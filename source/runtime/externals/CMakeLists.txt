@@ -1,0 +1,2 @@
+add_subdirectory(vixl)
+add_subdirectory(dlmalloc)

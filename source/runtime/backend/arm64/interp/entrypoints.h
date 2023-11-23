@@ -1,0 +1,8 @@
+//
+// Created by 甘尧 on 2023/9/7.
+//
+
+#ifndef SWIFTHORIZON_ENTRYPOINTS_H
+#define SWIFTHORIZON_ENTRYPOINTS_H
+
+#endif  // SWIFTHORIZON_ENTRYPOINTS_H
