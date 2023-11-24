@@ -1,5 +1,6 @@
 enable_language(ASM)
 add_subdirectory(externals)
+add_subdirectory(frontend)
 
 if ("arm64" IN_LIST ARCHITECTURE)
     set(RUNTIME_ARCH_SOURCE

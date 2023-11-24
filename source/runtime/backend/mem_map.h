@@ -25,14 +25,14 @@ public:
 
     explicit MemMap(u32 size, bool executable = false);
 
-    virtual ~MemMap();
+    ~MemMap() override;
 
     void* Map(u32 size, u32 offset, Mode mode, bool pri = false);
     void Protect(u32 size, u32 offset, Mode mode);
     void Unmap(void* mem, u32 size);
     void Free(u32 offset, u32 size);
     u8* GetMemory();
-    u32 GetSize() const;
+    [[nodiscard]] u32 GetSize() const;
 
 private:
     class Impl;

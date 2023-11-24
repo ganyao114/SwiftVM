@@ -20,4 +20,5 @@ message(STATUS "Target architecture: ${ARCHITECTURE}")
 
 add_subdirectory(externals)
 add_subdirectory(runtime)
+add_subdirectory(compiler)
 add_subdirectory(tests)

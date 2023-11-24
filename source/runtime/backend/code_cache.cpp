@@ -45,7 +45,7 @@ std::optional<CodeBuffer> CodeCache::AllocCode(size_t size) {
     if (code_mem_mapped) {
         result_buffer.exec_data = result - code_mem->GetMemory() + code_mem_mapped;
     }
-    return std::move(result_buffer);
+    return result_buffer;
 }
 
 bool CodeCache::FreeCode(u8* exec_ptr) {
