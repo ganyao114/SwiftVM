@@ -11,7 +11,7 @@
 #endif
 #include <filesystem>
 
-namespace swift::runtime {
+namespace swift {
 
 namespace fs {
 using namespace std::filesystem;

@@ -8,5 +8,5 @@ add_library(slang_compiler STATIC
         slang.cpp
         slang.h)
 
-target_link_libraries(slang_compiler PUBLIC antlr4_static)
+target_link_libraries(slang_compiler PUBLIC swift::base antlr4_static)
 target_include_directories(slang_compiler PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/antlr)

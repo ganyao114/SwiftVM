@@ -3,7 +3,7 @@
 //
 #pragma once
 
-#include "runtime/common/common_funcs.h"
+#include "base/common_funcs.h"
 #include "runtime/common/types.h"
 
 namespace swift::runtime::backend {

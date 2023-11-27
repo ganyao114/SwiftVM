@@ -1,11 +1,11 @@
 #pragma once
 
+#include "base/common_funcs.h"
+#include "jit_context.h"
 #include "runtime/backend/code_cache.h"
-#include "runtime/common/common_funcs.h"
 #include "runtime/common/types.h"
 #include "runtime/include/config.h"
 #include "runtime/ir/block.h"
-#include "jit_context.h"
 
 namespace swift::runtime::backend::arm64 {
 

@@ -9,7 +9,7 @@
 #pragma clang diagnostic ignored "-Wpragma-pack"
 #endif
 
-#include "runtime/common/common_funcs.h"
+#include "base/common_funcs.h"
 #include "runtime/common/logging.h"
 #include "runtime/common/types.h"
 #include "runtime/ir/ir_types.h"

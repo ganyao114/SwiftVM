@@ -23,14 +23,12 @@ add_library(swift_runtime STATIC
         common/slab_alloc.cc
         common/slab_alloc.h
         common/object_pool.h
-        common/common_funcs.h
+        ../base/common_funcs.h
         common/variant_util.h
         common/logging.h
         common/logging.cpp
         common/virtual_vector.cpp
         common/virtual_vector.h
-        common/file.cpp
-        common/file.h
         common/bit_fields.h
         ir/args.cpp
         ir/args.h
@@ -79,5 +77,5 @@ add_library(swift_runtime STATIC
 
 
 find_package(Boost 1.57 REQUIRED)
-target_link_libraries(swift_runtime PUBLIC fmt Boost::boost vixl dlmalloc)
+target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl dlmalloc)
 add_library(swift::runtime ALIAS swift_runtime)

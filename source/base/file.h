@@ -11,7 +11,7 @@
 
 #define HAS_UNIX_FD defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
 
-namespace swift::runtime {
+namespace swift {
 
 enum class FileAccessMode {
     None = 0,

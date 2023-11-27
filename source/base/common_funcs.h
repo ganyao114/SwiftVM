@@ -1,10 +1,10 @@
 #pragma once
 
+#include "runtime/common/logging.h"
 #include <string_view>
 #include <type_traits>
-#include "logging.h"
 
-namespace swift::runtime {
+namespace swift {
 
 #define CONCAT2(x, y) DO_CONCAT2(x, y)
 #define DO_CONCAT2(x, y) x##y

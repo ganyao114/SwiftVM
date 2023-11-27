@@ -1,9 +1,9 @@
 #pragma once
 
 #include <fmt/format.h>
-#include "base/types.h"
+#include "types.h"
 
-namespace swift::runtime::log {
+namespace swift::log {
 
 enum class Level {
     Info,
@@ -34,14 +34,14 @@ template <typename... Args> void LogMessage(Level log_level,
 
 void AssertFailed(const std::string& message);
 
-}  // namespace swift::runtime::log
+}  // namespace swift::log
 
 #ifdef STRIP_LOG
 #define LOG(level, ...) (void(0))
 #else
 #define LOG(level, ...)                                                                            \
-    swift::runtime::log::LogMessage(                                                               \
-            swift::runtime::log::Level::level, __FILE__, __LINE__, __FUNCTION__, __VA_ARGS__)
+    swift::log::LogMessage(                                                               \
+            swift::log::Level::level, __FILE__, __LINE__, __FUNCTION__, __VA_ARGS__)
 #endif
 
 #define LOG_INFO(...) LOG(Info, __VA_ARGS__)
@@ -52,14 +52,14 @@ void AssertFailed(const std::string& message);
 #define ASSERT(cond)                                                                               \
     do {                                                                                           \
         if (!(cond)) {                                                                             \
-            swift::runtime::log::AssertFailed(fmt::format("Check failed: \"{}\"", #cond));         \
+            swift::log::AssertFailed(fmt::format("Check failed: \"{}\"", #cond));         \
         }                                                                                          \
     } while (0)
 
 #define ASSERT_MSG(cond, ...)                                                                      \
     do                                                                                             \
         if (!(cond)) {                                                                             \
-            swift::runtime::log::AssertFailed(fmt::format("Check Failed! " __VA_ARGS__));          \
+            swift::log::AssertFailed(fmt::format("Check Failed! " __VA_ARGS__));          \
         }                                                                                          \
     while (0)
 

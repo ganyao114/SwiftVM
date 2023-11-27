@@ -18,6 +18,7 @@ if (NOT DEFINED ARCHITECTURE)
 endif()
 message(STATUS "Target architecture: ${ARCHITECTURE}")
 
+add_subdirectory(base)
 add_subdirectory(externals)
 add_subdirectory(runtime)
 add_subdirectory(compiler)

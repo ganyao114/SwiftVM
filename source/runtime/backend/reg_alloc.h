@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "runtime/common/common_funcs.h"
+#include "base/common_funcs.h"
 #include "runtime/common/types.h"
 #include "runtime/ir/block.h"
 #include "runtime/ir/host_reg.h"
