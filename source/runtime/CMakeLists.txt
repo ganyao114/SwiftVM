@@ -4,15 +4,13 @@ add_subdirectory(frontend)
 
 if ("arm64" IN_LIST ARCHITECTURE)
     set(RUNTIME_ARCH_SOURCE
-            backend/translator.cpp
-            backend/translator.h
             backend/arm64/context.S
             backend/arm64/jit/jit_context.cpp
             backend/arm64/jit/jit_context.h
             backend/arm64/jit/translator.cpp
             backend/arm64/jit/translator.h)
 else ()
-    set(RUNTIME_ARCH_SOURCE)
+    set(RUNTIME_ARCH_SOURCE backend/dummy_entry.cpp)
 endif ()
 
 add_library(swift_runtime STATIC
@@ -23,7 +21,6 @@ add_library(swift_runtime STATIC
         common/slab_alloc.cc
         common/slab_alloc.h
         common/object_pool.h
-        ../base/common_funcs.h
         common/variant_util.h
         common/logging.h
         common/logging.cpp
@@ -73,6 +70,8 @@ add_library(swift_runtime STATIC
         backend/reg_alloc.cpp
         backend/reg_alloc.h
         backend/jit_code.h
+        backend/translator.cpp
+        backend/translator.h
         ${RUNTIME_ARCH_SOURCE})
 
 

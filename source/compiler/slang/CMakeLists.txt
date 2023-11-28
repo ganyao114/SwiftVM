@@ -6,7 +6,18 @@ add_library(slang_compiler STATIC
         ${G4_SRCS}
         ${G4_DEFS}
         slang.cpp
-        slang.h)
+        slang.h
+        context.cpp
+        context.h
+        class.cpp
+        class.h
+        method.cpp
+        method.h
+        expression.cpp
+        expression.h
+        attrs.h
+        field.cpp
+        field.h)
 
 target_link_libraries(slang_compiler PUBLIC swift::base antlr4_static)
 target_include_directories(slang_compiler PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/antlr)

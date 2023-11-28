@@ -3,8 +3,15 @@
 #include "runtime/ir/opts/cfg_analysis_pass.h"
 #include "runtime/ir/opts/local_elimination_pass.h"
 #include "runtime/backend/mem_map.h"
+#include "compiler/slang/slang.h"
 
-TEST_CASE("Test runtime-init") {
+TEST_CASE("Test compiler") {
+    using namespace swift::slang;
+    Context context{};
+    CompileFile("/Users/swift/CLionProjects/SwiftVM/source/tests/test.slang", context);
+}
+
+TEST_CASE("Test runtime-ir") {
     using namespace swift::runtime::backend;
     using namespace swift::runtime::ir;
     Inst::InitializeSlabHeap(0x100000);

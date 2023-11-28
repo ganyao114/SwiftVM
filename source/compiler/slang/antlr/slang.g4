@@ -9,7 +9,7 @@ namespaceDef
     ;
 
 functionHeader
-    :   accessModifier ? Type Identifier  '(' functionParams? ')'
+    :   accFlag=accessModifier ? returnType=Type functionName=Identifier  '(' args=functionParams? ')'
     ;
 
 functionDef
@@ -25,15 +25,15 @@ interfaceDef
     ;
 
 classDef
-    :   'class' Identifier '{' (functionImpl | classDef | interfaceDef)* '}'
+    :   'class' className=Identifier '{' (functionImpl | classDef | interfaceDef | fieldDef)* '}'
     ;
 
 accessModifier
     : 'public' | 'private' | 'protected'
     ;
 
-field
-    : accessModifier ? Type Identifier ';'
+fieldDef
+    : accFlag=accessModifier ? fieldType=Type fieldName=Identifier ('=' expression)? ';'
     ;
 
 functionParams
@@ -52,15 +52,16 @@ codeBlock
     : '{' statement* '}'
     ;
 
-statement : localVariableDeclarationStatement
+statement : expression
+          | localVariableDeclarationStatement
           | expressionStatement
           | returnStatement
-          | methodCallStatement
+          | assignmentStatement
           ;
 
 // 定义局部变量声明语句
 localVariableDeclarationStatement
-    : Type Identifier ('=' expression)? ';'
+    : Type localName=Identifier ('=' expression)? ';'
     ;
 
 // 定义表达式语句
@@ -74,24 +75,41 @@ returnStatement
     ;
 
 // 定义方法调用语句
-methodCallStatement
-    : (receiver=expression '.')? methodName=Identifier '(' arguments? ')'
+methodCallExpression
+    : methodName=Identifier '(' arguments? ')'
+    ;
+
+assignmentStatement
+    : receiver=Identifier '=' expression ';'
     ;
 
 // 参数列表规则
 arguments
-    : expression (',' expression)*
+    : argFirst=expression (',' expression)*
     ;
 
 // 定义表达式
 expression
-    : additionExpression | Identifier | literal
+    : literal | methodCallExpression | additionExpression | conditionExpression
     ;
 
 // 定义字面量，例如整数或字符串字面量
 literal
-    : IntegerLiteral | StringLiteral
+    : IntegerLiteral
+    | StringLiteral
+    | 'true'
+    | 'false'
+    | 'null'
     ;
+
+conditionExpression
+    : additionExpression // 乘除优先于加减
+    ( '>' additionExpression
+    | '<' additionExpression
+    | '==' additionExpression
+    | '>=' additionExpression
+    | '<=' additionExpression
+    )* ;
 
 additionExpression
     : multiplicationExpression // 乘除优先于加减
@@ -103,23 +121,19 @@ multiplicationExpression
     : primaryExpression // 基础表达式，例如数字、括号表达式
     ( '*' primaryExpression // 乘法
     | '/' primaryExpression // 除法
+    | '<<' primaryExpression // 左移
+    | '>>' primaryExpression // 右移
     )* ;
 
 primaryExpression
     : '(' expression ')' // 括号表达式，用于改变优先级
-    | IntegerLiteral ; // 整数
+    | literal
+    | Identifier
+    ; // 整数
 
 Import
-    :    'import' Whitespace (ImportA | ImportB)
+    :    'import' Whitespace '<' SCharSequence? '>'
     ;
-
-ImportA:
-          '<' SCharSequence? '>'
-        ;
-
-ImportB:
-         '"' SCharSequence? '"'
-        ;
 
 Type
     :   Void | Bool | S32 | S64 | U32 | U64 | String | Object
@@ -170,6 +184,7 @@ fragment
 SCharSequence
     :   SChar+
     ;
+
 fragment
 SChar
     :   ~["\\\r\n];
@@ -211,5 +226,9 @@ IntegerLiteral
     ;
 
 StringLiteral
-    : '"' ( ~["\\] | '\\' . )* '"'
+    :  '"' (ESC | ~["\\])* '"'
     ;
+
+fragment ESC :   '\\' (["\\/bfnrt] | UNICODE) ;
+fragment UNICODE : 'u' HEX HEX HEX HEX ;
+fragment HEX : [0-9a-fA-F] ;
