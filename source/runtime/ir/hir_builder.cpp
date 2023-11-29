@@ -115,6 +115,16 @@ void HIRFunction::AppendInst(Inst* inst) {
             if (auto hir_value = GetHIRValue(value); hir_value) {
                 hir_value->Use(inst, i);
             }
+        } else if (arg.IsParams()) {
+            auto &params = arg.Get<Params>();
+            for (auto param : params) {
+                if (auto data = param.data; data.IsValue()) {
+                    if (auto hir_value = GetHIRValue(data.value); hir_value) {
+                        hir_value->Use(inst, i);
+                    }
+                }
+            }
+            params.Destroy();
         }
     }
     switch (inst->GetOp()) {

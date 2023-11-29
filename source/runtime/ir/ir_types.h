@@ -9,7 +9,7 @@
 
 namespace swift::runtime::ir {
 
-enum class ArgType : u8 { Void = 0, Value, Imm, Uniform, Local, Cond, Flags, Operand, Lambda };
+enum class ArgType : u8 { Void = 0, Value, Imm, Uniform, Local, Cond, Flags, Operand, Lambda, Params };
 enum class ValueType : u8 {
     VOID = 0,
     BOOL,

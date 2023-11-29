@@ -74,6 +74,16 @@ void Inst::SetArg(int index, const Operand& arg) {
     }
 }
 
+void Inst::SetArg(int index, const Params& params) {
+    DestroyArg(index);
+    arguments[index] = params;
+    for (auto param : params) {
+        if (auto data = param.data; data.IsValue()) {
+            Use(data.value);
+        }
+    }
+}
+
 void Inst::Use(const Value& value) {
     auto def = value.Def();
     ASSERT_MSG(def, "Value used by {} is null!", op_code);
@@ -154,6 +164,14 @@ void Inst::DestroyArg(u8 arg_idx) {
         UnUse(arg.Get<Value>());
     } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
         UnUse(arg.Get<Lambda>().GetValue());
+    } else if (arg.IsParams()) {
+        auto &params = arg.Get<Params>();
+        for (auto param : params) {
+            if (auto data = param.data; data.IsValue()) {
+                UnUse(data.value);
+            }
+        }
+        params.Destroy();
     }
 }
 

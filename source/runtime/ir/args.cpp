@@ -31,31 +31,61 @@ void Value::UnUse() const {
 Lambda::Lambda() { address.type = ArgType::Void; }
 
 Lambda::Lambda(const Imm& imm) {
-    address.inner.imm = imm;
+    address.imm = imm;
     address.type = ArgType::Imm;
 }
 
 Lambda::Lambda(const Value& value) {
-    address.inner.value = value;
+    address.value = value;
     address.type = ArgType::Value;
 }
 
 Imm& Lambda::GetImm() {
     ASSERT(address.type == ArgType::Imm);
-    return address.inner.imm;
+    return address.imm;
 }
 
 Value& Lambda::GetValue() {
     ASSERT(address.type == ArgType::Value);
-    return address.inner.value;
+    return address.value;
 }
 
 Value& Lambda::GetValue() const {
     ASSERT(address.type == ArgType::Value);
-    return address.inner.value;
+    return address.value;
 }
 
 bool Lambda::IsValue() const { return address.type == ArgType::Value; }
+
+void Params::Push(const Value& data) {
+    Push(new Param(data));
+}
+
+void Params::Push(const Imm& data) {
+    Push(new Param(data));
+}
+
+void Params::Push(Param* param) {
+    if (first_param) {
+        auto insert_point = first_param;
+        while (insert_point->next_node) {
+            insert_point = insert_point->next_node;
+        }
+        insert_point->next_node = param;
+    } else {
+        first_param = param;
+    }
+}
+
+void Params::Destroy() {
+    if (!first_param) return;
+    auto param = first_param;
+    do {
+        auto deleted = param;
+        param = param->next_node;
+        delete deleted;
+    } while (param->next_node);
+}
 
 Operand::Operand(const Value& left, const Imm& right, Op op) : left(left), right(right), op(op) {}
 
@@ -68,5 +98,15 @@ Uniform::Uniform(u32 offset, ValueType type) : type(type), offset(offset) {}
 u32 Uniform::GetOffset() { return offset; }
 
 ValueType Uniform::GetType() { return type; }
+
+Params::Param::Param(const Value& value) {
+    data.value = value;
+    data.type = ArgType::Value;
+}
+
+Params::Param::Param(const Imm& imm) {
+    data.imm = imm;
+    data.type = ArgType::Imm;
+}
 
 }  // namespace swift::runtime::ir

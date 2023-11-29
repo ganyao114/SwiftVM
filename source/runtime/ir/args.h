@@ -11,6 +11,7 @@
 
 #include "base/common_funcs.h"
 #include "runtime/common/logging.h"
+#include "runtime/common/slab_alloc.h"
 #include "runtime/common/types.h"
 #include "runtime/ir/ir_types.h"
 
@@ -85,26 +86,18 @@ private:
     Inst* inst{};
 };
 
-template<ValueType type_>
-class TypedValue final : public Value {
+template <ValueType type_> class TypedValue final : public Value {
 public:
     TypedValue() = default;
 
-    template<ValueType other_type>
-    constexpr TypedValue(const TypedValue<other_type>& value)
+    template <ValueType other_type> constexpr TypedValue(const TypedValue<other_type>& value)
             : Value(value) {
         ASSERT(value.Type() != type_);
     }
 
-    constexpr TypedValue(const Value& value)
-            : Value(value) {
-        SetType(type_);
-    }
+    constexpr TypedValue(const Value& value) : Value(value) { SetType(type_); }
 
-    constexpr TypedValue(Inst* inst)
-            : TypedValue(Value(inst)) {
-        SetType(type_);
-    }
+    constexpr TypedValue(Inst* inst) : TypedValue(Value(inst)) { SetType(type_); }
 };
 
 using BOOL = TypedValue<ValueType::BOOL>;
@@ -138,7 +131,11 @@ struct DataClass {
     union {
         Value value;
         Imm imm;
-    } inner{};
+    };
+
+    [[nodiscard]] bool IsValue() const {
+        return type == ArgType::Value;
+    }
 };
 
 class Lambda {
@@ -156,7 +153,7 @@ public:
     Imm& GetImm();
 
 private:
-    mutable FuncAddr address;
+    mutable FuncAddr address{};
 };
 
 enum class Flags : u16 {
@@ -189,6 +186,72 @@ struct OperandOp {
     u8 shift_ext{};
 };
 
+class Params {
+public:
+    class Param : public SlabObject<Param, true> {
+    public:
+        explicit Param() = default;
+        explicit Param(const Value& value);
+        explicit Param(const Imm& imm);
+
+        DataClass data{};
+
+    private:
+        friend class Params;
+        Param* next_node{};
+    };
+
+    class Iterator {
+    public:
+        using value_type = Param;
+        using difference_type = std::ptrdiff_t;
+        using pointer = Param*;
+        using reference = Param&;
+        using iterator_category = std::forward_iterator_tag;
+
+        explicit Iterator(pointer ptr) : ptr_(ptr) {}
+
+        reference operator*() const { return *ptr_; }
+        pointer operator->() { return ptr_; }
+
+        // 前置递增操作符
+        Iterator& operator++() {
+            ptr_ = ptr_->next_node;
+            return *this;
+        }
+
+        Iterator operator++(int) {
+            Iterator temp = *this;
+            ptr_ = ptr_->next_node;
+            return temp;
+        }
+
+        bool operator==(const Iterator& other) const {
+            return ptr_ == other.ptr_;
+        }
+
+        bool operator!=(const Iterator& other) const {
+            return ptr_ != other.ptr_;
+        }
+
+    private:
+        pointer ptr_;
+    };
+
+    void Push(const Imm& data);
+    void Push(const Value& data);
+
+    [[nodiscard]] Iterator begin() const { return Iterator(first_param); }
+
+    [[nodiscard]] Iterator end() const { return Iterator(nullptr); }
+
+    void Destroy();
+
+private:
+    void Push(Param* param);
+    Param* first_param{};
+};
+
 struct ArgClass {
     ArgType type;
     union {
@@ -200,6 +263,7 @@ struct ArgClass {
         Uniform uniform;
         Lambda lambda;
         Flags flags;
+        Params params;
     };
 
     explicit ArgClass() : type(ArgType::Void) {}
@@ -244,6 +308,11 @@ struct ArgClass {
         type = ArgType::Flags;
     }
 
+    explicit ArgClass(const Params& v) {
+        params = v;
+        type = ArgType::Params;
+    }
+
     constexpr ArgClass& operator=(const Uniform& v) {
         uniform = v;
         type = ArgType::Uniform;
@@ -279,13 +348,9 @@ public:
 
     [[nodiscard]] Op GetOp() const;
 
-    Type GetLeft() const {
-        return left;
-    }
+    Type GetLeft() const { return left; }
 
-    Type GetRight() const {
-        return right;
-    }
+    Type GetRight() const { return right; }
 
 private:
     Op op{};
@@ -309,6 +374,7 @@ public:
     Arg(const Local& v) : value(v) {}
     Arg(const Uniform& v) : value(v) {}
     Arg(const Lambda& v) : value(v) {}
+    Arg(const Params& v) : value(v) {}
 
     [[nodiscard]] constexpr bool IsImm() const { return value.type == ArgType::Imm; }
 
@@ -319,6 +385,8 @@ public:
     [[nodiscard]] constexpr bool IsLambda() const { return value.type == ArgType::Lambda; }
 
     [[nodiscard]] constexpr bool IsVoid() const { return value.type == ArgType::Void; }
+
+    [[nodiscard]] constexpr bool IsParams() const { return value.type == ArgType::Params; }
 
     [[nodiscard]] ArgType GetType() const { return value.type; }
 
@@ -347,6 +415,9 @@ public:
         } else if constexpr (std::is_same<T, Flags>::value) {
             assert(value.type == ArgType::Flags);
             return value.flags;
+        } else if constexpr (std::is_same<T, Params>::value) {
+            assert(value.type == ArgType::Params);
+            return value.params;
         } else {
             assert(0);
         }

@@ -43,6 +43,12 @@ TEST_CASE("Test runtime-ir") {
     hir_builder.LinkBlock(terminal::LinkBlock{3});
     function->StoreLocal(local_arg3, const2);
     function->StoreUniform(Uniform{0, ValueType::U32}, function->LoadLocal(local_arg3));
+
+    Params params{};
+    params.Push(local1);
+    params.Push(local2);
+    hir_builder.CallDynamic(Lambda(Imm(uint64_t(1))), params);
+
     hir_builder.Return();
     CFGAnalysisPass::Run(&hir_builder);
     LocalEliminationPass::Run(&hir_builder);

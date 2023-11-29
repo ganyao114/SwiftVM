@@ -10,7 +10,7 @@ using u16 = uint16_t;
 using u32 = uint32_t;
 
 #ifdef __APPLE__
-typedef size_t u64;     ///<  64-bit unsigned integer.
+typedef uint64_t u64;     ///<  64-bit unsigned integer.
 #else
 typedef uint64_t u64;     ///<  64-bit unsigned integer.
 #endif

@@ -24,11 +24,10 @@ concept InstAllocator = requires(T allocator, Inst* inst, OpCode code) {
 
 #pragma pack(push, 1)
 class Inst : public SlabObject<Inst, true> {
-    friend class Value;
-    friend class Block;
-
 public:
     static constexpr auto max_args = 4;
+
+    ~Inst();
 
     template <typename... Args> void SetArgs(const Args&... args) {
         constexpr auto arg_count = sizeof...(args);
@@ -75,6 +74,7 @@ public:
     void SetArg(int index, const Uniform& arg);
     void SetArg(int index, const Lambda& arg);
     void SetArg(int index, const Operand& arg);
+    void SetArg(int index, const Params& arg);
 
     template <typename T> T GetArg(int index) {
         if constexpr (std::is_same<T, Operand>::value) {
@@ -103,11 +103,12 @@ public:
     Inst* GetPseudoOperation(OpCode code);
     void DestroyArg(u8 arg_idx);
 
-    virtual ~Inst();
-
     IntrusiveListNode list_node{};
 
 private:
+    friend class Value;
+    friend class Block;
+
     Inst* next_pseudo_inst{};
     std::array<Arg, max_args> arguments{};
     OpCode op_code{OpCode::Void};

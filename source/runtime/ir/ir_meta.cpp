@@ -21,6 +21,7 @@ constexpr ArgType Cond = ArgType::Cond;
 constexpr ArgType Flags = ArgType::Flags;
 constexpr ArgType Operand = ArgType::Operand;
 constexpr ArgType Lambda = ArgType::Lambda;
+constexpr ArgType Params = ArgType::Params;
 
 static const std::array ir_meta_infos {
 IRMeta{OpCode::Void, "Void", Void, {}},

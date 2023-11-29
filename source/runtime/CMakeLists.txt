@@ -10,7 +10,8 @@ if ("arm64" IN_LIST ARCHITECTURE)
             backend/arm64/jit/translator.cpp
             backend/arm64/jit/translator.h)
 else ()
-    set(RUNTIME_ARCH_SOURCE backend/dummy_entry.cpp)
+    set(RUNTIME_ARCH_SOURCE backend/dummy_entry.cpp
+    )
 endif ()
 
 add_library(swift_runtime STATIC
