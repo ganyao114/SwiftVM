@@ -17,7 +17,7 @@ void JitTranslator::Translate(ir::Inst* inst) {
     switch (inst->GetOp()) {
 #include "runtime/ir/ir.inc"
         default:
-            abort();
+            ASSERT_MSG(false, "Instr unk op: {}", inst->GetOp());
     }
 
 #undef INST
@@ -44,6 +44,7 @@ void JitTranslator::EmitAdc(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitAndImm(ir::Inst* inst) {
+    auto imm = inst->GetArg<ir::Imm>(1);
 
 }
 

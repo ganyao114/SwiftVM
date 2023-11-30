@@ -178,6 +178,7 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
     worklist.push_back(entry_block);
     // RPO List
     auto& reverse_post_order = hir_function->GetHIRBlocksRPO();
+    reverse_post_order.push_back(*entry_block);
 
     while (!worklist.empty()) {
         auto current = worklist.back();

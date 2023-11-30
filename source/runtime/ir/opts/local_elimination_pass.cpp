@@ -13,15 +13,15 @@ void LocalEliminationPass::Run(HIRBuilder* hir_builder) {
 }
 
 void LocalEliminationPass::Run(HIRFunction* hir_function) {
-    auto& hir_blocks = hir_function->GetHIRBlocks();
+    auto& hir_blocks = hir_function->GetHIRBlocksRPO();
     Vector<HIRLocal> current_locals(hir_function->MaxLocalId() + 1);
-    for (auto block : hir_blocks) {
-        for (auto& inst : block->GetInstList()) {
+    for (auto &block : hir_blocks) {
+        for (auto& inst : block.GetInstList()) {
             switch (inst.GetOp()) {
                 case OpCode::LoadLocal: {
                     auto local = inst.GetArg<Local>(0);
                     if (auto local_value = current_locals[local.id].current_value;
-                        local_value && local_value->block == block) {
+                        local_value && local_value->block == &block) {
                         if (auto hir_value = hir_function->GetHIRValue(Value{&inst}); hir_value) {
                             for (auto& use : hir_value->uses) {
                                 if (use.inst->ArgAt(use.arg_idx).IsValue()) {

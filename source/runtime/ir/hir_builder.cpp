@@ -257,6 +257,7 @@ HIRBuilder::HIRBuilder(u32 func_cap) : pools(func_cap) {}
 HIRFunction* HIRBuilder::AppendFunction(Location start, Location end) {
     current_function = pools.functions.Create(new Function(start), start, end, pools);
     hir_functions.push_back(*current_function);
+    current_function->AppendBlock(start, end);
     return current_function;
 }
 
