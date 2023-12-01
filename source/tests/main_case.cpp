@@ -37,13 +37,15 @@ TEST_CASE("Test runtime-ir") {
     auto local1 = function->LoadLocal(local_arg1);
     function->StoreLocal(local_arg2, local1);
     auto local2 = function->LoadLocal(local_arg2);
-    hir_builder.If(terminal::If{local2, terminal::LinkBlock{1}, terminal::LinkBlock{2}});
-    hir_builder.LinkBlock(terminal::LinkBlock{3});
+    auto [else_, then_] = hir_builder.If(terminal::If{local2, terminal::LinkBlock{1}, terminal::LinkBlock{2}});
+    hir_builder.SetCurBlock(then_);
     function->StoreLocal(local_arg3, const1);
     hir_builder.LinkBlock(terminal::LinkBlock{3});
+    hir_builder.SetCurBlock(else_);
     function->StoreLocal(local_arg3, const2);
+    hir_builder.LinkBlock(terminal::LinkBlock{3});
+    hir_builder.SetCurBlock(3);
     function->StoreUniform(Uniform{0, ValueType::U32}, function->LoadLocal(local_arg3));
-
     Params params{};
     params.Push(local1);
     params.Push(local2);
@@ -88,12 +90,12 @@ TEST_CASE("Test runtime-ir-cfg") {
     auto local1 = function->LoadLocal(local_arg1);
     function->StoreLocal(local_arg2, local1);
     auto local2 = function->LoadLocal(local_arg2);
-    hir_builder.LinkBlock(terminal::LinkBlock{2});
+    hir_builder.SetCurBlock(hir_builder.LinkBlock(terminal::LinkBlock{2}));
     function->StoreLocal(local_arg3, const1);
-    hir_builder.LinkBlock(terminal::LinkBlock{3});
+    hir_builder.SetCurBlock(hir_builder.LinkBlock(terminal::LinkBlock{3}));
     function->StoreLocal(local_arg3, const2);
     function->StoreUniform(Uniform{0, ValueType::U32}, function->LoadLocal(local_arg3));
-    hir_builder.LinkBlock(terminal::LinkBlock{4});
+    hir_builder.SetCurBlock(hir_builder.LinkBlock(terminal::LinkBlock{4}));
     Params params{};
     params.Push(local1);
     params.Push(local2);

@@ -198,6 +198,20 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
             }
         }
     }
+
+    // Dominance Frontier
+    for (auto &block : reverse_post_order) {
+        auto &predecessors = block.GetPredecessors();
+        if (!predecessors.empty()) {
+            for (auto predecessor : predecessors) {
+                auto runner = predecessor;
+                while (runner && runner != runner->GetDominator()) {
+                    runner->PushDominance(&block);
+                    runner = runner->GetDominator();
+                }
+            }
+        }
+    }
 }
 
 }  // namespace swift::runtime::ir

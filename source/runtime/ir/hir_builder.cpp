@@ -39,6 +39,11 @@ void HIRBlock::AddBackEdge(HIRBlock* target) {
     back_edges.push_back(*back_edge);
 }
 
+void HIRBlock::PushDominance(HIRBlock* hir_block) {
+    auto dominance = pools.mem_arena.Create<Dominance>(hir_block);
+    dom_frontier.push_back(*dominance);
+}
+
 bool HIRBlock::HasIncomingEdges() { return !incoming_edges.empty(); }
 
 bool HIRBlock::HasOutgoingEdges() { return !outgoing_edges.empty(); }
@@ -49,7 +54,7 @@ InstList& HIRBlock::GetInstList() { return block->GetInstList(); }
 
 u16 HIRBlock::MaxValueCount() { return 0; }
 u16 HIRBlock::MaxBlockCount() { return 0; }
-u16 HIRBlock::MaxLocalId() { return 0; }
+u16 HIRBlock::MaxLocalCount() { return 0; }
 
 HIRValue::HIRValue(u16 id, const Value& value, HIRBlock* block) : value(value), block(block) {
     if (auto def = value.Def(); def) {
@@ -94,8 +99,11 @@ HIRFunction::HIRFunction(Function* function,
 HIRBlock* HIRFunction::AppendBlock(Location start, Location end_) {
     auto hir_block = CreateOrGetBlock(start);
     hir_block->block->SetEndLocation(end_);
-    current_block = hir_block;
     return hir_block;
+}
+
+void HIRFunction::SetCurBlock(HIRBlock* block) {
+    current_block = block;
 }
 
 void HIRFunction::AppendInst(Inst* inst) {
@@ -139,7 +147,11 @@ void HIRFunction::AppendInst(Inst* inst) {
     }
 }
 
-void HIRFunction::DestroyHIRValue(HIRValue* value) { values.erase(*value); }
+void HIRFunction::DestroyHIRValue(HIRValue* value) {
+    values.erase(*value);
+    auto block = value->block->block;
+    block->DestroyInst(value->value.Def());
+}
 
 HIRBlock* HIRFunction::GetCurrentBlock() { return current_block; }
 
@@ -228,7 +240,7 @@ void HIRFunction::EndFunction() {
 
 u16 HIRFunction::MaxBlockCount() { return block_order_id; }
 u16 HIRFunction::MaxValueCount() { return value_order_id; }
-u16 HIRFunction::MaxLocalId() { return max_local_id; }
+u16 HIRFunction::MaxLocalCount() { return max_local_id + 1; }
 
 HIRBlock* HIRFunction::CreateOrGetBlock(Location location) {
     auto itr = std::find_if(block_list.begin(), block_list.end(), [location] (auto &block) -> auto {
@@ -257,13 +269,25 @@ HIRBuilder::HIRBuilder(u32 func_cap) : pools(func_cap) {}
 HIRFunction* HIRBuilder::AppendFunction(Location start, Location end) {
     current_function = pools.functions.Create(new Function(start), start, end, pools);
     hir_functions.push_back(*current_function);
-    current_function->AppendBlock(start, end);
+    SetCurBlock(current_function->AppendBlock(start, end));
     return current_function;
 }
 
 HIRFunctionList& HIRBuilder::GetHIRFunctions() { return hir_functions; }
 
 void HIRBuilder::SetLocation(Location location) { current_location = location; }
+
+void HIRBuilder::SetCurBlock(HIRBlock* block) {
+    ASSERT(current_function);
+    current_function->SetCurBlock(block);
+}
+
+void HIRBuilder::SetCurBlock(Location location) {
+    ASSERT(current_function);
+    auto block = current_function->CreateOrGetBlock(location);
+    ASSERT(block);
+    current_function->SetCurBlock(block);
+}
 
 HIRBuilder::ElseThen HIRBuilder::If(const terminal::If& if_) {
     ASSERT_MSG(current_function, "current function is null!");

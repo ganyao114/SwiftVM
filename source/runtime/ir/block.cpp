@@ -20,6 +20,8 @@ void Block::DestroyInst(Inst* inst) {
     delete inst;
 }
 
+void DestroyInst(InstList::iterator &itr);
+
 void Block::SetEndLocation(Location end_) { this->end = end_; }
 
 Location Block::GetStartLocation() { return location; }

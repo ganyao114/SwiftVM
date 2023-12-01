@@ -23,7 +23,7 @@ class DataContext {
 public:
     virtual u16 MaxBlockCount() = 0;
     virtual u16 MaxValueCount() = 0;
-    virtual u16 MaxLocalId() = 0;
+    virtual u16 MaxLocalCount() = 0;
 };
 
 struct Edge {
@@ -42,6 +42,15 @@ struct Edge {
 
     u8 flags{};
 };
+
+struct Dominance {
+    IntrusiveListNode node;
+    HIRBlock *block;
+
+    explicit Dominance(HIRBlock* block) : block(block), node() {};
+};
+
+using DomFrontier = IntrusiveList<&Dominance::node>;
 
 struct BackEdge {
     HIRBlock *target;
@@ -169,6 +178,9 @@ public:
 
     auto& GetBackEdges() { return back_edges; }
 
+    auto& GetDomFrontier() { return dom_frontier; }
+
+    void PushDominance(HIRBlock *block);
     void SetDominator(HIRBlock *block_) { dominator = block_; };
     auto GetDominator() { return dominator; };
 
@@ -177,7 +189,7 @@ public:
 
     u16 MaxBlockCount() override;
     u16 MaxValueCount() override;
-    u16 MaxLocalId() override;
+    u16 MaxLocalCount() override;
 
     IntrusiveListNode list_node{};
 
@@ -194,14 +206,12 @@ private:
     BackEdgeList back_edges{};
     HIRPhiList phis{};
     HIRBlock* dominator{};
+    DomFrontier dom_frontier{};
 };
 
 using HIRBlockList = IntrusiveList<&HIRBlock::list_node>;
 
 class HIRFunction : public DataContext {
-    friend class HIRBuilder;
-    friend class HIRBlock;
-
 public:
     explicit HIRFunction(Function* function,
                          const Location& begin,
@@ -224,6 +234,8 @@ public:
 #undef INST
 
     HIRBlock* AppendBlock(Location start, Location end = {});
+    HIRBlock *CreateOrGetBlock(Location location);
+    void SetCurBlock(HIRBlock *block);
     void AppendInst(Inst* inst);
     void DestroyHIRValue(HIRValue* value);
     HIRBlock *GetCurrentBlock();
@@ -244,12 +256,13 @@ public:
 
     u16 MaxBlockCount() override;
     u16 MaxValueCount() override;
-    u16 MaxLocalId() override;
+    u16 MaxLocalCount() override;
 
     IntrusiveListNode list_node;
 
 private:
-    HIRBlock *CreateOrGetBlock(Location location);
+    friend class HIRBuilder;
+    friend class HIRBlock;
 
     struct {
         u32 current_slot{0};
@@ -322,6 +335,10 @@ public:
 #undef INST
 
     void SetLocation(Location location);
+
+    void SetCurBlock(HIRBlock *block);
+
+    void SetCurBlock(Location location);
 
     ElseThen If(const terminal::If& if_);
 

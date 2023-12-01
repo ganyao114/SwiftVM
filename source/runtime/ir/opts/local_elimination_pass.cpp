@@ -14,14 +14,19 @@ void LocalEliminationPass::Run(HIRBuilder* hir_builder) {
 
 void LocalEliminationPass::Run(HIRFunction* hir_function) {
     auto& hir_blocks = hir_function->GetHIRBlocksRPO();
-    Vector<HIRLocal> current_locals(hir_function->MaxLocalId() + 1);
+    auto block_count = hir_function->MaxBlockCount();
+    auto local_count = hir_function->MaxLocalCount();
+    StackVector<StackVector<HIRLocal, 8>, 8> all_current_locals{block_count};
+    // same block
     for (auto &block : hir_blocks) {
+        auto &current_locals = all_current_locals[block.GetOrderId()];
+        current_locals.resize(local_count);
+        StackVector<HIRValue*, 4> value_be_destroy{};
         for (auto& inst : block.GetInstList()) {
             switch (inst.GetOp()) {
                 case OpCode::LoadLocal: {
                     auto local = inst.GetArg<Local>(0);
-                    if (auto local_value = current_locals[local.id].current_value;
-                        local_value && local_value->block == &block) {
+                    if (auto local_value = current_locals[local.id].current_value) {
                         if (auto hir_value = hir_function->GetHIRValue(Value{&inst}); hir_value) {
                             for (auto& use : hir_value->uses) {
                                 if (use.inst->ArgAt(use.arg_idx).IsValue()) {
@@ -30,7 +35,7 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
                                     use.inst->SetArg(use.arg_idx, Lambda{local_value->value});
                                 }
                             }
-                            hir_function->DestroyHIRValue(hir_value);
+                            value_be_destroy.push_back(hir_value);
                         }
                     }
                     break;
@@ -45,6 +50,13 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
                     break;
             }
         }
+        for (auto &value : value_be_destroy) {
+            hir_function->DestroyHIRValue(value);
+        }
+    }
+
+    for (auto itr = hir_blocks.rbegin(); itr != hir_blocks.rend(); ++itr) {
+
     }
 }
 
