@@ -33,7 +33,7 @@ accessModifier
     ;
 
 fieldDef
-    : accFlag=accessModifier ? fieldType=Type fieldName=Identifier ('=' expression)? ';'
+    : Const ? accFlag=accessModifier ? fieldType=Type fieldName=Identifier ('=' expression)? ';'
     ;
 
 functionParams
@@ -61,7 +61,7 @@ statement : expression
 
 // 定义局部变量声明语句
 localVariableDeclarationStatement
-    : Type localName=Identifier ('=' expression)? ';'
+    : Const? Type localName=Identifier ('=' expression)? ';'
     ;
 
 // 定义表达式语句
@@ -130,6 +130,10 @@ primaryExpression
     | literal
     | Identifier
     ; // 整数
+
+Const
+    :   'const'
+    ;
 
 Import
     :    'import' Whitespace '<' SCharSequence? '>'

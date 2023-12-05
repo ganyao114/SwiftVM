@@ -80,12 +80,21 @@ struct ValueAllocated {
 #pragma pack(push, 1)
 struct HIRUse {
     constexpr static auto USE_NIL = 255;
+    constexpr static auto USE_FUNC_CALL = 253;
     constexpr static auto USE_PHI = 254;
     Inst* inst;
     u8 arg_idx;
     IntrusiveListNode list_node{};
 
     explicit HIRUse(Inst* inst, u8 arg_idx);
+
+    [[nodiscard]] bool IsFuncCall() const {
+        return arg_idx == USE_FUNC_CALL;
+    }
+
+    [[nodiscard]] bool IsPhi() const {
+        return arg_idx == USE_PHI;
+    }
 };
 #pragma pack(pop)
 
@@ -99,6 +108,7 @@ struct HIRValue {
     HIRUseList uses{};
 
     IntrusiveMapNode map_node{};
+    IntrusiveListNode list_node{};
 
     HIRValue() : value(), block(nullptr) {};
     HIRValue(const Value& value) : value(value), block(nullptr){};
@@ -124,30 +134,10 @@ struct HIRLocal {
     HIRValue* current_value{};
 };
 
-struct HIRPhi {
-    struct PhiNode {
-        IntrusiveListNode list_node;
-        HIRValue *value;
-
-        explicit PhiNode(HIRValue* value) : value(value) {}
-    };
-
-    using PhiNodes = IntrusiveList<&PhiNode::list_node>;
-
-    explicit HIRPhi(HIRPools& pools, HIRValue* value);
-
-    HIRPools &pools;
-    HIRValue *value;
-    PhiNodes inputs{};
-    IntrusiveListNode list_node;
-
-    void AddInput(HIRValue *input);
-};
 #pragma pack(pop, 4)
 
-using HIRPhiList = IntrusiveList<&HIRPhi::list_node>;
-
 using HIRValueMap = IntrusiveMap<&HIRValue::map_node>;
+using HIRValueList = IntrusiveList<&HIRValue::list_node>;
 
 using HIRBlockVector = std::span<HIRBlock*>;
 
@@ -158,10 +148,29 @@ class HIRBlock : public DataContext {
 public:
     explicit HIRBlock(Block* block, HIRValueMap& values, HIRPools& pools);
 
-    void AppendInst(Inst* inst);
-    HIRPhi *AppendPhi();
+    template <typename... Args> Inst* CreateInst(OpCode op, const Args&... args) {
+        auto inst = new Inst(op);
+        inst->SetArgs(args...);
+        return inst;
+    }
+
+    template <typename... Args> HIRValue *AppendInst(OpCode op, const Args&... args) {
+        auto inst = new Inst(op);
+        inst->SetArgs(args...);
+        return AppendInst(inst);
+    }
+
+#define INST(name, ret, ...)                                                                       \
+    template <typename... Args> ret name(const Args&... args) {                                    \
+        return ret{AppendInst(OpCode::name, args...)};                                             \
+    }
+#include "ir.inc"
+#undef INST
+
+    HIRValue *AppendInst(Inst* inst);
+    HIRValue *InsertFront(Inst* inst);
     HIRValueMap& GetHIRValues();
-    const HIRPhiList& GetPhis();
+    HIRValueList& GetHIRValueList();
     [[nodiscard]] u16 GetOrderId() const;
 
     void AddOutgoingEdge(Edge* edge);
@@ -196,15 +205,15 @@ public:
 private:
     u16 order_id{};
     Block* block;
-    HIRFunction *function;
+    HIRFunction *function{};
     HIRPools& pools;
-    HIRValueMap& values;
+    HIRValueMap& value_map;
+    HIRValueList value_list;
     IntrusiveList<&Edge::outgoing_edges> outgoing_edges{};
     IntrusiveList<&Edge::incoming_edges> incoming_edges{};
     HIRBlockVector predecessors;
     HIRBlockVector successors;
     BackEdgeList back_edges{};
-    HIRPhiList phis{};
     HIRBlock* dominator{};
     DomFrontier dom_frontier{};
 };
@@ -222,7 +231,8 @@ public:
         ASSERT(current_block);
         auto inst = new Inst(op);
         inst->SetArgs(args...);
-        AppendInst(inst);
+        current_block->block->AppendInst(inst);
+        AppendValue(current_block, inst);
         return inst;
     }
 
@@ -236,7 +246,7 @@ public:
     HIRBlock* AppendBlock(Location start, Location end = {});
     HIRBlock *CreateOrGetBlock(Location location);
     void SetCurBlock(HIRBlock *block);
-    void AppendInst(Inst* inst);
+    HIRValue *AppendValue(HIRBlock *block, Inst* inst);
     void DestroyHIRValue(HIRValue* value);
     HIRBlock *GetCurrentBlock();
     HIRBlockVector& GetHIRBlocks();
@@ -267,6 +277,8 @@ private:
     struct {
         u32 current_slot{0};
     } spill_stack{};
+
+    void UseInst(Inst* inst);
 
     u16 max_local_id{};
     Function* function;

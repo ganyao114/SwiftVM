@@ -202,7 +202,7 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
     // Dominance Frontier
     for (auto &block : reverse_post_order) {
         auto &predecessors = block.GetPredecessors();
-        if (!predecessors.empty()) {
+        if (predecessors.size() > 1) {
             for (auto predecessor : predecessors) {
                 auto runner = predecessor;
                 while (runner && runner != runner->GetDominator()) {

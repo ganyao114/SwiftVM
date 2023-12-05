@@ -11,22 +11,27 @@ namespace swift::runtime::ir {
 Edge::Edge(HIRBlock* src, HIRBlock* dest) : src_block(src), dest_block(dest) {}
 
 HIRBlock::HIRBlock(Block* block, HIRValueMap& values, HIRPools& pools)
-        : block(block), values(values), pools(pools) {}
+        : block(block), value_map(values), value_list(), pools(pools) {}
 
-void HIRBlock::AppendInst(Inst* inst) { block->AppendInst(inst); }
-
-HIRPhi* HIRBlock::AppendPhi() {
-    auto result = block->AddPhi();
-    auto value = pools.values.Create(function->value_order_id++, result, this);
-    values.insert(*value);
-    auto phi = pools.mem_arena.Create<HIRPhi>(pools, value);
-    phis.push_back(*phi);
-    return phi;
+HIRValue *HIRBlock::AppendInst(Inst* inst) {
+    block->AppendInst(inst);
+    if (function) {
+        return function->AppendValue(this, inst);
+    }
+    return nullptr;
 }
 
-HIRValueMap& HIRBlock::GetHIRValues() { return values; }
+HIRValue *HIRBlock::InsertFront(Inst* inst) {
+    block->InsertBefore(inst, block->GetBeginInst().operator->());
+    if (function) {
+        return function->AppendValue(this, inst);
+    }
+    return nullptr;
+}
 
-const HIRPhiList& HIRBlock::GetPhis() { return phis; }
+HIRValueMap& HIRBlock::GetHIRValues() { return value_map; }
+
+HIRValueList& HIRBlock::GetHIRValueList() { return value_list; }
 
 u16 HIRBlock::GetOrderId() const { return order_id; }
 
@@ -78,14 +83,6 @@ void HIRValue::UnUse(Inst* inst, u8 idx) {
     }
 }
 
-HIRPhi::HIRPhi(HIRPools& pools, HIRValue* value) : pools(pools), value(value) {}
-
-void HIRPhi::AddInput(HIRValue* input) {
-    auto node = pools.mem_arena.Create<PhiNode>(input);
-    inputs.push_back(*node);
-    input->Use(value->value.Def(), HIRUse::USE_PHI);
-}
-
 HIRUse::HIRUse(Inst* inst, u8 arg_idx) : inst(inst), arg_idx(arg_idx) {}
 
 HIRFunction::HIRFunction(Function* function,
@@ -102,42 +99,21 @@ HIRBlock* HIRFunction::AppendBlock(Location start, Location end_) {
     return hir_block;
 }
 
-void HIRFunction::SetCurBlock(HIRBlock* block) {
-    current_block = block;
-}
+void HIRFunction::SetCurBlock(HIRBlock* block) { current_block = block; }
 
-void HIRFunction::AppendInst(Inst* inst) {
-    current_block->AppendInst(inst);
+HIRValue *HIRFunction::AppendValue(HIRBlock *hir_block, Inst* inst) {
+    ASSERT(hir_block);
+    HIRValue *hir_value{};
     if (inst->HasValue()) {
-        values.insert(*pools.values.Create(value_order_id++, Value{inst}, current_block));
+        hir_value = pools.values.Create(value_order_id++, Value{inst}, hir_block);
+        values.insert(*hir_value);
+        hir_block->GetHIRValueList().push_back(*hir_value);
     }
-    for (int i = 0; i < Inst::max_args; ++i) {
-        auto& arg = inst->ArgAt(i);
-        if (arg.IsValue()) {
-            auto value = inst->GetArg<Value>(i);
-            if (auto hir_value = GetHIRValue(value); hir_value) {
-                hir_value->Use(inst, i);
-            }
-        } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
-            auto value = inst->GetArg<Lambda>(i).GetValue();
-            if (auto hir_value = GetHIRValue(value); hir_value) {
-                hir_value->Use(inst, i);
-            }
-        } else if (arg.IsParams()) {
-            auto &params = arg.Get<Params>();
-            for (auto param : params) {
-                if (auto data = param.data; data.IsValue()) {
-                    if (auto hir_value = GetHIRValue(data.value); hir_value) {
-                        hir_value->Use(inst, i);
-                    }
-                }
-            }
-            params.Destroy();
-        }
-    }
+    UseInst(inst);
     switch (inst->GetOp()) {
+        case OpCode::StoreLocal:
         case OpCode::LoadLocal:
-        case OpCode::StoreLocal: {
+        case OpCode::DefineLocal: {
             auto local = inst->GetArg<Local>(0);
             max_local_id = std::max(local.id, max_local_id);
             break;
@@ -145,6 +121,7 @@ void HIRFunction::AppendInst(Inst* inst) {
         default:
             break;
     }
+    return hir_value;
 }
 
 void HIRFunction::DestroyHIRValue(HIRValue* value) {
@@ -242,8 +219,35 @@ u16 HIRFunction::MaxBlockCount() { return block_order_id; }
 u16 HIRFunction::MaxValueCount() { return value_order_id; }
 u16 HIRFunction::MaxLocalCount() { return max_local_id + 1; }
 
+void HIRFunction::UseInst(Inst* inst) {
+    for (int i = 0; i < Inst::max_args; ++i) {
+        auto& arg = inst->ArgAt(i);
+        if (arg.IsValue()) {
+            auto value = inst->GetArg<Value>(i);
+            if (auto hir_value = GetHIRValue(value); hir_value) {
+                hir_value->Use(inst, i);
+            }
+        } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
+            auto value = inst->GetArg<Lambda>(i).GetValue();
+            if (auto hir_value = GetHIRValue(value); hir_value) {
+                hir_value->Use(inst, i);
+            }
+        } else if (arg.IsParams()) {
+            auto& params = arg.Get<Params>();
+            for (auto param : params) {
+                if (auto data = param.data; data.IsValue()) {
+                    if (auto hir_value = GetHIRValue(data.value); hir_value) {
+                        hir_value->Use(inst, HIRUse::USE_FUNC_CALL);
+                    }
+                }
+            }
+            params.Destroy();
+        }
+    }
+}
+
 HIRBlock* HIRFunction::CreateOrGetBlock(Location location) {
-    auto itr = std::find_if(block_list.begin(), block_list.end(), [location] (auto &block) -> auto {
+    auto itr = std::find_if(block_list.begin(), block_list.end(), [location](auto& block) -> auto {
         return block.GetBlock()->GetStartLocation() == location;
     });
     if (itr != block_list.end()) {

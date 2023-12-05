@@ -36,6 +36,7 @@ public:
         auto acc_flag = context->accFlag->getText();
         auto filed_name = context->fieldName->getText();
         auto field_type = context->fieldType->getText();
+        auto has_const = context->Const() != nullptr;
         return visitExpression(context->expression());
     }
 

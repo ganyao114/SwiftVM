@@ -19,6 +19,7 @@ void DataflowAnalysisPass::Run(HIRFunction* hir_function) {
         auto &values = hir_block->GetHIRValues();
         incoming_bitvectors[hir_block->GetOrderId()] = BitVector{values.size()};
     }
+
 }
 
 }  // namespace swift::runtime::ir

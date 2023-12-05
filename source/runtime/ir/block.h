@@ -29,12 +29,16 @@ public:
     }
 
     void AppendInst(Inst* inst);
+    void InsertBefore(Inst* inst, Inst* before);
+    void InsertAfter(Inst* inst, Inst* after);
+    void RemoveInst(Inst* inst);
     void DestroyInst(Inst* inst);
 
     void SetEndLocation(Location location);
     Location GetStartLocation();
 
     InstList &GetInstList();
+    InstList::iterator GetBeginInst();
 
 #define INST(name, ret, ...)                                                                      \
     template <typename... Args> ret name(const Args&... args) {                                    \

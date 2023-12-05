@@ -23,14 +23,17 @@ TEST_CASE("Test runtime-ir") {
             .id = 0,
             .type = ValueType::U32,
     };
-    Local local_arg2{
+    Local local_arg2 {
             .id = 1,
             .type = ValueType::U32,
     };
-    Local local_arg3{
+    Local local_arg3 {
             .id = 2,
             .type = ValueType::U32,
     };
+    function->DefineLocal(local_arg1);
+    function->DefineLocal(local_arg2);
+    function->DefineLocal(local_arg3);
     auto const1 = function->LoadImm(Imm(UINT32_MAX));
     auto const2 = function->LoadImm(Imm(UINT32_MAX-1));
     function->StoreLocal(local_arg1, const1);
@@ -84,6 +87,9 @@ TEST_CASE("Test runtime-ir-cfg") {
             .id = 2,
             .type = ValueType::U32,
     };
+    function->DefineLocal(local_arg1);
+    function->DefineLocal(local_arg2);
+    function->DefineLocal(local_arg3);
     auto const1 = function->LoadImm(Imm(UINT32_MAX));
     auto const2 = function->LoadImm(Imm(UINT32_MAX-1));
     function->StoreLocal(local_arg1, const1);

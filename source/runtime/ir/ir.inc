@@ -1,4 +1,5 @@
 // Read Write
+INST(DefineLocal, Void, Local)
 INST(LoadLocal, Value, Local)
 INST(StoreLocal, Void, Local, Value)
 INST(LoadUniform, Value, Uniform)
@@ -13,7 +14,7 @@ INST(CompareAndSwap, Value, Value, Value, Value)
 INST(CallLambda, Value, Lambda, Value, Value, Value)
 INST(CallLocation, Value, Lambda, Params)
 INST(CallDynamic, Value, Lambda, Params)
-INST(AddPhi, Value, Value, Value, Value, Value)
+INST(AddPhi, Value, Params)
 
 // Imm
 INST(LoadImm, Value, Imm)

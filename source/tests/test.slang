@@ -4,7 +4,7 @@ namespace Test {
 
     class A {
 
-        private string text = "hello world";
+        const private string text = "hello world";
 
         public u32 methodA (bool arg1, u32 arg2) {
             bool a = arg1 > arg2;
