@@ -44,7 +44,6 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
                 }
                 case OpCode::LoadLocal: {
                     auto local = inst.GetArg<Local>(0);
-                    bool load_inst = true;
                     auto hir_value = hir_function->GetHIRValue(Value{&inst});
                     ASSERT(hir_value);
                     if (auto local_value = current_locals[local.id].current_value) {
@@ -71,7 +70,6 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
                         }
                         if (use_count == 0) {
                             value_be_destroy.push_back(hir_value);
-                            load_inst = false;
                         } else {
                             loads[local.id].push_back(hir_value);
                         }
