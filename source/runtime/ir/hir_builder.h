@@ -248,6 +248,7 @@ public:
     void SetCurBlock(HIRBlock *block);
     HIRValue *AppendValue(HIRBlock *block, Inst* inst);
     void DestroyHIRValue(HIRValue* value);
+    HIRBlock *GetEntryBlock();
     HIRBlock *GetCurrentBlock();
     HIRBlockVector& GetHIRBlocks();
     HIRBlockList& GetHIRBlockList();
@@ -294,6 +295,7 @@ private:
     HIRBlockList blocks_rpo{};
     HIRValueMap values{};
     HIRBlock* current_block{};
+    HIRBlock* entry_block{};
 };
 
 using HIRFunctionList = IntrusiveList<&HIRFunction::list_node>;

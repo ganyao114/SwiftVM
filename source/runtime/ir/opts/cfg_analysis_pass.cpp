@@ -183,7 +183,7 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
     while (!worklist.empty()) {
         auto current = worklist.back();
         auto current_id = current->GetOrderId();
-        if (successors_visited[current_id] == current->GetOutgoingEdges().size()) {
+        if (successors_visited[current_id] == current->GetSuccessors().size()) {
             worklist.pop_back();
         } else {
             auto successor = current->GetSuccessors()[successors_visited[current_id]++];
@@ -198,14 +198,17 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
             }
         }
     }
+    // Entry Dom self
+    entry_block->SetDominator(entry_block);
 
     // Dominance Frontier
     for (auto &block : reverse_post_order) {
         auto &predecessors = block.GetPredecessors();
         if (predecessors.size() > 1) {
+            auto dom = block.GetDominator();
             for (auto predecessor : predecessors) {
                 auto runner = predecessor;
-                while (runner && runner != runner->GetDominator()) {
+                while (runner != dom) {
                     runner->PushDominance(&block);
                     runner = runner->GetDominator();
                 }

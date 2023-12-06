@@ -64,7 +64,7 @@ public:
         }
     }
 
-    virtual ~Block();
+    ~Block();
 
     union {
         NonTriviallyDummy dummy{};

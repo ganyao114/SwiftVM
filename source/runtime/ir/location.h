@@ -10,6 +10,8 @@ namespace swift::runtime::ir {
 
 class Location {
 public:
+    constexpr static size_t INVALID{size_t(-1)};
+
     constexpr Location() = default;
 
     constexpr Location(size_t value) : value(value) {}

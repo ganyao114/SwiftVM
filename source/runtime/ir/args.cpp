@@ -84,7 +84,7 @@ void Params::Destroy() {
         auto deleted = param;
         param = param->next_node;
         delete deleted;
-    } while (param->next_node);
+    } while (param);
 }
 
 Operand::Operand(const Value& left, const Imm& right, Op op) : left(left), right(right), op(op) {}

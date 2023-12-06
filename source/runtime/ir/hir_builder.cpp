@@ -13,7 +13,7 @@ Edge::Edge(HIRBlock* src, HIRBlock* dest) : src_block(src), dest_block(dest) {}
 HIRBlock::HIRBlock(Block* block, HIRValueMap& values, HIRPools& pools)
         : block(block), value_map(values), value_list(), pools(pools) {}
 
-HIRValue *HIRBlock::AppendInst(Inst* inst) {
+HIRValue* HIRBlock::AppendInst(Inst* inst) {
     block->AppendInst(inst);
     if (function) {
         return function->AppendValue(this, inst);
@@ -21,7 +21,7 @@ HIRValue *HIRBlock::AppendInst(Inst* inst) {
     return nullptr;
 }
 
-HIRValue *HIRBlock::InsertFront(Inst* inst) {
+HIRValue* HIRBlock::InsertFront(Inst* inst) {
     block->InsertBefore(inst, block->GetBeginInst().operator->());
     if (function) {
         return function->AppendValue(this, inst);
@@ -90,7 +90,11 @@ HIRFunction::HIRFunction(Function* function,
                          const Location& end,
                          HIRPools& pools)
         : function(function), begin(begin), end(end), pools(pools) {
-    AppendBlock(begin);
+    entry_block = AppendBlock(Location::INVALID);
+    auto first_block = AppendBlock(begin);
+    AddEdge(entry_block, first_block);
+    entry_block->block->SetTerminal(terminal::LinkBlock{begin});
+    current_block = first_block;
 }
 
 HIRBlock* HIRFunction::AppendBlock(Location start, Location end_) {
@@ -101,9 +105,9 @@ HIRBlock* HIRFunction::AppendBlock(Location start, Location end_) {
 
 void HIRFunction::SetCurBlock(HIRBlock* block) { current_block = block; }
 
-HIRValue *HIRFunction::AppendValue(HIRBlock *hir_block, Inst* inst) {
+HIRValue* HIRFunction::AppendValue(HIRBlock* hir_block, Inst* inst) {
     ASSERT(hir_block);
-    HIRValue *hir_value{};
+    HIRValue* hir_value{};
     if (inst->HasValue()) {
         hir_value = pools.values.Create(value_order_id++, Value{inst}, hir_block);
         values.insert(*hir_value);
@@ -129,6 +133,8 @@ void HIRFunction::DestroyHIRValue(HIRValue* value) {
     auto block = value->block->block;
     block->DestroyInst(value->value.Def());
 }
+
+HIRBlock* HIRFunction::GetEntryBlock() { return entry_block; }
 
 HIRBlock* HIRFunction::GetCurrentBlock() { return current_block; }
 
@@ -241,7 +247,6 @@ void HIRFunction::UseInst(Inst* inst) {
                     }
                 }
             }
-            params.Destroy();
         }
     }
 }

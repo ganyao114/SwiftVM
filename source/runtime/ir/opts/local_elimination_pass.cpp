@@ -2,7 +2,7 @@
 // Created by 甘尧 on 2023/9/18.
 //
 
-#include <list>
+#include <set>
 #include "local_elimination_pass.h"
 
 namespace swift::runtime::ir {
@@ -20,7 +20,7 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
 
     StackVector<HIRBlock*, 8> local_def_block{local_count};
     StackVector<Local, 8> locals{local_count};
-    StackVector<StackVector<HIRBlock*, 8>, 8> local_loads{local_count};
+    StackVector<StackVector<HIRBlock*, 8>, 8> local_stores{local_count};
     StackVector<StackVector<HIRLocal, 8>, 8> block_current_locals{block_count};
 
     StackVector<StackVector<StackVector<HIRValue*, 8>, 8>, 8> block_local_loads{block_count};
@@ -30,6 +30,7 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
         auto& current_locals = block_current_locals[block.GetOrderId()];
         auto& loads = block_local_loads[block.GetOrderId()];
         BitVector load_set{local_count};
+        BitVector store_set{local_count};
         current_locals.resize(local_count);
         loads.resize(local_count);
         StackVector<HIRValue*, 4> value_be_destroy{};
@@ -67,19 +68,15 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
                             } else {
                                 use++;
                             }
-                            if (use_count == 0) {
-                                value_be_destroy.push_back(hir_value);
-                                load_inst = false;
-                            } else {
-                                loads[local.id].push_back(hir_value);
-                            }
+                        }
+                        if (use_count == 0) {
+                            value_be_destroy.push_back(hir_value);
+                            load_inst = false;
+                        } else {
+                            loads[local.id].push_back(hir_value);
                         }
                     } else {
                         loads[local.id].push_back(hir_value);
-                    }
-                    if (load_inst && !load_set.test(local.id)) {
-                        local_loads[local.id].push_back(&block);
-                        load_set.set(local.id, true);
                     }
                     break;
                 }
@@ -87,6 +84,10 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
                     auto local = inst.GetArg<Local>(0);
                     auto value = hir_function->GetHIRValue(inst.GetArg<Value>(1));
                     current_locals[local.id] = {local, value};
+                    if (!store_set.test(local.id)) {
+                        local_stores[local.id].push_back(&block);
+                        store_set.set(local.id, true);
+                    }
                     break;
                 }
                 default:
@@ -100,7 +101,7 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
 
     struct Phi {
         Local local;
-        std::list<HIRValue*> nodes{};
+        std::set<HIRValue*> nodes{};
 
         explicit Phi(const Local& local) : local(local) {}
     };
@@ -109,14 +110,14 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
     StackVector<StackVector<Phi, 8>, 8> block_phi_map{block_count};
     // Step 1: Insert Phi Node
     for (u32 local_id = 0; local_id < local_count; local_id++) {
-        auto &loads = local_loads[local_id];
-        if (loads.empty()) {
+        auto &stores = local_stores[local_id];
+        if (stores.empty()) {
             continue;
         }
         StackVector<Phi*, 8> blocks_phi{block_count};
         StackVector<HIRBlock*, 8> worklist{};
-        for (auto load_block : loads) {
-            worklist.push_back(load_block);
+        for (auto store_block : stores) {
+            worklist.push_back(store_block);
         }
         while (!worklist.empty()) {
             auto block = worklist.back();
@@ -133,7 +134,7 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
                 }
                 auto local_value = block_current_locals[block->GetOrderId()][local_id].current_value;
                 if (local_value) {
-                    blocks_phi[dom_id]->nodes.push_back(local_value);
+                    blocks_phi[dom_id]->nodes.insert(local_value);
                 }
             }
         }
@@ -145,6 +146,7 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
         if (block_phis.empty()) {
             continue;
         }
+        auto block = hir_function->GetHIRBlocks()[block_id];
         for (auto &phi_desc : block_phis) {
             if (phi_desc.nodes.empty()) {
                 continue;
@@ -153,10 +155,34 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
             for (auto value : phi_desc.nodes) {
                 params.Push(value->value);
             }
-            auto block = hir_function->GetHIRBlocks()[block_id];
             auto phi = block->CreateInst(OpCode::AddPhi, params);
             auto phi_value = block->InsertFront(phi);
-            // TODO
+            auto& loads = block_local_loads[block->GetOrderId()][phi_desc.local.id];
+            for (auto load_value : loads) {
+                auto use_count = load_value->uses.size();
+                for (auto use = load_value->uses.begin(); use != load_value->uses.end();) {
+                    if (use->IsPhi()) {
+                        // Do nothing
+                        use++;
+                    } else if (use->IsFuncCall()) {
+                        // TODO
+                        use++;
+                    } else if (use->inst->ArgAt(use->arg_idx).IsValue()) {
+                        use->inst->SetArg(use->arg_idx, phi_value->value);
+                        use_count--;
+                        use = load_value->uses.erase(use);
+                    } else if (use->inst->ArgAt(use->arg_idx).IsLambda()) {
+                        use->inst->SetArg(use->arg_idx, Lambda{phi_value->value});
+                        use_count--;
+                        use = load_value->uses.erase(use);
+                    } else {
+                        use++;
+                    }
+                }
+                if (use_count == 0) {
+                    hir_function->DestroyHIRValue(load_value);
+                }
+            }
         }
     }
 }
