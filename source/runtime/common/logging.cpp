@@ -3,19 +3,19 @@
 
 #if __ANDROID__
 #include <android/log.h>
-static android_LogPriority GetAndroidLogLevel(base::log::Level log_level) {
+static android_LogPriority GetAndroidLogLevel(swift::runtime::log::Level log_level) {
     android_LogPriority priority = ANDROID_LOG_DEFAULT;
     switch (log_level) {
-        case base::log::Level::Debug:
+        case swift::runtime::log::Level::Debug:
             priority = ANDROID_LOG_DEBUG;
             break;
-        case base::log::Level::Info:
+        case swift::runtime::log::Level::Info:
             priority = ANDROID_LOG_INFO;
             break;
-        case base::log::Level::Warning:
+        case swift::runtime::log::Level::Warning:
             priority = ANDROID_LOG_WARN;
             break;
-        case base::log::Level::Error:
+        case swift::runtime::log::Level::Error:
             priority = ANDROID_LOG_ERROR;
             break;
         default:

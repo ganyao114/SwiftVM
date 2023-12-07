@@ -54,6 +54,10 @@ add_library(swift_runtime STATIC
         ir/opts/cfg_analysis_pass.h
         ir/opts/local_elimination_pass.cpp
         ir/opts/local_elimination_pass.h
+        ir/opts/const_folding_pass.cpp
+        ir/opts/const_folding_pass.h
+        ir/opts/register_alloc_pass.cpp
+        ir/opts/register_alloc_pass.h
         backend/translate_table.h
         backend/interpreter.cpp
         backend/interpreter.h
@@ -75,7 +79,6 @@ add_library(swift_runtime STATIC
         backend/translator.h
         ${RUNTIME_ARCH_SOURCE})
 
-
-find_package(Boost 1.57 REQUIRED)
+find_package(Boost 1.57)
 target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl dlmalloc)
 add_library(swift::runtime ALIAS swift_runtime)
