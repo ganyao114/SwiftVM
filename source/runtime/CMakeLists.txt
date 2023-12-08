@@ -58,6 +58,8 @@ add_library(swift_runtime STATIC
         ir/opts/const_folding_pass.h
         ir/opts/register_alloc_pass.cpp
         ir/opts/register_alloc_pass.h
+        ir/opts/reid_instr_pass.cpp
+        ir/opts/reid_instr_pass.h
         backend/translate_table.h
         backend/interpreter.cpp
         backend/interpreter.h

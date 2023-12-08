@@ -22,7 +22,7 @@ struct HIRValue;
 class DataContext {
 public:
     virtual u16 MaxBlockCount() = 0;
-    virtual u16 MaxValueCount() = 0;
+    virtual u16 MaxInstrCount() = 0;
     virtual u16 MaxLocalCount() = 0;
 };
 
@@ -108,20 +108,21 @@ struct HIRValue {
     HIRUseList uses{};
 
     IntrusiveMapNode map_node{};
-    IntrusiveListNode list_node{};
 
     HIRValue() : value(), block(nullptr) {};
     HIRValue(const Value& value) : value(value), block(nullptr){};
-    explicit HIRValue(u16 id, const Value& value, HIRBlock* block);
+    explicit HIRValue(const Value& value, HIRBlock* block);
 
     void Use(Inst* inst, u8 idx);
     void UnUse(Inst* inst, u8 idx);
 
+    u16 GetOrderId() const;
+
     // for rbtree compare
     static NOINLINE int Compare(const HIRValue& lhs, const HIRValue& rhs) {
-        if (rhs.value.Def()->Id() > lhs.value.Def()->Id()) {
+        if (rhs.GetOrderId() > lhs.GetOrderId()) {
             return 1;
-        } else if (rhs.value.Def()->Id() < lhs.value.Def()->Id()) {
+        } else if (rhs.GetOrderId() < lhs.GetOrderId()) {
             return -1;
         } else {
             return 0;
@@ -137,7 +138,6 @@ struct HIRLocal {
 #pragma pack(pop, 4)
 
 using HIRValueMap = IntrusiveMap<&HIRValue::map_node>;
-using HIRValueList = IntrusiveList<&HIRValue::list_node>;
 
 using HIRBlockVector = std::span<HIRBlock*>;
 
@@ -170,7 +170,6 @@ public:
     HIRValue *AppendInst(Inst* inst);
     HIRValue *InsertFront(Inst* inst);
     HIRValueMap& GetHIRValues();
-    HIRValueList& GetHIRValueList();
     [[nodiscard]] u16 GetOrderId() const;
 
     void AddOutgoingEdge(Edge* edge);
@@ -197,7 +196,7 @@ public:
     InstList& GetInstList();
 
     u16 MaxBlockCount() override;
-    u16 MaxValueCount() override;
+    u16 MaxInstrCount() override;
     u16 MaxLocalCount() override;
 
     IntrusiveListNode list_node{};
@@ -208,7 +207,6 @@ private:
     HIRFunction *function{};
     HIRPools& pools;
     HIRValueMap& value_map;
-    HIRValueList value_list;
     IntrusiveList<&Edge::outgoing_edges> outgoing_edges{};
     IntrusiveList<&Edge::incoming_edges> incoming_edges{};
     HIRBlockVector predecessors;
@@ -266,7 +264,7 @@ public:
     void EndFunction();
 
     u16 MaxBlockCount() override;
-    u16 MaxValueCount() override;
+    u16 MaxInstrCount() override;
     u16 MaxLocalCount() override;
 
     IntrusiveListNode list_node;
@@ -286,7 +284,8 @@ private:
     Location begin;
     Location end;
     u16 block_order_id{};
-    u16 value_order_id{};
+    u16 inst_order_id{};
+    u16 value_count{};
     HIRPools& pools;
 
     HIRBlockVector blocks{};

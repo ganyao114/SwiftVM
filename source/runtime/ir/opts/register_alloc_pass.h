@@ -2,7 +2,17 @@
 // Created by 甘尧 on 2023/12/6.
 //
 
-#ifndef SWIFTRUNTIME_REGISTER_ALLOC_PASS_H
-#define SWIFTRUNTIME_REGISTER_ALLOC_PASS_H
+#pragma once
 
-#endif  // SWIFTRUNTIME_REGISTER_ALLOC_PASS_H
+#include "runtime/ir/hir_builder.h"
+#include "runtime/backend/reg_alloc.h"
+
+namespace swift::runtime::ir {
+
+class RegisterAllocPass {
+public:
+    static void Run(HIRBuilder *hir_builder, backend::RegAlloc *reg_alloc);
+    static void Run(HIRFunction *hir_function, backend::RegAlloc *reg_alloc);
+};
+
+}  // namespace swift::runtime::ir
