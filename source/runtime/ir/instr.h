@@ -23,7 +23,7 @@ concept InstAllocator = requires(T allocator, Inst* inst, OpCode code) {
 };
 
 #pragma pack(push, 1)
-class Inst : public SlabObject<Inst, true> {
+class Inst final : public SlabObject<Inst, true> {
 public:
     static constexpr auto max_args = 4;
 

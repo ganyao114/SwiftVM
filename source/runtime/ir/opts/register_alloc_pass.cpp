@@ -89,7 +89,14 @@ private:
         }
     }
 
-    void CollectLiveIntervals(Block* lir_block) {}
+    void CollectLiveIntervals(Block* lir_block) {
+        // TODO
+        StackVector<u32, 32> use_end{};
+        use_end.resize(lir_block->GetInstList().size());
+//        for (auto& instr : lir_block->GetInstList()) {
+//            live_interval.push_back({hir_value.value.Def(), hir_value.GetOrderId(), end});
+//        }
+    }
 
     void ExpireOldIntervals(LiveInterval& current) {
         for (auto it = active_lives.begin(); it != active_lives.end();) {
@@ -106,7 +113,10 @@ private:
         }
     }
 
-    void SpillAtInterval(LiveInterval& interval) {}
+    void SpillAtInterval(LiveInterval& interval) {
+        auto is_float = IsFloatValue(interval.inst);
+
+    }
 
     bool IsFloatValue(Inst* inst) {
         auto value_type = inst->ReturnType();

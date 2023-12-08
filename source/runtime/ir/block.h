@@ -9,7 +9,7 @@
 
 namespace swift::runtime::ir {
 
-class Block : public SlabObject<Block, true> {
+class Block final : public SlabObject<Block, true> {
 public:
     explicit Block() = default;
 

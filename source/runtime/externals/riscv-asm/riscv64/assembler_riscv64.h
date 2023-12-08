@@ -22,9 +22,14 @@
 #include <utility>
 #include <vector>
 #include <deque>
+#include <list>
 
 namespace art {
 namespace riscv64 {
+
+static constexpr size_t KB = 1024;
+static constexpr size_t MB = KB * KB;
+static constexpr size_t GB = KB * KB * KB;
 
 template <typename T>
 using ArenaDeque = std::deque<T>;
@@ -169,6 +174,30 @@ template <size_t kBits, typename T> constexpr bool IsInt(T value) {
                    : (-GetIntLimit<T>(kBits) <= value) && (value < GetIntLimit<T>(kBits));
 }
 
+// Generate maximum/minimum values for signed/unsigned n-bit integers
+template <typename T>
+constexpr T MaxInt(size_t bits) {
+    DCHECK(std::is_unsigned_v<T> || bits > 0u);
+    DCHECK_LE(bits, BitSizeOf<T>());
+    using unsigned_type = std::make_unsigned_t<T>;
+    return bits == BitSizeOf<T>()
+                   ? std::numeric_limits<T>::max()
+                   : std::is_signed_v<T>
+                             ? ((bits == 1u) ? 0 : static_cast<T>(MaxInt<unsigned_type>(bits - 1)))
+                             : static_cast<T>(UINT64_C(1) << bits) - static_cast<T>(1);
+}
+
+template <typename T>
+constexpr T MinInt(size_t bits) {
+    DCHECK(std::is_unsigned_v<T> || bits > 0);
+    DCHECK_LE(bits, BitSizeOf<T>());
+    return bits == BitSizeOf<T>()
+                   ? std::numeric_limits<T>::min()
+                   : std::is_signed_v<T>
+                             ? ((bits == 1u) ? -1 : static_cast<T>(-1) - MaxInt<T>(bits))
+                             : static_cast<T>(0);
+}
+
 // Check whether an N-bit two's-complement representation can hold value.
 template <typename T>
 inline bool IsInt(size_t N, T value) {
@@ -220,6 +249,13 @@ constexpr int CTZ(T x) {
     return (sizeof(T) == sizeof(uint64_t)) ? __builtin_ctzll(x) : __builtin_ctz(x);
 }
 
+template<typename T>
+constexpr bool IsPowerOfTwo(T x) {
+    static_assert(std::is_integral_v<T>, "T must be integral");
+    // TODO: assert unsigned. There is currently many uses with signed values.
+    return (x & (x - 1)) == 0;
+}
+
 // For rounding integers.
 // Note: Omit the `n` from T type deduction, deduce only from the `x` argument.
 template<typename T>
@@ -238,6 +274,25 @@ template<typename T>
 constexpr T RoundUp(T x, std::remove_reference_t<T> n) {
     return RoundDown(x + n - 1, n);
 }
+
+// The alignment guaranteed for individual allocations.
+static constexpr size_t kAlignment = 8u;
+
+class ArenaAllocator {
+public:
+
+    void* Alloc(size_t bytes);
+
+    void* Realloc(void *ptr, size_t old_size, size_t new_size);
+
+    template <typename T>
+    T* AllocArray(size_t length) {
+        return static_cast<T*>(Alloc(length * sizeof(T)));
+    }
+
+private:
+    std::list<std::vector<uint8_t>> buffer{};
+};
 
 enum XRegister {
     Zero = 0,  // X0, hard-wired zero
@@ -349,6 +404,18 @@ enum class PointerSize : size_t {
 
 static constexpr PointerSize kRiscv64PointerSize = PointerSize::k64;
 
+static constexpr PointerSize kRuntimePointerSize = sizeof(void*) == 8U
+                                                           ? PointerSize::k64
+                                                           : PointerSize::k32;
+
+// Runtime sizes.
+static constexpr size_t kBitsPerByte = 8;
+static constexpr size_t kBitsPerByteLog2 = 3;
+static constexpr int kBitsPerIntPtrT = sizeof(intptr_t) * kBitsPerByte;
+
+// Required stack alignment
+static constexpr size_t kStackAlignment = 16;
+
 enum class FPRoundingMode : uint32_t {
     kRNE = 0x0,  // Round to Nearest, ties to Even
     kRTZ = 0x1,  // Round towards Zero
@@ -392,6 +459,133 @@ enum FPClassMaskType {
     kPositiveInfinity = 0x080,
     kSignalingNaN = 0x100,
     kQuietNaN = 0x200,
+};
+
+class Assembler;
+class AssemblerBuffer;
+
+class MemoryRegion final {
+public:
+    struct ContentEquals {
+        constexpr bool operator()(const MemoryRegion& lhs, const MemoryRegion& rhs) const {
+            return lhs.size() == rhs.size() && memcmp(lhs.begin(), rhs.begin(), lhs.size()) == 0;
+        }
+    };
+
+    MemoryRegion() : pointer_(nullptr), size_(0) {}
+    MemoryRegion(void* pointer_in, uintptr_t size_in) : pointer_(pointer_in), size_(size_in) {}
+
+    void* pointer() const { return pointer_; }
+    size_t size() const { return size_; }
+    size_t size_in_bits() const { return size_ * kBitsPerByte; }
+
+    static size_t pointer_offset() {
+        return offsetof(MemoryRegion, pointer_);
+    }
+
+    uint8_t* begin() const { return reinterpret_cast<uint8_t*>(pointer_); }
+    uint8_t* end() const { return begin() + size_; }
+
+    // Load value of type `T` at `offset`.  The memory address corresponding
+    // to `offset` should be word-aligned (on ARM, this is a requirement).
+    template<typename T>
+    ALWAYS_INLINE T Load(uintptr_t offset) const {
+        T* address = ComputeInternalPointer<T>(offset);
+        DCHECK(IsWordAligned(address));
+        return *address;
+    }
+
+    // Store `value` (of type `T`) at `offset`.  The memory address
+    // corresponding to `offset` should be word-aligned (on ARM, this is
+    // a requirement).
+    template<typename T>
+    ALWAYS_INLINE void Store(uintptr_t offset, T value) const {
+        T* address = ComputeInternalPointer<T>(offset);
+        DCHECK(IsWordAligned(address));
+        *address = value;
+    }
+
+    // Load value of type `T` at `offset`.  The memory address corresponding
+    // to `offset` does not need to be word-aligned.
+    template<typename T>
+    ALWAYS_INLINE T LoadUnaligned(uintptr_t offset) const {
+        // Equivalent unsigned integer type corresponding to T.
+        using U = std::make_unsigned_t<T>;
+        U equivalent_unsigned_integer_value = 0;
+        // Read the value byte by byte in a little-endian fashion.
+        for (size_t i = 0; i < sizeof(U); ++i) {
+            equivalent_unsigned_integer_value +=
+                    *ComputeInternalPointer<uint8_t>(offset + i) << (i * kBitsPerByte);
+        }
+        return bit_cast<T, U>(equivalent_unsigned_integer_value);
+    }
+
+    // Store `value` (of type `T`) at `offset`.  The memory address
+    // corresponding to `offset` does not need to be word-aligned.
+    template<typename T>
+    ALWAYS_INLINE void StoreUnaligned(uintptr_t offset, T value) const {
+        // Equivalent unsigned integer type corresponding to T.
+        using U = std::make_unsigned_t<T>;
+        U equivalent_unsigned_integer_value = bit_cast<U, T>(value);
+        // Write the value byte by byte in a little-endian fashion.
+        for (size_t i = 0; i < sizeof(U); ++i) {
+            *ComputeInternalPointer<uint8_t>(offset + i) =
+                    (equivalent_unsigned_integer_value >> (i * kBitsPerByte)) & 0xFF;
+        }
+    }
+
+    template<typename T>
+    ALWAYS_INLINE T* PointerTo(uintptr_t offset) const {
+        return ComputeInternalPointer<T>(offset);
+    }
+
+    void CopyFrom(size_t offset, const MemoryRegion& from) const;
+
+    template<class Vector>
+    void CopyFromVector(size_t offset, Vector& vector) const {
+        if (!vector.empty()) {
+            CopyFrom(offset, MemoryRegion(vector.data(), vector.size()));
+        }
+    }
+
+    // Compute a sub memory region based on an existing one.
+    ALWAYS_INLINE MemoryRegion Subregion(uintptr_t offset, uintptr_t size_in) const {
+        CHECK_GE(this->size(), size_in);
+        CHECK_LE(offset,  this->size() - size_in);
+        return MemoryRegion(reinterpret_cast<void*>(begin() + offset), size_in);
+    }
+
+    // Compute an extended memory region based on an existing one.
+    ALWAYS_INLINE void Extend(const MemoryRegion& region, uintptr_t extra) {
+        pointer_ = region.pointer();
+        size_ = (region.size() + extra);
+    }
+
+private:
+    template<typename T>
+    ALWAYS_INLINE T* ComputeInternalPointer(size_t offset) const {
+        CHECK_GE(size(), sizeof(T));
+        CHECK_LE(offset, size() - sizeof(T));
+        return reinterpret_cast<T*>(begin() + offset);
+    }
+
+    // Locate the bit with the given offset. Returns a pointer to the byte
+    // containing the bit, and sets bit_mask to the bit within that byte.
+    ALWAYS_INLINE uint8_t* ComputeBitPointer(uintptr_t bit_offset, uint8_t* bit_mask) const {
+        uintptr_t bit_remainder = (bit_offset & (kBitsPerByte - 1));
+        *bit_mask = (1U << bit_remainder);
+        uintptr_t byte_offset = (bit_offset >> kBitsPerByteLog2);
+        return ComputeInternalPointer<uint8_t>(byte_offset);
+    }
+
+    // Is `address` aligned on a machine word?
+    template<typename T> static constexpr bool IsWordAligned(const T* address) {
+        // Word alignment in bytes.  Determined from pointer size.
+        return IsAligned<kRuntimePointerSize>(address);
+    }
+
+    void* pointer_;
+    size_t size_;
 };
 
 class Label {
@@ -448,6 +642,245 @@ private:
     DISALLOW_COPY_AND_ASSIGN(Label);
 };
 
+// Assembler fixups are positions in generated code that require processing
+// after the code has been copied to executable memory. This includes building
+// relocation information.
+class AssemblerFixup {
+public:
+    virtual void Process(const MemoryRegion& region, int position) = 0;
+    virtual ~AssemblerFixup() {}
+
+private:
+    AssemblerFixup* previous_;
+    int position_;
+
+    AssemblerFixup* previous() const { return previous_; }
+    void set_previous(AssemblerFixup* previous_in) { previous_ = previous_in; }
+
+    int position() const { return position_; }
+    void set_position(int position_in) { position_ = position_in; }
+
+    friend class AssemblerBuffer;
+};
+
+// Parent of all queued slow paths, emitted during finalization
+class SlowPath {
+public:
+    SlowPath() : next_(nullptr) {}
+    virtual ~SlowPath() {}
+
+    Label* Continuation() { return &continuation_; }
+    Label* Entry() { return &entry_; }
+    // Generate code for slow path
+    virtual void Emit(Assembler *sp_asm) = 0;
+
+protected:
+    // Entry branched to by fast path
+    Label entry_;
+    // Optional continuation that is branched to at the end of the slow path
+    Label continuation_;
+    // Next in linked list of slow paths
+    SlowPath *next_;
+
+private:
+    friend class AssemblerBuffer;
+    DISALLOW_COPY_AND_ASSIGN(SlowPath);
+};
+
+class AssemblerBuffer {
+public:
+    explicit AssemblerBuffer(ArenaAllocator* allocator);
+    ~AssemblerBuffer();
+
+    ArenaAllocator* GetAllocator() {
+        return allocator_;
+    }
+
+    // Basic support for emitting, loading, and storing.
+    template<typename T> void Emit(T value) {
+        CHECK(HasEnsuredCapacity());
+        *reinterpret_cast<T*>(cursor_) = value;
+        cursor_ += sizeof(T);
+    }
+
+    template<typename T> T Load(size_t position) {
+        CHECK_LE(position, Size() - static_cast<int>(sizeof(T)));
+        return *reinterpret_cast<T*>(contents_ + position);
+    }
+
+    template<typename T> void Store(size_t position, T value) {
+        CHECK_LE(position, Size() - static_cast<int>(sizeof(T)));
+        *reinterpret_cast<T*>(contents_ + position) = value;
+    }
+
+    void Resize(size_t new_size) {
+        if (new_size > Capacity()) {
+            ExtendCapacity(new_size);
+        }
+        cursor_ = contents_ + new_size;
+    }
+
+    void Move(size_t newposition, size_t oldposition, size_t size) {
+        // Move a chunk of the buffer from oldposition to newposition.
+        DCHECK_LE(oldposition + size, Size());
+        DCHECK_LE(newposition + size, Size());
+        memmove(contents_ + newposition, contents_ + oldposition, size);
+    }
+
+    // Emit a fixup at the current location.
+    void EmitFixup(AssemblerFixup* fixup) {
+        fixup->set_previous(fixup_);
+        fixup->set_position(Size());
+        fixup_ = fixup;
+    }
+
+    void EnqueueSlowPath(SlowPath* slowpath) {
+        if (slow_path_ == nullptr) {
+            slow_path_ = slowpath;
+        } else {
+            SlowPath* cur = slow_path_;
+            for ( ; cur->next_ != nullptr ; cur = cur->next_) {}
+            cur->next_ = slowpath;
+        }
+    }
+
+    void EmitSlowPaths(Assembler* sp_asm) {
+        SlowPath* cur = slow_path_;
+        SlowPath* next = nullptr;
+        slow_path_ = nullptr;
+        for ( ; cur != nullptr ; cur = next) {
+            cur->Emit(sp_asm);
+            next = cur->next_;
+            delete cur;
+        }
+    }
+
+    // Get the size of the emitted code.
+    size_t Size() const {
+        CHECK_GE(cursor_, contents_);
+        return cursor_ - contents_;
+    }
+
+    uint8_t* contents() const { return contents_; }
+
+    // Copy the assembled instructions into the specified memory block.
+    void CopyInstructions(const MemoryRegion& region);
+
+    // To emit an instruction to the assembler buffer, the EnsureCapacity helper
+    // must be used to guarantee that the underlying data area is big enough to
+    // hold the emitted instruction. Usage:
+    //
+    //     AssemblerBuffer buffer;
+    //     AssemblerBuffer::EnsureCapacity ensured(&buffer);
+    //     ... emit bytes for single instruction ...
+
+#ifndef NDEBUG
+
+    class EnsureCapacity {
+    public:
+        explicit EnsureCapacity(AssemblerBuffer* buffer) {
+            if (buffer->cursor() > buffer->limit()) {
+                buffer->ExtendCapacity(buffer->Size() + kMinimumGap);
+            }
+            // In debug mode, we save the assembler buffer along with the gap
+            // size before we start emitting to the buffer. This allows us to
+            // check that any single generated instruction doesn't overflow the
+            // limit implied by the minimum gap size.
+            buffer_ = buffer;
+            gap_ = ComputeGap();
+            // Make sure that extending the capacity leaves a big enough gap
+            // for any kind of instruction.
+            CHECK_GE(gap_, kMinimumGap);
+            // Mark the buffer as having ensured the capacity.
+            CHECK(!buffer->HasEnsuredCapacity());  // Cannot nest.
+            buffer->has_ensured_capacity_ = true;
+        }
+
+        ~EnsureCapacity() {
+            // Unmark the buffer, so we cannot emit after this.
+            buffer_->has_ensured_capacity_ = false;
+            // Make sure the generated instruction doesn't take up more
+            // space than the minimum gap.
+            int delta = gap_ - ComputeGap();
+            CHECK_LE(delta, kMinimumGap);
+        }
+
+    private:
+        AssemblerBuffer* buffer_;
+        int gap_;
+
+        int ComputeGap() { return buffer_->Capacity() - buffer_->Size(); }
+    };
+
+    bool has_ensured_capacity_;
+    bool HasEnsuredCapacity() const { return has_ensured_capacity_; }
+
+#else
+
+    class EnsureCapacity {
+    public:
+        explicit EnsureCapacity(AssemblerBuffer* buffer) {
+            if (buffer->cursor() > buffer->limit()) {
+                buffer->ExtendCapacity(buffer->Size() + kMinimumGap);
+            }
+        }
+    };
+
+    // When building the C++ tests, assertion code is enabled. To allow
+    // asserting that the user of the assembler buffer has ensured the
+    // capacity needed for emitting, we add a placeholder method in non-debug mode.
+    bool HasEnsuredCapacity() const { return true; }
+
+#endif
+
+    // Returns the position in the instruction stream.
+    int GetPosition() { return  cursor_ - contents_; }
+
+    size_t Capacity() const {
+        CHECK_GE(limit_, contents_);
+        return (limit_ - contents_) + kMinimumGap;
+    }
+
+    // Unconditionally increase the capacity.
+    // The provided `min_capacity` must be higher than current `Capacity()`.
+    void ExtendCapacity(size_t min_capacity);
+
+    void ProcessFixups();
+
+private:
+    // The limit is set to kMinimumGap bytes before the end of the data area.
+    // This leaves enough space for the longest possible instruction and allows
+    // for a single, fast space check per instruction.
+    static constexpr int kMinimumGap = 32;
+
+    ArenaAllocator* const allocator_;
+    uint8_t* contents_;
+    uint8_t* cursor_;
+    uint8_t* limit_;
+    AssemblerFixup* fixup_;
+#ifndef NDEBUG
+    bool fixups_processed_;
+#endif
+
+    // Head of linked list of slow paths
+    SlowPath* slow_path_;
+
+    uint8_t* cursor() const { return cursor_; }
+    uint8_t* limit() const { return limit_; }
+
+    // Process the fixup chain starting at the given fixup. The offset is
+    // non-zero for fixups in the body if the preamble is non-empty.
+    void ProcessFixups(const MemoryRegion& region);
+
+    // Compute the limit based on the data area and the capacity. See
+    // description of kMinimumGap for the reasoning behind the value.
+    static uint8_t* ComputeLimit(uint8_t* data, size_t capacity) {
+        return data + capacity - kMinimumGap;
+    }
+
+    friend class AssemblerFixup;
+};
+
 struct DebugFrameOpCodeWriterForAssembler {
     int pad{};
 };
@@ -499,7 +932,7 @@ public:
     AssemblerBuffer* GetBuffer() { return &buffer_; }
 
 protected:
-    explicit Assembler(ArenaAllocator* allocator) : buffer_(allocator), cfi_(this) {}
+    explicit Assembler(ArenaAllocator* allocator) : buffer_(allocator), cfi_() {}
 
     AssemblerBuffer buffer_;
 
