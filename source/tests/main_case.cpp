@@ -6,6 +6,7 @@
 #include "runtime/ir/opts/register_alloc_pass.h"
 #include "runtime/backend/mem_map.h"
 #include "compiler/slang/slang.h"
+#include "assembler_riscv64.h"
 
 TEST_CASE("Test compiler") {
     using namespace swift::slang;
@@ -13,7 +14,7 @@ TEST_CASE("Test compiler") {
     CompileFile("/Users/swift/CLionProjects/SwiftVM/source/tests/test.slang", context);
 }
 
-TEST_CASE("Test runtime-ir") {
+TEST_CASE("Test runtime ir") {
     using namespace swift::runtime::backend;
     using namespace swift::runtime::ir;
     Inst::InitializeSlabHeap(0x100000);
@@ -69,7 +70,7 @@ TEST_CASE("Test runtime-ir") {
     ASSERT(res);
 }
 
-TEST_CASE("Test runtime-ir-cfg") {
+TEST_CASE("Test runtime ir cfg") {
     using namespace swift::runtime::backend;
     using namespace swift::runtime::ir;
     Inst::InitializeSlabHeap(0x100000);
@@ -121,4 +122,12 @@ TEST_CASE("Test runtime-ir-cfg") {
     auto res = mem_arena.Map(0x100000, 0, MemMap::ReadExe, false);
     ASSERT(res);
 
+}
+
+TEST_CASE("Test riscv64 asm") {
+    using namespace swift;
+    riscv64::ArenaAllocator allocator{};
+    riscv64::Riscv64Assembler assembler{&allocator};
+    assembler.Add(riscv64::A1, riscv64::A1, riscv64::A1);
+    assembler.FinalizeCode();
 }

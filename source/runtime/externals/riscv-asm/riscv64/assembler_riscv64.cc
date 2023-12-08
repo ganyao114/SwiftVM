@@ -17,7 +17,7 @@
 #include "assembler_riscv64.h"
 #include <ostream>
 
-namespace art {
+namespace swift {
 namespace riscv64 {
 
 static const char* kXRegisterNames[] = {"zero", "ra", "sp",  "gp",  "tp", "t0", "t1", "t2",

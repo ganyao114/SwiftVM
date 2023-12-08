@@ -24,8 +24,10 @@
 #include <deque>
 #include <list>
 
-namespace art {
+namespace swift {
 namespace riscv64 {
+
+#define NDEBUG 1
 
 static constexpr size_t KB = 1024;
 static constexpr size_t MB = KB * KB;
@@ -909,9 +911,9 @@ public:
     virtual size_t CodePosition() { return CodeSize(); }
 
     // Copy instructions out of assembly buffer into the given region of memory
-    //    virtual void CopyInstructions(const MemoryRegion& region) {
-    //        buffer_.CopyInstructions(region);
-    //    }
+    virtual void CopyInstructions(const MemoryRegion& region) {
+        buffer_.CopyInstructions(region);
+    }
 
     // TODO: Implement with disassembler.
     virtual void Comment([[maybe_unused]] const char* format, ...) {}
@@ -1014,13 +1016,13 @@ class Riscv64Assembler final : public Assembler {
 public:
     explicit Riscv64Assembler(ArenaAllocator* allocator)
             : Assembler(allocator)
-            , branches_()
+            , branches_{}
             , finalized_(false)
             , overwriting_(false)
             , overwrite_location_(0)
-            , literals_()
-            , long_literals_()
-            , jump_tables_()
+            , literals_{}
+            , long_literals_{}
+            , jump_tables_{}
             , last_position_adjustment_(0)
             , last_old_position_(0)
             , last_branch_id_(0)
