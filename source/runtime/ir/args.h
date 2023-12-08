@@ -45,7 +45,7 @@ struct Void {
     explicit Void(Inst*) {}
 };
 
-#pragma pack(1)
+#pragma pack(push, 1)
 class Imm {
 public:
     explicit Imm(bool value) : type{ValueType::BOOL}, imm_bool{value} {}
@@ -66,7 +66,6 @@ private:
     };
 };
 
-#pragma pack(push, 1)
 class Value {
 public:
     constexpr Value(Inst* in = {}) : inst(in) {}
