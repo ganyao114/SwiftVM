@@ -7,6 +7,7 @@
 namespace swift::runtime::ir {
 
 struct LiveInterval {
+    Inst* inst{};
     u32 start{};
     u32 end{};
 
@@ -22,10 +23,26 @@ struct LiveInterval {
 class LinearScanAllocator {
 public:
     explicit LinearScanAllocator(HIRFunction* function, backend::RegAlloc* alloc)
-            : function(function), block(), reg_alloc(alloc), live_interval{function->MaxInstrCount()}, active_lives() {}
+            : function(function)
+            , block()
+            , reg_alloc(alloc)
+            , live_interval()
+            , active_lives() {
+        active_gprs = alloc->GetGprs();
+        active_fprs = alloc->GetFprs();
+        live_interval.reserve(function->MaxInstrCount());
+    }
 
     explicit LinearScanAllocator(Block* block, backend::RegAlloc* alloc)
-            : function(), block(block), reg_alloc(alloc), live_interval{block->GetInstList().size()}, active_lives() {}
+            : function()
+            , block(block)
+            , reg_alloc(alloc)
+            , live_interval()
+            , active_lives() {
+        active_gprs = alloc->GetGprs();
+        active_fprs = alloc->GetFprs();
+        live_interval.reserve(block->GetInstList().size());
+    }
 
     void AllocateRegisters() {
         // Step 1: Collect live intervals
@@ -42,51 +59,93 @@ public:
         for (auto& interval : live_interval) {
             ExpireOldIntervals(interval);
 
-//            if (active_lives.size() == static_cast<size_t>(numAvailableRegisters)) {
-//                SpillAtInterval(interval);
-//            } else {
-//                int reg = AllocateRegister();
-//                interval.registerAssigned = reg;
-//                active_lives.push_back(interval);
-//                AssignRegisterToVariable(interval.variable, reg);
-//            }
+            if (!IsFloatValue(interval.inst)) {
+                if (auto alloc = AllocGPR(); alloc >= 0) {
+                    active_lives.push_back(interval);
+                    reg_alloc->MapRegister(interval.inst->Id(), HostGPR{(u16)alloc});
+                } else {
+                    SpillAtInterval(interval);
+                }
+            } else {
+                if (auto alloc = AllocFPR(); alloc >= 0) {
+                    active_lives.push_back(interval);
+                    reg_alloc->MapRegister(interval.inst->Id(), HostFPR{(u16)alloc});
+                } else {
+                    SpillAtInterval(interval);
+                }
+            }
         }
     }
 
 private:
-
     void CollectLiveIntervals(HIRFunction* hir_function) {
         for (auto& hir_value : hir_function->GetHIRValues()) {
             u32 end{hir_value.GetOrderId()};
             std::for_each(hir_value.uses.begin(), hir_value.uses.end(), [&end](auto& use) {
-                end = std::max(end, (u32) use.inst->Id());
+                end = std::max(end, (u32)use.inst->Id());
             });
-            live_interval[hir_value.GetOrderId()] = {hir_value.GetOrderId(), end};
+            live_interval.push_back({
+                    hir_value.value.Def(), hir_value.GetOrderId(), end});
         }
     }
 
-    void CollectLiveIntervals(Block *lir_block) {
+    void CollectLiveIntervals(Block* lir_block) {}
 
-    }
-
-    void ExpireOldIntervals(LiveInterval &current) {
+    void ExpireOldIntervals(LiveInterval& current) {
         for (auto it = active_lives.begin(); it != active_lives.end();) {
             if (it->end < current.start) {
-//                FreeRegister(it->registerAssigned);
-                it = active_lives.erase(it); // Remove expired intervals
+                if (!IsFloatValue(it->inst)) {
+                    FreeGPR(reg_alloc->ValueGPR(it->inst->Id()).id);
+                } else {
+                    FreeFPR(reg_alloc->ValueFPR(it->inst->Id()).id);
+                }
+                it = active_lives.erase(it);  // Remove expired intervals
             } else {
                 ++it;
             }
         }
     }
 
+    void SpillAtInterval(LiveInterval& interval) {}
+
+    bool IsFloatValue(Inst* inst) {
+        auto value_type = inst->ReturnType();
+        return value_type >= ValueType::V8 && value_type <= ValueType::V256;
+    }
+
+    int AllocGPR() {
+        if (auto alloc = active_gprs.GetFirstClear(); alloc >= 0) {
+            active_gprs.Mark(alloc);
+            return alloc;
+        }
+        return -1;
+    }
+
+    int AllocFPR() {
+        if (auto alloc = active_fprs.GetFirstClear(); alloc >= 0) {
+            active_fprs.Mark(alloc);
+            return alloc;
+        }
+        return -1;
+    }
+
+    void FreeGPR(u32 id) {
+        ASSERT(active_gprs.Get(id));
+        active_gprs.Clear(id);
+    }
+
+    void FreeFPR(u32 id) {
+        ASSERT(active_fprs.Get(id));
+        active_fprs.Clear(id);
+    }
+
     HIRFunction* function;
-    Block *block;
+    Block* block;
     backend::RegAlloc* reg_alloc;
     Vector<LiveInterval> live_interval;
     List<LiveInterval> active_lives;
-    u16 active_general_value{};
-    u16 active_float_value{};
+    backend::GPRSMask active_gprs;
+    backend::FPRSMask active_fprs;
 };
 
 void RegisterAllocPass::Run(HIRBuilder* hir_builder, backend::RegAlloc* reg_alloc) {

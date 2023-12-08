@@ -81,7 +81,7 @@ public:
 
     void Use() const;
     void UnUse() const;
-    u16 Id() const;
+    [[nodiscard]] u16 Id() const;
 
 private:
     Inst* inst{};

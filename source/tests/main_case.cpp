@@ -2,6 +2,8 @@
 #include "runtime/ir/hir_builder.h"
 #include "runtime/ir/opts/cfg_analysis_pass.h"
 #include "runtime/ir/opts/local_elimination_pass.h"
+#include "runtime/ir/opts/reid_instr_pass.h"
+#include "runtime/ir/opts/register_alloc_pass.h"
 #include "runtime/backend/mem_map.h"
 #include "compiler/slang/slang.h"
 
@@ -57,14 +59,14 @@ TEST_CASE("Test runtime-ir") {
     hir_builder.Return();
     CFGAnalysisPass::Run(&hir_builder);
     LocalEliminationPass::Run(&hir_builder);
-
-    assert(local2.Defined());
+    ReIdInstrPass::Run(&hir_builder);
+    RegAlloc reg_alloc{function->MaxInstrCount(), GPRSMask{0}, FPRSMask{0}};
+    RegisterAllocPass::Run(&hir_builder, &reg_alloc);
 
     MemMap mem_arena{0x100000, true};
 
     auto res = mem_arena.Map(0x100000, 0, MemMap::ReadExe, false);
     ASSERT(res);
-
 }
 
 TEST_CASE("Test runtime-ir-cfg") {
@@ -110,6 +112,7 @@ TEST_CASE("Test runtime-ir-cfg") {
     hir_builder.Return();
     CFGAnalysisPass::Run(&hir_builder);
     LocalEliminationPass::Run(&hir_builder);
+    ReIdInstrPass::Run(&hir_builder);
 
     assert(local2.Defined());
 

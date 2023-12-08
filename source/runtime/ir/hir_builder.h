@@ -116,7 +116,7 @@ struct HIRValue {
     void Use(Inst* inst, u8 idx);
     void UnUse(Inst* inst, u8 idx);
 
-    u16 GetOrderId() const;
+    [[nodiscard]] u16 GetOrderId() const;
 
     // for rbtree compare
     static NOINLINE int Compare(const HIRValue& lhs, const HIRValue& rhs) {
@@ -229,6 +229,7 @@ public:
         ASSERT(current_block);
         auto inst = new Inst(op);
         inst->SetArgs(args...);
+        inst->SetId(inst_order_id++);
         current_block->block->AppendInst(inst);
         AppendValue(current_block, inst);
         return inst;
