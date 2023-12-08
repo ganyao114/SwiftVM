@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <bit>
 #include "base/common_funcs.h"
 #include "runtime/common/types.h"
 #include "runtime/ir/block.h"
@@ -11,10 +12,59 @@
 
 namespace swift::runtime::backend {
 
+template<typename T = u32>
+class RegisterMask {
+public:
+
+    explicit RegisterMask() : mask() {}
+
+    explicit RegisterMask(T mask) : mask(mask) {}
+
+    auto GetFirstMarked() {
+        return std::countr_zero(mask);
+    }
+
+    auto GetFirstClear() {
+        return std::countr_one(mask);
+    }
+
+    auto GetMarkedCount() {
+        return std::popcount(mask);
+    }
+
+    auto GetClearCount() {
+        return GetAllCount() - std::popcount(mask);
+    }
+
+    auto GetAllCount() {
+        return sizeof(T) * 8;
+    }
+
+    bool Get(u32 bit) {
+        return mask & (T(1) << bit);
+    }
+
+    void Mark(u32 bit) {
+        mask |= (T(1) << bit);
+    }
+
+    void Clear(u32 bit) {
+        mask &= ~(T(1) << bit);
+    }
+
+private:
+    T mask;
+};
+
+using GPRSMask = RegisterMask<u32>;
+using FPRSMask = RegisterMask<u32>;
+
 class RegAlloc : DeleteCopyAndMove {
 public:
 
-    enum Type : u8 {
+    explicit RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs);
+
+    enum Type : u16 {
         NONE,
         GPR,
         FPR,
@@ -22,21 +72,27 @@ public:
     };
 
     struct Map {
-        union {
-            ir::HostGPR gpr;
-            ir::HostFPR fpr;
-            ir::SpillSlot spill;
-        };
         Type type{NONE};
-        u32 dirty_gprs{};
-        u32 dirty_fprs{};
+        u16 slot{};
+        GPRSMask dirty_gprs{0};
+        FPRSMask dirty_fprs{0};
     };
+
+    const GPRSMask& GetGprs() const;
+    const FPRSMask& GetFprs() const;
+
+    void MapRegister(u32 id, ir::HostGPR gpr);
+    void MapRegister(u32 id, ir::HostFPR fpr);
 
     ir::HostGPR ValueGPR(const ir::Value &value);
     ir::HostFPR ValueFPR(const ir::Value &value);
+    ir::HostGPR ValueGPR(u32 id);
+    ir::HostFPR ValueFPR(u32 id);
 
 private:
     Vector<Map> alloc_result;
+    const GPRSMask gprs;
+    const FPRSMask fprs;
 };
 
 }

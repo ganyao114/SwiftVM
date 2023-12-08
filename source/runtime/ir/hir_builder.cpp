@@ -176,7 +176,6 @@ void HIRFunction::MergeAdjacentBlocks(HIRBlock* left, HIRBlock* right) {}
 bool HIRFunction::SplitBlock(HIRBlock* new_block, HIRBlock* old_block) { return false; }
 
 void HIRFunction::IdByRPO() {
-    std::destroy(values.begin(), values.end());
     u32 cur_inst_id{0};
     // Re id inst
     StackVector<HIRValue*, 32> function_values{};
