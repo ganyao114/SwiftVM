@@ -11,11 +11,12 @@ namespace swift::runtime::ir {
 Edge::Edge(HIRBlock* src, HIRBlock* dest) : src_block(src), dest_block(dest) {}
 
 HIRBlock::HIRBlock(Block* block, HIRValueMap& values, HIRPools& pools)
-        : block(block), value_map(values), value_list(), pools(pools) {}
+        : block(block), value_map(values), pools(pools) {}
 
 HIRValue* HIRBlock::AppendInst(Inst* inst) {
     block->AppendInst(inst);
     if (function) {
+        inst->SetId(function->inst_order_id++);
         return function->AppendValue(this, inst);
     }
     return nullptr;
@@ -24,14 +25,13 @@ HIRValue* HIRBlock::AppendInst(Inst* inst) {
 HIRValue* HIRBlock::InsertFront(Inst* inst) {
     block->InsertBefore(inst, block->GetBeginInst().operator->());
     if (function) {
+        inst->SetId(function->inst_order_id++);
         return function->AppendValue(this, inst);
     }
     return nullptr;
 }
 
 HIRValueMap& HIRBlock::GetHIRValues() { return value_map; }
-
-HIRValueList& HIRBlock::GetHIRValueList() { return value_list; }
 
 u16 HIRBlock::GetOrderId() const { return order_id; }
 
@@ -57,17 +57,11 @@ Block* HIRBlock::GetBlock() { return block; }
 
 InstList& HIRBlock::GetInstList() { return block->GetInstList(); }
 
-u16 HIRBlock::MaxValueCount() { return 0; }
+u16 HIRBlock::MaxInstrCount() { return 0; }
 u16 HIRBlock::MaxBlockCount() { return 0; }
 u16 HIRBlock::MaxLocalCount() { return 0; }
 
-HIRValue::HIRValue(u16 id, const Value& value, HIRBlock* block) : value(value), block(block) {
-    if (auto def = value.Def(); def) {
-        def->SetId(id);
-    } else {
-        ASSERT_MSG(false, "Invalid value!");
-    }
-}
+HIRValue::HIRValue(const Value& value, HIRBlock* block) : value(value), block(block) {}
 
 void HIRValue::Use(Inst* inst, u8 idx) {
     auto use = block->pools.uses.Create(inst, idx);
@@ -82,6 +76,8 @@ void HIRValue::UnUse(Inst* inst, u8 idx) {
         uses.erase(itr);
     }
 }
+
+u16 HIRValue::GetOrderId() const { return value.Def()->Id(); }
 
 HIRUse::HIRUse(Inst* inst, u8 arg_idx) : inst(inst), arg_idx(arg_idx) {}
 
@@ -109,9 +105,9 @@ HIRValue* HIRFunction::AppendValue(HIRBlock* hir_block, Inst* inst) {
     ASSERT(hir_block);
     HIRValue* hir_value{};
     if (inst->HasValue()) {
-        hir_value = pools.values.Create(value_order_id++, Value{inst}, hir_block);
+        hir_value = pools.values.Create(Value{inst}, hir_block);
         values.insert(*hir_value);
-        hir_block->GetHIRValueList().push_back(*hir_value);
+        value_count++;
     }
     UseInst(inst);
     switch (inst->GetOp()) {
@@ -132,6 +128,7 @@ void HIRFunction::DestroyHIRValue(HIRValue* value) {
     values.erase(*value);
     auto block = value->block->block;
     block->DestroyInst(value->value.Def());
+    value_count--;
 }
 
 HIRBlock* HIRFunction::GetEntryBlock() { return entry_block; }
@@ -179,14 +176,24 @@ void HIRFunction::MergeAdjacentBlocks(HIRBlock* left, HIRBlock* right) {}
 bool HIRFunction::SplitBlock(HIRBlock* new_block, HIRBlock* old_block) { return false; }
 
 void HIRFunction::IdByRPO() {
-    u32 cur_value_id{0};
+    std::destroy(values.begin(), values.end());
+    u32 cur_inst_id{0};
+    // Re id inst
+    StackVector<HIRValue*, 32> function_values{};
+    function_values.reserve(value_count);
     for (auto& block : GetHIRBlocksRPO()) {
-        StackVector<HIRValue*, 32> block_values{block.GetHIRValues().size()};
-        for (auto& value : block.GetHIRValues()) {
-            if (auto def = value.value.Def(); def) {
-                def->SetId(cur_value_id++);
+        for (auto& inst : block.GetInstList()) {
+            if (auto value = GetHIRValue(&inst); value) {
+                function_values.push_back(value);
+                values.erase(*value);
             }
+            inst.SetId(cur_inst_id++);
         }
+    }
+    inst_order_id = cur_inst_id;
+    // Re insert map
+    for (auto value : function_values) {
+        values.insert(*value);
     }
 }
 
@@ -222,7 +229,7 @@ void HIRFunction::EndFunction() {
 }
 
 u16 HIRFunction::MaxBlockCount() { return block_order_id; }
-u16 HIRFunction::MaxValueCount() { return value_order_id; }
+u16 HIRFunction::MaxInstrCount() { return inst_order_id; }
 u16 HIRFunction::MaxLocalCount() { return max_local_id + 1; }
 
 void HIRFunction::UseInst(Inst* inst) {

@@ -11,13 +11,32 @@
 
 namespace swift::runtime::backend {
 
-class RegAlloc {
+class RegAlloc : DeleteCopyAndMove {
 public:
+
+    enum Type : u8 {
+        NONE,
+        GPR,
+        FPR,
+        MEM
+    };
+
+    struct Map {
+        union {
+            ir::HostGPR gpr;
+            ir::HostFPR fpr;
+            ir::SpillSlot spill;
+        };
+        Type type{NONE};
+        u32 dirty_gprs{};
+        u32 dirty_fprs{};
+    };
 
     ir::HostGPR ValueGPR(const ir::Value &value);
     ir::HostFPR ValueFPR(const ir::Value &value);
 
 private:
+    Vector<Map> alloc_result;
 };
 
 }

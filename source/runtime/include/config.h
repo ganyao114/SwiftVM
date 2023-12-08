@@ -30,6 +30,7 @@ struct Config {
     u32 uniform_buffer_size;
     ISA backend_isa;
     std::vector<UniformDesc> buffers_static_alloc; // 静态分配建议
+    u32 stack_alignment;
 };
 
 }

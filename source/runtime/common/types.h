@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <vector>
+#include <list>
 #include "base/types.h"
 #include <boost/intrusive/slist.hpp>
 #include <boost/intrusive/rbtree.hpp>
@@ -38,6 +40,9 @@ using BitVector = boost::dynamic_bitset<>;
 
 template <typename T>
 using Vector = typename std::vector<T>;
+
+template <typename T>
+using List = typename std::list<T>;
 
 template <typename T, size_t N>
 using StackVector = typename boost::container::small_vector<T, N>;

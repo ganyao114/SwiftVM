@@ -28,6 +28,10 @@ void Value::UnUse() const {
     Def()->num_use--;
 }
 
+u16 Value::Id() const {
+    return Def()->Id();
+}
+
 Lambda::Lambda() { address.type = ArgType::Void; }
 
 Lambda::Lambda(const Imm& imm) {
