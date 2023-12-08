@@ -101,7 +101,7 @@ struct HIRUse {
 using HIRUseList = IntrusiveList<&HIRUse::list_node>;
 
 #pragma pack(push, 4)
-struct HIRValue {
+struct HIRValue final {
     Value value;
     HIRBlock* block;
     ValueAllocated allocated{};
@@ -218,7 +218,7 @@ private:
 
 using HIRBlockList = IntrusiveList<&HIRBlock::list_node>;
 
-class HIRFunction : public DataContext {
+class HIRFunction final : public DataContext {
 public:
     explicit HIRFunction(Function* function,
                          const Location& begin,

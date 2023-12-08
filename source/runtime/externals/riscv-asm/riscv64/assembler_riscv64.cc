@@ -73,6 +73,104 @@ ALWAYS_INLINE static inline int32_t ToInt12(uint32_t uint12) {
   return static_cast<int32_t>(uint12 - ((uint12 & 0x800) << 1));
 }
 
+void* ArenaAllocator::Alloc(size_t bytes) {
+    bytes = RoundUp(bytes, kAlignment);
+    auto &ref = buffer.emplace_back(bytes);
+    return ref.data();
+}
+
+void* ArenaAllocator::Realloc(void* ptr, size_t old_size, size_t new_size) {
+    DCHECK_GE(new_size, old_size);
+    DCHECK_EQ(ptr == nullptr, old_size == 0u);
+    auto itr = std::find_if(buffer.begin(), buffer.end(), [ptr] (auto &buf) {
+        return buf.data() == ptr;
+    });
+    DCHECK(itr != buffer.end());
+    new_size = RoundUp(new_size, kAlignment);
+    itr->resize(new_size);
+    DCHECK(itr->size() == new_size);
+    DCHECK(itr->data() == ptr);
+    return ptr;
+}
+
+void MemoryRegion::CopyFrom(size_t offset, const MemoryRegion& from) const {
+    CHECK(from.pointer() != nullptr);
+    CHECK_GT(from.size(), 0U);
+    CHECK_GE(this->size(), from.size());
+    CHECK_LE(offset, this->size() - from.size());
+    memmove(reinterpret_cast<void*>(begin() + offset), from.pointer(), from.size());
+}
+
+AssemblerBuffer::AssemblerBuffer(ArenaAllocator* allocator)
+        : allocator_(allocator) {
+    static const size_t kInitialBufferCapacity = 4 * KB;
+    contents_ = allocator_->AllocArray<uint8_t>(kInitialBufferCapacity);
+    cursor_ = contents_;
+    limit_ = ComputeLimit(contents_, kInitialBufferCapacity);
+    fixup_ = nullptr;
+    slow_path_ = nullptr;
+#ifndef NDEBUG
+    has_ensured_capacity_ = false;
+    fixups_processed_ = false;
+#endif
+
+    // Verify internal state.
+    CHECK_EQ(Capacity(), kInitialBufferCapacity);
+    CHECK_EQ(Size(), 0U);
+}
+
+
+AssemblerBuffer::~AssemblerBuffer() {
+//    if (allocator_->IsRunningOnMemoryTool()) {
+//        allocator_->MakeInaccessible(contents_, Capacity());
+//    }
+}
+
+
+void AssemblerBuffer::ProcessFixups(const MemoryRegion& region) {
+    AssemblerFixup* fixup = fixup_;
+    while (fixup != nullptr) {
+        fixup->Process(region, fixup->position());
+        fixup = fixup->previous();
+    }
+#ifndef NDEBUG
+    fixups_processed_ = true;
+#endif
+}
+
+
+void AssemblerBuffer::ProcessFixups() {
+    MemoryRegion from(reinterpret_cast<void*>(contents()), Size());
+    ProcessFixups(from);
+}
+
+
+void AssemblerBuffer::CopyInstructions(const MemoryRegion& instructions) {
+    MemoryRegion from(reinterpret_cast<void*>(contents()), Size());
+    instructions.CopyFrom(0, from);
+}
+
+
+void AssemblerBuffer::ExtendCapacity(size_t min_capacity) {
+    size_t old_size = Size();
+    size_t old_capacity = Capacity();
+    DCHECK_GT(min_capacity, old_capacity);
+    size_t new_capacity = std::min(old_capacity * 2, old_capacity + 1 * MB);
+    new_capacity = std::max(new_capacity, min_capacity);
+
+    // Allocate the new data area and copy contents of the old one to it.
+    contents_ = reinterpret_cast<uint8_t*>(
+            allocator_->Realloc(contents_, old_capacity, new_capacity));
+
+    // Update the cursor and recompute the limit.
+    cursor_ = contents_ + old_size;
+    limit_ = ComputeLimit(contents_, new_capacity);
+
+    // Verify internal state.
+    CHECK_EQ(Capacity(), new_capacity);
+    CHECK_EQ(Size(), old_size);
+}
+
 void Riscv64Assembler::FinalizeCode() {
   CHECK(!finalized_);
   Assembler::FinalizeCode();
@@ -1176,7 +1274,7 @@ void AddConstImpl(Riscv64Assembler* assembler,
   ScratchRegisterScope srs(assembler);
   // A temporary must be available for adjustment even if it's not needed.
   // However, `rd` can be used as the temporary unless it's the same as `rs1` or SP.
-  DCHECK_IMPLIES(rd == rs1 || rd == SP, srs.AvailableXRegisters() != 0u);
+//  DCHECK_IMPLIES(rd == rs1 || rd == SP, srs.AvailableXRegisters() != 0u);
 
   if (IsInt<12>(value)) {
     addi(rd, rs1, value);
@@ -2066,30 +2164,31 @@ void Riscv64Assembler::PromoteBranches() {
 }
 
 void Riscv64Assembler::PatchCFI() {
-  if (cfi().NumberOfDelayedAdvancePCs() == 0u) {
-    return;
-  }
-
-  using DelayedAdvancePC = DebugFrameOpCodeWriterForAssembler::DelayedAdvancePC;
-  const auto data = cfi().ReleaseStreamAndPrepareForDelayedAdvancePC();
-  const std::vector<uint8_t>& old_stream = data.first;
-  const std::vector<DelayedAdvancePC>& advances = data.second;
-
-  // Refill our data buffer with patched opcodes.
-  static constexpr size_t kExtraSpace = 16;  // Not every PC advance can be encoded in one byte.
-  cfi().ReserveCFIStream(old_stream.size() + advances.size() + kExtraSpace);
-  size_t stream_pos = 0;
-  for (const DelayedAdvancePC& advance : advances) {
-    DCHECK_GE(advance.stream_pos, stream_pos);
-    // Copy old data up to the point where advance was issued.
-    cfi().AppendRawData(old_stream, stream_pos, advance.stream_pos);
-    stream_pos = advance.stream_pos;
-    // Insert the advance command with its final offset.
-    size_t final_pc = GetAdjustedPosition(advance.pc);
-    cfi().AdvancePC(final_pc);
-  }
-  // Copy the final segment if any.
-  cfi().AppendRawData(old_stream, stream_pos, old_stream.size());
+    // TODO
+//  if (cfi().NumberOfDelayedAdvancePCs() == 0u) {
+//    return;
+//  }
+//
+//  using DelayedAdvancePC = DebugFrameOpCodeWriterForAssembler::DelayedAdvancePC;
+//  const auto data = cfi().ReleaseStreamAndPrepareForDelayedAdvancePC();
+//  const std::vector<uint8_t>& old_stream = data.first;
+//  const std::vector<DelayedAdvancePC>& advances = data.second;
+//
+//  // Refill our data buffer with patched opcodes.
+//  static constexpr size_t kExtraSpace = 16;  // Not every PC advance can be encoded in one byte.
+//  cfi().ReserveCFIStream(old_stream.size() + advances.size() + kExtraSpace);
+//  size_t stream_pos = 0;
+//  for (const DelayedAdvancePC& advance : advances) {
+//    DCHECK_GE(advance.stream_pos, stream_pos);
+//    // Copy old data up to the point where advance was issued.
+//    cfi().AppendRawData(old_stream, stream_pos, advance.stream_pos);
+//    stream_pos = advance.stream_pos;
+//    // Insert the advance command with its final offset.
+//    size_t final_pc = GetAdjustedPosition(advance.pc);
+//    cfi().AdvancePC(final_pc);
+//  }
+//  // Copy the final segment if any.
+//  cfi().AppendRawData(old_stream, stream_pos, old_stream.size());
 }
 
 void Riscv64Assembler::EmitJumpTables() {

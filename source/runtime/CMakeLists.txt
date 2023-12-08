@@ -82,5 +82,5 @@ add_library(swift_runtime STATIC
         ${RUNTIME_ARCH_SOURCE})
 
 find_package(Boost 1.57)
-target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl dlmalloc)
+target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl riscv64_asm dlmalloc)
 add_library(swift::runtime ALIAS swift_runtime)
