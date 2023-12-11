@@ -135,7 +135,7 @@ struct HIRLocal {
     HIRValue* current_value{};
 };
 
-#pragma pack(pop, 4)
+#pragma pack(pop)
 
 using HIRValueMap = IntrusiveMap<&HIRValue::map_node>;
 

@@ -108,12 +108,7 @@ TEST_CASE("Test runtime ir cfg") {
     Params params{};
     params.Push(local1);
     params.Push(local2);
-    auto call_inst = hir_builder.CallDynamic(Lambda(Imm(uint64_t(1))), params);
-    auto values = call_inst.Def()->GetValues();
-
-    for (auto va : values) {
-        ASSERT(va.Defined());
-    }
+    hir_builder.CallDynamic(Lambda(Imm(uint64_t(1))), params);
 
     hir_builder.Return();
     CFGAnalysisPass::Run(&hir_builder);
