@@ -26,6 +26,7 @@ concept InstAllocator = requires(T allocator, Inst* inst, OpCode code) {
 class Inst final : public SlabObject<Inst, true> {
 public:
     static constexpr auto max_args = 4;
+    using Values = StackVector<Value, max_args>;
 
     ~Inst();
 
@@ -91,6 +92,7 @@ public:
 
     void Use(const Value& value);
     void UnUse(const Value& value);
+    Values GetValues();
 
     OpCode GetOp();
     void SetId(u16 id);

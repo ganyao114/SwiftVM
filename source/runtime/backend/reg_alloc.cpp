@@ -10,18 +10,30 @@ RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs)
         : alloc_result{instr_size}, gprs(gprs), fprs(fprs) {}
 
 void RegAlloc::MapRegister(u32 id, ir::HostFPR fpr) {
-    alloc_result[id].type = FPR;
-    alloc_result[id].slot = fpr.id;
+    auto &map = alloc_result[id];
+    map.type = FPR;
+    map.slot = fpr.id;
 }
 
 void RegAlloc::MapRegister(u32 id, ir::HostGPR gpr) {
-    alloc_result[id].type = GPR;
-    alloc_result[id].slot = gpr.id;
+    auto &map = alloc_result[id];
+    map.type = GPR;
+    map.slot = gpr.id;
 }
 
-ir::HostFPR RegAlloc::ValueFPR(const ir::Value& value) { return {}; }
+void RegAlloc::SetActiveRegs(swift::u32 id, GPRSMask& gprs, FPRSMask& fprs) {
+    auto &map = alloc_result[id];
+    map.dirty_gprs = gprs;
+    map.dirty_fprs = fprs;
+}
 
-ir::HostGPR RegAlloc::ValueGPR(const ir::Value& value) { return {}; }
+ir::HostFPR RegAlloc::ValueFPR(const ir::Value& value) {
+    return ValueFPR(value.Id());
+}
+
+ir::HostGPR RegAlloc::ValueGPR(const ir::Value& value) {
+    return ValueGPR(value.Id());
+}
 
 ir::HostGPR RegAlloc::ValueGPR(u32 id) { return ir::HostGPR{alloc_result[id].slot}; }
 
@@ -30,5 +42,17 @@ ir::HostFPR RegAlloc::ValueFPR(u32 id) { return ir::HostFPR{alloc_result[id].slo
 const GPRSMask& RegAlloc::GetGprs() const { return gprs; }
 
 const FPRSMask& RegAlloc::GetFprs() const { return fprs; }
+
+ir::HostGPR RegAlloc::GetTmpGPR() {
+    return ir::HostGPR{1};
+}
+
+ir::HostFPR RegAlloc::GetTmpFPR() {
+    return ir::HostFPR{1};
+}
+
+void RegAlloc::SetCurrent(ir::Inst *inst) {
+    current_ir = inst;
+}
 
 }  // namespace swift::runtime::backend

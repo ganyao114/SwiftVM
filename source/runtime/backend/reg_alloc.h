@@ -78,19 +78,27 @@ public:
         FPRSMask dirty_fprs{0};
     };
 
-    const GPRSMask& GetGprs() const;
-    const FPRSMask& GetFprs() const;
+    [[nodiscard]] const GPRSMask& GetGprs() const;
+    [[nodiscard]] const FPRSMask& GetFprs() const;
 
     void MapRegister(u32 id, ir::HostGPR gpr);
     void MapRegister(u32 id, ir::HostFPR fpr);
+    void SetActiveRegs(u32 id, GPRSMask &gprs, FPRSMask &fprs);
 
     ir::HostGPR ValueGPR(const ir::Value &value);
     ir::HostFPR ValueFPR(const ir::Value &value);
     ir::HostGPR ValueGPR(u32 id);
     ir::HostFPR ValueFPR(u32 id);
 
+    ir::HostGPR GetTmpGPR();
+    ir::HostFPR GetTmpFPR();
+
+    void SetCurrent(ir::Inst *inst);
+
 private:
     Vector<Map> alloc_result;
+    u32 stack_size{};
+    ir::Inst *current_ir{};
     const GPRSMask gprs;
     const FPRSMask fprs;
 };

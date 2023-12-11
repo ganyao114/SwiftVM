@@ -23,22 +23,14 @@ struct LiveInterval {
 class LinearScanAllocator {
 public:
     explicit LinearScanAllocator(HIRFunction* function, backend::RegAlloc* alloc)
-            : function(function)
-            , block()
-            , reg_alloc(alloc)
-            , live_interval()
-            , active_lives() {
+            : function(function), block(), reg_alloc(alloc), live_interval(), active_lives() {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(function->MaxInstrCount());
     }
 
     explicit LinearScanAllocator(Block* block, backend::RegAlloc* alloc)
-            : function()
-            , block(block)
-            , reg_alloc(alloc)
-            , live_interval()
-            , active_lives() {
+            : function(), block(block), reg_alloc(alloc), live_interval(), active_lives() {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(block->GetInstList().size());
@@ -74,6 +66,7 @@ public:
                     SpillAtInterval(interval);
                 }
             }
+            reg_alloc->SetActiveRegs(interval.inst->Id(), active_fprs, active_gprs);
         }
     }
 
@@ -84,8 +77,7 @@ private:
             std::for_each(hir_value.uses.begin(), hir_value.uses.end(), [&end](auto& use) {
                 end = std::max(end, (u32)use.inst->Id());
             });
-            live_interval.push_back({
-                    hir_value.value.Def(), hir_value.GetOrderId(), end});
+            live_interval.push_back({hir_value.value.Def(), hir_value.GetOrderId(), end});
         }
     }
 
@@ -93,9 +85,9 @@ private:
         // TODO
         StackVector<u32, 32> use_end{};
         use_end.resize(lir_block->GetInstList().size());
-//        for (auto& instr : lir_block->GetInstList()) {
-//            live_interval.push_back({hir_value.value.Def(), hir_value.GetOrderId(), end});
-//        }
+        //        for (auto& instr : lir_block->GetInstList()) {
+        //            live_interval.push_back({hir_value.value.Def(), hir_value.GetOrderId(), end});
+        //        }
     }
 
     void ExpireOldIntervals(LiveInterval& current) {
@@ -113,10 +105,7 @@ private:
         }
     }
 
-    void SpillAtInterval(LiveInterval& interval) {
-        auto is_float = IsFloatValue(interval.inst);
-
-    }
+    void SpillAtInterval(LiveInterval& interval) { auto is_float = IsFloatValue(interval.inst); }
 
     bool IsFloatValue(Inst* inst) {
         auto value_type = inst->ReturnType();

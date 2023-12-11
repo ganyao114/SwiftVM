@@ -115,6 +115,25 @@ void Inst::UnUse(const Value& value) {
     }
 }
 
+Inst::Values Inst::GetValues() {
+    Values values{};
+    for (auto &arg : arguments) {
+        if (arg.IsValue()) {
+            values.push_back(arg.Get<Value>());
+        } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
+            values.push_back(arg.Get<Lambda>().GetValue());
+        } else if (arg.IsParams()) {
+            auto& params = arg.Get<Params>();
+            for (auto param : params) {
+                if (auto data = param.data; data.IsValue()) {
+                    values.push_back(data.value);
+                }
+            }
+        }
+    }
+    return values;
+}
+
 OpCode Inst::GetOp() {
     return op_code;
 }
@@ -220,7 +239,7 @@ void Inst::Validate(Inst* inst) {
 }
 
 Inst::~Inst() {
-    for (int i = 0; i < max_args; ++i) {
+    for (u8 i = 0; i < max_args; ++i) {
         DestroyArg(i);
     }
 }

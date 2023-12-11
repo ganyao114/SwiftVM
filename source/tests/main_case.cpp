@@ -108,7 +108,12 @@ TEST_CASE("Test runtime ir cfg") {
     Params params{};
     params.Push(local1);
     params.Push(local2);
-    hir_builder.CallDynamic(Lambda(Imm(uint64_t(1))), params);
+    auto call_inst = hir_builder.CallDynamic(Lambda(Imm(uint64_t(1))), params);
+    auto values = call_inst.Def()->GetValues();
+
+    for (auto va : values) {
+        ASSERT(va.Defined());
+    }
 
     hir_builder.Return();
     CFGAnalysisPass::Run(&hir_builder);
@@ -126,8 +131,13 @@ TEST_CASE("Test runtime ir cfg") {
 
 TEST_CASE("Test riscv64 asm") {
     using namespace swift;
+    riscv64::Riscv64Label label{};
     riscv64::ArenaAllocator allocator{};
     riscv64::Riscv64Assembler assembler{&allocator};
     assembler.Add(riscv64::A1, riscv64::A1, riscv64::A1);
+    assembler.Bind(&label);
+    assembler.Add(riscv64::A1, riscv64::A1, riscv64::A1);
+    assembler.Add(riscv64::A1, riscv64::A1, riscv64::A1);
+    assembler.Bne(riscv64::A1, riscv64::A2, &label);
     assembler.FinalizeCode();
 }
