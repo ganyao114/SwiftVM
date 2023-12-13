@@ -921,7 +921,7 @@ public:
     virtual void Bind(Label* label) = 0;
     virtual void Jump(Label* label) = 0;
 
-    virtual ~Assembler() {}
+    virtual ~Assembler() = default;
 
     /**
      * @brief Buffer of DWARF's Call Frame Information opcodes.
@@ -1014,8 +1014,7 @@ private:
 
 class Riscv64Assembler final : public Assembler {
 public:
-    explicit Riscv64Assembler(ArenaAllocator* allocator)
-            : Assembler(allocator)
+    explicit Riscv64Assembler(ArenaAllocator* allocator): Assembler(allocator)
             , branches_{}
             , finalized_(false)
             , overwriting_(false)
@@ -1030,14 +1029,15 @@ public:
             , available_scratch_fp_registers_(1u << FTMP) {
     }
 
-    virtual ~Riscv64Assembler() {
+    ~Riscv64Assembler() override {
         for (auto& branch : branches_) {
             CHECK(branch.IsResolved());
         }
     }
 
+
+
     size_t CodeSize() const override { return Assembler::CodeSize(); }
-    DebugFrameOpCodeWriterForAssembler& cfi() { return Assembler::cfi(); }
 
     // According to "The RISC-V Instruction Set Manual"
 

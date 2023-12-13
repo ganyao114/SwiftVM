@@ -6,6 +6,7 @@
 
 #include <vector>
 #include <list>
+#include <set>
 #include "base/types.h"
 #include <boost/intrusive/slist.hpp>
 #include <boost/intrusive/rbtree.hpp>
@@ -43,6 +44,9 @@ using Vector = typename std::vector<T>;
 
 template <typename T>
 using List = typename std::list<T>;
+
+template <typename T>
+using Set = typename std::set<T>;
 
 template <typename T, size_t N>
 using StackVector = typename boost::container::small_vector<T, N>;

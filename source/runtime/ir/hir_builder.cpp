@@ -10,6 +10,19 @@ namespace swift::runtime::ir {
 
 Edge::Edge(HIRBlock* src, HIRBlock* dest) : src_block(src), dest_block(dest) {}
 
+HIRLoop* HIRLoop::Create(HIRFunction* function, HIRBlock* header, size_t length) {
+    return function->pools.mem_arena.Create<HIRLoop>(function, header, length);
+}
+
+HIRLoop::HIRLoop(HIRFunction* function, HIRBlock* header, size_t length) {
+    loop = function->pools.CreateBlockVector(length);
+    std::memcpy(loop.data(), (void*)header, sizeof(HIRBlock*) * length);
+}
+
+HIRBlock* HIRLoop::GetHeader() const { return loop[0]; }
+
+HIRBlockVector HIRLoop::GetLoopVector() const { return loop; }
+
 HIRBlock::HIRBlock(Block* block, HIRValueMap& values, HIRPools& pools)
         : block(block), value_map(values), pools(pools) {}
 
@@ -141,6 +154,8 @@ HIRBlockList& HIRFunction::GetHIRBlockList() { return block_list; }
 
 HIRBlockList& HIRFunction::GetHIRBlocksRPO() { return blocks_rpo; }
 
+HIRLoopList& HIRFunction::GetHIRLoop() { return loops; }
+
 HIRValueMap& HIRFunction::GetHIRValues() { return values; }
 
 HIRValue* HIRFunction::GetHIRValue(const Value& value) {
@@ -170,6 +185,8 @@ void HIRFunction::AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional) {
 }
 
 void HIRFunction::RemoveEdge(Edge* edge) {}
+
+void HIRFunction::AddLoop(HIRLoop* loop) { loops.push_back(*loop); }
 
 void HIRFunction::MergeAdjacentBlocks(HIRBlock* left, HIRBlock* right) {}
 
@@ -359,6 +376,16 @@ Location HIRBuilder::GetNextLocation(const terminal::Terminal& term) {
             return {};
         }
     });
+}
+
+void DfsHIRBlock(HIRBlock* start, HIRBlock* end, HIRBlockSet& visited) {
+    if (start == end || visited.count(start)) {
+        return;
+    }
+    visited.insert(start);
+    for (auto pred : start->GetPredecessors()) {
+        DfsHIRBlock(pred, end, visited);
+    }
 }
 
 }  // namespace swift::runtime::ir

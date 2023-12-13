@@ -8,8 +8,8 @@
 #include "runtime/common/mem_arena.h"
 #include "runtime/common/object_pool.h"
 #include "runtime/ir/function.h"
-#include "runtime/ir/module.h"
 #include "runtime/ir/host_reg.h"
+#include "runtime/ir/module.h"
 
 namespace swift::runtime::ir {
 
@@ -18,6 +18,9 @@ class HIRFunction;
 class HIRBuilder;
 struct HIRPools;
 struct HIRValue;
+
+using HIRBlockVector = std::span<HIRBlock*>;
+using HIRBlockSet = Set<HIRBlock*>;
 
 class DataContext {
 public:
@@ -45,18 +48,18 @@ struct Edge {
 
 struct Dominance {
     IntrusiveListNode node;
-    HIRBlock *block;
+    HIRBlock* block;
 
-    explicit Dominance(HIRBlock* block) : block(block), node() {};
+    explicit Dominance(HIRBlock* block) : block(block), node(){};
 };
 
 using DomFrontier = IntrusiveList<&Dominance::node>;
 
 struct BackEdge {
-    HIRBlock *target;
+    HIRBlock* target;
     IntrusiveListNode list_node{};
 
-    explicit BackEdge(HIRBlock *block) : target(block) {}
+    explicit BackEdge(HIRBlock* block) : target(block) {}
 };
 
 using BackEdgeList = IntrusiveList<&BackEdge::list_node>;
@@ -88,13 +91,9 @@ struct HIRUse {
 
     explicit HIRUse(Inst* inst, u8 arg_idx);
 
-    [[nodiscard]] bool IsFuncCall() const {
-        return arg_idx == USE_FUNC_CALL;
-    }
+    [[nodiscard]] bool IsFuncCall() const { return arg_idx == USE_FUNC_CALL; }
 
-    [[nodiscard]] bool IsPhi() const {
-        return arg_idx == USE_PHI;
-    }
+    [[nodiscard]] bool IsPhi() const { return arg_idx == USE_PHI; }
 };
 #pragma pack(pop)
 
@@ -109,7 +108,7 @@ struct HIRValue final {
 
     IntrusiveMapNode map_node{};
 
-    HIRValue() : value(), block(nullptr) {};
+    HIRValue() : value(), block(nullptr){};
     HIRValue(const Value& value) : value(value), block(nullptr){};
     explicit HIRValue(const Value& value, HIRBlock* block);
 
@@ -135,13 +134,25 @@ struct HIRLocal {
     HIRValue* current_value{};
 };
 
+class HIRLoop final {
+public:
+    static HIRLoop* Create(HIRFunction* function, HIRBlock* header, size_t length);
+
+    explicit HIRLoop(HIRFunction* function, HIRBlock* header, size_t length);
+    [[nodiscard]] HIRBlock* GetHeader() const;
+    [[nodiscard]] HIRBlockVector GetLoopVector() const;
+
+    IntrusiveListNode node{};
+
+private:
+    HIRBlockVector loop;
+};
 #pragma pack(pop)
 
+using HIRLoopList = IntrusiveList<&HIRLoop::node>;
 using HIRValueMap = IntrusiveMap<&HIRValue::map_node>;
 
-using HIRBlockVector = std::span<HIRBlock*>;
-
-class HIRBlock : public DataContext {
+class HIRBlock final : public DataContext {
     friend class HIRFunction;
     friend class HIRValue;
 
@@ -154,7 +165,7 @@ public:
         return inst;
     }
 
-    template <typename... Args> HIRValue *AppendInst(OpCode op, const Args&... args) {
+    template <typename... Args> HIRValue* AppendInst(OpCode op, const Args&... args) {
         auto inst = new Inst(op);
         inst->SetArgs(args...);
         return AppendInst(inst);
@@ -162,13 +173,14 @@ public:
 
 #define INST(name, ret, ...)                                                                       \
     template <typename... Args> ret name(const Args&... args) {                                    \
-        return ret{AppendInst(OpCode::name, args...)};                                             \
+        auto hir_value = AppendInst(OpCode::name, args...);                                        \
+        return ret{hir_value ? hir_value->value.Def() : nullptr};                                  \
     }
 #include "ir.inc"
 #undef INST
 
-    HIRValue *AppendInst(Inst* inst);
-    HIRValue *InsertFront(Inst* inst);
+    HIRValue* AppendInst(Inst* inst);
+    HIRValue* InsertFront(Inst* inst);
     HIRValueMap& GetHIRValues();
     [[nodiscard]] u16 GetOrderId() const;
 
@@ -188,8 +200,8 @@ public:
 
     auto& GetDomFrontier() { return dom_frontier; }
 
-    void PushDominance(HIRBlock *block);
-    void SetDominator(HIRBlock *block_) { dominator = block_; };
+    void PushDominance(HIRBlock* block);
+    void SetDominator(HIRBlock* block_) { dominator = block_; };
     auto GetDominator() { return dominator; };
 
     Block* GetBlock();
@@ -204,7 +216,7 @@ public:
 private:
     u16 order_id{};
     Block* block;
-    HIRFunction *function{};
+    HIRFunction* function{};
     HIRPools& pools;
     HIRValueMap& value_map;
     IntrusiveList<&Edge::outgoing_edges> outgoing_edges{};
@@ -243,20 +255,22 @@ public:
 #undef INST
 
     HIRBlock* AppendBlock(Location start, Location end = {});
-    HIRBlock *CreateOrGetBlock(Location location);
-    void SetCurBlock(HIRBlock *block);
-    HIRValue *AppendValue(HIRBlock *block, Inst* inst);
+    HIRBlock* CreateOrGetBlock(Location location);
+    void SetCurBlock(HIRBlock* block);
+    HIRValue* AppendValue(HIRBlock* block, Inst* inst);
     void DestroyHIRValue(HIRValue* value);
-    HIRBlock *GetEntryBlock();
-    HIRBlock *GetCurrentBlock();
+    HIRBlock* GetEntryBlock();
+    HIRBlock* GetCurrentBlock();
     HIRBlockVector& GetHIRBlocks();
     HIRBlockList& GetHIRBlockList();
     HIRBlockList& GetHIRBlocksRPO();
+    HIRLoopList& GetHIRLoop();
     HIRValueMap& GetHIRValues();
     HIRValue* GetHIRValue(const Value& value);
     HIRPools& GetMemPool();
     void AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional = false);
     void RemoveEdge(Edge* edge);
+    void AddLoop(HIRLoop* loop);
     void MergeAdjacentBlocks(HIRBlock* left, HIRBlock* right);
     bool SplitBlock(HIRBlock* new_block, HIRBlock* old_block);
     void IdByRPO();
@@ -273,6 +287,7 @@ public:
 private:
     friend class HIRBuilder;
     friend class HIRBlock;
+    friend class HIRLoop;
 
     struct {
         u32 current_slot{0};
@@ -296,6 +311,7 @@ private:
     HIRValueMap values{};
     HIRBlock* current_block{};
     HIRBlock* entry_block{};
+    HIRLoopList loops{};
 };
 
 using HIRFunctionList = IntrusiveList<&HIRFunction::list_node>;
@@ -337,7 +353,7 @@ public:
 
     explicit HIRBuilder(u32 func_cap = 1);
 
-    HIRFunction *AppendFunction(Location start, Location end = {});
+    HIRFunction* AppendFunction(Location start, Location end = {});
 
     HIRFunctionList& GetHIRFunctions();
 
@@ -350,7 +366,7 @@ public:
 
     void SetLocation(Location location);
 
-    void SetCurBlock(HIRBlock *block);
+    void SetCurBlock(HIRBlock* block);
 
     void SetCurBlock(Location location);
 
@@ -370,5 +386,7 @@ private:
     Location current_location;
     HIRFunction* current_function{};
 };
+
+void DfsHIRBlock(HIRBlock* start, HIRBlock* end, HIRBlockSet& visited);
 
 }  // namespace swift::runtime::ir

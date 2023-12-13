@@ -94,8 +94,11 @@ void CFGAnalysisPass::Run(HIRFunction* hir_function) {
     // Build back edges
     FindBackEdges(hir_function, visited);
 
-    // Build Reverse Post Order
+    // Build Reverse Post Order & Build Dom Tree
     ComputeDominanceInformation(hir_function);
+
+    // Collect looper
+    ComputeLoopInformation(hir_function);
 }
 
 bool CFGAnalysisPass::UpdateDominatorOfSuccessor(HIRBlock* block, HIRBlock* successor) {
@@ -202,8 +205,8 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
     entry_block->SetDominator(entry_block);
 
     // Dominance Frontier
-    for (auto &block : reverse_post_order) {
-        auto &predecessors = block.GetPredecessors();
+    for (auto& block : reverse_post_order) {
+        auto& predecessors = block.GetPredecessors();
         if (predecessors.size() > 1) {
             auto dom = block.GetDominator();
             for (auto predecessor : predecessors) {
@@ -211,6 +214,29 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
                 while (runner != dom) {
                     runner->PushDominance(&block);
                     runner = runner->GetDominator();
+                }
+            }
+        }
+    }
+}
+
+void CFGAnalysisPass::ComputeLoopInformation(HIRFunction* hir_function) {
+    for (auto& block : hir_function->GetHIRBlocksRPO()) {
+        auto& back_edges = block.GetBackEdges();
+        if (!back_edges.empty()) {
+            auto dominator = block.GetDominator();
+            for (auto& back_edge : back_edges) {
+                auto header = back_edge.target;
+                if (header != dominator) {
+                    StackVector<HIRBlock*, 4> loop{};
+                    loop.push_back(&block);
+                    HIRBlockSet visited{};
+                    DfsHIRBlock(&block, header, visited);
+                    for (HIRBlock* loop_block : visited) {
+                        loop.push_back(loop_block);
+                    }
+                    auto hir_loop = HIRLoop::Create(hir_function, *loop.begin(), loop.size());
+                    hir_function->AddLoop(hir_loop);
                 }
             }
         }

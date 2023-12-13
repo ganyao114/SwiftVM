@@ -10,7 +10,7 @@ namespace swift::runtime {
 
 class MemArena {
 public:
-    explicit MemArena(size_t chunk_size = 4096) : new_chunk_size{chunk_size} {
+    explicit MemArena(size_t chunk_size = 4_KB) : new_chunk_size{chunk_size} {
         node = &chunks.emplace_back(new_chunk_size);
     }
 
