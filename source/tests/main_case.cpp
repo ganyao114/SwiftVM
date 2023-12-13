@@ -124,6 +124,32 @@ TEST_CASE("Test runtime ir cfg") {
 
 }
 
+TEST_CASE("Test runtime ir loop") {
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    Inst::InitializeSlabHeap(0x100000);
+    Block::InitializeSlabHeap(0x10000);
+    Function::InitializeSlabHeap(0x2000);
+    HIRBuilder hir_builder{1};
+    auto function = hir_builder.AppendFunction(Location{0}, Location{0x10});
+    Local local1{
+            .id = 0,
+            .type = ValueType::U32,
+    };
+    auto value = function->LoadLocal(local1);
+    auto [else_, then_] = hir_builder.If(terminal::If{value, terminal::LinkBlock{1}, terminal::LinkBlock{2}});
+    else_->StoreLocal(local1, else_->LoadImm(Imm(UINT32_MAX)));
+    then_->StoreLocal(local1, else_->LoadImm(Imm(UINT32_MAX)));
+    hir_builder.SetCurBlock(else_);
+    hir_builder.LinkBlock(terminal::LinkBlock{0});
+    hir_builder.SetCurBlock(then_);
+    hir_builder.Return();
+
+    CFGAnalysisPass::Run(&hir_builder);
+    LocalEliminationPass::Run(&hir_builder);
+    ReIdInstrPass::Run(&hir_builder);
+}
+
 TEST_CASE("Test riscv64 asm") {
     using namespace swift;
     riscv64::Riscv64Label label{};

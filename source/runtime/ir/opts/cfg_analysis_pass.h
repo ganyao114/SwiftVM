@@ -19,6 +19,7 @@ private:
     static void FindDominateEdges(HIRFunction *hir_function);
     static void FindBackEdges(HIRFunction *hir_function, BitVector &visited);
     static void ComputeDominanceInformation(HIRFunction *hir_function);
+    static void ComputeLoopInformation(HIRFunction *hir_function);
 };
 
 }  // namespace swift::runtime::ir

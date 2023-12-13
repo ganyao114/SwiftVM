@@ -20,6 +20,16 @@ VRegister JitContext::V(const ir::Value& value) {
     return VRegister::GetVRegFromCode(reg.id);
 }
 
+Register JitContext::GetTmpX(const ir::Value& value) {
+    auto reg = reg_alloc.GetTmpGPR();
+    return XRegister::GetXRegFromCode(reg.id);
+}
+
+VRegister JitContext::GetTmpV(const ir::Value& value) {
+    auto reg = reg_alloc.GetTmpFPR();
+    return VRegister::GetVRegFromCode(reg.id);
+}
+
 void JitContext::Forward(ir::Location location) {
 
 }

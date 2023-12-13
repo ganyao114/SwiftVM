@@ -44,6 +44,7 @@ const GPRSMask& RegAlloc::GetGprs() const { return gprs; }
 const FPRSMask& RegAlloc::GetFprs() const { return fprs; }
 
 ir::HostGPR RegAlloc::GetTmpGPR() {
+    
     return ir::HostGPR{1};
 }
 
