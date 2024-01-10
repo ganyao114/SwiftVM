@@ -19,6 +19,7 @@ namespace swift::runtime::ir {
 
 class Inst;
 class Arg;
+struct ArgClass;
 
 enum class Cond : u8 {
     EQ = 0,
@@ -53,6 +54,9 @@ public:
     explicit Imm(u16 value) : type{ValueType::U16}, imm_u16{value} {}
     explicit Imm(u32 value) : type{ValueType::U32}, imm_u32{value} {}
     explicit Imm(u64 value) : type{ValueType::U64}, imm_u64{value} {}
+    explicit Imm(u64 value, ValueType size) : type{size}, imm_u64{value} {}
+
+    u64 GetValue() const;
 
 private:
     ValueType type{ValueType::VOID};
@@ -74,7 +78,7 @@ public:
 
     [[nodiscard]] bool Defined() const { return inst; }
 
-    void SetType(ValueType type) const;
+    Value SetType(ValueType type) const;
 
     [[nodiscard]] ValueType Type() const;
 
@@ -133,27 +137,38 @@ struct DataClass {
         Imm imm;
     };
 
+    constexpr DataClass() {}
+
+    constexpr DataClass(const Value& v) : value(v), type(ArgType::Value) {}
+
+    constexpr DataClass(const Imm& v) : imm(v), type(ArgType::Imm) {}
+
     [[nodiscard]] bool IsValue() const {
         return type == ArgType::Value;
     }
+
+    ArgClass ToArgClass() const;
 };
 
 class Lambda {
 public:
     using FuncAddr = DataClass;
 
-    explicit Lambda();
-    explicit Lambda(const Value& value);
-    explicit Lambda(const Imm& imm);
+    constexpr Lambda() : address() {}
+
+    constexpr Lambda(const Value& value) : address(value) {}
+
+    constexpr Lambda(const Imm& imm) : address(imm) {}
 
     bool IsValue() const;
 
     Value& GetValue();
     Value& GetValue() const;
     Imm& GetImm();
+    Imm& GetImm() const;
 
 private:
-    mutable FuncAddr address{};
+    mutable FuncAddr address;
 };
 
 enum class Flags : u16 {
@@ -171,6 +186,7 @@ DECLARE_ENUM_FLAG_OPERATORS(Flags)
 
 struct OperandOp {
     enum Type : u8 {
+        None = 0,
         Plus = 1 << 0,
         Minus = 1 << 1,
         LSL = 1 << 2,
@@ -336,7 +352,7 @@ class Operand {
     friend class Inst;
 
 public:
-    using Type = ArgClass;
+    using Type = DataClass;
     using Op = OperandOp;
 
     constexpr Operand() = default;
@@ -345,11 +361,15 @@ public:
 
     explicit Operand(const Value& left, const Value& right, Op op = {});
 
+    explicit Operand(const Imm& left);
+
+    explicit Operand(const Value& left);
+
     [[nodiscard]] Op GetOp() const;
 
-    Type GetLeft() const { return left; }
+    [[nodiscard]] Type GetLeft() const { return left; }
 
-    Type GetRight() const { return right; }
+    [[nodiscard]] Type GetRight() const { return right; }
 
 private:
     Op op{};
@@ -391,34 +411,44 @@ public:
 
     template <typename T> constexpr T& Get() {
         if constexpr (std::is_same<T, Value>::value) {
-            assert(value.type == ArgType::Value);
+            ASSERT(value.type == ArgType::Value);
             return value.value;
         } else if constexpr (std::is_same<T, Imm>::value) {
-            assert(value.type == ArgType::Imm);
+            ASSERT(value.type == ArgType::Imm);
             return value.imm;
         } else if constexpr (std::is_same<T, Local>::value) {
-            assert(value.type == ArgType::Local);
+            ASSERT(value.type == ArgType::Local);
             return value.local;
         } else if constexpr (std::is_same<T, Uniform>::value) {
-            assert(value.type == ArgType::Uniform);
+            ASSERT(value.type == ArgType::Uniform);
             return value.uniform;
         } else if constexpr (std::is_same<T, Cond>::value) {
-            assert(value.type == ArgType::Cond);
+            ASSERT(value.type == ArgType::Cond);
             return value.cond;
         } else if constexpr (std::is_same<T, OperandOp>::value) {
-            assert(value.type == ArgType::Operand);
+            ASSERT(value.type == ArgType::Operand);
             return value.operand;
         } else if constexpr (std::is_same<T, Lambda>::value) {
-            assert(value.type == ArgType::Lambda);
+            ASSERT(value.type == ArgType::Lambda);
             return value.lambda;
         } else if constexpr (std::is_same<T, Flags>::value) {
-            assert(value.type == ArgType::Flags);
+            ASSERT(value.type == ArgType::Flags);
             return value.flags;
         } else if constexpr (std::is_same<T, Params>::value) {
-            assert(value.type == ArgType::Params);
+            ASSERT(value.type == ArgType::Params);
             return value.params;
         } else {
-            assert(0);
+            ASSERT(false);
+        }
+    }
+
+    [[maybe_unused]] DataClass ToDataClass() const {
+        if (value.type == ArgType::Value) {
+            return value.value;
+        } else if (value.type == ArgType::Imm) {
+            return value.imm;
+        } else {
+            ASSERT(false);
         }
     }
 

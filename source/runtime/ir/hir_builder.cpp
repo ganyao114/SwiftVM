@@ -107,9 +107,12 @@ HIRFunction::HIRFunction(Function* function,
 }
 
 HIRBlock* HIRFunction::AppendBlock(Location start, Location end_) {
-    auto hir_block = CreateOrGetBlock(start);
-    hir_block->block->SetEndLocation(end_);
-    return hir_block;
+    if (auto hir_block = CreateOrGetBlock(start); hir_block) {
+        hir_block->block->SetEndLocation(end_);
+        return hir_block;
+    } else {
+        return nullptr;
+    }
 }
 
 void HIRFunction::SetCurBlock(HIRBlock* block) { current_block = block; }
@@ -219,7 +222,6 @@ void HIRFunction::EndBlock(Terminal terminal) {
 }
 
 void HIRFunction::EndFunction() {
-    EndBlock(terminal::PopRSBHint{});
     blocks = pools.CreateBlockVector(MaxBlockCount());
     for (auto& block : block_list) {
         // Function vector
@@ -275,6 +277,9 @@ void HIRFunction::UseInst(Inst* inst) {
 }
 
 HIRBlock* HIRFunction::CreateOrGetBlock(Location location) {
+    if (!location.Valid()) {
+        return nullptr;
+    }
     auto itr = std::find_if(block_list.begin(), block_list.end(), [location](auto& block) -> auto {
         return block.GetBlock()->GetStartLocation() == location;
     });
@@ -328,9 +333,13 @@ HIRBuilder::ElseThen HIRBuilder::If(const terminal::If& if_) {
     auto else_ = GetNextLocation(if_.else_);
     auto then_ = GetNextLocation(if_.then_);
     auto else_block = current_function->AppendBlock(else_);
+    if (else_block) {
+        current_function->AddEdge(pre_block, else_block, true);
+    }
     auto then_block = current_function->AppendBlock(then_);
-    current_function->AddEdge(pre_block, then_block, true);
-    current_function->AddEdge(pre_block, else_block, true);
+    if (then_block) {
+        current_function->AddEdge(pre_block, then_block, true);
+    }
     return {else_block, then_block};
 }
 
@@ -358,8 +367,23 @@ HIRBlock* HIRBuilder::LinkBlock(const terminal::LinkBlock& link) {
     return next_block;
 }
 
+void HIRBuilder::ReturnToDispatcher() {
+    ASSERT_MSG(current_function, "current function is null!");
+    current_function->EndBlock(ir::terminal::ReturnToDispatch{});
+    current_function->EndFunction();
+    current_function = {};
+}
+
+void HIRBuilder::ReturnToHost() {
+    ASSERT_MSG(current_function, "current function is null!");
+    current_function->EndBlock(ir::terminal::ReturnToHost{});
+    current_function->EndFunction();
+    current_function = {};
+}
+
 void HIRBuilder::Return() {
     ASSERT_MSG(current_function, "current function is null!");
+    current_function->EndBlock(terminal::PopRSBHint{});
     current_function->EndFunction();
     current_function = {};
 }
@@ -372,7 +396,6 @@ Location HIRBuilder::GetNextLocation(const terminal::Terminal& term) {
         } else if constexpr (std::is_same_v<T, terminal::LinkBlockFast>) {
             return x.next;
         } else {
-            ASSERT_MSG(false, "Invalid terminal");
             return {};
         }
     });

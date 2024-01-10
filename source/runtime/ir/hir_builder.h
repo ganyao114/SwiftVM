@@ -161,19 +161,19 @@ public:
 
     template <typename... Args> Inst* CreateInst(OpCode op, const Args&... args) {
         auto inst = new Inst(op);
-        inst->SetArgs(args...);
+        inst->SetArgs(std::forward<const Args&>(args)...);
         return inst;
     }
 
     template <typename... Args> HIRValue* AppendInst(OpCode op, const Args&... args) {
         auto inst = new Inst(op);
-        inst->SetArgs(args...);
+        inst->SetArgs(std::forward<const Args&>(args)...);
         return AppendInst(inst);
     }
 
 #define INST(name, ret, ...)                                                                       \
     template <typename... Args> ret name(const Args&... args) {                                    \
-        auto hir_value = AppendInst(OpCode::name, args...);                                        \
+        auto hir_value = AppendInst(OpCode::name, std::forward<const Args&>(args)...);             \
         return ret{hir_value ? hir_value->value.Def() : nullptr};                                  \
     }
 #include "ir.inc"
@@ -240,7 +240,7 @@ public:
     template <typename... Args> Inst* AppendInst(OpCode op, const Args&... args) {
         ASSERT(current_block);
         auto inst = new Inst(op);
-        inst->SetArgs(args...);
+        inst->SetArgs(std::forward<const Args&>(args)...);
         inst->SetId(inst_order_id++);
         current_block->block->AppendInst(inst);
         AppendValue(current_block, inst);
@@ -249,7 +249,7 @@ public:
 
 #define INST(name, ret, ...)                                                                       \
     template <typename... Args> ret name(const Args&... args) {                                    \
-        return ret{AppendInst(OpCode::name, args...)};                                             \
+        return ret{AppendInst(OpCode::name, std::forward<const Args&>(args)...)};                  \
     }
 #include "ir.inc"
 #undef INST
@@ -357,12 +357,24 @@ public:
 
     HIRFunctionList& GetHIRFunctions();
 
+    template <typename... Args> Inst* AppendInst(OpCode op, const Args&... args) {
+        return current_function->AppendInst(op, std::forward<const Args&>(args)...);
+    }
+
 #define INST(name, ret, ...)                                                                       \
     template <typename... Args> ret name(const Args&... args) {                                    \
-        return ret{current_function->AppendInst(OpCode::name, args...)};                           \
+        return ret{AppendInst(OpCode::name, std::forward<const Args&>(args)...)};                  \
     }
 #include "ir.inc"
 #undef INST
+
+    template<typename Lambda, typename... Args>
+    Value CallHost(Lambda l, const Args&... args) {
+        constexpr static auto MAX_ARG = 3;
+        auto arg_count = sizeof...(args);
+        ASSERT(arg_count <= MAX_ARG);
+        return CallLambda(FptrCast(l), std::forward<const Args&>(args)...);
+    }
 
     void SetLocation(Location location);
 
@@ -375,6 +387,10 @@ public:
     Vector<CaseBlock> Switch(const terminal::Switch& switch_);
 
     HIRBlock* LinkBlock(const terminal::LinkBlock& switch_);
+
+    void ReturnToDispatcher();
+
+    void ReturnToHost();
 
     void Return();
 

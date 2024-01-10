@@ -8,9 +8,12 @@
 
 namespace swift::runtime::ir {
 
-void Value::SetType(ValueType type) const {
+u64 Imm::GetValue() const { return imm_u64; }
+
+Value Value::SetType(ValueType type) const {
     ASSERT(Def());
     Def()->SetReturn(type);
+    return *this;
 }
 
 ValueType Value::Type() const {
@@ -28,23 +31,24 @@ void Value::UnUse() const {
     Def()->num_use--;
 }
 
-u16 Value::Id() const {
-    return Def()->Id();
-}
+u16 Value::Id() const { return Def()->Id(); }
 
-Lambda::Lambda() { address.type = ArgType::Void; }
-
-Lambda::Lambda(const Imm& imm) {
-    address.imm = imm;
-    address.type = ArgType::Imm;
-}
-
-Lambda::Lambda(const Value& value) {
-    address.value = value;
-    address.type = ArgType::Value;
+ArgClass DataClass::ToArgClass() const {
+    if (type == ArgType::Value) {
+        return ArgClass{value};
+    } else if (type == ArgType::Imm) {
+        return ArgClass{imm};
+    } else {
+        ASSERT(false);
+    }
 }
 
 Imm& Lambda::GetImm() {
+    ASSERT(address.type == ArgType::Imm);
+    return address.imm;
+}
+
+Imm& Lambda::GetImm() const {
     ASSERT(address.type == ArgType::Imm);
     return address.imm;
 }
@@ -59,15 +63,11 @@ Value& Lambda::GetValue() const {
     return address.value;
 }
 
-bool Lambda::IsValue() const { return address.type == ArgType::Value; }
+bool Lambda::IsValue() const { return address.IsValue(); }
 
-void Params::Push(const Value& data) {
-    Push(new Param(data));
-}
+void Params::Push(const Value& data) { Push(new Param(data)); }
 
-void Params::Push(const Imm& data) {
-    Push(new Param(data));
-}
+void Params::Push(const Imm& data) { Push(new Param(data)); }
 
 void Params::Push(Param* param) {
     if (first_param) {
@@ -90,6 +90,10 @@ void Params::Destroy() {
         delete deleted;
     } while (param);
 }
+
+Operand::Operand(const Imm& left) : left(left) {}
+
+Operand::Operand(const Value& left) : left(left) {}
 
 Operand::Operand(const Value& left, const Imm& right, Op op) : left(left), right(right), op(op) {}
 

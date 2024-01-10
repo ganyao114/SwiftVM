@@ -63,9 +63,9 @@ void Inst::SetArg(int index, const Operand& arg) {
     DestroyArg(index);
     arguments[index++] = arg;
     DestroyArg(index);
-    arguments[index++] = arg.left;
+    arguments[index++] = arg.left.ToArgClass();
     DestroyArg(index);
-    arguments[index++] = arg.right;
+    arguments[index++] = arg.right.ToArgClass();
     if (arg.left.type == ArgType::Value) {
         Use(arg.left.value);
     }
@@ -155,6 +155,8 @@ bool Inst::IsPseudoOperation() {
         case OpCode::GetCarry:
         case OpCode::GetOverFlow:
         case OpCode::GetNegate:
+        case OpCode::GetPositive:
+        case OpCode::GetSigned:
         case OpCode::GetZero:
         case OpCode::GetNZCV:
         case OpCode::GetNegZero:

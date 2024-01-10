@@ -37,4 +37,6 @@ constexpr inline u64 operator ""_GB(unsigned long long n) {
     return operator ""_MB(n) * UINT64_C(1024);
 }
 
+#define UNREACHABLE abort
+
 }

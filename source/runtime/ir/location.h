@@ -22,6 +22,8 @@ public:
 
     [[nodiscard]] size_t Value() const { return value; }
 
+    [[nodiscard]] bool Valid() const { return value != INVALID; }
+
 private:
     size_t value{};
 };

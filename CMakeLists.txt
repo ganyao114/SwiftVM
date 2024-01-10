@@ -21,3 +21,6 @@ elseif (CMAKE_SYSTEM_NAME MATCHES "^(Linux|kFreeBSD|GNU|SunOS)$")
 endif()
 
 add_subdirectory(source)
+if (ANDROID)
+    add_subdirectory(android/app/src/main/jni)
+endif()

@@ -4,11 +4,7 @@ add_subdirectory(frontend)
 
 if ("arm64" IN_LIST ARCHITECTURE)
     set(RUNTIME_ARCH_SOURCE
-            backend/arm64/context.S
-            backend/arm64/jit/jit_context.cpp
-            backend/arm64/jit/jit_context.h
-            backend/arm64/jit/translator.cpp
-            backend/arm64/jit/translator.h)
+            backend/arm64/context.S)
 else ()
     set(RUNTIME_ARCH_SOURCE backend/dummy_entry.cpp
     )
@@ -28,6 +24,10 @@ add_library(swift_runtime STATIC
         common/virtual_vector.cpp
         common/virtual_vector.h
         common/bit_fields.h
+        common/function_info.h
+        common/cast_utils.h
+        frontend/ir_assembler.cpp
+        frontend/ir_assembler.h
         ir/args.cpp
         ir/args.h
         ir/ir_types.h
@@ -79,6 +79,12 @@ add_library(swift_runtime STATIC
         backend/jit_code.h
         backend/translator.cpp
         backend/translator.h
+        backend/arm64/jit/jit_context.cpp
+        backend/arm64/jit/jit_context.h
+        backend/arm64/jit/translator.cpp
+        backend/arm64/jit/translator.h
+        backend/riscv64/jit/jit_context.cpp
+        backend/riscv64/jit/jit_context.h
         ${RUNTIME_ARCH_SOURCE})
 
 find_package(Boost 1.57)

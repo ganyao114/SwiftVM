@@ -24,6 +24,21 @@ enum ISA : uint8_t {
     kLoongArch
 };
 
+class MemoryInterface {
+public:
+    virtual bool Read(void* dest, size_t offset, size_t size) = 0;
+    virtual bool Write(void* src, size_t offset, size_t size) = 0;
+    virtual void *GetPointer(void* src) = 0;
+
+    template <typename T> T Read(size_t offset = 0) {
+        T t;
+        Read(&t, offset, sizeof(T));
+        return std::move(t);
+    }
+
+    template <typename T> void Write(T& t, size_t offset) { Write(&t, offset, sizeof(T)); }
+};
+
 struct Config {
     bool enable_jit;
     bool enable_asm_interp;
@@ -31,6 +46,7 @@ struct Config {
     ISA backend_isa;
     std::vector<UniformDesc> buffers_static_alloc; // 静态分配建议
     u32 stack_alignment;
+    MemoryInterface *memory;
 };
 
 }
