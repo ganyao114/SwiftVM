@@ -6,6 +6,7 @@
 
 #include "runtime/ir/instr.h"
 #include "runtime/ir/terminal.h"
+#include "runtime/common/cast_utils.h"
 
 namespace swift::runtime::ir {
 
@@ -41,11 +42,19 @@ public:
     InstList::iterator GetBeginInst();
 
 #define INST(name, ret, ...)                                                                      \
-    template <typename... Args> ret name(const Args&... args) {                                    \
-        return ret{AppendInst(OpCode::name, args...)};                                             \
+    template <typename... Args> ret name(const Args&... args) {                                   \
+        return ret{AppendInst(OpCode::name, args...)};                                            \
     }
 #include "ir.inc"
 #undef INST
+
+    template<typename Lambda, typename... Args>
+    Value CallHost(Lambda l, const Args&... args) {
+        constexpr static auto MAX_ARG = 3;
+        auto arg_count = sizeof...(args);
+        ASSERT(arg_count <= MAX_ARG);
+        return CallLambda(FptrCast(l), std::forward<const Args&>(args)...);
+    }
 
     bool operator<(const Block& rhs) const { return location < rhs.location; }
 

@@ -14,6 +14,7 @@ namespace terminal {
 
 struct Invalid {};
 struct ReturnToDispatch {};
+struct ReturnToHost {};
 
 struct LinkBlock {
     explicit LinkBlock(const Location& next_)
@@ -36,6 +37,7 @@ struct CheckHalt;
 using Terminal = boost::variant<
         Invalid,
         ReturnToDispatch,
+        ReturnToHost,
         LinkBlock,
         LinkBlockFast,
         PopRSBHint,

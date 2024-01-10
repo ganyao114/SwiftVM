@@ -24,8 +24,8 @@ public:
     Register X(const ir::Value &value);
     VRegister V(const ir::Value &value);
 
-    Register GetTmpX(const ir::Value &value);
-    VRegister GetTmpV(const ir::Value &value);
+    Register GetTmpX();
+    VRegister GetTmpV();
 
     void Forward(ir::Location location);
     void Forward(const Register &location);
@@ -33,6 +33,8 @@ public:
     u8 *Flush(CodeCache &code_cache);
 
     MacroAssembler &GetMasm();
+
+    void TickIR(ir::Inst *instr);
 
 private:
     const Config &config;

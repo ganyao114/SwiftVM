@@ -20,12 +20,12 @@ VRegister JitContext::V(const ir::Value& value) {
     return VRegister::GetVRegFromCode(reg.id);
 }
 
-Register JitContext::GetTmpX(const ir::Value& value) {
+Register JitContext::GetTmpX() {
     auto reg = reg_alloc.GetTmpGPR();
     return XRegister::GetXRegFromCode(reg.id);
 }
 
-VRegister JitContext::GetTmpV(const ir::Value& value) {
+VRegister JitContext::GetTmpV() {
     auto reg = reg_alloc.GetTmpFPR();
     return VRegister::GetVRegFromCode(reg.id);
 }
@@ -46,12 +46,16 @@ u8* JitContext::Flush(CodeCache& code_cache) {
     auto cache_size = masm.GetBuffer()->GetSizeInBytes();
     auto buffer = code_cache.AllocCode(cache_size);
     if (buffer.has_value()) {
-        memcpy(buffer->rw_data, masm.GetBuffer()->GetStartAddress<u8*>(), cache_size);
+        std::memcpy(buffer->rw_data, masm.GetBuffer()->GetStartAddress<u8*>(), cache_size);
         buffer->Flush();
         return buffer->exec_data;
     } else {
         return nullptr;
     }
+}
+
+void JitContext::TickIR(ir::Inst* instr) {
+    reg_alloc.SetCurrent(instr);
 }
 
 MacroAssembler& JitContext::GetMasm() {

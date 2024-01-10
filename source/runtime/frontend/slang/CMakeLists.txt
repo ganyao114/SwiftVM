@@ -1,2 +1,2 @@
-add_library(slang_frontend STATIC slang_frontend.cpp
+add_library(frontend_slang STATIC slang_frontend.cpp
         slang_frontend.h)

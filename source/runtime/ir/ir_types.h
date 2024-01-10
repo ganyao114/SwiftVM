@@ -6,6 +6,7 @@
 
 #include "runtime/common/types.h"
 #include "runtime/ir/opcodes.h"
+#include "base/common_funcs.h"
 
 namespace swift::runtime::ir {
 
@@ -31,12 +32,16 @@ enum class ValueType : u8 {
     V256
 };
 
+DECLARE_ENUM_FLAG_OPERATORS(ValueType)
+
 struct IRMeta {
     const OpCode op_code;
     const char* name;
     const ArgType return_type;
     const std::vector<ArgType> arg_types;
 };
+
+u8 GetValueSizeByte(ValueType type);
 
 const IRMeta& GetIRMetaInfo(OpCode op_code);
 

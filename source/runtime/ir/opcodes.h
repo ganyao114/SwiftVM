@@ -14,7 +14,6 @@ enum class OpCode : u8 {
 #include "ir.inc"
 #undef INST
     BASE_COUNT,
-    SetLocation,
     COUNT
 };
 

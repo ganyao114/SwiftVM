@@ -11,16 +11,24 @@ INST(StoreMemoryTSO, Void, Operand, Value)
 INST(CompareAndSwap, Value, Value, Value, Value)
 
 // Help
+INST(UniformBarrier, Void)
+INST(Goto, Value, BOOL)
+INST(NotGoto, Value, BOOL)
+INST(BindLabel, Void, Value)
 INST(CallLambda, Value, Lambda, Value, Value, Value)
 INST(CallLocation, Value, Lambda, Params)
 INST(CallDynamic, Value, Lambda, Params)
 INST(AddPhi, Value, Params)
+INST(Nop, Void)
+INST(AdvancePC, Void, Imm)
+INST(SetLocation, Void, Lambda)
+INST(GetLocation, Value)
 
 // Imm
 INST(LoadImm, Value, Imm)
 
 // Help
-INST(PushRSB, Void, Value)
+INST(PushRSB, Void, Lambda)
 INST(PopRSB, Void)
 
 // Calculator
@@ -32,7 +40,8 @@ INST(Sbb, Value, Value, Operand)
 // Mul & Div
 INST(Mul, Value, Value, Operand)
 INST(Div, Value, Value, Operand)
-INST(ZeroExtend, Value, Value, Imm)
+INST(ZeroExtend32, U32, Value)
+INST(ZeroExtend64, U64, Value)
 INST(SignExtend, Value, Value, Imm)
 // And & Or
 INST(AndImm, Value, Value, Imm)
@@ -40,11 +49,15 @@ INST(OrImm, Value, Value, Imm)
 INST(AndValue, Value, Value, Value)
 INST(OrValue, Value, Value, Value)
 INST(XorValue, Value, Value, Value)
+// Not
+INST(Not, Value, Value, Value)
 // Get flag from result
 INST(GetCarry, BOOL, Value)
 INST(GetOverFlow, BOOL, Value)
 INST(GetZero, BOOL, Value)
 INST(GetNegate, BOOL, Value)
+INST(GetPositive, BOOL, Value)
+INST(GetSigned, BOOL, Value)
 INST(GetNegZero, BOOL, Value)
 INST(GetParity, BOOL, Value)
 INST(GetNZCV, Value, Value)

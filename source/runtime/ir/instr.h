@@ -82,8 +82,8 @@ public:
             ASSERT(arguments[index].IsOperand());
             Operand operand{};
             operand.op = arguments[index++].Get<Operand::Op>();
-            operand.left = arguments[index++].value;
-            operand.right = arguments[index++].value;
+            operand.left = arguments[index++].ToDataClass();
+            operand.right = arguments[index++].ToDataClass();
             return operand;
         } else {
             return arguments[index].Get<T>();
