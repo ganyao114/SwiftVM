@@ -25,6 +25,12 @@ using s16 = int16_t;
 using s32 = int32_t;
 using s64 = int64_t;
 
+#if __LP64__
+using VAddr = u64;
+#else
+using VAddr = u32;
+#endif
+
 constexpr inline u64 operator ""_KB(unsigned long long n) {
     return static_cast<u64>(n) * UINT64_C(1024);
 }

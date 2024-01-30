@@ -7,7 +7,7 @@
 namespace swift::runtime::backend {
 
 RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs)
-        : alloc_result{instr_size}, gprs(gprs), fprs(fprs) {}
+        : alloc_result(instr_size), gprs(gprs), fprs(fprs) {}
 
 void RegAlloc::MapRegister(u32 id, ir::HostFPR fpr) {
     auto &map = alloc_result[id];
@@ -44,7 +44,6 @@ const GPRSMask& RegAlloc::GetGprs() const { return gprs; }
 const FPRSMask& RegAlloc::GetFprs() const { return fprs; }
 
 ir::HostGPR RegAlloc::GetTmpGPR() {
-    
     return ir::HostGPR{1};
 }
 

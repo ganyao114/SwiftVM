@@ -247,6 +247,8 @@ private:
 
     ir::BOOL CheckCond(Cond cond);
 
+    void CondGoto(ir::BOOL cond, ir::Lambda then_, ir::Location else_);
+
     bool DecodeSwitch(_DInst& insn);
 
     void DecodeMov(_DInst& insn);
