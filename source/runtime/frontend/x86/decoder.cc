@@ -47,11 +47,9 @@ ir::Operand ToOperand(ir::Lambda address) {
     }
 }
 
-ir::Operand ToOperand(ir::Value value) {
-    return ir::Operand{value};
-}
+ir::Operand ToOperand(ir::Value value) { return ir::Operand{value}; }
 
-X64Decoder::X64Decoder(VAddr start, runtime::MemoryInterface *memory, ir::Assembler* visitor)
+X64Decoder::X64Decoder(VAddr start, runtime::MemoryInterface* memory, ir::Assembler* visitor)
         : start(start), assembler(visitor), memory(memory) {}
 
 void X64Decoder::Decode() {
@@ -308,10 +306,7 @@ void X64Decoder::DecodeCondJump(_DInst& insn, Cond cond) {
         }
     } else {
         auto check_result = CheckCond(cond);
-        auto label = __ NotGoto(check_result);
-        __ SetLocation(address);
-        __ BindLabel(label);
-        __ If(ir::terminal::If{check_result, ir::terminal::ReturnToDispatch{}, ir::terminal::LinkBlock{pc + insn.size}});
+        CondGoto(check_result, address, pc + insn.size);
     }
 }
 
@@ -319,10 +314,8 @@ void X64Decoder::DecodeZeroCheckJump(_DInst& insn, _RegisterType reg) {
     auto& op0 = insn.ops[0];
     auto value_check = R(reg);
     auto address = AddrSrc(insn, op0);
-    auto label = __ Goto(value_check);
-    __ SetLocation(address);
-    __ BindLabel(label);
-    __ If(ir::terminal::If{value_check, ir::terminal::LinkBlock{pc + insn.size}, ir::terminal::ReturnToDispatch{}});
+
+    CondGoto(__ Not(value_check), address, pc + insn.size);
 }
 
 void X64Decoder::DecodeAddSubWithCarry(_DInst& insn, bool sub) {
@@ -383,8 +376,7 @@ void X64Decoder::DecodeCondMov(_DInst& insn, Cond cond) {
     __ BindLabel(label);
 }
 
-void X64Decoder::DecodeAnd(_DInst& insn) {
-}
+void X64Decoder::DecodeAnd(_DInst& insn) {}
 
 ir::Value X64Decoder::R(_RegisterType reg) {
     assert(reg <= _RegisterType::R_XMM15);
@@ -484,6 +476,20 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
             break;
         case Cond::NP:
             break;
+    }
+}
+
+void X64Decoder::CondGoto(ir::BOOL cond, ir::Lambda then_, ir::Location else_) {
+    if (then_.IsValue()) {
+        auto label = __ NotGoto(cond);
+        __ SetLocation(then_);
+        __ BindLabel(label);
+        __ If(ir::terminal::If{
+                cond, ir::terminal::ReturnToDispatch{}, ir::terminal::LinkBlock{else_}});
+    } else {
+        __ If(ir::terminal::If{cond,
+                               ir::terminal::LinkBlock{then_.GetImm().GetValue()},
+                               ir::terminal::LinkBlock{else_}});
     }
 }
 
@@ -610,7 +616,8 @@ ir::Lambda X64Decoder::GetAddress(_DInst& insn, _Operand& operand) {
                 value = insn.disp ? __ Add(value_base_index, offset) : value_base_index;
             } else {
                 auto value_rn = R(static_cast<_RegisterType>(operand.index));
-                auto value_base_index = insn.scale ? __ LslImm(value_rn, ir::Imm(insn.scale)) : value_rn;
+                auto value_base_index =
+                        insn.scale ? __ LslImm(value_rn, ir::Imm(insn.scale)) : value_rn;
                 value = insn.disp ? __ Add(value_base_index, offset) : value_base_index;
             }
             break;
@@ -642,7 +649,7 @@ ir::Value X64Decoder::Pop(_RegisterType reg, ir::ValueType size) {
     } else {
         R(reg, value);
     }
-    R(sp, __ Add(R(sp), ir::Imm((u8) size_byte)));
+    R(sp, __ Add(R(sp), ir::Imm((u8)size_byte)));
     return value;
 }
 

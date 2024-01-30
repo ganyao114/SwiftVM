@@ -277,9 +277,6 @@ void HIRFunction::UseInst(Inst* inst) {
 }
 
 HIRBlock* HIRFunction::CreateOrGetBlock(Location location) {
-    if (!location.Valid()) {
-        return nullptr;
-    }
     auto itr = std::find_if(block_list.begin(), block_list.end(), [location](auto& block) -> auto {
         return block.GetBlock()->GetStartLocation() == location;
     });

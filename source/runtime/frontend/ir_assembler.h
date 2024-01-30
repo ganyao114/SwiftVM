@@ -26,7 +26,7 @@ public:
         constexpr static auto MAX_ARG = 3;
         auto arg_count = sizeof...(args);
         ASSERT(arg_count <= MAX_ARG);
-        return CallLambda(FptrCast(l), std::forward<const Args&>(args)...);
+        return CallLambda(Lambda{Imm{reinterpret_cast<VAddr>(FptrCast(l))}}, std::forward<const Args&>(args)...);
     }
 
     HIRBuilder::ElseThen If(const terminal::If& if_);

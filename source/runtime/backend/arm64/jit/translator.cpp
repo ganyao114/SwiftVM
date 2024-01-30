@@ -1,6 +1,7 @@
 #pragma once
 
 #include "translator.h"
+#include "runtime/backend/context.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -21,6 +22,43 @@ void JitTranslator::Translate(ir::Inst* inst) {
     }
 
 #undef INST
+}
+
+void JitTranslator::EmitLoadUniform(ir::Inst* inst) {
+    auto uni = inst->GetArg<ir::Uniform>(0);
+    auto uni_offset = uni.GetOffset();
+    auto uni_type = uni.GetType();
+
+    auto uni_buffer_offset = offsetof(State, uniform_buffer_begin);
+
+}
+
+void JitTranslator::EmitStoreUniform(ir::Inst* inst) {
+
+}
+
+void JitTranslator::EmitLoadLocal(ir::Inst* inst) {
+
+}
+
+void JitTranslator::EmitStoreLocal(ir::Inst* inst) {
+
+}
+
+void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
+
+}
+
+void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
+
+}
+
+void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
+
+}
+
+void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
+
 }
 
 Operand JitTranslator::EmitOperand(ir::Operand& ir_op) {
