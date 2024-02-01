@@ -42,10 +42,10 @@ public:
 struct Config {
     bool enable_jit;
     bool enable_asm_interp;
-    u32 uniform_buffer_size;
+    uint32_t uniform_buffer_size;
     ISA backend_isa;
     std::vector<UniformDesc> buffers_static_alloc; // 静态分配建议
-    u32 stack_alignment;
+    uint32_t stack_alignment;
     MemoryInterface *memory;
 };
 
