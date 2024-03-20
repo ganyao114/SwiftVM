@@ -110,7 +110,6 @@ using U8 = TypedValue<ValueType::U8>;
 using U16 = TypedValue<ValueType::U16>;
 using U32 = TypedValue<ValueType::U32>;
 using U64 = TypedValue<ValueType::U64>;
-using U128 = TypedValue<ValueType::U128>;
 
 // Uniform buffer
 class Uniform {

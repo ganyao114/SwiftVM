@@ -89,6 +89,7 @@ public:
     ir::HostFPR ValueFPR(const ir::Value &value);
     ir::HostGPR ValueGPR(u32 id);
     ir::HostFPR ValueFPR(u32 id);
+    Type ValueType(const ir::Value &value);
 
     ir::HostGPR GetTmpGPR();
     ir::HostFPR GetTmpFPR();

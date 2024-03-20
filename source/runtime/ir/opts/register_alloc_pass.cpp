@@ -82,12 +82,20 @@ private:
     }
 
     void CollectLiveIntervals(Block* lir_block) {
-        // TODO
-        StackVector<u32, 32> use_end{};
+        ASSERT_MSG(lir_block, "block == null");
+        StackVector<u16, 32> use_end{};
         use_end.resize(lir_block->GetInstList().size());
-        //        for (auto& instr : lir_block->GetInstList()) {
-        //            live_interval.push_back({hir_value.value.Def(), hir_value.GetOrderId(), end});
-        //        }
+        for (auto& instr : lir_block->GetInstList()) {
+            auto values = instr.GetValues();
+            for (auto &value : values) {
+                auto &end = use_end[value.Id()];
+                end = std::max(end, instr.Id());
+            }
+        }
+        for (auto& instr : lir_block->GetInstList()) {
+            auto end = use_end[instr.Id()];
+            live_interval.push_back({&instr, instr.Id(), end});
+        }
     }
 
     void ExpireOldIntervals(LiveInterval& current) {
@@ -105,7 +113,10 @@ private:
         }
     }
 
-    void SpillAtInterval(LiveInterval& interval) { auto is_float = IsFloatValue(interval.inst); }
+    void SpillAtInterval(LiveInterval& interval) {
+        auto is_float = IsFloatValue(interval.inst);
+
+    }
 
     bool IsFloatValue(Inst* inst) {
         auto value_type = inst->ReturnType();
@@ -147,6 +158,83 @@ private:
     backend::FPRSMask active_fprs;
 };
 
+class VRegisterAllocator {
+public:
+    explicit VRegisterAllocator(Block* block)
+            : block(block), live_interval(), active_lives() {
+    }
+
+    void AllocateRegisters() {
+        CollectLiveIntervals();
+        // Step 2: Sort live intervals
+        std::sort(live_interval.begin(), live_interval.end());
+
+        // Step 3: Alloc Registers
+        for (auto& interval : live_interval) {
+            ExpireOldIntervals(interval);
+
+//            if (!IsFloatValue(interval.inst)) {
+//                if (auto alloc = AllocGPR(); alloc >= 0) {
+//                    active_lives.push_back(interval);
+//                    reg_alloc->MapRegister(interval.inst->Id(), HostGPR{(u16)alloc});
+//                } else {
+//                    SpillAtInterval(interval);
+//                }
+//            } else {
+//                if (auto alloc = AllocFPR(); alloc >= 0) {
+//                    active_lives.push_back(interval);
+//                    reg_alloc->MapRegister(interval.inst->Id(), HostFPR{(u16)alloc});
+//                } else {
+//                    SpillAtInterval(interval);
+//                }
+//            }
+//            reg_alloc->SetActiveRegs(interval.inst->Id(), active_fprs, active_gprs);
+        }
+    }
+
+    void ExpireOldIntervals(LiveInterval& current) {
+        for (auto it = active_lives.begin(); it != active_lives.end();) {
+            if (it->end < current.start) {
+                if (!IsFloatValue(it->inst)) {
+                    FreeGPR(reg_alloc->ValueGPR(it->inst->Id()).id);
+                } else {
+                    FreeFPR(reg_alloc->ValueFPR(it->inst->Id()).id);
+                }
+                it = active_lives.erase(it);  // Remove expired intervals
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    bool IsFloatValue(Inst* inst) {
+        auto value_type = inst->ReturnType();
+        return value_type >= ValueType::V8 && value_type <= ValueType::V256;
+    }
+
+private:
+
+    void CollectLiveIntervals() {
+        StackVector<u16, 32> use_end{};
+        use_end.resize(block->GetInstList().size());
+        for (auto& instr : block->GetInstList()) {
+            auto values = instr.GetValues();
+            for (auto &value : values) {
+                auto &end = use_end[value.Id()];
+                end = std::max(end, instr.Id());
+            }
+        }
+        for (auto& instr : block->GetInstList()) {
+            auto end = use_end[instr.Id()];
+            live_interval.push_back({&instr, instr.Id(), end});
+        }
+    }
+
+    Block* block;
+    Vector<LiveInterval> live_interval;
+    List<LiveInterval> active_lives;
+};
+
 void RegisterAllocPass::Run(HIRBuilder* hir_builder, backend::RegAlloc* reg_alloc) {
     for (auto& hir_func : hir_builder->GetHIRFunctions()) {
         Run(&hir_func, reg_alloc);
@@ -156,6 +244,10 @@ void RegisterAllocPass::Run(HIRBuilder* hir_builder, backend::RegAlloc* reg_allo
 void RegisterAllocPass::Run(HIRFunction* hir_function, backend::RegAlloc* reg_alloc) {
     LinearScanAllocator linear_scan{hir_function, reg_alloc};
     linear_scan.AllocateRegisters();
+}
+
+void VRegisterAllocPass::Run(ir::Block* block) {
+
 }
 
 }  // namespace swift::runtime::ir

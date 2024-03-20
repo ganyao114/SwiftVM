@@ -27,6 +27,7 @@ class Inst final : public SlabObject<Inst, true> {
 public:
     static constexpr auto max_args = 4;
     using Values = StackVector<Value, max_args>;
+    using Pseudos = StackVector<Inst*, 8>;
 
     ~Inst();
 
@@ -77,7 +78,8 @@ public:
     void SetArg(int index, const Operand& arg);
     void SetArg(int index, const Params& arg);
 
-    template <typename T> T GetArg(int index) {
+    template <typename T>
+    [[nodiscard]] T GetArg(int index) {
         if constexpr (std::is_same<T, Operand>::value) {
             ASSERT(arguments[index].IsOperand());
             Operand operand{};
@@ -94,16 +96,21 @@ public:
     void UnUse(const Value& value);
     Values GetValues();
 
-    OpCode GetOp();
+    [[nodiscard]] OpCode GetOp();
     void SetId(u16 id);
     void SetReturn(ValueType type);
-    u16 Id() const;
-    ValueType ReturnType() const;
+    [[nodiscard]] u16 Id() const;
+    [[nodiscard]] ValueType ReturnType() const;
     bool HasValue();
     bool IsPseudoOperation();
 
-    Inst* GetPseudoOperation(OpCode code);
+    [[nodiscard]] Inst* GetPseudoOperation(OpCode code);
+    [[nodiscard]] Inst::Pseudos GetPseudoOperations();
     void DestroyArg(u8 arg_idx);
+
+    [[nodiscard]] u16 VirRegID() const {
+        return vir_reg;
+    }
 
     IntrusiveListNode list_node{};
 
@@ -116,6 +123,7 @@ private:
     OpCode op_code{OpCode::Void};
     u8 num_use{};
     u16 id{};
+    u16 vir_reg{};
     ValueType ret_type{};
 };
 #pragma pack(pop)

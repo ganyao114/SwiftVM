@@ -13,7 +13,7 @@ class JitTranslator {
 public:
     explicit JitTranslator(JitContext& ctx);
 
-    void Translate(ir::Inst *inst);
+    void Translate();
 
     Operand EmitOperand(ir::Operand &ir_op);
 
@@ -24,6 +24,9 @@ public:
 #undef INST
 
 private:
+
+    void Translate(ir::Inst *inst);
+
     JitContext &context;
     MacroAssembler &masm;
 };

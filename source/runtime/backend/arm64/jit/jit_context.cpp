@@ -10,6 +10,18 @@ namespace swift::runtime::backend::arm64 {
 
 JitContext::JitContext(const Config& config, RegAlloc &reg_alloc) : config(config), reg_alloc(reg_alloc) {}
 
+CPUReg JitContext::Get(const ir::Value& value) {
+    if (reg_alloc.ValueType(value) == RegAlloc::GPR) {
+        return X(value);
+    } else if (reg_alloc.ValueType(value) == RegAlloc::FPR) {
+        return V(value);
+    } else if (reg_alloc.ValueType(value) == RegAlloc::MEM) {
+        ASSERT_MSG(false, "");
+    } else {
+        ASSERT_MSG(false, "");
+    }
+}
+
 Register JitContext::X(const ir::Value& value) {
     auto reg = reg_alloc.ValueGPR(value);
     return XRegister::GetXRegFromCode(reg.id);

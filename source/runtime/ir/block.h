@@ -4,14 +4,20 @@
 
 #pragma once
 
+#include <shared_mutex>
 #include "runtime/ir/instr.h"
 #include "runtime/ir/terminal.h"
 #include "runtime/common/cast_utils.h"
+#include "runtime/common/spin_lock.h"
+#include "runtime/backend/jit_code.h"
 
 namespace swift::runtime::ir {
 
 class Block final : public SlabObject<Block, true> {
 public:
+    using ReadLock = std::shared_lock<RwSpinLock>;
+    using WriteLock = std::unique_lock<RwSpinLock>;
+
     explicit Block() = default;
 
     explicit Block(const Location &location) : location(location) {}
@@ -34,12 +40,25 @@ public:
     void InsertAfter(Inst* inst, Inst* after);
     void RemoveInst(Inst* inst);
     void DestroyInst(Inst* inst);
+    void DestroyInsts();
 
     void SetEndLocation(Location location);
     Location GetStartLocation();
 
     InstList &GetInstList();
     InstList::iterator GetBeginInst();
+
+    [[nodiscard]] ReadLock LockRead() {
+        return std::shared_lock{block_lock};
+    }
+
+    [[nodiscard]] WriteLock LockWrite() {
+        return std::unique_lock{block_lock};
+    }
+
+    [[nodiscard]] u32 GetVStackSize() const {
+        return v_stack * 8;
+    }
 
 #define INST(name, ret, ...)                                                                      \
     template <typename... Args> ret name(const Args&... args) {                                   \
@@ -87,6 +106,9 @@ private:
     Location end{0};
     InstList inst_list{};
     Terminal block_term{};
+    RwSpinLock block_lock{};
+    u16 v_stack{};
+    backend::JitCache jit_cache;
 };
 
 using BlockList = IntrusiveList<&Block::list_node>;

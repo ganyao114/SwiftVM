@@ -2,12 +2,17 @@
 
 #include "translator.h"
 #include "runtime/backend/context.h"
+#include "runtime/backend/arm64/constant.h"
 
 namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
 JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()) {}
+
+void JitTranslator::Translate() {
+
+}
 
 void JitTranslator::Translate(ir::Inst* inst) {
     ASSERT(inst);
@@ -26,11 +31,10 @@ void JitTranslator::Translate(ir::Inst* inst) {
 
 void JitTranslator::EmitLoadUniform(ir::Inst* inst) {
     auto uni = inst->GetArg<ir::Uniform>(0);
-    auto uni_offset = uni.GetOffset();
     auto uni_type = uni.GetType();
-
-    auto uni_buffer_offset = offsetof(State, uniform_buffer_begin);
-
+    auto offset = offsetof(State, uniform_buffer_begin) + uni.GetOffset();
+    auto reg = context.Get(inst);
+    context.X();
 }
 
 void JitTranslator::EmitStoreUniform(ir::Inst* inst) {
