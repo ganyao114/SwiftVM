@@ -505,10 +505,9 @@ ir::ValueType X64Decoder::GetSize(u32 bits) {
             return ir::ValueType::U32;
         case 64:
             return ir::ValueType::U64;
-        case 128:
-            return ir::ValueType::U128;
         default:
             ASSERT(false);
+            return ir::ValueType::VOID;
     }
 }
 

@@ -39,6 +39,10 @@ ir::HostGPR RegAlloc::ValueGPR(u32 id) { return ir::HostGPR{alloc_result[id].slo
 
 ir::HostFPR RegAlloc::ValueFPR(u32 id) { return ir::HostFPR{alloc_result[id].slot}; }
 
+RegAlloc::Type RegAlloc::ValueType(const ir::Value& value) {
+    return alloc_result[value.Id()].type;
+}
+
 const GPRSMask& RegAlloc::GetGprs() const { return gprs; }
 
 const FPRSMask& RegAlloc::GetFprs() const { return fprs; }

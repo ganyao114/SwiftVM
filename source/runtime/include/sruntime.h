@@ -11,19 +11,36 @@ namespace swift::runtime {
 
 using LocationDescriptor = size_t;
 
+enum class HaltReason : std::uint32_t {
+    None = 0x00000000,
+    Step = 0x00000001,
+    Signal = 0x00000002,
+    PageFatal = 0x00000004,
+    CodeMiss = 0x00000008,
+    ModuleMiss = 0x000000010,
+};
+
+DECLARE_ENUM_FLAG_OPERATORS(HaltReason)
+
 class Instance {};
 
 class Interface {
 public:
     explicit Interface(Config config);
 
-    u32 Run();
+    HaltReason Run();
 
-    u32 Step();
+    HaltReason Step();
+
+    void SignalInterrupt();
+
+    void ClearInterrupt();
 
     void SetLocation(LocationDescriptor location);
 
     LocationDescriptor GetLocation();
+
+    [[nodiscard]] std::span<u8> GetUniformBuffer() const;
 
 private:
     struct Impl;

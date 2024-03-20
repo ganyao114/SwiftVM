@@ -26,6 +26,11 @@ add_library(swift_runtime STATIC
         common/bit_fields.h
         common/function_info.h
         common/cast_utils.h
+        common/lru_cache.h
+        common/range_mutex.h
+        common/range_map.h
+        common/spin_lock.cpp
+        common/spin_lock.h
         frontend/ir_assembler.cpp
         frontend/ir_assembler.h
         ir/args.cpp
@@ -61,8 +66,8 @@ add_library(swift_runtime STATIC
         ir/opts/reid_instr_pass.cpp
         ir/opts/reid_instr_pass.h
         backend/translate_table.h
-        backend/interpreter.cpp
-        backend/interpreter.h
+        backend/asm_interp.cpp
+        backend/asm_interp.h
         backend/context.h
         backend/address_space.cpp
         backend/address_space.h
@@ -79,12 +84,16 @@ add_library(swift_runtime STATIC
         backend/jit_code.h
         backend/translator.cpp
         backend/translator.h
+        backend/module.cpp
+        backend/module.h
         backend/arm64/jit/jit_context.cpp
         backend/arm64/jit/jit_context.h
         backend/arm64/jit/translator.cpp
         backend/arm64/jit/translator.h
         backend/riscv64/jit/jit_context.cpp
         backend/riscv64/jit/jit_context.h
+        backend/interp/interpreter.cpp
+        backend/interp/interpreter.h
         ${RUNTIME_ARCH_SOURCE})
 
 find_package(Boost 1.57)

@@ -1,0 +1,11 @@
+//
+// Created by 甘尧 on 2024/3/15.
+//
+
+#pragma once
+
+#define ARM64_X_REGS_MASK 0b1111111111111111111
+#define ARM64_V_REGS_MASK 0b1111111111111111111
+#define ARM64_MAX_X_REGS 32
+#define ARM64_MAX_V_REGS 32
+

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "runtime/common/types.h"
+#include "runtime/include/sruntime.h"
 #include "runtime/ir/location.h"
 
 namespace swift::runtime::backend {
@@ -24,11 +25,11 @@ struct State {
     void* l1_code_cache{};
     void* l2_code_cache{};
     void* interface{};
-    volatile u32 halt_reason{0};
+    HaltReason halt_reason{HaltReason::None};
     RSBFrame* rsb_pointer{};
     ir::Location current_loc{0};
     void* pt{};
-    void *local_buffer{};
+    void* local_buffer{};
     u8 uniform_buffer_begin[];
 };
 

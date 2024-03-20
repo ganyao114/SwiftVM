@@ -9,12 +9,22 @@
 
 namespace swift::runtime::backend {
 
+enum class JitState {
+    None = 0,
+    Queue,
+    Cached,
+    Deprecated
+};
+
 struct JitCache {
-    using CacheID = BitField<0, 8, u32>;
-    using Offset = BitField<9, 32, u32>;
-    using Size = BitField<41, 24, u32>;
+    using State = BitField<0, 2, u64>;
+    using CacheID = BitField<3, 6, u64>;
+    using Offset = BitField<10, 32, u64>;
+    using Size = BitField<42, 22, u64>;
+    State jit_state;
     CacheID cache_id;
     Offset offset_in;
+    Size cache_size;
 };
 
 }

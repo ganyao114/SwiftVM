@@ -15,4 +15,9 @@ public:
     static void Run(HIRFunction *hir_function, backend::RegAlloc *reg_alloc);
 };
 
+class VRegisterAllocPass {
+public:
+    static void Run(ir::Block *block);
+};
+
 }  // namespace swift::runtime::ir

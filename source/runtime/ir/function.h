@@ -10,10 +10,26 @@ namespace swift::runtime::ir {
 
 class Function : public SlabObject<Function, true> {
 public:
+    using ReadLock = std::shared_lock<RwSpinLock>;
+    using WriteLock = std::unique_lock<RwSpinLock>;
 
     explicit Function() = default;
 
     explicit Function(const Location &location) : location(location) {}
+
+    ~Function();
+
+    Location GetStartLocation();
+    ir::Block *EntryBlock();
+    ir::Block *FindBlock(ir::Location location);
+
+    [[nodiscard]] ReadLock LockRead() {
+        return std::shared_lock{func_lock};
+    }
+
+    [[nodiscard]] WriteLock LockWrite() {
+        return std::unique_lock{func_lock};
+    }
 
     union {
         NonTriviallyDummy dummy{};
@@ -35,6 +51,9 @@ private:
     u32 id{};
     Location location;
     BlockMap blocks{};
+    RwSpinLock func_lock{};
+    u16 v_stack{};
+    backend::JitCache jit_cache;
 };
 
 using FunctionList = IntrusiveList<&Function::list_node>;

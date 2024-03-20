@@ -16,7 +16,7 @@ struct InterpFrame {
     size_t handle_ptr;
 };
 
-class Interpreter {
+class AsmInterpreter {
 public:
 
 private:

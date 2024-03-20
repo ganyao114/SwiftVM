@@ -4,13 +4,14 @@
 
 #pragma once
 
+#include <cstdint>
 #include <span>
 
 namespace swift::runtime {
 
 struct UniformDesc {
-    uint32_t offset;
-    uint32_t size;
+    std::uint32_t offset;
+    std::uint32_t size;
 };
 
 enum ISA : uint8_t {
@@ -42,10 +43,10 @@ public:
 struct Config {
     bool enable_jit;
     bool enable_asm_interp;
-    uint32_t uniform_buffer_size;
+    std::uint32_t uniform_buffer_size;
     ISA backend_isa;
     std::vector<UniformDesc> buffers_static_alloc; // 静态分配建议
-    uint32_t stack_alignment;
+    std::uint32_t stack_alignment;
     MemoryInterface *memory;
 };
 

@@ -23,6 +23,7 @@ INST(Nop, Void)
 INST(AdvancePC, Void, Imm)
 INST(SetLocation, Void, Lambda)
 INST(GetLocation, Value)
+INST(Zero, Value)
 
 // Imm
 INST(LoadImm, Value, Imm)

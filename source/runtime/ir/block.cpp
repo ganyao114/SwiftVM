@@ -37,7 +37,12 @@ void Block::DestroyInst(Inst* inst) {
     delete inst;
 }
 
-void DestroyInst(InstList::iterator& itr);
+void Block::DestroyInsts() {
+    auto lock_write = LockWrite();
+    for (auto& inst : inst_list) {
+        DestroyInst(&inst);
+    }
+}
 
 void Block::SetEndLocation(Location end_) { this->end = end_; }
 
@@ -48,9 +53,7 @@ InstList& Block::GetInstList() { return inst_list; }
 InstList::iterator Block::GetBeginInst() { return inst_list.begin(); }
 
 Block::~Block() {
-    for (auto& inst : inst_list) {
-        DestroyInst(&inst);
-    }
+    DestroyInsts();
 }
 
 }  // namespace swift::runtime::ir

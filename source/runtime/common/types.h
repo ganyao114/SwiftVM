@@ -24,6 +24,10 @@ struct NonTriviallyDummy {
 template <auto NodeMember>
 using IntrusiveList = typename ams::util::IntrusiveListMemberTraits<NodeMember>::ListType;
 using IntrusiveListNode = ams::util::IntrusiveListNode;
+template<class Derived>
+using IntrusiveListBaseNode = ams::util::IntrusiveListBaseNode<Derived>;
+template<class Derived>
+using IntrusiveListBaseTraits = ams::util::IntrusiveListBaseTraits<Derived>;
 
 using SingleIntrusiveListNode = boost::intrusive::slist_member_hook<>;
 template<auto Member, typename Parent = ams::util::impl::GetParentType<Member>>

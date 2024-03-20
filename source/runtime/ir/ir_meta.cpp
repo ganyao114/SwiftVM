@@ -36,9 +36,9 @@ IRMeta{OpCode::COUNT, "COUNT", Void, {}}
 u8 GetValueSizePow(ValueType type) {
     if (type == ValueType::BOOL) {
         return 0;
-    } else if (type >= ValueType::U8 && type <= ValueType::U128) {
+    } else if (type >= ValueType::U8 && type <= ValueType::U64) {
         return (u32) type - (u32) ValueType::U8;
-    } else if (type >= ValueType::S8 && type <= ValueType::S128) {
+    } else if (type >= ValueType::S8 && type <= ValueType::S64) {
         return (u32) type - (u32) ValueType::S8;
     } else if (type >= ValueType::V8 && type <= ValueType::V256) {
         return (u32) type - (u32) ValueType::V8;

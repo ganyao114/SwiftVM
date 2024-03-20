@@ -131,7 +131,7 @@ Inst::Values Inst::GetValues() {
             }
         }
     }
-    return values;
+    return std::move(values);
 }
 
 OpCode Inst::GetOp() {
@@ -177,6 +177,17 @@ Inst* Inst::GetPseudoOperation(OpCode code) {
         pseudo_inst = pseudo_inst->next_pseudo_inst;
     }
     return {};
+}
+
+Inst::Pseudos Inst::GetPseudoOperations() {
+    Pseudos pseudos{};
+    auto pseudo_inst = next_pseudo_inst;
+    while (pseudo_inst) {
+        ASSERT(pseudo_inst->GetArg<Value>(0).Def() == this);
+        pseudos.push_back(pseudo_inst);
+        pseudo_inst = pseudo_inst->next_pseudo_inst;
+    }
+    return std::move(pseudos);
 }
 
 void Inst::DestroyArg(u8 arg_idx) {
