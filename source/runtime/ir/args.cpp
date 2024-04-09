@@ -39,7 +39,7 @@ ArgClass DataClass::ToArgClass() const {
     } else if (type == ArgType::Imm) {
         return ArgClass{imm};
     } else {
-        ASSERT(false);
+        PANIC();
     }
 }
 

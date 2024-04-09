@@ -151,20 +151,7 @@ ValueType Inst::ReturnType() const {
 bool Inst::HasValue() { return GetIRMetaInfo(op_code).return_type == ArgType::Value; }
 
 bool Inst::IsPseudoOperation() {
-    switch (op_code) {
-        case OpCode::GetCarry:
-        case OpCode::GetOverFlow:
-        case OpCode::GetNegate:
-        case OpCode::GetPositive:
-        case OpCode::GetSigned:
-        case OpCode::GetZero:
-        case OpCode::GetNZCV:
-        case OpCode::GetNegZero:
-        case OpCode::GetAllFlags:
-            return true;
-        default:
-            return false;
-    }
+    return op_code == OpCode::GetFlags;
 }
 
 Inst* Inst::GetPseudoOperation(OpCode code) {
@@ -205,6 +192,10 @@ void Inst::DestroyArg(u8 arg_idx) {
         }
         params.Destroy();
     }
+}
+
+void Inst::SetVirReg(u16 slot) {
+    vir_reg = slot;
 }
 
 void Inst::Validate(Inst* inst) {

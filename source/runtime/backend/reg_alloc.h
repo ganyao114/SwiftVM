@@ -83,12 +83,15 @@ public:
 
     void MapRegister(u32 id, ir::HostGPR gpr);
     void MapRegister(u32 id, ir::HostFPR fpr);
+    void MapMemSpill(u32 id, ir::SpillSlot slot);
     void SetActiveRegs(u32 id, GPRSMask &gprs, FPRSMask &fprs);
 
     ir::HostGPR ValueGPR(const ir::Value &value);
     ir::HostFPR ValueFPR(const ir::Value &value);
+    ir::SpillSlot ValueMem(const ir::Value &value);
     ir::HostGPR ValueGPR(u32 id);
     ir::HostFPR ValueFPR(u32 id);
+    ir::SpillSlot ValueMem(u32 id);
     Type ValueType(const ir::Value &value);
 
     ir::HostGPR GetTmpGPR();

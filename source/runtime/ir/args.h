@@ -56,7 +56,7 @@ public:
     explicit Imm(u64 value) : type{ValueType::U64}, imm_u64{value} {}
     explicit Imm(u64 value, ValueType size) : type{size}, imm_u64{value} {}
 
-    u64 GetValue() const;
+    [[nodiscard]] u64 GetValue() const;
 
 private:
     ValueType type{ValueType::VOID};
@@ -78,7 +78,7 @@ public:
 
     [[nodiscard]] bool Defined() const { return inst; }
 
-    Value SetType(ValueType type) const;
+    [[nodiscard]] Value SetType(ValueType type) const;
 
     [[nodiscard]] ValueType Type() const;
 
@@ -146,7 +146,7 @@ struct DataClass {
         return type == ArgType::Value;
     }
 
-    ArgClass ToArgClass() const;
+    [[nodiscard]] ArgClass ToArgClass() const;
 };
 
 class Lambda {
@@ -170,12 +170,22 @@ private:
     mutable FuncAddr address;
 };
 
+struct FlagsBit {
+    constexpr static u8 Carry = 0;
+    constexpr static u8 Overflow = 1;
+    constexpr static u8 Zero = 2;
+    constexpr static u8 Negate = 3;
+    constexpr static u8 Parity = 4;
+    constexpr static u8 Positive = 4;
+};
+
 enum class Flags : u16 {
-    Carry = 1 << 0,
-    Overflow = 1 << 1,
-    Zero = 1 << 2,
-    Negate = 1 << 3,
-    Parity = 1 << 4,
+    Carry = 1 << FlagsBit::Carry,
+    Overflow = 1 << FlagsBit::Overflow,
+    Zero = 1 << FlagsBit::Zero,
+    Negate = 1 << FlagsBit::Negate,
+    Parity = 1 << FlagsBit::Parity,
+    Positive = 1 << FlagsBit::Positive,
     NegZero = Zero | Negate,
     NZCV = Carry | Overflow | Zero | Negate,
     All = Carry | Overflow | Zero | Negate | Parity
@@ -437,7 +447,7 @@ public:
             ASSERT(value.type == ArgType::Params);
             return value.params;
         } else {
-            ASSERT(false);
+            PANIC();
         }
     }
 
@@ -447,7 +457,7 @@ public:
         } else if (value.type == ArgType::Imm) {
             return value.imm;
         } else {
-            ASSERT(false);
+            PANIC();
         }
     }
 

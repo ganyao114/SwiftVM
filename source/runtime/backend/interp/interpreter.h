@@ -26,7 +26,7 @@ public:
 private:
 
     template <typename T>
-    T GetReg(ir::Value value, InterpStack& stack) {
+    T GetReg(InterpStack& stack, ir::Value value) {
         auto buf = &stack[value.Def()->VirRegID()];
         T ret;
         std::memcpy(&ret, buf, sizeof(T));
@@ -34,11 +34,9 @@ private:
     };
 
     template <typename T>
-    T GetVReg(ir::Value value, InterpStack& stack) {
-        auto buf = &stack[stack.size() - 2 * value.Def()->VirRegID()];
-        T ret;
-        std::memcpy(&ret, buf, sizeof(T));
-        return std::move(ret);
+    void SetReg(InterpStack& stack, ir::Value value, T &t) {
+        auto buf = &stack[value.Def()->VirRegID()];
+        std::memcpy(buf, &t, sizeof(T));
     };
 
     State& state;

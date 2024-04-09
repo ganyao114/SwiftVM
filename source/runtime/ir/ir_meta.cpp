@@ -2,7 +2,7 @@
 // Created by 甘尧 on 2023/9/8.
 //
 
-#include <math.h>
+#include <cmath>
 #include "runtime/common/logging.h"
 #include "runtime/ir/ir_types.h"
 
@@ -43,7 +43,7 @@ u8 GetValueSizePow(ValueType type) {
     } else if (type >= ValueType::V8 && type <= ValueType::V256) {
         return (u32) type - (u32) ValueType::V8;
     } else {
-        ASSERT(false);
+        PANIC();
     }
 }
 

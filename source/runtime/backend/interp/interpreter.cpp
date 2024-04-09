@@ -35,25 +35,13 @@ HaltReason Interpreter::Run(ir::Inst* inst, InterpStack &stack) {
 }
 
 void Interpreter::RunAdc(ir::Inst* inst, InterpStack& stack) {
-    auto left = GetReg<u64>(inst->GetArg<ir::Value>(0), stack);
+    auto left = GetReg<u64>(stack, inst->GetArg<ir::Value>(0));
 }
 
 void Interpreter::RunAdd(ir::Inst* inst, InterpStack& stack) {
-    auto left = GetReg<u64>(inst->GetArg<ir::Value>(0), stack);
+    auto left = GetReg<u64>(stack, inst->GetArg<ir::Value>(0));
     for (auto pseudo : inst->GetPseudoOperations()) {
-        switch (pseudo->GetOp()) {
-            case ir::OpCode::GetCarry:
-            case ir::OpCode::GetOverFlow:
-            case ir::OpCode::GetNegate:
-            case ir::OpCode::GetPositive:
-            case ir::OpCode::GetSigned:
-            case ir::OpCode::GetZero:
-            case ir::OpCode::GetNZCV:
-            case ir::OpCode::GetNegZero:
-            case ir::OpCode::GetAllFlags:
-            default:
-                break;
-        }
+
     }
 }
 
