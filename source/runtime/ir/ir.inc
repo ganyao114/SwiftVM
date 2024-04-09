@@ -53,16 +53,7 @@ INST(XorValue, Value, Value, Value)
 // Not
 INST(Not, Value, Value, Value)
 // Get flag from result
-INST(GetCarry, BOOL, Value)
-INST(GetOverFlow, BOOL, Value)
-INST(GetZero, BOOL, Value)
-INST(GetNegate, BOOL, Value)
-INST(GetPositive, BOOL, Value)
-INST(GetSigned, BOOL, Value)
-INST(GetNegZero, BOOL, Value)
-INST(GetParity, BOOL, Value)
-INST(GetNZCV, Value, Value)
-INST(GetAllFlags, Value, Value)
+INST(GetFlags, Value, Value, Flags)
 // Shift
 // LogicalShiftLeft
 INST(LslImm, Value, Value, Imm)

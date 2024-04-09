@@ -281,11 +281,13 @@ void X64Decoder::DecodeAddSub(_DInst& insn, bool sub, bool save_res) {
 
     auto result = sub ? __ Sub(left, right) : __ Add(left, right);
 
-    SetFlag(CPUFlags::Carry, __ GetCarry(result));
-    SetFlag(CPUFlags::Overflow, __ GetOverFlow(result));
-    SetFlag(CPUFlags::Signed, __ GetSigned(result));
-    SetFlag(CPUFlags::Parity, __ GetParity(result));
-    SetFlag(CPUFlags::Zero, __ GetZero(result));
+    auto flags = __ GetFlags(result, ir::Flags::All);
+
+//    SetFlag(CPUFlags::Carry, __ GetCarry(result));
+//    SetFlag(CPUFlags::Overflow, __ GetOverFlow(result));
+//    SetFlag(CPUFlags::Signed, __ GetSigned(result));
+//    SetFlag(CPUFlags::Parity, __ GetParity(result));
+//    SetFlag(CPUFlags::Zero, __ GetZero(result));
 
     if (save_res) {
         Dst(insn, op0, result);
@@ -327,11 +329,13 @@ void X64Decoder::DecodeAddSubWithCarry(_DInst& insn, bool sub) {
 
     auto result = sub ? __ Sub(left, right) : __ Adc(left, right);
 
-    SetFlag(CPUFlags::Carry, __ GetCarry(result));
-    SetFlag(CPUFlags::Overflow, __ GetOverFlow(result));
-    SetFlag(CPUFlags::Signed, __ GetSigned(result));
-    SetFlag(CPUFlags::Parity, __ GetParity(result));
-    SetFlag(CPUFlags::Zero, __ GetZero(result));
+    auto flags = __ GetFlags(result, ir::Flags::All);
+
+//    SetFlag(CPUFlags::Carry, __ GetCarry(result));
+//    SetFlag(CPUFlags::Overflow, __ GetOverFlow(result));
+//    SetFlag(CPUFlags::Signed, __ GetSigned(result));
+//    SetFlag(CPUFlags::Parity, __ GetParity(result));
+//    SetFlag(CPUFlags::Zero, __ GetZero(result));
 
     Dst(insn, op0, result);
 }
@@ -341,10 +345,12 @@ void X64Decoder::DecodeIncAndDec(_DInst& insn, bool dec) {
     auto src = Src(insn, op0);
     auto result = dec ? __ Sub(src, ir::Imm(1u)) : __ Add(src, ir::Imm(1u));
 
-    SetFlag(CPUFlags::Overflow, __ GetOverFlow(result));
-    SetFlag(CPUFlags::Signed, __ GetSigned(result));
-    SetFlag(CPUFlags::Parity, __ GetParity(result));
-    SetFlag(CPUFlags::Zero, __ GetZero(result));
+    auto flags = __ GetFlags(result, ir::Flags::Overflow | ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
+
+//    SetFlag(CPUFlags::Overflow, __ GetOverFlow(result));
+//    SetFlag(CPUFlags::Signed, __ GetSigned(result));
+//    SetFlag(CPUFlags::Parity, __ GetParity(result));
+//    SetFlag(CPUFlags::Zero, __ GetZero(result));
 
     Dst(insn, op0, result);
 }
@@ -506,7 +512,7 @@ ir::ValueType X64Decoder::GetSize(u32 bits) {
         case 64:
             return ir::ValueType::U64;
         default:
-            ASSERT(false);
+            PANIC();
             return ir::ValueType::VOID;
     }
 }
@@ -630,7 +636,7 @@ ir::Lambda X64Decoder::GetAddress(_DInst& insn, _Operand& operand) {
             }
             break;
         default:
-            ASSERT(false);
+            PANIC();
     }
     if (value.IsValue() && value.GetValue().Type() != ir::ValueType::U64) {
         value = __ ZeroExtend64(value.GetValue());
@@ -670,9 +676,10 @@ void X64Decoder::DecodeOr(_DInst& insn) {
 
     auto result = __ OrValue(left, right);
     ClearFlags(CPUFlags::Carry | CPUFlags::Overflow | CPUFlags::FlagAF);
-    SetFlag(CPUFlags::Signed, __ GetSigned(result));
-    SetFlag(CPUFlags::Parity, __ GetParity(result));
-    SetFlag(CPUFlags::Zero, __ GetZero(result));
+    auto flags = __ GetFlags(result, ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
+    SetFlag(CPUFlags::Signed, __ TestBit(flags, ir::Imm{ir::FlagsBit::Negate}));
+    SetFlag(CPUFlags::Parity, __ TestBit(flags, ir::Imm{ir::FlagsBit::Parity}));
+    SetFlag(CPUFlags::Zero, __ TestBit(flags, ir::Imm{ir::FlagsBit::Zero}));
     Dst(insn, op0, result);
 }
 
@@ -685,9 +692,10 @@ void X64Decoder::DecodeXor(_DInst& insn) {
 
     auto result = __ XorValue(left, right);
     ClearFlags(CPUFlags::Carry | CPUFlags::Overflow | CPUFlags::FlagAF);
-    SetFlag(CPUFlags::Signed, __ GetSigned(result));
-    SetFlag(CPUFlags::Parity, __ GetParity(result));
-    SetFlag(CPUFlags::Zero, __ GetZero(result));
+    auto flags = __ GetFlags(result, ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
+    SetFlag(CPUFlags::Signed, __ TestBit(flags, ir::Imm{ir::FlagsBit::Negate}));
+    SetFlag(CPUFlags::Parity, __ TestBit(flags, ir::Imm{ir::FlagsBit::Parity}));
+    SetFlag(CPUFlags::Zero, __ TestBit(flags, ir::Imm{ir::FlagsBit::Zero}));
     Dst(insn, op0, result);
 }
 

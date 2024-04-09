@@ -114,6 +114,11 @@ TEST_CASE("Test runtime ir cfg") {
     CFGAnalysisPass::Run(&hir_builder);
     LocalEliminationPass::Run(&hir_builder);
     ReIdInstrPass::Run(&hir_builder);
+#define ARM64_X_REGS_MASK 0b1111111111111111111
+    swift::runtime::backend::GPRSMask gprs{ARM64_X_REGS_MASK};
+    swift::runtime::backend::FPRSMask fprs{ARM64_X_REGS_MASK};
+    RegAlloc reg_alloc{0x100, gprs, fprs};
+    RegisterAllocPass::Run(&hir_builder, &reg_alloc);
 
     assert(local2.Defined());
 

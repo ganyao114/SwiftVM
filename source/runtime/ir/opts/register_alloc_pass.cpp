@@ -73,11 +73,15 @@ public:
 private:
     void CollectLiveIntervals(HIRFunction* hir_function) {
         for (auto& hir_value : hir_function->GetHIRValues()) {
+            auto start = hir_value.GetOrderId();
             u32 end{hir_value.GetOrderId()};
             std::for_each(hir_value.uses.begin(), hir_value.uses.end(), [&end](auto& use) {
                 end = std::max(end, (u32)use.inst->Id());
             });
-            live_interval.push_back({hir_value.value.Def(), hir_value.GetOrderId(), end});
+            if (auto inst = hir_value.value.Def(); inst->IsPseudoOperation()) {
+                start = inst->GetArg<Value>(0).Id();
+            }
+            live_interval.push_back({hir_value.value.Def(), start, end});
         }
     }
 
@@ -93,18 +97,29 @@ private:
             }
         }
         for (auto& instr : lir_block->GetInstList()) {
+            auto start = instr.Id();
             auto end = use_end[instr.Id()];
-            live_interval.push_back({&instr, instr.Id(), end});
+            if (instr.IsPseudoOperation()) {
+                start = instr.GetArg<Value>(0).Id();
+            }
+            live_interval.push_back({&instr, start, end});
         }
     }
 
     void ExpireOldIntervals(LiveInterval& current) {
         for (auto it = active_lives.begin(); it != active_lives.end();) {
             if (it->end < current.start) {
-                if (!IsFloatValue(it->inst)) {
+                auto value_type = reg_alloc->ValueType(ir::Value(it->inst));
+                if (value_type == backend::RegAlloc::GPR) {
                     FreeGPR(reg_alloc->ValueGPR(it->inst->Id()).id);
-                } else {
+                } else if (value_type == backend::RegAlloc::FPR) {
                     FreeFPR(reg_alloc->ValueFPR(it->inst->Id()).id);
+                } else {
+                    auto slot = reg_alloc->ValueMem(it->inst->Id()).offset;
+                    FreeSpill(slot);
+                    if (IsFloatValue(it->inst)) {
+                        FreeSpill(slot + 1);
+                    }
                 }
                 it = active_lives.erase(it);  // Remove expired intervals
             } else {
@@ -113,12 +128,12 @@ private:
         }
     }
 
-    void SpillAtInterval(LiveInterval& interval) {
-        auto is_float = IsFloatValue(interval.inst);
-
+    void GrowSpillStack(u32 new_item_size) {
+        spill_slot_cursor = spill_slots.size();
+        spill_slots.resize(spill_slot_cursor + new_item_size);
     }
 
-    bool IsFloatValue(Inst* inst) {
+    static bool IsFloatValue(Inst* inst) {
         auto value_type = inst->ReturnType();
         return value_type >= ValueType::V8 && value_type <= ValueType::V256;
     }
@@ -139,6 +154,39 @@ private:
         return -1;
     }
 
+    void SpillAtInterval(LiveInterval& interval) {
+        auto is_float = IsFloatValue(interval.inst);
+        auto slot_size = is_float ? 2 : 1;
+        if (is_float) {
+            s32 slot{-1};
+            for (int i = 0; i + 1 < spill_slots.size(); i += 2) {
+                if (!spill_slots[i] && !spill_slots[i + 1]) {
+                    slot = i;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                slot = spill_slots.size();
+                GrowSpillStack(slot_size);
+            }
+            reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{static_cast<u16>(slot)});
+            spill_slots[slot] = true;
+        } else {
+            auto itr = std::find(spill_slots.begin(), spill_slots.end(), false);
+            if (itr != spill_slots.end()) {
+                u16 slot = std::distance(spill_slots.begin(), itr);
+                reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{slot});
+                spill_slots[slot] = true;
+            } else {
+                // grow stack
+                u16 slot = spill_slot_cursor;
+                reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{slot});
+                GrowSpillStack(slot_size);
+                spill_slots[slot] = true;
+            }
+        }
+    }
+
     void FreeGPR(u32 id) {
         ASSERT(active_gprs.Get(id));
         active_gprs.Clear(id);
@@ -149,6 +197,11 @@ private:
         active_fprs.Clear(id);
     }
 
+    void FreeSpill(u32 slot) {
+        ASSERT(spill_slots[slot]);
+        spill_slots[slot] = false;
+    }
+
     HIRFunction* function;
     Block* block;
     backend::RegAlloc* reg_alloc;
@@ -156,6 +209,8 @@ private:
     List<LiveInterval> active_lives;
     backend::GPRSMask active_gprs;
     backend::FPRSMask active_fprs;
+    Vector<bool> spill_slots{};
+    u16 spill_slot_cursor{0};
 };
 
 class VRegisterAllocator {
@@ -173,32 +228,17 @@ public:
         for (auto& interval : live_interval) {
             ExpireOldIntervals(interval);
 
-//            if (!IsFloatValue(interval.inst)) {
-//                if (auto alloc = AllocGPR(); alloc >= 0) {
-//                    active_lives.push_back(interval);
-//                    reg_alloc->MapRegister(interval.inst->Id(), HostGPR{(u16)alloc});
-//                } else {
-//                    SpillAtInterval(interval);
-//                }
-//            } else {
-//                if (auto alloc = AllocFPR(); alloc >= 0) {
-//                    active_lives.push_back(interval);
-//                    reg_alloc->MapRegister(interval.inst->Id(), HostFPR{(u16)alloc});
-//                } else {
-//                    SpillAtInterval(interval);
-//                }
-//            }
-//            reg_alloc->SetActiveRegs(interval.inst->Id(), active_fprs, active_gprs);
+            active_lives.push_back(interval);
+            AllocVReg(interval);
         }
     }
 
     void ExpireOldIntervals(LiveInterval& current) {
         for (auto it = active_lives.begin(); it != active_lives.end();) {
             if (it->end < current.start) {
-                if (!IsFloatValue(it->inst)) {
-                    FreeGPR(reg_alloc->ValueGPR(it->inst->Id()).id);
-                } else {
-                    FreeFPR(reg_alloc->ValueFPR(it->inst->Id()).id);
+                active_vregs[it->inst->VirRegID()] = false;
+                if (IsFloatValue(it->inst)) {
+                    active_vregs[it->inst->VirRegID() + 1] = false;
                 }
                 it = active_lives.erase(it);  // Remove expired intervals
             } else {
@@ -210,6 +250,44 @@ public:
     bool IsFloatValue(Inst* inst) {
         auto value_type = inst->ReturnType();
         return value_type >= ValueType::V8 && value_type <= ValueType::V256;
+    }
+
+    void GrowVRegs(u32 new_item_size) {
+        active_vregs_cursor = active_vregs.size();
+        active_vregs.resize(active_vregs_cursor + new_item_size);
+    }
+
+    void AllocVReg(LiveInterval& interval) {
+        auto is_float = IsFloatValue(interval.inst);
+        auto slot_size = is_float ? 2 : 1;
+        if (is_float) {
+            s32 slot{-1};
+            for (int i = 0; i + 1 < active_vregs.size(); i += 2) {
+                if (!active_vregs[i] && !active_vregs[i + 1]) {
+                    slot = i;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                slot = active_vregs.size();
+                GrowVRegs(slot_size);
+            }
+            interval.inst->SetVirReg(slot);
+            active_vregs[slot] = true;
+        } else {
+            auto itr = std::find(active_vregs.begin(), active_vregs.end(), false);
+            if (itr != active_vregs.end()) {
+                u16 slot = std::distance(active_vregs.begin(), itr);
+                active_vregs[slot] = true;
+                interval.inst->SetVirReg(slot);
+            } else {
+                // grow stack
+                u16 slot = active_vregs_cursor;
+                GrowVRegs(slot_size);
+                active_vregs[slot] = true;
+                interval.inst->SetVirReg(slot);
+            }
+        }
     }
 
 private:
@@ -225,14 +303,20 @@ private:
             }
         }
         for (auto& instr : block->GetInstList()) {
+            auto start = instr.Id();
             auto end = use_end[instr.Id()];
-            live_interval.push_back({&instr, instr.Id(), end});
+            if (instr.IsPseudoOperation()) {
+                start = instr.GetArg<Value>(0).Id();
+            }
+            live_interval.push_back({&instr, start, end});
         }
     }
 
     Block* block;
     Vector<LiveInterval> live_interval;
     List<LiveInterval> active_lives;
+    Vector<bool> active_vregs{};
+    u16 active_vregs_cursor{0};
 };
 
 void RegisterAllocPass::Run(HIRBuilder* hir_builder, backend::RegAlloc* reg_alloc) {
@@ -247,7 +331,8 @@ void RegisterAllocPass::Run(HIRFunction* hir_function, backend::RegAlloc* reg_al
 }
 
 void VRegisterAllocPass::Run(ir::Block* block) {
-
+    VRegisterAllocator allocator{block};
+    allocator.AllocateRegisters();
 }
 
 }  // namespace swift::runtime::ir

@@ -163,7 +163,7 @@ constexpr u8 GetEFlagBit(CPUFlags flag) {
         case CPUFlags::Direction:
             return EFlags::DF::pos;
         default:
-            ASSERT(false);
+            PANIC();
     }
     return 0;
 }

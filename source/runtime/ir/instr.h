@@ -112,6 +112,8 @@ public:
         return vir_reg;
     }
 
+    void SetVirReg(u16 slot);
+
     IntrusiveListNode list_node{};
 
 private:

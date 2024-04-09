@@ -34,7 +34,6 @@ void JitTranslator::EmitLoadUniform(ir::Inst* inst) {
     auto uni_type = uni.GetType();
     auto offset = offsetof(State, uniform_buffer_begin) + uni.GetOffset();
     auto reg = context.Get(inst);
-    context.X();
 }
 
 void JitTranslator::EmitStoreUniform(ir::Inst* inst) {

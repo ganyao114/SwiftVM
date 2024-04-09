@@ -4,8 +4,10 @@
 #pragma once
 
 #include "runtime/common/types.h"
+#include "runtime/common/bit_fields.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/location.h"
+#include "runtime/ir/args.h"
 
 namespace swift::runtime::backend {
 
@@ -21,6 +23,15 @@ struct RSBBuffer {
     std::array<RSBFrame, rsb_stack_size + 2> rsb_frames{};
 };
 
+union CPUFlags {
+    u64 flags{};
+    BitField<ir::FlagsBit::Carry, 1, u64> carry;
+    BitField<ir::FlagsBit::Overflow, 1, u64> overflow;
+    BitField<ir::FlagsBit::Zero, 1, u64> zero;
+    BitField<ir::FlagsBit::Negate, 1, u64> negate;
+    BitField<ir::FlagsBit::Parity, 1, u64> parity;
+};
+
 struct State {
     void* l1_code_cache{};
     void* l2_code_cache{};
@@ -30,6 +41,7 @@ struct State {
     ir::Location current_loc{0};
     void* pt{};
     void* local_buffer{};
+    CPUFlags cpu_flags{};
     u8 uniform_buffer_begin[];
 };
 
