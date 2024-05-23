@@ -26,6 +26,8 @@ restore_host_callee:
     ldp x19, x20, [sp], #16
     ret
 
+
+
 .def swift_runtime_entry
     stp x29, x30, [sp, #-16]!
     bl save_host_callee
@@ -67,7 +69,7 @@ code_dispatcher:
     sub l1_index, l1_index, loc
     cbnz l1_index, 1b
     ldr args, [l1_start, #-0x8]
-    tbnz arg, 63, go_interp
+    tbnz args, 63, go_interp
     blr args
 
 2:  // query l2 cache
@@ -77,11 +79,11 @@ code_dispatcher:
 
 3:  // l2 looper
     ldr l2_index, [l2_start], #0x10
-    cbz l2_index, return_host
+    cbz l2_index, code_cache_miss
     sub l2_index, l2_index, loc
     cbnz l2_index, 3b
     ldr args, [l2_start, #-0x8]
-    cbz args, return_host
+    cbz args, code_cache_miss
 
     // write to l1 cache
     ldr l2_index, [l1_start, #-0x8]
@@ -98,22 +100,30 @@ code_dispatcher:
 #undef l2_start
 
 go_guest:
-    tbnz arg, 63, go_interp
+    tbz args, 63, jump_guest
 go_interp:
     bfc args, 63, 1
+    ldp arg, handle, [args], #16
+    blr handle
 jump_guest:
     blr args
 
-.def swift_return_host
-return_host:
-    // write back rsb
-    str rsb_ptr, [state, #OFF_RSB_PTR]
     // load excption
     ldr w0, [state, #OFF_EXCEPTION]
+    cbz w0, code_dispatcher
+return_host:
+    // clear execption
     str wzr, [state, #OFF_EXCEPTION]
+    // write back rsb
+    str rsb_ptr, [state, #OFF_RSB_PTR]
     bl restore_host_callee
     ldp x29, x30, [sp], #16
     ret
+
+code_cache_miss:
+    mov w0, #0x8
+    b return_host
+
 
 .def swift_check_halt
     ldr w0, [state, #OFF_EXCEPTION]

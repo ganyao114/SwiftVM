@@ -38,7 +38,6 @@ void Block::DestroyInst(Inst* inst) {
 }
 
 void Block::DestroyInsts() {
-    auto lock_write = LockWrite();
     for (auto& inst : inst_list) {
         DestroyInst(&inst);
     }
@@ -53,6 +52,7 @@ InstList& Block::GetInstList() { return inst_list; }
 InstList::iterator Block::GetBeginInst() { return inst_list.begin(); }
 
 Block::~Block() {
+    auto guard = LockWrite();
     DestroyInsts();
 }
 

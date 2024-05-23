@@ -5,11 +5,9 @@
 #pragma once
 
 #include "cpu.h"
-#include "translator/interface.h"
+#include "translator/runtime.h"
 
-namespace swift::arm64 {
-
-using namespace translator;
+namespace swift::translator::arm64 {
 
 class Arm64Core : public Core {
 public:
@@ -23,6 +21,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;
+    Instance *instance{};
 };
 
 }  // namespace swift::arm64

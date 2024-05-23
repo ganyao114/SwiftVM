@@ -3,13 +3,9 @@
 //
 #pragma once
 
-#include "base/common_funcs.h"
 #include "runtime/common/types.h"
 
 namespace swift::runtime::backend {
-
-void ClearICache(void *start, size_t size);
-void ClearDCache(void *start, size_t size);
 
 class MemMap : DeleteCopyAndMove {
 public:

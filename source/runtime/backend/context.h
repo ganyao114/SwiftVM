@@ -39,10 +39,24 @@ struct State {
     HaltReason halt_reason{HaltReason::None};
     RSBFrame* rsb_pointer{};
     ir::Location current_loc{0};
+    ir::Location prev_loc{0};
     void* pt{};
     void* local_buffer{};
     CPUFlags cpu_flags{};
+    void *blocking_linkage_address{};
     u8 uniform_buffer_begin[];
 };
+
+constexpr u32 state_offset_uniform_buffer = offsetof(State, uniform_buffer_begin);
+constexpr u32 state_offset_local_buffer = offsetof(State, local_buffer);
+constexpr u32 state_offset_l1_code_cache = offsetof(State, l1_code_cache);
+constexpr u32 state_offset_l2_code_cache = offsetof(State, l2_code_cache);
+constexpr u32 state_offset_halt_reason = offsetof(State, halt_reason);
+constexpr u32 state_offset_current_loc = offsetof(State, current_loc);
+constexpr u32 state_offset_prev_loc = offsetof(State, prev_loc);
+constexpr u32 state_offset_pt = offsetof(State, pt);
+constexpr u32 state_offset_rsb_pointer = offsetof(State, rsb_pointer);
+constexpr u32 state_offset_flags = offsetof(State, cpu_flags);
+constexpr u32 state_offset_blocking_linkage_address = offsetof(State, blocking_linkage_address);
 
 }  // namespace swift::runtime::backend

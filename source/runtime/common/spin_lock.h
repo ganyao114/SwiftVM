@@ -45,6 +45,18 @@ private:
     std::atomic<bool> writer{false};
     std::atomic<u16> reader_count{0};
 };
+
+class UseReference {
+public:
+
+    void UseObject();
+    void UnUseObject();
+    void UnUseObjectAndFree();
+    void WaitUnUse();
+
+private:
+    std::atomic<u16> ref_count{0};
+};
 #pragma pack(pop)
 
 } // namespace swift::runtime

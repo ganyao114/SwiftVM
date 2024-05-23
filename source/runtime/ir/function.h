@@ -8,7 +8,7 @@
 
 namespace swift::runtime::ir {
 
-class Function : public SlabObject<Function, true> {
+class Function : public SlabObject<Function, true>, public IntrusiveRefCounter<Function> {
 public:
     using ReadLock = std::shared_lock<RwSpinLock>;
     using WriteLock = std::unique_lock<RwSpinLock>;
@@ -31,6 +31,14 @@ public:
         return std::unique_lock{func_lock};
     }
 
+    [[nodiscard]] backend::JitCache& GetJitCache() {
+        return jit_cache;
+    }
+
+    [[nodiscard]] u32 GetDispatchIndex() const {
+        return dispatch_index;
+    }
+
     union {
         NonTriviallyDummy dummy{};
         IntrusiveMapNode map_node;
@@ -48,7 +56,10 @@ public:
         }
     }
 private:
-    u32 id{};
+    union {
+        u32 id{};
+        u32 dispatch_index;
+    };
     Location location;
     BlockMap blocks{};
     RwSpinLock func_lock{};

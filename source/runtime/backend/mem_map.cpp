@@ -21,6 +21,7 @@
 
 #endif  // ^^^ Linux ^^^
 
+#include "cache_clear.h"
 #include "mem_map.h"
 
 namespace swift::runtime::backend {
@@ -218,21 +219,6 @@ public:
 };
 
 #endif  // ^^^ Unix ^^^
-
-void ClearICache(void *start, size_t size) {
-#ifdef __APPLE__
-    sys_icache_invalidate(reinterpret_cast<char *>(start), size);
-#else
-    __builtin___clear_cache(reinterpret_cast<char *>(start),
-                            reinterpret_cast<char *>(start) + size);
-#endif
-}
-
-void ClearDCache(void *start, size_t size) {
-#ifdef __APPLE__
-    sys_dcache_flush(reinterpret_cast<char *>(start), size);
-#endif
-}
 
 MemMap::MemMap(u32 size, bool exec) : arena_size(size) {
     impl = std::make_unique<Impl>(size, exec);

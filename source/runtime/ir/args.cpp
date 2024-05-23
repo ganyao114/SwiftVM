@@ -103,7 +103,7 @@ Operand::Op Operand::GetOp() const { return op; }
 
 Uniform::Uniform(u32 offset, ValueType type) : type(type), offset(offset) {}
 
-u32 Uniform::GetOffset() { return offset; }
+u32 Uniform::GetOffset() const { return offset; }
 
 ValueType Uniform::GetType() { return type; }
 

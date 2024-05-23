@@ -5,6 +5,7 @@
 #include "runtime/ir/opts/reid_instr_pass.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 #include "runtime/backend/mem_map.h"
+#include "runtime/backend/address_space.h"
 #include "compiler/slang/slang.h"
 #include "assembler_riscv64.h"
 
@@ -166,4 +167,23 @@ TEST_CASE("Test riscv64 asm") {
     assembler.Add(riscv64::A1, riscv64::A1, riscv64::A1);
     assembler.Bne(riscv64::A1, riscv64::A2, &label);
     assembler.FinalizeCode();
+}
+
+TEST_CASE("Test runtime") {
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    swift::runtime::Config config {
+            .loc_start = 0,
+            .loc_end = UINT64_MAX,
+            .enable_jit = true,
+            .backend_isa = swift::runtime::kArm64,
+            .enable_rsb = false,
+            .has_local_operation = false
+    };
+    AddressSpace address_space{config};
+    auto module = address_space.GetDefaultModule();
+    Block block1{0, Location{1}};
+    Block block2{1, Location{2}};
+    module->Push(&block1);
+    module->Push(&block2);
 }

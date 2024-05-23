@@ -116,7 +116,7 @@ class Uniform {
 public:
     explicit Uniform(u32 offset, ValueType type);
 
-    u32 GetOffset();
+    u32 GetOffset() const;
     ValueType GetType();
 
 private:

@@ -6,30 +6,38 @@
 
 #include <map>
 #include <shared_mutex>
-#include "base/common_funcs.h"
 #include "runtime/backend/code_cache.h"
 #include "runtime/common/range_mutex.h"
 #include "runtime/common/types.h"
+#include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
 
 namespace swift::runtime::backend {
 
+constexpr static auto INVALID_CACHE_ID = UINT16_MAX;
+class AddressSpace;
+
 class Module : DeleteCopyAndMove {
 public:
-    explicit Module(const ir::Location& start, const ir::Location& end, bool ro);
+    explicit Module(const Config& config,
+                    AddressSpace& space,
+                    const ir::Location& start,
+                    const ir::Location& end,
+                    bool ro);
 
-    void Push(ir::Block* block);
+    bool Push(ir::Block* block);
 
-    void Push(ir::Function* func);
+    bool Push(ir::Function* func);
 
-    [[nodiscard]] ir::Function* GetFunction(ir::Location location);
+    [[nodiscard]] IntrusivePtr<ir::Function> GetFunction(ir::Location location);
 
-    [[nodiscard]] ir::Block* GetBlock(ir::Location location);
+    [[nodiscard]] IntrusivePtr<ir::Block> GetBlock(ir::Location location);
 
-    [[nodiscard]] std::pair<ir::Block*, ir::Block::ReadLock> LockReadBlock(ir::Location location);
+    [[nodiscard]] CodeCache *GetCodeCache(u8 *exe_ptr);
 
-    [[nodiscard]] std::pair<ir::Function*, ir::Function::ReadLock> LockReadFunction(
-            ir::Location location);
+    [[nodiscard]] void *GetJitCache(ir::Location location);
+
+    [[nodiscard]] void *GetJitCache(const JitCache &jit_cache);
 
     void RemoveBlock(ir::Block* block);
 
@@ -41,7 +49,24 @@ public:
 
     [[nodiscard]] bool ReadOnly() const { return read_only; }
 
+    [[nodiscard]] std::pair<u16, CodeBuffer> AllocCodeCache(u32 size);
+
+    [[nodiscard]] const Config& GetConfig() {
+        return config;
+    }
+
+    [[nodiscard]] AddressSpace& GetAddressSpace() {
+        return address_space;
+    }
+
+    [[nodiscard]] AddressSpace& GetAddressSpace() const {
+        return address_space;
+    }
+
 private:
+
+    const Config& config;
+    AddressSpace &address_space;
     ir::Location module_start;
     ir::Location module_end;
     const bool read_only;
@@ -49,7 +74,9 @@ private:
     RangeMutex address_lock{};
     ir::BlockMap ir_blocks{};
     ir::FunctionMap ir_functions{};
+    std::shared_mutex cache_lock;
     std::map<u16, CodeCache> code_caches{};
+    u16 current_code_cache{};
 };
 
 }  // namespace swift::runtime::backend
