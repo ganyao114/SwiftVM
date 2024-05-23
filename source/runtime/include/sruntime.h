@@ -9,8 +9,6 @@
 
 namespace swift::runtime {
 
-using LocationDescriptor = size_t;
-
 enum class HaltReason : std::uint32_t {
     None = 0x00000000,
     Step = 0x00000001,
@@ -18,15 +16,21 @@ enum class HaltReason : std::uint32_t {
     PageFatal = 0x00000004,
     CodeMiss = 0x00000008,
     ModuleMiss = 0x000000010,
+    CacheMiss = 0x00000020,
+    BlockLinkage = 0x00000040,
+    IllegalCode = 0x00000080
 };
 
 DECLARE_ENUM_FLAG_OPERATORS(HaltReason)
 
-class Instance {};
-
-class Interface {
+class Instance {
 public:
-    explicit Interface(Config config);
+    static std::unique_ptr<Instance> Make(const Config& config);
+};
+
+class Runtime {
+public:
+    explicit Runtime(Instance *instance);
 
     HaltReason Run();
 

@@ -4,8 +4,10 @@
 
 #pragma once
 
+#include <map>
 #include "aarch64/macro-assembler-aarch64.h"
 #include "base/common_funcs.h"
+#include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/constant.h"
 #include "runtime/backend/code_cache.h"
 #include "runtime/backend/reg_alloc.h"
@@ -22,30 +24,40 @@ using CPUReg = boost::variant<Register, VRegister>;
 
 class JitContext : DeleteCopyAndMove {
 public:
-    explicit JitContext(const Config& config, RegAlloc &reg_alloc);
+    explicit JitContext(const std::shared_ptr<Module> &module, RegAlloc& reg_alloc);
 
-    CPUReg Get(const ir::Value &value);
-    Register X(const ir::Value &value);
-    VRegister V(const ir::Value &value);
+    [[nodiscard]] CPUReg Get(const ir::Value& value);
+    [[nodiscard]] Register X(const ir::Value& value);
+    [[nodiscard]] VRegister V(const ir::Value& value);
 
-    Register GetTmpX();
-    VRegister GetTmpV();
+    [[nodiscard]] Register GetTmpX();
+    [[nodiscard]] VRegister GetTmpV();
 
     void Forward(ir::Location location);
-    void Forward(const Register &location);
+    void Forward(const Register& location);
     void Finish();
-    u8 *Flush(CodeCache &code_cache);
+    [[nodiscard]] u32 CurrentBufferSize();
+    u8* Flush(const CodeBuffer& code_cache);
 
-    MacroAssembler &GetMasm();
+    [[nodiscard]] MacroAssembler& GetMasm();
 
-    void TickIR(ir::Inst *instr);
+    void SetCurrent(ir::Function *function);
+    void SetCurrent(ir::Block *block);
+    void TickIR(ir::Inst* instr);
 
 private:
-    const Config &config;
-    RegAlloc &reg_alloc;
+    void BlockLinkStub(ir::Location location);
+
+    vixl::aarch64::Label *GetLabel(LocationDescriptor loc);
+
+    std::shared_ptr<Module> module;
+    ir::Function *cur_function{};
+    ir::Block *cur_block{};
+    RegAlloc& reg_alloc;
     MacroAssembler masm;
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_gprs;
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_fprs;
+    std::map<LocationDescriptor, Label> labels;
 };
 
 }  // namespace swift::runtime::backend::arm64

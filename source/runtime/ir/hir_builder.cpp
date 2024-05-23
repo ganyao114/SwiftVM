@@ -171,6 +171,10 @@ HIRValue* HIRFunction::GetHIRValue(const Value& value) {
 
 HIRPools& HIRFunction::GetMemPool() { return pools; }
 
+Function* HIRFunction::GetFunction() {
+    return function;
+}
+
 void HIRFunction::AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional) {
     ASSERT(src && dest);
     bool dest_was_dominated = dest->HasIncomingEdges();
@@ -381,6 +385,13 @@ void HIRBuilder::ReturnToHost() {
 void HIRBuilder::Return() {
     ASSERT_MSG(current_function, "current function is null!");
     current_function->EndBlock(terminal::PopRSBHint{});
+    current_function->EndFunction();
+    current_function = {};
+}
+
+void HIRBuilder::End() {
+    ASSERT_MSG(current_function, "current function is null!");
+    current_function->EndBlock(terminal::ReturnToDispatch{});
     current_function->EndFunction();
     current_function = {};
 }

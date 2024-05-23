@@ -12,7 +12,6 @@ endif ()
 
 add_library(swift_runtime STATIC
         include/sruntime.h
-        include/address_space.h
         include/config.h
         common/types.h
         common/slab_alloc.cc
@@ -31,6 +30,10 @@ add_library(swift_runtime STATIC
         common/range_map.h
         common/spin_lock.cpp
         common/spin_lock.h
+        common/spin_lock.h
+        common/cityhash.cpp
+        common/cityhash.h
+        common/swap.h
         frontend/ir_assembler.cpp
         frontend/ir_assembler.h
         ir/args.cpp
@@ -71,7 +74,8 @@ add_library(swift_runtime STATIC
         backend/context.h
         backend/address_space.cpp
         backend/address_space.h
-        backend/interface.cpp
+        backend/runtime.cpp
+        backend/runtime.h
         backend/entrypoint.h
         backend/code_cache.cpp
         backend/code_cache.h
@@ -86,14 +90,22 @@ add_library(swift_runtime STATIC
         backend/translator.h
         backend/module.cpp
         backend/module.h
+        backend/trampolines.cpp
+        backend/trampolines.h
         backend/arm64/jit/jit_context.cpp
         backend/arm64/jit/jit_context.h
         backend/arm64/jit/translator.cpp
         backend/arm64/jit/translator.h
+        backend/arm64/trampolines.cpp
+        backend/arm64/trampolines.h
         backend/riscv64/jit/jit_context.cpp
         backend/riscv64/jit/jit_context.h
+        backend/riscv64/trampolines.cpp
+        backend/riscv64/trampolines.h
         backend/interp/interpreter.cpp
         backend/interp/interpreter.h
+        backend/cache_clear.cpp
+        backend/cache_clear.h
         ${RUNTIME_ARCH_SOURCE})
 
 find_package(Boost 1.57)

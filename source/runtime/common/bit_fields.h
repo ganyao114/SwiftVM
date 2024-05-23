@@ -15,7 +15,18 @@ public:
         return *this;
     }
 
-    inline operator T() const { return (T)((storage & mask) >> position); }
+    template <class R> inline BitField& operator=(R val) {
+        storage = (storage & ~mask) | (((T) val << position) & mask);
+        return *this;
+    }
+
+    template <class R> inline bool operator==(R val) {
+        return (R) ((storage & mask) >> position) == val;
+    }
+
+    inline T operator *() const { return (T)((storage & mask) >> position); }
+
+    template <class R> inline R get() const { return (R)((storage & mask) >> position); }
 
 private:
     BitField(T val) = delete;

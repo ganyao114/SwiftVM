@@ -1,7 +1,7 @@
 /*
 distorm.c
 
-diStorm3 C Library Interface
+diStorm3 C Library Runtime
 diStorm3 - Powerful disassembler for X86/AMD64
 http://ragestorm.net/distorm/
 distorm at gmail dot com

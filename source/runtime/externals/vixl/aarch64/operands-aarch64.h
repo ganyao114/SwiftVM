@@ -487,8 +487,8 @@ AARCH64_REGISTER_CODE_LIST(DEFINE_VREGISTERS)
 
 
 // Register aliases.
-const XRegister ip0 = x16;
-const XRegister ip1 = x17;
+const XRegister ip_0 = x16;
+const XRegister ip_1 = x17;
 const XRegister fp = x29;
 const XRegister lr = x30;
 const XRegister xzr = x31;

@@ -8,13 +8,7 @@
 
 namespace swift::translator {
 
-enum ExitReason : uint8_t {
-    None = 0,
-    IllegalCode,
-    PageFatal,
-    Syscall,
-    Signal
-};
+enum ExitReason : uint8_t { None = 0, IllegalCode, PageFatal, Syscall, Signal, Step };
 
 class Instance {
 
@@ -29,4 +23,4 @@ public:
     virtual uint64_t GetSyscallNumber() = 0;
 };
 
-}
+}  // namespace swift::translator

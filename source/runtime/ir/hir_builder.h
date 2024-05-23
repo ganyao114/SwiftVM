@@ -268,6 +268,7 @@ public:
     HIRValueMap& GetHIRValues();
     HIRValue* GetHIRValue(const Value& value);
     HIRPools& GetMemPool();
+    Function *GetFunction();
     void AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional = false);
     void RemoveEdge(Edge* edge);
     void AddLoop(HIRLoop* loop);
@@ -393,6 +394,8 @@ public:
     void ReturnToHost();
 
     void Return();
+
+    void End();
 
 private:
     Location GetNextLocation(const Terminal& term);

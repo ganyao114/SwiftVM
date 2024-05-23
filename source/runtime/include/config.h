@@ -9,9 +9,13 @@
 
 namespace swift::runtime {
 
-struct UniformDesc {
+using LocationDescriptor = size_t;
+
+struct UniformMapDesc {
     std::uint32_t offset;
-    std::uint32_t size;
+    std::uint16_t size;
+    std::uint16_t reg;
+    bool is_float;
 };
 
 enum ISA : uint8_t {
@@ -41,12 +45,18 @@ public:
 };
 
 struct Config {
+    LocationDescriptor loc_start;
+    LocationDescriptor loc_end;
     bool enable_jit;
     bool enable_asm_interp;
+    bool enable_rsb;
+    bool has_local_operation;
     std::uint32_t uniform_buffer_size;
     ISA backend_isa;
-    std::vector<UniformDesc> buffers_static_alloc; // 静态分配建议
+    std::vector<UniformMapDesc> buffers_static_alloc; // 静态分配建议
     std::uint32_t stack_alignment;
+    void *page_table;
+    void *memory_base;
     MemoryInterface *memory;
 };
 

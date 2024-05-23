@@ -18,9 +18,6 @@ CodeCache::~CodeCache() {
     if (space_code) {
         destroy_mspace(space_code);
     }
-    if (space_data) {
-        destroy_mspace(space_data);
-    }
 }
 
 void CodeCache::Init() {
@@ -30,9 +27,6 @@ void CodeCache::Init() {
     code_mem_mapped = reinterpret_cast<u8*>(code_mem->Map(code_mem->GetSize(), 0, MemMap::ReadExe));
 #endif
     space_code = create_mspace_with_base(code_mem->GetMemory(), code_mem->GetSize(), 0);
-
-    data_mem = std::make_unique<MemMap>(max_size, false);
-    space_data = create_mspace_with_base(data_mem->GetMemory(), data_mem->GetSize(), 0);
 }
 
 std::optional<CodeBuffer> CodeCache::AllocCode(size_t size) {
@@ -41,7 +35,8 @@ std::optional<CodeBuffer> CodeCache::AllocCode(size_t size) {
         return std::nullopt;
     }
 
-    CodeBuffer result_buffer{result, result, size};
+    CodeBuffer result_buffer{
+            result, result, static_cast<u32>(result - code_mem->GetMemory()), size};
     if (code_mem_mapped) {
         result_buffer.exec_data = result - code_mem->GetMemory() + code_mem_mapped;
     }
@@ -56,6 +51,45 @@ bool CodeCache::FreeCode(u8* exec_ptr) {
     return true;
 }
 
-bool CodeCache::Contain(u8* exec_ptr) { return false; }
+bool CodeCache::Contain(const u8* exec_ptr) {
+    if (code_mem_mapped) {
+        return exec_ptr >= code_mem_mapped && exec_ptr <= (code_mem_mapped + max_size);
+    } else {
+        return exec_ptr >= code_mem->GetMemory() && exec_ptr <= (code_mem->GetMemory() + max_size);
+    }
+}
+
+u8* CodeCache::GetExePtr(u32 offset) {
+    if (offset > max_size) {
+        return nullptr;
+    }
+    if (code_mem_mapped) {
+        return code_mem_mapped + offset;
+    } else {
+        return code_mem->GetMemory() + offset;
+    }
+}
+
+u8* CodeCache::GetRWPtr(u32 offset) {
+    if (offset > max_size) {
+        return nullptr;
+    }
+    return code_mem->GetMemory() + offset;
+}
+
+u8* CodeCache::GetRWPtr(const u8* exec_ptr) {
+    if (code_mem_mapped) {
+        if (exec_ptr < code_mem_mapped || exec_ptr > (code_mem_mapped + max_size)) {
+            return nullptr;
+        }
+        return code_mem->GetMemory() + (exec_ptr - code_mem_mapped);
+    } else {
+        auto map_start = code_mem->GetMemory();
+        if (exec_ptr < map_start || exec_ptr > (map_start + max_size)) {
+            return nullptr;
+        }
+        return const_cast<u8*>(exec_ptr);
+    }
+}
 
 }  // namespace swift::runtime::backend

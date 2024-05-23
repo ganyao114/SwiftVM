@@ -15,15 +15,9 @@ typedef uint64_t u64;     ///<  64-bit unsigned integer.
 typedef uint64_t u64;     ///<  64-bit unsigned integer.
 #endif
 
-using u128 = struct {
-    u64 hi;
-    u64 lo;
-};
+using u128 = std::array<u64, 2>;
 
-using u256 = struct {
-    u128 hi;
-    u128 lo;
-};
+using u256 = std::array<u64, 4>;
 
 using s8 = int8_t;
 using s16 = int16_t;

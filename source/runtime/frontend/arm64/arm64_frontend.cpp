@@ -203,8 +203,8 @@ void A64Decoder::VisitBitfield(const Instruction* instr) {
             VIXL_UNIMPLEMENTED();
     }
 
-    auto dst = inzero ? __ Zero() : ReadRegister(reg_size, instr->GetRd());
-    auto src = ReadRegister(reg_size, instr->GetRn());
+    auto dst = inzero ? __ Zero() : ReadRegister(instr->GetRd(), reg_size == 4 ? ir::ValueType::U32 : ir::ValueType::U64);
+    auto src = ReadRegister(instr->GetRn(), reg_size == 4 ? ir::ValueType::U32 : ir::ValueType::U64);
     // Rotate source bitfield into place.
     u64 result = RotateRight(src, R, reg_size);
     // Determine the sign extension.

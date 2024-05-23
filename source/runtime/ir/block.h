@@ -13,7 +13,7 @@
 
 namespace swift::runtime::ir {
 
-class Block final : public SlabObject<Block, true> {
+class Block final : public SlabObject<Block, true>, public IntrusiveRefCounter<Block> {
 public:
     using ReadLock = std::shared_lock<RwSpinLock>;
     using WriteLock = std::unique_lock<RwSpinLock>;
@@ -60,6 +60,14 @@ public:
         return v_stack * 8;
     }
 
+    [[nodiscard]] backend::JitCache &GetJitCache() {
+        return jit_cache;
+    }
+
+    [[nodiscard]] u32 GetDispatchIndex() const {
+        return dispatch_index;
+    }
+
 #define INST(name, ret, ...)                                                                      \
     template <typename... Args> ret name(const Args&... args) {                                   \
         return ret{AppendInst(OpCode::name, args...)};                                            \
@@ -101,7 +109,10 @@ public:
     };
 
 private:
-    u32 id{};
+    union {
+        u32 id{};
+        u32 dispatch_index;
+    };
     Location location{0};
     Location end{0};
     InstList inst_list{};

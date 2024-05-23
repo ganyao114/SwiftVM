@@ -100,4 +100,25 @@ void RwSpinLock::unlock_shared() {
     reader_count.fetch_sub(1, std::memory_order_release);
 }
 
+void UseReference::UseObject() {
+    ref_count.fetch_add(1, std::memory_order_acquire);
+}
+
+void UseReference::UnUseObject() {
+    ref_count.fetch_sub(1, std::memory_order_release);
+}
+
+void UseReference::UnUseObjectAndFree() {
+    if (ref_count.fetch_sub(1, std::memory_order_release) == 1) {
+        std::atomic_thread_fence(std::memory_order_acquire);
+        delete this;
+    }
+}
+
+void UseReference::WaitUnUse() {
+    while (ref_count.load(std::memory_order_relaxed) != 0) {
+        ThreadPause();
+    }
+}
+
 } // namespace swift::runtime

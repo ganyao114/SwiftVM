@@ -19,7 +19,7 @@ using namespace runtime;
 
 class A64Decoder : public DecoderVisitor {
 public:
-    A64Decoder(VAddr start, runtime::MemoryInterface* memory, runtime::ir::Assembler* visitor);
+    explicit A64Decoder(VAddr start, runtime::MemoryInterface* memory, runtime::ir::Assembler* visitor);
 
     void Decode();
 

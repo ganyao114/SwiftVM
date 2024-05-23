@@ -1,6 +1,6 @@
 add_library(translator STATIC
         interface.cpp
-        interface.h
+        runtime.h
         arm64/cpu.h
         arm64/translator.cpp
         arm64/translator.h)
