@@ -10,7 +10,7 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
-JitContext::JitContext(const std::shared_ptr<Module> &module, RegAlloc& reg_alloc)
+JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_alloc)
         : module(module), reg_alloc(reg_alloc) {}
 
 CPUReg JitContext::Get(const ir::Value& value) {
@@ -52,7 +52,7 @@ void JitContext::Forward(ir::Location location) {
         self_forward = location == cur_function->GetStartLocation();
     }
     if (self_forward) {
-        auto self_label = GetLabel(location.Value());
+        auto self_label{GetLabel(location.Value())};
         __ B(self_label);
     } else {
         auto target_module = module->GetAddressSpace().GetModule(location.Value());
@@ -63,30 +63,43 @@ void JitContext::Forward(ir::Location location) {
             __ Ret();
             return;
         }
-        bool direct_link;
-        if (module == target_module) {
-            direct_link = target_module->ReadOnly();
-        } else {
-            direct_link = false;
-        }
+
+        const bool self_module_forward{module == target_module};
+        const ModuleConfig& module_config{module->GetModuleConfig()};
+        const ModuleConfig& target_module_config{target_module->GetModuleConfig()};
+
+        bool direct_link{
+                (self_module_forward && module_config.HasOpt(Optimizations::DirectBlockLink)) ||
+                target_module_config.read_only};
+
         if (direct_link) {
-            if (auto code = target_module->GetJitCache(location.Value()); code) {
-                Label label;
-                //                __ Bind()
+            bool in_function{false};
+            if (cur_function) {
+                in_function = cur_function->FindBlock(location.Value());
+            }
+            if (in_function) {
+                __ B(GetLabel(location.Value()));
+            } else if (auto code = target_module->GetJitCache(location.Value()); code) {
+                __ B(GetLabel(location.Value()));
             } else {
                 BlockLinkStub(location);
             }
-        } else {
-            u32 dispatcher_index = 0;
-
-            __ Mov(ipw, dispatcher_index * 2 + 1);
+        } else if (self_module_forward && module_config.HasOpt(Optimizations::IndirectBlockLink)) {
+            // indirect link
+            u32 dispatcher_index = target_module->GetDispatchIndex(location);
+            __ Mov(ipw, dispatcher_index);
             __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
             __ Br(ip);
+        } else {
+            // do not link
+            __ Mov(ip, location.Value());
+            __ Str(ip, MemOperand(state, state_offset_current_loc));
+            __ Ret();
         }
     }
 }
 
-void JitContext::Forward(const Register& location) {
+void JitContext::ReturnToDispatcher(const vixl::aarch64::Register& location) {
     __ Str(location, MemOperand(state, state_offset_current_loc));
     __ Ret();
 }
@@ -94,6 +107,8 @@ void JitContext::Forward(const Register& location) {
 void JitContext::Finish() { __ FinalizeCode(); }
 
 u8* JitContext::Flush(const CodeBuffer& code_cache) {
+    FlushLabels(reinterpret_cast<VAddr>(code_cache.exec_data));
+    Finish();
     std::memcpy(code_cache.rw_data, masm.GetBuffer()->GetStartAddress<u8*>(), code_cache.size);
     code_cache.Flush();
     return code_cache.exec_data;
@@ -103,10 +118,14 @@ u32 JitContext::CurrentBufferSize() { return __ GetBuffer() -> GetSizeInBytes();
 
 void JitContext::SetCurrent(ir::Block* block) {
     cur_block = block;
+    auto label = GetLabel(block->GetStartLocation().Value());
+    __ Bind(label);
 }
 
 void JitContext::SetCurrent(ir::Function* function) {
     cur_function = function;
+    auto label = GetLabel(function->GetStartLocation().Value());
+    __ Bind(label);
 }
 
 void JitContext::TickIR(ir::Inst* instr) { reg_alloc.SetCurrent(instr); }
@@ -133,6 +152,16 @@ void JitContext::BlockLinkStub(ir::Location location) {
     __ Mov(ip0, location.Value());
     __ Str(ip0, MemOperand(state, state_offset_current_loc));
     __ Ret();
+}
+
+void JitContext::FlushLabels(VAddr target) {
+    for (auto& [location, label] : labels) {
+        if (label.IsBound()) {
+            continue;
+        }
+        ptrdiff_t offset = location - target;
+        __ BindToOffset(&label, offset);
+    }
 }
 
 #undef masm

@@ -38,6 +38,11 @@ namespace ams::util {
         public:
             constexpr ALWAYS_INLINE IntrusiveListNode() : m_prev(this), m_next(this) { /* ... */ }
 
+            constexpr ALWAYS_INLINE void Reset() {
+                m_prev == this;
+                m_next == this;
+            }
+
             constexpr ALWAYS_INLINE bool IsLinked() const {
                 return m_next != this;
             }
@@ -288,6 +293,10 @@ namespace ams::util {
                         this->pop_front();
                     }
                 }
+
+                constexpr ALWAYS_INLINE void reset() {
+                    m_root_node.Reset();
+                }
             private:
                 constexpr ALWAYS_INLINE void splice_impl(const_iterator _pos, const_iterator _first, const_iterator _last) {
                     if (_first == _last) {
@@ -532,6 +541,10 @@ namespace ams::util {
 
             constexpr ALWAYS_INLINE void clear() {
                 m_impl.clear();
+            }
+
+            constexpr ALWAYS_INLINE void reset() {
+                m_impl.reset();
             }
     };
 

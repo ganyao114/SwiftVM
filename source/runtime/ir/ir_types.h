@@ -7,28 +7,43 @@
 #include "runtime/common/types.h"
 #include "runtime/ir/opcodes.h"
 #include "base/common_funcs.h"
+#include "fmt/format.h"
 
 namespace swift::runtime::ir {
 
-enum class ArgType : u8 { Void = 0, Value, Imm, Uniform, Local, Cond, Flags, Operand, Lambda, Params };
-enum class ValueType : u8 {
-    VOID = 0,
-    BOOL,
-    U8,
-    U16,
-    U32,
-    U64,
-    S8,
-    S16,
-    S32,
-    S64,
-    V8,
-    V16,
-    V32,
-    V64,
-    V128,
-    V256
-};
+#define ARG_TYPE_ENUM(X) \
+    X(Void)     \
+    X(Value)    \
+    X(Imm)      \
+    X(Uniform)  \
+    X(Local)    \
+    X(Cond)     \
+    X(Flags)    \
+    X(Operand)  \
+    X(Lambda)   \
+    X(Params)
+
+#define VALUE_TYPE_ENUM(X) \
+    X(VOID) \
+    X(BOOL) \
+    X(U8)   \
+    X(U16)  \
+    X(U32)  \
+    X(U64)  \
+    X(S8)   \
+    X(S16)  \
+    X(S32)  \
+    X(S64)  \
+    X(V8)   \
+    X(V16)  \
+    X(V32)  \
+    X(V64)  \
+    X(V128) \
+    X(V256)
+
+enum class ArgType : u8 { ARG_TYPE_ENUM(ENUM_DEFINE) };
+
+enum class ValueType : u8 { VALUE_TYPE_ENUM(ENUM_DEFINE) };
 
 DECLARE_ENUM_FLAG_OPERATORS(ValueType)
 
@@ -43,4 +58,23 @@ u8 GetValueSizeByte(ValueType type);
 
 const IRMeta& GetIRMetaInfo(OpCode op_code);
 
+const char *ArgTypeString(ArgType arg_type);
+
+const char *ValueTypeString(ValueType value_type);
+
 }  // namespace swift::runtime::ir
+
+// formatters
+template <> struct fmt::formatter<swift::runtime::ir::ArgType> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(swift::runtime::ir::ArgType arg_type, FormatContext& ctx) const {
+        return formatter<std::string>::format(swift::runtime::ir::ArgTypeString(arg_type), ctx);
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::ValueType> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(swift::runtime::ir::ValueType value_type, FormatContext& ctx) const {
+        return formatter<std::string>::format(swift::runtime::ir::ValueTypeString(value_type), ctx);
+    }
+};

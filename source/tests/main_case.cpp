@@ -8,6 +8,8 @@
 #include "runtime/backend/address_space.h"
 #include "compiler/slang/slang.h"
 #include "assembler_riscv64.h"
+#include "fmt/format.h"
+#include <iostream>
 
 TEST_CASE("Test compiler") {
     using namespace swift::slang;
@@ -186,4 +188,19 @@ TEST_CASE("Test runtime") {
     Block block2{1, Location{2}};
     module->Push(&block1);
     module->Push(&block2);
+}
+
+TEST_CASE("Test block ir print") {
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    Block block{0, Location{0x1000}};
+    auto imm32 = block.LoadImm(Imm{8u}).SetType(ValueType::U32);
+    auto imm8 = block.LoadImm(Imm{8u}).SetType(ValueType::U8);
+    block.StoreUniform(Uniform{32, ValueType::U32}, imm8);
+    Params params{};
+    params.Push(imm8);
+    params.Push(imm8);
+    auto res = block.CallDynamic(Lambda(Imm(uint64_t(1))), params);
+    block.SetTerminal(terminal::If(terminal::If{imm8, terminal::LinkBlock{0x1000}, terminal::LinkBlock{0x2000}}));
+    std::cout << block.ToString() << std::endl;
 }

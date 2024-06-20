@@ -9,7 +9,12 @@ namespace swift::runtime::ir {
 
 Terminal Block::GetTerminal() const { return block_term; }
 
-void Block::SetTerminal(Terminal term) { block_term = std::move(term); }
+void Block::SetTerminal(Terminal term) {
+    block_term = std::move(term);
+    if (!inst_list.empty() && inst_list.begin()->Id() == Inst::invalid_id) {
+        ReIdInstr();
+    }
+}
 
 bool Block::HasTerminal() const { return !block_term.empty(); }
 
@@ -37,23 +42,36 @@ void Block::DestroyInst(Inst* inst) {
     delete inst;
 }
 
-void Block::DestroyInsts() {
-    for (auto& inst : inst_list) {
-        DestroyInst(&inst);
+void Block::DestroyInstrs() {
+    for (auto it = inst_list.begin(); it != inst_list.end();) {
+        auto pre = it;
+        it = inst_list.erase(it);
+        delete pre.operator->();
+    }
+}
+
+void Block::ReIdInstr() {
+    u16 index{0};
+    for (auto& instr : inst_list) {
+        instr.SetId(index++);
     }
 }
 
 void Block::SetEndLocation(Location end_) { this->end = end_; }
 
-Location Block::GetStartLocation() { return location; }
+Location Block::GetStartLocation() const { return location; }
 
 InstList& Block::GetInstList() { return inst_list; }
 
+InstList& Block::GetInstList() const { return inst_list; }
+
 InstList::iterator Block::GetBeginInst() { return inst_list.begin(); }
+
+std::string Block::ToString() const { return fmt::format("{}", *this); }
 
 Block::~Block() {
     auto guard = LockWrite();
-    DestroyInsts();
+    DestroyInstrs();
 }
 
 }  // namespace swift::runtime::ir

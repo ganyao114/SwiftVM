@@ -8,7 +8,25 @@
 
 namespace swift::runtime::ir {
 
-u64 Imm::GetValue() const { return imm_u64; }
+ValueType Imm::GetType() const {
+    return type;
+}
+
+u64 Imm::GetValue() const {
+    switch (type) {
+        case ValueType::BOOL:
+        case ValueType::U8:
+            return imm_u8;
+        case ValueType::U16:
+            return imm_u16;
+        case ValueType::U32:
+            return imm_u32;
+        case ValueType::U64:
+            return imm_u64;
+        default:
+            return 0;
+    }
+}
 
 Value Value::SetType(ValueType type) const {
     ASSERT(Def());
@@ -18,7 +36,11 @@ Value Value::SetType(ValueType type) const {
 
 ValueType Value::Type() const {
     ASSERT(Def());
-    return Def()->ReturnType();
+    if (cast_type == ValueType::VOID) {
+        return Def()->ReturnType();
+    } else {
+        return cast_type;
+    }
 }
 
 void Value::Use() const {
@@ -105,7 +127,7 @@ Uniform::Uniform(u32 offset, ValueType type) : type(type), offset(offset) {}
 
 u32 Uniform::GetOffset() const { return offset; }
 
-ValueType Uniform::GetType() { return type; }
+ValueType Uniform::GetType() const { return type; }
 
 Params::Param::Param(const Value& value) {
     data.value = value;
@@ -115,6 +137,15 @@ Params::Param::Param(const Value& value) {
 Params::Param::Param(const Imm& imm) {
     data.imm = imm;
     data.type = ArgType::Imm;
+}
+
+const char *CondString(Cond cond) {
+#define ENUM_CLASS Cond
+    switch (cond) {
+        COND_ENUM(ENUM_TO_STRING_CASE)
+    }
+    return "Unk";
+#undef ENUM_CLASS
 }
 
 }  // namespace swift::runtime::ir

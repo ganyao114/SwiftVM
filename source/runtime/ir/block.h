@@ -10,6 +10,7 @@
 #include "runtime/common/cast_utils.h"
 #include "runtime/common/spin_lock.h"
 #include "runtime/backend/jit_code.h"
+#include "runtime/common/variant_util.h"
 
 namespace swift::runtime::ir {
 
@@ -40,13 +41,15 @@ public:
     void InsertAfter(Inst* inst, Inst* after);
     void RemoveInst(Inst* inst);
     void DestroyInst(Inst* inst);
-    void DestroyInsts();
+    void DestroyInstrs();
+    void ReIdInstr();
 
     void SetEndLocation(Location location);
-    Location GetStartLocation();
+    [[nodiscard]] Location GetStartLocation() const;
 
-    InstList &GetInstList();
-    InstList::iterator GetBeginInst();
+    [[nodiscard]] InstList &GetInstList();
+    [[nodiscard]] InstList &GetInstList() const;
+    [[nodiscard]] InstList::iterator GetBeginInst();
 
     [[nodiscard]] ReadLock LockRead() {
         return std::shared_lock{block_lock};
@@ -62,6 +65,10 @@ public:
 
     [[nodiscard]] backend::JitCache &GetJitCache() {
         return jit_cache;
+    }
+
+    [[nodiscard]] u32 GetId() const {
+        return id;
     }
 
     [[nodiscard]] u32 GetDispatchIndex() const {
@@ -100,6 +107,8 @@ public:
         }
     }
 
+    [[nodiscard]] std::string ToString() const;
+
     ~Block();
 
     union {
@@ -115,7 +124,7 @@ private:
     };
     Location location{0};
     Location end{0};
-    InstList inst_list{};
+    mutable InstList inst_list{};
     Terminal block_term{};
     RwSpinLock block_lock{};
     u16 v_stack{};
@@ -126,3 +135,46 @@ using BlockList = IntrusiveList<&Block::list_node>;
 using BlockMap = IntrusiveMap<&Block::map_node>;
 
 }  // namespace swift::runtime::ir
+
+template <> struct fmt::formatter<swift::runtime::ir::Terminal> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(swift::runtime::ir::Terminal term, FormatContext& ctx) const {
+        using namespace swift::runtime::ir;
+        auto result = swift::runtime::VisitVariant<std::string>(term, [](auto x) -> std::string {
+            using T = std::decay_t<decltype(x)>;
+            std::string content{};
+            if constexpr (std::is_same_v<T, terminal::LinkBlock>) {
+                content.append(fmt::format("  Link Block 0x{:x}\n", x.next.Value()));
+            } else if constexpr (std::is_same_v<T, terminal::LinkBlockFast>) {
+                content.append(fmt::format("  LinkFast Block 0x{:x}\n", x.next.Value()));
+            } else if constexpr (std::is_same_v<T, terminal::ReturnToDispatch>) {
+                content.append("  ReturnToDispatch\n");
+            } else if constexpr (std::is_same_v<T, terminal::ReturnToHost>) {
+                content.append("  ReturnToHost\n");
+            } else if constexpr (std::is_same_v<T, terminal::PopRSBHint>) {
+                content.append("  PopRSBHint\n");
+            } else if constexpr (std::is_same_v<T, terminal::If>) {
+                content.append(fmt::format("  If ({}):\n", (const Value &) x.cond));
+                content.append(fmt::format("  {}", x.then_));
+                content.append("  Else:\n");
+                content.append(fmt::format("  {}", x.else_));
+            } else {
+                return {};
+            }
+            return content;
+        });
+        return formatter<std::string>::format(result, ctx);
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::Block> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(const swift::runtime::ir::Block &block, FormatContext& ctx) const {
+        std::string block_content{fmt::format("Basic Block ${}, Location: 0x{:x}: \n", block.GetId(), block.GetStartLocation().Value())};
+        for (auto &instr : block.GetInstList()) {
+            block_content.append(fmt::format("  {}\n", instr));
+        }
+        block_content.append(fmt::format("{}", block.GetTerminal()));
+        return formatter<std::string>::format(block_content, ctx);
+    }
+};

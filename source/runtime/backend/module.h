@@ -17,13 +17,22 @@ namespace swift::runtime::backend {
 constexpr static auto INVALID_CACHE_ID = UINT16_MAX;
 class AddressSpace;
 
+struct ModuleConfig {
+    bool read_only{};
+    Optimizations optimizations{Optimizations::None};
+
+    [[nodiscard]] bool HasOpt(Optimizations cmp) const {
+        return (optimizations & cmp) != Optimizations::None;
+    }
+};
+
 class Module : DeleteCopyAndMove {
 public:
     explicit Module(const Config& config,
                     AddressSpace& space,
                     const ir::Location& start,
                     const ir::Location& end,
-                    bool ro);
+                    const ModuleConfig &m_config);
 
     bool Push(ir::Block* block);
 
@@ -37,6 +46,8 @@ public:
 
     [[nodiscard]] void *GetJitCache(ir::Location location);
 
+    [[nodiscard]] u32 GetDispatchIndex(ir::Location location);
+
     [[nodiscard]] void *GetJitCache(const JitCache &jit_cache);
 
     void RemoveBlock(ir::Block* block);
@@ -47,7 +58,7 @@ public:
         return ScopedRangeLock{address_lock, start.Value(), end.Value()};
     }
 
-    [[nodiscard]] bool ReadOnly() const { return read_only; }
+    [[nodiscard]] const ModuleConfig &GetModuleConfig() const { return module_config; }
 
     [[nodiscard]] std::pair<u16, CodeBuffer> AllocCodeCache(u32 size);
 
@@ -66,10 +77,10 @@ public:
 private:
 
     const Config& config;
+    const ModuleConfig module_config;
     AddressSpace &address_space;
     ir::Location module_start;
     ir::Location module_end;
-    const bool read_only;
     std::shared_mutex lock;
     RangeMutex address_lock{};
     ir::BlockMap ir_blocks{};

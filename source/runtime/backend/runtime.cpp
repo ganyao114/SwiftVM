@@ -145,7 +145,14 @@ void Runtime::SignalInterrupt() {
     // #endif
 }
 
-void Runtime::ClearInterrupt() {}
+void Runtime::ClearInterrupt() {
+    // #ifdef _MSC_VER
+    //     _InterlockedAnd(reinterpret_cast<volatile long*>(ptr), ~value);
+    // #else
+    //     __atomic_and_fetch((u32*) &impl->state->halt_reason, ~((u32) backend::HaltReason::Signal),
+    //     __ATOMIC_SEQ_CST);
+    // #endif
+}
 
 void Runtime::SetLocation(LocationDescriptor location) {
     impl->state->current_loc = ir::Location(location);
@@ -177,7 +184,6 @@ void* PushAndTranslateHIR(std::shared_ptr<backend::Module> module, ir::HIRFuncti
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate();
-    context.Finish();
     auto buffer_size = context.CurrentBufferSize();
     if (auto [idx, buffer] = module->AllocCodeCache(buffer_size);
         idx != backend::INVALID_CACHE_ID) {
@@ -208,7 +214,6 @@ bool PushAndTranslateHIR(const std::shared_ptr<backend::Module>& module, ir::HIR
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate();
-    context.Finish();
     auto buffer_size = context.CurrentBufferSize();
     if (auto [idx, buffer] = module->AllocCodeCache(buffer_size);
         idx != backend::INVALID_CACHE_ID) {

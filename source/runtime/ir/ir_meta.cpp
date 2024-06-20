@@ -24,36 +24,52 @@ constexpr ArgType Operand = ArgType::Operand;
 constexpr ArgType Lambda = ArgType::Lambda;
 constexpr ArgType Params = ArgType::Params;
 
-static const std::array ir_meta_infos {
-IRMeta{OpCode::Void, "Void", Void, {}},
+static const std::array ir_meta_infos{IRMeta{OpCode::Void, "Void", Void, {}},
 #define INST(name, ret, ...) IRMeta{OpCode::name, #name, ret, {__VA_ARGS__}},
 #include "ir.inc"
 #undef INST
-IRMeta{OpCode::BASE_COUNT, "BASE_COUNT", Void, {}},
-IRMeta{OpCode::COUNT, "COUNT", Void, {}}
-};
+                                      IRMeta{OpCode::BASE_COUNT, "BASE_COUNT", Void, {}},
+                                      IRMeta{OpCode::COUNT, "COUNT", Void, {}}};
 
 u8 GetValueSizePow(ValueType type) {
     if (type == ValueType::BOOL) {
         return 0;
     } else if (type >= ValueType::U8 && type <= ValueType::U64) {
-        return (u32) type - (u32) ValueType::U8;
+        return (u32)type - (u32)ValueType::U8;
     } else if (type >= ValueType::S8 && type <= ValueType::S64) {
-        return (u32) type - (u32) ValueType::S8;
+        return (u32)type - (u32)ValueType::S8;
     } else if (type >= ValueType::V8 && type <= ValueType::V256) {
-        return (u32) type - (u32) ValueType::V8;
+        return (u32)type - (u32)ValueType::V8;
     } else {
         PANIC();
     }
 }
 
-u8 GetValueSizeByte(ValueType type) {
-    return std::pow(2, GetValueSizePow(type));
-}
+u8 GetValueSizeByte(ValueType type) { return std::pow(2u, GetValueSizePow(type)); }
 
-const IRMeta &GetIRMetaInfo(OpCode op_code) {
+bool IsFloatValueType(ValueType type) { return type >= ValueType::V8 && type <= ValueType::V256; }
+
+const IRMeta& GetIRMetaInfo(OpCode op_code) {
     ASSERT(op_code < OpCode::COUNT);
     return ir_meta_infos[static_cast<u8>(op_code)];
 }
 
+const char *ArgTypeString(ArgType arg_type) {
+#define ENUM_CLASS ArgType
+    switch (arg_type) {
+        ARG_TYPE_ENUM(ENUM_TO_STRING_CASE)
+    }
+    return "Unk";
+#undef ENUM_CLASS
 }
+
+const char *ValueTypeString(ValueType value_type) {
+#define ENUM_CLASS ValueType
+    switch (value_type) {
+        VALUE_TYPE_ENUM(ENUM_TO_STRING_CASE)
+    }
+    return "Unk";
+#undef ENUM_CLASS
+}
+
+}  // namespace swift::runtime::ir

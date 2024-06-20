@@ -89,4 +89,7 @@ bool ContainsElement(const Container& container, const T& value, size_t start_po
     return it != container.end();
 }
 
+#define ENUM_TO_STRING_CASE(r) case ENUM_CLASS::r: return #r;
+#define ENUM_DEFINE(r) r,
+
 }

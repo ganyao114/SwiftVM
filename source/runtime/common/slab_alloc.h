@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstdlib>
+#include "logging.h"
 
 namespace swift::runtime {
 
@@ -115,9 +116,7 @@ private:
 public:
     constexpr SlabObject() = default;
 
-    static void InitializeSlabHeap(size_t object_size) {
-        slab_heap.Initialize(object_size);
-    }
+    static void InitializeSlabHeap(size_t object_size) { slab_heap.Initialize(object_size); }
 
     static void InitializeSlabHeap(void* memory, size_t memory_size) {
         slab_heap.Initialize(memory, memory_size);
@@ -133,14 +132,14 @@ public:
 
     constexpr static void Delete(T* obj) { slab_heap.Delete(obj); }
 
-    constexpr static T* TryAllocate() {
+    constexpr static T* TryAllocate(size_t size = sizeof(T)) {
         if constexpr (override) {
             auto res = slab_heap.Allocate();
             if (res) {
                 return res;
             }
         }
-        return reinterpret_cast<T *>(malloc(sizeof(T)));
+        return reinterpret_cast<T*>(malloc(size));
     }
 
     constexpr static void TryFree(void* obj) {
@@ -152,7 +151,7 @@ public:
     }
 
     void* operator new(size_t sz) {
-        assert(sz == sizeof(T));
+        ASSERT(sz == sizeof(T));
         return TryAllocate();
     }
     void operator delete(void* p) { TryFree(p); }

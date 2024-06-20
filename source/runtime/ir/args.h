@@ -14,6 +14,7 @@
 #include "runtime/common/slab_alloc.h"
 #include "runtime/common/types.h"
 #include "runtime/ir/ir_types.h"
+#include "fmt/format.h"
 
 namespace swift::runtime::ir {
 
@@ -21,26 +22,27 @@ class Inst;
 class Arg;
 struct ArgClass;
 
-enum class Cond : u8 {
-    EQ = 0,
-    NE,
-    CS,
-    CC,
-    MI,
-    PL,
-    VS,
-    VC,
-    HI,
-    LS,
-    GE,
-    LT,
-    GT,
-    LE,
-    AL,
-    NV,
-    HS = CS,
-    LO = CC,
-};
+#define COND_ENUM(X) \
+    X(EQ) \
+    X(NE) \
+    X(CS) \
+    X(CC) \
+    X(MI) \
+    X(PL) \
+    X(VS) \
+    X(VC) \
+    X(HI) \
+    X(LS) \
+    X(GE) \
+    X(LT) \
+    X(GT) \
+    X(LE) \
+    X(AL) \
+    X(NV)
+
+enum class Cond : u8 { COND_ENUM(ENUM_DEFINE) };
+
+const char *CondString(Cond cond);
 
 struct Void {
     explicit Void(Inst*) {}
@@ -49,20 +51,20 @@ struct Void {
 #pragma pack(push, 1)
 class Imm {
 public:
-    explicit Imm(bool value) : type{ValueType::BOOL}, imm_bool{value} {}
+    explicit Imm(bool value) : type{ValueType::BOOL}, imm_u8{value} {}
     explicit Imm(u8 value) : type{ValueType::U8}, imm_u8{value} {}
     explicit Imm(u16 value) : type{ValueType::U16}, imm_u16{value} {}
     explicit Imm(u32 value) : type{ValueType::U32}, imm_u32{value} {}
     explicit Imm(u64 value) : type{ValueType::U64}, imm_u64{value} {}
     explicit Imm(u64 value, ValueType size) : type{size}, imm_u64{value} {}
 
+    [[nodiscard]] ValueType GetType() const;
     [[nodiscard]] u64 GetValue() const;
 
 private:
     ValueType type{ValueType::VOID};
 
     union {
-        bool imm_bool;
         u8 imm_u8;
         u16 imm_u16;
         u32 imm_u32;
@@ -86,8 +88,9 @@ public:
     void UnUse() const;
     [[nodiscard]] u16 Id() const;
 
-private:
-    Inst* inst{};
+protected:
+    Inst* inst;
+    ValueType cast_type{ValueType::VOID};
 };
 
 template <ValueType type_> class TypedValue final : public Value {
@@ -99,9 +102,9 @@ public:
         ASSERT(value.Type() != type_);
     }
 
-    constexpr TypedValue(const Value& value) : Value(value) { SetType(type_); }
+    constexpr TypedValue(const Value& value) : Value(value) { cast_type = type_; }
 
-    constexpr TypedValue(Inst* inst) : TypedValue(Value(inst)) { SetType(type_); }
+    constexpr TypedValue(Inst* inst) : TypedValue(Value(inst)) { cast_type = type_; }
 };
 
 using BOOL = TypedValue<ValueType::BOOL>;
@@ -116,8 +119,8 @@ class Uniform {
 public:
     explicit Uniform(u32 offset, ValueType type);
 
-    u32 GetOffset() const;
-    ValueType GetType();
+    [[nodiscard]] u32 GetOffset() const;
+    [[nodiscard]] ValueType GetType() const;
 
 private:
     u32 offset{};
@@ -466,3 +469,112 @@ private:
 };
 
 }  // namespace swift::runtime::ir
+
+// formatters
+template <> struct fmt::formatter<swift::runtime::ir::Cond> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(swift::runtime::ir::Cond cond, FormatContext& ctx) const {
+        return formatter<std::string>::format(swift::runtime::ir::CondString(cond), ctx);
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::Value> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(const swift::runtime::ir::Value &value, FormatContext& ctx) const {
+        return formatter<std::string>::format(fmt::format("({}) @{}", value.Type(), value.Id()), ctx);
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::Imm> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(const swift::runtime::ir::Imm &imm, FormatContext& ctx) const {
+        return formatter<std::string>::format(fmt::format("({}) #{}", imm.GetType(), imm.GetValue()), ctx);
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::Uniform> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(const swift::runtime::ir::Uniform &uni, FormatContext& ctx) const {
+        return formatter<std::string>::format(fmt::format("({}) u[{}]", uni.GetType(), uni.GetOffset()), ctx);
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::Local> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(const swift::runtime::ir::Local &local, FormatContext& ctx) const {
+        return formatter<std::string>::format(fmt::format("({}) a[{}]", local.type, local.id), ctx);
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::Flags> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(swift::runtime::ir::Flags flags, FormatContext& ctx) const {
+        return formatter<std::string>::format(fmt::format("f{:b}", (uint16_t) flags), ctx);
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::DataClass> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(const swift::runtime::ir::DataClass &data, FormatContext& ctx) const {
+        if (data.IsValue()) {
+            return formatter<std::string>::format(fmt::format("{}", data.value), ctx);
+        } else {
+            return formatter<std::string>::format(fmt::format("{}", data.imm), ctx);
+        }
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::Lambda> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(const swift::runtime::ir::Lambda &lambda, FormatContext& ctx) const {
+        if (lambda.IsValue()) {
+            return formatter<std::string>::format(fmt::format("{}", lambda.GetValue()), ctx);
+        } else {
+            return formatter<std::string>::format(fmt::format("{}", lambda.GetImm()), ctx);
+        }
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::Operand> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(const swift::runtime::ir::Operand &operand, FormatContext& ctx) const {
+        std::string result{};
+        switch (operand.GetOp().type) {
+            case swift::runtime::ir::OperandOp::Plus:
+                result.append(fmt::format("{} + {}", operand.GetLeft(), operand.GetRight()));
+                break;
+            case swift::runtime::ir::OperandOp::Minus:
+                result.append(fmt::format("{} - {}", operand.GetLeft(), operand.GetRight()));
+                break;
+            case swift::runtime::ir::OperandOp::LSL:
+                result.append(fmt::format("{} << {}", operand.GetLeft(), operand.GetRight()));
+                break;
+            case swift::runtime::ir::OperandOp::LSR:
+                result.append(fmt::format("{} >> {}", operand.GetLeft(), operand.GetRight()));
+                break;
+            case swift::runtime::ir::OperandOp::EXT:
+                result.append(fmt::format("{} + {}", operand.GetLeft(), operand.GetRight()));
+                break;
+            default:
+                result.append(fmt::format("{}", operand.GetLeft()));
+                break;
+        }
+        return formatter<std::string>::format(fmt::format("[{}]", result), ctx);
+    }
+};
+
+template <> struct fmt::formatter<swift::runtime::ir::Params> : fmt::formatter<std::string> {
+    template <typename FormatContext>
+    auto format(const swift::runtime::ir::Params &params, FormatContext& ctx) const {
+        std::string result{};
+        bool first{true};
+        for (auto param : params) {
+            if (!first) {
+                result.append(", ");
+            }
+            result.append(fmt::format("{}", param.data));
+            first = false;
+        }
+        return formatter<std::string>::format(fmt::format("[{}]", result), ctx);
+    }
+};
