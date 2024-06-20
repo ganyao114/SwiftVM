@@ -10,6 +10,8 @@ Inst::Inst(OpCode code) : op_code(code) {}
 
 Arg& Inst::ArgAt(int index) { return arguments[index]; }
 
+Arg& Inst::ArgAt(int index) const { return arguments[index]; }
+
 void Inst::SetArg(int index, const Void& arg) {
     DestroyArg(index);
     arguments[index] = arg;
@@ -134,7 +136,7 @@ Inst::Values Inst::GetValues() {
     return std::move(values);
 }
 
-OpCode Inst::GetOp() {
+OpCode Inst::GetOp() const {
     return op_code;
 }
 

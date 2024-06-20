@@ -9,7 +9,11 @@
 namespace swift::runtime::backend {
 
 AddressSpace::AddressSpace(const Config& config) : config(config) {
-    default_module = std::make_shared<Module>(config, *this, config.loc_start, config.loc_end, false);
+    const ModuleConfig default_module_config {
+            .read_only = config.static_program,
+            .optimizations = config.global_opts
+    };
+    default_module = std::make_shared<Module>(config, *this, config.loc_start, config.loc_end, default_module_config);
     auto [ignore, tramp_buf] = default_module->AllocCodeCache(0x1000);
     switch (config.backend_isa) {
         case kArm64:
@@ -25,9 +29,9 @@ AddressSpace::AddressSpace(const Config& config) : config(config) {
 
 std::shared_ptr<Module> AddressSpace::MapModule(LocationDescriptor start,
                                                 LocationDescriptor end,
-                                                bool read_only) {
+                                                const ModuleConfig &m_config) {
     std::unique_lock guard(lock);
-    auto module = std::make_shared<Module>(config, *this, start, end, read_only);
+    auto module = std::make_shared<Module>(config, *this, start, end, m_config);
     modules.Map(start, end, module);
     return module;
 }
@@ -46,8 +50,12 @@ void AddressSpace::UnmapModule(LocationDescriptor start, LocationDescriptor end)
     modules.Unmap(start, end);
 }
 
-void AddressSpace::PushCodeCache(ir::Location location, void* cache) {
-    code_cache.Put(location.Value(), reinterpret_cast<size_t>(cache));
+u32 AddressSpace::PushCodeCache(ir::Location location, void* cache) {
+    return code_cache.Put(location.Value(), reinterpret_cast<size_t>(cache));
+}
+
+u32 AddressSpace::GetCodeCacheIndex(ir::Location location) {
+    return code_cache.GetOrPut(location.Value(), 0);
 }
 
 void* AddressSpace::GetCodeCache(ir::Location location) {

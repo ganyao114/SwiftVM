@@ -20,7 +20,7 @@ namespace swift::runtime::backend::arm64 {
 
 using namespace vixl::aarch64;
 
-using CPUReg = boost::variant<Register, VRegister>;
+using CPUReg = std::variant<Register, VRegister>;
 
 class JitContext : DeleteCopyAndMove {
 public:
@@ -34,7 +34,7 @@ public:
     [[nodiscard]] VRegister GetTmpV();
 
     void Forward(ir::Location location);
-    void Forward(const Register& location);
+    void ReturnToDispatcher(const Register& location);
     void Finish();
     [[nodiscard]] u32 CurrentBufferSize();
     u8* Flush(const CodeBuffer& code_cache);
@@ -45,10 +45,12 @@ public:
     void SetCurrent(ir::Block *block);
     void TickIR(ir::Inst* instr);
 
+    vixl::aarch64::Label *GetLabel(LocationDescriptor loc);
+
 private:
     void BlockLinkStub(ir::Location location);
 
-    vixl::aarch64::Label *GetLabel(LocationDescriptor loc);
+    void FlushLabels(VAddr target);
 
     std::shared_ptr<Module> module;
     ir::Function *cur_function{};

@@ -20,8 +20,8 @@ Module::Module(const Config& config,
                AddressSpace& space,
                const ir::Location& start,
                const ir::Location& end,
-               bool ro)
-        : config(config), address_space(space), module_start(start), module_end(end), read_only(ro) {}
+               const ModuleConfig &m_config)
+        : config(config), address_space(space), module_start(start), module_end(end), module_config(m_config) {}
 
 bool Module::Push(ir::Block* block) {
     ASSERT(block);
@@ -83,6 +83,10 @@ void* Module::GetJitCache(ir::Location location) {
     } else {
         return nullptr;
     }
+}
+
+u32 Module::GetDispatchIndex(ir::Location location) {
+    return address_space.GetCodeCacheIndex(location);
 }
 
 void* Module::GetJitCache(const JitCache &jit_cache) {

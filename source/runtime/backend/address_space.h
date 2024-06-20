@@ -23,7 +23,7 @@ public:
 
     std::shared_ptr<Module> MapModule(LocationDescriptor start,
                                       LocationDescriptor end,
-                                      bool read_only = false);
+                                      const ModuleConfig &m_config);
 
     [[nodiscard]] std::shared_ptr<Module> GetModule(LocationDescriptor loc);
 
@@ -31,7 +31,9 @@ public:
 
     void UnmapModule(LocationDescriptor start, LocationDescriptor end);
 
-    void PushCodeCache(ir::Location location, void* cache);
+    u32 PushCodeCache(ir::Location location, void* cache);
+
+    u32 GetCodeCacheIndex(ir::Location location);
 
     [[nodiscard]] void* GetCodeCache(ir::Location location);
 

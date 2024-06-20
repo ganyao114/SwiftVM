@@ -34,13 +34,14 @@ public:
     bool Put(size_t key, size_t value) {
         u32 index = Hash(key);
         bool done = false;
-
+        u32 result{};
         std::unique_lock<TableLock> guard(lock);
         do {
             if (entries[index].key == 0 || entries[index].key == key) {
                 entries[index].value = value;
                 std::atomic_thread_fence(std::memory_order_acquire);
                 entries[index].key = key;
+                result = 2 * index + 1;
                 done = true;
             } else {
                 index++;
@@ -51,7 +52,7 @@ public:
         } while (!done && index < (size - 1));
 
         assert(done);
-        return done;
+        return result;
     }
 
     u32 GetOrPut(size_t key, size_t value) {
