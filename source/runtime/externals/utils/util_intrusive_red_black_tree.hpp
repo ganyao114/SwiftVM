@@ -353,6 +353,14 @@ namespace ams::util {
                 return freebsd::RB_FIND(const_cast<ImplType::RootType &>(m_impl.m_root), const_cast<IntrusiveRedBlackTreeNode *>(node), CompareImpl);
             }
 
+            constexpr ALWAYS_INLINE IntrusiveRedBlackTreeNode *LowerBoundImpl(IntrusiveRedBlackTreeNode const *node) const {
+                return freebsd::RB_LOWER_BOUND(const_cast<ImplType::RootType &>(m_impl.m_root), const_cast<IntrusiveRedBlackTreeNode *>(node), CompareImpl);
+            }
+
+            constexpr ALWAYS_INLINE IntrusiveRedBlackTreeNode *UpperBoundImpl(IntrusiveRedBlackTreeNode const *node) const {
+                return freebsd::RB_UPPER_BOUND(const_cast<ImplType::RootType &>(m_impl.m_root), const_cast<IntrusiveRedBlackTreeNode *>(node), CompareImpl);
+            }
+
             constexpr ALWAYS_INLINE IntrusiveRedBlackTreeNode *NFindImpl(IntrusiveRedBlackTreeNode const *node) const {
                 return freebsd::RB_NFIND(const_cast<ImplType::RootType &>(m_impl.m_root), const_cast<IntrusiveRedBlackTreeNode *>(node), CompareImpl);
             }
@@ -445,6 +453,14 @@ namespace ams::util {
 
             constexpr ALWAYS_INLINE iterator find(const_reference ref) const {
                 return iterator(this->FindImpl(Traits::GetNode(std::addressof(ref))));
+            }
+
+            constexpr ALWAYS_INLINE iterator lower_bound(const_reference ref) const {
+                return iterator(this->LowerBoundImpl(Traits::GetNode(std::addressof(ref))));
+            }
+
+            constexpr ALWAYS_INLINE iterator upper_bound(const_reference ref) const {
+                return iterator(this->UpperBoundImpl(Traits::GetNode(std::addressof(ref))));
             }
 
             constexpr ALWAYS_INLINE iterator nfind(const_reference ref) const {

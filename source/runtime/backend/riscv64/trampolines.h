@@ -14,11 +14,12 @@ using namespace swift::riscv64;
 
 class TrampolinesRiscv64 : public Trampolines {
 public:
-    explicit TrampolinesRiscv64(const Config& config, const CodeBuffer& buffer);
+    explicit TrampolinesRiscv64(const Config& config);
 
-    void Build() override;
+    bool LinkBlock(u8* source, u8* target, u8* source_rw, bool pic) override;
 
 private:
+    void Build();
 
     void BuildRuntimeEntry();
 

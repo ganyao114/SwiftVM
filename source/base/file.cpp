@@ -153,10 +153,10 @@ void* File::Map(size_t offset, size_t size) {
     }
 #if HAS_UNIX_FD
     int prot{0};
-    if ((open_mode & FileAccessMode::Read) != FileAccessMode::None) {
+    if (True(open_mode & FileAccessMode::Read)) {
         prot |= PROT_READ;
     }
-    if ((open_mode & FileAccessMode::Write) != FileAccessMode::None) {
+    if (True(open_mode & FileAccessMode::Write)) {
         prot |= PROT_WRITE;
     }
     auto res = mmap(nullptr, size, prot, MAP_SHARED, fileno(file), offset);

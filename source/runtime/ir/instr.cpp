@@ -21,11 +21,21 @@ void Inst::SetArg(int index, const Value& arg) {
     DestroyArg(index);
     arguments[index] = arg;
     Use(arg);
+
+    // default ret type
+    if (HasValue() && ret_type == ValueType::VOID) {
+        ret_type = arg.Type();
+    }
 }
 
 void Inst::SetArg(int index, const Imm& arg) {
     DestroyArg(index);
     arguments[index] = arg;
+
+    // default ret type
+    if (HasValue() && ret_type == ValueType::VOID) {
+        ret_type = arg.GetType();
+    }
 }
 
 void Inst::SetArg(int index, const Cond& arg) {
@@ -41,11 +51,23 @@ void Inst::SetArg(int index, const Flags& arg) {
 void Inst::SetArg(int index, const Local& arg) {
     DestroyArg(index);
     arguments[index] = arg;
+
+    // default ret type
+    if (ret_type == ValueType::VOID) {
+        if (GetIRMetaInfo(op_code).return_type != ArgType::Void) {
+            ret_type = arg.type;
+        }
+    }
 }
 
 void Inst::SetArg(int index, const Uniform& arg) {
     DestroyArg(index);
     arguments[index] = arg;
+
+    // default ret type
+    if (HasValue() && ret_type == ValueType::VOID) {
+        ret_type = arg.GetType();
+    }
 }
 
 void Inst::SetArg(int index, const Lambda& arg) {
@@ -117,6 +139,20 @@ void Inst::UnUse(const Value& value) {
     }
 }
 
+u8 Inst::GetUses(bool exclude_pseudo) {
+    if (!exclude_pseudo) {
+        return num_use;
+    }
+    u8 pseudo_count{0};
+    auto pseudo_inst = next_pseudo_inst;
+    while (pseudo_inst) {
+        ASSERT(pseudo_inst->GetArg<Value>(0).Def() == this);
+        pseudo_count++;
+        pseudo_inst = pseudo_inst->next_pseudo_inst;
+    }
+    return num_use - pseudo_count;
+}
+
 Inst::Values Inst::GetValues() {
     Values values{};
     for (auto &arg : arguments) {
@@ -153,7 +189,33 @@ ValueType Inst::ReturnType() const {
 bool Inst::HasValue() { return GetIRMetaInfo(op_code).return_type == ArgType::Value; }
 
 bool Inst::IsPseudoOperation() {
-    return op_code == OpCode::GetFlags;
+    return op_code == OpCode::GetFlags || op_code == OpCode::SaveFlags;
+}
+
+bool Inst::IsGetHostRegOperation() {
+    if (op_code == OpCode::GetHostGPR || op_code == OpCode::GetHostFPR) {
+        return GetArg<Imm>(1).Get() == 0;
+    }
+    return false;
+}
+
+bool Inst::IsSetHostRegOperation() {
+    if (op_code == OpCode::SetHostGPR || op_code == OpCode::SetHostFPR) {
+        return GetArg<Imm>(2).Get() == 0;
+    }
+    return false;
+}
+
+bool Inst::IsBitCastOperation() {
+    return op_code == OpCode::BitCast;
+}
+
+bool Inst::HasSideEffects() {
+    if (num_use) {
+        return true;
+    }
+    auto &ir_info = GetIRMetaInfo(op_code);
+    return ir_info.return_type == ArgType::Void;
 }
 
 Inst* Inst::GetPseudoOperation(OpCode code) {
@@ -179,6 +241,18 @@ Inst::Pseudos Inst::GetPseudoOperations() {
     return std::move(pseudos);
 }
 
+bool Inst::HasFlagsSavePseudo() {
+    auto pseudo_inst = next_pseudo_inst;
+    while (pseudo_inst) {
+        ASSERT(pseudo_inst->GetArg<Value>(0).Def() == this);
+        if (pseudo_inst->GetOp() == OpCode::SaveFlags) {
+            return true;
+        }
+        pseudo_inst = pseudo_inst->next_pseudo_inst;
+    }
+    return false;
+}
+
 void Inst::DestroyArg(u8 arg_idx) {
     auto &arg = ArgAt(arg_idx);
     if (arg.IsValue()) {
@@ -193,7 +267,20 @@ void Inst::DestroyArg(u8 arg_idx) {
             }
         }
         params.Destroy();
+    } else {
+        arg = {};
     }
+}
+
+void Inst::DestroyArgs() {
+    for (u8 i = 0; i < max_args; ++i) {
+        DestroyArg(i);
+    }
+}
+
+void Inst::Reset() {
+    DestroyArgs();
+    op_code = OpCode::Void;
 }
 
 void Inst::SetVirReg(u16 slot) {
@@ -244,10 +331,22 @@ void Inst::Validate(Inst* inst) {
     }
 }
 
-Inst::~Inst() {
-    for (u8 i = 0; i < max_args; ++i) {
-        DestroyArg(i);
+int Inst::PublicIndex(int max_index) const {
+    auto& ir_info = GetIRMetaInfo(op_code);
+    int arg_index{0};
+    while (arg_index < max_index) {
+        auto arg_type = ir_info.arg_types[arg_index];
+        if (arg_type == ArgType::Operand) {
+            max_index += 2;
+        }
+        arg_index++;
     }
+    ASSERT(max_index < Inst::max_args);
+    return max_index;
+}
+
+Inst::~Inst() {
+    DestroyArgs();
 }
 
 }  // namespace swift::runtime::ir

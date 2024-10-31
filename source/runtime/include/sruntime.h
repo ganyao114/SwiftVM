@@ -9,6 +9,10 @@
 
 namespace swift::runtime {
 
+namespace backend {
+struct State;
+}
+
 enum class HaltReason : std::uint32_t {
     None = 0x00000000,
     Step = 0x00000001,
@@ -18,7 +22,8 @@ enum class HaltReason : std::uint32_t {
     ModuleMiss = 0x000000010,
     CacheMiss = 0x00000020,
     BlockLinkage = 0x00000040,
-    IllegalCode = 0x00000080
+    IllegalCode = 0x00000080,
+    CallHost = 0x000000100
 };
 
 DECLARE_ENUM_FLAG_OPERATORS(HaltReason)
@@ -32,6 +37,8 @@ class Runtime {
 public:
     explicit Runtime(Instance *instance);
 
+    ~Runtime();
+
     HaltReason Run();
 
     HaltReason Step();
@@ -42,13 +49,15 @@ public:
 
     void SetLocation(LocationDescriptor location);
 
-    LocationDescriptor GetLocation();
+    [[nodiscard]] LocationDescriptor GetLocation();
 
     [[nodiscard]] std::span<u8> GetUniformBuffer() const;
 
+    [[nodiscard]] backend::State *GetState() const;
+
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl;
+    std::unique_ptr<Impl> impl{};
 };
 
 }  // namespace swift::runtime

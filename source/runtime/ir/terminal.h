@@ -33,6 +33,7 @@ struct PopRSBHint {};
 struct If;
 struct Switch;
 struct CheckHalt;
+struct Condition;
 
 using Terminal = boost::variant<
         Invalid,
@@ -42,6 +43,7 @@ using Terminal = boost::variant<
         LinkBlockFast,
         PopRSBHint,
         boost::recursive_wrapper<If>,
+        boost::recursive_wrapper<Condition>,
         boost::recursive_wrapper<Switch>,
         boost::recursive_wrapper<CheckHalt>>;
 
@@ -51,6 +53,14 @@ struct If {
         cond.Use();
     }
     BOOL cond;
+    Terminal then_;
+    Terminal else_;
+};
+
+struct Condition {
+    Condition(Cond cond, Terminal then_, Terminal else_)
+            : cond(cond), then_(std::move(then_)), else_(std::move(else_)) {}
+    Cond cond;
     Terminal then_;
     Terminal else_;
 };

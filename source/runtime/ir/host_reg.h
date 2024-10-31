@@ -23,6 +23,19 @@ struct SpillSlot {
     static constexpr auto INVALID = u16(-1);
     u16 offset{INVALID};
 };
+
+struct Reference {
+    static constexpr auto INVALID = u16(-1);
+    u16 ref_to{INVALID};
+};
+
+struct HostReg {
+    union {
+        HostGPR gpr;
+        HostFPR fpr;
+    };
+    bool is_fpr{};
+};
 #pragma pack(pop)
 
 }

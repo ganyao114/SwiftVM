@@ -13,6 +13,7 @@ class RegisterAllocPass {
 public:
     static void Run(HIRBuilder *hir_builder, backend::RegAlloc *reg_alloc);
     static void Run(HIRFunction *hir_function, backend::RegAlloc *reg_alloc);
+    static void Run(ir::Block *block, backend::RegAlloc *reg_alloc);
 };
 
 class VRegisterAllocPass {

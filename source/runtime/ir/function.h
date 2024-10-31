@@ -8,59 +8,35 @@
 
 namespace swift::runtime::ir {
 
-class Function : public SlabObject<Function, true>, public IntrusiveRefCounter<Function> {
+class Function : public SlabObject<Function, true>,
+                 public IntrusiveRefCounter<Function>,
+                 public AddressNode {
 public:
     using ReadLock = std::shared_lock<RwSpinLock>;
     using WriteLock = std::unique_lock<RwSpinLock>;
 
     explicit Function() = default;
 
-    explicit Function(const Location &location) : location(location) {}
+    explicit Function(const Location& location) : AddressNode(location, AddressNode::Function) {}
 
     ~Function();
 
-    Location GetStartLocation();
-    ir::Block *EntryBlock();
-    ir::Block *FindBlock(ir::Location location);
+    ir::Block* EntryBlock();
+    ir::Block* FindBlock(ir::Location location, bool block_start = true);
 
-    [[nodiscard]] ReadLock LockRead() {
-        return std::shared_lock{func_lock};
-    }
+    [[nodiscard]] ReadLock LockRead() { return std::shared_lock{func_lock}; }
 
-    [[nodiscard]] WriteLock LockWrite() {
-        return std::unique_lock{func_lock};
-    }
+    [[nodiscard]] WriteLock LockWrite() { return std::unique_lock{func_lock}; }
 
-    [[nodiscard]] backend::JitCache& GetJitCache() {
-        return jit_cache;
-    }
+    [[nodiscard]] backend::JitCache& GetJitCache() { return jit_cache; }
 
-    [[nodiscard]] u32 GetDispatchIndex() const {
-        return dispatch_index;
-    }
+    [[nodiscard]] u32 GetDispatchIndex() const { return dispatch_index; }
 
-    union {
-        NonTriviallyDummy dummy{};
-        IntrusiveMapNode map_node;
-        IntrusiveListNode list_node;
-    };
-
-    // for rbtree compare
-    static NOINLINE int Compare(const Function &lhs, const Function &rhs) {
-        if (rhs.location > lhs.location) {
-            return 1;
-        } else if (rhs.location < lhs.location) {
-            return -1;
-        } else {
-            return 0;
-        }
-    }
 private:
     union {
         u32 id{};
         u32 dispatch_index;
     };
-    Location location;
     BlockMap blocks{};
     RwSpinLock func_lock{};
     u16 v_stack{};

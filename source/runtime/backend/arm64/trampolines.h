@@ -13,27 +13,35 @@ using namespace vixl::aarch64;
 
 class TrampolinesArm64 : public Trampolines {
 public:
-    explicit TrampolinesArm64(const Config& config, const CodeBuffer& buffer);
-
-    void Build() override;
+    explicit TrampolinesArm64(const Config& config);
 
     bool LinkBlock(u8* source, u8* target, u8* source_rw, bool pic) override;
 
+    std::optional<CallHost> GetCallHost(HostFunction* func, ISA frontend) override;
+
 private:
-    void BuildRuntimeEntry();
+    void Build();
 
-    void BuildSaveHostCallee();
+    void BuildRuntimeEntry(MacroAssembler &assembler);
 
-    void BuildRestoreHostCallee();
+    void BuildSaveHostCallee(MacroAssembler &assembler);
 
-    void BuildSaveStaticUniform();
+    void BuildRestoreHostCallee(MacroAssembler &assembler);
 
-    void BuildRestoreStaticUniform();
+    void BuildSaveStaticUniform(MacroAssembler &assembler);
 
-    MacroAssembler assembler{};
+    void BuildRestoreStaticUniform(MacroAssembler &assembler);
+
+    void *BuildFunctionTrampoline(MacroAssembler &assembler, HostFunction *func, ISA frontend_isa);
+
+    static void CallHostTrampoline(TrampolinesArm64 *thiz, State *ctx);
+
     Label label_runtime_entry;
     Label label_code_dispatcher;
     Label label_return_host;
+    Label label_call_host;
+    std::unordered_map<LocationDescriptor, CallHost> call_host_trampolines{};
+    std::unordered_map<u64, void *> signature_trampolines{};
 };
 
 }  // namespace swift::runtime::backend::arm64

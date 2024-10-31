@@ -27,6 +27,12 @@ void RegAlloc::MapMemSpill(u32 id, ir::SpillSlot slot) {
     map.slot = slot.offset;
 }
 
+void RegAlloc::MapReference(u32 from, u32 to) {
+    auto& map = alloc_result[to];
+    map.type = REF;
+    map.slot = from;
+}
+
 void RegAlloc::SetActiveRegs(swift::u32 id, GPRSMask& gprs, FPRSMask& fprs) {
     auto& map = alloc_result[id];
     map.dirty_gprs = gprs;
@@ -35,21 +41,32 @@ void RegAlloc::SetActiveRegs(swift::u32 id, GPRSMask& gprs, FPRSMask& fprs) {
 
 ir::HostFPR RegAlloc::ValueFPR(const ir::Value& value) { return ValueFPR(value.Id()); }
 
-ir::HostGPR RegAlloc::ValueGPR(const ir::Value& value) { return ValueGPR(value.Id()); }
+ir::HostGPR RegAlloc::ValueGPR(const ir::Value& value) {
+    return ValueGPR(value.Id());
+}
 
 ir::SpillSlot RegAlloc::ValueMem(const ir::Value& value) { return ValueMem(value.Id()); }
 
 ir::HostGPR RegAlloc::ValueGPR(u32 id) {
+    if (auto &res = alloc_result[id]; res.type == REF) {
+        return ValueGPR(res.slot);
+    }
     ASSERT(alloc_result[id].type == GPR);
     return ir::HostGPR{alloc_result[id].slot};
 }
 
 ir::HostFPR RegAlloc::ValueFPR(u32 id) {
+    if (auto &res = alloc_result[id]; res.type == REF) {
+        return ValueFPR(res.slot);
+    }
     ASSERT(alloc_result[id].type == FPR);
     return ir::HostFPR{alloc_result[id].slot};
 }
 
 ir::SpillSlot RegAlloc::ValueMem(u32 id) {
+    if (auto &res = alloc_result[id]; res.type == REF) {
+        return ValueMem(res.slot);
+    }
     ASSERT(alloc_result[id].type == MEM);
     return ir::SpillSlot{alloc_result[id].slot};
 }
@@ -60,9 +77,13 @@ const GPRSMask& RegAlloc::GetGprs() const { return gprs; }
 
 const FPRSMask& RegAlloc::GetFprs() const { return fprs; }
 
-ir::HostGPR RegAlloc::GetTmpGPR() { return ir::HostGPR{1}; }
+GPRSMask RegAlloc::GetDirtyGPR() const {
+    return alloc_result[current_ir->Id()].dirty_gprs;
+}
 
-ir::HostFPR RegAlloc::GetTmpFPR() { return ir::HostFPR{1}; }
+FPRSMask RegAlloc::GetDirtyFPR() const {
+    return alloc_result[current_ir->Id()].dirty_fprs;
+}
 
 void RegAlloc::SetCurrent(ir::Inst* inst) { current_ir = inst; }
 

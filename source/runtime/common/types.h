@@ -7,11 +7,12 @@
 #include <list>
 #include <set>
 #include <vector>
+#include <map>
 #include <boost/container/small_vector.hpp>
 #include <boost/dynamic_bitset.hpp>
 #include <boost/intrusive/rbtree.hpp>
 #include <boost/intrusive/slist.hpp>
-#include <boost/intrusive_ptr.hpp>
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include "base/common_funcs.h"
 #include "base/types.h"
@@ -42,8 +43,11 @@ using SingleIntrusiveList = typename boost::intrusive::
 // boost::intrusive::member_hook<Parent, IntrusiveMapNode, Member>,
 // boost::intrusive::compare<std::less<Parent>>>;
 
+template<auto MemberPtr>
+using GetParentType = ams::util::impl::GetParentType<MemberPtr>;
+
 using IntrusiveMapNode = ams::util::IntrusiveRedBlackTreeNode;
-template <auto Member, typename Comparator = ams::util::impl::GetParentType<Member>>
+template <auto Member, typename Comparator = GetParentType<Member>>
 using IntrusiveMap = typename ams::util::IntrusiveRedBlackTreeMemberTraitsDeferredAssert<
         Member>::template TreeType<Comparator>;
 
@@ -54,6 +58,8 @@ template <typename T> using Vector = typename std::vector<T>;
 template <typename T> using List = typename std::list<T>;
 
 template <typename T> using Set = typename std::set<T>;
+
+template <typename K, typename V> using Map = typename std::map<K, V>;
 
 template <typename T, size_t N> using StackVector = typename boost::container::small_vector<T, N>;
 

@@ -34,8 +34,10 @@ add_library(swift_runtime STATIC
         common/cityhash.cpp
         common/cityhash.h
         common/swap.h
+        common/address_hash_map.h
         frontend/ir_assembler.cpp
         frontend/ir_assembler.h
+        frontend/function_abi.h
         ir/args.cpp
         ir/args.h
         ir/ir_types.h
@@ -68,6 +70,12 @@ add_library(swift_runtime STATIC
         ir/opts/register_alloc_pass.h
         ir/opts/reid_instr_pass.cpp
         ir/opts/reid_instr_pass.h
+        ir/opts/uniform_elimination_pass.cpp
+        ir/opts/uniform_elimination_pass.h
+        ir/opts/flags_elimination_pass.cpp
+        ir/opts/flags_elimination_pass.h
+        ir/opts/deadcode_elimination_pass.cpp
+        ir/opts/deadcode_elimination_pass.h
         backend/translate_table.h
         backend/asm_interp.cpp
         backend/asm_interp.h
@@ -96,6 +104,7 @@ add_library(swift_runtime STATIC
         backend/arm64/jit/jit_context.h
         backend/arm64/jit/translator.cpp
         backend/arm64/jit/translator.h
+        backend/arm64/jit/flags.cpp
         backend/arm64/trampolines.cpp
         backend/arm64/trampolines.h
         backend/riscv64/jit/jit_context.cpp
@@ -106,6 +115,7 @@ add_library(swift_runtime STATIC
         backend/interp/interpreter.h
         backend/cache_clear.cpp
         backend/cache_clear.h
+        backend/host_function.h
         ${RUNTIME_ARCH_SOURCE})
 
 find_package(Boost 1.57)

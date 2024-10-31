@@ -2,55 +2,162 @@
 // Created by SwiftGan on 2021/1/1.
 //
 
+#include <array>
 #include <cmath>
 #include "runtime/frontend/x86/cpu.h"
 #include "runtime/frontend/x86/decoder.h"
 
 namespace swift::x86 {
+
+using namespace swift::runtime::frontend;
+
+static std::array<ABIRegUniform, 1> general_return_x86{{offsetof(ThreadContext64, rax), 4}};
+
+static std::array<ABIRegUniform, 1> float_return_x86{{offsetof(ThreadContext64, xmm0), 16}};
+
+static std::array<ABIRegUniform, 8> general_params_x64{
+        ABIRegUniform{offsetof(ThreadContext64, rdi), 8},
+        ABIRegUniform{offsetof(ThreadContext64, rsi), 8},
+        ABIRegUniform{offsetof(ThreadContext64, rdx), 8},
+        ABIRegUniform{offsetof(ThreadContext64, rcx), 8},
+        ABIRegUniform{offsetof(ThreadContext64, r8), 8},
+        ABIRegUniform{offsetof(ThreadContext64, r9), 8},
+        ABIRegUniform{offsetof(ThreadContext64, rax), 8},
+        ABIRegUniform{offsetof(ThreadContext64, rbx), 8}};
+
+static std::array<ABIRegUniform, 8> float_params_x64{
+        ABIRegUniform{offsetof(ThreadContext64, xmm0), 16},
+        ABIRegUniform{offsetof(ThreadContext64, xmm1), 16},
+        ABIRegUniform{offsetof(ThreadContext64, xmm2), 16},
+        ABIRegUniform{offsetof(ThreadContext64, xmm3), 16},
+        ABIRegUniform{offsetof(ThreadContext64, xmm4), 16},
+        ABIRegUniform{offsetof(ThreadContext64, xmm5), 16},
+        ABIRegUniform{offsetof(ThreadContext64, xmm6), 16},
+        ABIRegUniform{offsetof(ThreadContext64, xmm7), 16}};
+
+static std::array<ABIRegUniform, 2> general_return_x64{
+        ABIRegUniform{offsetof(ThreadContext64, rdi), 8},
+        ABIRegUniform{offsetof(ThreadContext64, rsi), 8}};
+
+static std::array<ABIRegUniform, 2> float_return_x64{
+        ABIRegUniform{offsetof(ThreadContext64, xmm0), 16},
+        ABIRegUniform{offsetof(ThreadContext64, xmm1), 16}};
+
+ABIDescriptor GetABIDescriptor32() {
+    return {{}, {}, general_return_x86, float_return_x86};
+}
+
+ABIDescriptor GetABIDescriptor64() {
+    return {general_params_x64, float_params_x64, general_return_x64, float_return_x64};
+}
+
+void FromHost(backend::State* state, ThreadContext64* ctx) {
+    ctx->pc.qword = *state->current_loc;
+    // TODO Flags
+}
+
+void ToHost(backend::State* state, ThreadContext64* ctx) {
+    state->current_loc = ctx->pc.qword;
+    // TODO Flags
+}
+
 #define __ assembler->
 
-constexpr u8 TimesToShift(u32 times) {
-    switch (times) {
-        case 1:
-            return 0;
-        case 2:
-            return 1;
-        case 4:
-            return 2;
+static ir::ValueType GetSize(u32 bits) {
+    switch (bits) {
+        case 0:
+            return ir::ValueType::VOID;
         case 8:
-            return 3;
+            return ir::ValueType::U8;
+        case 16:
+            return ir::ValueType::U16;
+        case 32:
+            return ir::ValueType::U32;
+        case 64:
+            return ir::ValueType::U64;
         default:
-            UNREACHABLE();
-            break;
+            PANIC();
+            return ir::ValueType::VOID;
+    }
+}
+
+static ir::ValueType GetSignedSize(u32 bits) {
+    switch (bits) {
+        case 0:
+            return ir::ValueType::VOID;
+        case 8:
+            return ir::ValueType::S8;
+        case 16:
+            return ir::ValueType::S16;
+        case 32:
+            return ir::ValueType::S32;
+        case 64:
+            return ir::ValueType::S64;
+        default:
+            PANIC();
+            return ir::ValueType::VOID;
+    }
+}
+
+static ir::ValueType GetVecSize(u32 bits) {
+    switch (bits) {
+        case 0:
+            return ir::ValueType::VOID;
+        case 8:
+            return ir::ValueType::V8;
+        case 16:
+            return ir::ValueType::V16;
+        case 32:
+            return ir::ValueType::V32;
+        case 64:
+            return ir::ValueType::V64;
+        case 128:
+            return ir::ValueType::V128;
+        case 256:
+            return ir::ValueType::V256;
+        default:
+            PANIC();
+            return ir::ValueType::VOID;
     }
 }
 
 ir::Uniform ToReg(const X86RegInfo& info) {
-    auto base_offset = offsetof(ThreadContext64, regs);
-    u32 offset = base_offset + info.index * sizeof(Reg);
-    ir::ValueType type = info.type;
-    return ir::Uniform{offset, type};
+    u32 offset{};
+    if (info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::R15) {
+        // gprs
+        offset = offsetof(ThreadContext64, regs) + (info.index - X86RegInfo::Rax) * sizeof(Reg);
+    } else if (info.index >= X86RegInfo::ES && info.index <= X86RegInfo::GS) {
+        // segments
+        offset = offsetof(ThreadContext64, segs) + (info.index - X86RegInfo::ES) * sizeof(Seg);
+    } else if (info.index == X86RegInfo::Rip) {
+        // pc
+        offset = offsetof(ThreadContext64, pc);
+    } else {
+        PANIC("Invalid GPR {}!", info.index);
+    }
+    return ir::Uniform{offset, info.type};
 }
 
 ir::Uniform ToVReg(const X86RegInfo& info) {
-    auto base_offset = offsetof(ThreadContext64, xmms);
-    u32 offset = base_offset + (info.index - X86RegInfo::Xmm0) * sizeof(Reg);
-    ir::ValueType type = info.type;
-    return ir::Uniform{offset, type};
-}
-
-ir::Operand ToOperand(ir::Lambda address) {
-    if (address.IsValue()) {
-        return ir::Operand{address.GetValue()};
+    u32 offset{};
+    if (info.index >= X86RegInfo::Xmm0 && info.index <= X86RegInfo::Xmm15) {
+        offset = offsetof(ThreadContext64, xmms) + (info.index - X86RegInfo::Xmm0) * sizeof(Xmm);
+    } else if (info.index >= X86RegInfo::Ymm0 && info.index <= X86RegInfo::Ymm15) {
+        // AVX Regs
+        offset = offsetof(ThreadContext64, xmms) + (info.index - X86RegInfo::Ymm0) * sizeof(Ymm);
     } else {
-        return ir::Operand{address.GetImm()};
+        PANIC("Invalid FPR {}!", info.index);
     }
+    return ir::Uniform{offset, info.type};
 }
 
-ir::Operand ToOperand(ir::Value value) { return ir::Operand{value}; }
-
-X64Decoder::X64Decoder(VAddr start, runtime::MemoryInterface* memory, ir::Assembler* visitor)
-        : start(start), assembler(visitor), memory(memory) {}
+X64Decoder::X64Decoder(VAddr start,
+                       runtime::MemoryInterface* memory,
+                       ir::Assembler* visitor,
+                       bool is_64bit)
+        : start(start), pc(start), assembler(visitor), memory(memory), is_64bit(is_64bit) {
+    addr_mask = is_64bit ? UINT64_MAX : UINT32_MAX;
+}
 
 void X64Decoder::Decode() {
     pc = start;
@@ -60,7 +167,7 @@ void X64Decoder::Decode() {
             Interrupt(InterruptReason::PAGE_FATAL);
             break;
         }
-        _DInst insn = DisDecode(code_ptr, 0x10, 1);
+        _DInst insn = DisDecode(code_ptr, 0x10, is_64bit);
         if (insn.opcode == UINT16_MAX) {
             Interrupt(InterruptReason::ILL_CODE);
             break;
@@ -71,6 +178,7 @@ void X64Decoder::Decode() {
             break;
         }
         assembler->AdvancePC(ir::Imm{insn.size});
+        end_decode = assembler->EndCommit();
     }
 }
 
@@ -99,7 +207,6 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             __ SetLocation(ir::Lambda{ret_addr});
             __ PopRSB();
             __ Return();
-            end_decode = true;
             break;
         }
         case I_RETF: {
@@ -107,7 +214,6 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             __ SetLocation(ir::Lambda{ret_addr});
             __ PopRSB();
             __ Return();
-            end_decode = true;
             break;
         }
         case I_LEAVE:
@@ -228,6 +334,9 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_ADD:
             DecodeAddSub(insn, false);
             break;
+        case I_XADD:
+            DecodeAddSub(insn, false, true, true);
+            break;
         case I_SUB:
             DecodeAddSub(insn, true);
             break;
@@ -252,11 +361,35 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_DIV:
             DecodeMulDiv(insn, true);
             break;
+        case I_IMUL:
+            DecodeMulDiv(insn, false, true);
+            break;
+        case I_IDIV:
+            DecodeMulDiv(insn, true, true);
+            break;
         case I_OR:
             DecodeOr(insn);
             break;
+        case I_AND:
+            DecodeAnd(insn, true);
+            break;
+        case I_TEST:
+            DecodeAnd(insn, false);
+            break;
         case I_XOR:
             DecodeXor(insn);
+            break;
+        case I_PUSH:
+            DecodePush(insn);
+            break;
+        case I_POP:
+            DecodePop(insn);
+            break;
+        case I_PUSHA:
+            DecodePushA(insn);
+            break;
+        case I_POPA:
+            DecodePopA(insn);
             break;
         default:
             return false;
@@ -264,133 +397,13 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
     return true;
 }
 
-void X64Decoder::DecodeMov(_DInst& insn) {
-    auto& op0 = insn.ops[0];
-    auto& op1 = insn.ops[1];
-
-    auto src = Src(insn, op1);
-    Dst(insn, op0, src);
-}
-
-void X64Decoder::DecodeAddSub(_DInst& insn, bool sub, bool save_res) {
-    auto& op0 = insn.ops[0];
-    auto& op1 = insn.ops[1];
-
-    auto left = Src(insn, op0);
-    auto right = Src(insn, op1);
-
-    auto result = sub ? __ Sub(left, right) : __ Add(left, right);
-
-    auto flags = __ GetFlags(result, ir::Flags::All);
-
-//    SetFlag(CPUFlags::Carry, __ GetCarry(result));
-//    SetFlag(CPUFlags::Overflow, __ GetOverFlow(result));
-//    SetFlag(CPUFlags::Signed, __ GetSigned(result));
-//    SetFlag(CPUFlags::Parity, __ GetParity(result));
-//    SetFlag(CPUFlags::Zero, __ GetZero(result));
-
-    if (save_res) {
-        Dst(insn, op0, result);
-    }
-}
-
-void X64Decoder::DecodeCondJump(_DInst& insn, Cond cond) {
-    auto& op0 = insn.ops[0];
-
-    auto address = AddrSrc(insn, op0);
-
-    if (cond == Cond::AL) {
-        if (address.IsValue()) {
-            __ SetLocation(address);
-            __ ReturnToDispatcher();
-        } else {
-            __ LinkBlock(ir::terminal::LinkBlock{address.GetImm().GetValue()});
-        }
-    } else {
-        auto check_result = CheckCond(cond);
-        CondGoto(check_result, address, pc + insn.size);
-    }
-}
-
-void X64Decoder::DecodeZeroCheckJump(_DInst& insn, _RegisterType reg) {
-    auto& op0 = insn.ops[0];
-    auto value_check = R(reg);
-    auto address = AddrSrc(insn, op0);
-
-    CondGoto(__ Not(value_check), address, pc + insn.size);
-}
-
-void X64Decoder::DecodeAddSubWithCarry(_DInst& insn, bool sub) {
-    auto& op0 = insn.ops[0];
-    auto& op1 = insn.ops[1];
-
-    auto left = Src(insn, op0);
-    auto right = Src(insn, op1);
-
-    auto result = sub ? __ Sub(left, right) : __ Adc(left, right);
-
-    auto flags = __ GetFlags(result, ir::Flags::All);
-
-//    SetFlag(CPUFlags::Carry, __ GetCarry(result));
-//    SetFlag(CPUFlags::Overflow, __ GetOverFlow(result));
-//    SetFlag(CPUFlags::Signed, __ GetSigned(result));
-//    SetFlag(CPUFlags::Parity, __ GetParity(result));
-//    SetFlag(CPUFlags::Zero, __ GetZero(result));
-
-    Dst(insn, op0, result);
-}
-
-void X64Decoder::DecodeIncAndDec(_DInst& insn, bool dec) {
-    auto& op0 = insn.ops[0];
-    auto src = Src(insn, op0);
-    auto result = dec ? __ Sub(src, ir::Imm(1u)) : __ Add(src, ir::Imm(1u));
-
-    auto flags = __ GetFlags(result, ir::Flags::Overflow | ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
-
-//    SetFlag(CPUFlags::Overflow, __ GetOverFlow(result));
-//    SetFlag(CPUFlags::Signed, __ GetSigned(result));
-//    SetFlag(CPUFlags::Parity, __ GetParity(result));
-//    SetFlag(CPUFlags::Zero, __ GetZero(result));
-
-    Dst(insn, op0, result);
-}
-
-void X64Decoder::DecodeMulDiv(_DInst& insn, bool div) {
-    auto& op0 = insn.ops[0];
-    auto left = Src(insn, op0);
-    auto right = R(div ? _RegisterType::R_RAX : _RegisterType::R_RAX);
-
-    ClearFlags(CPUFlags::FlagsAll);
-}
-
-void X64Decoder::DecodeLea(_DInst& insn) {
-    auto& op0 = insn.ops[0];
-    auto& op1 = insn.ops[1];
-
-    auto address = GetAddress(insn, op1);
-    if (address.IsValue()) {
-        Dst(insn, op0, address.GetValue());
-    } else {
-        Dst(insn, op0, __ LoadImm(address.GetImm()));
-    }
-}
-
-void X64Decoder::DecodeCondMov(_DInst& insn, Cond cond) {
-    auto check_result = CheckCond(cond);
-    auto label = __ NotGoto(check_result);
-    DecodeMov(insn);
-    __ BindLabel(label);
-}
-
-void X64Decoder::DecodeAnd(_DInst& insn) {}
-
 ir::Value X64Decoder::R(_RegisterType reg) {
-    assert(reg <= _RegisterType::R_XMM15);
+    ASSERT(reg <= _RegisterType::R_RIP);
     return __ LoadUniform(ToReg(x86_regs_table[reg]));
 }
 
 ir::Value X64Decoder::V(_RegisterType reg) {
-    assert(reg <= _RegisterType::R_XMM15);
+    ASSERT(reg <= _RegisterType::R_YMM15);
     return __ LoadUniform(ToVReg(x86_regs_table[reg]));
 }
 
@@ -402,34 +415,11 @@ void X64Decoder::V(_RegisterType reg, ir::Value value) {
     __ StoreUniform(ToVReg(x86_regs_table[reg]), value);
 }
 
-ir::Value X64Decoder::GetFlag(CPUFlags flag) {
-    u32 ef_offset = offsetof(ThreadContext64, ef);
-    auto ef_value = __ LoadUniform(ir::Uniform{ef_offset, ir::ValueType::U32});
-    return __ BitExtract(ef_value, ir::Imm(GetEFlagBit(flag)), ir::Imm(1u));
-}
-
-void X64Decoder::SetFlag(CPUFlags flag, ir::BOOL value) {
-    u32 ef_offset = offsetof(ThreadContext64, ef);
-    ir::Uniform ef_uni{ef_offset, ir::ValueType::U32};
-    auto old_ef = __ LoadUniform(ef_uni);
-    auto new_ef = __ BitInsert(old_ef, value, ir::Imm(GetEFlagBit(flag)), ir::Imm(1u));
-    __ StoreUniform(ef_uni, new_ef);
-}
-
-void X64Decoder::ClearFlags(CPUFlags flags) {
-    u32 ef_offset = offsetof(ThreadContext64, ef);
-    ir::Uniform ef_uni{ef_offset, ir::ValueType::U32};
-    auto old_ef = __ LoadUniform(ef_uni);
-    auto new_ef = __ AndImm(old_ef, ir::Imm(~static_cast<u32>(flags)));
-    __ StoreUniform(ef_uni, new_ef);
-}
-
 void X64Decoder::Interrupt(InterruptReason reason) {
     ir::Uniform uni_interrupt{offsetof(ThreadContext64, interrupt), ir::ValueType::U32};
     __ SetLocation(ir::Lambda{ir::Imm{pc}});
     __ StoreUniform(uni_interrupt, __ LoadImm(ir::Imm(static_cast<u32>(reason))));
     __ ReturnToHost();
-    end_decode = true;
 }
 
 ir::BOOL X64Decoder::CheckCond(Cond cond) {
@@ -437,9 +427,9 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
         case Cond::AL:
             return __ LoadImm(ir::Imm(true));
         case Cond::EQ:
-            return GetFlag(CPUFlags::Zero);
+            return __ TestFlags(ir::Flags::Zero);
         case Cond::NE:
-            return __ Not(GetFlag(CPUFlags::Zero));
+            return __ TestNotFlags(ir::Flags::Zero);
         case Cond::CS:
             break;
         case Cond::CC:
@@ -494,86 +484,76 @@ void X64Decoder::CondGoto(ir::BOOL cond, ir::Lambda then_, ir::Location else_) {
                 cond, ir::terminal::ReturnToDispatch{}, ir::terminal::LinkBlock{else_}});
     } else {
         __ If(ir::terminal::If{cond,
-                               ir::terminal::LinkBlock{then_.GetImm().GetValue()},
+                               ir::terminal::LinkBlock{then_.GetImm().Get()},
                                ir::terminal::LinkBlock{else_}});
     }
 }
 
-ir::ValueType X64Decoder::GetSize(u32 bits) {
-    switch (bits) {
-        case 0:
-            return ir::ValueType::VOID;
-        case 8:
-            return ir::ValueType::U8;
-        case 16:
-            return ir::ValueType::U16;
-        case 32:
-            return ir::ValueType::U32;
-        case 64:
-            return ir::ValueType::U64;
+ir::Value X64Decoder::ToValue(const ir::DataClass& data) {
+    return data.IsImm() ? __ LoadImm(data.imm) : data.value;
+}
+
+ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op) {
+    ir::DataClass result{};
+    switch (op.type) {
+        case O_PC:
+            result = ir::Imm(pc + insn.imm.sqword);
+            break;
+        case O_REG:
+            if (op.index == R_RIP) {
+                result = ir::Imm(pc + insn.imm.qword & addr_mask);
+            } else if (IsV(static_cast<_RegisterType>(op.index))) {
+                result = V(static_cast<_RegisterType>(op.index));
+            } else {
+                result = R(static_cast<_RegisterType>(op.index));
+            }
+            break;
+        case O_IMM: {
+            /* Special fix for negative sign extended immediates. */
+            if ((insn.flags & FLAG_IMM_SIGNED) && (op.size == 8)) {
+                if (insn.imm.sbyte < 0) {
+                    result = ir::Imm{insn.imm.sbyte};
+                    break;
+                }
+            }
+
+            if (op.size == 64) {
+                result = ir::Imm{insn.imm.qword};
+            } else {
+                result = ir::Imm{insn.imm.dword};
+            }
+            break;
+        }
+        case O_IMM1:
+            result = ir::Imm{insn.imm.ex.i1};
+            break;
+        case O_IMM2:
+            result = ir::Imm{insn.imm.ex.i2};
+            break;
+        case O_SMEM:
+        case O_MEM:
+        case O_DISP: {
+            auto size = GetSize(op.size);
+            auto address_operand = GetAddress(insn, op);
+            result = __ LoadMemoryTSO(address_operand.ToIROperand()).SetType(size);
+            break;
+        }
+        case O_PTR: {
+            auto mem_segment = insn.imm.ptr.seg;
+            auto seg_offset = insn.imm.ptr.off;
+            auto address = (u32(mem_segment) << 4) + seg_offset;
+            result = ir::Imm{address};
+            break;
+        }
         default:
             PANIC();
-            return ir::ValueType::VOID;
-    }
-}
-
-ir::Value X64Decoder::Src(_DInst& insn, _Operand& operand) {
-    ir::Value value{};
-    auto size = GetSize(operand.size);
-    switch (operand.type) {
-        case O_PC:
-            value = __ LoadImm(ir::Imm(pc + insn.imm.qword));
-            break;
-        case O_REG:
-            if (operand.index == R_RIP) {
-                value = __ LoadImm(ir::Imm(pc + insn.imm.qword));
-            } else if (IsV(static_cast<_RegisterType>(operand.index))) {
-                value = V(static_cast<_RegisterType>(operand.index));
-            } else {
-                value = R(static_cast<_RegisterType>(operand.index));
-            }
-            break;
-        case O_IMM:
-            value = __ LoadImm(ir::Imm{insn.imm.qword});
-            break;
-        case O_SMEM:
-        case O_MEM:
-            auto address = GetAddress(insn, operand);
-            value = __ LoadMemory(address).SetType(size);
-            break;
     }
 
-    return value;
+    return result;
 }
 
-ir::Lambda X64Decoder::AddrSrc(_DInst& insn, _Operand& operand) {
-    ir::Lambda value{};
-    switch (operand.type) {
-        case O_PC:
-            value = ir::Imm(pc + insn.imm.qword);
-            break;
-        case O_REG:
-            if (operand.index == R_RIP) {
-                value = ir::Imm(pc + insn.imm.qword);
-            } else if (IsV(static_cast<_RegisterType>(operand.index))) {
-                value = V(static_cast<_RegisterType>(operand.index));
-            } else {
-                value = R(static_cast<_RegisterType>(operand.index));
-            }
-            break;
-        case O_IMM:
-            value = ir::Imm{insn.imm.qword, GetSize(operand.size)};
-            break;
-        case O_SMEM:
-        case O_MEM:
-            auto address = GetAddress(insn, operand);
-            value = __ LoadMemory(ToOperand(address)).SetType(ir::ValueType::U64);
-            break;
-    }
-    return value;
-}
-
-void X64Decoder::Dst(_DInst& insn, _Operand& operand, ir::Value value) {
+void X64Decoder::Dst(_DInst& insn, _Operand& operand, const ir::DataClass& data) {
+    auto value = ToValue(data);
     switch (operand.type) {
         case O_REG:
             if (IsV(static_cast<_RegisterType>(operand.index))) {
@@ -582,79 +562,262 @@ void X64Decoder::Dst(_DInst& insn, _Operand& operand, ir::Value value) {
                 R(static_cast<_RegisterType>(operand.index), value);
             }
             break;
+        case O_DISP:
         case O_SMEM:
-        case O_MEM:
+        case O_MEM: {
             auto address = GetAddress(insn, operand);
-            __ StoreMemory(ToOperand(address), value);
+            __ StoreMemoryTSO(address.ToIROperand(), value);
             break;
+        }
+        default:
+            PANIC();
     }
 }
 
 bool X64Decoder::IsV(_RegisterType reg) { return reg >= R_ST0; }
 
-ir::Lambda X64Decoder::GetAddress(_DInst& insn, _Operand& operand) {
-    ir::Lambda value{};
-    switch (operand.type) {
-        case O_MEM: {
-            u8 segment{};
-            if (insn.segment == R_NONE) {
-                switch (insn.base) {
-                    case R_BP:
-                    case R_EBP:
-                    case R_RBP:
-                        segment = R_SS;
-                        break;
-                    case R_RIP:
-                        segment = R_CS;
-                        break;
-                    default:
-                        segment = R_NONE;
-                }
+X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
+    Operand address_operand{};
+    switch (op.type) {
+        case O_SMEM: {
+            auto segment = SEGMENT_GET(insn.segment);
+            bool is_default = SEGMENT_IS_DEFAULT(insn.segment);
+            switch (insn.opcode) {
+                case I_MOVS:
+                    is_default = false;
+                    if (&op == &insn.ops[0]) segment = R_ES;
+                    break;
+                case I_CMPS:
+                    is_default = false;
+                    if (&op == &insn.ops[1]) segment = R_ES;
+                    break;
+                case I_INS:
+                case I_LODS:
+                case I_STOS:
+                case I_SCAS:
+                    is_default = false;
+                    break;
             }
-            ir::Imm offset{insn.disp};
-            if (insn.base <= R_DR7) {
-                auto value_base = R(static_cast<_RegisterType>(insn.base));
-                auto value_rn = R(static_cast<_RegisterType>(operand.index));
-                auto value_base_index =
-                        insn.scale ? __ Add(value_base, __ LslImm(value_rn, ir::Imm(insn.scale)))
-                                   : __ Add(value_base, value_rn);
-                value = insn.disp ? __ Add(value_base_index, offset) : value_base_index;
-            } else {
-                auto value_rn = R(static_cast<_RegisterType>(operand.index));
-                auto value_base_index =
-                        insn.scale ? __ LslImm(value_rn, ir::Imm(insn.scale)) : value_rn;
-                value = insn.disp ? __ Add(value_base_index, offset) : value_base_index;
+
+            address_operand.left = R(static_cast<_RegisterType>(op.index));
+
+            if (!is_default && (segment != R_NONE)) {
+                address_operand.right = R(static_cast<_RegisterType>(segment));
+                address_operand.ext = 4;
+            }
+
+            if (insn.dispSize) {
+                s64 disp = ForceCast<s64>(insn.disp);
+                if (address_operand.right.Null() && !address_operand.ext) {
+                    address_operand.right = ir::Imm(disp & addr_mask);
+                } else {
+                    ir::Imm imm{std::abs<s64>(disp) & addr_mask};
+                    address_operand.left =
+                            disp > 0 ? __ Add(address_operand.left.value, ir::Operand(imm))
+                                     : __ Sub(address_operand.left.value, ir::Operand{imm});
+                }
             }
             break;
         }
-        case O_SMEM:
-            if (operand.index == R_RIP) {
-                value = ir::Lambda(ir::Imm{pc + insn.disp});
+        case O_MEM: {
+            if ((SEGMENT_GET(insn.segment) != R_NONE) && !SEGMENT_IS_DEFAULT(insn.segment)) {
+                address_operand.left = __ LslImm(
+                        R(static_cast<_RegisterType>(SEGMENT_GET(insn.segment))), ir::Imm(4u));
+            }
+            if (insn.base != R_NONE) {
+                ASSERT(address_operand.left.Null());
+                if (insn.base == R_RIP) {
+                    address_operand.left = ir::Imm(pc & addr_mask);
+                } else {
+                    address_operand.left = R(static_cast<_RegisterType>(insn.base));
+                }
+                address_operand.right = R(static_cast<_RegisterType>(op.index));
             } else {
-                auto base_reg = R(static_cast<_RegisterType>(operand.index));
-                value = __ Add(base_reg, ir::Imm(insn.disp));
+                address_operand.left = R(static_cast<_RegisterType>(op.index));
+            }
+            if (insn.scale != 0) {
+                if (insn.scale == 2)
+                    address_operand.ext = 1;
+                else if (insn.scale == 4)
+                    address_operand.ext = 2;
+                else if (insn.scale == 8)
+                    address_operand.ext = 3;
+                else {
+                    PANIC("Invalid scale");
+                }
+            }
+            if (insn.dispSize && insn.disp) {
+                s64 disp = ForceCast<s64>(insn.disp);
+                if (address_operand.right.Null() && !address_operand.ext) {
+                    address_operand.right = ir::Imm(disp & addr_mask);
+                } else {
+                    ir::Imm imm{std::abs<s64>(disp) & addr_mask};
+                    address_operand.left =
+                            disp > 0 ? __ Add(address_operand.left.value, ir::Operand(imm))
+                                     : __ Sub(address_operand.left.value, ir::Operand{imm});
+                }
             }
             break;
+        }
+        case O_DISP: {
+            if ((SEGMENT_GET(insn.segment) != R_NONE) && !SEGMENT_IS_DEFAULT(insn.segment)) {
+                auto segment = R(static_cast<_RegisterType>(SEGMENT_GET(insn.segment)));
+                address_operand.left = __ LoadImm(ir::Imm(insn.disp & addr_mask));
+                address_operand.right = segment;
+                address_operand.ext = 4;
+            } else {
+                address_operand.left = ir::Imm(insn.disp & addr_mask);
+            }
+            break;
+        }
         default:
             PANIC();
     }
-    if (value.IsValue() && value.GetValue().Type() != ir::ValueType::U64) {
-        value = __ ZeroExtend64(value.GetValue());
-    }
-    return value;
+    return address_operand;
 }
 
-ir::Value X64Decoder::Pop(_RegisterType reg, ir::ValueType size) {
-    auto size_byte = ir::GetValueSizeByte(size);
+void X64Decoder::DecodeMov(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+
+    auto src = Src(insn, op1);
+    Dst(insn, op0, src);
+}
+
+void X64Decoder::DecodeAddSub(_DInst& insn, bool sub, bool save_res, bool exchange) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+
+    auto left = ToValue(Src(insn, op0));
+    auto right = Src(insn, op1);
+
+    auto result = sub ? __ Sub(left, ir::Operand{right}) : __ Add(left, ir::Operand{right});
+
+    __ SaveFlags(result, ir::Flags::All);
+
+    if (exchange) {
+        Dst(insn, op1, left);
+    }
+
+    if (save_res) {
+        Dst(insn, op0, result);
+    }
+}
+
+void X64Decoder::DecodeCondJump(_DInst& insn, Cond cond) {
+    auto& op0 = insn.ops[0];
+
+    auto address = ir::Lambda{Src(insn, op0)};
+
+    if (cond == Cond::AL) {
+        if (!address.IsValue()) {
+            __ SetLocation(address);
+            __ ReturnToDispatcher();
+        } else {
+            __ LinkBlock(ir::terminal::LinkBlock{address.GetImm().Get()});
+        }
+    } else {
+        auto check_result = CheckCond(cond);
+        CondGoto(check_result, address, pc);
+    }
+}
+
+void X64Decoder::DecodeZeroCheckJump(_DInst& insn, _RegisterType reg) {
+    auto& op0 = insn.ops[0];
+    auto value_check = R(reg);
+    auto address = Src(insn, op0);
+
+    CondGoto(__ Not(value_check), address, pc);
+}
+
+void X64Decoder::DecodeAddSubWithCarry(_DInst& insn, bool sub) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+
+    auto left = ToValue(Src(insn, op0));
+    auto right = Src(insn, op1);
+
+    auto result = sub ? __ Sub(left, ir::Operand{right}) : __ Adc(left, ir::Operand{right});
+
+    __ SaveFlags(result, ir::Flags::All);
+
+    Dst(insn, op0, result);
+}
+
+void X64Decoder::DecodeIncAndDec(_DInst& insn, bool dec) {
+    auto& op0 = insn.ops[0];
+    auto src = ToValue(Src(insn, op0));
+    auto result =
+            dec ? __ Sub(src, ir::Operand{ir::Imm(1u)}) : __ Add(src, ir::Operand{ir::Imm(1u)});
+
+    __ SaveFlags(result,
+                 ir::Flags::Overflow | ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero |
+                         ir::Flags::AuxiliaryCarry);
+
+    Dst(insn, op0, result);
+}
+
+void X64Decoder::DecodeMulDiv(_DInst& insn, bool div, bool sign) {
+    auto& op0 = insn.ops[0];
+    auto left = ToValue(Src(insn, op0));
+    auto right = R(_RegisterType::R_RAX);
+
+    if (sign && op0.size != 64) {
+        left = __ SignExtend(left).SetType(GetSignedSize(op0.size));
+        right = __ SignExtend(right).SetType(GetSignedSize(op0.size));
+    }
+
+    auto result = div ? __ Div(left, ir::Operand{right}) : __ Mul(left, ir::Operand{right});
+
+    __ SaveFlags(result, ir::Flags::Overflow | ir::Flags::Carry);
+
+    Dst(insn, op0, result);
+}
+
+void X64Decoder::DecodeLea(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+
+    auto address = GetAddress(insn, op1);
+    Dst(insn, op0, __ GetOperand(address.ToIROperand()));
+}
+
+void X64Decoder::DecodeCondMov(_DInst& insn, Cond cond) {
+    auto check_result = CheckCond(cond);
+    auto label = __ NotGoto(check_result);
+    DecodeMov(insn);
+    __ BindLabel(label);
+}
+
+void X64Decoder::DecodeAnd(_DInst& insn, bool save_result) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+
+    auto left = ToValue(Src(insn, op0));
+    auto right = Src(insn, op1);
+
+    auto result = __ And(left, ir::Operand{right});
+
+    __ SaveFlags(result,
+                 ir::Flags::Zero | ir::Flags::Negate | ir::Flags::Carry | ir::Flags::Overflow |
+                         ir::Flags::Parity);
+
+    if (save_result) {
+        Dst(insn, op0, result);
+    }
+}
+
+ir::Value X64Decoder::Pop(_RegisterType reg, ir::ValueType type) {
+    auto size_byte = ir::GetValueSizeByte(type);
     auto sp = _RegisterType::R_RSP;
-    ir::Lambda address = R(sp);
-    auto value = __ LoadMemory(address).SetType(size);
+    auto address = R(sp);
+    auto value = __ LoadMemory(ir::Operand{address}).SetType(type);
     if (IsV(reg)) {
         V(reg, value);
     } else {
         R(reg, value);
     }
-    R(sp, __ Add(R(sp), ir::Imm((u8)size_byte)));
+    R(sp, __ Add(address, ir::Operand{ir::Imm(size_byte)}));
     return value;
 }
 
@@ -663,8 +826,8 @@ void X64Decoder::Push(ir::Value value) {
     auto size_byte = ir::GetValueSizeByte(size);
     auto sp = _RegisterType::R_RSP;
     auto address = R(sp);
-    __ StoreMemory(R(sp), ToOperand(value));
-    R(sp, __ Sub(R(sp), ir::Operand(ir::Imm(size_byte))));
+    __ StoreMemory(ir::Operand{address}, value);
+    R(sp, __ Sub(address, ir::Operand{size_byte}));
 }
 
 void X64Decoder::DecodeOr(_DInst& insn) {
@@ -674,12 +837,10 @@ void X64Decoder::DecodeOr(_DInst& insn) {
     auto left = Src(insn, op0);
     auto right = Src(insn, op1);
 
-    auto result = __ OrValue(left, right);
-    ClearFlags(CPUFlags::Carry | CPUFlags::Overflow | CPUFlags::FlagAF);
-    auto flags = __ GetFlags(result, ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
-    SetFlag(CPUFlags::Signed, __ TestBit(flags, ir::Imm{ir::FlagsBit::Negate}));
-    SetFlag(CPUFlags::Parity, __ TestBit(flags, ir::Imm{ir::FlagsBit::Parity}));
-    SetFlag(CPUFlags::Zero, __ TestBit(flags, ir::Imm{ir::FlagsBit::Zero}));
+    auto result = __ Or(ToValue(left), ir::Operand{right});
+    __ ClearFlags(ir::Flags::Carry | ir::Flags::Overflow | ir::Flags::AuxiliaryCarry);
+    __ SaveFlags(result, ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
+
     Dst(insn, op0, result);
 }
 
@@ -690,12 +851,99 @@ void X64Decoder::DecodeXor(_DInst& insn) {
     auto left = Src(insn, op0);
     auto right = Src(insn, op1);
 
-    auto result = __ XorValue(left, right);
-    ClearFlags(CPUFlags::Carry | CPUFlags::Overflow | CPUFlags::FlagAF);
-    auto flags = __ GetFlags(result, ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
-    SetFlag(CPUFlags::Signed, __ TestBit(flags, ir::Imm{ir::FlagsBit::Negate}));
-    SetFlag(CPUFlags::Parity, __ TestBit(flags, ir::Imm{ir::FlagsBit::Parity}));
-    SetFlag(CPUFlags::Zero, __ TestBit(flags, ir::Imm{ir::FlagsBit::Zero}));
+    auto result = __ Xor(ToValue(left), ir::Operand{right});
+    __ ClearFlags(ir::Flags::Carry | ir::Flags::Overflow | ir::Flags::AuxiliaryCarry);
+    __ SaveFlags(result, ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
+
+    Dst(insn, op0, result);
+}
+
+void X64Decoder::DecodePush(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto value = Src(insn, op0);
+    Push(ToValue(value));
+}
+
+void X64Decoder::DecodePop(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    Pop(static_cast<_RegisterType>(op0.index), GetSize(op0.size));
+}
+
+void X64Decoder::DecodePushA(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto type = GetSize(op0.size);
+    ASSERT(type == runtime::ir::ValueType::U32);
+    auto sp = R(_RegisterType::R_ESP);
+    __ StoreMemory(ir::Operand{sp}, R(R_EAX));
+    __ StoreMemory(ir::Operand{sp, -4, ir::OperandPlus}, R(R_ECX));
+    __ StoreMemory(ir::Operand{sp, -8, ir::OperandPlus}, R(R_EDX));
+    __ StoreMemory(ir::Operand{sp, -12, ir::OperandPlus}, R(R_EBX));
+    __ StoreMemory(ir::Operand{sp, -16, ir::OperandPlus}, R(R_ESP));
+    __ StoreMemory(ir::Operand{sp, -20, ir::OperandPlus}, R(R_EBP));
+    __ StoreMemory(ir::Operand{sp, -24, ir::OperandPlus}, R(R_RSI));
+    __ StoreMemory(ir::Operand{sp, -28, ir::OperandPlus}, R(R_RDI));
+    auto new_sp = __ Sub(sp, ir::Operand{28u});
+    R(_RegisterType::R_ESP, new_sp);
+}
+
+void X64Decoder::DecodePopA(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto type = GetSize(op0.size);
+    ASSERT(type == runtime::ir::ValueType::U32);
+    auto sp = R(_RegisterType::R_ESP);
+    auto eax = __ LoadMemory(ir::Operand{sp});
+    R(R_EAX, eax);
+    auto ecx = __ LoadMemory(ir::Operand{sp, 4u});
+    R(R_ECX, ecx);
+    auto edx = __ LoadMemory(ir::Operand{sp, 8u});
+    R(R_EDX, edx);
+    auto ebx = __ LoadMemory(ir::Operand{sp, 16u});
+    R(R_EBX, ebx);
+    auto ebp = __ LoadMemory(ir::Operand{sp, 20u});
+    R(R_EBP, ebp);
+    auto esi = __ LoadMemory(ir::Operand{sp, 24u});
+    R(R_ESI, esi);
+    auto edi = __ LoadMemory(ir::Operand{sp, 28u});
+    R(R_EDI, edi);
+    auto new_sp = __ Add(sp, ir::Operand{28u});
+    R(_RegisterType::R_ESP, new_sp);
+}
+
+void X64Decoder::DecodeShlShr(_DInst& insn, bool shr) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+
+    auto left = ToValue(Src(insn, op0));
+    auto right = ToValue(Src(insn, op1));
+
+    auto result = shr ? __ LsrValue(left, right) : __ LslValue(left, right);
+    __ ClearFlags(ir::Flags::Carry | ir::Flags::Overflow | ir::Flags::AuxiliaryCarry);
+    __ SaveFlags(result, ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
+    Dst(insn, op0, result);
+}
+
+void X64Decoder::DecodeCmp(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+
+    auto left = ToValue(Src(insn, op0));
+    auto right = Src(insn, op1);
+
+    auto result = __ Sub(left, ir::Operand{right});
+    __ SaveFlags(result, ir::Flags::All);
+}
+
+void X64Decoder::DecodeAndNot(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+
+    auto left = ToValue(Src(insn, op0));
+    auto right = Src(insn, op1);
+
+    auto result = __ AndNot(left, ir::Operand{right});
+    __ ClearFlags(ir::Flags::Carry | ir::Flags::Overflow | ir::Flags::All);
+    __ SaveFlags(result, ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
+
     Dst(insn, op0, result);
 }
 

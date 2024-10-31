@@ -51,15 +51,22 @@ struct Void {
 #pragma pack(push, 1)
 class Imm {
 public:
-    explicit Imm(bool value) : type{ValueType::BOOL}, imm_u8{value} {}
-    explicit Imm(u8 value) : type{ValueType::U8}, imm_u8{value} {}
-    explicit Imm(u16 value) : type{ValueType::U16}, imm_u16{value} {}
-    explicit Imm(u32 value) : type{ValueType::U32}, imm_u32{value} {}
-    explicit Imm(u64 value) : type{ValueType::U64}, imm_u64{value} {}
-    explicit Imm(u64 value, ValueType size) : type{size}, imm_u64{value} {}
+    constexpr Imm(bool value) : type{ValueType::U8}, imm_u8{value} {}
+    constexpr Imm(u8 value) : type{ValueType::U8}, imm_u8{value} {}
+    constexpr Imm(u16 value) : type{ValueType::U16}, imm_u16{value} {}
+    constexpr Imm(u32 value) : type{ValueType::U32}, imm_u32{value} {}
+    constexpr Imm(u64 value) : type{ValueType::U64}, imm_u64{value} {}
+    constexpr Imm(s8 value) : type{ValueType::S8}, imm_s8{value} {}
+    constexpr Imm(s16 value) : type{ValueType::S16}, imm_s16{value} {}
+    constexpr Imm(s32 value) : type{ValueType::S32}, imm_s32{value} {}
+    constexpr Imm(s64 value) : type{ValueType::S64}, imm_s64{value} {}
+    constexpr Imm(u64 value, ValueType size) : type{size}, imm_u64{value} {}
 
     [[nodiscard]] ValueType GetType() const;
-    [[nodiscard]] u64 GetValue() const;
+    [[nodiscard]] bool IsSigned() const;
+    [[nodiscard]] bool IsNegate() const;
+    [[nodiscard]] u64 Get() const;
+    [[nodiscard]] s64 GetSigned() const;
 
 private:
     ValueType type{ValueType::VOID};
@@ -69,8 +76,16 @@ private:
         u16 imm_u16;
         u32 imm_u32;
         u64 imm_u64;
+        s8 imm_s8;
+        s16 imm_s16;
+        s32 imm_s32;
+        s64 imm_s64;
     };
 };
+
+const inline Imm HostRegIndex(u16 index) {
+    return Imm(index);
+}
 
 class Value {
 public:
@@ -80,9 +95,14 @@ public:
 
     [[nodiscard]] bool Defined() const { return inst; }
 
-    [[nodiscard]] Value SetType(ValueType type) const;
+    [[nodiscard]] Value SetType(ValueType type);
+
+    [[nodiscard]] Value SetCastType(ValueType type);
 
     [[nodiscard]] ValueType Type() const;
+
+    bool operator==(const Value& rhs) const;
+    bool operator!=(const Value& rhs) const;
 
     void Use() const;
     void UnUse() const;
@@ -95,6 +115,8 @@ protected:
 
 template <ValueType type_> class TypedValue final : public Value {
 public:
+    constexpr static ValueType TYPE = type_;
+
     TypedValue() = default;
 
     template <ValueType other_type> constexpr TypedValue(const TypedValue<other_type>& value)
@@ -107,8 +129,8 @@ public:
     constexpr TypedValue(Inst* inst) : TypedValue(Value(inst)) { cast_type = type_; }
 };
 
-using BOOL = TypedValue<ValueType::BOOL>;
-using U1 = TypedValue<ValueType::BOOL>;
+using VOID = TypedValue<ValueType::VOID>;
+using BOOL = TypedValue<ValueType::U8>;
 using U8 = TypedValue<ValueType::U8>;
 using U16 = TypedValue<ValueType::U16>;
 using U32 = TypedValue<ValueType::U32>;
@@ -117,14 +139,19 @@ using U64 = TypedValue<ValueType::U64>;
 // Uniform buffer
 class Uniform {
 public:
+    explicit Uniform() = default;
+
     explicit Uniform(u32 offset, ValueType type);
 
     [[nodiscard]] u32 GetOffset() const;
     [[nodiscard]] ValueType GetType() const;
 
+    bool operator==(const Uniform& rhs) const;
+    bool operator!=(const Uniform& rhs) const;
+
 private:
     u32 offset{};
-    ValueType type{};
+    ValueType type{ValueType::VOID};
 };
 
 struct Local {
@@ -133,20 +160,28 @@ struct Local {
 };
 
 struct DataClass {
-    ArgType type{ArgType::Void};
+    ArgType type;
     union {
         Value value;
         Imm imm;
     };
 
-    constexpr DataClass() {}
+    constexpr DataClass() : type(ArgType::Void) {}
 
     constexpr DataClass(const Value& v) : value(v), type(ArgType::Value) {}
 
     constexpr DataClass(const Imm& v) : imm(v), type(ArgType::Imm) {}
 
+    [[nodiscard]] bool Null() const {
+        return type == ArgType::Void;
+    }
+
     [[nodiscard]] bool IsValue() const {
         return type == ArgType::Value;
+    }
+
+    [[nodiscard]] bool IsImm() const {
+        return type == ArgType::Imm;
     }
 
     [[nodiscard]] ArgClass ToArgClass() const;
@@ -157,6 +192,8 @@ public:
     using FuncAddr = DataClass;
 
     constexpr Lambda() : address() {}
+
+    constexpr Lambda(const DataClass& value) : address(value) {}
 
     constexpr Lambda(const Value& value) : address(value) {}
 
@@ -179,40 +216,58 @@ struct FlagsBit {
     constexpr static u8 Zero = 2;
     constexpr static u8 Negate = 3;
     constexpr static u8 Parity = 4;
-    constexpr static u8 Positive = 4;
+    constexpr static u8 Positive = 5;
+    // hack for x86 AF flag
+    constexpr static u8 AuxiliaryCarry = 6;
 };
 
-enum class Flags : u16 {
+enum class Flags : u64 {
+    None = 0,
     Carry = 1 << FlagsBit::Carry,
     Overflow = 1 << FlagsBit::Overflow,
     Zero = 1 << FlagsBit::Zero,
     Negate = 1 << FlagsBit::Negate,
     Parity = 1 << FlagsBit::Parity,
     Positive = 1 << FlagsBit::Positive,
+    AuxiliaryCarry = 1 << FlagsBit::AuxiliaryCarry,
     NegZero = Zero | Negate,
+    NZ = NegZero,
+    CV = Carry | Overflow,
     NZCV = Carry | Overflow | Zero | Negate,
-    All = Carry | Overflow | Zero | Negate | Parity
+    All = Carry | Overflow | Zero | Negate | Parity | AuxiliaryCarry
 };
 
 DECLARE_ENUM_FLAG_OPERATORS(Flags)
+
+std::string FlagsString(Flags flags);
 
 struct OperandOp {
     enum Type : u8 {
         None = 0,
         Plus = 1 << 0,
-        Minus = 1 << 1,
-        LSL = 1 << 2,
-        LSR = 1 << 3,
-        EXT = 1 << 4,
+        LSL = 1 << 1,
+        LSR = 1 << 2,
+        PlusExt = 1 << 3,
     };
 
     constexpr OperandOp() = default;
 
-    explicit OperandOp(Type type, u8 shift_ext = 0) : type(type), shift_ext(shift_ext) {}
+    constexpr OperandOp(Type type, u8 shift_ext = 0) : type(type), shift_ext(shift_ext) {}
+
+    bool operator==(const OperandOp& rhs) const {
+        return type == rhs.type;
+    }
+
+    bool operator!=(const OperandOp& rhs) const { return !(rhs == *this); }
 
     Type type{Plus};
     u8 shift_ext{};
 };
+
+constexpr OperandOp OperandNone{OperandOp::None};
+constexpr OperandOp OperandPlus{OperandOp::Plus};
+constexpr OperandOp OperandLsl{OperandOp::LSL};
+constexpr OperandOp OperandLsr{OperandOp::LSR};
 
 class Params {
 public:
@@ -369,6 +424,8 @@ public:
 
     constexpr Operand() = default;
 
+    explicit Operand(const Type& left, const Type& right = {}, Op op = {});
+
     explicit Operand(const Value& left, const Imm& right, Op op = {});
 
     explicit Operand(const Value& left, const Value& right, Op op = {});
@@ -382,6 +439,8 @@ public:
     [[nodiscard]] Type GetLeft() const { return left; }
 
     [[nodiscard]] Type GetRight() const { return right; }
+
+    [[nodiscard]] bool IsImm() const { return left.IsImm() && right.Null(); }
 
 private:
     Op op{};
@@ -460,8 +519,9 @@ public:
         } else if (value.type == ArgType::Imm) {
             return value.imm;
         } else {
-            PANIC();
+            PANIC("Invalid arg type!");
         }
+        return {};
     }
 
 private:
@@ -488,7 +548,11 @@ template <> struct fmt::formatter<swift::runtime::ir::Value> : fmt::formatter<st
 template <> struct fmt::formatter<swift::runtime::ir::Imm> : fmt::formatter<std::string> {
     template <typename FormatContext>
     auto format(const swift::runtime::ir::Imm &imm, FormatContext& ctx) const {
-        return formatter<std::string>::format(fmt::format("({}) #{}", imm.GetType(), imm.GetValue()), ctx);
+        if (swift::runtime::ir::IsSignValueType(imm.GetType())) {
+            return formatter<std::string>::format(fmt::format("({}) #{}", imm.GetType(), imm.GetSigned()), ctx);
+        } else {
+            return formatter<std::string>::format(fmt::format("({}) #{}", imm.GetType(), imm.Get()), ctx);
+        }
     }
 };
 
@@ -509,7 +573,7 @@ template <> struct fmt::formatter<swift::runtime::ir::Local> : fmt::formatter<st
 template <> struct fmt::formatter<swift::runtime::ir::Flags> : fmt::formatter<std::string> {
     template <typename FormatContext>
     auto format(swift::runtime::ir::Flags flags, FormatContext& ctx) const {
-        return formatter<std::string>::format(fmt::format("f{:b}", (uint16_t) flags), ctx);
+        return formatter<std::string>::format(fmt::format("Flags<{}>", swift::runtime::ir::FlagsString(flags)), ctx);
     }
 };
 
@@ -543,17 +607,14 @@ template <> struct fmt::formatter<swift::runtime::ir::Operand> : fmt::formatter<
             case swift::runtime::ir::OperandOp::Plus:
                 result.append(fmt::format("{} + {}", operand.GetLeft(), operand.GetRight()));
                 break;
-            case swift::runtime::ir::OperandOp::Minus:
-                result.append(fmt::format("{} - {}", operand.GetLeft(), operand.GetRight()));
-                break;
             case swift::runtime::ir::OperandOp::LSL:
                 result.append(fmt::format("{} << {}", operand.GetLeft(), operand.GetRight()));
                 break;
             case swift::runtime::ir::OperandOp::LSR:
                 result.append(fmt::format("{} >> {}", operand.GetLeft(), operand.GetRight()));
                 break;
-            case swift::runtime::ir::OperandOp::EXT:
-                result.append(fmt::format("{} + {}", operand.GetLeft(), operand.GetRight()));
+            case swift::runtime::ir::OperandOp::PlusExt:
+                result.append(fmt::format("{} + ({} << {})", operand.GetLeft(), operand.GetRight(), operand.GetOp().shift_ext));
                 break;
             default:
                 result.append(fmt::format("{}", operand.GetLeft()));
@@ -575,6 +636,6 @@ template <> struct fmt::formatter<swift::runtime::ir::Params> : fmt::formatter<s
             result.append(fmt::format("{}", param.data));
             first = false;
         }
-        return formatter<std::string>::format(fmt::format("[{}]", result), ctx);
+        return formatter<std::string>::format(fmt::format("Params[{}]", result), ctx);
     }
 };

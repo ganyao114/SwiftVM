@@ -73,10 +73,26 @@ public:
 private:
     void CollectLiveIntervals(HIRFunction* hir_function) {
         for (auto& hir_value : hir_function->GetHIRValues()) {
+            auto instr = hir_value.value.Def();
+            if (instr->IsGetHostRegOperation()) {
+                auto is_float = instr->GetOp() == OpCode::GetHostFPR;
+                auto host_index = instr->GetArg<Imm>(0).Get();
+                if (is_float) {
+                    reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{(u16) host_index});
+                } else {
+                    reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{(u16) host_index});
+                }
+                continue;
+            }
+            if (instr->IsBitCastOperation()) {
+                auto from = instr->GetArg<Value>(0);
+                reg_alloc->MapReference(from.Id(), instr->Id());
+                continue;
+            }
             auto start = hir_value.GetOrderId();
             u32 end{hir_value.GetOrderId()};
             std::for_each(hir_value.uses.begin(), hir_value.uses.end(), [&end](auto& use) {
-                end = std::max(end, (u32)use.inst->Id());
+                end = std::max(end, (u32) use.inst->Id());
             });
             if (auto inst = hir_value.value.Def(); inst->IsPseudoOperation()) {
                 start = inst->GetArg<Value>(0).Id();
@@ -87,22 +103,76 @@ private:
 
     void CollectLiveIntervals(Block* lir_block) {
         ASSERT_MSG(lir_block, "block == null");
-        StackVector<u16, 32> use_end{};
+        ASSERT_MSG(!lir_block->IsEmptyBlock(), "block is empty");
+        StackVector<u16, 64> use_end{};
+        Map<u16, u8> set_value_uses{};
         use_end.resize(lir_block->GetInstList().size());
         for (auto& instr : lir_block->GetInstList()) {
-            auto values = instr.GetValues();
-            for (auto &value : values) {
-                auto &end = use_end[value.Id()];
-                end = std::max(end, instr.Id());
+            if (instr.IsGetHostRegOperation()) {
+                auto is_float = instr.GetOp() == OpCode::GetHostFPR;
+                auto host_index = instr.GetArg<Imm>(0).Get();
+                if (is_float) {
+                    reg_alloc->MapRegister(instr.Id(), HostFPR{(u16) host_index});
+                } else {
+                    reg_alloc->MapRegister(instr.Id(), HostGPR{(u16) host_index});
+                }
+            } else if (instr.IsBitCastOperation()) {
+                auto from = instr.GetArg<Value>(0);
+                reg_alloc->MapReference(from.Id(), instr.Id());
+            } else if (instr.IsSetHostRegOperation()) {
+                auto value = instr.GetArg<Value>(0);
+                auto host_index = instr.GetArg<Imm>(1).Get();
+                auto is_float = instr.GetOp() == OpCode::SetHostFPR;
+                auto use_count = value.Def()->GetUses();
+                ASSERT(use_count > 0);
+                if (use_count == 1) {
+                    // Well, Only this
+                    if (is_float) {
+                        reg_alloc->MapRegister(value.Id(), HostFPR{(u16) host_index});
+                    } else {
+                        reg_alloc->MapRegister(value.Id(), HostGPR{(u16) host_index});
+                    }
+                    continue;
+                } else {
+                    if (auto itr = set_value_uses.find(value.Id()); itr != set_value_uses.end()) {
+                        auto uses = itr->second;
+                        if (--uses == 0) {
+                            if (is_float) {
+                                reg_alloc->MapRegister(value.Id(), HostFPR{(u16) host_index});
+                            } else {
+                                reg_alloc->MapRegister(value.Id(), HostGPR{(u16) host_index});
+                            }
+                        } else {
+                            set_value_uses[value.Id()] = uses;
+                        }
+                    } else {
+                        set_value_uses[value.Id()] = --use_count;
+                    }
+                    continue;
+                }
+            } else {
+                auto values = instr.GetValues();
+                for (auto& value : values) {
+                    if (value.Def()->IsBitCastOperation()) {
+                        auto src = value.Def()->GetArg<Value>(0);
+                        auto& end = use_end[src.Id()];
+                        end = std::max(end, instr.Id());
+                    } else {
+                        auto& end = use_end[value.Id()];
+                        end = std::max(end, instr.Id());
+                    }
+                }
             }
         }
         for (auto& instr : lir_block->GetInstList()) {
-            auto start = instr.Id();
-            auto end = use_end[instr.Id()];
-            if (instr.IsPseudoOperation()) {
-                start = instr.GetArg<Value>(0).Id();
+            if (instr.HasValue()) {
+                auto start = instr.Id();
+                auto end = use_end[start];
+                if (!end) {
+                    continue;
+                }
+                live_interval.push_back({&instr, start, end});
             }
-            live_interval.push_back({&instr, start, end});
         }
     }
 
@@ -236,9 +306,9 @@ public:
     void ExpireOldIntervals(LiveInterval& current) {
         for (auto it = active_lives.begin(); it != active_lives.end();) {
             if (it->end < current.start) {
-                active_vregs[it->inst->VirRegID()] = false;
+                active_v_regs[it->inst->VirRegID()] = false;
                 if (IsFloatValue(it->inst)) {
-                    active_vregs[it->inst->VirRegID() + 1] = false;
+                    active_v_regs[it->inst->VirRegID() + 1] = false;
                 }
                 it = active_lives.erase(it);  // Remove expired intervals
             } else {
@@ -253,8 +323,8 @@ public:
     }
 
     void GrowVRegs(u32 new_item_size) {
-        active_vregs_cursor = active_vregs.size();
-        active_vregs.resize(active_vregs_cursor + new_item_size);
+        active_v_regs_cursor = active_v_regs.size();
+        active_v_regs.resize(active_v_regs_cursor + new_item_size);
     }
 
     void AllocVReg(LiveInterval& interval) {
@@ -262,29 +332,29 @@ public:
         auto slot_size = is_float ? 2 : 1;
         if (is_float) {
             s32 slot{-1};
-            for (int i = 0; i + 1 < active_vregs.size(); i += 2) {
-                if (!active_vregs[i] && !active_vregs[i + 1]) {
+            for (int i = 0; i + 1 < active_v_regs.size(); i += 2) {
+                if (!active_v_regs[i] && !active_v_regs[i + 1]) {
                     slot = i;
                     break;
                 }
             }
             if (slot < 0) {
-                slot = active_vregs.size();
+                slot = active_v_regs.size();
                 GrowVRegs(slot_size);
             }
             interval.inst->SetVirReg(slot);
-            active_vregs[slot] = true;
+            active_v_regs[slot] = true;
         } else {
-            auto itr = std::find(active_vregs.begin(), active_vregs.end(), false);
-            if (itr != active_vregs.end()) {
-                u16 slot = std::distance(active_vregs.begin(), itr);
-                active_vregs[slot] = true;
+            auto itr = std::find(active_v_regs.begin(), active_v_regs.end(), false);
+            if (itr != active_v_regs.end()) {
+                u16 slot = std::distance(active_v_regs.begin(), itr);
+                active_v_regs[slot] = true;
                 interval.inst->SetVirReg(slot);
             } else {
                 // grow stack
-                u16 slot = active_vregs_cursor;
+                u16 slot = active_v_regs_cursor;
                 GrowVRegs(slot_size);
-                active_vregs[slot] = true;
+                active_v_regs[slot] = true;
                 interval.inst->SetVirReg(slot);
             }
         }
@@ -293,7 +363,7 @@ public:
 private:
 
     void CollectLiveIntervals() {
-        StackVector<u16, 32> use_end{};
+        StackVector<u16, 64> use_end{};
         use_end.resize(block->GetInstList().size());
         for (auto& instr : block->GetInstList()) {
             auto values = instr.GetValues();
@@ -303,20 +373,19 @@ private:
             }
         }
         for (auto& instr : block->GetInstList()) {
-            auto start = instr.Id();
-            auto end = use_end[instr.Id()];
-            if (instr.IsPseudoOperation()) {
-                start = instr.GetArg<Value>(0).Id();
+            if (instr.HasValue()) {
+                auto start = instr.Id();
+                auto end = use_end[start];
+                live_interval.push_back({&instr, start, end});
             }
-            live_interval.push_back({&instr, start, end});
         }
     }
 
     Block* block;
     Vector<LiveInterval> live_interval;
     List<LiveInterval> active_lives;
-    Vector<bool> active_vregs{};
-    u16 active_vregs_cursor{0};
+    Vector<bool> active_v_regs{};
+    u16 active_v_regs_cursor{0};
 };
 
 void RegisterAllocPass::Run(HIRBuilder* hir_builder, backend::RegAlloc* reg_alloc) {
@@ -328,6 +397,11 @@ void RegisterAllocPass::Run(HIRBuilder* hir_builder, backend::RegAlloc* reg_allo
 void RegisterAllocPass::Run(HIRFunction* hir_function, backend::RegAlloc* reg_alloc) {
     LinearScanAllocator linear_scan{hir_function, reg_alloc};
     linear_scan.AllocateRegisters();
+}
+
+void RegisterAllocPass::Run(ir::Block* block, backend::RegAlloc* reg_alloc) {
+    LinearScanAllocator allocator{block, reg_alloc};
+    allocator.AllocateRegisters();
 }
 
 void VRegisterAllocPass::Run(ir::Block* block) {

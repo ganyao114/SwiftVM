@@ -5,27 +5,42 @@
 #pragma once
 
 #include "runtime/common/types.h"
+#include "runtime/include/config.h"
 
 namespace swift::runtime::ir {
 
 class Location {
 public:
-    constexpr static size_t INVALID{size_t(-1)};
+    constexpr static LocationDescriptor INVALID{LocationDescriptor(-1)};
 
     constexpr Location() = default;
 
-    constexpr Location(size_t value) : value(value) {}
+    constexpr Location(LocationDescriptor value) : value(value) {}
 
     bool operator==(const Location& o) const { return value == o.Value(); }
 
     bool operator!=(const Location& o) const { return !operator==(o); }
 
-    [[nodiscard]] size_t Value() const { return value; }
+    bool operator>=(const LocationDescriptor& loc) const { return loc >= value; }
+
+    bool operator<=(const LocationDescriptor& loc) const { return loc <= value; }
+
+    void operator=(LocationDescriptor loc) { value = loc; }
+
+    LocationDescriptor operator*() const { return value; }
+
+    Location operator+(LocationDescriptor size) const {
+        auto result{*this};
+        result.value += size;
+        return result;
+    }
+
+    [[nodiscard]] LocationDescriptor Value() const { return value; }
 
     [[nodiscard]] bool Valid() const { return value != INVALID; }
 
 private:
-    size_t value{};
+    LocationDescriptor value{};
 };
 
 inline bool operator<(const Location& x, const Location& y) noexcept {

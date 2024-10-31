@@ -23,6 +23,8 @@
 #include <vector>
 #include <deque>
 #include <list>
+#include "string.h"
+#include <numeric>
 
 namespace swift {
 namespace riscv64 {

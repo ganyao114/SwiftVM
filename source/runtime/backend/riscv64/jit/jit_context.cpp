@@ -21,13 +21,11 @@ FRegister JitContext::V(const ir::Value& value) {
 }
 
 XRegister JitContext::GetTmpX() {
-    auto reg = reg_alloc.GetTmpGPR();
-    return XRegister(reg.id);
+    PANIC();
 }
 
 FRegister JitContext::GetTmpV() {
-    auto reg = reg_alloc.GetTmpFPR();
-    return FRegister(reg.id);
+    PANIC();
 }
 
 void JitContext::Forward(ir::Location location) {

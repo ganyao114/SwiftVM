@@ -10,15 +10,18 @@ namespace swift::runtime::backend::riscv64 {
 
 using namespace riscv64;
 
-TrampolinesRiscv64::TrampolinesRiscv64(const Config& config, const CodeBuffer& buffer)
-        : Trampolines(config, buffer) {}
+TrampolinesRiscv64::TrampolinesRiscv64(const Config& config)
+        : Trampolines(config) {
+    Build();
+}
 
 void TrampolinesRiscv64::Build() {
     BuildRuntimeEntry();
     __ FinalizeCode();
-    __ GetBuffer()->CopyInstructions({code_buffer.rw_data, code_buffer.size});
-    code_buffer.Flush();
-    runtime_entry = reinterpret_cast<RuntimeEntry>(code_buffer.exec_data);
+    auto code_buffer = code_cache.AllocCode(__ GetBuffer()->Size());
+    __ GetBuffer()->CopyInstructions({code_buffer->rw_data, code_buffer->size});
+    code_buffer->Flush();
+    runtime_entry = reinterpret_cast<RuntimeEntry>(code_buffer->exec_data);
     return_host =
             reinterpret_cast<ReturnHost>((ptrdiff_t)runtime_entry + label_return_host.Position());
 }
@@ -47,5 +50,10 @@ void TrampolinesRiscv64::BuildSaveStaticUniform() {
 
 void TrampolinesRiscv64::BuildRestoreStaticUniform() {}
 
+bool TrampolinesRiscv64::LinkBlock(u8* source, u8* target, u8* source_rw, bool pic) {
+    return false;
 }
+
+}
+
 #undef __

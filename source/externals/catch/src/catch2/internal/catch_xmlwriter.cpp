@@ -13,6 +13,7 @@
 
 #include <iomanip>
 #include <type_traits>
+#include <cstdint>
 
 namespace Catch {
 
@@ -31,7 +32,7 @@ namespace {
         CATCH_INTERNAL_ERROR("Invalid multibyte utf-8 start byte encountered");
     }
 
-    uint32_t headerValue(unsigned char c) {
+    std::uint32_t headerValue(unsigned char c) {
         if ((c & 0xE0) == 0xC0) {
             return c & 0x1F;
         }

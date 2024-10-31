@@ -12,6 +12,7 @@
 #include "runtime/common/range_map.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
+#include "runtime/ir/opts/uniform_elimination_pass.h"
 
 namespace swift::runtime::backend {
 
@@ -20,6 +21,8 @@ constexpr static auto code_cache_bits = 23;
 class AddressSpace : public runtime::Instance {
 public:
     explicit AddressSpace(const Config& config);
+
+    ~AddressSpace();
 
     std::shared_ptr<Module> MapModule(LocationDescriptor start,
                                       LocationDescriptor end,
@@ -38,17 +41,24 @@ public:
     [[nodiscard]] void* GetCodeCache(ir::Location location);
 
     [[nodiscard]] Trampolines &GetTrampolines();
+    [[nodiscard]] Trampolines &GetTrampolines() const;
 
     [[nodiscard]] const Config &GetConfig();
     [[nodiscard]] const Config &GetConfig() const;
 
+    [[nodiscard]] const ir::UniformInfo &GetUniformInfo();
+    [[nodiscard]] const ir::UniformInfo &GetUniformInfo() const;
+
 private:
+    void Init();
+
     const Config config;
     std::shared_mutex lock;
     RangeMap<LocationDescriptor, std::shared_ptr<Module>> modules{};
     std::shared_ptr<Module> default_module;
     std::unique_ptr<Trampolines> trampolines;
     TranslateTable code_cache{code_cache_bits};
+    std::unique_ptr<ir::UniformInfo> uniform_info{};
 };
 
 }  // namespace swift::runtime::backend

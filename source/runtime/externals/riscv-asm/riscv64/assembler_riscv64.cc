@@ -16,6 +16,7 @@
 
 #include "assembler_riscv64.h"
 #include <ostream>
+#include <algorithm>
 
 namespace swift {
 namespace riscv64 {

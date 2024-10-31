@@ -25,13 +25,14 @@
 // regs
 #define state       x28
 #define cache       x27
-#define rsb_ptr     x26
-#define pt          x25
-#define local       x24
+#define flags       x26
+#define rsb_ptr     x25
+#define local       x25
+#define loc         x24
+#define pt          x24
 #define args        x23
 #define arg         x22
 #define handle      x21
-#define loc         x9
 
 #define ip          x11
 #define ip0         x16

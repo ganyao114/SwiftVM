@@ -8,13 +8,10 @@
 
 namespace swift::runtime::ir {
 
-ValueType Imm::GetType() const {
-    return type;
-}
+ValueType Imm::GetType() const { return type; }
 
-u64 Imm::GetValue() const {
+u64 Imm::Get() const {
     switch (type) {
-        case ValueType::BOOL:
         case ValueType::U8:
             return imm_u8;
         case ValueType::U16:
@@ -28,9 +25,45 @@ u64 Imm::GetValue() const {
     }
 }
 
-Value Value::SetType(ValueType type) const {
+s64 Imm::GetSigned() const {
+    if (!IsSigned()) {
+        return static_cast<s64>(Get());
+    }
+    switch (type) {
+        case ValueType::S8:
+            return imm_s8;
+        case ValueType::S16:
+            return imm_s16;
+        case ValueType::S32:
+            return imm_s32;
+        case ValueType::S64:
+            return imm_s64;
+        default:
+            return 0;
+    }
+}
+
+bool Imm::IsSigned() const {
+    return type >= ValueType::S8 && type <= ValueType::S64;
+}
+
+bool Imm::IsNegate() const {
+    if (IsSigned()) {
+        return GetSigned() < 0;
+    } else {
+        return false;
+    }
+}
+
+Value Value::SetType(ValueType type) {
     ASSERT(Def());
     Def()->SetReturn(type);
+    return *this;
+}
+
+Value Value::SetCastType(ValueType type) {
+    ASSERT(Def());
+    cast_type = type;
     return *this;
 }
 
@@ -54,6 +87,10 @@ void Value::UnUse() const {
 }
 
 u16 Value::Id() const { return Def()->Id(); }
+
+bool Value::operator==(const Value& rhs) const { return inst == rhs.inst; }
+
+bool Value::operator!=(const Value& rhs) const { return !(rhs == *this); }
 
 ArgClass DataClass::ToArgClass() const {
     if (type == ArgType::Value) {
@@ -117,6 +154,8 @@ Operand::Operand(const Imm& left) : left(left) {}
 
 Operand::Operand(const Value& left) : left(left) {}
 
+Operand::Operand(const Type& left, const Type& right, Op op) : left(left), right(right), op(op) {}
+
 Operand::Operand(const Value& left, const Imm& right, Op op) : left(left), right(right), op(op) {}
 
 Operand::Operand(const Value& left, const Value& right, Op op) : left(left), right(right), op(op) {}
@@ -129,6 +168,10 @@ u32 Uniform::GetOffset() const { return offset; }
 
 ValueType Uniform::GetType() const { return type; }
 
+bool Uniform::operator==(const Uniform& rhs) const { return offset == rhs.offset; }
+
+bool Uniform::operator!=(const Uniform& rhs) const { return !(rhs == *this); }
+
 Params::Param::Param(const Value& value) {
     data.value = value;
     data.type = ArgType::Value;
@@ -139,13 +182,36 @@ Params::Param::Param(const Imm& imm) {
     data.type = ArgType::Imm;
 }
 
-const char *CondString(Cond cond) {
+const char* CondString(Cond cond) {
 #define ENUM_CLASS Cond
-    switch (cond) {
-        COND_ENUM(ENUM_TO_STRING_CASE)
-    }
+    switch (cond) { COND_ENUM(ENUM_TO_STRING_CASE) }
     return "Unk";
 #undef ENUM_CLASS
+}
+
+std::string FlagsString(Flags flags) {
+    std::string result{};
+    if (True(flags & Flags::Carry)) {
+        result += "CF, ";
+    }
+    if (True(flags & Flags::Overflow)) {
+        result += "OF, ";
+    }
+    if (True(flags & Flags::Zero)) {
+        result += "ZF, ";
+    }
+    if (True(flags & Flags::Negate)) {
+        result += "SF, ";
+    }
+    if (True(flags & Flags::AuxiliaryCarry)) {
+        result += "AF, ";
+    }
+    if (True(flags & Flags::Parity)) {
+        result += "PF, ";
+    }
+    size_t end = result.find_last_not_of(", ");
+    result = result.substr(0, end + 1);
+    return result;
 }
 
 }  // namespace swift::runtime::ir
