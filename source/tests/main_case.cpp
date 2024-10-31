@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <iostream>
 #include "runtime/ir/hir_builder.h"
 #include "runtime/ir/opts/cfg_analysis_pass.h"
 #include "runtime/ir/opts/local_elimination_pass.h"
@@ -9,7 +10,7 @@
 #include "compiler/slang/slang.h"
 #include "assembler_riscv64.h"
 #include "fmt/format.h"
-#include <iostream>
+#include "translator/x86/translator.h"
 
 TEST_CASE("Test compiler") {
     using namespace swift::slang;
@@ -178,9 +179,8 @@ TEST_CASE("Test runtime") {
             .loc_start = 0,
             .loc_end = UINT64_MAX,
             .enable_jit = true,
+            .has_local_operation = false,
             .backend_isa = swift::runtime::kArm64,
-            .enable_rsb = false,
-            .has_local_operation = false
     };
     AddressSpace address_space{config};
     auto module = address_space.GetDefaultModule();
@@ -195,12 +195,22 @@ TEST_CASE("Test block ir print") {
     using namespace swift::runtime::ir;
     Block block{0, Location{0x1000}};
     auto imm32 = block.LoadImm(Imm{8u}).SetType(ValueType::U32);
-    auto imm8 = block.LoadImm(Imm{8u}).SetType(ValueType::U8);
+    auto imm8 = block.LoadImm<BOOL>(Imm{8u}).SetType(ValueType::U8);
     block.StoreUniform(Uniform{32, ValueType::U32}, imm8);
     Params params{};
     params.Push(imm8);
     params.Push(imm8);
-    auto res = block.CallDynamic(Lambda(Imm(uint64_t(1))), params);
+    block.CallDynamic(Lambda(Imm(uint64_t(1))), params);
+    block.SaveFlags(imm8, Flags{Flags::NZCV});
     block.SetTerminal(terminal::If(terminal::If{imm8, terminal::LinkBlock{0x1000}, terminal::LinkBlock{0x2000}}));
     std::cout << block.ToString() << std::endl;
+}
+
+TEST_CASE("Test x86 translator") {
+    using namespace swift::x86;
+    using namespace swift::translator::x86;
+    auto instance = X86Instance::Make();
+    auto core1 = X86Core::Make(instance);
+
+    core1->Run();
 }

@@ -23,11 +23,39 @@ CPUReg JitContext::Get(const ir::Value& value) {
     } else {
         ASSERT_MSG(false, "");
     }
+    return {};
 }
 
-Register JitContext::X(const ir::Value& value) {
+Register JitContext::R(const ir::Value& value, bool auto_cast) {
+    if (value.Type() == ir::ValueType::U64) {
+        return X(value);
+    } else {
+        if (auto_cast && value.Def()->IsGetHostRegOperation()) {
+            if (value.Type() == ir::ValueType::U8) {
+                auto tmp = GetTmpX();
+                __ Ubfx(tmp.W(), W(value), 0, 8);
+                return tmp.W();
+            } else if (value.Type() == ir::ValueType::U16) {
+                auto tmp = GetTmpX();
+                __ Ubfx(tmp.W(), W(value), 0, 16);
+                return tmp.W();
+            } else {
+                return W(value);
+            }
+        } else {
+            return W(value);
+        }
+    }
+}
+
+XRegister JitContext::X(const ir::Value& value) {
     auto reg = reg_alloc.ValueGPR(value);
-    return XRegister::GetXRegFromCode(reg.id);
+    return XRegister(reg.id);
+}
+
+WRegister JitContext::W(const ir::Value& value) {
+    auto reg = reg_alloc.ValueGPR(value);
+    return WRegister(reg.id);
 }
 
 VRegister JitContext::V(const ir::Value& value) {
@@ -35,14 +63,25 @@ VRegister JitContext::V(const ir::Value& value) {
     return VRegister::GetVRegFromCode(reg.id);
 }
 
-Register JitContext::GetTmpX() {
-    auto reg = reg_alloc.GetTmpGPR();
-    return XRegister::GetXRegFromCode(reg.id);
+XRegister JitContext::GetTmpX() {
+    if (auto alloc = cur_dirty_gprs.GetFirstClear(); alloc >= 0) {
+        cur_dirty_gprs.Mark(alloc);
+        return XRegister(alloc);
+    }
+    PANIC();
+}
+
+Register JitContext::GetTmpGPR(ir::ValueType type) {
+    auto x = GetTmpX();
+    return type == ir::ValueType::U64 ? x : x.W();
 }
 
 VRegister JitContext::GetTmpV() {
-    auto reg = reg_alloc.GetTmpFPR();
-    return VRegister::GetVRegFromCode(reg.id);
+    if (auto alloc = cur_dirty_fprs.GetFirstClear(); alloc >= 0) {
+        cur_dirty_fprs.Mark(alloc);
+        return VRegister::GetVRegFromCode(alloc);
+    }
+    PANIC();
 }
 
 void JitContext::Forward(ir::Location location) {
@@ -84,7 +123,7 @@ void JitContext::Forward(ir::Location location) {
             } else {
                 BlockLinkStub(location);
             }
-        } else if (self_module_forward && module_config.HasOpt(Optimizations::IndirectBlockLink)) {
+        } else if (self_module_forward && module_config.HasOpt(Optimizations::BlockLink)) {
             // indirect link
             u32 dispatcher_index = target_module->GetDispatchIndex(location);
             __ Mov(ipw, dispatcher_index);
@@ -99,7 +138,7 @@ void JitContext::Forward(ir::Location location) {
     }
 }
 
-void JitContext::ReturnToDispatcher(const vixl::aarch64::Register& location) {
+void JitContext::ReturnToDispatcher(const Register& location) {
     __ Str(location, MemOperand(state, state_offset_current_loc));
     __ Ret();
 }
@@ -116,6 +155,15 @@ u8* JitContext::Flush(const CodeBuffer& code_cache) {
 
 u32 JitContext::CurrentBufferSize() { return __ GetBuffer() -> GetSizeInBytes(); }
 
+bool JitContext::IsUniform(const Register& reg) {
+    auto &uniform_info = module->GetAddressSpace().GetUniformInfo();
+    if (reg.IsV()) {
+        return uniform_info.uni_fprs.Get(reg.GetCode());
+    } else {
+        return uniform_info.uni_gprs.Get(reg.GetCode());
+    }
+}
+
 void JitContext::SetCurrent(ir::Block* block) {
     cur_block = block;
     auto label = GetLabel(block->GetStartLocation().Value());
@@ -128,7 +176,11 @@ void JitContext::SetCurrent(ir::Function* function) {
     __ Bind(label);
 }
 
-void JitContext::TickIR(ir::Inst* instr) { reg_alloc.SetCurrent(instr); }
+void JitContext::TickIR(ir::Inst* instr) {
+    reg_alloc.SetCurrent(instr);
+    cur_dirty_gprs = reg_alloc.GetDirtyGPR();
+    cur_dirty_fprs = reg_alloc.GetDirtyFPR();
+}
 
 MacroAssembler& JitContext::GetMasm() { return masm; }
 

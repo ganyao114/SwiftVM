@@ -10,8 +10,9 @@ namespace swift::runtime::ir {
 
 class LocalEliminationPass {
 public:
-    static void Run(HIRBuilder *hir_builder);
-    static void Run(HIRFunction *hir_function);
+    static void Run(HIRBuilder *hir_builder, bool mem_to_regs = true);
+    static void Run(HIRFunction *hir_function, bool mem_to_regs = true);
+    static void Run(Block *block);
 };
 
 }  // namespace swift::runtime::ir

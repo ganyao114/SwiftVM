@@ -30,7 +30,7 @@ struct CodeBuffer {
 
 class CodeCache {
 public:
-    explicit CodeCache(const Config& config, u32 size);
+    explicit CodeCache(const Config& config, u32 size, bool read_only = false);
 
     ~CodeCache();
 
@@ -46,11 +46,13 @@ private:
 
     const Config& config;
     const size_t inst_alignment;
+    const bool read_only;
     u32 max_size;
     mspace space_code{};
     std::unique_ptr<MemMap> code_mem;
 
     u8* code_mem_mapped{};
+    u8* code_cursor{};
 };
 
 }  // namespace swift::runtime::backend

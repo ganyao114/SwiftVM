@@ -28,7 +28,7 @@ public:
     static constexpr auto max_args = 4;
     static constexpr auto invalid_id = UINT16_MAX;
     using Values = StackVector<Value, max_args>;
-    using Pseudos = StackVector<Inst*, 8>;
+    using Pseudos = StackVector<Inst*, 4>;
 
     ~Inst();
 
@@ -57,7 +57,7 @@ public:
 
     template <typename... Args> static Inst* Create(OpCode op, const Args&... args) {
         auto inst = new Inst(op);
-        inst->SetArgs(args...);
+        inst->SetArgs(std::forward<const Args&>(args)...);
         return inst;
     }
     static void Validate(Inst* inst);
@@ -82,6 +82,7 @@ public:
 
     template <typename T>
     [[nodiscard]] T GetArg(int index) const {
+        index = PublicIndex(index);
         if constexpr (std::is_same<T, Operand>::value) {
             ASSERT(arguments[index].IsOperand());
             Operand operand{};
@@ -94,21 +95,42 @@ public:
         }
     }
 
+    template <typename... Args> void SetInst(OpCode op, const Args&... args) {
+        this->op_code = op;
+        this->SetArgs(std::forward<const Args&>(args)...);
+    }
+
+#define INST(name, ret, ...)                                                                        \
+    template <typename... Args> Inst &name(const Args&... args) {                                   \
+        this->SetInst(OpCode::name, std::forward<const Args&>(args)...);                            \
+        return *this;                                                                               \
+    }
+#include "ir.inc"
+#undef INST
+
     void Use(const Value& value);
     void UnUse(const Value& value);
-    Values GetValues();
+    [[nodiscard]] u8 GetUses(bool exclude_pseudo = true);
+    [[nodiscard]] Values GetValues();
 
     [[nodiscard]] OpCode GetOp() const;
     void SetId(u16 id);
     void SetReturn(ValueType type);
     [[nodiscard]] u16 Id() const;
     [[nodiscard]] ValueType ReturnType() const;
-    bool HasValue();
-    bool IsPseudoOperation();
+    [[nodiscard]] bool HasValue();
+    [[nodiscard]] bool IsPseudoOperation();
+    [[nodiscard]] bool IsGetHostRegOperation();
+    [[nodiscard]] bool IsSetHostRegOperation();
+    [[nodiscard]] bool IsBitCastOperation();
+    [[nodiscard]] bool HasSideEffects();
 
     [[nodiscard]] Inst* GetPseudoOperation(OpCode code);
     [[nodiscard]] Inst::Pseudos GetPseudoOperations();
+    [[nodiscard]] bool HasFlagsSavePseudo();
     void DestroyArg(u8 arg_idx);
+    void DestroyArgs();
+    void Reset();
 
     [[nodiscard]] u16 VirRegID() const {
         return vir_reg;
@@ -121,6 +143,8 @@ public:
 private:
     friend class Value;
     friend class Block;
+
+    [[nodiscard]] int PublicIndex(int index) const;
 
     Inst* next_pseudo_inst{};
     mutable std::array<Arg, max_args> arguments{};

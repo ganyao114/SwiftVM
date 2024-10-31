@@ -25,7 +25,6 @@ namespace swift::runtime::ir {
 
 #define VALUE_TYPE_ENUM(X) \
     X(VOID) \
-    X(BOOL) \
     X(U8)   \
     X(U16)  \
     X(U32)  \
@@ -61,6 +60,16 @@ const IRMeta& GetIRMetaInfo(OpCode op_code);
 const char *ArgTypeString(ArgType arg_type);
 
 const char *ValueTypeString(ValueType value_type);
+
+bool IsFloatValueType(ValueType type);
+
+bool IsSignValueType(ValueType type);
+
+ValueType GetIRValueType(u32 size_byte);
+
+ValueType GetVecIRValueType(u32 size_byte);
+
+ValueType GetSignedIRValueType(u32 size_byte);
 
 }  // namespace swift::runtime::ir
 

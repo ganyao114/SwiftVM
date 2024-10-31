@@ -6,8 +6,10 @@
 
 #include "distorm.h"
 #include "mnemonics.h"
+#include "cpu.h"
 #include "runtime/include/config.h"
 #include "runtime/frontend/ir_assembler.h"
+#include "runtime/backend/context.h"
 
 namespace swift::x86 {
 
@@ -61,7 +63,23 @@ struct X86RegInfo {
         Xmm12,
         Xmm13,
         Xmm14,
-        Xmm15
+        Xmm15,
+        Ymm0,
+        Ymm1,
+        Ymm2,
+        Ymm3,
+        Ymm4,
+        Ymm5,
+        Ymm6,
+        Ymm7,
+        Ymm8,
+        Ymm9,
+        Ymm10,
+        Ymm11,
+        Ymm12,
+        Ymm13,
+        Ymm14,
+        Ymm15
     };
 
     u8 code;
@@ -139,12 +157,12 @@ constexpr X86RegInfo x86_regs_table[] = {
         {_RegisterType::R_BPL, X86RegInfo::Rbp, ir::ValueType::U8, false},
         {_RegisterType::R_SIL, X86RegInfo::Rsi, ir::ValueType::U8, false},
         {_RegisterType::R_DIL, X86RegInfo::Rdi, ir::ValueType::U8, false},
-        {_RegisterType::R_ES, X86RegInfo::ES, ir::ValueType::U64, false},
-        {_RegisterType::R_CS, X86RegInfo::CS, ir::ValueType::U64, false},
-        {_RegisterType::R_SS, X86RegInfo::SS, ir::ValueType::U64, false},
-        {_RegisterType::R_DS, X86RegInfo::DS, ir::ValueType::U64, false},
-        {_RegisterType::R_FS, X86RegInfo::FS, ir::ValueType::U64, false},
-        {_RegisterType::R_GS, X86RegInfo::GS, ir::ValueType::U64, false},
+        {_RegisterType::R_ES, X86RegInfo::ES, ir::ValueType::U16, false},
+        {_RegisterType::R_CS, X86RegInfo::CS, ir::ValueType::U16, false},
+        {_RegisterType::R_SS, X86RegInfo::SS, ir::ValueType::U16, false},
+        {_RegisterType::R_DS, X86RegInfo::DS, ir::ValueType::U16, false},
+        {_RegisterType::R_FS, X86RegInfo::FS, ir::ValueType::U16, false},
+        {_RegisterType::R_GS, X86RegInfo::GS, ir::ValueType::U16, false},
         {_RegisterType::R_RIP, X86RegInfo::Rip, ir::ValueType::U64, false},
         {_RegisterType::R_ST0, X86RegInfo::Xmm0, ir::ValueType::V128, false},
         {_RegisterType::R_ST1, X86RegInfo::Xmm1, ir::ValueType::V128, false},
@@ -154,14 +172,14 @@ constexpr X86RegInfo x86_regs_table[] = {
         {_RegisterType::R_ST5, X86RegInfo::Xmm5, ir::ValueType::V128, false},
         {_RegisterType::R_ST6, X86RegInfo::Xmm6, ir::ValueType::V128, false},
         {_RegisterType::R_ST7, X86RegInfo::Xmm7, ir::ValueType::V128, false},
-        {_RegisterType::R_MM0, X86RegInfo::Xmm0, ir::ValueType::U64, false},
-        {_RegisterType::R_MM1, X86RegInfo::Xmm1, ir::ValueType::U64, false},
-        {_RegisterType::R_MM2, X86RegInfo::Xmm2, ir::ValueType::U64, false},
-        {_RegisterType::R_MM3, X86RegInfo::Xmm3, ir::ValueType::U64, false},
-        {_RegisterType::R_MM4, X86RegInfo::Xmm4, ir::ValueType::U64, false},
-        {_RegisterType::R_MM5, X86RegInfo::Xmm5, ir::ValueType::U64, false},
-        {_RegisterType::R_MM6, X86RegInfo::Xmm6, ir::ValueType::U64, false},
-        {_RegisterType::R_MM7, X86RegInfo::Xmm7, ir::ValueType::U64, false},
+        {_RegisterType::R_MM0, X86RegInfo::Xmm0, ir::ValueType::V64, false},
+        {_RegisterType::R_MM1, X86RegInfo::Xmm1, ir::ValueType::V64, false},
+        {_RegisterType::R_MM2, X86RegInfo::Xmm2, ir::ValueType::V64, false},
+        {_RegisterType::R_MM3, X86RegInfo::Xmm3, ir::ValueType::V64, false},
+        {_RegisterType::R_MM4, X86RegInfo::Xmm4, ir::ValueType::V64, false},
+        {_RegisterType::R_MM5, X86RegInfo::Xmm5, ir::ValueType::V64, false},
+        {_RegisterType::R_MM6, X86RegInfo::Xmm6, ir::ValueType::V64, false},
+        {_RegisterType::R_MM7, X86RegInfo::Xmm7, ir::ValueType::V64, false},
         {_RegisterType::R_XMM0, X86RegInfo::Xmm0, ir::ValueType::V128, false},
         {_RegisterType::R_XMM1, X86RegInfo::Xmm1, ir::ValueType::V128, false},
         {_RegisterType::R_XMM2, X86RegInfo::Xmm2, ir::ValueType::V128, false},
@@ -178,7 +196,22 @@ constexpr X86RegInfo x86_regs_table[] = {
         {_RegisterType::R_XMM13, X86RegInfo::Xmm13, ir::ValueType::V128, false},
         {_RegisterType::R_XMM14, X86RegInfo::Xmm14, ir::ValueType::V128, false},
         {_RegisterType::R_XMM15, X86RegInfo::Xmm15, ir::ValueType::V128, false},
-
+        {_RegisterType::R_XMM0, X86RegInfo::Ymm0, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM1, X86RegInfo::Ymm1, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM2, X86RegInfo::Ymm2, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM3, X86RegInfo::Ymm3, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM4, X86RegInfo::Ymm4, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM5, X86RegInfo::Ymm5, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM6, X86RegInfo::Ymm6, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM7, X86RegInfo::Ymm7, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM8, X86RegInfo::Ymm8, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM9, X86RegInfo::Ymm9, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM10, X86RegInfo::Ymm10, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM11, X86RegInfo::Ymm11, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM12, X86RegInfo::Ymm12, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM13, X86RegInfo::Ymm13, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM14, X86RegInfo::Ymm14, ir::ValueType::V256, false},
+        {_RegisterType::R_YMM15, X86RegInfo::Ymm15, ir::ValueType::V256, false}
 };
 
 ir::Uniform ToReg(const X86RegInfo& info);
@@ -187,7 +220,7 @@ ir::Uniform ToVReg(const X86RegInfo& info);
 
 class X64Decoder {
 public:
-    X64Decoder(VAddr start, runtime::MemoryInterface *memory, ir::Assembler* visitor);
+    X64Decoder(VAddr start, runtime::MemoryInterface *memory, ir::Assembler* visitor, bool is_64bit);
 
     void Decode();
 
@@ -213,7 +246,34 @@ private:
         IE = 1 << 21
     };
 
-    bool IsV(_RegisterType reg);
+    struct Operand {
+        ir::OperandOp::Type op_type{ir::OperandOp::Plus};
+        ir::DataClass left{};
+        ir::DataClass right{};
+        u8 ext{};
+
+        [[nodiscard]] ir::Operand ToIROperand() const {
+            if (right.Null()) {
+                if (ext) {
+                    return ir::Operand{left, ir::Imm(ext), ir::OperandLsl};
+                } else {
+                    return ir::Operand{left};
+                }
+            } else {
+                return ir::Operand{left, right, {op_type, ext}};
+            }
+        }
+
+        [[nodiscard]] bool IsImm() const {
+            return left.IsImm() && right.Null() && !ext;
+        }
+
+        [[nodiscard]] ir::Imm ToImm() const {
+            return left.imm;
+        }
+    };
+
+    static bool IsV(_RegisterType reg);
 
     ir::Value R(_RegisterType reg);
 
@@ -223,23 +283,15 @@ private:
 
     void V(_RegisterType reg, ir::Value value);
 
-    ir::Value GetFlag(CPUFlags flag);
-
-    void SetFlag(CPUFlags flag, ir::BOOL value);
-
-    void ClearFlags(CPUFlags flags);
-
     void Interrupt(InterruptReason reason);
 
-    ir::ValueType GetSize(u32 bits);
+    ir::Value ToValue(const ir::DataClass &data);
 
-    ir::Value Src(_DInst& insn, _Operand& operand);
+    ir::DataClass Src(_DInst& insn, _Operand& operand);
 
-    ir::Lambda AddrSrc(_DInst& insn, _Operand& operand);
+    void Dst(_DInst& insn, _Operand& operand, const ir::DataClass &value);
 
-    void Dst(_DInst& insn, _Operand& operand, ir::Value value);
-
-    ir::Lambda GetAddress(_DInst& insn, _Operand& operand);
+    Operand GetAddress(_DInst& insn, _Operand& operand);
 
     ir::Value Pop(_RegisterType reg, ir::ValueType size);
 
@@ -253,7 +305,7 @@ private:
 
     void DecodeMov(_DInst& insn);
 
-    void DecodeAddSub(_DInst& insn, bool sub, bool save_res = true);
+    void DecodeAddSub(_DInst& insn, bool sub, bool save_res = true, bool exchange = false);
 
     void DecodeCondJump(_DInst& insn, Cond cond);
 
@@ -263,11 +315,11 @@ private:
 
     void DecodeIncAndDec(_DInst& insn, bool dec);
 
-    void DecodeAnd(_DInst& insn);
+    void DecodeAnd(_DInst& insn, bool save_result = false);
 
     void DecodeLea(_DInst& insn);
 
-    void DecodeMulDiv(_DInst& insn, bool div);
+    void DecodeMulDiv(_DInst& insn, bool div, bool sign = false);
 
     void DecodeCondMov(_DInst& insn, Cond cond);
 
@@ -275,11 +327,30 @@ private:
 
     void DecodeXor(_DInst& insn);
 
+    void DecodePush(_DInst& insn);
+
+    void DecodePop(_DInst& insn);
+
+    void DecodePushA(_DInst& insn);
+
+    void DecodePopA(_DInst& insn);
+
+    void DecodeShlShr(_DInst& insn, bool shr);
+
+    void DecodeCmp(_DInst& insn);
+
+    void DecodeAndNot(_DInst& insn);
+
     VAddr start;
     VAddr pc;
     ir::Assembler* assembler;
     runtime::MemoryInterface *memory;
     bool end_decode{false};
+    bool is_64bit{false};
+    VAddr addr_mask{UINT64_MAX};
 };
+
+void FromHost(backend::State *state, ThreadContext64 *ctx);
+void ToHost(backend::State *state, ThreadContext64 *ctx);
 
 }  // namespace swift::x86

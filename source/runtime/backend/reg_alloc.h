@@ -40,7 +40,11 @@ public:
         return sizeof(T) * 8;
     }
 
-    bool Get(u32 bit) {
+    [[nodiscard]] bool Null() const {
+        return mask == 0;
+    }
+
+    [[nodiscard]] bool Get(u32 bit) const {
         return mask & (T(1) << bit);
     }
 
@@ -50,6 +54,10 @@ public:
 
     void Clear(u32 bit) {
         mask &= ~(T(1) << bit);
+    }
+
+    void Reset(T value) {
+        mask = value;
     }
 
 private:
@@ -68,7 +76,8 @@ public:
         NONE,
         GPR,
         FPR,
-        MEM
+        MEM,
+        REF
     };
 
     struct Map {
@@ -84,6 +93,7 @@ public:
     void MapRegister(u32 id, ir::HostGPR gpr);
     void MapRegister(u32 id, ir::HostFPR fpr);
     void MapMemSpill(u32 id, ir::SpillSlot slot);
+    void MapReference(u32 from, u32 to);
     void SetActiveRegs(u32 id, GPRSMask &gprs, FPRSMask &fprs);
 
     ir::HostGPR ValueGPR(const ir::Value &value);
@@ -94,8 +104,8 @@ public:
     ir::SpillSlot ValueMem(u32 id);
     Type ValueType(const ir::Value &value);
 
-    ir::HostGPR GetTmpGPR();
-    ir::HostFPR GetTmpFPR();
+    [[nodiscard]] GPRSMask GetDirtyGPR() const;
+    [[nodiscard]] FPRSMask GetDirtyFPR() const;
 
     void SetCurrent(ir::Inst *inst);
 

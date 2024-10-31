@@ -522,6 +522,42 @@ namespace ams::freebsd {
         return res;
     }
 
+    template<typename T, typename U, typename Compare> requires HasRBEntry<T>
+    constexpr ALWAYS_INLINE T *RB_LOWER_BOUND(RBHead<T> &head, const U &key, Compare cmp) {
+        T *tmp = head.Root();
+        T *res = nullptr;
+
+        while (tmp) {
+            const int comp = cmp(key, tmp);
+            if (comp <= 0) {
+                res = tmp;
+                tmp = RB_LEFT(tmp);
+            } else {
+                tmp = RB_RIGHT(tmp);
+            }
+        }
+
+        return res;
+    }
+
+    template<typename T, typename U, typename Compare> requires HasRBEntry<T>
+    constexpr ALWAYS_INLINE T *RB_UPPER_BOUND(RBHead<T> &head, const U &key, Compare cmp) {
+        T *tmp = head.Root();
+        T *res = nullptr;
+
+        while (tmp) {
+            const int comp = cmp(key, tmp);
+            if (comp < 0) {
+                res = tmp;
+                tmp = RB_LEFT(tmp);
+            } else {
+                tmp = RB_RIGHT(tmp);
+            }
+        }
+
+        return res;
+    }
+
     template<typename T, typename Compare> requires HasRBEntry<T>
     constexpr ALWAYS_INLINE T *RB_FIND_EXISTING(RBHead<T> &head, T *elm, Compare cmp) {
         T *tmp = head.Root();

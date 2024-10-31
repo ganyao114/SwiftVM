@@ -9,11 +9,15 @@
 
 namespace swift::runtime {
 
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
+
 void* AllocateMemoryPages(std::size_t size) noexcept {
 #ifdef _WIN32
     void* base{VirtualAlloc(nullptr, size, MEM_COMMIT, PAGE_READWRITE)};
 #else
-    void* base{mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0)};
+    void* base{mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE, -1, 0)};
 
     if (base == MAP_FAILED) {
         base = nullptr;

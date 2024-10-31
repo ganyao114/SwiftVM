@@ -25,6 +25,7 @@
 
 #define DONLY_MSPACES 1
 #define MSPACES 1
+#define USE_DL_PREFIX 1
 
 #ifdef __cplusplus
 extern "C" {

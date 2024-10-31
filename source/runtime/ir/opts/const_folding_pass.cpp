@@ -16,4 +16,8 @@ void ConstFoldingPass::Run(HIRFunction* hir_function) {
 
 }
 
+void ConstFoldingPass::Run(Block* block) {
+
+}
+
 }

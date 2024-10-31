@@ -164,7 +164,7 @@ public:
             backing_memory = reinterpret_cast<u8*>(
                     mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0));
         }
-#elif ANDROID
+#elif ANDROID || defined(__linux__)
         fd = memfd_create("HostMemory", 0);
 #endif
         if (fd == -1) {
@@ -214,7 +214,7 @@ public:
 
     const bool executable;
     int fd{};
-    u8* backing_memory;
+    u8* backing_memory{};
     u32 map_size;
 };
 

@@ -16,7 +16,7 @@ void Block::SetTerminal(Terminal term) {
     }
 }
 
-bool Block::HasTerminal() const { return !block_term.empty(); }
+bool Block::HasTerminal() const { return block_term.which() != 0; }
 
 void Block::AppendInst(Inst* inst) {
     Inst::Validate(inst);
@@ -55,17 +55,22 @@ void Block::ReIdInstr() {
     for (auto& instr : inst_list) {
         instr.SetId(index++);
     }
+    max_instr_id = index;
 }
-
-void Block::SetEndLocation(Location end_) { this->end = end_; }
-
-Location Block::GetStartLocation() const { return location; }
 
 InstList& Block::GetInstList() { return inst_list; }
 
 InstList& Block::GetInstList() const { return inst_list; }
 
 InstList::iterator Block::GetBeginInst() { return inst_list.begin(); }
+
+bool Block::IsJitCached() {
+    return jit_cache.jit_state == backend::JitState::Cached;
+}
+
+bool Block::IsEmptyBlock() {
+    return !IsJitCached() && inst_list.empty() && !HasTerminal();
+}
 
 std::string Block::ToString() const { return fmt::format("{}", *this); }
 

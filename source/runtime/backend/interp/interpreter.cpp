@@ -26,7 +26,7 @@ HaltReason Interpreter::Run(ir::Inst* inst, InterpStack &stack) {
 #define INST(name, ...) case ir::OpCode::name: { \
         Run##name(inst, stack);    \
     }
-#include "runtime/ir/ir.inc"
+//#include "runtime/ir/ir.inc"
 #undef INST
         default:
             break;

@@ -7,23 +7,23 @@
 
 namespace swift::runtime::ir {
 
-void LocalEliminationPass::Run(HIRBuilder* hir_builder) {
+void LocalEliminationPass::Run(HIRBuilder* hir_builder, bool to_regs) {
     for (auto& hir_func : hir_builder->GetHIRFunctions()) {
-        Run(&hir_func);
+        Run(&hir_func, to_regs);
     }
 }
 
-void LocalEliminationPass::Run(HIRFunction* hir_function) {
+void LocalEliminationPass::Run(HIRFunction* hir_function, bool to_regs) {
     auto& hir_blocks = hir_function->GetHIRBlocksRPO();
     auto block_count = hir_function->MaxBlockCount();
     auto local_count = hir_function->MaxLocalCount();
 
-    StackVector<HIRBlock*, 8> local_def_block{local_count};
-    StackVector<Local, 8> locals{local_count};
-    StackVector<StackVector<HIRBlock*, 8>, 8> local_stores{local_count};
-    StackVector<StackVector<HIRLocal, 8>, 8> block_current_locals{block_count};
+    StackVector<HIRBlock*, 16> local_def_block{local_count};
+    StackVector<Local, 16> locals{local_count};
+    StackVector<StackVector<HIRBlock*, 16>, 16> local_stores{local_count};
+    StackVector<StackVector<HIRLocal, 16>, 16> block_current_locals{block_count};
 
-    StackVector<StackVector<StackVector<HIRValue*, 8>, 8>, 8> block_local_loads{block_count};
+    StackVector<StackVector<StackVector<HIRValue*, 16>, 16>, 16> block_local_loads{block_count};
 
     // Same block elimination
     for (auto& block : hir_blocks) {
@@ -105,15 +105,15 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
     };
 
     // Mem 2 Reg
-    StackVector<StackVector<Phi, 8>, 8> block_phi_map{block_count};
+    StackVector<StackVector<Phi, 16>, 16> block_phi_map{block_count};
     // Step 1: Insert Phi Node
     for (u32 local_id = 0; local_id < local_count; local_id++) {
         auto &stores = local_stores[local_id];
         if (stores.empty()) {
             continue;
         }
-        StackVector<Phi*, 8> blocks_phi{block_count};
-        StackVector<HIRBlock*, 8> worklist{};
+        StackVector<Phi*, 16> blocks_phi{block_count};
+        StackVector<HIRBlock*, 16> worklist{};
         for (auto store_block : stores) {
             worklist.push_back(store_block);
         }
@@ -183,6 +183,10 @@ void LocalEliminationPass::Run(HIRFunction* hir_function) {
             }
         }
     }
+}
+
+void LocalEliminationPass::Run(Block* block) {
+
 }
 
 }  // namespace swift::runtime::ir

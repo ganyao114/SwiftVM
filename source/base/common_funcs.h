@@ -1,8 +1,9 @@
 #pragma once
 
-#include "runtime/common/logging.h"
+#include "base/logging.h"
 #include <string_view>
 #include <type_traits>
+#include <tuple>
 
 namespace swift {
 
@@ -91,5 +92,49 @@ bool ContainsElement(const Container& container, const T& value, size_t start_po
 
 #define ENUM_TO_STRING_CASE(r) case ENUM_CLASS::r: return #r;
 #define ENUM_DEFINE(r) r,
+
+template <typename T> struct Identity {
+    using type = T;
+};
+
+template<typename T>
+constexpr T RoundDown(T x, typename Identity<T>::type n) {
+    return (x & -n);
+}
+
+template<typename T>
+constexpr T RoundUp(T x, std::remove_reference_t<T> n) {
+    return RoundDown(x + n - 1, n);
+}
+
+
+template<class... E>
+struct list {};
+
+template<class F>
+struct function_info : function_info<decltype(&F::operator())> {};
+
+template<class R, class... As>
+struct function_info<R(As...)> {
+    using return_type = R;
+    using parameter_list = list<As...>;
+    static constexpr std::size_t parameter_count = sizeof...(As);
+
+    using equivalent_function_type = R(As...);
+
+    template<std::size_t I>
+    struct parameter {
+        static_assert(I < parameter_count, "Non-existent parameter");
+        using type = std::tuple_element_t<I, std::tuple<As...>>;
+    };
+};
+
+template<class F>
+using equivalent_function_type = typename function_info<F>::equivalent_function_type;
+
+template<class Function>
+inline auto FuncPtrCast(Function f) noexcept {
+    return static_cast<equivalent_function_type<Function>*>(f);
+}
 
 }
