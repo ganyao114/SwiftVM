@@ -17,9 +17,9 @@ public:
 
     void Initialize(size_t size) { size_ = size; }
 
-    constexpr std::size_t GetSize() const { return size_; }
+    [[nodiscard]] std::size_t GetSize() const { return size_; }
 
-    Node* GetHead() const { return head; }
+    [[nodiscard]] Node* GetHead() const { return head; }
 
     void* Allocate();
 
@@ -45,11 +45,11 @@ public:
         }
     }
 
-    constexpr bool Contains(uintptr_t addr) const { return start <= addr && addr < end; }
+    [[nodiscard]] constexpr bool Contains(uintptr_t addr) const { return start <= addr && addr < end; }
 
-    constexpr std::size_t GetSlabHeapSize() const { return (end - start) / GetObjectSize(); }
+    [[nodiscard]] constexpr std::size_t GetSlabHeapSize() const { return (end - start) / GetObjectSize(); }
 
-    constexpr std::size_t GetObjectSize() const { return allocator.GetSize(); }
+    [[nodiscard]] constexpr std::size_t GetObjectSize() const { return allocator.GetSize(); }
 
     std::size_t GetObjectIndexImpl(const void* obj) const {
         return (reinterpret_cast<uintptr_t>(obj) - start) / GetObjectSize();
@@ -74,12 +74,12 @@ public:
     }
 
     void Free(void* obj) {
-        assert(Contains(reinterpret_cast<uintptr_t>(obj)));
+        ASSERT(Contains(reinterpret_cast<uintptr_t>(obj)));
         allocator.Free(obj);
     }
 
     void Initialize(void* memory, size_t memory_size) {
-        assert(memory != nullptr);
+        ASSERT(memory != nullptr);
 
         auto object_size = sizeof(T);
 

@@ -267,9 +267,8 @@ void Inst::DestroyArg(u8 arg_idx) {
             }
         }
         params.Destroy();
-    } else {
-        arg = {};
     }
+    arg = {};
 }
 
 void Inst::DestroyArgs() {

@@ -208,7 +208,7 @@ public:
 
     bool Unmap(void* mem, u32 size) { return munmap(mem, size); }
 
-    u8* GetBackend() const { return backing_memory; }
+    [[nodiscard]] u8* GetBackend() const { return backing_memory; }
 
     virtual ~Impl() = default;
 
