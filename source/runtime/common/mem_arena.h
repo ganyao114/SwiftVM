@@ -26,7 +26,7 @@ public:
 
 private:
     struct NonTrivialDummy {
-        NonTrivialDummy() noexcept {}
+        NonTrivialDummy() noexcept = default;
     };
 
     struct Chunk {

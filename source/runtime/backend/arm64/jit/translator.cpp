@@ -896,6 +896,10 @@ void JitTranslator::EmitXor(ir::Inst* inst) {}
 
 void JitTranslator::EmitGoto(ir::Inst* inst) {}
 
+void JitTranslator::EmitSelect(ir::Inst* inst) {}
+
+void JitTranslator::EmitCondSelect(ir::Inst* inst) {}
+
 void JitTranslator::EmitZero(ir::Inst* inst) {}
 
 #undef masm

@@ -43,6 +43,9 @@ void Block::DestroyInst(Inst* inst) {
 }
 
 void Block::DestroyInstrs() {
+    for (auto& inst : inst_list) {
+        inst.DestroyArgs();
+    }
     for (auto it = inst_list.begin(); it != inst_list.end();) {
         auto pre = it;
         it = inst_list.erase(it);
