@@ -176,12 +176,10 @@ public:
             }
         }
 
-        if (!backing_memory) {
-            backing_memory = reinterpret_cast<u8*>(Map(size, 0, Mode::ReadWrite, false));
-        }
+        backing_memory = reinterpret_cast<u8*>(Map(size, 0, Mode::ReadWrite, false));
     }
 
-    void* Map(u32 size, u32 offset, MemMap::Mode mode, bool pri) {
+    [[nodiscard]] void* Map(u32 size, u32 offset, MemMap::Mode mode, bool pri) const {
         auto flags = GetProtectFlags(mode);
 #if __APPLE__
         if (!fd) {

@@ -60,7 +60,7 @@ struct fdpic_dummy_loadmap {
 	struct fdpic_loadseg segs[1];
 };
 
-#include "reloc.h"
+//#include "reloc.h"
 
 #ifndef FDPIC_CONSTDISP_FLAG
 #define FDPIC_CONSTDISP_FLAG 0

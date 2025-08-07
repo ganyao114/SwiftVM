@@ -268,12 +268,22 @@ private:
             return left.IsImm() && right.Null() && !ext;
         }
 
+        [[nodiscard]] bool OnlyLeft() const {
+            return !left.Null() && right.Null();
+        }
+
         [[nodiscard]] ir::Imm ToImm() const {
             return left.imm;
+        }
+
+        [[nodiscard]] ir::DataClass Left() const {
+            return left;
         }
     };
 
     static bool IsV(_RegisterType reg);
+
+    ir::DataClass GetOperand(const Operand &operand);
 
     ir::Value R(_RegisterType reg);
 
@@ -304,6 +314,8 @@ private:
     bool DecodeSwitch(_DInst& insn);
 
     void DecodeMov(_DInst& insn);
+
+    void DecodeMovs(_DInst& insn);
 
     void DecodeAddSub(_DInst& insn, bool sub, bool save_res = true, bool exchange = false);
 

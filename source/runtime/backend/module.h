@@ -45,6 +45,26 @@ inline IntrusivePtr<ir::Block> GetBlock(const AddressNodeRef& node) {
     return boost::get<IntrusivePtr<ir::Block>>(node);
 }
 
+class DataAllocator {
+public:
+    explicit DataAllocator(u32 size);
+
+    ~DataAllocator();
+
+    [[nodiscard]] void* Alloc(u32 size);
+
+    void Free(void* ptr);
+
+    [[nodiscard]] u32 GetSize() const { return mem_map->GetSize(); }
+
+    [[nodiscard]] u8* GetBackend() const { return mem_map->GetMemory(); }
+
+    [[nodiscard]] bool IsOverlap(const u8 *ptr);
+private:
+    std::unique_ptr<MemMap> mem_map;
+    mspace space;
+};
+
 class Module : DeleteCopyAndMove {
 public:
     explicit Module(AddressSpace& space,
@@ -78,6 +98,14 @@ public:
         return ScopedRangeLock{address_lock, start.Value(), end.Value()};
     }
 
+    [[nodiscard]] std::shared_lock<std::shared_mutex> ModuleLockRead() {
+        return std::shared_lock{module_lock};
+    }
+
+    [[nodiscard]] std::unique_lock<std::shared_mutex> ModuleLockWrite() {
+        return std::unique_lock{module_lock};
+    }
+
     [[nodiscard]] const ModuleConfig& GetModuleConfig() const { return module_config; }
 
     [[nodiscard]] std::pair<u16, CodeBuffer> AllocCodeCache(u32 size);
@@ -93,11 +121,13 @@ private:
     AddressSpace& address_space;
     ir::Location module_start;
     ir::Location module_end;
-    std::shared_mutex lock;
+    std::shared_mutex inner_lock;
+    std::shared_mutex module_lock;
     RangeMutex address_lock{};
     AddressHashMap<&ir::AddressNode::map_node> address_node_map;
     std::shared_mutex cache_lock;
     std::map<u16, CodeCache> code_caches{};
+    std::list<DataAllocator> data_allocators{};
     u16 current_code_cache{};
 };
 

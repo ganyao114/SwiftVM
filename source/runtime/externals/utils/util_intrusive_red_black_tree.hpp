@@ -421,6 +421,10 @@ namespace ams::util {
                 return m_impl.empty();
             }
 
+            constexpr ALWAYS_INLINE bool empty() {
+                return m_impl.empty();
+            }
+
             constexpr ALWAYS_INLINE reference back() {
                 return *Traits::GetParent(std::addressof(m_impl.back()));
             }

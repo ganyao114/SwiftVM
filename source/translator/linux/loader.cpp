@@ -5,11 +5,14 @@
 #include <fcntl.h>
 #include <link.h>
 #include <sys/mman.h>
+#include <sys/auxv.h>
 #include "base/common_funcs.h"
 #include "base/logging.h"
 #include "loader.h"
 
 namespace swift::linux {
+
+typedef uintptr_t __attribute__((may_alias)) stack_val_t;
 
 #define MAX_PHNUM 12
 
@@ -54,6 +57,7 @@ struct LoadInfo {
     ElfW(Addr) base{};
     ElfW(Addr) phdr{};
     ElfW(Addr) phnum{};
+    ElfW(Addr) phentsize{};
     Elf64_Half machine{};
     char* interp_path{};
     u8* main_stack_bottom{};
@@ -87,8 +91,6 @@ static LoadInfo LoadElfFile(const char* filename, size_t pagesize) {
                 break;
         }
     ElfW(Phdr) phdr[MAX_PHNUM];
-    if (ehdr.e_phnum > sizeof(phdr) / sizeof(phdr[0]) || ehdr.e_phnum < 1)
-        PANIC("ELF file has unreasonable! file = {}, e_machine = {}", filename, ehdr.e_phnum);
     if (ehdr.e_type != ET_DYN)
         PANIC("ELF file not ET_DYN! file = {}, e_machine = {}", filename, ehdr.e_type);
 
@@ -181,6 +183,7 @@ static LoadInfo LoadElfFile(const char* filename, size_t pagesize) {
     load_result.phdr = ehdr.e_phoff - first_load->p_offset + first_load->p_vaddr + load_bias;
     load_result.phnum = ehdr.e_phnum;
     load_result.addr = ehdr.e_entry + load_bias;
+    load_result.phentsize = ehdr.e_phentsize;
     return load_result;
 }
 
@@ -200,11 +203,62 @@ static LoadInfo LoadElfFile(const char* filename, size_t pagesize) {
  * program.  We need to modify argc, move argv[1..] back to the argv[0..]
  * position, and also examine and modify the auxiliary vector on the stack.
  */
+void SetupMainStack(LoadInfo &program_info, void *base, std::span<char*> args, std::span<char*> envps) {
+    auto argc = args.size();
+    auto envp_count = envps.size();
+
+    auto stack_cursor = reinterpret_cast<stack_val_t *>(base);
+
+    /* Right after execve, the stack content is as follow:
+                 *
+                 *   +------+--------+--------+--------+
+                 *   | argc | argv[] | envp[] | auxv[] |
+                 *   +------+--------+--------+--------+
+     */
+
+    // argc
+    *(stack_cursor++) = argc;
+
+    // argv[]
+    for (int i = 0; i < argc; ++i) {
+        *(stack_cursor++) = reinterpret_cast<stack_val_t>(args[i]);
+    }
+
+    *(stack_cursor++) = {};
+
+    // envp[]
+    for (int i = 0; i < envp_count; ++i) {
+        *(stack_cursor++) = reinterpret_cast<stack_val_t>(envps[i]);
+    }
+
+    *(stack_cursor++) = {};
+
+    // auxv[]
+    auto auxv = reinterpret_cast<ElfW(auxv_t) *>(stack_cursor);
+
+    *(auxv++) = {AT_NULL};
+    *(auxv++) = {AT_PHDR, program_info.phdr};
+    *(auxv++) = {AT_PHENT, program_info.phentsize};
+    *(auxv++) = {AT_PHNUM, program_info.phnum};
+    *(auxv++) = {AT_PAGESZ, static_cast<uint64_t>(getpagesize())};
+    *(auxv++) = {AT_BASE, program_info.base};
+    *(auxv++) = {AT_ENTRY, program_info.addr};
+    *(auxv++) = {AT_UID, getuid()};
+    *(auxv++) = {AT_EUID, geteuid()};
+    *(auxv++) = {AT_GID, getgid()};
+    *(auxv++) = {AT_EGID, getegid()};
+    *(auxv++) = {AT_CLKTCK, getauxval(AT_CLKTCK)};
+    *(auxv++) = {AT_SECURE, getauxval(AT_SECURE)};
+    *(auxv++) = {AT_FLAGS, getauxval(AT_FLAGS)};
+    *(auxv++) = {AT_RANDOM, getauxval(AT_RANDOM)};
+    *(auxv++) = {AT_EXECFN, (stack_val_t) program_info.elf_path};
+    *(auxv++) = {AT_NULL};
+}
+
 #define MAIN_STACK_SIZE 1_MB
-static LoadInfo current_program;
 
 int Execve(const char* program, std::span<char*> args, std::span<char*> envps) {
-    current_program = LoadElfFile(program, getpagesize());
+    LoadInfo current_program = LoadElfFile(program, getpagesize());
 
     // mmap main stack
     current_program.main_stack_bottom = reinterpret_cast<u8*>(
@@ -213,10 +267,11 @@ int Execve(const char* program, std::span<char*> args, std::span<char*> envps) {
 
     auto stack_top = current_program.main_stack_bottom + MAIN_STACK_SIZE;
 
-    auto argv = args.size() + 1;
-    auto envp_count = envps.size();
-//    auto auxv_count =
-//    auto stack_elements =
+    // setup main stack
+    auto stack_base = stack_top - 64_KB;
+    SetupMainStack(current_program, stack_base, args, envps);
+
+
 }
 
 }  // namespace swift::linux

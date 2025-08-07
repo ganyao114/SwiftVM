@@ -25,7 +25,7 @@ concept InstAllocator = requires(T allocator, Inst* inst, OpCode code) {
 #pragma pack(push, 1)
 class Inst final : public SlabObject<Inst, true> {
 public:
-    static constexpr auto max_args = 4;
+    static constexpr auto max_args = 5;
     static constexpr auto invalid_id = UINT16_MAX;
     using Values = StackVector<Value, max_args>;
     using Pseudos = StackVector<Inst*, 4>;
@@ -125,7 +125,7 @@ public:
     [[nodiscard]] bool IsBitCastOperation();
     [[nodiscard]] bool HasSideEffects();
 
-    [[nodiscard]] Inst* GetPseudoOperation(OpCode code);
+    [[nodiscard]] Inst::Pseudos GetPseudoOperations(OpCode code);
     [[nodiscard]] Inst::Pseudos GetPseudoOperations();
     [[nodiscard]] bool HasFlagsSavePseudo();
     void DestroyArg(u8 arg_idx);

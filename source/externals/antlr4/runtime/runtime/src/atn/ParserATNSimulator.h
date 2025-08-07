@@ -179,7 +179,7 @@ namespace atn {
    * already exists. We must make sure that all requests to add DFA states that
    * are equivalent result in the same shared DFA object. This is because lots of
    * threads will be trying to update the DFA at once. The
-   * {@link #addDFAState} method also locks inside the DFA lock
+   * {@link #addDFAState} method also locks inside the DFA inner_lock
    * but this time on the shared context cache when it rebuilds the
    * configurations' {@link PredictionContext} objects using cached
    * subgraphs/nodes. No other locking occurs, even during DFA simulation. This is

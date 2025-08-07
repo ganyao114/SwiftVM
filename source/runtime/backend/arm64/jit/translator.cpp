@@ -902,6 +902,10 @@ void JitTranslator::EmitCondSelect(ir::Inst* inst) {}
 
 void JitTranslator::EmitZero(ir::Inst* inst) {}
 
+void JitTranslator::EmitGetResult(ir::Inst* inst) {
+
+}
+
 #undef masm
 
 }  // namespace swift::runtime::backend::arm64

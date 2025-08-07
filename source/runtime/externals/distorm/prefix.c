@@ -149,7 +149,7 @@ void prefixes_decode(const uint8_t* code, int codeLen, _PrefixState* ps, _Decode
 		 (codeLen > 0) && (code - ps->start < INST_MAXIMUM_SIZE);
 		 code++, codeLen--, index++) {
 		/*
-		NOTE: AMD treat lock/rep as two different groups... But I am based on Intel.
+		NOTE: AMD treat inner_lock/rep as two different groups... But I am based on Intel.
 
 			- Lock and Repeat:
 				- 0xF0 � LOCK
