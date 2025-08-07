@@ -10,4 +10,8 @@ namespace swift::linux {
 
 ShadowLib::ShadowLib(std::string path) : path(std::move(path)) {}
 
+ShadowSymbol* ShadowLib::LoadSymbol(const char* name) {
+
+}
+
 }

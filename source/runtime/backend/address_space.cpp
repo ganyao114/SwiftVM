@@ -106,6 +106,6 @@ const ir::UniformInfo& AddressSpace::GetUniformInfo() { return *uniform_info; }
 
 const ir::UniformInfo& AddressSpace::GetUniformInfo() const { return *uniform_info; }
 
-AddressSpace::~AddressSpace() {}
+AddressSpace::~AddressSpace() = default;
 
 }  // namespace swift::runtime::backend

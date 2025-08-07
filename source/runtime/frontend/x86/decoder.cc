@@ -283,6 +283,9 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_MOV:
             DecodeMov(insn);
             break;
+        case I_MOVS:
+            DecodeMovs(insn);
+            break;
         case I_CMOVA:
             DecodeCondMov(insn, Cond::AT);
             break;
@@ -576,6 +579,14 @@ void X64Decoder::Dst(_DInst& insn, _Operand& operand, const ir::DataClass& data)
 
 bool X64Decoder::IsV(_RegisterType reg) { return reg >= R_ST0; }
 
+ir::DataClass X64Decoder::GetOperand(const X64Decoder::Operand& operand) {
+    if (operand.OnlyLeft()) {
+        return operand.Left();
+    } else {
+        return __ GetOperand(operand.ToIROperand());
+    }
+}
+
 X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
     Operand address_operand{};
     switch (op.type) {
@@ -679,9 +690,24 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
 void X64Decoder::DecodeMov(_DInst& insn) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
-
     auto src = Src(insn, op1);
     Dst(insn, op0, src);
+}
+
+void X64Decoder::DecodeMovs(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+
+    if ((insn.flags & FLAG_REP) || (insn.flags & FLAG_REPNZ)) {
+        auto src_addr = GetOperand(GetAddress(insn, op1));
+        auto dst_addr = GetOperand(GetAddress(insn, op0));
+        auto count = R(R_RCX);
+
+        __ MemoryCopyTSO(ir::Lambda{dst_addr}, ir::Lambda{src_addr}, count);
+
+    } else {
+
+    }
 }
 
 void X64Decoder::DecodeAddSub(_DInst& insn, bool sub, bool save_res, bool exchange) {

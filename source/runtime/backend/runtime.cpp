@@ -78,7 +78,7 @@ struct Runtime::Impl final {
         return hr;
     }
 
-    HaltReason Run() {
+    [[nodiscard]] HaltReason Run() const {
         HaltReason hr{HaltReason::None};
         while (running.load(std::memory_order_acquire)) {
             auto current_loc = GetLocation();

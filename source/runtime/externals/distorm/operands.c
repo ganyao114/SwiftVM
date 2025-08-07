@@ -872,7 +872,7 @@ int operands_extract(_CodeInfo* ci, _DInst* di, _InstInfo* ii,
 			} else if ((ci->dt == Decode32Bits) && (ps->decodedPrefixes & INST_PRE_LOCK)) {
 				/*
 				 * NOTE: In 32 bits decoding mode,
-				 * if the lock prefix is set before MOV CR(n) it will become the 4th bit of the REG field like REX.R in 64 bits.
+				 * if the inner_lock prefix is set before MOV CR(n) it will become the 4th bit of the REG field like REX.R in 64 bits.
 				 */
 				reg += EX_GPR_BASE;
 				ps->usedPrefixes |= INST_PRE_LOCK;

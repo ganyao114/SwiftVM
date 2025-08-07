@@ -58,6 +58,7 @@ add_library(swift_runtime STATIC
         ir/hir_builder.h
         ir/ir_meta.cpp
         ir/host_reg.h
+        ir/allocator.h
         ir/opts/dataflow_analysis_pass.cpp
         ir/opts/dataflow_analysis_pass.h
         ir/opts/cfg_analysis_pass.cpp

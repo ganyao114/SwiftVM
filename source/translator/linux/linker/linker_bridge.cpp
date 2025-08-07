@@ -30,6 +30,6 @@ extern "C" void swift_linux_unload_so(swift_linux_host_so *dso) {
 
 }
 
-extern "C" void* swift_linux_load_symbol(swift_linux_host_so *dso, const char *name) {
+extern "C" Elf64_Sym *swift_linux_load_symbol(swift_linux_host_so *dso, const char *name) {
 
 }

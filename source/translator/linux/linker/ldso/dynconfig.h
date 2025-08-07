@@ -23,4 +23,20 @@
 #define DEFAULT_STACK_MAX (8<<20)
 #define DEFAULT_GUARD_MAX (1<<20)
 
+#ifndef DTP_OFFSET
+#define DTP_OFFSET 0
+#endif
+
+#ifndef BOOL
+#define BOOL char
+#endif
+
+#ifndef TRUE
+#define TRUE 1
+#endif
+
+#ifndef FALSE
+#define FALSE 0
+#endif
+
 #endif  // SWIFTVM_DYNCONFIG_H

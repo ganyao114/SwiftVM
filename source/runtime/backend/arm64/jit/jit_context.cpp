@@ -118,10 +118,12 @@ void JitContext::Forward(ir::Location location) {
             }
             if (in_function) {
                 __ B(GetLabel(location.Value()));
-            } else if (auto code = target_module->GetJitCache(location.Value()); code) {
-                __ B(GetLabel(location.Value()));
             } else {
-                BlockLinkStub(location);
+                if (auto code = target_module->GetJitCache(location.Value()); code) {
+                    __ B(GetLabel(location.Value()));
+                } else {
+                    BlockLinkStub(location);
+                }
             }
         } else if (self_module_forward && module_config.HasOpt(Optimizations::BlockLink)) {
             // indirect link
@@ -207,7 +209,7 @@ void JitContext::BlockLinkStub(ir::Location location) {
 }
 
 void JitContext::FlushLabels(VAddr target) {
-    for (auto& [location, label] : labels) {
+    for (auto &[location, label] : labels) {
         if (label.IsBound()) {
             continue;
         }

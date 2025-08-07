@@ -279,7 +279,7 @@ typedef enum OpType {
 /* If the opcode is supported by 80286 and upper models (16/32 bits). */
 #define INST_32BITS (1 << 3)
 /*
- * Prefix flags (6 types: lock/rep, seg override, addr-size, oper-size, REX, VEX)
+ * Prefix flags (6 types: inner_lock/rep, seg override, addr-size, oper-size, REX, VEX)
  * There are several specific instructions that can follow LOCK prefix,
  * note that they must be using a memory operand form, otherwise they generate an exception.
  */

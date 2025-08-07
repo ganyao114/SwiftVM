@@ -28,6 +28,6 @@ PredictionContextCache& ATNSimulator::getSharedContextCache() const {
 }
 
 Ref<const PredictionContext> ATNSimulator::getCachedContext(const Ref<const PredictionContext> &context) {
-  // This function must only be called with an active state lock, as we are going to change a shared structure.
+  // This function must only be called with an active state inner_lock, as we are going to change a shared structure.
   return PredictionContext::getCachedContext(context, getSharedContextCache());
 }

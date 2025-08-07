@@ -24,9 +24,9 @@ private:
 
     void BuildRuntimeEntry(MacroAssembler &assembler);
 
-    void BuildSaveHostCallee(MacroAssembler &assembler);
+    static void BuildSaveHostCallee(MacroAssembler &assembler);
 
-    void BuildRestoreHostCallee(MacroAssembler &assembler);
+    static void BuildRestoreHostCallee(MacroAssembler &assembler);
 
     void BuildSaveStaticUniform(MacroAssembler &assembler);
 

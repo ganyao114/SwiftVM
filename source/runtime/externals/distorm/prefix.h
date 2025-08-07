@@ -48,7 +48,7 @@ typedef struct {
 } _PrefixState;
 
 /*
-* Intel supports 6 types of prefixes, whereas AMD supports 5 types (lock is seperated from rep/nz).
+* Intel supports 6 types of prefixes, whereas AMD supports 5 types (inner_lock is seperated from rep/nz).
 * REX is the fifth prefix type, this time I'm based on AMD64.
 * VEX is the 6th, though it can't be repeated.
 */

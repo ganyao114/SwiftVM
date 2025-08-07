@@ -50,7 +50,7 @@ public:
     void SetCurrent(ir::Block *block);
     void TickIR(ir::Inst* instr);
 
-    vixl::aarch64::Label *GetLabel(LocationDescriptor loc);
+    [[nodiscard]] vixl::aarch64::Label *GetLabel(LocationDescriptor loc);
 
 private:
     void BlockLinkStub(ir::Location location);

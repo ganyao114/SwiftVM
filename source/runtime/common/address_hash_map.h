@@ -95,7 +95,12 @@ public:
         }
         if (auto itr = map_ptr->find(T{addr}); itr != map_ptr->end()) {
             map_ptr->erase(itr);
-            return itr.operator->();
+            auto ret = itr.operator->();
+            if (map_ptr->empty()) {
+                hash_map[hash] = nullptr;
+                std::erase_if(intrusive_maps, [map_ptr](auto& item) { return &item == map_ptr; });
+            }
+            return ret;
         }
         return {};
     }

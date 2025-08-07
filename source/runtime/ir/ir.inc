@@ -34,6 +34,7 @@ INST(SetHostGPR, Void, Value, Imm, Imm)
 INST(SetHostFPR, Void, Value, Imm, Imm)
 INST(BitCast, Value, Value)
 INST(GetOperand, Value, Operand)
+INST(GetResult, Value, Value, Value)
 
 // Imm
 INST(LoadImm, Value, Imm)

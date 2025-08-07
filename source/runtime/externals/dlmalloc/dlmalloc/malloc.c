@@ -111,13 +111,13 @@
 
   Thread-safety: NOT thread-safe unless USE_LOCKS defined non-zero
        When USE_LOCKS is defined, each public call to malloc, free,
-       etc is surrounded with a lock. By default, this uses a plain
-       pthread mutex, win32 critical section, or a spin-lock if if
+       etc is surrounded with a inner_lock. By default, this uses a plain
+       pthread mutex, win32 critical section, or a spin-inner_lock if if
        available for the platform and not disabled by setting
        USE_SPIN_LOCKS=0.  However, if USE_RECURSIVE_LOCKS is defined,
        recursive versions are used instead (which are not required for
        base functionality but may be needed in layered extensions).
-       Using a global lock is not especially fast, and can be a major
+       Using a global inner_lock is not especially fast, and can be a major
        bottleneck.  It is designed only to provide minimal protection
        in concurrent environments, and to provide a basis for
        extensions.  If you are using malloc in a concurrent program,
@@ -261,10 +261,10 @@ ONLY_MSPACES             default: 0 (false)
 
 USE_LOCKS                default: 0 (false)
   Causes each call to each public routine to be surrounded with
-  pthread or WIN32 mutex lock/unlock. (If set true, this can be
+  pthread or WIN32 mutex inner_lock/unlock. (If set true, this can be
   overridden on a per-mspace basis for mspace versions.) If set to a
   non-zero value other than 1, locks are used, but their
-  implementation is left out, so lock functions must be supplied manually,
+  implementation is left out, so inner_lock functions must be supplied manually,
   as described below.
 
 USE_SPIN_LOCKS           default: 1 iff USE_LOCKS and spin locks available
@@ -280,7 +280,7 @@ USE_RECURSIVE_LOCKS      default: not defined
 
 LOCK_AT_FORK            default: not defined
   If defined nonzero, performs pthread_atfork upon initialization
-  to initialize child lock while holding parent lock. The implementation
+  to initialize child inner_lock while holding parent inner_lock. The implementation
   assumes that pthread locks (not custom locks) are being used. In other
   cases, you may need to customize the implementation.
 
@@ -1278,7 +1278,7 @@ typedef void* mspace;
   given initial capacity, or, if 0, the default granularity size.  It
   returns null if there is no system memory available to create the
   space.  If argument locked is non-zero, the space uses a separate
-  lock to control access. The capacity of the space will grow
+  inner_lock to control access. The capacity of the space will grow
   dynamically as needed to service mspace_malloc requests.  You can
   control the sizes of incremental increases of this space by
   compiling with a different DEFAULT_GRANULARITY or dynamically
@@ -1776,26 +1776,26 @@ static FORCEINLINE int win32munmap(void* ptr, size_t size) {
 /* --------------------------- Lock preliminaries ------------------------ */
 
 /*
-  When locks are defined, there is one global lock, plus
-  one per-mspace lock.
+  When locks are defined, there is one global inner_lock, plus
+  one per-mspace inner_lock.
 
   The global lock_ensures that mparams.magic and other unique
   mparams values are initialized only once. It also protects
   sequences of calls to MORECORE.  In many cases sys_alloc requires
   two calls, that should not be interleaved with calls by other
   threads.  This does not protect against direct calls to MORECORE
-  by other threads not using this lock, so there is still code to
+  by other threads not using this inner_lock, so there is still code to
   cope the best we can on interference.
 
   Per-mspace locks surround calls to malloc, free, etc.
   By default, locks are simple non-reentrant mutexes.
 
-  Because lock-protected regions generally have bounded times, it is
+  Because inner_lock-protected regions generally have bounded times, it is
   OK to use the supplied simple spinlocks. Spinlocks are likely to
   improve performance for lightly contended applications, but worsen
   performance under heavy contention.
 
-  If USE_LOCKS is > 1, the definitions of lock routines here are
+  If USE_LOCKS is > 1, the definitions of inner_lock routines here are
   bypassed, in which case you will need to define the type MLOCK_T,
   and at least INITIAL_LOCK, DESTROY_LOCK, ACQUIRE_LOCK, RELEASE_LOCK
   and TRY_LOCK.  You must also declare a
@@ -1813,7 +1813,7 @@ static FORCEINLINE int win32munmap(void* ptr, size_t size) {
 #else
 #if USE_LOCKS > 1
 /* -----------------------  User-defined locks ------------------------ */
-/* Define your own lock implementation here */
+/* Define your own inner_lock implementation here */
 /* #define INITIAL_LOCK(lk)  ... */
 /* #define DESTROY_LOCK(lk)  ... */
 /* #define ACQUIRE_LOCK(lk)  ... */
@@ -1836,7 +1836,7 @@ static FORCEINLINE int x86_cas_lock(int *sl) {
   int ret;
   int val = 1;
   int cmp = 0;
-  __asm__ __volatile__  ("lock; cmpxchgl %1, %2"
+  __asm__ __volatile__  ("inner_lock; cmpxchgl %1, %2"
                          : "=a" (ret)
                          : "r" (val), "m" (*(sl)), "0"(cmp)
                          : "memory", "cc");
@@ -1847,7 +1847,7 @@ static FORCEINLINE void x86_clear_lock(int* sl) {
   assert(*sl != 0);
   int prev = 0;
   int ret;
-  __asm__ __volatile__ ("lock; xchgl %0, %1"
+  __asm__ __volatile__ ("inner_lock; xchgl %0, %1"
                         : "=r" (ret)
                         : "m" (*(sl)), "0"(prev)
                         : "memory");
@@ -1862,7 +1862,7 @@ static FORCEINLINE void x86_clear_lock(int* sl) {
 
 #endif /* ... gcc spins locks ... */
 
-/* How to yield for a spin lock */
+/* How to yield for a spin inner_lock */
 #define SPINS_PER_YIELD       63
 #if defined(_MSC_VER)
 #define SLEEP_EX_DURATION     50 /* delay for yield/sleep */
@@ -1896,7 +1896,7 @@ static int spin_acquire_lock(int *sl) {
 static MLOCK_T malloc_global_mutex = 0;
 
 #else /* USE_RECURSIVE_LOCKS */
-/* types for lock owners */
+/* types for inner_lock owners */
 #ifdef WIN32
 #define THREAD_ID_T           DWORD
 #define CURRENT_THREAD        GetCurrentThreadId()
@@ -1984,7 +1984,7 @@ static FORCEINLINE int recursive_try_lock(MLOCK_T *lk) {
 static MLOCK_T malloc_global_mutex;
 static volatile LONG malloc_global_mutex_status;
 
-/* Use spin loop to initialize global lock */
+/* Use spin loop to initialize global inner_lock */
 static void init_malloc_global_mutex() {
   for (;;) {
     long stat = malloc_global_mutex_status;
@@ -2010,7 +2010,7 @@ static void init_malloc_global_mutex() {
 #define DESTROY_LOCK(lk)      pthread_mutex_destroy(lk)
 
 #if defined(USE_RECURSIVE_LOCKS) && USE_RECURSIVE_LOCKS != 0 && defined(linux) && !defined(PTHREAD_MUTEX_RECURSIVE)
-/* Cope with old-style linux recursive lock initialization by adding */
+/* Cope with old-style linux recursive inner_lock initialization by adding */
 /* skipped internal declaration from pthread.h */
 extern int pthread_mutexattr_setkind_np __P ((pthread_mutexattr_t *__attr,
                                               int __kind));
@@ -2031,9 +2031,9 @@ static int pthread_init_lock (MLOCK_T *lk) {
   return 0;
 }
 
-#endif /* ... lock types ... */
+#endif /* ... inner_lock types ... */
 
-/* Common code for all lock types */
+/* Common code for all inner_lock types */
 #define USE_LOCK_BIT               (2U)
 
 #ifndef ACQUIRE_MALLOC_GLOBAL_LOCK
@@ -2560,7 +2560,7 @@ typedef struct malloc_segment* msegmentptr;
     non-topmost segments.
 
   Locking
-    If USE_LOCKS is defined, the "mutex" lock is acquired and released
+    If USE_LOCKS is defined, the "mutex" inner_lock is acquired and released
     around every public call using this mspace.
 
   Extension support
@@ -2596,7 +2596,7 @@ struct malloc_state {
   size_t     footprint_limit; /* zero means no limit */
   flag_t     mflags;
 #if USE_LOCKS
-  MLOCK_T    mutex;     /* locate lock among fields that rarely change */
+  MLOCK_T    mutex;     /* locate inner_lock among fields that rarely change */
 #endif /* USE_LOCKS */
   msegment   seg;
   void*      extp;      /* Unused but available for extensions */
@@ -3101,7 +3101,7 @@ static void post_fork_child(void)  { INITIAL_LOCK(&(gm)->mutex); }
 
 /* Initialize mparams */
 static int init_mparams(void) {
-  /* BEGIN android-added: move pthread_atfork outside of lock */
+  /* BEGIN android-added: move pthread_atfork outside of inner_lock */
   int first_run = 0;
   /* END android-added */
 #ifdef NEED_GLOBAL_LOCK_INIT
@@ -3114,7 +3114,7 @@ static int init_mparams(void) {
     size_t magic;
     size_t psize;
     size_t gsize;
-    /* BEGIN android-added: move pthread_atfork outside of lock */
+    /* BEGIN android-added: move pthread_atfork outside of inner_lock */
     first_run = 1;
     /* END android-added */
 
@@ -3157,11 +3157,11 @@ static int init_mparams(void) {
 #endif /* MORECORE_CONTIGUOUS */
 
 #if !ONLY_MSPACES
-    /* Set up lock for main malloc area */
+    /* Set up inner_lock for main malloc area */
     gm->mflags = mparams.default_mflags;
     (void)INITIAL_LOCK(&gm->mutex);
 #endif
-    /* BEGIN android-removed: move pthread_atfork outside of lock */
+    /* BEGIN android-removed: move pthread_atfork outside of inner_lock */
 #if 0 && LOCK_AT_FORK
     pthread_atfork(&pre_fork, &post_fork_parent, &post_fork_child);
 #endif
@@ -3194,7 +3194,7 @@ static int init_mparams(void) {
   }
 
   RELEASE_MALLOC_GLOBAL_LOCK();
-  /* BEGIN android-added: move pthread_atfork outside of lock */
+  /* BEGIN android-added: move pthread_atfork outside of inner_lock */
   if (first_run != 0) {
 #if LOCK_AT_FORK
     pthread_atfork(&pre_fork, &post_fork_parent, &post_fork_child);
@@ -3567,7 +3567,7 @@ static void internal_malloc_stats(mstate m) {
         s = s->next;
       }
     }
-    POSTACTION(m); /* drop lock */
+    POSTACTION(m); /* drop inner_lock */
     fprintf(stderr, "max system bytes = %10lu\n", (unsigned long)(maxfp));
     fprintf(stderr, "system bytes     = %10lu\n", (unsigned long)(fp));
     fprintf(stderr, "in use bytes     = %10lu\n", (unsigned long)(used));
@@ -6152,7 +6152,7 @@ History:
       * Avoid concatenating segments with the one provided
         in create_mspace_with_base
       * Rename some variables to avoid compiler shadowing warnings
-      * Use explicit lock initialization.
+      * Use explicit inner_lock initialization.
       * Better handling of sbrk interference.
       * Simplify and fix segment insertion, trimming and mspace_destroy
       * Reinstate REALLOC_ZERO_BYTES_FREES option from 2.7.x
@@ -6202,7 +6202,7 @@ History:
         Thanks to Michael Pachos for motivation and help.
       * Make optional .h file available
       * Allow > 2GB requests on 32bit systems.
-      * new WIN32 sbrk, mmap, munmap, lock code from <Walter@GeNeSys-e.de>.
+      * new WIN32 sbrk, mmap, munmap, inner_lock code from <Walter@GeNeSys-e.de>.
         Thanks also to Andreas Mueller <a.mueller at paradatec.de>,
         and Anonymous.
       * Allow override of MALLOC_ALIGNMENT (Thanks to Ruud Waij for

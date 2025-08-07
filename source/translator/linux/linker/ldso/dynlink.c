@@ -29,7 +29,6 @@ unsigned __default_guardsize = DEFAULT_GUARD_SIZE;
 
 static pthread_rwlock_t lock = PTHREAD_RWLOCK_INITIALIZER;
 struct __libc __libc;
-#define __pthread_self pthread_self
 
 static void __inhibit_ptc()
 {
@@ -124,6 +123,16 @@ struct td_index {
 	struct td_index *next;
 };
 
+typedef struct pthread_private_struct {
+
+} pthread_internal;
+
+#define pthread_t pthread_internal *
+
+static pthread_t __pthread_self() {
+    return NULL;
+}
+
 struct dso {
 #if DL_FDPIC
 	struct fdpic_loadmap *loadmap;
@@ -190,7 +199,7 @@ typedef void (*stage3_func)(size_t *, size_t *);
 
 static struct builtin_tls {
 	char c;
-	struct pthread pt;
+    pthread_internal pt;
 	void *space[16];
 } builtin_tls[1];
 #define MIN_TLS_ALIGN offsetof(struct builtin_tls, pt)
@@ -376,20 +385,31 @@ static Sym *gnu_lookup_filtered(uint32_t h1, uint32_t *hashtab, struct dso *dso,
 #if defined(__GNUC__)
 __attribute__((always_inline))
 #endif
-static inline struct symdef find_sym2(struct dso *dso, const char *s, int need_def, int use_deps)
+static inline
+
+#if defined(__GNUC__)
+__attribute__((always_inline))
+#endif
+ inline struct symdef find_sym2(struct dso *dso, const char *s, int need_def, int use_deps)
 {
 	uint32_t h = 0, gh = gnu_hash(s), gho = gh / (8*sizeof(size_t)), *ght;
 	size_t ghm = 1ul << gh % (8*sizeof(size_t));
 	struct symdef def = {0};
 	struct dso **deps = use_deps ? dso->deps : 0;
 	for (; dso; dso=use_deps ? *deps++ : dso->syms_next) {
-		Sym *sym;
-		if ((ght = dso->ghashtab)) {
-			sym = gnu_lookup_filtered(gh, ght, dso, s, gho, ghm);
-		} else {
-			if (!h) h = sysv_hash(s);
-			sym = sysv_lookup(s, h, dso);
-		}
+		Sym *sym = NULL;
+        if (dso->host_dso != NULL) {
+            // is native lib
+            sym = swift_linux_load_symbol(dso->host_dso, s);
+        }
+        if (!sym) {
+            if ((ght = dso->ghashtab)) {
+                sym = gnu_lookup_filtered(gh, ght, dso, s, gho, ghm);
+            } else {
+                if (!h) h = sysv_hash(s);
+                sym = sysv_lookup(s, h, dso);
+            }
+        }
 		if (!sym) continue;
 		if (!sym->st_shndx)
 			if (need_def || (sym->st_info&0xf) == STT_TLS

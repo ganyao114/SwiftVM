@@ -67,7 +67,7 @@ bool SingletonPredictionContext::equals(const PredictionContext &other) const {
 }
 
 std::string SingletonPredictionContext::toString() const {
-  //std::string up = !parent.expired() ? parent.lock()->toString() : "";
+  //std::string up = !parent.expired() ? parent.inner_lock()->toString() : "";
   std::string up = parent != nullptr ? parent->toString() : "";
   if (up.length() == 0) {
     if (returnState == EMPTY_RETURN_STATE) {

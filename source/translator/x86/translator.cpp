@@ -104,7 +104,7 @@ struct X86Instance::Impl final {
             } else if constexpr (std::is_same_v<T, IntrusivePtr<ir::Block>>) {
                 auto guard = x->LockWrite();
                 if (x->IsEmptyBlock()) {
-                    // Do
+                    auto jit_guard = module->ModuleLockRead();
                     ir::Assembler assembler{x.get()};
                     x86::X64Decoder decoder{pc, &memory_impl, &assembler, true};
                     decoder.Decode();

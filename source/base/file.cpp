@@ -124,7 +124,7 @@ bool File::Read(void* dest, size_t offset, size_t size) {
     return pread(fileno(file), dest, size, offset) == size;
 #else
     ASSERT_MSG(offset <= 2_GB, "seek only support 2G file!");
-    std::lock_guard guard(lock);
+    std::lock_guard guard(inner_lock);
     if (std::fseek(file, offset, SEEK_CUR) == 0) {
         return std::fread(dest, size, 1, file) == size;
     } else {
@@ -138,7 +138,7 @@ bool File::Write(void* src, size_t offset, size_t size) {
     return pwrite(fileno(file), src, size, offset) == size;
 #else
     ASSERT_MSG(offset <= 2_GB, "seek only support 2G file!");
-    std::lock_guard guard(lock);
+    std::lock_guard guard(inner_lock);
     if (std::fseek(file, offset, SEEK_CUR) == 0) {
         return std::fwrite(src, size, 1, file) == size;
     } else {

@@ -537,7 +537,7 @@ typedef void* mspace;
   given initial capacity, or, if 0, the default granularity size.  It
   returns null if there is no system memory available to create the
   space.  If argument locked is non-zero, the space uses a separate
-  lock to control access. The capacity of the space will grow
+  inner_lock to control access. The capacity of the space will grow
   dynamically as needed to service mspace_malloc requests.  You can
   control the sizes of incremental increases of this space by
   compiling with a different DEFAULT_GRANULARITY or dynamically

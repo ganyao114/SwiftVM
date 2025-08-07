@@ -64,6 +64,31 @@ static void ReleaseNodeRef(ir::AddressNode* node) {
     }
 }
 
+DataAllocator::DataAllocator(swift::u32 size) {
+    mem_map = std::make_unique<MemMap>(size, true);
+    space = create_mspace_with_base(mem_map->GetMemory(), mem_map->GetSize(), 0);
+}
+
+DataAllocator::~DataAllocator() {
+    if (space) {
+        destroy_mspace(space);
+    }
+}
+
+void* DataAllocator::Alloc(u32 size) {
+    return mspace_malloc(space, size);
+}
+
+void DataAllocator::Free(void* ptr) {
+    mspace_free(space, ptr);
+}
+
+bool DataAllocator::IsOverlap(const u8* ptr) {
+    auto mem = mem_map->GetMemory();
+    auto size = mem_map->GetSize();
+    return ptr >= mem && ptr < mem + size;
+}
+
 Module::Module(AddressSpace& space,
                const ir::Location& start,
                const ir::Location& end,
@@ -77,7 +102,7 @@ Module::Module(AddressSpace& space,
 bool Module::Push(ir::AddressNode* node) {
     ASSERT(node);
     auto loc = node->GetStartLocation().Value();
-    std::unique_lock guard(lock);
+    std::unique_lock guard(inner_lock);
     if (!address_node_map.Put<true>(loc, node)) {
         return false;
     }
@@ -88,14 +113,14 @@ bool Module::Push(ir::AddressNode* node) {
 
 void Module::Remove(ir::AddressNode* node) {
     {
-        std::unique_lock guard(lock);
+        std::unique_lock guard(inner_lock);
         address_node_map.Remove(node->location.Value());
     }
     ReleaseNodeRef(node);
 }
 
 AddressNodeRefs Module::RemoveRange(ir::Location start, ir::Location end) {
-    std::unique_lock guard(lock);
+    std::unique_lock guard(inner_lock);
     auto nodes_ptr = address_node_map.GetRange(start.Value(), end.Value());
     AddressNodeRefs nodes{};
     for (auto node_ptr : nodes_ptr) {
@@ -107,7 +132,7 @@ AddressNodeRefs Module::RemoveRange(ir::Location start, ir::Location end) {
 }
 
 AddressNodeRef Module::GetNode(ir::Location location) {
-    std::shared_lock guard(lock);
+    std::shared_lock guard(inner_lock);
     if (auto node = address_node_map.Get(location.Value()); node) {
         return ToNodeRef(node);
     }
@@ -115,7 +140,7 @@ AddressNodeRef Module::GetNode(ir::Location location) {
 }
 
 AddressNodeRefs Module::GetNodes(ir::Location start, ir::Location end) {
-    std::shared_lock guard(lock);
+    std::shared_lock guard(inner_lock);
     auto nodes_ptr = address_node_map.GetRange(start.Value(), end.Value());
     AddressNodeRefs nodes{};
     for (auto node_ptr : nodes_ptr) {
@@ -128,7 +153,7 @@ AddressNodeRef Module::GetNodeOrCreate(ir::Location location, bool is_func) {
     if (auto node = GetNode(location); !IsEmpty(node)) {
         return node;
     }
-    std::unique_lock guard(lock);
+    std::unique_lock guard(inner_lock);
     if (auto node = address_node_map.Get(location.Value()); node) {
         return ToNodeRef(node);
     }
@@ -146,7 +171,7 @@ AddressNodeRef Module::GetNodeOrCreate(ir::Location location, bool is_func) {
 }
 
 AddressNodeRefs Module::GetRangeNodes(ir::Location start, ir::Location end) {
-    std::shared_lock guard(lock);
+    std::shared_lock guard(inner_lock);
     auto nodes_ptr = address_node_map.GetRange(start.Value(), end.Value());
     AddressNodeRefs nodes{};
     for (auto node_ptr : nodes_ptr) {

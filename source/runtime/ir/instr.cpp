@@ -189,7 +189,7 @@ ValueType Inst::ReturnType() const {
 bool Inst::HasValue() { return GetIRMetaInfo(op_code).return_type == ArgType::Value; }
 
 bool Inst::IsPseudoOperation() {
-    return op_code == OpCode::GetFlags || op_code == OpCode::SaveFlags;
+    return op_code == OpCode::GetFlags || op_code == OpCode::SaveFlags || op_code == OpCode::GetResult;
 }
 
 bool Inst::IsGetHostRegOperation() {
@@ -218,16 +218,17 @@ bool Inst::HasSideEffects() {
     return ir_info.return_type == ArgType::Void;
 }
 
-Inst* Inst::GetPseudoOperation(OpCode code) {
+Inst::Pseudos Inst::GetPseudoOperations(OpCode code) {
+    Pseudos pseudos{};
     auto pseudo_inst = next_pseudo_inst;
     while (pseudo_inst) {
+        ASSERT(pseudo_inst->GetArg<Value>(0).Def() == this);
         if (pseudo_inst->op_code == code) {
-            ASSERT(pseudo_inst->GetArg<Value>(0).Def() == this);
-            return pseudo_inst;
+            pseudos.push_back(pseudo_inst);
         }
         pseudo_inst = pseudo_inst->next_pseudo_inst;
     }
-    return {};
+    return std::move(pseudos);
 }
 
 Inst::Pseudos Inst::GetPseudoOperations() {
