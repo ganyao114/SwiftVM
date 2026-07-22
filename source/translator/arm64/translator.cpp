@@ -64,7 +64,11 @@ struct Arm64Instance::Impl final {
                 // is loaded/stored via IR uniform accesses.
                 .buffers_static_alloc = {},
                 .static_program = false,
-                .global_opts = Optimizations::ConstantFolding | Optimizations::DeadCodeRemove,
+                // Block linking enabled: empty dispatch slots fall back to the
+                // dispatcher safely (see JitContext::Forward). DirectBlockLink
+                // stays off until the SMC delink mechanism lands (Phase 4).
+                .global_opts = Optimizations::ConstantFolding | Optimizations::DeadCodeRemove |
+                               Optimizations::BlockLink,
                 .arm64_features = Arm64Features::None,
                 .stack_alignment = 16,
                 .page_table = nullptr,

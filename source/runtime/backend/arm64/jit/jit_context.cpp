@@ -71,7 +71,7 @@ XRegister JitContext::GetTmpX() {
         cur_dirty_gprs.Mark(alloc);
         return XRegister(alloc);
     }
-    PANIC();
+    PANIC("No free temporary GPR");
 }
 
 Register JitContext::GetTmpGPR(ir::ValueType type) {
@@ -84,7 +84,7 @@ VRegister JitContext::GetTmpV() {
         cur_dirty_fprs.Mark(alloc);
         return VRegister::GetVRegFromCode(alloc);
     }
-    PANIC();
+    PANIC("No free temporary VREG");
 }
 
 void JitContext::Forward(ir::Location location) {
@@ -129,11 +129,36 @@ void JitContext::Forward(ir::Location location) {
                 }
             }
         } else if (self_module_forward && module_config.HasOpt(Optimizations::BlockLink)) {
-            // indirect link
+            // Indirect link: jump straight to the target through the module's
+            // dispatch-table slot. GetDispatchIndex reserves the slot (value 0)
+            // for `location`; once the target is translated, PushCodeCache fills
+            // that exact slot with its code pointer, so later forwards to the
+            // same target branch directly to it and skip the dispatcher entirely.
+            //
+            // Empty-slot safety: if the target has not been translated yet, the
+            // slot still reads 0. Do NOT `br 0x0` (that crashed before this
+            // fix). Fall back exactly like the "do not link" path below: write
+            // the target location into current_loc and Ret to the trampoline.
+            // halt_reason is 0 here (a normal block-end forward never sets it),
+            // so the trampoline's post-block "Ldr w0, halt_reason; Cbz w0,
+            // code_dispatcher" re-enters the dispatcher, which re-runs the L1/L2
+            // lookup for the target — hitting it if it was compiled in the
+            // meantime, or CodeMiss-ing back to the host to translate it (the
+            // slot then gets filled, so the next forward links directly). The
+            // current_loc write is essential: the dispatcher re-dispatches on
+            // current_loc, so without it we would re-look-up the *source* block
+            // and loop instead of reaching the target.
             u32 dispatcher_index = target_module->GetDispatchIndex(location);
+            Label empty_slot;
             __ Mov(ipw, dispatcher_index);
             __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
+            __ Cbz(ip, &empty_slot);
             __ Br(ip);
+            // empty slot -> back to the dispatcher for the target location.
+            __ Bind(&empty_slot);
+            __ Mov(ip, location.Value());
+            __ Str(ip, MemOperand(state, state_offset_current_loc));
+            __ Ret();
         } else {
             // do not link
             __ Mov(ip, location.Value());
