@@ -14,12 +14,8 @@
 #include "runtime/backend/translate_table.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
-#include "runtime/ir/opts/const_folding_pass.h"
-#include "runtime/ir/opts/deadcode_elimination_pass.h"
-#include "runtime/ir/opts/flags_elimination_pass.h"
-#include "runtime/ir/opts/local_elimination_pass.h"
+#include "runtime/ir/opts/pass_pipeline.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
-#include "runtime/ir/opts/uniform_elimination_pass.h"
 
 namespace swift::runtime {
 
@@ -34,6 +30,10 @@ struct Runtime::Impl final {
         state_buffer.resize(sizeof(backend::State) +
                             address_space->GetConfig().uniform_buffer_size);
         state = reinterpret_cast<backend::State*>(state_buffer.data());
+        // Wire the dispatcher's code-cache tables: L1 is per-runtime, L2 is the
+        // address-space wide translate table that PushCodeCache writes to.
+        state->l1_code_cache = l1_code_cache.Data();
+        state->l2_code_cache = address_space->GetCodeCacheTable().Data();
         jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
     }
 
@@ -62,7 +62,9 @@ struct Runtime::Impl final {
                     if constexpr (std::is_same_v<T, IntrusivePtr<ir::Function>>) {
                         auto read_lock = x->LockRead();
                         auto current_block = x->EntryBlock();
-                        return HaltReason::None;
+                        if (!current_block) return HaltReason::CodeMiss;
+                        backend::interp::Interpreter interpreter{*state, current_block};
+                        return interpreter.Run();
                     } else if constexpr (std::is_same_v<T, IntrusivePtr<ir::Block>>) {
                         auto read_lock = x->LockRead();
                         backend::interp::Interpreter interpreter{*state, x.get()};
@@ -236,21 +238,10 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     const auto& address_space = module->GetAddressSpace();
 
     // Optimize passes
-    if (module_config.HasOpt(Optimizations::LocalElimination)) {
-        ir::LocalEliminationPass::Run(block.get());
-    }
-    if (module_config.HasOpt(Optimizations::UniformElimination)) {
-        ir::UniformEliminationPass::Run(block.get(), address_space.GetUniformInfo());
-    }
-    if (module_config.HasOpt(Optimizations::FlagElimination)) {
-        ir::FlagsEliminationPass::Run(block.get());
-    }
-    if (module_config.HasOpt(Optimizations::ConstantFolding)) {
-        ir::ConstFoldingPass::Run(block.get());
-    }
-    if (module_config.HasOpt(Optimizations::DeadCodeRemove)) {
-        ir::DeadCodeEliminationPass::Run(block.get());
-    }
+    const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
+                                      ? &address_space.GetUniformInfo() : nullptr;
+    auto pipeline = ir::PassPipeline::BuildDefault(uni_info);
+    pipeline.RunBlock(block.get(), module_config.optimizations);
 
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};

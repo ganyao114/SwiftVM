@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+
+# Reference clones / scratch
+.cache/
+
+# Build directories
+build/
+cmake-build-*/
+android/.gradle/
+
+# Binaries and intermediate artifacts
+main
+*.o
+*.bin
+source/translator/linux/tests/test
+source/translator/linux/tests/test.i64
+
+# In-source CMake accidents
+source/translator/linux/tests/CMakeCache.txt
+source/translator/linux/tests/CMakeFiles/
+source/translator/linux/tests/Makefile
+source/translator/linux/tests/cmake_install.cmake

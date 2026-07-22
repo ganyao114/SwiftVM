@@ -36,7 +36,9 @@ public:
 
     constexpr SlabHeap(size_t count) {
         slab_memory = malloc(sizeof(T) * count);
-        Initialize(slab_memory, sizeof(T) * count);
+        if (slab_memory) {
+            Initialize(slab_memory, sizeof(T) * count);
+        }
     }
 
     ~SlabHeap() {
@@ -99,7 +101,9 @@ public:
 
     void Initialize(size_t object_size) {
         slab_memory = malloc(sizeof(T) * object_size);
-        Initialize(slab_memory, sizeof(T) * object_size);
+        if (slab_memory) {
+            Initialize(slab_memory, sizeof(T) * object_size);
+        }
     }
 
 private:

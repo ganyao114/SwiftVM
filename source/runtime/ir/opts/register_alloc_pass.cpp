@@ -66,7 +66,7 @@ public:
                     SpillAtInterval(interval);
                 }
             }
-            reg_alloc->SetActiveRegs(interval.inst->Id(), active_fprs, active_gprs);
+            reg_alloc->SetActiveRegs(interval.inst->Id(), active_gprs, active_fprs);
         }
     }
 
@@ -106,7 +106,7 @@ private:
         ASSERT_MSG(!lir_block->IsEmptyBlock(), "block is empty");
         StackVector<u16, 64> use_end{};
         Map<u16, u8> set_value_uses{};
-        use_end.resize(lir_block->GetInstList().size());
+        use_end.resize(std::max<u32>(lir_block->MaxInstrId(), lir_block->GetInstList().size()));
         for (auto& instr : lir_block->GetInstList()) {
             if (instr.IsGetHostRegOperation()) {
                 auto is_float = instr.GetOp() == OpCode::GetHostFPR;
@@ -163,6 +163,46 @@ private:
                     }
                 }
             }
+        }
+        // Values referenced only by the block terminal (e.g. the condition of
+        // terminal::If produced for a jcc, or a Switch dispatch value) are
+        // used at the end of the block and must stay live until then.
+        if (lir_block->MaxInstrId() > 0) {
+            auto block_end = static_cast<u16>(lir_block->MaxInstrId() - 1);
+            auto extend_use = [&use_end, block_end](const Value& value) {
+                if (!value.Defined()) {
+                    return;
+                }
+                auto id = value.Def()->IsBitCastOperation()
+                                  ? value.Def()->GetArg<Value>(0).Id()
+                                  : value.Id();
+                if (id < use_end.size()) {
+                    auto& end = use_end[id];
+                    end = std::max(end, block_end);
+                }
+            };
+            std::function<void(const Terminal&)> walk_terminal =
+                    [&walk_terminal, &extend_use](const Terminal& term) {
+                        VisitVariant<void>(term, [&walk_terminal, &extend_use](auto t) {
+                            using T = std::decay_t<decltype(t)>;
+                            if constexpr (std::is_same_v<T, terminal::If>) {
+                                extend_use(t.cond);
+                                walk_terminal(t.then_);
+                                walk_terminal(t.else_);
+                            } else if constexpr (std::is_same_v<T, terminal::Switch>) {
+                                extend_use(t.value);
+                                for (auto& c : t.cases) {
+                                    walk_terminal(c.then);
+                                }
+                            } else if constexpr (std::is_same_v<T, terminal::Condition>) {
+                                walk_terminal(t.then_);
+                                walk_terminal(t.else_);
+                            } else if constexpr (std::is_same_v<T, terminal::CheckHalt>) {
+                                walk_terminal(t.else_);
+                            }
+                        });
+                    };
+            walk_terminal(lir_block->GetTerminal());
         }
         for (auto& instr : lir_block->GetInstList()) {
             if (instr.HasValue()) {

@@ -77,6 +77,8 @@ add_library(swift_runtime STATIC
         ir/opts/flags_elimination_pass.h
         ir/opts/deadcode_elimination_pass.cpp
         ir/opts/deadcode_elimination_pass.h
+        ir/opts/pass_pipeline.cpp
+        ir/opts/pass_pipeline.h
         backend/translate_table.h
         backend/asm_interp.cpp
         backend/asm_interp.h

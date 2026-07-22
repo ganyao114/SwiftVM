@@ -104,6 +104,43 @@ static int error_impl(const char *, ...);
 static int error_noop(const char *, ...);
 static int (*error)(const char *, ...) = printf;
 
+/* SwiftVM specific: 检查是否为关键系统库 */
+static int is_critical_system_library(const char *name)
+{
+	const char *basename = strrchr(name, '/');
+	basename = basename ? basename + 1 : name;
+	
+	// 检查是否为关键系统库
+	if (!strncmp(basename, "libc.so", 7) || !strncmp(basename, "libc-", 5)) return 1;
+	if (!strncmp(basename, "libpthread.so", 13) || !strncmp(basename, "libpthread-", 11)) return 1;
+	if (!strncmp(basename, "libm.so", 7) || !strncmp(basename, "libm-", 5)) return 1;
+	if (!strncmp(basename, "libdl.so", 8) || !strncmp(basename, "libdl-", 6)) return 1;
+	if (!strncmp(basename, "librt.so", 8) || !strncmp(basename, "librt-", 6)) return 1;
+	if (!strncmp(basename, "ld-linux", 8) || !strncmp(basename, "ld.so", 5)) return 1;
+	
+	return 0;
+}
+
+/* SwiftVM specific: 初始化 guest 程序的 host 库支持 */
+static void init_guest_program_host_support(struct dso *app)
+{
+	/* 确保主程序能够访问 host 库 */
+	if (app && app->name) {
+		const char *app_basename = strrchr(app->name, '/');
+		app_basename = app_basename ? app_basename + 1 : app->name;
+		
+		/* 尝试为主程序加载 host 版本（如果存在） */
+		app->host_dso = swift_linux_load_so(app_basename);
+		
+		/* 记录主程序的 host 支持状态 */
+		if (app->host_dso && runtime) {
+			// 成功加载了 host 版本
+		} else if (runtime) {
+			// 主程序没有 host 版本，这是正常的
+		}
+	}
+}
+
 #define MAXP2(a,b) (-(-(a)&-(b)))
 #define ALIGN(x,y) ((x)+(y)-1 & -(y))
 
@@ -396,13 +433,22 @@ __attribute__((always_inline))
 	size_t ghm = 1ul << gh % (8*sizeof(size_t));
 	struct symdef def = {0};
 	struct dso **deps = use_deps ? dso->deps : 0;
+	
 	for (; dso; dso=use_deps ? *deps++ : dso->syms_next) {
 		Sym *sym = NULL;
+		int found_host_impl = 0;
+		
+        // 首先检查是否是 host 库，如果是则尝试加载 host 符号
         if (dso->host_dso != NULL) {
-            // is native lib
-            sym = swift_linux_load_symbol(dso->host_dso, s);
+            // 检查是否有 host 架构实现
+            if (swift_linux_has_host_symbol(dso->host_dso, s)) {
+                found_host_impl = 1;
+                sym = swift_linux_load_symbol(dso->host_dso, s);
+            }
         }
-        if (!sym) {
+        
+        // 如果没有找到 host 实现，则查找 guest 库中的符号
+        if (!found_host_impl && !sym) {
             if ((ght = dso->ghashtab)) {
                 sym = gnu_lookup_filtered(gh, ght, dso, s, gho, ghm);
             } else {
@@ -410,6 +456,7 @@ __attribute__((always_inline))
                 sym = sysv_lookup(s, h, dso);
             }
         }
+        
 		if (!sym) continue;
 		if (!sym->st_shndx)
 			if (need_def || (sym->st_info&0xf) == STT_TLS
@@ -420,6 +467,7 @@ __attribute__((always_inline))
 				continue;
 		if (!(1<<(sym->st_info&0xf) & OK_TYPES)) continue;
 		if (!(1<<(sym->st_info>>4) & OK_BINDS)) continue;
+		
 		def.sym = sym;
 		def.dso = dso;
 		break;
@@ -541,6 +589,15 @@ static void do_relocs(struct dso *dso, size_t *rel, size_t rel_size, size_t stri
 		}
 
 		sym_val = def.sym ? (size_t)laddr(def.dso, def.sym->st_value) : 0;
+		
+		// 如果符号来自 host 跳板，直接使用符号值（跳板地址）
+		if (def.dso && def.dso->host_dso && def.sym && def.sym->st_value) {
+			// 检查符号是否来自 host 实现
+			if (swift_linux_has_host_symbol(def.dso->host_dso, name)) {
+				sym_val = def.sym->st_value; // 直接使用跳板地址
+			}
+		}
+		
 		tls_val = def.sym ? def.sym->st_value : 0;
 
 		if ((type == REL_TPOFF || type == REL_TPOFF_NEG)
@@ -1277,6 +1334,11 @@ static struct dso *load_library(const char *name, struct dso *needed_by)
 		unmap_library(&temp_dso);
 		return load_library("libc.so", needed_by);
 	}
+	
+	/* 检查是否是关键系统库 */
+	int is_critical_lib = is_critical_system_library(name);
+	int is_libc = is_critical_lib && (strstr(name, "libc") != NULL);
+	
 	/* Past this point, if we haven't reached runtime yet, ldso has
 	 * committed either to use the mapped library or to abort execution.
 	 * Unmapping is not possible, so we can safely reclaim gaps. */
@@ -1334,9 +1396,45 @@ static struct dso *load_library(const char *name, struct dso *needed_by)
 	p->prev = tail;
 	tail = p;
 
+	// 尝试加载对应的 host 库以支持跳板机制
+	// 对于共享库，尝试加载同名的 host 库
+	if (p->shortname || pathname != name) {
+		const char *lib_name = p->shortname ? p->shortname : name;
+		p->host_dso = swift_linux_load_so(lib_name);
+		if (p->host_dso) {
+			// 成功加载 host 库，可以提供跳板支持
+		}
+	}
+	
+	/* 对于关键系统库，强制确保使用 host 版本 */
+	if (is_critical_lib) {
+		if (!p->host_dso) {
+			p->host_dso = swift_linux_load_so(lib_name);
+		}
+		// 对于 libc 尝试多个变体
+		if (!p->host_dso && is_libc) {
+			p->host_dso = swift_linux_load_so("libc.so.6");  // 尝试标准 glibc 名称
+		}
+		if (!p->host_dso && is_libc) {
+			p->host_dso = swift_linux_load_so("libc.so");    // 备用名称
+		}
+		// 如果仍然无法加载关键库的 host 版本，记录警告但继续
+		if (!p->host_dso && runtime) {
+			error("Warning: Failed to load host version for critical library %s", p->name);
+		} else if (p->host_dso && ldd_mode) {
+			dprintf(1, "\t%s => host version loaded successfully\n", p->name);
+		}
+	}
+
 	if (DL_FDPIC) makefuncdescs(p);
 
-	if (ldd_mode) dprintf(1, "\t%s => %s (%p)\n", name, pathname, p->base);
+	if (ldd_mode) {
+		dprintf(1, "\t%s => %s (%p)", name, pathname, p->base);
+		if (p->host_dso) {
+			dprintf(1, " [host support available]");
+		}
+		dprintf(1, "\n");
+	}
 
 	return p;
 }
@@ -1819,6 +1917,9 @@ hidden void __dls2(unsigned char *base, size_t *sp)
 	kernel_mapped_dso(&ldso);
 	decode_dyn(&ldso);
 
+	/* 确保动态链接器本身使用 host libc 实现 */
+	ldso.host_dso = swift_linux_load_so("libc.so");
+
 	if (DL_FDPIC) makefuncdescs(&ldso);
 
 	/* Prepare storage for to save clobbered REL addends so they
@@ -2015,6 +2116,14 @@ void __dls3(size_t *sp, size_t *auxv)
 		tls_align = MAXP2(tls_align, app.tls.align);
 	}
 	decode_dyn(&app);
+	
+	/* 为主应用程序设置 host 库支持 */
+	if (app.name) {
+		const char *app_basename = strrchr(app.name, '/');
+		app_basename = app_basename ? app_basename + 1 : app.name;
+		app.host_dso = swift_linux_load_so(app_basename);
+	}
+	
 	if (DL_FDPIC) {
 		makefuncdescs(&app);
 		if (!app.loadmap) {
@@ -2030,6 +2139,9 @@ void __dls3(size_t *sp, size_t *auxv)
 
 	/* Initial dso chain consists only of the app. */
 	head = tail = syms_tail = &app;
+
+	/* SwiftVM: 初始化 guest 程序的 host 库支持 */
+	init_guest_program_host_support(&app);
 
 	/* Donate unused parts of app and library mapping to malloc */
 	reclaim_gaps(&app);
@@ -2365,6 +2477,14 @@ static void *do_dlsym(struct dso *p, const char *s, void *ra)
 		return __tls_get_addr((tls_mod_off_t []){def.dso->tls_id, def.sym->st_value-DTP_OFFSET});
 	if (DL_FDPIC && (def.sym->st_info&0xf) == STT_FUNC)
 		return def.dso->funcdescs + (def.sym - def.dso->syms);
+	
+	// 检查是否是通过 host 跳板获得的符号
+	if (def.dso->host_dso && def.sym->st_value) {
+		// 如果符号值非零，说明这可能是一个跳板地址
+		// 直接返回符号值（跳板地址）
+		return (void*)def.sym->st_value;
+	}
+	
 	return laddr(def.dso, def.sym->st_value);
 }
 

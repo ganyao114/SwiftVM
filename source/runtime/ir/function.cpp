@@ -29,7 +29,8 @@ ir::Block* Function::FindBlock(ir::Location loc, bool block_start) {
 }
 
 Function::~Function() {
-    for (auto& block : blocks) {
+    while (!blocks.empty()) {
+        auto& block = *blocks.begin();
         blocks.erase(block);
         delete &block;
     }

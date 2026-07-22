@@ -1,277 +1,257 @@
 //
 // Created by 甘尧 on 2024/6/22.
+// Rewritten as a guest ARM64 Linux ELF loader on top of elfio.
 //
 
-#include <fcntl.h>
-#include <link.h>
-#include <sys/mman.h>
-#include <sys/auxv.h>
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <iterator>
 #include "base/common_funcs.h"
 #include "base/logging.h"
+#include "elfio/elfio.hpp"
 #include "loader.h"
 
 namespace swift::linux {
 
-typedef uintptr_t __attribute__((may_alias)) stack_val_t;
-
-#define MAX_PHNUM 12
-
-static int ProtFromPhdr(const ElfW(Phdr) * phdr) {
-    int prot = 0;
-    if (phdr->p_flags & PF_R) prot |= PROT_READ;
-    if (phdr->p_flags & PF_W) prot |= PROT_WRITE;
-    if (phdr->p_flags & PF_X) prot |= PROT_EXEC;
-    return prot;
-}
-
-/*
- * Handle the "bss" portion of a segment, where the memory size
- * exceeds the file size and we zero-fill the difference.  For any
- * whole pages in this region, we over-map anonymous pages.  For the
- * sub-page remainder, we zero-fill bytes directly.
- */
-static void HandleBss(const ElfW(Phdr) * ph, ElfW(Addr) load_bias, size_t pagesize) {
-    if (ph->p_memsz > ph->p_filesz) {
-        ElfW(Addr) file_end = ph->p_vaddr + load_bias + ph->p_filesz;
-        ElfW(Addr) file_page_end = RoundUp(file_end, pagesize);
-        ElfW(Addr) page_end = RoundUp(ph->p_vaddr + load_bias + ph->p_memsz, pagesize);
-        if (page_end > file_page_end) {
-            auto mmap_res = mmap(reinterpret_cast<void*>(file_page_end),
-                                 page_end - file_page_end,
-                                 ProtFromPhdr(ph),
-                                 MAP_ANON | MAP_PRIVATE | MAP_FIXED,
-                                 -1,
-                                 0);
-            if (mmap_res == MAP_FAILED) PANIC("Map bss segment failed!");
-        }
-        if (file_page_end > file_end && (ph->p_flags & PF_W)) {
-            size_t len = file_page_end - file_end;
-            bzero((void*)file_end, len);
-        }
-    }
-}
-
-struct LoadInfo {
-    char* elf_path{};
-    ElfW(Addr) addr{};
-    ElfW(Addr) base{};
-    ElfW(Addr) phdr{};
-    ElfW(Addr) phnum{};
-    ElfW(Addr) phentsize{};
-    Elf64_Half machine{};
-    char* interp_path{};
-    u8* main_stack_bottom{};
+// Linux auxv entry types we emit.
+enum GuestAuxv : u64 {
+    AT_NULL = 0,
+    AT_PHDR = 3,
+    AT_PHENT = 4,
+    AT_PHNUM = 5,
+    AT_PAGESZ = 6,
+    AT_BASE = 7,
+    AT_FLAGS = 8,
+    AT_ENTRY = 9,
+    AT_UID = 11,
+    AT_EUID = 12,
+    AT_GID = 13,
+    AT_EGID = 14,
+    AT_HWCAP = 16,
+    AT_CLKTCK = 17,
+    AT_SECURE = 23,
+    AT_RANDOM = 25,
+    AT_EXECFN = 31,
 };
 
-/*
- * Open an ELF file and load it into memory.
- */
-static LoadInfo LoadElfFile(const char* filename, size_t pagesize) {
-    LoadInfo load_result{};
-    ASSERT(filename);
-    int fd = open(filename, O_RDONLY);
-    ElfW(Ehdr) ehdr;
-    auto read_res = pread(fd, &ehdr, sizeof(ehdr), 0);
-    if (read_res < 0) PANIC("Failed to read ELF header from file! file = {}", filename);
-    if (ehdr.e_ident[EI_MAG0] != ELFMAG0 || ehdr.e_ident[EI_MAG1] != ELFMAG1 ||
-        ehdr.e_ident[EI_MAG2] != ELFMAG2 || ehdr.e_ident[EI_MAG3] != ELFMAG3 ||
-        ehdr.e_version != EV_CURRENT || ehdr.e_ehsize != sizeof(ehdr) ||
-        ehdr.e_phentsize != sizeof(ElfW(Phdr)))
-        switch (ehdr.e_machine) {
-            case EM_ARM:
-            case EM_AARCH64:
-            case EM_X86_64:
-            case EM_386:
-                load_result.machine = ehdr.e_machine;
-                break;
-            default:
-                PANIC("ELF file has wrong architecture! file = {}, e_machine = {}",
-                      filename,
-                      ehdr.e_machine);
-                break;
-        }
-    ElfW(Phdr) phdr[MAX_PHNUM];
-    if (ehdr.e_type != ET_DYN)
-        PANIC("ELF file not ET_DYN! file = {}, e_machine = {}", filename, ehdr.e_type);
+LoadedImage ElfLoader::Load(const std::string& path) {
+    ELFIO::elfio reader;
+    if (!reader.load(path)) {
+        PANIC("Failed to parse guest ELF file! file = {}", path);
+    }
+    if (reader.get_class() != ELFIO::ELFCLASS64) {
+        PANIC("Guest ELF is not 64-bit! file = {}", path);
+    }
+    GuestISA isa;
+    switch (reader.get_machine()) {
+        case ELFIO::EM_AARCH64:
+            isa = GuestISA::kArm64;
+            break;
+        case ELFIO::EM_X86_64:
+            isa = GuestISA::kX86_64;
+            break;
+        default:
+            PANIC("Guest ELF has an unsupported e_machine! file = {}, e_machine = {}",
+                  path,
+                  reader.get_machine());
+    }
+    auto elf_type = reader.get_type();
+    if (elf_type != ELFIO::ET_EXEC && elf_type != ELFIO::ET_DYN) {
+        PANIC("Guest ELF is not an executable! file = {}, e_type = {}", path, elf_type);
+    }
 
-    read_res = pread(fd, phdr, sizeof(phdr[0]) * ehdr.e_phnum, ehdr.e_phoff);
-    if (read_res < 0) PANIC("Failed to read program headers from ELF file! file = {}", filename);
-
-    size_t i = 0;
-    while (i < ehdr.e_phnum && phdr[i].p_type != PT_LOAD) ++i;
-
-    if (i == ehdr.e_phnum) PANIC("ELF file has no PT_LOAD header! file = {}", filename);
-
-    /*
-     * ELF requires that PT_LOAD segments be in ascending order of p_vaddr.
-     * Find the last one to calculate the whole address span of the image.
-     */
-    const ElfW(Phdr)* first_load = &phdr[i];
-    const ElfW(Phdr)* last_load = &phdr[ehdr.e_phnum - 1];
-    while (last_load > first_load && last_load->p_type != PT_LOAD) --last_load;
-    size_t span = last_load->p_vaddr + last_load->p_memsz - first_load->p_vaddr;
-    /*
-     * Map the first segment and reserve the space used for the rest and
-     * for holes between segments.
-     */
-    auto mapping = reinterpret_cast<uintptr_t>(
-            mmap(reinterpret_cast<void*>(RoundDown(first_load->p_vaddr, pagesize)),
-                 span,
-                 ProtFromPhdr(first_load),
-                 MAP_PRIVATE,
-                 fd,
-                 RoundDown(first_load->p_offset, pagesize)));
-
-    if (mapping == -1) PANIC("Map segment failed!");
-
-    const ElfW(Addr) load_bias = mapping - RoundDown(first_load->p_vaddr, pagesize);
-    if (first_load->p_offset > ehdr.e_phoff ||
-        first_load->p_filesz < ehdr.e_phoff + (ehdr.e_phnum * sizeof(ElfW(Phdr))))
-        PANIC("First load segment of ELF file does not contain phdrs! file = {}", filename);
-    HandleBss(first_load, load_bias, pagesize);
-    ElfW(Addr) last_end = first_load->p_vaddr + load_bias + first_load->p_memsz;
-    /*
-     * Map the remaining segments, and protect any holes between them.
-     */
-    const ElfW(Phdr) * ph;
-    for (ph = first_load + 1; ph <= last_load; ++ph) {
-        if (ph->p_type == PT_LOAD) {
-            ElfW(Addr) last_page_end = RoundUp(last_end, pagesize);
-            last_end = ph->p_vaddr + load_bias + ph->p_memsz;
-            ElfW(Addr) start = RoundDown(ph->p_vaddr + load_bias, pagesize);
-            ElfW(Addr) end = RoundUp(last_end, pagesize);
-            if (start > last_page_end)
-                mprotect(reinterpret_cast<void*>(last_page_end), start - last_page_end, PROT_NONE);
-
-            auto mmap_res = mmap(reinterpret_cast<void*>(start),
-                                 end - start,
-                                 ProtFromPhdr(ph),
-                                 MAP_PRIVATE | MAP_FIXED,
-                                 fd,
-                                 RoundDown(ph->p_offset, pagesize));
-
-            if (mmap_res == MAP_FAILED) PANIC("Map segment failed!");
-            HandleBss(ph, load_bias, pagesize);
+    auto& segments = reader.segments;
+    if (segments.size() == 0) {
+        PANIC("Guest ELF has no program headers! file = {}", path);
+    }
+    for (const auto& seg : segments) {
+        if (seg->get_type() == ELFIO::PT_INTERP) {
+            PANIC("Dynamically linked guest ELF is not supported yet (PT_INTERP = {})! file = {}",
+                  std::string(seg->get_data(), seg->get_file_size()),
+                  path);
         }
     }
-    /*
-     * Find the PT_INTERP header, if there is one.
-     */
-    for (i = 0; i < ehdr.e_phnum; ++i) {
-        if (phdr[i].p_type == PT_INTERP) {
-            /*
-             * The PT_INTERP isn't really required to sit inside the first
-             * (or any) load segment, though it normally does.  So we can
-             * easily avoid an extra read in that case.
-             */
-            if (phdr[i].p_offset >= first_load->p_offset &&
-                phdr[i].p_filesz <= first_load->p_filesz) {
-                load_result.interp_path = (char*)(phdr[i].p_vaddr + load_bias);
-            } else {
-                static char interp_buffer[PATH_MAX + 1];
-                if (phdr[i].p_filesz >= sizeof(interp_buffer))
-                    PANIC("ELF file has unreasonable PT_INTERP size! file = {}", filename);
-                read_res = pread(fd, interp_buffer, phdr[i].p_filesz, phdr[i].p_offset);
-                if (read_res < 0) PANIC("Cannot read PT_INTERP segment contents!");
-                load_result.interp_path = interp_buffer;
-            }
+
+    // Address span of all PT_LOAD segments (host-page aligned).
+    VAddr min_vaddr = UINT64_MAX;
+    VAddr max_end = 0;
+    for (const auto& seg : segments) {
+        if (seg->get_type() != ELFIO::PT_LOAD) continue;
+        min_vaddr = std::min(min_vaddr, seg->get_virtual_address());
+        max_end = std::max(max_end, seg->get_virtual_address() + seg->get_memory_size());
+    }
+    if (min_vaddr == UINT64_MAX) {
+        PANIC("Guest ELF has no PT_LOAD segments! file = {}", path);
+    }
+    const VAddr span_start = GuestMemory::RoundDownHostPage(min_vaddr);
+    const VAddr span_end = GuestMemory::RoundHostPage(max_end);
+    const u64 span = span_end - span_start;
+
+    // Reserve the whole span up front, RW and zero-filled. The host never
+    // executes guest code (the JIT reads it as data), so guest page
+    // permissions are irrelevant and a single RW reservation is enough.
+    VAddr load_bias = 0;
+    if (elf_type == ELFIO::ET_EXEC) {
+        // ET_EXEC: prefer its linked addresses...
+        if (!memory->MapFixed(span_start, span)) {
+            // ...but the low 4GB is unmappable for arm64 macOS processes
+            // (dyld requires the host image above 4GB), so fall back to a
+            // load bias. Position-dependent guests only work where the
+            // fixed mapping succeeded (e.g. Linux hosts); PC-relative code
+            // (adr/adrp, e.g. static PIE-style asm) runs fine either way.
+            LOG_WARNING("Cannot map ET_EXEC image at its linked base {:#x}, falling back to load bias",
+                        span_start);
+            elf_type = ELFIO::ET_DYN;
+        }
+    }
+    if (elf_type == ELFIO::ET_DYN) {
+        // Static PIE (or biased ET_EXEC): pick any free host range, the bias
+        // is the delta.
+        auto base = memory->MapAnywhere(span);
+        if (!base) {
+            PANIC("Failed to reserve guest address span for image! file = {}", path);
+        }
+        load_bias = base - span_start;
+    }
+
+    // Copy segment file contents into the reservation; the anonymous
+    // reservation already zero-fills .bss (p_memsz > p_filesz).
+    for (const auto& seg : segments) {
+        if (seg->get_type() != ELFIO::PT_LOAD) continue;
+        const VAddr dst = load_bias + seg->get_virtual_address();
+        if (seg->get_file_size() > 0) {
+            memory->WriteBytes(dst, {reinterpret_cast<const u8*>(seg->get_data()), seg->get_file_size()});
+        }
+        LOG_INFO("Loaded segment {:#x} -> guest {:#x} (file {:#x} / mem {:#x})",
+                 seg->get_virtual_address(),
+                 dst,
+                 seg->get_file_size(),
+                 seg->get_memory_size());
+    }
+
+    // Locate the program header table inside the loaded image for AT_PHDR.
+    const u64 phoff = reader.get_segments_offset();
+    const u64 phnum = reader.segments.size();
+    const u64 phentsize = reader.get_segment_entry_size();
+    VAddr phdr_addr = 0;
+    for (const auto& seg : segments) {
+        if (seg->get_type() != ELFIO::PT_LOAD) continue;
+        const u64 seg_off = seg->get_offset();
+        if (phoff >= seg_off && phoff + phnum * phentsize <= seg_off + seg->get_file_size()) {
+            phdr_addr = load_bias + seg->get_virtual_address() + (phoff - seg_off);
             break;
         }
     }
-    close(fd);
-    load_result.base = load_bias;
-    load_result.phdr = ehdr.e_phoff - first_load->p_offset + first_load->p_vaddr + load_bias;
-    load_result.phnum = ehdr.e_phnum;
-    load_result.addr = ehdr.e_entry + load_bias;
-    load_result.phentsize = ehdr.e_phentsize;
-    return load_result;
-}
-
-/*
- * This points to a sequence of pointer-size words:
- *      [0]             argc
- *      [1..argc]       argv[0..argc-1]
- *      [1+argc]        NULL
- *      [2+argc..]      envp[0..]
- *                      NULL
- *                      auxv[0].a_type
- *                      auxv[1].a_un.a_val
- *                      ...
- *
- * argv[0] is the uninteresting name of this bootstrap program.  argv[1] is
- * the real program file name we'll open, and also the argv[0] for that
- * program.  We need to modify argc, move argv[1..] back to the argv[0..]
- * position, and also examine and modify the auxiliary vector on the stack.
- */
-void SetupMainStack(LoadInfo &program_info, void *base, std::span<char*> args, std::span<char*> envps) {
-    auto argc = args.size();
-    auto envp_count = envps.size();
-
-    auto stack_cursor = reinterpret_cast<stack_val_t *>(base);
-
-    /* Right after execve, the stack content is as follow:
-                 *
-                 *   +------+--------+--------+--------+
-                 *   | argc | argv[] | envp[] | auxv[] |
-                 *   +------+--------+--------+--------+
-     */
-
-    // argc
-    *(stack_cursor++) = argc;
-
-    // argv[]
-    for (int i = 0; i < argc; ++i) {
-        *(stack_cursor++) = reinterpret_cast<stack_val_t>(args[i]);
+    if (!phdr_addr) {
+        PANIC("Program headers are not covered by any PT_LOAD segment! file = {}", path);
     }
 
-    *(stack_cursor++) = {};
-
-    // envp[]
-    for (int i = 0; i < envp_count; ++i) {
-        *(stack_cursor++) = reinterpret_cast<stack_val_t>(envps[i]);
-    }
-
-    *(stack_cursor++) = {};
-
-    // auxv[]
-    auto auxv = reinterpret_cast<ElfW(auxv_t) *>(stack_cursor);
-
-    *(auxv++) = {AT_NULL};
-    *(auxv++) = {AT_PHDR, program_info.phdr};
-    *(auxv++) = {AT_PHENT, program_info.phentsize};
-    *(auxv++) = {AT_PHNUM, program_info.phnum};
-    *(auxv++) = {AT_PAGESZ, static_cast<uint64_t>(getpagesize())};
-    *(auxv++) = {AT_BASE, program_info.base};
-    *(auxv++) = {AT_ENTRY, program_info.addr};
-    *(auxv++) = {AT_UID, getuid()};
-    *(auxv++) = {AT_EUID, geteuid()};
-    *(auxv++) = {AT_GID, getgid()};
-    *(auxv++) = {AT_EGID, getegid()};
-    *(auxv++) = {AT_CLKTCK, getauxval(AT_CLKTCK)};
-    *(auxv++) = {AT_SECURE, getauxval(AT_SECURE)};
-    *(auxv++) = {AT_FLAGS, getauxval(AT_FLAGS)};
-    *(auxv++) = {AT_RANDOM, getauxval(AT_RANDOM)};
-    *(auxv++) = {AT_EXECFN, (stack_val_t) program_info.elf_path};
-    *(auxv++) = {AT_NULL};
+    LoadedImage image{};
+    image.path = path;
+    image.isa = isa;
+    image.entry = load_bias + reader.get_entry();
+    image.load_bias = load_bias;
+    image.phdr = phdr_addr;
+    image.phentsize = phentsize;
+    image.phnum = phnum;
+    image.brk_start = load_bias + span_end;
+    LOG_INFO("Guest image loaded: entry {:#x} bias {:#x} phdr {:#x} phnum {} brk {:#x}",
+             image.entry,
+             image.load_bias,
+             image.phdr,
+             image.phnum,
+             image.brk_start);
+    return image;
 }
 
-#define MAIN_STACK_SIZE 1_MB
+VAddr SetupInitialStack(GuestMemory& memory,
+                        const LoadedImage& image,
+                        const std::vector<std::string>& args,
+                        const std::vector<std::string>& envs) {
+    // Prefer the classic high address; on hosts where the low 4GB is not
+    // mappable (arm64 macOS) take any host range instead.
+    VAddr stack_top = kGuestStackTop;
+    if (!memory.MapFixed(stack_top - kGuestStackSize, kGuestStackSize)) {
+        stack_top = 0;
+    }
+    if (!stack_top) {
+        auto base = memory.MapAnywhere(kGuestStackSize);
+        if (!base) {
+            PANIC("Failed to map guest main stack");
+        }
+        stack_top = base + kGuestStackSize;
+        LOG_WARNING("Guest stack placed at host-chosen {:#x}", stack_top);
+    }
 
-int Execve(const char* program, std::span<char*> args, std::span<char*> envps) {
-    LoadInfo current_program = LoadElfFile(program, getpagesize());
+    VAddr sp = stack_top;
 
-    // mmap main stack
-    current_program.main_stack_bottom = reinterpret_cast<u8*>(
-            mmap(nullptr, MAIN_STACK_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS, -1, 0));
-    if (current_program.main_stack_bottom == MAP_FAILED) PANIC("Main stack map failed!");
+    // Push blobs (strings, AT_RANDOM payload) top-down first.
+    auto push_bytes = [&](const void* data, size_t len) {
+        sp -= len;
+        memory.WriteBytes(sp, {reinterpret_cast<const u8*>(data), len});
+        return sp;
+    };
+    auto push_string = [&](const std::string& str) { return push_bytes(str.data(), str.size() + 1); };
 
-    auto stack_top = current_program.main_stack_bottom + MAIN_STACK_SIZE;
+    u8 random_bytes[16];
+    arc4random_buf(random_bytes, sizeof(random_bytes));
+    const VAddr random_ptr = push_bytes(random_bytes, sizeof(random_bytes));
 
-    // setup main stack
-    auto stack_base = stack_top - 64_KB;
-    SetupMainStack(current_program, stack_base, args, envps);
+    const VAddr execfn_ptr = push_string(image.path);
 
+    std::vector<VAddr> env_ptrs;
+    env_ptrs.reserve(envs.size());
+    for (const auto& env : envs) {
+        env_ptrs.push_back(push_string(env));
+    }
 
+    std::vector<VAddr> arg_ptrs;
+    arg_ptrs.reserve(args.size());
+    for (const auto& arg : args) {
+        arg_ptrs.push_back(push_string(arg));
+    }
+
+    const std::pair<GuestAuxv, u64> auxv[] = {
+            {AT_PHDR, image.phdr},
+            {AT_PHENT, image.phentsize},
+            {AT_PHNUM, image.phnum},
+            {AT_PAGESZ, GuestMemory::kGuestPageSize},
+            {AT_BASE, 0},  // no interpreter (static)
+            {AT_FLAGS, 0},
+            {AT_ENTRY, image.entry},
+            {AT_UID, 1000},
+            {AT_EUID, 1000},
+            {AT_GID, 1000},
+            {AT_EGID, 1000},
+            {AT_HWCAP, 0},
+            {AT_CLKTCK, 100},
+            {AT_SECURE, 0},
+            {AT_RANDOM, random_ptr},
+            {AT_EXECFN, execfn_ptr},
+    };
+
+    // Vector table: argc, argv..., NULL, envp..., NULL, auxv pairs..., AT_NULL.
+    const u64 word_count = 1 + arg_ptrs.size() + 1 + env_ptrs.size() + 1 + 2 * std::size(auxv) + 2;
+    sp = RoundDown(sp - word_count * sizeof(u64), static_cast<u64>(16));
+
+    auto cursor = reinterpret_cast<u64*>(sp);
+    auto push_word = [&](u64 value) { *cursor++ = value; };
+
+    push_word(arg_ptrs.size());
+    for (const auto ptr : arg_ptrs) push_word(ptr);
+    push_word(0);
+    for (const auto ptr : env_ptrs) push_word(ptr);
+    push_word(0);
+    for (const auto& [type, value] : auxv) {
+        push_word(type);
+        push_word(value);
+    }
+    push_word(AT_NULL);
+    push_word(0);
+
+    LOG_INFO("Guest stack ready: sp {:#x} argc {}", sp, arg_ptrs.size());
+    return sp;
 }
 
 }  // namespace swift::linux

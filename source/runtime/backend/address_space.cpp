@@ -25,6 +25,7 @@ void AddressSpace::Init() {
             break;
         case kRiscv64:
             trampolines = std::make_unique<riscv64::TrampolinesRiscv64>(config);
+            break;
         default:
             PANIC();
     }

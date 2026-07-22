@@ -169,7 +169,9 @@ public:
     HIRValue* AppendInst(OpCode op, const Args&... args) {
         auto inst = new Inst(op);
         inst->SetArgs(std::forward<const Args&>(args)...);
-        inst->SetReturn(RetType::TYPE);
+        if constexpr (RetType::TYPE != ValueType::VOID) {
+            inst->SetReturn(RetType::TYPE);
+        }
         return AppendInst(inst);
     }
 
@@ -246,7 +248,9 @@ public:
         auto inst = new Inst(op);
         inst->SetArgs(std::forward<const Args&>(args)...);
         inst->SetId(inst_order_id++);
-        inst->SetReturn(RetType::TYPE);
+        if constexpr (RetType::TYPE != ValueType::VOID) {
+            inst->SetReturn(RetType::TYPE);
+        }
         current_block->block->AppendInst(inst);
         AppendValue(current_block, inst);
         return inst;
@@ -256,7 +260,9 @@ public:
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
     ret name(const Args&... args) {                                                                \
         auto inst = AppendInst(OpCode::name, std::forward<const Args&>(args)...);                  \
-        inst->SetReturn(RetType::TYPE);                                                            \
+        if constexpr (RetType::TYPE != ValueType::VOID) {                                          \
+            inst->SetReturn(RetType::TYPE);                                                        \
+        }                                                                                          \
         return ret{inst};                                                                          \
     }
 #include "ir.inc"

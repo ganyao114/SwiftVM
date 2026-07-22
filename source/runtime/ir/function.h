@@ -40,7 +40,7 @@ private:
     BlockMap blocks{};
     RwSpinLock func_lock{};
     u16 v_stack{};
-    backend::JitCache jit_cache;
+    backend::JitCache jit_cache{};
 };
 
 using FunctionList = IntrusiveList<&Function::list_node>;
