@@ -84,7 +84,7 @@ void Inst::SetArg(int index, const Operand::Op& arg) {
 }
 
 void Inst::SetArg(int index, const Operand& arg) {
-    ASSERT(index + 2 < max_args);
+    ASSERT(index + PhysicalSlots(ArgType::Operand) - 1 < max_args);
     DestroyArg(index);
     arguments[index++] = arg;
     DestroyArg(index);
@@ -187,7 +187,7 @@ ValueType Inst::ReturnType() const {
     return ret_type;
 }
 
-bool Inst::HasValue() { return GetIRMetaInfo(op_code).return_type == ArgType::Value; }
+bool Inst::HasValue() { return meta::HasValue(GetIRMetaInfo(op_code).return_type); }
 
 bool Inst::IsPseudoOperation() {
     return op_code == OpCode::GetFlags || op_code == OpCode::SaveFlags || op_code == OpCode::GetResult;
@@ -312,38 +312,24 @@ void Inst::Validate(Inst* inst) {
             auto arg_type = ir_info.arg_types[arg_index];
             ASSERT_MSG(inst_arg.GetType() == arg_type, "{} has invalid arg!", inst->op_code);
             arg_index++;
-            if (arg_type == ArgType::Operand) {
-                inner_arg_index += 3;
-            } else {
-                inner_arg_index++;
-            }
+            inner_arg_index += PhysicalSlots(arg_type);
         }
     } else {
-        switch (inst->op_code) {
-            case OpCode::SetLocation: {
-                ASSERT_MSG(inst->ArgAt(0).GetType() == ArgType::Imm,
-                           "SetLocation arg 0 must be Imm type!");
-                break;
-            }
-            default:
-                ASSERT_MSG(false, "Unk Instr {}!", inst->op_code);
-                break;
-        }
+        // SetLocation and every other base opcode are handled above (they are all
+        // < BASE_COUNT); anything reaching here is not a real instruction.
+        ASSERT_MSG(false, "Unk Instr {}!", inst->op_code);
     }
 }
 
-int Inst::PublicIndex(int max_index) const {
-    auto& ir_info = GetIRMetaInfo(op_code);
-    int arg_index{0};
-    while (arg_index < max_index) {
-        auto arg_type = ir_info.arg_types[arg_index];
-        if (arg_type == ArgType::Operand) {
-            max_index += 2;
-        }
-        arg_index++;
+int Inst::PublicIndex(int logical_index) const {
+    auto& info = GetIRMetaInfo(op_code);
+    ASSERT(logical_index >= 0 && logical_index < (int)info.arg_types.size());
+    int physical = logical_index;
+    for (int i = 0; i < logical_index; i++) {
+        physical += PhysicalSlots(info.arg_types[i]) - 1;
     }
-    ASSERT(max_index < Inst::max_args);
-    return max_index;
+    ASSERT(physical < max_args);
+    return physical;
 }
 
 Inst::~Inst() {

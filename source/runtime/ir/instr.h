@@ -9,6 +9,7 @@
 #include "fmt/format.h"
 #include "runtime/common/logging.h"
 #include "runtime/common/slab_alloc.h"
+#include "runtime/ir/ir_meta.h"
 #include "runtime/ir/opcodes.h"
 
 namespace swift::runtime::ir {
@@ -26,6 +27,7 @@ concept InstAllocator = requires(T allocator, Inst* inst, OpCode code) {
 class Inst final : public SlabObject<Inst, true> {
 public:
     static constexpr auto max_args = 5;
+    static_assert(max_args == meta::kMaxPhysSlots, "keep in sync with ir_meta.h");
     static constexpr auto invalid_id = UINT16_MAX;
     using Values = StackVector<Value, max_args>;
     using Pseudos = StackVector<Inst*, 4>;
@@ -38,11 +40,8 @@ public:
         int index{};
         auto arg_index = [&](const Arg& arg) -> int {
             auto res = index;
-            if (arg.IsOperand()) {
-                index += 3;
-            } else {
-                index++;
-            }
+            // Operand spans op+left+right; slot width comes from PhysicalSlots (ir_types.h).
+            index += PhysicalSlots(arg.IsOperand() ? ArgType::Operand : ArgType::Void);
             return res;
         };
         (SetArg(arg_index(args), args), ...);

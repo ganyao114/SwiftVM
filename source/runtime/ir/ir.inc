@@ -1,3 +1,11 @@
+// IR instruction table — the single source of truth for instruction signatures.
+// Format: INST(Name, RetToken, ArgTokens...)
+//   Name      -> OpCode::Name, builder method name, Emit##Name/Run##Name
+//   RetToken  -> C++ return type in builders (args.h: Void, Value, BOOL, U32, U64)
+//                AND ArgType via meta::tokens (ir_meta.h)
+//   ArgTokens -> must be exact ArgType enumerator names (ir_types.h)
+// Slot rule:   Operand = 3 physical slots, everything else 1 (ir_types.h PhysicalSlots).
+
 // Read Write
 INST(DefineLocal, Void, Local)
 INST(LoadLocal, Value, Local)
