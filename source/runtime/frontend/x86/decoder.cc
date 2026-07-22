@@ -1929,9 +1929,27 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
             auto subtrahend = use_carry ? __ Add(b_c, ir::Operand{cin}) : b_c;
             auto zero = __ LoadImm(ir::Imm(u64(0)));
             rhs = __ And(__ Sub(zero, ir::Operand{subtrahend}), ir::Operand{ir::Imm(mask)});
+            // AF for a narrow subtraction is the half-BORROW of (a - subtrahend),
+            // which the add-of-negated used for the value below does NOT reproduce
+            // (its half-carry differs). Source AF from a genuine sub. PF is still
+            // correct from the add-of-negated (low bits of a+(-b) == a-b).
+            // Known residue: for SBB (use_carry) subtrahend = b + cin pre-folds the
+            // borrow-in, so when b[3:0] + cin >= 16 the half-borrow is approximate
+            // (the exact 3-operand half-borrow needs a true Sbcs with a live
+            // carry-in). Same class as the C/V boundary residue below; the fuzzer
+            // masks AF for narrow adc/sbb. Plain sub/cmp here are exact.
+            if (True(flag_mask & ir::Flags::AuxiliaryCarry)) {
+                auto af_src = __ Sub(a_c, ir::Operand{subtrahend});
+                __ SaveFlags(af_src, ir::Flags::AuxiliaryCarry);
+            }
         }
         auto value = __ Add(a_c, ir::Operand{rhs});
-        __ SaveFlags(value, flag_mask & (ir::Flags::Parity | ir::Flags::AuxiliaryCarry));
+        // For sub, AF was sourced from the dedicated sub above, so only PF comes
+        // from the add-of-negated here. For add, AF (half-carry of a+b) is exact,
+        // except narrow ADC (use_carry): rhs = b + cin pre-folds the carry-in, so
+        // when b[3:0] + cin >= 16 the half-carry is approximate (documented above).
+        __ SaveFlags(value, flag_mask & (sub ? ir::Flags::Parity
+                                             : (ir::Flags::Parity | ir::Flags::AuxiliaryCarry)));
         // Exact NZCV from the shifted op: the carry-in is folded into the
         // shifted subtrahend BEFORE the shift, so N/Z/V at the container's
         // top bit always match the narrow operation (the wrap of b + cin to

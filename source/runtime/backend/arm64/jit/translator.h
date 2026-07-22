@@ -134,7 +134,7 @@ private:
 
     void SaveOF(Register &value, ir::ValueType type);
 
-    void SaveAuxiliaryCarry(Register &left, Register &result);
+    void SaveAuxiliaryCarry(Register &left, const Operand &right, Register &result);
 
     void GetParityFlag(const Register &result);
 
