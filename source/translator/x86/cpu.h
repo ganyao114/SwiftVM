@@ -240,6 +240,20 @@ struct ThreadContext64 {
     // Segment overrides fs:/gs: compute addresses as base + offset.
     u64 fs_base{};
     u64 gs_base{};
+    // SSE MXCSR (status/control): updated by ldmxcsr / stmxcsr / fxrstor.
+    // Default after RESET per the Intel SDM.
+    u32 mxcsr{0x1F80};
+    // Cross-block carry polarity: the sticky flags store the host (ARM)
+    // carry, which after a sub-family op is the INVERSE of the x86 CF. The
+    // decoder tracks the polarity within a block but cannot know it at block
+    // entry, so every carry-defining op also records it here; CF consumers
+    // (jcc / setcc / cmov / lahf / adc / sbb) XOR the stored host carry with
+    // this byte to recover the architectural CF across block boundaries.
+    // 0 = stored C == x86 CF, 1 = stored C == NOT x86 CF.
+    u8 carry_inverted{};
+    u8 carry_pad0{};
+    u16 carry_pad1{};
+    u32 mxcsr_pad{};
 };
 
 }  // namespace swift::x86

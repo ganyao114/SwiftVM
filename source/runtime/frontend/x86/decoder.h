@@ -400,8 +400,17 @@ private:
     ir::Value ArithWithFlags(ir::Value left, ir::Value right, ArithOp op, u32 width,
                              ir::Flags flag_mask);
 
-    // Current CF as a 0/1 value, honoring the tracked carry polarity.
+    // Current CF as a 0/1 value, honoring the tracked carry polarity (and
+    // the runtime polarity byte at block entry).
     ir::Value CarryValue();
+
+    // Runtime carry polarity byte (ThreadContext64::carry_inverted): written
+    // by every carry-defining op so CF consumers in LATER blocks can recover
+    // the architectural CF from the stored host carry.
+    static ir::Uniform PolarityUniform() {
+        return ir::Uniform{offsetof(ThreadContext64, carry_inverted), ir::ValueType::U8};
+    }
+    void StorePolarity(bool inverted);
 
     void DecodeCmp(_DInst& insn);
 
@@ -421,6 +430,82 @@ private:
     // Segment override base: FS/GS read the 64-bit bases from the context
     // (TLS); other segments keep the legacy selector * 16 model.
     ir::Value SegmentBase(_RegisterType segment);
+
+    // ---- SSE support ----------------------------------------------------
+    // xmm slots are accessed as two 64-bit uniform halves (the x86 config
+    // runs no uniform-caching pass, so scalar and V128 uniform views of the
+    // same slot alias safely in both backends). Vector ALU semantics the IR
+    // cannot express (the JIT Vec4* emitters are stubs) go through per-half
+    // host helpers, mirroring the RepMovs/RepStos pattern.
+    ir::Value XmmLo(_RegisterType reg);
+
+    ir::Value XmmHi(_RegisterType reg);
+
+    void XmmLo(_RegisterType reg, ir::Value value);
+
+    void XmmHi(_RegisterType reg, ir::Value value);
+
+    struct VecHalves {
+        ir::Value lo, hi;
+    };
+
+    // Load an xmm register or a 128-bit memory operand as two U64 halves.
+    VecHalves LoadSrcHalves(_DInst& insn, _Operand& op);
+
+    // Single-half variants (dead loads break the register allocator, see
+    // DecodeVecIROp).
+    ir::Value LoadSrcLo(_DInst& insn, _Operand& op);
+    ir::Value LoadSrcHi(_DInst& insn, _Operand& op);
+
+    // Fold a memory/register address operand to a single address value
+    // (TSO forms only encode [base], see Src()).
+    ir::Value FlatAddress(_DInst& insn, _Operand& op);
+
+    // dst(xmm) op= src(xmm/m128), computed per 64-bit half by a host helper.
+    using VecHalfFn = u64 (*)(u64, u64);
+    void DecodeVecHalfOp(_DInst& insn, VecHalfFn fn);
+    // Distinct helpers for the lo / hi result halves (unpack-style ops).
+    void DecodeVecHalfOp(_DInst& insn, VecHalfFn fn_lo, VecHalfFn fn_hi);
+    // Same but sourced from the HIGH halves of both operands (punpckh*).
+    void DecodeVecHalfOpHigh(_DInst& insn, VecHalfFn fn_lo, VecHalfFn fn_hi);
+    // Both helpers take the LOW halves (punpcklbw / punpcklwd).
+    void DecodePunpckLo(_DInst& insn, VecHalfFn fn_lo, VecHalfFn fn_hi);
+
+    // dst(xmm) op= src(xmm/m128) with pure-IR ops on the halves.
+    enum class VecIROp { Xor, Or, And, AndNot, AddQ, SubQ, Punpckldq, Punpckhdq,
+                         Punpcklqdq, Punpckhqdq, Muludq };
+    void DecodeVecIROp(_DInst& insn, VecIROp op);
+
+    void DecodeMovd(_DInst& insn);
+    void DecodeMovq(_DInst& insn);
+    // movdqa/movdqu/movaps/movups: plain 128-bit moves.
+    void DecodeMovVec(_DInst& insn);
+    void DecodeMovsd(_DInst& insn);
+    void DecodeMovss(_DInst& insn);
+    // movlpd/movlps/movhpd/movhps: m64 <-> xmm low/high half.
+    void DecodeMovHalf(_DInst& insn, bool high);
+    void DecodeMovhlps(_DInst& insn, bool low_to_high);
+    void DecodeMovmsk(_DInst& insn, bool pd);
+    void DecodePshufd(_DInst& insn);
+    void DecodeShufps(_DInst& insn, bool pd);
+    // pslldq/psrldq: the byte shift amount is a decode-time constant.
+    void DecodePshiftDQ(_DInst& insn, bool left);
+    // psllw/pslld/psllq/psrlw/psrld/psrlq (imm8 and xmm-count forms).
+    void DecodePshift(_DInst& insn, bool left, int kind);
+    void DecodePalignr(_DInst& insn);
+    void DecodePshufb(_DInst& insn);
+    void DecodePmovmskb(_DInst& insn);
+    void DecodeMxcsr(_DInst& insn, bool load);
+    void DecodeFxsave(_DInst& insn, bool restore);
+    void DecodeUcomisd(_DInst& insn);
+    // bsf / bsr (and tzcnt aliased to bsf with BMI1 hidden).
+    void DecodeBitScan(_DInst& insn, bool reverse);
+    // lock cmpxchg (single-threaded model: plain load/compare/store).
+    void DecodeCmpxchg(_DInst& insn);
+    // rol / ror (value-exact; CF/OF left unchanged, see implementation).
+    void DecodeRotate(_DInst& insn, bool left);
+    // bt / bts / btr / btc (kind 0..3); CF = extracted bit.
+    void DecodeBt(_DInst& insn, int kind);
 
     VAddr start;
     VAddr pc;
