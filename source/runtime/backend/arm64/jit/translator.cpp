@@ -294,20 +294,14 @@ void JitTranslator::ClearFlags(ir::Flags guest) {
         }
         __ And(flags, flags, ForceCast<s64>(mask));
     }
-    auto af_cleared{false};
     if (True(guest & ir::Flags::Parity)) {
-        // Clear Parity
+        // Clear Parity: an odd-parity byte makes TestParityFlag read PF = 0.
         __ Mov(ip, 1);
         __ Bfi(flags, ip, HostFlagsBit::ParityByte, 8);
-        if (True(guest & ir::Flags::AuxiliaryCarry)) {
-            __ Bfi(flags, ip, HostFlagsBit::ParityByte, 16);
-            af_cleared = true;
-        } else {
-            __ Bfi(flags, ip, HostFlagsBit::ParityByte, 8);
-        }
     }
-    if (True(guest & ir::Flags::AuxiliaryCarry) && !af_cleared) {
-        __ Bfc(flags, HostFlagsBit::AFLeft, 8);
+    if (True(guest & ir::Flags::AuxiliaryCarry)) {
+        // AF is a single bit (carry into bit 4).
+        __ Bfc(flags, HostFlagsBit::AuxiliaryCarry, 1);
     }
 }
 
@@ -385,9 +379,26 @@ void JitTranslator::SaveOF(Register& value, ir::ValueType type) {
     __ Bind(&pass);
 }
 
-void JitTranslator::SaveAuxiliaryCarry(Register &left, Register &result) {
-    __ Bfi(flags, left, HostFlagsBit::AFLeft, 4);
-    __ Bfi(flags, result, HostFlagsBit::AFRight, 4);
+void JitTranslator::SaveAuxiliaryCarry(Register &left, const Operand &right, Register &result) {
+    // AF = carry into bit 4 = bit4(left) ^ bit4(right) ^ bit4(result). This holds
+    // for add/adc/sub/sbb alike (result already reflects any carry-in). Only the
+    // three bit-4s matter, so fold the whole values together and extract bit 4.
+    auto tmp = context.GetTmpX();
+    __ Eor(tmp, left.X(), Operand{result.X()});
+    if (right.IsImmediate()) {
+        if ((right.GetImmediate() >> 4) & 1) {
+            __ Eor(tmp, tmp, 1u << 4);
+        }
+    } else {
+        // Plain or shifted register: materialize its effective bits (.X view keeps
+        // bit 4 correct for the W-width shift forms too); only bit 4 survives.
+        auto reg = right.GetRegister().X();
+        auto shift = right.IsShiftedRegister() ? right.GetShift() : LSL;
+        auto amount = right.IsShiftedRegister() ? right.GetShiftAmount() : 0;
+        __ Eor(tmp, tmp, Operand{reg, shift, amount});
+    }
+    __ Ubfx(tmp, tmp, 4, 1);
+    __ Bfi(flags, tmp, HostFlagsBit::AuxiliaryCarry, 1);
 }
 
 void JitTranslator::EmitAdvancePC(ir::Inst* inst) {
@@ -410,11 +421,8 @@ void JitTranslator::TestParityFlag(const Register& result) {
 }
 
 void JitTranslator::TestAuxiliaryCarry(const Register& result) {
-    // SaveAuxiliaryCarry stores the low nibble of the left operand at AFLeft and
-    // the low nibble of the result at AFRight; approximate AF as bit4 of their xor.
-    __ Ubfx(result.W(), flags, HostFlagsBit::AFLeft, 8);
-    __ Eor(result.W(), result.W(), Operand{result.W(), LSR, 4});
-    __ Ubfx(result.W(), result.W(), 4, 1);
+    // AF is stored as a single bit (the carry into bit 4) at AuxiliaryCarry.
+    __ Ubfx(result, flags, HostFlagsBit::AuxiliaryCarry, 1);
 }
 
 JitTranslator::PseudoFlags JitTranslator::GetPseudoFlags(ir::Inst* inst) {
@@ -1072,7 +1080,7 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
             SaveParity(result);
         }
         if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(left_register, result);
+            SaveAuxiliaryCarry(left_register, right_operand, result);
         }
     } else {
         __ Add(result, left_register, right_operand);
@@ -1097,7 +1105,7 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
             SaveParity(result);
         }
         if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(left_register, result);
+            SaveAuxiliaryCarry(left_register, right_operand, result);
         }
     } else {
         __ Sub(result, left_register, right_operand);
@@ -1126,7 +1134,7 @@ void JitTranslator::EmitAdc(ir::Inst* inst) {
             SaveParity(result);
         }
         if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(left_register, result);
+            SaveAuxiliaryCarry(left_register, right_operand, result);
         }
     } else {
         __ Adc(result, left_register, right_operand);
@@ -1155,7 +1163,7 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
             SaveParity(result);
         }
         if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(left_register, result);
+            SaveAuxiliaryCarry(left_register, right_operand, result);
         }
     } else {
         __ Sbc(result, left_register, right_operand);
