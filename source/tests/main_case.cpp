@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <iostream>
 #include "runtime/ir/hir_builder.h"
+#include "runtime/ir/ir_meta.h"
 #include "runtime/ir/opts/cfg_analysis_pass.h"
 #include "runtime/ir/opts/local_elimination_pass.h"
 #include "runtime/ir/opts/reid_instr_pass.h"
@@ -213,4 +214,44 @@ TEST_CASE("Test x86 translator") {
     auto core1 = X86Core::Make(instance);
 
     core1->Run();
+}
+
+TEST_CASE("IR meta consistency") {
+    using namespace swift::runtime::ir;
+
+    // (1) The constexpr projection (ir.inc via meta::kPhys) must agree with the
+    // runtime table summed through the single slot rule, PhysicalSlots.
+    constexpr int kPhysByOp[] = {
+            0,  // OpCode::Void
+#define INST(name, ret, ...) meta::kPhys_##name,
+#include "runtime/ir/ir.inc"
+#undef INST
+    };
+    for (int op = 1; op < (int)OpCode::BASE_COUNT; op++) {
+        auto& info = GetIRMetaInfo((OpCode)op);
+        int runtime_slots = 0;
+        for (auto t : info.arg_types) {
+            runtime_slots += PhysicalSlots(t);
+        }
+        REQUIRE(runtime_slots == kPhysByOp[op]);
+        REQUIRE(runtime_slots <= Inst::max_args);
+    }
+
+    // (2) StoreMemory(Operand, Value): GetArg<Value>(1) must resolve to the right
+    // physical slot without the old PublicIndex out-of-bounds read.
+    Block block{0, Location{0x1000}};
+    auto base = block.LoadImm(Imm{0x1000u});
+    auto idx = block.LoadImm(Imm{0x8u});
+    auto stored = block.LoadImm(Imm{42u});
+    Operand operand{base, idx};
+    auto* store = block.AppendInst(OpCode::StoreMemory, operand, stored);
+    REQUIRE(store->GetArg<Value>(1) == stored);
+
+    // (3) Operand round-trip: GetArg<Operand>(0) rebuilds op/left/right.
+    Operand got = store->GetArg<Operand>(0);
+    REQUIRE(got.GetOp() == operand.GetOp());
+    REQUIRE(got.GetLeft().IsValue());
+    REQUIRE(got.GetLeft().value == base);
+    REQUIRE(got.GetRight().IsValue());
+    REQUIRE(got.GetRight().value == idx);
 }

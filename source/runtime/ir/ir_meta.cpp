@@ -4,32 +4,23 @@
 
 #include <cmath>
 #include "runtime/common/logging.h"
+#include "runtime/ir/ir_meta.h"
 #include "runtime/ir/ir_types.h"
 
 namespace swift::runtime::ir {
 
-constexpr ArgType BOOL = ArgType::Value;
-constexpr ArgType U8 = ArgType::Value;
-constexpr ArgType U16 = ArgType::Value;
-constexpr ArgType U32 = ArgType::Value;
-constexpr ArgType U64 = ArgType::Value;
-constexpr ArgType Void = ArgType::Void;
-constexpr ArgType Value = ArgType::Value;
-constexpr ArgType Imm = ArgType::Imm;
-constexpr ArgType Uniform = ArgType::Uniform;
-constexpr ArgType Local = ArgType::Local;
-constexpr ArgType Cond = ArgType::Cond;
-constexpr ArgType Flags = ArgType::Flags;
-constexpr ArgType Operand = ArgType::Operand;
-constexpr ArgType Lambda = ArgType::Lambda;
-constexpr ArgType Params = ArgType::Params;
+// Signature tokens now live in meta::tokens (ir_meta.h); the runtime table below
+// is a pure projection of the constexpr per-instruction facts generated there.
+using namespace meta::tokens;
 
-static const std::array ir_meta_infos{IRMeta{OpCode::Void, "Void", Void, {}},
-#define INST(name, ret, ...) IRMeta{OpCode::name, #name, ret, {__VA_ARGS__}},
+static const std::array ir_meta_infos{IRMeta{OpCode::Void, "Void", ArgType::Void, {}},
+#define INST(name, ret, ...) \
+    IRMeta{OpCode::name, #name, meta::kRet_##name, \
+           {meta::kArgs_##name.begin(), meta::kArgs_##name.end()}},
 #include "ir.inc"
 #undef INST
-IRMeta{OpCode::BASE_COUNT, "BASE_COUNT", Void, {}},
-IRMeta{OpCode::COUNT, "COUNT", Void, {}}};
+IRMeta{OpCode::BASE_COUNT, "BASE_COUNT", ArgType::Void, {}},
+IRMeta{OpCode::COUNT, "COUNT", ArgType::Void, {}}};
 
 u8 GetValueSizePow(ValueType type) {
     if (type >= ValueType::U8 && type <= ValueType::U64) {

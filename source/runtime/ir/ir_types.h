@@ -42,6 +42,9 @@ namespace swift::runtime::ir {
 
 enum class ArgType : u8 { ARG_TYPE_ENUM(ENUM_DEFINE) };
 
+// Physical slot width per arg kind. Operand = op+left+right. Change here and only here.
+constexpr u8 PhysicalSlots(ArgType t) { return t == ArgType::Operand ? 3 : 1; }
+
 enum class ValueType : u8 { VALUE_TYPE_ENUM(ENUM_DEFINE) };
 
 DECLARE_ENUM_FLAG_OPERATORS(ValueType)
