@@ -156,6 +156,13 @@ static ir::ValueType GetSignedSize(u32 bits) {
     }
 }
 
+// 64 bit signed values must be typed U64: the backend's context.R only
+// promotes U64 to X registers, an S64 value would silently get a W register
+// (32 bit truncation).
+static ir::ValueType GetSignedContainer(u32 bits) {
+    return bits == 64 ? ir::ValueType::U64 : GetSignedSize(bits);
+}
+
 static ir::ValueType GetVecSize(u32 bits) {
     switch (bits) {
         case 0:
@@ -564,7 +571,7 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         }
         case I_CDQE: {
             auto eax = R(_RegisterType::R_EAX);
-            R(_RegisterType::R_RAX, __ SignExtend(eax).SetType(ir::ValueType::S64));
+            R(_RegisterType::R_RAX, __ SignExtend(eax).SetType(ir::ValueType::U64));
             break;
         }
         case I_CWD: {
@@ -573,12 +580,12 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             break;
         }
         case I_CDQ: {
-            auto eax = __ SignExtend(R(_RegisterType::R_EAX)).SetType(ir::ValueType::S64);
+            auto eax = __ SignExtend(R(_RegisterType::R_EAX)).SetType(ir::ValueType::U64);
             R(_RegisterType::R_EDX, __ AsrImm(eax, ir::Imm(31u)));
             break;
         }
         case I_CQO: {
-            auto rax = R(_RegisterType::R_RAX).SetType(ir::ValueType::S64);
+            auto rax = R(_RegisterType::R_RAX).SetType(ir::ValueType::U64);
             R(_RegisterType::R_RDX, __ AsrImm(rax, ir::Imm(63u)));
             break;
         }
@@ -606,6 +613,31 @@ ir::Value X64Decoder::V(_RegisterType reg) {
     return __ LoadUniform(ToVReg(x86_regs_table[reg]));
 }
 
+ir::Value X64Decoder::NarrowTo(ir::Value value, ir::ValueType type) {
+    auto want = ir::GetValueSizeByte(type);
+    // Untyped (VOID) values are register-width containers: treat as 64 bit
+    // (the backend cannot size a VOID value either).
+    if (value.Type() == ir::ValueType::VOID) {
+        value = value.SetCastType(ir::ValueType::U64);
+    }
+    auto have = ir::GetValueSizeByte(value.Type());
+    if (want == have) {
+        return value;
+    }
+    if (want == 8) {
+        return __ ZeroExtend64(value);
+    }
+    // W-normalize first (safe for any input width), then a cast-type
+    // adjustment for sub-32 destinations. (SetType would mutate the producing
+    // instruction's own width and still leave the wrapper's cast unchanged —
+    // the store width follows the wrapper.)
+    value = __ ZeroExtend32(value);
+    if (want < 4) {
+        value = value.SetCastType(type);
+    }
+    return value;
+}
+
 void X64Decoder::R(_RegisterType reg, ir::Value value) {
     auto& info = x86_regs_table[reg];
     if (info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::R15) {
@@ -628,7 +660,7 @@ void X64Decoder::R(_RegisterType reg, ir::Value value) {
             return;
         }
     }
-    __ StoreUniform(ToReg(info), value);
+    __ StoreUniform(ToReg(info), NarrowTo(value, info.type));
 }
 
 void X64Decoder::V(_RegisterType reg, ir::Value value) {
@@ -753,7 +785,9 @@ ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op) {
         case O_IMM: {
             if (insn.flags & FLAG_IMM_SIGNED) {
                 // distorm already sign extended the immediate to 64 bits.
-                result = ir::Imm{insn.imm.sqword};
+                // Type it u64: an s64 typed LoadImm would get a 32 bit
+                // register in the backend and truncate.
+                result = ir::Imm{static_cast<u64>(insn.imm.sqword)};
             } else if (op.size == 64) {
                 result = ir::Imm{insn.imm.qword};
             } else if (op.size == 16) {
@@ -776,7 +810,14 @@ ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op) {
         case O_DISP: {
             auto size = GetSize(op.size);
             auto address_operand = GetAddress(insn, op);
-            result = __ LoadMemoryTSO(address_operand.ToIROperand()).SetType(size);
+            // The backend's TSO loads/stores (ldar/stlr) only encode [base]:
+            // any offset/index in the addressing operand would be silently
+            // dropped, so the address is always folded into a single value.
+            // SetType (not just cast): EmitGetOperand sizes the result from
+            // the instruction's own return type.
+            auto address = __ GetOperand(address_operand.ToIROperand())
+                                   .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
+            result = __ LoadMemoryTSO(ir::Operand{address}).SetType(size);
             break;
         }
         case O_PTR: {
@@ -810,9 +851,12 @@ void X64Decoder::Dst(_DInst& insn, _Operand& operand, const ir::DataClass& data)
             if (operand.size) {
                 // The store width comes from the operand, not the value (e.g.
                 // sign extended immediates are wider than the destination).
-                value = value.SetType(GetSize(operand.size));
+                value = NarrowTo(value, GetSize(operand.size));
             }
-            __ StoreMemoryTSO(address.ToIROperand(), value);
+            // See Src(): TSO stores only encode [base], fold the address.
+            auto folded = __ GetOperand(address.ToIROperand())
+                                  .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
+            __ StoreMemoryTSO(ir::Operand{folded}, value);
             break;
         }
         default:
@@ -1013,7 +1057,7 @@ void X64Decoder::DecodeMovsx(_DInst& insn) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
     auto src = ToValue(Src(insn, op1));
-    auto result = __ SignExtend(src).SetType(GetSignedSize(op0.size));
+    auto result = __ SignExtend(src).SetType(GetSignedContainer(op0.size));
     Dst(insn, op0, result);
 }
 
@@ -1124,10 +1168,15 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
         auto flagged = sub ? __ Sub(sa, ir::Operand{sb}) : __ Add(sa, ir::Operand{sb});
         __ SaveFlags(flagged, flag_mask & ir::Flags::NZCV);
         carry_ = sub ? CarryPolarity::Inverted : CarryPolarity::Direct;
+        if (width == 32) {
+            // 64 bit container value; register / memory stores narrow it
+            // safely through NarrowTo (SetType on the U64 add would break its
+            // emitter).
+            return value;
+        }
         // The store width follows the value's type (EmitStoreUniform), so the
-        // result must carry the guest width type even though it was computed
-        // in a wider container.
-        return value.SetType(GetSize(width));
+        // result must carry the guest width type (32 -> 16/8 is W-safe).
+        return value.SetCastType(GetSize(width));
     }
 }
 
@@ -1257,9 +1306,8 @@ static ir::Value MulWithFlags(ir::Assembler* assembler, ir::Value a, ir::Value b
     if (width == 64) {
         lo = assembler->Mul(a, ir::Operand{b});
         if (out_hi) {
-            *out_hi = (sign ? assembler->CallHost(&MulHiS64, a, b)
-                            : assembler->CallHost(&MulHiU64, a, b))
-                              .SetType(GetSize(width));
+            *out_hi = sign ? assembler->CallHost(&MulHiS64, a, b)
+                           : assembler->CallHost(&MulHiU64, a, b);
         }
     } else if (sign && width < 32) {
         // Signed narrow: multiply the sign extended operands at 32 bits (the
@@ -1267,23 +1315,23 @@ static ir::Value MulWithFlags(ir::Assembler* assembler, ir::Value a, ir::Value b
         auto aw = assembler->SignExtend(a).SetType(ir::ValueType::S32);
         auto bw = assembler->SignExtend(b).SetType(ir::ValueType::S32);
         lo = assembler->Mul(aw, ir::Operand{bw});
+        // W-register-safe type adjustment for the store width.
+        lo = lo.SetCastType(GetSize(width));
     } else {
-        auto type = sign ? GetSignedSize(width) : GetSize(width);
+        auto type = sign ? GetSignedContainer(width) : GetSize(width);
         lo = assembler->Mul(a.SetType(type), ir::Operand{b.SetType(type)});
     }
-    // The store width follows the value's type (EmitStoreUniform): results
-    // must carry the guest width type.
-    lo = lo.SetType(GetSize(width));
     if (width < 64 && out_hi) {
         // Full double width product for the high half (no flag side effects).
-        auto aw = sign ? assembler->SignExtend(a).SetType(ir::ValueType::S64)
+        // Keep the container 64 bits wide: narrowing the shift instruction
+        // itself would make its emitter use 32 bit registers (invalid shifts).
+        auto aw = sign ? assembler->SignExtend(a).SetType(ir::ValueType::U64)
                        : assembler->ZeroExtend64(a);
-        auto bw = sign ? assembler->SignExtend(b).SetType(ir::ValueType::S64)
+        auto bw = sign ? assembler->SignExtend(b).SetType(ir::ValueType::U64)
                        : assembler->ZeroExtend64(b);
         auto wide = assembler->Mul(aw, ir::Operand{bw});
-        *out_hi = (sign ? assembler->AsrImm(wide, ir::Imm(width))
-                        : assembler->LsrImm(wide, ir::Imm(width)))
-                          .SetType(GetSize(width));
+        *out_hi = sign ? assembler->AsrImm(wide, ir::Imm(width))
+                       : assembler->LsrImm(wide, ir::Imm(width));
     }
     // SF / ZF / PF from the low result; AF / CF / OF cleared.
     auto flagged = assembler->Or(lo, ir::Operand{ir::Imm(u64(0))});
@@ -1382,10 +1430,10 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
     switch (op0.size) {
         case 8: {
             auto ax = R(_RegisterType::R_AX);
-            auto num = sign ? __ SignExtend(ax).SetType(ir::ValueType::S64)
+            auto num = sign ? __ SignExtend(ax).SetType(ir::ValueType::U64)
                             : __ ZeroExtend64(__ ZeroExtend32(ax));
             auto hi = sign ? __ AsrImm(num, ir::Imm(63u)) : __ LoadImm(ir::Imm(u64(0)));
-            auto den = Extend(src, sign ? ir::ValueType::S64 : ir::ValueType::U64, sign);
+            auto den = Extend(src, ir::ValueType::U64, sign);
             auto quot = __ CallHost(div_q, hi, num, den);
             auto rem = __ CallHost(div_r, hi, num, den);
             R(_RegisterType::R_AL, quot);
@@ -1396,10 +1444,10 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
             auto lo = __ ZeroExtend32(R(_RegisterType::R_AX));
             auto hi16 = __ ZeroExtend32(R(_RegisterType::R_DX));
             auto num32 = __ Or(__ LslImm(hi16, ir::Imm(16u)), ir::Operand{lo});
-            auto num = sign ? __ SignExtend(num32).SetType(ir::ValueType::S64)
+            auto num = sign ? __ SignExtend(num32).SetType(ir::ValueType::U64)
                             : __ ZeroExtend64(num32);
             auto hi = sign ? __ AsrImm(num, ir::Imm(63u)) : __ LoadImm(ir::Imm(u64(0)));
-            auto den = Extend(src, sign ? ir::ValueType::S64 : ir::ValueType::U64, sign);
+            auto den = Extend(src, ir::ValueType::U64, sign);
             auto quot = __ CallHost(div_q, hi, num, den);
             auto rem = __ CallHost(div_r, hi, num, den);
             R(_RegisterType::R_AX, quot);
@@ -1410,9 +1458,9 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
             auto lo = __ ZeroExtend64(R(_RegisterType::R_EAX));
             auto hi32 = __ ZeroExtend64(R(_RegisterType::R_EDX));
             auto num = __ Or(__ LslImm(hi32, ir::Imm(32u)), ir::Operand{lo});
-            auto hi = sign ? __ AsrImm(num.SetType(ir::ValueType::S64), ir::Imm(63u))
+            auto hi = sign ? __ AsrImm(num.SetType(ir::ValueType::U64), ir::Imm(63u))
                            : __ LoadImm(ir::Imm(u64(0)));
-            auto den = Extend(src, sign ? ir::ValueType::S64 : ir::ValueType::U64, sign);
+            auto den = Extend(src, ir::ValueType::U64, sign);
             auto quot = __ CallHost(div_q, hi, num, den);
             auto rem = __ CallHost(div_r, hi, num, den);
             R(_RegisterType::R_EAX, quot);
@@ -1422,7 +1470,7 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
         case 64: {
             auto lo = R(_RegisterType::R_RAX);
             auto hi = R(_RegisterType::R_RDX);
-            auto den = Extend(src, sign ? ir::ValueType::S64 : ir::ValueType::U64, sign);
+            auto den = Extend(src, ir::ValueType::U64, sign);
             auto quot = __ CallHost(div_q, hi, lo, den);
             auto rem = __ CallHost(div_r, hi, lo, den);
             R(_RegisterType::R_RAX, quot);
@@ -1440,7 +1488,11 @@ void X64Decoder::DecodeLea(_DInst& insn) {
     auto& op1 = insn.ops[1];
 
     auto address = GetAddress(insn, op1);
-    Dst(insn, op0, __ GetOperand(address.ToIROperand()));
+    // SetType (mutation): EmitGetOperand sizes the result from the
+    // instruction's own return type, untyped would truncate to 32 bits.
+    Dst(insn, op0,
+        __ GetOperand(address.ToIROperand())
+                .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32));
 }
 
 void X64Decoder::DecodeCondMov(_DInst& insn, Cond cond) {
@@ -1450,11 +1502,20 @@ void X64Decoder::DecodeCondMov(_DInst& insn, Cond cond) {
     __ BindLabel(label);
 }
 
-void X64Decoder::SaveLogicFlags(ir::Value result) {
+void X64Decoder::SaveLogicFlags(ir::Value result, u32 width) {
     // AND / OR / XOR / TEST: CF = OF = 0, AF undefined (cleared here),
     // SF / ZF / PF from the result.
-    __ ClearFlags(ir::Flags::Carry | ir::Flags::Overflow | ir::Flags::AuxiliaryCarry);
-    __ SaveFlags(result, ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
+    if (width < 32) {
+        // The backend's flag-setting logical ops compute N/Z at the host
+        // register width (32 bits), which is wrong for narrow results; a
+        // separate flag-only op derives them at the guest width.
+        auto flagged = __ Or(result, ir::Operand{ir::Imm(u64(0))});
+        __ ClearFlags(ir::Flags::AuxiliaryCarry);
+        __ SaveFlags(flagged, ir::Flags::Negate | ir::Flags::Zero | ir::Flags::Parity);
+    } else {
+        __ ClearFlags(ir::Flags::Carry | ir::Flags::Overflow | ir::Flags::AuxiliaryCarry);
+        __ SaveFlags(result, ir::Flags::Negate | ir::Flags::Parity | ir::Flags::Zero);
+    }
     carry_ = CarryPolarity::Direct;  // CF == 0, same under either polarity
 }
 
@@ -1467,7 +1528,7 @@ void X64Decoder::DecodeAnd(_DInst& insn, bool save_result) {
 
     auto result = __ And(left, ir::Operand{right});
 
-    SaveLogicFlags(result);
+    SaveLogicFlags(result, op0.size);
 
     if (save_result) {
         Dst(insn, op0, result);
@@ -1500,7 +1561,7 @@ void X64Decoder::DecodeOr(_DInst& insn) {
     auto right = Src(insn, op1);
 
     auto result = __ Or(ToValue(left), ir::Operand{right});
-    SaveLogicFlags(result);
+    SaveLogicFlags(result, op0.size);
 
     Dst(insn, op0, result);
 }
@@ -1513,7 +1574,7 @@ void X64Decoder::DecodeXor(_DInst& insn) {
     auto right = Src(insn, op1);
 
     auto result = __ Xor(ToValue(left), ir::Operand{right});
-    SaveLogicFlags(result);
+    SaveLogicFlags(result, op0.size);
 
     Dst(insn, op0, result);
 }
@@ -1524,7 +1585,7 @@ void X64Decoder::DecodePush(_DInst& insn) {
     auto type = GetSize(width);
     if (op0.type == O_IMM || op0.type == O_IMM1) {
         // distorm keeps the immediate sign extended in imm.sqword.
-        auto value = __ LoadImm(ir::Imm(insn.imm.sqword)).SetType(GetSignedSize(width));
+        auto value = __ LoadImm(ir::Imm(insn.imm.sqword)).SetType(GetSignedContainer(width));
         Push(value, type);
         return;
     }
@@ -1604,10 +1665,10 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
         // Narrow SAR must sign extend to 32 bits first: the backend shift is a
         // 32/64 bit op, an unsigned narrow value would shift in zeros.
         auto ext = width < 32 ? __ SignExtend(left).SetType(ir::ValueType::S32)
-                              : left.SetType(GetSignedSize(width));
+                              : left.SetType(GetSignedContainer(width));
         result = __ AsrValue(ext, count);
     }
-    result = result.SetType(GetSize(width));
+    result = result.SetCastType(GetSize(width));
 
     // A zero shift count leaves the flags untouched; skip the flag update.
     auto skip_flags = __ NotGoto(__ TestNotZero(count));
@@ -1642,7 +1703,7 @@ void X64Decoder::DecodeAndNot(_DInst& insn) {
     auto right = Src(insn, op1);
 
     auto result = __ AndNot(left, ir::Operand{right});
-    SaveLogicFlags(result);
+    SaveLogicFlags(result, op0.size);
 
     Dst(insn, op0, result);
 }

@@ -102,17 +102,19 @@ void EmitModRMMem(CodeBuf& b, u8 reg_field, const MemOp& m) {
 }
 
 // rex bits for a reg/mem instruction; reg_field extended by R, rm (base) by B, index by X.
-void EmitRexFor(CodeBuf& b, int width, u8 reg_field, bool has_mem, bool byte_op, bool high_byte) {
+void EmitRexFor(CodeBuf& b, int width, u8 reg_field, const MemOp* m, bool byte_op, bool high_byte) {
+    bool has_mem = m != nullptr;
+    bool x_bit = has_mem && m->scale != 0 && (kIndexReg >= 8);
     if (byte_op) {
         // High byte registers (AH..BH) forbid any REX. Byte registers >= 4
         // (SPL..) or >= 8 require one.
         if (high_byte) {
             return;
         }
-        bool need = width == 64 || reg_field >= 4;  // spl/bpl/sil/dil and r8b+ need REX
-        EmitRex(b, width == 64, reg_field >= 8, false, has_mem && (kDataReg >= 8), need);
+        bool need = width == 64 || reg_field >= 4 || x_bit;  // spl/bpl/sil/dil and r8b+ need REX
+        EmitRex(b, width == 64, reg_field >= 8, x_bit, has_mem && (kDataReg >= 8), need);
     } else {
-        EmitRex(b, width == 64, reg_field >= 8, false, has_mem && (kDataReg >= 8));
+        EmitRex(b, width == 64, reg_field >= 8, x_bit, has_mem && (kDataReg >= 8));
     }
 }
 
@@ -163,7 +165,7 @@ void EmitAluRegImm(CodeBuf& b, u8 group, int width, u8 dst, u64 imm, bool imm8_f
 void EmitAluRegMem(CodeBuf& b, u8 group, int width, u8 dst, const MemOp& m) {
     EmitOperandPrefix(b, width);
     bool byte_op = width == 8;
-    EmitRexFor(b, width, dst, true, byte_op, false);
+    EmitRexFor(b, width, dst, &m, byte_op, false);
     b.B(u8(group * 8 + (byte_op ? 2 : 3)));
     EmitModRMMem(b, dst, m);
 }
@@ -171,7 +173,7 @@ void EmitAluRegMem(CodeBuf& b, u8 group, int width, u8 dst, const MemOp& m) {
 void EmitAluMemReg(CodeBuf& b, u8 group, int width, const MemOp& m, u8 src) {
     EmitOperandPrefix(b, width);
     bool byte_op = width == 8;
-    EmitRexFor(b, width, src, true, byte_op, false);
+    EmitRexFor(b, width, src, &m, byte_op, false);
     b.B(u8(group * 8 + (byte_op ? 0 : 1)));
     EmitModRMMem(b, src, m);
 }
@@ -211,7 +213,7 @@ void EmitGroupF6(CodeBuf& b, u8 sub, int width, u8 rm, bool high_byte = false) {
 void EmitGroupF6Mem(CodeBuf& b, u8 sub, int width, const MemOp& m) {
     EmitOperandPrefix(b, width);
     bool byte_op = width == 8;
-    EmitRexFor(b, width, 0, true, byte_op, false);
+    EmitRexFor(b, width, 0, &m, byte_op, false);
     b.B(byte_op ? 0xF6 : 0xF7);
     EmitModRMMem(b, 0, m);
 }
@@ -272,7 +274,7 @@ void EmitMovRegImm(CodeBuf& b, int width, u8 dst, u64 imm) {
 void EmitMovRegMem(CodeBuf& b, int width, u8 dst, const MemOp& m) {
     EmitOperandPrefix(b, width);
     bool byte_op = width == 8;
-    EmitRexFor(b, width, dst, true, byte_op, false);
+    EmitRexFor(b, width, dst, &m, byte_op, false);
     b.B(byte_op ? 0x8A : 0x8B);
     EmitModRMMem(b, dst, m);
 }
@@ -280,7 +282,7 @@ void EmitMovRegMem(CodeBuf& b, int width, u8 dst, const MemOp& m) {
 void EmitMovMemReg(CodeBuf& b, int width, const MemOp& m, u8 src) {
     EmitOperandPrefix(b, width);
     bool byte_op = width == 8;
-    EmitRexFor(b, width, src, true, byte_op, false);
+    EmitRexFor(b, width, src, &m, byte_op, false);
     b.B(byte_op ? 0x88 : 0x89);
     EmitModRMMem(b, src, m);
 }
@@ -288,7 +290,7 @@ void EmitMovMemReg(CodeBuf& b, int width, const MemOp& m, u8 src) {
 void EmitMovMemImm(CodeBuf& b, int width, const MemOp& m, u64 imm) {
     EmitOperandPrefix(b, width);
     bool byte_op = width == 8;
-    EmitRexFor(b, width, 0, true, byte_op, false);
+    EmitRexFor(b, width, 0, &m, byte_op, false);
     b.B(byte_op ? 0xC6 : 0xC7);
     EmitModRMMem(b, 0, m);
     if (byte_op) {
@@ -322,7 +324,7 @@ void EmitMovsxd(CodeBuf& b, u8 dst, u8 src) {
 
 void EmitLea(CodeBuf& b, int width, u8 dst, const MemOp& m) {
     EmitOperandPrefix(b, width);
-    EmitRex(b, width == 64, dst >= 8, false, !m.rip_rel && (kDataReg >= 8));
+    EmitRex(b, width == 64, dst >= 8, m.scale != 0 && (kIndexReg >= 8), !m.rip_rel && (kDataReg >= 8));
     b.B(0x8D);
     EmitModRMMem(b, dst, m);
 }
@@ -338,7 +340,7 @@ void EmitXchgRegReg(CodeBuf& b, int width, u8 a, u8 bb, bool high_byte = false) 
 void EmitXchgMemReg(CodeBuf& b, int width, const MemOp& m, u8 src) {
     EmitOperandPrefix(b, width);
     bool byte_op = width == 8;
-    EmitRexFor(b, width, src, true, byte_op, false);
+    EmitRexFor(b, width, src, &m, byte_op, false);
     b.B(byte_op ? 0x86 : 0x87);
     EmitModRMMem(b, src, m);
 }
@@ -366,12 +368,18 @@ void EmitCallRel32(CodeBuf& b, s32 rel) { b.B(0xE8); b.D(u32(rel)); }
 
 void EmitRet(CodeBuf& b) { b.B(0xC3); }
 
-void EmitPushReg(CodeBuf& b, u8 reg) {
+void EmitPushReg(CodeBuf& b, u8 reg, bool width16 = false) {
+    if (width16) {
+        b.B(0x66);
+    }
     EmitRex(b, false, false, false, reg >= 8);
     b.B(u8(0x50 + (reg & 7)));
 }
 
-void EmitPopReg(CodeBuf& b, u8 reg) {
+void EmitPopReg(CodeBuf& b, u8 reg, bool width16 = false) {
+    if (width16) {
+        b.B(0x66);
+    }
     EmitRex(b, false, false, false, reg >= 8);
     b.B(u8(0x58 + (reg & 7)));
 }
@@ -530,6 +538,17 @@ struct FuzzEnv {
         return regs[rng() % std::size(regs)];
     }
 
+    // Byte register; 1 in 4 times a legacy no-REX byte register (indices 0-7,
+    // where 4-7 encode AH/CH/DH/BH).
+    u8 RandByteReg(bool& high_byte) {
+        high_byte = false;
+        if (RandInt(0, 3) == 0) {
+            high_byte = true;
+            return u8(RandInt(0, 7));
+        }
+        return RandReg();
+    }
+
     MemOp RandMem() {
         MemOp m{};
         int kind = RandInt(0, 9);
@@ -541,6 +560,14 @@ struct FuzzEnv {
                 m.disp = 8;
             }
         }
+        return m;
+    }
+
+    // [rip + disp32] form (lea only — no actual memory access).
+    MemOp RipRelMem() {
+        MemOp m{};
+        m.rip_rel = true;
+        m.disp = RandInt(-256, 256);
         return m;
     }
 
@@ -779,18 +806,18 @@ TEST_CASE("Fuzz x86 debug repro") {
         return;
     }
     FuzzEnv env;
-    // sub r10, r9; mul edx; lahf; seto r15b; hlt
-    std::vector<u8> code = {0x4d, 0x29, 0xca, 0xf7, 0xe2, 0x9f, 0x41, 0x0f, 0x90, 0xc7, 0xf4};
+    // lea r8, [r13+r11*4+1]; hlt
+    std::vector<u8> code = {0x4d, 0x8d, 0x44, 0x9d, 0x01, 0xf4};
     u64 code_addr = env.base;
     std::memcpy(env.host_mem, code.data(), code.size());
     env.uc->WriteMemory(env.base, code);
     env.DumpIR(code_addr);
     auto& ctx = *env.ctx;
-    ctx.rax.qword = 0x5d8010f4db8e18cc;
-    ctx.rdx.qword = 0xec4ec8ba148c21d6;
-    ctx.rsi.qword = 0x39681f394f6e83d1;
+    ctx.r13.qword = env.data_addr;
+    ctx.r11.qword = 2;
     ctx.rip.qword = code_addr;
     ctx.rsp.qword = env.stack_addr;
+    std::cout << fmt::format("base={:x} data_addr={:x}\n", env.base, env.data_addr);
     env.SyncRegsToUnicorn();
     env.uc->Run(code_addr, code_addr + code.size() - 1, 0, 0);
     env.core->Run();
@@ -802,6 +829,11 @@ TEST_CASE("Fuzz x86 debug repro") {
     show("rdx", UC_X86_REG_RDX, ctx.rdx.qword);
     show("r9", UC_X86_REG_R9, ctx.r9.qword);
     show("r15", UC_X86_REG_R15, ctx.r15.qword);
+    auto uc_mem = env.uc->ReadMemory(env.data_addr - 0x200, 8);
+    u64 uc_val = 0, sv_val = 0;
+    memcpy(&uc_val, uc_mem.data(), 8);
+    memcpy(&sv_val, reinterpret_cast<u8*>(env.host_mem) + (env.data_addr - 0x200 - env.base), 8);
+    std::cout << fmt::format("mem[r13-0x200]: uc={:x} sv={:x}\n", uc_val, sv_val);
 }
 
 namespace {
@@ -819,10 +851,24 @@ TEST_CASE("Fuzz x86 alu") {
         for (int j = 0; j < n; ++j) {
             u8 group = env.Pick(std::vector<u8>{0, 1, 2, 3, 4, 5, 6, 7});  // add..cmp (test below)
             int width = env.Pick(std::vector<int>{8, 16, 32, 64});
-            u8 dst = env.RandReg();
-            u8 src = env.RandReg();
+            bool hb_dst = false, hb_src = false;
+            u8 dst = width == 8 ? env.RandByteReg(hb_dst) : env.RandReg();
+            u8 src = width == 8 ? env.RandByteReg(hb_src) : env.RandReg();
+            bool high_byte = hb_dst || hb_src;
+            if (high_byte) {
+                // No-REX byte operands: indices 0-7 (4-7 are AH..BH).
+                dst = u8(env.RandInt(0, 7));
+                src = u8(env.RandInt(0, 7));
+            }
             int form = env.RandInt(0, 9);
-            if (env.RandInt(0, 7) == 0) {
+            if (high_byte) {
+                // High byte ops: reg-reg forms only.
+                if (env.RandInt(0, 4) == 0) {
+                    EmitTestRegReg(b, width, dst, src, true);
+                } else {
+                    EmitAluRegReg(b, group, width, dst, src, true);
+                }
+            } else if (env.RandInt(0, 7) == 0) {
                 EmitTestRegReg(b, width, dst, src);
             } else if (form < 4) {
                 EmitAluRegReg(b, group, width, dst, src);
@@ -855,21 +901,22 @@ TEST_CASE("Fuzz x86 inc dec neg not") {
         FlagMask mask;
         for (int j = 0; j < n; ++j) {
             int width = env.Pick(std::vector<int>{8, 16, 32, 64});
-            u8 dst = env.RandReg();
+            bool high_byte = false;
+            u8 dst = width == 8 ? env.RandByteReg(high_byte) : env.RandReg();
             switch (env.RandInt(0, 3)) {
                 case 0:
-                    EmitIncDec(b, false, width, dst);
+                    EmitIncDec(b, false, width, dst, high_byte);
                     mask.ah &= ~kAhCF;  // CF after inc/dec not preserved (backend limit)
                     break;
                 case 1:
-                    EmitIncDec(b, true, width, dst);
+                    EmitIncDec(b, true, width, dst, high_byte);
                     mask.ah &= ~kAhCF;
                     break;
                 case 2:
-                    EmitGroupF6(b, 3, width, dst);  // neg
+                    EmitGroupF6(b, 3, width, dst, high_byte);  // neg
                     break;
                 default:
-                    EmitGroupF6(b, 2, width, dst);  // not (flags untouched)
+                    EmitGroupF6(b, 2, width, dst, high_byte);  // not (flags untouched)
                     break;
             }
         }
@@ -890,15 +937,16 @@ TEST_CASE("Fuzz x86 shifts") {
         for (int j = 0; j < n; ++j) {
             u8 sub = env.Pick(std::vector<u8>{4, 5, 7});  // shl shr sar
             int width = env.Pick(std::vector<int>{8, 16, 32, 64});
-            u8 dst = env.RandReg();
+            bool high_byte = false;
+            u8 dst = width == 8 ? env.RandByteReg(high_byte) : env.RandReg();
             if (env.RandInt(0, 1)) {
                 // by CL
                 env.ctx->rcx.qword = env.Pick(std::vector<u64>{0, 1, 2, 7, 8, 15, 16, 31, 32, 33,
                                                                  63, 64, 65, 255});
-                EmitShift(b, sub, width, dst, 0, true);
+                EmitShift(b, sub, width, dst, 0, true, high_byte);
             } else {
                 u8 count = u8(env.Pick(std::vector<u64>{1, 2, 3, 7, 8, 15, 16, 31}));
-                EmitShift(b, sub, width, dst, count, false);
+                EmitShift(b, sub, width, dst, count, false, high_byte);
             }
         }
         env.EmitFlagCapture(b);
@@ -1142,9 +1190,15 @@ TEST_CASE("Fuzz x86 mov lea xchg extends") {
         for (int j = 0; j < n; ++j) {
             int what = env.RandInt(0, 8);
             int width = env.Pick(std::vector<int>{8, 16, 32, 64});
+            bool high_byte = false;
+            u8 byte_reg = width == 8 ? env.RandByteReg(high_byte) : env.RandReg();
             switch (what) {
                 case 0:
-                    EmitMovRegReg(b, width, env.RandReg(), env.RandReg());
+                    if (high_byte) {
+                        EmitMovRegReg(b, width, u8(env.RandInt(0, 7)), u8(env.RandInt(0, 7)), true);
+                    } else {
+                        EmitMovRegReg(b, width, byte_reg, env.RandReg());
+                    }
                     break;
                 case 1:
                     EmitMovRegImm(b, width, env.RandReg(), env.PoolVal(width));
@@ -1159,10 +1213,18 @@ TEST_CASE("Fuzz x86 mov lea xchg extends") {
                     EmitMovMemImm(b, width, env.RandMem(), env.PoolVal(width > 32 ? 32 : width));
                     break;
                 case 5:
-                    EmitLea(b, width, env.RandReg(), env.RandMem());
+                    if (env.RandInt(0, 4) == 0) {
+                        EmitLea(b, width, env.RandReg(), env.RipRelMem());
+                    } else {
+                        EmitLea(b, width, env.RandReg(), env.RandMem());
+                    }
                     break;
                 case 6:
-                    EmitXchgRegReg(b, width, env.RandReg(), env.RandReg());
+                    if (high_byte) {
+                        EmitXchgRegReg(b, width, u8(env.RandInt(0, 7)), u8(env.RandInt(0, 7)), true);
+                    } else {
+                        EmitXchgRegReg(b, width, byte_reg, env.RandReg());
+                    }
                     break;
                 case 7:
                     EmitXchgMemReg(b, width, env.RandMem(), env.RandReg());
@@ -1309,6 +1371,115 @@ TEST_CASE("Fuzz x86 call ret jmp") {
             std::cout << fmt::format("[callret] MISMATCH:{} code: {}", detail, env.DumpCode(code))
                       << std::endl;
         }
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz x86 mixed sequences") {
+    FuzzEnv env;
+    int iters = env.Iters(4000);
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        env.EmitFlagPrefix(b);
+        FlagMask mask;
+        int n = env.RandInt(2, 5);
+        for (int j = 0; j < n; ++j) {
+            int width = env.Pick(std::vector<int>{8, 16, 32, 64});
+            switch (env.RandInt(0, 9)) {
+                case 0:  // alu reg-reg / reg-imm
+                case 1: {
+                    u8 group = env.Pick(std::vector<u8>{0, 1, 2, 3, 4, 5, 6, 7});
+                    if (env.RandInt(0, 1)) {
+                        EmitAluRegReg(b, group, width, env.RandReg(), env.RandReg());
+                    } else {
+                        EmitAluRegImm(b, group, width, env.RandReg(),
+                                      env.PoolVal(width > 32 ? 32 : width), env.RandInt(0, 3) == 0);
+                    }
+                    break;
+                }
+                case 2:  // inc / dec / neg / not
+                    switch (env.RandInt(0, 3)) {
+                        case 0:
+                            EmitIncDec(b, false, width, env.RandReg());
+                            mask.ah &= ~kAhCF;
+                            break;
+                        case 1:
+                            EmitIncDec(b, true, width, env.RandReg());
+                            mask.ah &= ~kAhCF;
+                            break;
+                        case 2:
+                            EmitGroupF6(b, 3, width, env.RandReg());
+                            break;
+                        default:
+                            EmitGroupF6(b, 2, width, env.RandReg());
+                            break;
+                    }
+                    break;
+                case 3:  // shift
+                    EmitShift(b, env.Pick(std::vector<u8>{4, 5, 7}), width, env.RandReg(),
+                              u8(env.Pick(std::vector<u64>{1, 2, 5, 7, 15})), false);
+                    mask.ah &= ~kAhCF;
+                    mask.of = false;
+                    break;
+                case 4:  // mov / lea
+                    if (env.RandInt(0, 1)) {
+                        EmitMovRegMem(b, width, env.RandReg(), env.RandMem());
+                    } else {
+                        EmitLea(b, width, env.RandReg(), env.RandMem());
+                    }
+                    break;
+                case 5:  // setcc
+                    EmitSetcc(b, u8(env.RandInt(0, 15)), env.RandReg());
+                    break;
+                case 6:  // xchg / movs
+                    if (env.RandInt(0, 1)) {
+                        EmitXchgRegReg(b, width, env.RandReg(), env.RandReg());
+                    } else {
+                        env.ctx->rsi.qword = env.data_addr - 0x800;
+                        env.ctx->rdi.qword = env.data_addr - 0x400;
+                        EmitMovs(b, width, false);
+                    }
+                    break;
+                case 7:  // mul / imul
+                    EmitGroupF6(b, env.RandInt(0, 1) ? 4 : 5, width, env.RandReg());
+                    mask.ah &= ~kAhCF;
+                    mask.of = false;
+                    break;
+                case 8:  // push / pop
+                    EmitPushReg(b, env.RandReg());
+                    EmitPopReg(b, env.RandReg());
+                    break;
+                default:  // cbw family / movzx / movsx
+                    switch (env.RandInt(0, 3)) {
+                        case 0:
+                            b.B(0x66);
+                            b.B(0x98);
+                            break;
+                        case 1:
+                            b.B(0x98);
+                            break;
+                        case 2:
+                            b.B(0x48);
+                            b.B(0x98);
+                            break;
+                        default: {
+                            int sw = width == 64 ? env.Pick(std::vector<int>{8, 16, 32}) : 8;
+                            if (sw == 32) {
+                                EmitMovsxd(b, env.RandReg(), env.RandReg());
+                            } else if (env.RandInt(0, 1)) {
+                                EmitMovzx(b, width, sw, env.RandReg(), env.RandReg());
+                            } else {
+                                EmitMovsx(b, width, sw, env.RandReg(), env.RandReg());
+                            }
+                            break;
+                        }
+                    }
+                    break;
+            }
+        }
+        env.EmitFlagCapture(b);
+        env.RunIteration(b.c, mask, "mixed");
     }
     REQUIRE(env.failures == 0);
 }
