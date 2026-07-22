@@ -56,6 +56,11 @@ struct Runtime::Impl final {
         HaltReason hr{HaltReason::None};
 
         while (hr == HaltReason::None) {
+            // Re-read the location every iteration: interpreted blocks update
+            // state->current_loc through their terminals (LinkBlock /
+            // SetLocation), so the dispatcher must follow it like the JIT
+            // trampolines code_dispatcher loop does.
+            current_loc = state->current_loc.Value();
             if (auto node = current_module->GetNode(current_loc); !backend::IsEmpty(node)) {
                 hr = VisitVariant<HaltReason>(node, [this](auto x) -> auto {
                     using T = std::decay_t<decltype(x)>;
@@ -77,6 +82,10 @@ struct Runtime::Impl final {
                 hr = HaltReason::CodeMiss;
             }
         }
+        // Mirror the JIT trampoline's label_return_host: the halt reason is
+        // consumed by the host loop, so clear it so the next entry (and any
+        // CheckHalt terminal) starts from a clean state.
+        state->halt_reason = HaltReason::None;
         return hr;
     }
 

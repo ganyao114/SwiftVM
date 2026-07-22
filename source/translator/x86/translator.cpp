@@ -265,10 +265,14 @@ static constexpr u32 kScratchUniformSize = 16;
 
 struct X86Instance::Impl final {
     Impl() {
+        // SVM_ENABLE_JIT=0 forces the IR interpreter path (same switch as the
+        // arm64 core; useful for cross-checking JIT results).
+        const char* jit_env = std::getenv("SVM_ENABLE_JIT");
+        const bool enable_jit = jit_env ? std::strcmp(jit_env, "0") != 0 : true;
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ul << 49,
-                .enable_jit = true,
+                .enable_jit = enable_jit,
                 .has_local_operation = false,
                 .backend_isa = swift::runtime::kArm64,
                 .uniform_buffer_size = sizeof(ThreadContext64) + kScratchUniformSize,
@@ -345,6 +349,11 @@ struct X86Instance::Impl final {
                         fmt::print("--- block {:#x} ---\n{}\n", pc, x->ToString());
                     }
                 }
+                if (!module->GetAddressSpace().GetConfig().enable_jit) {
+                    // Interpreter path: leave the decoded block in the module;
+                    // Runtime::Impl::Interpreter() picks it up by location.
+                    return nullptr;
+                }
                 return backend::TranslateIR(module, x.get());
             } else {
                 return nullptr;
@@ -388,8 +397,11 @@ struct X86Core::Impl final {
                            GetCPUContext()->rdx.qword);
             }
             if (True(hr & runtime::HaltReason::CodeMiss)) {
-                // No cache, do translate
-                if (!Translate(pc)) {
+                // No cache, do translate (in IR interpreter mode this only
+                // decodes the block into the module and returns nullptr).
+                const bool jit = instance->impl->address_space->GetConfig().enable_jit;
+                auto* cache = Translate(pc);
+                if (jit && !cache) {
                     return ExitReason::IllegalCode;
                 }
                 // Translation done, resume running the translated code

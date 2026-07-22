@@ -398,10 +398,16 @@ private:
 
     void DecodeAndNot(_DInst& insn);
 
-    void SaveLogicFlags(ir::Value result);
+    void SaveLogicFlags(ir::Value result, u32 width);
 
     // Extend a value to a (wider) type, signed or unsigned.
     ir::Value Extend(ir::Value value, ir::ValueType type, bool sign);
+
+    // Narrow (or widen) a value to a type safely: SetType on a U64-producing
+    // instruction would make its emitter use 32 bit registers on 64 bit
+    // operands (e.g. invalid W shifts), so narrowing goes through an explicit
+    // ZeroExtend32 (W-normalize) plus a W-register-safe SetType.
+    ir::Value NarrowTo(ir::Value value, ir::ValueType type);
 
     VAddr start;
     VAddr pc;
