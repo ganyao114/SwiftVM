@@ -453,6 +453,21 @@ void JitTranslator::EmitClearFlags(ir::Inst* inst) {
     flags_clear |= inst->GetArg<ir::Flags>(0);
 }
 
+void JitTranslator::EmitSetCarry(ir::Inst* inst) {
+    // Set guest CF directly in the flags register from a computed 0/1 value.
+    // Merge pending NZCV first so no later merge clobbers the bit we write
+    // (MergeNZCV leaves nzcv_dirty=false; Bfi does not set it).
+    MergeNZCV();
+    auto bit = context.R(inst->GetArg<ir::Value>(0));
+    __ Bfi(flags, bit.X(), HostFlagsBit::C, 1);
+}
+
+void JitTranslator::EmitSetOverflow(ir::Inst* inst) {
+    MergeNZCV();
+    auto bit = context.R(inst->GetArg<ir::Value>(0));
+    __ Bfi(flags, bit.X(), HostFlagsBit::V, 1);
+}
+
 void JitTranslator::FlushFlags() {
     if (flags_clear != ir::Flags::None) {
         ClearFlags(flags_clear);
