@@ -13,6 +13,12 @@
 
 namespace swift::x86 {
 
+// Guest->host address bias used by host helpers (rep movs/stos) that execute
+// with raw guest pointers. Installed by the embedding translator when guest
+// addresses are virtualized (memory_base); 0 = identity.
+void SetGuestMemBias(u64 bias);
+[[nodiscard]] u64 GetGuestMemBias();
+
 using VAddr = u64;
 using namespace swift::runtime;
 
@@ -317,6 +323,9 @@ private:
 
     void DecodeMovs(_DInst& insn);
 
+    void DecodeStos(_DInst& insn);
+
+    void DecodeCpuid(_DInst& insn);
     void DecodeMovzx(_DInst& insn);
 
     void DecodeMovsx(_DInst& insn);
@@ -408,6 +417,10 @@ private:
     // operands (e.g. invalid W shifts), so narrowing goes through an explicit
     // ZeroExtend32 (W-normalize) plus a W-register-safe SetType.
     ir::Value NarrowTo(ir::Value value, ir::ValueType type);
+
+    // Segment override base: FS/GS read the 64-bit bases from the context
+    // (TLS); other segments keep the legacy selector * 16 model.
+    ir::Value SegmentBase(_RegisterType segment);
 
     VAddr start;
     VAddr pc;

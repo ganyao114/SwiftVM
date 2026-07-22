@@ -8,7 +8,38 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
-JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()) {}
+JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()) {
+    auto& config = ctx.GetConfig();
+    use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
+}
+
+MemOperand JitTranslator::BiasMem(const Register& base, bool atomic) {
+    if (!atomic) {
+        return MemOperand{base, pt};
+    }
+    // No register-offset form available: fold the bias into the reserved
+    // scratch (mem_scratch is never allocated to a guest value, unlike a
+    // GetTmpX register at a VOID instruction — see defines.h).
+    __ Add(mem_scratch, base, pt);
+    return MemOperand{mem_scratch};
+}
+
+MemOperand JitTranslator::BiasMem(const Register& base, s64 imm, bool atomic) {
+    if (imm == 0) {
+        return BiasMem(base, atomic);
+    }
+    // [guest base + imm + pt]: fold the immediate into the reserved scratch.
+    if (imm > 0) {
+        __ Add(mem_scratch, base, imm);
+    } else {
+        __ Sub(mem_scratch, base, -imm);
+    }
+    if (atomic) {
+        __ Add(mem_scratch, mem_scratch, pt);
+        return MemOperand{mem_scratch};
+    }
+    return MemOperand{mem_scratch, pt};
+}
 
 void JitTranslator::Translate(ir::Block* block) {
     cur_block = block;
@@ -652,7 +683,8 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = ir::Value{inst};
     auto type = inst->ReturnType();
-    auto vixl_operand = EmitMemOperand(operand, type, false);
+    // Ldar* has no register-offset form: the pt bias must be folded.
+    auto vixl_operand = EmitMemOperand(operand, type, false, true);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
@@ -695,7 +727,8 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = inst->GetArg<ir::Value>(1);
     auto type = value.Type();
-    auto vixl_operand = EmitMemOperand(operand, type, false);
+    // Stlr* has no register-offset form: the pt bias must be folded.
+    auto vixl_operand = EmitMemOperand(operand, type, false, true);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
@@ -823,12 +856,25 @@ Operand JitTranslator::EmitOperand(ir::Operand& ir_op) {
     }
 }
 
-MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op, ir::ValueType type, bool pair) {
+MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
+                                         ir::ValueType type,
+                                         bool pair,
+                                         bool atomic) {
     auto access_size = ir::GetValueSizeByte(type);
     if (ir_op.GetRight().Null()) {
         if (ir_op.GetLeft().IsImm()) {
             auto imm = ir_op.GetLeft().imm.Get();
             auto imm_signed = ir_op.GetLeft().imm.GetSigned();
+            if (use_memory_base) {
+                // Absolute guest address: materialize it, then apply the pt
+                // bias (guest addr + pt = host addr).
+                __ Mov(mem_scratch, imm);
+                if (atomic) {
+                    __ Add(mem_scratch, mem_scratch, pt);
+                    return MemOperand{mem_scratch};
+                }
+                return MemOperand{mem_scratch, pt};
+            }
             bool can_imm = pair ? __ IsImmLSPair(imm_signed, access_size) : __ IsImmLSUnscaled(imm_signed);
             if (can_imm) {
                 return MemOperand{xzr, imm_signed};
@@ -842,7 +888,10 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op, ir::ValueType type,
             auto addr_value = ir_op.GetLeft().value;
             auto& instr_list = cur_block->GetInstList();
             auto instr = addr_value.Def();
-            if (addr_value.Def()->GetUses() == 2) {
+            // With the pt bias active, post-index forms cannot express
+            // [base + pt] (+writeback), so the folding is disabled and the
+            // address update executes as a normal Add/Sub.
+            if (!use_memory_base && addr_value.Def()->GetUses() == 2) {
                 int search_times{0};
                 for (auto itr = instr_list.iterator_to(*instr);
                      itr != instr_list.end() && search_times < 3;
@@ -888,6 +937,9 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op, ir::ValueType type,
                     }
                 }
             }
+            if (use_memory_base) {
+                return BiasMem(context.R(addr_value), atomic);
+            }
             return MemOperand{context.R(addr_value)};
         }
     } else {
@@ -907,12 +959,23 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op, ir::ValueType type,
             bool can_imm = pair ? __ IsImmLSPair(imm, access_size) : __ IsImmLSUnscaled(imm);
             if (can_imm) {
                 if (ir_op.GetOp() == ir::OperandOp::Plus) {
+                    if (use_memory_base) {
+                        return BiasMem(left_reg, imm, atomic);
+                    }
                     return MemOperand{left_reg, imm};
                 } else if (ir_op.GetOp() == ir::OperandOp::LSL) {
+                    if (use_memory_base) {
+                        __ Lsl(mem_scratch, left_reg, imm);
+                        return BiasMem(mem_scratch, atomic);
+                    }
                     auto tmp = context.GetTmpX();
                     __ Lsl(tmp, left_reg, imm);
                     return MemOperand{tmp};
                 } else if (ir_op.GetOp() == ir::OperandOp::LSR) {
+                    if (use_memory_base) {
+                        __ Lsr(mem_scratch, left_reg, imm);
+                        return BiasMem(mem_scratch, atomic);
+                    }
                     auto tmp = context.GetTmpX();
                     __ Lsr(tmp, left_reg, imm);
                     return MemOperand{tmp};
@@ -920,6 +983,19 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op, ir::ValueType type,
                     PANIC();
                 }
             } else {
+                if (use_memory_base) {
+                    __ Mov(mem_scratch, imm);
+                    if (ir_op.GetOp() == ir::OperandOp::Plus) {
+                        __ Add(mem_scratch, left_reg, mem_scratch);
+                    } else if (ir_op.GetOp() == ir::OperandOp::LSL) {
+                        __ Lsl(mem_scratch, left_reg, mem_scratch);
+                    } else if (ir_op.GetOp() == ir::OperandOp::LSR) {
+                        __ Lsr(mem_scratch, left_reg, mem_scratch);
+                    } else {
+                        PANIC();
+                    }
+                    return BiasMem(mem_scratch, atomic);
+                }
                 auto tmp = context.GetTmpX();
                 __ Mov(tmp, imm);
                 if (ir_op.GetOp() == ir::OperandOp::Plus) {
@@ -935,16 +1011,37 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op, ir::ValueType type,
         } else {
             auto right_reg = context.R(right.value, true);
             if (ir_op.GetOp() == ir::OperandOp::Plus) {
+                if (use_memory_base) {
+                    __ Add(mem_scratch, left_reg, right_reg);
+                    return BiasMem(mem_scratch, atomic);
+                }
                 return MemOperand{left_reg, right_reg};
             } else if (ir_op.GetOp() == ir::OperandOp::LSL) {
+                if (use_memory_base) {
+                    __ Lsl(mem_scratch, left_reg, right_reg);
+                    return BiasMem(mem_scratch, atomic);
+                }
                 return MemOperand{left_reg, right_reg, LSL};
             } else if (ir_op.GetOp() == ir::OperandOp::LSR) {
+                if (use_memory_base) {
+                    __ Lsr(mem_scratch, left_reg, right_reg);
+                    return BiasMem(mem_scratch, atomic);
+                }
                 return MemOperand{left_reg, right_reg, LSR};
             } else if (ir_op.GetOp() == ir::OperandOp::PlusExt) {
                 auto shift_amount = ir_op.GetOp().shift_ext;
                 if (ir::GetValueSizeByte(right.value.Type()) == shift_amount) {
+                    if (use_memory_base) {
+                        __ Add(mem_scratch, left_reg, Operand{right_reg, LSL, shift_amount});
+                        return BiasMem(mem_scratch, atomic);
+                    }
                     return MemOperand{left_reg, right_reg, LSL, shift_amount};
                 } else {
+                    if (use_memory_base) {
+                        __ Lsl(mem_scratch, right_reg, shift_amount);
+                        __ Add(mem_scratch, left_reg, mem_scratch);
+                        return BiasMem(mem_scratch, atomic);
+                    }
                     auto tmp = context.GetTmpX();
                     __ Lsl(tmp, right_reg, shift_amount);
                     return MemOperand{left_reg, tmp};
@@ -1637,6 +1734,15 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
     auto result = context.R(ir::Value{inst});
 
     MergeNZCV();
+
+    // Exclusive instructions take a base register only (no offset forms), so
+    // under guest address virtualization the pt bias must be folded in
+    // explicitly (reserved scratch: CAS is VOID-adjacent and GetTmpX cannot
+    // be trusted here — see defines.h mem_scratch).
+    if (use_memory_base) {
+        __ Add(mem_scratch, address, pt);
+        address = mem_scratch;
+    }
 
     Label retry;
     Label done;

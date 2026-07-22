@@ -47,6 +47,10 @@ public:
 
     [[nodiscard]] MacroAssembler& GetMasm();
 
+    // Address-space config (JIT needs it for the memory_base bias fast-path
+    // decision in EmitMemOperand).
+    [[nodiscard]] const Config& GetConfig() { return module->GetAddressSpace().GetConfig(); }
+
     void SetCurrent(ir::Function *function);
     void SetCurrent(ir::Block *block);
     void TickIR(ir::Inst* instr);

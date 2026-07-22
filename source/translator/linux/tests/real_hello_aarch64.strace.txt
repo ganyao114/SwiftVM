@@ -1,0 +1,17 @@
+1151  execve("./real_hello_aarch64", ["./real_hello_aarch64"], 0xffffd0e4d928 /* 24 vars */) = 0
+1151  brk(NULL)                         = 0x3d3eb000
+1151  brk(0x3d3ebae8)                   = 0x3d3ebae8
+1151  set_tid_address(0x3d3eb0d0)       = 1151
+1151  set_robust_list(0x3d3eb0e0, 24)   = 0
+1151  rseq(0x3d3eb720, 0x20, 0, 0xd428bc00) = 0
+1151  prlimit64(0, RLIMIT_STACK, NULL, {rlim_cur=8192*1024, rlim_max=RLIM64_INFINITY}) = 0
+1151  readlinkat(AT_FDCWD, "/proc/self/exe", "/Users/swift/CLionProjects/Swift"..., 4096) = 83
+1151  getrandom("\x77\xab\xaf\x11\x9d\x56\x27\xc5", 8, GRND_NONBLOCK) = 8
+1151  brk(NULL)                         = 0x3d3ebae8
+1151  brk(0x3d40cae8)                   = 0x3d40cae8
+1151  brk(0x3d40d000)                   = 0x3d40d000
+1151  mprotect(0x48c000, 16384, PROT_READ) = 0
+1151  newfstatat(1, "", {st_mode=S_IFIFO|0600, st_size=0, ...}, AT_EMPTY_PATH) = 0
+1151  write(1, "Hello, real glibc!\n", 19) = 19
+1151  exit_group(42)                    = ?
+1151  +++ exited with 42 +++

@@ -20,28 +20,34 @@ using namespace swift::runtime;
 using namespace swift::arm64;
 
 /*
- * Guest memory model: the backend JIT (and interpreter) use guest virtual
- * addresses directly as host pointers (config.page_table / memory_base are
- * null), so the guest address space is identity-mapped into the host
- * process. The loader (translator/linux) is responsible for placing the
- * guest image / stack at their guest addresses with host mmap; instruction
- * fetch for the decoder therefore degrades to a plain memcpy.
+ * Guest memory model: with guest address virtualization (Config::memory_base)
+ * the guest runs at its linked addresses while the host backing store sits at
+ * guest + bias. The decoder's instruction fetch therefore applies the same
+ * bias (installed by the linux loader via SetBias; 0 = identity, the default
+ * for tests / non-loader embedders).
  */
 class MemoryImpl : public runtime::MemoryInterface {
 public:
+    void SetBias(u64 b) { bias = b; }
     bool Read(void* dest, size_t addr, size_t size) override {
-        return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        return std::memcpy(dest, reinterpret_cast<const void*>(addr + bias), size);
     }
     bool Write(void* src, size_t addr, size_t size) override {
-        return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        return std::memcpy(reinterpret_cast<void*>(addr + bias), src, size);
     }
-    void* GetPointer(void* src) override { return src; }
+    void* GetPointer(void* src) override {
+        return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(src) + bias);
+    }
+    u64 bias{};
 };
 
 static MemoryImpl memory_impl{};
 
 struct Arm64Instance::Impl final {
-    Impl() {
+    // memory_base: guest->host bias (host addr = guest addr + bias), installed
+    // by the linux loader; nullptr keeps the identity-mapped fast path.
+    explicit Impl(void* memory_base) {
+        memory_impl.SetBias(reinterpret_cast<uintptr_t>(memory_base));
         // SVM_ENABLE_JIT=0 forces the IR interpreter path (bring-up aid
         // while the JIT is under development).
         const char* jit_env = std::getenv("SVM_ENABLE_JIT");
@@ -62,7 +68,7 @@ struct Arm64Instance::Impl final {
                 .arm64_features = Arm64Features::None,
                 .stack_alignment = 16,
                 .page_table = nullptr,
-                .memory_base = nullptr,
+                .memory_base = memory_base,
                 .memory = &memory_impl,
         };
         address_space = std::make_unique<backend::AddressSpace>(config);
@@ -178,9 +184,9 @@ struct Arm64Core::Impl final {
     u64 svc_num{};
 };
 
-Arm64Instance::Arm64Instance() { impl = std::make_unique<Impl>(); }
+Arm64Instance::Arm64Instance(void* memory_base) { impl = std::make_unique<Impl>(memory_base); }
 
-Arm64Instance* Arm64Instance::Make() { return new Arm64Instance(); }
+Arm64Instance* Arm64Instance::Make(void* memory_base) { return new Arm64Instance(memory_base); }
 
 void Arm64Instance::Destroy(Arm64Instance* instance) { delete instance; }
 

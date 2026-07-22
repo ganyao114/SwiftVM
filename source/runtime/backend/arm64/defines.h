@@ -29,12 +29,26 @@
 #define rsb_ptr     x25
 #define local       x25
 #define loc         x24
+// pt aliases loc (x24): when Config::page_table / memory_base virtualizes
+// guest addresses, x24 holds the guest->host bias for the whole guest run
+// and the dispatcher scratch location moves to ip6 (see
+// TrampolinesArm64::BuildRuntimeEntry).
 #define pt          x24
 #define args        x23
 #define arg         x22
 #define handle      x21
 
 #define ip          x11
+// mem_scratch: reserved scratch for folding the pt bias into memory operands
+// (EmitMemOperand / EmitCompareAndSwap) when Config::page_table /
+// memory_base is active. It must NOT go through JitContext::GetTmpX: the
+// regalloc pass only records dirty masks at value-defining instructions, so
+// GetTmpX at VOID instructions (stores) can hand out a register holding a
+// live value. mem_scratch is marked reserved in the trampoline register mask
+// (only in bias mode), so it is never allocated to a guest value. It aliases
+// ip7/forward: the dispatcher's use of x10 is strictly between blocks and
+// never overlaps guest code emission.
+#define mem_scratch x10
 #define ip0         x16
 #define ip1         x17
 #define ip2         x14

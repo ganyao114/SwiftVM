@@ -583,8 +583,10 @@ void Interpreter::RunStoreUniform(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
     const auto operand = inst->GetArg<ir::Operand>(0);
     const auto type = inst->ReturnType();
-    // Guest memory is identity-mapped (guest vaddr == host pointer).
-    const auto* ptr = reinterpret_cast<const void*>(EvalOperand(stack, operand));
+    // Guest address virtualization: state.pt carries the guest->host bias
+    // (host = guest + bias); it is 0 for identity mapping.
+    const auto* ptr = reinterpret_cast<const void*>(EvalOperand(stack, operand) +
+                                                    reinterpret_cast<uintptr_t>(state.pt));
     if (IsVector(type)) {
         u128 value{};
         std::memcpy(&value, ptr, ir::GetValueSizeByte(type));
@@ -602,7 +604,8 @@ void Interpreter::RunStoreMemory(ir::Inst* inst, InterpStack& stack) {
     const auto operand = inst->GetArg<ir::Operand>(0);
     const auto value = inst->GetArg<ir::Value>(1);
     const auto type = value.Type();
-    auto* ptr = reinterpret_cast<void*>(EvalOperand(stack, operand));
+    auto* ptr = reinterpret_cast<void*>(EvalOperand(stack, operand) +
+                                        reinterpret_cast<uintptr_t>(state.pt));
     if (IsVector(type)) {
         const u128 v = ReadVec(stack, value);
         std::memcpy(ptr, &v, ir::GetValueSizeByte(type));
@@ -627,8 +630,11 @@ void Interpreter::RunMemoryCopy(ir::Inst* inst, InterpStack& stack) {
     auto dst = inst->GetArg<ir::Lambda>(0);
     auto src = inst->GetArg<ir::Lambda>(1);
     const u64 size = inst->GetArg<ir::Imm>(2).Get();
-    std::memmove(reinterpret_cast<void*>(EvalLambda(stack, dst)),
-                 reinterpret_cast<const void*>(EvalLambda(stack, src)),
+    // The lambdas evaluate to guest addresses; apply the pt bias (0 for
+    // identity mapping).
+    const auto bias = reinterpret_cast<uintptr_t>(state.pt);
+    std::memmove(reinterpret_cast<void*>(EvalLambda(stack, dst) + bias),
+                 reinterpret_cast<const void*>(EvalLambda(stack, src) + bias),
                  size);
 }
 
@@ -645,7 +651,7 @@ void Interpreter::RunCompareAndSwap(ir::Inst* inst, InterpStack& stack) {
     const auto desired = inst->GetArg<ir::Value>(2);
     const u32 bits = TypeBits(expected.Type());
     const u64 mask = MaskBits(bits);
-    auto* ptr = reinterpret_cast<void*>(addr);
+    auto* ptr = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
     u64 old{0};
     std::memcpy(&old, ptr, bits / 8);
     old &= mask;

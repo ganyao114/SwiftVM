@@ -1,0 +1,31 @@
+1112 arch_prctl(12289,274886297936,4320624,2048,3,12976128) = -1 errno=22 (Invalid argument)
+1112 brk(NULL) = 0x00000000004bd000
+1112 brk(0x00000000004bdd00) = 0x00000000004bdd00
+1112 arch_prctl(4098,4969344,24,2048,2,4968448) = 0
+1112 set_tid_address(0x4bd650) = 1112
+1112 set_robust_list(0x4bd660,24) = -1 errno=38 (Function not implemented)
+1112 Unknown syscall 334
+1112 prlimit64(0,RLIMIT_STACK,NULL,0x0000004000800980) = 0 ({rlim_cur=8388608,rlim_max=-1})
+1112 readlinkat(-100,"/proc/self/exe",0x00000040007ff900,4096) = 81
+1112 getrandom(0x4bb890,8,1) = 8
+1112 brk(NULL) = 0x00000000004bdd00
+1112 brk(0x00000000004ded00) = 0x00000000004ded00
+1112 brk(0x00000000004df000) = 0x00000000004df000
+1112 mprotect(0x00000000004b0000,20480,PROT_READ) = 0
+1112 newfstatat(1,"",0x0000004000800560,0x1000) = 0
+1112 uname(0x4000800750) = 0
+1112 readlink("/proc/self/exe",0x00000040007ff8d0,4095) = 81
+1112 openat(-100,"/tmp/real_busy_test.txt",O_WRONLY|O_CREAT|O_TRUNC,0644) = 3
+1112 write(3,0x487073,23) = 23
+1112 close(3) = 0
+1112 openat(-100,"/tmp/real_busy_test.txt",O_RDONLY) = 3
+1112 read(3,0x800830,127) = 23
+1112 close(3) = 0
+1112 newfstatat(-100,"/tmp/real_busy_test.txt",0x00000040008007a0,0) = 0
+1112 unlink("/tmp/real_busy_test.txt") = 0
+1112 mmap(NULL,1052672,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0) = 0x0000004000803000
+1112 mremap(274886307840,1052672,2101248,1,0,0) = 274887360512
+1112 munmap(0x0000004000904000,2101248) = 0
+1112 getpid() = 1112
+1112 write(1,0x4be310,319) = 319
+1112 exit_group(0)

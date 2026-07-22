@@ -13,10 +13,12 @@ class X86Instance : public Instance {
 public:
     friend class X86Core;
 
-    static X86Instance *Make();
+    // memory_base: guest->host bias for guest address virtualization
+    // (host addr = guest addr + bias); nullptr = identity mapping (default).
+    static X86Instance *Make(void* memory_base = nullptr);
     static void Destroy(X86Instance *instance);
 private:
-    explicit X86Instance();
+    explicit X86Instance(void* memory_base);
 
     struct Impl;
     std::unique_ptr<Impl> impl{};

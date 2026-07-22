@@ -44,7 +44,13 @@ public:
 
     Operand EmitOperand(ir::Operand &ir_op);
 
-    MemOperand EmitMemOperand(ir::Operand &ir_op, ir::ValueType type, bool pair = false);
+    // atomic: the operand feeds an instruction without register-offset
+    // addressing forms (Ldar/Stlr), so under memory_base the pt bias is
+    // folded into a scratch register instead of [base + pt].
+    MemOperand EmitMemOperand(ir::Operand &ir_op,
+                              ir::ValueType type,
+                              bool pair = false,
+                              bool atomic = false);
 
 #define INST(name, ...) void Emit##name(ir::Inst *inst);
 #include "runtime/ir/ir.inc"
@@ -103,6 +109,15 @@ private:
     // Materialize an IR operand into a scratch register
     Register MaterializeOperand(const Operand &operand, ir::ValueType type);
 
+    // Guest address virtualization (Config::memory_base): the pt register
+    // holds the guest->host bias for the whole guest run. These wrap a guest
+    // base register into [base + pt] (+ optional immediate). atomic=true
+    // folds the bias into a scratch register (for instructions without
+    // register-offset forms). Only called when use_memory_base is set;
+    // identity mode never pays for this.
+    MemOperand BiasMem(const Register &base, bool atomic = false);
+    MemOperand BiasMem(const Register &base, s64 imm, bool atomic = false);
+
     // Host C-ABI call helper (saves/restores caller-saved allocated GPRs)
     void EmitHostCall(const ir::Lambda &lambda,
                       const std::vector<ir::DataClass> &args,
@@ -143,6 +158,9 @@ private:
     ir::Flags flags_clear{};
     bool save_in_nzcv{true};
     bool nzcv_dirty{false};
+    // True when Config::memory_base / page_table is set: every guest memory
+    // access goes through the pt bias register (guest addr + pt = host addr).
+    bool use_memory_base{false};
 };
 
 }

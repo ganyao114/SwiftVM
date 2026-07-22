@@ -231,6 +231,15 @@ struct ThreadContext64 {
     };
     std::array<Ymm, 16> ymms;
     InterruptReason interrupt;
+    // 64-bit FS/GS segment bases (TLS). Set via arch_prctl by the syscall
+    // layer, following the Linux ABI:
+    //   ARCH_SET_FS = 0x1002  -> fs_base = arg2
+    //   ARCH_SET_GS = 0x1001  -> gs_base = arg2
+    //   ARCH_GET_FS = 0x1003  -> *(u64*)arg2 = fs_base
+    //   ARCH_GET_GS = 0x1004  -> *(u64*)arg2 = gs_base
+    // Segment overrides fs:/gs: compute addresses as base + offset.
+    u64 fs_base{};
+    u64 gs_base{};
 };
 
 }  // namespace swift::x86

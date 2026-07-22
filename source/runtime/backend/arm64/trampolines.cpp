@@ -50,6 +50,9 @@ void TrampolinesArm64::Build() {
     }
     if (config.page_table || config.memory_base) {
         gpr_regs.Mark(pt.GetCode());
+        // Reserved scratch for bias folding in generated code (see
+        // defines.h mem_scratch): never allocated to guest values.
+        gpr_regs.Mark(mem_scratch.GetCode());
     }
     if (config.has_local_operation) {
         gpr_regs.Mark(local.GetCode());
@@ -88,6 +91,13 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     Label go_interp;
     Label code_cache_miss;
     Label jump_guest;
+    // When guest addresses are virtualized (page_table / memory_base), x24 is
+    // the persistent pt register (holds the guest->host bias for the whole
+    // guest execution), so the dispatcher's scratch "current location" value
+    // must live elsewhere; ip6 (x9) is free in the dispatcher. In identity
+    // mode keep the historical x24 (loc) to leave generated code untouched.
+    const bool has_pt = config.page_table || config.memory_base;
+    const XRegister loc_reg = has_pt ? XRegister(ip6.GetCode()) : XRegister(loc.GetCode());
     __ Bind(&label_runtime_entry);
     BuildSaveHostCallee(assembler);
 
@@ -117,8 +127,8 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
 
     // align loc
     __ Bind(&code_dispatcher);
-    __ Ldr(loc, MemOperand(state, state_offset_current_loc));
-    __ Lsr(loc_index, loc, 2);
+    __ Ldr(loc_reg, MemOperand(state, state_offset_current_loc));
+    __ Lsr(loc_index, loc_reg, 2);
 
     // query l1 cache
     __ Ldr(l1_cache, MemOperand(state, state_offset_l1_code_cache));
@@ -134,7 +144,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Bind(&query_step_1);
     __ Ldr(l1_index, MemOperand(l1_start, 0x10, PostIndex));
     __ Cbz(l1_index, &query_step_2);
-    __ Sub(l1_index, l1_index, loc);
+    __ Sub(l1_index, l1_index, loc_reg);
     __ Cbnz(l1_index, &query_step_1);
     __ Ldr(forward, MemOperand(l1_start, -0x8));
     __ Cbnz(forward, &go_guest);
@@ -149,7 +159,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Bind(&query_step_3);
     __ Ldr(l2_index, MemOperand(l2_start, 0x10, PostIndex));
     __ Cbz(l2_index, &code_cache_miss);
-    __ Sub(l2_index, l2_index, loc);
+    __ Sub(l2_index, l2_index, loc_reg);
     __ Cbnz(l2_index, &query_step_3);
     __ Ldr(forward, MemOperand(l2_start, -0x8));
     __ Cbz(forward, &code_cache_miss);
@@ -158,7 +168,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Ldr(l2_index, MemOperand(l1_start, -0x8));
     __ Add(l2_index, l2_index, 1);
     __ Cbz(l2_index, &go_guest);  // check if l1 cache is full
-    __ Stp(loc, forward, MemOperand(l1_start, -0x10));
+    __ Stp(loc_reg, forward, MemOperand(l1_start, -0x10));
 
     __ Bind(&go_guest);
     if (config.enable_asm_interp) {

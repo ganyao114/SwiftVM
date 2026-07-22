@@ -234,8 +234,14 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size) {
             return {index, *buf};
         }
     }
+    // NOTE: the cache must be big enough for dlmalloc's bookkeeping plus a
+    // useful number of blocks. Sizing it from the *block* size (a few hundred
+    // bytes) produced sub-minimum mspace arenas that handed out out-of-bounds
+    // pointers and corrupted the JIT heap. Use a sane floor instead.
+    constexpr u32 kMinCodeCacheSize = 32_MB;
     auto ref = code_caches.try_emplace(
-            current_code_cache, address_space.GetConfig(), ModuleCodeCacheSize(size));
+            current_code_cache, address_space.GetConfig(),
+            std::max(ModuleCodeCacheSize(size), kMinCodeCacheSize));
     current_code_cache++;
     return {ref.first->first, *ref.first->second.AllocCode(size)};
 }

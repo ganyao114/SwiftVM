@@ -88,43 +88,48 @@ LoadedImage ElfLoader::Load(const std::string& path) {
     const VAddr span_end = GuestMemory::RoundHostPage(max_end);
     const u64 span = span_end - span_start;
 
-    // Reserve the whole span up front, RW and zero-filled. The host never
-    // executes guest code (the JIT reads it as data), so guest page
-    // permissions are irrelevant and a single RW reservation is enough.
-    VAddr load_bias = 0;
+    // Address modes:
+    //  - ET_EXEC: the guest runs at its *linked* addresses (guest load bias
+    //    0); the host cannot necessarily map there (macOS pagezero bans the
+    //    low 4GB), so the image is reserved at a host-chosen address and the
+    //    guest->host bias is installed in GuestMemory ("memory_base" mode).
+    //    Every guest memory access (JIT pt register, interpreter, syscall
+    //    layer, instruction fetch) applies that bias.
+    //  - ET_DYN (static PIE): self-relocating, no absolute-address problem,
+    //    so it stays on the proven identity path for now (see below).
+    VAddr guest_base = 0;
     if (elf_type == ELFIO::ET_EXEC) {
-        // ET_EXEC: prefer its linked addresses...
-        if (!memory->MapFixed(span_start, span)) {
-            // ...but the low 4GB is unmappable for arm64 macOS processes
-            // (dyld requires the host image above 4GB), so fall back to a
-            // load bias. Position-dependent guests only work where the
-            // fixed mapping succeeded (e.g. Linux hosts); PC-relative code
-            // (adr/adrp, e.g. static PIE-style asm) runs fine either way.
-            LOG_WARNING("Cannot map ET_EXEC image at its linked base {:#x}, falling back to load bias",
-                        span_start);
-            elf_type = ELFIO::ET_DYN;
+        if (!memory->MapImageAnywhere(span_start, span)) {
+            PANIC("Failed to reserve guest address span for image! file = {}", path);
         }
-    }
-    if (elf_type == ELFIO::ET_DYN) {
-        // Static PIE (or biased ET_EXEC): pick any free host range, the bias
-        // is the delta.
+        LOG_INFO("ET_EXEC loaded in memory_base (bias) mode: guest {:#x} host_bias {:#x}",
+                 span_start,
+                 memory->GetBias());
+    } else {
+        // Static PIE: self-relocating, so it has no absolute-address problem
+        // and stays on the proven identity path (guest addr == host addr,
+        // Config::memory_base = nullptr, zero-overhead fast path).
+        // TODO: move PIE onto the bias path as well once the x86 frontend's
+        // rep movs/stos host helpers (decoder.cc RepMovs/RepStos*) translate
+        // guest pointers — they currently dereference them directly, which
+        // only works identity mapped.
         auto base = memory->MapAnywhere(span);
         if (!base) {
             PANIC("Failed to reserve guest address span for image! file = {}", path);
         }
-        load_bias = base - span_start;
+        guest_base = base - span_start;
+        LOG_INFO("ET_DYN loaded identity-mapped: guest base {:#x}", guest_base);
     }
 
-    // Copy segment file contents into the reservation; the anonymous
-    // reservation already zero-fills .bss (p_memsz > p_filesz).
+    // Copy segment file contents into the reservation (guest addresses; the
+    // anonymous reservation already zero-fills .bss, p_memsz > p_filesz).
     for (const auto& seg : segments) {
         if (seg->get_type() != ELFIO::PT_LOAD) continue;
-        const VAddr dst = load_bias + seg->get_virtual_address();
+        const VAddr dst = guest_base + seg->get_virtual_address();
         if (seg->get_file_size() > 0) {
             memory->WriteBytes(dst, {reinterpret_cast<const u8*>(seg->get_data()), seg->get_file_size()});
         }
-        LOG_INFO("Loaded segment {:#x} -> guest {:#x} (file {:#x} / mem {:#x})",
-                 seg->get_virtual_address(),
+        LOG_INFO("Loaded segment guest {:#x} (file {:#x} / mem {:#x})",
                  dst,
                  seg->get_file_size(),
                  seg->get_memory_size());
@@ -139,7 +144,7 @@ LoadedImage ElfLoader::Load(const std::string& path) {
         if (seg->get_type() != ELFIO::PT_LOAD) continue;
         const u64 seg_off = seg->get_offset();
         if (phoff >= seg_off && phoff + phnum * phentsize <= seg_off + seg->get_file_size()) {
-            phdr_addr = load_bias + seg->get_virtual_address() + (phoff - seg_off);
+            phdr_addr = guest_base + seg->get_virtual_address() + (phoff - seg_off);
             break;
         }
     }
@@ -150,15 +155,16 @@ LoadedImage ElfLoader::Load(const std::string& path) {
     LoadedImage image{};
     image.path = path;
     image.isa = isa;
-    image.entry = load_bias + reader.get_entry();
-    image.load_bias = load_bias;
+    image.entry = guest_base + reader.get_entry();
+    image.load_bias = guest_base;
     image.phdr = phdr_addr;
     image.phentsize = phentsize;
     image.phnum = phnum;
-    image.brk_start = load_bias + span_end;
-    LOG_INFO("Guest image loaded: entry {:#x} bias {:#x} phdr {:#x} phnum {} brk {:#x}",
+    image.brk_start = guest_base + span_end;
+    LOG_INFO("Guest image loaded: entry {:#x} guest_bias {:#x} host_bias {:#x} phdr {:#x} phnum {} brk {:#x}",
              image.entry,
              image.load_bias,
+             memory->GetBias(),
              image.phdr,
              image.phnum,
              image.brk_start);
@@ -169,8 +175,9 @@ VAddr SetupInitialStack(GuestMemory& memory,
                         const LoadedImage& image,
                         const std::vector<std::string>& args,
                         const std::vector<std::string>& envs) {
-    // Prefer the classic high address; on hosts where the low 4GB is not
-    // mappable (arm64 macOS) take any host range instead.
+    // Prefer the classic high guest address; if the corresponding host range
+    // (guest + bias) is not mappable, take any host range and translate it
+    // back to a guest address.
     VAddr stack_top = kGuestStackTop;
     if (!memory.MapFixed(stack_top - kGuestStackSize, kGuestStackSize)) {
         stack_top = 0;
@@ -181,7 +188,7 @@ VAddr SetupInitialStack(GuestMemory& memory,
             PANIC("Failed to map guest main stack");
         }
         stack_top = base + kGuestStackSize;
-        LOG_WARNING("Guest stack placed at host-chosen {:#x}", stack_top);
+        LOG_WARNING("Guest stack placed at host-chosen guest {:#x}", stack_top);
     }
 
     VAddr sp = stack_top;
@@ -235,7 +242,7 @@ VAddr SetupInitialStack(GuestMemory& memory,
     const u64 word_count = 1 + arg_ptrs.size() + 1 + env_ptrs.size() + 1 + 2 * std::size(auxv) + 2;
     sp = RoundDown(sp - word_count * sizeof(u64), static_cast<u64>(16));
 
-    auto cursor = reinterpret_cast<u64*>(sp);
+    auto cursor = static_cast<u64*>(memory.ToHost(sp));
     auto push_word = [&](u64 value) { *cursor++ = value; };
 
     push_word(arg_ptrs.size());
