@@ -25,7 +25,11 @@ public:
     }
 
     auto GetFirstClear() {
-        return std::countr_one(mask);
+        constexpr auto bit_count = static_cast<int>(sizeof(T) * 8);
+        auto idx = std::countr_one(mask);
+        // All bits marked → no clear register; countr_one returns the
+        // bit-width, which is not a valid register index.
+        return idx < bit_count ? idx : -1;
     }
 
     auto GetMarkedCount() {
