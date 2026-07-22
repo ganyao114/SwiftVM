@@ -1,0 +1,5 @@
+1110 arch_prctl(4098,4216408,231,131072,131072,0) = 0
+1110 set_tid_address(0x405790) = 1110
+1110 ioctl(1,TIOCGWINSZ,0x0000004000800950) = -1 errno=25 (Inappropriate ioctl for device)
+1110 writev(1,0x40008008e0,0x2) = 19
+1110 exit_group(42)

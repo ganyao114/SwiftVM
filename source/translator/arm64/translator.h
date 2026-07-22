@@ -17,11 +17,13 @@ class Arm64Instance : public Instance {
 public:
     friend class Arm64Core;
 
-    static Arm64Instance *Make();
+    // memory_base: guest->host bias for guest address virtualization
+    // (host addr = guest addr + bias); nullptr = identity mapping (default).
+    static Arm64Instance *Make(void* memory_base = nullptr);
     static void Destroy(Arm64Instance *instance);
 
 private:
-    explicit Arm64Instance();
+    explicit Arm64Instance(void* memory_base);
 
     struct Impl;
     std::unique_ptr<Impl> impl{};

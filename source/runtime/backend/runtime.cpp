@@ -34,6 +34,11 @@ struct Runtime::Impl final {
         // address-space wide translate table that PushCodeCache writes to.
         state->l1_code_cache = l1_code_cache.Data();
         state->l2_code_cache = address_space->GetCodeCacheTable().Data();
+        // Guest address virtualization: Config::memory_base carries the
+        // guest->host bias (host = guest + bias); the JIT keeps it in the
+        // reserved pt register and the interpreter reads it from here.
+        // nullptr (identity) keeps the zero-overhead fast path.
+        state->pt = address_space->GetConfig().memory_base;
         jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
     }
 

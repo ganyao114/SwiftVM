@@ -59,15 +59,23 @@ using namespace swift::x86;
         {offsetof(ThreadContext64, xmm15), 16, 31, true},
 };
 
+// Instruction-fetch memory interface for the x86 decoder. With guest
+// address virtualization (memory_base), guest address G is backed by host
+// memory at G + bias; the loader installs the bias via SetBias (0 =
+// identity, the default for tests / non-loader embedders).
 class MemoryImpl : public runtime::MemoryInterface {
 public:
+    void SetBias(u64 b) { bias = b; }
     bool Read(void* dest, size_t addr, size_t size) override {
-        return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        return std::memcpy(dest, reinterpret_cast<const void*>(addr + bias), size);
     }
     bool Write(void* src, size_t addr, size_t size) override {
-        return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        return std::memcpy(reinterpret_cast<void*>(addr + bias), src, size);
     }
-    void* GetPointer(void* src) override { return src; }
+    void* GetPointer(void* src) override {
+        return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(src) + bias);
+    }
+    u64 bias{};
 };
 
 static MemoryImpl memory_impl{};
@@ -263,8 +271,39 @@ static constexpr u32 kScratchUniformSize = 16;
     block->ReIdInstr();
 }
 
+// WORKAROUND (runtime contract bug, ir/instr.cpp Inst::HasSideEffects +
+// ir/opts/deadcode_elimination_pass.cpp): a CallLambda whose U64 result has
+// no uses is classified as side-effect free, so DeadCodeRemove erases it —
+// but the frontend's void-ish host helpers (x86 decoder RepMovs, decoder.cc)
+// perform guest memory writes inside the host call. Observed: musl memcpy's
+// `rep movsq` silently dropped under JIT (the IR interpreter has no DCE and
+// is unaffected), leaving the destination unwritten. Pin every unused
+// CallLambda with a dummy StoreUniform to the scratch uniform slot (same
+// trick as MaterializeTerminalCondUse above) so the call survives DCE. The
+// proper fix belongs to the runtime (treat CallLambda as side-effecting) or
+// the frontend (return a value that is consumed, like RepStos does).
+static void PinUnusedCallLambdas(ir::Block* block) {
+    bool inserted = false;
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() == ir::OpCode::CallLambda && inst.GetUses() == 0) {
+            ir::Uniform scratch{kScratchUniformOffset, ir::ValueType::U64};
+            block->AppendInst(ir::OpCode::StoreUniform, scratch, ir::Value{&inst});
+            inserted = true;
+        }
+    }
+    if (inserted) {
+        block->ReIdInstr();
+    }
+}
+
 struct X86Instance::Impl final {
-    Impl() {
+    // memory_base: guest->host bias (host addr = guest addr + bias), installed
+    // by the linux loader; nullptr keeps the identity-mapped fast path.
+    explicit Impl(void* memory_base) {
+        memory_impl.SetBias(reinterpret_cast<uintptr_t>(memory_base));
+        // Host helpers in the frontend (rep movs/stos) dereference raw guest
+        // pointers; they read the same bias from the frontend-side global.
+        x86::SetGuestMemBias(reinterpret_cast<uintptr_t>(memory_base));
         // SVM_ENABLE_JIT=0 forces the IR interpreter path (same switch as the
         // arm64 core; useful for cross-checking JIT results).
         const char* jit_env = std::getenv("SVM_ENABLE_JIT");
@@ -297,7 +336,7 @@ struct X86Instance::Impl final {
                 .arm64_features = Arm64Features::None,
                 .stack_alignment = 16,
                 .page_table = nullptr,
-                .memory_base = nullptr,
+                .memory_base = memory_base,
                 .memory = &memory_impl,
         };
         address_space = std::make_unique<backend::AddressSpace>(config);
@@ -345,6 +384,7 @@ struct X86Instance::Impl final {
                     //  - RegisterAllocPass accounts for terminal value uses,
                     //    so MaterializeTerminalCondUse is retired.
                     FixupSingleSidedOperands(x.get());
+                    PinUnusedCallLambdas(x.get());
                     if (std::getenv("SVM_DUMP_IR")) {
                         fmt::print("--- block {:#x} ---\n{}\n", pc, x->ToString());
                     }
@@ -450,9 +490,9 @@ struct X86Core::Impl final {
     u64 svc_num{};
 };
 
-X86Instance::X86Instance() { impl = std::make_unique<Impl>(); }
+X86Instance::X86Instance(void* memory_base) { impl = std::make_unique<Impl>(memory_base); }
 
-X86Instance* X86Instance::Make() { return new X86Instance(); }
+X86Instance* X86Instance::Make(void* memory_base) { return new X86Instance(memory_base); }
 
 void X86Instance::Destroy(X86Instance* instance) {
     delete instance;

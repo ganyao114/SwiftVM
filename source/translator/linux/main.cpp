@@ -28,7 +28,8 @@ using namespace swift;
 static int RunArm64Guest(const linux::LoadedImage& image,
                          VAddr guest_sp,
                          linux::GuestMemory& memory) {
-    auto* instance = translator::arm64::Arm64Instance::Make();
+    auto* instance = translator::arm64::Arm64Instance::Make(
+            reinterpret_cast<void*>(memory.GetBias()));
     auto* core = translator::arm64::Arm64Core::Make(instance);
 
     auto& ctx = core->GetContext();
@@ -36,7 +37,7 @@ static int RunArm64Guest(const linux::LoadedImage& image,
     ctx.pc = image.entry;
     ctx.sp = guest_sp;
 
-    linux::SyscallHandler syscalls{&memory, image.brk_start, linux::GuestISA::kArm64};
+    linux::SyscallHandler syscalls{&memory, image.brk_start, linux::GuestISA::kArm64, image.path};
     int exit_code = 0;
     for (;;) {
         auto reason = core->Run();
@@ -71,7 +72,8 @@ static int RunArm64Guest(const linux::LoadedImage& image,
 static int RunX86Guest(const linux::LoadedImage& image,
                        VAddr guest_sp,
                        linux::GuestMemory& memory) {
-    auto* instance = translator::x86::X86Instance::Make();
+    auto* instance = translator::x86::X86Instance::Make(
+            reinterpret_cast<void*>(memory.GetBias()));
     auto* core = translator::x86::X86Core::Make(instance);
 
     auto& ctx = core->GetContext();
@@ -82,7 +84,9 @@ static int RunX86Guest(const linux::LoadedImage& image,
     // plus IF (bit 9).
     ctx.ef.flags = 0x202;
 
-    linux::SyscallHandler syscalls{&memory, image.brk_start, linux::GuestISA::kX86_64};
+    linux::SyscallHandler syscalls{&memory, image.brk_start, linux::GuestISA::kX86_64, image.path};
+    // arch_prctl writes fs_base/gs_base straight into the frontend context.
+    syscalls.SetX86Context(&ctx);
     int exit_code = 0;
     for (;;) {
         auto reason = core->Run();
@@ -133,7 +137,8 @@ int main(int argc, char** argv) {
     }
     std::vector<std::string> guest_envs = {"PATH=/usr/bin:/bin", "HOME=/root"};
 
-    // 1. Guest address space (identity mapped into the host process).
+    // 1. Guest address space (guest addresses virtualized through a
+    //    guest->host bias; see guest_memory.h).
     linux::GuestMemory memory;
 
     // 2. Load the guest ELF.
