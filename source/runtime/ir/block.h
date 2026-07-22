@@ -84,7 +84,9 @@ public:
     Inst* AppendInst(OpCode op, const Args&... args) {
         auto inst = new Inst(op);
         inst->SetArgs(std::forward<const Args&>(args)...);
-        inst->SetReturn(RetType::TYPE);
+        if constexpr (RetType::TYPE != ValueType::VOID) {
+            inst->SetReturn(RetType::TYPE);
+        }
         AppendInst(inst);
         return inst;
     }
@@ -121,7 +123,9 @@ public:
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
     ret name(const Args&... args) {                                                                \
         auto inst = AppendInst(OpCode::name, std::forward<const Args&>(args)...);                  \
-        inst->SetReturn(RetType::TYPE);                                                            \
+        if constexpr (RetType::TYPE != ValueType::VOID) {                                          \
+            inst->SetReturn(RetType::TYPE);                                                        \
+        }                                                                                          \
         return ret{inst};                                                                          \
     }
 #include "ir.inc"
@@ -148,7 +152,7 @@ private:
     RwSpinLock block_lock{};
     u16 max_instr_id{};
     u16 v_stack{};
-    backend::JitCache jit_cache;
+    backend::JitCache jit_cache{};
 };
 
 using BlockList = IntrusiveList<&Block::list_node>;

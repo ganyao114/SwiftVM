@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include "base/common_funcs.h"
 #include "jit_context.h"
 #include "runtime/backend/code_cache.h"
@@ -74,8 +75,39 @@ private:
 
     void Translate(ir::Inst *inst);
 
+    // Terminals
+    void EmitTerminal(const ir::Terminal &terminal);
+
+    // Labels used by Goto / NotGoto / BindLabel
+    Label *GetLocalLabel(ir::Inst *inst);
+
     // Flags
     void SaveHostFlags(HostFlags host, ir::Flags guest);
+
+    static HostFlags GuestNZCVToHost(ir::Flags guest);
+
+    static Condition MapCond(ir::Cond cond);
+
+    // Merge pending guest flags kept in host NZCV into the flags register
+    void MergeNZCV();
+
+    // Restore host NZCV from the flags register (clobbers ip)
+    void LoadNZCVFromFlags();
+
+    // Merge host N/Z into the flags register and clear stale C/V (x86 logical ops)
+    void MergeLogicalFlagsNZ();
+
+    // Compute N/Z from a result value and merge them (for ops without a flag setting form)
+    void SaveLogicalResultFlags(Register &result, ir::ValueType type, const PseudoFlags &pseudo);
+
+    // Materialize an IR operand into a scratch register
+    Register MaterializeOperand(const Operand &operand, ir::ValueType type);
+
+    // Host C-ABI call helper (saves/restores caller-saved allocated GPRs)
+    void EmitHostCall(const ir::Lambda &lambda,
+                      const std::vector<ir::DataClass> &args,
+                      bool has_result,
+                      const Register &result);
 
     void ClearFlags(ir::Flags flags);
 
@@ -89,11 +121,11 @@ private:
 
     void SaveAuxiliaryCarry(Register &left, Register &result);
 
-    void GetParityFlag(Register &result);
+    void GetParityFlag(const Register &result);
 
-    void TestParityFlag(Register &result);
+    void TestParityFlag(const Register &result);
 
-    void TestAuxiliaryCarry(Register &result);
+    void TestAuxiliaryCarry(const Register &result);
 
     [[nodiscard]] PseudoFlags GetPseudoFlags(ir::Inst *inst);
 
@@ -106,6 +138,7 @@ private:
     ir::Block *cur_block{};
     ir::Inst *cur_instr{};
     BitVector disable_instructions{};
+    std::map<ir::Inst *, Label> local_labels{};
     ir::Flags flags_set{};
     ir::Flags flags_clear{};
     bool save_in_nzcv{true};

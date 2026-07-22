@@ -6,10 +6,11 @@ add_library(swift_translator STATIC
         arm64/translator.h
         x86/cpu.h
         x86/translator.cpp
-        x86/translator.h)
+        x86/translator.h
+        )
 
-target_link_libraries(swift_translator PUBLIC swift::base swift::runtime fronted_x86)
+target_link_libraries(swift_translator PUBLIC swift::base swift::runtime fronted_arm64 fronted_x86)
+target_link_libraries(swift_translator PRIVATE distorm)
+target_include_directories(swift_translator PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/externals/distorm)
 
-if (UNIX AND NOT APPLE)
-    add_subdirectory(linux)
-endif ()
+add_subdirectory(linux)

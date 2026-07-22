@@ -40,6 +40,10 @@ public:
 
     [[nodiscard]] void* GetCodeCache(ir::Location location);
 
+    // The address-space wide (L2) translate table backing PushCodeCache /
+    // GetCodeCache; the JIT dispatcher reads it directly from generated code.
+    [[nodiscard]] TranslateTable& GetCodeCacheTable() { return code_cache; }
+
     [[nodiscard]] Trampolines &GetTrampolines();
     [[nodiscard]] Trampolines &GetTrampolines() const;
 

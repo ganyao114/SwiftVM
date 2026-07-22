@@ -29,12 +29,12 @@ public:
 #define INST(name, ret, ...)                                                                       \
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
     ret name(const Args&... args) {                                                                \
-        return ret{AppendInst(OpCode::name, std::forward<const Args&>(args)...)};                  \
+        return ret{AppendInst<RetType>(OpCode::name, std::forward<const Args&>(args)...)};   \
     }
 #include "runtime/ir/ir.inc"
 #undef INST
 
-    template <typename Lambda, typename... Args> Value CallHost(Lambda l, const Args&... args) {
+    template <typename LambdaT, typename... Args> Value CallHost(LambdaT l, const Args&... args) {
         constexpr static auto MAX_ARG = 3;
         auto arg_count = sizeof...(args);
         ASSERT(arg_count <= MAX_ARG);

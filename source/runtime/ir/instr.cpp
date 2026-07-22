@@ -84,6 +84,7 @@ void Inst::SetArg(int index, const Operand::Op& arg) {
 }
 
 void Inst::SetArg(int index, const Operand& arg) {
+    ASSERT(index + 2 < max_args);
     DestroyArg(index);
     arguments[index++] = arg;
     DestroyArg(index);
@@ -306,7 +307,7 @@ void Inst::Validate(Inst* inst) {
         auto& ir_info = GetIRMetaInfo(inst->op_code);
         int inner_arg_index{};
         int arg_index{};
-        while (inner_arg_index < Inst::max_args) {
+        while (inner_arg_index < Inst::max_args && arg_index < ir_info.arg_types.size()) {
             auto& inst_arg = inst->ArgAt(inner_arg_index);
             auto arg_type = ir_info.arg_types[arg_index];
             ASSERT_MSG(inst_arg.GetType() == arg_type, "{} has invalid arg!", inst->op_code);

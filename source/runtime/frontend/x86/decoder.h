@@ -145,14 +145,14 @@ constexpr X86RegInfo x86_regs_table[] = {
         {_RegisterType::R_CH, X86RegInfo::Rcx, ir::ValueType::U8, true},
         {_RegisterType::R_DH, X86RegInfo::Rdx, ir::ValueType::U8, true},
         {_RegisterType::R_BH, X86RegInfo::Rbx, ir::ValueType::U8, true},
-        {_RegisterType::R_R8B, X86RegInfo::R8, ir::ValueType::U8, true},
-        {_RegisterType::R_R9B, X86RegInfo::R9, ir::ValueType::U8, true},
-        {_RegisterType::R_R10B, X86RegInfo::R10, ir::ValueType::U8, true},
-        {_RegisterType::R_R11B, X86RegInfo::R11, ir::ValueType::U8, true},
-        {_RegisterType::R_R12B, X86RegInfo::R12, ir::ValueType::U8, true},
-        {_RegisterType::R_R13B, X86RegInfo::R13, ir::ValueType::U8, true},
-        {_RegisterType::R_R14B, X86RegInfo::R14, ir::ValueType::U8, true},
-        {_RegisterType::R_R15B, X86RegInfo::R15, ir::ValueType::U8, true},
+        {_RegisterType::R_R8B, X86RegInfo::R8, ir::ValueType::U8, false},
+        {_RegisterType::R_R9B, X86RegInfo::R9, ir::ValueType::U8, false},
+        {_RegisterType::R_R10B, X86RegInfo::R10, ir::ValueType::U8, false},
+        {_RegisterType::R_R11B, X86RegInfo::R11, ir::ValueType::U8, false},
+        {_RegisterType::R_R12B, X86RegInfo::R12, ir::ValueType::U8, false},
+        {_RegisterType::R_R13B, X86RegInfo::R13, ir::ValueType::U8, false},
+        {_RegisterType::R_R14B, X86RegInfo::R14, ir::ValueType::U8, false},
+        {_RegisterType::R_R15B, X86RegInfo::R15, ir::ValueType::U8, false},
         {_RegisterType::R_SPL, X86RegInfo::Rsp, ir::ValueType::U8, false},
         {_RegisterType::R_BPL, X86RegInfo::Rbp, ir::ValueType::U8, false},
         {_RegisterType::R_SIL, X86RegInfo::Rsi, ir::ValueType::U8, false},
@@ -303,9 +303,9 @@ private:
 
     Operand GetAddress(_DInst& insn, _Operand& operand);
 
-    ir::Value Pop(_RegisterType reg, ir::ValueType size);
+    ir::Value Pop(ir::ValueType size);
 
-    void Push(ir::Value value);
+    void Push(ir::Value value, ir::ValueType size);
 
     ir::BOOL CheckCond(Cond cond);
 
@@ -316,6 +316,10 @@ private:
     void DecodeMov(_DInst& insn);
 
     void DecodeMovs(_DInst& insn);
+
+    void DecodeMovzx(_DInst& insn);
+
+    void DecodeMovsx(_DInst& insn);
 
     void DecodeAddSub(_DInst& insn, bool sub, bool save_res = true, bool exchange = false);
 
@@ -331,7 +335,19 @@ private:
 
     void DecodeLea(_DInst& insn);
 
-    void DecodeMulDiv(_DInst& insn, bool div, bool sign = false);
+    void DecodeMulOneOperand(_DInst& insn, bool sign);
+
+    void DecodeIMul(_DInst& insn);
+
+    void DecodeDiv(_DInst& insn, bool sign);
+
+    void DecodeNeg(_DInst& insn);
+
+    void DecodeNot(_DInst& insn);
+
+    void DecodeXchg(_DInst& insn);
+
+    void DecodeSetCC(_DInst& insn, Cond cond);
 
     void DecodeCondMov(_DInst& insn, Cond cond);
 
@@ -349,9 +365,43 @@ private:
 
     void DecodeShlShr(_DInst& insn, bool shr);
 
+    void DecodeSar(_DInst& insn);
+
+    // kind: 0 = shl, 1 = shr, 2 = sar
+    void DecodeShift(_DInst& insn, int kind);
+
+    enum class ArithOp { Add, Adc, Sub, Sbb };
+
+    // ARM flag-setting arithmetic always reports C as NOT-borrow, so after a
+    // sub-family op the stored carry has the inverse of the x86 CF semantics.
+    // The backend offers no way to rewrite a single flag bit, so the decoder
+    // tracks the polarity of the stored carry and compensates at CF consumers
+    // (jcc / setcc / cmov / adc / sbb / lahf). Valid within a translation
+    // block; resets to Unknown at block entry (best effort across blocks, see
+    // report).
+    enum class CarryPolarity { Unknown, Direct, Inverted };
+
+    // left (op) right at the given x86 width with flags per flag_mask. For
+    // widths < 32 (and for 32 bit carry ops with mismatched polarity) the host
+    // flag computation is only exact at wider widths, so the NZCV-defining op
+    // runs in a wider container on operands shifted left; PF/AF and the result
+    // value come from a second, unshifted add whose host flags provably never
+    // pollute the sticky flags register (its N/C/V are always 0 and its Z is
+    // only set when the true Z is set).
+    ir::Value ArithWithFlags(ir::Value left, ir::Value right, ArithOp op, u32 width,
+                             ir::Flags flag_mask);
+
+    // Current CF as a 0/1 value, honoring the tracked carry polarity.
+    ir::Value CarryValue();
+
     void DecodeCmp(_DInst& insn);
 
     void DecodeAndNot(_DInst& insn);
+
+    void SaveLogicFlags(ir::Value result);
+
+    // Extend a value to a (wider) type, signed or unsigned.
+    ir::Value Extend(ir::Value value, ir::ValueType type, bool sign);
 
     VAddr start;
     VAddr pc;
@@ -360,6 +410,7 @@ private:
     bool end_decode{false};
     bool is_64bit{false};
     VAddr addr_mask{UINT64_MAX};
+    CarryPolarity carry_{CarryPolarity::Unknown};
 };
 
 void FromHost(backend::State *state, ThreadContext64 *ctx);

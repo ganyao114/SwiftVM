@@ -20,6 +20,14 @@ u64 Imm::Get() const {
             return imm_u32;
         case ValueType::U64:
             return imm_u64;
+        case ValueType::S8:
+            return static_cast<u8>(imm_s8);
+        case ValueType::S16:
+            return static_cast<u16>(imm_s16);
+        case ValueType::S32:
+            return static_cast<u32>(imm_s32);
+        case ValueType::S64:
+            return static_cast<u64>(imm_s64);
         default:
             return 0;
     }
@@ -97,6 +105,9 @@ ArgClass DataClass::ToArgClass() const {
         return ArgClass{value};
     } else if (type == ArgType::Imm) {
         return ArgClass{imm};
+    } else if (type == ArgType::Void) {
+        // Single-sided Operand: the empty right side maps to a Void arg.
+        return ArgClass{};
     } else {
         PANIC();
     }
@@ -168,7 +179,7 @@ u32 Uniform::GetOffset() const { return offset; }
 
 ValueType Uniform::GetType() const { return type; }
 
-bool Uniform::operator==(const Uniform& rhs) const { return offset == rhs.offset; }
+bool Uniform::operator==(const Uniform& rhs) const { return offset == rhs.offset && type == rhs.type; }
 
 bool Uniform::operator!=(const Uniform& rhs) const { return !(rhs == *this); }
 

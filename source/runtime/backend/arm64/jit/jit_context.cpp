@@ -13,8 +13,11 @@ namespace swift::runtime::backend::arm64 {
 JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_alloc)
         : module(module), reg_alloc(reg_alloc) {}
 
-CPUReg JitContext::Get(const ir::Value& value) {
-    if (reg_alloc.ValueType(value) == RegAlloc::GPR) {
+bool JitContext::HasAllocation(const ir::Value& value) {
+    return reg_alloc.ValueType(value) != RegAlloc::NONE;
+}
+
+CPUReg JitContext::Get(const ir::Value& value) {    if (reg_alloc.ValueType(value) == RegAlloc::GPR) {
         return X(value);
     } else if (reg_alloc.ValueType(value) == RegAlloc::FPR) {
         return V(value);

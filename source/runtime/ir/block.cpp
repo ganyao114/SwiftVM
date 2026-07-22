@@ -24,15 +24,15 @@ void Block::AppendInst(Inst* inst) {
 }
 
 void Block::InsertBefore(Inst* inst, Inst* before) {
-    if (!inst_list.empty() && inst_list.iterator_to(*before) != inst_list.begin()) {
-        inst_list.insert(std::prev(inst_list.iterator_to(*before)), *inst);
+    if (!inst_list.empty()) {
+        inst_list.insert(inst_list.iterator_to(*before), *inst);
     } else {
         inst_list.push_front(*inst);
     }
 }
 
 void Block::InsertAfter(Inst* inst, Inst* after) {
-    inst_list.insert(inst_list.iterator_to(*after), *inst);
+    inst_list.insert(std::next(inst_list.iterator_to(*after)), *inst);
 }
 
 void Block::RemoveInst(Inst* inst) { inst_list.erase(*inst); }

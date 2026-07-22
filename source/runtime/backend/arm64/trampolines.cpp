@@ -30,41 +30,45 @@ void TrampolinesArm64::Build() {
             (__ GetBuffer()->GetStartAddress<ptrdiff_t>() - label_return_host.GetLocation()));
 
     // GPR registers can use
-    gpr_regs.Reset(UINT32_MAX);
+    // Mask convention (shared with the linear-scan pass and JitContext):
+    // bit set = register unavailable (reserved here, or live during allocation),
+    // bit clear = free to allocate. Start with everything free, then mark the
+    // registers reserved for the runtime/trampoline ABI.
+    gpr_regs.Reset(0);
 
 #ifdef __APPLE__
-    // X18 is tmp registers
-    gpr_regs.Clear(18);
+    // X18 is reserved by the platform ABI
+    gpr_regs.Mark(18);
 #endif
 
-    gpr_regs.Clear(x31.GetCode());  // sp
-    gpr_regs.Clear(fp.GetCode());   // fp
-    gpr_regs.Clear(state.GetCode());
-    gpr_regs.Clear(cache.GetCode());
+    gpr_regs.Mark(x31.GetCode());  // sp
+    gpr_regs.Mark(fp.GetCode());   // fp
+    gpr_regs.Mark(state.GetCode());
+    gpr_regs.Mark(cache.GetCode());
     if (True(config.global_opts & Optimizations::ReturnStackBuffer)) {
-        gpr_regs.Clear(rsb_ptr.GetCode());
+        gpr_regs.Mark(rsb_ptr.GetCode());
     }
     if (config.page_table || config.memory_base) {
-        gpr_regs.Clear(pt.GetCode());
+        gpr_regs.Mark(pt.GetCode());
     }
     if (config.has_local_operation) {
-        gpr_regs.Clear(local.GetCode());
+        gpr_regs.Mark(local.GetCode());
     }
-    gpr_regs.Clear(flags.GetCode());
-    gpr_regs.Clear(ip.GetCode());
+    gpr_regs.Mark(flags.GetCode());
+    gpr_regs.Mark(ip.GetCode());
 
     // FPR registers can use
-    fpr_regs.Reset(UINT32_MAX);
-    fpr_regs.Clear(ipv0.GetCode());
-    fpr_regs.Clear(ipv1.GetCode());
-    fpr_regs.Clear(ipv2.GetCode());
-    fpr_regs.Clear(ipv3.GetCode());
+    fpr_regs.Reset(0);
+    fpr_regs.Mark(ipv0.GetCode());
+    fpr_regs.Mark(ipv1.GetCode());
+    fpr_regs.Mark(ipv2.GetCode());
+    fpr_regs.Mark(ipv3.GetCode());
 
     for (auto& desc : config.buffers_static_alloc) {
         if (desc.is_float) {
-            fpr_regs.Clear(desc.reg);
+            fpr_regs.Mark(desc.reg);
         } else {
-            gpr_regs.Clear(desc.reg);
+            gpr_regs.Mark(desc.reg);
         }
     }
 }
@@ -104,9 +108,13 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     if (True(config.global_opts & Optimizations::ReturnStackBuffer)) {
         __ Ldr(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
     }
+    // Restore statically-allocated guest registers unconditionally: JitRun
+    // always enters with a non-null forward, and the block-to-block path below
+    // never restores them, so skipping this on the fast path would run blocks
+    // with stale host values in statically-mapped guest registers.
+    BuildRestoreStaticUniform(assembler);
     __ Cbnz(forward, &go_guest);
 
-    BuildRestoreStaticUniform(assembler);
     // align loc
     __ Bind(&code_dispatcher);
     __ Ldr(loc, MemOperand(state, state_offset_current_loc));
@@ -116,7 +124,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Ldr(l1_cache, MemOperand(state, state_offset_l1_code_cache));
     __ Eor(l1_index, loc_index, Operand(loc_index, LSR, L1_CODE_CACHE_BITS));
     __ And(l1_index, l1_index, L1_CODE_CACHE_HASH);
-    __ And(l1_start, l1_cache, Operand(l1_index, LSL, L1_CODE_CACHE_HASH));
+    __ Add(l1_start, l1_cache, Operand(l1_index, LSL, 4));
 
     Label query_step_1;
     Label query_step_2;

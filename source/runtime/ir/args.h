@@ -518,6 +518,9 @@ public:
             return value.value;
         } else if (value.type == ArgType::Imm) {
             return value.imm;
+        } else if (value.type == ArgType::Void) {
+            // Single-sided Operand: the empty side maps back to a null DataClass.
+            return {};
         } else {
             PANIC("Invalid arg type!");
         }
