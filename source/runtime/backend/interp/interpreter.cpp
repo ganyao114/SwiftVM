@@ -28,17 +28,16 @@ namespace {
 //    so JITed code can merge them with Mrs/Msr (GuestNZCVToHost);
 //  - bits 7..0 hold the low byte of the last result whose SaveFlags pseudo
 //    requested Parity (x86 PF is derived from it on test);
-//  - bits 14..11 / 18..15 hold the low nibbles of the left operand / result
-//    of the last add/sub whose SaveFlags requested AuxiliaryCarry (x86 AF).
+//  - bit 26 holds x86 AF exactly (carry/borrow into bit 4), matching the JIT's
+//    HostFlagsBit::AuxiliaryCarry single-bit representation.
 // See JitTranslator::SaveParity / SaveAuxiliaryCarry / HostFlagsBit.
 // ---------------------------------------------------------------------------
 constexpr u32 kHostFlagN = 31;
 constexpr u32 kHostFlagZ = 30;
 constexpr u32 kHostFlagC = 29;
 constexpr u32 kHostFlagV = 28;
+constexpr u32 kHostAF = 26;
 constexpr u32 kHostParityByte = 0;   // width 8
-constexpr u32 kHostAFLeft = 11;      // width 4
-constexpr u32 kHostAFRight = 15;     // width 4
 
 u32 TypeBits(ValueType type) { return ir::GetValueSizeByte(type) * 8; }
 
@@ -282,11 +281,11 @@ void Interpreter::SaveGuestFlags(InterpStack& stack, ir::Inst* def, ir::Flags f)
             case ir::OpCode::Adc:
             case ir::OpCode::Sub:
             case ir::OpCode::Sbb: {
-                // JIT SaveAuxiliaryCarry: snapshot the low nibble of the left
-                // operand and of the result; AF is approximated on test.
+                // JIT SaveAuxiliaryCarry: AF = bit4(left) ^ bit4(right) ^
+                // bit4(result) (carry/borrow into bit 4), stored as one bit.
                 const u64 l = ReadScalar(stack, def->GetArg<ir::Value>(0));
-                fl = (fl & ~(u64(0xFF) << kHostAFLeft)) |
-                     ((l & 0xF) << kHostAFLeft) | ((result & 0xF) << kHostAFRight);
+                const u64 r = EvalOperand(stack, def->GetArg<ir::Operand>(1));
+                set(kHostAF, ((l ^ r ^ result) >> 4) & 1);
                 break;
             }
             default:
@@ -331,11 +330,8 @@ bool Interpreter::TestGuestFlags(ir::Flags f) {
         first = false;
     }
     if (True(f & ir::Flags::AuxiliaryCarry)) {
-        // Mirrors JitTranslator::TestAuxiliaryCarry bit-for-bit (including
-        // its approximation of AF from the saved nibbles).
-        u64 v = (fl >> kHostAFLeft) & 0xFF;
-        v ^= v >> 4;
-        const bool af = (v >> 4) & 1;
+        // Mirrors JitTranslator::TestAuxiliaryCarry: AF is a single bit.
+        const bool af = (fl >> kHostAF) & 1;
         result = first ? af : (result && af);
         first = false;
     }
@@ -363,7 +359,7 @@ void Interpreter::ClearGuestFlags(ir::Flags f) {
         fl = (fl & ~(u64(0xFF) << kHostParityByte)) | (u64(1) << kHostParityByte);
     }
     if (True(f & ir::Flags::AuxiliaryCarry)) {
-        fl &= ~(u64(0xFF) << kHostAFLeft);
+        fl &= ~(u64(1) << kHostAF);
     }
 }
 
@@ -927,6 +923,19 @@ void Interpreter::RunTestNotFlags(ir::Inst* inst, InterpStack& stack) {
 
 void Interpreter::RunClearFlags(ir::Inst* inst, InterpStack& stack) {
     ClearGuestFlags(inst->GetArg<ir::Flags>(0));
+}
+
+void Interpreter::RunSetCarry(ir::Inst* inst, InterpStack& stack) {
+    // Mirrors JitTranslator::EmitSetCarry: set guest CF from a computed bit.
+    const bool on = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & 1;
+    u64& fl = state.host_cpu_flags;
+    fl = on ? (fl | (u64(1) << kHostFlagC)) : (fl & ~(u64(1) << kHostFlagC));
+}
+
+void Interpreter::RunSetOverflow(ir::Inst* inst, InterpStack& stack) {
+    const bool on = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & 1;
+    u64& fl = state.host_cpu_flags;
+    fl = on ? (fl | (u64(1) << kHostFlagV)) : (fl & ~(u64(1) << kHostFlagV));
 }
 
 void Interpreter::RunLslImm(ir::Inst* inst, InterpStack& stack) {

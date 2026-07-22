@@ -2498,6 +2498,7 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
     ir::Value shifted = width < 32 ? __ ZeroExtend32(left) : left;
 
     ir::Value result;
+    ir::Value sar_ext;  // sign-extended operand for SAR (reused for its CF)
     if (kind == 0) {
         result = __ LslValue(shifted, count);
     } else if (kind == 1) {
@@ -2505,9 +2506,9 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
     } else {
         // Narrow SAR must sign extend to 32 bits first: the backend shift is a
         // 32/64 bit op, an unsigned narrow value would shift in zeros.
-        auto ext = width < 32 ? __ SignExtend(left).SetType(ir::ValueType::S32)
-                              : left.SetType(GetSignedContainer(width));
-        result = __ AsrValue(ext, count);
+        sar_ext = width < 32 ? __ SignExtend(left).SetType(ir::ValueType::S32)
+                             : left.SetType(GetSignedContainer(width));
+        result = __ AsrValue(sar_ext, count);
     }
     result = result.SetCastType(GetSize(width));
     // For narrow shifts the flag-defining op must be typed at the guest
@@ -2519,15 +2520,52 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
 
     // A zero shift count leaves the flags untouched; skip the flag update.
     auto skip_flags = __ NotGoto(__ TestNotZero(count));
-    // SF / ZF / PF from the result via a flag-setting logical op. CF / OF are
-    // cleared as an approximation (CF should be the last bit shifted out and OF
-    // is only defined for count == 1; the backend cannot express that partial
-    // update, see report).
+    // SF / ZF / PF from the result via a flag-setting logical op (which also
+    // clears C / V / AF). CF and OF are then set explicitly via SetCarry /
+    // SetOverflow, which write the flag bits directly without disturbing N/Z.
     auto flagged = __ Or(flag_value, ir::Operand{ir::Imm(u64(0))});
     __ SaveFlags(flagged, ir::Flags::Negate | ir::Flags::Zero | ir::Flags::Parity);
-    StorePolarity(false);  // skipped together with the flag update when count == 0
+
+    // CF = last bit shifted out (count >= 1 in this region):
+    //   SHL: bit (width-1) of (orig << (count-1)) == bit (width-count) of orig.
+    //   SHR/SAR: bit 0 of (orig >> (count-1))     == bit (count-1) of orig.
+    auto count_m1 = __ Sub(count, ir::Operand{ir::Imm(u64(1))});
+    ir::Value cf;
+    if (kind == 0) {
+        auto shl = __ LslValue(shifted, count_m1);
+        cf = __ And(__ LsrImm(shl, ir::Imm(u64(width - 1))), ir::Operand{ir::Imm(u64(1))});
+    } else if (kind == 1) {
+        // SHR: bits beyond the width shift out as 0, so a logical shift suffices.
+        cf = __ And(__ LsrValue(shifted, count_m1), ir::Operand{ir::Imm(u64(1))});
+    } else {
+        // SAR: counts beyond the width shift out the sign bit, so use an
+        // arithmetic shift of the sign-extended operand.
+        cf = __ And(__ AsrValue(sar_ext, count_m1), ir::Operand{ir::Imm(u64(1))});
+    }
+    __ SetCarry(cf);
+
+    // OF is defined only for count == 1; the formula is exact there and harmless
+    // (architecturally undefined) for other counts:
+    //   SHL: MSB(result) XOR CF;  SHR: MSB(orig);  SAR: 0.
+    ir::Value of;
+    if (kind == 0) {
+        auto msb = __ And(__ LsrImm(flag_value, ir::Imm(u64(width - 1))),
+                          ir::Operand{ir::Imm(u64(1))});
+        of = __ Xor(msb, ir::Operand{cf});
+    } else if (kind == 1) {
+        of = __ And(__ LsrImm(shifted, ir::Imm(u64(width - 1))), ir::Operand{ir::Imm(u64(1))});
+    } else {
+        of = __ LoadImm(ir::Imm(u64(0)));
+    }
+    __ SetOverflow(of);
+
+    StorePolarity(false);  // CF stored Direct; skipped with the update when count == 0
     __ BindLabel(skip_flags);
-    carry_ = CarryPolarity::Direct;  // CF == 0 (approximation), same either way
+    // The shift count is runtime-dependent: count == 0 preserves the previous
+    // carry and its polarity, count != 0 sets CF Direct. The frontend cannot know
+    // which at decode time, so mark the polarity unknown and let consumers
+    // normalize through the runtime polarity byte (stored above for count != 0).
+    carry_ = CarryPolarity::Unknown;
 
     Dst(insn, op0, result);
 }
@@ -3252,7 +3290,8 @@ void X64Decoder::DecodeRotate(_DInst& insn, bool left) {
     const auto width = op0.size;
     const u64 mask = width == 64 ? 63 : 31;
     auto src = width < 32 ? __ ZeroExtend32(ToValue(Src(insn, op0))) : ToValue(Src(insn, op0));
-    auto count = __ And(ToValue(Src(insn, op1)), ir::Operand{ir::Imm(mask)});
+    auto count_masked = __ And(ToValue(Src(insn, op1)), ir::Operand{ir::Imm(mask)});
+    auto count = count_masked;
     // 8/16-bit rotates reduce the masked count modulo the width (a rotate by
     // the width is the identity); 32/64-bit counts are already in range.
     if (width < 32) {
@@ -3269,8 +3308,32 @@ void X64Decoder::DecodeRotate(_DInst& insn, bool left) {
     if (width < 64) {
         result = __ And(result, ir::Operand{ir::Imm((u64(1) << width) - 1)});
     }
-    // TODO(flags): CF/OF updates for rotate counts 1 / 0 are not modelled;
-    // glibc's pointer guard consumes only the value.
+
+    // Rotates affect only CF and OF; N/Z/P/AF are left unchanged. A zero masked
+    // count leaves the flags untouched (a full-width rotate has a non-zero masked
+    // count, so it still updates CF even though the value is the identity).
+    auto skip_flags = __ NotGoto(__ TestNotZero(count_masked));
+    // CF = last bit rotated out: ROL -> result bit 0, ROR -> result MSB. Holds
+    // for any non-zero count.
+    auto msb = __ And(__ LsrImm(result, ir::Imm(u64(width - 1))), ir::Operand{ir::Imm(u64(1))});
+    ir::Value cf = left ? __ And(result, ir::Operand{ir::Imm(u64(1))}) : msb;
+    __ SetCarry(cf);
+    // OF is defined only for count == 1 (undefined, harmless otherwise):
+    //   ROL: CF XOR MSB(result);  ROR: MSB(result) XOR next-MSB(result).
+    ir::Value of;
+    if (left) {
+        of = __ Xor(cf, ir::Operand{msb});
+    } else {
+        auto msb2 =
+                __ And(__ LsrImm(result, ir::Imm(u64(width - 2))), ir::Operand{ir::Imm(u64(1))});
+        of = __ Xor(msb, ir::Operand{msb2});
+    }
+    __ SetOverflow(of);
+    StorePolarity(false);  // CF stored Direct; skipped with the update when count == 0
+    __ BindLabel(skip_flags);
+    // Count is runtime-dependent (0 preserves the prior carry), so mark unknown.
+    carry_ = CarryPolarity::Unknown;
+
     Dst(insn, op0, result.SetCastType(GetSize(width)));
 }
 

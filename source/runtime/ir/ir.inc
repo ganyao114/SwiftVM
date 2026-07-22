@@ -76,6 +76,10 @@ INST(SaveFlags, Void, Value, Flags)
 INST(TestFlags, Value, Flags)
 INST(TestNotFlags, Value, Flags)
 INST(ClearFlags, Void, Flags)
+// Set a single guest flag (C / V) from a computed 0/1 value. Used where the
+// flag is derived rather than produced by a host flag-setting op (shift CF/OF).
+INST(SetCarry, Void, Value)
+INST(SetOverflow, Void, Value)
 // Shift
 // LogicalShiftLeft
 INST(LslImm, Value, Value, Imm)
