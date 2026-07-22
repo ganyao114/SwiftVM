@@ -323,16 +323,18 @@ struct X86Instance::Impl final {
                 // arm64_backend_regs_map comment.)
                 .buffers_static_alloc = {},
                 .static_program = false,
-                // NOTE: Optimizations::BlockLink is intentionally left
-                // out: the indirect-link path in the arm64 backend
-                // (JitContext::Forward: "Ldr ip, [cache, ip, LSL 3]; Br ip")
-                // jumps via the dispatch table even when the target block
-                // has never been translated (empty slot -> br 0x0), so any
-                // backward branch to a not-yet-compiled block crashes.
+                // Block linking enabled: JitContext::Forward's indirect-link
+                // path now falls back to the dispatcher on an empty dispatch
+                // slot (write target to current_loc + Ret) instead of
+                // `br 0x0`, so backward branches to not-yet-compiled blocks
+                // are safe. DirectBlockLink stays off: its backpatched direct
+                // branches need a delink mechanism to cooperate with SMC
+                // (Phase 4).
                 .global_opts = Optimizations::ReturnStackBuffer | Optimizations::FlagElimination |
                                Optimizations::DeadCodeRemove |
                                Optimizations::StaticCode |
-                               Optimizations::ConstantFolding,
+                               Optimizations::ConstantFolding |
+                               Optimizations::BlockLink,
                 .arm64_features = Arm64Features::None,
                 .stack_alignment = 16,
                 .page_table = nullptr,
