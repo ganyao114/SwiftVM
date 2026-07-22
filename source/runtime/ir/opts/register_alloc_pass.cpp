@@ -48,7 +48,30 @@ public:
         std::sort(live_interval.begin(), live_interval.end());
 
         // Step 3: Alloc Registers
+        //
+        // Instructions that define no value (VOID ops such as StoreMemory)
+        // own no live interval, but the JIT still asks GetTmpX/GetTmpV for
+        // scratch registers while emitting them. Those pick the first
+        // register not marked in the per-instruction dirty mask
+        // (RegAlloc::GetDirtyGPR/FPR), so that mask must exist for *every*
+        // instruction: without it a VOID op would see an all-clear mask and
+        // clobber a live value (or a reserved runtime register). Fill each
+        // gap between interval starts with the register set active right
+        // after the previous interval was processed. That set is a
+        // conservative superset of the registers truly live at any point
+        // inside the gap: no interval starts inside the gap, and an
+        // interval already expired there ended before the gap began.
+        const u32 instr_count = InstrCount();
+        u32 next_id = 0;
+        auto fill_gap = [&](u32 end) {
+            end = std::min(end, instr_count);
+            for (; next_id < end; next_id++) {
+                reg_alloc->SetActiveRegs(next_id, active_gprs, active_fprs);
+            }
+        };
         for (auto& interval : live_interval) {
+            fill_gap(interval.start);
+
             ExpireOldIntervals(interval);
 
             if (!IsFloatValue(interval.inst)) {
@@ -67,10 +90,19 @@ public:
                 }
             }
             reg_alloc->SetActiveRegs(interval.inst->Id(), active_gprs, active_fprs);
+            next_id = std::max(next_id, interval.start + 1);
         }
+        // Fill any remaining instructions after the last interval start.
+        fill_gap(instr_count);
     }
 
 private:
+    // Number of RegAlloc map entries (matches how the caller sized it).
+    u32 InstrCount() {
+        return function ? static_cast<u32>(function->MaxInstrCount())
+                        : block->MaxInstrId();
+    }
+
     void CollectLiveIntervals(HIRFunction* hir_function) {
         for (auto& hir_value : hir_function->GetHIRValues()) {
             auto instr = hir_value.value.Def();
