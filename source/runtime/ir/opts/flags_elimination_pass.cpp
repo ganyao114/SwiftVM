@@ -30,6 +30,19 @@
 namespace swift::runtime::ir {
 
 void FlagsEliminationPass::Run(Block* block) {
+    // DISABLED: the backward liveness below has a correctness bug that
+    // manifests as wrong carry/parity after adc/sbb/lahf (fuzz "alu" family
+    // fails with off-by-one register values). The pass was previously a stub
+    // (0% elimination), so disabling it restores correct behavior. The
+    // implementation is kept for future debugging — re-enable after the
+    // root cause is found and fuzz is green.
+    //
+    // Set SVM_FLAGS_ELIM=1 to force-enable for debugging.
+    static const bool force_enable = std::getenv("SVM_FLAGS_ELIM") != nullptr;
+    if (!force_enable) {
+        return;
+    }
+
     auto& inst_list = block->GetInstList();
 
     Flags needed = Flags::All;  // live-out: flags persist across blocks
@@ -52,12 +65,24 @@ void FlagsEliminationPass::Run(Block* block) {
                 if (False(live)) {
                     stat_save_dead++;
                     victims.push_back(&inst);
+                    if (std::getenv("SVM_FLAGS_DEBUG")) {
+                        fmt::print("[flags-elim-dbg] block {:#x}: DELETE SaveFlags mask={} needed={}\n",
+                                   block->GetStartLocation().Value(), FlagsString(mask), FlagsString(needed));
+                    }
                 } else {
                     if (live != mask) {
                         inst.SetArg(1, live);
                         stat_shrunk++;
+                        if (std::getenv("SVM_FLAGS_DEBUG")) {
+                            fmt::print("[flags-elim-dbg] block {:#x}: NARROW SaveFlags {} -> {} needed={}\n",
+                                       block->GetStartLocation().Value(), FlagsString(mask), FlagsString(live), FlagsString(needed));
+                        }
                     }
-                    needed &= ~mask;
+                    // Only remove the bits we actually kept (live). Bits
+                    // dropped from the mask are NOT written by this
+                    // instruction, so an earlier write of them must be
+                    // preserved (they may be the value a later reader sees).
+                    needed &= ~live;
                 }
                 break;
             }
@@ -73,7 +98,8 @@ void FlagsEliminationPass::Run(Block* block) {
                         inst.SetArg(0, live);
                         stat_shrunk++;
                     }
-                    needed &= ~mask;
+                    // Same as SaveFlags: only clear the bits actually kept.
+                    needed &= ~live;
                 }
                 break;
             }
