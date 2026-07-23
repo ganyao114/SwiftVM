@@ -5,6 +5,7 @@
 #pragma once
 
 #include <map>
+#include <vector>
 #include "aarch64/macro-assembler-aarch64.h"
 #include "base/common_funcs.h"
 #include "runtime/backend/address_space.h"
@@ -62,14 +63,57 @@ private:
 
     void FlushLabels(VAddr target);
 
+    // --- RegAlloc::MEM (spilled value) support ---------------------------
+    // A value the linear scan could not keep in a host register lives in
+    // State::spill_area (backend/context.h). Every *use* reloads it into a
+    // scratch register (Ldr). A spilled *def* computes into a scratch
+    // register exactly like a register-allocated def; the write-back (Str)
+    // is deferred to the next TickIR / block-exit boundary because
+    // JitContext never observes the moment an emitter finishes writing the
+    // destination register. Reads of the just-defined value from the same
+    // instruction or from the block terminal are served the scratch
+    // register directly (value.Def() == cur_inst), so no stale slot is
+    // ever observed.
+    //
+    // Limitations (spilling has never triggered on current workloads, so
+    // this path is defensive):
+    //  - Reload/write-back scratch registers come from GetTmpX/GetTmpV;
+    //    under total register exhaustion those PANIC (loudly) instead of
+    //    silently corrupting state. A fully robust spill needs one
+    //    permanently reserved scratch register in the trampoline mask.
+    //  - The spill area holds kMaxSpillSlots u64 slots; the allocator
+    //    PANICs beyond that rather than overrunning the uniform buffer.
+    //  - A few block terminals (Invalid/ReturnToDispatch/ReturnToHost/
+    //    PopRSBHint/Switch-fallthrough) Ret directly out of the translator
+    //    without touching JitContext, so a pending write-back from the
+    //    block's last instruction is skipped there. Harmless in block mode
+    //    (spill slots are block-local); only a function-mode spill at the
+    //    final instruction into such a terminal would be affected.
+    [[nodiscard]] Register SpillGPR(const ir::Value& value);
+    [[nodiscard]] VRegister SpillFPR(const ir::Value& value);
+    void FlushSpillWrites();
+    [[nodiscard]] static bool IsFloatValue(const ir::Value& value);
+
+    struct PendingSpillWrite {
+        u16 slot;    // spill slot index
+        u8 reg;      // scratch register code holding the value
+        bool is_fpr;
+    };
+
     std::shared_ptr<Module> module;
     ir::Function *cur_function{};
     ir::Block *cur_block{};
+    ir::Inst *cur_inst{};
     RegAlloc& reg_alloc;
     MacroAssembler masm;
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_gprs;
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_fprs;
     std::map<LocationDescriptor, Label> labels;
+    // value id -> scratch reg code for the current instruction's spilled
+    // def (repeated def accesses within one instruction must return the
+    // same register); cleared at every TickIR.
+    std::map<u32, u8> spill_def_scratch;
+    std::vector<PendingSpillWrite> pending_spill_writes;
 
     GPRSMask cur_dirty_gprs{};
     GPRSMask cur_dirty_fprs{};

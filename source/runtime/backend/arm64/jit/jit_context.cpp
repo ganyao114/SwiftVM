@@ -10,6 +10,10 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
+// The spill slot count reserved in State must match the allocator's limit.
+static_assert(kMaxSpillSlots == sizeof(State::spill_area) / sizeof(u64),
+              "spill slot count mismatch between reg_alloc.h and context.h");
+
 JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_alloc)
         : module(module), reg_alloc(reg_alloc) {}
 
@@ -17,14 +21,25 @@ bool JitContext::HasAllocation(const ir::Value& value) {
     return reg_alloc.ValueType(value) != RegAlloc::NONE;
 }
 
-CPUReg JitContext::Get(const ir::Value& value) {    if (reg_alloc.ValueType(value) == RegAlloc::GPR) {
-        return X(value);
-    } else if (reg_alloc.ValueType(value) == RegAlloc::FPR) {
-        return V(value);
-    } else if (reg_alloc.ValueType(value) == RegAlloc::MEM) {
-        ASSERT_MSG(false, "");
-    } else {
-        ASSERT_MSG(false, "");
+bool JitContext::IsFloatValue(const ir::Value& value) {
+    auto type = value.Type();
+    return type >= ir::ValueType::V8 && type <= ir::ValueType::V256;
+}
+
+CPUReg JitContext::Get(const ir::Value& value) {
+    switch (reg_alloc.ValueType(value)) {
+        case RegAlloc::GPR:
+            return X(value);
+        case RegAlloc::FPR:
+            return V(value);
+        case RegAlloc::MEM:
+            // Spilled value: reload from (or def-scratch for) its slot.
+            if (IsFloatValue(value)) {
+                return SpillFPR(value);
+            }
+            return SpillGPR(value);
+        default:
+            ASSERT_MSG(false, "value has no register allocation");
     }
     return {};
 }
@@ -52,18 +67,82 @@ Register JitContext::R(const ir::Value& value, bool auto_cast) {
 }
 
 XRegister JitContext::X(const ir::Value& value) {
+    if (reg_alloc.ValueType(value) == RegAlloc::MEM) {
+        return XRegister(SpillGPR(value).GetCode());
+    }
     auto reg = reg_alloc.ValueGPR(value);
     return XRegister(reg.id);
 }
 
 WRegister JitContext::W(const ir::Value& value) {
+    if (reg_alloc.ValueType(value) == RegAlloc::MEM) {
+        return WRegister(SpillGPR(value).GetCode());
+    }
     auto reg = reg_alloc.ValueGPR(value);
     return WRegister(reg.id);
 }
 
 VRegister JitContext::V(const ir::Value& value) {
+    if (reg_alloc.ValueType(value) == RegAlloc::MEM) {
+        return SpillFPR(value);
+    }
     auto reg = reg_alloc.ValueFPR(value);
     return VRegister::GetVRegFromCode(reg.id);
+}
+
+Register JitContext::SpillGPR(const ir::Value& value) {
+    const auto slot = reg_alloc.ValueMem(value);
+    ASSERT_MSG(slot.offset < kMaxSpillSlots, "spill slot beyond reserved area");
+    const u32 offset = state_offset_spill_area + slot.offset * sizeof(u64);
+    if (value.Defined() && value.Def() == cur_inst) {
+        // Def access: nothing to reload yet. Hand out (or reuse) the
+        // scratch register the emitter will compute into and queue the
+        // deferred write-back (flushed at the next TickIR / block exit).
+        if (auto it = spill_def_scratch.find(value.Id()); it != spill_def_scratch.end()) {
+            return XRegister(it->second);
+        }
+        auto tmp = GetTmpX();
+        spill_def_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
+        pending_spill_writes.push_back({slot.offset, static_cast<u8>(tmp.GetCode()), false});
+        return tmp;
+    }
+    // Use access: reload from the spill slot. Any write-back of a value
+    // defined by an earlier instruction has already been flushed at this
+    // instruction's TickIR, so the slot is current.
+    auto tmp = GetTmpX();
+    __ Ldr(tmp, MemOperand(state, offset));
+    return tmp;
+}
+
+VRegister JitContext::SpillFPR(const ir::Value& value) {
+    const auto slot = reg_alloc.ValueMem(value);
+    // A spilled SIMD value occupies two consecutive u64 slots (16 bytes).
+    ASSERT_MSG(slot.offset + 1 < kMaxSpillSlots, "spill slot beyond reserved area");
+    const u32 offset = state_offset_spill_area + slot.offset * sizeof(u64);
+    if (value.Defined() && value.Def() == cur_inst) {
+        if (auto it = spill_def_scratch.find(value.Id()); it != spill_def_scratch.end()) {
+            return VRegister::GetVRegFromCode(it->second);
+        }
+        auto tmp = GetTmpV();
+        spill_def_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
+        pending_spill_writes.push_back({slot.offset, static_cast<u8>(tmp.GetCode()), true});
+        return tmp;
+    }
+    auto tmp = GetTmpV();
+    __ Ldr(tmp.Q(), MemOperand(state, offset));
+    return tmp;
+}
+
+void JitContext::FlushSpillWrites() {
+    for (auto& write : pending_spill_writes) {
+        const u32 offset = state_offset_spill_area + write.slot * sizeof(u64);
+        if (write.is_fpr) {
+            __ Str(VRegister::GetVRegFromCode(write.reg).Q(), MemOperand(state, offset));
+        } else {
+            __ Str(XRegister(write.reg), MemOperand(state, offset));
+        }
+    }
+    pending_spill_writes.clear();
 }
 
 XRegister JitContext::GetTmpX() {
@@ -89,6 +168,10 @@ VRegister JitContext::GetTmpV() {
 
 void JitContext::Forward(ir::Location location) {
     ASSERT(cur_block);
+    // Block exit: land any pending spill write-back before the transfer
+    // (a spilled value defined by the block's last instruction may be live
+    // into the target block in function mode).
+    FlushSpillWrites();
     auto self_forward = location == cur_block->GetStartLocation();
     if (!self_forward && cur_function) {
         self_forward = location == cur_function->GetStartLocation();
@@ -169,6 +252,8 @@ void JitContext::Forward(ir::Location location) {
 }
 
 void JitContext::ReturnToDispatcher(const Register& location) {
+    // Block exit: see Forward.
+    FlushSpillWrites();
     __ Str(location, MemOperand(state, state_offset_current_loc));
     __ Ret();
 }
@@ -207,6 +292,13 @@ void JitContext::SetCurrent(ir::Function* function) {
 }
 
 void JitContext::TickIR(ir::Inst* instr) {
+    // Deferred spill write-back for the previous instruction's def (if
+    // any) must land before anything else: from this instruction on the
+    // scratch register holding it may be reused, and uses reload from the
+    // slot.
+    FlushSpillWrites();
+    spill_def_scratch.clear();
+    cur_inst = instr;
     reg_alloc.SetCurrent(instr);
     cur_dirty_gprs = reg_alloc.GetDirtyGPR();
     cur_dirty_fprs = reg_alloc.GetDirtyFPR();

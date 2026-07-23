@@ -48,30 +48,33 @@ ir::HostGPR RegAlloc::ValueGPR(const ir::Value& value) {
 ir::SpillSlot RegAlloc::ValueMem(const ir::Value& value) { return ValueMem(value.Id()); }
 
 ir::HostGPR RegAlloc::ValueGPR(u32 id) {
-    if (auto &res = alloc_result[id]; res.type == REF) {
-        return ValueGPR(res.slot);
-    }
+    id = ResolveId(id);
     ASSERT(alloc_result[id].type == GPR);
     return ir::HostGPR{alloc_result[id].slot};
 }
 
 ir::HostFPR RegAlloc::ValueFPR(u32 id) {
-    if (auto &res = alloc_result[id]; res.type == REF) {
-        return ValueFPR(res.slot);
-    }
+    id = ResolveId(id);
     ASSERT(alloc_result[id].type == FPR);
     return ir::HostFPR{alloc_result[id].slot};
 }
 
 ir::SpillSlot RegAlloc::ValueMem(u32 id) {
-    if (auto &res = alloc_result[id]; res.type == REF) {
-        return ValueMem(res.slot);
-    }
+    id = ResolveId(id);
     ASSERT(alloc_result[id].type == MEM);
     return ir::SpillSlot{alloc_result[id].slot};
 }
 
-RegAlloc::Type RegAlloc::ValueType(const ir::Value& value) { return alloc_result[value.Id()].type; }
+RegAlloc::Type RegAlloc::ValueType(const ir::Value& value) {
+    return alloc_result[ResolveId(value.Id())].type;
+}
+
+u32 RegAlloc::ResolveId(u32 id) const {
+    while (alloc_result[id].type == REF) {
+        id = alloc_result[id].slot;
+    }
+    return id;
+}
 
 const GPRSMask& RegAlloc::GetGprs() const { return gprs; }
 
