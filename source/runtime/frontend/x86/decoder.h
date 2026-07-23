@@ -516,6 +516,22 @@ private:
     void DecodeCvttsd2si(_DInst& insn);
     void DecodeCvtsd2ss(_DInst& insn);
     void DecodeCvtss2sd(_DInst& insn);
+    // SSE scalar packed float: addss/subss/mulss/divss (low dword only).
+    void DecodeScalarFloatOp(_DInst& insn, VecHalfFn fn);
+    // pextrw / pinsrw: gpr <-> xmm word lane (imm8 selects the lane).
+    void DecodePextrw(_DInst& insn);
+    void DecodePinsrw(_DInst& insn);
+    // SSE3: movddup duplicates the source low qword into both halves.
+    void DecodeMovddup(_DInst& insn);
+    // SSE3: haddps/hsubps horizontal add/sub of adjacent dword pairs.
+    void DecodeHaddps(_DInst& insn, bool sub);
+    // lzcnt (leading-zero count) and crc32 (SSE4.2 CRC-32C).
+    void DecodeLzcnt(_DInst& insn);
+    void DecodeCrc32(_DInst& insn);
+    // String ops: lods / cmps / scas (single-step and REP forms; DF assumed 0).
+    void DecodeLods(_DInst& insn);
+    void DecodeCmps(_DInst& insn);
+    void DecodeScas(_DInst& insn);
     // popcnt / bswap.
     void DecodePopcnt(_DInst& insn);
     void DecodeBswap(_DInst& insn);
