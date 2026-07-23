@@ -99,6 +99,19 @@ public:
     // True if any page is currently write-protected (tests / diagnostics).
     [[nodiscard]] bool HasProtectedPages() const;
 
+    // Process-wide enable switch (default: enabled). When disabled,
+    // RegisterBlock is a no-op, so no page is ever write-protected. Intended
+    // for test harnesses that rewrite a guest code arena from OUTSIDE
+    // Runtime::Run (e.g. the differential fuzzer): the fault raised by their
+    // memcpy into a previously translated — and thus write-protected — page
+    // cannot be claimed by the SMC handler (no active runtime on the thread)
+    // and would kill the process. Such harnesses disable tracking for their
+    // lifetime instead of going through InvalidateRange, to which they have
+    // no access (the AddressSpace is not reachable through the public
+    // translator Instance/Core API).
+    static void SetEnabled(bool enabled);
+    [[nodiscard]] static bool IsEnabled();
+
 private:
     struct TrackedBlock {
         ir::Block* block{};

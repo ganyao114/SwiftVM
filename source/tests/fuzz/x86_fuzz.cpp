@@ -8,6 +8,7 @@
 #include "translator/x86/translator.h"
 #include "translator/x86/cpu.h"
 #include "runtime/frontend/x86/decoder.h"
+#include "runtime/backend/smc_tracker.h"
 #include <random>
 #include <chrono>
 #include <iostream>
@@ -502,6 +503,12 @@ struct FuzzEnv {
     int failures{0};
 
     FuzzEnv() {
+        // Disable SMC write-protection for the fuzz arena: each iteration
+        // memcpys new guest code into the same pages OUTSIDE Runtime::Run,
+        // so the SMC handler (which requires an active runtime on the
+        // faulting thread) cannot claim the resulting write fault and the
+        // process would die from SIGSEGV. Re-enabled in ~FuzzEnv.
+        runtime::backend::SmcTracker::SetEnabled(false);
         host_mem = mmap(nullptr, kMemSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (host_mem == MAP_FAILED) {
             perror("mmap");
@@ -527,6 +534,7 @@ struct FuzzEnv {
     ~FuzzEnv() {
         X86Core::Destroy(core);
         X86Instance::Destroy(instance);
+        runtime::backend::SmcTracker::SetEnabled(true);
         munmap(host_mem, kMemSize);
     }
 

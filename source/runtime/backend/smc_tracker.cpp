@@ -15,6 +15,18 @@
 
 namespace swift::runtime::backend {
 
+namespace {
+std::atomic_bool g_smc_enabled{true};
+}
+
+void SmcTracker::SetEnabled(bool enabled) {
+    g_smc_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool SmcTracker::IsEnabled() {
+    return g_smc_enabled.load(std::memory_order_relaxed);
+}
+
 SmcTracker::SmcTracker(u64 guest_bias)
         : bias_(guest_bias)
         , page_size_(static_cast<u64>(getpagesize()))
@@ -36,6 +48,9 @@ bool SmcTracker::SetPageProtected(VAddr page, bool prot_read_only) {
 }
 
 void SmcTracker::RegisterBlock(ir::Block* block, VAddr guest_start, VAddr guest_end) {
+    if (!IsEnabled()) {
+        return;  // SMC tracking disabled (e.g. fuzz harness rewriting its arena)
+    }
     if (guest_end <= guest_start) {
         // Degenerate range (block end unknown): still track the start page —
         // better partial coverage than none.
