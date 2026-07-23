@@ -134,6 +134,17 @@ public:
     // the host signal handler; takes the cache lock shared.
     [[nodiscard]] bool LookupFault(const u8* host_pc, FaultEntry& out);
 
+    // Full invalidation of a compiled block (SMC, Phase 4): resets its
+    // JitCache, removes it from the address node map (possibly destroying
+    // it — callers must not touch `block` afterwards), frees the JIT code
+    // buffer and drops the matching fault-table entries. The caller
+    // (SmcTracker) is responsible for the dispatch-table (L1/L2) slots.
+    void InvalidateBlock(ir::Block* block);
+
+    // Drops every fault-table entry recorded for the unit emitted at
+    // host_start (one entry per compiled unit).
+    void RemoveFaultEntries(const u8* host_start);
+
     [[nodiscard]] AddressSpace& GetAddressSpace() { return address_space; }
 
     [[nodiscard]] AddressSpace& GetAddressSpace() const { return address_space; }
@@ -152,8 +163,8 @@ private:
     std::shared_mutex cache_lock;
     std::map<u16, CodeCache> code_caches{};
     // Sorted by host_start (mspace allocations are not guaranteed monotonic).
-    // NOTE: entries are not removed when code is freed (Module::Remove /
-    // FreeCode are inactive today); Phase 4 (SMC) must invalidate them.
+    // Entries are removed by RemoveFaultEntries when SMC invalidation frees
+    // the corresponding code (Module::InvalidateBlock).
     std::vector<FaultEntry> fault_table{};
     std::list<DataAllocator> data_allocators{};
     u16 current_code_cache{};

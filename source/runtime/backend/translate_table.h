@@ -140,6 +140,30 @@ public:
         } while (!found && index != end && c_key != 0);
     }
 
+    // Zeroes the *value* of the entry for `key`, keeping the key itself. Used
+    // by SMC invalidation: unlike Remove(), this does not break the linear
+    // probe chain for colliding keys, and it is safe against lock-free JIT
+    // readers — the dispatcher and indirect block links read only the value
+    // word (an aligned size_t store is atomic on the supported hosts) and
+    // treat a zero value as a cache miss, falling back to retranslation.
+    // Returns true if the entry was found.
+    bool Zero(size_t key) {
+        u32 index = Hash(key);
+        size_t c_key;
+
+        std::shared_lock<TableLock> guard(lock);
+        do {
+            c_key = entries[index].key;
+            if (c_key == key) {
+                entries[index].value = 0;
+                std::atomic_thread_fence(std::memory_order_release);
+                return true;
+            }
+            index++;
+        } while (index < (size - 1) && c_key != 0);
+        return false;
+    }
+
     void Clear() { std::memset(entries.data(), 0, entries.size() * sizeof(TranslateEntry)); }
 
     void Reset() {

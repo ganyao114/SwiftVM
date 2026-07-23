@@ -8,7 +8,9 @@
 
 namespace swift::runtime::backend {
 
-AddressSpace::AddressSpace(const Config& config) : config(config) {
+AddressSpace::AddressSpace(const Config& config)
+        : config(config)
+        , smc_tracker(reinterpret_cast<u64>(config.memory_base)) {
     Init();
 }
 
@@ -93,6 +95,28 @@ void* AddressSpace::GetCodeCache(ir::Location location) {
         return nullptr;
     }
     return module->GetJitCache(location);
+}
+
+bool AddressSpace::LookupFault(const u8* host_pc, FaultEntry& out) {
+    std::shared_lock guard(lock);
+    bool found = false;
+    modules.ForEachValue([&](const std::shared_ptr<Module>& module) {
+        if (!found && module && module->LookupFault(host_pc, out)) {
+            found = true;
+        }
+    });
+    if (!found && default_module) {
+        found = default_module->LookupFault(host_pc, out);
+    }
+    return found;
+}
+
+void AddressSpace::InvalidateCodeRange(VAddr guest_start, VAddr guest_end) {
+    // See the wiring note in address_space.h: called by the syscall layer
+    // when the guest mprotects / remaps / unmaps memory that may hold
+    // translated code. nullptr L1: per-runtime L1 flushing is the caller's
+    // responsibility.
+    smc_tracker.InvalidateRange(*this, nullptr, guest_start, guest_end);
 }
 
 Trampolines& AddressSpace::GetTrampolines() { return *trampolines; }
