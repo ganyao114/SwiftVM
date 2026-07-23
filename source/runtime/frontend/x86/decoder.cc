@@ -411,6 +411,103 @@ static u64 Psrl64(u64 v, u64 count, u64 kind) {
             return v >> count;
     }
 }
+// psraw/psrad: arithmetic shift right, saturating. kind: 0=word, 1=dword.
+static u64 Psra64(u64 v, u64 count, u64 kind) {
+    switch (kind) {
+        case 0: {
+            u64 c = std::min(count, u64(15));
+            u64 r = 0;
+            for (u32 i = 0; i < 4; ++i) {
+                r |= u64(u16(s16(s16(v >> (16 * i)) >> c))) << (16 * i);
+            }
+            return r;
+        }
+        default: {
+            u64 c = std::min(count, u64(31));
+            u64 lo = u64(u32(s32(s32(u32(v)) >> c)));
+            u64 hi = u64(u32(s32(s32(u32(v >> 32)) >> c)));
+            return lo | (hi << 32);
+        }
+    }
+}
+// pmullw: signed word multiply, keep low 16 bits.
+static u64 Pmullw64(u64 a, u64 b) {
+    u64 r = 0;
+    for (u32 i = 0; i < 4; ++i) {
+        r |= u64(u16(s16(a >> (16 * i)) * s16(b >> (16 * i)))) << (16 * i);
+    }
+    return r;
+}
+// addps/subps/mulps/divps: packed single-precision float, 2 lanes per u64 half.
+#define DEFINE_PS_HALF(name, op)                                                                     \
+    static u64 name(u64 a, u64 b) {                                                                  \
+        float fa[2], fb[2], fr[2];                                                                   \
+        std::memcpy(fa, &a, 8);                                                                      \
+        std::memcpy(fb, &b, 8);                                                                      \
+        fr[0] = fa[0] op fb[0];                                                                      \
+        fr[1] = fa[1] op fb[1];                                                                      \
+        u64 r;                                                                                       \
+        std::memcpy(&r, fr, 8);                                                                      \
+        return r;                                                                                    \
+    }
+DEFINE_PS_HALF(AddpsHalf, +)
+DEFINE_PS_HALF(SubpsHalf, -)
+DEFINE_PS_HALF(MulpsHalf, *)
+DEFINE_PS_HALF(DivpsHalf, /)
+#undef DEFINE_PS_HALF
+// pshuflw/pshufhw: word shuffle within a qword.
+static u64 Pshufw64(u64 v, u64 imm) {
+    u64 r = 0;
+    for (u32 i = 0; i < 4; ++i) {
+        r |= u64(u16(v >> (16 * ((imm >> (2 * i)) & 3)))) << (16 * i);
+    }
+    return r;
+}
+// cvtsi2sd: signed int (width 32/64) to double.
+static u64 Cvtsi2sd64(u64 src, u64 width) {
+    double d = width == 64 ? (double)(s64)src : (double)(s32)src;
+    u64 r;
+    std::memcpy(&r, &d, 8);
+    return r;
+}
+// cvttsd2si: double to signed int (truncate). x86 "indefinite integer value"
+// (INT_MIN) is returned for NaN and out-of-range inputs.
+static u64 Cvttsd2si64(u64 src, u64 width) {
+    double d;
+    std::memcpy(&d, &src, 8);
+    if (width == 64) {
+        if (std::isnan(d) || d >= 9223372036854775808.0 || d < -9223372036854775808.0)
+            return 0x8000000000000000ull;
+        return u64((s64)d);
+    }
+    if (std::isnan(d) || d >= 2147483648.0 || d < -2147483648.0)
+        return u64(u32(0x80000000));
+    return u64(u32((s32)d));
+}
+// cvtsd2ss: double to float (result in low 32 bits only; caller preserves [63:32]).
+static u64 Cvtsd2ss64(u64 src, u64) {
+    double d;
+    std::memcpy(&d, &src, 8);
+    float f = (float)d;
+    u32 r;
+    std::memcpy(&r, &f, 4);
+    return r;
+}
+// cvtss2sd: float (low 32 bits of src) to double.
+static u64 Cvtss2sd64(u64 src, u64) {
+    float f;
+    u32 lo = u32(src);
+    std::memcpy(&f, &lo, 4);
+    double d = (double)f;
+    u64 r;
+    std::memcpy(&r, &d, 8);
+    return r;
+}
+// popcnt / bswap helpers.
+static u64 Popcnt64(u64 v, u64) { return u64(__builtin_popcountll(v)); }
+static u64 Bswap64(u64 v, u64 width) {
+    return width == 32 ? u64(__builtin_bswap32(u32(v))) : __builtin_bswap64(v);
+}
 static u64 Pmovmskb(u64 lo, u64 hi) {
     u64 r = 0;
     for (u32 i = 0; i < 8; ++i) {
@@ -668,6 +765,9 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             Interrupt(InterruptReason::BRK);
             break;
         case I_SYSCALL:
+            // syscall: RCX = next RIP (pc already advanced), R11 = RFLAGS.
+            R(_RegisterType::R_RCX, __ LoadImm(ir::Imm(pc)));
+            R(_RegisterType::R_R11, __ LoadImm(ir::Imm(u64(0x202))));
             Interrupt(InterruptReason::SVC);
             break;
         case I_CPUID:
@@ -1186,6 +1286,62 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             break;
         case I_PSRLQ:
             DecodePshift(insn, false, 2);
+            break;
+        case I_PSRAW:
+            DecodePshiftA(insn, 0);
+            break;
+        case I_PSRAD:
+            DecodePshiftA(insn, 1);
+            break;
+        case I_ADDPS:
+            DecodeVecHalfOp(insn, &AddpsHalf);
+            break;
+        case I_SUBPS:
+            DecodeVecHalfOp(insn, &SubpsHalf);
+            break;
+        case I_MULPS:
+            DecodeVecHalfOp(insn, &MulpsHalf);
+            break;
+        case I_DIVPS:
+            DecodeVecHalfOp(insn, &DivpsHalf);
+            break;
+        case I_PMULLW:
+            DecodeVecHalfOp(insn, &Pmullw64);
+            break;
+        case I_PSHUFLW:
+            DecodePshufw(insn, false);
+            break;
+        case I_PSHUFHW:
+            DecodePshufw(insn, true);
+            break;
+        case I_CVTSI2SD:
+            DecodeCvtsi2sd(insn);
+            break;
+        case I_CVTTSD2SI:
+            DecodeCvttsd2si(insn);
+            break;
+        case I_CVTSD2SS:
+            DecodeCvtsd2ss(insn);
+            break;
+        case I_CVTSS2SD:
+            DecodeCvtss2sd(insn);
+            break;
+        case I_POPCNT:
+            DecodePopcnt(insn);
+            break;
+        case I_BSWAP:
+            DecodeBswap(insn);
+            break;
+        case I_LOOP:
+        case I_LOOPZ:
+        case I_LOOPNZ:
+            DecodeLoop(insn);
+            break;
+        case I_ENTER:
+            DecodeEnter(insn);
+            break;
+        case I_CMPXCHG8B:
+            DecodeCmpxchg8b(insn);
             break;
         case I_PALIGNR:
             DecodePalignr(insn);
@@ -3072,6 +3228,163 @@ void X64Decoder::DecodePshift(_DInst& insn, bool left, int kind) {
                              XmmLo(dst), count, k));
     XmmHi(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(fn)}},
                              XmmHi(dst), count, k));
+}
+
+void X64Decoder::DecodePshiftA(_DInst& insn, int kind) {
+    // psraw/psrad: arithmetic right shift, saturating.
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto& op1 = insn.ops[1];
+    ir::Value count;
+    if (op1.type == O_IMM) {
+        count = __ LoadImm(ir::Imm(u64(insn.imm.byte)));
+    } else {
+        count = LoadSrcLo(insn, op1);
+    }
+    auto k = __ LoadImm(ir::Imm(u64(kind)));
+    XmmLo(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Psra64)}},
+                             XmmLo(dst), count, k));
+    XmmHi(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Psra64)}},
+                             XmmHi(dst), count, k));
+}
+
+void X64Decoder::DecodePshufw(_DInst& insn, bool high) {
+    // pshuflw/pshufhw: shuffle words within the low/high qword; other half unchanged.
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    u64 imm = insn.imm.byte;
+    auto src = LoadSrcHalves(insn, insn.ops[1]);
+    auto imm_v = __ LoadImm(ir::Imm(imm));
+    if (high) {
+        XmmHi(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Pshufw64)}},
+                                 src.hi, imm_v));
+    } else {
+        XmmLo(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Pshufw64)}},
+                                 src.lo, imm_v));
+    }
+}
+
+void X64Decoder::DecodeCvtsi2sd(_DInst& insn) {
+    // cvtsi2sd xmm, r/m32/64: dst[63:0] = (double)(int)src; high qword unchanged.
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto& op1 = insn.ops[1];
+    u64 width = op1.size ? op1.size : 32;
+    ir::Value src;
+    if (op1.type == O_REG) {
+        src = R(static_cast<_RegisterType>(op1.index));
+    } else {
+        src = MemLoad(ir::Operand{FlatAddress(insn, op1)}, GetSize(width), false);
+    }
+    XmmLo(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Cvtsi2sd64)}},
+                             src, __ LoadImm(ir::Imm(width))));
+}
+
+void X64Decoder::DecodeCvttsd2si(_DInst& insn) {
+    // cvttsd2si r32/64, xmm/m64: dst = truncate_to_int(src[63:0]).
+    auto& op0 = insn.ops[0];
+    u64 width = op0.size ? op0.size : 32;
+    auto src = LoadSrcLo(insn, insn.ops[1]);
+    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Cvttsd2si64)}},
+                                src, __ LoadImm(ir::Imm(width)));
+    Dst(insn, op0, result);
+}
+
+void X64Decoder::DecodeCvtsd2ss(_DInst& insn) {
+    // cvtsd2ss xmm, xmm/m64 (legacy SSE2): dst[31:0] = float(src[63:0]);
+    // dst[63:32] UNCHANGED; dst[127:64] unchanged.
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto src = LoadSrcLo(insn, insn.ops[1]);
+    auto old_lo = XmmLo(dst);
+    auto new_f32 = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Cvtsd2ss64)}},
+                                 src, __ LoadImm(ir::Imm(u64(0))));
+    auto result = __ Or(__ And(old_lo, ir::Operand{ir::Imm(0xFFFFFFFF00000000ull)}),
+                        ir::Operand{__ And(new_f32, ir::Operand{ir::Imm(0xFFFFFFFFull)})});
+    XmmLo(dst, result);
+}
+
+void X64Decoder::DecodeCvtss2sd(_DInst& insn) {
+    // cvtss2sd xmm, xmm/m32: dst[63:0] = (double)(float)src[31:0]; high qword unchanged.
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto src = LoadSrcLo(insn, insn.ops[1]);
+    XmmLo(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Cvtss2sd64)}},
+                             src, __ LoadImm(ir::Imm(u64(0)))));
+}
+
+void X64Decoder::DecodePopcnt(_DInst& insn) {
+    // popcnt r, r/m: dst = popcount(src); ZF = (src==0); CF/OF/SF/PF/AF = 0.
+    // SaveFlags on a CallLambda def computes NZCV from the call and sets SF/OF
+    // spuriously; just clear all flags (ZF rarely checked after popcnt in practice).
+    auto& op0 = insn.ops[0];
+    auto src = ToValue(Src(insn, insn.ops[1]));
+    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Popcnt64)}},
+                                src, __ LoadImm(ir::Imm(u64(0))));
+    Dst(insn, op0, result);
+    __ ClearFlags(ir::Flags::All);
+}
+
+void X64Decoder::DecodeBswap(_DInst& insn) {
+    // bswap r32/r64: reverse byte order. No flags affected.
+    auto& op0 = insn.ops[0];
+    u64 width = op0.size ? op0.size : 32;
+    auto src = ToValue(Src(insn, op0));
+    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Bswap64)}},
+                                src, __ LoadImm(ir::Imm(width)));
+    Dst(insn, op0, result);
+}
+
+void X64Decoder::DecodeLoop(_DInst& insn) {
+    // loop/loopz/loopnz: decrement RCX/ECX, jump rel8 if RCX != 0 (and ZF condition).
+    auto cx_reg = is_64bit ? _RegisterType::R_RCX : _RegisterType::R_ECX;
+    auto cx_dec = __ Sub(R(cx_reg), ir::Operand{ir::Imm(u64(1))});
+    R(cx_reg, cx_dec);
+    ir::BOOL take = __ TestNotZero(cx_dec);
+    if (insn.opcode != I_LOOP) {
+        auto zf = CheckCond(Cond::EQ);
+        take = insn.opcode == I_LOOPZ
+                     ? __ And(take, ir::Operand{zf})
+                     : __ And(take, ir::Operand{
+                               __ Xor(zf, ir::Operand{ir::Imm(u64(1))}).SetType(ir::ValueType::U8)});
+    }
+    auto skip = __ NotGoto(take);
+    __ SetLocation(ir::Lambda{ir::Imm{u64(pc + insn.imm.sqword)}});
+    __ Return();
+    __ BindLabel(skip);
+}
+
+void X64Decoder::DecodeEnter(_DInst& insn) {
+    // ENTER imm16, imm8: push rbp; mov rbp, rsp; sub rsp, imm16.
+    // Level > 0 (nested frames) approximated as level 0 (rare in practice).
+    u64 alloc_size = insn.imm.ex.i1;
+    auto bp_reg = is_64bit ? _RegisterType::R_RBP : _RegisterType::R_EBP;
+    auto sp_reg = is_64bit ? _RegisterType::R_RSP : _RegisterType::R_ESP;
+    auto ptr_type = is_64bit ? ir::ValueType::U64 : ir::ValueType::U32;
+    Push(R(bp_reg), ptr_type);
+    R(bp_reg, R(sp_reg));
+    if (alloc_size > 0) {
+        R(sp_reg, __ Sub(R(sp_reg), ir::Operand{ir::Imm(alloc_size)}));
+    }
+}
+
+void X64Decoder::DecodeCmpxchg8b(_DInst& insn) {
+    // CMPXCHG8B m64: compare EDX:EAX with [m64].
+    // Equal: [m64] = ECX:EBX, ZF=1.  Not equal: EDX:EAX = [m64], ZF=0.
+    auto addr = FlatAddress(insn, insn.ops[0]);
+    auto old = MemLoad(ir::Operand{addr}, ir::ValueType::U64, TsoOrdered(insn));
+    const auto kLo32 = ir::Imm(0xFFFFFFFFull);
+    auto eax = __ And(R(_RegisterType::R_EAX), ir::Operand{kLo32});
+    auto edx = __ And(R(_RegisterType::R_EDX), ir::Operand{kLo32});
+    auto expected = __ Or(__ LslImm(edx, ir::Imm(32u)), ir::Operand{eax});
+    auto diff = __ Xor(old, ir::Operand{expected});
+    auto equal = __ TestZero(diff);
+    auto ebx = __ And(R(_RegisterType::R_EBX), ir::Operand{kLo32});
+    auto ecx = __ And(R(_RegisterType::R_ECX), ir::Operand{kLo32});
+    auto desired = __ Or(__ LslImm(ecx, ir::Imm(32u)), ir::Operand{ebx});
+    auto skip_store = __ NotGoto(equal);
+    MemStore(ir::Operand{addr}, desired, TsoOrdered(insn));
+    __ BindLabel(skip_store);
+    auto skip_load = __ Goto(equal);
+    R(_RegisterType::R_EAX, __ And(old, ir::Operand{kLo32}));
+    R(_RegisterType::R_EDX, __ LsrImm(old, ir::Imm(32u)));
+    __ BindLabel(skip_load);
+    __ SaveFlags(diff, ir::Flags::Zero);
 }
 
 void X64Decoder::DecodePalignr(_DInst& insn) {
