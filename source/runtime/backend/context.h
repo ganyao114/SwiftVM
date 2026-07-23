@@ -44,10 +44,22 @@ struct State {
     void* local_buffer{};
     u64 host_cpu_flags{};
     void *blocking_linkage_address{};
+    // Spill area for RegAlloc::MEM values (linear-scan register allocator):
+    // fixed u64 slots addressed from JIT code as
+    // [state, state_offset_spill_area + slot * 8]; a spilled SIMD value
+    // occupies two consecutive slots (16 bytes, hence alignas(16)). Kept
+    // inside State, right before the flexible uniform buffer, so no extra
+    // allocation or Config plumbing is needed and every uniform-buffer
+    // offset keeps resolving through offsetof. The size must match
+    // backend::kMaxSpillSlots (backend/reg_alloc.h) — enforced by a
+    // static_assert in arm64/jit/jit_context.cpp; the allocator panics
+    // rather than hand out a slot beyond it.
+    alignas(16) std::array<u64, 64> spill_area{};
     u8 uniform_buffer_begin[];
 };
 
 constexpr u32 state_offset_uniform_buffer = offsetof(State, uniform_buffer_begin);
+constexpr u32 state_offset_spill_area = offsetof(State, spill_area);
 constexpr u32 state_offset_local_buffer = offsetof(State, local_buffer);
 constexpr u32 state_offset_l1_code_cache = offsetof(State, l1_code_cache);
 constexpr u32 state_offset_l2_code_cache = offsetof(State, l2_code_cache);

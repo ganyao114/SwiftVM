@@ -71,6 +71,13 @@ private:
 using GPRSMask = RegisterMask<u32>;
 using FPRSMask = RegisterMask<u32>;
 
+// Number of u64 spill slots reserved in State::spill_area (context.h).
+// The linear-scan pass panics instead of handing out a slot beyond this:
+// an out-of-range slot would silently overwrite the uniform buffer that
+// follows the spill area. Kept in sync with State::spill_area by a
+// static_assert in arm64/jit/jit_context.cpp.
+static constexpr u32 kMaxSpillSlots = 64;
+
 class RegAlloc : DeleteCopyAndMove {
 public:
 
@@ -106,6 +113,8 @@ public:
     ir::HostGPR ValueGPR(u32 id);
     ir::HostFPR ValueFPR(u32 id);
     ir::SpillSlot ValueMem(u32 id);
+    // Resolves REF (bitcast alias) entries, so the result is the underlying
+    // GPR/FPR/MEM allocation rather than the alias itself.
     Type ValueType(const ir::Value &value);
 
     [[nodiscard]] GPRSMask GetDirtyGPR() const;
@@ -114,6 +123,10 @@ public:
     void SetCurrent(ir::Inst *inst);
 
 private:
+    // Follows REF chains (MapReference) to the id holding the real
+    // GPR/FPR/MEM allocation.
+    [[nodiscard]] u32 ResolveId(u32 id) const;
+
     Vector<Map> alloc_result;
     u32 stack_size{};
     ir::Inst *current_ir{};

@@ -3,6 +3,7 @@
 //
 
 #include "register_alloc_pass.h"
+#include "base/logging.h"
 
 namespace swift::runtime::ir {
 
@@ -94,6 +95,11 @@ public:
         }
         // Fill any remaining instructions after the last interval start.
         fill_gap(instr_count);
+
+        if (spill_count) {
+            LOG_WARNING("RegisterAllocPass: {} value(s) spilled to stack slots (highest slot {})",
+                        spill_count, max_spill_slot);
+        }
     }
 
 private:
@@ -299,34 +305,45 @@ private:
     void SpillAtInterval(LiveInterval& interval) {
         auto is_float = IsFloatValue(interval.inst);
         auto slot_size = is_float ? 2 : 1;
+        u32 slot{};
         if (is_float) {
-            s32 slot{-1};
+            s32 found{-1};
             for (int i = 0; i + 1 < spill_slots.size(); i += 2) {
                 if (!spill_slots[i] && !spill_slots[i + 1]) {
-                    slot = i;
+                    found = i;
                     break;
                 }
             }
-            if (slot < 0) {
-                slot = spill_slots.size();
+            if (found < 0) {
+                found = spill_slots.size();
                 GrowSpillStack(slot_size);
             }
+            slot = found;
             reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{static_cast<u16>(slot)});
             spill_slots[slot] = true;
         } else {
             auto itr = std::find(spill_slots.begin(), spill_slots.end(), false);
             if (itr != spill_slots.end()) {
-                u16 slot = std::distance(spill_slots.begin(), itr);
-                reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{slot});
+                slot = std::distance(spill_slots.begin(), itr);
+                reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{static_cast<u16>(slot)});
                 spill_slots[slot] = true;
             } else {
                 // grow stack
-                u16 slot = spill_slot_cursor;
-                reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{slot});
+                slot = spill_slot_cursor;
+                reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{static_cast<u16>(slot)});
                 GrowSpillStack(slot_size);
                 spill_slots[slot] = true;
             }
         }
+        // The JIT keeps spilled values in State::spill_area, which holds
+        // exactly kMaxSpillSlots u64 slots (a spilled SIMD value takes two).
+        // Fail loudly instead of handing out a slot that would silently
+        // overwrite the uniform buffer following the spill area.
+        ASSERT_MSG(slot + slot_size <= backend::kMaxSpillSlots,
+                   "spill area exhausted: slot {} (+{}) >= {} reserved slots",
+                   slot, slot_size, backend::kMaxSpillSlots);
+        spill_count++;
+        max_spill_slot = std::max(max_spill_slot, slot + slot_size - 1);
     }
 
     void FreeGPR(u32 id) {
@@ -353,6 +370,11 @@ private:
     backend::FPRSMask active_fprs;
     Vector<bool> spill_slots{};
     u16 spill_slot_cursor{0};
+    // Spill telemetry (reported at the end of AllocateRegisters): spilling
+    // has never triggered on current workloads, so any hit is worth a log
+    // line — it means the JIT's defensive MEM path is being exercised.
+    u32 spill_count{0};
+    u32 max_spill_slot{0};
 };
 
 class VRegisterAllocator {
