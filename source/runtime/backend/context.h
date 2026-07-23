@@ -46,6 +46,16 @@ struct State {
     void* interface{};
     HaltReason halt_reason{HaltReason::None};
     RSBFrame* rsb_pointer{};
+    // RSB bounds for the JIT overflow/underflow guards (JitContext::EmitRSBPush/
+    // EmitRSBPop). The stack grows downward from rsb_top (the empty position,
+    // entry [rsb_stack_size]) toward rsb_bottom (entry [0]).
+    //   rsb_bottom = &rsb_frames[0]              — push skips once rsb_ptr <= here (full)
+    //   rsb_top    = &rsb_frames[rsb_stack_size] — pop falls back once rsb_ptr >= here (empty)
+    // Without these guards an imbalance of guest ret over call would walk
+    // rsb_ptr past the buffer and the speculative RSB load would read/branch
+    // on garbage (SIGSEGV).
+    RSBFrame* rsb_bottom{};
+    RSBFrame* rsb_top{};
     ir::Location current_loc{0};
     ir::Location prev_loc{0};
     void* pt{};
@@ -88,6 +98,8 @@ constexpr u32 state_offset_current_loc = offsetof(State, current_loc);
 constexpr u32 state_offset_prev_loc = offsetof(State, prev_loc);
 constexpr u32 state_offset_pt = offsetof(State, pt);
 constexpr u32 state_offset_rsb_pointer = offsetof(State, rsb_pointer);
+constexpr u32 state_offset_rsb_bottom = offsetof(State, rsb_bottom);
+constexpr u32 state_offset_rsb_top = offsetof(State, rsb_top);
 constexpr u32 state_offset_host_flags = offsetof(State, host_cpu_flags);
 constexpr u32 state_offset_blocking_linkage_address = offsetof(State, blocking_linkage_address);
 

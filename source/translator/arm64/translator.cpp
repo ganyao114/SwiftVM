@@ -72,15 +72,15 @@ struct Arm64Instance::Impl final {
                 //   no backpatching); unknown targets fall back to the
                 //   indirect dispatch table.
                 // FunctionBaseCompile: whole-function decode + compile
-                //   (TranslateIR(HIRFunction*) path).
-                // NOTE: FunctionBaseCompile is implemented but temporarily disabled
-                // pending a fix in the HIRBuilder→TranslateIR(HIRFunction*)
-                // path (the function-level register allocator produces bad
-                // allocations for multi-block functions decoded through the
-                // HIRBuilder; see the func_base path in Translate()).
+                //   (TranslateIR(HIRFunction*) path). The function-level linear
+                //   scan now accounts for terminal uses and runs over an RPO
+                //   numbering (ComputeRPO/IdByRPO in TranslateIR), fixing the
+                //   bad multi-block allocations. It is opt-in at runtime via
+                //   SVM_FUNC_BASE=1 (see Translate()); complex functions fall
+                //   back to block compilation.
                 .global_opts = Optimizations::ConstantFolding | Optimizations::DeadCodeRemove |
                                Optimizations::BlockLink | Optimizations::DirectBlockLink |
-                               Optimizations::ReturnStackBuffer,
+                               Optimizations::ReturnStackBuffer | Optimizations::FunctionBaseCompile,
                 .arm64_features = Arm64Features::None,
                 .stack_alignment = 16,
                 .page_table = nullptr,
@@ -97,7 +97,13 @@ struct Arm64Instance::Impl final {
     [[nodiscard]] void* Translate(LocationDescriptor pc) const {
         auto module = address_space->GetModule(pc);
         auto& m_config = module->GetModuleConfig();
-        auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile);
+        // Function-level compilation is opt-in: the opt must be set AND
+        // SVM_FUNC_BASE=1. Default stays block compilation so the known-good
+        // paths are untouched; simple functions opt into the whole-function
+        // path for validation.
+        const char* fb_env = std::getenv("SVM_FUNC_BASE");
+        auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&
+                         fb_env && std::strcmp(fb_env, "0") != 0;
 
         // Function-level compilation: decode the whole function (all
         // reachable blocks up to ret / indirect jump) into an HIRFunction
@@ -106,6 +112,12 @@ struct Arm64Instance::Impl final {
         // address-node map and the HIRBuilder's internal Function object
         // (TranslateIR pushes the HIRBuilder's Function into the module).
         if (func_base) {
+            // Best-effort: any failure in the whole-function path (an IR assert
+            // during decode/compile of an unsupported construct) falls back to
+            // the known-good block path below instead of crashing the guest.
+            void* func_code = nullptr;
+            bool compiled = false;
+            try {
             auto jit_guard = module->ModuleLockRead();
             ir::HIRBuilder builder{};
             auto* hir_func = builder.AppendFunction(pc);
@@ -114,12 +126,17 @@ struct Arm64Instance::Impl final {
             constexpr size_t kMaxFuncBlocks = 256;
             size_t decoded_count = 0;
             bool progress = true;
-            while (progress && decoded_count < kMaxFuncBlocks) {
+            bool function_ended = false;
+            while (progress && decoded_count < kMaxFuncBlocks && !function_ended) {
                 progress = false;
                 std::vector<LocationDescriptor> to_decode;
                 for (auto& hb : hir_func->GetHIRBlockList()) {
                     auto* blk = hb.GetBlock();
-                    if (blk->GetInstList().empty()) {
+                    // An undecoded block has neither instructions nor a
+                    // terminal. The synthetic entry block already carries a
+                    // LinkBlock terminal (and an INVALID start location) — it
+                    // must never be decoded, so require !HasTerminal().
+                    if (blk->GetInstList().empty() && !blk->HasTerminal()) {
                         to_decode.push_back(blk->GetStartLocation().Value());
                     }
                 }
@@ -129,22 +146,66 @@ struct Arm64Instance::Impl final {
                     decoder.Decode();
                     ++decoded_count;
                     progress = true;
+                    // A function-ending terminal (ret / svc) calls EndFunction
+                    // through the assembler and clears the current function —
+                    // stop decoding; the graph is already finalized.
+                    if (!builder.HasCurrentFunction()) {
+                        function_ended = true;
+                        break;
+                    }
                 }
             }
-            // Finalize the function graph (RPO, dominance, loops).
-            // Do NOT call builder.End(): it appends a spurious
-            // ReturnToDispatch terminal to the current block, which
-            // already has a terminal from the decoder.
-            hir_func->EndFunction();
+            // Finalize the function graph (predecessors/successors, blocks
+            // vector) unless a ret/svc terminal already did. Do NOT call
+            // builder.End(): it appends a spurious ReturnToDispatch terminal.
+            if (!function_ended) {
+                hir_func->EndFunction();
+            }
 
-            if (!module->GetAddressSpace().GetConfig().enable_jit) {
-                return nullptr;
+            // Complexity gate (see the x86 driver for the full rationale): only
+            // single-block, host-call-free functions take the whole-function
+            // path; anything else falls back to block compilation below.
+            bool too_complex = false;
+            size_t decoded_blocks = 0;
+            for (auto* hb : hir_func->GetHIRBlocks()) {
+                if (!hb) {
+                    continue;
+                }
+                auto* blk = hb->GetBlock();
+                if (blk->GetInstList().empty()) {
+                    continue;  // synthetic entry / undecoded successor
+                }
+                decoded_blocks++;
+                for (auto& inst : blk->GetInstList()) {
+                    if (inst.GetOp() == ir::OpCode::CallLambda) {
+                        too_complex = true;
+                        break;
+                    }
+                }
             }
-            auto* code_cache = backend::TranslateIR(module, hir_func);
-            if (code_cache) {
-                address_space->PushCodeCache(pc, code_cache);
+            if (decoded_blocks > 1) {
+                too_complex = true;
             }
-            return code_cache;
+
+            if (!too_complex) {
+                if (!module->GetAddressSpace().GetConfig().enable_jit) {
+                    return nullptr;
+                }
+                func_code = backend::TranslateIR(module, hir_func);
+                if (func_code) {
+                    address_space->PushCodeCache(pc, func_code);
+                }
+                compiled = true;
+            }
+            } catch (const std::exception&) {
+                // Unsupported construct in the whole-function path — fall back
+                // to block compilation (see the x86 driver for details).
+                compiled = false;
+            }
+            if (compiled) {
+                return func_code;
+            }
+            // Complex / failed function: fall through to block compilation.
         }
 
         // Block-level compilation path.

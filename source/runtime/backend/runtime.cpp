@@ -57,6 +57,11 @@ struct Runtime::Impl final {
         // guard slots absorb a modest overflow.
         if (True(address_space->GetConfig().global_opts & Optimizations::ReturnStackBuffer)) {
             state->rsb_pointer = &rsb_buffer.rsb_frames[backend::rsb_stack_size];
+            // JIT overflow/underflow guards: push skips at the bottom (full),
+            // pop falls back to the dispatcher at the top (empty). See
+            // JitContext::EmitRSBPush / EmitRSBPop.
+            state->rsb_bottom = &rsb_buffer.rsb_frames[0];
+            state->rsb_top = &rsb_buffer.rsb_frames[backend::rsb_stack_size];
         }
         jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
     }
@@ -316,6 +321,16 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     if (jit_state.jit_state == backend::JitState::Cached) {
         return module->GetJitCache(jit_state);
     }
+    // Establish a consistent RPO layout before allocation/emission: the
+    // function-level linear scan and the emitter (Translate(HIRFunction*) walks
+    // GetHIRBlocksRPO) both assume instruction ids are dense in emission order.
+    // ComputeRPO fills blocks_rpo; IdByRPO renumbers every instruction 0..N-1 in
+    // that order (and re-keys the HIRValue map), so a value's OrderId lines up
+    // with where it is actually emitted. Skipped for a single-block function
+    // beyond the (harmless) renumber. Must run after EndFunction (the driver
+    // calls it) since predecessors/successors are built there.
+    function->ComputeRPO();
+    function->IdByRPO();
     const auto& address_space = module->GetAddressSpace();
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};

@@ -53,8 +53,21 @@ public:
     //   from the L2 dispatch table and branches directly — skipping the
     //   trampoline dispatcher.  On a miss (mismatch, empty slot, or
     //   underflow) falls through to the normal Ret-to-dispatcher path.
+    //
+    // Bounds guards (State::rsb_bottom / rsb_top, wired in runtime.cpp):
+    //   Push skips when rsb_ptr has reached the buffer bottom (stack full) so
+    //   the pre-decrement store never writes out of bounds.
+    //   Pop falls back to the dispatcher when rsb_ptr has reached the empty
+    //   top (more guest rets than calls) so the speculative load never reads
+    //   past the buffer. Both convert an RSB imbalance into a safe dispatcher
+    //   round-trip instead of a SIGSEGV.
     void EmitRSBPush(u64 guest_return_addr, u32 dispatch_index);
     void EmitRSBPop();
+
+    // Reserves (GetOrPut) the L2 dispatch-table slot for a guest address and
+    // returns its slot index (2*entry+1, pointing at the entry's value word).
+    // Used by the translator to build RSB push frames at call sites.
+    [[nodiscard]] u32 GetDispatchIndex(u64 guest_addr);
 
     void Finish();
     [[nodiscard]] u32 CurrentBufferSize();

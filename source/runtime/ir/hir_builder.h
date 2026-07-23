@@ -294,6 +294,13 @@ public:
     void AddLoop(HIRLoop* loop);
     void MergeAdjacentBlocks(HIRBlock* left, HIRBlock* right);
     bool SplitBlock(HIRBlock* new_block, HIRBlock* old_block);
+    // Populates blocks_rpo with the reverse-post-order of the CFG reachable
+    // from the entry block (the synthetic entry itself is excluded — it holds
+    // no guest instructions, only a LinkBlock to the first real block). Must be
+    // called after EndFunction (predecessors/successors are built there) and
+    // before IdByRPO / function-level register allocation / emission, all of
+    // which rely on a consistent RPO instruction numbering.
+    void ComputeRPO();
     void IdByRPO();
 
     void EndBlock(Terminal terminal);
@@ -376,10 +383,26 @@ public:
 
     HIRFunction* AppendFunction(Location start, Location end = {});
 
+    // False once a function-ending terminal (Return/ReturnToHost/...) has been
+    // emitted — those call EndFunction and clear the current function. The
+    // function-level decode loop uses this to stop decoding and avoid a second
+    // (corrupting) EndFunction call.
+    [[nodiscard]] bool HasCurrentFunction() const { return current_function != nullptr; }
+
     HIRFunctionList& GetHIRFunctions();
 
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
     Inst* AppendInst(OpCode op, const Args&... args) {
+        // A function-ending terminal (Return/ReturnToHost) clears
+        // current_function mid-Decode, but the x86 decoder still emits a
+        // trailing AdvancePC right after it (decoder.cc decode loop). In block
+        // mode that lands harmlessly in the block's inst list; here there is no
+        // current function to append to. AdvancePC is only a flags-flush marker
+        // (the backend emits no pc motion for it) and the block-end FlushFlags +
+        // terminal MergeNZCV already cover it, so dropping it is a safe no-op.
+        if (!current_function) {
+            return nullptr;
+        }
         return current_function->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
     }
 
