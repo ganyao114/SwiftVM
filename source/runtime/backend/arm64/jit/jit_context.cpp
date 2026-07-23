@@ -300,15 +300,32 @@ void JitContext::ReturnToDispatcher(const Register& location) {
 //   slot, or underflow) fall through to the normal Ret-to-dispatcher path.
 
 void JitContext::EmitRSBPush(u64 guest_return_addr, u32 dispatch_index) {
+    Label rsb_full;
+    // Overflow guard: if rsb_ptr has already reached the bottom of the buffer
+    // (state->rsb_bottom == &rsb_frames[0], stack full), a pre-decrement push
+    // would store out of bounds — skip the push and let the ret take the slow
+    // dispatcher path instead. Unsigned compare: skip when rsb_ptr <= bottom.
+    __ Ldr(ip0, MemOperand(state, state_offset_rsb_bottom));
+    __ Cmp(rsb_ptr, ip0);
+    __ B(&rsb_full, ls);
     // ip0 (x16) = guest return address, ip1 (x17) = dispatch table slot.
     __ Mov(ip0, guest_return_addr);
     __ Mov(ip1, static_cast<u64>(dispatch_index));
     // Pre-decrement push: rsb_ptr -= 16, then store the pair.
     __ Stp(ip0, ip1, MemOperand(rsb_ptr, -16, PreIndex));
+    __ Bind(&rsb_full);
 }
 
 void JitContext::EmitRSBPop() {
     Label rsb_miss;
+    // Underflow guard: if rsb_ptr has reached the empty top of the stack
+    // (state->rsb_top == &rsb_frames[rsb_stack_size]), there are more guest
+    // rets than recorded calls, so no valid prediction exists — fall back to
+    // the dispatcher without reading the buffer (avoids an out-of-bounds load
+    // and a wild branch). Unsigned compare: fall back when rsb_ptr >= top.
+    __ Ldr(ip0, MemOperand(state, state_offset_rsb_top));
+    __ Cmp(rsb_ptr, ip0);
+    __ B(&rsb_miss, hs);
     // Load the predicted guest return address from the top RSB frame.
     __ Ldr(ip0, MemOperand(rsb_ptr, 0));
     // Load the actual return target (set by the frontend's ret instruction).
@@ -317,7 +334,8 @@ void JitContext::EmitRSBPop() {
     __ B(&rsb_miss, ne);
     // Prediction hit: load the L2 dispatch-table slot index and look up the
     // compiled code pointer.  cache (x27) holds the L2 table base at all
-    // times (loaded once at runtime entry).
+    // times (loaded once at runtime entry).  dispatch_index == 2*entry+1
+    // points straight at the entry's value word (an 8-byte code pointer).
     __ Ldr(ip, MemOperand(rsb_ptr, 8));   // ip (x11) = dispatch_index
     __ Ldr(ip2, MemOperand(cache, ip, LSL, 3));  // ip2 (x14) = code ptr
     __ Cbz(ip2, &rsb_miss);               // empty slot → fallback
@@ -327,6 +345,10 @@ void JitContext::EmitRSBPop() {
     // Miss / underflow: fall back to the trampoline dispatcher.
     __ Bind(&rsb_miss);
     __ Ret();
+}
+
+u32 JitContext::GetDispatchIndex(u64 guest_addr) {
+    return module->GetDispatchIndex(ir::Location{guest_addr});
 }
 
 void JitContext::Finish() { __ FinalizeCode(); }

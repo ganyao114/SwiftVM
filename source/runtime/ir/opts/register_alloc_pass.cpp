@@ -110,6 +110,60 @@ private:
     }
 
     void CollectLiveIntervals(HIRFunction* hir_function) {
+        // A value referenced ONLY by a block terminal (terminal::If.cond, a
+        // Switch dispatch value, ...) never appears in the HIRValue use list:
+        // HIRFunction::UseInst walks instruction arguments only, and EndBlock
+        // stores the terminal without registering uses for the values it reads.
+        // Left unaccounted, such a value's live interval collapses to [def, def]
+        // and the linear scan frees its host register while the terminal (emitted
+        // at block exit, after every instruction) still reads it — the register
+        // gets handed to a later, overlapping interval and the terminal branches
+        // on a clobbered value (SIGSEGV). Mirror the block-level walk_terminal
+        // below: extend each terminal-used value to the last instruction id of
+        // the block that owns the terminal (function-global id).
+        Map<u32, u32> terminal_end{};
+        for (auto* hir_block : hir_function->GetHIRBlocks()) {
+            auto* lir_block = hir_block->GetBlock();
+            u32 block_end = 0;
+            for (auto& inst : lir_block->GetInstList()) {
+                block_end = std::max<u32>(block_end, inst.Id());
+            }
+            if (block_end == 0) {
+                continue;  // empty block — nothing can be live out of it
+            }
+            auto extend_use = [&terminal_end, block_end](const Value& value) {
+                if (!value.Defined()) {
+                    return;
+                }
+                auto id = value.Def()->IsBitCastOperation()
+                                  ? value.Def()->GetArg<Value>(0).Id()
+                                  : value.Id();
+                auto& end = terminal_end[id];
+                end = std::max(end, block_end);
+            };
+            std::function<void(const Terminal&)> walk_terminal =
+                    [&walk_terminal, &extend_use](const Terminal& term) {
+                        VisitVariant<void>(term, [&walk_terminal, &extend_use](auto t) {
+                            using T = std::decay_t<decltype(t)>;
+                            if constexpr (std::is_same_v<T, terminal::If>) {
+                                extend_use(t.cond);
+                                walk_terminal(t.then_);
+                                walk_terminal(t.else_);
+                            } else if constexpr (std::is_same_v<T, terminal::Switch>) {
+                                extend_use(t.value);
+                                for (auto& c : t.cases) {
+                                    walk_terminal(c.then);
+                                }
+                            } else if constexpr (std::is_same_v<T, terminal::Condition>) {
+                                walk_terminal(t.then_);
+                                walk_terminal(t.else_);
+                            } else if constexpr (std::is_same_v<T, terminal::CheckHalt>) {
+                                walk_terminal(t.else_);
+                            }
+                        });
+                    };
+            walk_terminal(lir_block->GetTerminal());
+        }
         for (auto& hir_value : hir_function->GetHIRValues()) {
             auto instr = hir_value.value.Def();
             if (instr->IsGetHostRegOperation()) {
@@ -132,6 +186,11 @@ private:
             std::for_each(hir_value.uses.begin(), hir_value.uses.end(), [&end](auto& use) {
                 end = std::max(end, (u32) use.inst->Id());
             });
+            // Extend for terminal uses (see above): the value must stay live
+            // until the end of the block whose terminal reads it.
+            if (auto it = terminal_end.find(instr->Id()); it != terminal_end.end()) {
+                end = std::max(end, it->second);
+            }
             if (auto inst = hir_value.value.Def(); inst->IsPseudoOperation()) {
                 start = inst->GetArg<Value>(0).Id();
             }

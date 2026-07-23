@@ -199,6 +199,45 @@ void HIRFunction::MergeAdjacentBlocks(HIRBlock* left, HIRBlock* right) {}
 
 bool HIRFunction::SplitBlock(HIRBlock* new_block, HIRBlock* old_block) { return false; }
 
+void HIRFunction::ComputeRPO() {
+    blocks_rpo.clear();
+    if (!entry_block) {
+        return;
+    }
+    // Iterative DFS over successors producing a post-order, then reverse it.
+    // Successors (not predecessors) are walked so the ordering is a valid
+    // forward layout for emission and linear-scan liveness.
+    HIRBlockSet visited{};
+    Vector<HIRBlock*> post_order{};
+    post_order.reserve(MaxBlockCount());
+    struct Frame {
+        HIRBlock* block;
+        size_t next_succ;
+    };
+    Vector<Frame> stack{};
+    stack.push_back({entry_block, 0});
+    visited.insert(entry_block);
+    while (!stack.empty()) {
+        auto& frame = stack.back();
+        auto successors = frame.block->GetSuccessors();
+        if (frame.next_succ < successors.size()) {
+            auto* succ = successors[frame.next_succ++];
+            if (visited.insert(succ).second) {
+                stack.push_back({succ, 0});
+            }
+        } else {
+            post_order.push_back(frame.block);
+            stack.pop_back();
+        }
+    }
+    // Reverse → RPO; drop the synthetic entry block (no guest instructions).
+    for (auto it = post_order.rbegin(); it != post_order.rend(); ++it) {
+        if (*it != entry_block) {
+            blocks_rpo.push_back(**it);
+        }
+    }
+}
+
 void HIRFunction::IdByRPO() {
     u32 cur_inst_id{0};
     // Re id inst
@@ -255,27 +294,68 @@ u16 HIRFunction::MaxInstrCount() { return inst_order_id; }
 u16 HIRFunction::MaxLocalCount() { return max_local_id + 1; }
 
 void HIRFunction::UseInst(Inst* inst) {
-    for (int i = 0; i < Inst::max_args; ++i) {
-        auto& arg = inst->ArgAt(i);
-        if (arg.IsValue()) {
-            auto value = inst->GetArg<Value>(i);
-            if (auto hir_value = GetHIRValue(value); hir_value) {
-                hir_value->Use(inst, i);
+    // Walk the instruction's LOGICAL arguments (from the opcode meta), not the
+    // physical slot array. An Operand argument occupies three physical slots
+    // (op + left + right) whose inner register/immediate slots are themselves
+    // typed Value/Imm; a physical-slot walk (the old ArgAt(i) loop) mistakes
+    // those inner slots for top-level Value arguments and calls GetArg with an
+    // out-of-range logical index, tripping the PublicIndex assert for any
+    // instruction carrying an Operand (e.g. Xor reg, mem). GetArg<T>(i) takes a
+    // logical index and expands it via PublicIndex, so iterating arg_types keeps
+    // the two in lockstep.
+    const auto& info = GetIRMetaInfo(inst->GetOp());
+    for (int i = 0; i < static_cast<int>(info.arg_types.size()); ++i) {
+        switch (info.arg_types[i]) {
+            case ArgType::Value: {
+                auto value = inst->GetArg<Value>(i);
+                if (auto hir_value = GetHIRValue(value); hir_value) {
+                    hir_value->Use(inst, i);
+                }
+                break;
             }
-        } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
-            auto value = inst->GetArg<Lambda>(i).GetValue();
-            if (auto hir_value = GetHIRValue(value); hir_value) {
-                hir_value->Use(inst, i);
-            }
-        } else if (arg.IsParams()) {
-            auto& params = arg.Get<Params>();
-            for (auto param : params) {
-                if (auto data = param.data; data.IsValue()) {
-                    if (auto hir_value = GetHIRValue(data.value); hir_value) {
-                        hir_value->Use(inst, HIRUse::USE_FUNC_CALL);
+            case ArgType::Lambda: {
+                auto lambda = inst->GetArg<Lambda>(i);
+                if (lambda.IsValue()) {
+                    if (auto hir_value = GetHIRValue(lambda.GetValue()); hir_value) {
+                        hir_value->Use(inst, i);
                     }
                 }
+                break;
             }
+            case ArgType::Params: {
+                auto params = inst->GetArg<Params>(i);
+                for (auto param : params) {
+                    if (auto data = param.data; data.IsValue()) {
+                        if (auto hir_value = GetHIRValue(data.value); hir_value) {
+                            hir_value->Use(inst, HIRUse::USE_FUNC_CALL);
+                        }
+                    }
+                }
+                break;
+            }
+            case ArgType::Operand: {
+                // An Operand nests up to two values (memory base / index).
+                // GetValues counts these as uses, so liveness must too — else a
+                // value feeding a memory operand dies at its def and its
+                // register is reused before the load/store reads it (bad
+                // address → guest signal). Register both sides when present.
+                auto operand = inst->GetArg<Operand>(i);
+                auto left = operand.GetLeft();
+                if (left.IsValue()) {
+                    if (auto hir_value = GetHIRValue(left.value); hir_value) {
+                        hir_value->Use(inst, i);
+                    }
+                }
+                auto right = operand.GetRight();
+                if (right.IsValue()) {
+                    if (auto hir_value = GetHIRValue(right.value); hir_value) {
+                        hir_value->Use(inst, i);
+                    }
+                }
+                break;
+            }
+            default:
+                break;
         }
     }
 }
@@ -368,29 +448,43 @@ HIRBlock* HIRBuilder::LinkBlock(const terminal::LinkBlock& link) {
     return next_block;
 }
 
+// A function-ending terminal clears current_function. The x86 decoder can emit
+// a second one after the function already ended (e.g. `hlt` after an exit
+// syscall); in function mode that is dead, so treat it as a no-op instead of
+// asserting (the translator driver falls back to block compilation for such
+// complex functions).
+
 void HIRBuilder::ReturnToDispatcher() {
-    ASSERT_MSG(current_function, "current function is null!");
+    if (!current_function) {
+        return;
+    }
     current_function->EndBlock(ir::terminal::ReturnToDispatch{});
     current_function->EndFunction();
     current_function = {};
 }
 
 void HIRBuilder::ReturnToHost() {
-    ASSERT_MSG(current_function, "current function is null!");
+    if (!current_function) {
+        return;
+    }
     current_function->EndBlock(ir::terminal::ReturnToHost{});
     current_function->EndFunction();
     current_function = {};
 }
 
 void HIRBuilder::Return() {
-    ASSERT_MSG(current_function, "current function is null!");
+    if (!current_function) {
+        return;
+    }
     current_function->EndBlock(terminal::PopRSBHint{});
     current_function->EndFunction();
     current_function = {};
 }
 
 void HIRBuilder::End() {
-    ASSERT_MSG(current_function, "current function is null!");
+    if (!current_function) {
+        return;
+    }
     current_function->EndBlock(terminal::ReturnToDispatch{});
     current_function->EndFunction();
     current_function = {};
