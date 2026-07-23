@@ -57,6 +57,28 @@ struct Runtime::Impl final {
     // instruction is never re-executed.
     static constexpr int kFaultPriority = 100;  // SMC handler will take 0.
 
+    // SMC write-protect fault handler (SignalHandler chain, priority 0 —
+    // ahead of the JIT guest-fault recovery). A guest store to a guest page
+    // holding translated code faults on the write protection installed by
+    // SmcTracker::RegisterBlock; the tracker opens a write window (page back
+    // to RW, stale blocks' dispatch slots zeroed) and the faulting store is
+    // re-executed on sigreturn. Actual invalidation is deferred to
+    // CloseWriteWindow after the current JitRun returns.
+    static constexpr int kSmcPriority = 0;
+
+    static bool HandleSmcFault(void* ctx, ucontext_t* uctx, int sig, siginfo_t* info) {
+        auto* self = static_cast<Impl*>(ctx);
+        if (tls_active_runtime != self) {
+            return false;  // not executing on this thread
+        }
+        if (sig != SIGSEGV && sig != SIGBUS) {
+            return false;
+        }
+        const auto fault_addr = reinterpret_cast<std::uintptr_t>(info->si_addr);
+        return self->address_space->GetSmcTracker().HandleWriteFault(
+                *self->address_space, self->l1_code_cache, fault_addr);
+    }
+
     static bool HandleFault(void* ctx, ucontext_t* uctx, int sig, siginfo_t* info) {
         auto* self = static_cast<Impl*>(ctx);
         if (tls_active_runtime != self) {
@@ -174,6 +196,16 @@ struct Runtime::Impl final {
                 }
                 // JIT Run!
                 hr = JitRun(cache);
+                // SMC write-window close (Phase 4): if a guest store hit a
+                // write-protected code page during this JitRun, the stale
+                // translations are invalidated now — the guest is back on
+                // the host side, so freeing JIT code and editing module
+                // maps is safe. Runs before the hr checks so it also covers
+                // the CodeMiss/CacheMiss exits. NOTE: with DirectBlockLink
+                // disabled HaltReason::BlockLinkage is never produced; if it
+                // is ever enabled, the linkage patch below must be ordered
+                // against invalidation of the *previous* block.
+                address_space->GetSmcTracker().CloseWriteWindow(*address_space, l1_code_cache);
             } else {
                 // IR Interpreter
                 hr = Interpreter();
@@ -208,7 +240,9 @@ struct Runtime::Impl final {
     std::vector<u8> state_buffer{};
     backend::State* state{};
     backend::AddressSpace* address_space{};
-    TranslateTable l1_code_cache{l1_cache_bits};
+    // mutable: the JIT dispatcher writes L1 entries through the raw
+    // state->l1_code_cache pointer even from const Run paths.
+    mutable TranslateTable l1_code_cache{l1_cache_bits};
     backend::interp::InterpStack interp_stack;
     std::atomic_bool running{true};
     backend::Trampolines::RuntimeEntry jit_entry{};
@@ -216,11 +250,13 @@ struct Runtime::Impl final {
 
 Runtime::Runtime(Instance* instance)
         : impl(std::make_unique<Impl>(reinterpret_cast<backend::AddressSpace*>(instance))) {
-    // Process-wide sigaction handlers (idempotent) + this runtime's entry in
-    // the fault handler chain. The chain is process-global; HandleFault
-    // filters by the thread-local active runtime so only the executing
-    // runtime claims a fault.
+    // Process-wide sigaction handlers (idempotent) + this runtime's entries
+    // in the fault handler chain. The chain is process-global; both handlers
+    // filter by the thread-local active runtime so only the executing
+    // runtime claims a fault. SMC sorts first (priority 0), the JIT
+    // guest-fault recovery second (priority 100).
     backend::SignalHandler::Install();
+    backend::SignalHandler::RegisterHandler(&Impl::HandleSmcFault, impl.get(), Impl::kSmcPriority);
     backend::SignalHandler::RegisterHandler(&Impl::HandleFault, impl.get(), Impl::kFaultPriority);
 }
 
@@ -352,6 +388,26 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
         jit_state.jit_state = backend::JitState::Cached;
         jit_state.cache_id = idx;
         jit_state.offset_in = buffer.offset;
+        // SMC tracking (Phase 4): fix the block's guest end location (the
+        // frontends never set node_size; AdvancePC immediates are per-
+        // instruction sizes and survive the opt pipeline, so their sum is
+        // the block's guest length) and write-protect the covered pages.
+        // Read-only (static) modules skip protection: their guests cannot
+        // legally self-modify.
+        if (!module_config.read_only) {
+            const VAddr block_start = block->GetStartLocation().Value();
+            u64 block_size = 0;
+            for (auto& inst : block->GetInstList()) {
+                if (inst.GetOp() == ir::OpCode::AdvancePC) {
+                    block_size += inst.GetArg<ir::Imm>(0).Get();
+                }
+            }
+            if (block_size) {
+                block->SetEndLocation(ir::Location(block_start + block_size));
+            }
+            address_space.GetSmcTracker().RegisterBlock(
+                    block.get(), block_start, block->GetEndLocation().Value());
+        }
         block->DestroyInstrs();
         return buffer.exec_data;
     }

@@ -90,6 +90,8 @@ add_library(swift_runtime STATIC
         backend/runtime.h
         backend/signal_handler.cpp
         backend/signal_handler.h
+        backend/smc_tracker.cpp
+        backend/smc_tracker.h
         backend/entrypoint.h
         backend/code_cache.cpp
         backend/code_cache.h

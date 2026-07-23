@@ -275,6 +275,40 @@ bool Module::LookupFault(const u8* host_pc, FaultEntry& out) {
     return true;
 }
 
+void Module::RemoveFaultEntries(const u8* host_start) {
+    std::unique_lock guard(cache_lock);
+    std::erase_if(fault_table,
+                  [&](const FaultEntry& e) { return e.host_start == host_start; });
+}
+
+void Module::InvalidateBlock(ir::Block* block) {
+    u8* exec_ptr = nullptr;
+    {
+        auto block_guard = block->LockWrite();
+        auto& jit_cache = block->GetJitCache();
+        if (jit_cache.jit_state.get<JitState>() == JitState::Cached) {
+            exec_ptr = static_cast<u8*>(GetJitCache(jit_cache));
+            // Reset before Remove() below: a fresh block re-created at this
+            // location must not see a stale Cached state (and a zeroed
+            // JitCache is exactly what the frontend's "fresh node" workaround
+            // expects).
+            jit_cache.jit_state = JitState::None;
+            jit_cache.cache_id = 0;
+            jit_cache.offset_in = 0;
+            jit_cache.cache_size = 0;
+        }
+    }
+    if (exec_ptr) {
+        RemoveFaultEntries(exec_ptr);
+        if (auto* cache = GetCodeCache(exec_ptr); cache) {
+            cache->FreeCode(exec_ptr);
+        }
+    }
+    // Last: removes the node from the address map and releases the module's
+    // reference — `block` may be destroyed here.
+    Remove(block);
+}
+
 void Module::DestroyNodes() {
     address_node_map.Destroy();
 }
