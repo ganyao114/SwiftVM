@@ -183,6 +183,67 @@ static u64 RepStos8(u64 dst, u64 value, u64 count) {
     return dst + count * 8;
 }
 
+// rep cmps/scas: run the early-terminating comparison loop and return the
+// number of elements actually compared (the decoder reloads the final pair to
+// produce flags). REPZ (repnz=0) stops on the first not-equal element; REPNZ
+// (repnz=1) stops on the first equal element. Separate Z/NZ entry points keep
+// the decoder from packing a mode bit with a flag-clobbering OR.
+static u64 RepCmpsN(const u8* s, const u8* d, u64 count, u64 repnz, u64 sz) {
+    u64 i = 0;
+    while (i < count) {
+        bool eq = std::memcmp(s + i * sz, d + i * sz, sz) == 0;
+        ++i;
+        if (repnz ? eq : !eq) {
+            break;
+        }
+    }
+    return i;
+}
+#define DEFINE_REP_CMPS(name, sz, repnz)                                                           \
+    static u64 name(u64 rsi, u64 rdi, u64 count) {                                                 \
+        const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);                         \
+        return RepCmpsN(reinterpret_cast<const u8*>(rsi + bias),                                  \
+                         reinterpret_cast<const u8*>(rdi + bias), count, repnz, sz);               \
+    }
+DEFINE_REP_CMPS(RepCmpsZ1, 1, 0)
+DEFINE_REP_CMPS(RepCmpsNZ1, 1, 1)
+DEFINE_REP_CMPS(RepCmpsZ2, 2, 0)
+DEFINE_REP_CMPS(RepCmpsNZ2, 2, 1)
+DEFINE_REP_CMPS(RepCmpsZ4, 4, 0)
+DEFINE_REP_CMPS(RepCmpsNZ4, 4, 1)
+DEFINE_REP_CMPS(RepCmpsZ8, 8, 0)
+DEFINE_REP_CMPS(RepCmpsNZ8, 8, 1)
+#undef DEFINE_REP_CMPS
+
+// rep scas: compare the accumulator (acc) against each [RDI] element.
+static u64 RepScasN(const u8* acc, const u8* d, u64 count, u64 repnz, u64 sz) {
+    u64 i = 0;
+    while (i < count) {
+        bool eq = std::memcmp(acc, d + i * sz, sz) == 0;
+        ++i;
+        if (repnz ? eq : !eq) {
+            break;
+        }
+    }
+    return i;
+}
+#define DEFINE_REP_SCAS(name, sz, repnz)                                                           \
+    static u64 name(u64 acc, u64 rdi, u64 count) {                                                 \
+        const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);                         \
+        u8 ab[sz];                                                                                 \
+        std::memcpy(ab, &acc, sz);                                                                 \
+        return RepScasN(ab, reinterpret_cast<const u8*>(rdi + bias), count, repnz, sz);            \
+    }
+DEFINE_REP_SCAS(RepScasZ1, 1, 0)
+DEFINE_REP_SCAS(RepScasNZ1, 1, 1)
+DEFINE_REP_SCAS(RepScasZ2, 2, 0)
+DEFINE_REP_SCAS(RepScasNZ2, 2, 1)
+DEFINE_REP_SCAS(RepScasZ4, 4, 0)
+DEFINE_REP_SCAS(RepScasNZ4, 4, 1)
+DEFINE_REP_SCAS(RepScasZ8, 8, 0)
+DEFINE_REP_SCAS(RepScasNZ8, 8, 1)
+#undef DEFINE_REP_SCAS
+
 // ---------------------------------------------------------------------------
 // SSE host helpers. Lane-wise vector semantics the IR cannot express (the
 // JIT Vec4* emitters are stubs) go through CallHost, mirroring the RepMovs /
@@ -438,6 +499,48 @@ static u64 Pmullw64(u64 a, u64 b) {
     }
     return r;
 }
+// pmaddwd: dst.d[i] = a.w[2i]*b.w[2i] + a.w[2i+1]*b.w[2i+1] (signed, per half).
+static u64 Pmaddwd64(u64 a, u64 b) {
+    u64 r = 0;
+    for (u32 i = 0; i < 2; ++i) {
+        s32 p0 = s32(s16(a >> (32 * i))) * s32(s16(b >> (32 * i)));
+        s32 p1 = s32(s16(a >> (32 * i + 16))) * s32(s16(b >> (32 * i + 16)));
+        r |= u64(u32(p0 + p1)) << (32 * i);
+    }
+    return r;
+}
+// movshdup/movsldup: duplicate the odd/even dwords of the source half.
+static u64 Movshdup64(u64, u64 b) {
+    u32 hi = u32(b >> 32);
+    return u64(hi) | (u64(hi) << 32);
+}
+static u64 Movsldup64(u64, u64 b) {
+    u32 lo = u32(b);
+    return u64(lo) | (u64(lo) << 32);
+}
+// haddps/hsubps: horizontal add/sub of the two dword pairs in {lo, hi}; the
+// result qword = {pair0, pair1}. sub selects subtraction.
+static u64 HaddpsHalf(u64 lo, u64 hi, u64 sub) {
+    u32 d[4] = {u32(lo), u32(lo >> 32), u32(hi), u32(hi >> 32)};
+    float f[4];
+    std::memcpy(f, d, 16);
+    float r0 = sub ? f[0] - f[1] : f[0] + f[1];
+    float r1 = sub ? f[2] - f[3] : f[2] + f[3];
+    u32 o[2];
+    std::memcpy(&o[0], &r0, 4);
+    std::memcpy(&o[1], &r1, 4);
+    return u64(o[0]) | (u64(o[1]) << 32);
+}
+// pextrw: extract word (imm & 7) from the 128-bit {lo, hi} source.
+static u64 Pextrw64(u64 lo, u64 hi, u64 imm) {
+    u64 src = (imm & 4) ? hi : lo;
+    return u64(u16(src >> (16 * (imm & 3))));
+}
+// pinsrw: insert the low word into lane (lane & 3) of a qword half.
+static u64 PinsrwHalf(u64 dst_half, u64 word, u64 lane) {
+    u64 mask = ~(u64(0xFFFF) << (16 * (lane & 3)));
+    return (dst_half & mask) | (u64(u16(word)) << (16 * (lane & 3)));
+}
 // addps/subps/mulps/divps: packed single-precision float, 2 lanes per u64 half.
 #define DEFINE_PS_HALF(name, op)                                                                     \
     static u64 name(u64 a, u64 b) {                                                                  \
@@ -455,6 +558,24 @@ DEFINE_PS_HALF(SubpsHalf, -)
 DEFINE_PS_HALF(MulpsHalf, *)
 DEFINE_PS_HALF(DivpsHalf, /)
 #undef DEFINE_PS_HALF
+// addss/subss/mulss/divss: scalar single-precision float on the low dword;
+// bits [63:32] of the low qword are preserved (high qword untouched by caller).
+#define DEFINE_SS_HALF(name, op)                                                                    \
+    static u64 name(u64 a, u64 b) {                                                                 \
+        float fa, fb, fr;                                                                           \
+        u32 la = u32(a), lb = u32(b);                                                               \
+        std::memcpy(&fa, &la, 4);                                                                   \
+        std::memcpy(&fb, &lb, 4);                                                                   \
+        fr = fa op fb;                                                                              \
+        u32 r;                                                                                      \
+        std::memcpy(&r, &fr, 4);                                                                    \
+        return (a & 0xFFFFFFFF00000000ull) | u64(r);                                                \
+    }
+DEFINE_SS_HALF(AddssHalf, +)
+DEFINE_SS_HALF(SubssHalf, -)
+DEFINE_SS_HALF(MulssHalf, *)
+DEFINE_SS_HALF(DivssHalf, /)
+#undef DEFINE_SS_HALF
 // pshuflw/pshufhw: word shuffle within a qword.
 static u64 Pshufw64(u64 v, u64 imm) {
     u64 r = 0;
@@ -507,6 +628,32 @@ static u64 Cvtss2sd64(u64 src, u64) {
 static u64 Popcnt64(u64 v, u64) { return u64(__builtin_popcountll(v)); }
 static u64 Bswap64(u64 v, u64 width) {
     return width == 32 ? u64(__builtin_bswap32(u32(v))) : __builtin_bswap64(v);
+}
+// lzcnt: count of leading zero bits within the architectural width.
+static u64 Lzcnt64(u64 v, u64 width) {
+    if (!v) {
+        return width;
+    }
+    if (width == 64) {
+        return u64(__builtin_clzll(v));
+    }
+    if (width == 32) {
+        return u64(__builtin_clz(u32(v)));
+    }
+    return u64(__builtin_clz(u32(v)) - (32 - width));
+}
+// crc32 (SSE4.2 CRC-32C / Castagnoli, reflected poly 0x82F63B78). The hardware
+// instruction performs no pre/post complement; nbytes is the source width.
+static u64 Crc32c64(u64 crc, u64 data, u64 nbytes) {
+    u32 c = u32(crc);
+    for (u64 i = 0; i < nbytes; ++i) {
+        c ^= u32(data & 0xFF);
+        data >>= 8;
+        for (u32 j = 0; j < 8; ++j) {
+            c = (c >> 1) ^ (0x82F63B78u & (~(c & 1) + 1));
+        }
+    }
+    return u64(c);
 }
 static u64 Pmovmskb(u64 lo, u64 hi) {
     u64 r = 0;
@@ -884,6 +1031,15 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             break;
         case I_STOS:
             DecodeStos(insn);
+            break;
+        case I_LODS:
+            DecodeLods(insn);
+            break;
+        case I_CMPS:
+            DecodeCmps(insn);
+            break;
+        case I_SCAS:
+            DecodeScas(insn);
             break;
         case I_CMOVA:
             DecodeCondMov(insn, Cond::AT);
@@ -1305,6 +1461,42 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_DIVPS:
             DecodeVecHalfOp(insn, &DivpsHalf);
             break;
+        case I_ADDSS:
+            DecodeScalarFloatOp(insn, &AddssHalf);
+            break;
+        case I_SUBSS:
+            DecodeScalarFloatOp(insn, &SubssHalf);
+            break;
+        case I_MULSS:
+            DecodeScalarFloatOp(insn, &MulssHalf);
+            break;
+        case I_DIVSS:
+            DecodeScalarFloatOp(insn, &DivssHalf);
+            break;
+        case I_PMADDWD:
+            DecodeVecHalfOp(insn, &Pmaddwd64);
+            break;
+        case I_MOVSHDUP:
+            DecodeVecHalfOp(insn, &Movshdup64);
+            break;
+        case I_MOVSLDUP:
+            DecodeVecHalfOp(insn, &Movsldup64);
+            break;
+        case I_MOVDDUP:
+            DecodeMovddup(insn);
+            break;
+        case I_HADDPS:
+            DecodeHaddps(insn, false);
+            break;
+        case I_HSUBPS:
+            DecodeHaddps(insn, true);
+            break;
+        case I_PEXTRW:
+            DecodePextrw(insn);
+            break;
+        case I_PINSRW:
+            DecodePinsrw(insn);
+            break;
         case I_PMULLW:
             DecodeVecHalfOp(insn, &Pmullw64);
             break;
@@ -1331,6 +1523,12 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             break;
         case I_BSWAP:
             DecodeBswap(insn);
+            break;
+        case I_LZCNT:
+            DecodeLzcnt(insn);
+            break;
+        case I_CRC32:
+            DecodeCrc32(insn);
             break;
         case I_LOOP:
         case I_LOOPZ:
@@ -2036,6 +2234,157 @@ void X64Decoder::DecodeStos(_DInst& insn) {
         auto step = ir::Imm(u64(ir::GetValueSizeByte(size)));
         R(dst_reg, __ Add(dst_addr, ir::Operand{step}));
     }
+}
+
+void X64Decoder::DecodeLods(_DInst& insn) {
+    // lods: accumulator = [RSI]; RSI += size. REP: only the final element
+    // survives (each iteration overwrites the accumulator). DF assumed 0.
+    auto& op0 = insn.ops[0];
+    const auto size = GetSize(op0.size);
+    const u64 step = ir::GetValueSizeByte(size);
+    auto si_reg = is_64bit ? _RegisterType::R_RSI : _RegisterType::R_ESI;
+    auto cnt_reg = is_64bit ? _RegisterType::R_RCX : _RegisterType::R_ECX;
+    auto acc_reg = [step] {
+        switch (step) {
+            case 1: return _RegisterType::R_AL;
+            case 2: return _RegisterType::R_AX;
+            case 4: return _RegisterType::R_EAX;
+            default: return _RegisterType::R_RAX;
+        }
+    }();
+    auto si0 = R(si_reg);
+    if ((insn.flags & FLAG_REP) || (insn.flags & FLAG_REPNZ)) {
+        auto count = __ ZeroExtend64(R(cnt_reg));
+        // The final element (index count-1) is the one left in the accumulator.
+        auto do_load = __ TestNotZero(count);
+        auto skip = __ NotGoto(do_load);
+        auto last = __ Sub(count, ir::Operand{ir::Imm(u64(1))});
+        auto last_addr = __ Add(si0, ir::Operand{__ Mul(last, ir::Operand{ir::Imm(step)})});
+        R(acc_reg, MemLoad(ir::Operand{last_addr}, size, TsoOrdered(insn)));
+        __ BindLabel(skip);
+        R(si_reg, __ Add(si0, ir::Operand{__ Mul(count, ir::Operand{ir::Imm(step)})}));
+        R(cnt_reg, __ LoadImm(ir::Imm(u64(0))));
+    } else {
+        R(acc_reg, MemLoad(ir::Operand{si0}, size, TsoOrdered(insn)));
+        R(si_reg, __ Add(si0, ir::Operand{ir::Imm(step)}));
+    }
+}
+
+void X64Decoder::DecodeCmps(_DInst& insn) {
+    // cmps: flags = [RSI] - [RDI]; RSI/RDI += size. REP compares up to RCX
+    // elements, stopping early per REPZ/REPNZ; flags reflect the last compare.
+    auto& op0 = insn.ops[0];
+    const auto size = GetSize(op0.size);
+    const u64 step = ir::GetValueSizeByte(size);
+    auto si_reg = is_64bit ? _RegisterType::R_RSI : _RegisterType::R_ESI;
+    auto di_reg = is_64bit ? _RegisterType::R_RDI : _RegisterType::R_EDI;
+    auto cnt_reg = is_64bit ? _RegisterType::R_RCX : _RegisterType::R_ECX;
+    auto si0 = R(si_reg);
+    auto di0 = R(di_reg);
+    auto cmp_flags = [&](ir::Value a, ir::Value b) {
+        ArithWithFlags(a, b, ArithOp::Sub, op0.size, ir::Flags::All);
+    };
+    if (!((insn.flags & FLAG_REP) || (insn.flags & FLAG_REPNZ))) {
+        auto a = MemLoad(ir::Operand{si0}, size, TsoOrdered(insn));
+        auto b = MemLoad(ir::Operand{di0}, size, TsoOrdered(insn));
+        cmp_flags(a, b);
+        R(si_reg, __ Add(si0, ir::Operand{ir::Imm(step)}));
+        R(di_reg, __ Add(di0, ir::Operand{ir::Imm(step)}));
+        return;
+    }
+    auto count = __ ZeroExtend64(R(cnt_reg));
+    bool repnz = (insn.flags & FLAG_REPNZ) != 0;
+    // RCX == 0 => the instruction is a no-op (pointers, RCX and flags all
+    // unchanged). Branch on the pre-call `count` FIRST and keep the CallHost
+    // (whose helper leaves stale host NZCV from its internal comparisons)
+    // inside the branch, so the no-op path executes nothing that disturbs the
+    // live flags a subsequent LAHF/pushf would read. On the active path
+    // ArithWithFlags is the final flag commit. (Mirrors DecodeShift, which
+    // branches on its plain count before the flag-defining work.)
+    auto skip = __ NotGoto(__ TestNotZero(count));
+    ir::Value iters;
+    if (repnz) {
+        switch (step) {
+            case 1: iters = __ CallHost(&RepCmpsNZ1, si0, di0, count); break;
+            case 2: iters = __ CallHost(&RepCmpsNZ2, si0, di0, count); break;
+            case 4: iters = __ CallHost(&RepCmpsNZ4, si0, di0, count); break;
+            default: iters = __ CallHost(&RepCmpsNZ8, si0, di0, count); break;
+        }
+    } else {
+        switch (step) {
+            case 1: iters = __ CallHost(&RepCmpsZ1, si0, di0, count); break;
+            case 2: iters = __ CallHost(&RepCmpsZ2, si0, di0, count); break;
+            case 4: iters = __ CallHost(&RepCmpsZ4, si0, di0, count); break;
+            default: iters = __ CallHost(&RepCmpsZ8, si0, di0, count); break;
+        }
+    }
+    iters = iters.SetType(ir::ValueType::U64);
+    auto adv = __ Mul(iters, ir::Operand{ir::Imm(step)});
+    R(si_reg, __ Add(si0, ir::Operand{adv}));
+    R(di_reg, __ Add(di0, ir::Operand{adv}));
+    R(cnt_reg, __ Sub(count, ir::Operand{iters}));
+    auto last_off = __ Mul(__ Sub(iters, ir::Operand{ir::Imm(u64(1))}),
+                           ir::Operand{ir::Imm(step)});
+    auto a = MemLoad(ir::Operand{__ Add(si0, ir::Operand{last_off})}, size, TsoOrdered(insn));
+    auto b = MemLoad(ir::Operand{__ Add(di0, ir::Operand{last_off})}, size, TsoOrdered(insn));
+    cmp_flags(a, b);
+    __ BindLabel(skip);
+}
+
+void X64Decoder::DecodeScas(_DInst& insn) {
+    // scas: flags = accumulator - [RDI]; RDI += size. REP form behaves like cmps.
+    auto& op0 = insn.ops[0];
+    const auto size = GetSize(op0.size);
+    const u64 step = ir::GetValueSizeByte(size);
+    auto di_reg = is_64bit ? _RegisterType::R_RDI : _RegisterType::R_EDI;
+    auto cnt_reg = is_64bit ? _RegisterType::R_RCX : _RegisterType::R_ECX;
+    auto acc = [this, step] {
+        switch (step) {
+            case 1: return R(_RegisterType::R_AL);
+            case 2: return R(_RegisterType::R_AX);
+            case 4: return R(_RegisterType::R_EAX);
+            default: return R(_RegisterType::R_RAX);
+        }
+    }();
+    auto di0 = R(di_reg);
+    if (!((insn.flags & FLAG_REP) || (insn.flags & FLAG_REPNZ))) {
+        auto b = MemLoad(ir::Operand{di0}, size, TsoOrdered(insn));
+        ArithWithFlags(acc, b, ArithOp::Sub, op0.size, ir::Flags::All);
+        R(di_reg, __ Add(di0, ir::Operand{ir::Imm(step)}));
+        return;
+    }
+    auto count = __ ZeroExtend64(R(cnt_reg));
+    bool repnz = (insn.flags & FLAG_REPNZ) != 0;
+    auto acc64 = __ ZeroExtend64(acc);
+    // RCX == 0 => no-op (RDI, RCX and flags unchanged). See DecodeCmps: the
+    // CallHost stays inside the branch so its stale NZCV never leaks into the
+    // no-op path; ArithWithFlags is the final flag commit on the active path.
+    auto skip = __ NotGoto(__ TestNotZero(count));
+    ir::Value iters;
+    if (repnz) {
+        switch (step) {
+            case 1: iters = __ CallHost(&RepScasNZ1, acc64, di0, count); break;
+            case 2: iters = __ CallHost(&RepScasNZ2, acc64, di0, count); break;
+            case 4: iters = __ CallHost(&RepScasNZ4, acc64, di0, count); break;
+            default: iters = __ CallHost(&RepScasNZ8, acc64, di0, count); break;
+        }
+    } else {
+        switch (step) {
+            case 1: iters = __ CallHost(&RepScasZ1, acc64, di0, count); break;
+            case 2: iters = __ CallHost(&RepScasZ2, acc64, di0, count); break;
+            case 4: iters = __ CallHost(&RepScasZ4, acc64, di0, count); break;
+            default: iters = __ CallHost(&RepScasZ8, acc64, di0, count); break;
+        }
+    }
+    iters = iters.SetType(ir::ValueType::U64);
+    auto adv = __ Mul(iters, ir::Operand{ir::Imm(step)});
+    R(di_reg, __ Add(di0, ir::Operand{adv}));
+    R(cnt_reg, __ Sub(count, ir::Operand{iters}));
+    auto last_off = __ Mul(__ Sub(iters, ir::Operand{ir::Imm(u64(1))}),
+                           ir::Operand{ir::Imm(step)});
+    auto b = MemLoad(ir::Operand{__ Add(di0, ir::Operand{last_off})}, size, TsoOrdered(insn));
+    ArithWithFlags(acc, b, ArithOp::Sub, op0.size, ir::Flags::All);
+    __ BindLabel(skip);
 }
 
 ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op, u32 width,
@@ -3306,6 +3655,118 @@ void X64Decoder::DecodeCvtss2sd(_DInst& insn) {
     auto src = LoadSrcLo(insn, insn.ops[1]);
     XmmLo(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Cvtss2sd64)}},
                              src, __ LoadImm(ir::Imm(u64(0)))));
+}
+
+void X64Decoder::DecodeScalarFloatOp(_DInst& insn, VecHalfFn fn) {
+    // addss/subss/mulss/divss: dst[31:0] = dst[31:0] OP src[31:0]; the upper
+    // bits of the low qword are preserved by the helper, high qword untouched.
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto a = XmmLo(dst);
+    auto b = LoadSrcLo(insn, insn.ops[1]);
+    XmmLo(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(fn)}}, a, b));
+}
+
+void X64Decoder::DecodePextrw(_DInst& insn) {
+    // pextrw reg, xmm, imm8: zero-extended word (imm8 & 7) of the source xmm.
+    auto src = static_cast<_RegisterType>(insn.ops[1].index);
+    u64 imm = insn.imm.byte;
+    auto word = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Pextrw64)}},
+                              XmmLo(src), XmmHi(src), __ LoadImm(ir::Imm(imm)));
+    Dst(insn, insn.ops[0], word);
+}
+
+void X64Decoder::DecodePinsrw(_DInst& insn) {
+    // pinsrw xmm, r/m16, imm8: insert the source word into lane (imm8 & 7).
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto& op1 = insn.ops[1];
+    u64 imm = insn.imm.byte;
+    ir::Value word;
+    if (op1.type == O_REG) {
+        word = __ ZeroExtend64(R(static_cast<_RegisterType>(op1.index)));
+    } else {
+        word = __ ZeroExtend64(
+                MemLoad(ir::Operand{FlatAddress(insn, op1)}, ir::ValueType::U16, false));
+    }
+    u32 lane = imm & 7;
+    if (lane < 4) {
+        XmmLo(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&PinsrwHalf)}},
+                                 XmmLo(dst), word, __ LoadImm(ir::Imm(u64(lane)))));
+    } else {
+        XmmHi(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&PinsrwHalf)}},
+                                 XmmHi(dst), word, __ LoadImm(ir::Imm(u64(lane - 4)))));
+    }
+}
+
+void X64Decoder::DecodeMovddup(_DInst& insn) {
+    // movddup xmm, xmm/m64: duplicate the source low qword into both halves.
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto s = LoadSrcLo(insn, insn.ops[1]);
+    XmmLo(dst, s);
+    XmmHi(dst, s);
+}
+
+void X64Decoder::DecodeHaddps(_DInst& insn, bool sub) {
+    // haddps/hsubps: dst.lo = horizontal(a.lo, a.hi), dst.hi = horizontal(b.lo, b.hi).
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto a_lo = XmmLo(dst);
+    auto a_hi = XmmHi(dst);
+    auto b = LoadSrcHalves(insn, insn.ops[1]);
+    auto s = __ LoadImm(ir::Imm(u64(sub ? 1 : 0)));
+    XmmLo(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&HaddpsHalf)}},
+                             a_lo, a_hi, s));
+    XmmHi(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&HaddpsHalf)}},
+                             b.lo, b.hi, s));
+}
+
+void X64Decoder::DecodeLzcnt(_DInst& insn) {
+    // lzcnt r, r/m: count of leading zero bits; ZF = (src == 0). LZCNT is not
+    // advertised in CPUID, but model the true semantics for direct use.
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+    u32 width = op0.size;
+    if (width != 64 && insn.size > 2) {
+        auto* bytes = reinterpret_cast<u8*>(
+                memory->GetPointer(reinterpret_cast<void*>(pc - insn.size)));
+        if (bytes) {
+            for (u32 i = 0; i + 1 < insn.size && bytes[i] != 0x0F; ++i) {
+                if (bytes[i] == 0x66) {
+                    width = 16;
+                    break;
+                }
+            }
+        }
+    }
+    const u64 wmask = width == 64 ? UINT64_MAX : ((u64(1) << width) - 1);
+    auto src = __ And(ToValue(Src(insn, op1)), ir::Operand{ir::Imm(wmask)})
+                       .SetType(GetSize(width));
+    auto src64 = __ ZeroExtend64(src);
+    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Lzcnt64)}},
+                                src64, __ LoadImm(ir::Imm(u64(width))))
+                          .SetType(ir::ValueType::U64);
+    // ZF = (result == 0). CF = (src == 0) and the other flags are
+    // architecturally undefined; the fuzz masks everything but ZF out.
+    __ SaveFlags(__ Or(result, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Zero);
+    if (width == 16) {
+        auto& info = x86_regs_table[op0.index];
+        auto off = ToReg(info).GetOffset();
+        auto result16 = __ And(result, ir::Operand{ir::Imm(u64(0xFFFF))})
+                                .SetType(ir::ValueType::U16);
+        __ StoreUniform(ir::Uniform{off, ir::ValueType::U16}, result16);
+        return;
+    }
+    Dst(insn, op0, result);
+}
+
+void X64Decoder::DecodeCrc32(_DInst& insn) {
+    // crc32 r32/r64, r/m8/16/32/64: accumulate CRC-32C. No flags affected.
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+    u64 nbytes = op1.size ? u64(op1.size) / 8 : 1;
+    auto acc = __ ZeroExtend64(ToValue(Src(insn, op0)));
+    auto data = __ ZeroExtend64(ToValue(Src(insn, op1)));
+    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Crc32c64)}},
+                                acc, data, __ LoadImm(ir::Imm(nbytes)));
+    Dst(insn, op0, result);
 }
 
 void X64Decoder::DecodePopcnt(_DInst& insn) {

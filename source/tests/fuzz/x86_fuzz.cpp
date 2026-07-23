@@ -2184,6 +2184,77 @@ void EmitMovdXmmToGpr(CodeBuf& b, u8 gpr, u8 xmm, bool w64) {
     EmitModRMReg(b, xmm, gpr);
 }
 
+// pextrw gpr, xmm, imm8: 66 [REX.R] 0F C5 /r ib
+void EmitPextrw(CodeBuf& b, u8 gpr, u8 xmm, u8 imm) {
+    b.B(0x66);
+    EmitRex(b, false, gpr >= 8, false, false);
+    b.B(0x0F);
+    b.B(0xC5);
+    EmitModRMReg(b, gpr, xmm);
+    b.B(imm);
+}
+
+// pinsrw xmm, gpr, imm8: 66 [REX.B] 0F C4 /r ib
+void EmitPinsrw(CodeBuf& b, u8 xmm, u8 gpr, u8 imm) {
+    b.B(0x66);
+    EmitRex(b, false, false, false, gpr >= 8);
+    b.B(0x0F);
+    b.B(0xC4);
+    EmitModRMReg(b, xmm, gpr);
+    b.B(imm);
+}
+
+// lzcnt r, r/m: F3 [66] [REX] 0F BD /r
+void EmitLzcnt(CodeBuf& b, int width, u8 dst, u8 src) {
+    b.B(0xF3);
+    EmitOperandPrefix(b, width);
+    EmitRex(b, width == 64, dst >= 8, false, src >= 8);
+    b.B(0x0F);
+    b.B(0xBD);
+    EmitModRMReg(b, dst, src);
+}
+
+// crc32 r32/r64, r/m8/16/32/64: F2 [66] [REX.W] 0F 38 F0/F1 /r
+void EmitCrc32(CodeBuf& b, int dst_width, int src_width, u8 dst, u8 src) {
+    b.B(0xF2);
+    EmitOperandPrefix(b, src_width);
+    EmitRex(b, dst_width == 64, dst >= 8, false, src >= 8);
+    b.B(0x0F);
+    b.B(0x38);
+    b.B(src_width == 8 ? 0xF0 : 0xF1);
+    EmitModRMReg(b, dst, src);
+}
+
+// cmps/scas/lods string ops (single step or REP/REPNZ prefixed).
+void EmitCmps(CodeBuf& b, int width, int rep) {  // rep: 0 none, 1 F3(REPZ), 2 F2(REPNZ)
+    if (rep == 1) b.B(0xF3);
+    else if (rep == 2) b.B(0xF2);
+    EmitOperandPrefix(b, width);
+    if (width == 64) b.B(0x48);
+    b.B(width == 8 ? 0xA6 : 0xA7);
+}
+void EmitScas(CodeBuf& b, int width, int rep) {
+    if (rep == 1) b.B(0xF3);
+    else if (rep == 2) b.B(0xF2);
+    EmitOperandPrefix(b, width);
+    if (width == 64) b.B(0x48);
+    b.B(width == 8 ? 0xAE : 0xAF);
+}
+void EmitLods(CodeBuf& b, int width, bool rep) {
+    if (rep) b.B(0xF3);
+    EmitOperandPrefix(b, width);
+    if (width == 64) b.B(0x48);
+    b.B(width == 8 ? 0xAC : 0xAD);
+}
+
+// Two IEEE-754 float bit patterns packed into one qword (lo = a, hi = b).
+u64 F32Pair(float a, float b) {
+    u32 ba, bb;
+    std::memcpy(&ba, &a, 4);
+    std::memcpy(&bb, &b, 4);
+    return u64(ba) | (u64(bb) << 32);
+}
+
 }  // namespace
 
 TEST_CASE("Fuzz x86 sse2") {
@@ -2216,6 +2287,8 @@ TEST_CASE("Fuzz x86 sse2") {
             {0x66, 0x62},  // punpckldq
             {0x66, 0x6C},  // punpcklqdq
             {0x66, 0x6D},  // punpckhqdq
+            {0x66, 0xF5},  // pmaddwd
+            {0x66, 0xE3},  // pavgw
     };
     for (int i = 0; i < iters; ++i) {
         CodeBuf b;
@@ -2592,6 +2665,151 @@ TEST_CASE("Fuzz x86 loop enter") {
         b.B(0xC9);  // LEAVE
         env.EmitFlagCapture(b);
         env.RunIteration(b.c, FlagMask{}, "loopenter");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz x86 sse3") {
+    FuzzEnv env;
+    int iters = env.Iters(2000);
+    // Small dyadic floats: no NaN/Inf/denormal, products stay finite and exact,
+    // divisors never zero — keeps IEEE results bit-identical between Unicorn
+    // (softfloat) and the host FPU.
+    const float kFloats[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f,
+                             0.5f, 1.5f, -1.0f, -2.0f};
+    const int kNF = int(sizeof(kFloats) / sizeof(kFloats[0]));
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        env.EmitFlagPrefix(b);
+        auto pick_f = [&]() { return kFloats[env.RandInt(0, kNF - 1)]; };
+        auto store_f4 = [&](MemOp base) {
+            MemOp m0 = base;
+            MemOp m1 = base; m1.disp += 8;
+            EmitMovRegImm(b, 64, kRax, F32Pair(pick_f(), pick_f()));
+            EmitMovMemReg(b, 64, m0, kRax);
+            EmitMovRegImm(b, 64, kRcx, F32Pair(pick_f(), pick_f()));
+            EmitMovMemReg(b, 64, m1, kRcx);
+        };
+        MemOp pa{}; pa.disp = 0x100;
+        MemOp pb2{}; pb2.disp = 0x120;
+        store_f4(pa);
+        store_f4(pb2);
+        EmitSseLoad(b, 0xF3, 0x6F, 0, pa);   // movdqu xmm0, A
+        EmitSseLoad(b, 0xF3, 0x6F, 1, pb2);  // movdqu xmm1, B
+        int kind = env.RandInt(0, 99);
+        if (kind < 40) {
+            // Scalar float: addss/subss/mulss/divss xmm0, xmm1.
+            const u8 ops[] = {0x58, 0x5C, 0x59, 0x5E};
+            EmitSseRR(b, 0xF3, ops[env.RandInt(0, 3)], 0, 1);
+        } else if (kind < 60) {
+            // haddps / hsubps xmm0, xmm1.
+            EmitSseRR(b, 0xF2, env.RandInt(0, 1) == 0 ? 0x7C : 0x7D, 0, 1);
+        } else if (kind < 80) {
+            // movddup / movshdup / movsldup xmm0, xmm1.
+            u8 what = u8(env.RandInt(0, 2));
+            if (what == 0) EmitSseRR(b, 0xF2, 0x12, 0, 1);       // movddup
+            else if (what == 1) EmitSseRR(b, 0xF3, 0x16, 0, 1);  // movshdup
+            else EmitSseRR(b, 0xF3, 0x12, 0, 1);                 // movsldup
+        } else {
+            // pextrw / pinsrw round trips (integer; observable in gpr + xmm0).
+            EmitSseRR(b, 0x66, 0x6F, 3, 0);  // movdqa xmm3, xmm0
+            u8 gpr = env.RandReg();
+            u8 imm = u8(env.RandInt(0, 7));
+            if (env.RandInt(0, 1) == 0) {
+                EmitPextrw(b, gpr, 3, imm);   // gpr = zero-extended xmm3[imm]
+                EmitPinsrw(b, 0, gpr, imm);   // xmm0[imm] = gpr low word
+            } else {
+                EmitPinsrw(b, 3, gpr, imm);
+                EmitSseRR(b, 0x66, 0xEB, 0, 3);  // por xmm0, xmm3
+            }
+        }
+        MemOp out{}; out.disp = 0x180;
+        EmitSseStore(b, 0xF3, 0x7F, out, 0);  // movdqu [0x180], xmm0
+        u8 msk_gpr = env.RandReg();
+        EmitPmovmskb(b, msk_gpr, 0);
+        env.EmitFlagCapture(b);
+        env.RunIteration(b.c, FlagMask{}, "sse3");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz x86 lzcnt crc32") {
+    FuzzEnv env;
+    int iters = env.Iters(2000);
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        env.EmitFlagPrefix(b);
+        if (env.RandInt(0, 1) == 0) {
+            // lzcnt: ZF = (result == 0); other flags undefined -> mask to ZF.
+            int width = env.Pick(std::vector<int>{16, 32, 64});
+            u8 dst = env.RandReg();
+            u8 src = env.RandReg();
+            EmitLzcnt(b, width, dst, src);
+            env.EmitFlagCapture(b);
+            env.RunIteration(b.c, FlagMask{u32(kAhZF), false}, "lzcnt");
+        } else {
+            // crc32: no flags affected. Canonical encodings only.
+            static const std::pair<int, int> kForms[] = {
+                    {32, 8}, {32, 32}, {64, 8}, {64, 64}};
+            auto [dw, sw] = kForms[env.RandInt(0, 3)];
+            u8 dst = env.RandReg();
+            u8 src = env.RandReg();
+            EmitCrc32(b, dw, sw, dst, src);
+            env.EmitFlagCapture(b);
+            env.RunIteration(b.c, FlagMask{0, false}, "crc32");
+        }
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz x86 rep cmps scas") {
+    FuzzEnv env;
+    int iters = env.Iters(1000);
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        env.EmitFlagPrefix(b, kRsi, kRdi, kRcx);
+        env.ctx->rsi.qword = env.data_addr - 0x800;
+        env.ctx->rdi.qword = env.data_addr - 0x400;
+        env.ctx->rax.qword = env.PoolVal(64);
+        int width = env.Pick(std::vector<int>{8, 16, 32, 64});
+        int kind = env.RandInt(0, 99);
+        if (kind < 40) {
+            // Single-step cmps (RCX not consumed).
+            EmitCmps(b, width, 0);
+        } else if (kind < 70) {
+            // REP cmps: count >= 1 (the RCX == 0 no-op leaves flags unchanged,
+            // which the decoder approximates; see DecodeCmps).
+            env.ctx->rcx.qword = env.RandInt(1, 16);
+            EmitCmps(b, width, env.RandInt(0, 1) == 0 ? 1 : 2);      // repz/repnz
+        } else if (kind < 85) {
+            // Single-step scas.
+            EmitScas(b, width, 0);
+        } else {
+            env.ctx->rcx.qword = env.RandInt(1, 16);
+            EmitScas(b, width, env.RandInt(0, 1) == 0 ? 1 : 2);       // repz/repnz
+        }
+        env.EmitFlagCapture(b);
+        env.RunIteration(b.c, FlagMask{}, "repcmps");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz x86 lods") {
+    FuzzEnv env;
+    int iters = env.Iters(1000);
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        env.EmitFlagPrefix(b, kRsi, kRcx);
+        env.ctx->rsi.qword = env.data_addr - 0x800;
+        env.ctx->rcx.qword = env.RandInt(0, 16);
+        int width = env.Pick(std::vector<int>{8, 16, 32, 64});
+        EmitLods(b, width, env.RandInt(0, 1) == 0);  // single-step or rep
+        env.EmitFlagCapture(b);
+        env.RunIteration(b.c, FlagMask{}, "lods");
     }
     REQUIRE(env.failures == 0);
 }
