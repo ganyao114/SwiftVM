@@ -14,9 +14,17 @@ namespace swift::runtime::backend {
 constexpr u32 rsb_init_key = UINT32_MAX;
 constexpr size_t rsb_stack_size = 64;
 
+// Direct RSB frame: the JIT push/pop operates on 16-byte entries via
+// pre-decrement / post-increment of the rsb_ptr register (x25).
+//   offset 0: guest_location — the guest return address (validation key)
+//   offset 8: dispatch_index — L2 dispatch-table slot for the return target
+// On ret the JIT pops a frame, compares guest_location with the actual
+// return target in state->current_loc, and on a hit loads the compiled
+// code pointer from the L2 dispatch table slot and branches directly —
+// skipping the full trampoline dispatcher round-trip.
 struct RSBFrame {
-    u32 location_hash{};
-    u32 cache_slot{};
+    u64 guest_location{};
+    u64 dispatch_index{};
 };
 
 struct RSBBuffer {
