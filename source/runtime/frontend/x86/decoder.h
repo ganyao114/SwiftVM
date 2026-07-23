@@ -507,6 +507,22 @@ private:
     void DecodePshiftDQ(_DInst& insn, bool left);
     // psllw/pslld/psllq/psrlw/psrld/psrlq (imm8 and xmm-count forms).
     void DecodePshift(_DInst& insn, bool left, int kind);
+    // psraw/psrad: arithmetic right shift (imm8 and xmm-count forms).
+    void DecodePshiftA(_DInst& insn, int kind);
+    // pshuflw/pshufhw: word shuffle within low/high qword.
+    void DecodePshufw(_DInst& insn, bool high);
+    // SSE2 scalar conversions.
+    void DecodeCvtsi2sd(_DInst& insn);
+    void DecodeCvttsd2si(_DInst& insn);
+    void DecodeCvtsd2ss(_DInst& insn);
+    void DecodeCvtss2sd(_DInst& insn);
+    // popcnt / bswap.
+    void DecodePopcnt(_DInst& insn);
+    void DecodeBswap(_DInst& insn);
+    // loop/loopz/loopnz / enter / cmpxchg8b.
+    void DecodeLoop(_DInst& insn);
+    void DecodeEnter(_DInst& insn);
+    void DecodeCmpxchg8b(_DInst& insn);
     void DecodePalignr(_DInst& insn);
     void DecodePshufb(_DInst& insn);
     void DecodePmovmskb(_DInst& insn);

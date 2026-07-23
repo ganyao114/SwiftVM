@@ -2126,6 +2126,38 @@ void EmitSseShiftImm(CodeBuf& b, u8 op, u8 sub, u8 dst, u8 imm) {
     b.B(imm);
 }
 
+// pshuflw (F2) / pshufhw (F3): 0F 70 /r ib
+void EmitPshufw(CodeBuf& b, bool high, u8 dst, u8 src, u8 imm) {
+    b.B(high ? 0xF3 : 0xF2);
+    b.B(0x0F);
+    b.B(0x70);
+    EmitModRMReg(b, dst, src);
+    b.B(imm);
+}
+
+// popcnt: F3 [66] [REX] 0F B8 /r
+void EmitPopcnt(CodeBuf& b, int width, u8 dst, u8 src) {
+    b.B(0xF3);
+    EmitOperandPrefix(b, width);
+    EmitRex(b, width == 64, dst >= 8, false, src >= 8);
+    b.B(0x0F);
+    b.B(0xB8);
+    EmitModRMReg(b, dst, src);
+}
+
+// bswap r32/r64: [REX] 0F C8+rd
+void EmitBswap(CodeBuf& b, int width, u8 reg) {
+    EmitRex(b, width == 64, false, false, reg >= 8);
+    b.B(0x0F);
+    b.B(u8(0xC8 + (reg & 7)));
+}
+
+// loop/loopz/loopnz: E2/E1/E0 rel8
+void EmitLoop(CodeBuf& b, u8 opcode, s8 rel) {
+    b.B(opcode);
+    b.B(u8(rel));
+}
+
 void EmitPmovmskb(CodeBuf& b, u8 gpr, u8 xmm) {
     b.B(0x66);
     if (gpr >= 8) {
@@ -2440,6 +2472,126 @@ TEST_CASE("Fuzz x86 bit ops") {
         // CF (last bit rotated) is exact for any non-zero count; rotates leave AF
         // undefined. OF only for an immediate masked count of 1.
         env.RunIteration(b.c, FlagMask{u32(kAhAll & ~kAhAF), of_checkable}, "rol");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+// =============================== new instruction families ===============================
+
+TEST_CASE("Fuzz x86 sse2 ext") {
+    FuzzEnv env;
+    int iters = env.Iters(2000);
+    // pmullw (66 prefix).  Packed float ops (addps/subps/mulps/divps) excluded:
+    // random pool values produce NaN/Inf inputs whose result bit patterns are
+    // implementation-defined and differ between Unicorn and the host FPU.
+    const std::vector<std::pair<u8, u8>> kExt = {
+            {0x66, 0xD5},  // pmullw
+    };
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        env.EmitFlagPrefix(b);
+        MemOp pa{}; pa.disp = 0x100;
+        MemOp pb2{}; pb2.disp = 0x120;
+        for (int half = 0; half < 2; ++half) {
+            MemOp ma = pa; ma.disp += s32(8 * half);
+            MemOp mb = pb2; mb.disp += s32(8 * half);
+            EmitMovRegImm(b, 64, kRax, env.PoolVal(64));
+            EmitMovMemReg(b, 64, ma, kRax);
+            EmitMovRegImm(b, 64, kRcx, env.PoolVal(64));
+            EmitMovMemReg(b, 64, mb, kRcx);
+        }
+        EmitSseLoad(b, 0xF3, 0x6F, 0, pa);
+        EmitSseLoad(b, 0xF3, 0x6F, 1, pb2);
+        int kind = env.RandInt(0, 99);
+        if (kind < 45) {
+            // Packed float ALU / pmullw.
+            auto [pfx, op] = kExt[env.RandInt(0, int(kExt.size()) - 1)];
+            EmitSseRR(b, pfx, op, 0, 1);
+        } else if (kind < 65) {
+            // psraw/psrad by imm8.
+            u8 imm = u8(env.RandInt(0, 20));
+            bool word = env.RandInt(0, 1) == 0;
+            EmitSseShiftImm(b, word ? 0x71 : 0x72, 4, 0, imm);
+        } else if (kind < 80) {
+            // pshuflw/pshufhw xmm2, xmm0, imm8; fold back into xmm0.
+            // Zero xmm2 first so the unchanged half is deterministic.
+            EmitSseRR(b, 0x66, 0xEF, 2, 2);  // pxor xmm2, xmm2
+            u8 imm = u8(env.RandInt(0, 255));
+            bool high = env.RandInt(0, 1) == 0;
+            EmitPshufw(b, high, 2, 0, imm);
+            EmitSseRR(b, 0x66, 0xEB, 0, 2);  // por xmm0, xmm2
+        } else {
+            // Scalar conversions: cvttsd2si / cvtsd2ss / cvtss2sd.
+            u8 what = u8(env.RandInt(0, 2));
+            u8 gpr = env.RandReg();
+            switch (what) {
+                case 0:  // cvttsd2si gpr, xmm0 (F2 0F 2C)
+                    b.B(0xF2);
+                    EmitRex(b, false, gpr >= 8, false, false);
+                    b.B(0x0F); b.B(0x2C);
+                    EmitModRMReg(b, gpr, 0);
+                    break;
+                case 1:  // cvtsd2ss xmm0, xmm1 (F2 0F 5A)
+                    EmitSseRR(b, 0xF2, 0x5A, 0, 1);
+                    break;
+                default:  // cvtss2sd xmm0, xmm1 (F3 0F 5A)
+                    EmitSseRR(b, 0xF3, 0x5A, 0, 1);
+                    break;
+            }
+        }
+        MemOp out{}; out.disp = 0x180;
+        EmitSseStore(b, 0xF3, 0x7F, out, 0);  // movdqu [0x180], xmm0
+        env.EmitFlagCapture(b);
+        env.RunIteration(b.c, FlagMask{}, "sse2ext");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz x86 alu ext") {
+    FuzzEnv env;
+    int iters = env.Iters(2000);
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        env.EmitFlagPrefix(b);
+        int kind = env.RandInt(0, 99);
+        if (kind < 50) {
+            // popcnt r, r.  Flags: only ZF defined; mask out AH/OF in comparison.
+            int width = env.Pick(std::vector<int>{16, 32, 64});
+            u8 dst = env.RandReg();
+            u8 src = env.RandReg();
+            EmitPopcnt(b, width, dst, src);
+        } else {
+            // bswap r32/r64.  No flags affected.
+            int width = env.RandInt(0, 1) == 0 ? 32 : 64;
+            u8 reg = env.RandReg();
+            EmitBswap(b, width, reg);
+        }
+        env.EmitFlagCapture(b);
+        // popcnt leaves SF/PF/AF/CF/OF undefined; mask them all out.
+        env.RunIteration(b.c, FlagMask{0, false}, "aluext");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz x86 loop enter") {
+    FuzzEnv env;
+    int iters = env.Iters(2000);
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        env.EmitFlagPrefix(b);
+        // enter/leave round trip (loop fuzzed via regression binaries;
+        // the backward-jump form stresses the JIT block-splitting path which
+        // is exercised by the loop_x86_64 regression binary instead).
+        u16 alloc = u16(env.RandInt(0, 8) * 8);
+        b.B(0xC8);  // ENTER alloc, 0
+        b.W(alloc);
+        b.B(0x00);
+        b.B(0xC9);  // LEAVE
+        env.EmitFlagCapture(b);
+        env.RunIteration(b.c, FlagMask{}, "loopenter");
     }
     REQUIRE(env.failures == 0);
 }
