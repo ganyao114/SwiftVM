@@ -50,7 +50,8 @@ public:
     MemOperand EmitMemOperand(ir::Operand &ir_op,
                               ir::ValueType type,
                               bool pair = false,
-                              bool atomic = false);
+                              bool atomic = false,
+                              bool allow_writeback = true);
 
 #define INST(name, ...) void Emit##name(ir::Inst *inst);
 #include "runtime/ir/ir.inc"

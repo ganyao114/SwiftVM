@@ -1,12 +1,22 @@
 #pragma once
 
 #include "translator.h"
+
+#include <cstring>
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
 
 namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
+
+namespace {
+
+void HostMemMove(void* dst, const void* src, size_t size) {
+    std::memmove(dst, src, size);
+}
+
+}  // namespace
 
 JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()) {
     auto& config = ctx.GetConfig();
@@ -625,7 +635,13 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = ir::Value{inst};
     auto type = inst->ReturnType();
-    auto vixl_operand = EmitMemOperand(operand, type, false);
+    // Q loads cannot use the register-offset encoding used for [base + pt],
+    // and must not consume the synthetic post-index produced by the generic
+    // address peephole. The ARM64 frontend lowers pair writeback into normal
+    // Add + two memory operations, so folding it here would write back after
+    // the first half of an LDP/STP pair rather than after the pair.
+    const bool q_access = type == ir::ValueType::V128;
+    auto vixl_operand = EmitMemOperand(operand, type, false, q_access, !q_access);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
@@ -668,7 +684,10 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = inst->GetArg<ir::Value>(1);
     auto type = value.Type();
-    auto vixl_operand = EmitMemOperand(operand, type, false);
+    // See EmitLoadMemory: materialize guest + pt for Q accesses and preserve
+    // the frontend's explicit pre/post-index writeback Add instructions.
+    const bool q_access = type == ir::ValueType::V128;
+    auto vixl_operand = EmitMemOperand(operand, type, false, q_access, !q_access);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
@@ -718,7 +737,8 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
     // permits (glibc init_cpu_features does 4-mod-8 qword accesses -> SIGBUS).
     // A possible future optimization is a runtime alignment check
     // (tst addr, width-1; b.ne slow) gating an ldapr/stlr fast path.
-    auto vixl_operand = EmitMemOperand(operand, type, false);
+    const bool q_access = type == ir::ValueType::V128;
+    auto vixl_operand = EmitMemOperand(operand, type, false, q_access, !q_access);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
@@ -767,7 +787,8 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
     // becomes visible (Stlr* faults on unaligned addresses — see
     // EmitLoadMemoryTSO for why the plain-store + barrier form is used).
     __ Dmb(InnerShareable, BarrierAll);
-    auto vixl_operand = EmitMemOperand(operand, type, false);
+    const bool q_access = type == ir::ValueType::V128;
+    auto vixl_operand = EmitMemOperand(operand, type, false, q_access, !q_access);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
@@ -809,11 +830,100 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
+    auto dst = inst->GetArg<ir::Lambda>(0);
+    auto src = inst->GetArg<ir::Lambda>(1);
+    const auto size = inst->GetArg<ir::Imm>(2).Get();
 
+    if (size == 0) {
+        return;
+    }
+
+    MergeNZCV();
+    FlushFlags();
+
+    // A memory copy is rare but needs true memmove overlap semantics. Call a
+    // host helper after preserving every register the host ABI may clobber.
+    // Saving all SIMD registers is deliberate: unlike a normal C++ caller,
+    // this JIT can keep a live guest Q value in any V register, including the
+    // ABI-volatile range.
+    constexpr u32 kGprSaveBytes = 160;
+    constexpr u32 kVRegSaveBytes = 32 * 16;
+    constexpr u32 kSaveBytes = kGprSaveBytes + kVRegSaveBytes;
+    static_assert((kSaveBytes % 16) == 0);
+
+    auto saved_gpr_offset = [](u32 code) -> u32 {
+        if (code <= 10) {
+            return code * 8;
+        }
+        switch (code) {
+            case 12: return 88;
+            case 13: return 96;
+            case 14: return 104;
+            case 15: return 112;
+            case 16: return 120;
+            case 17: return 128;
+            default: PANIC();
+        }
+    };
+    auto load_lambda = [&](const ir::Lambda& lambda, const XRegister& target) {
+        if (!lambda.IsValue()) {
+            __ Mov(target, lambda.GetImm().Get());
+            return;
+        }
+        auto value = lambda.GetValue();
+        auto source = context.X(value);
+        if (source.GetCode() <= 10 || (source.GetCode() >= 12 && source.GetCode() <= 17)) {
+            __ Ldr(target, MemOperand(sp, saved_gpr_offset(source.GetCode())));
+        } else {
+            __ Mov(target, source);
+        }
+    };
+
+    __ Sub(sp, sp, kSaveBytes);
+    __ Stp(x0, x1, MemOperand(sp, 0));
+    __ Stp(x2, x3, MemOperand(sp, 16));
+    __ Stp(x4, x5, MemOperand(sp, 32));
+    __ Stp(x6, x7, MemOperand(sp, 48));
+    __ Stp(x8, x9, MemOperand(sp, 64));
+    __ Stp(x10, x12, MemOperand(sp, 80));
+    __ Stp(x13, x14, MemOperand(sp, 96));
+    __ Stp(x15, x16, MemOperand(sp, 112));
+    __ Str(x17, MemOperand(sp, 128));
+    __ Stp(x29, x30, MemOperand(sp, 144));
+    for (u32 i = 0; i < 32; ++i) {
+        __ Str(VRegister::GetVRegFromCode(i).Q(), MemOperand(sp, kGprSaveBytes + i * 16));
+    }
+
+    load_lambda(dst, x0);
+    load_lambda(src, x1);
+    if (use_memory_base) {
+        __ Add(x0, x0, pt);
+        __ Add(x1, x1, pt);
+    }
+    __ Mov(x2, size);
+    __ Mov(ip, reinterpret_cast<uintptr_t>(&HostMemMove));
+    __ Blr(ip);
+
+    for (u32 i = 0; i < 32; ++i) {
+        __ Ldr(VRegister::GetVRegFromCode(i).Q(), MemOperand(sp, kGprSaveBytes + i * 16));
+    }
+    __ Ldp(x0, x1, MemOperand(sp, 0));
+    __ Ldp(x2, x3, MemOperand(sp, 16));
+    __ Ldp(x4, x5, MemOperand(sp, 32));
+    __ Ldp(x6, x7, MemOperand(sp, 48));
+    __ Ldp(x8, x9, MemOperand(sp, 64));
+    __ Ldp(x10, x12, MemOperand(sp, 80));
+    __ Ldp(x13, x14, MemOperand(sp, 96));
+    __ Ldp(x15, x16, MemOperand(sp, 112));
+    __ Ldr(x17, MemOperand(sp, 128));
+    __ Ldp(x29, x30, MemOperand(sp, 144));
+    __ Add(sp, sp, kSaveBytes);
 }
 
 void JitTranslator::EmitMemoryCopyTSO(ir::Inst* inst) {
-
+    __ Dmb(InnerShareable, BarrierAll);
+    EmitMemoryCopy(inst);
+    __ Dmb(InnerShareable, BarrierAll);
 }
 
 Operand JitTranslator::EmitOperand(ir::Operand& ir_op) {
@@ -899,7 +1009,8 @@ Operand JitTranslator::EmitOperand(ir::Operand& ir_op) {
 MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                                          ir::ValueType type,
                                          bool pair,
-                                         bool atomic) {
+                                         bool atomic,
+                                         bool allow_writeback) {
     auto access_size = ir::GetValueSizeByte(type);
     if (ir_op.GetRight().Null()) {
         if (ir_op.GetLeft().IsImm()) {
@@ -931,7 +1042,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             // With the pt bias active, post-index forms cannot express
             // [base + pt] (+writeback), so the folding is disabled and the
             // address update executes as a normal Add/Sub.
-            if (!use_memory_base && addr_value.Def()->GetUses() == 2) {
+            if (allow_writeback && !use_memory_base && addr_value.Def()->GetUses() == 2) {
                 int search_times{0};
                 for (auto itr = instr_list.iterator_to(*instr);
                      itr != instr_list.end() && search_times < 3;
@@ -964,8 +1075,10 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                             continue;
                         }
                         if (itr->GetOp() == ir::OpCode::Add) {
+                            disable_instructions.set(itr->Id());
                             return MemOperand{context.R(addr_value), imm, PostIndex};
                         } else {
+                            disable_instructions.set(itr->Id());
                             return MemOperand{context.R(addr_value), -imm, PostIndex};
                         }
                     } else {
