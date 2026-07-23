@@ -706,24 +706,30 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = ir::Value{inst};
     auto type = inst->ReturnType();
-    // Ldar* has no register-offset form: the pt bias must be folded.
-    auto vixl_operand = EmitMemOperand(operand, type, false, true);
+    // Conservative strategy: plain load + a trailing `dmb ishld` (orders the
+    // load before all later loads and stores, inner-shareable). This replaces
+    // the old Ldar* implementation: Ldar*/Ldapr* only encode [Xn] (no offset
+    // forms) and, more importantly, fault on the unaligned accesses x86
+    // permits (glibc init_cpu_features does 4-mod-8 qword accesses -> SIGBUS).
+    // A possible future optimization is a runtime alignment check
+    // (tst addr, width-1; b.ne slow) gating an ldapr/stlr fast path.
+    auto vixl_operand = EmitMemOperand(operand, type, false);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
-            __ Ldarb(context.W(value), vixl_operand);
+            __ Ldrb(context.W(value), vixl_operand);
             break;
         case ir::ValueType::S16:
         case ir::ValueType::U16:
-            __ Ldarh(context.W(value), vixl_operand);
+            __ Ldrh(context.W(value), vixl_operand);
             break;
         case ir::ValueType::S32:
         case ir::ValueType::U32:
-            __ Ldar(context.W(value), vixl_operand);
+            __ Ldr(context.W(value), vixl_operand);
             break;
         case ir::ValueType::S64:
         case ir::ValueType::U64:
-            __ Ldar(context.X(value), vixl_operand);
+            __ Ldr(context.X(value), vixl_operand);
             break;
         case ir::ValueType::V8:
             __ Ldr(context.V(value).B(), vixl_operand);
@@ -744,32 +750,38 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
             PANIC("UnImplement!");
             break;
     }
+    // Acquire half: no later load/store may be observed before this one.
+    __ Dmb(InnerShareable, BarrierReads);
 }
 
 void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = inst->GetArg<ir::Value>(1);
     auto type = value.Type();
-    // Stlr* has no register-offset form: the pt bias must be folded.
-    auto vixl_operand = EmitMemOperand(operand, type, false, true);
+    // Release half: `dmb ish` drains all prior loads/stores before this store
+    // becomes visible (Stlr* faults on unaligned addresses — see
+    // EmitLoadMemoryTSO for why the plain-store + barrier form is used).
+    __ Dmb(InnerShareable, BarrierAll);
+    auto vixl_operand = EmitMemOperand(operand, type, false);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
-            __ Stlrb(context.W(value), vixl_operand);
+            __ Strb(context.W(value), vixl_operand);
             break;
         case ir::ValueType::S16:
         case ir::ValueType::U16:
-            __ Stlrh(context.W(value), vixl_operand);
+            __ Strh(context.W(value), vixl_operand);
             break;
         case ir::ValueType::S32:
         case ir::ValueType::U32:
-            __ Stlr(context.W(value), vixl_operand);
+            __ Str(context.W(value), vixl_operand);
             break;
         case ir::ValueType::S64:
         case ir::ValueType::U64:
-            __ Stlr(context.X(value), vixl_operand);
+            __ Str(context.X(value), vixl_operand);
             break;
-        // Vector stores have no release form; fall back to a plain store.
+        // Vector stores have no release form either; the barrier above still
+        // orders them (plain store inside the barrier sandwich).
         case ir::ValueType::V8:
             __ Str(context.V(value).B(), vixl_operand);
             break;

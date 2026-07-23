@@ -612,13 +612,17 @@ void Interpreter::RunStoreMemory(ir::Inst* inst, InterpStack& stack) {
 }
 
 void Interpreter::RunLoadMemoryTSO(ir::Inst* inst, InterpStack& stack) {
-    // Single-threaded interpreter: TSO loads degrade to plain loads (the JIT
-    // uses Ldar* for ordering; no ordering is observable here).
+    // TSO ordering is only observable with multiple concurrent guest threads;
+    // the interpreter executes one guest thread on one host thread, so a TSO
+    // load is semantically identical to a plain load here (the JIT provides
+    // the ordering with plain load + dmb ishld — see
+    // JitTranslator::EmitLoadMemoryTSO).
     RunLoadMemory(inst, stack);
 }
 
 void Interpreter::RunStoreMemoryTSO(ir::Inst* inst, InterpStack& stack) {
-    // See RunLoadMemoryTSO: TSO stores degrade to plain stores.
+    // See RunLoadMemoryTSO: single-threaded execution makes the release
+    // ordering unobservable, so TSO stores degrade to plain stores.
     RunStoreMemory(inst, stack);
 }
 
