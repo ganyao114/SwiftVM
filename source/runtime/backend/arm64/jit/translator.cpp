@@ -98,9 +98,18 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             MergeNZCV();
             context.Forward(term.next);
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
-            // TODO: ReturnStackBuffer support; fall back to a plain dispatcher return.
+            // Return Stack Buffer: this is the real pop+predict site. It must
+            // run here (not at the PopRSB instruction) because guest flags have
+            // just been committed by FlushFlags/MergeNZCV — the hit path
+            // branches directly to the return target, which expects the flags
+            // register to be current. EmitRSBPop ends in Br (hit) or Ret (miss/
+            // underflow), so it fully terminates the block.
             MergeNZCV();
-            __ Ret();
+            if (True(context.GetConfig().global_opts & Optimizations::ReturnStackBuffer)) {
+                context.EmitRSBPop();
+            } else {
+                __ Ret();
+            }
         } else if constexpr (std::is_same_v<T, ir::terminal::If>) {
             Label else_label;
             __ Cbz(context.W(term.cond), &else_label);
@@ -1453,7 +1462,12 @@ void JitTranslator::EmitLsrImm(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitPopRSB(ir::Inst* inst) {
-    // TODO: ReturnStackBuffer support; safe to ignore when the optimization is off.
+    // Deliberate no-op: the frontend emits PopRSB immediately before Return(),
+    // so the block always ends in a PopRSBHint terminal. The actual RSB pop +
+    // predict is emitted there (see EmitTerminal) after guest flags have been
+    // flushed — emitting the direct-branch pop here, mid-block with flags still
+    // in host NZCV, would hand the return target stale flags. This instruction
+    // is kept as a frontend marker pairing the ret with its RSB frame.
 }
 
 void JitTranslator::EmitRorImm(ir::Inst* inst) {
@@ -1491,7 +1505,24 @@ void JitTranslator::EmitBindLabel(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitPushRSB(ir::Inst* inst) {
-    // TODO: ReturnStackBuffer support; safe to ignore when the optimization is off.
+    // When RSB is disabled rsb_ptr (x25) is neither reserved in the register
+    // mask nor loaded at runtime entry, so emitting any push would clobber an
+    // allocated guest register — bail out entirely.
+    if (False(context.GetConfig().global_opts & Optimizations::ReturnStackBuffer)) {
+        return;
+    }
+    // The argument is the guest return address: Lambda(Imm{pc}) for a call.
+    // A dynamic (value) target has no statically known return address here, so
+    // there is nothing to predict — skip.
+    auto lambda = inst->GetArg<ir::Lambda>(0);
+    if (lambda.IsValue()) {
+        return;
+    }
+    const u64 ret_addr = lambda.GetImm().Get();
+    // Reserve the L2 dispatch slot for the return target now; the slot's value
+    // word is filled with the code pointer once that target is compiled, so the
+    // matching pop can branch directly to it (or fall back if still 0).
+    context.EmitRSBPush(ret_addr, context.GetDispatchIndex(ret_addr));
 }
 
 void JitTranslator::EmitTestBit(ir::Inst* inst) {
