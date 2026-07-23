@@ -5,6 +5,7 @@
 #include "address_space.h"
 #include "module.h"
 #include "runtime/common/alignment.h"
+#include <algorithm>
 
 namespace swift::runtime::backend {
 
@@ -244,6 +245,34 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size) {
             std::max(ModuleCodeCacheSize(size), kMinCodeCacheSize));
     current_code_cache++;
     return {ref.first->first, *ref.first->second.AllocCode(size)};
+}
+
+void Module::AddFaultEntry(u8* host_start, u8* host_end, VAddr guest_loc) {
+    std::unique_lock guard(cache_lock);
+    FaultEntry entry{host_start, host_end, guest_loc};
+    auto it = std::lower_bound(fault_table.begin(),
+                               fault_table.end(),
+                               host_start,
+                               [](const FaultEntry& e, const u8* pc) { return e.host_start < pc; });
+    fault_table.insert(it, entry);
+}
+
+bool Module::LookupFault(const u8* host_pc, FaultEntry& out) {
+    std::shared_lock guard(cache_lock);
+    // Last entry with host_start <= host_pc, then check the range.
+    auto it = std::upper_bound(fault_table.begin(),
+                               fault_table.end(),
+                               host_pc,
+                               [](const u8* pc, const FaultEntry& e) { return pc < e.host_start; });
+    if (it == fault_table.begin()) {
+        return false;
+    }
+    --it;
+    if (!it->Contains(host_pc)) {
+        return false;
+    }
+    out = *it;
+    return true;
 }
 
 void Module::DestroyNodes() {

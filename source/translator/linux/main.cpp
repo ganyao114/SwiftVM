@@ -14,6 +14,7 @@
 #include <vector>
 #include "base/logging.h"
 #include "loader.h"
+#include "runtime/backend/signal_handler.h"
 #include "syscalls.h"
 #include "translator/arm64/translator.h"
 #include "translator/x86/translator.h"
@@ -140,6 +141,19 @@ int main(int argc, char** argv) {
     // 1. Guest address space (guest addresses virtualized through a
     //    guest->host bias; see guest_memory.h).
     linux::GuestMemory memory;
+
+    // Tell the runtime's host signal handler how to distinguish a wild guest
+    // pointer (fault host address not backed by any guest mapping -> guest
+    // PageFatal) from a protection fault on a mapped guest page (SMC, host
+    // bug -> let the default handler crash with diagnostics).
+    runtime::backend::SignalHandler::SetGuestMapProbe(
+            [](void* ctx, std::uintptr_t fault_host_addr) -> bool {
+                auto* mem = static_cast<linux::GuestMemory*>(ctx);
+                const VAddr guest =
+                        mem->ToGuest(reinterpret_cast<const void*>(fault_host_addr));
+                return mem->RangeIsMapped(guest, 1);
+            },
+            &memory);
 
     // 2. Load the guest ELF.
     linux::ElfLoader loader{&memory};

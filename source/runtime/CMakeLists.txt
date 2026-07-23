@@ -88,6 +88,8 @@ add_library(swift_runtime STATIC
         backend/address_space.h
         backend/runtime.cpp
         backend/runtime.h
+        backend/signal_handler.cpp
+        backend/signal_handler.h
         backend/entrypoint.h
         backend/code_cache.cpp
         backend/code_cache.h

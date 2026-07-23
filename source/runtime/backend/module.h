@@ -27,6 +27,22 @@ struct ModuleConfig {
 
 struct NoneAddressNode {};
 
+// JIT fault table entry: one per compiled unit (block or function). Records
+// the host PC range the unit was emitted to and the guest address to resume
+// at if a host fault (wild guest pointer) is raised inside that range. The
+// granularity is the whole unit (no per-instruction host->guest map): on a
+// fault the guest resumes at the unit's entry, which is precise enough for
+// PageFatal reporting (Phase 3) and SMC invalidation (Phase 4).
+struct FaultEntry {
+    u8* host_start{};
+    u8* host_end{};
+    VAddr guest_loc{};
+
+    [[nodiscard]] bool Contains(const u8* host_pc) const {
+        return host_pc >= host_start && host_pc < host_end;
+    }
+};
+
 using AddressNodeRef = boost::variant<NoneAddressNode, IntrusivePtr<ir::Block>, IntrusivePtr<ir::Function>>;
 
 using AddressNodeRefs = StackVector<AddressNodeRef, 32>;
@@ -110,6 +126,14 @@ public:
 
     [[nodiscard]] std::pair<u16, CodeBuffer> AllocCodeCache(u32 size);
 
+    // Records the host PC range of a freshly compiled unit (called right
+    // after JitContext::Flush in TranslateIR).
+    void AddFaultEntry(u8* host_start, u8* host_end, VAddr guest_loc);
+
+    // Finds the fault entry whose host range contains host_pc. Called from
+    // the host signal handler; takes the cache lock shared.
+    [[nodiscard]] bool LookupFault(const u8* host_pc, FaultEntry& out);
+
     [[nodiscard]] AddressSpace& GetAddressSpace() { return address_space; }
 
     [[nodiscard]] AddressSpace& GetAddressSpace() const { return address_space; }
@@ -127,6 +151,10 @@ private:
     AddressHashMap<&ir::AddressNode::map_node> address_node_map;
     std::shared_mutex cache_lock;
     std::map<u16, CodeCache> code_caches{};
+    // Sorted by host_start (mspace allocations are not guaranteed monotonic).
+    // NOTE: entries are not removed when code is freed (Module::Remove /
+    // FreeCode are inactive today); Phase 4 (SMC) must invalidate them.
+    std::vector<FaultEntry> fault_table{};
     std::list<DataAllocator> data_allocators{};
     u16 current_code_cache{};
 };
