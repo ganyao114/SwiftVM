@@ -22,12 +22,12 @@ void TrampolinesArm64::Build() {
     std::memcpy(code_buffer->rw_data, __ GetBuffer()->GetStartAddress<u8*>(), buffer_size);
     code_buffer->Flush();
     runtime_entry = reinterpret_cast<RuntimeEntry>(code_buffer->exec_data);
-    return_host = reinterpret_cast<ReturnHost>(
-            code_buffer->exec_data +
-            (__ GetBuffer()->GetStartAddress<ptrdiff_t>() - label_return_host.GetLocation()));
-    call_host = reinterpret_cast<CallHost>(
-            code_buffer->exec_data +
-            (__ GetBuffer()->GetStartAddress<ptrdiff_t>() - label_return_host.GetLocation()));
+    // vixl label locations are non-negative byte offsets from the buffer
+    // start (see vixl Label::GetLocation / IsBound).
+    return_host = reinterpret_cast<ReturnHost>(code_buffer->exec_data +
+                                               label_return_host.GetLocation());
+    call_host = reinterpret_cast<CallHost>(code_buffer->exec_data +
+                                           label_call_host.GetLocation());
 
     // GPR registers can use
     // Mask convention (shared with the linear-scan pass and JitContext):

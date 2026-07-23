@@ -40,6 +40,10 @@ public:
 
     [[nodiscard]] void* GetCodeCache(ir::Location location);
 
+    // Searches every module's JIT fault table for the compiled unit whose
+    // host PC range contains host_pc (host signal handler path).
+    [[nodiscard]] bool LookupFault(const u8* host_pc, FaultEntry& out);
+
     // The address-space wide (L2) translate table backing PushCodeCache /
     // GetCodeCache; the JIT dispatcher reads it directly from generated code.
     [[nodiscard]] TranslateTable& GetCodeCacheTable() { return code_cache; }
