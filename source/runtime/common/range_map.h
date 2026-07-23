@@ -51,6 +51,15 @@ public:
         return GetValueInternal(new_address);
     }
 
+    // Visits every non-null mapped value (values may repeat across ranges).
+    template <typename F> void ForEachValue(F&& fn) const {
+        for (const auto& [key, value] : container) {
+            if (value != null_value) {
+                fn(value);
+            }
+        }
+    }
+
 private:
     using MapType = std::map<KeyT, ValueT>;
     using IteratorType = typename MapType::iterator;
