@@ -25,12 +25,20 @@
 
 using namespace swift;
 
+// Interpreter wild-pointer guard thunk: ctx is a GuestMemory*.
+static bool InterpRangeCheckThunk(void* ctx, u64 addr, u64 size) {
+    return static_cast<linux::GuestMemory*>(ctx)->RangeIsMapped(addr, size);
+}
+
 // Runs an ARM64 guest: x8 = syscall nr, x0-x5 = args, result -> x0.
 static int RunArm64Guest(const linux::LoadedImage& image,
                          VAddr guest_sp,
                          linux::GuestMemory& memory) {
     auto* instance = translator::arm64::Arm64Instance::Make(
             reinterpret_cast<void*>(memory.GetBias()));
+    // Wire the interpreter wild-pointer guard before creating the core
+    // (the core's constructor copies it into the runtime State).
+    instance->SetInterpRangeCheck(InterpRangeCheckThunk, &memory);
     auto* core = translator::arm64::Arm64Core::Make(instance);
 
     auto& ctx = core->GetContext();
@@ -39,6 +47,8 @@ static int RunArm64Guest(const linux::LoadedImage& image,
     ctx.sp = guest_sp;
 
     linux::SyscallHandler syscalls{&memory, image.brk_start, linux::GuestISA::kArm64, image.path};
+    // SMC wiring: notify the runtime when the guest remaps/unmaps code pages.
+    syscalls.SetSmcInvalidate([instance](VAddr s, VAddr e) { instance->InvalidateCodeRange(s, e); });
     int exit_code = 0;
     for (;;) {
         auto reason = core->Run();
@@ -75,6 +85,9 @@ static int RunX86Guest(const linux::LoadedImage& image,
                        linux::GuestMemory& memory) {
     auto* instance = translator::x86::X86Instance::Make(
             reinterpret_cast<void*>(memory.GetBias()));
+    // Wire the interpreter wild-pointer guard before creating the core
+    // (the core's constructor copies it into the runtime State).
+    instance->SetInterpRangeCheck(InterpRangeCheckThunk, &memory);
     auto* core = translator::x86::X86Core::Make(instance);
 
     auto& ctx = core->GetContext();
@@ -86,6 +99,8 @@ static int RunX86Guest(const linux::LoadedImage& image,
     ctx.ef.flags = 0x202;
 
     linux::SyscallHandler syscalls{&memory, image.brk_start, linux::GuestISA::kX86_64, image.path};
+    // SMC wiring: notify the runtime when the guest remaps/unmaps code pages.
+    syscalls.SetSmcInvalidate([instance](VAddr s, VAddr e) { instance->InvalidateCodeRange(s, e); });
     // arch_prctl writes fs_base/gs_base straight into the frontend context.
     syscalls.SetX86Context(&ctx);
     int exit_code = 0;

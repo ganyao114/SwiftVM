@@ -68,6 +68,23 @@ public:
     void VisitSystem(const Instruction* instr) override;
     void VisitException(const Instruction* instr) override;
 
+    // NEON / SIMD (minimal subset for glibc startup).
+    void VisitNEONCopy(const Instruction* instr) override;
+    void VisitNEONModifiedImmediate(const Instruction* instr) override;
+
+    // Conditional compare.
+    void VisitConditionalCompareImmediate(const Instruction* instr) override;
+    void VisitConditionalCompareRegister(const Instruction* instr) override;
+
+    // Data processing (1 source): RBIT, REV, CLZ, CLS, etc.
+    void VisitDataProcessing1Source(const Instruction* instr) override;
+
+    // Load/store exclusive (LDXR/STXR/LDAXR/STLXR/CAS).
+    void VisitLoadStoreExclusive(const Instruction* instr) override;
+
+    // Atomic memory (LDADD, SWP, LDSET, LDCLR, etc.).
+    void VisitAtomicMemory(const Instruction* instr) override;
+
     // Fallback for anything not implemented yet.
     void VisitUnimplemented(const Instruction* instr) override;
     void VisitUnallocated(const Instruction* instr) override;
@@ -146,6 +163,8 @@ private:
     void LoadStoreHelper(const Instruction* instr, const ir::DataClass& offset, AddrMode mode);
 
     void LoadStorePairHelper(const Instruction* instr, AddrMode mode);
+
+    void ConditionalCompareHelper(const Instruction* instr, const ir::DataClass& op2);
 
     // --- Block control -----------------------------------------------------
     [[nodiscard]] VAddr CurrentPC() const;

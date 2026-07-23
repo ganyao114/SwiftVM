@@ -166,15 +166,18 @@ Condition JitTranslator::MapCond(ir::Cond cond) {
 
 void JitTranslator::MergeNZCV() {
     if (save_in_nzcv && nzcv_dirty) {
-        // Replace semantics: clear the stale NZCV bits in the flags register
-        // first. A plain Orr would accumulate sticky bits (e.g. Z=1 left by an
-        // earlier instruction) and poison every later flag consumer.
-        u64 clear_nzcv = ~static_cast<u64>(HostFlags::NZCV);
+        // Only merge the NZCV bits that SaveFlags actually requested.
+        // Bits NOT requested (e.g. C/V when only SF/ZF were saved) keep
+        // their existing value in the flags register, so a ClearFlags(CF)
+        // between two flag-setting instructions is not overwritten.
+        const u64 req = static_cast<u64>(nzcv_requested);
+        u64 keep = ~req;
         __ Mrs(ip, NZCV);
-        __ And(flags, flags, ForceCast<s64>(clear_nzcv));
-        __ And(ip, ip, static_cast<u32>(HostFlags::NZCV));
+        __ And(flags, flags, ForceCast<s64>(keep));
+        __ And(ip, ip, static_cast<u32>(req));
         __ Orr(flags, flags, ip);
         nzcv_dirty = false;
+        nzcv_requested = {};
     }
 }
 
@@ -264,9 +267,11 @@ void JitTranslator::SaveHostFlags(HostFlags host, ir::Flags guest) {
         host_need_saved |= HostFlags::V;
     }
     if (save_in_nzcv) {
-        if (host_need_saved != host) {
-            PANIC();
-        }
+        // Accumulate which NZCV bits were actually requested by guest
+        // SaveFlags. MergeNZCV will only merge these bits, preserving
+        // any ClearFlags(CF/OF) that happened between flag-setting
+        // instructions.
+        nzcv_requested |= host_need_saved;
         nzcv_dirty = true;
     } else {
         __ Mrs(ip, NZCV);
@@ -1099,10 +1104,16 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
     auto pseudo_flags = GetPseudoFlags(inst);
 
     if (!pseudo_flags.Null()) {
-        MergeNZCV();
-        __ Adds(result, left_register, right_operand);
-        auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-        SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+        const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
+        if (needs_nzcv) {
+            MergeNZCV();
+            __ Adds(result, left_register, right_operand);
+            auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
+            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+        } else {
+            // AF/PF only: use non-flag form to avoid clobbering host NZCV.
+            __ Add(result, left_register, right_operand);
+        }
         if (True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }
@@ -1124,10 +1135,15 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
     auto pseudo_flags = GetPseudoFlags(inst);
 
     if (!pseudo_flags.Null()) {
-        MergeNZCV();
-        __ Subs(result, left_register, right_operand);
-        auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-        SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+        const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
+        if (needs_nzcv) {
+            MergeNZCV();
+            __ Subs(result, left_register, right_operand);
+            auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
+            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+        } else {
+            __ Sub(result, left_register, right_operand);
+        }
         if (True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }
@@ -1154,9 +1170,14 @@ void JitTranslator::EmitAdc(ir::Inst* inst) {
     }
 
     if (!pseudo_flags.Null()) {
-        __ Adcs(result, left_register, right_operand);
-        auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-        SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+        const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
+        if (needs_nzcv) {
+            __ Adcs(result, left_register, right_operand);
+            auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
+            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+        } else {
+            __ Adc(result, left_register, right_operand);
+        }
         if (True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }
@@ -1183,9 +1204,14 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
     }
 
     if (!pseudo_flags.Null()) {
-        __ Sbcs(result, left_register, right_operand);
-        auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-        SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+        const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
+        if (needs_nzcv) {
+            __ Sbcs(result, left_register, right_operand);
+            auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
+            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+        } else {
+            __ Sbc(result, left_register, right_operand);
+        }
         if (True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }

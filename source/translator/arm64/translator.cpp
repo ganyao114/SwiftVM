@@ -126,11 +126,19 @@ struct Arm64Instance::Impl final {
     }
 
     std::unique_ptr<backend::AddressSpace> address_space{};
+    // Interpreter wild-pointer guard: wired by the linux loader via
+    // Arm64Instance::SetInterpRangeCheck; forwarded to State by Arm64Core::Impl.
+    bool (*range_check_fn)(void*, u64, u64){nullptr};
+    void* range_check_ctx{};
 };
 
 struct Arm64Core::Impl final {
     explicit Impl(Arm64Instance* instance) : instance(instance) {
         s_runtime = instance->impl->MakeRuntime();
+        // Wire the interpreter wild-pointer guard into the runtime State.
+        auto* st = s_runtime->GetState();
+        st->interp_range_check = instance->impl->range_check_fn;
+        st->interp_range_check_ctx = instance->impl->range_check_ctx;
     }
 
     [[nodiscard]] void* Translate(LocationDescriptor pc) const {
@@ -193,6 +201,15 @@ Arm64Instance::Arm64Instance(void* memory_base) { impl = std::make_unique<Impl>(
 Arm64Instance* Arm64Instance::Make(void* memory_base) { return new Arm64Instance(memory_base); }
 
 void Arm64Instance::Destroy(Arm64Instance* instance) { delete instance; }
+
+void Arm64Instance::InvalidateCodeRange(uint64_t start, uint64_t end) {
+    impl->address_space->InvalidateCodeRange(start, end);
+}
+
+void Arm64Instance::SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), void* ctx) {
+    impl->range_check_fn = fn;
+    impl->range_check_ctx = ctx;
+}
 
 Arm64Core::Arm64Core(Arm64Instance* instance) : instance(instance) {
     impl = std::make_unique<Impl>(instance);

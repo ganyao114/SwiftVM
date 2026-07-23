@@ -44,6 +44,18 @@ struct State {
     void* local_buffer{};
     u64 host_cpu_flags{};
     void *blocking_linkage_address{};
+    // Guest address space upper bound (== Config::loc_end). The interpreter
+    // checks every LoadMemory/StoreMemory guest address against this limit
+    // before dereferencing, converting a wild guest pointer into a clean
+    // PageFatal halt instead of a host SIGSEGV. UINT64_MAX = unchecked
+    // (default, safe for JIT-only paths where the signal handler covers this).
+    u64 guest_addr_limit{UINT64_MAX};
+    // Optional precise range check for the interpreter: if non-null, called
+    // with (interp_range_check_ctx, guest_addr, size) before every memory
+    // access. Returns false → PageFatal. Wired by the translator layer to
+    // GuestMemory::RangeIsMapped. nullptr = fall back to guest_addr_limit only.
+    bool (*interp_range_check)(void* ctx, u64 addr, u64 size){nullptr};
+    void* interp_range_check_ctx{};
     // Spill area for RegAlloc::MEM values (linear-scan register allocator):
     // fixed u64 slots addressed from JIT code as
     // [state, state_offset_spill_area + slot * 8]; a spilled SIMD value

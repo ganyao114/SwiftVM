@@ -17,6 +17,16 @@ public:
     // (host addr = guest addr + bias); nullptr = identity mapping (default).
     static X86Instance *Make(void* memory_base = nullptr);
     static void Destroy(X86Instance *instance);
+
+    // SMC hook: forwards to AddressSpace::InvalidateCodeRange — see
+    // translator::Instance for the contract.
+    void InvalidateCodeRange(uint64_t start, uint64_t end) override;
+
+    // Interpreter wild-pointer guard: fn(ctx, guest_addr, size) must return
+    // true if [guest_addr, guest_addr+size) is mapped guest memory. Wired by
+    // the linux loader to GuestMemory::RangeIsMapped before creating a Core.
+    void SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), void* ctx);
+
 private:
     explicit X86Instance(void* memory_base);
 

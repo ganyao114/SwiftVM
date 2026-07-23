@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <functional>
 #include <string>
 #include <sys/stat.h>
 #include "base/types.h"
@@ -217,6 +218,12 @@ public:
     // (translator/x86/cpu.h ThreadContext64::fs_base/gs_base).
     void SetX86Context(void* x86_ctx) { this->x86_ctx = x86_ctx; }
 
+    // SMC wiring (Phase 4): called with (guest_start, guest_end) whenever the
+    // guest mprotects (PROT_WRITE), mmaps (MAP_FIXED), munmaps, or mremaps a
+    // range that may hold translated code. The callback must invalidate any
+    // stale JIT blocks in that range. nullptr/unset = no-op (tests, interp-only).
+    void SetSmcInvalidate(std::function<void(VAddr, VAddr)> fn) { smc_invalidate_ = std::move(fn); }
+
     // TLS segment bases set via arch_prctl (x86_64 only). Mirrors of the
     // context fields, kept for inspection/tests.
     [[nodiscard]] u64 GetFsBase() const { return fs_base; }
@@ -275,6 +282,8 @@ private:
     u64 robust_list_head{};
     u64 robust_list_len{};
     s64 tid{1000};
+    // SMC callback — see SetSmcInvalidate. nullptr = no SMC tracking active.
+    std::function<void(VAddr, VAddr)> smc_invalidate_;
 };
 
 }  // namespace swift::linux

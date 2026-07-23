@@ -45,6 +45,10 @@ struct Runtime::Impl final {
         // reserved pt register and the interpreter reads it from here.
         // nullptr (identity) keeps the zero-overhead fast path.
         state->pt = address_space->GetConfig().memory_base;
+        // Interpreter wild-pointer guard: any guest address >= loc_end is
+        // definitionally invalid; the interpreter checks this before every
+        // memory access and raises PageFatal instead of crashing the host.
+        state->guest_addr_limit = static_cast<u64>(address_space->GetConfig().loc_end);
         jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
     }
 

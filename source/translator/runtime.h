@@ -10,7 +10,19 @@ namespace swift::translator {
 
 enum ExitReason : uint8_t { None = 0, IllegalCode, PageFatal, Syscall, Signal, Step };
 
-class Instance {};
+class Instance {
+public:
+    virtual ~Instance() = default;
+
+    // SMC hook (Phase 4): notify the runtime that the guest has changed
+    // permissions or unmapped/remapped [start, end) — any translated code
+    // overlapping that range must be invalidated. Default: no-op (safe when
+    // no SMC tracker is wired, e.g. in unit tests).
+    virtual void InvalidateCodeRange(uint64_t start, uint64_t end) {
+        (void)start;
+        (void)end;
+    }
+};
 
 class Core {
 public:
