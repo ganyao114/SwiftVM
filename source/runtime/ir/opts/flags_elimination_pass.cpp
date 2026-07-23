@@ -30,14 +30,12 @@
 namespace swift::runtime::ir {
 
 void FlagsEliminationPass::Run(Block* block) {
-    // DISABLED: the backward liveness below has a correctness bug that
-    // manifests as wrong carry/parity after adc/sbb/lahf (fuzz "alu" family
-    // fails with off-by-one register values). The pass was previously a stub
-    // (0% elimination), so disabling it restores correct behavior. The
-    // implementation is kept for future debugging — re-enable after the
-    // root cause is found and fuzz is green.
-    //
-    // Set SVM_FLAGS_ELIM=1 to force-enable for debugging.
+    // The backward liveness is mostly correct: C-writers (SaveFlags/ClearFlags
+    // with CF, SetCarry) are never deleted (cross-block carry dependency),
+    // narrowing is disabled (interacts badly with JIT lazy NZCV), and the
+    // JIT uses nzcv_requested to merge only requested NZCV bits. Residual
+    // edge cases remain with adc/sbb in "alu"/"mixed" fuzz families (2-3
+    // failures out of 22). Default off; SVM_FLAGS_ELIM=1 to enable.
     static const bool force_enable = std::getenv("SVM_FLAGS_ELIM") != nullptr;
     if (!force_enable) {
         return;
@@ -61,6 +59,14 @@ void FlagsEliminationPass::Run(Block* block) {
             case OpCode::SaveFlags: {
                 stat_save++;
                 const Flags mask = inst.GetArg<Flags>(1);
+                // Never delete or narrow a SaveFlags that writes C: carry
+                // persists across blocks and a later block's Adc/Sbb may
+                // read it. Per-block liveness cannot model this dependency.
+                // Do NOT modify `needed` — this preserved instruction must
+                // not "kill" any bits for earlier writers.
+                if (True(mask & Flags::Carry)) {
+                    break;
+                }
                 const Flags live = mask & needed;
                 if (False(live)) {
                     stat_save_dead++;
@@ -70,44 +76,39 @@ void FlagsEliminationPass::Run(Block* block) {
                                    block->GetStartLocation().Value(), FlagsString(mask), FlagsString(needed));
                     }
                 } else {
-                    if (live != mask) {
-                        inst.SetArg(1, live);
-                        stat_shrunk++;
-                        if (std::getenv("SVM_FLAGS_DEBUG")) {
-                            fmt::print("[flags-elim-dbg] block {:#x}: NARROW SaveFlags {} -> {} needed={}\n",
-                                       block->GetStartLocation().Value(), FlagsString(mask), FlagsString(live), FlagsString(needed));
-                        }
-                    }
-                    // Only remove the bits we actually kept (live). Bits
-                    // dropped from the mask are NOT written by this
-                    // instruction, so an earlier write of them must be
-                    // preserved (they may be the value a later reader sees).
-                    needed &= ~live;
+                    // No narrowing — keep the original mask intact.
+                    // Narrowing interacts badly with the JIT's lazy NZCV
+                    // window (the emitter checks the pseudo mask to decide
+                    // flag-setting vs non-flag form; a narrowed mask can
+                    // switch forms and change host NZCV behavior).
+                    needed &= ~mask;
                 }
                 break;
             }
             case OpCode::ClearFlags: {
                 stat_clear++;
                 const Flags mask = inst.GetArg<Flags>(0);
+                // Same C protection as SaveFlags.
+                if (True(mask & Flags::Carry)) {
+                    break;
+                }
                 const Flags live = mask & needed;
                 if (False(live)) {
                     stat_clear_dead++;
                     victims.push_back(&inst);
                 } else {
-                    if (live != mask) {
-                        inst.SetArg(0, live);
-                        stat_shrunk++;
-                    }
-                    // Same as SaveFlags: only clear the bits actually kept.
-                    needed &= ~live;
+                    // No narrowing (same as SaveFlags).
+                    needed &= ~mask;
                 }
                 break;
             }
             case OpCode::SetCarry:
+                // Never delete SetCarry: same cross-block carry reasoning.
+                stat_setcv++;
+                break;
             case OpCode::SetOverflow: {
                 stat_setcv++;
-                const Flags bit = inst.GetOp() == OpCode::SetCarry ? Flags::Carry
-                                                                   : Flags::Overflow;
+                const Flags bit = Flags::Overflow;
                 if (False(needed & bit)) {
                     stat_setcv_dead++;
                     victims.push_back(&inst);

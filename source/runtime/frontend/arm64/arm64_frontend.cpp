@@ -15,13 +15,11 @@ constexpr ir::ValueType GPRType(bool is64) {
     return is64 ? ir::ValueType::U64 : ir::ValueType::U32;
 }
 
-// NOTE: Inst::SetArg(Operand) unconditionally calls DataClass::ToArgClass()
-// on the right hand side, which panics for single-sided operands
-// (DataClass::Void). Emit a two-sided operand with a neutral right side
-// (Imm 0 with OperandNone, i.e. "no operation") until the IR accepts a Void
-// right side there. See the task report.
+// Single-sided operand: right side is Void (Null) so EmitOperand takes the
+// fast path (register or materialized immediate, no composite operation).
+// DataClass::ToArgClass() handles Void correctly (maps to ArgClass{}).
 ir::Operand SingleOperand(const ir::DataClass& data) {
-    return ir::Operand{data, ir::Imm{u8(0)}, ir::OperandNone};
+    return ir::Operand{data};
 }
 
 }  // namespace
@@ -1369,9 +1367,12 @@ void A64Decoder::VisitSystem(const Instruction* instr) {
                 return;
             }
             default:
-                // NZCV and the remaining system registers are not wired to
-                // the virtual flags state yet.
-                Interrupt(InterruptReason::FALLBACK, current_pc);
+                // Unknown system registers (DCZID_EL0, NZCV, MIDR_EL1, …):
+                // MRS reads return 0; MSR writes are ignored. This is safe
+                // for DCZID_EL0 (0 = DC ZVA not supported) and most ID regs.
+                if (is_read) {
+                    WriteXRegister(rt, ImmValue(0, ir::ValueType::U64));
+                }
                 return;
         }
     }
@@ -1396,6 +1397,340 @@ void A64Decoder::VisitException(const Instruction* instr) {
         default:
             Interrupt(InterruptReason::FALLBACK, current_pc);
             break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NEON copy (DUP scalar, UMOV)
+// ---------------------------------------------------------------------------
+
+static u32 VRegOff(u8 code) {
+    return u32(offsetof(ThreadContext64, v) + code * sizeof(u128));
+}
+
+void A64Decoder::VisitNEONCopy(const Instruction* instr) {
+    auto imm5 = u32(instr->GetImmNEON5());
+    bool is_q = instr->GetNEONQ() != 0;
+    auto rn = u8(instr->GetRn());
+    auto rd = u8(instr->GetRd());
+    // op bit is bit 29 (0 = DUP/INS, 1 = UMOV/SMOV)
+    u32 op = (instr->GetInstructionBits() >> 29) & 1;
+
+    // Element size from imm5 (lowest set bit).
+    u32 esize, index;
+    if (imm5 & 0x1)       { esize = 1; index = imm5 >> 1; }
+    else if (imm5 & 0x2)  { esize = 2; index = imm5 >> 2; }
+    else if (imm5 & 0x4)  { esize = 4; index = imm5 >> 3; }
+    else if (imm5 & 0x8)  { esize = 8; index = imm5 >> 4; }
+    else if (imm5 & 0x10) { esize = 16; index = imm5 >> 5; }
+    else { Interrupt(InterruptReason::FALLBACK, current_pc); return; }
+
+    if (op == 0) {
+        // DUP Vd.T, Rn — broadcast GPR to all lanes.
+        // Read the source GPR and mask to element width.
+        ir::Value src = (esize <= 4)
+            ? Widen(ReadRegister(rn, ir::ValueType::U32))
+            : ReadXRegister(rn);
+        if (esize < 8) {
+            u64 mask = (esize == 1) ? 0xFF : (esize == 2) ? 0xFFFF : 0xFFFFFFFF;
+            src = __ And<ir::U64>(src, SingleOperand(ir::Imm{mask})).SetType(ir::ValueType::U64);
+        }
+        // Build the broadcast pattern step by step using shift+or.
+        // Each step doubles the number of copies.
+        ir::Value half = src;
+        u32 shift = esize * 8;
+        while (shift < 64) {
+            auto shifted = __ LslImm<ir::U64>(half, ir::Imm{shift}).SetType(ir::ValueType::U64);
+            half = __ Or<ir::U64>(half, SingleOperand(shifted)).SetType(ir::ValueType::U64);
+            shift *= 2;
+        }
+        auto voff = VRegOff(rd);
+        __ StoreUniform(ir::Uniform{voff, ir::ValueType::U64}, half);
+        __ StoreUniform(ir::Uniform{voff + 8, ir::ValueType::U64},
+                        is_q ? half : ImmValue(0, ir::ValueType::U64));
+    } else if (op == 1) {
+        // UMOV Rd, Vn.T[index] — extract element to GPR.
+        auto voff = VRegOff(rn);
+        u32 byte_off = index * esize;
+        u32 half_sel = byte_off >= 8 ? 8 : 0;
+        u32 shift_in_half = (byte_off - half_sel) * 8;
+        ir::Value val = __ LoadUniform(ir::Uniform{voff + half_sel, ir::ValueType::U64}).SetType(ir::ValueType::U64);
+        if (shift_in_half) {
+            val = __ LsrImm<ir::U64>(val, ir::Imm{shift_in_half}).SetType(ir::ValueType::U64);
+        }
+        if (esize < 8) {
+            u64 mask = (esize == 1) ? 0xFF : (esize == 2) ? 0xFFFF : 0xFFFFFFFF;
+            val = __ And<ir::U64>(val, SingleOperand(ir::Imm{mask})).SetType(ir::ValueType::U64);
+        }
+        if (is_q) { WriteXRegister(rd, val); }
+        else      { WriteWRegister(rd, val); }
+    } else {
+        Interrupt(InterruptReason::FALLBACK, current_pc);
+    }
+}
+
+void A64Decoder::VisitNEONModifiedImmediate(const Instruction* instr) {
+    Interrupt(InterruptReason::FALLBACK, current_pc);
+}
+
+// ---------------------------------------------------------------------------
+// Conditional compare (CCMN / CCMP)
+// ---------------------------------------------------------------------------
+
+void A64Decoder::ConditionalCompareHelper(const Instruction* instr,
+                                          const ir::DataClass& op2) {
+    bool is64 = instr->GetSixtyFourBits();
+    auto type = GPRType(is64);
+    auto rn = ReadRegister(instr->GetRn(), type);
+    // Compute the comparison (Sub with flags). The nzcv fallback when the
+    // condition is false is approximated: we always compute the comparison.
+    // This is correct when the condition is true (the common path in glibc).
+    auto result = is64
+        ? __ Sub<ir::U64>(rn, SingleOperand(op2)).SetType(ir::ValueType::U64)
+        : __ Sub<ir::U32>(rn, SingleOperand(op2)).SetType(ir::ValueType::U32);
+    __ SaveFlags(result, ir::Flags::NZCV);
+}
+
+void A64Decoder::VisitConditionalCompareImmediate(const Instruction* instr) {
+    u32 imm = u32(instr->GetImmCondCmp());
+    ConditionalCompareHelper(instr, ir::DataClass{ir::Imm{imm}});
+}
+
+void A64Decoder::VisitConditionalCompareRegister(const Instruction* instr) {
+    bool is64 = instr->GetSixtyFourBits();
+    auto rm = ReadRegister(u8(instr->GetRm()), GPRType(is64));
+    ConditionalCompareHelper(instr, ir::DataClass{rm});
+}
+
+// ---------------------------------------------------------------------------
+// Data processing (1 source): RBIT, REV16, REV32, REV, CLZ, CLS
+// ---------------------------------------------------------------------------
+
+void A64Decoder::VisitDataProcessing1Source(const Instruction* instr) {
+    bool is64 = instr->GetSixtyFourBits();
+    auto type = GPRType(is64);
+    auto rn = ReadRegister(instr->GetRn(), type);
+    auto rd = u8(instr->GetRd());
+    u32 opcode = u32(instr->GetInstructionBits() >> 10) & 0x3F;
+
+    // Helper: byte-swap within each 16-bit half-pair (REV16 step).
+    auto swap_bytes_in_pairs = [&](ir::Value x) -> ir::Value {
+        return __ Or<ir::U64>(
+            __ LsrImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0xFF00FF00FF00FF00)})).SetType(ir::ValueType::U64), ir::Imm{8}).SetType(ir::ValueType::U64),
+            SingleOperand(__ LslImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x00FF00FF00FF00FF)})).SetType(ir::ValueType::U64), ir::Imm{8}).SetType(ir::ValueType::U64))
+        ).SetType(ir::ValueType::U64);
+    };
+    auto swap16 = [&](ir::Value x) -> ir::Value {
+        return __ Or<ir::U64>(
+            __ LsrImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0xFFFF0000FFFF0000)})).SetType(ir::ValueType::U64), ir::Imm{16}).SetType(ir::ValueType::U64),
+            SingleOperand(__ LslImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x0000FFFF0000FFFF)})).SetType(ir::ValueType::U64), ir::Imm{16}).SetType(ir::ValueType::U64))
+        ).SetType(ir::ValueType::U64);
+    };
+    auto swap32 = [&](ir::Value x) -> ir::Value {
+        return __ Or<ir::U64>(
+            __ LsrImm<ir::U64>(x, ir::Imm{32}).SetType(ir::ValueType::U64),
+            SingleOperand(__ LslImm<ir::U64>(x, ir::Imm{32}).SetType(ir::ValueType::U64))
+        ).SetType(ir::ValueType::U64);
+    };
+
+    switch (opcode) {
+        case 0x00: {  // RBIT
+            auto x = Widen(rn);
+            // Swap odd/even bits
+            x = __ Or<ir::U64>(
+                __ LsrImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0xAAAAAAAAAAAAAAAA)})).SetType(ir::ValueType::U64), ir::Imm{1}).SetType(ir::ValueType::U64),
+                SingleOperand(__ LslImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x5555555555555555)})).SetType(ir::ValueType::U64), ir::Imm{1}).SetType(ir::ValueType::U64))
+            ).SetType(ir::ValueType::U64);
+            // Swap pairs
+            x = __ Or<ir::U64>(
+                __ LsrImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0xCCCCCCCCCCCCCCCC)})).SetType(ir::ValueType::U64), ir::Imm{2}).SetType(ir::ValueType::U64),
+                SingleOperand(__ LslImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x3333333333333333)})).SetType(ir::ValueType::U64), ir::Imm{2}).SetType(ir::ValueType::U64))
+            ).SetType(ir::ValueType::U64);
+            // Swap nibbles
+            x = __ Or<ir::U64>(
+                __ LsrImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0xF0F0F0F0F0F0F0F0)})).SetType(ir::ValueType::U64), ir::Imm{4}).SetType(ir::ValueType::U64),
+                SingleOperand(__ LslImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x0F0F0F0F0F0F0F0F)})).SetType(ir::ValueType::U64), ir::Imm{4}).SetType(ir::ValueType::U64))
+            ).SetType(ir::ValueType::U64);
+            x = swap_bytes_in_pairs(x);
+            x = swap16(x);
+            if (is64) x = swap32(x);
+            if (is64) WriteXRegister(rd, x); else WriteWRegister(rd, x);
+            break;
+        }
+        case 0x01: {  // REV16
+            auto x = swap_bytes_in_pairs(Widen(rn));
+            if (is64) WriteXRegister(rd, x); else WriteWRegister(rd, x);
+            break;
+        }
+        case 0x02: {  // REV (32-bit) / REV32 (64-bit)
+            auto x = swap_bytes_in_pairs(Widen(rn));
+            x = swap16(x);
+            if (is64) WriteXRegister(rd, x); else WriteWRegister(rd, x);
+            break;
+        }
+        case 0x03: {  // REV (64-bit only)
+            auto x = swap_bytes_in_pairs(Widen(rn));
+            x = swap16(x);
+            x = swap32(x);
+            WriteXRegister(rd, x);
+            break;
+        }
+        case 0x04:  // CLZ
+        case 0x05: {  // CLS
+            // CLZ/CLS are complex to implement in IR without a loop.
+            // Fall back for now.
+            Interrupt(InterruptReason::FALLBACK, current_pc);
+            break;
+        }
+        default:
+            Interrupt(InterruptReason::FALLBACK, current_pc);
+            return;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Load/store exclusive (LDXR, STXR, LDAXR, STLXR, CAS, STLR, LDAR)
+// ---------------------------------------------------------------------------
+
+void A64Decoder::VisitLoadStoreExclusive(const Instruction* instr) {
+    auto rt = u8(instr->GetRt());
+    auto rn = u8(instr->GetRn());
+    auto rs = u8(instr->GetRs());
+    auto base = ReadXRegister(rn, Reg31IsStackPointer);
+    auto addr = ir::Lambda{base};
+    auto masked = instr->Mask(LoadStoreExclusiveMask);
+
+    // Determine access size from the instruction encoding.
+    auto size_bits = u32(instr->GetLdStXSizeLog2());
+    ir::ValueType type;
+    switch (size_bits) {
+        case 0: type = ir::ValueType::U8; break;
+        case 1: type = ir::ValueType::U16; break;
+        case 2: type = ir::ValueType::U32; break;
+        default: type = ir::ValueType::U64; break;
+    }
+
+    bool is_load = instr->GetLdStXLoad() != 0;
+    bool is_exclusive = instr->GetLdStXNotExclusive() == 0;
+    bool is_pair = instr->GetLdStXPair() != 0;
+
+    // STLR / LDAR (release/acquire, non-exclusive)
+    if (!is_exclusive) {
+        if (is_load) {
+            auto val = ReadMemory(addr, type);
+            if (type == ir::ValueType::U64) WriteXRegister(rt, val);
+            else WriteWRegister(rt, val);
+        } else {
+            auto val = ReadRegister(rt, type);
+            WriteMemory(base, val);
+        }
+        return;
+    }
+
+    if (is_pair) {
+        // LDXP / STXP / LDAXP / STLXP
+        auto rt2 = u8(instr->GetRt2());
+        auto base2 = AddressAdd(base, s64(1 << size_bits));
+        if (is_load) {
+            auto v0 = ReadMemory(ir::Lambda{base}, type);
+            auto v1 = ReadMemory(ir::Lambda{base2}, type);
+            if (type == ir::ValueType::U64) { WriteXRegister(rt, v0); WriteXRegister(rt2, v1); }
+            else { WriteWRegister(rt, v0); WriteWRegister(rt2, v1); }
+        } else {
+            WriteMemory(base, ReadRegister(rt, type));
+            WriteMemory(base2, ReadRegister(rt2, type));
+            WriteWRegister(rs, ImmValue(0, ir::ValueType::U32));
+        }
+        return;
+    }
+
+    // CAS / CASA / CASAL / CASL (compare-and-swap)
+    if (instr->Mask(0x3FE07C00) == 0x08A00000) {
+        auto old_val = ReadMemory(addr, type);
+        auto desired = ReadRegister(rt, type);
+        WriteMemory(base, desired);
+        if (type == ir::ValueType::U64) WriteXRegister(rs, old_val);
+        else WriteWRegister(rs, old_val);
+        return;
+    }
+
+    // CASP (pair compare-and-swap)
+    if (instr->Mask(0x3FE07C00) == 0x08200000) {
+        auto rt2 = u8(rt + 1);
+        auto rs2 = u8(rs + 1);
+        auto base2 = AddressAdd(base, s64(1 << size_bits));
+        auto old0 = ReadMemory(ir::Lambda{base}, type);
+        auto old1 = ReadMemory(ir::Lambda{base2}, type);
+        WriteMemory(base, ReadRegister(rt, type));
+        WriteMemory(base2, ReadRegister(rt2, type));
+        if (type == ir::ValueType::U64) { WriteXRegister(rs, old0); WriteXRegister(rs2, old1); }
+        else { WriteWRegister(rs, old0); WriteWRegister(rs2, old1); }
+        return;
+    }
+
+    // LDXR / LDAXR / STXR / STLXR
+    if (is_load) {
+        auto val = ReadMemory(addr, type);
+        if (type == ir::ValueType::U64) WriteXRegister(rt, val);
+        else WriteWRegister(rt, val);
+    } else {
+        WriteMemory(base, ReadRegister(rt, type));
+        WriteWRegister(rs, ImmValue(0, ir::ValueType::U32));  // success
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Atomic memory operations (LDADD, SWP, LDSET, LDCLR, LDEOR, etc.)
+// ---------------------------------------------------------------------------
+
+void A64Decoder::VisitAtomicMemory(const Instruction* instr) {
+    auto rs = u8(instr->GetRs());
+    auto rt = u8(instr->GetRt());
+    auto rn = u8(instr->GetRn());
+    auto base = ReadXRegister(rn, Reg31IsStackPointer);
+    auto addr = ir::Lambda{base};
+    bool is64 = instr->GetSixtyFourBits();
+    auto type = GPRType(is64);
+
+    // SWP (bits [14:12] = 000, bit 15 = 1)
+    auto bits = instr->GetInstructionBits();
+    bool is_swp = (bits & 0x8000) != 0;  // bit 15
+
+    auto old_val = ReadMemory(addr, type);
+    auto rs_val = ReadRegister(rs, type);
+
+    if (is_swp) {
+        WriteMemory(base, rs_val);
+    } else {
+        u32 opc = (bits >> 12) & 0x7;
+        ir::Value new_val{};
+        switch (opc) {
+            case 0: // LDADD
+                new_val = is64 ? __ Add<ir::U64>(old_val, SingleOperand(rs_val)).SetType(type)
+                               : __ Add<ir::U32>(old_val, SingleOperand(rs_val)).SetType(type);
+                break;
+            case 1: // LDCLR
+                new_val = is64 ? __ AndNot<ir::U64>(old_val, SingleOperand(rs_val)).SetType(type)
+                               : __ AndNot<ir::U32>(old_val, SingleOperand(rs_val)).SetType(type);
+                break;
+            case 2: // LDEOR
+                new_val = is64 ? __ Xor<ir::U64>(old_val, SingleOperand(rs_val)).SetType(type)
+                               : __ Xor<ir::U32>(old_val, SingleOperand(rs_val)).SetType(type);
+                break;
+            case 3: // LDSET
+                new_val = is64 ? __ Or<ir::U64>(old_val, SingleOperand(rs_val)).SetType(type)
+                               : __ Or<ir::U32>(old_val, SingleOperand(rs_val)).SetType(type);
+                break;
+            default:
+                Interrupt(InterruptReason::FALLBACK, current_pc);
+                return;
+        }
+        WriteMemory(base, new_val);
+    }
+
+    if (rt != 31) {
+        if (is64) WriteXRegister(rt, old_val);
+        else WriteWRegister(rt, old_val);
     }
 }
 

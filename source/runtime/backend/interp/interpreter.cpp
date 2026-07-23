@@ -441,6 +441,13 @@ HaltReason Interpreter::Run() {
             continue;
         }
         Run(&*it, stack);
+        // Wild-pointer guard (RunLoadMemory/RunStoreMemory) and any future
+        // instruction-level fault sets state.halt_reason; stop the block
+        // immediately so the halt propagates to the dispatcher instead of
+        // continuing to execute past the faulting instruction.
+        if (state.halt_reason != HaltReason::None) {
+            return state.halt_reason;
+        }
     }
     return RunTerminal(block->GetTerminal(), stack);
 }
@@ -579,9 +586,22 @@ void Interpreter::RunStoreUniform(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
     const auto operand = inst->GetArg<ir::Operand>(0);
     const auto type = inst->ReturnType();
+    const u64 guest_addr = EvalOperand(stack, operand);
+    // Wild-pointer guard: a guest address at or beyond the guest address-space
+    // limit (Config::loc_end) is definitionally invalid. Raise PageFatal instead
+    // of letting the host dereference a bad pointer (SIGSEGV). The JIT path
+    // relies on the host signal handler for this; the interpreter has none.
+    const u64 access_size = ir::GetValueSizeByte(type);
+    if (guest_addr >= state.guest_addr_limit ||
+        guest_addr + access_size > state.guest_addr_limit ||
+        (state.interp_range_check &&
+         !state.interp_range_check(state.interp_range_check_ctx, guest_addr, access_size))) {
+        state.halt_reason = HaltReason::PageFatal;
+        return;
+    }
     // Guest address virtualization: state.pt carries the guest->host bias
     // (host = guest + bias); it is 0 for identity mapping.
-    const auto* ptr = reinterpret_cast<const void*>(EvalOperand(stack, operand) +
+    const auto* ptr = reinterpret_cast<const void*>(guest_addr +
                                                     reinterpret_cast<uintptr_t>(state.pt));
     if (IsVector(type)) {
         u128 value{};
@@ -600,7 +620,17 @@ void Interpreter::RunStoreMemory(ir::Inst* inst, InterpStack& stack) {
     const auto operand = inst->GetArg<ir::Operand>(0);
     const auto value = inst->GetArg<ir::Value>(1);
     const auto type = value.Type();
-    auto* ptr = reinterpret_cast<void*>(EvalOperand(stack, operand) +
+    const u64 guest_addr = EvalOperand(stack, operand);
+    // Wild-pointer guard: see RunLoadMemory for the rationale.
+    const u64 access_size = ir::GetValueSizeByte(type);
+    if (guest_addr >= state.guest_addr_limit ||
+        guest_addr + access_size > state.guest_addr_limit ||
+        (state.interp_range_check &&
+         !state.interp_range_check(state.interp_range_check_ctx, guest_addr, access_size))) {
+        state.halt_reason = HaltReason::PageFatal;
+        return;
+    }
+    auto* ptr = reinterpret_cast<void*>(guest_addr +
                                         reinterpret_cast<uintptr_t>(state.pt));
     if (IsVector(type)) {
         const u128 v = ReadVec(stack, value);

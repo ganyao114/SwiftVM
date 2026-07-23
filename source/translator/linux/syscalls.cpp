@@ -25,6 +25,9 @@ static constexpr u64 GUEST_MAP_PRIVATE = 0x02;
 static constexpr u64 GUEST_MAP_FIXED = 0x10;
 static constexpr u64 GUEST_MAP_ANONYMOUS = 0x20;
 
+// Guest mprotect protections (asm-generic mman).
+static constexpr u64 GUEST_PROT_WRITE = 0x02;
+
 // Guest AT_* constants (asm-generic fcntl).
 static constexpr u64 GUEST_AT_FDCWD = static_cast<u64>(-100);
 static constexpr u64 GUEST_AT_SYMLINK_NOFOLLOW = 0x100;
@@ -561,6 +564,8 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
         if (addr % GuestMemory::kHostPageSize != 0) return -EINVAL_;
         // MAP_FIXED replaces existing *guest* mappings in the range; unmap
         // them first (host MapFixed never clobbers).
+        // SMC: the replaced range may hold translated code — invalidate it.
+        if (smc_invalidate_) smc_invalidate_(addr, addr + map_length);
         memory->Unmap(addr, map_length);
         if (!memory->MapFixed(addr, map_length)) return -ENOMEM_;
         guest_addr = addr;
@@ -601,6 +606,8 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
 s64 SyscallHandler::SysMunmap(u64 addr, u64 length) {
     if (addr % GuestMemory::kGuestPageSize != 0) return -EINVAL_;
     if (length == 0) return -EINVAL_;
+    // SMC: the unmapped range may hold translated code — invalidate it.
+    if (smc_invalidate_) smc_invalidate_(addr, addr + length);
     memory->Unmap(addr, length);
     return 0;
 }
@@ -608,6 +615,13 @@ s64 SyscallHandler::SysMunmap(u64 addr, u64 length) {
 s64 SyscallHandler::SysMprotect(u64 addr, u64 len, u64 prot) {
     // Guest protections are advisory for us: the host never executes guest
     // code and the JIT reads/writes guest memory as data. Pretend success.
+    // SMC: PROT_WRITE on a range that holds translated code means the guest
+    // is about to patch it — invalidate any stale blocks now, before the
+    // write happens (the write-protect trap may not fire on an already-writable
+    // host page).
+    if ((prot & GUEST_PROT_WRITE) && smc_invalidate_) {
+        smc_invalidate_(addr, addr + len);
+    }
     return 0;
 }
 
@@ -625,6 +639,8 @@ s64 SyscallHandler::SysMremap(u64 addr, u64 old_size, u64 new_size, u64 flags, u
     VAddr out = 0;
     if (flags & MREMAP_FIXED) {
         if (new_addr % GuestMemory::kHostPageSize != 0) return -EINVAL_;
+        // SMC: the fixed target range may hold translated code — invalidate it.
+        if (smc_invalidate_) smc_invalidate_(new_addr, new_addr + new_len);
         memory->Unmap(new_addr, new_len);  // MREMAP_FIXED replaces the target range
         if (!memory->MapFixed(new_addr, new_len)) return -ENOMEM_;
         out = new_addr;
@@ -633,6 +649,9 @@ s64 SyscallHandler::SysMremap(u64 addr, u64 old_size, u64 new_size, u64 flags, u
         if (!out) return -ENOMEM_;
     }
     std::memcpy(memory->ToHost(out), memory->ToHostConst(addr), old_size);
+    // SMC: the old range is about to be unmapped — invalidate any translated
+    // code there before dropping the mapping.
+    if (smc_invalidate_) smc_invalidate_(addr, addr + GuestMemory::RoundHostPage(old_size));
     memory->Unmap(addr, GuestMemory::RoundHostPage(old_size));
     return static_cast<s64>(out);
 }

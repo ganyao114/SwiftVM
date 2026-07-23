@@ -158,6 +158,11 @@ private:
     ir::Flags flags_clear{};
     bool save_in_nzcv{true};
     bool nzcv_dirty{false};
+    // Which host NZCV bits were actually requested by SaveFlags since the
+    // last MergeNZCV. Only these bits are merged; the rest keep their
+    // existing value in the flags register (so a ClearFlags(CF) between
+    // two flag-setting instructions is not overwritten by the merge).
+    HostFlags nzcv_requested{};
     // True when Config::memory_base / page_table is set: every guest memory
     // access goes through the pt bias register (guest addr + pt = host addr).
     bool use_memory_base{false};

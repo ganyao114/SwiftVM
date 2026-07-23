@@ -22,6 +22,15 @@ public:
     static Arm64Instance *Make(void* memory_base = nullptr);
     static void Destroy(Arm64Instance *instance);
 
+    // SMC hook: forwards to AddressSpace::InvalidateCodeRange — see
+    // translator::Instance for the contract.
+    void InvalidateCodeRange(uint64_t start, uint64_t end) override;
+
+    // Interpreter wild-pointer guard: fn(ctx, guest_addr, size) must return
+    // true if [guest_addr, guest_addr+size) is mapped guest memory. Wired by
+    // the linux loader to GuestMemory::RangeIsMapped before creating a Core.
+    void SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), void* ctx);
+
 private:
     explicit Arm64Instance(void* memory_base);
 

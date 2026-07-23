@@ -153,7 +153,15 @@ LoadedImage ElfLoader::Load(const std::string& path) {
     }
 
     LoadedImage image{};
-    image.path = path;
+    // Resolve to an absolute path so that readlink("/proc/self/exe") always
+    // returns an absolute path — glibc's _dl_get_origin asserts linkval[0]=='/'
+    // and aborts (exit 134) if the value is relative.
+    if (char* resolved = realpath(path.c_str(), nullptr)) {
+        image.path = resolved;
+        free(resolved);
+    } else {
+        image.path = path;  // realpath failed (e.g. file already deleted); keep as-is
+    }
     image.isa = isa;
     image.entry = guest_base + reader.get_entry();
     image.load_bias = guest_base;

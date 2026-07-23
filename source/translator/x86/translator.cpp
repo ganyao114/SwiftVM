@@ -408,11 +408,19 @@ struct X86Instance::Impl final {
     }
 
     std::unique_ptr<backend::AddressSpace> address_space{};
+    // Interpreter wild-pointer guard: wired by the linux loader via
+    // X86Instance::SetInterpRangeCheck; forwarded to State by X86Core::Impl.
+    bool (*range_check_fn)(void*, u64, u64){nullptr};
+    void* range_check_ctx{};
 };
 
 struct X86Core::Impl final {
     explicit Impl(X86Instance* instance) : instance(instance) {
         s_runtime = instance->impl->MakeRuntime();
+        // Wire the interpreter wild-pointer guard into the runtime State.
+        auto* st = s_runtime->GetState();
+        st->interp_range_check = instance->impl->range_check_fn;
+        st->interp_range_check_ctx = instance->impl->range_check_ctx;
     }
 
     [[nodiscard]] void* Translate(LocationDescriptor pc) const {
@@ -498,6 +506,15 @@ X86Instance* X86Instance::Make(void* memory_base) { return new X86Instance(memor
 
 void X86Instance::Destroy(X86Instance* instance) {
     delete instance;
+}
+
+void X86Instance::InvalidateCodeRange(uint64_t start, uint64_t end) {
+    impl->address_space->InvalidateCodeRange(start, end);
+}
+
+void X86Instance::SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), void* ctx) {
+    impl->range_check_fn = fn;
+    impl->range_check_ctx = ctx;
 }
 
 X86Core::X86Core(X86Instance* instance) : instance(instance) {
