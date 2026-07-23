@@ -21,7 +21,6 @@
 
 #include "flags_elimination_pass.h"
 
-#include <cstdlib>
 #include <unordered_map>
 #include <vector>
 
@@ -30,18 +29,30 @@
 namespace swift::runtime::ir {
 
 void FlagsEliminationPass::Run(Block* block) {
-    // The backward liveness is mostly correct: C-writers (SaveFlags/ClearFlags
-    // with CF, SetCarry) are never deleted (cross-block carry dependency),
-    // narrowing is disabled (interacts badly with JIT lazy NZCV), and the
-    // JIT uses nzcv_requested to merge only requested NZCV bits. Residual
-    // edge cases remain with adc/sbb in "alu"/"mixed" fuzz families (2-3
-    // failures out of 22). Default off; SVM_FLAGS_ELIM=1 to enable.
-    static const bool force_enable = std::getenv("SVM_FLAGS_ELIM") != nullptr;
-    if (!force_enable) {
+    // Still has residual correctness issues beyond Adc/Sbb blocks (fuzz
+    // alu/mixed failures with off-by-one register values in JIT mode).
+    // The backward liveness + JIT lazy NZCV interaction needs a deeper
+    // redesign. Default off; SVM_FLAGS_ELIM=1 to enable for debugging.
+    static const bool enabled = std::getenv("SVM_FLAGS_ELIM") != nullptr;
+    if (!enabled) {
         return;
     }
-
     auto& inst_list = block->GetInstList();
+
+    // Adc/Sbb read the carry written by the preceding guest instruction.
+    // A block can contain multiple guest instruction regions, each with a
+    // SaveFlags boundary. The block-wide backward `needed` set cannot model
+    // that boundary: a later Adc/Sbb may make an earlier, unrelated writer
+    // appear live (or kill the bits needed by its real carry producer).
+    //
+    // Keep this conservative until liveness is tracked per guest instruction
+    // region. Skipping the entire block means the carry producer and every
+    // instruction in its flag-normalization chain remain intact.
+    for (const auto& inst : inst_list) {
+        if (inst.GetOp() == OpCode::Adc || inst.GetOp() == OpCode::Sbb) {
+            return;
+        }
+    }
 
     Flags needed = Flags::All;  // live-out: flags persist across blocks
     // Needed-set snapshots at bound labels, keyed by the Goto/NotGoto inst
