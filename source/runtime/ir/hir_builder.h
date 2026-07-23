@@ -178,6 +178,9 @@ public:
 #define INST(name, ret, ...)                                                                       \
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
     ret name(const Args&... args) {                                                                \
+        static_assert(meta::ValidArgCount(OpCode::name, meta::kArgs_##name.size(),                 \
+                                          sizeof...(Args)),                                        \
+                    #name ": argument count mismatch (see ir.inc)");                               \
         auto hir_value = AppendInst<RetType>(OpCode::name, std::forward<const Args&>(args)...);    \
         return ret{hir_value ? hir_value->value.Def() : nullptr};                                  \
     }
@@ -259,6 +262,9 @@ public:
 #define INST(name, ret, ...)                                                                       \
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
     ret name(const Args&... args) {                                                                \
+        static_assert(meta::ValidArgCount(OpCode::name, meta::kArgs_##name.size(),                 \
+                                          sizeof...(Args)),                                        \
+                    #name ": argument count mismatch (see ir.inc)");                               \
         auto inst = AppendInst(OpCode::name, std::forward<const Args&>(args)...);                  \
         if constexpr (RetType::TYPE != ValueType::VOID) {                                          \
             inst->SetReturn(RetType::TYPE);                                                        \
@@ -380,6 +386,9 @@ public:
 #define INST(name, ret, ...)                                                                       \
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
     ret name(const Args&... args) {                                                                \
+        static_assert(meta::ValidArgCount(OpCode::name, meta::kArgs_##name.size(),                 \
+                                          sizeof...(Args)),                                        \
+                    #name ": argument count mismatch (see ir.inc)");                               \
         return ret{AppendInst<RetType>(OpCode::name, std::forward<const Args&>(args)...)};         \
     }
 #include "ir.inc"
