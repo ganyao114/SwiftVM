@@ -65,10 +65,22 @@ struct Arm64Instance::Impl final {
                 .buffers_static_alloc = {},
                 .static_program = false,
                 // Block linking enabled: empty dispatch slots fall back to the
-                // dispatcher safely (see JitContext::Forward). DirectBlockLink
-                // stays off until the SMC delink mechanism lands (Phase 4).
+                // dispatcher safely (see JitContext::Forward).
+                // ReturnStackBuffer: call/ret pairs skip the dispatcher on
+                //   a correct RSB prediction (JitContext::EmitRSBPush/Pop).
+                // DirectBlockLink: known targets branch via Mov+Br (SMC-safe,
+                //   no backpatching); unknown targets fall back to the
+                //   indirect dispatch table.
+                // FunctionBaseCompile: whole-function decode + compile
+                //   (TranslateIR(HIRFunction*) path).
+                // NOTE: FunctionBaseCompile is implemented but temporarily disabled
+                // pending a fix in the HIRBuilder→TranslateIR(HIRFunction*)
+                // path (the function-level register allocator produces bad
+                // allocations for multi-block functions decoded through the
+                // HIRBuilder; see the func_base path in Translate()).
                 .global_opts = Optimizations::ConstantFolding | Optimizations::DeadCodeRemove |
-                               Optimizations::BlockLink,
+                               Optimizations::BlockLink | Optimizations::DirectBlockLink |
+                               Optimizations::ReturnStackBuffer,
                 .arm64_features = Arm64Features::None,
                 .stack_alignment = 16,
                 .page_table = nullptr,
@@ -86,16 +98,61 @@ struct Arm64Instance::Impl final {
         auto module = address_space->GetModule(pc);
         auto& m_config = module->GetModuleConfig();
         auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile);
-        // Detect a freshly created node before GetNodeOrCreate: a fresh
-        // ir::Block has an UNINITIALIZED jit_cache (runtime bug — it is
-        // default-initialized garbage), so IsEmptyBlock()/IsJitCached() on
-        // it are meaningless until we clear it.
+
+        // Function-level compilation: decode the whole function (all
+        // reachable blocks up to ret / indirect jump) into an HIRFunction
+        // and compile it as a single unit.  Bypasses GetNodeOrCreate to
+        // avoid the ir::Function identity conflict between the module's
+        // address-node map and the HIRBuilder's internal Function object
+        // (TranslateIR pushes the HIRBuilder's Function into the module).
+        if (func_base) {
+            auto jit_guard = module->ModuleLockRead();
+            ir::HIRBuilder builder{};
+            auto* hir_func = builder.AppendFunction(pc);
+            ir::Assembler assembler{&builder};
+
+            constexpr size_t kMaxFuncBlocks = 256;
+            size_t decoded_count = 0;
+            bool progress = true;
+            while (progress && decoded_count < kMaxFuncBlocks) {
+                progress = false;
+                std::vector<LocationDescriptor> to_decode;
+                for (auto& hb : hir_func->GetHIRBlockList()) {
+                    auto* blk = hb.GetBlock();
+                    if (blk->GetInstList().empty()) {
+                        to_decode.push_back(blk->GetStartLocation().Value());
+                    }
+                }
+                for (auto addr : to_decode) {
+                    builder.SetCurBlock(addr);
+                    arm64::A64Decoder decoder{addr, &memory_impl, &assembler};
+                    decoder.Decode();
+                    ++decoded_count;
+                    progress = true;
+                }
+            }
+            // Finalize the function graph (RPO, dominance, loops).
+            // Do NOT call builder.End(): it appends a spurious
+            // ReturnToDispatch terminal to the current block, which
+            // already has a terminal from the decoder.
+            hir_func->EndFunction();
+
+            if (!module->GetAddressSpace().GetConfig().enable_jit) {
+                return nullptr;
+            }
+            auto* code_cache = backend::TranslateIR(module, hir_func);
+            if (code_cache) {
+                address_space->PushCodeCache(pc, code_cache);
+            }
+            return code_cache;
+        }
+
+        // Block-level compilation path.
         const bool fresh = backend::IsEmpty(module->GetNode(pc));
-        auto node = module->GetNodeOrCreate(pc, func_base);
+        auto node = module->GetNodeOrCreate(pc, false);
         auto code_cache = VisitVariant<void*>(node, [module, pc, fresh](auto x) -> void* {
             using T = std::decay_t<decltype(x)>;
             if constexpr (std::is_same_v<T, IntrusivePtr<ir::Function>>) {
-                // TODO: function-based compilation
                 return nullptr;
             } else if constexpr (std::is_same_v<T, IntrusivePtr<ir::Block>>) {
                 auto guard = x->LockWrite();

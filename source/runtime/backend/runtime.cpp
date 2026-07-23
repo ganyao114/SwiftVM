@@ -49,6 +49,15 @@ struct Runtime::Impl final {
         // definitionally invalid; the interpreter checks this before every
         // memory access and raises PageFatal instead of crashing the host.
         state->guest_addr_limit = static_cast<u64>(address_space->GetConfig().loc_end);
+        // Return Stack Buffer: allocate the RSB backing store and point
+        // state->rsb_pointer at the top of the stack (the stack grows
+        // downward: push pre-decrements, pop post-increments).  The buffer
+        // has rsb_stack_size + 2 entries; the initial pointer sits at entry
+        // [rsb_stack_size] so 64 pushes reach entry [0] before the two
+        // guard slots absorb a modest overflow.
+        if (True(address_space->GetConfig().global_opts & Optimizations::ReturnStackBuffer)) {
+            state->rsb_pointer = &rsb_buffer.rsb_frames[backend::rsb_stack_size];
+        }
         jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
     }
 
@@ -243,6 +252,10 @@ struct Runtime::Impl final {
     Instance* instance{};
     std::vector<u8> state_buffer{};
     backend::State* state{};
+    // RSB backing store: rsb_stack_size + 2 entries of 16 bytes each.
+    // state->rsb_pointer points into this buffer; the trampoline saves/
+    // restores it across host exits.
+    backend::RSBBuffer rsb_buffer{};
     backend::AddressSpace* address_space{};
     // mutable: the JIT dispatcher writes L1 entries through the raw
     // state->l1_code_cache pointer even from const Run paths.

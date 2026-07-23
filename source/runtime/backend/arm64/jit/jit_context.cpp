@@ -203,12 +203,40 @@ void JitContext::Forward(ir::Location location) {
                 in_function = cur_function->FindBlock(location.Value());
             }
             if (in_function) {
+                // Intra-function branch: the target label is bound within
+                // this same code buffer by SetCurrent(block).
                 __ B(GetLabel(location.Value()));
             } else {
                 if (auto code = target_module->GetJitCache(location.Value()); code) {
-                    __ B(GetLabel(location.Value()));
+                    // Target already compiled: branch directly via Mov+Br.
+                    // A plain B(label) cannot reach across code buffers;
+                    // Mov+Br is position-independent and SMC-safe (the
+                    // address is loaded at JIT time, not backpatched).
+                    __ Mov(ip, reinterpret_cast<VAddr>(code));
+                    __ Br(ip);
                 } else {
-                    BlockLinkStub(location);
+                    // Target not yet compiled: fall back to the indirect
+                    // link (dispatch table) if available, otherwise the
+                    // dispatcher.  This avoids the BlockLinkStub backpatch
+                    // path which is not SMC-safe (the patched B would
+                    // dangle after invalidation).
+                    if (self_module_forward &&
+                        module_config.HasOpt(Optimizations::BlockLink)) {
+                        u32 dispatcher_index = target_module->GetDispatchIndex(location);
+                        Label empty_slot;
+                        __ Mov(ipw, dispatcher_index);
+                        __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
+                        __ Cbz(ip, &empty_slot);
+                        __ Br(ip);
+                        __ Bind(&empty_slot);
+                        __ Mov(ip, location.Value());
+                        __ Str(ip, MemOperand(state, state_offset_current_loc));
+                        __ Ret();
+                    } else {
+                        __ Mov(ip, location.Value());
+                        __ Str(ip, MemOperand(state, state_offset_current_loc));
+                        __ Ret();
+                    }
                 }
             }
         } else if (self_module_forward && module_config.HasOpt(Optimizations::BlockLink)) {
@@ -255,6 +283,49 @@ void JitContext::ReturnToDispatcher(const Register& location) {
     // Block exit: see Forward.
     FlushSpillWrites();
     __ Str(location, MemOperand(state, state_offset_current_loc));
+    __ Ret();
+}
+
+// --- Return Stack Buffer (RSB) -------------------------------------------
+// The RSB is a small stack of 16-byte frames in host memory, pointed to by
+// the reserved rsb_ptr register (x25).  Each frame holds:
+//   offset 0: guest_location  (u64) — the guest return address (validation)
+//   offset 8: dispatch_index  (u64) — L2 dispatch-table slot for fast lookup
+//
+// Push (guest call): pre-decrement rsb_ptr by 16 and store the frame.
+// Pop  (guest ret):  load the frame, compare guest_location with the actual
+//   return target in state->current_loc; on a hit, load the compiled code
+//   pointer from the L2 dispatch table and branch directly — skipping the
+//   trampoline dispatcher round-trip entirely.  On a miss (mismatch, empty
+//   slot, or underflow) fall through to the normal Ret-to-dispatcher path.
+
+void JitContext::EmitRSBPush(u64 guest_return_addr, u32 dispatch_index) {
+    // ip0 (x16) = guest return address, ip1 (x17) = dispatch table slot.
+    __ Mov(ip0, guest_return_addr);
+    __ Mov(ip1, static_cast<u64>(dispatch_index));
+    // Pre-decrement push: rsb_ptr -= 16, then store the pair.
+    __ Stp(ip0, ip1, MemOperand(rsb_ptr, -16, PreIndex));
+}
+
+void JitContext::EmitRSBPop() {
+    Label rsb_miss;
+    // Load the predicted guest return address from the top RSB frame.
+    __ Ldr(ip0, MemOperand(rsb_ptr, 0));
+    // Load the actual return target (set by the frontend's ret instruction).
+    __ Ldr(ip1, MemOperand(state, state_offset_current_loc));
+    __ Cmp(ip0, ip1);
+    __ B(&rsb_miss, ne);
+    // Prediction hit: load the L2 dispatch-table slot index and look up the
+    // compiled code pointer.  cache (x27) holds the L2 table base at all
+    // times (loaded once at runtime entry).
+    __ Ldr(ip, MemOperand(rsb_ptr, 8));   // ip (x11) = dispatch_index
+    __ Ldr(ip2, MemOperand(cache, ip, LSL, 3));  // ip2 (x14) = code ptr
+    __ Cbz(ip2, &rsb_miss);               // empty slot → fallback
+    // Commit the pop and jump directly to the target's compiled code.
+    __ Add(rsb_ptr, rsb_ptr, 16);
+    __ Br(ip2);
+    // Miss / underflow: fall back to the trampoline dispatcher.
+    __ Bind(&rsb_miss);
     __ Ret();
 }
 

@@ -41,6 +41,21 @@ public:
 
     void Forward(ir::Location location);
     void ReturnToDispatcher(const Register& location);
+
+    // --- Return Stack Buffer (RSB) emission --------------------------------
+    // Called from the JitTranslator for PushRSB instructions and PopRSBHint
+    // terminals when Optimizations::ReturnStackBuffer is enabled.
+    //
+    // Push: stores (guest_return_addr, dispatch_index) as a 16-byte frame
+    //   via pre-decrement of rsb_ptr (x25).
+    // Pop:  pops a frame, validates guest_return_addr against
+    //   state->current_loc, and on a hit loads the compiled code pointer
+    //   from the L2 dispatch table and branches directly — skipping the
+    //   trampoline dispatcher.  On a miss (mismatch, empty slot, or
+    //   underflow) falls through to the normal Ret-to-dispatcher path.
+    void EmitRSBPush(u64 guest_return_addr, u32 dispatch_index);
+    void EmitRSBPop();
+
     void Finish();
     [[nodiscard]] u32 CurrentBufferSize();
     [[nodiscard]] bool IsUniform(const Register& reg);
