@@ -4,6 +4,7 @@
 #include "runtime/ir/ir_meta.h"
 #include "runtime/ir/opts/cfg_analysis_pass.h"
 #include "runtime/ir/opts/local_elimination_pass.h"
+#include "runtime/ir/opts/flags_elimination_pass.h"
 #include "runtime/ir/opts/reid_instr_pass.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 #include "runtime/backend/mem_map.h"
@@ -254,4 +255,46 @@ TEST_CASE("IR meta consistency") {
     REQUIRE(got.GetLeft().value == base);
     REQUIRE(got.GetRight().IsValue());
     REQUIRE(got.GetRight().value == idx);
+}
+
+TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
+    using namespace swift::runtime::ir;
+
+    Block overwritten{0, Location{0x1000}};
+    auto lhs = overwritten.LoadImm(Imm{1u});
+    auto rhs = overwritten.LoadImm(Imm{2u});
+    auto old_result = overwritten.Add(lhs, Operand{rhs});
+    overwritten.AppendInst(OpCode::SaveFlags, old_result, Flags::All);
+    auto new_result = overwritten.Add(lhs, Operand{rhs});
+    auto* new_save = overwritten.AppendInst(OpCode::SaveFlags, new_result, Flags::All);
+
+    FlagsEliminationPass::Run(&overwritten);
+
+    REQUIRE(old_result.Def()->GetPseudoOperations(OpCode::SaveFlags).empty());
+    auto new_pseudos = new_result.Def()->GetPseudoOperations(OpCode::SaveFlags);
+    REQUIRE(new_pseudos.size() == 1);
+    REQUIRE(new_pseudos[0] == new_save);
+    REQUIRE(new_pseudos[0]->GetArg<Flags>(1) == Flags::All);
+    size_t save_count = 0;
+    for (auto& inst : overwritten.GetInstList()) {
+        save_count += inst.GetOp() == OpCode::SaveFlags;
+    }
+    REQUIRE(save_count == 1);
+
+    Block carry_read{0, Location{0x2000}};
+    auto carry_lhs = carry_read.LoadImm(Imm{5u});
+    auto carry_rhs = carry_read.LoadImm(Imm{3u});
+    auto carry_source = carry_read.Add(carry_lhs, Operand{carry_rhs});
+    auto* carry_save = carry_read.AppendInst(OpCode::SaveFlags, carry_source, Flags::All);
+    auto sbb_result = carry_read.Sbb(carry_lhs, Operand{carry_rhs});
+    carry_read.AppendInst(OpCode::SaveFlags, sbb_result, Flags::All);
+
+    FlagsEliminationPass::Run(&carry_read);
+
+    // Sbb reads the preceding carry, so its producer stays live. Its mask must
+    // remain whole: the JIT cannot safely turn this into a C-only pseudo.
+    auto carry_pseudos = carry_source.Def()->GetPseudoOperations(OpCode::SaveFlags);
+    REQUIRE(carry_pseudos.size() == 1);
+    REQUIRE(carry_pseudos[0] == carry_save);
+    REQUIRE(carry_pseudos[0]->GetArg<Flags>(1) == Flags::All);
 }
