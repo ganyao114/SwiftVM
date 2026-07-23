@@ -19,6 +19,14 @@ namespace swift::x86 {
 void SetGuestMemBias(u64 bias);
 [[nodiscard]] u64 GetGuestMemBias();
 
+// Memory ordering mode installed by the embedding translator (from
+// Config::tso_mode). AcqRel routes every guest memory access through the
+// ordering-enforcing IR ops; Relaxed/Hardware keep plain accesses (Hardware
+// relies on the host already running a TSO memory model). LOCK-prefixed
+// instructions always emit ordered accesses regardless of this mode.
+void SetTsoMode(runtime::TsoMode mode);
+[[nodiscard]] runtime::TsoMode GetTsoMode();
+
 using VAddr = u64;
 using namespace swift::runtime;
 
@@ -303,9 +311,16 @@ private:
 
     ir::Value ToValue(const ir::DataClass &data);
 
-    ir::DataClass Src(_DInst& insn, _Operand& operand);
+    ir::DataClass Src(_DInst& insn, _Operand& operand, bool force_tso = false);
 
-    void Dst(_DInst& insn, _Operand& operand, const ir::DataClass &value);
+    void Dst(_DInst& insn, _Operand& operand, const ir::DataClass &value, bool force_tso = false);
+
+    // Memory ordering: AcqRel mode orders every access; a LOCK prefix orders
+    // just that instruction's accesses (force_tso covers the implicitly
+    // locked memory XCHG, which carries no LOCK prefix in the encoding).
+    [[nodiscard]] bool TsoOrdered(const _DInst& insn) const;
+    ir::Value MemLoad(const ir::Operand& addr, ir::ValueType type, bool tso);
+    void MemStore(const ir::Operand& addr, ir::Value value, bool tso);
 
     Operand GetAddress(_DInst& insn, _Operand& operand);
 

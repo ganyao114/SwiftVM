@@ -106,10 +106,44 @@ static u64 DivQS64(u64 hi, u64 lo, u64 den) {
 
 namespace {
 std::atomic<u64> g_guest_mem_bias{0};
+// Memory ordering mode installed by the embedding translator (Config::tso_mode
+// -> x86::SetTsoMode). Relaxed by default: correct for single-threaded guests.
+std::atomic<u8> g_tso_mode{static_cast<u8>(runtime::TsoMode::Relaxed)};
 }
 
 void SetGuestMemBias(u64 bias) { g_guest_mem_bias.store(bias, std::memory_order_relaxed); }
 u64 GetGuestMemBias() { return g_guest_mem_bias.load(std::memory_order_relaxed); }
+
+void SetTsoMode(runtime::TsoMode mode) {
+    g_tso_mode.store(static_cast<u8>(mode), std::memory_order_relaxed);
+}
+runtime::TsoMode GetTsoMode() {
+    return static_cast<runtime::TsoMode>(g_tso_mode.load(std::memory_order_relaxed));
+}
+
+bool X64Decoder::TsoOrdered(const _DInst& insn) const {
+    if (GetTsoMode() == runtime::TsoMode::AcqRel) {
+        return true;
+    }
+    // LOCK-prefixed instructions are full fences on x86; order their accesses
+    // even in Relaxed mode.
+    return (insn.flags & FLAG_LOCK) != 0;
+}
+
+ir::Value X64Decoder::MemLoad(const ir::Operand& addr, ir::ValueType type, bool tso) {
+    if (tso) {
+        return assembler->LoadMemoryTSO(addr).SetType(type);
+    }
+    return assembler->LoadMemory(addr).SetType(type);
+}
+
+void X64Decoder::MemStore(const ir::Operand& addr, ir::Value value, bool tso) {
+    if (tso) {
+        assembler->StoreMemoryTSO(addr, value);
+    } else {
+        assembler->StoreMemory(addr, value);
+    }
+}
 
 static void RepMovs(u64 dst, u64 src, u64 bytes) {
     const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
@@ -1397,7 +1431,7 @@ ir::Value X64Decoder::ToValue(const ir::DataClass& data) {
     return data.IsImm() ? __ LoadImm(data.imm) : data.value;
 }
 
-ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op) {
+ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op, bool force_tso) {
     ir::DataClass result{};
     switch (op.type) {
         case O_PC:
@@ -1440,18 +1474,18 @@ ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op) {
         case O_DISP: {
             auto size = GetSize(op.size);
             auto address_operand = GetAddress(insn, op);
-            // The backend's TSO loads/stores (ldar/stlr) only encode [base]:
-            // any offset/index in the addressing operand would be silently
-            // dropped, so the address is always folded into a single value.
-            // Plain (non-TSO) memory ops are used throughout this frontend:
-            // the guest is single-threaded so no ordering is observable, and
-            // ldar/stlr fault on the unaligned addresses x86 permits (glibc
-            // init_cpu_features does 4-mod-8 qword feature-word accesses).
-            // SetType (not just cast): EmitGetOperand sizes the result from
-            // the instruction's own return type.
+            // The address is always folded into a single value (historically
+            // for the TSO forms, which only encode [base]; harmless for the
+            // plain forms). TSO emission: AcqRel mode (or a LOCK prefix on
+            // this instruction) routes the load through LoadMemoryTSO, whose
+            // backend form (plain load + dmb ishld) tolerates the unaligned
+            // addresses x86 permits (glibc init_cpu_features does 4-mod-8
+            // qword feature-word accesses). SetType (not just cast):
+            // EmitGetOperand sizes the result from the instruction's own
+            // return type.
             auto address = __ GetOperand(address_operand.ToIROperand())
                                    .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
-            result = __ LoadMemory(ir::Operand{address}).SetType(size);
+            result = MemLoad(ir::Operand{address}, size, force_tso || TsoOrdered(insn));
             break;
         }
         case O_PTR: {
@@ -1468,7 +1502,7 @@ ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op) {
     return result;
 }
 
-void X64Decoder::Dst(_DInst& insn, _Operand& operand, const ir::DataClass& data) {
+void X64Decoder::Dst(_DInst& insn, _Operand& operand, const ir::DataClass& data, bool force_tso) {
     auto value = ToValue(data);
     switch (operand.type) {
         case O_REG:
@@ -1487,10 +1521,11 @@ void X64Decoder::Dst(_DInst& insn, _Operand& operand, const ir::DataClass& data)
                 // sign extended immediates are wider than the destination).
                 value = NarrowTo(value, GetSize(operand.size));
             }
-            // See Src(): the folded single-value address form.
+            // See Src(): the folded single-value address form; TSO selection
+            // follows the mode / LOCK prefix.
             auto folded = __ GetOperand(address.ToIROperand())
                                   .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
-            __ StoreMemory(ir::Operand{folded}, value);
+            MemStore(ir::Operand{folded}, value, force_tso || TsoOrdered(insn));
             break;
         }
         default:
@@ -1755,8 +1790,8 @@ void X64Decoder::DecodeMovs(_DInst& insn) {
         auto dst_reg = is_64bit ? _RegisterType::R_RDI : _RegisterType::R_EDI;
         auto src_addr = R(src_reg);
         auto dst_addr = R(dst_reg);
-        auto value = __ LoadMemory(ir::Operand{src_addr}).SetType(size);
-        __ StoreMemory(ir::Operand{dst_addr}, value);
+        auto value = MemLoad(ir::Operand{src_addr}, size, TsoOrdered(insn));
+        MemStore(ir::Operand{dst_addr}, value, TsoOrdered(insn));
         auto step = ir::Imm(u64(ir::GetValueSizeByte(size)));
         R(src_reg, __ Add(src_addr, ir::Operand{step}));
         R(dst_reg, __ Add(dst_addr, ir::Operand{step}));
@@ -1841,7 +1876,7 @@ void X64Decoder::DecodeStos(_DInst& insn) {
         R(cnt_reg, __ LoadImm(ir::Imm(u64(0))));
     } else {
         // TODO: DF (direction flag) is not modelled, assume DF == 0.
-        __ StoreMemory(ir::Operand{dst_addr}, acc.SetType(size));
+        MemStore(ir::Operand{dst_addr}, acc.SetType(size), TsoOrdered(insn));
         auto step = ir::Imm(u64(ir::GetValueSizeByte(size)));
         R(dst_reg, __ Add(dst_addr, ir::Operand{step}));
     }
@@ -2078,11 +2113,16 @@ void X64Decoder::DecodeXchg(_DInst& insn) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
 
-    auto left = Src(insn, op0);
-    auto right = Src(insn, op1);
+    // XCHG with a memory operand is implicitly locked on x86 (full fence,
+    // no LOCK prefix in the encoding): order its accesses even in Relaxed
+    // mode.
+    const bool mem_tso = op0.type != O_REG || op1.type != O_REG;
 
-    Dst(insn, op0, right);
-    Dst(insn, op1, left);
+    auto left = Src(insn, op0, mem_tso);
+    auto right = Src(insn, op1, mem_tso);
+
+    Dst(insn, op0, right, mem_tso);
+    Dst(insn, op1, left, mem_tso);
 }
 
 void X64Decoder::DecodeSetCC(_DInst& insn, Cond cond) {
@@ -2377,6 +2417,9 @@ ir::Value X64Decoder::Pop(ir::ValueType type) {
     auto size_byte = ir::GetValueSizeByte(type);
     auto sp = _RegisterType::R_RSP;
     auto address = R(sp);
+    // Stack accesses stay Relaxed even in AcqRel mode: each guest thread owns
+    // its stack, so no cross-thread ordering is observable (cross86 does the
+    // same relaxation for RSP/RBP-relative accesses).
     auto value = __ LoadMemory(ir::Operand{address}).SetType(type);
     R(sp, __ Add(address, ir::Operand{ir::Imm(u64(size_byte))}));
     return value;
@@ -3246,7 +3289,10 @@ void X64Decoder::DecodeCmpxchg(_DInst& insn) {
     if (op0.type == O_REG) {
         old = __ And(ToValue(Src(insn, op0)), ir::Operand{ir::Imm(wmask)}).SetType(type);
     } else {
-        old = __ LoadMemory(ir::Operand{FlatAddress(insn, op0)}).SetType(type);
+        // lock cmpxchg: ordered load (the store below is ordered too). This
+        // is still a single-threaded model — TSO gives ordering, not the
+        // atomic RMW a real multi-threaded guest would need.
+        old = MemLoad(ir::Operand{FlatAddress(insn, op0)}, type, TsoOrdered(insn));
     }
     // Flags come from CMP accumulator, destination (acc - old).
     ArithWithFlags(acc, old, ArithOp::Sub, width, ir::Flags::All);
@@ -3272,7 +3318,7 @@ void X64Decoder::DecodeCmpxchg(_DInst& insn) {
         // The store is skipped when the comparison fails (x86 writes only on
         // success; also avoids touching read-only pages on the failure path).
         auto skip_store = __ NotGoto(equal);
-        __ StoreMemory(ir::Operand{addr}, NarrowTo(desired, type));
+        MemStore(ir::Operand{addr}, NarrowTo(desired, type), TsoOrdered(insn));
         __ BindLabel(skip_store);
     }
     // dest == accumulator register: the dest write already updated it.
@@ -3359,7 +3405,7 @@ void X64Decoder::DecodeBt(_DInst& insn, int kind) {
         auto elems = __ AsrValue(idx64, __ LoadImm(ir::Imm(u64(log2w))));
         auto byte_off = __ LslValue(elems, __ LoadImm(ir::Imm(u64(log2w - 3))));
         mem_addr = __ Add(FlatAddress(insn, op0), ir::Operand{byte_off});
-        base = __ LoadMemory(ir::Operand{mem_addr}).SetType(type);
+        base = MemLoad(ir::Operand{mem_addr}, type, TsoOrdered(insn));
         n = __ And(idx64, ir::Operand{ir::Imm(u64(width - 1))});
     }
     auto wide = width < 64 ? __ ZeroExtend64(base) : base;
@@ -3378,7 +3424,8 @@ void X64Decoder::DecodeBt(_DInst& insn, int kind) {
         if (op0.type == O_REG) {
             Dst(insn, op0, modified.SetCastType(type));
         } else {
-            __ StoreMemory(ir::Operand{mem_addr}, NarrowTo(modified, type));
+            // lock bts/btr/btc: ordered store (TsoOrdered covers LOCK).
+            MemStore(ir::Operand{mem_addr}, NarrowTo(modified, type), TsoOrdered(insn));
         }
     }
 

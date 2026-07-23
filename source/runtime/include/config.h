@@ -63,6 +63,16 @@ enum class Arm64Features : std::uint32_t {
 
 DECLARE_ENUM_FLAG_OPERATORS(Arm64Features)
 
+// Guest memory ordering model: how strictly guest loads/stores are ordered on
+// a (weakly ordered) host.
+//   Relaxed:  no ordering — correct for single-threaded guests (default).
+//   AcqRel:   every guest load acquires / every store releases (TSO
+//             compatible); the frontend emits LoadMemoryTSO/StoreMemoryTSO
+//             and the ARM64 backend surrounds plain accesses with barriers.
+//   Hardware: the host enforces TSO itself (e.g. Apple silicon TSO mode,
+//             Linux PR_SET_MEM_MODEL_TSO); codegen matches Relaxed.
+enum class TsoMode : std::uint8_t { Relaxed, AcqRel, Hardware };
+
 class MemoryInterface {
 public:
     virtual bool Read(void* dest, size_t addr, size_t size) = 0;
@@ -90,6 +100,10 @@ struct Config {
     bool static_program;
     Optimizations global_opts;
     Arm64Features arm64_features{Arm64Features::None};
+    // Memory ordering for guest accesses (frontends read this and install it
+    // via their mode hook, e.g. x86::SetTsoMode). Hardware mode is a promise
+    // from the embedder that the host already runs in a TSO memory model.
+    TsoMode tso_mode{TsoMode::Relaxed};
     std::uint32_t stack_alignment;
     void* page_table;
     void* memory_base;
