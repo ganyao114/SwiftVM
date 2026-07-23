@@ -14,6 +14,21 @@
 
 namespace swift::runtime::ir {
 
+namespace meta {
+// Compile-time argument-count check for the builder INST macros. Exact match
+// against the ir.inc signature, with two documented exceptions:
+//  - CallLambda: trailing host-call argument Values are optional (Lambda +
+//    0..3 Values, see Block::CallHost and the SIMD helpers in the x86 decoder).
+//  - Not: unary logical-not (Value) or bitwise-not (Value, Operand); both
+//    backends dispatch on ArgAt(1).IsVoid() (EmitNot / RunNot).
+constexpr bool ValidArgCount(OpCode op, std::size_t declared, std::size_t actual) {
+    if (op == OpCode::CallLambda || op == OpCode::Not) {
+        return actual >= 1 && actual <= declared;
+    }
+    return actual == declared;
+}
+}  // namespace meta
+
 class Block;
 class Inst;
 
@@ -101,6 +116,9 @@ public:
 
 #define INST(name, ret, ...)                                                                        \
     template <typename... Args> Inst &name(const Args&... args) {                                   \
+        static_assert(meta::ValidArgCount(OpCode::name, meta::kArgs_##name.size(),                  \
+                                          sizeof...(Args)),                                         \
+                    #name ": argument count mismatch (see ir.inc)");                                \
         this->SetInst(OpCode::name, std::forward<const Args&>(args)...);                            \
         return *this;                                                                               \
     }
