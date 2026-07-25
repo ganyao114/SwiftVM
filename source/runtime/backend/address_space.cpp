@@ -112,10 +112,9 @@ bool AddressSpace::LookupFault(const u8* host_pc, FaultEntry& out) {
 }
 
 void AddressSpace::InvalidateCodeRange(VAddr guest_start, VAddr guest_end) {
-    // See the wiring note in address_space.h: called by the syscall layer
-    // when the guest mprotects / remaps / unmaps memory that may hold
-    // translated code. nullptr L1: per-runtime L1 flushing is the caller's
-    // responsibility.
+    // Called by the syscall layer when the guest mprotects / remaps / unmaps
+    // memory that may hold translated code. SmcTracker owns cross-runtime L1
+    // and shared-L2 invalidation; there is no caller-specific L1 here.
     smc_tracker.InvalidateRange(*this, nullptr, guest_start, guest_end);
 }
 
