@@ -1,7 +1,7 @@
 #include "translator.h"
 
-#include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
+#include "runtime/backend/context.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -337,11 +337,20 @@ void JitTranslator::EmitVecAdd(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     switch (inst->GetArg<ir::Imm>(2).Get()) {
-        case 8: __ Add(result.V16B(), left.V16B(), right.V16B()); break;
-        case 16: __ Add(result.V8H(), left.V8H(), right.V8H()); break;
-        case 32: __ Add(result.V4S(), left.V4S(), right.V4S()); break;
-        case 64: __ Add(result.V2D(), left.V2D(), right.V2D()); break;
-        default: PANIC("invalid vector lane width");
+        case 8:
+            __ Add(result.V16B(), left.V16B(), right.V16B());
+            break;
+        case 16:
+            __ Add(result.V8H(), left.V8H(), right.V8H());
+            break;
+        case 32:
+            __ Add(result.V4S(), left.V4S(), right.V4S());
+            break;
+        case 64:
+            __ Add(result.V2D(), left.V2D(), right.V2D());
+            break;
+        default:
+            PANIC("invalid vector lane width");
     }
 }
 
@@ -350,11 +359,20 @@ void JitTranslator::EmitVecSub(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     switch (inst->GetArg<ir::Imm>(2).Get()) {
-        case 8: __ Sub(result.V16B(), left.V16B(), right.V16B()); break;
-        case 16: __ Sub(result.V8H(), left.V8H(), right.V8H()); break;
-        case 32: __ Sub(result.V4S(), left.V4S(), right.V4S()); break;
-        case 64: __ Sub(result.V2D(), left.V2D(), right.V2D()); break;
-        default: PANIC("invalid vector lane width");
+        case 8:
+            __ Sub(result.V16B(), left.V16B(), right.V16B());
+            break;
+        case 16:
+            __ Sub(result.V8H(), left.V8H(), right.V8H());
+            break;
+        case 32:
+            __ Sub(result.V4S(), left.V4S(), right.V4S());
+            break;
+        case 64:
+            __ Sub(result.V2D(), left.V2D(), right.V2D());
+            break;
+        default:
+            PANIC("invalid vector lane width");
     }
 }
 
@@ -363,11 +381,20 @@ void JitTranslator::EmitVecCmpEq(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     switch (inst->GetArg<ir::Imm>(2).Get()) {
-        case 8: __ Cmeq(result.V16B(), left.V16B(), right.V16B()); break;
-        case 16: __ Cmeq(result.V8H(), left.V8H(), right.V8H()); break;
-        case 32: __ Cmeq(result.V4S(), left.V4S(), right.V4S()); break;
-        case 64: __ Cmeq(result.V2D(), left.V2D(), right.V2D()); break;
-        default: PANIC("invalid vector lane width");
+        case 8:
+            __ Cmeq(result.V16B(), left.V16B(), right.V16B());
+            break;
+        case 16:
+            __ Cmeq(result.V8H(), left.V8H(), right.V8H());
+            break;
+        case 32:
+            __ Cmeq(result.V4S(), left.V4S(), right.V4S());
+            break;
+        case 64:
+            __ Cmeq(result.V2D(), left.V2D(), right.V2D());
+            break;
+        default:
+            PANIC("invalid vector lane width");
     }
 }
 
@@ -376,12 +403,205 @@ void JitTranslator::EmitVecCmpGt(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     switch (inst->GetArg<ir::Imm>(2).Get()) {
-        case 8: __ Cmgt(result.V16B(), left.V16B(), right.V16B()); break;
-        case 16: __ Cmgt(result.V8H(), left.V8H(), right.V8H()); break;
-        case 32: __ Cmgt(result.V4S(), left.V4S(), right.V4S()); break;
-        case 64: __ Cmgt(result.V2D(), left.V2D(), right.V2D()); break;
-        default: PANIC("invalid vector lane width");
+        case 8:
+            __ Cmgt(result.V16B(), left.V16B(), right.V16B());
+            break;
+        case 16:
+            __ Cmgt(result.V8H(), left.V8H(), right.V8H());
+            break;
+        case 32:
+            __ Cmgt(result.V4S(), left.V4S(), right.V4S());
+            break;
+        case 64:
+            __ Cmgt(result.V2D(), left.V2D(), right.V2D());
+            break;
+        default:
+            PANIC("invalid vector lane width");
     }
+}
+
+void JitTranslator::EmitVecAvg(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    switch (inst->GetArg<ir::Imm>(2).Get()) {
+        case 8:
+            __ Urhadd(result.V16B(), left.V16B(), right.V16B());
+            break;
+        case 16:
+            __ Urhadd(result.V8H(), left.V8H(), right.V8H());
+            break;
+        default:
+            PANIC("invalid vector average lane width");
+    }
+}
+
+void JitTranslator::EmitVecMin(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const bool is_signed = inst->GetArg<ir::Imm>(3).Get() != 0;
+    switch (inst->GetArg<ir::Imm>(2).Get()) {
+        case 8:
+            if (is_signed)
+                __ Smin(result.V16B(), left.V16B(), right.V16B());
+            else
+                __ Umin(result.V16B(), left.V16B(), right.V16B());
+            break;
+        case 16:
+            if (is_signed)
+                __ Smin(result.V8H(), left.V8H(), right.V8H());
+            else
+                __ Umin(result.V8H(), left.V8H(), right.V8H());
+            break;
+        case 32:
+            if (is_signed)
+                __ Smin(result.V4S(), left.V4S(), right.V4S());
+            else
+                __ Umin(result.V4S(), left.V4S(), right.V4S());
+            break;
+        default:
+            PANIC("invalid vector min lane width");
+    }
+}
+
+void JitTranslator::EmitVecMax(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const bool is_signed = inst->GetArg<ir::Imm>(3).Get() != 0;
+    switch (inst->GetArg<ir::Imm>(2).Get()) {
+        case 8:
+            if (is_signed)
+                __ Smax(result.V16B(), left.V16B(), right.V16B());
+            else
+                __ Umax(result.V16B(), left.V16B(), right.V16B());
+            break;
+        case 16:
+            if (is_signed)
+                __ Smax(result.V8H(), left.V8H(), right.V8H());
+            else
+                __ Umax(result.V8H(), left.V8H(), right.V8H());
+            break;
+        case 32:
+            if (is_signed)
+                __ Smax(result.V4S(), left.V4S(), right.V4S());
+            else
+                __ Umax(result.V4S(), left.V4S(), right.V4S());
+            break;
+        default:
+            PANIC("invalid vector max lane width");
+    }
+}
+
+void JitTranslator::EmitVecMul(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    switch (inst->GetArg<ir::Imm>(2).Get()) {
+        case 8:
+            __ Mul(result.V16B(), left.V16B(), right.V16B());
+            break;
+        case 16:
+            __ Mul(result.V8H(), left.V8H(), right.V8H());
+            break;
+        case 32:
+            __ Mul(result.V4S(), left.V4S(), right.V4S());
+            break;
+        default:
+            PANIC("invalid vector multiply lane width");
+    }
+}
+
+void JitTranslator::EmitVecAbsDiffSum8(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    auto low = context.GetTmpV();
+    auto high = context.GetTmpV();
+    __ Uabdl(low.V8H(), left.V8B(), right.V8B());
+    __ Uabdl2(high.V8H(), left.V16B(), right.V16B());
+    __ Addv(low.H(), low.V8H());
+    __ Addv(high.H(), high.V8H());
+    __ Eor(result.V16B(), result.V16B(), result.V16B());
+    __ Ins(result.V8H(), 0, low.V8H(), 0);
+    __ Ins(result.V8H(), 4, high.V8H(), 0);
+}
+
+void JitTranslator::EmitVecMadd16(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    auto low = context.GetTmpV();
+    auto high = context.GetTmpV();
+    __ Smull(low.V4S(), left.V4H(), right.V4H());
+    __ Smull2(high.V4S(), left.V8H(), right.V8H());
+    __ Addp(result.V4S(), low.V4S(), high.V4S());
+}
+
+namespace {
+
+VRegister VecLaneFormat(VRegister reg, u32 lane_bits) {
+    switch (lane_bits) {
+        case 16:
+            return reg.V8H();
+        case 32:
+            return reg.V4S();
+        case 64:
+            return reg.V2D();
+        default:
+            PANIC("invalid vector shift lane width");
+    }
+    return reg;
+}
+
+}  // namespace
+
+void JitTranslator::EmitVecShiftLeft(ir::Inst* inst) {
+    auto value = context.V(inst->GetArg<ir::Value>(0));
+    auto count = context.X(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    auto clamped = context.GetTmpX();
+    auto shifts = context.GetTmpV();
+    __ Mov(clamped, lane_bits);
+    __ Cmp(count, clamped);
+    __ Csel(clamped, count, clamped, ls);
+    auto shift_format = VecLaneFormat(shifts, lane_bits);
+    __ Dup(shift_format, lane_bits == 64 ? Register(clamped) : Register(clamped.W()));
+    __ Ushl(VecLaneFormat(result, lane_bits), VecLaneFormat(value, lane_bits), shift_format);
+}
+
+void JitTranslator::EmitVecShiftRight(ir::Inst* inst) {
+    auto value = context.V(inst->GetArg<ir::Value>(0));
+    auto count = context.X(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    auto clamped = context.GetTmpX();
+    auto shifts = context.GetTmpV();
+    __ Mov(clamped, lane_bits);
+    __ Cmp(count, clamped);
+    __ Csel(clamped, count, clamped, ls);
+    __ Neg(clamped, clamped);
+    auto shift_format = VecLaneFormat(shifts, lane_bits);
+    __ Dup(shift_format, lane_bits == 64 ? Register(clamped) : Register(clamped.W()));
+    __ Ushl(VecLaneFormat(result, lane_bits), VecLaneFormat(value, lane_bits), shift_format);
+}
+
+void JitTranslator::EmitVecShiftRightArithmetic(ir::Inst* inst) {
+    auto value = context.V(inst->GetArg<ir::Value>(0));
+    auto count = context.X(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    auto clamped = context.GetTmpX();
+    auto shifts = context.GetTmpV();
+    __ Mov(clamped, lane_bits - 1);
+    __ Cmp(count, clamped);
+    __ Csel(clamped, count, clamped, ls);
+    __ Neg(clamped, clamped);
+    auto shift_format = VecLaneFormat(shifts, lane_bits);
+    __ Dup(shift_format, lane_bits == 64 ? Register(clamped) : Register(clamped.W()));
+    __ Sshl(VecLaneFormat(result, lane_bits), VecLaneFormat(value, lane_bits), shift_format);
 }
 
 void JitTranslator::EmitVecShuffle32(ir::Inst* inst) {
@@ -439,20 +659,28 @@ void JitTranslator::EmitVecZip(ir::Inst* inst) {
     const bool high = inst->GetArg<ir::Imm>(3).Get() != 0;
     switch (inst->GetArg<ir::Imm>(2).Get()) {
         case 8:
-            if (high) __ Zip2(result.V16B(), left.V16B(), right.V16B());
-            else __ Zip1(result.V16B(), left.V16B(), right.V16B());
+            if (high)
+                __ Zip2(result.V16B(), left.V16B(), right.V16B());
+            else
+                __ Zip1(result.V16B(), left.V16B(), right.V16B());
             break;
         case 16:
-            if (high) __ Zip2(result.V8H(), left.V8H(), right.V8H());
-            else __ Zip1(result.V8H(), left.V8H(), right.V8H());
+            if (high)
+                __ Zip2(result.V8H(), left.V8H(), right.V8H());
+            else
+                __ Zip1(result.V8H(), left.V8H(), right.V8H());
             break;
         case 32:
-            if (high) __ Zip2(result.V4S(), left.V4S(), right.V4S());
-            else __ Zip1(result.V4S(), left.V4S(), right.V4S());
+            if (high)
+                __ Zip2(result.V4S(), left.V4S(), right.V4S());
+            else
+                __ Zip1(result.V4S(), left.V4S(), right.V4S());
             break;
         case 64:
-            if (high) __ Zip2(result.V2D(), left.V2D(), right.V2D());
-            else __ Zip1(result.V2D(), left.V2D(), right.V2D());
+            if (high)
+                __ Zip2(result.V2D(), left.V2D(), right.V2D());
+            else
+                __ Zip1(result.V2D(), left.V2D(), right.V2D());
             break;
         default:
             PANIC("invalid vector lane width");
@@ -473,6 +701,75 @@ void JitTranslator::EmitVecDup64(ir::Inst* inst) {
     auto src = context.X(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     __ Dup(result.V2D(), src);
+}
+
+void JitTranslator::EmitVecExtract16(ir::Inst* inst) {
+    auto src = context.V(inst->GetArg<ir::Value>(0));
+    auto result = context.W(ir::Value{inst});
+    const u32 lane = inst->GetArg<ir::Imm>(1).Get() & 7;
+    __ Umov(result, src.V8H(), lane);
+}
+
+void JitTranslator::EmitVecInsert16(ir::Inst* inst) {
+    auto dest = context.V(inst->GetArg<ir::Value>(0));
+    auto value = context.W(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 lane = inst->GetArg<ir::Imm>(2).Get() & 7;
+    __ Orr(result.V16B(), dest.V16B(), dest.V16B());
+    __ Ins(result.V8H(), lane, value);
+}
+
+void JitTranslator::EmitVecMovMask(ir::Inst* inst) {
+    auto src = context.V(inst->GetArg<ir::Value>(0));
+    auto result = context.W(ir::Value{inst});
+    const u32 lane_bits = inst->GetArg<ir::Imm>(1).Get();
+    if (lane_bits == 8) {
+        auto packed = context.GetTmpV();
+        auto work = context.GetTmpV();
+        __ Ushr(work.V16B(), src.V16B(), 7);
+        __ Uzp1(packed.V16B(), work.V16B(), work.V16B());
+        __ Uzp2(work.V16B(), work.V16B(), work.V16B());
+        __ Sli(packed.V16B(), work.V16B(), 1);
+        __ Uzp2(work.V16B(), packed.V16B(), packed.V16B());
+        __ Uzp1(packed.V16B(), packed.V16B(), packed.V16B());
+        __ Sli(packed.V16B(), work.V16B(), 2);
+        __ Uzp2(work.V16B(), packed.V16B(), packed.V16B());
+        __ Uzp1(packed.V16B(), packed.V16B(), packed.V16B());
+        __ Sli(packed.V16B(), work.V16B(), 4);
+        __ Umov(result, packed.V8H(), 0);
+        return;
+    }
+    if (lane_bits == 32) {
+        auto work = context.GetTmpV();
+        auto shifts = context.GetTmpV();
+        __ Ushr(work.V4S(), src.V4S(), 31);
+        __ Movi(shifts.V16B(), 0x0000000300000002ull, 0x0000000100000000ull);
+        __ Ushl(work.V4S(), work.V4S(), shifts.V4S());
+        __ Addv(work.S(), work.V4S());
+        __ Umov(result, work.V4S(), 0);
+        return;
+    }
+    if (lane_bits == 64) {
+        auto work = context.GetTmpV();
+        auto packed = context.GetTmpX();
+        __ Uzp2(work.V4S(), src.V4S(), src.V4S());
+        __ Umov(packed, work.V2D(), 0);
+        __ Bfi(packed, packed, 31, 32);
+        __ Lsr(packed, packed, 62);
+        __ Mov(result, packed.W());
+        return;
+    }
+    PANIC("invalid vector movmask lane width");
+}
+
+void JitTranslator::EmitVecTableLookup8(ir::Inst* inst) {
+    auto table = context.V(inst->GetArg<ir::Value>(0));
+    auto control = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    auto indexes = context.GetTmpV();
+    __ Movi(indexes.V16B(), 0x8F);
+    __ And(indexes.V16B(), control.V16B(), indexes.V16B());
+    __ Tbl(result.V16B(), table.V16B(), indexes.V16B());
 }
 
 void JitTranslator::EmitVecFAddScalar32(ir::Inst* inst) {
