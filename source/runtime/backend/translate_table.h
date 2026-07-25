@@ -39,7 +39,11 @@ public:
         do {
             if (entries[index].key == 0 || entries[index].key == key) {
                 entries[index].value = value;
-                std::atomic_thread_fence(std::memory_order_acquire);
+                // Generated dispatchers read this table without taking the
+                // host lock. Publish the code pointer before making its key
+                // visible so a racing reader can only see a miss, never a key
+                // paired with an uninitialized target.
+                std::atomic_thread_fence(std::memory_order_release);
                 entries[index].key = key;
                 result = 2 * index + 1;
                 done = true;
@@ -65,7 +69,7 @@ public:
                     result = 2 * index + 1;
                 } else {
                     entries[index].value = value;
-                    std::atomic_thread_fence(std::memory_order_acquire);
+                    std::atomic_thread_fence(std::memory_order_release);
                     entries[index].key = key;
                     result = 2 * index + 1;
                 }

@@ -21,6 +21,7 @@
 
 #include <cstring>
 #include <span>
+#include <shared_mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -139,6 +140,9 @@ private:
     // MapFixed/MapAnywhere/Unmap.
     void TrackMap(VAddr addr, u64 size);
     void TrackUnmap(VAddr addr, u64 size);
+    void TrackUnmapLocked(VAddr addr, u64 size);
+    [[nodiscard]] bool RangeIsMappedLocked(VAddr addr, u64 size) const;
+    mutable std::shared_mutex mapped_regions_mutex;
     std::vector<std::pair<VAddr, VAddr>> mapped_regions;
     u64 bias_{};
 };

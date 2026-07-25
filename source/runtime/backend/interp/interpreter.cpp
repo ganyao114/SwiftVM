@@ -7,6 +7,7 @@
 // two could disagree this implementation follows the JIT, including its
 // quirks (documented inline).
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -675,20 +676,110 @@ void Interpreter::RunMemoryCopyTSO(ir::Inst* inst, InterpStack& stack) {
 
 void Interpreter::RunCompareAndSwap(ir::Inst* inst, InterpStack& stack) {
     // Args: (address, expected, desired); returns the old value.
-    // Single-threaded semantics: no retry loop, no exclusives (the JIT uses
-    // Ldaxr/Stlxr).
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto expected = inst->GetArg<ir::Value>(1);
     const auto desired = inst->GetArg<ir::Value>(2);
     const u32 bits = TypeBits(expected.Type());
     const u64 mask = MaskBits(bits);
     auto* ptr = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
-    u64 old{0};
-    std::memcpy(&old, ptr, bits / 8);
-    old &= mask;
-    if (old == (ReadScalar(stack, expected) & mask)) {
-        const u64 d = ReadScalar(stack, desired) & mask;
-        std::memcpy(ptr, &d, bits / 8);
+    const u64 expected_value = ReadScalar(stack, expected) & mask;
+    const u64 desired_value = ReadScalar(stack, desired) & mask;
+    u64 old{};
+    switch (bits) {
+        case 8: {
+            auto exp = static_cast<u8>(expected_value);
+            std::atomic_ref(*static_cast<u8*>(ptr))
+                    .compare_exchange_strong(exp,
+                                             static_cast<u8>(desired_value),
+                                             std::memory_order_seq_cst);
+            old = exp;
+            break;
+        }
+        case 16: {
+            auto exp = static_cast<u16>(expected_value);
+            std::atomic_ref(*static_cast<u16*>(ptr))
+                    .compare_exchange_strong(exp,
+                                             static_cast<u16>(desired_value),
+                                             std::memory_order_seq_cst);
+            old = exp;
+            break;
+        }
+        case 32: {
+            auto exp = static_cast<u32>(expected_value);
+            std::atomic_ref(*static_cast<u32*>(ptr))
+                    .compare_exchange_strong(exp,
+                                             static_cast<u32>(desired_value),
+                                             std::memory_order_seq_cst);
+            old = exp;
+            break;
+        }
+        case 64: {
+            auto exp = expected_value;
+            std::atomic_ref(*static_cast<u64*>(ptr))
+                    .compare_exchange_strong(exp, desired_value, std::memory_order_seq_cst);
+            old = exp;
+            break;
+        }
+        default:
+            PANIC("unsupported CompareAndSwap width");
+    }
+    WriteScalar(stack, inst, old);
+}
+
+void Interpreter::RunAtomicExchange(ir::Inst* inst, InterpStack& stack) {
+    const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    const auto desired = inst->GetArg<ir::Value>(1);
+    auto* raw = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
+    const u64 value = ReadScalar(stack, desired);
+    u64 old{};
+    switch (TypeBits(desired.Type())) {
+        case 8:
+            old = std::atomic_ref(*static_cast<u8*>(raw))
+                          .exchange(static_cast<u8>(value), std::memory_order_seq_cst);
+            break;
+        case 16:
+            old = std::atomic_ref(*static_cast<u16*>(raw))
+                          .exchange(static_cast<u16>(value), std::memory_order_seq_cst);
+            break;
+        case 32:
+            old = std::atomic_ref(*static_cast<u32*>(raw))
+                          .exchange(static_cast<u32>(value), std::memory_order_seq_cst);
+            break;
+        case 64:
+            old = std::atomic_ref(*static_cast<u64*>(raw))
+                          .exchange(value, std::memory_order_seq_cst);
+            break;
+        default:
+            PANIC("unsupported AtomicExchange width");
+    }
+    WriteScalar(stack, inst, old);
+}
+
+void Interpreter::RunAtomicFetchAdd(ir::Inst* inst, InterpStack& stack) {
+    const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    const auto addend = inst->GetArg<ir::Value>(1);
+    auto* raw = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
+    const u64 value = ReadScalar(stack, addend);
+    u64 old{};
+    switch (TypeBits(addend.Type())) {
+        case 8:
+            old = std::atomic_ref(*static_cast<u8*>(raw))
+                          .fetch_add(static_cast<u8>(value), std::memory_order_seq_cst);
+            break;
+        case 16:
+            old = std::atomic_ref(*static_cast<u16*>(raw))
+                          .fetch_add(static_cast<u16>(value), std::memory_order_seq_cst);
+            break;
+        case 32:
+            old = std::atomic_ref(*static_cast<u32*>(raw))
+                          .fetch_add(static_cast<u32>(value), std::memory_order_seq_cst);
+            break;
+        case 64:
+            old = std::atomic_ref(*static_cast<u64*>(raw))
+                          .fetch_add(value, std::memory_order_seq_cst);
+            break;
+        default:
+            PANIC("unsupported AtomicFetchAdd width");
     }
     WriteScalar(stack, inst, old);
 }

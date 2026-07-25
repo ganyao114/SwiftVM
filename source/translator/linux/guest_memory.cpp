@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <sys/mman.h>
 #if defined(__APPLE__)
@@ -137,9 +138,10 @@ std::string GuestMemory::ReadCString(VAddr addr, size_t max_len) {
 
 void GuestMemory::TrackMap(VAddr addr, u64 size) {
     if (size == 0) return;
+    std::unique_lock guard(mapped_regions_mutex);
     const VAddr end = addr + size;
     // Replace any overlaps, then coalesce touching intervals.
-    TrackUnmap(addr, size);
+    TrackUnmapLocked(addr, size);
     mapped_regions.emplace_back(addr, end);
     std::sort(mapped_regions.begin(), mapped_regions.end());
     std::vector<std::pair<VAddr, VAddr>> merged;
@@ -156,6 +158,11 @@ void GuestMemory::TrackMap(VAddr addr, u64 size) {
 
 void GuestMemory::TrackUnmap(VAddr addr, u64 size) {
     if (size == 0) return;
+    std::unique_lock guard(mapped_regions_mutex);
+    TrackUnmapLocked(addr, size);
+}
+
+void GuestMemory::TrackUnmapLocked(VAddr addr, u64 size) {
     const VAddr end = addr + size;
     std::vector<std::pair<VAddr, VAddr>> out;
     out.reserve(mapped_regions.size());
@@ -171,6 +178,11 @@ void GuestMemory::TrackUnmap(VAddr addr, u64 size) {
 }
 
 bool GuestMemory::RangeIsMapped(VAddr addr, u64 size) const {
+    std::shared_lock guard(mapped_regions_mutex);
+    return RangeIsMappedLocked(addr, size);
+}
+
+bool GuestMemory::RangeIsMappedLocked(VAddr addr, u64 size) const {
     if (size == 0) return true;
     if (addr + size < addr) return false;  // overflow
     // Find the last region with start <= addr.
@@ -184,21 +196,24 @@ bool GuestMemory::RangeIsMapped(VAddr addr, u64 size) const {
 }
 
 bool GuestMemory::TryReadBytes(VAddr addr, std::span<u8> out) {
-    if (!RangeIsMapped(addr, out.size())) return false;
+    std::shared_lock guard(mapped_regions_mutex);
+    if (!RangeIsMappedLocked(addr, out.size())) return false;
     std::memcpy(out.data(), ToHostConst(addr), out.size());
     return true;
 }
 
 bool GuestMemory::TryWriteBytes(VAddr addr, std::span<const u8> data) {
-    if (!RangeIsMapped(addr, data.size())) return false;
+    std::shared_lock guard(mapped_regions_mutex);
+    if (!RangeIsMappedLocked(addr, data.size())) return false;
     std::memcpy(ToHost(addr), data.data(), data.size());
     return true;
 }
 
 bool GuestMemory::TryReadCString(VAddr addr, std::string& out, size_t max_len) {
+    std::shared_lock guard(mapped_regions_mutex);
     out.clear();
     for (size_t i = 0; i < max_len; ++i) {
-        if (!RangeIsMapped(addr + i, 1)) return false;
+        if (!RangeIsMappedLocked(addr + i, 1)) return false;
         char c;
         std::memcpy(&c, ToHostConst(addr + i), 1);
         if (c == '\0') return true;
