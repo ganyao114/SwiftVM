@@ -91,7 +91,7 @@ exact checked-in test binaries with `strace -f`.
 | Per-runtime dispatcher | Each guest thread has its own `Runtime` and L1 table. The L2 table and immutable emitted code are shared. |
 | Guest mapping intervals | Previously unsynchronized. `GuestMemory` now uses a shared mutex around map tracking and validated reads/writes (`source/translator/linux/guest_memory.cpp:139-218`). Process-wide `brk` and mapping syscalls also use one coarse memory mutex. |
 | Futex table/process exit/TIDs | New process-wide state: futex queues are mutex-protected; exit and TID allocation are atomic (`source/translator/linux/syscalls.h:206-253`). |
-| SMC tracker | Its own header describes the old driver as single-threaded (`source/runtime/backend/smc_tracker.h:8-24`). Freeing JIT while another thread executes it is unsafe, so the first clone unprotects all tracked pages and disables future SMC registration for that address space (`source/runtime/backend/smc_tracker.cpp:89-98`). Single-thread SMC behavior is unchanged. |
+| SMC tracker | MT SMC now clears the shared L2 and every registered Runtime L1, detaches stale nodes from dispatch visibility, and defers executable/fault-table reclamation with per-Runtime QSBR epochs (`source/runtime/backend/smc_tracker.cpp`). The runtime publishes before cache lookup and becomes quiescent immediately after trampoline return (`source/runtime/backend/runtime.cpp`). `SVM_SMC_MT=0` retains the old diagnostic fallback that unprotects pages and disables tracking. |
 | Host fault handlers | Process-global callbacks are registered once; the active runtime is selected from thread-local storage (`source/runtime/backend/runtime.cpp:33`, `:88-106`, `:292-302`). Each running host thread installs its alternate stack. |
 | Atomic guest RMW | Memory `xchg`, `lock cmpxchg`, and locked add/sub/xadd were previously ordered load/store sequences rather than atomic operations. They now use exclusive-loop IR in both JIT and interpreter (`source/runtime/frontend/x86/decoder_alu.cc:303-328`, `:392-409`, `:872-922`; `source/runtime/backend/arm64/jit/translator_mem.cpp:488-651`). Other locked RMW families such as `bts/btr/btc`, `inc/dec`, and logical ops still need true atomic lowering before they can be advertised for arbitrary threaded guests. |
 
@@ -112,6 +112,9 @@ frontend's process-wide mode hook. `X86Instance` now reads
 - `tso_peterson.c`: Peterson mutual exclusion with locked exchange fence.
 - `clone_futex_smoke_x86_64.S`: locally buildable clone/futex/join and atomic
   RMW fallback.
+- `clone_smc_mt_x86_64.S`: one thread repeatedly patches a page-distinct
+  worker while another is executing the retired translation; exact alternating
+  values and checksum cover cross-thread invalidation plus deferred reclaim.
 - `clone_tso_litmus_x86_64.S`: locally buildable persistent-thread SB+MP
   fallback.
 
@@ -185,5 +188,6 @@ work's code paths:
    natural alignment whereas x86 locked operations permit unaligned memory).
 4. Replace the coarse translation lock with per-location compile ownership
    only after profiling; correctness currently takes priority.
-5. Design an MT-safe SMC epoch/reclamation mechanism before allowing guest
-   code mutation after the first clone.
+5. Extend SMC handling to the interpreter if decoded IR is ever expected to
+   observe guest code mutations while `SVM_ENABLE_JIT=0`; JIT MT SMC is now
+   covered by QSBR reclamation and `clone_smc_mt_x86_64`.

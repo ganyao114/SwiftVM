@@ -27,8 +27,7 @@
 //    guest code (Runtime::Run does this).
 //  - Handler registration is expected at setup time only. The chain is a
 //    fixed array appended under a mutex and read lock-free in the signal
-//    handler (registration never happens concurrently with guest execution
-//    in the current single-threaded drivers).
+//    handler; registration completes before any guest thread executes.
 //
 
 #pragma once

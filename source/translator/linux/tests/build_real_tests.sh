@@ -35,6 +35,8 @@ if [ "$SUFFIX" = x86_64 ]; then
     gcc -nostdlib -static -Wl,--build-id=none \
         -o clone_futex_smoke_x86_64 clone_futex_smoke_x86_64.S
     gcc -nostdlib -static -Wl,--build-id=none \
+        -o clone_smc_mt_x86_64 clone_smc_mt_x86_64.S
+    gcc -nostdlib -static -Wl,--build-id=none \
         -o clone_tso_litmus_x86_64 clone_tso_litmus_x86_64.S
     gcc -nostdlib -static -Wl,--build-id=none \
         -o clone_lock_rmw_x86_64 clone_lock_rmw_x86_64.S
@@ -85,6 +87,7 @@ fi
 if [ "$SUFFIX" = x86_64 ]; then
     for binary in \
         clone_futex_smoke_x86_64 \
+        clone_smc_mt_x86_64 \
         clone_tso_litmus_x86_64 \
         clone_lock_rmw_x86_64 \
         clone_unaligned_atomic_x86_64 \

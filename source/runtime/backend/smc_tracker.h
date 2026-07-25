@@ -1,55 +1,33 @@
 //
 // Self-modifying code (SMC) tracking for the SwiftVM runtime backend.
 //
-// Purpose (Phase 4): when guest code writes to a guest page that contains
-// JIT-translated code, the stale translations must be invalidated so the
-// next execution re-translates from the modified bytes.
+// Translated guest-code pages are write-protected. A guest write opens a
+// temporary RW window and removes every affected translation from all
+// dispatch tables. Module visibility is detached after the current JitRun
+// returns, but executable storage and fault metadata are retained under a
+// QSBR epoch until no Runtime can still be executing the old code.
 //
-// Design (modeled on cross86's SmcTracker + FEX's mtrack, simplified for the
-// single-threaded drivers):
-//  - RegisterNode() is called right after a block/function is JIT-compiled. Every
-//    *host* page overlapping the block's guest range is write-protected
-//    (mprotect PROT_READ) and a page -> blocks record is kept.
-//  - A guest store to a protected page raises a host SIGSEGV/SIGBUS. The
-//    runtime's SMC fault handler (SignalHandler chain, priority 0 — ahead of
-//    the JIT guest-fault recovery) calls HandleWriteFault(), which:
-//      1. marks the page dirty (a "write window" opens),
-//      2. drops the page back to RW so the faulting store can complete on
-//         sigreturn,
-//      3. eagerly zeroes the L1/L2 dispatch-table slots of every block on
-//         the page, so linked control flow (JitContext::Forward indirect
-//         links read the L2 slot directly) can no longer jump into the stale
-//         code and falls back to the dispatcher instead.
-//  - CloseWriteWindow() runs after every JitRun return (the guest is never
-//    inside JIT code at that point, so freeing is safe). For every dirty
-//    page: all its blocks are removed from the module, their JIT code is
-//    freed, their fault-table entries dropped, and the page is either
-//    re-protected (blocks remain) or left writable and untracked (none
-//    remain). The next dispatch on the invalidated locations misses and
-//    re-translates from the patched guest bytes.
+// Cross-thread semantics:
+//  - A writer observes modified code on its next dispatch.
+//  - Another guest CPU may finish code it entered before invalidation.
+//  - Every per-Runtime L1 and the shared AddressSpace L2 are cleared, so a
+//    later dispatch cannot newly enter the retired translation.
+//  - Direct intra-function/self-label edges may remain stale until that CPU
+//    reaches a host boundary; its published epoch keeps the code alive.
 //
-// Deliberate deviations / limitations:
-//  - No mid-block rewind: a block that patches an instruction *later in the
-//    same block instance* finishes with stale code once (the faulting store
-//    itself completes and the modification is picked up the next time the
-//    block is entered). Rewinding to the block entry from the signal handler
-//    would re-execute the store against a re-protected page and loop
-//    forever; block-boundary invalidation is the standard DBT compromise.
-//  - A block that jumps to its own start (JitContext::Forward self-label
-//    branch, no dispatch slot) and writes its own page inside the loop is
-//    not detected until it leaves the loop.
-//  - Host-page granularity (16KB on macOS arm64): a write to a non-code
-//    guest page sharing a host page with translated code causes a spurious
-//    (but correct) invalidation. Pages that exceed kMaxInvalidations stop
-//    being re-protected (SMC disabled for them) so data/text-straddling
-//    pages cannot livelock the translator.
-//  - Blocks interpreted (JIT off) are not tracked; the IR interpreter
-//    re-uses decoded blocks and would need its own SMC story.
+// Limitations:
+//  - No mid-block rewind: a block that patches a later instruction in itself
+//    finishes the current translated instance once.
+//  - Blocks interpreted with JIT disabled are not tracked. The interpreter
+//    reuses decoded IR and needs a separate SMC design.
 //
 
 #pragma once
 
+#include <atomic>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <vector>
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/types.h"
@@ -58,68 +36,87 @@
 namespace swift::runtime::backend {
 
 class AddressSpace;
+class Module;
 
 class SmcTracker {
 public:
+    static constexpr u64 kInactiveEpoch = UINT64_MAX;
+
+    struct RuntimeEpoch {
+        explicit RuntimeEpoch(TranslateTable* table) : l1(table) {}
+
+        std::atomic<u64> active_epoch{kInactiveEpoch};
+        TranslateTable* l1{};
+    };
+    using RuntimeToken = std::shared_ptr<RuntimeEpoch>;
+
     // guest_bias: guest->host address bias (host = guest + bias), from
     // Config::memory_base (0 = identity mapping).
     explicit SmcTracker(u64 guest_bias);
 
-    // Called after a block is JIT-compiled: write-protect the host pages
-    // covering [guest_start, guest_end) and record block ownership.
-    // Idempotent per page; safe to call for a page that is already tracked.
-    void RegisterNode(ir::AddressNode* node, VAddr guest_start, VAddr guest_end);
+    // Called after a block/function is fully published. Every host page
+    // overlapping [guest_start, guest_end) is write-protected and records the
+    // owning module/node. Idempotent for an identical range.
+    void RegisterNode(const std::shared_ptr<Module>& module,
+                      ir::AddressNode* node,
+                      VAddr guest_start,
+                      VAddr guest_end);
 
-    // Signal-handler path. If fault_host_addr hits a write-protected tracked
-    // page: open the write window (unprotect), mark the page dirty, and
-    // eagerly zero the L1 (per-runtime) / L2 (address-space) dispatch slots
-    // of all blocks on the page. Returns true when the fault was claimed
-    // (the faulting store may be resumed).
+    // Runtime/QSBR registration. BeginJit runs before any cache lookup that
+    // can yield a JIT pointer; EndJit runs immediately after trampoline
+    // return. Entry publishes and validates a generation using atomics only;
+    // reclamation locking occurs only while pending_count_ is non-zero.
+    [[nodiscard]] RuntimeToken RegisterRuntime(TranslateTable& l1);
+    void UnregisterRuntime(const RuntimeToken& token);
+    void BeginJit(const RuntimeToken& token);
+    void EndJit(const RuntimeToken& token);
+
+    // Called before the first guest thread is spawned. Single-threaded guests
+    // leave runtime epochs inactive and retain their cheaper path.
+    void EnableMultithreading();
+
+    // Signal-handler path. Opens the page's write window and eagerly zeroes
+    // the shared L2 plus every registered L1 slot for affected nodes.
     bool HandleWriteFault(AddressSpace& space,
-                          TranslateTable& l1,
+                          TranslateTable& current_l1,
                           std::uintptr_t fault_host_addr);
 
-    // Called from Runtime::Run after every JitRun return. Invalidates all
-    // blocks on dirty pages (module removal + code free + fault-table
-    // cleanup) and restores / drops page protections. No-op when no write
-    // window is open.
-    void CloseWriteWindow(AddressSpace& space, TranslateTable& l1);
+    // Host-side boundary after JitRun. Detaches all translations on dirty
+    // pages, retires their code/fault metadata, and closes the write window.
+    void CloseWriteWindow(AddressSpace& space, TranslateTable& current_l1);
 
-    // Synchronous invalidation for guest mprotect/mmap/munmap: invalidates
-    // every tracked block overlapping [guest_start, guest_end) and stops
-    // tracking (and write-protecting) the affected pages. `l1` may be
-    // nullptr (the caller — the syscall layer — is then responsible for
-    // flushing per-runtime L1 caches; with the current single-runtime
-    // drivers that is the Runtime that triggered the syscall).
+    // Synchronous invalidation for guest mprotect/mmap/munmap. All registered
+    // Runtime L1 caches are cleared; current_l1 may be null for callers that
+    // are not associated with a Runtime.
     void InvalidateRange(AddressSpace& space,
-                         TranslateTable* l1,
+                         TranslateTable* current_l1,
                          VAddr guest_start,
                          VAddr guest_end);
 
-    // True if any page is currently write-protected (tests / diagnostics).
     [[nodiscard]] bool HasProtectedPages() const;
 
-    // Process-wide enable switch (default: enabled). When disabled,
-    // RegisterNode is a no-op, so no page is ever write-protected. Intended
-    // for test harnesses that rewrite a guest code arena from OUTSIDE
-    // Runtime::Run (e.g. the differential fuzzer): the fault raised by their
-    // memcpy into a previously translated — and thus write-protected — page
-    // cannot be claimed by the SMC handler (no active runtime on the thread)
-    // and would kill the process. Such harnesses disable tracking for their
-    // lifetime instead of going through InvalidateRange, to which they have
-    // no access (the AddressSpace is not reachable through the public
-    // translator Instance/Core API).
+    // Process-wide test-harness switch. When false, RegisterNode is a no-op.
     static void SetEnabled(bool enabled);
     [[nodiscard]] static bool IsEnabled();
 
-    // Per-address-space MT safety gate. Restores every protected page to RW,
-    // clears tracking metadata, and makes future RegisterNode calls no-ops.
-    // Existing translated code remains valid; only mutation detection is
-    // disabled.
+    // Diagnostic MT kill switch used by SVM_SMC_MT=0. Restores every tracked
+    // page to RW, clears metadata, and suppresses future registration.
     void DisableAndUnprotectAll();
 
 private:
+    class MetadataGuard {
+    public:
+        explicit MetadataGuard(const SmcTracker& tracker) : tracker_(tracker) {
+            tracker_.LockMetadata();
+        }
+        ~MetadataGuard() { tracker_.UnlockMetadata(); }
+
+    private:
+        const SmcTracker& tracker_;
+    };
+
     struct TrackedNode {
+        std::shared_ptr<Module> module;
         ir::AddressNode* node{};
         VAddr guest_start{};
         VAddr guest_end{};
@@ -128,32 +125,60 @@ private:
     struct PageRecord {
         bool write_protected{};
         bool dirty{};
+        bool claim_stale_fault{};
         u32 invalidations{};
         std::vector<TrackedNode> nodes;
     };
 
-    // After this many invalidations a page is considered data/text-straddled
-    // and is never write-protected again (avoids fault/invalidate livelock).
+    struct RetiredCode {
+        std::shared_ptr<Module> module;
+        u8* exec_ptr{};
+        u64 retire_epoch{};
+    };
+
+    struct ReclaimCandidate {
+        std::shared_ptr<Module> module;
+        u8* exec_ptr{};
+    };
+
     static constexpr u32 kMaxInvalidations = 8;
 
     [[nodiscard]] VAddr PageKey(VAddr guest_addr) const { return guest_addr & ~page_mask_; }
 
-    // (Un)protects the host page backing guest page key `page`.
-    // Returns false when the mprotect failed (page left untracked-as-
-    // protected; SMC detection for it degrades gracefully).
     bool SetPageProtected(VAddr page, bool prot_read_only);
+    void LockMetadata() const;
+    void UnlockMetadata() const;
 
-    // Invalidates `tb` fully: erases it from every page record covering its
-    // guest range, removes it from its module, frees the JIT code and drops
-    // the fault-table entry, and zeroes the L1/L2 dispatch slots.
-    void InvalidateNode(AddressSpace& space, TranslateTable* l1, const TrackedNode& tracked);
+    // The following metadata helpers require metadata_lock_.
+    void ClearDispatchSlots(AddressSpace& space,
+                            TranslateTable* extra_l1,
+                            const TrackedNode& tracked);
+    [[nodiscard]] std::vector<TrackedNode> TakeDirtyNodes(AddressSpace& space,
+                                                          TranslateTable* extra_l1);
+    [[nodiscard]] std::vector<TrackedNode> TakeRangeNodes(AddressSpace& space,
+                                                          TranslateTable* extra_l1,
+                                                          VAddr first,
+                                                          VAddr last);
+    void RemoveTrackedNode(ir::AddressNode* node);
+    [[nodiscard]] bool CanReclaim(u64 retire_epoch) const;
+
+    // invalidation_mutex_ must be held.
+    void Retire(std::vector<ReclaimCandidate>& candidates);
+    void ReclaimRetiredLocked();
+    void ReclaimRetired();
 
     const u64 bias_;
     const u64 page_size_;
     const u64 page_mask_;
     std::map<VAddr, PageRecord> pages_{};
-    // Pages that gave up on SMC tracking (see kMaxInvalidations).
     std::vector<VAddr> disabled_pages_{};
+    std::vector<RuntimeToken> runtimes_{};
+    std::vector<RetiredCode> retired_{};
+    mutable std::atomic_flag metadata_lock_ = ATOMIC_FLAG_INIT;
+    std::mutex invalidation_mutex_{};
+    std::atomic<u64> global_epoch_{1};
+    std::atomic<size_t> pending_count_{0};
+    std::atomic_bool multithreaded_{false};
     bool locally_enabled_{true};
 };
 

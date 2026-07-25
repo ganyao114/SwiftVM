@@ -1,5 +1,5 @@
 //
-// Self-modifying code (SMC) tracking — see smc_tracker.h for the design.
+// Self-modifying code (SMC) tracking — see smc_tracker.h.
 //
 
 #include "smc_tracker.h"
@@ -31,7 +31,17 @@ SmcTracker::SmcTracker(u64 guest_bias)
         : bias_(guest_bias)
         , page_size_(static_cast<u64>(getpagesize()))
         , page_mask_(page_size_ - 1) {
-    ASSERT((page_size_ & page_mask_) == 0);  // page size is a power of two
+    ASSERT((page_size_ & page_mask_) == 0);
+}
+
+void SmcTracker::LockMetadata() const {
+    while (metadata_lock_.test_and_set(std::memory_order_acquire)) {
+        // Signal-handler compatible spin: never call into the scheduler here.
+    }
+}
+
+void SmcTracker::UnlockMetadata() const {
+    metadata_lock_.clear(std::memory_order_release);
 }
 
 bool SmcTracker::SetPageProtected(VAddr page, bool prot_read_only) {
@@ -47,13 +57,74 @@ bool SmcTracker::SetPageProtected(VAddr page, bool prot_read_only) {
     return true;
 }
 
-void SmcTracker::RegisterNode(ir::AddressNode* node, VAddr guest_start, VAddr guest_end) {
-    if (!IsEnabled() || !locally_enabled_) {
-        return;  // SMC tracking disabled (e.g. fuzz harness rewriting its arena)
+SmcTracker::RuntimeToken SmcTracker::RegisterRuntime(TranslateTable& l1) {
+    auto token = std::make_shared<RuntimeEpoch>(&l1);
+    MetadataGuard guard(*this);
+    runtimes_.push_back(token);
+    return token;
+}
+
+void SmcTracker::UnregisterRuntime(const RuntimeToken& token) {
+    if (!token) {
+        return;
+    }
+    token->active_epoch.store(kInactiveEpoch, std::memory_order_release);
+    {
+        MetadataGuard guard(*this);
+        std::erase(runtimes_, token);
+    }
+    if (pending_count_.load(std::memory_order_relaxed) != 0) {
+        ReclaimRetired();
+    }
+}
+
+void SmcTracker::BeginJit(const RuntimeToken& token) {
+    if (!token) {
+        return;
+    }
+    if (!multithreaded_.load(std::memory_order_acquire)) {
+        return;
+    }
+    for (;;) {
+        const auto epoch = global_epoch_.load(std::memory_order_seq_cst);
+        token->active_epoch.store(epoch, std::memory_order_seq_cst);
+        // Closing the entry race requires validation after publication. If
+        // invalidation advanced the epoch between the two loads, retry before
+        // looking up a JIT pointer. With the same seq_cst order used by the
+        // reclaimer's scan, either that scan observes this runtime in the old
+        // epoch or this runtime observes the bump and republishes.
+        if (global_epoch_.load(std::memory_order_seq_cst) == epoch) {
+            return;
+        }
+    }
+}
+
+void SmcTracker::EndJit(const RuntimeToken& token) {
+    if (!token || !multithreaded_.load(std::memory_order_acquire)) {
+        return;
+    }
+    token->active_epoch.store(kInactiveEpoch, std::memory_order_seq_cst);
+    if (pending_count_.load(std::memory_order_relaxed) != 0) {
+        ReclaimRetired();
+    }
+}
+
+void SmcTracker::EnableMultithreading() {
+    multithreaded_.store(true, std::memory_order_release);
+}
+
+void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
+                              ir::AddressNode* node,
+                              VAddr guest_start,
+                              VAddr guest_end) {
+    if (!IsEnabled()) {
+        return;
+    }
+    MetadataGuard guard(*this);
+    if (!locally_enabled_) {
+        return;
     }
     if (guest_end <= guest_start) {
-        // Degenerate range (block end unknown): still track the start page —
-        // better partial coverage than none.
         guest_end = guest_start + 1;
     }
     const VAddr first = PageKey(guest_start);
@@ -61,221 +132,328 @@ void SmcTracker::RegisterNode(ir::AddressNode* node, VAddr guest_start, VAddr gu
     for (VAddr page = first; page <= last; page += page_size_) {
         if (std::find(disabled_pages_.begin(), disabled_pages_.end(), page) !=
             disabled_pages_.end()) {
-            continue;  // page gave up on SMC (data/text straddle livelock guard)
+            continue;
         }
         auto& rec = pages_[page];
-        // A new block may only be registered outside of an open write window
-        // (translation happens after CloseWriteWindow), so a dirty page here
-        // means a previous invalidation left it writable — re-protecting is
-        // correct.
-        const bool duplicate = std::any_of(rec.nodes.begin(), rec.nodes.end(),
-                                           [&](const TrackedNode& tracked) {
-                                               return tracked.node == node &&
-                                                      tracked.guest_start == guest_start &&
-                                                      tracked.guest_end == guest_end;
-                                           });
+        const bool duplicate = std::any_of(
+                rec.nodes.begin(), rec.nodes.end(), [&](const TrackedNode& tracked) {
+                    return tracked.node == node && tracked.guest_start == guest_start &&
+                           tracked.guest_end == guest_end;
+                });
         if (!duplicate) {
-            rec.nodes.push_back(TrackedNode{node, guest_start, guest_end});
+            rec.nodes.push_back(TrackedNode{module, node, guest_start, guest_end});
         }
-        if (!rec.write_protected) {
+        // A translation published during another thread's open write window
+        // is collected by CloseWriteWindow's retry loop. Do not protect the
+        // page until that batch has detached every such translation.
+        if (!rec.dirty && !rec.write_protected) {
             if (SetPageProtected(page, true)) {
                 rec.write_protected = true;
-                rec.dirty = false;
+                rec.claim_stale_fault = false;
             }
         }
     }
 }
 
-void SmcTracker::DisableAndUnprotectAll() {
-    locally_enabled_ = false;
-    for (auto& [page, record] : pages_) {
-        if (record.write_protected) {
-            SetPageProtected(page, false);
+void SmcTracker::ClearDispatchSlots(AddressSpace& space,
+                                    TranslateTable* extra_l1,
+                                    const TrackedNode& tracked) {
+    auto clear_location = [&](VAddr location) {
+        space.GetCodeCacheTable().Zero(location);
+        if (extra_l1) {
+            extra_l1->Zero(location);
         }
-    }
-    pages_.clear();
-    disabled_pages_.clear();
-}
-
-bool SmcTracker::HandleWriteFault(AddressSpace& space,
-                                  TranslateTable& l1,
-                                  std::uintptr_t fault_host_addr) {
-    const VAddr guest = static_cast<VAddr>(fault_host_addr) - bias_;
-    const auto it = pages_.find(PageKey(guest));
-    if (it == pages_.end() || !it->second.write_protected) {
-        return false;  // not an SMC write-protect fault
-    }
-    auto& rec = it->second;
-    // Open the write window: let the faulting store complete on sigreturn.
-    if (!SetPageProtected(it->first, false)) {
-        return false;  // could not unprotect; let the default handler crash
-    }
-    rec.write_protected = false;
-    rec.dirty = true;
-    // Eager dispatch-slot invalidation: with BlockLink enabled the JIT reads
-    // L2 slots directly, so without this the very next forward would jump
-    // straight back into the stale code and the invalidation deferred to
-    // CloseWriteWindow would never be observed. A zeroed slot falls back to
-    // the dispatcher, which misses (L1/L2 both zeroed) and returns CodeMiss.
-    for (const auto& tracked : rec.nodes) {
-        const auto loc = tracked.node->GetStartLocation().Value();
-        space.GetCodeCacheTable().Zero(loc);
-        l1.Zero(loc);
-        if (tracked.node->node_type == ir::AddressNode::Function) {
-            auto* function = static_cast<ir::Function*>(tracked.node);
-            for (auto& block : function->GetBlocks()) {
-                space.GetCodeCacheTable().Zero(block.GetStartLocation().Value());
-                l1.Zero(block.GetStartLocation().Value());
+        for (const auto& runtime : runtimes_) {
+            if (runtime && runtime->l1 && runtime->l1 != extra_l1) {
+                runtime->l1->Zero(location);
             }
         }
+    };
+
+    clear_location(tracked.node->GetStartLocation().Value());
+    if (tracked.node->node_type == ir::AddressNode::Function) {
+        auto* function = static_cast<ir::Function*>(tracked.node);
+        for (auto& block : function->GetBlocks()) {
+            clear_location(block.GetStartLocation().Value());
+        }
     }
-    return true;
 }
 
-void SmcTracker::InvalidateNode(AddressSpace& space,
-                                TranslateTable* l1,
-                                const TrackedNode& tracked) {
-    const auto loc = tracked.node->GetStartLocation().Value();
-    // Detach every range owned by this compiled unit before module removal can
-    // destroy it. A function appears once per decoded basic-block range.
+void SmcTracker::RemoveTrackedNode(ir::AddressNode* node) {
     for (auto& [page, record] : pages_) {
         std::erase_if(record.nodes,
-                      [&](const TrackedNode& other) { return other.node == tracked.node; });
-    }
-    if (auto module = space.GetModule(loc)) {
-        module->InvalidateNode(tracked.node);
-    }
-    // Idempotent with the eager zeroing in HandleWriteFault; covers the
-    // synchronous InvalidateRange path (no prior fault) as well.
-    space.GetCodeCacheTable().Zero(loc);
-    if (l1) {
-        l1->Zero(loc);
+                      [&](const TrackedNode& tracked) { return tracked.node == node; });
     }
 }
 
-void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& l1) {
-    // Collect the dirty pages' blocks first; dedupe by block pointer (a
-    // block spanning multiple dirty pages must be invalidated once).
-    std::vector<TrackedNode> to_invalidate;
-    std::vector<VAddr> dirty_pages;
-    for (auto& [page, rec] : pages_) {
-        if (!rec.dirty) {
+std::vector<SmcTracker::TrackedNode> SmcTracker::TakeDirtyNodes(
+        AddressSpace& space, TranslateTable* extra_l1) {
+    std::vector<TrackedNode> nodes;
+    for (auto& [page, record] : pages_) {
+        if (!record.dirty) {
             continue;
         }
-        dirty_pages.push_back(page);
-        for (const auto& tracked : rec.nodes) {
-            const bool seen = std::any_of(to_invalidate.begin(),
-                                          to_invalidate.end(),
-                                          [&](const TrackedNode& other) {
-                                              return other.node == tracked.node;
-                                          });
-            if (!seen) {
-                to_invalidate.push_back(tracked);
+        for (const auto& tracked : record.nodes) {
+            const bool duplicate = std::any_of(
+                    nodes.begin(), nodes.end(), [&](const TrackedNode& other) {
+                        return other.node == tracked.node;
+                    });
+            if (!duplicate) {
+                ClearDispatchSlots(space, extra_l1, tracked);
+                nodes.push_back(tracked);
             }
         }
     }
-    if (dirty_pages.empty()) {
-        return;
+    for (const auto& tracked : nodes) {
+        RemoveTrackedNode(tracked.node);
     }
-    for (const auto& tracked : to_invalidate) {
-        InvalidateNode(space, &l1, tracked);
-    }
-    for (const VAddr page : dirty_pages) {
-        auto it = pages_.find(page);
-        if (it == pages_.end()) {
-            continue;
-        }
-        auto& rec = it->second;
-        rec.dirty = false;
-        rec.invalidations++;
-        if (rec.nodes.empty()) {
-            // No translated code left on the page: stop tracking it, leave
-            // it writable (already unprotected by HandleWriteFault).
-            pages_.erase(it);
-            continue;
-        }
-        if (rec.invalidations > kMaxInvalidations) {
-            // Data/text-straddling page: give up on SMC for it rather than
-            // faulting on every data write forever.
-            disabled_pages_.push_back(page);
-            pages_.erase(it);
-            continue;
-        }
-        // Remaining blocks still need guarding.
-        if (SetPageProtected(page, true)) {
-            rec.write_protected = true;
-        }
-    }
+    return nodes;
 }
 
-void SmcTracker::InvalidateRange(AddressSpace& space,
-                                 TranslateTable* l1,
-                                 VAddr guest_start,
-                                 VAddr guest_end) {
-    if (guest_end <= guest_start) {
-        return;
-    }
-    std::vector<TrackedNode> to_invalidate;
-    const VAddr first = PageKey(guest_start);
-    const VAddr last = PageKey(guest_end - 1);
+std::vector<SmcTracker::TrackedNode> SmcTracker::TakeRangeNodes(
+        AddressSpace& space, TranslateTable* extra_l1, VAddr first, VAddr last) {
+    std::vector<TrackedNode> nodes;
     for (VAddr page = first; page <= last; page += page_size_) {
         auto it = pages_.find(page);
         if (it == pages_.end()) {
             continue;
         }
         for (const auto& tracked : it->second.nodes) {
-            const bool seen = std::any_of(to_invalidate.begin(),
-                                          to_invalidate.end(),
-                                          [&](const TrackedNode& other) {
-                                              return other.node == tracked.node;
-                                          });
-            if (!seen) {
-                to_invalidate.push_back(tracked);
+            const bool duplicate = std::any_of(
+                    nodes.begin(), nodes.end(), [&](const TrackedNode& other) {
+                        return other.node == tracked.node;
+                    });
+            if (!duplicate) {
+                ClearDispatchSlots(space, extra_l1, tracked);
+                nodes.push_back(tracked);
             }
         }
     }
-    // Clear every dispatch slot while function/block ownership is still alive.
-    for (const auto& tracked : to_invalidate) {
-        space.GetCodeCacheTable().Zero(tracked.node->GetStartLocation().Value());
-        if (l1) {
-            l1->Zero(tracked.node->GetStartLocation().Value());
-        }
-        if (tracked.node->node_type == ir::AddressNode::Function) {
-            auto* function = static_cast<ir::Function*>(tracked.node);
-            for (auto& block : function->GetBlocks()) {
-                space.GetCodeCacheTable().Zero(block.GetStartLocation().Value());
-                if (l1) {
-                    l1->Zero(block.GetStartLocation().Value());
-                }
-            }
-        }
+    for (const auto& tracked : nodes) {
+        RemoveTrackedNode(tracked.node);
     }
-    for (const auto& tracked : to_invalidate) {
-        InvalidateNode(space, l1, tracked);
+    return nodes;
+}
+
+bool SmcTracker::HandleWriteFault(AddressSpace& space,
+                                  TranslateTable& current_l1,
+                                  std::uintptr_t fault_host_addr) {
+    const VAddr guest = static_cast<VAddr>(fault_host_addr) - bias_;
+    MetadataGuard guard(*this);
+    const auto it = pages_.find(PageKey(guest));
+    if (it == pages_.end()) {
+        return false;
     }
-    // The guest is changing the mapping/permissions of these pages: drop
-    // tracking and restore writability (guest_memory does not enforce guest
-    // permissions itself, so a page we protected stays protected unless we
-    // undo it here).
-    for (VAddr page = first; page <= last; page += page_size_) {
-        auto it = pages_.find(page);
-        if (it == pages_.end()) {
+    auto& rec = it->second;
+    // A second CPU may have taken the old protection fault but reached this
+    // handler only after the first CPU closed the window and detached the
+    // page's last node. The page is still mapped RW; claim the delayed
+    // synchronous fault so sigreturn retries the store instead of treating it
+    // as an unrelated guest-memory failure.
+    if (rec.claim_stale_fault && !rec.write_protected) {
+        return true;
+    }
+    // Another thread may have taken the same protection fault before the
+    // first handler completed mprotect. The page is now writable and the
+    // pending fault can safely resume.
+    if (rec.dirty && !rec.write_protected) {
+        return true;
+    }
+    if (!rec.write_protected) {
+        return false;
+    }
+    if (!SetPageProtected(it->first, false)) {
+        return false;
+    }
+    rec.write_protected = false;
+    rec.dirty = true;
+    for (const auto& tracked : rec.nodes) {
+        ClearDispatchSlots(space, &current_l1, tracked);
+    }
+    return true;
+}
+
+bool SmcTracker::CanReclaim(u64 retire_epoch) const {
+    for (const auto& runtime : runtimes_) {
+        if (!runtime) {
             continue;
         }
-        if (it->second.write_protected) {
-            SetPageProtected(page, false);
+        const auto active = runtime->active_epoch.load(std::memory_order_seq_cst);
+        if (active != kInactiveEpoch && active < retire_epoch) {
+            return false;
         }
-        pages_.erase(it);
+    }
+    return true;
+}
+
+void SmcTracker::Retire(std::vector<ReclaimCandidate>& candidates) {
+    if (candidates.empty()) {
+        return;
+    }
+    // Dispatch visibility was removed before this release operation. A
+    // Runtime that publishes the resulting epoch must therefore observe the
+    // cleared tables and cannot newly enter one of these allocations.
+    const auto retire_epoch = global_epoch_.fetch_add(1, std::memory_order_seq_cst) + 1;
+    MetadataGuard guard(*this);
+    for (auto& candidate : candidates) {
+        retired_.push_back(
+                RetiredCode{std::move(candidate.module), candidate.exec_ptr, retire_epoch});
+    }
+    candidates.clear();
+    pending_count_.store(retired_.size(), std::memory_order_relaxed);
+}
+
+void SmcTracker::ReclaimRetiredLocked() {
+    std::vector<RetiredCode> ready;
+    {
+        MetadataGuard guard(*this);
+        for (auto it = retired_.begin(); it != retired_.end();) {
+            if (CanReclaim(it->retire_epoch)) {
+                ready.push_back(std::move(*it));
+                it = retired_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        pending_count_.store(retired_.size(), std::memory_order_relaxed);
+    }
+    for (auto& retired : ready) {
+        retired.module->ReclaimCode(retired.exec_ptr);
     }
 }
 
-bool SmcTracker::HasProtectedPages() const {
-    for (const auto& [page, rec] : pages_) {
-        if (rec.write_protected) {
-            return true;
+void SmcTracker::ReclaimRetired() {
+    std::lock_guard invalidation_guard(invalidation_mutex_);
+    ReclaimRetiredLocked();
+}
+
+void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& current_l1) {
+    std::lock_guard invalidation_guard(invalidation_mutex_);
+    std::vector<ReclaimCandidate> candidates;
+
+    for (;;) {
+        std::vector<TrackedNode> nodes;
+        {
+            MetadataGuard guard(*this);
+            nodes = TakeDirtyNodes(space, &current_l1);
+            if (nodes.empty()) {
+                for (auto it = pages_.begin(); it != pages_.end();) {
+                    auto& rec = it->second;
+                    if (!rec.dirty) {
+                        ++it;
+                        continue;
+                    }
+                    rec.dirty = false;
+                    rec.invalidations++;
+                    if (rec.nodes.empty()) {
+                        // Keep an RW tombstone until the page is either
+                        // re-protected by RegisterNode or synchronously
+                        // unmapped. It closes the delayed-second-fault race
+                        // described in HandleWriteFault.
+                        rec.claim_stale_fault = true;
+                        ++it;
+                        continue;
+                    }
+                    if (rec.invalidations > kMaxInvalidations) {
+                        disabled_pages_.push_back(it->first);
+                        rec.claim_stale_fault = true;
+                        ++it;
+                        continue;
+                    }
+                    if (SetPageProtected(it->first, true)) {
+                        rec.write_protected = true;
+                        rec.claim_stale_fault = false;
+                    }
+                    ++it;
+                }
+                break;
+            }
+        }
+
+        // Do not hold the signal-handler metadata spinlock while waiting on a
+        // module/node lock. A publisher holds those locks while RegisterNode
+        // takes metadata_lock_; the retry loop collects anything it published
+        // during this detach phase.
+        for (const auto& tracked : nodes) {
+            if (auto* exec_ptr = tracked.module->DetachNode(tracked.node); exec_ptr) {
+                candidates.push_back(ReclaimCandidate{tracked.module, exec_ptr});
+            }
         }
     }
-    return false;
+
+    Retire(candidates);
+    ReclaimRetiredLocked();
+}
+
+void SmcTracker::InvalidateRange(AddressSpace& space,
+                                 TranslateTable* current_l1,
+                                 VAddr guest_start,
+                                 VAddr guest_end) {
+    if (guest_end <= guest_start) {
+        return;
+    }
+    const VAddr first = PageKey(guest_start);
+    const VAddr last = PageKey(guest_end - 1);
+    std::lock_guard invalidation_guard(invalidation_mutex_);
+    std::vector<ReclaimCandidate> candidates;
+
+    for (;;) {
+        std::vector<TrackedNode> nodes;
+        {
+            MetadataGuard guard(*this);
+            nodes = TakeRangeNodes(space, current_l1, first, last);
+            if (nodes.empty()) {
+                for (VAddr page = first; page <= last; page += page_size_) {
+                    auto it = pages_.find(page);
+                    if (it == pages_.end()) {
+                        continue;
+                    }
+                    if (it->second.write_protected) {
+                        SetPageProtected(page, false);
+                    }
+                    pages_.erase(it);
+                }
+                break;
+            }
+        }
+        for (const auto& tracked : nodes) {
+            if (auto* exec_ptr = tracked.module->DetachNode(tracked.node); exec_ptr) {
+                candidates.push_back(ReclaimCandidate{tracked.module, exec_ptr});
+            }
+        }
+    }
+
+    Retire(candidates);
+    ReclaimRetiredLocked();
+}
+
+void SmcTracker::DisableAndUnprotectAll() {
+    std::lock_guard invalidation_guard(invalidation_mutex_);
+    {
+        MetadataGuard guard(*this);
+        locally_enabled_ = false;
+        multithreaded_.store(false, std::memory_order_release);
+        for (const auto& runtime : runtimes_) {
+            if (runtime) {
+                runtime->active_epoch.store(kInactiveEpoch, std::memory_order_seq_cst);
+            }
+        }
+        for (auto& [page, record] : pages_) {
+            if (record.write_protected) {
+                SetPageProtected(page, false);
+            }
+        }
+        pages_.clear();
+        disabled_pages_.clear();
+    }
+    ReclaimRetiredLocked();
+}
+
+bool SmcTracker::HasProtectedPages() const {
+    MetadataGuard guard(*this);
+    return std::any_of(pages_.begin(), pages_.end(), [](const auto& entry) {
+        return entry.second.write_protected;
+    });
 }
 
 }  // namespace swift::runtime::backend
