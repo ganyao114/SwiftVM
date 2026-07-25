@@ -108,3 +108,28 @@ INST(Vec4Mul, Value, Value, Value)
 
 INST(Vec4And, Value, Value, Value)
 INST(Vec4Or, Value, Value, Value)
+
+// Lane-agnostic vector bitwise operations.
+INST(VecXor, Value, Value, Value)
+INST(VecAnd, Value, Value, Value)
+INST(VecOr, Value, Value, Value)
+INST(VecAndNot, Value, Value, Value)
+
+// Integer vector operations. The immediate is the lane width in bits.
+INST(VecAdd, Value, Value, Value, Imm)
+INST(VecSub, Value, Value, Value, Imm)
+INST(VecCmpEq, Value, Value, Value, Imm)
+INST(VecCmpGt, Value, Value, Value, Imm)
+
+// Shuffle/duplication operations.
+INST(VecShuffle32, Value, Value, Imm)
+INST(VecShuffle16, Value, Value, Imm, Imm)
+INST(VecZip, Value, Value, Value, Imm, Imm)
+INST(VecDupPairs32, Value, Value, Imm)
+INST(VecDup64, Value, Value)
+
+// Scalar f32 arithmetic preserving bits [127:32] of the left operand.
+INST(VecFAddScalar32, Value, Value, Value)
+INST(VecFSubScalar32, Value, Value, Value)
+INST(VecFMulScalar32, Value, Value, Value)
+INST(VecFDivScalar32, Value, Value, Value)

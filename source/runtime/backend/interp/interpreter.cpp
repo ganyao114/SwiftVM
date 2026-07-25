@@ -1086,6 +1086,44 @@ unsigned __int128 Vec4Binary(unsigned __int128 a, unsigned __int128 b, Op op) {
     return result;
 }
 
+template <typename Op>
+unsigned __int128 VecLaneBinary(unsigned __int128 a,
+                                unsigned __int128 b,
+                                u32 lane_bits,
+                                Op op) {
+    ASSERT(lane_bits == 8 || lane_bits == 16 || lane_bits == 32 || lane_bits == 64);
+    const u64 lane_mask = MaskBits(lane_bits);
+    unsigned __int128 result = 0;
+    for (u32 bit = 0; bit < 128; bit += lane_bits) {
+        const u64 left = static_cast<u64>(a >> bit) & lane_mask;
+        const u64 right = static_cast<u64>(b >> bit) & lane_mask;
+        result |= static_cast<unsigned __int128>(op(left, right) & lane_mask) << bit;
+    }
+    return result;
+}
+
+template <typename Op>
+unsigned __int128 VecFloatScalar32(unsigned __int128 a, unsigned __int128 b, Op op) {
+    const u32 left_bits = static_cast<u32>(a);
+    const u32 right_bits = static_cast<u32>(b);
+    float left;
+    float right;
+    std::memcpy(&left, &left_bits, sizeof(left));
+    std::memcpy(&right, &right_bits, sizeof(right));
+    const float value = op(left, right);
+    u32 result_bits;
+    std::memcpy(&result_bits, &value, sizeof(result_bits));
+    return (a & ~static_cast<unsigned __int128>(0xFFFFFFFFu)) | result_bits;
+}
+
+s64 SignedLane(u64 value, u32 lane_bits) {
+    if (lane_bits == 64) {
+        return static_cast<s64>(value);
+    }
+    return static_cast<s64>((value ^ (u64(1) << (lane_bits - 1))) -
+                            (u64(1) << (lane_bits - 1)));
+}
+
 }  // namespace
 
 void Interpreter::RunVec4Add(ir::Inst* inst, InterpStack& stack) {
@@ -1124,6 +1162,174 @@ void Interpreter::RunVec4Or(ir::Inst* inst, InterpStack& stack) {
              inst,
              ReadVec(stack, inst->GetArg<ir::Value>(0)) |
                      ReadVec(stack, inst->GetArg<ir::Value>(1)));
+}
+
+void Interpreter::RunVecXor(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             ReadVec(stack, inst->GetArg<ir::Value>(0)) ^
+                     ReadVec(stack, inst->GetArg<ir::Value>(1)));
+}
+
+void Interpreter::RunVecAnd(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             ReadVec(stack, inst->GetArg<ir::Value>(0)) &
+                     ReadVec(stack, inst->GetArg<ir::Value>(1)));
+}
+
+void Interpreter::RunVecOr(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             ReadVec(stack, inst->GetArg<ir::Value>(0)) |
+                     ReadVec(stack, inst->GetArg<ir::Value>(1)));
+}
+
+void Interpreter::RunVecAndNot(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             ReadVec(stack, inst->GetArg<ir::Value>(0)) &
+                     ~ReadVec(stack, inst->GetArg<ir::Value>(1)));
+}
+
+void Interpreter::RunVecAdd(ir::Inst* inst, InterpStack& stack) {
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                           ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                           lane_bits,
+                           [](u64 a, u64 b) { return a + b; }));
+}
+
+void Interpreter::RunVecSub(ir::Inst* inst, InterpStack& stack) {
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                           ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                           lane_bits,
+                           [](u64 a, u64 b) { return a - b; }));
+}
+
+void Interpreter::RunVecCmpEq(ir::Inst* inst, InterpStack& stack) {
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                           ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                           lane_bits,
+                           [](u64 a, u64 b) { return a == b ? ~u64(0) : 0; }));
+}
+
+void Interpreter::RunVecCmpGt(ir::Inst* inst, InterpStack& stack) {
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                           ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                           lane_bits,
+                           [lane_bits](u64 a, u64 b) {
+                               return SignedLane(a, lane_bits) > SignedLane(b, lane_bits)
+                                              ? ~u64(0)
+                                              : 0;
+                           }));
+}
+
+void Interpreter::RunVecShuffle32(ir::Inst* inst, InterpStack& stack) {
+    const auto src = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u32 control = inst->GetArg<ir::Imm>(1).Get();
+    u128 result = 0;
+    for (u32 lane = 0; lane < 4; ++lane) {
+        const u32 selected = (control >> (lane * 2)) & 3;
+        result |= static_cast<u128>(static_cast<u32>(src >> (selected * 32))) << (lane * 32);
+    }
+    WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecShuffle16(ir::Inst* inst, InterpStack& stack) {
+    const auto src = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u32 control = inst->GetArg<ir::Imm>(1).Get();
+    const bool high = inst->GetArg<ir::Imm>(2).Get() != 0;
+    const u32 base = high ? 4 : 0;
+    u128 result = src;
+    const u128 half_mask = static_cast<u128>(~u64(0)) << (base * 16);
+    result &= ~half_mask;
+    for (u32 lane = 0; lane < 4; ++lane) {
+        const u32 selected = base + ((control >> (lane * 2)) & 3);
+        const u16 value = static_cast<u16>(src >> (selected * 16));
+        result |= static_cast<u128>(value) << ((base + lane) * 16);
+    }
+    WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecZip(ir::Inst* inst, InterpStack& stack) {
+    const auto left = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto right = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool high = inst->GetArg<ir::Imm>(3).Get() != 0;
+    ASSERT(lane_bits == 8 || lane_bits == 16 || lane_bits == 32 || lane_bits == 64);
+    const u32 half_lanes = 64 / lane_bits;
+    const u32 source_base = high ? half_lanes : 0;
+    const u64 lane_mask = MaskBits(lane_bits);
+    u128 result = 0;
+    for (u32 lane = 0; lane < half_lanes; ++lane) {
+        const u32 source_bit = (source_base + lane) * lane_bits;
+        const u64 a = static_cast<u64>(left >> source_bit) & lane_mask;
+        const u64 b = static_cast<u64>(right >> source_bit) & lane_mask;
+        result |= static_cast<u128>(a) << ((lane * 2) * lane_bits);
+        result |= static_cast<u128>(b) << ((lane * 2 + 1) * lane_bits);
+    }
+    WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecDupPairs32(ir::Inst* inst, InterpStack& stack) {
+    const auto src = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u32 odd = inst->GetArg<ir::Imm>(1).Get() ? 1 : 0;
+    u128 result = 0;
+    for (u32 pair = 0; pair < 2; ++pair) {
+        const u32 value = static_cast<u32>(src >> ((pair * 2 + odd) * 32));
+        result |= static_cast<u128>(value) << (pair * 64);
+        result |= static_cast<u128>(value) << (pair * 64 + 32);
+    }
+    WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecDup64(ir::Inst* inst, InterpStack& stack) {
+    const u64 src = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    WriteVec(stack, inst, static_cast<u128>(src) | (static_cast<u128>(src) << 64));
+}
+
+void Interpreter::RunVecFAddScalar32(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              [](float a, float b) { return a + b; }));
+}
+
+void Interpreter::RunVecFSubScalar32(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              [](float a, float b) { return a - b; }));
+}
+
+void Interpreter::RunVecFMulScalar32(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              [](float a, float b) { return a * b; }));
+}
+
+void Interpreter::RunVecFDivScalar32(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              [](float a, float b) { return a / b; }));
 }
 
 }  // namespace swift::runtime::backend::interp
