@@ -785,6 +785,28 @@ struct FuzzEnv {
         for (int r = 0; r < 16; r++) {
             init_regs[r] = ctx->regs[r].qword;
         }
+        // The x87 family keeps its two source operands at these fixed offsets.
+        // Snapshot all ten ext80 bytes before execution so a host-only Unicorn
+        // mismatch always reports the exact input that produced it.
+        u64 x87_a_significand = 0;
+        u64 x87_b_significand = 0;
+        u16 x87_a_sign_exp = 0;
+        u16 x87_b_sign_exp = 0;
+        const bool diagnose_x87 = std::strncmp(tag, "x87", 3) == 0;
+        if (diagnose_x87) {
+            std::memcpy(&x87_a_significand,
+                        reinterpret_cast<const void*>(data_addr + 0x300),
+                        sizeof(x87_a_significand));
+            std::memcpy(&x87_a_sign_exp,
+                        reinterpret_cast<const void*>(data_addr + 0x308),
+                        sizeof(x87_a_sign_exp));
+            std::memcpy(&x87_b_significand,
+                        reinterpret_cast<const void*>(data_addr + 0x320),
+                        sizeof(x87_b_significand));
+            std::memcpy(&x87_b_sign_exp,
+                        reinterpret_cast<const void*>(data_addr + 0x328),
+                        sizeof(x87_b_sign_exp));
+        }
         SyncRegsToUnicorn();
 
         bool unicorn_ok = true;
@@ -904,6 +926,15 @@ struct FuzzEnv {
                                  init_regs[12],
                                  init_regs[14])
                       << std::endl;
+            if (diagnose_x87) {
+                std::cout << fmt::format(
+                                     "  x87-input: A={:04x}:{:016x} B={:04x}:{:016x}",
+                                     x87_a_sign_exp,
+                                     x87_a_significand,
+                                     x87_b_sign_exp,
+                                     x87_b_significand)
+                          << std::endl;
+            }
         }
     }
 
@@ -2785,6 +2816,10 @@ TEST_CASE("Fuzz x86 x87") {
     const auto is_ext_denormal = [](Ext80Bits value) {
         return (value.sign_exp & 0x7FFF) == 0 && value.significand != 0;
     };
+    const auto is_exact_two_to_63 = [](Ext80Bits value) {
+        return (value.sign_exp & 0x7FFF) == 0x403E &&
+               value.significand == 0x8000000000000000ull;
+    };
     const auto is_f32_nan = [](u32 value) {
         return (value & 0x7F800000u) == 0x7F800000u &&
                (value & 0x007FFFFFu) != 0;
@@ -2840,7 +2875,7 @@ TEST_CASE("Fuzz x86 x87") {
         constexpr s32 kOut = 0x380;
         std::memset(reinterpret_cast<void*>(env.data_addr + kOut), 0, 0x40);
 
-        switch (i % 8) {
+        switch (i % 16) {
             case 0: {
                 // m32/m64 load, binary pop form, and exact ext80 store.
                 const bool wide = (env.rng() & 1) != 0;
@@ -2966,7 +3001,7 @@ TEST_CASE("Fuzz x86 x87") {
                 emit_mem(b, 0xDB, 7, kOut + 0x10);
                 break;
             }
-            default: {
+            case 7: {
                 // Full tag/TOP/control/status environment round-trip.
                 emit_reg(b, 0xD9, 0xE8);
                 emit_reg(b, 0xD9, 0xEE);
@@ -2976,6 +3011,153 @@ TEST_CASE("Fuzz x86 x87") {
                 emit_mem(b, 0xD9, 6, kOut + 0x20);
                 clear_env_pointer_fields(b, kOut);
                 clear_env_pointer_fields(b, kOut + 0x20);
+                break;
+            }
+            case 8: {
+                // Completed FPREM/FPREM1 reductions are bit-exact, including
+                // quotient C bits.  Keep the Unicorn differential operands
+                // exactly representable as binary64 because QEMU performs
+                // its nominal x87 reduction after narrowing to double.
+                static constexpr s64 kNumerators[] =
+                        {17, 19, -17, -19, 7, 9, 31, 33};
+                static constexpr s64 kDivisors[] = {3, 4, 5, 7};
+                *reinterpret_cast<s64*>(env.data_addr + kA) =
+                        kDivisors[env.rng() % std::size(kDivisors)];
+                *reinterpret_cast<s64*>(env.data_addr + kB) =
+                        kNumerators[env.rng() % std::size(kNumerators)];
+                emit_mem(b, 0xDF, 5, kA);
+                emit_mem(b, 0xDF, 5, kB);
+                emit_reg(b, 0xD9, (env.rng() & 1) ? 0xF8 : 0xF5);
+                emit_reg(b, 0xDF, 0xE0);              // FNSTSW AX
+                EmitMovRegReg(b, 16, kR10, kRax);     // retain quotient flags
+                emit_mem(b, 0xDB, 7, kOut);
+                break;
+            }
+            case 9: {
+                // Exact FSCALE exponent adjustment on integer-valued inputs
+                // and truncating fractional scale factors.
+                static constexpr double kValues[] =
+                        {0.0, -0.0, 1.0, -1.0, 1.5, 0x1p-100, 0x1p100};
+                static constexpr double kScales[] =
+                        {-100.75, -63.5, -1.75, 0.0, 1.75, 63.5, 100.75};
+                *reinterpret_cast<u64*>(env.data_addr + kA) =
+                        std::bit_cast<u64>(kScales[env.rng() % std::size(kScales)]);
+                *reinterpret_cast<u64*>(env.data_addr + kB) =
+                        std::bit_cast<u64>(kValues[env.rng() % std::size(kValues)]);
+                emit_mem(b, 0xDD, 0, kA);  // ST1 scale
+                emit_mem(b, 0xDD, 0, kB);  // ST0 value
+                emit_reg(b, 0xD9, 0xFD);
+                emit_mem(b, 0xDB, 7, kOut);
+                break;
+            }
+            case 10: {
+                // FXTRACT is encoding-exact.  QEMU's helper is reliable for
+                // normal finite operands; denormal/extreme/special encodings
+                // stay in the direct architectural suite above.
+                static constexpr Ext80Bits kExtractPool[] = {
+                        {0x8000000000000000ull, 0x3FFF},
+                        {0x8000000000000000ull, 0xBFFF},
+                        {0xA000000000000000ull, 0x4000},
+                        {0xC000000000000000ull, 0x3FFD},
+                        {0xFFFFFFFFFFFFFFFFull, 0x7FFE},
+                };
+                write_ext(kA, kExtractPool[env.rng() % std::size(kExtractPool)]);
+                emit_mem(b, 0xDB, 5, kA);
+                emit_reg(b, 0xD9, 0xF4);
+                emit_mem(b, 0xDB, 7, kOut);        // significand
+                emit_mem(b, 0xDB, 7, kOut + 0x10); // exponent
+                break;
+            }
+            case 11: {
+                // Unary host-libm path.  Both implementations intentionally
+                // narrow to binary64, so the ext80 store is bit-exact here.
+                // NaNs are directed-only because QEMU truncates their payload
+                // during its internal narrowing while real x87 preserves it.
+                // A 20-value Rosetta probe measured real-FSIN deltas from 33
+                // through 1,607,041,691 ext80 significand ULPs versus
+                // sin(double), so this is explicitly an oracle-compatibility
+                // comparison rather than a claim of hardware accuracy.
+                Ext80Bits input;
+                do {
+                    input = kExtPool[env.rng() % std::size(kExtPool)];
+                } while (is_ext_nan(input) ||
+                         (input.sign_exp & 0x7FFF) == 0x7FFF ||
+                         is_exact_two_to_63(input));
+                write_ext(kA, input);
+                emit_mem(b, 0xDB, 5, kA);
+                static constexpr u8 kUnary[] = {0xFE, 0xFF};  // FSIN/FCOS
+                emit_reg(b, 0xD9, kUnary[env.rng() % std::size(kUnary)]);
+                emit_mem(b, 0xDB, 7, kOut);
+                break;
+            }
+            case 12: {
+                // QEMU/Unicorn's helpers narrow ext80 to f64 and use an
+                // inclusive [-2^63,+2^63] range check before calling libm.
+                // Real x87 instead rejects |x| >= 2^63 (Rosetta: C2=1,
+                // unchanged ST0, and no FPTAN/FSINCOS push at equality).
+                // Exact +/-2^63 therefore remains in the real-x86-directed
+                // suite, not this QEMU differential.  Retain values just
+                // below the boundary (which round to f64 2^63) and values
+                // strictly beyond it to exercise both oracle-compatible arms.
+                static constexpr Ext80Bits kRangePool[] = {
+                        {0xFFFFFFFFFFFFFFFFull, 0x403D},
+                        {0xFFFFFFFFFFFFFFFFull, 0xC03D},
+                        {0x8000000000000000ull, 0x403F},
+                        {0x8000000000000000ull, 0xC03F},
+                        {0xD72CB2A95C7EF6CDull, 0x7FFE},
+                        {0xD72CB2A95C7EF6CDull, 0xFFFE},
+                };
+                write_ext(kA, kRangePool[env.rng() % std::size(kRangePool)]);
+                emit_mem(b, 0xDB, 5, kA);
+                static constexpr u8 kRangeOps[] = {0xFE, 0xFF, 0xF2, 0xFB};
+                emit_reg(b, 0xD9, kRangeOps[env.rng() % std::size(kRangeOps)]);
+                emit_reg(b, 0xDF, 0xE0);
+                // This case observes only TOP and C2.  QEMU's libm helpers do
+                // not reproduce real-x87 precision exception reporting, which
+                // is covered directly instead of treated as an oracle here.
+                EmitAluRegImm(b, 4, 16, kRax, 0x3C00);  // AND AX, TOP|C2
+                EmitMovRegReg(b, 16, kR10, kRax);
+                emit_mem(b, 0xDB, 7, kOut);
+                break;
+            }
+            case 13: {
+                // Successful FPTAN/FSINCOS stack order with controlled
+                // binary64-exact inputs.
+                static constexpr double kTrigInputs[] =
+                        {0.0, -0.0, 0.25, -0.25, 0.5, -0.5, 1.0, -1.0};
+                *reinterpret_cast<u64*>(env.data_addr + kA) = std::bit_cast<u64>(
+                        kTrigInputs[env.rng() % std::size(kTrigInputs)]);
+                emit_mem(b, 0xDD, 0, kA);
+                emit_reg(b, 0xD9, (env.rng() & 1) ? 0xF2 : 0xFB);
+                emit_mem(b, 0xDB, 7, kOut);
+                emit_mem(b, 0xDB, 7, kOut + 0x10);
+                break;
+            }
+            case 14: {
+                // Pop-form FPATAN/FYL2X/FYL2XP1.  These operands avoid domain
+                // ambiguity but cover signs, zeros, and ordinary magnitudes.
+                static constexpr double kX[] = {0.25, 0.5, 1.0, 2.0, 4.0};
+                static constexpr double kY[] = {-3.0, -1.0, 0.0, 1.0, 3.0};
+                *reinterpret_cast<u64*>(env.data_addr + kA) =
+                        std::bit_cast<u64>(kY[env.rng() % std::size(kY)]);
+                *reinterpret_cast<u64*>(env.data_addr + kB) =
+                        std::bit_cast<u64>(kX[env.rng() % std::size(kX)]);
+                emit_mem(b, 0xDD, 0, kA);  // y in ST1
+                emit_mem(b, 0xDD, 0, kB);  // x in ST0
+                static constexpr u8 kBinary[] = {0xF3, 0xF1, 0xF9};
+                emit_reg(b, 0xD9, kBinary[env.rng() % std::size(kBinary)]);
+                emit_mem(b, 0xDB, 7, kOut);
+                break;
+            }
+            default: {
+                // F2XM1's architecturally defined input interval is [-1,+1].
+                static constexpr double kInputs[] =
+                        {-1.0, -0.5, -0.25, -0.0, 0.0, 0.25, 0.5, 1.0};
+                *reinterpret_cast<u64*>(env.data_addr + kA) = std::bit_cast<u64>(
+                        kInputs[env.rng() % std::size(kInputs)]);
+                emit_mem(b, 0xDD, 0, kA);
+                emit_reg(b, 0xD9, 0xF0);
+                emit_mem(b, 0xDB, 7, kOut);
                 break;
             }
         }
@@ -4693,6 +4875,10 @@ TEST_CASE("x87 directed edge semantics") {
         b.B(primary);
         b.B(secondary);
     };
+    const auto write_ext = [&](s32 displacement, u64 significand, u16 sign_exp) {
+        *reinterpret_cast<u64*>(data + displacement) = significand;
+        *reinterpret_cast<u16*>(data + displacement + 8) = sign_exp;
+    };
 
     const char* old_jit = std::getenv("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
@@ -5045,6 +5231,281 @@ TEST_CASE("x87 directed edge semantics") {
             REQUIRE(*reinterpret_cast<u16*>(data + 0x438) == 0x3FFF);
             REQUIRE(ctx.x87_ftw == 0xFFFF);
             REQUIRE(((ctx.x87_fsw >> 11) & 7) == 0);
+        }
+
+        // FPREM uses a quotient truncated toward zero and maps Q2/Q1/Q0 to
+        // C0/C3/C1.  FPREM1 instead selects the nearest-even quotient.
+        {
+            *reinterpret_cast<s64*>(data + 0x500) = 5;
+            *reinterpret_cast<s64*>(data + 0x508) = 17;
+            std::memset(reinterpret_cast<void*>(data + 0x520), 0, 10);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDF, 5, 0x500);  // FILD 5
+            emit_mem(b, 0xDF, 5, 0x508);  // FILD 17
+            emit_reg(b, 0xD9, 0xF8);      // FPREM: q=3, remainder=2
+            emit_reg(b, 0xDF, 0xE0);      // capture quotient flags before FSTP
+            emit_mem(b, 0xDB, 7, 0x520);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x520) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x528) == 0x4000);
+            REQUIRE((ctx.rax.qword & 0x4700) == 0x4200);  // C3+C1
+        }
+        {
+            *reinterpret_cast<s64*>(data + 0x500) = 4;
+            *reinterpret_cast<s64*>(data + 0x508) = 19;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDF, 5, 0x500);
+            emit_mem(b, 0xDF, 5, 0x508);
+            emit_reg(b, 0xD9, 0xF8);      // FPREM: q=4, remainder=3
+            emit_reg(b, 0xDF, 0xE0);
+            emit_mem(b, 0xDB, 7, 0x520);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x520) ==
+                    0xC000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x528) == 0x4000);
+            REQUIRE((ctx.rax.qword & 0x4700) == 0x0100);  // C0
+        }
+        {
+            *reinterpret_cast<s64*>(data + 0x500) = 4;
+            *reinterpret_cast<s64*>(data + 0x508) = 19;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDF, 5, 0x500);
+            emit_mem(b, 0xDF, 5, 0x508);
+            emit_reg(b, 0xD9, 0xF5);      // FPREM1: q=5, remainder=-1
+            emit_reg(b, 0xDF, 0xE0);
+            emit_mem(b, 0xDB, 7, 0x520);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x520) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x528) == 0xBFFF);
+            REQUIRE((ctx.rax.qword & 0x4700) == 0x0300);  // C0+C1
+        }
+        for (const u8 remainder_opcode : {u8(0xF8), u8(0xF5)}) {
+            // A large exponent gap performs an architecturally partial first
+            // reduction (C2=1), then completes on the following invocation,
+            // for both FPREM and FPREM1.
+            *reinterpret_cast<s64*>(data + 0x500) = 3;
+            write_ext(0x508, 0x8000000000000000ull, 0x4063);  // 2^100
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDF, 5, 0x500);
+            emit_mem(b, 0xDB, 5, 0x508);
+            emit_reg(b, 0xD9, remainder_opcode);
+            emit_reg(b, 0xD9, 0xC0);      // FLD ST(0), snapshot partial result
+            emit_mem(b, 0xDB, 7, 0x530);
+            emit_reg(b, 0xDF, 0xE0);
+            EmitMovRegReg(b, 16, kR10, kRax);
+            emit_reg(b, 0xD9, remainder_opcode);
+            emit_reg(b, 0xDF, 0xE0);
+            EmitMovRegReg(b, 16, kR11, kRax);
+            emit_mem(b, 0xDB, 7, 0x520);
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0x0400) != 0);
+            REQUIRE((ctx.r11.qword & 0x0400) == 0);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x530) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x538) == 0x403F);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x520) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x528) == 0x3FFF);
+        }
+        {
+            // Exact-op NaN propagation quiets an SNaN, retains its payload,
+            // and raises IE.
+            write_ext(0x500, 0x8000000000000000ull, 0x3FFF);
+            write_ext(0x508, 0xA123456789ABCDEFull, 0xFFFF);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x500);
+            emit_mem(b, 0xDB, 5, 0x508);
+            emit_reg(b, 0xD9, 0xF5);
+            emit_mem(b, 0xDB, 7, 0x520);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x520) ==
+                    0xE123456789ABCDEFull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x528) == 0xFFFF);
+            REQUIRE((ctx.x87_fsw & 1) != 0);
+        }
+
+        // FSCALE performs an exact exponent adjustment, including the
+        // denormal/normal boundary, using truncation of ST(1).
+        {
+            write_ext(0x540, 1, 0);  // minimum ext80 denormal
+            *reinterpret_cast<s64*>(data + 0x550) = 63;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDF, 5, 0x550);
+            emit_mem(b, 0xDB, 5, 0x540);
+            emit_reg(b, 0xD9, 0xFD);      // FSCALE ST0 by trunc(ST1)
+            emit_mem(b, 0xDB, 7, 0x560);
+            run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x560) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x568) == 0x0001);
+        }
+        {
+            write_ext(0x540, 0x8000000000000000ull, 0x0001);
+            *reinterpret_cast<s64*>(data + 0x550) = -1;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDF, 5, 0x550);
+            emit_mem(b, 0xDB, 5, 0x540);
+            emit_reg(b, 0xD9, 0xFD);
+            emit_mem(b, 0xDB, 7, 0x560);
+            run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x560) ==
+                    0x4000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x568) == 0);
+        }
+        {
+            // Scaling the maximum finite ext80 value upward overflows with
+            // the source sign retained and the x87 OE/PE flags set.
+            write_ext(0x540, 0xFFFFFFFFFFFFFFFFull, 0x7FFE);
+            *reinterpret_cast<s64*>(data + 0x550) = 1;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDF, 5, 0x550);
+            emit_mem(b, 0xDB, 5, 0x540);
+            emit_reg(b, 0xD9, 0xFD);
+            emit_mem(b, 0xDB, 7, 0x560);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x560) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x568) == 0x7FFF);
+            REQUIRE((ctx.x87_fsw & 0x0028) == 0x0028);  // OE + PE
+        }
+
+        // FXTRACT normalizes an ext80 denormal exactly.  Final ST0 is the
+        // signed significand and ST1 is the unbiased exponent.
+        {
+            write_ext(0x540, 1, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x540);
+            emit_reg(b, 0xD9, 0xF4);      // FXTRACT
+            emit_mem(b, 0xDB, 7, 0x560); // significand
+            emit_mem(b, 0xDB, 7, 0x570); // exponent
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x560) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x568) == 0x3FFF);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x570) ==
+                    0x807A000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x578) == 0xC00D);
+            REQUIRE((ctx.x87_fsw & 0x0002) != 0);  // DE
+        }
+        {
+            write_ext(0x540, 0xFFFFFFFFFFFFFFFFull, 0x7FFE);
+            *reinterpret_cast<s32*>(data + 0x57C) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x540);
+            emit_reg(b, 0xD9, 0xF4);
+            emit_mem(b, 0xDB, 7, 0x560);  // normalized significand
+            emit_mem(b, 0xDB, 2, 0x57C);  // FIST exponent as m32
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x560) ==
+                    0xFFFFFFFFFFFFFFFFull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x568) == 0x3FFF);
+            REQUIRE(*reinterpret_cast<s32*>(data + 0x57C) == 16383);
+            REQUIRE(ctx.x87_ftw != 0xFFFF);  // FIST is non-pop
+        }
+
+        // At and beyond 2^63, the trigonometric reducer reports C2 and does
+        // not alter ST0 or perform the nominal FPTAN push.
+        for (const u16 sign : {u16(0), u16(0x8000)}) {
+            write_ext(0x580, 0x8000000000000000ull, u16(sign | 0x403E));
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x580);
+            emit_reg(b, 0xD9, 0xFE);      // FSIN
+            emit_mem(b, 0xDB, 7, 0x590);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x590) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x598) ==
+                    u16(sign | 0x403E));
+            REQUIRE((ctx.x87_fsw & 0x0400) != 0);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+        }
+        {
+            write_ext(0x580, 0x8000000000000000ull, 0x403F);  // 2^64
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x580);
+            emit_reg(b, 0xD9, 0xF2);      // FPTAN, must not push
+            emit_mem(b, 0xDB, 7, 0x590);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x598) == 0x403F);
+            REQUIRE((ctx.x87_fsw & 0x0400) != 0);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+        }
+
+        // Successful push forms have architecturally fixed final ordering.
+        {
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xEE);      // FLDZ
+            emit_reg(b, 0xD9, 0xF2);      // FPTAN
+            emit_mem(b, 0xDB, 7, 0x5A0); // ST0 = +1
+            emit_mem(b, 0xDB, 7, 0x5B0); // ST1 = tan(+0) = +0
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x5A0) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x5A8) == 0x3FFF);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x5B0) == 0);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x5B8) == 0);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+        }
+        {
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xEE);      // FLDZ
+            emit_reg(b, 0xD9, 0xFB);      // FSINCOS
+            emit_mem(b, 0xDB, 7, 0x5A0); // ST0 = cos(+0) = +1
+            emit_mem(b, 0xDB, 7, 0x5B0); // ST1 = sin(+0) = +0
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x5A0) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x5A8) == 0x3FFF);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x5B0) == 0);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+        }
+
+        // Unary transcendental NaNs retain payload/sign and quiet SNaNs.
+        {
+            write_ext(0x5C0, 0xA123456789ABCDEFull, 0xFFFF);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x5C0);
+            emit_reg(b, 0xD9, 0xFE);      // FSIN
+            emit_mem(b, 0xDB, 7, 0x5D0);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x5D0) ==
+                    0xE123456789ABCDEFull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x5D8) == 0xFFFF);
+            REQUIRE((ctx.x87_fsw & 1) != 0);
+        }
+
+        // The binary/pop transcendental helpers retain exact easy identities.
+        {
+            *reinterpret_cast<s64*>(data + 0x5E0) = 3;
+            *reinterpret_cast<s64*>(data + 0x5E8) = 2;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDF, 5, 0x5E0); // y=3
+            emit_mem(b, 0xDF, 5, 0x5E8); // x=2
+            emit_reg(b, 0xD9, 0xF1);      // FYL2X = 3
+            emit_mem(b, 0xDB, 7, 0x5F0);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x5F0) ==
+                    0xC000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x5F8) == 0x4000);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
         }
 
         X86Instance::Destroy(instance);
