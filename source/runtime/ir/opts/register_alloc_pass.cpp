@@ -28,6 +28,21 @@ static Value ResolveBitCastSource(Value value) {
     return value;
 }
 
+using HostGPRWriteMap = Map<u16, Vector<u32>>;
+
+static bool LiveRangeCrossesHostGPRWrite(const HostGPRWriteMap& writes,
+                                         u16 host_reg,
+                                         u32 def_id,
+                                         u32 use_end) {
+    auto it = writes.find(host_reg);
+    if (it == writes.end()) {
+        return false;
+    }
+    return std::any_of(it->second.begin(), it->second.end(), [def_id, use_end](u32 set_id) {
+        return def_id < set_id && set_id <= use_end;
+    });
+}
+
 class LinearScanAllocator {
 public:
     explicit LinearScanAllocator(HIRFunction* function, backend::RegAlloc* alloc)
@@ -130,11 +145,16 @@ private:
         // the block that owns the terminal (function-global id).
         Map<u32, u32> terminal_end{};
         Map<u32, u32> actual_use_end{};
+        HostGPRWriteMap host_gpr_writes{};
         for (auto* hir_block : hir_function->GetHIRBlocks()) {
             auto* lir_block = hir_block->GetBlock();
             u32 block_end = 0;
             for (auto& inst : lir_block->GetInstList()) {
                 block_end = std::max<u32>(block_end, inst.Id());
+                if (inst.GetOp() == OpCode::SetHostGPR) {
+                    const auto host_reg = static_cast<u16>(inst.GetArg<Imm>(1).Get());
+                    host_gpr_writes[host_reg].push_back(inst.Id());
+                }
                 for (auto value : inst.GetValues()) {
                     auto source = ResolveBitCastSource(value);
                     auto& end = actual_use_end[source.Id()];
@@ -177,25 +197,6 @@ private:
         }
         for (auto& hir_value : hir_function->GetHIRValues()) {
             auto instr = hir_value.value.Def();
-            const bool full_gpr_get =
-                    instr->GetOp() == OpCode::GetHostGPR &&
-                    GetValueSizeByte(instr->ReturnType()) == sizeof(u64);
-            if (instr->IsGetHostRegOperation() &&
-                (instr->GetOp() == OpCode::GetHostFPR || full_gpr_get)) {
-                auto is_float = instr->GetOp() == OpCode::GetHostFPR;
-                auto host_index = instr->GetArg<Imm>(0).Get();
-                if (is_float) {
-                    reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{(u16) host_index});
-                } else {
-                    reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{(u16) host_index});
-                }
-                continue;
-            }
-            if (instr->IsBitCastOperation()) {
-                auto from = instr->GetArg<Value>(0);
-                reg_alloc->MapReference(from.Id(), instr->Id());
-                continue;
-            }
             auto start = hir_value.GetOrderId();
             u32 end{hir_value.GetOrderId()};
             std::for_each(hir_value.uses.begin(), hir_value.uses.end(), [&end](auto& use) {
@@ -212,6 +213,32 @@ private:
             if (auto it = terminal_end.find(instr->Id()); it != terminal_end.end()) {
                 end = std::max(end, it->second);
             }
+            const bool host_reg_alias = instr->IsGetHostRegOperation();
+            const bool full_gpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostGPR &&
+                                      GetValueSizeByte(instr->ReturnType()) == sizeof(u64);
+            const bool fixed_fpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostFPR;
+            const auto host_index =
+                    host_reg_alias ? static_cast<u16>(instr->GetArg<Imm>(0).Get()) : u16{};
+            // A fixed mapping aliases this SSA value directly to the pinned
+            // register. Preserve snapshot semantics by forcing a copy when a
+            // SetHostGPR can overwrite that register before the value's last use.
+            const bool fixed_gpr_get =
+                    full_gpr_get &&
+                    !LiveRangeCrossesHostGPRWrite(host_gpr_writes, host_index, instr->Id(), end);
+            if (fixed_fpr_get || fixed_gpr_get) {
+                auto is_float = fixed_fpr_get;
+                if (is_float) {
+                    reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{host_index});
+                } else {
+                    reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{host_index});
+                }
+                continue;
+            }
+            if (instr->IsBitCastOperation()) {
+                auto from = instr->GetArg<Value>(0);
+                reg_alloc->MapReference(from.Id(), instr->Id());
+                continue;
+            }
             if (auto inst = hir_value.value.Def(); inst->IsPseudoOperation()) {
                 start = inst->GetArg<Value>(0).Id();
             }
@@ -224,23 +251,13 @@ private:
         ASSERT_MSG(!lir_block->IsEmptyBlock(), "block is empty");
         StackVector<u16, 64> use_end{};
         use_end.resize(std::max<u32>(lir_block->MaxInstrId(), lir_block->GetInstList().size()));
+        HostGPRWriteMap host_gpr_writes{};
         for (auto& instr : lir_block->GetInstList()) {
-            const bool full_gpr_get =
-                    instr.GetOp() == OpCode::GetHostGPR &&
-                    GetValueSizeByte(instr.ReturnType()) == sizeof(u64);
-            if (instr.IsGetHostRegOperation() &&
-                (instr.GetOp() == OpCode::GetHostFPR || full_gpr_get)) {
-                auto is_float = instr.GetOp() == OpCode::GetHostFPR;
-                auto host_index = instr.GetArg<Imm>(0).Get();
-                if (is_float) {
-                    reg_alloc->MapRegister(instr.Id(), HostFPR{(u16) host_index});
-                } else {
-                    reg_alloc->MapRegister(instr.Id(), HostGPR{(u16) host_index});
-                }
-            } else if (instr.IsBitCastOperation()) {
-                auto from = instr.GetArg<Value>(0);
-                reg_alloc->MapReference(from.Id(), instr.Id());
-            } else {
+            if (instr.GetOp() == OpCode::SetHostGPR) {
+                const auto host_reg = static_cast<u16>(instr.GetArg<Imm>(1).Get());
+                host_gpr_writes[host_reg].push_back(instr.Id());
+            }
+            if (!instr.IsGetHostRegOperation() && !instr.IsBitCastOperation()) {
                 // SetHost* is a normal use. Pinned registers are reserved from
                 // linear scan, and the emitter performs the move/bit insert at
                 // the SetHost* instruction. Coalescing the source into the
@@ -293,6 +310,31 @@ private:
             walk_terminal(lir_block->GetTerminal());
         }
         for (auto& instr : lir_block->GetInstList()) {
+            const bool host_reg_alias = instr.IsGetHostRegOperation();
+            const bool full_gpr_get = host_reg_alias && instr.GetOp() == OpCode::GetHostGPR &&
+                                      GetValueSizeByte(instr.ReturnType()) == sizeof(u64);
+            const bool fixed_fpr_get = host_reg_alias && instr.GetOp() == OpCode::GetHostFPR;
+            const auto host_index =
+                    host_reg_alias ? static_cast<u16>(instr.GetArg<Imm>(0).Get()) : u16{};
+            // See the function-level collector above: a crossing write makes
+            // the GetHostGPR result a snapshot, not a zero-cost alias.
+            const bool fixed_gpr_get =
+                    full_gpr_get &&
+                    !LiveRangeCrossesHostGPRWrite(
+                            host_gpr_writes, host_index, instr.Id(), use_end[instr.Id()]);
+            if (fixed_fpr_get || fixed_gpr_get) {
+                if (fixed_fpr_get) {
+                    reg_alloc->MapRegister(instr.Id(), HostFPR{host_index});
+                } else {
+                    reg_alloc->MapRegister(instr.Id(), HostGPR{host_index});
+                }
+                continue;
+            }
+            if (instr.IsBitCastOperation()) {
+                auto from = instr.GetArg<Value>(0);
+                reg_alloc->MapReference(from.Id(), instr.Id());
+                continue;
+            }
             if (instr.HasValue()) {
                 auto start = instr.Id();
                 auto end = use_end[start];
