@@ -286,13 +286,11 @@ struct X86Instance::Impl final {
                 !uniform_elim_env || std::strcmp(uniform_elim_env, "0") != 0;
         // The interpreter's GetHostGPR/SetHostGPR handlers intentionally have
         // no host-register state, so never emit mapped ops in interpreter mode.
-        // Keep mapping opt-in until the complete fuzz matrix can run past the
-        // local Unicorn uc_mem_map SIGILL; the translator binary matrix is green,
-        // but that infrastructure failure prevents default-on qualification.
+        // Default-on; keep an explicit escape hatch for diagnostics.
         const char* static_regs_env = std::getenv("SVM_STATIC_REGS");
         const bool enable_static_regs =
                 enable_jit && enable_uniform_elim &&
-                static_regs_env && std::strcmp(static_regs_env, "1") == 0;
+                (!static_regs_env || std::strcmp(static_regs_env, "0") != 0);
         std::span<UniformMapDesc> static_regs =
                 enable_static_regs ? std::span<UniformMapDesc>{arm64_backend_regs_map}
                                    : std::span<UniformMapDesc>{};
