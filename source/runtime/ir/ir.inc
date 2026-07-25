@@ -23,6 +23,8 @@ INST(StoreMemoryTSO, Void, Operand, Value)
 INST(MemoryCopy, Void, Lambda, Lambda, Imm)
 INST(MemoryCopyTSO, Void, Lambda, Lambda, Imm)
 INST(CompareAndSwap, Value, Value, Value, Value)
+INST(AtomicExchange, Value, Value, Value)
+INST(AtomicFetchAdd, Value, Value, Value)
 
 // Help
 INST(UniformBarrier, Void)

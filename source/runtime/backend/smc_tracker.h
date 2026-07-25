@@ -112,6 +112,12 @@ public:
     static void SetEnabled(bool enabled);
     [[nodiscard]] static bool IsEnabled();
 
+    // Per-address-space MT safety gate. Restores every protected page to RW,
+    // clears tracking metadata, and makes future RegisterNode calls no-ops.
+    // Existing translated code remains valid; only mutation detection is
+    // disabled.
+    void DisableAndUnprotectAll();
+
 private:
     struct TrackedNode {
         ir::AddressNode* node{};
@@ -148,6 +154,7 @@ private:
     std::map<VAddr, PageRecord> pages_{};
     // Pages that gave up on SMC tracking (see kMaxInvalidations).
     std::vector<VAddr> disabled_pages_{};
+    bool locally_enabled_{true};
 };
 
 }  // namespace swift::runtime::backend

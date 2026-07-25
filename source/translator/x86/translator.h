@@ -27,6 +27,12 @@ public:
     // the linux loader to GuestMemory::RangeIsMapped before creating a Core.
     void SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), void* ctx);
 
+    // Called before the first guest thread is spawned. Existing SMC page
+    // protections are removed and future tracking is disabled for this
+    // address space: the current SMC invalidator may free code still executing
+    // on another host thread and is intentionally not advertised as MT-safe.
+    void PrepareForMultithreading();
+
 private:
     explicit X86Instance(void* memory_base);
 

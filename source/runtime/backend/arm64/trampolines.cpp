@@ -59,6 +59,7 @@ void TrampolinesArm64::Build() {
     }
     gpr_regs.Mark(flags.GetCode());
     gpr_regs.Mark(ip.GetCode());
+    gpr_regs.Mark(atomic_scratch.GetCode());
 
     // FPR registers can use
     fpr_regs.Reset(0);

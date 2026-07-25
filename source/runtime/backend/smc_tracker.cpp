@@ -48,7 +48,7 @@ bool SmcTracker::SetPageProtected(VAddr page, bool prot_read_only) {
 }
 
 void SmcTracker::RegisterNode(ir::AddressNode* node, VAddr guest_start, VAddr guest_end) {
-    if (!IsEnabled()) {
+    if (!IsEnabled() || !locally_enabled_) {
         return;  // SMC tracking disabled (e.g. fuzz harness rewriting its arena)
     }
     if (guest_end <= guest_start) {
@@ -84,6 +84,17 @@ void SmcTracker::RegisterNode(ir::AddressNode* node, VAddr guest_start, VAddr gu
             }
         }
     }
+}
+
+void SmcTracker::DisableAndUnprotectAll() {
+    locally_enabled_ = false;
+    for (auto& [page, record] : pages_) {
+        if (record.write_protected) {
+            SetPageProtected(page, false);
+        }
+    }
+    pages_.clear();
+    disabled_pages_.clear();
 }
 
 bool SmcTracker::HandleWriteFault(AddressSpace& space,

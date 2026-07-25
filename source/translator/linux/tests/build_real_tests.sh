@@ -31,12 +31,26 @@ echo "== Building for $SUFFIX in $TESTS_DIR =="
 gcc -static -O2 -o "real_hello_${SUFFIX}" real_hello.c
 gcc -static -O2 -o "real_busy_${SUFFIX}" real_busy.c
 gcc -static -O2 -o "func_tests_${SUFFIX}" func_tests.c
+if [ "$SUFFIX" = x86_64 ]; then
+    gcc -nostdlib -static -Wl,--build-id=none \
+        -o clone_futex_smoke_x86_64 clone_futex_smoke_x86_64.S
+    gcc -nostdlib -static -Wl,--build-id=none \
+        -o clone_tso_litmus_x86_64 clone_tso_litmus_x86_64.S
+    gcc -static -O2 -pthread -o pthread_mutex_counter_x86_64 pthread_mutex_counter.c
+    gcc -static -O2 -pthread -o tso_spinlock_counter_x86_64 tso_spinlock_counter.c
+    gcc -static -O2 -pthread -o tso_litmus_x86_64 tso_litmus.c
+    gcc -static -O2 -pthread -o tso_peterson_x86_64 tso_peterson.c
+fi
 
 # --- musl static (x86_64: apt-get install musl-tools) ---
 if [ "$SUFFIX" = x86_64 ] && command -v musl-gcc >/dev/null; then
     musl-gcc -static -O2 -o real_hello_musl_x86_64 real_hello.c
     musl-gcc -static -O2 -o real_busy_musl_x86_64  real_busy.c
     musl-gcc -static -O2 -o func_tests_musl_x86_64 func_tests.c
+    musl-gcc -static -O2 -pthread -o pthread_mutex_counter_musl_x86_64 pthread_mutex_counter.c
+    musl-gcc -static -O2 -pthread -o tso_spinlock_counter_musl_x86_64 tso_spinlock_counter.c
+    musl-gcc -static -O2 -pthread -o tso_litmus_musl_x86_64 tso_litmus.c
+    musl-gcc -static -O2 -pthread -o tso_peterson_musl_x86_64 tso_peterson.c
 fi
 
 # --- verify ---
@@ -61,6 +75,26 @@ record_native_result() {
 record_native_result "func_tests_${SUFFIX}"
 if [ "$SUFFIX" = x86_64 ] && [ -x func_tests_musl_x86_64 ]; then
     record_native_result func_tests_musl_x86_64
+fi
+if [ "$SUFFIX" = x86_64 ]; then
+    for binary in \
+        clone_futex_smoke_x86_64 \
+        clone_tso_litmus_x86_64 \
+        pthread_mutex_counter_x86_64 \
+        tso_spinlock_counter_x86_64 \
+        tso_litmus_x86_64 \
+        tso_peterson_x86_64; do
+        record_native_result "$binary"
+    done
+    for binary in \
+        pthread_mutex_counter_musl_x86_64 \
+        tso_spinlock_counter_musl_x86_64 \
+        tso_litmus_musl_x86_64 \
+        tso_peterson_musl_x86_64; do
+        if [ -x "$binary" ]; then
+            record_native_result "$binary"
+        fi
+    done
 fi
 
 # --- syscall traces ---
