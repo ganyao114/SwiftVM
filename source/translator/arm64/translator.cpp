@@ -189,14 +189,17 @@ struct Arm64Instance::Impl final {
                                              });
             }
 
-            if (has_host_call) {
+            const char* func_lambda_env = std::getenv("SVM_FUNC_LAMBDA");
+            const bool allow_func_lambda =
+                    !func_lambda_env || std::strcmp(func_lambda_env, "0") != 0;
+            if (has_host_call && !allow_func_lambda) {
                 for (auto* hb : hir_func->GetHIRBlocks()) {
                     if (hb && hb != hir_func->GetEntryBlock()) {
                         block_only_locations.insert(hb->GetBlock()->GetStartLocation().Value());
                     }
                 }
                 throw std::runtime_error(
-                        "function contains CallLambda; host-call liveness is not qualified");
+                        "function contains CallLambda; disabled by SVM_FUNC_LAMBDA=0");
             } else if (hit_block_cap) {
                 function_compilation_disabled = true;
                 for (auto* hb : hir_func->GetHIRBlocks()) {
