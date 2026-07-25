@@ -290,6 +290,55 @@ void X64Decoder::DecodeX87(_DInst& insn) {
             break;
         }
 
+        case I_FPREM:
+        case I_FPREM1:
+            CallX87(MakeX87Command(
+                            X87Action::Remainder,
+                            X87Format::None,
+                            0,
+                            static_cast<u8>(insn.opcode == I_FPREM
+                                                    ? X87Remainder::Truncate
+                                                    : X87Remainder::Nearest)),
+                    zero());
+            break;
+        case I_FSCALE:
+            CallX87(MakeX87Command(X87Action::Scale), zero());
+            break;
+        case I_FXTRACT:
+            CallX87(MakeX87Command(X87Action::Extract), zero());
+            break;
+
+        case I_FSIN:
+        case I_FCOS:
+        case I_FSINCOS:
+        case I_FPTAN:
+        case I_FPATAN:
+        case I_FYL2X:
+        case I_FYL2XP1:
+        case I_F2XM1: {
+            X87Transcendental operation = X87Transcendental::Sin;
+            switch (insn.opcode) {
+                case I_FCOS: operation = X87Transcendental::Cos; break;
+                case I_FSINCOS: operation = X87Transcendental::SinCos; break;
+                case I_FPTAN: operation = X87Transcendental::Tan; break;
+                case I_FPATAN: operation = X87Transcendental::Atan; break;
+                case I_FYL2X: operation = X87Transcendental::YLog2X; break;
+                case I_FYL2XP1:
+                    operation = X87Transcendental::YLog2XPlusOne;
+                    break;
+                case I_F2XM1:
+                    operation = X87Transcendental::TwoToXMinusOne;
+                    break;
+                default: break;
+            }
+            CallX87(MakeX87Command(X87Action::Transcendental,
+                                   X87Format::None,
+                                   0,
+                                   static_cast<u8>(operation)),
+                    zero());
+            break;
+        }
+
         case I_FLD1:
         case I_FLDL2T:
         case I_FLDL2E:

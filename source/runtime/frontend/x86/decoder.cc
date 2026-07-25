@@ -643,6 +643,18 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_FXAM:
         case I_FSQRT:
         case I_FRNDINT:
+        case I_FPREM:
+        case I_FPREM1:
+        case I_FSCALE:
+        case I_FXTRACT:
+        case I_FSIN:
+        case I_FCOS:
+        case I_FSINCOS:
+        case I_FPTAN:
+        case I_FPATAN:
+        case I_FYL2X:
+        case I_FYL2XP1:
+        case I_F2XM1:
         case I_FLD1:
         case I_FLDL2T:
         case I_FLDL2E:
