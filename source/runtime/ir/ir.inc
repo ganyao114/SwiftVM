@@ -120,6 +120,19 @@ INST(VecAdd, Value, Value, Value, Imm)
 INST(VecSub, Value, Value, Value, Imm)
 INST(VecCmpEq, Value, Value, Value, Imm)
 INST(VecCmpGt, Value, Value, Value, Imm)
+INST(VecAvg, Value, Value, Value, Imm)
+INST(VecMin, Value, Value, Value, Imm, Imm)
+INST(VecMax, Value, Value, Value, Imm, Imm)
+INST(VecMul, Value, Value, Value, Imm)
+
+// Packed integer horizontal operations.
+INST(VecAbsDiffSum8, Value, Value, Value)
+INST(VecMadd16, Value, Value, Value)
+
+// Packed shifts. The scalar count is the raw x86 imm8 / low qword count.
+INST(VecShiftLeft, Value, Value, Value, Imm)
+INST(VecShiftRight, Value, Value, Value, Imm)
+INST(VecShiftRightArithmetic, Value, Value, Value, Imm)
 
 // Shuffle/duplication operations.
 INST(VecShuffle32, Value, Value, Imm)
@@ -127,6 +140,10 @@ INST(VecShuffle16, Value, Value, Imm, Imm)
 INST(VecZip, Value, Value, Value, Imm, Imm)
 INST(VecDupPairs32, Value, Value, Imm)
 INST(VecDup64, Value, Value)
+INST(VecExtract16, Value, Value, Imm)
+INST(VecInsert16, Value, Value, Value, Imm)
+INST(VecMovMask, Value, Value, Imm)
+INST(VecTableLookup8, Value, Value, Value)
 
 // Scalar f32 arithmetic preserving bits [127:32] of the left operand.
 INST(VecFAddScalar32, Value, Value, Value)
