@@ -143,6 +143,15 @@ private:
 
     void TestAuxiliaryCarry(const Register &result);
 
+    // ARM and x86 can choose different signs/payloads when a packed FP
+    // operation consumes a NaN. Normalize each lane to x86's first-NaN,
+    // quiet-preserving rule after the NEON arithmetic instruction.
+    void EmitVecFloatNaNFixup(const VRegister &result,
+                              const VRegister &left,
+                              const VRegister &right,
+                              u32 lane_bits,
+                              u32 lane_count = 0);
+
     [[nodiscard]] PseudoFlags GetPseudoFlags(ir::Inst *inst);
 
     [[nodiscard]] bool MatchMemoryOffsetCase(ir::Inst *inst);

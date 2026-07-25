@@ -777,8 +777,10 @@ void JitTranslator::EmitVecFAddScalar32(ir::Inst* inst) {
     auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     auto scalar = context.GetTmpV();
-    __ Fmov(scalar.S(), right);
-    __ Fadd(scalar.S(), left.S(), scalar.S());
+    auto rhs = context.GetTmpV();
+    __ Fmov(rhs.S(), right);
+    __ Fadd(scalar.S(), left.S(), rhs.S());
+    EmitVecFloatNaNFixup(scalar, left, rhs, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -788,8 +790,10 @@ void JitTranslator::EmitVecFSubScalar32(ir::Inst* inst) {
     auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     auto scalar = context.GetTmpV();
-    __ Fmov(scalar.S(), right);
-    __ Fsub(scalar.S(), left.S(), scalar.S());
+    auto rhs = context.GetTmpV();
+    __ Fmov(rhs.S(), right);
+    __ Fsub(scalar.S(), left.S(), rhs.S());
+    EmitVecFloatNaNFixup(scalar, left, rhs, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -799,8 +803,10 @@ void JitTranslator::EmitVecFMulScalar32(ir::Inst* inst) {
     auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     auto scalar = context.GetTmpV();
-    __ Fmov(scalar.S(), right);
-    __ Fmul(scalar.S(), left.S(), scalar.S());
+    auto rhs = context.GetTmpV();
+    __ Fmov(rhs.S(), right);
+    __ Fmul(scalar.S(), left.S(), rhs.S());
+    EmitVecFloatNaNFixup(scalar, left, rhs, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -810,10 +816,350 @@ void JitTranslator::EmitVecFDivScalar32(ir::Inst* inst) {
     auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     auto scalar = context.GetTmpV();
-    __ Fmov(scalar.S(), right);
-    __ Fdiv(scalar.S(), left.S(), scalar.S());
+    auto rhs = context.GetTmpV();
+    __ Fmov(rhs.S(), right);
+    __ Fdiv(scalar.S(), left.S(), rhs.S());
+    EmitVecFloatNaNFixup(scalar, left, rhs, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
+}
+
+void JitTranslator::EmitVecFloatNaNFixup(const VRegister& result,
+                                         const VRegister& left,
+                                         const VRegister& right,
+                                         u32 lane_bits,
+                                         u32 lane_count) {
+    ASSERT(lane_bits == 32 || lane_bits == 64);
+    const u32 lanes = lane_count == 0 ? 128 / lane_bits : lane_count;
+    auto raw_left = context.GetTmpX();
+    auto raw_right = context.GetTmpX();
+    auto raw_result = context.GetTmpX();
+    auto exponent = context.GetTmpX();
+    auto fraction = context.GetTmpX();
+    auto nan_left = context.GetTmpX();
+    auto nan_right = context.GetTmpX();
+    auto quiet_left = context.GetTmpX();
+    auto quiet_right = context.GetTmpX();
+    auto chosen = context.GetTmpX();
+    auto right_nan_choice = context.GetTmpX();
+    auto mask = context.GetTmpX();
+    auto nan_result = context.GetTmpX();
+    auto no_input_nan = context.GetTmpX();
+    auto invalid_nan = context.GetTmpX();
+    auto indefinite = context.GetTmpX();
+
+    const u64 exponent_mask = lane_bits == 32 ? 0x7F800000u : 0x7FF0000000000000ull;
+    const u64 fraction_mask = lane_bits == 32 ? 0x007FFFFFu : 0x000FFFFFFFFFFFFFull;
+    const u64 quiet_mask = lane_bits == 32 ? 0x00400000u : 0x0008000000000000ull;
+    for (u32 lane = 0; lane < lanes; ++lane) {
+        if (lane_bits == 32) {
+            __ Umov(raw_left.W(), left.V4S(), lane);
+            __ Umov(raw_right.W(), right.V4S(), lane);
+            __ Umov(raw_result.W(), result.V4S(), lane);
+
+            __ Mov(mask.W(), static_cast<u32>(exponent_mask));
+            __ And(exponent.W(), raw_left.W(), mask.W());
+            __ Cmp(exponent.W(), mask.W());
+            __ Cset(exponent.W(), eq);
+            __ Mov(mask.W(), static_cast<u32>(fraction_mask));
+            __ And(fraction.W(), raw_left.W(), mask.W());
+            __ Cmp(fraction.W(), 0);
+            __ Cset(fraction.W(), ne);
+            __ And(nan_left.W(), exponent.W(), fraction.W());
+
+            __ Mov(mask.W(), static_cast<u32>(exponent_mask));
+            __ And(exponent.W(), raw_right.W(), mask.W());
+            __ Cmp(exponent.W(), mask.W());
+            __ Cset(exponent.W(), eq);
+            __ Mov(mask.W(), static_cast<u32>(fraction_mask));
+            __ And(fraction.W(), raw_right.W(), mask.W());
+            __ Cmp(fraction.W(), 0);
+            __ Cset(fraction.W(), ne);
+            __ And(nan_right.W(), exponent.W(), fraction.W());
+
+            __ Mov(mask.W(), static_cast<u32>(quiet_mask));
+            __ Orr(quiet_left.W(), raw_left.W(), mask.W());
+            __ Orr(quiet_right.W(), raw_right.W(), mask.W());
+            __ Cmp(nan_left.W(), 0);
+            __ Csel(chosen.W(), quiet_left.W(), raw_result.W(), ne);
+            // Real x86 gives operand 1 priority when both inputs are NaN.
+            // Select operand 2 only when operand 1 was not NaN.
+            __ Cmp(nan_left.W(), 0);
+            __ Cset(right_nan_choice.W(), eq);
+            __ And(right_nan_choice.W(), right_nan_choice.W(), nan_right.W());
+            __ Cmp(right_nan_choice.W(), 0);
+            __ Csel(chosen.W(), quiet_right.W(), chosen.W(), ne);
+
+            __ Mov(mask.W(), static_cast<u32>(exponent_mask));
+            __ And(exponent.W(), raw_result.W(), mask.W());
+            __ Cmp(exponent.W(), mask.W());
+            __ Cset(exponent.W(), eq);
+            __ Mov(mask.W(), static_cast<u32>(fraction_mask));
+            __ And(fraction.W(), raw_result.W(), mask.W());
+            __ Cmp(fraction.W(), 0);
+            __ Cset(fraction.W(), ne);
+            __ And(nan_result.W(), exponent.W(), fraction.W());
+            __ Orr(no_input_nan.W(), nan_left.W(), nan_right.W());
+            __ Cmp(no_input_nan.W(), 0);
+            __ Cset(no_input_nan.W(), eq);
+            __ And(invalid_nan.W(), nan_result.W(), no_input_nan.W());
+            __ Mov(indefinite.W(), 0xFFC00000u);
+            __ Cmp(invalid_nan.W(), 0);
+            __ Csel(chosen.W(), indefinite.W(), chosen.W(), ne);
+            __ Ins(result.V4S(), lane, chosen.W());
+        } else {
+            __ Umov(raw_left, left.V2D(), lane);
+            __ Umov(raw_right, right.V2D(), lane);
+            __ Umov(raw_result, result.V2D(), lane);
+
+            __ Mov(mask, exponent_mask);
+            __ And(exponent, raw_left, mask);
+            __ Cmp(exponent, mask);
+            __ Cset(exponent, eq);
+            __ Mov(mask, fraction_mask);
+            __ And(fraction, raw_left, mask);
+            __ Cmp(fraction, 0);
+            __ Cset(fraction, ne);
+            __ And(nan_left, exponent, fraction);
+
+            __ Mov(mask, exponent_mask);
+            __ And(exponent, raw_right, mask);
+            __ Cmp(exponent, mask);
+            __ Cset(exponent, eq);
+            __ Mov(mask, fraction_mask);
+            __ And(fraction, raw_right, mask);
+            __ Cmp(fraction, 0);
+            __ Cset(fraction, ne);
+            __ And(nan_right, exponent, fraction);
+
+            __ Mov(mask, quiet_mask);
+            __ Orr(quiet_left, raw_left, mask);
+            __ Orr(quiet_right, raw_right, mask);
+            __ Cmp(nan_left, 0);
+            __ Csel(chosen, quiet_left, raw_result, ne);
+            // Real x86 gives operand 1 priority when both inputs are NaN.
+            __ Cmp(nan_left, 0);
+            __ Cset(right_nan_choice, eq);
+            __ And(right_nan_choice, right_nan_choice, nan_right);
+            __ Cmp(right_nan_choice, 0);
+            __ Csel(chosen, quiet_right, chosen, ne);
+
+            __ Mov(mask, exponent_mask);
+            __ And(exponent, raw_result, mask);
+            __ Cmp(exponent, mask);
+            __ Cset(exponent, eq);
+            __ Mov(mask, fraction_mask);
+            __ And(fraction, raw_result, mask);
+            __ Cmp(fraction, 0);
+            __ Cset(fraction, ne);
+            __ And(nan_result, exponent, fraction);
+            __ Orr(no_input_nan, nan_left, nan_right);
+            __ Cmp(no_input_nan, 0);
+            __ Cset(no_input_nan, eq);
+            __ And(invalid_nan, nan_result, no_input_nan);
+            __ Mov(indefinite, 0xFFF8000000000000ull);
+            __ Cmp(invalid_nan, 0);
+            __ Csel(chosen, indefinite, chosen, ne);
+            __ Ins(result.V2D(), lane, chosen);
+        }
+    }
+}
+
+void JitTranslator::EmitVecFAdd(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    if (lane_bits == 32)
+        __ Fadd(result.V4S(), left.V4S(), right.V4S());
+    else
+        __ Fadd(result.V2D(), left.V2D(), right.V2D());
+    EmitVecFloatNaNFixup(result, left, right, lane_bits);
+}
+
+void JitTranslator::EmitVecFSub(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    if (lane_bits == 32)
+        __ Fsub(result.V4S(), left.V4S(), right.V4S());
+    else
+        __ Fsub(result.V2D(), left.V2D(), right.V2D());
+    EmitVecFloatNaNFixup(result, left, right, lane_bits);
+}
+
+void JitTranslator::EmitVecFMul(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    if (lane_bits == 32)
+        __ Fmul(result.V4S(), left.V4S(), right.V4S());
+    else
+        __ Fmul(result.V2D(), left.V2D(), right.V2D());
+    EmitVecFloatNaNFixup(result, left, right, lane_bits);
+}
+
+void JitTranslator::EmitVecFDiv(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    if (lane_bits == 32)
+        __ Fdiv(result.V4S(), left.V4S(), right.V4S());
+    else
+        __ Fdiv(result.V2D(), left.V2D(), right.V2D());
+    EmitVecFloatNaNFixup(result, left, right, lane_bits);
+}
+
+void JitTranslator::EmitVecFCmp(ir::Inst* inst) {
+    auto left_raw = context.X(inst->GetArg<ir::Value>(0));
+    auto right_raw = context.X(inst->GetArg<ir::Value>(1));
+    auto result = context.X(ir::Value{inst});
+    auto bit = context.GetTmpX();
+    auto left = context.GetTmpV();
+    auto right = context.GetTmpV();
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    if (bits == 32) {
+        __ Fmov(left.S(), left_raw.W());
+        __ Fmov(right.S(), right_raw.W());
+        __ Fcmp(left.S(), right.S());
+    } else {
+        __ Fmov(left.D(), left_raw);
+        __ Fmov(right.D(), right_raw);
+        __ Fcmp(left.D(), right.D());
+    }
+
+    // ARM FPCompare NZCV: less=N, equal=Z, greater=C, unordered=C|V.
+    // x86 UCOMIS flags are CF=less|unordered, PF=unordered,
+    // ZF=equal|unordered.
+    __ Cset(bit, lt);
+    __ Mov(result, bit);
+    __ Cset(bit, vs);
+    __ Orr(result, result, bit);
+    __ Lsl(bit, bit, 1);
+    __ Orr(result, result, bit);
+    __ Cset(bit, eq);
+    auto unordered = context.GetTmpX();
+    __ Cset(unordered, vs);
+    __ Orr(bit, bit, unordered);
+    __ Lsl(bit, bit, 2);
+    __ Orr(result, result, bit);
+}
+
+void JitTranslator::EmitVecFCvtIntToFloat(ir::Inst* inst) {
+    auto source = context.X(inst->GetArg<ir::Value>(0));
+    auto result = context.X(ir::Value{inst});
+    auto fp = context.GetTmpV();
+    const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
+    const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
+    if (dst_bits == 32) {
+        if (src_bits == 32)
+            __ Scvtf(fp.S(), source.W());
+        else
+            __ Scvtf(fp.S(), source);
+        __ Fmov(result.W(), fp.S());
+    } else {
+        if (src_bits == 32)
+            __ Scvtf(fp.D(), source.W());
+        else
+            __ Scvtf(fp.D(), source);
+        __ Fmov(result, fp.D());
+    }
+}
+
+void JitTranslator::EmitVecFCvtFloatToInt(ir::Inst* inst) {
+    auto source = context.X(inst->GetArg<ir::Value>(0));
+    auto result = context.X(ir::Value{inst});
+    auto fp = context.GetTmpV();
+    auto bound = context.GetTmpV();
+    auto bound_bits = context.GetTmpX();
+    auto converted = context.GetTmpX();
+    auto invalid = context.GetTmpX();
+    auto test = context.GetTmpX();
+    auto indefinite = context.GetTmpX();
+    const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
+    const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
+
+    if (src_bits == 32) {
+        __ Fmov(fp.S(), source.W());
+    } else {
+        __ Fmov(fp.D(), source);
+    }
+    if (dst_bits == 32) {
+        if (src_bits == 32)
+            __ Fcvtzs(converted.W(), fp.S());
+        else
+            __ Fcvtzs(converted.W(), fp.D());
+    } else {
+        if (src_bits == 32)
+            __ Fcvtzs(converted, fp.S());
+        else
+            __ Fcvtzs(converted, fp.D());
+    }
+
+    // Detect NaN first (FCMP x,x => V set only for unordered), then the two
+    // half-open integer bounds.  The lower endpoint is valid; the upper
+    // endpoint is invalid because truncation cannot represent 2^N.
+    if (src_bits == 32)
+        __ Fcmp(fp.S(), fp.S());
+    else
+        __ Fcmp(fp.D(), fp.D());
+    __ Cset(invalid, vs);
+
+    const u64 upper_bits = src_bits == 32 ? (dst_bits == 32 ? 0x4F000000u : 0x5F000000u)
+                           : (dst_bits == 32 ? 0x41E0000000000000ull
+                                             : 0x43E0000000000000ull);
+    const u64 lower_bits = src_bits == 32 ? (dst_bits == 32 ? 0xCF000000u : 0xDF000000u)
+                           : (dst_bits == 32 ? 0xC1E0000000000000ull
+                                             : 0xC3E0000000000000ull);
+    __ Mov(bound_bits, upper_bits);
+    if (src_bits == 32)
+        __ Fmov(bound.S(), bound_bits.W());
+    else
+        __ Fmov(bound.D(), bound_bits);
+    if (src_bits == 32)
+        __ Fcmp(fp.S(), bound.S());
+    else
+        __ Fcmp(fp.D(), bound.D());
+    __ Cset(test, hs);
+    __ Orr(invalid, invalid, test);
+
+    __ Mov(bound_bits, lower_bits);
+    if (src_bits == 32)
+        __ Fmov(bound.S(), bound_bits.W());
+    else
+        __ Fmov(bound.D(), bound_bits);
+    if (src_bits == 32)
+        __ Fcmp(fp.S(), bound.S());
+    else
+        __ Fcmp(fp.D(), bound.D());
+    __ Cset(test, lt);
+    __ Orr(invalid, invalid, test);
+
+    __ Mov(indefinite, dst_bits == 32 ? 0x80000000u : 0x8000000000000000ull);
+    __ Cmp(invalid, 0);
+    if (dst_bits == 32)
+        __ Csel(result.W(), indefinite.W(), converted.W(), ne);
+    else
+        __ Csel(result, indefinite, converted, ne);
+}
+
+void JitTranslator::EmitVecFCvtScalar(ir::Inst* inst) {
+    auto source = context.X(inst->GetArg<ir::Value>(0));
+    auto result = context.X(ir::Value{inst});
+    auto fp = context.GetTmpV();
+    const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
+    if (src_bits == 32) {
+        __ Fmov(fp.S(), source.W());
+        __ Fcvt(fp.D(), fp.S());
+        __ Fmov(result, fp.D());
+    } else {
+        __ Fmov(fp.D(), source);
+        __ Fcvt(fp.S(), fp.D());
+        __ Fmov(result.W(), fp.S());
+    }
 }
 
 void JitTranslator::EmitAsrValue(ir::Inst* inst) {

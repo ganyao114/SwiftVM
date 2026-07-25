@@ -150,3 +150,18 @@ INST(VecFAddScalar32, Value, Value, Value)
 INST(VecFSubScalar32, Value, Value, Value)
 INST(VecFMulScalar32, Value, Value, Value)
 INST(VecFDivScalar32, Value, Value, Value)
+
+// Packed IEEE floating-point operations. Imm is the lane width (32 or 64).
+INST(VecFAdd, Value, Value, Value, Imm)
+INST(VecFSub, Value, Value, Value, Imm)
+INST(VecFMul, Value, Value, Value, Imm)
+INST(VecFDiv, Value, Value, Value, Imm)
+
+// Scalar compare result: bit 0 = CF, bit 1 = PF, bit 2 = ZF.
+INST(VecFCmp, Value, Value, Value, Imm)
+
+// Scalar conversions. The result is the raw IEEE/integer bit pattern in a
+// scalar container; widths are supplied as immediates in bits.
+INST(VecFCvtIntToFloat, Value, Value, Imm, Imm)
+INST(VecFCvtFloatToInt, Value, Value, Imm, Imm)
+INST(VecFCvtScalar, Value, Value, Imm)

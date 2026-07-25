@@ -514,8 +514,11 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             auto cf = CheckCond(Cond::BT);
             auto pf = CheckCond(Cond::PA);
             auto af = __ TestFlags(ir::Flags::AuxiliaryCarry).SetType(ir::ValueType::U8);
-            auto zf = CheckCond(Cond::EQ);
-            auto sf = CheckCond(Cond::MI);
+            // TestFlags reads the guest flag shadow directly.  CondSelect
+            // would observe whatever host NZCV the preceding PF/AF query
+            // happened to leave behind (notably after UCOMIS*).
+            auto zf = __ TestFlags(ir::Flags::Zero).SetType(ir::ValueType::U8);
+            auto sf = __ TestFlags(ir::Flags::Negate).SetType(ir::ValueType::U8);
             auto lo = __ Or(cf, ir::Operand{__ LslImm(pf, ir::Imm(2u))});
             auto mid = __ Or(__ LslImm(af, ir::Imm(4u)), ir::Operand{__ LslImm(zf, ir::Imm(6u))});
             auto ah = __ Or(
@@ -747,16 +750,28 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodePshiftA(insn, 1);
             break;
         case I_ADDPS:
-            DecodeVecHalfOp(insn, &AddpsHalf);
+            DecodePackedFloatOp(insn, VecFloatOp::Add, 32);
+            break;
+        case I_ADDPD:
+            DecodePackedFloatOp(insn, VecFloatOp::Add, 64);
             break;
         case I_SUBPS:
-            DecodeVecHalfOp(insn, &SubpsHalf);
+            DecodePackedFloatOp(insn, VecFloatOp::Sub, 32);
+            break;
+        case I_SUBPD:
+            DecodePackedFloatOp(insn, VecFloatOp::Sub, 64);
             break;
         case I_MULPS:
-            DecodeVecHalfOp(insn, &MulpsHalf);
+            DecodePackedFloatOp(insn, VecFloatOp::Mul, 32);
+            break;
+        case I_MULPD:
+            DecodePackedFloatOp(insn, VecFloatOp::Mul, 64);
             break;
         case I_DIVPS:
-            DecodeVecHalfOp(insn, &DivpsHalf);
+            DecodePackedFloatOp(insn, VecFloatOp::Div, 32);
+            break;
+        case I_DIVPD:
+            DecodePackedFloatOp(insn, VecFloatOp::Div, 64);
             break;
         case I_ADDSS:
             DecodeScalarFloatOp(insn, VecFloatOp::Add);
@@ -803,8 +818,14 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_PSHUFHW:
             DecodePshufw(insn, true);
             break;
+        case I_CVTSI2SS:
+            DecodeCvtsi2ss(insn);
+            break;
         case I_CVTSI2SD:
             DecodeCvtsi2sd(insn);
+            break;
+        case I_CVTTSS2SI:
+            DecodeCvttss2si(insn);
             break;
         case I_CVTTSD2SI:
             DecodeCvttsd2si(insn);
@@ -861,6 +882,9 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             break;
         case I_UCOMISD:
             DecodeUcomisd(insn);
+            break;
+        case I_UCOMISS:
+            DecodeUcomis(insn, 32);
             break;
         case I_BSF:
         case I_TZCNT:
