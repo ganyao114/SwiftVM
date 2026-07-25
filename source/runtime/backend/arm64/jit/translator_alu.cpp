@@ -703,6 +703,13 @@ void JitTranslator::EmitVecDup64(ir::Inst* inst) {
     __ Dup(result.V2D(), src);
 }
 
+void JitTranslator::EmitVecExtract64(ir::Inst* inst) {
+    auto src = context.V(inst->GetArg<ir::Value>(0));
+    auto result = context.X(ir::Value{inst});
+    const u32 lane = inst->GetArg<ir::Imm>(1).Get() & 1;
+    __ Umov(result, src.V2D(), lane);
+}
+
 void JitTranslator::EmitVecExtract16(ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.W(ir::Value{inst});

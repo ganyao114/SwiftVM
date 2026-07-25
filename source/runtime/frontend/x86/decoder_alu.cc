@@ -929,6 +929,46 @@ void X64Decoder::DecodeCmpxchg8b(_DInst& insn) {
     __ SaveFlags(diff, ir::Flags::Zero);
 }
 
+void X64Decoder::DecodeCmpxchg16b(_DInst& insn) {
+    // CMPXCHG16B m128 compares RDX:RAX and conditionally stores RCX:RBX.
+    // Only ZF is changed; on mismatch the observed pair replaces RDX:RAX.
+    auto addr = FlatAddress(insn, insn.ops[0]);
+    auto expected_lo = R(_RegisterType::R_RAX);
+    auto expected_hi = R(_RegisterType::R_RDX);
+    auto desired_lo = R(_RegisterType::R_RBX);
+    auto desired_hi = R(_RegisterType::R_RCX);
+
+    if ((insn.flags & FLAG_LOCK) != 0) {
+        // Real x86 raises #GP for an unaligned locked CMPXCHG16B. The runtime
+        // currently represents synchronous guest memory faults as PageFatal.
+        __ SetLocation(ir::Lambda{ir::Imm{pc - insn.size}});
+        __ CheckMemoryAlignment(addr, ir::Imm(15));
+    }
+
+    // The aligned path is atomic for both spellings. For no-LOCK this is
+    // stronger than required but architecturally legal; its unaligned slow
+    // path preserves Rosetta's legal no-LOCK behavior with a serialized
+    // memcpy-equivalent pair transaction.
+    auto old_pair = __ CompareAndSwap128(addr,
+                                        expected_lo,
+                                        expected_hi,
+                                        desired_lo,
+                                        desired_hi)
+                            .SetType(ir::ValueType::V128);
+    auto old_lo = __ VecExtract64(old_pair, ir::Imm(0)).SetType(ir::ValueType::U64);
+    auto old_hi = __ VecExtract64(old_pair, ir::Imm(1)).SetType(ir::ValueType::U64);
+    auto diff_lo = __ Xor(old_lo, ir::Operand{expected_lo});
+    auto diff_hi = __ Xor(old_hi, ir::Operand{expected_hi});
+    auto diff = __ Or(diff_lo, ir::Operand{diff_hi});
+    auto equal = __ TestZero(diff);
+
+    auto skip_load = __ Goto(equal);
+    R(_RegisterType::R_RAX, old_lo);
+    R(_RegisterType::R_RDX, old_hi);
+    __ BindLabel(skip_load);
+    __ SaveFlags(diff, ir::Flags::Zero);
+}
+
 void X64Decoder::DecodeBitScan(_DInst& insn, bool reverse) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
