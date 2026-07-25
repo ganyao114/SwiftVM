@@ -46,6 +46,37 @@ static std::array<ABIRegUniform, 2> float_return_x64{
         ABIRegUniform{offsetof(ThreadContext64, xmm0), 16},
         ABIRegUniform{offsetof(ThreadContext64, xmm1), 16}};
 
+static bool IsGuestStackRegister(unsigned reg) {
+    switch (static_cast<_RegisterType>(reg)) {
+        case _RegisterType::R_RSP:
+        case _RegisterType::R_ESP:
+        case _RegisterType::R_SP:
+        case _RegisterType::R_RBP:
+        case _RegisterType::R_EBP:
+        case _RegisterType::R_BP:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool IsThreadPrivateAddress(const _DInst& insn) {
+    const auto segment = static_cast<_RegisterType>(SEGMENT_GET(insn.segment));
+    if (segment == _RegisterType::R_FS || segment == _RegisterType::R_GS) {
+        return true;
+    }
+    if (IsGuestStackRegister(insn.base)) {
+        return true;
+    }
+    for (const auto& op : insn.ops) {
+        if ((op.type == O_SMEM || op.type == O_MEM) &&
+            IsGuestStackRegister(op.index)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 ABIDescriptor GetABIDescriptor32() { return {{}, {}, general_return_x86, float_return_x86}; }
 
 ABIDescriptor GetABIDescriptor64() {
@@ -64,6 +95,12 @@ void ToHost(backend::State* state, ThreadContext64* ctx) {
 
 bool X64Decoder::TsoOrdered(const _DInst& insn) const {
     if (GetTsoMode() == runtime::TsoMode::AcqRel) {
+        // ABI-owned stack and TLS locations are private to this guest thread.
+        // Shared acquire/release accesses still order surrounding plain
+        // accesses, while LOCK must retain its full ordered/atomic semantics.
+        if (!(insn.flags & FLAG_LOCK) && IsThreadPrivateAddress(insn)) {
+            return false;
+        }
         return true;
     }
     // LOCK-prefixed instructions are full fences on x86; order their accesses
@@ -1326,18 +1363,18 @@ ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op, bool force_tso) {
         case O_DISP: {
             auto size = GetSize(op.size);
             auto address_operand = GetAddress(insn, op);
-            // The address is always folded into a single value (historically
-            // for the TSO forms, which only encode [base]; harmless for the
-            // plain forms). TSO emission: AcqRel mode (or a LOCK prefix on
-            // this instruction) routes the load through LoadMemoryTSO, whose
-            // backend form (plain load + dmb ishld) tolerates the unaligned
-            // addresses x86 permits (glibc init_cpu_features does 4-mod-8
-            // qword feature-word accesses). SetType (not just cast):
-            // EmitGetOperand sizes the result from the instruction's own
-            // return type.
-            auto address = __ GetOperand(address_operand.ToIROperand())
-                                   .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
-            result = MemLoad(ir::Operand{address}, size, force_tso || TsoOrdered(insn));
+            const bool tso = force_tso || TsoOrdered(insn);
+            if (tso) {
+                // Preserve a constant/RIP-relative address through the TSO IR.
+                // The backend can then prove natural alignment at compile time
+                // and omit its dynamic LDAPR/STLR alignment branch.
+                result = MemLoad(address_operand.ToIROperand(), size, true);
+            } else {
+                auto address =
+                        __ GetOperand(address_operand.ToIROperand())
+                                .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
+                result = MemLoad(ir::Operand{address}, size, false);
+            }
             break;
         }
         case O_PTR: {
@@ -1373,11 +1410,17 @@ void X64Decoder::Dst(_DInst& insn, _Operand& operand, const ir::DataClass& data,
                 // sign extended immediates are wider than the destination).
                 value = NarrowTo(value, GetSize(operand.size));
             }
-            // See Src(): the folded single-value address form; TSO selection
-            // follows the mode / LOCK prefix.
-            auto folded = __ GetOperand(address.ToIROperand())
-                                  .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
-            MemStore(ir::Operand{folded}, value, force_tso || TsoOrdered(insn));
+            const bool tso = force_tso || TsoOrdered(insn);
+            if (tso) {
+                // Keep constant addresses visible for the aligned TSO fast
+                // path; register-derived addresses are checked dynamically.
+                MemStore(address.ToIROperand(), value, true);
+            } else {
+                auto folded =
+                        __ GetOperand(address.ToIROperand())
+                                .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
+                MemStore(ir::Operand{folded}, value, false);
+            }
             break;
         }
         default:

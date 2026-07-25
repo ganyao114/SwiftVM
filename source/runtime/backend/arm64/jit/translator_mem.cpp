@@ -1,5 +1,8 @@
 #include "translator.h"
 
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include "runtime/backend/atomic_fallback.h"
 #include "runtime/backend/context.h"
@@ -14,6 +17,37 @@ namespace {
 void HostMemMove(void* dst, const void* src, size_t size) {
     std::memmove(dst, src, size);
 }
+
+struct TsoEmissionStats {
+    const bool enabled{std::getenv("SVM_TSO_STATS") != nullptr};
+    std::atomic<u64> load_sites{};
+    std::atomic<u64> store_sites{};
+    std::atomic<u64> scalar_fast_sites{};
+    std::atomic<u64> alignment_check_sites{};
+    std::atomic<u64> dmb_instructions{};
+
+    ~TsoEmissionStats() {
+        if (enabled) {
+            std::fprintf(stderr,
+                         "SVM_TSO_STATS load_sites=%llu store_sites=%llu "
+                         "scalar_fast_sites=%llu alignment_check_sites=%llu "
+                         "dmb_instructions=%llu\n",
+                         static_cast<unsigned long long>(load_sites.load()),
+                         static_cast<unsigned long long>(store_sites.load()),
+                         static_cast<unsigned long long>(scalar_fast_sites.load()),
+                         static_cast<unsigned long long>(alignment_check_sites.load()),
+                         static_cast<unsigned long long>(dmb_instructions.load()));
+        }
+    }
+
+    void Increment(std::atomic<u64>& counter) {
+        if (enabled) {
+            counter.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+};
+
+TsoEmissionStats tso_emission_stats;
 
 }  // namespace
 
@@ -404,15 +438,108 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = ir::Value{inst};
     auto type = inst->ReturnType();
-    // Conservative strategy: plain load + a trailing `dmb ishld` (orders the
-    // load before all later loads and stores, inner-shareable). This replaces
-    // the old Ldar* implementation: Ldar*/Ldapr* only encode [Xn] (no offset
-    // forms) and, more importantly, fault on the unaligned accesses x86
-    // permits (glibc init_cpu_features does 4-mod-8 qword accesses -> SIGBUS).
-    // A possible future optimization is a runtime alignment check
-    // (tst addr, width-1; b.ne slow) gating an ldapr/stlr fast path.
     const bool q_access = type == ir::ValueType::V128;
-    auto vixl_operand = EmitMemOperand(operand, type, false, q_access, !q_access);
+    const bool scalar = type < ir::ValueType::V8 || type > ir::ValueType::V256;
+    const bool supports_rcpc =
+            True(context.GetConfig().arm64_features & Arm64Features::RCpc);
+    const auto size = ir::GetValueSizeByte(type);
+    const bool static_address =
+            operand.GetRight().Null() && operand.GetLeft().IsImm();
+    const auto static_bias = reinterpret_cast<uintptr_t>(
+            context.GetConfig().memory_base ? context.GetConfig().memory_base
+                                            : context.GetConfig().page_table);
+    const bool statically_unaligned =
+            static_address && size > 1 &&
+            ((operand.GetLeft().imm.Get() + static_bias) & (size - 1)) != 0;
+    const bool scalar_fast_path =
+            scalar && supports_rcpc && !statically_unaligned;
+    const bool check_alignment =
+            scalar_fast_path && size > 1 && !static_address;
+    tso_emission_stats.Increment(tso_emission_stats.load_sites);
+    if (scalar_fast_path) {
+        tso_emission_stats.Increment(tso_emission_stats.scalar_fast_sites);
+    }
+    if (check_alignment) {
+        tso_emission_stats.Increment(tso_emission_stats.alignment_check_sites);
+    }
+    auto vixl_operand =
+            EmitMemOperand(operand,
+                           type,
+                           false,
+                           scalar_fast_path || q_access,
+                           !scalar_fast_path && !q_access);
+
+    // FEAT_LRCPC's LDAPR is the scalar x86-TSO fast path. It requires a bare,
+    // naturally aligned address, so materialize any offset and branch around
+    // it for x86's permitted unaligned accesses. Byte accesses are naturally
+    // aligned by definition. Hosts without LRCPC and vector accesses retain
+    // the proven plain-load + dmb ishld half-barrier.
+    if (scalar_fast_path) {
+        Register address = vixl_operand.GetBaseRegister();
+        if (!vixl_operand.IsImmediateOffset() || vixl_operand.GetOffset() != 0) {
+            __ ComputeAddress(mem_scratch, vixl_operand);
+            address = mem_scratch;
+        }
+
+        Label unaligned;
+        Label done;
+        if (check_alignment) {
+            __ Tst(address, size - 1);
+            __ B(&unaligned, ne);
+        }
+        {
+            vixl::CPUFeaturesScope rcpc(&masm, vixl::CPUFeatures::kRCpc);
+            switch (type) {
+                case ir::ValueType::S8:
+                case ir::ValueType::U8:
+                    __ Ldaprb(context.W(value), MemOperand(address));
+                    break;
+                case ir::ValueType::S16:
+                case ir::ValueType::U16:
+                    __ Ldaprh(context.W(value), MemOperand(address));
+                    break;
+                case ir::ValueType::S32:
+                case ir::ValueType::U32:
+                    __ Ldapr(context.W(value), MemOperand(address));
+                    break;
+                case ir::ValueType::S64:
+                case ir::ValueType::U64:
+                    __ Ldapr(context.X(value), MemOperand(address));
+                    break;
+                default:
+                    PANIC("unsupported scalar TSO load width");
+            }
+        }
+        if (size == 1) {
+            return;
+        }
+        if (!check_alignment) {
+            return;
+        }
+        __ B(&done);
+        __ Bind(&unaligned);
+        switch (type) {
+            case ir::ValueType::S16:
+            case ir::ValueType::U16:
+                __ Ldrh(context.W(value), MemOperand(address));
+                break;
+            case ir::ValueType::S32:
+            case ir::ValueType::U32:
+                __ Ldr(context.W(value), MemOperand(address));
+                break;
+            case ir::ValueType::S64:
+            case ir::ValueType::U64:
+                __ Ldr(context.X(value), MemOperand(address));
+                break;
+            default:
+                PANIC("unsupported unaligned scalar TSO load width");
+        }
+        tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
+        __ Dmb(InnerShareable, BarrierReads);
+        __ Bind(&done);
+        return;
+    }
+
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
@@ -450,6 +577,7 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
             break;
     }
     // Acquire half: no later load/store may be observed before this one.
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierReads);
 }
 
@@ -457,12 +585,106 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = inst->GetArg<ir::Value>(1);
     auto type = value.Type();
-    // Release half: `dmb ish` drains all prior loads/stores before this store
-    // becomes visible (Stlr* faults on unaligned addresses — see
-    // EmitLoadMemoryTSO for why the plain-store + barrier form is used).
-    __ Dmb(InnerShareable, BarrierAll);
     const bool q_access = type == ir::ValueType::V128;
-    auto vixl_operand = EmitMemOperand(operand, type, false, q_access, !q_access);
+    const bool scalar = type < ir::ValueType::V8 || type > ir::ValueType::V256;
+    const bool supports_rcpc =
+            True(context.GetConfig().arm64_features & Arm64Features::RCpc);
+    const auto size = ir::GetValueSizeByte(type);
+    const bool static_address =
+            operand.GetRight().Null() && operand.GetLeft().IsImm();
+    const auto static_bias = reinterpret_cast<uintptr_t>(
+            context.GetConfig().memory_base ? context.GetConfig().memory_base
+                                            : context.GetConfig().page_table);
+    const bool statically_unaligned =
+            static_address && size > 1 &&
+            ((operand.GetLeft().imm.Get() + static_bias) & (size - 1)) != 0;
+    const bool scalar_fast_path =
+            scalar && supports_rcpc && !statically_unaligned;
+    const bool check_alignment =
+            scalar_fast_path && size > 1 && !static_address;
+    tso_emission_stats.Increment(tso_emission_stats.store_sites);
+    if (scalar_fast_path) {
+        tso_emission_stats.Increment(tso_emission_stats.scalar_fast_sites);
+    }
+    if (check_alignment) {
+        tso_emission_stats.Increment(tso_emission_stats.alignment_check_sites);
+    }
+    auto vixl_operand =
+            EmitMemOperand(operand,
+                           type,
+                           false,
+                           scalar_fast_path || q_access,
+                           !scalar_fast_path && !q_access);
+
+    // Gate the complete scalar fast path with the same probe as LDAPR. This
+    // keeps non-LRCPC hosts on the previous dmb+str implementation and makes
+    // SVM_ARM64_LRCPC=0 an exact A/B baseline.
+    if (scalar_fast_path) {
+        Register address = vixl_operand.GetBaseRegister();
+        if (!vixl_operand.IsImmediateOffset() || vixl_operand.GetOffset() != 0) {
+            __ ComputeAddress(mem_scratch, vixl_operand);
+            address = mem_scratch;
+        }
+
+        Label unaligned;
+        Label done;
+        if (check_alignment) {
+            __ Tst(address, size - 1);
+            __ B(&unaligned, ne);
+        }
+        switch (type) {
+            case ir::ValueType::S8:
+            case ir::ValueType::U8:
+                __ Stlrb(context.W(value), MemOperand(address));
+                break;
+            case ir::ValueType::S16:
+            case ir::ValueType::U16:
+                __ Stlrh(context.W(value), MemOperand(address));
+                break;
+            case ir::ValueType::S32:
+            case ir::ValueType::U32:
+                __ Stlr(context.W(value), MemOperand(address));
+                break;
+            case ir::ValueType::S64:
+            case ir::ValueType::U64:
+                __ Stlr(context.X(value), MemOperand(address));
+                break;
+            default:
+                PANIC("unsupported scalar TSO store width");
+        }
+        if (size == 1) {
+            return;
+        }
+        if (!check_alignment) {
+            return;
+        }
+        __ B(&done);
+        __ Bind(&unaligned);
+        tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
+        __ Dmb(InnerShareable, BarrierAll);
+        switch (type) {
+            case ir::ValueType::S16:
+            case ir::ValueType::U16:
+                __ Strh(context.W(value), MemOperand(address));
+                break;
+            case ir::ValueType::S32:
+            case ir::ValueType::U32:
+                __ Str(context.W(value), MemOperand(address));
+                break;
+            case ir::ValueType::S64:
+            case ir::ValueType::U64:
+                __ Str(context.X(value), MemOperand(address));
+                break;
+            default:
+                PANIC("unsupported unaligned scalar TSO store width");
+        }
+        __ Bind(&done);
+        return;
+    }
+
+    // Vector stores have no release form on the baseline used here.
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
+    __ Dmb(InnerShareable, BarrierAll);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
@@ -480,8 +702,6 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
         case ir::ValueType::U64:
             __ Str(context.X(value), vixl_operand);
             break;
-        // Vector stores have no release form either; the barrier above still
-        // orders them (plain store inside the barrier sandwich).
         case ir::ValueType::V8:
             __ Str(context.V(value).B(), vixl_operand);
             break;
@@ -595,8 +815,15 @@ void JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitMemoryCopyTSO(ir::Inst* inst) {
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
     EmitMemoryCopy(inst);
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
+    __ Dmb(InnerShareable, BarrierAll);
+}
+
+void JitTranslator::EmitMemoryBarrierTSO(ir::Inst* inst) {
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
 }
 
@@ -623,6 +850,7 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
     Label retry;
     Label cas_done;
     Label done;
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
 
     if (ir::GetValueSizeByte(type) > 1) {
@@ -684,6 +912,7 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
     }
     __ Cbnz(ipw, &retry);
     __ Bind(&done);
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
 }
 
@@ -705,6 +934,7 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
     Label aligned;
     Label retry;
     Label done;
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
 
     if (ir::GetValueSizeByte(type) > 1) {
@@ -745,6 +975,7 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
     }
     __ Cbnz(ipw, &retry);
     __ Bind(&done);
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
 }
 
@@ -764,6 +995,7 @@ void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
     Label aligned;
     Label retry;
     Label done;
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
 
     if (ir::GetValueSizeByte(type) > 1) {
@@ -813,6 +1045,7 @@ void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
     }
     __ Cbnz(ipw, &retry);
     __ Bind(&done);
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
 }
 
@@ -835,6 +1068,7 @@ void JitTranslator::EmitAtomicRMW(ir::Inst* inst) {
     Label aligned;
     Label retry;
     Label done;
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
 
     if (ir::GetValueSizeByte(type) > 1) {
@@ -880,6 +1114,7 @@ void JitTranslator::EmitAtomicRMW(ir::Inst* inst) {
     }
     __ Cbnz(ipw, &retry);
     __ Bind(&done);
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
 }
 
