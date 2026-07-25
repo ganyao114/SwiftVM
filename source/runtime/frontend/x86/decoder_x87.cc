@@ -73,6 +73,11 @@ X87Binary BinaryOperation(u16 opcode) {
 
 ir::Value X64Decoder::CallX87(u64 command, ir::Value guest_address) {
     auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
+    const char* jit = std::getenv("SVM_X87_JIT");
+    if (jit && std::strcmp(jit, "0") != 0) {
+        return __ X87Op(context, ir::Imm(command), guest_address)
+                .SetType(ir::ValueType::U64);
+    }
     auto encoded = __ LoadImm(ir::Imm(command)).SetType(ir::ValueType::U64);
     return __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Dispatch)}},
                          context,

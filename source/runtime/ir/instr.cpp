@@ -219,7 +219,7 @@ bool Inst::HasSideEffects() {
     // is dead (LOCK NOT is the common case). They must not be removed by DCE.
     if (op_code == OpCode::CompareAndSwap || op_code == OpCode::CompareAndSwap128 ||
         op_code == OpCode::AtomicExchange || op_code == OpCode::AtomicFetchAdd ||
-        op_code == OpCode::AtomicRMW) {
+        op_code == OpCode::AtomicRMW || op_code == OpCode::X87Op) {
         return true;
     }
     auto &ir_info = GetIRMetaInfo(op_code);

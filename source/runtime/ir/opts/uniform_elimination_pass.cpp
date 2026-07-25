@@ -192,6 +192,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info) {
             }
             case OpCode::CallLambda:
             case OpCode::CallDynamic:
+            case OpCode::X87Op:
             case OpCode::MemoryCopy:
             case OpCode::MemoryCopyTSO:
             case OpCode::SetHostGPR:
