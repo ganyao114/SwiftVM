@@ -21,7 +21,13 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
 void JitTranslator::Translate(ir::Block* block) {
     cur_block = block;
     context.SetCurrent(block);
-    disable_instructions.resize(block->MaxInstrId());
+    // Function-mode IdByRPO assigns global instruction ids, while
+    // Block::MaxInstrId remains the block-local count established at decode.
+    // Never shrink a function-sized bitmap back to that local count: memory
+    // operand peepholes index it with the global ids of instructions they
+    // suppress.
+    disable_instructions.resize(
+            std::max<size_t>(disable_instructions.size(), block->MaxInstrId()));
     for (auto& inst : block->GetInstList()) {
         cur_instr = &inst;
         if (inst.Id() < disable_instructions.size() && disable_instructions.test(inst.Id())) {
@@ -37,6 +43,7 @@ void JitTranslator::Translate(ir::Block* block) {
 void JitTranslator::Translate(ir::HIRFunction* function) {
     ASSERT(function);
     context.SetCurrent(function->GetFunction());
+    disable_instructions.resize(function->MaxInstrCount());
     for (auto& hir_block : function->GetHIRBlocksRPO()) {
         Translate(hir_block.GetBlock());
     }

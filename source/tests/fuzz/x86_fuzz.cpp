@@ -3202,6 +3202,191 @@ TEST_CASE("x86 ENTER LEAVE static/function interaction") {
     munmap(arena, kArenaSize);
 }
 
+TEST_CASE("x86 CallLambda function/static interaction") {
+    constexpr size_t kArenaSize = 0x50000;
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 stack = base + 0x40000;
+    const u64 fxsave_area = base + 0x30000;
+    constexpr u64 kMarker = 0x1122334455667788ull;
+    constexpr u64 kXmmLo = 0x0123456789ABCDEFull;
+    constexpr u64 kXmmHi = 0xFEDCBA9876543210ull;
+    constexpr u32 kMxcsr = 0x1F80;
+    backend::SmcTracker::SetEnabled(false);
+
+    struct ConfigCase {
+        const char* func;
+        const char* statics;
+    };
+    const ConfigCase cases[] = {{"1", "1"}, {"1", "0"}, {"0", "1"}, {"0", "0"}};
+    size_t code_cursor = 0;
+    const auto old_func = getenv("SVM_FUNC_BASE");
+    const auto old_static = getenv("SVM_STATIC_REGS");
+    const auto old_uniform = getenv("SVM_UNIFORM_ELIM");
+    const auto old_jit = getenv("SVM_ENABLE_JIT");
+    const auto old_lambda = getenv("SVM_FUNC_LAMBDA");
+    const std::string old_func_value = old_func ? old_func : "";
+    const std::string old_static_value = old_static ? old_static : "";
+    const std::string old_uniform_value = old_uniform ? old_uniform : "";
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    const std::string old_lambda_value = old_lambda ? old_lambda : "";
+    setenv("SVM_UNIFORM_ELIM", "1", 1);
+    setenv("SVM_ENABLE_JIT", "1", 1);
+    setenv("SVM_FUNC_LAMBDA", "1", 1);
+
+    auto initialize_context = [&](ThreadContext64& ctx, u64 code_addr) {
+        std::memset(reinterpret_cast<void*>(fxsave_area), 0xA5, 512);
+        ctx.rip.qword = code_addr;
+        ctx.rsp.qword = stack;
+        ctx.r13.qword = fxsave_area;
+        ctx.mxcsr = kMxcsr;
+        ctx.xmm0.l[0] = kXmmLo;
+        ctx.xmm0.l[1] = kXmmHi;
+    };
+    auto check_fxsave = [&] {
+        const auto* saved = reinterpret_cast<const u8*>(fxsave_area);
+        u16 fcw{};
+        u32 mxcsr{};
+        u32 mask{};
+        u64 xmm_lo{};
+        u64 xmm_hi{};
+        std::memcpy(&fcw, saved, sizeof(fcw));
+        std::memcpy(&mxcsr, saved + 24, sizeof(mxcsr));
+        std::memcpy(&mask, saved + 28, sizeof(mask));
+        std::memcpy(&xmm_lo, saved + 160, sizeof(xmm_lo));
+        std::memcpy(&xmm_hi, saved + 168, sizeof(xmm_hi));
+        CHECK(fcw == 0x037F);
+        CHECK(mxcsr == kMxcsr);
+        CHECK(mask == 0x0000FFFF);
+        CHECK(xmm_lo == kXmmLo);
+        CHECK(xmm_hi == kXmmHi);
+    };
+
+    for (const auto& cfg : cases) {
+        setenv("SVM_FUNC_BASE", cfg.func, 1);
+        setenv("SVM_STATIC_REGS", cfg.statics, 1);
+        auto* instance = X86Instance::Make();
+
+        // The loop back-edge crosses FXSAVE's CallLambda. RSP is dirty in the
+        // pinned x19 mapping, cmp's flags are consumed after the host call,
+        // r12 remains live across iterations, and FXSAVE's computed address is
+        // used both as the lambda argument and by its following IR stores.
+        {
+            CodeBuf code;
+            code.B(0x49); code.B(0xBC); code.Q(kMarker);          // mov r12, marker
+            code.B(0xB9); code.D(3);                             // mov ecx, 3
+            code.B(0x48); code.B(0x83); code.B(0xEC); code.B(0x20);  // sub rsp, 0x20
+            const size_t loop = code.Pos();
+            code.B(0x4D); code.B(0x39); code.B(0xE4);             // cmp r12, r12
+            code.B(0x41); code.B(0x0F); code.B(0xAE); code.B(0x45); code.B(0);
+            code.B(0x75);                                        // jne fail
+            const size_t jne_disp = code.Pos();
+            code.B(0);
+            code.B(0x49); code.B(0x83); code.B(0xC4); code.B(7); // add r12, 7
+            code.B(0xFF); code.B(0xC9);                           // dec ecx
+            code.B(0x75);                                        // jnz loop
+            const size_t loop_disp = code.Pos();
+            code.B(0);
+            code.B(0x48); code.B(0x83); code.B(0xC4); code.B(0x20);
+            code.B(0xF4);
+            const size_t fail = code.Pos();
+            code.B(0xB8); code.D(1);                              // mov eax, 1
+            code.B(0x48); code.B(0x83); code.B(0xC4); code.B(0x20);
+            code.B(0xF4);
+            code.Patch8(jne_disp, static_cast<s8>(fail - (jne_disp + 1)));
+            code.Patch8(loop_disp, static_cast<s8>(loop - (loop_disp + 1)));
+
+            const u64 code_addr = base + code_cursor++ * 0x200;
+            std::memcpy(reinterpret_cast<void*>(code_addr), code.c.data(), code.c.size());
+            auto* core = X86Core::Make(instance);
+            auto& ctx = core->GetContext();
+            initialize_context(ctx, code_addr);
+            core->Run();
+            INFO(fmt::format("func={} static={} loop", cfg.func, cfg.statics));
+            CHECK(ctx.rax.qword == 0);
+            CHECK(ctx.r12.qword == kMarker + 21);
+            CHECK(ctx.rsp.qword == stack);
+            check_fxsave();
+            X86Core::Destroy(core);
+        }
+
+        // A separately translated guest function has CallLambda next to its
+        // entry/exit path. Both caller and callee are eligible for function
+        // compilation, and RET must observe the dirty-then-restored RSP.
+        {
+            const u64 code_addr = base + code_cursor++ * 0x200;
+            const u64 helper_addr = code_addr + 0x80;
+            CodeBuf caller;
+            caller.B(0x48); caller.B(0xBB); caller.Q(kMarker);     // mov rbx, marker
+            caller.B(0xE8);
+            const size_t call_disp = caller.Pos();
+            caller.D(0);
+            caller.B(0xF4);
+            caller.Patch32(call_disp,
+                           static_cast<s32>(helper_addr - (code_addr + call_disp + 4)));
+
+            CodeBuf helper;
+            helper.B(0x48); helper.B(0x83); helper.B(0xEC); helper.B(0x20);
+            helper.B(0x48); helper.B(0x39); helper.B(0xDB);       // cmp rbx, rbx
+            helper.B(0x41); helper.B(0x0F); helper.B(0xAE); helper.B(0x45); helper.B(0);
+            helper.B(0x75);
+            const size_t jne_disp = helper.Pos();
+            helper.B(0);
+            helper.B(0x48); helper.B(0x83); helper.B(0xC3); helper.B(5);
+            helper.B(0x48); helper.B(0x83); helper.B(0xC4); helper.B(0x20);
+            helper.B(0xC3);
+            const size_t fail = helper.Pos();
+            helper.B(0xB8); helper.D(1);
+            helper.B(0x48); helper.B(0x83); helper.B(0xC4); helper.B(0x20);
+            helper.B(0xC3);
+            helper.Patch8(jne_disp, static_cast<s8>(fail - (jne_disp + 1)));
+            std::memcpy(reinterpret_cast<void*>(code_addr), caller.c.data(), caller.c.size());
+            std::memcpy(reinterpret_cast<void*>(helper_addr), helper.c.data(), helper.c.size());
+
+            auto* core = X86Core::Make(instance);
+            auto& ctx = core->GetContext();
+            initialize_context(ctx, code_addr);
+            core->Run();
+            INFO(fmt::format("func={} static={} called-function", cfg.func, cfg.statics));
+            CHECK(ctx.rax.qword == 0);
+            CHECK(ctx.rbx.qword == kMarker + 5);
+            CHECK(ctx.rsp.qword == stack);
+            check_fxsave();
+            X86Core::Destroy(core);
+        }
+        X86Instance::Destroy(instance);
+    }
+
+    if (old_func) {
+        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_FUNC_BASE");
+    }
+    if (old_static) {
+        setenv("SVM_STATIC_REGS", old_static_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_STATIC_REGS");
+    }
+    if (old_uniform) {
+        setenv("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_UNIFORM_ELIM");
+    }
+    if (old_jit) {
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_ENABLE_JIT");
+    }
+    if (old_lambda) {
+        setenv("SVM_FUNC_LAMBDA", old_lambda_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_FUNC_LAMBDA");
+    }
+    backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
 TEST_CASE("SSE batch B directed edge semantics") {
     using Vec128 = std::array<u8, 16>;
     struct Result {

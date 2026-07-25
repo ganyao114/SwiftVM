@@ -65,11 +65,36 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     MergeNZCV();
     FlushFlags();
 
+    // Materialize value arguments before taking the register snapshot. In
+    // function mode an argument can be RegAlloc::MEM; context.X() then reloads
+    // it into a caller-saved scratch register. If that reload happens after
+    // the snapshot and argument setup subsequently reads the register's saved
+    // slot, it passes the stale pre-reload value to the helper.
+    std::vector<XRegister> value_args;
+    value_args.reserve(args.size());
+    for (const auto& data : args) {
+        if (data.IsValue()) {
+            value_args.emplace_back(context.X(data.value));
+        }
+    }
+    std::optional<XRegister> lambda_value;
+    if (lambda.IsValue()) {
+        lambda_value.emplace(context.X(lambda.GetValue()));
+    }
+
     // Save all potentially allocated caller-saved GPRs (x0-x10, x12-x17) plus
     // x29/x30: the Blr below clobbers the link register holding this block's
     // return address back to the dispatcher.
     // ip (x11) is reserved scratch; x18 is reserved on Apple; x19+ are callee-saved.
-    constexpr u32 kSaveBytes = 16 * 10;
+    //
+    // Preserve every SIMD register as a full 128-bit value as well. The host
+    // ABI leaves v0-v7 and v16-v31 caller-saved, and only guarantees the low
+    // 64 bits of v8-v15. The function-wide allocator can keep a V128 live
+    // across CallLambda, so the ABI's partial preservation is insufficient.
+    constexpr u32 kGprSaveBytes = 16 * 10;
+    constexpr u32 kSimdSaveOffset = kGprSaveBytes;
+    constexpr u32 kSimdSaveBytes = 32 * 16;
+    constexpr u32 kSaveBytes = kGprSaveBytes + kSimdSaveBytes;
     auto saved_offset = [](u32 code) -> u32 {
         if (code <= 10) {
             return code * 8;
@@ -104,15 +129,20 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     __ Stp(x15, x16, MemOperand(sp, 112));
     __ Str(x17, MemOperand(sp, 128));
     __ Stp(x29, x30, MemOperand(sp, 144));
+    for (u32 code = 0; code < 32; ++code) {
+        __ Str(VRegister::GetQRegFromCode(code),
+               MemOperand(sp, kSimdSaveOffset + code * 16));
+    }
 
     // Load arguments into x0-x7.
     u32 index{0};
+    u32 value_index{0};
     for (auto& data : args) {
         auto dst = XRegister(index++);
         if (data.IsImm()) {
             __ Mov(dst, data.imm.Get());
         } else {
-            auto src = context.X(data.value);
+            auto src = value_args[value_index++];
             if (src.GetCode() <= 17) {
                 __ Ldr(dst, MemOperand(sp, saved_offset(src.GetCode())));
             } else {
@@ -123,7 +153,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
 
     // Function address.
     if (lambda.IsValue()) {
-        auto fn = context.X(lambda.GetValue());
+        auto fn = *lambda_value;
         if (fn.GetCode() <= 17) {
             __ Ldr(ip, MemOperand(sp, saved_offset(fn.GetCode())));
         } else {
@@ -136,6 +166,10 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
 
     __ Str(x0, MemOperand(sp, kResultSlot));
 
+    for (u32 code = 0; code < 32; ++code) {
+        __ Ldr(VRegister::GetQRegFromCode(code),
+               MemOperand(sp, kSimdSaveOffset + code * 16));
+    }
     __ Ldp(x0, x1, MemOperand(sp, 0));
     __ Ldp(x2, x3, MemOperand(sp, 16));
     __ Ldp(x4, x5, MemOperand(sp, 32));
