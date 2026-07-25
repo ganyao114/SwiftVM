@@ -14,7 +14,9 @@
 #include <unordered_map>
 #include <alloca.h>
 #include "interpreter.h"
+#include "runtime/backend/atomic_fallback.h"
 #include "runtime/common/variant_util.h"
+#include "runtime/ir/atomic_rmw.h"
 
 namespace swift::runtime::backend::interp {
 
@@ -56,6 +58,75 @@ u64 SignExtendTo(u64 value, u32 bits) {
     }
     const u64 sign = u64(1) << (bits - 1);
     return (value ^ sign) - sign;
+}
+
+template <typename T>
+bool IsNaturallyAligned(const void* ptr) {
+    constexpr auto required = std::atomic_ref<T>::required_alignment;
+    return (reinterpret_cast<uintptr_t>(ptr) & (required - 1)) == 0;
+}
+
+template <typename T>
+T AtomicCompareExchange(void* ptr, T expected, T desired) {
+    if (IsNaturallyAligned<T>(ptr)) {
+        std::atomic_ref(*static_cast<T*>(ptr))
+                .compare_exchange_strong(expected, desired, std::memory_order_seq_cst);
+        return expected;
+    }
+    runtime::backend::UnalignedAtomicGuard guard;
+    T old;
+    std::memcpy(&old, ptr, sizeof(old));
+    if (old == expected) {
+        std::memcpy(ptr, &desired, sizeof(desired));
+    }
+    return old;
+}
+
+template <typename T>
+T AtomicExchangeValue(void* ptr, T desired) {
+    if (IsNaturallyAligned<T>(ptr)) {
+        return std::atomic_ref(*static_cast<T*>(ptr))
+                .exchange(desired, std::memory_order_seq_cst);
+    }
+    runtime::backend::UnalignedAtomicGuard guard;
+    T old;
+    std::memcpy(&old, ptr, sizeof(old));
+    std::memcpy(ptr, &desired, sizeof(desired));
+    return old;
+}
+
+template <typename T>
+T AtomicFetchAddValue(void* ptr, T addend) {
+    if (IsNaturallyAligned<T>(ptr)) {
+        return std::atomic_ref(*static_cast<T*>(ptr))
+                .fetch_add(addend, std::memory_order_seq_cst);
+    }
+    runtime::backend::UnalignedAtomicGuard guard;
+    T old;
+    std::memcpy(&old, ptr, sizeof(old));
+    const T desired = static_cast<T>(old + addend);
+    std::memcpy(ptr, &desired, sizeof(desired));
+    return old;
+}
+
+template <typename T, typename Transform>
+T AtomicTransformValue(void* ptr, Transform&& transform) {
+    if (IsNaturallyAligned<T>(ptr)) {
+        auto ref = std::atomic_ref(*static_cast<T*>(ptr));
+        T old = ref.load(std::memory_order_seq_cst);
+        for (;;) {
+            const T desired = transform(old);
+            if (ref.compare_exchange_weak(old, desired, std::memory_order_seq_cst)) {
+                return old;
+            }
+        }
+    }
+    runtime::backend::UnalignedAtomicGuard guard;
+    T old;
+    std::memcpy(&old, ptr, sizeof(old));
+    const T desired = transform(old);
+    std::memcpy(ptr, &desired, sizeof(desired));
+    return old;
 }
 
 }  // namespace
@@ -693,40 +764,21 @@ void Interpreter::RunCompareAndSwap(ir::Inst* inst, InterpStack& stack) {
     const u64 desired_value = ReadScalar(stack, desired) & mask;
     u64 old{};
     switch (bits) {
-        case 8: {
-            auto exp = static_cast<u8>(expected_value);
-            std::atomic_ref(*static_cast<u8*>(ptr))
-                    .compare_exchange_strong(exp,
-                                             static_cast<u8>(desired_value),
-                                             std::memory_order_seq_cst);
-            old = exp;
+        case 8:
+            old = AtomicCompareExchange(
+                    ptr, static_cast<u8>(expected_value), static_cast<u8>(desired_value));
             break;
-        }
-        case 16: {
-            auto exp = static_cast<u16>(expected_value);
-            std::atomic_ref(*static_cast<u16*>(ptr))
-                    .compare_exchange_strong(exp,
-                                             static_cast<u16>(desired_value),
-                                             std::memory_order_seq_cst);
-            old = exp;
+        case 16:
+            old = AtomicCompareExchange(
+                    ptr, static_cast<u16>(expected_value), static_cast<u16>(desired_value));
             break;
-        }
-        case 32: {
-            auto exp = static_cast<u32>(expected_value);
-            std::atomic_ref(*static_cast<u32*>(ptr))
-                    .compare_exchange_strong(exp,
-                                             static_cast<u32>(desired_value),
-                                             std::memory_order_seq_cst);
-            old = exp;
+        case 32:
+            old = AtomicCompareExchange(
+                    ptr, static_cast<u32>(expected_value), static_cast<u32>(desired_value));
             break;
-        }
-        case 64: {
-            auto exp = expected_value;
-            std::atomic_ref(*static_cast<u64*>(ptr))
-                    .compare_exchange_strong(exp, desired_value, std::memory_order_seq_cst);
-            old = exp;
+        case 64:
+            old = AtomicCompareExchange(ptr, expected_value, desired_value);
             break;
-        }
         default:
             PANIC("unsupported CompareAndSwap width");
     }
@@ -741,20 +793,16 @@ void Interpreter::RunAtomicExchange(ir::Inst* inst, InterpStack& stack) {
     u64 old{};
     switch (TypeBits(desired.Type())) {
         case 8:
-            old = std::atomic_ref(*static_cast<u8*>(raw))
-                          .exchange(static_cast<u8>(value), std::memory_order_seq_cst);
+            old = AtomicExchangeValue(raw, static_cast<u8>(value));
             break;
         case 16:
-            old = std::atomic_ref(*static_cast<u16*>(raw))
-                          .exchange(static_cast<u16>(value), std::memory_order_seq_cst);
+            old = AtomicExchangeValue(raw, static_cast<u16>(value));
             break;
         case 32:
-            old = std::atomic_ref(*static_cast<u32*>(raw))
-                          .exchange(static_cast<u32>(value), std::memory_order_seq_cst);
+            old = AtomicExchangeValue(raw, static_cast<u32>(value));
             break;
         case 64:
-            old = std::atomic_ref(*static_cast<u64*>(raw))
-                          .exchange(value, std::memory_order_seq_cst);
+            old = AtomicExchangeValue(raw, value);
             break;
         default:
             PANIC("unsupported AtomicExchange width");
@@ -770,23 +818,73 @@ void Interpreter::RunAtomicFetchAdd(ir::Inst* inst, InterpStack& stack) {
     u64 old{};
     switch (TypeBits(addend.Type())) {
         case 8:
-            old = std::atomic_ref(*static_cast<u8*>(raw))
-                          .fetch_add(static_cast<u8>(value), std::memory_order_seq_cst);
+            old = AtomicFetchAddValue(raw, static_cast<u8>(value));
             break;
         case 16:
-            old = std::atomic_ref(*static_cast<u16*>(raw))
-                          .fetch_add(static_cast<u16>(value), std::memory_order_seq_cst);
+            old = AtomicFetchAddValue(raw, static_cast<u16>(value));
             break;
         case 32:
-            old = std::atomic_ref(*static_cast<u32*>(raw))
-                          .fetch_add(static_cast<u32>(value), std::memory_order_seq_cst);
+            old = AtomicFetchAddValue(raw, static_cast<u32>(value));
             break;
         case 64:
-            old = std::atomic_ref(*static_cast<u64*>(raw))
-                          .fetch_add(value, std::memory_order_seq_cst);
+            old = AtomicFetchAddValue(raw, value);
             break;
         default:
             PANIC("unsupported AtomicFetchAdd width");
+    }
+    WriteScalar(stack, inst, old);
+}
+
+void Interpreter::RunAtomicRMW(ir::Inst* inst, InterpStack& stack) {
+    const auto op =
+            static_cast<ir::AtomicRMWOp>(inst->GetArg<ir::Imm>(0).Get());
+    const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(1));
+    const auto operand_arg = inst->GetArg<ir::Value>(2);
+    const auto carry_arg = inst->GetArg<ir::Value>(3);
+    void* raw = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
+    const u64 operand = ReadScalar(stack, operand_arg);
+    const u64 carry = ReadScalar(stack, carry_arg) & 1;
+
+    const auto transform = [=](auto old) {
+        using T = decltype(old);
+        const T rhs = static_cast<T>(operand);
+        switch (op) {
+            case ir::AtomicRMWOp::Add:
+                return static_cast<T>(old + rhs);
+            case ir::AtomicRMWOp::Sub:
+                return static_cast<T>(old - rhs);
+            case ir::AtomicRMWOp::And:
+                return static_cast<T>(old & rhs);
+            case ir::AtomicRMWOp::Or:
+                return static_cast<T>(old | rhs);
+            case ir::AtomicRMWOp::Xor:
+                return static_cast<T>(old ^ rhs);
+            case ir::AtomicRMWOp::Neg:
+                return static_cast<T>(T(0) - old);
+            case ir::AtomicRMWOp::AddCarry:
+                return static_cast<T>(old + rhs + static_cast<T>(carry));
+            case ir::AtomicRMWOp::SubBorrow:
+                return static_cast<T>(old - rhs - static_cast<T>(carry));
+        }
+        return old;
+    };
+
+    u64 old{};
+    switch (TypeBits(operand_arg.Type())) {
+        case 8:
+            old = AtomicTransformValue<u8>(raw, transform);
+            break;
+        case 16:
+            old = AtomicTransformValue<u16>(raw, transform);
+            break;
+        case 32:
+            old = AtomicTransformValue<u32>(raw, transform);
+            break;
+        case 64:
+            old = AtomicTransformValue<u64>(raw, transform);
+            break;
+        default:
+            PANIC("unsupported AtomicRMW width");
     }
     WriteScalar(stack, inst, old);
 }
