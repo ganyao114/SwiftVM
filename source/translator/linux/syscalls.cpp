@@ -2,7 +2,10 @@
 // Linux syscall emulation — see syscalls.h for the calling convention.
 //
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -46,6 +49,24 @@ static constexpr u64 FUTEX_WAKE = 1;
 static constexpr u64 FUTEX_WAIT_BITSET = 9;
 static constexpr u64 FUTEX_WAKE_BITSET = 10;
 static constexpr u64 FUTEX_CMD_MASK = 0x7f;
+static constexpr u64 FUTEX_CLOCK_REALTIME = 0x100;
+
+// clone(2) flags used by glibc/musl pthread_create.
+static constexpr u64 CLONE_VM = 0x00000100;
+static constexpr u64 CLONE_FS = 0x00000200;
+static constexpr u64 CLONE_FILES = 0x00000400;
+static constexpr u64 CLONE_SIGHAND = 0x00000800;
+static constexpr u64 CLONE_THREAD = 0x00010000;
+static constexpr u64 CLONE_SYSVSEM = 0x00040000;
+static constexpr u64 CLONE_SETTLS = 0x00080000;
+static constexpr u64 CLONE_PARENT_SETTID = 0x00100000;
+static constexpr u64 CLONE_CHILD_CLEARTID = 0x00200000;
+static constexpr u64 CLONE_DETACHED = 0x00400000;  // obsolete, still passed by musl
+static constexpr u64 CLONE_CHILD_SETTID = 0x01000000;
+static constexpr u64 SUPPORTED_THREAD_CLONE_FLAGS =
+        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD |
+        CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID |
+        CLONE_CHILD_CLEARTID | CLONE_DETACHED | CLONE_CHILD_SETTID;
 
 // mremap flags.
 static constexpr u64 MREMAP_MAYMOVE = 1;
@@ -251,6 +272,7 @@ static u64 X86ToCanonical(u64 nr) {
         case X64_rseq: return SYS_rseq;
         case X64_faccessat2: return SYS_faccessat2;
         case X64_getpid: return SYS_getpid;
+        case X64_clone: return SYS_clone;
         case X64_gettid: return SYS_gettid;
         case X64_getuid: return SYS_getuid;
         case X64_geteuid: return SYS_geteuid;
@@ -258,6 +280,172 @@ static u64 X86ToCanonical(u64 nr) {
         case X64_getegid: return SYS_getegid;
         default: return nr;
     }
+}
+
+SyscallProcessState::SyscallProcessState(GuestMemory* memory, VAddr brk_base)
+        : memory(memory)
+        , brk_base(brk_base)
+        , brk_current(brk_base)
+        , brk_mapped_end(GuestMemory::RoundHostPage(brk_base)) {}
+
+bool SyscallProcessState::StoreGuestU32(u64 uaddr, u32 value) {
+    if ((uaddr & (alignof(u32) - 1)) != 0 || !memory->RangeIsMapped(uaddr, sizeof(u32))) {
+        return false;
+    }
+    auto* word = static_cast<u32*>(memory->ToHost(uaddr));
+    std::atomic_ref<u32>(*word).store(value, std::memory_order_release);
+    return true;
+}
+
+s64 SyscallProcessState::WakeFutex(u64 uaddr, u32 count) {
+    return WakeFutexMasked(uaddr, count, UINT32_MAX);
+}
+
+s64 SyscallProcessState::WakeFutexMasked(u64 uaddr, u32 count, u32 bitset) {
+    if ((uaddr & (alignof(u32) - 1)) != 0) {
+        return -EINVAL_;
+    }
+    if (!memory->RangeIsMapped(uaddr, sizeof(u32))) {
+        return -EFAULT_;
+    }
+    std::lock_guard guard(futex_mutex);
+    auto it = futex_queues.find(uaddr);
+    if (it == futex_queues.end() || count == 0) {
+        return 0;
+    }
+    auto& waiters = it->second.waiters;
+    size_t wake_count = 0;
+    for (auto waiter = waiters.begin(); waiter != waiters.end() && wake_count < count;) {
+        if (((*waiter)->bitset & bitset) == 0) {
+            ++waiter;
+            continue;
+        }
+        auto selected = *waiter;
+        waiter = waiters.erase(waiter);
+        selected->woken = true;
+        selected->cv.notify_one();
+        ++wake_count;
+    }
+    if (waiters.empty()) {
+        futex_queues.erase(it);
+    }
+    return static_cast<s64>(wake_count);
+}
+
+void SyscallProcessState::WakeAllFutexesLocked() {
+    for (auto& [address, queue] : futex_queues) {
+        for (auto& waiter : queue.waiters) {
+            waiter->woken = true;
+            waiter->cv.notify_one();
+        }
+        queue.waiters.clear();
+    }
+    futex_queues.clear();
+}
+
+void SyscallProcessState::RequestExitGroup(u8 code) {
+    exit_code.store(code, std::memory_order_release);
+    exiting.store(true, std::memory_order_release);
+    std::lock_guard guard(futex_mutex);
+    WakeAllFutexesLocked();
+}
+
+s64 SyscallProcessState::Futex(u64 uaddr,
+                               u64 op,
+                               u64 val,
+                               u64 timeout,
+                               u64 uaddr2,
+                               u64 val3) {
+    (void) uaddr2;
+    (void) val3;
+    const u64 cmd = op & FUTEX_CMD_MASK;
+    if (cmd == FUTEX_WAKE || cmd == FUTEX_WAKE_BITSET) {
+        const u32 bitset = cmd == FUTEX_WAKE_BITSET ? static_cast<u32>(val3) : UINT32_MAX;
+        if (bitset == 0) {
+            return -EINVAL_;
+        }
+        return WakeFutexMasked(
+                uaddr, static_cast<u32>(std::min<u64>(val, UINT32_MAX)), bitset);
+    }
+    if (cmd != FUTEX_WAIT && cmd != FUTEX_WAIT_BITSET) {
+        LOG_WARNING("futex op {} not supported, returning -ENOSYS", cmd);
+        return -ENOSYS_;
+    }
+    if ((uaddr & (alignof(u32) - 1)) != 0) {
+        return -EINVAL_;
+    }
+    if (!memory->RangeIsMapped(uaddr, sizeof(u32))) {
+        return -EFAULT_;
+    }
+
+    GuestTimespec guest_timeout{};
+    if (timeout) {
+        if (!memory->TryRead(timeout, guest_timeout)) {
+            return -EFAULT_;
+        }
+        if (guest_timeout.sec < 0 || guest_timeout.nsec < 0 ||
+            guest_timeout.nsec >= 1'000'000'000) {
+            return -EINVAL_;
+        }
+    }
+
+    std::unique_lock lock(futex_mutex);
+    // The value check and waiter insertion are serialized against WAKE by the
+    // same lock. Guest writes do not take this lock, but the aligned atomic
+    // load gives the Linux val32 check semantics and avoids a C++ data race.
+    auto* word = static_cast<u32*>(memory->ToHost(uaddr));
+    const u32 current = std::atomic_ref<u32>(*word).load(std::memory_order_acquire);
+    if (current != static_cast<u32>(val)) {
+        return -EAGAIN_;
+    }
+    if (IsExiting()) {
+        return 0;
+    }
+
+    const u32 bitset = cmd == FUTEX_WAIT_BITSET ? static_cast<u32>(val3) : UINT32_MAX;
+    if (bitset == 0) {
+        return -EINVAL_;
+    }
+    auto waiter = std::make_shared<FutexWaiter>();
+    waiter->bitset = bitset;
+    futex_queues[uaddr].waiters.push_back(waiter);
+    bool woke = true;
+    if (!timeout) {
+        waiter->cv.wait(lock, [&] { return waiter->woken || IsExiting(); });
+    } else {
+        const auto duration = std::chrono::seconds(guest_timeout.sec) +
+                              std::chrono::nanoseconds(guest_timeout.nsec);
+        if (cmd == FUTEX_WAIT_BITSET) {
+            // WAIT_BITSET uses an absolute deadline. CLOCK_REALTIME selects
+            // system_clock; otherwise Linux uses CLOCK_MONOTONIC.
+            if (op & FUTEX_CLOCK_REALTIME) {
+                const auto deadline = std::chrono::system_clock::time_point(
+                        std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                                duration));
+                woke = waiter->cv.wait_until(
+                        lock, deadline, [&] { return waiter->woken || IsExiting(); });
+            } else {
+                const auto deadline = std::chrono::steady_clock::time_point(
+                        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                duration));
+                woke = waiter->cv.wait_until(
+                        lock, deadline, [&] { return waiter->woken || IsExiting(); });
+            }
+        } else {
+            woke = waiter->cv.wait_for(
+                    lock, duration, [&] { return waiter->woken || IsExiting(); });
+        }
+    }
+    if (!waiter->woken) {
+        auto it = futex_queues.find(uaddr);
+        if (it != futex_queues.end()) {
+            std::erase(it->second.waiters, waiter);
+            if (it->second.waiters.empty()) {
+                futex_queues.erase(it);
+            }
+        }
+    }
+    return woke || IsExiting() ? 0 : -ETIMEDOUT_;
 }
 
 SyscallHandler::Result SyscallHandler::Handle(u64 nr,
@@ -286,10 +474,19 @@ SyscallHandler::Result SyscallHandler::Handle(u64 nr,
             result.ret = SysWritev(a0, a1, a2);
             break;
         case SYS_exit:
-        case SYS_exit_group:
             result.ret = 0;
             result.exited = true;
             result.exit_code = static_cast<u8>(a0);
+            break;
+        case SYS_exit_group:
+            result.ret = 0;
+            result.exited = true;
+            result.exit_group = true;
+            result.exit_code = static_cast<u8>(a0);
+            process->RequestExitGroup(result.exit_code);
+            break;
+        case SYS_clone:
+            result.ret = SysClone(a0, a1, a2, a3, a4);
             break;
         case SYS_brk:
             result.ret = SysBrk(a0);
@@ -398,6 +595,7 @@ SyscallHandler::Result SyscallHandler::Handle(u64 nr,
             result.ret = SysArchPrctl(a0, a1);
             break;
         case SYS_set_tid_address:
+            clear_child_tid = a0;
             result.ret = tid;
             break;
         case SYS_set_robust_list:
@@ -524,27 +722,30 @@ s64 SyscallHandler::SysWritev(u64 fd, u64 iov, u64 iovcnt) {
 }
 
 s64 SyscallHandler::SysBrk(u64 addr) {
-    if (addr == 0 || addr < brk_base) {
-        return static_cast<s64>(brk_current);
+    std::lock_guard guard(process->memory_mutex);
+    if (addr == 0 || addr < process->brk_base) {
+        return static_cast<s64>(process->brk_current);
     }
     // Refuse to grow unreasonably far past the image (1 GiB heap ceiling);
     // brk_base is a guest address (the image's linked end), so an absolute
     // ceiling would be wrong.
-    if (addr >= brk_base + (1ull << 30)) {
-        return static_cast<s64>(brk_current);
+    if (addr >= process->brk_base + (1ull << 30)) {
+        return static_cast<s64>(process->brk_current);
     }
     const VAddr new_mapped_end = GuestMemory::RoundHostPage(addr);
-    if (new_mapped_end > brk_mapped_end) {
-        if (!memory->MapFixed(brk_mapped_end, new_mapped_end - brk_mapped_end)) {
-            return static_cast<s64>(brk_current);
+    if (new_mapped_end > process->brk_mapped_end) {
+        if (!memory->MapFixed(process->brk_mapped_end,
+                              new_mapped_end - process->brk_mapped_end)) {
+            return static_cast<s64>(process->brk_current);
         }
-        brk_mapped_end = new_mapped_end;
+        process->brk_mapped_end = new_mapped_end;
     }
-    brk_current = addr;
-    return static_cast<s64>(brk_current);
+    process->brk_current = addr;
+    return static_cast<s64>(process->brk_current);
 }
 
 s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u64 offset) {
+    std::lock_guard guard(process->memory_mutex);
     if (length == 0) return -EINVAL_;
     const bool anonymous = (flags & GUEST_MAP_ANONYMOUS) != 0;
     if (!anonymous) {
@@ -604,6 +805,7 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
 }
 
 s64 SyscallHandler::SysMunmap(u64 addr, u64 length) {
+    std::lock_guard guard(process->memory_mutex);
     if (addr % GuestMemory::kGuestPageSize != 0) return -EINVAL_;
     if (length == 0) return -EINVAL_;
     // SMC: the unmapped range may hold translated code — invalidate it.
@@ -613,6 +815,7 @@ s64 SyscallHandler::SysMunmap(u64 addr, u64 length) {
 }
 
 s64 SyscallHandler::SysMprotect(u64 addr, u64 len, u64 prot) {
+    std::lock_guard guard(process->memory_mutex);
     // Guest protections are advisory for us: the host never executes guest
     // code and the JIT reads/writes guest memory as data. Pretend success.
     // SMC: PROT_WRITE on a range that holds translated code means the guest
@@ -626,6 +829,7 @@ s64 SyscallHandler::SysMprotect(u64 addr, u64 len, u64 prot) {
 }
 
 s64 SyscallHandler::SysMremap(u64 addr, u64 old_size, u64 new_size, u64 flags, u64 new_addr) {
+    std::lock_guard guard(process->memory_mutex);
     if (new_size == 0) return -EINVAL_;
     if (old_size == 0) return -EINVAL_;
     if (!memory->RangeIsMapped(addr, old_size)) return -EFAULT_;
@@ -926,27 +1130,31 @@ s64 SyscallHandler::SysIoctl(u64 fd, u64 request, u64 arg) {
 }
 
 s64 SyscallHandler::SysFutex(u64 uaddr, u64 op, u64 val, u64 timeout, u64 uaddr2, u64 val3) {
-    // Single-threaded simplification: no other thread can ever be blocked
-    // on (or racing) a futex, so WAIT returns immediately and WAKE wakes
-    // nothing.
-    const u64 cmd = op & FUTEX_CMD_MASK;
-    switch (cmd) {
-        case FUTEX_WAIT:
-        case FUTEX_WAIT_BITSET: {
-            u32 cur;
-            if (!memory->TryRead(uaddr, cur)) return -EFAULT_;
-            if (cur != static_cast<u32>(val)) return -EAGAIN_;
-            // Value still matches; pretend we were woken right away
-            // (spurious wakeups are legal).
-            return 0;
-        }
-        case FUTEX_WAKE:
-        case FUTEX_WAKE_BITSET:
-            return 0;  // zero waiters woken
-        default:
-            LOG_WARNING("futex op {} not supported, returning -ENOSYS", cmd);
-            return -ENOSYS_;
+    return process->Futex(uaddr, op, val, timeout, uaddr2, val3);
+}
+
+s64 SyscallHandler::SysClone(u64 flags,
+                             u64 child_stack,
+                             u64 parent_tid,
+                             u64 child_tid,
+                             u64 tls) {
+    const u64 required = CLONE_VM | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
+    if ((flags & required) != required || (flags & ~SUPPORTED_THREAD_CLONE_FLAGS) != 0) {
+        LOG_WARNING("clone flags {:#x} are not a supported pthread thread clone", flags);
+        return -EINVAL_;
     }
+    if (!child_stack || !clone_callback_) {
+        return -EINVAL_;
+    }
+    if ((flags & CLONE_PARENT_SETTID) &&
+        !memory->RangeIsMapped(parent_tid, sizeof(u32))) {
+        return -EFAULT_;
+    }
+    if ((flags & (CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID)) &&
+        !memory->RangeIsMapped(child_tid, sizeof(u32))) {
+        return -EFAULT_;
+    }
+    return clone_callback_(CloneRequest{flags, child_stack, parent_tid, child_tid, tls});
 }
 
 s64 SyscallHandler::SysArchPrctl(u64 code, u64 addr) {
@@ -1043,4 +1251,3 @@ s64 SyscallHandler::WriteGuestStat(u64 guest_buf, const struct stat& h) {
 }
 
 }  // namespace swift::linux
-

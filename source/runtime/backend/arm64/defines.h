@@ -49,6 +49,9 @@
 // ip7/forward: the dispatcher's use of x10 is strictly between blocks and
 // never overlaps guest code emission.
 #define mem_scratch x10
+// Reserved second scratch for atomic RMW loops: mem_scratch may already hold
+// the biased address, while the new value must survive until Stlxr.
+#define atomic_scratch x12
 #define ip0         x16
 #define ip1         x17
 #define ip2         x14
@@ -91,4 +94,3 @@
 #define iph3        h14
 #define ipq0        q11
 #define ipq1        q12
-
