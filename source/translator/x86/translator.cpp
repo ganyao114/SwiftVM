@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <unordered_set>
 #include "fmt/format.h"
 #include "base/scope_exit.h"
 #include "runtime/backend/address_space.h"
@@ -14,6 +15,7 @@
 #include "runtime/frontend/x86/decoder.h"
 #include "runtime/include/sruntime.h"
 #include "translator.h"
+#include "translator/function_stats.h"
 
 namespace swift::translator::x86 {
 
@@ -317,8 +319,8 @@ struct X86Instance::Impl final {
                 // are safe. DirectBlockLink stays off: its backpatched direct
                 // branches need a delink mechanism to cooperate with SMC
                 // (Phase 4).
-                // FunctionBaseCompile: whole-function decode + compile. Opt-in
-                //   at runtime via SVM_FUNC_BASE=1 (see Translate()); the
+                // FunctionBaseCompile: whole-function decode + compile.
+                //   Enabled by default; SVM_FUNC_BASE=0 is the escape hatch.
                 //   function-level linear scan now handles terminal uses over an
                 //   RPO numbering, and complex/failed functions fall back to
                 //   block compilation.
@@ -339,11 +341,13 @@ struct X86Instance::Impl final {
     [[nodiscard]] void* Translate(LocationDescriptor pc) const {
         auto module = address_space->GetModule(pc);
         auto& m_config = module->GetModuleConfig();
-        // Function-level compilation is opt-in: the opt must be set AND
-        // SVM_FUNC_BASE=1, so the known-good block path stays the default.
+        // Function-level compilation is default-on when the optimization is
+        // present; SVM_FUNC_BASE=0 is the explicit block-only escape hatch.
         const char* fb_env = std::getenv("SVM_FUNC_BASE");
         auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&
-                         fb_env && std::strcmp(fb_env, "0") != 0;
+                         (!fb_env || std::strcmp(fb_env, "0") != 0) &&
+                         !function_compilation_disabled &&
+                         !block_only_locations.contains(pc);
 
         // Function-level compilation: decode the whole function (all reachable
         // blocks up to ret / indirect jump / syscall) into an HIRFunction and
@@ -358,18 +362,20 @@ struct X86Instance::Impl final {
             // known-good block path below instead of crashing the guest.
             void* func_code = nullptr;
             bool compiled = false;
+            func_stats.Attempt();
             try {
             auto jit_guard = module->ModuleLockRead();
-            ir::HIRBuilder builder{};
+            ir::HIRBuilder builder{1, true};
             auto* hir_func = builder.AppendFunction(pc);
-            ir::Assembler assembler{&builder};
 
-            constexpr size_t kMaxFuncBlocks = 256;
+            // The current linear-scan allocator is intentionally conservative
+            // and does not yet qualify very large libc CFGs (for example
+            // _int_malloc at ~150 blocks). Keep those on the block compiler;
+            // ordinary multi-block functions still take the function path.
+            constexpr size_t kMaxFuncBlocks = 128;
             size_t decoded_count = 0;
-            bool progress = true;
-            bool function_ended = false;
-            while (progress && decoded_count < kMaxFuncBlocks && !function_ended) {
-                progress = false;
+            bool hit_block_cap = false;
+            while (decoded_count < kMaxFuncBlocks) {
                 std::vector<LocationDescriptor> to_decode;
                 for (auto& hb : hir_func->GetHIRBlockList()) {
                     auto* blk = hb.GetBlock();
@@ -380,24 +386,29 @@ struct X86Instance::Impl final {
                         to_decode.push_back(blk->GetStartLocation().Value());
                     }
                 }
+                if (to_decode.empty()) {
+                    break;
+                }
                 for (auto addr : to_decode) {
+                    if (decoded_count == kMaxFuncBlocks) {
+                        hit_block_cap = true;
+                        break;
+                    }
                     builder.SetCurBlock(addr);
+                    ir::Assembler assembler{&builder};
                     x86::X64Decoder decoder{addr, &memory_impl, &assembler, true};
                     decoder.Decode();
                     ++decoded_count;
-                    progress = true;
-                    // A function-ending terminal (ret / syscall) ends the HIR
-                    // function via the assembler — stop; the graph is finalized.
-                    if (!builder.HasCurrentFunction()) {
-                        function_ended = true;
-                        break;
-                    }
                 }
             }
-            // Finalize predecessors/successors unless a ret/syscall already did.
-            if (!function_ended) {
-                hir_func->EndFunction();
+            for (auto& hb : hir_func->GetHIRBlockList()) {
+                auto* block = hb.GetBlock();
+                if (block->GetInstList().empty() && !block->HasTerminal()) {
+                    hit_block_cap = true;
+                    break;
+                }
             }
+            hir_func->EndFunction();
 
             if (std::getenv("SVM_DUMP_IR")) {
                 // stderr: survives the crash that aborts the guest before
@@ -414,16 +425,8 @@ struct X86Instance::Impl final {
                 fmt::print(stderr, "--- end function {:#x} ---\n", pc);
             }
 
-            // Complexity gate: the whole-function backend path is only validated
-            // for simple, single-block, host-call-free functions (the syscall /
-            // ret that ends such a function makes each compiled unit one block,
-            // so this exercises the RPO + function-level regalloc path while
-            // staying close to block semantics). Functions with a host call
-            // (CallLambda) or spanning multiple blocks (loops / branches) hit
-            // not-yet-ready paths (host-call ABI across blocks, cross-block
-            // state), so fall back to the known-good block compilation for them.
-            bool too_complex = false;
             size_t decoded_blocks = 0;
+            bool has_host_call = false;
             for (auto* hb : hir_func->GetHIRBlocks()) {
                 if (!hb) {
                     continue;
@@ -433,34 +436,71 @@ struct X86Instance::Impl final {
                     continue;  // synthetic entry / undecoded successor
                 }
                 decoded_blocks++;
-                for (auto& inst : blk->GetInstList()) {
-                    if (inst.GetOp() == ir::OpCode::CallLambda) {
-                        too_complex = true;
-                        break;
-                    }
-                }
-            }
-            if (decoded_blocks > 1) {
-                too_complex = true;
+                has_host_call |= std::any_of(blk->GetInstList().begin(),
+                                             blk->GetInstList().end(),
+                                             [](const ir::Inst& inst) {
+                                                 return inst.GetOp() == ir::OpCode::CallLambda;
+                                             });
             }
 
-            if (!too_complex) {
+            if (has_host_call) {
+                for (auto* hb : hir_func->GetHIRBlocks()) {
+                    if (hb && hb != hir_func->GetEntryBlock()) {
+                        block_only_locations.insert(hb->GetBlock()->GetStartLocation().Value());
+                    }
+                }
+                throw std::runtime_error(
+                        "function contains CallLambda; host-call liveness is not qualified");
+            } else if (hit_block_cap) {
+                // Once a translation reaches the safety cap, entry at one of
+                // its not-yet-discovered interior blocks cannot be identified
+                // reliably as the same function. Keep the remainder of this
+                // process on block compilation instead of repeatedly decoding
+                // overlapping suffixes of the oversized CFG.
+                function_compilation_disabled = true;
+                for (auto* hb : hir_func->GetHIRBlocks()) {
+                    if (hb && hb != hir_func->GetEntryBlock()) {
+                        block_only_locations.insert(hb->GetBlock()->GetStartLocation().Value());
+                    }
+                }
+                func_stats.BlockCap(pc, decoded_count);
+            } else {
                 if (!module->GetAddressSpace().GetConfig().enable_jit) {
-                    return nullptr;
+                    if (!backend::PublishIRFunction(module, hir_func)) {
+                        throw std::runtime_error("failed to publish interpreted HIR function");
+                    }
+                    if (std::getenv("SVM_DUMP_IR")) {
+                        fmt::print(stderr, "[func-compile] {:#x} interp-publish-ready\n", pc);
+                    }
+                    func_stats.Compiled(decoded_blocks);
+                    if (std::getenv("SVM_DUMP_IR")) {
+                        fmt::print(stderr, "[func-compile] {:#x} interp-return\n", pc);
+                    }
+                    compiled = true;
+                } else {
+                    func_code = backend::TranslateIR(module, hir_func);
+                    if (!func_code) {
+                        throw std::runtime_error("TranslateIR(HIRFunction) returned null");
+                    }
+                    func_stats.Compiled(decoded_blocks);
+                    if (std::getenv("SVM_DUMP_IR")) {
+                        fmt::print(stderr, "[func-compile] {:#x} jit-return\n", pc);
+                    }
+                    compiled = true;
                 }
-                func_code = backend::TranslateIR(module, hir_func);
-                if (func_code) {
-                    address_space->PushCodeCache(pc, func_code);
-                }
-                compiled = true;
             }
-            } catch (const std::exception&) {
+            } catch (const std::exception& error) {
                 // Unsupported construct in the whole-function path (e.g. a
                 // branch the function-mode decode can't lower yet) — fall back
                 // to block compilation. The builder is local and the module is
                 // untouched until TranslateIR, so nothing leaks; the read lock
                 // unwinds with the try scope.
+                func_stats.Exception(pc, error.what());
+                block_only_locations.insert(pc);
                 compiled = false;
+            }
+            if (std::getenv("SVM_DUMP_IR")) {
+                fmt::print(stderr, "[func-compile] {:#x} builder-destroyed\n", pc);
             }
             if (compiled) {
                 return func_code;
@@ -525,6 +565,9 @@ struct X86Instance::Impl final {
     }
 
     std::unique_ptr<backend::AddressSpace> address_space{};
+    mutable FunctionCompileStats func_stats{"x86_64"};
+    mutable std::unordered_set<LocationDescriptor> block_only_locations{};
+    mutable bool function_compilation_disabled{};
     // Interpreter wild-pointer guard: wired by the linux loader via
     // X86Instance::SetInterpRangeCheck; forwarded to State by X86Core::Impl.
     bool (*range_check_fn)(void*, u64, u64){nullptr};

@@ -106,9 +106,17 @@ HIRFunction::HIRFunction(Function* function,
     current_block = first_block;
 }
 
+HIRFunction::~HIRFunction() {
+    if (owns_function) {
+        delete function;
+    }
+}
+
 HIRBlock* HIRFunction::AppendBlock(Location start, Location end_) {
     if (auto hir_block = CreateOrGetBlock(start); hir_block) {
-        hir_block->block->SetEndLocation(end_);
+        if (end_ > start) {
+            hir_block->block->SetEndLocation(end_);
+        }
         return hir_block;
     } else {
         return nullptr;
@@ -173,6 +181,10 @@ HIRPools& HIRFunction::GetMemPool() { return pools; }
 
 Function* HIRFunction::GetFunction() {
     return function;
+}
+
+void HIRFunction::ReleaseFunctionOwnership() {
+    owns_function = false;
 }
 
 void HIRFunction::AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional) {
@@ -285,6 +297,14 @@ void HIRFunction::EndFunction() {
         for (auto& edge : outgoing_edges) {
             block.successors[outgoing_index++] = edge.dest_block;
         }
+
+        // Transfer every real decoded block to the persistent ir::Function.
+        // The HIR wrappers live in HIRBuilder's pools, but ir::Function owns
+        // the Block objects after the builder goes away. The synthetic entry
+        // has Location::INVALID and exists only to seed CFG/RPO discovery.
+        if (&block != entry_block) {
+            function->AddBlock(block.GetBlock());
+        }
     }
     block_list.clear();
 }
@@ -294,36 +314,40 @@ u16 HIRFunction::MaxInstrCount() { return inst_order_id; }
 u16 HIRFunction::MaxLocalCount() { return max_local_id + 1; }
 
 void HIRFunction::UseInst(Inst* inst) {
-    // Walk the instruction's LOGICAL arguments (from the opcode meta), not the
-    // physical slot array. An Operand argument occupies three physical slots
-    // (op + left + right) whose inner register/immediate slots are themselves
-    // typed Value/Imm; a physical-slot walk (the old ArgAt(i) loop) mistakes
-    // those inner slots for top-level Value arguments and calls GetArg with an
-    // out-of-range logical index, tripping the PublicIndex assert for any
-    // instruction carrying an Operand (e.g. Xor reg, mem). GetArg<T>(i) takes a
-    // logical index and expands it via PublicIndex, so iterating arg_types keeps
-    // the two in lockstep.
+    // HIRUse::arg_idx is a physical Arg slot (the local-elimination passes feed
+    // it back to ArgAt/SetArg). Walk logical metadata while carrying the
+    // physical offset explicitly; Operand consumes op + left + right slots.
     const auto& info = GetIRMetaInfo(inst->GetOp());
-    for (int i = 0; i < static_cast<int>(info.arg_types.size()); ++i) {
-        switch (info.arg_types[i]) {
+    u8 physical = 0;
+    for (const auto arg_type : info.arg_types) {
+        switch (arg_type) {
             case ArgType::Value: {
-                auto value = inst->GetArg<Value>(i);
+                auto& arg = inst->ArgAt(physical);
+                if (inst->GetOp() == OpCode::CallLambda && arg.IsVoid()) {
+                    break;  // optional trailing host-call argument
+                }
+                ASSERT_MSG(arg.IsValue(),
+                           "{} physical arg {} is {}, expected Value",
+                           inst->GetOp(),
+                           physical,
+                           arg.GetType());
+                auto value = arg.Get<Value>();
                 if (auto hir_value = GetHIRValue(value); hir_value) {
-                    hir_value->Use(inst, i);
+                    hir_value->Use(inst, physical);
                 }
                 break;
             }
             case ArgType::Lambda: {
-                auto lambda = inst->GetArg<Lambda>(i);
+                auto lambda = inst->ArgAt(physical).Get<Lambda>();
                 if (lambda.IsValue()) {
                     if (auto hir_value = GetHIRValue(lambda.GetValue()); hir_value) {
-                        hir_value->Use(inst, i);
+                        hir_value->Use(inst, physical);
                     }
                 }
                 break;
             }
             case ArgType::Params: {
-                auto params = inst->GetArg<Params>(i);
+                auto params = inst->ArgAt(physical).Get<Params>();
                 for (auto param : params) {
                     if (auto data = param.data; data.IsValue()) {
                         if (auto hir_value = GetHIRValue(data.value); hir_value) {
@@ -334,22 +358,12 @@ void HIRFunction::UseInst(Inst* inst) {
                 break;
             }
             case ArgType::Operand: {
-                // An Operand nests up to two values (memory base / index).
-                // GetValues counts these as uses, so liveness must too — else a
-                // value feeding a memory operand dies at its def and its
-                // register is reused before the load/store reads it (bad
-                // address → guest signal). Register both sides when present.
-                auto operand = inst->GetArg<Operand>(i);
-                auto left = operand.GetLeft();
-                if (left.IsValue()) {
-                    if (auto hir_value = GetHIRValue(left.value); hir_value) {
-                        hir_value->Use(inst, i);
-                    }
-                }
-                auto right = operand.GetRight();
-                if (right.IsValue()) {
-                    if (auto hir_value = GetHIRValue(right.value); hir_value) {
-                        hir_value->Use(inst, i);
+                for (u8 nested = 1; nested <= 2; ++nested) {
+                    auto& data = inst->ArgAt(physical + nested);
+                    if (data.IsValue()) {
+                        if (auto hir_value = GetHIRValue(data.Get<Value>()); hir_value) {
+                            hir_value->Use(inst, physical + nested);
+                        }
                     }
                 }
                 break;
@@ -357,6 +371,7 @@ void HIRFunction::UseInst(Inst* inst) {
             default:
                 break;
         }
+        physical += PhysicalSlots(arg_type);
     }
 }
 
@@ -382,7 +397,8 @@ HIRPools::HIRPools(u32 func_cap)
         , uses(func_cap * 256)
         , mem_arena(func_cap * 512) {}
 
-HIRBuilder::HIRBuilder(u32 func_cap) : pools(func_cap) {}
+HIRBuilder::HIRBuilder(u32 func_cap, bool defer_function_end)
+        : pools(func_cap), defer_function_end(defer_function_end) {}
 
 HIRFunction* HIRBuilder::AppendFunction(Location start, Location end) {
     current_function = pools.functions.Create(new Function(start), start, end, pools);
@@ -459,6 +475,9 @@ void HIRBuilder::ReturnToDispatcher() {
         return;
     }
     current_function->EndBlock(ir::terminal::ReturnToDispatch{});
+    if (defer_function_end) {
+        return;
+    }
     current_function->EndFunction();
     current_function = {};
 }
@@ -468,6 +487,9 @@ void HIRBuilder::ReturnToHost() {
         return;
     }
     current_function->EndBlock(ir::terminal::ReturnToHost{});
+    if (defer_function_end) {
+        return;
+    }
     current_function->EndFunction();
     current_function = {};
 }
@@ -477,6 +499,9 @@ void HIRBuilder::Return() {
         return;
     }
     current_function->EndBlock(terminal::PopRSBHint{});
+    if (defer_function_end) {
+        return;
+    }
     current_function->EndFunction();
     current_function = {};
 }

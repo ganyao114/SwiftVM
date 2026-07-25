@@ -140,6 +140,8 @@ public:
     // buffer and drops the matching fault-table entries. The caller
     // (SmcTracker) is responsible for the dispatch-table (L1/L2) slots.
     void InvalidateBlock(ir::Block* block);
+    void InvalidateFunction(ir::Function* function);
+    void InvalidateNode(ir::AddressNode* node);
 
     // Drops every fault-table entry recorded for the unit emitted at
     // host_start (one entry per compiled unit).
