@@ -1,6 +1,7 @@
 #include "translator.h"
 
 #include <cstring>
+#include "runtime/backend/atomic_fallback.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
 
@@ -15,6 +16,114 @@ void HostMemMove(void* dst, const void* src, size_t size) {
 }
 
 }  // namespace
+
+void JitTranslator::AcquireUnalignedAtomicLock(const Register& scratch) {
+    Label retry;
+    __ Mov(atomic_scratch,
+           reinterpret_cast<uintptr_t>(&runtime::backend::unaligned_atomic_lock));
+    __ Bind(&retry);
+    __ Ldaxr(scratch.W(), MemOperand(atomic_scratch));
+    __ Cbnz(scratch.W(), &retry);
+    __ Mov(scratch.W(), 1);
+    __ Stxr(ipw, scratch.W(), MemOperand(atomic_scratch));
+    __ Cbnz(ipw, &retry);
+}
+
+void JitTranslator::ReleaseUnalignedAtomicLock() {
+    __ Mov(atomic_scratch,
+           reinterpret_cast<uintptr_t>(&runtime::backend::unaligned_atomic_lock));
+    __ Stlr(wzr, MemOperand(atomic_scratch));
+}
+
+void JitTranslator::EmitPlainAtomicLoad(ir::ValueType type,
+                                        const Register& result,
+                                        const Register& address) {
+    switch (type) {
+        case ir::ValueType::S8:
+        case ir::ValueType::U8:
+            __ Ldrb(result.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S16:
+        case ir::ValueType::U16:
+            __ Ldrh(result.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S32:
+        case ir::ValueType::U32:
+            __ Ldr(result.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S64:
+        case ir::ValueType::U64:
+            __ Ldr(result, MemOperand(address));
+            break;
+        default:
+            PANIC("unsupported atomic load width");
+    }
+}
+
+void JitTranslator::EmitPlainAtomicStore(ir::ValueType type,
+                                         const Register& value,
+                                         const Register& address) {
+    switch (type) {
+        case ir::ValueType::S8:
+        case ir::ValueType::U8:
+            __ Strb(value.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S16:
+        case ir::ValueType::U16:
+            __ Strh(value.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S32:
+        case ir::ValueType::U32:
+            __ Str(value.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S64:
+        case ir::ValueType::U64:
+            __ Str(value, MemOperand(address));
+            break;
+        default:
+            PANIC("unsupported atomic store width");
+    }
+}
+
+void JitTranslator::EmitAtomicRMWValue(ir::AtomicRMWOp op,
+                                       ir::ValueType type,
+                                       const Register& output,
+                                       const Register& old,
+                                       ir::Value operand,
+                                       ir::Value carry) {
+    const bool wide = ir::GetValueSizeByte(type) == 8;
+    const auto dst = wide ? output : output.W();
+    const auto lhs = wide ? old : old.W();
+    const Register rhs = context.R(operand);
+    switch (op) {
+        case ir::AtomicRMWOp::Add:
+            __ Add(dst, lhs, rhs);
+            break;
+        case ir::AtomicRMWOp::Sub:
+            __ Sub(dst, lhs, rhs);
+            break;
+        case ir::AtomicRMWOp::And:
+            __ And(dst, lhs, rhs);
+            break;
+        case ir::AtomicRMWOp::Or:
+            __ Orr(dst, lhs, rhs);
+            break;
+        case ir::AtomicRMWOp::Xor:
+            __ Eor(dst, lhs, rhs);
+            break;
+        case ir::AtomicRMWOp::Neg:
+            __ Neg(dst, lhs);
+            break;
+        case ir::AtomicRMWOp::AddCarry:
+            __ Add(dst, lhs, rhs);
+            __ Add(dst, dst, context.W(carry));
+            break;
+        case ir::AtomicRMWOp::SubBorrow:
+            __ Sub(dst, lhs, rhs);
+            __ Sub(dst, dst, context.W(carry));
+            break;
+    }
+}
 
 MemOperand JitTranslator::BiasMem(const Register& base, bool atomic) {
     if (!atomic) {
@@ -510,9 +619,26 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
         address = mem_scratch;
     }
 
+    Label aligned;
     Label retry;
+    Label cas_done;
     Label done;
     __ Dmb(InnerShareable, BarrierAll);
+
+    if (ir::GetValueSizeByte(type) > 1) {
+        __ Tst(address, ir::GetValueSizeByte(type) - 1);
+        __ B(&aligned, eq);
+        AcquireUnalignedAtomicLock(result);
+        EmitPlainAtomicLoad(type, result, address);
+        __ Cmp(result, context.R(expected, true));
+        __ B(&cas_done, ne);
+        EmitPlainAtomicStore(type, context.R(desired, true), address);
+        __ Bind(&cas_done);
+        ReleaseUnalignedAtomicLock();
+        __ B(&done);
+    }
+
+    __ Bind(&aligned);
     __ Bind(&retry);
     switch (type) {
         case ir::ValueType::S8:
@@ -576,8 +702,22 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
         address = mem_scratch;
     }
 
+    Label aligned;
     Label retry;
+    Label done;
     __ Dmb(InnerShareable, BarrierAll);
+
+    if (ir::GetValueSizeByte(type) > 1) {
+        __ Tst(address, ir::GetValueSizeByte(type) - 1);
+        __ B(&aligned, eq);
+        AcquireUnalignedAtomicLock(result);
+        EmitPlainAtomicLoad(type, result, address);
+        EmitPlainAtomicStore(type, context.R(desired, true), address);
+        ReleaseUnalignedAtomicLock();
+        __ B(&done);
+    }
+
+    __ Bind(&aligned);
     __ Bind(&retry);
     switch (type) {
         case ir::ValueType::S8:
@@ -604,6 +744,7 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
             PANIC("UnImplement!");
     }
     __ Cbnz(ipw, &retry);
+    __ Bind(&done);
     __ Dmb(InnerShareable, BarrierAll);
 }
 
@@ -620,8 +761,27 @@ void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
         address = mem_scratch;
     }
 
+    Label aligned;
     Label retry;
+    Label done;
     __ Dmb(InnerShareable, BarrierAll);
+
+    if (ir::GetValueSizeByte(type) > 1) {
+        __ Tst(address, ir::GetValueSizeByte(type) - 1);
+        __ B(&aligned, eq);
+        AcquireUnalignedAtomicLock(result);
+        EmitPlainAtomicLoad(type, result, address);
+        if (ir::GetValueSizeByte(type) == 8) {
+            __ Add(atomic_scratch, result, context.X(addend));
+        } else {
+            __ Add(atomic_scratch.W(), result.W(), context.W(addend));
+        }
+        EmitPlainAtomicStore(type, atomic_scratch, address);
+        ReleaseUnalignedAtomicLock();
+        __ B(&done);
+    }
+
+    __ Bind(&aligned);
     __ Bind(&retry);
     switch (type) {
         case ir::ValueType::S8:
@@ -652,6 +812,74 @@ void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
             PANIC("UnImplement!");
     }
     __ Cbnz(ipw, &retry);
+    __ Bind(&done);
+    __ Dmb(InnerShareable, BarrierAll);
+}
+
+void JitTranslator::EmitAtomicRMW(ir::Inst* inst) {
+    // Args: (operation, address, operand, carry); returns the previous value.
+    const auto op =
+            static_cast<ir::AtomicRMWOp>(inst->GetArg<ir::Imm>(0).Get());
+    auto address = context.X(inst->GetArg<ir::Value>(1));
+    const auto operand = inst->GetArg<ir::Value>(2);
+    const auto carry = inst->GetArg<ir::Value>(3);
+    const auto type = operand.Type();
+    const auto result = context.R(ir::Value{inst});
+
+    MergeNZCV();
+    if (use_memory_base) {
+        __ Add(mem_scratch, address, pt);
+        address = mem_scratch;
+    }
+
+    Label aligned;
+    Label retry;
+    Label done;
+    __ Dmb(InnerShareable, BarrierAll);
+
+    if (ir::GetValueSizeByte(type) > 1) {
+        __ Tst(address, ir::GetValueSizeByte(type) - 1);
+        __ B(&aligned, eq);
+        AcquireUnalignedAtomicLock(result);
+        EmitPlainAtomicLoad(type, result, address);
+        EmitAtomicRMWValue(op, type, atomic_scratch, result, operand, carry);
+        EmitPlainAtomicStore(type, atomic_scratch, address);
+        ReleaseUnalignedAtomicLock();
+        __ B(&done);
+    }
+
+    __ Bind(&aligned);
+    __ Bind(&retry);
+    switch (type) {
+        case ir::ValueType::S8:
+        case ir::ValueType::U8:
+            __ Ldaxrb(result.W(), MemOperand(address));
+            EmitAtomicRMWValue(op, type, atomic_scratch, result, operand, carry);
+            __ Stlxrb(ipw, atomic_scratch.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S16:
+        case ir::ValueType::U16:
+            __ Ldaxrh(result.W(), MemOperand(address));
+            EmitAtomicRMWValue(op, type, atomic_scratch, result, operand, carry);
+            __ Stlxrh(ipw, atomic_scratch.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S32:
+        case ir::ValueType::U32:
+            __ Ldaxr(result.W(), MemOperand(address));
+            EmitAtomicRMWValue(op, type, atomic_scratch, result, operand, carry);
+            __ Stlxr(ipw, atomic_scratch.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S64:
+        case ir::ValueType::U64:
+            __ Ldaxr(result, MemOperand(address));
+            EmitAtomicRMWValue(op, type, atomic_scratch, result, operand, carry);
+            __ Stlxr(ipw, atomic_scratch, MemOperand(address));
+            break;
+        default:
+            PANIC("unsupported AtomicRMW width");
+    }
+    __ Cbnz(ipw, &retry);
+    __ Bind(&done);
     __ Dmb(InnerShareable, BarrierAll);
 }
 
