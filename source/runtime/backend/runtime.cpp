@@ -78,7 +78,7 @@ struct Runtime::Impl final {
     // SMC write-protect fault handler (SignalHandler chain, priority 0 —
     // ahead of the JIT guest-fault recovery). A guest store to a guest page
     // holding translated code faults on the write protection installed by
-    // SmcTracker::RegisterBlock; the tracker opens a write window (page back
+    // SmcTracker::RegisterNode; the tracker opens a write window (page back
     // to RW, stale blocks' dispatch slots zeroed) and the faulting store is
     // re-executed on sigreturn. Actual invalidation is deferred to
     // CloseWriteWindow after the current JitRun returns.
@@ -153,6 +153,7 @@ struct Runtime::Impl final {
         }
 
         HaltReason hr{HaltReason::None};
+        IntrusivePtr<ir::Function> active_function{};
 
         while (hr == HaltReason::None) {
             // Re-read the location every iteration: interpreted blocks update
@@ -160,13 +161,24 @@ struct Runtime::Impl final {
             // SetLocation), so the dispatcher must follow it like the JIT
             // trampolines code_dispatcher loop does.
             current_loc = state->current_loc.Value();
+            if (active_function) {
+                auto read_lock = active_function->LockRead();
+                if (auto* block = active_function->FindBlock(current_loc)) {
+                    backend::interp::Interpreter interpreter{*state, block};
+                    hr = interpreter.Run();
+                    continue;
+                }
+                active_function = {};
+            }
             if (auto node = current_module->GetNode(current_loc); !backend::IsEmpty(node)) {
-                hr = VisitVariant<HaltReason>(node, [this](auto x) -> auto {
+                hr = VisitVariant<HaltReason>(
+                        node, [this, &active_function, current_loc](auto x) -> auto {
                     using T = std::decay_t<decltype(x)>;
                     if constexpr (std::is_same_v<T, IntrusivePtr<ir::Function>>) {
                         auto read_lock = x->LockRead();
-                        auto current_block = x->EntryBlock();
+                        auto current_block = x->FindBlock(current_loc);
                         if (!current_block) return HaltReason::CodeMiss;
+                        active_function = x;
                         backend::interp::Interpreter interpreter{*state, current_block};
                         return interpreter.Run();
                     } else if constexpr (std::is_same_v<T, IntrusivePtr<ir::Block>>) {
@@ -309,18 +321,56 @@ std::span<u8> Runtime::GetUniformBuffer() const {
 
 namespace backend {
 
+namespace {
+
+size_t PrepareFunctionGuestRanges(ir::HIRFunction* function) {
+    size_t decoded_blocks = 0;
+    VAddr max_end = function->GetFunction()->GetStartLocation().Value();
+    for (auto* hir_block : function->GetHIRBlocks()) {
+        if (!hir_block || hir_block == function->GetEntryBlock()) {
+            continue;
+        }
+        auto* block = hir_block->GetBlock();
+        if (block->GetInstList().empty()) {
+            continue;
+        }
+        ++decoded_blocks;
+        u64 block_size = 0;
+        for (auto& inst : block->GetInstList()) {
+            if (inst.GetOp() == ir::OpCode::AdvancePC) {
+                block_size += inst.GetArg<ir::Imm>(0).Get();
+            }
+        }
+        const VAddr block_start = block->GetStartLocation().Value();
+        // A one-instruction terminal block may not retain an AdvancePC: the
+        // assembler closes the block before the decoder's trailing
+        // AdvancePC. Never leave the constructor's zero end as an unsigned
+        // wraparound range; tracking the start byte still protects the
+        // containing host page.
+        block->SetEndLocation(ir::Location(block_start + std::max<u64>(block_size, 1)));
+        max_end = std::max(max_end, block->GetEndLocation().Value());
+    }
+    function->GetFunction()->SetEndLocation(ir::Location(max_end));
+    return decoded_blocks;
+}
+
+}  // namespace
+
+bool PublishIRFunction(const std::shared_ptr<backend::Module>& module,
+                       ir::HIRFunction* function) {
+    PrepareFunctionGuestRanges(function);
+    if (!module->Push(function->GetFunction())) {
+        return false;
+    }
+    function->ReleaseFunctionOwnership();
+    return true;
+}
+
 void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunction* function) {
     auto ir_function = function->GetFunction();
     auto func_start = ir_function->GetStartLocation().Value();
-    if (!module->Push(ir_function)) {
-        return nullptr;
-    }
-
-    auto guard = ir_function->LockWrite();
+    PrepareFunctionGuestRanges(function);
     auto& jit_state = ir_function->GetJitCache();
-    if (jit_state.jit_state == backend::JitState::Cached) {
-        return module->GetJitCache(jit_state);
-    }
     // Establish a consistent RPO layout before allocation/emission: the
     // function-level linear scan and the emitter (Translate(HIRFunction*) walks
     // GetHIRBlocksRPO) both assume instruction ids are dense in emission order.
@@ -331,26 +381,65 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     // calls it) since predecessors/successors are built there.
     function->ComputeRPO();
     function->IdByRPO();
+    const bool dump_ir = std::getenv("SVM_DUMP_IR") != nullptr;
+    if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} rpo-ready\n", func_start);
     const auto& address_space = module->GetAddressSpace();
     const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
                                       ? &address_space.GetUniformInfo() : nullptr;
     auto pipeline = ir::PassPipeline::BuildDefault(uni_info);
     pipeline.RunFunction(function, module->GetModuleConfig().optimizations);
+    if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} opts-ready\n", func_start);
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
     backend::RegAlloc reg_alloc{static_cast<u32>(function->MaxInstrCount()), gprs, fprs};
     ir::RegisterAllocPass::Run(function, &reg_alloc);
+    if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} regalloc-ready\n", func_start);
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate(function);
+    if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} emit-ready\n", func_start);
     auto buffer_size = context.CurrentBufferSize();
+    if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} size={}\n", func_start, buffer_size);
     if (auto [idx, buffer] = module->AllocCodeCache(buffer_size);
         idx != backend::INVALID_CACHE_ID) {
         context.Flush(buffer);
-        module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, func_start);
+        if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} flush-ready\n", func_start);
         jit_state.jit_state = backend::JitState::Cached;
         jit_state.cache_id = idx;
         jit_state.offset_in = buffer.offset;
+        jit_state.cache_size = buffer.size;
+        if (!module->Push(ir_function)) {
+            jit_state = {};
+            if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
+                cache->FreeCode(buffer.exec_data);
+            }
+            return nullptr;
+        }
+        function->ReleaseFunctionOwnership();
+        if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} publish-ready\n", func_start);
+        module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, func_start);
+
+        // Publish every decoded block label, not only the function entry.
+        // External links, RSB return targets, and code misses are allowed to
+        // land at a basic-block boundary inside this compiled unit.
+        auto& mutable_address_space = module->GetAddressSpace();
+        for (auto& hir_block : function->GetHIRBlocksRPO()) {
+            auto* block = hir_block.GetBlock();
+            if (block->GetInstList().empty()) {
+                continue;
+            }
+            const auto guest = block->GetStartLocation().Value();
+            const auto offset = context.GetCodeOffset(guest);
+            ASSERT(offset >= 0 && static_cast<size_t>(offset) < buffer.size);
+            mutable_address_space.PushCodeCache(guest, buffer.exec_data + offset);
+            if (!module->GetModuleConfig().read_only) {
+                mutable_address_space.GetSmcTracker().RegisterNode(
+                        ir_function,
+                        block->GetStartLocation().Value(),
+                        block->GetEndLocation().Value());
+            }
+        }
+        if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} entries-ready\n", func_start);
         return buffer.exec_data;
     }
     return nullptr;
@@ -441,7 +530,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
             if (block_size) {
                 block->SetEndLocation(ir::Location(block_start + block_size));
             }
-            address_space.GetSmcTracker().RegisterBlock(
+            address_space.GetSmcTracker().RegisterNode(
                     block.get(), block_start, block->GetEndLocation().Value());
         }
         block->DestroyInstrs();

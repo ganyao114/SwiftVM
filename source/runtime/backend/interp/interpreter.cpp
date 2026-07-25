@@ -411,12 +411,19 @@ bool Interpreter::EvalCondition(ir::Cond cond) {
 // ---------------------------------------------------------------------------
 
 HaltReason Interpreter::Run() {
-    const size_t slot_count = size_t(block->MaxInstrId()) * kSlotStride + kSlotStride;
+    auto& insts = block->GetInstList();
+    // Function-mode instruction ids are global across the RPO, while
+    // Block::max_instr_id is only maintained by Block::ReIdInstr for flat
+    // block translation. Size from the actual maximum so entering any block
+    // in a function cannot index the interpreter stack out of bounds.
+    u32 max_inst_id = 0;
+    for (auto& inst : insts) {
+        max_inst_id = std::max<u32>(max_inst_id, inst.Id());
+    }
+    const size_t slot_count = (size_t(max_inst_id) + 1) * kSlotStride;
     auto* raw = static_cast<u64*>(alloca(slot_count * sizeof(u64)));
     std::memset(raw, 0, slot_count * sizeof(u64));
     InterpStack stack{raw, slot_count};
-
-    auto& insts = block->GetInstList();
 
     // Block-local labels for Goto / NotGoto: the JIT lowers them to local
     // labels + Cbz/Cbnz where BindLabel(arg = the Goto's value) marks the

@@ -6,7 +6,12 @@
 
 namespace swift::runtime::ir {
 
-ir::Block* Function::EntryBlock() { return (ir::Block *) blocks.begin().operator->(); }
+ir::Block* Function::EntryBlock() { return FindBlock(GetStartLocation()); }
+
+void Function::AddBlock(ir::Block* block) {
+    ASSERT(block);
+    blocks.insert(*block);
+}
 
 ir::Block* Function::FindBlock(ir::Location loc, bool block_start) {
     if (block_start) {
@@ -30,9 +35,9 @@ ir::Block* Function::FindBlock(ir::Location loc, bool block_start) {
 
 Function::~Function() {
     while (!blocks.empty()) {
-        auto& block = *blocks.begin();
-        blocks.erase(block);
-        delete &block;
+        auto* block = static_cast<ir::Block*>(&*blocks.begin());
+        blocks.erase(*block);
+        delete block;
     }
 }
 

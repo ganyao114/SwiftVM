@@ -30,16 +30,38 @@ echo "== Building for $SUFFIX in $TESTS_DIR =="
 # --- glibc static ---
 gcc -static -O2 -o "real_hello_${SUFFIX}" real_hello.c
 gcc -static -O2 -o "real_busy_${SUFFIX}" real_busy.c
+gcc -static -O2 -o "func_tests_${SUFFIX}" func_tests.c
 
 # --- musl static (x86_64: apt-get install musl-tools) ---
 if [ "$SUFFIX" = x86_64 ] && command -v musl-gcc >/dev/null; then
     musl-gcc -static -O2 -o real_hello_musl_x86_64 real_hello.c
     musl-gcc -static -O2 -o real_busy_musl_x86_64  real_busy.c
+    musl-gcc -static -O2 -o func_tests_musl_x86_64 func_tests.c
 fi
 
 # --- verify ---
-file "real_hello_${SUFFIX}" "real_busy_${SUFFIX}"
+file "real_hello_${SUFFIX}" "real_busy_${SUFFIX}" "func_tests_${SUFFIX}"
 readelf -h "real_hello_${SUFFIX}" | grep -E 'Type|Machine|Entry'
+
+# --- native ground truth ---
+# Keep stdout and the exact exit status together so qualification never relies
+# on a hand-computed checksum. These files are intentionally architecture/libc
+# specific even when the numeric result happens to match.
+record_native_result() {
+    local binary="$1"
+    local output="${binary}.native.txt"
+    set +e
+    "./${binary}" >"${output}"
+    local status=$?
+    set -e
+    printf 'exit=%d\n' "$status" >>"${output}"
+    echo "native ${binary}: exit=${status}"
+}
+
+record_native_result "func_tests_${SUFFIX}"
+if [ "$SUFFIX" = x86_64 ] && [ -x func_tests_musl_x86_64 ]; then
+    record_native_result func_tests_musl_x86_64
+fi
 
 # --- syscall traces ---
 # Native strace (works on matching-ISA machines):
@@ -60,4 +82,4 @@ fi
 # /etc/apt/sources.list at old-releases.ubuntu.com first.)
 
 echo "== Done =="
-ls -l real_hello_* real_busy_* 2>/dev/null || true
+ls -l real_hello_* real_busy_* func_tests_* 2>/dev/null || true

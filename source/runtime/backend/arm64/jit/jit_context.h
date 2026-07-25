@@ -71,6 +71,7 @@ public:
 
     void Finish();
     [[nodiscard]] u32 CurrentBufferSize();
+    [[nodiscard]] ptrdiff_t GetCodeOffset(LocationDescriptor location) const;
     [[nodiscard]] bool IsUniform(const Register& reg);
     u8* Flush(const CodeBuffer& code_cache);
 

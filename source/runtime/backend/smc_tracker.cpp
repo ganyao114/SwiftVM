@@ -47,7 +47,7 @@ bool SmcTracker::SetPageProtected(VAddr page, bool prot_read_only) {
     return true;
 }
 
-void SmcTracker::RegisterBlock(ir::Block* block, VAddr guest_start, VAddr guest_end) {
+void SmcTracker::RegisterNode(ir::AddressNode* node, VAddr guest_start, VAddr guest_end) {
     if (!IsEnabled()) {
         return;  // SMC tracking disabled (e.g. fuzz harness rewriting its arena)
     }
@@ -68,7 +68,15 @@ void SmcTracker::RegisterBlock(ir::Block* block, VAddr guest_start, VAddr guest_
         // (translation happens after CloseWriteWindow), so a dirty page here
         // means a previous invalidation left it writable — re-protecting is
         // correct.
-        rec.blocks.push_back(TrackedBlock{block, guest_start, guest_end});
+        const bool duplicate = std::any_of(rec.nodes.begin(), rec.nodes.end(),
+                                           [&](const TrackedNode& tracked) {
+                                               return tracked.node == node &&
+                                                      tracked.guest_start == guest_start &&
+                                                      tracked.guest_end == guest_end;
+                                           });
+        if (!duplicate) {
+            rec.nodes.push_back(TrackedNode{node, guest_start, guest_end});
+        }
         if (!rec.write_protected) {
             if (SetPageProtected(page, true)) {
                 rec.write_protected = true;
@@ -98,31 +106,33 @@ bool SmcTracker::HandleWriteFault(AddressSpace& space,
     // straight back into the stale code and the invalidation deferred to
     // CloseWriteWindow would never be observed. A zeroed slot falls back to
     // the dispatcher, which misses (L1/L2 both zeroed) and returns CodeMiss.
-    for (const auto& tb : rec.blocks) {
-        const auto loc = tb.block->GetStartLocation().Value();
+    for (const auto& tracked : rec.nodes) {
+        const auto loc = tracked.node->GetStartLocation().Value();
         space.GetCodeCacheTable().Zero(loc);
         l1.Zero(loc);
+        if (tracked.node->node_type == ir::AddressNode::Function) {
+            auto* function = static_cast<ir::Function*>(tracked.node);
+            for (auto& block : function->GetBlocks()) {
+                space.GetCodeCacheTable().Zero(block.GetStartLocation().Value());
+                l1.Zero(block.GetStartLocation().Value());
+            }
+        }
     }
     return true;
 }
 
-void SmcTracker::InvalidateBlock(AddressSpace& space,
-                                 TranslateTable* l1,
-                                 const TrackedBlock& tb) {
-    const auto loc = tb.block->GetStartLocation().Value();
-    // Detach from every page record covering the block's guest range BEFORE
-    // the module removal below possibly destroys the block object.
-    const VAddr first = PageKey(tb.guest_start);
-    const VAddr last = PageKey(tb.guest_end > tb.guest_start ? tb.guest_end - 1
-                                                             : tb.guest_start);
-    for (VAddr page = first; page <= last; page += page_size_) {
-        if (auto it = pages_.find(page); it != pages_.end()) {
-            auto& blocks = it->second.blocks;
-            std::erase_if(blocks, [&](const TrackedBlock& o) { return o.block == tb.block; });
-        }
+void SmcTracker::InvalidateNode(AddressSpace& space,
+                                TranslateTable* l1,
+                                const TrackedNode& tracked) {
+    const auto loc = tracked.node->GetStartLocation().Value();
+    // Detach every range owned by this compiled unit before module removal can
+    // destroy it. A function appears once per decoded basic-block range.
+    for (auto& [page, record] : pages_) {
+        std::erase_if(record.nodes,
+                      [&](const TrackedNode& other) { return other.node == tracked.node; });
     }
     if (auto module = space.GetModule(loc)) {
-        module->InvalidateBlock(tb.block);
+        module->InvalidateNode(tracked.node);
     }
     // Idempotent with the eager zeroing in HandleWriteFault; covers the
     // synchronous InvalidateRange path (no prior fault) as well.
@@ -135,29 +145,29 @@ void SmcTracker::InvalidateBlock(AddressSpace& space,
 void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& l1) {
     // Collect the dirty pages' blocks first; dedupe by block pointer (a
     // block spanning multiple dirty pages must be invalidated once).
-    std::vector<TrackedBlock> to_invalidate;
+    std::vector<TrackedNode> to_invalidate;
     std::vector<VAddr> dirty_pages;
     for (auto& [page, rec] : pages_) {
         if (!rec.dirty) {
             continue;
         }
         dirty_pages.push_back(page);
-        for (const auto& tb : rec.blocks) {
+        for (const auto& tracked : rec.nodes) {
             const bool seen = std::any_of(to_invalidate.begin(),
                                           to_invalidate.end(),
-                                          [&](const TrackedBlock& o) {
-                                              return o.block == tb.block;
+                                          [&](const TrackedNode& other) {
+                                              return other.node == tracked.node;
                                           });
             if (!seen) {
-                to_invalidate.push_back(tb);
+                to_invalidate.push_back(tracked);
             }
         }
     }
     if (dirty_pages.empty()) {
         return;
     }
-    for (const auto& tb : to_invalidate) {
-        InvalidateBlock(space, &l1, tb);
+    for (const auto& tracked : to_invalidate) {
+        InvalidateNode(space, &l1, tracked);
     }
     for (const VAddr page : dirty_pages) {
         auto it = pages_.find(page);
@@ -167,7 +177,7 @@ void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& l1) {
         auto& rec = it->second;
         rec.dirty = false;
         rec.invalidations++;
-        if (rec.blocks.empty()) {
+        if (rec.nodes.empty()) {
             // No translated code left on the page: stop tracking it, leave
             // it writable (already unprotected by HandleWriteFault).
             pages_.erase(it);
@@ -194,7 +204,7 @@ void SmcTracker::InvalidateRange(AddressSpace& space,
     if (guest_end <= guest_start) {
         return;
     }
-    std::vector<TrackedBlock> to_invalidate;
+    std::vector<TrackedNode> to_invalidate;
     const VAddr first = PageKey(guest_start);
     const VAddr last = PageKey(guest_end - 1);
     for (VAddr page = first; page <= last; page += page_size_) {
@@ -202,12 +212,35 @@ void SmcTracker::InvalidateRange(AddressSpace& space,
         if (it == pages_.end()) {
             continue;
         }
-        for (const auto& tb : it->second.blocks) {
-            to_invalidate.push_back(tb);
+        for (const auto& tracked : it->second.nodes) {
+            const bool seen = std::any_of(to_invalidate.begin(),
+                                          to_invalidate.end(),
+                                          [&](const TrackedNode& other) {
+                                              return other.node == tracked.node;
+                                          });
+            if (!seen) {
+                to_invalidate.push_back(tracked);
+            }
         }
     }
-    for (const auto& tb : to_invalidate) {
-        InvalidateBlock(space, l1, tb);
+    // Clear every dispatch slot while function/block ownership is still alive.
+    for (const auto& tracked : to_invalidate) {
+        space.GetCodeCacheTable().Zero(tracked.node->GetStartLocation().Value());
+        if (l1) {
+            l1->Zero(tracked.node->GetStartLocation().Value());
+        }
+        if (tracked.node->node_type == ir::AddressNode::Function) {
+            auto* function = static_cast<ir::Function*>(tracked.node);
+            for (auto& block : function->GetBlocks()) {
+                space.GetCodeCacheTable().Zero(block.GetStartLocation().Value());
+                if (l1) {
+                    l1->Zero(block.GetStartLocation().Value());
+                }
+            }
+        }
+    }
+    for (const auto& tracked : to_invalidate) {
+        InvalidateNode(space, l1, tracked);
     }
     // The guest is changing the mapping/permissions of these pages: drop
     // tracking and restore writability (guest_memory does not enforce guest

@@ -56,6 +56,7 @@ public:
     void Return();
 
     bool EndCommit() const;
+    [[nodiscard]] bool IsFunctionMode() const { return hir_builder != nullptr; }
 
 private:
     HIRBuilder* hir_builder;

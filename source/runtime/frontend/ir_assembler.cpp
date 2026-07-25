@@ -7,31 +7,31 @@
 namespace swift::runtime::ir {
 
 HIRBuilder::ElseThen Assembler::If(const terminal::If& if_) {
+    end_decode = true;
     if (hir_builder) {
         return hir_builder->If(if_);
     } else {
         ir_block->SetTerminal(terminal::Terminal{if_});
-        end_decode = true;
         return {};
     }
 }
 
 HIRBlock* Assembler::LinkBlock(const terminal::LinkBlock& block) {
+    end_decode = true;
     if (hir_builder) {
         return hir_builder->LinkBlock(block);
     } else {
         ir_block->SetTerminal(terminal::Terminal{block});
-        end_decode = true;
         return {};
     }
 }
 
 void Assembler::ReturnToDispatcher() {
+    end_decode = true;
     if (hir_builder) {
         hir_builder->ReturnToDispatcher();
     } else {
         ir_block->SetTerminal(terminal::ReturnToDispatch{});
-        end_decode = true;
     }
 }
 
