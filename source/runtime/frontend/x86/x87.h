@@ -19,6 +19,10 @@ enum class X87Action : u8 {
     Binary,
     Compare,
     Unary,
+    Remainder,
+    Scale,
+    Extract,
+    Transcendental,
     LoadConstant,
     Exchange,
     Free,
@@ -55,6 +59,22 @@ enum class X87Unary : u8 {
     Examine,
     Sqrt,
     Round,
+};
+
+enum class X87Remainder : u8 {
+    Truncate,
+    Nearest,
+};
+
+enum class X87Transcendental : u8 {
+    Sin,
+    Cos,
+    SinCos,
+    Tan,
+    Atan,
+    YLog2X,
+    YLog2XPlusOne,
+    TwoToXMinusOne,
 };
 
 enum class X87Constant : u8 {
