@@ -752,6 +752,10 @@ void Interpreter::RunMemoryCopyTSO(ir::Inst* inst, InterpStack& stack) {
     RunMemoryCopy(inst, stack);
 }
 
+void Interpreter::RunMemoryBarrierTSO(ir::Inst* inst, InterpStack& stack) {
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+}
+
 void Interpreter::RunCompareAndSwap(ir::Inst* inst, InterpStack& stack) {
     // Args: (address, expected, desired); returns the old value.
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
