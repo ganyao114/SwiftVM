@@ -1528,7 +1528,11 @@ void JitTranslator::EmitPushRSB(ir::Inst* inst) {
 void JitTranslator::EmitTestBit(ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
     auto bit = inst->GetArg<ir::Imm>(1).Get();
-    __ Ubfx(context.W(ir::Value{inst}), context.W(value), bit, 1);
+    if (ir::GetValueSizeByte(value.Type()) == 8) {
+        __ Ubfx(context.X(ir::Value{inst}), context.X(value), bit, 1);
+    } else {
+        __ Ubfx(context.W(ir::Value{inst}), context.W(value), bit, 1);
+    }
 }
 
 void JitTranslator::EmitVec4Add(ir::Inst* inst) {}
