@@ -46,9 +46,7 @@ static std::array<ABIRegUniform, 2> float_return_x64{
         ABIRegUniform{offsetof(ThreadContext64, xmm0), 16},
         ABIRegUniform{offsetof(ThreadContext64, xmm1), 16}};
 
-ABIDescriptor GetABIDescriptor32() {
-    return {{}, {}, general_return_x86, float_return_x86};
-}
+ABIDescriptor GetABIDescriptor32() { return {{}, {}, general_return_x86, float_return_x86}; }
 
 ABIDescriptor GetABIDescriptor64() {
     return {general_params_x64, float_params_x64, general_return_x64, float_return_x64};
@@ -157,7 +155,7 @@ void X64Decoder::Decode() {
                 // rdssp: dst = 0
                 u32 idx = (code_ptr[4] & 7) | ((code_ptr[1] & 1) << 3);
                 auto reg = static_cast<_RegisterType>((code_ptr[1] & 8) ? (R_RAX + idx)
-                                                                         : (R_EAX + idx));
+                                                                        : (R_EAX + idx));
                 R(reg, __ LoadImm(ir::Imm(u64(0))));
             }
             __ Nop();
@@ -223,8 +221,7 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             // ret imm16: also drop stack args
             if (insn.ops[0].type == O_IMM) {
                 auto sp = R(_RegisterType::R_RSP);
-                R(_RegisterType::R_RSP,
-                  __ Add(sp, ir::Operand{ir::Imm(u64(insn.imm.word))}));
+                R(_RegisterType::R_RSP, __ Add(sp, ir::Operand{ir::Imm(u64(insn.imm.word))}));
             }
             __ SetLocation(ir::Lambda{ret_addr});
             __ PopRSB();
@@ -521,9 +518,9 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             auto sf = CheckCond(Cond::MI);
             auto lo = __ Or(cf, ir::Operand{__ LslImm(pf, ir::Imm(2u))});
             auto mid = __ Or(__ LslImm(af, ir::Imm(4u)), ir::Operand{__ LslImm(zf, ir::Imm(6u))});
-            auto ah = __ Or(__ Or(lo, ir::Operand{mid}),
-                            ir::Operand{__ Or(__ LslImm(sf, ir::Imm(7u)),
-                                              ir::Operand{ir::Imm(u64(2))})});
+            auto ah = __ Or(
+                    __ Or(lo, ir::Operand{mid}),
+                    ir::Operand{__ Or(__ LslImm(sf, ir::Imm(7u)), ir::Operand{ir::Imm(u64(2))})});
             R(_RegisterType::R_AH, ah);
             break;
         }
@@ -672,22 +669,31 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeVecInt(insn, VecIntOp::CmpGt, 32);
             break;
         case I_PMINUB:
-            DecodeVecHalfOp(insn, &Pminub64);
+            DecodeVecMinMax(insn, false, 8, false);
             break;
         case I_PMAXUB:
-            DecodeVecHalfOp(insn, &Pmaxub64);
+            DecodeVecMinMax(insn, true, 8, false);
             break;
         case I_PMINUD:
-            DecodeVecHalfOp(insn, &Pminud64);
+            DecodeVecMinMax(insn, false, 32, false);
+            break;
+        case I_PMAXUD:
+            DecodeVecMinMax(insn, true, 32, false);
+            break;
+        case I_PMINSW:
+            DecodeVecMinMax(insn, false, 16, true);
+            break;
+        case I_PMAXSW:
+            DecodeVecMinMax(insn, true, 16, true);
             break;
         case I_PAVGB:
-            DecodeVecHalfOp(insn, &Pavgb64);
+            DecodeVecAvg(insn, 8);
             break;
         case I_PAVGW:
-            DecodeVecHalfOp(insn, &Pavgw64);
+            DecodeVecAvg(insn, 16);
             break;
         case I_PSADBW:
-            DecodeVecHalfOp(insn, &Psadbw64);
+            DecodeVecAbsDiffSum8(insn);
             break;
         case I_PUNPCKLBW:
             DecodeVecZip(insn, 8, false);
@@ -765,7 +771,7 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeScalarFloatOp(insn, VecFloatOp::Div);
             break;
         case I_PMADDWD:
-            DecodeVecHalfOp(insn, &Pmaddwd64);
+            DecodeVecMadd16(insn);
             break;
         case I_MOVSHDUP:
             DecodeVecDupPairs32(insn, true);
@@ -789,7 +795,7 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodePinsrw(insn);
             break;
         case I_PMULLW:
-            DecodeVecHalfOp(insn, &Pmullw64);
+            DecodeVecMul(insn, 16);
             break;
         case I_PSHUFLW:
             DecodePshufw(insn, false);
@@ -1008,32 +1014,59 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
     ir::Cond arm;
     bool inv = false;
     switch (cond) {
-        case Cond::EQ: arm = ir::Cond::EQ; break;
-        case Cond::NE: arm = ir::Cond::NE; break;
-        case Cond::MI: case Cond::SN: arm = ir::Cond::MI; break;
-        case Cond::PL: case Cond::NS: arm = ir::Cond::PL; break;
-        case Cond::VS: arm = ir::Cond::VS; break;
-        case Cond::VC: arm = ir::Cond::VC; break;
-        case Cond::GE: arm = ir::Cond::GE; break;
-        case Cond::LT: arm = ir::Cond::LT; break;
-        case Cond::GT: arm = ir::Cond::GT; break;
-        case Cond::LE: arm = ir::Cond::LE; break;
-        // CF == 1 / CF == 0: value-based, honoring the polarity byte, so the
-    // result is exact even when the carry was produced in another block.
-        case Cond::CS: case Cond::BT:
+        case Cond::EQ:
+            arm = ir::Cond::EQ;
+            break;
+        case Cond::NE:
+            arm = ir::Cond::NE;
+            break;
+        case Cond::MI:
+        case Cond::SN:
+            arm = ir::Cond::MI;
+            break;
+        case Cond::PL:
+        case Cond::NS:
+            arm = ir::Cond::PL;
+            break;
+        case Cond::VS:
+            arm = ir::Cond::VS;
+            break;
+        case Cond::VC:
+            arm = ir::Cond::VC;
+            break;
+        case Cond::GE:
+            arm = ir::Cond::GE;
+            break;
+        case Cond::LT:
+            arm = ir::Cond::LT;
+            break;
+        case Cond::GT:
+            arm = ir::Cond::GT;
+            break;
+        case Cond::LE:
+            arm = ir::Cond::LE;
+            break;
+            // CF == 1 / CF == 0: value-based, honoring the polarity byte, so the
+            // result is exact even when the carry was produced in another block.
+        case Cond::CS:
+        case Cond::BT:
             return __ TestNotZero(CarryValue());
-        case Cond::CC: case Cond::AE:
+        case Cond::CC:
+        case Cond::AE:
             return __ TestZero(CarryValue());
         // JA: CF == 0 && ZF == 0
-        case Cond::HI: case Cond::AT:
+        case Cond::HI:
+        case Cond::AT:
             // Not expressible as a single ARM condition under Direct carry
             // polarity (x86 A = !CF && !ZF while the stored C equals CF), so
             // compose it from polarity-aware pieces.
             return __ And(CheckCond(Cond::CC), ir::Operand{CheckCond(Cond::NE)});
         // JBE: CF == 1 || ZF == 1
-        case Cond::LS: case Cond::BE:
+        case Cond::LS:
+        case Cond::BE:
             return __ Or(CheckCond(Cond::CS), ir::Operand{CheckCond(Cond::EQ)});
-        default: PANIC();
+        default:
+            PANIC();
     }
     auto one = __ LoadImm(ir::Imm(u8(1)));
     auto zero = __ LoadImm(ir::Imm(u8(0)));
@@ -1236,8 +1269,7 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
                 if (address_operand.left.Null()) {
                     address_operand.left = seg_base;
                 } else {
-                    address_operand.left =
-                            __ Add(seg_base, ir::Operand{address_operand.left});
+                    address_operand.left = __ Add(seg_base, ir::Operand{address_operand.left});
                 }
             }
 
@@ -1245,8 +1277,8 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
                 s64 disp = ForceCast<s64>(insn.disp);
                 if (address_operand.right.Null() && !address_operand.ext) {
                     if (address_operand.left.IsImm()) {
-                        address_operand.left = ir::Imm((address_operand.left.imm.Get() + disp) &
-                                                       addr_mask);
+                        address_operand.left =
+                                ir::Imm((address_operand.left.imm.Get() + disp) & addr_mask);
                     } else {
                         address_operand.right = ir::Imm(disp & addr_mask);
                     }
@@ -1270,8 +1302,8 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
             if ((SEGMENT_GET(insn.segment) != R_NONE) && !SEGMENT_IS_DEFAULT(insn.segment)) {
                 // FS/GS use the 64-bit bases from the context; other segments
                 // keep the legacy selector * 16 model.
-                address_operand.left = SegmentBase(
-                        static_cast<_RegisterType>(SEGMENT_GET(insn.segment)));
+                address_operand.left =
+                        SegmentBase(static_cast<_RegisterType>(SEGMENT_GET(insn.segment)));
             }
             if (insn.base != R_NONE) {
                 if (address_operand.left.Null()) {
@@ -1316,8 +1348,8 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
                 } else if (address_operand.right.Null() && !address_operand.ext) {
                     if (address_operand.left.IsImm()) {
                         // Fold constant bases (e.g. RIP relative).
-                        address_operand.left = ir::Imm((address_operand.left.imm.Get() + disp) &
-                                                       addr_mask);
+                        address_operand.left =
+                                ir::Imm((address_operand.left.imm.Get() + disp) & addr_mask);
                     } else {
                         address_operand.right = ir::Imm(disp & addr_mask);
                     }
@@ -1344,8 +1376,7 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
             if ((SEGMENT_GET(insn.segment) != R_NONE) && !SEGMENT_IS_DEFAULT(insn.segment)) {
                 // FS/GS use the 64-bit bases from the context; other segments
                 // keep the legacy selector * 16 model.
-                auto seg_base = SegmentBase(
-                        static_cast<_RegisterType>(SEGMENT_GET(insn.segment)));
+                auto seg_base = SegmentBase(static_cast<_RegisterType>(SEGMENT_GET(insn.segment)));
                 address_operand.left =
                         __ Add(seg_base, ir::Operand{ir::Imm(insn.disp & addr_mask)});
             } else {
@@ -1407,22 +1438,6 @@ void X64Decoder::DecodeMovsx(_DInst& insn) {
     Dst(insn, op0, result);
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 void X64Decoder::DecodeLea(_DInst& insn) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
@@ -1430,82 +1445,14 @@ void X64Decoder::DecodeLea(_DInst& insn) {
     auto address = GetAddress(insn, op1);
     // SetType (mutation): EmitGetOperand sizes the result from the
     // instruction's own return type, untyped would truncate to 32 bits.
-    Dst(insn, op0,
+    Dst(insn,
+        op0,
         __ GetOperand(address.ToIROperand())
                 .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32));
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // ---------------------------------------------------------------------------
 // SSE decode implementations
 // ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 }  // namespace swift::x86
