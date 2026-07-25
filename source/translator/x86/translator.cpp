@@ -7,6 +7,9 @@
 #include <memory>
 #include <mutex>
 #include <unordered_set>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <sys/sysctl.h>
+#endif
 #include "fmt/format.h"
 #include "base/scope_exit.h"
 #include "runtime/backend/address_space.h"
@@ -73,6 +76,38 @@ static runtime::TsoMode TsoModeFromEnvironment() {
     }
     LOG_WARNING("Unknown SVM_TSO_MODE '{}'; using relaxed", value);
     return runtime::TsoMode::Relaxed;
+}
+
+static Arm64Features DetectArm64Features() {
+    Arm64Features features = Arm64Features::None;
+
+#if defined(__APPLE__) && defined(__aarch64__)
+    auto sysctl_feature = [](const char* name) {
+        int value = 0;
+        size_t size = sizeof(value);
+        return sysctlbyname(name, &value, &size, nullptr, 0) == 0 &&
+               size == sizeof(value) && value != 0;
+    };
+    if (sysctl_feature("hw.optional.arm.FEAT_LRCPC")) {
+        features |= Arm64Features::RCpc;
+    }
+    if (sysctl_feature("hw.optional.arm.FEAT_LRCPC2")) {
+        features |= Arm64Features::RCpcImm;
+    }
+#endif
+
+    // Diagnostic/bring-up override. The default remains the OS feature probe;
+    // forcing an unsupported instruction will SIGILL, so this is intentionally
+    // not a general user-facing mode switch.
+    if (const char* value = std::getenv("SVM_ARM64_LRCPC")) {
+        if (std::strcmp(value, "0") == 0) {
+            features = static_cast<Arm64Features>(
+                    static_cast<u32>(features) & ~static_cast<u32>(Arm64Features::RCpc));
+        } else if (std::strcmp(value, "1") == 0) {
+            features |= Arm64Features::RCpc;
+        }
+    }
+    return features;
 }
 
 // WORKAROUND (runtime bug, ir/instr.h Inst::GetArg<Operand>): the x86
@@ -347,7 +382,7 @@ struct X86Instance::Impl final {
                 //   RPO numbering, and complex/failed functions fall back to
                 //   block compilation.
                 .global_opts = global_opts,
-                .arm64_features = Arm64Features::None,
+                .arm64_features = DetectArm64Features(),
                 .tso_mode = TsoModeFromEnvironment(),
                 .stack_alignment = 16,
                 .page_table = nullptr,

@@ -157,7 +157,16 @@ void X64Decoder::DecodeMovs(_DInst& insn) {
         auto count = __ ZeroExtend64(R(cnt_reg));
         auto bytes =
                 __ Mul(count, ir::Operand{ir::Imm(u64(ir::GetValueSizeByte(size)))});
+        // REP MOVS is not atomic on x86. Order the copy as one operation
+        // relative to surrounding guest memory accesses; the host helper may
+        // use ordinary/vector accesses internally without a fence per element.
+        if (TsoOrdered(insn)) {
+            __ MemoryBarrierTSO();
+        }
         __ CallHost(&RepMovs, dst_addr, src_addr, bytes);
+        if (TsoOrdered(insn)) {
+            __ MemoryBarrierTSO();
+        }
         R(src_reg, __ Add(src_addr, ir::Operand{bytes}));
         R(dst_reg, __ Add(dst_addr, ir::Operand{bytes}));
         R(cnt_reg, __ LoadImm(ir::Imm(u64(0))));
@@ -199,11 +208,19 @@ void X64Decoder::DecodeStos(_DInst& insn) {
         // host call gets a spill allocation the JIT cannot produce.
         auto acc64 = __ ZeroExtend64(acc);
         ir::Value end;
+        // As with REP MOVS, x86 requires ordering at the operation boundary,
+        // not atomic visibility of the whole filled range.
+        if (TsoOrdered(insn)) {
+            __ MemoryBarrierTSO();
+        }
         switch (ir::GetValueSizeByte(size)) {
             case 1: end = __ CallHost(&RepStos1, dst_addr, acc64, count); break;
             case 2: end = __ CallHost(&RepStos2, dst_addr, acc64, count); break;
             case 4: end = __ CallHost(&RepStos4, dst_addr, acc64, count); break;
             default: end = __ CallHost(&RepStos8, dst_addr, acc64, count); break;
+        }
+        if (TsoOrdered(insn)) {
+            __ MemoryBarrierTSO();
         }
         // The helper returns the fill end address, keeping the call alive.
         R(dst_reg, end);
