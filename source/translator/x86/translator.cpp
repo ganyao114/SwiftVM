@@ -580,6 +580,10 @@ struct X86Instance::Impl final {
 struct X86Core::Impl final {
     explicit Impl(X86Instance* instance) : instance(instance) {
         s_runtime = instance->impl->MakeRuntime();
+        auto* cpu = GetCPUContext();
+        cpu->x87_fcw = 0x037F;
+        cpu->x87_fsw = 0;
+        cpu->x87_ftw = 0xFFFF;
         // Wire the interpreter wild-pointer guard into the runtime State.
         auto* st = s_runtime->GetState();
         st->interp_range_check = instance->impl->range_check_fn;

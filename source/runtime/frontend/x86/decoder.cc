@@ -164,6 +164,16 @@ void X64Decoder::Decode() {
             end_decode = assembler->EndCommit();
             continue;
         }
+        // distorm reports DF C0+i (FFREEP ST(i)) as an undefined one-byte
+        // instruction. Decode it here so the architectural free+pop operation
+        // remains available and the stream advances by its real length.
+        if (code_ptr[0] == 0xDF && (code_ptr[1] & 0xF8) == 0xC0) {
+            DecodeX87FreePop(static_cast<u8>(code_ptr[1] & 7));
+            pc += 2;
+            assembler->AdvancePC(ir::Imm{2});
+            end_decode = assembler->EndCommit();
+            continue;
+        }
         _DInst insn = DisDecode(code_ptr, 0x10, is_64bit);
         if (insn.opcode == UINT16_MAX || insn.size == 0) {
             // size == 0 would loop forever at the same pc.
@@ -527,6 +537,43 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             R(_RegisterType::R_AH, ah);
             break;
         }
+        case I_SAHF: {
+            // SF:ZF:0:AF:0:PF:1:CF <- AH.  Save each independently because
+            // SAHF permits combinations (notably SF+ZF) that no single ALU
+            // result can represent.
+            auto ah = R(_RegisterType::R_AH).SetType(ir::ValueType::U64);
+            auto bit = [&](u32 position) {
+                return __ And(__ LsrImm(ah, ir::Imm(position)),
+                              ir::Operand{ir::Imm(u64(1))});
+            };
+            auto one = __ LoadImm(ir::Imm(u64(1)));
+            auto zero = __ LoadImm(ir::Imm(u64(0)));
+
+            auto pf = bit(2);
+            auto parity_value = __ Select(__ TestNotZero(pf), zero, one);
+            __ SaveFlags(__ Or(parity_value, ir::Operand{ir::Imm(u64(0))}),
+                         ir::Flags::Parity);
+
+            auto zf = bit(6);
+            auto zero_value = __ Select(__ TestNotZero(zf), zero, one);
+            __ SaveFlags(__ Or(zero_value, ir::Operand{ir::Imm(u64(0))}),
+                         ir::Flags::Zero);
+
+            auto sf = bit(7);
+            auto sign_value = __ LslImm(sf, ir::Imm(63u)).SetType(ir::ValueType::U64);
+            __ SaveFlags(__ Or(sign_value, ir::Operand{ir::Imm(u64(0))}),
+                         ir::Flags::Negate);
+
+            // 0xF + AFbit has an auxiliary carry exactly when AFbit is one.
+            auto auxiliary_value =
+                    __ Add(__ LoadImm(ir::Imm(u64(0xF))), ir::Operand{bit(4)});
+            __ SaveFlags(auxiliary_value, ir::Flags::AuxiliaryCarry);
+
+            __ SetCarry(bit(0));
+            carry_ = CarryPolarity::Direct;
+            StorePolarity(false);
+            break;
+        }
         case I_CWDE: {
             auto ax = R(_RegisterType::R_AX);
             R(_RegisterType::R_EAX, __ SignExtend(ax).SetType(ir::ValueType::S32));
@@ -552,6 +599,77 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             R(_RegisterType::R_RDX, __ AsrImm(rax, ir::Imm(63u)));
             break;
         }
+        // ---- x87 floating-point stack ----------------------------------
+        case I_FLD:
+        case I_FST:
+        case I_FSTP:
+        case I_FILD:
+        case I_FIST:
+        case I_FISTP:
+        case I_FISTTP:
+        case I_FADD:
+        case I_FADDP:
+        case I_FIADD:
+        case I_FMUL:
+        case I_FMULP:
+        case I_FIMUL:
+        case I_FSUB:
+        case I_FSUBR:
+        case I_FSUBP:
+        case I_FSUBRP:
+        case I_FISUB:
+        case I_FISUBR:
+        case I_FDIV:
+        case I_FDIVR:
+        case I_FDIVP:
+        case I_FDIVRP:
+        case I_FIDIV:
+        case I_FIDIVR:
+        case I_FCOM:
+        case I_FCOMP:
+        case I_FCOMPP:
+        case I_FUCOM:
+        case I_FUCOMP:
+        case I_FUCOMPP:
+        case I_FICOM:
+        case I_FICOMP:
+        case I_FCOMI:
+        case I_FCOMIP:
+        case I_FUCOMI:
+        case I_FUCOMIP:
+        case I_FCHS:
+        case I_FABS:
+        case I_FTST:
+        case I_FXAM:
+        case I_FSQRT:
+        case I_FRNDINT:
+        case I_FLD1:
+        case I_FLDL2T:
+        case I_FLDL2E:
+        case I_FLDPI:
+        case I_FLDLG2:
+        case I_FLDLN2:
+        case I_FLDZ:
+        case I_FXCH:
+        case I_FFREE:
+        case I_FINCSTP:
+        case I_FDECSTP:
+        case I_FNSTCW:
+        case I_FSTCW:
+        case I_FLDCW:
+        case I_FNSTSW:
+        case I_FSTSW:
+        case I_FNINIT:
+        case I_FINIT:
+        case I_FNCLEX:
+        case I_FCLEX:
+        case I_FNSTENV:
+        case I_FSTENV:
+        case I_FLDENV:
+        case I_FNOP:
+        case I_WAIT:
+            DecodeX87(insn);
+            break;
         // ---- SSE subset (glibc baseline SSE2 string routines) ----
         case I_MOVD:
             DecodeMovd(insn);
@@ -875,9 +993,11 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeMxcsr(insn, true);
             break;
         case I_FXSAVE:
+        case I_FXSAVE64:
             DecodeFxsave(insn, false);
             break;
         case I_FXRSTOR:
+        case I_FXRSTOR64:
             DecodeFxsave(insn, true);
             break;
         case I_UCOMISD:

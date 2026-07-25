@@ -129,6 +129,16 @@ union Ymm {
     Xmm high;
 };
 
+// Architectural 80-bit x87 register payload.  The six padding bytes match an
+// FXSAVE register slot and keep every physical register naturally aligned;
+// only significand/sign_exp are architectural.
+struct alignas(16) X87Reg {
+    u64 significand{};
+    u16 sign_exp{};
+    std::array<u8, 6> reserved{};
+};
+static_assert(sizeof(X87Reg) == 16);
+
 union EFlags {
     using CF = BitField<0, 1, u32>;  // carry: set to true when an arithmetic carry occurs
     using PF = BitField<1, 1, u32>;  // parity: set to true if the number of bits set in the low 8
@@ -254,6 +264,18 @@ struct ThreadContext64 {
     u8 carry_pad0{};
     u16 carry_pad1{};
     u32 mxcsr_pad{};
+
+    // x87 architectural state.  x87_fsw contains TOP in bits 13:11 and C0-C3
+    // in their architectural locations.  x87_ftw is the full legacy tag word
+    // (two bits per physical slot: valid/zero/special/empty); FXSAVE's
+    // abridged one-bit FTW is derived from it.
+    u16 x87_fcw{0x037F};
+    u16 x87_fsw{};
+    u16 x87_ftw{0xFFFF};
+    u16 x87_fop{};
+    u64 x87_fip{};
+    u64 x87_fdp{};
+    std::array<X87Reg, 8> x87_regs{};
 };
 
 }  // namespace swift::x86

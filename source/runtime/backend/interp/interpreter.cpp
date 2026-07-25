@@ -587,6 +587,13 @@ void Interpreter::RunStoreUniform(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
+void Interpreter::RunGetUniformAddress(ir::Inst* inst, InterpStack& stack) {
+    const auto offset = inst->GetArg<ir::Imm>(0).Get();
+    WriteScalar(stack,
+                inst,
+                reinterpret_cast<u64>(&state.uniform_buffer_begin[offset]));
+}
+
 void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
     const auto operand = inst->GetArg<ir::Operand>(0);
     const auto type = inst->ReturnType();

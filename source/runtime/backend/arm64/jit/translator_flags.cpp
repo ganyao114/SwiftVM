@@ -29,13 +29,23 @@ void JitTranslator::LoadNZCVFromFlags() {
     __ Msr(NZCV, ip);
 }
 
-void JitTranslator::MergeLogicalFlagsNZ() {
-    u64 clear_nzcv = ~static_cast<u64>(HostFlags::NZCV);
+void JitTranslator::MergeLogicalFlagsNZ(ir::Flags requested) {
+    // Logical flag producers may have only an N or only a Z SaveFlags pseudo
+    // (SAHF deliberately writes them independently).  Commit exactly that
+    // requested subset: merging both bits lets a later SF-only zero result
+    // resurrect an earlier ZF that SAHF already cleared.
+    const u64 requested_nz =
+            static_cast<u64>(GuestNZCVToHost(requested & ir::Flags::NZ));
+    if (!requested_nz) {
+        return;
+    }
+    u64 keep = ~requested_nz;
     __ Mrs(ip, NZCV);
-    __ And(flags, flags, ForceCast<s64>(clear_nzcv));
-    __ And(ip, ip, static_cast<u32>(HostFlags::NZ));
+    __ And(flags, flags, ForceCast<s64>(keep));
+    __ And(ip, ip, static_cast<u32>(requested_nz));
     __ Orr(flags, flags, ip);
     nzcv_dirty = false;
+    nzcv_requested = {};
 }
 
 void JitTranslator::SaveLogicalResultFlags(Register& result,
@@ -62,7 +72,7 @@ void JitTranslator::SaveLogicalResultFlags(Register& result,
             PANIC();
     }
     __ Bics(ip, ip, 0);
-    MergeLogicalFlagsNZ();
+    MergeLogicalFlagsNZ(pseudo.set);
     if (True(pseudo.set & ir::Flags::Parity)) {
         SaveParity(result);
     }
