@@ -593,6 +593,14 @@ private:
     // bt / bts / btr / btc (kind 0..3); CF = extracted bit.
     void DecodeBt(_DInst& insn, int kind);
 
+    // ---- x87 support ----------------------------------------------------
+    // The architectural stack and extF80 arithmetic live in ThreadContext64
+    // and are updated by the SoftFloat-backed stateful helper.
+    void DecodeX87(_DInst& insn);
+    void DecodeX87FreePop(u8 index);
+    ir::Value CallX87(u64 command, ir::Value guest_address);
+    void ApplyX87CompareFlags(ir::Value compact_flags);
+
     VAddr start;
     VAddr pc;
     ir::Assembler* assembler;

@@ -12,6 +12,10 @@ INST(LoadLocal, Value, Local)
 INST(StoreLocal, Void, Local, Value)
 INST(LoadUniform, Value, Uniform)
 INST(StoreUniform, Void, Uniform, Value)
+// Host address of a byte within the current uniform buffer.  This is only for
+// stateful frontend helpers that need to update several architectural fields
+// atomically (x87); ordinary guest code must keep using Load/StoreUniform.
+INST(GetUniformAddress, Value, Imm)
 INST(LoadMemory, Value, Operand)
 INST(StoreMemory, Void, Operand, Value)
 INST(LoadMemoryTSO, Value, Operand)

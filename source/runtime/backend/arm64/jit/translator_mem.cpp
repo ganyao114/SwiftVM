@@ -140,6 +140,12 @@ void JitTranslator::EmitLoadUniform(ir::Inst* inst) {
     });
 }
 
+void JitTranslator::EmitGetUniformAddress(ir::Inst* inst) {
+    const auto offset = inst->GetArg<ir::Imm>(0).Get();
+    auto result = context.X(ir::Value{inst});
+    __ Add(result, state, offsetof(State, uniform_buffer_begin) + offset);
+}
+
 void JitTranslator::EmitStoreUniform(ir::Inst* inst) {
     auto uni = inst->GetArg<ir::Uniform>(0);
     s32 offset = offsetof(State, uniform_buffer_begin) + uni.GetOffset();
