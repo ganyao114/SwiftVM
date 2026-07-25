@@ -512,6 +512,7 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
 
     Label retry;
     Label done;
+    __ Dmb(InnerShareable, BarrierAll);
     __ Bind(&retry);
     switch (type) {
         case ir::ValueType::S8:
@@ -557,6 +558,101 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
     }
     __ Cbnz(ipw, &retry);
     __ Bind(&done);
+    __ Dmb(InnerShareable, BarrierAll);
+}
+
+void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
+    // Args: (address, desired); returns the previous value. Memory XCHG is
+    // implicitly locked on x86, so use an unconditional exclusive loop and
+    // full barriers regardless of the configured ordinary-memory TSO mode.
+    auto address = context.X(inst->GetArg<ir::Value>(0));
+    const auto desired = inst->GetArg<ir::Value>(1);
+    const auto type = desired.Type();
+    const auto result = context.R(ir::Value{inst});
+
+    MergeNZCV();
+    if (use_memory_base) {
+        __ Add(mem_scratch, address, pt);
+        address = mem_scratch;
+    }
+
+    Label retry;
+    __ Dmb(InnerShareable, BarrierAll);
+    __ Bind(&retry);
+    switch (type) {
+        case ir::ValueType::S8:
+        case ir::ValueType::U8:
+            __ Ldaxrb(result.W(), MemOperand(address));
+            __ Stlxrb(ipw, context.W(desired), MemOperand(address));
+            break;
+        case ir::ValueType::S16:
+        case ir::ValueType::U16:
+            __ Ldaxrh(result.W(), MemOperand(address));
+            __ Stlxrh(ipw, context.W(desired), MemOperand(address));
+            break;
+        case ir::ValueType::S32:
+        case ir::ValueType::U32:
+            __ Ldaxr(result.W(), MemOperand(address));
+            __ Stlxr(ipw, context.W(desired), MemOperand(address));
+            break;
+        case ir::ValueType::S64:
+        case ir::ValueType::U64:
+            __ Ldaxr(result, MemOperand(address));
+            __ Stlxr(ipw, context.X(desired), MemOperand(address));
+            break;
+        default:
+            PANIC("UnImplement!");
+    }
+    __ Cbnz(ipw, &retry);
+    __ Dmb(InnerShareable, BarrierAll);
+}
+
+void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
+    // Args: (address, addend); returns the previous value. Used by LOCK XADD.
+    auto address = context.X(inst->GetArg<ir::Value>(0));
+    const auto addend = inst->GetArg<ir::Value>(1);
+    const auto type = addend.Type();
+    const auto result = context.R(ir::Value{inst});
+
+    MergeNZCV();
+    if (use_memory_base) {
+        __ Add(mem_scratch, address, pt);
+        address = mem_scratch;
+    }
+
+    Label retry;
+    __ Dmb(InnerShareable, BarrierAll);
+    __ Bind(&retry);
+    switch (type) {
+        case ir::ValueType::S8:
+        case ir::ValueType::U8:
+            __ Ldaxrb(result.W(), MemOperand(address));
+            __ Add(atomic_scratch.W(), result.W(), context.W(addend));
+            __ Stlxrb(ipw, atomic_scratch.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S16:
+        case ir::ValueType::U16:
+            __ Ldaxrh(result.W(), MemOperand(address));
+            __ Add(atomic_scratch.W(), result.W(), context.W(addend));
+            __ Stlxrh(ipw, atomic_scratch.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S32:
+        case ir::ValueType::U32:
+            __ Ldaxr(result.W(), MemOperand(address));
+            __ Add(atomic_scratch.W(), result.W(), context.W(addend));
+            __ Stlxr(ipw, atomic_scratch.W(), MemOperand(address));
+            break;
+        case ir::ValueType::S64:
+        case ir::ValueType::U64:
+            __ Ldaxr(result, MemOperand(address));
+            __ Add(atomic_scratch, result, context.X(addend));
+            __ Stlxr(ipw, atomic_scratch, MemOperand(address));
+            break;
+        default:
+            PANIC("UnImplement!");
+    }
+    __ Cbnz(ipw, &retry);
+    __ Dmb(InnerShareable, BarrierAll);
 }
 
 void JitTranslator::EmitUniformBarrier(ir::Inst* inst) {

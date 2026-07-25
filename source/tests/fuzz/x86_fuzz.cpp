@@ -3598,6 +3598,356 @@ TEST_CASE("x86 CallLambda function/static interaction") {
     munmap(arena, kArenaSize);
 }
 
+TEST_CASE("x86 RBX RBP static mapping interaction") {
+    constexpr size_t kArenaSize = 0x80000;
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 data_base = base + 0x50000;
+    const u64 stack = base + 0x70000;
+    backend::SmcTracker::SetEnabled(false);
+
+    struct ConfigCase {
+        const char* func;
+        const char* statics;
+    };
+    const ConfigCase cases[] = {{"1", "1"}, {"1", "0"}, {"0", "1"}, {"0", "0"}};
+    const auto old_func = getenv("SVM_FUNC_BASE");
+    const auto old_static = getenv("SVM_STATIC_REGS");
+    const auto old_uniform = getenv("SVM_UNIFORM_ELIM");
+    const auto old_jit = getenv("SVM_ENABLE_JIT");
+    const auto old_lambda = getenv("SVM_FUNC_LAMBDA");
+    const std::string old_func_value = old_func ? old_func : "";
+    const std::string old_static_value = old_static ? old_static : "";
+    const std::string old_uniform_value = old_uniform ? old_uniform : "";
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    const std::string old_lambda_value = old_lambda ? old_lambda : "";
+    setenv("SVM_UNIFORM_ELIM", "1", 1);
+    setenv("SVM_ENABLE_JIT", "1", 1);
+    setenv("SVM_FUNC_LAMBDA", "1", 1);
+
+    u64 random = 0xD1B54A32D192ED03ull;
+    for (const auto& cfg : cases) {
+        setenv("SVM_FUNC_BASE", cfg.func, 1);
+        setenv("SVM_STATIC_REGS", cfg.statics, 1);
+        auto* instance = X86Instance::Make();
+        size_t code_cursor = 0;
+        for (int iteration = 0; iteration < 64; ++iteration) {
+            random ^= random << 7;
+            random ^= random >> 9;
+            const u64 rbx_memory = random;
+            random ^= random << 8;
+            const u64 rbp_memory = random;
+            random ^= random >> 11;
+            const u32 xor_mask = static_cast<u32>(random) | 1u;
+
+            const u64 initial_rbx = data_base + 0x100;
+            const u64 initial_rbp = data_base + 0x200;
+            *reinterpret_cast<u64*>(initial_rbx) = rbx_memory;
+            *reinterpret_cast<u64*>(initial_rbp) = rbp_memory;
+            *reinterpret_cast<u64*>(initial_rbp + 8) = 0;
+
+            const u64 code_addr = base + code_cursor++ * 0x200;
+            const u64 helper_addr = code_addr + 0x100;
+            CodeBuf caller;
+            caller.c = {
+                    0x48, 0x8B, 0x03,        // mov rax, [rbx]
+                    0x48, 0x8B, 0x4D, 0x00,  // mov rcx, [rbp]
+                    0x48, 0x83, 0xC3, 0x08,  // add rbx, 8
+                    0x48, 0x83, 0xED, 0x08,  // sub rbp, 8
+                    0x53,                    // push rbx
+                    0x55,                    // push rbp
+                    0x5A,                    // pop rdx
+                    0x5E,                    // pop rsi
+                    0xE8,                    // call helper
+            };
+            const size_t call_disp = caller.Pos();
+            caller.D(0);
+            caller.c.insert(caller.c.end(),
+                            {
+                                    0x48,
+                                    0x89,
+                                    0x45,
+                                    0x00,  // mov [rbp], rax
+                                    0xF4,  // hlt
+                            });
+            caller.Patch32(call_disp, static_cast<s32>(helper_addr - (code_addr + call_disp + 4)));
+
+            CodeBuf helper;
+            helper.c = {0x48, 0x81, 0xF3};  // xor rbx, imm32
+            helper.D(xor_mask);
+            helper.c.insert(helper.c.end(),
+                            {
+                                    0x48,
+                                    0x83,
+                                    0xC5,
+                                    0x10,  // add rbp, 16
+                            });
+            EmitPopcnt(helper, 64, kRax, kRax);  // CallLambda
+            helper.B(0xC3);
+            std::memcpy(reinterpret_cast<void*>(code_addr), caller.c.data(), caller.c.size());
+            std::memcpy(reinterpret_cast<void*>(helper_addr), helper.c.data(), helper.c.size());
+
+            auto* core = X86Core::Make(instance);
+            auto& ctx = core->GetContext();
+            ctx.rip.qword = code_addr;
+            ctx.rsp.qword = stack;
+            ctx.rbx.qword = initial_rbx;
+            ctx.rbp.qword = initial_rbp;
+            core->Run();
+
+            const u64 extended_mask =
+                    static_cast<u64>(static_cast<s64>(static_cast<s32>(xor_mask)));
+            INFO(fmt::format("func={} static={} iteration={} mask={:#x}",
+                             cfg.func,
+                             cfg.statics,
+                             iteration,
+                             xor_mask));
+            CHECK(ctx.rbx.qword == ((initial_rbx + 8) ^ extended_mask));
+            CHECK(ctx.rbp.qword == initial_rbp + 8);
+            CHECK(ctx.rsp.qword == stack);
+            CHECK(ctx.rdx.qword == initial_rbp - 8);
+            CHECK(ctx.rsi.qword == initial_rbx + 8);
+            CHECK(ctx.rcx.qword == rbp_memory);
+            CHECK(ctx.rax.qword == std::popcount(rbx_memory));
+            CHECK(*reinterpret_cast<u64*>(initial_rbp + 8) == std::popcount(rbx_memory));
+            X86Core::Destroy(core);
+        }
+        X86Instance::Destroy(instance);
+    }
+
+    if (old_func) {
+        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_FUNC_BASE");
+    }
+    if (old_static) {
+        setenv("SVM_STATIC_REGS", old_static_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_STATIC_REGS");
+    }
+    if (old_uniform) {
+        setenv("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_UNIFORM_ELIM");
+    }
+    if (old_jit) {
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_ENABLE_JIT");
+    }
+    if (old_lambda) {
+        setenv("SVM_FUNC_LAMBDA", old_lambda_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_FUNC_LAMBDA");
+    }
+    backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
+TEST_CASE("x86 static GetHostGPR alias clobber regression") {
+    constexpr size_t kArenaSize = 0x40000;
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 stack = base + 0x30000;
+    backend::SmcTracker::SetEnabled(false);
+
+    struct ConfigCase {
+        const char* func;
+        const char* statics;
+    };
+    const ConfigCase cases[] = {{"1", "1"}, {"1", "0"}, {"0", "1"}, {"0", "0"}};
+    const auto old_func = getenv("SVM_FUNC_BASE");
+    const auto old_static = getenv("SVM_STATIC_REGS");
+    const auto old_uniform = getenv("SVM_UNIFORM_ELIM");
+    const auto old_jit = getenv("SVM_ENABLE_JIT");
+    const auto old_lambda = getenv("SVM_FUNC_LAMBDA");
+    const std::string old_func_value = old_func ? old_func : "";
+    const std::string old_static_value = old_static ? old_static : "";
+    const std::string old_uniform_value = old_uniform ? old_uniform : "";
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    const std::string old_lambda_value = old_lambda ? old_lambda : "";
+    setenv("SVM_UNIFORM_ELIM", "1", 1);
+    setenv("SVM_ENABLE_JIT", "1", 1);
+    setenv("SVM_FUNC_LAMBDA", "1", 1);
+
+    for (const auto& cfg : cases) {
+        setenv("SVM_FUNC_BASE", cfg.func, 1);
+        setenv("SVM_STATIC_REGS", cfg.statics, 1);
+        auto* instance = X86Instance::Make();
+        size_t code_cursor = 0;
+        auto run = [&](const char* name, CodeBuf code, auto initialize, auto verify) {
+            code.B(0xF4);
+            const u64 code_addr = base + code_cursor++ * 0x100;
+            std::memcpy(reinterpret_cast<void*>(code_addr), code.c.data(), code.c.size());
+            auto* core = X86Core::Make(instance);
+            auto& ctx = core->GetContext();
+            ctx.rip.qword = code_addr;
+            ctx.rsp.qword = stack;
+            initialize(ctx);
+            core->Run();
+            INFO(fmt::format("func={} static={} case={}", cfg.func, cfg.statics, name));
+            verify(ctx);
+            X86Core::Destroy(core);
+        };
+
+        {
+            CodeBuf code;
+            EmitXchgRegReg(code, 64, kRbx, kRcx);
+            constexpr u64 rbx = 0x7BEF0123456789ABull;
+            constexpr u64 rcx = 0x0000000000000002ull;
+            run(
+                    "xchg-rbx-rcx",
+                    std::move(code),
+                    [](ThreadContext64& ctx) {
+                        ctx.rbx.qword = rbx;
+                        ctx.rcx.qword = rcx;
+                    },
+                    [](const ThreadContext64& ctx) {
+                        CHECK(ctx.rbx.qword == rcx);
+                        CHECK(ctx.rcx.qword == rbx);
+                    });
+        }
+        {
+            CodeBuf code;
+            EmitXchgRegReg(code, 64, kRdx, kRbp);
+            constexpr u64 rdx = 0x1020304050607080ull;
+            constexpr u64 rbp = 0x8877665544332211ull;
+            run(
+                    "xchg-rdx-rbp",
+                    std::move(code),
+                    [](ThreadContext64& ctx) {
+                        ctx.rdx.qword = rdx;
+                        ctx.rbp.qword = rbp;
+                    },
+                    [](const ThreadContext64& ctx) {
+                        CHECK(ctx.rdx.qword == rbp);
+                        CHECK(ctx.rbp.qword == rdx);
+                    });
+        }
+        {
+            CodeBuf code;
+            EmitXchgRegReg(code, 64, kRbx, kRbp);
+            constexpr u64 rbx = 0x1111222233334444ull;
+            constexpr u64 rbp = 0xAAAABBBBCCCCDDDDull;
+            run(
+                    "xchg-rbx-rbp",
+                    std::move(code),
+                    [](ThreadContext64& ctx) {
+                        ctx.rbx.qword = rbx;
+                        ctx.rbp.qword = rbp;
+                    },
+                    [](const ThreadContext64& ctx) {
+                        CHECK(ctx.rbx.qword == rbp);
+                        CHECK(ctx.rbp.qword == rbx);
+                    });
+        }
+        {
+            CodeBuf code;
+            EmitXchgRegReg(code, 64, kRax, kRsp);
+            constexpr u64 rax = 0x5566778899AABBCCull;
+            run(
+                    "xchg-rax-rsp",
+                    std::move(code),
+                    [](ThreadContext64& ctx) { ctx.rax.qword = rax; },
+                    [stack](const ThreadContext64& ctx) {
+                        CHECK(ctx.rax.qword == stack);
+                        CHECK(ctx.rsp.qword == rax);
+                    });
+        }
+        {
+            CodeBuf code;
+            code.B(0x48);
+            code.B(0x0F);
+            code.B(0xC1);
+            EmitModRMReg(code, kRcx, kRbx);  // xadd rbx, rcx
+            constexpr u64 rbx = 0xFEDCBA9876543210ull;
+            constexpr u64 rcx = 0x0123456789ABCDEFull;
+            run(
+                    "xadd-rbx-rcx",
+                    std::move(code),
+                    [](ThreadContext64& ctx) {
+                        ctx.rbx.qword = rbx;
+                        ctx.rcx.qword = rcx;
+                    },
+                    [](const ThreadContext64& ctx) {
+                        CHECK(ctx.rbx.qword == rbx + rcx);
+                        CHECK(ctx.rcx.qword == rbx);
+                    });
+        }
+        {
+            CodeBuf code;
+            EmitXchgRegReg(code, 32, kRbx, kRcx);
+            constexpr u64 rbx = 0xAAAABBBB12345678ull;
+            constexpr u64 rcx = 0xCCCCDDDD89ABCDEFull;
+            run(
+                    "xchg-ebx-ecx",
+                    std::move(code),
+                    [](ThreadContext64& ctx) {
+                        ctx.rbx.qword = rbx;
+                        ctx.rcx.qword = rcx;
+                    },
+                    [](const ThreadContext64& ctx) {
+                        CHECK(ctx.rbx.qword == static_cast<u32>(rcx));
+                        CHECK(ctx.rcx.qword == static_cast<u32>(rbx));
+                    });
+        }
+        {
+            CodeBuf code;
+            EmitXchgRegReg(code, 64, kRbx, kRcx);
+            EmitPopcnt(code, 64, kRax, kRdx);  // CallLambda between swap and use.
+            EmitMovRegReg(code, 64, kRsi, kRcx);
+            constexpr u64 rbx = 0x13579BDF2468ACE0ull;
+            constexpr u64 rcx = 0x0F0E0D0C0B0A0908ull;
+            constexpr u64 rdx = 0xF0F0F0F000000001ull;
+            run(
+                    "xchg-old-value-after-lambda",
+                    std::move(code),
+                    [](ThreadContext64& ctx) {
+                        ctx.rbx.qword = rbx;
+                        ctx.rcx.qword = rcx;
+                        ctx.rdx.qword = rdx;
+                    },
+                    [](const ThreadContext64& ctx) {
+                        CHECK(ctx.rbx.qword == rcx);
+                        CHECK(ctx.rcx.qword == rbx);
+                        CHECK(ctx.rsi.qword == rbx);
+                        CHECK(ctx.rax.qword == std::popcount(rdx));
+                    });
+        }
+        X86Instance::Destroy(instance);
+    }
+
+    if (old_func) {
+        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_FUNC_BASE");
+    }
+    if (old_static) {
+        setenv("SVM_STATIC_REGS", old_static_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_STATIC_REGS");
+    }
+    if (old_uniform) {
+        setenv("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_UNIFORM_ELIM");
+    }
+    if (old_jit) {
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_ENABLE_JIT");
+    }
+    if (old_lambda) {
+        setenv("SVM_FUNC_LAMBDA", old_lambda_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_FUNC_LAMBDA");
+    }
+    backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
 TEST_CASE("x86 function JIT large lambda-free CFG") {
     constexpr size_t kArenaSize = 0x80000;
     void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE,
