@@ -1044,6 +1044,9 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_CMPXCHG8B:
             DecodeCmpxchg8b(insn);
             break;
+        case I_CMPXCHG16B:
+            DecodeCmpxchg16b(insn);
+            break;
         case I_PALIGNR:
             DecodePalignr(insn);
             break;
