@@ -149,7 +149,7 @@ void JitTranslator::EmitAnd(ir::Inst* inst) {
         MergeNZCV();
         // x86 logical ops: N/Z from the result, C/V cleared.
         __ Ands(result, left_register, right_operand);
-        MergeLogicalFlagsNZ();
+        MergeLogicalFlagsNZ(pseudo_flags.set);
         if (True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }
@@ -172,7 +172,7 @@ void JitTranslator::EmitAndNot(ir::Inst* inst) {
     if (!pseudo_flags.Null()) {
         MergeNZCV();
         __ Bics(result, left_register, right_operand);
-        MergeLogicalFlagsNZ();
+        MergeLogicalFlagsNZ(pseudo_flags.set);
         if (True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }

@@ -2724,6 +2724,215 @@ TEST_CASE("Fuzz x86 sse float edge") {
     REQUIRE(env.failures == 0);
 }
 
+TEST_CASE("Fuzz x86 x87") {
+    FuzzEnv env;
+    const int iters = env.Iters(256);
+    struct Ext80Bits {
+        u64 significand;
+        u16 sign_exp;
+    };
+    static constexpr Ext80Bits kExtPool[] = {
+            {0x0000000000000000ull, 0x0000},  // +0
+            {0x0000000000000000ull, 0x8000},  // -0
+            {0x0000000000000001ull, 0x0000},  // minimum ext80 denormal
+            {0x4000000000000000ull, 0x0000},  // mid ext80 denormal
+            {0x8000000000000000ull, 0x3FFF},  // +1
+            {0x8000000000000000ull, 0xBFFF},  // -1
+            {0xA000000000000000ull, 0x4000},  // +2.5
+            {0x8000000000000000ull, 0x403E},  // +2^63
+            {0x8000000000000000ull, 0xC03E},  // -2^63
+            {0x8000000000000000ull, 0x7FFF},  // +Inf
+            {0x8000000000000000ull, 0xFFFF},  // -Inf
+            {0xC000000000000000ull, 0x7FFF},  // canonical QNaN
+            {0xC123456789ABCDEFull, 0x7FFF},  // payload QNaN
+            {0xA123456789ABCDEFull, 0x7FFF},  // payload SNaN
+            // A huge finite ext80-only value in the 1e4932 range.
+            {0xD72CB2A95C7EF6CDull, 0x7FFE},
+    };
+    static constexpr s64 kIntPool[] = {
+            0,
+            1,
+            -1,
+            std::numeric_limits<s32>::max(),
+            std::numeric_limits<s32>::min(),
+            std::numeric_limits<s64>::max(),
+            std::numeric_limits<s64>::min(),
+    };
+
+    const auto emit_mem = [](CodeBuf& b, u8 primary, u8 group, s32 displacement) {
+        MemOp memory{};
+        memory.disp = displacement;
+        EmitRex(b, false, false, false, true);
+        b.B(primary);
+        EmitModRMMem(b, group, memory);
+    };
+    const auto emit_reg = [](CodeBuf& b, u8 primary, u8 secondary) {
+        b.B(primary);
+        b.B(secondary);
+    };
+    const auto write_ext = [&](s32 displacement, Ext80Bits value) {
+        std::memcpy(reinterpret_cast<void*>(env.data_addr + displacement),
+                    &value.significand,
+                    8);
+        std::memcpy(reinterpret_cast<void*>(env.data_addr + displacement + 8),
+                    &value.sign_exp,
+                    2);
+    };
+    const auto is_ext_nan = [](Ext80Bits value) {
+        return (value.sign_exp & 0x7FFF) == 0x7FFF &&
+               (value.significand & 0x7FFFFFFFFFFFFFFFull) != 0;
+    };
+    const auto is_ext_denormal = [](Ext80Bits value) {
+        return (value.sign_exp & 0x7FFF) == 0 && value.significand != 0;
+    };
+    const auto clear_env_pointer_fields = [](CodeBuf& b, s32 displacement) {
+        MemOp field{};
+        // SwiftVM intentionally stores but does not update FIP/FDP/FOP yet.
+        // Normalize those documented approximation fields after FNSTENV so
+        // the differential continues to compare FCW/FSW/full-FTW exactly.
+        field.disp = displacement + 12;  // FIP
+        EmitMovMemImm(b, 32, field, 0);
+        field.disp = displacement + 18;  // FOP (upper half of FCS/FOP)
+        EmitMovMemImm(b, 16, field, 0);
+        field.disp = displacement + 20;  // FDP
+        EmitMovMemImm(b, 32, field, 0);
+    };
+
+    for (int i = 0; i < iters; ++i) {
+        env.InitRegs();
+        CodeBuf b;
+        // x87 instructions do not normally define EFLAGS.  RunIteration
+        // resets Unicorn's EFLAGS but deliberately preserves SwiftVM's flag
+        // shadow, so establish an identical live flag value before every case
+        // that ends in LAHF/SETO capture.
+        env.EmitFlagPrefix(b);
+        emit_reg(b, 0xDB, 0xE3);  // FNINIT
+        constexpr s32 kA = 0x300;
+        constexpr s32 kB = 0x320;
+        constexpr s32 kOut = 0x380;
+        std::memset(reinterpret_cast<void*>(env.data_addr + kOut), 0, 0x40);
+
+        switch (i % 8) {
+            case 0: {
+                // m32/m64 load, binary pop form, and exact ext80 store.
+                const bool wide = (env.rng() & 1) != 0;
+                if (wide) {
+                    *reinterpret_cast<u64*>(env.data_addr + kA) = PickFloat64Bits(env);
+                    *reinterpret_cast<u64*>(env.data_addr + kB) = PickFloat64Bits(env);
+                    emit_mem(b, 0xDD, 0, kA);
+                    emit_mem(b, 0xDD, 0, kB);
+                } else {
+                    *reinterpret_cast<u32*>(env.data_addr + kA) = PickFloat32Bits(env);
+                    *reinterpret_cast<u32*>(env.data_addr + kB) = PickFloat32Bits(env);
+                    emit_mem(b, 0xD9, 0, kA);
+                    emit_mem(b, 0xD9, 0, kB);
+                }
+                static constexpr u8 kPopOps[] = {0xC1, 0xC9, 0xE9, 0xF9};
+                emit_reg(b, 0xDE, kPopOps[env.rng() % std::size(kPopOps)]);
+                emit_mem(b, 0xDB, 7, kOut);
+                break;
+            }
+            case 1: {
+                // Native ext80 operands include denormals, NaNs, infinities
+                // and values beyond binary64's exponent range.
+                write_ext(kA, kExtPool[env.rng() % std::size(kExtPool)]);
+                write_ext(kB, kExtPool[env.rng() % std::size(kExtPool)]);
+                emit_mem(b, 0xDB, 5, kA);
+                emit_mem(b, 0xDB, 5, kB);
+                static constexpr u8 kPopOps[] = {0xC1, 0xC9, 0xE9, 0xF9};
+                emit_reg(b, 0xDE, kPopOps[env.rng() % std::size(kPopOps)]);
+                emit_mem(b, 0xDB, 7, kOut);
+                break;
+            }
+            case 2: {
+                // Exact signed integer loads and stores, including 2^63
+                // boundaries and integer-indefinite collision at INT64_MIN.
+                const s64 value = kIntPool[env.rng() % std::size(kIntPool)];
+                *reinterpret_cast<s64*>(env.data_addr + kA) = value;
+                emit_mem(b, 0xDF, 5, kA);    // FILD m64
+                emit_mem(b, 0xDF, 7, kOut);  // FISTP m64
+                break;
+            }
+            case 3: {
+                // Float-to-integer invalid paths: NaN/Inf/out-of-range must
+                // materialize the x86 0x8000... indefinite result.
+                *reinterpret_cast<u64*>(env.data_addr + kA) = PickFloat64Bits(env);
+                emit_mem(b, 0xDD, 0, kA);
+                emit_mem(b, 0xDF, 7, kOut);
+                break;
+            }
+            case 4: {
+                // C3/C2/C0 -> ZF/PF/CF through the canonical FNSTSW AX+SAHF
+                // sequence used by compiled x87 code.  Unicorn/QEMU omits IE
+                // for FCOM with a QNaN and miscompares equal ext80 denormals as
+                // greater, unlike real x86 (Rosetta probes: FCOM QNaN,+0 ->
+                // FSW 0x7501; minDn,minDn and midDn,midDn -> FSW 0x7002).
+                // Keep the three-way comparison on cases where Unicorn is a
+                // usable oracle; directed tests below retain exact NaN and
+                // equal-denormal status-word coverage.
+                Ext80Bits a;
+                Ext80Bits c;
+                do {
+                    a = kExtPool[env.rng() % std::size(kExtPool)];
+                } while (is_ext_nan(a));
+                do {
+                    c = kExtPool[env.rng() % std::size(kExtPool)];
+                } while (is_ext_nan(c) ||
+                         (is_ext_denormal(a) && is_ext_denormal(c) &&
+                          a.significand == c.significand &&
+                          a.sign_exp == c.sign_exp));
+                write_ext(kA, a);
+                write_ext(kB, c);
+                emit_mem(b, 0xDB, 5, kB);
+                emit_mem(b, 0xDB, 5, kA);
+                emit_reg(b, 0xD8, 0xD1);  // FCOM ST(1)
+                emit_reg(b, 0xDF, 0xE0);  // FNSTSW AX
+                b.B(0x9E);               // SAHF
+                // Unicorn also omits the real-x86 DE bit whenever a denormal
+                // participates.  AL is not part of the FNSTSW+SAHF contract
+                // under test, so discard it after SAHF; directed tests assert
+                // exact DE/IE contents before any masking.
+                EmitMovRegImm(b, 8, kRax, 0);
+                env.EmitFlagCapture(b);
+                env.RunIteration(
+                        b.c, FlagMask{kAhCF | kAhPF | kAhZF, false}, "x87-compare");
+                continue;
+            }
+            case 5: {
+                write_ext(kA, kExtPool[env.rng() % std::size(kExtPool)]);
+                emit_mem(b, 0xDB, 5, kA);
+                emit_reg(b, 0xD9, (env.rng() & 1) ? 0xFA : 0xFC);  // FSQRT/FRNDINT
+                emit_mem(b, 0xDB, 7, kOut);
+                break;
+            }
+            case 6: {
+                // Constants, exchange and a register pop store.
+                emit_reg(b, 0xD9, 0xE8 + (env.rng() % 7));
+                emit_reg(b, 0xD9, 0xE8 + (env.rng() % 7));
+                emit_reg(b, 0xD9, 0xC9);  // FXCH ST(1)
+                emit_mem(b, 0xDB, 7, kOut);
+                emit_mem(b, 0xDB, 7, kOut + 0x10);
+                break;
+            }
+            default: {
+                // Full tag/TOP/control/status environment round-trip.
+                emit_reg(b, 0xD9, 0xE8);
+                emit_reg(b, 0xD9, 0xEE);
+                emit_mem(b, 0xD9, 6, kOut);  // FNSTENV
+                emit_reg(b, 0xDB, 0xE3);
+                emit_mem(b, 0xD9, 4, kOut);  // FLDENV
+                emit_mem(b, 0xD9, 6, kOut + 0x20);
+                clear_env_pointer_fields(b, kOut);
+                clear_env_pointer_fields(b, kOut + 0x20);
+                break;
+            }
+        }
+        env.EmitFlagCapture(b);
+        env.RunIteration(b.c, FlagMask{}, "x87");
+    }
+    REQUIRE(env.failures == 0);
+}
+
 TEST_CASE("SSE batch A directed edge semantics") {
     using Vec128 = std::array<u8, 16>;
     struct RunResult {
@@ -4056,6 +4265,328 @@ TEST_CASE("SSE batch B directed edge semantics") {
     REQUIRE(read64(widened_qnan) == 0x7FF82468A0000000ull);
 
     X86Instance::Destroy(instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
+TEST_CASE("x87 directed edge semantics") {
+    constexpr size_t kArenaSize = 0x80000;
+    void* arena =
+            mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 data = base + 0x60000;
+    const u64 stack = base + 0x5F000;
+    size_t code_cursor = 1;
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+
+    const auto emit_mem = [](CodeBuf& b, u8 primary, u8 group, s32 displacement) {
+        MemOp memory{};
+        memory.disp = displacement;
+        EmitRex(b, false, false, false, true);
+        b.B(primary);
+        EmitModRMMem(b, group, memory);
+    };
+    const auto emit_reg = [](CodeBuf& b, u8 primary, u8 secondary) {
+        b.B(primary);
+        b.B(secondary);
+    };
+
+    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const bool had_old_jit = old_jit != nullptr;
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    for (const bool jit : {true, false}) {
+        setenv("SVM_ENABLE_JIT", jit ? "1" : "0", 1);
+        auto* instance = X86Instance::Make();
+
+        const auto run = [&](CodeBuf b) {
+            b.B(0xF4);
+            const u64 code = base + code_cursor++ * 0x200;
+            REQUIRE(code + b.c.size() < base + 0x50000);
+            std::memcpy(reinterpret_cast<void*>(code), b.c.data(), b.c.size());
+            auto* core = X86Core::Make(instance);
+            auto& ctx = core->GetContext();
+            ctx.rip.qword = code;
+            ctx.r13.qword = data;
+            ctx.rsp.qword = stack;
+            const auto exit = core->Run();
+            REQUIRE(exit == swift::translator::None);
+            ThreadContext64 result = ctx;
+            X86Core::Destroy(core);
+            return result;
+        };
+
+        INFO("backend=" << (jit ? "JIT" : "interpreter"));
+
+        // Eight pushes fill every physical register.  The ninth masked stack
+        // overflow wraps TOP to 7 and replaces that physical slot with the
+        // architectural indefinite value/tag.
+        {
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);  // FNINIT
+            for (int i = 0; i < 9; ++i) emit_reg(b, 0xD9, 0xE8);  // FLD1
+            const auto ctx = run(std::move(b));
+            REQUIRE(((ctx.x87_fsw >> 11) & 7) == 7);
+            REQUIRE(ctx.x87_ftw == 0x8000);
+            REQUIRE(ctx.x87_regs[7].significand == 0xC000000000000000ull);
+            REQUIRE(ctx.x87_regs[7].sign_exp == 0xFFFF);
+            REQUIRE((ctx.x87_fsw & 0x0041) == 0x0041);  // IE + stack fault
+        }
+
+        // 0 < 1: FCOM writes C0, FNSTSW AX moves it to AH.CF, and SAHF must
+        // therefore make SETB true.  The direct FCOMI form must agree.
+        {
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);  // FLD1
+            emit_reg(b, 0xD9, 0xEE);  // FLDZ
+            emit_reg(b, 0xD8, 0xD1);  // FCOM ST(1)
+            emit_reg(b, 0xDF, 0xE0);  // FNSTSW AX
+            b.B(0x9E);               // SAHF
+            EmitSetcc(b, 0x2, kR10);  // SETB
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0xFF) == 1);
+            REQUIRE((ctx.rax.qword & 0x4500) == 0x0100);  // C0=1,C2=C3=0
+        }
+        {
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);
+            emit_reg(b, 0xD9, 0xEE);
+            emit_reg(b, 0xDB, 0xF1);  // FCOMI ST(0),ST(1)
+            EmitSetcc(b, 0x2, kR10);
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0xFF) == 1);
+        }
+        {
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);  // FLD1
+            emit_reg(b, 0xD9, 0xE8);  // FLD1
+            emit_reg(b, 0xD8, 0xD1);  // FCOM ST(1): equal
+            emit_reg(b, 0xDF, 0xE0);  // FNSTSW AX
+            b.B(0x9E);               // SAHF
+            EmitSetcc(b, 0x4, kR10);  // SETZ
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0xFF) == 1);
+            REQUIRE((ctx.rax.qword & 0x4700) == 0x4000);  // C3 only; C0-C2 clear
+        }
+        {
+            constexpr u64 qnan = 0xC123456789ABCDEFull;
+            *reinterpret_cast<u64*>(data + 0x20) = qnan;
+            *reinterpret_cast<u16*>(data + 0x28) = 0x7FFF;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);     // FLD1
+            emit_mem(b, 0xDB, 5, 0x20);  // FLD m80 QNaN
+            emit_reg(b, 0xD8, 0xD1);     // FCOM ST(1): unordered
+            emit_reg(b, 0xDF, 0xE0);     // FNSTSW AX
+            b.B(0x9E);                  // SAHF
+            EmitSetcc(b, 0x2, kR10);     // SETB / CF
+            EmitSetcc(b, 0xA, kR11);     // SETP / PF
+            EmitSetcc(b, 0x4, kR12);     // SETZ / ZF
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0xFF) == 1);
+            REQUIRE((ctx.r11.qword & 0xFF) == 1);
+            REQUIRE((ctx.r12.qword & 0xFF) == 1);
+            // Real x86 distinguishes FCOM from FUCOM for quiet NaNs: FCOM
+            // raises invalid even for a QNaN.  A Rosetta real-x86 probe of
+            // FCOM QNaN,+0 reports FSW=0x7501; the ordered peer does not affect
+            // that NaN rule, while Unicorn/QEMU incorrectly omits IE.
+            REQUIRE((ctx.rax.qword & 0xFFFF) == 0x7501);
+        }
+        {
+            constexpr u64 qnan = 0xC123456789ABCDEFull;
+            *reinterpret_cast<u64*>(data + 0x20) = qnan;
+            *reinterpret_cast<u16*>(data + 0x28) = 0x7FFF;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);     // FLD1
+            emit_mem(b, 0xDB, 5, 0x20);  // FLD m80 QNaN
+            emit_reg(b, 0xDD, 0xE1);     // FUCOM ST(1)
+            emit_reg(b, 0xDF, 0xE0);     // FNSTSW AX
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.rax.qword & 0xFFFF) == 0x7500);  // unordered, no IE
+        }
+        {
+            constexpr u64 snan = 0xA123456789ABCDEFull;
+            *reinterpret_cast<u64*>(data + 0x20) = snan;
+            *reinterpret_cast<u16*>(data + 0x28) = 0x7FFF;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);     // FLD1
+            emit_mem(b, 0xDB, 5, 0x20);  // FLD m80 SNaN
+            emit_reg(b, 0xDD, 0xE1);     // FUCOM ST(1)
+            emit_reg(b, 0xDF, 0xE0);     // FNSTSW AX
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.rax.qword & 0xFFFF) == 0x7501);  // unordered + IE
+        }
+        {
+            // Equal ext80 denormals compare by their true value and raise DE.
+            *reinterpret_cast<u64*>(data + 0x20) = 1;
+            *reinterpret_cast<u16*>(data + 0x28) = 0;
+            CodeBuf b;
+            EmitAluRegReg(b, 7, 64, kRax, kRax);  // CMP: seed ZF=1
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x20);
+            emit_mem(b, 0xDB, 5, 0x20);
+            emit_reg(b, 0xD8, 0xD1);              // FCOM ST(1)
+            emit_reg(b, 0xDF, 0xE0);              // FNSTSW AX
+            EmitMovRegReg(b, 16, kR10, kRax);     // preserve raw FSW
+            b.B(0x9E);                            // SAHF
+            b.B(0x9F);                            // LAHF
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0xFFFF) == 0x7002);  // C3 + DE
+            REQUIRE(((ctx.rax.qword >> 8) & 0x45) == 0x40);
+        }
+        {
+            // A flag prefix with ZF=1 must not contaminate the subsequent
+            // SAHF result.  Loading minDenormal followed by +0 leaves
+            // ST(0)=+0 < ST(1)=minDenormal: C0+DE, hence CF=1/ZF=0.
+            *reinterpret_cast<u64*>(data + 0x20) = 1;
+            *reinterpret_cast<u16*>(data + 0x28) = 0;
+            *reinterpret_cast<u64*>(data + 0x30) = 0;
+            *reinterpret_cast<u16*>(data + 0x38) = 0;
+            CodeBuf b;
+            EmitAluRegReg(b, 7, 64, kRax, kRax);  // CMP: seed ZF=1
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x20);           // FLD min denormal
+            emit_mem(b, 0xDB, 5, 0x30);           // FLD +0
+            emit_reg(b, 0xD8, 0xD1);              // FCOM ST(1)
+            emit_reg(b, 0xDF, 0xE0);              // FNSTSW AX
+            EmitMovRegReg(b, 16, kR10, kRax);     // preserve raw FSW
+            b.B(0x9E);                            // SAHF
+            b.B(0x9F);                            // LAHF
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0xFFFF) == 0x3102);  // C0 + DE
+            REQUIRE(((ctx.rax.qword >> 8) & 0x45) == 0x01);
+            REQUIRE((ctx.rax.qword & 0xFF) == 0x02);
+        }
+
+        // PC=24 rounds the addition itself to single precision.  1+2^-25 is
+        // consequently exactly 1.0 when later stored as double.
+        {
+            *reinterpret_cast<u16*>(data + 0x40) = 0x007F;
+            *reinterpret_cast<u64*>(data + 0x48) = 0x3FF0000000000000ull;
+            *reinterpret_cast<u64*>(data + 0x50) = 0x3E60000000000000ull;
+            *reinterpret_cast<u64*>(data + 0x58) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x40);  // FLDCW
+            emit_mem(b, 0xDD, 0, 0x48);  // FLD m64 1
+            emit_mem(b, 0xDD, 0, 0x50);  // FLD m64 2^-25
+            emit_reg(b, 0xDE, 0xC1);     // FADDP ST(1),ST(0)
+            emit_mem(b, 0xDD, 3, 0x58);  // FSTP m64
+            run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x58) == 0x3FF0000000000000ull);
+        }
+        // RC=round-up controls a narrowing store.  1+2^-24 is exactly halfway
+        // between the first two f32 values at 1.0, so it rounds to 0x3f800001.
+        {
+            *reinterpret_cast<u16*>(data + 0x40) = 0x0B7F;
+            *reinterpret_cast<u64*>(data + 0x48) = 0x3FF0000010000000ull;
+            *reinterpret_cast<u32*>(data + 0x58) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x40);  // FLDCW: RC=round toward +Inf
+            emit_mem(b, 0xDD, 0, 0x48);  // FLD exact halfway f64
+            emit_mem(b, 0xD9, 3, 0x58);  // FSTP m32
+            run(std::move(b));
+            REQUIRE(*reinterpret_cast<u32*>(data + 0x58) == 0x3F800001u);
+        }
+
+        // Invalid integer conversion stores the x86 integer indefinite value.
+        {
+            *reinterpret_cast<u64*>(data + 0x60) = 0x7FF0000000000000ull;
+            *reinterpret_cast<u64*>(data + 0x68) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDD, 0, 0x60);  // FLD +Inf
+            emit_mem(b, 0xDF, 7, 0x68);  // FISTP m64
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x68) ==
+                    0x8000000000000000ull);
+            REQUIRE((ctx.x87_fsw & 1) != 0);
+        }
+
+        // A quiet extF80 NaN payload survives arithmetic and the pop form;
+        // the physical stack is empty again after the final store.
+        {
+            constexpr u64 payload = 0xC123456789ABCDEFull;
+            *reinterpret_cast<u64*>(data + 0x70) = payload;
+            *reinterpret_cast<u16*>(data + 0x78) = 0x7FFF;
+            std::memset(reinterpret_cast<void*>(data + 0x80), 0, 10);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x70);  // FLD m80
+            emit_reg(b, 0xD9, 0xE8);     // FLD1
+            emit_reg(b, 0xDE, 0xC1);     // FADDP
+            emit_mem(b, 0xDB, 7, 0x80);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x80) == payload);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x88) == 0x7FFF);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+            REQUIRE(((ctx.x87_fsw >> 11) & 7) == 0);
+        }
+
+        // Environment save/load restores FCW, TOP and the full two-bit tag
+        // word (register payloads are intentionally not part of FNSTENV).
+        {
+            std::memset(reinterpret_cast<void*>(data + 0x100), 0, 28);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);
+            emit_reg(b, 0xD9, 0xEE);
+            emit_mem(b, 0xD9, 6, 0x100);  // FNSTENV
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 4, 0x100);  // FLDENV
+            const auto ctx = run(std::move(b));
+            REQUIRE(((ctx.x87_fsw >> 11) & 7) == 6);
+            REQUIRE(ctx.x87_ftw == 0x1FFF);
+            REQUIRE(ctx.x87_fcw == 0x037F);
+        }
+
+        // FXSAVE writes logical ST slots plus physical abridged tags; FXRSTOR
+        // reconstructs the full tags and the same logical stack order.
+        {
+            std::memset(reinterpret_cast<void*>(data + 0x200), 0xCC, 512);
+            std::memset(reinterpret_cast<void*>(data + 0x420), 0, 32);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);  // FLD1
+            emit_reg(b, 0xD9, 0xEE);  // FLDZ
+            MemOp save{};
+            save.disp = 0x200;
+            EmitRex(b, false, false, false, true);
+            b.B(0x0F);
+            b.B(0xAE);
+            EmitModRMMem(b, 0, save);  // FXSAVE
+            emit_reg(b, 0xDB, 0xE3);
+            EmitRex(b, false, false, false, true);
+            b.B(0x0F);
+            b.B(0xAE);
+            EmitModRMMem(b, 1, save);  // FXRSTOR
+            emit_mem(b, 0xDB, 7, 0x420);
+            emit_mem(b, 0xDB, 7, 0x430);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x200) == 0x037F);
+            REQUIRE(((*reinterpret_cast<u16*>(data + 0x202) >> 11) & 7) == 6);
+            REQUIRE(*reinterpret_cast<u8*>(data + 0x204) == 0xC0);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x420) == 0);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x428) == 0);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x430) ==
+                    0x8000000000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x438) == 0x3FFF);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+            REQUIRE(((ctx.x87_fsw >> 11) & 7) == 0);
+        }
+
+        X86Instance::Destroy(instance);
+    }
+    if (had_old_jit)
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    else
+        unsetenv("SVM_ENABLE_JIT");
     swift::runtime::backend::SmcTracker::SetEnabled(true);
     munmap(arena, kArenaSize);
 }
