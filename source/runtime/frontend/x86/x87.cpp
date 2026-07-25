@@ -343,14 +343,30 @@ void StoreInteger(ThreadContext64& ctx,
     const u8 rounding = truncate ? softfloat_round_minMag : state.roundingMode;
     ctx.x87_fsw &= static_cast<u16>(~kSwC1);
 
+    // SoftFloat's integer conversion entry points are intended to return their
+    // configured NaN sentinel, but x87 must not let any NaN payload reach the
+    // finite significand-shift path.  All FIST/FISTP/FISTTP widths use the
+    // architectural integer-indefinite result and raise invalid.
+    if (IsNaN(value)) {
+        indefinite();
+        Raise(ctx, kSwIE);
+        return;
+    }
+
     if (format == X87Format::Int64) {
         const s64 out = extF80_to_i64(&state, value, rounding, true);
-        StoreGuest<u64>(address, static_cast<u64>(out));
+        if (state.exceptionFlags & softfloat_flag_invalid) {
+            indefinite();
+        } else {
+            StoreGuest<u64>(address, static_cast<u64>(out));
+        }
     } else {
         const s32 out = extF80_to_i32(&state, value, rounding, true);
-        if (format == X87Format::Int16 &&
-            ((state.exceptionFlags & softfloat_flag_invalid) ||
-             out < std::numeric_limits<s16>::min() || out > std::numeric_limits<s16>::max())) {
+        if (state.exceptionFlags & softfloat_flag_invalid) {
+            indefinite();
+        } else if (format == X87Format::Int16 &&
+                   (out < std::numeric_limits<s16>::min() ||
+                    out > std::numeric_limits<s16>::max())) {
             state.exceptionFlags |= softfloat_flag_invalid;
             StoreGuest<u16>(address, 0x8000);
         } else if (format == X87Format::Int16) {
