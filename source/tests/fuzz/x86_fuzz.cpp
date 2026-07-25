@@ -2785,6 +2785,34 @@ TEST_CASE("Fuzz x86 x87") {
     const auto is_ext_denormal = [](Ext80Bits value) {
         return (value.sign_exp & 0x7FFF) == 0 && value.significand != 0;
     };
+    const auto is_f32_nan = [](u32 value) {
+        return (value & 0x7F800000u) == 0x7F800000u &&
+               (value & 0x007FFFFFu) != 0;
+    };
+    const auto is_f64_nan = [](u64 value) {
+        return (value & 0x7FF0000000000000ull) == 0x7FF0000000000000ull &&
+               (value & 0x000FFFFFFFFFFFFFull) != 0;
+    };
+    const auto binary_f32_is_nan = [&](u8 opcode, u32 a, u32 c) {
+        if (is_f32_nan(a) || is_f32_nan(c)) return true;
+        const float left = std::bit_cast<float>(a);
+        const float right = std::bit_cast<float>(c);
+        const float result = opcode == 0xC1 ? left + right
+                             : opcode == 0xC9 ? left * right
+                             : opcode == 0xE9 ? left - right
+                                              : left / right;
+        return std::isnan(result);
+    };
+    const auto binary_f64_is_nan = [&](u8 opcode, u64 a, u64 c) {
+        if (is_f64_nan(a) || is_f64_nan(c)) return true;
+        const double left = std::bit_cast<double>(a);
+        const double right = std::bit_cast<double>(c);
+        const double result = opcode == 0xC1 ? left + right
+                              : opcode == 0xC9 ? left * right
+                              : opcode == 0xE9 ? left - right
+                                               : left / right;
+        return std::isnan(result);
+    };
     const auto clear_env_pointer_fields = [](CodeBuf& b, s32 displacement) {
         MemOp field{};
         // SwiftVM intentionally stores but does not update FIP/FDP/FOP yet.
@@ -2816,19 +2844,36 @@ TEST_CASE("Fuzz x86 x87") {
             case 0: {
                 // m32/m64 load, binary pop form, and exact ext80 store.
                 const bool wide = (env.rng() & 1) != 0;
+                static constexpr u8 kPopOps[] = {0xC1, 0xC9, 0xE9, 0xF9};
+                const u8 pop_op = kPopOps[env.rng() % std::size(kPopOps)];
                 if (wide) {
-                    *reinterpret_cast<u64*>(env.data_addr + kA) = PickFloat64Bits(env);
-                    *reinterpret_cast<u64*>(env.data_addr + kB) = PickFloat64Bits(env);
+                    u64 a;
+                    u64 c;
+                    do {
+                        a = PickFloat64Bits(env);
+                        c = PickFloat64Bits(env);
+                    } while (binary_f64_is_nan(pop_op, a, c));
+                    *reinterpret_cast<u64*>(env.data_addr + kA) = a;
+                    *reinterpret_cast<u64*>(env.data_addr + kB) = c;
                     emit_mem(b, 0xDD, 0, kA);
                     emit_mem(b, 0xDD, 0, kB);
                 } else {
-                    *reinterpret_cast<u32*>(env.data_addr + kA) = PickFloat32Bits(env);
-                    *reinterpret_cast<u32*>(env.data_addr + kB) = PickFloat32Bits(env);
+                    u32 a;
+                    u32 c;
+                    do {
+                        a = PickFloat32Bits(env);
+                        c = PickFloat32Bits(env);
+                    } while (binary_f32_is_nan(pop_op, a, c));
+                    *reinterpret_cast<u32*>(env.data_addr + kA) = a;
+                    *reinterpret_cast<u32*>(env.data_addr + kB) = c;
                     emit_mem(b, 0xD9, 0, kA);
                     emit_mem(b, 0xD9, 0, kB);
                 }
-                static constexpr u8 kPopOps[] = {0xC1, 0xC9, 0xE9, 0xF9};
-                emit_reg(b, 0xDE, kPopOps[env.rng() % std::size(kPopOps)]);
+                // Unicorn propagates a different NaN payload here and, when
+                // that result is converted with FISTP, stores payload-derived
+                // garbage (observed 0xc1...) instead of real x86's integer
+                // indefinite.  Directed tests retain the exact NaN paths.
+                emit_reg(b, 0xDE, pop_op);
                 emit_mem(b, 0xDB, 7, kOut);
                 break;
             }
@@ -2855,8 +2900,15 @@ TEST_CASE("Fuzz x86 x87") {
             }
             case 3: {
                 // Float-to-integer invalid paths: NaN/Inf/out-of-range must
-                // materialize the x86 0x8000... indefinite result.
-                *reinterpret_cast<u64*>(env.data_addr + kA) = PickFloat64Bits(env);
+                // materialize the x86 0x8000... indefinite result.  Unicorn
+                // stores NaN-payload garbage for this path, so keep Inf and
+                // finite overflow in the differential and assert all NaNs in
+                // the directed suite.
+                u64 input;
+                do {
+                    input = PickFloat64Bits(env);
+                } while (is_f64_nan(input));
+                *reinterpret_cast<u64*>(env.data_addr + kA) = input;
                 emit_mem(b, 0xDD, 0, kA);
                 emit_mem(b, 0xDF, 7, kOut);
                 break;
@@ -4857,6 +4909,70 @@ TEST_CASE("x87 directed edge semantics") {
             REQUIRE(*reinterpret_cast<u64*>(data + 0x68) ==
                     0x8000000000000000ull);
             REQUIRE((ctx.x87_fsw & 1) != 0);
+        }
+
+        // Every NaN class uses the integer-indefinite result for FISTP and
+        // raises IE; no payload bits may leak into the integer destination.
+        const auto require_fistp_nan64 = [&](u64 significand, u16 sign_exp) {
+            *reinterpret_cast<u64*>(data + 0x90) = significand;
+            *reinterpret_cast<u16*>(data + 0x98) = sign_exp;
+            *reinterpret_cast<u64*>(data + 0xA0) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x90);  // FLD m80 NaN
+            emit_mem(b, 0xDF, 7, 0xA0);  // FISTP m64
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0xA0) ==
+                    0x8000000000000000ull);
+            REQUIRE((ctx.x87_fsw & 1) != 0);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+        };
+        require_fistp_nan64(0xC000000000000000ull, 0x7FFF);  // canonical QNaN
+        require_fistp_nan64(0xA123456789ABCDEFull, 0x7FFF);  // payload SNaN
+        require_fistp_nan64(0xC123456789ABCDEFull, 0x7FFF);  // payload QNaN
+
+        // Non-pop FIST m16/m32 follows the same NaN rule and leaves ST(0)
+        // occupied after writing both indefinite values.
+        {
+            *reinterpret_cast<u64*>(data + 0x90) = 0xC123456789ABCDEFull;
+            *reinterpret_cast<u16*>(data + 0x98) = 0x7FFF;
+            *reinterpret_cast<u32*>(data + 0xA0) = 0;
+            *reinterpret_cast<u16*>(data + 0xA4) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x90);  // FLD m80 payload QNaN
+            emit_mem(b, 0xDB, 2, 0xA0);  // FIST m32
+            emit_mem(b, 0xDF, 2, 0xA4);  // FIST m16
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u32*>(data + 0xA0) == 0x80000000u);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0xA4) == 0x8000u);
+            REQUIRE((ctx.x87_fsw & 1) != 0);
+            REQUIRE(ctx.x87_ftw != 0xFFFF);
+        }
+
+        // Exact host repro: the arithmetic result retains the x86 payload, but
+        // converting that NaN must still produce integer indefinite.
+        {
+            *reinterpret_cast<u32*>(data + 0xC0) = 0x7FA12345u;
+            *reinterpret_cast<u32*>(data + 0xC4) = 0x7FC12345u;
+            *reinterpret_cast<u64*>(data + 0xC8) = 0;
+            std::memset(reinterpret_cast<void*>(data + 0xD0), 0, 10);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 0, 0xC0);  // FLD m32 payload NaN
+            emit_mem(b, 0xD9, 0, 0xC4);  // FLD m32 payload QNaN
+            emit_reg(b, 0xDE, 0xC9);     // FMULP ST(1),ST(0)
+            emit_reg(b, 0xD9, 0xC0);     // FLD ST(0), preserve product copy
+            emit_mem(b, 0xDB, 7, 0xD0);  // FSTP m80 payload product
+            emit_mem(b, 0xDF, 7, 0xC8);  // FISTP m64
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0xD0) ==
+                    0xE123450000000000ull);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0xD8) == 0x7FFF);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0xC8) ==
+                    0x8000000000000000ull);
+            REQUIRE((ctx.x87_fsw & 1) != 0);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
         }
 
         // A quiet extF80 NaN payload survives arithmetic and the pop form;
