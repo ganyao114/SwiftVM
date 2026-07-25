@@ -26,9 +26,15 @@
 
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <sys/stat.h>
+#include <unordered_map>
 #include "base/types.h"
 #include "guest_memory.h"
 #include "loader.h"
@@ -75,6 +81,7 @@ enum GuestSyscall : u64 {
     SYS_getegid = 177,
     SYS_gettid = 178,
     SYS_sysinfo = 179,
+    SYS_clone = 220,
     SYS_brk = 214,
     SYS_munmap = 215,
     SYS_mremap = 216,
@@ -125,6 +132,7 @@ enum GuestSyscallX64 : u64 {
     X64_dup2 = 33,
     X64_nanosleep = 35,
     X64_getpid = 39,
+    X64_clone = 56,
     X64_exit = 60,
     X64_uname = 63,
     X64_fcntl = 72,
@@ -188,6 +196,57 @@ enum GuestErrno : s64 {
     ENAMETOOLONG_ = 36,
     ENOSYS_ = 38,
     ELOOP_ = 40,
+    ETIMEDOUT_ = 110,
+};
+
+// Process-wide state shared by every emulated guest thread. Guest address
+// mappings, the program break, futex queues, and exit_group are Linux process
+// state; keeping them here prevents each per-thread SyscallHandler from
+// accidentally creating a private view.
+class SyscallProcessState {
+public:
+    SyscallProcessState(GuestMemory* memory, VAddr brk_base);
+
+    [[nodiscard]] s64 AllocateTid() {
+        return next_tid.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    s64 Futex(u64 uaddr, u64 op, u64 val, u64 timeout, u64 uaddr2, u64 val3);
+    s64 WakeFutex(u64 uaddr, u32 count);
+    bool StoreGuestU32(u64 uaddr, u32 value);
+
+    void RequestExitGroup(u8 code);
+    [[nodiscard]] bool IsExiting() const {
+        return exiting.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] u8 GetExitCode() const {
+        return exit_code.load(std::memory_order_acquire);
+    }
+
+    GuestMemory* memory;
+    std::mutex memory_mutex;
+    VAddr brk_base{};
+    VAddr brk_current{};
+    VAddr brk_mapped_end{};
+
+private:
+    struct FutexWaiter {
+        std::condition_variable cv;
+        u32 bitset{~u32{0}};
+        bool woken{};
+    };
+    struct FutexQueue {
+        std::deque<std::shared_ptr<FutexWaiter>> waiters;
+    };
+
+    void WakeAllFutexesLocked();
+    s64 WakeFutexMasked(u64 uaddr, u32 count, u32 bitset);
+
+    std::mutex futex_mutex;
+    std::unordered_map<VAddr, FutexQueue> futex_queues;
+    std::atomic<s64> next_tid{1001};
+    std::atomic_bool exiting{false};
+    std::atomic<u8> exit_code{0};
 };
 
 class SyscallHandler {
@@ -199,19 +258,33 @@ public:
     explicit SyscallHandler(GuestMemory* memory,
                             VAddr brk_base,
                             GuestISA isa = GuestISA::kArm64,
-                            std::string exe_path = {})
-            : memory(memory), isa(isa), exe_path(std::move(exe_path)), brk_base(brk_base),
-              brk_current(brk_base), brk_mapped_end(GuestMemory::RoundHostPage(brk_base)) {}
+                            std::string exe_path = {},
+                            std::shared_ptr<SyscallProcessState> process = {},
+                            s64 tid = 1000)
+            : memory(memory), isa(isa), exe_path(std::move(exe_path)),
+              process(process ? std::move(process)
+                              : std::make_shared<SyscallProcessState>(memory, brk_base)),
+              tid(tid) {}
 
     struct Result {
         s64 ret{};
         bool exited{false};
+        bool exit_group{false};
         u8 exit_code{0};
     };
 
+    struct CloneRequest {
+        u64 flags{};
+        VAddr child_stack{};
+        VAddr parent_tid{};
+        VAddr child_tid{};
+        u64 tls{};
+    };
+    using CloneCallback = std::function<s64(const CloneRequest&)>;
+
     Result Handle(u64 nr, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5);
 
-    [[nodiscard]] VAddr GetBrk() const { return brk_current; }
+    [[nodiscard]] VAddr GetBrk() const { return process->brk_current; }
 
     // x86_64 only: hands the handler the thread context so arch_prctl can
     // write fs_base/gs_base through to the frontend-visible fields
@@ -223,11 +296,16 @@ public:
     // range that may hold translated code. The callback must invalidate any
     // stale JIT blocks in that range. nullptr/unset = no-op (tests, interp-only).
     void SetSmcInvalidate(std::function<void(VAddr, VAddr)> fn) { smc_invalidate_ = std::move(fn); }
+    void SetCloneCallback(CloneCallback fn) { clone_callback_ = std::move(fn); }
 
     // TLS segment bases set via arch_prctl (x86_64 only). Mirrors of the
     // context fields, kept for inspection/tests.
     [[nodiscard]] u64 GetFsBase() const { return fs_base; }
     [[nodiscard]] u64 GetGsBase() const { return gs_base; }
+    [[nodiscard]] s64 GetTid() const { return tid; }
+    [[nodiscard]] VAddr GetClearChildTid() const { return clear_child_tid; }
+    void SetClearChildTid(VAddr addr) { clear_child_tid = addr; }
+    [[nodiscard]] std::shared_ptr<SyscallProcessState> GetProcessState() const { return process; }
 
 private:
     s64 SysRead(u64 fd, u64 buf, u64 count);
@@ -260,6 +338,7 @@ private:
     s64 SysIoctl(u64 fd, u64 request, u64 arg);
     s64 SysFutex(u64 uaddr, u64 op, u64 val, u64 timeout, u64 uaddr2, u64 val3);
     s64 SysArchPrctl(u64 code, u64 addr);
+    s64 SysClone(u64 flags, u64 child_stack, u64 parent_tid, u64 child_tid, u64 tls);
     s64 SysPrlimit64(u64 pid, u64 resource, u64 new_rlim, u64 old_rlim);
     s64 SysGetrandom(u64 buf, u64 buflen, u64 flags);
     s64 SysSysinfo(u64 buf);
@@ -269,9 +348,7 @@ private:
     GuestMemory* memory;
     GuestISA isa;
     std::string exe_path;
-    VAddr brk_base{};
-    VAddr brk_current{};
-    VAddr brk_mapped_end{};
+    std::shared_ptr<SyscallProcessState> process;
     // x86_64 ThreadContext64 (translator/x86/cpu.h), set via SetX86Context;
     // arch_prctl writes fs_base/gs_base through it. Opaque here to keep the
     // x86 header out of this one.
@@ -281,9 +358,11 @@ private:
     u64 gs_base{};
     u64 robust_list_head{};
     u64 robust_list_len{};
-    s64 tid{1000};
+    s64 tid{};
+    VAddr clear_child_tid{};
     // SMC callback — see SetSmcInvalidate. nullptr = no SMC tracking active.
     std::function<void(VAddr, VAddr)> smc_invalidate_;
+    CloneCallback clone_callback_;
 };
 
 }  // namespace swift::linux

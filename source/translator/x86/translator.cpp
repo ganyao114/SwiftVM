@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <unordered_set>
 #include "fmt/format.h"
 #include "base/scope_exit.h"
@@ -52,6 +53,22 @@ public:
 };
 
 static MemoryImpl memory_impl{};
+
+static runtime::TsoMode TsoModeFromEnvironment() {
+    const char* value = std::getenv("SVM_TSO_MODE");
+    if (!value || std::strcmp(value, "relaxed") == 0 ||
+        std::strcmp(value, "Relaxed") == 0) {
+        return runtime::TsoMode::Relaxed;
+    }
+    if (std::strcmp(value, "acqrel") == 0 || std::strcmp(value, "AcqRel") == 0) {
+        return runtime::TsoMode::AcqRel;
+    }
+    if (std::strcmp(value, "hardware") == 0 || std::strcmp(value, "Hardware") == 0) {
+        return runtime::TsoMode::Hardware;
+    }
+    LOG_WARNING("Unknown SVM_TSO_MODE '{}'; using relaxed", value);
+    return runtime::TsoMode::Relaxed;
+}
 
 // WORKAROUND (runtime bug, ir/instr.h Inst::GetArg<Operand>): the x86
 // frontend legitimately emits single-sided ir::Operand args (e.g.
@@ -326,11 +343,16 @@ struct X86Instance::Impl final {
                 //   block compilation.
                 .global_opts = global_opts,
                 .arm64_features = Arm64Features::None,
+                .tso_mode = TsoModeFromEnvironment(),
                 .stack_alignment = 16,
                 .page_table = nullptr,
                 .memory_base = memory_base,
                 .memory = &memory_impl,
         };
+        // The x86 decoder mode is process-global because decoded IR is shared
+        // by every Runtime in this Instance. Install it once before any block
+        // can be decoded; the default remains Relaxed.
+        x86::SetTsoMode(config.tso_mode);
         address_space = std::make_unique<backend::AddressSpace>(config);
     }
 
@@ -339,6 +361,18 @@ struct X86Instance::Impl final {
     }
 
     [[nodiscard]] void* Translate(LocationDescriptor pc) const {
+        // Coarse first-cut MT policy: only one thread may inspect/mutate the
+        // frontend's function fallback sets or decode/publish IR at a time.
+        // Already-published JIT code remains concurrently executable.
+        std::lock_guard translate_guard(translate_mutex);
+        // Another thread may have published this exact location while we
+        // waited for the coarse lock. Reuse it instead of compiling a duplicate
+        // function whose Module::Push would fail and surface as IllegalCode.
+        if (address_space->GetConfig().enable_jit) {
+            if (auto* published = address_space->GetCodeCache(pc)) {
+                return published;
+            }
+        }
         auto module = address_space->GetModule(pc);
         auto& m_config = module->GetModuleConfig();
         // Function-level compilation is default-on when the optimization is
@@ -568,6 +602,7 @@ struct X86Instance::Impl final {
     }
 
     std::unique_ptr<backend::AddressSpace> address_space{};
+    mutable std::mutex translate_mutex;
     mutable FunctionCompileStats func_stats{"x86_64"};
     mutable std::unordered_set<LocationDescriptor> block_only_locations{};
     mutable bool function_compilation_disabled{};
@@ -678,6 +713,11 @@ void X86Instance::InvalidateCodeRange(uint64_t start, uint64_t end) {
 void X86Instance::SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), void* ctx) {
     impl->range_check_fn = fn;
     impl->range_check_ctx = ctx;
+}
+
+void X86Instance::PrepareForMultithreading() {
+    std::lock_guard guard(impl->translate_mutex);
+    impl->address_space->GetSmcTracker().DisableAndUnprotectAll();
 }
 
 X86Core::X86Core(X86Instance* instance) : instance(instance) {
