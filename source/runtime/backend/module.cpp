@@ -281,13 +281,13 @@ void Module::RemoveFaultEntries(const u8* host_start) {
                   [&](const FaultEntry& e) { return e.host_start == host_start; });
 }
 
-void Module::InvalidateBlock(ir::Block* block) {
+static u8* DetachBlock(Module& module, ir::Block* block) {
     u8* exec_ptr = nullptr;
     {
         auto block_guard = block->LockWrite();
         auto& jit_cache = block->GetJitCache();
         if (jit_cache.jit_state.get<JitState>() == JitState::Cached) {
-            exec_ptr = static_cast<u8*>(GetJitCache(jit_cache));
+            exec_ptr = static_cast<u8*>(module.GetJitCache(jit_cache));
             // Reset before Remove() below: a fresh block re-created at this
             // location must not see a stale Cached state (and a zeroed
             // JitCache is exactly what the frontend's "fresh node" workaround
@@ -298,50 +298,54 @@ void Module::InvalidateBlock(ir::Block* block) {
             jit_cache.cache_size = 0;
         }
     }
-    if (exec_ptr) {
-        RemoveFaultEntries(exec_ptr);
-        if (auto* cache = GetCodeCache(exec_ptr); cache) {
-            cache->FreeCode(exec_ptr);
-        }
-    }
     // Last: removes the node from the address map and releases the module's
     // reference — `block` may be destroyed here.
-    Remove(block);
+    module.Remove(block);
+    return exec_ptr;
 }
 
-void Module::InvalidateFunction(ir::Function* function) {
+static u8* DetachFunction(Module& module, ir::Function* function) {
     u8* exec_ptr = nullptr;
     {
         auto function_guard = function->LockWrite();
         auto& jit_cache = function->GetJitCache();
         if (jit_cache.jit_state.get<JitState>() == JitState::Cached) {
-            exec_ptr = static_cast<u8*>(GetJitCache(jit_cache));
+            exec_ptr = static_cast<u8*>(module.GetJitCache(jit_cache));
             jit_cache.jit_state = JitState::None;
             jit_cache.cache_id = 0;
             jit_cache.offset_in = 0;
             jit_cache.cache_size = 0;
         }
     }
-    if (exec_ptr) {
-        RemoveFaultEntries(exec_ptr);
-        if (auto* cache = GetCodeCache(exec_ptr); cache) {
-            cache->FreeCode(exec_ptr);
-        }
-    }
-    Remove(function);
+    module.Remove(function);
+    return exec_ptr;
 }
 
-void Module::InvalidateNode(ir::AddressNode* node) {
+u8* Module::DetachNode(ir::AddressNode* node) {
     ASSERT(node);
+    auto module_guard = ModuleLockWrite();
     switch (node->node_type) {
         case ir::AddressNode::Block:
-            InvalidateBlock(static_cast<ir::Block*>(node));
-            break;
+            return DetachBlock(*this, static_cast<ir::Block*>(node));
         case ir::AddressNode::Function:
-            InvalidateFunction(static_cast<ir::Function*>(node));
-            break;
+            return DetachFunction(*this, static_cast<ir::Function*>(node));
         default:
             PANIC("invalid address node type");
+    }
+}
+
+void Module::ReclaimCode(u8* exec_ptr) {
+    if (!exec_ptr) {
+        return;
+    }
+    std::unique_lock guard(cache_lock);
+    std::erase_if(fault_table,
+                  [&](const FaultEntry& entry) { return entry.host_start == exec_ptr; });
+    for (auto& [index, cache] : code_caches) {
+        if (cache.Contain(exec_ptr)) {
+            cache.FreeCode(exec_ptr);
+            return;
+        }
     }
 }
 
