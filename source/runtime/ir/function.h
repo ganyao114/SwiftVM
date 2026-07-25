@@ -23,6 +23,9 @@ public:
 
     ir::Block* EntryBlock();
     ir::Block* FindBlock(ir::Location location, bool block_start = true);
+    void AddBlock(ir::Block* block);
+    [[nodiscard]] BlockMap& GetBlocks() { return blocks; }
+    [[nodiscard]] const BlockMap& GetBlocks() const { return blocks; }
 
     [[nodiscard]] ReadLock LockRead() { return std::shared_lock{func_lock}; }
 

@@ -7,7 +7,7 @@
 //
 // Design (modeled on cross86's SmcTracker + FEX's mtrack, simplified for the
 // single-threaded drivers):
-//  - RegisterBlock() is called right after a block is JIT-compiled. Every
+//  - RegisterNode() is called right after a block/function is JIT-compiled. Every
 //    *host* page overlapping the block's guest range is write-protected
 //    (mprotect PROT_READ) and a page -> blocks record is kept.
 //  - A guest store to a protected page raises a host SIGSEGV/SIGBUS. The
@@ -68,7 +68,7 @@ public:
     // Called after a block is JIT-compiled: write-protect the host pages
     // covering [guest_start, guest_end) and record block ownership.
     // Idempotent per page; safe to call for a page that is already tracked.
-    void RegisterBlock(ir::Block* block, VAddr guest_start, VAddr guest_end);
+    void RegisterNode(ir::AddressNode* node, VAddr guest_start, VAddr guest_end);
 
     // Signal-handler path. If fault_host_addr hits a write-protected tracked
     // page: open the write window (unprotect), mark the page dirty, and
@@ -100,7 +100,7 @@ public:
     [[nodiscard]] bool HasProtectedPages() const;
 
     // Process-wide enable switch (default: enabled). When disabled,
-    // RegisterBlock is a no-op, so no page is ever write-protected. Intended
+    // RegisterNode is a no-op, so no page is ever write-protected. Intended
     // for test harnesses that rewrite a guest code arena from OUTSIDE
     // Runtime::Run (e.g. the differential fuzzer): the fault raised by their
     // memcpy into a previously translated — and thus write-protected — page
@@ -113,8 +113,8 @@ public:
     [[nodiscard]] static bool IsEnabled();
 
 private:
-    struct TrackedBlock {
-        ir::Block* block{};
+    struct TrackedNode {
+        ir::AddressNode* node{};
         VAddr guest_start{};
         VAddr guest_end{};
     };
@@ -123,7 +123,7 @@ private:
         bool write_protected{};
         bool dirty{};
         u32 invalidations{};
-        std::vector<TrackedBlock> blocks;
+        std::vector<TrackedNode> nodes;
     };
 
     // After this many invalidations a page is considered data/text-straddled
@@ -140,7 +140,7 @@ private:
     // Invalidates `tb` fully: erases it from every page record covering its
     // guest range, removes it from its module, frees the JIT code and drops
     // the fault-table entry, and zeroes the L1/L2 dispatch slots.
-    void InvalidateBlock(AddressSpace& space, TranslateTable* l1, const TrackedBlock& tb);
+    void InvalidateNode(AddressSpace& space, TranslateTable* l1, const TrackedNode& tracked);
 
     const u64 bias_;
     const u64 page_size_;

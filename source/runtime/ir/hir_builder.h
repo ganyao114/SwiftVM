@@ -244,6 +244,7 @@ public:
                          const Location& begin,
                          const Location& end,
                          HIRPools& pools);
+    ~HIRFunction();
 
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
     Inst* AppendInst(OpCode op, const Args&... args) {
@@ -289,6 +290,7 @@ public:
     HIRValue* GetHIRValue(const Value& value);
     HIRPools& GetMemPool();
     Function* GetFunction();
+    void ReleaseFunctionOwnership();
     void AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional = false);
     void RemoveEdge(Edge* edge);
     void AddLoop(HIRLoop* loop);
@@ -325,6 +327,7 @@ private:
 
     u16 max_local_id{};
     Function* function;
+    bool owns_function{true};
     Location begin;
     Location end;
     u16 block_order_id{};
@@ -379,7 +382,10 @@ public:
         HIRBlock* then_{};
     };
 
-    explicit HIRBuilder(u32 func_cap = 1);
+    // defer_function_end keeps the HIR function open when one decoded block
+    // reaches ret/syscall/indirect control flow. Whole-function discovery
+    // decodes the remaining queued CFG blocks before calling EndFunction().
+    explicit HIRBuilder(u32 func_cap = 1, bool defer_function_end = false);
 
     HIRFunction* AppendFunction(Location start, Location end = {});
 
@@ -400,7 +406,10 @@ public:
         // current function to append to. AdvancePC is only a flags-flush marker
         // (the backend emits no pc motion for it) and the block-end FlushFlags +
         // terminal MergeNZCV already cover it, so dropping it is a safe no-op.
-        if (!current_function) {
+        if (!current_function || !current_function->GetCurrentBlock()) {
+            ASSERT_MSG(op == OpCode::AdvancePC,
+                       "IR {} emitted after the current block terminal",
+                       op);
             return nullptr;
         }
         return current_function->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
@@ -451,6 +460,7 @@ private:
     HIRFunctionList hir_functions{};
     Location current_location;
     HIRFunction* current_function{};
+    bool defer_function_end{};
 };
 
 void DfsHIRBlock(HIRBlock* start, HIRBlock* end, HIRBlockSet& visited);

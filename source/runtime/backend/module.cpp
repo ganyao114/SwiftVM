@@ -309,6 +309,42 @@ void Module::InvalidateBlock(ir::Block* block) {
     Remove(block);
 }
 
+void Module::InvalidateFunction(ir::Function* function) {
+    u8* exec_ptr = nullptr;
+    {
+        auto function_guard = function->LockWrite();
+        auto& jit_cache = function->GetJitCache();
+        if (jit_cache.jit_state.get<JitState>() == JitState::Cached) {
+            exec_ptr = static_cast<u8*>(GetJitCache(jit_cache));
+            jit_cache.jit_state = JitState::None;
+            jit_cache.cache_id = 0;
+            jit_cache.offset_in = 0;
+            jit_cache.cache_size = 0;
+        }
+    }
+    if (exec_ptr) {
+        RemoveFaultEntries(exec_ptr);
+        if (auto* cache = GetCodeCache(exec_ptr); cache) {
+            cache->FreeCode(exec_ptr);
+        }
+    }
+    Remove(function);
+}
+
+void Module::InvalidateNode(ir::AddressNode* node) {
+    ASSERT(node);
+    switch (node->node_type) {
+        case ir::AddressNode::Block:
+            InvalidateBlock(static_cast<ir::Block*>(node));
+            break;
+        case ir::AddressNode::Function:
+            InvalidateFunction(static_cast<ir::Function*>(node));
+            break;
+        default:
+            PANIC("invalid address node type");
+    }
+}
+
 void Module::DestroyNodes() {
     address_node_map.Destroy();
 }

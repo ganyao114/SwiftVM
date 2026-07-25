@@ -26,6 +26,16 @@ void A64Decoder::VisitUnconditionalBranch(const Instruction* instr) {
         WriteXRegister(kLinkRegCode,
                        __ LoadImm<ir::U64>(ir::Imm{NextPC()}).SetType(ir::ValueType::U64));
         __ PushRSB(ir::Lambda{ir::Imm{NextPC()}});
+        if (assembler->IsFunctionMode()) {
+            // A direct call ends this compilation region. Treating BL like an
+            // intra-function branch would absorb the callee (and recursive
+            // callees) into the caller CFG, while its RET must resume at a
+            // separately dispatchable return address.
+            WritePC(ir::Lambda{ir::Imm{target}});
+            __ ReturnToDispatcher();
+            end_decode_ = true;
+            return;
+        }
     }
     BranchImm(target);
 }
