@@ -243,6 +243,23 @@ void JitTranslator::EmitSetLocation(ir::Inst* inst) {
     }
 }
 
+void JitTranslator::EmitCheckMemoryAlignment(ir::Inst* inst) {
+    const auto address = context.X(inst->GetArg<ir::Value>(0));
+    const auto mask = inst->GetArg<ir::Imm>(1).Get();
+    Label aligned;
+
+    // Tst clobbers NZCV, so commit any pending guest flags first. On failure,
+    // Ret returns to the runtime-entry dispatcher, which observes PageFatal in
+    // State::halt_reason and exits through the normal guest-fault path.
+    MergeNZCV();
+    __ Tst(address, mask);
+    __ B(&aligned, eq);
+    __ Mov(ipw, static_cast<u32>(HaltReason::PageFatal));
+    __ Str(ipw, MemOperand(state, state_offset_halt_reason));
+    __ Ret();
+    __ Bind(&aligned);
+}
+
 void JitTranslator::EmitCallLocation(ir::Inst* inst) {
     // TODO: semantics assumed to be a host C-ABI call with params, same as CallDynamic.
     auto lambda = inst->GetArg<ir::Lambda>(0);

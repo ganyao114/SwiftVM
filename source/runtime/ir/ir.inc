@@ -24,6 +24,13 @@ INST(MemoryCopy, Void, Lambda, Lambda, Imm)
 INST(MemoryCopyTSO, Void, Lambda, Lambda, Imm)
 INST(MemoryBarrierTSO, Void)
 INST(CompareAndSwap, Value, Value, Value, Value)
+// 128-bit CAS takes scalar halves to stay within the IR's five physical-arg
+// limit and returns the observed {high,low} pair as V128.
+INST(CompareAndSwap128, Value, Value, Value, Value, Value, Value)
+// Dynamic architectural-alignment check. A failure terminates the current
+// guest block with PageFatal; the frontend sets the precise guest location
+// immediately before it.
+INST(CheckMemoryAlignment, Void, Value, Imm)
 INST(AtomicExchange, Value, Value, Value)
 INST(AtomicFetchAdd, Value, Value, Value)
 INST(AtomicRMW, Value, Imm, Value, Value, Value)
@@ -148,6 +155,7 @@ INST(VecShuffle16, Value, Value, Imm, Imm)
 INST(VecZip, Value, Value, Value, Imm, Imm)
 INST(VecDupPairs32, Value, Value, Imm)
 INST(VecDup64, Value, Value)
+INST(VecExtract64, Value, Value, Imm)
 INST(VecExtract16, Value, Value, Imm)
 INST(VecInsert16, Value, Value, Value, Imm)
 INST(VecMovMask, Value, Value, Imm)

@@ -916,6 +916,74 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
     __ Dmb(InnerShareable, BarrierAll);
 }
 
+void JitTranslator::EmitCompareAndSwap128(ir::Inst* inst) {
+    // Args: (address, expected_lo, expected_hi, desired_lo, desired_hi);
+    // returns the observed pair as V128, low half in lane 0.
+    auto address = context.X(inst->GetArg<ir::Value>(0));
+    const auto expected_lo = inst->GetArg<ir::Value>(1);
+    const auto expected_hi = inst->GetArg<ir::Value>(2);
+    const auto desired_lo = inst->GetArg<ir::Value>(3);
+    const auto desired_hi = inst->GetArg<ir::Value>(4);
+    const auto result = context.V(ir::Value{inst});
+
+    MergeNZCV();
+    if (use_memory_base) {
+        __ Add(mem_scratch, address, pt);
+        address = mem_scratch;
+    }
+
+    Label aligned;
+    Label retry;
+    Label fallback_no_store;
+    Label aligned_observed;
+    Label done;
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
+    __ Dmb(InnerShareable, BarrierAll);
+
+    // The locked frontend rejects misalignment before this instruction. The
+    // no-LOCK form is architecturally legal when unaligned (confirmed under
+    // Rosetta), so preserve it with a serialized plain pair load/store.
+    __ Tst(address, 15);
+    __ B(&aligned, eq);
+    AcquireUnalignedAtomicLock(atomic_pair_scratch);
+    __ Ldp(atomic_scratch, atomic_pair_scratch, MemOperand(address));
+    __ Cmp(atomic_scratch, context.X(expected_lo));
+    __ B(&fallback_no_store, ne);
+    __ Cmp(atomic_pair_scratch, context.X(expected_hi));
+    __ B(&fallback_no_store, ne);
+    __ Stp(context.X(desired_lo), context.X(desired_hi), MemOperand(address));
+    __ Bind(&fallback_no_store);
+    __ Ins(result.V2D(), 0, atomic_scratch);
+    __ Ins(result.V2D(), 1, atomic_pair_scratch);
+    ReleaseUnalignedAtomicLock();
+    __ B(&done);
+
+    __ Bind(&aligned);
+    __ Bind(&retry);
+    __ Ldaxp(atomic_scratch, atomic_pair_scratch, MemOperand(address));
+    __ Cmp(atomic_scratch, context.X(expected_lo));
+    __ B(&aligned_observed, ne);
+    __ Cmp(atomic_pair_scratch, context.X(expected_hi));
+    __ B(&aligned_observed, ne);
+    __ Stlxp(ipw,
+             context.X(desired_lo),
+             context.X(desired_hi),
+             MemOperand(address));
+    __ Cbnz(ipw, &retry);
+    __ B(&aligned_observed);
+
+    __ Bind(&aligned_observed);
+    // Clear a still-live monitor after a compare mismatch. It is harmless
+    // after a successful STLXP and keeps the exclusive state local to this op.
+    __ Clrex();
+    __ Ins(result.V2D(), 0, atomic_scratch);
+    __ Ins(result.V2D(), 1, atomic_pair_scratch);
+
+    __ Bind(&done);
+    tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
+    __ Dmb(InnerShareable, BarrierAll);
+}
+
 void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
     // Args: (address, desired); returns the previous value. Memory XCHG is
     // implicitly locked on x86, so use an unconditional exclusive loop and
