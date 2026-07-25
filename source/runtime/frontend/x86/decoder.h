@@ -578,6 +578,7 @@ private:
     void DecodeLoop(_DInst& insn);
     void DecodeEnter(_DInst& insn);
     void DecodeCmpxchg8b(_DInst& insn);
+    void DecodeCmpxchg16b(_DInst& insn);
     void DecodePalignr(_DInst& insn);
     void DecodePshufb(_DInst& insn);
     void DecodePmovmskb(_DInst& insn);

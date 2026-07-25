@@ -789,6 +789,36 @@ void Interpreter::RunCompareAndSwap(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, old);
 }
 
+void Interpreter::RunCompareAndSwap128(ir::Inst* inst, InterpStack& stack) {
+    const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    const u64 expected_lo = ReadScalar(stack, inst->GetArg<ir::Value>(1));
+    const u64 expected_hi = ReadScalar(stack, inst->GetArg<ir::Value>(2));
+    const u64 desired_lo = ReadScalar(stack, inst->GetArg<ir::Value>(3));
+    const u64 desired_hi = ReadScalar(stack, inst->GetArg<ir::Value>(4));
+    auto* ptr = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
+
+    // std::atomic_ref<unsigned __int128> is neither portable nor guaranteed
+    // lock-free. Serialize the 16-byte memcpy compare/store with the same
+    // process-global lock used by the JIT's unaligned atomic slow path.
+    runtime::backend::UnalignedAtomicGuard guard;
+    u128 old{};
+    std::memcpy(&old, ptr, sizeof(old));
+    const u128 expected = (static_cast<u128>(expected_hi) << 64) | expected_lo;
+    if (old == expected) {
+        const u128 desired = (static_cast<u128>(desired_hi) << 64) | desired_lo;
+        std::memcpy(ptr, &desired, sizeof(desired));
+    }
+    WriteVec(stack, inst, old);
+}
+
+void Interpreter::RunCheckMemoryAlignment(ir::Inst* inst, InterpStack& stack) {
+    const u64 address = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    const u64 mask = inst->GetArg<ir::Imm>(1).Get();
+    if ((address & mask) != 0) {
+        state.halt_reason = HaltReason::PageFatal;
+    }
+}
+
 void Interpreter::RunAtomicExchange(ir::Inst* inst, InterpStack& stack) {
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto desired = inst->GetArg<ir::Value>(1);
@@ -1742,6 +1772,12 @@ void Interpreter::RunVecDupPairs32(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunVecDup64(ir::Inst* inst, InterpStack& stack) {
     const u64 src = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     WriteVec(stack, inst, static_cast<u128>(src) | (static_cast<u128>(src) << 64));
+}
+
+void Interpreter::RunVecExtract64(ir::Inst* inst, InterpStack& stack) {
+    const auto src = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u32 lane = inst->GetArg<ir::Imm>(1).Get() & 1;
+    WriteScalar(stack, inst, static_cast<u64>(src >> (lane * 64)));
 }
 
 void Interpreter::RunVecExtract16(ir::Inst* inst, InterpStack& stack) {

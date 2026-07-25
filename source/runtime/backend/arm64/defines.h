@@ -52,6 +52,8 @@
 // Reserved second scratch for atomic RMW loops: mem_scratch may already hold
 // the biased address, while the new value must survive until Stlxr.
 #define atomic_scratch x12
+// Second observed-value register for pair-exclusive 128-bit CAS.
+#define atomic_pair_scratch x13
 #define ip0         x16
 #define ip1         x17
 #define ip2         x14

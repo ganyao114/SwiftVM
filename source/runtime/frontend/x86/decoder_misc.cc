@@ -9,16 +9,17 @@ using namespace swift::runtime::frontend;
 
 void X64Decoder::DecodeCpuid(_DInst& insn) {
     (void)insn;
-    // Conservative feature set: SSE2 baseline only. AVX2 / AVX-512 / BMI /
-    // ERMS are deliberately NOT reported so glibc's ifunc dispatch selects
-    // the baseline SSE2 string routines (the EVEX implementations are out of
-    // scope for this translator).
+    // Conservative feature set: SSE2 baseline plus CX16. AVX2 / AVX-512 /
+    // BMI / ERMS are deliberately NOT reported so glibc's ifunc dispatch
+    // selects the baseline SSE2 string routines (the EVEX implementations are
+    // out of scope for this translator).
     static constexpr u32 kSse2Edx = (1u << 0)   // FPU
                                     | (1u << 15)  // CMOV
                                     | (1u << 23)  // MMX
                                     | (1u << 24)  // FXSR
                                     | (1u << 25)  // SSE
                                     | (1u << 26); // SSE2
+    static constexpr u32 kLeaf1Ecx = (1u << 13); // CMPXCHG16B
     static constexpr u32 kExtEdx = (1u << 20)   // NX
                                    | (1u << 29);  // LM (required by 64 bit guests)
     auto leaf = __ ZeroExtend64(R(_RegisterType::R_EAX));
@@ -46,7 +47,7 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     emit(0x80000000, {0x80000004, 0, 0, 0});  // max extended leaf
     emit(0x80000001, {0, 0, 0, kExtEdx});
     emit(7, {0, 0, 0, 0});                     // no BMI / AVX2 / AVX-512 / ERMS
-    emit(1, {0x000306C3, 0, 0, kSse2Edx});     // Haswell-ish model, SSE2 only
+    emit(1, {0x000306C3, 0, kLeaf1Ecx, kSse2Edx}); // Haswell-ish model + CX16
     // "GenuineIntel" + max basic leaf.
     emit(0, {7, 0x756E6547, 0x6C65746E, 0x49656E69});
 }
