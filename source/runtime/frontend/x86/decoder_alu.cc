@@ -304,8 +304,21 @@ void X64Decoder::DecodeAddSub(_DInst& insn, bool sub, bool save_res, bool exchan
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
 
-    auto left = ToValue(Src(insn, op0));
+    ir::Value left;
     auto right = ToValue(Src(insn, op1));
+    const bool locked_rmw =
+            save_res && op0.type != O_REG && (insn.flags & FLAG_LOCK) != 0;
+    if (locked_rmw) {
+        const auto type = GetSize(op0.size);
+        auto address = FlatAddress(insn, op0);
+        auto addend = NarrowTo(right, type);
+        if (sub) {
+            addend = __ Sub(__ LoadImm(ir::Imm(u64(0))), ir::Operand{addend}).SetType(type);
+        }
+        left = __ AtomicFetchAdd(address, addend).SetType(type);
+    } else {
+        left = ToValue(Src(insn, op0));
+    }
 
     // ADD / SUB / CMP update CF, OF, ZF, SF, PF and AF.
     auto result = ArithWithFlags(left, right, sub ? ArithOp::Sub : ArithOp::Add, op0.size,
@@ -315,7 +328,7 @@ void X64Decoder::DecodeAddSub(_DInst& insn, bool sub, bool save_res, bool exchan
         Dst(insn, op1, left);
     }
 
-    if (save_res) {
+    if (save_res && !locked_rmw) {
         Dst(insn, op0, result);
     }
 }
@@ -375,16 +388,24 @@ void X64Decoder::DecodeXchg(_DInst& insn) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
 
-    // XCHG with a memory operand is implicitly locked on x86 (full fence,
-    // no LOCK prefix in the encoding): order its accesses even in Relaxed
-    // mode.
-    const bool mem_tso = op0.type != O_REG || op1.type != O_REG;
+    if (op0.type == O_REG && op1.type == O_REG) {
+        auto left = Src(insn, op0);
+        auto right = Src(insn, op1);
+        Dst(insn, op0, right);
+        Dst(insn, op1, left);
+        return;
+    }
 
-    auto left = Src(insn, op0, mem_tso);
-    auto right = Src(insn, op1, mem_tso);
-
-    Dst(insn, op0, right, mem_tso);
-    Dst(insn, op1, left, mem_tso);
+    // XCHG with memory is an atomic RMW and a full fence even without a LOCK
+    // prefix. A TSO load/store pair is ordered but not atomic, so lower it to
+    // the backend's exclusive exchange primitive.
+    auto& mem = op0.type == O_REG ? op1 : op0;
+    auto& reg = op0.type == O_REG ? op0 : op1;
+    const auto type = GetSize(mem.size);
+    auto address = FlatAddress(insn, mem);
+    auto desired = NarrowTo(ToValue(Src(insn, reg)), type);
+    auto old = __ AtomicExchange(address, desired).SetType(type);
+    Dst(insn, reg, old);
 }
 
 void X64Decoder::DecodeMulOneOperand(_DInst& insn, bool sign) {
@@ -882,10 +903,8 @@ void X64Decoder::DecodeCmpxchg(_DInst& insn) {
     if (op0.type == O_REG) {
         old = __ And(ToValue(Src(insn, op0)), ir::Operand{ir::Imm(wmask)}).SetType(type);
     } else {
-        // lock cmpxchg: ordered load (the store below is ordered too). This
-        // is still a single-threaded model — TSO gives ordering, not the
-        // atomic RMW a real multi-threaded guest would need.
-        old = MemLoad(ir::Operand{FlatAddress(insn, op0)}, type, TsoOrdered(insn));
+        auto addr = FlatAddress(insn, op0);
+        old = __ CompareAndSwap(addr, acc, desired).SetType(type);
     }
     // Flags come from CMP accumulator, destination (acc - old).
     ArithWithFlags(acc, old, ArithOp::Sub, width, ir::Flags::All);
@@ -906,13 +925,6 @@ void X64Decoder::DecodeCmpxchg(_DInst& insn) {
         } else {
             Dst(insn, op0, new_dst);
         }
-    } else {
-        auto addr = FlatAddress(insn, op0);
-        // The store is skipped when the comparison fails (x86 writes only on
-        // success; also avoids touching read-only pages on the failure path).
-        auto skip_store = __ NotGoto(equal);
-        MemStore(ir::Operand{addr}, NarrowTo(desired, type), TsoOrdered(insn));
-        __ BindLabel(skip_store);
     }
     // dest == accumulator register: the dest write already updated it.
     const bool dst_is_acc = op0.type == O_REG && op0.index == acc_reg;

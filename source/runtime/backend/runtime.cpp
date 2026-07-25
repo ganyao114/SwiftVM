@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <utility>
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/constant.h"
@@ -85,10 +86,9 @@ struct Runtime::Impl final {
     static constexpr int kSmcPriority = 0;
 
     static bool HandleSmcFault(void* ctx, ucontext_t* uctx, int sig, siginfo_t* info) {
-        auto* self = static_cast<Impl*>(ctx);
-        if (tls_active_runtime != self) {
-            return false;  // not executing on this thread
-        }
+        (void) ctx;
+        auto* self = static_cast<Impl*>(tls_active_runtime);
+        if (!self) return false;
         if (sig != SIGSEGV && sig != SIGBUS) {
             return false;
         }
@@ -98,10 +98,9 @@ struct Runtime::Impl final {
     }
 
     static bool HandleFault(void* ctx, ucontext_t* uctx, int sig, siginfo_t* info) {
-        auto* self = static_cast<Impl*>(ctx);
-        if (tls_active_runtime != self) {
-            return false;  // not executing on this thread
-        }
+        (void) ctx;
+        auto* self = static_cast<Impl*>(tls_active_runtime);
+        if (!self) return false;
         if (sig != SIGSEGV && sig != SIGBUS) {
             return false;  // SIGILL in JIT code is a host codegen bug: crash
         }
@@ -290,21 +289,37 @@ Runtime::Runtime(Instance* instance)
     // runtime claims a fault. SMC sorts first (priority 0), the JIT
     // guest-fault recovery second (priority 100).
     backend::SignalHandler::Install();
-    backend::SignalHandler::RegisterHandler(&Impl::HandleSmcFault, impl.get(), Impl::kSmcPriority);
-    backend::SignalHandler::RegisterHandler(&Impl::HandleFault, impl.get(), Impl::kFaultPriority);
+    // The callbacks route through tls_active_runtime, so one stable pair is
+    // sufficient for every Runtime in the process. This also avoids modifying
+    // the process-global handler array while another guest thread may be
+    // handling a fault.
+    static std::once_flag register_fault_handlers;
+    std::call_once(register_fault_handlers, [] {
+        backend::SignalHandler::RegisterHandler(
+                &Impl::HandleSmcFault, nullptr, Impl::kSmcPriority);
+        backend::SignalHandler::RegisterHandler(
+                &Impl::HandleFault, nullptr, Impl::kFaultPriority);
+    });
 }
 
-Runtime::~Runtime() {
-    backend::SignalHandler::UnregisterHandler(impl.get());
-}
+Runtime::~Runtime() = default;
 
 HaltReason Runtime::Run() { return impl->Run(); }
 
 HaltReason Runtime::Step() { return HaltReason::None; }
 
-void Runtime::SignalInterrupt() {}
+void Runtime::SignalInterrupt() {
+    impl->running.store(false, std::memory_order_release);
+    // The JIT trampoline samples halt_reason after every returned block. This
+    // makes an interrupt observable while Run() is inside generated code
+    // instead of waiting for an unrelated guest syscall.
+    impl->state->halt_reason = HaltReason::Signal;
+}
 
-void Runtime::ClearInterrupt() {}
+void Runtime::ClearInterrupt() {
+    impl->state->halt_reason = HaltReason::None;
+    impl->running.store(true, std::memory_order_release);
+}
 
 void Runtime::SetLocation(LocationDescriptor location) { impl->SetLocation(location); }
 
