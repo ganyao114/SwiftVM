@@ -54,11 +54,11 @@ public:
     // Syscall-layer hook (Phase 4): the guest is changing permissions or
     // unmapping/remapping [guest_start, guest_end) — synchronously
     // invalidate every tracked block overlapping the range and drop the
-    // write protection we installed. WIRING NOTE: the syscall layer
-    // (translator/linux/syscalls.cpp) should call this from its
+    // write protection we installed. The syscall layer
+    // (translator/linux/syscalls.cpp) calls this from its
     // mprotect/mmap/munmap emulation paths whenever the range may contain
-    // translated guest code; it must also make every Runtime flush its
-    // per-runtime L1 dispatch cache (the L2 table is zeroed here).
+    // translated guest code. SmcTracker clears the shared L2 and every
+    // registered Runtime's L1 dispatch cache.
     void InvalidateCodeRange(VAddr guest_start, VAddr guest_end);
 
     // The address-space wide (L2) translate table backing PushCodeCache /

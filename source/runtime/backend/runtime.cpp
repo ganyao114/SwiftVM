@@ -41,6 +41,7 @@ struct Runtime::Impl final {
         // address-space wide translate table that PushCodeCache writes to.
         state->l1_code_cache = l1_code_cache.Data();
         state->l2_code_cache = address_space->GetCodeCacheTable().Data();
+        smc_epoch = address_space->GetSmcTracker().RegisterRuntime(l1_code_cache);
         // Guest address virtualization: Config::memory_base carries the
         // guest->host bias (host = guest + bias); the JIT keeps it in the
         // reserved pt register and the interpreter reads it from here.
@@ -65,6 +66,10 @@ struct Runtime::Impl final {
             state->rsb_top = &rsb_buffer.rsb_frames[backend::rsb_stack_size];
         }
         jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
+    }
+
+    ~Impl() {
+        address_space->GetSmcTracker().UnregisterRuntime(smc_epoch);
     }
 
     // Host-fault recovery (SignalHandler chain, priority kFaultPriority).
@@ -214,6 +219,11 @@ struct Runtime::Impl final {
         HaltReason hr{HaltReason::None};
         while (running.load(std::memory_order_acquire)) {
             auto current_loc = GetLocation();
+            auto& smc = address_space->GetSmcTracker();
+            // Publish before cache lookup, not merely before JitRun: a pointer
+            // fetched while an invalidation races must remain epoch-protected
+            // until the trampoline returns.
+            smc.BeginJit(smc_epoch);
             if (auto cache = hr != HaltReason::CacheMiss ? address_space->GetCodeCache(current_loc)
                                                          : nullptr;
                 cache) {
@@ -225,6 +235,10 @@ struct Runtime::Impl final {
                 }
                 // JIT Run!
                 hr = JitRun(cache);
+                // The runtime is now quiescent with respect to retired JIT
+                // code. This is an atomic-only fast path unless reclamation
+                // work is actually pending.
+                smc.EndJit(smc_epoch);
                 // SMC write-window close (Phase 4): if a guest store hit a
                 // write-protected code page during this JitRun, the stale
                 // translations are invalidated now — the guest is back on
@@ -234,8 +248,9 @@ struct Runtime::Impl final {
                 // disabled HaltReason::BlockLinkage is never produced; if it
                 // is ever enabled, the linkage patch below must be ordered
                 // against invalidation of the *previous* block.
-                address_space->GetSmcTracker().CloseWriteWindow(*address_space, l1_code_cache);
+                smc.CloseWriteWindow(*address_space, l1_code_cache);
             } else {
+                smc.EndJit(smc_epoch);
                 // IR Interpreter
                 hr = Interpreter();
             }
@@ -276,6 +291,7 @@ struct Runtime::Impl final {
     // mutable: the JIT dispatcher writes L1 entries through the raw
     // state->l1_code_cache pointer even from const Run paths.
     mutable TranslateTable l1_code_cache{l1_cache_bits};
+    backend::SmcTracker::RuntimeToken smc_epoch{};
     backend::interp::InterpStack interp_stack;
     std::atomic_bool running{true};
     backend::Trampolines::RuntimeEntry jit_entry{};
@@ -449,6 +465,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
             mutable_address_space.PushCodeCache(guest, buffer.exec_data + offset);
             if (!module->GetModuleConfig().read_only) {
                 mutable_address_space.GetSmcTracker().RegisterNode(
+                        module,
                         ir_function,
                         block->GetStartLocation().Value(),
                         block->GetEndLocation().Value());
@@ -546,7 +563,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
                 block->SetEndLocation(ir::Location(block_start + block_size));
             }
             address_space.GetSmcTracker().RegisterNode(
-                    block.get(), block_start, block->GetEndLocation().Value());
+                    module, block.get(), block_start, block->GetEndLocation().Value());
         }
         block->DestroyInstrs();
         return buffer.exec_data;

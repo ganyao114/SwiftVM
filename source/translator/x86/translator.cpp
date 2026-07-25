@@ -586,6 +586,11 @@ struct X86Instance::Impl final {
             func_base = false;
         }
 
+        // SMC detachment takes the matching write lock. Cover node lookup /
+        // creation as well as publication: otherwise invalidation could
+        // detach this node immediately before this thread acquires the read
+        // lock, after which it would compile and publish an orphaned node.
+        auto module_compile_guard = module->ModuleLockRead();
         // Detect a freshly created node before GetNodeOrCreate: a fresh
         // ir::Block has an UNINITIALIZED jit_cache (runtime bug — it is
         // default-initialized garbage), so IsEmptyBlock()/IsJitCached() on
@@ -604,7 +609,6 @@ struct X86Instance::Impl final {
                     // jit_cache so TranslateIR doesn't mistake the new block
                     // for a cached one.
                     std::memset(&x->GetJitCache(), 0, sizeof(backend::JitCache));
-                    auto jit_guard = module->ModuleLockRead();
                     ir::Assembler assembler{x.get()};
                     x86::X64Decoder decoder{pc, &memory_impl, &assembler, true};
                     decoder.Decode();
@@ -761,7 +765,15 @@ void X86Instance::SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), voi
 
 void X86Instance::PrepareForMultithreading() {
     std::lock_guard guard(impl->translate_mutex);
-    impl->address_space->GetSmcTracker().DisableAndUnprotectAll();
+    auto& smc = impl->address_space->GetSmcTracker();
+    const char* smc_mt_env = std::getenv("SVM_SMC_MT");
+    if (smc_mt_env && std::strcmp(smc_mt_env, "0") == 0) {
+        // Diagnostic fallback to the pre-QSBR behavior: MT continues, but
+        // translated pages are unprotected and SMC detection is disabled.
+        smc.DisableAndUnprotectAll();
+    } else {
+        smc.EnableMultithreading();
+    }
 }
 
 X86Core::X86Core(X86Instance* instance) : instance(instance) {
