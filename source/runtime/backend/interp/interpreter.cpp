@@ -7,9 +7,9 @@
 // two could disagree this implementation follows the JIT, including its
 // quirks (documented inline).
 
-#include <alloca.h>
 #include <cstring>
 #include <unordered_map>
+#include <alloca.h>
 #include "interpreter.h"
 #include "runtime/common/variant_util.h"
 
@@ -37,7 +37,7 @@ constexpr u32 kHostFlagZ = 30;
 constexpr u32 kHostFlagC = 29;
 constexpr u32 kHostFlagV = 28;
 constexpr u32 kHostAF = 26;
-constexpr u32 kHostParityByte = 0;   // width 8
+constexpr u32 kHostParityByte = 0;  // width 8
 
 u32 TypeBits(ValueType type) { return ir::GetValueSizeByte(type) * 8; }
 
@@ -129,7 +129,7 @@ u64 Interpreter::EvalOperand(InterpStack& stack, const ir::Operand& operand) {
             return left << (rval & 63);
         case ir::OperandOp::LSR:
             return (left & MaskFor(operand.GetLeft().IsValue() ? operand.GetLeft().value.Type()
-                                                                : ValueType::U64)) >>
+                                                               : ValueType::U64)) >>
                    (rval & 63);
         case ir::OperandOp::PlusExt:
             return left + (rval << operand.GetOp().shift_ext);
@@ -191,8 +191,7 @@ void Interpreter::SaveGuestFlags(InterpStack& stack, ir::Inst* def, ir::Flags f)
             case ir::OpCode::Add:
             case ir::OpCode::Adc: {
                 // The incoming carry must be read before this save updates C.
-                const u64 cin =
-                        def->GetOp() == ir::OpCode::Adc ? ((fl >> kHostFlagC) & 1) : 0;
+                const u64 cin = def->GetOp() == ir::OpCode::Adc ? ((fl >> kHostFlagC) & 1) : 0;
                 const u64 l = ReadScalar(stack, def->GetArg<ir::Value>(0)) & MaskBits(bits);
                 const u64 r = EvalOperand(stack, def->GetArg<ir::Operand>(1)) & MaskBits(bits);
                 const unsigned __int128 wide = static_cast<unsigned __int128>(l) + r + cin;
@@ -237,18 +236,16 @@ void Interpreter::SaveGuestFlags(InterpStack& stack, ir::Inst* def, ir::Flags f)
                     // check the upper half. 64-bit Mul leaves C/V untouched
                     // (JitTranslator::SaveCV returns early for U64).
                     const u64 l = ReadScalar(stack, def->GetArg<ir::Value>(0)) & MaskBits(bits);
-                    const u64 r =
-                            EvalOperand(stack, def->GetArg<ir::Operand>(1)) & MaskBits(bits);
+                    const u64 r = EvalOperand(stack, def->GetArg<ir::Operand>(1)) & MaskBits(bits);
                     if (ir::IsSignValueType(def->GetArg<ir::Value>(0).Type())) {
-                        const __int128 wide = static_cast<__int128>(
-                                                      static_cast<s64>(SignExtendTo(l, bits))) *
-                                              static_cast<s64>(SignExtendTo(r, bits));
+                        const __int128 wide =
+                                static_cast<__int128>(static_cast<s64>(SignExtendTo(l, bits))) *
+                                static_cast<s64>(SignExtendTo(r, bits));
                         overflow = carry =
-                                wide != static_cast<__int128>(static_cast<s64>(
-                                                SignExtendTo(result, bits)));
+                                wide !=
+                                static_cast<__int128>(static_cast<s64>(SignExtendTo(result, bits)));
                     } else {
-                        const unsigned __int128 wide =
-                                static_cast<unsigned __int128>(l) * r;
+                        const unsigned __int128 wide = static_cast<unsigned __int128>(l) * r;
                         overflow = carry = (wide >> bits) != 0;
                     }
                     have = true;
@@ -272,8 +269,7 @@ void Interpreter::SaveGuestFlags(InterpStack& stack, ir::Inst* def, ir::Flags f)
     if (True(f & ir::Flags::Parity)) {
         // JIT SaveParity: stash the low byte of the result; PF is derived
         // from it lazily in TestFlags.
-        fl = (fl & ~(u64(0xFF) << kHostParityByte)) |
-             ((result & 0xFF) << kHostParityByte);
+        fl = (fl & ~(u64(0xFF) << kHostParityByte)) | ((result & 0xFF) << kHostParityByte);
     }
     if (True(f & ir::Flags::AuxiliaryCarry)) {
         switch (def->GetOp()) {
@@ -552,8 +548,7 @@ void Interpreter::RunStoreLocal(ir::Inst* inst, InterpStack& stack) {
 
 void Interpreter::RunLoadUniform(ir::Inst* inst, InterpStack& stack) {
     const auto uni = inst->GetArg<ir::Uniform>(0);
-    const auto type =
-            inst->ReturnType() == ValueType::VOID ? uni.GetType() : inst->ReturnType();
+    const auto type = inst->ReturnType() == ValueType::VOID ? uni.GetType() : inst->ReturnType();
     const auto* base = &state.uniform_buffer_begin[uni.GetOffset()];
     if (IsVector(type)) {
         u128 value{};
@@ -592,8 +587,7 @@ void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
     // of letting the host dereference a bad pointer (SIGSEGV). The JIT path
     // relies on the host signal handler for this; the interpreter has none.
     const u64 access_size = ir::GetValueSizeByte(type);
-    if (guest_addr >= state.guest_addr_limit ||
-        guest_addr + access_size > state.guest_addr_limit ||
+    if (guest_addr >= state.guest_addr_limit || guest_addr + access_size > state.guest_addr_limit ||
         (state.interp_range_check &&
          !state.interp_range_check(state.interp_range_check_ctx, guest_addr, access_size))) {
         state.halt_reason = HaltReason::PageFatal;
@@ -601,8 +595,8 @@ void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
     }
     // Guest address virtualization: state.pt carries the guest->host bias
     // (host = guest + bias); it is 0 for identity mapping.
-    const auto* ptr = reinterpret_cast<const void*>(guest_addr +
-                                                    reinterpret_cast<uintptr_t>(state.pt));
+    const auto* ptr =
+            reinterpret_cast<const void*>(guest_addr + reinterpret_cast<uintptr_t>(state.pt));
     if (IsVector(type)) {
         u128 value{};
         std::memcpy(&value, ptr, ir::GetValueSizeByte(type));
@@ -623,15 +617,13 @@ void Interpreter::RunStoreMemory(ir::Inst* inst, InterpStack& stack) {
     const u64 guest_addr = EvalOperand(stack, operand);
     // Wild-pointer guard: see RunLoadMemory for the rationale.
     const u64 access_size = ir::GetValueSizeByte(type);
-    if (guest_addr >= state.guest_addr_limit ||
-        guest_addr + access_size > state.guest_addr_limit ||
+    if (guest_addr >= state.guest_addr_limit || guest_addr + access_size > state.guest_addr_limit ||
         (state.interp_range_check &&
          !state.interp_range_check(state.interp_range_check_ctx, guest_addr, access_size))) {
         state.halt_reason = HaltReason::PageFatal;
         return;
     }
-    auto* ptr = reinterpret_cast<void*>(guest_addr +
-                                        reinterpret_cast<uintptr_t>(state.pt));
+    auto* ptr = reinterpret_cast<void*>(guest_addr + reinterpret_cast<uintptr_t>(state.pt));
     if (IsVector(type)) {
         const u128 v = ReadVec(stack, value);
         std::memcpy(ptr, &v, ir::GetValueSizeByte(type));
@@ -1022,18 +1014,14 @@ void Interpreter::RunRorImm(ir::Inst* inst, InterpStack& stack) {
     const u32 bits = TypeBits(inst->ReturnType());
     const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & MaskBits(bits);
     const u32 amount = inst->GetArg<ir::Imm>(1).Get() & (bits - 1);
-    WriteScalar(stack,
-                inst,
-                amount ? ((value >> amount) | (value << (bits - amount))) : value);
+    WriteScalar(stack, inst, amount ? ((value >> amount) | (value << (bits - amount))) : value);
 }
 
 void Interpreter::RunRorValue(ir::Inst* inst, InterpStack& stack) {
     const u32 bits = TypeBits(inst->ReturnType());
     const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & MaskBits(bits);
     const u32 amount = ReadScalar(stack, inst->GetArg<ir::Value>(1)) & (bits - 1);
-    WriteScalar(stack,
-                inst,
-                amount ? ((value >> amount) | (value << (bits - amount))) : value);
+    WriteScalar(stack, inst, amount ? ((value >> amount) | (value << (bits - amount))) : value);
 }
 
 void Interpreter::RunBitExtract(ir::Inst* inst, InterpStack& stack) {
@@ -1087,10 +1075,7 @@ unsigned __int128 Vec4Binary(unsigned __int128 a, unsigned __int128 b, Op op) {
 }
 
 template <typename Op>
-unsigned __int128 VecLaneBinary(unsigned __int128 a,
-                                unsigned __int128 b,
-                                u32 lane_bits,
-                                Op op) {
+unsigned __int128 VecLaneBinary(unsigned __int128 a, unsigned __int128 b, u32 lane_bits, Op op) {
     ASSERT(lane_bits == 8 || lane_bits == 16 || lane_bits == 32 || lane_bits == 64);
     const u64 lane_mask = MaskBits(lane_bits);
     unsigned __int128 result = 0;
@@ -1120,8 +1105,7 @@ s64 SignedLane(u64 value, u32 lane_bits) {
     if (lane_bits == 64) {
         return static_cast<s64>(value);
     }
-    return static_cast<s64>((value ^ (u64(1) << (lane_bits - 1))) -
-                            (u64(1) << (lane_bits - 1)));
+    return static_cast<s64>((value ^ (u64(1) << (lane_bits - 1))) - (u64(1) << (lane_bits - 1)));
 }
 
 }  // namespace
@@ -1230,10 +1214,125 @@ void Interpreter::RunVecCmpGt(ir::Inst* inst, InterpStack& stack) {
                            ReadVec(stack, inst->GetArg<ir::Value>(1)),
                            lane_bits,
                            [lane_bits](u64 a, u64 b) {
-                               return SignedLane(a, lane_bits) > SignedLane(b, lane_bits)
-                                              ? ~u64(0)
-                                              : 0;
+                               return SignedLane(a, lane_bits) > SignedLane(b, lane_bits) ? ~u64(0)
+                                                                                          : 0;
                            }));
+}
+
+void Interpreter::RunVecAvg(ir::Inst* inst, InterpStack& stack) {
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    ASSERT(lane_bits == 8 || lane_bits == 16);
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                           ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                           lane_bits,
+                           [](u64 a, u64 b) { return (a + b + 1) >> 1; }));
+}
+
+void Interpreter::RunVecMin(ir::Inst* inst, InterpStack& stack) {
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool is_signed = inst->GetArg<ir::Imm>(3).Get() != 0;
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                           ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                           lane_bits,
+                           [lane_bits, is_signed](u64 a, u64 b) {
+                               if (is_signed) {
+                                   return SignedLane(a, lane_bits) < SignedLane(b, lane_bits) ? a
+                                                                                              : b;
+                               }
+                               return std::min(a, b);
+                           }));
+}
+
+void Interpreter::RunVecMax(ir::Inst* inst, InterpStack& stack) {
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool is_signed = inst->GetArg<ir::Imm>(3).Get() != 0;
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                           ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                           lane_bits,
+                           [lane_bits, is_signed](u64 a, u64 b) {
+                               if (is_signed) {
+                                   return SignedLane(a, lane_bits) > SignedLane(b, lane_bits) ? a
+                                                                                              : b;
+                               }
+                               return std::max(a, b);
+                           }));
+}
+
+void Interpreter::RunVecMul(ir::Inst* inst, InterpStack& stack) {
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                           ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                           lane_bits,
+                           [](u64 a, u64 b) { return a * b; }));
+}
+
+void Interpreter::RunVecAbsDiffSum8(ir::Inst* inst, InterpStack& stack) {
+    const auto left = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto right = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    u128 result = 0;
+    for (u32 half = 0; half < 2; ++half) {
+        u64 sum = 0;
+        for (u32 byte = 0; byte < 8; ++byte) {
+            const u32 bit = half * 64 + byte * 8;
+            const int a = static_cast<u8>(left >> bit);
+            const int b = static_cast<u8>(right >> bit);
+            sum += static_cast<u64>(a > b ? a - b : b - a);
+        }
+        result |= static_cast<u128>(sum) << (half * 64);
+    }
+    WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecMadd16(ir::Inst* inst, InterpStack& stack) {
+    const auto left = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto right = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    u128 result = 0;
+    for (u32 lane = 0; lane < 4; ++lane) {
+        const u32 bit = lane * 32;
+        const s32 a0 = static_cast<s16>(left >> bit);
+        const s32 a1 = static_cast<s16>(left >> (bit + 16));
+        const s32 b0 = static_cast<s16>(right >> bit);
+        const s32 b1 = static_cast<s16>(right >> (bit + 16));
+        const u32 sum = static_cast<u32>(static_cast<s64>(a0) * b0 + static_cast<s64>(a1) * b1);
+        result |= static_cast<u128>(sum) << bit;
+    }
+    WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecShiftLeft(ir::Inst* inst, InterpStack& stack) {
+    const auto value = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u64 count = ReadScalar(stack, inst->GetArg<ir::Value>(1));
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    WriteVec(stack, inst, VecLaneBinary(value, 0, lane_bits, [count, lane_bits](u64 lane, u64) {
+                 return count >= lane_bits ? 0 : lane << count;
+             }));
+}
+
+void Interpreter::RunVecShiftRight(ir::Inst* inst, InterpStack& stack) {
+    const auto value = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u64 count = ReadScalar(stack, inst->GetArg<ir::Value>(1));
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    WriteVec(stack, inst, VecLaneBinary(value, 0, lane_bits, [count, lane_bits](u64 lane, u64) {
+                 return count >= lane_bits ? 0 : lane >> count;
+             }));
+}
+
+void Interpreter::RunVecShiftRightArithmetic(ir::Inst* inst, InterpStack& stack) {
+    const auto value = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u64 count = ReadScalar(stack, inst->GetArg<ir::Value>(1));
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    const u32 clamped = static_cast<u32>(std::min(count, u64(lane_bits - 1)));
+    WriteVec(stack, inst, VecLaneBinary(value, 0, lane_bits, [clamped, lane_bits](u64 lane, u64) {
+                 return static_cast<u64>(SignedLane(lane, lane_bits) >> clamped);
+             }));
 }
 
 void Interpreter::RunVecShuffle32(ir::Inst* inst, InterpStack& stack) {
@@ -1298,6 +1397,45 @@ void Interpreter::RunVecDupPairs32(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunVecDup64(ir::Inst* inst, InterpStack& stack) {
     const u64 src = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     WriteVec(stack, inst, static_cast<u128>(src) | (static_cast<u128>(src) << 64));
+}
+
+void Interpreter::RunVecExtract16(ir::Inst* inst, InterpStack& stack) {
+    const auto src = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u32 lane = inst->GetArg<ir::Imm>(1).Get() & 7;
+    WriteScalar(stack, inst, static_cast<u16>(src >> (lane * 16)));
+}
+
+void Interpreter::RunVecInsert16(ir::Inst* inst, InterpStack& stack) {
+    const auto dest = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u16 value = static_cast<u16>(ReadScalar(stack, inst->GetArg<ir::Value>(1)));
+    const u32 lane = inst->GetArg<ir::Imm>(2).Get() & 7;
+    const u128 mask = static_cast<u128>(0xFFFF) << (lane * 16);
+    WriteVec(stack, inst, (dest & ~mask) | (static_cast<u128>(value) << (lane * 16)));
+}
+
+void Interpreter::RunVecMovMask(ir::Inst* inst, InterpStack& stack) {
+    const auto src = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u32 lane_bits = inst->GetArg<ir::Imm>(1).Get();
+    ASSERT(lane_bits == 8 || lane_bits == 32 || lane_bits == 64);
+    u64 result = 0;
+    for (u32 lane = 0; lane < 128 / lane_bits; ++lane) {
+        result |= static_cast<u64>((src >> (lane * lane_bits + lane_bits - 1)) & 1) << lane;
+    }
+    WriteScalar(stack, inst, result);
+}
+
+void Interpreter::RunVecTableLookup8(ir::Inst* inst, InterpStack& stack) {
+    const auto table = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto control = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    u128 result = 0;
+    for (u32 byte = 0; byte < 16; ++byte) {
+        const u8 index = static_cast<u8>(control >> (byte * 8));
+        if ((index & 0x80) == 0) {
+            result |= static_cast<u128>(static_cast<u8>(table >> ((index & 0x0F) * 8)))
+                      << (byte * 8);
+        }
+    }
+    WriteVec(stack, inst, result);
 }
 
 void Interpreter::RunVecFAddScalar32(ir::Inst* inst, InterpStack& stack) {

@@ -2,19 +2,19 @@
 // instruction family, execute them on both Unicorn and SwiftVM, and compare
 // GPRs, captured status flags (via lahf + seto), and scratch memory.
 
-#include <catch2/catch_test_macros.hpp>
-#include <unicorn/unicorn.h>
-#include "unicorn_interface.h"
-#include "translator/x86/translator.h"
-#include "translator/x86/cpu.h"
-#include "runtime/frontend/x86/decoder.h"
-#include "runtime/backend/smc_tracker.h"
-#include <random>
 #include <chrono>
-#include <iostream>
 #include <cstring>
-#include <sys/mman.h>
+#include <iostream>
+#include <random>
+#include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
+#include <sys/mman.h>
+#include <unicorn/unicorn.h>
+#include "runtime/backend/smc_tracker.h"
+#include "runtime/frontend/x86/decoder.h"
+#include "translator/x86/cpu.h"
+#include "translator/x86/translator.h"
+#include "unicorn_interface.h"
 
 using namespace swift::test;
 using namespace swift::translator::x86;
@@ -29,7 +29,10 @@ struct CodeBuf {
     std::vector<u8> c;
 
     void B(u8 v) { c.push_back(v); }
-    void W(u16 v) { B(u8(v)); B(u8(v >> 8)); }
+    void W(u16 v) {
+        B(u8(v));
+        B(u8(v >> 8));
+    }
     void D(u32 v) {
         for (int i = 0; i < 4; i++) B(u8(v >> (8 * i)));
     }
@@ -52,7 +55,6 @@ constexpr u8 kRax = 0, kRcx = 1, kRdx = 2, kRbx = 3, kRsp = 4, kRbp = 5, kRsi = 
 constexpr u8 kDataReg = kR13;
 constexpr u8 kIndexReg = kR11;
 constexpr u8 kCaptureReg = kR15;
-
 
 // Segment override prefix (0x64 = fs, 0x65 = gs), emitted before everything.
 void EmitSegPrefix(CodeBuf& b, u8 seg) {
@@ -128,7 +130,8 @@ void EmitRexFor(CodeBuf& b, int width, u8 reg_field, const MemOp* m, bool byte_o
     }
 }
 
-void EmitRexForRegReg(CodeBuf& b, int width, u8 reg_field, u8 rm_reg, bool byte_op, bool high_byte) {
+void EmitRexForRegReg(
+        CodeBuf& b, int width, u8 reg_field, u8 rm_reg, bool byte_op, bool high_byte) {
     if (byte_op) {
         if (high_byte) {
             return;
@@ -340,7 +343,11 @@ void EmitMovsxd(CodeBuf& b, u8 dst, u8 src) {
 
 void EmitLea(CodeBuf& b, int width, u8 dst, const MemOp& m) {
     EmitOperandPrefix(b, width);
-    EmitRex(b, width == 64, dst >= 8, m.scale != 0 && (kIndexReg >= 8), !m.rip_rel && (kDataReg >= 8));
+    EmitRex(b,
+            width == 64,
+            dst >= 8,
+            m.scale != 0 && (kIndexReg >= 8),
+            !m.rip_rel && (kDataReg >= 8));
     b.B(0x8D);
     EmitModRMMem(b, dst, m);
 }
@@ -377,11 +384,20 @@ void EmitCmovcc(CodeBuf& b, u8 cc, int width, u8 dst, u8 src) {
     EmitModRMReg(b, dst, src);
 }
 
-void EmitJccRel8(CodeBuf& b, u8 cc, s8 rel) { b.B(u8(0x70 + cc)); b.B(u8(rel)); }
+void EmitJccRel8(CodeBuf& b, u8 cc, s8 rel) {
+    b.B(u8(0x70 + cc));
+    b.B(u8(rel));
+}
 
-void EmitJmpRel8(CodeBuf& b, s8 rel) { b.B(0xEB); b.B(u8(rel)); }
+void EmitJmpRel8(CodeBuf& b, s8 rel) {
+    b.B(0xEB);
+    b.B(u8(rel));
+}
 
-void EmitCallRel32(CodeBuf& b, s32 rel) { b.B(0xE8); b.D(u32(rel)); }
+void EmitCallRel32(CodeBuf& b, s32 rel) {
+    b.B(0xE8);
+    b.D(u32(rel));
+}
 
 void EmitRet(CodeBuf& b) { b.B(0xC3); }
 
@@ -543,20 +559,32 @@ struct FuzzEnv {
         return d(rng);
     }
 
-    template <typename T>
-    const T& Pick(const std::vector<T>& v) {
-        return v[rng() % v.size()];
-    }
+    template <typename T> const T& Pick(const std::vector<T>& v) { return v[rng() % v.size()]; }
 
     u64 PoolVal(int width) {
-        static const u64 edges[] = {0,          1,          2,
-                                    3,          0x7F,       0x80,
-                                    0xFF,       0x100,      0x7FFF,
-                                    0x8000,     0xFFFF,     0x10000,
-                                    0x7FFFFFFF, 0x80000000, 0xFFFFFFFF,
-                                    0x100000000ull, 0x7FFFFFFFFFFFFFFFull, 0x8000000000000000ull,
-                                    ~0ull,      42,         0x55,
-                                    0xAA,       0x1234567890ABCDEFull};
+        static const u64 edges[] = {0,
+                                    1,
+                                    2,
+                                    3,
+                                    0x7F,
+                                    0x80,
+                                    0xFF,
+                                    0x100,
+                                    0x7FFF,
+                                    0x8000,
+                                    0xFFFF,
+                                    0x10000,
+                                    0x7FFFFFFF,
+                                    0x80000000,
+                                    0xFFFFFFFF,
+                                    0x100000000ull,
+                                    0x7FFFFFFFFFFFFFFFull,
+                                    0x8000000000000000ull,
+                                    ~0ull,
+                                    42,
+                                    0x55,
+                                    0xAA,
+                                    0x1234567890ABCDEFull};
         u64 v;
         if (RandInt(0, 2) == 0) {
             v = edges[rng() % std::size(edges)];
@@ -571,8 +599,7 @@ struct FuzzEnv {
 
     // GPRs usable as random operands (excludes rsp, r11 index, r13 data, r15 capture).
     u8 RandReg() {
-        static const u8 regs[] = {kRax, kRcx, kRdx, kRbx, kRbp, kRsi, kRdi,
-                                  kR8,  kR9,  kR10, kR12};
+        static const u8 regs[] = {kRax, kRcx, kRdx, kRbx, kRbp, kRsi, kRdi, kR8, kR9, kR10, kR12};
         return regs[rng() % std::size(regs)];
     }
 
@@ -670,8 +697,7 @@ struct FuzzEnv {
     // Emit the flag-init prefix: a random flag-defining op on the initialized
     // registers, executed identically on both sides.
     // Registers in `exclude` are left untouched (dividend/divisor setups).
-    void EmitFlagPrefix(CodeBuf& b, u8 exclude1 = 0xFF, u8 exclude2 = 0xFF,
-                        u8 exclude3 = 0xFF) {
+    void EmitFlagPrefix(CodeBuf& b, u8 exclude1 = 0xFF, u8 exclude2 = 0xFF, u8 exclude3 = 0xFF) {
         auto pick_reg = [&] {
             u8 r;
             do {
@@ -703,7 +729,7 @@ struct FuzzEnv {
 
     // Emit the flag capture suffix: lahf + seto r15b. OF lands in bit 0 of r15.
     void EmitFlagCapture(CodeBuf& b) {
-        b.B(0x9F);  // lahf
+        b.B(0x9F);                       // lahf
         EmitSetcc(b, 0x0, kCaptureReg);  // seto r15b
     }
 
@@ -741,8 +767,7 @@ struct FuzzEnv {
             std::cout << "== cursor " << (cursor - 1) << " code: " << DumpCode(code) << std::endl;
         }
 
-        std::memcpy(reinterpret_cast<u8*>(host_mem) + (code_addr - base), code.data(),
-                    code.size());
+        std::memcpy(reinterpret_cast<u8*>(host_mem) + (code_addr - base), code.data(), code.size());
         uc->WriteMemory(code_addr, code);
         // keep Unicorn's view of the data area in sync with the host's
         uc->WriteMemory(data_addr - 0x1000,
@@ -782,13 +807,20 @@ struct FuzzEnv {
             u64 swift_val;
         };
         std::vector<RegPair> pairs = {
-                {UC_X86_REG_RAX, "rax", ctx->rax.qword}, {UC_X86_REG_RBX, "rbx", ctx->rbx.qword},
-                {UC_X86_REG_RCX, "rcx", ctx->rcx.qword}, {UC_X86_REG_RDX, "rdx", ctx->rdx.qword},
-                {UC_X86_REG_RSI, "rsi", ctx->rsi.qword}, {UC_X86_REG_RDI, "rdi", ctx->rdi.qword},
-                {UC_X86_REG_RBP, "rbp", ctx->rbp.qword}, {UC_X86_REG_RSP, "rsp", ctx->rsp.qword},
-                {UC_X86_REG_R8, "r8", ctx->r8.qword},    {UC_X86_REG_R9, "r9", ctx->r9.qword},
-                {UC_X86_REG_R10, "r10", ctx->r10.qword}, {UC_X86_REG_R11, "r11", ctx->r11.qword},
-                {UC_X86_REG_R12, "r12", ctx->r12.qword}, {UC_X86_REG_R13, "r13", ctx->r13.qword},
+                {UC_X86_REG_RAX, "rax", ctx->rax.qword},
+                {UC_X86_REG_RBX, "rbx", ctx->rbx.qword},
+                {UC_X86_REG_RCX, "rcx", ctx->rcx.qword},
+                {UC_X86_REG_RDX, "rdx", ctx->rdx.qword},
+                {UC_X86_REG_RSI, "rsi", ctx->rsi.qword},
+                {UC_X86_REG_RDI, "rdi", ctx->rdi.qword},
+                {UC_X86_REG_RBP, "rbp", ctx->rbp.qword},
+                {UC_X86_REG_RSP, "rsp", ctx->rsp.qword},
+                {UC_X86_REG_R8, "r8", ctx->r8.qword},
+                {UC_X86_REG_R9, "r9", ctx->r9.qword},
+                {UC_X86_REG_R10, "r10", ctx->r10.qword},
+                {UC_X86_REG_R11, "r11", ctx->r11.qword},
+                {UC_X86_REG_R12, "r12", ctx->r12.qword},
+                {UC_X86_REG_R13, "r13", ctx->r13.qword},
                 {UC_X86_REG_R14, "r14", ctx->r14.qword},
         };
         bool reg_mismatch = false;
@@ -817,8 +849,11 @@ struct FuzzEnv {
         u32 sv_of = mask.of ? u32(ctx->r15.qword & 1) : 0;
         if (uc_ah != sv_ah || uc_of != sv_of) {
             reg_mismatch = true;
-            detail += fmt::format(" flags: uc_ah={:02x} sv_ah={:02x} uc_of={} sv_of={};", uc_ah,
-                                  sv_ah, uc_of, sv_of);
+            detail += fmt::format(" flags: uc_ah={:02x} sv_ah={:02x} uc_of={} sv_of={};",
+                                  uc_ah,
+                                  sv_ah,
+                                  uc_of,
+                                  sv_of);
         }
 
         // Compare scratch memory window.
@@ -833,21 +868,36 @@ struct FuzzEnv {
                 }
             }
             reg_mismatch = true;
-            detail += fmt::format(" mem@{:x}: uc={:02x} sv={:02x};", win_off + first,
-                                  uc_data[first], reinterpret_cast<u8*>(host_mem)[win_off + first]);
+            detail += fmt::format(" mem@{:x}: uc={:02x} sv={:02x};",
+                                  win_off + first,
+                                  uc_data[first],
+                                  reinterpret_cast<u8*>(host_mem)[win_off + first]);
         }
 
         if (reg_mismatch) {
             failures++;
-            std::cout << fmt::format("[{}] MISMATCH (cursor {}):{} code: {}", tag, cursor - 1,
-                                     detail, DumpCode(code))
+            std::cout << fmt::format("[{}] MISMATCH (cursor {}):{} code: {}",
+                                     tag,
+                                     cursor - 1,
+                                     detail,
+                                     DumpCode(code))
                       << std::endl;
             std::cout << fmt::format(
-                    "  init: rax={:x} rcx={:x} rdx={:x} rbx={:x} rbp={:x} rsi={:x} rdi={:x} "
-                    "r8={:x} r9={:x} r10={:x} r12={:x} r14={:x}",
-                    init_regs[0], init_regs[1], init_regs[2], init_regs[3], init_regs[5],
-                    init_regs[6], init_regs[7], init_regs[8], init_regs[9], init_regs[10],
-                    init_regs[12], init_regs[14])
+                                 "  init: rax={:x} rcx={:x} rdx={:x} rbx={:x} rbp={:x} rsi={:x} "
+                                 "rdi={:x} "
+                                 "r8={:x} r9={:x} r10={:x} r12={:x} r14={:x}",
+                                 init_regs[0],
+                                 init_regs[1],
+                                 init_regs[2],
+                                 init_regs[3],
+                                 init_regs[5],
+                                 init_regs[6],
+                                 init_regs[7],
+                                 init_regs[8],
+                                 init_regs[9],
+                                 init_regs[10],
+                                 init_regs[12],
+                                 init_regs[14])
                       << std::endl;
         }
     }
@@ -869,11 +919,18 @@ TEST_CASE("Fuzz x86 debug repro") {
     FuzzEnv env;
     // SSE regalloc repro: movdqa reg-reg + mem round trip + pmovmskb.
     {
-        std::vector<u8> codeSse = {
-                0x31, 0xdf,                                            // xor edi, ebx
-                0x41, 0x0f, 0xbd, 0xf0,                                // bsr esi, r8d
-                0x9f, 0x41, 0x0f, 0x90, 0xc7,                          // lahf; seto r15b
-                0xf4};
+        std::vector<u8> codeSse = {0x31,
+                                   0xdf,  // xor edi, ebx
+                                   0x41,
+                                   0x0f,
+                                   0xbd,
+                                   0xf0,  // bsr esi, r8d
+                                   0x9f,
+                                   0x41,
+                                   0x0f,
+                                   0x90,
+                                   0xc7,  // lahf; seto r15b
+                                   0xf4};
         u64 addrSse = env.base + 0x4000;
         std::memcpy(reinterpret_cast<u8*>(env.host_mem) + 0x4000, codeSse.data(), codeSse.size());
         env.DumpIR(addrSse);
@@ -886,7 +943,8 @@ TEST_CASE("Fuzz x86 debug repro") {
         env.uc->Run(addrSse, addrSse + codeSse.size() - 1, 0, 0);
         env.core->Run();
         std::cout << fmt::format("sse repro ebx: uc={:x} sv={:x}\n",
-                                 env.uc->ReadRegister(UC_X86_REG_RBX), ctx2.rbx.qword);
+                                 env.uc->ReadRegister(UC_X86_REG_RBX),
+                                 ctx2.rbx.qword);
     }
 
     // mov rax, fs:[r13]; mov rbx, gs:[r13+8]; hlt
@@ -909,9 +967,12 @@ TEST_CASE("Fuzz x86 debug repro") {
     env.uc->WriteRegister(UC_X86_REG_GS_BASE, ctx.gs_base);
     env.uc->Run(env.base, env.base + code.size() - 1, 0, 0);
     env.core->Run();
-    std::cout << fmt::format("rax: uc={:x} sv={:x}\n", env.uc->ReadRegister(UC_X86_REG_RAX), ctx.rax.qword);
-    std::cout << fmt::format("rbx: uc={:x} sv={:x}\n", env.uc->ReadRegister(UC_X86_REG_RBX), ctx.rbx.qword);
-    std::cout << ((ctx.rax.qword == marker1 && ctx.rbx.qword == marker2) ? "FSGS-OK" : "FSGS-FAIL") << std::endl;
+    std::cout << fmt::format(
+            "rax: uc={:x} sv={:x}\n", env.uc->ReadRegister(UC_X86_REG_RAX), ctx.rax.qword);
+    std::cout << fmt::format(
+            "rbx: uc={:x} sv={:x}\n", env.uc->ReadRegister(UC_X86_REG_RBX), ctx.rbx.qword);
+    std::cout << ((ctx.rax.qword == marker1 && ctx.rbx.qword == marker2) ? "FSGS-OK" : "FSGS-FAIL")
+              << std::endl;
 
     std::cout << fmt::format("base={:x} data_addr={:x}\n", env.base, env.data_addr);
     // IR dump: xor ecx, eax; imul r12d, r12d
@@ -935,7 +996,9 @@ TEST_CASE("Fuzz x86 debug repro") {
     u64 stos_val = 0;
     std::memcpy(&stos_val, reinterpret_cast<u8*>(env.host_mem) + (env.data_addr - env.base), 8);
     std::cout << fmt::format("repstos rdi: uc={:x} sv={:x} mem={:x}\n",
-                             env.uc->ReadRegister(UC_X86_REG_RDI), ctx.rdi.qword, stos_val);
+                             env.uc->ReadRegister(UC_X86_REG_RDI),
+                             ctx.rdi.qword,
+                             stos_val);
 
     // rep stosw repro
     std::vector<u8> codeB = {0xf3, 0x66, 0xab, 0xf4};
@@ -951,9 +1014,13 @@ TEST_CASE("Fuzz x86 debug repro") {
     env.uc->Run(addrB, addrB + codeB.size() - 1, 0, 0);
     env.core->Run();
     u64 stosw_val = 0;
-    std::memcpy(&stosw_val, reinterpret_cast<u8*>(env.host_mem) + (env.data_addr + 0x100 - env.base), 8);
+    std::memcpy(&stosw_val,
+                reinterpret_cast<u8*>(env.host_mem) + (env.data_addr + 0x100 - env.base),
+                8);
     std::cout << fmt::format("repstosw rdi: uc={:x} sv={:x} mem={:x}\n",
-                             env.uc->ReadRegister(UC_X86_REG_RDI), ctx.rdi.qword, stosw_val);
+                             env.uc->ReadRegister(UC_X86_REG_RDI),
+                             ctx.rdi.qword,
+                             stosw_val);
 
     // EVEX prefix: must be a graceful ILL_CODE / panic, never UB.
     {
@@ -993,8 +1060,10 @@ TEST_CASE("Fuzz x86 debug repro") {
     env.uc->Run(addrC, addrC + codeC.size() - 1, 0, 0);
     env.core->Run();
     std::cout << fmt::format("mul64 rdx: uc={:x} sv={:x} rax: uc={:x} sv={:x}\n",
-                             env.uc->ReadRegister(UC_X86_REG_RDX), ctx.rdx.qword,
-                             env.uc->ReadRegister(UC_X86_REG_RAX), ctx.rax.qword);
+                             env.uc->ReadRegister(UC_X86_REG_RDX),
+                             ctx.rdx.qword,
+                             env.uc->ReadRegister(UC_X86_REG_RAX),
+                             ctx.rax.qword);
 
     // imul r8d; mul r9w; lahf repro (mul CF after a previous mul)
     std::vector<u8> code9 = {0x41, 0xf7, 0xe8, 0x66, 0x41, 0xf7, 0xe1, 0x9f, 0xf4};
@@ -1010,8 +1079,10 @@ TEST_CASE("Fuzz x86 debug repro") {
     env.uc->Run(addr9, addr9 + code9.size() - 1, 0, 0);
     env.core->Run();
     std::cout << fmt::format("mul16 rdx: uc={:x} sv={:x} rax: uc={:x} sv={:x}\n",
-                             env.uc->ReadRegister(UC_X86_REG_RDX), ctx.rdx.qword,
-                             env.uc->ReadRegister(UC_X86_REG_RAX), ctx.rax.qword);
+                             env.uc->ReadRegister(UC_X86_REG_RDX),
+                             ctx.rdx.qword,
+                             env.uc->ReadRegister(UC_X86_REG_RAX),
+                             ctx.rax.qword);
 
     // imul ecx (one-operand 32-bit signed): check EDX = high half
     std::vector<u8> code8 = {0xf7, 0xe9, 0xf4};
@@ -1026,11 +1097,26 @@ TEST_CASE("Fuzz x86 debug repro") {
     env.uc->Run(addr8, addr8 + code8.size() - 1, 0, 0);
     env.core->Run();
     std::cout << fmt::format("imul32 rdx: uc={:x} sv={:x} rax: uc={:x} sv={:x}\n",
-                             env.uc->ReadRegister(UC_X86_REG_RDX), ctx.rdx.qword,
-                             env.uc->ReadRegister(UC_X86_REG_RAX), ctx.rax.qword);
+                             env.uc->ReadRegister(UC_X86_REG_RDX),
+                             ctx.rdx.qword,
+                             env.uc->ReadRegister(UC_X86_REG_RAX),
+                             ctx.rax.qword);
     // sbb-after-dec repro: test si,si; xor cx,cx; dec r12d; sbb r8w,dx; lahf
-    std::vector<u8> code6 = {0x66, 0x85, 0xf0, 0x66, 0x31, 0xc9, 0x41, 0xff, 0xcc,
-                             0x66, 0x41, 0x19, 0xd0, 0x9f, 0xf4};
+    std::vector<u8> code6 = {0x66,
+                             0x85,
+                             0xf0,
+                             0x66,
+                             0x31,
+                             0xc9,
+                             0x41,
+                             0xff,
+                             0xcc,
+                             0x66,
+                             0x41,
+                             0x19,
+                             0xd0,
+                             0x9f,
+                             0xf4};
     u64 addr6 = env.base + 0xb000;
     std::memcpy(reinterpret_cast<u8*>(env.host_mem) + 0xb000, code6.data(), code6.size());
     env.DumpIR(addr6);
@@ -1046,13 +1132,29 @@ TEST_CASE("Fuzz x86 debug repro") {
     env.uc->Run(addr6, addr6 + code6.size() - 1, 0, 0);
     env.core->Run();
     std::cout << fmt::format("sbb-dec r8: uc={:x} sv={:x} (expect ...5ea9)\n",
-                             env.uc->ReadRegister(UC_X86_REG_R8), ctx.r8.qword);
+                             env.uc->ReadRegister(UC_X86_REG_R8),
+                             ctx.r8.qword);
 
     // jecxz CF-polarity repro: sub rbx, rdi (borrow -> CF=1); jecxz +10
     // (not taken); movabs rcx, imm; lahf
-    std::vector<u8> code5 = {0x48, 0x29, 0xfb, 0x67, 0xe3, 0x0a,
-                             0x48, 0xb9, 0x0d, 0xf0, 0xfe, 0xca, 0xef, 0xbe, 0xad, 0xde,
-                             0x9f, 0xf4};
+    std::vector<u8> code5 = {0x48,
+                             0x29,
+                             0xfb,
+                             0x67,
+                             0xe3,
+                             0x0a,
+                             0x48,
+                             0xb9,
+                             0x0d,
+                             0xf0,
+                             0xfe,
+                             0xca,
+                             0xef,
+                             0xbe,
+                             0xad,
+                             0xde,
+                             0x9f,
+                             0xf4};
     u64 addr5 = env.base + 0xa000;
     std::memcpy(reinterpret_cast<u8*>(env.host_mem) + 0xa000, code5.data(), code5.size());
     env.DumpIR(addr5);
@@ -1066,7 +1168,8 @@ TEST_CASE("Fuzz x86 debug repro") {
     env.uc->Run(addr5, addr5 + code5.size() - 1, 0, 0);
     env.core->Run();
     std::cout << fmt::format("jecxz rax: uc={:x} sv={:x} (expect CF=1)\n",
-                             env.uc->ReadRegister(UC_X86_REG_RAX), ctx.rax.qword);
+                             env.uc->ReadRegister(UC_X86_REG_RAX),
+                             ctx.rax.qword);
 
     // Misaligned TSO repro: sub [r13+r11*2+0x10], r8 with r11=3 (addr % 8 == 6)
     std::vector<u8> code4 = {0x4b, 0x29, 0x44, 0x5d, 0x10, 0xf4};
@@ -1090,14 +1193,16 @@ TEST_CASE("Fuzz x86 debug repro") {
     env.DumpIR(addr3);
     env.uc->WriteMemory(addr3, code3);
     ctx.rax.qword = 0;
-    ctx.rbx.qword = 5;       // bl = 5: adc -> 5 + 0xFF + 1 = 0x105 -> bl=5, CF=1
+    ctx.rbx.qword = 5;  // bl = 5: adc -> 5 + 0xFF + 1 = 0x105 -> bl=5, CF=1
     ctx.rip.qword = addr3;
     env.SyncRegsToUnicorn();
     env.uc->Run(addr3, addr3 + code3.size() - 1, 0, 0);
     env.core->Run();
     // ebx|r8d = 0x80000003: SF=1 ZF=0, low byte 0x03 -> 2 bits -> even -> PF=1
     std::cout << fmt::format("pf rax: uc={:x} sv={:x} rbp={:x}\n",
-                             env.uc->ReadRegister(UC_X86_REG_RAX), ctx.rax.qword, ctx.rbp.qword);
+                             env.uc->ReadRegister(UC_X86_REG_RAX),
+                             ctx.rax.qword,
+                             ctx.rbp.qword);
 }
 
 namespace {
@@ -1235,8 +1340,8 @@ TEST_CASE("Fuzz x86 shifts") {
             u64 count_used;
             if (by_cl) {
                 // by CL
-                count_used = env.Pick(std::vector<u64>{0, 1, 2, 7, 8, 15, 16, 31, 32, 33,
-                                                       63, 64, 65, 255});
+                count_used = env.Pick(
+                        std::vector<u64>{0, 1, 2, 7, 8, 15, 16, 31, 32, 33, 63, 64, 65, 255});
                 env.ctx->rcx.qword = count_used;
                 EmitShift(b, sub, width, dst, 0, true, high_byte);
             } else {
@@ -1378,16 +1483,36 @@ TEST_CASE("Fuzz x86 div idiv") {
         }
         auto set_reg = [&](u8 r, u64 v) {
             switch (r) {
-                case kRbx: env.ctx->rbx.qword = v; break;
-                case kRcx: env.ctx->rcx.qword = v; break;
-                case kRsi: env.ctx->rsi.qword = v; break;
-                case kRdi: env.ctx->rdi.qword = v; break;
-                case kRbp: env.ctx->rbp.qword = v; break;
-                case kR8: env.ctx->r8.qword = v; break;
-                case kR9: env.ctx->r9.qword = v; break;
-                case kR10: env.ctx->r10.qword = v; break;
-                case kR12: env.ctx->r12.qword = v; break;
-                default: env.ctx->rbx.qword = v; break;
+                case kRbx:
+                    env.ctx->rbx.qword = v;
+                    break;
+                case kRcx:
+                    env.ctx->rcx.qword = v;
+                    break;
+                case kRsi:
+                    env.ctx->rsi.qword = v;
+                    break;
+                case kRdi:
+                    env.ctx->rdi.qword = v;
+                    break;
+                case kRbp:
+                    env.ctx->rbp.qword = v;
+                    break;
+                case kR8:
+                    env.ctx->r8.qword = v;
+                    break;
+                case kR9:
+                    env.ctx->r9.qword = v;
+                    break;
+                case kR10:
+                    env.ctx->r10.qword = v;
+                    break;
+                case kR12:
+                    env.ctx->r12.qword = v;
+                    break;
+                default:
+                    env.ctx->rbx.qword = v;
+                    break;
             }
         };
         set_reg(rm, divisor & mod);
@@ -1561,7 +1686,8 @@ TEST_CASE("Fuzz x86 mov lea xchg extends") {
                     break;
                 case 6:
                     if (high_byte) {
-                        EmitXchgRegReg(b, width, u8(env.RandInt(0, 7)), u8(env.RandInt(0, 7)), true);
+                        EmitXchgRegReg(
+                                b, width, u8(env.RandInt(0, 7)), u8(env.RandInt(0, 7)), true);
                     } else {
                         EmitXchgRegReg(b, width, byte_reg, env.RandReg());
                     }
@@ -1597,13 +1723,31 @@ TEST_CASE("Fuzz x86 cbw cdq lahf") {
         env.InitRegs();
         env.EmitFlagPrefix(b, kRsi, kRdi);
         switch (env.RandInt(0, 7)) {
-            case 0: b.B(0x66); b.B(0x98); break;  // cbw
-            case 1: b.B(0x98); break;             // cwde
-            case 2: b.B(0x48); b.B(0x98); break;  // cdqe
-            case 3: b.B(0x66); b.B(0x99); break;  // cwd
-            case 4: b.B(0x99); break;             // cdq
-            case 5: b.B(0x48); b.B(0x99); break;  // cqo
-            case 6: b.B(0x9F); break;             // lahf
+            case 0:
+                b.B(0x66);
+                b.B(0x98);
+                break;  // cbw
+            case 1:
+                b.B(0x98);
+                break;  // cwde
+            case 2:
+                b.B(0x48);
+                b.B(0x98);
+                break;  // cdqe
+            case 3:
+                b.B(0x66);
+                b.B(0x99);
+                break;  // cwd
+            case 4:
+                b.B(0x99);
+                break;  // cdq
+            case 5:
+                b.B(0x48);
+                b.B(0x99);
+                break;  // cqo
+            case 6:
+                b.B(0x9F);
+                break;  // lahf
             default: {
                 // movs single step
                 env.ctx->rsi.qword = env.data_addr - 0x800;
@@ -1659,15 +1803,15 @@ TEST_CASE("Fuzz x86 cpuid") {
         // SwiftVM side only (no differential comparison).
         std::vector<u8> code = {0x0F, 0xA2, 0xF4};
         u64 addr = env.base + (env.cursor++ * FuzzEnv::kCodeStride);
-        std::memcpy(reinterpret_cast<u8*>(env.host_mem) + (addr - env.base), code.data(),
-                    code.size());
+        std::memcpy(
+                reinterpret_cast<u8*>(env.host_mem) + (addr - env.base), code.data(), code.size());
         env.InitRegs();
         env.ctx->rax.qword = leaf;
         env.ctx->rcx.qword = 0;
         env.ctx->rip.qword = addr;
         env.core->Run();
-        u64 sig[4] = {env.ctx->rax.qword, env.ctx->rbx.qword, env.ctx->rcx.qword,
-                      env.ctx->rdx.qword};
+        u64 sig[4] = {
+                env.ctx->rax.qword, env.ctx->rbx.qword, env.ctx->rcx.qword, env.ctx->rdx.qword};
         switch (leaf) {
             case 0:
                 REQUIRE(sig[0] == 7);
@@ -1676,8 +1820,8 @@ TEST_CASE("Fuzz x86 cpuid") {
                 REQUIRE(sig[2] == 0x6C65746E);  // "ntel"
                 break;
             case 1:
-                REQUIRE((sig[3] & (1u << 26)) != 0);   // SSE2 reported
-                REQUIRE((sig[2] & (1u << 0)) == 0);    // no SSE3
+                REQUIRE((sig[3] & (1u << 26)) != 0);  // SSE2 reported
+                REQUIRE((sig[2] & (1u << 0)) == 0);   // no SSE3
                 break;
             case 7:
                 REQUIRE(sig[1] == 0);  // no AVX2 / AVX-512 / BMI / ERMS
@@ -1755,14 +1899,22 @@ TEST_CASE("Fuzz x86 call ret jmp") {
             u64 sv;
         };
         std::vector<RegPair> pairs = {
-                {UC_X86_REG_RAX, "rax", env.ctx->rax.qword}, {UC_X86_REG_RBX, "rbx", env.ctx->rbx.qword},
-                {UC_X86_REG_RCX, "rcx", env.ctx->rcx.qword}, {UC_X86_REG_RDX, "rdx", env.ctx->rdx.qword},
-                {UC_X86_REG_RSI, "rsi", env.ctx->rsi.qword}, {UC_X86_REG_RDI, "rdi", env.ctx->rdi.qword},
-                {UC_X86_REG_RBP, "rbp", env.ctx->rbp.qword}, {UC_X86_REG_RSP, "rsp", env.ctx->rsp.qword},
-                {UC_X86_REG_R8, "r8", env.ctx->r8.qword},    {UC_X86_REG_R9, "r9", env.ctx->r9.qword},
-                {UC_X86_REG_R10, "r10", env.ctx->r10.qword}, {UC_X86_REG_R11, "r11", env.ctx->r11.qword},
-                {UC_X86_REG_R12, "r12", env.ctx->r12.qword}, {UC_X86_REG_R13, "r13", env.ctx->r13.qword},
-                {UC_X86_REG_R14, "r14", env.ctx->r14.qword}, {UC_X86_REG_R15, "r15", env.ctx->r15.qword},
+                {UC_X86_REG_RAX, "rax", env.ctx->rax.qword},
+                {UC_X86_REG_RBX, "rbx", env.ctx->rbx.qword},
+                {UC_X86_REG_RCX, "rcx", env.ctx->rcx.qword},
+                {UC_X86_REG_RDX, "rdx", env.ctx->rdx.qword},
+                {UC_X86_REG_RSI, "rsi", env.ctx->rsi.qword},
+                {UC_X86_REG_RDI, "rdi", env.ctx->rdi.qword},
+                {UC_X86_REG_RBP, "rbp", env.ctx->rbp.qword},
+                {UC_X86_REG_RSP, "rsp", env.ctx->rsp.qword},
+                {UC_X86_REG_R8, "r8", env.ctx->r8.qword},
+                {UC_X86_REG_R9, "r9", env.ctx->r9.qword},
+                {UC_X86_REG_R10, "r10", env.ctx->r10.qword},
+                {UC_X86_REG_R11, "r11", env.ctx->r11.qword},
+                {UC_X86_REG_R12, "r12", env.ctx->r12.qword},
+                {UC_X86_REG_R13, "r13", env.ctx->r13.qword},
+                {UC_X86_REG_R14, "r14", env.ctx->r14.qword},
+                {UC_X86_REG_R15, "r15", env.ctx->r15.qword},
         };
         std::string detail;
         bool bad = false;
@@ -1813,8 +1965,12 @@ TEST_CASE("Fuzz x86 mixed sequences") {
                     } else if (env.RandInt(0, 1)) {
                         EmitAluRegReg(b, group, width, env.RandReg(), env.RandReg());
                     } else {
-                        EmitAluRegImm(b, group, width, env.RandReg(),
-                                      env.PoolVal(width > 32 ? 32 : width), env.RandInt(0, 3) == 0);
+                        EmitAluRegImm(b,
+                                      group,
+                                      width,
+                                      env.RandReg(),
+                                      env.PoolVal(width > 32 ? 32 : width),
+                                      env.RandInt(0, 3) == 0);
                     }
                     break;
                 }
@@ -1843,8 +1999,12 @@ TEST_CASE("Fuzz x86 mixed sequences") {
                          // approximate after shifts (the backend cannot express
                          // the partial flag update) and a later adc / setcc
                          // would observe it through registers.
-                    EmitShift(b, env.Pick(std::vector<u8>{4, 5, 7}), width, env.RandReg(),
-                              u8(env.Pick(std::vector<u64>{1, 2, 5, 7, 15})), false);
+                    EmitShift(b,
+                              env.Pick(std::vector<u8>{4, 5, 7}),
+                              width,
+                              env.RandReg(),
+                              u8(env.Pick(std::vector<u64>{1, 2, 5, 7, 15})),
+                              false);
                     mask.ah &= ~(kAhCF | kAhAF);  // CF approximate, AF undefined after shift
                     mask.of = false;
                     j = n;  // end the sequence
@@ -1860,7 +2020,7 @@ TEST_CASE("Fuzz x86 mixed sequences") {
                     EmitSetcc(b, u8(env.RandInt(0, 15)), env.RandReg());
                     break;
                 case 6:  // xchg (movs is covered by its own families: ops
-                        // generated before it here could clobber rsi/rdi)
+                         // generated before it here could clobber rsi/rdi)
                     EmitXchgRegReg(b, width, env.RandReg(), env.RandReg());
                     break;
                 case 7:  // mul / imul — must end the sequence: SF / ZF / PF are
@@ -1870,7 +2030,7 @@ TEST_CASE("Fuzz x86 mixed sequences") {
                          // are exact and checked by the dedicated mul family.
                     EmitGroupF6(b, env.RandInt(0, 1) ? 4 : 5, width, env.RandReg());
                     mask.ah &= ~(kAhSF | kAhZF | kAhAF);  // SF/ZF/AF undefined after mul
-                    j = n;  // end the sequence
+                    j = n;                                // end the sequence
                     break;
                 case 8:  // push / pop
                     EmitPushReg(b, env.RandReg());
@@ -1930,12 +2090,20 @@ TEST_CASE("Fuzz x86 segments") {
                 EmitMovMemImm(b, width, env.RandMem(), env.PoolVal(width > 32 ? 32 : width), seg);
                 break;
             case 3:
-                EmitAluRegMem(b, env.Pick(std::vector<u8>{0, 1, 4, 5, 6, 7}), width, env.RandReg(),
-                              env.RandMem(), seg);
+                EmitAluRegMem(b,
+                              env.Pick(std::vector<u8>{0, 1, 4, 5, 6, 7}),
+                              width,
+                              env.RandReg(),
+                              env.RandMem(),
+                              seg);
                 break;
             default:
-                EmitAluMemReg(b, env.Pick(std::vector<u8>{0, 1, 4, 5, 6}), width, env.RandMem(),
-                              env.RandReg(), seg);
+                EmitAluMemReg(b,
+                              env.Pick(std::vector<u8>{0, 1, 4, 5, 6}),
+                              width,
+                              env.RandMem(),
+                              env.RandReg(),
+                              seg);
                 break;
         }
         env.EmitFlagCapture(b);
@@ -1961,7 +2129,9 @@ TEST_CASE("Fuzz x86 decode robustness") {
             b.B(0xF4);
         }
         u64 code_addr = env.base + (env.cursor++ * FuzzEnv::kCodeStride);
-        std::memcpy(reinterpret_cast<u8*>(env.host_mem) + (code_addr - env.base), b.c.data(), b.c.size());
+        std::memcpy(reinterpret_cast<u8*>(env.host_mem) + (code_addr - env.base),
+                    b.c.data(),
+                    b.c.size());
         try {
             struct MemIf : public swift::runtime::MemoryInterface {
                 bool Read(void* dest, size_t addr, size_t size) override {
@@ -1994,14 +2164,21 @@ TEST_CASE("Fuzz x86 nop family") {
     // diverge from Unicorn.
     env.ctx->rax.qword = 0xDEAD0000;
     CodeBuf b;
-    b.B(0xF3); b.B(0x0F); b.B(0x1E); b.B(0xFA);  // endbr64
-    b.B(0xF3); b.B(0x0F); b.B(0x1E); b.B(0xFB);  // endbr32
+    b.B(0xF3);
+    b.B(0x0F);
+    b.B(0x1E);
+    b.B(0xFA);  // endbr64
+    b.B(0xF3);
+    b.B(0x0F);
+    b.B(0x1E);
+    b.B(0xFB);  // endbr32
     // nop word ptr cs:[rax + rax*1 + 0]
     for (u8 v : {0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00}) {
         b.B(v);
     }
-    b.B(0x66); b.B(0x90);  // 16-bit nop (xchg ax, ax)
-    b.B(0x90);             // nop
+    b.B(0x66);
+    b.B(0x90);  // 16-bit nop (xchg ax, ax)
+    b.B(0x90);  // nop
     env.RunIteration(b.c, FlagMask{}, "nop");
     REQUIRE(env.failures == 0);
 }
@@ -2024,7 +2201,9 @@ TEST_CASE("Fuzz x86 segment address forms") {
     write_marker(env.data_addr + 0x140, 0x1111111122222222ull);
     {
         CodeBuf b;
-        b.B(0x64); b.B(0x48); b.B(0xA1);  // mov rax, fs:[imm64]
+        b.B(0x64);
+        b.B(0x48);
+        b.B(0xA1);  // mov rax, fs:[imm64]
         b.Q(0x40);
         env.RunIteration(b.c, FlagMask{}, "seg-moffs");
     }
@@ -2071,7 +2250,8 @@ TEST_CASE("Fuzz x86 segment address forms") {
         env.RunIteration(b.c, FlagMask{}, "seg-store");
     }
     u64 stored = 0;
-    std::memcpy(&stored, reinterpret_cast<u8*>(env.host_mem) + (env.data_addr + 0x88 - env.base), 8);
+    std::memcpy(
+            &stored, reinterpret_cast<u8*>(env.host_mem) + (env.data_addr + 0x88 - env.base), 8);
     REQUIRE(stored == 0x7777777788888888ull);
     REQUIRE(env.failures == 0);
 }
@@ -2095,6 +2275,17 @@ void EmitSseRR(CodeBuf& b, u8 prefix, u8 op, u8 dst, u8 src) {
     EmitModRMReg(b, dst, src);
 }
 
+// reg-reg form: prefix 0F 38 op /r (reg = dst, rm = src)
+void EmitSse38RR(CodeBuf& b, u8 prefix, u8 op, u8 dst, u8 src) {
+    if (prefix) {
+        b.B(prefix);
+    }
+    b.B(0x0F);
+    b.B(0x38);
+    b.B(op);
+    EmitModRMReg(b, dst, src);
+}
+
 // load form: prefix 0F op, reg = dst xmm, rm = mem
 void EmitSseLoad(CodeBuf& b, u8 prefix, u8 op, u8 dst, const MemOp& m) {
     if (prefix) {
@@ -2102,6 +2293,18 @@ void EmitSseLoad(CodeBuf& b, u8 prefix, u8 op, u8 dst, const MemOp& m) {
     }
     EmitSseRexMem(b, m);
     b.B(0x0F);
+    b.B(op);
+    EmitModRMMem(b, dst, m);
+}
+
+// load form: prefix 0F 38 op, reg = dst xmm, rm = mem
+void EmitSse38Load(CodeBuf& b, u8 prefix, u8 op, u8 dst, const MemOp& m) {
+    if (prefix) {
+        b.B(prefix);
+    }
+    EmitSseRexMem(b, m);
+    b.B(0x0F);
+    b.B(0x38);
     b.B(op);
     EmitModRMMem(b, dst, m);
 }
@@ -2168,6 +2371,18 @@ void EmitPmovmskb(CodeBuf& b, u8 gpr, u8 xmm) {
     EmitModRMReg(b, gpr, xmm);
 }
 
+void EmitMovmsk(CodeBuf& b, bool pd, u8 gpr, u8 xmm) {
+    if (pd) {
+        b.B(0x66);
+    }
+    if (gpr >= 8) {
+        EmitRex(b, false, true, false, false);
+    }
+    b.B(0x0F);
+    b.B(0x50);
+    EmitModRMReg(b, gpr, xmm);
+}
+
 void EmitMovdGprToXmm(CodeBuf& b, u8 xmm, u8 gpr, bool w64) {
     b.B(0x66);
     EmitRex(b, w64, false, false, gpr >= 8, w64 || gpr >= 8);
@@ -2227,15 +2442,19 @@ void EmitCrc32(CodeBuf& b, int dst_width, int src_width, u8 dst, u8 src) {
 
 // cmps/scas/lods string ops (single step or REP/REPNZ prefixed).
 void EmitCmps(CodeBuf& b, int width, int rep) {  // rep: 0 none, 1 F3(REPZ), 2 F2(REPNZ)
-    if (rep == 1) b.B(0xF3);
-    else if (rep == 2) b.B(0xF2);
+    if (rep == 1)
+        b.B(0xF3);
+    else if (rep == 2)
+        b.B(0xF2);
     EmitOperandPrefix(b, width);
     if (width == 64) b.B(0x48);
     b.B(width == 8 ? 0xA6 : 0xA7);
 }
 void EmitScas(CodeBuf& b, int width, int rep) {
-    if (rep == 1) b.B(0xF3);
-    else if (rep == 2) b.B(0xF2);
+    if (rep == 1)
+        b.B(0xF3);
+    else if (rep == 2)
+        b.B(0xF2);
     EmitOperandPrefix(b, width);
     if (width == 64) b.B(0x48);
     b.B(width == 8 ? 0xAE : 0xAF);
@@ -2256,6 +2475,376 @@ u64 F32Pair(float a, float b) {
 }
 
 }  // namespace
+
+TEST_CASE("SSE batch A directed edge semantics") {
+    using Vec128 = std::array<u8, 16>;
+    struct RunResult {
+        Vec128 vec{};
+        u64 rax{};
+    };
+
+    constexpr size_t kArenaSize = 0x40000;
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 arena_base = reinterpret_cast<u64>(arena);
+    const u64 data_addr = arena_base + 0x30000;
+    size_t code_cursor = 0;
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    auto* instance = X86Instance::Make();
+
+    const Vec128 input = {0x80,
+                          0x7F,
+                          0x01,
+                          0xFF,
+                          0x00,
+                          0x55,
+                          0xAA,
+                          0xFE,
+                          0x10,
+                          0x20,
+                          0x40,
+                          0x81,
+                          0x7E,
+                          0x02,
+                          0xC0,
+                          0x3F};
+    const Vec128 control = {0x00,
+                            0x81,
+                            0x72,
+                            0xF3,
+                            0x04,
+                            0x95,
+                            0x6E,
+                            0xFF,
+                            0x08,
+                            0x09,
+                            0xFA,
+                            0x0B,
+                            0x4C,
+                            0x8D,
+                            0x7E,
+                            0x8F};
+    const Vec128 zero{};
+    MemOp pa{};
+    pa.disp = 0x100;
+    MemOp pb{};
+    pb.disp = 0x120;
+    MemOp out{};
+    out.disp = 0x180;
+
+    auto run = [&](CodeBuf b, const Vec128& a, const Vec128& rhs) {
+        std::memcpy(reinterpret_cast<void*>(data_addr + pa.disp), a.data(), a.size());
+        std::memcpy(reinterpret_cast<void*>(data_addr + pb.disp), rhs.data(), rhs.size());
+        std::memset(reinterpret_cast<void*>(data_addr + out.disp), 0, 16);
+        EmitSseStore(b, 0xF3, 0x7F, out, 0);
+        b.B(0xF4);
+
+        const u64 code_addr = arena_base + code_cursor * 0x100;
+        code_cursor++;
+        REQUIRE(code_addr + b.c.size() < arena_base + 0x20000);
+        std::memcpy(reinterpret_cast<void*>(code_addr), b.c.data(), b.c.size());
+
+        auto* core = X86Core::Make(instance);
+        auto& ctx = core->GetContext();
+        ctx.rip.qword = code_addr;
+        ctx.r13.qword = data_addr;
+        ctx.rsp.qword = arena_base + 0x2F000;
+        core->Run();
+
+        RunResult result;
+        result.rax = ctx.rax.qword;
+        std::memcpy(result.vec.data(),
+                    reinterpret_cast<void*>(data_addr + out.disp),
+                    result.vec.size());
+        X86Core::Destroy(core);
+        return result;
+    };
+
+    auto shift_expected = [](const Vec128& src, u32 lane_bits, u64 count, int kind) {
+        unsigned __int128 value = 0;
+        std::memcpy(&value, src.data(), sizeof(value));
+        unsigned __int128 result = 0;
+        const u64 mask = lane_bits == 64 ? ~u64(0) : (u64(1) << lane_bits) - 1;
+        for (u32 bit = 0; bit < 128; bit += lane_bits) {
+            const u64 lane = static_cast<u64>(value >> bit) & mask;
+            u64 shifted = 0;
+            if (kind == 0) {
+                shifted = count >= lane_bits ? 0 : (lane << count) & mask;
+            } else if (kind == 1) {
+                shifted = count >= lane_bits ? 0 : lane >> count;
+            } else {
+                const u32 clamped = static_cast<u32>(std::min(count, u64(lane_bits - 1)));
+                const u64 sign = u64(1) << (lane_bits - 1);
+                const s64 signed_lane = lane_bits == 64 ? static_cast<s64>(lane)
+                                                        : static_cast<s64>((lane ^ sign) - sign);
+                shifted = static_cast<u64>(signed_lane >> clamped) & mask;
+            }
+            result |= static_cast<unsigned __int128>(shifted) << bit;
+        }
+        Vec128 expected{};
+        std::memcpy(expected.data(), &result, sizeof(result));
+        return expected;
+    };
+
+    struct ShiftForm {
+        u8 imm_op;
+        u8 imm_sub;
+        u8 count_op;
+        u8 width;
+        int kind;  // 0 left, 1 logical right, 2 arithmetic right
+    };
+    static constexpr ShiftForm kShiftForms[] = {
+            {0x71, 6, 0xF1, 16, 0},
+            {0x72, 6, 0xF2, 32, 0},
+            {0x73, 6, 0xF3, 64, 0},
+            {0x71, 2, 0xD1, 16, 1},
+            {0x72, 2, 0xD2, 32, 1},
+            {0x73, 2, 0xD3, 64, 1},
+            {0x71, 4, 0xE1, 16, 2},
+            {0x72, 4, 0xE2, 32, 2},
+    };
+
+    bool matched = true;
+    std::string mismatch;
+    for (const auto& form : kShiftForms) {
+        const u64 counts[] = {0, 1, u64(form.width - 1), form.width, u64(form.width + 1), 255};
+        for (u64 count : counts) {
+            const auto expected = shift_expected(input, form.width, count, form.kind);
+            CodeBuf imm;
+            EmitSseLoad(imm, 0xF3, 0x6F, 0, pa);
+            EmitSseShiftImm(imm, form.imm_op, form.imm_sub, 0, static_cast<u8>(count));
+            const auto imm_result = run(std::move(imm), input, zero);
+            if (imm_result.vec != expected) {
+                matched = false;
+                mismatch = fmt::format(
+                        "imm shift kind={} width={} count={}", form.kind, form.width, count);
+                break;
+            }
+
+            CodeBuf variable;
+            EmitSseLoad(variable, 0xF3, 0x6F, 0, pa);
+            EmitMovRegImm(variable, 64, kRax, count);
+            EmitMovdGprToXmm(variable, 1, kRax, true);
+            EmitSseRR(variable, 0x66, form.count_op, 0, 1);
+            const auto variable_result = run(std::move(variable), input, zero);
+            if (variable_result.vec != expected) {
+                matched = false;
+                mismatch = fmt::format(
+                        "xmm shift kind={} width={} count={}", form.kind, form.width, count);
+                break;
+            }
+        }
+        if (!matched) {
+            break;
+        }
+    }
+
+    if (matched) {
+        CodeBuf b;
+        EmitSseLoad(b, 0xF3, 0x6F, 0, pa);
+        EmitSseLoad(b, 0xF3, 0x6F, 1, pb);
+        EmitSse38RR(b, 0x66, 0x00, 0, 1);
+        const auto actual = run(std::move(b), input, control).vec;
+        Vec128 expected{};
+        for (u32 i = 0; i < 16; ++i) {
+            expected[i] = (control[i] & 0x80) ? 0 : input[control[i] & 0x0F];
+        }
+        if (actual != expected) {
+            matched = false;
+            mismatch = "pshufb bit-7 zeroing / low-nibble indexing";
+        }
+    }
+
+    auto binary_lanes = [](const Vec128& a, const Vec128& b, u32 lane_bits, auto operation) {
+        unsigned __int128 left = 0;
+        unsigned __int128 right = 0;
+        std::memcpy(&left, a.data(), sizeof(left));
+        std::memcpy(&right, b.data(), sizeof(right));
+        unsigned __int128 result = 0;
+        const u64 mask = lane_bits == 64 ? ~u64(0) : (u64(1) << lane_bits) - 1;
+        for (u32 bit = 0; bit < 128; bit += lane_bits) {
+            const u64 lhs = static_cast<u64>(left >> bit) & mask;
+            const u64 rhs = static_cast<u64>(right >> bit) & mask;
+            result |= static_cast<unsigned __int128>(operation(lhs, rhs) & mask) << bit;
+        }
+        Vec128 expected{};
+        std::memcpy(expected.data(), &result, sizeof(result));
+        return expected;
+    };
+    auto signed_lane = [](u64 value, u32 bits) {
+        if (bits == 64) {
+            return static_cast<s64>(value);
+        }
+        const u64 sign = u64(1) << (bits - 1);
+        return static_cast<s64>((value ^ sign) - sign);
+    };
+
+    if (matched) {
+        struct BinaryCase {
+            const char* name;
+            bool map38;
+            u8 opcode;
+            u32 lane_bits;
+            int operation;  // 0 avg, 1 umin, 2 umax, 3 smin, 4 smax, 5 mul
+        };
+        static constexpr BinaryCase kCases[] = {
+                {"pavgb", false, 0xE0, 8, 0},
+                {"pavgw", false, 0xE3, 16, 0},
+                {"pminub", false, 0xDA, 8, 1},
+                {"pmaxub", false, 0xDE, 8, 2},
+                {"pminsw", false, 0xEA, 16, 3},
+                {"pmaxsw", false, 0xEE, 16, 4},
+                {"pminud", true, 0x3B, 32, 1},
+                {"pmaxud", true, 0x3F, 32, 2},
+                {"pmullw", false, 0xD5, 16, 5},
+        };
+        for (const auto& test : kCases) {
+            auto expected = binary_lanes(input, control, test.lane_bits, [&](u64 lhs, u64 rhs) {
+                switch (test.operation) {
+                    case 0:
+                        return (lhs + rhs + 1) >> 1;
+                    case 1:
+                        return std::min(lhs, rhs);
+                    case 2:
+                        return std::max(lhs, rhs);
+                    case 3:
+                        return signed_lane(lhs, test.lane_bits) < signed_lane(rhs, test.lane_bits)
+                                       ? lhs
+                                       : rhs;
+                    case 4:
+                        return signed_lane(lhs, test.lane_bits) > signed_lane(rhs, test.lane_bits)
+                                       ? lhs
+                                       : rhs;
+                    default:
+                        return lhs * rhs;
+                }
+            });
+            CodeBuf b;
+            EmitSseLoad(b, 0xF3, 0x6F, 0, pa);
+            EmitSseLoad(b, 0xF3, 0x6F, 1, pb);
+            if (test.map38) {
+                EmitSse38RR(b, 0x66, test.opcode, 0, 1);
+            } else {
+                EmitSseRR(b, 0x66, test.opcode, 0, 1);
+            }
+            if (run(std::move(b), input, control).vec != expected) {
+                matched = false;
+                mismatch = test.name;
+                break;
+            }
+        }
+    }
+
+    if (matched) {
+        Vec128 expected{};
+        for (u32 half = 0; half < 2; ++half) {
+            u64 sum = 0;
+            for (u32 byte = 0; byte < 8; ++byte) {
+                const int lhs = input[half * 8 + byte];
+                const int rhs = control[half * 8 + byte];
+                sum += static_cast<u64>(lhs > rhs ? lhs - rhs : rhs - lhs);
+            }
+            std::memcpy(expected.data() + half * 8, &sum, sizeof(sum));
+        }
+        CodeBuf b;
+        EmitSseLoad(b, 0xF3, 0x6F, 0, pa);
+        EmitSseLoad(b, 0xF3, 0x6F, 1, pb);
+        EmitSseRR(b, 0x66, 0xF6, 0, 1);
+        if (run(std::move(b), input, control).vec != expected) {
+            matched = false;
+            mismatch = "psadbw result qword layout";
+        }
+    }
+
+    if (matched) {
+        Vec128 expected{};
+        for (u32 lane = 0; lane < 4; ++lane) {
+            s16 a0, a1, b0, b1;
+            std::memcpy(&a0, input.data() + lane * 4, 2);
+            std::memcpy(&a1, input.data() + lane * 4 + 2, 2);
+            std::memcpy(&b0, control.data() + lane * 4, 2);
+            std::memcpy(&b1, control.data() + lane * 4 + 2, 2);
+            const u32 sum = static_cast<u32>(static_cast<s64>(a0) * b0 + static_cast<s64>(a1) * b1);
+            std::memcpy(expected.data() + lane * 4, &sum, 4);
+        }
+        CodeBuf b;
+        EmitSseLoad(b, 0xF3, 0x6F, 0, pa);
+        EmitSseLoad(b, 0xF3, 0x6F, 1, pb);
+        EmitSseRR(b, 0x66, 0xF5, 0, 1);
+        if (run(std::move(b), input, control).vec != expected) {
+            matched = false;
+            mismatch = "pmaddwd signed pairwise products";
+        }
+    }
+
+    if (matched) {
+        u32 expected8 = 0;
+        u32 expected32 = 0;
+        u32 expected64 = 0;
+        for (u32 i = 0; i < 16; ++i) {
+            expected8 |= u32(input[i] >> 7) << i;
+        }
+        for (u32 i = 0; i < 4; ++i) {
+            expected32 |= u32(input[i * 4 + 3] >> 7) << i;
+        }
+        for (u32 i = 0; i < 2; ++i) {
+            expected64 |= u32(input[i * 8 + 7] >> 7) << i;
+        }
+        struct MaskCase {
+            u32 expected;
+            int kind;  // 0 pmovmskb, 1 movmskps, 2 movmskpd
+        };
+        const MaskCase cases[] = {{expected8, 0}, {expected32, 1}, {expected64, 2}};
+        for (const auto& test : cases) {
+            CodeBuf b;
+            EmitSseLoad(b, 0xF3, 0x6F, 0, pa);
+            if (test.kind == 0) {
+                EmitPmovmskb(b, kRax, 0);
+            } else {
+                EmitMovmsk(b, test.kind == 2, kRax, 0);
+            }
+            if (static_cast<u32>(run(std::move(b), input, zero).rax) != test.expected) {
+                matched = false;
+                mismatch = test.kind == 0 ? "pmovmskb" : (test.kind == 1 ? "movmskps" : "movmskpd");
+                break;
+            }
+        }
+    }
+
+    if (matched) {
+        for (u32 lane = 0; lane < 8; ++lane) {
+            u16 expected_word;
+            std::memcpy(&expected_word, input.data() + lane * 2, 2);
+            CodeBuf extract;
+            EmitSseLoad(extract, 0xF3, 0x6F, 0, pa);
+            EmitPextrw(extract, kRax, 0, static_cast<u8>(lane));
+            if (static_cast<u32>(run(std::move(extract), input, zero).rax) != expected_word) {
+                matched = false;
+                mismatch = fmt::format("pextrw lane {}", lane);
+                break;
+            }
+
+            Vec128 expected = input;
+            constexpr u16 inserted = 0xBEEF;
+            std::memcpy(expected.data() + lane * 2, &inserted, 2);
+            CodeBuf insert;
+            EmitSseLoad(insert, 0xF3, 0x6F, 0, pa);
+            EmitMovRegImm(insert, 64, kRax, inserted);
+            EmitPinsrw(insert, 0, kRax, static_cast<u8>(lane));
+            if (run(std::move(insert), input, zero).vec != expected) {
+                matched = false;
+                mismatch = fmt::format("pinsrw lane {}", lane);
+                break;
+            }
+        }
+    }
+
+    X86Instance::Destroy(instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+    INFO(mismatch);
+    REQUIRE(matched);
+}
 
 TEST_CASE("Fuzz x86 sse2") {
     FuzzEnv env;
@@ -2280,6 +2869,8 @@ TEST_CASE("Fuzz x86 sse2") {
             {0x66, 0x66},  // pcmpgtd
             {0x66, 0xDA},  // pminub
             {0x66, 0xDE},  // pmaxub
+            {0x66, 0xEA},  // pminsw
+            {0x66, 0xEE},  // pmaxsw
             {0x66, 0xE0},  // pavgb
             {0x66, 0xF6},  // psadbw
             {0x66, 0x60},  // punpcklbw
@@ -2295,11 +2886,15 @@ TEST_CASE("Fuzz x86 sse2") {
         env.InitRegs();
         env.EmitFlagPrefix(b);
         // Materialize two 16-byte patterns into the scratch window.
-        MemOp pa{}; pa.disp = 0x100;
-        MemOp pb2{}; pb2.disp = 0x120;
+        MemOp pa{};
+        pa.disp = 0x100;
+        MemOp pb2{};
+        pb2.disp = 0x120;
         for (int half = 0; half < 2; ++half) {
-            MemOp ma = pa; ma.disp += s32(8 * half);
-            MemOp mb = pb2; mb.disp += s32(8 * half);
+            MemOp ma = pa;
+            ma.disp += s32(8 * half);
+            MemOp mb = pb2;
+            mb.disp += s32(8 * half);
             EmitMovRegImm(b, 64, kRax, env.PoolVal(64));
             EmitMovMemReg(b, 64, ma, kRax);
             EmitMovRegImm(b, 64, kRcx, env.PoolVal(64));
@@ -2310,55 +2905,104 @@ TEST_CASE("Fuzz x86 sse2") {
         EmitSseLoad(b, 0xF3, 0x6F, 1, pb2);
 
         int kind = env.RandInt(0, 99);
-        if (kind < 55) {
+        if (kind < 50) {
             // Lane ALU: dst xmm0, src xmm1 or a memory operand.
-            auto [pfx, op] = kAlu[env.RandInt(0, int(kAlu.size()) - 1)];
-            if (env.RandInt(0, 3) == 0) {
-                EmitSseLoad(b, pfx, op, 0, pb2);  // mem source form
+            if (env.RandInt(0, 5) == 0) {
+                // SSE4.1 unsigned dword min/max (0F 38 3B/3F).
+                const u8 op = env.RandInt(0, 1) == 0 ? 0x3B : 0x3F;
+                if (env.RandInt(0, 3) == 0) {
+                    EmitSse38Load(b, 0x66, op, 0, pb2);
+                } else {
+                    EmitSse38RR(b, 0x66, op, 0, 1);
+                }
             } else {
-                EmitSseRR(b, pfx, op, 0, 1);
+                auto [pfx, op] = kAlu[env.RandInt(0, int(kAlu.size()) - 1)];
+                if (env.RandInt(0, 3) == 0) {
+                    EmitSseLoad(b, pfx, op, 0, pb2);  // mem source form
+                } else {
+                    EmitSseRR(b, pfx, op, 0, 1);
+                }
             }
-        } else if (kind < 65) {
+        } else if (kind < 58) {
             // pshufd xmm2, xmm0|mem, imm8
             u8 imm = u8(env.RandInt(0, 255));
             if (env.RandInt(0, 2) == 0) {
                 b.B(0x66);
                 EmitSseRexMem(b, pb2);
-                b.B(0x0F); b.B(0x70);
+                b.B(0x0F);
+                b.B(0x70);
                 EmitModRMMem(b, 2, pb2);
                 b.B(imm);
             } else {
-                b.B(0x66); b.B(0x0F); b.B(0x70);
+                b.B(0x66);
+                b.B(0x0F);
+                b.B(0x70);
                 EmitModRMReg(b, 2, 0);
                 b.B(imm);
             }
             // Fold the result back into xmm0 for observation.
             EmitSseRR(b, 0x66, 0xEB, 0, 2);  // por xmm0, xmm2
-        } else if (kind < 75) {
-            // DQ shifts / lane shifts by imm.
-            u8 what = u8(env.RandInt(0, 5));
-            u8 imm = u8(env.RandInt(0, 40));
-            switch (what) {
-                case 0: EmitSseShiftImm(b, 0x73, 7, 0, imm); break;  // pslldq
-                case 1: EmitSseShiftImm(b, 0x73, 3, 0, imm); break;  // psrldq
-                case 2: EmitSseShiftImm(b, 0x71, 6, 0, imm); break;  // psllw
-                case 3: EmitSseShiftImm(b, 0x71, 2, 0, imm); break;  // psrlw
-                case 4: EmitSseShiftImm(b, 0x72, 6, 0, imm); break;  // pslld
-                default: EmitSseShiftImm(b, 0x73, 2, 0, imm); break; // psrlq
+        } else if (kind < 72) {
+            // Packed lane shifts by imm8. Counts explicitly cover the x86
+            // saturation boundaries for every lane width.
+            struct ShiftImmForm {
+                u8 op;
+                u8 sub;
+                u8 width;
+            };
+            static constexpr ShiftImmForm kForms[] = {
+                    {0x71, 6, 16},  // psllw
+                    {0x72, 6, 32},  // pslld
+                    {0x73, 6, 64},  // psllq
+                    {0x71, 2, 16},  // psrlw
+                    {0x72, 2, 32},  // psrld
+                    {0x73, 2, 64},  // psrlq
+                    {0x71, 4, 16},  // psraw
+                    {0x72, 4, 32},  // psrad
+            };
+            const auto& form = kForms[env.RandInt(0, int(std::size(kForms)) - 1)];
+            const u8 edge_counts[] = {
+                    0, 1, u8(form.width - 1), form.width, u8(form.width + 1), 255};
+            EmitSseShiftImm(b, form.op, form.sub, 0, edge_counts[env.RandInt(0, 5)]);
+        } else if (kind < 84) {
+            // Packed lane shifts by xmm/m128 low-qword count, with the same
+            // boundary set as the immediate forms.
+            struct ShiftCountForm {
+                u8 op;
+                u8 width;
+            };
+            static constexpr ShiftCountForm kForms[] = {
+                    {0xF1, 16},  // psllw
+                    {0xF2, 32},  // pslld
+                    {0xF3, 64},  // psllq
+                    {0xD1, 16},  // psrlw
+                    {0xD2, 32},  // psrld
+                    {0xD3, 64},  // psrlq
+                    {0xE1, 16},  // psraw
+                    {0xE2, 32},  // psrad
+            };
+            const auto& form = kForms[env.RandInt(0, int(std::size(kForms)) - 1)];
+            const u64 edge_counts[] = {
+                    0, 1, u64(form.width - 1), form.width, u64(form.width + 1), 255};
+            const u64 count = edge_counts[env.RandInt(0, 5)];
+            if (env.RandInt(0, 3) == 0) {
+                EmitMovRegImm(b, 64, kRax, count);
+                EmitMovMemReg(b, 64, pb2, kRax);
+                EmitSseLoad(b, 0x66, form.op, 0, pb2);
+            } else {
+                EmitMovRegImm(b, 64, kRax, count);
+                EmitMovdGprToXmm(b, 2, kRax, true);
+                EmitSseRR(b, 0x66, form.op, 0, 2);
             }
-        } else if (kind < 80) {
-            // Lane shifts by xmm count: materialize the count via movd.
-            EmitMovRegImm(b, 64, kRax, u64(env.RandInt(0, 70)));
-            EmitMovdGprToXmm(b, 2, kRax, true);
-            u8 what = u8(env.RandInt(0, 5));
-            const u8 ops[] = {0xF1, 0xD1, 0xF2, 0xD2, 0xF3, 0xD3};
-            EmitSseRR(b, 0x66, ops[what], 0, 2);
-        } else if (kind < 85) {
+        } else if (kind < 88) {
             // palignr xmm0, xmm1, imm
-            b.B(0x66); b.B(0x0F); b.B(0x3A); b.B(0x0F);
+            b.B(0x66);
+            b.B(0x0F);
+            b.B(0x3A);
+            b.B(0x0F);
             EmitModRMReg(b, 0, 1);
             b.B(u8(env.RandInt(0, 40)));
-        } else if (kind < 90) {
+        } else if (kind < 92) {
             // movd / movq GPR <-> XMM round trips (values observable in GPRs).
             u8 gpr = env.RandReg();
             bool w64 = env.RandInt(0, 1) == 0;
@@ -2366,15 +3010,22 @@ TEST_CASE("Fuzz x86 sse2") {
             EmitSseRR(b, 0x66, 0xEB, 0, 3);  // por xmm0, xmm3
             u8 gpr2 = env.RandReg();
             EmitMovdXmmToGpr(b, gpr2, 3, w64);
-        } else if (kind < 95) {
+        } else if (kind < 96) {
             // movq xmm, xmm + movsd / movss / movhlps / shufps
             u8 what = u8(env.RandInt(0, 3));
             switch (what) {
-                case 0: EmitSseRR(b, 0xF3, 0x7E, 0, 1); break;  // movq xmm0, xmm1
-                case 1: EmitSseRR(b, 0xF2, 0x10, 0, 1); break;  // movsd
-                case 2: EmitSseRR(b, 0xF3, 0x10, 0, 1); break;  // movss
+                case 0:
+                    EmitSseRR(b, 0xF3, 0x7E, 0, 1);
+                    break;  // movq xmm0, xmm1
+                case 1:
+                    EmitSseRR(b, 0xF2, 0x10, 0, 1);
+                    break;  // movsd
+                case 2:
+                    EmitSseRR(b, 0xF3, 0x10, 0, 1);
+                    break;  // movss
                 default: {
-                    b.B(0x0F); b.B(0xC6);                     // shufps xmm0, xmm1, imm
+                    b.B(0x0F);
+                    b.B(0xC6);  // shufps xmm0, xmm1, imm
                     EmitModRMReg(b, 0, 1);
                     b.B(u8(env.RandInt(0, 255)));
                     break;
@@ -2388,10 +3039,14 @@ TEST_CASE("Fuzz x86 sse2") {
         }
 
         // Observe: raw dump + pmovmskb into a GPR (differential on both).
-        MemOp out{}; out.disp = 0x180;
+        MemOp out{};
+        out.disp = 0x180;
         EmitSseStore(b, 0xF3, 0x7F, out, 0);  // movdqu [0x180], xmm0
         u8 msk_gpr = env.RandReg();
         EmitPmovmskb(b, msk_gpr, 0);
+        if (env.RandInt(0, 3) == 0) {
+            EmitMovmsk(b, env.RandInt(0, 1) == 0, env.RandReg(), 0);
+        }
 
         env.EmitFlagCapture(b);
         env.RunIteration(b.c, FlagMask{}, "sse2");
@@ -2418,13 +3073,15 @@ TEST_CASE("Fuzz x86 bit ops") {
                 EmitMovMemReg(b, 64, m, kRax);
                 EmitOperandPrefix(b, width);
                 EmitRexFor(b, width, dst, &m, false, false);
-                b.B(0x0F); b.B(rev ? 0xBD : 0xBC);
+                b.B(0x0F);
+                b.B(rev ? 0xBD : 0xBC);
                 EmitModRMMem(b, dst, m);
             } else {
                 u8 src = env.RandReg();
                 EmitOperandPrefix(b, width);
                 EmitRexForRegReg(b, width, dst, src, false, false);
-                b.B(0x0F); b.B(rev ? 0xBD : 0xBC);
+                b.B(0x0F);
+                b.B(rev ? 0xBD : 0xBC);
                 EmitModRMReg(b, dst, src);
             }
             env.EmitFlagCapture(b);
@@ -2442,14 +3099,16 @@ TEST_CASE("Fuzz x86 bit ops") {
                 // imm8 index form (0F BA /4..7 ib)
                 EmitOperandPrefix(b, width);
                 EmitRexForRegReg(b, width, 0, dst, false, false);
-                b.B(0x0F); b.B(0xBA);
+                b.B(0x0F);
+                b.B(0xBA);
                 EmitModRMReg(b, u8(4 + op), dst);
                 b.B(u8(env.RandInt(0, width + 8)));
             } else {
                 u8 idx = env.RandReg();
                 EmitOperandPrefix(b, width);
                 EmitRexForRegReg(b, width, idx, dst, false, false);
-                b.B(0x0F); b.B(opcodes[op]);
+                b.B(0x0F);
+                b.B(opcodes[op]);
                 EmitModRMReg(b, idx, dst);
             }
             env.EmitFlagCapture(b);
@@ -2469,7 +3128,8 @@ TEST_CASE("Fuzz x86 bit ops") {
             EmitMovRegImm(b, 64, kRcx, u64(env.RandInt(0, 2 * width - 1)));
             EmitOperandPrefix(b, width);
             EmitRexFor(b, width, kRcx, &m, false, false);
-            b.B(0x0F); b.B(opcodes[op]);
+            b.B(0x0F);
+            b.B(opcodes[op]);
             EmitModRMMem(b, kRcx, m);
             env.EmitFlagCapture(b);
             env.RunIteration(b.c, FlagMask{u32(kAhCF), false}, "btmem");
@@ -2490,7 +3150,8 @@ TEST_CASE("Fuzz x86 bit ops") {
                 }
                 EmitOperandPrefix(b, width);
                 EmitRexFor(b, width, src, &m, false, false);
-                b.B(0x0F); b.B(0xB1);
+                b.B(0x0F);
+                b.B(0xB1);
                 EmitModRMMem(b, src, m);
             } else {
                 bool hb = width == 8 && env.RandInt(0, 3) == 0;
@@ -2503,7 +3164,8 @@ TEST_CASE("Fuzz x86 bit ops") {
                 }
                 EmitOperandPrefix(b, width);
                 EmitRexForRegReg(b, width, src, dst, width == 8, hb);
-                b.B(0x0F); b.B(width == 8 ? 0xB0 : 0xB1);
+                b.B(0x0F);
+                b.B(width == 8 ? 0xB0 : 0xB1);
                 EmitModRMReg(b, src, dst);
             }
             env.EmitFlagCapture(b);
@@ -2564,11 +3226,15 @@ TEST_CASE("Fuzz x86 sse2 ext") {
         CodeBuf b;
         env.InitRegs();
         env.EmitFlagPrefix(b);
-        MemOp pa{}; pa.disp = 0x100;
-        MemOp pb2{}; pb2.disp = 0x120;
+        MemOp pa{};
+        pa.disp = 0x100;
+        MemOp pb2{};
+        pb2.disp = 0x120;
         for (int half = 0; half < 2; ++half) {
-            MemOp ma = pa; ma.disp += s32(8 * half);
-            MemOp mb = pb2; mb.disp += s32(8 * half);
+            MemOp ma = pa;
+            ma.disp += s32(8 * half);
+            MemOp mb = pb2;
+            mb.disp += s32(8 * half);
             EmitMovRegImm(b, 64, kRax, env.PoolVal(64));
             EmitMovMemReg(b, 64, ma, kRax);
             EmitMovRegImm(b, 64, kRcx, env.PoolVal(64));
@@ -2577,16 +3243,43 @@ TEST_CASE("Fuzz x86 sse2 ext") {
         EmitSseLoad(b, 0xF3, 0x6F, 0, pa);
         EmitSseLoad(b, 0xF3, 0x6F, 1, pb2);
         int kind = env.RandInt(0, 99);
-        if (kind < 45) {
+        if (kind < 35) {
             // Packed float ALU / pmullw.
             auto [pfx, op] = kExt[env.RandInt(0, int(kExt.size()) - 1)];
             EmitSseRR(b, pfx, op, 0, 1);
-        } else if (kind < 65) {
-            // psraw/psrad by imm8.
-            u8 imm = u8(env.RandInt(0, 20));
+        } else if (kind < 55) {
+            // psraw/psrad by imm8, including the arithmetic saturation edge.
             bool word = env.RandInt(0, 1) == 0;
-            EmitSseShiftImm(b, word ? 0x71 : 0x72, 4, 0, imm);
-        } else if (kind < 80) {
+            const u8 width = word ? 16 : 32;
+            const u8 edge_counts[] = {0, 1, u8(width - 1), width, u8(width + 1), 255};
+            EmitSseShiftImm(b, word ? 0x71 : 0x72, 4, 0, edge_counts[env.RandInt(0, 5)]);
+        } else if (kind < 70) {
+            // psraw/psrad by xmm low-qword count.
+            bool word = env.RandInt(0, 1) == 0;
+            const u64 width = word ? 16 : 32;
+            const u64 edge_counts[] = {0, 1, width - 1, width, width + 1, 255};
+            EmitMovRegImm(b, 64, kRax, edge_counts[env.RandInt(0, 5)]);
+            EmitMovdGprToXmm(b, 2, kRax, true);
+            EmitSseRR(b, 0x66, word ? 0xE1 : 0xE2, 0, 2);
+        } else if (kind < 82) {
+            // pshufb: alternating controls exercise bit-7 zeroing; controls
+            // without bit 7 also set ignored bits [6:4] while selecting by
+            // their low nibble.
+            static constexpr u64 kControlLo = 0xFF6E9504F3728100ull;
+            static constexpr u64 kControlHi = 0x8F7E8D4C0BFA0908ull;
+            EmitMovRegImm(b, 64, kRax, kControlLo);
+            EmitMovMemReg(b, 64, pb2, kRax);
+            MemOp ctrl_hi = pb2;
+            ctrl_hi.disp += 8;
+            EmitMovRegImm(b, 64, kRax, kControlHi);
+            EmitMovMemReg(b, 64, ctrl_hi, kRax);
+            if (env.RandInt(0, 1) == 0) {
+                EmitSse38Load(b, 0x66, 0x00, 0, pb2);
+            } else {
+                EmitSseLoad(b, 0xF3, 0x6F, 1, pb2);
+                EmitSse38RR(b, 0x66, 0x00, 0, 1);
+            }
+        } else if (kind < 92) {
             // pshuflw/pshufhw xmm2, xmm0, imm8; fold back into xmm0.
             // Zero xmm2 first so the unchanged half is deterministic.
             EmitSseRR(b, 0x66, 0xEF, 2, 2);  // pxor xmm2, xmm2
@@ -2602,7 +3295,8 @@ TEST_CASE("Fuzz x86 sse2 ext") {
                 case 0:  // cvttsd2si gpr, xmm0 (F2 0F 2C)
                     b.B(0xF2);
                     EmitRex(b, false, gpr >= 8, false, false);
-                    b.B(0x0F); b.B(0x2C);
+                    b.B(0x0F);
+                    b.B(0x2C);
                     EmitModRMReg(b, gpr, 0);
                     break;
                 case 1:  // cvtsd2ss xmm0, xmm1 (F2 0F 5A)
@@ -2613,7 +3307,8 @@ TEST_CASE("Fuzz x86 sse2 ext") {
                     break;
             }
         }
-        MemOp out{}; out.disp = 0x180;
+        MemOp out{};
+        out.disp = 0x180;
         EmitSseStore(b, 0xF3, 0x7F, out, 0);  // movdqu [0x180], xmm0
         env.EmitFlagCapture(b);
         env.RunIteration(b.c, FlagMask{}, "sse2ext");
@@ -2675,8 +3370,8 @@ TEST_CASE("Fuzz x86 sse3") {
     // Small dyadic floats: no NaN/Inf/denormal, products stay finite and exact,
     // divisors never zero — keeps IEEE results bit-identical between Unicorn
     // (softfloat) and the host FPU.
-    const float kFloats[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f,
-                             0.5f, 1.5f, -1.0f, -2.0f};
+    const float kFloats[] = {
+            1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 0.5f, 1.5f, -1.0f, -2.0f};
     const int kNF = int(sizeof(kFloats) / sizeof(kFloats[0]));
     for (int i = 0; i < iters; ++i) {
         CodeBuf b;
@@ -2685,14 +3380,17 @@ TEST_CASE("Fuzz x86 sse3") {
         auto pick_f = [&]() { return kFloats[env.RandInt(0, kNF - 1)]; };
         auto store_f4 = [&](MemOp base) {
             MemOp m0 = base;
-            MemOp m1 = base; m1.disp += 8;
+            MemOp m1 = base;
+            m1.disp += 8;
             EmitMovRegImm(b, 64, kRax, F32Pair(pick_f(), pick_f()));
             EmitMovMemReg(b, 64, m0, kRax);
             EmitMovRegImm(b, 64, kRcx, F32Pair(pick_f(), pick_f()));
             EmitMovMemReg(b, 64, m1, kRcx);
         };
-        MemOp pa{}; pa.disp = 0x100;
-        MemOp pb2{}; pb2.disp = 0x120;
+        MemOp pa{};
+        pa.disp = 0x100;
+        MemOp pb2{};
+        pb2.disp = 0x120;
         store_f4(pa);
         store_f4(pb2);
         EmitSseLoad(b, 0xF3, 0x6F, 0, pa);   // movdqu xmm0, A
@@ -2708,23 +3406,27 @@ TEST_CASE("Fuzz x86 sse3") {
         } else if (kind < 80) {
             // movddup / movshdup / movsldup xmm0, xmm1.
             u8 what = u8(env.RandInt(0, 2));
-            if (what == 0) EmitSseRR(b, 0xF2, 0x12, 0, 1);       // movddup
-            else if (what == 1) EmitSseRR(b, 0xF3, 0x16, 0, 1);  // movshdup
-            else EmitSseRR(b, 0xF3, 0x12, 0, 1);                 // movsldup
+            if (what == 0)
+                EmitSseRR(b, 0xF2, 0x12, 0, 1);  // movddup
+            else if (what == 1)
+                EmitSseRR(b, 0xF3, 0x16, 0, 1);  // movshdup
+            else
+                EmitSseRR(b, 0xF3, 0x12, 0, 1);  // movsldup
         } else {
             // pextrw / pinsrw round trips (integer; observable in gpr + xmm0).
             EmitSseRR(b, 0x66, 0x6F, 3, 0);  // movdqa xmm3, xmm0
             u8 gpr = env.RandReg();
             u8 imm = u8(env.RandInt(0, 7));
             if (env.RandInt(0, 1) == 0) {
-                EmitPextrw(b, gpr, 3, imm);   // gpr = zero-extended xmm3[imm]
-                EmitPinsrw(b, 0, gpr, imm);   // xmm0[imm] = gpr low word
+                EmitPextrw(b, gpr, 3, imm);  // gpr = zero-extended xmm3[imm]
+                EmitPinsrw(b, 0, gpr, imm);  // xmm0[imm] = gpr low word
             } else {
                 EmitPinsrw(b, 3, gpr, imm);
                 EmitSseRR(b, 0x66, 0xEB, 0, 3);  // por xmm0, xmm3
             }
         }
-        MemOp out{}; out.disp = 0x180;
+        MemOp out{};
+        out.disp = 0x180;
         EmitSseStore(b, 0xF3, 0x7F, out, 0);  // movdqu [0x180], xmm0
         u8 msk_gpr = env.RandReg();
         EmitPmovmskb(b, msk_gpr, 0);
@@ -2751,8 +3453,7 @@ TEST_CASE("Fuzz x86 lzcnt crc32") {
             env.RunIteration(b.c, FlagMask{u32(kAhZF), false}, "lzcnt");
         } else {
             // crc32: no flags affected. Canonical encodings only.
-            static const std::pair<int, int> kForms[] = {
-                    {32, 8}, {32, 32}, {64, 8}, {64, 64}};
+            static const std::pair<int, int> kForms[] = {{32, 8}, {32, 32}, {64, 8}, {64, 64}};
             auto [dw, sw] = kForms[env.RandInt(0, 3)];
             u8 dst = env.RandReg();
             u8 src = env.RandReg();
@@ -2783,13 +3484,13 @@ TEST_CASE("Fuzz x86 rep cmps scas") {
             // REP cmps: count >= 1 (the RCX == 0 no-op leaves flags unchanged,
             // which the decoder approximates; see DecodeCmps).
             env.ctx->rcx.qword = env.RandInt(1, 16);
-            EmitCmps(b, width, env.RandInt(0, 1) == 0 ? 1 : 2);      // repz/repnz
+            EmitCmps(b, width, env.RandInt(0, 1) == 0 ? 1 : 2);  // repz/repnz
         } else if (kind < 85) {
             // Single-step scas.
             EmitScas(b, width, 0);
         } else {
             env.ctx->rcx.qword = env.RandInt(1, 16);
-            EmitScas(b, width, env.RandInt(0, 1) == 0 ? 1 : 2);       // repz/repnz
+            EmitScas(b, width, env.RandInt(0, 1) == 0 ? 1 : 2);  // repz/repnz
         }
         env.EmitFlagCapture(b);
         env.RunIteration(b.c, FlagMask{}, "repcmps");
@@ -2813,4 +3514,4 @@ TEST_CASE("Fuzz x86 lods") {
     }
     REQUIRE(env.failures == 0);
 }
-}
+}  // namespace

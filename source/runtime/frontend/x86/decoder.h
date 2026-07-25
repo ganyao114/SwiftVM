@@ -4,12 +4,12 @@
 
 #pragma once
 
+#include "cpu.h"
 #include "distorm.h"
 #include "mnemonics.h"
-#include "cpu.h"
-#include "runtime/include/config.h"
-#include "runtime/frontend/ir_assembler.h"
 #include "runtime/backend/context.h"
+#include "runtime/frontend/ir_assembler.h"
+#include "runtime/include/config.h"
 
 namespace swift::x86 {
 
@@ -31,8 +31,34 @@ using VAddr = u64;
 using namespace swift::runtime;
 
 enum class Cond : u8 {
-    EQ = 0, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL, NV,
-    AT, AE, BT, BE, SN, NS, PA, NP, HS = CS, LO = CC, OF = VS, NO = VC
+    EQ = 0,
+    NE,
+    CS,
+    CC,
+    MI,
+    PL,
+    VS,
+    VC,
+    HI,
+    LS,
+    GE,
+    LT,
+    GT,
+    LE,
+    AL,
+    NV,
+    AT,
+    AE,
+    BT,
+    BE,
+    SN,
+    NS,
+    PA,
+    NP,
+    HS = CS,
+    LO = CC,
+    OF = VS,
+    NO = VC
 };
 
 DECLARE_ENUM_FLAG_OPERATORS(Cond)
@@ -225,8 +251,7 @@ constexpr X86RegInfo x86_regs_table[] = {
         {_RegisterType::R_YMM12, X86RegInfo::Ymm12, ir::ValueType::V256, false},
         {_RegisterType::R_YMM13, X86RegInfo::Ymm13, ir::ValueType::V256, false},
         {_RegisterType::R_YMM14, X86RegInfo::Ymm14, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM15, X86RegInfo::Ymm15, ir::ValueType::V256, false}
-};
+        {_RegisterType::R_YMM15, X86RegInfo::Ymm15, ir::ValueType::V256, false}};
 
 ir::Uniform ToReg(const X86RegInfo& info);
 
@@ -234,12 +259,14 @@ ir::Uniform ToVReg(const X86RegInfo& info);
 
 class X64Decoder {
 public:
-    X64Decoder(VAddr start, runtime::MemoryInterface *memory, ir::Assembler* visitor, bool is_64bit);
+    X64Decoder(VAddr start,
+               runtime::MemoryInterface* memory,
+               ir::Assembler* visitor,
+               bool is_64bit);
 
     void Decode();
 
 private:
-
     enum SSEMCSREnables : u32 {
         IM = 1 << 7,
         DM = 1 << 8,
@@ -278,26 +305,18 @@ private:
             }
         }
 
-        [[nodiscard]] bool IsImm() const {
-            return left.IsImm() && right.Null() && !ext;
-        }
+        [[nodiscard]] bool IsImm() const { return left.IsImm() && right.Null() && !ext; }
 
-        [[nodiscard]] bool OnlyLeft() const {
-            return !left.Null() && right.Null();
-        }
+        [[nodiscard]] bool OnlyLeft() const { return !left.Null() && right.Null(); }
 
-        [[nodiscard]] ir::Imm ToImm() const {
-            return left.imm;
-        }
+        [[nodiscard]] ir::Imm ToImm() const { return left.imm; }
 
-        [[nodiscard]] ir::DataClass Left() const {
-            return left;
-        }
+        [[nodiscard]] ir::DataClass Left() const { return left; }
     };
 
     static bool IsV(_RegisterType reg);
 
-    ir::DataClass GetOperand(const Operand &operand);
+    ir::DataClass GetOperand(const Operand& operand);
 
     ir::Value R(_RegisterType reg);
 
@@ -309,11 +328,11 @@ private:
 
     void Interrupt(InterruptReason reason);
 
-    ir::Value ToValue(const ir::DataClass &data);
+    ir::Value ToValue(const ir::DataClass& data);
 
     ir::DataClass Src(_DInst& insn, _Operand& operand, bool force_tso = false);
 
-    void Dst(_DInst& insn, _Operand& operand, const ir::DataClass &value, bool force_tso = false);
+    void Dst(_DInst& insn, _Operand& operand, const ir::DataClass& value, bool force_tso = false);
 
     // Memory ordering: AcqRel mode orders every access; a LOCK prefix orders
     // just that instruction's accesses (force_tso covers the implicitly
@@ -412,8 +431,8 @@ private:
     // value come from a second, unshifted add whose host flags provably never
     // pollute the sticky flags register (its N/C/V are always 0 and its Z is
     // only set when the true Z is set).
-    ir::Value ArithWithFlags(ir::Value left, ir::Value right, ArithOp op, u32 width,
-                             ir::Flags flag_mask);
+    ir::Value ArithWithFlags(
+            ir::Value left, ir::Value right, ArithOp op, u32 width, ir::Flags flag_mask);
 
     // Current CF as a 0/1 value, honoring the tracked carry polarity (and
     // the runtime polarity byte at block entry).
@@ -496,6 +515,11 @@ private:
 
     enum class VecIntOp { Add, Sub, CmpEq, CmpGt };
     void DecodeVecInt(_DInst& insn, VecIntOp op, u32 lane_bits);
+    void DecodeVecAvg(_DInst& insn, u32 lane_bits);
+    void DecodeVecMinMax(_DInst& insn, bool max, u32 lane_bits, bool is_signed);
+    void DecodeVecMul(_DInst& insn, u32 lane_bits);
+    void DecodeVecAbsDiffSum8(_DInst& insn);
+    void DecodeVecMadd16(_DInst& insn);
 
     void DecodeVecZip(_DInst& insn, u32 lane_bits, bool high);
     void DecodeVecDupPairs32(_DInst& insn, bool odd);
@@ -568,14 +592,14 @@ private:
     VAddr start;
     VAddr pc;
     ir::Assembler* assembler;
-    runtime::MemoryInterface *memory;
+    runtime::MemoryInterface* memory;
     bool end_decode{false};
     bool is_64bit{false};
     VAddr addr_mask{UINT64_MAX};
     CarryPolarity carry_{CarryPolarity::Unknown};
 };
 
-void FromHost(backend::State *state, ThreadContext64 *ctx);
-void ToHost(backend::State *state, ThreadContext64 *ctx);
+void FromHost(backend::State* state, ThreadContext64* ctx);
+void ToHost(backend::State* state, ThreadContext64* ctx);
 
 }  // namespace swift::x86
