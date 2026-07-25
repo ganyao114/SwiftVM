@@ -71,6 +71,13 @@ public:
     // NEON / SIMD (minimal subset for glibc startup).
     void VisitNEONCopy(const Instruction* instr) override;
     void VisitNEONModifiedImmediate(const Instruction* instr) override;
+    void VisitNEON2RegMisc(const Instruction* instr) override;
+    void VisitNEON3Same(const Instruction* instr) override;
+    void VisitNEONExtract(const Instruction* instr) override;
+    void VisitNEONShiftImmediate(const Instruction* instr) override;
+    void VisitNEONLoadStoreMultiStruct(const Instruction* instr) override;
+    void VisitNEONLoadStoreMultiStructPostIndex(const Instruction* instr) override;
+    void VisitFPIntegerConvert(const Instruction* instr) override;
 
     // Conditional compare.
     void VisitConditionalCompareImmediate(const Instruction* instr) override;
@@ -109,6 +116,12 @@ private:
     }
 
     ir::Value ReadVRegister(u8 code, ir::ValueType type);
+
+    ir::Value ReadVHalf(u8 code, bool high);
+
+    void WriteVHalves(u8 code, ir::Value low, ir::Value high);
+
+    ir::Value ZeroByteMask(ir::Value value);
 
     void WritePC(ir::Lambda new_pc);
 
