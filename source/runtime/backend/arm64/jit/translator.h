@@ -102,7 +102,7 @@ private:
     void LoadNZCVFromFlags();
 
     // Merge host N/Z into the flags register and clear stale C/V (x86 logical ops)
-    void MergeLogicalFlagsNZ();
+    void MergeLogicalFlagsNZ(ir::Flags requested);
 
     // Compute N/Z from a result value and merge them (for ops without a flag setting form)
     void SaveLogicalResultFlags(Register &result, ir::ValueType type, const PseudoFlags &pseudo);

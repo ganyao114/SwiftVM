@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstring>
 #include "runtime/frontend/x86/decoder_internal.h"
+#include "runtime/frontend/x86/x87.h"
 
 namespace swift::x86 {
 
@@ -1132,11 +1133,15 @@ void X64Decoder::DecodeMxcsr(_DInst& insn, bool load) {
 
 void X64Decoder::DecodeFxsave(_DInst& insn, bool restore) {
     auto addr = FlatAddress(insn, insn.ops[0]);
+    auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
     ir::Uniform uni_mxcsr{offsetof(ThreadContext64, mxcsr), ir::ValueType::U32};
     constexpr s32 kXsaveXmmOff = 160;  // xmm0 starts at byte 160 in the fxsave area
     if (!restore) {
-        // Zero + defaults first, then overwrite with the live state.
-        __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&FxsaveFill)}}, addr);
+        // Zero + save the architectural x87 area first, then overwrite the
+        // live MXCSR and XMM fields.
+        __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Fxsave)}},
+                      context,
+                      addr);
         __ StoreMemory(ir::Operand{addr, 24, ir::OperandPlus}, __ LoadUniform(uni_mxcsr));
         for (u32 i = 0; i < 16; ++i) {
             ir::Uniform uni_xmm{u32(offsetof(ThreadContext64, xmms) + i * sizeof(Xmm)),
@@ -1145,6 +1150,9 @@ void X64Decoder::DecodeFxsave(_DInst& insn, bool restore) {
                            __ LoadUniform(uni_xmm));
         }
     } else {
+        __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Fxrstor)}},
+                      context,
+                      addr);
         auto mx = __ LoadMemory(ir::Operand{addr, 24, ir::OperandPlus}).SetType(ir::ValueType::U32);
         __ StoreUniform(uni_mxcsr, mx);
         for (u32 i = 0; i < 16; ++i) {
