@@ -23,14 +23,19 @@ namespace swift::translator::x86 {
 using namespace swift::runtime;
 using namespace swift::x86;
 
-// Conservative static guest->host map. RSP is hot in calls, returns and stack
-// memory addressing; x19 is AArch64 ABI callee-saved and is not used by the
-// runtime's x24-x28 state/cache/flags/RSB/page-table assignments. The
-// trampoline reserves x19 from linear scan, restores it on runtime entry and
-// spills it on every host exit. Inline CallLambda helpers do not receive the
-// uniform buffer and must preserve x19 by the platform ABI.
+// Conservative static guest->host map. RBX/RSP/RBP are hot general, stack and
+// frame registers; x19-x21 are AArch64 ABI callee-saved and do not overlap the
+// runtime's x24-x28 state/cache/flags/RSB/page-table assignments. Descriptors
+// stay sorted by uniform offset so the trampoline can pair adjacent saves.
+// The trampoline reserves them from linear scan, restores them on runtime
+// entry and spills them on every host exit. Inline CallLambda helpers do not
+// receive the uniform buffer and must preserve x19-x21 by the platform ABI.
+// The legacy asm-interpreter uses x21 as `handle`; this x86 Config leaves that
+// mutually-exclusive path disabled.
 static UniformMapDesc arm64_backend_regs_map[] = {
+        {offsetof(ThreadContext64, rbx), 8, 20, false},
         {offsetof(ThreadContext64, rsp), 8, 19, false},
+        {offsetof(ThreadContext64, rbp), 8, 21, false},
 };
 
 // Instruction-fetch memory interface for the x86 decoder. With guest
