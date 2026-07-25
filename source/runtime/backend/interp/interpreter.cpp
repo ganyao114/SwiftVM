@@ -16,6 +16,7 @@
 #include "interpreter.h"
 #include "runtime/backend/atomic_fallback.h"
 #include "runtime/common/variant_util.h"
+#include "runtime/frontend/x86/x87.h"
 #include "runtime/ir/atomic_rmw.h"
 
 namespace swift::runtime::backend::interp {
@@ -930,6 +931,13 @@ void Interpreter::RunCallLambda(ir::Inst* inst, InterpStack& stack) {
         }
     }
     WriteScalar(stack, inst, CallHostFunc(stack, lambda, args));
+}
+
+void Interpreter::RunX87Op(ir::Inst* inst, InterpStack& stack) {
+    const auto context = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    const auto command = inst->GetArg<ir::Imm>(1).Get();
+    const auto address = ReadScalar(stack, inst->GetArg<ir::Value>(2));
+    WriteScalar(stack, inst, swift::x86::X87Dispatch(context, command, address));
 }
 
 void Interpreter::RunCallLocation(ir::Inst* inst, InterpStack& stack) {
