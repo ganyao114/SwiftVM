@@ -447,11 +447,14 @@ private:
     ir::Value SegmentBase(_RegisterType segment);
 
     // ---- SSE support ----------------------------------------------------
-    // xmm slots are accessed as two 64-bit uniform halves (the x86 config
-    // runs no uniform-caching pass, so scalar and V128 uniform views of the
-    // same slot alias safely in both backends). Vector ALU semantics the IR
-    // cannot express (the JIT Vec4* emitters are stubs) go through per-half
-    // host helpers, mirroring the RepMovs/RepStos pattern.
+    // The x86 config runs no uniform-caching pass, so scalar and V128 uniform
+    // views of the same xmm slot alias safely in both backends.
+    ir::Value XmmRead(_RegisterType reg);
+
+    void XmmWrite(_RegisterType reg, ir::Value value);
+
+    ir::Value LoadSrcVec(_DInst& insn, _Operand& op);
+
     ir::Value XmmLo(_RegisterType reg);
 
     ir::Value XmmHi(_RegisterType reg);
@@ -486,10 +489,18 @@ private:
     // Both helpers take the LOW halves (punpcklbw / punpcklwd).
     void DecodePunpckLo(_DInst& insn, VecHalfFn fn_lo, VecHalfFn fn_hi);
 
-    // dst(xmm) op= src(xmm/m128) with pure-IR ops on the halves.
-    enum class VecIROp { Xor, Or, And, AndNot, AddQ, SubQ, Punpckldq, Punpckhdq,
-                         Punpcklqdq, Punpckhqdq, Muludq };
-    void DecodeVecIROp(_DInst& insn, VecIROp op);
+    void DecodeVec4Add(_DInst& insn);
+
+    enum class VecBitwiseOp { Xor, Or, And, AndNot };
+    void DecodeVecBitwise(_DInst& insn, VecBitwiseOp op);
+
+    enum class VecIntOp { Add, Sub, CmpEq, CmpGt };
+    void DecodeVecInt(_DInst& insn, VecIntOp op, u32 lane_bits);
+
+    void DecodeVecZip(_DInst& insn, u32 lane_bits, bool high);
+    void DecodeVecDupPairs32(_DInst& insn, bool odd);
+
+    void DecodeMuludq(_DInst& insn);
 
     void DecodeMovd(_DInst& insn);
     void DecodeMovq(_DInst& insn);
@@ -516,8 +527,8 @@ private:
     void DecodeCvttsd2si(_DInst& insn);
     void DecodeCvtsd2ss(_DInst& insn);
     void DecodeCvtss2sd(_DInst& insn);
-    // SSE scalar packed float: addss/subss/mulss/divss (low dword only).
-    void DecodeScalarFloatOp(_DInst& insn, VecHalfFn fn);
+    enum class VecFloatOp { Add, Sub, Mul, Div };
+    void DecodeScalarFloatOp(_DInst& insn, VecFloatOp op);
     // pextrw / pinsrw: gpr <-> xmm word lane (imm8 selects the lane).
     void DecodePextrw(_DInst& insn);
     void DecodePinsrw(_DInst& insn);
