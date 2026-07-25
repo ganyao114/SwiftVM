@@ -100,7 +100,15 @@ void JitTranslator::SaveHostFlags(HostFlags host, ir::Flags guest) {
 }
 
 void JitTranslator::ClearFlags(ir::Flags guest) {
-    if (!save_in_nzcv) {
+    if (True(guest & ir::Flags::NZCV)) {
+        // ClearFlags is an independent IR write, not merely an annotation on
+        // the preceding flag producer. Flag elimination can delete a dead
+        // SaveFlags and DCE can then delete that producer, while a sibling
+        // ClearFlags(C/V) remains live (x86 logical ops followed by ADC/SBB).
+        //
+        // Commit a pending lazy producer before clearing the stored bits. This
+        // also prevents a later MergeNZCV from resurrecting a bit cleared here.
+        MergeNZCV();
         u64 mask{UINT64_MAX};
         if (True(guest & ir::Flags::Negate)) {
             mask &= ~(u64(1) << HostFlagsBit::N);
