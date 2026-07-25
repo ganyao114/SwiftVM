@@ -363,6 +363,14 @@ u8* JitContext::Flush(const CodeBuffer& code_cache) {
 
 u32 JitContext::CurrentBufferSize() { return __ GetBuffer() -> GetSizeInBytes(); }
 
+ptrdiff_t JitContext::GetCodeOffset(LocationDescriptor location) const {
+    auto it = labels.find(location);
+    if (it == labels.end() || !it->second.IsBound()) {
+        return -1;
+    }
+    return it->second.GetLocation();
+}
+
 bool JitContext::IsUniform(const Register& reg) {
     auto &uniform_info = module->GetAddressSpace().GetUniformInfo();
     if (reg.IsV()) {
