@@ -454,19 +454,6 @@ struct X86Instance::Impl final {
                 }
                 throw std::runtime_error(
                         "function contains CallLambda; disabled by SVM_FUNC_LAMBDA=0");
-            } else if (has_host_call && decoded_blocks > 64 &&
-                       module->GetAddressSpace().GetConfig().enable_jit) {
-                // Large, helper-bearing libc CFGs still expose a separate
-                // function-JIT control-flow miscompile before their first host
-                // call. Keep CallLambda itself enabled for ordinary functions,
-                // but do not conflate that unresolved large-CFG issue with the
-                // host-call ABI qualification.
-                for (auto* hb : hir_func->GetHIRBlocks()) {
-                    if (hb && hb != hir_func->GetEntryBlock()) {
-                        block_only_locations.insert(hb->GetBlock()->GetStartLocation().Value());
-                    }
-                }
-                func_stats.BlockCap(pc, decoded_count);
             } else if (hit_block_cap) {
                 // Once a translation reaches the safety cap, entry at one of
                 // its not-yet-discovered interior blocks cannot be identified
