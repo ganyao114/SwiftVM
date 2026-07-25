@@ -65,7 +65,14 @@ private:
         if (node->used_size + size <= node->num_size) {
             return node;
         }
-        node = &chunks.emplace_back(new_chunk_size);
+        // Some arena users require one contiguous allocation larger than the
+        // normal chunk size. In particular, HIRFunction::EndFunction builds a
+        // pointer table for every CFG block; a function with more than 63 real
+        // blocks plus its synthetic entry exceeds HIRPools' 512-byte default
+        // arena chunk. Returning another default-sized chunk here let
+        // Memory() advance past the backing vector and corrupted the function
+        // during JIT emission. Oversize the new chunk to fit the request.
+        node = &chunks.emplace_back(std::max(new_chunk_size, size));
         return node;
     }
 

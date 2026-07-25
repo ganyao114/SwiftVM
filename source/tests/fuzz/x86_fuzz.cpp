@@ -5,6 +5,8 @@
 #include <chrono>
 #include <bit>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include <catch2/catch_test_macros.hpp>
@@ -3382,6 +3384,240 @@ TEST_CASE("x86 CallLambda function/static interaction") {
         setenv("SVM_FUNC_LAMBDA", old_lambda_value.c_str(), 1);
     } else {
         unsetenv("SVM_FUNC_LAMBDA");
+    }
+    backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
+TEST_CASE("x86 function JIT large lambda-free CFG") {
+    constexpr size_t kArenaSize = 0x80000;
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 stack = base + 0x70000;
+    backend::SmcTracker::SetEnabled(false);
+
+    struct Mode {
+        const char* name;
+        const char* func;
+        const char* jit;
+    };
+    const Mode modes[] = {
+            {"function-jit", "1", "1"},
+            {"block-jit", "0", "1"},
+            {"function-interpreter", "1", "0"},
+    };
+    const size_t stages[] = {15, 23, 31, 39, 47, 59};
+
+    const auto old_func = getenv("SVM_FUNC_BASE");
+    const auto old_jit = getenv("SVM_ENABLE_JIT");
+    const std::string old_func_value = old_func ? old_func : "";
+    const std::string old_jit_value = old_jit ? old_jit : "";
+
+    size_t code_cursor = 0;
+    for (const auto& mode : modes) {
+        setenv("SVM_FUNC_BASE", mode.func, 1);
+        setenv("SVM_ENABLE_JIT", mode.jit, 1);
+        auto* instance = X86Instance::Make();
+        for (const size_t stage_count : stages) {
+            // An entry jump plus N conditional/add diamonds yields exactly
+            // 2*N+2 reachable blocks: 32, 48, 64, 80, 96, and 120. The taken
+            // edge skips the add and both paths rejoin at the next condition;
+            // no instruction in the stream produces CallLambda.
+            CodeBuf helper;
+            helper.B(0xEB); helper.B(0x00);                    // jmp body
+            helper.B(0x48); helper.B(0x31); helper.B(0xC0);  // xor rax, rax
+            for (size_t i = 0; i < stage_count; ++i) {
+                helper.B(0xF7); helper.B(0xC2);              // test edx, imm32
+                helper.D(1u << (i % 31));
+                helper.B(0x74);                             // jz next stage
+                const size_t jz_disp = helper.Pos();
+                helper.B(0);
+                helper.B(0x48); helper.B(0x83); helper.B(0xC0);
+                helper.B(static_cast<u8>(i + 1));            // add rax, i+1
+                helper.B(0xEB);                             // jmp next stage
+                const size_t jmp_disp = helper.Pos();
+                helper.B(0);
+                const size_t next = helper.Pos();
+                helper.Patch8(jz_disp, static_cast<s8>(next - (jz_disp + 1)));
+                helper.Patch8(jmp_disp, static_cast<s8>(next - (jmp_disp + 1)));
+            }
+            helper.B(0xC3);                                 // ret
+
+            const u64 code_addr = base + code_cursor++ * 0x1000;
+            const u64 helper_addr = code_addr + 0x80;
+            CodeBuf caller;
+            caller.B(0xE8);
+            const size_t call_disp = caller.Pos();
+            caller.D(0);
+            caller.B(0xF4);
+            caller.Patch32(call_disp,
+                           static_cast<s32>(helper_addr - (code_addr + call_disp + 4)));
+            std::memcpy(reinterpret_cast<void*>(code_addr), caller.c.data(), caller.c.size());
+            std::memcpy(reinterpret_cast<void*>(helper_addr), helper.c.data(), helper.c.size());
+
+            auto run = [&](u32 selector, u64 expected) {
+                auto* core = X86Core::Make(instance);
+                auto& ctx = core->GetContext();
+                ctx.rip.qword = code_addr;
+                ctx.rsp.qword = stack;
+                ctx.rdx.qword = selector;
+                core->Run();
+                INFO(fmt::format("mode={} stages={} blocks={} selector={:#x}",
+                                 mode.name, stage_count, stage_count * 2 + 2, selector));
+                CHECK(ctx.rax.qword == expected);
+                CHECK(ctx.rsp.qword == stack);
+                X86Core::Destroy(core);
+            };
+            run(0, 0);
+            run(~u32{0}, stage_count * (stage_count + 1) / 2);
+        }
+        X86Instance::Destroy(instance);
+    }
+
+    if (old_func) {
+        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_FUNC_BASE");
+    }
+    if (old_jit) {
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_ENABLE_JIT");
+    }
+    backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
+TEST_CASE("x86 extracted glibc 72-block cache-info function") {
+    // Load the checked-in static glibc fixture into a biased guest arena, then
+    // enter get_common_cache_info.constprop.0 directly with controlled
+    // arguments. This function has 72 reachable blocks. Zeroed CPU-feature
+    // globals select its early-return path, but whole-function translation
+    // must still decode and compile every arm (including signed-div helpers).
+    struct Elf64Header {
+        u8 ident[16];
+        u16 type;
+        u16 machine;
+        u32 version;
+        u64 entry;
+        u64 phoff;
+        u64 shoff;
+        u32 flags;
+        u16 ehsize;
+        u16 phentsize;
+        u16 phnum;
+        u16 shentsize;
+        u16 shnum;
+        u16 shstrndx;
+    };
+    struct Elf64ProgramHeader {
+        u32 type;
+        u32 flags;
+        u64 offset;
+        u64 vaddr;
+        u64 paddr;
+        u64 filesz;
+        u64 memsz;
+        u64 align;
+    };
+    static_assert(sizeof(Elf64Header) == 64);
+    static_assert(sizeof(Elf64ProgramHeader) == 56);
+
+    const auto fixture = std::filesystem::path(__FILE__).parent_path() /
+                         "../../translator/linux/tests/func_tests_x86_64";
+    std::ifstream input(fixture, std::ios::binary);
+    REQUIRE(input.good());
+    input.seekg(0, std::ios::end);
+    const auto file_size = static_cast<size_t>(input.tellg());
+    input.seekg(0);
+    std::vector<u8> image(file_size);
+    input.read(reinterpret_cast<char*>(image.data()), static_cast<std::streamsize>(image.size()));
+    REQUIRE(input.good());
+
+    constexpr size_t kArenaSize = 0x800000;
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const auto* ehdr = reinterpret_cast<const Elf64Header*>(image.data());
+    REQUIRE(ehdr->ident[0] == 0x7F);
+    REQUIRE(ehdr->ident[1] == 'E');
+    REQUIRE(ehdr->ident[2] == 'L');
+    REQUIRE(ehdr->ident[3] == 'F');
+    REQUIRE(ehdr->phentsize == sizeof(Elf64ProgramHeader));
+    for (u16 i = 0; i < ehdr->phnum; ++i) {
+        const size_t phoff = ehdr->phoff + static_cast<size_t>(i) * ehdr->phentsize;
+        REQUIRE(phoff + sizeof(Elf64ProgramHeader) <= image.size());
+        const auto* phdr =
+                reinterpret_cast<const Elf64ProgramHeader*>(image.data() + phoff);
+        if (phdr->type != 1) {  // PT_LOAD
+            continue;
+        }
+        REQUIRE(phdr->offset + phdr->filesz <= image.size());
+        REQUIRE(phdr->vaddr + phdr->memsz <= kArenaSize);
+        std::memcpy(reinterpret_cast<void*>(base + phdr->vaddr),
+                    image.data() + phdr->offset,
+                    phdr->filesz);
+    }
+
+    constexpr u64 kFunction = 0x4027A0;
+    constexpr u64 kReturnHlt = 0x5F0000;
+    constexpr u64 kOutput = 0x600000;
+    constexpr u64 kStack = 0x700000;
+    constexpr u64 kMarker = 0x123456789ABC;
+    *reinterpret_cast<u8*>(base + kReturnHlt) = 0xF4;
+    backend::SmcTracker::SetEnabled(false);
+
+    struct Mode {
+        const char* name;
+        const char* func;
+        const char* jit;
+    };
+    const Mode modes[] = {
+            {"function-jit", "1", "1"},
+            {"block-jit", "0", "1"},
+            {"function-interpreter", "1", "0"},
+    };
+    const auto old_func = getenv("SVM_FUNC_BASE");
+    const auto old_jit = getenv("SVM_ENABLE_JIT");
+    const std::string old_func_value = old_func ? old_func : "";
+    const std::string old_jit_value = old_jit ? old_jit : "";
+
+    for (const auto& mode : modes) {
+        setenv("SVM_FUNC_BASE", mode.func, 1);
+        setenv("SVM_ENABLE_JIT", mode.jit, 1);
+        std::memset(reinterpret_cast<void*>(base + kOutput), 0, 0x20);
+        *reinterpret_cast<u64*>(base + kStack - 8) = kReturnHlt;
+        auto* instance = X86Instance::Make(reinterpret_cast<void*>(base));
+        auto* core = X86Core::Make(instance);
+        auto& ctx = core->GetContext();
+        ctx.rip.qword = kFunction;
+        ctx.rsp.qword = kStack - 8;
+        ctx.rdi.qword = kOutput;
+        ctx.rsi.qword = kOutput + 8;
+        ctx.rdx.qword = kOutput + 16;
+        ctx.rcx.qword = kMarker;
+        core->Run();
+        INFO(mode.name);
+        CHECK(*reinterpret_cast<u64*>(base + kOutput) == kMarker);
+        CHECK(*reinterpret_cast<u64*>(base + kOutput + 8) == kMarker);
+        CHECK(*reinterpret_cast<u32*>(base + kOutput + 16) == 0);
+        CHECK(ctx.rsp.qword == kStack);
+        X86Core::Destroy(core);
+        X86Instance::Destroy(instance);
+    }
+
+    if (old_func) {
+        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_FUNC_BASE");
+    }
+    if (old_jit) {
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_ENABLE_JIT");
     }
     backend::SmcTracker::SetEnabled(true);
     munmap(arena, kArenaSize);
