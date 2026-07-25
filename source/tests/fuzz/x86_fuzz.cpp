@@ -3092,6 +3092,116 @@ TEST_CASE("SSE batch A directed edge semantics") {
     REQUIRE(matched);
 }
 
+TEST_CASE("x86 ENTER LEAVE static/function interaction") {
+    constexpr size_t kArenaSize = 0x40000;
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 stack = base + 0x30000;
+    const u64 marker = 0x1122334455667788ull;
+    backend::SmcTracker::SetEnabled(false);
+
+    struct ConfigCase {
+        const char* func;
+        const char* statics;
+    };
+    const ConfigCase cases[] = {{"1", "1"}, {"1", "0"}, {"0", "1"}, {"0", "0"}};
+    size_t code_cursor = 0;
+    const auto old_func = getenv("SVM_FUNC_BASE");
+    const auto old_static = getenv("SVM_STATIC_REGS");
+    const auto old_uniform = getenv("SVM_UNIFORM_ELIM");
+    const auto old_jit = getenv("SVM_ENABLE_JIT");
+    const std::string old_func_value = old_func ? old_func : "";
+    const std::string old_static_value = old_static ? old_static : "";
+    const std::string old_uniform_value = old_uniform ? old_uniform : "";
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    setenv("SVM_UNIFORM_ELIM", "1", 1);
+    setenv("SVM_ENABLE_JIT", "1", 1);
+    for (const auto& cfg : cases) {
+        setenv("SVM_FUNC_BASE", cfg.func, 1);
+        setenv("SVM_STATIC_REGS", cfg.statics, 1);
+        auto* instance = X86Instance::Make();
+        auto run = [&](u16 alloc, bool flag_op) {
+            std::vector<u8> code;
+            if (flag_op) {
+                // add bx, ax (keeps the exact flag-producing shape from the
+                // fuzz repro immediately before ENTER).
+                code = {0x66, 0x01, 0xC3};
+            }
+            code.push_back(0xC8);
+            code.push_back(static_cast<u8>(alloc));
+            code.push_back(static_cast<u8>(alloc >> 8));
+            code.push_back(0x00);
+            code.push_back(0xC9);
+            code.push_back(0xF4);
+            const u64 code_addr = base + code_cursor++ * 0x100;
+            std::memcpy(reinterpret_cast<void*>(code_addr), code.data(), code.size());
+            auto* core = X86Core::Make(instance);
+            auto& ctx = core->GetContext();
+            ctx.rip.qword = code_addr;
+            ctx.rsp.qword = stack;
+            ctx.rbp.qword = marker;
+            ctx.rax.qword = 3;
+            ctx.rbx.qword = 7;
+            core->Run();
+            INFO(fmt::format("func={} static={} alloc={:#x} flags={}", cfg.func, cfg.statics,
+                             alloc, flag_op));
+            CHECK(ctx.rbp.qword == marker);
+            CHECK(ctx.rsp.qword == stack);
+            X86Core::Destroy(core);
+        };
+        run(0, false);
+        run(8, false);
+        run(0x40, false);
+        run(0x28, true);
+        // A guest call enters a separate translated function containing the
+        // frame pair, then RET must return with the caller's stack intact.
+        {
+            const u64 code_addr = base + code_cursor++ * 0x100;
+            const u64 helper_addr = code_addr + 0x40;
+            std::array<u8, 6> caller{0xE8, 0, 0, 0, 0, 0xF4};
+            const s32 rel = static_cast<s32>(helper_addr - (code_addr + 5));
+            std::memcpy(caller.data() + 1, &rel, sizeof(rel));
+            std::memcpy(reinterpret_cast<void*>(code_addr), caller.data(), caller.size());
+            const std::array<u8, 7> helper{0xC8, 0x28, 0x00, 0x00, 0xC9, 0xC3, 0xF4};
+            std::memcpy(reinterpret_cast<void*>(helper_addr), helper.data(), helper.size());
+            auto* core = X86Core::Make(instance);
+            auto& ctx = core->GetContext();
+            ctx.rip.qword = code_addr;
+            ctx.rsp.qword = stack;
+            ctx.rbp.qword = marker;
+            core->Run();
+            INFO(fmt::format("func={} static={} nested-call", cfg.func, cfg.statics));
+            CHECK(ctx.rbp.qword == marker);
+            CHECK(ctx.rsp.qword == stack);
+            X86Core::Destroy(core);
+        }
+        X86Instance::Destroy(instance);
+    }
+    if (old_func) {
+        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_FUNC_BASE");
+    }
+    if (old_static) {
+        setenv("SVM_STATIC_REGS", old_static_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_STATIC_REGS");
+    }
+    if (old_uniform) {
+        setenv("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_UNIFORM_ELIM");
+    }
+    if (old_jit) {
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_ENABLE_JIT");
+    }
+    backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
 TEST_CASE("SSE batch B directed edge semantics") {
     using Vec128 = std::array<u8, 16>;
     struct Result {
