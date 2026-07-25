@@ -3,8 +3,8 @@
 //
 // Backward flag liveness, in the spirit of FEX's
 // RedundantFlagCalculationElimination: walk the block from the end, track the
-// set of guest flag bits that are still needed, and drop (or narrow) flag
-// writes whose bits are all rewritten later before any read.
+// set of guest flag bits that are still needed, and drop flag writes whose
+// bits are all rewritten later before any read.
 //
 // Flag model in this IR (see ir.inc):
 //   writes: SaveFlags(value, mask) / ClearFlags(mask) / SetCarry / SetOverflow
@@ -15,9 +15,8 @@
 //
 // Removal is safe in both backends: a removed SaveFlags only makes its def
 // emit the non-flag-setting instruction form, so no later reader can observe
-// it (readers make their bits needed, which keeps the last write). Narrowing
-// a mask never changes JIT codegen for NZCV (the lazy merge is whole-NZCV)
-// and is per-bit exact in the interpreter.
+// it (readers make their bits needed, which keeps the last write). ClearFlags
+// remains an independent write even when a sibling SaveFlags is removed.
 
 #include "flags_elimination_pass.h"
 
@@ -29,14 +28,6 @@
 namespace swift::runtime::ir {
 
 void FlagsEliminationPass::Run(Block* block) {
-    // Still has residual correctness issues beyond Adc/Sbb blocks (fuzz
-    // alu/mixed failures with off-by-one register values in JIT mode).
-    // The backward liveness + JIT lazy NZCV interaction needs a deeper
-    // redesign. Default off; SVM_FLAGS_ELIM=1 to enable for debugging.
-    static const bool enabled = std::getenv("SVM_FLAGS_ELIM") != nullptr;
-    if (!enabled) {
-        return;
-    }
     auto& inst_list = block->GetInstList();
 
     // Adc/Sbb read the carry written by the preceding guest instruction.
