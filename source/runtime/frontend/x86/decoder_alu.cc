@@ -1,4 +1,5 @@
 #include "runtime/frontend/x86/decoder_internal.h"
+#include "runtime/ir/atomic_rmw.h"
 
 namespace swift::x86 {
 
@@ -337,51 +338,119 @@ void X64Decoder::DecodeAddSubWithCarry(_DInst& insn, bool sub) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
 
-    auto left = ToValue(Src(insn, op0));
     auto right = ToValue(Src(insn, op1));
+    const bool locked_rmw = op0.type != O_REG && (insn.flags & FLAG_LOCK) != 0;
+    ir::Value left;
+    ir::Value carry;
+    if (locked_rmw) {
+        carry = CarryValue();
+        const auto type = GetSize(op0.size);
+        auto operand = NarrowTo(right, type);
+        left = __ AtomicRMW(
+                         ir::Imm(static_cast<u8>(sub ? ir::AtomicRMWOp::SubBorrow
+                                                    : ir::AtomicRMWOp::AddCarry)),
+                         FlatAddress(insn, op0),
+                         operand,
+                         carry)
+                       .SetType(type);
+    } else {
+        left = ToValue(Src(insn, op0));
+    }
 
+    if (locked_rmw) {
+        // The atomic retry loop takes carry as an explicit SSA input. Restore
+        // that same architectural CF before the ordinary flag-producing ADC/SBB.
+        __ SetCarry(carry);
+        carry_ = CarryPolarity::Direct;
+        StorePolarity(false);
+    }
     auto result = ArithWithFlags(left, right, sub ? ArithOp::Sbb : ArithOp::Adc, op0.size,
                                  ir::Flags::All);
 
-    Dst(insn, op0, result);
+    if (!locked_rmw) {
+        Dst(insn, op0, result);
+    }
 }
 
 void X64Decoder::DecodeIncAndDec(_DInst& insn, bool dec) {
     auto& op0 = insn.ops[0];
-    auto src = ToValue(Src(insn, op0));
+    auto carry = CarryValue();
     auto one = __ LoadImm(ir::Imm(u64(1), GetSize(op0.size)));
+    const bool locked_rmw = op0.type != O_REG && (insn.flags & FLAG_LOCK) != 0;
+    ir::Value src;
+    if (locked_rmw) {
+        const auto type = GetSize(op0.size);
+        src = __ AtomicRMW(
+                        ir::Imm(static_cast<u8>(dec ? ir::AtomicRMWOp::Sub
+                                                   : ir::AtomicRMWOp::Add)),
+                        FlatAddress(insn, op0),
+                        one,
+                        __ LoadImm(ir::Imm(u8(0))))
+                      .SetType(type);
+    } else {
+        src = ToValue(Src(insn, op0));
+    }
 
-    // INC / DEC update OF, SF, ZF, AF and PF, but preserve CF. Note the backend
-    // cannot preserve CF across a flag-setting add (its NZCV liveness is not
-    // per-bit), so CF after INC / DEC is currently the carry of the increment
-    // itself (see report).
+    // INC / DEC update OF, SF, ZF, AF and PF, but preserve CF.
     auto result = ArithWithFlags(src, one, dec ? ArithOp::Sub : ArithOp::Add, op0.size,
                                  ir::Flags::Overflow | ir::Flags::Negate | ir::Flags::Parity |
                                          ir::Flags::Zero | ir::Flags::AuxiliaryCarry);
 
-    Dst(insn, op0, result);
+    __ SetCarry(carry);
+    carry_ = CarryPolarity::Direct;
+    StorePolarity(false);
+    if (!locked_rmw) {
+        Dst(insn, op0, result);
+    }
 }
 
 void X64Decoder::DecodeNeg(_DInst& insn) {
     auto& op0 = insn.ops[0];
-    auto src = ToValue(Src(insn, op0));
+    const bool locked_rmw = op0.type != O_REG && (insn.flags & FLAG_LOCK) != 0;
+    const auto type = GetSize(op0.size);
+    auto zero = __ LoadImm(ir::Imm(u64(0), type));
+    ir::Value src;
+    if (locked_rmw) {
+        src = __ AtomicRMW(ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Neg)),
+                          FlatAddress(insn, op0),
+                          zero,
+                          __ LoadImm(ir::Imm(u8(0))))
+                      .SetType(type);
+    } else {
+        src = ToValue(Src(insn, op0));
+    }
 
     // NEG updates all status flags; CF is set iff the operand was non zero,
     // which matches the borrow of 0 - src.
-    auto zero = __ LoadImm(ir::Imm(u64(0), GetSize(op0.size)));
     auto result = ArithWithFlags(zero, src, ArithOp::Sub, op0.size, ir::Flags::All);
 
-    Dst(insn, op0, result);
+    if (!locked_rmw) {
+        Dst(insn, op0, result);
+    }
 }
 
 void X64Decoder::DecodeNot(_DInst& insn) {
     auto& op0 = insn.ops[0];
-    auto src = ToValue(Src(insn, op0));
+    const bool locked_rmw = op0.type != O_REG && (insn.flags & FLAG_LOCK) != 0;
+    const auto type = GetSize(op0.size);
+    auto all_ones = __ LoadImm(ir::Imm(UINT64_MAX, type));
+    ir::Value src;
+    if (locked_rmw) {
+        src = __ AtomicRMW(ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Xor)),
+                          FlatAddress(insn, op0),
+                          all_ones,
+                          __ LoadImm(ir::Imm(u8(0))))
+                      .SetType(type);
+    } else {
+        src = ToValue(Src(insn, op0));
+    }
 
     // NOT does not modify any flags.
     auto result = __ Xor(src, ir::Operand{ir::Imm(UINT64_MAX)});
 
-    Dst(insn, op0, result);
+    if (!locked_rmw) {
+        Dst(insn, op0, result);
+    }
 }
 
 void X64Decoder::DecodeXchg(_DInst& insn) {
@@ -577,14 +646,26 @@ void X64Decoder::DecodeAnd(_DInst& insn, bool save_result) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
 
-    auto left = ToValue(Src(insn, op0));
-    auto right = Src(insn, op1);
+    auto right = ToValue(Src(insn, op1));
+    const bool locked_rmw =
+            save_result && op0.type != O_REG && (insn.flags & FLAG_LOCK) != 0;
+    ir::Value left;
+    if (locked_rmw) {
+        const auto type = GetSize(op0.size);
+        left = __ AtomicRMW(ir::Imm(static_cast<u8>(ir::AtomicRMWOp::And)),
+                           FlatAddress(insn, op0),
+                           NarrowTo(right, type),
+                           __ LoadImm(ir::Imm(u8(0))))
+                       .SetType(type);
+    } else {
+        left = ToValue(Src(insn, op0));
+    }
 
     auto result = __ And(left, ir::Operand{right});
 
     SaveLogicFlags(result, op0.size);
 
-    if (save_result) {
+    if (save_result && !locked_rmw) {
         Dst(insn, op0, result);
     }
 }
@@ -593,26 +674,52 @@ void X64Decoder::DecodeOr(_DInst& insn) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
 
-    auto left = Src(insn, op0);
-    auto right = Src(insn, op1);
+    auto right = ToValue(Src(insn, op1));
+    const bool locked_rmw = op0.type != O_REG && (insn.flags & FLAG_LOCK) != 0;
+    ir::Value left;
+    if (locked_rmw) {
+        const auto type = GetSize(op0.size);
+        left = __ AtomicRMW(ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Or)),
+                           FlatAddress(insn, op0),
+                           NarrowTo(right, type),
+                           __ LoadImm(ir::Imm(u8(0))))
+                       .SetType(type);
+    } else {
+        left = ToValue(Src(insn, op0));
+    }
 
-    auto result = __ Or(ToValue(left), ir::Operand{right});
+    auto result = __ Or(left, ir::Operand{right});
     SaveLogicFlags(result, op0.size);
 
-    Dst(insn, op0, result);
+    if (!locked_rmw) {
+        Dst(insn, op0, result);
+    }
 }
 
 void X64Decoder::DecodeXor(_DInst& insn) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
 
-    auto left = Src(insn, op0);
-    auto right = Src(insn, op1);
+    auto right = ToValue(Src(insn, op1));
+    const bool locked_rmw = op0.type != O_REG && (insn.flags & FLAG_LOCK) != 0;
+    ir::Value left;
+    if (locked_rmw) {
+        const auto type = GetSize(op0.size);
+        left = __ AtomicRMW(ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Xor)),
+                           FlatAddress(insn, op0),
+                           NarrowTo(right, type),
+                           __ LoadImm(ir::Imm(u8(0))))
+                       .SetType(type);
+    } else {
+        left = ToValue(Src(insn, op0));
+    }
 
-    auto result = __ Xor(ToValue(left), ir::Operand{right});
+    auto result = __ Xor(left, ir::Operand{right});
     SaveLogicFlags(result, op0.size);
 
-    Dst(insn, op0, result);
+    if (!locked_rmw) {
+        Dst(insn, op0, result);
+    }
 }
 
 void X64Decoder::DecodeShlShr(_DInst& insn, bool shr) { DecodeShift(insn, shr ? 1 : 0); }
@@ -798,19 +905,23 @@ void X64Decoder::DecodeCmpxchg8b(_DInst& insn) {
     // CMPXCHG8B m64: compare EDX:EAX with [m64].
     // Equal: [m64] = ECX:EBX, ZF=1.  Not equal: EDX:EAX = [m64], ZF=0.
     auto addr = FlatAddress(insn, insn.ops[0]);
-    auto old = MemLoad(ir::Operand{addr}, ir::ValueType::U64, TsoOrdered(insn));
     const auto kLo32 = ir::Imm(0xFFFFFFFFull);
-    auto eax = __ And(R(_RegisterType::R_EAX), ir::Operand{kLo32});
-    auto edx = __ And(R(_RegisterType::R_EDX), ir::Operand{kLo32});
+    auto eax = __ ZeroExtend64(__ And(R(_RegisterType::R_EAX), ir::Operand{kLo32}));
+    auto edx = __ ZeroExtend64(__ And(R(_RegisterType::R_EDX), ir::Operand{kLo32}));
     auto expected = __ Or(__ LslImm(edx, ir::Imm(32u)), ir::Operand{eax});
+    auto ebx = __ ZeroExtend64(__ And(R(_RegisterType::R_EBX), ir::Operand{kLo32}));
+    auto ecx = __ ZeroExtend64(__ And(R(_RegisterType::R_ECX), ir::Operand{kLo32}));
+    auto desired = __ Or(__ LslImm(ecx, ir::Imm(32u)), ir::Operand{ebx});
+    const bool locked = (insn.flags & FLAG_LOCK) != 0;
+    auto old = locked ? __ CompareAndSwap(addr, expected, desired).SetType(ir::ValueType::U64)
+                      : MemLoad(ir::Operand{addr}, ir::ValueType::U64, TsoOrdered(insn));
     auto diff = __ Xor(old, ir::Operand{expected});
     auto equal = __ TestZero(diff);
-    auto ebx = __ And(R(_RegisterType::R_EBX), ir::Operand{kLo32});
-    auto ecx = __ And(R(_RegisterType::R_ECX), ir::Operand{kLo32});
-    auto desired = __ Or(__ LslImm(ecx, ir::Imm(32u)), ir::Operand{ebx});
-    auto skip_store = __ NotGoto(equal);
-    MemStore(ir::Operand{addr}, desired, TsoOrdered(insn));
-    __ BindLabel(skip_store);
+    if (!locked) {
+        auto skip_store = __ NotGoto(equal);
+        MemStore(ir::Operand{addr}, desired, TsoOrdered(insn));
+        __ BindLabel(skip_store);
+    }
     auto skip_load = __ Goto(equal);
     R(_RegisterType::R_EAX, __ And(old, ir::Operand{kLo32}));
     R(_RegisterType::R_EDX, __ LsrImm(old, ir::Imm(32u)));
@@ -996,9 +1107,11 @@ void X64Decoder::DecodeBt(_DInst& insn, int kind) {
     const auto type = GetSize(width);
     auto idx_raw = ToValue(Src(insn, op1));
 
-    ir::Value base;       // the value the bit is extracted from
-    ir::Value n;          // in-element bit index
-    ir::Value mem_addr;   // non-null for the memory (bit-string) form
+    const bool locked_rmw =
+            kind != 0 && op0.type != O_REG && (insn.flags & FLAG_LOCK) != 0;
+    ir::Value base;      // the old value the bit is extracted from
+    ir::Value n;         // in-element bit index
+    ir::Value mem_addr;  // non-null for the memory (bit-string) form
     if (op0.type == O_REG) {
         base = ToValue(Src(insn, op0));
         n = __ And(idx_raw, ir::Operand{ir::Imm(u64(width - 1))});
@@ -1010,13 +1123,34 @@ void X64Decoder::DecodeBt(_DInst& insn, int kind) {
         auto elems = __ AsrValue(idx64, __ LoadImm(ir::Imm(u64(log2w))));
         auto byte_off = __ LslValue(elems, __ LoadImm(ir::Imm(u64(log2w - 3))));
         mem_addr = __ Add(FlatAddress(insn, op0), ir::Operand{byte_off});
-        base = MemLoad(ir::Operand{mem_addr}, type, TsoOrdered(insn));
         n = __ And(idx64, ir::Operand{ir::Imm(u64(width - 1))});
+        if (locked_rmw) {
+            auto mask = __ LslValue(__ LoadImm(ir::Imm(u64(1))), n);
+            ir::AtomicRMWOp op;
+            ir::Value operand;
+            if (kind == 1) {
+                op = ir::AtomicRMWOp::Or;
+                operand = mask;
+            } else if (kind == 2) {
+                op = ir::AtomicRMWOp::And;
+                operand = __ Xor(mask, ir::Operand{ir::Imm(UINT64_MAX)});
+            } else {
+                op = ir::AtomicRMWOp::Xor;
+                operand = mask;
+            }
+            base = __ AtomicRMW(ir::Imm(static_cast<u8>(op)),
+                               mem_addr,
+                               NarrowTo(operand, type),
+                               __ LoadImm(ir::Imm(u8(0))))
+                           .SetType(type);
+        } else {
+            base = MemLoad(ir::Operand{mem_addr}, type, TsoOrdered(insn));
+        }
     }
     auto wide = width < 64 ? __ ZeroExtend64(base) : base;
     auto bit = __ And(__ LsrValue(wide, n), ir::Operand{ir::Imm(u64(1))});
 
-    if (kind != 0) {
+    if (kind != 0 && !locked_rmw) {
         auto mask = __ LslValue(__ LoadImm(ir::Imm(u64(1))), n);
         ir::Value modified;
         if (kind == 1) {
@@ -1029,7 +1163,6 @@ void X64Decoder::DecodeBt(_DInst& insn, int kind) {
         if (op0.type == O_REG) {
             Dst(insn, op0, modified.SetCastType(type));
         } else {
-            // lock bts/btr/btc: ordered store (TsoOrdered covers LOCK).
             MemStore(ir::Operand{mem_addr}, NarrowTo(modified, type), TsoOrdered(insn));
         }
     }

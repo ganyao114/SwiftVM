@@ -6,6 +6,7 @@
 #include "runtime/backend/code_cache.h"
 #include "runtime/common/types.h"
 #include "runtime/include/config.h"
+#include "runtime/ir/atomic_rmw.h"
 #include "runtime/ir/block.h"
 
 namespace swift::runtime::backend::arm64 {
@@ -58,6 +59,20 @@ public:
 #undef INST
 
 private:
+    void AcquireUnalignedAtomicLock(const Register& scratch);
+    void ReleaseUnalignedAtomicLock();
+    void EmitPlainAtomicLoad(ir::ValueType type,
+                             const Register& result,
+                             const Register& address);
+    void EmitPlainAtomicStore(ir::ValueType type,
+                              const Register& value,
+                              const Register& address);
+    void EmitAtomicRMWValue(ir::AtomicRMWOp op,
+                            ir::ValueType type,
+                            const Register& output,
+                            const Register& old,
+                            ir::Value operand,
+                            ir::Value carry);
 
     struct PseudoFlags {
         ir::Flags set{};
