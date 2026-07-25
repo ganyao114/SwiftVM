@@ -9,10 +9,9 @@ using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
-// SSE host helpers. Lane-wise vector semantics the IR cannot express (the
-// JIT Vec4* emitters are stubs) go through CallHost, mirroring the RepMovs /
-// RepStos pattern: each helper computes ONE 64-bit half of a 128-bit lane
-// vector, and the decoder invokes it twice (lo / hi halves).
+// SSE host helpers. Operations not represented in vector IR go through
+// CallHost, mirroring the RepMovs / RepStos pattern: each helper computes ONE
+// 64-bit half of a 128-bit lane vector, and the decoder invokes it twice.
 // ---------------------------------------------------------------------------
 
 u64 Paddb64(u64 a, u64 b) {
@@ -435,6 +434,22 @@ u64 UcomisdFlags(u64 a, u64 b) {
     }
     return 0;
 }
+
+ir::Value X64Decoder::XmmRead(_RegisterType reg) {
+    return __ LoadUniform(ToVReg(x86_regs_table[reg]));
+}
+
+void X64Decoder::XmmWrite(_RegisterType reg, ir::Value value) {
+    __ StoreUniform(ToVReg(x86_regs_table[reg]), value);
+}
+
+ir::Value X64Decoder::LoadSrcVec(_DInst& insn, _Operand& op) {
+    if (op.type == O_REG) {
+        return XmmRead(static_cast<_RegisterType>(op.index));
+    }
+    return __ LoadMemory(ir::Operand{FlatAddress(insn, op)}).SetType(ir::ValueType::V128);
+}
+
 ir::Value X64Decoder::XmmLo(_RegisterType reg) {
     auto off = ToVReg(x86_regs_table[reg]).GetOffset();
     return __ LoadUniform(ir::Uniform{off, ir::ValueType::U64});
@@ -516,6 +531,75 @@ void X64Decoder::DecodePunpckLo(_DInst& insn, VecHalfFn fn_lo, VecHalfFn fn_hi) 
     XmmHi(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(fn_hi)}}, a_lo, b_lo));
 }
 
+void X64Decoder::DecodeVec4Add(_DInst& insn) {
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto result = __ Vec4Add(XmmRead(dst), LoadSrcVec(insn, insn.ops[1]))
+                          .SetType(ir::ValueType::V128);
+    XmmWrite(dst, result);
+}
+
+void X64Decoder::DecodeVecBitwise(_DInst& insn, VecBitwiseOp op) {
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto left = XmmRead(dst);
+    auto right = LoadSrcVec(insn, insn.ops[1]);
+    ir::Value result;
+    switch (op) {
+        case VecBitwiseOp::Xor:
+            result = __ VecXor(left, right);
+            break;
+        case VecBitwiseOp::Or:
+            result = __ VecOr(left, right);
+            break;
+        case VecBitwiseOp::And:
+            result = __ VecAnd(left, right);
+            break;
+        case VecBitwiseOp::AndNot:
+            // PANDN: dst = (NOT dst) AND src; VecAndNot(x, y) = x AND NOT y.
+            result = __ VecAndNot(right, left);
+            break;
+    }
+    XmmWrite(dst, result.SetType(ir::ValueType::V128));
+}
+
+void X64Decoder::DecodeVecInt(_DInst& insn, VecIntOp op, u32 lane_bits) {
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto left = XmmRead(dst);
+    auto right = LoadSrcVec(insn, insn.ops[1]);
+    ir::Value result;
+    switch (op) {
+        case VecIntOp::Add:
+            result = __ VecAdd(left, right, ir::Imm(lane_bits));
+            break;
+        case VecIntOp::Sub:
+            result = __ VecSub(left, right, ir::Imm(lane_bits));
+            break;
+        case VecIntOp::CmpEq:
+            result = __ VecCmpEq(left, right, ir::Imm(lane_bits));
+            break;
+        case VecIntOp::CmpGt:
+            result = __ VecCmpGt(left, right, ir::Imm(lane_bits));
+            break;
+    }
+    XmmWrite(dst, result.SetType(ir::ValueType::V128));
+}
+
+void X64Decoder::DecodeVecZip(_DInst& insn, u32 lane_bits, bool high) {
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto result = __ VecZip(XmmRead(dst),
+                            LoadSrcVec(insn, insn.ops[1]),
+                            ir::Imm(lane_bits),
+                            ir::Imm(high ? 1u : 0u))
+                          .SetType(ir::ValueType::V128);
+    XmmWrite(dst, result);
+}
+
+void X64Decoder::DecodeVecDupPairs32(_DInst& insn, bool odd) {
+    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
+    auto result = __ VecDupPairs32(LoadSrcVec(insn, insn.ops[1]), ir::Imm(odd ? 1u : 0u))
+                          .SetType(ir::ValueType::V128);
+    XmmWrite(dst, result);
+}
+
 void X64Decoder::DecodeVecHalfOpHigh(_DInst& insn, VecHalfFn fn_lo, VecHalfFn fn_hi) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     auto a_hi = XmmHi(dst);
@@ -524,104 +608,16 @@ void X64Decoder::DecodeVecHalfOpHigh(_DInst& insn, VecHalfFn fn_lo, VecHalfFn fn
     XmmHi(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(fn_hi)}}, a_hi, b_hi));
 }
 
-void X64Decoder::DecodeVecIROp(_DInst& insn, VecIROp op) {
+void X64Decoder::DecodeMuludq(_DInst& insn) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
-    // Load only the halves the op actually consumes: a dead LoadMemory /
-    // LoadUniform result gets no live interval in the register allocator,
-    // and the JIT emitter then fails to find a register for it.
-    const bool low_only = op == VecIROp::Punpckldq || op == VecIROp::Punpcklqdq;
-    const bool high_only = op == VecIROp::Punpckhdq || op == VecIROp::Punpckhqdq;
-    const bool need_a_lo = !high_only;
-    const bool need_a_hi = !low_only;
-    const bool need_b_lo = !high_only;
-    const bool need_b_hi = !low_only;
-    ir::Value a_lo, a_hi, b_lo, b_hi;
-    if (need_a_lo) {
-        a_lo = XmmLo(dst);
-    }
-    if (need_a_hi) {
-        a_hi = XmmHi(dst);
-    }
-    auto& op1 = insn.ops[1];
-    bool src_is_reg = op1.type == O_REG;
-    VecHalves b{};
-    if (src_is_reg) {
-        auto reg = static_cast<_RegisterType>(op1.index);
-        if (need_b_lo) {
-            b_lo = XmmLo(reg);
-        }
-        if (need_b_hi) {
-            b_hi = XmmHi(reg);
-        }
-    } else {
-        auto addr = FlatAddress(insn, op1);
-        if (need_b_lo) {
-            b_lo = __ LoadMemory(ir::Operand{addr}).SetType(ir::ValueType::U64);
-        }
-        if (need_b_hi) {
-            auto hi_addr = __ Add(addr, ir::Operand{ir::Imm(u64(8))});
-            b_hi = __ LoadMemory(ir::Operand{hi_addr}).SetType(ir::ValueType::U64);
-        }
-    }
-    b.lo = b_lo;
-    b.hi = b_hi;
+    auto a_lo = XmmLo(dst);
+    auto a_hi = XmmHi(dst);
+    auto b = LoadSrcHalves(insn, insn.ops[1]);
     const auto kLo32 = ir::Imm(0xFFFFFFFFull);
-    ir::Value lo, hi;
-    switch (op) {
-        case VecIROp::Xor:
-            lo = __ Xor(a_lo, ir::Operand{b.lo});
-            hi = __ Xor(a_hi, ir::Operand{b.hi});
-            break;
-        case VecIROp::Or:
-            lo = __ Or(a_lo, ir::Operand{b.lo});
-            hi = __ Or(a_hi, ir::Operand{b.hi});
-            break;
-        case VecIROp::And:
-            lo = __ And(a_lo, ir::Operand{b.lo});
-            hi = __ And(a_hi, ir::Operand{b.hi});
-            break;
-        case VecIROp::AndNot:
-            // PANDN: dst = (NOT dst) AND src; IR AndNot(x, y) = x AND NOT y.
-            lo = __ AndNot(b.lo, ir::Operand{a_lo});
-            hi = __ AndNot(b.hi, ir::Operand{a_hi});
-            break;
-        case VecIROp::AddQ:
-            lo = __ Add(a_lo, ir::Operand{b.lo});
-            hi = __ Add(a_hi, ir::Operand{b.hi});
-            break;
-        case VecIROp::SubQ:
-            lo = __ Sub(a_lo, ir::Operand{b.lo});
-            hi = __ Sub(a_hi, ir::Operand{b.hi});
-            break;
-        case VecIROp::Punpckldq:
-            // dst = {a.d0, b.d0, a.d1, b.d1}: all four dwords come from the
-            // LOW qwords of both operands.
-            lo = __ Or(__ And(a_lo, ir::Operand{kLo32}),
-                       ir::Operand{__ LslImm(b.lo, ir::Imm(32u))});
-            hi = __ Or(__ LsrImm(a_lo, ir::Imm(32u)),
-                       ir::Operand{__ And(b.lo, ir::Operand{ir::Imm(0xFFFFFFFF00000000ull)})});
-            break;
-        case VecIROp::Punpckhdq:
-            lo = __ Or(__ And(a_hi, ir::Operand{kLo32}),
-                       ir::Operand{__ LslImm(b.hi, ir::Imm(32u))});
-            hi = __ Or(__ LsrImm(a_hi, ir::Imm(32u)),
-                       ir::Operand{__ And(b.hi, ir::Operand{ir::Imm(0xFFFFFFFF00000000ull)})});
-            break;
-        case VecIROp::Punpcklqdq:
-            lo = a_lo;
-            hi = b.lo;
-            break;
-        case VecIROp::Punpckhqdq:
-            lo = a_hi;
-            hi = b.hi;
-            break;
-        case VecIROp::Muludq:
-            lo = __ Mul(__ And(a_lo, ir::Operand{kLo32}),
-                        ir::Operand{__ And(b.lo, ir::Operand{kLo32})});
-            hi = __ Mul(__ And(a_hi, ir::Operand{kLo32}),
-                        ir::Operand{__ And(b.hi, ir::Operand{kLo32})});
-            break;
-    }
+    auto lo = __ Mul(__ And(a_lo, ir::Operand{kLo32}),
+                     ir::Operand{__ And(b.lo, ir::Operand{kLo32})});
+    auto hi = __ Mul(__ And(a_hi, ir::Operand{kLo32}),
+                     ir::Operand{__ And(b.hi, ir::Operand{kLo32})});
     XmmLo(dst, lo);
     XmmHi(dst, hi);
 }
@@ -775,14 +771,9 @@ void X64Decoder::DecodeMovmsk(_DInst& insn, bool pd) {
 
 void X64Decoder::DecodePshufd(_DInst& insn) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
-    auto b = LoadSrcHalves(insn, insn.ops[1]);
-    u64 imm = insn.imm.byte;
-    auto lo = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&PshufdHalf)}},
-                            b.lo, b.hi, __ LoadImm(ir::Imm(imm)));
-    auto hi = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&PshufdHalf)}},
-                            b.lo, b.hi, __ LoadImm(ir::Imm(imm | 0x100)));
-    XmmLo(dst, lo);
-    XmmHi(dst, hi);
+    auto result = __ VecShuffle32(LoadSrcVec(insn, insn.ops[1]), ir::Imm(insn.imm.byte))
+                          .SetType(ir::ValueType::V128);
+    XmmWrite(dst, result);
 }
 
 void X64Decoder::DecodeShufps(_DInst& insn, bool pd) {
@@ -886,18 +877,12 @@ void X64Decoder::DecodePshiftA(_DInst& insn, int kind) {
 }
 
 void X64Decoder::DecodePshufw(_DInst& insn, bool high) {
-    // pshuflw/pshufhw: shuffle words within the low/high qword; other half unchanged.
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
-    u64 imm = insn.imm.byte;
-    auto src = LoadSrcHalves(insn, insn.ops[1]);
-    auto imm_v = __ LoadImm(ir::Imm(imm));
-    if (high) {
-        XmmHi(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Pshufw64)}},
-                                 src.hi, imm_v));
-    } else {
-        XmmLo(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Pshufw64)}},
-                                 src.lo, imm_v));
-    }
+    auto result = __ VecShuffle16(LoadSrcVec(insn, insn.ops[1]),
+                                  ir::Imm(insn.imm.byte),
+                                  ir::Imm(high ? 1u : 0u))
+                          .SetType(ir::ValueType::V128);
+    XmmWrite(dst, result);
 }
 
 void X64Decoder::DecodeCvtsi2sd(_DInst& insn) {
@@ -946,13 +931,26 @@ void X64Decoder::DecodeCvtss2sd(_DInst& insn) {
                              src, __ LoadImm(ir::Imm(u64(0)))));
 }
 
-void X64Decoder::DecodeScalarFloatOp(_DInst& insn, VecHalfFn fn) {
-    // addss/subss/mulss/divss: dst[31:0] = dst[31:0] OP src[31:0]; the upper
-    // bits of the low qword are preserved by the helper, high qword untouched.
+void X64Decoder::DecodeScalarFloatOp(_DInst& insn, VecFloatOp op) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
-    auto a = XmmLo(dst);
-    auto b = LoadSrcLo(insn, insn.ops[1]);
-    XmmLo(dst, __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(fn)}}, a, b));
+    auto left = XmmRead(dst);
+    auto right = LoadSrcLo(insn, insn.ops[1]);
+    ir::Value result;
+    switch (op) {
+        case VecFloatOp::Add:
+            result = __ VecFAddScalar32(left, right);
+            break;
+        case VecFloatOp::Sub:
+            result = __ VecFSubScalar32(left, right);
+            break;
+        case VecFloatOp::Mul:
+            result = __ VecFMulScalar32(left, right);
+            break;
+        case VecFloatOp::Div:
+            result = __ VecFDivScalar32(left, right);
+            break;
+    }
+    XmmWrite(dst, result.SetType(ir::ValueType::V128));
 }
 
 void X64Decoder::DecodePextrw(_DInst& insn) {
@@ -987,11 +985,9 @@ void X64Decoder::DecodePinsrw(_DInst& insn) {
 }
 
 void X64Decoder::DecodeMovddup(_DInst& insn) {
-    // movddup xmm, xmm/m64: duplicate the source low qword into both halves.
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
-    auto s = LoadSrcLo(insn, insn.ops[1]);
-    XmmLo(dst, s);
-    XmmHi(dst, s);
+    auto result = __ VecDup64(LoadSrcLo(insn, insn.ops[1])).SetType(ir::ValueType::V128);
+    XmmWrite(dst, result);
 }
 
 void X64Decoder::DecodeHaddps(_DInst& insn, bool sub) {

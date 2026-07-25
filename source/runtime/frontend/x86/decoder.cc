@@ -597,79 +597,79 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_PXOR:
         case I_XORPS:
         case I_XORPD:
-            DecodeVecIROp(insn, VecIROp::Xor);
+            DecodeVecBitwise(insn, VecBitwiseOp::Xor);
             break;
         case I_POR:
         case I_ORPS:
         case I_ORPD:
-            DecodeVecIROp(insn, VecIROp::Or);
+            DecodeVecBitwise(insn, VecBitwiseOp::Or);
             break;
         case I_PAND:
         case I_ANDPS:
         case I_ANDPD:
-            DecodeVecIROp(insn, VecIROp::And);
+            DecodeVecBitwise(insn, VecBitwiseOp::And);
             break;
         case I_PANDN:
         case I_ANDNPS:
         case I_ANDNPD:
-            DecodeVecIROp(insn, VecIROp::AndNot);
+            DecodeVecBitwise(insn, VecBitwiseOp::AndNot);
             break;
         case I_PADDQ:
-            DecodeVecIROp(insn, VecIROp::AddQ);
+            DecodeVecInt(insn, VecIntOp::Add, 64);
             break;
         case I_PSUBQ:
-            DecodeVecIROp(insn, VecIROp::SubQ);
+            DecodeVecInt(insn, VecIntOp::Sub, 64);
             break;
         case I_PUNPCKLDQ:
-            DecodeVecIROp(insn, VecIROp::Punpckldq);
+            DecodeVecZip(insn, 32, false);
             break;
         case I_PUNPCKHDQ:
-            DecodeVecIROp(insn, VecIROp::Punpckhdq);
+            DecodeVecZip(insn, 32, true);
             break;
         case I_PUNPCKLQDQ:
-            DecodeVecIROp(insn, VecIROp::Punpcklqdq);
+            DecodeVecZip(insn, 64, false);
             break;
         case I_PUNPCKHQDQ:
-            DecodeVecIROp(insn, VecIROp::Punpckhqdq);
+            DecodeVecZip(insn, 64, true);
             break;
         case I_PMULUDQ:
-            DecodeVecIROp(insn, VecIROp::Muludq);
+            DecodeMuludq(insn);
             break;
         case I_PADDB:
-            DecodeVecHalfOp(insn, &Paddb64);
+            DecodeVecInt(insn, VecIntOp::Add, 8);
             break;
         case I_PSUBB:
-            DecodeVecHalfOp(insn, &Psubb64);
+            DecodeVecInt(insn, VecIntOp::Sub, 8);
             break;
         case I_PADDW:
-            DecodeVecHalfOp(insn, &Paddw64);
+            DecodeVecInt(insn, VecIntOp::Add, 16);
             break;
         case I_PSUBW:
-            DecodeVecHalfOp(insn, &Psubw64);
+            DecodeVecInt(insn, VecIntOp::Sub, 16);
             break;
         case I_PADDD:
-            DecodeVecHalfOp(insn, &Paddd64);
+            DecodeVec4Add(insn);
             break;
         case I_PSUBD:
-            DecodeVecHalfOp(insn, &Psubd64);
+            DecodeVecInt(insn, VecIntOp::Sub, 32);
             break;
         case I_PCMPEQB:
-            DecodeVecHalfOp(insn, &Pcmpeqb64);
+            DecodeVecInt(insn, VecIntOp::CmpEq, 8);
             break;
         case I_PCMPEQW:
-            DecodeVecHalfOp(insn, &Pcmpeqw64);
+            DecodeVecInt(insn, VecIntOp::CmpEq, 16);
             break;
         case I_PCMPEQD:
-            DecodeVecHalfOp(insn, &Pcmpeqd64);
+            DecodeVecInt(insn, VecIntOp::CmpEq, 32);
             break;
         case I_PCMPGTB:
-            DecodeVecHalfOp(insn, &Pcmpgtb64);
+            DecodeVecInt(insn, VecIntOp::CmpGt, 8);
             break;
         case I_PCMPGTW:
-            DecodeVecHalfOp(insn, &Pcmpgtw64);
+            DecodeVecInt(insn, VecIntOp::CmpGt, 16);
             break;
         case I_PCMPGTD:
-            DecodeVecHalfOp(insn, &Pcmpgtd64);
+            DecodeVecInt(insn, VecIntOp::CmpGt, 32);
             break;
         case I_PMINUB:
             DecodeVecHalfOp(insn, &Pminub64);
@@ -690,16 +690,16 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeVecHalfOp(insn, &Psadbw64);
             break;
         case I_PUNPCKLBW:
-            DecodePunpckLo(insn, &PunpcklbwLo, &PunpcklbwHi);
+            DecodeVecZip(insn, 8, false);
             break;
         case I_PUNPCKHBW:
-            DecodeVecHalfOpHigh(insn, &PunpcklbwLo, &PunpcklbwHi);
+            DecodeVecZip(insn, 8, true);
             break;
         case I_PUNPCKLWD:
-            DecodePunpckLo(insn, &PunpcklwdLo, &PunpcklwdHi);
+            DecodeVecZip(insn, 16, false);
             break;
         case I_PUNPCKHWD:
-            DecodeVecHalfOpHigh(insn, &PunpcklwdLo, &PunpcklwdHi);
+            DecodeVecZip(insn, 16, true);
             break;
         case I_PSHUFD:
             DecodePshufd(insn);
@@ -753,25 +753,25 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeVecHalfOp(insn, &DivpsHalf);
             break;
         case I_ADDSS:
-            DecodeScalarFloatOp(insn, &AddssHalf);
+            DecodeScalarFloatOp(insn, VecFloatOp::Add);
             break;
         case I_SUBSS:
-            DecodeScalarFloatOp(insn, &SubssHalf);
+            DecodeScalarFloatOp(insn, VecFloatOp::Sub);
             break;
         case I_MULSS:
-            DecodeScalarFloatOp(insn, &MulssHalf);
+            DecodeScalarFloatOp(insn, VecFloatOp::Mul);
             break;
         case I_DIVSS:
-            DecodeScalarFloatOp(insn, &DivssHalf);
+            DecodeScalarFloatOp(insn, VecFloatOp::Div);
             break;
         case I_PMADDWD:
             DecodeVecHalfOp(insn, &Pmaddwd64);
             break;
         case I_MOVSHDUP:
-            DecodeVecHalfOp(insn, &Movshdup64);
+            DecodeVecDupPairs32(insn, true);
             break;
         case I_MOVSLDUP:
-            DecodeVecHalfOp(insn, &Movsldup64);
+            DecodeVecDupPairs32(insn, false);
             break;
         case I_MOVDDUP:
             DecodeMovddup(insn);
