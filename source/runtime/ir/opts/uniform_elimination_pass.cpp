@@ -170,6 +170,14 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info) {
                         inst.SetHostGPR(value, HostRegIndex(reg_index), offset_in);
                     }
                     mapped_store_count++;
+                    // A mapped store mutates the live host register directly.
+                    // Treat it like SetHostGPR for the path-insensitive cache:
+                    // a later load of another uniform must not fold through a
+                    // value captured before this write. This matters when a
+                    // static RSP store (ENTER/LEAVE) is followed by a load of
+                    // RBP in a function-compiled block; otherwise the load can
+                    // become a BitCast of the old pinned x19 value.
+                    invalidate_uniform_values();
                     break;
                 }
                 // The backend stores according to the Value type, not the
