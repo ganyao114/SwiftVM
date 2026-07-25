@@ -332,6 +332,10 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     function->ComputeRPO();
     function->IdByRPO();
     const auto& address_space = module->GetAddressSpace();
+    const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
+                                      ? &address_space.GetUniformInfo() : nullptr;
+    auto pipeline = ir::PassPipeline::BuildDefault(uni_info);
+    pipeline.RunFunction(function, module->GetModuleConfig().optimizations);
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
     backend::RegAlloc reg_alloc{static_cast<u32>(function->MaxInstrCount()), gprs, fprs};

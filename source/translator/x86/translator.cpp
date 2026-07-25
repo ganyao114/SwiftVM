@@ -20,43 +20,14 @@ namespace swift::translator::x86 {
 using namespace swift::runtime;
 using namespace swift::x86;
 
-// Static guest->host register map for the arm64 backend. Currently UNUSED:
-// with this map enabled, guest rdi (and likely other statically mapped
-// registers) reads back wrong after ReturnToHost (observed rdi == 0x100
-// instead of 1 for `mov edi, 1` in the hello guest), i.e. the spill of
-// statically allocated registers into the uniform buffer on the
-// ReturnToHost path looks broken in the runtime backend. Re-enable only
-// after that is fixed.
-[[maybe_unused]] static UniformMapDesc arm64_backend_regs_map[] = {
-        {offsetof(ThreadContext64, rdi), 8, 0, false},
-        {offsetof(ThreadContext64, rsi), 8, 1, false},
-        {offsetof(ThreadContext64, rdx), 8, 2, false},
-        {offsetof(ThreadContext64, rcx), 8, 3, false},
-        {offsetof(ThreadContext64, r8), 8, 4, false},
-        {offsetof(ThreadContext64, r9), 8, 5, false},
-        {offsetof(ThreadContext64, rax), 8, 6, false},
-        {offsetof(ThreadContext64, rbx), 8, 19, false},
-        {offsetof(ThreadContext64, rsp), 8, 20, false},
-        {offsetof(ThreadContext64, rbp), 8, 21, false},
-        {offsetof(ThreadContext64, r12), 8, 22, false},
-        {offsetof(ThreadContext64, r13), 8, 23, false},
-
-        {offsetof(ThreadContext64, xmm0), 16, 16, true},
-        {offsetof(ThreadContext64, xmm1), 16, 17, true},
-        {offsetof(ThreadContext64, xmm2), 16, 18, true},
-        {offsetof(ThreadContext64, xmm3), 16, 19, true},
-        {offsetof(ThreadContext64, xmm4), 16, 20, true},
-        {offsetof(ThreadContext64, xmm5), 16, 21, true},
-        {offsetof(ThreadContext64, xmm6), 16, 22, true},
-        {offsetof(ThreadContext64, xmm7), 16, 23, true},
-        {offsetof(ThreadContext64, xmm8), 16, 24, true},
-        {offsetof(ThreadContext64, xmm9), 16, 25, true},
-        {offsetof(ThreadContext64, xmm10), 16, 26, true},
-        {offsetof(ThreadContext64, xmm11), 16, 27, true},
-        {offsetof(ThreadContext64, xmm12), 16, 28, true},
-        {offsetof(ThreadContext64, xmm13), 16, 29, true},
-        {offsetof(ThreadContext64, xmm14), 16, 30, true},
-        {offsetof(ThreadContext64, xmm15), 16, 31, true},
+// Conservative static guest->host map. RSP is hot in calls, returns and stack
+// memory addressing; x19 is AArch64 ABI callee-saved and is not used by the
+// runtime's x24-x28 state/cache/flags/RSB/page-table assignments. The
+// trampoline reserves x19 from linear scan, restores it on runtime entry and
+// spills it on every host exit. Inline CallLambda helpers do not receive the
+// uniform buffer and must preserve x19 by the platform ABI.
+static UniformMapDesc arm64_backend_regs_map[] = {
+        {offsetof(ThreadContext64, rsp), 8, 19, false},
 };
 
 // Instruction-fetch memory interface for the x86 decoder. With guest
@@ -308,6 +279,30 @@ struct X86Instance::Impl final {
         // arm64 core; useful for cross-checking JIT results).
         const char* jit_env = std::getenv("SVM_ENABLE_JIT");
         const bool enable_jit = jit_env ? std::strcmp(jit_env, "0") != 0 : true;
+        // Default-on, with a diagnostic escape hatch for before/after
+        // validation and field bisects.
+        const char* uniform_elim_env = std::getenv("SVM_UNIFORM_ELIM");
+        const bool enable_uniform_elim =
+                !uniform_elim_env || std::strcmp(uniform_elim_env, "0") != 0;
+        // The interpreter's GetHostGPR/SetHostGPR handlers intentionally have
+        // no host-register state, so never emit mapped ops in interpreter mode.
+        // Keep mapping opt-in until the complete fuzz matrix can run past the
+        // local Unicorn uc_mem_map SIGILL; the translator binary matrix is green,
+        // but that infrastructure failure prevents default-on qualification.
+        const char* static_regs_env = std::getenv("SVM_STATIC_REGS");
+        const bool enable_static_regs =
+                enable_jit && enable_uniform_elim &&
+                static_regs_env && std::strcmp(static_regs_env, "1") == 0;
+        std::span<UniformMapDesc> static_regs =
+                enable_static_regs ? std::span<UniformMapDesc>{arm64_backend_regs_map}
+                                   : std::span<UniformMapDesc>{};
+        auto global_opts = Optimizations::ReturnStackBuffer | Optimizations::FlagElimination |
+                           Optimizations::DeadCodeRemove | Optimizations::StaticCode |
+                           Optimizations::ConstantFolding | Optimizations::BlockLink |
+                           Optimizations::FunctionBaseCompile;
+        if (enable_uniform_elim) {
+            global_opts |= Optimizations::UniformElimination;
+        }
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ul << 49,
@@ -315,13 +310,7 @@ struct X86Instance::Impl final {
                 .has_local_operation = false,
                 .backend_isa = swift::runtime::kArm64,
                 .uniform_buffer_size = sizeof(ThreadContext64) + kScratchUniformSize,
-                // No static host-register allocation of guest registers:
-                // the whole ThreadContext64 lives in the uniform buffer and
-                // is loaded/stored via IR uniform accesses. (The
-                // arm64_backend_regs_map static allocation above currently
-                // loses guest register values across ReturnToHost — see
-                // arm64_backend_regs_map comment.)
-                .buffers_static_alloc = {},
+                .buffers_static_alloc = static_regs,
                 .static_program = false,
                 // Block linking enabled: JitContext::Forward's indirect-link
                 // path now falls back to the dispatcher on an empty dispatch
@@ -335,11 +324,7 @@ struct X86Instance::Impl final {
                 //   function-level linear scan now handles terminal uses over an
                 //   RPO numbering, and complex/failed functions fall back to
                 //   block compilation.
-                .global_opts = Optimizations::ReturnStackBuffer | Optimizations::FlagElimination |
-                               Optimizations::DeadCodeRemove |
-                               Optimizations::StaticCode |
-                               Optimizations::ConstantFolding |
-                               Optimizations::BlockLink | Optimizations::FunctionBaseCompile,
+                .global_opts = global_opts,
                 .arm64_features = Arm64Features::None,
                 .stack_alignment = 16,
                 .page_table = nullptr,
