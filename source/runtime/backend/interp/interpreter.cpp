@@ -7,7 +7,9 @@
 // two could disagree this implementation follows the JIT, including its
 // quirks (documented inline).
 
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 #include <alloca.h>
 #include "interpreter.h"
@@ -1105,7 +1107,143 @@ unsigned __int128 VecFloatScalar32(unsigned __int128 a, unsigned __int128 b, Op 
     const float value = op(left, right);
     u32 result_bits;
     std::memcpy(&result_bits, &value, sizeof(result_bits));
+    const bool left_nan = (left_bits & 0x7F800000u) == 0x7F800000u &&
+                          (left_bits & 0x007FFFFFu) != 0;
+    const bool right_nan = (right_bits & 0x7F800000u) == 0x7F800000u &&
+                           (right_bits & 0x007FFFFFu) != 0;
+    const bool result_nan = (result_bits & 0x7F800000u) == 0x7F800000u &&
+                            (result_bits & 0x007FFFFFu) != 0;
+    if (left_nan)
+        result_bits = left_bits | 0x00400000u;
+    else if (right_nan)
+        result_bits = right_bits | 0x00400000u;
+    else if (result_nan)
+        result_bits = 0xFFC00000u;
     return (a & ~static_cast<unsigned __int128>(0xFFFFFFFFu)) | result_bits;
+}
+
+enum class FloatBinaryKind : u8 { Add, Sub, Mul, Div };
+
+template <typename T, typename Op>
+unsigned __int128 VecFloatBinary(unsigned __int128 a,
+                                 unsigned __int128 b,
+                                 u32 lane_bits,
+                                 Op op,
+                                 FloatBinaryKind kind) {
+    ASSERT(lane_bits == 32 || lane_bits == 64);
+    unsigned __int128 result = 0;
+    const u32 lanes = 128 / lane_bits;
+    const u64 lane_mask = lane_bits == 32 ? 0xFFFFFFFFull : ~0ull;
+    for (u32 lane = 0; lane < lanes; ++lane) {
+        const u64 abits = static_cast<u64>(a >> (lane * lane_bits)) & lane_mask;
+        const u64 bbits = static_cast<u64>(b >> (lane * lane_bits)) & lane_mask;
+        T av{};
+        T bv{};
+        std::memcpy(&av, &abits, sizeof(T));
+        std::memcpy(&bv, &bbits, sizeof(T));
+        const T rv = op(av, bv);
+        u64 rbits = 0;
+        std::memcpy(&rbits, &rv, sizeof(T));
+        // x86 SSE arithmetic propagates the first NaN operand, preserving
+        // its sign/payload while setting the quiet bit. Host FPUs are free
+        // to choose a different NaN sign, so normalize the raw lane here.
+        const u64 exponent_mask = lane_bits == 32 ? 0x7F800000u
+                                                    : 0x7FF0000000000000ull;
+        const u64 fraction_mask = lane_bits == 32 ? 0x007FFFFFu
+                                                    : 0x000FFFFFFFFFFFFFull;
+        const u64 quiet_mask = lane_bits == 32 ? 0x00400000u
+                                                 : 0x0008000000000000ull;
+        const u64 sign_mask = lane_bits == 32 ? 0x80000000u : 0x8000000000000000ull;
+        const bool a_nan = (abits & exponent_mask) == exponent_mask &&
+                           (abits & fraction_mask) != 0;
+        const bool b_nan = (bbits & exponent_mask) == exponent_mask &&
+                           (bbits & fraction_mask) != 0;
+        const bool a_inf = (abits & exponent_mask) == exponent_mask &&
+                           (abits & fraction_mask) == 0;
+        const bool b_inf = (bbits & exponent_mask) == exponent_mask &&
+                           (bbits & fraction_mask) == 0;
+        const bool a_zero = (abits & ~sign_mask) == 0;
+        const bool b_zero = (bbits & ~sign_mask) == 0;
+        // Keep the intermediate result canonical for the exact non-NaN edge
+        // cases that exposed host-FPU differences in the interpreter.  The
+        // operation has already been evaluated in T; these bit fixes only
+        // enforce x86's infinity sign and round-to-nearest zero behavior.
+        if (!a_nan && !b_nan) {
+            if (kind == FloatBinaryKind::Sub && abits == bbits && !a_inf) {
+                // x - x is +0 under the default MXCSR round-to-nearest mode.
+                rbits = 0;
+            } else if (kind == FloatBinaryKind::Mul && (a_inf || b_inf) && !(a_zero || b_zero)) {
+                rbits = ((abits ^ bbits) & sign_mask) | exponent_mask;
+            } else if (kind == FloatBinaryKind::Div && (a_inf || b_inf) && !b_inf && !b_zero) {
+                rbits = ((abits ^ bbits) & sign_mask) | exponent_mask;
+            } else if ((kind == FloatBinaryKind::Add || kind == FloatBinaryKind::Sub) &&
+                       (a_inf || b_inf)) {
+                // Addition/subtraction with one infinity returns that
+                // infinity (subtraction flips the RHS sign).
+                if (a_inf && !b_inf)
+                    rbits = abits;
+                else if (!a_inf && b_inf)
+                    rbits = kind == FloatBinaryKind::Sub ? (bbits ^ sign_mask) : bbits;
+            } else if ((kind == FloatBinaryKind::Mul || kind == FloatBinaryKind::Div) &&
+                       (rbits & ~sign_mask) == 0) {
+                // Signed zero for multiply/divide is the XOR of operand signs.
+                rbits = (abits ^ bbits) & sign_mask;
+            }
+        }
+        if (a_nan)
+            rbits = abits | quiet_mask;
+        else if (b_nan)
+            rbits = bbits | quiet_mask;
+        else if ((rbits & exponent_mask) == exponent_mask && (rbits & fraction_mask) != 0)
+            rbits = lane_bits == 32 ? 0xFFC00000u : 0xFFF8000000000000ull;
+        result |= static_cast<unsigned __int128>(rbits & lane_mask) << (lane * lane_bits);
+    }
+    return result;
+}
+
+u64 FloatCompareFlags(u64 a, u64 b, u32 lane_bits) {
+    if (lane_bits == 32) {
+        const u32 abits = static_cast<u32>(a);
+        const u32 bbits = static_cast<u32>(b);
+        float av{}, bv{};
+        std::memcpy(&av, &abits, sizeof(av));
+        std::memcpy(&bv, &bbits, sizeof(bv));
+        if (std::isnan(av) || std::isnan(bv)) return 7;
+        if (av == bv) return 4;
+        return av < bv ? 1 : 0;
+    }
+    double av{}, bv{};
+    std::memcpy(&av, &a, sizeof(av));
+    std::memcpy(&bv, &b, sizeof(bv));
+    if (std::isnan(av) || std::isnan(bv)) return 7;
+    if (av == bv) return 4;
+    return av < bv ? 1 : 0;
+}
+
+u64 FloatToIntIndefinite(u64 raw, u32 src_bits, u32 dst_bits) {
+    long double value{};
+    if (src_bits == 32) {
+        const u32 bits = static_cast<u32>(raw);
+        float v{};
+        std::memcpy(&v, &bits, sizeof(v));
+        value = v;
+    } else {
+        double v{};
+        std::memcpy(&v, &raw, sizeof(v));
+        value = v;
+    }
+    if (dst_bits == 32) {
+        constexpr long double kMin = -2147483648.0L;
+        constexpr long double kMaxExclusive = 2147483648.0L;
+        if (std::isnan(static_cast<double>(value)) || value < kMin || value >= kMaxExclusive)
+            return 0x80000000u;
+        return static_cast<u32>(static_cast<s32>(value));
+    }
+    constexpr long double kMin = -9223372036854775808.0L;
+    constexpr long double kMaxExclusive = 9223372036854775808.0L;
+    if (std::isnan(static_cast<double>(value)) || value < kMin || value >= kMaxExclusive)
+        return 0x8000000000000000ull;
+    return static_cast<u64>(static_cast<s64>(value));
 }
 
 s64 SignedLane(u64 value, u32 lane_bits) {
@@ -1443,6 +1581,102 @@ void Interpreter::RunVecTableLookup8(ir::Inst* inst, InterpStack& stack) {
         }
     }
     WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecFAdd(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const auto a = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto b = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    WriteVec(stack,
+             inst,
+             bits == 32 ? VecFloatBinary<float>(a, b, bits, [](float x, float y) { return x + y; }, FloatBinaryKind::Add)
+                        : VecFloatBinary<double>(a, b, bits, [](double x, double y) { return x + y; }, FloatBinaryKind::Add));
+}
+
+void Interpreter::RunVecFSub(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const auto a = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto b = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    WriteVec(stack,
+             inst,
+             bits == 32 ? VecFloatBinary<float>(a, b, bits, [](float x, float y) { return x - y; }, FloatBinaryKind::Sub)
+                        : VecFloatBinary<double>(a, b, bits, [](double x, double y) { return x - y; }, FloatBinaryKind::Sub));
+}
+
+void Interpreter::RunVecFMul(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const auto a = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto b = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    WriteVec(stack,
+             inst,
+             bits == 32 ? VecFloatBinary<float>(a, b, bits, [](float x, float y) { return x * y; }, FloatBinaryKind::Mul)
+                        : VecFloatBinary<double>(a, b, bits, [](double x, double y) { return x * y; }, FloatBinaryKind::Mul));
+}
+
+void Interpreter::RunVecFDiv(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const auto a = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto b = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    WriteVec(stack,
+             inst,
+             bits == 32 ? VecFloatBinary<float>(a, b, bits, [](float x, float y) { return x / y; }, FloatBinaryKind::Div)
+                        : VecFloatBinary<double>(a, b, bits, [](double x, double y) { return x / y; }, FloatBinaryKind::Div));
+}
+
+void Interpreter::RunVecFCmp(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const u64 a = static_cast<u64>(ReadVec(stack, inst->GetArg<ir::Value>(0)));
+    const u64 b = static_cast<u64>(ReadVec(stack, inst->GetArg<ir::Value>(1)));
+    WriteScalar(stack, inst, FloatCompareFlags(a, b, bits));
+}
+
+void Interpreter::RunVecFCvtIntToFloat(ir::Inst* inst, InterpStack& stack) {
+    const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
+    const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
+    const u64 raw = static_cast<u64>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
+    if (dst_bits == 32) {
+        const long double value = src_bits == 32 ? static_cast<long double>(static_cast<s32>(raw))
+                                                 : static_cast<long double>(static_cast<s64>(raw));
+        const float converted = static_cast<float>(value);
+        u32 bits = 0;
+        std::memcpy(&bits, &converted, sizeof(bits));
+        WriteScalar(stack, inst, bits);
+    } else {
+        const long double value = src_bits == 32 ? static_cast<long double>(static_cast<s32>(raw))
+                                                 : static_cast<long double>(static_cast<s64>(raw));
+        const double converted = static_cast<double>(value);
+        u64 bits = 0;
+        std::memcpy(&bits, &converted, sizeof(bits));
+        WriteScalar(stack, inst, bits);
+    }
+}
+
+void Interpreter::RunVecFCvtFloatToInt(ir::Inst* inst, InterpStack& stack) {
+    const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
+    const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
+    const u64 raw = static_cast<u64>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
+    WriteScalar(stack, inst, FloatToIntIndefinite(raw, src_bits, dst_bits));
+}
+
+void Interpreter::RunVecFCvtScalar(ir::Inst* inst, InterpStack& stack) {
+    const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
+    const u64 raw = static_cast<u64>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
+    if (src_bits == 32) {
+        const u32 source = static_cast<u32>(raw);
+        float value{};
+        std::memcpy(&value, &source, sizeof(value));
+        const double converted = static_cast<double>(value);
+        u64 bits = 0;
+        std::memcpy(&bits, &converted, sizeof(bits));
+        WriteScalar(stack, inst, bits);
+    } else {
+        double value{};
+        std::memcpy(&value, &raw, sizeof(value));
+        const float converted = static_cast<float>(value);
+        u32 bits = 0;
+        std::memcpy(&bits, &converted, sizeof(bits));
+        WriteScalar(stack, inst, bits);
+    }
 }
 
 void Interpreter::RunVecFAddScalar32(ir::Inst* inst, InterpStack& stack) {

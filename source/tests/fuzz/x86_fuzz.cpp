@@ -3,6 +3,7 @@
 // GPRs, captured status flags (via lahf + seto), and scratch memory.
 
 #include <chrono>
+#include <bit>
 #include <cstring>
 #include <iostream>
 #include <random>
@@ -761,13 +762,15 @@ struct FuzzEnv {
         cursor++;
         if (getenv("SWIFT_FUZZ_DUMP_IR")) {
             std::cout << "== cursor " << (cursor - 1) << " code: " << DumpCode(code) << std::endl;
-            DumpIR(code_addr);
         }
         if (getenv("SWIFT_FUZZ_TRACE")) {
             std::cout << "== cursor " << (cursor - 1) << " code: " << DumpCode(code) << std::endl;
         }
 
         std::memcpy(reinterpret_cast<u8*>(host_mem) + (code_addr - base), code.data(), code.size());
+        if (getenv("SWIFT_FUZZ_DUMP_IR")) {
+            DumpIR(code_addr);
+        }
         uc->WriteMemory(code_addr, code);
         // keep Unicorn's view of the data area in sync with the host's
         uc->WriteMemory(data_addr - 0x1000,
@@ -2399,6 +2402,29 @@ void EmitMovdXmmToGpr(CodeBuf& b, u8 gpr, u8 xmm, bool w64) {
     EmitModRMReg(b, xmm, gpr);
 }
 
+// Scalar/packed floating-point instruction emitters used by the controlled
+// edge corpus below.  All forms use xmm0/xmm1 as the operands so the corpus
+// can load exact IEEE bit patterns with movdqu.
+void EmitSseFloatRR(CodeBuf& b, u8 prefix, u8 op, u8 dst = 0, u8 src = 1) {
+    EmitSseRR(b, prefix, op, dst, src);
+}
+
+void EmitSseFloatIntToXmm(CodeBuf& b, u8 prefix, u8 dst_xmm, u8 src_gpr, bool src64) {
+    b.B(prefix);
+    EmitRex(b, false, dst_xmm >= 8, false, src_gpr >= 8, src64 || dst_xmm >= 8 || src_gpr >= 8);
+    b.B(0x0F);
+    b.B(0x2A);
+    EmitModRMReg(b, dst_xmm, src_gpr);
+}
+
+void EmitSseFloatToInt(CodeBuf& b, u8 prefix, u8 dst_gpr, u8 src_xmm, bool dst64) {
+    b.B(prefix);
+    EmitRex(b, dst64, dst_gpr >= 8, false, false, dst64 || dst_gpr >= 8);
+    b.B(0x0F);
+    b.B(0x2C);
+    EmitModRMReg(b, dst_gpr, src_xmm);
+}
+
 // pextrw gpr, xmm, imm8: 66 [REX.R] 0F C5 /r ib
 void EmitPextrw(CodeBuf& b, u8 gpr, u8 xmm, u8 imm) {
     b.B(0x66);
@@ -2474,7 +2500,227 @@ u64 F32Pair(float a, float b) {
     return u64(ba) | (u64(bb) << 32);
 }
 
+u32 PickFloat32Bits(FuzzEnv& env) {
+    static constexpr u32 kPool[] = {
+            0x00000000u,  // +0
+            0x80000000u,  // -0
+            0x3F800000u,  // +1
+            0xBF800000u,  // -1
+            0x00000001u,  // smallest subnormal
+            0x00010000u,  // mid subnormal
+            0x7F800000u,  // +inf
+            0xFF800000u,  // -inf
+            0x7FC00000u,  // canonical qnan
+            0x7FC12345u,  // payload qnan
+            0x7FA12345u,  // payload snan
+            0x4F000000u,  // +2^31
+            0xCF000000u,  // -2^31
+            0x4F000001u,  // just above +2^31
+            0xCEFFFFFFu,  // just below -2^31
+            0x5F000000u,  // +2^63
+            0xDF000000u,  // -2^63
+            0x5EFFFFFFu,  // just below +2^63
+            0xDEFFFFFFu,  // just above -2^63
+    };
+    return kPool[env.rng() % std::size(kPool)];
+}
+
+u64 PickFloat64Bits(FuzzEnv& env) {
+    static constexpr u64 kPool[] = {
+            0x0000000000000000ull,  // +0
+            0x8000000000000000ull,  // -0
+            0x3FF0000000000000ull,  // +1
+            0xBFF0000000000000ull,  // -1
+            0x0000000000000001ull,  // smallest subnormal
+            0x0008000000000000ull,  // mid subnormal
+            0x7FF0000000000000ull,  // +inf
+            0xFFF0000000000000ull,  // -inf
+            0x7FF8000000000000ull,  // canonical qnan
+            0x7FF8123456789ABCull,  // payload qnan
+            0x7FF0123456789ABCull,  // payload snan
+            0x41E0000000000000ull,  // +2^31
+            0xC1E0000000000000ull,  // -2^31
+            0x41E0000000000001ull,  // just above +2^31
+            0xC1DFFFFFFFFFFFFFull,  // just below -2^31
+            0x43E0000000000000ull,  // +2^63
+            0xC3E0000000000000ull,  // -2^63
+            0x43DFFFFFFFFFFFFFull,  // just below +2^63
+            0xC3DFFFFFFFFFFFFFull,  // just above -2^63
+            0x41DFFFFFFFC00000ull,  // exact INT_MAX as double
+            0xC1DFFFFFFFC00000ull,  // exact INT_MIN as double
+    };
+    return kPool[env.rng() % std::size(kPool)];
+}
+
 }  // namespace
+
+// This family is the controlled operand source for the vector implementation:
+// exact signed zero, subnormals, infinities, qNaN/sNaN payloads, conversion
+// limits, and all nine normal/+inf/NaN ucomis pairings.
+TEST_CASE("Fuzz x86 sse float edge") {
+    FuzzEnv env;
+    const int iters = env.Iters(256);
+    const u32 ucomis_cases[] = {0x3F800000u, 0x7F800000u, 0x7FC12345u};
+    const u64 ucomisd_cases[] = {0x3FF0000000000000ull,
+                                 0x7FF0000000000000ull,
+                                 0x7FF8123456789ABCull};
+    const auto is_nan32 = [](u32 bits) {
+        return (bits & 0x7F800000u) == 0x7F800000u && (bits & 0x007FFFFFu) != 0;
+    };
+    const auto is_nan64 = [](u64 bits) {
+        return (bits & 0x7FF0000000000000ull) == 0x7FF0000000000000ull &&
+               (bits & 0x000FFFFFFFFFFFFFull) != 0;
+    };
+
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        // Establish a fresh guest flag state before any branch that only
+        // moves/converts data and then captures flags.
+        EmitTestRegReg(b, 64, kRax, kRax);
+        const int kind = i % 8;
+        if (kind == 0) {
+            // Packed single arithmetic, including NaN propagation and -0.
+            const u32 av[4] = {PickFloat32Bits(env), PickFloat32Bits(env),
+                               PickFloat32Bits(env), PickFloat32Bits(env)};
+            u32 cv[4] = {PickFloat32Bits(env), PickFloat32Bits(env),
+                         PickFloat32Bits(env), PickFloat32Bits(env)};
+            // Unicorn/QEMU chooses the second NaN for dual-NaN operations,
+            // while real x86 chooses operand 1 (for example mulss
+            // 0x7FA12345,0x7FC12345 -> 0x7FE12345).  Keep single-NaN
+            // coverage but avoid that known three-way arbitration mismatch in
+            // every lane of the fully materialized 128-bit operands.
+            auto has_dual_nan = [&] {
+                for (size_t lane = 0; lane < 4; ++lane) {
+                    if (is_nan32(av[lane]) && is_nan32(cv[lane]))
+                        return true;
+                }
+                return false;
+            };
+            while (has_dual_nan()) {
+                for (u32& value : cv)
+                    value = PickFloat32Bits(env);
+            }
+            MemOp ma{};
+            ma.disp = 0x100;
+            MemOp mb{};
+            mb.disp = 0x110;
+            MemOp ma_hi = ma;
+            ma_hi.disp += 8;
+            MemOp mb_hi = mb;
+            mb_hi.disp += 8;
+            const u64 a_lo = u64(av[0]) | (u64(av[1]) << 32);
+            const u64 a_hi = u64(av[2]) | (u64(av[3]) << 32);
+            const u64 c_lo = u64(cv[0]) | (u64(cv[1]) << 32);
+            const u64 c_hi = u64(cv[2]) | (u64(cv[3]) << 32);
+            EmitMovRegImm(b, 64, kRax, a_lo);
+            EmitMovMemReg(b, 64, ma, kRax);
+            EmitMovRegImm(b, 64, kRcx, c_lo);
+            EmitMovMemReg(b, 64, mb, kRcx);
+            EmitMovRegImm(b, 64, kRax, a_hi);
+            EmitMovMemReg(b, 64, ma_hi, kRax);
+            EmitMovRegImm(b, 64, kRcx, c_hi);
+            EmitMovMemReg(b, 64, mb_hi, kRcx);
+            EmitSseLoad(b, 0xF3, 0x6F, 0, ma);
+            EmitSseLoad(b, 0xF3, 0x6F, 1, mb);
+            static constexpr u8 kOps[] = {0x58, 0x5C, 0x59, 0x5E};
+            EmitSseFloatRR(b, 0x00, kOps[env.rng() % std::size(kOps)]);
+            EmitSseFloatRR(b, 0x00, kOps[env.rng() % std::size(kOps)]);
+        } else if (kind == 1) {
+            // Packed double arithmetic, including NaN propagation and -0.
+            const u64 a0 = PickFloat64Bits(env);
+            const u64 a1 = PickFloat64Bits(env);
+            u64 c0 = PickFloat64Bits(env);
+            u64 c1 = PickFloat64Bits(env);
+            while ((is_nan64(a0) && is_nan64(c0)) || (is_nan64(a1) && is_nan64(c1))) {
+                c0 = PickFloat64Bits(env);
+                c1 = PickFloat64Bits(env);
+            }
+            u64 a = a0;
+            u64 c = c0;
+            MemOp ma{};
+            ma.disp = 0x100;
+            MemOp mb{};
+            mb.disp = 0x110;
+            MemOp ma_hi = ma;
+            ma_hi.disp += 8;
+            MemOp mb_hi = mb;
+            mb_hi.disp += 8;
+            EmitMovRegImm(b, 64, kRax, a);
+            EmitMovMemReg(b, 64, ma, kRax);
+            EmitMovRegImm(b, 64, kRcx, c);
+            EmitMovMemReg(b, 64, mb, kRcx);
+            EmitMovRegImm(b, 64, kRax, a1);
+            EmitMovMemReg(b, 64, ma_hi, kRax);
+            EmitMovRegImm(b, 64, kRcx, c1);
+            EmitMovMemReg(b, 64, mb_hi, kRcx);
+            EmitSseLoad(b, 0xF3, 0x6F, 0, ma);
+            EmitSseLoad(b, 0xF3, 0x6F, 1, mb);
+            static constexpr u8 kOps[] = {0x58, 0x5C, 0x59, 0x5E};
+            EmitSseFloatRR(b, 0x66, kOps[env.rng() % std::size(kOps)]);
+            EmitSseFloatRR(b, 0x66, kOps[env.rng() % std::size(kOps)]);
+        } else if (kind == 2 || kind == 3) {
+            // cvtt*: use the complete edge pool; directed tests separately
+            // assert that invalid values become the integer-indefinite 0x80...
+            const bool is_double = kind == 3;
+            u64 bits = is_double ? PickFloat64Bits(env)
+                                 : u64(PickFloat32Bits(env));
+            MemOp m{};
+            m.disp = 0x100;
+            EmitMovRegImm(b, 64, kRax, bits);
+            EmitMovMemReg(b, 64, m, kRax);
+            EmitSseLoad(b, 0xF3, 0x6F, 0, m);
+            const bool dst64 = (env.rng() & 1) != 0;
+            EmitSseFloatToInt(b, is_double ? 0xF2 : 0xF3, kR10, 0, dst64);
+            EmitMovRegReg(b, 64, kRax, kR10);
+        } else if (kind == 4) {
+            // int -> scalar float, both signed widths.
+            EmitMovRegImm(b, 64, kR10, env.PoolVal(64));
+            const bool to_double = (env.rng() & 1) != 0;
+            const bool src64 = (env.rng() & 1) != 0;
+            EmitSseFloatIntToXmm(b, to_double ? 0xF2 : 0xF3, 0, kR10, src64);
+            EmitMovdXmmToGpr(b, kRax, 0, true);
+        } else if (kind == 5) {
+            // scalar widening/narrowing, preserving the first source's upper bits.
+            u64 bits = PickFloat64Bits(env);
+            MemOp m{};
+            m.disp = 0x100;
+            EmitMovRegImm(b, 64, kRax, bits);
+            EmitMovMemReg(b, 64, m, kRax);
+            EmitSseLoad(b, 0xF3, 0x6F, 0, m);
+            EmitSseLoad(b, 0xF3, 0x6F, 1, m);
+            EmitSseFloatRR(b, (env.rng() & 1) ? 0xF2 : 0xF3, 0x5A);
+        } else {
+            // Nine controlled ucomiss/ucomisd combinations.  LAHF observes
+            // ZF/PF/CF; the decoder must clear OF/SF/AF as required by x86.
+            const u32 ia = ucomis_cases[(i / 8) % 3];
+            const u32 ib = ucomis_cases[(i / 8 / 3) % 3];
+            const bool is_double = (i & 1) != 0;
+            u64 a = is_double ? ucomisd_cases[(i / 2 / 8) % 3] : u64(ia);
+            u64 c = is_double ? ucomisd_cases[(i / 2 / 8 / 3) % 3] : u64(ib);
+            MemOp ma{};
+            ma.disp = 0x100;
+            MemOp mb{};
+            mb.disp = 0x110;
+            EmitMovRegImm(b, 64, kRax, a);
+            EmitMovMemReg(b, 64, ma, kRax);
+            EmitMovRegImm(b, 64, kRcx, c);
+            EmitMovMemReg(b, 64, mb, kRcx);
+            EmitSseLoad(b, 0xF3, 0x6F, 0, ma);
+            EmitSseLoad(b, 0xF3, 0x6F, 1, mb);
+            EmitSseFloatRR(b, is_double ? 0x66 : 0xF3, 0x2E);
+            env.EmitFlagCapture(b);
+            env.RunIteration(b.c, FlagMask{kAhCF | kAhPF | kAhZF, false}, "ucomis-edge");
+            continue;
+        }
+        MemOp out{};
+        out.disp = 0x180;
+        EmitSseStore(b, 0xF3, 0x7F, out, 0);
+        env.EmitFlagCapture(b);
+        env.RunIteration(b.c, FlagMask{}, "sse-float-edge");
+    }
+    REQUIRE(env.failures == 0);
+}
 
 TEST_CASE("SSE batch A directed edge semantics") {
     using Vec128 = std::array<u8, 16>;
@@ -2844,6 +3090,737 @@ TEST_CASE("SSE batch A directed edge semantics") {
     munmap(arena, kArenaSize);
     INFO(mismatch);
     REQUIRE(matched);
+}
+
+TEST_CASE("SSE batch B directed edge semantics") {
+    using Vec128 = std::array<u8, 16>;
+    struct Result {
+        Vec128 vec{};
+        u64 scalar{};
+        u8 ah{};
+        u8 of{};
+    };
+
+    constexpr size_t kArenaSize = 0x40000;
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 arena_base = reinterpret_cast<u64>(arena);
+    const u64 data_addr = arena_base + 0x30000;
+    size_t code_cursor = 0;
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    auto* instance = X86Instance::Make();
+    MemOp pa{};
+    pa.disp = 0x100;
+    MemOp pb{};
+    pb.disp = 0x120;
+    MemOp out{};
+    out.disp = 0x180;
+    MemOp scalar_out{};
+    scalar_out.disp = 0x1A0;
+
+    auto bits32 = [](u32 v) {
+        Vec128 result{};
+        std::memcpy(result.data(), &v, sizeof(v));
+        return result;
+    };
+    auto bits64 = [](u64 v) {
+        Vec128 result{};
+        std::memcpy(result.data(), &v, sizeof(v));
+        return result;
+    };
+    auto bits64pair = [](u64 lo, u64 hi) {
+        Vec128 result{};
+        std::memcpy(result.data(), &lo, sizeof(lo));
+        std::memcpy(result.data() + 8, &hi, sizeof(hi));
+        return result;
+    };
+    auto bits32quad = [](u32 a, u32 b, u32 c, u32 d) {
+        Vec128 result{};
+        const u32 values[] = {a, b, c, d};
+        std::memcpy(result.data(), values, sizeof(values));
+        return result;
+    };
+    auto read64 = [](const Vec128& v) {
+        u64 value = 0;
+        std::memcpy(&value, v.data(), sizeof(value));
+        return value;
+    };
+    auto read_lane64 = [](const Vec128& v, size_t offset) {
+        u64 value = 0;
+        std::memcpy(&value, v.data() + offset, sizeof(value));
+        return value;
+    };
+    auto run = [&](CodeBuf b, const Vec128& a, const Vec128& rhs) {
+        std::memcpy(reinterpret_cast<void*>(data_addr + pa.disp), a.data(), a.size());
+        std::memcpy(reinterpret_cast<void*>(data_addr + pb.disp), rhs.data(), rhs.size());
+        std::memset(reinterpret_cast<void*>(data_addr + out.disp), 0, 16);
+        std::memset(reinterpret_cast<void*>(data_addr + scalar_out.disp), 0, 8);
+        EmitSseStore(b, 0xF3, 0x7F, out, 0);
+        b.B(0x9F);
+        EmitSetcc(b, 0x0, kCaptureReg);
+        b.B(0xF4);
+        const u64 code_addr = arena_base + code_cursor++ * 0x100;
+        std::memcpy(reinterpret_cast<void*>(code_addr), b.c.data(), b.c.size());
+        auto* core = X86Core::Make(instance);
+        auto& ctx = core->GetContext();
+        ctx.rip.qword = code_addr;
+        ctx.r13.qword = data_addr;
+        ctx.rsp.qword = arena_base + 0x2F000;
+        core->Run();
+        Result result;
+        std::memcpy(result.vec.data(), reinterpret_cast<void*>(data_addr + out.disp), 16);
+        std::memcpy(&result.scalar, reinterpret_cast<void*>(data_addr + scalar_out.disp), 8);
+        result.ah = static_cast<u8>(ctx.rax.qword >> 8);
+        result.of = static_cast<u8>(ctx.r15.qword & 1);
+        X86Core::Destroy(core);
+        return result;
+    };
+
+    auto packed = [&](u8 prefix, u8 op, const Vec128& a, const Vec128& b) {
+        CodeBuf code;
+        EmitSseLoad(code, 0xF3, 0x6F, 0, pa);
+        EmitSseLoad(code, 0xF3, 0x6F, 1, pb);
+        EmitSseFloatRR(code, prefix, op);
+        return run(std::move(code), a, b).vec;
+    };
+
+    const Vec128 f32_a = {0x00, 0x00, 0xC0, 0x3F, 0x00, 0x00, 0x20, 0x40,
+                          0x00, 0x00, 0x80, 0xBF, 0x00, 0x00, 0x80, 0x3F};
+    const Vec128 f32_b = {0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x40,
+                          0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x40};
+    for (u32 op = 0; op < 4; ++op) {
+        const Vec128 actual = packed(0, static_cast<u8>(0x58 + (op == 1 ? 4 : op == 2 ? 1 : op == 3 ? 6 : 0)),
+                                     f32_a,
+                                     f32_b);
+        static constexpr u32 expected_f32[4][4] = {
+                {0x40200000u, 0x40900000u, 0xBF000000u, 0x40400000u},
+                {0x3F000000u, 0x3F000000u, 0xBFC00000u, 0xBF800000u},
+                {0x3FC00000u, 0x40A00000u, 0xBF000000u, 0x40000000u},
+                {0x3FC00000u, 0x3FA00000u, 0xC0000000u, 0x3F000000u},
+        };
+        for (u32 lane = 0; lane < 4; ++lane) {
+            u32 value = 0;
+            std::memcpy(&value, actual.data() + lane * 4, 4);
+            INFO(fmt::format("packed f32 op={} lane={} value={:08x}", op, lane, value));
+            REQUIRE(value == expected_f32[op][lane]);
+        }
+    }
+
+    const Vec128 f64_a = bits64(0x3FF8000000000000ull);
+    const Vec128 f64_b = bits64(0x4000000000000000ull);
+    for (u8 op : {u8(0x58), u8(0x5C), u8(0x59), u8(0x5E)}) {
+        const Vec128 actual = packed(0x66, op, f64_a, f64_b);
+        const u64 value = read64(actual);
+        const u64 expected = op == 0x58 ? 0x400C000000000000ull
+                              : op == 0x5C ? 0xBFE0000000000000ull
+                              : op == 0x59 ? 0x4008000000000000ull
+                                           : 0x3FE8000000000000ull;
+        REQUIRE(value == expected);
+    }
+
+    // NaN propagation/quieting: ARM default FPCR in this runtime preserves
+    // the first operand payload and sets the quiet bit, matching x86 here.
+    const Vec128 qnan = bits32(0x7FC12345u);
+    const Vec128 snan = bits32(0x7FA12345u);
+    const Vec128 one = bits32(0x3F800000u);
+    REQUIRE(read64(packed(0, 0x58, qnan, one)) == 0x000000007FC12345ull);
+    REQUIRE(static_cast<u32>(read64(packed(0, 0x58, snan, one))) == 0x7FE12345u);
+    const Vec128 qnan64 = bits64(0x7FF8123456789ABCull);
+    const Vec128 snan64 = bits64(0x7FF0123456789ABCull);
+    REQUIRE(read64(packed(0x66, 0x58, qnan64, bits64(0x3FF0000000000000ull))) ==
+            0x7FF8123456789ABCull);
+    REQUIRE(read64(packed(0x66, 0x58, snan64, bits64(0x3FF0000000000000ull))) ==
+            0x7FF8123456789ABCull);
+
+    // UCOMISS/UCOMISD: unordered=111, less=001, equal=100, greater=000.
+    const u32 cmp32[] = {0x3F800000u, 0x7F800000u, 0x7FC12345u};
+    const u64 cmp64[] = {0x3FF0000000000000ull, 0x7FF0000000000000ull,
+                         0x7FF8123456789ABCull};
+    for (u32 i = 0; i < 3; ++i) {
+        for (u32 j = 0; j < 3; ++j) {
+            const u8 expected32 = std::isnan(std::bit_cast<float>(cmp32[i])) ||
+                                                  std::isnan(std::bit_cast<float>(cmp32[j]))
+                                          ? 0x45
+                                          : (cmp32[i] < cmp32[j] ? 0x01 : cmp32[i] == cmp32[j] ? 0x40 : 0x00);
+            (void)expected32;
+            // Run the two widths independently so each flags result is observed.
+            CodeBuf s;
+            EmitSseLoad(s, 0xF3, 0x6F, 0, pa);
+            EmitSseLoad(s, 0xF3, 0x6F, 1, pb);
+            EmitSseFloatRR(s, 0xF3, 0x2E);
+            EmitSseStore(s, 0xF3, 0x7F, out, 0);
+            auto rs = run(std::move(s), bits64(cmp32[i]), bits64(cmp32[j]));
+            REQUIRE((rs.ah & (kAhCF | kAhPF | kAhZF)) == expected32);
+            REQUIRE((rs.ah & (kAhSF | kAhAF)) == 0);
+            REQUIRE(rs.of == 0);
+
+            CodeBuf d;
+            EmitSseLoad(d, 0xF3, 0x6F, 0, pa);
+            EmitSseLoad(d, 0xF3, 0x6F, 1, pb);
+            EmitSseFloatRR(d, 0x66, 0x2E);
+            EmitSseStore(d, 0xF3, 0x7F, out, 0);
+            auto rd = run(std::move(d), bits64(cmp64[i]), bits64(cmp64[j]));
+            const u8 expected64 = (std::isnan(std::bit_cast<double>(cmp64[i])) ||
+                                   std::isnan(std::bit_cast<double>(cmp64[j])))
+                                          ? 0x45
+                                          : (cmp64[i] < cmp64[j] ? 0x01 : cmp64[i] == cmp64[j] ? 0x40 : 0x00);
+            REQUIRE((rd.ah & (kAhCF | kAhPF | kAhZF)) == expected64);
+            REQUIRE((rd.ah & (kAhSF | kAhAF)) == 0);
+            REQUIRE(rd.of == 0);
+        }
+    }
+
+    auto cvtt = [&](bool is_double, bool dst64, u64 raw) {
+        CodeBuf code;
+        EmitSseLoad(code, 0xF3, 0x6F, 0, pb);
+        EmitSseFloatToInt(code, is_double ? 0xF2 : 0xF3, kRax, 0, dst64);
+        EmitMovMemReg(code, 64, scalar_out, kRax);
+        return run(std::move(code), bits64(0), bits64(raw)).scalar;
+    };
+    for (u64 raw : {u64(0x7FC12345u), u64(0x7FA12345u), u64(0x7F800000u),
+                    u64(0xFF800000u), u64(0x5F000000u), u64(0xDF000000u)}) {
+        REQUIRE(static_cast<u32>(cvtt(false, false, raw)) == 0x80000000u);
+        const u64 cvtt64 = cvtt(false, true, raw);
+        INFO(fmt::format("cvtt32->64 raw={:016x} result={:016x}", raw, cvtt64));
+        REQUIRE(cvtt64 == 0x8000000000000000ull);
+    }
+    REQUIRE(static_cast<u32>(cvtt(false, false, 0x4F000000u)) == 0x80000000u);
+    REQUIRE(cvtt(false, true, 0x4F000000u) == 0x0000000080000000ull);
+    REQUIRE(static_cast<u32>(cvtt(false, false, 0x4F000001u)) == 0x80000000u);
+    REQUIRE(cvtt(false, true, 0x4F000001u) == 0x0000000080000100ull);
+    REQUIRE(static_cast<u32>(cvtt(false, false, 0xCF000001u)) == 0x80000000u);
+    REQUIRE(static_cast<s64>(cvtt(false, true, 0xCF000001u)) < 0);
+    for (u64 raw : {0x7FF8123456789ABCull, 0x7FF0123456789ABCull,
+                    0x7FF0000000000000ull, 0xFFF0000000000000ull,
+                    0x43E0000000000000ull, 0xC3E0000000000001ull}) {
+        REQUIRE(cvtt(true, false, raw) == 0x80000000ull);
+        REQUIRE(cvtt(true, true, raw) == 0x8000000000000000ull);
+    }
+    REQUIRE(cvtt(true, false, 0x41E0000000000001ull) == 0x80000000ull);
+    REQUIRE(cvtt(true, true, 0x41E0000000000001ull) == 0x0000000080000000ull);
+    REQUIRE(static_cast<u32>(cvtt(false, false, 0xCF000000u)) == 0x80000000u);  // INT_MIN
+    REQUIRE(cvtt(true, true, 0xC3E0000000000000ull) == 0x8000000000000000ull);  // INT64_MIN
+    REQUIRE(static_cast<u32>(cvtt(false, false, 0x4EFFFFFFu)) == 2147483520u);
+    REQUIRE(static_cast<s32>(cvtt(false, false, 0xCEFFFFFFu)) == -2147483520);
+    REQUIRE(cvtt(true, false, 0x41DFFFFFFFC00000ull) == 2147483647u);
+    REQUIRE(static_cast<s64>(cvtt(true, true, 0x43DFFFFFFFFFFFFFull)) == 9223372036854774784ll);
+    REQUIRE(cvtt(false, false, 0x3FC00000u) == 1);  // truncation toward zero
+    REQUIRE(cvtt(true, true, 0x400A000000000000ull) == 3);
+
+    auto cvtsi = [&](bool to_double, bool src64, u64 raw) {
+        CodeBuf code;
+        EmitMovRegImm(code, 64, kR10, raw);
+        EmitSseFloatIntToXmm(code, to_double ? 0xF2 : 0xF3, 0, kR10, src64);
+        EmitMovdXmmToGpr(code, kRax, 0, true);
+        EmitMovMemReg(code, 64, scalar_out, kRax);
+        return run(std::move(code), bits64(0), bits64(0)).scalar;
+    };
+    REQUIRE(cvtsi(true, false, 0x708006DB7C853D27ull) == 0x41DF214F49C00000ull);
+    REQUIRE(cvtsi(true, false, 0x80000000ull) == 0xC1E0000000000000ull);
+    // RNE conversion of signed 0x90abcdef is 0xCEDEA864 (verified with a
+    // native C cast; the host report's CEDE0064 value is not IEEE-754 RNE).
+    REQUIRE(static_cast<u32>(cvtsi(false, false, 0x1234567890ABCDEFull)) == 0xCEDEA864u);
+
+    // Drive both packed-double lanes. This exercises normal, signed-zero,
+    // denormal, infinity, qNaN, sNaN, and negative operands independently.
+    const Vec128 one64 = bits64pair(0x3FF0000000000000ull, 0x3FF0000000000000ull);
+    const Vec128 qnan_pair = bits64pair(0x7FF8123456789ABCull, 0xFFF8123456789ABCull);
+    const Vec128 snan_pair = bits64pair(0x7FF0123456789ABCull, 0xFFF0123456789ABCull);
+    const Vec128 mul_nan = packed(0x66, 0x59, qnan_pair, one64);
+    const Vec128 div_nan = packed(0x66, 0x5E, qnan_pair, one64);
+    REQUIRE(read64(mul_nan) == 0x7FF8123456789ABCull);
+    REQUIRE(read_lane64(mul_nan, 8) == 0xFFF8123456789ABCull);
+    REQUIRE(read64(div_nan) == 0x7FF8123456789ABCull);
+    REQUIRE(read_lane64(div_nan, 8) == 0xFFF8123456789ABCull);
+    const Vec128 mul_snan = packed(0x66, 0x59, snan_pair, one64);
+    REQUIRE(read64(mul_snan) == 0x7FF8123456789ABCull);
+    REQUIRE(read_lane64(mul_snan, 8) == 0xFFF8123456789ABCull);
+    const Vec128 mul_nan_rhs = packed(0x66, 0x59, one64, qnan_pair);
+    REQUIRE(read64(mul_nan_rhs) == 0x7FF8123456789ABCull);
+    REQUIRE(read_lane64(mul_nan_rhs, 8) == 0xFFF8123456789ABCull);
+    const Vec128 div_nan_rhs = packed(0x66, 0x5E, one64, qnan_pair);
+    REQUIRE(read64(div_nan_rhs) == 0x7FF8123456789ABCull);
+    REQUIRE(read_lane64(div_nan_rhs, 8) == 0xFFF8123456789ABCull);
+    const Vec128 edge_a = bits64pair(0x8000000000000000ull, 0x0000000000000001ull);
+    const Vec128 edge_b = bits64pair(0x7FF0000000000000ull, 0xBFF0000000000000ull);
+    const Vec128 edge_mul = packed(0x66, 0x59, edge_a, edge_b);
+    const Vec128 edge_div = packed(0x66, 0x5E, edge_a, edge_b);
+    REQUIRE(read64(edge_mul) == 0xFFF8000000000000ull);
+    REQUIRE(read_lane64(edge_mul, 8) == 0x8000000000000001ull);
+    REQUIRE(read64(edge_div) == 0x8000000000000000ull);
+    REQUIRE(read_lane64(edge_div, 8) == 0x8000000000000001ull);
+
+    const Vec128 inf32 = bits32quad(0x7F800000u, 0x7F800000u, 0x7F800000u, 0x7F800000u);
+    const Vec128 neg_inf32 = bits32quad(0xFF800000u, 0xFF800000u, 0xFF800000u, 0xFF800000u);
+    const Vec128 zero32 = bits32quad(0, 0, 0, 0);
+    auto require_invalid32 = [&](u8 op, const Vec128& lhs, const Vec128& rhs) {
+        const Vec128 actual = packed(0, op, lhs, rhs);
+        for (u32 lane = 0; lane < 4; ++lane) {
+            u32 value = 0;
+            std::memcpy(&value, actual.data() + lane * 4, sizeof(value));
+            REQUIRE(value == 0xFFC00000u);
+        }
+    };
+    require_invalid32(0x59, inf32, zero32);       // inf * 0
+    require_invalid32(0x5E, zero32, zero32);      // 0 / 0
+    require_invalid32(0x5E, inf32, inf32);        // inf / inf
+    require_invalid32(0x5C, inf32, inf32);        // inf - inf
+    require_invalid32(0x58, inf32, neg_inf32);    // inf + (-inf)
+    const Vec128 one32 = bits32quad(0x3F800000u, 0x3F800000u,
+                                    0x3F800000u, 0x3F800000u);
+    const Vec128 invalid_chain32 = packed(0, 0x5C, packed(0, 0x58, inf32, one32), inf32);
+    for (u32 lane = 0; lane < 4; ++lane) {
+        u32 value = 0;
+        std::memcpy(&value, invalid_chain32.data() + lane * 4, sizeof(value));
+        REQUIRE(value == 0xFFC00000u);
+    }
+
+    const Vec128 inf64 = bits64pair(0x7FF0000000000000ull, 0x7FF0000000000000ull);
+    const Vec128 neg_inf64 = bits64pair(0xFFF0000000000000ull, 0xFFF0000000000000ull);
+    const Vec128 zero64 = bits64pair(0, 0);
+    auto require_invalid64 = [&](u8 op, const Vec128& lhs, const Vec128& rhs) {
+        const Vec128 actual = packed(0x66, op, lhs, rhs);
+        REQUIRE(read64(actual) == 0xFFF8000000000000ull);
+        REQUIRE(read_lane64(actual, 8) == 0xFFF8000000000000ull);
+    };
+    require_invalid64(0x59, inf64, zero64);       // inf * 0
+    require_invalid64(0x5E, zero64, zero64);      // 0 / 0
+    require_invalid64(0x5E, inf64, inf64);        // inf / inf
+    require_invalid64(0x5C, inf64, inf64);        // inf - inf
+    require_invalid64(0x58, inf64, neg_inf64);    // inf + (-inf)
+    const Vec128 one64_chain = bits64pair(0x3FF0000000000000ull, 0x3FF0000000000000ull);
+    const Vec128 invalid_chain64 = packed(0x66, 0x5C,
+                                          packed(0x66, 0x58, inf64, one64_chain), inf64);
+    REQUIRE(read64(invalid_chain64) == 0xFFF8000000000000ull);
+    REQUIRE(read_lane64(invalid_chain64, 8) == 0xFFF8000000000000ull);
+
+    // Interpreter regression sequences from the seeded float-edge corpus.
+    // Seeded cursor 88: lane 1 -Inf * 2.1e9, then -Inf - 2.1e9.
+    const u32 two_point_one_g = 0x4EFAE6B7u;
+    const Vec128 neg_inf_vec = bits32quad(0xFF800000u, 0xFF800000u, 0xFF800000u, 0xFF800000u);
+    const Vec128 finite_vec = bits32quad(two_point_one_g, two_point_one_g,
+                                         two_point_one_g, two_point_one_g);
+    const Vec128 inf_mul = packed(0, 0x59, neg_inf_vec, finite_vec);
+    const Vec128 inf_sub = packed(0, 0x5C, inf_mul, finite_vec);
+    for (u32 lane = 0; lane < 4; ++lane) {
+        u32 value = 0;
+        std::memcpy(&value, inf_sub.data() + lane * 4, sizeof(value));
+        REQUIRE(value == 0xFF800000u);
+    }
+    // Fresh-seed cursor 168: verify the two initialized lanes while keeping
+    // upper lanes nontrivial (the original fuzz case left them as arena data).
+    const Vec128 cursor168_a = bits32quad(0x7F800000u, 0x5EFFFFFFu,
+                                          0x12345678u, 0x89ABCDEFu);
+    const Vec128 cursor168_b = bits32quad(0x00010000u, 0x4F000000u,
+                                          0x0FEDCBA9u, 0x76543210u);
+    const Vec128 cursor168_mul = packed(0, 0x59, cursor168_a, cursor168_b);
+    const Vec128 cursor168_result = packed(0, 0x5C, cursor168_mul, cursor168_b);
+    u32 cursor168_lane0 = 0;
+    u32 cursor168_lane1 = 0;
+    std::memcpy(&cursor168_lane0, cursor168_result.data(), sizeof(cursor168_lane0));
+    std::memcpy(&cursor168_lane1, cursor168_result.data() + 4, sizeof(cursor168_lane1));
+    REQUIRE(cursor168_lane0 == 0x7F800000u);
+    // 0x5EFFFFFF * 0x4F000000 is finite (0x6E7FFFFF); retain the exact
+    // bit-pattern so this also guards the non-overflow lane.
+    REQUIRE(cursor168_lane1 == 0x6E7FFFFFu);
+    // Seeded cursor 152: lane 1 (2^63 -) minus itself, then multiply by
+    // the same finite value; exact zero must remain +0.
+    const Vec128 boundary_vec = bits32quad(0x5F000000u, 0x5F000000u,
+                                           0x5F000000u, 0x5F000000u);
+    const Vec128 zero_after_sub = packed(0, 0x5C, boundary_vec, boundary_vec);
+    const Vec128 zero_after_mul = packed(0, 0x59, zero_after_sub, boundary_vec);
+    for (u32 lane = 0; lane < 4; ++lane) {
+        u32 value = 0;
+        std::memcpy(&value, zero_after_mul.data() + lane * 4, sizeof(value));
+        REQUIRE(value == 0x00000000u);
+    }
+    // Seeded cursor 152: divps followed by mulps with an infinity in lane 1.
+    // This catches the interpreter's intermediate-lane handling, not just the
+    // final arithmetic opcode in isolation.
+    const Vec128 seeded_a = bits32quad(0x4F000001u, 0xFF800000u,
+                                       0x4F000001u, 0xFF800000u);
+    const Vec128 seeded_b = bits32quad(0x4F000000u, 0xCEFFFFFFu,
+                                       0x4F000000u, 0xCEFFFFFFu);
+    const Vec128 seeded_div = packed(0, 0x5E, seeded_a, seeded_b);
+    const Vec128 seeded_div_mul = packed(0, 0x59, seeded_div, seeded_b);
+    for (u32 lane = 0; lane < 4; ++lane) {
+        u32 value = 0;
+        std::memcpy(&value, seeded_div_mul.data() + lane * 4, sizeof(value));
+        REQUIRE(value == (lane & 1 ? 0xFF800000u : 0x4F000001u));
+    }
+    // Seeded cursor 224: 1 + (-1), then +0 + (-1) gives -1 in every lane.
+    const Vec128 one_vec = bits32quad(0x3F800000u, 0x3F800000u,
+                                      0x3F800000u, 0x3F800000u);
+    const Vec128 neg_one_vec = bits32quad(0xBF800000u, 0xBF800000u,
+                                          0xBF800000u, 0xBF800000u);
+    const Vec128 zero_vec = packed(0, 0x58, one_vec, neg_one_vec);
+    const Vec128 minus_one_vec = packed(0, 0x58, zero_vec, neg_one_vec);
+    for (u32 lane = 0; lane < 4; ++lane) {
+        u32 value = 0;
+        std::memcpy(&value, minus_one_vec.data() + lane * 4, sizeof(value));
+        REQUIRE(value == 0xBF800000u);
+    }
+
+    auto scalar_convert = [&](u8 prefix, u8 op, const Vec128& dst, const Vec128& src) {
+        CodeBuf code;
+        EmitSseLoad(code, 0xF3, 0x6F, 0, pa);
+        EmitSseLoad(code, 0xF3, 0x6F, 1, pb);
+        EmitSseFloatRR(code, prefix, op);
+        return run(std::move(code), dst, src).vec;
+    };
+    // Real x86 arbitration: operand 1 wins when both inputs are NaN, with
+    // only its quiet bit added.  Unicorn/QEMU instead commonly selects the
+    // second operand, so these directed cases validate the JIT against the
+    // real ISA behavior independently of the three-way fuzz oracle.
+    const Vec128 snan32 = bits32(0x7FA12345u);
+    const Vec128 qnan32 = bits32(0x7FC12345u);
+    auto mul_snan_qnan = scalar_convert(0, 0x59, snan32, qnan32);
+    REQUIRE(static_cast<u32>(read64(mul_snan_qnan)) == 0x7FE12345u);
+    auto mul_qnan_snan = scalar_convert(0, 0x59, qnan32, snan32);
+    REQUIRE(static_cast<u32>(read64(mul_qnan_snan)) == 0x7FC12345u);
+    auto div_snan_qnan = scalar_convert(0, 0x5E, snan32, qnan32);
+    REQUIRE(static_cast<u32>(read64(div_snan_qnan)) == 0x7FE12345u);
+    const Vec128 arbitration_snan64 = bits64(0x7FF0123456789ABCull);
+    const Vec128 arbitration_qnan64 = bits64(0x7FF8123456789ABCull);
+    auto mul_snan64_qnan64 = scalar_convert(0x66, 0x59, arbitration_snan64,
+                                             arbitration_qnan64);
+    REQUIRE(read64(mul_snan64_qnan64) == 0x7FF8123456789ABCull);
+    const Vec128 preserved = {0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
+                              0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC};
+    const Vec128 scalar_inf32 = bits32(0x7F800000u);
+    const Vec128 scalar_neg_inf32 = bits32(0xFF800000u);
+    const Vec128 scalar_zero32 = bits32(0);
+    auto require_invalid_scalar32 = [&](u8 op, const Vec128& lhs, const Vec128& rhs) {
+        const Vec128 actual = scalar_convert(0, op, lhs, rhs);
+        u32 value = 0;
+        std::memcpy(&value, actual.data(), sizeof(value));
+        REQUIRE(value == 0xFFC00000u);
+    };
+    require_invalid_scalar32(0x59, scalar_inf32, scalar_zero32);      // inf * 0
+    require_invalid_scalar32(0x5E, scalar_zero32, scalar_zero32);     // 0 / 0
+    require_invalid_scalar32(0x5E, scalar_inf32, scalar_inf32);       // inf / inf
+    require_invalid_scalar32(0x5C, scalar_inf32, scalar_inf32);       // inf - inf
+    require_invalid_scalar32(0x58, scalar_inf32, scalar_neg_inf32);   // inf + (-inf)
+    const Vec128 scalar_inf64 = bits64(0x7FF0000000000000ull);
+    const Vec128 scalar_neg_inf64 = bits64(0xFFF0000000000000ull);
+    const Vec128 scalar_zero64 = bits64(0);
+    auto require_invalid_scalar64 = [&](u8 op, const Vec128& lhs, const Vec128& rhs) {
+        const Vec128 actual = scalar_convert(0x66, op, lhs, rhs);
+        REQUIRE(read64(actual) == 0xFFF8000000000000ull);
+    };
+    require_invalid_scalar64(0x59, scalar_inf64, scalar_zero64);      // inf * 0
+    require_invalid_scalar64(0x5E, scalar_zero64, scalar_zero64);     // 0 / 0
+    require_invalid_scalar64(0x5E, scalar_inf64, scalar_inf64);       // inf / inf
+    require_invalid_scalar64(0x5C, scalar_inf64, scalar_inf64);       // inf - inf
+    require_invalid_scalar64(0x58, scalar_inf64, scalar_neg_inf64);   // inf + (-inf)
+    auto widened = scalar_convert(0xF3, 0x5A, preserved, bits32(0x3FC00000u));
+    REQUIRE(read64(widened) == 0x3FF8000000000000ull);
+    REQUIRE(std::memcmp(widened.data() + 8, preserved.data() + 8, 8) == 0);
+    auto narrowed = scalar_convert(0xF2, 0x5A, preserved, bits64(0x3FF8000000000000ull));
+    REQUIRE(static_cast<u32>(read64(narrowed)) == 0x3FC00000u);
+    REQUIRE((read64(narrowed) >> 32) == (read64(preserved) >> 32));
+    auto narrowed_qnan = scalar_convert(0xF2, 0x5A, preserved, bits64(0x7FF8123456789ABCull));
+    REQUIRE(static_cast<u32>(read64(narrowed_qnan)) == 0x7FC091A2u);
+    auto widened_qnan = scalar_convert(0xF3, 0x5A, preserved, bits32(0x7FC12345u));
+    REQUIRE(read64(widened_qnan) == 0x7FF82468A0000000ull);
+
+    X86Instance::Destroy(instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
+TEST_CASE("SSE batch B JIT interpreter differential edge sweep") {
+    using Vec128 = std::array<u8, 16>;
+    struct Result {
+        Vec128 vec{};
+        u8 ah{};
+        u8 of{};
+    };
+
+    // Construct both backends up front. X86Instance snapshots SVM_ENABLE_JIT
+    // at construction, so this compares identical guest blocks without
+    // involving Unicorn or relying on host floating-point behavior.
+    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    const bool had_old_jit = old_jit != nullptr;
+    setenv("SVM_ENABLE_JIT", "1", 1);
+    auto* jit_instance = X86Instance::Make();
+    setenv("SVM_ENABLE_JIT", "0", 1);
+    auto* interp_instance = X86Instance::Make();
+    if (had_old_jit)
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    else
+        unsetenv("SVM_ENABLE_JIT");
+
+    constexpr size_t kArenaSize = 0x1000000;
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 arena_base = reinterpret_cast<u64>(arena);
+    const u64 data_addr = arena_base + 0x800000;
+    const u64 stack_addr = arena_base + 0x700000;
+    MemOp ma{};
+    ma.disp = 0x100;
+    MemOp mb{};
+    mb.disp = 0x120;
+    MemOp mout{};
+    mout.disp = 0x180;
+
+    auto* jit_core = X86Core::Make(jit_instance);
+    auto* interp_core = X86Core::Make(interp_instance);
+    auto* jit_ctx = &jit_core->GetContext();
+    auto* interp_ctx = &interp_core->GetContext();
+    size_t code_cursor = 1;
+    size_t comparisons = 0;
+    int divergences = 0;
+    std::unordered_map<const CodeBuf*, u64> code_addresses;
+    std::unordered_map<const CodeBuf*, std::vector<u8>> code_snapshots;
+
+    const auto run = [&](X86Core* core,
+                         ThreadContext64* ctx,
+                         u64 code_addr,
+                         const Vec128& lhs,
+                         const Vec128& rhs,
+                         u64 r10) {
+        std::memcpy(reinterpret_cast<void*>(data_addr + ma.disp), lhs.data(), lhs.size());
+        std::memcpy(reinterpret_cast<void*>(data_addr + mb.disp), rhs.data(), rhs.size());
+        std::memset(reinterpret_cast<void*>(data_addr + mout.disp), 0, 16);
+        ctx->rax.qword = 0x1122334455667788ull;
+        ctx->r10.qword = r10;
+        ctx->r13.qword = data_addr;
+        ctx->rsp.qword = stack_addr;
+        ctx->r15.qword = 0;
+        ctx->rip.qword = code_addr;
+        core->Run();
+        Result result;
+        std::memcpy(result.vec.data(), reinterpret_cast<void*>(data_addr + mout.disp), 16);
+        result.ah = static_cast<u8>(ctx->rax.qword >> 8);
+        result.of = static_cast<u8>(ctx->r15.qword & 1);
+        return result;
+    };
+
+    const auto compare_block = [&](const char* label,
+                                   CodeBuf& code,
+                                   const Vec128& lhs,
+                                   const Vec128& rhs,
+                                   u64 r10,
+                                   bool compare_flags = false) {
+        ++comparisons;
+        const std::vector<u8> snapshot(code.c.begin(), code.c.end());
+        auto snapshot_it = code_snapshots.find(&code);
+        if (snapshot_it == code_snapshots.end() || snapshot_it->second != snapshot) {
+            const u64 new_code_addr = arena_base + code_cursor++ * 0x100;
+            std::memcpy(reinterpret_cast<void*>(new_code_addr), code.c.data(), code.c.size());
+            code_addresses[&code] = new_code_addr;
+            code_snapshots[&code] = snapshot;
+        }
+        const u64 code_addr = code_addresses.at(&code);
+        const Result jit = run(jit_core, jit_ctx, code_addr, lhs, rhs, r10);
+        const Result interp = run(interp_core, interp_ctx, code_addr, lhs, rhs, r10);
+        const bool same_vec = jit.vec == interp.vec;
+        const bool same_flags = !compare_flags || (jit.ah == interp.ah && jit.of == interp.of);
+        if (!same_vec || !same_flags) {
+            if (divergences++ < 12) {
+                INFO(fmt::format("{} differential mismatch: ah {:02x}/{:02x}, of {}/{}",
+                                 label, jit.ah, interp.ah, jit.of, interp.of));
+            }
+        }
+    };
+
+    const std::array<u32, 14> f32_pool = {
+            0x00000000u, 0x80000000u, 0x00000001u, 0x00010000u, 0x3F800000u,
+            0xBF800000u, 0x4F000000u, 0x5EFFFFFFu, 0x7F7FFFFFu, 0x7F800000u,
+            0xFF800000u, 0x7FC00000u, 0x7FC12345u, 0x7FA12345u};
+    const std::array<u64, 14> f64_pool = {
+            0x0000000000000000ull, 0x8000000000000000ull, 0x0000000000000001ull,
+            0x0008000000000000ull, 0x3FF0000000000000ull, 0xBFF0000000000000ull,
+            0x41E0000000000000ull, 0x43DFFFFFFFFFFFFFull, 0x7FEFFFFFFFFFFFFFull,
+            0x7FF0000000000000ull, 0xFFF0000000000000ull, 0x7FF8000000000000ull,
+            0x7FF8123456789ABCull, 0x7FF0123456789ABCull};
+    const std::array<u8, 4> arithmetic_ops = {0x58, 0x5C, 0x59, 0x5E};
+
+    auto make_f32_vec = [&](size_t target_lane, size_t ai, size_t bi) {
+        Vec128 lhs{};
+        Vec128 rhs{};
+        u32 av[4]{};
+        u32 bv[4]{};
+        for (size_t lane = 0; lane < 4; ++lane) {
+            av[lane] = f32_pool[(ai + lane + 1) % f32_pool.size()];
+            bv[lane] = f32_pool[(bi + lane * 3 + 2) % f32_pool.size()];
+        }
+        av[target_lane] = f32_pool[ai];
+        bv[target_lane] = f32_pool[bi];
+        std::memcpy(lhs.data(), av, sizeof(av));
+        std::memcpy(rhs.data(), bv, sizeof(bv));
+        return std::pair{lhs, rhs};
+    };
+    auto make_f64_vec = [&](size_t target_lane, size_t ai, size_t bi) {
+        Vec128 lhs{};
+        Vec128 rhs{};
+        u64 av[2]{};
+        u64 bv[2]{};
+        for (size_t lane = 0; lane < 2; ++lane) {
+            av[lane] = f64_pool[(ai + lane + 1) % f64_pool.size()];
+            bv[lane] = f64_pool[(bi + lane * 3 + 2) % f64_pool.size()];
+        }
+        av[target_lane] = f64_pool[ai];
+        bv[target_lane] = f64_pool[bi];
+        std::memcpy(lhs.data(), av, sizeof(av));
+        std::memcpy(rhs.data(), bv, sizeof(bv));
+        return std::pair{lhs, rhs};
+    };
+
+    // Packed ps/pd operations, including every edge value in every lane and
+    // every two-operation chain shape used by the fuzz family.
+    for (const bool is_double : {false, true}) {
+        const size_t lanes = is_double ? 2 : 4;
+        const size_t pool_size = is_double ? f64_pool.size() : f32_pool.size();
+        for (const u8 first : arithmetic_ops) {
+            for (const u8 second : arithmetic_ops) {
+                CodeBuf code;
+                EmitSseLoad(code, 0xF3, 0x6F, 0, ma);
+                EmitSseLoad(code, 0xF3, 0x6F, 1, mb);
+                EmitSseFloatRR(code, is_double ? 0x66 : 0x00, first);
+                EmitSseFloatRR(code, is_double ? 0x66 : 0x00, second);
+                EmitSseStore(code, 0xF3, 0x7F, mout, 0);
+                code.B(0xF4);
+                for (size_t lane = 0; lane < lanes; ++lane) {
+                    for (size_t ai = 0; ai < pool_size; ++ai) {
+                        for (size_t bi = 0; bi < pool_size; ++bi) {
+                            const auto operands = is_double ? make_f64_vec(lane, ai, bi)
+                                                             : make_f32_vec(lane, ai, bi);
+                            compare_block("packed-float-chain", code, operands.first,
+                                          operands.second, 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The reported fresh-seed shape: initialized low lanes plus arbitrary
+    // upper-lane arena data. Compare the complete 128-bit result, not only
+    // the lanes whose source values were described by the repro.
+    {
+        const Vec128 cursor168_a = {0x00, 0x00, 0x80, 0x7F, 0xFF, 0xFF, 0xFF, 0x5E,
+                                    0x78, 0x56, 0x34, 0x12, 0xEF, 0xCD, 0xAB, 0x89};
+        const Vec128 cursor168_b = {0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x4F,
+                                    0xA9, 0xCB, 0xED, 0x0F, 0x10, 0x32, 0x54, 0x76};
+        CodeBuf code;
+        EmitSseLoad(code, 0xF3, 0x6F, 0, ma);
+        EmitSseLoad(code, 0xF3, 0x6F, 1, mb);
+        EmitSseFloatRR(code, 0x00, 0x59);
+        EmitSseFloatRR(code, 0x00, 0x5C);
+        EmitSseStore(code, 0xF3, 0x7F, mout, 0);
+        code.B(0xF4);
+        compare_block("cursor-168-upper-lanes", code, cursor168_a, cursor168_b, 0);
+    }
+
+    Vec128 dst_pattern{};
+    for (size_t i = 0; i < dst_pattern.size(); ++i)
+        dst_pattern[i] = static_cast<u8>(0xA0 + i);
+
+    // Scalar integer-to-float and float-to-integer forms.
+    const std::array<u64, 8> integer_pool = {0,
+                                             1,
+                                             ~u64(0),
+                                             0x7FFFFFFFull,
+                                             0x80000000ull,
+                                             0x7FFFFFFFFFFFFFFFull,
+                                             0x8000000000000000ull,
+                                             0x1234567890ABCDEFull};
+    for (const bool to_double : {false, true}) {
+        for (const bool src64 : {false, true}) {
+            CodeBuf code;
+            EmitSseLoad(code, 0xF3, 0x6F, 0, ma);
+            EmitSseFloatIntToXmm(code, to_double ? 0xF2 : 0xF3, 0, kR10, src64);
+            EmitSseStore(code, 0xF3, 0x7F, mout, 0);
+            code.B(0xF4);
+            for (const u64 value : integer_pool)
+                compare_block("cvtsi", code, dst_pattern, dst_pattern, value);
+        }
+    }
+    for (const bool is_double : {false, true}) {
+        for (const bool dst64 : {false, true}) {
+            CodeBuf code;
+            EmitSseLoad(code, 0xF3, 0x6F, 0, ma);
+            EmitSseFloatToInt(code, is_double ? 0xF2 : 0xF3, kR10, 0, dst64);
+            EmitMovMemReg(code, dst64 ? 64 : 32, mout, kR10);
+            code.B(0xF4);
+            if (is_double) {
+                for (const u64 value : f64_pool) {
+                    Vec128 source{};
+                    std::memcpy(source.data(), &value, sizeof(value));
+                    compare_block("cvtt", code, source, source, 0);
+                }
+            } else {
+                for (const u32 value : f32_pool) {
+                    Vec128 source{};
+                    std::memcpy(source.data(), &value, sizeof(value));
+                    compare_block("cvtt", code, source, source, 0);
+                }
+            }
+        }
+    }
+
+    // Scalar widening/narrowing and all ordered/unordered compare pairs.
+    for (const bool to_wide : {false, true}) {
+        CodeBuf code;
+        EmitSseLoad(code, 0xF3, 0x6F, 0, ma);
+        EmitSseLoad(code, 0xF3, 0x6F, 1, mb);
+        EmitSseFloatRR(code, to_wide ? 0xF3 : 0xF2, 0x5A);
+        EmitSseStore(code, 0xF3, 0x7F, mout, 0);
+        code.B(0xF4);
+        if (to_wide) {
+            for (const u32 value : f32_pool) {
+                Vec128 source{};
+                std::memcpy(source.data(), &value, sizeof(value));
+                compare_block("cvtss2sd", code, dst_pattern, source, 0);
+            }
+        } else {
+            for (const u64 value : f64_pool) {
+                Vec128 source{};
+                std::memcpy(source.data(), &value, sizeof(value));
+                compare_block("cvtsd2ss", code, dst_pattern, source, 0);
+            }
+        }
+    }
+    for (const bool is_double : {false, true}) {
+        CodeBuf code;
+        EmitTestRegReg(code, 64, kRax, kRax);
+        EmitSseLoad(code, 0xF3, 0x6F, 0, ma);
+        EmitSseLoad(code, 0xF3, 0x6F, 1, mb);
+        EmitSseFloatRR(code, is_double ? 0x66 : 0xF3, 0x2E);
+        code.B(0x9F);
+        EmitSetcc(code, 0x0, kCaptureReg);
+        code.B(0xF4);
+        const size_t pool_size = is_double ? f64_pool.size() : f32_pool.size();
+        for (size_t ai = 0; ai < pool_size; ++ai) {
+            for (size_t bi = 0; bi < pool_size; ++bi) {
+                Vec128 lhs{};
+                Vec128 rhs{};
+                if (is_double) {
+                    std::memcpy(lhs.data(), &f64_pool[ai], sizeof(u64));
+                    std::memcpy(rhs.data(), &f64_pool[bi], sizeof(u64));
+                } else {
+                    const u32 a = f32_pool[ai];
+                    const u32 b = f32_pool[bi];
+                    std::memcpy(lhs.data(), &a, sizeof(a));
+                    std::memcpy(rhs.data(), &b, sizeof(b));
+                }
+                compare_block("ucomis", code, lhs, rhs, 0, true);
+            }
+        }
+    }
+
+    X86Core::Destroy(jit_core);
+    X86Core::Destroy(interp_core);
+    X86Instance::Destroy(jit_instance);
+    X86Instance::Destroy(interp_instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+    REQUIRE(comparisons == 19325);
+    REQUIRE(divergences == 0);
 }
 
 TEST_CASE("Fuzz x86 sse2") {

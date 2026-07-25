@@ -546,12 +546,16 @@ private:
     void DecodePshiftA(_DInst& insn, int kind);
     // pshuflw/pshufhw: word shuffle within low/high qword.
     void DecodePshufw(_DInst& insn, bool high);
+    enum class VecFloatOp { Add, Sub, Mul, Div };
     // SSE2 scalar conversions.
+    void DecodeCvtsi2ss(_DInst& insn);
     void DecodeCvtsi2sd(_DInst& insn);
+    void DecodeCvttss2si(_DInst& insn);
     void DecodeCvttsd2si(_DInst& insn);
     void DecodeCvtsd2ss(_DInst& insn);
     void DecodeCvtss2sd(_DInst& insn);
-    enum class VecFloatOp { Add, Sub, Mul, Div };
+    void DecodePackedFloatOp(_DInst& insn, VecFloatOp op, u32 lane_bits);
+    void DecodeUcomis(_DInst& insn, u32 lane_bits);
     void DecodeScalarFloatOp(_DInst& insn, VecFloatOp op);
     // pextrw / pinsrw: gpr <-> xmm word lane (imm8 selects the lane).
     void DecodePextrw(_DInst& insn);
