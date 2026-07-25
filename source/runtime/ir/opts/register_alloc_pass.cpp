@@ -21,6 +21,13 @@ struct LiveInterval {
     }
 };
 
+static Value ResolveBitCastSource(Value value) {
+    while (value.Defined() && value.Def()->IsBitCastOperation()) {
+        value = value.Def()->GetArg<Value>(0);
+    }
+    return value;
+}
+
 class LinearScanAllocator {
 public:
     explicit LinearScanAllocator(HIRFunction* function, backend::RegAlloc* alloc)
@@ -122,11 +129,17 @@ private:
         // below: extend each terminal-used value to the last instruction id of
         // the block that owns the terminal (function-global id).
         Map<u32, u32> terminal_end{};
+        Map<u32, u32> actual_use_end{};
         for (auto* hir_block : hir_function->GetHIRBlocks()) {
             auto* lir_block = hir_block->GetBlock();
             u32 block_end = 0;
             for (auto& inst : lir_block->GetInstList()) {
                 block_end = std::max<u32>(block_end, inst.Id());
+                for (auto value : inst.GetValues()) {
+                    auto source = ResolveBitCastSource(value);
+                    auto& end = actual_use_end[source.Id()];
+                    end = std::max<u32>(end, inst.Id());
+                }
             }
             if (block_end == 0) {
                 continue;  // empty block — nothing can be live out of it
@@ -135,9 +148,7 @@ private:
                 if (!value.Defined()) {
                     return;
                 }
-                auto id = value.Def()->IsBitCastOperation()
-                                  ? value.Def()->GetArg<Value>(0).Id()
-                                  : value.Id();
+                auto id = ResolveBitCastSource(value).Id();
                 auto& end = terminal_end[id];
                 end = std::max(end, block_end);
             };
@@ -166,7 +177,11 @@ private:
         }
         for (auto& hir_value : hir_function->GetHIRValues()) {
             auto instr = hir_value.value.Def();
-            if (instr->IsGetHostRegOperation()) {
+            const bool full_gpr_get =
+                    instr->GetOp() == OpCode::GetHostGPR &&
+                    GetValueSizeByte(instr->ReturnType()) == sizeof(u64);
+            if (instr->IsGetHostRegOperation() &&
+                (instr->GetOp() == OpCode::GetHostFPR || full_gpr_get)) {
                 auto is_float = instr->GetOp() == OpCode::GetHostFPR;
                 auto host_index = instr->GetArg<Imm>(0).Get();
                 if (is_float) {
@@ -186,6 +201,12 @@ private:
             std::for_each(hir_value.uses.begin(), hir_value.uses.end(), [&end](auto& use) {
                 end = std::max(end, (u32) use.inst->Id());
             });
+            // Block optimization passes can turn a LoadUniform into a BitCast
+            // after HIR use lists were built. Scan the current instructions
+            // above so alias roots remain live even when those lists are stale.
+            if (auto it = actual_use_end.find(instr->Id()); it != actual_use_end.end()) {
+                end = std::max(end, it->second);
+            }
             // Extend for terminal uses (see above): the value must stay live
             // until the end of the block whose terminal reads it.
             if (auto it = terminal_end.find(instr->Id()); it != terminal_end.end()) {
@@ -202,10 +223,13 @@ private:
         ASSERT_MSG(lir_block, "block == null");
         ASSERT_MSG(!lir_block->IsEmptyBlock(), "block is empty");
         StackVector<u16, 64> use_end{};
-        Map<u16, u8> set_value_uses{};
         use_end.resize(std::max<u32>(lir_block->MaxInstrId(), lir_block->GetInstList().size()));
         for (auto& instr : lir_block->GetInstList()) {
-            if (instr.IsGetHostRegOperation()) {
+            const bool full_gpr_get =
+                    instr.GetOp() == OpCode::GetHostGPR &&
+                    GetValueSizeByte(instr.ReturnType()) == sizeof(u64);
+            if (instr.IsGetHostRegOperation() &&
+                (instr.GetOp() == OpCode::GetHostFPR || full_gpr_get)) {
                 auto is_float = instr.GetOp() == OpCode::GetHostFPR;
                 auto host_index = instr.GetArg<Imm>(0).Get();
                 if (is_float) {
@@ -216,48 +240,17 @@ private:
             } else if (instr.IsBitCastOperation()) {
                 auto from = instr.GetArg<Value>(0);
                 reg_alloc->MapReference(from.Id(), instr.Id());
-            } else if (instr.IsSetHostRegOperation()) {
-                auto value = instr.GetArg<Value>(0);
-                auto host_index = instr.GetArg<Imm>(1).Get();
-                auto is_float = instr.GetOp() == OpCode::SetHostFPR;
-                auto use_count = value.Def()->GetUses();
-                ASSERT(use_count > 0);
-                if (use_count == 1) {
-                    // Well, Only this
-                    if (is_float) {
-                        reg_alloc->MapRegister(value.Id(), HostFPR{(u16) host_index});
-                    } else {
-                        reg_alloc->MapRegister(value.Id(), HostGPR{(u16) host_index});
-                    }
-                    continue;
-                } else {
-                    if (auto itr = set_value_uses.find(value.Id()); itr != set_value_uses.end()) {
-                        auto uses = itr->second;
-                        if (--uses == 0) {
-                            if (is_float) {
-                                reg_alloc->MapRegister(value.Id(), HostFPR{(u16) host_index});
-                            } else {
-                                reg_alloc->MapRegister(value.Id(), HostGPR{(u16) host_index});
-                            }
-                        } else {
-                            set_value_uses[value.Id()] = uses;
-                        }
-                    } else {
-                        set_value_uses[value.Id()] = --use_count;
-                    }
-                    continue;
-                }
             } else {
+                // SetHost* is a normal use. Pinned registers are reserved from
+                // linear scan, and the emitter performs the move/bit insert at
+                // the SetHost* instruction. Coalescing the source into the
+                // pinned register would update guest state at the source
+                // definition, potentially before intervening uses.
                 auto values = instr.GetValues();
                 for (auto& value : values) {
-                    if (value.Def()->IsBitCastOperation()) {
-                        auto src = value.Def()->GetArg<Value>(0);
-                        auto& end = use_end[src.Id()];
-                        end = std::max(end, instr.Id());
-                    } else {
-                        auto& end = use_end[value.Id()];
-                        end = std::max(end, instr.Id());
-                    }
+                    auto source = ResolveBitCastSource(value);
+                    auto& end = use_end[source.Id()];
+                    end = std::max(end, instr.Id());
                 }
             }
         }
@@ -270,9 +263,7 @@ private:
                 if (!value.Defined()) {
                     return;
                 }
-                auto id = value.Def()->IsBitCastOperation()
-                                  ? value.Def()->GetArg<Value>(0).Id()
-                                  : value.Id();
+                auto id = ResolveBitCastSource(value).Id();
                 if (id < use_end.size()) {
                     auto& end = use_end[id];
                     end = std::max(end, block_end);

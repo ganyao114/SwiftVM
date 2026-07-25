@@ -1,5 +1,9 @@
+#include <array>
+#include <bit>
 #include <catch2/catch_test_macros.hpp>
+#include <cstring>
 #include <iostream>
+#include <sys/mman.h>
 #include "runtime/ir/hir_builder.h"
 #include "runtime/ir/ir_meta.h"
 #include "runtime/ir/opts/cfg_analysis_pass.h"
@@ -7,8 +11,11 @@
 #include "runtime/ir/opts/flags_elimination_pass.h"
 #include "runtime/ir/opts/reid_instr_pass.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/ir/opts/uniform_elimination_pass.h"
 #include "runtime/backend/mem_map.h"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/smc_tracker.h"
+#include "runtime/frontend/x86/decoder.h"
 #include "compiler/slang/slang.h"
 #include "assembler_riscv64.h"
 #include "fmt/format.h"
@@ -206,6 +213,202 @@ TEST_CASE("Test block ir print") {
     block.SaveFlags(imm8, Flags{Flags::NZCV});
     block.SetTerminal(terminal::If(terminal::If{imm8, terminal::LinkBlock{0x1000}, terminal::LinkBlock{0x2000}}));
     std::cout << block.ToString() << std::endl;
+}
+
+TEST_CASE("Uniform elimination does not propagate conditional stores past labels") {
+    using namespace swift::runtime::ir;
+
+    UniformInfo info{.uniform_size = 64};
+
+    Block conditional{0, Location{0x1000}};
+    auto condition = conditional.LoadImm<BOOL>(Imm{1u});
+    auto skip_store = conditional.NotGoto(condition);
+    auto stored = conditional.LoadImm(Imm{0u}).SetType(ValueType::U8);
+    conditional.StoreUniform(Uniform{32, ValueType::U8}, stored);
+    conditional.BindLabel(skip_store);
+    auto merged_load = conditional.LoadUniform(Uniform{32, ValueType::U8});
+
+    UniformEliminationPass::Run(&conditional, info);
+    REQUIRE(merged_load.Def()->GetOp() == OpCode::LoadUniform);
+
+    Block straight_line{1, Location{0x2000}};
+    auto straight_value = straight_line.LoadImm(Imm{0u}).SetType(ValueType::U8);
+    straight_line.StoreUniform(Uniform{32, ValueType::U8}, straight_value);
+    auto straight_load = straight_line.LoadUniform(Uniform{32, ValueType::U8});
+
+    UniformEliminationPass::Run(&straight_line, info);
+    REQUIRE(straight_load.Def()->GetOp() == OpCode::BitExtract);
+}
+
+TEST_CASE("Uniform elimination preserves rotate-by-zero carry polarity load") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+
+    // cmp si,sp; rol r15b,cl; lahf; seto r15b; hlt
+    std::array<swift::u8, 13> code{
+            0x66, 0x44, 0x39, 0xe6, 0x41, 0xd2, 0xc7,
+            0x9f, 0x41, 0x0f, 0x90, 0xc7, 0xf4,
+    };
+    struct MemIf final : MemoryInterface {
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+
+    const auto address = reinterpret_cast<VAddr>(code.data());
+    Block block{0, Location{address}};
+    Assembler assembler{&block};
+    X64Decoder decoder{address, &memory, &assembler, true};
+    decoder.Decode();
+
+    UniformInfo info{.uniform_size = sizeof(ThreadContext64)};
+    UniformEliminationPass::Run(&block, info);
+
+    const auto polarity_offset = offsetof(ThreadContext64, carry_inverted);
+    size_t polarity_loads = 0;
+    for (auto& inst : block.GetInstList()) {
+        if (inst.GetOp() == OpCode::LoadUniform &&
+            inst.GetArg<Uniform>(0).GetOffset() == polarity_offset) {
+            polarity_loads++;
+        }
+    }
+    REQUIRE(polarity_loads == 1);
+}
+
+TEST_CASE("Uniform elimination uses the latest full GPR store for a narrow load") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+
+    // sub rbx,rdx; popcnt r10w,bx; lahf; seto r15b; hlt
+    std::array<swift::u8, 15> code{
+            0x48, 0x29, 0xd3, 0xf3, 0x66, 0x44, 0x0f, 0xb8,
+            0xd3, 0x9f, 0x41, 0x0f, 0x90, 0xc7, 0xf4,
+    };
+    struct MemIf final : MemoryInterface {
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+
+    const auto address = reinterpret_cast<VAddr>(code.data());
+    Block block{0, Location{address}};
+    Assembler assembler{&block};
+    X64Decoder decoder{address, &memory, &assembler, true};
+    decoder.Decode();
+
+    const auto rbx_offset = offsetof(ThreadContext64, rbx);
+    Value latest_rbx_store{};
+    Inst* narrow_rbx_load = nullptr;
+    for (auto& inst : block.GetInstList()) {
+        if (inst.GetOp() == OpCode::StoreUniform &&
+            inst.GetArg<Uniform>(0).GetOffset() == rbx_offset) {
+            latest_rbx_store = inst.GetArg<Value>(1);
+        } else if (inst.GetOp() == OpCode::LoadUniform) {
+            auto uniform = inst.GetArg<Uniform>(0);
+            if (uniform.GetOffset() == rbx_offset &&
+                uniform.GetType() == ValueType::U16) {
+                narrow_rbx_load = &inst;
+            }
+        }
+    }
+    REQUIRE(latest_rbx_store.Defined());
+    REQUIRE(narrow_rbx_load != nullptr);
+
+    UniformInfo info{.uniform_size = sizeof(ThreadContext64)};
+    UniformEliminationPass::Run(&block, info);
+
+    REQUIRE(narrow_rbx_load->GetOp() == OpCode::BitExtract);
+    REQUIRE(narrow_rbx_load->GetArg<Value>(0) == latest_rbx_store);
+
+    // Execute the same sequence without Unicorn. The old bug passed the full
+    // post-sub RBX value to Popcnt64 after the narrow load was folded.
+    void* guest_code = mmap(nullptr, 4096, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(guest_code != MAP_FAILED);
+    std::memcpy(guest_code, code.data(), code.size());
+    backend::SmcTracker::SetEnabled(false);
+    auto* instance = swift::translator::x86::X86Instance::Make();
+    auto* core = swift::translator::x86::X86Core::Make(instance);
+    auto& context = core->GetContext();
+    context.rip.qword = reinterpret_cast<VAddr>(guest_code);
+    context.rbx.qword = UINT64_MAX;
+    // RBX - RDX = 0xffffffffffff0003. Its full-width popcount is 50,
+    // while popcnt BX must see only 0x0003 and return 2.
+    context.rdx.qword = 0xFFFC;
+    context.r10.qword = 0xFFFF0000;
+    core->Run();
+    const auto popcount = context.r10.qword & 0xFFFF;
+    swift::translator::x86::X86Core::Destroy(core);
+    swift::translator::x86::X86Instance::Destroy(instance);
+    backend::SmcTracker::SetEnabled(true);
+    munmap(guest_code, 4096);
+    REQUIRE(popcount == 2);
+}
+
+TEST_CASE("JIT BitExtract feeds an exact U16 value to CallLambda") {
+    using namespace swift::runtime;
+    using namespace swift::x86;
+
+    // add cx,r8w; popcnt bx,cx; lahf; seto r15b; hlt
+    std::array<swift::u8, 15> code{
+            0x66, 0x44, 0x01, 0xc1, 0xf3, 0x66, 0x0f, 0xb8,
+            0xd9, 0x9f, 0x41, 0x0f, 0x90, 0xc7, 0xf4,
+    };
+    void* guest_code = mmap(nullptr, 4096, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(guest_code != MAP_FAILED);
+    std::memcpy(guest_code, code.data(), code.size());
+    backend::SmcTracker::SetEnabled(false);
+    auto* instance = swift::translator::x86::X86Instance::Make();
+
+    bool matched = true;
+    swift::u64 failed_rcx{};
+    swift::u64 failed_r8{};
+    swift::u16 expected{};
+    swift::u16 actual{};
+    swift::u64 random = 0x9E3779B97F4A7C15ull;
+    for (int iteration = 0; iteration < 1024; ++iteration) {
+        random ^= random << 7;
+        random ^= random >> 9;
+        auto rcx = random;
+        random ^= random << 8;
+        auto r8 = random;
+
+        auto* core = swift::translator::x86::X86Core::Make(instance);
+        auto& context = core->GetContext();
+        context.rip.qword = reinterpret_cast<VAddr>(guest_code);
+        context.rcx.qword = rcx;
+        context.r8.qword = r8;
+        context.rbx.qword = 0xA4297CCD266D0000ull;
+        core->Run();
+        expected = static_cast<swift::u16>(
+                std::popcount(static_cast<swift::u16>(rcx + r8)));
+        actual = static_cast<swift::u16>(context.rbx.qword);
+        swift::translator::x86::X86Core::Destroy(core);
+        if (actual != expected) {
+            matched = false;
+            failed_rcx = rcx;
+            failed_r8 = r8;
+            break;
+        }
+    }
+    swift::translator::x86::X86Instance::Destroy(instance);
+    backend::SmcTracker::SetEnabled(true);
+    munmap(guest_code, 4096);
+
+    INFO(fmt::format("rcx={:#x}, r8={:#x}, expected={}, actual={}",
+                     failed_rcx, failed_r8, expected, actual));
+    REQUIRE(matched);
 }
 
 TEST_CASE("Test x86 translator") {

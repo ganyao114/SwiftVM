@@ -52,6 +52,13 @@ struct Arm64Instance::Impl final {
         // while the JIT is under development).
         const char* jit_env = std::getenv("SVM_ENABLE_JIT");
         const bool enable_jit = jit_env ? std::strcmp(jit_env, "0") != 0 : true;
+        auto global_opts = Optimizations::ConstantFolding | Optimizations::DeadCodeRemove |
+                           Optimizations::BlockLink | Optimizations::DirectBlockLink |
+                           Optimizations::ReturnStackBuffer | Optimizations::FunctionBaseCompile;
+        const char* uniform_elim_env = std::getenv("SVM_UNIFORM_ELIM");
+        if (!uniform_elim_env || std::strcmp(uniform_elim_env, "0") != 0) {
+            global_opts |= Optimizations::UniformElimination;
+        }
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ull << 48,
@@ -78,9 +85,7 @@ struct Arm64Instance::Impl final {
                 //   bad multi-block allocations. It is opt-in at runtime via
                 //   SVM_FUNC_BASE=1 (see Translate()); complex functions fall
                 //   back to block compilation.
-                .global_opts = Optimizations::ConstantFolding | Optimizations::DeadCodeRemove |
-                               Optimizations::BlockLink | Optimizations::DirectBlockLink |
-                               Optimizations::ReturnStackBuffer | Optimizations::FunctionBaseCompile,
+                .global_opts = global_opts,
                 .arm64_features = Arm64Features::None,
                 .stack_alignment = 16,
                 .page_table = nullptr,

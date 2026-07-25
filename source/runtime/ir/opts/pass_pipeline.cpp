@@ -24,6 +24,10 @@ PassPipeline PassPipeline::BuildDefault(const UniformInfo* uniform_info) {
             [uniform_info](Block* block) {
                 UniformEliminationPass::Run(block, *uniform_info);
             });
+        pipeline.AddFunctionPass(Optimizations::UniformElimination,
+            [uniform_info](HIRFunction* function) {
+                UniformEliminationPass::Run(function, *uniform_info, true);
+            });
     }
 
     pipeline.AddBlockPass(Optimizations::FlagElimination, [](Block* block) {

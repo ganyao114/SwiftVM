@@ -46,14 +46,17 @@ MemOperand JitTranslator::BiasMem(const Register& base, s64 imm, bool atomic) {
 
 void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
     auto offset = inst->GetArg<ir::Imm>(1).Get();
-    if (!offset) {
-        return;
-    }
     auto reg_index = inst->GetArg<ir::Imm>(0).Get();
     auto host_reg = XRegister(reg_index);
     auto ret_reg = context.X(ir::Value{inst});
-    if (host_reg != ret_reg) {
-        __ Ubfx(ret_reg, host_reg, reg_index * 8, ir::GetValueSizeByte(inst->ReturnType()));
+    const auto bit_offset = offset * 8;
+    const auto bit_width = ir::GetValueSizeByte(inst->ReturnType()) * 8;
+    if (bit_offset == 0 && bit_width == 64) {
+        if (host_reg != ret_reg) {
+            __ Mov(ret_reg, host_reg);
+        }
+    } else {
+        __ Ubfx(ret_reg, host_reg, bit_offset, bit_width);
     }
 }
 
@@ -72,14 +75,18 @@ void JitTranslator::EmitGetHostFPR(ir::Inst* inst) {
 
 void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
     auto offset = inst->GetArg<ir::Imm>(2).Get();
-    if (!offset) {
-        return;
-    }
     auto reg_index = inst->GetArg<ir::Imm>(1).Get();
     auto host_reg = XRegister(reg_index);
-    auto value_reg = context.X(inst->GetArg<ir::Value>(0));
-    if (value_reg != host_reg) {
-        __ Bfi(host_reg, value_reg, reg_index * 8, ir::GetValueSizeByte(inst->ReturnType()));
+    auto value = inst->GetArg<ir::Value>(0);
+    auto value_reg = context.X(value);
+    const auto bit_offset = offset * 8;
+    const auto bit_width = ir::GetValueSizeByte(value.Type()) * 8;
+    if (bit_offset == 0 && bit_width == 64) {
+        if (value_reg != host_reg) {
+            __ Mov(host_reg, value_reg);
+        }
+    } else {
+        __ Bfi(host_reg, value_reg, bit_offset, bit_width);
     }
 }
 
