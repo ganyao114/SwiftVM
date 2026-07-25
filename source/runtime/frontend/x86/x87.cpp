@@ -1,8 +1,11 @@
 #include "runtime/frontend/x86/x87.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
@@ -16,6 +19,24 @@ extern "C" {
 namespace swift::x86 {
 
 namespace {
+
+std::atomic<u64> g_x87_dispatch_calls{};
+
+void PrintX87DispatchStats() {
+    std::fprintf(stderr,
+                 "SVM x87 helper calls: %llu\n",
+                 static_cast<unsigned long long>(
+                         g_x87_dispatch_calls.load(std::memory_order_relaxed)));
+}
+
+bool X87DispatchStatsEnabled() {
+    static const bool enabled = [] {
+        if (!std::getenv("SVM_X87_JIT_STATS")) return false;
+        std::atexit(PrintX87DispatchStats);
+        return true;
+    }();
+    return enabled;
+}
 
 constexpr u16 kSwIE = 1u << 0;
 constexpr u16 kSwDE = 1u << 1;
@@ -162,6 +183,11 @@ extFloat80_t Read(const ThreadContext64& ctx, u8 logical) {
 void WritePhysical(ThreadContext64& ctx, u8 physical, const extFloat80_t& value) {
     ctx.x87_regs[physical].significand = value.signif;
     ctx.x87_regs[physical].sign_exp = value.signExp;
+    // The padding is non-architectural. The opt-in ARM64 reduced path uses
+    // reserved[0] as an eligibility marker; every SoftFloat/helper write must
+    // clear it so a later instruction cannot mistake an exact ext80 result
+    // for a value produced and rounded by the native f64 pipeline.
+    ctx.x87_regs[physical].reserved.fill(0);
     SetTagPhysical(ctx, physical, Classify(value));
 }
 
@@ -1034,6 +1060,9 @@ void LoadEnvironment(ThreadContext64& ctx, u64 address) {
 }  // namespace
 
 u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
+    if (X87DispatchStatsEnabled()) {
+        g_x87_dispatch_calls.fetch_add(1, std::memory_order_relaxed);
+    }
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     const auto command = DecodeCommand(command_word);
     switch (command.action) {
@@ -1047,6 +1076,14 @@ u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
         case X87Action::LoadFloat:
         case X87Action::LoadInt:
             Push(ctx, LoadMemoryValue(ctx, command.format, guest_address));
+            // A binary64 load is already rounded to the compute precision of
+            // the opt-in reduced path and can safely seed that pipeline.
+            // Deliberately do not certify f32, integer, or m80 helper loads:
+            // those remain exact SoftFloat provenance across the next op.
+            if (command.action == X87Action::LoadFloat &&
+                command.format == X87Format::Float64) {
+                ctx.x87_regs[Top(ctx)].reserved[0] = kX87ReducedMarker;
+            }
             break;
         case X87Action::StoreFloat:
             StoreFloat(ctx, command.format, guest_address);

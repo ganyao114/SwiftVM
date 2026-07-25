@@ -15,6 +15,7 @@
 #include <unicorn/unicorn.h>
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/frontend/x86/decoder.h"
+#include "runtime/frontend/x86/x87.h"
 #include "translator/x86/cpu.h"
 #include "translator/x86/translator.h"
 #include "unicorn_interface.h"
@@ -4883,7 +4884,18 @@ TEST_CASE("x87 directed edge semantics") {
     const char* old_jit = std::getenv("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
-    for (const bool jit : {true, false}) {
+    struct X87BoundarySnapshot {
+        u64 significand;
+        u16 sign_exp;
+        u16 fsw;
+        u16 ftw;
+    };
+    std::vector<X87BoundarySnapshot> f32_sub_expected;
+    std::vector<X87BoundarySnapshot> ext80_div_expected;
+
+    // Run the exact interpreter first so the opt-in JIT boundary sweeps below
+    // can use it as their local SoftFloat oracle without Unicorn.
+    for (const bool jit : {false, true}) {
         setenv("SVM_ENABLE_JIT", jit ? "1" : "0", 1);
         auto* instance = X86Instance::Make();
 
@@ -5506,6 +5518,243 @@ TEST_CASE("x87 directed edge semantics") {
                     0xC000000000000000ull);
             REQUIRE(*reinterpret_cast<u16*>(data + 0x5F8) == 0x4000);
             REQUIRE(ctx.x87_ftw == 0xFFFF);
+        }
+
+        {
+            // The opt-in ARM64 x87 JIT deliberately mirrors FEX reduced
+            // precision for canonical binary64 register arithmetic.  This
+            // multiplication is one of the Rosetta probe's double-rounding
+            // witnesses: real ext80 retains 0x...4bf7, while f64 rounds to
+            // 0x...4800 before the result is expanded back to ext80.
+            *reinterpret_cast<u64*>(data + 0x620) =
+                    UINT64_C(0x407fcd1be17e6ba2);
+            *reinterpret_cast<u64*>(data + 0x628) =
+                    UINT64_C(0x6f7fb29d67d81501);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDD, 0, 0x620);
+            emit_mem(b, 0xDD, 0, 0x628);
+            emit_reg(b, 0xDE, 0xC9);      // FMULP ST(1), ST(0)
+            emit_mem(b, 0xDB, 7, 0x630);
+            const auto ctx = run(std::move(b));
+            const bool reduced =
+                    jit && std::getenv("SVM_X87_JIT") &&
+                    std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x630) ==
+                    (reduced ? UINT64_C(0xfc01a2d864074800)
+                             : UINT64_C(0xfc01a2d864074bf7)));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x638) == 0x4300);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+        }
+
+        {
+            // A reduced f64 overflow remains finite in true ext80. Besides
+            // pinning the intentional value divergence, this checks ARM
+            // FPSR OFC/IXC -> x87 OE/PE status mapping.
+            *reinterpret_cast<u64*>(data + 0x640) =
+                    UINT64_C(0x7fefffffffffffff);
+            *reinterpret_cast<u64*>(data + 0x648) =
+                    UINT64_C(0x4000000000000000);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDD, 0, 0x640);
+            emit_mem(b, 0xDD, 0, 0x648);
+            emit_reg(b, 0xDE, 0xC9);      // FMULP ST(1), ST(0)
+            emit_mem(b, 0xDB, 7, 0x650);
+            const auto ctx = run(std::move(b));
+            const bool reduced =
+                    jit && std::getenv("SVM_X87_JIT") &&
+                    std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x650) ==
+                    (reduced ? UINT64_C(0x8000000000000000)
+                             : UINT64_C(0xfffffffffffff800)));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x658) ==
+                    (reduced ? 0x7FFF : 0x43FF));
+            if (reduced) {
+                REQUIRE((ctx.x87_fsw & 0x28) == 0x28);  // OE + PE
+            } else {
+                REQUIRE((ctx.x87_fsw & 0x28) == 0);
+            }
+        }
+
+        {
+            // FLD m64 values are eligible to seed the reduced native
+            // pipeline, but an inexact binary64 addition must bail out before
+            // publishing a rounded result: ext80 retains the 2^-60 addend.
+            // This is the exact helper/native/FSTP-m80 boundary shape from
+            // host fuzz cursor 80.
+            *reinterpret_cast<u64*>(data + 0x660) =
+                    UINT64_C(0x3FF0000000000000);  // 1
+            *reinterpret_cast<u64*>(data + 0x668) =
+                    UINT64_C(0x3C30000000000000);  // 2^-60
+            std::memset(reinterpret_cast<void*>(data + 0x670), 0, 10);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDD, 0, 0x660);
+            emit_mem(b, 0xDD, 0, 0x668);
+            emit_reg(b, 0xDE, 0xC1);      // FADDP ST(1), ST(0)
+            emit_mem(b, 0xDB, 7, 0x670);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x670) ==
+                    UINT64_C(0x8000000000000008));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x678) == 0x3FFF);
+            REQUIRE((ctx.x87_fsw & 0x3F) == 0);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+        }
+
+        {
+            // The reverse-pop peer has the same requirement.  Binary64 rounds
+            // 2^-60-1 to -1, while ext80 represents it exactly as
+            // 0xbffe:fffffffffffffff0.  This pins the cursor-208 instruction
+            // shape, including the following exact FSTP m80.
+            *reinterpret_cast<u64*>(data + 0x660) =
+                    UINT64_C(0x3C30000000000000);  // 2^-60 in ST(1)
+            *reinterpret_cast<u64*>(data + 0x668) =
+                    UINT64_C(0x3FF0000000000000);  // 1 in ST(0)
+            std::memset(reinterpret_cast<void*>(data + 0x670), 0, 10);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDD, 0, 0x660);
+            emit_mem(b, 0xDD, 0, 0x668);
+            emit_reg(b, 0xDE, 0xE9);      // FSUBRP ST(1), ST(0)
+            emit_mem(b, 0xDB, 7, 0x670);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x670) ==
+                    UINT64_C(0xFFFFFFFFFFFFFFF0));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x678) == 0xBFFE);
+            REQUIRE((ctx.x87_fsw & 0x3F) == 0);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+        }
+
+        {
+            // An IXC bailout leaves the exact ext80 result in architectural
+            // state, then runtime-revalidates it as finite/reducible.  A
+            // following reduced operation may narrow that value without
+            // another helper call.  Multiplication by one makes the handoff
+            // visible: exact ext80 retains 2^-60, while the opt-in pipeline
+            // deliberately rounds it to binary64 one before FMUL.
+            *reinterpret_cast<u64*>(data + 0x6D0) =
+                    UINT64_C(0x3FF0000000000000);  // 1
+            *reinterpret_cast<u64*>(data + 0x6D8) =
+                    UINT64_C(0x3C30000000000000);  // 2^-60
+            std::memset(reinterpret_cast<void*>(data + 0x6E0), 0, 10);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDD, 0, 0x6D0);
+            emit_mem(b, 0xDD, 0, 0x6D8);
+            emit_reg(b, 0xDE, 0xC1);      // FADDP: IXC -> exact helper
+            emit_reg(b, 0xD9, 0xE8);      // FLD1
+            emit_reg(b, 0xDE, 0xC9);      // FMULP consumes revalidated ST(1)
+            emit_mem(b, 0xDB, 7, 0x6E0);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            const bool reduced =
+                    jit && std::getenv("SVM_X87_JIT") &&
+                    std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x6E0) ==
+                    (reduced ? UINT64_C(0x8000000000000000)
+                             : UINT64_C(0x8000000000000008)));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x6E8) == 0x3FFF);
+            REQUIRE(ctx.x87_ftw == 0xFFFF);
+        }
+
+        {
+            // Every subtraction of two finite binary32 operands is exactly
+            // representable in binary64. Thus the reduced register path must
+            // agree bit-for-bit with the SoftFloat interpreter, including the
+            // reverse-pop form used by fuzz cursor 208.
+            static constexpr u32 kF32Pool[] = {
+                    0x00000000u, 0x80000000u,
+                    0x00000001u, 0x007FFFFFu, 0x00800000u,
+                    0x3F800000u, 0xBF800000u, 0x4F000000u,
+                    0x7F7FFFFFu, 0xFF7FFFFFu,
+                    0x7F800000u, 0xFF800000u,
+            };
+            size_t oracle_index = 0;
+            for (const u32 left : kF32Pool) {
+                for (const u32 right : kF32Pool) {
+                    if (std::isnan(std::bit_cast<float>(right) -
+                                   std::bit_cast<float>(left))) {
+                        continue;
+                    }
+                    *reinterpret_cast<u32*>(data + 0x680) = left;
+                    *reinterpret_cast<u32*>(data + 0x684) = right;
+                    std::memset(reinterpret_cast<void*>(data + 0x690), 0, 10);
+                    CodeBuf b;
+                    emit_reg(b, 0xDB, 0xE3);
+                    emit_mem(b, 0xD9, 0, 0x680);
+                    emit_mem(b, 0xD9, 0, 0x684);
+                    emit_reg(b, 0xDE, 0xE9);      // FSUBRP ST(1), ST(0)
+                    emit_mem(b, 0xDB, 7, 0x690);
+                    const auto ctx = run(std::move(b));
+                    const X87BoundarySnapshot actual{
+                            *reinterpret_cast<u64*>(data + 0x690),
+                            *reinterpret_cast<u16*>(data + 0x698),
+                            ctx.x87_fsw,
+                            ctx.x87_ftw,
+                    };
+                    if (!jit) {
+                        f32_sub_expected.push_back(actual);
+                    } else {
+                        REQUIRE(oracle_index < f32_sub_expected.size());
+                        const auto& expected = f32_sub_expected[oracle_index++];
+                        CAPTURE(left, right);
+                        REQUIRE(actual.significand == expected.significand);
+                        REQUIRE(actual.sign_exp == expected.sign_exp);
+                        REQUIRE(actual.fsw == expected.fsw);
+                        REQUIRE(actual.ftw == expected.ftw);
+                    }
+                }
+            }
+        }
+
+        {
+            // An ext80-only exponent must reject the f64 fast path. Exercise
+            // both operand orders around FDIVRP and then cross the helper ->
+            // inline FSTP m80 boundary from fuzz cursor 1.
+            static constexpr std::array<std::pair<u64, u16>, 4> kOperands{{
+                    {0xD72CB2A95C7EF6CDull, 0x7FFE},
+                    {0x8000000000000000ull, 0x3FFF},
+                    {0x8000000000000000ull, 0x403E},
+                    {0x0000000000000001ull, 0x0000},
+            }};
+            size_t oracle_index = 0;
+            for (size_t left = 0; left < kOperands.size(); ++left) {
+                for (size_t right = 0; right < kOperands.size(); ++right) {
+                    if (left == right) continue;
+                    if (left != 0 && right != 0) continue;
+                    write_ext(0x6A0,
+                              kOperands[left].first,
+                              kOperands[left].second);
+                    write_ext(0x6B0,
+                              kOperands[right].first,
+                              kOperands[right].second);
+                    std::memset(reinterpret_cast<void*>(data + 0x6C0), 0, 10);
+                    CodeBuf b;
+                    emit_reg(b, 0xDB, 0xE3);
+                    emit_mem(b, 0xDB, 5, 0x6A0);
+                    emit_mem(b, 0xDB, 5, 0x6B0);
+                    emit_reg(b, 0xDE, 0xF9);      // FDIVRP ST(1), ST(0)
+                    emit_mem(b, 0xDB, 7, 0x6C0);
+                    const auto ctx = run(std::move(b));
+                    const X87BoundarySnapshot actual{
+                            *reinterpret_cast<u64*>(data + 0x6C0),
+                            *reinterpret_cast<u16*>(data + 0x6C8),
+                            ctx.x87_fsw,
+                            ctx.x87_ftw,
+                    };
+                    if (!jit) {
+                        ext80_div_expected.push_back(actual);
+                    } else {
+                        REQUIRE(oracle_index < ext80_div_expected.size());
+                        const auto& expected = ext80_div_expected[oracle_index++];
+                        CAPTURE(left, right);
+                        REQUIRE(actual.significand == expected.significand);
+                        REQUIRE(actual.sign_exp == expected.sign_exp);
+                        REQUIRE(actual.fsw == expected.fsw);
+                        REQUIRE(actual.ftw == expected.ftw);
+                    }
+                }
+            }
         }
 
         X86Instance::Destroy(instance);

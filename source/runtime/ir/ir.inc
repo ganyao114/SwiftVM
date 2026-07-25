@@ -16,6 +16,10 @@ INST(StoreUniform, Void, Uniform, Value)
 // stateful frontend helpers that need to update several architectural fields
 // atomically (x87); ordinary guest code must keep using Load/StoreUniform.
 INST(GetUniformAddress, Value, Imm)
+// Stateful x87 operation. The dedicated opcode keeps x87 out of the generic
+// CallLambda classification so ARM64 can inline selected commands and
+// whole-function compilation can retain blocks containing x87.
+INST(X87Op, Value, Value, Imm, Value)
 INST(LoadMemory, Value, Operand)
 INST(StoreMemory, Void, Operand, Value)
 INST(LoadMemoryTSO, Value, Operand)
