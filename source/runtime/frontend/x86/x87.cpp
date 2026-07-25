@@ -1,6 +1,8 @@
 #include "runtime/frontend/x86/x87.h"
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -41,6 +43,10 @@ constexpr extFloat80_t kIndefinite{
         .signExp = 0xFFFF,
 };
 constexpr extFloat80_t kZero{.signif = 0, .signExp = 0};
+constexpr extFloat80_t kOne{
+        .signif = UINT64_C(0x8000000000000000),
+        .signExp = 0x3FFF,
+};
 
 struct DecodedCommand {
     X87Action action;
@@ -104,6 +110,32 @@ bool IsDenormal(const extFloat80_t& value) {
     return (value.signExp & 0x7FFF) == 0 && value.signif != 0;
 }
 
+bool IsZero(const extFloat80_t& value) {
+    return (value.signExp & 0x7FFF) == 0 && value.signif == 0;
+}
+
+struct NormalizedMagnitude {
+    u64 significand;
+    s32 exponent;
+};
+
+NormalizedMagnitude NormalizeMagnitude(const extFloat80_t& value) {
+    u64 significand = value.signif;
+    s32 exponent = value.signExp & 0x7FFF;
+    if (!exponent) exponent = 1;
+    if (significand && !(significand & UINT64_C(0x8000000000000000))) {
+        const int shift = std::countl_zero(significand);
+        significand <<= shift;
+        exponent -= shift;
+    }
+    return {significand, exponent};
+}
+
+bool MagnitudeAtLeastTwoTo63(const extFloat80_t& value) {
+    return !IsNaN(value) && !IsInfinity(value) &&
+           (value.signExp & 0x7FFF) >= 0x403E;
+}
+
 u16 Classify(const extFloat80_t& value) {
     const u16 exponent = value.signExp & 0x7FFF;
     if (exponent == 0 && value.signif == 0) {
@@ -159,6 +191,12 @@ void RaiseSoftFloat(ThreadContext64& ctx, u8 flags) {
     if (flags & softfloat_flag_underflow) exceptions |= kSwUE;
     if (flags & softfloat_flag_inexact) exceptions |= kSwPE;
     Raise(ctx, exceptions);
+}
+
+extFloat80_t QuietNaN(ThreadContext64& ctx, extFloat80_t value) {
+    if (IsSignalingNaN(value)) Raise(ctx, kSwIE);
+    value.signif |= UINT64_C(0xC000000000000000);
+    return value;
 }
 
 softfloat_state StateFromControl(const ThreadContext64& ctx, bool force_extended = false) {
@@ -389,6 +427,378 @@ extFloat80_t ApplyBinary(softfloat_state& state,
         case X87Binary::Div: return extF80_div(&state, left, right);
     }
     return kIndefinite;
+}
+
+struct QuotientInfo {
+    u64 magnitude;
+    bool rounded_up;
+};
+
+QuotientInfo CompleteQuotient(extFloat80_t dividend,
+                              extFloat80_t divisor,
+                              bool nearest) {
+    const auto a = NormalizeMagnitude(dividend);
+    const auto b = NormalizeMagnitude(divisor);
+    const s32 difference = a.exponent - b.exponent;
+    if (difference < -1) return {0, false};
+    __uint128_t numerator = a.significand;
+    __uint128_t denominator = b.significand;
+    if (difference >= 0) {
+        numerator <<= difference;
+    } else {
+        denominator <<= -difference;
+    }
+    const __uint128_t floor = numerator / denominator;
+    const __uint128_t remainder = numerator % denominator;
+    bool rounded_up = false;
+    __uint128_t quotient = floor;
+    if (nearest) {
+        const __uint128_t twice_remainder = remainder << 1;
+        rounded_up = twice_remainder > denominator ||
+                     (twice_remainder == denominator && (floor & 1));
+        if (rounded_up) ++quotient;
+    }
+    return {static_cast<u64>(quotient), rounded_up};
+}
+
+extFloat80_t CompleteRemainder(ThreadContext64& ctx,
+                               extFloat80_t dividend,
+                               extFloat80_t divisor,
+                               bool nearest,
+                               u64* quotient_bits) {
+    const auto quotient = CompleteQuotient(dividend, divisor, nearest);
+    const auto nearest_quotient =
+            nearest ? quotient : CompleteQuotient(dividend, divisor, true);
+    if (quotient_bits) *quotient_bits = quotient.magnitude & 7;
+
+    auto state = StateFromControl(ctx, true);
+    auto result = extF80_rem(&state, dividend, divisor);
+    if (!nearest && nearest_quotient.rounded_up) {
+        auto adjustment = divisor;
+        adjustment.signExp =
+                static_cast<u16>((adjustment.signExp & 0x7FFF) |
+                                 (dividend.signExp & 0x8000));
+        result = extF80_add(&state, result, adjustment);
+    }
+    RaiseSoftFloat(ctx, state.exceptionFlags);
+    return result;
+}
+
+extFloat80_t ScaleEncodingForPartial(extFloat80_t value, s32 scale) {
+    const auto normalized = NormalizeMagnitude(value);
+    const s32 exponent = normalized.exponent + scale;
+    return {
+            .signif = normalized.significand,
+            .signExp = static_cast<u16>((value.signExp & 0x8000) | exponent),
+    };
+}
+
+void SetRemainderQuotientFlags(ThreadContext64& ctx, u64 quotient) {
+    ctx.x87_fsw &= static_cast<u16>(~kSwConditionMask);
+    if (quotient & 4) ctx.x87_fsw |= kSwC0;  // Q2
+    if (quotient & 2) ctx.x87_fsw |= kSwC3;  // Q1
+    if (quotient & 1) ctx.x87_fsw |= kSwC1;  // Q0
+}
+
+void Remainder(ThreadContext64& ctx, X87Remainder operation) {
+    if (!Require(ctx, 0) || !Require(ctx, 1)) {
+        Write(ctx, 0, kIndefinite);
+        return;
+    }
+
+    const auto dividend = Read(ctx, 0);
+    const auto divisor = Read(ctx, 1);
+    if (IsDenormal(dividend) || IsDenormal(divisor)) Raise(ctx, kSwDE);
+    const bool nearest = operation == X87Remainder::Nearest;
+
+    // Let SoftFloat provide the architectural NaN/Inf/zero-divisor result.
+    // Quotient flags are all zero for these completed exceptional cases.
+    if (IsNaN(dividend) || IsNaN(divisor) || IsInfinity(dividend) ||
+        IsZero(divisor) || IsInfinity(divisor) || IsZero(dividend)) {
+        auto state = StateFromControl(ctx, true);
+        const auto result = extF80_rem(&state, dividend, divisor);
+        Write(ctx, 0, result);
+        SetRemainderQuotientFlags(ctx, 0);
+        RaiseSoftFloat(ctx, state.exceptionFlags);
+        return;
+    }
+
+    const s32 difference = NormalizeMagnitude(dividend).exponent -
+                           NormalizeMagnitude(divisor).exponent;
+    if (difference >= 64) {
+        // Intel permits an implementation-selected reduction width N in
+        // [32,63].  Contemporary x87 uses 32-bit exponent windows for both
+        // instructions: N = 32 + (D mod 32).  A Rosetta real-x86 probe of
+        // 2^100 mod 3 yields 2^64 with C2 set on the first FPREM and FPREM1.
+        // C0/C1/C3 are undefined while C2 is set.
+        const s32 width = 32 + (difference & 31);
+        const auto scaled_divisor =
+                ScaleEncodingForPartial(divisor, difference - width);
+        const auto result =
+                CompleteRemainder(ctx, dividend, scaled_divisor, nearest, nullptr);
+        Write(ctx, 0, result);
+        ctx.x87_fsw |= kSwC2;
+        return;
+    }
+
+    u64 quotient = 0;
+    const auto result =
+            CompleteRemainder(ctx, dividend, divisor, nearest, &quotient);
+    Write(ctx, 0, result);
+    SetRemainderQuotientFlags(ctx, quotient);
+}
+
+extFloat80_t PowerOfTwo(s32 exponent) {
+    return {
+            .signif = UINT64_C(0x8000000000000000),
+            .signExp = static_cast<u16>(0x3FFF + exponent),
+    };
+}
+
+void Scale(ThreadContext64& ctx) {
+    if (!Require(ctx, 0) || !Require(ctx, 1)) {
+        Write(ctx, 0, kIndefinite);
+        return;
+    }
+    auto value = Read(ctx, 0);
+    const auto scale = Read(ctx, 1);
+    if (IsDenormal(value) || IsDenormal(scale)) Raise(ctx, kSwDE);
+    ctx.x87_fsw &= static_cast<u16>(~kSwC1);
+
+    auto state = StateFromControl(ctx);
+    if (IsNaN(value) || IsNaN(scale)) {
+        value = extF80_mul(&state, value, scale);
+    } else if (IsInfinity(scale)) {
+        const extFloat80_t factor =
+                (scale.signExp & 0x8000)
+                        ? kZero
+                        : extFloat80_t{.signif = UINT64_C(0x8000000000000000),
+                                       .signExp = 0x7FFF};
+        value = extF80_mul(&state, value, factor);
+    } else {
+        auto conversion = StateFromControl(ctx, true);
+        s64 amount = extF80_to_i64(
+                &conversion, scale, softfloat_round_minMag, false);
+        if (conversion.exceptionFlags & softfloat_flag_invalid) {
+            amount = (scale.signExp & 0x8000) ? -32768 : 32768;
+        }
+        amount = std::clamp<s64>(amount, -32768, 32768);
+        while (amount && !IsZero(value) && !IsInfinity(value) && !IsNaN(value)) {
+            const s32 chunk =
+                    static_cast<s32>(std::clamp<s64>(amount, -16000, 16000));
+            value = extF80_mul(&state, value, PowerOfTwo(chunk));
+            amount -= chunk;
+        }
+    }
+    Write(ctx, 0, value);
+    RaiseSoftFloat(ctx, state.exceptionFlags);
+}
+
+void Extract(ThreadContext64& ctx) {
+    if (!Require(ctx, 0)) {
+        Write(ctx, 0, kIndefinite);
+        Push(ctx, kIndefinite);
+        return;
+    }
+    const auto value = Read(ctx, 0);
+    extFloat80_t significand{};
+    extFloat80_t exponent{};
+    if (IsNaN(value)) {
+        significand = exponent = QuietNaN(ctx, value);
+    } else if (IsInfinity(value)) {
+        significand = value;
+        exponent = {.signif = UINT64_C(0x8000000000000000), .signExp = 0x7FFF};
+    } else if (IsZero(value)) {
+        significand = value;
+        exponent = {.signif = UINT64_C(0x8000000000000000), .signExp = 0xFFFF};
+        Raise(ctx, kSwZE);
+    } else {
+        const auto normalized = NormalizeMagnitude(value);
+        significand = {
+                .signif = normalized.significand,
+                .signExp = static_cast<u16>((value.signExp & 0x8000) | 0x3FFF),
+        };
+        exponent = i32_to_extF80(normalized.exponent - 0x3FFF);
+        if (IsDenormal(value)) Raise(ctx, kSwDE);
+    }
+
+    // FXTRACT first replaces the old ST0 with the exponent, then pushes the
+    // significand.  Final ST0 is significand and final ST1 is exponent.
+    Write(ctx, 0, exponent);
+    Push(ctx, significand);
+}
+
+double ToHostDouble(ThreadContext64& ctx, extFloat80_t value) {
+    auto state = StateFromControl(ctx, true);
+    const auto converted = extF80_to_f64(&state, value);
+    RaiseSoftFloat(ctx, state.exceptionFlags);
+    return std::bit_cast<double>(static_cast<u64>(converted.v));
+}
+
+extFloat80_t FromHostDouble(ThreadContext64& ctx, double value) {
+    auto state = StateFromControl(ctx, true);
+    const float64_t converted{.v = std::bit_cast<u64>(value)};
+    const auto result = f64_to_extF80(&state, converted);
+    RaiseSoftFloat(ctx, state.exceptionFlags);
+    return result;
+}
+
+extFloat80_t PropagateNaN(ThreadContext64& ctx,
+                          extFloat80_t first,
+                          extFloat80_t second) {
+    auto state = StateFromControl(ctx, true);
+    const auto result = extF80_add(&state, first, second);
+    RaiseSoftFloat(ctx, state.exceptionFlags);
+    return result;
+}
+
+bool IsTrigRangeLimited(X87Transcendental operation) {
+    return operation == X87Transcendental::Sin ||
+           operation == X87Transcendental::Cos ||
+           operation == X87Transcendental::SinCos ||
+           operation == X87Transcendental::Tan;
+}
+
+bool IsPushTranscendental(X87Transcendental operation) {
+    return operation == X87Transcendental::SinCos ||
+           operation == X87Transcendental::Tan;
+}
+
+void Transcendental(ThreadContext64& ctx, X87Transcendental operation) {
+    const bool binary = operation == X87Transcendental::Atan ||
+                        operation == X87Transcendental::YLog2X ||
+                        operation == X87Transcendental::YLog2XPlusOne;
+    if (binary) {
+        if (!Require(ctx, 0) || !Require(ctx, 1)) {
+            Write(ctx, 1, kIndefinite);
+            Pop(ctx);
+            return;
+        }
+        const auto x = Read(ctx, 0);
+        const auto y = Read(ctx, 1);
+        if (IsDenormal(x) || IsDenormal(y)) Raise(ctx, kSwDE);
+
+        extFloat80_t result{};
+        if (IsNaN(y) || IsNaN(x)) {
+            result = PropagateNaN(ctx, y, x);
+        } else {
+            const double host_x = ToHostDouble(ctx, x);
+            const double host_y = ToHostDouble(ctx, y);
+            double host_result = 0;
+            switch (operation) {
+                case X87Transcendental::Atan:
+                    host_result = std::atan2(host_y, host_x);
+                    break;
+                case X87Transcendental::YLog2X:
+                    host_result =
+                            host_y *
+                            (std::log(host_x) /
+                             std::bit_cast<double>(UINT64_C(0x3FE62E42FEFA39EF)));
+                    if (IsZero(x) && !IsZero(y)) Raise(ctx, kSwZE);
+                    break;
+                case X87Transcendental::YLog2XPlusOne:
+                    host_result =
+                            host_y *
+                            (std::log(host_x + 1.0) /
+                             std::bit_cast<double>(UINT64_C(0x3FE62E42FEFA39EF)));
+                    if ((x.signExp & 0x8000) && host_x == -1.0 && !IsZero(y)) {
+                        Raise(ctx, kSwZE);
+                    }
+                    break;
+                default: break;
+            }
+            if (std::isnan(host_result)) {
+                result = kIndefinite;
+                Raise(ctx, kSwIE);
+            } else {
+                result = FromHostDouble(ctx, host_result);
+                if (std::isfinite(host_result) && host_result != 0.0) {
+                    Raise(ctx, kSwPE);
+                }
+            }
+        }
+        Write(ctx, 1, result);
+        Pop(ctx);
+        return;
+    }
+
+    if (!Require(ctx, 0)) {
+        Write(ctx, 0, kIndefinite);
+        if (IsPushTranscendental(operation)) Push(ctx, kIndefinite);
+        return;
+    }
+    const auto input = Read(ctx, 0);
+    if (IsDenormal(input)) Raise(ctx, kSwDE);
+    ctx.x87_fsw &= static_cast<u16>(~kSwC2);
+
+    if (IsNaN(input)) {
+        const auto result = QuietNaN(ctx, input);
+        Write(ctx, 0, result);
+        if (IsPushTranscendental(operation)) Push(ctx, result);
+        return;
+    }
+    if (IsInfinity(input) && IsTrigRangeLimited(operation)) {
+        Write(ctx, 0, kIndefinite);
+        Raise(ctx, kSwIE);
+        if (IsPushTranscendental(operation)) Push(ctx, kIndefinite);
+        return;
+    }
+    if (IsTrigRangeLimited(operation) && MagnitudeAtLeastTwoTo63(input)) {
+        // C2=1 means argument reduction was not performed.  The source and
+        // stack depth are both unchanged, including for the nominal push ops.
+        // The boundary is inclusive on real x87.  QEMU's helper incorrectly
+        // accepts exact +/-2^63 after narrowing to f64; the differential fuzz
+        // excludes that oracle deviation while directed tests pin this path.
+        ctx.x87_fsw |= kSwC2;
+        return;
+    }
+
+    const double host_input = ToHostDouble(ctx, input);
+    if (operation == X87Transcendental::SinCos) {
+        double sine = 0;
+        double cosine = 0;
+#ifdef __APPLE__
+        __sincos(host_input, &sine, &cosine);
+#else
+        ::sincos(host_input, &sine, &cosine);
+#endif
+        const auto sine80 = FromHostDouble(ctx, sine);
+        const auto cosine80 = FromHostDouble(ctx, cosine);
+        Write(ctx, 0, sine80);
+        Push(ctx, cosine80);
+        if (host_input != 0.0) Raise(ctx, kSwPE);
+        return;
+    }
+    if (operation == X87Transcendental::Tan) {
+        const double tangent = std::tan(host_input);
+        if (std::isnan(tangent)) {
+            Write(ctx, 0, kIndefinite);
+            Raise(ctx, kSwIE);
+            Push(ctx, kIndefinite);
+        } else {
+            Write(ctx, 0, FromHostDouble(ctx, tangent));
+            Push(ctx, kOne);
+            if (host_input != 0.0) Raise(ctx, kSwPE);
+        }
+        return;
+    }
+
+    double host_result = 0;
+    switch (operation) {
+        case X87Transcendental::Sin: host_result = std::sin(host_input); break;
+        case X87Transcendental::Cos: host_result = std::cos(host_input); break;
+        case X87Transcendental::TwoToXMinusOne:
+            host_result = std::exp2(host_input) - 1.0;
+            break;
+        default: break;
+    }
+    if (std::isnan(host_result)) {
+        Write(ctx, 0, kIndefinite);
+        Raise(ctx, kSwIE);
+    } else {
+        Write(ctx, 0, FromHostDouble(ctx, host_result));
+        if (host_input != 0.0 && std::isfinite(host_input)) Raise(ctx, kSwPE);
+    }
 }
 
 void Binary(ThreadContext64& ctx, const DecodedCommand& command, u64 address) {
@@ -670,6 +1080,19 @@ u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
             return Compare(ctx, command, guest_address);
         case X87Action::Unary:
             Unary(ctx, static_cast<X87Unary>(command.operation));
+            break;
+        case X87Action::Remainder:
+            Remainder(ctx, static_cast<X87Remainder>(command.operation));
+            break;
+        case X87Action::Scale:
+            Scale(ctx);
+            break;
+        case X87Action::Extract:
+            Extract(ctx);
+            break;
+        case X87Action::Transcendental:
+            Transcendental(ctx,
+                           static_cast<X87Transcendental>(command.operation));
             break;
         case X87Action::LoadConstant:
             Push(ctx, Constant(static_cast<X87Constant>(command.operation)));
