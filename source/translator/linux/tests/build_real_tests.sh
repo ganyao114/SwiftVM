@@ -36,6 +36,10 @@ if [ "$SUFFIX" = x86_64 ]; then
         -o clone_futex_smoke_x86_64 clone_futex_smoke_x86_64.S
     gcc -nostdlib -static -Wl,--build-id=none \
         -o clone_tso_litmus_x86_64 clone_tso_litmus_x86_64.S
+    gcc -nostdlib -static -Wl,--build-id=none \
+        -o clone_lock_rmw_x86_64 clone_lock_rmw_x86_64.S
+    gcc -nostdlib -static -Wl,--build-id=none \
+        -o clone_unaligned_atomic_x86_64 clone_unaligned_atomic_x86_64.S
     gcc -static -O2 -pthread -o pthread_mutex_counter_x86_64 pthread_mutex_counter.c
     gcc -static -O2 -pthread -o tso_spinlock_counter_x86_64 tso_spinlock_counter.c
     gcc -static -O2 -pthread -o tso_litmus_x86_64 tso_litmus.c
@@ -80,6 +84,8 @@ if [ "$SUFFIX" = x86_64 ]; then
     for binary in \
         clone_futex_smoke_x86_64 \
         clone_tso_litmus_x86_64 \
+        clone_lock_rmw_x86_64 \
+        clone_unaligned_atomic_x86_64 \
         pthread_mutex_counter_x86_64 \
         tso_spinlock_counter_x86_64 \
         tso_litmus_x86_64 \

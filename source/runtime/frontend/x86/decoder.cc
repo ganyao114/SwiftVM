@@ -180,6 +180,24 @@ void X64Decoder::Decode() {
             Interrupt(InterruptReason::ILL_CODE);
             break;
         }
+        // distorm leaves an architecturally invalid LOCK prefix in the unused
+        // prefix mask instead of rejecting the instruction.  Do not silently
+        // execute the unlocked opcode (notably LOCK IMUL and register-dest
+        // forms): x86 raises #UD.
+        bool invalid_lock = false;
+        for (u32 i = 0; i < insn.size && i < 16; ++i) {
+            if ((insn.unusedPrefixesMask & (u16(1) << i)) != 0 && code_ptr[i] == 0xF0) {
+                invalid_lock = true;
+                break;
+            }
+        }
+        if (invalid_lock) {
+            pc += insn.size;
+            Interrupt(InterruptReason::ILL_CODE);
+            assembler->AdvancePC(ir::Imm{insn.size});
+            end_decode = assembler->EndCommit();
+            break;
+        }
         pc += insn.size;
         if (!DecodeSwitch(insn)) {
             Interrupt(InterruptReason::FALLBACK);
