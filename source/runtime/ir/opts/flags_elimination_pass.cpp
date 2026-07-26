@@ -26,6 +26,14 @@
 
 #include "fmt/format.h"
 
+
+// Cached diagnostic-env probes: these sit on the per-block path and
+// Darwin's getenv() walks `environ` on every call.
+static bool EnvOnce(const char* name) { return std::getenv(name) != nullptr; }
+static const bool kEnv_dump_ir = EnvOnce("SVM_DUMP_IR");
+static const bool kEnv_dump_ir_post = EnvOnce("SVM_DUMP_IR_POST");
+static const bool kEnv_flags_debug = EnvOnce("SVM_FLAGS_DEBUG");
+
 namespace swift::runtime::ir {
 
 void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
@@ -109,7 +117,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 if (False(live)) {
                     stat_save_dead++;
                     victims.push_back(&inst);
-                    if (std::getenv("SVM_FLAGS_DEBUG")) {
+                    if (kEnv_flags_debug) {
                         fmt::print("[flags-elim-dbg] block {:#x}: DELETE SaveFlags mask={} needed={}\n",
                                    block->GetStartLocation().Value(), FlagsString(mask), FlagsString(needed));
                     }
@@ -198,14 +206,14 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
         }
     }
 
-    if (std::getenv("SVM_DUMP_IR") &&
+    if (kEnv_dump_ir &&
         (stat_save || stat_clear || stat_setcv)) {
         fmt::print("[flags-elim] block {:#x}: SaveFlags {} -> {} (-{}), ClearFlags {} -> {} "
                    "(-{}), SetC/V {} -> {} (-{}), masks narrowed {}\n",
                    block->GetStartLocation().Value(), stat_save, stat_save - stat_save_dead,
                    stat_save_dead, stat_clear, stat_clear - stat_clear_dead, stat_clear_dead,
                    stat_setcv, stat_setcv - stat_setcv_dead, stat_setcv_dead, stat_shrunk);
-        if (std::getenv("SVM_DUMP_IR_POST")) {
+        if (kEnv_dump_ir_post) {
             fmt::print("--- post-elim block {:#x} ---\n{}\n",
                        block->GetStartLocation().Value(), block->ToString());
         }
