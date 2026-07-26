@@ -255,7 +255,7 @@ void X64Decoder::Decode() {
                 // instruction, matching GetAddress's convention, so advance
                 // first and restore only if nobody claims it.
                 pc += vex.length;
-                if (DecodeAvxFp(vex)) {
+                if (DecodeAvxInt(vex) || DecodeAvxFp(vex)) {
                     assembler->AdvancePC(ir::Imm{vex.length});
                     end_decode = assembler->EndCommit();
                     continue;

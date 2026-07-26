@@ -7,6 +7,7 @@ add_library(fronted_x86 STATIC decoder.cc
     decoder_string.cc
     decoder_x87.cc
     decoder_avx_fp.cc
+    decoder_avx_int.cc
     vex_decoder.cc
     x87.cpp
     x87.h

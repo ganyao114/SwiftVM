@@ -770,6 +770,32 @@ private:
     void DecodeAvxFpCvtPd2Ps(const VexInsn& v);
     void DecodeAvxFpMovmsk(const VexInsn& v, u32 lane_bits);
 
+    // ---- VEX integer / data movement (decoder_avx_int.cc) ----------------
+    // Same contract as DecodeAvxFp: returns false for anything unmodelled, and
+    // every false return happens BEFORE any IR is emitted, so a decline never
+    // leaves a half-built block behind. The two families share no
+    // (map, opcode) pair, so dispatch order between them does not matter.
+    using AvxIntBinFn = ir::Value (*)(ir::Assembler*, ir::Value, ir::Value, u32, u32);
+    using AvxIntUnFn = ir::Value (*)(ir::Assembler*, ir::Value, u32);
+
+    bool DecodeAvxInt(const VexInsn& v);
+
+    ir::Value AvxIntNarrowSrc(const VexInsn& v, u32 bytes);
+    void DecodeAvxIntBinary(const VexInsn& v, AvxIntBinFn fn, u32 param);
+    void DecodeAvxIntUnary(const VexInsn& v, AvxIntUnFn fn, u32 param);
+    void DecodeAvxIntZeroDst(const VexInsn& v);
+    void DecodeAvxIntShiftCount(const VexInsn& v, u32 kind, u32 lane_bits);
+    void DecodeAvxIntShiftImm(const VexInsn& v, u32 kind, u32 lane_bits);
+    void DecodeAvxIntExtend(const VexInsn& v, u32 src_bits, u32 dst_bits, bool is_signed);
+    void DecodeAvxIntBroadcast(const VexInsn& v, u32 element_bits);
+    void DecodeAvxIntBroadcast128(const VexInsn& v);
+    void DecodeAvxIntInsert128(const VexInsn& v);
+    void DecodeAvxIntExtract128(const VexInsn& v);
+    void DecodeAvxIntPerm2i128(const VexInsn& v);
+    void DecodeAvxIntPermq(const VexInsn& v);
+    void DecodeAvxIntPermd(const VexInsn& v);
+    void DecodeAvxIntBlendv(const VexInsn& v);
+
     // ---- VEX.256 (decoder_avx.cc) ---------------------------------------
     // A 256-bit operation is two independent V128 operations (contract C1:
     // ARM64 V registers are 128 bits and RegAlloc maps one value onto one
