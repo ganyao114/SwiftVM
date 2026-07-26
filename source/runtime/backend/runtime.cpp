@@ -354,6 +354,31 @@ namespace backend {
 
 namespace {
 
+bool X87TopVirtRequested() {
+    const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
+    const char* x87_jit = std::getenv("SVM_X87_JIT");
+    return topvirt && std::strcmp(topvirt, "0") != 0 &&
+           x87_jit && std::strcmp(x87_jit, "0") != 0;
+}
+
+bool HasX87Op(ir::Block* block) {
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() == ir::OpCode::X87Op) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool HasX87Op(ir::HIRFunction* function) {
+    for (auto& block : function->GetHIRBlocksRPO()) {
+        if (HasX87Op(block.GetBlock())) {
+            return true;
+        }
+    }
+    return false;
+}
+
 size_t PrepareFunctionGuestRanges(ir::HIRFunction* function) {
     size_t decoded_blocks = 0;
     VAddr max_end = function->GetFunction()->GetStartLocation().Value();
@@ -421,7 +446,22 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     pipeline.RunFunction(function, module->GetModuleConfig().optimizations);
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} opts-ready\n", func_start);
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
+    const bool reserve_x87_topvirt =
+            X87TopVirtRequested() && HasX87Op(function);
+    if (reserve_x87_topvirt) {
+        // Dedicated callee-saved TOP/cache-validity register. Reserve it
+        // before allocation so neither block nor function mode can assign a
+        // live IR value to it.
+        gprs.Mark(20);
+    }
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
+    if (reserve_x87_topvirt) {
+        // Pin the hot half of the x87 stack only. Reserving all eight FPRs
+        // exhausted the finite spill arena in large function-mode units.
+        for (u32 code = 28; code < 32; ++code) {
+            fprs.Mark(code);
+        }
+    }
     backend::RegAlloc reg_alloc{static_cast<u32>(function->MaxInstrCount()), gprs, fprs};
     ir::RegisterAllocPass::Run(function, &reg_alloc);
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} regalloc-ready\n", func_start);
@@ -491,7 +531,17 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     }
     const auto& address_space = module->GetAddressSpace();
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
+    const bool reserve_x87_topvirt =
+            X87TopVirtRequested() && HasX87Op(ir_block);
+    if (reserve_x87_topvirt) {
+        gprs.Mark(20);
+    }
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
+    if (reserve_x87_topvirt) {
+        for (u32 code = 28; code < 32; ++code) {
+            fprs.Mark(code);
+        }
+    }
     backend::RegAlloc reg_alloc{static_cast<u32>(block->MaxInstrCount()), gprs, fprs};
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
@@ -527,7 +577,17 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     pipeline.RunBlock(block.get(), module_config.optimizations);
 
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
+    const bool reserve_x87_topvirt =
+            X87TopVirtRequested() && HasX87Op(block.get());
+    if (reserve_x87_topvirt) {
+        gprs.Mark(20);
+    }
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
+    if (reserve_x87_topvirt) {
+        for (u32 code = 28; code < 32; ++code) {
+            fprs.Mark(code);
+        }
+    }
     backend::RegAlloc reg_alloc{static_cast<u32>(block->MaxInstrId()), gprs, fprs};
 
     ir::RegisterAllocPass::Run(block.get(), &reg_alloc);
