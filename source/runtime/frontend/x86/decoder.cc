@@ -1474,7 +1474,13 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_VZEROALL:
             return DecodeAvx(insn);
         default:
-            return false;
+            // Legacy SSE3 / SSSE3 / SSE4.1 / SSE4.2 (decoder_sse4.cc). Routed
+            // from `default` rather than from sixty `case` labels: an opcode
+            // any case above claims never reaches here, and this arm therefore
+            // cannot collide with a case being added elsewhere in the switch.
+            // DecodeSse4 returns false for anything it does not claim, which
+            // preserves the previous FALLBACK behaviour exactly.
+            return DecodeSse4(insn);
     }
     return true;
 }

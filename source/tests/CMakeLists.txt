@@ -13,6 +13,7 @@ add_executable(swift_test
         fuzz/avx_gather_test.cpp
         fuzz/avx_misc_test.cpp
         fuzz/avx_fma_test.cpp
+        fuzz/sse4_test.cpp
         fuzz/xsave_test.cpp
         fuzz/bmi_test.cpp)
 
