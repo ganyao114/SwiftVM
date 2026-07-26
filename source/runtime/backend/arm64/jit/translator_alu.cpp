@@ -636,6 +636,15 @@ void JitTranslator::EmitVecPack(ir::Inst* inst) {
             __ Sqxtn(result.V8B(), left.V8H());
             __ Sqxtn2(result.V16B(), right.V8H());
         }
+    } else if (unsigned_destination) {
+        // PACKUSDW: signed 32-bit sources saturated into the UNSIGNED 16-bit
+        // range, which is exactly SQXTUN. This branch had been missing, so a
+        // 32-bit unsigned pack silently took the signed path below and turned
+        // 0x8000..0xFFFF into 0x7FFF — and diverged from RunVecPack, which
+        // honours the flag at every width. No decoder emits it yet (legacy
+        // packusdw is unimplemented), so this was latent rather than live.
+        __ Sqxtun(result.V4H(), left.V4S());
+        __ Sqxtun2(result.V8H(), right.V4S());
     } else {
         __ Sqxtn(result.V4H(), left.V4S());
         __ Sqxtn2(result.V8H(), right.V4S());
