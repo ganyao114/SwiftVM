@@ -4,7 +4,61 @@
 
 #include "instr.h"
 
+#include <cstdlib>
+
 namespace swift::runtime::ir {
+
+namespace {
+// See the comment on Inst::operator new. All three are trivially constructible
+// and trivially destructible on purpose: a thread_local with a non-trivial
+// destructor costs a guard check on every access, and there is nothing to run
+// at thread exit -- chunks are deliberately never handed back (below).
+thread_local void* tls_inst_free_head{};
+thread_local u8* tls_inst_bump{};
+thread_local size_t tls_inst_bump_left{};
+
+// Inst is `#pragma pack(1)`, so its size need not be a multiple of anything.
+// Round the slot up to 16 bytes so every instruction keeps exactly the
+// alignment malloc used to give it -- an Inst holds raw pointers
+// (next_pseudo_inst, the intrusive list node) that the rest of the runtime
+// reads without any packed-access annotation.
+constexpr size_t kInstSlot = (sizeof(Inst) + 15u) & ~size_t(15u);
+constexpr size_t kChunkBytes = 64u * 1024u;
+}  // namespace
+
+void* Inst::operator new(size_t sz) {
+    ASSERT(sz == sizeof(Inst));
+    if (auto* head = tls_inst_free_head) {
+        tls_inst_free_head = *static_cast<void**>(head);
+        return head;
+    }
+    if (tls_inst_bump_left < kInstSlot) {
+        // The tail of the old chunk (< one slot) is abandoned; at 64 KiB per
+        // chunk that is under 0.2% of it.
+        auto* chunk = static_cast<u8*>(std::malloc(kChunkBytes));
+        ASSERT_MSG(chunk != nullptr, "out of memory allocating an IR instruction chunk");
+        tls_inst_bump = chunk;
+        tls_inst_bump_left = kChunkBytes;
+    }
+    auto* mem = tls_inst_bump;
+    tls_inst_bump += kInstSlot;
+    tls_inst_bump_left -= kInstSlot;
+    return mem;
+}
+
+void Inst::operator delete(void* p) {
+    if (!p) {
+        return;
+    }
+    // Unbounded by construction: the storage belongs to a chunk this allocator
+    // owns forever, so "retained on the free list" and "free space in the
+    // arena" are the same thing. A block freed by a thread other than the one
+    // that allocated it joins the freeing thread's list, which is why chunks
+    // must never be released -- an Inst outlives the thread that created it
+    // whenever a compiled unit is reclaimed from another thread.
+    *static_cast<void**>(p) = tls_inst_free_head;
+    tls_inst_free_head = p;
+}
 
 Inst::Inst(OpCode code) : op_code(code) {}
 
