@@ -147,6 +147,8 @@ void JitContext::FlushSpillWrites() {
 
 XRegister JitContext::GetTmpX() {
     if (auto alloc = cur_dirty_gprs.GetFirstClear(); alloc >= 0) {
+        ASSERT_MSG(alloc != ip0.GetCode() && alloc != ip1.GetCode(),
+                   "VIXL macro scratch register escaped the reserved GPR mask");
         cur_dirty_gprs.Mark(alloc);
         return XRegister(alloc);
     }
