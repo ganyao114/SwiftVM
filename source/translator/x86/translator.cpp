@@ -803,6 +803,20 @@ void X86Instance::PrepareForMultithreading() {
     }
 }
 
+// --- AOT pre-compilation (source/aot) -------------------------------------
+// Exposed so the AOT compiler can drive the *existing* translation path from
+// a symbol table. See translator.h.
+void* X86Instance::CompileAt(uint64_t pc) { return impl->Translate(pc); }
+
+void X86Instance::ResetFunctionModeLatch() {
+    std::lock_guard guard(impl->translate_mutex);
+    impl->function_compilation_disabled = false;
+}
+
+runtime::backend::AddressSpace* X86Instance::GetAddressSpace() {
+    return impl->address_space.get();
+}
+
 X86Core::X86Core(X86Instance* instance) : instance(instance) {
     impl = std::make_unique<Impl>(instance);
 }

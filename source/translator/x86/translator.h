@@ -5,6 +5,10 @@
 #include "cpu.h"
 #include "translator/runtime.h"
 
+namespace swift::runtime::backend {
+class AddressSpace;
+}
+
 namespace swift::translator::x86 {
 using namespace swift::x86;
 class X86Core;
@@ -33,6 +37,31 @@ public:
     // publication for MT-safe SMC invalidation/reclamation. SVM_SMC_MT=0
     // retains the old diagnostic fallback that disables SMC for the process.
     void PrepareForMultithreading();
+
+    // --- AOT pre-compilation (source/aot) ---------------------------------
+    // Compile the code at guest address `pc` *without* executing anything,
+    // and hand back the entry pointer (null if the translator refused it).
+    // This is the same Impl::Translate() the CodeMiss path calls, exposed so
+    // the AOT compiler can drive it from a symbol table instead of from
+    // control flow -- deliberately not a second translation entry point,
+    // since a divergent AOT front end is the failure mode docs/aot-design.md
+    // §3 rules out.
+    void* CompileAt(uint64_t pc);
+
+    // Clear the process-wide "a function exceeded the block cap, stay on
+    // block compilation" latch. That latch exists to stop the *runtime* from
+    // repeatedly decoding overlapping suffixes of an oversized CFG; an
+    // offline pass walks a fixed symbol list once, so the repetition it
+    // guards against cannot happen, and leaving it latched costs almost all
+    // of AOT's whole-function coverage (130 of 1074 units on
+    // func_tests_x86_64 instead of ~1000). Per-location memos
+    // (block_only_locations) are deliberately NOT cleared.
+    void ResetFunctionModeLatch();
+
+    // The backing address space, so the AOT compiler can harvest the units
+    // Impl::Translate published and so the AOT loader can install units into
+    // it. Never null.
+    swift::runtime::backend::AddressSpace* GetAddressSpace();
 
 private:
     explicit X86Instance(void* memory_base, u64 guest_addr_mask);
