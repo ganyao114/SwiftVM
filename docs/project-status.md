@@ -62,7 +62,9 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 ## 4. 测试与验证体系
 
 - **本机（macOS arm64）跑通完整套件的前置条件**:系统缺 cmake 时可借用任一 3.21+ 的 cmake;vendored fmt 9.1.1 与 Apple clang 21 的 `consteval` 冲突，需 `-DCMAKE_CXX_FLAGS=-DFMT_CONSTEVAL=`;ANTLR 需 JDK,且 `find_program(JAVA ...)` 结果会被 CMake 缓存,换 JDK 后必须显式 `-DJAVA=<path>` 覆盖否则仍用旧值（而 "Antlr4 gen success" 是无条件打印的，不能作为成功依据）。
-- **全套件基线**(2026-07-26,含上述全部修复):非 fuzz **27 PASS / 0 FAIL**,Unicorn 差分 fuzz **33 PASS / 0 FAIL**——套件首次全绿。
+- **全套件基线**(2026-07-26,含上述全部修复):**逐用例独立进程**下非 fuzz 27 PASS / 0 FAIL、Unicorn 差分 fuzz 33 PASS / 0 FAIL。
+- ⚠ **但「逐用例跑」会掩盖跨用例缺陷**。`Fuzz x86 decode robustness`(`x86_fuzz.cpp:2167`) 在**单进程全量**跑时 SIGABRT(`malloc: pointer being freed was not allocated`,堆破坏),单跑该用例则通过——需要前面若干用例先跑过才触发。已在 origin/master 的干净 worktree 上复现，**属既有缺陷而非近期引入**。
+  §4 的 per-case 方法论是为绕开 Unicorn 偶发 SIGILL 而采用的，但它同时**交换掉了跨用例覆盖**。两种跑法都要做：per-case 用于定位与抗 flake,单进程全量用于暴露跨用例状态污染。仅凭 per-case 全绿宣称「套件通过」是不完整的。
 - **构建陷阱**:逐提交验证（`git checkout <sha>` 循环）会让文件时间戳回退，make 据此误判无需重编，后续测试跑的是**陈旧二进制**。症状是「用例数变少但全绿」——覆盖面悄悄塌了却看着像胜利。切回分支后应 `touch` 相关源文件强制重建再测。
 - **差分 fuzz**(`swift_test "Fuzz x86*"`,Unicorn oracle):32 族 per-case 运行。**已知 flake:Unicorn 自身偶发 SIGILL(rc=132,x86_fuzz.cpp:6023/6030)~10-30%/run，会 abort 整个 Catch2**——方法论：per-case 循环 + 每例 3 次重试；管道中 `$?` 是 grep 的码不是测试的码。
 - **Rosetta 仲裁**(`arch -x86_64`):ISA 语义 ground truth（真实 x86 边界行为，如 FCOM IE、FIST 边界、非对齐 LOCK 信号形态）。
@@ -135,6 +137,33 @@ InterruptReason::FALLBACK → translator/x86/translator.cpp 的 default 分支
 这条决定了 CPUID 的开启策略：一旦 advertise AVX,glibc 的 IFUNC 会立刻选 AVX2 版的 memcpy/strlen 等，**撞上任何一条未实现指令就是进程崩溃**,而不是慢一点。所以「实现了一大批 AVX」并不等于「可以开 CPUID」——必须先确认目标二进制实际执行的指令集被完整覆盖。
 
 初步取证（`llvm-objdump` 统计 `source/translator/linux/tests/` 下的真实二进制）：**musl 构建的 `real_hello`/`real_busy`/`func_tests` 里 VEX 指令数为 0**,而 glibc 构建的 `func_tests_x86_64` 有 **4525 条**。因此对 musl guest 开启的风险远低于 glibc guest。注意静态计数会包含运行时未必选中的 IFUNC 变体，「二进制中存在」不等于「一定执行」。
+
+### 方法论：本轮反复出现的「绿色陷阱」
+
+同一族问题在本轮出现了**四次**，共同特征是**失败会喊，退化不会**——测试变绿了，但覆盖面悄悄塌了：
+
+| # | 表现 | 根因 |
+|---|---|---|
+| 1 | Unicorn 差分全绿 | oracle **静默算错**（忽略 VEX.vvvv、执行破坏性 legacy SSE） |
+| 2 | 修复后测试通过，实际测的是旧代码 | `git checkout`/文件还原让 mtime 回退，make 误判无需重编 |
+| 3 | per-case 逐用例全绿 | 每用例独立进程，**结构上**不可能触发跨用例状态污染（掩盖了 slab 堆破坏） |
+| 4 | `ctest` 报 All tests passed (1 assertion) | 门控未设时用例 `SUCCEED()` 自跳过，而 `add_test` 没设门 |
+
+**对策已固化**：①任何单一 oracle 的结论都要与第二 oracle 或 SDM 交叉核对；②任何还原/变异测试后 `touch` 源文件或删 .o 再构建；③per-case 与单进程全量**两种跑法都要跑**；④`add_test` 显式设置全部门控。
+
+另有一条正向经验：**变异测试是唯一能证明断言有牙的手段**。本轮多处「全绿」在引入人为缺陷后确实变红，也有一次变异**没有**触发（`UZP1 t,x,x` 使 `UMULL2` 与 `UMULL` 语义等价），被如实报告为空结果而非计入战果——这个区分很重要。
+
+### IR 扩展判据（多 ISA 中间表示）
+
+该 IR 服务多个前端（ARM64/x86/Slang）与多个后端（ARM64/RISC-V64），新增 opcode 的标准是**语义合适 + 平台中性**。判断方法：**换一个 ISA 的前端还有意义吗？换一个后端还能自然实现吗？**
+
+- ✅ `VecUnzip`(VecZip 的对偶,AArch64 `UZP1/UZP2`、RVV `vnsrl/vcompress`)、`VecMulWiden`（正是 SVE2 的 `UMULLB/SMULLB`)
+- ❌ 被否决的 `VecMaddUbs`——「无符号×有符号、成对相加、饱和到 16 位」是 x86 特有组合，已拆解为前端用通用 op 组合
+- ❌ 不要把 x86 编码约定（`vinsertps` 的三段式 imm8、FMA 的 132/213/231 编号、gather 执行后清零掩码的副作用）塞进 IR——那属编码层，留在前端 handler
+
+参数化用中性形式（lane 宽度、是否有符号、是否饱和用 `Imm`），**不要为每个 x86 变体各开一个 opcode**——这也是 `ir.inc` 既有风格。
+
+**中性 ≠ 该加**：blend 族审查后新增为零，因为现有 `VecOr/VecAnd/VecAndNot`（= AArch64 `BSL`、RVV `vmerge`）已能表达；`VecSelect` 虽是合法中性原语、能把三条降成一条，但不值得为此永久增加一个 opcode。
 
 ### oracle 缺陷模式（本轮累计四处）
 
