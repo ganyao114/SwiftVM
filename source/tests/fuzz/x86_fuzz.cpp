@@ -1864,6 +1864,8 @@ TEST_CASE("Fuzz x86 cpuid") {
         // the variable means enabled.
         const char* sse4_env = std::getenv("SVM_SSE4");
         const bool sse4_on = !sse4_env || std::strcmp(sse4_env, "0") != 0;
+        const char* sse42str_env = std::getenv("SVM_SSE42STR");
+        const bool sse42str_on = !sse42str_env || std::strcmp(sse42str_env, "0") != 0;
         switch (leaf) {
             case 0:
                 REQUIRE(sig[0] == 0x15);
@@ -1896,7 +1898,7 @@ TEST_CASE("Fuzz x86 cpuid") {
                 REQUIRE(((sig[2] >> 9) & 1u) == (sse4_on ? 1u : 0u));    // SSSE3
                 REQUIRE(((sig[2] >> 19) & 1u) == (sse4_on ? 1u : 0u));   // SSE4.1
                 REQUIRE(((sig[2] >> 23) & 1u) == (sse4_on ? 1u : 0u));   // POPCNT
-                REQUIRE((sig[2] & (1u << 20)) == 0);   // no SSE4.2 (pcmpXstrY missing)
+                REQUIRE(((sig[2] >> 20) & 1u) == (sse42str_on ? 1u : 0u));  // SSE4.2
                 break;
             case 7:
                 // AVX2 (bit 5) tracks SVM_AVX *and* SVM_XSAVE together -- AVX
