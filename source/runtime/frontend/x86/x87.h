@@ -10,11 +10,6 @@ namespace swift::x86 {
 // reduced pipeline. SoftFloat writes clear it; certified native/f64 values set
 // it. FXSAVE/FXRSTOR never expose or restore the padding.
 constexpr u8 kX87ReducedMarker = 0xA5;
-// An exact helper result that is finite and inside the normal binary64 range.
-// Its architectural ext80 payload remains untouched, but a later opt-in
-// reduced operation may explicitly round it to f64 instead of keeping the
-// whole arithmetic chain on the helper path.
-constexpr u8 kX87ReducedReadyMarker = 0xA6;
 
 // X87Dispatch command encoding.  The frontend supplies one command word and
 // one optional guest address; the helper updates the architectural x87 fields
