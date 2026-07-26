@@ -38,6 +38,14 @@ public:
     [[nodiscard]] XRegister GetTmpX();
     [[nodiscard]] Register GetTmpGPR(ir::ValueType type);
     [[nodiscard]] VRegister GetTmpV();
+    // Registers unavailable for the current IR instruction: RegAlloc's live set
+    // here (a conservative superset -- see register_alloc_pass.cpp), the
+    // runtime's reserved registers, and every scratch GetTmpX/GetTmpV has
+    // already handed out while emitting this instruction.  A register absent
+    // from these holds no value the block will read again, which is what lets
+    // EmitHostCall save a subset instead of everything.
+    [[nodiscard]] const GPRSMask& GetLiveGPRs() const { return cur_dirty_gprs; }
+    [[nodiscard]] const FPRSMask& GetLiveFPRs() const { return cur_dirty_fprs; }
     // Exclude a register from GetTmpX for the current IR instruction only.
     void ReserveTmpX(const XRegister& reg);
 
