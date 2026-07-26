@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include "runtime/frontend/x86/cpu.h"
 #include "runtime/frontend/x86/decoder_internal.h"
@@ -176,8 +177,10 @@ ir::Uniform ToVReg(const X86RegInfo& info) {
     if (info.index >= X86RegInfo::Xmm0 && info.index <= X86RegInfo::Xmm15) {
         offset = offsetof(ThreadContext64, xmms) + (info.index - X86RegInfo::Xmm0) * sizeof(Xmm);
     } else if (info.index >= X86RegInfo::Ymm0 && info.index <= X86RegInfo::Ymm15) {
-        // AVX Regs
-        offset = offsetof(ThreadContext64, xmms) + (info.index - X86RegInfo::Ymm0) * sizeof(Ymm);
+        // A YMM entry names the HIGH half only; the low half is the matching
+        // Xmm entry, which is where every SSE handler already reads and writes.
+        offset = offsetof(ThreadContext64, ymm_high) +
+                 (info.index - X86RegInfo::Ymm0) * sizeof(Xmm);
     } else {
         PANIC("Invalid FPR {}!", info.index);
     }
@@ -294,6 +297,9 @@ void X64Decoder::Decode() {
             break;
         }
         pc += insn.size;
+        // VEX handlers re-read the prefix bytes (see DecodeVex): distorm does
+        // not expose VEX.L/W/vvvv and mis-sizes the AVX2 integer forms.
+        insn_bytes = code_ptr;
         if (!DecodeSwitch(insn)) {
             Interrupt(InterruptReason::FALLBACK);
             break;
@@ -1359,6 +1365,62 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             // single-threaded model.
             __ Nop();
             break;
+        // ---- AVX: VEX-encoded forms ----
+        // One entry point so the SVM_AVX gate and the VEX.L / operand-shape
+        // checks are written once; see DecodeAvx.
+        case I_VMOVDQA:
+        case I_VMOVDQU:
+        case I_VMOVAPS:
+        case I_VMOVUPS:
+        case I_VMOVAPD:
+        case I_VMOVUPD:
+        case I_VMOVNTDQ:
+        case I_VMOVNTDQA:
+        case I_VMOVNTPS:
+        case I_VMOVNTPD:
+        case I_VLDDQU:
+        case I_VMOVD:
+        case I_VMOVQ:
+        case I_VPXOR:
+        case I_VPOR:
+        case I_VPAND:
+        case I_VPANDN:
+        case I_VPADDB:
+        case I_VPADDW:
+        case I_VPADDD:
+        case I_VPADDQ:
+        case I_VPSUBB:
+        case I_VPSUBW:
+        case I_VPSUBD:
+        case I_VPSUBQ:
+        case I_VPCMPEQB:
+        case I_VPCMPEQW:
+        case I_VPCMPEQD:
+        case I_VPCMPGTB:
+        case I_VPCMPGTW:
+        case I_VPCMPGTD:
+        // Routed for their VEX.256 handlers (decoder_avx.cc). The VEX.128
+        // forms have no handler yet; DecodeAvx's L=0 path declines them, which
+        // traps the block as FALLBACK — the same outcome as before they were
+        // listed here, never a mis-execution.
+        case I_VXORPS:
+        case I_VXORPD:
+        case I_VORPS:
+        case I_VORPD:
+        case I_VANDPS:
+        case I_VANDPD:
+        case I_VANDNPS:
+        case I_VANDNPD:
+        case I_VPMINUB:
+        case I_VPMINUD:
+        case I_VPMAXUB:
+        case I_VPMAXUD:
+        case I_VPMOVMSKB:
+        case I_VPSHUFB:
+        case I_VBROADCASTSS:
+        case I_VZEROUPPER:
+        case I_VZEROALL:
+            return DecodeAvx(insn);
         default:
             return false;
     }
@@ -1923,5 +1985,381 @@ void X64Decoder::DecodeLea(_DInst& insn) {
 // ---------------------------------------------------------------------------
 // SSE decode implementations
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// AVX / VEX infrastructure
+// ---------------------------------------------------------------------------
+
+bool X64Decoder::AvxEnabled() {
+    // Read once: DecodeSwitch consults this per instruction and getenv is not
+    // required to be cheap (or thread-safe against setenv).
+    static const bool enabled = [] {
+        const char* env = std::getenv("SVM_AVX");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
+X64Decoder::VexInfo X64Decoder::DecodeVex() const {
+    VexInfo vex{};
+    if (!insn_bytes) {
+        return vex;
+    }
+    // A VEX prefix must immediately precede the opcode; only segment and
+    // address-size overrides may come before it (66/F2/F3/REX before VEX is
+    // #UD, and distorm would not have produced a V* mnemonic in that case).
+    u32 i = 0;
+    while (i < 4) {
+        const u8 b = insn_bytes[i];
+        if (b == 0x2E || b == 0x36 || b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65 ||
+            b == 0x67) {
+            ++i;
+            continue;
+        }
+        break;
+    }
+    if (insn_bytes[i] == 0xC5) {
+        // 2-byte VEX: [R vvvv L pp]. Implies mmmmm=1 (0F map) and W=0.
+        const u8 b1 = insn_bytes[i + 1];
+        const u8 raw_vvvv = static_cast<u8>((b1 >> 3) & 0xF);
+        vex.valid = true;
+        vex.vvvv = static_cast<u8>(~raw_vvvv & 0xF);
+        vex.vvvv_unused = raw_vvvv == 0xF;
+        vex.l = (b1 & 0x04) != 0;
+        vex.pp = static_cast<u8>(b1 & 0x03);
+        vex.mmmmm = 1;
+        vex.w = false;
+    } else if (insn_bytes[i] == 0xC4) {
+        // 3-byte VEX: [R X B mmmmm][W vvvv L pp].
+        const u8 b1 = insn_bytes[i + 1];
+        const u8 b2 = insn_bytes[i + 2];
+        const u8 raw_vvvv = static_cast<u8>((b2 >> 3) & 0xF);
+        vex.valid = true;
+        vex.mmmmm = static_cast<u8>(b1 & 0x1F);
+        vex.w = (b2 & 0x80) != 0;
+        vex.vvvv = static_cast<u8>(~raw_vvvv & 0xF);
+        vex.vvvv_unused = raw_vvvv == 0xF;
+        vex.l = (b2 & 0x04) != 0;
+        vex.pp = static_cast<u8>(b2 & 0x03);
+    }
+    return vex;
+}
+
+bool X64Decoder::IsVex128(const VexInfo& vex) const { return vex.valid && !vex.l; }
+
+u32 X64Decoder::VecIndex(_RegisterType reg) {
+    if (reg >= R_YMM0 && reg <= R_YMM15) {
+        return static_cast<u32>(reg - R_YMM0);
+    }
+    ASSERT(reg >= R_XMM0 && reg <= R_XMM15);
+    return static_cast<u32>(reg - R_XMM0);
+}
+
+_RegisterType X64Decoder::XmmOf(u32 index) {
+    ASSERT(index < 16);
+    return static_cast<_RegisterType>(R_XMM0 + index);
+}
+
+ir::Uniform X64Decoder::YmmHighUniform(u32 index) {
+    ASSERT(index < 16);
+    return ir::Uniform{static_cast<u32>(offsetof(ThreadContext64, ymm_high) + index * sizeof(Xmm)),
+                       ir::ValueType::V128};
+}
+
+ir::Value X64Decoder::YmmHighRead(u32 index) { return __ LoadUniform(YmmHighUniform(index)); }
+
+void X64Decoder::YmmHighWrite(u32 index, ir::Value value) {
+    __ StoreUniform(YmmHighUniform(index), value.SetType(ir::ValueType::V128));
+}
+
+ir::Value X64Decoder::YmmHighLo(u32 index) {
+    return __ LoadUniform(ir::Uniform{YmmHighUniform(index).GetOffset(), ir::ValueType::U64});
+}
+
+ir::Value X64Decoder::YmmHighHi(u32 index) {
+    return __ LoadUniform(ir::Uniform{YmmHighUniform(index).GetOffset() + 8, ir::ValueType::U64});
+}
+
+void X64Decoder::YmmHighLo(u32 index, ir::Value value) {
+    // NarrowTo normalizes untyped (CallLambda) values so the store has a width,
+    // mirroring XmmLo/XmmHi.
+    __ StoreUniform(ir::Uniform{YmmHighUniform(index).GetOffset(), ir::ValueType::U64},
+                    NarrowTo(value, ir::ValueType::U64));
+}
+
+void X64Decoder::YmmHighHi(u32 index, ir::Value value) {
+    __ StoreUniform(ir::Uniform{YmmHighUniform(index).GetOffset() + 8, ir::ValueType::U64},
+                    NarrowTo(value, ir::ValueType::U64));
+}
+
+void X64Decoder::ZeroYmmHigh(u32 index) {
+    // Two U64 zero stores rather than one V128: the vector IR has no
+    // "materialize zero vector" op, and LoadImm produces a scalar.
+    auto zero = __ LoadImm(ir::Imm(u64(0)));
+    __ StoreUniform(ir::Uniform{YmmHighUniform(index).GetOffset(), ir::ValueType::U64}, zero);
+    __ StoreUniform(ir::Uniform{YmmHighUniform(index).GetOffset() + 8, ir::ValueType::U64}, zero);
+}
+
+bool X64Decoder::DecodeAvx(_DInst& insn) {
+    // Returning false traps the block as FALLBACK. That is the correct answer
+    // for every shape we do not model: a VEX instruction executed with the
+    // wrong width or operand order silently produces wrong data, which is far
+    // worse than refusing to translate the block.
+    if (!AvxEnabled()) {
+        return false;
+    }
+    // VZEROUPPER/VZEROALL take no operands and are distinguished by mnemonic
+    // (VZEROALL is the L=1 encoding), so they need neither check below.
+    if (insn.opcode == I_VZEROUPPER || insn.opcode == I_VZEROALL) {
+        DecodeVzero(insn.opcode == I_VZEROALL);
+        return true;
+    }
+    const auto vex = DecodeVex();
+    // L is read from the raw prefix, never from distorm's operand sizes: for
+    // the AVX2 packed-integer opcodes this distorm snapshot has no 256-bit
+    // table entry and reports 128-bit XMM operands for an L=1 encoding without
+    // any error. Gating on the real L bit is what keeps that misdecode from
+    // reaching a handler. L=1 belongs to the 256-bit handlers.
+    if (!IsVex128(vex)) {
+        // DecodeAvx256 re-checks vex.valid/vex.l, so a non-VEX encoding still
+        // declines here and the block traps as FALLBACK.
+        return DecodeAvx256(insn, vex);
+    }
+    // Normalize any YMM operand code to its XMM twin. distorm already reports
+    // XMM for the L=0 encodings we accept, but a YMM code reaching one of the
+    // SSE helpers below would silently read/write ymm_high instead of xmms —
+    // the wrong 128-bit half, with no diagnostic. One cheap guard here covers
+    // every handler.
+    for (auto& op : insn.ops) {
+        if (op.type == O_REG && op.index >= R_YMM0 && op.index <= R_YMM15) {
+            op.index = static_cast<u8>(XmmOf(VecIndex(static_cast<_RegisterType>(op.index))));
+        }
+    }
+    switch (insn.opcode) {
+        case I_VMOVDQA:
+        case I_VMOVDQU:
+        case I_VMOVAPS:
+        case I_VMOVUPS:
+        case I_VMOVAPD:
+        case I_VMOVUPD:
+        // Non-temporal hints carry no extra semantics in this model, so they
+        // degrade to plain moves exactly as the SSE dispatch does.
+        case I_VMOVNTDQ:
+        case I_VMOVNTDQA:
+        case I_VMOVNTPS:
+        case I_VMOVNTPD:
+        case I_VLDDQU:
+            DecodeVexMovVec(insn);
+            return true;
+        case I_VMOVD:
+            DecodeVexMovd(insn);
+            return true;
+        case I_VMOVQ:
+            DecodeVexMovq(insn);
+            return true;
+        default:
+            break;
+    }
+    // Everything remaining is a 3-operand non-destructive form. Verify the
+    // operand shape distorm produced rather than trusting it: a 2-operand
+    // result here would make ops[1] the r/m operand and ops[2] garbage.
+    if (insn.ops[0].type != O_REG || insn.ops[1].type != O_REG ||
+        insn.ops[2].type == O_NONE) {
+        return false;
+    }
+    switch (insn.opcode) {
+        case I_VPXOR:
+            DecodeVexBitwise(insn, VecBitwiseOp::Xor);
+            return true;
+        case I_VPOR:
+            DecodeVexBitwise(insn, VecBitwiseOp::Or);
+            return true;
+        case I_VPAND:
+            DecodeVexBitwise(insn, VecBitwiseOp::And);
+            return true;
+        case I_VPANDN:
+            DecodeVexBitwise(insn, VecBitwiseOp::AndNot);
+            return true;
+        case I_VPADDB:
+            DecodeVexInt(insn, VecIntOp::Add, 8);
+            return true;
+        case I_VPADDW:
+            DecodeVexInt(insn, VecIntOp::Add, 16);
+            return true;
+        case I_VPADDD:
+            DecodeVexInt(insn, VecIntOp::Add, 32);
+            return true;
+        case I_VPADDQ:
+            DecodeVexInt(insn, VecIntOp::Add, 64);
+            return true;
+        case I_VPSUBB:
+            DecodeVexInt(insn, VecIntOp::Sub, 8);
+            return true;
+        case I_VPSUBW:
+            DecodeVexInt(insn, VecIntOp::Sub, 16);
+            return true;
+        case I_VPSUBD:
+            DecodeVexInt(insn, VecIntOp::Sub, 32);
+            return true;
+        case I_VPSUBQ:
+            DecodeVexInt(insn, VecIntOp::Sub, 64);
+            return true;
+        case I_VPCMPEQB:
+            DecodeVexInt(insn, VecIntOp::CmpEq, 8);
+            return true;
+        case I_VPCMPEQW:
+            DecodeVexInt(insn, VecIntOp::CmpEq, 16);
+            return true;
+        case I_VPCMPEQD:
+            DecodeVexInt(insn, VecIntOp::CmpEq, 32);
+            return true;
+        case I_VPCMPGTB:
+            DecodeVexInt(insn, VecIntOp::CmpGt, 8);
+            return true;
+        case I_VPCMPGTW:
+            DecodeVexInt(insn, VecIntOp::CmpGt, 16);
+            return true;
+        case I_VPCMPGTD:
+            DecodeVexInt(insn, VecIntOp::CmpGt, 32);
+            return true;
+        default:
+            return false;
+    }
+}
+
+_RegisterType X64Decoder::VexSrc1(const _DInst& insn) {
+    // Non-destructive source: `vpxor dst, src1, src2` keeps dst intact, so
+    // handlers must read ops[1] where the SSE version reads ops[0].
+    ASSERT(insn.ops[1].type == O_REG);
+    return static_cast<_RegisterType>(insn.ops[1].index);
+}
+
+void X64Decoder::DecodeVexBitwise(_DInst& insn, VecBitwiseOp op) {
+    const auto dst = VecIndex(static_cast<_RegisterType>(insn.ops[0].index));
+    auto left = XmmRead(VexSrc1(insn));
+    auto right = LoadSrcVec(insn, insn.ops[2]);
+    ir::Value result;
+    switch (op) {
+        case VecBitwiseOp::Xor:
+            result = __ VecXor(left, right);
+            break;
+        case VecBitwiseOp::Or:
+            result = __ VecOr(left, right);
+            break;
+        case VecBitwiseOp::And:
+            result = __ VecAnd(left, right);
+            break;
+        case VecBitwiseOp::AndNot:
+            // VPANDN: dst = (NOT src1) AND src2; VecAndNot(x, y) = x AND NOT y.
+            result = __ VecAndNot(right, left);
+            break;
+    }
+    XmmWrite(XmmOf(dst), result.SetType(ir::ValueType::V128));
+    ZeroYmmHigh(dst);
+}
+
+void X64Decoder::DecodeVexInt(_DInst& insn, VecIntOp op, u32 lane_bits) {
+    const auto dst = VecIndex(static_cast<_RegisterType>(insn.ops[0].index));
+    auto left = XmmRead(VexSrc1(insn));
+    auto right = LoadSrcVec(insn, insn.ops[2]);
+    ir::Value result;
+    switch (op) {
+        case VecIntOp::Add:
+            result = __ VecAdd(left, right, ir::Imm(lane_bits));
+            break;
+        case VecIntOp::Sub:
+            result = __ VecSub(left, right, ir::Imm(lane_bits));
+            break;
+        case VecIntOp::CmpEq:
+            result = __ VecCmpEq(left, right, ir::Imm(lane_bits));
+            break;
+        case VecIntOp::CmpGt:
+            result = __ VecCmpGt(left, right, ir::Imm(lane_bits));
+            break;
+    }
+    XmmWrite(XmmOf(dst), result.SetType(ir::ValueType::V128));
+    ZeroYmmHigh(dst);
+}
+
+void X64Decoder::DecodeVexMovVec(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+    if (op0.type == O_REG) {
+        // Load form: xmm, xmm/m128.
+        const auto dst = VecIndex(static_cast<_RegisterType>(op0.index));
+        ir::Value v;
+        if (op1.type == O_REG) {
+            v = XmmRead(XmmOf(VecIndex(static_cast<_RegisterType>(op1.index))));
+        } else {
+            v = __ LoadMemory(ir::Operand{FlatAddress(insn, op1)}).SetType(ir::ValueType::V128);
+        }
+        XmmWrite(XmmOf(dst), v);
+        ZeroYmmHigh(dst);
+    } else {
+        // Store form: m128, xmm. No destination register, so no upper half to
+        // clear (vmovntdq degrades to a plain store, as the SSE path does).
+        auto v = XmmRead(XmmOf(VecIndex(static_cast<_RegisterType>(op1.index))));
+        __ StoreMemory(ir::Operand{FlatAddress(insn, op0)}, v);
+    }
+}
+
+void X64Decoder::DecodeVexMovd(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+    // VEX.W forms (vmovq via VEX.128.66.0F.W1 6E) are 64-bit: same path as
+    // vmovq, exactly as DecodeMovd defers to DecodeMovq.
+    if (op0.size == 64 || op1.size == 64) {
+        DecodeVexMovq(insn);
+        return;
+    }
+    if (op0.type == O_REG && IsV(static_cast<_RegisterType>(op0.index))) {
+        // vmovd xmm, r/m32: low dword = src, bits 255:32 all zeroed.
+        const auto dst = VecIndex(static_cast<_RegisterType>(op0.index));
+        auto src = ToValue(Src(insn, op1));
+        XmmLo(XmmOf(dst), __ ZeroExtend64(src));
+        XmmHi(XmmOf(dst), __ LoadImm(ir::Imm(u64(0))));
+        ZeroYmmHigh(dst);
+    } else {
+        // vmovd r/m32, xmm: no vector destination.
+        Dst(insn, op0, XmmLo(XmmOf(VecIndex(static_cast<_RegisterType>(op1.index)))));
+    }
+}
+
+void X64Decoder::DecodeVexMovq(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+    if (op0.type == O_REG && IsV(static_cast<_RegisterType>(op0.index))) {
+        // vmovq xmm, xmm/r64/m64: low qword = src, bits 255:64 zeroed.
+        const auto dst = VecIndex(static_cast<_RegisterType>(op0.index));
+        ir::Value v;
+        if (op1.type == O_REG && IsV(static_cast<_RegisterType>(op1.index))) {
+            v = XmmLo(XmmOf(VecIndex(static_cast<_RegisterType>(op1.index))));
+        } else {
+            v = ToValue(Src(insn, op1));
+        }
+        XmmLo(XmmOf(dst), v);
+        XmmHi(XmmOf(dst), __ LoadImm(ir::Imm(u64(0))));
+        ZeroYmmHigh(dst);
+    } else {
+        Dst(insn, op0, XmmLo(XmmOf(VecIndex(static_cast<_RegisterType>(op1.index)))));
+    }
+}
+
+void X64Decoder::DecodeVzero(bool all) {
+    // Outside 64-bit mode only YMM0-7 exist; touching YMM8-15 there would
+    // corrupt state a 32-bit guest can still observe through a later mode
+    // switch, so follow the architectural register count.
+    const u32 count = is_64bit ? 16 : 8;
+    auto zero = __ LoadImm(ir::Imm(u64(0)));
+    for (u32 i = 0; i < count; ++i) {
+        if (all) {
+            // VZEROALL clears the FULL registers, low half included.
+            const auto low = ToVReg(x86_regs_table[XmmOf(i)]).GetOffset();
+            __ StoreUniform(ir::Uniform{low, ir::ValueType::U64}, zero);
+            __ StoreUniform(ir::Uniform{low + 8, ir::ValueType::U64}, zero);
+        }
+        ZeroYmmHigh(i);
+    }
+}
 
 }  // namespace swift::x86
