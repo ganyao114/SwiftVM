@@ -24,9 +24,21 @@
 #
 # Before the SmcTracker node-ownership fix this aborted on ~100% of runs.
 #
+# EVERY non-zero outcome below is a regression. Two defects this test used to
+# report as "known open" are fixed (runtime.cpp, Runtime::Impl::Interpreter):
+# under SMC churn the runtime fell into the IR interpreter for a dispatch slot
+# whose module node was still live, and the interpreter cannot execute
+# JIT-pipeline IR -- it yielded 0 for statically allocated uniforms (guest rsp
+# -> PageFatal at `ret`, rc 103) and spun forever on ReturnToDispatch-class
+# terminals (the timeout). Measured on the fix commit's parent: 14/550 runs
+# lost a guest thread and 5/550 hung; after the fix 0/550 and 0/550.
+#
+# Sizing: those rates are ~2.5% and ~0.9% per run, so 200 runs detect a
+# reintroduction with probability >99.9% (100 runs only ~97%). Keep the
+# default at 200 unless you are iterating locally.
 set -u
 SVM="${1:?usage: run_smc_stress_tests.sh <svm_translator_linux> [runs] [timeout]}"
-RUNS="${2:-100}"
+RUNS="${2:-200}"
 TMO="${3:-60}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GUEST="$HERE/smc_mt_stress_x86_64"
@@ -67,13 +79,11 @@ if [ "$host_fails" != 0 ] || [ "$guest_lost" != 0 ] || [ "$timeouts" != 0 ]; the
     echo "--- signatures ---"
     sort "$tmp/sig" | uniq -c | sort -rn | head -10
 fi
-# host_fails is the hard gate: any host abort/SIGILL is the SMC use-after-free
-# class of defect coming back.
+# Both gates are hard. The exit codes stay distinct only so a failure says
+# which class came back -- neither is tolerated.
+#   exit 1  host abort/SIGILL: the SMC use-after-free class.
+#   exit 2  a guest thread was halted, or a run hung: the runtime interpreted
+#           JIT-pipeline IR on an SMC dispatch miss (see the header).
 [ "$host_fails" = 0 ] || exit 1
-# guest_lost / timeouts are a SEPARATE, still-open defect this test discovered
-# (a guest thread taking PageFatal inside an SMC-churned unit, and an
-# invalidate/recompile thrash). They reproduce with and without the node
-# ownership fix, so they are reported with a distinct status rather than
-# folded into the regression gate.
 [ "$guest_lost" = 0 ] && [ "$timeouts" = 0 ] || exit 2
 exit 0
