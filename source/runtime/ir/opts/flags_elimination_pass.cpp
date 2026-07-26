@@ -20,6 +20,7 @@
 
 #include "flags_elimination_pass.h"
 
+#include <cstring>
 #include <unordered_map>
 #include <vector>
 
@@ -61,15 +62,50 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
             case OpCode::SaveFlags: {
                 stat_save++;
                 const Flags mask = inst.GetArg<Flags>(1);
-                // Never delete or narrow a SaveFlags that writes C: carry
-                // persists across blocks and a later block's Adc/Sbb may
-                // read it. Per-block liveness cannot model this dependency.
-                // Do NOT modify `needed` — this preserved instruction must
-                // not "kill" any bits for earlier writers.
+                // PF and AF are the two x86 status bits with no host
+                // equivalent, and they are what makes an arithmetic guest
+                // instruction expensive: the arm64 back end spends one BFI on
+                // parity (SaveParity) and an EOR/EOR/UBFX/BFI plus a scratch
+                // GPR on the auxiliary carry (SaveAuxiliaryCarry), for two bits
+                // that only JP/JNP/SETP, LAHF, PUSHF and the BCD instructions
+                // ever read.  Measured over the 25 e2e guests plus the bench
+                // kernels, CMP alone cost 16.4 host instructions per guest
+                // instruction, and CMP/TEST/ADD/SUB/XOR/AND/INC together were
+                // ~48% of all emitted IR.
+                //
+                // Narrowing the mask in general is unsafe -- the emitter reads
+                // the pseudo mask to choose between the flag-setting and plain
+                // form of a host instruction, so dropping an NZCV bit changes
+                // which instruction is emitted.  PF and AF are exactly the bits
+                // that take no part in that decision (`needs_nzcv` tests
+                // Flags::NZCV, and both back ends read this same mask), which
+                // is what makes narrowing *these two* safe where a general
+                // narrowing is not.
+                constexpr Flags kSoftBits = Flags::Parity | Flags::AuxiliaryCarry;
+                // Bisect switch, mirroring SVM_UNIFORM_DSE / SVM_CONST_CSE.
+                static const bool narrow_off = [] {
+                    const char* e = std::getenv("SVM_FLAG_NARROW");
+                    return e && std::strcmp(e, "0") == 0;
+                }();
+                const Flags narrowed =
+                        narrow_off ? mask : (mask & ~(kSoftBits & ~needed));
+
+                // Never delete a SaveFlags that writes C: carry persists across
+                // blocks and a later block's Adc/Sbb may read it. Per-block
+                // liveness cannot model that dependency, so such a write also
+                // does not "kill" NZCV/OF for earlier writers.
                 if (True(mask & Flags::Carry)) {
+                    if (narrowed != mask) {
+                        inst.SetArg(1, narrowed);
+                        stat_shrunk++;
+                    }
+                    // It does still unconditionally overwrite whichever of
+                    // PF/AF remain in the mask, so those are dead for earlier
+                    // writers even under the conservative carry rule.
+                    needed &= ~(narrowed & kSoftBits);
                     break;
                 }
-                const Flags live = mask & needed;
+                const Flags live = narrowed & needed;
                 if (False(live)) {
                     stat_save_dead++;
                     victims.push_back(&inst);
@@ -78,12 +114,11 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                                    block->GetStartLocation().Value(), FlagsString(mask), FlagsString(needed));
                     }
                 } else {
-                    // No narrowing — keep the original mask intact.
-                    // Narrowing interacts badly with the JIT's lazy NZCV
-                    // window (the emitter checks the pseudo mask to decide
-                    // flag-setting vs non-flag form; a narrowed mask can
-                    // switch forms and change host NZCV behavior).
-                    needed &= ~mask;
+                    if (narrowed != mask) {
+                        inst.SetArg(1, narrowed);
+                        stat_shrunk++;
+                    }
+                    needed &= ~narrowed;
                 }
                 break;
             }
