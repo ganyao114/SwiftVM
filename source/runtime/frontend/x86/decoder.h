@@ -10,6 +10,7 @@
 #include "runtime/backend/context.h"
 #include "runtime/frontend/ir_assembler.h"
 #include "runtime/include/config.h"
+#include "vex_decoder.h"
 
 namespace swift::x86 {
 
@@ -739,6 +740,35 @@ private:
     void DecodeVexMovq(_DInst& insn);
     // vzeroupper / vzeroall.
     void DecodeVzero(bool all);
+
+    // ---- VEX floating point (decoder_avx_fp.cc) --------------------------
+    // Single entry point, tried from the VEX dispatch once the prefix is
+    // decoded and pc has advanced past the instruction (RIP-relative folding
+    // depends on that, matching GetAddress's convention). Returns false for
+    // anything unmodelled, which must trap the block as FALLBACK: a VEX float
+    // run at the wrong width or with swapped operands silently produces wrong
+    // data rather than faulting.
+    bool DecodeAvxFp(const VexInsn& v);
+
+    ir::Value VexAddress(const VexInsn& v);
+    ir::Value VexLoadVec(const VexInsn& v);
+    VecHalves VexLoadVec256(const VexInsn& v);
+    ir::Value VexLoadScalar(const VexInsn& v, u32 lane_bits);
+    ir::Value VexLoadScalarVec(const VexInsn& v, u32 lane_bits);
+    void VexWrite128(u32 index, ir::Value value);
+    void VexWrite256(u32 index, ir::Value lo, ir::Value hi);
+
+    void DecodeAvxFpArith(const VexInsn& v, VecFloatOp op, u32 lane_bits);
+    void DecodeAvxFpArithScalar(const VexInsn& v, VecFloatOp op, u32 lane_bits);
+    void DecodeAvxFpBitwise(const VexInsn& v, VecBitwiseOp op);
+    void DecodeAvxFpMinMax(const VexInsn& v, u32 lane_bits, bool maximum, bool scalar);
+    void DecodeAvxFpSqrt(const VexInsn& v, u32 lane_bits, bool scalar);
+    void DecodeAvxFpCmpMask(const VexInsn& v, u32 lane_bits, bool scalar);
+    void DecodeAvxFpComis(const VexInsn& v, u32 lane_bits);
+    void DecodeAvxFpCvtLanewise(const VexInsn& v, u32 kind);
+    void DecodeAvxFpCvtPs2Pd(const VexInsn& v);
+    void DecodeAvxFpCvtPd2Ps(const VexInsn& v);
+    void DecodeAvxFpMovmsk(const VexInsn& v, u32 lane_bits);
 
     // ---- VEX.256 (decoder_avx.cc) ---------------------------------------
     // A 256-bit operation is two independent V128 operations (contract C1:
