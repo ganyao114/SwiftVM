@@ -915,6 +915,35 @@ private:
     ir::Value CallX87(u64 command, ir::Value guest_address);
     void ApplyX87CompareFlags(ir::Value compact_flags);
 
+    // ---- legacy SSE3 / SSSE3 / SSE4.1 / SSE4.2 (decoder_sse4.cc) ---------
+    // Single entry point, called from DecodeSwitch's `default:` arm: these are
+    // all distorm-decoded (non-VEX) opcodes, and routing them from `default`
+    // rather than from sixty `case` labels keeps this family out of the way of
+    // every other change to that switch.  Returns false for anything it does
+    // not claim, which keeps the previous FALLBACK behaviour exactly.
+    //
+    // Unlike the VEX handlers, NOTHING here zeroes bits 255:128 of the
+    // destination YMM: legacy SSE preserves them.  See decoder_sse4.cc.
+    bool DecodeSse4(_DInst& insn);
+
+    // Per-128-bit-lane callbacks, the legacy twins of AvxIntBinFn/AvxIntUnFn
+    // (no `half` argument: a legacy SSE form has exactly one 128-bit lane).
+    using SseBinFn = ir::Value (*)(ir::Assembler*, ir::Value, ir::Value, u32);
+    using SseUnFn = ir::Value (*)(ir::Assembler*, ir::Value, u32);
+
+    ir::Value SseNarrowSrc(_DInst& insn, _Operand& op, u32 bytes);
+    void DecodeSseBinary(_DInst& insn, SseBinFn fn, u32 param);
+    void DecodeSseUnary(_DInst& insn, SseUnFn fn, u32 param);
+    void DecodeSseRound(_DInst& insn, u32 lane_bits, bool scalar);
+    void DecodeSsePTest(_DInst& insn);
+    void DecodeSseExtend(_DInst& insn, u32 src_bits, u32 dst_bits, bool is_signed);
+    void DecodeSseBlendVar(_DInst& insn, u32 lane_bits);
+    void DecodeSseInsertPs(_DInst& insn);
+    void DecodeSseExtract(_DInst& insn, u32 element_bits);
+    void DecodeSseInsert(_DInst& insn, u32 element_bits);
+    void DecodeSseMpsadbw(_DInst& insn);
+    void DecodeSsePhminposuw(_DInst& insn);
+
     VAddr start;
     VAddr pc;
     // First byte of the instruction currently in DecodeSwitch. Handlers that
