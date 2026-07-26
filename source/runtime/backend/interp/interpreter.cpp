@@ -2126,9 +2126,14 @@ void Interpreter::RunVecFCmp(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, FloatCompareFlags(a, b, bits));
 }
 
+// The predicate is a relation set -- bit 0 = less, 1 = equal, 2 = greater,
+// 3 = unordered; see the comment on VecFCmpMask in ir/ir.inc.  The four
+// outcomes are mutually exclusive and exhaustive, so the lane's mask is simply
+// "is the outcome that occurred a member of the set", and all 16 sets (0 =
+// never, 15 = always) fall out of that with no per-predicate case at all.
 void Interpreter::RunVecFCmpMask(ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
-    const u32 predicate = inst->GetArg<ir::Imm>(3).Get() & 7;
+    const u32 relations = inst->GetArg<ir::Imm>(3).Get() & 15;
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
     const u128 left = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const u128 right = ReadVec(stack, inst->GetArg<ir::Value>(1));
@@ -2140,7 +2145,7 @@ void Interpreter::RunVecFCmpMask(ir::Inst* inst, InterpStack& stack) {
         const u64 b_bits = static_cast<u64>(right >> (lane * bits)) & lane_mask;
         bool eq;
         bool lt;
-        bool le;
+        bool gt;
         bool unordered;
         if (bits == 32) {
             float a;
@@ -2152,7 +2157,7 @@ void Interpreter::RunVecFCmpMask(ir::Inst* inst, InterpStack& stack) {
             unordered = std::isnan(a) || std::isnan(b);
             eq = !unordered && a == b;
             lt = !unordered && a < b;
-            le = !unordered && a <= b;
+            gt = !unordered && a > b;
         } else {
             double a;
             double b;
@@ -2161,16 +2166,10 @@ void Interpreter::RunVecFCmpMask(ir::Inst* inst, InterpStack& stack) {
             unordered = std::isnan(a) || std::isnan(b);
             eq = !unordered && a == b;
             lt = !unordered && a < b;
-            le = !unordered && a <= b;
+            gt = !unordered && a > b;
         }
-        const bool matched = predicate == 0   ? eq
-                             : predicate == 1 ? lt
-                             : predicate == 2 ? le
-                             : predicate == 3 ? unordered
-                             : predicate == 4 ? !eq
-                             : predicate == 5 ? !lt
-                             : predicate == 6 ? !le
-                                              : !unordered;
+        const u32 outcome = unordered ? 8u : lt ? 1u : eq ? 2u : gt ? 4u : 0u;
+        const bool matched = (relations & outcome) != 0;
         const u128 mask = static_cast<u128>(lane_mask) << (lane * bits);
         result = (result & ~mask) |
                  (matched ? static_cast<u128>(lane_mask) << (lane * bits) : 0);
@@ -2411,6 +2410,180 @@ void Interpreter::RunVecUnzip(ir::Inst* inst, InterpStack& stack) {
         const u64 b = static_cast<u64>(right >> source_bit) & lane_mask;
         result |= static_cast<u128>(a) << (lane * lane_bits);
         result |= static_cast<u128>(b) << ((half_lanes + lane) * lane_bits);
+    }
+    WriteVec(stack, inst, result);
+}
+
+// Fused multiply-add: dst = +-(a*b) +- c with a SINGLE rounding (ir.inc).
+//
+// std::fma is not a style preference here.  Written `av * bv + cv`, C++ is
+// free to round the product before the addition (and on a host without a
+// fused unit it must), which is exactly the double rounding this opcode
+// exists to avoid -- and since the JIT lowers to FMLA, an unfused
+// interpreter would differ from it on every input whose exact product falls
+// on a tie.  That is the worse failure the two-backend rule guards against:
+// not "unlike hardware" but "the two backends disagree".
+//
+// Mirrors JitTranslator::EmitVecFMulAdd, including its x86 NaN rules: a NaN
+// source is returned quieted with the earliest source winning (order a, b,
+// c), and an invalid operation with no NaN source -- Inf*0, or an infinite
+// product added to the opposite infinity -- yields the QNaN indefinite, whose
+// sign bit is SET.
+void Interpreter::RunVecFMulAdd(ir::Inst* inst, InterpStack& stack) {
+    const u128 a = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u128 b = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    const u128 c = ReadVec(stack, inst->GetArg<ir::Value>(2));
+    const u32 bits = inst->GetArg<ir::Imm>(3).Get();
+    const u32 flags = inst->GetArg<ir::Imm>(4).Get();
+    ASSERT(bits == 32 || bits == 64);
+    const bool negate_product = (flags & 1u) != 0;
+    const bool negate_addend = (flags & 2u) != 0;
+    const u32 lanes = 128 / bits;
+    const u64 lane_mask = bits == 32 ? 0xFFFFFFFFull : ~0ull;
+    const u64 exponent_mask = bits == 32 ? 0x7F800000ull : 0x7FF0000000000000ull;
+    const u64 fraction_mask = bits == 32 ? 0x007FFFFFull : 0x000FFFFFFFFFFFFFull;
+    const u64 quiet_mask = bits == 32 ? 0x00400000ull : 0x0008000000000000ull;
+    const u64 indefinite = bits == 32 ? 0xFFC00000ull : 0xFFF8000000000000ull;
+    const auto is_nan = [&](u64 x) {
+        return (x & exponent_mask) == exponent_mask && (x & fraction_mask) != 0;
+    };
+    u128 result = 0;
+    for (u32 lane = 0; lane < lanes; ++lane) {
+        const u32 shift = lane * bits;
+        const u64 a_bits = static_cast<u64>(a >> shift) & lane_mask;
+        const u64 b_bits = static_cast<u64>(b >> shift) & lane_mask;
+        const u64 c_bits = static_cast<u64>(c >> shift) & lane_mask;
+        u64 r_bits = 0;
+        if (bits == 32) {
+            float av{};
+            float bv{};
+            float cv{};
+            const u32 ai = u32(a_bits);
+            const u32 bi = u32(b_bits);
+            const u32 ci = u32(c_bits);
+            std::memcpy(&av, &ai, sizeof(av));
+            std::memcpy(&bv, &bi, sizeof(bv));
+            std::memcpy(&cv, &ci, sizeof(cv));
+            if (negate_product) av = -av;
+            if (negate_addend) cv = -cv;
+            const float rv = std::fma(av, bv, cv);
+            u32 encoded;
+            std::memcpy(&encoded, &rv, sizeof(encoded));
+            r_bits = encoded;
+        } else {
+            double av{};
+            double bv{};
+            double cv{};
+            std::memcpy(&av, &a_bits, sizeof(av));
+            std::memcpy(&bv, &b_bits, sizeof(bv));
+            std::memcpy(&cv, &c_bits, sizeof(cv));
+            if (negate_product) av = -av;
+            if (negate_addend) cv = -cv;
+            const double rv = std::fma(av, bv, cv);
+            std::memcpy(&r_bits, &rv, sizeof(r_bits));
+        }
+        if (is_nan(a_bits)) {
+            r_bits = a_bits | quiet_mask;
+        } else if (is_nan(b_bits)) {
+            r_bits = b_bits | quiet_mask;
+        } else if (is_nan(c_bits)) {
+            r_bits = c_bits | quiet_mask;
+        } else if (is_nan(r_bits)) {
+            r_bits = indefinite;
+        }
+        result |= static_cast<u128>(r_bits & lane_mask) << shift;
+    }
+    WriteVec(stack, inst, result);
+}
+
+// VecFRoundInt -- round each lane to an integral floating-point value.
+//
+// Kept in step with JitTranslator::EmitVecFRoundInt (FRINTN/FRINTM/FRINTP/
+// FRINTZ).  Two things are done by hand rather than by libm, both so that the
+// answer cannot depend on host state:
+//
+//  * NaN is handled BEFORE the arithmetic.  std::trunc / std::floor of a
+//    signalling NaN is not specified to quiet it, and on some hosts lowers to
+//    an instruction that raises.  Returning `raw | quiet_bit` reproduces what
+//    both FRINT* and x86 ROUND* do: the operand back, quieted, sign and
+//    payload untouched.
+//  * Nearest-ties-to-even is spelled out instead of calling std::nearbyint,
+//    which follows the HOST rounding mode.  Nothing in this runtime calls
+//    fesetround today, but FRINTN is unconditionally ties-to-even, and a
+//    divergence between the two back ends is worse than either behaviour.
+void Interpreter::RunVecFRoundInt(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const u32 mode = inst->GetArg<ir::Imm>(3).Get();
+    const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    const u128 source = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    u128 result = scalar ? ReadVec(stack, inst->GetArg<ir::Value>(1)) : 0;
+    const u32 lanes = scalar ? 1 : 128 / bits;
+    const u64 lane_mask = MaskBits(bits);
+
+    // Ties-to-even without touching the host rounding mode.  |x| >= 2^52
+    // (2^23 for f32) is already integral, and there `x - trunc(x)` is exactly
+    // zero, so the general path below returns it unchanged.
+    const auto round_even = [](double x) {
+        const double t = std::trunc(x);
+        const double frac = std::fabs(x - t);
+        double adjust = 0.0;
+        if (frac > 0.5) {
+            adjust = 1.0;
+        } else if (frac == 0.5) {
+            // Ties go to the even neighbour: step away from zero only when
+            // truncation left an odd integer.
+            adjust = std::fmod(t, 2.0) != 0.0 ? 1.0 : 0.0;
+        }
+        // The step must be AWAY FROM ZERO, so it carries x's sign: -1.5 must
+        // become -2.0, not (-1.0 + 1.0) = -0.0.  The trailing copysign then
+        // restores the sign of a zero result (-0.3 truncates to -0.0).
+        return std::copysign(t + std::copysign(adjust, x), x);
+    };
+
+    for (u32 lane = 0; lane < lanes; ++lane) {
+        const u64 raw = static_cast<u64>(source >> (lane * bits)) & lane_mask;
+        u64 output;
+        if (bits == 32) {
+            constexpr u32 kExponent = 0x7F800000u;
+            constexpr u32 kMantissa = 0x007FFFFFu;
+            constexpr u32 kQuiet = 0x00400000u;
+            const auto input = static_cast<u32>(raw);
+            if ((input & kExponent) == kExponent && (input & kMantissa) != 0) {
+                output = input | kQuiet;
+            } else {
+                float value;
+                std::memcpy(&value, &input, sizeof(value));
+                const double wide = static_cast<double>(value);
+                const double rounded = mode == 0   ? round_even(wide)
+                                       : mode == 1 ? std::floor(wide)
+                                       : mode == 2 ? std::ceil(wide)
+                                                   : std::trunc(wide);
+                // An f32 rounded to an integer is exactly representable in f32
+                // (its magnitude never grows past the next power of two), so
+                // the double detour cannot lose anything.
+                const auto narrowed = static_cast<float>(rounded);
+                u32 encoded;
+                std::memcpy(&encoded, &narrowed, sizeof(encoded));
+                output = encoded;
+            }
+        } else {
+            constexpr u64 kExponent = UINT64_C(0x7FF0000000000000);
+            constexpr u64 kMantissa = UINT64_C(0x000FFFFFFFFFFFFF);
+            constexpr u64 kQuiet = UINT64_C(0x0008000000000000);
+            if ((raw & kExponent) == kExponent && (raw & kMantissa) != 0) {
+                output = raw | kQuiet;
+            } else {
+                double value;
+                std::memcpy(&value, &raw, sizeof(value));
+                const double rounded = mode == 0   ? round_even(value)
+                                       : mode == 1 ? std::floor(value)
+                                       : mode == 2 ? std::ceil(value)
+                                                   : std::trunc(value);
+                std::memcpy(&output, &rounded, sizeof(output));
+            }
+        }
+        const u128 mask = static_cast<u128>(lane_mask) << (lane * bits);
+        result = (result & ~mask) | (static_cast<u128>(output) << (lane * bits));
     }
     WriteVec(stack, inst, result);
 }

@@ -1355,13 +1355,31 @@ void JitTranslator::EmitVecFCmp(ir::Inst* inst) {
     __ Orr(result, result, bit);
 }
 
+// The predicate is a relation set -- bit 0 = less, 1 = equal, 2 = greater,
+// 3 = unordered; see the comment on VecFCmpMask in ir/ir.inc.
+//
+// All 16 sets are reachable, but only eight sequences are needed: a set and
+// its complement give complementary masks, so `m` in 8..15 is emitted as the
+// sequence for `15 - m` (which is always in 0..7) followed by one MVN.  That
+// pairing is what makes the table below total by construction rather than by
+// sixteen hand-checked cases -- 15-8=7 (ordered -> unordered), 15-9=6
+// (ge -> !ge), 15-11=4 (gt -> !gt), 15-15=0 (never -> always), and so on.
+//
+// AArch64 FCMEQ/FCMGT/FCMGE are ORDERED: they give false for a NaN operand,
+// which is what x86's ordered predicates want.  `unordered` has no direct
+// instruction and is built from FCMEQ(x, x), false exactly for a NaN.  These
+// primitives may raise FPSR.IOC where x86 would not; SwiftVM propagates no FP
+// exception state either way, which is the same reason the front end drops
+// AVX's signalling-vs-quiet dimension (frontend/x86/fp_cmp_predicate.h).
 void JitTranslator::EmitVecFCmpMask(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
-    const u32 predicate = inst->GetArg<ir::Imm>(3).Get() & 7;
+    const u32 relations = inst->GetArg<ir::Imm>(3).Get() & 15;
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    const bool invert = relations >= 8;
+    const u32 predicate = invert ? 15 - relations : relations;
     auto compare = context.GetTmpV();
     auto ordered_left = context.GetTmpV();
     auto ordered_right = context.GetTmpV();
@@ -1369,28 +1387,38 @@ void JitTranslator::EmitVecFCmpMask(ir::Inst* inst) {
         return bits == 32 ? value.V4S() : value.V2D();
     };
     switch (predicate) {
-        case 0: __ Fcmeq(format(compare), format(left), format(right)); break;
-        case 1: __ Fcmgt(format(compare), format(right), format(left)); break;
-        case 2: __ Fcmge(format(compare), format(right), format(left)); break;
-        case 3:
-        case 7:
+        case 0:  // {} -- never; with invert, {<,==,>,unord} -- always.
+            __ Movi(compare.V16B(), 0);
+            break;
+        case 1:  // {<}
+            __ Fcmgt(format(compare), format(right), format(left));
+            break;
+        case 2:  // {==}
+            __ Fcmeq(format(compare), format(left), format(right));
+            break;
+        case 3:  // {<, ==}
+            __ Fcmge(format(compare), format(right), format(left));
+            break;
+        case 4:  // {>}
+            __ Fcmgt(format(compare), format(left), format(right));
+            break;
+        case 5:  // {<, >} -- ordered-and-not-equal.  Two ordered compares are
+                 // cheaper than "ordered AND not equal", which needs three.
+            __ Fcmgt(format(ordered_left), format(right), format(left));
+            __ Fcmgt(format(ordered_right), format(left), format(right));
+            __ Orr(compare.V16B(), ordered_left.V16B(), ordered_right.V16B());
+            break;
+        case 6:  // {==, >}
+            __ Fcmge(format(compare), format(left), format(right));
+            break;
+        case 7:  // {<, ==, >} -- ordered; with invert, unordered.
             __ Fcmeq(format(ordered_left), format(left), format(left));
             __ Fcmeq(format(ordered_right), format(right), format(right));
             __ And(compare.V16B(), ordered_left.V16B(), ordered_right.V16B());
-            if (predicate == 3) __ Mvn(compare.V16B(), compare.V16B());
             break;
-        case 4:
-            __ Fcmeq(format(compare), format(left), format(right));
-            __ Mvn(compare.V16B(), compare.V16B());
-            break;
-        case 5:
-            __ Fcmgt(format(compare), format(right), format(left));
-            __ Mvn(compare.V16B(), compare.V16B());
-            break;
-        case 6:
-            __ Fcmge(format(compare), format(right), format(left));
-            __ Mvn(compare.V16B(), compare.V16B());
-            break;
+    }
+    if (invert) {
+        __ Mvn(compare.V16B(), compare.V16B());
     }
     if (!scalar) {
         __ Orr(result.V16B(), compare.V16B(), compare.V16B());
@@ -1930,6 +1958,163 @@ void JitTranslator::EmitVecUnzip(ir::Inst* inst) {
             break;
         default:
             PANIC("invalid vector lane width");
+    }
+}
+
+// Fused multiply-add: dst = +-(a*b) +- c with a SINGLE rounding (ir.inc).
+//
+// AArch64 has exactly the two accumulate forms, both fused:
+//     FMLA Vd, Vn, Vm   ->  Vd = Vd + Vn*Vm
+//     FMLS Vd, Vn, Vm   ->  Vd = Vd - Vn*Vm
+// so the sign of the PRODUCT picks the mnemonic and the sign of the ADDEND is
+// applied to the accumulator up front with FNEG.  Negating the addend before
+// the fused step is exact for every finite value and for infinities, so it
+// cannot introduce a rounding difference; it does flip the sign bit of a NaN
+// addend, which is why the NaN fixup below reads the ORIGINAL c and not the
+// negated accumulator.
+//
+// WHY THE NaN FIXUP IS VECTOR CODE AND NOT THE USUAL LANE LOOP
+// ------------------------------------------------------------
+// EmitVecFloatNaNFixup extracts every lane into GPRs; at three operands that
+// would need half again as many live GPRs as the two-operand version, which
+// already had to be cut from 16 temporaries to 8 to stop exhausting the pool.
+// FCMEQ(x, x) is false exactly for NaN, so the whole predicate is available in
+// the vector unit for one instruction per operand and this emitter needs no
+// GPR at all beyond the two immediate materializations.
+//
+// The x86 rule being reproduced (same as VecFloatBinary / EmitVecFloatNaNFixup):
+// a NaN source is returned quieted, earlier sources win over later ones, and an
+// invalid operation with no NaN source (Inf*0, or Inf added to the opposite
+// Inf) returns the QNaN indefinite -- whose sign bit is SET, unlike ARM's
+// default NaN.  Source order here is the arithmetic order a, b, c.
+void JitTranslator::EmitVecFMulAdd(ir::Inst* inst) {
+    auto a = context.V(inst->GetArg<ir::Value>(0));
+    auto b = context.V(inst->GetArg<ir::Value>(1));
+    auto c = context.V(inst->GetArg<ir::Value>(2));
+    auto result = context.V(ir::Value{inst});
+    const u32 lane_bits = inst->GetArg<ir::Imm>(3).Get();
+    const u32 flags = inst->GetArg<ir::Imm>(4).Get();
+    const bool negate_product = (flags & 1u) != 0;
+    const bool negate_addend = (flags & 2u) != 0;
+    ASSERT(lane_bits == 32 || lane_bits == 64);
+
+    // Mov of a wide immediate may use VIXL's ip0/ip1 scratches.
+    context.ReserveTmpX(ip0);
+    context.ReserveTmpX(ip1);
+
+    auto acc = context.GetTmpV();
+    auto ok = context.GetTmpV();      // lanes where every source is non-NaN
+    auto mask = context.GetTmpV();    // scratch predicate
+    auto value = context.GetTmpV();   // scratch replacement value
+    auto imm = context.GetTmpX();
+
+    const auto fmt_of = [&](const VRegister& v) { return lane_bits == 32 ? v.V4S() : v.V2D(); };
+
+    // acc = (negate_addend ? -c : c), then the fused step.
+    if (negate_addend) {
+        __ Fneg(fmt_of(acc), fmt_of(c));
+    } else {
+        __ Orr(acc.V16B(), c.V16B(), c.V16B());
+    }
+    if (negate_product) {
+        __ Fmls(fmt_of(acc), fmt_of(a), fmt_of(b));
+    } else {
+        __ Fmla(fmt_of(acc), fmt_of(a), fmt_of(b));
+    }
+
+    // ok = ~isnan(a) & ~isnan(b) & ~isnan(c)
+    __ Fcmeq(fmt_of(ok), fmt_of(a), fmt_of(a));
+    __ Fcmeq(fmt_of(mask), fmt_of(b), fmt_of(b));
+    __ And(ok.V16B(), ok.V16B(), mask.V16B());
+    __ Fcmeq(fmt_of(mask), fmt_of(c), fmt_of(c));
+    __ And(ok.V16B(), ok.V16B(), mask.V16B());
+
+    // A NaN produced by the operation itself (no NaN source) is x86's QNaN
+    // indefinite.  mask = ok & isnan(acc).
+    __ Fcmeq(fmt_of(mask), fmt_of(acc), fmt_of(acc));
+    __ Bic(mask.V16B(), ok.V16B(), mask.V16B());
+    if (lane_bits == 32) {
+        __ Mov(imm.W(), 0xFFC00000u);
+        __ Dup(value.V4S(), imm.W());
+    } else {
+        __ Mov(imm, UINT64_C(0xFFF8000000000000));
+        __ Dup(value.V2D(), imm);
+    }
+    // BIT: result lanes selected by `mask` take `value`.
+    __ Bit(acc.V16B(), value.V16B(), mask.V16B());
+
+    // Quieted source propagation, applied lowest priority first so that a wins.
+    if (lane_bits == 32) {
+        __ Mov(imm.W(), 0x00400000u);
+        __ Dup(value.V4S(), imm.W());
+    } else {
+        __ Mov(imm, UINT64_C(0x0008000000000000));
+        __ Dup(value.V2D(), imm);
+    }
+    auto quiet = context.GetTmpV();
+    __ Orr(quiet.V16B(), value.V16B(), value.V16B());
+    for (const VRegister* source : {&c, &b, &a}) {
+        __ Fcmeq(fmt_of(mask), fmt_of(*source), fmt_of(*source));
+        __ Orr(value.V16B(), source->V16B(), quiet.V16B());
+        // BIF: lanes where the predicate is FALSE (i.e. this source is NaN)
+        // take `value`.
+        __ Bif(acc.V16B(), value.V16B(), mask.V16B());
+    }
+    __ Orr(result.V16B(), acc.V16B(), acc.V16B());
+}
+
+// VecFRoundInt -- round each lane to an integral floating-point value.
+//
+// The four IR modes map one-for-one onto the AArch64 FRINT family, so this is
+// a single instruction per half.  Deliberately NOT FRINTX/FRINTI: those follow
+// FPCR, and the IR's mode is an immediate precisely so that the result cannot
+// depend on host state the front end never set.
+//
+// NO NaN FIXUP IS NEEDED HERE, unlike VecFAdd/VecFMul.  EmitVecFloatNaNFixup
+// exists because ARM MANUFACTURES a default NaN (7FC0_0000, sign clear) where
+// x86 manufactures its indefinite (FFC0_0000, sign set) -- inf-inf, 0*inf and
+// friends.  FRINT* cannot manufacture anything: with FPCR.DN clear (this
+// runtime never sets it) it returns the operand with the quiet bit forced on
+// and every other bit, including the sign, untouched.  That is exactly what
+// x86 ROUNDPS/ROUNDPD/ROUNDSS/ROUNDSD do with a NaN operand.  Verified against
+// Rosetta on QNaN, SNaN and both signed zeroes -- see avx_misc_test.cpp.
+void JitTranslator::EmitVecFRoundInt(ir::Inst* inst) {
+    auto source = context.V(inst->GetArg<ir::Value>(0));
+    auto merge = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const u32 mode = inst->GetArg<ir::Imm>(3).Get();
+    const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    ASSERT(bits == 32 || bits == 64);
+    auto value = context.GetTmpV();
+    auto out = VecLaneFormat(value, bits);
+    auto in = VecLaneFormat(source, bits);
+    switch (mode) {
+        case 0:
+            __ Frintn(out, in);  // nearest, ties to even
+            break;
+        case 1:
+            __ Frintm(out, in);  // toward -infinity
+            break;
+        case 2:
+            __ Frintp(out, in);  // toward +infinity
+            break;
+        case 3:
+            __ Frintz(out, in);  // toward zero
+            break;
+        default:
+            PANIC("invalid rounding mode");
+    }
+    // Same merge shape as EmitVecFUnary: lane 0 from the rounded value, the
+    // rest of the destination from `merge`.
+    if (!scalar) {
+        __ Orr(result.V16B(), value.V16B(), value.V16B());
+    } else {
+        __ Orr(result.V16B(), merge.V16B(), merge.V16B());
+        if (bits == 32)
+            __ Ins(result.V4S(), 0, value.V4S(), 0);
+        else
+            __ Ins(result.V2D(), 0, value.V2D(), 0);
     }
 }
 

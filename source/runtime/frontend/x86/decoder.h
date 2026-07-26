@@ -874,10 +874,21 @@ private:
     // The masked moves are the one family here that touches memory per
     // element rather than per vector, so that a masked-off element cannot
     // fault -- see the file header.
+    // ---- VEX round / dot product / vpermilpd-var (decoder_avx_misc.cc) ----
+    bool DecodeAvxMisc(const VexInsn& v);
+    void DecodeAvxRound(const VexInsn& v, u32 lane_bits, bool scalar);
+    void DecodeAvxDotProduct(const VexInsn& v, u32 lane_bits);
+
     bool DecodeAvxBlend(const VexInsn& v);
     void DecodeAvxBlendVar(const VexInsn& v, u32 lane_bits);
     void DecodeAvxInsertPs(const VexInsn& v);
     void DecodeAvxMaskMov(const VexInsn& v, u32 lane_bits, bool store);
+
+    // ---- FMA3 (decoder_avx_fma.cc) --------------------------------------
+    bool DecodeAvxFma(const VexInsn& v);
+    void DecodeAvxFmaPacked(const VexInsn& v, u32 order, u32 flags, u32 lane_bits);
+    void DecodeAvxFmaScalar(const VexInsn& v, u32 order, u32 flags, u32 lane_bits);
+    void DecodeAvxFmaAddSub(const VexInsn& v, u32 order, bool sub_even, u32 lane_bits);
 
     // ---- VEX.256 (decoder_avx.cc) ---------------------------------------
     // A 256-bit operation is two independent V128 operations (contract C1:

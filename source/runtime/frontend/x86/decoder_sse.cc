@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstring>
 #include "runtime/frontend/x86/decoder_internal.h"
+#include "runtime/frontend/x86/fp_cmp_predicate.h"
 #include "runtime/frontend/x86/x87.h"
 
 namespace swift::x86 {
@@ -1095,6 +1096,11 @@ void X64Decoder::DecodeScalarFloatOp(_DInst& insn, VecFloatOp op, u32 lane_bits)
     XmmWrite(dst, result.SetType(ir::ValueType::V128));
 }
 
+// `predicate` is the x86 SSE imm8 the mnemonic implies (0..7: eq, lt, le,
+// unord, neq, nlt, nle, ord).  VecFCmpMask does not take an x86 encoding --
+// it takes a relation set -- so it is translated through the SAME table the
+// VEX path uses (fp_cmp_predicate.h), whose first eight rows ARE the SSE
+// predicates.  The two paths therefore cannot drift.
 void X64Decoder::DecodeFloatCompareMask(
         _DInst& insn, u32 lane_bits, u32 predicate, bool scalar) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
@@ -1113,8 +1119,11 @@ void X64Decoder::DecodeFloatCompareMask(
                            TsoOrdered(insn));
         right = __ VecDup64(__ ZeroExtend64(raw)).SetType(ir::ValueType::V128);
     }
-    auto result = __ VecFCmpMask(
-            left, right, ir::Imm(lane_bits), ir::Imm(predicate), ir::Imm(u32(scalar)));
+    auto result = __ VecFCmpMask(left,
+                                 right,
+                                 ir::Imm(lane_bits),
+                                 ir::Imm(X86CmpPredicateToRelation(predicate)),
+                                 ir::Imm(u32(scalar)));
     XmmWrite(dst, result.SetType(ir::ValueType::V128));
 }
 

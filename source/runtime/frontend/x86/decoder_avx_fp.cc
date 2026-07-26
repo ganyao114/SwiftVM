@@ -118,17 +118,17 @@
 // ---------------------------------------------------------------------------
 // KNOWN GAPS (deliberate, not oversights)
 // ---------------------------------------------------------------------------
-//  * vcmpps/pd/ss/sd accept only imm8 predicates 0..7 (the SSE set: eq, lt,
-//    le, unord, neq, nlt, nle, ord).  AVX widened the field to five bits
-//    (0..31: the _*_OQ/_*_OS signalling variants plus ge/gt and their
-//    negations).  VecFCmpMask masks the predicate with 7, so accepting 8..31
-//    would silently compute a DIFFERENT comparison -- e.g. imm8=17 (LT_OQ)
-//    would be run as imm8=1 (LT_OS), and imm8=13 (GE_OS) as imm8=5 (NLT_US),
-//    which is a different answer whenever an operand is NaN.  Predicates >= 8
-//    are therefore declined (block traps as FALLBACK) rather than mis-executed.
-//    Closing this needs either a wider VecFCmpMask predicate or a decode-time
-//    rewrite of the 8..31 encodings onto swapped-operand 0..7 forms, and both
-//    are IR/backend changes that are out of scope here.
+//  * (CLOSED) vcmpps/pd/ss/sd once accepted only imm8 0..7 -- the SSE set --
+//    and declined 8..31 because VecFCmpMask masked its predicate with 7 and
+//    would have run imm8=17 (LT_OQ) as imm8=1 (LT_OS).  All 32 predicates now
+//    decode.  The fix was to stop putting an x86 encoding in the IR at all:
+//    VecFCmpMask's predicate is a RELATION SET over {<, ==, >, unordered}, and
+//    fp_cmp_predicate.h translates the imm8 into it (both the VEX path and the
+//    legacy SSE mnemonics go through that one table).  AVX's signalling-vs-
+//    quiet dimension collapses on the way in, because it was measured to
+//    change only MXCSR.IE and never the result mask -- see that header.
+//    Coverage: source/tests/fuzz/avx_cmp_test.cpp, all 32 predicates x
+//    {ps, pd, ss, sd} x {128, 256} against Rosetta.
 //  * vsqrtps/pd/ss/sd of a NEGATIVE operand returns the POSITIVE default QNaN
 //    (0x7FC00000 / 0x7FF8000000000000) where x86 returns the NEGATIVE "QNaN
 //    floating-point indefinite" (0xFFC00000 / 0xFFF8000000000000).  Measured
@@ -173,6 +173,7 @@
 // than mis-decoding one instruction.
 
 #include "runtime/frontend/x86/decoder_internal.h"
+#include "runtime/frontend/x86/fp_cmp_predicate.h"
 #include "runtime/frontend/x86/vex_decoder.h"
 
 namespace swift::x86 {
@@ -425,10 +426,16 @@ void X64Decoder::DecodeAvxFpSqrt(const VexInsn& v, u32 lane_bits, bool scalar) {
 
 // vcmpps/pd/ss/sd.  imm8 selects the predicate; the result is an all-ones /
 // all-zeros mask per lane (scalar forms write lane 0 and copy src1's rest).
-// Callers must have rejected imm8 >= 8 -- see the KNOWN GAPS note.
+//
+// AVX widened the predicate field to five bits and defined all 32 encodings,
+// so every imm8 0..31 is accepted.  The imm8 is translated into VecFCmpMask's
+// RELATION SET here rather than passed through: the IR deliberately does not
+// speak x86 imm8, and imm8 bit 4 (signalling vs quiet) is deliberately dropped
+// because it changes only MXCSR, which SwiftVM does not model -- both measured
+// on hardware and argued in fp_cmp_predicate.h.
 void X64Decoder::DecodeAvxFpCmpMask(const VexInsn& v, u32 lane_bits, bool scalar) {
     const auto bits = ir::Imm(lane_bits);
-    const auto pred = ir::Imm(u32(v.imm8 & 7u));
+    const auto pred = ir::Imm(X86CmpPredicateToRelation(v.imm8));
     const auto sc = ir::Imm(u32(scalar));
     if (scalar) {
         auto left = XmmRead(XmmOf(v.vvvv));
@@ -643,12 +650,14 @@ bool X64Decoder::DecodeAvxFpBase(const VexInsn& v) {
         }
         // ---- compare into a mask -----------------------------------------
         case 0xC2:
-            if (!v.has_imm8 || (v.imm8 & 0xF8u) != 0) {
-                // Predicates 8..31 are AVX-only extensions VecFCmpMask cannot
-                // express; declining is the only answer that is not silently
-                // wrong.  See KNOWN GAPS.
+            if (!v.has_imm8) {
                 return false;
             }
+            // All 32 AVX predicates are accepted.  imm8 bits 7:5 are reserved
+            // and IGNORED rather than #UD -- the SDM's operation section reads
+            // imm8[4:0] and lists no exception for them, and Rosetta was
+            // measured executing imm8 = 0x20/0x40/0x80/0xE1/0xFF as 0x00/0x00/
+            // 0x00/0x01/0x1F.  X86CmpPredicateToRelation does that masking.
             DecodeAvxFpCmpMask(v, packed ? packed_bits : scalar_bits, scalar);
             return true;
         // ---- compare into EFLAGS -----------------------------------------
