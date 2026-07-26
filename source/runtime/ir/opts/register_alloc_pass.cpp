@@ -207,19 +207,34 @@ public:
 
             if (!IsFloatValue(interval.inst)) {
                 if (auto alloc = AllocGPR(); alloc >= 0) {
-                    active_lives.push_back(interval);
                     reg_alloc->MapRegister(interval.inst->Id(), HostGPR{(u16)alloc});
                 } else {
                     SpillAtInterval(interval);
                 }
             } else {
                 if (auto alloc = AllocFPR(); alloc >= 0) {
-                    active_lives.push_back(interval);
                     reg_alloc->MapRegister(interval.inst->Id(), HostFPR{(u16)alloc});
                 } else {
                     SpillAtInterval(interval);
                 }
             }
+            // EVERY interval joins the active set, spilled ones included.
+            //
+            // A spilled interval used not to be recorded here, which made the
+            // MEM arm of ExpireOldIntervals (and FreeSpill with it) dead code:
+            // a stack slot handed out was a stack slot lost, so the high-water
+            // mark tracked the *total* number of spills in a compilation unit
+            // rather than the number live at once. State::spill_area holds
+            // kMaxSpillSlots slots and the allocator asserts past that, so a
+            // unit that merely spilled often enough — not one that needed many
+            // slots at once — aborted the guest. Recycling makes the ceiling a
+            // function of peak simultaneous pressure, which is the quantity the
+            // 64-slot reservation was sized for.
+            //
+            // The lifetime model is the same one the register arms already
+            // trust: `end` is the last instruction that names the value, so the
+            // slot is reusable exactly when the register would have been.
+            active_lives.push_back(interval);
             reg_alloc->SetActiveRegs(interval.inst->Id(), active_gprs, active_fprs);
             next_id = std::max(next_id, interval.start + 1);
         }
