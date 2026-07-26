@@ -189,17 +189,27 @@ TEST_CASE("Test runtime") {
     using namespace swift::runtime::ir;
     swift::runtime::Config config {
             .loc_start = 0,
-            .loc_end = UINT64_MAX,
+            // Must be a realistic guest range, matching the arm64 translator
+            // (translator/arm64/translator.cpp). Module's AddressHashMap
+            // reserves one pointer per 1 MB of [loc_start, loc_end): 2^48
+            // costs a 2 MB reservation, while UINT64_MAX would ask mmap for
+            // 128 TB and abort in AllocateMemoryPages.
+            .loc_end = 1ull << 48,
             .enable_jit = true,
             .has_local_operation = false,
             .backend_isa = swift::runtime::kArm64,
     };
     AddressSpace address_space{config};
     auto module = address_space.GetDefaultModule();
-    Block block1{0, Location{1}};
-    Block block2{1, Location{2}};
-    module->Push(&block1);
-    module->Push(&block2);
+    // Module::Push takes ownership: it calls IntrusivePtrAddRef, and the
+    // matching release eventually runs Block::operator delete -> SlabObject::
+    // TryFree, which hands a non-slab pointer to libc free(). A stack-allocated
+    // Block therefore ends the test with free() on a stack address (SIGABRT).
+    // Heap-allocate, matching how TranslateIR feeds Push in runtime.cpp.
+    auto* block1 = new Block(0, Location{1});
+    auto* block2 = new Block(1, Location{2});
+    REQUIRE(module->Push(block1));
+    REQUIRE(module->Push(block2));
 }
 
 TEST_CASE("Test block ir print") {
