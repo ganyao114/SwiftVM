@@ -1,9 +1,12 @@
 #include <array>
 #include <bit>
 #include <catch2/catch_test_macros.hpp>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <map>
 #include <sys/mman.h>
+#include <vector>
 #include "runtime/ir/hir_builder.h"
 #include "runtime/ir/ir_meta.h"
 #include "runtime/ir/opts/cfg_analysis_pass.h"
@@ -500,4 +503,78 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     REQUIRE(carry_pseudos.size() == 1);
     REQUIRE(carry_pseudos[0] == carry_save);
     REQUIRE(carry_pseudos[0]->GetArg<Flags>(1) == Flags::All);
+}
+
+TEST_CASE("Register allocation gives every spilled value a private slot") {
+    using namespace swift::runtime::ir;
+    using swift::runtime::backend::RegAlloc;
+    using swift::runtime::backend::GPRSMask;
+    using swift::runtime::backend::FPRSMask;
+
+    // Two live values sharing one State::spill_area slot is a silent
+    // miscompile: both Str/Ldr target the same address, so each reload
+    // observes the other's value. Squeeze the linear scan onto its spill path
+    // and assert the slots are disjoint, counting a SIMD spill as the two u64
+    // slots its 16-byte access actually covers.
+    auto check_disjoint_slots = [](int n_scalar,
+                                   int n_vector,
+                                   std::uint32_t free_gprs,
+                                   std::uint32_t free_fprs) {
+        Block block{0, Location{0x1000}};
+        std::vector<Value> scalars;
+        for (int i = 0; i < n_scalar; i++) {
+            scalars.push_back(block.LoadImm(Imm{static_cast<std::uint32_t>(i + 1)}));
+        }
+        std::vector<Value> vectors;
+        for (int i = 0; i < n_vector; i++) {
+            vectors.push_back(block.LoadImm<TypedValue<ValueType::V128>>(
+                    Imm{static_cast<std::uint64_t>(i + 0x100)}));
+        }
+        // Every value needs a use to own a live interval, and consuming them
+        // in reverse definition order keeps them all live at once.
+        for (int i = n_vector - 1; i >= 0; i--) {
+            block.VecAdd<TypedValue<ValueType::V128>>(vectors[i], vectors[i], Imm{32u});
+        }
+        if (!scalars.empty()) {
+            Value acc = scalars.back();
+            for (int i = n_scalar - 2; i >= 0; i--) {
+                acc = block.Add(acc, Operand{scalars[i]});
+            }
+        }
+        block.ReIdInstr();  // AppendInst does not assign ids; the pass indexes by id
+
+        // bit SET = unavailable; leave only the lowest `free_*` clear.
+        GPRSMask gprs{~((1u << free_gprs) - 1u)};
+        FPRSMask fprs{~((1u << free_fprs) - 1u)};
+        RegAlloc reg_alloc{0x200, gprs, fprs};
+        RegisterAllocPass::Run(&block, &reg_alloc);
+
+        std::map<std::uint32_t, int> occupancy;
+        int spilled = 0;
+        auto record = [&](const std::vector<Value>& values, int slot_width) {
+            for (auto& value : values) {
+                if (reg_alloc.ValueType(value) != RegAlloc::MEM) {
+                    continue;
+                }
+                spilled++;
+                const std::uint32_t slot = reg_alloc.ValueMem(value).offset;
+                for (int k = 0; k < slot_width; k++) {
+                    occupancy[slot + k]++;
+                }
+            }
+        };
+        record(scalars, 1);
+        record(vectors, 2);
+
+        REQUIRE(spilled >= 2);  // the case must actually reach the spill path
+        for (auto& [slot, owners] : occupancy) {
+            INFO("spill slot " << slot << " claimed by " << owners << " live values");
+            REQUIRE(owners == 1);
+        }
+    };
+
+    check_disjoint_slots(12, 0, 2, 8);  // scalar-only pressure
+    check_disjoint_slots(0, 10, 8, 2);  // vector-only pressure
+    check_disjoint_slots(10, 6, 2, 2);  // mixed
+    check_disjoint_slots(5, 5, 1, 1);   // odd-sized stack before a SIMD pair
 }

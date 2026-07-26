@@ -368,9 +368,10 @@ private:
         }
     }
 
+    // Appends new_item_size free slots. Callers must take the new index from
+    // spill_slots.size() *before* calling this, never from a cached cursor.
     void GrowSpillStack(u32 new_item_size) {
-        spill_slot_cursor = spill_slots.size();
-        spill_slots.resize(spill_slot_cursor + new_item_size);
+        spill_slots.resize(spill_slots.size() + new_item_size);
     }
 
     static bool IsFloatValue(Inst* inst) {
@@ -407,12 +408,26 @@ private:
                 }
             }
             if (found < 0) {
+                // A SIMD spill occupies two consecutive u64 slots and the JIT
+                // accesses it with a 16-byte Ldr/Str. State::spill_area is
+                // alignas(16), so the pair must start on an even slot for the
+                // scaled (multiple-of-16) offset form to encode; pad by one
+                // when a preceding scalar spill left the stack odd-sized. The
+                // pad slot stays free and is reclaimed by the next GPR spill.
+                if (spill_slots.size() & 1u) {
+                    GrowSpillStack(1);
+                }
                 found = spill_slots.size();
                 GrowSpillStack(slot_size);
             }
             slot = found;
             reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{static_cast<u16>(slot)});
+            // Both halves must be marked: the scalar path below scans every
+            // index, so leaving slot+1 clear would hand the upper half of this
+            // 16-byte value to a later GPR spill and let the two destroy each
+            // other on every reload.
             spill_slots[slot] = true;
+            spill_slots[slot + 1] = true;
         } else {
             auto itr = std::find(spill_slots.begin(), spill_slots.end(), false);
             if (itr != spill_slots.end()) {
@@ -420,10 +435,14 @@ private:
                 reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{static_cast<u16>(slot)});
                 spill_slots[slot] = true;
             } else {
-                // grow stack
-                slot = spill_slot_cursor;
-                reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{static_cast<u16>(slot)});
+                // Grow the stack. The new slot is the first appended index,
+                // i.e. the size *before* growing — NOT spill_slot_cursor,
+                // which still holds the index handed out by the previous
+                // grow and would alias this value onto its predecessor's
+                // slot (silently, since both stay in range).
+                slot = spill_slots.size();
                 GrowSpillStack(slot_size);
+                reg_alloc->MapMemSpill(interval.inst->Id(), ir::SpillSlot{static_cast<u16>(slot)});
                 spill_slots[slot] = true;
             }
         }
@@ -461,7 +480,6 @@ private:
     backend::GPRSMask active_gprs;
     backend::FPRSMask active_fprs;
     Vector<bool> spill_slots{};
-    u16 spill_slot_cursor{0};
     // Spill telemetry (reported at the end of AllocateRegisters): spilling
     // has never triggered on current workloads, so any hit is worth a log
     // line — it means the JIT's defensive MEM path is being exercised.
