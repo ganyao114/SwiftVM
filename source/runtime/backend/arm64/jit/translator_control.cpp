@@ -208,6 +208,13 @@ void JitTranslator::EmitCallLambda(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitX87Op(ir::Inst* inst) {
+    // VIXL MacroAssembler may clobber ip0/ip1 while materializing immediates.
+    // Keep them out of this instruction's long-lived temporary set without
+    // shrinking the register allocator globally (which can force unrelated,
+    // high-pressure emitters into the spill path).
+    context.ReserveTmpX(ip0);
+    context.ReserveTmpX(ip1);
+
     const auto context_value = inst->GetArg<ir::Value>(0);
     const auto command = inst->GetArg<ir::Imm>(1);
     const auto address = inst->GetArg<ir::Value>(2);
