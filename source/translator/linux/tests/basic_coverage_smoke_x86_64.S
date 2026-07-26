@@ -219,10 +219,10 @@ _start:
     test $0x00800000, %edx
     jnz 1f
     mov %ecx, %r10d
-    and $0x40400000, %r10d
-    cmp $0x40400000, %r10d
+    and $0x40402000, %r10d
+    cmp $0x40402000, %r10d
     jne 1f
-    test $0x0c002000, %ecx
+    test $0x0c000000, %ecx
     jnz 1f
     mov $7, %eax
     xor %ecx, %ecx
