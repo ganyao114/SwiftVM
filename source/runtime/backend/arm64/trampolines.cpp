@@ -59,6 +59,12 @@ void TrampolinesArm64::Build() {
     }
     gpr_regs.Mark(flags.GetCode());
     gpr_regs.Mark(ip.GetCode());
+    // VIXL MacroAssembler materializes non-encodable immediates through its
+    // ip0/ip1 scratch pair. They cannot hold allocated guest values or
+    // multi-instruction emitter temporaries: a later macro instruction may
+    // overwrite them implicitly.
+    gpr_regs.Mark(ip0.GetCode());
+    gpr_regs.Mark(ip1.GetCode());
     gpr_regs.Mark(atomic_scratch.GetCode());
     gpr_regs.Mark(atomic_pair_scratch.GetCode());
 
