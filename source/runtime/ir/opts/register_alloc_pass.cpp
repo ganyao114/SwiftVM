@@ -390,7 +390,14 @@ private:
                     };
             walk_terminal(lir_block->GetTerminal());
         }
-        for (auto& hir_value : hir_function->GetHIRValues()) {
+        // GetHIRValues() is indexed by instruction id, so this visits values in
+        // ascending id -- the order the linear scan below requires -- and holds a
+        // null for every instruction that defines no value.
+        for (auto* hir_value_ptr : hir_function->GetHIRValues()) {
+            if (!hir_value_ptr) {
+                continue;
+            }
+            auto& hir_value = *hir_value_ptr;
             auto instr = hir_value.value.Def();
             auto start = hir_value.GetOrderId();
             u32 end{hir_value.GetOrderId()};

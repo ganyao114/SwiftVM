@@ -130,8 +130,23 @@ HIRValue* HIRFunction::AppendValue(HIRBlock* hir_block, Inst* inst) {
     HIRValue* hir_value{};
     if (inst->HasValue()) {
         hir_value = pools.values.Create(Value{inst}, hir_block);
-        values.insert(*hir_value);
         value_count++;
+    }
+    // `values` is indexed by instruction id. Every caller today assigns the
+    // next dense id immediately before calling here, so the push_back is the
+    // only path taken -- replacing this whole block with a bare push_back
+    // survives the suites unchanged. The indexed form is kept anyway because
+    // "values[i] is the value defined by instruction i" is the contract the
+    // table's other users read it under, not an assumption about callers; the
+    // cost is one perfectly predicted compare.
+    const auto id = inst->Id();
+    if (id == values.size()) {
+        values.push_back(hir_value);
+    } else {
+        if (values.size() <= id) {
+            values.resize(id + 1, nullptr);
+        }
+        values[id] = hir_value;
     }
     UseInst(inst);
     switch (inst->GetOp()) {
@@ -149,9 +164,16 @@ HIRValue* HIRFunction::AppendValue(HIRBlock* hir_block, Inst* inst) {
 }
 
 void HIRFunction::DestroyHIRValue(HIRValue* value) {
-    values.erase(*value);
+    auto* def = value->value.Def();
+    // Clear the id slot before DestroyInst frees the instruction the id lives
+    // in. Guarded on identity so a stale HIRValue can never blank a slot that
+    // has since been handed to another instruction.
+    const auto id = def->Id();
+    if (id < values.size() && values[id] == value) {
+        values[id] = nullptr;
+    }
     auto block = value->block->block;
-    block->DestroyInst(value->value.Def());
+    block->DestroyInst(def);
     value_count--;
 }
 
@@ -170,11 +192,18 @@ HIRLoopList& HIRFunction::GetHIRLoop() { return loops; }
 HIRValueMap& HIRFunction::GetHIRValues() { return values; }
 
 HIRValue* HIRFunction::GetHIRValue(const Value& value) {
-    if (auto itr = values.find(value); itr != values.end()) {
-        return itr.operator->();
-    } else {
+    auto* def = value.Def();
+    if (!def) {
         return {};
     }
+    // invalid_id is checked explicitly rather than relying on it being out of
+    // range: it is UINT16_MAX, and ids are u16, so a maximally sized unit could
+    // otherwise make it a legal index.
+    const auto id = def->Id();
+    if (id == Inst::invalid_id || id >= values.size()) {
+        return {};
+    }
+    return values[id];
 }
 
 HIRPools& HIRFunction::GetMemPool() { return pools; }
@@ -219,22 +248,40 @@ void HIRFunction::ComputeRPO() {
     // Iterative DFS over successors producing a post-order, then reverse it.
     // Successors (not predecessors) are walked so the ordering is a valid
     // forward layout for emission and linear-scan liveness.
-    HIRBlockSet visited{};
-    Vector<HIRBlock*> post_order{};
-    post_order.reserve(MaxBlockCount());
+    //
+    // The visited set is a dense flag array over HIRBlock::order_id rather than
+    // the Set<HIRBlock*> this used to use: that was a red-black tree with a
+    // node allocation per block, and under lazy function compilation a unit has
+    // ~2-5 blocks, so the container cost dominated the traversal it was
+    // serving. The three scratch containers are small_vectors for the same
+    // reason -- a typical unit now touches the heap zero times here.
+    StackVector<u8, 32> visited{};
+    visited.resize(MaxBlockCount(), 0);
+    StackVector<HIRBlock*, 32> post_order{};
     struct Frame {
         HIRBlock* block;
-        size_t next_succ;
+        u32 next_succ;
     };
-    Vector<Frame> stack{};
+    StackVector<Frame, 32> stack{};
+    auto mark_visited = [&visited](HIRBlock* block) -> bool {
+        const auto id = block->GetOrderId();
+        if (id >= visited.size()) {
+            visited.resize(id + 1, 0);
+        }
+        if (visited[id]) {
+            return false;
+        }
+        visited[id] = 1;
+        return true;
+    };
     stack.push_back({entry_block, 0});
-    visited.insert(entry_block);
+    mark_visited(entry_block);
     while (!stack.empty()) {
         auto& frame = stack.back();
         auto successors = frame.block->GetSuccessors();
         if (frame.next_succ < successors.size()) {
             auto* succ = successors[frame.next_succ++];
-            if (visited.insert(succ).second) {
+            if (mark_visited(succ)) {
                 stack.push_back({succ, 0});
             }
         } else {
@@ -251,24 +298,26 @@ void HIRFunction::ComputeRPO() {
 }
 
 void HIRFunction::IdByRPO() {
+    // Renumber every instruction 0..N-1 in RPO and rebuild the id-indexed value
+    // table in the same walk: reading a value through its *old* id and pushing
+    // it at its *new* one is exactly a permutation, so no lookup structure has
+    // to be re-keyed. (The previous tree form erased and re-inserted every
+    // value here, twice per unit, because its key was the id being changed.)
+    //
+    // Values defined in blocks outside the RPO -- unreachable ones -- drop out
+    // rather than being left behind with a now-stale id that could alias a
+    // renumbered instruction's slot.
+    reid_scratch.clear();
+    reid_scratch.reserve(values.size());
     u32 cur_inst_id{0};
-    // Re id inst
-    StackVector<HIRValue*, 32> function_values{};
-    function_values.reserve(value_count);
     for (auto& block : GetHIRBlocksRPO()) {
         for (auto& inst : block.GetInstList()) {
-            if (auto value = GetHIRValue(&inst); value) {
-                function_values.push_back(value);
-                values.erase(*value);
-            }
+            reid_scratch.push_back(GetHIRValue(Value{&inst}));
             inst.SetId(cur_inst_id++);
         }
     }
     inst_order_id = cur_inst_id;
-    // Re insert map
-    for (auto value : function_values) {
-        values.insert(*value);
-    }
+    values.swap(reid_scratch);
 }
 
 void HIRFunction::EndBlock(Terminal terminal) {
@@ -473,8 +522,41 @@ HIRPools::HIRPools(u32 func_cap)
         , uses(func_cap * 256)
         , mem_arena(func_cap * 512) {}
 
+namespace {
+// The per-thread pool set the lease hands out, plus the flag that makes a
+// nested lease fall back to a private one. A unique_ptr rather than a plain
+// object so the pools are released at thread exit; by then Reset() has already
+// destroyed every object in them.
+thread_local std::unique_ptr<HIRPools> tls_pools{};
+thread_local bool tls_pools_in_use{false};
+}  // namespace
+
+HIRPoolLease::HIRPoolLease(u32 func_cap) {
+    if (tls_pools_in_use) {
+        owned = std::make_unique<HIRPools>(func_cap);
+        pools = owned.get();
+        return;
+    }
+    if (!tls_pools) {
+        // func_cap only sizes the initial chunks; a cached set reached by a
+        // later builder with a larger cap simply grows on demand.
+        tls_pools = std::make_unique<HIRPools>(func_cap);
+    }
+    tls_pools_in_use = true;
+    pools = tls_pools.get();
+}
+
+HIRPoolLease::~HIRPoolLease() {
+    if (owned) {
+        return;
+    }
+    pools->Reset();
+    tls_pools_in_use = false;
+}
+
 HIRBuilder::HIRBuilder(u32 func_cap, bool defer_function_end)
-        : pools(func_cap), defer_function_end(defer_function_end) {}
+        : pool_lease(func_cap), pools(pool_lease.Get()),
+          defer_function_end(defer_function_end) {}
 
 HIRFunction* HIRBuilder::AppendFunction(Location start, Location end) {
     current_function = pools.functions.Create(new Function(start), start, end, pools);

@@ -14,6 +14,7 @@
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/backend/translate_table.h"
+#include "runtime/common/perf_stats.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
 #include "runtime/ir/opts/pass_pipeline.h"
@@ -486,6 +487,28 @@ void RecordJitCacheUnit(const std::shared_ptr<backend::Module>& module,
                       blocks);
 }
 
+// PassPipeline::BuildDefault builds a nine-entry vector of std::function
+// objects. It was rebuilt for every compiled unit even though its only input,
+// the address space's UniformInfo, is fixed for the life of that address space
+// -- so under lazy function compilation it ran once per decoded guest block.
+//
+// Cached per thread and keyed on the UniformInfo pointer rather than in a
+// plain static: an embedder can hold several Instances with different uniform
+// layouts, and a mismatched pipeline would silently apply the wrong uniform
+// map. A key change rebuilds; in the single-address-space case that never
+// happens after the first unit.
+const ir::PassPipeline& GetPassPipeline(const ir::UniformInfo* uni_info) {
+    static thread_local ir::PassPipeline cached{};
+    static thread_local const ir::UniformInfo* cached_key{};
+    static thread_local bool cached_valid{false};
+    if (!cached_valid || cached_key != uni_info) {
+        cached = ir::PassPipeline::BuildDefault(uni_info);
+        cached_key = uni_info;
+        cached_valid = true;
+    }
+    return cached;
+}
+
 size_t PrepareFunctionGuestRanges(ir::HIRFunction* function) {
     size_t decoded_blocks = 0;
     VAddr max_end = function->GetFunction()->GetStartLocation().Value();
@@ -542,22 +565,27 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     // with where it is actually emitted. Skipped for a single-block function
     // beyond the (harmless) renumber. Must run after EndFunction (the driver
     // calls it) since predecessors/successors are built there.
+    PerfScope perf_rpo{GetPerfStats().rpo_ns};
     function->ComputeRPO();
     function->IdByRPO();
+    perf_rpo.Stop();
     static const bool dump_ir = std::getenv("SVM_DUMP_IR") != nullptr;
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} rpo-ready\n", func_start);
     const auto& address_space = module->GetAddressSpace();
     const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
                                       ? &address_space.GetUniformInfo() : nullptr;
-    auto pipeline = ir::PassPipeline::BuildDefault(uni_info);
-    pipeline.RunFunction(function, module->GetModuleConfig().optimizations);
+    PerfScope perf_opt{GetPerfStats().opt_ns};
+    GetPassPipeline(uni_info).RunFunction(function, module->GetModuleConfig().optimizations);
+    perf_opt.Stop();
     // The function passes delete instructions (flag elimination, then dead-code
     // elimination), which punches holes in the numbering established above.
     // RegisterAllocPass indexes its interval table by instruction id and sizes
     // it from MaxInstrCount(), so the ids must be dense in emission order
     // again before allocation. This is the function-mode counterpart of
     // PassPipeline::RunBlock's trailing Block::ReIdInstr().
+    PerfScope perf_rpo2{GetPerfStats().rpo_ns};
     function->IdByRPO();
+    perf_rpo2.Stop();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} opts-ready\n", func_start);
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     const bool reserve_x87_topvirt =
@@ -576,17 +604,28 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
             fprs.Mark(code);
         }
     }
+    PerfScope perf_ra{GetPerfStats().regalloc_ns};
     backend::RegAlloc reg_alloc{static_cast<u32>(function->MaxInstrCount()), gprs, fprs};
     ir::RegisterAllocPass::Run(function, &reg_alloc);
+    perf_ra.Stop();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} regalloc-ready\n", func_start);
+    PerfScope perf_cg{GetPerfStats().codegen_ns};
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate(function);
+    perf_cg.Stop();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} emit-ready\n", func_start);
     auto buffer_size = context.CurrentBufferSize();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} size={}\n", func_start, buffer_size);
     if (auto [idx, buffer] = module->AllocCodeCache(buffer_size);
         idx != backend::INVALID_CACHE_ID) {
+        PerfScope perf_pub{GetPerfStats().publish_ns};
+        PerfAdd(GetPerfStats().host_bytes, buffer_size);
+        PerfAdd(GetPerfStats().ir_insts, function->MaxInstrCount());
+        if (PerfPerUnit()) {
+            fmt::print(stderr, "[svm-unit] pc={:#x} ir={} host={}\n", func_start,
+                       function->MaxInstrCount(), buffer_size);
+        }
         context.Flush(buffer);
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} flush-ready\n", func_start);
         jit_state.jit_state = backend::JitState::Cached;
@@ -693,8 +732,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     // Optimize passes
     const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
                                       ? &address_space.GetUniformInfo() : nullptr;
-    auto pipeline = ir::PassPipeline::BuildDefault(uni_info);
-    pipeline.RunBlock(block.get(), module_config.optimizations);
+    GetPassPipeline(uni_info).RunBlock(block.get(), module_config.optimizations);
 
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     const bool reserve_x87_topvirt =

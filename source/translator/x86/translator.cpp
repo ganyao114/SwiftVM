@@ -17,6 +17,7 @@
 #include "runtime/backend/jit_code.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/signal_handler.h"
+#include "runtime/common/perf_stats.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "runtime/include/sruntime.h"
 #include "translator.h"
@@ -470,6 +471,7 @@ struct X86Instance::Impl final {
         // frontend's function fallback sets or decode/publish IR at a time.
         // Already-published JIT code remains concurrently executable.
         std::lock_guard translate_guard(translate_mutex);
+        PerfScope perf_total{GetPerfStats().translate_ns};
         // Another thread may have published this exact location while we
         // waited for the coarse lock. Reuse it instead of compiling a duplicate
         // function whose Module::Push would fail and surface as IllegalCode.
@@ -529,6 +531,7 @@ struct X86Instance::Impl final {
             const bool lazy = lazy_budget < kMaxFuncBlocks;
             size_t decoded_count = 0;
             bool hit_block_cap = false;
+            PerfScope perf_decode{GetPerfStats().decode_ns};
             while (decoded_count < decode_cap) {
                 std::vector<LocationDescriptor> to_decode;
                 for (auto& hb : hir_func->GetHIRBlockList()) {
@@ -575,6 +578,9 @@ struct X86Instance::Impl final {
                 }
             }
             hir_func->EndFunction();
+            perf_decode.Stop();
+            PerfAdd(GetPerfStats().func_units, 1);
+            PerfAdd(GetPerfStats().decoded_blocks, decoded_count);
 
             if (kEnvDumpIr) {
                 // stderr: survives the crash that aborts the guest before
