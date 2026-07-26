@@ -6,10 +6,12 @@ add_library(fronted_x86 STATIC decoder.cc
     decoder_sse.cc
     decoder_string.cc
     decoder_x87.cc
+    vex_decoder.cc
     x87.cpp
     x87.h
     decoder_internal.h
     decoder.h
+    vex_decoder.h
     cpu.h)
 
 target_link_libraries(fronted_x86 PUBLIC swift_runtime distorm softfloat_3e)
