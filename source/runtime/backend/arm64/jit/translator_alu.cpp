@@ -1029,143 +1029,88 @@ void JitTranslator::EmitVecFloatNaNFixup(const VRegister& result,
                                          u32 lane_bits,
                                          u32 lane_count) {
     ASSERT(lane_bits == 32 || lane_bits == 64);
-    const u32 lanes = lane_count == 0 ? 128 / lane_bits : lane_count;
-
-    // Mov may use VIXL's ip0/ip1 scratch registers for wide immediates. Keep
-    // those registers out of this emitter's long-lived temporary set.
-    context.ReserveTmpX(ip0);
-    context.ReserveTmpX(ip1);
-
-    // These eight physical temporaries are reused as soon as a logical value
-    // dies. GetTmpX has instruction scope rather than lexical scope, so
-    // acquiring one register for every logical name below would keep all of
-    // them dirty across every lane and exhaust GPRs in high-pressure blocks.
-    auto raw_left = context.GetTmpX();
-    auto raw_right = context.GetTmpX();
-    auto raw_result = context.GetTmpX();
-    auto mask = context.GetTmpX();
-    auto scratch = context.GetTmpX();
-    auto nan_left = context.GetTmpX();
-    auto nan_right = context.GetTmpX();
-    auto chosen = context.GetTmpX();
-
-    const u64 exponent_mask = lane_bits == 32 ? 0x7F800000u : 0x7FF0000000000000ull;
-    const u64 fraction_mask = lane_bits == 32 ? 0x007FFFFFu : 0x000FFFFFFFFFFFFFull;
-    const u64 quiet_mask = lane_bits == 32 ? 0x00400000u : 0x0008000000000000ull;
-    for (u32 lane = 0; lane < lanes; ++lane) {
-        if (lane_bits == 32) {
-            __ Umov(raw_left.W(), left.V4S(), lane);
-            __ Umov(raw_right.W(), right.V4S(), lane);
-            __ Umov(raw_result.W(), result.V4S(), lane);
-
-            __ Mov(mask.W(), static_cast<u32>(exponent_mask));
-            __ And(scratch.W(), raw_left.W(), mask.W());
-            __ Cmp(scratch.W(), mask.W());
-            __ Cset(scratch.W(), eq);
-            __ Mov(mask.W(), static_cast<u32>(fraction_mask));
-            __ And(mask.W(), raw_left.W(), mask.W());
-            __ Cmp(mask.W(), 0);
-            __ Cset(mask.W(), ne);
-            __ And(nan_left.W(), scratch.W(), mask.W());
-
-            __ Mov(mask.W(), static_cast<u32>(exponent_mask));
-            __ And(scratch.W(), raw_right.W(), mask.W());
-            __ Cmp(scratch.W(), mask.W());
-            __ Cset(scratch.W(), eq);
-            __ Mov(mask.W(), static_cast<u32>(fraction_mask));
-            __ And(mask.W(), raw_right.W(), mask.W());
-            __ Cmp(mask.W(), 0);
-            __ Cset(mask.W(), ne);
-            __ And(nan_right.W(), scratch.W(), mask.W());
-
-            __ Mov(mask.W(), static_cast<u32>(quiet_mask));
-            __ Orr(scratch.W(), raw_left.W(), mask.W());
-            // raw_left is dead after quieting operand 1, so reuse it for the
-            // quieted operand 2.
-            __ Orr(raw_left.W(), raw_right.W(), mask.W());
-            __ Cmp(nan_left.W(), 0);
-            __ Csel(chosen.W(), scratch.W(), raw_result.W(), ne);
-            // Real x86 gives operand 1 priority when both inputs are NaN.
-            // Select operand 2 only when operand 1 was not NaN.
-            __ Cmp(nan_left.W(), 0);
-            __ Cset(scratch.W(), eq);
-            __ And(scratch.W(), scratch.W(), nan_right.W());
-            __ Cmp(scratch.W(), 0);
-            __ Csel(chosen.W(), raw_left.W(), chosen.W(), ne);
-
-            __ Mov(mask.W(), static_cast<u32>(exponent_mask));
-            __ And(raw_left.W(), raw_result.W(), mask.W());
-            __ Cmp(raw_left.W(), mask.W());
-            __ Cset(raw_left.W(), eq);
-            __ Mov(mask.W(), static_cast<u32>(fraction_mask));
-            __ And(mask.W(), raw_result.W(), mask.W());
-            __ Cmp(mask.W(), 0);
-            __ Cset(mask.W(), ne);
-            __ And(raw_left.W(), raw_left.W(), mask.W());
-            __ Orr(raw_right.W(), nan_left.W(), nan_right.W());
-            __ Cmp(raw_right.W(), 0);
-            __ Cset(raw_right.W(), eq);
-            __ And(raw_left.W(), raw_left.W(), raw_right.W());
-            __ Mov(raw_result.W(), 0xFFC00000u);
-            __ Cmp(raw_left.W(), 0);
-            __ Csel(chosen.W(), raw_result.W(), chosen.W(), ne);
-            __ Ins(result.V4S(), lane, chosen.W());
+    // The scalar forms (lane_count == 1) define lane 0 only; their callers
+    // merge the surviving lanes from `left` after this returns. Keeping the
+    // bitwise ops 64-bit wide there is not an optimisation but a correctness
+    // requirement for the 64-bit scalar shapes: writing the upper half of
+    // `result` would destroy the very lane the caller is about to copy back
+    // whenever RegAlloc gives `result` and `left` the same physical register.
+    const bool scalar = lane_count == 1;
+    auto bytes = [scalar](const VRegister& v) { return scalar ? v.V8B() : v.V16B(); };
+    // isnan(x) == !(x == x). FCMEQ yields all-ones lanes where the compare
+    // holds, so every mask below is the *complement* of "is NaN"; BIF/BIT read
+    // that polarity directly and no NOT is needed anywhere.
+    auto ordered = [&](const VRegister& d, const VRegister& s) {
+        if (scalar) {
+            if (lane_bits == 32) {
+                __ Fcmeq(d.S(), s.S(), s.S());
+            } else {
+                __ Fcmeq(d.D(), s.D(), s.D());
+            }
         } else {
-            __ Umov(raw_left, left.V2D(), lane);
-            __ Umov(raw_right, right.V2D(), lane);
-            __ Umov(raw_result, result.V2D(), lane);
-
-            __ Mov(mask, exponent_mask);
-            __ And(scratch, raw_left, mask);
-            __ Cmp(scratch, mask);
-            __ Cset(scratch, eq);
-            __ Mov(mask, fraction_mask);
-            __ And(mask, raw_left, mask);
-            __ Cmp(mask, 0);
-            __ Cset(mask, ne);
-            __ And(nan_left, scratch, mask);
-
-            __ Mov(mask, exponent_mask);
-            __ And(scratch, raw_right, mask);
-            __ Cmp(scratch, mask);
-            __ Cset(scratch, eq);
-            __ Mov(mask, fraction_mask);
-            __ And(mask, raw_right, mask);
-            __ Cmp(mask, 0);
-            __ Cset(mask, ne);
-            __ And(nan_right, scratch, mask);
-
-            __ Mov(mask, quiet_mask);
-            __ Orr(scratch, raw_left, mask);
-            __ Orr(raw_left, raw_right, mask);
-            __ Cmp(nan_left, 0);
-            __ Csel(chosen, scratch, raw_result, ne);
-            // Real x86 gives operand 1 priority when both inputs are NaN.
-            __ Cmp(nan_left, 0);
-            __ Cset(scratch, eq);
-            __ And(scratch, scratch, nan_right);
-            __ Cmp(scratch, 0);
-            __ Csel(chosen, raw_left, chosen, ne);
-
-            __ Mov(mask, exponent_mask);
-            __ And(raw_left, raw_result, mask);
-            __ Cmp(raw_left, mask);
-            __ Cset(raw_left, eq);
-            __ Mov(mask, fraction_mask);
-            __ And(mask, raw_result, mask);
-            __ Cmp(mask, 0);
-            __ Cset(mask, ne);
-            __ And(raw_left, raw_left, mask);
-            __ Orr(raw_right, nan_left, nan_right);
-            __ Cmp(raw_right, 0);
-            __ Cset(raw_right, eq);
-            __ And(raw_left, raw_left, raw_right);
-            __ Mov(raw_result, 0xFFF8000000000000ull);
-            __ Cmp(raw_left, 0);
-            __ Csel(chosen, raw_result, chosen, ne);
-            __ Ins(result.V2D(), lane, chosen);
+            if (lane_bits == 32) {
+                __ Fcmeq(d.V4S(), s.V4S(), s.V4S());
+            } else {
+                __ Fcmeq(d.V2D(), s.V2D(), s.V2D());
+            }
         }
+    };
+    // Both constants are built with NEON modified immediates (one or two
+    // instructions, no GPR): MOVI/MVNI cannot encode the 64-bit patterns
+    // directly, but each is its 32-bit half shifted into place. Going through
+    // MacroAssembler::Movi(vd, u64) instead would spill the value through
+    // VIXL's ip0/ip1 scratch -- reserved, so correct, but a GPR round trip and
+    // three instructions where these are two.
+    auto splat = [&](const VRegister& d, bool indefinite) {
+        if (indefinite) {
+            // MSL: ~((imm8 << 16) | 0xFFFF).
+            __ Mvni(d.V4S(), lane_bits == 32 ? 0x3F : 0x07, MSL, 16);
+        } else {
+            __ Movi(d.V4S(), lane_bits == 32 ? 0x00400000u : 0x00080000u);
+        }
+        if (lane_bits == 64) {
+            __ Shl(d.V2D(), d.V2D(), 32);
+        }
+    };
+
+    auto ordered_mask = context.GetTmpV();
+    auto propagated = context.GetTmpV();
+    auto tmp = context.GetTmpV();
+
+    // x86 propagates operand 1's NaN in preference to operand 2's; ARM ranks
+    // signalling NaNs above quiet ones instead, so the choice has to be redone
+    // from the inputs rather than read off the hardware result.
+    ordered(ordered_mask, left);
+    __ Orr(bytes(propagated), bytes(right), bytes(right));
+    __ Bif(bytes(propagated), bytes(left), bytes(ordered_mask));
+    // `propagated` is a NaN exactly when one of the two inputs was (it *is*
+    // one of them), so re-testing it costs one register less than keeping the
+    // left mask alive and ANDing in a second one.
+    ordered(ordered_mask, propagated);
+
+    // Force the quiet bit on: a signalling input is forwarded as the matching
+    // quiet NaN with its payload intact. The 32-bit bit pattern is an ORR
+    // vector immediate; the 64-bit one is not encodable as one (the same
+    // immediate would land in both halves of every lane and corrupt the
+    // payload), so it goes through a register.
+    if (lane_bits == 32) {
+        __ Orr(propagated.V4S(), 0x40, 16);
+    } else {
+        splat(tmp, false);
+        __ Orr(bytes(propagated), bytes(propagated), bytes(tmp));
     }
+
+    // Lanes where the operation itself was invalid (inf-inf, 0*inf, 0/0, and
+    // nothing else once neither input is a NaN) get x86's "real indefinite"
+    // QNaN, which differs from ARM's default NaN in the sign bit.
+    splat(tmp, true);
+    __ Bit(bytes(propagated), bytes(tmp), bytes(ordered_mask));
+
+    // Add/sub/mul/div return a NaN for *every* NaN input, so "the result is a
+    // NaN" is exactly the set of lanes that needs one of the two substitutions
+    // above; lanes that produced a number are already correct.
+    ordered(ordered_mask, result);
+    __ Bif(bytes(result), bytes(propagated), bytes(ordered_mask));
 }
 
 void JitTranslator::EmitVecFAdd(ir::Inst* inst) {

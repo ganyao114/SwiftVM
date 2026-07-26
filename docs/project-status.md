@@ -55,6 +55,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_UNIFORM_ELIM | 0/1 | 1 | uniform 消除 pass |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_FORCE_FIXED_STACK | 0/1 | — | 诊断：强制 guest 栈 fixed/fallback(布局 flake repro) |
+| SVM_GUEST_BITS | 0 或 20..47 | 32 | guest 地址窗口位宽。**0 = 无界（未隔离）**，需 `-DSWIFT_ALLOW_UNBOUNDED_GUEST=ON` 才编译进去，普通构建拒绝 |
 | SWIFT_FUZZ_SEED | u64 | 随机 | fuzz 定值复现 |
 
 ---
@@ -69,6 +70,11 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 - **差分 fuzz**(`swift_test "Fuzz x86*"`,Unicorn oracle):32 族 per-case 运行。**已知 flake:Unicorn 自身偶发 SIGILL(rc=132,x86_fuzz.cpp:6023/6030)~10-30%/run，会 abort 整个 Catch2**——方法论：per-case 循环 + 每例 3 次重试；管道中 `$?` 是 grep 的码不是测试的码。
 - **Rosetta 仲裁**(`arch -x86_64`):ISA 语义 ground truth（真实 x86 边界行为，如 FCOM IE、FIST 边界、非对齐 LOCK 信号形态）。
 - **raw 测试二进制**(`source/translator/linux/tests/`,.S + 生成器 + 已检入 ELF):smoke/coverage/MT/TSO/x87 各家族；`build_real_tests.sh` 在 orb ubuntu-x64 VM 或 `clang -target x86_64-linux-gnu -nostdlib -static` 重建。
+- **隔离/健壮性三件套**(均为「宿主必须活着」而非「guest 算得对」):
+  `run_isolation_tests.sh` 21 例（地址空间窗口 + 无界模式的编译期门）、
+  `run_malformed_guest_tests.sh` 33 例（畸形指令流）、
+  `run_helper_fault_tests.sh` 38 例（**宿主 helper 帧里的 guest 故障必须变成 guest #PF**，
+  13 形状 × 3 种 lowering；干净 HEAD 上 9 通过/29 失败）。
 - **func_tests**:真实 C 多块函数，三模式 checksum 必须逐位一致。
 - **MT/TSO**:clone_* 五件套 + litmus(mp/sb00 合法方差区间历史已知）。
 
@@ -320,19 +326,110 @@ helper 感知的 unwind。
 而不是散落的宿主 mmap）。保护页方案在正确性上不成立：guest 地址是无界的 64 位，
 `+2^40` 不是任何有限保护带能挡住的。
 
-回归套件 `run_isolation_tests.sh` 20 例：修后 20/20，`SVM_GUEST_BITS=0`（恢复
+回归套件 `run_isolation_tests.sh` 21 例：修后 21/21，`SVM_GUEST_BITS=0`（恢复
 未隔离行为）下 10/20——十处逃逸全部失败。原始实证不可直接复现为测试（两个宿主
 目标都随 ASLR 变位），所以套件断言**性质**：有窗口时 `[base]` 与
 `[base + k·2^bits]` 必须别名，「没有别名」恰恰等于「这次访问触到了宿主内存」。
 
-**剩余的架构半边（仍未解决）**：helper 内的故障仍会打死宿主。隔离已经修好——
-helper 再也碰不到宿主内存——但一个**窗口内**的野地址仍会在活着的宿主栈帧里触发
-故障，`HandleFault` 展不开它。x87/xsave 用「校验并跳过」绕开，这在架构上不正确
-（guest 本该吃到 #PF，现在静默拿到零）；`rep` 系列连这个检查都没有。真正的修法
-需要 helper 感知的 unwind，或从 `CallHost` 出来的 guest 可见故障返回路径。
+### ~~P-1b — 隔离性的另一半：helper 里的故障~~ **已修复**（2026-07-27）
 
-另一个脚枪：`SVM_GUEST_BITS=0` 逐字恢复未隔离行为。回归套件需要它来演示缺陷，
-发布前应改成编译期门控。
+上一轮遗留的「架构那一半」现已收口。三条独立的缺陷，逐条给证据：
+
+**(1) clone worker 的缺页打死宿主——根因不是缺页处理。** 复现：
+`SVM_AVX=1 svm_translator_linux avx_crosspage_x86_64 5` →
+`unhandled host fault: SIGBUS at pc=... addr=0x7000400df4`。lldb 回溯定位到
+`SyscallProcessState::StoreGuestU32` ← `X86GuestProcess::RunThread` ← 线程
+teardown，`si_addr` 正是 guest 的 `&xp_ctid`。即：**CLONE_CHILD_CLEARTID 的
+清零存储是宿主对 guest 内存的写**，而该 guest 页与代码同页、被 SMC 写保护，于是
+在一个 `tls_active_runtime == nullptr` 的线程上吃到保护故障，`HandleSmcFault`
+拒绝认领 → `DefaultHandler` 杀进程。对照实验：`SVM_SMC_MT=0`（解除全部写保护）
+与 `SVM_ENABLE_JIT=0`（解释器不做 SMC 跟踪）下崩溃消失，确认是写保护而非缺页。
+修法：`runtime.cpp` 增加线程本地 owner slot——「本线程拥有的 Runtime」，从构造
+活到析构，覆盖 JitRun 之间的宿主代码（syscall 模拟、线程 teardown）。宿主写到
+代码页语义上就是自修改代码，打开写窗口 + 失效翻译并重试正是正确处理。
+该类缺陷不止 clone：任何把结果写回 guest 缓冲区的 syscall 都同形。
+
+**(2) helper 内的 guest 故障必须变成 guest #PF。** 此前 x87/fxsave 的
+`GuestPointer` 返回 `nullptr`、调用方一律 `if (!out) return;`——`fnstenv [bad]`
+等成为**静默空操作**；`rep movs/stos/cmps/scas` 的 `ClampGuestWalk` 只把走查夹在
+**窗口**内，对窗口内的未映射页毫无防护——实测（干净 HEAD）**直接打死宿主**，
+比原以为的「静默少搬数据」更糟。
+方案选型（三选一，选了 1）：
+| 方案 | 结论 |
+|---|---|
+| helper 感知的 unwind | 需要 setjmp/longjmp 或 DWARF；每次调用有固定成本，且信号处理器里 longjmp 要手工恢复信号掩码 |
+| 把 helper 访存改走 JIT 路径 | rep 走查本质是循环，无法用单条 IR 访存表达 |
+| **helper 内校验 + 可见故障返回通道** | **选用**：无 unwind、无新后端 op |
+返回通道的落点是**位 63**（`kX87GuestFault` / `kStringGuestFault`）：x87 helper
+只回 FSW(16 位) 与 FCOMI 三位，`RepMovs` 原本返回 void，`RepStos*` 原本返回填充
+末地址——已改由 IR 计算（走查连续，末地址是输入的纯函数），把返回值腾出来；
+`RepCmps*/RepScas*` 回的是元素计数，被窗口夹断后 ≤ 2^32。发射侧复用既有的
+`CheckMemoryAlignment(v, mask)`——它就是「`v & mask != 0` 就带 PageFatal 退出块」
+的通用原语（`DecodeCmpxchg16b` 的非对齐 LOCK #GP 用的同一条），因此**后端零改动**。
+`SetLocation(insn_pc)` 在前，保证 halt 报的是出错指令自己的 rip。
+`rep cmps/scas` 只在「把夹断后的额度全部走完」时才报故障——提前因比较结果终止的
+走查没有碰到洞，不欠故障。
+
+**(3) 性能约束（上一位 agent 因此没做）已用数据解决。** 「每次调用一把锁 + 二分
+查找」确实不可接受，所以没有沿用 `RangeIsMapped`：`GuestMemory` 新增
+**页存在位图**（每 16 KiB 宿主页 1 bit，默认 32 位窗口下 32 KiB，calloc 惰性
+落页），配合 `SignalHandler::SetGuestRangeProbe` 的**区间**探针——一次间接调用
+回答整段走查，无锁。实测（独立 worktree、同一次进程内交错、11 rep、loadavg≈10）：
+
+| 负载 | 中位数 | 说明 |
+|---|---|---|
+| `rep movsb` count=8 紧循环（合成最坏） | **+30%** | 每次调用 2 次探针，约 2.4 ns/探针 |
+| `rep stosb` count=8 紧循环（合成最坏） | **+46%** | 每次调用 1 次探针 |
+| `rep movsq` count=512 | +0.4% | 探针成本被搬运摊薄 |
+| `func_tests`（真实 glibc，翻译密集） | −0.2% | 噪声内 |
+| `mem` / `int` / `real_busy` | −0.1% / +0.9% / +1.5% | 噪声内 |
+
+即：合成最坏情况有真实代价，**任何真实负载测不出差别**（glibc 的 memcpy 走
+SSE/AVX，我们不上报 ERMS，`rep movsb` 不在热路径上）。位图同时让指令取指的
+`GetPointer` 从「shared_lock + 二分」变成一次位读。
+
+**回归套件**：`run_helper_fault_tests.sh` + `gen_helper_fault_guest_x86_64.py`，
+38 例 = 13 形状 × 3 种 lowering（默认 / `SVM_X87_JIT=1` / `SVM_ENABLE_JIT=0`）。
+断言三件事：宿主活着、guest halt 于 `reason 2`、**且 guest 没有打印 SURVIVED**
+——每个形状在故障指令之后都继续写一个标记，所以「helper 跳过了访问、执行继续」
+是显式可分辨的，而不是与「故障了」长得一样。
+**负向对照**（干净 HEAD 二进制跑同一套件）：**9 通过 / 29 失败**。
+**变异测试**（7 个变异，逐个重编译后跑套件）：
+
+| 变异 | 结果 |
+|---|---|
+| 去掉 `HandleSmcFault` 的 owner-slot 回退 | 杀死（clone_pf 红） |
+| `X87Dispatch` 不 OR 故障位 | 杀死（10 红） |
+| `CallX87` 不发射故障检查 | 杀死（10 红） |
+| `ClampGuestWalk` 不上报映射不足 | 杀死（18 红） |
+| `DecodeMovs` 去掉故障检查 | 杀死（6 红） |
+| 位图不再更新 | 杀死（38 红） |
+| `~Impl` 里的 `CloseWriteWindow` | **未杀死** → 该行已删除，见下 |
+
+`~Impl` 的 `CloseWriteWindow` 是「线程退出前关掉宿主开的写窗口」的防御性调用，
+变异测试分辨不出有无——而且它本就不必要：`RegisterNode` 的 `!rec.dirty` 守卫
+与 `CloseWriteWindow` 的重试循环已经负责收集「别的线程开窗期间发布的翻译」。
+**未经验证的防御性代码不留**，已删。
+
+**`SVM_GUEST_BITS=0` 改为编译期门控**：普通构建直接拒绝并点名
+`-DSWIFT_ALLOW_UNBOUNDED_GUEST=ON`（cmake option，默认 OFF）。
+`run_isolation_tests.sh` 新增一条断言就是这个门（第 21 例），并在
+`SVM_ISOLATION_EXPECT=broken` 下检测到门存在时 SKIP 并说明需要专用构建。
+专用构建实测仍能演示缺陷：10 通过 / 10 失败。
+
+**顺带答出了一个悬置的问题**：`run_avx_real_tests.sh` 的 stage 5 此前因为这条
+崩溃报 BLOCKED。修好后它给出真实结论——**32 字节跨页存储在故障时确实留下撕裂
+写**：落在已映射页里的 16 字节被提交，随后第二半缺页（`first_page_partial=1`、
+`first_page_prefix_intact=1`、`observer_fault=1`）。这是契约 C1 的 2×16B 下降的
+直接后果；x86 不承诺跨页原子性所以不算违规，但它**对另一个 guest 线程可见**，
+且与当前 x86 硬件的实际行为不同。runner 现在断言机制（worker 死于故障、宿主存活、
+未越界写）并把撕裂位作为 ANSWER 打印，而不是把它钉死成期望值——将来真做成硬件
+忠实的下降不该因此变红。
+
+**仍未解决**：故障后的寄存器状态是近似的。x86 在 `rep` 中途 #PF 时
+RCX/RSI/RDI 指向出错元素；我们发射的更新在故障检查之后，故障路径根本走不到它们，
+guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程），所以这个差异
+目前不可观测——但如果将来实现了 guest 信号投递，它就变成一个真实缺口。
 
 ### P0 — 潜伏 bug（触发面已收窄但未根治）
 

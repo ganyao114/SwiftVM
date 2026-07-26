@@ -50,6 +50,13 @@ public:
     void ReserveTmpX(const XRegister& reg);
 
     void Forward(ir::Location location);
+    // Inline dispatch to a compile-time-constant guest location, for the
+    // "SetLocation(imm) + ReturnToDispatch" shape a direct jmp/call decodes to.
+    // Emits nothing and returns false when the target is not linkable (unknown
+    // module, cross-module, BlockLink disabled); the caller then Rets to the
+    // trampoline dispatcher as before. state->current_loc has already been
+    // written by EmitSetLocation, so the fallback path needs no fixup.
+    [[nodiscard]] bool ForwardStatic(ir::Location location);
     void ReturnToDispatcher(const Register& location);
 
     // --- Return Stack Buffer (RSB) emission --------------------------------

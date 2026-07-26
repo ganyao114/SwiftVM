@@ -230,6 +230,8 @@ func_tests 5.1%、**x87_bench 90.8%**。
 | #1 `imul` 高半走 helper | `e01cbe4` | **mul/add 比值 3.27 → 1.000** | 新增 `MulHigh` IR，落 `SMULH`/`UMULH`。乘法循环现与加法循环等速 |
 | #3 `EmitHostCall` 全量保存 | `64a48d9` | **x87_bench 1.52×** | 保存集改为 RegAlloc 逐指令活跃集；其余负载持平 |
 | #2 函数模式净亏损 | `d42bb4f` | **int −41%、branch −21%** | 根因是接线漏洞：`PassPipeline::RunFunction` 只跑注册为 function pass 的条目，而只有 UniformElimination 注册了——函数模式**从来没跑过 flag 消除与死代码消除**。两个 pass 的 `Run(HIRFunction*)` 重载早就写好，只是没被调用 |
+| SSE NaN 修正改用 NEON | 未提交 | **`fp` 6.49×**（0.4094 → 0.0631 s） | `EmitVecFloatNaNFixup` 原本逐 lane 用 8 个 GPR 做位手术（f32 packed 约 160 条 host 指令）；改为 `Fcmeq`/`Bif`/`Bit` 一次算全部 lane，9–12 条、3 个 V 临时、0 个 GPR。发射字节：`vec_float_nan_pressure` −76.5%、`avx_real`（`SVM_AVX=1`）−44.8%、`fp` kernel −25.4% |
+| 直接 jmp/call 走 L2 分派槽 | 未提交 | **`call` −5.0%**（0.1908 → 0.1813 s） | 生成代码内 dispatcher 往返：`call` kernel **64 000 009 → 11**。代价是每个直接跳转出口多 3 条指令（`call` 发射字节 +1.8%） |
 
 两项都用「同一干净基座产出的两个二进制、同一次调用内交错、中位数」测得，
 所以结论不受宿主负载影响。#3 另有 25 个 guest e2e 程序的**退出码逐行比对**。
@@ -454,6 +456,42 @@ codegen 17% / opt 8% / **其余 26%**。
   这条线索**本轮完全未触及**。
 - **多线程 guest 的性能**：`clone_lock_rmw_x86_64` 是仓库里第二长的负载（~1.3 s），
   未纳入基线（它测的是竞争而非吞吐，方差性质不同）。
+
+### 6b. 后续补测（2026-07-27，基座 `6a4ba4f`，插桩只在独立 worktree）
+
+**生成代码内 dispatcher 往返**——在 `code_dispatcher`、L1/L2 命中点与 `code_cache_miss`
+各插一个计数器（用该点已死的 scratch 寄存器），得到：
+
+| guest | dispatcher 迭代 | L1 命中 | L2 命中 | miss |
+|---|---|---|---|---|
+| `bench call` | **64 000 009** | 63 999 992 | 6 | 11 |
+| `func_tests`（真实 glibc） | 14 108 | 13 049 | 132 | 927 |
+| `real_busy` | 11 534 | 10 427 | 115 | 992 |
+| `bench int/fp/mem/branch` | 4–5 | 0 | ≤1 | 4–5 |
+
+结论：这一层**只在 call 密集代码上是热点**（每个直接 call 一次往返，L1 命中率
+99.99998%），真实短命程序上 miss 数≈编译单元数（每个新单元一次），不是热点。
+
+**RSB 命中率**（同一批插桩）：`bench call` **100.00%**（64 M pop / 64 M hit），
+但 `func_tests` 只有 **1.81%**（3587 pop / 65 hit）、`real_busy` **2.52%**。
+即 RSB 在微基准上完美、在真实 glibc 上几乎不起作用——**根因未查**（推测返回地址
+落在调用者单元内部、不是编译单元入口，L2 槽因此永远是空的）。
+
+**候选 #4（SMC 宿主页粒度）在真实 glibc guest 上的量级：无。** 计数
+`RegisterNode`/`mprotect`/写保护故障/失效节点：
+
+| guest | 保护页 | mprotect | **故障** | **失效节点** |
+|---|---|---|---|---|
+| `func_tests` | 21 | 21 | **0** | **0** |
+| `real_busy` | 23 | 23 | **0** | **0** |
+| `func_tests_musl` / `real_busy_musl` | 2 | 2 | **0** | **0** |
+| `real_hello` | 20 | 20 | **0** | **0** |
+| `clone_smc_mt`（真 SMC） | 515 | 1028 | 513 | 1537 |
+
+真实静态 ELF 的 `.text` 与 `.data`/`.bss` 落在不同的 PT_LOAD 段、按宿主页对齐映射，
+所以数据写从不落进含代码的 16 KiB 宿主页。基线里 545→8 编译单元那个现象来自
+`mklinuxelf.py` 造的 freestanding guest（全部塞进一个 PT_LOAD）。
+**候选 #4 应当降级**：真实语料上收益为零，而它是清单里正确性风险最高的一项。
 
 ## 7. 本轮做的唯一非测量改动
 
