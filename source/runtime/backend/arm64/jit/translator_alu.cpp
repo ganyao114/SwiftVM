@@ -259,6 +259,25 @@ void JitTranslator::EmitRorImm(ir::Inst* inst) {
     __ Ror(result, context.R(value), ror);
 }
 
+void JitTranslator::EmitByteSwap(ir::Inst* inst) {
+    auto value = inst->GetArg<ir::Value>(0);
+    auto result = context.R(ir::Value{inst});
+    const u32 width = inst->GetArg<ir::Imm>(1).Get();
+    switch (width) {
+        case 16:
+            __ Rev16(result.W(), context.W(value));
+            break;
+        case 32:
+            __ Rev(result.W(), context.W(value));
+            break;
+        case 64:
+            __ Rev(result.X(), context.X(value));
+            break;
+        default:
+            PANIC("invalid byte-swap width {}", width);
+    }
+}
+
 void JitTranslator::EmitVec4Or(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
@@ -513,6 +532,26 @@ void JitTranslator::EmitVecMul(ir::Inst* inst) {
     }
 }
 
+void JitTranslator::EmitVecMulHigh16(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    auto low = context.GetTmpV();
+    auto high = context.GetTmpV();
+    const bool signed_lanes = inst->GetArg<ir::Imm>(2).Get() != 0;
+    if (signed_lanes) {
+        __ Smull(low.V4S(), left.V4H(), right.V4H());
+        __ Smull2(high.V4S(), left.V8H(), right.V8H());
+    } else {
+        __ Umull(low.V4S(), left.V4H(), right.V4H());
+        __ Umull2(high.V4S(), left.V8H(), right.V8H());
+    }
+    // Signedness only changes how the 16-bit operands are widened.  Once the
+    // complete 32-bit products exist, both PMULHW and PMULHUW select bits 31:16.
+    __ Shrn(result.V4H(), low.V4S(), 16);
+    __ Shrn2(result.V8H(), high.V4S(), 16);
+}
+
 void JitTranslator::EmitVecAbsDiffSum8(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
@@ -543,6 +582,8 @@ namespace {
 
 VRegister VecLaneFormat(VRegister reg, u32 lane_bits) {
     switch (lane_bits) {
+        case 8:
+            return reg.V16B();
         case 16:
             return reg.V8H();
         case 32:
@@ -556,6 +597,50 @@ VRegister VecLaneFormat(VRegister reg, u32 lane_bits) {
 }
 
 }  // namespace
+
+void JitTranslator::EmitVecSatAdd(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool signed_lanes = inst->GetArg<ir::Imm>(3).Get() != 0;
+    if (signed_lanes)
+        __ Sqadd(VecLaneFormat(result, bits), VecLaneFormat(left, bits), VecLaneFormat(right, bits));
+    else
+        __ Uqadd(VecLaneFormat(result, bits), VecLaneFormat(left, bits), VecLaneFormat(right, bits));
+}
+
+void JitTranslator::EmitVecSatSub(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool signed_lanes = inst->GetArg<ir::Imm>(3).Get() != 0;
+    if (signed_lanes)
+        __ Sqsub(VecLaneFormat(result, bits), VecLaneFormat(left, bits), VecLaneFormat(right, bits));
+    else
+        __ Uqsub(VecLaneFormat(result, bits), VecLaneFormat(left, bits), VecLaneFormat(right, bits));
+}
+
+void JitTranslator::EmitVecPack(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 source_bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool unsigned_destination = inst->GetArg<ir::Imm>(3).Get() != 0;
+    if (source_bits == 16) {
+        if (unsigned_destination) {
+            __ Sqxtun(result.V8B(), left.V8H());
+            __ Sqxtun2(result.V16B(), right.V8H());
+        } else {
+            __ Sqxtn(result.V8B(), left.V8H());
+            __ Sqxtn2(result.V16B(), right.V8H());
+        }
+    } else {
+        __ Sqxtn(result.V4H(), left.V4S());
+        __ Sqxtn2(result.V8H(), right.V4S());
+    }
+}
 
 void JitTranslator::EmitVecShiftLeft(ir::Inst* inst) {
     auto value = context.V(inst->GetArg<ir::Value>(0));
@@ -831,6 +916,50 @@ void JitTranslator::EmitVecFDivScalar32(ir::Inst* inst) {
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
 
+void JitTranslator::EmitVecFAddScalar64(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.X(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    auto rhs = context.GetTmpV();
+    __ Fmov(rhs.D(), right);
+    __ Fadd(result.D(), left.D(), rhs.D());
+    EmitVecFloatNaNFixup(result, left, rhs, 64, 1);
+    __ Ins(result.V2D(), 1, left.V2D(), 1);
+}
+
+void JitTranslator::EmitVecFSubScalar64(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.X(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    auto rhs = context.GetTmpV();
+    __ Fmov(rhs.D(), right);
+    __ Fsub(result.D(), left.D(), rhs.D());
+    EmitVecFloatNaNFixup(result, left, rhs, 64, 1);
+    __ Ins(result.V2D(), 1, left.V2D(), 1);
+}
+
+void JitTranslator::EmitVecFMulScalar64(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.X(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    auto rhs = context.GetTmpV();
+    __ Fmov(rhs.D(), right);
+    __ Fmul(result.D(), left.D(), rhs.D());
+    EmitVecFloatNaNFixup(result, left, rhs, 64, 1);
+    __ Ins(result.V2D(), 1, left.V2D(), 1);
+}
+
+void JitTranslator::EmitVecFDivScalar64(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.X(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    auto rhs = context.GetTmpV();
+    __ Fmov(rhs.D(), right);
+    __ Fdiv(result.D(), left.D(), rhs.D());
+    EmitVecFloatNaNFixup(result, left, rhs, 64, 1);
+    __ Ins(result.V2D(), 1, left.V2D(), 1);
+}
+
 void JitTranslator::EmitVecFloatNaNFixup(const VRegister& result,
                                          const VRegister& left,
                                          const VRegister& right,
@@ -1020,6 +1149,84 @@ void JitTranslator::EmitVecFDiv(ir::Inst* inst) {
     EmitVecFloatNaNFixup(result, left, right, lane_bits);
 }
 
+void JitTranslator::EmitVecFMinMax(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool maximum = inst->GetArg<ir::Imm>(3).Get() != 0;
+    const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    auto mask = context.GetTmpV();
+    auto selected = context.GetTmpV();
+    if (bits == 32) {
+        if (maximum)
+            __ Fcmgt(mask.V4S(), left.V4S(), right.V4S());
+        else
+            __ Fcmgt(mask.V4S(), right.V4S(), left.V4S());
+    } else {
+        if (maximum)
+            __ Fcmgt(mask.V2D(), left.V2D(), right.V2D());
+        else
+            __ Fcmgt(mask.V2D(), right.V2D(), left.V2D());
+    }
+    __ Bsl(mask.V16B(), left.V16B(), right.V16B());
+    __ Orr(selected.V16B(), mask.V16B(), mask.V16B());
+    if (!scalar) {
+        __ Orr(result.V16B(), selected.V16B(), selected.V16B());
+    } else {
+        __ Orr(result.V16B(), left.V16B(), left.V16B());
+        if (bits == 32)
+            __ Ins(result.V4S(), 0, selected.V4S(), 0);
+        else
+            __ Ins(result.V2D(), 0, selected.V2D(), 0);
+    }
+}
+
+void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
+    auto source = context.V(inst->GetArg<ir::Value>(0));
+    auto merge = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const u32 kind = inst->GetArg<ir::Imm>(3).Get();
+    const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    auto value = context.GetTmpV();
+    if (bits == 32) {
+        if (kind == 0) {
+            __ Fsqrt(value.V4S(), source.V4S());
+        } else if (kind == 1) {
+            __ Frecpe(value.V4S(), source.V4S());
+            auto step = context.GetTmpV();
+            // FRECPE alone is less accurate than x86 RCPPS/RCPSS require.
+            // Two Newton-Raphson refinements comfortably satisfy the x86
+            // relative-error bound while retaining the estimate semantics.
+            for (u32 i = 0; i < 2; ++i) {
+                __ Frecps(step.V4S(), source.V4S(), value.V4S());
+                __ Fmul(value.V4S(), value.V4S(), step.V4S());
+            }
+        } else {
+            __ Frsqrte(value.V4S(), source.V4S());
+            auto square = context.GetTmpV();
+            auto step = context.GetTmpV();
+            for (u32 i = 0; i < 2; ++i) {
+                __ Fmul(square.V4S(), value.V4S(), value.V4S());
+                __ Frsqrts(step.V4S(), source.V4S(), square.V4S());
+                __ Fmul(value.V4S(), value.V4S(), step.V4S());
+            }
+        }
+    } else {
+        __ Fsqrt(value.V2D(), source.V2D());
+    }
+    if (!scalar) {
+        __ Orr(result.V16B(), value.V16B(), value.V16B());
+    } else {
+        __ Orr(result.V16B(), merge.V16B(), merge.V16B());
+        if (bits == 32)
+            __ Ins(result.V4S(), 0, value.V4S(), 0);
+        else
+            __ Ins(result.V2D(), 0, value.V2D(), 0);
+    }
+}
+
 void JitTranslator::EmitVecFCmp(ir::Inst* inst) {
     auto left_raw = context.X(inst->GetArg<ir::Value>(0));
     auto right_raw = context.X(inst->GetArg<ir::Value>(1));
@@ -1055,6 +1262,54 @@ void JitTranslator::EmitVecFCmp(ir::Inst* inst) {
     __ Orr(result, result, bit);
 }
 
+void JitTranslator::EmitVecFCmpMask(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const u32 predicate = inst->GetArg<ir::Imm>(3).Get() & 7;
+    const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    auto compare = context.GetTmpV();
+    auto ordered_left = context.GetTmpV();
+    auto ordered_right = context.GetTmpV();
+    auto format = [bits](const VRegister& value) {
+        return bits == 32 ? value.V4S() : value.V2D();
+    };
+    switch (predicate) {
+        case 0: __ Fcmeq(format(compare), format(left), format(right)); break;
+        case 1: __ Fcmgt(format(compare), format(right), format(left)); break;
+        case 2: __ Fcmge(format(compare), format(right), format(left)); break;
+        case 3:
+        case 7:
+            __ Fcmeq(format(ordered_left), format(left), format(left));
+            __ Fcmeq(format(ordered_right), format(right), format(right));
+            __ And(compare.V16B(), ordered_left.V16B(), ordered_right.V16B());
+            if (predicate == 3) __ Mvn(compare.V16B(), compare.V16B());
+            break;
+        case 4:
+            __ Fcmeq(format(compare), format(left), format(right));
+            __ Mvn(compare.V16B(), compare.V16B());
+            break;
+        case 5:
+            __ Fcmgt(format(compare), format(right), format(left));
+            __ Mvn(compare.V16B(), compare.V16B());
+            break;
+        case 6:
+            __ Fcmge(format(compare), format(right), format(left));
+            __ Mvn(compare.V16B(), compare.V16B());
+            break;
+    }
+    if (!scalar) {
+        __ Orr(result.V16B(), compare.V16B(), compare.V16B());
+    } else {
+        __ Orr(result.V16B(), left.V16B(), left.V16B());
+        if (bits == 32)
+            __ Ins(result.V4S(), 0, compare.V4S(), 0);
+        else
+            __ Ins(result.V2D(), 0, compare.V2D(), 0);
+    }
+}
+
 void JitTranslator::EmitVecFCvtIntToFloat(ir::Inst* inst) {
     auto source = context.X(inst->GetArg<ir::Value>(0));
     auto result = context.X(ir::Value{inst});
@@ -1088,6 +1343,7 @@ void JitTranslator::EmitVecFCvtFloatToInt(ir::Inst* inst) {
     auto indefinite = context.GetTmpX();
     const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
     const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool round_nearest = inst->GetArg<ir::Imm>(3).Get() != 0;
 
     if (src_bits == 32) {
         __ Fmov(fp.S(), source.W());
@@ -1095,15 +1351,21 @@ void JitTranslator::EmitVecFCvtFloatToInt(ir::Inst* inst) {
         __ Fmov(fp.D(), source);
     }
     if (dst_bits == 32) {
-        if (src_bits == 32)
-            __ Fcvtzs(converted.W(), fp.S());
-        else
-            __ Fcvtzs(converted.W(), fp.D());
+        if (src_bits == 32) {
+            if (round_nearest) __ Fcvtns(converted.W(), fp.S());
+            else __ Fcvtzs(converted.W(), fp.S());
+        } else {
+            if (round_nearest) __ Fcvtns(converted.W(), fp.D());
+            else __ Fcvtzs(converted.W(), fp.D());
+        }
     } else {
-        if (src_bits == 32)
-            __ Fcvtzs(converted, fp.S());
-        else
-            __ Fcvtzs(converted, fp.D());
+        if (src_bits == 32) {
+            if (round_nearest) __ Fcvtns(converted, fp.S());
+            else __ Fcvtzs(converted, fp.S());
+        } else {
+            if (round_nearest) __ Fcvtns(converted, fp.D());
+            else __ Fcvtzs(converted, fp.D());
+        }
     }
 
     // Detect NaN first (FCMP x,x => V set only for unordered), then the two
@@ -1166,6 +1428,78 @@ void JitTranslator::EmitVecFCvtScalar(ir::Inst* inst) {
         __ Fmov(fp.D(), source);
         __ Fcvt(fp.S(), fp.D());
         __ Fmov(result.W(), fp.S());
+    }
+}
+
+void JitTranslator::EmitVecFCvtPacked(ir::Inst* inst) {
+    auto source = context.V(inst->GetArg<ir::Value>(0));
+    auto result = context.V(ir::Value{inst});
+    auto wide = context.GetTmpV();
+    const u32 kind = inst->GetArg<ir::Imm>(1).Get();
+    switch (kind) {
+        case 0: __ Scvtf(result.V4S(), source.V4S()); break;
+        case 1:
+            __ Sshll(wide.V2D(), source.V2S(), 0);
+            __ Scvtf(result.V2D(), wide.V2D());
+            break;
+        case 2:
+        case 3: {
+            if (kind == 2)
+                __ Fcvtns(result.V4S(), source.V4S());
+            else
+                __ Fcvtzs(result.V4S(), source.V4S());
+            auto invalid = context.GetTmpV();
+            auto compare = context.GetTmpV();
+            auto bound = context.GetTmpV();
+            auto bits = context.GetTmpX();
+            auto indefinite = context.GetTmpV();
+            __ Fcmeq(invalid.V4S(), source.V4S(), source.V4S());
+            __ Mvn(invalid.V16B(), invalid.V16B());
+            __ Mov(bits.W(), 0x4F000000u);  // +2^31
+            __ Dup(bound.V4S(), bits.W());
+            __ Fcmge(compare.V4S(), source.V4S(), bound.V4S());
+            __ Orr(invalid.V16B(), invalid.V16B(), compare.V16B());
+            __ Mov(bits.W(), 0xCF000000u);  // -2^31 (valid endpoint)
+            __ Dup(bound.V4S(), bits.W());
+            __ Fcmgt(compare.V4S(), bound.V4S(), source.V4S());
+            __ Orr(invalid.V16B(), invalid.V16B(), compare.V16B());
+            __ Mov(bits.W(), 0x80000000u);
+            __ Dup(indefinite.V4S(), bits.W());
+            __ Bsl(invalid.V16B(), indefinite.V16B(), result.V16B());
+            __ Orr(result.V16B(), invalid.V16B(), invalid.V16B());
+            break;
+        }
+        case 4:
+        case 5:
+            if (kind == 4)
+                __ Fcvtns(wide.V2D(), source.V2D());
+            else
+                __ Fcvtzs(wide.V2D(), source.V2D());
+            {
+                auto invalid = context.GetTmpV();
+                auto compare = context.GetTmpV();
+                auto bound = context.GetTmpV();
+                auto bits = context.GetTmpX();
+                auto indefinite = context.GetTmpV();
+                __ Fcmeq(invalid.V2D(), source.V2D(), source.V2D());
+                __ Mvn(invalid.V16B(), invalid.V16B());
+                __ Mov(bits, 0x41E0000000000000ull);  // +2^31
+                __ Dup(bound.V2D(), bits);
+                __ Fcmge(compare.V2D(), source.V2D(), bound.V2D());
+                __ Orr(invalid.V16B(), invalid.V16B(), compare.V16B());
+                __ Mov(bits, 0xC1E0000000000000ull);  // -2^31
+                __ Dup(bound.V2D(), bits);
+                __ Fcmgt(compare.V2D(), bound.V2D(), source.V2D());
+                __ Orr(invalid.V16B(), invalid.V16B(), compare.V16B());
+                __ Mov(bits, 0x80000000u);
+                __ Dup(indefinite.V2D(), bits);
+                __ Bsl(invalid.V16B(), indefinite.V16B(), wide.V16B());
+                __ Orr(wide.V16B(), invalid.V16B(), invalid.V16B());
+            }
+            __ Xtn(result.V2S(), wide.V2D());
+            break;
+        case 6: __ Fcvtl(result.V2D(), source.V2S()); break;
+        case 7: __ Fcvtn(result.V2S(), source.V2D()); break;
     }
 }
 

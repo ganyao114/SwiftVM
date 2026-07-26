@@ -43,6 +43,10 @@ void TrampolinesArm64::Build() {
 
     gpr_regs.Mark(x31.GetCode());  // sp
     gpr_regs.Mark(fp.GetCode());   // fp
+    // x30 is the link register. Guest values live across a CallLambda must
+    // never be allocated here: the host call and the generated block's final
+    // return both require the architectural LR value.
+    gpr_regs.Mark(x30.GetCode());
     gpr_regs.Mark(state.GetCode());
     gpr_regs.Mark(cache.GetCode());
     if (True(config.global_opts & Optimizations::ReturnStackBuffer)) {

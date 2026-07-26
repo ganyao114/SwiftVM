@@ -1271,6 +1271,24 @@ void Interpreter::RunRorValue(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, amount ? ((value >> amount) | (value << (bits - amount))) : value);
 }
 
+void Interpreter::RunByteSwap(ir::Inst* inst, InterpStack& stack) {
+    const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    const u32 width = inst->GetArg<ir::Imm>(1).Get();
+    switch (width) {
+        case 16:
+            WriteScalar(stack, inst, __builtin_bswap16(static_cast<u16>(value)));
+            break;
+        case 32:
+            WriteScalar(stack, inst, __builtin_bswap32(static_cast<u32>(value)));
+            break;
+        case 64:
+            WriteScalar(stack, inst, __builtin_bswap64(value));
+            break;
+        default:
+            PANIC("invalid byte-swap width {}", width);
+    }
+}
+
 void Interpreter::RunBitExtract(ir::Inst* inst, InterpStack& stack) {
     const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 lsb = inst->GetArg<ir::Imm>(1).Get();
@@ -1358,6 +1376,34 @@ unsigned __int128 VecFloatScalar32(unsigned __int128 a, unsigned __int128 b, Op 
     else if (result_nan)
         result_bits = 0xFFC00000u;
     return (a & ~static_cast<unsigned __int128>(0xFFFFFFFFu)) | result_bits;
+}
+
+template <typename Op>
+unsigned __int128 VecFloatScalar64(unsigned __int128 a, unsigned __int128 b, Op op) {
+    const u64 left_bits = static_cast<u64>(a);
+    const u64 right_bits = static_cast<u64>(b);
+    double left;
+    double right;
+    std::memcpy(&left, &left_bits, sizeof(left));
+    std::memcpy(&right, &right_bits, sizeof(right));
+    const double value = op(left, right);
+    u64 result_bits;
+    std::memcpy(&result_bits, &value, sizeof(result_bits));
+    const bool left_nan = (left_bits & 0x7FF0000000000000ull) == 0x7FF0000000000000ull &&
+                          (left_bits & 0x000FFFFFFFFFFFFFull) != 0;
+    const bool right_nan =
+            (right_bits & 0x7FF0000000000000ull) == 0x7FF0000000000000ull &&
+            (right_bits & 0x000FFFFFFFFFFFFFull) != 0;
+    const bool result_nan =
+            (result_bits & 0x7FF0000000000000ull) == 0x7FF0000000000000ull &&
+            (result_bits & 0x000FFFFFFFFFFFFFull) != 0;
+    if (left_nan)
+        result_bits = left_bits | 0x0008000000000000ull;
+    else if (right_nan)
+        result_bits = right_bits | 0x0008000000000000ull;
+    else if (result_nan)
+        result_bits = 0xFFF8000000000000ull;
+    return (a & (static_cast<unsigned __int128>(UINT64_MAX) << 64)) | result_bits;
 }
 
 enum class FloatBinaryKind : u8 { Add, Sub, Mul, Div };
@@ -1657,6 +1703,97 @@ void Interpreter::RunVecMul(ir::Inst* inst, InterpStack& stack) {
                            [](u64 a, u64 b) { return a * b; }));
 }
 
+void Interpreter::RunVecMulHigh16(ir::Inst* inst, InterpStack& stack) {
+    const bool signed_lanes = inst->GetArg<ir::Imm>(2).Get() != 0;
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(
+                     ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                     ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                     16,
+                     [signed_lanes](u64 a, u64 b) {
+                         const u32 product = signed_lanes
+                                 ? static_cast<u32>(static_cast<s32>(
+                                           static_cast<s16>(a) * static_cast<s16>(b)))
+                                 : static_cast<u32>(static_cast<u16>(a)) *
+                                           static_cast<u32>(static_cast<u16>(b));
+                         return static_cast<u64>(product >> 16);
+                     }));
+}
+
+void Interpreter::RunVecSatAdd(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool signed_lanes = inst->GetArg<ir::Imm>(3).Get() != 0;
+    const u64 mask = (u64(1) << bits) - 1;
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(
+                     ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                     ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                     bits,
+                     [bits, signed_lanes, mask](u64 a, u64 b) {
+                         if (!signed_lanes) return std::min<u64>(a + b, mask);
+                         const s64 minimum = -(s64(1) << (bits - 1));
+                         const s64 maximum = (s64(1) << (bits - 1)) - 1;
+                         return static_cast<u64>(
+                                        std::clamp(SignedLane(a, bits) + SignedLane(b, bits),
+                                                   minimum,
+                                                   maximum)) &
+                                mask;
+                     }));
+}
+
+void Interpreter::RunVecSatSub(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool signed_lanes = inst->GetArg<ir::Imm>(3).Get() != 0;
+    const u64 mask = (u64(1) << bits) - 1;
+    WriteVec(stack,
+             inst,
+             VecLaneBinary(
+                     ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                     ReadVec(stack, inst->GetArg<ir::Value>(1)),
+                     bits,
+                     [bits, signed_lanes, mask](u64 a, u64 b) {
+                         if (!signed_lanes) return a < b ? u64(0) : a - b;
+                         const s64 minimum = -(s64(1) << (bits - 1));
+                         const s64 maximum = (s64(1) << (bits - 1)) - 1;
+                         return static_cast<u64>(
+                                        std::clamp(SignedLane(a, bits) - SignedLane(b, bits),
+                                                   minimum,
+                                                   maximum)) &
+                                mask;
+                     }));
+}
+
+void Interpreter::RunVecPack(ir::Inst* inst, InterpStack& stack) {
+    const u32 source_bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool unsigned_destination = inst->GetArg<ir::Imm>(3).Get() != 0;
+    const u32 destination_bits = source_bits / 2;
+    const u32 lanes_per_source = 128 / source_bits;
+    const u64 source_mask = (u64(1) << source_bits) - 1;
+    const s64 destination_minimum =
+            unsigned_destination ? 0 : -(s64(1) << (destination_bits - 1));
+    const s64 destination_maximum = unsigned_destination
+            ? (s64(1) << destination_bits) - 1
+            : (s64(1) << (destination_bits - 1)) - 1;
+    const u128 sources[] = {ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                            ReadVec(stack, inst->GetArg<ir::Value>(1))};
+    u128 result = 0;
+    for (u32 source = 0; source < 2; ++source) {
+        for (u32 lane = 0; lane < lanes_per_source; ++lane) {
+            const u64 raw =
+                    static_cast<u64>(sources[source] >> (lane * source_bits)) & source_mask;
+            const s64 narrowed = std::clamp(
+                    SignedLane(raw, source_bits), destination_minimum, destination_maximum);
+            const u64 encoded = static_cast<u64>(narrowed) &
+                                ((u64(1) << destination_bits) - 1);
+            const u32 output_lane = source * lanes_per_source + lane;
+            result |= static_cast<u128>(encoded) << (output_lane * destination_bits);
+        }
+    }
+    WriteVec(stack, inst, result);
+}
+
 void Interpreter::RunVecAbsDiffSum8(ir::Inst* inst, InterpStack& stack) {
     const auto left = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const auto right = ReadVec(stack, inst->GetArg<ir::Value>(1));
@@ -1867,11 +2004,133 @@ void Interpreter::RunVecFDiv(ir::Inst* inst, InterpStack& stack) {
                         : VecFloatBinary<double>(a, b, bits, [](double x, double y) { return x / y; }, FloatBinaryKind::Div));
 }
 
+void Interpreter::RunVecFMinMax(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool maximum = inst->GetArg<ir::Imm>(3).Get() != 0;
+    const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    const u128 left = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u128 right = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    u128 result = scalar ? left : 0;
+    const u32 lanes = scalar ? 1 : 128 / bits;
+    const u64 lane_mask = bits == 64 ? UINT64_MAX : UINT32_MAX;
+    for (u32 lane = 0; lane < lanes; ++lane) {
+        const u64 a_bits = static_cast<u64>(left >> (lane * bits)) & lane_mask;
+        const u64 b_bits = static_cast<u64>(right >> (lane * bits)) & lane_mask;
+        bool choose_left;
+        if (bits == 32) {
+            float a;
+            float b;
+            const u32 aa = u32(a_bits);
+            const u32 bb = u32(b_bits);
+            std::memcpy(&a, &aa, sizeof(a));
+            std::memcpy(&b, &bb, sizeof(b));
+            choose_left = !std::isnan(a) && !std::isnan(b) &&
+                          (maximum ? a > b : a < b);
+        } else {
+            double a;
+            double b;
+            std::memcpy(&a, &a_bits, sizeof(a));
+            std::memcpy(&b, &b_bits, sizeof(b));
+            choose_left = !std::isnan(a) && !std::isnan(b) &&
+                          (maximum ? a > b : a < b);
+        }
+        const u128 mask = static_cast<u128>(lane_mask) << (lane * bits);
+        const u64 selected = choose_left ? a_bits : b_bits;
+        result = (result & ~mask) | (static_cast<u128>(selected) << (lane * bits));
+    }
+    WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecFUnary(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const u32 kind = inst->GetArg<ir::Imm>(3).Get();
+    const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    const u128 source = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    u128 result = scalar ? ReadVec(stack, inst->GetArg<ir::Value>(1)) : 0;
+    const u32 lanes = scalar ? 1 : 128 / bits;
+    const u64 lane_mask = bits == 64 ? UINT64_MAX : UINT32_MAX;
+    for (u32 lane = 0; lane < lanes; ++lane) {
+        const u64 raw = static_cast<u64>(source >> (lane * bits)) & lane_mask;
+        u64 output;
+        if (bits == 32) {
+            float value;
+            const u32 input = u32(raw);
+            std::memcpy(&value, &input, sizeof(value));
+            const float converted = kind == 0 ? std::sqrt(value)
+                                    : kind == 1 ? 1.0f / value
+                                                : 1.0f / std::sqrt(value);
+            u32 encoded;
+            std::memcpy(&encoded, &converted, sizeof(encoded));
+            output = encoded;
+        } else {
+            double value;
+            std::memcpy(&value, &raw, sizeof(value));
+            const double converted = std::sqrt(value);
+            std::memcpy(&output, &converted, sizeof(output));
+        }
+        const u128 mask = static_cast<u128>(lane_mask) << (lane * bits);
+        result = (result & ~mask) | (static_cast<u128>(output) << (lane * bits));
+    }
+    WriteVec(stack, inst, result);
+}
+
 void Interpreter::RunVecFCmp(ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const u64 a = static_cast<u64>(ReadVec(stack, inst->GetArg<ir::Value>(0)));
     const u64 b = static_cast<u64>(ReadVec(stack, inst->GetArg<ir::Value>(1)));
     WriteScalar(stack, inst, FloatCompareFlags(a, b, bits));
+}
+
+void Interpreter::RunVecFCmpMask(ir::Inst* inst, InterpStack& stack) {
+    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const u32 predicate = inst->GetArg<ir::Imm>(3).Get() & 7;
+    const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    const u128 left = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u128 right = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    u128 result = scalar ? left : 0;
+    const u32 lanes = scalar ? 1 : 128 / bits;
+    const u64 lane_mask = bits == 64 ? UINT64_MAX : UINT32_MAX;
+    for (u32 lane = 0; lane < lanes; ++lane) {
+        const u64 a_bits = static_cast<u64>(left >> (lane * bits)) & lane_mask;
+        const u64 b_bits = static_cast<u64>(right >> (lane * bits)) & lane_mask;
+        bool eq;
+        bool lt;
+        bool le;
+        bool unordered;
+        if (bits == 32) {
+            float a;
+            float b;
+            const u32 aa = u32(a_bits);
+            const u32 bb = u32(b_bits);
+            std::memcpy(&a, &aa, sizeof(a));
+            std::memcpy(&b, &bb, sizeof(b));
+            unordered = std::isnan(a) || std::isnan(b);
+            eq = !unordered && a == b;
+            lt = !unordered && a < b;
+            le = !unordered && a <= b;
+        } else {
+            double a;
+            double b;
+            std::memcpy(&a, &a_bits, sizeof(a));
+            std::memcpy(&b, &b_bits, sizeof(b));
+            unordered = std::isnan(a) || std::isnan(b);
+            eq = !unordered && a == b;
+            lt = !unordered && a < b;
+            le = !unordered && a <= b;
+        }
+        const bool matched = predicate == 0   ? eq
+                             : predicate == 1 ? lt
+                             : predicate == 2 ? le
+                             : predicate == 3 ? unordered
+                             : predicate == 4 ? !eq
+                             : predicate == 5 ? !lt
+                             : predicate == 6 ? !le
+                                              : !unordered;
+        const u128 mask = static_cast<u128>(lane_mask) << (lane * bits);
+        result = (result & ~mask) |
+                 (matched ? static_cast<u128>(lane_mask) << (lane * bits) : 0);
+    }
+    WriteVec(stack, inst, result);
 }
 
 void Interpreter::RunVecFCvtIntToFloat(ir::Inst* inst, InterpStack& stack) {
@@ -1898,8 +2157,35 @@ void Interpreter::RunVecFCvtIntToFloat(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunVecFCvtFloatToInt(ir::Inst* inst, InterpStack& stack) {
     const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
     const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool round_nearest = inst->GetArg<ir::Imm>(3).Get() != 0;
     const u64 raw = static_cast<u64>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
-    WriteScalar(stack, inst, FloatToIntIndefinite(raw, src_bits, dst_bits));
+    if (!round_nearest) {
+        WriteScalar(stack, inst, FloatToIntIndefinite(raw, src_bits, dst_bits));
+        return;
+    }
+    long double value;
+    if (src_bits == 32) {
+        const u32 encoded = u32(raw);
+        float decoded;
+        std::memcpy(&decoded, &encoded, sizeof(decoded));
+        value = std::nearbyint(static_cast<long double>(decoded));
+    } else {
+        double decoded;
+        std::memcpy(&decoded, &raw, sizeof(decoded));
+        value = std::nearbyint(static_cast<long double>(decoded));
+    }
+    const long double minimum =
+            dst_bits == 32 ? -2147483648.0L : -9223372036854775808.0L;
+    const long double maximum =
+            dst_bits == 32 ? 2147483648.0L : 9223372036854775808.0L;
+    if (std::isnan(static_cast<double>(value)) || value < minimum || value >= maximum) {
+        WriteScalar(stack, inst, dst_bits == 32 ? 0x80000000u : 0x8000000000000000ull);
+    } else {
+        WriteScalar(stack,
+                    inst,
+                    dst_bits == 32 ? u64(u32(static_cast<s32>(value)))
+                                   : u64(static_cast<s64>(value)));
+    }
 }
 
 void Interpreter::RunVecFCvtScalar(ir::Inst* inst, InterpStack& stack) {
@@ -1921,6 +2207,81 @@ void Interpreter::RunVecFCvtScalar(ir::Inst* inst, InterpStack& stack) {
         std::memcpy(&bits, &converted, sizeof(bits));
         WriteScalar(stack, inst, bits);
     }
+}
+
+void Interpreter::RunVecFCvtPacked(ir::Inst* inst, InterpStack& stack) {
+    const u128 source = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u32 kind = inst->GetArg<ir::Imm>(1).Get();
+    u128 result = 0;
+    auto put32 = [&](u32 lane, u32 value) {
+        result |= static_cast<u128>(value) << (lane * 32);
+    };
+    auto put64 = [&](u32 lane, u64 value) {
+        result |= static_cast<u128>(value) << (lane * 64);
+    };
+    if (kind == 0 || kind == 1) {
+        const u32 lanes = kind == 0 ? 4 : 2;
+        for (u32 lane = 0; lane < lanes; ++lane) {
+            const s32 value = static_cast<s32>(source >> (lane * 32));
+            if (kind == 0) {
+                const float converted = static_cast<float>(value);
+                u32 encoded;
+                std::memcpy(&encoded, &converted, sizeof(encoded));
+                put32(lane, encoded);
+            } else {
+                const double converted = static_cast<double>(value);
+                u64 encoded;
+                std::memcpy(&encoded, &converted, sizeof(encoded));
+                put64(lane, encoded);
+            }
+        }
+    } else if (kind >= 2 && kind <= 5) {
+        const bool source_double = kind >= 4;
+        const bool truncate = kind == 3 || kind == 5;
+        const u32 lanes = source_double ? 2 : 4;
+        for (u32 lane = 0; lane < lanes; ++lane) {
+            long double value;
+            if (source_double) {
+                const u64 raw = static_cast<u64>(source >> (lane * 64));
+                double decoded;
+                std::memcpy(&decoded, &raw, sizeof(decoded));
+                value = decoded;
+            } else {
+                const u32 raw = static_cast<u32>(source >> (lane * 32));
+                float decoded;
+                std::memcpy(&decoded, &raw, sizeof(decoded));
+                value = decoded;
+            }
+            value = truncate ? std::trunc(value) : std::nearbyint(value);
+            u32 encoded = 0x80000000u;
+            if (!std::isnan(static_cast<double>(value)) &&
+                value >= -2147483648.0L && value < 2147483648.0L) {
+                encoded = static_cast<u32>(static_cast<s32>(value));
+            }
+            put32(lane, encoded);
+        }
+    } else if (kind == 6) {
+        for (u32 lane = 0; lane < 2; ++lane) {
+            const u32 raw = static_cast<u32>(source >> (lane * 32));
+            float decoded;
+            std::memcpy(&decoded, &raw, sizeof(decoded));
+            const double converted = decoded;
+            u64 encoded;
+            std::memcpy(&encoded, &converted, sizeof(encoded));
+            put64(lane, encoded);
+        }
+    } else {
+        for (u32 lane = 0; lane < 2; ++lane) {
+            const u64 raw = static_cast<u64>(source >> (lane * 64));
+            double decoded;
+            std::memcpy(&decoded, &raw, sizeof(decoded));
+            const float converted = static_cast<float>(decoded);
+            u32 encoded;
+            std::memcpy(&encoded, &converted, sizeof(encoded));
+            put32(lane, encoded);
+        }
+    }
+    WriteVec(stack, inst, result);
 }
 
 void Interpreter::RunVecFAddScalar32(ir::Inst* inst, InterpStack& stack) {
@@ -1953,6 +2314,38 @@ void Interpreter::RunVecFDivScalar32(ir::Inst* inst, InterpStack& stack) {
              VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
                               ReadScalar(stack, inst->GetArg<ir::Value>(1)),
                               [](float a, float b) { return a / b; }));
+}
+
+void Interpreter::RunVecFAddScalar64(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              [](double a, double b) { return a + b; }));
+}
+
+void Interpreter::RunVecFSubScalar64(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              [](double a, double b) { return a - b; }));
+}
+
+void Interpreter::RunVecFMulScalar64(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              [](double a, double b) { return a * b; }));
+}
+
+void Interpreter::RunVecFDivScalar64(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack,
+             inst,
+             VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              [](double a, double b) { return a / b; }));
 }
 
 }  // namespace swift::runtime::backend::interp
