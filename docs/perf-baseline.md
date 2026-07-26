@@ -227,6 +227,7 @@ func_tests 5.1%、**x87_bench 90.8%**。
 |---|---|---|---|
 | #1 `imul` 高半走 helper | `e01cbe4` | **mul/add 比值 3.27 → 1.000** | 新增 `MulHigh` IR，落 `SMULH`/`UMULH`。乘法循环现与加法循环等速 |
 | #3 `EmitHostCall` 全量保存 | `64a48d9` | **x87_bench 1.52×** | 保存集改为 RegAlloc 逐指令活跃集；其余负载持平 |
+| #2 函数模式净亏损 | `d42bb4f` | **int −41%、branch −21%** | 根因是接线漏洞：`PassPipeline::RunFunction` 只跑注册为 function pass 的条目，而只有 UniformElimination 注册了——函数模式**从来没跑过 flag 消除与死代码消除**。两个 pass 的 `Run(HIRFunction*)` 重载早就写好，只是没被调用 |
 
 两项都用「同一干净基座产出的两个二进制、同一次调用内交错、中位数」测得，
 所以结论不受宿主负载影响。#3 另有 25 个 guest e2e 程序的**退出码逐行比对**。
@@ -234,6 +235,18 @@ func_tests 5.1%、**x87_bench 90.8%**。
 一条教训值得记住：#3 第一次测量是在主工作树上做的，而树里有其他并行改动
 （`signal_handler.cpp` 等），结果把别人的 SIGBUS 算到了这个改动头上。**性能
 与行为比对必须在独立 worktree 上取基线。**
+
+#2 顺带暴露一个真实正确性缺陷：`Inst::HasSideEffects` 没把
+`CallLambda`/`CallLocation`/`CallDynamic` 算进去。它们返回 U64 但常常没人用
+返回值，DCE 会删掉——而它们是通过 state 指针改 guest 状态的 helper（FNINIT、
+SoftFloat x87、xsave）。**这个缺陷在 DCE 没被接进函数模式时是不可见的**，接上
+的那一刻立刻显形（九次 FLD1 后 TOP=0 而非 7）。一个没被调用的 pass 会掩盖别处
+的错误假设。
+
+#2 结论：**函数模式应继续默认开**。回归已消失，翻转默认值会丢掉 `call` 的
+10.5%。仍落后的 `func_tests` 是**翻译成本**不是代码质量——`SVM_FUNC_STATS=1`
+显示 compiled=148 但 compiled_blocks=847（5.72 块/函数），把静态可达的块都急切
+编译了，而短命程序大部分从不执行。下一步是热度启发式或惰性块编译。
 
 ---
 
