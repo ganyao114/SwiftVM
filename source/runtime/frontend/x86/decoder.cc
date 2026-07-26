@@ -77,6 +77,35 @@ static bool IsThreadPrivateAddress(const _DInst& insn) {
     return false;
 }
 
+static void FixupMovbeOperandSize(_DInst& insn, const u8* code) {
+    if (insn.opcode != I_MOVBE || FLAG_GET_OPSIZE(insn.flags) != Decode32Bits) {
+        return;
+    }
+
+    // This distorm snapshot treats MOVBE's 66H operand-size override as an
+    // unused prefix: both F0 (reg <- mem) and F1 (mem <- reg) are returned
+    // with 32-bit operands/register IDs. Recover the architectural 16-bit
+    // form from the original bytes before generic Src/Dst processing.
+    for (u32 i = 0; i < insn.size; ++i) {
+        if (code[i] != 0x66 || (insn.unusedPrefixesMask & (u16(1) << i)) == 0) {
+            continue;
+        }
+        for (auto& op : insn.ops) {
+            if (op.type == O_NONE) break;
+            op.size = 16;
+            if (op.type == O_REG && op.index >= REGS32_BASE &&
+                op.index < REGS32_BASE + 16) {
+                op.index = static_cast<u8>(op.index + (REGS16_BASE - REGS32_BASE));
+            }
+        }
+        insn.flags &= ~(u16(3) << 8);
+        auto* normalized = &insn;
+        FLAG_SET_OPSIZE(normalized, Decode16Bits);
+        insn.unusedPrefixesMask &= ~(u16(1) << i);
+        return;
+    }
+}
+
 ABIDescriptor GetABIDescriptor32() { return {{}, {}, general_return_x86, float_return_x86}; }
 
 ABIDescriptor GetABIDescriptor64() {
@@ -211,7 +240,36 @@ void X64Decoder::Decode() {
             end_decode = assembler->EndCommit();
             continue;
         }
+        // This distorm snapshot predates RDSEED and decodes 0F C7 /7 as a
+        // one-byte undefined instruction.  Recognize the register-only
+        // encoding here (optional 66 and REX prefixes) so the stream advances
+        // by its architectural length.
+        if (is_64bit) {
+            u32 seed_offset = 0;
+            bool operand16 = false;
+            u8 rex = 0;
+            if (code_ptr[seed_offset] == 0x66) {
+                operand16 = true;
+                ++seed_offset;
+            }
+            if ((code_ptr[seed_offset] & 0xF0) == 0x40) {
+                rex = code_ptr[seed_offset++];
+            }
+            if (code_ptr[seed_offset] == 0x0F && code_ptr[seed_offset + 1] == 0xC7 &&
+                (code_ptr[seed_offset + 2] & 0xF8) == 0xF8) {
+                const u32 index = (code_ptr[seed_offset + 2] & 7) | ((rex & 1) << 3);
+                const u32 width = (rex & 8) ? 64 : (operand16 ? 16 : 32);
+                const auto first = width == 64 ? R_RAX : (width == 32 ? R_EAX : R_AX);
+                DecodeRandomRegister(static_cast<_RegisterType>(first + index), width);
+                const u32 size = seed_offset + 3;
+                pc += size;
+                assembler->AdvancePC(ir::Imm{size});
+                end_decode = assembler->EndCommit();
+                continue;
+            }
+        }
         _DInst insn = DisDecode(code_ptr, 0x10, is_64bit);
+        FixupMovbeOperandSize(insn, code_ptr);
         if (insn.opcode == UINT16_MAX || insn.size == 0) {
             // size == 0 would loop forever at the same pc.
             Interrupt(InterruptReason::ILL_CODE);
@@ -263,6 +321,10 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             Interrupt(InterruptReason::HLT);
             break;
         case I_INT_3:
+        case I_INT1:
+        case I_INT:
+            // With no guest IDT/kernel, software and debug interrupts surface
+            // through the runtime's breakpoint/trap path.
             Interrupt(InterruptReason::BRK);
             break;
         case I_SYSCALL:
@@ -273,6 +335,32 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             break;
         case I_CPUID:
             DecodeCpuid(insn);
+            break;
+        case I_RDTSC:
+            DecodeTimestamp(false);
+            break;
+        case I_RDTSCP:
+            DecodeTimestamp(true);
+            break;
+        case I_RDRAND:
+            DecodeRandom(insn);
+            break;
+        case I_MOVBE:
+            DecodeMovbe(insn);
+            break;
+        case I_MOVNTI:
+            DecodeMovnti(insn);
+            break;
+        case I_XLAT:
+            DecodeXlat(insn);
+            break;
+        case I_XGETBV:
+            // XSAVE/OSXSAVE are deliberately absent from CPUID, therefore
+            // XGETBV is architecturally unavailable and must #UD.
+            Interrupt(InterruptReason::ILL_CODE);
+            break;
+        case I_UD2:
+            Interrupt(InterruptReason::ILL_CODE);
             break;
         case I_CALL: {
             auto ret_type = is_64bit ? ir::ValueType::U64 : ir::ValueType::U32;
@@ -557,11 +645,50 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_SAR:
             DecodeSar(insn);
             break;
+        case I_SHLD:
+            DecodeDoubleShift(insn, false);
+            break;
+        case I_SHRD:
+            DecodeDoubleShift(insn, true);
+            break;
+        case I_RCL:
+            DecodeRotateCarry(insn, true);
+            break;
+        case I_RCR:
+            DecodeRotateCarry(insn, false);
+            break;
+        case I_CLC:
+            __ SetCarry(__ LoadImm(ir::Imm(u8(0))));
+            carry_ = CarryPolarity::Direct;
+            StorePolarity(false);
+            break;
+        case I_STC:
+            __ SetCarry(__ LoadImm(ir::Imm(u8(1))));
+            carry_ = CarryPolarity::Direct;
+            StorePolarity(false);
+            break;
+        case I_CMC:
+            __ SetCarry(__ Xor(CarryValue(), ir::Operand{ir::Imm(u8(1))}));
+            carry_ = CarryPolarity::Direct;
+            StorePolarity(false);
+            break;
+        case I_CLD:
+            StoreDirection(false);
+            break;
+        case I_STD:
+            StoreDirection(true);
+            break;
         case I_PUSH:
             DecodePush(insn);
             break;
         case I_POP:
             DecodePop(insn);
+            break;
+        case I_PUSHF:
+            DecodePushf(insn);
+            break;
+        case I_POPF:
+            DecodePopf(insn);
             break;
         case I_PUSHA:
             DecodePushA(insn);
@@ -748,8 +875,11 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_MOVDQU:
         case I_MOVAPS:
         case I_MOVUPS:
+        case I_MOVAPD:
+        case I_MOVUPD:
         case I_MOVNTDQ:
         case I_MOVNTPS:
+        case I_MOVNTPD:
         case I_LDDQU:
             DecodeMovVec(insn);
             break;
@@ -838,6 +968,17 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_PSUBD:
             DecodeVecInt(insn, VecIntOp::Sub, 32);
             break;
+        case I_PADDSB: DecodeVecSat(insn, false, 8, true); break;
+        case I_PADDSW: DecodeVecSat(insn, false, 16, true); break;
+        case I_PADDUSB: DecodeVecSat(insn, false, 8, false); break;
+        case I_PADDUSW: DecodeVecSat(insn, false, 16, false); break;
+        case I_PSUBSB: DecodeVecSat(insn, true, 8, true); break;
+        case I_PSUBSW: DecodeVecSat(insn, true, 16, true); break;
+        case I_PSUBUSB: DecodeVecSat(insn, true, 8, false); break;
+        case I_PSUBUSW: DecodeVecSat(insn, true, 16, false); break;
+        case I_PACKSSWB: DecodeVecPack(insn, 16, false); break;
+        case I_PACKSSDW: DecodeVecPack(insn, 32, false); break;
+        case I_PACKUSWB: DecodeVecPack(insn, 16, true); break;
         case I_PCMPEQB:
             DecodeVecInt(insn, VecIntOp::CmpEq, 8);
             break;
@@ -894,6 +1035,18 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             break;
         case I_PUNPCKHWD:
             DecodeVecZip(insn, 16, true);
+            break;
+        case I_UNPCKLPS:
+            DecodeVecZip(insn, 32, false);
+            break;
+        case I_UNPCKHPS:
+            DecodeVecZip(insn, 32, true);
+            break;
+        case I_UNPCKLPD:
+            DecodeVecZip(insn, 64, false);
+            break;
+        case I_UNPCKHPD:
+            DecodeVecZip(insn, 64, true);
             break;
         case I_PSHUFD:
             DecodePshufd(insn);
@@ -970,6 +1123,66 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_DIVSS:
             DecodeScalarFloatOp(insn, VecFloatOp::Div);
             break;
+        case I_ADDSD:
+            DecodeScalarFloatOp(insn, VecFloatOp::Add, 64);
+            break;
+        case I_SUBSD:
+            DecodeScalarFloatOp(insn, VecFloatOp::Sub, 64);
+            break;
+        case I_MULSD:
+            DecodeScalarFloatOp(insn, VecFloatOp::Mul, 64);
+            break;
+        case I_DIVSD:
+            DecodeScalarFloatOp(insn, VecFloatOp::Div, 64);
+            break;
+        case I_CMPEQPS: DecodeFloatCompareMask(insn, 32, 0, false); break;
+        case I_CMPLTPS: DecodeFloatCompareMask(insn, 32, 1, false); break;
+        case I_CMPLEPS: DecodeFloatCompareMask(insn, 32, 2, false); break;
+        case I_CMPUNORDPS: DecodeFloatCompareMask(insn, 32, 3, false); break;
+        case I_CMPNEQPS: DecodeFloatCompareMask(insn, 32, 4, false); break;
+        case I_CMPNLTPS: DecodeFloatCompareMask(insn, 32, 5, false); break;
+        case I_CMPNLEPS: DecodeFloatCompareMask(insn, 32, 6, false); break;
+        case I_CMPORDPS: DecodeFloatCompareMask(insn, 32, 7, false); break;
+        case I_CMPEQPD: DecodeFloatCompareMask(insn, 64, 0, false); break;
+        case I_CMPLTPD: DecodeFloatCompareMask(insn, 64, 1, false); break;
+        case I_CMPLEPD: DecodeFloatCompareMask(insn, 64, 2, false); break;
+        case I_CMPUNORDPD: DecodeFloatCompareMask(insn, 64, 3, false); break;
+        case I_CMPNEQPD: DecodeFloatCompareMask(insn, 64, 4, false); break;
+        case I_CMPNLTPD: DecodeFloatCompareMask(insn, 64, 5, false); break;
+        case I_CMPNLEPD: DecodeFloatCompareMask(insn, 64, 6, false); break;
+        case I_CMPORDPD: DecodeFloatCompareMask(insn, 64, 7, false); break;
+        case I_CMPEQSS: DecodeFloatCompareMask(insn, 32, 0, true); break;
+        case I_CMPLTSS: DecodeFloatCompareMask(insn, 32, 1, true); break;
+        case I_CMPLESS: DecodeFloatCompareMask(insn, 32, 2, true); break;
+        case I_CMPUNORDSS: DecodeFloatCompareMask(insn, 32, 3, true); break;
+        case I_CMPNEQSS: DecodeFloatCompareMask(insn, 32, 4, true); break;
+        case I_CMPNLTSS: DecodeFloatCompareMask(insn, 32, 5, true); break;
+        case I_CMPNLESS: DecodeFloatCompareMask(insn, 32, 6, true); break;
+        case I_CMPORDSS: DecodeFloatCompareMask(insn, 32, 7, true); break;
+        case I_CMPEQSD: DecodeFloatCompareMask(insn, 64, 0, true); break;
+        case I_CMPLTSD: DecodeFloatCompareMask(insn, 64, 1, true); break;
+        case I_CMPLESD: DecodeFloatCompareMask(insn, 64, 2, true); break;
+        case I_CMPUNORDSD: DecodeFloatCompareMask(insn, 64, 3, true); break;
+        case I_CMPNEQSD: DecodeFloatCompareMask(insn, 64, 4, true); break;
+        case I_CMPNLTSD: DecodeFloatCompareMask(insn, 64, 5, true); break;
+        case I_CMPNLESD: DecodeFloatCompareMask(insn, 64, 6, true); break;
+        case I_CMPORDSD: DecodeFloatCompareMask(insn, 64, 7, true); break;
+        case I_MINPS: DecodeFloatMinMax(insn, 32, false, false); break;
+        case I_MAXPS: DecodeFloatMinMax(insn, 32, true, false); break;
+        case I_MINPD: DecodeFloatMinMax(insn, 64, false, false); break;
+        case I_MAXPD: DecodeFloatMinMax(insn, 64, true, false); break;
+        case I_MINSS: DecodeFloatMinMax(insn, 32, false, true); break;
+        case I_MAXSS: DecodeFloatMinMax(insn, 32, true, true); break;
+        case I_MINSD: DecodeFloatMinMax(insn, 64, false, true); break;
+        case I_MAXSD: DecodeFloatMinMax(insn, 64, true, true); break;
+        case I_SQRTPS: DecodeFloatUnary(insn, 32, 0, false); break;
+        case I_SQRTPD: DecodeFloatUnary(insn, 64, 0, false); break;
+        case I_SQRTSS: DecodeFloatUnary(insn, 32, 0, true); break;
+        case I_SQRTSD: DecodeFloatUnary(insn, 64, 0, true); break;
+        case I_RCPPS: DecodeFloatUnary(insn, 32, 1, false); break;
+        case I_RCPSS: DecodeFloatUnary(insn, 32, 1, true); break;
+        case I_RSQRTPS: DecodeFloatUnary(insn, 32, 2, false); break;
+        case I_RSQRTSS: DecodeFloatUnary(insn, 32, 2, true); break;
         case I_PMADDWD:
             DecodeVecMadd16(insn);
             break;
@@ -997,6 +1210,15 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_PMULLW:
             DecodeVecMul(insn, 16);
             break;
+        case I_PMULHW:
+            DecodeVecMulHigh16(insn, true);
+            break;
+        case I_PMULHUW:
+            DecodeVecMulHigh16(insn, false);
+            break;
+        case I_MASKMOVDQU:
+            DecodeMaskmovdqu(insn);
+            break;
         case I_PSHUFLW:
             DecodePshufw(insn, false);
             break;
@@ -1015,6 +1237,20 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_CVTTSD2SI:
             DecodeCvttsd2si(insn);
             break;
+        case I_CVTSS2SI:
+            DecodeCvtFloatToInt(insn, 32);
+            break;
+        case I_CVTSD2SI:
+            DecodeCvtFloatToInt(insn, 64);
+            break;
+        case I_CVTDQ2PS: DecodePackedConvert(insn, 0); break;
+        case I_CVTDQ2PD: DecodePackedConvert(insn, 1); break;
+        case I_CVTPS2DQ: DecodePackedConvert(insn, 2); break;
+        case I_CVTTPS2DQ: DecodePackedConvert(insn, 3); break;
+        case I_CVTPD2DQ: DecodePackedConvert(insn, 4); break;
+        case I_CVTTPD2DQ: DecodePackedConvert(insn, 5); break;
+        case I_CVTPS2PD: DecodePackedConvert(insn, 6); break;
+        case I_CVTPD2PS: DecodePackedConvert(insn, 7); break;
         case I_CVTSD2SS:
             DecodeCvtsd2ss(insn);
             break;
@@ -1068,9 +1304,11 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeFxsave(insn, true);
             break;
         case I_UCOMISD:
+        case I_COMISD:
             DecodeUcomisd(insn);
             break;
         case I_UCOMISS:
+        case I_COMISS:
             DecodeUcomis(insn, 32);
             break;
         case I_BSF:
@@ -1108,6 +1346,7 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_PREFETCHT2:
         case I_PREFETCHNTA:
         case I_PREFETCH:
+        case I_PREFETCHW:
         case I_LFENCE:
         case I_MFENCE:
         case I_SFENCE:
@@ -1299,7 +1538,17 @@ ir::Value X64Decoder::CarryValue() {
 }
 
 void X64Decoder::StorePolarity(bool inverted) {
-    __ StoreUniform(PolarityUniform(), __ LoadImm(ir::Imm(u64(inverted ? 1 : 0))));
+    // StoreUniform uses the value's width, not the Uniform declaration's
+    // width. Keep this byte-typed so it cannot overwrite the adjacent DF byte.
+    __ StoreUniform(PolarityUniform(), __ LoadImm(ir::Imm(u8(inverted ? 1 : 0))));
+}
+
+ir::Value X64Decoder::DirectionValue() {
+    return __ LoadUniform(DirectionUniform()).SetType(ir::ValueType::U8);
+}
+
+void X64Decoder::StoreDirection(bool backward) {
+    __ StoreUniform(DirectionUniform(), __ LoadImm(ir::Imm(u8(backward ? 1 : 0))));
 }
 
 void X64Decoder::CondGoto(ir::BOOL cond, ir::Lambda then_, ir::Location else_) {

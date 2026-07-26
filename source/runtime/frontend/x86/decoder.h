@@ -360,6 +360,12 @@ private:
     void DecodeStos(_DInst& insn);
 
     void DecodeCpuid(_DInst& insn);
+    void DecodeTimestamp(bool rdtscp);
+    void DecodeRandom(_DInst& insn);
+    void DecodeRandomRegister(_RegisterType reg, u32 width);
+    void DecodeMovbe(_DInst& insn);
+    void DecodeMovnti(_DInst& insn);
+    void DecodeXlat(_DInst& insn);
     void DecodeMovzx(_DInst& insn);
 
     void DecodeMovsx(_DInst& insn);
@@ -401,6 +407,8 @@ private:
     void DecodePush(_DInst& insn);
 
     void DecodePop(_DInst& insn);
+    void DecodePushf(_DInst& insn);
+    void DecodePopf(_DInst& insn);
 
     void DecodePushA(_DInst& insn);
 
@@ -409,6 +417,8 @@ private:
     void DecodeShlShr(_DInst& insn, bool shr);
 
     void DecodeSar(_DInst& insn);
+    void DecodeDoubleShift(_DInst& insn, bool right);
+    void DecodeRotateCarry(_DInst& insn, bool left);
 
     // kind: 0 = shl, 1 = shr, 2 = sar
     void DecodeShift(_DInst& insn, int kind);
@@ -445,6 +455,11 @@ private:
         return ir::Uniform{offsetof(ThreadContext64, carry_inverted), ir::ValueType::U8};
     }
     void StorePolarity(bool inverted);
+    static ir::Uniform DirectionUniform() {
+        return ir::Uniform{offsetof(ThreadContext64, direction), ir::ValueType::U8};
+    }
+    ir::Value DirectionValue();
+    void StoreDirection(bool set);
 
     void DecodeCmp(_DInst& insn);
 
@@ -518,8 +533,12 @@ private:
     void DecodeVecAvg(_DInst& insn, u32 lane_bits);
     void DecodeVecMinMax(_DInst& insn, bool max, u32 lane_bits, bool is_signed);
     void DecodeVecMul(_DInst& insn, u32 lane_bits);
+    void DecodeVecMulHigh16(_DInst& insn, bool is_signed);
+    void DecodeVecSat(_DInst& insn, bool sub, u32 lane_bits, bool is_signed);
+    void DecodeVecPack(_DInst& insn, u32 source_bits, bool unsigned_destination);
     void DecodeVecAbsDiffSum8(_DInst& insn);
     void DecodeVecMadd16(_DInst& insn);
+    void DecodeMaskmovdqu(_DInst& insn);
 
     void DecodeVecZip(_DInst& insn, u32 lane_bits, bool high);
     void DecodeVecDupPairs32(_DInst& insn, bool odd);
@@ -552,11 +571,16 @@ private:
     void DecodeCvtsi2sd(_DInst& insn);
     void DecodeCvttss2si(_DInst& insn);
     void DecodeCvttsd2si(_DInst& insn);
+    void DecodeCvtFloatToInt(_DInst& insn, u32 source_bits);
+    void DecodePackedConvert(_DInst& insn, u32 kind);
     void DecodeCvtsd2ss(_DInst& insn);
     void DecodeCvtss2sd(_DInst& insn);
     void DecodePackedFloatOp(_DInst& insn, VecFloatOp op, u32 lane_bits);
     void DecodeUcomis(_DInst& insn, u32 lane_bits);
-    void DecodeScalarFloatOp(_DInst& insn, VecFloatOp op);
+    void DecodeScalarFloatOp(_DInst& insn, VecFloatOp op, u32 lane_bits = 32);
+    void DecodeFloatCompareMask(_DInst& insn, u32 lane_bits, u32 predicate, bool scalar);
+    void DecodeFloatMinMax(_DInst& insn, u32 lane_bits, bool maximum, bool scalar);
+    void DecodeFloatUnary(_DInst& insn, u32 lane_bits, u32 kind, bool scalar);
     // pextrw / pinsrw: gpr <-> xmm word lane (imm8 selects the lane).
     void DecodePextrw(_DInst& insn);
     void DecodePinsrw(_DInst& insn);

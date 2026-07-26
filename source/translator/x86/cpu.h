@@ -261,7 +261,9 @@ struct ThreadContext64 {
     // this byte to recover the architectural CF across block boundaries.
     // 0 = stored C == x86 CF, 1 = stored C == NOT x86 CF.
     u8 carry_inverted{};
-    u8 carry_pad0{};
+    // Architectural DF, kept separately from the lazy arithmetic flags.
+    // String instructions consult it dynamically across translation blocks.
+    u8 direction{};
     u16 carry_pad1{};
     u32 mxcsr_pad{};
 

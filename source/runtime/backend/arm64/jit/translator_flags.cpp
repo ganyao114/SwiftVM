@@ -293,12 +293,17 @@ void JitTranslator::EmitSetCarry(ir::Inst* inst) {
     // Merge pending NZCV first so no later merge clobbers the bit we write
     // (MergeNZCV leaves nzcv_dirty=false; Bfi does not set it).
     MergeNZCV();
+    // A preceding ClearFlags may still be queued in the lazy flag window.
+    // Apply it before inserting CF, otherwise the next flush clears the bit
+    // just written (RDRAND/RDSEED are the minimal reproducer).
+    FlushFlags();
     auto bit = context.R(inst->GetArg<ir::Value>(0));
     __ Bfi(flags, bit.X(), HostFlagsBit::C, 1);
 }
 
 void JitTranslator::EmitSetOverflow(ir::Inst* inst) {
     MergeNZCV();
+    FlushFlags();
     auto bit = context.R(inst->GetArg<ir::Value>(0));
     __ Bfi(flags, bit.X(), HostFlagsBit::V, 1);
 }

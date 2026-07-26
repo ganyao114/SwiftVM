@@ -1834,7 +1834,8 @@ TEST_CASE("Fuzz x86 rep stos") {
 
 TEST_CASE("Fuzz x86 cpuid") {
     FuzzEnv env;
-    for (u32 leaf : {0u, 1u, 7u, 0x80000000u, 0x80000001u, 5u, 0x80000004u}) {
+    for (u32 leaf :
+         {0u, 1u, 7u, 0x15u, 0x80000000u, 0x80000001u, 5u, 0x80000004u}) {
         // Unicorn reports its own feature set, so this is checked on the
         // SwiftVM side only (no differential comparison).
         std::vector<u8> code = {0x0F, 0xA2, 0xF4};
@@ -1850,23 +1851,36 @@ TEST_CASE("Fuzz x86 cpuid") {
                 env.ctx->rax.qword, env.ctx->rbx.qword, env.ctx->rcx.qword, env.ctx->rdx.qword};
         switch (leaf) {
             case 0:
-                REQUIRE(sig[0] == 7);
+                REQUIRE(sig[0] == 0x15);
                 REQUIRE(sig[1] == 0x756E6547);  // "Genu"
                 REQUIRE(sig[3] == 0x49656E69);  // "ineI"
                 REQUIRE(sig[2] == 0x6C65746E);  // "ntel"
                 break;
             case 1:
                 REQUIRE((sig[3] & (1u << 26)) != 0);  // SSE2 reported
+                REQUIRE((sig[3] & (1u << 4)) != 0);   // TSC
+                REQUIRE((sig[3] & (1u << 8)) != 0);   // CX8
+                REQUIRE((sig[2] & (1u << 22)) != 0);  // MOVBE
+                REQUIRE((sig[2] & (1u << 30)) != 0);  // RDRAND
+                REQUIRE((sig[2] & (1u << 26)) == 0);  // no XSAVE
+                REQUIRE((sig[2] & (1u << 27)) == 0);  // no OSXSAVE
                 REQUIRE((sig[2] & (1u << 0)) == 0);   // no SSE3
                 break;
             case 7:
-                REQUIRE(sig[1] == 0);  // no AVX2 / AVX-512 / BMI / ERMS
+                REQUIRE(sig[1] == (1u << 18));        // RDSEED only
+                break;
+            case 0x15:
+                REQUIRE(sig[0] == 1);              // denominator
+                REQUIRE(sig[1] == 1);              // numerator
+                REQUIRE(sig[2] == 1'000'000'000);  // crystal frequency: 1 GHz
+                REQUIRE(sig[3] == 0);
                 break;
             case 0x80000000:
                 REQUIRE(sig[0] == 0x80000004);
                 break;
             case 0x80000001:
                 REQUIRE((sig[3] & (1u << 29)) != 0);  // long mode
+                REQUIRE((sig[3] & (1u << 27)) != 0);  // RDTSCP
                 break;
             default:
                 std::cout << fmt::format("cpuid leaf {:x} eax={:x}\n", leaf, sig[0]);
@@ -6305,6 +6319,51 @@ TEST_CASE("Fuzz x86 alu ext") {
         env.EmitFlagCapture(b);
         // popcnt leaves SF/PF/AF/CF/OF undefined; mask them all out.
         env.RunIteration(b.c, FlagMask{0, false}, "aluext");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz x86 movbe xlat") {
+    FuzzEnv env;
+    // The first seven iterations deterministically cover both legal MOVBE
+    // memory forms at every width plus XLAT, even with a small fuzz override.
+    int iters = std::max(env.Iters(1200), 7);
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        env.EmitFlagPrefix(b, kRax, kRbx, kDataReg);
+        const int kind = i < 7 ? i : env.RandInt(0, 6);
+        if (kind < 6) {
+            static constexpr int widths[] = {16, 32, 64};
+            const int width = widths[kind % 3];
+            const bool store = kind >= 3;
+            const u8 reg = env.Pick(std::vector<u8>{kRax, kRcx, kRdx, kR8, kR10});
+            MemOp mem{};
+            mem.disp = 0x200 + env.RandInt(0, 16) * 8;
+            if (!store) {
+                EmitOperandPrefix(b, width);
+                EmitRexFor(b, width, reg, &mem, false, false);
+                b.B(0x0F);
+                b.B(0x38);
+                b.B(0xF0);  // movbe reg, [mem] (load)
+                EmitModRMMem(b, reg, mem);
+            } else {
+                EmitOperandPrefix(b, width);
+                EmitRexFor(b, width, reg, &mem, false, false);
+                b.B(0x0F);
+                b.B(0x38);
+                b.B(0xF1);  // movbe [mem], reg (store)
+                EmitModRMMem(b, reg, mem);
+            }
+        } else {
+            // XLAT always uses DS:[RBX + zero-extended AL].
+            env.ctx->rbx.qword = env.data_addr + 0x300;
+            env.ctx->rax.qword =
+                    (env.ctx->rax.qword & ~u64(0xFF)) | u64(env.RandInt(0, 63));
+            b.B(0xD7);
+        }
+        env.EmitFlagCapture(b);
+        env.RunIteration(b.c, FlagMask{}, "movbe-xlat");
     }
     REQUIRE(env.failures == 0);
 }

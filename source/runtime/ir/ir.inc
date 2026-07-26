@@ -101,6 +101,8 @@ INST(AsrValue, Value, Value, Value)
 // RotateRight
 INST(RorImm, Value, Value, Imm)
 INST(RorValue, Value, Value, Value)
+// Reverse the byte order within a 16/32/64-bit scalar.
+INST(ByteSwap, Value, Value, Imm)
 // Bit
 INST(BitExtract, Value, Value, Imm, Imm)
 INST(BitInsert, Value, Value, Value, Imm, Imm)
@@ -132,6 +134,12 @@ INST(VecAvg, Value, Value, Value, Imm)
 INST(VecMin, Value, Value, Value, Imm, Imm)
 INST(VecMax, Value, Value, Value, Imm, Imm)
 INST(VecMul, Value, Value, Value, Imm)
+// High 16 bits of eight signed/unsigned 16x16-bit products.
+INST(VecMulHigh16, Value, Value, Value, Imm)
+INST(VecSatAdd, Value, Value, Value, Imm, Imm)
+INST(VecSatSub, Value, Value, Value, Imm, Imm)
+// Narrow and concatenate signed lanes; unsigned destination selects PACKUSWB.
+INST(VecPack, Value, Value, Value, Imm, Imm)
 
 // Packed integer horizontal operations.
 INST(VecAbsDiffSum8, Value, Value, Value)
@@ -158,18 +166,31 @@ INST(VecFAddScalar32, Value, Value, Value)
 INST(VecFSubScalar32, Value, Value, Value)
 INST(VecFMulScalar32, Value, Value, Value)
 INST(VecFDivScalar32, Value, Value, Value)
+INST(VecFAddScalar64, Value, Value, Value)
+INST(VecFSubScalar64, Value, Value, Value)
+INST(VecFMulScalar64, Value, Value, Value)
+INST(VecFDivScalar64, Value, Value, Value)
 
 // Packed IEEE floating-point operations. Imm is the lane width (32 or 64).
 INST(VecFAdd, Value, Value, Value, Imm)
 INST(VecFSub, Value, Value, Value, Imm)
 INST(VecFMul, Value, Value, Value, Imm)
 INST(VecFDiv, Value, Value, Value, Imm)
+INST(VecFMinMax, Value, Value, Value, Imm, Imm, Imm)
+// kind: 0=sqrt, 1=reciprocal estimate, 2=reciprocal-sqrt estimate.
+INST(VecFUnary, Value, Value, Value, Imm, Imm, Imm)
 
 // Scalar compare result: bit 0 = CF, bit 1 = PF, bit 2 = ZF.
 INST(VecFCmp, Value, Value, Value, Imm)
+// Predicate: 0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
+// Final Imm is scalar (preserve upper lanes) when non-zero.
+INST(VecFCmpMask, Value, Value, Value, Imm, Imm, Imm)
 
 // Scalar conversions. The result is the raw IEEE/integer bit pattern in a
 // scalar container; widths are supplied as immediates in bits.
 INST(VecFCvtIntToFloat, Value, Value, Imm, Imm)
-INST(VecFCvtFloatToInt, Value, Value, Imm, Imm)
+INST(VecFCvtFloatToInt, Value, Value, Imm, Imm, Imm)
 INST(VecFCvtScalar, Value, Value, Imm)
+// 0=dq2ps, 1=dq2pd, 2=ps2dq, 3=ttps2dq, 4=pd2dq, 5=ttpd2dq,
+// 6=ps2pd, 7=pd2ps.
+INST(VecFCvtPacked, Value, Value, Imm)
