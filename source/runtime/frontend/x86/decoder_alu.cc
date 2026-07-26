@@ -7,18 +7,14 @@ using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
-// Host helpers for operations the IR cannot express directly (128-bit products,
-// 128-bit dividends). Invoked through CallHost. Divide-by-zero / overflow do NOT
-// raise #DE here yet (TODO), they just produce 0.
-static u64 MulHiU64(u64 a, u64 b) {
-    return static_cast<u64>((static_cast<unsigned __int128>(a) * b) >> 64);
-}
-
-static u64 MulHiS64(u64 a, u64 b) {
-    return static_cast<u64>(
-            (static_cast<__int128>(static_cast<s64>(a)) * static_cast<s64>(b)) >> 64);
-}
-
+// Host helpers for operations the IR cannot express directly (128-bit
+// dividends). Invoked through CallHost. Divide-by-zero / overflow do NOT raise
+// #DE here yet (TODO), they just produce 0.
+//
+// The 64x64 high half used to live here too. It is now ir::MulHigh, one
+// SMULH/UMULH: a call site costs 376 bytes of register save/restore plus the
+// branch pair, which made a 64-bit multiply loop 3.27x slower than the same
+// loop without the multiply (docs/perf-baseline.md 5.1).
 static u64 DivQU64(u64 hi, u64 lo, u64 den) {
     if (!den) {
         return 0;
@@ -106,8 +102,13 @@ static ir::Value MulWithFlags(ir::Assembler* assembler, ir::Value a, ir::Value b
     ir::Value bad;  // nonzero iff the product does not fit in `width` bits
     if (width == 64) {
         lo = assembler->Mul(a, ir::Operand{b});
-        auto hi = sign ? assembler->CallHost(&MulHiS64, a, b)
-                       : assembler->CallHost(&MulHiU64, a, b);
+        // SetType: MulHigh lowers to SMULH/UMULH, which read full X registers.
+        // A narrower type here would have the allocator hand out a W register
+        // and the top half would be whatever was left in it.
+        auto hi = assembler->MulHigh(a.SetType(ir::ValueType::U64),
+                                     b.SetType(ir::ValueType::U64),
+                                     ir::Imm(u32(sign)))
+                          .SetType(ir::ValueType::U64);
         if (out_hi) {
             *out_hi = hi;
         }
