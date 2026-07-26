@@ -265,9 +265,9 @@ void X64Decoder::Decode() {
                 // 0F map.
                 if (DecodeBmi(vex) ||
                     (avx_on &&
-                     (DecodeAvxMul(vex) || DecodeAvxInt(vex) || DecodeAvxFp(vex) ||
-                      DecodeAvxHadd(vex) || DecodeAvxBlend(vex) ||
-                      DecodeAvxGather(vex)))) {
+                     (DecodeAvxMul(vex) || DecodeAvxFma(vex) || DecodeAvxInt(vex) ||
+                      DecodeAvxFp(vex) || DecodeAvxHadd(vex) || DecodeAvxBlend(vex) ||
+                      DecodeAvxGather(vex) || DecodeAvxMisc(vex)))) {
                     assembler->AdvancePC(ir::Imm{vex.length});
                     end_decode = assembler->EndCommit();
                     continue;

@@ -212,7 +212,18 @@ INST(VecFUnary, Value, Value, Value, Imm, Imm, Imm)
 
 // Scalar compare result: bit 0 = CF, bit 1 = PF, bit 2 = ZF.
 INST(VecFCmp, Value, Value, Value, Imm)
-// Predicate: 0=eq, 1=lt, 2=le, 3=unord, 4=neq, 5=nlt, 6=nle, 7=ord.
+// Lane-wise compare to an all-ones / all-zeros mask.  The predicate (second
+// Imm) is a RELATION SET, not an ISA's compare encoding: an IEEE 754 compare
+// of two lanes has exactly four mutually exclusive outcomes, and the predicate
+// names the subset for which the lane's mask is set --
+//     bit 0 = a < b, bit 1 = a == b, bit 2 = a > b, bit 3 = unordered.
+// All 16 subsets are legal: 0 is "never" and 15 is "always".  So `le` is 3,
+// `ord` is 7, `neq` (x86's NEQ_UQ, which is true when unordered) is 13, and
+// x86's NEQ_OQ, which is not, is 5.  Front ends translate their own encoding
+// into this -- for x86 see frontend/x86/fp_cmp_predicate.h, which also records
+// why the AVX signalling-vs-quiet dimension is NOT represented here (it is an
+// MXCSR exception-flag distinction only, measured on hardware, and SwiftVM
+// models no FP exception state).
 // Final Imm is scalar (preserve upper lanes) when non-zero.
 INST(VecFCmpMask, Value, Value, Value, Imm, Imm, Imm)
 
@@ -239,3 +250,52 @@ INST(VecFCvtPacked, Value, Value, Imm)
 // NaN and saturation rules cannot drift between the fused and unfused paths.
 // AArch64 lowers it to UZP1/UZP2.
 INST(VecUnzip, Value, Value, Value, Imm, Imm)
+
+// Fused multiply-add over floating-point lanes:
+//     dst.lane = round( sign_p * (a.lane * b.lane)  +  sign_c * c.lane )
+// with ONE rounding of the whole expression.  The exact product feeds the
+// addition unrounded, which is the entire reason this cannot be spelled as
+// VecFMul followed by VecFAdd: that rounds twice and differs from every FMA
+// unit in hardware whenever the exact product lands on a tie.  First Imm is
+// the lane width in bits (32 or 64); second Imm is a flag word:
+//     bit 0   negate the product before the addition
+//     bit 1   negate the addend
+// so the four sign combinations are one opcode rather than four.  The x86
+// 132/213/231 operand-order numbering is NOT represented here -- that is an
+// encoding detail, resolved in the front end into this (a, b, c) order.
+//
+// Nothing about this is x86-shaped.  AArch64 has FMLA/FMLS (and scalar
+// FMADD/FMSUB/FNMADD/FNMSUB, which cover all four sign combinations
+// directly); RISC-V V has vfmacc/vfnmacc/vfmsac/vfnmsac -- the same four --
+// and scalar RISC-V has fmadd/fmsub/fnmadd/fnmsub; a 32-bit ARM front end
+// would reach it from VFMA/VFMS/VFNMA/VFNMS.  A back end without a fused
+// unit can still implement it exactly with a double-double product, so the
+// opcode is implementable rather than merely expressible everywhere.
+//
+// SCALAR forms are deliberately absent.  x86's scalar FMA merges the
+// untouched lanes from the DESTINATION register, which is a different one of
+// the three operands for each of 132/213/231, so no "upper lanes come from
+// operand N" rule covers them; the front end computes the packed form and
+// merges lane 0 itself.
+INST(VecFMulAdd, Value, Value, Value, Value, Imm, Imm)
+
+// Round each floating-point lane to an INTEGRAL VALUE, result still floating
+// point.  First Imm is the lane width in bits (32 or 64); second Imm selects
+// the rounding mode:
+//     0  to nearest, ties to even   1  toward -infinity (floor)
+//     2  toward +infinity (ceil)    3  toward zero (truncate)
+// Third Imm non-zero means SCALAR: only lane 0 is rounded and the remaining
+// lanes come from `merge` (arg 1), the same shape VecFUnary already uses.
+//
+// The mode is an immediate rather than "whatever the current mode is": an IR
+// value must mean the same thing wherever it is scheduled, and a back end is
+// free to keep the host rounding mode set to anything.  A guest whose own
+// rounding-mode register selects the mode resolves that in its front end (the
+// x86 one reads MXCSR.RC and selects among the four results).
+//
+// This is not an x86 shape.  AArch64 has exactly these four as FRINTN/FRINTM/
+// FRINTP/FRINTZ; RISC-V V reaches them through vfcvt with an rm field; C's
+// rint/floor/ceil/trunc are the same four functions.  A NaN operand is
+// returned quieted and otherwise unchanged, and the sign of a zero result is
+// preserved (ceil(-0.5) is -0.0), which is what all of those already do.
+INST(VecFRoundInt, Value, Value, Value, Imm, Imm, Imm)

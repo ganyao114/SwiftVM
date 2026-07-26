@@ -12,6 +12,8 @@ add_library(fronted_x86 STATIC decoder.cc
     decoder_avx_hadd.cc
     decoder_avx_blend.cc
     decoder_avx_gather.cc
+    decoder_avx_misc.cc
+    decoder_avx_fma.cc
     decoder_bmi.cc
     decoder_xsave.cc
     vex_decoder.cc

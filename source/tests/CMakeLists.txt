@@ -5,11 +5,14 @@ add_executable(swift_test
         fuzz/vex_decoder_test.cpp
         fuzz/avx_fp_test.cpp
         fuzz/avx_fp2_test.cpp
+        fuzz/avx_cmp_test.cpp
         fuzz/avx_int_test.cpp
         fuzz/avx_mul_test.cpp
         fuzz/avx_hadd_test.cpp
         fuzz/avx_blend_test.cpp
         fuzz/avx_gather_test.cpp
+        fuzz/avx_misc_test.cpp
+        fuzz/avx_fma_test.cpp
         fuzz/xsave_test.cpp
         fuzz/bmi_test.cpp)
 
