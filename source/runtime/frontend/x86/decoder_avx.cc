@@ -229,7 +229,17 @@ void X64Decoder::DecodeAvx256MinMax(_DInst& insn, bool max, u32 lane_bits, bool 
 // in [31:16].  This is the one operation here whose halves are not
 // independent — the two 16-bit masks have to be recombined.
 void X64Decoder::DecodeAvx256Pmovmskb(_DInst& insn) {
-    const auto src = VecIndex(static_cast<_RegisterType>(insn.ops[1].index));
+    // The source comes from the raw ModRM.rm, NOT insn.ops[1]: this distorm
+    // snapshot's VEX VPMOVMSKB table entry has no operand descriptors, so it
+    // reports ModRM.reg for both operands (see VexRmRegister). Reading ops[1]
+    // returns another register's mask whenever the destination GPR number
+    // differs from the source vector register number — verified against
+    // Rosetta, which decodes `vpmovmskb ecx, ymm5` correctly while distorm
+    // renders it as `VPMOVMSKB RCX, XMM1`.
+    const u32 rm = VexRmRegister();
+    const auto src = rm != UINT32_MAX
+                             ? rm
+                             : VecIndex(static_cast<_RegisterType>(insn.ops[1].index));
     auto lo = __ VecMovMask(XmmRead(XmmOf(src)), ir::Imm(8u)).SetType(ir::ValueType::U32);
     auto hi = __ VecMovMask(YmmHighRead(src), ir::Imm(8u)).SetType(ir::ValueType::U32);
     auto shifted = __ LslImm(hi, ir::Imm(u64(16))).SetType(ir::ValueType::U32);
