@@ -200,13 +200,48 @@ X64Decoder::X64Decoder(VAddr start,
 // past it.
 static constexpr size_t kMaxInsnBytes = 15;
 
+// Bytes of guest code the decode loop is allowed to look at per instruction.
+// DisDecode is handed 0x10 unconditionally, so that -- not kMaxInsnBytes -- is
+// the window that must be proven readable.
+static constexpr size_t kFetchWindow = 0x10;
+
 void X64Decoder::Decode() {
     pc = start;
     while (!end_decode) {
+        // Instruction fetch is the one guest access made from *host* code, so
+        // it is the one that must never fault: runtime.cpp's HandleFault only
+        // recovers faults whose host pc lies inside a JIT buffer, so a fault
+        // raised here kills the host process instead of the guest. Two things
+        // are therefore checked before any byte is touched:
+        //   1. pc itself is backed by a guest mapping (GetPointer validates),
+        //   2. the whole 16-byte window every consumer below reads is backed
+        //      too -- DisDecode is handed 0x10 bytes unconditionally and the
+        //      raw-byte special cases peek at code_ptr[1..4] before any length
+        //      is known, so a fetch starting in the last bytes of a mapping
+        //      would run off its end.
+        // When the window is short, decode from a zero-padded bounce buffer
+        // and reject anything whose real length needs the missing bytes: an
+        // instruction straddling into an unmapped page is a guest #PF. The
+        // padding cannot fake a match in the raw-byte special cases below --
+        // every one of them requires a nonzero byte at its last position.
+        u8 fetch_buf[kFetchWindow];
         auto code_ptr = reinterpret_cast<u8*>(memory->GetPointer(reinterpret_cast<void*>(pc)));
         if (!code_ptr) {
             Interrupt(InterruptReason::PAGE_FATAL);
             break;
+        }
+        size_t fetch_avail = kFetchWindow;
+        if (!memory->GetPointer(reinterpret_cast<void*>(pc + kFetchWindow - 1))) {
+            std::memset(fetch_buf, 0, sizeof(fetch_buf));
+            fetch_avail = 0;
+            for (size_t i = 0; i < kFetchWindow; ++i) {
+                const auto* byte = reinterpret_cast<const u8*>(
+                        memory->GetPointer(reinterpret_cast<void*>(pc + i)));
+                if (!byte) break;
+                fetch_buf[i] = *byte;
+                ++fetch_avail;
+            }
+            code_ptr = fetch_buf;
         }
         // CET endbr64 / endbr32 (F3 0F 1E FA/FB): distorm doesn't know them,
         // treat as NOP (real binaries start with endbr64).
@@ -254,6 +289,13 @@ void X64Decoder::Decode() {
         const bool bmi_on = BmiEnabled();
         if ((avx_on || bmi_on) && HasVexPrefix(code_ptr, kMaxInsnBytes)) {
             const auto vex = DecodeVexInsn(code_ptr, kMaxInsnBytes);
+            // vex.length beyond the fetch window means the encoding was
+            // completed out of the zero padding: it runs into an unmapped
+            // page, so the guest faults rather than executing it.
+            if (vex.valid && vex.length > fetch_avail) {
+                Interrupt(InterruptReason::PAGE_FATAL);
+                break;
+            }
             if (vex.valid) {
                 const auto saved_pc = pc;
                 // Handlers resolve RIP-relative operands against the END of the
@@ -318,6 +360,12 @@ void X64Decoder::Decode() {
         if (insn.opcode == UINT16_MAX || insn.size == 0) {
             // size == 0 would loop forever at the same pc.
             Interrupt(InterruptReason::ILL_CODE);
+            break;
+        }
+        if (insn.size > fetch_avail) {
+            // Decoded out of the zero padding: the real encoding runs into an
+            // unmapped page, which architecturally faults.
+            Interrupt(InterruptReason::PAGE_FATAL);
             break;
         }
         // distorm leaves an architecturally invalid LOCK prefix in the unused

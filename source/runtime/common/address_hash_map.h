@@ -36,7 +36,21 @@ public:
         return (addr - addr_start) / hash_item_size;
     }
 
+    // Whether addr hashes into this map at all. hash_map is a raw span, so an
+    // address outside [addr_start, addr_end) indexes out of bounds -- and the
+    // addresses reaching these lookups are GUEST-CONTROLLED (a block location
+    // is wherever the guest's last branch pointed). `jmp rax` with rax = -1
+    // hashes to ~2^44 and read hash_map[2^44], faulting the host. Callers
+    // treat "not in this map" as a miss, which is the right answer for an
+    // address this map was never sized for.
+    [[nodiscard]] bool InRange(LocationDescriptor addr) const {
+        return addr >= addr_start && Hash(addr) < hash_map.size();
+    }
+
     [[nodiscard]] T* Get(LocationDescriptor addr) {
+        if (!InRange(addr)) {
+            return {};
+        }
         auto hash = Hash(addr);
         auto map_ptr = hash_map[hash];
         if (map_ptr) {
@@ -50,8 +64,11 @@ public:
     Nodes GetRange(LocationDescriptor start, LocationDescriptor end) {
         constexpr auto max_node_size = 64_KB; // Maybe no safe?
         Nodes nodes{};
+        if (end < addr_start || start > addr_end) {
+            return nodes;
+        }
         auto start_hash = Hash(std::max(start - max_node_size, addr_start));
-        auto end_hash = Hash(end);
+        auto end_hash = std::min<LocationDescriptor>(Hash(end), hash_map.size() - 1);
 
         for (auto i = start_hash; i <= end_hash; i++) {
             if (auto map_ptr = hash_map[i]; map_ptr) {
@@ -72,6 +89,9 @@ public:
 
     template <bool check_exist = false>
     bool Put(LocationDescriptor addr, T* value) {
+        if (!InRange(addr)) {
+            return false;
+        }
         auto hash = Hash(addr);
         auto map_ptr = hash_map[hash];
         if (!map_ptr) {
@@ -88,6 +108,9 @@ public:
     }
 
     T* Remove(LocationDescriptor addr) {
+        if (!InRange(addr)) {
+            return {};
+        }
         auto hash = Hash(addr);
         auto map_ptr = hash_map[hash];
         if (!map_ptr) {

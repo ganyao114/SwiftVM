@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <limits>
 #include <sys/mman.h>
 #include <unistd.h>
 #include "runtime/backend/address_space.h"
@@ -125,10 +126,21 @@ void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
         return;
     }
     if (guest_end <= guest_start) {
+        // A block whose range wraps the address space has no pages to track.
+        // Block locations are guest-controlled -- `jmp rax` with rax = -1
+        // produces start = 2^64-1, end = 0 -- and the walk below would then
+        // step past the top page, wrap to 0 and insert a PageRecord for every
+        // page in the address space until the host ran out of memory.
+        if (guest_start == std::numeric_limits<VAddr>::max()) {
+            return;
+        }
         guest_end = guest_start + 1;
     }
     const VAddr first = PageKey(guest_start);
     const VAddr last = PageKey(guest_end - 1);
+    if (last < first) {
+        return;
+    }
     for (VAddr page = first; page <= last; page += page_size_) {
         if (std::find(disabled_pages_.begin(), disabled_pages_.end(), page) !=
             disabled_pages_.end()) {
@@ -151,6 +163,11 @@ void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
                 rec.write_protected = true;
                 rec.claim_stale_fault = false;
             }
+        }
+        // page += page_size_ would wrap past the top of the address space and
+        // restart the walk at 0; `last` is inclusive, so stop here instead.
+        if (last - page < page_size_) {
+            break;
         }
     }
 }
