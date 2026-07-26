@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <utility>
 #include "types.h"
 
 namespace swift::runtime {
@@ -22,6 +24,30 @@ public:
 
     template <typename T> T* CreateArray(size_t size) {
         return reinterpret_cast<T*>(Memory(sizeof(T) * size));
+    }
+
+    // Hands every byte back for reuse without returning it to the allocator.
+    // Nothing here runs destructors -- the arena never ran them in the first
+    // place (Create() constructs in place and the chunk is simply dropped), so
+    // this is only valid once the caller is done with every object it carved
+    // out. Reusing one arena across compilation units is exactly that case.
+    //
+    // The largest chunk is kept rather than the first: FreeChunk oversizes a
+    // chunk when a single request does not fit (block pointer tables for wide
+    // CFGs), and keeping that one lets the next unit of similar shape run
+    // without touching the allocator at all.
+    void Reset() {
+        if (chunks.size() > 1) {
+            auto largest = std::max_element(
+                    chunks.begin(), chunks.end(),
+                    [](const Chunk& a, const Chunk& b) { return a.num_size < b.num_size; });
+            if (largest != chunks.begin()) {
+                std::swap(*chunks.begin(), *largest);
+            }
+            chunks.resize(1);
+        }
+        chunks.front().used_size = 0;
+        node = &chunks.front();
     }
 
 private:

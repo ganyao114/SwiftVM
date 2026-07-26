@@ -106,8 +106,6 @@ struct HIRValue final {
     ValueAllocated allocated{};
     HIRUseList uses{};
 
-    IntrusiveMapNode map_node{};
-
     HIRValue() : value(), block(nullptr){};
     HIRValue(const Value& value) : value(value), block(nullptr){};
     explicit HIRValue(const Value& value, HIRBlock* block);
@@ -116,17 +114,6 @@ struct HIRValue final {
     void UnUse(Inst* inst, u8 idx);
 
     [[nodiscard]] u16 GetOrderId() const;
-
-    // for rbtree compare
-    static NOINLINE int Compare(const HIRValue& lhs, const HIRValue& rhs) {
-        if (rhs.GetOrderId() > lhs.GetOrderId()) {
-            return 1;
-        } else if (rhs.GetOrderId() < lhs.GetOrderId()) {
-            return -1;
-        } else {
-            return 0;
-        }
-    }
 };
 
 struct HIRLocal {
@@ -150,7 +137,19 @@ private:
 #pragma pack(pop)
 
 using HIRLoopList = IntrusiveList<&HIRLoop::node>;
-using HIRValueMap = IntrusiveMap<&HIRValue::map_node>;
+
+// Instruction id -> the HIRValue that instruction defines (null for the
+// void-typed ones), dense over 0..MaxInstrCount()-1.
+//
+// This was an intrusive red-black tree keyed on the defining instruction's id,
+// which made every use-chain lookup a tree walk through a NOINLINE comparator
+// and forced IdByRPO to erase and re-insert every value just to re-key it.
+// Instruction ids are already assigned densely and monotonically as
+// instructions are appended, so the tree was an index over a sequence that is
+// its own index. Iterating the vector in index order visits values in
+// ascending id, exactly as the tree's in-order walk did -- which is what the
+// linear-scan allocator relies on.
+using HIRValueMap = Vector<HIRValue*>;
 
 class HIRBlock final : public DataContext {
     friend class HIRFunction;
@@ -348,6 +347,10 @@ private:
     // Reverse Post Order
     HIRBlockList blocks_rpo{};
     HIRValueMap values{};
+    // Scratch target for IdByRPO's rebuild of `values`; kept as a member so the
+    // second (post-pass) renumbering reuses the first one's buffer instead of
+    // allocating again.
+    HIRValueMap reid_scratch{};
     HIRBlock* current_block{};
     HIRBlock* entry_block{};
     HIRLoopList loops{};
@@ -364,6 +367,17 @@ struct HIRPools {
         uses.ReleaseContents();
     }
 
+    // Returns the pools to their construction state, ready for another
+    // compilation unit, without freeing the backing chunks. Destructors run
+    // exactly as they would if the pools were destroyed: ObjectPool's
+    // destruct=true instantiations (functions and blocks) release their
+    // objects, so an HIRFunction that still owns its ir::Function still deletes
+    // it here.
+    void Reset() {
+        ReleaseContents();
+        mem_arena.Reset();
+    }
+
     explicit HIRPools(u32 func_cap = 1);
 
     HIRBlockVector CreateBlockVector(size_t size) {
@@ -376,6 +390,32 @@ struct HIRPools {
     ObjectPool<HIRValue> values;
     ObjectPool<Edge> edges;
     ObjectPool<HIRUse> uses;
+};
+
+// Borrows a per-thread HIRPools instead of building one per compiled unit.
+//
+// Constructing HIRPools means six allocator round trips and destroying it means
+// six more; under lazy function compilation that is once per decoded guest
+// block, which made it pure fixed overhead of the pipeline rather than work on
+// behalf of the unit. The lease hands back a pool set that has been Reset() to
+// the same state a freshly constructed one would be in.
+//
+// A second, nested lease on the same thread (a builder constructed while
+// another is alive) gets its own privately owned HIRPools, so nesting stays
+// correct rather than sharing one arena between two builders.
+class HIRPoolLease {
+public:
+    explicit HIRPoolLease(u32 func_cap);
+    ~HIRPoolLease();
+
+    HIRPoolLease(const HIRPoolLease&) = delete;
+    HIRPoolLease& operator=(const HIRPoolLease&) = delete;
+
+    HIRPools& Get() const { return *pools; }
+
+private:
+    HIRPools* pools{};
+    std::unique_ptr<HIRPools> owned{};
 };
 
 class HIRBuilder {
@@ -464,7 +504,12 @@ public:
 private:
     Location GetNextLocation(const Terminal& term);
 
-    HIRPools pools;
+    // Declared first so it outlives every member that allocates from it: the
+    // lease's destructor is what returns the pools to a clean state, and it
+    // must run after hir_functions has released its (intrusively linked)
+    // HIRFunction objects.
+    HIRPoolLease pool_lease;
+    HIRPools& pools;
     HIRFunctionList hir_functions{};
     Location current_location;
     HIRFunction* current_function{};
