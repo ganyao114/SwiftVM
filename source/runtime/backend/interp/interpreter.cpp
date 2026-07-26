@@ -2052,6 +2052,16 @@ void Interpreter::RunVecFUnary(ir::Inst* inst, InterpStack& stack) {
     for (u32 lane = 0; lane < lanes; ++lane) {
         const u64 raw = static_cast<u64>(source >> (lane * bits)) & lane_mask;
         u64 output;
+        // x86 SQRT of a negative operand raises #I and delivers the QNaN
+        // *indefinite*, whose sign bit is SET (0xFFC00000 / 0xFFF8...). Both
+        // std::sqrt and ARM's FSQRT deliver a positive default NaN instead, so
+        // the sign has to be forced. `value < 0` is false for NaN (which must
+        // keep propagating) and for -0.0 (whose sqrt is legitimately -0.0),
+        // which is exactly the wanted predicate. Verified against real x86 via
+        // Rosetta: sqrtps(-4) = ffc00000, sqrtpd(-4) = fff8000000000000.
+        // Kept in step with JitTranslator::EmitVecFUnary — a divergence here is
+        // worse than either behaviour, since the two backends are differentially
+        // tested against each other.
         if (bits == 32) {
             float value;
             const u32 input = u32(raw);
@@ -2061,12 +2071,18 @@ void Interpreter::RunVecFUnary(ir::Inst* inst, InterpStack& stack) {
                                                 : 1.0f / std::sqrt(value);
             u32 encoded;
             std::memcpy(&encoded, &converted, sizeof(encoded));
+            if (kind == 0 && value < 0.0f) {
+                encoded = 0xFFC00000u;
+            }
             output = encoded;
         } else {
             double value;
             std::memcpy(&value, &raw, sizeof(value));
             const double converted = std::sqrt(value);
             std::memcpy(&output, &converted, sizeof(output));
+            if (value < 0.0) {
+                output = UINT64_C(0xFFF8000000000000);
+            }
         }
         const u128 mask = static_cast<u128>(lane_mask) << (lane * bits);
         result = (result & ~mask) | (static_cast<u128>(output) << (lane * bits));
