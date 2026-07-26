@@ -10,6 +10,8 @@ using namespace swift::runtime::frontend;
 
 namespace {
 std::atomic<u64> g_guest_mem_bias{0};
+// Bounded guest window mask; UINT64_MAX = disabled. See decoder.h.
+std::atomic<u64> g_guest_addr_mask{UINT64_MAX};
 // Memory ordering mode installed by the embedding translator (Config::tso_mode
 // -> x86::SetTsoMode). Relaxed by default: correct for single-threaded guests.
 std::atomic<u8> g_tso_mode{static_cast<u8>(runtime::TsoMode::Relaxed)};
@@ -17,6 +19,16 @@ std::atomic<u8> g_tso_mode{static_cast<u8>(runtime::TsoMode::Relaxed)};
 
 void SetGuestMemBias(u64 bias) { g_guest_mem_bias.store(bias, std::memory_order_relaxed); }
 u64 GetGuestMemBias() { return g_guest_mem_bias.load(std::memory_order_relaxed); }
+
+void SetGuestAddrMask(u64 mask) {
+    g_guest_addr_mask.store(mask ? mask : UINT64_MAX, std::memory_order_relaxed);
+}
+u64 GetGuestAddrMask() { return g_guest_addr_mask.load(std::memory_order_relaxed); }
+
+u8* GuestHostPtr(u64 guest_addr) {
+    return reinterpret_cast<u8*>((guest_addr & g_guest_addr_mask.load(std::memory_order_relaxed)) +
+                                 g_guest_mem_bias.load(std::memory_order_relaxed));
+}
 
 void SetTsoMode(runtime::TsoMode mode) {
     g_tso_mode.store(static_cast<u8>(mode), std::memory_order_relaxed);
@@ -29,13 +41,42 @@ constexpr u64 kStringBackward = u64(1) << 63;
 constexpr u64 kStringStepShift = 61;
 constexpr u64 kStringCountMask = (u64(1) << kStringStepShift) - 1;
 
-static void RepMovs(u64 dst, u64 src, u64 packed) {
+// Clamps a rep-string walk into the bounded guest window and returns the host
+// pointer for its (truncated) start element. `count` is reduced so that every
+// byte the loop touches stays inside the window — without this the loop would
+// walk out of the window and dereference host memory even though the *start*
+// address was truncated. With the window disabled this is a plain bias add.
+//
+// NOTE (unresolved, see the isolation report): clamping keeps the walk off
+// host memory, but a wild in-window address still faults inside this host
+// frame, which runtime.cpp's HandleFault cannot recover.
+static u8* ClampGuestWalk(u64 start, u64 step, bool backward, u64& count) {
+    const u64 mask = g_guest_addr_mask.load(std::memory_order_relaxed);
     const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
+    const u64 base = start & mask;
+    if (mask != UINT64_MAX && count != 0) {
+        const u64 avail = mask - base + 1;  // bytes from base to the window end
+        if (avail < step) {
+            count = 0;
+        } else if (backward) {
+            const u64 room = base / step + 1;
+            if (count > room) count = room;
+        } else {
+            const u64 room = avail / step;
+            if (count > room) count = room;
+        }
+    }
+    return reinterpret_cast<u8*>(base + bias);
+}
+
+static void RepMovs(u64 dst, u64 src, u64 packed) {
     const bool backward = (packed & kStringBackward) != 0;
     const u64 step = u64(1) << ((packed >> kStringStepShift) & 3);
-    const u64 count = packed & kStringCountMask;
-    auto* d = reinterpret_cast<u8*>(dst + bias);
-    const auto* s = reinterpret_cast<const u8*>(src + bias);
+    u64 dst_count = packed & kStringCountMask;
+    u64 src_count = dst_count;
+    auto* d = ClampGuestWalk(dst, step, backward, dst_count);
+    const auto* s = ClampGuestWalk(src, step, backward, src_count);
+    const u64 count = dst_count < src_count ? dst_count : src_count;
     for (u64 i = 0; i < count; ++i) {
         std::memmove(d, s, step);
         d += backward ? -static_cast<s64>(step) : static_cast<s64>(step);
@@ -47,48 +88,48 @@ static void RepMovs(u64 dst, u64 src, u64 packed) {
 // They return the end address: the call result feeds the RDI update, which
 // keeps the host call alive in the JIT pipeline.
 static u64 RepStos1(u64 dst, u64 value, u64 count) {
-    const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
     const bool backward = (count & kStringBackward) != 0;
     count &= ~kStringBackward;
-    auto* p = reinterpret_cast<u8*>(dst + bias);
+    const u64 arch_count = count;
+    auto* p = ClampGuestWalk(dst, 1, backward, count);
     for (u64 i = 0; i < count; ++i) {
         *p = u8(value);
         p += backward ? -1 : 1;
     }
-    return backward ? dst - count : dst + count;
+    return backward ? dst - arch_count : dst + arch_count;
 }
 static u64 RepStos2(u64 dst, u64 value, u64 count) {
-    const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
     const bool backward = (count & kStringBackward) != 0;
     count &= ~kStringBackward;
-    auto* p = reinterpret_cast<u8*>(dst + bias);
+    const u64 arch_count = count;
+    auto* p = ClampGuestWalk(dst, 2, backward, count);
     for (u64 i = 0; i < count; ++i) {
         std::memcpy(p, &value, 2);
         p += backward ? -2 : 2;
     }
-    return backward ? dst - count * 2 : dst + count * 2;
+    return backward ? dst - arch_count * 2 : dst + arch_count * 2;
 }
 static u64 RepStos4(u64 dst, u64 value, u64 count) {
-    const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
     const bool backward = (count & kStringBackward) != 0;
     count &= ~kStringBackward;
-    auto* p = reinterpret_cast<u8*>(dst + bias);
+    const u64 arch_count = count;
+    auto* p = ClampGuestWalk(dst, 4, backward, count);
     for (u64 i = 0; i < count; ++i) {
         std::memcpy(p, &value, 4);
         p += backward ? -4 : 4;
     }
-    return backward ? dst - count * 4 : dst + count * 4;
+    return backward ? dst - arch_count * 4 : dst + arch_count * 4;
 }
 static u64 RepStos8(u64 dst, u64 value, u64 count) {
-    const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
     const bool backward = (count & kStringBackward) != 0;
     count &= ~kStringBackward;
-    auto* p = reinterpret_cast<u8*>(dst + bias);
+    const u64 arch_count = count;
+    auto* p = ClampGuestWalk(dst, 8, backward, count);
     for (u64 i = 0; i < count; ++i) {
         std::memcpy(p, &value, 8);
         p += backward ? -8 : 8;
     }
-    return backward ? dst - count * 8 : dst + count * 8;
+    return backward ? dst - arch_count * 8 : dst + arch_count * 8;
 }
 
 // rep cmps/scas: run the early-terminating comparison loop and return the
@@ -112,9 +153,12 @@ static u64 RepCmpsN(const u8* s, const u8* d, u64 count, u64 repnz, u64 sz) {
 }
 #define DEFINE_REP_CMPS(name, sz, repnz)                                                           \
     static u64 name(u64 rsi, u64 rdi, u64 count) {                                                 \
-        const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);                         \
-        return RepCmpsN(reinterpret_cast<const u8*>(rsi + bias),                                  \
-                         reinterpret_cast<const u8*>(rdi + bias), count, repnz, sz);               \
+        const bool bwd = (count & kStringBackward) != 0;                                           \
+        u64 n_s = count & ~kStringBackward, n_d = n_s;                                             \
+        const auto* s_ptr = ClampGuestWalk(rsi, sz, bwd, n_s);                                     \
+        const auto* d_ptr = ClampGuestWalk(rdi, sz, bwd, n_d);                                     \
+        const u64 n = (n_s < n_d ? n_s : n_d) | (bwd ? kStringBackward : 0);                       \
+        return RepCmpsN(s_ptr, d_ptr, n, repnz, sz);                                               \
     }
 DEFINE_REP_CMPS(RepCmpsZ1, 1, 0)
 DEFINE_REP_CMPS(RepCmpsNZ1, 1, 1)
@@ -143,10 +187,12 @@ static u64 RepScasN(const u8* acc, const u8* d, u64 count, u64 repnz, u64 sz) {
 }
 #define DEFINE_REP_SCAS(name, sz, repnz)                                                           \
     static u64 name(u64 acc, u64 rdi, u64 count) {                                                 \
-        const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);                         \
         u8 ab[sz];                                                                                 \
         std::memcpy(ab, &acc, sz);                                                                 \
-        return RepScasN(ab, reinterpret_cast<const u8*>(rdi + bias), count, repnz, sz);            \
+        const bool bwd = (count & kStringBackward) != 0;                                           \
+        u64 n = count & ~kStringBackward;                                                          \
+        const auto* d_ptr = ClampGuestWalk(rdi, sz, bwd, n);                                       \
+        return RepScasN(ab, d_ptr, n | (bwd ? kStringBackward : 0), repnz, sz);                    \
     }
 DEFINE_REP_SCAS(RepScasZ1, 1, 0)
 DEFINE_REP_SCAS(RepScasNZ1, 1, 1)
@@ -162,8 +208,9 @@ DEFINE_REP_SCAS(RepScasNZ8, 8, 1)
 // (FCW = 0x037F, MXCSR_MASK = 0x0000FFFF); the decoder then stores the live
 // mxcsr and xmm0-15 over it via IR.
 u64 FxsaveFill(u64 guest_addr) {
-    const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
-    auto* p = reinterpret_cast<u8*>(guest_addr + bias);
+    u64 count = 512;
+    auto* p = ClampGuestWalk(guest_addr, 1, false, count);
+    if (count < 512) return 0;  // would leave the guest window
     std::memset(p, 0, 512);
     u16 fcw = 0x037F;
     std::memcpy(p, &fcw, 2);

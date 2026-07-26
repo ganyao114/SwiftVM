@@ -10,7 +10,7 @@ namespace swift::runtime::backend {
 
 AddressSpace::AddressSpace(const Config& config)
         : config(config)
-        , smc_tracker(reinterpret_cast<u64>(config.memory_base)) {
+        , smc_tracker(reinterpret_cast<u64>(config.memory_base), config.guest_addr_mask) {
     Init();
 }
 

@@ -68,6 +68,11 @@ struct State {
     // PageFatal halt instead of a host SIGSEGV. UINT64_MAX = unchecked
     // (default, safe for JIT-only paths where the signal handler covers this).
     u64 guest_addr_limit{UINT64_MAX};
+    // Bounded guest window (Config::guest_addr_mask): every guest address is
+    // truncated to this mask before `pt` is added, so no guest address — wild
+    // pointer, 0xFFFF'FFFF'FFFF'FFFF, signed wraparound — can name host memory
+    // outside the embedder's window. UINT64_MAX = disabled.
+    u64 guest_addr_mask{UINT64_MAX};
     // Optional precise range check for the interpreter: if non-null, called
     // with (interp_range_check_ctx, guest_addr, size) before every memory
     // access. Returns false → PageFatal. Wired by the translator layer to

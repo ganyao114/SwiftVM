@@ -49,11 +49,14 @@ static UniformMapDesc arm64_backend_regs_map[] = {
 class MemoryImpl : public runtime::MemoryInterface {
 public:
     void SetBias(u64 b) { bias = b; }
+    // Bounded guest window (Config::guest_addr_mask): truncate before biasing
+    // so a guest address can only ever name the embedder's window.
+    void SetMask(u64 m) { mask = m ? m : UINT64_MAX; }
     bool Read(void* dest, size_t addr, size_t size) override {
-        return std::memcpy(dest, reinterpret_cast<const void*>(addr + bias), size);
+        return std::memcpy(dest, reinterpret_cast<const void*>((addr & mask) + bias), size);
     }
     bool Write(void* src, size_t addr, size_t size) override {
-        return std::memcpy(reinterpret_cast<void*>(addr + bias), src, size);
+        return std::memcpy(reinterpret_cast<void*>((addr & mask) + bias), src, size);
     }
     // Instruction fetch. This runs in *host* code, so a fault here is not
     // recoverable: runtime.cpp's HandleFault only rewrites faults whose host
@@ -65,7 +68,7 @@ public:
     // Embedders that installed no oracle (unit tests, fuzzers, identity
     // mappings) keep the raw bias add.
     void* GetPointer(void* src) override {
-        const auto host = reinterpret_cast<uintptr_t>(src) + bias;
+        const auto host = (reinterpret_cast<uintptr_t>(src) & mask) + bias;
         if (runtime::backend::SignalHandler::HasGuestMapProbe() &&
             !runtime::backend::SignalHandler::IsGuestAddressMapped(host)) {
             return nullptr;
@@ -73,6 +76,7 @@ public:
         return reinterpret_cast<void*>(host);
     }
     u64 bias{};
+    u64 mask{UINT64_MAX};
 };
 
 static MemoryImpl memory_impl{};
@@ -344,11 +348,14 @@ static void PinUnusedCallLambdas(ir::Block* block) {
 struct X86Instance::Impl final {
     // memory_base: guest->host bias (host addr = guest addr + bias), installed
     // by the linux loader; nullptr keeps the identity-mapped fast path.
-    explicit Impl(void* memory_base) {
+    explicit Impl(void* memory_base, u64 guest_addr_mask) {
         memory_impl.SetBias(reinterpret_cast<uintptr_t>(memory_base));
-        // Host helpers in the frontend (rep movs/stos) dereference raw guest
-        // pointers; they read the same bias from the frontend-side global.
+        memory_impl.SetMask(guest_addr_mask);
+        // Host helpers in the frontend (rep movs/stos, x87, xsave) dereference
+        // raw guest pointers; they read the same bias and window mask from the
+        // frontend-side globals.
         x86::SetGuestMemBias(reinterpret_cast<uintptr_t>(memory_base));
+        x86::SetGuestAddrMask(guest_addr_mask);
         // SVM_ENABLE_JIT=0 forces the IR interpreter path (same switch as the
         // arm64 core; useful for cross-checking JIT results).
         const char* jit_env = std::getenv("SVM_ENABLE_JIT");
@@ -402,6 +409,7 @@ struct X86Instance::Impl final {
                 .stack_alignment = 16,
                 .page_table = nullptr,
                 .memory_base = memory_base,
+                .guest_addr_mask = guest_addr_mask,
                 .memory = &memory_impl,
         };
         // The x86 decoder mode is process-global because decoded IR is shared
@@ -761,9 +769,13 @@ struct X86Core::Impl final {
     u64 svc_num{};
 };
 
-X86Instance::X86Instance(void* memory_base) { impl = std::make_unique<Impl>(memory_base); }
+X86Instance::X86Instance(void* memory_base, u64 guest_addr_mask) {
+    impl = std::make_unique<Impl>(memory_base, guest_addr_mask);
+}
 
-X86Instance* X86Instance::Make(void* memory_base) { return new X86Instance(memory_base); }
+X86Instance* X86Instance::Make(void* memory_base, u64 guest_addr_mask) {
+    return new X86Instance(memory_base, guest_addr_mask);
+}
 
 void X86Instance::Destroy(X86Instance* instance) {
     delete instance;

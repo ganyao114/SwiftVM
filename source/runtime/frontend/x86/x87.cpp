@@ -9,6 +9,7 @@
 #include <cstring>
 #include <limits>
 
+#include "runtime/backend/signal_handler.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "translator/x86/cpu.h"
 
@@ -246,32 +247,76 @@ softfloat_state StateFromControl(const ThreadContext64& ctx, bool force_extended
     return state;
 }
 
-u8* GuestPointer(u64 address) {
-    return reinterpret_cast<u8*>(address + GetGuestMemBias());
+// Guest -> host pointer for the x87 / fxsave helpers.
+//
+// These run in *host* code, so a fault taken here is unrecoverable:
+// runtime.cpp's HandleFault only rewinds faults whose host pc lies inside a
+// JIT buffer, and this frame's does not. Two guards, in order:
+//   1. the bounded guest window mask (Config::guest_addr_mask) — a wild guest
+//      address can then only ever name an in-window guest page, never host
+//      memory. This is the isolation guarantee and is unconditional.
+//   2. the embedder's guest-mapping oracle — an in-window but *unmapped*
+//      address yields nullptr and the caller skips the access, so the host
+//      survives. Embedders without an oracle (unit tests, fuzzers, identity
+//      mappings) keep the raw behaviour.
+// [address, address + size) must be backed in full; guest mappings are
+// tracked at >= 16 KiB granularity and size is at most 512, so probing the
+// first and last byte cannot straddle an untested hole.
+//
+// KNOWN GAP: a skipped access is not guest-visible — the architectural
+// outcome should be #PF. Delivering that needs a fault return path out of a
+// live host frame (see the isolation report).
+}  // namespace  (GuestPointer is declared in x87.h)
+
+u8* GuestPointer(u64 address, size_t size) {
+    const u64 mask = GetGuestAddrMask();
+    const u64 masked = address & mask;
+    if (size == 0 || (mask != UINT64_MAX && size > mask - masked + 1)) {
+        return nullptr;
+    }
+    auto* host = reinterpret_cast<u8*>(masked + GetGuestMemBias());
+    if (runtime::backend::SignalHandler::HasGuestMapProbe()) {
+        const auto lo = reinterpret_cast<std::uintptr_t>(host);
+        if (!runtime::backend::SignalHandler::IsGuestAddressMapped(lo) ||
+            !runtime::backend::SignalHandler::IsGuestAddressMapped(lo + size - 1)) {
+            return nullptr;
+        }
+    }
+    return host;
 }
+
+namespace {
 
 template <typename T>
 T LoadGuest(u64 address) {
     T value{};
-    std::memcpy(&value, GuestPointer(address), sizeof(value));
+    if (const auto* p = GuestPointer(address, sizeof(T))) {
+        std::memcpy(&value, p, sizeof(value));
+    }
     return value;
 }
 
 template <typename T>
 void StoreGuest(u64 address, T value) {
-    std::memcpy(GuestPointer(address), &value, sizeof(value));
+    if (auto* p = GuestPointer(address, sizeof(T))) {
+        std::memcpy(p, &value, sizeof(value));
+    }
 }
 
 extFloat80_t LoadExt80(u64 address) {
     extFloat80_t value{};
-    std::memcpy(&value.signif, GuestPointer(address), 8);
-    std::memcpy(&value.signExp, GuestPointer(address) + 8, 2);
+    if (const auto* p = GuestPointer(address, 10)) {
+        std::memcpy(&value.signif, p, 8);
+        std::memcpy(&value.signExp, p + 8, 2);
+    }
     return value;
 }
 
 void StoreExt80(u64 address, const extFloat80_t& value) {
-    std::memcpy(GuestPointer(address), &value.signif, 8);
-    std::memcpy(GuestPointer(address) + 8, &value.signExp, 2);
+    if (auto* p = GuestPointer(address, 10)) {
+        std::memcpy(p, &value.signif, 8);
+        std::memcpy(p + 8, &value.signExp, 2);
+    }
 }
 
 extFloat80_t Signed64ToExt80(s64 integer) {
@@ -1126,7 +1171,8 @@ u8 AbridgedTag(const ThreadContext64& ctx) {
 }
 
 void StoreEnvironment(ThreadContext64& ctx, u64 address) {
-    auto* out = GuestPointer(address);
+    auto* out = GuestPointer(address, 28);
+    if (!out) return;
     const u32 fcw = ctx.x87_fcw;
     const u32 fsw = ctx.x87_fsw;
     const u32 ftw = ctx.x87_ftw;
@@ -1147,7 +1193,8 @@ void StoreEnvironment(ThreadContext64& ctx, u64 address) {
 }
 
 void LoadEnvironment(ThreadContext64& ctx, u64 address) {
-    const auto* in = GuestPointer(address);
+    const auto* in = GuestPointer(address, 28);
+    if (!in) return;
     u32 fcw{}, fsw{}, ftw{}, fip{}, fcs_fop{}, fdp{};
     std::memcpy(&fcw, in + 0, 4);
     std::memcpy(&fsw, in + 4, 4);
@@ -1316,7 +1363,8 @@ u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
 
 u64 X87Fxsave(u64 context, u64 guest_address) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
-    auto* out = GuestPointer(guest_address);
+    auto* out = GuestPointer(guest_address, 512);
+    if (!out) return 0;
     std::memset(out, 0, 512);
     std::memcpy(out + 0, &ctx.x87_fcw, 2);
     std::memcpy(out + 2, &ctx.x87_fsw, 2);
@@ -1338,7 +1386,8 @@ u64 X87Fxsave(u64 context, u64 guest_address) {
 
 u64 X87Fxrstor(u64 context, u64 guest_address) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
-    const auto* in = GuestPointer(guest_address);
+    const auto* in = GuestPointer(guest_address, 512);
+    if (!in) return 0;
     std::memcpy(&ctx.x87_fcw, in + 0, 2);
     std::memcpy(&ctx.x87_fsw, in + 2, 2);
     u8 abridged{};

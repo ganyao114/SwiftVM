@@ -19,7 +19,9 @@ public:
 
     // memory_base: guest->host bias for guest address virtualization
     // (host addr = guest addr + bias); nullptr = identity mapping (default).
-    static Arm64Instance *Make(void* memory_base = nullptr);
+    // guest_addr_mask: bounded guest window (Config::guest_addr_mask),
+    // 0 = unbounded (legacy).
+    static Arm64Instance *Make(void* memory_base = nullptr, u64 guest_addr_mask = 0);
     static void Destroy(Arm64Instance *instance);
 
     // SMC hook: forwards to AddressSpace::InvalidateCodeRange — see
@@ -32,7 +34,7 @@ public:
     void SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), void* ctx);
 
 private:
-    explicit Arm64Instance(void* memory_base);
+    explicit Arm64Instance(void* memory_base, u64 guest_addr_mask);
 
     struct Impl;
     std::unique_ptr<Impl> impl{};

@@ -159,7 +159,40 @@ void JitTranslator::EmitAtomicRMWValue(ir::AtomicRMWOp op,
     }
 }
 
+void JitTranslator::EmitGuestToHost(const Register& dst, const Register& guest_addr) {
+    if (window_uxtw) {
+        // pt + zext32(guest): one instruction, same as the unbounded Add.
+        __ Add(dst, pt, Operand(guest_addr.W(), UXTW));
+        return;
+    }
+    if (guest_addr_mask) {
+        __ And(dst, guest_addr, guest_addr_mask);
+        __ Add(dst, dst, pt);
+        return;
+    }
+    __ Add(dst, guest_addr, pt);
+}
+
 MemOperand JitTranslator::BiasMem(const Register& base, bool atomic) {
+    if (window_uxtw) {
+        // Bounded 32-bit guest window: [pt, Wbase, UXTW] is the *same*
+        // register-offset load the unbounded path emitted, with the
+        // truncation folded into the addressing mode — zero extra cost.
+        if (!atomic) {
+            return MemOperand{pt, base.W(), UXTW};
+        }
+        __ Add(mem_scratch, pt, Operand(base.W(), UXTW));
+        return MemOperand{mem_scratch};
+    }
+    if (guest_addr_mask) {
+        // Non-32-bit window: one extra `and` with a logical immediate.
+        __ And(mem_scratch, base, guest_addr_mask);
+        if (!atomic) {
+            return MemOperand{mem_scratch, pt};
+        }
+        __ Add(mem_scratch, mem_scratch, pt);
+        return MemOperand{mem_scratch};
+    }
     if (!atomic) {
         return MemOperand{base, pt};
     }
@@ -174,11 +207,28 @@ MemOperand JitTranslator::BiasMem(const Register& base, s64 imm, bool atomic) {
     if (imm == 0) {
         return BiasMem(base, atomic);
     }
+    if (window_uxtw) {
+        // 32-bit add wraps mod 2^32, so the displacement is applied *inside*
+        // the window and the truncation is again free.
+        if (imm > 0) {
+            __ Add(mem_scratch.W(), base.W(), imm);
+        } else {
+            __ Sub(mem_scratch.W(), base.W(), -imm);
+        }
+        if (atomic) {
+            __ Add(mem_scratch, pt, Operand(mem_scratch.W(), UXTW));
+            return MemOperand{mem_scratch};
+        }
+        return MemOperand{pt, mem_scratch.W(), UXTW};
+    }
     // [guest base + imm + pt]: fold the immediate into the reserved scratch.
     if (imm > 0) {
         __ Add(mem_scratch, base, imm);
     } else {
         __ Sub(mem_scratch, base, -imm);
+    }
+    if (guest_addr_mask) {
+        __ And(mem_scratch, mem_scratch, guest_addr_mask);
     }
     if (atomic) {
         __ Add(mem_scratch, mem_scratch, pt);
@@ -791,8 +841,8 @@ void JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
     load_lambda(dst, x0);
     load_lambda(src, x1);
     if (use_memory_base) {
-        __ Add(x0, x0, pt);
-        __ Add(x1, x1, pt);
+        EmitGuestToHost(x0, x0);
+        EmitGuestToHost(x1, x1);
     }
     __ Mov(x2, size);
     __ Mov(ip, reinterpret_cast<uintptr_t>(&HostMemMove));
@@ -842,7 +892,7 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
     // explicitly (reserved scratch: CAS is VOID-adjacent and GetTmpX cannot
     // be trusted here — see defines.h mem_scratch).
     if (use_memory_base) {
-        __ Add(mem_scratch, address, pt);
+        EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
     }
 
@@ -928,7 +978,7 @@ void JitTranslator::EmitCompareAndSwap128(ir::Inst* inst) {
 
     MergeNZCV();
     if (use_memory_base) {
-        __ Add(mem_scratch, address, pt);
+        EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
     }
 
@@ -995,7 +1045,7 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
 
     MergeNZCV();
     if (use_memory_base) {
-        __ Add(mem_scratch, address, pt);
+        EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
     }
 
@@ -1056,7 +1106,7 @@ void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
 
     MergeNZCV();
     if (use_memory_base) {
-        __ Add(mem_scratch, address, pt);
+        EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
     }
 
@@ -1129,7 +1179,7 @@ void JitTranslator::EmitAtomicRMW(ir::Inst* inst) {
 
     MergeNZCV();
     if (use_memory_base) {
-        __ Add(mem_scratch, address, pt);
+        EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
     }
 

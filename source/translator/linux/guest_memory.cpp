@@ -22,9 +22,67 @@
 
 namespace swift::linux {
 
+bool GuestMemory::ReserveWindow(u32 bits) {
+    ASSERT(bias_ == 0);       // the reservation installs the bias; call once
+    ASSERT(window_bits_ == 0);
+    if (bits == 0) return true;  // window disabled: legacy unbounded bias mode
+    ASSERT(bits >= 20 && bits <= 47);
+    const u64 size = u64(1) << bits;
+    // One PROT_NONE reservation for the whole guest address space. PROT_NONE
+    // anonymous pages commit nothing; every later guest mapping is carved out
+    // of this range with MAP_FIXED, which is safe *because* the range is ours.
+    void* base = mmap(nullptr,
+                      size,
+                      PROT_NONE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                      -1,
+                      0);
+    if (base == MAP_FAILED) {
+        LOG_ERROR("GuestMemory: guest window reservation of {:#x} bytes failed, errno {}",
+                  size,
+                  errno);
+        return false;
+    }
+    window_bits_ = bits;
+    mask_ = size - 1;
+    bias_ = reinterpret_cast<VAddr>(base);
+    // mmap arena: upper half of the window. The classic guest stack
+    // (kGuestStackTop = 0x7FF00000) and the brk heap live below it.
+    arena_base_ = size >> 1;
+    LOG_INFO("GuestWindow: guest [0, {:#x}) -> host [{:#x}, {:#x}) mask {:#x}",
+             size,
+             bias_,
+             bias_ + size,
+             mask_);
+    return true;
+}
+
 bool GuestMemory::MapFixed(VAddr addr, u64 size) {
     ASSERT(addr % kHostPageSize == 0);
     auto map_size = RoundHostPage(size);
+    if (window_bits_ != 0) {
+        // Windowed: the range must lie wholly inside the guest window. The
+        // MAP_FIXED below can only ever land inside our own reservation.
+        if (map_size == 0 || addr > mask_ || map_size > mask_ - addr + 1) {
+            return false;
+        }
+        void* const host = ToHost(addr);
+        auto* res = mmap(host,
+                         map_size,
+                         PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                         -1,
+                         0);
+        if (res == MAP_FAILED) {
+            LOG_ERROR("GuestMemory: window map failed at guest {:#x} size {:#x} errno {}",
+                      addr,
+                      map_size,
+                      errno);
+            return false;
+        }
+        TrackMap(addr, map_size);
+        return true;
+    }
     const VAddr host_addr = addr + bias_;
 #if defined(__APPLE__)
     // mach_vm_allocate(VM_FLAGS_FIXED) fails with KERN_NO_SPACE when any
@@ -68,6 +126,21 @@ bool GuestMemory::MapFixed(VAddr addr, u64 size) {
 
 VAddr GuestMemory::MapAnywhere(u64 size) {
     auto map_size = RoundHostPage(size);
+    if (window_bits_ != 0) {
+        VAddr addr;
+        {
+            std::shared_lock guard(mapped_regions_mutex);
+            // First fit in the arena; fall back to the low half (below the
+            // arena base) only if the arena is exhausted.
+            addr = FindFreeLocked(arena_base_, map_size);
+            if (!addr) addr = FindFreeLocked(kNullGuardEnd, map_size);
+        }
+        if (!addr) {
+            LOG_ERROR("GuestMemory: guest window exhausted, cannot place {:#x} bytes", map_size);
+            return 0;
+        }
+        return MapFixed(addr, map_size) ? addr : 0;
+    }
     auto* res = mmap(nullptr, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (res == MAP_FAILED) {
         LOG_ERROR("GuestMemory: map failed size {:#x} errno {}", map_size, errno);
@@ -81,8 +154,21 @@ VAddr GuestMemory::MapAnywhere(u64 size) {
 
 bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
     ASSERT(guest_start % kHostPageSize == 0);
-    ASSERT(bias_ == 0);  // the image reservation installs the bias; call once
     auto map_size = RoundHostPage(size);
+    if (window_bits_ != 0) {
+        // Windowed: the guest keeps its linked addresses, which must fit in
+        // the window. The bias is already installed by ReserveWindow.
+        if (guest_start > mask_ || map_size > mask_ - guest_start + 1) {
+            LOG_ERROR("GuestMemory: image [{:#x}, {:#x}) does not fit the {}-bit guest "
+                      "window; raise it with SVM_GUEST_BITS (20..47)",
+                      guest_start,
+                      guest_start + map_size,
+                      window_bits_);
+            return false;
+        }
+        return MapFixed(guest_start, map_size);
+    }
+    ASSERT(bias_ == 0);  // the image reservation installs the bias; call once
     // Diagnostic fixed-stack repro: put the image at a stable high host hint,
     // which makes guest+bias for the classic 0x7ff00000 stack independent of
     // the executable/libSystem layout. mmap without MAP_FIXED remains
@@ -124,15 +210,34 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
 void GuestMemory::Unmap(VAddr addr, u64 size) {
     auto base = RoundDownHostPage(addr);
     auto end = RoundHostPage(addr + size);
-    if (end > base) {
-        munmap(ToHost(base), end - base);
+    if (end <= base) return;
+    if (window_bits_ != 0) {
+        if (base > mask_) return;
+        if (end - 1 > mask_) end = mask_ + 1;
+        // Keep the window reservation intact: overlay PROT_NONE anonymous
+        // pages instead of punching a hole a host allocation could move into.
+        // This also discards the old pages, so a later map is zero-filled.
+        mmap(ToHost(base),
+             end - base,
+             PROT_NONE,
+             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE,
+             -1,
+             0);
         TrackUnmap(base, end - base);
+        return;
     }
+    munmap(ToHost(base), end - base);
+    TrackUnmap(base, end - base);
 }
 
 bool GuestMemory::Protect(VAddr addr, u64 size, bool read, bool write, bool exec) {
     auto base = RoundDownHostPage(addr);
     auto end = RoundHostPage(addr + size);
+    if (window_bits_ != 0) {
+        if (base > mask_) return false;
+        if (end - 1 > mask_) end = mask_ + 1;
+        if (end <= base) return false;
+    }
     int prot = PROT_NONE;
     if (read) prot |= PROT_READ;
     if (write) prot |= PROT_WRITE;
@@ -207,9 +312,32 @@ bool GuestMemory::RangeIsMapped(VAddr addr, u64 size) const {
     return RangeIsMappedLocked(addr, size);
 }
 
+VAddr GuestMemory::FindFreeLocked(VAddr from, u64 size) const {
+    if (size == 0 || window_bits_ == 0) return 0;
+    const VAddr limit = mask_ + 1;  // exclusive window end
+    VAddr cursor = RoundHostPage(from);
+    if (cursor > limit || size > limit - cursor) return 0;
+    // mapped_regions is sorted and disjoint: push the candidate past every
+    // region it overlaps until a large enough hole appears.
+    for (const auto& r : mapped_regions) {
+        if (r.second <= cursor) continue;      // entirely below the candidate
+        if (r.first >= cursor + size) break;   // hole [cursor, r.first) fits
+        cursor = RoundHostPage(r.second);
+        if (cursor > limit || size > limit - cursor) return 0;
+    }
+    return cursor;
+}
+
 bool GuestMemory::RangeIsMappedLocked(VAddr addr, u64 size) const {
     if (size == 0) return true;
     if (addr + size < addr) return false;  // overflow
+    if (window_bits_ != 0) {
+        // Answer for the *effective* address: ToHost truncates to the window,
+        // so validation has to truncate identically or the two disagree.
+        // A range that would wrap over the window top is never valid.
+        addr &= mask_;
+        if (size > mask_ - addr + 1) return false;
+    }
     // Find the last region with start <= addr.
     auto it = std::upper_bound(mapped_regions.begin(),
                                mapped_regions.end(),

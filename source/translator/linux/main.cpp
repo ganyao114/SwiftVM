@@ -42,7 +42,7 @@ static int RunArm64Guest(const linux::LoadedImage& image,
                          VAddr guest_sp,
                          linux::GuestMemory& memory) {
     auto* instance = translator::arm64::Arm64Instance::Make(
-            reinterpret_cast<void*>(memory.GetBias()));
+            reinterpret_cast<void*>(memory.GetBias()), memory.Windowed() ? memory.Mask() : 0);
     // Wire the interpreter wild-pointer guard before creating the core
     // (the core's constructor copies it into the runtime State).
     instance->SetInterpRangeCheck(InterpRangeCheckThunk, &memory);
@@ -102,7 +102,8 @@ public:
             : image(image)
             , memory(memory)
             , instance(translator::x86::X86Instance::Make(
-                      reinterpret_cast<void*>(memory.GetBias())))
+                      reinterpret_cast<void*>(memory.GetBias()),
+                      memory.Windowed() ? memory.Mask() : 0))
             , process(std::make_shared<linux::SyscallProcessState>(
                       &memory, image.brk_start)) {
         instance->SetInterpRangeCheck(InterpRangeCheckThunk, &memory);
@@ -312,9 +313,36 @@ int main(int argc, char** argv) {
     }
     std::vector<std::string> guest_envs = {"PATH=/usr/bin:/bin", "HOME=/root"};
 
-    // 1. Guest address space (guest addresses virtualized through a
-    //    guest->host bias; see guest_memory.h).
+    // 1. Guest address space. Every guest address is truncated to a bounded
+    //    window and then biased into one host reservation, so no guest
+    //    address — wild pointer, 0xFFFF'FFFF'FFFF'FFFF, signed wraparound —
+    //    can name host memory. SVM_GUEST_BITS overrides the window size;
+    //    SVM_GUEST_BITS=0 restores the old unbounded bias mode (the guest can
+    //    then read and write arbitrary host memory: diagnostics only).
     linux::GuestMemory memory;
+    {
+        u32 window_bits = linux::GuestMemory::kDefaultWindowBits;
+        if (const char* env = std::getenv("SVM_GUEST_BITS")) {
+            const long v = std::strtol(env, nullptr, 0);
+            if (v == 0) {
+                window_bits = 0;
+            } else if (v >= 20 && v <= 47) {
+                window_bits = static_cast<u32>(v);
+            } else {
+                LOG_ERROR("SVM_GUEST_BITS={} out of range (0 or 20..47); using {}",
+                          env,
+                          window_bits);
+            }
+        }
+        if (!memory.ReserveWindow(window_bits)) {
+            PANIC("Failed to reserve the {}-bit guest address window", window_bits);
+        }
+        if (window_bits == 0) {
+            LOG_WARNING(
+                    "SVM_GUEST_BITS=0: guest address space is UNBOUNDED — the guest can "
+                    "read and write host memory. Diagnostics only.");
+        }
+    }
 
     // Tell the runtime's host signal handler how to distinguish a wild guest
     // pointer (fault host address not backed by any guest mapping -> guest
@@ -325,6 +353,13 @@ int main(int argc, char** argv) {
                 auto* mem = static_cast<linux::GuestMemory*>(ctx);
                 const VAddr guest =
                         mem->ToGuest(reinterpret_cast<const void*>(fault_host_addr));
+                // Windowed: a host address outside the reservation is not a
+                // guest address at all. RangeIsMapped truncates, so without
+                // this check a host fault below the window would alias onto a
+                // mapped guest page and be misreported as guest memory.
+                if (mem->Windowed() && guest > mem->Mask()) {
+                    return false;
+                }
                 return mem->RangeIsMapped(guest, 1);
             },
             &memory);
