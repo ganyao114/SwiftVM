@@ -5,6 +5,7 @@ add_library(fronted_x86 STATIC decoder.cc
     decoder_misc.cc
     decoder_sse.cc
     decoder_sse4.cc
+    decoder_sse42str.cc
     decoder_string.cc
     decoder_x87.cc
     decoder_avx_fp.cc

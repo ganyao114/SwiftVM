@@ -635,6 +635,14 @@ private:
     // CPUID consults it so the reported feature bits can never outrun the
     // decoder, the same coherence rule AVX/XSAVE follow.
     [[nodiscard]] static bool Sse4Enabled();
+    // SVM_SSE42STR -- the SSE4.2 string-compare escape hatch, default ON.
+    // Separate from Sse4Enabled because the two families are separate files
+    // with separate CPUID bits: SSE3/SSSE3/SSE4.1 come from decoder_sse4.cc,
+    // SSE4.2 (leaf 1 ECX bit 20) is exactly the pcmpXstrY family in
+    // decoder_sse42str.cc and nothing else.  DecodeCpuid must consult THIS
+    // one before setting bit 20, or the gate and the advertisement drift.
+    [[nodiscard]] static bool Sse42StrEnabled();
+
     // Raw VEX prefix fields, parsed from the instruction bytes rather than
     // taken from distorm.  This is NOT redundant: this distorm snapshot
     // predates AVX2 and therefore has no 256-bit table entry for the packed
@@ -958,6 +966,24 @@ private:
     bool DecodeAvxSse4(const VexInsn& v);
     void DecodeAvxPhminposuw(const VexInsn& v);
     void DecodeAvxVTest(const VexInsn& v, u32 lane_bits);
+
+    // ---- SSE4.2 string compare (decoder_sse42str.cc) --------------------
+    // PCMPISTRI / PCMPISTRM / PCMPESTRI / PCMPESTRM and their VEX twins: the
+    // whole of SSE4.2 beyond POPCNT and CRC32.  Two entry points, one per
+    // encoding family, both with the usual contract -- false for anything
+    // unmodelled, and every false return happens before any IR is emitted.
+    bool DecodeSse42Str(_DInst& insn);
+    bool DecodeSse42StrVex(const VexInsn& v);
+    // Shared body.  `reg1` holds the first operand (always a register),
+    // `src2` is the already-loaded second operand, `wide` selects RAX/RDX over
+    // EAX/EDX for the explicit lengths, and `vex` selects contract C3 (zero
+    // bits 255:128 of YMM0) over the legacy preserve-them contract.
+    void DecodeSse42StrBody(_RegisterType reg1, ir::Value src2, u8 imm8, bool explicit_length,
+                            bool wide, bool mask_form, bool vex);
+    // |signed length| saturated at 8 or 16; the family's most error-prone step.
+    ir::Value Sse42StrLength(ir::Value raw, u32 elements);
+    // CF / ZF / SF / OF from the helper's packed result, AF and PF to zero.
+    void Sse42StrFlags(ir::Value packed);
 
     VAddr start;
     VAddr pc;

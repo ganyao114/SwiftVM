@@ -310,7 +310,7 @@ void X64Decoder::Decode() {
                      (DecodeAvxMul(vex) || DecodeAvxFma(vex) || DecodeAvxInt(vex) ||
                       DecodeAvxFp(vex) || DecodeAvxHadd(vex) || DecodeAvxBlend(vex) ||
                       DecodeAvxGather(vex) || DecodeAvxMisc(vex) ||
-                      DecodeAvxSse4(vex)))) {
+                      DecodeAvxSse4(vex) || DecodeSse42StrVex(vex)))) {
                     assembler->AdvancePC(ir::Imm{vex.length});
                     end_decode = assembler->EndCommit();
                     continue;
@@ -1531,7 +1531,7 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             // preserves the previous FALLBACK behaviour exactly.
             // The SSE4.2 string family (decoder_sse42str.cc) rides the same
             // arm for the same reason.
-            return DecodeSse4(insn);
+            return DecodeSse4(insn) || DecodeSse42Str(insn);
     }
     return true;
 }
