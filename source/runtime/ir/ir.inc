@@ -147,6 +147,24 @@ INST(VecMax, Value, Value, Value, Imm, Imm)
 INST(VecMul, Value, Value, Value, Imm)
 // High 16 bits of eight signed/unsigned 16x16-bit products.
 INST(VecMulHigh16, Value, Value, Value, Imm)
+// Widening multiply of the EVEN lanes.  Imms are (src_lane_bits, is_signed);
+// src_lane_bits is 8, 16 or 32 and the destination lane is twice as wide, so
+// destination lane i is widen(a.lane[2i]) * widen(b.lane[2i]) with both source
+// lanes read at src_lane_bits and the full 2*src_lane_bits product kept.
+//
+// A 128-bit IR value cannot hold the widening product of ALL its lanes, so any
+// widening multiply has to say WHICH source lanes take part.  Two conventions
+// exist in real hardware and this is the lane-indexed one: destination lane i
+// comes from source lane 2i, so the operation is width-generic (8/16/32) and
+// says nothing about any particular guest ISA.  SVE2's UMULLB/SMULLB are
+// exactly this instruction.  AArch64 NEON's UMULL/UMULL2 -- the other
+// convention, "the low/high contiguous half of the lanes" -- reaches it with
+// one existing VecZip: `UMULL Vd.2D, Vn.2S, Vm.2S` is this opcode applied to
+// VecZip(x, x, 32, 0) (ZIP1 puts lanes 0 and 1 into the even positions), and
+// UMULL2 the same with VecZip(x, x, 32, 1).  RVV reaches it with a compaction
+// (vnsrl) plus vwmul.  Nothing here is x86-shaped: the x86 description "the low
+// 32 bits of each 64-bit lane" is the same bits stated in the other direction.
+INST(VecMulWiden, Value, Value, Value, Imm, Imm)
 INST(VecSatAdd, Value, Value, Value, Imm, Imm)
 INST(VecSatSub, Value, Value, Value, Imm, Imm)
 // Narrow and concatenate signed lanes; unsigned destination selects PACKUSWB.
@@ -206,3 +224,18 @@ INST(VecFCvtScalar, Value, Value, Imm)
 // 0=dq2ps, 1=dq2pd, 2=ps2dq, 3=ttps2dq, 4=pd2dq, 5=ttpd2dq,
 // 6=ps2pd, 7=pd2ps.
 INST(VecFCvtPacked, Value, Value, Imm)
+
+// De-interleave: the exact dual of VecZip, and the primitive every pairwise /
+// horizontal operation is built from.  The concatenation {a, b} is viewed as
+// two interleaved streams of `lane width` (first Imm) lanes and one of them is
+// kept: second Imm 0 selects the EVEN-indexed lanes, non-zero the ODD ones.
+// Lanes from `a` fill the low half of the result and lanes from `b` the high
+// half, so with four lanes per operand
+//     VecUnzip(a, b, w, 0) = [a0 a2 b0 b2]
+//     VecUnzip(a, b, w, 1) = [a1 a3 b1 b3]
+// and a lane-wise op over the two results is a pairwise op over a and b.  This
+// is deliberately a data-movement opcode rather than a fused "pairwise add":
+// the arithmetic stays in the existing VecAdd/VecFAdd/VecSatAdd family, so the
+// NaN and saturation rules cannot drift between the fused and unfused paths.
+// AArch64 lowers it to UZP1/UZP2.
+INST(VecUnzip, Value, Value, Value, Imm, Imm)

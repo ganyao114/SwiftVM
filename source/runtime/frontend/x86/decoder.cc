@@ -263,7 +263,11 @@ void X64Decoder::Decode() {
                 // No opcode collision: BMI lives on 0F38 F2/F3/F5/F6/F7 and
                 // 0F3A F0, while the AVX handlers' F2..F6 cases are all on the
                 // 0F map.
-                if (DecodeBmi(vex) || (avx_on && (DecodeAvxInt(vex) || DecodeAvxFp(vex)))) {
+                if (DecodeBmi(vex) ||
+                    (avx_on &&
+                     (DecodeAvxMul(vex) || DecodeAvxInt(vex) || DecodeAvxFp(vex) ||
+                      DecodeAvxHadd(vex) || DecodeAvxBlend(vex) ||
+                      DecodeAvxGather(vex)))) {
                     assembler->AdvancePC(ir::Imm{vex.length});
                     end_decode = assembler->EndCommit();
                     continue;
@@ -992,7 +996,10 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeVecZip(insn, 64, true);
             break;
         case I_PMULUDQ:
-            DecodeMuludq(insn);
+            DecodeSseMulWiden(insn, false);
+            break;
+        case I_PMULDQ:
+            DecodeSseMulWiden(insn, true);
             break;
         case I_PADDB:
             DecodeVecInt(insn, VecIntOp::Add, 8);

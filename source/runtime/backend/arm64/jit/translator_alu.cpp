@@ -552,6 +552,60 @@ void JitTranslator::EmitVecMulHigh16(ir::Inst* inst) {
     __ Shrn2(result.V8H(), high.V4S(), 16);
 }
 
+// Widening multiply of the even lanes: destination lane i is the full
+// 2*src_bits product of source lane 2i of each operand.
+//
+// AArch64's UMULL/SMULL widen the CONTIGUOUS low half of the lanes (UMULL2 the
+// high half), which is a different lane selection from this opcode's, so the
+// even lanes are compacted first.  UZP1 Vt.4S, Vn.4S, Vn.4S yields
+// {n0, n2, n0, n2}; UMULL then reads its low two lanes, which are exactly the
+// even lanes wanted.  UMULL2 is deliberately NOT used -- it would pair lanes
+// 2 and 3, i.e. one even and one odd lane, and silently produce the wrong
+// second result lane.
+//
+// Three host instructions and two vector temporaries.  `result` is only
+// written by the last one, so it may share a physical register with either
+// source without the compaction clobbering an operand that is still needed.
+void JitTranslator::EmitVecMulWiden(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    auto even_left = context.GetTmpV();
+    auto even_right = context.GetTmpV();
+    const bool is_signed = inst->GetArg<ir::Imm>(3).Get() != 0;
+    switch (inst->GetArg<ir::Imm>(2).Get()) {
+        case 8:
+            __ Uzp1(even_left.V16B(), left.V16B(), left.V16B());
+            __ Uzp1(even_right.V16B(), right.V16B(), right.V16B());
+            if (is_signed) {
+                __ Smull(result.V8H(), even_left.V8B(), even_right.V8B());
+            } else {
+                __ Umull(result.V8H(), even_left.V8B(), even_right.V8B());
+            }
+            break;
+        case 16:
+            __ Uzp1(even_left.V8H(), left.V8H(), left.V8H());
+            __ Uzp1(even_right.V8H(), right.V8H(), right.V8H());
+            if (is_signed) {
+                __ Smull(result.V4S(), even_left.V4H(), even_right.V4H());
+            } else {
+                __ Umull(result.V4S(), even_left.V4H(), even_right.V4H());
+            }
+            break;
+        case 32:
+            __ Uzp1(even_left.V4S(), left.V4S(), left.V4S());
+            __ Uzp1(even_right.V4S(), right.V4S(), right.V4S());
+            if (is_signed) {
+                __ Smull(result.V2D(), even_left.V2S(), even_right.V2S());
+            } else {
+                __ Umull(result.V2D(), even_left.V2S(), even_right.V2S());
+            }
+            break;
+        default:
+            PANIC("invalid widening vector multiply source lane width");
+    }
+}
+
 void JitTranslator::EmitVecAbsDiffSum8(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
@@ -1838,6 +1892,44 @@ void JitTranslator::EmitGetResult(ir::Inst* inst) {
     auto src_reg = context.R(src);
     if (result != src_reg) {
         __ Mov(result, src_reg);
+    }
+}
+
+// De-interleave {left, right}, keeping the even (UZP1) or odd (UZP2) lanes.
+// At 64-bit lanes UZP1/UZP2 coincide with ZIP1/ZIP2; the opcode still accepts
+// that width so a caller does not have to special-case it.
+void JitTranslator::EmitVecUnzip(ir::Inst* inst) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto right = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const bool odd = inst->GetArg<ir::Imm>(3).Get() != 0;
+    switch (inst->GetArg<ir::Imm>(2).Get()) {
+        case 8:
+            if (odd)
+                __ Uzp2(result.V16B(), left.V16B(), right.V16B());
+            else
+                __ Uzp1(result.V16B(), left.V16B(), right.V16B());
+            break;
+        case 16:
+            if (odd)
+                __ Uzp2(result.V8H(), left.V8H(), right.V8H());
+            else
+                __ Uzp1(result.V8H(), left.V8H(), right.V8H());
+            break;
+        case 32:
+            if (odd)
+                __ Uzp2(result.V4S(), left.V4S(), right.V4S());
+            else
+                __ Uzp1(result.V4S(), left.V4S(), right.V4S());
+            break;
+        case 64:
+            if (odd)
+                __ Uzp2(result.V2D(), left.V2D(), right.V2D());
+            else
+                __ Uzp1(result.V2D(), left.V2D(), right.V2D());
+            break;
+        default:
+            PANIC("invalid vector lane width");
     }
 }
 
