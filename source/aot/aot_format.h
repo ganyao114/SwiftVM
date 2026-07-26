@@ -114,7 +114,8 @@ enum SwiftAotStatus : int {
 };
 
 inline constexpr char kAotMagic[8] = {'S', 'V', 'M', 'A', 'O', 'T', '\0', '\1'};
-inline constexpr std::uint64_t kAotFormatVersion = 1;
+// 2: the info blob carries the successor-sweep census (AotStats::sweep_*).
+inline constexpr std::uint64_t kAotFormatVersion = 2;
 
 inline constexpr const char* kAotCodeSectionName = ".svmaot.text";
 inline constexpr const char* kAotInfoSectionName = ".svmaot.info";
@@ -132,6 +133,23 @@ inline constexpr std::uint64_t kAotCodeVaddr = 0x8000'0000'0000ull;
 // Deliberately not a call into a diagnostic helper — a stub that needs the
 // runtime to be wired would fail quietly when it is not.
 inline constexpr std::uint32_t kAotStubInsn = 0xD42140E0u;  // brk #0xA07
+
+// Symbol types the artifact compiles and rewrites: STT_FUNC (2) and
+// STT_GNU_IFUNC (10).
+//
+// STT_GNU_IFUNC has to be in the set. Its `st_value` is a RESOLVER -- an
+// ordinary function that the loader calls to pick an implementation -- and
+// func_tests_x86_64 has 37 of them, `strlen`/`memcpy`/`strcmp` among them.
+// Leaving them out did not leave a hole: it left the ORIGINAL x86-64 st_value
+// in the artifact's symbol table, which is precisely the "quietly leave x86
+// bytes behind" outcome docs/aot-design.md §1 forbids. Rewritten, the symbol
+// keeps its meaning exactly -- it names the resolver, now compiled -- and a
+// caller must still run it to obtain the implementation. swift::aot::
+// AotGuestEnv::LookupSymbol does; a host that does not gets a code address
+// where it expected a length.
+inline constexpr bool IsCompilableFuncType(unsigned char type) {
+    return type == 2 || type == 10;
+}
 inline constexpr std::uint32_t kAotStubSize = 8;            // brk + udf #0
 
 }  // namespace swift::aot

@@ -480,6 +480,9 @@ struct X86Instance::Impl final {
                 return published;
             }
         }
+        if (compile_observer) {
+            compile_observer(compile_observer_ctx, pc);
+        }
         auto module = address_space->GetModule(pc);
         auto& m_config = module->GetModuleConfig();
         // Function-level compilation is default-on when the optimization is
@@ -526,7 +529,10 @@ struct X86Instance::Impl final {
             // shrink SmcTracker::ClearDispatchSlots' walk, but it changes HIR
             // ownership semantics and is left for a separate change.
             const size_t lazy_budget =
-                    address_space->GetConfig().enable_jit ? LazyFuncBudget() : kMaxFuncBlocks;
+                    decode_budget_override != 0
+                            ? decode_budget_override
+                            : (address_space->GetConfig().enable_jit ? LazyFuncBudget()
+                                                                     : kMaxFuncBlocks);
             const size_t decode_cap = std::min(lazy_budget, kMaxFuncBlocks);
             const bool lazy = lazy_budget < kMaxFuncBlocks;
             size_t decoded_count = 0;
@@ -746,6 +752,11 @@ struct X86Instance::Impl final {
     mutable FunctionCompileStats func_stats{"x86_64"};
     mutable std::unordered_set<LocationDescriptor> block_only_locations{};
     mutable bool function_compilation_disabled{};
+    // AOT: in-process override of the function-mode decode budget (see
+    // X86Instance::SetFunctionDecodeBudget). 0 = follow SVM_FUNC_LAZY.
+    std::size_t decode_budget_override{};
+    void (*compile_observer)(void*, uint64_t){nullptr};
+    void* compile_observer_ctx{};
     // Interpreter wild-pointer guard: wired by the linux loader via
     // X86Instance::SetInterpRangeCheck; forwarded to State by X86Core::Impl.
     bool (*range_check_fn)(void*, u64, u64){nullptr};
@@ -888,6 +899,17 @@ void X86Instance::ResetFunctionModeLatch() {
 
 runtime::backend::AddressSpace* X86Instance::GetAddressSpace() {
     return impl->address_space.get();
+}
+
+void X86Instance::SetFunctionDecodeBudget(std::size_t blocks) {
+    std::lock_guard guard(impl->translate_mutex);
+    impl->decode_budget_override = blocks;
+}
+
+void X86Instance::SetCompileObserver(void (*fn)(void*, uint64_t), void* ctx) {
+    std::lock_guard guard(impl->translate_mutex);
+    impl->compile_observer = fn;
+    impl->compile_observer_ctx = ctx;
 }
 
 X86Core::X86Core(X86Instance* instance) : instance(instance) {

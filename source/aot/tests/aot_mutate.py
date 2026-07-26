@@ -132,7 +132,7 @@ class Artifact:
         self.stub_offset_at = at(); self.stub_offset = r2.u32()
         self.code_size = r2.u32()
         self.code_hash_at = at(); self.code_hash = r2.u64()
-        r2.skip(9 * 4)                        # stats
+        r2.skip(12 * 4)                       # stats (9 census + 3 sweep, fmt v2)
         n_seg = r2.u32()
         self.segments = []
         for _ in range(n_seg):

@@ -30,6 +30,10 @@ class X86Instance;
 class X86Core;
 }  // namespace swift::translator::x86
 
+namespace swift::runtime::backend {
+class AddressSpace;
+}
+
 namespace swift::guest_call {
 
 class JitGuestEnv : public GuestCallEnv {
@@ -58,7 +62,20 @@ public:
     // ordinary libc functions.  The patched byte is intentionally NOT restored:
     // nothing calls `main` afterwards, and restoring it would mean writing to
     // a page the SMC tracker may have write-protected.
-    bool RunStartupUntil(const std::string& stop_symbol, std::string& error);
+    //
+    // `patch_stop = false` means the loaded image ALREADY has `hlt` there.
+    // The AOT environment needs that: an artifact's units are hashed against
+    // live guest bytes when they are installed, so a patch applied after the
+    // install would make the artifact describe bytes that are no longer
+    // there -- and the install has by then write-protected the page.  Loading
+    // an image that is already patched keeps both sides honest, because the
+    // artifact is compiled from exactly the bytes that will run.
+    bool RunStartupUntil(const std::string& stop_symbol, std::string& error,
+                         bool patch_stop = true);
+
+    // The address space behind this environment. Exposed for the AOT
+    // environment, which installs an artifact into it before anything runs.
+    [[nodiscard]] swift::runtime::backend::AddressSpace* AddressSpace() const;
 
     // GuestCallEnv ---------------------------------------------------------
     swift::x86::ThreadContext64& Context() override;

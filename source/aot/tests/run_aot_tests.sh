@@ -33,19 +33,22 @@ head_() { printf '\n== %s ==\n' "$1"; }
 # --------------------------------------------------------------------------
 head_ "0. build the guest-globals case"
 # --------------------------------------------------------------------------
-if clang --target=x86_64-unknown-linux-gnu -ffreestanding -nostdlib -fno-pic \
-        -fno-pie -mcmodel=small -O1 -fno-stack-protector \
-        -c "$HERE/globals_guest.c" -o "$WORK/globals_guest.o" 2>/dev/null &&
-   python3 "$HERE/mkaotguest.py" -o "$HERE/globals_guest_x86_64" \
-        "$WORK/globals_guest.o" --entry _start >/dev/null; then
-    ok "globals_guest_x86_64 rebuilt"
-else
-    if [ -f "$HERE/globals_guest_x86_64" ]; then
-        ok "globals_guest_x86_64 (using the checked-in copy; clang cross unavailable)"
+build_guest() {
+    local name=$1
+    if clang --target=x86_64-unknown-linux-gnu -ffreestanding -nostdlib -fno-pic \
+            -fno-pie -mcmodel=small -O1 -fno-stack-protector \
+            -c "$HERE/$name.c" -o "$WORK/$name.o" 2>/dev/null &&
+       python3 "$HERE/mkaotguest.py" -o "$HERE/${name}_x86_64" \
+            "$WORK/$name.o" --entry _start >/dev/null; then
+        ok "${name}_x86_64 rebuilt"
+    elif [ -f "$HERE/${name}_x86_64" ]; then
+        ok "${name}_x86_64 (using the checked-in copy; clang cross unavailable)"
     else
-        bad "cannot build globals_guest_x86_64"
+        bad "cannot build ${name}_x86_64"
     fi
-fi
+}
+build_guest globals_guest
+build_guest smc_guest
 
 # --------------------------------------------------------------------------
 # equivalence: JIT vs AOT, byte for byte, same runner
@@ -99,6 +102,63 @@ run_equivalence() {
 run_equivalence globals "$HERE/globals_guest_x86_64"
 run_equivalence func_tests "$CORPUS/func_tests_x86_64"
 run_equivalence real_busy "$CORPUS/real_busy_x86_64"
+
+# --------------------------------------------------------------------------
+head_ "coverage: how much run-time JIT the artifact actually removes"
+# --------------------------------------------------------------------------
+# An artifact that loads and produces the right output can still leave almost
+# all of the translation work to run time, which is what the default (lazy,
+# one block per unit) does. --dump-compiles counts what the JIT still had to
+# translate WITH the artifact installed, so the claim is measured rather than
+# assumed. Both wider settings must stay byte-identical to the JIT baseline:
+# more coverage that changes the output is not coverage, it is a bug.
+coverage() {
+    local name=$1 guest=$2 want_max=$3; shift 3
+    "$AOT" run --guest "$guest" --dump-compiles "$WORK/$name.jitonly.log" \
+        > "$WORK/$name.base.out" 2> "$WORK/$name.base.err"
+    local base_rc=$?
+    local base; base=$(wc -l < "$WORK/$name.jitonly.log" | tr -d ' ')
+
+    if ! "$AOT" compile "$guest" -o "$WORK/$name.cov.aot" "$@" \
+            > "$WORK/$name.cov.compile" 2>&1; then
+        bad "$name: compile $*"; cat "$WORK/$name.cov.compile"; return
+    fi
+    "$AOT" run --aot "$WORK/$name.cov.aot" --dump-compiles "$WORK/$name.cov.log" \
+        > "$WORK/$name.cov.out" 2> "$WORK/$name.cov.err"
+    local cov_rc=$?
+    local left; left=$(wc -l < "$WORK/$name.cov.log" | tr -d ' ')
+    local units; units=$(sed -n 's/.*units emitted *: *//p' "$WORK/$name.cov.compile")
+
+    if [ "$base_rc" = "$cov_rc" ] && cmp -s "$WORK/$name.base.out" "$WORK/$name.cov.out"; then
+        ok "$name [$*]: still byte-identical to the JIT baseline"
+    else
+        bad "$name [$*]: output or exit code changed (jit=$base_rc aot=$cov_rc)"
+        diff "$WORK/$name.base.out" "$WORK/$name.cov.out" | head -5
+    fi
+    if [ "${left:-999999}" -le "$want_max" ]; then
+        ok "$name [$*]: $base run-time translations -> $left (<= $want_max), $units units"
+    else
+        bad "$name [$*]: $base -> $left run-time translations, expected <= $want_max"
+    fi
+}
+
+# Budgets are the measured numbers with slack. The residual is dominated by
+# indirect jump-table targets (switch_worker, __printf_buffer,
+# read_encoded_value_with_base) plus the block after a `syscall`, which the
+# design deliberately leaves to the dispatcher.
+coverage func_tests "$CORPUS/func_tests_x86_64" 800 --eager
+coverage func_tests_sweep "$CORPUS/func_tests_x86_64" 200 --eager --sweep
+coverage real_busy_sweep "$CORPUS/real_busy_x86_64" 250 --eager --sweep
+
+head_ "artifact structure: eager+sweep"
+if python3 "$HERE/aot_elf_check.py" "$WORK/func_tests_sweep.cov.aot" \
+        --guest "$CORPUS/func_tests_x86_64" > "$WORK/sweep.elfcheck" 2>&1; then
+    sed -n 's/^/    /p' "$WORK/sweep.elfcheck" | grep -v '^    $'
+    ok "eager+sweep artifact passes the independent ELF parser"
+else
+    bad "eager+sweep artifact fails the independent ELF parser"
+    cat "$WORK/sweep.elfcheck"
+fi
 
 BASE="$WORK/func_tests.aot"
 GUEST="$CORPUS/func_tests_x86_64"
@@ -217,6 +277,57 @@ if python3 "$HERE/aot_elf_check.py" "$WORK/m_size.aot" --guest "$GUEST" >/dev/nu
     bad "STT_FUNC st_size grown by 8 -> NOT caught"
 else
     ok "STT_FUNC st_size grown by 8 -> caught by aot_elf_check.py"
+fi
+
+# --------------------------------------------------------------------------
+head_ "self-modifying guest (docs/aot-design.md §8)"
+# --------------------------------------------------------------------------
+# smc_guest overwrites the immediate inside one of its own functions and calls
+# it again. The value it prints is the decision procedure: the OLD one means
+# stale artifact code ran (exit 72), the new one means the write was noticed
+# and the unit was retranslated (exit 88). §8 asked for "refuse to continue";
+# what is implemented is retranslation, which is the same safety property and
+# the only one compatible with §7.1's "byte-identical to JIT on all 25 e2e
+# guests" -- the doc has been corrected to say so.
+SMC_GUEST="$HERE/smc_guest_x86_64"
+if [ -f "$SMC_GUEST" ]; then
+    "$AOT" run --guest "$SMC_GUEST" > "$WORK/smc.jit.out" 2>&1; smc_jit_rc=$?
+    if "$AOT" compile "$SMC_GUEST" -o "$WORK/smc.aot" --eager --sweep \
+            > "$WORK/smc.compile" 2>&1; then
+        "$AOT" run --aot "$WORK/smc.aot" > "$WORK/smc.aot.out" 2>&1; smc_aot_rc=$?
+        if [ "$smc_aot_rc" = 88 ] && [ "$smc_jit_rc" = 88 ] &&
+                cmp -s "$WORK/smc.jit.out" "$WORK/smc.aot.out"; then
+            ok "guest overwrote an installed unit -> retranslated, identical to JIT (rc 88)"
+        elif [ "$smc_aot_rc" = 72 ]; then
+            bad "guest overwrote an installed unit -> STALE AOT CODE RAN (rc 72)"
+        else
+            bad "smc_guest: jit rc=$smc_jit_rc aot rc=$smc_aot_rc"
+            cat "$WORK/smc.aot.out"
+        fi
+    else
+        bad "smc_guest: compile"; cat "$WORK/smc.compile"
+    fi
+else
+    bad "missing $SMC_GUEST"
+fi
+
+# --------------------------------------------------------------------------
+head_ "AOT <-> call layer, end to end"
+# --------------------------------------------------------------------------
+# swift_aot_call_test compiles an artifact IN ITS OWN process image (the
+# validity key covers the SwiftVM build id, so an artifact from this `svm_aot`
+# binary would be refused there -- correctly), installs it, resolves libc
+# symbols through the artifact's rewritten .symtab and calls them with GuestFn.
+CALLTEST="$BUILD/source/aot/swift_aot_call_test"
+if [ -x "$CALLTEST" ]; then
+    if "$CALLTEST" > "$WORK/call_test.log" 2>&1; then
+        ok "swift_aot_call_test: $(tail -2 "$WORK/call_test.log" | head -1)"
+    else
+        bad "swift_aot_call_test failed"
+        tail -25 "$WORK/call_test.log"
+    fi
+else
+    bad "missing $CALLTEST"
 fi
 
 # --------------------------------------------------------------------------

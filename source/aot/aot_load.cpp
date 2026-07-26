@@ -274,7 +274,12 @@ bool SymbolIndex::Build(const std::string& artifact_path,
         if (!syms.get_symbol(i, name, value, size, bind, type, shndx, other)) {
             continue;
         }
-        if (type != STT_FUNC || name.empty()) {
+        // STT_GNU_IFUNC too: the writer rewrote it, so skipping it here would
+        // make Lookup() silently miss `strlen`/`memcpy`/`strcmp` -- 37 names in
+        // func_tests_x86_64, and exactly the ones a host is most likely to ask
+        // for. What comes back is the compiled RESOLVER; the caller must run it
+        // (AotGuestEnv::LookupSymbol does).
+        if (!IsCompilableFuncType(type) || name.empty()) {
             continue;
         }
         if (value < kAotCodeVaddr || value >= kAotCodeVaddr + artifact.code.size()) {

@@ -124,6 +124,9 @@ std::vector<u8> EncodeInfoBlob(const AotImage& image) {
     payload.U32(image.stats.fail_scan);
     payload.U32(image.stats.fail_guest_hash);
     payload.U32(image.stats.symbols_stubbed);
+    payload.U32(image.stats.sweep_rounds);
+    payload.U32(image.stats.sweep_addrs);
+    payload.U32(image.stats.sweep_units);
 
     payload.U32(static_cast<u32>(image.segments.size()));
     for (const auto& s : image.segments) {
@@ -210,7 +213,8 @@ bool DecodeInfoBlob(const u8* data, std::size_t size, AotImage& out, std::string
         !r.U32(out.stats.addrs_attempted) || !r.U32(out.stats.units_emitted) ||
         !r.U32(out.stats.fail_translate) || !r.U32(out.stats.fail_block_mode) ||
         !r.U32(out.stats.fail_scan) || !r.U32(out.stats.fail_guest_hash) ||
-        !r.U32(out.stats.symbols_stubbed)) {
+        !r.U32(out.stats.symbols_stubbed) || !r.U32(out.stats.sweep_rounds) ||
+        !r.U32(out.stats.sweep_addrs) || !r.U32(out.stats.sweep_units)) {
         return fail("truncated stats");
     }
 
@@ -413,7 +417,10 @@ bool WriteArtifact(const std::string& guest_elf_path,
             if (shndx != SHN_UNDEF && shndx < SHN_LORESERVE && shndx < shndx_map.size()) {
                 new_shndx = shndx_map[shndx];
             }
-            if (type == STT_FUNC && shndx != SHN_UNDEF && shndx < SHN_LORESERVE) {
+            // STT_GNU_IFUNC is rewritten alongside STT_FUNC (aot_format.h,
+            // IsCompilableFuncType): leaving it alone would leave the original
+            // x86-64 st_value in an AArch64 object.
+            if (IsCompilableFuncType(type) && shndx != SHN_UNDEF && shndx < SHN_LORESERVE) {
                 auto it = by_guest.find(value);
                 if (it != by_guest.end()) {
                     value = kAotCodeVaddr + it->second.first;

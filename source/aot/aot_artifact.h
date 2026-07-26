@@ -65,6 +65,14 @@ struct AotStats {
     u32 fail_scan{};           // ScanCodeUnit refused the unit
     u32 fail_guest_hash{};     // guest bytes not readable through the window
     u32 symbols_stubbed{};     // STT_FUNC pointed at the failure stub
+    // Successor sweep (--sweep): addresses the *decoder* published as direct
+    // successors of an already-compiled unit but that no unit covers yet.
+    // These are exactly the blocks the JIT would otherwise have to discover at
+    // run time; nothing here is guessed, so an address that is only reachable
+    // through an indirect edge still stays with the dispatcher.
+    u32 sweep_rounds{};
+    u32 sweep_addrs{};         // successor addresses fed back into CompileAt
+    u32 sweep_units{};         // of those, units the artifact ended up carrying
 };
 
 struct AotImage {
