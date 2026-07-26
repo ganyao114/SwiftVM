@@ -470,10 +470,16 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto right_physical = context.GetTmpX();
             auto scratch = context.GetTmpX();
             auto left_address = context.GetTmpX();
-            auto right_address = context.GetTmpX();
+            // x12/x13 are permanently reserved by the trampoline mask for
+            // atomic emitters. X87Op is mutually exclusive with an atomic
+            // instruction, so using them explicitly bounds this emitter's
+            // generic scratch demand without risking a live guest value.
+            auto right_address = atomic_pair_scratch;
             auto left_bits = context.GetTmpX();
-            auto right_bits = context.GetTmpX();
-            auto round_bits = context.GetTmpX();
+            auto right_bits = atomic_scratch;
+            // FCW is dead after the entry guard and is overwritten with FPSR
+            // before its next use, so it can carry the conversion marker.
+            auto round_bits = fcw;
             auto left_fp = context.GetTmpV();
             auto right_fp = context.GetTmpV();
             Label slow;
