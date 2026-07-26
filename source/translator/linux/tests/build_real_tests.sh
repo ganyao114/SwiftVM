@@ -41,6 +41,8 @@ if [ "$SUFFIX" = x86_64 ]; then
     gcc -nostdlib -static -Wl,--build-id=none \
         -o vec_float_nan_pressure_x86_64 vec_float_nan_pressure_x86_64.S
     gcc -nostdlib -static -Wl,--build-id=none \
+        -o x87_midtier_x86_64 x87_midtier_x86_64.S
+    gcc -nostdlib -static -Wl,--build-id=none \
         -o clone_futex_smoke_x86_64 clone_futex_smoke_x86_64.S
     gcc -nostdlib -static -Wl,--build-id=none \
         -o clone_smc_mt_x86_64 clone_smc_mt_x86_64.S
@@ -102,6 +104,7 @@ if [ "$SUFFIX" = x86_64 ]; then
         random_smoke_x86_64 \
         rdtsc_monotonic_x86_64 \
         vec_float_nan_pressure_x86_64 \
+        x87_midtier_x86_64 \
         clone_futex_smoke_x86_64 \
         clone_smc_mt_x86_64 \
         clone_tso_litmus_x86_64 \
