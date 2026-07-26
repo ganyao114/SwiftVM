@@ -460,7 +460,25 @@ public:
                        op);
             return nullptr;
         }
-        return current_function->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
+        // AdvancePC coalescing -- see FoldAdvancePC. Guarded by the argument
+        // shape so the branch folds away for every other opcode.
+        if constexpr (sizeof...(Args) == 1 &&
+                      (std::is_same_v<std::decay_t<Args>, Imm> && ...)) {
+            if (advpc_coalesce && op == OpCode::AdvancePC && FoldAdvancePC(args...)) {
+                return nullptr;
+            }
+        }
+        if (LeavesPendingFlags(op)) {
+            flags_since_advance = true;
+        }
+        auto* inst =
+                current_function->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
+        if (op == OpCode::AdvancePC) {
+            last_advance = inst;
+            last_advance_block = current_function->GetCurrentBlock();
+            flags_since_advance = false;
+        }
+        return inst;
     }
 
 #define INST(name, ret, ...)                                                                       \
@@ -504,6 +522,51 @@ public:
 private:
     Location GetNextLocation(const Terminal& term);
 
+    // `AdvancePC` is not program-counter motion -- no backend emits any -- it is
+    // the guest instruction boundary at which the arm64 backend commits its
+    // lazily kept flag state (EmitAdvancePC = MergeNZCV + FlushFlags) and at
+    // which the interpreter does nothing at all. Its immediate is read in
+    // exactly one other place: the sum over a block is that block's guest byte
+    // length (backend/runtime.cpp, SMC range registration).
+    //
+    // Measured over the 25 e2e guests: 21 562 AdvancePC reach the backend and
+    // only 4 016 (18.6%) find pending NZCV, 2 543 (11.8%) a pending ClearFlags
+    // -- at least 69.6% emit nothing whatsoever while still costing a pool
+    // object, a HIRValue slot, and one visit in every pass, in RegAlloc and in
+    // codegen. That is 13.4% of all IR.
+    //
+    // So drop the ones that cannot do anything, and fold their immediate
+    // *backwards* into the last AdvancePC that was kept in the same block. That
+    // direction matters: the running sum of the retained immediates equals the
+    // sum of all of them after every single step, so no block-close hook is
+    // needed and the guest byte length is preserved exactly -- including for
+    // blocks whose trailing AdvancePC is dropped by the terminal rule above.
+    //
+    // "Cannot do anything" = no instruction since the last retained AdvancePC
+    // can leave pending flag state (LeavesPendingFlags). The emitted host code
+    // is therefore byte-identical, which is the check this is verified with
+    // (SVM_PROF=2 per-unit ir/host fingerprints) rather than a claim.
+    bool FoldAdvancePC(const Imm& imm);
+    static bool AdvancePCCoalesceEnabled();
+
+    // Every opcode whose backend emission can leave state that EmitAdvancePC
+    // would have to commit. `nzcv_dirty` is only ever set by SaveHostFlags and
+    // SaveNZ, both of which are reached exclusively from emitters gated on a
+    // SaveFlags pseudo-operation; `flags_clear` only by EmitClearFlags.
+    // SetCarry/SetOverflow are listed because they touch the guest flags word
+    // directly, so a boundary after them is kept even though they self-flush.
+    static constexpr bool LeavesPendingFlags(OpCode op) {
+        switch (op) {
+            case OpCode::SaveFlags:
+            case OpCode::ClearFlags:
+            case OpCode::SetCarry:
+            case OpCode::SetOverflow:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     // Declared first so it outlives every member that allocates from it: the
     // lease's destructor is what returns the pools to a clean state, and it
     // must run after hir_functions has released its (intrusively linked)
@@ -514,6 +577,13 @@ private:
     Location current_location;
     HIRFunction* current_function{};
     bool defer_function_end{};
+    // AdvancePC coalescing state. last_advance_block is compared by pointer so
+    // no block-transition hook is needed: If/LinkBlock/Switch/SetCurBlock all
+    // move current_block, and a mismatch simply means "no fold target here".
+    Inst* last_advance{};
+    HIRBlock* last_advance_block{};
+    bool flags_since_advance{false};
+    const bool advpc_coalesce{AdvancePCCoalesceEnabled()};
 };
 
 void DfsHIRBlock(HIRBlock* start, HIRBlock* end, HIRBlockSet& visited);

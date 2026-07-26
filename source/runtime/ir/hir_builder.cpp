@@ -2,6 +2,8 @@
 // Created by 甘尧 on 2023/9/8.
 //
 
+#include <cstdlib>
+#include <cstring>
 #include <utility>
 #include "hir_builder.h"
 #include "runtime/common/variant_util.h"
@@ -566,6 +568,33 @@ HIRFunction* HIRBuilder::AppendFunction(Location start, Location end) {
 }
 
 HIRFunctionList& HIRBuilder::GetHIRFunctions() { return hir_functions; }
+
+bool HIRBuilder::AdvancePCCoalesceEnabled() {
+    // Escape hatch for bisection; see the header for what this does. Cached in
+    // a member by the constructor so the guard-variable load stays off the
+    // per-instruction path.
+    static const bool enabled = [] {
+        const char* env = std::getenv("SVM_ADVPC_COALESCE");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
+bool HIRBuilder::FoldAdvancePC(const Imm& imm) {
+    // A flag producer since the last boundary makes this AdvancePC a real
+    // flush point.
+    if (flags_since_advance) {
+        return false;
+    }
+    // Nothing to fold into: the first AdvancePC of a block is always kept, so
+    // a block that has any AdvancePC at all keeps at least one.
+    if (!last_advance || last_advance_block != current_function->GetCurrentBlock()) {
+        return false;
+    }
+    const auto prev = last_advance->GetArg<Imm>(0);
+    last_advance->SetArg(0, Imm{prev.Get() + imm.Get(), prev.GetType()});
+    return true;
+}
 
 void HIRBuilder::SetLocation(Location location) { current_location = location; }
 

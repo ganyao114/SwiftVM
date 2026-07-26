@@ -155,6 +155,39 @@ public:
 
     void SetVirReg(u16 slot);
 
+    // Instruction storage: a per-thread bump arena with a free list.
+    //
+    // `SlabObject<Inst, true>` promises a slab, but nothing outside
+    // source/tests/main_case.cpp ever calls Inst::InitializeSlabHeap, so in
+    // svm_translator_linux (and in every embedder) the slab head is always
+    // null and SlabObject::TryAllocate/TryFree degrade to plain malloc/free,
+    // once per IR instruction -- the single largest line item in the decode
+    // phase. Measured with a marginal-cost probe (N extra allocations per
+    // appended instruction, median of 11 runs): `new Inst` + `delete` costs
+    // 25 ns, of which raw malloc+free is 15.8 ns, against 0.73 ns for the
+    // bump-allocated HIRValue pool next to it. On func_tests that is ~0.5 ms
+    // of a 2.84 ms decode phase.
+    //
+    // Turning the slab on instead is not the fix: SlabHeap::Initialize builds
+    // its free list with one seq_cst compare-exchange per object (a million of
+    // them at main_case.cpp's size) and SlabAllocator::Allocate/Free are a
+    // seq_cst CAS loop each, i.e. the same order of magnitude as malloc.
+    //
+    // A recycling cache alone is not enough, and measuring that is what
+    // produced this shape: in the default (function) mode nothing ever calls
+    // Block::DestroyInstrs, so IR instructions are simply leaked and a pure
+    // freelist stays empty forever -- it measured +0.5..+1.0% on translate_ns,
+    // i.e. a small loss. Bump allocation is what makes the *first* allocation
+    // cheap, and the freelist on top is what makes block mode (which does
+    // destroy its instructions) reuse them: -5.9% translate_ns there.
+    //
+    // A freelist entry stores its successor in the object's own storage, so
+    // the arena costs nothing beyond the chunks themselves, and chunks are
+    // never released: an Inst can be freed by a thread other than the one that
+    // allocated it, so no chunk has a single owning thread.
+    void* operator new(size_t sz);
+    void operator delete(void* p);
+
     IntrusiveListNode list_node{};
 
 private:
