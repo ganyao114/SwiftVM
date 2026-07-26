@@ -25,9 +25,36 @@ namespace {
 // Rewriting a use to an earlier identical constant is unconditionally valid for
 // a pure value, with one exception that is easy to get wrong: the x86 front end
 // builds intra-block control flow (Goto / NotGoto / BindLabel -- see CondGoto
-// and the shift decoders), so a constant defined before a forward branch has
-// NOT necessarily executed when control reaches the label.  Those three opcodes
-// therefore reset the table, exactly as they do in UniformEliminationPass.
+// and the shift decoders), so a constant defined between a forward branch and
+// its label has NOT necessarily executed when control reaches the label.  Those
+// three opcodes therefore reset the table, exactly as they do in
+// UniformEliminationPass.
+//
+// Of the three, BindLabel is the one carrying the correctness: these labels are
+// forward-only (the label value is produced by the branch and bound after it),
+// so code before a branch dominates everything after it and only the merge at
+// the label can bring in a definition that did not run.  The resets at Goto /
+// NotGoto are redundant with that and are kept for the same reason
+// UniformEliminationPass keeps them -- to scope facts to one straight-line
+// region -- not because a case is known to need them.
+//
+// The BindLabel reset is NOT hypothetical.  Instrumenting the pass with a
+// second, barrier-free table and comparing the two shows it suppressing 13
+// in-window reuses per func_tests_x86_64 translation and 12 per
+// real_busy_x86_64, every one of them with the anchor materialized at a
+// greater open-branch depth than the use -- i.e. exactly the unsafe shape
+// (DecodeShift in decoder_alu.cc materializes LoadImm(0) for SAR's OF inside a
+// NotGoto/BindLabel region a few instructions before the label).
+//
+// What that instrumentation ALSO showed is why this needs a unit test rather
+// than trust in the corpus: with the BindLabel reset deleted, all 25 guest e2e
+// exit codes are unchanged, func_tests' output stays byte-identical, and the
+// whole swift_test suite -- 161k assertions including the Unicorn differential
+// fuzz -- stays green.  The suppressed reuses are real but land on flag bits
+// nothing goes on to read.  "Constant CSE does not reuse a constant
+// materialized under a branch" (source/tests/main_case.cpp) is therefore the
+// only thing that pins this reset, and it carries a straight-line positive
+// control so it cannot pass by the pass simply doing nothing.
 //
 // The orphaned duplicate is left for DeadCodeEliminationPass, which runs last
 // in the pipeline and already iterates to a fixpoint.

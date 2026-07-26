@@ -10,6 +10,7 @@
 #include "runtime/ir/hir_builder.h"
 #include "runtime/ir/ir_meta.h"
 #include "runtime/ir/opts/cfg_analysis_pass.h"
+#include "runtime/ir/opts/const_folding_pass.h"
 #include "runtime/ir/opts/local_elimination_pass.h"
 #include "runtime/ir/opts/flags_elimination_pass.h"
 #include "runtime/ir/opts/reid_instr_pass.h"
@@ -293,6 +294,200 @@ TEST_CASE("Uniform elimination preserves rotate-by-zero carry polarity load") {
         }
     }
     REQUIRE(polarity_loads == 1);
+}
+
+TEST_CASE("Constant CSE does not reuse a constant materialized under a branch") {
+    using namespace swift::runtime::ir;
+
+    // ConstFoldingPass deduplicates LoadImm within a sliding window, and resets
+    // its table at Goto / NotGoto / BindLabel because the x86 front end builds
+    // intra-block control flow. BindLabel is the reset that carries the
+    // correctness: a constant materialized between a forward branch and its
+    // label has NOT executed on the path that took the branch, so rewriting a
+    // use after the label to that definition reads a register the block never
+    // wrote. (The resets at the branch itself are redundant with it -- code
+    // before a forward branch dominates everything after -- and are kept only
+    // to scope facts to one straight-line region; see the comment in the pass.)
+    //
+    // The shape is real: DecodeShift (decoder_alu.cc) materializes LoadImm(0)
+    // for SAR's OF inside exactly such a NotGoto/BindLabel region, a handful of
+    // IR instructions before the label.
+    Block conditional{0, Location{0x1000}};
+    auto cond = conditional.LoadImm<BOOL>(Imm{1u});
+    auto skip = conditional.NotGoto(cond);
+    auto guarded = conditional.LoadImm(Imm{0x1234u});
+    conditional.StoreUniform(Uniform{0, ValueType::U32}, guarded);
+    conditional.BindLabel(skip);
+    auto merged = conditional.LoadImm(Imm{0x1234u});
+    conditional.StoreUniform(Uniform{8, ValueType::U32}, merged);
+    conditional.SetTerminal(terminal::ReturnToDispatch{});
+
+    ConstFoldingPass::Run(&conditional);
+
+    auto arg_of_store = [](Block& block, std::uint32_t offset) -> Inst* {
+        Inst* found = nullptr;
+        for (auto& inst : block.GetInstList()) {
+            if (inst.GetOp() == OpCode::StoreUniform &&
+                inst.GetArg<Uniform>(0).GetOffset() == offset) {
+                found = inst.GetArg<Value>(1).Def();
+            }
+        }
+        return found;
+    };
+
+    // The store after the label must still read the constant materialized
+    // after the label. Removing the BindLabel reset rewrites it to `guarded`.
+    REQUIRE(arg_of_store(conditional, 8) == merged.Def());
+    REQUIRE(arg_of_store(conditional, 8) != guarded.Def());
+
+    // Positive control. Without it the case above would also pass if the pass
+    // did no deduplication at all -- which is exactly how a barrier ends up
+    // "covered" by a test that proves nothing. Same two constants, same
+    // distance, no branch between them: here the second one MUST be folded away.
+    Block straight_line{1, Location{0x2000}};
+    auto first = straight_line.LoadImm(Imm{0x1234u});
+    straight_line.StoreUniform(Uniform{0, ValueType::U32}, first);
+    auto second = straight_line.LoadImm(Imm{0x1234u});
+    straight_line.StoreUniform(Uniform{8, ValueType::U32}, second);
+    straight_line.SetTerminal(terminal::ReturnToDispatch{});
+
+    ConstFoldingPass::Run(&straight_line);
+
+    REQUIRE(arg_of_store(straight_line, 8) == first.Def());
+    REQUIRE(arg_of_store(straight_line, 8) != second.Def());
+}
+
+TEST_CASE("MMX-form shared opcodes are refused instead of run on the XMM file") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+
+    // MMX and SSE share opcode numbers: distorm reports the same insn.opcode
+    // for `paddb mm0,mm1` (0F FC C1) and `paddb xmm0,xmm1` (66 0F FC C1), and
+    // only the operand register class distinguishes them. x86_regs_table maps
+    // R_MM0..R_MM7 onto X86RegInfo::Xmm0..Xmm7, so before the guard in
+    // DecodeSwitch an MMX-form instruction did not fail -- it read and wrote
+    // the guest's XMM0-XMM7 and produced silently wrong data. This runtime
+    // implements no MMX register file and does not advertise MMX (CPUID leaf 1
+    // EDX bit 23 is clear), so the only correct answer is to refuse the
+    // instruction: InterruptReason::FALLBACK, which the runtime turns into
+    // IllegalCode.
+    struct MemIf final : MemoryInterface {
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+
+    constexpr auto kInterruptOffset = offsetof(ThreadContext64, interrupt);
+    constexpr auto kXmmBase = offsetof(ThreadContext64, xmms);
+    constexpr auto kXmmEnd = kXmmBase + sizeof(ThreadContext64::xmms);
+
+    struct Outcome {
+        bool refused;      // a FALLBACK interrupt was raised
+        bool touched_xmm;  // the XMM register file was read or written
+    };
+    auto decode = [&](std::vector<swift::u8> bytes) {
+        bytes.push_back(0xF4);  // hlt, so Decode() terminates
+        const auto address = reinterpret_cast<VAddr>(bytes.data());
+        Block block{0, Location{address}};
+        Assembler assembler{&block};
+        X64Decoder decoder{address, &memory, &assembler, true};
+        decoder.Decode();
+
+        Outcome out{false, false};
+        for (auto& inst : block.GetInstList()) {
+            const bool is_store = inst.GetOp() == OpCode::StoreUniform;
+            const bool is_load = inst.GetOp() == OpCode::LoadUniform;
+            if (!is_store && !is_load) {
+                continue;
+            }
+            const auto offset = inst.GetArg<Uniform>(0).GetOffset();
+            if (offset >= kXmmBase && offset < kXmmEnd) {
+                out.touched_xmm = true;
+            }
+            if (is_store && offset == kInterruptOffset) {
+                auto reason = inst.GetArg<Value>(1);
+                if (reason.Defined() && reason.Def()->GetOp() == OpCode::LoadImm &&
+                    reason.Def()->GetArg<Imm>(0).Get() ==
+                            static_cast<swift::u32>(InterruptReason::FALLBACK)) {
+                    out.refused = true;
+                }
+            }
+        }
+        return out;
+    };
+
+    struct Case {
+        const char* name;
+        std::vector<swift::u8> mmx;  // no 66 prefix: MM operands
+        std::vector<swift::u8> sse;  // 66-prefixed: XMM operands
+    };
+    // The seven named in the original report, plus a spread across the rest of
+    // the shared space (the plain MMX/SSE2 integer set, the SSSE3 additions and
+    // the GPR<->vector movers) -- the defect was never specific to seven
+    // opcodes, it was a property of the dispatch.
+    const std::vector<Case> cases = {
+            {"pshufb", {0x0F, 0x38, 0x00, 0xC1}, {0x66, 0x0F, 0x38, 0x00, 0xC1}},
+            {"palignr", {0x0F, 0x3A, 0x0F, 0xC1, 0x03}, {0x66, 0x0F, 0x3A, 0x0F, 0xC1, 0x03}},
+            {"pextrw", {0x0F, 0xC5, 0xC1, 0x02}, {0x66, 0x0F, 0xC5, 0xC1, 0x02}},
+            {"pmovmskb", {0x0F, 0xD7, 0xC1}, {0x66, 0x0F, 0xD7, 0xC1}},
+            {"pmuludq", {0x0F, 0xF4, 0xC1}, {0x66, 0x0F, 0xF4, 0xC1}},
+            {"psadbw", {0x0F, 0xF6, 0xC1}, {0x66, 0x0F, 0xF6, 0xC1}},
+            {"pminub", {0x0F, 0xDA, 0xC1}, {0x66, 0x0F, 0xDA, 0xC1}},
+            {"paddb", {0x0F, 0xFC, 0xC1}, {0x66, 0x0F, 0xFC, 0xC1}},
+            {"psubb", {0x0F, 0xF8, 0xC1}, {0x66, 0x0F, 0xF8, 0xC1}},
+            {"pand", {0x0F, 0xDB, 0xC1}, {0x66, 0x0F, 0xDB, 0xC1}},
+            {"pxor", {0x0F, 0xEF, 0xC1}, {0x66, 0x0F, 0xEF, 0xC1}},
+            {"pcmpeqb", {0x0F, 0x74, 0xC1}, {0x66, 0x0F, 0x74, 0xC1}},
+            {"punpcklbw", {0x0F, 0x60, 0xC1}, {0x66, 0x0F, 0x60, 0xC1}},
+            {"packsswb", {0x0F, 0x63, 0xC1}, {0x66, 0x0F, 0x63, 0xC1}},
+            {"pmullw", {0x0F, 0xD5, 0xC1}, {0x66, 0x0F, 0xD5, 0xC1}},
+            {"pmaddwd", {0x0F, 0xF5, 0xC1}, {0x66, 0x0F, 0xF5, 0xC1}},
+            {"pavgb", {0x0F, 0xE0, 0xC1}, {0x66, 0x0F, 0xE0, 0xC1}},
+            {"pmaxsw", {0x0F, 0xEE, 0xC1}, {0x66, 0x0F, 0xEE, 0xC1}},
+            {"paddusb", {0x0F, 0xDC, 0xC1}, {0x66, 0x0F, 0xDC, 0xC1}},
+            {"psllw imm", {0x0F, 0x71, 0xF0, 0x03}, {0x66, 0x0F, 0x71, 0xF0, 0x03}},
+            {"psllw reg", {0x0F, 0xF1, 0xC1}, {0x66, 0x0F, 0xF1, 0xC1}},
+            {"pinsrw", {0x0F, 0xC4, 0xC0, 0x02}, {0x66, 0x0F, 0xC4, 0xC0, 0x02}},
+            {"movd", {0x0F, 0x6E, 0xC0}, {0x66, 0x0F, 0x6E, 0xC0}},
+            {"pabsb", {0x0F, 0x38, 0x1C, 0xC1}, {0x66, 0x0F, 0x38, 0x1C, 0xC1}},
+            {"pmulhrsw", {0x0F, 0x38, 0x0B, 0xC1}, {0x66, 0x0F, 0x38, 0x0B, 0xC1}},
+            // paddq is the one shared opcode distorm reports with XMM operand
+            // indices in BOTH forms, so the register-class test cannot see it
+            // and DecodeSwitch reads the 0x66 prefix instead. It is here as a
+            // register form and as a memory form, because the prefix scan walks
+            // the encoding and the memory form has a different byte layout.
+            {"paddq", {0x0F, 0xD4, 0xC1}, {0x66, 0x0F, 0xD4, 0xC1}},
+            {"paddq mem", {0x0F, 0xD4, 0x01}, {0x66, 0x0F, 0xD4, 0x01}},
+            {"paddq rex", {0x0F, 0xD4, 0xC1}, {0x66, 0x44, 0x0F, 0xD4, 0xC1}},
+            // paddq mm0,[rcx+0x66]: the displacement byte IS 0x66. A prefix
+            // scan that does not stop at the 0x0F escape reads it as an
+            // operand-size prefix and lets this MMX instruction through.
+            {"paddq disp=0x66",
+             {0x0F, 0xD4, 0x41, 0x66},
+             {0x66, 0x0F, 0xD4, 0x41, 0x66}},
+    };
+
+    for (auto& c : cases) {
+        INFO("MMX form of " << c.name);
+        auto mmx = decode(c.mmx);
+        // Refusing is the point; not touching the XMM file is what refusing
+        // BUYS, and is the assertion that fails if the guard is removed.
+        REQUIRE_FALSE(mmx.touched_xmm);
+        REQUIRE(mmx.refused);
+    }
+    for (auto& c : cases) {
+        // The 66-prefixed twin must be unaffected: a guard that rejected both
+        // forms would pass every assertion above while breaking SSE2.
+        INFO("SSE form of " << c.name);
+        auto sse = decode(c.sse);
+        REQUIRE_FALSE(sse.refused);
+        REQUIRE(sse.touched_xmm);
+    }
 }
 
 TEST_CASE("Uniform elimination uses the latest full GPR store for a narrow load") {
@@ -773,5 +968,311 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
     for (unsigned live : {12u, 20u, 28u}) {
         INFO("values read twice across a saturated file: " << live);
         check_and_emit(BuildReloadPressureBlock(live));
+    }
+}
+
+// --- spill-slot recycling ----------------------------------------------------
+//
+// The blocks below pin the register file full with long-lived "anchor" values
+// and then push a long stream of SHORT-lived values past it. Every short value
+// spills (the file is full) but at most two are live at any instant, so the
+// number of stack slots the unit needs is a small constant while the number of
+// spill *events* is proportional to the churn. That difference is the whole
+// point: a linear scan that never returns a slot consumes one per event and
+// dies on backend::kMaxSpillSlots; one that recycles stays flat.
+
+static swift::runtime::ir::Block* BuildSpillChurnBlock(unsigned anchors, unsigned churn) {
+    using namespace swift::runtime::ir;
+    auto* block = new Block(0, Location{0x3000});
+    std::vector<Value> held;
+    held.reserve(anchors);
+    for (unsigned i = 0; i < anchors; i++) {
+        held.push_back(block->LoadImm(Imm{static_cast<std::uint32_t>(i + 1)}));
+    }
+    // The churn. `acc` is a chain: acc(i) dies at exactly the instruction that
+    // defines acc(i+1), which is the boundary case an off-by-one in the expiry
+    // test (`end < start` vs `end <= start`) gets wrong -- both are live at
+    // that instruction, so they must not share a slot.
+    Value acc = block->LoadImm(Imm{0u});
+    for (unsigned i = 0; i < churn; i++) {
+        auto tmp = block->LoadImm(Imm{static_cast<std::uint32_t>(0x1000 + i)});
+        acc = block->Add(acc, Operand{tmp});
+    }
+    // Anchors are consumed only here, so they are live across the whole churn.
+    Value sum = held.back();
+    for (int i = static_cast<int>(anchors) - 2; i >= 0; i--) {
+        sum = block->Add(sum, Operand{held[i]});
+    }
+    block->StoreUniform(Uniform{0, ValueType::U32}, block->Add(sum, Operand{acc}));
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    return block;
+}
+
+// Same shape in the vector file. A spilled V128 occupies TWO consecutive u64
+// slots and is accessed with a 16-byte Ldr/Str, so recycling it has to return
+// both halves and keep the surviving pairs even-aligned (the scaled offset form
+// cannot encode an odd one).
+static swift::runtime::ir::Block* BuildVecSpillChurnBlock(unsigned anchors, unsigned churn) {
+    using namespace swift::runtime::ir;
+    auto* block = new Block(0, Location{0x4000});
+    std::vector<Value> held;
+    held.reserve(anchors);
+    for (unsigned i = 0; i < anchors; i++) {
+        held.push_back(block->LoadUniform<TypedValue<ValueType::V128>>(
+                Uniform{static_cast<std::uint32_t>(16 * (i + 1)), ValueType::V128}));
+    }
+    Value acc = block->LoadUniform<TypedValue<ValueType::V128>>(Uniform{0, ValueType::V128});
+    for (unsigned i = 0; i < churn; i++) {
+        auto tmp = block->LoadUniform<TypedValue<ValueType::V128>>(
+                Uniform{static_cast<std::uint32_t>(16 * (i % 8)), ValueType::V128});
+        acc = block->VecAdd<TypedValue<ValueType::V128>>(acc, tmp, Imm{32u});
+    }
+    Value sum = held.back();
+    for (int i = static_cast<int>(anchors) - 2; i >= 0; i--) {
+        sum = block->VecAdd<TypedValue<ValueType::V128>>(sum, held[i], Imm{32u});
+    }
+    block->StoreUniform(Uniform{0, ValueType::V128},
+                        block->VecAdd<TypedValue<ValueType::V128>>(sum, acc, Imm{32u}));
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    return block;
+}
+
+// Both files churning at once, so scalar and SIMD spills interleave over the
+// same recycled stack: this is the case where returning only one half of a
+// SIMD pair, or losing the even alignment, shows up.
+static swift::runtime::ir::Block* BuildMixedSpillChurnBlock(unsigned anchors, unsigned churn) {
+    using namespace swift::runtime::ir;
+    auto* block = new Block(0, Location{0x5000});
+    std::vector<Value> gpr_held;
+    std::vector<Value> vec_held;
+    for (unsigned i = 0; i < anchors; i++) {
+        gpr_held.push_back(block->LoadImm(Imm{static_cast<std::uint32_t>(i + 1)}));
+        vec_held.push_back(block->LoadUniform<TypedValue<ValueType::V128>>(
+                Uniform{static_cast<std::uint32_t>(16 * (i + 1)), ValueType::V128}));
+    }
+    Value gpr_acc = block->LoadImm(Imm{0u});
+    Value vec_acc = block->LoadUniform<TypedValue<ValueType::V128>>(Uniform{0, ValueType::V128});
+    for (unsigned i = 0; i < churn; i++) {
+        auto scalar = block->LoadImm(Imm{static_cast<std::uint32_t>(0x2000 + i)});
+        gpr_acc = block->Add(gpr_acc, Operand{scalar});
+        auto vec = block->LoadUniform<TypedValue<ValueType::V128>>(
+                Uniform{static_cast<std::uint32_t>(16 * (i % 8)), ValueType::V128});
+        vec_acc = block->VecAdd<TypedValue<ValueType::V128>>(vec_acc, vec, Imm{32u});
+    }
+    Value gpr_sum = gpr_held.back();
+    Value vec_sum = vec_held.back();
+    for (int i = static_cast<int>(anchors) - 2; i >= 0; i--) {
+        gpr_sum = block->Add(gpr_sum, Operand{gpr_held[i]});
+        vec_sum = block->VecAdd<TypedValue<ValueType::V128>>(vec_sum, vec_held[i], Imm{32u});
+    }
+    block->StoreUniform(Uniform{0, ValueType::U32}, block->Add(gpr_sum, Operand{gpr_acc}));
+    block->StoreUniform(Uniform{16, ValueType::V128},
+                        block->VecAdd<TypedValue<ValueType::V128>>(vec_sum, vec_acc, Imm{32u}));
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    return block;
+}
+
+// Manufactures the one stack layout that tells an even-aligned pair search from
+// a naive one: a scalar sitting on the low half of a freed SIMD pair, with the
+// high half and the pair above it free. The free slots are then {odd, even,
+// even+1} and the first *adjacent free pair* starts on an ODD index -- which a
+// 16-byte Ldr/Str cannot address with the scaled offset form. Only a search
+// that steps by two rejects it.
+static swift::runtime::ir::Block* BuildPairFragmentBlock(unsigned gpr_anchors,
+                                                         unsigned vec_anchors,
+                                                         unsigned rounds) {
+    using namespace swift::runtime::ir;
+    auto* block = new Block(0, Location{0x6000});
+    std::vector<Value> gpr_held;
+    std::vector<Value> vec_held;
+    for (unsigned i = 0; i < gpr_anchors; i++) {
+        gpr_held.push_back(block->LoadImm(Imm{static_cast<std::uint32_t>(i + 1)}));
+    }
+    for (unsigned i = 0; i < vec_anchors; i++) {
+        vec_held.push_back(block->LoadUniform<TypedValue<ValueType::V128>>(
+                Uniform{static_cast<std::uint32_t>(16 * (i + 1)), ValueType::V128}));
+    }
+    for (unsigned r = 0; r < rounds; r++) {
+        auto va = block->LoadUniform<TypedValue<ValueType::V128>>(Uniform{16, ValueType::V128});
+        auto vb = block->LoadUniform<TypedValue<ValueType::V128>>(Uniform{32, ValueType::V128});
+        block->StoreUniform(Uniform{64, ValueType::V128}, va);  // va dies
+        auto sx = block->LoadImm(Imm{static_cast<std::uint32_t>(0x30 + r)});
+        block->StoreUniform(Uniform{80, ValueType::V128}, vb);  // vb dies; sx now holds va's low slot
+        auto vc = block->LoadUniform<TypedValue<ValueType::V128>>(Uniform{48, ValueType::V128});
+        block->StoreUniform(Uniform{96, ValueType::V128}, vc);
+        block->StoreUniform(Uniform{0, ValueType::U32}, sx);
+    }
+    Value gpr_sum = gpr_held.back();
+    for (int i = static_cast<int>(gpr_anchors) - 2; i >= 0; i--) {
+        gpr_sum = block->Add(gpr_sum, Operand{gpr_held[i]});
+    }
+    Value vec_sum = vec_held.back();
+    for (int i = static_cast<int>(vec_anchors) - 2; i >= 0; i--) {
+        vec_sum = block->VecAdd<TypedValue<ValueType::V128>>(vec_sum, vec_held[i], Imm{32u});
+    }
+    block->StoreUniform(Uniform{0, ValueType::U32}, gpr_sum);
+    block->StoreUniform(Uniform{112, ValueType::V128}, vec_sum);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    return block;
+}
+
+TEST_CASE("Spill slots are recycled, not merely handed out") {
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::backend;
+
+    // The regression this guards: SpillAtInterval never recorded its interval
+    // in the allocator's active set, so the MEM arm of ExpireOldIntervals --
+    // and FreeSpill with it -- was unreachable. Slots were handed out and never
+    // returned, making the 64-slot State::spill_area a budget for the TOTAL
+    // number of spills in a compilation unit instead of the number live at
+    // once. Any long enough block of short-lived spills aborted the guest with
+    // "spill area exhausted".
+    swift::runtime::Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = swift::runtime::kArm64,
+    };
+    AddressSpace address_space{config};
+    auto module = address_space.GetDefaultModule();
+    const auto gprs = address_space.GetTrampolines().GetGPRRegs();
+    const auto fprs = address_space.GetTrampolines().GetFPRRegs();
+    // Filling the file exactly means the anchors take every allocatable
+    // register and only the scratch reserve's worth spills permanently, so the
+    // slot high-water mark is dominated by the churn -- which is what is under
+    // test.
+    const auto gpr_pool = static_cast<unsigned>(GPRSMask{gprs}.GetClearCount());
+    const auto fpr_pool = static_cast<unsigned>(FPRSMask{fprs}.GetClearCount());
+
+    // Live range of a value as the linear scan models it in block mode: from
+    // its defining instruction to the last instruction that names it, extended
+    // to the end of the block when the terminal reads it.
+    auto live_ranges = [](Block* block) {
+        std::map<std::uint32_t, std::pair<std::uint32_t, std::uint32_t>> range;
+        for (auto& inst : block->GetInstList()) {
+            if (inst.HasValue()) {
+                range[inst.Id()] = {inst.Id(), inst.Id()};
+            }
+        }
+        for (auto& inst : block->GetInstList()) {
+            for (auto& value : inst.GetValues()) {
+                if (!value.Defined()) continue;
+                auto it = range.find(value.Id());
+                if (it != range.end()) {
+                    it->second.second = std::max<std::uint32_t>(it->second.second, inst.Id());
+                }
+            }
+        }
+        return range;
+    };
+
+    auto check_recycling = [&](Block* raw, unsigned expect_min_spills) {
+        swift::runtime::IntrusivePtr<Block> block{raw};
+        RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs};
+        // Pre-fix this call itself threw ("spill area exhausted: slot 64 (+1)
+        // >= 64 reserved slots") long before any assertion below could run.
+        RegisterAllocPass::Run(block.get(), &reg_alloc);
+
+        auto ranges = live_ranges(block.get());
+        struct Occupancy {
+            std::uint32_t id;
+            std::uint32_t slot;
+            std::uint32_t width;
+            std::uint32_t start;
+            std::uint32_t end;
+        };
+        std::vector<Occupancy> spilled;
+        for (auto& inst : block->GetInstList()) {
+            // A bitcast is an alias of its source, not an allocation of its
+            // own; counting it would report one slot with two owners.
+            if (!inst.HasValue() || inst.IsBitCastOperation()) {
+                continue;
+            }
+            Value value{&inst};
+            if (reg_alloc.ValueType(value) != RegAlloc::MEM) {
+                continue;
+            }
+            const auto type = inst.ReturnType();
+            const bool is_vector = type >= ValueType::V8 && type <= ValueType::V256;
+            const std::uint32_t slot = reg_alloc.ValueMem(value).offset;
+            auto& r = ranges[inst.Id()];
+            spilled.push_back({inst.Id(), slot, is_vector ? 2u : 1u, r.first, r.second});
+        }
+
+        // 1. The unit must actually have gone down the spill path, hard.
+        INFO("spilled values: " << spilled.size());
+        REQUIRE(spilled.size() >= expect_min_spills);
+
+        std::uint32_t high_water = 0;
+        for (auto& s : spilled) {
+            high_water = std::max(high_water, s.slot + s.width);
+            // 2. A 16-byte Ldr/Str encodes only a multiple-of-16 offset, so a
+            //    SIMD pair must stay even-aligned however the stack is reused.
+            if (s.width == 2) {
+                INFO("SIMD value " << s.id << " at slot " << s.slot);
+                REQUIRE(s.slot % 2 == 0);
+            }
+            // 3. Never past the reservation: beyond it the Str walks into the
+            //    uniform buffer that follows State::spill_area.
+            REQUIRE(s.slot + s.width <= kMaxSpillSlots);
+        }
+
+        // 4. Two values that are live at the same time must not share a slot.
+        //    This is what makes recycling safe rather than merely cheap: a slot
+        //    returned one instruction too early is handed to an overlapping
+        //    value and both Ldr/Str target the same address.
+        for (std::size_t i = 0; i < spilled.size(); i++) {
+            for (std::size_t j = i + 1; j < spilled.size(); j++) {
+                const auto& a = spilled[i];
+                const auto& b = spilled[j];
+                const bool ranges_overlap = a.start <= b.end && b.start <= a.end;
+                if (!ranges_overlap) {
+                    continue;
+                }
+                const bool slots_overlap =
+                        a.slot < b.slot + b.width && b.slot < a.slot + a.width;
+                INFO("values " << a.id << " [" << a.start << "," << a.end << "] slot " << a.slot
+                               << "+" << a.width << " and " << b.id << " [" << b.start << ","
+                               << b.end << "] slot " << b.slot << "+" << b.width);
+                REQUIRE_FALSE(slots_overlap);
+            }
+        }
+
+        // 5. And the reuse must be real: far more spills than slots. Without
+        //    recycling these are equal by construction.
+        INFO("high water " << high_water << " slots for " << spilled.size() << " spills");
+        REQUIRE(high_water * 2 < spilled.size());
+
+        // 6. Finally the JIT has to emit it. GetTmpX/GetTmpV and
+        //    SpillGPR/SpillFPR assert through AssertFailed, so reaching the end
+        //    of Translate is itself the assertion.
+        arm64::JitContext context{module, reg_alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block.get());
+        context.Finish();
+        REQUIRE(context.CurrentBufferSize() > 0);
+        return high_water;
+    };
+
+    SECTION("scalar churn") {
+        // 200 rounds of (LoadImm, Add) past a full file: >=400 spill events
+        // against a 64-slot area. Pre-fix this aborts at the 64th.
+        check_recycling(BuildSpillChurnBlock(gpr_pool, 200), 300);
+    }
+    SECTION("vector churn") {
+        check_recycling(BuildVecSpillChurnBlock(fpr_pool, 200), 300);
+    }
+    SECTION("mixed churn") {
+        // Scalar and SIMD spills interleaved over one recycled stack.
+        check_recycling(BuildMixedSpillChurnBlock(std::min(gpr_pool, fpr_pool), 200), 500);
+    }
+    SECTION("fragmented pairs stay 16-byte aligned") {
+        // Deliberately leaves the first adjacent free pair on an ODD index.
+        check_recycling(BuildPairFragmentBlock(gpr_pool, fpr_pool, 120), 400);
     }
 }

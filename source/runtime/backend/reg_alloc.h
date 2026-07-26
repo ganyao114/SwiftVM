@@ -76,6 +76,29 @@ using FPRSMask = RegisterMask<u32>;
 // an out-of-range slot would silently overwrite the uniform buffer that
 // follows the spill area. Kept in sync with State::spill_area by a
 // static_assert in arm64/jit/jit_context.cpp.
+//
+// This is a budget for spills LIVE AT ONCE, not for spills performed. It used
+// to be the latter -- the allocator never returned a slot -- which made a unit
+// that spilled repeatedly abort even though it needed a handful of slots at any
+// instant. With recycling (register_alloc_pass.cpp, ExpireOldIntervals) the
+// measured high-water marks are: avx_real_x86_64 under SVM_AVX=1 fell from 50
+// slots to 3 (57 spills either way), swift_test's saturation blocks from 55 to
+// 28, and the block-mode x87 guests are unchanged at 8 and 21 -- those really
+// do hold that many spilled values simultaneously.
+//
+// What can still reach 64: the ARM64 pools are 20 allocatable GPRs and 28 FPRs,
+// less the scratch reserve (3/3 by default), so a compilation unit needs more
+// than ~81 scalar values -- or ~57 V128 values, which take two slots each --
+// live at one instruction. No guest in the corpus comes close; the closest is
+// 21. Raising the ceiling is cheap if that ever changes: spill_area sits
+// immediately before State's flexible uniform buffer, every uniform offset is
+// derived from offsetof(State, uniform_buffer_begin) rather than hardcoded, and
+// ThreadContext64 -- whose byte layout the FXSAVE path and contract C2 depend
+// on -- lives inside that buffer and does not move. The cost is 8 bytes of
+// per-thread State per slot; the JIT's scaled-immediate addressing has room to
+// spare (32760 bytes for the u64 form, 65520 for the 16-byte one). It is left
+// at 64 because the assert now fires only on a shape nothing produces, and it
+// names the unit when it does.
 static constexpr u32 kMaxSpillSlots = 64;
 
 // --- Scratch-register budget -------------------------------------------
