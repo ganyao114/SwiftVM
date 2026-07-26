@@ -62,7 +62,8 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 ## 4. 测试与验证体系
 
 - **本机（macOS arm64）跑通完整套件的前置条件**:系统缺 cmake 时可借用任一 3.21+ 的 cmake;vendored fmt 9.1.1 与 Apple clang 21 的 `consteval` 冲突，需 `-DCMAKE_CXX_FLAGS=-DFMT_CONSTEVAL=`;ANTLR 需 JDK,且 `find_program(JAVA ...)` 结果会被 CMake 缓存,换 JDK 后必须显式 `-DJAVA=<path>` 覆盖否则仍用旧值（而 "Antlr4 gen success" 是无条件打印的，不能作为成功依据）。
-- **全套件基线**(2026-07-26,含上述 P0 修复):非 fuzz 24 PASS / 1 FAIL(仅遗留 #10b),fuzz **32 PASS / 0 FAIL**(2 次 Unicorn flake 重试)。
+- **全套件基线**(2026-07-26,含上述全部修复):非 fuzz **27 PASS / 0 FAIL**,Unicorn 差分 fuzz **33 PASS / 0 FAIL**——套件首次全绿。
+- **构建陷阱**:逐提交验证（`git checkout <sha>` 循环）会让文件时间戳回退，make 据此误判无需重编，后续测试跑的是**陈旧二进制**。症状是「用例数变少但全绿」——覆盖面悄悄塌了却看着像胜利。切回分支后应 `touch` 相关源文件强制重建再测。
 - **差分 fuzz**(`swift_test "Fuzz x86*"`,Unicorn oracle):32 族 per-case 运行。**已知 flake:Unicorn 自身偶发 SIGILL(rc=132,x86_fuzz.cpp:6023/6030)~10-30%/run，会 abort 整个 Catch2**——方法论：per-case 循环 + 每例 3 次重试；管道中 `$?` 是 grep 的码不是测试的码。
 - **Rosetta 仲裁**(`arch -x86_64`):ISA 语义 ground truth（真实 x86 边界行为，如 FCOM IE、FIST 边界、非对齐 LOCK 信号形态）。
 - **raw 测试二进制**(`source/translator/linux/tests/`,.S + 生成器 + 已检入 ELF):smoke/coverage/MT/TSO/x87 各家族；`build_real_tests.sh` 在 orb ubuntu-x64 VM 或 `clang -target x86_64-linux-gnu -nostdlib -static` 重建。
@@ -180,7 +181,10 @@ VEX.256 的拒绝在下列组合下均复现：CPU 模型 default / HASWELL / SK
 8. ~~**静态映射仅 RSP→x19**~~:已完成。RBX→x20、RBP→x21 扩展随 `a1f8292` 落地，映射表见 `source/translator/x86/translator.cpp:37`。
 9. **CallLambda 多块函数 liveness** 保守回退（host-call 跨块活区间未证明）；>64 块+lambda 走块编译（任务 #43)。
 10. **aarch64 解释器 PageFatal 缺口**（既有）。
-10b. **`Test runtime` 定向用例 SIGABRT**(`main_case.cpp:187`,rc=134)。已用 stash-重建法确认是 **master 基线既有失败**,与近期改动无关。该用例只构造 `AddressSpace` 并 push 两个空 block,不触及寄存器分配或 flags 发射。
+10b. ~~**`Test runtime` 定向用例 SIGABRT**~~:**已修复**（两个缺陷叠加，修掉第一个后第二个才浮出）。
+   ① `Module::Push` 经 `IntrusivePtrAddRef` 取得所有权，最终释放走 `Block::operator delete` → `SlabObject::TryFree`,而 TryFree 对不在 slab 内的指针调用 libc `free()`。用例把**栈上**的 Block 交进去，作用域结束时栈对象先析构、随后 module 释放引用 → 对栈地址 `free()`。改为堆分配（与 `runtime.cpp` 里 `TranslateIR` 喂给 Push 的方式一致）。
+   ② 用例用 `loc_end = UINT64_MAX`,而 `AddressHashMap` 按每 1 MB 一个指针预留,2^64 的范围要 `2^44 × 8 = 128 TB`,mmap 拒绝后 `AllocateMemoryPages` 的 `ASSERT(base)` 触发。生产代码用 `1<<49`(x86)/`1<<48`(arm64),只有该用例是异类，已按其自身声明的 `backend_isa=kArm64` 对齐。
+   **注意 `Module::Push(ir::AddressNode*)` 是「裸指针签名 + 取得所有权」的接口**——这是本次两个缺陷的共同诱因，未来若有新调用点应留意。
 11. ~~**"Flag elimination" 定向断言失败**~~:已修复。根因是**测试陈旧**而非 pass 有 bug——测试（`7a909ba`,07-23）用 `Flags::All` 断言首个 SaveFlags 被删，但次日 `4003358` 引入的 carry 保护对任何含 C 的掩码一律不删。已把该场景改用 `Flags::NZ`（真正覆盖"死 pseudo 消除"），并新增一个 carry 掩码场景显式断言两个写都必须存活。
 12. **信号 backpatch TSO 不做的结论已固化**:FEX 用它服务非对齐机制而非优化；我们编译期对齐证明+廉价分支已获同等快路径，成本（并发代码补丁+I-cache 同步+信号链耦合）不值。
 
