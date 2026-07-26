@@ -31,7 +31,7 @@
 #include <vector>
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/types.h"
-#include "runtime/ir/block.h"
+#include "runtime/ir/function.h"
 
 namespace swift::runtime::backend {
 
@@ -116,9 +116,16 @@ private:
         const SmcTracker& tracker_;
     };
 
+    // The node is held by STRONG reference, not borrowed. Its only other
+    // owner is the module's address-node map, and DetachNode drops that
+    // reference while this tracker still has page records pointing at the
+    // node: RegisterNode can re-insert the same node in the window between
+    // TakeDirtyNodes (which releases metadata_lock_) and DetachNode (which
+    // waits on the publisher's module read lock), after which a borrowed
+    // pointer refers to freed memory.
     struct TrackedNode {
         std::shared_ptr<Module> module;
-        ir::AddressNode* node{};
+        ir::NodeRef node{};
         VAddr guest_start{};
         VAddr guest_end{};
     };
