@@ -262,14 +262,303 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Bind(&done);
             return;
         }
+        case swift::x86::X87Action::LoadInt: {
+            if (format != swift::x86::X87Format::Int16 &&
+                format != swift::x86::X87Format::Int32 &&
+                format != swift::x86::X87Format::Int64) {
+                break;
+            }
+
+            auto fsw = context.GetTmpX();
+            auto ftw = context.GetTmpX();
+            auto top = context.GetTmpX();
+            auto shift = context.GetTmpX();
+            auto scratch = context.GetTmpX();
+            auto integer = context.GetTmpX();
+            auto bits = context.GetTmpX();
+            auto reg_address = context.GetTmpX();
+            auto guest = context.X(address);
+            auto fp = context.GetTmpV();
+            Label slow;
+            Label zero;
+            Label encoded;
+            Label done;
+
+            __ Ldrh(fsw.W(), MemOperand(state, kFsw));
+            __ Ldrh(ftw.W(), MemOperand(state, kFtw));
+            __ Ubfx(top.W(), fsw.W(), 11, 3);
+            __ Add(top.W(), top.W(), 7);
+            __ And(top.W(), top.W(), 7);
+            __ Lsl(shift.W(), top.W(), 1);
+            __ Lsr(scratch.W(), ftw.W(), shift.W());
+            __ And(scratch.W(), scratch.W(), 3);
+            __ Cmp(scratch.W(), 3);
+            __ B(ne, &slow);  // occupied push destination: exact stack fault
+
+            const auto mem = use_memory_base ? BiasMem(guest) : MemOperand(guest);
+            if (format == swift::x86::X87Format::Int16) {
+                __ Ldrsh(integer, mem);
+            } else if (format == swift::x86::X87Format::Int32) {
+                __ Ldrsw(integer, mem);
+            } else {
+                __ Ldr(integer, mem);
+                // Only integers with |x| <= 2^53 are certified: their f64
+                // conversion and expansion are bit-identical to SoftFloat
+                // ext80. Larger m64 integers bail instead of introducing a
+                // new reduced-precision architectural value.
+                __ Cmp(integer, 0);
+                __ Cneg(scratch, integer, mi);
+                __ Mov(bits, UINT64_C(0x0020000000000000));
+                __ Cmp(scratch, bits);
+                __ B(hi, &slow);
+            }
+
+            __ Scvtf(fp.D(), integer);
+            __ Fmov(bits, fp.D());
+            __ Cbz(integer, &zero);
+            __ Ubfx(scratch, bits, 52, 11);
+            __ Add(scratch, scratch, 0x3C00);
+            __ Ubfx(reg_address, bits, 63, 1);
+            __ Orr(scratch, scratch, Operand{reg_address, LSL, 15});
+            __ And(bits, bits, UINT64_C(0x000FFFFFFFFFFFFF));
+            __ Lsl(bits, bits, 11);
+            __ Orr(bits, bits, UINT64_C(0x8000000000000000));
+            __ B(&encoded);
+            __ Bind(&zero);
+            __ Mov(bits, 0);
+            __ Mov(scratch, 0);
+            __ Bind(&encoded);
+
+            __ Add(reg_address, state, kRegs);
+            __ Add(reg_address, reg_address, Operand{top, LSL, 4});
+            __ Str(bits, MemOperand(reg_address));
+            __ Strh(scratch.W(), MemOperand(reg_address, 8));
+            __ Str(wzr, MemOperand(reg_address, 10));
+            __ Strh(wzr, MemOperand(reg_address, 14));
+            __ Mov(scratch.W(), kReducedMarker);
+            __ Strb(scratch.W(),
+                    MemOperand(reg_address, kReducedMarkerOffset));
+
+            __ Mov(scratch.W(), 3);
+            __ Lsl(scratch.W(), scratch.W(), shift.W());
+            __ Bic(ftw.W(), ftw.W(), scratch.W());
+            __ Cmp(integer, 0);
+            __ Cset(scratch.W(), eq);  // zero tag=1, valid tag=0
+            __ Lsl(scratch.W(), scratch.W(), shift.W());
+            __ Orr(ftw.W(), ftw.W(), scratch.W());
+            __ And(fsw.W(), fsw.W(), 0xC5FF);
+            __ Orr(fsw.W(), fsw.W(), Operand{top.W(), LSL, 11});
+            __ Strh(ftw.W(), MemOperand(state, kFtw));
+            __ Strh(fsw.W(), MemOperand(state, kFsw));
+            zero_result();
+            __ B(&done);
+            __ Bind(&slow);
+            fallback();
+            __ Bind(&done);
+            return;
+        }
+        case swift::x86::X87Action::StoreInt: {
+            if (format != swift::x86::X87Format::Int16 &&
+                format != swift::x86::X87Format::Int32 &&
+                format != swift::x86::X87Format::Int64) {
+                break;
+            }
+
+            auto fsw = context.GetTmpX();
+            auto ftw = context.GetTmpX();
+            auto fcw = context.GetTmpX();
+            auto top = context.GetTmpX();
+            auto shift = context.GetTmpX();
+            auto bits = context.GetTmpX();
+            auto sign_exp = context.GetTmpX();
+            auto reg_address = context.GetTmpX();
+            auto scratch = atomic_scratch;
+            auto converted = atomic_pair_scratch;
+            auto guest = context.X(address);
+            auto input_fp = context.GetTmpV();
+            auto rounded_fp = context.GetTmpV();
+            Label slow;
+            Label input_zero;
+            Label input_ready;
+            Label round_nearest;
+            Label round_down;
+            Label round_up;
+            Label round_zero;
+            Label rounded;
+            Label invalid;
+            Label store;
+            Label no_pending;
+            Label summary_done;
+            Label done;
+
+            __ Ldrh(fsw.W(), MemOperand(state, kFsw));
+            __ Ldrh(ftw.W(), MemOperand(state, kFtw));
+            __ Ldrh(fcw.W(), MemOperand(state, kFcw));
+            __ Ubfx(top.W(), fsw.W(), 11, 3);
+            __ Lsl(shift.W(), top.W(), 1);
+            __ Lsr(sign_exp.W(), ftw.W(), shift.W());
+            __ And(sign_exp.W(), sign_exp.W(), 3);
+            __ Cmp(sign_exp.W(), 3);
+            __ B(eq, &slow);  // empty stack uses exact stack-fault helper
+
+            __ Add(reg_address, state, kRegs);
+            __ Add(reg_address, reg_address, Operand{top, LSL, 4});
+            __ Ldrb(scratch.W(),
+                    MemOperand(reg_address, kReducedMarkerOffset));
+            __ Cmp(scratch.W(), kReducedMarker);
+            // A6/unmarked ext80 values may contain precision below binary64;
+            // those conversions must remain on SoftFloat.
+            __ B(ne, &slow);
+            __ Ldr(bits, MemOperand(reg_address));
+            __ Ldrh(sign_exp.W(), MemOperand(reg_address, 8));
+            __ And(shift.W(), sign_exp.W(), 0x7FFF);
+            __ Cbz(shift.W(), &input_zero);
+            __ Cmp(shift.W(), 0x7FFF);
+            __ B(eq, &invalid);  // every NaN and infinity is integer-invalid
+            __ Cmp(shift.W(), 0x43FE);
+            __ B(gt, &invalid);  // certainly outside every integer width
+            __ Cmp(shift.W(), 0x3C01);
+            __ B(lt, &slow);     // f64-subnormal/ext80-only inputs use helper
+            __ Tst(bits, UINT64_C(0x8000000000000000));
+            __ B(eq, &slow);
+            __ And(scratch, bits, 0x7FF);
+            __ Cbnz(scratch, &slow);
+            __ Lsr(bits, bits, 11);
+            __ Sub(shift.W(), shift.W(), 0x3C00);
+            __ Lsl(shift, shift, 52);
+            __ And(bits, bits, UINT64_C(0x000FFFFFFFFFFFFF));
+            __ Orr(bits, bits, shift);
+            __ Ubfx(sign_exp, sign_exp, 15, 1);
+            __ Orr(bits, bits, Operand{sign_exp, LSL, 63});
+            __ B(&input_ready);
+            __ Bind(&input_zero);
+            __ Cbnz(bits, &slow);  // true ext80 denormal: preserve DE/helper
+            __ Ubfx(bits, sign_exp, 15, 1);
+            __ Lsl(bits, bits, 63);
+            __ Bind(&input_ready);
+            __ Fmov(input_fp.D(), bits);
+
+            if (command_flags & swift::x86::X87Truncate) {
+                __ B(&round_zero);
+            } else {
+                __ Ubfx(scratch.W(), fcw.W(), 10, 2);
+                __ Cbz(scratch.W(), &round_nearest);
+                __ Cmp(scratch.W(), 1);
+                __ B(eq, &round_down);
+                __ Cmp(scratch.W(), 2);
+                __ B(eq, &round_up);
+                __ B(&round_zero);
+            }
+            __ Bind(&round_nearest);
+            __ Frintn(rounded_fp.D(), input_fp.D());
+            __ B(&rounded);
+            __ Bind(&round_down);
+            __ Frintm(rounded_fp.D(), input_fp.D());
+            __ B(&rounded);
+            __ Bind(&round_up);
+            __ Frintp(rounded_fp.D(), input_fp.D());
+            __ B(&rounded);
+            __ Bind(&round_zero);
+            __ Frintz(rounded_fp.D(), input_fp.D());
+            __ Bind(&rounded);
+
+            const u64 upper_bits =
+                    format == swift::x86::X87Format::Int16
+                            ? UINT64_C(0x40E0000000000000)
+                    : format == swift::x86::X87Format::Int32
+                            ? UINT64_C(0x41E0000000000000)
+                            : UINT64_C(0x43E0000000000000);
+            const u64 lower_bits =
+                    format == swift::x86::X87Format::Int16
+                            ? UINT64_C(0xC0E0000000000000)
+                    : format == swift::x86::X87Format::Int32
+                            ? UINT64_C(0xC1E0000000000000)
+                            : UINT64_C(0xC3E0000000000000);
+            __ Mov(scratch, upper_bits);
+            __ Fmov(input_fp.D(), scratch);
+            __ Fcmp(rounded_fp.D(), input_fp.D());
+            __ B(ge, &invalid);  // +2^(N-1) is the first invalid value
+            __ Mov(scratch, lower_bits);
+            __ Fmov(input_fp.D(), scratch);
+            __ Fcmp(rounded_fp.D(), input_fp.D());
+            __ B(lt, &invalid);  // -2^(N-1) itself remains valid
+
+            if (format == swift::x86::X87Format::Int64) {
+                __ Fcvtzs(converted, rounded_fp.D());
+            } else {
+                __ Fcvtzs(converted.W(), rounded_fp.D());
+            }
+            // Match SoftFloat's exact=true conversion: valid non-integral
+            // inputs contribute PE, while invalid conversions contribute IE
+            // only. FRINTN/M/P/Z themselves are deliberately used instead of
+            // changing process-global FPCR.
+            __ Fmov(input_fp.D(), bits);
+            __ Fcmp(input_fp.D(), rounded_fp.D());
+            __ Cset(scratch.W(), ne);
+            __ Orr(fsw.W(), fsw.W(), Operand{scratch.W(), LSL, 5});
+            __ B(&store);
+
+            __ Bind(&invalid);
+            __ Mov(converted,
+                   format == swift::x86::X87Format::Int16
+                           ? UINT64_C(0x8000)
+                   : format == swift::x86::X87Format::Int32
+                           ? UINT64_C(0x80000000)
+                           : UINT64_C(0x8000000000000000));
+            __ Orr(fsw.W(), fsw.W(), 1);  // IE
+
+            __ Bind(&store);
+            __ And(fsw.W(), fsw.W(), 0xFDFF);  // C1=0
+            const auto out = use_memory_base ? BiasMem(guest) : MemOperand(guest);
+            if (format == swift::x86::X87Format::Int16) {
+                __ Strh(converted.W(), out);
+            } else if (format == swift::x86::X87Format::Int32) {
+                __ Str(converted.W(), out);
+            } else {
+                __ Str(converted, out);
+            }
+
+            if (command_flags & swift::x86::X87Pop) {
+                __ Lsl(shift.W(), top.W(), 1);
+                __ Mov(scratch.W(), 3);
+                __ Lsl(scratch.W(), scratch.W(), shift.W());
+                __ Orr(ftw.W(), ftw.W(), scratch.W());
+                __ Add(top.W(), top.W(), 1);
+                __ And(top.W(), top.W(), 7);
+                __ And(fsw.W(), fsw.W(), 0xC5FF);
+                __ Orr(fsw.W(), fsw.W(), Operand{top.W(), LSL, 11});
+                __ Strh(ftw.W(), MemOperand(state, kFtw));
+            }
+
+            __ And(scratch.W(), fsw.W(), 0x3F);
+            __ Bic(scratch.W(), scratch.W(), fcw.W());
+            __ Cbz(scratch.W(), &no_pending);
+            __ Orr(fsw.W(), fsw.W(), 0x8080);
+            __ B(&summary_done);
+            __ Bind(&no_pending);
+            __ And(fsw.W(), fsw.W(), 0x7F7F);
+            __ Bind(&summary_done);
+            __ Strh(fsw.W(), MemOperand(state, kFsw));
+            zero_result();
+            __ B(&done);
+            __ Bind(&slow);
+            fallback();
+            __ Bind(&done);
+            return;
+        }
         case swift::x86::X87Action::Binary: {
-            // Reduced-precision register arithmetic.  The architectural state
-            // remains ext80; only operands whose ext80 encoding is exactly a
-            // normal binary64 value take this path.  Everything involving
-            // memory, an empty/special stack value, a non-RNE control word, or
-            // precision below PC=64 falls back to the bit-exact SoftFloat
-            // implementation.
-            if (format != swift::x86::X87Format::Register) {
+            // Reduced-precision register and m32real/m64real arithmetic. The
+            // architectural state remains ext80; stack operands must carry
+            // certified f64 provenance. Memory NaN/Inf values, empty/special
+            // stack values, non-RNE control words, and PC below 64 all bail to
+            // the bit-exact SoftFloat implementation. Every finite normal f32
+            // is exactly representable as f64; m64real is already binary64.
+            const bool register_form =
+                    format == swift::x86::X87Format::Register;
+            const bool memory_real =
+                    format == swift::x86::X87Format::Float32 ||
+                    format == swift::x86::X87Format::Float64;
+            if (!register_form && !memory_real) {
                 break;
             }
 
@@ -292,6 +581,10 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto round_bits = fcw;
             auto left_fp = context.GetTmpV();
             auto right_fp = context.GetTmpV();
+            Register guest{};
+            if (memory_real) {
+                guest = context.X(address);
+            }
             Label slow;
             Label done;
 
@@ -303,33 +596,40 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
             __ Ubfx(left_physical.W(), fsw.W(), 11, 3);
-            if (command_flags & swift::x86::X87DestIndex) {
+            if (register_form &&
+                (command_flags & swift::x86::X87DestIndex)) {
                 __ Add(left_physical.W(), left_physical.W(), index);
                 __ And(left_physical.W(), left_physical.W(), 7);
                 __ Ubfx(right_physical.W(), fsw.W(), 11, 3);
-            } else {
+            } else if (register_form) {
                 __ Add(right_physical.W(), left_physical.W(), index);
                 __ And(right_physical.W(), right_physical.W(), 7);
             }
 
-            // Both source tags must be non-empty.  Special values deliberately
+            // Stack source tags must be non-empty. Special values deliberately
             // stay on SoftFloat even when their payload happens to fit f64.
-            for (auto physical : {left_physical, right_physical}) {
+            auto require_nonempty = [&](const Register& physical) {
                 __ Lsl(scratch.W(), physical.W(), 1);
                 __ Lsr(scratch.W(), ftw.W(), scratch.W());
                 __ And(scratch.W(), scratch.W(), 3);
                 __ Cmp(scratch.W(), 3);
                 __ B(eq, &slow);
+            };
+            require_nonempty(left_physical);
+            if (register_form) {
+                require_nonempty(right_physical);
             }
 
             __ Add(left_address, state, kRegs);
             __ Add(left_address,
                    left_address,
                    Operand{left_physical, LSL, 4});
-            __ Add(right_address, state, kRegs);
-            __ Add(right_address,
-                   right_address,
-                   Operand{right_physical, LSL, 4});
+            if (register_form) {
+                __ Add(right_address, state, kRegs);
+                __ Add(right_address,
+                       right_address,
+                       Operand{right_physical, LSL, 4});
+            }
 
             // Spell out the two conversions rather than retaining a label in
             // a lambda: VIXL labels must have stable storage.
@@ -407,7 +707,38 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             };
 
             convert_one(left_address, left_bits, right_bits, left_fp);
-            convert_one(right_address, right_bits, left_bits, right_fp);
+            if (register_form) {
+                convert_one(right_address, right_bits, left_bits, right_fp);
+            } else if (format == swift::x86::X87Format::Float32) {
+                __ Ldr(right_bits.W(),
+                       use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                // ARM and x87 differ in NaN propagation/invalid-result details;
+                // keep all memory NaN/Inf and denormal inputs on SoftFloat.
+                __ And(left_bits.W(), right_bits.W(), 0x7F800000u);
+                __ Cmp(left_bits.W(), 0x7F800000u);
+                __ B(eq, &slow);
+                Label memory_f32_ready;
+                __ Cbnz(left_bits.W(), &memory_f32_ready);
+                __ And(left_bits.W(), right_bits.W(), 0x007FFFFFu);
+                __ Cbnz(left_bits.W(), &slow);  // preserve x87 DE
+                __ Bind(&memory_f32_ready);
+                __ Fmov(right_fp.S(), right_bits.W());
+                __ Fcvt(right_fp.D(), right_fp.S());
+            } else {
+                __ Ldr(right_bits,
+                       use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                __ Ubfx(left_bits, right_bits, 52, 11);
+                __ Cmp(left_bits, 0x7FF);
+                __ B(eq, &slow);
+                Label memory_f64_ready;
+                __ Cbnz(left_bits, &memory_f64_ready);
+                __ And(left_bits,
+                       right_bits,
+                       UINT64_C(0x000FFFFFFFFFFFFF));
+                __ Cbnz(left_bits, &slow);  // preserve x87 DE
+                __ Bind(&memory_f64_ready);
+                __ Fmov(right_fp.D(), right_bits);
+            }
 
             if (command_flags & swift::x86::X87Reverse) {
                 std::swap(left_fp, right_fp);
@@ -429,6 +760,10 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                     break;
             }
             __ Mrs(fcw, FPSR);
+            // ARM's invalid-operation default NaN encoding/propagation is not
+            // the x87 SoftFloat result (notably 0/0). Keep every IOC result on
+            // the exact helper before publishing architectural state.
+            __ Tbnz(fcw, 0, &slow);  // FPSR.IOC
 
             // A binary64 add/sub may discard low bits that the 64-bit ext80
             // significand would retain.  The marked operands only prove that
@@ -621,6 +956,196 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Bind(&done);
             return;
         }
+        case swift::x86::X87Action::Compare: {
+            const bool register_form =
+                    format == swift::x86::X87Format::Register;
+            const bool memory_real =
+                    format == swift::x86::X87Format::Float32 ||
+                    format == swift::x86::X87Format::Float64;
+            if (!register_form && !memory_real) {
+                break;  // integer-memory compares stay on SoftFloat
+            }
+
+            auto fsw = context.GetTmpX();
+            auto ftw = context.GetTmpX();
+            auto left_physical = context.GetTmpX();
+            auto right_physical = context.GetTmpX();
+            auto shift = context.GetTmpX();
+            auto scratch = context.GetTmpX();
+            auto left_address = context.GetTmpX();
+            auto left_bits = context.GetTmpX();
+            auto right_address = atomic_pair_scratch;
+            auto right_bits = atomic_scratch;
+            auto left_fp = context.GetTmpV();
+            auto right_fp = context.GetTmpV();
+            Register guest{};
+            if (memory_real) {
+                guest = context.X(address);
+            }
+            Label slow;
+            Label done;
+
+            __ Ldrh(fsw.W(), MemOperand(state, kFsw));
+            __ Ldrh(ftw.W(), MemOperand(state, kFtw));
+            __ Ubfx(left_physical.W(), fsw.W(), 11, 3);
+            __ Lsl(shift.W(), left_physical.W(), 1);
+            __ Lsr(scratch.W(), ftw.W(), shift.W());
+            __ And(scratch.W(), scratch.W(), 3);
+            __ Cmp(scratch.W(), 3);
+            __ B(eq, &slow);
+            if (register_form) {
+                __ Add(right_physical.W(), left_physical.W(), index);
+                __ And(right_physical.W(), right_physical.W(), 7);
+                __ Lsl(shift.W(), right_physical.W(), 1);
+                __ Lsr(scratch.W(), ftw.W(), shift.W());
+                __ And(scratch.W(), scratch.W(), 3);
+                __ Cmp(scratch.W(), 3);
+                __ B(eq, &slow);
+            }
+
+            __ Add(left_address, state, kRegs);
+            __ Add(left_address,
+                   left_address,
+                   Operand{left_physical, LSL, 4});
+            if (register_form) {
+                __ Add(right_address, state, kRegs);
+                __ Add(right_address,
+                       right_address,
+                       Operand{right_physical, LSL, 4});
+            }
+
+            auto convert_canonical = [&](const Register& ext_address,
+                                         const Register& bits,
+                                         const Register& exponent,
+                                         const VRegister& fp) {
+                auto sign_exp = scratch;
+                Label input_zero;
+                Label converted;
+                __ Ldrb(shift.W(),
+                        MemOperand(ext_address, kReducedMarkerOffset));
+                __ Cmp(shift.W(), kReducedMarker);
+                // A6 can carry ext80-only tail bits. NaN, infinity, ext80
+                // denormals, and every uncertified value bail so FCOM/FUCOM
+                // exception distinctions remain the helper's responsibility.
+                __ B(ne, &slow);
+                __ Ldr(bits, MemOperand(ext_address));
+                __ Ldrh(sign_exp.W(), MemOperand(ext_address, 8));
+                __ And(exponent.W(), sign_exp.W(), 0x7FFF);
+                __ Cbz(exponent.W(), &input_zero);
+                __ Cmp(exponent.W(), 0x3C01);
+                __ B(lt, &slow);
+                __ Cmp(exponent.W(), 0x43FE);
+                __ B(gt, &slow);
+                __ Tst(bits, UINT64_C(0x8000000000000000));
+                __ B(eq, &slow);
+                __ And(shift, bits, 0x7FF);
+                __ Cbnz(shift, &slow);
+                __ Lsr(bits, bits, 11);
+                __ Sub(exponent.W(), exponent.W(), 0x3C00);
+                __ Lsl(exponent, exponent, 52);
+                __ And(bits, bits, UINT64_C(0x000FFFFFFFFFFFFF));
+                __ Orr(bits, bits, exponent);
+                __ Ubfx(sign_exp, sign_exp, 15, 1);
+                __ Orr(bits, bits, Operand{sign_exp, LSL, 63});
+                __ Fmov(fp.D(), bits);
+                __ B(&converted);
+                __ Bind(&input_zero);
+                __ Cbnz(bits, &slow);
+                __ Ubfx(bits, sign_exp, 15, 1);
+                __ Lsl(bits, bits, 63);
+                __ Fmov(fp.D(), bits);
+                __ Bind(&converted);
+            };
+
+            convert_canonical(left_address, left_bits, right_bits, left_fp);
+            if (register_form) {
+                convert_canonical(right_address,
+                                  right_bits,
+                                  left_bits,
+                                  right_fp);
+            } else if (format == swift::x86::X87Format::Float32) {
+                __ Ldr(right_bits.W(),
+                       use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                __ And(left_bits.W(), right_bits.W(), 0x7F800000u);
+                __ Cmp(left_bits.W(), 0x7F800000u);
+                __ B(eq, &slow);  // memory NaN/Inf: helper owns IE semantics
+                Label memory_f32_ready;
+                __ Cbnz(left_bits.W(), &memory_f32_ready);
+                __ And(left_bits.W(), right_bits.W(), 0x007FFFFFu);
+                __ Cbnz(left_bits.W(),
+                         &slow);  // preserve helper status behavior
+                __ Bind(&memory_f32_ready);
+                __ Fmov(right_fp.S(), right_bits.W());
+                __ Fcvt(right_fp.D(), right_fp.S());
+            } else {
+                __ Ldr(right_bits,
+                       use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                __ Ubfx(left_bits, right_bits, 52, 11);
+                __ Cmp(left_bits, 0x7FF);
+                __ B(eq, &slow);  // memory NaN/Inf: helper owns IE semantics
+                Label memory_f64_ready;
+                __ Cbnz(left_bits, &memory_f64_ready);
+                __ And(left_bits,
+                       right_bits,
+                       UINT64_C(0x000FFFFFFFFFFFFF));
+                __ Cbnz(left_bits,
+                         &slow);  // preserve helper status behavior
+                __ Bind(&memory_f64_ready);
+                __ Fmov(right_fp.D(), right_bits);
+            }
+
+            __ Fcmp(left_fp.D(), right_fp.D());
+            __ Cset(scratch.W(), lt);
+            if (command_flags & swift::x86::X87ToEFlags) {
+                ASSERT(has_result);
+                __ Mov(result.W(), scratch.W());  // CF
+                __ Cset(shift.W(), eq);
+                __ Orr(result.W(),
+                       result.W(),
+                       Operand{shift.W(), LSL, 2});  // ZF; PF remains zero
+            } else {
+                __ And(fsw.W(), fsw.W(), 0xB8FF);  // clear C3/C2/C1/C0
+                __ Orr(fsw.W(),
+                       fsw.W(),
+                       Operand{scratch.W(), LSL, 8});  // less -> C0
+                __ Cset(shift.W(), eq);
+                __ Orr(fsw.W(),
+                       fsw.W(),
+                       Operand{shift.W(), LSL, 14});  // equal -> C3
+                zero_result();
+            }
+
+            if (command_flags &
+                (swift::x86::X87Pop | swift::x86::X87PopTwice)) {
+                __ Lsl(shift.W(), left_physical.W(), 1);
+                __ Mov(scratch.W(), 3);
+                __ Lsl(scratch.W(), scratch.W(), shift.W());
+                __ Orr(ftw.W(), ftw.W(), scratch.W());
+                __ Add(left_physical.W(), left_physical.W(), 1);
+                __ And(left_physical.W(), left_physical.W(), 7);
+                if (command_flags & swift::x86::X87PopTwice) {
+                    __ Lsl(shift.W(), left_physical.W(), 1);
+                    __ Mov(scratch.W(), 3);
+                    __ Lsl(scratch.W(), scratch.W(), shift.W());
+                    __ Orr(ftw.W(), ftw.W(), scratch.W());
+                    __ Add(left_physical.W(), left_physical.W(), 1);
+                    __ And(left_physical.W(), left_physical.W(), 7);
+                }
+                __ And(fsw.W(), fsw.W(), 0xC5FF);
+                __ Orr(fsw.W(),
+                       fsw.W(),
+                       Operand{left_physical.W(), LSL, 11});
+                __ Strh(ftw.W(), MemOperand(state, kFtw));
+                __ Strh(fsw.W(), MemOperand(state, kFsw));
+            } else if (!(command_flags & swift::x86::X87ToEFlags)) {
+                __ Strh(fsw.W(), MemOperand(state, kFsw));
+            }
+            __ B(&done);
+            __ Bind(&slow);
+            fallback();
+            __ Bind(&done);
+            return;
+        }
         case swift::x86::X87Action::AdjustTop: {
             auto fsw = context.GetTmpX();
             auto top = context.GetTmpX();
@@ -671,6 +1196,81 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             return;
         }
         case swift::x86::X87Action::Unary: {
+            if (operation == static_cast<u8>(swift::x86::X87Unary::Test)) {
+                auto fsw = context.GetTmpX();
+                auto ftw = context.GetTmpX();
+                auto physical = context.GetTmpX();
+                auto shift = context.GetTmpX();
+                auto bits = context.GetTmpX();
+                auto sign_exp = context.GetTmpX();
+                auto reg_address = context.GetTmpX();
+                auto fp = context.GetTmpV();
+                auto zero_fp = context.GetTmpV();
+                Label slow;
+                Label input_zero;
+                Label converted;
+                Label done;
+
+                __ Ldrh(fsw.W(), MemOperand(state, kFsw));
+                __ Ldrh(ftw.W(), MemOperand(state, kFtw));
+                __ Ubfx(physical.W(), fsw.W(), 11, 3);
+                __ Lsl(shift.W(), physical.W(), 1);
+                __ Lsr(bits.W(), ftw.W(), shift.W());
+                __ And(bits.W(), bits.W(), 3);
+                __ Cmp(bits.W(), 3);
+                __ B(eq, &slow);
+                __ Add(reg_address, state, kRegs);
+                __ Add(reg_address,
+                       reg_address,
+                       Operand{physical, LSL, 4});
+                __ Ldrb(shift.W(),
+                        MemOperand(reg_address, kReducedMarkerOffset));
+                __ Cmp(shift.W(), kReducedMarker);
+                // NaN, ext80 denormal, and uncertified values bail so FTST
+                // retains the helper's IE/DE and unordered behavior.
+                __ B(ne, &slow);
+                __ Ldr(bits, MemOperand(reg_address));
+                __ Ldrh(sign_exp.W(), MemOperand(reg_address, 8));
+                __ And(shift.W(), sign_exp.W(), 0x7FFF);
+                __ Cbz(shift.W(), &input_zero);
+                __ Cmp(shift.W(), 0x3C01);
+                __ B(lt, &slow);
+                __ Cmp(shift.W(), 0x43FE);
+                __ B(gt, &slow);
+                __ Tst(bits, UINT64_C(0x8000000000000000));
+                __ B(eq, &slow);
+                __ And(physical, bits, 0x7FF);
+                __ Cbnz(physical, &slow);
+                __ Lsr(bits, bits, 11);
+                __ Sub(shift.W(), shift.W(), 0x3C00);
+                __ Lsl(shift, shift, 52);
+                __ And(bits, bits, UINT64_C(0x000FFFFFFFFFFFFF));
+                __ Orr(bits, bits, shift);
+                __ Ubfx(sign_exp, sign_exp, 15, 1);
+                __ Orr(bits, bits, Operand{sign_exp, LSL, 63});
+                __ Fmov(fp.D(), bits);
+                __ B(&converted);
+                __ Bind(&input_zero);
+                __ Cbnz(bits, &slow);
+                __ Ubfx(bits, sign_exp, 15, 1);
+                __ Lsl(bits, bits, 63);
+                __ Fmov(fp.D(), bits);
+                __ Bind(&converted);
+                __ Fmov(zero_fp.D(), xzr);
+                __ Fcmp(fp.D(), zero_fp.D());
+                __ And(fsw.W(), fsw.W(), 0xB8FF);
+                __ Cset(bits.W(), lt);
+                __ Orr(fsw.W(), fsw.W(), Operand{bits.W(), LSL, 8});
+                __ Cset(bits.W(), eq);
+                __ Orr(fsw.W(), fsw.W(), Operand{bits.W(), LSL, 14});
+                __ Strh(fsw.W(), MemOperand(state, kFsw));
+                zero_result();
+                __ B(&done);
+                __ Bind(&slow);
+                fallback();
+                __ Bind(&done);
+                return;
+            }
             if (operation == static_cast<u8>(swift::x86::X87Unary::Sqrt)) {
                 auto fsw = context.GetTmpX();
                 auto ftw = context.GetTmpX();
@@ -682,12 +1282,21 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 auto reg_address = context.GetTmpX();
                 auto fp = context.GetTmpV();
                 Label slow;
+                Label input_zero;
+                Label input_special;
+                Label positive_infinity;
+                Label quiet_nan;
+                Label invalid;
+                Label publish_special;
+                Label status;
                 Label no_pending;
                 Label summary_done;
                 Label done;
                 __ Ldrh(fcw.W(), MemOperand(state, kFcw));
                 __ And(shift.W(), fcw.W(), 0x0F00);
                 __ Cmp(shift.W(), 0x0300);
+                // Host FSQRT is RNE/binary64. Other RC/PC modes and ext80
+                // denormals stay on SoftFloat.
                 __ B(ne, &slow);
                 __ Ldrh(fsw.W(), MemOperand(state, kFsw));
                 __ Ldrh(ftw.W(), MemOperand(state, kFtw));
@@ -707,10 +1316,14 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                         MemOperand(reg_address, kReducedMarkerOffset));
                 __ Cmp(shift.W(), kReducedMarker);
                 __ B(ne, &slow);
-                __ Tbnz(sign_exp, 15, &slow);  // negative/NaN uses SoftFloat
+                __ And(shift.W(), sign_exp.W(), 0x7FFF);
+                __ Cbz(shift.W(), &input_zero);
+                __ Cmp(shift.W(), 0x7FFF);
+                __ B(eq, &input_special);
+                __ Tbnz(sign_exp, 15, &invalid);
                 __ And(shift, bits, 0x7FF);
                 __ Cbnz(shift, &slow);
-                __ Tst(bits, 0x8000000000000000ull);
+                __ Tst(bits, UINT64_C(0x8000000000000000));
                 __ B(eq, &slow);
                 __ And(shift.W(), sign_exp.W(), 0x7FFF);
                 __ Cmp(shift.W(), 0x3C01);
@@ -726,6 +1339,10 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 __ Msr(FPSR, xzr);
                 __ Fsqrt(fp.D(), fp.D());
                 __ Mrs(shift, FPSR);
+                // An inexact binary64 square root may retain additional low
+                // significand bits in ext80. Publish only exact host results;
+                // all irrational/double-rounding cases stay on SoftFloat.
+                __ Tbnz(shift, 4, &slow);  // FPSR.IXC
                 __ Fmov(bits, fp.D());
 
                 // A positive normal f64 has a positive normal square root.
@@ -742,10 +1359,57 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 __ Strb(bits.W(),
                         MemOperand(reg_address, kReducedMarkerOffset));
 
-                // FSQRT can only contribute precision for this guarded input
-                // class (IXC bit 4 -> x87 PE bit 5).
-                __ Ubfx(bits.W(), shift.W(), 4, 1);
-                __ Orr(fsw.W(), fsw.W(), Operand{bits.W(), LSL, 5});
+                // IXC was rejected before publishing, so this accepted
+                // positive-finite result is bit-identical to ext80 SoftFloat.
+                __ B(&status);
+
+                __ Bind(&input_zero);
+                __ Cbnz(bits, &slow);  // true ext80 denormal -> helper + DE
+                // sqrt(+/-0) preserves the input image and provenance.
+                __ B(&status);
+
+                __ Bind(&input_special);
+                __ Mov(shift, UINT64_C(0x8000000000000000));
+                __ Cmp(bits, shift);
+                __ B(eq, &positive_infinity);
+                // QNaN propagates its payload; SNaN is quieted and raises IE.
+                __ Tbnz(bits, 62, &quiet_nan);
+                __ Orr(fsw.W(), fsw.W(), 1);
+                __ Bind(&quiet_nan);
+                __ Orr(bits, bits, UINT64_C(0xC000000000000000));
+                __ B(&publish_special);
+
+                __ Bind(&positive_infinity);
+                __ Tbnz(sign_exp, 15, &invalid);
+                __ B(&publish_special);
+
+                __ Bind(&invalid);
+                // Negative finite values and -Inf produce the x87 indefinite
+                // QNaN, not ARM's positive default NaN.
+                __ Mov(bits, UINT64_C(0xC000000000000000));
+                __ Mov(sign_exp.W(), 0xFFFF);
+                __ Orr(fsw.W(), fsw.W(), 1);
+
+                __ Bind(&publish_special);
+                __ Str(bits, MemOperand(reg_address));
+                __ Strh(sign_exp.W(), MemOperand(reg_address, 8));
+                __ Str(wzr, MemOperand(reg_address, 10));
+                __ Strh(wzr, MemOperand(reg_address, 14));
+                __ Mov(shift.W(), kReducedMarker);
+                __ Strb(shift.W(),
+                        MemOperand(reg_address, kReducedMarkerOffset));
+                // Reclassify ST0 as special (covers NaN, infinity, and the
+                // negative-input indefinite result).
+                __ Lsl(shift.W(), physical.W(), 1);
+                __ Mov(bits.W(), 3);
+                __ Lsl(bits.W(), bits.W(), shift.W());
+                __ Bic(ftw.W(), ftw.W(), bits.W());
+                __ Mov(bits.W(), 2);
+                __ Lsl(bits.W(), bits.W(), shift.W());
+                __ Orr(ftw.W(), ftw.W(), bits.W());
+                __ Strh(ftw.W(), MemOperand(state, kFtw));
+
+                __ Bind(&status);
                 __ And(fsw.W(), fsw.W(), 0xFDFF);
                 __ And(bits.W(), fsw.W(), 0x3F);
                 __ Bic(bits.W(), bits.W(), fcw.W());
@@ -793,6 +1457,8 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 __ And(scratch.W(), scratch.W(), 0x7FFF);
             }
             __ Strh(scratch.W(), MemOperand(reg_address, 8));
+            // Only the architectural sign bit changes. The significand and
+            // binary64-canonical/reduced-ready provenance remain valid.
             __ And(fsw.W(), fsw.W(), 0xFDFF);
             __ Strh(fsw.W(), MemOperand(state, kFsw));
             zero_result();

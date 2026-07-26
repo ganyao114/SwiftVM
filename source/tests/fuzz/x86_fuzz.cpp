@@ -5146,6 +5146,278 @@ TEST_CASE("x87 directed edge semantics") {
             REQUIRE((ctx.x87_fsw & 1) != 0);
         }
 
+        // Mid-tier integer loads are exact through 2^53. The immediately
+        // adjacent m64 value must reject the f64 path and retain its ext80-only
+        // low significand bit through the helper.
+        {
+            *reinterpret_cast<s16*>(data + 0x700) = -123;
+            *reinterpret_cast<s32*>(data + 0x704) = std::numeric_limits<s32>::min();
+            *reinterpret_cast<s64*>(data + 0x708) = INT64_C(0x0020000000000000);
+            *reinterpret_cast<s64*>(data + 0x710) = INT64_C(0x0020000000000001);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDF, 0, 0x700);  // FILD m16
+            emit_mem(b, 0xDB, 7, 0x720);  // FSTP m80
+            emit_mem(b, 0xDB, 0, 0x704);  // FILD m32
+            emit_mem(b, 0xDB, 7, 0x730);  // FSTP m80
+            emit_mem(b, 0xDF, 5, 0x708);  // FILD m64, exact f64 boundary
+            emit_mem(b, 0xDB, 7, 0x740);  // FSTP m80
+            emit_mem(b, 0xDF, 5, 0x710);  // FILD m64, helper bailout
+            emit_mem(b, 0xDB, 7, 0x750);  // FSTP m80
+            run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x720) ==
+                    UINT64_C(0xF600000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x728) == 0xC005);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x730) ==
+                    UINT64_C(0x8000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x738) == 0xC01E);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x740) ==
+                    UINT64_C(0x8000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x748) == 0x4034);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x750) ==
+                    UINT64_C(0x8000000000000400));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x758) == 0x4034);
+        }
+
+        // FIST selects all four FCW rounding modes without changing FPCR.
+        // Positive overflow stores indefinite, while the negative endpoint is
+        // valid for each destination width.
+        for (const auto [fcw, expected] :
+             std::array<std::pair<u16, s32>, 4>{{
+                     {0x037F, 2}, {0x077F, 1}, {0x0B7F, 2}, {0x0F7F, 1}}}) {
+            *reinterpret_cast<u16*>(data + 0x760) = fcw;
+            *reinterpret_cast<u64*>(data + 0x768) =
+                    UINT64_C(0x3FF8000000000000);  // +1.5
+            *reinterpret_cast<s32*>(data + 0x770) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x760);  // FLDCW
+            emit_mem(b, 0xDD, 0, 0x768);  // FLD m64
+            emit_mem(b, 0xDB, 3, 0x770);  // FISTP m32
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE(*reinterpret_cast<s32*>(data + 0x770) == expected);
+            REQUIRE((ctx.x87_fsw & 0x21) == 0x20);  // PE, no IE
+        }
+        for (const auto [input, expected, ie] :
+             std::array<std::tuple<u64, u64, bool>, 4>{{
+                     {UINT64_C(0x41E0000000000000),
+                      UINT64_C(0x0000000080000000), true},
+                     {UINT64_C(0xC1E0000000000000),
+                      UINT64_C(0x0000000080000000), false},
+                     {UINT64_C(0x43E0000000000000),
+                      UINT64_C(0x8000000000000000), true},
+                     {UINT64_C(0xC3E0000000000000),
+                      UINT64_C(0x8000000000000000), false},
+             }}) {
+            *reinterpret_cast<u64*>(data + 0x768) = input;
+            *reinterpret_cast<u64*>(data + 0x778) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDD, 0, 0x768);
+            if ((input >> 52 & 0x7FF) == 0x41E) {
+                emit_mem(b, 0xDB, 3, 0x778);  // FISTP m32
+            } else {
+                emit_mem(b, 0xDF, 7, 0x778);  // FISTP m64
+            }
+            const auto ctx = run(std::move(b));
+            CAPTURE(input);
+            if ((input >> 52 & 0x7FF) == 0x41E) {
+                REQUIRE(*reinterpret_cast<u32*>(data + 0x778) ==
+                        static_cast<u32>(expected));
+            } else {
+                REQUIRE(*reinterpret_cast<u64*>(data + 0x778) == expected);
+            }
+            REQUIRE(((ctx.x87_fsw & 1) != 0) == ie);
+        }
+        for (const auto [input, ie] :
+             std::array<std::pair<u64, bool>, 2>{{
+                     {UINT64_C(0x40E0000000000000), true},   // +2^15
+                     {UINT64_C(0xC0E0000000000000), false},  // -2^15
+             }}) {
+            *reinterpret_cast<u64*>(data + 0x7D0) = input;
+            *reinterpret_cast<u16*>(data + 0x7D8) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDD, 0, 0x7D0);
+            emit_mem(b, 0xDF, 2, 0x7D8);  // FIST m16 (non-pop)
+            emit_mem(b, 0xDB, 7, 0x7E0);  // value must remain on stack
+            const auto ctx = run(std::move(b));
+            CAPTURE(input);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x7D8) == 0x8000);
+            REQUIRE(((ctx.x87_fsw & 1) != 0) == ie);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x7E0) ==
+                    UINT64_C(0x8000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x7E8) ==
+                    (ie ? 0x400E : 0xC00E));
+        }
+
+        // Memory real arithmetic shares the register pipeline. These exact
+        // additions cover both widening m32real and native m64real operands.
+        {
+            *reinterpret_cast<u32*>(data + 0x780) = 0x40000000u;  // 2.0f
+            *reinterpret_cast<u64*>(data + 0x788) =
+                    UINT64_C(0x3FE0000000000000);  // 0.5
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);      // FLD1
+            emit_mem(b, 0xD8, 0, 0x780); // FADD m32real -> 3
+            emit_mem(b, 0xDB, 7, 0x790); // FSTP m80
+            emit_reg(b, 0xD9, 0xE8);      // FLD1
+            emit_mem(b, 0xDC, 0, 0x788); // FADD m64real -> 1.5
+            emit_mem(b, 0xDB, 7, 0x7A0); // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x790) ==
+                    UINT64_C(0xC000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x798) == 0x4000);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x7A0) ==
+                    UINT64_C(0xC000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x7A8) == 0x3FFF);
+            REQUIRE((ctx.x87_fsw & 0x3F) == 0);
+        }
+
+        // Memory denormals stay on the exact helper. The current architectural
+        // helper normalizes m32/m64 denormals while loading and therefore does
+        // not expose a DE bit for these memory forms; the opt-in path must not
+        // invent a different status result.
+        for (const bool wide : {false, true}) {
+            if (wide) {
+                *reinterpret_cast<u64*>(data + 0x7D0) = 1;
+            } else {
+                *reinterpret_cast<u32*>(data + 0x7D0) = 1;
+            }
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xEE);  // FLDZ
+            emit_mem(b, wide ? 0xDC : 0xD8, 0, 0x7D0);  // FADD denormal
+            emit_mem(b, 0xDB, 7, 0x7E0);
+            const auto ctx = run(std::move(b));
+            CAPTURE(wide);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x7E0) ==
+                    UINT64_C(0x8000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x7E8) ==
+                    (wide ? 0x3BCD : 0x3F6A));
+            REQUIRE((ctx.x87_fsw & 0x3F) == 0);
+        }
+        for (const bool wide : {false, true}) {
+            if (wide) {
+                *reinterpret_cast<u64*>(data + 0x7D0) = 1;
+            } else {
+                *reinterpret_cast<u32*>(data + 0x7D0) = 1;
+            }
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);  // FLD1
+            emit_mem(b, wide ? 0xDC : 0xD8, 2, 0x7D0);  // FCOM denormal
+            const auto ctx = run(std::move(b));
+            CAPTURE(wide);
+            REQUIRE((ctx.x87_fsw & 0x4702) == 0);  // greater, helper has no DE
+        }
+        for (const bool wide : {false, true}) {
+            if (wide) {
+                *reinterpret_cast<u64*>(data + 0x7D0) = 0;
+            } else {
+                *reinterpret_cast<u32*>(data + 0x7D0) = 0;
+            }
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xEE);  // FLDZ
+            emit_mem(b, wide ? 0xDC : 0xD8, 6, 0x7D0);  // FDIV 0/0
+            emit_mem(b, 0xDB, 7, 0x7E0);
+            const auto ctx = run(std::move(b));
+            CAPTURE(wide);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x7E0) ==
+                    UINT64_C(0xC000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x7E8) == 0xFFFF);
+            REQUIRE((ctx.x87_fsw & 1) != 0);
+        }
+        {
+            *reinterpret_cast<u64*>(data + 0x7D0) =
+                    UINT64_C(0x7FF8123456789ABC);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);              // FLD1
+            emit_mem(b, 0xDC, 0, 0x7D0);          // FADD m64 QNaN
+            emit_mem(b, 0xDB, 7, 0x7E0);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x7E0) ==
+                    UINT64_C(0xC091A2B3C4D5E000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x7E8) == 0x7FFF);
+            REQUIRE((ctx.x87_fsw & 1) == 0);
+        }
+
+        // FSQRT special handling is pinned independently of ARM's default
+        // NaN sign/payload choices.
+        for (const auto [input, expected_sig, expected_exp, ie] :
+             std::array<std::tuple<u64, u64, u16, bool>, 5>{{
+                     {UINT64_C(0x8000000000000000), 0, 0x8000, false}, // -0
+                     {UINT64_C(0x7FF0000000000000),
+                      UINT64_C(0x8000000000000000), 0x7FFF, false},
+                     {UINT64_C(0xFFF0000000000000),
+                      UINT64_C(0xC000000000000000), 0xFFFF, true},
+                     {UINT64_C(0xC010000000000000),
+                      UINT64_C(0xC000000000000000), 0xFFFF, true}, // -4
+                     {UINT64_C(0x7FF0123456789ABC),
+                      UINT64_C(0xC091A2B3C4D5E000), 0x7FFF, false},
+                     // The existing m64-load helper pre-quiets this SNaN
+                     // without carrying IE; default semantics remain untouched.
+             }}) {
+            *reinterpret_cast<u64*>(data + 0x7B0) = input;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDD, 0, 0x7B0);
+            emit_reg(b, 0xD9, 0xFA);      // FSQRT
+            emit_mem(b, 0xDB, 7, 0x7C0); // FSTP m80
+            const auto ctx = run(std::move(b));
+            CAPTURE(input);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x7C0) == expected_sig);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x7C8) == expected_exp);
+            REQUIRE(((ctx.x87_fsw & 1) != 0) == ie);
+        }
+        {
+            // sqrt(2) is inexact in binary64 and has additional ext80 result
+            // bits. The opt-in emitter must bail instead of publishing the
+            // f64-rounded expansion (...6800).
+            *reinterpret_cast<u64*>(data + 0x7B0) =
+                    UINT64_C(0x4000000000000000);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDD, 0, 0x7B0);
+            emit_reg(b, 0xD9, 0xFA);
+            emit_mem(b, 0xDB, 7, 0x7C0);
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x7C0) ==
+                    UINT64_C(0xB504F333F9DE6484));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x7C8) == 0x3FFF);
+            REQUIRE((ctx.x87_fsw & 0x20) != 0);
+        }
+
+        // Pop variants share the inline compare result while preserving exact
+        // TOP/full-tag bookkeeping. FCOMPP of equal values leaves one valid
+        // stack slot and C3 set. FTST covers greater/equal status directly.
+        {
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);
+            emit_reg(b, 0xD9, 0xE8);
+            emit_reg(b, 0xD9, 0xE8);
+            emit_reg(b, 0xDE, 0xD9);  // FCOMPP
+            const auto ctx = run(std::move(b));
+            REQUIRE(((ctx.x87_fsw >> 11) & 7) == 7);
+            REQUIRE((ctx.x87_fsw & 0x4700) == 0x4000);
+            REQUIRE(ctx.x87_ftw == 0x3FFF);
+        }
+        {
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);  // FLD1
+            emit_reg(b, 0xD9, 0xE4);  // FTST: greater
+            emit_reg(b, 0xD9, 0xEE);  // FLDZ
+            emit_reg(b, 0xD9, 0xE4);  // FTST: equal
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.x87_fsw & 0x4700) == 0x4000);
+        }
+
         // Every NaN class uses the integer-indefinite result for FISTP and
         // raises IE; no payload bits may leak into the integer destination.
         const auto require_fistp_nan64 = [&](u64 significand, u16 sign_exp) {
