@@ -28,8 +28,9 @@ bool SmcTracker::IsEnabled() {
     return g_smc_enabled.load(std::memory_order_relaxed);
 }
 
-SmcTracker::SmcTracker(u64 guest_bias)
+SmcTracker::SmcTracker(u64 guest_bias, u64 guest_addr_mask)
         : bias_(guest_bias)
+        , mask_(guest_addr_mask ? guest_addr_mask : UINT64_MAX)
         , page_size_(static_cast<u64>(getpagesize()))
         , page_mask_(page_size_ - 1) {
     ASSERT((page_size_ & page_mask_) == 0);
@@ -46,11 +47,16 @@ void SmcTracker::UnlockMetadata() const {
 }
 
 bool SmcTracker::SetPageProtected(VAddr page, bool prot_read_only) {
-    const auto host = reinterpret_cast<void*>(page + bias_);
+    // Truncate to the guest window first: `page` is derived from a
+    // guest-controlled block location, and an unmasked page + bias_ would
+    // mprotect an arbitrary *host* mapping (observed: the translator's own
+    // __TEXT, which then loses execute permission under its own feet).
+    const auto host_addr = (page & mask_) + bias_;
+    const auto host = reinterpret_cast<void*>(host_addr);
     const int prot = prot_read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
     if (mprotect(host, page_size_, prot) != 0) {
         LOG_ERROR("SMC: mprotect({:#x}, {}) failed: {}",
-                  page + bias_,
+                  host_addr,
                   prot_read_only ? "R" : "RW",
                   std::strerror(errno));
         return false;
@@ -136,8 +142,24 @@ void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
         }
         guest_end = guest_start + 1;
     }
-    const VAddr first = PageKey(guest_start);
-    const VAddr last = PageKey(guest_end - 1);
+    // Page-walk bounds are taken in *window* coordinates so that the pages_
+    // keys match what HandleWriteFault derives from a fault address and what
+    // SetPageProtected actually mprotects. A range that leaves the window is
+    // not a real translation (legitimate blocks were fetched through the same
+    // truncation), so there is nothing to protect.
+    VAddr page_lo = guest_start;
+    VAddr page_hi = guest_end - 1;
+    if (mask_ != UINT64_MAX) {
+        const u64 len = guest_end - guest_start;
+        const VAddr lo = guest_start & mask_;
+        if (len > mask_ + 1 - lo) {
+            return;
+        }
+        page_lo = lo;
+        page_hi = lo + len - 1;
+    }
+    const VAddr first = PageKey(page_lo);
+    const VAddr last = PageKey(page_hi);
     if (last < first) {
         return;
     }
@@ -255,7 +277,7 @@ std::vector<SmcTracker::TrackedNode> SmcTracker::TakeRangeNodes(
 bool SmcTracker::HandleWriteFault(AddressSpace& space,
                                   TranslateTable& current_l1,
                                   std::uintptr_t fault_host_addr) {
-    const VAddr guest = static_cast<VAddr>(fault_host_addr) - bias_;
+    const VAddr guest = static_cast<VAddr>(fault_host_addr) - bias_;  // already in-window
     MetadataGuard guard(*this);
     const auto it = pages_.find(PageKey(guest));
     if (it == pages_.end()) {
@@ -408,6 +430,16 @@ void SmcTracker::InvalidateRange(AddressSpace& space,
                                  VAddr guest_end) {
     if (guest_end <= guest_start) {
         return;
+    }
+    // Window coordinates, matching RegisterNode's page keys.
+    if (mask_ != UINT64_MAX) {
+        const u64 len = guest_end - guest_start;
+        const VAddr lo = guest_start & mask_;
+        if (len > mask_ + 1 - lo) {
+            return;
+        }
+        guest_start = lo;
+        guest_end = lo + len;
     }
     const VAddr first = PageKey(guest_start);
     const VAddr last = PageKey(guest_end - 1);

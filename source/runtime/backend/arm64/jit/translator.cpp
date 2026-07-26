@@ -14,6 +14,8 @@ namespace swift::runtime::backend::arm64 {
 JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()) {
     auto& config = ctx.GetConfig();
     use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
+    guest_addr_mask = config.guest_addr_mask;
+    window_uxtw = guest_addr_mask == 0xFFFFFFFFull;
     const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
     const char* x87_jit = std::getenv("SVM_X87_JIT");
     x87_topvirt_requested =
@@ -326,8 +328,10 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             auto imm_signed = ir_op.GetLeft().imm.GetSigned();
             if (use_memory_base) {
                 // Absolute guest address: materialize it, then apply the pt
-                // bias (guest addr + pt = host addr).
-                __ Mov(mem_scratch, imm);
+                // bias (guest addr + pt = host addr). With a bounded guest
+                // window the truncation happens at translation time — the
+                // immediate is a compile-time constant, so it is free.
+                __ Mov(mem_scratch, guest_addr_mask ? (imm & guest_addr_mask) : imm);
                 if (atomic) {
                     __ Add(mem_scratch, mem_scratch, pt);
                     return MemOperand{mem_scratch};

@@ -7,6 +7,7 @@
 #include <memory>
 #include <unordered_set>
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/signal_handler.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/jit_code.h"
 #include "runtime/backend/runtime.h"
@@ -31,16 +32,27 @@ using namespace swift::arm64;
 class MemoryImpl : public runtime::MemoryInterface {
 public:
     void SetBias(u64 b) { bias = b; }
+    // Bounded guest window (Config::guest_addr_mask): truncate before biasing
+    // so a guest address can only ever name the embedder's window.
+    void SetMask(u64 m) { mask = m ? m : UINT64_MAX; }
     bool Read(void* dest, size_t addr, size_t size) override {
-        return std::memcpy(dest, reinterpret_cast<const void*>(addr + bias), size);
+        return std::memcpy(dest, reinterpret_cast<const void*>((addr & mask) + bias), size);
     }
     bool Write(void* src, size_t addr, size_t size) override {
-        return std::memcpy(reinterpret_cast<void*>(addr + bias), src, size);
+        return std::memcpy(reinterpret_cast<void*>((addr & mask) + bias), src, size);
     }
+    // Instruction fetch runs in host code; see the x86 MemoryImpl for why the
+    // embedder's guest-mapping oracle is consulted before dereferencing.
     void* GetPointer(void* src) override {
-        return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(src) + bias);
+        const auto host = (reinterpret_cast<uintptr_t>(src) & mask) + bias;
+        if (runtime::backend::SignalHandler::HasGuestMapProbe() &&
+            !runtime::backend::SignalHandler::IsGuestAddressMapped(host)) {
+            return nullptr;
+        }
+        return reinterpret_cast<void*>(host);
     }
     u64 bias{};
+    u64 mask{UINT64_MAX};
 };
 
 static MemoryImpl memory_impl{};
@@ -48,8 +60,9 @@ static MemoryImpl memory_impl{};
 struct Arm64Instance::Impl final {
     // memory_base: guest->host bias (host addr = guest addr + bias), installed
     // by the linux loader; nullptr keeps the identity-mapped fast path.
-    explicit Impl(void* memory_base) {
+    explicit Impl(void* memory_base, u64 guest_addr_mask) {
         memory_impl.SetBias(reinterpret_cast<uintptr_t>(memory_base));
+        memory_impl.SetMask(guest_addr_mask);
         // SVM_ENABLE_JIT=0 forces the IR interpreter path (bring-up aid
         // while the JIT is under development).
         const char* jit_env = std::getenv("SVM_ENABLE_JIT");
@@ -91,6 +104,7 @@ struct Arm64Instance::Impl final {
                 .stack_alignment = 16,
                 .page_table = nullptr,
                 .memory_base = memory_base,
+                .guest_addr_mask = guest_addr_mask,
                 .memory = &memory_impl,
         };
         address_space = std::make_unique<backend::AddressSpace>(config);
@@ -358,9 +372,13 @@ struct Arm64Core::Impl final {
     u64 svc_num{};
 };
 
-Arm64Instance::Arm64Instance(void* memory_base) { impl = std::make_unique<Impl>(memory_base); }
+Arm64Instance::Arm64Instance(void* memory_base, u64 guest_addr_mask) {
+    impl = std::make_unique<Impl>(memory_base, guest_addr_mask);
+}
 
-Arm64Instance* Arm64Instance::Make(void* memory_base) { return new Arm64Instance(memory_base); }
+Arm64Instance* Arm64Instance::Make(void* memory_base, u64 guest_addr_mask) {
+    return new Arm64Instance(memory_base, guest_addr_mask);
+}
 
 void Arm64Instance::Destroy(Arm64Instance* instance) { delete instance; }
 

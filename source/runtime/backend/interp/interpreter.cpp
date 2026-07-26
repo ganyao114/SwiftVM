@@ -670,12 +670,17 @@ void Interpreter::RunGetUniformAddress(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
     const auto operand = inst->GetArg<ir::Operand>(0);
     const auto type = inst->ReturnType();
-    const u64 guest_addr = EvalOperand(stack, operand);
+    u64 guest_addr = EvalOperand(stack, operand);
     // Wild-pointer guard: a guest address at or beyond the guest address-space
     // limit (Config::loc_end) is definitionally invalid. Raise PageFatal instead
     // of letting the host dereference a bad pointer (SIGSEGV). The JIT path
     // relies on the host signal handler for this; the interpreter has none.
     const u64 access_size = ir::GetValueSizeByte(type);
+    // Bounded guest window first, so the interpreter validates (and faults on)
+    // the same effective address the JIT would access -- the JIT truncates in
+    // the addressing mode, so checking the untruncated address here would make
+    // the two paths disagree about which wild pointers are in bounds.
+    guest_addr &= state.guest_addr_mask;
     if (guest_addr >= state.guest_addr_limit || guest_addr + access_size > state.guest_addr_limit ||
         (state.interp_range_check &&
          !state.interp_range_check(state.interp_range_check_ctx, guest_addr, access_size))) {
@@ -703,9 +708,14 @@ void Interpreter::RunStoreMemory(ir::Inst* inst, InterpStack& stack) {
     const auto operand = inst->GetArg<ir::Operand>(0);
     const auto value = inst->GetArg<ir::Value>(1);
     const auto type = value.Type();
-    const u64 guest_addr = EvalOperand(stack, operand);
+    u64 guest_addr = EvalOperand(stack, operand);
     // Wild-pointer guard: see RunLoadMemory for the rationale.
     const u64 access_size = ir::GetValueSizeByte(type);
+    // Bounded guest window first, so the interpreter validates (and faults on)
+    // the same effective address the JIT would access -- the JIT truncates in
+    // the addressing mode, so checking the untruncated address here would make
+    // the two paths disagree about which wild pointers are in bounds.
+    guest_addr &= state.guest_addr_mask;
     if (guest_addr >= state.guest_addr_limit || guest_addr + access_size > state.guest_addr_limit ||
         (state.interp_range_check &&
          !state.interp_range_check(state.interp_range_check_ctx, guest_addr, access_size))) {
@@ -744,8 +754,9 @@ void Interpreter::RunMemoryCopy(ir::Inst* inst, InterpStack& stack) {
     // The lambdas evaluate to guest addresses; apply the pt bias (0 for
     // identity mapping).
     const auto bias = reinterpret_cast<uintptr_t>(state.pt);
-    std::memmove(reinterpret_cast<void*>(EvalLambda(stack, dst) + bias),
-                 reinterpret_cast<const void*>(EvalLambda(stack, src) + bias),
+    const auto mask = state.guest_addr_mask;
+    std::memmove(reinterpret_cast<void*>((EvalLambda(stack, dst) & mask) + bias),
+                 reinterpret_cast<const void*>((EvalLambda(stack, src) & mask) + bias),
                  size);
 }
 
@@ -764,7 +775,7 @@ void Interpreter::RunCompareAndSwap(ir::Inst* inst, InterpStack& stack) {
     const auto desired = inst->GetArg<ir::Value>(2);
     const u32 bits = TypeBits(expected.Type());
     const u64 mask = MaskBits(bits);
-    auto* ptr = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
+    auto* ptr = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
     const u64 expected_value = ReadScalar(stack, expected) & mask;
     const u64 desired_value = ReadScalar(stack, desired) & mask;
     u64 old{};
@@ -796,7 +807,7 @@ void Interpreter::RunCompareAndSwap128(ir::Inst* inst, InterpStack& stack) {
     const u64 expected_hi = ReadScalar(stack, inst->GetArg<ir::Value>(2));
     const u64 desired_lo = ReadScalar(stack, inst->GetArg<ir::Value>(3));
     const u64 desired_hi = ReadScalar(stack, inst->GetArg<ir::Value>(4));
-    auto* ptr = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
+    auto* ptr = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
 
     // std::atomic_ref<unsigned __int128> is neither portable nor guaranteed
     // lock-free. Serialize the 16-byte memcpy compare/store with the same
@@ -823,7 +834,7 @@ void Interpreter::RunCheckMemoryAlignment(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunAtomicExchange(ir::Inst* inst, InterpStack& stack) {
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto desired = inst->GetArg<ir::Value>(1);
-    auto* raw = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
+    auto* raw = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
     const u64 value = ReadScalar(stack, desired);
     u64 old{};
     switch (TypeBits(desired.Type())) {
@@ -848,7 +859,7 @@ void Interpreter::RunAtomicExchange(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunAtomicFetchAdd(ir::Inst* inst, InterpStack& stack) {
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto addend = inst->GetArg<ir::Value>(1);
-    auto* raw = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
+    auto* raw = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
     const u64 value = ReadScalar(stack, addend);
     u64 old{};
     switch (TypeBits(addend.Type())) {
@@ -876,7 +887,7 @@ void Interpreter::RunAtomicRMW(ir::Inst* inst, InterpStack& stack) {
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(1));
     const auto operand_arg = inst->GetArg<ir::Value>(2);
     const auto carry_arg = inst->GetArg<ir::Value>(3);
-    void* raw = reinterpret_cast<void*>(addr + reinterpret_cast<uintptr_t>(state.pt));
+    void* raw = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
     const u64 operand = ReadScalar(stack, operand_arg);
     const u64 carry = ReadScalar(stack, carry_arg) & 1;
 

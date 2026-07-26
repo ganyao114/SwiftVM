@@ -71,8 +71,13 @@ using namespace swift::runtime::frontend;
 
 namespace {
 
-u8* GuestBytes(u64 address) {
-    return reinterpret_cast<u8*>(address + GetGuestMemBias());
+// Guest -> host pointer for the XSAVE/XRSTOR helpers. Same contract as
+// x87.cpp's GuestPointer: the window mask makes host memory unreachable, the
+// embedder's mapping oracle turns an unmapped in-window address into nullptr
+// so the caller skips the access instead of faulting in an unrecoverable
+// host frame. Returns nullptr when [address, address+size) is not backed.
+u8* GuestBytes(u64 address, size_t size) {
+    return GuestPointer(address, size);
 }
 
 // x87 INIT configuration (SDM Table 9-1): the same state FNINIT establishes,
@@ -125,7 +130,8 @@ u64 XsaveHelper(u64 context, u64 guest_address, u64 requested) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     const u64 xcr0 = GuestXcr0();
     const u64 rfbm = requested & xcr0;
-    u8* out = GuestBytes(guest_address);
+    u8* out = GuestBytes(guest_address, XsaveAreaSize());
+    if (!out) return 0;
 
     u64 old_bv{};
     std::memcpy(&old_bv, out + kXsaveXstateBvOffset, sizeof(old_bv));
@@ -180,7 +186,8 @@ u64 XrstorHelper(u64 context, u64 guest_address, u64 requested) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     const u64 xcr0 = GuestXcr0();
     const u64 rfbm = requested & xcr0;
-    const u8* in = GuestBytes(guest_address);
+    const u8* in = GuestBytes(guest_address, XsaveAreaSize());
+    if (!in) return 0;
 
     u64 state_bv{};
     std::memcpy(&state_bv, in + kXsaveXstateBvOffset, sizeof(state_bv));

@@ -51,3 +51,22 @@ add_test(NAME malformed_guest_isolation
                  $<TARGET_FILE:svm_translator_linux>)
 set_tests_properties(malformed_guest_isolation PROPERTIES
                      LABELS "isolation;guest;e2e" TIMEOUT 300)
+
+# ---------------------------------------------------------------------------
+# Guest/host address-space isolation.
+#
+# The bounded guest window: every guest address is truncated into one host
+# reservation before the bias is added, so no guest address can name host
+# memory.  The suite asserts that `base` and `base + 2^k` alias (i.e. the
+# access stayed inside the window) and that wild pointers never kill the host.
+# It fails on the unbounded build -- run it with SVM_ISOLATION_EXPECT=broken
+# to see the defect it locks down.
+#
+# Same dormancy caveat as the registrations above: nothing calls
+# enable_testing(), so run_isolation_tests.sh is runnable on its own for now.
+# ---------------------------------------------------------------------------
+add_test(NAME guest_address_space_isolation
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/run_isolation_tests.sh
+                 $<TARGET_FILE:svm_translator_linux>)
+set_tests_properties(guest_address_space_isolation PROPERTIES
+                     LABELS "isolation;guest;e2e" TIMEOUT 300)

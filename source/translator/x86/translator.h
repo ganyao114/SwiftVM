@@ -15,7 +15,9 @@ public:
 
     // memory_base: guest->host bias for guest address virtualization
     // (host addr = guest addr + bias); nullptr = identity mapping (default).
-    static X86Instance *Make(void* memory_base = nullptr);
+    // guest_addr_mask: bounded guest window (Config::guest_addr_mask),
+    // 0 = unbounded (legacy).
+    static X86Instance *Make(void* memory_base = nullptr, u64 guest_addr_mask = 0);
     static void Destroy(X86Instance *instance);
 
     // SMC hook: forwards to AddressSpace::InvalidateCodeRange — see
@@ -33,7 +35,7 @@ public:
     void PrepareForMultithreading();
 
 private:
-    explicit X86Instance(void* memory_base);
+    explicit X86Instance(void* memory_base, u64 guest_addr_mask);
 
     struct Impl;
     std::unique_ptr<Impl> impl{};

@@ -168,6 +168,13 @@ private:
     MemOperand BiasMem(const Register &base, bool atomic = false);
     MemOperand BiasMem(const Register &base, s64 imm, bool atomic = false);
 
+    // Bounded guest window (Config::guest_addr_mask): materializes the host
+    // address of a guest address into `dst` as (guest & mask) + pt. Used by
+    // the forms that need a single base register (exclusives, host calls).
+    // With a 32-bit window this is one instruction — the same Add the
+    // unbounded path emitted — because UXTW does the truncation for free.
+    void EmitGuestToHost(const Register &dst, const Register &guest_addr);
+
     // Host C-ABI call helper (saves/restores caller-saved allocated GPRs)
     void EmitHostCall(const ir::Lambda &lambda,
                       const std::vector<ir::DataClass> &args,
@@ -225,6 +232,14 @@ private:
     // True when Config::memory_base / page_table is set: every guest memory
     // access goes through the pt bias register (guest addr + pt = host addr).
     bool use_memory_base{false};
+    // Bounded guest window (Config::guest_addr_mask, 0 = disabled). Every
+    // guest address is truncated to `guest_addr_mask` before pt is added, so
+    // the access can only land inside the embedder's window reservation.
+    u64 guest_addr_mask{0};
+    // guest_addr_mask == 0xFFFFFFFF: the arm64 [Xn, Wm, UXTW] addressing mode
+    // computes pt + zext32(guest) in the *same* instruction the unbounded
+    // path already used, so a 32-bit window costs nothing.
+    bool window_uxtw{false};
     // TOP virtualization is deliberately a second opt-in layered on the
     // reduced x87 JIT. It stays default-off until host Unicorn qualification
     // has covered the new block/function paths.

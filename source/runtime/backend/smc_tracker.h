@@ -52,7 +52,8 @@ public:
 
     // guest_bias: guest->host address bias (host = guest + bias), from
     // Config::memory_base (0 = identity mapping).
-    explicit SmcTracker(u64 guest_bias);
+    // guest_addr_mask: bounded-guest-window mask (see Config), 0 = disabled.
+    explicit SmcTracker(u64 guest_bias, u64 guest_addr_mask = 0);
 
     // Called after a block/function is fully published. Every host page
     // overlapping [guest_start, guest_end) is write-protected and records the
@@ -168,6 +169,11 @@ private:
     void ReclaimRetired();
 
     const u64 bias_;
+    // Guest window mask; UINT64_MAX when the window is disabled. Every guest
+    // page is truncated with it before bias_ is added, so the write
+    // protection we install can only ever land inside the guest window --
+    // never on a host mapping (the translator's own __TEXT included).
+    const u64 mask_;
     const u64 page_size_;
     const u64 page_mask_;
     std::map<VAddr, PageRecord> pages_{};

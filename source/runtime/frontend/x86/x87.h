@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 #include "runtime/common/types.h"
 
 namespace swift::x86 {
@@ -118,6 +120,14 @@ constexpr u64 MakeX87Command(X87Action action,
            (static_cast<u64>(operation) << 24) |
            (static_cast<u64>(flags) << 32);
 }
+
+// Guest -> host pointer for helpers that dereference guest memory from host
+// code. Applies the bounded-guest-window mask (isolation: host memory is
+// unreachable) and, when the embedder installed one, its guest-mapping oracle
+// (availability: an unmapped address returns nullptr instead of faulting in an
+// unrecoverable host frame). Returns nullptr unless [address, address + size)
+// is fully backed. size must be <= the guest mapping granularity (16 KiB).
+u8* GuestPointer(u64 address, size_t size);
 
 u64 X87Dispatch(u64 context, u64 command, u64 guest_address);
 u64 X87Fxsave(u64 context, u64 guest_address);

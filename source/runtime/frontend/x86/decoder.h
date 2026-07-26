@@ -20,6 +20,16 @@ namespace swift::x86 {
 void SetGuestMemBias(u64 bias);
 [[nodiscard]] u64 GetGuestMemBias();
 
+// Bounded guest window (Config::guest_addr_mask). Host helpers truncate every
+// guest address with this mask before adding the bias, so a wild guest pointer
+// aliases inside the embedder's guest window instead of naming host memory.
+// UINT64_MAX (the default) = no window.
+void SetGuestAddrMask(u64 mask);
+[[nodiscard]] u64 GetGuestAddrMask();
+// Guest address -> host pointer for host-side helpers. The ONLY place the
+// frontend converts a guest address, so the truncation cannot be forgotten.
+[[nodiscard]] u8* GuestHostPtr(u64 guest_addr);
+
 // Memory ordering mode installed by the embedding translator (from
 // Config::tso_mode). AcqRel routes every guest memory access through the
 // ordering-enforcing IR ops; Relaxed/Hardware keep plain accesses (Hardware
