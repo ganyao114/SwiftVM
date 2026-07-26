@@ -317,3 +317,35 @@ INST(VecFRoundInt, Value, Value, Value, Imm, Imm, Imm)
 // force dead code.  The narrow widths do not use this -- an 8/16/32-bit high
 // half is already reachable by widening to 64 and shifting.
 INST(MulHigh, Value, Value, Value, Imm)
+
+// Materialize a condition as the integer 1 (true) or 0 (false).
+//
+// Reads the condition flags exactly the way CondSelect does -- same Cond
+// vocabulary, same implicit NZCV source -- so FlagsEliminationPass must keep
+// it in the same bucket as CondSelect, and both back ends must resolve it
+// against the same flag state.
+//
+// This exists as its own opcode rather than sugar over CondSelect because
+// "condition -> 0/1" is a single instruction on every back end that matters,
+// while the CondSelect spelling forces the front end to materialize two
+// constants first:  AArch64 has CSET, x86 has SETcc, RISC-V reaches it with
+// the SLT/SLTU family (and after a compare-into-register the value IS the
+// flag).  Nothing here is x86-shaped -- AArch64's CSET and ARM's IT/MOV pair
+// want exactly this, and any front end with a "flag as value" operation
+// (x86 SETcc, AArch64 CSET, ARM MRS+shift) lowers into it.
+//
+// The result is defined as exactly 0 or 1, not "any non-zero value", so a
+// front end may use it as an arithmetic operand.  Note what that is and is not
+// backed by today: a mutation that emitted CSETM (all ones) instead of CSET
+// survived the whole corpus -- swift_test in four configurations, 25 guest
+// e2e programs, and the AVX/isolation/malformed/helper-fault suites.  Every
+// current x86 consumer is truthiness-only (Jcc branches on non-zero, JA/JBE
+// compose with AND/OR where all-ones still works, and DecodeSetCC re-narrows
+// through Select(cond, 1, 0)).  The contract is therefore a promise to future
+// consumers, not a property any existing test pins.
+//
+// Measured motivation: the x86 front end reached every NZCV-shaped condition
+// through LoadImm(1) + LoadImm(0) + CondSelect, and LoadImm is the single
+// most numerous IR opcode in the corpus at 15.15%
+// (docs/ir-expansion-attribution.md 2).
+INST(CondSet, BOOL, Cond)

@@ -428,7 +428,7 @@ void JitContext::EmitRSBPush(u64 guest_return_addr, u32 dispatch_index) {
 }
 
 void JitContext::EmitRSBPop() {
-    Label rsb_miss;
+    Label rsb_miss, rsb_empty;
     // Underflow guard: if rsb_ptr has reached the empty top of the stack
     // (state->rsb_top == &rsb_frames[rsb_stack_size]), there are more guest
     // rets than recorded calls, so no valid prediction exists — fall back to
@@ -436,7 +436,7 @@ void JitContext::EmitRSBPop() {
     // and a wild branch). Unsigned compare: fall back when rsb_ptr >= top.
     __ Ldr(ip0, MemOperand(state, state_offset_rsb_top));
     __ Cmp(rsb_ptr, ip0);
-    __ B(&rsb_miss, hs);
+    __ B(&rsb_empty, hs);
     // Load the predicted guest return address from the top RSB frame.
     __ Ldr(ip0, MemOperand(rsb_ptr, 0));
     // Load the actual return target (set by the frontend's ret instruction).
@@ -453,8 +453,28 @@ void JitContext::EmitRSBPop() {
     // Commit the pop and jump directly to the target's compiled code.
     __ Add(rsb_ptr, rsb_ptr, 16);
     __ Br(ip2);
-    // Miss / underflow: fall back to the trampoline dispatcher.
+    // Miss with a frame present: DISCARD that frame before falling back.
+    //
+    // This ret consumes a return address either way, so leaving the frame in
+    // place desynchronises the buffer permanently: the very next ret compares
+    // against the same stale entry and misses again, while pushes keep
+    // stacking until rsb_ptr reaches rsb_bottom and every later push is
+    // skipped by the overflow guard.  Measured on HEAD (SVM_RSB_STATS
+    // instrumentation, docs/perf-baseline.md 6b): func_tests 3587 pops /
+    // 65 hits (1.81%), of which 3469 were address mismatches and *3463 of
+    // 3592 pushes were skipped because the buffer was full* — one unmatched
+    // guest call early in glibc startup wedged the buffer for the whole run.
+    // Popping here makes the buffer self-healing: an unmatched call costs at
+    // most the predictions of the rets that drain it.
+    //
+    // Discarding is unconditionally safe: the RSB is a prediction only.  The
+    // architectural return target lives in state->current_loc and the fallback
+    // below returns to the trampoline dispatcher, which uses it.  A wrong or
+    // missing prediction can only cost a dispatcher round-trip.
     __ Bind(&rsb_miss);
+    __ Add(rsb_ptr, rsb_ptr, 16);
+    // Underflow: no frame was read, so there is nothing to discard.
+    __ Bind(&rsb_empty);
     __ Ret();
 }
 

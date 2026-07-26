@@ -2617,4 +2617,17 @@ void Interpreter::RunMulHigh(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, high);
 }
 
+// Condition -> 0/1.  This is RunCondSelect with the two operands frozen at 1
+// and 0, and it must stay that way: EvalCondition is the single definition of
+// what each ir::Cond means for this back end, so routing CondSet through it is
+// what keeps the interpreter and EmitCondSet (CSET) from drifting apart.
+void Interpreter::RunCondSet(ir::Inst* inst, InterpStack& stack) {
+    // WriteScalar drops the store when the return type is VOID, and a Cond
+    // argument gives Inst::SetArg nothing to infer one from -- so a front end
+    // that forgets SetType would leave the condition reading as stack garbage
+    // here while the JIT kept working.  Assert rather than silently diverge.
+    ASSERT(inst->ReturnType() != ir::ValueType::VOID);
+    WriteScalar(stack, inst, EvalCondition(inst->GetArg<ir::Cond>(0)) ? 1 : 0);
+}
+
 }  // namespace swift::runtime::backend::interp

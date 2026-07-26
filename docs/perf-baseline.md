@@ -233,6 +233,8 @@ func_tests 5.1%、**x87_bench 90.8%**。
 | SSE NaN 修正改用 NEON | 未提交 | **`fp` 6.49×**（0.4094 → 0.0631 s） | `EmitVecFloatNaNFixup` 原本逐 lane 用 8 个 GPR 做位手术（f32 packed 约 160 条 host 指令）；改为 `Fcmeq`/`Bif`/`Bit` 一次算全部 lane，9–12 条、3 个 V 临时、0 个 GPR。发射字节：`vec_float_nan_pressure` −76.5%、`avx_real`（`SVM_AVX=1`）−44.8%、`fp` kernel −25.4% |
 | 直接 jmp/call 走 L2 分派槽 | 未提交 | **`call` −5.0%**（0.1908 → 0.1813 s） | 生成代码内 dispatcher 往返：`call` kernel **64 000 009 → 11**。代价是每个直接跳转出口多 3 条指令（`call` 发射字节 +1.8%） |
 | #2 后续：函数编译惰性化（`SVM_FUNC_LAZY`，默认 1 块/单元） | 未提交 | **`func_tests` 墙钟 −10.1%**（0.0386 → 0.0347 s，同次交错、rel MAD ≤1.5%）；**发射 host 字节 −30.3%**（344 000 → 239 920）；**编译的 guest 块 −29.7%**（1631 → 1147）；`call`/`int`/`branch`/`mem`/`fp` 持平 | 见下方「#2 后续」 |
+| §6b RSB 命中率 1.81% —— 根因已定位并修复 | 未提交 | **`func_tests` 命中率 1.81% → 94.70%**、`real_busy` 2.52% → 92.35%、`real_hello` 2.73% → 93.50%、`real_busy_musl` 46.28% → 62.81%；`bench call` 100.00% 不变。**墙钟测不出**（`call` +0.2%、`func_tests` +2.5%，均在 MAD 内） | 见下方「§6b 续：RSB 根因」。改动一条指令：pop 未命中时 `rsb_ptr += 16` |
+| §3.4 `CheckCond` 的 `LoadImm/LoadImm/CondSelect` → `CondSet` | 未提交 | **全语料 IR −2.08%**（146 830 → 143 783）、**发射 host 字节 −1.65%**（739 496 → 727 308）；`LoadImm` 条数 **−20.0%**（15 199 → 12 152）。**墙钟测不出**（8 个 workload 全在 MAD 内，宿主 loadavg 41–49） | 新增 `CondSet(Cond) -> 0/1` IR，ARM64 落 `CSET`、解释器落 `EvalCondition`。26 个程序的确定性计数，见下方「§3.4 续」 |
 
 两项都用「同一干净基座产出的两个二进制、同一次调用内交错、中位数」测得，
 所以结论不受宿主负载影响。#3 另有 25 个 guest e2e 程序的**退出码逐行比对**。
@@ -550,7 +552,96 @@ codegen 17% / opt 8% / **其余 26%**。
 `mklinuxelf.py` 造的 freestanding guest（全部塞进一个 PT_LOAD）。
 **候选 #4 应当降级**：真实语料上收益为零，而它是清单里正确性风险最高的一项。
 
+### 6c. §6b 续：RSB 根因（2026-07-27，基座 `8d8ddba`，插桩只在独立 worktree）
+
+§6b 的推测（「返回地址不是编译单元入口，L2 槽永远是空」）**只对了 1.5%**。把 pop 的
+未命中拆成三类（下溢 / 地址不符 / L2 槽为空）后，HEAD 上的实测是：
+
+| guest | pop | hit | 下溢 | **地址不符** | L2 槽空 | **push 因缓冲区满被跳过** |
+|---|---|---|---|---|---|---|
+| `func_tests` | 3587 | 65 (1.81%) | 0 | **3469** | 53 | **3463 / 3592** |
+| `real_busy` | 2616 | 66 (2.52%) | 0 | **2497** | 53 | **2491 / 2621** |
+| `real_hello` | 2383 | 65 (2.73%) | 0 | 2265 | 53 | 2259 / 2388 |
+| `func_tests_musl` | 1211 | 1152 (95.13%) | 0 | 24 | 35 | 0 |
+
+**真正的根因**：`EmitRSBPop` 的未命中路径 `Ret()` 回分派器时**不推进 `rsb_ptr`**，
+而这条 `ret` 已经消耗掉了一个返回地址。于是第一次「L2 槽为空」（返回目标还没编译，
+每个新区域必然发生一次）就把缓冲区永久失步：下一条 `ret` 与同一个陈旧帧比较、
+必然不符；push 一直堆叠到 `rsb_bottom`，此后**每一次 push 都被溢出保护跳过**。
+一次未匹配就够，整个进程再也恢复不了——`push_skipped_full` 占 96.4% 就是这个。
+musl 语料命中率高，只是因为它恰好没在早期踩到那一次。
+
+**修法**（`JitContext::EmitRSBPop`，一条 `Add`）：读到帧的两条未命中路径统一
+`rsb_ptr += 16` 丢弃该帧；下溢路径没读到帧，不动。丢弃**语义上无条件安全**——RSB 只是
+预测，体系结构上的返回目标始终在 `state->current_loc`，未命中就回分派器，错误预测
+最多损失一次分派往返。修后 `miss_addr` 在**全部 guest 上归零**，`push_skipped_full`
+归零，命中率见兑现表。
+
+**变异测试**：
+* 去掉 pop 的 L2 空槽保护（`Cbz(ip2, ...)`）→ 8 个 e2e guest 变成 139（SIGSEGV）。**被抓。**
+* 去掉地址比较（`B(&rsb_miss, ne)`）→ swift_test、25 个 e2e、helper-fault 全绿。**没被抓**，
+  而这**不是测试弱**：修好之后全语料 `miss_addr = 0`，即这批 guest 里根本不存在
+  真正的 call/ret 失配，比较永远成立。要抓它需要一个带 longjmp / 栈切换的 guest，
+  **语料里没有**。
+
+### 3.4 续：`CondSet`（2026-07-27，同一基座）
+
+`docs/ir-expansion-attribution.md` §3.4 指出 `CheckCond` 每次条件求值新建
+`LoadImm(1)/LoadImm(0)/CondSelect`。新增 `INST(CondSet, BOOL, Cond)`（ir.inc 末尾），
+ARM64 落一条 `CSET`，解释器落 `EvalCondition`。26 个程序的确定性计数
+（按 IR opcode 累加 `CurrentBufferSize()` 增量，插桩只在独立 worktree）：
+
+| | IR 条数 | 发射 host 字节 |
+|---|---|---|
+| `8d8ddba` | 146 830 | 739 496 |
+| +CondSet | **143 783（−2.08%）** | **727 308（−1.65%）** |
+
+逐 opcode：`CondSelect` 2767 → 0，`CondSet` 0 → 2767（字节相同，两者都是 1 条指令
+加同样的 NZCV 重载），`LoadImm` **15 199 → 12 152（−20.0%）**、其字节 −18.1%。
+墙钟与 `ir-expansion-attribution.md` 的结论一致：**测不出**。
+
+**踩到的真实缺陷（自己的）**：`Inst::SetArg(const Cond&)` 不推断返回类型，而 `CondSet`
+的唯一参数就是 `Cond`，所以 `ret_type` 停在 `VOID`。JIT 无事（RegAlloc 看的是 opcode
+的 meta 返回类型），但 `Interpreter::WriteScalar` 对 VOID **直接 return，什么都不写**——
+条件读到栈上的残留值。这正是「只做一个后端」那类分歧的镜像版本。
+`run_helper_fault_tests.sh` 的 `SVM_ENABLE_JIT=0` 形状抓到了它（38 → 37）。
+现在前端显式 `SetType(U8)`，两个后端都对 `VOID` 断言。
+
+**变异测试**：
+
+| 变异 | 结果 |
+|---|---|
+| `EmitCondSet` 条件取反 | swift_test 94 例中 **29 例失败**；几乎每个 e2e guest 退出码错。**被抓** |
+| 只把解释器 `RunCondSet` 取反（JIT 保持正确） | swift_test **23 处断言失败**、helper-fault 38 → 37；e2e 退出码不变（走 JIT）。**被抓**，且证明解释器侧真的被覆盖 |
+| `flags_elimination_pass` 里去掉 `case OpCode::CondSet` | `TEST_CASE("Fuzz x86 mixed sequences")` 的 Unicorn 差分出现 **8 处分歧**。**被抓**——那一行是承重的 |
+| `CSET` 改 `CSETM`（true 变全 1 而非 1） | swift_test 四配置、25 个 e2e、AVX/isolation/malformed/helper-fault **全绿**。**没被抓** |
+
+最后一条是个**已知覆盖缺口**，已写进 `ir.inc` 的注释：当前 x86 前端所有消费者都只判
+非零（Jcc 判非零；JA/JBE 用 AND/OR 组合，全 1 照样对；`DecodeSetCC` 又用
+`Select(cond,1,0)` 重新归一），所以「结果恰为 0/1」这条契约今天没有任何测试钉住它。
+
+### 6d. x87 内联的成本结构（只测量，未改动）
+
+`SVM_X87_JIT=1` 下 host/guest 仍是 151.7。按 IR opcode 拆开 `x87_bench` 的发射字节：
+
+| 配置 | 总发射字节 | 主导 opcode | 条数 | 该 opcode 字节 | 占比 | 字节/条 |
+|---|---|---|---|---|---|---|
+| 默认（SoftFloat） | 3040 | `CallLambda` | 22 | 2376 | 78.2% | **108** |
+| `SVM_X87_JIT=1` | 11 220 | `X87Op` | 22 | 10 692 | **95.3%** | **486** |
+
+即：`64a48d9` 把 helper 发射点从 376 字节压到 **108 字节**之后，**默认的 SoftFloat 路径
+在代码体积上已经比内联路径便宜 3.7 倍**（3040 vs 11 220），而内联路径换来的是约 1.9×
+的执行速度。下一轮要动 x87，靶子是明确的：**每个 `X87Op` 486 字节 ≈ 121 条 ARM64 指令**
+（`x87_midtier` 同量级：46 条 `X87Op` / 12 648 字节 = 275 字节/条）。本轮**没有改动**
+x87：`X87Op` 是全语料唯一需要 8 个临时 GPR 的 opcode，且 `x87.cpp` 与 `translator_x87.cpp`
+在最近三个提交里连续被改过，风险/收益比不如上面两项。
+
 ## 7. 本轮做的唯一非测量改动
 
 无。插桩全部在独立 worktree（`SVM_PROF`），主工作区只新增了
 `source/translator/linux/tests/bench_*` 与本文档。未 commit。
+
+（§6c / §3.4 续 / §6d 那一轮的改动是 6 个文件：`jit_context.cpp`、`ir.inc`、
+`translator_alu.cpp`、`interpreter.cpp`、`decoder.cc`、`flags_elimination_pass.cpp`；
+插桩同样只在独立 worktree，主工作区无残留——`git grep -n "emitstat\|svm_rsb_prof"`
+应无输出。未 commit。）
