@@ -9157,8 +9157,11 @@ TEST_CASE("x86 avx256 vs rosetta reference") {
             {  // register source: low dword of xmm1 (AVX2; distorm lacks it)
                 CodeBuf b;
                 vex_rr(b, 1, 2, 0x18, 0, kVexNoSrc1, 1);
+                // Decodes now: the register-source form is claimed by
+                // decoder_avx_fp.cc's second wave, so it is compared like
+                // everything else rather than exempted.
                 check(fmt::format("vbroadcastss.rr/{}", pname), b, ref.pair, 1, 0xFF, want,
-                      Where::Ymm0, Expect::KnownNotDecoded);
+                      Where::Ymm0);
             }
             {  // m32 source: the same dword, read from memory instead
                 CodeBuf b;
@@ -9197,7 +9200,10 @@ TEST_CASE("x86 avx256 vs rosetta reference") {
     // The register-source vbroadcastss is still declined once per block for all
     // six pairs; any movement there means distorm gained the AVX2 entry.
     CHECK(known_wrong_src == 0u);
-    CHECK(known_not_decoded == 6u);
+    // Pinned at zero: the register-source vbroadcastss that this used to
+    // exempt is implemented, so nothing here may be declined. Kept as an
+    // assertion so a reintroduced exemption cannot pass unnoticed.
+    CHECK(known_not_decoded == 0u);
 }
 
 }  // namespace

@@ -770,6 +770,27 @@ private:
     void DecodeAvxFpCvtPd2Ps(const VexInsn& v);
     void DecodeAvxFpMovmsk(const VexInsn& v, u32 lane_bits);
 
+    // ---- VEX floating point, second wave (decoder_avx_fp.cc) -------------
+    // DecodeAvxFp dispatches Base (the original 0F-map family) then Fp2. Both
+    // 128- and 256-bit forms of every opcode below are claimed here, so the
+    // "only L=1 implemented" asymmetry that made the VEX.128 twins fatal
+    // cannot recur.
+    bool DecodeAvxFpBase(const VexInsn& v);
+    bool DecodeAvxFp2(const VexInsn& v);
+    void VexWriteHalves(u32 index, ir::Value lo, ir::Value hi);
+    void DecodeAvxFpMovScalar(const VexInsn& v, u32 lane_bits, bool store);
+    void DecodeAvxFpMovLoHi(const VexInsn& v, bool high, bool store);
+    void DecodeAvxFpMovDDup(const VexInsn& v);
+    void DecodeAvxFpCvtScalarFloat(const VexInsn& v, u32 src_bits);
+    void DecodeAvxFpCvtSi2Scalar(const VexInsn& v, u32 dst_bits);
+    void DecodeAvxFpCvtScalar2Si(const VexInsn& v, u32 src_bits, bool truncate);
+    void DecodeAvxFpCvtWiden(const VexInsn& v, u32 kind);
+    void DecodeAvxFpCvtNarrow(const VexInsn& v, u32 kind);
+    void DecodeAvxFpByteShift(const VexInsn& v, bool left);
+    void DecodeAvxFpPTest(const VexInsn& v);
+    void DecodeAvxFpExtract(const VexInsn& v, u32 element_bits);
+    void DecodeAvxFpInsert(const VexInsn& v, u32 element_bits);
+
     // ---- VEX integer / data movement (decoder_avx_int.cc) ----------------
     // Same contract as DecodeAvxFp: returns false for anything unmodelled, and
     // every false return happens BEFORE any IR is emitted, so a decline never
