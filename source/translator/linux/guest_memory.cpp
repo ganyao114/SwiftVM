@@ -3,6 +3,7 @@
 //
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -82,9 +83,33 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
     ASSERT(guest_start % kHostPageSize == 0);
     ASSERT(bias_ == 0);  // the image reservation installs the bias; call once
     auto map_size = RoundHostPage(size);
-    auto* res = mmap(nullptr, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // Diagnostic fixed-stack repro: put the image at a stable high host hint,
+    // which makes guest+bias for the classic 0x7ff00000 stack independent of
+    // the executable/libSystem layout. mmap without MAP_FIXED remains
+    // non-clobbering; require the requested hint so SVM_FORCE_FIXED_STACK=1
+    // cannot silently fall back to the layout-sensitive path it is meant to
+    // eliminate.
+    constexpr VAddr kForcedImageHost = 0x20000000000;
+    const char* force_fixed_env = std::getenv("SVM_FORCE_FIXED_STACK");
+    const bool force_fixed =
+            force_fixed_env && std::strcmp(force_fixed_env, "1") == 0;
+    void* const hint =
+            force_fixed ? reinterpret_cast<void*>(kForcedImageHost) : nullptr;
+    auto* res = mmap(hint,
+                     map_size,
+                     PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS,
+                     -1,
+                     0);
     if (res == MAP_FAILED) {
         LOG_ERROR("GuestMemory: image reserve failed size {:#x} errno {}", map_size, errno);
+        return false;
+    }
+    if (force_fixed && res != hint) {
+        munmap(res, map_size);
+        LOG_ERROR("GuestMemory: forced image host hint {:#x} unavailable (got {})",
+                  kForcedImageHost,
+                  res);
         return false;
     }
     SetBias(reinterpret_cast<VAddr>(res) - guest_start);
