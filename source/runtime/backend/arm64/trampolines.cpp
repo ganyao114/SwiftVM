@@ -65,6 +65,16 @@ void TrampolinesArm64::Build() {
     gpr_regs.Mark(ip.GetCode());
     gpr_regs.Mark(atomic_scratch.GetCode());
     gpr_regs.Mark(atomic_pair_scratch.GetCode());
+    // vixl's MacroAssembler synthesizes un-encodable immediates and
+    // out-of-range memory offsets through UseScratchRegisterScope, whose
+    // default pool is tmp_list_ = {x16, x17} (macro-assembler-aarch64.cc).
+    // Those writes are invisible to this allocator, so a guest value the
+    // linear scan parked in x16/x17 is destroyed with no diagnostic. The
+    // per-emitter context.ReserveTmpX(ip0/ip1) mitigation only removes them
+    // from GetTmpX handouts — it cannot protect an allocator assignment —
+    // so reserving them here is the only complete fix.
+    gpr_regs.Mark(ip0.GetCode());
+    gpr_regs.Mark(ip1.GetCode());
 
     // FPR registers can use
     fpr_regs.Reset(0);

@@ -71,7 +71,14 @@ void JitTranslator::SaveLogicalResultFlags(Register& result,
         default:
             PANIC();
     }
-    __ Bics(ip, ip, 0);
+    // NZ from the sign-extended result, with C/V cleared — the x86 logical-op
+    // flag shape. Must NOT be spelled `Bics(ip, ip, 0)`: vixl inverts a BIC
+    // immediate, and the resulting all-ones is not a legal logical immediate,
+    // so LogicalMacro synthesizes it through UseScratchRegisterScope and
+    // silently clobbers x16 (vixl's tmp_list_ is {x16, x17}, which this
+    // backend does not reserve from the register allocator). Tst is the
+    // register form of ANDS and yields the identical NZCV with no scratch.
+    __ Tst(ip, ip);
     MergeLogicalFlagsNZ(pseudo.set);
     if (True(pseudo.set & ir::Flags::Parity)) {
         SaveParity(result);
@@ -166,7 +173,9 @@ void JitTranslator::SaveNZ(Register& value, ir::ValueType type) {
         default:
             PANIC();
     }
-    __ Bics(ip, ip, 0);
+    // Same reasoning as SaveLogicalResultFlags: Tst avoids the vixl x16
+    // scratch that `Bics(ip, ip, 0)` would take.
+    __ Tst(ip, ip);
     if (save_in_nzcv) {
         nzcv_dirty = true;
     } else {
