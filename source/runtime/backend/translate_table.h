@@ -168,6 +168,44 @@ public:
         return false;
     }
 
+    // --- JIT disk cache / AOT support -------------------------------------
+    // A slot index is not a function of the key alone: colliding keys probe
+    // forward, so which slot a key ends up in depends on insertion order. The
+    // JIT dispatch indices baked into generated code are slot indices, so a
+    // deserialized code unit is only valid if the table reproduces the exact
+    // assignment its immediates were emitted against. PutAt installs one
+    // recorded (index, key) pair with a zero value (the code pointer is filled
+    // later by Put/PushCodeCache); ForEachEntry snapshots the assignment.
+    //
+    // PutAt returns false when `index` is already claimed by a different key,
+    // which the caller must treat as "this whole cache file is unusable" --
+    // a mis-assigned slot is a wild branch, not a miss.
+    bool PutAt(u32 index, size_t key) {
+        if (key == 0 || index >= size - 1) {
+            return false;
+        }
+        std::unique_lock<TableLock> guard(lock);
+        if (entries[index].key == key) {
+            return true;
+        }
+        if (entries[index].key != 0) {
+            return false;
+        }
+        entries[index].value = 0;
+        std::atomic_thread_fence(std::memory_order_release);
+        entries[index].key = key;
+        return true;
+    }
+
+    template <typename Fn> void ForEachEntry(Fn&& fn) {
+        std::shared_lock<TableLock> guard(lock);
+        for (u32 index = 0; index < size - 1; ++index) {
+            if (entries[index].key != 0) {
+                fn(index, entries[index].key, entries[index].value);
+            }
+        }
+    }
+
     void Clear() { std::memset(entries.data(), 0, entries.size() * sizeof(TranslateEntry)); }
 
     void Reset() {
