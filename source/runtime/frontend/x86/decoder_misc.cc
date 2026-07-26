@@ -96,9 +96,15 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     // missing -- so AVX is reported only when BOTH gates are on. SVM_XSAVE
     // alone still reports XSAVE/OSXSAVE, which is coherent on its own.
     const bool avx_reported = AvxEnabled() && XsaveEnabled();
+    // FMA (ECX.12) rides on the same condition as AVX and not on one of its
+    // own: the FMA3 handler is dispatched from inside the `avx_on` group of the
+    // VEX chain in decoder.cc, so it is reachable in exactly the cases AVX is
+    // reported.  All 60 mnemonics are implemented at both VEX.L, so the bit
+    // does not over-promise.  (The bit is architecturally meaningless without
+    // AVX anyway -- FMA3 has no non-VEX encoding.)
     const u32 leaf1_ecx = kLeaf1Ecx |
                           (XsaveEnabled() ? ((1u << 26) | (1u << 27)) : 0u) |
-                          (avx_reported ? (1u << 28) : 0u);      // AVX
+                          (avx_reported ? ((1u << 28) | (1u << 12)) : 0u);  // AVX, FMA
     // BMI1 (bit 3) and BMI2 (bit 8) follow SVM_BMI. They are deliberately
     // independent of AVX: glibc's string ifuncs require AVX2 *and* BMI2
     // together, so advertising BMI2 without the AVX2 implementation being
