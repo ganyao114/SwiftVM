@@ -6,6 +6,7 @@
 
 #include <map>
 #include <mutex>
+#include "runtime/backend/jit_cache.h"
 #include "runtime/backend/module.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/backend/translate_table.h"
@@ -65,6 +66,11 @@ public:
     // GetCodeCache; the JIT dispatcher reads it directly from generated code.
     [[nodiscard]] TranslateTable& GetCodeCacheTable() { return code_cache; }
 
+    // JIT disk cache (SVM_JIT_CACHE=<dir>, off by default). Null when the
+    // switch is unset or the environment cannot support it; every caller must
+    // handle null by simply compiling as usual.
+    [[nodiscard]] JitDiskCache* GetJitDiskCache() const { return jit_disk_cache.get(); }
+
     [[nodiscard]] Trampolines &GetTrampolines();
     [[nodiscard]] Trampolines &GetTrampolines() const;
 
@@ -87,6 +93,7 @@ private:
     // signal-handler / const-access paths (same pattern as GetTrampolines).
     mutable SmcTracker smc_tracker;
     std::unique_ptr<ir::UniformInfo> uniform_info{};
+    std::unique_ptr<JitDiskCache> jit_disk_cache{};
 };
 
 }  // namespace swift::runtime::backend
