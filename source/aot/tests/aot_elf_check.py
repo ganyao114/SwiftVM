@@ -147,7 +147,11 @@ def main():
     check(code is not None, "missing .svmaot.text")
     info = a.section(".svmaot.info")
     check(info is not None, "missing .svmaot.info")
-    funcs = [s for s in syms if s["type"] == 2]
+    # STT_FUNC (2) and STT_GNU_IFUNC (10). The ifuncs are not optional: their
+    # st_value is a resolver, i.e. real code, and if the writer left them alone
+    # the artifact would carry 37 original x86-64 addresses in an AArch64
+    # object. Checking them here is what makes "leave them alone" a failure.
+    funcs = [s for s in syms if s["type"] in (2, 10)]
     for s in syms:
         check(s["name_ok"], f"symbol {s['name']!r} st_name out of range")
         check(s["shndx"] < a.e_shnum or s["shndx"] >= SHN_LORESERVE,
@@ -223,9 +227,19 @@ def main():
         check(not moved_objects,
               f"{len(moved_objects)} STT_OBJECT symbols moved (data must not move)")
         gfuncs = [s for s in gsyms if s["type"] == 2]
+        gifuncs = [s for s in gsyms if s["type"] == 10]
+        # An ifunc that still holds its guest st_value is an x86-64 address in
+        # an AArch64 object: the symbol table would be lying about where the
+        # code is, and a host resolving `strlen` by name would jump into guest
+        # data. Assert every one of them moved into the code section.
+        stale = [x["name"] for x, y in zip(gsyms, asyms)
+                 if x["type"] == 10 and y["value"] == x["value"]]
+        check(not stale,
+              f"{len(stale)} STT_GNU_IFUNC symbols kept their guest st_value "
+              f"(first: {stale[0] if stale else ''})")
         print(f"  symtab: {len(gsyms)} symbols preserved, {len(gfuncs)} STT_FUNC "
-              f"redirected, {len([s for s in gsyms if s['type'] == 1])} STT_OBJECT "
-              f"untouched")
+              f"+ {len(gifuncs)} STT_GNU_IFUNC redirected, "
+              f"{len([s for s in gsyms if s['type'] == 1])} STT_OBJECT untouched")
 
         # .svmaot.segN vs the guest PT_LOADs
         gloads = [p for p in g.phs if p["type"] == 1]

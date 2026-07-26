@@ -448,7 +448,12 @@ bool JitGuestEnv::HandleSyscall() {
 // ---------------------------------------------------------------------------
 // Startup: build the Linux initial stack and run until `stop_symbol`.
 // ---------------------------------------------------------------------------
-bool JitGuestEnv::RunStartupUntil(const std::string& stop_symbol, std::string& error) {
+runtime::backend::AddressSpace* JitGuestEnv::AddressSpace() const {
+    return instance_ != nullptr ? instance_->GetAddressSpace() : nullptr;
+}
+
+bool JitGuestEnv::RunStartupUntil(const std::string& stop_symbol, std::string& error,
+                                  bool patch_stop) {
     auto it = image_.functions.find(stop_symbol);
     if (it == image_.functions.end()) {
         error = "no symbol named " + stop_symbol;
@@ -459,7 +464,15 @@ bool JitGuestEnv::RunStartupUntil(const std::string& stop_symbol, std::string& e
     // Patch the first byte of the stop symbol with `hlt`.  Done before any
     // translation so the SMC tracker has nothing to invalidate; deliberately
     // never restored (see the header).
-    *static_cast<std::uint8_t*>(space_.ToHost(stop)) = 0xF4;
+    if (patch_stop) {
+        *static_cast<std::uint8_t*>(space_.ToHost(stop)) = 0xF4;
+    } else if (*static_cast<const std::uint8_t*>(space_.ToHost(stop)) != 0xF4) {
+        // "Already patched" must be a fact, not an assumption: without this the
+        // guest would run past `main` into a full program run and the failure
+        // would surface far away from its cause.
+        error = "the loaded image is not pre-patched at " + stop_symbol;
+        return false;
+    }
 
     // --- initial stack: argc, argv, envp, auxv ------------------------------
     std::uint64_t sp = layout_.main_stack_top - 4096;

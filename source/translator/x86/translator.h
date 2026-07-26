@@ -63,6 +63,20 @@ public:
     // it. Never null.
     swift::runtime::backend::AddressSpace* GetAddressSpace();
 
+    // Whole-function decoding for one offline pass, independent of
+    // SVM_FUNC_LAZY. AOT knobs must be command-line flags: ComputeEnvHash()
+    // hashes every raw SVM_*/SWIFT_* string, so setting SVM_FUNC_LAZY=0 in the
+    // compiler's environment would produce an artifact that only loads in a
+    // process that also sets it. Passing the budget in-process keeps the
+    // artifact loadable under the default environment.
+    // 0 = follow SVM_FUNC_LAZY (the default).
+    void SetFunctionDecodeBudget(std::size_t blocks);
+
+    // Every location Impl::Translate compiles is reported to `fn` *before* the
+    // compile. Used by `svm_aot run --dump-compiles` to census what the JIT
+    // still has to do at run time when an artifact is installed; null clears.
+    void SetCompileObserver(void (*fn)(void*, uint64_t), void* ctx);
+
 private:
     explicit X86Instance(void* memory_base, u64 guest_addr_mask);
 

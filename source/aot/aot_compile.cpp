@@ -73,7 +73,7 @@ bool DiscoverFunctions(const std::string& guest_elf_path,
         if (!syms.get_symbol(i, name, value, size, bind, type, shndx, other)) {
             continue;
         }
-        if (type != STT_FUNC || shndx == SHN_UNDEF || shndx >= SHN_LORESERVE) {
+        if (!IsCompilableFuncType(type) || shndx == SHN_UNDEF || shndx >= SHN_LORESERVE) {
             continue;
         }
         raw.push_back({value, size, shndx, name});
@@ -187,6 +187,9 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
     auto* instance = translator::x86::X86Instance::Make(
             reinterpret_cast<void*>(guest.memory.GetBias()),
             guest.memory.Windowed() ? guest.memory.Mask() : 0);
+    if (options.decode_budget != 0) {
+        instance->SetFunctionDecodeBudget(options.decode_budget);
+    }
     auto* address_space = instance->GetAddressSpace();
     const auto& config = address_space->GetConfig();
     const auto& host_image = backend::GetHostImage();
@@ -213,7 +216,8 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
                     unsigned char bind{}, type{}, other{};
                     Elf_Half shndx{};
                     if (syms.get_symbol(k, name, value, size, bind, type, shndx, other) &&
-                        type == STT_FUNC && shndx != SHN_UNDEF && shndx < SHN_LORESERVE) {
+                        IsCompilableFuncType(type) && shndx != SHN_UNDEF &&
+                        shndx < SHN_LORESERVE) {
                         stats.symbols_seen++;
                     }
                 }
@@ -238,14 +242,17 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         });
     };
 
+    // Successor addresses the decoder published but no unit covers. Filled
+    // while harvesting each unit's blocks; drained by the --sweep rounds.
+    std::set<u64> pending_successors;
+
     u32 attempted = 0;
-    for (const auto& c : candidates) {
-        if (options.max_functions != 0 && attempted >= options.max_functions) {
-            break;
-        }
-        ++attempted;
+    // One entry address through the ordinary function-mode path. Returns true
+    // when a unit was added.
+    auto compile_one = [&](u64 addr, const std::string& name) -> bool {
+        const FuncCandidate c{addr, 0, 0, false, name};
         if (units.count(c.addr)) {
-            continue;
+            return false;
         }
         void* entry = nullptr;
         try {
@@ -263,10 +270,10 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
             if (options.verbose) {
                 fmt::print(stderr, "[aot] {:#x} {}: translate failed\n", c.addr, c.name);
             }
-            continue;
+            return false;
         }
         if (already_claimed(static_cast<const u8*>(entry))) {
-            continue;
+            return false;
         }
 
         auto module = address_space->GetModule(c.addr);
@@ -280,13 +287,13 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         if (!module->LookupFault(static_cast<const u8*>(entry), fault) ||
             fault.host_start != static_cast<const u8*>(entry)) {
             stats.fail_block_mode++;
-            continue;
+            return false;
         }
         const auto* code = static_cast<const u8*>(fault.host_start);
         const auto code_size = static_cast<u32>(fault.host_end - fault.host_start);
         if (code_size == 0 || code_size % 4 != 0) {
             stats.fail_block_mode++;
-            continue;
+            return false;
         }
 
         auto scan = backend::ScanCodeUnit({code, code_size}, host_image, window);
@@ -296,7 +303,7 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
                 fmt::print(stderr, "[aot] {:#x} {}: scan refused ({})\n", c.addr, c.name,
                            scan.reject_reason);
             }
-            continue;
+            return false;
         }
 
         AotUnit unit{};
@@ -309,12 +316,23 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         // fallback owns exactly one.
         bool blocks_ok = true;
         auto add_block = [&](u64 bs, u64 be) {
+            auto* block_entry =
+                    static_cast<const u8*>(address_space->GetCodeCache(ir::Location{bs}));
+            if (!block_entry) {
+                // A successor the function-mode decode named but did not
+                // decode (the lazy budget stopped short, or the block cap did).
+                // It is a *statically known* direct edge, not a guess, so it is
+                // a legitimate sweep candidate; an indirect target still never
+                // appears here and still lands in the dispatcher.
+                if (ir::Location{bs}.Valid() && guest.memory.RangeIsMapped(bs, 1)) {
+                    pending_successors.insert(bs);
+                }
+                return;
+            }
             if (be <= bs) {
                 return;
             }
-            auto* block_entry =
-                    static_cast<const u8*>(address_space->GetCodeCache(ir::Location{bs}));
-            if (!block_entry || block_entry < code || block_entry >= code + code_size) {
+            if (block_entry < code || block_entry >= code + code_size) {
                 return;  // published by another unit (shared tail, alias)
             }
             SerialBlock sb{};
@@ -342,12 +360,12 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
             add_block(block->GetStartLocation().Value(), block->GetEndLocation().Value());
         } else {
             stats.fail_block_mode++;
-            continue;
+            return false;
         }
 
         if (!blocks_ok || unit.blocks.empty()) {
             stats.fail_guest_hash++;
-            continue;
+            return false;
         }
         std::sort(unit.blocks.begin(), unit.blocks.end(), [](const auto& a, const auto& b) {
             return a.guest_start < b.guest_start;
@@ -357,6 +375,66 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         unit_bytes_index[c.addr] = unit_bytes.size();
         unit_bytes.emplace_back(code, code + code_size);
         units.emplace(c.addr, std::move(unit));
+        return true;
+    };
+
+    for (const auto& c : candidates) {
+        if (options.max_functions != 0 && attempted >= options.max_functions) {
+            break;
+        }
+        ++attempted;
+        compile_one(c.addr, c.name);
+    }
+
+    // --- successor sweep --------------------------------------------------
+    // Everything here was published as a direct successor by the *same*
+    // decoder the JIT uses. The sweep never enumerates an indirect jump's
+    // targets -- docs/aot-design.md §3 forbids that, and the decoder does not
+    // even offer them -- so an address it cannot reach still goes through the
+    // L2 dispatcher exactly as before. The only thing at stake is how much
+    // work is left for run time.
+    if (options.sweep && options.max_functions == 0) {
+        // A round can uncover new successors; stop when a round adds nothing.
+        for (u32 round = 0; round < 32; ++round) {
+            // Second candidate source: the L2 dispatch table. A slot exists
+            // only because the *emitter* reserved one, and it reserves one for
+            // exactly two things: a block the decoder published, and the
+            // return address of a `call` (JitTranslator::EmitPushRSB, which
+            // takes the slot only for a Lambda(Imm) target and skips a dynamic
+            // one). Return sites are the dominant gap -- I_CALL lowers to
+            // PushRSB + an unconditional jump to the callee, so the block
+            // *after* a call is not a CFG successor of the caller and whole-
+            // function decoding never reaches it. Both sources are addresses
+            // the decoder named from an immediate; an indirect jump's target
+            // set appears in neither, so it still goes to the dispatcher.
+            address_space->GetCodeCacheTable().ForEachEntry(
+                    [&](u32, std::size_t key, std::size_t value) {
+                        if (value == 0) {
+                            pending_successors.insert(static_cast<u64>(key));
+                        }
+                    });
+            std::set<u64> todo;
+            todo.swap(pending_successors);
+            for (const auto& u : units) {
+                todo.erase(u.first);
+            }
+            if (todo.empty()) {
+                break;
+            }
+            stats.sweep_rounds = round + 1;
+            u32 added = 0;
+            for (u64 addr : todo) {
+                stats.sweep_addrs++;
+                if (address_space->GetCodeCache(ir::Location{addr})) {
+                    continue;  // an earlier unit in this round already covers it
+                }
+                added += compile_one(addr, "") ? 1 : 0;
+            }
+            stats.sweep_units += added;
+            if (added == 0) {
+                break;
+            }
+        }
     }
     stats.addrs_attempted = attempted;
 

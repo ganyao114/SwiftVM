@@ -43,8 +43,10 @@ bool InterpRangeCheckThunk(void* ctx, u64 addr, u64 size) {
 int Usage() {
     std::fprintf(stderr,
                  "usage:\n"
-                 "  svm_aot compile <guest.elf> -o <artifact> [--verbose] [--max N]\n"
-                 "  svm_aot run [--aot <artifact>] [--guest <guest.elf>] [-- <args...>]\n"
+                 "  svm_aot compile <guest.elf> -o <artifact>\n"
+                 "        [--verbose] [--max N] [--eager|--decode-budget N] [--sweep]\n"
+                 "  svm_aot run [--aot <artifact>] [--guest <guest.elf>]\n"
+                 "        [--stats] [--dump-compiles <file>] [-- <args...>]\n"
                  "  svm_aot info <artifact>\n");
     return 2;
 }
@@ -52,11 +54,24 @@ int Usage() {
 // --------------------------------------------------------------------------
 // run
 // --------------------------------------------------------------------------
+// `--dump-compiles`: every guest address the JIT still had to translate while
+// the guest ran. With an artifact installed this is exactly the set AOT did
+// *not* cover, which is the only honest way to measure "does the artifact
+// replace run-time JIT".  A command-line flag rather than an SVM_* variable,
+// for the reason in CmdRun below.
+std::vector<u64>* g_compile_log = nullptr;
+void CompileObserver(void*, u64 pc) {
+    if (g_compile_log) {
+        g_compile_log->push_back(pc);
+    }
+}
+
 int RunGuest(aot::GuestImage& guest,
              const std::vector<std::string>& args,
              const std::string& artifact_path,
              const aot::AotImage* artifact,
-             bool print_stats) {
+             bool print_stats,
+             const std::string& dump_compiles) {
     const VAddr guest_sp = linux::SetupInitialStack(
             guest.memory, guest.image, args, {"PATH=/usr/bin:/bin", "HOME=/root"});
 
@@ -64,6 +79,12 @@ int RunGuest(aot::GuestImage& guest,
             reinterpret_cast<void*>(guest.memory.GetBias()),
             guest.memory.Windowed() ? guest.memory.Mask() : 0);
     instance->SetInterpRangeCheck(InterpRangeCheckThunk, &guest.memory);
+
+    std::vector<u64> compile_log;
+    if (!dump_compiles.empty()) {
+        g_compile_log = &compile_log;
+        instance->SetCompileObserver(CompileObserver, nullptr);
+    }
 
     if (artifact) {
         SwiftAotRuntime rt{};
@@ -138,6 +159,17 @@ int RunGuest(aot::GuestImage& guest,
             break;
         }
     }
+    if (!dump_compiles.empty()) {
+        instance->SetCompileObserver(nullptr, nullptr);
+        g_compile_log = nullptr;
+        if (FILE* f = std::fopen(dump_compiles.c_str(), "w")) {
+            for (const u64 pc : compile_log) {
+                std::fprintf(f, "%llx\n", static_cast<unsigned long long>(pc));
+            }
+            std::fclose(f);
+        }
+        std::fprintf(stderr, "[aot] run-time translations: %zu\n", compile_log.size());
+    }
     translator::x86::X86Core::Destroy(core);
     translator::x86::X86Instance::Destroy(instance);
     return exit_code;
@@ -152,6 +184,7 @@ int CmdRun(int argc, char** argv) {
     // value, so an `SVM_AOT_STATS=1` would change the validity key and reject
     // the artifact it was meant to describe.
     bool print_stats = false;
+    std::string dump_compiles;
     int i = 2;
     for (; i < argc; ++i) {
         const std::string a = argv[i];
@@ -161,6 +194,8 @@ int CmdRun(int argc, char** argv) {
             guest_path = argv[++i];
         } else if (a == "--stats") {
             print_stats = true;
+        } else if (a == "--dump-compiles" && i + 1 < argc) {
+            dump_compiles = argv[++i];
         } else if (a == "--") {
             ++i;
             break;
@@ -214,7 +249,7 @@ int CmdRun(int argc, char** argv) {
     if (guest_args.empty()) {
         guest_args.push_back(guest.image.path);
     }
-    return RunGuest(guest, guest_args, artifact_path, artifact_ptr, print_stats);
+    return RunGuest(guest, guest_args, artifact_path, artifact_ptr, print_stats, dump_compiles);
 }
 
 // --------------------------------------------------------------------------
@@ -230,6 +265,16 @@ int CmdCompile(int argc, char** argv) {
             options.verbose = true;
         } else if (a == "--max" && i + 1 < argc) {
             options.max_functions = static_cast<u32>(std::strtoul(argv[++i], nullptr, 0));
+        } else if (a == "--eager") {
+            // Whole-function decoding (the pre-c0b5861 default). A flag, not
+            // SVM_FUNC_LAZY=0: the validity key hashes raw SVM_* strings, so
+            // the env-var route would yield an artifact that only loads in a
+            // process that exports the same variable.
+            options.decode_budget = 128;
+        } else if (a == "--decode-budget" && i + 1 < argc) {
+            options.decode_budget = static_cast<u32>(std::strtoul(argv[++i], nullptr, 0));
+        } else if (a == "--sweep") {
+            options.sweep = true;
         } else if (options.guest_elf.empty()) {
             options.guest_elf = a;
         } else {
@@ -255,6 +300,10 @@ int CmdCompile(int argc, char** argv) {
                 stats.fail_translate, stats.fail_block_mode, stats.fail_scan,
                 stats.fail_guest_hash);
     std::printf("[aot]   symbols -> failure stub: %u\n", stats.symbols_stubbed);
+    if (options.sweep) {
+        std::printf("[aot]   successor sweep        : %u rounds, %u addresses, %u units\n",
+                    stats.sweep_rounds, stats.sweep_addrs, stats.sweep_units);
+    }
     return 0;
 }
 

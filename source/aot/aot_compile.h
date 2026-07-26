@@ -23,6 +23,20 @@ struct CompileOptions {
     // Stop after this many entry addresses (0 = all). Used by the tests to
     // exercise the minimal one-function loop cheaply.
     u32 max_functions{};
+    // Blocks decoded per function unit. 0 follows the process default, which
+    // since c0b5861 is SVM_FUNC_LAZY=1 -- one block per unit, i.e. an artifact
+    // that only covers *entry* blocks. `--eager` raises it, which is a
+    // command-line flag and not an environment variable on purpose: the
+    // validity key hashes every raw SVM_* string, so exporting SVM_FUNC_LAZY=0
+    // to widen coverage would produce an artifact that is rejected under the
+    // default environment.
+    u32 decode_budget{};
+    // Second pass: re-run discovery over the addresses the first pass left as
+    // successor edges and compile those too (see kAotSweepRounds). Never
+    // invents targets -- it only compiles addresses the *decoder* published as
+    // real successors, so an address that is not statically known still ends
+    // up in the dispatcher.
+    bool sweep{};
 };
 
 // Discovered guest function, before compilation.
