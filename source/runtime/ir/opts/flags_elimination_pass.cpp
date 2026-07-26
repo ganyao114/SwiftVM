@@ -27,7 +27,7 @@
 
 namespace swift::runtime::ir {
 
-void FlagsEliminationPass::Run(Block* block) {
+void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
     auto& inst_list = block->GetInstList();
 
     // Adc/Sbb read the carry written by the preceding guest instruction.
@@ -155,8 +155,12 @@ void FlagsEliminationPass::Run(Block* block) {
     }
 
     for (auto* victim : victims) {
-        inst_list.erase(inst_list.iterator_to(*victim));
-        delete victim;
+        if (hir_function) {
+            hir_function->EraseInst(block, victim);
+        } else {
+            inst_list.erase(inst_list.iterator_to(*victim));
+            delete victim;
+        }
     }
 
     if (std::getenv("SVM_DUMP_IR") &&
@@ -181,7 +185,7 @@ void FlagsEliminationPass::Run(HIRBuilder* hir_builder) {
 
 void FlagsEliminationPass::Run(HIRFunction* hir_function) {
     for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
-        Run(hir_block.GetBlock());
+        Run(hir_block.GetBlock(), hir_function);
     }
 }
 

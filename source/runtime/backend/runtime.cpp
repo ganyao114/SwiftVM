@@ -444,6 +444,13 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
                                       ? &address_space.GetUniformInfo() : nullptr;
     auto pipeline = ir::PassPipeline::BuildDefault(uni_info);
     pipeline.RunFunction(function, module->GetModuleConfig().optimizations);
+    // The function passes delete instructions (flag elimination, then dead-code
+    // elimination), which punches holes in the numbering established above.
+    // RegisterAllocPass indexes its interval table by instruction id and sizes
+    // it from MaxInstrCount(), so the ids must be dense in emission order
+    // again before allocation. This is the function-mode counterpart of
+    // PassPipeline::RunBlock's trailing Block::ReIdInstr().
+    function->IdByRPO();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} opts-ready\n", func_start);
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     const bool reserve_x87_topvirt =

@@ -8,7 +8,7 @@
 
 namespace swift::runtime::ir {
 
-void DeadCodeEliminationPass::Run(Block* block) {
+void DeadCodeEliminationPass::Run(Block* block, HIRFunction* hir_function) {
     auto& inst_list = block->GetInstList();
     // Iterate to a fixpoint: removing an instruction can kill the last use of
     // an EARLIER def (e.g. once FlagEliminationPass drops a dead SaveFlags,
@@ -21,8 +21,15 @@ void DeadCodeEliminationPass::Run(Block* block) {
         for (auto it = inst_list.begin(); it != inst_list.end();) {
             auto pre = it;
             if (!it->HasSideEffects()) {
-                it = inst_list.erase(it);
-                delete pre.operator->();
+                if (hir_function) {
+                    // EraseInst unlinks from inst_list itself; step past the
+                    // victim before it is freed.
+                    ++it;
+                    hir_function->EraseInst(block, pre.operator->());
+                } else {
+                    it = inst_list.erase(it);
+                    delete pre.operator->();
+                }
                 changed = true;
             } else {
                 ++it;
@@ -39,7 +46,7 @@ void DeadCodeEliminationPass::Run(HIRBuilder* hir_builder) {
 
 void DeadCodeEliminationPass::Run(HIRFunction* hir_function) {
     for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
-        Run(hir_block.GetBlock());
+        Run(hir_block.GetBlock(), hir_function);
     }
 }
 
