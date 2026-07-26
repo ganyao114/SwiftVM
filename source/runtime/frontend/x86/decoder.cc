@@ -195,6 +195,11 @@ X64Decoder::X64Decoder(VAddr start,
     addr_mask = is_64bit ? UINT64_MAX : UINT32_MAX;
 }
 
+// x86-64's architectural maximum instruction length. Bounds every raw-byte
+// read on the VEX path so a decode at the very end of a mapped page cannot run
+// past it.
+static constexpr size_t kMaxInsnBytes = 15;
+
 void X64Decoder::Decode() {
     pc = start;
     while (!end_decode) {
@@ -232,6 +237,31 @@ void X64Decoder::Decode() {
             assembler->AdvancePC(ir::Imm{5});
             end_decode = assembler->EndCommit();
             continue;
+        }
+        // VEX (AVX/AVX2). This distorm snapshot cannot carry AVX: of 117 probed
+        // encodings, 40 come back I_UNDEFINED and another 38 silently drop
+        // VEX.L, reporting a 256-bit encoding as 128-bit XMM operands. So VEX
+        // instructions are decoded from the raw bytes here (vex_decoder.h)
+        // rather than handed to distorm.
+        //
+        // Families still living on the legacy distorm path fall through: when a
+        // handler declines, pc is restored and the normal decode runs exactly as
+        // before. That keeps this migration incremental instead of a flag day.
+        if (AvxEnabled() && HasVexPrefix(code_ptr, kMaxInsnBytes)) {
+            const auto vex = DecodeVexInsn(code_ptr, kMaxInsnBytes);
+            if (vex.valid) {
+                const auto saved_pc = pc;
+                // Handlers resolve RIP-relative operands against the END of the
+                // instruction, matching GetAddress's convention, so advance
+                // first and restore only if nobody claims it.
+                pc += vex.length;
+                if (DecodeAvxFp(vex)) {
+                    assembler->AdvancePC(ir::Imm{vex.length});
+                    end_decode = assembler->EndCommit();
+                    continue;
+                }
+                pc = saved_pc;
+            }
         }
         // distorm reports DF C0+i (FFREEP ST(i)) as an undefined one-byte
         // instruction. Decode it here so the architectural free+pop operation
