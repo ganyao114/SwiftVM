@@ -33,7 +33,7 @@ class UniformEliminationPass {
 public:
     static void Run(HIRBuilder *hir_builder, const UniformInfo &info, bool to_regs);
     static void Run(HIRFunction *hir_function, const UniformInfo &info, bool to_regs);
-    static void Run(Block *block, const UniformInfo &config);
+    static void Run(Block *block, const UniformInfo &config, HIRFunction *hir_function = nullptr);
 };
 
 }  // namespace swift::runtime::ir

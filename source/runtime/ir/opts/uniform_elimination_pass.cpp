@@ -4,6 +4,8 @@
 
 #include "uniform_elimination_pass.h"
 
+#include <cstring>
+
 namespace swift::runtime::ir {
 
 struct UniformValue {
@@ -15,7 +17,184 @@ struct UniformValue {
     }
 };
 
-void UniformEliminationPass::Run(Block* block, const UniformInfo &info) {
+// --- dead uniform store elimination ----------------------------------------
+//
+// The forward pass above forwards uniform *loads*; nothing removed a uniform
+// *store* whose bytes are overwritten again before anybody reads them.  The x86
+// front end emits such stores constantly: every flag-setting arithmetic
+// instruction writes the carry-polarity byte (decoder.cc StorePolarity ->
+// LoadImm + StoreUniform), and a guest register written twice in one block
+// stores twice.  Measured over the 25 e2e guests plus the five bench kernels,
+// StoreUniform was 11.4% of all emitted IR and 7.7% of all emitted host bytes.
+//
+// The analysis is the mirror image of the forward one and deliberately uses the
+// *same* barrier set: anything opaque enough that a folded load could not see
+// through it is also opaque enough that a store before it may be observed.
+// Beyond that:
+//   * the walk is backward, starting with nothing known dead -- uniforms are
+//     the guest context and every byte is live out of the block;
+//   * a LoadUniform resurrects exactly the bytes it reads;
+//   * a store is removed only when *every* byte it writes is already known to
+//     be overwritten later.
+// Nothing here is x86-specific: "a register write that another register write
+// overwrites before any read" is dead in any guest ISA.
+
+// Would DeadCodeEliminationPass keep `def` even after its last use is gone?
+[[nodiscard]] static bool SurvivesDCE(const Inst* def) {
+    switch (def->GetOp()) {
+        // Keep in sync with Inst::HasSideEffects() plus the guest-load rule in
+        // DeadCodeEliminationPass: every value-returning opcode either of them
+        // refuses to delete.
+        case OpCode::LoadMemory:
+        case OpCode::LoadMemoryTSO:
+        case OpCode::CompareAndSwap:
+        case OpCode::CompareAndSwap128:
+        case OpCode::AtomicExchange:
+        case OpCode::AtomicFetchAdd:
+        case OpCode::AtomicRMW:
+        case OpCode::X87Op:
+        case OpCode::CallLambda:
+        case OpCode::CallLocation:
+        case OpCode::CallDynamic:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// This is the constraint that decides which stores may be removed at all.
+//
+// Deleting a store orphans the value it stored; DeadCodeEliminationPass then
+// walks that def chain backwards, deleting each producer as it loses its last
+// use.  If the chain reaches an instruction DCE must KEEP -- a guest memory
+// read, an atomic RMW, a host helper call -- that instruction is left with no
+// uses at all, and the block-mode register allocator gives a value with no
+// recorded use no live interval and hence no register
+// (register_alloc_pass.cpp: `if (!end) continue;`).  The back end then asserts
+// `alloc_result[id].type == GPR` the moment it emits it.
+//
+// The chain is real and short: `mov ecx,[r13+0x80]` is
+// LoadMemory -> ZeroExtend32 -> ZeroExtend64 -> StoreUniform, so checking only
+// the store's immediate operand is not enough.  Found by SVM_FUNC_BASE=0
+// swift_test, the only configuration that takes the block-mode allocator path.
+[[nodiscard]] static bool ChainWouldStrandASurvivor(const Value& root, const Inst* store) {
+    StackVector<Inst*, 16> work{};
+    u32 visited = 0;
+    constexpr u32 kMaxVisited = 64;  // give up (and keep the store) beyond this
+    if (auto* def = root.Def()) {
+        work.push_back(def);
+    }
+    while (!work.empty()) {
+        if (++visited > kMaxVisited) {
+            return true;
+        }
+        auto* def = work.back();
+        work.pop_back();
+        if (SurvivesDCE(def)) {
+            return true;
+        }
+        // More than the one use being removed: this producer stays alive, so
+        // nothing behind it dies either.
+        const u8 uses = const_cast<Inst*>(def)->GetUses(false);
+        if (uses > 1) {
+            continue;
+        }
+        for (auto& value : const_cast<Inst*>(def)->GetValues()) {
+            if (auto* next = value.Def(); next && next != store) {
+                work.push_back(next);
+            }
+        }
+    }
+    return false;
+}
+
+static void EliminateDeadStores(Block* block, const UniformInfo& info,
+                                HIRFunction* hir_function) {
+    auto& inst_list = block->GetInstList();
+    // killed[i] = byte i of the uniform buffer is overwritten later in this
+    // block before any read.
+    StackVector<u8, 0x100> killed{};
+    killed.resize(info.uniform_size);
+    std::fill(killed.begin(), killed.end(), u8{0});
+    StackVector<Inst*, 16> victims{};
+
+    auto clear_all = [&] { std::fill(killed.begin(), killed.end(), u8{0}); };
+
+    for (auto it = inst_list.rbegin(); it != inst_list.rend(); ++it) {
+        Inst& inst = *it;
+        switch (inst.GetOp()) {
+            case OpCode::StoreUniform: {
+                const auto uniform = inst.GetArg<Uniform>(0);
+                const auto value = inst.GetArg<Value>(1);
+                const u32 off = uniform.GetOffset();
+                // The backend stores according to the *value* width, not the
+                // descriptor width -- the same rule the forward pass tracks.
+                const u32 size = GetValueSizeByte(value.Type());
+                if (off + size > killed.size()) {
+                    break;
+                }
+                bool all_dead = true;
+                for (u32 i = 0; i < size; ++i) {
+                    if (!killed[off + i]) {
+                        all_dead = false;
+                        break;
+                    }
+                }
+                if (all_dead && !ChainWouldStrandASurvivor(value, &inst)) {
+                    victims.push_back(&inst);
+                    break;  // a removed store kills nothing
+                }
+                for (u32 i = 0; i < size; ++i) {
+                    killed[off + i] = 1;
+                }
+                break;
+            }
+            case OpCode::LoadUniform: {
+                const auto uniform = inst.GetArg<Uniform>(0);
+                const u32 off = uniform.GetOffset();
+                const u32 size = GetValueSizeByte(uniform.GetType());
+                for (u32 i = 0; i < size && off + i < killed.size(); ++i) {
+                    killed[off + i] = 0;
+                }
+                break;
+            }
+            case OpCode::CallLambda:
+            case OpCode::CallDynamic:
+            case OpCode::CallLocation:
+            case OpCode::X87Op:
+            case OpCode::MemoryCopy:
+            case OpCode::MemoryCopyTSO:
+            case OpCode::SetHostGPR:
+            case OpCode::SetHostFPR:
+            case OpCode::GetHostGPR:
+            case OpCode::GetHostFPR:
+            case OpCode::SetLocation:
+            case OpCode::Goto:
+            case OpCode::NotGoto:
+            case OpCode::BindLabel:
+                clear_all();
+                break;
+            default:
+                break;
+        }
+    }
+
+    for (auto* victim : victims) {
+        if (hir_function) {
+            hir_function->EraseInst(block, victim);
+        } else {
+            inst_list.erase(inst_list.iterator_to(*victim));
+            delete victim;
+        }
+    }
+
+    if (!victims.empty() && std::getenv("SVM_DUMP_IR")) {
+        fmt::print(stderr, "[uniform-dse] block {:#x}: removed {} dead uniform store(s)\n",
+                   block->GetStartLocation().Value(), victims.size());
+    }
+}
+
+void UniformEliminationPass::Run(Block* block, const UniformInfo &info, HIRFunction* hir_function) {
     StackVector<UniformValue, 0x100> uniform_values{info.uniform_size};
     u32 load_count{};
     u32 folded_load_count{};
@@ -233,6 +412,16 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info) {
                        block->GetStartLocation().Value(), block->ToString());
         }
     }
+
+    // Escape hatch for bisecting a suspected DSE bug against the load-folding
+    // half of this pass, which SVM_UNIFORM_ELIM=0 cannot separate.
+    static const bool dse_off = [] {
+        const char* e = std::getenv("SVM_UNIFORM_DSE");
+        return e && std::strcmp(e, "0") == 0;
+    }();
+    if (!dse_off) {
+        EliminateDeadStores(block, info, hir_function);
+    }
 }
 
 void UniformEliminationPass::Run(HIRBuilder* hir_builder, const UniformInfo& info, bool mem_to_regs) {
@@ -245,7 +434,7 @@ void UniformEliminationPass::Run(HIRFunction* hir_func, const UniformInfo& info,
     (void)mem_to_regs;
     for (auto* hir_block : hir_func->GetHIRBlocks()) {
         if (hir_block) {
-            Run(hir_block->GetBlock(), info);
+            Run(hir_block->GetBlock(), info, hir_func);
         }
     }
 }

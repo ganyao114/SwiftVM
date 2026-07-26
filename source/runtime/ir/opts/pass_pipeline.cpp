@@ -46,6 +46,11 @@ PassPipeline PassPipeline::BuildDefault(const UniformInfo* uniform_info) {
     pipeline.AddBlockPass(Optimizations::ConstantFolding, [](Block* block) {
         ConstFoldingPass::Run(block);
     });
+    // Same wiring gap d42bb4f fixed for flag elimination: without a function
+    // entry the pass simply never runs on a function-compiled unit.
+    pipeline.AddFunctionPass(Optimizations::ConstantFolding, [](HIRFunction* function) {
+        ConstFoldingPass::Run(function);
+    });
 
     pipeline.AddBlockPass(Optimizations::DeadCodeRemove, [](Block* block) {
         DeadCodeEliminationPass::Run(block);
