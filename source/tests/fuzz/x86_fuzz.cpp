@@ -1882,7 +1882,17 @@ TEST_CASE("Fuzz x86 cpuid") {
                 REQUIRE(((sig[2] >> 26) & 1u) == (xsave_on ? 1u : 0u));   // XSAVE
                 REQUIRE(((sig[2] >> 27) & 1u) == (xsave_on ? 1u : 0u));   // OSXSAVE
                 REQUIRE(((sig[2] >> 28) & 1u) == (avx_reported ? 1u : 0u));  // AVX
-                REQUIRE((sig[2] & (1u << 0)) == 0);   // no SSE3
+                // SSE3 / SSSE3 / SSE4.1 / POPCNT are backed by decoder_sse4.cc
+                // and are now advertised unconditionally.  SSE4.2 (bit 20) is
+                // NOT: the pcmpXstrY family is what it promises and that is
+                // exactly what is missing, so the bit must stay clear until
+                // those four exist -- same coherence rule as XSAVE/AVX above,
+                // just in the other direction.
+                REQUIRE((sig[2] & (1u << 0)) != 0);    // SSE3
+                REQUIRE((sig[2] & (1u << 9)) != 0);    // SSSE3
+                REQUIRE((sig[2] & (1u << 19)) != 0);   // SSE4.1
+                REQUIRE((sig[2] & (1u << 23)) != 0);   // POPCNT
+                REQUIRE((sig[2] & (1u << 20)) == 0);   // no SSE4.2 (pcmpXstrY missing)
                 break;
             case 7:
                 // AVX2 (bit 5) tracks SVM_AVX *and* SVM_XSAVE together -- AVX

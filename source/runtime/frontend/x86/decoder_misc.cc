@@ -80,8 +80,19 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
                                     | (1u << 24)  // FXSR
                                     | (1u << 25)  // SSE
                                     | (1u << 26); // SSE2
+    // SSE3 / SSSE3 / SSE4.1 are backed by decoder_sse4.cc (64 mnemonics,
+    // 4020 Rosetta rows).  POPCNT is I_POPCNT, long implemented.
+    //
+    // Bit 20 (SSE4.2) is deliberately NOT set: what SSE4.2 advertises is
+    // POPCNT, CRC32 and pcmpistri/pcmpistrm/pcmpestri/pcmpestrm, and those
+    // four are exactly what is still missing.  Claiming the bit would make
+    // glibc's ifunc select string variants that die with IllegalCode.
     static constexpr u32 kLeaf1Ecx = (1u << 13)  // CMPXCHG16B
                                      | (1u << 22)  // MOVBE
+                                     | (1u << 0)   // SSE3
+                                     | (1u << 9)   // SSSE3
+                                     | (1u << 19)  // SSE4.1
+                                     | (1u << 23)  // POPCNT
                                      | (1u << 30); // RDRAND
     static constexpr u32 kLeaf7Ebx = (1u << 18);  // RDSEED
     // XSAVE (ECX.26) and OSXSAVE (ECX.27) travel together: OSXSAVE is
