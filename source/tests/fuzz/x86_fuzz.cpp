@@ -1850,6 +1850,12 @@ TEST_CASE("Fuzz x86 cpuid") {
         env.core->Run();
         u64 sig[4] = {
                 env.ctx->rax.qword, env.ctx->rbx.qword, env.ctx->rcx.qword, env.ctx->rdx.qword};
+        // Gates are read once per process by the decoder, so a plain getenv
+        // here matches what CPUID will actually report.
+        const bool xsave_on = std::getenv("SVM_XSAVE") &&
+                              std::strcmp(std::getenv("SVM_XSAVE"), "0") != 0;
+        const bool bmi_on = std::getenv("SVM_BMI") &&
+                            std::strcmp(std::getenv("SVM_BMI"), "0") != 0;
         switch (leaf) {
             case 0:
                 REQUIRE(sig[0] == 0x15);
@@ -1864,12 +1870,20 @@ TEST_CASE("Fuzz x86 cpuid") {
                 REQUIRE((sig[2] & (1u << 13)) != 0);  // CMPXCHG16B
                 REQUIRE((sig[2] & (1u << 22)) != 0);  // MOVBE
                 REQUIRE((sig[2] & (1u << 30)) != 0);  // RDRAND
-                REQUIRE((sig[2] & (1u << 26)) == 0);  // no XSAVE
-                REQUIRE((sig[2] & (1u << 27)) == 0);  // no OSXSAVE
+                // XSAVE/OSXSAVE track the SVM_XSAVE gate. The point of this
+                // block is the repo's CPUID-coherence discipline -- never
+                // advertise a feature that is not implemented -- so the
+                // assertion follows the gate rather than being pinned off:
+                // with the gate on, XGETBV/XSAVE/XRSTOR and CPUID.0xD exist.
+                REQUIRE(((sig[2] >> 26) & 1u) == (xsave_on ? 1u : 0u));   // XSAVE
+                REQUIRE(((sig[2] >> 27) & 1u) == (xsave_on ? 1u : 0u));   // OSXSAVE
                 REQUIRE((sig[2] & (1u << 0)) == 0);   // no SSE3
                 break;
             case 7:
-                REQUIRE(sig[1] == (1u << 18));        // RDSEED only
+                // BMI1 (bit 3) / BMI2 (bit 8) track the SVM_BMI gate, same
+                // discipline: decoder_bmi.cc implements the whole set.
+                REQUIRE(sig[1] == ((1u << 18) |
+                                   (bmi_on ? ((1u << 3) | (1u << 8)) : 0u)));
                 break;
             case 0x15:
                 REQUIRE(sig[0] == 1);              // denominator

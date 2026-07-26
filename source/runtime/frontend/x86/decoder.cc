@@ -247,7 +247,12 @@ void X64Decoder::Decode() {
         // Families still living on the legacy distorm path fall through: when a
         // handler declines, pc is restored and the normal decode runs exactly as
         // before. That keeps this migration incremental instead of a flag day.
-        if (AvxEnabled() && HasVexPrefix(code_ptr, kMaxInsnBytes)) {
+        // BMI1/BMI2 share the VEX prefix but are GPR instructions, so they are
+        // gated separately: glibc's ifunc needs AVX2 and BMI2 together before
+        // it picks an AVX2 string variant, and each of those contains BMI.
+        const bool avx_on = AvxEnabled();
+        const bool bmi_on = BmiEnabled();
+        if ((avx_on || bmi_on) && HasVexPrefix(code_ptr, kMaxInsnBytes)) {
             const auto vex = DecodeVexInsn(code_ptr, kMaxInsnBytes);
             if (vex.valid) {
                 const auto saved_pc = pc;
@@ -255,7 +260,10 @@ void X64Decoder::Decode() {
                 // instruction, matching GetAddress's convention, so advance
                 // first and restore only if nobody claims it.
                 pc += vex.length;
-                if (DecodeAvxInt(vex) || DecodeAvxFp(vex)) {
+                // No opcode collision: BMI lives on 0F38 F2/F3/F5/F6/F7 and
+                // 0F3A F0, while the AVX handlers' F2..F6 cases are all on the
+                // 0F map.
+                if (DecodeBmi(vex) || (avx_on && (DecodeAvxInt(vex) || DecodeAvxFp(vex)))) {
                     assembler->AdvancePC(ir::Imm{vex.length});
                     end_decode = assembler->EndCommit();
                     continue;
@@ -1300,7 +1308,9 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeBswap(insn);
             break;
         case I_LZCNT:
-            DecodeLzcnt(insn);
+            // With the BMI gate on this adds the CF that the plain LZCNT path
+            // omits; with it off it falls through to today's behaviour.
+            DecodeLzcntBmi(insn);
             break;
         case I_CRC32:
             DecodeCrc32(insn);
@@ -1351,9 +1361,14 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeUcomis(insn, 32);
             break;
         case I_BSF:
-        case I_TZCNT:
-            // tzcnt with BMI1 hidden executes as bsf on our reported CPU.
             DecodeBitScan(insn, false);
+            break;
+        case I_TZCNT:
+            // TZCNT and BSF differ in their zero-source behaviour and in CF/ZF,
+            // so they cannot share a handler once BMI1 is advertised. With the
+            // gate off DecodeTzcnt reproduces the old aliasing: tzcnt executes
+            // as bsf on a CPU that hides BMI1.
+            DecodeTzcnt(insn);
             break;
         case I_BSR:
             DecodeBitScan(insn, true);

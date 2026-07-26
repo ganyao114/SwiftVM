@@ -791,6 +791,30 @@ private:
     void DecodeAvxFpExtract(const VexInsn& v, u32 element_bits);
     void DecodeAvxFpInsert(const VexInsn& v, u32 element_bits);
 
+    // ---- BMI1 / BMI2 (decoder_bmi.cc) ------------------------------------
+    // VEX-encoded but NOT vector: these operate on GPRs, VEX.L must be 0, and
+    // vvvv carries a second source or the destination. Gated on SVM_BMI so the
+    // CPUID BMI bits and the implementation can be advertised together —
+    // glibc's ifunc requires AVX2+BMI2 jointly before it selects the AVX2
+    // string variants, and every one of those contains BMI instructions.
+    [[nodiscard]] static bool BmiEnabled();
+    bool DecodeBmi(const VexInsn& v);
+
+    ir::Value BmiSrc(const VexInsn& v, u32 width);
+    void BmiWriteFlagsNZ(ir::Value result, u32 width);
+    void DecodeBmiAndn(const VexInsn& v, u32 width);
+    void DecodeBmiBls(const VexInsn& v, u32 width, u32 kind);
+    void DecodeBmiBzhi(const VexInsn& v, u32 width);
+    void DecodeBmiBextr(const VexInsn& v, u32 width);
+    void DecodeBmiShiftX(const VexInsn& v, u32 width, u32 kind);
+    void DecodeBmiRorx(const VexInsn& v, u32 width);
+    void DecodeBmiMulx(const VexInsn& v, u32 width);
+    void DecodeBmiDepExt(const VexInsn& v, u32 width, bool deposit);
+    // TZCNT/LZCNT are legacy-encoded (F3 0F BC/BD) but belong to BMI1/LZCNT;
+    // both fall back to today's BSF/BSR behaviour when the gate is off.
+    void DecodeTzcnt(_DInst& insn);
+    void DecodeLzcntBmi(_DInst& insn);
+
     // ---- VEX integer / data movement (decoder_avx_int.cc) ----------------
     // Same contract as DecodeAvxFp: returns false for anything unmodelled, and
     // every false return happens BEFORE any IR is emitted, so a decline never
