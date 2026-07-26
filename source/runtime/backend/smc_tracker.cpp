@@ -171,11 +171,13 @@ void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
         auto& rec = pages_[page];
         const bool duplicate = std::any_of(
                 rec.nodes.begin(), rec.nodes.end(), [&](const TrackedNode& tracked) {
-                    return tracked.node == node && tracked.guest_start == guest_start &&
+                    return tracked.node.Get() == node &&
+                           tracked.guest_start == guest_start &&
                            tracked.guest_end == guest_end;
                 });
         if (!duplicate) {
-            rec.nodes.push_back(TrackedNode{module, node, guest_start, guest_end});
+            rec.nodes.push_back(
+                    TrackedNode{module, ir::NodeRef{node}, guest_start, guest_end});
         }
         // A translation published during another thread's open write window
         // is collected by CloseWriteWindow's retry loop. Do not protect the
@@ -209,9 +211,10 @@ void SmcTracker::ClearDispatchSlots(AddressSpace& space,
         }
     };
 
-    clear_location(tracked.node->GetStartLocation().Value());
-    if (tracked.node->node_type == ir::AddressNode::Function) {
-        auto* function = static_cast<ir::Function*>(tracked.node);
+    auto* node = tracked.node.Get();
+    clear_location(node->GetStartLocation().Value());
+    if (node->node_type == ir::AddressNode::Function) {
+        auto* function = static_cast<ir::Function*>(node);
         for (auto& block : function->GetBlocks()) {
             clear_location(block.GetStartLocation().Value());
         }
@@ -221,7 +224,7 @@ void SmcTracker::ClearDispatchSlots(AddressSpace& space,
 void SmcTracker::RemoveTrackedNode(ir::AddressNode* node) {
     for (auto& [page, record] : pages_) {
         std::erase_if(record.nodes,
-                      [&](const TrackedNode& tracked) { return tracked.node == node; });
+                      [&](const TrackedNode& tracked) { return tracked.node.Get() == node; });
     }
 }
 
@@ -235,7 +238,7 @@ std::vector<SmcTracker::TrackedNode> SmcTracker::TakeDirtyNodes(
         for (const auto& tracked : record.nodes) {
             const bool duplicate = std::any_of(
                     nodes.begin(), nodes.end(), [&](const TrackedNode& other) {
-                        return other.node == tracked.node;
+                        return other.node.Get() == tracked.node.Get();
                     });
             if (!duplicate) {
                 ClearDispatchSlots(space, extra_l1, tracked);
@@ -244,7 +247,7 @@ std::vector<SmcTracker::TrackedNode> SmcTracker::TakeDirtyNodes(
         }
     }
     for (const auto& tracked : nodes) {
-        RemoveTrackedNode(tracked.node);
+        RemoveTrackedNode(tracked.node.Get());
     }
     return nodes;
 }
@@ -260,7 +263,7 @@ std::vector<SmcTracker::TrackedNode> SmcTracker::TakeRangeNodes(
         for (const auto& tracked : it->second.nodes) {
             const bool duplicate = std::any_of(
                     nodes.begin(), nodes.end(), [&](const TrackedNode& other) {
-                        return other.node == tracked.node;
+                        return other.node.Get() == tracked.node.Get();
                     });
             if (!duplicate) {
                 ClearDispatchSlots(space, extra_l1, tracked);
@@ -269,7 +272,7 @@ std::vector<SmcTracker::TrackedNode> SmcTracker::TakeRangeNodes(
         }
     }
     for (const auto& tracked : nodes) {
-        RemoveTrackedNode(tracked.node);
+        RemoveTrackedNode(tracked.node.Get());
     }
     return nodes;
 }
@@ -414,7 +417,7 @@ void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& current_l
         // takes metadata_lock_; the retry loop collects anything it published
         // during this detach phase.
         for (const auto& tracked : nodes) {
-            if (auto* exec_ptr = tracked.module->DetachNode(tracked.node); exec_ptr) {
+            if (auto* exec_ptr = tracked.module->DetachNode(tracked.node.Get()); exec_ptr) {
                 candidates.push_back(ReclaimCandidate{tracked.module, exec_ptr});
             }
         }
@@ -466,7 +469,7 @@ void SmcTracker::InvalidateRange(AddressSpace& space,
             }
         }
         for (const auto& tracked : nodes) {
-            if (auto* exec_ptr = tracked.module->DetachNode(tracked.node); exec_ptr) {
+            if (auto* exec_ptr = tracked.module->DetachNode(tracked.node.Get()); exec_ptr) {
                 candidates.push_back(ReclaimCandidate{tracked.module, exec_ptr});
             }
         }
@@ -478,6 +481,11 @@ void SmcTracker::InvalidateRange(AddressSpace& space,
 
 void SmcTracker::DisableAndUnprotectAll() {
     std::lock_guard invalidation_guard(invalidation_mutex_);
+    // Dropped after metadata_lock_ is released: the records own node
+    // references, and releasing the last one runs ~Block/~Function (which
+    // frees the whole instruction list) -- work that must not happen under a
+    // spinlock the signal handler also takes.
+    std::map<VAddr, PageRecord> dead_pages;
     {
         MetadataGuard guard(*this);
         locally_enabled_ = false;
@@ -492,9 +500,10 @@ void SmcTracker::DisableAndUnprotectAll() {
                 SetPageProtected(page, false);
             }
         }
-        pages_.clear();
+        dead_pages.swap(pages_);
         disabled_pages_.clear();
     }
+    dead_pages.clear();
     ReclaimRetiredLocked();
 }
 

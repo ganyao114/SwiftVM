@@ -39,31 +39,9 @@ static AddressNodeRef ToNodeRef(ir::AddressNode* node) {
     }
 }
 
-static void AddNodeRef(ir::AddressNode* node) {
-    switch (node->node_type) {
-        case ir::AddressNode::Function:
-            IntrusivePtrAddRef((ir::Function*)node);
-            break;
-        case ir::AddressNode::Block:
-            IntrusivePtrAddRef((ir::Block*)node);
-            break;
-        default:
-            break;
-    }
-}
+static void AddNodeRef(ir::AddressNode* node) { ir::AddressNodeAddRef(node); }
 
-static void ReleaseNodeRef(ir::AddressNode* node) {
-    switch (node->node_type) {
-        case ir::AddressNode::Function:
-            IntrusivePtrRelease((ir::Function*)node);
-            break;
-        case ir::AddressNode::Block:
-            IntrusivePtrRelease((ir::Block*)node);
-            break;
-        default:
-            break;
-    }
-}
+static void ReleaseNodeRef(ir::AddressNode* node) { ir::AddressNodeRelease(node); }
 
 DataAllocator::DataAllocator(swift::u32 size) {
     mem_map = std::make_unique<MemMap>(size, true);
@@ -113,11 +91,24 @@ bool Module::Push(ir::AddressNode* node) {
 }
 
 void Module::Remove(ir::AddressNode* node) {
+    // Identity-checked and idempotent. SMC invalidation can detach the same
+    // node twice (a publisher re-registers it with the tracker between
+    // TakeDirtyNodes and DetachNode, so the retry loop collects it again), and
+    // the map may already hold a *different*, freshly created node at the same
+    // location. Removing by location alone would then evict the new node and
+    // release the old node's map reference a second time -- a refcount
+    // underflow that frees a live node.
+    bool erased = false;
     {
         std::unique_lock guard(inner_lock);
-        address_node_map.Remove(node->location.Value());
+        if (address_node_map.Get(node->location.Value()) == node) {
+            address_node_map.Remove(node->location.Value());
+            erased = true;
+        }
     }
-    ReleaseNodeRef(node);
+    if (erased) {
+        ReleaseNodeRef(node);
+    }
 }
 
 AddressNodeRefs Module::RemoveRange(ir::Location start, ir::Location end) {
