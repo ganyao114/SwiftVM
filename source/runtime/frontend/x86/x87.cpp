@@ -287,14 +287,29 @@ extFloat80_t Signed64ToExt80(s64 integer) {
 
 extFloat80_t LoadMemoryValue(ThreadContext64& ctx, X87Format format, u64 address) {
     auto state = StateFromControl(ctx, true);
+    // FLD m32/m64 of a signaling NaN is an invalid operation: real x86 raises
+    // #IA and pushes the quieted value, so a later consumer (FSQRT, FADD, ...)
+    // sees IE already set. SoftFloat records that in `state`, which used to be
+    // discarded here — the quieting happened but the exception never reached
+    // the status word.
+    //
+    // NOTE: Unicorn does not propagate IE here either, so the differential
+    // fuzz masks IE for m32/m64 FLD (see kX87StatusMaskLoadIE in x86_fuzz.cpp).
+    // Real x86 behaviour was established by Rosetta arbitration.
+    // Widening m32/m64 to ext80 is always exact, so the only flag SoftFloat can
+    // produce here is invalid (from an SNaN); no spurious PE/UE is possible.
     switch (format) {
         case X87Format::Float32: {
             float32_t value{.v = LoadGuest<u32>(address)};
-            return f32_to_extF80(&state, value);
+            const auto result = f32_to_extF80(&state, value);
+            RaiseSoftFloat(ctx, state.exceptionFlags);
+            return result;
         }
         case X87Format::Float64: {
             float64_t value{.v = LoadGuest<u64>(address)};
-            return f64_to_extF80(&state, value);
+            const auto result = f64_to_extF80(&state, value);
+            RaiseSoftFloat(ctx, state.exceptionFlags);
+            return result;
         }
         case X87Format::Float80:
             return LoadExt80(address);
@@ -407,6 +422,25 @@ void StoreInteger(ThreadContext64& ctx,
     const u8 rounding = truncate ? softfloat_round_minMag : state.roundingMode;
     ctx.x87_fsw &= static_cast<u16>(~kSwC1);
 
+    // C1 reports the rounding direction: the SDM sets it when the stored
+    // result is greater than the exact source value ("rounded up"), and clears
+    // it otherwise. Determine that by widening the integer result back to
+    // ext80 and comparing — the inexact flag alone gives magnitude, not sign.
+    // Only called on the paths that actually store a converted result: when
+    // #IA forces the integer indefinite value, C1 stays 0.
+    //
+    // NOTE: Unicorn clears C1 unconditionally here, so the differential fuzz
+    // masks C1 for FIST/FISTP/FISTTP (see kX87StatusMaskFistC1 in x86_fuzz.cpp).
+    // Real x86 behaviour was established by Rosetta arbitration.
+    // Signed64ToExt80, not i64_to_extF80: the vendored SoftFloat build does not
+    // include the latter's translation unit.
+    const auto mark_round_up = [&](s64 stored) {
+        softfloat_state scratch{};
+        if (extF80_lt(&scratch, value, Signed64ToExt80(stored))) {
+            ctx.x87_fsw |= kSwC1;
+        }
+    };
+
     // SoftFloat's integer conversion entry points are intended to return their
     // configured NaN sentinel, but x87 must not let any NaN payload reach the
     // finite significand-shift path.  All FIST/FISTP/FISTTP widths use the
@@ -423,6 +457,7 @@ void StoreInteger(ThreadContext64& ctx,
             indefinite();
         } else {
             StoreGuest<u64>(address, static_cast<u64>(out));
+            mark_round_up(out);
         }
     } else {
         const s32 out = extF80_to_i32(&state, value, rounding, true);
@@ -435,8 +470,10 @@ void StoreInteger(ThreadContext64& ctx,
             StoreGuest<u16>(address, 0x8000);
         } else if (format == X87Format::Int16) {
             StoreGuest<u16>(address, static_cast<u16>(out));
+            mark_round_up(out);
         } else {
             StoreGuest<u32>(address, static_cast<u32>(out));
+            mark_round_up(out);
         }
     }
     RaiseSoftFloat(ctx, state.exceptionFlags);
@@ -1094,7 +1131,17 @@ u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
                          command.format,
                          guest_address,
                          (command.flags & X87Truncate) != 0);
-            if (command.flags & X87Pop) Pop(ctx);
+            if (command.flags & X87Pop) {
+                // FISTP's pop belongs to the same instruction as the store, so
+                // it must not erase the rounding direction StoreInteger just
+                // recorded in C1. Pop() clears C1 as a blanket rule — correct
+                // where C1 carries no other meaning — so carry the store's
+                // value across it. A stack underflow has already forced C1 to
+                // 0 via StackFault, and that 0 is preserved here too.
+                const u16 c1 = ctx.x87_fsw & kSwC1;
+                Pop(ctx);
+                ctx.x87_fsw = static_cast<u16>((ctx.x87_fsw & ~kSwC1) | c1);
+            }
             break;
         case X87Action::LoadReg: {
             const auto value =
