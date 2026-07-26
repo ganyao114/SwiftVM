@@ -1665,15 +1665,14 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
         default:
             break;
     }
-    // Every other x86 condition is a pure NZCV function. Use CondSelect, which
+    // Every other x86 condition is a pure NZCV function. Use CondSet, which
     // reads host NZCV directly (repeated TestFlags would go through Mrs/Tst
     // pairs and Tst clobbers host NZCV, degrading every subsequent read within
-    // the block). x86 conditions without an ARM equivalent are expressed as the
-    // inverse condition with swapped select operands. CF involving conditions
-    // honor the tracked carry polarity: after a sub-family op the stored carry
-    // is the inverse of the x86 CF.
+    // the block). The two x86 conditions with no single ARM equivalent (A and
+    // BE) return early below, composed from polarity-aware pieces. CF involving
+    // conditions honor the tracked carry polarity: after a sub-family op the
+    // stored carry is the inverse of the x86 CF.
     ir::Cond arm;
-    bool inv = false;
     switch (cond) {
         case Cond::EQ:
             arm = ir::Cond::EQ;
@@ -1729,9 +1728,21 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
         default:
             PANIC();
     }
-    auto one = __ LoadImm(ir::Imm(u8(1)));
-    auto zero = __ LoadImm(ir::Imm(u8(0)));
-    return inv ? __ CondSelect(arm, zero, one) : __ CondSelect(arm, one, zero);
+    // One CondSet, not LoadImm(1) + LoadImm(0) + CondSelect: the fused form is
+    // a `cset` on ARM64 and a `setcc` on x86, and LoadImm was the single most
+    // numerous IR opcode in the corpus (15.15%), a large part of it these two
+    // constants (docs/ir-expansion-attribution.md 2 and 3.4).
+    //
+    // SetType is REQUIRED, not decoration.  Inst::SetArg infers a default
+    // return type from the first typed argument, and Cond is untyped -- an
+    // opcode whose only argument is a Cond therefore keeps ValueType::VOID.
+    // The JIT survives that (RegAlloc keys off the opcode's meta return type),
+    // but Interpreter::WriteScalar early-returns on VOID and silently writes
+    // nothing, so the condition would read as whatever was left in the slot.
+    // Caught by run_helper_fault_tests.sh's SVM_ENABLE_JIT=0 shapes; the two
+    // back ends now assert on it.  U8 is what the old LoadImm(u8) pair gave
+    // CondSelect, so the register width is unchanged.
+    return __ CondSet(arm).SetType(ir::ValueType::U8);
 }
 
 ir::Value X64Decoder::CarryValue() {

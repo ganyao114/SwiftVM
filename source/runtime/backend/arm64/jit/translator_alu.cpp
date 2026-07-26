@@ -1846,6 +1846,25 @@ void JitTranslator::EmitCondSelect(ir::Inst* inst) {
     __ Csel(result, context.R(true_value), context.R(false_value), MapCond(cond));
 }
 
+// Condition -> 0/1 in one instruction.  The NZCV handling is deliberately
+// byte-for-byte the same as EmitCondSelect above: CSET and CSEL read the same
+// host flags, so if the two diverged, replacing a CondSelect with a CondSet in
+// the front end would silently change which flag state the condition sees.
+// Kept in step with Interpreter::RunCondSet.
+void JitTranslator::EmitCondSet(ir::Inst* inst) {
+    auto cond = inst->GetArg<ir::Cond>(0);
+    // Cond is untyped, so Inst::SetArg cannot infer a return type here and a
+    // front end that forgets SetType leaves it VOID.  That is silent in this
+    // back end (RegAlloc keys off the opcode's meta return type) and silent
+    // data loss in the interpreter, so refuse it in both.
+    ASSERT(inst->ReturnType() != ir::ValueType::VOID);
+    auto result = context.R(ir::Value{inst});
+    if (!(save_in_nzcv && nzcv_dirty)) {
+        LoadNZCVFromFlags();
+    }
+    __ Cset(result, MapCond(cond));
+}
+
 void JitTranslator::EmitZero(ir::Inst* inst) {
     auto self = ir::Value{inst};
     if (ir::IsFloatValueType(inst->ReturnType())) {

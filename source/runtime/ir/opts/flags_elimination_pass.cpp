@@ -9,7 +9,8 @@
 // Flag model in this IR (see ir.inc):
 //   writes: SaveFlags(value, mask) / ClearFlags(mask) / SetCarry / SetOverflow
 //   reads:  TestFlags / TestNotFlags (mask), GetFlags (whole register),
-//           Adc / Sbb (implicit C), CondSelect (implicit NZCV via host cond)
+//           Adc / Sbb (implicit C), CondSelect / CondSet (implicit NZCV via
+//           host cond)
 // The guest flags live in the backend flags register (JIT) / state word
 // (interpreter) across blocks, so every bit is live-out of a block.
 //
@@ -176,7 +177,8 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 needed |= Flags::Carry;
                 break;
             case OpCode::CondSelect:
-                // Host conditional select reads NZCV directly.
+            case OpCode::CondSet:
+                // Host conditional select / set reads NZCV directly.
                 needed |= Flags::NZCV;
                 break;
             case OpCode::BindLabel:
