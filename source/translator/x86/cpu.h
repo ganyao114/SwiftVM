@@ -124,11 +124,6 @@ union Xmm {
     u8 b[16];
 };
 
-union Ymm {
-    Xmm low;
-    Xmm high;
-};
-
 // Architectural 80-bit x87 register payload.  The six padding bytes match an
 // FXSAVE register slot and keep every physical register naturally aligned;
 // only significand/sign_exp are architectural.
@@ -239,7 +234,14 @@ struct ThreadContext64 {
             Xmm xmm15;
         };
     };
-    std::array<Ymm, 16> ymms;
+    // YMM bits 255:128 only.  The low 128 bits of every YMM *are* xmms[i] —
+    // storing them twice would force each SSE handler to mirror its result, and
+    // the JIT hardcodes uniform offsets into xmms.  Splitting the register this
+    // way also keeps every IR value at V128, which is all the ARM64 register
+    // allocator can map (a V256 IR value has no host register to live in).
+    // Same 256 bytes at the same offset as the old (broken, sizeof==16 union)
+    // ymms array, so FXSAVE and every hardcoded uniform offset are unaffected.
+    std::array<Xmm, 16> ymm_high{};
     InterruptReason interrupt;
     // 64-bit FS/GS segment bases (TLS). Set via arch_prctl by the syscall
     // layer, following the Linux ABI:

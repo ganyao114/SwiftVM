@@ -236,22 +236,28 @@ constexpr X86RegInfo x86_regs_table[] = {
         {_RegisterType::R_XMM13, X86RegInfo::Xmm13, ir::ValueType::V128, false},
         {_RegisterType::R_XMM14, X86RegInfo::Xmm14, ir::ValueType::V128, false},
         {_RegisterType::R_XMM15, X86RegInfo::Xmm15, ir::ValueType::V128, false},
-        {_RegisterType::R_XMM0, X86RegInfo::Ymm0, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM1, X86RegInfo::Ymm1, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM2, X86RegInfo::Ymm2, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM3, X86RegInfo::Ymm3, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM4, X86RegInfo::Ymm4, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM5, X86RegInfo::Ymm5, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM6, X86RegInfo::Ymm6, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM7, X86RegInfo::Ymm7, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM8, X86RegInfo::Ymm8, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM9, X86RegInfo::Ymm9, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM10, X86RegInfo::Ymm10, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM11, X86RegInfo::Ymm11, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM12, X86RegInfo::Ymm12, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM13, X86RegInfo::Ymm13, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM14, X86RegInfo::Ymm14, ir::ValueType::V256, false},
-        {_RegisterType::R_YMM15, X86RegInfo::Ymm15, ir::ValueType::V256, false}};
+        // YMM entries address the HIGH half (ymm_high[i]) and are V128, never
+        // V256: a 256-bit IR value cannot be register-allocated (ARM64 V regs
+        // are 128-bit), so every 256-bit operation is split into two V128 ones.
+        // The low half of YMMi is the Xmmi entry above — same storage.
+        // (The R_YMM0 code was previously mistyped as R_XMM0, which made
+        // x86_regs_table[R_YMM0] report a V256 XMM slot.)
+        {_RegisterType::R_YMM0, X86RegInfo::Ymm0, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM1, X86RegInfo::Ymm1, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM2, X86RegInfo::Ymm2, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM3, X86RegInfo::Ymm3, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM4, X86RegInfo::Ymm4, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM5, X86RegInfo::Ymm5, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM6, X86RegInfo::Ymm6, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM7, X86RegInfo::Ymm7, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM8, X86RegInfo::Ymm8, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM9, X86RegInfo::Ymm9, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM10, X86RegInfo::Ymm10, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM11, X86RegInfo::Ymm11, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM12, X86RegInfo::Ymm12, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM13, X86RegInfo::Ymm13, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM14, X86RegInfo::Ymm14, ir::ValueType::V128, false},
+        {_RegisterType::R_YMM15, X86RegInfo::Ymm15, ir::ValueType::V128, false}};
 
 ir::Uniform ToReg(const X86RegInfo& info);
 
@@ -618,6 +624,122 @@ private:
     // bt / bts / btr / btc (kind 0..3); CF = extracted bit.
     void DecodeBt(_DInst& insn, int kind);
 
+    // ---- AVX / VEX support ----------------------------------------------
+    // Gate for every VEX handler.  AVX stays behind SVM_AVX=1 until the
+    // Unicorn differential fuzzer covers it; with the gate off the V*
+    // opcodes fall through DecodeSwitch's default and the block traps as
+    // FALLBACK, exactly as before AVX decoding existed.  No CPUID bit is
+    // advertised either way, so a well-behaved guest never emits VEX at all.
+    [[nodiscard]] static bool AvxEnabled();
+
+    // Raw VEX prefix fields, parsed from the instruction bytes rather than
+    // taken from distorm.  This is NOT redundant: this distorm snapshot
+    // predates AVX2 and therefore has no 256-bit table entry for the packed
+    // *integer* opcodes (VPXOR/VPAND/VPOR/VPADDx/VPCMPx/VPSHUFB/...).  For
+    // those it silently reports XMM operands with size 128 even when VEX.L=1,
+    // with no error flag.  Trusting distorm's operand sizes would therefore
+    // execute a 256-bit vpxor as a 128-bit one AND zero the upper half — a
+    // wrong answer with no diagnostic.  `l` below is always authoritative.
+    struct VexInfo {
+        bool valid{false};  // instruction really carries a C4/C5 VEX prefix
+        bool l{false};      // VEX.L: 0 = 128-bit, 1 = 256-bit
+        bool w{false};      // VEX.W (operand-size / opcode extension)
+        // VEX.vvvv is stored INVERTED in the encoding, so the "no third
+        // operand" marker 0b1111 un-inverts to register 0 and is otherwise
+        // indistinguishable from a genuine xmm0 source.  vvvv is the decoded
+        // register number; check vvvv_unused before treating it as one.
+        u8 vvvv{0};              // 0..15
+        bool vvvv_unused{true};  // raw field was 0b1111
+        u8 mmmmm{1};             // opcode map: 1 = 0F, 2 = 0F38, 3 = 0F3A
+        u8 pp{0};                // implied prefix: 0 none, 1 = 66, 2 = F3, 3 = F2
+        // NOTE: of the fields above only `valid` and `l` are currently read
+        // (by IsVex128 / the 256-bit dispatch). The handlers take their
+        // operands from distorm's operand list and distinguish the 2- and
+        // 3-operand shapes by that list, so vvvv/vvvv_unused/w/pp/mmmmm are
+        // parsed but unconsumed. They are kept because the moment a handler
+        // has to disambiguate an encoding distorm reports ambiguously, the
+        // raw prefix is the only authority — which is already true for `l`
+        // (see DecodeVex).
+    };
+
+    // Parse the VEX prefix of the instruction currently being decoded.
+    // Returns valid=false when the bytes are not a VEX prefix.
+    [[nodiscard]] VexInfo DecodeVex() const;
+
+    // True when the instruction is a VEX.128 (L=0) form that Agent A's
+    // handlers may execute.  L=1 forms belong to the 256-bit handlers; until
+    // those exist a VEX.L=1 encoding must NOT be run through a 128-bit path.
+    [[nodiscard]] bool IsVex128(const VexInfo& vex) const;
+
+    // 0..15 for any XMM or YMM distorm register code.  The two register files
+    // are the same architectural registers, so handlers work in this index
+    // space and pick the half they want explicitly.
+    [[nodiscard]] static u32 VecIndex(_RegisterType reg);
+    // The XMM (low half) register code for a vector register index, so the
+    // whole existing SSE helper set (XmmRead / XmmLo / LoadSrcVec / ...)
+    // applies unchanged to a YMM operand's low 128 bits.
+    [[nodiscard]] static _RegisterType XmmOf(u32 index);
+
+    // ymm_high[index] as a V128 uniform / value.
+    [[nodiscard]] static ir::Uniform YmmHighUniform(u32 index);
+    ir::Value YmmHighRead(u32 index);
+    void YmmHighWrite(u32 index, ir::Value value);
+    // 64-bit halves of ymm_high[index], for helper-call based paths.
+    ir::Value YmmHighLo(u32 index);
+    ir::Value YmmHighHi(u32 index);
+    void YmmHighLo(u32 index, ir::Value value);
+    void YmmHighHi(u32 index, ir::Value value);
+
+    // C3: every VEX.128 instruction zeroes bits 255:128 of its destination.
+    // This is THE semantic difference from legacy SSE (which preserves them),
+    // and omitting it produces stale-upper-half bugs that only show up once
+    // the register is later read as a YMM.  Call after writing the low half.
+    void ZeroYmmHigh(u32 index);
+
+    // The register operand encoded in VEX.vvvv, as an XMM code.  VEX made the
+    // SSE two-operand forms non-destructive: `vpxor dst, src1, src2` reads
+    // src1 from vvvv instead of clobbering dst.  distorm surfaces it as
+    // ops[1] with ops[2] holding the r/m operand, and that operand list is
+    // what the handlers consume — VexInfo::vvvv is NOT cross-checked against
+    // it today (see the note on VexInfo).
+    [[nodiscard]] static _RegisterType VexSrc1(const _DInst& insn);
+    // The r/m operand of a 3-operand VEX form is simply ops[2]; it is passed
+    // straight to the existing LoadSrcVec / LoadSrcHalves helpers, which need
+    // a mutable _Operand&, so there is no accessor for it.
+
+    // Single entry point for every VEX opcode routed from DecodeSwitch:
+    // applies the SVM_AVX gate, the VEX.L==0 gate and the operand-shape check
+    // in one place, then dispatches. false == "do not translate this block".
+    bool DecodeAvx(_DInst& insn);
+
+    // dst = src1 (op) src2 over 128 bits, then zero bits 255:128.
+    void DecodeVexBitwise(_DInst& insn, VecBitwiseOp op);
+    void DecodeVexInt(_DInst& insn, VecIntOp op, u32 lane_bits);
+    // vmovdqu/vmovdqa/vmovups/vmovaps: 128-bit reg<->reg / reg<->mem move.
+    void DecodeVexMovVec(_DInst& insn);
+    // vmovd/vmovq: gpr/m <-> xmm, upper bits of the destination zeroed.
+    void DecodeVexMovd(_DInst& insn);
+    void DecodeVexMovq(_DInst& insn);
+    // vzeroupper / vzeroall.
+    void DecodeVzero(bool all);
+
+    // ---- VEX.256 (decoder_avx.cc) ---------------------------------------
+    // A 256-bit operation is two independent V128 operations (contract C1:
+    // ARM64 V registers are 128 bits and RegAlloc maps one value onto one
+    // register, so no V256 IR value can exist). These write BOTH halves of
+    // the destination and therefore must NOT call ZeroYmmHigh.
+    bool DecodeAvx256(_DInst& insn, const VexInfo& vex);
+    VecHalves LoadAvx256Src(_DInst& insn, _Operand& op);
+    void StoreAvx256Dst(_DInst& insn, _Operand& op, ir::Value lo, ir::Value hi);
+    void WriteAvx256(u32 index, ir::Value lo, ir::Value hi);
+    void DecodeAvx256Mov(_DInst& insn);
+    void DecodeAvx256Bitwise(_DInst& insn, VecBitwiseOp op);
+    void DecodeAvx256Int(_DInst& insn, VecIntOp op, u32 lane_bits);
+    void DecodeAvx256MinMax(_DInst& insn, bool max, u32 lane_bits, bool is_signed);
+    void DecodeAvx256Pmovmskb(_DInst& insn);
+    void DecodeAvx256Pshufb(_DInst& insn);
+    void DecodeAvx256BroadcastSS(_DInst& insn);
+
     // ---- x87 support ----------------------------------------------------
     // The architectural stack and extF80 arithmetic live in ThreadContext64
     // and are updated by the SoftFloat-backed stateful helper.
@@ -628,6 +750,10 @@ private:
 
     VAddr start;
     VAddr pc;
+    // First byte of the instruction currently in DecodeSwitch. Handlers that
+    // must inspect the raw encoding (VEX prefix fields, see DecodeVex) read
+    // through this; _DInst alone does not carry them.
+    const u8* insn_bytes{nullptr};
     ir::Assembler* assembler;
     runtime::MemoryInterface* memory;
     bool end_decode{false};
