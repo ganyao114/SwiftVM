@@ -91,7 +91,18 @@ ifunc 会真正选中 AVX 路径。
 | FMA3 全 60 助记符（两个 VEX.L、寄存器与内存形式） | 完成 | Rosetta **3360 行**，7 次变异全杀 |
 | gather 族 | 完成 | Rosetta 差分 |
 | legacy SSE3 / SSSE3 / SSE4.1 共 64 条 | 完成 | Rosetta **4360 行**，26 次变异全杀 |
-| SSE4.2 字符串族 `pcmpXstrY` | **缺** | 挡住 CPUID bit 20 |
+| SSE4.2 字符串族 `pcmpXstrY` + 四条 VEX 孪生 | 完成 | Rosetta **6104 行** + 独立 SDM 模型双 oracle，38 次变异全杀 |
+
+**CPUID bit 20 仍不开，这是性能取舍而非正确性缺口**：四条指令已实现，
+`-msse4.2` 二进制现在就能跑——这与 CPUID 无关。但 glibc 的 ifunc 会查 CPUID，
+开了 bit 20 它就改选 SSE4.2 的 `strlen`/`strcmp`，而本实现的 `Sse42StrEval` 是
+O(n²) 矩阵，实测每条 27–180 ns，比 SSE2 的 `pcmpeqb + pmovmskb` 对（1.4–12 ns）
+**慢一个数量级**。等 helper 变快再开，开关是 `Sse42StrEnabled()`。
+
+`pcmpXstrY` 那一族里有一处**硬件抓到的**语义 bug：SDM 有效性覆盖表的中间两行，
+实现与测试模型**以同样的方式写反了**（`ABCDE` vs `ABCDEFGHIJ`，真机在索引 0
+报匹配，写反的表报无匹配）。**模型没抓到，真机抓到了**——两个来源同源出错时，
+只有第三方能否定。这是「单一 oracle 全绿不构成证据」最干净的一个实例。
 
 **为什么 legacy SSE 属于 AVX 的收口条件**：真实 CPU 不存在「有 AVX 无 SSE4.2」
 的组合，所以 advertise AVX 隐含承诺了整条 SSE 链。补这一族之前，一次 78-opcode
