@@ -113,6 +113,16 @@ vpxor ymm0,ymm1,ymm2  C5 F5 EF C2 -> id=7009 ops[0] index=91(R_XMM0) size=128
 - **`VexInfo` 的多数字段只写不读**:实际被消费的只有 `valid` 与 `l`;`vvvv`/`vvvv_unused`/`w`/`pp`/`mmmmm` 均无读取点。handler 是靠 distorm 的操作数**列表形状**区分 2/3 操作数形式，绕开了 vvvv==0 的歧义而非解决它。原注释宣称"vvvv 用作 cross-check"**不实，已订正**。保留字段本身合理（一旦某条编码 distorm 报得有歧义，原始前缀就是唯一权威——`l` 已经是这种情况）。
 - **定向覆盖已补**:`TEST_CASE("x86 avx vex128 directed C3 zeroing and source order")`,68 个块 × JIT/解释器自差分 + 手算期望,不用 Unicorn。运行前对 `ymm_high` 逐寄存器逐字节投毒，并用一条 legacy `movdqu` 对照块证明投毒能存活于非 C3 写入——否则"观察到高半为零"不构成证据。
 
+### Rosetta oracle 抓到的实现缺陷
+
+**`VPMOVMSKB` 源寄存器解码错误（已修）。** 根因不在本仓库代码，在 bundled distorm：`externals/distorm/insts.c` 的 `II_V_66_0F_D7` 是其邻域里**唯一没有操作数描述符**的条目（`{{0x18e, 6563}, 0x40, 0, 0, 0, 0}` 对比 vpaddq/vpand/vpxor 的 `{{0x135, ...}, 0x0, 73, 0, 0, 0}`),于是 `ops[1]` 跟的是 **ModRM.reg 而非 ModRM.rm**,且目的被报成 64 位。distorm 自己的文本反汇编就露馅：`vpmovmskb ecx, ymm5`(`C4 E1 7D D7 CD`) 渲染成 `VPMOVMSKB RCX, XMM1`;legacy `66 0F D7` 解码正确。
+
+后果：只要目的 GPR 编号 ≠ 源 ymm 编号就**掩错寄存器**——`vpmovmskb eax, ymm1` 返回 ymm0 的掩码。`vpmovmskb eax, ymm0` 恰好对（reg==rm),这大概就是它长期未被发现的原因。该指令在仓库 census 里出现 984 次。
+
+修法沿用仓库既有的「原始字节预解码」先例（census 文档对 RDSEED 即如此）：新增 `X64Decoder::VexRmRegister()` 从原始编码取 ModRM.rm(含 VEX.B),`DecodeAvx256Pmovmskb` 改用它。**未改动 vendored distorm 表**——那会影响所有消费者且难以验证。修复后 12 处比较全部与 Rosetta 逐位一致。
+
+**`VBROADCASTSS` 寄存器源形式不可解码（未修，覆盖缺口非错误答案）。** AVX2 的 `C4 E2 7D 18 C1` 在这份 distorm 快照里返回 `FLAG_NOT_DECODABLE`（快照只有 AVX1 的 m32 形式），SwiftVM 因而正确 FALLBACK。测试以 `known_not_decoded == 6` 钉住，distorm 一旦补上该条目测试即红。
+
 ### 已知偏差与缺口
 1. **32 字节访存的故障语义**:x86 上 32 字节访问是**单个不可分割**的架构操作。C1 拆成两次 16 字节后：跨页且仅第二页未映射时，load 会**先写入目的低半再故障**（硬件保持整个 YMM 不变），store 会**先提交前 16 字节再故障**（硬件不产生部分存储）；上半故障报告的地址是 `base+16` 而非 `base`。仅对 SIGSEGV 后继续执行的 guest 可见（用户态故障处理、JIT guard page、mmap 探测型分配器）。要精确修复需先探测两半再提交，或引入真正的 32 字节 IR 访存 op（后端工作）。
 2. **32 字节对齐未强制**:`VMOVDQA`/`VMOVAPS`/`VMOVNT*` 应在未对齐时 #GP;沿用现有 SSE `MOVDQA` 同样忽略 16 字节规则的先例。可用机制是 `CheckMemoryAlignment(addr, Imm(31))`。
@@ -133,6 +143,18 @@ vpxor ymm0,ymm1,ymm2  C5 F5 EF C2 -> id=7009 ops[0] index=91(R_XMM0) size=128
 VEX.256 的拒绝在下列组合下均复现：CPU 模型 default / HASWELL / SKYLAKE_CLIENT × 设与不设 `CR4.OSXSAVE|OSFXSR` × 在被模拟代码里 `XSETBV` 把 XCR0 设为 3 或 7。
 
 **后果**：AVX 的验证不能走差分 fuzz 的老路。可用组合是——搬移用 Unicorn 差分；ALU 运算用 **JIT vs 解释器自差分 + 手算定向期望**;**C3 的高半清零规则任何 oracle 都看不见**（观察高半需要 256 位存储，而 Unicorn 不执行），只能靠定向自差分覆盖。
+
+### Rosetta 是 VEX.256 的可用 oracle（实测，本机 Darwin 27 / M4 Max）
+
+原以为 VEX.256 无 oracle 可用，实测推翻了这个判断：
+
+- **Rosetta 会执行 AVX/AVX2 的 256 位指令且结果正确**。`vmovdqu ymm`、`vpaddb ymm`、`vpshufb ymm`、`vpmovmskb r32,ymm`、`vpgatherdd ymm` 全部通过。
+- **但默认下 CPUID 谎报**:`arch -x86_64` 里 leaf1 ECX.28(AVX)=0、ECX.27(OSXSAVE)=0、leaf7 EBX.5(AVX2)=0——**指令照样正确执行**。设 `ROSETTA_ADVERTISE_AVX=1` 后 CPUID 才如实报告（XCR0=0x7),执行行为两种情况相同。所以**能力判定必须靠实际执行，不能读 CPUID**。
+- **负控成立**（否则上述结论无意义）:AVX-512 的 `vmovaps zmm0,zmm1` 与 `ud2` 都触发 SIGILL,证明确实在执行而非静默忽略。
+
+已建 `TEST_CASE("x86 avx256 vs rosetta reference")`:522 次比较 × JIT/解释器双后端、264 条参考值、0 条 SKIP。参考数据生成器 `source/tests/fuzz/avx256_rosetta_ref.c`(x86_64 独立程序，不进 CMake)与测试**逐字共用** `avx256_ops.inc` 的指令表，两侧不可能漂移；它从表**运行时汇编**指令而非写 inline asm,且用「执行 `vpaddb ymm`」而非读 CPUID 判定能力。全部数值是 Rosetta 写进内存的字面字节，无一手算。
+
+硬件判决了两条此前只能靠推理的语义：**`vpshufb ymm` 确为按 128 位 lane 独立**（per-lane 与 cross-lane 两种预测在 32 字节里差 30 字节，Rosetta 给的是 per-lane),**`vpmovmskb ymm` 确为 `lo | hi<<16`**（正反序可区分）。实现两条都对。
 
 这也是一条方法论教训：**oracle 静默算错比 oracle 报错危险得多**。首次跑 AVX fuzz 得到 1308 处"不一致"，若不手算核对就会全部误判为本方实现的 bug。
 
@@ -170,7 +192,18 @@ VEX.256 的拒绝在下列组合下均复现：CPU 模型 default / HASWELL / SK
    ① **FIST/FISTP/FISTTP 的 C1**:`StoreInteger` 现按 SDM 语义置位——把整数结果加宽回 ext80 与源比较，结果**大于**源（向上舍入）才置 C1;inexact 标志只给大小、不给方向，所以必须比较。另发现一处连带缺陷：`Pop()` 无条件清 C1,而 FISTP 的 pop 属于同一条指令，会抹掉刚记录的舍入方向——已在 `StoreInt` 的分派处跨 pop 保留 C1（栈下溢时 `StackFault` 已把 C1 清零，该 0 同样被保留）。
    ② **m32/m64 load 的 IE**:`LoadMemoryValue` 曾在**局部** `state` 上做 `f32/f64_to_extF80` 后直接丢弃，SNaN 被 quiet 了但 IE 从未进状态字。现已 `RaiseSoftFloat`。加宽到 ext80 恒为精确，故不会引入伪 PE/UE。
    **实测结论与原判断不同**:Unicorn 差分**并未变红**（它根本不在 FIST/FLD 之后取 FSW,观察不到这两处），所以**不需要 fuzz 掩码**。真正变红的是定向断言 `x87 directed edge semantics`——它当时编码的正是旧的错误行为，其注释已明说"helper pre-quiets this SNaN without carrying IE"。该期望已订正，并新增一条正向断言把 C1 钉死：以 +1.5 走四种舍入模式，C1 必须恰好在结果为 2（向上舍入）的两种模式下置位。
-   仍遗留：`StoreFloat`(`x87.cpp:373`) 的 FST/FSTP 有同样的 C1 缺口（同为无条件清零，未在舍入上行时置位），本轮未动。
+   **随后被 Rosetta 仲裁纠正的判定式错误**：首版实现用「结果 > 精确源」判定 C1,**对所有负源都是反的**。真实 x86 判决：
+   ```
+   FIST m32(-1.5) RC=nearest → 存 -2, C1=1   但 -2 < -1.5，值比较给 0
+   FIST m32(-1.5) RC=up      → 存 -1, C1=0   但 -1 > -1.5，值比较给 1
+   ```
+   C1 报告的是**有效数是否进位**，即 `|结果| > |精确源|`。首版的定向测试没抓到，因为它**只用了 +1.5**——正源下两种语义恰好一致，根本无法区分。教训：**验证舍入方向类语义必须带负源**，正负互为镜像才是自证的。现已抽出共用判定 `RoundedUpInMagnitude()`(`x87.cpp:298`,清符号位后比幅度）供全部落点使用。
+3b. **x87 C1（舍入方向）全面排查**（2026-07-26,期望值均来自 Rosetta 实测）。
+   已修：`StoreFloat`(FST/FSTP m32/m64,m80 恒 0——实测确认即使源在窄格式里 inexact 也报 C1=0/PE=0)、FSTP 的 pop 抹除、`StoreInteger` 的负源反向、`StoreReg`(FST/FSTP ST(i) 此前完全不碰 C1、留陈旧值)、`Unary::Round`(FRNDINT)、`Unary::Sqrt`(用 round-toward-zero 重算一次比对，仅 inexact 时触发)、以及 `translator_x87.cpp` 中盘 `StoreInt` 的两处（C1 恒 0、pop 掩码 `0xC5FF` 含 bit9 会抹掉 C1,改 `0xC7FF`)。**中盘那两处此前与 helper 背离**——`SVM_X87_JIT=1` 下定向断言本已是红的。
+   定向测试新增约 500 条断言，正负源互为镜像;**负向对照**：回退实现只留测试，7 条 C1 断言全红（40 个失败断言），证明它们确实在揭错而非空转。三种模式（默认 / `SVM_X87_JIT=1` / 再加 `SVM_X87_TOPVIRT=1`)均 2557/2557 通过。
+   **未修（有理由）**:`Binary`(FADD/FSUB/FMUL/FDIV) 无条件清 C1——判据已用 Rosetta 验证（以 round-toward-zero 重算，不等即进位），但这是 x87 最热的 helper 路径，inexact 时要多跑一次 SoftFloat,且 `translator_x87.cpp` 有对应的中盘孪生体，只修 helper 会重新制造上面那类背离。注意「RC=down/up/chop 三模式可由舍入模式+结果符号零开销得出、只有 nearest 需重算」这个优化——**半修（三模式对、nearest 错）比明确记为缺口更难排查**，故整体留待决策。`Scale`(FSCALE) 同理但价值更低（乘 2^n 恒精确）。中盘 FSQRT 拿不到第二次求值，且该路径本就是刻意的 f64 降精度管线,C1 保真无独立意义。
+   **无法判定**：超越函数（FSIN/FCOS/FPTAN/FSINCOS/F2XM1/FYL2X/FYL2XP1/FPATAN)完全不碰 C1,但当前实现是「转 host double → libm → 加宽回 ext80」,结果本就不是正确舍入的,「舍入方向」在这个实现里没有可定义的答案。要修得先有正确舍入的 ext80 超越函数。
+
 4. **x87 opt-in reduced 语义**:FMUL/FDIV 走 f64 受控精度（文档化 diverge),FADD/FSUB 以 IXC 守卫保位精确；FILD m64 守卫 |x|≤2^53。provenance 标记 0xA5(canonical)/0xA6(reduced-ready)。
 5. **TOP 虚拟化默认 OFF**:stock bench 收益为零（bailout 主导），该模式 fuzz 覆盖薄。关键不变量已写入代码注释（pin 读取必经 TOP reload 的全寄存器 Ubfx 顺带清陈旧 mask)。
 
