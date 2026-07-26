@@ -84,56 +84,95 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
         lambda_value.emplace(context.X(lambda.GetValue()));
     }
 
-    // Save all potentially allocated caller-saved GPRs (x0-x10, x12-x17) plus
-    // x29/x30: the Blr below clobbers the link register holding this block's
-    // return address back to the dispatcher.
-    // ip (x11) is reserved scratch; x18 is reserved on Apple; x19+ are callee-saved.
+    // Save the caller-saved registers that are actually live across the call,
+    // plus x29/x30: the Blr below clobbers the link register holding this
+    // block's return address back to the dispatcher.  x18 is reserved on
+    // Apple; x19+ are callee-saved and preserved by the helper itself.
     //
-    // Preserve every SIMD register as a full 128-bit value as well. The host
-    // ABI leaves v0-v7 and v16-v31 caller-saved, and only guarantees the low
-    // 64 bits of v8-v15. The function-wide allocator can keep a V128 live
-    // across CallLambda, so the ABI's partial preservation is insufficient.
-    constexpr u32 kGprSaveBytes = 16 * 10;
-    constexpr u32 kSimdSaveOffset = kGprSaveBytes;
-    constexpr u32 kSimdSaveBytes = 32 * 16;
-    constexpr u32 kSaveBytes = kGprSaveBytes + kSimdSaveBytes;
-    auto saved_offset = [](u32 code) -> u32 {
-        if (code <= 10) {
-            return code * 8;
+    // SIMD registers are saved as full 128-bit values, because the host ABI
+    // only guarantees the low 64 bits of v8-v15 and the function-wide
+    // allocator can keep a V128 live across CallLambda.
+    //
+    // "Live" is context.GetLiveGPRs/GetLiveFPRs: RegAlloc's per-instruction
+    // live set (a conservative superset), the runtime's reserved registers,
+    // and every scratch handed out while emitting this instruction -- which
+    // includes the reloads context.X() just did above for spilled arguments.
+    // A register outside those masks holds nothing this block will read again.
+    //
+    // This used to save all 17 caller-saved GPRs and all 32 Q registers
+    // unconditionally: 672 bytes of stack and ~94 instructions at every call
+    // site, which is 90.8% of the emitted code on the x87 default path
+    // (docs/perf-baseline.md 5.3).  An integer-only block has just the four
+    // reserved ipv0-ipv3 marked out of 32 FPRs.
+    GPRSMask live_gprs = context.GetLiveGPRs();
+    // Argument registers are unioned in explicitly instead of trusting the
+    // mask to contain them.  The argument setup below reads each one back from
+    // its save slot (loading x0 first would otherwise clobber a later
+    // argument's source register), so a register with no slot would silently
+    // pass garbage to the helper -- the worst failure shape available here.
+    for (const auto& reg : value_args) {
+        if (reg.GetCode() <= 17) {
+            live_gprs.Mark(reg.GetCode());
         }
-        switch (code) {
-            case 12:
-                return 88;
-            case 13:
-                return 96;
-            case 14:
-                return 104;
-            case 15:
-                return 112;
-            case 16:
-                return 120;
-            case 17:
-                return 128;
-            default:
-                PANIC();
+    }
+    if (lambda_value && lambda_value->GetCode() <= 17) {
+        live_gprs.Mark(lambda_value->GetCode());
+    }
+
+    boost::container::small_vector<u32, 18> save_gprs;
+    for (u32 code = 0; code <= 17; ++code) {
+        if (live_gprs.Get(code)) {
+            save_gprs.push_back(code);
         }
+    }
+    boost::container::small_vector<u32, 32> save_fprs;
+    const FPRSMask& live_fprs = context.GetLiveFPRs();
+    for (u32 code = 0; code < 32; ++code) {
+        if (live_fprs.Get(code)) {
+            save_fprs.push_back(code);
+        }
+    }
+
+    std::array<int, 18> gpr_slot{};
+    gpr_slot.fill(-1);
+    u32 cursor{0};
+    for (u32 code : save_gprs) {
+        gpr_slot[code] = int(cursor);
+        cursor += 8;
+    }
+    const u32 kLinkSlot = cursor;
+    cursor += 16;
+    const u32 kResultSlot = cursor;
+    cursor += 8;
+    // sp must stay 16-byte aligned, and the Q accesses below want a 16-byte
+    // multiple as their base.
+    const u32 kSimdSaveOffset = (cursor + 15u) & ~15u;
+    const u32 kSaveBytes =
+            (kSimdSaveOffset + u32(save_fprs.size()) * 16u + 15u) & ~15u;
+    auto saved_offset = [&](u32 code) -> u32 {
+        ASSERT_MSG(code < gpr_slot.size() && gpr_slot[code] >= 0,
+                   "host call argument in an unsaved register");
+        return u32(gpr_slot[code]);
     };
-    constexpr u32 kResultSlot = 136;
 
     __ Sub(sp, sp, kSaveBytes);
-    __ Stp(x0, x1, MemOperand(sp, 0));
-    __ Stp(x2, x3, MemOperand(sp, 16));
-    __ Stp(x4, x5, MemOperand(sp, 32));
-    __ Stp(x6, x7, MemOperand(sp, 48));
-    __ Stp(x8, x9, MemOperand(sp, 64));
-    __ Stp(x10, x12, MemOperand(sp, 80));
-    __ Stp(x13, x14, MemOperand(sp, 96));
-    __ Stp(x15, x16, MemOperand(sp, 112));
-    __ Str(x17, MemOperand(sp, 128));
-    __ Stp(x29, x30, MemOperand(sp, 144));
-    for (u32 code = 0; code < 32; ++code) {
-        __ Str(VRegister::GetQRegFromCode(code),
-               MemOperand(sp, kSimdSaveOffset + code * 16));
+    for (size_t i = 0; i + 1 < save_gprs.size(); i += 2) {
+        __ Stp(XRegister(save_gprs[i]),
+               XRegister(save_gprs[i + 1]),
+               MemOperand(sp, gpr_slot[save_gprs[i]]));
+    }
+    if (save_gprs.size() & 1u) {
+        __ Str(XRegister(save_gprs.back()), MemOperand(sp, gpr_slot[save_gprs.back()]));
+    }
+    __ Stp(x29, x30, MemOperand(sp, kLinkSlot));
+    for (size_t i = 0; i + 1 < save_fprs.size(); i += 2) {
+        __ Stp(VRegister::GetQRegFromCode(save_fprs[i]),
+               VRegister::GetQRegFromCode(save_fprs[i + 1]),
+               MemOperand(sp, kSimdSaveOffset + u32(i) * 16));
+    }
+    if (save_fprs.size() & 1u) {
+        __ Str(VRegister::GetQRegFromCode(save_fprs.back()),
+               MemOperand(sp, kSimdSaveOffset + u32(save_fprs.size() - 1) * 16));
     }
 
     // Load arguments into x0-x7.
@@ -168,20 +207,24 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
 
     __ Str(x0, MemOperand(sp, kResultSlot));
 
-    for (u32 code = 0; code < 32; ++code) {
-        __ Ldr(VRegister::GetQRegFromCode(code),
-               MemOperand(sp, kSimdSaveOffset + code * 16));
+    for (size_t i = 0; i + 1 < save_fprs.size(); i += 2) {
+        __ Ldp(VRegister::GetQRegFromCode(save_fprs[i]),
+               VRegister::GetQRegFromCode(save_fprs[i + 1]),
+               MemOperand(sp, kSimdSaveOffset + u32(i) * 16));
     }
-    __ Ldp(x0, x1, MemOperand(sp, 0));
-    __ Ldp(x2, x3, MemOperand(sp, 16));
-    __ Ldp(x4, x5, MemOperand(sp, 32));
-    __ Ldp(x6, x7, MemOperand(sp, 48));
-    __ Ldp(x8, x9, MemOperand(sp, 64));
-    __ Ldp(x10, x12, MemOperand(sp, 80));
-    __ Ldp(x13, x14, MemOperand(sp, 96));
-    __ Ldp(x15, x16, MemOperand(sp, 112));
-    __ Ldr(x17, MemOperand(sp, 128));
-    __ Ldp(x29, x30, MemOperand(sp, 144));
+    if (save_fprs.size() & 1u) {
+        __ Ldr(VRegister::GetQRegFromCode(save_fprs.back()),
+               MemOperand(sp, kSimdSaveOffset + u32(save_fprs.size() - 1) * 16));
+    }
+    for (size_t i = 0; i + 1 < save_gprs.size(); i += 2) {
+        __ Ldp(XRegister(save_gprs[i]),
+               XRegister(save_gprs[i + 1]),
+               MemOperand(sp, gpr_slot[save_gprs[i]]));
+    }
+    if (save_gprs.size() & 1u) {
+        __ Ldr(XRegister(save_gprs.back()), MemOperand(sp, gpr_slot[save_gprs.back()]));
+    }
+    __ Ldp(x29, x30, MemOperand(sp, kLinkSlot));
     if (has_result) {
         __ Ldr(result, MemOperand(sp, kResultSlot));
     }
