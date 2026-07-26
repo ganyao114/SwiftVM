@@ -5252,14 +5252,292 @@ TEST_CASE("x87 directed edge semantics") {
             CAPTURE(fcw);
             REQUIRE(*reinterpret_cast<s32*>(data + 0x770) == expected);
             REQUIRE((ctx.x87_fsw & 0x21) == 0x20);  // PE, no IE
-            // C1 is the rounding *direction*, not merely "inexact": the SDM
-            // sets it when the stored result exceeds the exact source. Here
-            // the source is +1.5, so C1 must be set exactly for the two modes
-            // that produce 2 (nearest-even and toward +inf) and clear for the
-            // two that produce 1 (toward -inf and truncate). Unicorn clears C1
-            // unconditionally, so only this directed check covers it; real x86
+            // C1 is the rounding *direction*, not merely "inexact": it is set
+            // when the significand was rounded up. Here the source is +1.5, so
+            // C1 must be set exactly for the two modes that produce 2
+            // (nearest-even and toward +inf) and clear for the two that
+            // produce 1 (toward -inf and truncate). Unicorn never reads FSW
+            // after FIST, so only this directed check covers it; real x86
             // behaviour was established by Rosetta arbitration.
             REQUIRE(((ctx.x87_fsw & 0x0200) != 0) == (expected == 2));
+        }
+
+        // The same instruction with a negative source pins the *sense* of C1,
+        // which a positive source cannot distinguish. "Rounded up" is a
+        // statement about the significand, i.e. about magnitude, not about the
+        // value: -1.5 under round-to-nearest stores -2, whose magnitude
+        // exceeds 1.5, so C1 is set even though -2 is the arithmetically
+        // smaller number. A "result > source" predicate is inverted for every
+        // negative source. Rosetta real-x86: FISTP m32 of -1.5 reports C1=1
+        // for nearest and toward -inf, C1=0 for toward +inf and truncate.
+        for (const auto [fcw, expected] :
+             std::array<std::pair<u16, s32>, 4>{{
+                     {0x037F, -2}, {0x077F, -2}, {0x0B7F, -1}, {0x0F7F, -1}}}) {
+            *reinterpret_cast<u16*>(data + 0x760) = fcw;
+            *reinterpret_cast<u64*>(data + 0x768) =
+                    UINT64_C(0xBFF8000000000000);  // -1.5
+            *reinterpret_cast<s32*>(data + 0x770) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x760);  // FLDCW
+            emit_mem(b, 0xDD, 0, 0x768);  // FLD m64
+            emit_mem(b, 0xDB, 3, 0x770);  // FISTP m32
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE(*reinterpret_cast<s32*>(data + 0x770) == expected);
+            REQUIRE((ctx.x87_fsw & 0x21) == 0x20);  // PE, no IE
+            REQUIRE(((ctx.x87_fsw & 0x0200) != 0) == (expected == -2));
+        }
+
+        // FST/FSTP m32/m64 carry the identical C1 rule, which the helper used
+        // to clear unconditionally. The source 1 + 1.5*2^-24 sits three
+        // quarters of the way from 1.0f toward the next f32, so nearest and
+        // toward +inf both deliver 0x3F800001 (magnitude rounded up, C1=1)
+        // while toward -inf and truncate deliver 0x3F800000 (C1=0). Negating
+        // the source swaps which two modes round the magnitude up, which is
+        // what makes the pair self-evident rather than a transcription of the
+        // implementation. Real-x86 expectations from Rosetta.
+        for (const auto [fcw, positive, negative] :
+             std::array<std::tuple<u16, u32, u32>, 4>{{
+                     {0x037F, 0x3F800001u, 0xBF800001u},
+                     {0x077F, 0x3F800000u, 0xBF800001u},
+                     {0x0B7F, 0x3F800001u, 0xBF800000u},
+                     {0x0F7F, 0x3F800000u, 0xBF800000u}}}) {
+            CAPTURE(fcw);
+            for (const bool negate : {false, true}) {
+                const u32 expected = negate ? negative : positive;
+                // 1 + 1.5*2^-24, sign flipped by the top bit.
+                const u64 source = UINT64_C(0x3FF0000018000000) |
+                                   (negate ? UINT64_C(1) << 63 : 0);
+                *reinterpret_cast<u16*>(data + 0x800) = fcw;
+                *reinterpret_cast<u64*>(data + 0x808) = source;
+                *reinterpret_cast<u32*>(data + 0x810) = 0;
+                CodeBuf b;
+                emit_reg(b, 0xDB, 0xE3);
+                emit_mem(b, 0xD9, 5, 0x800);  // FLDCW
+                emit_mem(b, 0xDD, 0, 0x808);  // FLD m64
+                emit_mem(b, 0xD9, 3, 0x810);  // FSTP m32
+                const auto ctx = run(std::move(b));
+                CAPTURE(negate);
+                REQUIRE(*reinterpret_cast<u32*>(data + 0x810) == expected);
+                REQUIRE((ctx.x87_fsw & 0x20) == 0x20);  // PE
+                // The magnitude was rounded up exactly when the delivered f32
+                // is the one further from zero, i.e. ...01 rather than ...00.
+                REQUIRE(((ctx.x87_fsw & 0x0200) != 0) ==
+                        ((expected & 1) != 0));
+                // FSTP's pop belongs to the same instruction and must not
+                // erase the direction: TOP is back at 0 yet C1 survives.
+                REQUIRE(((ctx.x87_fsw >> 11) & 7) == 0);
+            }
+        }
+
+        // The non-pop FST m32 must agree with FSTP, and masked overflow is
+        // part of the same rule: an infinity delivered for a finite source is
+        // a magnitude round-up (C1=1), the largest finite is not (C1=0).
+        // 2^200 is exactly representable as a double and far above f32 range.
+        for (const auto [fcw, positive, negative] :
+             std::array<std::tuple<u16, u32, u32>, 4>{{
+                     {0x037F, 0x7F800000u, 0xFF800000u},
+                     {0x077F, 0x7F7FFFFFu, 0xFF800000u},
+                     {0x0B7F, 0x7F800000u, 0xFF7FFFFFu},
+                     {0x0F7F, 0x7F7FFFFFu, 0xFF7FFFFFu}}}) {
+            CAPTURE(fcw);
+            for (const bool negate : {false, true}) {
+                const u32 expected = negate ? negative : positive;
+                const u64 source = UINT64_C(0x4C70000000000000) |
+                                   (negate ? UINT64_C(1) << 63 : 0);
+                *reinterpret_cast<u16*>(data + 0x800) = fcw;
+                *reinterpret_cast<u64*>(data + 0x808) = source;
+                *reinterpret_cast<u32*>(data + 0x810) = 0;
+                CodeBuf b;
+                emit_reg(b, 0xDB, 0xE3);
+                emit_mem(b, 0xD9, 5, 0x800);  // FLDCW
+                emit_mem(b, 0xDD, 0, 0x808);  // FLD m64
+                emit_mem(b, 0xD9, 2, 0x810);  // FST m32 (no pop)
+                const auto ctx = run(std::move(b));
+                CAPTURE(negate);
+                REQUIRE(*reinterpret_cast<u32*>(data + 0x810) == expected);
+                REQUIRE((ctx.x87_fsw & 0x28) == 0x28);  // OE + PE
+                REQUIRE(((ctx.x87_fsw & 0x0200) != 0) ==
+                        ((expected & 0x7FFFFFFFu) == 0x7F800000u));
+            }
+        }
+
+        // FST m64 needs an ext80-only source to round at all. Significand
+        // 0x8000000000000C00 is 1 + 1.5 f64-ulp, an exact tie, so nearest-even
+        // and toward +inf deliver ...0002 (round-up, C1=1) while toward -inf
+        // and truncate deliver ...0001 (C1=0).
+        for (const auto [fcw, expected] :
+             std::array<std::pair<u16, u64>, 4>{{
+                     {0x037F, UINT64_C(0x3FF0000000000002)},
+                     {0x077F, UINT64_C(0x3FF0000000000001)},
+                     {0x0B7F, UINT64_C(0x3FF0000000000002)},
+                     {0x0F7F, UINT64_C(0x3FF0000000000001)}}}) {
+            *reinterpret_cast<u16*>(data + 0x800) = fcw;
+            write_ext(0x820, UINT64_C(0x8000000000000C00), 0x3FFF);
+            *reinterpret_cast<u64*>(data + 0x818) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x800);  // FLDCW
+            emit_mem(b, 0xDB, 5, 0x820);  // FLD m80
+            emit_mem(b, 0xDD, 3, 0x818);  // FSTP m64
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x818) == expected);
+            REQUIRE((ctx.x87_fsw & 0x20) == 0x20);  // PE
+            REQUIRE(((ctx.x87_fsw & 0x0200) != 0) == ((expected & 3) == 2));
+        }
+
+        // FST/FSTP m80 is a bit-for-bit copy: no rounding is possible, so C1
+        // is architecturally 0 and PE is never raised, even for a datum that
+        // is inexact in every narrower format. The store must also *clear* a
+        // C1 that a preceding instruction set — FXAM reports the sign there —
+        // rather than leaving it alone.
+        {
+            write_ext(0x820, UINT64_C(0x8000000000000C00), 0xBFFF);
+            write_ext(0x830, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x820);  // FLD m80, negative
+            emit_reg(b, 0xD9, 0xE5);      // FXAM: C1 = sign = 1
+            emit_reg(b, 0xDF, 0xE0);      // FNSTSW AX
+            EmitMovRegReg(b, 16, kR10, kRax);
+            emit_mem(b, 0xDB, 7, 0x830);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0x0200) == 0x0200);  // FXAM did set C1
+            REQUIRE((ctx.x87_fsw & 0x0200) == 0);         // FSTP m80 cleared it
+            REQUIRE((ctx.x87_fsw & 0x20) == 0);           // and raised no PE
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x830) ==
+                    UINT64_C(0x8000000000000C00));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x838) == 0xBFFF);
+        }
+
+        // A register-to-register FST also transfers ext80 unrounded, so it
+        // clears C1 instead of leaving the previous instruction's value in
+        // place. The helper used to leave C1 untouched here.
+        {
+            write_ext(0x820, UINT64_C(0x8000000000000C00), 0xBFFF);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);      // FLD1
+            emit_mem(b, 0xDB, 5, 0x820);  // FLD m80, negative
+            emit_reg(b, 0xD9, 0xE5);      // FXAM: C1 = 1
+            emit_reg(b, 0xDD, 0xD1);      // FST ST(1)
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.x87_fsw & 0x0200) == 0);
+        }
+
+        // FRNDINT reports the same magnitude-based direction, and its result
+        // is directly comparable with its own source. +1.5 and -1.5 are mirror
+        // images: C1 must be set in exactly the two modes that deliver
+        // magnitude 2 and clear in the two that deliver magnitude 1 — which
+        // for the negative source are the opposite two modes. FSW is captured
+        // before the store, because the store would rewrite C1 itself.
+        for (const auto [fcw, positive_two, negative_two] :
+             std::array<std::tuple<u16, bool, bool>, 4>{{{0x037F, true, true},
+                                                         {0x077F, false, true},
+                                                         {0x0B7F, true, false},
+                                                         {0x0F7F, false, false}}}) {
+            CAPTURE(fcw);
+            for (const bool negate : {false, true}) {
+                const bool magnitude_two = negate ? negative_two : positive_two;
+                *reinterpret_cast<u16*>(data + 0x800) = fcw;
+                write_ext(0x820,
+                          UINT64_C(0xC000000000000000),  // 1.5
+                          static_cast<u16>(negate ? 0xBFFF : 0x3FFF));
+                write_ext(0x830, 0, 0);
+                CodeBuf b;
+                emit_reg(b, 0xDB, 0xE3);
+                emit_mem(b, 0xD9, 5, 0x800);  // FLDCW
+                emit_mem(b, 0xDB, 5, 0x820);  // FLD m80
+                emit_reg(b, 0xD9, 0xFC);      // FRNDINT
+                emit_reg(b, 0xDF, 0xE0);      // FNSTSW AX
+                EmitMovRegReg(b, 16, kR10, kRax);
+                emit_mem(b, 0xDB, 7, 0x830);  // FSTP m80
+                const auto ctx = run(std::move(b));
+                CAPTURE(negate);
+                // Magnitude 2 is exponent 0x4000, magnitude 1 is 0x3FFF; the
+                // significand is 0x8000000000000000 either way.
+                REQUIRE(*reinterpret_cast<u64*>(data + 0x830) ==
+                        UINT64_C(0x8000000000000000));
+                REQUIRE((*reinterpret_cast<u16*>(data + 0x838) & 0x7FFF) ==
+                        (magnitude_two ? 0x4000 : 0x3FFF));
+                REQUIRE((ctx.r10.qword & 0x20) == 0x20);  // PE
+                REQUIRE(((ctx.r10.qword & 0x0200) != 0) == magnitude_two);
+            }
+        }
+
+        // An exactly representable FRNDINT source rounds in no direction at
+        // all: no PE, and C1 clear in every mode.
+        for (const u16 fcw : {0x037F, 0x077F, 0x0B7F, 0x0F7F}) {
+            *reinterpret_cast<u16*>(data + 0x800) = fcw;
+            write_ext(0x820, UINT64_C(0x8000000000000000), 0x4000);  // 2.0
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x800);
+            emit_mem(b, 0xDB, 5, 0x820);
+            emit_reg(b, 0xD9, 0xFC);  // FRNDINT
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE((ctx.x87_fsw & 0x20) == 0);
+            REQUIRE((ctx.x87_fsw & 0x0200) == 0);
+        }
+
+        // FSQRT has no exact result to compare against, so the direction has
+        // to come from a second, toward-zero evaluation. The ext80 square root
+        // of 2 lies 0.3496 ulp above significand 0xB504F333F9DE6484 — computed
+        // with arbitrary-precision arithmetic, independent of any x87
+        // implementation. Nearest, toward -inf and truncate must therefore all
+        // deliver ...84 with C1=0, and only toward +inf may deliver ...85 with
+        // C1=1. The m80 source keeps this off the opt-in reduced-precision
+        // mid-tier, which is only seeded by FLD m64.
+        for (const auto [fcw, expected] :
+             std::array<std::pair<u16, u64>, 4>{{
+                     {0x037F, UINT64_C(0xB504F333F9DE6484)},
+                     {0x077F, UINT64_C(0xB504F333F9DE6484)},
+                     {0x0B7F, UINT64_C(0xB504F333F9DE6485)},
+                     {0x0F7F, UINT64_C(0xB504F333F9DE6484)}}}) {
+            *reinterpret_cast<u16*>(data + 0x800) = fcw;
+            write_ext(0x820, UINT64_C(0x8000000000000000), 0x4000);  // 2.0
+            write_ext(0x830, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x800);  // FLDCW
+            emit_mem(b, 0xDB, 5, 0x820);  // FLD m80
+            emit_reg(b, 0xD9, 0xFA);      // FSQRT
+            emit_reg(b, 0xDF, 0xE0);      // FNSTSW AX
+            EmitMovRegReg(b, 16, kR10, kRax);
+            emit_mem(b, 0xDB, 7, 0x830);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x830) == expected);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x838) == 0x3FFF);
+            REQUIRE((ctx.r10.qword & 0x20) == 0x20);  // PE
+            REQUIRE(((ctx.r10.qword & 0x0200) != 0) ==
+                    (expected == UINT64_C(0xB504F333F9DE6485)));
+        }
+
+        // An exact square root rounds in no direction: sqrt(4) = 2 with no PE
+        // and C1 clear in every mode.
+        for (const u16 fcw : {0x037F, 0x077F, 0x0B7F, 0x0F7F}) {
+            *reinterpret_cast<u16*>(data + 0x800) = fcw;
+            write_ext(0x820, UINT64_C(0x8000000000000000), 0x4001);  // 4.0
+            write_ext(0x830, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x800);
+            emit_mem(b, 0xDB, 5, 0x820);
+            emit_reg(b, 0xD9, 0xFA);  // FSQRT
+            emit_reg(b, 0xDF, 0xE0);  // FNSTSW AX
+            EmitMovRegReg(b, 16, kR10, kRax);
+            emit_mem(b, 0xDB, 7, 0x830);
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x830) ==
+                    UINT64_C(0x8000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x838) == 0x4000);
+            REQUIRE((ctx.r10.qword & 0x20) == 0);
+            REQUIRE((ctx.r10.qword & 0x0200) == 0);
         }
         for (const auto [input, expected, ie] :
              std::array<std::tuple<u64, u64, bool>, 4>{{

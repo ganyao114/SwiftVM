@@ -285,6 +285,25 @@ extFloat80_t Signed64ToExt80(s64 integer) {
     return value;
 }
 
+// x87 defines C1 as the rounding *direction*: set when the significand was
+// rounded up, i.e. when the delivered magnitude exceeds the exact source
+// magnitude.  It is NOT "the delivered value is arithmetically greater than
+// the source".  Rosetta real-x86 arbitration:
+//   FIST m32 of -1.5, round-to-nearest -> stores -2 with C1=1, even though -2
+//     is the *smaller* value (|-2| > |-1.5| is what C1 reports);
+//   FST m32 of -1e40, masked overflow  -> stores -inf with C1=1;
+//   FST m32 of -1e-60, round toward -inf -> stores -denormal_min with C1=1.
+// The inexact flag alone gives the magnitude of the error, never its
+// direction, so an explicit comparison is unavoidable.
+bool RoundedUpInMagnitude(extFloat80_t source, extFloat80_t stored) {
+    source.signExp &= 0x7FFF;
+    stored.signExp &= 0x7FFF;
+    softfloat_state scratch{};
+    // A NaN compares false in both directions, which is exactly right: a NaN
+    // result never raises #P, and C1 is only meaningful when #P is signalled.
+    return extF80_lt(&scratch, source, stored);
+}
+
 extFloat80_t LoadMemoryValue(ThreadContext64& ctx, X87Format format, u64 address) {
     auto state = StateFromControl(ctx, true);
     // FLD m32/m64 of a signaling NaN is an invalid operation: real x86 raises
@@ -293,8 +312,9 @@ extFloat80_t LoadMemoryValue(ThreadContext64& ctx, X87Format format, u64 address
     // discarded here — the quieting happened but the exception never reached
     // the status word.
     //
-    // NOTE: Unicorn does not propagate IE here either, so the differential
-    // fuzz masks IE for m32/m64 FLD (see kX87StatusMaskLoadIE in x86_fuzz.cpp).
+    // NOTE: Unicorn does not propagate IE here either, but it also never reads
+    // FSW after FLD, so the differential fuzz cannot observe this and needs no
+    // mask; the directed assertions in x86_fuzz.cpp are the only coverage.
     // Real x86 behaviour was established by Rosetta arbitration.
     // Widening m32/m64 to ext80 is always exact, so the only flag SoftFloat can
     // produce here is invalid (from an SNaN); no spurious PE/UE is possible.
@@ -386,13 +406,36 @@ void StoreFloat(ThreadContext64& ctx, X87Format format, u64 address) {
     const auto value = Read(ctx, 0);
     auto state = StateFromControl(ctx);
     ctx.x87_fsw &= static_cast<u16>(~kSwC1);
+
+    // FST/FSTP report the rounding direction in C1 exactly like FIST/FISTP do
+    // (see RoundedUpInMagnitude).  Widening the narrowed result back to ext80
+    // is always exact, so the magnitude comparison against the source is the
+    // architectural predicate, covering masked overflow (delivered infinity is
+    // a round-up) and masked underflow (delivered zero is not) for free.
+    //
+    // NOTE: Unicorn never reads FSW after FST, so the differential fuzz cannot
+    // observe C1 here at all; the directed assertions in x86_fuzz.cpp are the
+    // only coverage, and their expectations come from Rosetta real-x86 runs.
+    softfloat_state widen{};
+    const auto mark_round_up = [&](const extFloat80_t& stored) {
+        if (RoundedUpInMagnitude(value, stored)) ctx.x87_fsw |= kSwC1;
+    };
     if (format == X87Format::Float32) {
         const auto out = extF80_to_f32(&state, value);
         StoreGuest<u32>(address, out.v);
+        mark_round_up(f32_to_extF80(&widen, out));
     } else if (format == X87Format::Float64) {
         const auto out = extF80_to_f64(&state, value);
         StoreGuest<u64>(address, out.v);
+        mark_round_up(f64_to_extF80(&widen, out));
     } else {
+        // FST/FSTP m80 copies the ext80 datum bit for bit, so no rounding is
+        // possible and C1 is architecturally always 0 — the blanket clear
+        // above is the whole story.  Verified on real x86: FSTP m80 of a value
+        // that is inexact in every narrower format reports C1=0 and PE=0, and
+        // still clears a C1 that an immediately preceding FXAM had set.  The
+        // ARM64 mid-tier inline m80 store agrees (`And fsw, 0xFDFF` in
+        // translator_x87.cpp).
         StoreExt80(address, value);
     }
     RaiseSoftFloat(ctx, state.exceptionFlags);
@@ -422,21 +465,25 @@ void StoreInteger(ThreadContext64& ctx,
     const u8 rounding = truncate ? softfloat_round_minMag : state.roundingMode;
     ctx.x87_fsw &= static_cast<u16>(~kSwC1);
 
-    // C1 reports the rounding direction: the SDM sets it when the stored
-    // result is greater than the exact source value ("rounded up"), and clears
-    // it otherwise. Determine that by widening the integer result back to
-    // ext80 and comparing — the inexact flag alone gives magnitude, not sign.
+    // C1 reports the rounding direction: set when the significand was rounded
+    // up, which for a store means the delivered magnitude exceeds the source
+    // magnitude (see RoundedUpInMagnitude).  Widen the integer result back to
+    // ext80 and compare — the inexact flag alone gives magnitude, not sign.
     // Only called on the paths that actually store a converted result: when
     // #IA forces the integer indefinite value, C1 stays 0.
     //
-    // NOTE: Unicorn clears C1 unconditionally here, so the differential fuzz
-    // masks C1 for FIST/FISTP/FISTTP (see kX87StatusMaskFistC1 in x86_fuzz.cpp).
-    // Real x86 behaviour was established by Rosetta arbitration.
+    // The predicate is a *magnitude* comparison, not "stored > source": real
+    // x86 stores -2 for FIST(-1.5) under round-to-nearest with C1=1 even
+    // though -2 is the smaller value.  An earlier value comparison here was
+    // therefore inverted for every negative source.
+    //
+    // NOTE: Unicorn never reads FSW after FIST, so the differential fuzz
+    // cannot observe C1 here; the directed assertions in x86_fuzz.cpp are the
+    // only coverage, and their expectations come from Rosetta real-x86 runs.
     // Signed64ToExt80, not i64_to_extF80: the vendored SoftFloat build does not
     // include the latter's translation unit.
     const auto mark_round_up = [&](s64 stored) {
-        softfloat_state scratch{};
-        if (extF80_lt(&scratch, value, Signed64ToExt80(stored))) {
+        if (RoundedUpInMagnitude(value, Signed64ToExt80(stored))) {
             ctx.x87_fsw |= kSwC1;
         }
     };
@@ -1009,13 +1056,36 @@ void Unary(ThreadContext64& ctx, X87Unary operation) {
             break;
         case X87Unary::Sqrt: {
             auto state = StateFromControl(ctx);
-            value = extF80_sqrt(&state, value);
+            const auto result = extF80_sqrt(&state, value);
+            // C1 is the rounding direction here too, but unlike a store there
+            // is no exact result to compare against.  Recompute toward zero:
+            // that mode always delivers the smaller-magnitude neighbour of the
+            // exact root, so "differs from it" is precisely "the significand
+            // was rounded up".  Guarded by the inexact flag, so exactly-
+            // representable roots pay nothing.
+            if (state.exceptionFlags & softfloat_flag_inexact) {
+                auto toward_zero = StateFromControl(ctx);
+                toward_zero.roundingMode = softfloat_round_minMag;
+                const auto down = extF80_sqrt(&toward_zero, value);
+                if (result.signif != down.signif ||
+                    result.signExp != down.signExp) {
+                    ctx.x87_fsw |= kSwC1;
+                }
+            }
+            value = result;
             RaiseSoftFloat(ctx, state.exceptionFlags);
             break;
         }
         case X87Unary::Round: {
             auto state = StateFromControl(ctx, true);
-            value = extF80_roundToInt(&state, value, state.roundingMode, true);
+            const auto rounded =
+                    extF80_roundToInt(&state, value, state.roundingMode, true);
+            // FRNDINT's result is directly comparable with its own source, so
+            // the direction needs no second computation.  Magnitude, not
+            // value: real x86 rounds -1.5 to -2 with C1=1 under both
+            // round-to-nearest and round toward -inf.
+            if (RoundedUpInMagnitude(value, rounded)) ctx.x87_fsw |= kSwC1;
+            value = rounded;
             RaiseSoftFloat(ctx, state.exceptionFlags);
             break;
         }
@@ -1124,7 +1194,14 @@ u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
             break;
         case X87Action::StoreFloat:
             StoreFloat(ctx, command.format, guest_address);
-            if (command.flags & X87Pop) Pop(ctx);
+            if (command.flags & X87Pop) {
+                // Same reasoning as StoreInt below: FSTP's pop belongs to the
+                // same instruction as the store and must not erase the
+                // rounding direction StoreFloat just recorded in C1.
+                const u16 c1 = ctx.x87_fsw & kSwC1;
+                Pop(ctx);
+                ctx.x87_fsw = static_cast<u16>((ctx.x87_fsw & ~kSwC1) | c1);
+            }
             break;
         case X87Action::StoreInt:
             StoreInteger(ctx,
@@ -1152,6 +1229,15 @@ u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
         case X87Action::StoreReg:
             if (Require(ctx, 0)) {
                 Write(ctx, command.index, Read(ctx, 0));
+                // A register-to-register FST/FSTP transfers the ext80 datum
+                // unrounded, so C1 is architecturally 0 rather than left at
+                // whatever the previous instruction put there.  Verified on
+                // real x86: FXAM of a negative (C1=1) followed by FST ST(1)
+                // reports C1=0.  The ARM64 mid-tier inline path already did
+                // this (`And fsw, 0xFDFF` in translator_x87.cpp); the helper
+                // did not.  The underflow branch needs no clear because
+                // Require -> StackFault has already forced C1 to 0.
+                ctx.x87_fsw &= static_cast<u16>(~kSwC1);
             } else {
                 Write(ctx, command.index, kIndefinite);
             }

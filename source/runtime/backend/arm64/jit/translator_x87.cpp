@@ -719,6 +719,11 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
             __ Ldrh(fcw.W(), MemOperand(state, kFcw));
+            // C1 is cleared up front so that both the invalid path and the
+            // converted path start from 0; the converted path re-sets it below
+            // when the store rounded up.  The register copy is dead on every
+            // `slow` branch, which reloads FSW inside the helper.
+            __ And(fsw.W(), fsw.W(), 0xFDFF);
             load_top(top, fsw);
             __ Lsl(shift.W(), top.W(), 1);
             __ Lsr(sign_exp.W(), ftw.W(), shift.W());
@@ -821,6 +826,16 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Fcmp(input_fp.D(), rounded_fp.D());
             __ Cset(scratch.W(), ne);
             __ Orr(fsw.W(), fsw.W(), Operand{scratch.W(), LSL, 5});
+            // C1 is the rounding *direction*: set when the stored magnitude
+            // exceeds the source magnitude, matching StoreInteger in
+            // x87.cpp. Magnitude, not value — real x86 stores -2 for
+            // FIST(-1.5) under round-to-nearest with C1=1. Both temporaries
+            // are dead after the PE compare above, so they can be clobbered.
+            __ Fabs(input_fp.D(), input_fp.D());
+            __ Fabs(rounded_fp.D(), rounded_fp.D());
+            __ Fcmp(rounded_fp.D(), input_fp.D());
+            __ Cset(scratch.W(), gt);
+            __ Orr(fsw.W(), fsw.W(), Operand{scratch.W(), LSL, 9});
             __ B(&store);
 
             __ Bind(&invalid);
@@ -833,7 +848,6 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Orr(fsw.W(), fsw.W(), 1);  // IE
 
             __ Bind(&store);
-            __ And(fsw.W(), fsw.W(), 0xFDFF);  // C1=0
             const auto out = use_memory_base ? BiasMem(guest) : MemOperand(guest);
             if (format == swift::x86::X87Format::Int16) {
                 __ Strh(converted.W(), out);
@@ -850,7 +864,12 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 __ Orr(ftw.W(), ftw.W(), scratch.W());
                 __ Add(top.W(), top.W(), 1);
                 __ And(top.W(), top.W(), 7);
-                __ And(fsw.W(), fsw.W(), 0xC5FF);
+                // 0xC7FF, not the 0xC5FF used by pops elsewhere: FISTP's pop
+                // belongs to the same instruction as the store, so it must
+                // clear TOP without erasing the rounding direction recorded in
+                // C1 above. This mirrors the cross-pop preservation in
+                // X87Dispatch's StoreInt arm.
+                __ And(fsw.W(), fsw.W(), 0xC7FF);
                 __ Orr(fsw.W(), fsw.W(), Operand{top.W(), LSL, 11});
                 __ Strh(ftw.W(), MemOperand(state, kFtw));
             }
