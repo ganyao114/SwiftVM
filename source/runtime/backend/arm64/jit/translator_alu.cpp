@@ -1194,9 +1194,28 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
     const u32 kind = inst->GetArg<ir::Imm>(3).Get();
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
     auto value = context.GetTmpV();
+    // x86 SQRT of a negative operand raises #I and delivers the QNaN
+    // *indefinite*, whose sign bit is SET (0xFFC00000 / 0xFFF8000000000000).
+    // ARM's FSQRT delivers the default NaN, whose sign is clear, so the two
+    // disagree on exactly those lanes — verified against real x86 via Rosetta:
+    // sqrtps(-4) = ffc00000, sqrtpd(-4) = fff8000000000000.
+    //
+    // FCMLT against zero is false for both NaN and -0.0, which is precisely the
+    // wanted predicate: a NaN operand must keep propagating through FSQRT, and
+    // sqrt(-0.0) is legitimately -0.0 on both architectures.
+    //
+    // This is not AVX-specific: legacy SSE sqrtps/sqrtpd/sqrtss/sqrtsd reach
+    // the same IR opcode and were wrong in the same way.
     if (bits == 32) {
         if (kind == 0) {
             __ Fsqrt(value.V4S(), source.V4S());
+            auto negative = context.GetTmpV();
+            auto indef = context.GetTmpV();
+            auto imm = context.GetTmpX();
+            __ Fcmlt(negative.V4S(), source.V4S(), 0.0);
+            __ Mov(imm.W(), 0xFFC00000u);
+            __ Dup(indef.V4S(), imm.W());
+            __ Bit(value.V16B(), indef.V16B(), negative.V16B());
         } else if (kind == 1) {
             __ Frecpe(value.V4S(), source.V4S());
             auto step = context.GetTmpV();
@@ -1219,6 +1238,13 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
         }
     } else {
         __ Fsqrt(value.V2D(), source.V2D());
+        auto negative = context.GetTmpV();
+        auto indef = context.GetTmpV();
+        auto imm = context.GetTmpX();
+        __ Fcmlt(negative.V2D(), source.V2D(), 0.0);
+        __ Mov(imm, UINT64_C(0xFFF8000000000000));
+        __ Dup(indef.V2D(), imm);
+        __ Bit(value.V16B(), indef.V16B(), negative.V16B());
     }
     if (!scalar) {
         __ Orr(result.V16B(), value.V16B(), value.V16B());
