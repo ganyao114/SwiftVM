@@ -466,13 +466,16 @@ TEST_CASE("IR meta consistency") {
 TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     using namespace swift::runtime::ir;
 
+    // Dead-pseudo removal, exercised on a carry-free mask. A SaveFlags whose
+    // bits are all rewritten before any read is dropped, and the surviving
+    // write keeps its original (un-narrowed) mask.
     Block overwritten{0, Location{0x1000}};
     auto lhs = overwritten.LoadImm(Imm{1u});
     auto rhs = overwritten.LoadImm(Imm{2u});
     auto old_result = overwritten.Add(lhs, Operand{rhs});
-    overwritten.AppendInst(OpCode::SaveFlags, old_result, Flags::All);
+    overwritten.AppendInst(OpCode::SaveFlags, old_result, Flags::NZ);
     auto new_result = overwritten.Add(lhs, Operand{rhs});
-    auto* new_save = overwritten.AppendInst(OpCode::SaveFlags, new_result, Flags::All);
+    auto* new_save = overwritten.AppendInst(OpCode::SaveFlags, new_result, Flags::NZ);
 
     FlagsEliminationPass::Run(&overwritten);
 
@@ -480,12 +483,34 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     auto new_pseudos = new_result.Def()->GetPseudoOperations(OpCode::SaveFlags);
     REQUIRE(new_pseudos.size() == 1);
     REQUIRE(new_pseudos[0] == new_save);
-    REQUIRE(new_pseudos[0]->GetArg<Flags>(1) == Flags::All);
+    REQUIRE(new_pseudos[0]->GetArg<Flags>(1) == Flags::NZ);
     size_t save_count = 0;
     for (auto& inst : overwritten.GetInstList()) {
         save_count += inst.GetOp() == OpCode::SaveFlags;
     }
     REQUIRE(save_count == 1);
+
+    // Carry is deliberately exempt from removal even when a later write in the
+    // same block covers it: C persists across blocks and a following block's
+    // Adc/Sbb may read it, which per-block liveness cannot model (see the
+    // guard in FlagsEliminationPass::Run). Both writes must therefore survive.
+    Block carry_overwritten{0, Location{0x1800}};
+    auto c_lhs = carry_overwritten.LoadImm(Imm{1u});
+    auto c_rhs = carry_overwritten.LoadImm(Imm{2u});
+    auto c_old = carry_overwritten.Add(c_lhs, Operand{c_rhs});
+    carry_overwritten.AppendInst(OpCode::SaveFlags, c_old, Flags::All);
+    auto c_new = carry_overwritten.Add(c_lhs, Operand{c_rhs});
+    carry_overwritten.AppendInst(OpCode::SaveFlags, c_new, Flags::All);
+
+    FlagsEliminationPass::Run(&carry_overwritten);
+
+    REQUIRE(c_old.Def()->GetPseudoOperations(OpCode::SaveFlags).size() == 1);
+    REQUIRE(c_new.Def()->GetPseudoOperations(OpCode::SaveFlags).size() == 1);
+    size_t carry_save_count = 0;
+    for (auto& inst : carry_overwritten.GetInstList()) {
+        carry_save_count += inst.GetOp() == OpCode::SaveFlags;
+    }
+    REQUIRE(carry_save_count == 2);
 
     Block carry_read{0, Location{0x2000}};
     auto carry_lhs = carry_read.LoadImm(Imm{5u});
