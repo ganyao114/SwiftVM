@@ -841,6 +841,44 @@ private:
     void DecodeAvxIntPermd(const VexInsn& v);
     void DecodeAvxIntBlendv(const VexInsn& v);
 
+    // ---- VEX / SSE widening multiply (decoder_avx_mul.cc) ----------------
+    bool DecodeAvxMul(const VexInsn& v);
+    void DecodeAvxMulWiden(const VexInsn& v, bool is_signed);
+    void DecodeSseMulWiden(_DInst& insn, bool is_signed);
+
+    // ---- VEX horizontal / pairwise (decoder_avx_hadd.cc) -----------------
+    // vhadd*/vhsub*/vphadd*/vphsub*/vpmaddubsw, both widths. Same decline
+    // contract as DecodeAvxInt, and it reuses DecodeAvxIntBinary above rather
+    // than adding a driver: every opcode it claims has the identical
+    // reg/vvvv/rm shape and is defined per 128-bit lane.
+    bool DecodeAvxHadd(const VexInsn& v);
+
+
+    // ---- AVX2 gather (decoder_avx_gather.cc) -----------------------------
+    // Built from existing IR in the shape DecodeMaskmovdqu already uses: per
+    // element TestNotZero on the mask msb -> NotGoto -> LoadMemory -> guarded
+    // slot write. A CallLambda helper was rejected because its loads would go
+    // through a raw host pointer: in the JIT the faulting host PC would sit
+    // inside the helper and AddressSpace::LookupFault would miss it, killing
+    // the HOST process instead of raising PageFatal.
+    bool DecodeAvxGather(const VexInsn& v);
+    void DecodeAvxGatherOp(const VexInsn& v, u32 element_bits, u32 index_bits,
+                           u32 index_reg);
+    ir::Value GatherSlotRead(u32 reg, u32 slot);
+    void GatherSlotWrite(u32 reg, u32 slot, ir::Value value);
+
+    // ---- VEX blend / extract / maskmov (decoder_avx_blend.cc) ------------
+    // vblendps/pd, vblendvps/pd, vextractps, vinsertps and vmaskmovps/pd,
+    // both widths. Same decline contract as DecodeAvxInt; the imm8 blends
+    // reuse DecodeAvxIntBinary and vextractps reuses DecodeAvxFpExtract.
+    // The masked moves are the one family here that touches memory per
+    // element rather than per vector, so that a masked-off element cannot
+    // fault -- see the file header.
+    bool DecodeAvxBlend(const VexInsn& v);
+    void DecodeAvxBlendVar(const VexInsn& v, u32 lane_bits);
+    void DecodeAvxInsertPs(const VexInsn& v);
+    void DecodeAvxMaskMov(const VexInsn& v, u32 lane_bits, bool store);
+
     // ---- VEX.256 (decoder_avx.cc) ---------------------------------------
     // A 256-bit operation is two independent V128 operations (contract C1:
     // ARM64 V registers are 128 bits and RegAlloc maps one value onto one

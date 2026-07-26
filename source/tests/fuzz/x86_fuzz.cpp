@@ -1854,8 +1854,6 @@ TEST_CASE("Fuzz x86 cpuid") {
         // here matches what CPUID will actually report.
         const bool xsave_on = std::getenv("SVM_XSAVE") &&
                               std::strcmp(std::getenv("SVM_XSAVE"), "0") != 0;
-        const bool bmi_on = std::getenv("SVM_BMI") &&
-                            std::strcmp(std::getenv("SVM_BMI"), "0") != 0;
         switch (leaf) {
             case 0:
                 REQUIRE(sig[0] == 0x15);
@@ -1880,10 +1878,12 @@ TEST_CASE("Fuzz x86 cpuid") {
                 REQUIRE((sig[2] & (1u << 0)) == 0);   // no SSE3
                 break;
             case 7:
-                // BMI1 (bit 3) / BMI2 (bit 8) track the SVM_BMI gate, same
-                // discipline: decoder_bmi.cc implements the whole set.
-                REQUIRE(sig[1] == ((1u << 18) |
-                                   (bmi_on ? ((1u << 3) | (1u << 8)) : 0u)));
+                // BMI1 (bit 3) / BMI2 (bit 8) are implemented (decoder_bmi.cc,
+                // gated on SVM_BMI) but deliberately NOT advertised yet: the
+                // AVX gap list is still being closed, and advertising BMI2 is
+                // what makes glibc's ifunc select the AVX2 string variants.
+                // The two moves together, in one reviewed step.
+                REQUIRE(sig[1] == (1u << 18));        // RDSEED only
                 break;
             case 0x15:
                 REQUIRE(sig[0] == 1);              // denominator

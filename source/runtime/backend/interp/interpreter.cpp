@@ -1721,6 +1721,35 @@ void Interpreter::RunVecMulHigh16(ir::Inst* inst, InterpStack& stack) {
                      }));
 }
 
+// Widening multiply of the even lanes; mirrors EmitVecMulWiden.  Source lane 2i
+// sits at bit 2i*src_bits, which is bit i*dst_bits -- the same offset as
+// destination lane i -- so one loop over the destination lanes reads both.
+//
+// The signed product cannot overflow the destination: two values in
+// [-2^(n-1), 2^(n-1)) multiply into [-2^(2n-2), 2^(2n-2)], which fits a
+// 2n-bit signed lane, so the s64 arithmetic below is exact for src_bits <= 32.
+void Interpreter::RunVecMulWiden(ir::Inst* inst, InterpStack& stack) {
+    const u32 src_bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool is_signed = inst->GetArg<ir::Imm>(3).Get() != 0;
+    ASSERT(src_bits == 8 || src_bits == 16 || src_bits == 32);
+    const u32 dst_bits = src_bits * 2;
+    const u64 src_mask = MaskBits(src_bits);
+    const u64 dst_mask = MaskBits(dst_bits);
+    const u128 a = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u128 b = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    u128 result = 0;
+    for (u32 bit = 0; bit < 128; bit += dst_bits) {
+        const u64 left = static_cast<u64>(a >> bit) & src_mask;
+        const u64 right = static_cast<u64>(b >> bit) & src_mask;
+        const u64 product =
+                is_signed ? static_cast<u64>(SignedLane(left, src_bits) *
+                                             SignedLane(right, src_bits))
+                          : left * right;
+        result |= static_cast<u128>(product & dst_mask) << bit;
+    }
+    WriteVec(stack, inst, result);
+}
+
 void Interpreter::RunVecSatAdd(ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const bool signed_lanes = inst->GetArg<ir::Imm>(3).Get() != 0;
@@ -2362,6 +2391,28 @@ void Interpreter::RunVecFDivScalar64(ir::Inst* inst, InterpStack& stack) {
              VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
                               ReadScalar(stack, inst->GetArg<ir::Value>(1)),
                               [](double a, double b) { return a / b; }));
+}
+
+// De-interleave, the dual of RunVecZip: keep every other lane of {left, right},
+// starting at lane 0 (UZP1) or lane 1 (UZP2). Mirrors EmitVecUnzip.
+void Interpreter::RunVecUnzip(ir::Inst* inst, InterpStack& stack) {
+    const auto left = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto right = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool odd = inst->GetArg<ir::Imm>(3).Get() != 0;
+    ASSERT(lane_bits == 8 || lane_bits == 16 || lane_bits == 32 || lane_bits == 64);
+    const u32 half_lanes = 64 / lane_bits;
+    const u32 first = odd ? 1 : 0;
+    const u64 lane_mask = MaskBits(lane_bits);
+    u128 result = 0;
+    for (u32 lane = 0; lane < half_lanes; ++lane) {
+        const u32 source_bit = (lane * 2 + first) * lane_bits;
+        const u64 a = static_cast<u64>(left >> source_bit) & lane_mask;
+        const u64 b = static_cast<u64>(right >> source_bit) & lane_mask;
+        result |= static_cast<u128>(a) << (lane * lane_bits);
+        result |= static_cast<u128>(b) << ((half_lanes + lane) * lane_bits);
+    }
+    WriteVec(stack, inst, result);
 }
 
 }  // namespace swift::runtime::backend::interp
