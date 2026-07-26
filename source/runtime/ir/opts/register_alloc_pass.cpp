@@ -7,6 +7,28 @@
 
 namespace swift::runtime::ir {
 
+// Scratch headroom the linear scan must never hand out to a value.
+//
+// JitContext::GetTmpX takes a scratch register by picking the first register
+// NOT set in this pass's per-instruction active mask, and there is no release
+// mechanism -- scratch is recycled only at the next TickIR. If the scan fills
+// every allocatable GPR, the active mask is all ones, GetTmpX has nothing to
+// return and panics ("No free temporary GPR"). That makes spilling
+// self-defeating: the very reload the spill requires (JitContext::SpillGPR)
+// asks for scratch, so the first spilled value guarantees the panic.
+// SVM_FUNC_BASE=0 on x87_bench_x86_64 and x87_topvirt_stress_x86_64 hit
+// exactly this and aborted the guest.
+//
+// 4 is measured, not guessed: 3 is the smallest headroom that lets both of
+// those guests run to completion, and 4 is the largest value that still leaves
+// every other workload in the suite (both real static-glibc programs included)
+// completely spill-free -- at 8, func_tests and real_busy start spilling.
+// Peak scratch demand for a single IR instruction was measured at 8 (the
+// vector NaN-fixup path behind VecFAdd/VecFMul/X87Op), so a saturated unit
+// that also emits one of those can still exhaust the pool; the real fix for
+// that is a scratch-release mechanism or per-opcode scratch accounting.
+static constexpr u32 kGprScratchReserve = 4;
+
 struct LiveInterval {
     Inst* inst{};
     u32 start{};
@@ -380,6 +402,9 @@ private:
     }
 
     int AllocGPR() {
+        if (static_cast<u32>(active_gprs.GetClearCount()) <= kGprScratchReserve) {
+            return -1;
+        }
         if (auto alloc = active_gprs.GetFirstClear(); alloc >= 0) {
             active_gprs.Mark(alloc);
             return alloc;

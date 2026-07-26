@@ -313,6 +313,82 @@ u16 HIRFunction::MaxBlockCount() { return block_order_id; }
 u16 HIRFunction::MaxInstrCount() { return inst_order_id; }
 u16 HIRFunction::MaxLocalCount() { return max_local_id + 1; }
 
+void HIRFunction::EraseInst(Block* block, Inst* inst) {
+    ASSERT(block && inst);
+    // Order matters: drop the uses this instruction holds while its args are
+    // still intact, then remove the value it defines, then free it.
+    UnUseInst(inst);
+    if (auto* hir_value = GetHIRValue(Value{inst}); hir_value) {
+        // DestroyHIRValue also unlinks the instruction from its block and
+        // deletes it (Block::DestroyInst).
+        DestroyHIRValue(hir_value);
+        return;
+    }
+    block->DestroyInst(inst);
+}
+
+// Exact mirror of UseInst: same logical/physical slot walk, unregistering
+// instead of registering. Keep the two in lockstep.
+void HIRFunction::UnUseInst(Inst* inst) {
+    const auto& info = GetIRMetaInfo(inst->GetOp());
+    u8 physical = 0;
+    for (const auto arg_type : info.arg_types) {
+        switch (arg_type) {
+            case ArgType::Value: {
+                auto& arg = inst->ArgAt(physical);
+                if (!arg.IsValue()) {
+                    break;
+                }
+                if (auto hir_value = GetHIRValue(arg.Get<Value>()); hir_value) {
+                    hir_value->UnUse(inst, physical);
+                }
+                break;
+            }
+            case ArgType::Lambda: {
+                auto& arg = inst->ArgAt(physical);
+                if (!arg.IsLambda()) {
+                    break;
+                }
+                auto lambda = arg.Get<Lambda>();
+                if (lambda.IsValue()) {
+                    if (auto hir_value = GetHIRValue(lambda.GetValue()); hir_value) {
+                        hir_value->UnUse(inst, physical);
+                    }
+                }
+                break;
+            }
+            case ArgType::Params: {
+                auto& arg = inst->ArgAt(physical);
+                if (!arg.IsParams()) {
+                    break;
+                }
+                for (auto param : arg.Get<Params>()) {
+                    if (auto data = param.data; data.IsValue()) {
+                        if (auto hir_value = GetHIRValue(data.value); hir_value) {
+                            hir_value->UnUse(inst, HIRUse::USE_FUNC_CALL);
+                        }
+                    }
+                }
+                break;
+            }
+            case ArgType::Operand: {
+                for (u8 nested = 1; nested <= 2; ++nested) {
+                    auto& data = inst->ArgAt(physical + nested);
+                    if (data.IsValue()) {
+                        if (auto hir_value = GetHIRValue(data.Get<Value>()); hir_value) {
+                            hir_value->UnUse(inst, physical + nested);
+                        }
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+        }
+        physical += PhysicalSlots(arg_type);
+    }
+}
+
 void HIRFunction::UseInst(Inst* inst) {
     // HIRUse::arg_idx is a physical Arg slot (the local-elimination passes feed
     // it back to ArgAt/SetArg). Walk logical metadata while carrying the

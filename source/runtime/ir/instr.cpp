@@ -217,9 +217,21 @@ bool Inst::HasSideEffects() {
     }
     // Value-returning atomics still mutate guest memory when their old value
     // is dead (LOCK NOT is the common case). They must not be removed by DCE.
+    //
+    // Host calls belong in the same bucket: CallLambda/CallLocation/CallDynamic
+    // are opaque to this IR (UniformEliminationPass already treats them as
+    // full barriers), and the x86 frontend uses them for helpers that write
+    // guest state through the state pointer rather than through their return
+    // value -- FNINIT, the SoftFloat x87 helpers, xsave, and so on. Their U64
+    // return is frequently unused, and deleting them silently drops the guest
+    // side effect: with these three missing from this list, function-mode
+    // compilation dropped the x87 control-word / TOP updates and
+    // "x87 directed edge semantics" read TOP=0 after nine FLD1s instead of 7.
     if (op_code == OpCode::CompareAndSwap || op_code == OpCode::CompareAndSwap128 ||
         op_code == OpCode::AtomicExchange || op_code == OpCode::AtomicFetchAdd ||
-        op_code == OpCode::AtomicRMW || op_code == OpCode::X87Op) {
+        op_code == OpCode::AtomicRMW || op_code == OpCode::X87Op ||
+        op_code == OpCode::CallLambda || op_code == OpCode::CallLocation ||
+        op_code == OpCode::CallDynamic) {
         return true;
     }
     auto &ir_info = GetIRMetaInfo(op_code);

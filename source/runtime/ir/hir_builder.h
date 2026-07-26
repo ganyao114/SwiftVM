@@ -280,6 +280,13 @@ public:
     void SetCurBlock(HIRBlock* block);
     HIRValue* AppendValue(HIRBlock* block, Inst* inst);
     void DestroyHIRValue(HIRValue* value);
+    // Removes `inst` from its block and frees it, keeping the function-level
+    // HIRValue bookkeeping consistent: every HIRUse this instruction holds on
+    // another value is unregistered first, and the instruction's own HIRValue
+    // (if it defines one) is erased from `values`. A plain `delete` would leave
+    // dangling HIRUse nodes behind, which the function-level register allocator
+    // dereferences when it computes live-interval ends.
+    void EraseInst(Block* block, Inst* inst);
     HIRBlock* GetEntryBlock();
     HIRBlock* GetCurrentBlock();
     HIRBlockVector& GetHIRBlocks();
@@ -324,6 +331,7 @@ private:
     } spill_stack{};
 
     void UseInst(Inst* inst);
+    void UnUseInst(Inst* inst);
 
     u16 max_local_id{};
     Function* function;
