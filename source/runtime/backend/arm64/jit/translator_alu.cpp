@@ -2118,4 +2118,20 @@ void JitTranslator::EmitVecFRoundInt(ir::Inst* inst) {
     }
 }
 
+// Upper 64 bits of a 64x64 product.  Both operands must be in registers:
+// SMULH/UMULH have no immediate form, so an immediate argument would have to
+// be materialised anyway, and the IR therefore takes Value rather than
+// Operand.  `true` on the source R() calls asks for the value in a register
+// rather than a spill slot.
+void JitTranslator::EmitMulHigh(ir::Inst* inst) {
+    auto left = context.R(inst->GetArg<ir::Value>(0), true);
+    auto right = context.R(inst->GetArg<ir::Value>(1), true);
+    auto result = context.R(ir::Value{inst});
+    if (inst->GetArg<ir::Imm>(2).Get() != 0) {
+        __ Smulh(result.X(), left.X(), right.X());
+    } else {
+        __ Umulh(result.X(), left.X(), right.X());
+    }
+}
+
 }  // namespace swift::runtime::backend::arm64

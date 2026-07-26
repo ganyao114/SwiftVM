@@ -2588,4 +2588,22 @@ void Interpreter::RunVecFRoundInt(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, result);
 }
 
+// Upper 64 bits of a 64x64 product; Imm selects signedness.  Kept in step with
+// EmitMulHigh -- a one-sided change here produces a back end divergence, which
+// is worse than the defect it would fix.
+void Interpreter::RunMulHigh(ir::Inst* inst, InterpStack& stack) {
+    const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    const u64 r = ReadScalar(stack, inst->GetArg<ir::Value>(1));
+    u64 high;
+    if (inst->GetArg<ir::Imm>(2).Get() != 0) {
+        const auto product = static_cast<__int128>(static_cast<s64>(l)) *
+                             static_cast<__int128>(static_cast<s64>(r));
+        high = static_cast<u64>(static_cast<unsigned __int128>(product) >> 64);
+    } else {
+        high = static_cast<u64>(
+                (static_cast<unsigned __int128>(l) * static_cast<unsigned __int128>(r)) >> 64);
+    }
+    WriteScalar(stack, inst, high);
+}
+
 }  // namespace swift::runtime::backend::interp

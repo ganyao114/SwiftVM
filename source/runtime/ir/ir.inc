@@ -299,3 +299,21 @@ INST(VecFMulAdd, Value, Value, Value, Value, Imm, Imm)
 // returned quieted and otherwise unchanged, and the sign of a zero result is
 // preserved (ceil(-0.5) is -0.0), which is what all of those already do.
 INST(VecFRoundInt, Value, Value, Value, Imm, Imm, Imm)
+
+// Upper 64 bits of a 64x64 product.  Imm = 1 for signed, 0 for unsigned.
+//
+// This is not an x86 convenience: every 64-bit ISA has to produce it and every
+// one of them has a single instruction for it, because the full 128-bit
+// product does not fit a register.  AArch64 has SMULH/UMULH, RISC-V has
+// MULH/MULHU, x86 gets it in RDX from one-operand MUL/IMUL.  A front end for
+// any of the three needs this; a back end for any of the three emits one
+// instruction.  Without it the low and high halves cannot both be expressed,
+// so the high half had to go through a host call -- measured at 3.27x slower
+// than the same loop without the multiply (docs/perf-baseline.md 5.1).
+//
+// Deliberately separate from Mul rather than a second result on it: IR values
+// are single-valued, and the two halves are wanted independently often enough
+// (x86 flags need only the high half's zero-ness) that fusing them would just
+// force dead code.  The narrow widths do not use this -- an 8/16/32-bit high
+// half is already reachable by widening to 64 and shifting.
+INST(MulHigh, Value, Value, Value, Imm)
