@@ -34,6 +34,8 @@ std::atomic_bool g_installed{false};
 
 std::atomic<SignalHandler::GuestMapProbe> g_guest_probe{nullptr};
 std::atomic<void*> g_guest_probe_ctx{nullptr};
+std::atomic<SignalHandler::GuestRangeProbe> g_guest_range_probe{nullptr};
+std::atomic<void*> g_guest_range_probe_ctx{nullptr};
 
 // Per-thread alternate stack. Allocated once and intentionally never freed:
 // the kernel references it until the thread exits.
@@ -111,8 +113,40 @@ void SignalHandler::SetGuestMapProbe(GuestMapProbe probe, void* ctx) {
     g_guest_probe.store(probe, std::memory_order_release);
 }
 
+void SignalHandler::SetGuestRangeProbe(GuestRangeProbe probe, void* ctx) {
+    g_guest_range_probe_ctx.store(ctx, std::memory_order_release);
+    g_guest_range_probe.store(probe, std::memory_order_release);
+}
+
 bool SignalHandler::HasGuestMapProbe() {
     return g_guest_probe.load(std::memory_order_acquire) != nullptr;
+}
+
+u64 SignalHandler::GuestMappedBytes(std::uintptr_t host_addr, u64 length) {
+    // Relaxed: the probe is installed by the embedder before any guest code
+    // runs, so there is nothing to synchronise with, and this sits directly in
+    // front of every rep-string helper call -- an acquire load here is a
+    // measurable `ldar` on the hot path for no benefit. (Set*Probe still
+    // publishes ctx before fn with release, so a reader that sees a non-null
+    // fn also sees its ctx.)
+    if (auto range = g_guest_range_probe.load(std::memory_order_relaxed)) {
+        return range(g_guest_range_probe_ctx.load(std::memory_order_relaxed), host_addr, length);
+    }
+    auto probe = g_guest_probe.load(std::memory_order_acquire);
+    if (!probe) {
+        return length;  // no oracle: keep the unchecked behaviour
+    }
+    // Fallback: walk page by page. Only reached by embedders that installed
+    // the single-address probe but not the range one.
+    constexpr u64 kProbeGranule = 4096;
+    void* ctx = g_guest_probe_ctx.load(std::memory_order_acquire);
+    u64 done = 0;
+    while (done < length) {
+        if (!probe(ctx, host_addr + done)) break;
+        const u64 in_page = kProbeGranule - ((host_addr + done) & (kProbeGranule - 1));
+        done += in_page < length - done ? in_page : length - done;
+    }
+    return done;
 }
 
 bool SignalHandler::IsGuestAddressMapped(std::uintptr_t fault_host_addr) {

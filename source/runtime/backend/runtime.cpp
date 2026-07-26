@@ -32,6 +32,29 @@ std::unique_ptr<Instance> Instance::Make(const Config& config) {
 // right State. void* because Runtime::Impl is a private nested type.
 static thread_local void* tls_active_runtime{};
 
+// Thread-local pointer to the Runtime::Impl this thread *owns*, valid from
+// construction to destruction rather than only while guest code runs.
+//
+// Host code outside JitRun writes guest memory too: syscall emulation copying
+// results into a guest buffer, and the clone-thread teardown store that
+// CLONE_CHILD_CLEARTID requires. Such a write lands on a *write-protected*
+// guest page whenever the target shares a page with translated code (freestanding
+// guests routinely put .bss in the same page as .text). That is an ordinary SMC
+// write-protect fault, but tls_active_runtime is null there — Runtime::Run has
+// already returned — so the SMC handler used to decline it and the process died
+// on an "unhandled host fault". Faulting host code is *outside* guest execution,
+// so opening the write window and retrying the store is exactly right: a host
+// store into a code page is self-modifying code and must invalidate.
+//
+// Indirected through a shared slot rather than stored as a raw pointer: a
+// Runtime may be destroyed by a thread other than the one that created it, and
+// the slot (not the Impl) is what the owning thread's TLS keeps alive, so the
+// handler can never observe a dangling Impl.
+struct OwnerSlot {
+    std::atomic<void*> impl{nullptr};
+};
+static thread_local std::shared_ptr<OwnerSlot> tls_owner_slot{};
+
 struct Runtime::Impl final {
     explicit Impl(backend::AddressSpace* address_space) : address_space(address_space) {
         state_buffer.resize(sizeof(backend::State) +
@@ -71,10 +94,31 @@ struct Runtime::Impl final {
             state->rsb_top = &rsb_buffer.rsb_frames[backend::rsb_stack_size];
         }
         jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
+        // Claim this thread for host-side SMC fault recovery (see OwnerSlot).
+        // A thread that constructs a second Runtime keeps the newest; either
+        // resolves to the same AddressSpace and SmcTracker.
+        if (!tls_owner_slot) {
+            tls_owner_slot = std::make_shared<OwnerSlot>();
+        }
+        owner_slot = tls_owner_slot;
+        owner_slot->impl.store(this, std::memory_order_release);
     }
 
     ~Impl() {
+        // NOTE: a write window opened by host code on a thread that then exits
+        // is deliberately NOT closed here. Closing it looked prudent, but a
+        // mutation test (delete the call, run the suites) could not tell the
+        // two versions apart -- and it is not needed: SmcTracker already
+        // collects translations published during another thread's open window
+        // (see RegisterNode's !rec.dirty guard and CloseWriteWindow's retry
+        // loop), and any thread that goes on running closes the window after
+        // its next JitRun. Unverified defensive work is not kept.
         address_space->GetSmcTracker().UnregisterRuntime(smc_epoch);
+        if (owner_slot) {
+            void* expected = this;
+            owner_slot->impl.compare_exchange_strong(
+                    expected, nullptr, std::memory_order_acq_rel, std::memory_order_relaxed);
+        }
     }
 
     // Host-fault recovery (SignalHandler chain, priority kFaultPriority).
@@ -97,7 +141,14 @@ struct Runtime::Impl final {
 
     static bool HandleSmcFault(void* ctx, ucontext_t* uctx, int sig, siginfo_t* info) {
         (void) ctx;
+        // The owner slot covers host code between JitRuns (syscall emulation,
+        // thread teardown); tls_active_runtime is the same object while guest
+        // code runs. Both resolve to this thread's AddressSpace, which is all
+        // HandleWriteFault needs.
         auto* self = static_cast<Impl*>(tls_active_runtime);
+        if (!self && tls_owner_slot) {
+            self = static_cast<Impl*>(tls_owner_slot->impl.load(std::memory_order_acquire));
+        }
         if (!self) return false;
         if (sig != SIGSEGV && sig != SIGBUS) {
             return false;
@@ -297,6 +348,8 @@ struct Runtime::Impl final {
     // state->l1_code_cache pointer even from const Run paths.
     mutable TranslateTable l1_code_cache{l1_cache_bits};
     backend::SmcTracker::RuntimeToken smc_epoch{};
+    // Kept alive alongside the creating thread's tls_owner_slot; see OwnerSlot.
+    std::shared_ptr<OwnerSlot> owner_slot{};
     backend::interp::InterpStack interp_stack;
     std::atomic_bool running{true};
     backend::Trampolines::RuntimeEntry jit_entry{};
@@ -382,6 +435,26 @@ bool HasX87Op(ir::HIRFunction* function) {
         }
     }
     return false;
+}
+
+// JIT disk cache hook (backend/jit_cache.h). Off unless SVM_JIT_CACHE is set;
+// the unit is described by its guest block ranges plus the offset of each
+// block's entry inside the emitted buffer.
+void RecordJitCacheUnit(const std::shared_ptr<backend::Module>& module,
+                        VAddr guest_start,
+                        bool is_function,
+                        const std::vector<SerialBlock>& blocks,
+                        const CodeBuffer& buffer) {
+    auto* cache = module->GetAddressSpace().GetJitDiskCache();
+    if (!cache) {
+        return;
+    }
+    cache->RecordUnit(module,
+                      guest_start,
+                      is_function,
+                      buffer.rw_data,
+                      static_cast<u32>(buffer.size),
+                      blocks);
 }
 
 size_t PrepareFunctionGuestRanges(ir::HIRFunction* function) {
@@ -506,6 +579,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
         // External links, RSB return targets, and code misses are allowed to
         // land at a basic-block boundary inside this compiled unit.
         auto& mutable_address_space = module->GetAddressSpace();
+        std::vector<backend::SerialBlock> cache_blocks;
         for (auto& hir_block : function->GetHIRBlocksRPO()) {
             auto* block = hir_block.GetBlock();
             if (block->GetInstList().empty()) {
@@ -515,6 +589,10 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
             const auto offset = context.GetCodeOffset(guest);
             ASSERT(offset >= 0 && static_cast<size_t>(offset) < buffer.size);
             mutable_address_space.PushCodeCache(guest, buffer.exec_data + offset);
+            cache_blocks.push_back({guest,
+                                    block->GetEndLocation().Value(),
+                                    static_cast<u32>(offset),
+                                    0});
             if (!module->GetModuleConfig().read_only) {
                 mutable_address_space.GetSmcTracker().RegisterNode(
                         module,
@@ -524,6 +602,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
             }
         }
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} entries-ready\n", func_start);
+        RecordJitCacheUnit(module, func_start, true, cache_blocks, buffer);
         return buffer.exec_data;
     }
     return nullptr;
@@ -636,6 +715,12 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
             }
             address_space.GetSmcTracker().RegisterNode(
                     module, block.get(), block_start, block->GetEndLocation().Value());
+        }
+        {
+            const VAddr start = block->GetStartLocation().Value();
+            const std::vector<backend::SerialBlock> cache_blocks{
+                    {start, block->GetEndLocation().Value(), 0, 0}};
+            RecordJitCacheUnit(module, start, false, cache_blocks, buffer);
         }
         block->DestroyInstrs();
         return buffer.exec_data;

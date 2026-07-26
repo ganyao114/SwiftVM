@@ -1284,9 +1284,15 @@ void X64Decoder::DecodeFxsave(_DInst& insn, bool restore) {
     if (!restore) {
         // Zero + save the architectural x87 area first, then overwrite the
         // live MXCSR and XMM fields.
-        __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Fxsave)}},
-                      context,
-                      addr);
+        auto status = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Fxsave)}},
+                                    context,
+                                    addr)
+                              .SetType(ir::ValueType::U64);
+        // An unmapped save area is a guest #PF, not a silent no-op. The
+        // StoreMemory calls below would fault on their own, but only after the
+        // x87 half had already been skipped -- and FXSAVE with RFBM covering
+        // only x87 would not fault at all.
+        RaiseIfGuestFault(status, insn_pc);
         __ StoreMemory(ir::Operand{addr, 24, ir::OperandPlus}, __ LoadUniform(uni_mxcsr));
         for (u32 i = 0; i < 16; ++i) {
             ir::Uniform uni_xmm{u32(offsetof(ThreadContext64, xmms) + i * sizeof(Xmm)),
@@ -1295,9 +1301,11 @@ void X64Decoder::DecodeFxsave(_DInst& insn, bool restore) {
                            __ LoadUniform(uni_xmm));
         }
     } else {
-        __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Fxrstor)}},
-                      context,
-                      addr);
+        auto status = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Fxrstor)}},
+                                    context,
+                                    addr)
+                              .SetType(ir::ValueType::U64);
+        RaiseIfGuestFault(status, insn_pc);
         auto mx = __ LoadMemory(ir::Operand{addr, 24, ir::OperandPlus}).SetType(ir::ValueType::U32);
         __ StoreUniform(uni_mxcsr, mx);
         for (u32 i = 0; i < 16; ++i) {

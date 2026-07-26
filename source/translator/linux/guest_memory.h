@@ -19,7 +19,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstring>
+#include <memory>
 #include <span>
 #include <shared_mutex>
 #include <string>
@@ -152,6 +154,30 @@ public:
     // True if every byte of [addr, addr+size) lies inside one mapped region.
     bool RangeIsMapped(VAddr addr, u64 size) const;
 
+    // Number of contiguous mapped bytes starting at `addr`, capped at
+    // `length` (and at the window end). 0 means `addr` itself is unmapped.
+    //
+    // This is the probe the *helpers* use — x87/fxsave and the rep-string
+    // walks, which dereference guest memory from host frames a fault cannot
+    // be recovered from — so it must be cheap enough to sit in front of a
+    // `rep movsb` of four bytes. With the window enabled it is a lock-free
+    // read of a page-presence bitmap (one bit per 16 KiB host page); the
+    // shared_mutex + interval binary search is only the unwindowed fallback.
+    //
+    // The overwhelmingly common shape — a windowed access that fits in one
+    // host page — is inlined here; everything else goes out of line.
+    [[nodiscard]] u64 MappedBytesFrom(VAddr addr, u64 length) const {
+        if (page_bitmap_) {
+            const VAddr base = addr & mask_;
+            const u64 in_page = kHostPageSize - (base & (kHostPageSize - 1));
+            if (length <= in_page) {
+                return PageBit(base) ? length : 0;
+            }
+        }
+        return MappedBytesFromSlow(addr, length);
+    }
+    [[nodiscard]] u64 MappedBytesFromSlow(VAddr addr, u64 length) const;
+
     bool TryReadBytes(VAddr addr, std::span<u8> out);
     bool TryWriteBytes(VAddr addr, std::span<const u8> data);
 
@@ -181,6 +207,25 @@ private:
     [[nodiscard]] bool RangeIsMappedLocked(VAddr addr, u64 size) const;
     // First free [addr, addr+size) hole at or above `from` inside the window.
     [[nodiscard]] VAddr FindFreeLocked(VAddr from, u64 size) const;
+    // Page-presence bitmap, one bit per host page of the window; nullptr when
+    // the window is disabled. Written only under mapped_regions_mutex (so the
+    // bitmap and mapped_regions never disagree for a caller that is not
+    // racing its own mmap), read without any lock.
+    void SetPageBits(VAddr addr, u64 size, bool present);
+    [[nodiscard]] bool PageBit(VAddr addr) const {
+        const u64 page = (addr & mask_) >> kHostPageShift;
+        return (page_bitmap_[page >> 6].load(std::memory_order_relaxed) >> (page & 63)) & 1;
+    }
+    static constexpr u32 kHostPageShift = 14;  // kHostPageSize == 1 << 14
+    static_assert(kHostPageSize == (u64(1) << kHostPageShift));
+    // calloc, not new[]: at the 47-bit maximum the bitmap is 1 GiB and
+    // value-initializing it would fault in every page. calloc hands back
+    // fresh zero pages, and all-zero bytes are a valid representation of
+    // std::atomic<u64>{0}.
+    struct BitmapFree {
+        void operator()(std::atomic<u64>* p) const noexcept { std::free(p); }
+    };
+    std::unique_ptr<std::atomic<u64>[], BitmapFree> page_bitmap_;
     mutable std::shared_mutex mapped_regions_mutex;
     std::vector<std::pair<VAddr, VAddr>> mapped_regions;
     u64 bias_{};

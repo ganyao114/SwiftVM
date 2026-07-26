@@ -23,8 +23,11 @@
 #  3. Does a 32-byte access that straddles a page boundary behave?  See
 #     avx_crosspage_common.h.  Stage 0 (both pages mapped) is compared against
 #     the oracle; stages 1-4 must produce a guest page fault and not a silent
-#     success; stage 5 wants to measure whether a faulting straddling store
-#     leaves a torn write behind, and is currently BLOCKED (see below).
+#     success; stage 5 measures, from a clone() worker that outlives the fault,
+#     whether the faulting straddling store leaves a torn write behind.
+#     Answer as of 2026-07-27: YES -- it does (see the ANSWER line the stage
+#     prints).  Stage 5 was BLOCKED until the host-side SMC write-protect fault
+#     on the clone teardown path was fixed.
 #
 # KNOWN_GAPS below is the honest, quantified list of what is missing today.  A
 # kernel in that list is reported as EXPECTED-GAP and does not fail the run; a
@@ -144,21 +147,48 @@ for s in 1 2 3 4; do
 done
 # Stage 5 is the measurement we actually want (does the split lowering leave a
 # torn write?).  It needs an observer that outlives the fault; SwiftVM has no
-# guest signal delivery, so it uses a clone() worker -- and a worker that dies
-# of PageFatal currently brings the host process down with it, which is a
-# separate bug.  Report the state of that blocker instead of pretending to
-# have an answer.
+# guest signal delivery, so it uses a clone() worker.  What is asserted here is
+# the *mechanism*, not the answer: the worker must die of its page fault, the
+# host must survive it, and the store must not have touched anything below its
+# own start.  The torn-write bit itself is reported, not asserted -- x86 does
+# not promise atomicity across a page boundary (see avx_crosspage_common.h), so
+# neither value is by itself an architectural violation and pinning it would
+# turn a future hardware-faithful lowering into a red test.
 out="$(SVM_AVX=1 "$SVM" "$XGUEST" 5 2>&1)"
-if echo "$out" | grep -q "^first_page_partial="; then
-    echo "  INFO        stage 5 measured: $(echo "$out" | grep '^first_page_partial=')"
-    echo "              (0 = hardware-like, 1 = torn write from the 2x16B lowering)"
-elif echo "$out" | grep -q "unhandled host fault"; then
-    echo "  BLOCKED     stage 5: a clone() worker dying of PageFatal takes the host"
-    echo "              process down (unhandled host SIGBUS), so nothing survives to"
-    echo "              read the first page back.  Torn-write question UNANSWERED."
-else
-    echo "  BLOCKED     stage 5: unexpected outcome"
+observed="$(echo "$out" | grep '^observer_fault=' | head -1)"
+partial="$(echo "$out" | grep '^first_page_partial=' | head -1)"
+prefix="$(echo "$out" | grep '^first_page_prefix_intact=' | head -1)"
+if echo "$out" | grep -q "unhandled host fault"; then
+    echo "  FAIL        stage 5: the clone() worker's page fault took the HOST down"
+    echo "$out" | grep 'unhandled host fault' | sed 's/^/                /'
+    fail=$((fail + 1))
+elif [ -z "$partial" ] || [ -z "$observed" ] || [ -z "$prefix" ]; then
+    echo "  FAIL        stage 5: observer produced no measurement:"
     echo "$out" | grep -v 'fixed map failed\|stack placed' | sed 's/^/                /'
+    fail=$((fail + 1))
+elif [ "$observed" != "observer_fault=0000000000000001" ]; then
+    echo "  FAIL        stage 5: the worker did NOT fault ($observed) -- the store into"
+    echo "              the unmapped page was silently accepted; nothing was measured."
+    fail=$((fail + 1))
+elif [ "$prefix" != "first_page_prefix_intact=0000000000000001" ]; then
+    echo "  FAIL        stage 5: the faulting store scribbled BELOW its own start"
+    echo "              ($prefix) -- the 48 bytes before hole-16 must be untouched."
+    fail=$((fail + 1))
+else
+    echo "  PASS        stage 5: worker died of the fault, host survived, no write"
+    echo "              outside the access range"
+    pass=$((pass + 1))
+    if [ "$partial" = "first_page_partial=0000000000000001" ]; then
+        echo "  ANSWER      a 32-byte store straddling into an unmapped page DOES leave a"
+        echo "              torn write: the 16 bytes in the mapped page are committed and"
+        echo "              then the second half faults.  Consequence of contract C1's"
+        echo "              2x16B lowering; x86 permits it (no cross-page atomicity), but"
+        echo "              it IS observable to another guest thread and diverges from"
+        echo "              what current x86 hardware does in practice."
+    else
+        echo "  ANSWER      no torn write: the straddling store left the mapped page"
+        echo "              untouched, matching what x86 hardware does in practice."
+    fi
 fi
 
 echo "=== summary: $pass passed, $gap expected gaps, $fail failed ==="

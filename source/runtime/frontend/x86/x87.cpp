@@ -259,28 +259,43 @@ softfloat_state StateFromControl(const ThreadContext64& ctx, bool force_extended
 //      address yields nullptr and the caller skips the access, so the host
 //      survives. Embedders without an oracle (unit tests, fuzzers, identity
 //      mappings) keep the raw behaviour.
-// [address, address + size) must be backed in full; guest mappings are
-// tracked at >= 16 KiB granularity and size is at most 512, so probing the
-// first and last byte cannot straddle an untested hole.
+// [address, address + size) must be backed in full.
 //
-// KNOWN GAP: a skipped access is not guest-visible — the architectural
-// outcome should be #PF. Delivering that needs a fault return path out of a
-// live host frame (see the isolation report).
+// A rejected access is NOT silently skipped: the guest-visible outcome is
+// #PF, so kGuestFaultLatch below records it and the helper entry points OR
+// x86::kX87GuestFault into their result. The emitted code checks that bit and
+// exits the block with HaltReason::PageFatal, which is how every other
+// synchronous guest memory fault is reported.
 }  // namespace  (GuestPointer is declared in x87.h)
+
+namespace {
+// Set by GuestPointer when it refuses an access, consumed (and cleared) by
+// the helper entry points. Thread-local: guest threads run helpers
+// concurrently on their own host threads.
+thread_local bool g_guest_fault_latch = false;
+
+bool TakeGuestFault() {
+    const bool faulted = g_guest_fault_latch;
+    g_guest_fault_latch = false;
+    return faulted;
+}
+}  // namespace
 
 u8* GuestPointer(u64 address, size_t size) {
     const u64 mask = GetGuestAddrMask();
     const u64 masked = address & mask;
     if (size == 0 || (mask != UINT64_MAX && size > mask - masked + 1)) {
+        g_guest_fault_latch = true;
         return nullptr;
     }
     auto* host = reinterpret_cast<u8*>(masked + GetGuestMemBias());
-    if (runtime::backend::SignalHandler::HasGuestMapProbe()) {
-        const auto lo = reinterpret_cast<std::uintptr_t>(host);
-        if (!runtime::backend::SignalHandler::IsGuestAddressMapped(lo) ||
-            !runtime::backend::SignalHandler::IsGuestAddressMapped(lo + size - 1)) {
-            return nullptr;
-        }
+    // One range probe covers the whole access, so a hole in the middle is
+    // caught too -- the old first/last-byte pair relied on the access being
+    // smaller than the mapping granularity.
+    if (runtime::backend::SignalHandler::GuestMappedBytes(
+                reinterpret_cast<std::uintptr_t>(host), size) < size) {
+        g_guest_fault_latch = true;
+        return nullptr;
     }
     return host;
 }
@@ -1213,7 +1228,7 @@ void LoadEnvironment(ThreadContext64& ctx, u64 address) {
 
 }  // namespace
 
-u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
+static u64 X87DispatchImpl(u64 context, u64 command_word, u64 guest_address) {
     if (X87DispatchStatsEnabled()) {
         g_x87_dispatch_calls.fetch_add(1, std::memory_order_relaxed);
     }
@@ -1361,7 +1376,18 @@ u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
     return 0;
 }
 
-u64 X87Fxsave(u64 context, u64 guest_address) {
+// Public entry points: clear the latch, run the operation, and report any
+// refused guest access to the emitted code through kX87GuestFault. The x87
+// state may already be partially updated when the fault is reported; that is
+// visible only through the halt diagnostics, because PageFatal terminates the
+// guest thread rather than delivering a resumable #PF.
+u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
+    TakeGuestFault();
+    const u64 result = X87DispatchImpl(context, command_word, guest_address);
+    return result | (TakeGuestFault() ? kX87GuestFault : 0);
+}
+
+static u64 X87FxsaveImpl(u64 context, u64 guest_address) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     auto* out = GuestPointer(guest_address, 512);
     if (!out) return 0;
@@ -1384,7 +1410,13 @@ u64 X87Fxsave(u64 context, u64 guest_address) {
     return 0;
 }
 
-u64 X87Fxrstor(u64 context, u64 guest_address) {
+u64 X87Fxsave(u64 context, u64 guest_address) {
+    TakeGuestFault();
+    const u64 result = X87FxsaveImpl(context, guest_address);
+    return result | (TakeGuestFault() ? kX87GuestFault : 0);
+}
+
+static u64 X87FxrstorImpl(u64 context, u64 guest_address) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     const auto* in = GuestPointer(guest_address, 512);
     if (!in) return 0;
@@ -1410,6 +1442,12 @@ u64 X87Fxrstor(u64 context, u64 guest_address) {
     }
     RecomputeSummary(ctx);
     return 0;
+}
+
+u64 X87Fxrstor(u64 context, u64 guest_address) {
+    TakeGuestFault();
+    const u64 result = X87FxrstorImpl(context, guest_address);
+    return result | (TakeGuestFault() ? kX87GuestFault : 0);
 }
 
 }  // namespace swift::x86

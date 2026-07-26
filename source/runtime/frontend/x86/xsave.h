@@ -114,6 +114,12 @@ u64 XgetbvHelper(u64 context);
 // time already points past the instruction.
 // ---------------------------------------------------------------------------
 void EmitXgetbv(ir::Assembler* assembler, VAddr next_pc);
-void EmitXsave(ir::Assembler* assembler, ir::Value address, VAddr next_pc, bool restore);
+// insn_pc is the XSAVE/XRSTOR's own guest pc: an unmapped state area raises
+// a guest page fault, and the halt must report that instruction, not the next.
+void EmitXsave(ir::Assembler* assembler,
+               ir::Value address,
+               VAddr next_pc,
+               VAddr insn_pc,
+               bool restore);
 
 }  // namespace swift::x86

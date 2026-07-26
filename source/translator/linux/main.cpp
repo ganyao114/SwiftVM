@@ -316,16 +316,30 @@ int main(int argc, char** argv) {
     // 1. Guest address space. Every guest address is truncated to a bounded
     //    window and then biased into one host reservation, so no guest
     //    address — wild pointer, 0xFFFF'FFFF'FFFF'FFFF, signed wraparound —
-    //    can name host memory. SVM_GUEST_BITS overrides the window size;
-    //    SVM_GUEST_BITS=0 restores the old unbounded bias mode (the guest can
-    //    then read and write arbitrary host memory: diagnostics only).
+    //    can name host memory. SVM_GUEST_BITS overrides the window size.
+    //
+    //    SVM_GUEST_BITS=0 restores the old unbounded bias mode, in which the
+    //    guest can read and write arbitrary host memory. That is the defect
+    //    the window removed, not a supported mode, so it is gated at COMPILE
+    //    time (-DSWIFT_ALLOW_UNBOUNDED_GUEST=1, cmake option
+    //    SWIFT_ALLOW_UNBOUNDED_GUEST) and is absent from ordinary builds.
+    //    run_isolation_tests.sh uses a dedicated build to demonstrate it.
     linux::GuestMemory memory;
     {
         u32 window_bits = linux::GuestMemory::kDefaultWindowBits;
         if (const char* env = std::getenv("SVM_GUEST_BITS")) {
             const long v = std::strtol(env, nullptr, 0);
             if (v == 0) {
+#ifdef SWIFT_ALLOW_UNBOUNDED_GUEST
                 window_bits = 0;
+#else
+                LOG_ERROR(
+                        "SVM_GUEST_BITS=0 (unbounded guest address space) is not compiled "
+                        "into this build. It lets the guest read and write host memory and "
+                        "exists only so run_isolation_tests.sh can demonstrate the defect; "
+                        "rebuild with -DSWIFT_ALLOW_UNBOUNDED_GUEST=ON to get it.");
+                return 2;
+#endif
             } else if (v >= 20 && v <= 47) {
                 window_bits = static_cast<u32>(v);
             } else {
@@ -361,6 +375,18 @@ int main(int argc, char** argv) {
                     return false;
                 }
                 return mem->RangeIsMapped(guest, 1);
+            },
+            &memory);
+    // Range form, used by the helpers that must validate before they
+    // dereference (x87/fxsave, rep-string walks). Same truncation rule.
+    runtime::backend::SignalHandler::SetGuestRangeProbe(
+            [](void* ctx, std::uintptr_t host_addr, u64 length) -> u64 {
+                auto* mem = static_cast<linux::GuestMemory*>(ctx);
+                const VAddr guest = mem->ToGuest(reinterpret_cast<const void*>(host_addr));
+                if (mem->Windowed() && guest > mem->Mask()) {
+                    return 0;
+                }
+                return mem->MappedBytesFrom(guest, length);
             },
             &memory);
 

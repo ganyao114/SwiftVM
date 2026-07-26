@@ -685,6 +685,10 @@ private:
 
     // Parse the VEX prefix of the instruction currently being decoded.
     // Returns valid=false when the bytes are not a VEX prefix.
+    // MMX-guard helper: distorm cannot separate PADDQ's MMX and SSE2 forms,
+    // so that one case reads the mandatory 0x66 prefix off the encoding.
+    [[nodiscard]] bool HasOperandSizePrefix() const;
+
     [[nodiscard]] VexInfo DecodeVex() const;
 
     // True when the instruction is a VEX.128 (L=0) form that Agent A's
@@ -933,6 +937,9 @@ private:
     void DecodeX87(_DInst& insn);
     void DecodeX87FreePop(u8 index);
     ir::Value CallX87(u64 command, ir::Value guest_address);
+    // Turns a helper's "I refused to touch unmapped guest memory" bit into a
+    // guest-visible PageFatal. See decoder_x87.cc.
+    void RaiseIfGuestFault(ir::Value helper_result, u64 faulting_pc);
     void ApplyX87CompareFlags(ir::Value compact_flags);
 
     // ---- legacy SSE3 / SSSE3 / SSE4.1 / SSE4.2 (decoder_sse4.cc) ---------
@@ -1001,6 +1008,10 @@ private:
     // must inspect the raw encoding (VEX prefix fields, see DecodeVex) read
     // through this; _DInst alone does not carry them.
     const u8* insn_bytes{nullptr};
+    // Guest pc of that same instruction (pc has already been advanced past it
+    // by the time DecodeSwitch runs). Handlers that raise a synchronous guest
+    // fault must SetLocation to this, or the halt reports the wrong rip.
+    VAddr insn_pc{0};
     ir::Assembler* assembler;
     runtime::MemoryInterface* memory;
     bool end_decode{false};

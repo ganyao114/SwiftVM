@@ -71,19 +71,69 @@ X87Binary BinaryOperation(u16 opcode) {
 
 }  // namespace
 
+// True for the x87 commands that dereference `guest_address`. Only those get
+// the guest-fault check below; adding it to the register-only forms would put
+// a live result register (and a test) on every FADD ST(i) for nothing.
+static bool X87TouchesMemory(u64 command) {
+    const auto action = static_cast<X87Action>(command & 0xFF);
+    const auto format = static_cast<X87Format>((command >> 8) & 0xFF);
+    if (format == X87Format::Register) {
+        return false;
+    }
+    switch (action) {
+        case X87Action::LoadFloat:
+        case X87Action::StoreFloat:
+        case X87Action::LoadInt:
+        case X87Action::StoreInt:
+        case X87Action::StoreControl:
+        case X87Action::LoadControl:
+        case X87Action::StoreStatus:
+        case X87Action::StoreEnvironment:
+        case X87Action::LoadEnvironment:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Turns a helper's kX87GuestFault bit into a guest-visible #PF.
+//
+// CheckMemoryAlignment is the runtime's generic "if (value & mask) exit the
+// block with HaltReason::PageFatal" primitive (see EmitCheckMemoryAlignment /
+// RunCheckMemoryAlignment); DecodeCmpxchg16b uses it for the unaligned-LOCK
+// #GP. Reused here because a helper that refused to touch unmapped guest
+// memory must fault the guest, not silently do nothing. SetLocation first so
+// the halt reports the faulting instruction's rip and not the block entry.
+void X64Decoder::RaiseIfGuestFault(ir::Value helper_result, u64 faulting_pc) {
+    // kX87GuestFault and decoder_string.cc's kStringGuestFault are the same
+    // bit by construction: one emitter serves every helper that has to
+    // validate before it dereferences.
+    static_assert(kX87GuestFault == (u64(1) << 63));
+    __ SetLocation(ir::Lambda{ir::Imm{faulting_pc}});
+    __ CheckMemoryAlignment(helper_result, ir::Imm(kX87GuestFault));
+}
+
 ir::Value X64Decoder::CallX87(u64 command, ir::Value guest_address) {
     auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
     const char* jit = std::getenv("SVM_X87_JIT");
+    ir::Value result;
     if (jit && std::strcmp(jit, "0") != 0) {
-        return __ X87Op(context, ir::Imm(command), guest_address)
-                .SetType(ir::ValueType::U64);
+        // The mid-tier inlines some commands and zeroes the result on those
+        // paths, so the fault bit can only ever come from its helper bailout.
+        result = __ X87Op(context, ir::Imm(command), guest_address)
+                         .SetType(ir::ValueType::U64);
+    } else {
+        auto encoded = __ LoadImm(ir::Imm(command)).SetType(ir::ValueType::U64);
+        result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Dispatch)}},
+                               context,
+                               encoded,
+                               guest_address)
+                         .SetType(ir::ValueType::U64);
     }
-    auto encoded = __ LoadImm(ir::Imm(command)).SetType(ir::ValueType::U64);
-    return __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Dispatch)}},
-                         context,
-                         encoded,
-                         guest_address)
-            .SetType(ir::ValueType::U64);
+    if (X87TouchesMemory(command)) {
+        RaiseIfGuestFault(result, insn_pc);
+    }
+    return result;
 }
 
 void X64Decoder::ApplyX87CompareFlags(ir::Value flags) {

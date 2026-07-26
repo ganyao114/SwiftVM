@@ -20,11 +20,11 @@
 //         break;
 //     case I_XSAVE:
 //     case I_XSAVE64:
-//         EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, false);
+//         EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, false);
 //         break;
 //     case I_XRSTOR:
 //     case I_XRSTOR64:
-//         EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, true);
+//         EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, true);
 //         break;
 //
 // and add `#include "runtime/frontend/x86/xsave.h"` to decoder.cc.  With
@@ -52,8 +52,11 @@
 //   * XRSTOR does not fault on a non-zero reserved header byte, on XCOMP_BV
 //     != 0, or on XSTATE_BV bits outside XCR0; those bits are masked off
 //     instead.  Rosetta 2 does not fault on any of these either.
-//   * An unmapped XSAVE area faults on the host pointer rather than raising a
-//     guest page fault, exactly like the existing FXSAVE helper.
+//   * An unmapped XSAVE area raises a guest page fault (PageFatal): the
+//     helper validates the whole area up front and reports the refusal
+//     through x86::kX87GuestFault, which EmitXsave turns into a block exit.
+//     It does NOT partially save/restore first, so unlike hardware nothing
+//     before the faulting byte is committed.
 // The helpers write guest memory through the raw bias pointer (as X87Fxsave
 // already does), so they bypass SMC tracking; an XSAVE area overlapping
 // translated code will not invalidate it.
@@ -131,7 +134,7 @@ u64 XsaveHelper(u64 context, u64 guest_address, u64 requested) {
     const u64 xcr0 = GuestXcr0();
     const u64 rfbm = requested & xcr0;
     u8* out = GuestBytes(guest_address, XsaveAreaSize());
-    if (!out) return 0;
+    if (!out) return kX87GuestFault;  // unmapped area -> guest #PF
 
     u64 old_bv{};
     std::memcpy(&old_bv, out + kXsaveXstateBvOffset, sizeof(old_bv));
@@ -187,7 +190,7 @@ u64 XrstorHelper(u64 context, u64 guest_address, u64 requested) {
     const u64 xcr0 = GuestXcr0();
     const u64 rfbm = requested & xcr0;
     const u8* in = GuestBytes(guest_address, XsaveAreaSize());
-    if (!in) return 0;
+    if (!in) return kX87GuestFault;  // unmapped area -> guest #PF
 
     u64 state_bv{};
     std::memcpy(&state_bv, in + kXsaveXstateBvOffset, sizeof(state_bv));
@@ -253,7 +256,11 @@ void EmitXgetbv(ir::Assembler* assembler, VAddr next_pc) {
                            ir::terminal::LinkBlock{next_pc}});
 }
 
-void EmitXsave(ir::Assembler* assembler, ir::Value address, VAddr next_pc, bool restore) {
+void EmitXsave(ir::Assembler* assembler,
+               ir::Value address,
+               VAddr next_pc,
+               VAddr insn_pc,
+               bool restore) {
     if (!XsaveEnabled()) {
         EmitUndefined(assembler, next_pc);
         return;
@@ -263,11 +270,19 @@ void EmitXsave(ir::Assembler* assembler, ir::Value address, VAddr next_pc, bool 
     // XSAVE64/XRSTOR64 differ from the 32-bit forms only in how FIP/FDP are
     // laid out in the legacy region; X87Fxsave already writes the 64-bit form
     // for both FXSAVE and FXSAVE64, so the two share one handler here too.
+    ir::Value status;
     if (restore) {
-        __ CallHost(&XrstorHelper, context, address, rfbm);
+        status = __ CallHost(&XrstorHelper, context, address, rfbm)
+                         .SetType(ir::ValueType::U64);
     } else {
-        __ CallHost(&XsaveHelper, context, address, rfbm);
+        status = __ CallHost(&XsaveHelper, context, address, rfbm)
+                         .SetType(ir::ValueType::U64);
     }
+    // An unmapped XSAVE area is a guest #PF, not a no-op. CheckMemoryAlignment
+    // is the runtime's generic "exit the block with PageFatal if (v & mask)"
+    // primitive; see decoder_x87.cc's RaiseIfGuestFault.
+    __ SetLocation(ir::Lambda{ir::Imm{insn_pc}});
+    __ CheckMemoryAlignment(status, ir::Imm(kX87GuestFault));
 }
 
 }  // namespace swift::x86

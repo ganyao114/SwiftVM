@@ -387,6 +387,7 @@ void X64Decoder::Decode() {
             end_decode = assembler->EndCommit();
             break;
         }
+        insn_pc = pc;
         pc += insn.size;
         // VEX handlers re-read the prefix bytes (see DecodeVex): distorm does
         // not expose VEX.L/W/vvvv and mis-sizes the AVX2 integer forms.
@@ -401,13 +402,38 @@ void X64Decoder::Decode() {
 }
 
 bool X64Decoder::DecodeSwitch(_DInst& insn) {
-    // Control / debug register moves are not modelled: trap gracefully
-    // instead of panicking on the unknown register class.
     for (auto& op : insn.ops) {
-        if (op.type == O_REG && ((op.index >= R_CR0 && op.index <= R_CR8) ||
-                                 (op.index >= R_DR0 && op.index <= R_DR7))) {
+        if (op.type != O_REG) {
+            continue;
+        }
+        // Control / debug register moves are not modelled: trap gracefully
+        // instead of panicking on the unknown register class.
+        if ((op.index >= R_CR0 && op.index <= R_CR8) ||
+            (op.index >= R_DR0 && op.index <= R_DR7)) {
             Interrupt(InterruptReason::ILL_CODE);
             return true;
+        }
+        // No MMX register file exists in this runtime, and MMX shares its
+        // opcode numbers with SSE: distorm reports the same insn.opcode for
+        // `paddb mm0,mm1` (0F FC) and `paddb xmm0,xmm1` (66 0F FC), with only
+        // the operand register class telling them apart. Every handler below
+        // reads that class as an XMM index, and x86_regs_table maps R_MM0..7
+        // onto X86RegInfo::Xmm0..7 -- so an MMX-form instruction does not fail,
+        // it quietly reads and writes the guest's XMM0-XMM7 and returns wrong
+        // data. Roughly fifty shared opcodes are reachable this way (the whole
+        // MMX/SSE2 integer set plus the SSSE3 additions and pextrw/pinsrw/
+        // pmovmskb/movd/movq), which is why this is one blanket test at the
+        // dispatch entry rather than a guard bolted onto each case.
+        //
+        // Refusing to decode returns false -> InterruptReason::FALLBACK ->
+        // IllegalCode, killing the guest at the instruction. That is the
+        // correct answer: MMX is not implemented, is not advertised (CPUID
+        // leaf 1 EDX bit 23 is clear, so no correct program should emit it),
+        // and dying loudly is strictly better than computing silently wrong
+        // vectors. decoder_sse4.cc's SseXmmForm makes the same call for the
+        // SSSE3 opcodes it owns.
+        if (op.index >= R_MM0 && op.index <= R_MM7) {
+            return false;
         }
     }
     switch (insn.opcode) {
@@ -1027,6 +1053,17 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeVecBitwise(insn, VecBitwiseOp::AndNot);
             break;
         case I_PADDQ:
+            // The one shared opcode the register-class test at the top of this
+            // function cannot see. This distorm snapshot decodes BOTH forms of
+            // PADDQ -- 0F D4 (MMX, mm/m64) and 66 0F D4 (SSE2, xmm/m128) -- with
+            // XMM operand indices, identical flags, identical opsize and an
+            // empty unusedPrefixesMask; nothing in the _DInst separates them.
+            // Sweeping all 88 MMX-form encodings against this snapshot showed
+            // it is the only one with that defect, so it gets the only special
+            // case: read the mandatory prefix off the encoding instead.
+            if (!HasOperandSizePrefix()) {
+                return false;  // MMX form -> FALLBACK -> IllegalCode
+            }
             DecodeVecInt(insn, VecIntOp::Add, 64);
             break;
         case I_PSUBQ:
@@ -2127,6 +2164,29 @@ bool X64Decoder::AvxEnabled() {
         return env && std::strcmp(env, "0") != 0;
     }();
     return enabled;
+}
+
+// True when a 0x66 operand-size prefix precedes the instruction's 0x0F escape
+// byte. Only needed where distorm loses the distinction between an MMX encoding
+// and its 66-prefixed SSE twin (see I_PADDQ in DecodeSwitch); everywhere else
+// the operand register class already carries it.
+bool X64Decoder::HasOperandSizePrefix() const {
+    if (!insn_bytes) {
+        return false;
+    }
+    // Legacy prefixes may appear in any order ahead of the escape byte, so scan
+    // until 0x0F. The bound is x86's 4-prefix-group limit plus REX; anything
+    // longer is not a two-byte-opcode encoding.
+    for (u32 i = 0; i < 5; i++) {
+        const u8 b = insn_bytes[i];
+        if (b == 0x0F) {
+            return false;
+        }
+        if (b == 0x66) {
+            return true;
+        }
+    }
+    return false;
 }
 
 X64Decoder::VexInfo X64Decoder::DecodeVex() const {

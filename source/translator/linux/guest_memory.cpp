@@ -46,6 +46,22 @@ bool GuestMemory::ReserveWindow(u32 bits) {
     window_bits_ = bits;
     mask_ = size - 1;
     bias_ = reinterpret_cast<VAddr>(base);
+    // Page-presence bitmap for the whole window: one bit per host page, so
+    // 2^(bits-17) bytes -- 32 KiB at the default 32-bit window, 1 GiB at the
+    // 47-bit maximum (calloc, so untouched pages cost nothing). This is what
+    // makes the helper-side "is this guest range mapped?" probe lock-free;
+    // see MappedBytesFrom.
+    const u64 words = std::max<u64>(1, (size >> kHostPageShift) / 64);
+    page_bitmap_.reset(static_cast<std::atomic<u64>*>(
+            std::calloc(static_cast<size_t>(words), sizeof(std::atomic<u64>))));
+    if (!page_bitmap_) {
+        munmap(base, size);
+        LOG_ERROR("GuestMemory: page-presence bitmap ({} words) allocation failed", words);
+        window_bits_ = 0;
+        mask_ = ~u64(0);
+        bias_ = 0;
+        return false;
+    }
     // mmap arena: upper half of the window. The classic guest stack
     // (kGuestStackTop = 0x7FF00000) and the brk heap live below it.
     arena_base_ = size >> 1;
@@ -266,12 +282,31 @@ std::string GuestMemory::ReadCString(VAddr addr, size_t max_len) {
     return result;
 }
 
+// Sets/clears one bit per host page of [addr, addr+size). Callers hold
+// mapped_regions_mutex, so the only concurrency is with lock-free readers;
+// relaxed is enough because the pages themselves are already
+// mapped/unmapped by the caller and a reader racing its own mmap has no
+// defined answer to race with.
+void GuestMemory::SetPageBits(VAddr addr, u64 size, bool present) {
+    if (!page_bitmap_ || size == 0) return;
+    const VAddr first = (addr & mask_) >> kHostPageShift;
+    const VAddr last = ((addr & mask_) + size - 1) >> kHostPageShift;
+    for (VAddr page = first; page <= last; ++page) {
+        auto& word = page_bitmap_[page >> 6];
+        const u64 bit = u64(1) << (page & 63);
+        const u64 old = word.load(std::memory_order_relaxed);
+        word.store(present ? (old | bit) : (old & ~bit), std::memory_order_relaxed);
+    }
+}
+
 void GuestMemory::TrackMap(VAddr addr, u64 size) {
     if (size == 0) return;
     std::unique_lock guard(mapped_regions_mutex);
     const VAddr end = addr + size;
-    // Replace any overlaps, then coalesce touching intervals.
+    // Replace any overlaps, then coalesce touching intervals. TrackUnmapLocked
+    // clears the same page bits, so set them after it, not before.
     TrackUnmapLocked(addr, size);
+    SetPageBits(addr, size, true);
     mapped_regions.emplace_back(addr, end);
     std::sort(mapped_regions.begin(), mapped_regions.end());
     std::vector<std::pair<VAddr, VAddr>> merged;
@@ -293,6 +328,7 @@ void GuestMemory::TrackUnmap(VAddr addr, u64 size) {
 }
 
 void GuestMemory::TrackUnmapLocked(VAddr addr, u64 size) {
+    SetPageBits(addr, size, false);
     const VAddr end = addr + size;
     std::vector<std::pair<VAddr, VAddr>> out;
     out.reserve(mapped_regions.size());
@@ -308,8 +344,47 @@ void GuestMemory::TrackUnmapLocked(VAddr addr, u64 size) {
 }
 
 bool GuestMemory::RangeIsMapped(VAddr addr, u64 size) const {
+    if (page_bitmap_) {
+        // Same answer as RangeIsMappedLocked, without the lock: mapped_regions
+        // is kept coalesced, so "every page present" and "wholly inside one
+        // region" are the same predicate.
+        return size == 0 || MappedBytesFrom(addr, size) == size;
+    }
     std::shared_lock guard(mapped_regions_mutex);
     return RangeIsMappedLocked(addr, size);
+}
+
+u64 GuestMemory::MappedBytesFromSlow(VAddr addr, u64 length) const {
+    if (length == 0) return 0;
+    if (window_bits_ != 0) {
+        addr &= mask_;
+        const u64 avail = mask_ - addr + 1;  // bytes to the window top
+        if (length > avail) length = avail;
+    } else if (addr + length < addr) {
+        return 0;  // overflow: never a valid range
+    }
+    if (page_bitmap_) {
+        u64 done = 0;
+        VAddr cursor = addr;
+        while (done < length) {
+            if (!PageBit(cursor)) break;
+            const u64 in_page = kHostPageSize - (cursor & (kHostPageSize - 1));
+            const u64 chunk = in_page < length - done ? in_page : length - done;
+            done += chunk;
+            cursor += chunk;
+        }
+        return done;
+    }
+    std::shared_lock guard(mapped_regions_mutex);
+    auto it = std::upper_bound(mapped_regions.begin(),
+                               mapped_regions.end(),
+                               addr,
+                               [](VAddr a, const auto& p) { return a < p.first; });
+    if (it == mapped_regions.begin()) return 0;
+    --it;
+    if (it->first > addr || it->second <= addr) return 0;
+    const u64 room = it->second - addr;
+    return room < length ? room : length;
 }
 
 VAddr GuestMemory::FindFreeLocked(VAddr from, u64 size) const {
