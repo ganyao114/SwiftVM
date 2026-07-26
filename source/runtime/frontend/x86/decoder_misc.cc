@@ -64,10 +64,15 @@ void GuestRandom(u64* destination, u64 width) {
 
 void X64Decoder::DecodeCpuid(_DInst& insn) {
     (void)insn;
-    // Conservative feature set: an SSE2 userland baseline plus the explicitly
-    // implemented scalar facilities below (CX16, MOVBE, RDRAND, RDSEED, TSC,
-    // RDTSCP). AVX2 / AVX-512 / BMI / ERMS and MMX are deliberately NOT
-    // reported so glibc's ifunc dispatch selects the covered SSE2 paths.
+    // Baseline: SSE2 userland plus the explicitly implemented scalar
+    // facilities (CX16, MOVBE, RDRAND, RDSEED, TSC, RDTSCP). AVX-512, ERMS and
+    // MMX stay unreported so glibc's ifunc dispatch keeps away from them.
+    //
+    // AVX/AVX2 and BMI1/BMI2 are advertised only behind their opt-in gates.
+    // The discipline this file has always followed is "never advertise what
+    // the decoder would #UD on", and it now cuts the other way too: the gates
+    // enable the handlers, so CPUID must follow them or the guest is told a
+    // lie in the safe direction and simply never uses the code we wrote.
     static constexpr u32 kSse2Edx = (1u << 0)   // FPU
                                     | (1u << 4)   // TSC
                                     | (1u << 8)   // CX8
@@ -84,14 +89,25 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     // really saves the extended state.  Both are gated on SVM_XSAVE, the same
     // switch that enables the XGETBV/XSAVE/XRSTOR handlers, so CPUID can never
     // promise a facility the decoder would #UD on.
-    //
-    // TO ENABLE AVX (not this change's job): add `| (1u << 28)` (AVX) to
-    // kLeaf1Ecx and `| (1u << 5)` (AVX2) to kLeaf7Ebx above, and drop the
-    // XsaveEnabled() gate on the next line so XSAVE/OSXSAVE are always
-    // reported.  XCR0 bit 2 comes along on its own -- GuestXcr0() sets it
-    // whenever the AVX decoder is on -- which is what makes XGETBV report YMM
-    // state and glibc's ifunc resolvers take the AVX path.
-    const u32 leaf1_ecx = kLeaf1Ecx | (XsaveEnabled() ? ((1u << 26) | (1u << 27)) : 0u);
+    // AVX requires the whole chain, not just its own bit: glibc checks
+    // OSXSAVE, then executes XGETBV and requires XCR0[2:1] == 11b, before it
+    // will take an AVX path. Advertising AVX without XSAVE/OSXSAVE would be
+    // incoherent -- CPUID would claim a facility whose enabling protocol is
+    // missing -- so AVX is reported only when BOTH gates are on. SVM_XSAVE
+    // alone still reports XSAVE/OSXSAVE, which is coherent on its own.
+    const bool avx_reported = AvxEnabled() && XsaveEnabled();
+    const u32 leaf1_ecx = kLeaf1Ecx |
+                          (XsaveEnabled() ? ((1u << 26) | (1u << 27)) : 0u) |
+                          (avx_reported ? (1u << 28) : 0u);      // AVX
+    // BMI1 (bit 3) and BMI2 (bit 8) follow SVM_BMI. They are deliberately
+    // independent of AVX: glibc's string ifuncs require AVX2 *and* BMI2
+    // together, so advertising BMI2 without the AVX2 implementation being
+    // ready would select variants we cannot run. Advertising AVX2 without
+    // BMI2 is safe -- the string variants stay unselected and memcpy/memset,
+    // whose AVX variants are fully covered, still get the fast path.
+    const u32 leaf7_ebx = kLeaf7Ebx |
+                          (avx_reported ? (1u << 5) : 0u) |       // AVX2
+                          (BmiEnabled() ? ((1u << 3) | (1u << 8)) : 0u);
     // CPUID.0xD: the XSAVE state-component enumeration.  Every value is
     // derived from the layout constants in xsave.h, which are the same ones
     // XsaveHelper writes through -- a guest sizing its save area from EBX
@@ -139,7 +155,7 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     R(_RegisterType::R_EDX, __ LoadImm(ir::Imm(u64(0))));
     emit(0x80000000, {0x80000004, 0, 0, 0});  // max extended leaf
     emit(0x80000001, {0, 0, 0, kExtEdx});
-    emit(7, {0, kLeaf7Ebx, 0, 0});              // RDSEED; no BMI/AVX2/ERMS
+    emit(7, {0, leaf7_ebx, 0, 0});              // RDSEED (+AVX2/BMI when gated on)
     // denominator=1, numerator=1, crystal=1 GHz => virtual TSC frequency 1 GHz.
     emit(0x15, {1, 1, 1'000'000'000u, 0});
     if (XsaveEnabled()) {

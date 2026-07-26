@@ -1854,6 +1854,12 @@ TEST_CASE("Fuzz x86 cpuid") {
         // here matches what CPUID will actually report.
         const bool xsave_on = std::getenv("SVM_XSAVE") &&
                               std::strcmp(std::getenv("SVM_XSAVE"), "0") != 0;
+        const bool bmi_on = std::getenv("SVM_BMI") &&
+                            std::strcmp(std::getenv("SVM_BMI"), "0") != 0;
+        // AVX needs its whole enabling chain, so the bit follows both gates.
+        const bool avx_on = std::getenv("SVM_AVX") &&
+                            std::strcmp(std::getenv("SVM_AVX"), "0") != 0;
+        const bool avx_reported = avx_on && xsave_on;
         switch (leaf) {
             case 0:
                 REQUIRE(sig[0] == 0x15);
@@ -1875,15 +1881,16 @@ TEST_CASE("Fuzz x86 cpuid") {
                 // with the gate on, XGETBV/XSAVE/XRSTOR and CPUID.0xD exist.
                 REQUIRE(((sig[2] >> 26) & 1u) == (xsave_on ? 1u : 0u));   // XSAVE
                 REQUIRE(((sig[2] >> 27) & 1u) == (xsave_on ? 1u : 0u));   // OSXSAVE
+                REQUIRE(((sig[2] >> 28) & 1u) == (avx_reported ? 1u : 0u));  // AVX
                 REQUIRE((sig[2] & (1u << 0)) == 0);   // no SSE3
                 break;
             case 7:
-                // BMI1 (bit 3) / BMI2 (bit 8) are implemented (decoder_bmi.cc,
-                // gated on SVM_BMI) but deliberately NOT advertised yet: the
-                // AVX gap list is still being closed, and advertising BMI2 is
-                // what makes glibc's ifunc select the AVX2 string variants.
-                // The two moves together, in one reviewed step.
-                REQUIRE(sig[1] == (1u << 18));        // RDSEED only
+                // AVX2 (bit 5) tracks SVM_AVX *and* SVM_XSAVE together -- AVX
+                // is incoherent without the XSAVE/XGETBV enabling protocol.
+                // BMI1 (bit 3) / BMI2 (bit 8) track SVM_BMI independently.
+                REQUIRE(sig[1] == ((1u << 18) |
+                                   (avx_reported ? (1u << 5) : 0u) |
+                                   (bmi_on ? ((1u << 3) | (1u << 8)) : 0u)));
                 break;
             case 0x15:
                 REQUIRE(sig[0] == 1);              // denominator
