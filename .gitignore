@@ -25,3 +25,12 @@ source/translator/linux/tests/CMakeCache.txt
 source/translator/linux/tests/CMakeFiles/
 source/translator/linux/tests/Makefile
 source/translator/linux/tests/cmake_install.cmake
+
+# Guest-side test/bench ELFs and generated reference tables: build products of
+# source/translator/linux/tests/build_*.sh, not sources. Committing them would
+# put an x86-64 ELF in an ARM64 repo and let a stale binary silently pass a run.
+source/translator/linux/tests/*_x86_64
+source/translator/linux/tests/*_host
+source/translator/linux/tests/*.elf
+source/translator/linux/tests/bench_*.txt
+source/translator/linux/tests/bench_*.json
