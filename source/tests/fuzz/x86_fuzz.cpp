@@ -5198,6 +5198,14 @@ TEST_CASE("x87 directed edge semantics") {
             CAPTURE(fcw);
             REQUIRE(*reinterpret_cast<s32*>(data + 0x770) == expected);
             REQUIRE((ctx.x87_fsw & 0x21) == 0x20);  // PE, no IE
+            // C1 is the rounding *direction*, not merely "inexact": the SDM
+            // sets it when the stored result exceeds the exact source. Here
+            // the source is +1.5, so C1 must be set exactly for the two modes
+            // that produce 2 (nearest-even and toward +inf) and clear for the
+            // two that produce 1 (toward -inf and truncate). Unicorn clears C1
+            // unconditionally, so only this directed check covers it; real x86
+            // behaviour was established by Rosetta arbitration.
+            REQUIRE(((ctx.x87_fsw & 0x0200) != 0) == (expected == 2));
         }
         for (const auto [input, expected, ie] :
              std::array<std::tuple<u64, u64, bool>, 4>{{
@@ -5357,10 +5365,16 @@ TEST_CASE("x87 directed edge semantics") {
                       UINT64_C(0xC000000000000000), 0xFFFF, true},
                      {UINT64_C(0xC010000000000000),
                       UINT64_C(0xC000000000000000), 0xFFFF, true}, // -4
+                     // FLD m64 of a signaling NaN is itself an invalid
+                     // operation: the load quiets the payload AND raises #IA,
+                     // so IE is already set before FSQRT ever runs (FSQRT of
+                     // the resulting QNaN adds nothing). The helper used to
+                     // quiet without carrying IE — see LoadMemoryValue in
+                     // x87.cpp. Unicorn drops IE here too, which is why the
+                     // Unicorn differential never caught it; real x86
+                     // behaviour was established by Rosetta arbitration.
                      {UINT64_C(0x7FF0123456789ABC),
-                      UINT64_C(0xC091A2B3C4D5E000), 0x7FFF, false},
-                     // The existing m64-load helper pre-quiets this SNaN
-                     // without carrying IE; default semantics remain untouched.
+                      UINT64_C(0xC091A2B3C4D5E000), 0x7FFF, true},
              }}) {
             *reinterpret_cast<u64*>(data + 0x7B0) = input;
             CodeBuf b;
