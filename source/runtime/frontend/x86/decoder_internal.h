@@ -38,7 +38,6 @@ u64 AddssHalf(u64 a, u64 b);
 u64 SubssHalf(u64 a, u64 b);
 u64 MulssHalf(u64 a, u64 b);
 u64 DivssHalf(u64 a, u64 b);
-u64 Bswap64(u64 v, u64 width);
 u64 FxsaveFill(u64 guest_addr);
 
 static ir::ValueType GetSize(u32 bits) {

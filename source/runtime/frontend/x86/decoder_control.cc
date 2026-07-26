@@ -94,6 +94,62 @@ void X64Decoder::DecodePop(_DInst& insn) {
     Dst(insn, op0, value);
 }
 
+void X64Decoder::DecodePushf(_DInst& insn) {
+    const auto type = FLAG_GET_OPSIZE(insn.flags) == Decode16Bits
+                              ? ir::ValueType::U16
+                              : (is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
+    // Reserved bit 1 is always one. Bit 9 reflects the user-visible IF value;
+    // SwiftVM does not model interrupt delivery, so it remains enabled.
+    const auto mask_bit = [&](ir::Value bit, u32 position) {
+        return __ LslImm(__ ZeroExtend64(bit), ir::Imm(position));
+    };
+    auto cf_pf = __ Or(mask_bit(CarryValue(), 0),
+                      ir::Operand{mask_bit(
+                              __ TestFlags(ir::Flags::Parity).SetType(ir::ValueType::U8), 2)});
+    auto af_zf = __ Or(
+            mask_bit(__ TestFlags(ir::Flags::AuxiliaryCarry).SetType(ir::ValueType::U8), 4),
+            ir::Operand{mask_bit(
+                    __ TestFlags(ir::Flags::Zero).SetType(ir::ValueType::U8), 6)});
+    auto sf_df = __ Or(mask_bit(
+                              __ TestFlags(ir::Flags::Negate).SetType(ir::ValueType::U8), 7),
+                      ir::Operand{mask_bit(DirectionValue(), 10)});
+    auto dynamic = __ Or(__ Or(cf_pf, ir::Operand{af_zf}),
+                         ir::Operand{__ Or(
+                                 sf_df,
+                                 ir::Operand{mask_bit(
+                                         __ TestFlags(ir::Flags::Overflow)
+                                                 .SetType(ir::ValueType::U8),
+                                         11)})});
+    auto packed = __ Or(__ LoadImm(ir::Imm(u64(0x202))), ir::Operand{dynamic}).SetType(type);
+    Push(packed, type);
+}
+
+void X64Decoder::DecodePopf(_DInst& insn) {
+    const auto type = FLAG_GET_OPSIZE(insn.flags) == Decode16Bits
+                              ? ir::ValueType::U16
+                              : (is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
+    auto flags = __ ZeroExtend64(Pop(type));
+    const auto bit = [&](u32 position) {
+        return __ And(__ LsrImm(flags, ir::Imm(position)), ir::Operand{ir::Imm(u64(1))});
+    };
+    auto one = __ LoadImm(ir::Imm(u64(1)));
+    auto zero = __ LoadImm(ir::Imm(u64(0)));
+
+    auto parity_value = __ Select(__ TestNotZero(bit(2)), zero, one);
+    __ SaveFlags(__ Or(parity_value, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Parity);
+    auto zero_value = __ Select(__ TestNotZero(bit(6)), zero, one);
+    __ SaveFlags(__ Or(zero_value, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Zero);
+    auto sign_value = __ LslImm(bit(7), ir::Imm(63u)).SetType(ir::ValueType::U64);
+    __ SaveFlags(__ Or(sign_value, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Negate);
+    auto auxiliary_value = __ Add(__ LoadImm(ir::Imm(u64(0xF))), ir::Operand{bit(4)});
+    __ SaveFlags(auxiliary_value, ir::Flags::AuxiliaryCarry);
+    __ SetCarry(bit(0));
+    __ SetOverflow(bit(11));
+    __ StoreUniform(DirectionUniform(), bit(10).SetType(ir::ValueType::U8));
+    carry_ = CarryPolarity::Direct;
+    StorePolarity(false);
+}
+
 void X64Decoder::DecodePushA(_DInst& insn) {
     auto& op0 = insn.ops[0];
     auto type = GetSize(op0.size);

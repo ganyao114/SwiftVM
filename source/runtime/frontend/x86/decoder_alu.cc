@@ -47,11 +47,8 @@ static u64 DivQS64(u64 hi, u64 lo, u64 den) {
     return static_cast<u64>(num / sden);
 }
 
-// popcnt / bswap helpers.
+// popcnt helper.
 static u64 Popcnt64(u64 v, u64) { return u64(__builtin_popcountll(v)); }
-u64 Bswap64(u64 v, u64 width) {
-    return width == 32 ? u64(__builtin_bswap32(u32(v))) : __builtin_bswap64(v);
-}
 // lzcnt: count of leading zero bits within the architectural width.
 static u64 Lzcnt64(u64 v, u64 width) {
     if (!v) {
@@ -811,6 +808,140 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
     // normalize through the runtime polarity byte (stored above for count != 0).
     carry_ = CarryPolarity::Unknown;
 
+    Dst(insn, op0, result);
+}
+
+void X64Decoder::DecodeDoubleShift(_DInst& insn, bool right) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+    auto& op2 = insn.ops[2];
+    const auto width = op0.size;
+    const auto container = width == 64 ? ir::ValueType::U64 : ir::ValueType::U32;
+    const u64 value_mask = width == 64 ? UINT64_MAX : ((u64(1) << width) - 1);
+
+    auto dst = ToValue(Src(insn, op0)).SetType(container);
+    auto src = ToValue(Src(insn, op1)).SetType(container);
+    if (width < 32) {
+        dst = __ ZeroExtend32(dst);
+        src = __ ZeroExtend32(src);
+    }
+    auto count = __ And(ToValue(Src(insn, op2)),
+                        ir::Operand{ir::Imm(width == 64 ? u64(0x3F) : u64(0x1F))});
+    auto complement = __ Sub(__ LoadImm(ir::Imm(u64(width))), ir::Operand{count});
+    auto shifted_dst = right ? __ LsrValue(dst, count) : __ LslValue(dst, count);
+    auto shifted_src = right ? __ LslValue(src, complement) : __ LsrValue(src, complement);
+    auto calculated = __ Or(shifted_dst, ir::Operand{shifted_src});
+    if (width < 64) {
+        calculated = __ And(calculated, ir::Operand{ir::Imm(value_mask)});
+    }
+    // Count zero is a strict no-op. For the 16-bit form, masked counts above
+    // 16 have architecturally undefined results and flags; this deterministic
+    // calculation is intentionally not advertised as stronger behavior.
+    auto nonzero = __ TestNotZero(count);
+    auto result = __ Select(nonzero, calculated, dst).SetType(GetSize(width));
+
+    auto skip_flags = __ NotGoto(nonzero);
+    auto flag_value = __ Or(result, ir::Operand{ir::Imm(u64(0))});
+    __ SaveFlags(flag_value, ir::Flags::Negate | ir::Flags::Zero | ir::Flags::Parity);
+    ir::Value cf;
+    if (right) {
+        auto count_m1 = __ Sub(count, ir::Operand{ir::Imm(u64(1))});
+        cf = __ And(__ LsrValue(dst, count_m1), ir::Operand{ir::Imm(u64(1))});
+    } else {
+        cf = __ And(__ LsrValue(dst, complement), ir::Operand{ir::Imm(u64(1))});
+    }
+    __ SetCarry(cf);
+    auto old_msb =
+            __ And(__ LsrImm(dst, ir::Imm(u64(width - 1))), ir::Operand{ir::Imm(u64(1))});
+    auto new_msb =
+            __ And(__ LsrImm(result, ir::Imm(u64(width - 1))), ir::Operand{ir::Imm(u64(1))});
+    // For count == 1, both SHLD and SHRD define OF as the change in the
+    // destination sign bit. It is architecturally undefined for larger counts.
+    __ SetOverflow(__ Xor(old_msb, ir::Operand{new_msb}));
+    StorePolarity(false);
+    __ BindLabel(skip_flags);
+    carry_ = CarryPolarity::Unknown;
+    Dst(insn, op0, result);
+}
+
+void X64Decoder::DecodeRotateCarry(_DInst& insn, bool left) {
+    auto& op0 = insn.ops[0];
+    auto& op1 = insn.ops[1];
+    const auto width = op0.size;
+    const auto container = width == 64 ? ir::ValueType::U64 : ir::ValueType::U32;
+    const u64 value_mask = width == 64 ? UINT64_MAX : ((u64(1) << width) - 1);
+
+    auto src = ToValue(Src(insn, op0)).SetType(container);
+    if (width < 32) {
+        src = __ ZeroExtend32(src);
+    }
+    auto count = __ And(ToValue(Src(insn, op1)),
+                        ir::Operand{ir::Imm(width == 64 ? u64(0x3F) : u64(0x1F))});
+    if (width < 32) {
+        // Intel specifies masked-count modulo (operand width + CF) for byte
+        // and word rotates through carry.
+        auto divisor = ir::Imm(u64(width + 1));
+        auto quotient = __ Div(count, ir::Operand{divisor});
+        count = __ Sub(count, ir::Operand{__ Mul(quotient, ir::Operand{divisor})});
+    }
+    auto old_cf = __ ZeroExtend64(CarryValue()).SetType(container);
+    auto complement =
+            __ Sub(__ LoadImm(ir::Imm(u64(width + 1))), ir::Operand{count});
+    ir::Value calculated;
+    ir::Value cf;
+    if (left) {
+        auto cf_shift = __ Sub(count, ir::Operand{ir::Imm(u64(1))});
+        auto wrap = __ LsrValue(src, complement);
+        // AArch64 masks a variable shift by the container width, while the
+        // x86 width+CF rotate needs a shift by exactly `width` to contribute
+        // zero (not the unshifted source).
+        wrap = __ Select(
+                __ TestZero(__ Sub(complement, ir::Operand{ir::Imm(u64(width))})),
+                __ LoadImm(ir::Imm(u64(0))),
+                wrap);
+        calculated = __ Or(
+                __ Or(__ LslValue(src, count),
+                      ir::Operand{__ LslValue(old_cf, cf_shift)}),
+                ir::Operand{wrap});
+        auto cf_pos = __ Sub(__ LoadImm(ir::Imm(u64(width))), ir::Operand{count});
+        cf = __ And(__ LsrValue(src, cf_pos), ir::Operand{ir::Imm(u64(1))});
+    } else {
+        auto cf_pos = __ Sub(__ LoadImm(ir::Imm(u64(width))), ir::Operand{count});
+        auto wrap = __ LslValue(src, complement);
+        wrap = __ Select(
+                __ TestZero(__ Sub(complement, ir::Operand{ir::Imm(u64(width))})),
+                __ LoadImm(ir::Imm(u64(0))),
+                wrap);
+        calculated = __ Or(
+                __ Or(__ LsrValue(src, count),
+                      ir::Operand{__ LslValue(old_cf, cf_pos)}),
+                ir::Operand{wrap});
+        auto count_m1 = __ Sub(count, ir::Operand{ir::Imm(u64(1))});
+        cf = __ And(__ LsrValue(src, count_m1), ir::Operand{ir::Imm(u64(1))});
+    }
+    if (width < 64) {
+        calculated = __ And(calculated, ir::Operand{ir::Imm(value_mask)});
+    }
+    auto nonzero = __ TestNotZero(count);
+    auto result = __ Select(nonzero, calculated, src).SetType(GetSize(width));
+
+    auto skip_flags = __ NotGoto(nonzero);
+    __ SetCarry(cf);
+    auto msb =
+            __ And(__ LsrImm(result, ir::Imm(u64(width - 1))), ir::Operand{ir::Imm(u64(1))});
+    ir::Value of;
+    if (left) {
+        of = __ Xor(msb, ir::Operand{cf});
+    } else {
+        auto next_msb =
+                __ And(__ LsrImm(result, ir::Imm(u64(width - 2))),
+                       ir::Operand{ir::Imm(u64(1))});
+        of = __ Xor(msb, ir::Operand{next_msb});
+    }
+    __ SetOverflow(of);
+    StorePolarity(false);
+    __ BindLabel(skip_flags);
+    carry_ = CarryPolarity::Unknown;
     Dst(insn, op0, result);
 }
 
