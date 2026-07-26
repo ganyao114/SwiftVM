@@ -519,7 +519,25 @@ private:
                 auto start = instr.Id();
                 auto end = use_end[start];
                 if (!end) {
-                    continue;
+                    // A value nobody reads still needs a register: the emitter
+                    // writes its destination unconditionally, and asking
+                    // RegAlloc for an unallocated value asserts
+                    // (alloc_result[id].type == GPR).
+                    //
+                    // This was unreachable until uniform dead-store
+                    // elimination landed: the front end always stored a
+                    // result into guest state, and that store was the use.
+                    // DSE can now remove the store while the producer survives
+                    // on its side effects -- AtomicExchange is the measured
+                    // case, and anything DCE keeps for a reason other than its
+                    // result has the same shape.
+                    //
+                    // A degenerate [start, start] interval is exactly right:
+                    // the register is needed for this one instruction and free
+                    // immediately after. The function-level collector already
+                    // behaves this way (its `end` starts at the def's order
+                    // id), which is why only block mode failed.
+                    end = start;
                 }
                 live_interval.push_back({&instr, start, end});
             }
