@@ -123,6 +123,30 @@ vpxor ymm0,ymm1,ymm2  C5 F5 EF C2 -> id=7009 ops[0] index=91(R_XMM0) size=128
 
 **`VBROADCASTSS` 寄存器源形式不可解码（未修，覆盖缺口非错误答案）。** AVX2 的 `C4 E2 7D 18 C1` 在这份 distorm 快照里返回 `FLAG_NOT_DECODABLE`（快照只有 AVX1 的 m32 形式），SwiftVM 因而正确 FALLBACK。测试以 `known_not_decoded == 6` 钉住，distorm 一旦补上该条目测试即红。
 
+### ⚠ FALLBACK 是致命的，不是优雅降级
+
+前面几处描述把「handler decline → 块 FALLBACK」说成「拒绝翻译而非误执行」——**前半句对，后半句给人的印象错**。实际链路是：
+```
+InterruptReason::FALLBACK → translator/x86/translator.cpp 的 default 分支
+                          → ExitReason::IllegalCode → guest 进程终止
+```
+**没有解释器兜底**（解释器消费同一份 IR,未解码的指令在那边同样未解码）。
+
+这条决定了 CPUID 的开启策略：一旦 advertise AVX,glibc 的 IFUNC 会立刻选 AVX2 版的 memcpy/strlen 等，**撞上任何一条未实现指令就是进程崩溃**,而不是慢一点。所以「实现了一大批 AVX」并不等于「可以开 CPUID」——必须先确认目标二进制实际执行的指令集被完整覆盖。
+
+初步取证（`llvm-objdump` 统计 `source/translator/linux/tests/` 下的真实二进制）：**musl 构建的 `real_hello`/`real_busy`/`func_tests` 里 VEX 指令数为 0**,而 glibc 构建的 `func_tests_x86_64` 有 **4525 条**。因此对 musl guest 开启的风险远低于 glibc guest。注意静态计数会包含运行时未必选中的 IFUNC 变体，「二进制中存在」不等于「一定执行」。
+
+### oracle 缺陷模式（本轮累计四处）
+
+| oracle | 缺陷 |
+|---|---|
+| Unicorn | VEX 三操作数形式忽略 vvvv,执行破坏性 legacy SSE(`vpaddw xmm0,xmm1,xmm2` 跑成 `xmm0=xmm0+xmm2`) |
+| Unicorn | VEX.256 一律 `UC_ERR_INSN_INVALID`,根本不执行 |
+| Rosetta | CPUID 谎报 AVX=0(需 `ROSETTA_ADVERTISE_AVX=1`),但指令照常正确执行 |
+| Rosetta | `VPSLLVQ`/`VPSRLVQ` 的移位计数被截断成 32 位（Intel 用完整 qword)。实测：计数 `0x100000001` 时 Rosetta 给 2、SDM 应为 0;而计数 `0x100` 时 Rosetta 正确给 0,排除了「只读低字节」 |
+
+**每一处都只有靠交叉验证（第二个 oracle 或规范本身）才发现，单一 oracle 全绿不构成正确性证据。** 这是本轮方法论上最值得留下的结论。
+
 ### 已知偏差与缺口
 1. **32 字节访存的故障语义**:x86 上 32 字节访问是**单个不可分割**的架构操作。C1 拆成两次 16 字节后：跨页且仅第二页未映射时，load 会**先写入目的低半再故障**（硬件保持整个 YMM 不变），store 会**先提交前 16 字节再故障**（硬件不产生部分存储）；上半故障报告的地址是 `base+16` 而非 `base`。仅对 SIGSEGV 后继续执行的 guest 可见（用户态故障处理、JIT guard page、mmap 探测型分配器）。要精确修复需先探测两半再提交，或引入真正的 32 字节 IR 访存 op（后端工作）。
 2. **32 字节对齐未强制**:`VMOVDQA`/`VMOVAPS`/`VMOVNT*` 应在未对齐时 #GP;沿用现有 SSE `MOVDQA` 同样忽略 16 字节规则的先例。可用机制是 `CheckMemoryAlignment(addr, Imm(31))`。
