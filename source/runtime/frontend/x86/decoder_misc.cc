@@ -1,4 +1,7 @@
 #include <array>
+#include <chrono>
+#include <random>
+#include <time.h>
 #include "runtime/frontend/x86/decoder_internal.h"
 
 namespace swift::x86 {
@@ -7,20 +10,77 @@ using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
+namespace {
+
+u64 ReadVirtualTsc() {
+#if defined(__APPLE__)
+    // Darwin does not guarantee EL0 access to CNTVCT_EL0. Use its supported
+    // monotonic raw clock and expose a stable virtual 1 GHz TSC.
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+    return u64(ts.tv_sec) * 1'000'000'000ull + u64(ts.tv_nsec);
+#elif defined(__aarch64__)
+    u64 value, frequency;
+    asm volatile("mrs %0, cntvct_el0" : "=r"(value));
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+    // Normalize the architectural counter to the same virtual 1 GHz frequency
+    // exposed through CPUID.15H.
+    return static_cast<u64>(
+            (static_cast<unsigned __int128>(value) * 1'000'000'000ull) / frequency);
+#else
+    return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count());
+#endif
+}
+
+u64 HostRandom() {
+    // A host helper keeps the nondeterministic read in both the JIT and
+    // interpreter execution paths.  random_device is backed by the platform
+    // entropy provider on the supported macOS host.
+    static thread_local std::random_device random;
+    return (u64(random()) << 32) | u64(random());
+}
+
+void ReadGuestTsc(ThreadContext64* context) {
+    const u64 tsc = ReadVirtualTsc();
+    context->rax.low.dword = u32(tsc);
+    context->rdx.low.dword = u32(tsc >> 32);
+}
+
+void GuestRandom(u64* destination, u64 width) {
+    const u64 value = HostRandom();
+    if (width == 16) {
+        *destination = (*destination & ~u64(0xFFFF)) | u16(value);
+    } else if (width == 32) {
+        *destination = u32(value);
+    } else {
+        *destination = value;
+    }
+}
+
+}  // namespace
+
 void X64Decoder::DecodeCpuid(_DInst& insn) {
     (void)insn;
-    // Conservative feature set: SSE2 baseline plus CX16. AVX2 / AVX-512 /
-    // BMI / ERMS are deliberately NOT reported so glibc's ifunc dispatch
-    // selects the baseline SSE2 string routines (the EVEX implementations are
-    // out of scope for this translator).
+    // Conservative feature set: an SSE2 userland baseline plus the explicitly
+    // implemented scalar facilities below (CX16, MOVBE, RDRAND, RDSEED, TSC,
+    // RDTSCP). AVX2 / AVX-512 / BMI / ERMS and MMX are deliberately NOT
+    // reported so glibc's ifunc dispatch selects the covered SSE2 paths.
     static constexpr u32 kSse2Edx = (1u << 0)   // FPU
+                                    | (1u << 4)   // TSC
+                                    | (1u << 8)   // CX8
                                     | (1u << 15)  // CMOV
-                                    | (1u << 23)  // MMX
                                     | (1u << 24)  // FXSR
                                     | (1u << 25)  // SSE
                                     | (1u << 26); // SSE2
-    static constexpr u32 kLeaf1Ecx = (1u << 13); // CMPXCHG16B
-    static constexpr u32 kExtEdx = (1u << 20)   // NX
+    static constexpr u32 kLeaf1Ecx = (1u << 13)  // CMPXCHG16B
+                                     | (1u << 22)  // MOVBE
+                                     | (1u << 30); // RDRAND
+    static constexpr u32 kLeaf7Ebx = (1u << 18);  // RDSEED
+    static constexpr u32 kExtEdx = (1u << 11)   // SYSCALL/SYSRET
+                                   | (1u << 20)   // NX
+                                   | (1u << 27)   // RDTSCP
                                    | (1u << 29);  // LM (required by 64 bit guests)
     auto leaf = __ ZeroExtend64(R(_RegisterType::R_EAX));
     auto is_leaf = [&](u32 n) {
@@ -46,10 +106,68 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     R(_RegisterType::R_EDX, __ LoadImm(ir::Imm(u64(0))));
     emit(0x80000000, {0x80000004, 0, 0, 0});  // max extended leaf
     emit(0x80000001, {0, 0, 0, kExtEdx});
-    emit(7, {0, 0, 0, 0});                     // no BMI / AVX2 / AVX-512 / ERMS
+    emit(7, {0, kLeaf7Ebx, 0, 0});              // RDSEED; no BMI/AVX2/ERMS
+    // denominator=1, numerator=1, crystal=1 GHz => virtual TSC frequency 1 GHz.
+    emit(0x15, {1, 1, 1'000'000'000u, 0});
     emit(1, {0x000306C3, 0, kLeaf1Ecx, kSse2Edx}); // Haswell-ish model + CX16
     // "GenuineIntel" + max basic leaf.
-    emit(0, {7, 0x756E6547, 0x6C65746E, 0x49656E69});
+    emit(0, {0x15, 0x756E6547, 0x6C65746E, 0x49656E69});
+}
+
+void X64Decoder::DecodeTimestamp(bool rdtscp) {
+    // Write through the context instead of returning the counter in an
+    // allocatable IR value. This also makes the operation explicitly
+    // side-effecting and avoids keeping a volatile value live across the host
+    // call in either backend.
+    auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
+    __ CallHost(&ReadGuestTsc, context);
+    if (rdtscp) {
+        // A single virtual CPU/core identity is exposed.
+        R(_RegisterType::R_ECX, __ LoadImm(ir::Imm(u64(0))));
+    }
+}
+
+void X64Decoder::DecodeRandomRegister(_RegisterType reg, u32 width) {
+    const auto destination =
+            __ GetUniformAddress(ir::Imm(ToReg(x86_regs_table[reg]).GetOffset()))
+                    .SetType(ir::ValueType::U64);
+    __ CallHost(&GuestRandom, destination, __ LoadImm(ir::Imm(u64(width))));
+    // RDRAND/RDSEED report success in CF and clear OF/SF/ZF/AF/PF.
+    __ ClearFlags(ir::Flags::All);
+    __ SetCarry(__ LoadImm(ir::Imm(u64(1))));
+    carry_ = CarryPolarity::Direct;
+    StorePolarity(false);
+}
+
+void X64Decoder::DecodeRandom(_DInst& insn) {
+    auto& op0 = insn.ops[0];
+    DecodeRandomRegister(static_cast<_RegisterType>(op0.index), op0.size);
+}
+
+void X64Decoder::DecodeMovbe(_DInst& insn) {
+    auto& dst = insn.ops[0];
+    auto& src = insn.ops[1];
+    // distorm orders both architectural forms semantically:
+    //   F0: op0=register, op1=memory (load)
+    //   F1: op0=memory,   op1=register (store)
+    const u32 width = dst.size;
+    auto value = ToValue(Src(insn, src));
+    auto swapped = __ ByteSwap(value, ir::Imm(width)).SetType(GetSize(width));
+    Dst(insn, dst, swapped);
+}
+
+void X64Decoder::DecodeMovnti(_DInst& insn) {
+    // The non-temporal cache hint is not architecturally visible here.  x86
+    // TSO is stronger than an NT store, so use the ordinary TSO-aware store
+    // path for correctness and retain the configured ordering policy.
+    Dst(insn, insn.ops[0], Src(insn, insn.ops[1]));
+}
+
+void X64Decoder::DecodeXlat(_DInst& insn) {
+    auto address = __ Add(R(_RegisterType::R_RBX),
+                          ir::Operand{__ ZeroExtend64(R(_RegisterType::R_AL))});
+    auto value = MemLoad(ir::Operand{address}, ir::ValueType::U8, TsoOrdered(insn));
+    R(_RegisterType::R_AL, value);
 }
 
 void X64Decoder::DecodeBswap(_DInst& insn) {
@@ -57,8 +175,7 @@ void X64Decoder::DecodeBswap(_DInst& insn) {
     auto& op0 = insn.ops[0];
     u64 width = op0.size ? op0.size : 32;
     auto src = ToValue(Src(insn, op0));
-    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Bswap64)}},
-                                src, __ LoadImm(ir::Imm(width)));
+    auto result = __ ByteSwap(src, ir::Imm(width)).SetType(GetSize(width));
     Dst(insn, op0, result);
 }
 

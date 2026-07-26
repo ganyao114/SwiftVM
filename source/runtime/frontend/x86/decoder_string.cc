@@ -25,9 +25,22 @@ runtime::TsoMode GetTsoMode() {
     return static_cast<runtime::TsoMode>(g_tso_mode.load(std::memory_order_relaxed));
 }
 
-static void RepMovs(u64 dst, u64 src, u64 bytes) {
+constexpr u64 kStringBackward = u64(1) << 63;
+constexpr u64 kStringStepShift = 61;
+constexpr u64 kStringCountMask = (u64(1) << kStringStepShift) - 1;
+
+static void RepMovs(u64 dst, u64 src, u64 packed) {
     const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
-    std::memmove(reinterpret_cast<void*>(dst + bias), reinterpret_cast<const void*>(src + bias), bytes);
+    const bool backward = (packed & kStringBackward) != 0;
+    const u64 step = u64(1) << ((packed >> kStringStepShift) & 3);
+    const u64 count = packed & kStringCountMask;
+    auto* d = reinterpret_cast<u8*>(dst + bias);
+    const auto* s = reinterpret_cast<const u8*>(src + bias);
+    for (u64 i = 0; i < count; ++i) {
+        std::memmove(d, s, step);
+        d += backward ? -static_cast<s64>(step) : static_cast<s64>(step);
+        s += backward ? -static_cast<s64>(step) : static_cast<s64>(step);
+    }
 }
 
 // rep stos fill helpers, one per element size (CallHost takes 3 args max).
@@ -35,32 +48,47 @@ static void RepMovs(u64 dst, u64 src, u64 bytes) {
 // keeps the host call alive in the JIT pipeline.
 static u64 RepStos1(u64 dst, u64 value, u64 count) {
     const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
-    std::memset(reinterpret_cast<void*>(dst + bias), int(value & 0xFF), count);
-    return dst + count;
+    const bool backward = (count & kStringBackward) != 0;
+    count &= ~kStringBackward;
+    auto* p = reinterpret_cast<u8*>(dst + bias);
+    for (u64 i = 0; i < count; ++i) {
+        *p = u8(value);
+        p += backward ? -1 : 1;
+    }
+    return backward ? dst - count : dst + count;
 }
 static u64 RepStos2(u64 dst, u64 value, u64 count) {
     const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
+    const bool backward = (count & kStringBackward) != 0;
+    count &= ~kStringBackward;
     auto* p = reinterpret_cast<u8*>(dst + bias);
     for (u64 i = 0; i < count; ++i) {
-        std::memcpy(p + i * 2, &value, 2);
+        std::memcpy(p, &value, 2);
+        p += backward ? -2 : 2;
     }
-    return dst + count * 2;
+    return backward ? dst - count * 2 : dst + count * 2;
 }
 static u64 RepStos4(u64 dst, u64 value, u64 count) {
     const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
+    const bool backward = (count & kStringBackward) != 0;
+    count &= ~kStringBackward;
     auto* p = reinterpret_cast<u8*>(dst + bias);
     for (u64 i = 0; i < count; ++i) {
-        std::memcpy(p + i * 4, &value, 4);
+        std::memcpy(p, &value, 4);
+        p += backward ? -4 : 4;
     }
-    return dst + count * 4;
+    return backward ? dst - count * 4 : dst + count * 4;
 }
 static u64 RepStos8(u64 dst, u64 value, u64 count) {
     const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
+    const bool backward = (count & kStringBackward) != 0;
+    count &= ~kStringBackward;
     auto* p = reinterpret_cast<u8*>(dst + bias);
     for (u64 i = 0; i < count; ++i) {
-        std::memcpy(p + i * 8, &value, 8);
+        std::memcpy(p, &value, 8);
+        p += backward ? -8 : 8;
     }
-    return dst + count * 8;
+    return backward ? dst - count * 8 : dst + count * 8;
 }
 
 // rep cmps/scas: run the early-terminating comparison loop and return the
@@ -69,9 +97,12 @@ static u64 RepStos8(u64 dst, u64 value, u64 count) {
 // (repnz=1) stops on the first equal element. Separate Z/NZ entry points keep
 // the decoder from packing a mode bit with a flag-clobbering OR.
 static u64 RepCmpsN(const u8* s, const u8* d, u64 count, u64 repnz, u64 sz) {
+    const bool backward = (count & kStringBackward) != 0;
+    count &= ~kStringBackward;
     u64 i = 0;
     while (i < count) {
-        bool eq = std::memcmp(s + i * sz, d + i * sz, sz) == 0;
+        const auto offset = static_cast<s64>(i * sz) * (backward ? -1 : 1);
+        bool eq = std::memcmp(s + offset, d + offset, sz) == 0;
         ++i;
         if (repnz ? eq : !eq) {
             break;
@@ -97,9 +128,12 @@ DEFINE_REP_CMPS(RepCmpsNZ8, 8, 1)
 
 // rep scas: compare the accumulator (acc) against each [RDI] element.
 static u64 RepScasN(const u8* acc, const u8* d, u64 count, u64 repnz, u64 sz) {
+    const bool backward = (count & kStringBackward) != 0;
+    count &= ~kStringBackward;
     u64 i = 0;
     while (i < count) {
-        bool eq = std::memcmp(acc, d + i * sz, sz) == 0;
+        const auto offset = static_cast<s64>(i * sz) * (backward ? -1 : 1);
+        bool eq = std::memcmp(acc, d + offset, sz) == 0;
         ++i;
         if (repnz ? eq : !eq) {
             break;
@@ -145,33 +179,44 @@ void X64Decoder::DecodeMovs(_DInst& insn) {
     auto& op1 = insn.ops[1];
 
     if ((insn.flags & FLAG_REP) || (insn.flags & FLAG_REPNZ)) {
-        // TODO: DF (direction flag) and segment overrides are not modelled,
-        // assume DF == 0 and default segments. The IR MemoryCopyTSO op takes an
-        // immediate count, so a dynamic RCX count goes through a host call.
+        // Segment overrides are not modelled. A dynamic RCX count goes through
+        // a host call; pack DF and the element width into its third argument.
         auto size = GetSize(op0.size);
+        const u64 step = ir::GetValueSizeByte(size);
+        const u64 step_log2 = step == 8 ? 3 : (step == 4 ? 2 : (step == 2 ? 1 : 0));
         auto src_reg = is_64bit ? _RegisterType::R_RSI : _RegisterType::R_ESI;
         auto dst_reg = is_64bit ? _RegisterType::R_RDI : _RegisterType::R_EDI;
         auto cnt_reg = is_64bit ? _RegisterType::R_RCX : _RegisterType::R_ECX;
         auto src_addr = R(src_reg);
         auto dst_addr = R(dst_reg);
         auto count = __ ZeroExtend64(R(cnt_reg));
-        auto bytes =
-                __ Mul(count, ir::Operand{ir::Imm(u64(ir::GetValueSizeByte(size)))});
+        auto df = __ ZeroExtend64(DirectionValue());
+        auto packed = __ Or(
+                count,
+                ir::Operand{__ Or(__ LslImm(df, ir::Imm(63u)),
+                                  ir::Operand{ir::Imm(step_log2 << kStringStepShift)})});
+        auto bytes = __ Mul(count, ir::Operand{ir::Imm(step)});
         // REP MOVS is not atomic on x86. Order the copy as one operation
         // relative to surrounding guest memory accesses; the host helper may
         // use ordinary/vector accesses internally without a fence per element.
         if (TsoOrdered(insn)) {
             __ MemoryBarrierTSO();
         }
-        __ CallHost(&RepMovs, dst_addr, src_addr, bytes);
+        __ CallHost(&RepMovs, dst_addr, src_addr, packed);
         if (TsoOrdered(insn)) {
             __ MemoryBarrierTSO();
         }
-        R(src_reg, __ Add(src_addr, ir::Operand{bytes}));
-        R(dst_reg, __ Add(dst_addr, ir::Operand{bytes}));
+        auto backward = __ TestNotZero(df);
+        R(src_reg,
+          __ Select(backward,
+                    __ Sub(src_addr, ir::Operand{bytes}),
+                    __ Add(src_addr, ir::Operand{bytes})).SetType(src_addr.Type()));
+        R(dst_reg,
+          __ Select(backward,
+                    __ Sub(dst_addr, ir::Operand{bytes}),
+                    __ Add(dst_addr, ir::Operand{bytes})).SetType(dst_addr.Type()));
         R(cnt_reg, __ LoadImm(ir::Imm(u64(0))));
     } else {
-        // TODO: DF (direction flag) is not modelled, assume DF == 0.
         auto size = GetSize(op0.size);
         auto src_reg = is_64bit ? _RegisterType::R_RSI : _RegisterType::R_ESI;
         auto dst_reg = is_64bit ? _RegisterType::R_RDI : _RegisterType::R_EDI;
@@ -180,8 +225,15 @@ void X64Decoder::DecodeMovs(_DInst& insn) {
         auto value = MemLoad(ir::Operand{src_addr}, size, TsoOrdered(insn));
         MemStore(ir::Operand{dst_addr}, value, TsoOrdered(insn));
         auto step = ir::Imm(u64(ir::GetValueSizeByte(size)));
-        R(src_reg, __ Add(src_addr, ir::Operand{step}));
-        R(dst_reg, __ Add(dst_addr, ir::Operand{step}));
+        auto backward = __ TestNotZero(DirectionValue());
+        R(src_reg,
+          __ Select(backward,
+                    __ Sub(src_addr, ir::Operand{step}),
+                    __ Add(src_addr, ir::Operand{step})).SetType(src_addr.Type()));
+        R(dst_reg,
+          __ Select(backward,
+                    __ Sub(dst_addr, ir::Operand{step}),
+                    __ Add(dst_addr, ir::Operand{step})).SetType(dst_addr.Type()));
     }
 }
 
@@ -201,9 +253,10 @@ void X64Decoder::DecodeStos(_DInst& insn) {
     auto dst_addr = R(dst_reg);
 
     if ((insn.flags & FLAG_REP) || (insn.flags & FLAG_REPNZ)) {
-        // TODO: DF (direction flag) and segment overrides are not modelled,
-        // assume DF == 0 and default segments.
         auto count = __ ZeroExtend64(R(cnt_reg));
+        auto packed_count =
+                __ Or(count,
+                      ir::Operand{__ LslImm(__ ZeroExtend64(DirectionValue()), ir::Imm(63u))});
         // Widen the accumulator: a narrow-typed value passed straight into a
         // host call gets a spill allocation the JIT cannot produce.
         auto acc64 = __ ZeroExtend64(acc);
@@ -214,10 +267,10 @@ void X64Decoder::DecodeStos(_DInst& insn) {
             __ MemoryBarrierTSO();
         }
         switch (ir::GetValueSizeByte(size)) {
-            case 1: end = __ CallHost(&RepStos1, dst_addr, acc64, count); break;
-            case 2: end = __ CallHost(&RepStos2, dst_addr, acc64, count); break;
-            case 4: end = __ CallHost(&RepStos4, dst_addr, acc64, count); break;
-            default: end = __ CallHost(&RepStos8, dst_addr, acc64, count); break;
+            case 1: end = __ CallHost(&RepStos1, dst_addr, acc64, packed_count); break;
+            case 2: end = __ CallHost(&RepStos2, dst_addr, acc64, packed_count); break;
+            case 4: end = __ CallHost(&RepStos4, dst_addr, acc64, packed_count); break;
+            default: end = __ CallHost(&RepStos8, dst_addr, acc64, packed_count); break;
         }
         if (TsoOrdered(insn)) {
             __ MemoryBarrierTSO();
@@ -226,16 +279,19 @@ void X64Decoder::DecodeStos(_DInst& insn) {
         R(dst_reg, end);
         R(cnt_reg, __ LoadImm(ir::Imm(u64(0))));
     } else {
-        // TODO: DF (direction flag) is not modelled, assume DF == 0.
         MemStore(ir::Operand{dst_addr}, acc.SetType(size), TsoOrdered(insn));
         auto step = ir::Imm(u64(ir::GetValueSizeByte(size)));
-        R(dst_reg, __ Add(dst_addr, ir::Operand{step}));
+        auto backward = __ TestNotZero(DirectionValue());
+        R(dst_reg,
+          __ Select(backward,
+                    __ Sub(dst_addr, ir::Operand{step}),
+                    __ Add(dst_addr, ir::Operand{step})).SetType(dst_addr.Type()));
     }
 }
 
 void X64Decoder::DecodeLods(_DInst& insn) {
-    // lods: accumulator = [RSI]; RSI += size. REP: only the final element
-    // survives (each iteration overwrites the accumulator). DF assumed 0.
+    // lods: accumulator = [RSI]; RSI changes by +/- size according to DF. REP
+    // leaves the final visited element in the accumulator.
     auto& op0 = insn.ops[0];
     const auto size = GetSize(op0.size);
     const u64 step = ir::GetValueSizeByte(size);
@@ -250,20 +306,31 @@ void X64Decoder::DecodeLods(_DInst& insn) {
         }
     }();
     auto si0 = R(si_reg);
+    auto backward = __ TestNotZero(DirectionValue());
     if ((insn.flags & FLAG_REP) || (insn.flags & FLAG_REPNZ)) {
         auto count = __ ZeroExtend64(R(cnt_reg));
         // The final element (index count-1) is the one left in the accumulator.
         auto do_load = __ TestNotZero(count);
         auto skip = __ NotGoto(do_load);
         auto last = __ Sub(count, ir::Operand{ir::Imm(u64(1))});
-        auto last_addr = __ Add(si0, ir::Operand{__ Mul(last, ir::Operand{ir::Imm(step)})});
+        auto last_off = __ Mul(last, ir::Operand{ir::Imm(step)});
+        auto last_addr = __ Select(backward,
+                                  __ Sub(si0, ir::Operand{last_off}),
+                                  __ Add(si0, ir::Operand{last_off})).SetType(si0.Type());
         R(acc_reg, MemLoad(ir::Operand{last_addr}, size, TsoOrdered(insn)));
         __ BindLabel(skip);
-        R(si_reg, __ Add(si0, ir::Operand{__ Mul(count, ir::Operand{ir::Imm(step)})}));
+        auto adv = __ Mul(count, ir::Operand{ir::Imm(step)});
+        R(si_reg,
+          __ Select(backward,
+                    __ Sub(si0, ir::Operand{adv}),
+                    __ Add(si0, ir::Operand{adv})).SetType(si0.Type()));
         R(cnt_reg, __ LoadImm(ir::Imm(u64(0))));
     } else {
         R(acc_reg, MemLoad(ir::Operand{si0}, size, TsoOrdered(insn)));
-        R(si_reg, __ Add(si0, ir::Operand{ir::Imm(step)}));
+        R(si_reg,
+          __ Select(backward,
+                    __ Sub(si0, ir::Operand{ir::Imm(step)}),
+                    __ Add(si0, ir::Operand{ir::Imm(step)})).SetType(si0.Type()));
     }
 }
 
@@ -278,6 +345,8 @@ void X64Decoder::DecodeCmps(_DInst& insn) {
     auto cnt_reg = is_64bit ? _RegisterType::R_RCX : _RegisterType::R_ECX;
     auto si0 = R(si_reg);
     auto di0 = R(di_reg);
+    auto df = __ ZeroExtend64(DirectionValue());
+    auto backward = __ TestNotZero(df);
     auto cmp_flags = [&](ir::Value a, ir::Value b) {
         ArithWithFlags(a, b, ArithOp::Sub, op0.size, ir::Flags::All);
     };
@@ -285,11 +354,18 @@ void X64Decoder::DecodeCmps(_DInst& insn) {
         auto a = MemLoad(ir::Operand{si0}, size, TsoOrdered(insn));
         auto b = MemLoad(ir::Operand{di0}, size, TsoOrdered(insn));
         cmp_flags(a, b);
-        R(si_reg, __ Add(si0, ir::Operand{ir::Imm(step)}));
-        R(di_reg, __ Add(di0, ir::Operand{ir::Imm(step)}));
+        R(si_reg,
+          __ Select(backward,
+                    __ Sub(si0, ir::Operand{ir::Imm(step)}),
+                    __ Add(si0, ir::Operand{ir::Imm(step)})).SetType(si0.Type()));
+        R(di_reg,
+          __ Select(backward,
+                    __ Sub(di0, ir::Operand{ir::Imm(step)}),
+                    __ Add(di0, ir::Operand{ir::Imm(step)})).SetType(di0.Type()));
         return;
     }
     auto count = __ ZeroExtend64(R(cnt_reg));
+    auto packed_count = __ Or(count, ir::Operand{__ LslImm(df, ir::Imm(63u))});
     bool repnz = (insn.flags & FLAG_REPNZ) != 0;
     // RCX == 0 => the instruction is a no-op (pointers, RCX and flags all
     // unchanged). Branch on the pre-call `count` FIRST and keep the CallHost
@@ -302,28 +378,38 @@ void X64Decoder::DecodeCmps(_DInst& insn) {
     ir::Value iters;
     if (repnz) {
         switch (step) {
-            case 1: iters = __ CallHost(&RepCmpsNZ1, si0, di0, count); break;
-            case 2: iters = __ CallHost(&RepCmpsNZ2, si0, di0, count); break;
-            case 4: iters = __ CallHost(&RepCmpsNZ4, si0, di0, count); break;
-            default: iters = __ CallHost(&RepCmpsNZ8, si0, di0, count); break;
+            case 1: iters = __ CallHost(&RepCmpsNZ1, si0, di0, packed_count); break;
+            case 2: iters = __ CallHost(&RepCmpsNZ2, si0, di0, packed_count); break;
+            case 4: iters = __ CallHost(&RepCmpsNZ4, si0, di0, packed_count); break;
+            default: iters = __ CallHost(&RepCmpsNZ8, si0, di0, packed_count); break;
         }
     } else {
         switch (step) {
-            case 1: iters = __ CallHost(&RepCmpsZ1, si0, di0, count); break;
-            case 2: iters = __ CallHost(&RepCmpsZ2, si0, di0, count); break;
-            case 4: iters = __ CallHost(&RepCmpsZ4, si0, di0, count); break;
-            default: iters = __ CallHost(&RepCmpsZ8, si0, di0, count); break;
+            case 1: iters = __ CallHost(&RepCmpsZ1, si0, di0, packed_count); break;
+            case 2: iters = __ CallHost(&RepCmpsZ2, si0, di0, packed_count); break;
+            case 4: iters = __ CallHost(&RepCmpsZ4, si0, di0, packed_count); break;
+            default: iters = __ CallHost(&RepCmpsZ8, si0, di0, packed_count); break;
         }
     }
     iters = iters.SetType(ir::ValueType::U64);
     auto adv = __ Mul(iters, ir::Operand{ir::Imm(step)});
-    R(si_reg, __ Add(si0, ir::Operand{adv}));
-    R(di_reg, __ Add(di0, ir::Operand{adv}));
+    R(si_reg,
+      __ Select(backward, __ Sub(si0, ir::Operand{adv}), __ Add(si0, ir::Operand{adv}))
+              .SetType(si0.Type()));
+    R(di_reg,
+      __ Select(backward, __ Sub(di0, ir::Operand{adv}), __ Add(di0, ir::Operand{adv}))
+              .SetType(di0.Type()));
     R(cnt_reg, __ Sub(count, ir::Operand{iters}));
     auto last_off = __ Mul(__ Sub(iters, ir::Operand{ir::Imm(u64(1))}),
                            ir::Operand{ir::Imm(step)});
-    auto a = MemLoad(ir::Operand{__ Add(si0, ir::Operand{last_off})}, size, TsoOrdered(insn));
-    auto b = MemLoad(ir::Operand{__ Add(di0, ir::Operand{last_off})}, size, TsoOrdered(insn));
+    auto last_si = __ Select(backward,
+                            __ Sub(si0, ir::Operand{last_off}),
+                            __ Add(si0, ir::Operand{last_off})).SetType(si0.Type());
+    auto last_di = __ Select(backward,
+                            __ Sub(di0, ir::Operand{last_off}),
+                            __ Add(di0, ir::Operand{last_off})).SetType(di0.Type());
+    auto a = MemLoad(ir::Operand{last_si}, size, TsoOrdered(insn));
+    auto b = MemLoad(ir::Operand{last_di}, size, TsoOrdered(insn));
     cmp_flags(a, b);
     __ BindLabel(skip);
 }
@@ -344,13 +430,19 @@ void X64Decoder::DecodeScas(_DInst& insn) {
         }
     }();
     auto di0 = R(di_reg);
+    auto df = __ ZeroExtend64(DirectionValue());
+    auto backward = __ TestNotZero(df);
     if (!((insn.flags & FLAG_REP) || (insn.flags & FLAG_REPNZ))) {
         auto b = MemLoad(ir::Operand{di0}, size, TsoOrdered(insn));
         ArithWithFlags(acc, b, ArithOp::Sub, op0.size, ir::Flags::All);
-        R(di_reg, __ Add(di0, ir::Operand{ir::Imm(step)}));
+        R(di_reg,
+          __ Select(backward,
+                    __ Sub(di0, ir::Operand{ir::Imm(step)}),
+                    __ Add(di0, ir::Operand{ir::Imm(step)})).SetType(di0.Type()));
         return;
     }
     auto count = __ ZeroExtend64(R(cnt_reg));
+    auto packed_count = __ Or(count, ir::Operand{__ LslImm(df, ir::Imm(63u))});
     bool repnz = (insn.flags & FLAG_REPNZ) != 0;
     auto acc64 = __ ZeroExtend64(acc);
     // RCX == 0 => no-op (RDI, RCX and flags unchanged). See DecodeCmps: the
@@ -360,26 +452,31 @@ void X64Decoder::DecodeScas(_DInst& insn) {
     ir::Value iters;
     if (repnz) {
         switch (step) {
-            case 1: iters = __ CallHost(&RepScasNZ1, acc64, di0, count); break;
-            case 2: iters = __ CallHost(&RepScasNZ2, acc64, di0, count); break;
-            case 4: iters = __ CallHost(&RepScasNZ4, acc64, di0, count); break;
-            default: iters = __ CallHost(&RepScasNZ8, acc64, di0, count); break;
+            case 1: iters = __ CallHost(&RepScasNZ1, acc64, di0, packed_count); break;
+            case 2: iters = __ CallHost(&RepScasNZ2, acc64, di0, packed_count); break;
+            case 4: iters = __ CallHost(&RepScasNZ4, acc64, di0, packed_count); break;
+            default: iters = __ CallHost(&RepScasNZ8, acc64, di0, packed_count); break;
         }
     } else {
         switch (step) {
-            case 1: iters = __ CallHost(&RepScasZ1, acc64, di0, count); break;
-            case 2: iters = __ CallHost(&RepScasZ2, acc64, di0, count); break;
-            case 4: iters = __ CallHost(&RepScasZ4, acc64, di0, count); break;
-            default: iters = __ CallHost(&RepScasZ8, acc64, di0, count); break;
+            case 1: iters = __ CallHost(&RepScasZ1, acc64, di0, packed_count); break;
+            case 2: iters = __ CallHost(&RepScasZ2, acc64, di0, packed_count); break;
+            case 4: iters = __ CallHost(&RepScasZ4, acc64, di0, packed_count); break;
+            default: iters = __ CallHost(&RepScasZ8, acc64, di0, packed_count); break;
         }
     }
     iters = iters.SetType(ir::ValueType::U64);
     auto adv = __ Mul(iters, ir::Operand{ir::Imm(step)});
-    R(di_reg, __ Add(di0, ir::Operand{adv}));
+    R(di_reg,
+      __ Select(backward, __ Sub(di0, ir::Operand{adv}), __ Add(di0, ir::Operand{adv}))
+              .SetType(di0.Type()));
     R(cnt_reg, __ Sub(count, ir::Operand{iters}));
     auto last_off = __ Mul(__ Sub(iters, ir::Operand{ir::Imm(u64(1))}),
                            ir::Operand{ir::Imm(step)});
-    auto b = MemLoad(ir::Operand{__ Add(di0, ir::Operand{last_off})}, size, TsoOrdered(insn));
+    auto last_di = __ Select(backward,
+                            __ Sub(di0, ir::Operand{last_off}),
+                            __ Add(di0, ir::Operand{last_off})).SetType(di0.Type());
+    auto b = MemLoad(ir::Operand{last_di}, size, TsoOrdered(insn));
     ArithWithFlags(acc, b, ArithOp::Sub, op0.size, ir::Flags::All);
     __ BindLabel(skip);
 }
