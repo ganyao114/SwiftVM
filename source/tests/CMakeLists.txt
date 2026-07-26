@@ -4,6 +4,7 @@ add_executable(swift_test
         # where the differential fuzz below is skipped.
         fuzz/vex_decoder_test.cpp
         fuzz/avx_fp_test.cpp
+        fuzz/avx_fp2_test.cpp
         fuzz/avx_int_test.cpp)
 
 target_link_libraries(swift_test PUBLIC swift_translator swift::runtime Catch2::Catch2WithMain slang_compiler)
