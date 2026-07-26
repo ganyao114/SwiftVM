@@ -74,9 +74,33 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 
 ---
 
-## 4b. AVX / AVX2（2026-07-26 落地的**地基**，默认关闭，**未经任何执行验证**）
+## 4b. AVX / AVX2 / FMA3（**已可用**，`SVM_AVX=1 SVM_XSAVE=1` 后 CPUID 如实上报）
 
-诚实定级：**这不是一个可用特性，是一层地基。** 代码能构建、门控正确、对现有路径零影响，但**没有任何一条 VEX 指令被真正执行过**——无差分测试、无 fuzz 覆盖。且因为 C4 纪律未打开 CPUID 的 AVX 位（见下），正常 guest 根本不会走到这些路径。
+> 本节 2026-07-27 重写。此前写的是「不是一个可用特性，是一层地基……没有任何
+> 一条 VEX 指令被真正执行过」——那句话在写下时是诚实的，现在已经不成立。
+
+**当前定级：可用。** 11 个真实 AVX2 kernel 与 x86-64 硬件**逐位一致**，
+`run_avx_real_tests.sh` 17 项全通过、0 缺口、0 失败。CPUID 在门控打开时上报
+AVX / AVX2 / FMA / XSAVE / OSXSAVE，`XGETBV` 报告 XCR0[2:1]=11b，glibc 的
+ifunc 会真正选中 AVX 路径。
+
+| 族 | 状态 | 验证规模 |
+|---|---|---|
+| VEX.128 / VEX.256 搬移·位运算·整数·浮点 | 完成 | Rosetta 差分 + 定向自差分 |
+| `vcmpps`/`vcmppd` 全 32 关系 | 完成 | predicate 重定义为关系集，见下 |
+| FMA3 全 60 助记符（两个 VEX.L、寄存器与内存形式） | 完成 | Rosetta **3360 行**，7 次变异全杀 |
+| gather 族 | 完成 | Rosetta 差分 |
+| legacy SSE3 / SSSE3 / SSE4.1 共 64 条 | 完成 | Rosetta **4360 行**，26 次变异全杀 |
+| SSE4.2 字符串族 `pcmpXstrY` | **缺** | 挡住 CPUID bit 20 |
+
+**为什么 legacy SSE 属于 AVX 的收口条件**：真实 CPU 不存在「有 AVX 无 SSE4.2」
+的组合，所以 advertise AVX 隐含承诺了整条 SSE 链。补这一族之前，一次 78-opcode
+的 legacy 探针里 **67 条致命**（FALLBACK → IllegalCode → guest 死）。
+
+**`VecFCmpMask` 的 predicate 已从「x86 imm8 编码」重定义为关系集**：
+bit0=a&lt;b, bit1=a==b, bit2=a&gt;b, bit3=unordered。16 个子集全部合法，恰好覆盖
+AVX 的 16 种关系；signaling 与否是异常行为不是比较结果，留在前端。这样 IR
+不再背 x86 的编码表，legacy SSE 的 8 个 predicate 正是这张表的前八行。
 
 ### 关键发现：distorm 对 VEX.L 的静默丢失（本轮最有价值的产出）
 
@@ -100,8 +124,18 @@ vpxor ymm0,ymm1,ymm2  C5 F5 EF C2 -> id=7009 ops[0] index=91(R_XMM0) size=128
 - **C1**:一个 YMM = **两个独立的 V128 IR 值**,永不创建 `ValueType::V256`。因为 ARM64 的 V 寄存器是 128 位而 `RegAlloc` 是一值一寄存器。结果是**零新增 IR opcode、零后端改动**——全部复用现有 V128 emitter 各调用两次。
 - **C2**:`union Ymm`(low/high 重叠、`sizeof` 仅 16 字节，存不下 256 位）已删除,替换为只存高半的 `std::array<Xmm,16> ymm_high`。实测 `sizeof(ThreadContext64)`=864 及 `xmms`=160/`ymm_high`=416/`interrupt`=672/`x87_regs`=736 **逐字节不变**,FXSAVE 与全部硬编码 uniform 偏移不受影响。
 - **C3**:VEX.128 写完 dst 必须清零 bits 255:128(与 legacy SSE 保留高半相反）;VEX.256 写满两半，**不适用** C3。
-- **C4**:CPUID 的 AVX/AVX2/XSAVE/OSXSAVE 位**一律未开**,XGETBV 仍 #UD。AVX 需要 XCR0 报告 YMM 状态位才成立，是一整套联动。
-- **C5**:全部挂在 `SVM_AVX=1` 后，默认关闭。
+- **C4（已从"一律不报"演进为"必须与实现一致"）**:CPUID 永远不得承诺解码器会
+  #UD 的能力——这是原始纪律；但门控打开后它**反过来也成立**：门控开启了
+  handler，CPUID 就必须跟上，否则等于朝安全方向撒谎，guest 永远用不到已经写好
+  的代码。现状：AVX/AVX2/FMA 随 `SVM_AVX && SVM_XSAVE` 联动（AVX 需要
+  XCR0[2:1]=11b 的整套协议，缺 XSAVE 就不连贯）；SSE3/SSSE3/SSE4.1/POPCNT 随
+  `SVM_SSE4`（默认开）；BMI1/BMI2 随 `SVM_BMI`。**SSE4.2（bit 20）刻意不报**
+  ——它承诺的正是还缺的 `pcmpXstrY` 四条。
+- **C5**:AVX/BMI/XSAVE 挂在各自的 `SVM_*` 后，默认关闭；`SVM_SSE4` 是**默认开的
+  逃生开关**，因为它替换的是「必然的 guest 死亡」而不是既有行为。
+  一条教训：`haddps`/`hsubps` 曾被移入该文件，于是关掉开关反而比改动前更差
+  ——它们现在被放在门控**之前**处理。**关闭态比被关掉的代码更差的开关不是逃生
+  开关。**
 
 ### 已实现
 - VEX.128:`VMOVDQA/U`、`VMOVAPS/UPS/APD/UPD`、`VMOVNTDQ/NTDQA/NTPS/NTPD`、`VLDDQU`、`VMOVD/Q`、`VPXOR/POR/PAND/PANDN`、`VPADD{B,W,D,Q}`、`VPSUB{B,W,D,Q}`、`VPCMPEQ{B,W,D}`、`VPCMPGT{B,W,D}`、`VZEROUPPER/VZEROALL`
@@ -221,12 +255,49 @@ VEX.256 的拒绝在下列组合下均复现：CPU 模型 default / HASWELL / SK
 
 两处**变异测试**证明断言有牙：把 `vpaddb` 的 opcode 改成 `vpaddw` → 手算层报错而自差分层**沉默**（两个后端一致地错，这正是纯自差分抓不到、手算层才能抓的情形）；改坏一个字面量字节 → 第一层报错。
 
-### 下一步（按依赖顺序）
-① ~~建 AVX 差分 fuzz~~ 已完成（见上表，注意 oracle 必须按能力矩阵选）;② 补齐被路由但仅有 256 位 handler 的那批 mnemonic 的 VEX.128 形式;③ **VEX.256 仍无任何 oracle**——需要 Rosetta 仲裁或更新的 Unicorn,这是 256 位路径能否可信的前提;④ 决定 32 字节访存的故障语义（接受偏差 or 引入 IR 级 32 字节 op);⑤ 全部验证通过后，才按 C4 的联动要求打开 CPUID+XCR0。
+### 下一步
+
+①–⑤ 全部完成：AVX 差分 fuzz 已建；VEX.128 形式已补齐；**Rosetta 已实测可作
+VEX.256 的 oracle**（本机 Darwin 27 / M4 Max，需 `ROSETTA_ADVERTISE_AVX=1`
+才有诚实 CPUID，但无论如何都会执行 AVX——所以能力判定必须靠实际执行而非特性
+位）；32 字节跨页访存 stage 0–4 已验证行为正确；CPUID + XCR0 已按 C4 打开。
+
+**剩余**：
+1. **`pcmpXstrY` 四条**——开 CPUID bit 20 的唯一前提。整族留白而非做一半：
+   现在 guest 带着 IllegalCode 响亮地死，做一半会返回错误索引，让
+   `strlen`/`strstr` 去读错误的内存。
+2. **32 字节跨页访存的撕裂写问题仍未回答**（stage 5）。此前被「clone() worker
+   死于 PageFatal 会带走宿主」挡住，该缺陷已修（见 §5），可以重做了。
+3. MMX 形式的共享 opcode（`pshufb`/`palignr`/`pextrw`/`pmovmskb`/`pmuludq`/
+   `psadbw`/`pminub` 的 no-66 编码）目前会被拿去操作 XMM 寄存器堆而不是陷入
+   ——静默错数据。今天暴露面低（CPUID 不报 MMX），但是潜伏陷阱。
 
 ---
 
 ## 5. 已知问题与遗留
+
+### P-1 — 隔离性：guest 能读写宿主任意内存（**已实证，未修复**，2026-07-27）
+
+这是目前最严重的问题，级别高于本节其余全部条目：它不是「算错」，是**逃逸**。
+
+guest 访存一律是 `host = guest + bias`，**全链路没有任何边界检查**（JIT 发射点
+`backend/arm64/jit/translator.cpp:327` 的 `MemOperand{scratch, pt}`）。bias 加法
+不等于隔离——当 `guest+bias` 恰好落在宿主已映射区域上，访问**静默成功**。
+
+实证（lldb、关 ASLR、从 `SetGuestMemBias` 的 `$x0` 读 bias、就地改 guest imm64）：
+- **读**：guest `mov eax,[0x14C000]` 拿到 `0xfeedfacf`，宿主自己的 Mach-O 头。
+- **写**：宿主 `malloc` 的缓冲区在 `0x100895930`，guest 往 `buf − bias` 写，
+  宿主 `exit` 断点处 `*(u64*)buf == 0x4141414141414141`。
+
+同源的两处：① SMC 写保护的 `mprotect` 会落到 bias 指向的任意宿主映射，**有时
+正是翻译器自己的 `__TEXT`**，于是它在自己脚下丢掉执行权限（现象 `fault addr ==
+faulting pc`，约 2.5% 的野分支用例命中）；② x87/fxsave 与 `rep movs/stos` 系列
+helper 在**宿主代码里**解引用 guest 地址，故障 pc 不在 JIT buffer 内，
+`HandleFault` 恢复不了。②**不是三行能修的**：helper 的栈帧还在，
+`SetContextPC(return_host)` 无效，需要 helper 内校验 + 故障返回路径，或
+helper 感知的 unwind。
+
+修法是架构性的：有界 guest 窗口 + 地址掩码/校验。**正在进行中。**
 
 ### P0 — 潜伏 bug（触发面已收窄但未根治）
 
