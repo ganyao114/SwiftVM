@@ -680,6 +680,23 @@ private:
     // applies unchanged to a YMM operand's low 128 bits.
     [[nodiscard]] static _RegisterType XmmOf(u32 index);
 
+    // The ModRM.rm register number (0..15, VEX.B folded in) of the instruction
+    // currently being decoded, taken from the raw encoding.
+    //
+    // Needed because this distorm snapshot's VPMOVMSKB VEX entry
+    // (externals/distorm/insts.c, II_V_66_0F_D7) carries NO operand
+    // descriptors — unlike every neighbouring V* entry — so distorm reports
+    // ModRM.reg for BOTH operands and sizes the destination as 64-bit. The
+    // source register is therefore wrong whenever the destination GPR number
+    // differs from the source vector register number, silently returning
+    // another register's mask (`vpmovmskb eax, ymm1` yields ymm0's). The
+    // legacy 66 0F D7 form decodes correctly.
+    //
+    // Callers must only use this for register-form (mod == 11) operands; it
+    // does not decode SIB or displacement. Returns UINT32_MAX if the
+    // instruction is not VEX-encoded or the bytes are unavailable.
+    [[nodiscard]] u32 VexRmRegister() const;
+
     // ymm_high[index] as a V128 uniform / value.
     [[nodiscard]] static ir::Uniform YmmHighUniform(u32 index);
     ir::Value YmmHighRead(u32 index);

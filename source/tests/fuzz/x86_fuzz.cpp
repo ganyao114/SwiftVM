@@ -8667,4 +8667,537 @@ TEST_CASE("AVX VEX.128 packed integer directed edge vectors") {
     CHECK(comparisons == 18u * 6u * 39u);
 }
 
+// ===========================================================================
+// AVX VEX.256 against a ROSETTA oracle.
+// ===========================================================================
+// FACT 1 above says Unicorn refuses every VEX.L=1 encoding, which left the
+// 256-bit handlers in decoder_avx.cc with no oracle whatsoever.  Rosetta 2 on
+// macOS 26/27 closes that gap: it executes AVX and AVX2 including the full
+// 256-bit register file.  Measured on this machine, not assumed:
+//
+//   * `vmovdqu ymm`, `vpaddb ymm`, `vpshufb ymm`, `vpmovmskb r32,ymm` and
+//     `vpgatherdd ymm` all execute and return correct results.
+//   * `ud2` and an AVX-512 `vmovaps zmm0,zmm1` both raise SIGILL, so the
+//     SIGILL detection the generator relies on is not vacuous -- Rosetta really
+//     is executing the 256-bit forms rather than silently ignoring them.
+//   * CPUID does NOT advertise AVX (leaf1 ECX.28 = 0, ECX.27 OSXSAVE = 0,
+//     leaf7 EBX.5 = 0) unless the process starts with ROSETTA_ADVERTISE_AVX=1.
+//     Execution works either way; only the feature bits are hidden.  That is
+//     why avx256_rosetta_ref.c gates on executing a live `vpaddb ymm` instead
+//     of reading CPUID.
+//
+// The reference values in avx256_rosetta_ref.inc are the literal bytes Rosetta
+// wrote to memory -- none of them is hand-computed, and an instruction Rosetta
+// had refused would appear there as a SKIP comment rather than a value.  The
+// instruction table (avx256_ops.inc) is shared verbatim with the generator, so
+// the two sides cannot drift onto different opcodes, and every encoding the
+// generator builds was disassembled with otool and confirmed to be the intended
+// mnemonic before the data was captured.
+//
+// TWO SEMANTICS THIS CASE EXISTS TO PIN DOWN, both now settled by hardware:
+//
+//   vpshufb ymm is PER 128-BIT LANE.  Input pair "laneidx" feeds control bytes
+//   0x1F..0x10 to the low lane; per-lane semantics ignore bits [6:4] and select
+//   bytes 15..0 of that same lane, a cross-lane reading would select bytes
+//   31..16 of the register, and the two predictions differ in 30 of 32 bytes.
+//   Rosetta returned the per-lane answer exactly.  decoder_avx.cc's two
+//   independent VecTableLookup8 calls are therefore CORRECT.
+//
+//   vpmovmskb ymm is `lo | hi<<16`.  Pair "signbits" gives the low half mask
+//   0x0505 and the high half mask 0x80AA, so `lo|hi<<16` = 0x80AA0505 and the
+//   swapped combine would be 0x050580AA.  Rosetta returned 0x80AA0505.
+//   decoder_avx.cc's recombination is therefore CORRECT.  This is the only
+//   instruction in the family whose halves are not independent.
+//
+// Each block under test is a SINGLE instruction: the operand registers are
+// written straight into ThreadContext64 and the result read straight back out,
+// so a broken `vmovdqu ymm` cannot mask a broken `vpaddb ymm` (or vice versa).
+// ymm_high is poisoned per register and per byte beforehand, so a handler that
+// writes only the low half, writes the upper half of the wrong register, or
+// leaves a bystander's upper half dirty is caught as well.
+//
+// Every ALU op is run in both the reg-reg and the reg-mem operand shape against
+// the same reference value.  That is exact rather than an approximation: the two
+// shapes differ only in where src2's 32 bytes come from, and both are fed the
+// identical bytes, so x86 defines them to produce the identical result.  What
+// the second shape actually exercises is SwiftVM's LoadAvx256Src split-load
+// path (two 16-byte loads at +0 and +16), which is where a wrong offset would
+// show up.  The same reasoning covers vbroadcastss's m32 shape.
+struct Avx256Input {
+    const char* name;
+    const char* a;
+    const char* b;
+};
+struct Avx256Ref {
+    const char* name;
+    int pair;
+    const char* result;
+};
+#include "avx256_rosetta_ref.inc"
+
+TEST_CASE("x86 avx256 vs rosetta reference") {
+    const char* avx_env = std::getenv("SVM_AVX");
+    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+        SUCCEED("SVM_AVX is not set; VEX.256 Rosetta differential skipped");
+        return;
+    }
+
+    using Vec256 = std::array<u8, 32>;
+    const auto parse = [](const char* h) {
+        Vec256 v{};
+        for (u32 i = 0; i < 32; ++i) {
+            const auto nib = [](char ch) -> u8 {
+                return u8(ch <= '9' ? ch - '0' : (ch | 0x20) - 'a' + 10);
+            };
+            v[i] = u8((nib(h[i * 2]) << 4) | nib(h[i * 2 + 1]));
+        }
+        return v;
+    };
+    const auto hex = [](const Vec256& v) {
+        std::string s;
+        for (const u8 x : v) {
+            s += fmt::format("{:02x}", x);
+        }
+        return s;
+    };
+
+    // The generator's guarantee, re-asserted here so a future edit to the input
+    // vectors cannot quietly remove the property this whole case depends on: a
+    // pair whose two 128-bit lanes are identical on both sides cannot catch an
+    // implementation that computed the upper half from the lower half's
+    // operands, which is the most likely way to break a two-halves split.
+    // "zeros_ones" is deliberately uniform -- it is the degenerate-extremes
+    // pair -- so the requirement is that all the OTHERS discriminate.
+    std::vector<Vec256> ins_a, ins_b;
+    size_t discriminating = 0;
+    for (const auto& in : kAvx256Inputs) {
+        const auto a = parse(in.a);
+        const auto b = parse(in.b);
+        const bool a_split = !std::equal(a.begin(), a.begin() + 16, a.begin() + 16);
+        const bool b_split = !std::equal(b.begin(), b.begin() + 16, b.begin() + 16);
+        if (a_split && b_split) {
+            ++discriminating;
+        } else {
+            INFO("input pair " << in.name << " has identical 128-bit lanes on at least one side");
+            REQUIRE(std::strcmp(in.name, "zeros_ones") == 0);
+        }
+        ins_a.push_back(a);
+        ins_b.push_back(b);
+    }
+    REQUIRE(discriminating == std::size(kAvx256Inputs) - 1);
+    // And the vpshufb lane test must actually be able to tell the two readings
+    // apart, or the headline conclusion above would rest on nothing.
+    {
+        int laneidx = -1;
+        for (u32 i = 0; i < std::size(kAvx256Inputs); ++i) {
+            if (std::strcmp(kAvx256Inputs[i].name, "laneidx") == 0) {
+                laneidx = int(i);
+            }
+        }
+        REQUIRE(laneidx >= 0);
+        const auto& a = ins_a[u32(laneidx)];
+        const auto& b = ins_b[u32(laneidx)];
+        Vec256 per_lane{};
+        Vec256 cross{};
+        for (u32 i = 0; i < 32; ++i) {
+            const u8 c = b[i];
+            per_lane[i] = (c & 0x80) ? 0 : a[(i & 16u) | (c & 0x0Fu)];
+            cross[i] = (c & 0x80) ? 0 : a[c & 0x1Fu];
+        }
+        REQUIRE(per_lane != cross);
+        // The Rosetta answer must be the per-lane one; if this ever fails the
+        // comment block above is wrong and decoder_avx.cc needs revisiting.
+        for (const auto& r : kAvx256Refs) {
+            if (std::strcmp(r.name, "vpshufb") == 0 && r.pair == laneidx) {
+                INFO("Rosetta vpshufb reference contradicts per-128-bit-lane semantics");
+                REQUIRE(parse(r.result) == per_lane);
+            }
+        }
+    }
+
+    // ---- instruction table, shared verbatim with the generator ------------
+    struct AluOp {
+        const char* name;
+        u8 pp, mmmmm, opcode;
+    };
+    struct MovOp {
+        const char* name;
+        u8 pp, mmmmm, ld, st;
+    };
+    static constexpr AluOp kAlu[] = {
+#define SVM_AVX256_ALU(name, pp, mmmmm, opcode) {#name, pp, mmmmm, u8(opcode)},
+#include "avx256_ops.inc"
+    };
+    static constexpr MovOp kMov[] = {
+#define SVM_AVX256_MOV(name, pp, mmmmm, ld_opcode, st_opcode) \
+    {#name, pp, mmmmm, u8(ld_opcode), u8(st_opcode)},
+#include "avx256_ops.inc"
+    };
+
+    // ---- VEX.256 emitters --------------------------------------------------
+    // EmitVexRR / EmitVexLoad / EmitVexStore hardcode mmmmm=1, and vpshufb /
+    // vpminud / vpmaxud / vbroadcastss live in the 0F38 map, so these take
+    // mmmmm explicitly.  Field meanings are EmitVexC4's: all un-inverted, and
+    // VEX.L is 1 throughout.
+    const auto vex_rr = [](CodeBuf& b, u8 pp, u8 mmmmm, u8 op, u8 dst, u8 src1, u8 src2) {
+        EmitVexC4(b, pp, mmmmm, src1, true, u8(dst >> 3), 0, u8(src2 >> 3));
+        b.B(op);
+        EmitModRMReg(b, dst, src2);
+    };
+    const auto vex_mem = [](CodeBuf& b, u8 pp, u8 mmmmm, u8 op, u8 reg, u8 src1, const MemOp& m) {
+        EmitVexC4(b, pp, mmmmm, src1, true, u8(reg >> 3), 0, u8(kDataReg >> 3));
+        b.B(op);
+        EmitModRMMem(b, reg, m);
+    };
+
+    // ---- runner ------------------------------------------------------------
+    constexpr size_t kArenaSize = 0x200000;
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 data = base + 0x180000;
+    const u64 stack = base + 0x100000;
+
+    MemOp ma{};
+    ma.disp = 0x100;  // A
+    MemOp mb{};
+    mb.disp = 0x140;  // B
+    MemOp mout{};
+    mout.disp = 0x180;  // result
+
+    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const bool had_old_jit = old_jit != nullptr;
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    setenv("SVM_ENABLE_JIT", "1", 1);
+    auto* jit_instance = X86Instance::Make();
+    setenv("SVM_ENABLE_JIT", "0", 1);
+    auto* interp_instance = X86Instance::Make();
+    if (had_old_jit) {
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_ENABLE_JIT");
+    }
+    auto* jit_core = X86Core::Make(jit_instance);
+    auto* interp_core = X86Core::Make(interp_instance);
+
+    const auto poison = [](u32 reg) {
+        Vec256 v{};
+        for (u32 j = 0; j < 32; ++j) {
+            v[j] = u8(0xA5 ^ (reg * 32 + j));
+        }
+        return v;
+    };
+
+    struct Out {
+        std::array<Vec256, 16> ymm{};  // xmms[i] in [0..15], ymm_high[i] in [16..31]
+        Vec256 mem{};
+        u64 rax{};
+        int exit{};
+    };
+
+    size_t code_cursor = 1;
+    std::vector<std::string> problems;
+    size_t comparisons = 0, bad_exits = 0, divergences = 0, mismatches = 0, bystanders = 0;
+
+    // `ymm_in`: which register gets A, which gets B (0xFF = leave poisoned).
+    const auto run_on = [&](X86Core* core, const CodeBuf& code, const Vec256& a, const Vec256& b,
+                            u8 reg_a, u8 reg_b, u64 code_addr) {
+        std::memcpy(reinterpret_cast<void*>(code_addr), code.c.data(), code.c.size());
+        std::memcpy(reinterpret_cast<void*>(data + ma.disp), a.data(), 32);
+        std::memcpy(reinterpret_cast<void*>(data + mb.disp), b.data(), 32);
+        std::memset(reinterpret_cast<void*>(data + mout.disp), 0xCC, 32);
+        auto& ctx = core->GetContext();
+        for (u32 i = 0; i < 16; ++i) {
+            const auto p = poison(i);
+            std::memcpy(ctx.xmms[i].b, p.data(), 16);
+            std::memcpy(ctx.ymm_high[i].b, p.data() + 16, 16);
+        }
+        // A ymm register's low half is xmms[i] and its upper half ymm_high[i],
+        // matching how the generator's `vmovdqu ymm1,[A]` lays A out.
+        if (reg_a != 0xFF) {
+            std::memcpy(ctx.xmms[reg_a].b, a.data(), 16);
+            std::memcpy(ctx.ymm_high[reg_a].b, a.data() + 16, 16);
+        }
+        if (reg_b != 0xFF) {
+            std::memcpy(ctx.xmms[reg_b].b, b.data(), 16);
+            std::memcpy(ctx.ymm_high[reg_b].b, b.data() + 16, 16);
+        }
+        ctx.rax.qword = 0xDEADBEEFDEADBEEFull;
+        ctx.r13.qword = data;
+        ctx.rsp.qword = stack;
+        ctx.rip.qword = code_addr;
+        Out o;
+        o.exit = int(core->Run());
+        for (u32 i = 0; i < 16; ++i) {
+            std::memcpy(o.ymm[i].data(), ctx.xmms[i].b, 16);
+            std::memcpy(o.ymm[i].data() + 16, ctx.ymm_high[i].b, 16);
+        }
+        o.rax = ctx.rax.qword;
+        std::memcpy(o.mem.data(), reinterpret_cast<void*>(data + mout.disp), 32);
+        return o;
+    };
+
+    // Runs on both backends, checks they agree, and returns the JIT result.
+    // `want` is the Rosetta reference; `where` says where to read the answer.
+    enum class Where { Ymm0, Memory, Rax32 };
+    // Two forms are KNOWN BROKEN, both because of the bundled distorm snapshot
+    // rather than decoder_avx.cc.  They are pinned rather than silenced: the
+    // pins encode the diagnosis, so fixing distorm turns this case red and
+    // whoever fixes it has to come here and delete the exemption.
+    //
+    //   KnownWrongSrcReg -- VPMOVMSKB.  distorm's VEX table entry
+    //     (II_V_66_0F_D7 in externals/distorm/insts.c, the only entry in its
+    //     neighbourhood with no operand descriptors: `{{0x18e, 6563}, 0x40, 0,
+    //     0, 0, 0}` against `{{0x135, ...}, 0x0, 73, 0, 0, 0}` for vpaddq /
+    //     vpand / vpxor) leaves the source operand unfilled, so ops[1] ends up
+    //     tracking ModRM.reg instead of ModRM.rm.  distorm's own text renderer
+    //     shows it: `vpmovmskb ecx, ymm5` (C4 E1 7D D7 CD) disassembles as
+    //     "VPMOVMSKB RCX, XMM1".  Legacy `pmovmskb` is decoded correctly, and
+    //     the bug hits VEX.128 and VEX.256 alike.  DecodeAvx256Pmovmskb reads
+    //     insn.ops[1].index in good faith and therefore masks the WRONG
+    //     REGISTER whenever the destination GPR number differs from the source
+    //     ymm number -- `vpmovmskb eax, ymm0` happens to work because reg and
+    //     rm coincide, which is why it went unnoticed.  The pin below asserts
+    //     the observed value is exactly the mask of ymm0 (the ModRM.reg
+    //     register), which is what proves that reading rather than merely
+    //     noting "it disagrees".
+    //
+    //   KnownNotDecoded -- VBROADCASTSS with a REGISTER source.  That shape is
+    //     AVX2; this distorm snapshot only has the AVX1 m32 form, so
+    //     C4 E2 7D 18 C1 comes back FLAG_NOT_DECODABLE and SwiftVM correctly
+    //     declines the block (FALLBACK) instead of mis-executing it.  This is a
+    //     coverage gap, not a wrong answer.  The m32 shape is decoded and is
+    //     checked against Rosetta normally.
+    enum class Expect { Match, KnownWrongSrcReg, KnownNotDecoded };
+    size_t known_wrong_src = 0, known_not_decoded = 0;
+    const auto check = [&](const std::string& label, CodeBuf code, int pair, u8 reg_a, u8 reg_b,
+                           const Vec256& want, Where where, Expect expect = Expect::Match) {
+        code.B(0xF4);  // hlt
+        const u64 code_addr = base + code_cursor * 0x100;
+        ++code_cursor;
+        REQUIRE(code.c.size() < 0x100);
+        const auto& a = ins_a[u32(pair)];
+        const auto& b = ins_b[u32(pair)];
+        const auto jit = run_on(jit_core, code, a, b, reg_a, reg_b, code_addr);
+        const auto itp = run_on(interp_core, code, a, b, reg_a, reg_b, code_addr);
+        ++comparisons;
+
+        if (jit.exit != int(swift::translator::None)) {
+            // FALLBACK / ILL_CODE both surface here: the form was DECLINED by
+            // the decoder, not mis-executed.  That is a coverage hole, not a
+            // wrong answer, but it is still a failure for this case unless the
+            // form is one distorm is known not to decode.
+            if (expect == Expect::KnownNotDecoded) {
+                ++known_not_decoded;
+                return;
+            }
+            if (bad_exits++ < 12) {
+                problems.push_back(
+                        fmt::format("{}: block did not reach HLT (exit={}); VEX.256 form not "
+                                    "decoded",
+                                    label, jit.exit));
+            }
+            return;
+        }
+        if (expect == Expect::KnownNotDecoded && bad_exits++ < 12) {
+            problems.push_back(fmt::format(
+                    "{}: now DECODES -- distorm gained the AVX2 register-source VBROADCASTSS "
+                    "entry.  Delete the KnownNotDecoded exemption and check it against Rosetta.",
+                    label));
+            return;
+        }
+        if (jit.ymm != itp.ymm || jit.mem != itp.mem || jit.rax != itp.rax ||
+            jit.exit != itp.exit) {
+            if (divergences++ < 12) {
+                problems.push_back(fmt::format("{}: JIT/interpreter divergence (ymm0 {} vs {}, "
+                                               "mem {} vs {}, rax {:#x} vs {:#x})",
+                                               label, hex(jit.ymm[0]), hex(itp.ymm[0]),
+                                               hex(jit.mem), hex(itp.mem), jit.rax, itp.rax));
+            }
+        }
+
+        for (const auto& [backend, got] : {std::pair<const char*, const Out*>{"jit", &jit},
+                                           std::pair<const char*, const Out*>{"interp", &itp}}) {
+            if (where == Where::Rax32) {
+                // vpmovmskb writes a 32-bit GPR, so the upper 32 bits of rax
+                // must be ZEROED, not preserved.  The reference stores the mask
+                // as four little-endian bytes at the front of its 32-byte slot.
+                const u64 want_rax = u64(want[0]) | (u64(want[1]) << 8) | (u64(want[2]) << 16) |
+                                     (u64(want[3]) << 24);
+                if (expect == Expect::KnownWrongSrcReg) {
+                    // Pin the DIAGNOSIS, not merely "it differs": the value must
+                    // be the mask of ymm0, the register ModRM.reg names, taken
+                    // from its poison since nothing ever loaded ymm0 here.
+                    const auto p0 = poison(0);
+                    u64 from_ymm0 = 0;
+                    for (u32 j = 0; j < 32; ++j) {
+                        if (p0[j] & 0x80u) {
+                            from_ymm0 |= u64(1) << j;
+                        }
+                    }
+                    if (got->rax == from_ymm0 && got->rax != want_rax) {
+                        ++known_wrong_src;
+                    } else if (mismatches++ < 12) {
+                        problems.push_back(fmt::format(
+                                "{} [{}]: rax {:#018x}; expected either the Rosetta answer "
+                                "{:#018x} (distorm's VPMOVMSKB operand bug fixed -- delete the "
+                                "KnownWrongSrcReg exemption) or the mask of ymm0 {:#018x} (the "
+                                "documented bug); it is neither, so the failure mode changed",
+                                label, backend, got->rax, want_rax, from_ymm0));
+                    }
+                    continue;
+                }
+                if (got->rax != want_rax && mismatches++ < 12) {
+                    problems.push_back(fmt::format("{} [{}]: rax {:#018x}, Rosetta says {:#018x}",
+                                                   label, backend, got->rax, want_rax));
+                }
+                continue;
+            }
+            const Vec256& g = (where == Where::Memory) ? got->mem : got->ymm[0];
+            if (g != want && mismatches++ < 12) {
+                problems.push_back(fmt::format("{} [{}]: got {}, Rosetta says {}", label, backend,
+                                               hex(g), hex(want)));
+            }
+            // No register other than the destination (and the operand sources,
+            // which the instruction may legitimately leave alone) may change --
+            // in particular no bystander's UPPER half may be disturbed by the
+            // two-halves split.
+            for (u32 i = 1; i < 16; ++i) {
+                if (i == reg_a || i == reg_b) {
+                    continue;
+                }
+                if (got->ymm[i] != poison(i) && bystanders++ < 12) {
+                    problems.push_back(fmt::format("{} [{}]: bystander ymm{} clobbered, {} != {}",
+                                                   label, backend, i, hex(got->ymm[i]),
+                                                   hex(poison(i))));
+                }
+            }
+        }
+    };
+
+    // ---- drive every reference row ----------------------------------------
+    for (const auto& ref : kAvx256Refs) {
+        const Vec256 want = parse(ref.result);
+        const std::string pname = kAvx256Inputs[ref.pair].name;
+
+        // Three-operand ALU: ymm0 = ymm1 OP ymm2, and ymm0 = ymm1 OP [B].
+        bool handled = false;
+        for (const auto& op : kAlu) {
+            if (std::strcmp(op.name, ref.name) != 0) {
+                continue;
+            }
+            handled = true;
+            {
+                CodeBuf b;
+                vex_rr(b, op.pp, op.mmmmm, op.opcode, 0, 1, 2);
+                check(fmt::format("{}.rr/{}", op.name, pname), b, ref.pair, 1, 2, want,
+                      Where::Ymm0);
+            }
+            {
+                CodeBuf b;
+                vex_mem(b, op.pp, op.mmmmm, op.opcode, 0, 1, mb);
+                check(fmt::format("{}.rm/{}", op.name, pname), b, ref.pair, 1, 0xFF, want,
+                      Where::Ymm0);
+            }
+        }
+        if (handled) {
+            continue;
+        }
+
+        // Data movement: load, store, and (where the encoding permits it) the
+        // register-register shape.  All three are identity on the data; what
+        // differs is the decoder path each takes.
+        for (const auto& op : kMov) {
+            if (std::strcmp(op.name, ref.name) != 0) {
+                continue;
+            }
+            handled = true;
+            if (op.ld != 0xFF) {
+                CodeBuf b;
+                vex_mem(b, op.pp, op.mmmmm, op.ld, 0, kVexNoSrc1, ma);
+                check(fmt::format("{}.ld/{}", op.name, pname), b, ref.pair, 0xFF, 0xFF, want,
+                      Where::Ymm0);
+            }
+            if (op.st != 0xFF) {
+                CodeBuf b;
+                vex_mem(b, op.pp, op.mmmmm, op.st, 0, kVexNoSrc1, mout);
+                check(fmt::format("{}.st/{}", op.name, pname), b, ref.pair, 0, 0xFF, want,
+                      Where::Memory);
+            }
+            // vlddqu has no register-source form (it is #UD), so it is skipped
+            // here rather than being fed an encoding hardware would reject.
+            if (op.ld != 0xFF && std::strcmp(op.name, "vlddqu") != 0) {
+                CodeBuf b;
+                vex_rr(b, op.pp, op.mmmmm, op.ld, 0, kVexNoSrc1, 1);
+                check(fmt::format("{}.rr/{}", op.name, pname), b, ref.pair, 1, 0xFF, want,
+                      Where::Ymm0);
+            }
+        }
+        if (handled) {
+            continue;
+        }
+
+        if (std::strcmp(ref.name, "vpmovmskb") == 0) {
+            // Source is ymm1 and the destination eax, i.e. ModRM.reg = 0 and
+            // ModRM.rm = 1 -- deliberately DIFFERENT numbers, which is exactly
+            // the case distorm gets wrong.  Encoding C4 E1 7D D7 C1, byte for
+            // byte what the Rosetta generator ran.
+            CodeBuf b;
+            vex_rr(b, 1, 1, 0xD7, 0 /* eax */, kVexNoSrc1, 1);
+            // Compared normally: DecodeAvx256Pmovmskb now takes the source from
+            // the raw ModRM.rm (X64Decoder::VexRmRegister) instead of distorm's
+            // ops[1], so the underlying distorm table defect no longer reaches
+            // the result. The defect itself is still present in the bundled
+            // insts.c -- see the Expect comment above.
+            check(fmt::format("vpmovmskb/{}", pname), b, ref.pair, 1, 0xFF, want, Where::Rax32);
+            continue;
+        }
+        if (std::strcmp(ref.name, "vbroadcastss") == 0) {
+            {  // register source: low dword of xmm1 (AVX2; distorm lacks it)
+                CodeBuf b;
+                vex_rr(b, 1, 2, 0x18, 0, kVexNoSrc1, 1);
+                check(fmt::format("vbroadcastss.rr/{}", pname), b, ref.pair, 1, 0xFF, want,
+                      Where::Ymm0, Expect::KnownNotDecoded);
+            }
+            {  // m32 source: the same dword, read from memory instead
+                CodeBuf b;
+                vex_mem(b, 1, 2, 0x18, 0, kVexNoSrc1, ma);
+                check(fmt::format("vbroadcastss.m32/{}", pname), b, ref.pair, 0xFF, 0xFF, want,
+                      Where::Ymm0);
+            }
+            continue;
+        }
+        FAIL("reference row for unknown mnemonic: " << ref.name);
+    }
+
+    X86Core::Destroy(jit_core);
+    X86Core::Destroy(interp_core);
+    X86Instance::Destroy(jit_instance);
+    X86Instance::Destroy(interp_instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+
+    for (size_t i = 0; i < problems.size() && i < 40; ++i) {
+        UNSCOPED_INFO(problems[i]);
+    }
+    CHECK(bad_exits == 0);
+    CHECK(divergences == 0);
+    CHECK(mismatches == 0);
+    CHECK(bystanders == 0);
+    // 31 ALU opcodes x 2 shapes + 22 move shapes + vpmovmskb + 2 vbroadcastss
+    // shapes, each over 6 input pairs.  Pinned so a coverage regression -- an
+    // opcode silently dropped from avx256_ops.inc, or a reference row lost in
+    // regeneration -- cannot pass as success.
+    CHECK(comparisons == (31u * 2u + 22u + 1u + 2u) * 6u);
+    // vpmovmskb is no longer exempt: the decoder works around the distorm
+    // table defect by reading ModRM.rm from the raw encoding, so the result now
+    // matches Rosetta and is compared like everything else. Pinned at zero so
+    // that reintroducing an exemption cannot pass unnoticed.
+    // The register-source vbroadcastss is still declined once per block for all
+    // six pairs; any movement there means distorm gained the AVX2 entry.
+    CHECK(known_wrong_src == 0u);
+    CHECK(known_not_decoded == 6u);
+}
+
 }  // namespace

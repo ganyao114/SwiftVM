@@ -2047,6 +2047,39 @@ X64Decoder::VexInfo X64Decoder::DecodeVex() const {
 
 bool X64Decoder::IsVex128(const VexInfo& vex) const { return vex.valid && !vex.l; }
 
+u32 X64Decoder::VexRmRegister() const {
+    if (!insn_bytes) {
+        return UINT32_MAX;
+    }
+    // Same prefix scan as DecodeVex: only segment / address-size overrides may
+    // precede a VEX prefix.
+    u32 i = 0;
+    while (i < 4) {
+        const u8 b = insn_bytes[i];
+        if (b == 0x2E || b == 0x36 || b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65 ||
+            b == 0x67) {
+            ++i;
+            continue;
+        }
+        break;
+    }
+    u32 modrm_at;
+    u8 b_bit;
+    if (insn_bytes[i] == 0xC5) {
+        // 2-byte VEX implies B=0 (it has no B field), then opcode, then ModRM.
+        b_bit = 0;
+        modrm_at = i + 3;
+    } else if (insn_bytes[i] == 0xC4) {
+        // 3-byte VEX stores B inverted in byte1 bit 5.
+        b_bit = static_cast<u8>((insn_bytes[i + 1] & 0x20) ? 0 : 1);
+        modrm_at = i + 4;
+    } else {
+        return UINT32_MAX;
+    }
+    const u8 modrm = insn_bytes[modrm_at];
+    return static_cast<u32>((modrm & 0x07) | (b_bit << 3));
+}
+
 u32 X64Decoder::VecIndex(_RegisterType reg) {
     if (reg >= R_YMM0 && reg <= R_YMM15) {
         return static_cast<u32>(reg - R_YMM0);
