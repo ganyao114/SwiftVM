@@ -216,63 +216,34 @@ std::array<u8, 16> DestPoison() {
 
 bool IsVex(const char* name) { return name[0] == 'v'; }
 
+// A ".y" suffix marks a VEX.256 row.  Those WRITE bits 255:128 with real data,
+// so they are exempt from the "a VEX row zeroes the upper half" rule -- that
+// rule is about VEX.128, and applying it to L=1 would assert the opposite of
+// the architecture.
+bool Is256(const char* name) {
+    const size_t n = std::strlen(name);
+    return n > 2 && std::strcmp(name + n - 2, ".y") == 0;
+}
+
+// Rows whose instruction has NO vector destination: the flag-only tests and
+// the extracts.  For these ymm3 must come back exactly as it was preloaded,
+// which is the same expectation as "legacy preserves the poison" and is why
+// they are simply skipped by the upper-half rules.
+bool WritesVector(const char* name) {
+    if (std::strncmp(name, "ptest", 5) == 0 || std::strncmp(name, "vptest", 6) == 0) return false;
+    if (std::strncmp(name, "vtest", 5) == 0) return false;
+    if (std::strncmp(name, "pextr", 5) == 0 || std::strncmp(name, "vpextr", 6) == 0) return false;
+    if (std::strcmp(name, "extractps") == 0) return false;
+    return true;
+}
+
 // PTEST's PF is the one byte where Rosetta and the SDM disagree; see the
 // header.  rax byte 1 is where the row's `setp ah` landed.
 bool ExcludedByte(const char* name, size_t index) {
-    const bool ptest = std::strcmp(name, "ptest") == 0 || std::strcmp(name, "vptest") == 0;
-    return ptest && index == 0x41;
-}
-
-// ---------------------------------------------------------------------------
-// KNOWN PRE-EXISTING DEFECT -- HADDPS / HSUBPS AND THE SIGN OF A NaN
-// ---------------------------------------------------------------------------
-// haddps/hsubps are NOT decoder_sse4.cc's: they are claimed by
-// `case I_HADDPS:` / `case I_HSUBPS:` in decoder.cc, which route to
-// DecodeHaddps -> the HaddpsHalf host lambda (decoder_sse.cc:284).  Their rows
-// are in this file as a regression net for that older handler, and they found
-// a real bug.
-//
-// HaddpsHalf computes `f[0] - f[1]` and `f[2] - f[3]` in host C.  At -O0 that
-// is correct; at -O2 and above clang lowers the PAIR of subtractions to
-// FNEG + FADDP, and FNEG flips the sign bit of a NaN.  x86 returns the second
-// operand's NaN QUIETED BUT OTHERWISE UNCHANGED, so every haddps/hsubps whose
-// result comes from a NaN in the ODD lane comes out with the wrong sign, on
-// both back ends, only in optimized builds.  Measured on this host:
-//
-//     HaddpsHalf(0x7E81FEFF_807F0100, 0x7FFFFFFF_80000000, sub=1)
-//       -O0  0x7FFFFFFF_FE81FEFF   (correct, and what Rosetta returned)
-//       -O2  0xFFFFFFFF_FE81FEFF   (sign of the NaN flipped)
-//
-// THE FIX (main line, not this agent's files): drop `case I_HADDPS:` and
-// `case I_HSUBPS:` from decoder.cc and let them fall through to DecodeSse4,
-// which already has the correct pure-IR path -- OpHorizontalFloat, the same
-// VecUnzip + VecFSub decoder_avx_hadd.cc's vhaddps uses, whose VecFSub carries
-// the x86 NaN-priority fixup.  Then delete this function and its two call
-// sites; the four rows below will pass unaided.
-//
-// Until then the difference is tolerated ONLY where it is exactly this bug:
-// one dword of the vector destination, differing in exactly the sign bit, with
-// both values NaN.  Any other haddps/hsubps difference still fails.
-bool IsNaN32(u32 x) { return (x & 0x7F800000u) == 0x7F800000u && (x & 0x007FFFFFu) != 0; }
-
-bool HaddpsNaNSignOnly(const char* name, const Obs& got, const Obs& want) {
-    if (std::strcmp(name, "haddps") != 0 && std::strcmp(name, "hsubps") != 0) {
-        return false;
-    }
-    for (size_t i = 16; i < 128; ++i) {
-        if (got[i] != want[i]) {
-            return false;  // anything outside the 128-bit result is a real failure
-        }
-    }
-    for (u32 lane = 0; lane < 4; ++lane) {
-        const u32 g = Dword(got, lane);
-        const u32 w = Dword(want, lane);
-        if (g == w) continue;
-        if ((g ^ w) != 0x80000000u || !IsNaN32(g) || !IsNaN32(w)) {
-            return false;
-        }
-    }
-    return true;
+    const bool flag_only = std::strncmp(name, "ptest", 5) == 0 ||
+                           std::strncmp(name, "vptest", 6) == 0 ||
+                           std::strncmp(name, "vtest", 5) == 0;
+    return flag_only && index == 0x41;
 }
 
 int PairIndex(const char* name) {
@@ -333,13 +304,9 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
         size_t checked = 0, vex_zeroed = 0;
         for (const auto& r : kSse4Refs) {
             const auto v = ParseObs(r.result);
-            const bool writes_vector =
-                    std::strcmp(r.name, "ptest") != 0 && std::strcmp(r.name, "vptest") != 0 &&
-                    std::strncmp(r.name, "pextr", 5) != 0 &&
-                    std::strncmp(r.name, "vpextr", 6) != 0 &&
-                    std::strcmp(r.name, "extractps") != 0;
+            const bool writes_vector = WritesVector(r.name);
             if (IsVex(r.name)) {
-                if (!writes_vector) continue;
+                if (!writes_vector || Is256(r.name)) continue;
                 INFO(r.name << " pair " << r.pair << ": a VEX row's reference does not have a "
                                                      "zeroed upper half (contract C3)");
                 REQUIRE(std::all_of(v.begin() + 16, v.begin() + 32, [](u8 x) { return x == 0; }));
@@ -485,6 +452,52 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
         REQUIRE(answers.size() >= 5);
     }
     {
+        // VTESTPS / VTESTPD look at the lane SIGN BITS only, so they must
+        // reach all four (ZF, CF) corners on their own -- and must NOT agree
+        // with PTEST on the same operands, or the sign-bit masking is not
+        // being measured.  Rosetta's answers were independently checked
+        // against a from-the-SDM model over all 50 rows before the data was
+        // accepted.
+        std::set<std::pair<int, int>> corners;
+        size_t rows = 0, differ_from_ptest = 0;
+        for (const auto& r : kSse4Refs) {
+            if (std::strncmp(r.name, "vtest", 5) != 0) continue;
+            const auto v = ParseObs(r.result);
+            corners.insert({int(v[0x40] & 1), int(v[0x48] & 1)});
+            ++rows;
+            const auto* pt = FindRow("ptest", r.pair, r.imm, r.rc);
+            if (pt != nullptr) {
+                const auto p = ParseObs(pt->result);
+                if (v[0x40] != p[0x40] || v[0x48] != p[0x48]) ++differ_from_ptest;
+            }
+        }
+        INFO("vtestps/vtestpd do not reach all four (ZF, CF) corners");
+        REQUIRE(corners.size() == 4);
+        REQUIRE(rows >= 40);
+        INFO("vtest never disagrees with ptest on the same operands -- the sign-bit "
+             "restriction is not being measured");
+        REQUIRE(differ_from_ptest > 0);
+    }
+    {
+        // VMPSADBW at VEX.256 gives each 128-bit lane its OWN three imm8 bits
+        // (imm8[2:0] low, imm8[5:3] high).  imm8 = 0x08 and 0x11 differ ONLY
+        // in bits the two lanes read differently, so an implementation that
+        // applied one control to both lanes cannot produce both answers.
+        std::set<std::string> low_lane, high_lane;
+        size_t rows = 0;
+        for (const auto& r : kSse4Refs) {
+            if (std::strcmp(r.name, "vmpsadbw.y") != 0) continue;
+            const std::string result(r.result);
+            low_lane.insert(result.substr(0, 32));
+            high_lane.insert(result.substr(32, 32));
+            ++rows;
+        }
+        REQUIRE(rows >= 60);
+        INFO("vmpsadbw.y's two 128-bit lanes do not vary independently with imm8");
+        REQUIRE(low_lane.size() > 1);
+        REQUIRE(high_lane.size() > 1);
+    }
+    {
         // BLENDVPS / BLENDVPD / PBLENDVB read DIFFERENT bits of the same XMM0,
         // so on the `seq` pair (whose mask alternates at all three
         // granularities) no two of them may agree.
@@ -565,7 +578,7 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
     size_t code_cursor = 1;
     std::vector<std::string> problems;
     size_t comparisons = 0, bad_exits = 0, divergences = 0, mismatches = 0, bystanders = 0,
-           leaked_mxcsr = 0, ptest_pf = 0, known_haddps = 0;
+           leaked_mxcsr = 0, ptest_pf = 0;
 
     const auto run_on = [&](X86Core* core, const std::vector<u8>& code, int pair, u64 code_addr) {
         const auto& a = ins_a[size_t(pair)];
@@ -676,19 +689,15 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
                     break;
                 }
             }
-            if (differs && HaddpsNaNSignOnly(ref.name, got->obs, want)) {
-                // The pre-existing HaddpsHalf defect, and nothing else; see the
-                // long comment on HaddpsNaNSignOnly.
-                ++known_haddps;
-                differs = false;
-            }
             if (differs && mismatches++ < 15) {
                 problems.push_back(fmt::format("{} [{}]: got {}, Rosetta says {} (enc {})", label,
                                                backend, Hex(got->obs), Hex(want), ref.enc));
             }
             // The SDM, not Rosetta, on PTEST's PF: it is architecturally 0.
-            if ((std::strcmp(ref.name, "ptest") == 0 || std::strcmp(ref.name, "vptest") == 0) &&
-                got->obs[0x41] != 0 && ptest_pf++ < 15) {
+            const bool flag_only = std::strncmp(ref.name, "ptest", 5) == 0 ||
+                                   std::strncmp(ref.name, "vptest", 6) == 0 ||
+                                   std::strncmp(ref.name, "vtest", 5) == 0;
+            if (flag_only && got->obs[0x41] != 0 && ptest_pf++ < 15) {
                 problems.push_back(fmt::format(
                         "{} [{}]: ptest left PF = {}, but the SDM sets PF to 0", label, backend,
                         got->obs[0x41]));
@@ -723,16 +732,9 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
                         << " jit/interp divergences=" << divergences
                         << " mismatches=" << mismatches << " bystanders=" << bystanders
                         << " leaked mxcsr=" << leaked_mxcsr << " ptest PF!=0=" << ptest_pf
-                        << " known haddps NaN-sign=" << known_haddps << joined);
+                        << joined);
     REQUIRE(comparisons > 3000);
     REQUIRE(problems.empty());
-    // The pre-existing haddps/hsubps defect must still be REACHED: if the four
-    // rows that hit it stopped hitting it, either the data lost its NaNs or
-    // somebody fixed the handler -- and in the second case HaddpsNaNSignOnly
-    // and this check should both be deleted rather than left as noise.
-    INFO("the haddps/hsubps NaN-sign rows no longer differ from Rosetta -- if decoder.cc now "
-         "routes I_HADDPS/I_HSUBPS to DecodeSse4, delete HaddpsNaNSignOnly and this check");
-    CHECK(known_haddps > 0);
 }
 
 // ===========================================================================
@@ -964,6 +966,12 @@ TEST_CASE("x86 legacy sse4 and vex twins agree") {
             {"packusdw", "vpackusdw"}, {"phaddw", "vphaddw"},     {"pmaddubsw", "vpmaddubsw"},
             {"pminsb", "vpminsb"},     {"pmaxud", "vpmaxud"},     {"pabsd", "vpabsd"},
             {"haddpd", "vhaddpd"},     {"pextrb", "vpextrb"},
+            // The twins decoder_sse4.cc added to the AVX side; these share a
+            // lane function with their legacy form by CONSTRUCTION rather than
+            // by copy, so this pairing is what proves the sharing is correct.
+            {"addsubps", "vaddsubps"}, {"addsubpd", "vaddsubpd"},
+            {"pmulhrsw", "vpmulhrsw"}, {"phminposuw", "vphminposuw"},
+            {"mpsadbw", "vmpsadbw"},
     };
     const auto dest_poison = DestPoison();
     size_t compared = 0;
@@ -990,9 +998,9 @@ TEST_CASE("x86 legacy sse4 and vex twins agree") {
     // And the halves differ exactly as specified.
     for (const auto& r : kSse4Refs) {
         if (!IsVex(r.name)) continue;
-        if (std::strcmp(r.name, "vptest") == 0 || std::strcmp(r.name, "vpextrb") == 0) continue;
+        if (!WritesVector(r.name) || Is256(r.name)) continue;
         const auto v = ParseObs(r.result);
-        INFO(r.name << ": VEX row does not zero bits 255:128");
+        INFO(r.name << ": VEX.128 row does not zero bits 255:128");
         REQUIRE(std::all_of(v.begin() + 16, v.begin() + 32, [](u8 x) { return x == 0; }));
     }
     for (const auto& r : kSse4Refs) {

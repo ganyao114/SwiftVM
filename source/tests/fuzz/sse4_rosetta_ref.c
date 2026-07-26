@@ -506,6 +506,21 @@ static void gen_legacy(const char* name, int pfx, int map, int op, int imm, int 
 
 /* The VEX twin of gen_legacy: dst = xmm3, VEX.vvvv = xmm3, r/m = xmm2/[mem].
    Same operands, so the low 128 bits must match the legacy row exactly. */
+static void gen_vexl(const char* name, int pp, int map, int op, int imm, int mem, int w, int l) {
+    Code c;
+    c.n = 0;
+    prologue(&c);
+    vex3(&c, pp, map, 3, l, w);
+    emit(&c, (u8)op);
+    if (mem >= 0) {
+        modrm_mem(&c, 3, mem);
+    } else {
+        modrm_reg(&c, 3, 2);
+    }
+    if (imm >= 0) emit(&c, (u8)imm);
+    row(name, imm < 0 ? 0 : imm, -1, &c);
+}
+
 static void gen_vex(const char* name, int pp, int map, int op, int imm, int mem, int w) {
     Code c;
     c.n = 0;
@@ -561,7 +576,7 @@ static void gen_round(const char* name, int op, int imm, int rc, int mem) {
 /* ptest, with the five condition flags materialized into al/ah/bl/cl/dl.
    The zeroing is INSIDE the recorded region so the flag bytes are unambiguous
    even if the instruction leaves a flag undefined. */
-static void gen_ptest(const char* name, int vex, int mem) {
+static void gen_test_flags(const char* name, int vex, int mem, int op, int l) {
     Code c;
     c.n = 0;
     prologue(&c);
@@ -574,10 +589,10 @@ static void gen_ptest(const char* name, int vex, int mem) {
     emit(&c, 0x31); /* xor edx, edx */
     emit(&c, 0xD2);
     if (vex) {
-        vex3(&c, 1, 2, 0, 0, 0);  /* vvvv unused: stored inverted, so 0 -> raw 1111b */
-        emit(&c, 0x17);
+        vex3(&c, 1, 2, 0, l, 0);  /* vvvv unused: stored inverted, so 0 -> raw 1111b */
+        emit(&c, (u8)op);
     } else {
-        legacy_head(&c, 0x66, 0, 0x38, 0x17);
+        legacy_head(&c, 0x66, 0, 0x38, (u8)op);
     }
     if (mem >= 0) {
         modrm_mem(&c, 3, mem);
@@ -816,9 +831,16 @@ int main(int argc, char** argv) {
         }
 
         /* ---- ptest ---------------------------------------------------- */
-        gen_ptest("ptest", 0, -1);
-        gen_ptest("ptest", 0, DATA_B);
-        gen_ptest("vptest", 1, -1);
+        gen_test_flags("ptest", 0, -1, 0x17, 0);
+        gen_test_flags("ptest", 0, DATA_B, 0x17, 0);
+        gen_test_flags("vptest", 1, -1, 0x17, 0);
+        gen_test_flags("vptest.y", 1, -1, 0x17, 1);
+        /* vtestps / vtestpd: PTEST restricted to the lane SIGN BITS. */
+        gen_test_flags("vtestps", 1, -1, 0x0E, 0);
+        gen_test_flags("vtestps", 1, DATA_B, 0x0E, 0);
+        gen_test_flags("vtestps.y", 1, -1, 0x0E, 1);
+        gen_test_flags("vtestpd", 1, -1, 0x0F, 0);
+        gen_test_flags("vtestpd.y", 1, -1, 0x0F, 1);
 
         /* ---- sign / zero extension ------------------------------------ */
         for (int i = 0; i < N_EXTEND; i++) {
@@ -915,6 +937,18 @@ int main(int argc, char** argv) {
         gen_legacy("addsubpd", 0x66, 0, 0xD0, -1, -1);
         gen_legacy("addsubpd", 0x66, 0, 0xD0, -1, DATA_B);
         gen_vex("vhaddpd", 1, 1, 0x7C, -1, -1, 0);
+        /* The twins no decoder_avx*.cc file claimed before decoder_sse4.cc. */
+        gen_vexl("vaddsubps", 3, 1, 0xD0, -1, -1, 0, 0);
+        gen_vexl("vaddsubps", 3, 1, 0xD0, -1, DATA_B, 0, 0);
+        gen_vexl("vaddsubps.y", 3, 1, 0xD0, -1, -1, 0, 1);
+        gen_vexl("vaddsubps.y", 3, 1, 0xD0, -1, DATA_B, 0, 1);
+        gen_vexl("vaddsubpd", 1, 1, 0xD0, -1, -1, 0, 0);
+        gen_vexl("vaddsubpd.y", 1, 1, 0xD0, -1, -1, 0, 1);
+        gen_vexl("vpmulhrsw", 1, 2, 0x0B, -1, -1, 0, 0);
+        gen_vexl("vpmulhrsw", 1, 2, 0x0B, -1, DATA_B, 0, 0);
+        gen_vexl("vpmulhrsw.y", 1, 2, 0x0B, -1, -1, 0, 1);
+        gen_vex_nov("vphminposuw", 1, 2, 0x41, -1, -1);
+        gen_vex_nov("vphminposuw", 1, 2, 0x41, -1, DATA_B);
 
         /* ---- dot product -------------------------------------------------- */
         for (int i = 0; i < N_DOT_IMMS; i++) {
@@ -929,6 +963,18 @@ int main(int argc, char** argv) {
             gen_legacy("mpsadbw", 0x66, 0x3A, 0x42, imm, -1);
         }
         gen_legacy("mpsadbw", 0x66, 0x3A, 0x42, 3, DATA_B);
+        for (int imm = 0; imm < 8; imm++) {
+            gen_vexl("vmpsadbw", 1, 3, 0x42, imm, -1, 0, 0);
+        }
+        /* At VEX.256 each 128-bit lane gets its own three imm8 bits:
+           imm8[2:0] for the low lane, imm8[5:3] for the high one.  These
+           values give the two lanes DIFFERENT controls, so an implementation
+           that applied one control to both fails. */
+        static const int kMpsadY[] = {0x00, 0x3F, 0x08, 0x11, 0x22, 0x2C, 0x15, 0x38};
+        for (int i = 0; i < 8; i++) {
+            gen_vexl("vmpsadbw.y", 1, 3, 0x42, kMpsadY[i], -1, 0, 1);
+        }
+        gen_vexl("vmpsadbw.y", 1, 3, 0x42, 0x2C, DATA_B, 0, 1);
         gen_legacy("movntdqa", 0x66, 0x38, 0x2A, -1, DATA_B);
     }
 

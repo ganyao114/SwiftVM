@@ -279,19 +279,16 @@ u64 Movsldup64(u64, u64 b) {
     u32 lo = u32(b);
     return u64(lo) | (u64(lo) << 32);
 }
-// haddps/hsubps: horizontal add/sub of the two dword pairs in {lo, hi}; the
-// result qword = {pair0, pair1}. sub selects subtraction.
-u64 HaddpsHalf(u64 lo, u64 hi, u64 sub) {
-    u32 d[4] = {u32(lo), u32(lo >> 32), u32(hi), u32(hi >> 32)};
-    float f[4];
-    std::memcpy(f, d, 16);
-    float r0 = sub ? f[0] - f[1] : f[0] + f[1];
-    float r1 = sub ? f[2] - f[3] : f[2] + f[3];
-    u32 o[2];
-    std::memcpy(&o[0], &r0, 4);
-    std::memcpy(&o[1], &r1, 4);
-    return u64(o[0]) | (u64(o[1]) << 32);
-}
+// haddps/hsubps used to live here as HaddpsHalf, a host-C lambda computing
+// `f[0] - f[1]` / `f[2] - f[3]`.  It was REMOVED rather than fixed: at -O2 and
+// above clang lowers that pair of subtractions to FNEG + FADDP, and FNEG flips
+// the sign bit of a NaN, whereas x86 returns the operand's NaN quieted but
+// otherwise unchanged.  Both instructions are now decoded by
+// decoder_sse4.cc's pure-IR horizontal path (VecUnzip + VecFSub/VecFAdd, the
+// same one vhaddps uses), whose VecFSub carries the x86 NaN-priority fixup.
+// A dead implementation with a known-wrong answer is a mine, so nothing is
+// left behind here.
+//
 // pextrw: extract word (imm & 7) from the 128-bit {lo, hi} source.
 u64 Pextrw64(u64 lo, u64 hi, u64 imm) {
     u64 src = (imm & 4) ? hi : lo;
@@ -1207,19 +1204,6 @@ void X64Decoder::DecodeMovddup(_DInst& insn) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     auto result = __ VecDup64(LoadSrcLo(insn, insn.ops[1])).SetType(ir::ValueType::V128);
     XmmWrite(dst, result);
-}
-
-void X64Decoder::DecodeHaddps(_DInst& insn, bool sub) {
-    // haddps/hsubps: dst.lo = horizontal(a.lo, a.hi), dst.hi = horizontal(b.lo, b.hi).
-    auto dst = static_cast<_RegisterType>(insn.ops[0].index);
-    auto a_lo = XmmLo(dst);
-    auto a_hi = XmmHi(dst);
-    auto b = LoadSrcHalves(insn, insn.ops[1]);
-    auto s = __ LoadImm(ir::Imm(u64(sub ? 1 : 0)));
-    XmmLo(dst,
-          __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&HaddpsHalf)}}, a_lo, a_hi, s));
-    XmmHi(dst,
-          __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&HaddpsHalf)}}, b.lo, b.hi, s));
 }
 
 void X64Decoder::DecodePalignr(_DInst& insn) {

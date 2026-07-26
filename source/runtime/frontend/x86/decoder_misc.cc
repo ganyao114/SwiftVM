@@ -89,11 +89,11 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     // glibc's ifunc select string variants that die with IllegalCode.
     static constexpr u32 kLeaf1Ecx = (1u << 13)  // CMPXCHG16B
                                      | (1u << 22)  // MOVBE
-                                     | (1u << 0)   // SSE3
-                                     | (1u << 9)   // SSSE3
-                                     | (1u << 19)  // SSE4.1
-                                     | (1u << 23)  // POPCNT
                                      | (1u << 30); // RDRAND
+    static constexpr u32 kSse4Ecx = (1u << 0)    // SSE3
+                                    | (1u << 9)   // SSSE3
+                                    | (1u << 19)  // SSE4.1
+                                    | (1u << 23); // POPCNT
     static constexpr u32 kLeaf7Ebx = (1u << 18);  // RDSEED
     // XSAVE (ECX.26) and OSXSAVE (ECX.27) travel together: OSXSAVE is
     // CR4.OSXSAVE, which is what makes XGETBV legal and tells the guest the OS
@@ -113,7 +113,7 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     // reported.  All 60 mnemonics are implemented at both VEX.L, so the bit
     // does not over-promise.  (The bit is architecturally meaningless without
     // AVX anyway -- FMA3 has no non-VEX encoding.)
-    const u32 leaf1_ecx = kLeaf1Ecx |
+    const u32 leaf1_ecx = kLeaf1Ecx | (Sse4Enabled() ? kSse4Ecx : 0u) |
                           (XsaveEnabled() ? ((1u << 26) | (1u << 27)) : 0u) |
                           (avx_reported ? ((1u << 28) | (1u << 12)) : 0u);  // AVX, FMA
     // BMI1 (bit 3) and BMI2 (bit 8) follow SVM_BMI. They are deliberately

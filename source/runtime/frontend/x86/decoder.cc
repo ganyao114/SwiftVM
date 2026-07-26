@@ -309,7 +309,8 @@ void X64Decoder::Decode() {
                     (avx_on &&
                      (DecodeAvxMul(vex) || DecodeAvxFma(vex) || DecodeAvxInt(vex) ||
                       DecodeAvxFp(vex) || DecodeAvxHadd(vex) || DecodeAvxBlend(vex) ||
-                      DecodeAvxGather(vex) || DecodeAvxMisc(vex)))) {
+                      DecodeAvxGather(vex) || DecodeAvxMisc(vex) ||
+                      DecodeAvxSse4(vex)))) {
                     assembler->AdvancePC(ir::Imm{vex.length});
                     end_decode = assembler->EndCommit();
                     continue;
@@ -1294,12 +1295,12 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_MOVDDUP:
             DecodeMovddup(insn);
             break;
-        case I_HADDPS:
-            DecodeHaddps(insn, false);
-            break;
-        case I_HSUBPS:
-            DecodeHaddps(insn, true);
-            break;
+        // I_HADDPS / I_HSUBPS are deliberately NOT listed here: they fall
+        // through to `default:` -> DecodeSse4, alongside haddpd/hsubpd. The
+        // host-lambda implementation that used to sit here flipped the sign
+        // bit of a NaN result (clang lowers the pair of float subtractions to
+        // FNEG + FADDP at -O2), so it was replaced by the pure-IR horizontal
+        // path in decoder_sse4.cc rather than patched.
         case I_PEXTRW:
             DecodePextrw(insn);
             break;
@@ -1528,6 +1529,8 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             // cannot collide with a case being added elsewhere in the switch.
             // DecodeSse4 returns false for anything it does not claim, which
             // preserves the previous FALLBACK behaviour exactly.
+            // The SSE4.2 string family (decoder_sse42str.cc) rides the same
+            // arm for the same reason.
             return DecodeSse4(insn);
     }
     return true;

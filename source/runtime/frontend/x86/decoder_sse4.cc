@@ -77,7 +77,7 @@
 //     implemented -- SSE4.2's advertised contents are POPCNT, CRC32 and those
 //     four string instructions, and the four are exactly the part this file
 //     leaves out (see "NOT IMPLEMENTED" below).  Bits 0, 9 and 19 are fully
-//     backed by what is here and by sse4_test.cpp's 4020 Rosetta rows.
+//     backed by what is here and by sse4_test.cpp's 4360 Rosetta rows.
 //
 //     Note the asymmetry this leaves: AVX is advertised (behind SVM_AVX +
 //     SVM_XSAVE) while SSE4.2 is not, which no real CPU has ever done.  That
@@ -92,11 +92,19 @@
 // counterparts.
 //
 // It is honoured structurally rather than by remembering: XmmWrite / XmmLo /
-// XmmHi write only the 128-bit xmm uniform and never touch ymm_high, and
-// NOTHING in this file calls ZeroYmmHigh or VexWrite128.  A grep for either
-// name in this file must return nothing.  sse4_test.cpp poisons ymm_high
-// before every row and requires the poison back afterwards, so a stray
-// zeroing fails a test rather than surviving as a latent bug.
+// XmmHi write only the 128-bit xmm uniform and never touch ymm_high, and no
+// handler in the LEGACY half of this file calls ZeroYmmHigh.
+//
+// The file also hosts a VEX section (see "THE VEX TWINS THIS FAMILY WAS
+// MISSING" at the bottom), where the opposite rule applies, so the invariant
+// is stated as a boundary rather than as "grep finds nothing": ZeroYmmHigh
+// appears exactly once, in DecodeAvxPhminposuw, and every other VEX form here
+// reaches C3 through DecodeAvxIntBinary.  Any occurrence of ZeroYmmHigh or
+// VexWrite128 ABOVE the "THE VEX TWINS" banner is a bug.
+//
+// sse4_test.cpp poisons ymm_high before every row and requires the poison back
+// on every legacy row and zeros on every VEX.128 one, so a stray zeroing (or a
+// missing one) fails a test rather than surviving as a latent bug.
 //
 // The second-most error-prone difference is BLENDVPS / BLENDVPD / PBLENDVB:
 // the legacy forms take their mask from an IMPLICIT XMM0, where the VEX forms
@@ -165,6 +173,15 @@
 //     occurrences), so this is the largest remaining gap in the family.
 //
 //   MONITOR / MWAIT (SSE3): privileged, no guest kernel, deliberately absent.
+//
+// TAKEN OVER FROM decoder.cc
+//   haddps / hsubps used to be decoded by `case I_HADDPS:` there, through the
+//   HaddpsHalf host lambda in decoder_sse.cc.  That lambda flipped the sign
+//   bit of a NaN result in optimized builds (clang lowers its pair of float
+//   subtractions to FNEG + FADDP), so both the case labels and the lambda were
+//   DELETED and the two instructions now use the pure-IR horizontal path here.
+//   A dead implementation with a known-wrong answer is a mine, so nothing was
+//   left behind.
 //
 // ---------------------------------------------------------------------------
 // KNOWN DEVIATIONS
@@ -550,10 +567,9 @@ ir::Value OpDotProduct(ir::Assembler* as, ir::Value a, ir::Value b, u32 param) {
 // vector of {b, 0x80, b+1, 0x80, ...} both selects and zero-extends in one
 // step.  |x - y| on values that are known to be 0..255 is then just
 // max - min, and the four differences add without overflow (4 * 255 = 1020).
-ir::Value OpMpsadbw(ir::Assembler* as, ir::Value a, ir::Value b, u32 param) {
-    const u32 imm8 = Flag(param);
-    const u32 needle_at = (imm8 & 3u) * 4u;
-    const u32 window_at = ((imm8 >> 2) & 1u) * 4u;
+ir::Value MpsadbwLane(ir::Assembler* as, ir::Value a, ir::Value b, u32 control) {
+    const u32 needle_at = (control & 3u) * 4u;
+    const u32 window_at = ((control >> 2) & 1u) * 4u;
     const auto words = ir::Imm(16u);
     ir::Value total{};
     for (u32 j = 0; j < 4; ++j) {
@@ -578,6 +594,29 @@ ir::Value OpMpsadbw(ir::Assembler* as, ir::Value a, ir::Value b, u32 param) {
         total = j == 0 ? absolute : as->VecAdd(total, absolute, words).SetType(kV128);
     }
     return total;
+}
+
+ir::Value OpMpsadbw(ir::Assembler* as, ir::Value a, ir::Value b, u32 param) {
+    return MpsadbwLane(as, a, b, Flag(param) & 7u);
+}
+
+// VMPSADBW at VEX.256 gives each 128-bit lane its OWN three control bits:
+// imm8[2:0] for the low lane and imm8[5:3] for the high one (SDM, VMPSADBW
+// "Operation").  That is the only place in this family where `half` changes
+// the meaning of the immediate rather than just the operand.
+ir::Value OpMpsadbwVex(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32 half) {
+    return MpsadbwLane(as, a, b, (Flag(param) >> (3u * half)) & 7u);
+}
+
+// AvxIntBinFn adapters for the lane functions the VEX twins share verbatim
+// with their legacy forms.  These exist only because AvxIntBinFn carries the
+// extra `half` argument that a legacy form has no use for.
+ir::Value OpAddSubVex(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return OpAddSub(as, a, b, param);
+}
+
+ir::Value OpMulHrswVex(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return OpMulHrsw(as, a, b, param);
 }
 
 // PHMINPOSUW (SSE4.1): the smallest UNSIGNED word, its INDEX in word 1, and
@@ -676,17 +715,10 @@ void X64Decoder::DecodeSseRound(_DInst& insn, u32 lane_bits, bool scalar) {
 // == decoder_avx_fp.cc DecodeAvxFpPTest, including the ordering: PF is written
 // before ZF because the value-producing instruction the ZF save attaches to
 // also republishes the parity byte.
-void X64Decoder::DecodeSsePTest(_DInst& insn) {
-    const auto fold = [&](ir::Value vec) {
-        auto lo = __ VecExtract64(vec, ir::Imm(0u)).SetType(kU64);
-        auto hi = __ VecExtract64(vec, ir::Imm(1u)).SetType(kU64);
-        return __ Or(lo, ir::Operand{hi}).SetType(kU64);
-    };
-    auto dest = XmmRead(static_cast<_RegisterType>(insn.ops[0].index));
-    auto src = LoadSrcVec(insn, insn.ops[1]);
-    auto both = fold(__ VecAnd(src, dest).SetType(kV128));
-    // VecAndNot(x, y) is x AND NOT y.
-    auto notdest = fold(__ VecAndNot(src, dest).SetType(kV128));
+// Shared by PTEST and by VTESTPS/VTESTPD, which differ only in WHICH bits of
+// the two AND results are looked at.  `both` and `notdest` are the two
+// expressions already folded to a scalar; zero means "no bit set".
+void X64Decoder::DecodeSseTestFlags(ir::Value both, ir::Value notdest) {
     __ ClearFlags(ir::Flags::Overflow | ir::Flags::Negate | ir::Flags::AuxiliaryCarry);
     auto one = __ LoadImm(ir::Imm(u64(1)));
     auto zero = __ LoadImm(ir::Imm(u64(0)));
@@ -699,6 +731,23 @@ void X64Decoder::DecodeSsePTest(_DInst& insn) {
     __ SaveFlags(cv, ir::Flags::Carry);
     carry_ = CarryPolarity::Direct;
     StorePolarity(false);
+}
+
+// The two 64-bit halves of a V128 OR-ed into one scalar.  Only zero /
+// non-zero is ever asked of the result, so this is exact.
+ir::Value X64Decoder::SseFoldToScalar(ir::Value vec) {
+    auto lo = __ VecExtract64(vec, ir::Imm(0u)).SetType(kU64);
+    auto hi = __ VecExtract64(vec, ir::Imm(1u)).SetType(kU64);
+    return __ Or(lo, ir::Operand{hi}).SetType(kU64);
+}
+
+void X64Decoder::DecodeSsePTest(_DInst& insn) {
+    auto dest = XmmRead(static_cast<_RegisterType>(insn.ops[0].index));
+    auto src = LoadSrcVec(insn, insn.ops[1]);
+    auto both = SseFoldToScalar(__ VecAnd(src, dest).SetType(kV128));
+    // VecAndNot(x, y) is x AND NOT y.
+    auto notdest = SseFoldToScalar(__ VecAndNot(src, dest).SetType(kV128));
+    DecodeSseTestFlags(both, notdest);
 }
 
 // ---------------------------------------------------------------------------
@@ -929,14 +978,33 @@ static bool SseXmmForm(const _DInst& insn, u32 vector_ops) {
 }
 
 bool X64Decoder::DecodeSse4(_DInst& insn) {
+    // haddps/hsubps are handled BEFORE the escape hatch, deliberately.  They
+    // used to be decoded in decoder.cc through a host-C helper whose `f[0]-f[1]`
+    // clang lowers at -O2 to FNEG+FADDP, flipping the sign of a NaN; that path
+    // was deleted in favour of the pure-IR one below.  Everything else in this
+    // file replaces a guaranteed guest death, so switching the file off can
+    // only restore the previous behaviour -- but for these two it would leave
+    // the opcode decoded by nobody and silently wrong, which is worse than what
+    // was here before.  An off switch whose off state is worse than the code it
+    // disables is not an escape hatch.
+    switch (insn.opcode) {
+        case I_HADDPS:
+            DecodeSseBinary(insn, OpHorizontalFloat, Pack(32, 0));
+            return true;
+        case I_HSUBPS:
+            DecodeSseBinary(insn, OpHorizontalFloat, Pack(32, 1));
+            return true;
+        default:
+            break;
+    }
     // Escape hatch.  Default ON: every opcode below currently kills the guest
     // outright, so the risk of a wrong answer is strictly better than the
     // certainty of a crash -- but a bisectable off switch is worth one getenv.
-    static const bool enabled = [] {
-        const char* env = std::getenv("SVM_SSE4");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    if (!enabled) {
+    //
+    // CPUID follows this switch (decoder_misc.cc): with it off, SSE3/SSSE3/
+    // SSE4.1/POPCNT must not be advertised, or CPUID would promise facilities
+    // the decoder then #UDs on -- the same coherence rule AVX and XSAVE obey.
+    if (!Sse4Enabled()) {
         return false;
     }
     switch (insn.opcode) {
@@ -1128,6 +1196,23 @@ bool X64Decoder::DecodeSse4(_DInst& insn) {
             DecodeSseBinary(insn, OpMax, Pack(16, 0));
             return true;
         // ---- SSE3 horizontal float / add-subtract -----------------------
+        // haddps / hsubps were claimed by decoder.cc's own `case I_HADDPS:`
+        // until this file took them over.  That older path went through the
+        // HaddpsHalf host lambda, which computed `f[0] - f[1]` in C; at -O2
+        // clang lowers the PAIR of subtractions to FNEG + FADDP, and FNEG
+        // flips the sign bit of a NaN.  x86 returns the operand's NaN quieted
+        // but otherwise UNCHANGED, so every haddps/hsubps whose result came
+        // from a NaN in the odd lane came out with the wrong sign, on both
+        // back ends, in optimized builds only.  The pure-IR path below has no
+        // such freedom: VecFSub carries the front end's x86 NaN-priority
+        // fixup, and it is the same VecUnzip + VecFSub decoder_avx_hadd.cc's
+        // vhaddps uses, so the legacy and VEX forms now agree by construction.
+        case I_HADDPS:
+            DecodeSseBinary(insn, OpHorizontalFloat, Pack(32, 0));
+            return true;
+        case I_HSUBPS:
+            DecodeSseBinary(insn, OpHorizontalFloat, Pack(32, 1));
+            return true;
         case I_HADDPD:
             DecodeSseBinary(insn, OpHorizontalFloat, Pack(64, 0));
             return true;
@@ -1166,6 +1251,153 @@ bool X64Decoder::DecodeSse4(_DInst& insn) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// THE VEX TWINS THIS FAMILY WAS MISSING
+// ---------------------------------------------------------------------------
+// Five AVX encodings had no handler anywhere in decoder_avx*.cc, which for a
+// VEX opcode means the same death sentence a missing legacy one carries: the
+// prefix decodes, no handler claims it, and the block traps as FALLBACK ->
+// IllegalCode.  They live here rather than in a new decoder_avx_*.cc file
+// because every one of them is the VEX form of an instruction whose lane
+// function is defined above -- putting them anywhere else would mean a sixth
+// copy of code this file already documents as duplicated once too often.
+//
+//   F2/66.0F.WIG  D0   vaddsubps / vaddsubpd   OpAddSub
+//   66.0F38.WIG   0B   vpmulhrsw               OpMulHrsw
+//   66.0F38.W0    0E   vtestps                 sign-bit PTEST
+//   66.0F38.W0    0F   vtestpd                 sign-bit PTEST
+//   66.0F38.WIG   41   vphminposuw             Phminposuw64
+//   66.0F3A.WIG   42   vmpsadbw                MpsadbwLane
+//
+// vex_decoder.cc's immediate table needs NO change: 0F D0 and the 0F38 map are
+// immediate-free there and 0F3A is uniformly imm8-carrying, which is right for
+// all six.  Checked triple by triple, because a wrong answer there mis-measures
+// the instruction length and desynchronizes the whole decode stream.
+//
+// WIDTHS.  vaddsubps/pd, vpmulhrsw and vtestps/pd exist at both VEX.128 and
+// VEX.256; vmpsadbw's 256-bit form is AVX2 and gives each 128-bit lane its own
+// three imm8 bits; vphminposuw has NO 256-bit encoding (it is #UD) and the L=1
+// form is DECLINED rather than invented.
+
+// vphminposuw xmm1, xmm2/m128.  128-bit only.
+void X64Decoder::DecodeAvxPhminposuw(const VexInsn& v) {
+    auto src = VexLoadVec(v);
+    auto lo = __ VecExtract64(src, ir::Imm(0u)).SetType(kU64);
+    auto hi = __ VecExtract64(src, ir::Imm(1u)).SetType(kU64);
+    auto zero = __ LoadImm(ir::Imm(u64(0)));
+    auto packed = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Phminposuw64)}},
+                                lo,
+                                hi,
+                                zero);
+    auto dst = XmmOf(v.reg);
+    XmmHi(dst, __ LoadImm(ir::Imm(u64(0))));
+    XmmLo(dst, packed);
+    // Contract C3: unlike every legacy handler in this file, a VEX.128 write
+    // ZEROES bits 255:128.
+    ZeroYmmHigh(v.reg);
+}
+
+// vtestps / vtestpd -- PTEST restricted to the SIGN BIT of each lane.
+//
+//   ZF = ((SRC AND DEST) has no lane sign bit set)     DEST = ModRM.reg
+//   CF = ((SRC AND NOT DEST) has no lane sign bit set) SRC  = r/m
+//   OF = AF = PF = SF = 0
+//
+// The restriction is one AND with a constant, so the flag plumbing is shared
+// verbatim with PTEST.  Masking AFTER the two ANDs rather than masking the
+// operands first is not a choice: `SRC AND NOT DEST` must be computed on the
+// full values, and only then reduced to sign bits.
+void X64Decoder::DecodeAvxVTest(const VexInsn& v, u32 lane_bits) {
+    const u64 sign = Replicate(lane_bits, u64(1) << (lane_bits - 1));
+    const auto keep = [&](ir::Value vec) {
+        return __ VecAnd(vec, VecConst(assembler, sign, sign)).SetType(kV128);
+    };
+    ir::Value both, notdest;
+    if (v.Is256()) {
+        auto dest_lo = XmmRead(XmmOf(v.reg));
+        auto dest_hi = YmmHighRead(v.reg);
+        auto src = VexLoadVec256(v);
+        auto and_lo = keep(__ VecAnd(src.lo, dest_lo).SetType(kV128));
+        auto and_hi = keep(__ VecAnd(src.hi, dest_hi).SetType(kV128));
+        auto andn_lo = keep(__ VecAndNot(src.lo, dest_lo).SetType(kV128));
+        auto andn_hi = keep(__ VecAndNot(src.hi, dest_hi).SetType(kV128));
+        both = __ Or(SseFoldToScalar(and_lo), ir::Operand{SseFoldToScalar(and_hi)})
+                       .SetType(kU64);
+        notdest = __ Or(SseFoldToScalar(andn_lo), ir::Operand{SseFoldToScalar(andn_hi)})
+                          .SetType(kU64);
+    } else {
+        auto dest = XmmRead(XmmOf(v.reg));
+        auto src = VexLoadVec(v);
+        both = SseFoldToScalar(keep(__ VecAnd(src, dest).SetType(kV128)));
+        notdest = SseFoldToScalar(keep(__ VecAndNot(src, dest).SetType(kV128)));
+    }
+    DecodeSseTestFlags(both, notdest);
+}
+
+bool X64Decoder::DecodeAvxSse4(const VexInsn& v) {
+    if (!AvxEnabled() || !v.valid) {
+        return false;
+    }
+    switch (v.map) {
+        case VexMap::Map0F:
+            // vaddsubps (F2) / vaddsubpd (66).  The no-prefix and F3 slots of
+            // opcode D0 are #UD.
+            if (v.opcode != 0xD0) {
+                return false;
+            }
+            if (v.pp == VexPP::PF2) {
+                DecodeAvxIntBinary(v, OpAddSubVex, Pack(32));
+                return true;
+            }
+            if (v.pp == VexPP::P66) {
+                DecodeAvxIntBinary(v, OpAddSubVex, Pack(64));
+                return true;
+            }
+            return false;
+        case VexMap::Map0F38:
+            if (v.pp != VexPP::P66) {
+                return false;
+            }
+            switch (v.opcode) {
+                case 0x0B:  // vpmulhrsw
+                    DecodeAvxIntBinary(v, OpMulHrswVex, 0);
+                    return true;
+                case 0x0E:  // vtestps
+                    DecodeAvxVTest(v, 32);
+                    return true;
+                case 0x0F:  // vtestpd
+                    DecodeAvxVTest(v, 64);
+                    return true;
+                case 0x41:  // vphminposuw
+                    if (v.l) {
+                        return false;  // no VEX.256 encoding exists: #UD
+                    }
+                    DecodeAvxPhminposuw(v);
+                    return true;
+                default:
+                    return false;
+            }
+        case VexMap::Map0F3A:
+            if (v.pp != VexPP::P66 || v.opcode != 0x42) {
+                return false;
+            }
+            DecodeAvxIntBinary(v, OpMpsadbwVex, Pack(8, u32(v.imm8)));
+            return true;
+        default:
+            return false;
+    }
+}
+
 #undef __
+
+bool X64Decoder::Sse4Enabled() {
+    // Read once: DecodeSse4 consults it per instruction and getenv is neither
+    // cheap nor thread-safe against setenv.
+    static const bool enabled = [] {
+        const char* env = std::getenv("SVM_SSE4");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
 
 }  // namespace swift::x86
