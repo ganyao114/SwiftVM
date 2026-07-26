@@ -3,6 +3,7 @@
 #include <random>
 #include <time.h>
 #include "runtime/frontend/x86/decoder_internal.h"
+#include "runtime/frontend/x86/xsave.h"
 
 namespace swift::x86 {
 
@@ -78,18 +79,42 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
                                      | (1u << 22)  // MOVBE
                                      | (1u << 30); // RDRAND
     static constexpr u32 kLeaf7Ebx = (1u << 18);  // RDSEED
+    // XSAVE (ECX.26) and OSXSAVE (ECX.27) travel together: OSXSAVE is
+    // CR4.OSXSAVE, which is what makes XGETBV legal and tells the guest the OS
+    // really saves the extended state.  Both are gated on SVM_XSAVE, the same
+    // switch that enables the XGETBV/XSAVE/XRSTOR handlers, so CPUID can never
+    // promise a facility the decoder would #UD on.
+    //
+    // TO ENABLE AVX (not this change's job): add `| (1u << 28)` (AVX) to
+    // kLeaf1Ecx and `| (1u << 5)` (AVX2) to kLeaf7Ebx above, and drop the
+    // XsaveEnabled() gate on the next line so XSAVE/OSXSAVE are always
+    // reported.  XCR0 bit 2 comes along on its own -- GuestXcr0() sets it
+    // whenever the AVX decoder is on -- which is what makes XGETBV report YMM
+    // state and glibc's ifunc resolvers take the AVX path.
+    const u32 leaf1_ecx = kLeaf1Ecx | (XsaveEnabled() ? ((1u << 26) | (1u << 27)) : 0u);
+    // CPUID.0xD: the XSAVE state-component enumeration.  Every value is
+    // derived from the layout constants in xsave.h, which are the same ones
+    // XsaveHelper writes through -- a guest sizing its save area from EBX
+    // below therefore cannot under-allocate it.
+    const u64 xcr0 = GuestXcr0();
+    const u32 xsave_size = XsaveAreaSize();
     static constexpr u32 kExtEdx = (1u << 11)   // SYSCALL/SYSRET
                                    | (1u << 20)   // NX
                                    | (1u << 27)   // RDTSCP
                                    | (1u << 29);  // LM (required by 64 bit guests)
     auto leaf = __ ZeroExtend64(R(_RegisterType::R_EAX));
+    // ECX is both an input (the subleaf) and an output, so capture it before
+    // the accumulator below overwrites it.
+    auto subleaf = __ ZeroExtend64(R(_RegisterType::R_ECX));
     auto is_leaf = [&](u32 n) {
         return __ TestZero(__ Xor(leaf, ir::Operand{ir::Imm(u64(n))}));
     };
+    auto is_subleaf = [&](u32 n) {
+        return __ TestZero(__ Xor(subleaf, ir::Operand{ir::Imm(u64(n))}));
+    };
     // Per-output-register leaf values {eax, ebx, ecx, edx}; unlisted leaves
     // and subleaves yield zeros.
-    auto emit = [&](u32 for_leaf, std::array<u32, 4> vals) {
-        auto cond = is_leaf(for_leaf);
+    auto fold = [&](auto cond, std::array<u32, 4> vals) {
         auto pick = [&](_RegisterType reg, u32 v) {
             R(reg, __ Select(cond, __ LoadImm(ir::Imm(u64(v))), R(reg))
                        .SetType(ir::ValueType::U32));
@@ -98,6 +123,14 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
         pick(_RegisterType::R_EBX, vals[1]);
         pick(_RegisterType::R_ECX, vals[2]);
         pick(_RegisterType::R_EDX, vals[3]);
+    };
+    auto emit = [&](u32 for_leaf, std::array<u32, 4> vals) {
+        fold(is_leaf(for_leaf), vals);
+    };
+    // Subleaf-selected leaves; an unlisted subleaf keeps the zeros below,
+    // which is what real hardware reports for CPUID.0xD.3 and above.
+    auto emit_sub = [&](u32 for_leaf, u32 for_subleaf, std::array<u32, 4> vals) {
+        fold(__ And(is_leaf(for_leaf), ir::Operand{is_subleaf(for_subleaf)}), vals);
     };
     // Start from zeros, then fold each supported leaf in.
     R(_RegisterType::R_EAX, __ LoadImm(ir::Imm(u64(0))));
@@ -109,7 +142,22 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     emit(7, {0, kLeaf7Ebx, 0, 0});              // RDSEED; no BMI/AVX2/ERMS
     // denominator=1, numerator=1, crystal=1 GHz => virtual TSC frequency 1 GHz.
     emit(0x15, {1, 1, 1'000'000'000u, 0});
-    emit(1, {0x000306C3, 0, kLeaf1Ecx, kSse2Edx}); // Haswell-ish model + CX16
+    if (XsaveEnabled()) {
+        // Subleaf 0: EAX/EDX = the XCR0 bitmap the processor supports, EBX =
+        // bytes needed by the components currently enabled in XCR0, ECX = the
+        // same for every supported component.  XSETBV is not implemented, so
+        // XCR0 is fixed at the supported set and EBX == ECX.
+        emit_sub(0xD, 0, {u32(xcr0), xsave_size, xsave_size, u32(xcr0 >> 32)});
+        // Subleaf 1 is deliberately absent, so it falls through to the zeros
+        // the accumulator starts from: its EAX advertises XSAVEOPT[0] /
+        // XSAVEC[1] / XGETBV-with-ECX=1[2] / XSAVES[3], none of which are
+        // implemented.  Hardware reports all-zero for it too.
+        if (xcr0 & kXstateYmm) {
+            // Subleaf 2: size and offset of the YMM_Hi128 component.
+            emit_sub(0xD, 2, {kXsaveYmmSize, kXsaveYmmOffset, 0, 0});
+        }
+    }
+    emit(1, {0x000306C3, 0, leaf1_ecx, kSse2Edx}); // Haswell-ish model + CX16
     // "GenuineIntel" + max basic leaf.
     emit(0, {0x15, 0x756E6547, 0x6C65746E, 0x49656E69});
 }
