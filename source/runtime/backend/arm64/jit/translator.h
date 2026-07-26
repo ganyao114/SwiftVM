@@ -258,8 +258,6 @@ private:
     bool x87_top_block_codegen_enabled{false};
     bool x87_top_cache_valid{false};
     bool x87_top_cache_for_current{false};
-    bool x87_pin_cache_possible{false};
-    bool x87_pin_cache_for_current{false};
     std::map<ir::Block*, X87TopBlockInfo> x87_top_blocks{};
 };
 

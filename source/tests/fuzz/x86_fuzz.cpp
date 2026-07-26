@@ -2865,9 +2865,6 @@ TEST_CASE("Fuzz x86 sse float edge") {
 TEST_CASE("Fuzz x86 x87") {
     FuzzEnv env;
     const int iters = env.Iters(256);
-    const bool reduced_x87 =
-            std::getenv("SVM_X87_JIT") &&
-            std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
     struct Ext80Bits {
         u64 significand;
         u16 sign_exp;
@@ -2994,28 +2991,16 @@ TEST_CASE("Fuzz x86 x87") {
                 if (wide) {
                     u64 a;
                     u64 c;
+                    // FMUL/FDIV operand pairs used to be pinned to a signed
+                    // 1.0 right-hand side under SVM_X87_JIT, because the
+                    // reduced register-arithmetic emitter computed in binary64
+                    // and could not match Unicorn's ext80 significand or PE.
+                    // That emitter is retired, so the opt-in configuration now
+                    // draws unconstrained pairs and compares every output and
+                    // status bit against Unicorn exactly like the default one.
                     do {
                         a = PickFloat64Bits(env);
                         c = PickFloat64Bits(env);
-                        if (reduced_x87 &&
-                            (pop_op == 0xC9 || pop_op == 0xF9)) {
-                            // The opt-in native FMUL/FDIV policy computes in
-                            // binary64. For an inexact result, expanding that
-                            // f64 back to ext80 leaves the low 11 significand
-                            // bits zero, whereas Unicorn's exact ext80 result
-                            // may retain them. FPSR.IXC also maps to x87 PE,
-                            // which need not match an ext80 operation's PE.
-                            //
-                            // Keep this three-way family bit-exact by making
-                            // the reduced multiply/divide result exact: the
-                            // second operand is signed 1.0. Consume the normal
-                            // pool draw first so cursor RNG progression stays
-                            // stable. Default mode retains unconstrained pairs
-                            // and compares every output/status bit to Unicorn.
-                            c = (c & UINT64_C(0x8000000000000000))
-                                        ? UINT64_C(0xBFF0000000000000)
-                                        : UINT64_C(0x3FF0000000000000);
-                        }
                     } while (binary_f64_is_nan(pop_op, a, c));
                     *reinterpret_cast<u64*>(env.data_addr + kA) = a;
                     *reinterpret_cast<u64*>(env.data_addr + kB) = c;
@@ -5464,6 +5449,91 @@ TEST_CASE("x87 directed edge semantics") {
             REQUIRE((ctx.x87_fsw & 0x0200) == 0);
         }
 
+        // FCHS and FABS rewrite the architectural sign bit and nothing else,
+        // so they must clear C1 instead of leaving the previous instruction's
+        // value there, must not disturb TOP, the tag word, the significand, or
+        // any exception bit, and must flip/clear exactly the sign. The ARM64
+        // inline arm for them had no directed coverage at all before this --
+        // deleting its `C1 = 0` store left every x87 test in the suite green.
+        // FSW is captured with FNSTSW before the trailing store, because the
+        // store rewrites C1 itself.
+        for (const auto [op, source_sign_exp, result_sign_exp] :
+             std::array<std::tuple<u8, u16, u16>, 3>{{
+                     {0xE0, 0xBFFF, 0x3FFF},  // FCHS: negative -> positive
+                     {0xE0, 0x3FFF, 0xBFFF},  // FCHS: positive -> negative
+                     {0xE1, 0xBFFF, 0x3FFF},  // FABS: negative -> positive
+             }}) {
+            write_ext(0x840, UINT64_C(0x8000000000000C00), source_sign_exp);
+            write_ext(0x850, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);      // FNINIT
+            emit_reg(b, 0xD9, 0xE8);      // FLD1, so a live neighbour exists
+            emit_mem(b, 0xDB, 5, 0x840);  // FLD m80
+            emit_reg(b, 0xD9, 0xE5);      // FXAM: C1 = sign
+            emit_reg(b, 0xD9, 0xE4);      // FTST: C1 = 0, C0/C3 = ordering
+            emit_reg(b, 0xD9, 0xE5);      // FXAM again: C1 = sign
+            emit_reg(b, 0xD9, op);        // FCHS / FABS
+            emit_reg(b, 0xDF, 0xE0);      // FNSTSW AX
+            EmitMovRegReg(b, 16, kR10, kRax);
+            emit_mem(b, 0xDB, 7, 0x850);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0x0200) == 0);  // C1 cleared
+            REQUIRE((ctx.r10.qword & 0x003F) == 0);  // no exception raised
+            REQUIRE(((ctx.r10.qword >> 11) & 7) == 6);  // TOP untouched
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x850) ==
+                    UINT64_C(0x8000000000000C00));  // significand untouched
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x858) == result_sign_exp);
+            // FLD1's register survives; the popped slot is empty again.
+            REQUIRE(ctx.x87_ftw == 0x3FFF);
+            REQUIRE(((ctx.x87_fsw >> 11) & 7) == 7);
+        }
+
+        // FST/FSTP ST(i) must *replace* the destination's two tag bits, not OR
+        // into them. A valid value written into a slot the tag word still
+        // marks empty is invisible: every later instruction reading it takes
+        // the stack-underflow path instead. Dropping the tag-clearing Bic from
+        // the ARM64 inline arm left the whole suite green before this case,
+        // because every other FST in it targets an already-occupied slot.
+        {
+            write_ext(0x860, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);      // FNINIT: TOP = 0, all slots empty
+            emit_reg(b, 0xD9, 0xE8);      // FLD1:   TOP = 7
+            emit_reg(b, 0xDD, 0xD3);      // FST ST(3) -> physical 2, empty
+            emit_reg(b, 0xD9, 0xCB);      // FXCH ST(3): must not underflow
+            emit_mem(b, 0xDB, 7, 0x860);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x860) ==
+                    UINT64_C(0x8000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x868) == 0x3FFF);
+            REQUIRE((ctx.x87_fsw & 0x0041) == 0);  // no IE, no stack fault
+            REQUIRE(((ctx.x87_fsw >> 11) & 7) == 0);
+            // Physical 2 valid, physical 7 emptied by the pop.
+            REQUIRE(ctx.x87_ftw == 0xFFCF);
+        }
+
+        // FSQRT's *lower* exponent guard. X87Dispatch certifies every FLD m64
+        // unconditionally, so a binary64 subnormal arrives marked as reducible
+        // while its ext80 exponent sits below the binary64 normal range. The
+        // host FSQRT path rebuilds an f64 by subtracting the 0x3C00 bias, which
+        // underflows for such a value, so the guard that sends it to SoftFloat
+        // is load-bearing -- and was untested: removing it left the suite
+        // green. sqrt(2^-1074) is exactly 2^-537.
+        {
+            *reinterpret_cast<u64*>(data + 0x870) = UINT64_C(1);  // 2^-1074
+            write_ext(0x880, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);      // FNINIT
+            emit_mem(b, 0xDD, 0, 0x870);  // FLD m64, subnormal
+            emit_reg(b, 0xD9, 0xFA);      // FSQRT
+            emit_mem(b, 0xDB, 7, 0x880);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x880) ==
+                    UINT64_C(0x8000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x888) == 0x3DE6);
+            REQUIRE((ctx.x87_fsw & 0x20) == 0);  // exact: no PE
+        }
+
         // FRNDINT reports the same magnitude-based direction, and its result
         // is directly comparable with its own source. +1.5 and -1.5 are mirror
         // images: C1 must be set in exactly the two modes that deliver
@@ -6213,11 +6283,13 @@ TEST_CASE("x87 directed edge semantics") {
         }
 
         {
-            // The opt-in ARM64 x87 JIT deliberately mirrors FEX reduced
-            // precision for canonical binary64 register arithmetic.  This
-            // multiplication is one of the Rosetta probe's double-rounding
-            // witnesses: real ext80 retains 0x...4bf7, while f64 rounds to
-            // 0x...4800 before the result is expanded back to ext80.
+            // One of the Rosetta probe's double-rounding witnesses: real
+            // ext80 retains 0x...4bf7, while a binary64 multiply would round
+            // to 0x...4800 before expanding back to ext80.  The reduced
+            // register-arithmetic emitter that produced the second value was
+            // retired (see the Binary arm in translator_x87.cpp), so this now
+            // pins the *absence* of that divergence: every configuration,
+            // opt-in JIT included, must reproduce the exact ext80 product.
             *reinterpret_cast<u64*>(data + 0x620) =
                     UINT64_C(0x407fcd1be17e6ba2);
             *reinterpret_cast<u64*>(data + 0x628) =
@@ -6229,20 +6301,17 @@ TEST_CASE("x87 directed edge semantics") {
             emit_reg(b, 0xDE, 0xC9);      // FMULP ST(1), ST(0)
             emit_mem(b, 0xDB, 7, 0x630);
             const auto ctx = run(std::move(b));
-            const bool reduced =
-                    jit && std::getenv("SVM_X87_JIT") &&
-                    std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
             REQUIRE(*reinterpret_cast<u64*>(data + 0x630) ==
-                    (reduced ? UINT64_C(0xfc01a2d864074800)
-                             : UINT64_C(0xfc01a2d864074bf7)));
+                    UINT64_C(0xfc01a2d864074bf7));
             REQUIRE(*reinterpret_cast<u16*>(data + 0x638) == 0x4300);
             REQUIRE(ctx.x87_ftw == 0xFFFF);
         }
 
         {
-            // A reduced f64 overflow remains finite in true ext80. Besides
-            // pinning the intentional value divergence, this checks ARM
-            // FPSR OFC/IXC -> x87 OE/PE status mapping.
+            // DBL_MAX * 2 overflows binary64 but stays finite in true
+            // ext80.  This was the intentional value divergence of the
+            // retired reduced arm; with that arm gone every configuration
+            // must produce the finite ext80 product and raise no status.
             *reinterpret_cast<u64*>(data + 0x640) =
                     UINT64_C(0x7fefffffffffffff);
             *reinterpret_cast<u64*>(data + 0x648) =
@@ -6254,19 +6323,10 @@ TEST_CASE("x87 directed edge semantics") {
             emit_reg(b, 0xDE, 0xC9);      // FMULP ST(1), ST(0)
             emit_mem(b, 0xDB, 7, 0x650);
             const auto ctx = run(std::move(b));
-            const bool reduced =
-                    jit && std::getenv("SVM_X87_JIT") &&
-                    std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
             REQUIRE(*reinterpret_cast<u64*>(data + 0x650) ==
-                    (reduced ? UINT64_C(0x8000000000000000)
-                             : UINT64_C(0xfffffffffffff800)));
-            REQUIRE(*reinterpret_cast<u16*>(data + 0x658) ==
-                    (reduced ? 0x7FFF : 0x43FF));
-            if (reduced) {
-                REQUIRE((ctx.x87_fsw & 0x28) == 0x28);  // OE + PE
-            } else {
-                REQUIRE((ctx.x87_fsw & 0x28) == 0);
-            }
+                    UINT64_C(0xfffffffffffff800));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x658) == 0x43FF);
+            REQUIRE((ctx.x87_fsw & 0x28) == 0);  // no OE, no PE
         }
 
         {
@@ -6319,12 +6379,12 @@ TEST_CASE("x87 directed edge semantics") {
         }
 
         {
-            // An IXC bailout leaves the exact ext80 result in architectural
-            // state, then runtime-revalidates it as finite/reducible.  A
-            // following reduced operation may narrow that value without
-            // another helper call.  Multiplication by one makes the handoff
-            // visible: exact ext80 retains 2^-60, while the opt-in pipeline
-            // deliberately rounds it to binary64 one before FMUL.
+            // FADDP produces a value that needs the full 64-bit ext80
+            // significand, and the following FMULP by one must carry all of
+            // it through.  The retired reduced arm narrowed the addend to
+            // binary64 here, which is what the second expectation used to
+            // encode; multiplication by one keeps that handoff visible, so
+            // this case still guards the boundary it was written for.
             *reinterpret_cast<u64*>(data + 0x6D0) =
                     UINT64_C(0x3FF0000000000000);  // 1
             *reinterpret_cast<u64*>(data + 0x6D8) =
@@ -6339,12 +6399,8 @@ TEST_CASE("x87 directed edge semantics") {
             emit_reg(b, 0xDE, 0xC9);      // FMULP consumes revalidated ST(1)
             emit_mem(b, 0xDB, 7, 0x6E0);  // FSTP m80
             const auto ctx = run(std::move(b));
-            const bool reduced =
-                    jit && std::getenv("SVM_X87_JIT") &&
-                    std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
             REQUIRE(*reinterpret_cast<u64*>(data + 0x6E0) ==
-                    (reduced ? UINT64_C(0x8000000000000000)
-                             : UINT64_C(0x8000000000000008)));
+                    UINT64_C(0x8000000000000008));
             REQUIRE(*reinterpret_cast<u16*>(data + 0x6E8) == 0x3FFF);
             REQUIRE(ctx.x87_ftw == 0xFFFF);
         }

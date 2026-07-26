@@ -12,7 +12,13 @@ namespace swift::runtime::backend {
 // Only opcodes that exceed the default appear here. Every entry is a measured
 // peak over the full corpus, cross-checked against the emitter source:
 //
-//  * X87Op reaches eight GPRs.
+//  * X87Op reaches eight GPRs. Not because of any one arm: LoadFloat(m80),
+//    StoreFloat(m80), LoadInt, StoreInt, Compare, Unary/FSQRT, LoadReg and
+//    StoreReg each hold exactly eight (status word, tag word, one or two
+//    physical indices, a shift, an address, and the value being rebuilt), so
+//    retiring an arm does not move this bound -- the retired reduced-precision
+//    Binary arm also held eight, and dropping it left the peak unchanged.
+//    Eight remains the largest demand in the corpus; everything else is <= 5.
 //  * VecFCvtFloatToInt open-codes the x86 "invalid conversion -> INT_MIN"
 //    rule per lane and holds five GPRs across it.
 //  * VecFCvtPacked and VecFMulAdd hold five vector temporaries.
