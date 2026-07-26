@@ -303,7 +303,15 @@ void JitContext::Forward(ir::Location location) {
         if (direct_link) {
             bool in_function{false};
             if (cur_function) {
-                in_function = cur_function->FindBlock(location.Value());
+                auto* target = cur_function->FindBlock(location.Value());
+                // Lazy region compilation leaves undecoded successors in the
+                // function as empty, terminal-less blocks.  JitTranslator skips
+                // them, so their label is never bound and a B here would
+                // dangle.  Treat them as external: the code below then takes
+                // the dispatch-slot path, whose empty-slot arm returns to the
+                // dispatcher and gets the target compiled.
+                in_function = target && !(target->GetInstList().empty() &&
+                                          !target->HasTerminal());
             }
             if (in_function) {
                 // Intra-function branch: the target label is bound within

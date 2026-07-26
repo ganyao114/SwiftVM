@@ -16,11 +16,14 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
     guest_addr_mask = config.guest_addr_mask;
     window_uxtw = guest_addr_mask == 0xFFFFFFFFull;
-    const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
-    const char* x87_jit = std::getenv("SVM_X87_JIT");
-    x87_topvirt_requested =
-            topvirt && std::strcmp(topvirt, "0") != 0 &&
-            x87_jit && std::strcmp(x87_jit, "0") != 0;
+    // Cached: JitTranslator is constructed once per compiled unit.
+    static const bool requested = [] {
+        const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
+        const char* x87_jit = std::getenv("SVM_X87_JIT");
+        return topvirt && std::strcmp(topvirt, "0") != 0 &&
+               x87_jit && std::strcmp(x87_jit, "0") != 0;
+    }();
+    x87_topvirt_requested = requested;
 }
 
 
@@ -63,7 +66,19 @@ void JitTranslator::Translate(ir::HIRFunction* function) {
     context.SetCurrent(function->GetFunction());
     disable_instructions.resize(function->MaxInstrCount());
     for (auto& hir_block : function->GetHIRBlocksRPO()) {
-        Translate(hir_block.GetBlock());
+        // Undecoded successor left behind by lazy region compilation (and by
+        // the pre-existing 128-block cap): no instructions and no terminal.
+        // Emitting it would bind a label nobody branches to and then fall into
+        // terminal::Invalid -> Ret without setting current_loc, which is a
+        // dispatcher loop if it were ever entered.  Its guest address is
+        // deliberately never published (TranslateIR skips empty blocks), so the
+        // only way in is JitContext::Forward, which routes to it through the L2
+        // dispatch slot instead.
+        auto* block = hir_block.GetBlock();
+        if (block->GetInstList().empty() && !block->HasTerminal()) {
+            continue;
+        }
+        Translate(block);
     }
     translating_function = false;
 }

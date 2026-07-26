@@ -8,6 +8,13 @@
 
 namespace swift::runtime::ir {
 
+
+// Cached diagnostic-env probes: these sit on the per-block path and
+// Darwin's getenv() walks `environ` on every call.
+static bool EnvOnce(const char* name) { return std::getenv(name) != nullptr; }
+static const bool kEnv_dump_ir = EnvOnce("SVM_DUMP_IR");
+static const bool kEnv_dump_ir_post = EnvOnce("SVM_DUMP_IR_POST");
+
 struct UniformValue {
     Value value{};
     u8 offset{};
@@ -188,7 +195,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
         }
     }
 
-    if (!victims.empty() && std::getenv("SVM_DUMP_IR")) {
+    if (!victims.empty() && kEnv_dump_ir) {
         fmt::print(stderr, "[uniform-dse] block {:#x}: removed {} dead uniform store(s)\n",
                    block->GetStartLocation().Value(), victims.size());
     }
@@ -399,7 +406,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info, HIRFunct
         }
     }
 
-    if (std::getenv("SVM_DUMP_IR")) {
+    if (kEnv_dump_ir) {
         fmt::print(stderr,
                    "[uniform-elim] block {:#x}: LoadUniform {} -> {} "
                    "(folded {}, mapped {}), mapped stores {}, invalidations {}\n",
@@ -407,7 +414,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info, HIRFunct
                    load_count - folded_load_count - mapped_load_count,
                    folded_load_count, mapped_load_count, mapped_store_count,
                    invalidation_count);
-        if (std::getenv("SVM_DUMP_IR_POST")) {
+        if (kEnv_dump_ir_post) {
             fmt::print(stderr, "--- post-uniform block {:#x} ---\n{}\n",
                        block->GetStartLocation().Value(), block->ToString());
         }

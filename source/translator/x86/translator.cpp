@@ -345,6 +345,48 @@ static void PinUnusedCallLambdas(ir::Block* block) {
     }
 }
 
+
+// Cached environment probes.  Each of these used to be re-read on every
+// compiled unit; Darwin's getenv() walks `environ` linearly and the function
+// path alone hit it seven times per unit.  All are process-constant switches.
+static bool EnvOnce(const char* name) { return std::getenv(name) != nullptr; }
+static const bool kEnvDumpIr = EnvOnce("SVM_DUMP_IR");
+static const bool kEnvFuncLambdaOff = [] {
+    const char* e = std::getenv("SVM_FUNC_LAMBDA");
+    return e && std::strcmp(e, "0") == 0;
+}();
+static const bool kEnvFuncBaseOff = [] {
+    const char* e = std::getenv("SVM_FUNC_BASE");
+    return e && std::strcmp(e, "0") == 0;
+}();
+
+// Blocks decoded per function-compile attempt before the region is closed and
+// the remaining successors are left for on-demand compilation.  SVM_FUNC_LAZY=0
+// restores eager whole-function decoding (the pre-2026-07-27 behaviour).
+//
+// Why a *region* rather than a whole function: measured on func_tests /
+// real_busy (static glibc), 56% of the blocks inside eagerly compiled function
+// units are never executed, and a short-lived guest spends ~60% of its wall
+// clock translating.  Why this is safe at any budget: no IR value crosses a
+// block boundary in function mode -- uniform and flag elimination are
+// block-local and FlushFlags runs at every block end (measured: 0 cross-block
+// operands over 17431 operands / 822 blocks on func_tests) -- so every decoded
+// block already is a self-contained entry point.  TranslateIR has always
+// relied on that, publishing every decoded block into the L2 dispatch table.
+static size_t LazyFuncBudget() {
+    static const size_t budget = [] () -> size_t {
+        if (const char* env = std::getenv("SVM_FUNC_LAZY")) {
+            const long v = std::strtol(env, nullptr, 10);
+            if (v <= 0) {
+                return 1024;  // disabled: above every cap => eager decoding
+            }
+            return static_cast<size_t>(v);
+        }
+        return 1;
+    }();
+    return budget;
+}
+
 struct X86Instance::Impl final {
     // memory_base: guest->host bias (host addr = guest addr + bias), installed
     // by the linux loader; nullptr keeps the identity-mapped fast path.
@@ -440,9 +482,8 @@ struct X86Instance::Impl final {
         auto& m_config = module->GetModuleConfig();
         // Function-level compilation is default-on when the optimization is
         // present; SVM_FUNC_BASE=0 is the explicit block-only escape hatch.
-        const char* fb_env = std::getenv("SVM_FUNC_BASE");
         auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&
-                         (!fb_env || std::strcmp(fb_env, "0") != 0) &&
+                         !kEnvFuncBaseOff &&
                          !function_compilation_disabled &&
                          !block_only_locations.contains(pc);
 
@@ -470,9 +511,25 @@ struct X86Instance::Impl final {
             // _int_malloc at ~150 blocks). Keep those on the block compiler;
             // ordinary multi-block functions still take the function path.
             constexpr size_t kMaxFuncBlocks = 128;
+            // JIT only.  The IR interpreter resolves the next guest location
+            // through ir::Function::FindBlock, and HIRFunction::EndFunction
+            // hands *every* HIR block to the ir::Function -- including the
+            // undecoded ones.  A partial unit therefore gives the interpreter
+            // an empty block for the successor, which executes nothing and
+            // spins forever (found by run_helper_fault_tests.sh's
+            // SVM_ENABLE_JIT=0 shapes, which hung).  The interpreter is a
+            // cross-check path where translation cost does not matter, so it
+            // keeps eager whole-function decoding.  The deeper fix -- not
+            // adding undecoded blocks to the ir::Function at all -- would also
+            // shrink SmcTracker::ClearDispatchSlots' walk, but it changes HIR
+            // ownership semantics and is left for a separate change.
+            const size_t lazy_budget =
+                    address_space->GetConfig().enable_jit ? LazyFuncBudget() : kMaxFuncBlocks;
+            const size_t decode_cap = std::min(lazy_budget, kMaxFuncBlocks);
+            const bool lazy = lazy_budget < kMaxFuncBlocks;
             size_t decoded_count = 0;
             bool hit_block_cap = false;
-            while (decoded_count < kMaxFuncBlocks) {
+            while (decoded_count < decode_cap) {
                 std::vector<LocationDescriptor> to_decode;
                 for (auto& hb : hir_func->GetHIRBlockList()) {
                     auto* blk = hb.GetBlock();
@@ -480,14 +537,26 @@ struct X86Instance::Impl final {
                     // synthetic entry block already has a LinkBlock terminal
                     // (and an INVALID start location) — never decode it.
                     if (blk->GetInstList().empty() && !blk->HasTerminal()) {
-                        to_decode.push_back(blk->GetStartLocation().Value());
+                        const auto addr = blk->GetStartLocation().Value();
+                        // Successor that already has published code (an earlier
+                        // region ended here, or it is another function entry).
+                        // Re-decoding would emit a second copy of the same guest
+                        // block; leaving it undecoded routes the edge through the
+                        // L2 slot, which is already filled and branches straight
+                        // to the existing code.  Without this, region growth
+                        // duplicates work: at budget 4 on func_tests it compiled
+                        // 1628 blocks where only 1147 are ever executed.
+                        if (lazy && address_space->GetCodeCache(addr)) {
+                            continue;
+                        }
+                        to_decode.push_back(addr);
                     }
                 }
                 if (to_decode.empty()) {
                     break;
                 }
                 for (auto addr : to_decode) {
-                    if (decoded_count == kMaxFuncBlocks) {
+                    if (decoded_count == decode_cap) {
                         hit_block_cap = true;
                         break;
                     }
@@ -507,7 +576,7 @@ struct X86Instance::Impl final {
             }
             hir_func->EndFunction();
 
-            if (std::getenv("SVM_DUMP_IR")) {
+            if (kEnvDumpIr) {
                 // stderr: survives the crash that aborts the guest before
                 // buffered stdout would flush. EndFunction (ours or the
                 // assembler's) clears block_list and fills the blocks vector,
@@ -540,9 +609,7 @@ struct X86Instance::Impl final {
                                              });
             }
 
-            const char* func_lambda_env = std::getenv("SVM_FUNC_LAMBDA");
-            const bool allow_func_lambda =
-                    !func_lambda_env || std::strcmp(func_lambda_env, "0") != 0;
+            const bool allow_func_lambda = !kEnvFuncLambdaOff;
             if (has_host_call && !allow_func_lambda) {
                 for (auto* hb : hir_func->GetHIRBlocks()) {
                     if (hb && hb != hir_func->GetEntryBlock()) {
@@ -551,7 +618,7 @@ struct X86Instance::Impl final {
                 }
                 throw std::runtime_error(
                         "function contains CallLambda; disabled by SVM_FUNC_LAMBDA=0");
-            } else if (hit_block_cap) {
+            } else if (hit_block_cap && !lazy) {
                 // Once a translation reaches the safety cap, entry at one of
                 // its not-yet-discovered interior blocks cannot be identified
                 // reliably as the same function. Keep the remainder of this
@@ -569,11 +636,11 @@ struct X86Instance::Impl final {
                     if (!backend::PublishIRFunction(module, hir_func)) {
                         throw std::runtime_error("failed to publish interpreted HIR function");
                     }
-                    if (std::getenv("SVM_DUMP_IR")) {
+                    if (kEnvDumpIr) {
                         fmt::print(stderr, "[func-compile] {:#x} interp-publish-ready\n", pc);
                     }
                     func_stats.Compiled(decoded_blocks);
-                    if (std::getenv("SVM_DUMP_IR")) {
+                    if (kEnvDumpIr) {
                         fmt::print(stderr, "[func-compile] {:#x} interp-return\n", pc);
                     }
                     compiled = true;
@@ -583,7 +650,7 @@ struct X86Instance::Impl final {
                         throw std::runtime_error("TranslateIR(HIRFunction) returned null");
                     }
                     func_stats.Compiled(decoded_blocks);
-                    if (std::getenv("SVM_DUMP_IR")) {
+                    if (kEnvDumpIr) {
                         fmt::print(stderr, "[func-compile] {:#x} jit-return\n", pc);
                     }
                     compiled = true;
@@ -599,7 +666,7 @@ struct X86Instance::Impl final {
                 block_only_locations.insert(pc);
                 compiled = false;
             }
-            if (std::getenv("SVM_DUMP_IR")) {
+            if (kEnvDumpIr) {
                 fmt::print(stderr, "[func-compile] {:#x} builder-destroyed\n", pc);
             }
             if (compiled) {
@@ -648,7 +715,7 @@ struct X86Instance::Impl final {
                     //    so MaterializeTerminalCondUse is retired.
                     FixupSingleSidedOperands(x.get());
                     PinUnusedCallLambdas(x.get());
-                    if (std::getenv("SVM_DUMP_IR")) {
+                    if (kEnvDumpIr) {
                         fmt::print("--- block {:#x} ---\n{}\n", pc, x->ToString());
                     }
                 }

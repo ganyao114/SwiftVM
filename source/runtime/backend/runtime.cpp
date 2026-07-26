@@ -413,10 +413,14 @@ namespace backend {
 namespace {
 
 bool X87TopVirtRequested() {
-    const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
-    const char* x87_jit = std::getenv("SVM_X87_JIT");
-    return topvirt && std::strcmp(topvirt, "0") != 0 &&
-           x87_jit && std::strcmp(x87_jit, "0") != 0;
+    // Cached: runs once per compiled unit, and Darwin's getenv walks `environ`.
+    static const bool requested = [] {
+        const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
+        const char* x87_jit = std::getenv("SVM_X87_JIT");
+        return topvirt && std::strcmp(topvirt, "0") != 0 &&
+               x87_jit && std::strcmp(x87_jit, "0") != 0;
+    }();
+    return requested;
 }
 
 bool HasX87Op(ir::Block* block) {
@@ -515,7 +519,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     // calls it) since predecessors/successors are built there.
     function->ComputeRPO();
     function->IdByRPO();
-    const bool dump_ir = std::getenv("SVM_DUMP_IR") != nullptr;
+    static const bool dump_ir = std::getenv("SVM_DUMP_IR") != nullptr;
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} rpo-ready\n", func_start);
     const auto& address_space = module->GetAddressSpace();
     const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
