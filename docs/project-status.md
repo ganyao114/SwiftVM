@@ -91,13 +91,19 @@ ifunc 会真正选中 AVX 路径。
 | FMA3 全 60 助记符（两个 VEX.L、寄存器与内存形式） | 完成 | Rosetta **3360 行**，7 次变异全杀 |
 | gather 族 | 完成 | Rosetta 差分 |
 | legacy SSE3 / SSSE3 / SSE4.1 共 64 条 | 完成 | Rosetta **4360 行**，26 次变异全杀 |
-| SSE4.2 字符串族 `pcmpXstrY` + 四条 VEX 孪生 | 完成 | Rosetta **6104 行** + 独立 SDM 模型双 oracle，38 次变异全杀 |
+| SSE4.2 字符串族 `pcmpXstrY` + 四条 VEX 孪生 | 完成 | Rosetta **6104 行** + 独立 SDM 模型双 oracle，**51 次变异全杀**；另有 148 万种输入上三个求值器逐位一致 |
 
-**CPUID bit 20 仍不开，这是性能取舍而非正确性缺口**：四条指令已实现，
-`-msse4.2` 二进制现在就能跑——这与 CPUID 无关。但 glibc 的 ifunc 会查 CPUID，
-开了 bit 20 它就改选 SSE4.2 的 `strlen`/`strcmp`，而本实现的 `Sse42StrEval` 是
-O(n²) 矩阵，实测每条 27–180 ns，比 SSE2 的 `pcmpeqb + pmovmskb` 对（1.4–12 ns）
-**慢一个数量级**。等 helper 变快再开，开关是 `Sse42StrEnabled()`。
+**CPUID bit 20 已开**（`76ccded`）。求值器从逐格矩阵改成位掩码代数后降到
+4.1–5.4 ns/次（`52e59aa`），`pcmpistri` 端到端 9.47 ns/迭代，是 SSE2 的
+`pcmpeqb+pmovmskb` 对的 6.8 倍，改动前是 17–45 倍。
+
+**此前反对置位的理由前提是错的，值得记下来。** 当时判断「开了 bit 20 会让 glibc
+把 `strlen`/`strstr` 换到 pcmpistri 上」。用 `llvm-nm` 查实际符号：这份 glibc 的
+SSE4.2 字符串变体只有六个（`strcmp`/`strncmp`/`strcasecmp`/`strcasecmp_l`/
+`strspn`/`strcspn`），**`strlen` 和 `strstr` 一个都没有**。census 里那 302 次
+`pcmpistri` 是 ifunc 变体内部的**静态字节**，只有这一位置上才会被选中——这也解释
+了为什么此前没有 glibc guest 死在它上面。**「census 计数」是静态出现次数，不是
+动态执行次数**，把两者当一回事会得出反向的结论。
 
 `pcmpXstrY` 那一族里有一处**硬件抓到的**语义 bug：SDM 有效性覆盖表的中间两行，
 实现与测试模型**以同样的方式写反了**（`ABCDE` vs `ABCDEFGHIJ`，真机在索引 0
@@ -140,8 +146,8 @@ vpxor ymm0,ymm1,ymm2  C5 F5 EF C2 -> id=7009 ops[0] index=91(R_XMM0) size=128
   handler，CPUID 就必须跟上，否则等于朝安全方向撒谎，guest 永远用不到已经写好
   的代码。现状：AVX/AVX2/FMA 随 `SVM_AVX && SVM_XSAVE` 联动（AVX 需要
   XCR0[2:1]=11b 的整套协议，缺 XSAVE 就不连贯）；SSE3/SSSE3/SSE4.1/POPCNT 随
-  `SVM_SSE4`（默认开）；BMI1/BMI2 随 `SVM_BMI`。**SSE4.2（bit 20）刻意不报**
-  ——它承诺的正是还缺的 `pcmpXstrY` 四条。
+  `SVM_SSE4`（默认开）；BMI1/BMI2 随 `SVM_BMI`。SSE4.2 随 `SVM_SSE42STR`（默认开）。
+  至此 **x86-64-v2 特性集完整**。
 - **C5**:AVX/BMI/XSAVE 挂在各自的 `SVM_*` 后，默认关闭；`SVM_SSE4` 是**默认开的
   逃生开关**，因为它替换的是「必然的 guest 死亡」而不是既有行为。
   一条教训：`haddps`/`hsubps` 曾被移入该文件，于是关掉开关反而比改动前更差
