@@ -1922,6 +1922,26 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
                 if (!address_operand.right.Null()) {
                     // base + index * scale
                     address_operand.op_type = ir::OperandOp::PlusExt;
+                } else if (!address_operand.left.IsImm()) {
+                    // Scaled index with NO base (mod=00, SIB.base=101; the
+                    // address sits in the disp32). With `right` empty the
+                    // scale can only travel in `ext`, and ToIROperand then
+                    // emits `left << ext` — but the displacement fold below
+                    // adds the disp INTO `left`, yielding
+                    //     (index + disp) << scale
+                    // instead of the architectural
+                    //     (index << scale) + disp.
+                    // Materialise the shift here so the disp fold sees a
+                    // plain value and takes the `right = Imm(disp)` branch.
+                    // X64Decoder::VexAddress already does it in this order,
+                    // which is why the VEX path was correct and this one was
+                    // not — clang emits this form for any static array with a
+                    // 2/4/8-byte element under -fno-pic, so the blast radius
+                    // was every SSE and scalar access of that shape.
+                    address_operand.left =
+                            __ LslImm(ToValue(address_operand.left),
+                                      ir::Imm(u64(address_operand.ext)));
+                    address_operand.ext = 0;
                 }
             }
             if (insn.dispSize) {

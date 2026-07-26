@@ -27,7 +27,15 @@ else()
     message(WARNING "Unicorn not found, fuzz tests skipped")
 endif()
 
+# The AVX/XSAVE/BMI cases self-skip to a green SUCCEED() when their gate is
+# unset, so a ctest run without these would report "all passed" having executed
+# almost nothing -- the exact "green but covering nothing" failure mode this
+# suite exists to prevent. Run the gated configuration by default; the default
+# (all gates off) configuration is still reachable by running the binary
+# directly.
 add_test(swift_test swift_test --durations yes)
+set_tests_properties(swift_test PROPERTIES
+        ENVIRONMENT "SVM_AVX=1;SVM_BMI=1;SVM_XSAVE=1")
 
 add_executable(swift_vm main.cpp)
 target_link_libraries(swift_vm PUBLIC fronted_arm64 fronted_x86 swift::runtime slang_compiler)
