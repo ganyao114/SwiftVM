@@ -186,8 +186,18 @@ VAddr SetupInitialStack(GuestMemory& memory,
     // Prefer the classic high guest address; if the corresponding host range
     // (guest + bias) is not mappable, take any host range and translate it
     // back to a guest address.
+    const char* force_fixed_env = std::getenv("SVM_FORCE_FIXED_STACK");
+    const bool force_fixed =
+            force_fixed_env && std::strcmp(force_fixed_env, "1") == 0;
+    const bool force_fallback =
+            force_fixed_env && std::strcmp(force_fixed_env, "0") == 0;
     VAddr stack_top = kGuestStackTop;
-    if (!memory.MapFixed(stack_top - kGuestStackSize, kGuestStackSize)) {
+    if (force_fallback ||
+        !memory.MapFixed(stack_top - kGuestStackSize, kGuestStackSize)) {
+        if (force_fixed) {
+            PANIC("SVM_FORCE_FIXED_STACK=1: failed to map guest stack at {:#x}",
+                  stack_top - kGuestStackSize);
+        }
         stack_top = 0;
     }
     if (!stack_top) {
