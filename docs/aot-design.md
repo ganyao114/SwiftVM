@@ -187,3 +187,26 @@ INTEGER / SSE / MEMORY，然后按序分配：
 - 不追求自修改代码的 guest（AOT 与 SMC 语义冲突；产物应当**检测到**目标区间被
   写就拒绝继续，而不是执行陈旧代码）
 - 不追求动态链接的 guest（先做静态链接的）
+
+---
+
+## 9. 实测的语料现状（2026-07-27，省去重新发现的一轮）
+
+| guest ELF | 节表 | `STT_FUNC` | 带 size 的 | 说明 |
+|---|---|---|---|---|
+| `func_tests_x86_64` | 28 节，有 `.symtab`/`.strtab` | **1317** | 1310 | 静态 glibc，AOT 的主目标 |
+| `real_busy_x86_64` | 有 `.symtab` | **1364** | 1357 | 同上 |
+| `hello_x86_64`、`bench_suite_x86_64` 等 | **节表为空（`e_shnum=0`）** | — | — | `mklinuxelf.py` 只写程序头 |
+
+两条结论：
+
+1. **真实目标规模约 1300 个函数**，其中约 0.5% 的 `STT_FUNC` 没有 size（例如
+   `__libc_message.cold` 这类），需要一个明确策略——用下一个符号的地址推边界，
+   还是跳过并记为缺口。**不要静默按 0 长度处理。**
+2. `source/translator/linux/tests/` 下手工构造的 freestanding guest **完全没有
+   符号表**，AOT 对它们只能走 CFG 发现。所以**验证语料必须以 `func_tests` /
+   `real_busy` 为主**——拿 `hello_x86_64` 做 AOT 的端到端验证会让"符号保留"
+   与"符号表修复"这两条要求根本没被测到。
+
+本机没有 `readelf` / `llvm-readelf`，上表是用 Python 直接解析 ELF 结构得到的；
+验证脚本不要依赖这两个工具存在。
