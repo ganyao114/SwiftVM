@@ -96,6 +96,15 @@
 using namespace swift::translator::x86;
 using namespace swift;
 
+// decoder_sse42str.cc's test hook.  Deliberately not in any header: nothing in
+// the runtime calls it, and it exists so this file can reach the evaluators
+// directly instead of only through a guest instruction.
+//   variant 0 = the reference (cell-at-a-time, the specification)
+//   variant 1 = the portable fast path (bitmask algebra, no SIMD)
+//   variant 2 = what the runtime calls (NEON where the host has it)
+extern "C" u64 SwiftSse42StrEvalVariant(unsigned variant, u64 a_lo, u64 a_hi, u64 b_lo, u64 b_hi,
+                                        u64 ctl);
+
 namespace {
 
 struct Sse42StrRef {
@@ -192,6 +201,29 @@ Vec256 Poison(u32 reg) {
     }
     return v;
 }
+
+// Restore SVM_ENABLE_JIT on the way out.  Catch2 runs the cases in this
+// binary in one process and in a randomized order, so a case that leaves the
+// variable changed silently reconfigures whatever runs next -- which is
+// exactly what happened: leaking it here made xsave_test's Rosetta case fail,
+// but only in a full-suite run and only with SVM_SSE42STR unset, because with
+// the gate off these cases return before touching the environment at all.
+struct ScopedJitEnv {
+    bool had;
+    std::string value;
+    ScopedJitEnv() {
+        const char* old = std::getenv("SVM_ENABLE_JIT");
+        had = old != nullptr;
+        if (had) value = old;
+    }
+    ~ScopedJitEnv() {
+        if (had) {
+            setenv("SVM_ENABLE_JIT", value.c_str(), 1);
+        } else {
+            unsetenv("SVM_ENABLE_JIT");
+        }
+    }
+};
 
 bool IsVex(const char* name) { return name[0] == 'v'; }
 bool IsMaskForm(const char* name) { return std::strlen(name) > 0 && name[std::strlen(name) - 1] == 'm'; }
@@ -676,18 +708,11 @@ TEST_CASE("x86 sse4.2 string compare vs rosetta and the SDM") {
     const u64 stack = base + 0x200000;
     const u64 data = base + 0x300000;
 
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
-    const bool had_old_jit = old_jit != nullptr;
-    const std::string old_jit_value = old_jit ? old_jit : "";
+    ScopedJitEnv jit_env;
     setenv("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
     setenv("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
-    if (had_old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
-    } else {
-        unsetenv("SVM_ENABLE_JIT");
-    }
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
 
@@ -866,6 +891,7 @@ TEST_CASE("x86 sse4.2 string compare reads only 16 bytes of memory") {
     REQUIRE(mprotect(reinterpret_cast<void*>(base + kPage * 3), kPage, PROT_NONE) == 0);
     const u64 operand = base + kPage * 3 - 16;  // last 16 bytes before the guard
 
+    ScopedJitEnv jit_env;
     setenv("SVM_ENABLE_JIT", "1", 1);
     auto* instance = X86Instance::Make();
     auto* core = X86Core::Make(instance);
@@ -982,11 +1008,11 @@ TEST_CASE("x86 sse4.2 string compare aliasing and REX-extended registers") {
     const u64 stack = base + 0x80000;
     const u64 data = base + 0xC0000;
 
+    ScopedJitEnv jit_env;
     setenv("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
     setenv("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
-    unsetenv("SVM_ENABLE_JIT");
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
 
@@ -1119,5 +1145,193 @@ TEST_CASE("x86 sse4.2 string compare aliasing and REX-extended registers") {
     INFO("checked=" << checked << joined);
     REQUIRE(problems.empty());
     REQUIRE(checked >= (avx_on ? 30u : 22u));
+}
+
+
+// ===========================================================================
+// The three evaluators must agree, bit for bit, everywhere.
+// ===========================================================================
+// decoder_sse42str.cc carries the original cell-at-a-time evaluator as its
+// SPECIFICATION and a bitmask/NEON one as the implementation.  That is only
+// safe if the two are pinned to each other over more inputs than the 6104
+// Rosetta rows reach -- the rows cover 128 of the 256 imm8 values, 16 of the
+// 289 explicit length pairs, and twelve operand pairs.
+//
+// This case covers EVERY imm8 (all 256, including the reserved bit 7), EVERY
+// explicit length pair (17 x 17, including the out-of-range 17..31 encodings
+// the IR can never produce but the helper must survive), the implicit form,
+// and twenty operand pairs -- the twelve Rosetta ones plus eight built to
+// stress the algebra's edges: both operands empty, no terminator at all,
+// terminators at opposite ends, and the 0x00 / 0x7F / 0x80 / 0xFF corners
+// where signed and unsigned "ranges" disagree.
+//
+// It also covers the PORTABLE path on an ARM host, which no other test does:
+// the runtime picks NEON here, so without variant 1 the scalar fallback would
+// only ever be exercised on a RISC-V build nobody runs the suite on.
+TEST_CASE("x86 sse4.2 string compare evaluators agree") {
+    struct Operands {
+        const char* name;
+        u64 a_lo, a_hi, b_lo, b_hi;
+    };
+    std::vector<Operands> cases;
+    for (const auto& p : kSse42StrPairs) {
+        const auto a = ParseHex32(p.a);
+        const auto b = ParseHex32(p.b);
+        u64 al, ah, bl, bh;
+        std::memcpy(&al, a.data(), 8);
+        std::memcpy(&ah, a.data() + 8, 8);
+        std::memcpy(&bl, b.data(), 8);
+        std::memcpy(&bh, b.data() + 8, 8);
+        cases.push_back({p.name, al, ah, bl, bh});
+    }
+    cases.push_back({"both empty", 0, 0, 0, 0});
+    cases.push_back({"a empty", 0, 0, 0x0807060504030201ull, 0x100F0E0D0C0B0A09ull});
+    cases.push_back({"b empty", 0x0807060504030201ull, 0x100F0E0D0C0B0A09ull, 0, 0});
+    cases.push_back({"identical, no terminator", 0x0807060504030201ull, 0x100F0E0D0C0B0A09ull,
+                     0x0807060504030201ull, 0x100F0E0D0C0B0A09ull});
+    cases.push_back({"terminators at opposite ends", 0x0807060504030200ull,
+                     0x100F0E0D0C0B0A09ull, 0x0807060504030201ull, 0x000F0E0D0C0B0A09ull});
+    cases.push_back({"all ones", ~u64(0), ~u64(0), ~u64(0), ~u64(0)});
+    cases.push_back({"signed corners", 0x7F80FF007F80FF00ull, 0x01FE8081017E8081ull,
+                     0x80FF007F80FF007Full, 0xFE8081017E808101ull});
+    cases.push_back({"one element apart", 0x0807060504030201ull, 0x100F0E0D0C0B0A09ull,
+                     0x0807060504030202ull, 0x100F0E0D0C0B0A09ull});
+
+    size_t compared = 0;
+    std::vector<std::string> problems;
+    const auto check = [&](const Operands& o, u64 ctl, const char* shape) {
+        const u64 want = SwiftSse42StrEvalVariant(0, o.a_lo, o.a_hi, o.b_lo, o.b_hi, ctl);
+        for (unsigned variant : {1u, 2u}) {
+            const u64 got = SwiftSse42StrEvalVariant(variant, o.a_lo, o.a_hi, o.b_lo, o.b_hi, ctl);
+            if (got != want && problems.size() < 12) {
+                problems.push_back(fmt::format(
+                        "{} / {} / ctl {:#x}: variant {} returned {:#x}, the reference "
+                        "(specification) says {:#x}",
+                        o.name, shape, ctl, variant, got, want));
+            }
+        }
+        ++compared;
+    };
+    for (const auto& o : cases) {
+        for (u32 imm = 0; imm < 256; ++imm) {
+            check(o, imm, "implicit");
+            for (u32 len1 = 0; len1 <= 16; ++len1) {
+                for (u32 len2 = 0; len2 <= 16; ++len2) {
+                    check(o, u64(imm) | (u64(1) << 8) | (u64(len1) << 9) | (u64(len2) << 14),
+                          "explicit");
+                }
+            }
+        }
+    }
+    // Out-of-range length encodings: the IR saturates before packing, so these
+    // are unreachable in practice, but the helper must not index out of its
+    // arrays if it is ever handed one.
+    for (const auto& o : cases) {
+        for (u32 len = 17; len < 32; ++len) {
+            for (u32 imm : {0x00u, 0x04u, 0x08u, 0x0Cu, 0x1Au, 0x4Cu}) {
+                check(o, u64(imm) | (u64(1) << 8) | (u64(len) << 9) | (u64(len) << 14),
+                      "explicit out of range");
+            }
+        }
+    }
+
+    std::string joined;
+    for (const auto& p : problems) {
+        joined += "\n  " + p;
+    }
+    INFO("compared=" << compared << joined);
+    REQUIRE(problems.empty());
+    INFO("the input space collapsed -- this case is meant to cover every imm8 and every "
+         "length pair");
+    REQUIRE(compared > 1400000);
+}
+
+// ===========================================================================
+// The fast evaluator must actually be fast.
+// ===========================================================================
+// A TRIPWIRE, not a benchmark: it exists so that deleting the fast path, or
+// accidentally routing the runtime back to the reference, fails a test instead
+// of quietly costing an order of magnitude.  The bound is 4x where the
+// measured ratio is 30x-90x, so host load cannot make it flaky.
+//
+// The comparison is interleaved inside ONE process and reduced with MIN over
+// nine repetitions.  That is the only shape that means anything here: this
+// host runs other agents' builds, and wall-clock numbers taken from separate
+// runs vary by 3x (measured).  Set SVM_SSE42STR_BENCH=1 to print the table.
+TEST_CASE("x86 sse4.2 string compare fast evaluator is fast") {
+    struct Point {
+        u64 a_lo, a_hi, b_lo, b_hi, ctl;
+    };
+    // One workload per aggregation, named by the libc routine whose ifunc
+    // picks that imm8: 0x00 equal-any (strchr/strspn), 0x04 ranges,
+    // 0x1a equal-each (strcmp), 0x0c equal-ordered (strstr).
+    struct Workload {
+        const char* name;
+        u32 imm;
+    };
+    static const Workload kWorkloads[] = {
+            {"equal any     (imm 0x00)", 0x00},
+            {"ranges        (imm 0x04)", 0x04},
+            {"equal each    (imm 0x1a)", 0x1A},
+            {"equal ordered (imm 0x0c)", 0x0C},
+    };
+    const bool print = std::getenv("SVM_SSE42STR_BENCH") != nullptr;
+
+    double total_reference = 0.0;
+    double total_runtime = 0.0;
+    std::string table;
+    for (const auto& w : kWorkloads) {
+        std::vector<Point> points;
+        for (const auto& pair : kSse42StrPairs) {
+            const auto a = ParseHex32(pair.a);
+            const auto b = ParseHex32(pair.b);
+            Point pt{};
+            std::memcpy(&pt.a_lo, a.data(), 8);
+            std::memcpy(&pt.a_hi, a.data() + 8, 8);
+            std::memcpy(&pt.b_lo, b.data(), 8);
+            std::memcpy(&pt.b_hi, b.data() + 8, 8);
+            pt.ctl = w.imm;
+            points.push_back(pt);
+        }
+        constexpr u32 kPasses = 2000;
+        constexpr u32 kReps = 9;
+        double best[3] = {1e18, 1e18, 1e18};
+        u64 sink = 0;
+        for (u32 rep = 0; rep < kReps; ++rep) {
+            for (unsigned variant = 0; variant < 3; ++variant) {
+                const auto t0 = std::chrono::steady_clock::now();
+                for (u32 pass = 0; pass < kPasses; ++pass) {
+                    for (const auto& pt : points) {
+                        sink += SwiftSse42StrEvalVariant(variant, pt.a_lo, pt.a_hi, pt.b_lo,
+                                                         pt.b_hi, pt.ctl);
+                    }
+                }
+                const auto t1 = std::chrono::steady_clock::now();
+                const double ns =
+                        double(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0)
+                                       .count()) /
+                        double(kPasses * points.size());
+                best[variant] = std::min(best[variant], ns);
+            }
+        }
+        REQUIRE(sink != 0);
+        const double ratio = best[0] / best[2];
+        total_reference += best[0];
+        total_runtime += best[2];
+        table += fmt::format("\n  {}  reference {:6.2f} ns  portable {:6.2f} ns  "
+                             "runtime {:6.2f} ns  speedup {:5.1f}x",
+                             w.name, best[0], best[1], best[2], ratio);
+    }
+    if (print) {
+        WARN("Sse42StrEval, min of 9 interleaved repetitions:" << table);
+    }
+    // Summed over the four aggregations rather than per-workload: "equal each"
+    // is the one the reference already did in a single pass, so its individual
+    // ratio is only ~4x and would make a per-workload bound tight enough to
+    // flap.  The measured aggregate ratio is ~9x, so 4x is a two-fold margin.
+    INFO("the runtime's evaluator is no longer meaningfully faster than the reference -- either "
+         "the fast path was removed or Sse42StrEval no longer calls it:"
+         << table);
+    REQUIRE(total_reference > total_runtime * 4.0);
 }
 
