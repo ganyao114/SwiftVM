@@ -83,10 +83,9 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     // SSE3 / SSSE3 / SSE4.1 are backed by decoder_sse4.cc (64 mnemonics,
     // 4020 Rosetta rows).  POPCNT is I_POPCNT, long implemented.
     //
-    // Bit 20 (SSE4.2) is deliberately NOT set: what SSE4.2 advertises is
-    // POPCNT, CRC32 and pcmpistri/pcmpistrm/pcmpestri/pcmpestrm, and those
-    // four are exactly what is still missing.  Claiming the bit would make
-    // glibc's ifunc select string variants that die with IllegalCode.
+    // SSE4.2 (bit 20) follows SVM_SSE42STR and is set below, not here:
+    // pcmpistri/pcmpistrm/pcmpestri/pcmpestrm are implemented (6104 Rosetta
+    // rows against a second, independent from-the-SDM model).
     static constexpr u32 kLeaf1Ecx = (1u << 13)  // CMPXCHG16B
                                      | (1u << 22)  // MOVBE
                                      | (1u << 30); // RDRAND
@@ -113,7 +112,12 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     // reported.  All 60 mnemonics are implemented at both VEX.L, so the bit
     // does not over-promise.  (The bit is architecturally meaningless without
     // AVX anyway -- FMA3 has no non-VEX encoding.)
+    // SSE4.2 (bit 20) is NOT folded into kSse4Ecx: that constant follows
+    // SVM_SSE4, and SVM_SSE4=1 SVM_SSE42STR=0 would then advertise a feature
+    // whose every instruction declines.  Sse42StrEnabled() is exported for
+    // exactly this.
     const u32 leaf1_ecx = kLeaf1Ecx | (Sse4Enabled() ? kSse4Ecx : 0u) |
+                          (Sse42StrEnabled() ? (1u << 20) : 0u) |  // SSE4.2
                           (XsaveEnabled() ? ((1u << 26) | (1u << 27)) : 0u) |
                           (avx_reported ? ((1u << 28) | (1u << 12)) : 0u);  // AVX, FMA
     // BMI1 (bit 3) and BMI2 (bit 8) follow SVM_BMI. They are deliberately
