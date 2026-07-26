@@ -1,5 +1,6 @@
 #include <atomic>
 #include <cstring>
+#include "runtime/backend/signal_handler.h"
 #include "runtime/frontend/x86/decoder_internal.h"
 
 namespace swift::x86 {
@@ -41,16 +42,34 @@ constexpr u64 kStringBackward = u64(1) << 63;
 constexpr u64 kStringStepShift = 61;
 constexpr u64 kStringCountMask = (u64(1) << kStringStepShift) - 1;
 
-// Clamps a rep-string walk into the bounded guest window and returns the host
-// pointer for its (truncated) start element. `count` is reduced so that every
-// byte the loop touches stays inside the window — without this the loop would
-// walk out of the window and dereference host memory even though the *start*
-// address was truncated. With the window disabled this is a plain bias add.
+// Bit a rep-string helper sets in its result when the walk ran into unmapped
+// guest memory. The emitted code tests it and exits the block with
+// HaltReason::PageFatal (see X64Decoder::RaiseIfGuestFault). Bit 63 is free in
+// every result these helpers produce: the movs/stos helpers now return only
+// this flag, and the cmps/scas element counts are bounded by the window clamp
+// (<= 2^32 elements at the default 32-bit window).
+constexpr u64 kStringGuestFault = u64(1) << 63;
+
+// Clamps a rep-string walk to (a) the bounded guest window and (b) the run of
+// *mapped* guest pages starting at it, and returns the host pointer for its
+// (truncated) start element. `count` comes back as the number of elements the
+// loop may legally touch; `faulted` says the reduction happened because the
+// walk ran into unmapped guest memory, i.e. the guest owes a #PF at the first
+// element beyond `count`.
 //
-// NOTE (unresolved, see the isolation report): clamping keeps the walk off
-// host memory, but a wild in-window address still faults inside this host
-// frame, which runtime.cpp's HandleFault cannot recover.
-static u8* ClampGuestWalk(u64 start, u64 step, bool backward, u64& count) {
+// (a) is the isolation guarantee: without it the loop would walk out of the
+// window and dereference host memory even though the *start* address was
+// truncated. (b) is availability plus architectural fidelity: the fault must
+// happen in the guest, not in this host frame, which runtime.cpp's HandleFault
+// cannot unwind. Reporting it back to the emitted code (kStringGuestFault) is
+// what turns "silently move fewer bytes" into a guest page fault.
+//
+// COST: exactly one range probe per walk in the non-faulting case (a lock-free
+// bitmap read in the linux embedder; see GuestMemory::MappedBytesFrom). The
+// per-element loop below only runs on the faulting path, which ends in a dead
+// guest thread anyway. Embedders with no oracle installed get `length` back
+// unchanged and keep the old unchecked behaviour.
+static u8* ClampGuestWalk(u64 start, u64 step, bool backward, u64& count, bool& faulted) {
     const u64 mask = g_guest_addr_mask.load(std::memory_order_relaxed);
     const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
     const u64 base = start & mask;
@@ -58,78 +77,118 @@ static u8* ClampGuestWalk(u64 start, u64 step, bool backward, u64& count) {
         const u64 avail = mask - base + 1;  // bytes from base to the window end
         if (avail < step) {
             count = 0;
+            faulted = true;  // leaving the window is a guest fault, not a clamp
         } else if (backward) {
             const u64 room = base / step + 1;
-            if (count > room) count = room;
+            if (count > room) {
+                count = room;
+                faulted = true;
+            }
         } else {
             const u64 room = avail / step;
-            if (count > room) count = room;
+            if (count > room) {
+                count = room;
+                faulted = true;
+            }
         }
     }
-    return reinterpret_cast<u8*>(base + bias);
+    auto* const host_base = reinterpret_cast<u8*>(base + bias);
+    if (count == 0) {
+        return host_base;
+    }
+    const u64 total = count * step;
+    const u64 lo = backward ? base - (count - 1) * step : base;
+    auto* const host_lo = reinterpret_cast<u8*>(lo + bias);
+    const u64 ok = runtime::backend::SignalHandler::GuestMappedBytes(
+            reinterpret_cast<std::uintptr_t>(host_lo), total);
+    if (ok == total) {
+        return host_base;  // fully backed: the common case, one probe
+    }
+    faulted = true;
+    if (!backward) {
+        count = ok / step;  // the mapped prefix starts at base
+        return host_base;
+    }
+    // Backward: the probe measured upward from the low end, so it does not
+    // give the run that starts at `base`. Only reached on the faulting path.
+    u64 reachable = 0;
+    while (reachable < count) {
+        const u64 elem = base - reachable * step;
+        if (runtime::backend::SignalHandler::GuestMappedBytes(
+                    reinterpret_cast<std::uintptr_t>(reinterpret_cast<u8*>(elem + bias)), step) <
+            step) {
+            break;
+        }
+        ++reachable;
+    }
+    count = reachable;
+    return host_base;
 }
 
-static void RepMovs(u64 dst, u64 src, u64 packed) {
+static u64 RepMovs(u64 dst, u64 src, u64 packed) {
     const bool backward = (packed & kStringBackward) != 0;
     const u64 step = u64(1) << ((packed >> kStringStepShift) & 3);
     u64 dst_count = packed & kStringCountMask;
     u64 src_count = dst_count;
-    auto* d = ClampGuestWalk(dst, step, backward, dst_count);
-    const auto* s = ClampGuestWalk(src, step, backward, src_count);
+    bool faulted = false;
+    auto* d = ClampGuestWalk(dst, step, backward, dst_count, faulted);
+    const auto* s = ClampGuestWalk(src, step, backward, src_count, faulted);
     const u64 count = dst_count < src_count ? dst_count : src_count;
     for (u64 i = 0; i < count; ++i) {
         std::memmove(d, s, step);
         d += backward ? -static_cast<s64>(step) : static_cast<s64>(step);
         s += backward ? -static_cast<s64>(step) : static_cast<s64>(step);
     }
+    return faulted ? kStringGuestFault : 0;
 }
 
 // rep stos fill helpers, one per element size (CallHost takes 3 args max).
-// They return the end address: the call result feeds the RDI update, which
-// keeps the host call alive in the JIT pipeline.
+// They return kStringGuestFault or 0; RDI/RCX are updated from IR (the walk is
+// contiguous, so the end address is a pure function of the inputs), which
+// leaves the result free to carry the fault report.
 static u64 RepStos1(u64 dst, u64 value, u64 count) {
     const bool backward = (count & kStringBackward) != 0;
     count &= ~kStringBackward;
-    const u64 arch_count = count;
-    auto* p = ClampGuestWalk(dst, 1, backward, count);
+    bool faulted = false;
+    auto* p = ClampGuestWalk(dst, 1, backward, count, faulted);
     for (u64 i = 0; i < count; ++i) {
         *p = u8(value);
         p += backward ? -1 : 1;
     }
-    return backward ? dst - arch_count : dst + arch_count;
+    return faulted ? kStringGuestFault : 0;
 }
 static u64 RepStos2(u64 dst, u64 value, u64 count) {
     const bool backward = (count & kStringBackward) != 0;
     count &= ~kStringBackward;
-    const u64 arch_count = count;
-    auto* p = ClampGuestWalk(dst, 2, backward, count);
+    bool faulted = false;
+    auto* p = ClampGuestWalk(dst, 2, backward, count, faulted);
     for (u64 i = 0; i < count; ++i) {
         std::memcpy(p, &value, 2);
         p += backward ? -2 : 2;
     }
-    return backward ? dst - arch_count * 2 : dst + arch_count * 2;
+    return faulted ? kStringGuestFault : 0;
 }
 static u64 RepStos4(u64 dst, u64 value, u64 count) {
     const bool backward = (count & kStringBackward) != 0;
     count &= ~kStringBackward;
-    const u64 arch_count = count;
-    auto* p = ClampGuestWalk(dst, 4, backward, count);
+    bool faulted = false;
+    auto* p = ClampGuestWalk(dst, 4, backward, count, faulted);
     for (u64 i = 0; i < count; ++i) {
         std::memcpy(p, &value, 4);
         p += backward ? -4 : 4;
     }
-    return backward ? dst - arch_count * 4 : dst + arch_count * 4;
+    return faulted ? kStringGuestFault : 0;
 }
 static u64 RepStos8(u64 dst, u64 value, u64 count) {
     const bool backward = (count & kStringBackward) != 0;
     count &= ~kStringBackward;
-    const u64 arch_count = count;
-    auto* p = ClampGuestWalk(dst, 8, backward, count);
+    bool faulted = false;
+    auto* p = ClampGuestWalk(dst, 8, backward, count, faulted);
     for (u64 i = 0; i < count; ++i) {
         std::memcpy(p, &value, 8);
         p += backward ? -8 : 8;
     }
-    return backward ? dst - arch_count * 8 : dst + arch_count * 8;
+    return faulted ? kStringGuestFault : 0;
 }
 
 // rep cmps/scas: run the early-terminating comparison loop and return the
@@ -151,14 +210,21 @@ static u64 RepCmpsN(const u8* s, const u8* d, u64 count, u64 repnz, u64 sz) {
     }
     return i;
 }
+// A clamped walk that the comparison terminated *before* its last reachable
+// element did not actually run into the hole, so it owes no fault. Only a run
+// that consumed the whole clamped count while the architectural count was
+// longer reaches unmapped memory.
 #define DEFINE_REP_CMPS(name, sz, repnz)                                                           \
     static u64 name(u64 rsi, u64 rdi, u64 count) {                                                 \
         const bool bwd = (count & kStringBackward) != 0;                                           \
         u64 n_s = count & ~kStringBackward, n_d = n_s;                                             \
-        const auto* s_ptr = ClampGuestWalk(rsi, sz, bwd, n_s);                                     \
-        const auto* d_ptr = ClampGuestWalk(rdi, sz, bwd, n_d);                                     \
-        const u64 n = (n_s < n_d ? n_s : n_d) | (bwd ? kStringBackward : 0);                       \
-        return RepCmpsN(s_ptr, d_ptr, n, repnz, sz);                                               \
+        bool faulted = false;                                                                      \
+        const auto* s_ptr = ClampGuestWalk(rsi, sz, bwd, n_s, faulted);                            \
+        const auto* d_ptr = ClampGuestWalk(rdi, sz, bwd, n_d, faulted);                            \
+        const u64 limit = n_s < n_d ? n_s : n_d;                                                   \
+        const u64 n = limit | (bwd ? kStringBackward : 0);                                          \
+        const u64 done = RepCmpsN(s_ptr, d_ptr, n, repnz, sz);                                     \
+        return done | (faulted && done == limit ? kStringGuestFault : 0);                          \
     }
 DEFINE_REP_CMPS(RepCmpsZ1, 1, 0)
 DEFINE_REP_CMPS(RepCmpsNZ1, 1, 1)
@@ -191,8 +257,11 @@ static u64 RepScasN(const u8* acc, const u8* d, u64 count, u64 repnz, u64 sz) {
         std::memcpy(ab, &acc, sz);                                                                 \
         const bool bwd = (count & kStringBackward) != 0;                                           \
         u64 n = count & ~kStringBackward;                                                          \
-        const auto* d_ptr = ClampGuestWalk(rdi, sz, bwd, n);                                       \
-        return RepScasN(ab, d_ptr, n | (bwd ? kStringBackward : 0), repnz, sz);                    \
+        bool faulted = false;                                                                      \
+        const auto* d_ptr = ClampGuestWalk(rdi, sz, bwd, n, faulted);                              \
+        const u64 limit = n;                                                                       \
+        const u64 done = RepScasN(ab, d_ptr, n | (bwd ? kStringBackward : 0), repnz, sz);          \
+        return done | (faulted && done == limit ? kStringGuestFault : 0);                          \
     }
 DEFINE_REP_SCAS(RepScasZ1, 1, 0)
 DEFINE_REP_SCAS(RepScasNZ1, 1, 1)
@@ -209,8 +278,9 @@ DEFINE_REP_SCAS(RepScasNZ8, 8, 1)
 // mxcsr and xmm0-15 over it via IR.
 u64 FxsaveFill(u64 guest_addr) {
     u64 count = 512;
-    auto* p = ClampGuestWalk(guest_addr, 1, false, count);
-    if (count < 512) return 0;  // would leave the guest window
+    bool faulted = false;
+    auto* p = ClampGuestWalk(guest_addr, 1, false, count, faulted);
+    if (count < 512) return kStringGuestFault;  // unmapped or outside the window
     std::memset(p, 0, 512);
     u16 fcw = 0x037F;
     std::memcpy(p, &fcw, 2);
@@ -249,10 +319,15 @@ void X64Decoder::DecodeMovs(_DInst& insn) {
         if (TsoOrdered(insn)) {
             __ MemoryBarrierTSO();
         }
-        __ CallHost(&RepMovs, dst_addr, src_addr, packed);
+        auto status = __ CallHost(&RepMovs, dst_addr, src_addr, packed)
+                              .SetType(ir::ValueType::U64);
         if (TsoOrdered(insn)) {
             __ MemoryBarrierTSO();
         }
+        // The walk stopped at unmapped guest memory: the architectural outcome
+        // is #PF at that element, not a short copy. RSI/RDI/RCX below are the
+        // no-fault values; on the faulting path the block exits before them.
+        RaiseIfGuestFault(status, insn_pc);
         auto backward = __ TestNotZero(df);
         R(src_reg,
           __ Select(backward,
@@ -307,23 +382,33 @@ void X64Decoder::DecodeStos(_DInst& insn) {
         // Widen the accumulator: a narrow-typed value passed straight into a
         // host call gets a spill allocation the JIT cannot produce.
         auto acc64 = __ ZeroExtend64(acc);
-        ir::Value end;
+        ir::Value status;
         // As with REP MOVS, x86 requires ordering at the operation boundary,
         // not atomic visibility of the whole filled range.
         if (TsoOrdered(insn)) {
             __ MemoryBarrierTSO();
         }
-        switch (ir::GetValueSizeByte(size)) {
-            case 1: end = __ CallHost(&RepStos1, dst_addr, acc64, packed_count); break;
-            case 2: end = __ CallHost(&RepStos2, dst_addr, acc64, packed_count); break;
-            case 4: end = __ CallHost(&RepStos4, dst_addr, acc64, packed_count); break;
-            default: end = __ CallHost(&RepStos8, dst_addr, acc64, packed_count); break;
+        const u64 step = ir::GetValueSizeByte(size);
+        switch (step) {
+            case 1: status = __ CallHost(&RepStos1, dst_addr, acc64, packed_count); break;
+            case 2: status = __ CallHost(&RepStos2, dst_addr, acc64, packed_count); break;
+            case 4: status = __ CallHost(&RepStos4, dst_addr, acc64, packed_count); break;
+            default: status = __ CallHost(&RepStos8, dst_addr, acc64, packed_count); break;
         }
+        status = status.SetType(ir::ValueType::U64);
         if (TsoOrdered(insn)) {
             __ MemoryBarrierTSO();
         }
-        // The helper returns the fill end address, keeping the call alive.
-        R(dst_reg, end);
+        // The helper's result is the guest-fault report, which also keeps the
+        // call alive; RDI is a pure function of the inputs (the fill is
+        // contiguous) and is recomputed here instead.
+        RaiseIfGuestFault(status, insn_pc);
+        auto bytes = __ Mul(count, ir::Operand{ir::Imm(step)});
+        auto backward = __ TestNotZero(DirectionValue());
+        R(dst_reg,
+          __ Select(backward,
+                    __ Sub(dst_addr, ir::Operand{bytes}),
+                    __ Add(dst_addr, ir::Operand{bytes})).SetType(dst_addr.Type()));
         R(cnt_reg, __ LoadImm(ir::Imm(u64(0))));
     } else {
         MemStore(ir::Operand{dst_addr}, acc.SetType(size), TsoOrdered(insn));
@@ -439,6 +524,10 @@ void X64Decoder::DecodeCmps(_DInst& insn) {
         }
     }
     iters = iters.SetType(ir::ValueType::U64);
+    // The comparison consumed every element it was allowed to touch and the
+    // next one is unmapped: guest #PF. Checked before iters is used, so the
+    // flag bit can never leak into RSI/RDI/RCX.
+    RaiseIfGuestFault(iters, insn_pc);
     auto adv = __ Mul(iters, ir::Operand{ir::Imm(step)});
     R(si_reg,
       __ Select(backward, __ Sub(si0, ir::Operand{adv}), __ Add(si0, ir::Operand{adv}))
@@ -513,6 +602,7 @@ void X64Decoder::DecodeScas(_DInst& insn) {
         }
     }
     iters = iters.SetType(ir::ValueType::U64);
+    RaiseIfGuestFault(iters, insn_pc);
     auto adv = __ Mul(iters, ir::Operand{ir::Imm(step)});
     R(di_reg,
       __ Select(backward, __ Sub(di0, ir::Operand{adv}), __ Add(di0, ir::Operand{adv}))

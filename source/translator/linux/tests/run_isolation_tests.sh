@@ -16,10 +16,19 @@
 #   so `base` and `base + 2^k` (k >= window bits) must alias.  If they do not,
 #   the access left the window — which is exactly "it reached host memory".
 #
-#   The suite therefore fails on the unbounded build (SVM_GUEST_BITS=0, kept as
-#   the diagnostic escape hatch) and passes on the bounded one.  Run it both
-#   ways to see the regression it locks down:
-#       SVM_ISOLATION_EXPECT=broken run_isolation_tests.sh   # unbounded
+#   The suite therefore fails on the unbounded build (SVM_GUEST_BITS=0) and
+#   passes on the bounded one.  Run it both ways to see the regression it
+#   locks down:
+#       SVM_ISOLATION_EXPECT=broken run_isolation_tests.sh <unbounded-build>
+#
+#   The unbounded mode is COMPILE-time gated: an ordinary build refuses
+#   SVM_GUEST_BITS=0 outright, because "the guest can write host memory" is the
+#   defect this work removed, not a supported diagnostic mode.  The broken half
+#   therefore needs its own build:
+#       cmake -S . -B build-unbounded -DCMAKE_BUILD_TYPE=Release \
+#             -DSWIFT_ALLOW_UNBOUNDED_GUEST=ON ...
+#   This script checks for the gate and says so instead of silently reporting
+#   a fixed build as "broken-but-passing".
 #
 # ASSERTIONS
 #   alias/load : guest exit code 0 (the aliased access matched).
@@ -39,10 +48,32 @@ GEN="$HERE/gen_isolation_guest_x86_64.py"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# SVM_GUEST_BITS=0 reproduces the pre-fix unbounded behaviour.
+# SVM_GUEST_BITS=0 reproduces the pre-fix unbounded behaviour, and only a
+# build configured with -DSWIFT_ALLOW_UNBOUNDED_GUEST=ON has it compiled in.
 BROKEN="${SVM_ISOLATION_EXPECT:-fixed}"
 ENVPFX=""
-[ "$BROKEN" = "broken" ] && ENVPFX="SVM_GUEST_BITS=0"
+if [ "$BROKEN" = "broken" ]; then
+    ENVPFX="SVM_GUEST_BITS=0"
+    probe="$(SVM_GUEST_BITS=0 "$SVM" /nonexistent-guest-elf 2>&1)"
+    if echo "$probe" | grep -q "SWIFT_ALLOW_UNBOUNDED_GUEST"; then
+        echo "SKIP: this build refuses SVM_GUEST_BITS=0 (the unbounded mode is compiled" >&2
+        echo "      out).  Rebuild with -DSWIFT_ALLOW_UNBOUNDED_GUEST=ON to run the" >&2
+        echo "      broken half; the isolation defect cannot be demonstrated otherwise." >&2
+        exit 3
+    fi
+fi
+
+# On a normal build the gate itself is an assertion: SVM_GUEST_BITS=0 must be
+# refused, and refused by name, so nobody re-opens the hole with an env var.
+gate_check() {
+    out="$(SVM_GUEST_BITS=0 "$SVM" /nonexistent-guest-elf 2>&1)"
+    if echo "$out" | grep -q "SWIFT_ALLOW_UNBOUNDED_GUEST"; then
+        report "unbounded_mode_gated" ok "SVM_GUEST_BITS=0 refused at compile-time gate"
+    else
+        report "unbounded_mode_gated" bad \
+            "SVM_GUEST_BITS=0 was accepted: the unbounded (non-isolating) mode is reachable"
+    fi
+}
 
 # Aliasing only holds for deltas that are whole multiples of the window size,
 # so the deltas are derived from the window under test rather than hard-coded.
@@ -119,6 +150,8 @@ for A in ffffffffffffffff fffffffffffff000 8000000000000000 7fffffffffffffff \
         report "wild_$A" ok "host survived (guest rc=$RC)"
     fi
 done
+
+[ "$BROKEN" = "broken" ] || gate_check
 
 echo "----"
 echo "isolation: $pass passed, $fail failed"
