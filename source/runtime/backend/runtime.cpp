@@ -211,6 +211,31 @@ struct Runtime::Impl final {
         if (!current_module) {
             return HaltReason::CodeMiss | HaltReason::ModuleMiss;
         }
+        // The IR interpreter is the execution engine for enable_jit=false. It
+        // is NOT a fallback for a dispatch-table miss while the JIT is on: the
+        // IR held by the module has been through the JIT pipeline and is no
+        // longer valid input for it. Two concrete ways that goes wrong, both
+        // observed:
+        //  - UniformEliminationPass rewrites reads of a statically allocated
+        //    uniform into GetHostGPR (Config::buffers_static_alloc; the x86
+        //    frontend pins guest rbx/rsp/rbp into x20/x19/x21). The
+        //    interpreter has no host-register file and RunGetHostGPR yields 0,
+        //    so `ret` pops from guest address 0 and the guest thread dies of
+        //    PageFatal.
+        //  - Terminals that mean "go back to the dispatcher"
+        //    (ReturnToDispatch/Invalid/PopRSBHint, and a Switch with no
+        //    matching case) return HaltReason::None without advancing
+        //    current_loc. The loop below has no dispatch step, so it re-runs
+        //    the same block forever.
+        // Neither is reachable without SMC: a dispatch slot is only ever
+        // zeroed while its module node is still live by SmcTracker's write
+        // fault (ClearDispatchSlots runs in the signal handler, DetachNode
+        // only later in CloseWriteWindow). Report CodeMiss instead so the
+        // translator recompiles and republishes the unit -- exactly what
+        // already happens when the node itself is gone.
+        if (address_space->GetConfig().enable_jit) {
+            return HaltReason::CodeMiss;
+        }
 
         HaltReason hr{HaltReason::None};
         IntrusivePtr<ir::Function> active_function{};
