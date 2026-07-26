@@ -1860,6 +1860,10 @@ TEST_CASE("Fuzz x86 cpuid") {
         const bool avx_on = std::getenv("SVM_AVX") &&
                             std::strcmp(std::getenv("SVM_AVX"), "0") != 0;
         const bool avx_reported = avx_on && xsave_on;
+        // SVM_SSE4 is default-ON (unlike the others), so the absence of
+        // the variable means enabled.
+        const char* sse4_env = std::getenv("SVM_SSE4");
+        const bool sse4_on = !sse4_env || std::strcmp(sse4_env, "0") != 0;
         switch (leaf) {
             case 0:
                 REQUIRE(sig[0] == 0x15);
@@ -1888,10 +1892,10 @@ TEST_CASE("Fuzz x86 cpuid") {
                 // exactly what is missing, so the bit must stay clear until
                 // those four exist -- same coherence rule as XSAVE/AVX above,
                 // just in the other direction.
-                REQUIRE((sig[2] & (1u << 0)) != 0);    // SSE3
-                REQUIRE((sig[2] & (1u << 9)) != 0);    // SSSE3
-                REQUIRE((sig[2] & (1u << 19)) != 0);   // SSE4.1
-                REQUIRE((sig[2] & (1u << 23)) != 0);   // POPCNT
+                REQUIRE(((sig[2] >> 0) & 1u) == (sse4_on ? 1u : 0u));    // SSE3
+                REQUIRE(((sig[2] >> 9) & 1u) == (sse4_on ? 1u : 0u));    // SSSE3
+                REQUIRE(((sig[2] >> 19) & 1u) == (sse4_on ? 1u : 0u));   // SSE4.1
+                REQUIRE(((sig[2] >> 23) & 1u) == (sse4_on ? 1u : 0u));   // POPCNT
                 REQUIRE((sig[2] & (1u << 20)) == 0);   // no SSE4.2 (pcmpXstrY missing)
                 break;
             case 7:

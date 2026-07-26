@@ -594,7 +594,6 @@ private:
     // SSE3: movddup duplicates the source low qword into both halves.
     void DecodeMovddup(_DInst& insn);
     // SSE3: haddps/hsubps horizontal add/sub of adjacent dword pairs.
-    void DecodeHaddps(_DInst& insn, bool sub);
     // lzcnt (leading-zero count) and crc32 (SSE4.2 CRC-32C).
     void DecodeLzcnt(_DInst& insn);
     void DecodeCrc32(_DInst& insn);
@@ -632,7 +631,10 @@ private:
     // FALLBACK, exactly as before AVX decoding existed.  No CPUID bit is
     // advertised either way, so a well-behaved guest never emits VEX at all.
     [[nodiscard]] static bool AvxEnabled();
-
+    // SVM_SSE4 -- the legacy SSE3/SSSE3/SSE4.1 escape hatch, default ON.
+    // CPUID consults it so the reported feature bits can never outrun the
+    // decoder, the same coherence rule AVX/XSAVE follow.
+    [[nodiscard]] static bool Sse4Enabled();
     // Raw VEX prefix fields, parsed from the instruction bytes rather than
     // taken from distorm.  This is NOT redundant: this distorm snapshot
     // predates AVX2 and therefore has no 256-bit table entry for the packed
@@ -943,6 +945,19 @@ private:
     void DecodeSseInsert(_DInst& insn, u32 element_bits);
     void DecodeSseMpsadbw(_DInst& insn);
     void DecodeSsePhminposuw(_DInst& insn);
+    // Shared by PTEST and VTESTPS/VTESTPD: the EFLAGS half of both.
+    void DecodeSseTestFlags(ir::Value both, ir::Value notdest);
+    ir::Value SseFoldToScalar(ir::Value vec);
+
+    // The VEX forms of this family that no decoder_avx*.cc file claimed --
+    // vaddsubps/pd, vpmulhrsw, vtestps/pd, vphminposuw, vmpsadbw. They live in
+    // decoder_sse4.cc so they can share its lane functions with the legacy
+    // forms instead of copying them a second time. Same contract as the other
+    // VEX entry points: false for anything unmodelled, and every false return
+    // happens before any IR is emitted.
+    bool DecodeAvxSse4(const VexInsn& v);
+    void DecodeAvxPhminposuw(const VexInsn& v);
+    void DecodeAvxVTest(const VexInsn& v, u32 lane_bits);
 
     VAddr start;
     VAddr pc;

@@ -126,6 +126,22 @@ SVM_SSE4("addsubps")
 SVM_SSE4("addsubpd")
 SVM_SSE4("vhaddpd")
 
+// ---- the VEX twins this family was missing until decoder_sse4.cc ----------
+SVM_SSE4("vaddsubps")
+SVM_SSE4("vaddsubps.y")
+SVM_SSE4("vaddsubpd")
+SVM_SSE4("vaddsubpd.y")
+SVM_SSE4("vpmulhrsw")
+SVM_SSE4("vpmulhrsw.y")
+SVM_SSE4("vphminposuw")
+SVM_SSE4("vmpsadbw")
+SVM_SSE4("vmpsadbw.y")
+SVM_SSE4("vtestps")
+SVM_SSE4("vtestps.y")
+SVM_SSE4("vtestpd")
+SVM_SSE4("vtestpd.y")
+SVM_SSE4("vptest.y")
+
 // ---- SSE4.1 dot product --------------------------------------------------------
 SVM_SSE4("dpps")
 SVM_SSE4("dppd")
