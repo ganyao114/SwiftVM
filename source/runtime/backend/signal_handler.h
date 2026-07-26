@@ -81,6 +81,13 @@ public:
     // guest pointer when the PC is inside JIT code).
     static bool IsGuestAddressMapped(std::uintptr_t fault_host_addr);
 
+    // True once an embedder has installed a probe. Lets non-fault callers
+    // (instruction fetch, which must validate *before* dereferencing rather
+    // than recover afterwards) tell "not mapped" from "no oracle available":
+    // embedders without a probe -- unit tests, fuzzers, identity mappings --
+    // must keep the unchecked behaviour.
+    static bool HasGuestMapProbe();
+
     // --- ucontext accessors (OS/arch abstraction) --------------------------
     static std::uintptr_t GetContextPC(const ucontext_t* uctx);
     static void SetContextPC(ucontext_t* uctx, std::uintptr_t pc);

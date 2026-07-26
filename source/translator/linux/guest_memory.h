@@ -82,8 +82,20 @@ public:
     // runtime::MemoryInterface — bias translation (instruction fetch).
     bool Read(void* dest, size_t addr, size_t size) override;
     bool Write(void* src, size_t addr, size_t size) override;
+    // Instruction fetch, and the ONLY guest access the frontend makes from
+    // host code. It must be validated: the bias is a plain add, so an
+    // unmapped guest address yields a host pointer into whatever the host
+    // happens to have there — a wild guest branch target would fault the HOST
+    // translator (host pc outside every JIT buffer, so runtime.cpp's
+    // HandleFault cannot recover it) instead of killing only the guest.
+    // Returning nullptr routes the caller to ExitReason::PageFatal; every
+    // caller in runtime/frontend/x86 already handles it.
     void* GetPointer(void* src) override {
-        return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(src) + bias_);
+        const auto guest = reinterpret_cast<VAddr>(src);
+        if (!RangeIsMapped(guest, 1)) {
+            return nullptr;
+        }
+        return reinterpret_cast<void*>(guest + bias_);
     }
 
     // Typed helpers for guest memory access.

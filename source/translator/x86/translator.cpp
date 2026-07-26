@@ -16,6 +16,7 @@
 #include "runtime/backend/context.h"
 #include "runtime/backend/jit_code.h"
 #include "runtime/backend/runtime.h"
+#include "runtime/backend/signal_handler.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "runtime/include/sruntime.h"
 #include "translator.h"
@@ -54,8 +55,22 @@ public:
     bool Write(void* src, size_t addr, size_t size) override {
         return std::memcpy(reinterpret_cast<void*>(addr + bias), src, size);
     }
+    // Instruction fetch. This runs in *host* code, so a fault here is not
+    // recoverable: runtime.cpp's HandleFault only rewrites faults whose host
+    // pc lies inside a JIT buffer, and the decoder's is not. A wild guest
+    // branch target (RET off a corrupted stack, `jmp rax` with garbage, an
+    // encoding the decoder mis-sizes) would therefore kill the host process
+    // instead of the guest. Validate against the embedder's guest-mapping
+    // oracle and hand the decoder a nullptr -> ExitReason::PageFatal.
+    // Embedders that installed no oracle (unit tests, fuzzers, identity
+    // mappings) keep the raw bias add.
     void* GetPointer(void* src) override {
-        return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(src) + bias);
+        const auto host = reinterpret_cast<uintptr_t>(src) + bias;
+        if (runtime::backend::SignalHandler::HasGuestMapProbe() &&
+            !runtime::backend::SignalHandler::IsGuestAddressMapped(host)) {
+            return nullptr;
+        }
+        return reinterpret_cast<void*>(host);
     }
     u64 bias{};
 };

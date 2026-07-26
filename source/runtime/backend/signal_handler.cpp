@@ -111,6 +111,10 @@ void SignalHandler::SetGuestMapProbe(GuestMapProbe probe, void* ctx) {
     g_guest_probe.store(probe, std::memory_order_release);
 }
 
+bool SignalHandler::HasGuestMapProbe() {
+    return g_guest_probe.load(std::memory_order_acquire) != nullptr;
+}
+
 bool SignalHandler::IsGuestAddressMapped(std::uintptr_t fault_host_addr) {
     auto probe = g_guest_probe.load(std::memory_order_acquire);
     if (!probe) {

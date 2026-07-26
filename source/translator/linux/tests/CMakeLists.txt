@@ -32,3 +32,22 @@ if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/avx_real_x86_64 AND
     set_tests_properties(avx_real_program PROPERTIES
                          LABELS "avx;guest;e2e" TIMEOUT 600)
 endif ()
+
+# ---------------------------------------------------------------------------
+# Isolation: a malformed guest instruction stream must kill only the guest.
+#
+# Unlike the suites above this one asserts nothing about results -- it asserts
+# that the HOST process survives.  The guests are generated on the fly by
+# gen_malformed_guest_x86_64.py (no checked-in binaries), so the corpus is
+# cheap to extend when a new host-kill route turns up.
+#
+# Same caveat as the note above: nothing does add_subdirectory(tests) and the
+# project never calls enable_testing(), so this registration is dormant until
+# either changes; run_malformed_guest_tests.sh is runnable on its own until
+# then, and takes --audit for the exhaustive opcode-space sweep.
+# ---------------------------------------------------------------------------
+add_test(NAME malformed_guest_isolation
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/run_malformed_guest_tests.sh
+                 $<TARGET_FILE:svm_translator_linux>)
+set_tests_properties(malformed_guest_isolation PROPERTIES
+                     LABELS "isolation;guest;e2e" TIMEOUT 300)
