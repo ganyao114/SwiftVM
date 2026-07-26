@@ -27,6 +27,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
 
 void JitTranslator::Translate(ir::Block* block) {
     cur_block = block;
+    static_next_loc.reset();
     if (x87_topvirt_requested && !translating_function) {
         AnalyzeX87TopVirt(block);
     }
@@ -74,10 +75,14 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             // Flat decoded blocks have no explicit terminal: the next location was
             // already written to state->current_loc by a SetLocation instruction.
             MergeNZCV();
-            __ Ret();
+            if (!EmitStaticForward()) {
+                __ Ret();
+            }
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToDispatch>) {
             MergeNZCV();
-            __ Ret();
+            if (!EmitStaticForward()) {
+                __ Ret();
+            }
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToHost>) {
             MergeNZCV();
             __ Mov(ipw, static_cast<u32>(HaltReason::CallHost));
@@ -146,6 +151,22 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
     });
 }
 
+// A direct jmp/call decodes to SetLocation(imm) + ReturnToDispatcher, and the
+// trampoline then re-reads state->current_loc and walks the L1 hash chain for
+// a target that was already known when the code was emitted. The dispatch
+// table indexed here is the same one the RSB pop and JitContext::Forward's
+// BlockLink path already branch through, with the same safety property: SMC
+// invalidation (SmcTracker::ClearDispatchSlots) zeroes the slot, so a stale
+// translation degrades to the Cbz fallback rather than to a wild branch.
+bool JitTranslator::EmitStaticForward() {
+    if (!static_next_loc) {
+        return false;
+    }
+    const u64 target = *static_next_loc;
+    static_next_loc.reset();
+    return context.ForwardStatic(ir::Location{target});
+}
+
 Label* JitTranslator::GetLocalLabel(ir::Inst* inst) {
     if (auto itr = local_labels.find(inst); itr != local_labels.end()) {
         return &itr->second;
@@ -188,6 +209,9 @@ Register JitTranslator::MaterializeOperand(const Operand& operand, ir::ValueType
 void JitTranslator::Translate(ir::Inst* inst) {
     ASSERT(inst);
     context.TickIR(inst);
+    if (inst->GetOp() != ir::OpCode::SetLocation) {
+        static_next_loc.reset();
+    }
 
 #define INST(name, ...)                                                                            \
     case ir::OpCode::name:                                                                         \

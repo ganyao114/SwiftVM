@@ -246,6 +246,15 @@ private:
     bool x87_topvirt_requested{false};
     bool x87_topvirt_function_eligible{false};
     bool translating_function{false};
+    // Set by EmitSetLocation when the next guest location is a compile-time
+    // constant, cleared by every other instruction (Translate(ir::Inst*)).
+    // A ReturnToDispatch/Invalid terminal reached with this set is a direct
+    // jmp/call: the dispatch-table slot for that exact address can be read
+    // inline instead of returning to the trampoline's hash lookup.
+    std::optional<u64> static_next_loc{};
+    // Emits the inline dispatch for `static_next_loc`; returns false when no
+    // static target is known and the caller must Ret to the dispatcher.
+    bool EmitStaticForward();
     bool x87_top_block_codegen_enabled{false};
     bool x87_top_cache_valid{false};
     bool x87_top_cache_for_current{false};

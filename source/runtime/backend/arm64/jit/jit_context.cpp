@@ -6,6 +6,7 @@
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/context.h"
 
+
 namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
@@ -238,6 +239,34 @@ VRegister JitContext::GetTmpV() {
 
 void JitContext::ReserveTmpX(const XRegister& reg) {
     cur_dirty_gprs.Mark(reg.GetCode());
+}
+
+bool JitContext::ForwardStatic(ir::Location location) {
+    if (!module->GetModuleConfig().HasOpt(Optimizations::BlockLink)) {
+        return false;
+    }
+    // Same-module only, like the BlockLink path in Forward(): a slot filled by
+    // another module outlives this module's view of it. The lookup also keeps
+    // dispatch slots (a finite shared table) from being reserved for addresses
+    // no module owns -- a computed jmp into unmapped memory must not consume
+    // one.
+    auto target_module = module->GetAddressSpace().GetModule(location.Value());
+    if (!target_module || target_module != module) {
+        return false;
+    }
+    // The Ret this replaces leaves the translator without touching JitContext,
+    // so a spilled def from the block's last instruction would never reach its
+    // slot; branching straight to the next unit makes that visible.
+    FlushSpillWrites();
+    const u32 dispatcher_index = target_module->GetDispatchIndex(location);
+    Label empty_slot;
+    __ Mov(ipw, dispatcher_index);
+    __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
+    __ Cbz(ip, &empty_slot);
+    __ Br(ip);
+    __ Bind(&empty_slot);
+    __ Ret();
+    return true;
 }
 
 void JitContext::Forward(ir::Location location) {

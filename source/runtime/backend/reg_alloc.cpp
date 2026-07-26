@@ -12,38 +12,37 @@ namespace swift::runtime::backend {
 // Only opcodes that exceed the default appear here. Every entry is a measured
 // peak over the full corpus, cross-checked against the emitter source:
 //
-//  * The float arithmetic family and X87Op all reach eight GPRs through
-//    JitTranslator::EmitVecFloatNaNFixup, which keeps eight logical values
-//    (raw operands, raw result, mask, scratch, two NaN predicates, the chosen
-//    lane) live simultaneously while it rebuilds x86 NaN propagation lane by
-//    lane in general-purpose registers.
+//  * X87Op reaches eight GPRs.
 //  * VecFCvtFloatToInt open-codes the x86 "invalid conversion -> INT_MIN"
 //    rule per lane and holds five GPRs across it.
 //  * VecFCvtPacked and VecFMulAdd hold five vector temporaries.
+//  * The float arithmetic family needs no GPR at all: since the NaN fixup
+//    became NEON (three vector temporaries, all lanes at once) their demand is
+//    that three plus whatever the calling emitter is already holding -- two
+//    for the 32-bit scalar shapes (merge target + the FPR-materialised right
+//    operand), one for the 64-bit ones, none for the packed ones.
 ScratchNeed ScratchBudget(ir::OpCode op) {
     switch (op) {
-        // --- eight GPRs: the vector NaN-fixup path -----------------------
-        case ir::OpCode::VecFAdd:
-        case ir::OpCode::VecFSub:
-        case ir::OpCode::VecFMul:
-        case ir::OpCode::VecFDiv:
-        case ir::OpCode::VecFAddScalar32:
-        case ir::OpCode::VecFSubScalar32:
-        case ir::OpCode::VecFMulScalar32:
-        case ir::OpCode::VecFDivScalar32:
-        case ir::OpCode::VecFAddScalar64:
-        case ir::OpCode::VecFSubScalar64:
-        case ir::OpCode::VecFMulScalar64:
-        case ir::OpCode::VecFDivScalar64:
+        // --- eight GPRs --------------------------------------------------
         case ir::OpCode::X87Op:
             return {8, kDefaultScratchFPR};
         // --- five GPRs ---------------------------------------------------
         case ir::OpCode::VecFCvtFloatToInt:
             return {5, kDefaultScratchFPR};
         // --- five FPRs ---------------------------------------------------
+        case ir::OpCode::VecFAddScalar32:
+        case ir::OpCode::VecFSubScalar32:
+        case ir::OpCode::VecFMulScalar32:
+        case ir::OpCode::VecFDivScalar32:
         case ir::OpCode::VecFCvtPacked:
         case ir::OpCode::VecFMulAdd:
             return {kDefaultScratchGPR, 5};
+        // --- four FPRs ---------------------------------------------------
+        case ir::OpCode::VecFAddScalar64:
+        case ir::OpCode::VecFSubScalar64:
+        case ir::OpCode::VecFMulScalar64:
+        case ir::OpCode::VecFDivScalar64:
+            return {kDefaultScratchGPR, 4};
         default:
             return {kDefaultScratchGPR, kDefaultScratchFPR};
     }

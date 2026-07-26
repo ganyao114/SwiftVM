@@ -280,11 +280,23 @@ void JitTranslator::EmitGetLocation(ir::Inst* inst) {
 
 void JitTranslator::EmitSetLocation(ir::Inst* inst) {
     auto location = inst->GetArg<ir::Lambda>(0);
+    // Any SetLocation invalidates an earlier constant, including a dynamic one:
+    // SetLocation is *not* only emitted just before a terminal (decoder_x87.cc
+    // and decoder_xsave.cc plant the faulting PC mid-block), so a block can
+    // hold a constant SetLocation followed by the `jmp *rax` one -- and reusing
+    // the stale constant there would turn an indirect jump into a jump back
+    // into the middle of the same block.
+    static_next_loc.reset();
     if (location.IsValue()) {
         __ Str(context.X(location.GetValue()), MemOperand(state, state_offset_current_loc));
     } else {
         __ Mov(ip, location.GetImm().Get());
         __ Str(ip, MemOperand(state, state_offset_current_loc));
+        // Remember the constant for the terminal: Translate(ir::Inst*) clears
+        // this again for every instruction that is not a SetLocation, so it
+        // only survives to the terminal when nothing could have changed
+        // state->current_loc in between.
+        static_next_loc = location.GetImm().Get();
     }
 }
 
