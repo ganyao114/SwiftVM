@@ -20,7 +20,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | TSO 内存序 | relaxed/acqrel(LRCPC 快路径 + REP 栅栏 + 栈/TLS 松弛） | litmus + 双模式矩阵 |
 | SMC | 写保护 + 信号失效；MT 安全 QSBR epoch 回收（SVM_SMC_MT) | smc=99 + clone_smc_mt 512 次补丁 |
 | 函数级编译 | FunctionBaseCompile 默认启用；CallLambda 函数级放开 | func_tests 3 模式 checksum |
-| 静态寄存器映射 | RSP→x19 默认启用 | 矩阵 |
+| 静态寄存器映射 | RSP→x19、RBX→x20、RBP→x21 默认启用 | 矩阵 |
 | 异常处理 | host 信号链（SMC→JIT fault→PageFatal)；非对齐 LOCK 语义按 Rosetta 仲裁 | bad_pointer=1 等 |
 
 **9-binary 矩阵**（双 TSO 模式全过）:`hello=42 loop=186 real_hello=42 real_hello_musl=42 real_busy=0 real_busy_musl=0 bad_pointer=1 smc=99 clone_futex_smoke=0`
@@ -51,7 +51,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_SMC_MT | 0/1 | 1 | MT SMC 回收 kill switch |
 | SVM_FUNC_BASE | 0/1 | 1 | 函数级编译 |
 | SVM_ENABLE_JIT | 0/1 | 1 | 0=纯解释器 |
-| SVM_STATIC_REGS | 0/1 | 1 | RSP→x19 |
+| SVM_STATIC_REGS | 0/1 | 1 | RSP→x19、RBX→x20、RBP→x21 |
 | SVM_UNIFORM_ELIM | 0/1 | 1 | uniform 消除 pass |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_FORCE_FIXED_STACK | 0/1 | — | 诊断：强制 guest 栈 fixed/fallback(布局 flake repro) |
@@ -61,6 +61,8 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 
 ## 4. 测试与验证体系
 
+- **本机（macOS arm64）跑通完整套件的前置条件**:系统缺 cmake 时可借用任一 3.21+ 的 cmake;vendored fmt 9.1.1 与 Apple clang 21 的 `consteval` 冲突，需 `-DCMAKE_CXX_FLAGS=-DFMT_CONSTEVAL=`;ANTLR 需 JDK,且 `find_program(JAVA ...)` 结果会被 CMake 缓存,换 JDK 后必须显式 `-DJAVA=<path>` 覆盖否则仍用旧值（而 "Antlr4 gen success" 是无条件打印的，不能作为成功依据）。
+- **全套件基线**(2026-07-26,含上述 P0 修复):非 fuzz 24 PASS / 1 FAIL(仅遗留 #10b),fuzz **32 PASS / 0 FAIL**(2 次 Unicorn flake 重试)。
 - **差分 fuzz**(`swift_test "Fuzz x86*"`,Unicorn oracle):32 族 per-case 运行。**已知 flake:Unicorn 自身偶发 SIGILL(rc=132,x86_fuzz.cpp:6023/6030)~10-30%/run，会 abort 整个 Catch2**——方法论：per-case 循环 + 每例 3 次重试；管道中 `$?` 是 grep 的码不是测试的码。
 - **Rosetta 仲裁**(`arch -x86_64`):ISA 语义 ground truth（真实 x86 边界行为，如 FCOM IE、FIST 边界、非对齐 LOCK 信号形态）。
 - **raw 测试二进制**(`source/translator/linux/tests/`,.S + 生成器 + 已检入 ELF):smoke/coverage/MT/TSO/x87 各家族；`build_real_tests.sh` 在 orb ubuntu-x64 VM 或 `clang -target x86_64-linux-gnu -nostdlib -static` 重建。
@@ -69,27 +71,117 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 
 ---
 
+## 4b. AVX / AVX2（2026-07-26 落地的**地基**，默认关闭，**未经任何执行验证**）
+
+诚实定级：**这不是一个可用特性，是一层地基。** 代码能构建、门控正确、对现有路径零影响，但**没有任何一条 VEX 指令被真正执行过**——无差分测试、无 fuzz 覆盖。且因为 C4 纪律未打开 CPUID 的 AVX 位（见下），正常 guest 根本不会走到这些路径。
+
+### 关键发现：distorm 对 VEX.L 的静默丢失（本轮最有价值的产出）
+
+vendored distorm 快照是 **AVX1-only**（2018 年生成，`insts.c` 里 `OT_YXMM`/`OT_VYXMM` 出现 0 次）。实测：
+
+| 类别 | VEX.L=1 行为 |
+|---|---|
+| AVX1 float/搬移(`VMOVDQU/A`、`VMOVUPS`、`VADDPS`、`VBROADCASTSS`) | 正确，`index=R_YMM0` `size=256` |
+| **AVX2 packed 整数**(`VPXOR`/`VPAND`/`VPADD*`/`VPCMP*`/`VPSHUFB`/`VPMOVMSKB`) | **静默按 128 位报告，且与 L=0 形式在 API 层完全无法区分** |
+| AVX2-only 助记符(`VPBROADCAST*`/`VINSERTI128`/`VPERM2I128`/`VPERMD`/gather) | `I_UNDEFINED`,不可解码 |
+
+实测对照（两条指令的 mnemonic id 与全部操作数**完全相同**）：
+```
+vpxor xmm0,xmm1,xmm2  C5 F1 EF C2 -> id=7009 ops[0] index=91(R_XMM0) size=128
+vpxor ymm0,ymm1,ymm2  C5 F5 EF C2 -> id=7009 ops[0] index=91(R_XMM0) size=128
+```
+**后果**：任何按 distorm 操作数宽度判断位宽的实现，都会把 256 位 vpxor 当成 128 位——只算低半、并按 C3 把高半清零，静默算错。
+**对策**：`DecodeVex()` 直接从原始指令字节解析 VEX 前缀，`VexInfo::l` 是位宽的**唯一**权威来源，任何路径都不得查询 distorm 的 size/寄存器类型。
+
+### 设计契约
+- **C1**:一个 YMM = **两个独立的 V128 IR 值**,永不创建 `ValueType::V256`。因为 ARM64 的 V 寄存器是 128 位而 `RegAlloc` 是一值一寄存器。结果是**零新增 IR opcode、零后端改动**——全部复用现有 V128 emitter 各调用两次。
+- **C2**:`union Ymm`(low/high 重叠、`sizeof` 仅 16 字节，存不下 256 位）已删除,替换为只存高半的 `std::array<Xmm,16> ymm_high`。实测 `sizeof(ThreadContext64)`=864 及 `xmms`=160/`ymm_high`=416/`interrupt`=672/`x87_regs`=736 **逐字节不变**,FXSAVE 与全部硬编码 uniform 偏移不受影响。
+- **C3**:VEX.128 写完 dst 必须清零 bits 255:128(与 legacy SSE 保留高半相反）;VEX.256 写满两半，**不适用** C3。
+- **C4**:CPUID 的 AVX/AVX2/XSAVE/OSXSAVE 位**一律未开**,XGETBV 仍 #UD。AVX 需要 XCR0 报告 YMM 状态位才成立，是一整套联动。
+- **C5**:全部挂在 `SVM_AVX=1` 后，默认关闭。
+
+### 已实现
+- VEX.128:`VMOVDQA/U`、`VMOVAPS/UPS/APD/UPD`、`VMOVNTDQ/NTDQA/NTPS/NTPD`、`VLDDQU`、`VMOVD/Q`、`VPXOR/POR/PAND/PANDN`、`VPADD{B,W,D,Q}`、`VPSUB{B,W,D,Q}`、`VPCMPEQ{B,W,D}`、`VPCMPGT{B,W,D}`、`VZEROUPPER/VZEROALL`
+- VEX.256(`decoder_avx.cc`):上述搬移/位运算/加减/比较，外加 `VPMINU{B,D}`/`VPMAXU{B,D}`、`VPMOVMSKB`(两半掩码按 `lo | hi<<16` 合并，是唯一两半不独立的)、`VPSHUFB`(AVX2 按 128 位 lane 独立，故每半一次 `VecTableLookup8` 精确)、`VBROADCASTSS`
+
+### VEX.128 审计结论（2026-07-26,静态核对 + 定向自差分）
+
+- **C3 高半清零：完整**。VEX.128 段内每一处向量目的写入（`DecodeVexBitwise`/`DecodeVexInt`/`DecodeVexMovVec` load 形式/`DecodeVexMovd`/`DecodeVexMovq` 的 xmm 目的）后面都紧跟 `ZeroYmmHigh`;`StoreMemory`(内存目的）与 `Dst(...)`(GPR/内存目的）正确地没有。已由主线独立复核。
+- **不可交换运算的源顺序：正确**。`vpandn` → `VecAndNot(right,left)` 得 `src2 & ~src1`(Intel 定义);`vpsub*` → `src1-src2`;`vpcmpgt*` → `src1>src2`。定向测试用 `ref(a,b) != ref(b,a)` 的不对称性断言把顺序钉死，反了必红。
+- **`vmovd`/`vmovq`:正确**,五个方向（GPR→xmm、xmm→GPR、mem↔xmm、xmm→xmm)均已执行验证，含零扩展。
+- **`VexInfo` 的多数字段只写不读**:实际被消费的只有 `valid` 与 `l`;`vvvv`/`vvvv_unused`/`w`/`pp`/`mmmmm` 均无读取点。handler 是靠 distorm 的操作数**列表形状**区分 2/3 操作数形式，绕开了 vvvv==0 的歧义而非解决它。原注释宣称"vvvv 用作 cross-check"**不实，已订正**。保留字段本身合理（一旦某条编码 distorm 报得有歧义，原始前缀就是唯一权威——`l` 已经是这种情况）。
+- **定向覆盖已补**:`TEST_CASE("x86 avx vex128 directed C3 zeroing and source order")`,68 个块 × JIT/解释器自差分 + 手算期望,不用 Unicorn。运行前对 `ymm_high` 逐寄存器逐字节投毒，并用一条 legacy `movdqu` 对照块证明投毒能存活于非 C3 写入——否则"观察到高半为零"不构成证据。
+
+### 已知偏差与缺口
+1. **32 字节访存的故障语义**:x86 上 32 字节访问是**单个不可分割**的架构操作。C1 拆成两次 16 字节后：跨页且仅第二页未映射时，load 会**先写入目的低半再故障**（硬件保持整个 YMM 不变），store 会**先提交前 16 字节再故障**（硬件不产生部分存储）；上半故障报告的地址是 `base+16` 而非 `base`。仅对 SIGSEGV 后继续执行的 guest 可见（用户态故障处理、JIT guard page、mmap 探测型分配器）。要精确修复需先探测两半再提交，或引入真正的 32 字节 IR 访存 op（后端工作）。
+2. **32 字节对齐未强制**:`VMOVDQA`/`VMOVAPS`/`VMOVNT*` 应在未对齐时 #GP;沿用现有 SSE `MOVDQA` 同样忽略 16 字节规则的先例。可用机制是 `CheckMemoryAlignment(addr, Imm(31))`。
+3. **非临时提示降级**为普通存储。
+4. AVX2-only 指令族因 distorm 不解码而**受阻**，需更新 distorm 表或手工预解码。
+5. 上述 VEX.128 之外的 mnemonic（`VPERM2I128`、`VINSERTI128`、`VBROADCASTF128`、`VPACK*`、`VPUNPCK*`、移位、全部 FP 算术、`VPTEST` 等）一律 decline → 块 FALLBACK。
+
+### Unicorn 不能作为 AVX oracle（实测，2026-07-26）
+
+在建 AVX 差分 fuzz 时实测 Unicorn 2.1.4，结果**否定了原定的验证路径**：
+
+| 指令类别 | Unicorn 行为 |
+|---|---|
+| VEX.128 **搬移**(全部 16 种已实现形态：vmovdqu/dqa、vmovups/aps/upd/apd、vmovntps/ntpd/ntdq、vlddqu、vmovntdqa,以及 vmovd/vmovq 的 xmm↔m32/m64、xmm↔r32/r64、xmm↔xmm) | **正确**，可作 oracle |
+| VEX.128 **三操作数形式**(vpaddb/vpaddw/vpxor … 全部 18 条) | **静默算错**:Unicorn **完全忽略 VEX.vvvv,执行破坏性的 legacy SSE 形式**——`vpaddw xmm0,xmm1,xmm2` 实际跑成 `xmm0 = xmm0 + xmm2`,**不报错**。用哨兵预置 xmm0 后取回 `哨兵 OP src2` 得证（xmm0 为零时表现为"结果 == src2",容易误判成另一种 bug）。与 AVX 使能无关 |
+| VEX.256 全部 | `UC_ERR_INSN_INVALID`,**根本不执行** |
+
+VEX.256 的拒绝在下列组合下均复现：CPU 模型 default / HASWELL / SKYLAKE_CLIENT × 设与不设 `CR4.OSXSAVE|OSFXSR` × 在被模拟代码里 `XSETBV` 把 XCR0 设为 3 或 7。
+
+**后果**：AVX 的验证不能走差分 fuzz 的老路。可用组合是——搬移用 Unicorn 差分；ALU 运算用 **JIT vs 解释器自差分 + 手算定向期望**;**C3 的高半清零规则任何 oracle 都看不见**（观察高半需要 256 位存储，而 Unicorn 不执行），只能靠定向自差分覆盖。
+
+这也是一条方法论教训：**oracle 静默算错比 oracle 报错危险得多**。首次跑 AVX fuzz 得到 1308 处"不一致"，若不手算核对就会全部误判为本方实现的 bug。
+
+### 已建立的 AVX 测试（三例，均在 `SVM_AVX=1` 下运行，未设时自跳过）
+
+| 用例 | oracle | 覆盖 |
+|---|---|---|
+| `Fuzz x86 avx vex128` | **Unicorn 差分** | 仅**数据搬移**——7 种 load、9 种 store、两个方向的 reg-reg,以及 vmovd/vmovq 与 GPR/内存之间的全部形态。三个向量寄存器都回写，旁路 clobber 会被抓到 |
+| `AVX VEX.128 packed integer directed edge vectors` | **手算字面量 + JIT/解释器自差分** | 18 条 ALU 运算。**双层**:第一层用 18 组手算的 16 字节字面量把参考模型钉死（否则模型与实现同错会一起变绿）;第二层 39 组边界操作数 × 6 种操作数形态（含 dst 别名到 src1/src2)在两种后端上跑，共 4212 次比较 |
+| `x86 avx vex128 directed C3 zeroing and source order` | **`ymm_high` 投毒 + 自差分 + 手算** | **C3 高半清零**（无 oracle 可见，只能这样覆盖）+ 不可交换运算源顺序。用一条 legacy `movdqu` 对照块证明投毒能存活于非 C3 写入，否则"高半为零"不构成证据 |
+
+两处**变异测试**证明断言有牙：把 `vpaddb` 的 opcode 改成 `vpaddw` → 手算层报错而自差分层**沉默**（两个后端一致地错，这正是纯自差分抓不到、手算层才能抓的情形）；改坏一个字面量字节 → 第一层报错。
+
+### 下一步（按依赖顺序）
+① ~~建 AVX 差分 fuzz~~ 已完成（见上表，注意 oracle 必须按能力矩阵选）;② 补齐被路由但仅有 256 位 handler 的那批 mnemonic 的 VEX.128 形式;③ **VEX.256 仍无任何 oracle**——需要 Rosetta 仲裁或更新的 Unicorn,这是 256 位路径能否可信的前提;④ 决定 32 字节访存的故障语义（接受偏差 or 引入 IR 级 32 字节 op);⑤ 全部验证通过后，才按 C4 的联动要求打开 CPUID+XCR0。
+
+---
+
 ## 5. 已知问题与遗留
 
 ### P0 — 潜伏 bug（触发面已收窄但未根治）
 
-1. **防御性 spill 路径误编译**:GetTmpX 池耗尽边缘的 spill 路径会产生错误代码（曾观测 pc=0xffc00000=不定 f32 NaN 常量被当代码地址跳）。NaN fixup 已降压（16→8 临时）大幅降低暴露面，但 spill 路径本身的 bug 未修。任何新的高压力 emitter 都可能再次踩中。**新增保留寄存器必须审计所有 emitter 的峰值临时数**（池=19，保留清单见 trampolines.cpp)。
-2. **vixl ip0/ip1 clobber 类**:vixl 宏物化不可编码立即数走 x16/x17，会静默踩掉分配到这里的 emitter 临时。当前缓解=涉事 emitter 入口 `context.ReserveTmpX(ip0/ip1)`(EmitX87Op、EmitVecFloatNaNFixup 已做），但**全 JIT 其他 emitter 未审计**。
+1. ~~**防御性 spill 路径误编译**~~:**已根治**。根因不在 `JitContext` 的延迟回写协议，而在 `LinearScanAllocator::SpillAtInterval`——整数 grow 分支用 `slot = spill_slot_cursor`,而 cursor 存的是**上一次** grow 的索引（`GrowSpillStack` 先赋 cursor 再 resize),于是第 2、4、6…… 次 GPR spill 与前一次**共用同一个 slot**;同时 SIMD spill 只标记 `spill_slots[slot]` 而不标记 `slot+1`,整数分支的线性扫描会把上半 slot 再发给别人，两个 16 字节访问互相踩。两者都无断言保护，静默产生错误数据——这正是 f32 不定 NaN `0xffc00000` 能进入 `State::current_loc` 并被当作 guest PC 派发的路径。修复：grow 时取 `spill_slots.size()`,SIMD 两个 slot 都标记并按偶数下标对齐（保证 16 字节 `Ldr/Str q` 的缩放偏移可编码），删除诱发该错误的 `spill_slot_cursor` 成员。回归测试见 `main_case.cpp`"Register allocation gives every spilled value a private slot"——在修复前该测试红（标量场景 5 处碰撞），修复后绿。
+   遗留（**不是**误编译，失败时响亮）:spill 的 interval 不入 `active_lives`(`register_alloc_pass.cpp:100-114`),导致 `ExpireOldIntervals` 的 MEM 分支与 `FreeSpill` 恒不可达,slot 只增不回收,压满 `kMaxSpillSlots=64` 时断言退出。
+2. **vixl ip0/ip1 clobber 类**（最热点已消除，仍未全面根治）:vixl 的 `tmp_list_` = {x16,x17}(`macro-assembler-aarch64.cc:323`),而 `trampolines.cpp` 的保留清单**不含 x16/x17**。x86 配置下可分配 GPR 池共 16 个,`GetFirstClear` 低位优先,**x16/x17 恰是第 13/14 个**——只要有 13 个值同时活跃,linear scan 就会把 guest 值放进 x16。`ReserveTmpX` 只作用于 `GetTmpX`,对分配器给出的 guest 值**零保护**。
+   已修：`SaveLogicalResultFlags`/`SaveNZ` 里的 `Bics(ip, ip, 0)`。vixl 会把 BIC 立即数取反成全 1,全 1 非合法逻辑立即数,故 LogicalMacro 必然物化进 x16——实测展开为 `mov x16, #0xffffffffffffffff` + `ands x11, x11, x16`。改用 `Tst(ip, ip)`(ANDS 的寄存器形式,NZCV 完全相同）后为单条 `tst`,不取 scratch。该路径由**每个 flag-setting 的 x86 OR/XOR**(含 `xor r,r` 清零惯用法）触达,是后端最热的暴露点。
+   未修，按暴露面排序：①`EmitVecMovMask`(`translator_alu.cpp:838`) 的 `Movi(V16B,hi,lo)` 每次必取 x16;②`EmitOperand`(`translator.cpp:244`) 只用 `IsImmAddSub` 判定就返回立即数 Operand,但下游是**逻辑**宏,任何 ≤4095 却非合法位掩码的立即数（如 `and r,0x123`)都会物化进 x16;③`EmitX87Op` 内 57 处编译期常量比较/掩码（`Cmp(w,0x7FFF)`、`And(fsw,0xC5FF)` 等）——该函数已 `ReserveTmpX(ip0/ip1)`,故只威胁分配到 x16/x17 的 guest 值,不威胁自身临时;④`MergeLogicalFlagsNZ`/`EmitTestFlags` 的非连续 NZCV 子集掩码（常见形状均可编码）。
+   **根治已落地**:x16/x17 加入 `trampolines.cpp` 的保留清单，池 16→14。该方案曾于 `96c6971` 全局保留、`5211e81` 因 SSE 高压回归而回退;**当年回归的真正原因很可能就是它把代码推上了当时静默损坏的 spill 路径**（见遗留 #1)——先修 spill 是重试它的前提。实测：非 fuzz 24 PASS/1 FAIL(仅既有 #10b),Unicorn 差分 fuzz **32 PASS/0 FAIL**;且最重的定向用例（glibc 72-block 函数、large lambda-free CFG、SSE batch B、x87)在池 14 下**spill 次数仍为 0**,即保留两个寄存器没有把任何现有 workload 推上 spill 路径。
+   仍建议保留 §3 的 emitter 纪律：新增高压 emitter 时仍需数峰值临时数（现池=14),`ReserveTmpX` 对 x16/x17 已无必要但无害。
+   **v31 已排除**:vixl 的 `fptmp_list_` = {d31} 同样未保留,但 `AllocFPR` 低位优先且空闲 FPR 有 28 个,v31 是最后一个才会发出;且经审计后端没有任何 emitter 会触发 vixl 取 FP scratch 的两条路径(`Fcmp` 立即数形式、mem-to-mem `Mov`)。实际不可达,无需处理。
 
 ### P1 — 忠实度差异（默认路径冻结，不影响 Unicorn fuzz)
 
-3. **helper vs 真实 x86 两处**(Rosetta 仲裁发现，Unicorn 与 helper 一致所以 fuzz 盲区）:①FIST 向上舍入时真实 x86 置 C1,helper 清 C1;②m64 load helper 预 quiet SNaN 但不把 IE 传给后续 FSQRT。修复需同步更新 fuzz 期望。
+3. ~~**helper vs 真实 x86 两处**~~:**已修复**。
+   ① **FIST/FISTP/FISTTP 的 C1**:`StoreInteger` 现按 SDM 语义置位——把整数结果加宽回 ext80 与源比较，结果**大于**源（向上舍入）才置 C1;inexact 标志只给大小、不给方向，所以必须比较。另发现一处连带缺陷：`Pop()` 无条件清 C1,而 FISTP 的 pop 属于同一条指令，会抹掉刚记录的舍入方向——已在 `StoreInt` 的分派处跨 pop 保留 C1（栈下溢时 `StackFault` 已把 C1 清零，该 0 同样被保留）。
+   ② **m32/m64 load 的 IE**:`LoadMemoryValue` 曾在**局部** `state` 上做 `f32/f64_to_extF80` 后直接丢弃，SNaN 被 quiet 了但 IE 从未进状态字。现已 `RaiseSoftFloat`。加宽到 ext80 恒为精确，故不会引入伪 PE/UE。
+   **实测结论与原判断不同**:Unicorn 差分**并未变红**（它根本不在 FIST/FLD 之后取 FSW,观察不到这两处），所以**不需要 fuzz 掩码**。真正变红的是定向断言 `x87 directed edge semantics`——它当时编码的正是旧的错误行为，其注释已明说"helper pre-quiets this SNaN without carrying IE"。该期望已订正，并新增一条正向断言把 C1 钉死：以 +1.5 走四种舍入模式，C1 必须恰好在结果为 2（向上舍入）的两种模式下置位。
+   仍遗留：`StoreFloat`(`x87.cpp:373`) 的 FST/FSTP 有同样的 C1 缺口（同为无条件清零，未在舍入上行时置位），本轮未动。
 4. **x87 opt-in reduced 语义**:FMUL/FDIV 走 f64 受控精度（文档化 diverge),FADD/FSUB 以 IXC 守卫保位精确；FILD m64 守卫 |x|≤2^53。provenance 标记 0xA5(canonical)/0xA6(reduced-ready)。
 5. **TOP 虚拟化默认 OFF**:stock bench 收益为零（bailout 主导），该模式 fuzz 覆盖薄。关键不变量已写入代码注释（pin 读取必经 TOP reload 的全寄存器 Ubfx 顺带清陈旧 mask)。
 
 ### P2 — 工程遗留
 
-6. **x87 14-byte legacy env**(FNSTENV 32-bit 形式）未实现；FIP/FDP 非逐指令精确（helper 路径正确，内联路径是块级近似）。
+6. **x87 14-byte legacy env**(FNSTENV/FLDENV 的 **16-bit 操作数形式**）未实现——`StoreEnvironment`/`LoadEnvironment`(`x87.cpp:1021`/`:1042`) 只写读 4 字节字段共 28 字节，即 32-bit 形式；16-bit 形式需 2 字节字段共 14 字节。FIP/FDP 非逐指令精确（helper 路径正确，内联路径是块级近似）。
 7. **16 个长模式非法 mnemonic**（普查确认不可达，记录不实现）;32-bit guest 模式所有构造点均 is_64bit=true。
-8. **静态映射仅 RSP→x19**:RBX/RBP 扩展未做（大改，需 FillStaticRegs/SpillStaticRegs 边界纪律）。
+8. ~~**静态映射仅 RSP→x19**~~:已完成。RBX→x20、RBP→x21 扩展随 `a1f8292` 落地，映射表见 `source/translator/x86/translator.cpp:37`。
 9. **CallLambda 多块函数 liveness** 保守回退（host-call 跨块活区间未证明）；>64 块+lambda 走块编译（任务 #43)。
 10. **aarch64 解释器 PageFatal 缺口**（既有）。
-11. **"Flag elimination" 定向断言失败**(main_case.cpp:476,master 基线即失败，非近期引入）。
+10b. **`Test runtime` 定向用例 SIGABRT**(`main_case.cpp:187`,rc=134)。已用 stash-重建法确认是 **master 基线既有失败**,与近期改动无关。该用例只构造 `AddressSpace` 并 push 两个空 block,不触及寄存器分配或 flags 发射。
+11. ~~**"Flag elimination" 定向断言失败**~~:已修复。根因是**测试陈旧**而非 pass 有 bug——测试（`7a909ba`,07-23）用 `Flags::All` 断言首个 SaveFlags 被删，但次日 `4003358` 引入的 carry 保护对任何含 C 的掩码一律不删。已把该场景改用 `Flags::NZ`（真正覆盖"死 pseudo 消除"），并新增一个 carry 掩码场景显式断言两个写都必须存活。
 12. **信号 backpatch TSO 不做的结论已固化**:FEX 用它服务非对齐机制而非优化；我们编译期对齐证明+廉价分支已获同等快路径，成本（并发代码补丁+I-cache 同步+信号链耦合）不值。
 
 ---
