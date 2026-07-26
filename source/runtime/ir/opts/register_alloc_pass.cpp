@@ -19,15 +19,28 @@ namespace swift::runtime::ir {
 // SVM_FUNC_BASE=0 on x87_bench_x86_64 and x87_topvirt_stress_x86_64 hit
 // exactly this and aborted the guest.
 //
-// 4 is measured, not guessed: 3 is the smallest headroom that lets both of
-// those guests run to completion, and 4 is the largest value that still leaves
-// every other workload in the suite (both real static-glibc programs included)
-// completely spill-free -- at 8, func_tests and real_busy start spilling.
-// Peak scratch demand for a single IR instruction was measured at 8 (the
-// vector NaN-fixup path behind VecFAdd/VecFMul/X87Op), so a saturated unit
-// that also emits one of those can still exhaust the pool; the real fix for
-// that is a scratch-release mechanism or per-opcode scratch accounting.
-static constexpr u32 kGprScratchReserve = 4;
+// The headroom is therefore not a tuning knob but a correctness obligation.
+// A previous fixed reserve of 4 was below the real peak of 8 (the vector
+// NaN-fixup path behind VecFAdd/VecFMul/X87Op) and survived only because those
+// opcodes happened never to appear in a saturated unit -- luck, not a
+// guarantee.
+//
+// It is now derived and *checked* instead of tuned:
+//
+//   backend::ScratchBudget declares, per opcode, how much scratch its emitter
+//   may hold at once (JitContext asserts nobody exceeds their declaration), and
+//   after allocating, this pass VERIFIES its own output: for every instruction
+//   it re-reads the mask it recorded and confirms the free-register count
+//   covers that instruction's budget plus one reload register for each spilled
+//   value the instruction names. A unit that fails is re-allocated with a
+//   larger reserve.
+//
+// Verifying beats reserving up front because the reserve is a whole-unit
+// property while the demand is per-instruction. Reserving the unit maximum
+// would charge every instruction of a function for the one VecFAdd inside it:
+// measured on this corpus that turned basic_coverage_smoke from zero spills
+// into 777. Verification only escalates the units where high demand actually
+// coincides with high pressure -- which, on the whole corpus, is none.
 
 struct LiveInterval {
     Inst* inst{};
@@ -67,18 +80,91 @@ static bool LiveRangeCrossesHostGPRWrite(const HostGPRWriteMap& writes,
 
 class LinearScanAllocator {
 public:
-    explicit LinearScanAllocator(HIRFunction* function, backend::RegAlloc* alloc)
-            : function(function), block(), reg_alloc(alloc), live_interval(), active_lives() {
+    explicit LinearScanAllocator(HIRFunction* function, backend::RegAlloc* alloc, u32 gpr_res,
+                                 u32 fpr_res)
+            : function(function), block(), reg_alloc(alloc), live_interval(), active_lives(),
+              gpr_reserve(gpr_res), fpr_reserve(fpr_res) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(function->MaxInstrCount());
     }
 
-    explicit LinearScanAllocator(Block* block, backend::RegAlloc* alloc)
-            : function(), block(block), reg_alloc(alloc), live_interval(), active_lives() {
+    explicit LinearScanAllocator(Block* block, backend::RegAlloc* alloc, u32 gpr_res, u32 fpr_res)
+            : function(), block(block), reg_alloc(alloc), live_interval(), active_lives(),
+              gpr_reserve(gpr_res), fpr_reserve(fpr_res) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(block->GetInstList().size());
+    }
+
+    [[nodiscard]] u32 SpillCount() const { return spill_count; }
+
+    // Re-reads the masks this scan recorded and confirms each instruction is
+    // left enough free registers for its emitter (backend::ScratchBudget) plus
+    // one reload register per distinct spilled value it names. This is exactly
+    // the condition JitContext::GetTmpX/GetTmpV depend on, checked against the
+    // data the JIT will actually consume rather than against a model of it.
+    [[nodiscard]] bool Verify() {
+        // Fast path, and the one every unit in the corpus takes: nothing was
+        // spilled, so no instruction needs a reload register, and AllocGPR /
+        // AllocFPR already refused to drop below `*_reserve` at every mask
+        // they recorded. Only an opcode whose budget exceeds that reserve can
+        // be short, which is a switch per instruction and no more.
+        if (spill_count == 0) {
+            bool ok = true;
+            auto check_budgets = [&](Block* lir_block) {
+                for (auto& inst : lir_block->GetInstList()) {
+                    auto need = backend::ScratchBudget(inst.GetOp());
+                    if (need.gpr <= gpr_reserve && need.fpr <= fpr_reserve) {
+                        continue;
+                    }
+                    if (inst.Id() >= reg_alloc->MapCount()) {
+                        continue;
+                    }
+                    ok &= static_cast<u32>(reg_alloc->DirtyGPR(inst.Id()).GetClearCount()) >=
+                                  need.gpr &&
+                          static_cast<u32>(reg_alloc->DirtyFPR(inst.Id()).GetClearCount()) >=
+                                  need.fpr;
+                }
+            };
+            if (function) {
+                for (auto* hir_block : function->GetHIRBlocks()) {
+                    check_budgets(hir_block->GetBlock());
+                }
+            } else {
+                check_budgets(block);
+            }
+            return ok;
+        }
+        bool ok = true;
+        auto check_block = [&](Block* lir_block) {
+            u32 last_id = 0;
+            for (auto& inst : lir_block->GetInstList()) {
+                last_id = std::max<u32>(last_id, inst.Id());
+                ok &= CheckInstr(&inst, 0, 0);
+            }
+            // The block terminal is emitted after the last instruction's
+            // TickIR and shares its mask, so any spilled value the terminal
+            // reads reloads into that instruction's remaining headroom.
+            u32 term_gpr = 0, term_fpr = 0;
+            CountTerminalReloads(lir_block->GetTerminal(), term_gpr, term_fpr);
+            if ((term_gpr || term_fpr) && last_id < reg_alloc->MapCount()) {
+                for (auto& inst : lir_block->GetInstList()) {
+                    if (inst.Id() == last_id) {
+                        ok &= CheckInstr(&inst, term_gpr, term_fpr);
+                        break;
+                    }
+                }
+            }
+        };
+        if (function) {
+            for (auto* hir_block : function->GetHIRBlocks()) {
+                check_block(hir_block->GetBlock());
+            }
+        } else {
+            check_block(block);
+        }
+        return ok;
     }
 
     void AllocateRegisters() {
@@ -147,6 +233,78 @@ public:
     }
 
 private:
+    // True when a value ends up in State::spill_area, so every access to it
+    // costs a scratch register.
+    bool IsSpilled(const Value& value) {
+        return value.Defined() &&
+               reg_alloc->ValueType(ResolveBitCastSource(value)) == backend::RegAlloc::MEM;
+    }
+
+    void CountTerminalReloads(const Terminal& term, u32& gpr, u32& fpr) {
+        auto count = [&](const Value& value) {
+            if (!IsSpilled(value)) {
+                return;
+            }
+            (IsFloatValue(ResolveBitCastSource(value).Def()) ? fpr : gpr)++;
+        };
+        std::function<void(const Terminal&)> walk = [&](const Terminal& t) {
+            VisitVariant<void>(t, [&](auto term_case) {
+                using T = std::decay_t<decltype(term_case)>;
+                if constexpr (std::is_same_v<T, terminal::If>) {
+                    count(term_case.cond);
+                    walk(term_case.then_);
+                    walk(term_case.else_);
+                } else if constexpr (std::is_same_v<T, terminal::Switch>) {
+                    count(term_case.value);
+                    for (auto& c : term_case.cases) {
+                        walk(c.then);
+                    }
+                } else if constexpr (std::is_same_v<T, terminal::Condition>) {
+                    walk(term_case.then_);
+                    walk(term_case.else_);
+                } else if constexpr (std::is_same_v<T, terminal::CheckHalt>) {
+                    walk(term_case.else_);
+                }
+            });
+        };
+        walk(term);
+    }
+
+    bool CheckInstr(Inst* inst, u32 extra_gpr, u32 extra_fpr) {
+        const u32 id = inst->Id();
+        if (id >= reg_alloc->MapCount()) {
+            return true;  // no mask was recorded for this id
+        }
+        auto need = backend::ScratchBudget(inst->GetOp());
+        u32 need_gpr = need.gpr + extra_gpr;
+        u32 need_fpr = need.fpr + extra_fpr;
+        // One reload register per DISTINCT spilled value the instruction
+        // names -- distinct because JitContext memoizes reloads per
+        // (instruction, value).
+        StackVector<u32, 8> counted{};
+        auto add = [&](const Value& value) {
+            if (!IsSpilled(value)) {
+                return;
+            }
+            auto source = ResolveBitCastSource(value);
+            if (std::find(counted.begin(), counted.end(), source.Id()) != counted.end()) {
+                return;
+            }
+            counted.push_back(source.Id());
+            (IsFloatValue(source.Def()) ? need_fpr : need_gpr)++;
+        };
+        for (auto& value : inst->GetValues()) {
+            add(value);
+        }
+        if (inst->HasValue()) {
+            add(Value{inst});
+        }
+        auto gprs = reg_alloc->DirtyGPR(id);
+        auto fprs = reg_alloc->DirtyFPR(id);
+        return static_cast<u32>(gprs.GetClearCount()) >= need_gpr &&
+               static_cast<u32>(fprs.GetClearCount()) >= need_fpr;
+    }
+
     // Number of RegAlloc map entries (matches how the caller sized it).
     u32 InstrCount() {
         return function ? static_cast<u32>(function->MaxInstrCount())
@@ -401,8 +559,12 @@ private:
         return value_type >= ValueType::V8 && value_type <= ValueType::V256;
     }
 
+    // The mask this pass records for an instruction is exactly `active_*` at
+    // the moment that instruction is reached, so refusing to allocate below
+    // the reserve here is what guarantees GetTmpX/GetTmpV find a register at
+    // every instruction of the unit.
     int AllocGPR() {
-        if (static_cast<u32>(active_gprs.GetClearCount()) <= kGprScratchReserve) {
+        if (static_cast<u32>(active_gprs.GetClearCount()) <= gpr_reserve) {
             return -1;
         }
         if (auto alloc = active_gprs.GetFirstClear(); alloc >= 0) {
@@ -413,6 +575,9 @@ private:
     }
 
     int AllocFPR() {
+        if (static_cast<u32>(active_fprs.GetClearCount()) <= fpr_reserve) {
+            return -1;
+        }
         if (auto alloc = active_fprs.GetFirstClear(); alloc >= 0) {
             active_fprs.Mark(alloc);
             return alloc;
@@ -504,6 +669,8 @@ private:
     List<LiveInterval> active_lives;
     backend::GPRSMask active_gprs;
     backend::FPRSMask active_fprs;
+    const u32 gpr_reserve{0};
+    const u32 fpr_reserve{0};
     Vector<bool> spill_slots{};
     // Spill telemetry (reported at the end of AllocateRegisters): spilling
     // has never triggered on current workloads, so any hit is worth a log
@@ -623,14 +790,90 @@ void RegisterAllocPass::Run(HIRBuilder* hir_builder, backend::RegAlloc* reg_allo
     }
 }
 
+// Allocate, then check the result against what the emitters actually need
+// (LinearScanAllocator::Verify). Escalating the reserve only on failure is
+// what keeps the guarantee free: the first attempt reserves the ordinary
+// emitter shape and, on this corpus, always passes.
+//
+// The escalation ladder is finite and its last rung is sufficient by
+// construction -- reserving the unit's largest opcode budget plus its largest
+// possible reload count leaves every instruction more free registers than it
+// can ask for -- so the loop cannot spin.
+static void CollectUnitBudget(Block* block, u32& gpr, u32& fpr, u32& reload_bound) {
+    for (auto& inst : block->GetInstList()) {
+        auto need = backend::ScratchBudget(inst.GetOp());
+        gpr = std::max<u32>(gpr, need.gpr);
+        fpr = std::max<u32>(fpr, need.fpr);
+        reload_bound = std::max<u32>(reload_bound, static_cast<u32>(inst.GetValues().size()) + 1);
+    }
+}
+
+static void CollectUnitBudget(HIRFunction* function, u32& gpr, u32& fpr, u32& reload_bound) {
+    for (auto* hir_block : function->GetHIRBlocks()) {
+        CollectUnitBudget(hir_block->GetBlock(), gpr, fpr, reload_bound);
+    }
+}
+
+template <typename Unit>
+static void RunVerified(Unit* unit, backend::RegAlloc* reg_alloc) {
+    // Attempt one: the ordinary emitter shape. Every unit in the corpus stops
+    // here, so nothing above this point may walk the instruction list -- the
+    // whole-unit budget scan below is deliberately deferred until an escalation
+    // is known to be necessary (func_tests is dominated by translation cost and
+    // notices a redundant pass).
+    {
+        LinearScanAllocator scan{unit, reg_alloc, backend::kDefaultScratchGPR,
+                                 backend::kDefaultScratchFPR};
+        scan.AllocateRegisters();
+        if (scan.Verify()) {
+            return;
+        }
+    }
+    u32 unit_gpr = 0, unit_fpr = 0, reload_bound = 0;
+    CollectUnitBudget(unit, unit_gpr, unit_fpr, reload_bound);
+
+    // A reserve at or above the pool size would leave the scan nothing to
+    // allocate, so each rung is clamped to leave one register allocatable.
+    // On the ARM64 pools this never binds (the pool is far larger than any
+    // opcode budget); it only matters for the artificially small masks unit
+    // tests use to force the spill path.
+    const auto pool_gpr = static_cast<u32>(backend::GPRSMask{reg_alloc->GetGprs()}.GetClearCount());
+    const auto pool_fpr = static_cast<u32>(backend::FPRSMask{reg_alloc->GetFprs()}.GetClearCount());
+    const auto clamp = [](u32 want, u32 pool) { return pool ? std::min(want, pool - 1) : 0u; };
+    const u32 base_gpr = std::max<u32>(unit_gpr, backend::kDefaultScratchGPR);
+    const u32 base_fpr = std::max<u32>(unit_fpr, backend::kDefaultScratchFPR);
+    const struct {
+        u32 gpr;
+        u32 fpr;
+    } ladder[] = {
+            {clamp(base_gpr, pool_gpr), clamp(base_fpr, pool_fpr)},
+            {clamp(base_gpr + reload_bound, pool_gpr), clamp(base_fpr + reload_bound, pool_fpr)},
+    };
+    for (auto& rung : ladder) {
+        reg_alloc->ResetAllocations();
+        LinearScanAllocator scan{unit, reg_alloc, rung.gpr, rung.fpr};
+        scan.AllocateRegisters();
+        if (scan.Verify()) {
+            LOG_WARNING("RegisterAllocPass: scratch reserve escalated to {}/{}", rung.gpr,
+                        rung.fpr);
+            return;
+        }
+    }
+    // Only reachable when the register pool itself is smaller than one
+    // instruction's scratch demand, which no ARM64 configuration produces. Say
+    // so here, where the unit is still identifiable, instead of letting the
+    // JIT walk into "No free temporary GPR" halfway through an instruction.
+    LOG_WARNING("RegisterAllocPass: pool {}/{} cannot cover scratch demand {}/{} (+{} reloads); "
+                "emitting with the largest workable reserve",
+                pool_gpr, pool_fpr, base_gpr, base_fpr, reload_bound);
+}
+
 void RegisterAllocPass::Run(HIRFunction* hir_function, backend::RegAlloc* reg_alloc) {
-    LinearScanAllocator linear_scan{hir_function, reg_alloc};
-    linear_scan.AllocateRegisters();
+    RunVerified(hir_function, reg_alloc);
 }
 
 void RegisterAllocPass::Run(ir::Block* block, backend::RegAlloc* reg_alloc) {
-    LinearScanAllocator allocator{block, reg_alloc};
-    allocator.AllocateRegisters();
+    RunVerified(block, reg_alloc);
 }
 
 void VRegisterAllocPass::Run(ir::Block* block) {

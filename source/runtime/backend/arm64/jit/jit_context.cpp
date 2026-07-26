@@ -101,7 +101,7 @@ Register JitContext::SpillGPR(const ir::Value& value) {
         if (auto it = spill_def_scratch.find(value.Id()); it != spill_def_scratch.end()) {
             return XRegister(it->second);
         }
-        auto tmp = GetTmpX();
+        auto tmp = GetSpillTmpX();
         spill_def_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
         pending_spill_writes.push_back({slot.offset, static_cast<u8>(tmp.GetCode()), false});
         return tmp;
@@ -109,8 +109,19 @@ Register JitContext::SpillGPR(const ir::Value& value) {
     // Use access: reload from the spill slot. Any write-back of a value
     // defined by an earlier instruction has already been flushed at this
     // instruction's TickIR, so the slot is current.
-    auto tmp = GetTmpX();
+    //
+    // One reload per (instruction, value): a second access within the same
+    // instruction reuses the register the first reload landed in. The slot
+    // cannot change under us mid-instruction (only TickIR flushes writes), and
+    // emitters never write through a source register, so the reuse is exact --
+    // and it is what makes the reload demand of an instruction bounded by the
+    // number of distinct values it names.
+    if (auto it = spill_use_scratch.find(value.Id()); it != spill_use_scratch.end()) {
+        return XRegister(it->second);
+    }
+    auto tmp = GetSpillTmpX();
     __ Ldr(tmp, MemOperand(state, offset));
+    spill_use_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
     return tmp;
 }
 
@@ -123,13 +134,18 @@ VRegister JitContext::SpillFPR(const ir::Value& value) {
         if (auto it = spill_def_scratch.find(value.Id()); it != spill_def_scratch.end()) {
             return VRegister::GetVRegFromCode(it->second);
         }
-        auto tmp = GetTmpV();
+        auto tmp = GetSpillTmpV();
         spill_def_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
         pending_spill_writes.push_back({slot.offset, static_cast<u8>(tmp.GetCode()), true});
         return tmp;
     }
-    auto tmp = GetTmpV();
+    // See SpillGPR: one reload per (instruction, value).
+    if (auto it = spill_use_scratch.find(value.Id()); it != spill_use_scratch.end()) {
+        return VRegister::GetVRegFromCode(it->second);
+    }
+    auto tmp = GetSpillTmpV();
     __ Ldr(tmp.Q(), MemOperand(state, offset));
+    spill_use_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
     return tmp;
 }
 
@@ -145,12 +161,59 @@ void JitContext::FlushSpillWrites() {
     pending_spill_writes.clear();
 }
 
+backend::ScratchNeed JitContext::CurrentBudget() const {
+    // Block terminals are emitted after the last instruction's TickIR and
+    // share its masks; they take no scratch of their own, so charging them to
+    // the default budget is exact.
+    return cur_inst ? backend::ScratchBudget(cur_inst->GetOp())
+                    : backend::ScratchNeed{backend::kDefaultScratchGPR,
+                                           backend::kDefaultScratchFPR};
+}
+
 XRegister JitContext::GetTmpX() {
+    // Budget check first: an emitter that outgrows its declared budget must
+    // say so by name here, at the instruction that did it, rather than
+    // surface later as a register-pool exhaustion PANIC in some unrelated
+    // high-pressure block (or, if the pool happened to have room, as no
+    // symptom at all until the pressure changes).
+    const u32 used = static_cast<u32>(cur_dirty_gprs.GetMarkedCount() -
+                                      tick_dirty_gprs.GetMarkedCount()) -
+                     spill_tmp_gprs;
+    ASSERT_MSG(used < CurrentBudget().gpr,
+               "scratch GPR budget exceeded emitting opcode {}: declared {}, asked for {}. "
+               "Raise its entry in backend::ScratchBudget (reg_alloc.cpp)",
+               cur_inst ? static_cast<u32>(cur_inst->GetOp()) : 0u, CurrentBudget().gpr, used + 1);
     if (auto alloc = cur_dirty_gprs.GetFirstClear(); alloc >= 0) {
         cur_dirty_gprs.Mark(alloc);
         return XRegister(alloc);
     }
+    // Unreachable while the linear scan honours ScratchBudget: it never
+    // assigns a value if that would drop the free count to the unit's
+    // reserve, and the assert above caps demand at that same reserve.
     PANIC("No free temporary GPR");
+}
+
+// Reload scratch is tracked apart from emitter scratch so the per-opcode
+// budget above stays a statement about the emitter alone. What bounds *this*
+// counter is the memoization in SpillGPR/SpillFPR (one register per distinct
+// value per instruction) together with the allocation pass, which verifies
+// that every instruction was left room for exactly that many.
+XRegister JitContext::GetSpillTmpX() {
+    if (auto alloc = cur_dirty_gprs.GetFirstClear(); alloc >= 0) {
+        cur_dirty_gprs.Mark(alloc);
+        spill_tmp_gprs++;
+        return XRegister(alloc);
+    }
+    PANIC("No free temporary GPR for spill reload");
+}
+
+VRegister JitContext::GetSpillTmpV() {
+    if (auto alloc = cur_dirty_fprs.GetFirstClear(); alloc >= 0) {
+        cur_dirty_fprs.Mark(alloc);
+        spill_tmp_fprs++;
+        return VRegister::GetVRegFromCode(alloc);
+    }
+    PANIC("No free temporary VREG for spill reload");
 }
 
 Register JitContext::GetTmpGPR(ir::ValueType type) {
@@ -159,6 +222,13 @@ Register JitContext::GetTmpGPR(ir::ValueType type) {
 }
 
 VRegister JitContext::GetTmpV() {
+    const u32 used = static_cast<u32>(cur_dirty_fprs.GetMarkedCount() -
+                                      tick_dirty_fprs.GetMarkedCount()) -
+                     spill_tmp_fprs;
+    ASSERT_MSG(used < CurrentBudget().fpr,
+               "scratch FPR budget exceeded emitting opcode {}: declared {}, asked for {}. "
+               "Raise its entry in backend::ScratchBudget (reg_alloc.cpp)",
+               cur_inst ? static_cast<u32>(cur_inst->GetOp()) : 0u, CurrentBudget().fpr, used + 1);
     if (auto alloc = cur_dirty_fprs.GetFirstClear(); alloc >= 0) {
         cur_dirty_fprs.Mark(alloc);
         return VRegister::GetVRegFromCode(alloc);
@@ -403,10 +473,16 @@ void JitContext::TickIR(ir::Inst* instr) {
     // slot.
     FlushSpillWrites();
     spill_def_scratch.clear();
+    spill_use_scratch.clear();
     cur_inst = instr;
     reg_alloc.SetCurrent(instr);
     cur_dirty_gprs = reg_alloc.GetDirtyGPR();
     cur_dirty_fprs = reg_alloc.GetDirtyFPR();
+    // Baseline for the per-instruction scratch budget (see GetTmpX).
+    tick_dirty_gprs = cur_dirty_gprs;
+    tick_dirty_fprs = cur_dirty_fprs;
+    spill_tmp_gprs = 0;
+    spill_tmp_fprs = 0;
 }
 
 MacroAssembler& JitContext::GetMasm() { return masm; }
