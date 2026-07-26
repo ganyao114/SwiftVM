@@ -38,6 +38,8 @@ public:
     [[nodiscard]] XRegister GetTmpX();
     [[nodiscard]] Register GetTmpGPR(ir::ValueType type);
     [[nodiscard]] VRegister GetTmpV();
+    // Exclude a register from GetTmpX for the current IR instruction only.
+    void ReserveTmpX(const XRegister& reg);
 
     void Forward(ir::Location location);
     void ReturnToDispatcher(const Register& location);
