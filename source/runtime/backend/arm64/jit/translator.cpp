@@ -14,13 +14,22 @@ namespace swift::runtime::backend::arm64 {
 JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()) {
     auto& config = ctx.GetConfig();
     use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
+    const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
+    const char* x87_jit = std::getenv("SVM_X87_JIT");
+    x87_topvirt_requested =
+            topvirt && std::strcmp(topvirt, "0") != 0 &&
+            x87_jit && std::strcmp(x87_jit, "0") != 0;
 }
 
 
 
 void JitTranslator::Translate(ir::Block* block) {
     cur_block = block;
+    if (x87_topvirt_requested && !translating_function) {
+        AnalyzeX87TopVirt(block);
+    }
     context.SetCurrent(block);
+    BeginX87TopVirtBlock(block);
     // Function-mode IdByRPO assigns global instruction ids, while
     // Block::MaxInstrId remains the block-local count established at decode.
     // Never shrink a function-sized bitmap back to that local count: memory
@@ -33,7 +42,9 @@ void JitTranslator::Translate(ir::Block* block) {
         if (inst.Id() < disable_instructions.size() && disable_instructions.test(inst.Id())) {
             continue;
         }
+        PrepareX87TopCache(&inst);
         Translate(&inst);
+        FinishX87TopCache(&inst);
     }
 
     FlushFlags();
@@ -42,11 +53,16 @@ void JitTranslator::Translate(ir::Block* block) {
 
 void JitTranslator::Translate(ir::HIRFunction* function) {
     ASSERT(function);
+    translating_function = true;
+    if (x87_topvirt_requested) {
+        AnalyzeX87TopVirt(function);
+    }
     context.SetCurrent(function->GetFunction());
     disable_instructions.resize(function->MaxInstrCount());
     for (auto& hir_block : function->GetHIRBlocksRPO()) {
         Translate(hir_block.GetBlock());
     }
+    translating_function = false;
 }
 
 void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {

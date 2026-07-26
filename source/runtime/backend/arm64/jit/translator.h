@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <vector>
 #include "base/common_funcs.h"
 #include "jit_context.h"
@@ -59,6 +60,39 @@ public:
 #undef INST
 
 private:
+    struct X87TopExpression {
+        // relative=true means (translation-unit entry TOP + value) & 7.
+        // Otherwise value is an architectural absolute TOP.
+        bool relative{true};
+        u8 value{};
+
+        bool operator==(const X87TopExpression&) const = default;
+    };
+
+    struct X87TopTransfer {
+        // Unknown transfers (currently FLDENV) make the whole function
+        // ineligible. reset=true means the input TOP is discarded.
+        bool known{true};
+        bool reset{};
+        u8 value{};
+    };
+
+    struct X87TopBlockInfo {
+        bool eligible{};
+        X87TopExpression entry{};
+        X87TopExpression exit{};
+    };
+
+    [[nodiscard]] X87TopTransfer AnalyzeX87TopTransfer(ir::Block* block) const;
+    [[nodiscard]] X87TopExpression ApplyX87TopTransfer(
+            const X87TopExpression& entry,
+            const X87TopTransfer& transfer) const;
+    void AnalyzeX87TopVirt(ir::Block* block);
+    void AnalyzeX87TopVirt(ir::HIRFunction* function);
+    void BeginX87TopVirtBlock(ir::Block* block);
+    void PrepareX87TopCache(ir::Inst* inst);
+    void FinishX87TopCache(ir::Inst* inst);
+
     void AcquireUnalignedAtomicLock(const Register& scratch);
     void ReleaseUnalignedAtomicLock();
     void EmitPlainAtomicLoad(ir::ValueType type,
@@ -191,6 +225,18 @@ private:
     // True when Config::memory_base / page_table is set: every guest memory
     // access goes through the pt bias register (guest addr + pt = host addr).
     bool use_memory_base{false};
+    // TOP virtualization is deliberately a second opt-in layered on the
+    // reduced x87 JIT. It stays default-off until host Unicorn qualification
+    // has covered the new block/function paths.
+    bool x87_topvirt_requested{false};
+    bool x87_topvirt_function_eligible{false};
+    bool translating_function{false};
+    bool x87_top_block_codegen_enabled{false};
+    bool x87_top_cache_valid{false};
+    bool x87_top_cache_for_current{false};
+    bool x87_pin_cache_possible{false};
+    bool x87_pin_cache_for_current{false};
+    std::map<ir::Block*, X87TopBlockInfo> x87_top_blocks{};
 };
 
 }

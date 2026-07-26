@@ -10,6 +10,322 @@
 
 namespace swift::runtime::backend::arm64 {
 
+namespace {
+
+u8 AddTopDelta(u8 top, int delta) {
+    return static_cast<u8>((static_cast<int>(top) + delta) & 7);
+}
+
+int X87CommandTopDelta(u64 command_word, bool& known, bool& reset, u8& reset_top) {
+    const auto action =
+            static_cast<swift::x86::X87Action>(command_word & 0xFF);
+    const auto operation = static_cast<u8>((command_word >> 24) & 0xFF);
+    const u32 flags = static_cast<u32>(command_word >> 32);
+    known = true;
+    reset = false;
+    reset_top = 0;
+
+    switch (action) {
+        case swift::x86::X87Action::Init:
+            reset = true;
+            return 0;
+        case swift::x86::X87Action::LoadEnvironment:
+            // FLDENV obtains TOP from guest memory. There is no affine
+            // relationship to the block/function entry TOP.
+            known = false;
+            return 0;
+        case swift::x86::X87Action::LoadFloat:
+        case swift::x86::X87Action::LoadInt:
+        case swift::x86::X87Action::LoadReg:
+        case swift::x86::X87Action::LoadConstant:
+        case swift::x86::X87Action::Extract:
+            return -1;
+        case swift::x86::X87Action::StoreFloat:
+        case swift::x86::X87Action::StoreInt:
+        case swift::x86::X87Action::StoreReg:
+        case swift::x86::X87Action::Binary:
+        case swift::x86::X87Action::Free:
+            return (flags & swift::x86::X87Pop) ? 1 : 0;
+        case swift::x86::X87Action::Compare:
+            if (flags & swift::x86::X87PopTwice) return 2;
+            return (flags & swift::x86::X87Pop) ? 1 : 0;
+        case swift::x86::X87Action::AdjustTop:
+            return (flags & swift::x86::X87IncrementTop) ? 1 : -1;
+        case swift::x86::X87Action::Transcendental:
+            switch (static_cast<swift::x86::X87Transcendental>(operation)) {
+                case swift::x86::X87Transcendental::SinCos:
+                case swift::x86::X87Transcendental::Tan:
+                    return -1;
+                case swift::x86::X87Transcendental::Atan:
+                case swift::x86::X87Transcendental::YLog2X:
+                case swift::x86::X87Transcendental::YLog2XPlusOne:
+                    return 1;
+                default:
+                    return 0;
+            }
+        default:
+            return 0;
+    }
+}
+
+}  // namespace
+
+JitTranslator::X87TopTransfer JitTranslator::AnalyzeX87TopTransfer(
+        ir::Block* block) const {
+    X87TopTransfer transfer{};
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() != ir::OpCode::X87Op) {
+            continue;
+        }
+        const u64 command_word = inst.GetArg<ir::Imm>(1).Get();
+        bool known{};
+        bool reset{};
+        u8 reset_top{};
+        const int delta =
+                X87CommandTopDelta(command_word, known, reset, reset_top);
+        if (!known) {
+            transfer.known = false;
+            return transfer;
+        }
+        if (reset) {
+            transfer.reset = true;
+            transfer.value = reset_top;
+        } else {
+            transfer.value = AddTopDelta(transfer.value, delta);
+        }
+    }
+    return transfer;
+}
+
+JitTranslator::X87TopExpression JitTranslator::ApplyX87TopTransfer(
+        const X87TopExpression& entry,
+        const X87TopTransfer& transfer) const {
+    ASSERT(transfer.known);
+    if (transfer.reset) {
+        return X87TopExpression{false, transfer.value};
+    }
+    return X87TopExpression{
+            entry.relative,
+            AddTopDelta(entry.value, transfer.value),
+    };
+}
+
+void JitTranslator::AnalyzeX87TopVirt(ir::Block* block) {
+    const auto transfer = AnalyzeX87TopTransfer(block);
+    X87TopBlockInfo info{};
+    info.eligible = transfer.known;
+    info.entry = X87TopExpression{true, 0};
+    if (transfer.known) {
+        info.exit = ApplyX87TopTransfer(info.entry, transfer);
+    }
+    x87_top_blocks[block] = info;
+}
+
+void JitTranslator::AnalyzeX87TopVirt(ir::HIRFunction* function) {
+    x87_top_blocks.clear();
+    x87_topvirt_function_eligible = true;
+
+    using Expr = X87TopExpression;
+    std::map<ir::HIRBlock*, X87TopTransfer> transfers;
+    std::map<ir::HIRBlock*, std::optional<Expr>> entries;
+    std::map<ir::HIRBlock*, std::optional<Expr>> exits;
+    auto* synthetic_entry = function->GetEntryBlock();
+
+    for (auto& hir_block : function->GetHIRBlocksRPO()) {
+        auto* block = &hir_block;
+        auto transfer = AnalyzeX87TopTransfer(block->GetBlock());
+        if (!transfer.known) {
+            x87_topvirt_function_eligible = false;
+        }
+        transfers.emplace(block, transfer);
+        entries.emplace(block, std::nullopt);
+        exits.emplace(block, std::nullopt);
+    }
+    if (!x87_topvirt_function_eligible) {
+        return;
+    }
+
+    // Fixed point over the CFG. A predecessor reached from the synthetic
+    // entry starts at relative delta zero. Backedges are checked once their
+    // exits become available; a non-zero stack-effect loop therefore rejects
+    // the whole function instead of silently choosing one predecessor.
+    bool changed = true;
+    size_t iterations = 0;
+    const size_t max_iterations =
+            std::max<size_t>(1, function->GetHIRBlocksRPO().size() * 3);
+    while (changed && iterations++ < max_iterations) {
+        changed = false;
+        for (auto& hir_block : function->GetHIRBlocksRPO()) {
+            auto* block = &hir_block;
+            std::optional<Expr> incoming;
+            bool has_known_predecessor = false;
+            for (auto* predecessor : block->GetPredecessors()) {
+                std::optional<Expr> candidate;
+                if (predecessor == synthetic_entry) {
+                    candidate = Expr{true, 0};
+                } else if (auto it = exits.find(predecessor);
+                           it != exits.end()) {
+                    candidate = it->second;
+                }
+                if (!candidate) {
+                    continue;
+                }
+                has_known_predecessor = true;
+                if (incoming && *incoming != *candidate) {
+                    x87_topvirt_function_eligible = false;
+                    return;
+                }
+                incoming = candidate;
+            }
+            if (!has_known_predecessor) {
+                continue;
+            }
+            if (entries[block] && *entries[block] != *incoming) {
+                x87_topvirt_function_eligible = false;
+                return;
+            }
+            if (!entries[block]) {
+                entries[block] = incoming;
+                changed = true;
+            }
+            const auto new_exit =
+                    ApplyX87TopTransfer(*incoming, transfers.at(block));
+            if (!exits[block] || *exits[block] != new_exit) {
+                exits[block] = new_exit;
+                changed = true;
+            }
+        }
+    }
+
+    for (auto& hir_block : function->GetHIRBlocksRPO()) {
+        auto* hir = &hir_block;
+        if (!entries[hir] || !exits[hir]) {
+            x87_topvirt_function_eligible = false;
+            x87_top_blocks.clear();
+            return;
+        }
+        x87_top_blocks[hir->GetBlock()] = X87TopBlockInfo{
+                true,
+                *entries[hir],
+                *exits[hir],
+        };
+    }
+}
+
+void JitTranslator::BeginX87TopVirtBlock(ir::Block* block) {
+    x87_top_cache_valid = false;
+    x87_top_cache_for_current = false;
+    const auto it = x87_top_blocks.find(block);
+    x87_top_block_codegen_enabled =
+            x87_topvirt_requested &&
+            it != x87_top_blocks.end() &&
+            it->second.eligible &&
+            (!translating_function || x87_topvirt_function_eligible);
+    x87_pin_cache_possible = false;
+    x87_pin_cache_for_current = false;
+}
+
+void JitTranslator::PrepareX87TopCache(ir::Inst* inst) {
+    x87_top_cache_for_current = false;
+    x87_pin_cache_for_current = false;
+    if (!x87_top_block_codegen_enabled ||
+        inst->GetOp() != ir::OpCode::X87Op) {
+        if (x87_pin_cache_possible) {
+            // x20[2:0] is cached TOP; x20[11:8] is the valid mask for
+            // D28-D31 (logical ST0-ST3).
+            __ And(WRegister{20}, WRegister{20}, 7);
+            x87_pin_cache_possible = false;
+        }
+        return;
+    }
+
+    const u64 command_word = inst->GetArg<ir::Imm>(1).Get();
+    bool known{};
+    bool reset{};
+    u8 reset_top{};
+    const int delta = X87CommandTopDelta(
+            command_word, known, reset, reset_top);
+    if (!known) {
+        if (x87_pin_cache_possible) {
+            __ And(WRegister{20}, WRegister{20}, 7);
+            x87_pin_cache_possible = false;
+        }
+        x87_top_cache_valid = false;
+        return;
+    }
+    if (!x87_top_cache_valid && !reset) {
+        constexpr u32 kFsw =
+                state_offset_uniform_buffer +
+                offsetof(swift::x86::ThreadContext64, x87_fsw);
+        const XRegister cached_top{20};
+        __ Ldrh(cached_top.W(), MemOperand(state, kFsw));
+        // INVARIANT: this whole-register Ubfx is also the pin-mask reset.
+        // Pins (x20[11:8], D28-D31 read cache) are compile-time invalidated
+        // at every block entry, but the runtime mask bits survive control
+        // flow between blocks. Every pin READ is gated behind a pin-binary
+        // Prepare, and every such Prepare passes through this reload (cache
+        // starts invalid per block) — the Ubfx zeroes the stale mask before
+        // any pin can be consumed. If this reload ever becomes mask-
+        // preserving, block-exit pin clears become mandatory instead.
+        __ Ubfx(cached_top.W(), cached_top.W(), 11, 3);
+        x87_top_cache_valid = true;
+    }
+    if (reset) {
+        // The reset value becomes current after this instruction; no entry
+        // load is needed because reset actions do not consume the old TOP.
+        x87_top_cache_for_current = false;
+    } else {
+        x87_top_cache_for_current = true;
+    }
+
+    const auto action =
+            static_cast<swift::x86::X87Action>(command_word & 0xFF);
+    const auto format =
+            static_cast<swift::x86::X87Format>((command_word >> 8) & 0xFF);
+    const bool pin_binary =
+            action == swift::x86::X87Action::Binary &&
+            (format == swift::x86::X87Format::Register ||
+             format == swift::x86::X87Format::Float32 ||
+             format == swift::x86::X87Format::Float64);
+    if (pin_binary && delta == 0 && !reset) {
+        x87_pin_cache_for_current = true;
+    } else if (x87_pin_cache_possible) {
+        __ And(WRegister{20}, WRegister{20}, 7);
+        x87_pin_cache_possible = false;
+    }
+}
+
+void JitTranslator::FinishX87TopCache(ir::Inst* inst) {
+    if (!x87_top_block_codegen_enabled ||
+        inst->GetOp() != ir::OpCode::X87Op) {
+        return;
+    }
+    bool known{};
+    bool reset{};
+    u8 reset_top{};
+    const int delta = X87CommandTopDelta(
+            inst->GetArg<ir::Imm>(1).Get(), known, reset, reset_top);
+    if (!known) {
+        x87_top_cache_valid = false;
+    } else if (reset) {
+        __ Mov(WRegister{20}, reset_top & 7);
+        x87_top_cache_valid = true;
+    } else if (delta != 0) {
+        // Pins were invalidated in Prepare. Fold the instruction's stack
+        // effect into the cached runtime entry TOP, modulo eight.
+        if (delta > 0) {
+            __ Add(WRegister{20}, WRegister{20}, delta);
+        } else {
+            __ Sub(WRegister{20}, WRegister{20}, -delta);
+        }
+        __ And(WRegister{20}, WRegister{20}, 7);
+        x87_top_cache_valid = true;
+    }
+    if (x87_pin_cache_for_current) {
+        x87_pin_cache_possible = true;
+    }
+}
+
 void JitTranslator::EmitX87Op(ir::Inst* inst) {
     // VIXL MacroAssembler may clobber ip0/ip1 while materializing immediates.
     // Keep them out of this instruction's long-lived temporary set without
@@ -55,6 +371,15 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
     const u8 index = static_cast<u8>((command_word >> 16) & 7);
     const u8 operation = static_cast<u8>((command_word >> 24) & 0xFF);
     const u32 command_flags = static_cast<u32>(command_word >> 32);
+    auto load_top = [&](const Register& destination,
+                        const Register& fsw) {
+        if (x87_top_cache_for_current) {
+            __ Mov(destination.W(), WRegister{20});
+            __ And(destination.W(), destination.W(), 7);
+        } else {
+            __ Ubfx(destination.W(), fsw.W(), 11, 3);
+        }
+    };
 
     auto zero_result = [&] {
         if (has_result) {
@@ -163,7 +488,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             Label done;
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(top.W(), fsw.W(), 11, 3);
+            load_top(top, fsw);
             __ Add(top.W(), top.W(), 7);
             __ And(top.W(), top.W(), 7);
             __ Lsl(shift.W(), top.W(), 1);
@@ -229,7 +554,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             Label done;
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(top.W(), fsw.W(), 11, 3);
+            load_top(top, fsw);
             __ Lsl(shift.W(), top.W(), 1);
             __ Lsr(tag.W(), ftw.W(), shift.W());
             __ And(tag.W(), tag.W(), 3);
@@ -286,7 +611,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
 
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(top.W(), fsw.W(), 11, 3);
+            load_top(top, fsw);
             __ Add(top.W(), top.W(), 7);
             __ And(top.W(), top.W(), 7);
             __ Lsl(shift.W(), top.W(), 1);
@@ -394,7 +719,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
             __ Ldrh(fcw.W(), MemOperand(state, kFcw));
-            __ Ubfx(top.W(), fsw.W(), 11, 3);
+            load_top(top, fsw);
             __ Lsl(shift.W(), top.W(), 1);
             __ Lsr(sign_exp.W(), ftw.W(), shift.W());
             __ And(sign_exp.W(), sign_exp.W(), 3);
@@ -581,6 +906,24 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto round_bits = fcw;
             auto left_fp = context.GetTmpV();
             auto right_fp = context.GetTmpV();
+            const u8 left_logical =
+                    register_form &&
+                            (command_flags & swift::x86::X87DestIndex)
+                            ? index
+                            : 0;
+            const u8 right_logical =
+                    register_form
+                            ? ((command_flags & swift::x86::X87DestIndex)
+                                       ? 0
+                                       : index)
+                            : 0;
+            const bool left_cacheable = left_logical < 4;
+            const bool right_cacheable = right_logical < 4;
+            const VRegister left_pin =
+                    VRegister::GetVRegFromCode(28 + (left_logical & 3));
+            const VRegister right_pin =
+                    VRegister::GetVRegFromCode(28 + (right_logical & 3));
+            const WRegister pin_mask{20};
             Register guest{};
             if (memory_real) {
                 guest = context.X(address);
@@ -595,12 +938,12 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
 
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(left_physical.W(), fsw.W(), 11, 3);
+            load_top(left_physical, fsw);
             if (register_form &&
                 (command_flags & swift::x86::X87DestIndex)) {
                 __ Add(left_physical.W(), left_physical.W(), index);
                 __ And(left_physical.W(), left_physical.W(), 7);
-                __ Ubfx(right_physical.W(), fsw.W(), 11, 3);
+                load_top(right_physical, fsw);
             } else if (register_form) {
                 __ Add(right_physical.W(), left_physical.W(), index);
                 __ And(right_physical.W(), right_physical.W(), 7);
@@ -706,9 +1049,35 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 __ Bind(&converted);
             };
 
+            Label left_not_pinned;
+            Label left_ready;
+            if (x87_pin_cache_for_current && left_cacheable) {
+                __ Tbz(pin_mask, 8 + left_logical, &left_not_pinned);
+                __ Fmov(left_fp.D(), left_pin.D());
+                __ B(&left_ready);
+                __ Bind(&left_not_pinned);
+            }
             convert_one(left_address, left_bits, right_bits, left_fp);
+            if (x87_pin_cache_for_current && left_cacheable) {
+                __ Fmov(left_pin.D(), left_fp.D());
+                __ Orr(pin_mask, pin_mask, 1u << (8 + left_logical));
+                __ Bind(&left_ready);
+            }
             if (register_form) {
+                Label right_not_pinned;
+                Label right_ready;
+                if (x87_pin_cache_for_current && right_cacheable) {
+                    __ Tbz(pin_mask, 8 + right_logical, &right_not_pinned);
+                    __ Fmov(right_fp.D(), right_pin.D());
+                    __ B(&right_ready);
+                    __ Bind(&right_not_pinned);
+                }
                 convert_one(right_address, right_bits, left_bits, right_fp);
+                if (x87_pin_cache_for_current && right_cacheable) {
+                    __ Fmov(right_pin.D(), right_fp.D());
+                    __ Orr(pin_mask, pin_mask, 1u << (8 + right_logical));
+                    __ Bind(&right_ready);
+                }
             } else if (format == swift::x86::X87Format::Float32) {
                 __ Ldr(right_bits.W(),
                        use_memory_base ? BiasMem(guest) : MemOperand(guest));
@@ -827,6 +1196,12 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Mov(exponent.W(), kReducedMarker);
             __ Strb(exponent.W(),
                     MemOperand(left_address, kReducedMarkerOffset));
+            if (x87_pin_cache_for_current && left_cacheable) {
+                // The architectural ext80 image above is the source of truth;
+                // the D-register is only a read cache for the next operation.
+                __ Fmov(left_pin.D(), left_fp.D());
+                __ Orr(pin_mask, pin_mask, 1u << (8 + left_logical));
+            }
 
             // Reclassify the destination tag.
             __ Lsl(shift.W(), left_physical.W(), 1);
@@ -879,7 +1254,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
 
             if (command_flags & swift::x86::X87Pop) {
                 // Pop the old ST0 after writing ST(i).
-                __ Ubfx(right_physical.W(), fsw.W(), 11, 3);
+                load_top(right_physical, fsw);
                 __ Lsl(shift.W(), right_physical.W(), 1);
                 __ Mov(exponent.W(), 3);
                 __ Lsl(exponent.W(), exponent.W(), shift.W());
@@ -896,6 +1271,12 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             zero_result();
             __ B(&done);
             __ Bind(&slow);
+            if (x87_pin_cache_for_current) {
+                // The exact helper may publish ext80-only state and the
+                // platform ABI does not preserve D28-D31. Invalidate the
+                // whole read cache before crossing the host-call boundary.
+                __ And(pin_mask, pin_mask, 7);
+            }
             fallback();
 
             // The exact helper clears reduced provenance.  Revalidate the
@@ -905,6 +1286,10 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             // index.  The exact ext80 payload is never rewritten here.
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
+            // The helper has already applied this instruction's pop. The
+            // block TOP cache is advanced only by FinishX87TopCache after the
+            // emitter returns, so revalidation must read the helper-published
+            // architectural TOP rather than the still-preinstruction cache.
             __ Ubfx(left_physical.W(), fsw.W(), 11, 3);
             if (!(command_flags & swift::x86::X87Pop) &&
                 (command_flags & swift::x86::X87DestIndex)) {
@@ -987,7 +1372,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
 
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(left_physical.W(), fsw.W(), 11, 3);
+            load_top(left_physical, fsw);
             __ Lsl(shift.W(), left_physical.W(), 1);
             __ Lsr(scratch.W(), ftw.W(), shift.W());
             __ And(scratch.W(), scratch.W(), 3);
@@ -1150,7 +1535,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto fsw = context.GetTmpX();
             auto top = context.GetTmpX();
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
-            __ Ubfx(top.W(), fsw.W(), 11, 3);
+            load_top(top, fsw);
             __ Add(top.W(),
                    top.W(),
                    (command_flags & swift::x86::X87IncrementTop) ? 1 : 7);
@@ -1171,7 +1556,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto mask = context.GetTmpX();
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(physical.W(), fsw.W(), 11, 3);
+            load_top(physical, fsw);
             __ Add(physical.W(), physical.W(), index);
             __ And(physical.W(), physical.W(), 7);
             __ Lsl(shift.W(), physical.W(), 1);
@@ -1180,7 +1565,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Orr(ftw.W(), ftw.W(), mask.W());
             if (command_flags & swift::x86::X87Pop) {
                 // Pop empties the old ST0 physical slot as well.
-                __ Ubfx(physical.W(), fsw.W(), 11, 3);
+                load_top(physical, fsw);
                 __ Lsl(shift.W(), physical.W(), 1);
                 __ Mov(mask.W(), 3);
                 __ Lsl(mask.W(), mask.W(), shift.W());
@@ -1213,7 +1598,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
 
                 __ Ldrh(fsw.W(), MemOperand(state, kFsw));
                 __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-                __ Ubfx(physical.W(), fsw.W(), 11, 3);
+                load_top(physical, fsw);
                 __ Lsl(shift.W(), physical.W(), 1);
                 __ Lsr(bits.W(), ftw.W(), shift.W());
                 __ And(bits.W(), bits.W(), 3);
@@ -1300,7 +1685,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 __ B(ne, &slow);
                 __ Ldrh(fsw.W(), MemOperand(state, kFsw));
                 __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-                __ Ubfx(physical.W(), fsw.W(), 11, 3);
+                load_top(physical, fsw);
                 __ Lsl(shift.W(), physical.W(), 1);
                 __ Lsr(bits.W(), ftw.W(), shift.W());
                 __ And(bits.W(), bits.W(), 3);
@@ -1440,7 +1825,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             Label done;
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(physical.W(), fsw.W(), 11, 3);
+            load_top(physical, fsw);
             __ Lsl(scratch.W(), physical.W(), 1);
             __ Lsr(reg_address.W(), ftw.W(), scratch.W());
             __ And(reg_address.W(), reg_address.W(), 3);
@@ -1481,7 +1866,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             Label done;
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(physical0.W(), fsw.W(), 11, 3);
+            load_top(physical0, fsw);
             __ Add(physical1.W(), physical0.W(), index);
             __ And(physical1.W(), physical1.W(), 7);
             for (auto physical : {physical0, physical1}) {
@@ -1520,7 +1905,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             Label done;
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(dest.W(), fsw.W(), 11, 3);
+            load_top(dest, fsw);
             __ Add(source.W(), dest.W(), index);
             __ And(source.W(), source.W(), 7);
             __ Lsl(shift.W(), source.W(), 1);
@@ -1573,7 +1958,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             Label done;
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(source.W(), fsw.W(), 11, 3);
+            load_top(source, fsw);
             __ Lsl(shift.W(), source.W(), 1);
             __ Lsr(tag.W(), ftw.W(), shift.W());
             __ And(tag.W(), tag.W(), 3);
@@ -1644,7 +2029,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             Label done;
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            __ Ubfx(top.W(), fsw.W(), 11, 3);
+            load_top(top, fsw);
             __ Add(top.W(), top.W(), 7);
             __ And(top.W(), top.W(), 7);
             __ Lsl(shift.W(), top.W(), 1);
