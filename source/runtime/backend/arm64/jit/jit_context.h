@@ -133,6 +133,13 @@ private:
     void FlushSpillWrites();
     [[nodiscard]] static bool IsFloatValue(const ir::Value& value);
 
+    // Scratch handed to a spill reload rather than to the emitter. Budgeted
+    // separately (backend::kSpillReloadHeadroom) because the linear scan pays
+    // for it only in units that actually spilled.
+    [[nodiscard]] XRegister GetSpillTmpX();
+    [[nodiscard]] VRegister GetSpillTmpV();
+    [[nodiscard]] backend::ScratchNeed CurrentBudget() const;
+
     struct PendingSpillWrite {
         u16 slot;    // spill slot index
         u8 reg;      // scratch register code holding the value
@@ -152,10 +159,23 @@ private:
     // def (repeated def accesses within one instruction must return the
     // same register); cleared at every TickIR.
     std::map<u32, u8> spill_def_scratch;
+    // value id -> scratch reg code holding a reloaded *use* of a spilled
+    // value, for the current instruction only; also cleared at every TickIR.
+    // Memoizing reloads is not just a code-size win: it is what bounds the
+    // reload demand of one instruction to the number of distinct values it
+    // names, which is the bound backend::kSpillReloadHeadroom encodes.
+    std::map<u32, u8> spill_use_scratch;
     std::vector<PendingSpillWrite> pending_spill_writes;
 
     GPRSMask cur_dirty_gprs{};
     GPRSMask cur_dirty_fprs{};
+    // cur_dirty_* as of the last TickIR. The difference in marked bits is how
+    // much scratch this instruction has consumed so far, which is what
+    // backend::ScratchBudget bounds.
+    GPRSMask tick_dirty_gprs{};
+    FPRSMask tick_dirty_fprs{};
+    u32 spill_tmp_gprs{};
+    u32 spill_tmp_fprs{};
 };
 
 }  // namespace swift::runtime::backend::arm64
