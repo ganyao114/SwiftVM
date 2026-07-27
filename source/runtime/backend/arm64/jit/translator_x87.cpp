@@ -881,14 +881,62 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             // exception flags are the source of the x87 sticky bits.
             //
             // So the arm is retired rather than shrunk: the helper is both
-            // smaller and faster today. The way back is to stop asking FPSR
-            // in the first place -- with operands already restricted to
-            // finite normals and zeroes, IE/ZE/OE/UE are derivable from the
-            // operands and the result bits, and PE is one fused multiply-add
-            // away (`e = fma(a, b, -r)`, `e != 0` for MUL; the analogous
-            // `a - q*b` for DIV; a two-sum for ADD/SUB). That is a semantics
-            // project with its own differential campaign against SoftFloat,
-            // not a code-size change, and it is not attempted here.
+            // smaller and faster today.
+            //
+            // THE "FPSR-FREE" WAY BACK WAS MEASURED AND DOES NOT CLEAR THE BAR.
+            //
+            // This comment used to propose one: stop asking FPSR, since with
+            // operands restricted to finite normals and zeroes IE/ZE/OE/UE fall
+            // out of the operand and result bits, and PE is one fused
+            // multiply-add away (`e = fma(a, b, -r) != 0` for MUL, `fma(q, -b,
+            // a)` for DIV, a two-sum for ADD/SUB). The arithmetic is right. The
+            // hit rate is not there, and the FPSR round trip was never the only
+            // thing in the way.
+            //
+            // Instrumented X87Dispatch::Binary under SVM_X87_JIT=1 with exactly
+            // the guards such an arm would use (convert_canonical's exponent
+            // window and integer-bit/low-11-bits-zero test, the Sqrt arm's
+            // (fcw & 0x0F00) == 0x0300, result normality checked before the
+            // residual). Fraction of operations the fast path would have served:
+            //
+            //   x87_bench      Add/Mul/Div, 2e6 each      0.00% / 0.00% / 0.00%
+            //   ldprobe        long double harmonic sum   Add 50.00%, Div 0.01%
+            //   x87_midtier    Add, 2 ops                 100%
+            //   real_busy, func_tests, func_tests_musl, bench_suite,
+            //   real_hello + 22 other guests              zero Binary ops
+            //
+            // Break-even is h = W/(S+W), where S is per-op saving and W is
+            // bail waste. Two-sum is six serially dependent FP ops, so ADD/SUB
+            // saves only ~0.4 ns against the helper's 16.0 ns and needs
+            // ~90-98%; MUL/DIV saves ~3.9 ns and needs ~51-83%.
+            //
+            // The ldprobe row is the load-bearing one, and it is a steel-man,
+            // not an adversary: a naive `acc += 1.0/k` harmonic sum, which is
+            // why anyone reaches for long double at all. Its 50% Add rate
+            // decomposes exactly -- 300000 `k += 1.0` counter increments
+            // (dyadic, always exact) and 300000 accumulations (never exact).
+            // EVERY HIT IS THE LOOP COUNTER. Not one hit is the numeric work.
+            // Its Div rate is 19 hits, precisely the 19 powers of two in
+            // [1, 300000] -- the exact set where 1.0/k is representable.
+            //
+            // Nor is provenance the binding constraint, which was the obvious
+            // objection (the live helper always clears the reduced marker, so a
+            // naive probe undercounts every accumulator chain after its first
+            // operation). Modelled with a shadow marker that a hit would have
+            // left certified: of x87_bench's 8724 provenance-only misses, the
+            // number that would then have been exact anyway was ZERO. 99.85% of
+            // bails are values needing more than 53 bits. That is arithmetic,
+            // not plumbing, and no amount of flag cleverness moves it.
+            //
+            // The deeper reason is structural: code reaches for long double
+            // exactly when binary64 does not suffice, and this fast path
+            // requires that binary64 does suffice. Those sets are nearly
+            // complementary. x86-64 SysV routes float/double through SSE, so
+            // every Binary op in this entire corpus originates in one of three
+            // hand-written x87 test guests.
+            //
+            // Do not re-derive this from the FPSR cost alone. Removing the 42
+            // cycles is necessary and insufficient.
             //
             // Every other inline arm was priced the same way and every one of
             // them earns its bytes -- disabling Exchange/LoadConstant/Sqrt/
