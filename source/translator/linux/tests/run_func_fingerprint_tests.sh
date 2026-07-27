@@ -79,6 +79,9 @@ mkdir -p "$STAGE_DIR" || {
 for g in "${GUESTS[@]}"; do
     src="$HERE/${g}_x86_64"
     if [ -x "$src" ]; then
+        # rm first: a stale SYMLINK here (from the pre-copy staging) would make
+        # cp follow it and clobber the link target in another checkout.
+        rm -f "$STAGE_DIR/${g}_x86_64"
         cp -f "$src" "$STAGE_DIR/${g}_x86_64" || {
             echo "FAIL: cannot stage $src at $STAGE_DIR"
             exit 2
