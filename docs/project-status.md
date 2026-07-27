@@ -65,6 +65,10 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_FORCE_FIXED_STACK | 0/1 | — | 诊断：强制 guest 栈 fixed/fallback(布局 flake repro) |
 | SVM_GUEST_BITS | 0 或 20..47 | 32 | guest 地址窗口位宽。**0 = 无界（未隔离）**，需 `-DSWIFT_ALLOW_UNBOUNDED_GUEST=ON` 才编译进去，普通构建拒绝 |
+| SVM_AVX / SVM_XSAVE | 0/1 | 0 | AVX/AVX2/FMA3 与 XSAVE/XSAVEC/XSAVEOPT 门控(联动广告) |
+| SVM_SSE4 / SVM_SSE42STR / SVM_BMI | 0/1 | 1 | SSE3~SSE4.1 / SSE4.2 字符串 / BMI1/BMI2 |
+| SVM_FSGSBASE | 0/1 | 0 | RD/WRFS/GSBASE(CPUID.7 EBX.0) |
+| SVM_ADX | 0/1 | 0 | ADCX/ADOX 双进位链(CPUID.7 EBX.19) |
 | SWIFT_FUZZ_SEED | u64 | 随机 | fuzz 定值复现 |
 
 ---
@@ -504,6 +508,13 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
 5. **TOP 虚拟化默认 OFF**:stock bench 收益为零（bailout 主导），该模式 fuzz 覆盖薄。关键不变量已写入代码注释（pin 读取必经 TOP reload 的全寄存器 Ubfx 顺带清陈旧 mask)。
 
 ### P2 — 工程遗留
+
+0. **PKRU 只有架构寄存器、无 enforcement**(2026-07-27 起）:RDPKRU/WRPKRU 解码并
+   维护 `ThreadContext64::pkru`,但 **CPUID.PKU 不广告**、pkey_mprotect 与逐访问
+   权限检查均未实现——无条件使用者看到一致寄存器,遵守 CPUID 的软件永不触发。
+   同型分歧:XSAVEC 广告但写标准格式(XCOMP_BV=0,SDM §13.10 要求 compacted,
+   已文档化;CPUID.0xD.1 EBX 报标准面积使按 EBX 分配的 guest 安全）。
+
 
 6. **x87 14-byte legacy env**(FNSTENV/FLDENV 的 **16-bit 操作数形式**）未实现——`StoreEnvironment`/`LoadEnvironment`(`x87.cpp:1021`/`:1042`) 只写读 4 字节字段共 28 字节，即 32-bit 形式；16-bit 形式需 2 字节字段共 14 字节。FIP/FDP 非逐指令精确（helper 路径正确，内联路径是块级近似）。
 7. **16 个长模式非法 mnemonic**（普查确认不可达，记录不实现）;32-bit guest 模式所有构造点均 is_64bit=true。
