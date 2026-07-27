@@ -2,6 +2,19 @@
 #
 # Function-mode compile fingerprint gate.
 #
+# PATH SENSITIVITY -- read before touching the golden.
+#   real_hello / real_busy are dynamically-linked glibc guests whose initial
+#   stack contains argv[0].  A different path STRING LENGTH shifts that stack,
+#   which shifts which blocks the guest reaches, which changes the unit list.
+#   Measured: 4428 units from the canonical repo path, 4447 from a git
+#   worktree under /private/tmp -- same commit, same binary content.
+#
+#   So: ALWAYS regenerate and compare from the canonical repo checkout, never
+#   from a worktree.  The script's own determinism check cannot see this
+#   because it reruns from the same path.  This bit the main line once: a
+#   golden regenerated from a worktree looked self-consistent and made the
+#   gate red for everyone else.
+#
 #   run_func_fingerprint_tests.sh <svm_translator_linux>            # vs golden
 #   run_func_fingerprint_tests.sh <svm_translator_linux> --update   # rewrite golden
 #   run_func_fingerprint_tests.sh <svm_A> --against <svm_B>         # A/B two builds
