@@ -6,6 +6,7 @@ set(SVM_LINUX_SOURCES
         main.cpp
         guest_memory.cpp
         guest_memory.h
+        path_utils.h
         syscalls.cpp
         syscalls.h
         )

@@ -1,6 +1,6 @@
 //
-// Guest ARM64 / x86_64 Linux ELF loader (static executables, ET_EXEC + static
-// ET_DYN).
+// Guest ARM64 / x86_64 Linux ELF loader. Dynamically linked executables are
+// handed to their own PT_INTERP loader, exactly as the Linux kernel does.
 //
 // Flow: parse the ELF with elfio -> reserve the image span -> copy PT_LOAD
 // contents to their *guest* addresses -> locate the in-memory program headers
@@ -33,11 +33,13 @@ enum class GuestISA : u8 { kArm64, kX86_64 };
 struct LoadedImage {
     std::string path;
     GuestISA isa{GuestISA::kArm64};
-    VAddr entry{};       // guest entry point (linked address + guest load bias)
+    VAddr entry{};       // initial guest PC: interpreter entry, or main entry
+    VAddr program_entry{};  // main executable entry (AT_ENTRY)
     VAddr load_bias{};   // GUEST load bias: 0 for ET_EXEC (linked addresses),
                          // host-chosen for identity-mapped static PIE. The
                          // guest->host bias (ET_EXEC) lives in GuestMemory
                          // (memory.GetBias()).
+    VAddr interpreter_base{};  // PT_INTERP load bias (AT_BASE), or zero
     VAddr phdr{};        // guest address of the in-memory program header table
     u64 phentsize{};
     u64 phnum{};
@@ -48,7 +50,7 @@ class ElfLoader {
 public:
     explicit ElfLoader(GuestMemory* memory) : memory(memory) {}
 
-    // Loads a statically linked ARM64 / x86_64 ELF into guest memory.
+    // Loads an ARM64 / x86_64 ELF and, when present, its PT_INTERP.
     LoadedImage Load(const std::string& path);
 
 private:

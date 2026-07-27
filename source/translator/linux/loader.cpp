@@ -7,10 +7,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <stdexcept>
 #include "base/common_funcs.h"
 #include "base/logging.h"
 #include "elfio/elfio.hpp"
 #include "loader.h"
+#include "path_utils.h"
 
 namespace swift::linux {
 
@@ -32,7 +34,9 @@ enum GuestAuxv : u64 {
     AT_CLKTCK = 17,
     AT_SECURE = 23,
     AT_RANDOM = 25,
+    AT_HWCAP2 = 26,
     AT_EXECFN = 31,
+    AT_MINSIGSTKSZ = 51,
 };
 
 LoadedImage ElfLoader::Load(const std::string& path) {
@@ -65,12 +69,16 @@ LoadedImage ElfLoader::Load(const std::string& path) {
     if (segments.size() == 0) {
         PANIC("Guest ELF has no program headers! file = {}", path);
     }
+    std::string interpreter;
     for (const auto& seg : segments) {
-        if (seg->get_type() == ELFIO::PT_INTERP) {
-            PANIC("Dynamically linked guest ELF is not supported yet (PT_INTERP = {})! file = {}",
-                  std::string(seg->get_data(), seg->get_file_size()),
-                  path);
+        if (seg->get_type() != ELFIO::PT_INTERP) continue;
+        const auto size = static_cast<size_t>(seg->get_file_size());
+        if (size == 0 || seg->get_data()[size - 1] != '\0') {
+            throw std::runtime_error(fmt::format(
+                    "Guest PT_INTERP is not NUL terminated: {}", path));
         }
+        interpreter.assign(seg->get_data(), size - 1);
+        break;
     }
 
     // Address span of all PT_LOAD segments (host-page aligned).
@@ -105,6 +113,23 @@ LoadedImage ElfLoader::Load(const std::string& path) {
         LOG_INFO("ET_EXEC loaded in memory_base (bias) mode: guest {:#x} host_bias {:#x}",
                  span_start,
                  memory->GetBias());
+    } else if (!interpreter.empty()) {
+        // Keep a dynamically linked PIE below the classic stack and leave a
+        // large brk gap. MapAnywhere's arena is reserved for ld.so and the
+        // DSOs it maps later.
+        constexpr VAddr kDynamicPieBase = 0x40000000;
+        const VAddr preferred = kDynamicPieBase + span_start;
+        if (!memory->RangeIsMapped(preferred, span) &&
+            memory->MapFixed(preferred, span)) {
+            guest_base = kDynamicPieBase;
+        } else {
+            auto base = memory->MapAnywhere(span);
+            if (!base) {
+                PANIC("Failed to reserve guest address span for image! file = {}", path);
+            }
+            guest_base = base - span_start;
+        }
+        LOG_INFO("Dynamic ET_DYN main loaded at guest base {:#x}", guest_base);
     } else {
         // Static PIE: self-relocating, so it can be placed anywhere. With the
         // bounded guest window that "anywhere" is a free guest address inside
@@ -161,6 +186,7 @@ LoadedImage ElfLoader::Load(const std::string& path) {
     }
     image.isa = isa;
     image.entry = guest_base + reader.get_entry();
+    image.program_entry = image.entry;
     image.load_bias = guest_base;
     image.phdr = phdr_addr;
     image.phentsize = phentsize;
@@ -173,6 +199,68 @@ LoadedImage ElfLoader::Load(const std::string& path) {
              image.phdr,
              image.phnum,
              image.brk_start);
+
+    if (!interpreter.empty()) {
+        const std::string interpreter_host_path = ResolveGuestPath(interpreter);
+        struct stat st {};
+        if (::stat(interpreter_host_path.c_str(), &st) != 0) {
+            throw std::runtime_error(fmt::format(
+                    "Guest interpreter '{}' was not found (resolved host path '{}'; "
+                    "set SVM_SYSROOT to a matching guest filesystem)",
+                    interpreter,
+                    interpreter_host_path));
+        }
+
+        ELFIO::elfio interp_reader;
+        if (!interp_reader.load(interpreter_host_path) ||
+            interp_reader.get_class() != ELFIO::ELFCLASS64 ||
+            interp_reader.get_machine() != reader.get_machine() ||
+            interp_reader.get_type() != ELFIO::ET_DYN) {
+            throw std::runtime_error(fmt::format(
+                    "Guest interpreter is not a matching 64-bit ET_DYN ELF: {}",
+                    interpreter_host_path));
+        }
+
+        VAddr interp_min = UINT64_MAX;
+        VAddr interp_max = 0;
+        for (const auto& seg : interp_reader.segments) {
+            if (seg->get_type() != ELFIO::PT_LOAD) continue;
+            interp_min = std::min(interp_min, seg->get_virtual_address());
+            interp_max = std::max(
+                    interp_max, seg->get_virtual_address() + seg->get_memory_size());
+        }
+        if (interp_min == UINT64_MAX) {
+            throw std::runtime_error(fmt::format(
+                    "Guest interpreter has no PT_LOAD segments: {}", interpreter_host_path));
+        }
+        const VAddr interp_span_start = GuestMemory::RoundDownHostPage(interp_min);
+        const VAddr interp_span_end = GuestMemory::RoundHostPage(interp_max);
+        const u64 interp_span = interp_span_end - interp_span_start;
+        const VAddr interp_reservation = memory->MapAnywhere(interp_span);
+        if (!interp_reservation) {
+            throw std::runtime_error(fmt::format(
+                    "Failed to reserve guest address span for interpreter: {}",
+                    interpreter_host_path));
+        }
+        const VAddr interp_bias = interp_reservation - interp_span_start;
+        for (const auto& seg : interp_reader.segments) {
+            if (seg->get_type() != ELFIO::PT_LOAD) continue;
+            const VAddr dst = interp_bias + seg->get_virtual_address();
+            if (seg->get_file_size() != 0) {
+                memory->WriteBytes(
+                        dst,
+                        {reinterpret_cast<const u8*>(seg->get_data()),
+                         static_cast<size_t>(seg->get_file_size())});
+            }
+        }
+        image.interpreter_base = interp_bias;
+        image.entry = interp_bias + interp_reader.get_entry();
+        LOG_INFO("Guest interpreter loaded: {} base {:#x} entry {:#x}; main entry {:#x}",
+                 interpreter_host_path,
+                 image.interpreter_base,
+                 image.entry,
+                 image.program_entry);
+    }
     return image;
 }
 
@@ -234,27 +322,60 @@ VAddr SetupInitialStack(GuestMemory& memory,
         arg_ptrs.push_back(push_string(arg));
     }
 
-    const std::pair<GuestAuxv, u64> auxv[] = {
-            {AT_PHDR, image.phdr},
-            {AT_PHENT, image.phentsize},
-            {AT_PHNUM, image.phnum},
-            {AT_PAGESZ, GuestMemory::kGuestPageSize},
-            {AT_BASE, 0},  // no interpreter (static)
-            {AT_FLAGS, 0},
-            {AT_ENTRY, image.entry},
-            {AT_UID, 1000},
-            {AT_EUID, 1000},
-            {AT_GID, 1000},
-            {AT_EGID, 1000},
-            {AT_HWCAP, 0},
-            {AT_CLKTCK, 100},
-            {AT_SECURE, 0},
-            {AT_RANDOM, random_ptr},
-            {AT_EXECFN, execfn_ptr},
-    };
+    std::vector<std::pair<GuestAuxv, u64>> auxv;
+    if (image.interpreter_base == 0) {
+        // Preserve the historical static-guest stack byte-for-byte. Its exact
+        // addresses affect reached blocks and therefore the 4400-unit
+        // function fingerprint gate.
+        auxv = {
+                {AT_PHDR, image.phdr},
+                {AT_PHENT, image.phentsize},
+                {AT_PHNUM, image.phnum},
+                {AT_PAGESZ, GuestMemory::kGuestPageSize},
+                {AT_BASE, 0},
+                {AT_FLAGS, 0},
+                {AT_ENTRY, image.entry},
+                {AT_UID, 1000},
+                {AT_EUID, 1000},
+                {AT_GID, 1000},
+                {AT_EGID, 1000},
+                {AT_HWCAP, 0},
+                {AT_CLKTCK, 100},
+                {AT_SECURE, 0},
+                {AT_RANDOM, random_ptr},
+                {AT_EXECFN, execfn_ptr},
+        };
+    } else {
+        // On x86 Linux AT_HWCAP is CPUID.1:EDX. The dynamic-launch marker also
+        // carries MMX because GNU x86-64-baseline requires that architectural
+        // bit before ld.so will admit a DSO.
+        u64 hwcap = image.isa == GuestISA::kX86_64 ? 0x07808111 : 0;
+        auxv = {
+                {AT_PHDR, image.phdr},
+                {AT_PHENT, image.phentsize},
+                {AT_PHNUM, image.phnum},
+                {AT_PAGESZ, GuestMemory::kGuestPageSize},
+                {AT_BASE, image.interpreter_base},
+                {AT_FLAGS, 0},
+                {AT_ENTRY, image.program_entry},
+                {AT_UID, 1000},
+                {AT_EUID, 1000},
+                {AT_GID, 1000},
+                {AT_EGID, 1000},
+                {AT_HWCAP, hwcap},
+                {AT_HWCAP2, 0},
+                {AT_CLKTCK, 100},
+                {AT_SECURE, 0},
+                {AT_RANDOM, random_ptr},
+                {AT_EXECFN, execfn_ptr},
+                // No AT_SYSINFO_EHDR: SwiftVM exposes no guest vDSO and glibc
+                // deliberately falls back to the emulated syscall layer.
+                {AT_MINSIGSTKSZ, 2048},
+        };
+    }
 
     // Vector table: argc, argv..., NULL, envp..., NULL, auxv pairs..., AT_NULL.
-    const u64 word_count = 1 + arg_ptrs.size() + 1 + env_ptrs.size() + 1 + 2 * std::size(auxv) + 2;
+    const u64 word_count = 1 + arg_ptrs.size() + 1 + env_ptrs.size() + 1 + 2 * auxv.size() + 2;
     sp = RoundDown(sp - word_count * sizeof(u64), static_cast<u64>(16));
 
     auto cursor = static_cast<u64*>(memory.ToHost(sp));
