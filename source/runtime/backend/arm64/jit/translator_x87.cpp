@@ -701,8 +701,9 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Ldrb(scratch.W(),
                     MemOperand(reg_address, kReducedMarkerOffset));
             __ Cmp(scratch.W(), kReducedMarker);
-            // A6/unmarked ext80 values may contain precision below binary64;
-            // those conversions must remain on SoftFloat.
+            // Only the A5 marker certifies a reduced value. Unmarked ext80
+            // values may contain precision below binary64, so those
+            // conversions must remain on SoftFloat.
             __ B(ne, &slow);
             __ Ldr(bits, MemOperand(reg_address));
             __ Ldrh(sign_exp.W(), MemOperand(reg_address, 8));
@@ -1011,8 +1012,8 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 __ Ldrb(shift.W(),
                         MemOperand(ext_address, kReducedMarkerOffset));
                 __ Cmp(shift.W(), kReducedMarker);
-                // A6 can carry ext80-only tail bits. NaN, infinity, ext80
-                // denormals, and every uncertified value bail so FCOM/FUCOM
+                // Only A5 certifies the reduced representation. NaN, infinity,
+                // ext80 denormals, and every unmarked value bail so FCOM/FUCOM
                 // exception distinctions remain the helper's responsibility.
                 __ B(ne, &slow);
                 __ Ldr(bits, MemOperand(ext_address));

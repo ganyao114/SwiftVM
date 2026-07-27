@@ -2,18 +2,13 @@
 #
 # Function-mode compile fingerprint gate.
 #
-# PATH SENSITIVITY -- read before touching the golden.
-#   real_hello / real_busy are dynamically-linked glibc guests whose initial
-#   stack contains argv[0].  A different path STRING LENGTH shifts that stack,
-#   which shifts which blocks the guest reaches, which changes the unit list.
-#   Measured: 4428 units from the canonical repo path, 4447 from a git
-#   worktree under /private/tmp -- same commit, same binary content.
-#
-#   So: ALWAYS regenerate and compare from the canonical repo checkout, never
-#   from a worktree.  The script's own determinism check cannot see this
-#   because it reruns from the same path.  This bit the main line once: a
-#   golden regenerated from a worktree looked self-consistent and made the
-#   gate red for everyone else.
+# FIXED GUEST PATH -- read before touching the golden.
+#   Dynamic-glibc guests put argv[0] on their initial stack.  Its string length
+#   can change the reached blocks and function-unit split, so launching guests
+#   directly from a checkout made the golden checkout-path dependent.  Every
+#   guest, including static ones, is therefore staged below
+#   /tmp/svm_fp_guests and launched through that fixed argv[0].  Keep this
+#   staging when changing the corpus or regenerating the golden.
 #
 #   run_func_fingerprint_tests.sh <svm_translator_linux>            # vs golden
 #   run_func_fingerprint_tests.sh <svm_translator_linux> --update   # rewrite golden
@@ -54,6 +49,7 @@ MODE="${2:-check}"
 OTHER="${3:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GOLDEN="$HERE/func_fingerprint_golden.txt"
+STAGE_DIR="/tmp/svm_fp_guests"
 
 if [ -z "$SVM" ] || [ ! -x "$SVM" ]; then
     echo "usage: run_func_fingerprint_tests.sh <svm_translator_linux> [--update|--against <svm_B>]"
@@ -69,14 +65,33 @@ GUESTS=(
     func_tests func_tests_musl
 )
 
+# Stage every guest behind a checkout-independent pathname. Symlinks keep this
+# cheap for the large glibc binaries; the path passed to the translator (and
+# therefore the guest's argv[0]) is the stable link, not its checkout target.
+mkdir -p "$STAGE_DIR" || {
+    echo "FAIL: cannot create fixed guest staging directory $STAGE_DIR"
+    exit 2
+}
+for g in "${GUESTS[@]}"; do
+    src="$HERE/${g}_x86_64"
+    if [ -x "$src" ]; then
+        ln -sfn "$src" "$STAGE_DIR/${g}_x86_64" || {
+            echo "FAIL: cannot stage $src at $STAGE_DIR"
+            exit 2
+        }
+    fi
+done
+echo "guest staging: $STAGE_DIR (fixed argv[0])"
+
 # One guest's fingerprint on stdout. `SVM_FUNC_BASE=1` is the default but is
 # pinned here so the gate keeps meaning the same thing if the default moves.
 # SVM_JIT_CACHE is cleared: a warm disk cache skips compilation entirely and
 # would report an empty unit list as a pass.
 emit_fingerprint() {
     local svm="$1" guest="$2" keep_host="$3"
-    local bin="$HERE/${guest}_x86_64"
-    [ -x "$bin" ] || { echo "$guest MISSING"; return; }
+    local source_bin="$HERE/${guest}_x86_64"
+    local bin="$STAGE_DIR/${guest}_x86_64"
+    [ -x "$source_bin" ] && [ -x "$bin" ] || { echo "$guest MISSING"; return; }
     local raw
     raw=$(SVM_PROF=2 SVM_FUNC_BASE=1 SVM_JIT_CACHE= "$svm" "$bin" 2>&1 >/dev/null)
     local units

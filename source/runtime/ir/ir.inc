@@ -336,13 +336,10 @@ INST(MulHigh, Value, Value, Value, Imm)
 //
 // The result is defined as exactly 0 or 1, not "any non-zero value", so a
 // front end may use it as an arithmetic operand.  Note what that is and is not
-// backed by today: a mutation that emitted CSETM (all ones) instead of CSET
-// survived the whole corpus -- swift_test in four configurations, 25 guest
-// e2e programs, and the AVX/isolation/malformed/helper-fault suites.  Every
-// current x86 consumer is truthiness-only (Jcc branches on non-zero, JA/JBE
-// compose with AND/OR where all-ones still works, and DecodeSetCC re-narrows
-// through Select(cond, 1, 0)).  The contract is therefore a promise to future
-// consumers, not a property any existing test pins.
+// backed by today: "CondSet materializes exactly one for arithmetic consumers"
+// in tests/main_case.cpp feeds the result to Add and inspects the direct JIT
+// lowering.  In particular, changing CSET to CSETM makes that directed test
+// fail; truthiness-only guest consumers cannot distinguish 1 from all ones.
 //
 // Measured motivation: the x86 front end reached every NZCV-shaped condition
 // through LoadImm(1) + LoadImm(0) + CondSelect, and LoadImm is the single

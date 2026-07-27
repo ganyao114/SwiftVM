@@ -48,6 +48,7 @@ public:
 
     // True when SVM_JIT_CACHE names a usable directory.
     [[nodiscard]] static bool Requested();
+    [[nodiscard]] bool Enabled() const { return enabled; }
 
     // Revive everything in the cache file into `module`. Safe to call once,
     // before any guest code runs.

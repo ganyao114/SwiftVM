@@ -83,7 +83,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
   `run_isolation_tests.sh` 21 例（地址空间窗口 + 无界模式的编译期门）、
   `run_malformed_guest_tests.sh` 33 例（畸形指令流）、
   `run_helper_fault_tests.sh` 38 例（**宿主 helper 帧里的 guest 故障必须变成 guest #PF**，
-  13 形状 × 3 种 lowering；干净 HEAD 上 9 通过/29 失败）。
+  13 形状 × 3 种 lowering；当前 HEAD **38/38 通过**）。
 - **func_tests**:真实 C 多块函数，三模式 checksum 必须逐位一致。
 - **MT/TSO**:clone_* 五件套 + litmus(mp/sb00 合法方差区间历史已知）。
 - ⚠ **e2e 退出码对「函数模式错编译」是盲的**。函数编译整个包在 `try/catch` 里
@@ -93,19 +93,24 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
   静默停跑了。这不是假设:一次针对函数路径的定向变异(M1)第一次就是凭这份证据被
   判成「存活」,只有每单元发射轨迹才看出它其实已经把全部函数单元踢进了块兜底。
   **实测(2026-07-27)**:注入一个让部分单元抛异常的变异后，25 个退出码与基线
-  **逐行相同**,而 `run_func_fingerprint_tests.sh` 立刻红——函数单元 4447 → 1855,
+  **逐行相同**,而 `run_func_fingerprint_tests.sh` 立刻红——修复 hermeticity 前的
+  worktree 直启路径下，函数单元 4447 → 1855,
   `real_hello` 的 `ir_insts` 27718 → 11782。
 - **函数编译发射指纹门禁**(`run_func_fingerprint_tests.sh`,常驻):11 个**单线程**
   guest 在 `SVM_PROF=2` 下的每单元 `[svm-unit] pc/ir` 列表 + `func_units /
   block_units / decoded_blocks / ir_insts` 总计,对拍检入的
-  `func_fingerprint_golden.txt`(4447 单元)。三个门:
+  `func_fingerprint_golden.txt`（固定 staging 路径下 **4419 单元**）。三个门:
   ① 同一构建跑两遍必须逐字节一致(**这一档才带 `host_bytes`**);
   ② 单元总数 < 1000 直接判死(防「golden 由已经坏掉的构建生成」的自我一致陷阱);
   ③ 与 golden 对拍。
   **`host_bytes` 只在同一构建内比**——发射的 host 指针立即数长度随翻译器自身布局
   变化，跨构建会漂几百字节而代码其实一致;跨构建只比 `ir_insts` 与每单元列表。
+  动态 glibc guest 的初始栈含 `argv[0]`，过去直接从 checkout 启动会让路径字符串
+  长度改变可达块和函数单元切分。门禁现将**所有** guest（含静态 guest）软链接到
+  固定的 `/tmp/svm_fp_guests/` 并从该路径启动；golden 已在固定路径下重生成，
+  checkout/worktree 位置不再参与指纹。
   用法:`run_func_fingerprint_tests.sh <svm>` / `--update` / `--against <svm_B>`。
-  已验证 golden 跨构建稳定(本轮工作构建与独立 baseline 构建指纹逐行相同)。
+  同一构建的重复 check 仍先做带 `host_bytes` 的双跑确定性检查。
 
 ---
 
@@ -115,7 +120,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 > 一条 VEX 指令被真正执行过」——那句话在写下时是诚实的，现在已经不成立。
 
 **当前定级：可用。** 11 个真实 AVX2 kernel 与 x86-64 硬件**逐位一致**，
-`run_avx_real_tests.sh` 17 项全通过、0 缺口、0 失败。CPUID 在门控打开时上报
+`run_avx_real_tests.sh` **18 项全通过、0 缺口、0 失败**。CPUID 在门控打开时上报
 AVX / AVX2 / FMA / XSAVE / OSXSAVE，`XGETBV` 报告 XCR0[2:1]=11b，glibc 的
 ifunc 会真正选中 AVX 路径。
 
@@ -209,7 +214,10 @@ vpxor ymm0,ymm1,ymm2  C5 F5 EF C2 -> id=7009 ops[0] index=91(R_XMM0) size=128
 
 修法沿用仓库既有的「原始字节预解码」先例（census 文档对 RDSEED 即如此）：新增 `X64Decoder::VexRmRegister()` 从原始编码取 ModRM.rm(含 VEX.B),`DecodeAvx256Pmovmskb` 改用它。**未改动 vendored distorm 表**——那会影响所有消费者且难以验证。修复后 12 处比较全部与 Rosetta 逐位一致。
 
-**`VBROADCASTSS` 寄存器源形式不可解码（未修，覆盖缺口非错误答案）。** AVX2 的 `C4 E2 7D 18 C1` 在这份 distorm 快照里返回 `FLAG_NOT_DECODABLE`（快照只有 AVX1 的 m32 形式），SwiftVM 因而正确 FALLBACK。测试以 `known_not_decoded == 6` 钉住，distorm 一旦补上该条目测试即红。
+**`VBROADCASTSS` 寄存器源形式已可解码。** bundled distorm 对 AVX2 的
+`C4 E2 7D 18 C1` 仍会返回 `FLAG_NOT_DECODABLE`，但 VEX 指令现先走
+`vex_decoder.cc` 的自包含原始字节解码；`0F38:18` 的寄存器源和 m32 源都复用
+32-bit broadcast lowering，不再依赖 distorm 的旧表项。
 
 ### ⚠ FALLBACK 是致命的，不是优雅降级
 
@@ -422,7 +430,8 @@ SSE/AVX，我们不上报 ERMS，`rep movsb` 不在热路径上）。位图同�
 断言三件事：宿主活着、guest halt 于 `reason 2`、**且 guest 没有打印 SURVIVED**
 ——每个形状在故障指令之后都继续写一个标记，所以「helper 跳过了访问、执行继续」
 是显式可分辨的，而不是与「故障了」长得一样。
-**负向对照**（干净 HEAD 二进制跑同一套件）：**9 通过 / 29 失败**。
+**当前 HEAD**：**38 通过 / 0 失败**。此前记录的 **9 通过 / 29 失败**来自当时
+保留的**旧 clean binary**，用途是修复后的负向对照，不是当前 HEAD 的套件结果。
 **变异测试**（7 个变异，逐个重编译后跑套件）：
 
 | 变异 | 结果 |
@@ -489,7 +498,7 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
    **未修（有理由）**:`Binary`(FADD/FSUB/FMUL/FDIV) 无条件清 C1——判据已用 Rosetta 验证（以 round-toward-zero 重算，不等即进位），但这是 x87 最热的 helper 路径，inexact 时要多跑一次 SoftFloat,且 `translator_x87.cpp` 有对应的中盘孪生体，只修 helper 会重新制造上面那类背离。注意「RC=down/up/chop 三模式可由舍入模式+结果符号零开销得出、只有 nearest 需重算」这个优化——**半修（三模式对、nearest 错）比明确记为缺口更难排查**，故整体留待决策。`Scale`(FSCALE) 同理但价值更低（乘 2^n 恒精确）。中盘 FSQRT 拿不到第二次求值，且该路径本就是刻意的 f64 降精度管线,C1 保真无独立意义。
    **无法判定**：超越函数（FSIN/FCOS/FPTAN/FSINCOS/F2XM1/FYL2X/FYL2XP1/FPATAN)完全不碰 C1,但当前实现是「转 host double → libm → 加宽回 ext80」,结果本就不是正确舍入的,「舍入方向」在这个实现里没有可定义的答案。要修得先有正确舍入的 ext80 超越函数。
 
-4. **x87 opt-in reduced 语义**:FMUL/FDIV 走 f64 受控精度（文档化 diverge),FADD/FSUB 以 IXC 守卫保位精确；FILD m64 守卫 |x|≤2^53。provenance 标记 0xA5(canonical)/0xA6(reduced-ready)。
+4. **x87 opt-in reduced 语义**:FMUL/FDIV 走 f64 受控精度（文档化 diverge),FADD/FSUB 以 IXC 守卫保位精确；FILD m64 守卫 |x|≤2^53。非架构 provenance 标记现在只有 **0xA5**，表示该值已获准走 reduced fast path；未标记值保留在 SoftFloat 路径。
 5. **TOP 虚拟化默认 OFF**:stock bench 收益为零（bailout 主导），该模式 fuzz 覆盖薄。关键不变量已写入代码注释（pin 读取必经 TOP reload 的全寄存器 Ubfx 顺带清陈旧 mask)。
 
 ### P2 — 工程遗留
@@ -505,6 +514,19 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
    **注意 `Module::Push(ir::AddressNode*)` 是「裸指针签名 + 取得所有权」的接口**——这是本次两个缺陷的共同诱因，未来若有新调用点应留意。
 11. ~~**"Flag elimination" 定向断言失败**~~:已修复。根因是**测试陈旧**而非 pass 有 bug——测试（`7a909ba`,07-23）用 `Flags::All` 断言首个 SaveFlags 被删，但次日 `4003358` 引入的 carry 保护对任何含 C 的掩码一律不删。已把该场景改用 `Flags::NZ`（真正覆盖"死 pseudo 消除"），并新增一个 carry 掩码场景显式断言两个写都必须存活。
 12. **信号 backpatch TSO 不做的结论已固化**:FEX 用它服务非对齐机制而非优化；我们编译期对齐证明+廉价分支已获同等快路径，成本（并发代码补丁+I-cache 同步+信号链耦合）不值。
+13. **B3 — JIT 磁盘缓存的模块归属只在单模块实践下安全**：缓存单元以
+    `guest_start` 为键，`RecordUnit` 当前忽略传入的 `module`，加载时又统一复活到
+    `default_module`。今天 `AddressSpace::MapModule` 没有调用者，所以不存在地址相同
+    但模块不同的碰撞；`config_hash`、`env_hash` 与逐块 guest-byte hash 也覆盖了现有
+    单模块场景的漂移。若将来启用第二模块，这些键不足以表达 ownership，可能把单元
+    归到错误模块。`MapModule` 已加高声量日志守卫：磁盘缓存 active 时一旦映射附加
+    模块就明确报告 cache ownership ambiguous；真正支持多模块前必须把模块身份纳入
+    持久化键与复活目标。
+14. **M1 — Build-ID 是文件身份摘要，不是内容哈希**：`ComputeBuildId` 对可执行文件
+    的 path、size、秒级 mtime、inode（再加 host image span）做哈希；若同一 inode
+    被原地替换为同尺寸内容且 mtime 被保留，ID 可能不变。加载阶段仍会逐块校验 guest
+    bytes，所以影响被限制在 build ID 未能隔离的 host-code cache 候选，而不是绕过
+    guest 代码漂移检查。需要更强的发布/攻击模型时应改为内容或构建系统提供的 ID。
 
 ---
 
