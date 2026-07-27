@@ -33,6 +33,7 @@ struct PerfStats {
     std::atomic<unsigned long long> regalloc_ns{0};   // RegisterAllocPass
     std::atomic<unsigned long long> codegen_ns{0};    // JitTranslator + Flush
     std::atomic<unsigned long long> publish_ns{0};    // module push, L2 slots, SMC
+    std::atomic<unsigned long long> ir_free_ns{0};    // releasing the unit's IR
     std::atomic<unsigned long long> translate_ns{0};  // whole Translate() call
 
     std::atomic<unsigned long long> func_units{0};
@@ -41,6 +42,13 @@ struct PerfStats {
     std::atomic<unsigned long long> host_bytes{0};
     std::atomic<unsigned long long> ir_insts{0};
     std::atomic<unsigned long long> pool_bytes{0};  // bytes handed to the allocator
+    // High-water mark of the ir::Inst arena: chunk bytes malloc'd by
+    // Inst::operator new. Chunks are never returned, so this only grows, and it
+    // grows only when the free list cannot satisfy an allocation -- i.e. it is
+    // exactly "peak IR held live at once", independent of host load and of
+    // anything else in the address space. Retaining a compiled unit's IR makes
+    // it track total IR ever built instead.
+    std::atomic<unsigned long long> ir_arena_bytes{0};
 };
 
 inline PerfStats& GetPerfStats() {
@@ -66,14 +74,19 @@ inline void PerfDumpAtExit() {
     auto g = [](const std::atomic<unsigned long long>& a) { return a.load(std::memory_order_relaxed); };
     std::fprintf(stderr,
                  "[svm-prof] translate_ns=%llu decode_ns=%llu rpo_ns=%llu "
-                 "opt_ns=%llu regalloc_ns=%llu codegen_ns=%llu publish_ns=%llu\n",
+                 "opt_ns=%llu regalloc_ns=%llu codegen_ns=%llu publish_ns=%llu "
+                 "ir_free_ns=%llu\n",
                  g(s.translate_ns), g(s.decode_ns), g(s.rpo_ns), g(s.opt_ns),
-                 g(s.regalloc_ns), g(s.codegen_ns), g(s.publish_ns));
+                 g(s.regalloc_ns), g(s.codegen_ns), g(s.publish_ns), g(s.ir_free_ns));
     std::fprintf(stderr,
                  "[svm-prof] func_units=%llu block_units=%llu decoded_blocks=%llu "
                  "host_bytes=%llu ir_insts=%llu pool_bytes=%llu\n",
                  g(s.func_units), g(s.block_units), g(s.decoded_blocks), g(s.host_bytes),
                  g(s.ir_insts), g(s.pool_bytes));
+    // Separate line on purpose: run_func_fingerprint_tests.sh keys its totals
+    // gate on a line that *starts* with "func_units=", so anything appended to
+    // the line above would have to be stripped there as well.
+    std::fprintf(stderr, "[svm-prof] ir_arena_bytes=%llu\n", g(s.ir_arena_bytes));
 }
 
 inline void PerfAdd(std::atomic<unsigned long long>& counter, unsigned long long v) {

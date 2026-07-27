@@ -121,22 +121,19 @@ struct HIRLocal {
     HIRValue* current_value{};
 };
 
-class HIRLoop final {
-public:
-    static HIRLoop* Create(HIRFunction* function, HIRBlock* header, size_t length);
-
-    explicit HIRLoop(HIRFunction* function, HIRBlock* header, size_t length);
-    [[nodiscard]] HIRBlock* GetHeader() const;
-    [[nodiscard]] HIRBlockVector GetLoopVector() const;
-
-    IntrusiveListNode node{};
-
-private:
-    HIRBlockVector loop;
-};
+// HIRLoop / HIRLoopList lived here. Removed, not repaired: the constructor
+// took a single `HIRBlock* header` and memcpy'd `length * sizeof(HIRBlock*)`
+// bytes OUT OF THAT ONE OBJECT, so every loop it built was the header block's
+// own fields reinterpreted as block pointers, reading past the object once
+// length exceeded sizeof(HIRBlock)/8. Its only producer (ComputeLoopInformation
+// in ir/opts/cfg_analysis_pass.cpp) was deleted in the previous round, and the
+// only accessor of the resulting list, HIRFunction::GetHIRLoop, never had a
+// caller anywhere in the tree -- so the type had no way left to be either
+// exercised or validated. A "fixed" constructor with no producer and no
+// consumer is an unverifiable claim; whoever next needs loop information should
+// add the type back together with the analysis that fills it and the code that
+// reads it.
 #pragma pack(pop)
-
-using HIRLoopList = IntrusiveList<&HIRLoop::node>;
 
 // Instruction id -> the HIRValue that instruction defines (null for the
 // void-typed ones), dense over 0..MaxInstrCount()-1.
@@ -291,7 +288,6 @@ public:
     HIRBlockVector& GetHIRBlocks();
     HIRBlockList& GetHIRBlockList();
     HIRBlockList& GetHIRBlocksRPO();
-    HIRLoopList& GetHIRLoop();
     HIRValueMap& GetHIRValues();
     HIRValue* GetHIRValue(const Value& value);
     HIRPools& GetMemPool();
@@ -299,7 +295,6 @@ public:
     void ReleaseFunctionOwnership();
     void AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional = false);
     void RemoveEdge(Edge* edge);
-    void AddLoop(HIRLoop* loop);
     void MergeAdjacentBlocks(HIRBlock* left, HIRBlock* right);
     bool SplitBlock(HIRBlock* new_block, HIRBlock* old_block);
     // Populates blocks_rpo with the reverse-post-order of the CFG reachable
@@ -323,7 +318,6 @@ public:
 private:
     friend class HIRBuilder;
     friend class HIRBlock;
-    friend class HIRLoop;
 
     struct {
         u32 current_slot{0};
@@ -353,7 +347,6 @@ private:
     HIRValueMap reid_scratch{};
     HIRBlock* current_block{};
     HIRBlock* entry_block{};
-    HIRLoopList loops{};
 };
 
 using HIRFunctionList = IntrusiveList<&HIRFunction::list_node>;
