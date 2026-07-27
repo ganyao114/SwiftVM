@@ -1,37 +1,6 @@
-// XSAVE facility: XGETBV, XSAVE/XSAVE64, XRSTOR/XRSTOR64.
-//
-// ===========================================================================
-// PATCH FOR MAINLINE TO MERGE (decoder.h / decoder.cc are off-limits here)
-// ---------------------------------------------------------------------------
-// Nothing in this file needs a declaration in decoder.h: the emitters are free
-// functions declared in xsave.h.  Only the dispatch in decoder.cc's
-// DecodeSwitch has to be added.  Replace the existing
-//
-//     case I_XGETBV:
-//         // XSAVE/OSXSAVE are deliberately absent from CPUID, therefore
-//         // XGETBV is architecturally unavailable and must #UD.
-//         Interrupt(InterruptReason::ILL_CODE);
-//         break;
-//
-// with
-//
-//     case I_XGETBV:
-//         EmitXgetbv(assembler, pc);
-//         break;
-//     case I_XSAVE:
-//     case I_XSAVE64:
-//         EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, false);
-//         break;
-//     case I_XRSTOR:
-//     case I_XRSTOR64:
-//         EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, true);
-//         break;
-//
-// and add `#include "runtime/frontend/x86/xsave.h"` to decoder.cc.  With
-// SVM_XSAVE unset all three still raise #UD, i.e. the behaviour before this
-// file existed.  decoder_xsave.cc must also be listed in
-// source/runtime/frontend/x86/CMakeLists.txt.
-// ===========================================================================
+// XSAVE facility emitters and helpers: XGETBV, XSAVE/XSAVE64, and
+// XRSTOR/XRSTOR64.  decoder.cc dispatches the diStorm mnemonics here; the
+// shared SVM_XSAVE gate keeps opcode availability coherent with CPUID.
 //
 // WHAT IS AND IS NOT IMPLEMENTED
 // ---------------------------------------------------------------------------

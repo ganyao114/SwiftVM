@@ -638,8 +638,10 @@ private:
     // Gate for every VEX handler.  AVX stays behind SVM_AVX=1 until the
     // Unicorn differential fuzzer covers it; with the gate off the V*
     // opcodes fall through DecodeSwitch's default and the block traps as
-    // FALLBACK, exactly as before AVX decoding existed.  No CPUID bit is
-    // advertised either way, so a well-behaved guest never emits VEX at all.
+    // FALLBACK, exactly as before AVX decoding existed.  CPUID advertises AVX
+    // only when SVM_AVX and SVM_XSAVE are both on, but decode intentionally
+    // stays SVM_AVX-only: accepting more than CPUID advertises is safe
+    // under-advertising and keeps the standalone AVX validation gate useful.
     [[nodiscard]] static bool AvxEnabled();
     // SVM_SSE4 -- the legacy SSE3/SSSE3/SSE4.1 escape hatch, default ON.
     // CPUID consults it so the reported feature bits can never outrun the

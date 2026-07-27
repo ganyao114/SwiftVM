@@ -10,6 +10,7 @@
 #include <cstring>
 #include "runtime/frontend/x86/cpu.h"
 #include "runtime/frontend/x86/decoder_internal.h"
+#include "runtime/frontend/x86/xsave.h"
 
 namespace swift::x86 {
 
@@ -478,9 +479,15 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             DecodeXlat(insn);
             break;
         case I_XGETBV:
-            // XSAVE/OSXSAVE are deliberately absent from CPUID, therefore
-            // XGETBV is architecturally unavailable and must #UD.
-            Interrupt(InterruptReason::ILL_CODE);
+            EmitXgetbv(assembler, pc);
+            break;
+        case I_XSAVE:
+        case I_XSAVE64:
+            EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, false);
+            break;
+        case I_XRSTOR:
+        case I_XRSTOR64:
+            EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, true);
             break;
         case I_UD2:
             Interrupt(InterruptReason::ILL_CODE);
