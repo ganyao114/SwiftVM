@@ -1362,3 +1362,72 @@ TEST_CASE("SaveCV commits x86 CF/OF into the flags register") {
     REQUIRE(text.find("msr nzcv") == std::string::npos);
     REQUIRE(text.find("msr NZCV") == std::string::npos);
 }
+
+// --- CondSet is an arithmetic 0/1 value, not merely truthy ------------------
+//
+// Guest consumers historically fed CondSet only into truthiness operations,
+// so replacing CSET (0/1) with CSETM (0/-1) survived the entire guest corpus.
+// Build the missing IR shape directly: materialize EQ and add it to an integer
+// before storing it. The disassembly check is the direct backend contract,
+// following the SaveCV structural test above; a CSETM mutation fails here even
+// though branches would continue to behave the same way.
+static swift::runtime::ir::Block* BuildCondSetArithmeticBlock() {
+    using namespace swift::runtime::ir;
+    auto* block = new Block(0, Location{0x7100});
+    auto flags_value = block->LoadImm(Imm{0ull}).SetType(ValueType::U64);
+    block->SaveFlags(flags_value, Flags::NZ);
+    auto one = block->CondSet(Cond::EQ).SetType(ValueType::U64);
+    auto base = block->LoadImm(Imm{41ull}).SetType(ValueType::U64);
+    auto sum = block->Add(base, Operand{one});
+    block->StoreUniform(Uniform{0, ValueType::U64}, sum);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    return block;
+}
+
+TEST_CASE("CondSet materializes exactly one for arithmetic consumers") {
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::backend;
+
+    swift::runtime::Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = swift::runtime::kArm64,
+    };
+    AddressSpace address_space{config};
+    auto module = address_space.GetDefaultModule();
+    const auto gprs = address_space.GetTrampolines().GetGPRRegs();
+    const auto fprs = address_space.GetTrampolines().GetFPRRegs();
+
+    swift::runtime::IntrusivePtr<Block> block{BuildCondSetArithmeticBlock()};
+    RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs};
+    RegisterAllocPass::Run(block.get(), &reg_alloc);
+
+    arm64::JitContext context{module, reg_alloc};
+    arm64::JitTranslator translator{context};
+    translator.Translate(block.get());
+    context.Finish();
+    REQUIRE(context.CurrentBufferSize() > 0);
+
+    auto& masm = context.GetMasm();
+    auto* buffer = masm.GetBuffer();
+    auto* first = buffer->GetStartAddress<const vixl::aarch64::Instruction*>();
+    auto* last = buffer->GetEndAddress<const vixl::aarch64::Instruction*>();
+
+    vixl::aarch64::Decoder decoder;
+    vixl::aarch64::Disassembler disassembler;
+    decoder.AppendVisitor(&disassembler);
+    std::string text;
+    for (const auto* instr = first; instr < last; instr = instr->GetNextInstruction()) {
+        decoder.Decode(instr);
+        text += disassembler.GetOutput();
+        text += '\n';
+    }
+    INFO(text);
+
+    REQUIRE(text.find("cset ") != std::string::npos);
+    REQUIRE(text.find("csetm ") == std::string::npos);
+    REQUIRE(text.find("add ") != std::string::npos);
+}

@@ -5,6 +5,7 @@
 #include "address_space.h"
 #include "runtime/backend/arm64/trampolines.h"
 #include "runtime/backend/riscv64/trampolines.h"
+#include "runtime/common/logging.h"
 
 namespace swift::runtime::backend {
 
@@ -65,6 +66,14 @@ void AddressSpace::Init() {
 std::shared_ptr<Module> AddressSpace::MapModule(LocationDescriptor start,
                                                 LocationDescriptor end,
                                                 const ModuleConfig& m_config) {
+    if (jit_disk_cache && jit_disk_cache->Enabled()) {
+        LOG_ERROR(
+                "SVM_JIT_CACHE: MapModule({:#x}, {:#x}) creates a second module, but cache "
+                "units have no module identity and are revived into default_module; cache "
+                "ownership is ambiguous",
+                start,
+                end);
+    }
     std::unique_lock guard(lock);
     auto module = std::make_shared<Module>(*this, start, end, m_config);
     modules.Map(start, end, module);

@@ -14,14 +14,20 @@
 # unrelated reason is worse than no test.
 #
 set -u
+export PYTHONDONTWRITEBYTECODE=1
 
-BUILD=${1:?usage: run_aot_tests.sh <build-dir>}
+BUILD_ARG=${1:?usage: run_aot_tests.sh <build-dir>}
+BUILD="$(cd "$BUILD_ARG" && pwd)" || {
+    echo "missing build directory: $BUILD_ARG"
+    exit 2
+}
 AOT="$BUILD/source/aot/svm_aot"
 REF="$BUILD/source/translator/linux/svm_translator_linux"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CORPUS="$(cd "$HERE/../../translator/linux/tests" && pwd)"
-WORK="${AOT_TEST_WORK:-$(mktemp -d)}"
-mkdir -p "$WORK"
+WORK_ARG="${AOT_TEST_WORK:-$(mktemp -d)}"
+mkdir -p "$WORK_ARG"
+WORK="$(cd "$WORK_ARG" && pwd)"
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -35,14 +41,16 @@ head_ "0. build the guest-globals case"
 # --------------------------------------------------------------------------
 build_guest() {
     local name=$1
+    local output="$WORK/${name}_x86_64"
     if clang --target=x86_64-unknown-linux-gnu -ffreestanding -nostdlib -fno-pic \
             -fno-pie -mcmodel=small -O1 -fno-stack-protector \
             -c "$HERE/$name.c" -o "$WORK/$name.o" 2>/dev/null &&
-       python3 "$HERE/mkaotguest.py" -o "$HERE/${name}_x86_64" \
+       python3 "$HERE/mkaotguest.py" -o "$output" \
             "$WORK/$name.o" --entry _start >/dev/null; then
         ok "${name}_x86_64 rebuilt"
     elif [ -f "$HERE/${name}_x86_64" ]; then
-        ok "${name}_x86_64 (using the checked-in copy; clang cross unavailable)"
+        cp "$HERE/${name}_x86_64" "$output"
+        ok "${name}_x86_64 (copied checked-in fixture; clang cross unavailable)"
     else
         bad "cannot build ${name}_x86_64"
     fi
@@ -99,7 +107,7 @@ run_equivalence() {
     fi
 }
 
-run_equivalence globals "$HERE/globals_guest_x86_64"
+run_equivalence globals "$WORK/globals_guest_x86_64"
 run_equivalence func_tests "$CORPUS/func_tests_x86_64"
 run_equivalence real_busy "$CORPUS/real_busy_x86_64"
 
@@ -289,7 +297,7 @@ head_ "self-modifying guest (docs/aot-design.md §8)"
 # what is implemented is retranslation, which is the same safety property and
 # the only one compatible with §7.1's "byte-identical to JIT on all 25 e2e
 # guests" -- the doc has been corrected to say so.
-SMC_GUEST="$HERE/smc_guest_x86_64"
+SMC_GUEST="$WORK/smc_guest_x86_64"
 if [ -f "$SMC_GUEST" ]; then
     "$AOT" run --guest "$SMC_GUEST" > "$WORK/smc.jit.out" 2>&1; smc_jit_rc=$?
     if "$AOT" compile "$SMC_GUEST" -o "$WORK/smc.aot" --eager --sweep \
