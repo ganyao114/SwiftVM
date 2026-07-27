@@ -568,6 +568,18 @@ size_t PrepareFunctionGuestRanges(ir::HIRFunction* function) {
     return decoded_blocks;
 }
 
+// Escape hatch for the release added at the end of TranslateIR(HIRFunction*).
+// `SVM_FUNC_IR_FREE=0` restores the old behaviour (function-mode IR retained
+// for the lifetime of the compiled unit), which is how the two sides of the
+// memory measurement are produced from one binary.
+bool FuncIRFreeEnabled() {
+    static const bool on = [] {
+        const char* e = std::getenv("SVM_FUNC_IR_FREE");
+        return !e || std::strcmp(e, "0") != 0;
+    }();
+    return on;
+}
+
 }  // namespace
 
 bool PublishIRFunction(const std::shared_ptr<backend::Module>& module,
@@ -689,6 +701,41 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
         }
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} entries-ready\n", func_start);
         RecordJitCacheUnit(module, func_start, true, cache_blocks, buffer);
+
+        // Release the function's IR. Block mode has always done this (the
+        // Block::DestroyInstrs at the end of TranslateIR(IntrusivePtr<Block>));
+        // function mode never did, so every instruction of every compiled
+        // function stayed allocated until the unit was invalidated or the
+        // module torn down -- i.e. for the whole process in the normal case.
+        //
+        // Nothing reads it again:
+        //  - the host code is emitted and flushed, and the fault table, the L2
+        //    dispatch slots, the SMC ranges and the disk-cache record are all
+        //    written above from data that lives in the AddressNode (guest
+        //    start/end) or in the JitCache, not in the instruction list;
+        //  - Runtime::Impl::Interpreter refuses to run module IR whenever the
+        //    JIT is on and returns CodeMiss instead (see the comment there);
+        //    the enable_jit=false path never reaches this function, it
+        //    publishes through PublishIRFunction and keeps its IR;
+        //  - JitContext::Forward's `cur_function->FindBlock` only ever inspects
+        //    the unit being emitted right now;
+        //  - the AOT collector re-reads the published node's blocks, but only
+        //    their guest start/end;
+        //  - the disk-cache *load* path already publishes function nodes whose
+        //    blocks hold no instructions at all (jit_cache.cpp), so this is a
+        //    shape the rest of the runtime is required to handle anyway.
+        //
+        // The write lock mirrors the block path, which destroys under
+        // ir_block->LockWrite(). It is uncontended here: Translate() holds the
+        // frontend's coarse translate lock and the module read lock, so an
+        // invalidation cannot be detaching this node concurrently.
+        if (FuncIRFreeEnabled()) {
+            // Outside publish_ns so that counter keeps meaning what it did.
+            perf_pub.Stop();
+            PerfScope perf_free{GetPerfStats().ir_free_ns};
+            auto ir_guard = ir_function->LockWrite();
+            ir_function->DestroyInstrs();
+        }
         return buffer.exec_data;
     }
     return nullptr;

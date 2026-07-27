@@ -96,6 +96,12 @@ public:
     void InsertAfter(Inst* inst, Inst* after);
     void RemoveInst(Inst* inst);
     void DestroyInst(Inst* inst);
+    // Frees every instruction in the block. Bulk teardown: it runs
+    // Inst::ReleaseArgs, not Inst::DestroyArgs, so no instruction is
+    // dereferenced through another instruction's operand. See ReleaseArgs for
+    // why that is both correct here and materially cheaper -- and why it is
+    // what makes tearing a whole function down safe regardless of the order
+    // its blocks are visited in.
     void DestroyInstrs();
     void ReIdInstr();
 

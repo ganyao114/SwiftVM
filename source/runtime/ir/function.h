@@ -24,6 +24,9 @@ public:
     ir::Block* EntryBlock();
     ir::Block* FindBlock(ir::Location location, bool block_start = true);
     void AddBlock(ir::Block* block);
+    // Frees every instruction of every block, leaving the blocks (and their
+    // guest ranges, jit_cache and dispatch indices) in place. Idempotent.
+    void DestroyInstrs();
     [[nodiscard]] BlockMap& GetBlocks() { return blocks; }
     [[nodiscard]] const BlockMap& GetBlocks() const { return blocks; }
 

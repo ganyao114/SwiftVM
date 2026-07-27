@@ -147,6 +147,26 @@ public:
     [[nodiscard]] bool HasFlagsSavePseudo();
     void DestroyArg(u8 arg_idx);
     void DestroyArgs();
+    // Teardown for "everything that could read this instruction is going away
+    // too" -- Block::DestroyInstrs and nothing else.
+    //
+    // DestroyArgs keeps the IR's *bookkeeping* consistent: each argument value
+    // is unregistered from its defining instruction (`def->num_use--`, plus a
+    // walk of that def's pseudo-operation chain). That is a dependent load and
+    // store into a different instruction for every operand, and it is the
+    // expensive half of teardown: freeing a compiled function's IR costs
+    // 18.1 ns per instruction with DestroyArgs and 10.4 ns with this
+    // (func_tests, 32 411 instructions, median of 13 runs).
+    //
+    // It is also pure waste when the whole block or function is being freed:
+    // nothing will read a use count again, and the only thing an argument
+    // actually *owns* is a Params list. So this frees that and blanks the
+    // slots (which is what makes the later ~Inst -> DestroyArgs a no-op) and
+    // touches no other instruction at all. Not touching another instruction is
+    // also what makes bulk teardown order-independent: the block-at-a-time
+    // walk in ~Function used to run UnUse against instructions in blocks it
+    // had already freed.
+    void ReleaseArgs();
     void Reset();
 
     [[nodiscard]] u16 VirRegID() const {
@@ -174,12 +194,15 @@ public:
     // seq_cst CAS loop each, i.e. the same order of magnitude as malloc.
     //
     // A recycling cache alone is not enough, and measuring that is what
-    // produced this shape: in the default (function) mode nothing ever calls
-    // Block::DestroyInstrs, so IR instructions are simply leaked and a pure
-    // freelist stays empty forever -- it measured +0.5..+1.0% on translate_ns,
-    // i.e. a small loss. Bump allocation is what makes the *first* allocation
-    // cheap, and the freelist on top is what makes block mode (which does
-    // destroy its instructions) reuse them: -5.9% translate_ns there.
+    // produced this shape: at the time, the default (function) mode never
+    // called Block::DestroyInstrs, so IR instructions were retained for the
+    // life of the compiled unit and a pure freelist stayed empty forever -- it
+    // measured +0.5..+1.0% on translate_ns, i.e. a small loss. Bump allocation
+    // is what makes the *first* allocation cheap, and the freelist on top is
+    // what makes a mode that does destroy its instructions reuse them: -5.9%
+    // translate_ns in block mode. TranslateIR(HIRFunction*) now releases its
+    // IR too, so the freelist is live on the default path as well and the
+    // arena stops growing after the first unit.
     //
     // A freelist entry stores its successor in the object's own storage, so
     // the arena costs nothing beyond the chunks themselves, and chunks are

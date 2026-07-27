@@ -33,10 +33,27 @@ ir::Block* Function::FindBlock(ir::Location loc, bool block_start) {
     }
 }
 
+void Function::DestroyInstrs() {
+    // Block-at-a-time is safe *because* Block::DestroyInstrs is the bulk path.
+    //
+    // The version that ran Inst::DestroyArgs was not: DestroyArgs -> UnUse
+    // writes through the defining instruction of each argument value, so a
+    // function whose value graph crosses a block boundary would write through
+    // a dangling Inst* as soon as the defining block had been freed -- which
+    // is exactly what ~Function did, one block at a time. It would not fault:
+    // the Inst arena never returns memory, so the write lands inside a live
+    // chunk and silently decrements a use count on whichever instruction has
+    // since been handed the slot. See Inst::ReleaseArgs.
+    for (auto& node : blocks) {
+        static_cast<ir::Block&>(node).DestroyInstrs();
+    }
+}
+
 Function::~Function() {
     while (!blocks.empty()) {
         auto* block = static_cast<ir::Block*>(&*blocks.begin());
         blocks.erase(*block);
+        // ~Block -> Block::DestroyInstrs, i.e. the same bulk teardown.
         delete block;
     }
 }

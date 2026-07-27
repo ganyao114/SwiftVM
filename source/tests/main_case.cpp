@@ -5,8 +5,10 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <string>
 #include <sys/mman.h>
 #include <vector>
+#include "aarch64/disasm-aarch64.h"
 #include "runtime/ir/hir_builder.h"
 #include "runtime/ir/ir_meta.h"
 #include "runtime/ir/opts/cfg_analysis_pass.h"
@@ -1275,4 +1277,88 @@ TEST_CASE("Spill slots are recycled, not merely handed out") {
         // Deliberately leaves the first adjacent free pair on an ODD index.
         check_recycling(BuildPairFragmentBlock(gpr_pool, fpr_pool, 120), 400);
     }
+}
+
+// --- x86 mul CF/OF must reach the flags register -----------------------------
+//
+// JitTranslator::SaveCV/SaveOF used to write their C/V bits into the HOST NZCV
+// register (Msr) and then clear nzcv_dirty, which is exactly the state that
+// makes MergeNZCV() do nothing: the bits were produced and then dropped. The
+// x86 frontend cannot reach either function today -- MulWithFlags materialises
+// CF/OF through a separate `SaveFlags(t + t, C|V)` producer rather than hanging
+// the pseudo on the Mul, and the only frontend ir::Div is the flagless RCL/RCR
+// modulus -- so no guest program and no exit code can catch this. The IR the
+// backend accepts is wider than the IR the frontend currently emits, and this
+// builds the missing shape directly.
+//
+// The check is on emitted code rather than on a running guest because
+// executing a bare Block needs the trampoline/State machinery a unit test does
+// not have. That is still a real check: whether the two C/V bits are OR-ed into
+// the flags register (x26) or parked in host NZCV is precisely the difference
+// between the broken and the fixed lowering.
+static swift::runtime::ir::Block* BuildMulCarryOverflowBlock() {
+    using namespace swift::runtime::ir;
+    auto* block = new Block(0, Location{0x7000});
+    auto a = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{0, ValueType::U32});
+    auto b = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{4, ValueType::U32});
+    // 32x32 unsigned multiply: EmitMul widens with Umull and asks SaveCV
+    // whether the upper half is nonzero, i.e. the x86 `mul` CF=OF rule.
+    auto product = block->Mul(a, Operand{b});
+    block->SaveFlags(product, Flags::Carry | Flags::Overflow);
+    block->StoreUniform(Uniform{8, ValueType::U32}, product);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    return block;
+}
+
+TEST_CASE("SaveCV commits x86 CF/OF into the flags register") {
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::backend;
+
+    swift::runtime::Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = swift::runtime::kArm64,
+    };
+    AddressSpace address_space{config};
+    auto module = address_space.GetDefaultModule();
+    const auto gprs = address_space.GetTrampolines().GetGPRRegs();
+    const auto fprs = address_space.GetTrampolines().GetFPRRegs();
+
+    swift::runtime::IntrusivePtr<Block> block{BuildMulCarryOverflowBlock()};
+    RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs};
+    RegisterAllocPass::Run(block.get(), &reg_alloc);
+
+    arm64::JitContext context{module, reg_alloc};
+    arm64::JitTranslator translator{context};
+    translator.Translate(block.get());
+    context.Finish();
+    REQUIRE(context.CurrentBufferSize() > 0);
+
+    auto& masm = context.GetMasm();
+    auto* buffer = masm.GetBuffer();
+    auto* first = buffer->GetStartAddress<const vixl::aarch64::Instruction*>();
+    auto* last = buffer->GetEndAddress<const vixl::aarch64::Instruction*>();
+
+    vixl::aarch64::Decoder decoder;
+    vixl::aarch64::Disassembler disassembler;
+    decoder.AppendVisitor(&disassembler);
+    std::string text;
+    for (const auto* instr = first; instr < last; instr = instr->GetNextInstruction()) {
+        decoder.Decode(instr);
+        text += disassembler.GetOutput();
+        text += '\n';
+    }
+    INFO(text);
+
+    // HostFlagsBit::C = 29, HostFlagsBit::V = 28 -> (3u << 28) = 0x30000000,
+    // and `flags` is x26 (backend/arm64/defines.h).
+    REQUIRE(text.find("orr x26, x26, #0x30000000") != std::string::npos);
+    // ...and it must NOT be stashed in host NZCV, where nothing collects it.
+    // Nothing else in this block has any reason to write NZCV: the only guest
+    // flag producer here is the multiply.
+    REQUIRE(text.find("msr nzcv") == std::string::npos);
+    REQUIRE(text.find("msr NZCV") == std::string::npos);
 }

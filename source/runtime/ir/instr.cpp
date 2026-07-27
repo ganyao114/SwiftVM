@@ -6,6 +6,8 @@
 
 #include <cstdlib>
 
+#include "runtime/common/perf_stats.h"
+
 namespace swift::runtime::ir {
 
 namespace {
@@ -39,6 +41,9 @@ void* Inst::operator new(size_t sz) {
         ASSERT_MSG(chunk != nullptr, "out of memory allocating an IR instruction chunk");
         tls_inst_bump = chunk;
         tls_inst_bump_left = kChunkBytes;
+        // Once per 64 KiB, so unconditional (no PerfEnabled() gate) costs
+        // nothing measurable and keeps the counter meaningful in any build.
+        PerfAdd(GetPerfStats().ir_arena_bytes, kChunkBytes);
     }
     auto* mem = tls_inst_bump;
     tls_inst_bump += kInstSlot;
@@ -330,6 +335,12 @@ bool Inst::HasFlagsSavePseudo() {
 
 void Inst::DestroyArg(u8 arg_idx) {
     auto &arg = ArgAt(arg_idx);
+    // An empty slot has nothing to unregister and is already blank. Most
+    // instructions use one or two of the five, and ~Inst runs this over all
+    // five again after ReleaseArgs has blanked them.
+    if (arg.IsVoid()) {
+        return;
+    }
     if (arg.IsValue()) {
         UnUse(arg.Get<Value>());
     } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
@@ -350,6 +361,23 @@ void Inst::DestroyArgs() {
     for (u8 i = 0; i < max_args; ++i) {
         DestroyArg(i);
     }
+}
+
+void Inst::ReleaseArgs() {
+    for (auto& arg : arguments) {
+        if (arg.IsVoid()) {
+            continue;
+        }
+        if (arg.IsParams()) {
+            // The only argument that owns heap memory. Params::Destroy does
+            // not null first_param, so blanking the slot below is what keeps
+            // ~Inst from walking a freed chain.
+            arg.Get<Params>().Destroy();
+        }
+        arg = {};
+    }
+    next_pseudo_inst = {};
+    num_use = 0;
 }
 
 void Inst::Reset() {
