@@ -165,9 +165,13 @@ void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
     }
     for (VAddr page = first; page <= last; page += page_size_) {
         auto& rec = pages_[page];
-        // O(1) duplicate check: node pointer is the unique key (a single
-        // compiled unit has exactly one guest_start/guest_end pair).
-        if (rec.node_ptrs.insert(node).second) {
+        const bool duplicate = std::any_of(
+                rec.nodes.begin(), rec.nodes.end(), [&](const TrackedNode& tracked) {
+                    return tracked.node.Get() == node &&
+                           tracked.guest_start == guest_start &&
+                           tracked.guest_end == guest_end;
+                });
+        if (!duplicate) {
             rec.nodes.push_back(
                     TrackedNode{module, ir::NodeRef{node}, guest_start, guest_end});
         }
@@ -215,9 +219,6 @@ void SmcTracker::ClearDispatchSlots(AddressSpace& space,
 
 void SmcTracker::RemoveTrackedNode(ir::AddressNode* node) {
     for (auto& [page, record] : pages_) {
-        // Erase from the O(1) lookup set first; then sweep the vector.
-        // node_ptrs.erase is a no-op if this page never held the node.
-        record.node_ptrs.erase(node);
         std::erase_if(record.nodes,
                       [&](const TrackedNode& tracked) { return tracked.node.Get() == node; });
     }
@@ -226,15 +227,16 @@ void SmcTracker::RemoveTrackedNode(ir::AddressNode* node) {
 std::vector<SmcTracker::TrackedNode> SmcTracker::TakeDirtyNodes(
         AddressSpace& space, TranslateTable* extra_l1) {
     std::vector<TrackedNode> nodes;
-    // O(1) cross-page dedup: a function can span many pages; avoid adding the
-    // same node to the result more than once without an any_of scan per entry.
-    std::unordered_set<ir::AddressNode*> seen;
     for (auto& [page, record] : pages_) {
         if (!record.dirty) {
             continue;
         }
         for (const auto& tracked : record.nodes) {
-            if (seen.insert(tracked.node.Get()).second) {
+            const bool duplicate = std::any_of(
+                    nodes.begin(), nodes.end(), [&](const TrackedNode& other) {
+                        return other.node.Get() == tracked.node.Get();
+                    });
+            if (!duplicate) {
                 ClearDispatchSlots(space, extra_l1, tracked);
                 nodes.push_back(tracked);
             }
@@ -249,14 +251,17 @@ std::vector<SmcTracker::TrackedNode> SmcTracker::TakeDirtyNodes(
 std::vector<SmcTracker::TrackedNode> SmcTracker::TakeRangeNodes(
         AddressSpace& space, TranslateTable* extra_l1, VAddr first, VAddr last) {
     std::vector<TrackedNode> nodes;
-    std::unordered_set<ir::AddressNode*> seen;
     for (VAddr page = first; page <= last; page += page_size_) {
         auto it = pages_.find(page);
         if (it == pages_.end()) {
             continue;
         }
         for (const auto& tracked : it->second.nodes) {
-            if (seen.insert(tracked.node.Get()).second) {
+            const bool duplicate = std::any_of(
+                    nodes.begin(), nodes.end(), [&](const TrackedNode& other) {
+                        return other.node.Get() == tracked.node.Get();
+                    });
+            if (!duplicate) {
                 ClearDispatchSlots(space, extra_l1, tracked);
                 nodes.push_back(tracked);
             }

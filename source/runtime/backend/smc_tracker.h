@@ -28,7 +28,6 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <unordered_set>
 #include <vector>
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/types.h"
@@ -136,10 +135,6 @@ private:
         bool dirty{};
         bool claim_stale_fault{};
         std::vector<TrackedNode> nodes;
-        // Raw-pointer set for O(1) duplicate detection in RegisterNode.
-        // Contains exactly the same elements as `nodes` (by pointer identity).
-        // Updated at every site that modifies `nodes`.
-        std::unordered_set<ir::AddressNode*> node_ptrs;
     };
 
     struct RetiredCode {
