@@ -39,6 +39,7 @@ constexpr u32 kXsaveXmmSize = 256;
 constexpr u32 kXsaveHeaderOffset = 512;
 constexpr u32 kXsaveHeaderSize = 64;
 constexpr u32 kXsaveXstateBvOffset = 512;
+constexpr u32 kXsaveXcompBvOffset = 520;
 // State component 2, YMM_Hi128: bits 255:128 of the sixteen YMM registers.
 constexpr u32 kXsaveYmmOffset = 576;
 constexpr u32 kXsaveYmmSize = 256;
@@ -121,5 +122,13 @@ void EmitXsave(ir::Assembler* assembler,
                VAddr next_pc,
                VAddr insn_pc,
                bool restore);
+void EmitXsaveopt(ir::Assembler* assembler,
+                  ir::Value address,
+                  VAddr next_pc,
+                  VAddr insn_pc);
+void EmitXsavec(ir::Assembler* assembler,
+                ir::Value address,
+                VAddr next_pc,
+                VAddr insn_pc);
 
 }  // namespace swift::x86

@@ -351,6 +351,49 @@ void X64Decoder::Decode() {
             end_decode = assembler->EndCommit();
             continue;
         }
+        // XSAVEC/XSAVEC64 (legacy prefixes + [REX] 0F C7 /4, memory only).
+        // This distorm snapshot has no mnemonic for the instruction and
+        // returns UNDEFINED with size 1 or 2. Decode its effective address by
+        // substituting XSAVE's 0F AE /4 opcode in a bounded copy, then route
+        // the resulting operand through the shared XSAVE facility emitter.
+        {
+            u32 opcode_offset = 0;
+            while (opcode_offset < kMaxInsnBytes) {
+                const u8 prefix = code_ptr[opcode_offset];
+                const bool legacy =
+                        prefix == 0x26 || prefix == 0x2E || prefix == 0x36 ||
+                        prefix == 0x3E || prefix == 0x64 || prefix == 0x65 ||
+                        prefix == 0x67;
+                if (legacy || (is_64bit && (prefix & 0xF0) == 0x40)) {
+                    ++opcode_offset;
+                    continue;
+                }
+                break;
+            }
+            if (opcode_offset + 2 < kMaxInsnBytes &&
+                code_ptr[opcode_offset] == 0x0F &&
+                code_ptr[opcode_offset + 1] == 0xC7 &&
+                (code_ptr[opcode_offset + 2] & 0x38) == 0x20 &&
+                (code_ptr[opcode_offset + 2] & 0xC0) != 0xC0) {
+                u8 surrogate[kFetchWindow];
+                std::memcpy(surrogate, code_ptr, sizeof(surrogate));
+                surrogate[opcode_offset + 1] = 0xAE;
+                auto insn = DisDecode(surrogate, sizeof(surrogate), is_64bit);
+                if ((insn.opcode == I_XSAVE || insn.opcode == I_XSAVE64) &&
+                    insn.size != 0) {
+                    if (insn.size > fetch_avail) {
+                        Interrupt(InterruptReason::PAGE_FATAL);
+                        break;
+                    }
+                    insn_pc = pc;
+                    pc += insn.size;
+                    EmitXsavec(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc);
+                    assembler->AdvancePC(ir::Imm{insn.size});
+                    end_decode = assembler->EndCommit();
+                    continue;
+                }
+            }
+        }
         // This distorm snapshot predates RDSEED and decodes 0F C7 /7 as a
         // one-byte undefined instruction.  Recognize the register-only
         // encoding here (optional 66 and REX prefixes) so the stream advances
@@ -506,6 +549,10 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
         case I_XSAVE:
         case I_XSAVE64:
             EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, false);
+            break;
+        case I_XSAVEOPT:
+        case I_XSAVEOPT64:
+            EmitXsaveopt(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc);
             break;
         case I_XRSTOR:
         case I_XRSTOR64:

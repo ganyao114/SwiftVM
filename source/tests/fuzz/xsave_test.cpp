@@ -100,6 +100,25 @@ void EmitXsaveInsn(CodeBuf& b, int disp, bool restore, bool wide) {
     b.B(u8(disp));
 }
 
+// XSAVEOPT / XSAVEOPT64 [r13 + disp8]: 0F AE /6.
+void EmitXsaveoptInsn(CodeBuf& b, int disp, bool wide) {
+    b.B(wide ? 0x49 : 0x41);
+    b.B(0x0F);
+    b.B(0xAE);
+    b.B(u8(0x40 | (6u << 3) | (kDataReg & 7)));
+    b.B(u8(disp));
+}
+
+// XSAVEC / XSAVEC64 [r13 + disp8]: 0F C7 /4. The bundled distorm has no
+// mnemonic for this form, so this also exercises decoder.cc's raw predecode.
+void EmitXsavecInsn(CodeBuf& b, int disp, bool wide) {
+    b.B(wide ? 0x49 : 0x41);
+    b.B(0x0F);
+    b.B(0xC7);
+    b.B(u8(0x40 | (4u << 3) | (kDataReg & 7)));
+    b.B(u8(disp));
+}
+
 void EmitXgetbvInsn(CodeBuf& b) {
     b.B(0x0F);
     b.B(0x01);
@@ -122,6 +141,7 @@ constexpr u32 kRefAreaSize = 0x340;    // 832
 constexpr u32 kRefYmmSize = 0x100;     // 256
 constexpr u32 kRefYmmOffset = 0x240;   // 576
 constexpr u32 kRefXstateBvOffset = 512;
+constexpr u32 kRefXcompBvOffset = 520;
 constexpr u32 kRefXmmOffset = 160;
 constexpr u32 kRefMxcsrOffset = 24;
 
@@ -407,8 +427,13 @@ TEST_CASE("x86 xsave facility vs rosetta reference") {
         CHECK(d0.rcx == kRefAreaSize);
         CHECK(d0.rdx == 0);
         const auto d1 = cpuid(0xD, 1);
-        CHECK(d1.rax == 0);  // no XSAVEOPT / XSAVEC / XGETBV(1) / XSAVES
-        CHECK(d1.rbx == 0);
+        CHECK(d1.rax == ((1u << 0) | (1u << 1)));  // XSAVEOPT + XSAVEC only
+        // SDM 13.2: EAX[1]=1 makes EBX the XSAVEC area size; the simplified
+        // standard-format XSAVEC therefore reports the standard size so a
+        // guest allocating from EBX cannot under-allocate.
+        CHECK(d1.rbx == kRefAreaSize);
+        CHECK(d1.rcx == 0);
+        CHECK(d1.rdx == 0);
         const auto d2 = cpuid(0xD, 2);
         CHECK(d2.rax == kRefYmmSize);
         CHECK(d2.rbx == kRefYmmOffset);
@@ -733,6 +758,56 @@ TEST_CASE("x86 xsave facility vs rosetta reference") {
         }
         CHECK(r.mxcsr == kSeedMxcsr);
         CHECK(r.fcw == kSeedFcw);
+
+        // XSAVEC uses SwiftVM's standard-format simplification, so its image
+        // is directly consumable by XRSTOR and matches XSAVE byte for byte.
+        CodeBuf compact;
+        EmitXsavecInsn(compact, 0, /*wide=*/true);
+        EmitXsaveInsn(compact, 0, /*restore=*/true, /*wide=*/true);
+        const auto compact_r = both("xsavec/xrstor roundtrip", compact,
+                                    [](ThreadContext64& ctx, u8* mem) {
+                                        std::memset(mem, 0, 1024);
+                                        const u64 poison_xcomp = ~0ull;
+                                        std::memcpy(mem + kRefXcompBvOffset, &poison_xcomp, 8);
+                                        ctx.rax.qword = 7;
+                                        ctx.rdx.qword = 0;
+                                    });
+        REQUIRE(compact_r.exit == int(swift::translator::None));
+        for (u32 reg = 0; reg < 16; ++reg) {
+            for (u32 lane = 0; lane < 16; ++lane) {
+                CHECK(compact_r.xmm[reg][lane] == seed_xmm(reg, lane));
+                CHECK(compact_r.ymm_high[reg][lane] == seed_ymm(reg, lane));
+            }
+        }
+        CHECK(compact_r.mxcsr == kSeedMxcsr);
+        CHECK(compact_r.fcw == kSeedFcw);
+        u64 xcomp_bv = ~0ull;
+        std::memcpy(&xcomp_bv, compact_r.mem.data() + kRefXcompBvOffset, 8);
+        CHECK(xcomp_bv == 0);
+        CHECK(compact_r.mem == r.mem);
+
+        // XSAVEOPT is permitted to save every requested component. The
+        // conservative implementation therefore has XSAVE-equivalent output
+        // and can use the same XRSTOR path.
+        CodeBuf optimized;
+        EmitXsaveoptInsn(optimized, 0, /*wide=*/true);
+        EmitXsaveInsn(optimized, 0, /*restore=*/true, /*wide=*/true);
+        const auto optimized_r = both("xsaveopt/xrstor roundtrip", optimized,
+                                      [](ThreadContext64& ctx, u8* mem) {
+                                          std::memset(mem, 0, 1024);
+                                          ctx.rax.qword = 7;
+                                          ctx.rdx.qword = 0;
+                                      });
+        REQUIRE(optimized_r.exit == int(swift::translator::None));
+        for (u32 reg = 0; reg < 16; ++reg) {
+            for (u32 lane = 0; lane < 16; ++lane) {
+                CHECK(optimized_r.xmm[reg][lane] == seed_xmm(reg, lane));
+                CHECK(optimized_r.ymm_high[reg][lane] == seed_ymm(reg, lane));
+            }
+        }
+        CHECK(optimized_r.mxcsr == kSeedMxcsr);
+        CHECK(optimized_r.fcw == kSeedFcw);
+        CHECK(optimized_r.mem == r.mem);
     }
 
     {  // ---- 0F AE register forms must not crash the decoder ----
@@ -822,6 +897,16 @@ TEST_CASE("x86 xsave stays hidden when disabled") {
     }
     {
         CodeBuf c;
+        EmitCpuidInsn(c);
+        const auto [exit, eax, ebx, ecx, edx] = run(c, 0xD, 1, 0x2800);
+        CHECK(exit == int(swift::translator::None));
+        CHECK(eax == 0);
+        CHECK(ebx == 0);
+        CHECK(ecx == 0);
+        CHECK(edx == 0);
+    }
+    {
+        CodeBuf c;
         EmitXgetbvInsn(c);
         const auto [exit, eax, ebx, ecx, edx] = run(c, 0, 0, 0x3000);
         CHECK(exit == int(swift::translator::IllegalCode));  // #UD
@@ -844,6 +929,26 @@ TEST_CASE("x86 xsave stays hidden when disabled") {
         CodeBuf c;
         EmitXsaveInsn(c, 0, true, false);
         const auto [exit, eax, ebx, ecx, edx] = run(c, 7, 0, 0x5000);
+        CHECK(exit == int(swift::translator::IllegalCode));  // #UD
+        (void)eax;
+        (void)ebx;
+        (void)ecx;
+        (void)edx;
+    }
+    {
+        CodeBuf c;
+        EmitXsavecInsn(c, 0, false);
+        const auto [exit, eax, ebx, ecx, edx] = run(c, 7, 0, 0x6000);
+        CHECK(exit == int(swift::translator::IllegalCode));  // #UD
+        (void)eax;
+        (void)ebx;
+        (void)ecx;
+        (void)edx;
+    }
+    {
+        CodeBuf c;
+        EmitXsaveoptInsn(c, 0, false);
+        const auto [exit, eax, ebx, ecx, edx] = run(c, 7, 0, 0x7000);
         CHECK(exit == int(swift::translator::IllegalCode));  // #UD
         (void)eax;
         (void)ebx;
