@@ -10,7 +10,9 @@ class DeadCodeEliminationPass {
 public:
     static void Run(HIRBuilder* hir_builder);
     static void Run(HIRFunction* hir_function);
-    static void Run(Block* block);
+    // See FlagsEliminationPass::Run for why the function path needs the
+    // owning HIRFunction: deletions must go through EraseInst.
+    static void Run(Block* block, HIRFunction* hir_function = nullptr);
 };
 
 }  // namespace swift::runtime::ir

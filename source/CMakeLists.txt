@@ -23,4 +23,7 @@ add_subdirectory(externals)
 add_subdirectory(runtime)
 add_subdirectory(compiler)
 add_subdirectory(translator)
+# AOT pre-compiler (docs/aot-design.md). After translator: it uses the
+# elfio::elfio alias that translator/linux creates.
+add_subdirectory(aot)
 add_subdirectory(tests)

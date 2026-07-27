@@ -10,7 +10,7 @@ namespace swift::runtime::backend {
 
 AddressSpace::AddressSpace(const Config& config)
         : config(config)
-        , smc_tracker(reinterpret_cast<u64>(config.memory_base)) {
+        , smc_tracker(reinterpret_cast<u64>(config.memory_base), config.guest_addr_mask) {
     Init();
 }
 
@@ -50,6 +50,15 @@ void AddressSpace::Init() {
             }
             uniform_info->uniform_regs_map.Map(desc.offset, desc.offset + desc.size, reg);
         }
+    }
+
+    // JIT disk cache (off unless SVM_JIT_CACHE names a directory). Loading
+    // here is deliberate: the guest image is mapped before the AddressSpace is
+    // built, so the per-unit guest-byte check has something to verify against,
+    // and every revived unit is published before any guest code can run.
+    if (JitDiskCache::Requested()) {
+        jit_disk_cache = std::make_unique<JitDiskCache>(*this);
+        jit_disk_cache->Load(default_module);
     }
 }
 
@@ -130,6 +139,12 @@ const ir::UniformInfo& AddressSpace::GetUniformInfo() { return *uniform_info; }
 
 const ir::UniformInfo& AddressSpace::GetUniformInfo() const { return *uniform_info; }
 
-AddressSpace::~AddressSpace() = default;
+AddressSpace::~AddressSpace() {
+    // Persist before anything is torn down: Save only touches the recorded
+    // byte copies and the L2 slot assignment, both still intact here.
+    if (jit_disk_cache) {
+        jit_disk_cache->Save();
+    }
+}
 
 }  // namespace swift::runtime::backend

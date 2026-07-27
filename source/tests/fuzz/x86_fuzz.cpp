@@ -1850,6 +1850,22 @@ TEST_CASE("Fuzz x86 cpuid") {
         env.core->Run();
         u64 sig[4] = {
                 env.ctx->rax.qword, env.ctx->rbx.qword, env.ctx->rcx.qword, env.ctx->rdx.qword};
+        // Gates are read once per process by the decoder, so a plain getenv
+        // here matches what CPUID will actually report.
+        const bool xsave_on = std::getenv("SVM_XSAVE") &&
+                              std::strcmp(std::getenv("SVM_XSAVE"), "0") != 0;
+        const bool bmi_on = std::getenv("SVM_BMI") &&
+                            std::strcmp(std::getenv("SVM_BMI"), "0") != 0;
+        // AVX needs its whole enabling chain, so the bit follows both gates.
+        const bool avx_on = std::getenv("SVM_AVX") &&
+                            std::strcmp(std::getenv("SVM_AVX"), "0") != 0;
+        const bool avx_reported = avx_on && xsave_on;
+        // SVM_SSE4 is default-ON (unlike the others), so the absence of
+        // the variable means enabled.
+        const char* sse4_env = std::getenv("SVM_SSE4");
+        const bool sse4_on = !sse4_env || std::strcmp(sse4_env, "0") != 0;
+        const char* sse42str_env = std::getenv("SVM_SSE42STR");
+        const bool sse42str_on = !sse42str_env || std::strcmp(sse42str_env, "0") != 0;
         switch (leaf) {
             case 0:
                 REQUIRE(sig[0] == 0x15);
@@ -1864,12 +1880,33 @@ TEST_CASE("Fuzz x86 cpuid") {
                 REQUIRE((sig[2] & (1u << 13)) != 0);  // CMPXCHG16B
                 REQUIRE((sig[2] & (1u << 22)) != 0);  // MOVBE
                 REQUIRE((sig[2] & (1u << 30)) != 0);  // RDRAND
-                REQUIRE((sig[2] & (1u << 26)) == 0);  // no XSAVE
-                REQUIRE((sig[2] & (1u << 27)) == 0);  // no OSXSAVE
-                REQUIRE((sig[2] & (1u << 0)) == 0);   // no SSE3
+                // XSAVE/OSXSAVE track the SVM_XSAVE gate. The point of this
+                // block is the repo's CPUID-coherence discipline -- never
+                // advertise a feature that is not implemented -- so the
+                // assertion follows the gate rather than being pinned off:
+                // with the gate on, XGETBV/XSAVE/XRSTOR and CPUID.0xD exist.
+                REQUIRE(((sig[2] >> 26) & 1u) == (xsave_on ? 1u : 0u));   // XSAVE
+                REQUIRE(((sig[2] >> 27) & 1u) == (xsave_on ? 1u : 0u));   // OSXSAVE
+                REQUIRE(((sig[2] >> 28) & 1u) == (avx_reported ? 1u : 0u));  // AVX
+                // SSE3 / SSSE3 / SSE4.1 / POPCNT are backed by decoder_sse4.cc
+                // and are now advertised unconditionally.  SSE4.2 (bit 20) is
+                // NOT: the pcmpXstrY family is what it promises and that is
+                // exactly what is missing, so the bit must stay clear until
+                // those four exist -- same coherence rule as XSAVE/AVX above,
+                // just in the other direction.
+                REQUIRE(((sig[2] >> 0) & 1u) == (sse4_on ? 1u : 0u));    // SSE3
+                REQUIRE(((sig[2] >> 9) & 1u) == (sse4_on ? 1u : 0u));    // SSSE3
+                REQUIRE(((sig[2] >> 19) & 1u) == (sse4_on ? 1u : 0u));   // SSE4.1
+                REQUIRE(((sig[2] >> 23) & 1u) == (sse4_on ? 1u : 0u));   // POPCNT
+                REQUIRE(((sig[2] >> 20) & 1u) == (sse42str_on ? 1u : 0u));  // SSE4.2
                 break;
             case 7:
-                REQUIRE(sig[1] == (1u << 18));        // RDSEED only
+                // AVX2 (bit 5) tracks SVM_AVX *and* SVM_XSAVE together -- AVX
+                // is incoherent without the XSAVE/XGETBV enabling protocol.
+                // BMI1 (bit 3) / BMI2 (bit 8) track SVM_BMI independently.
+                REQUIRE(sig[1] == ((1u << 18) |
+                                   (avx_reported ? (1u << 5) : 0u) |
+                                   (bmi_on ? ((1u << 3) | (1u << 8)) : 0u)));
                 break;
             case 0x15:
                 REQUIRE(sig[0] == 1);              // denominator
@@ -2372,6 +2409,60 @@ void EmitSseStore(CodeBuf& b, u8 prefix, u8 op, const MemOp& m, u8 src) {
     EmitModRMMem(b, src, m);
 }
 
+// ---- VEX (AVX) encoding helpers -------------------------------------------
+// The 3-byte C4 form is used throughout, including for reg-reg: the fuzz's
+// memory shape is [kDataReg + disp] with kDataReg = r13, whose high bit needs
+// VEX.B — a field the 2-byte C5 form does not have. Using one form everywhere
+// removes the chance of picking C5 for an operand that cannot encode in it.
+//
+// pp: 0=none, 1=66, 2=F3, 3=F2. mmmmm: 1=implied 0F, 2=0F38, 3=0F3A.
+// vvvv is the *un-inverted* src1 register number; R/X/B are the un-inverted
+// high bits of ModRM.reg / SIB.index / ModRM.rm. All four are inverted here.
+// `w` is VEX.W. It defaults to 0, which is the correct (and only legal) value
+// for every 128-bit packed form; only the vmovd/vmovq GPR pair needs W=1 to
+// select the 64-bit operand, so it is a trailing defaulted argument and every
+// existing caller keeps emitting byte-identical encodings.
+void EmitVexC4(CodeBuf& b, u8 pp, u8 mmmmm, u8 vvvv, bool l, u8 r, u8 x, u8 bb, bool w = false) {
+    b.B(0xC4);
+    b.B(u8(((~r & 1) << 7) | ((~x & 1) << 6) | ((~bb & 1) << 5) | (mmmmm & 0x1F)));
+    b.B(u8(((w ? 1 : 0) << 7) | ((~vvvv & 0xF) << 3) | ((l ? 1 : 0) << 2) | (pp & 3)));
+}
+
+// VEX reg-reg: dst = src1 (op) src2. ModRM.reg = dst, ModRM.rm = src2.
+void EmitVexRR(CodeBuf& b, u8 pp, u8 op, u8 dst, u8 src1, u8 src2, bool l = false,
+               bool w = false) {
+    EmitVexC4(b, pp, 1, src1, l, u8(dst >> 3), 0, u8(src2 >> 3), w);
+    b.B(op);
+    EmitModRMReg(b, dst, src2);
+}
+
+// VEX with a memory src2 (load form). Mirrors EmitSseRexMem's operand shape:
+// base = kDataReg, optional index = kIndexReg, or rip-relative.
+void EmitVexLoad(CodeBuf& b, u8 pp, u8 op, u8 dst, u8 src1, const MemOp& m, bool l = false,
+                 bool w = false) {
+    const u8 bb = m.rip_rel ? 0 : u8(kDataReg >> 3);
+    const u8 x = (!m.rip_rel && m.scale) ? u8(kIndexReg >> 3) : 0;
+    EmitVexC4(b, pp, 1, src1, l, u8(dst >> 3), x, bb, w);
+    b.B(op);
+    EmitModRMMem(b, dst, m);
+}
+
+// "No src1" for a two-operand VEX instruction: the *encoded* vvvv field must
+// be 1111. EmitVexC4 stores ~vvvv, so that is requested by passing 0 — not
+// 0xF, which would encode xmm15 as a source and make a two-operand opcode
+// undecodable.
+constexpr u8 kVexNoSrc1 = 0;
+
+// VEX store form: ModRM.reg = src register, rm = memory, no src1.
+void EmitVexStore(CodeBuf& b, u8 pp, u8 op, const MemOp& m, u8 src, bool l = false,
+                  bool w = false) {
+    const u8 bb = m.rip_rel ? 0 : u8(kDataReg >> 3);
+    const u8 x = (!m.rip_rel && m.scale) ? u8(kIndexReg >> 3) : 0;
+    EmitVexC4(b, pp, 1, kVexNoSrc1, l, u8(src >> 3), x, bb, w);
+    b.B(op);
+    EmitModRMMem(b, src, m);
+}
+
 // imm-group shifts (0F 71/72/73 /n ib), rm = dst xmm
 void EmitSseShiftImm(CodeBuf& b, u8 op, u8 sub, u8 dst, u8 imm) {
     b.B(0x66);
@@ -2774,9 +2865,6 @@ TEST_CASE("Fuzz x86 sse float edge") {
 TEST_CASE("Fuzz x86 x87") {
     FuzzEnv env;
     const int iters = env.Iters(256);
-    const bool reduced_x87 =
-            std::getenv("SVM_X87_JIT") &&
-            std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
     struct Ext80Bits {
         u64 significand;
         u16 sign_exp;
@@ -2903,28 +2991,16 @@ TEST_CASE("Fuzz x86 x87") {
                 if (wide) {
                     u64 a;
                     u64 c;
+                    // FMUL/FDIV operand pairs used to be pinned to a signed
+                    // 1.0 right-hand side under SVM_X87_JIT, because the
+                    // reduced register-arithmetic emitter computed in binary64
+                    // and could not match Unicorn's ext80 significand or PE.
+                    // That emitter is retired, so the opt-in configuration now
+                    // draws unconstrained pairs and compares every output and
+                    // status bit against Unicorn exactly like the default one.
                     do {
                         a = PickFloat64Bits(env);
                         c = PickFloat64Bits(env);
-                        if (reduced_x87 &&
-                            (pop_op == 0xC9 || pop_op == 0xF9)) {
-                            // The opt-in native FMUL/FDIV policy computes in
-                            // binary64. For an inexact result, expanding that
-                            // f64 back to ext80 leaves the low 11 significand
-                            // bits zero, whereas Unicorn's exact ext80 result
-                            // may retain them. FPSR.IXC also maps to x87 PE,
-                            // which need not match an ext80 operation's PE.
-                            //
-                            // Keep this three-way family bit-exact by making
-                            // the reduced multiply/divide result exact: the
-                            // second operand is signed 1.0. Consume the normal
-                            // pool draw first so cursor RNG progression stays
-                            // stable. Default mode retains unconstrained pairs
-                            // and compares every output/status bit to Unicorn.
-                            c = (c & UINT64_C(0x8000000000000000))
-                                        ? UINT64_C(0xBFF0000000000000)
-                                        : UINT64_C(0x3FF0000000000000);
-                        }
                     } while (binary_f64_is_nan(pop_op, a, c));
                     *reinterpret_cast<u64*>(env.data_addr + kA) = a;
                     *reinterpret_cast<u64*>(env.data_addr + kB) = c;
@@ -5198,6 +5274,377 @@ TEST_CASE("x87 directed edge semantics") {
             CAPTURE(fcw);
             REQUIRE(*reinterpret_cast<s32*>(data + 0x770) == expected);
             REQUIRE((ctx.x87_fsw & 0x21) == 0x20);  // PE, no IE
+            // C1 is the rounding *direction*, not merely "inexact": it is set
+            // when the significand was rounded up. Here the source is +1.5, so
+            // C1 must be set exactly for the two modes that produce 2
+            // (nearest-even and toward +inf) and clear for the two that
+            // produce 1 (toward -inf and truncate). Unicorn never reads FSW
+            // after FIST, so only this directed check covers it; real x86
+            // behaviour was established by Rosetta arbitration.
+            REQUIRE(((ctx.x87_fsw & 0x0200) != 0) == (expected == 2));
+        }
+
+        // The same instruction with a negative source pins the *sense* of C1,
+        // which a positive source cannot distinguish. "Rounded up" is a
+        // statement about the significand, i.e. about magnitude, not about the
+        // value: -1.5 under round-to-nearest stores -2, whose magnitude
+        // exceeds 1.5, so C1 is set even though -2 is the arithmetically
+        // smaller number. A "result > source" predicate is inverted for every
+        // negative source. Rosetta real-x86: FISTP m32 of -1.5 reports C1=1
+        // for nearest and toward -inf, C1=0 for toward +inf and truncate.
+        for (const auto [fcw, expected] :
+             std::array<std::pair<u16, s32>, 4>{{
+                     {0x037F, -2}, {0x077F, -2}, {0x0B7F, -1}, {0x0F7F, -1}}}) {
+            *reinterpret_cast<u16*>(data + 0x760) = fcw;
+            *reinterpret_cast<u64*>(data + 0x768) =
+                    UINT64_C(0xBFF8000000000000);  // -1.5
+            *reinterpret_cast<s32*>(data + 0x770) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x760);  // FLDCW
+            emit_mem(b, 0xDD, 0, 0x768);  // FLD m64
+            emit_mem(b, 0xDB, 3, 0x770);  // FISTP m32
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE(*reinterpret_cast<s32*>(data + 0x770) == expected);
+            REQUIRE((ctx.x87_fsw & 0x21) == 0x20);  // PE, no IE
+            REQUIRE(((ctx.x87_fsw & 0x0200) != 0) == (expected == -2));
+        }
+
+        // FST/FSTP m32/m64 carry the identical C1 rule, which the helper used
+        // to clear unconditionally. The source 1 + 1.5*2^-24 sits three
+        // quarters of the way from 1.0f toward the next f32, so nearest and
+        // toward +inf both deliver 0x3F800001 (magnitude rounded up, C1=1)
+        // while toward -inf and truncate deliver 0x3F800000 (C1=0). Negating
+        // the source swaps which two modes round the magnitude up, which is
+        // what makes the pair self-evident rather than a transcription of the
+        // implementation. Real-x86 expectations from Rosetta.
+        for (const auto [fcw, positive, negative] :
+             std::array<std::tuple<u16, u32, u32>, 4>{{
+                     {0x037F, 0x3F800001u, 0xBF800001u},
+                     {0x077F, 0x3F800000u, 0xBF800001u},
+                     {0x0B7F, 0x3F800001u, 0xBF800000u},
+                     {0x0F7F, 0x3F800000u, 0xBF800000u}}}) {
+            CAPTURE(fcw);
+            for (const bool negate : {false, true}) {
+                const u32 expected = negate ? negative : positive;
+                // 1 + 1.5*2^-24, sign flipped by the top bit.
+                const u64 source = UINT64_C(0x3FF0000018000000) |
+                                   (negate ? UINT64_C(1) << 63 : 0);
+                *reinterpret_cast<u16*>(data + 0x800) = fcw;
+                *reinterpret_cast<u64*>(data + 0x808) = source;
+                *reinterpret_cast<u32*>(data + 0x810) = 0;
+                CodeBuf b;
+                emit_reg(b, 0xDB, 0xE3);
+                emit_mem(b, 0xD9, 5, 0x800);  // FLDCW
+                emit_mem(b, 0xDD, 0, 0x808);  // FLD m64
+                emit_mem(b, 0xD9, 3, 0x810);  // FSTP m32
+                const auto ctx = run(std::move(b));
+                CAPTURE(negate);
+                REQUIRE(*reinterpret_cast<u32*>(data + 0x810) == expected);
+                REQUIRE((ctx.x87_fsw & 0x20) == 0x20);  // PE
+                // The magnitude was rounded up exactly when the delivered f32
+                // is the one further from zero, i.e. ...01 rather than ...00.
+                REQUIRE(((ctx.x87_fsw & 0x0200) != 0) ==
+                        ((expected & 1) != 0));
+                // FSTP's pop belongs to the same instruction and must not
+                // erase the direction: TOP is back at 0 yet C1 survives.
+                REQUIRE(((ctx.x87_fsw >> 11) & 7) == 0);
+            }
+        }
+
+        // The non-pop FST m32 must agree with FSTP, and masked overflow is
+        // part of the same rule: an infinity delivered for a finite source is
+        // a magnitude round-up (C1=1), the largest finite is not (C1=0).
+        // 2^200 is exactly representable as a double and far above f32 range.
+        for (const auto [fcw, positive, negative] :
+             std::array<std::tuple<u16, u32, u32>, 4>{{
+                     {0x037F, 0x7F800000u, 0xFF800000u},
+                     {0x077F, 0x7F7FFFFFu, 0xFF800000u},
+                     {0x0B7F, 0x7F800000u, 0xFF7FFFFFu},
+                     {0x0F7F, 0x7F7FFFFFu, 0xFF7FFFFFu}}}) {
+            CAPTURE(fcw);
+            for (const bool negate : {false, true}) {
+                const u32 expected = negate ? negative : positive;
+                const u64 source = UINT64_C(0x4C70000000000000) |
+                                   (negate ? UINT64_C(1) << 63 : 0);
+                *reinterpret_cast<u16*>(data + 0x800) = fcw;
+                *reinterpret_cast<u64*>(data + 0x808) = source;
+                *reinterpret_cast<u32*>(data + 0x810) = 0;
+                CodeBuf b;
+                emit_reg(b, 0xDB, 0xE3);
+                emit_mem(b, 0xD9, 5, 0x800);  // FLDCW
+                emit_mem(b, 0xDD, 0, 0x808);  // FLD m64
+                emit_mem(b, 0xD9, 2, 0x810);  // FST m32 (no pop)
+                const auto ctx = run(std::move(b));
+                CAPTURE(negate);
+                REQUIRE(*reinterpret_cast<u32*>(data + 0x810) == expected);
+                REQUIRE((ctx.x87_fsw & 0x28) == 0x28);  // OE + PE
+                REQUIRE(((ctx.x87_fsw & 0x0200) != 0) ==
+                        ((expected & 0x7FFFFFFFu) == 0x7F800000u));
+            }
+        }
+
+        // FST m64 needs an ext80-only source to round at all. Significand
+        // 0x8000000000000C00 is 1 + 1.5 f64-ulp, an exact tie, so nearest-even
+        // and toward +inf deliver ...0002 (round-up, C1=1) while toward -inf
+        // and truncate deliver ...0001 (C1=0).
+        for (const auto [fcw, expected] :
+             std::array<std::pair<u16, u64>, 4>{{
+                     {0x037F, UINT64_C(0x3FF0000000000002)},
+                     {0x077F, UINT64_C(0x3FF0000000000001)},
+                     {0x0B7F, UINT64_C(0x3FF0000000000002)},
+                     {0x0F7F, UINT64_C(0x3FF0000000000001)}}}) {
+            *reinterpret_cast<u16*>(data + 0x800) = fcw;
+            write_ext(0x820, UINT64_C(0x8000000000000C00), 0x3FFF);
+            *reinterpret_cast<u64*>(data + 0x818) = 0;
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x800);  // FLDCW
+            emit_mem(b, 0xDB, 5, 0x820);  // FLD m80
+            emit_mem(b, 0xDD, 3, 0x818);  // FSTP m64
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x818) == expected);
+            REQUIRE((ctx.x87_fsw & 0x20) == 0x20);  // PE
+            REQUIRE(((ctx.x87_fsw & 0x0200) != 0) == ((expected & 3) == 2));
+        }
+
+        // FST/FSTP m80 is a bit-for-bit copy: no rounding is possible, so C1
+        // is architecturally 0 and PE is never raised, even for a datum that
+        // is inexact in every narrower format. The store must also *clear* a
+        // C1 that a preceding instruction set — FXAM reports the sign there —
+        // rather than leaving it alone.
+        {
+            write_ext(0x820, UINT64_C(0x8000000000000C00), 0xBFFF);
+            write_ext(0x830, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xDB, 5, 0x820);  // FLD m80, negative
+            emit_reg(b, 0xD9, 0xE5);      // FXAM: C1 = sign = 1
+            emit_reg(b, 0xDF, 0xE0);      // FNSTSW AX
+            EmitMovRegReg(b, 16, kR10, kRax);
+            emit_mem(b, 0xDB, 7, 0x830);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0x0200) == 0x0200);  // FXAM did set C1
+            REQUIRE((ctx.x87_fsw & 0x0200) == 0);         // FSTP m80 cleared it
+            REQUIRE((ctx.x87_fsw & 0x20) == 0);           // and raised no PE
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x830) ==
+                    UINT64_C(0x8000000000000C00));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x838) == 0xBFFF);
+        }
+
+        // A register-to-register FST also transfers ext80 unrounded, so it
+        // clears C1 instead of leaving the previous instruction's value in
+        // place. The helper used to leave C1 untouched here.
+        {
+            write_ext(0x820, UINT64_C(0x8000000000000C00), 0xBFFF);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_reg(b, 0xD9, 0xE8);      // FLD1
+            emit_mem(b, 0xDB, 5, 0x820);  // FLD m80, negative
+            emit_reg(b, 0xD9, 0xE5);      // FXAM: C1 = 1
+            emit_reg(b, 0xDD, 0xD1);      // FST ST(1)
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.x87_fsw & 0x0200) == 0);
+        }
+
+        // FCHS and FABS rewrite the architectural sign bit and nothing else,
+        // so they must clear C1 instead of leaving the previous instruction's
+        // value there, must not disturb TOP, the tag word, the significand, or
+        // any exception bit, and must flip/clear exactly the sign. The ARM64
+        // inline arm for them had no directed coverage at all before this --
+        // deleting its `C1 = 0` store left every x87 test in the suite green.
+        // FSW is captured with FNSTSW before the trailing store, because the
+        // store rewrites C1 itself.
+        for (const auto [op, source_sign_exp, result_sign_exp] :
+             std::array<std::tuple<u8, u16, u16>, 3>{{
+                     {0xE0, 0xBFFF, 0x3FFF},  // FCHS: negative -> positive
+                     {0xE0, 0x3FFF, 0xBFFF},  // FCHS: positive -> negative
+                     {0xE1, 0xBFFF, 0x3FFF},  // FABS: negative -> positive
+             }}) {
+            write_ext(0x840, UINT64_C(0x8000000000000C00), source_sign_exp);
+            write_ext(0x850, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);      // FNINIT
+            emit_reg(b, 0xD9, 0xE8);      // FLD1, so a live neighbour exists
+            emit_mem(b, 0xDB, 5, 0x840);  // FLD m80
+            emit_reg(b, 0xD9, 0xE5);      // FXAM: C1 = sign
+            emit_reg(b, 0xD9, 0xE4);      // FTST: C1 = 0, C0/C3 = ordering
+            emit_reg(b, 0xD9, 0xE5);      // FXAM again: C1 = sign
+            emit_reg(b, 0xD9, op);        // FCHS / FABS
+            emit_reg(b, 0xDF, 0xE0);      // FNSTSW AX
+            EmitMovRegReg(b, 16, kR10, kRax);
+            emit_mem(b, 0xDB, 7, 0x850);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE((ctx.r10.qword & 0x0200) == 0);  // C1 cleared
+            REQUIRE((ctx.r10.qword & 0x003F) == 0);  // no exception raised
+            REQUIRE(((ctx.r10.qword >> 11) & 7) == 6);  // TOP untouched
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x850) ==
+                    UINT64_C(0x8000000000000C00));  // significand untouched
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x858) == result_sign_exp);
+            // FLD1's register survives; the popped slot is empty again.
+            REQUIRE(ctx.x87_ftw == 0x3FFF);
+            REQUIRE(((ctx.x87_fsw >> 11) & 7) == 7);
+        }
+
+        // FST/FSTP ST(i) must *replace* the destination's two tag bits, not OR
+        // into them. A valid value written into a slot the tag word still
+        // marks empty is invisible: every later instruction reading it takes
+        // the stack-underflow path instead. Dropping the tag-clearing Bic from
+        // the ARM64 inline arm left the whole suite green before this case,
+        // because every other FST in it targets an already-occupied slot.
+        {
+            write_ext(0x860, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);      // FNINIT: TOP = 0, all slots empty
+            emit_reg(b, 0xD9, 0xE8);      // FLD1:   TOP = 7
+            emit_reg(b, 0xDD, 0xD3);      // FST ST(3) -> physical 2, empty
+            emit_reg(b, 0xD9, 0xCB);      // FXCH ST(3): must not underflow
+            emit_mem(b, 0xDB, 7, 0x860);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x860) ==
+                    UINT64_C(0x8000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x868) == 0x3FFF);
+            REQUIRE((ctx.x87_fsw & 0x0041) == 0);  // no IE, no stack fault
+            REQUIRE(((ctx.x87_fsw >> 11) & 7) == 0);
+            // Physical 2 valid, physical 7 emptied by the pop.
+            REQUIRE(ctx.x87_ftw == 0xFFCF);
+        }
+
+        // FSQRT's *lower* exponent guard. X87Dispatch certifies every FLD m64
+        // unconditionally, so a binary64 subnormal arrives marked as reducible
+        // while its ext80 exponent sits below the binary64 normal range. The
+        // host FSQRT path rebuilds an f64 by subtracting the 0x3C00 bias, which
+        // underflows for such a value, so the guard that sends it to SoftFloat
+        // is load-bearing -- and was untested: removing it left the suite
+        // green. sqrt(2^-1074) is exactly 2^-537.
+        {
+            *reinterpret_cast<u64*>(data + 0x870) = UINT64_C(1);  // 2^-1074
+            write_ext(0x880, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);      // FNINIT
+            emit_mem(b, 0xDD, 0, 0x870);  // FLD m64, subnormal
+            emit_reg(b, 0xD9, 0xFA);      // FSQRT
+            emit_mem(b, 0xDB, 7, 0x880);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x880) ==
+                    UINT64_C(0x8000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x888) == 0x3DE6);
+            REQUIRE((ctx.x87_fsw & 0x20) == 0);  // exact: no PE
+        }
+
+        // FRNDINT reports the same magnitude-based direction, and its result
+        // is directly comparable with its own source. +1.5 and -1.5 are mirror
+        // images: C1 must be set in exactly the two modes that deliver
+        // magnitude 2 and clear in the two that deliver magnitude 1 — which
+        // for the negative source are the opposite two modes. FSW is captured
+        // before the store, because the store would rewrite C1 itself.
+        for (const auto [fcw, positive_two, negative_two] :
+             std::array<std::tuple<u16, bool, bool>, 4>{{{0x037F, true, true},
+                                                         {0x077F, false, true},
+                                                         {0x0B7F, true, false},
+                                                         {0x0F7F, false, false}}}) {
+            CAPTURE(fcw);
+            for (const bool negate : {false, true}) {
+                const bool magnitude_two = negate ? negative_two : positive_two;
+                *reinterpret_cast<u16*>(data + 0x800) = fcw;
+                write_ext(0x820,
+                          UINT64_C(0xC000000000000000),  // 1.5
+                          static_cast<u16>(negate ? 0xBFFF : 0x3FFF));
+                write_ext(0x830, 0, 0);
+                CodeBuf b;
+                emit_reg(b, 0xDB, 0xE3);
+                emit_mem(b, 0xD9, 5, 0x800);  // FLDCW
+                emit_mem(b, 0xDB, 5, 0x820);  // FLD m80
+                emit_reg(b, 0xD9, 0xFC);      // FRNDINT
+                emit_reg(b, 0xDF, 0xE0);      // FNSTSW AX
+                EmitMovRegReg(b, 16, kR10, kRax);
+                emit_mem(b, 0xDB, 7, 0x830);  // FSTP m80
+                const auto ctx = run(std::move(b));
+                CAPTURE(negate);
+                // Magnitude 2 is exponent 0x4000, magnitude 1 is 0x3FFF; the
+                // significand is 0x8000000000000000 either way.
+                REQUIRE(*reinterpret_cast<u64*>(data + 0x830) ==
+                        UINT64_C(0x8000000000000000));
+                REQUIRE((*reinterpret_cast<u16*>(data + 0x838) & 0x7FFF) ==
+                        (magnitude_two ? 0x4000 : 0x3FFF));
+                REQUIRE((ctx.r10.qword & 0x20) == 0x20);  // PE
+                REQUIRE(((ctx.r10.qword & 0x0200) != 0) == magnitude_two);
+            }
+        }
+
+        // An exactly representable FRNDINT source rounds in no direction at
+        // all: no PE, and C1 clear in every mode.
+        for (const u16 fcw : {0x037F, 0x077F, 0x0B7F, 0x0F7F}) {
+            *reinterpret_cast<u16*>(data + 0x800) = fcw;
+            write_ext(0x820, UINT64_C(0x8000000000000000), 0x4000);  // 2.0
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x800);
+            emit_mem(b, 0xDB, 5, 0x820);
+            emit_reg(b, 0xD9, 0xFC);  // FRNDINT
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE((ctx.x87_fsw & 0x20) == 0);
+            REQUIRE((ctx.x87_fsw & 0x0200) == 0);
+        }
+
+        // FSQRT has no exact result to compare against, so the direction has
+        // to come from a second, toward-zero evaluation. The ext80 square root
+        // of 2 lies 0.3496 ulp above significand 0xB504F333F9DE6484 — computed
+        // with arbitrary-precision arithmetic, independent of any x87
+        // implementation. Nearest, toward -inf and truncate must therefore all
+        // deliver ...84 with C1=0, and only toward +inf may deliver ...85 with
+        // C1=1. The m80 source keeps this off the opt-in reduced-precision
+        // mid-tier, which is only seeded by FLD m64.
+        for (const auto [fcw, expected] :
+             std::array<std::pair<u16, u64>, 4>{{
+                     {0x037F, UINT64_C(0xB504F333F9DE6484)},
+                     {0x077F, UINT64_C(0xB504F333F9DE6484)},
+                     {0x0B7F, UINT64_C(0xB504F333F9DE6485)},
+                     {0x0F7F, UINT64_C(0xB504F333F9DE6484)}}}) {
+            *reinterpret_cast<u16*>(data + 0x800) = fcw;
+            write_ext(0x820, UINT64_C(0x8000000000000000), 0x4000);  // 2.0
+            write_ext(0x830, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x800);  // FLDCW
+            emit_mem(b, 0xDB, 5, 0x820);  // FLD m80
+            emit_reg(b, 0xD9, 0xFA);      // FSQRT
+            emit_reg(b, 0xDF, 0xE0);      // FNSTSW AX
+            EmitMovRegReg(b, 16, kR10, kRax);
+            emit_mem(b, 0xDB, 7, 0x830);  // FSTP m80
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x830) == expected);
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x838) == 0x3FFF);
+            REQUIRE((ctx.r10.qword & 0x20) == 0x20);  // PE
+            REQUIRE(((ctx.r10.qword & 0x0200) != 0) ==
+                    (expected == UINT64_C(0xB504F333F9DE6485)));
+        }
+
+        // An exact square root rounds in no direction: sqrt(4) = 2 with no PE
+        // and C1 clear in every mode.
+        for (const u16 fcw : {0x037F, 0x077F, 0x0B7F, 0x0F7F}) {
+            *reinterpret_cast<u16*>(data + 0x800) = fcw;
+            write_ext(0x820, UINT64_C(0x8000000000000000), 0x4001);  // 4.0
+            write_ext(0x830, 0, 0);
+            CodeBuf b;
+            emit_reg(b, 0xDB, 0xE3);
+            emit_mem(b, 0xD9, 5, 0x800);
+            emit_mem(b, 0xDB, 5, 0x820);
+            emit_reg(b, 0xD9, 0xFA);  // FSQRT
+            emit_reg(b, 0xDF, 0xE0);  // FNSTSW AX
+            EmitMovRegReg(b, 16, kR10, kRax);
+            emit_mem(b, 0xDB, 7, 0x830);
+            const auto ctx = run(std::move(b));
+            CAPTURE(fcw);
+            REQUIRE(*reinterpret_cast<u64*>(data + 0x830) ==
+                    UINT64_C(0x8000000000000000));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x838) == 0x4000);
+            REQUIRE((ctx.r10.qword & 0x20) == 0);
+            REQUIRE((ctx.r10.qword & 0x0200) == 0);
         }
         for (const auto [input, expected, ie] :
              std::array<std::tuple<u64, u64, bool>, 4>{{
@@ -5357,10 +5804,16 @@ TEST_CASE("x87 directed edge semantics") {
                       UINT64_C(0xC000000000000000), 0xFFFF, true},
                      {UINT64_C(0xC010000000000000),
                       UINT64_C(0xC000000000000000), 0xFFFF, true}, // -4
+                     // FLD m64 of a signaling NaN is itself an invalid
+                     // operation: the load quiets the payload AND raises #IA,
+                     // so IE is already set before FSQRT ever runs (FSQRT of
+                     // the resulting QNaN adds nothing). The helper used to
+                     // quiet without carrying IE — see LoadMemoryValue in
+                     // x87.cpp. Unicorn drops IE here too, which is why the
+                     // Unicorn differential never caught it; real x86
+                     // behaviour was established by Rosetta arbitration.
                      {UINT64_C(0x7FF0123456789ABC),
-                      UINT64_C(0xC091A2B3C4D5E000), 0x7FFF, false},
-                     // The existing m64-load helper pre-quiets this SNaN
-                     // without carrying IE; default semantics remain untouched.
+                      UINT64_C(0xC091A2B3C4D5E000), 0x7FFF, true},
              }}) {
             *reinterpret_cast<u64*>(data + 0x7B0) = input;
             CodeBuf b;
@@ -5830,11 +6283,13 @@ TEST_CASE("x87 directed edge semantics") {
         }
 
         {
-            // The opt-in ARM64 x87 JIT deliberately mirrors FEX reduced
-            // precision for canonical binary64 register arithmetic.  This
-            // multiplication is one of the Rosetta probe's double-rounding
-            // witnesses: real ext80 retains 0x...4bf7, while f64 rounds to
-            // 0x...4800 before the result is expanded back to ext80.
+            // One of the Rosetta probe's double-rounding witnesses: real
+            // ext80 retains 0x...4bf7, while a binary64 multiply would round
+            // to 0x...4800 before expanding back to ext80.  The reduced
+            // register-arithmetic emitter that produced the second value was
+            // retired (see the Binary arm in translator_x87.cpp), so this now
+            // pins the *absence* of that divergence: every configuration,
+            // opt-in JIT included, must reproduce the exact ext80 product.
             *reinterpret_cast<u64*>(data + 0x620) =
                     UINT64_C(0x407fcd1be17e6ba2);
             *reinterpret_cast<u64*>(data + 0x628) =
@@ -5846,20 +6301,17 @@ TEST_CASE("x87 directed edge semantics") {
             emit_reg(b, 0xDE, 0xC9);      // FMULP ST(1), ST(0)
             emit_mem(b, 0xDB, 7, 0x630);
             const auto ctx = run(std::move(b));
-            const bool reduced =
-                    jit && std::getenv("SVM_X87_JIT") &&
-                    std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
             REQUIRE(*reinterpret_cast<u64*>(data + 0x630) ==
-                    (reduced ? UINT64_C(0xfc01a2d864074800)
-                             : UINT64_C(0xfc01a2d864074bf7)));
+                    UINT64_C(0xfc01a2d864074bf7));
             REQUIRE(*reinterpret_cast<u16*>(data + 0x638) == 0x4300);
             REQUIRE(ctx.x87_ftw == 0xFFFF);
         }
 
         {
-            // A reduced f64 overflow remains finite in true ext80. Besides
-            // pinning the intentional value divergence, this checks ARM
-            // FPSR OFC/IXC -> x87 OE/PE status mapping.
+            // DBL_MAX * 2 overflows binary64 but stays finite in true
+            // ext80.  This was the intentional value divergence of the
+            // retired reduced arm; with that arm gone every configuration
+            // must produce the finite ext80 product and raise no status.
             *reinterpret_cast<u64*>(data + 0x640) =
                     UINT64_C(0x7fefffffffffffff);
             *reinterpret_cast<u64*>(data + 0x648) =
@@ -5871,19 +6323,10 @@ TEST_CASE("x87 directed edge semantics") {
             emit_reg(b, 0xDE, 0xC9);      // FMULP ST(1), ST(0)
             emit_mem(b, 0xDB, 7, 0x650);
             const auto ctx = run(std::move(b));
-            const bool reduced =
-                    jit && std::getenv("SVM_X87_JIT") &&
-                    std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
             REQUIRE(*reinterpret_cast<u64*>(data + 0x650) ==
-                    (reduced ? UINT64_C(0x8000000000000000)
-                             : UINT64_C(0xfffffffffffff800)));
-            REQUIRE(*reinterpret_cast<u16*>(data + 0x658) ==
-                    (reduced ? 0x7FFF : 0x43FF));
-            if (reduced) {
-                REQUIRE((ctx.x87_fsw & 0x28) == 0x28);  // OE + PE
-            } else {
-                REQUIRE((ctx.x87_fsw & 0x28) == 0);
-            }
+                    UINT64_C(0xfffffffffffff800));
+            REQUIRE(*reinterpret_cast<u16*>(data + 0x658) == 0x43FF);
+            REQUIRE((ctx.x87_fsw & 0x28) == 0);  // no OE, no PE
         }
 
         {
@@ -5936,12 +6379,12 @@ TEST_CASE("x87 directed edge semantics") {
         }
 
         {
-            // An IXC bailout leaves the exact ext80 result in architectural
-            // state, then runtime-revalidates it as finite/reducible.  A
-            // following reduced operation may narrow that value without
-            // another helper call.  Multiplication by one makes the handoff
-            // visible: exact ext80 retains 2^-60, while the opt-in pipeline
-            // deliberately rounds it to binary64 one before FMUL.
+            // FADDP produces a value that needs the full 64-bit ext80
+            // significand, and the following FMULP by one must carry all of
+            // it through.  The retired reduced arm narrowed the addend to
+            // binary64 here, which is what the second expectation used to
+            // encode; multiplication by one keeps that handoff visible, so
+            // this case still guards the boundary it was written for.
             *reinterpret_cast<u64*>(data + 0x6D0) =
                     UINT64_C(0x3FF0000000000000);  // 1
             *reinterpret_cast<u64*>(data + 0x6D8) =
@@ -5956,12 +6399,8 @@ TEST_CASE("x87 directed edge semantics") {
             emit_reg(b, 0xDE, 0xC9);      // FMULP consumes revalidated ST(1)
             emit_mem(b, 0xDB, 7, 0x6E0);  // FSTP m80
             const auto ctx = run(std::move(b));
-            const bool reduced =
-                    jit && std::getenv("SVM_X87_JIT") &&
-                    std::strcmp(std::getenv("SVM_X87_JIT"), "0") != 0;
             REQUIRE(*reinterpret_cast<u64*>(data + 0x6E0) ==
-                    (reduced ? UINT64_C(0x8000000000000000)
-                             : UINT64_C(0x8000000000000008)));
+                    UINT64_C(0x8000000000000008));
             REQUIRE(*reinterpret_cast<u16*>(data + 0x6E8) == 0x3FFF);
             REQUIRE(ctx.x87_ftw == 0xFFFF);
         }
@@ -7083,4 +7522,1781 @@ TEST_CASE("Fuzz x86 lods") {
     }
     REQUIRE(env.failures == 0);
 }
+
+// ===========================================================================
+// AVX / VEX.128 — what Unicorn can and cannot be used for.
+// ===========================================================================
+// Every statement below was measured against Unicorn 2.1.4 (/opt/homebrew),
+// not assumed. They are the reason this family is split into a Unicorn
+// differential (data movement only) and a self-contained directed/self-
+// differential case (packed integer ALU), and they must stay recorded here:
+//
+//  FACT 1 — VEX.256 does not execute at all.  Any L=1 encoding aborts with
+//    UC_ERR_INSN_INVALID.  Tried and rejected: the default / HASWELL /
+//    SKYLAKE_CLIENT CPU models, setting and not setting CR4.OSXSAVE|OSFXSR,
+//    and an in-guest XSETBV writing XCR0 = 3 or 7.  None of it helps.  The
+//    256-bit handlers in decoder_avx.cc therefore have NO Unicorn oracle.
+//
+//  FACT 2 — VEX.128 packed integer ALU is silently WRONG.  Unicorn ignores
+//    VEX.vvvv and executes the destructive legacy-SSE form instead:
+//        vpaddw xmm0, xmm1, xmm2   is run as   xmm0 = xmm0 + xmm2
+//    No error is raised.  Confirmed by loading xmm0 with a 0x5A5A… sentinel
+//    and observing sentinel-op-xmm2 come back for all eighteen of vpxor /
+//    vpor / vpand / vpandn / vpadd{b,w,d,q} / vpsub{b,w,d,q} /
+//    vpcmpeq{b,w,d} / vpcmpgt{b,w,d}; xmm1 and xmm2 were verified to be
+//    loaded correctly, only the result is wrong.  (An earlier reading of the
+//    same bug is "the result is just src2" — that is this bug seen with a
+//    zeroed xmm0.)  This is unrelated to AVX enablement: it reproduces with
+//    every CPU model and CR4/XCR0 combination from FACT 1.
+//    ==> Unicorn CANNOT be an oracle for any three-operand VEX.128 form.
+//        Pointing this case at RunIteration produces ~1300 false failures.
+//        The ALU coverage lives in the directed case below instead.
+//
+//  FACT 3 — VEX.128 data movement IS correct.  All sixteen move shapes the
+//    decoder implements were verified to round-trip exactly: vmovdqu/vmovdqa,
+//    vmovups/vmovaps/vmovupd/vmovapd, vmovntps/vmovntpd/vmovntdq,
+//    vlddqu (loads, stores and reg-reg), and the vmovd/vmovq family in its
+//    xmm<-m32/m64, xmm<-r32/r64, m32/m64<-xmm, r32/r64<-xmm and xmm<-xmm
+//    forms.  Movement is what this case fuzzes.
+//
+//  Contract C3 (a VEX.128 write zeroes bits 255:128 of the destination) needs
+//  a 256-bit store to observe, which is exactly what FACT 1 forbids, so it is
+//  out of reach for both cases here.
+//
+// SwiftVM gates AVX behind SVM_AVX, read once into a function-local static, so
+// it must be set in the environment before the process starts; both cases skip
+// themselves otherwise rather than silently testing the FALLBACK path.
+TEST_CASE("Fuzz x86 avx vex128") {
+    const char* avx_env = std::getenv("SVM_AVX");
+    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+        SUCCEED("SVM_AVX is not set; VEX.128 differential skipped");
+        return;
+    }
+    FuzzEnv env;
+    const int iters = env.Iters(1500);
+
+    // {pp, opcode} tables for the VEX.128 move forms FACT 3 clears for use.
+    // mmmmm is always 1 (implied 0F) because EmitVexC4 emits only that map, so
+    // vmovntdqa (0F38 2A) is the one implemented move shape not fuzzed here.
+    static constexpr std::pair<u8, u8> kVecLoad[] = {
+            {2, 0x6F},  // vmovdqu xmm, m128
+            {1, 0x6F},  // vmovdqa xmm, m128
+            {0, 0x10},  // vmovups xmm, m128
+            {1, 0x10},  // vmovupd xmm, m128
+            {0, 0x28},  // vmovaps xmm, m128
+            {1, 0x28},  // vmovapd xmm, m128
+            {3, 0xF0},  // vlddqu  xmm, m128
+    };
+    static constexpr std::pair<u8, u8> kVecStore[] = {
+            {2, 0x7F},  // vmovdqu m128, xmm
+            {1, 0x7F},  // vmovdqa m128, xmm
+            {0, 0x11},  // vmovups m128, xmm
+            {1, 0x11},  // vmovupd m128, xmm
+            {0, 0x29},  // vmovaps m128, xmm
+            {1, 0x29},  // vmovapd m128, xmm
+            {0, 0x2B},  // vmovntps m128, xmm
+            {1, 0x2B},  // vmovntpd m128, xmm
+            {1, 0xE7},  // vmovntdq m128, xmm
+    };
+    // Register-register moves in the "ModRM.rm is the source" direction.
+    static constexpr std::pair<u8, u8> kVecMoveRR[] = {
+            {2, 0x6F}, {1, 0x6F}, {0, 0x10}, {1, 0x10}, {0, 0x28}, {1, 0x28},
+    };
+    // Register-register moves in the "ModRM.rm is the destination" direction:
+    // the store opcodes take a register r/m, so ModRM.reg is the source.
+    static constexpr std::pair<u8, u8> kVecMoveRRRev[] = {
+            {2, 0x7F}, {1, 0x7F}, {0, 0x11}, {1, 0x11}, {0, 0x29}, {1, 0x29},
+    };
+    // GPRs safe to clobber: r11 is the index register, r13 the data base, r15
+    // the flag capture, and rsp must stay a valid stack.
+    static constexpr u8 kFreeGpr[] = {kRax, kRbx, kRcx, kRdx, kRsi, kRdi,
+                                      kRbp, kR8,  kR9,  kR10, kR12, kR14};
+
+    const auto pick = [&](const auto& table) {
+        return table[env.RandInt(0, int(std::size(table)) - 1)];
+    };
+
+    for (int i = 0; i < iters; ++i) {
+        CodeBuf b;
+        env.InitRegs();
+        env.EmitFlagPrefix(b);
+
+        MemOp pa{};
+        pa.disp = 0x100;
+        MemOp pb{};
+        pb.disp = 0x120;
+        MemOp pc{};
+        pc.disp = 0x140;
+        MemOp out{};
+        out.disp = 0x180;
+        for (int half = 0; half < 2; ++half) {
+            for (const MemOp* area : {&pa, &pb, &pc}) {
+                MemOp m = *area;
+                m.disp += s32(8 * half);
+                EmitMovRegImm(b, 64, kRax, env.PoolVal(64));
+                EmitMovMemReg(b, 64, m, kRax);
+            }
+        }
+
+        // Seed all three vector registers from memory so nothing observed
+        // afterwards depends on an undefined initial XMM value.
+        const auto ld0 = pick(kVecLoad);
+        const auto ld1 = pick(kVecLoad);
+        const auto ld2 = pick(kVecLoad);
+        EmitVexLoad(b, ld0.first, ld0.second, 0, kVexNoSrc1, pc);
+        EmitVexLoad(b, ld1.first, ld1.second, 1, kVexNoSrc1, pa);
+        EmitVexLoad(b, ld2.first, ld2.second, 2, kVexNoSrc1, pb);
+
+        // The move under test.
+        MemOp gpr_out = out;
+        gpr_out.disp += 0x60;
+        switch (env.RandInt(0, 6)) {
+            case 0: {  // xmm0 <- xmm1/xmm2, rm-is-source direction
+                const auto f = pick(kVecMoveRR);
+                EmitVexRR(b, f.first, f.second, 0, kVexNoSrc1, u8(env.RandInt(1, 2)));
+                break;
+            }
+            case 1: {  // xmm0 <- xmm1/xmm2, rm-is-destination direction
+                const auto f = pick(kVecMoveRRRev);
+                EmitVexRR(b, f.first, f.second, u8(env.RandInt(1, 2)), kVexNoSrc1, 0);
+                break;
+            }
+            case 2: {  // xmm0 <- [A] or [B], re-loaded through a second form
+                const auto f = pick(kVecLoad);
+                EmitVexLoad(b, f.first, f.second, 0, kVexNoSrc1, env.RandInt(0, 1) ? pa : pb);
+                break;
+            }
+            case 3: {  // vmovd/vmovq xmm0, r32/r64 — upper bits must be zeroed
+                const bool wide = env.RandInt(0, 1) != 0;
+                const u8 g = kFreeGpr[env.RandInt(0, int(std::size(kFreeGpr)) - 1)];
+                EmitVexRR(b, 1, 0x6E, 0, kVexNoSrc1, g, false, wide);
+                break;
+            }
+            case 4: {  // vmovd/vmovq r32/r64, xmm1 — GPR destination
+                const bool wide = env.RandInt(0, 1) != 0;
+                const u8 g = kFreeGpr[env.RandInt(0, int(std::size(kFreeGpr)) - 1)];
+                EmitVexRR(b, 1, 0x7E, 1, kVexNoSrc1, g, false, wide);
+                break;
+            }
+            case 5: {  // vmovq xmm0, xmm1/m64 (F3 7E) — zeroes bits 127:64
+                if (env.RandInt(0, 1)) {
+                    EmitVexRR(b, 2, 0x7E, 0, kVexNoSrc1, 1);
+                } else {
+                    EmitVexLoad(b, 2, 0x7E, 0, kVexNoSrc1, pa);
+                }
+                break;
+            }
+            default: {  // narrow stores: vmovq m64, xmm (66 D6) / vmovd m32, xmm (66 7E)
+                if (env.RandInt(0, 1)) {
+                    EmitVexStore(b, 1, 0xD6, gpr_out, 1);
+                } else {
+                    EmitVexStore(b, 1, 0x7E, gpr_out, 1);
+                }
+                break;
+            }
+        }
+
+        // Publish all three registers so a move that clobbers a bystander, or
+        // fails to zero the upper lanes it must zero, is caught.
+        MemOp s1 = out;
+        s1.disp += 0x20;
+        MemOp s2 = out;
+        s2.disp += 0x40;
+        const auto st0 = pick(kVecStore);
+        const auto st1 = pick(kVecStore);
+        const auto st2 = pick(kVecStore);
+        EmitVexStore(b, st0.first, st0.second, out, 0);
+        EmitVexStore(b, st1.first, st1.second, s1, 1);
+        EmitVexStore(b, st2.first, st2.second, s2, 2);
+
+        FlagMask mask{};
+        env.RunIteration(b.c, mask, "avx128mov");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+// ---------------------------------------------------------------------------
+// AVX VEX.128 directed semantics, without Unicorn.
+//
+// Unicorn cannot be the oracle for this family: see FACT 1/2/3 on the case
+// above.  In short it mis-executes VEX.128 packed integer ops (it ignores
+// VEX.vvvv and runs the destructive legacy form, so the result is dst OP src2 —
+// which looks like "it returns src2" whenever dst happened to be zero), it
+// refuses VEX.256 outright, and — the reason this case exists — it has no way
+// to expose bits 255:128 at all.  So every
+// expectation here is hand-computed from the Intel definition, and every block
+// is additionally executed on both backends so a JIT/interpreter divergence is
+// caught in the same pass.
+//
+// The load-bearing property is contract C3: a VEX.128 write ZEROES bits 255:128
+// of its destination where the legacy SSE form preserves them.  ThreadContext64
+// ::ymm_high is poisoned with a per-register, per-byte pattern before every run,
+// so a handler that forgets ZeroYmmHigh, one that clears only part of the upper
+// half, and one that clears the wrong register are all distinguishable.  A
+// legacy `movdqu` control block asserts the poison survives an SSE write, which
+// is what makes the zero observed after a VEX write meaningful.
+TEST_CASE("x86 avx vex128 directed C3 zeroing and source order") {
+    const char* avx_env = std::getenv("SVM_AVX");
+    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+        SUCCEED("SVM_AVX is not set; VEX.128 directed semantics skipped");
+        return;
+    }
+
+    using Vec128 = std::array<u8, 16>;
+    struct RunResult {
+        std::array<Vec128, 16> xmm{};
+        std::array<Vec128, 16> high{};
+        u64 rax{};
+        Vec128 out{};
+        int exit{};
+    };
+
+    constexpr size_t kArenaSize = 0x200000;
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 data = base + 0x180000;
+    const u64 stack = base + 0x100000;
+
+    MemOp ma{};
+    ma.disp = 0x100;
+    MemOp mb{};
+    mb.disp = 0x120;
+    MemOp mout{};
+    mout.disp = 0x140;
+
+    // X86Instance snapshots SVM_ENABLE_JIT at construction, so both backends
+    // have to be built here rather than selected per run.
+    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const bool had_old_jit = old_jit != nullptr;
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    setenv("SVM_ENABLE_JIT", "1", 1);
+    auto* jit_instance = X86Instance::Make();
+    setenv("SVM_ENABLE_JIT", "0", 1);
+    auto* interp_instance = X86Instance::Make();
+    if (had_old_jit) {
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_ENABLE_JIT");
+    }
+    auto* jit_core = X86Core::Make(jit_instance);
+    auto* interp_core = X86Core::Make(interp_instance);
+
+    // Distinct per register AND per byte: a clear of the wrong register cannot
+    // masquerade as the right one, and a half-width clear leaves a visible tail.
+    const auto poison = [](u32 reg) {
+        Vec128 v{};
+        for (u32 j = 0; j < 16; ++j) {
+            v[j] = u8(0x5A ^ (reg * 16 + j));
+        }
+        return v;
+    };
+    const Vec128 kZero{};
+    const auto hex = [](const Vec128& v) {
+        std::string s;
+        for (const u8 x : v) {
+            s += fmt::format("{:02x}", x);
+        }
+        return s;
+    };
+
+    size_t code_cursor = 1;
+    size_t checks = 0;
+    std::vector<std::string> problems;
+    const auto fail = [&](std::string msg) { problems.push_back(std::move(msg)); };
+
+    const auto run_on = [&](X86Core* core, const CodeBuf& code, const Vec128& lhs,
+                            const Vec128& rhs, u64 rax_in) {
+        const u64 code_addr = base + code_cursor * 0x200;
+        std::memcpy(reinterpret_cast<void*>(code_addr), code.c.data(), code.c.size());
+        std::memcpy(reinterpret_cast<void*>(data + ma.disp), lhs.data(), lhs.size());
+        std::memcpy(reinterpret_cast<void*>(data + mb.disp), rhs.data(), rhs.size());
+        std::memset(reinterpret_cast<void*>(data + mout.disp), 0xCC, 32);
+        auto& ctx = core->GetContext();
+        for (u32 i = 0; i < 16; ++i) {
+            const auto p = poison(i);
+            std::memcpy(ctx.ymm_high[i].b, p.data(), p.size());
+            std::memset(ctx.xmms[i].b, u8(0x11 * (i + 1)), 16);
+        }
+        ctx.rax.qword = rax_in;
+        ctx.r13.qword = data;
+        ctx.rsp.qword = stack;
+        ctx.rip.qword = code_addr;
+        RunResult r;
+        r.exit = int(core->Run());
+        for (u32 i = 0; i < 16; ++i) {
+            std::memcpy(r.xmm[i].data(), ctx.xmms[i].b, 16);
+            std::memcpy(r.high[i].data(), ctx.ymm_high[i].b, 16);
+        }
+        r.rax = ctx.rax.qword;
+        std::memcpy(r.out.data(), reinterpret_cast<void*>(data + mout.disp), 16);
+        return r;
+    };
+
+    // Every block gets a fresh address so the JIT never serves a stale
+    // translation (SMC tracking is off for the whole case).
+    const auto run_both = [&](const std::string& label, CodeBuf code, const Vec128& lhs,
+                              const Vec128& rhs, u64 rax_in, bool may_decline = false) {
+        code.B(0xF4);  // hlt
+        ++code_cursor;
+        REQUIRE(code.c.size() < 0x200);
+        const auto jit = run_on(jit_core, code, lhs, rhs, rax_in);
+        const auto interp = run_on(interp_core, code, lhs, rhs, rax_in);
+        ++checks;
+        // may_decline: encodings that are architecturally #UD, where refusing to
+        // translate is the correct conservative answer rather than a miss.
+        if (!may_decline && jit.exit != int(swift::translator::None)) {
+            // FALLBACK / ILL_CODE both surface as IllegalCode: the form was
+            // declined by the decoder rather than mis-executed.
+            fail(fmt::format("{}: block did not reach HLT (exit={}), form not decoded", label,
+                             jit.exit));
+        }
+        if (jit.xmm != interp.xmm || jit.high != interp.high || jit.rax != interp.rax ||
+            jit.out != interp.out || jit.exit != interp.exit) {
+            fail(fmt::format("{}: JIT/interpreter divergence (rax {:#x}/{:#x}, xmm0 {}/{}, "
+                             "ymm_high0 {}/{})",
+                             label, jit.rax, interp.rax, hex(jit.xmm[0]), hex(interp.xmm[0]),
+                             hex(jit.high[0]), hex(interp.high[0])));
+        }
+        return jit;
+    };
+
+    // C3: ymm_high[dst] must be zero and every other upper half untouched.
+    const auto check_c3 = [&](const std::string& label, const RunResult& r, int dst) {
+        if (dst >= 0 && r.high[u32(dst)] != kZero) {
+            fail(fmt::format("{}: C3 violated, ymm_high[{}] = {} (expected zero)", label, dst,
+                             hex(r.high[u32(dst)])));
+        }
+        for (u32 i = 0; i < 16; ++i) {
+            if (dst >= 0 && i == u32(dst)) {
+                continue;
+            }
+            if (r.high[i] != poison(i)) {
+                fail(fmt::format("{}: ymm_high[{}] clobbered, {} != {}", label, i, hex(r.high[i]),
+                                 hex(poison(i))));
+            }
+        }
+    };
+    const auto check_vec = [&](const std::string& label, const Vec128& got, const Vec128& want) {
+        if (got != want) {
+            fail(fmt::format("{}: got {} want {}", label, hex(got), hex(want)));
+        }
+    };
+
+    // ---- hand-computed references -----------------------------------------
+    // dst = src1 OP src2, where src1 is VEX.vvvv and src2 the r/m operand.
+    const auto bitwise_ref = [](int kind, const Vec128& s1, const Vec128& s2) {
+        Vec128 out{};
+        for (u32 j = 0; j < 16; ++j) {
+            switch (kind) {
+                case 0: out[j] = u8(s1[j] ^ s2[j]); break;
+                case 1: out[j] = u8(s1[j] | s2[j]); break;
+                case 2: out[j] = u8(s1[j] & s2[j]); break;
+                default: out[j] = u8(u8(~s1[j]) & s2[j]); break;  // vpandn
+            }
+        }
+        return out;
+    };
+    const auto lane_ref = [](int kind, u32 lane_bits, const Vec128& s1, const Vec128& s2) {
+        Vec128 out{};
+        const u32 bytes = lane_bits / 8;
+        const u64 mask = lane_bits == 64 ? ~u64(0) : ((u64(1) << lane_bits) - 1);
+        for (u32 l = 0; l < 16; l += bytes) {
+            u64 x = 0;
+            u64 y = 0;
+            for (u32 k = 0; k < bytes; ++k) {
+                x |= u64(s1[l + k]) << (8 * k);
+                y |= u64(s2[l + k]) << (8 * k);
+            }
+            u64 z = 0;
+            switch (kind) {
+                case 0: z = (x + y) & mask; break;
+                case 1: z = (x - y) & mask; break;
+                case 2: z = (x == y) ? mask : 0; break;
+                default: {
+                    // Signed compare: sign-extend both lanes into 64 bits.
+                    const u32 sh = 64 - lane_bits;
+                    const s64 sx = s64(x << sh) >> sh;
+                    const s64 sy = s64(y << sh) >> sh;
+                    z = (sx > sy) ? mask : 0;
+                    break;
+                }
+            }
+            for (u32 k = 0; k < bytes; ++k) {
+                out[l + k] = u8(z >> (8 * k));
+            }
+        }
+        return out;
+    };
+
+    // Fixed pseudo-random operands: both signs and both magnitudes appear in
+    // every lane width, so no comparison degenerates.
+    Vec128 va{};
+    Vec128 vb{};
+    {
+        u32 seed = 0x12345678u;
+        const auto next = [&seed] {
+            seed = seed * 1664525u + 1013904223u;
+            return u8(seed >> 24);
+        };
+        for (u32 j = 0; j < 16; ++j) {
+            va[j] = next();
+        }
+        for (u32 j = 0; j < 16; ++j) {
+            vb[j] = next();
+            if (vb[j] == va[j]) {
+                vb[j] = u8(vb[j] ^ 0x5Au);
+            }
+        }
+    }
+    // The data must actually separate `src1 OP src2` from `src2 OP src1`,
+    // otherwise a reversed source order would pass this case silently.
+    REQUIRE(bitwise_ref(3, va, vb) != bitwise_ref(3, vb, va));
+    for (const u32 lb : {8u, 16u, 32u, 64u}) {
+        REQUIRE(lane_ref(1, lb, va, vb) != lane_ref(1, lb, vb, va));
+    }
+    for (const u32 lb : {8u, 16u, 32u}) {
+        REQUIRE(lane_ref(3, lb, va, vb) != lane_ref(3, lb, vb, va));
+    }
+
+    // Sources are loaded with LEGACY SSE movdqu on purpose: legacy writes
+    // preserve bits 255:128, so the poison in ymm_high[1]/[2] survives into the
+    // instruction under test and the C3 check is about that instruction alone.
+    const auto emit_setup = [&](CodeBuf& b) {
+        EmitSseLoad(b, 0xF3, 0x6F, 1, ma);  // movdqu xmm1, [A]
+        EmitSseLoad(b, 0xF3, 0x6F, 2, mb);  // movdqu xmm2, [B]
+    };
+    // The shared VEX helpers hardcode VEX.W=0 and the 0F map; vmovq's GPR forms
+    // need W=1 and vmovntdqa needs 0F38, so this case emits its own prefix for
+    // those.  vvvv follows EmitVexC4's convention: pass the un-inverted register
+    // number, 0 meaning "no src1" (encoded 1111).
+    const auto vex3 = [](CodeBuf& b, u8 pp, u8 mmmmm, bool w, u8 vvvv, u8 r, u8 x, u8 bb) {
+        b.B(0xC4);
+        b.B(u8(((~r & 1) << 7) | ((~x & 1) << 6) | ((~bb & 1) << 5) | (mmmmm & 0x1F)));
+        b.B(u8(((w ? 1u : 0u) << 7) | ((~vvvv & 0xF) << 3) | (pp & 3)));
+    };
+
+    // ---- control: the legacy SSE form must PRESERVE bits 255:128 ----------
+    // Without this the C3 assertions above prove nothing: a harness that lost
+    // the poison for unrelated reasons would report every VEX form as correct.
+    {
+        CodeBuf b;
+        EmitSseLoad(b, 0xF3, 0x6F, 3, ma);  // movdqu xmm3, [A]  (legacy, not VEX)
+        const auto r = run_both("legacy movdqu control", b, va, vb, 0);
+        check_vec("legacy movdqu control xmm3", r.xmm[3], va);
+        check_c3("legacy movdqu control", r, -1);  // -1: nothing may be zeroed
+    }
+
+    // ---- three-operand lane / bitwise ops ---------------------------------
+    struct AluCase {
+        const char* name;
+        u8 pp;
+        u8 op;
+        bool bitwise;
+        int kind;
+        u32 lane_bits;
+    };
+    static constexpr AluCase kCases[] = {
+            {"vpxor", 1, 0xEF, true, 0, 0},      {"vpor", 1, 0xEB, true, 1, 0},
+            {"vpand", 1, 0xDB, true, 2, 0},      {"vpandn", 1, 0xDF, true, 3, 0},
+            {"vpaddb", 1, 0xFC, false, 0, 8},    {"vpaddw", 1, 0xFD, false, 0, 16},
+            {"vpaddd", 1, 0xFE, false, 0, 32},   {"vpaddq", 1, 0xD4, false, 0, 64},
+            {"vpsubb", 1, 0xF8, false, 1, 8},    {"vpsubw", 1, 0xF9, false, 1, 16},
+            {"vpsubd", 1, 0xFA, false, 1, 32},   {"vpsubq", 1, 0xFB, false, 1, 64},
+            {"vpcmpeqb", 1, 0x74, false, 2, 8},  {"vpcmpeqw", 1, 0x75, false, 2, 16},
+            {"vpcmpeqd", 1, 0x76, false, 2, 32}, {"vpcmpgtb", 1, 0x64, false, 3, 8},
+            {"vpcmpgtw", 1, 0x65, false, 3, 16}, {"vpcmpgtd", 1, 0x66, false, 3, 32}};
+
+    for (const auto& c : kCases) {
+        const Vec128 want = c.bitwise ? bitwise_ref(c.kind, va, vb)
+                                      : lane_ref(c.kind, c.lane_bits, va, vb);
+        // reg-reg: xmm0 = xmm1 OP xmm2, destination distinct from both sources.
+        {
+            CodeBuf b;
+            emit_setup(b);
+            EmitVexRR(b, c.pp, c.op, 0, 1, 2);
+            const std::string label = fmt::format("{} xmm0,xmm1,xmm2", c.name);
+            const auto r = run_both(label, b, va, vb, 0);
+            check_vec(label + " result", r.xmm[0], want);
+            check_c3(label, r, 0);
+            // Non-destructive: VEX must not clobber either source.
+            check_vec(label + " src1 preserved", r.xmm[1], va);
+            check_vec(label + " src2 preserved", r.xmm[2], vb);
+        }
+        // memory src2: exercises LoadSrcVec's O_MEM path with the same order.
+        {
+            CodeBuf b;
+            emit_setup(b);
+            EmitVexLoad(b, c.pp, c.op, 0, 1, mb);
+            const std::string label = fmt::format("{} xmm0,xmm1,[B]", c.name);
+            const auto r = run_both(label, b, va, vb, 0);
+            check_vec(label + " result", r.xmm[0], want);
+            check_c3(label, r, 0);
+            check_vec(label + " src1 preserved", r.xmm[1], va);
+        }
+    }
+
+    // dst == src1 == src2: the `vpxor xmmN, xmmN, xmmN` zeroing idiom must
+    // clear the FULL 256-bit register, not just the low half.
+    {
+        CodeBuf b;
+        EmitVexRR(b, 1, 0xEF, 5, 5, 5);
+        const auto r = run_both("vpxor xmm5,xmm5,xmm5", b, va, vb, 0);
+        check_vec("vpxor self low", r.xmm[5], kZero);
+        check_c3("vpxor self", r, 5);
+    }
+
+    // ---- two-operand 128-bit moves ----------------------------------------
+    struct MovCase {
+        const char* name;
+        u8 pp;
+        u8 op;
+        // VLDDQU is memory-only (a reg-reg form is #UD); everything else here
+        // also has a legal register source.
+        bool has_reg_form;
+    };
+    static constexpr MovCase kLoads[] = {
+            {"vmovdqu", 2, 0x6F, true}, {"vmovdqa", 1, 0x6F, true}, {"vmovups", 0, 0x10, true},
+            {"vmovaps", 0, 0x28, true}, {"vmovupd", 1, 0x10, true}, {"vmovapd", 1, 0x28, true},
+            {"vlddqu", 3, 0xF0, false}};
+    for (const auto& c : kLoads) {
+        {
+            CodeBuf b;
+            EmitVexLoad(b, c.pp, c.op, 0, kVexNoSrc1, ma);
+            const std::string label = fmt::format("{} xmm0,[A]", c.name);
+            const auto r = run_both(label, b, va, vb, 0);
+            check_vec(label + " result", r.xmm[0], va);
+            check_c3(label, r, 0);
+        }
+        if (c.has_reg_form) {
+            CodeBuf b;
+            emit_setup(b);
+            EmitVexRR(b, c.pp, c.op, 0, kVexNoSrc1, 1);
+            const std::string label = fmt::format("{} xmm0,xmm1", c.name);
+            const auto r = run_both(label, b, va, vb, 0);
+            check_vec(label + " result", r.xmm[0], va);
+            check_c3(label, r, 0);
+        }
+    }
+
+    // vmovntdqa xmm0, [A] — the only routed VEX.128 form on the 0F38 map.
+    {
+        CodeBuf b;
+        vex3(b, 1, 2, false, 0, 0, 0, u8(kDataReg >> 3));
+        b.B(0x2A);
+        EmitModRMMem(b, 0, ma);
+        const auto r = run_both("vmovntdqa xmm0,[A]", b, va, vb, 0);
+        check_vec("vmovntdqa xmm0,[A] result", r.xmm[0], va);
+        check_c3("vmovntdqa xmm0,[A]", r, 0);
+    }
+
+    // The MR (0x7F) reg-reg encoding puts the DESTINATION in ModRM.rm, so
+    // distorm reports ops[0] = rm.  A handler that assumed ops[0] is always the
+    // ModRM.reg field would zero the wrong upper half here.
+    {
+        CodeBuf b;
+        emit_setup(b);
+        EmitVexRR(b, 2, 0x7F, 1, kVexNoSrc1, 0);  // vmovdqu xmm0, xmm1
+        const auto r = run_both("vmovdqu xmm0,xmm1 (MR form)", b, va, vb, 0);
+        check_vec("vmovdqu MR result", r.xmm[0], va);
+        check_c3("vmovdqu MR", r, 0);
+    }
+
+    // A two-operand VEX form must encode vvvv = 1111; any other value is
+    // architecturally #UD.  The handlers read distorm's operand list and never
+    // consult VexInfo::vvvv_unused (0b1111 un-inverts to register 0, so vvvv
+    // alone cannot tell "absent" from "xmm0"), which is safe ONLY as long as
+    // distorm does not surface a spurious vvvv as ops[1] — that would make
+    // DecodeVexMovVec take its source from the wrong register.  Encode
+    // vvvv = xmm1 with rm = xmm2 and require the outcome is either a refusal to
+    // translate or xmm2's value; xmm1's value would be the silent misread.
+    // Observed: distorm rejects the reserved encoding outright, so the block
+    // traps as FALLBACK — the conservative answer, and the reason the missing
+    // vvvv_unused check is not currently reachable from the guest.
+    {
+        CodeBuf b;
+        emit_setup(b);
+        EmitVexC4(b, 2, 1, 14, false, 0, 0, 0);  // ~14 = 0b0001 lands in vvvv
+        b.B(0x6F);
+        EmitModRMReg(b, 0, 2);  // vmovdqu xmm0, xmm2
+        const auto r =
+                run_both("vmovdqu xmm0,xmm2 with reserved vvvv=xmm1", b, va, vb, 0, true);
+        if (r.exit == int(swift::translator::None) && r.xmm[0] == va) {
+            fail("reserved vvvv on a two-operand vmovdqu was consumed as the source: "
+                 "result is xmm1, expected xmm2");
+        }
+    }
+
+    // Store forms have no vector destination: NOTHING may be zeroed.
+    {
+        CodeBuf b;
+        emit_setup(b);
+        EmitVexStore(b, 2, 0x7F, mout, 1);  // vmovdqu [out], xmm1
+        const auto r = run_both("vmovdqu [out],xmm1", b, va, vb, 0);
+        check_vec("vmovdqu store payload", r.out, va);
+        check_c3("vmovdqu [out],xmm1", r, -1);
+    }
+
+    // ---- vmovd / vmovq ----------------------------------------------------
+    constexpr u64 kGpr = 0x0123456789ABCDEFull;
+    const auto qword_of = [](const Vec128& v, u32 off) {
+        u64 q = 0;
+        for (u32 k = 0; k < 8; ++k) {
+            q |= u64(v[off + k]) << (8 * k);
+        }
+        return q;
+    };
+    const auto vec_from = [](u64 lo, u64 hi) {
+        Vec128 v{};
+        for (u32 k = 0; k < 8; ++k) {
+            v[k] = u8(lo >> (8 * k));
+            v[8 + k] = u8(hi >> (8 * k));
+        }
+        return v;
+    };
+
+    {  // vmovd xmm0, eax: bits 255:32 all zero.
+        CodeBuf b;
+        EmitVexRR(b, 1, 0x6E, 0, kVexNoSrc1, kRax);
+        const auto r = run_both("vmovd xmm0,eax", b, va, vb, kGpr);
+        check_vec("vmovd xmm0,eax result", r.xmm[0], vec_from(kGpr & 0xFFFFFFFFull, 0));
+        check_c3("vmovd xmm0,eax", r, 0);
+    }
+    {  // vmovq xmm0, rax (VEX.W=1 6E): bits 255:64 zero.
+        CodeBuf b;
+        vex3(b, 1, 1, true, 0, 0, 0, 0);
+        b.B(0x6E);
+        EmitModRMReg(b, 0, kRax);
+        const auto r = run_both("vmovq xmm0,rax", b, va, vb, kGpr);
+        check_vec("vmovq xmm0,rax result", r.xmm[0], vec_from(kGpr, 0));
+        check_c3("vmovq xmm0,rax", r, 0);
+    }
+    {  // vmovq xmm0, xmm1 (F3 0F 7E): low qword copied, bits 255:64 zero.
+        CodeBuf b;
+        emit_setup(b);
+        EmitVexRR(b, 2, 0x7E, 0, kVexNoSrc1, 1);
+        const auto r = run_both("vmovq xmm0,xmm1", b, va, vb, 0);
+        check_vec("vmovq xmm0,xmm1 result", r.xmm[0], vec_from(qword_of(va, 0), 0));
+        check_c3("vmovq xmm0,xmm1", r, 0);
+    }
+    {  // vmovq xmm0, [A] (F3 0F 7E load form).
+        CodeBuf b;
+        EmitVexLoad(b, 2, 0x7E, 0, kVexNoSrc1, ma);
+        const auto r = run_both("vmovq xmm0,[A]", b, va, vb, 0);
+        check_vec("vmovq xmm0,[A] result", r.xmm[0], vec_from(qword_of(va, 0), 0));
+        check_c3("vmovq xmm0,[A]", r, 0);
+    }
+    {  // vmovd eax, xmm1 (66 0F 7E): GPR destination, zero-extended to 64.
+        CodeBuf b;
+        emit_setup(b);
+        EmitVexRR(b, 1, 0x7E, 1, kVexNoSrc1, kRax);
+        const auto r = run_both("vmovd eax,xmm1", b, va, vb, kGpr);
+        if (r.rax != (qword_of(va, 0) & 0xFFFFFFFFull)) {
+            fail(fmt::format("vmovd eax,xmm1: rax = {:#018x}, want {:#018x}", r.rax,
+                             qword_of(va, 0) & 0xFFFFFFFFull));
+        }
+        check_c3("vmovd eax,xmm1", r, -1);
+    }
+    {  // vmovq rax, xmm1 (VEX.W=1 66 0F 7E).
+        CodeBuf b;
+        emit_setup(b);
+        // r/x/bb are the high BITS of reg/index/rm, so xmm1 and rax are both 0.
+        vex3(b, 1, 1, true, 0, 0, 0, 0);
+        b.B(0x7E);
+        EmitModRMReg(b, 1, kRax);
+        const auto r = run_both("vmovq rax,xmm1", b, va, vb, kGpr);
+        if (r.rax != qword_of(va, 0)) {
+            fail(fmt::format("vmovq rax,xmm1: rax = {:#018x}, want {:#018x}", r.rax,
+                             qword_of(va, 0)));
+        }
+        check_c3("vmovq rax,xmm1", r, -1);
+    }
+    {  // vmovq [out], xmm1 (66 0F D6): 8-byte store, no vector destination.
+        CodeBuf b;
+        emit_setup(b);
+        EmitVexStore(b, 1, 0xD6, mout, 1);
+        const auto r = run_both("vmovq [out],xmm1", b, va, vb, 0);
+        Vec128 want{};
+        for (u32 k = 0; k < 8; ++k) {
+            want[k] = va[k];
+        }
+        for (u32 k = 8; k < 16; ++k) {
+            want[k] = 0xCC;  // the memset fill: the store must not widen to 16
+        }
+        check_vec("vmovq [out],xmm1 payload", r.out, want);
+        check_c3("vmovq [out],xmm1", r, -1);
+    }
+
+    // ---- vzeroupper / vzeroall (2-byte C5 VEX) ----------------------------
+    {
+        CodeBuf b;
+        b.B(0xC5);
+        b.B(0xF8);  // R=1 vvvv=1111 L=0 pp=00
+        b.B(0x77);
+        const auto r = run_both("vzeroupper", b, va, vb, 0);
+        for (u32 i = 0; i < 16; ++i) {
+            check_vec(fmt::format("vzeroupper ymm_high[{}]", i), r.high[i], kZero);
+            Vec128 want{};
+            want.fill(u8(0x11 * (i + 1)));
+            check_vec(fmt::format("vzeroupper xmm[{}] preserved", i), r.xmm[i], want);
+        }
+    }
+    {
+        CodeBuf b;
+        b.B(0xC5);
+        b.B(0xFC);  // same, L=1 -> vzeroall
+        b.B(0x77);
+        const auto r = run_both("vzeroall", b, va, vb, 0);
+        for (u32 i = 0; i < 16; ++i) {
+            check_vec(fmt::format("vzeroall ymm_high[{}]", i), r.high[i], kZero);
+            check_vec(fmt::format("vzeroall xmm[{}]", i), r.xmm[i], kZero);
+        }
+    }
+
+    // ---- VEX.L=1 must never run through a 128-bit path --------------------
+    // distorm has no 256-bit table entry for the packed integer opcodes and
+    // reports 128-bit XMM operands for an L=1 encoding; if the L bit were taken
+    // from distorm rather than the prefix, this would execute as a 128-bit
+    // vpaddb AND zero the upper half.  The upper halves of the sources here are
+    // the harness poison (legacy movdqu preserved them), so a correct 256-bit
+    // result is computable by hand and both halves are asserted.  A C3 zero in
+    // ymm_high[0] is the specific signature of the mis-route.
+    {
+        CodeBuf b;
+        emit_setup(b);
+        EmitVexRR(b, 1, 0xFC, 0, 1, 2, /*l=*/true);  // vpaddb ymm0, ymm1, ymm2
+        const auto r = run_both("vpaddb ymm0,ymm1,ymm2 (L=1)", b, va, vb, 0);
+        check_vec("vpaddb L=1 low half", r.xmm[0], lane_ref(0, 8, va, vb));
+        check_vec("vpaddb L=1 high half", r.high[0], lane_ref(0, 8, poison(1), poison(2)));
+        if (r.high[0] == kZero) {
+            fail("vpaddb ymm0,ymm1,ymm2 (L=1) zeroed its upper half: the 256-bit form was "
+                 "executed through a VEX.128 path");
+        }
+    }
+
+    X86Core::Destroy(jit_core);
+    X86Core::Destroy(interp_core);
+    X86Instance::Destroy(jit_instance);
+    X86Instance::Destroy(interp_instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+
+    for (size_t i = 0; i < problems.size() && i < 30; ++i) {
+        UNSCOPED_INFO(problems[i]);
+    }
+    CHECK(problems.empty());
+    CHECK(checks > 40);
+}
+
+// VEX.128 packed integer ALU — hand-computed edge vectors.
+//
+// The case above derives its expectations from a reference model and runs it on
+// one pseudo-random operand pair.  That leaves two gaps this case closes:
+//
+//   1. NOTHING pins the reference model itself.  A model that misread the ISA —
+//      vpandn inverting the wrong operand, a compare done unsigned, an add
+//      carrying across a lane boundary — would agree with an implementation
+//      that made the same mistake, and both cases would pass.  So the first
+//      thing here is a table of literal 16-byte results worked out BY HAND from
+//      the Intel definition, asserted against the model before any guest code
+//      runs.  The derivations are written out next to each entry.
+//   2. One random operand pair exercises no boundary.  Five directed pairs are
+//      added, each built so a single property is unmistakable: carry out of
+//      every lane, borrow out of every lane, equality spans that differ by
+//      width, signed/unsigned disagreement at every width, and an asymmetric
+//      bit pattern where all four bitwise ops differ from one another.
+//
+// Operand shapes also go further: dst aliased onto src1 and onto src2, which
+// the case above only covers for the `vpxor xmmN,xmmN,xmmN` idiom.  xmm0 holds
+// a sentinel and all three registers are published, so a lowering that writes a
+// bystander is caught in every shape.
+//
+// Both backends are checked against the model, so this is simultaneously the
+// absolute-correctness check and the JIT/interpreter differential.
+TEST_CASE("AVX VEX.128 packed integer directed edge vectors") {
+    const char* avx_env = std::getenv("SVM_AVX");
+    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+        SUCCEED("SVM_AVX is not set; VEX.128 ALU edge vectors skipped");
+        return;
+    }
+    using Vec128 = std::array<u8, 16>;
+
+    // ---- reference model ---------------------------------------------------
+    // Transcribed from the SDM operation pseudocode.  Every lane is
+    // independent: no carry, borrow or compare result crosses a lane boundary,
+    // which is the property the width-specific literals below expose.
+    //   VPAND    DEST[i] := SRC1[i] AND SRC2[i]
+    //   VPANDN   DEST[i] := (NOT SRC1[i]) AND SRC2[i]  <- SRC1 is the inverted
+    //   VPOR     DEST[i] := SRC1[i] OR  SRC2[i]           operand, so swapping
+    //   VPXOR    DEST[i] := SRC1[i] XOR SRC2[i]           the sources changes
+    //   VPADDx   DEST[i] := (SRC1[i] + SRC2[i]) mod 2^n   the answer
+    //   VPSUBx   DEST[i] := (SRC1[i] - SRC2[i]) mod 2^n
+    //   VPCMPEQx DEST[i] := SRC1[i] =  SRC2[i] ? all-ones : all-zeros
+    //   VPCMPGTx DEST[i] := SRC1[i] >  SRC2[i] ? all-ones : all-zeros, SIGNED
+    // The bitwise ops are defined over the whole 128 bits; evaluating them per
+    // byte is identical and lets one loop serve every opcode.
+    enum class RefOp { And, AndNot, Or, Xor, Add, Sub, CmpEq, CmpGt };
+    const auto ref_lane = [](RefOp op, u32 lane_bits, const Vec128& a, const Vec128& b) {
+        Vec128 result{};
+        const u32 lane_bytes = lane_bits / 8;
+        const u64 mask = lane_bits == 64 ? ~u64(0) : ((u64(1) << lane_bits) - 1);
+        for (u32 base = 0; base < 16; base += lane_bytes) {
+            u64 la = 0;
+            u64 lb = 0;
+            for (u32 k = 0; k < lane_bytes; ++k) {  // little-endian lane assembly
+                la |= u64(a[base + k]) << (8 * k);
+                lb |= u64(b[base + k]) << (8 * k);
+            }
+            u64 r = 0;
+            switch (op) {
+                case RefOp::And: r = la & lb; break;
+                case RefOp::AndNot: r = (~la) & lb; break;
+                case RefOp::Or: r = la | lb; break;
+                case RefOp::Xor: r = la ^ lb; break;
+                case RefOp::Add: r = la + lb; break;
+                case RefOp::Sub: r = la - lb; break;
+                case RefOp::CmpEq: r = (la == lb) ? ~u64(0) : 0; break;
+                default: {
+                    // VPCMPGT is SIGNED: sign-extend both lanes before comparing,
+                    // so 0x80 > 0x7F is FALSE at byte width.
+                    const u32 sh = 64 - lane_bits;
+                    const s64 sa = s64(la << sh) >> sh;
+                    const s64 sb = s64(lb << sh) >> sh;
+                    r = (sa > sb) ? ~u64(0) : 0;
+                    break;
+                }
+            }
+            r &= mask;
+            for (u32 k = 0; k < lane_bytes; ++k) {
+                result[base + k] = u8(r >> (8 * k));
+            }
+        }
+        return result;
+    };
+    const auto hex = [](const Vec128& v) {
+        std::string s;
+        for (const u8 byte : v) {
+            s += fmt::format("{:02x}", byte);
+        }
+        return s;
+    };
+
+    // ---- hand-computed operand pairs --------------------------------------
+    // PAIR_BIT: deliberately asymmetric, so and/or/xor/andn all differ from one
+    // another and (~A)&B differs from (~B)&A.
+    const Vec128 bit_a = {{0xF0, 0x0F, 0xFF, 0x00, 0xAA, 0x55, 0xCC, 0x33, 0x81, 0x7E, 0x18, 0xE7,
+                           0x01, 0xFE, 0x80, 0x7F}};
+    const Vec128 bit_b = {{0x3C, 0xC3, 0xA5, 0x5A, 0x0F, 0xF0, 0x96, 0x69, 0xFF, 0x00, 0x12, 0x34,
+                           0x56, 0x78, 0x9A, 0xBC}};
+    // PAIR_CARRY: A = all ones, B = 1 in the low byte of every dword.  Every
+    // lane addition carries out, and the carry may not leave its own lane, so
+    // the four add widths produce four visibly different vectors.
+    const Vec128 carry_a = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                             0xFF, 0xFF, 0xFF, 0xFF}};
+    const Vec128 carry_b = {{0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+                             0x01, 0x00, 0x00, 0x00}};
+    // PAIR_BORROW: the borrow-side twin — A = 0 against the same B.
+    const Vec128 borrow_a = {};
+    // PAIR_EQ: identical except bytes 7 and 12, so the byte, word and dword
+    // equality masks each cover a different span of the register.
+    const Vec128 eq_a = {{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB,
+                          0xCC, 0xDD, 0xEE, 0xFF}};
+    const Vec128 eq_b = {{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x78, 0x88, 0x99, 0xAA, 0xBB,
+                          0xCD, 0xDD, 0xEE, 0xFF}};
+    // PAIR_GT: signed edges (0x80 against 0x7F, -1 against 0) placed so that at
+    // every width at least one lane answers differently under an unsigned
+    // comparison than under the signed one the ISA requires.
+    const Vec128 gt_a = {{0x80, 0x80, 0x7F, 0x7F, 0x00, 0x00, 0xFF, 0xFF, 0x01, 0xFF, 0x7F, 0x80,
+                          0x00, 0x00, 0x00, 0x00}};
+    const Vec128 gt_b = {{0x7F, 0x80, 0x80, 0x7F, 0xFF, 0x00, 0x00, 0xFF, 0x01, 0xFF, 0x80, 0x7F,
+                          0x00, 0x00, 0x00, 0x01}};
+
+    enum PairId { kBit = 0, kCarry, kBorrow, kEq, kGt };
+    std::vector<std::pair<Vec128, Vec128>> pairs = {
+            {bit_a, bit_b}, {carry_a, carry_b}, {borrow_a, carry_b}, {eq_a, eq_b}, {gt_a, gt_b}};
+
+    struct AluOp {
+        const char* name;
+        u8 pp;
+        u8 opcode;
+        RefOp kind;
+        u32 lane_bits;
+        PairId literal_pair;
+        Vec128 literal;  // hand-computed; see the derivation block above
+    };
+    // Derivations (all little-endian; b_i = byte i of the vector):
+    //  * bitwise, PAIR_BIT, byte 0 worked out in full, the other 15 identically:
+    //      A = F0 = 1111'0000   B = 3C = 0011'1100
+    //      xor  -> 1100'1100 = CC        or   -> 1111'1100 = FC
+    //      and  -> 0011'0000 = 30        andn -> (0000'1111) & 0011'1100 = 0C
+    //  * vpaddb PAIR_CARRY: FF+01 = 0x100 -> 00, carry dropped at the lane edge;
+    //      FF+00 = FF.  So byte 0 of each dword is 00 and the rest stay FF.
+    //  * vpaddw: A words are FFFF, B words are 0001,0000,0001,0000,...
+    //      FFFF+0001 = 0000 and FFFF+0000 = FFFF -> 00 00 FF FF repeating.
+    //  * vpaddd: A dwords FFFFFFFF + B dwords 00000001 = 00000000 everywhere.
+    //  * vpaddq: A qwords = -1, B qwords = 0x0000000100000001, so the sum is
+    //      0x0000000100000000 -> bytes 00 00 00 00 01 00 00 00, twice.
+    //  * vpsubb PAIR_BORROW: 00-01 = FF (borrow dropped), 00-00 = 00.
+    //  * vpsubw: 0000-0001 = FFFF, 0000-0000 = 0000.
+    //  * vpsubd: 00000000-00000001 = FFFFFFFF -> all ones.
+    //  * vpsubq: 0 - 0x0000000100000001 = 0xFFFFFFFEFFFFFFFF
+    //      -> bytes FF FF FF FF FE FF FF FF, twice.
+    //  * vpcmpeq* PAIR_EQ: the operands differ only at b7 and b12, so the byte
+    //      form clears exactly those two, the word form clears the words holding
+    //      them (b6-b7 and b12-b13), and the dword form clears b4-b7 and b12-b15.
+    //  * vpcmpgtb PAIR_GT lane by lane (signed values):
+    //      -128>127 N, -128>-128 N, 127>-128 Y, 127>127 N, 0>-1 Y, 0>0 N,
+    //      -1>0 N, -1>-1 N, 1>1 N, -1>-1 N, 127>-128 Y, -128>127 N,
+    //      then 0>0 three times N and finally 0>1 N.
+    //  * vpcmpgtw PAIR_GT.  A words: 8080 7F7F 0000 FFFF FF01 807F 0000 0000
+    //      B words: 807F 7F80 00FF FF00 FF01 7F80 0000 0100.  Signed:
+    //      -32640>-32641 Y, 32639>32640 N, 0>255 N, -1>-256 Y, -255>-255 N,
+    //      -32641>32640 N, 0>0 N, 0>256 N.
+    //  * vpcmpgtd PAIR_GT.  A dwords: 7F7F8080 FFFF0000 807FFF01 00000000
+    //      B dwords: 7F80807F FF0000FF 7F80FF01 01000000.  Signed:
+    //      0x7F7F8080 > 0x7F80807F N (both positive, A the smaller),
+    //      -65536 > -16776961 Y, negative > positive N, 0 > 16777216 N.
+    static const AluOp kAluOps[] = {
+            {"vpxor", 1, 0xEF, RefOp::Xor, 8, kBit,
+             {{0xCC, 0xCC, 0x5A, 0x5A, 0xA5, 0xA5, 0x5A, 0x5A, 0x7E, 0x7E, 0x0A, 0xD3, 0x57, 0x86,
+               0x1A, 0xC3}}},
+            {"vpor", 1, 0xEB, RefOp::Or, 8, kBit,
+             {{0xFC, 0xCF, 0xFF, 0x5A, 0xAF, 0xF5, 0xDE, 0x7B, 0xFF, 0x7E, 0x1A, 0xF7, 0x57, 0xFE,
+               0x9A, 0xFF}}},
+            {"vpand", 1, 0xDB, RefOp::And, 8, kBit,
+             {{0x30, 0x03, 0xA5, 0x00, 0x0A, 0x50, 0x84, 0x21, 0x81, 0x00, 0x10, 0x24, 0x00, 0x78,
+               0x80, 0x3C}}},
+            {"vpandn", 1, 0xDF, RefOp::AndNot, 8, kBit,
+             {{0x0C, 0xC0, 0x00, 0x5A, 0x05, 0xA0, 0x12, 0x48, 0x7E, 0x00, 0x02, 0x10, 0x56, 0x00,
+               0x1A, 0x80}}},
+            {"vpaddb", 1, 0xFC, RefOp::Add, 8, kCarry,
+             {{0x00, 0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0x00, 0xFF,
+               0xFF, 0xFF}}},
+            {"vpaddw", 1, 0xFD, RefOp::Add, 16, kCarry,
+             {{0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00,
+               0xFF, 0xFF}}},
+            {"vpaddd", 1, 0xFE, RefOp::Add, 32, kCarry,
+             {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00}}},
+            {"vpaddq", 1, 0xD4, RefOp::Add, 64, kCarry,
+             {{0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+               0x00, 0x00}}},
+            {"vpsubb", 1, 0xF8, RefOp::Sub, 8, kBorrow,
+             {{0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00,
+               0x00, 0x00}}},
+            {"vpsubw", 1, 0xF9, RefOp::Sub, 16, kBorrow,
+             {{0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF,
+               0x00, 0x00}}},
+            {"vpsubd", 1, 0xFA, RefOp::Sub, 32, kBorrow,
+             {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+               0xFF, 0xFF}}},
+            {"vpsubq", 1, 0xFB, RefOp::Sub, 64, kBorrow,
+             {{0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0xFF,
+               0xFF, 0xFF}}},
+            {"vpcmpeqb", 1, 0x74, RefOp::CmpEq, 8, kEq,
+             {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0xFF,
+               0xFF, 0xFF}}},
+            {"vpcmpeqw", 1, 0x75, RefOp::CmpEq, 16, kEq,
+             {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00,
+               0xFF, 0xFF}}},
+            {"vpcmpeqd", 1, 0x76, RefOp::CmpEq, 32, kEq,
+             {{0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00,
+               0x00, 0x00}}},
+            {"vpcmpgtb", 1, 0x64, RefOp::CmpGt, 8, kGt,
+             {{0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00,
+               0x00, 0x00}}},
+            {"vpcmpgtw", 1, 0x65, RefOp::CmpGt, 16, kGt,
+             {{0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00}}},
+            {"vpcmpgtd", 1, 0x66, RefOp::CmpGt, 32, kGt,
+             {{0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               0x00, 0x00}}},
+    };
+
+    // LAYER 1 — the hand-computed literals gate the reference model.  If this
+    // fails the model is wrong and every result below it is meaningless, so it
+    // runs before a single guest instruction is executed.
+    for (const auto& op : kAluOps) {
+        const auto& operands = pairs[op.literal_pair];
+        const auto modeled = ref_lane(op.kind, op.lane_bits, operands.first, operands.second);
+        INFO(fmt::format("{}: hand-computed {} vs model {}", op.name, hex(op.literal),
+                         hex(modeled)));
+        REQUIRE(modeled == op.literal);
+    }
+
+    // ---- broaden the operand set ------------------------------------------
+    // Edge vectors chosen for lane-boundary behaviour, paired at two different
+    // strides so each meets several partners.
+    const std::array<Vec128, 9> edge = {{
+            Vec128{},  // all zero
+            carry_a,   // all ones
+            Vec128{{0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+                    0x80, 0x80, 0x80}},  // every lane sign bit set
+            Vec128{{0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F,
+                    0x7F, 0x7F, 0x7F}},
+            Vec128{{0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+                    0x01, 0x01, 0x01}},
+            Vec128{{0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55,
+                    0xAA, 0x55, 0xAA}},
+            Vec128{{0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00,
+                    0xFF, 0x00, 0xFF}},
+            Vec128{{0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF,
+                    0xFF, 0x00, 0x00}},  // word-boundary halves
+            Vec128{{0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
+                    0xFF, 0xFF, 0xFF}},  // dword-boundary halves
+    }};
+    for (size_t i = 0; i < edge.size(); ++i) {
+        pairs.emplace_back(edge[i], edge[(i + 1) % edge.size()]);
+        pairs.emplace_back(edge[i], edge[(i + 4) % edge.size()]);
+    }
+    // Fixed-seed splitmix64 so any failure is reproducible from the source alone.
+    u64 rng_state = 0x5EEDA5A51234F00Dull;
+    const auto next_u64 = [&rng_state] {
+        u64 z = (rng_state += 0x9E3779B97F4A7C15ull);
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+        return z ^ (z >> 31);
+    };
+    for (int i = 0; i < 16; ++i) {
+        Vec128 lhs{};
+        Vec128 rhs{};
+        const u64 a0 = next_u64();
+        const u64 a1 = next_u64();
+        const u64 b0 = next_u64();
+        const u64 b1 = next_u64();
+        std::memcpy(lhs.data(), &a0, 8);
+        std::memcpy(lhs.data() + 8, &a1, 8);
+        std::memcpy(rhs.data(), &b0, 8);
+        std::memcpy(rhs.data() + 8, &b1, 8);
+        pairs.emplace_back(lhs, rhs);
+    }
+    REQUIRE(pairs.size() == 39);
+
+    // ---- operand shapes ----------------------------------------------------
+    // xmm1 holds A, xmm2 holds B, xmm0 a sentinel.  For the memory form the
+    // second source is [B], the same bytes xmm2 holds.
+    struct Form {
+        const char* name;
+        u8 dst;
+        u8 src1;  // 1 => xmm1/A, 2 => xmm2/B
+        u8 src2;  // ignored when mem_src2
+        bool mem_src2;
+    };
+    static constexpr Form kForms[] = {
+            {"rr dst=xmm0 src1=xmm1 src2=xmm2", 0, 1, 2, false},
+            {"rr dst=xmm0 src1=xmm2 src2=xmm1", 0, 2, 1, false},  // sources swapped
+            {"rr dst=xmm1 (dst aliases src1)", 1, 1, 2, false},
+            {"rr dst=xmm2 (dst aliases src2)", 2, 1, 2, false},
+            {"mem dst=xmm0 src1=xmm1 src2=[B]", 0, 1, 0, true},
+            {"mem dst=xmm1 (dst aliases src1)", 1, 1, 0, true},
+    };
+
+    // ---- guest harness -----------------------------------------------------
+    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const bool had_old_jit = old_jit != nullptr;
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    setenv("SVM_ENABLE_JIT", "1", 1);
+    auto* jit_instance = X86Instance::Make();
+    setenv("SVM_ENABLE_JIT", "0", 1);
+    auto* interp_instance = X86Instance::Make();
+    if (had_old_jit) {
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_ENABLE_JIT");
+    }
+
+    constexpr size_t kArenaSize = 0x100000;
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 arena_base = reinterpret_cast<u64>(arena);
+    const u64 data_addr = arena_base + 0x80000;
+    const u64 stack_addr = arena_base + 0x70000;
+    constexpr u64 kCodeBase = 0x1000;
+    constexpr u64 kBlockStride = 0x200;
+
+    MemOp pa{};
+    pa.disp = 0x100;
+    MemOp pb{};
+    pb.disp = 0x120;
+    MemOp ps{};
+    ps.disp = 0x140;
+    MemOp o0{};
+    o0.disp = 0x200;
+    MemOp o1{};
+    o1.disp = 0x220;
+    MemOp o2{};
+    o2.disp = 0x240;
+    // Sentinel for xmm0: an irregular pattern that no operand pair produces, so
+    // "the op wrote a register it must not touch" cannot alias into a
+    // correct-looking answer.
+    const Vec128 sentinel = {{0x5A, 0xC7, 0x13, 0x9E, 0x2B, 0x64, 0xD8, 0xF1, 0x47, 0xBE, 0x05,
+                              0x9C, 0x3D, 0xE6, 0x71, 0x28}};
+
+    auto* jit_core = X86Core::Make(jit_instance);
+    auto* interp_core = X86Core::Make(interp_instance);
+    struct Snapshot {
+        Vec128 x0{};
+        Vec128 x1{};
+        Vec128 x2{};
+        bool clean_exit{false};
+    };
+    const auto run = [&](X86Core* core, u64 code_addr, const Vec128& a, const Vec128& b) {
+        auto& ctx = core->GetContext();
+        std::memcpy(reinterpret_cast<void*>(data_addr + pa.disp), a.data(), a.size());
+        std::memcpy(reinterpret_cast<void*>(data_addr + pb.disp), b.data(), b.size());
+        std::memcpy(reinterpret_cast<void*>(data_addr + ps.disp), sentinel.data(), sentinel.size());
+        std::memset(reinterpret_cast<void*>(data_addr + o0.disp), 0, 16);
+        std::memset(reinterpret_cast<void*>(data_addr + o1.disp), 0, 16);
+        std::memset(reinterpret_cast<void*>(data_addr + o2.disp), 0, 16);
+        ctx.rip.qword = code_addr;
+        ctx.r13.qword = data_addr;
+        ctx.rsp.qword = stack_addr;
+        const auto exit = core->Run();
+        Snapshot out;
+        out.clean_exit = exit == swift::translator::None;
+        std::memcpy(out.x0.data(), reinterpret_cast<void*>(data_addr + o0.disp), 16);
+        std::memcpy(out.x1.data(), reinterpret_cast<void*>(data_addr + o1.disp), 16);
+        std::memcpy(out.x2.data(), reinterpret_cast<void*>(data_addr + o2.disp), 16);
+        return out;
+    };
+
+    size_t comparisons = 0;
+    int mismatches = 0;
+    int bad_exits = 0;
+    int divergences = 0;
+    std::vector<std::string> problems;
+    size_t block_index = 0;
+
+    for (const auto& op : kAluOps) {
+        for (const auto& form : kForms) {
+            CodeBuf b;
+            EmitVexLoad(b, 2, 0x6F, 0, kVexNoSrc1, ps);  // vmovdqu xmm0, [sentinel]
+            EmitVexLoad(b, 2, 0x6F, 1, kVexNoSrc1, pa);  // vmovdqu xmm1, [A]
+            EmitVexLoad(b, 2, 0x6F, 2, kVexNoSrc1, pb);  // vmovdqu xmm2, [B]
+            if (form.mem_src2) {
+                EmitVexLoad(b, op.pp, op.opcode, form.dst, form.src1, pb);
+            } else {
+                EmitVexRR(b, op.pp, op.opcode, form.dst, form.src1, form.src2);
+            }
+            EmitVexStore(b, 2, 0x7F, o0, 0);
+            EmitVexStore(b, 2, 0x7F, o1, 1);
+            EmitVexStore(b, 2, 0x7F, o2, 2);
+            b.B(0xF4);  // hlt
+
+            // Every block gets its own address so the JIT never serves a stale
+            // translation (SMC tracking is off for the whole case).
+            const u64 code_addr = arena_base + kCodeBase + block_index * kBlockStride;
+            ++block_index;
+            REQUIRE(b.c.size() <= kBlockStride);
+            REQUIRE(code_addr + b.c.size() < stack_addr);
+            std::memcpy(reinterpret_cast<void*>(code_addr), b.c.data(), b.c.size());
+
+            for (const auto& operands : pairs) {
+                const Vec128& a = operands.first;
+                const Vec128& bv = operands.second;
+                const Vec128& lhs = form.src1 == 1 ? a : bv;
+                const Vec128& rhs = form.mem_src2 ? bv : (form.src2 == 1 ? a : bv);
+                const Vec128 result = ref_lane(op.kind, op.lane_bits, lhs, rhs);
+                const Vec128 want0 = form.dst == 0 ? result : sentinel;
+                const Vec128 want1 = form.dst == 1 ? result : a;
+                const Vec128 want2 = form.dst == 2 ? result : bv;
+
+                ++comparisons;
+                const Snapshot jit = run(jit_core, code_addr, a, bv);
+                const Snapshot interp = run(interp_core, code_addr, a, bv);
+                if (!jit.clean_exit || !interp.clean_exit) {
+                    if (bad_exits++ < 4) {
+                        problems.push_back(fmt::format(
+                                "{} [{}]: block did not reach HLT (jit={} interp={}), form not "
+                                "decoded",
+                                op.name, form.name, jit.clean_exit, interp.clean_exit));
+                    }
+                    continue;
+                }
+                if (jit.x0 != interp.x0 || jit.x1 != interp.x1 || jit.x2 != interp.x2) {
+                    if (divergences++ < 4) {
+                        problems.push_back(fmt::format(
+                                "{} [{}] JIT/interpreter divergence: A={} B={} | jit x0={} x1={} "
+                                "x2={} | interp x0={} x1={} x2={}",
+                                op.name, form.name, hex(a), hex(bv), hex(jit.x0), hex(jit.x1),
+                                hex(jit.x2), hex(interp.x0), hex(interp.x1), hex(interp.x2)));
+                    }
+                }
+                const std::pair<const char*, const Snapshot*> backends[] = {{"jit", &jit},
+                                                                           {"interp", &interp}};
+                for (const auto& [backend, got] : backends) {
+                    if (got->x0 == want0 && got->x1 == want1 && got->x2 == want2) {
+                        continue;
+                    }
+                    if (mismatches++ < 8) {
+                        problems.push_back(fmt::format(
+                                "{} [{}] {} disagrees with the hand-computed model: A={} B={} | "
+                                "want x0={} x1={} x2={} | got x0={} x1={} x2={}",
+                                op.name, form.name, backend, hex(a), hex(bv), hex(want0),
+                                hex(want1), hex(want2), hex(got->x0), hex(got->x1), hex(got->x2)));
+                    }
+                }
+            }
+        }
+    }
+
+    X86Core::Destroy(jit_core);
+    X86Core::Destroy(interp_core);
+    X86Instance::Destroy(jit_instance);
+    X86Instance::Destroy(interp_instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+
+    for (size_t i = 0; i < problems.size() && i < 30; ++i) {
+        UNSCOPED_INFO(problems[i]);
+    }
+    CHECK(bad_exits == 0);
+    CHECK(divergences == 0);
+    CHECK(mismatches == 0);
+    // 18 opcodes x 6 operand shapes x 39 operand pairs, each run on both
+    // backends.  Pinned so a coverage regression cannot pass silently.
+    CHECK(comparisons == 18u * 6u * 39u);
+}
+
+// ===========================================================================
+// AVX VEX.256 against a ROSETTA oracle.
+// ===========================================================================
+// FACT 1 above says Unicorn refuses every VEX.L=1 encoding, which left the
+// 256-bit handlers in decoder_avx.cc with no oracle whatsoever.  Rosetta 2 on
+// macOS 26/27 closes that gap: it executes AVX and AVX2 including the full
+// 256-bit register file.  Measured on this machine, not assumed:
+//
+//   * `vmovdqu ymm`, `vpaddb ymm`, `vpshufb ymm`, `vpmovmskb r32,ymm` and
+//     `vpgatherdd ymm` all execute and return correct results.
+//   * `ud2` and an AVX-512 `vmovaps zmm0,zmm1` both raise SIGILL, so the
+//     SIGILL detection the generator relies on is not vacuous -- Rosetta really
+//     is executing the 256-bit forms rather than silently ignoring them.
+//   * CPUID does NOT advertise AVX (leaf1 ECX.28 = 0, ECX.27 OSXSAVE = 0,
+//     leaf7 EBX.5 = 0) unless the process starts with ROSETTA_ADVERTISE_AVX=1.
+//     Execution works either way; only the feature bits are hidden.  That is
+//     why avx256_rosetta_ref.c gates on executing a live `vpaddb ymm` instead
+//     of reading CPUID.
+//
+// The reference values in avx256_rosetta_ref.inc are the literal bytes Rosetta
+// wrote to memory -- none of them is hand-computed, and an instruction Rosetta
+// had refused would appear there as a SKIP comment rather than a value.  The
+// instruction table (avx256_ops.inc) is shared verbatim with the generator, so
+// the two sides cannot drift onto different opcodes, and every encoding the
+// generator builds was disassembled with otool and confirmed to be the intended
+// mnemonic before the data was captured.
+//
+// TWO SEMANTICS THIS CASE EXISTS TO PIN DOWN, both now settled by hardware:
+//
+//   vpshufb ymm is PER 128-BIT LANE.  Input pair "laneidx" feeds control bytes
+//   0x1F..0x10 to the low lane; per-lane semantics ignore bits [6:4] and select
+//   bytes 15..0 of that same lane, a cross-lane reading would select bytes
+//   31..16 of the register, and the two predictions differ in 30 of 32 bytes.
+//   Rosetta returned the per-lane answer exactly.  decoder_avx.cc's two
+//   independent VecTableLookup8 calls are therefore CORRECT.
+//
+//   vpmovmskb ymm is `lo | hi<<16`.  Pair "signbits" gives the low half mask
+//   0x0505 and the high half mask 0x80AA, so `lo|hi<<16` = 0x80AA0505 and the
+//   swapped combine would be 0x050580AA.  Rosetta returned 0x80AA0505.
+//   decoder_avx.cc's recombination is therefore CORRECT.  This is the only
+//   instruction in the family whose halves are not independent.
+//
+// Each block under test is a SINGLE instruction: the operand registers are
+// written straight into ThreadContext64 and the result read straight back out,
+// so a broken `vmovdqu ymm` cannot mask a broken `vpaddb ymm` (or vice versa).
+// ymm_high is poisoned per register and per byte beforehand, so a handler that
+// writes only the low half, writes the upper half of the wrong register, or
+// leaves a bystander's upper half dirty is caught as well.
+//
+// Every ALU op is run in both the reg-reg and the reg-mem operand shape against
+// the same reference value.  That is exact rather than an approximation: the two
+// shapes differ only in where src2's 32 bytes come from, and both are fed the
+// identical bytes, so x86 defines them to produce the identical result.  What
+// the second shape actually exercises is SwiftVM's LoadAvx256Src split-load
+// path (two 16-byte loads at +0 and +16), which is where a wrong offset would
+// show up.  The same reasoning covers vbroadcastss's m32 shape.
+struct Avx256Input {
+    const char* name;
+    const char* a;
+    const char* b;
+};
+struct Avx256Ref {
+    const char* name;
+    int pair;
+    const char* result;
+};
+#include "avx256_rosetta_ref.inc"
+
+TEST_CASE("x86 avx256 vs rosetta reference") {
+    const char* avx_env = std::getenv("SVM_AVX");
+    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+        SUCCEED("SVM_AVX is not set; VEX.256 Rosetta differential skipped");
+        return;
+    }
+
+    using Vec256 = std::array<u8, 32>;
+    const auto parse = [](const char* h) {
+        Vec256 v{};
+        for (u32 i = 0; i < 32; ++i) {
+            const auto nib = [](char ch) -> u8 {
+                return u8(ch <= '9' ? ch - '0' : (ch | 0x20) - 'a' + 10);
+            };
+            v[i] = u8((nib(h[i * 2]) << 4) | nib(h[i * 2 + 1]));
+        }
+        return v;
+    };
+    const auto hex = [](const Vec256& v) {
+        std::string s;
+        for (const u8 x : v) {
+            s += fmt::format("{:02x}", x);
+        }
+        return s;
+    };
+
+    // The generator's guarantee, re-asserted here so a future edit to the input
+    // vectors cannot quietly remove the property this whole case depends on: a
+    // pair whose two 128-bit lanes are identical on both sides cannot catch an
+    // implementation that computed the upper half from the lower half's
+    // operands, which is the most likely way to break a two-halves split.
+    // "zeros_ones" is deliberately uniform -- it is the degenerate-extremes
+    // pair -- so the requirement is that all the OTHERS discriminate.
+    std::vector<Vec256> ins_a, ins_b;
+    size_t discriminating = 0;
+    for (const auto& in : kAvx256Inputs) {
+        const auto a = parse(in.a);
+        const auto b = parse(in.b);
+        const bool a_split = !std::equal(a.begin(), a.begin() + 16, a.begin() + 16);
+        const bool b_split = !std::equal(b.begin(), b.begin() + 16, b.begin() + 16);
+        if (a_split && b_split) {
+            ++discriminating;
+        } else {
+            INFO("input pair " << in.name << " has identical 128-bit lanes on at least one side");
+            REQUIRE(std::strcmp(in.name, "zeros_ones") == 0);
+        }
+        ins_a.push_back(a);
+        ins_b.push_back(b);
+    }
+    REQUIRE(discriminating == std::size(kAvx256Inputs) - 1);
+    // And the vpshufb lane test must actually be able to tell the two readings
+    // apart, or the headline conclusion above would rest on nothing.
+    {
+        int laneidx = -1;
+        for (u32 i = 0; i < std::size(kAvx256Inputs); ++i) {
+            if (std::strcmp(kAvx256Inputs[i].name, "laneidx") == 0) {
+                laneidx = int(i);
+            }
+        }
+        REQUIRE(laneidx >= 0);
+        const auto& a = ins_a[u32(laneidx)];
+        const auto& b = ins_b[u32(laneidx)];
+        Vec256 per_lane{};
+        Vec256 cross{};
+        for (u32 i = 0; i < 32; ++i) {
+            const u8 c = b[i];
+            per_lane[i] = (c & 0x80) ? 0 : a[(i & 16u) | (c & 0x0Fu)];
+            cross[i] = (c & 0x80) ? 0 : a[c & 0x1Fu];
+        }
+        REQUIRE(per_lane != cross);
+        // The Rosetta answer must be the per-lane one; if this ever fails the
+        // comment block above is wrong and decoder_avx.cc needs revisiting.
+        for (const auto& r : kAvx256Refs) {
+            if (std::strcmp(r.name, "vpshufb") == 0 && r.pair == laneidx) {
+                INFO("Rosetta vpshufb reference contradicts per-128-bit-lane semantics");
+                REQUIRE(parse(r.result) == per_lane);
+            }
+        }
+    }
+
+    // ---- instruction table, shared verbatim with the generator ------------
+    struct AluOp {
+        const char* name;
+        u8 pp, mmmmm, opcode;
+    };
+    struct MovOp {
+        const char* name;
+        u8 pp, mmmmm, ld, st;
+    };
+    static constexpr AluOp kAlu[] = {
+#define SVM_AVX256_ALU(name, pp, mmmmm, opcode) {#name, pp, mmmmm, u8(opcode)},
+#include "avx256_ops.inc"
+    };
+    static constexpr MovOp kMov[] = {
+#define SVM_AVX256_MOV(name, pp, mmmmm, ld_opcode, st_opcode) \
+    {#name, pp, mmmmm, u8(ld_opcode), u8(st_opcode)},
+#include "avx256_ops.inc"
+    };
+
+    // ---- VEX.256 emitters --------------------------------------------------
+    // EmitVexRR / EmitVexLoad / EmitVexStore hardcode mmmmm=1, and vpshufb /
+    // vpminud / vpmaxud / vbroadcastss live in the 0F38 map, so these take
+    // mmmmm explicitly.  Field meanings are EmitVexC4's: all un-inverted, and
+    // VEX.L is 1 throughout.
+    const auto vex_rr = [](CodeBuf& b, u8 pp, u8 mmmmm, u8 op, u8 dst, u8 src1, u8 src2) {
+        EmitVexC4(b, pp, mmmmm, src1, true, u8(dst >> 3), 0, u8(src2 >> 3));
+        b.B(op);
+        EmitModRMReg(b, dst, src2);
+    };
+    const auto vex_mem = [](CodeBuf& b, u8 pp, u8 mmmmm, u8 op, u8 reg, u8 src1, const MemOp& m) {
+        EmitVexC4(b, pp, mmmmm, src1, true, u8(reg >> 3), 0, u8(kDataReg >> 3));
+        b.B(op);
+        EmitModRMMem(b, reg, m);
+    };
+
+    // ---- runner ------------------------------------------------------------
+    constexpr size_t kArenaSize = 0x200000;
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 data = base + 0x180000;
+    const u64 stack = base + 0x100000;
+
+    MemOp ma{};
+    ma.disp = 0x100;  // A
+    MemOp mb{};
+    mb.disp = 0x140;  // B
+    MemOp mout{};
+    mout.disp = 0x180;  // result
+
+    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const bool had_old_jit = old_jit != nullptr;
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    setenv("SVM_ENABLE_JIT", "1", 1);
+    auto* jit_instance = X86Instance::Make();
+    setenv("SVM_ENABLE_JIT", "0", 1);
+    auto* interp_instance = X86Instance::Make();
+    if (had_old_jit) {
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    } else {
+        unsetenv("SVM_ENABLE_JIT");
+    }
+    auto* jit_core = X86Core::Make(jit_instance);
+    auto* interp_core = X86Core::Make(interp_instance);
+
+    const auto poison = [](u32 reg) {
+        Vec256 v{};
+        for (u32 j = 0; j < 32; ++j) {
+            v[j] = u8(0xA5 ^ (reg * 32 + j));
+        }
+        return v;
+    };
+
+    struct Out {
+        std::array<Vec256, 16> ymm{};  // xmms[i] in [0..15], ymm_high[i] in [16..31]
+        Vec256 mem{};
+        u64 rax{};
+        int exit{};
+    };
+
+    size_t code_cursor = 1;
+    std::vector<std::string> problems;
+    size_t comparisons = 0, bad_exits = 0, divergences = 0, mismatches = 0, bystanders = 0;
+
+    // `ymm_in`: which register gets A, which gets B (0xFF = leave poisoned).
+    const auto run_on = [&](X86Core* core, const CodeBuf& code, const Vec256& a, const Vec256& b,
+                            u8 reg_a, u8 reg_b, u64 code_addr) {
+        std::memcpy(reinterpret_cast<void*>(code_addr), code.c.data(), code.c.size());
+        std::memcpy(reinterpret_cast<void*>(data + ma.disp), a.data(), 32);
+        std::memcpy(reinterpret_cast<void*>(data + mb.disp), b.data(), 32);
+        std::memset(reinterpret_cast<void*>(data + mout.disp), 0xCC, 32);
+        auto& ctx = core->GetContext();
+        for (u32 i = 0; i < 16; ++i) {
+            const auto p = poison(i);
+            std::memcpy(ctx.xmms[i].b, p.data(), 16);
+            std::memcpy(ctx.ymm_high[i].b, p.data() + 16, 16);
+        }
+        // A ymm register's low half is xmms[i] and its upper half ymm_high[i],
+        // matching how the generator's `vmovdqu ymm1,[A]` lays A out.
+        if (reg_a != 0xFF) {
+            std::memcpy(ctx.xmms[reg_a].b, a.data(), 16);
+            std::memcpy(ctx.ymm_high[reg_a].b, a.data() + 16, 16);
+        }
+        if (reg_b != 0xFF) {
+            std::memcpy(ctx.xmms[reg_b].b, b.data(), 16);
+            std::memcpy(ctx.ymm_high[reg_b].b, b.data() + 16, 16);
+        }
+        ctx.rax.qword = 0xDEADBEEFDEADBEEFull;
+        ctx.r13.qword = data;
+        ctx.rsp.qword = stack;
+        ctx.rip.qword = code_addr;
+        Out o;
+        o.exit = int(core->Run());
+        for (u32 i = 0; i < 16; ++i) {
+            std::memcpy(o.ymm[i].data(), ctx.xmms[i].b, 16);
+            std::memcpy(o.ymm[i].data() + 16, ctx.ymm_high[i].b, 16);
+        }
+        o.rax = ctx.rax.qword;
+        std::memcpy(o.mem.data(), reinterpret_cast<void*>(data + mout.disp), 32);
+        return o;
+    };
+
+    // Runs on both backends, checks they agree, and returns the JIT result.
+    // `want` is the Rosetta reference; `where` says where to read the answer.
+    enum class Where { Ymm0, Memory, Rax32 };
+    // Two forms are KNOWN BROKEN, both because of the bundled distorm snapshot
+    // rather than decoder_avx.cc.  They are pinned rather than silenced: the
+    // pins encode the diagnosis, so fixing distorm turns this case red and
+    // whoever fixes it has to come here and delete the exemption.
+    //
+    //   KnownWrongSrcReg -- VPMOVMSKB.  distorm's VEX table entry
+    //     (II_V_66_0F_D7 in externals/distorm/insts.c, the only entry in its
+    //     neighbourhood with no operand descriptors: `{{0x18e, 6563}, 0x40, 0,
+    //     0, 0, 0}` against `{{0x135, ...}, 0x0, 73, 0, 0, 0}` for vpaddq /
+    //     vpand / vpxor) leaves the source operand unfilled, so ops[1] ends up
+    //     tracking ModRM.reg instead of ModRM.rm.  distorm's own text renderer
+    //     shows it: `vpmovmskb ecx, ymm5` (C4 E1 7D D7 CD) disassembles as
+    //     "VPMOVMSKB RCX, XMM1".  Legacy `pmovmskb` is decoded correctly, and
+    //     the bug hits VEX.128 and VEX.256 alike.  DecodeAvx256Pmovmskb reads
+    //     insn.ops[1].index in good faith and therefore masks the WRONG
+    //     REGISTER whenever the destination GPR number differs from the source
+    //     ymm number -- `vpmovmskb eax, ymm0` happens to work because reg and
+    //     rm coincide, which is why it went unnoticed.  The pin below asserts
+    //     the observed value is exactly the mask of ymm0 (the ModRM.reg
+    //     register), which is what proves that reading rather than merely
+    //     noting "it disagrees".
+    //
+    //   KnownNotDecoded -- VBROADCASTSS with a REGISTER source.  That shape is
+    //     AVX2; this distorm snapshot only has the AVX1 m32 form, so
+    //     C4 E2 7D 18 C1 comes back FLAG_NOT_DECODABLE and SwiftVM correctly
+    //     declines the block (FALLBACK) instead of mis-executing it.  This is a
+    //     coverage gap, not a wrong answer.  The m32 shape is decoded and is
+    //     checked against Rosetta normally.
+    enum class Expect { Match, KnownWrongSrcReg, KnownNotDecoded };
+    size_t known_wrong_src = 0, known_not_decoded = 0;
+    const auto check = [&](const std::string& label, CodeBuf code, int pair, u8 reg_a, u8 reg_b,
+                           const Vec256& want, Where where, Expect expect = Expect::Match) {
+        code.B(0xF4);  // hlt
+        const u64 code_addr = base + code_cursor * 0x100;
+        ++code_cursor;
+        REQUIRE(code.c.size() < 0x100);
+        const auto& a = ins_a[u32(pair)];
+        const auto& b = ins_b[u32(pair)];
+        const auto jit = run_on(jit_core, code, a, b, reg_a, reg_b, code_addr);
+        const auto itp = run_on(interp_core, code, a, b, reg_a, reg_b, code_addr);
+        ++comparisons;
+
+        if (jit.exit != int(swift::translator::None)) {
+            // FALLBACK / ILL_CODE both surface here: the form was DECLINED by
+            // the decoder, not mis-executed.  That is a coverage hole, not a
+            // wrong answer, but it is still a failure for this case unless the
+            // form is one distorm is known not to decode.
+            if (expect == Expect::KnownNotDecoded) {
+                ++known_not_decoded;
+                return;
+            }
+            if (bad_exits++ < 12) {
+                problems.push_back(
+                        fmt::format("{}: block did not reach HLT (exit={}); VEX.256 form not "
+                                    "decoded",
+                                    label, jit.exit));
+            }
+            return;
+        }
+        if (expect == Expect::KnownNotDecoded && bad_exits++ < 12) {
+            problems.push_back(fmt::format(
+                    "{}: now DECODES -- distorm gained the AVX2 register-source VBROADCASTSS "
+                    "entry.  Delete the KnownNotDecoded exemption and check it against Rosetta.",
+                    label));
+            return;
+        }
+        if (jit.ymm != itp.ymm || jit.mem != itp.mem || jit.rax != itp.rax ||
+            jit.exit != itp.exit) {
+            if (divergences++ < 12) {
+                problems.push_back(fmt::format("{}: JIT/interpreter divergence (ymm0 {} vs {}, "
+                                               "mem {} vs {}, rax {:#x} vs {:#x})",
+                                               label, hex(jit.ymm[0]), hex(itp.ymm[0]),
+                                               hex(jit.mem), hex(itp.mem), jit.rax, itp.rax));
+            }
+        }
+
+        for (const auto& [backend, got] : {std::pair<const char*, const Out*>{"jit", &jit},
+                                           std::pair<const char*, const Out*>{"interp", &itp}}) {
+            if (where == Where::Rax32) {
+                // vpmovmskb writes a 32-bit GPR, so the upper 32 bits of rax
+                // must be ZEROED, not preserved.  The reference stores the mask
+                // as four little-endian bytes at the front of its 32-byte slot.
+                const u64 want_rax = u64(want[0]) | (u64(want[1]) << 8) | (u64(want[2]) << 16) |
+                                     (u64(want[3]) << 24);
+                if (expect == Expect::KnownWrongSrcReg) {
+                    // Pin the DIAGNOSIS, not merely "it differs": the value must
+                    // be the mask of ymm0, the register ModRM.reg names, taken
+                    // from its poison since nothing ever loaded ymm0 here.
+                    const auto p0 = poison(0);
+                    u64 from_ymm0 = 0;
+                    for (u32 j = 0; j < 32; ++j) {
+                        if (p0[j] & 0x80u) {
+                            from_ymm0 |= u64(1) << j;
+                        }
+                    }
+                    if (got->rax == from_ymm0 && got->rax != want_rax) {
+                        ++known_wrong_src;
+                    } else if (mismatches++ < 12) {
+                        problems.push_back(fmt::format(
+                                "{} [{}]: rax {:#018x}; expected either the Rosetta answer "
+                                "{:#018x} (distorm's VPMOVMSKB operand bug fixed -- delete the "
+                                "KnownWrongSrcReg exemption) or the mask of ymm0 {:#018x} (the "
+                                "documented bug); it is neither, so the failure mode changed",
+                                label, backend, got->rax, want_rax, from_ymm0));
+                    }
+                    continue;
+                }
+                if (got->rax != want_rax && mismatches++ < 12) {
+                    problems.push_back(fmt::format("{} [{}]: rax {:#018x}, Rosetta says {:#018x}",
+                                                   label, backend, got->rax, want_rax));
+                }
+                continue;
+            }
+            const Vec256& g = (where == Where::Memory) ? got->mem : got->ymm[0];
+            if (g != want && mismatches++ < 12) {
+                problems.push_back(fmt::format("{} [{}]: got {}, Rosetta says {}", label, backend,
+                                               hex(g), hex(want)));
+            }
+            // No register other than the destination (and the operand sources,
+            // which the instruction may legitimately leave alone) may change --
+            // in particular no bystander's UPPER half may be disturbed by the
+            // two-halves split.
+            for (u32 i = 1; i < 16; ++i) {
+                if (i == reg_a || i == reg_b) {
+                    continue;
+                }
+                if (got->ymm[i] != poison(i) && bystanders++ < 12) {
+                    problems.push_back(fmt::format("{} [{}]: bystander ymm{} clobbered, {} != {}",
+                                                   label, backend, i, hex(got->ymm[i]),
+                                                   hex(poison(i))));
+                }
+            }
+        }
+    };
+
+    // ---- drive every reference row ----------------------------------------
+    for (const auto& ref : kAvx256Refs) {
+        const Vec256 want = parse(ref.result);
+        const std::string pname = kAvx256Inputs[ref.pair].name;
+
+        // Three-operand ALU: ymm0 = ymm1 OP ymm2, and ymm0 = ymm1 OP [B].
+        bool handled = false;
+        for (const auto& op : kAlu) {
+            if (std::strcmp(op.name, ref.name) != 0) {
+                continue;
+            }
+            handled = true;
+            {
+                CodeBuf b;
+                vex_rr(b, op.pp, op.mmmmm, op.opcode, 0, 1, 2);
+                check(fmt::format("{}.rr/{}", op.name, pname), b, ref.pair, 1, 2, want,
+                      Where::Ymm0);
+            }
+            {
+                CodeBuf b;
+                vex_mem(b, op.pp, op.mmmmm, op.opcode, 0, 1, mb);
+                check(fmt::format("{}.rm/{}", op.name, pname), b, ref.pair, 1, 0xFF, want,
+                      Where::Ymm0);
+            }
+        }
+        if (handled) {
+            continue;
+        }
+
+        // Data movement: load, store, and (where the encoding permits it) the
+        // register-register shape.  All three are identity on the data; what
+        // differs is the decoder path each takes.
+        for (const auto& op : kMov) {
+            if (std::strcmp(op.name, ref.name) != 0) {
+                continue;
+            }
+            handled = true;
+            if (op.ld != 0xFF) {
+                CodeBuf b;
+                vex_mem(b, op.pp, op.mmmmm, op.ld, 0, kVexNoSrc1, ma);
+                check(fmt::format("{}.ld/{}", op.name, pname), b, ref.pair, 0xFF, 0xFF, want,
+                      Where::Ymm0);
+            }
+            if (op.st != 0xFF) {
+                CodeBuf b;
+                vex_mem(b, op.pp, op.mmmmm, op.st, 0, kVexNoSrc1, mout);
+                check(fmt::format("{}.st/{}", op.name, pname), b, ref.pair, 0, 0xFF, want,
+                      Where::Memory);
+            }
+            // vlddqu has no register-source form (it is #UD), so it is skipped
+            // here rather than being fed an encoding hardware would reject.
+            if (op.ld != 0xFF && std::strcmp(op.name, "vlddqu") != 0) {
+                CodeBuf b;
+                vex_rr(b, op.pp, op.mmmmm, op.ld, 0, kVexNoSrc1, 1);
+                check(fmt::format("{}.rr/{}", op.name, pname), b, ref.pair, 1, 0xFF, want,
+                      Where::Ymm0);
+            }
+        }
+        if (handled) {
+            continue;
+        }
+
+        if (std::strcmp(ref.name, "vpmovmskb") == 0) {
+            // Source is ymm1 and the destination eax, i.e. ModRM.reg = 0 and
+            // ModRM.rm = 1 -- deliberately DIFFERENT numbers, which is exactly
+            // the case distorm gets wrong.  Encoding C4 E1 7D D7 C1, byte for
+            // byte what the Rosetta generator ran.
+            CodeBuf b;
+            vex_rr(b, 1, 1, 0xD7, 0 /* eax */, kVexNoSrc1, 1);
+            // Compared normally: DecodeAvx256Pmovmskb now takes the source from
+            // the raw ModRM.rm (X64Decoder::VexRmRegister) instead of distorm's
+            // ops[1], so the underlying distorm table defect no longer reaches
+            // the result. The defect itself is still present in the bundled
+            // insts.c -- see the Expect comment above.
+            check(fmt::format("vpmovmskb/{}", pname), b, ref.pair, 1, 0xFF, want, Where::Rax32);
+            continue;
+        }
+        if (std::strcmp(ref.name, "vbroadcastss") == 0) {
+            {  // register source: low dword of xmm1 (AVX2; distorm lacks it)
+                CodeBuf b;
+                vex_rr(b, 1, 2, 0x18, 0, kVexNoSrc1, 1);
+                // Decodes now: the register-source form is claimed by
+                // decoder_avx_fp.cc's second wave, so it is compared like
+                // everything else rather than exempted.
+                check(fmt::format("vbroadcastss.rr/{}", pname), b, ref.pair, 1, 0xFF, want,
+                      Where::Ymm0);
+            }
+            {  // m32 source: the same dword, read from memory instead
+                CodeBuf b;
+                vex_mem(b, 1, 2, 0x18, 0, kVexNoSrc1, ma);
+                check(fmt::format("vbroadcastss.m32/{}", pname), b, ref.pair, 0xFF, 0xFF, want,
+                      Where::Ymm0);
+            }
+            continue;
+        }
+        FAIL("reference row for unknown mnemonic: " << ref.name);
+    }
+
+    X86Core::Destroy(jit_core);
+    X86Core::Destroy(interp_core);
+    X86Instance::Destroy(jit_instance);
+    X86Instance::Destroy(interp_instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+
+    for (size_t i = 0; i < problems.size() && i < 40; ++i) {
+        UNSCOPED_INFO(problems[i]);
+    }
+    CHECK(bad_exits == 0);
+    CHECK(divergences == 0);
+    CHECK(mismatches == 0);
+    CHECK(bystanders == 0);
+    // 31 ALU opcodes x 2 shapes + 22 move shapes + vpmovmskb + 2 vbroadcastss
+    // shapes, each over 6 input pairs.  Pinned so a coverage regression -- an
+    // opcode silently dropped from avx256_ops.inc, or a reference row lost in
+    // regeneration -- cannot pass as success.
+    CHECK(comparisons == (31u * 2u + 22u + 1u + 2u) * 6u);
+    // vpmovmskb is no longer exempt: the decoder works around the distorm
+    // table defect by reading ModRM.rm from the raw encoding, so the result now
+    // matches Rosetta and is compared like everything else. Pinned at zero so
+    // that reintroducing an exemption cannot pass unnoticed.
+    // The register-source vbroadcastss is still declined once per block for all
+    // six pairs; any movement there means distorm gained the AVX2 entry.
+    CHECK(known_wrong_src == 0u);
+    // Pinned at zero: the register-source vbroadcastss that this used to
+    // exempt is implemented, so nothing here may be declined. Kept as an
+    // assertion so a reintroduced exemption cannot pass unnoticed.
+    CHECK(known_not_decoded == 0u);
+}
+
 }  // namespace

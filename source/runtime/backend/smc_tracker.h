@@ -31,7 +31,7 @@
 #include <vector>
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/types.h"
-#include "runtime/ir/block.h"
+#include "runtime/ir/function.h"
 
 namespace swift::runtime::backend {
 
@@ -52,7 +52,8 @@ public:
 
     // guest_bias: guest->host address bias (host = guest + bias), from
     // Config::memory_base (0 = identity mapping).
-    explicit SmcTracker(u64 guest_bias);
+    // guest_addr_mask: bounded-guest-window mask (see Config), 0 = disabled.
+    explicit SmcTracker(u64 guest_bias, u64 guest_addr_mask = 0);
 
     // Called after a block/function is fully published. Every host page
     // overlapping [guest_start, guest_end) is write-protected and records the
@@ -115,9 +116,16 @@ private:
         const SmcTracker& tracker_;
     };
 
+    // The node is held by STRONG reference, not borrowed. Its only other
+    // owner is the module's address-node map, and DetachNode drops that
+    // reference while this tracker still has page records pointing at the
+    // node: RegisterNode can re-insert the same node in the window between
+    // TakeDirtyNodes (which releases metadata_lock_) and DetachNode (which
+    // waits on the publisher's module read lock), after which a borrowed
+    // pointer refers to freed memory.
     struct TrackedNode {
         std::shared_ptr<Module> module;
-        ir::AddressNode* node{};
+        ir::NodeRef node{};
         VAddr guest_start{};
         VAddr guest_end{};
     };
@@ -126,7 +134,6 @@ private:
         bool write_protected{};
         bool dirty{};
         bool claim_stale_fault{};
-        u32 invalidations{};
         std::vector<TrackedNode> nodes;
     };
 
@@ -141,7 +148,28 @@ private:
         u8* exec_ptr{};
     };
 
-    static constexpr u32 kMaxInvalidations = 8;
+    // DELETED, AND DELIBERATELY NOT TO BE REVIVED: a per-page invalidation
+    // counter (kMaxInvalidations = 8) plus a disabled_pages_ list that stopped
+    // tracking a page once it exceeded the limit, as a thrash backstop.
+    //
+    // It was unreachable. CloseWriteWindow only reaches the limit check after
+    // TakeDirtyNodes has returned an empty batch, and an empty batch implies
+    // every dirty page's node list is empty, so the `rec.nodes.empty()` branch
+    // always continued first. Measured with a temporary probe over smc,
+    // clone_smc_mt (x5) and smc_mt_stress (x8): nodes_nonempty was 0 in every
+    // run, nodes_empty equalled the dirty-page iteration count exactly, and
+    // `invalidations > 8` was true on 504..1418 of those iterations per run
+    // (peak invalidations 516) without the branch ever being taken.
+    //
+    // Do NOT "repair" it into something that fires. disabled_pages_ stops
+    // tracking a page permanently, so translations on it silently go stale --
+    // that trades SMC correctness for speed, in exchange for preventing a
+    // thrash that does not exist. What looked like thrash was the runtime
+    // falling into the IR interpreter on an SMC dispatch miss, diagnosed and
+    // fixed in 0b25e82; see run_smc_stress_tests.sh's header for the measured
+    // before/after. If page-level invalidation churn ever does become a real
+    // cost, the answer is to make re-translation cheaper or to widen the
+    // granularity, never to stop observing writes.
 
     [[nodiscard]] VAddr PageKey(VAddr guest_addr) const { return guest_addr & ~page_mask_; }
 
@@ -168,10 +196,14 @@ private:
     void ReclaimRetired();
 
     const u64 bias_;
+    // Guest window mask; UINT64_MAX when the window is disabled. Every guest
+    // page is truncated with it before bias_ is added, so the write
+    // protection we install can only ever land inside the guest window --
+    // never on a host mapping (the translator's own __TEXT included).
+    const u64 mask_;
     const u64 page_size_;
     const u64 page_mask_;
     std::map<VAddr, PageRecord> pages_{};
-    std::vector<VAddr> disabled_pages_{};
     std::vector<RuntimeToken> runtimes_{};
     std::vector<RetiredCode> retired_{};
     mutable std::atomic_flag metadata_lock_ = ATOMIC_FLAG_INIT;

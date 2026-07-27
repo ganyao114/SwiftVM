@@ -14,3 +14,4 @@ target_link_libraries(swift_translator PRIVATE distorm)
 target_include_directories(swift_translator PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/externals/distorm)
 
 add_subdirectory(linux)
+add_subdirectory(guest_call)

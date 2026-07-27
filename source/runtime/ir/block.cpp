@@ -43,13 +43,17 @@ void Block::DestroyInst(Inst* inst) {
 }
 
 void Block::DestroyInstrs() {
-    for (auto& inst : inst_list) {
-        inst.DestroyArgs();
-    }
+    // One pass. Every node is unlinked *before* it is freed and the successor
+    // comes from erase()'s return value, which it reads while the node is
+    // still live -- Inst::operator delete threads its free list through the
+    // object's own first bytes, and list_node is what lives there. (Deleting
+    // first and calling inst_list.clear() afterwards is a use-after-free for
+    // the same reason: clear() is a pop_front loop over the freed nodes.)
     for (auto it = inst_list.begin(); it != inst_list.end();) {
-        auto pre = it;
+        auto* inst = it.operator->();
         it = inst_list.erase(it);
-        delete pre.operator->();
+        inst->ReleaseArgs();
+        delete inst;
     }
 }
 

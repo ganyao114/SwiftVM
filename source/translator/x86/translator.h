@@ -5,6 +5,10 @@
 #include "cpu.h"
 #include "translator/runtime.h"
 
+namespace swift::runtime::backend {
+class AddressSpace;
+}
+
 namespace swift::translator::x86 {
 using namespace swift::x86;
 class X86Core;
@@ -15,7 +19,9 @@ public:
 
     // memory_base: guest->host bias for guest address virtualization
     // (host addr = guest addr + bias); nullptr = identity mapping (default).
-    static X86Instance *Make(void* memory_base = nullptr);
+    // guest_addr_mask: bounded guest window (Config::guest_addr_mask),
+    // 0 = unbounded (legacy).
+    static X86Instance *Make(void* memory_base = nullptr, u64 guest_addr_mask = 0);
     static void Destroy(X86Instance *instance);
 
     // SMC hook: forwards to AddressSpace::InvalidateCodeRange — see
@@ -32,8 +38,47 @@ public:
     // retains the old diagnostic fallback that disables SMC for the process.
     void PrepareForMultithreading();
 
+    // --- AOT pre-compilation (source/aot) ---------------------------------
+    // Compile the code at guest address `pc` *without* executing anything,
+    // and hand back the entry pointer (null if the translator refused it).
+    // This is the same Impl::Translate() the CodeMiss path calls, exposed so
+    // the AOT compiler can drive it from a symbol table instead of from
+    // control flow -- deliberately not a second translation entry point,
+    // since a divergent AOT front end is the failure mode docs/aot-design.md
+    // §3 rules out.
+    void* CompileAt(uint64_t pc);
+
+    // Clear the process-wide "a function exceeded the block cap, stay on
+    // block compilation" latch. That latch exists to stop the *runtime* from
+    // repeatedly decoding overlapping suffixes of an oversized CFG; an
+    // offline pass walks a fixed symbol list once, so the repetition it
+    // guards against cannot happen, and leaving it latched costs almost all
+    // of AOT's whole-function coverage (130 of 1074 units on
+    // func_tests_x86_64 instead of ~1000). Per-location memos
+    // (block_only_locations) are deliberately NOT cleared.
+    void ResetFunctionModeLatch();
+
+    // The backing address space, so the AOT compiler can harvest the units
+    // Impl::Translate published and so the AOT loader can install units into
+    // it. Never null.
+    swift::runtime::backend::AddressSpace* GetAddressSpace();
+
+    // Whole-function decoding for one offline pass, independent of
+    // SVM_FUNC_LAZY. AOT knobs must be command-line flags: ComputeEnvHash()
+    // hashes every raw SVM_*/SWIFT_* string, so setting SVM_FUNC_LAZY=0 in the
+    // compiler's environment would produce an artifact that only loads in a
+    // process that also sets it. Passing the budget in-process keeps the
+    // artifact loadable under the default environment.
+    // 0 = follow SVM_FUNC_LAZY (the default).
+    void SetFunctionDecodeBudget(std::size_t blocks);
+
+    // Every location Impl::Translate compiles is reported to `fn` *before* the
+    // compile. Used by `svm_aot run --dump-compiles` to census what the JIT
+    // still has to do at run time when an artifact is installed; null clears.
+    void SetCompileObserver(void (*fn)(void*, uint64_t), void* ctx);
+
 private:
-    explicit X86Instance(void* memory_base);
+    explicit X86Instance(void* memory_base, u64 guest_addr_mask);
 
     struct Impl;
     std::unique_ptr<Impl> impl{};

@@ -107,6 +107,14 @@ struct Config {
     std::uint32_t stack_alignment;
     void* page_table;
     void* memory_base;
+    // Bounded guest window: every guest address is truncated to this mask
+    // *before* memory_base is added, so `guest & mask + memory_base` can only
+    // ever name the embedder's own [memory_base, memory_base + mask + 1)
+    // reservation — a wild guest pointer aliases inside the window instead of
+    // reaching host memory. Must be 2^n - 1. 0 = disabled (unbounded bias;
+    // the guest can then address arbitrary host memory and it is the
+    // embedder's job to prove it will not).
+    std::uint64_t guest_addr_mask{0};
     MemoryInterface* memory;
 };
 

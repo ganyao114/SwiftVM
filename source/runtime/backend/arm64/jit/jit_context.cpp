@@ -6,6 +6,7 @@
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/context.h"
 
+
 namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
@@ -101,7 +102,7 @@ Register JitContext::SpillGPR(const ir::Value& value) {
         if (auto it = spill_def_scratch.find(value.Id()); it != spill_def_scratch.end()) {
             return XRegister(it->second);
         }
-        auto tmp = GetTmpX();
+        auto tmp = GetSpillTmpX();
         spill_def_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
         pending_spill_writes.push_back({slot.offset, static_cast<u8>(tmp.GetCode()), false});
         return tmp;
@@ -109,8 +110,19 @@ Register JitContext::SpillGPR(const ir::Value& value) {
     // Use access: reload from the spill slot. Any write-back of a value
     // defined by an earlier instruction has already been flushed at this
     // instruction's TickIR, so the slot is current.
-    auto tmp = GetTmpX();
+    //
+    // One reload per (instruction, value): a second access within the same
+    // instruction reuses the register the first reload landed in. The slot
+    // cannot change under us mid-instruction (only TickIR flushes writes), and
+    // emitters never write through a source register, so the reuse is exact --
+    // and it is what makes the reload demand of an instruction bounded by the
+    // number of distinct values it names.
+    if (auto it = spill_use_scratch.find(value.Id()); it != spill_use_scratch.end()) {
+        return XRegister(it->second);
+    }
+    auto tmp = GetSpillTmpX();
     __ Ldr(tmp, MemOperand(state, offset));
+    spill_use_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
     return tmp;
 }
 
@@ -123,13 +135,18 @@ VRegister JitContext::SpillFPR(const ir::Value& value) {
         if (auto it = spill_def_scratch.find(value.Id()); it != spill_def_scratch.end()) {
             return VRegister::GetVRegFromCode(it->second);
         }
-        auto tmp = GetTmpV();
+        auto tmp = GetSpillTmpV();
         spill_def_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
         pending_spill_writes.push_back({slot.offset, static_cast<u8>(tmp.GetCode()), true});
         return tmp;
     }
-    auto tmp = GetTmpV();
+    // See SpillGPR: one reload per (instruction, value).
+    if (auto it = spill_use_scratch.find(value.Id()); it != spill_use_scratch.end()) {
+        return VRegister::GetVRegFromCode(it->second);
+    }
+    auto tmp = GetSpillTmpV();
     __ Ldr(tmp.Q(), MemOperand(state, offset));
+    spill_use_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
     return tmp;
 }
 
@@ -145,12 +162,59 @@ void JitContext::FlushSpillWrites() {
     pending_spill_writes.clear();
 }
 
+backend::ScratchNeed JitContext::CurrentBudget() const {
+    // Block terminals are emitted after the last instruction's TickIR and
+    // share its masks; they take no scratch of their own, so charging them to
+    // the default budget is exact.
+    return cur_inst ? backend::ScratchBudget(cur_inst->GetOp())
+                    : backend::ScratchNeed{backend::kDefaultScratchGPR,
+                                           backend::kDefaultScratchFPR};
+}
+
 XRegister JitContext::GetTmpX() {
+    // Budget check first: an emitter that outgrows its declared budget must
+    // say so by name here, at the instruction that did it, rather than
+    // surface later as a register-pool exhaustion PANIC in some unrelated
+    // high-pressure block (or, if the pool happened to have room, as no
+    // symptom at all until the pressure changes).
+    const u32 used = static_cast<u32>(cur_dirty_gprs.GetMarkedCount() -
+                                      tick_dirty_gprs.GetMarkedCount()) -
+                     spill_tmp_gprs;
+    ASSERT_MSG(used < CurrentBudget().gpr,
+               "scratch GPR budget exceeded emitting opcode {}: declared {}, asked for {}. "
+               "Raise its entry in backend::ScratchBudget (reg_alloc.cpp)",
+               cur_inst ? static_cast<u32>(cur_inst->GetOp()) : 0u, CurrentBudget().gpr, used + 1);
     if (auto alloc = cur_dirty_gprs.GetFirstClear(); alloc >= 0) {
         cur_dirty_gprs.Mark(alloc);
         return XRegister(alloc);
     }
+    // Unreachable while the linear scan honours ScratchBudget: it never
+    // assigns a value if that would drop the free count to the unit's
+    // reserve, and the assert above caps demand at that same reserve.
     PANIC("No free temporary GPR");
+}
+
+// Reload scratch is tracked apart from emitter scratch so the per-opcode
+// budget above stays a statement about the emitter alone. What bounds *this*
+// counter is the memoization in SpillGPR/SpillFPR (one register per distinct
+// value per instruction) together with the allocation pass, which verifies
+// that every instruction was left room for exactly that many.
+XRegister JitContext::GetSpillTmpX() {
+    if (auto alloc = cur_dirty_gprs.GetFirstClear(); alloc >= 0) {
+        cur_dirty_gprs.Mark(alloc);
+        spill_tmp_gprs++;
+        return XRegister(alloc);
+    }
+    PANIC("No free temporary GPR for spill reload");
+}
+
+VRegister JitContext::GetSpillTmpV() {
+    if (auto alloc = cur_dirty_fprs.GetFirstClear(); alloc >= 0) {
+        cur_dirty_fprs.Mark(alloc);
+        spill_tmp_fprs++;
+        return VRegister::GetVRegFromCode(alloc);
+    }
+    PANIC("No free temporary VREG for spill reload");
 }
 
 Register JitContext::GetTmpGPR(ir::ValueType type) {
@@ -159,6 +223,13 @@ Register JitContext::GetTmpGPR(ir::ValueType type) {
 }
 
 VRegister JitContext::GetTmpV() {
+    const u32 used = static_cast<u32>(cur_dirty_fprs.GetMarkedCount() -
+                                      tick_dirty_fprs.GetMarkedCount()) -
+                     spill_tmp_fprs;
+    ASSERT_MSG(used < CurrentBudget().fpr,
+               "scratch FPR budget exceeded emitting opcode {}: declared {}, asked for {}. "
+               "Raise its entry in backend::ScratchBudget (reg_alloc.cpp)",
+               cur_inst ? static_cast<u32>(cur_inst->GetOp()) : 0u, CurrentBudget().fpr, used + 1);
     if (auto alloc = cur_dirty_fprs.GetFirstClear(); alloc >= 0) {
         cur_dirty_fprs.Mark(alloc);
         return VRegister::GetVRegFromCode(alloc);
@@ -168,6 +239,34 @@ VRegister JitContext::GetTmpV() {
 
 void JitContext::ReserveTmpX(const XRegister& reg) {
     cur_dirty_gprs.Mark(reg.GetCode());
+}
+
+bool JitContext::ForwardStatic(ir::Location location) {
+    if (!module->GetModuleConfig().HasOpt(Optimizations::BlockLink)) {
+        return false;
+    }
+    // Same-module only, like the BlockLink path in Forward(): a slot filled by
+    // another module outlives this module's view of it. The lookup also keeps
+    // dispatch slots (a finite shared table) from being reserved for addresses
+    // no module owns -- a computed jmp into unmapped memory must not consume
+    // one.
+    auto target_module = module->GetAddressSpace().GetModule(location.Value());
+    if (!target_module || target_module != module) {
+        return false;
+    }
+    // The Ret this replaces leaves the translator without touching JitContext,
+    // so a spilled def from the block's last instruction would never reach its
+    // slot; branching straight to the next unit makes that visible.
+    FlushSpillWrites();
+    const u32 dispatcher_index = target_module->GetDispatchIndex(location);
+    Label empty_slot;
+    __ Mov(ipw, dispatcher_index);
+    __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
+    __ Cbz(ip, &empty_slot);
+    __ Br(ip);
+    __ Bind(&empty_slot);
+    __ Ret();
+    return true;
 }
 
 void JitContext::Forward(ir::Location location) {
@@ -204,7 +303,15 @@ void JitContext::Forward(ir::Location location) {
         if (direct_link) {
             bool in_function{false};
             if (cur_function) {
-                in_function = cur_function->FindBlock(location.Value());
+                auto* target = cur_function->FindBlock(location.Value());
+                // Lazy region compilation leaves undecoded successors in the
+                // function as empty, terminal-less blocks.  JitTranslator skips
+                // them, so their label is never bound and a B here would
+                // dangle.  Treat them as external: the code below then takes
+                // the dispatch-slot path, whose empty-slot arm returns to the
+                // dispatcher and gets the target compiled.
+                in_function = target && !(target->GetInstList().empty() &&
+                                          !target->HasTerminal());
             }
             if (in_function) {
                 // Intra-function branch: the target label is bound within
@@ -321,7 +428,7 @@ void JitContext::EmitRSBPush(u64 guest_return_addr, u32 dispatch_index) {
 }
 
 void JitContext::EmitRSBPop() {
-    Label rsb_miss;
+    Label rsb_miss, rsb_empty;
     // Underflow guard: if rsb_ptr has reached the empty top of the stack
     // (state->rsb_top == &rsb_frames[rsb_stack_size]), there are more guest
     // rets than recorded calls, so no valid prediction exists — fall back to
@@ -329,7 +436,7 @@ void JitContext::EmitRSBPop() {
     // and a wild branch). Unsigned compare: fall back when rsb_ptr >= top.
     __ Ldr(ip0, MemOperand(state, state_offset_rsb_top));
     __ Cmp(rsb_ptr, ip0);
-    __ B(&rsb_miss, hs);
+    __ B(&rsb_empty, hs);
     // Load the predicted guest return address from the top RSB frame.
     __ Ldr(ip0, MemOperand(rsb_ptr, 0));
     // Load the actual return target (set by the frontend's ret instruction).
@@ -346,8 +453,28 @@ void JitContext::EmitRSBPop() {
     // Commit the pop and jump directly to the target's compiled code.
     __ Add(rsb_ptr, rsb_ptr, 16);
     __ Br(ip2);
-    // Miss / underflow: fall back to the trampoline dispatcher.
+    // Miss with a frame present: DISCARD that frame before falling back.
+    //
+    // This ret consumes a return address either way, so leaving the frame in
+    // place desynchronises the buffer permanently: the very next ret compares
+    // against the same stale entry and misses again, while pushes keep
+    // stacking until rsb_ptr reaches rsb_bottom and every later push is
+    // skipped by the overflow guard.  Measured on HEAD (SVM_RSB_STATS
+    // instrumentation, docs/perf-baseline.md 6b): func_tests 3587 pops /
+    // 65 hits (1.81%), of which 3469 were address mismatches and *3463 of
+    // 3592 pushes were skipped because the buffer was full* — one unmatched
+    // guest call early in glibc startup wedged the buffer for the whole run.
+    // Popping here makes the buffer self-healing: an unmatched call costs at
+    // most the predictions of the rets that drain it.
+    //
+    // Discarding is unconditionally safe: the RSB is a prediction only.  The
+    // architectural return target lives in state->current_loc and the fallback
+    // below returns to the trampoline dispatcher, which uses it.  A wrong or
+    // missing prediction can only cost a dispatcher round-trip.
     __ Bind(&rsb_miss);
+    __ Add(rsb_ptr, rsb_ptr, 16);
+    // Underflow: no frame was read, so there is nothing to discard.
+    __ Bind(&rsb_empty);
     __ Ret();
 }
 
@@ -403,10 +530,16 @@ void JitContext::TickIR(ir::Inst* instr) {
     // slot.
     FlushSpillWrites();
     spill_def_scratch.clear();
+    spill_use_scratch.clear();
     cur_inst = instr;
     reg_alloc.SetCurrent(instr);
     cur_dirty_gprs = reg_alloc.GetDirtyGPR();
     cur_dirty_fprs = reg_alloc.GetDirtyFPR();
+    // Baseline for the per-instruction scratch budget (see GetTmpX).
+    tick_dirty_gprs = cur_dirty_gprs;
+    tick_dirty_fprs = cur_dirty_fprs;
+    spill_tmp_gprs = 0;
+    spill_tmp_fprs = 0;
 }
 
 MacroAssembler& JitContext::GetMasm() { return masm; }

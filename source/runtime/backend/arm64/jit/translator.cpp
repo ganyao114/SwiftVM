@@ -14,17 +14,23 @@ namespace swift::runtime::backend::arm64 {
 JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()) {
     auto& config = ctx.GetConfig();
     use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
-    const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
-    const char* x87_jit = std::getenv("SVM_X87_JIT");
-    x87_topvirt_requested =
-            topvirt && std::strcmp(topvirt, "0") != 0 &&
-            x87_jit && std::strcmp(x87_jit, "0") != 0;
+    guest_addr_mask = config.guest_addr_mask;
+    window_uxtw = guest_addr_mask == 0xFFFFFFFFull;
+    // Cached: JitTranslator is constructed once per compiled unit.
+    static const bool requested = [] {
+        const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
+        const char* x87_jit = std::getenv("SVM_X87_JIT");
+        return topvirt && std::strcmp(topvirt, "0") != 0 &&
+               x87_jit && std::strcmp(x87_jit, "0") != 0;
+    }();
+    x87_topvirt_requested = requested;
 }
 
 
 
 void JitTranslator::Translate(ir::Block* block) {
     cur_block = block;
+    static_next_loc.reset();
     if (x87_topvirt_requested && !translating_function) {
         AnalyzeX87TopVirt(block);
     }
@@ -60,7 +66,19 @@ void JitTranslator::Translate(ir::HIRFunction* function) {
     context.SetCurrent(function->GetFunction());
     disable_instructions.resize(function->MaxInstrCount());
     for (auto& hir_block : function->GetHIRBlocksRPO()) {
-        Translate(hir_block.GetBlock());
+        // Undecoded successor left behind by lazy region compilation (and by
+        // the pre-existing 128-block cap): no instructions and no terminal.
+        // Emitting it would bind a label nobody branches to and then fall into
+        // terminal::Invalid -> Ret without setting current_loc, which is a
+        // dispatcher loop if it were ever entered.  Its guest address is
+        // deliberately never published (TranslateIR skips empty blocks), so the
+        // only way in is JitContext::Forward, which routes to it through the L2
+        // dispatch slot instead.
+        auto* block = hir_block.GetBlock();
+        if (block->GetInstList().empty() && !block->HasTerminal()) {
+            continue;
+        }
+        Translate(block);
     }
     translating_function = false;
 }
@@ -72,10 +90,14 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             // Flat decoded blocks have no explicit terminal: the next location was
             // already written to state->current_loc by a SetLocation instruction.
             MergeNZCV();
-            __ Ret();
+            if (!EmitStaticForward()) {
+                __ Ret();
+            }
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToDispatch>) {
             MergeNZCV();
-            __ Ret();
+            if (!EmitStaticForward()) {
+                __ Ret();
+            }
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToHost>) {
             MergeNZCV();
             __ Mov(ipw, static_cast<u32>(HaltReason::CallHost));
@@ -144,6 +166,22 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
     });
 }
 
+// A direct jmp/call decodes to SetLocation(imm) + ReturnToDispatcher, and the
+// trampoline then re-reads state->current_loc and walks the L1 hash chain for
+// a target that was already known when the code was emitted. The dispatch
+// table indexed here is the same one the RSB pop and JitContext::Forward's
+// BlockLink path already branch through, with the same safety property: SMC
+// invalidation (SmcTracker::ClearDispatchSlots) zeroes the slot, so a stale
+// translation degrades to the Cbz fallback rather than to a wild branch.
+bool JitTranslator::EmitStaticForward() {
+    if (!static_next_loc) {
+        return false;
+    }
+    const u64 target = *static_next_loc;
+    static_next_loc.reset();
+    return context.ForwardStatic(ir::Location{target});
+}
+
 Label* JitTranslator::GetLocalLabel(ir::Inst* inst) {
     if (auto itr = local_labels.find(inst); itr != local_labels.end()) {
         return &itr->second;
@@ -186,6 +224,9 @@ Register JitTranslator::MaterializeOperand(const Operand& operand, ir::ValueType
 void JitTranslator::Translate(ir::Inst* inst) {
     ASSERT(inst);
     context.TickIR(inst);
+    if (inst->GetOp() != ir::OpCode::SetLocation) {
+        static_next_loc.reset();
+    }
 
 #define INST(name, ...)                                                                            \
     case ir::OpCode::name:                                                                         \
@@ -326,8 +367,10 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             auto imm_signed = ir_op.GetLeft().imm.GetSigned();
             if (use_memory_base) {
                 // Absolute guest address: materialize it, then apply the pt
-                // bias (guest addr + pt = host addr).
-                __ Mov(mem_scratch, imm);
+                // bias (guest addr + pt = host addr). With a bounded guest
+                // window the truncation happens at translation time — the
+                // immediate is a compile-time constant, so it is free.
+                __ Mov(mem_scratch, guest_addr_mask ? (imm & guest_addr_mask) : imm);
                 if (atomic) {
                     __ Add(mem_scratch, mem_scratch, pt);
                     return MemOperand{mem_scratch};

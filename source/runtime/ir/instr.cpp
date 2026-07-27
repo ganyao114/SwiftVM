@@ -4,7 +4,66 @@
 
 #include "instr.h"
 
+#include <cstdlib>
+
+#include "runtime/common/perf_stats.h"
+
 namespace swift::runtime::ir {
+
+namespace {
+// See the comment on Inst::operator new. All three are trivially constructible
+// and trivially destructible on purpose: a thread_local with a non-trivial
+// destructor costs a guard check on every access, and there is nothing to run
+// at thread exit -- chunks are deliberately never handed back (below).
+thread_local void* tls_inst_free_head{};
+thread_local u8* tls_inst_bump{};
+thread_local size_t tls_inst_bump_left{};
+
+// Inst is `#pragma pack(1)`, so its size need not be a multiple of anything.
+// Round the slot up to 16 bytes so every instruction keeps exactly the
+// alignment malloc used to give it -- an Inst holds raw pointers
+// (next_pseudo_inst, the intrusive list node) that the rest of the runtime
+// reads without any packed-access annotation.
+constexpr size_t kInstSlot = (sizeof(Inst) + 15u) & ~size_t(15u);
+constexpr size_t kChunkBytes = 64u * 1024u;
+}  // namespace
+
+void* Inst::operator new(size_t sz) {
+    ASSERT(sz == sizeof(Inst));
+    if (auto* head = tls_inst_free_head) {
+        tls_inst_free_head = *static_cast<void**>(head);
+        return head;
+    }
+    if (tls_inst_bump_left < kInstSlot) {
+        // The tail of the old chunk (< one slot) is abandoned; at 64 KiB per
+        // chunk that is under 0.2% of it.
+        auto* chunk = static_cast<u8*>(std::malloc(kChunkBytes));
+        ASSERT_MSG(chunk != nullptr, "out of memory allocating an IR instruction chunk");
+        tls_inst_bump = chunk;
+        tls_inst_bump_left = kChunkBytes;
+        // Once per 64 KiB, so unconditional (no PerfEnabled() gate) costs
+        // nothing measurable and keeps the counter meaningful in any build.
+        PerfAdd(GetPerfStats().ir_arena_bytes, kChunkBytes);
+    }
+    auto* mem = tls_inst_bump;
+    tls_inst_bump += kInstSlot;
+    tls_inst_bump_left -= kInstSlot;
+    return mem;
+}
+
+void Inst::operator delete(void* p) {
+    if (!p) {
+        return;
+    }
+    // Unbounded by construction: the storage belongs to a chunk this allocator
+    // owns forever, so "retained on the free list" and "free space in the
+    // arena" are the same thing. A block freed by a thread other than the one
+    // that allocated it joins the freeing thread's list, which is why chunks
+    // must never be released -- an Inst outlives the thread that created it
+    // whenever a compiled unit is reclaimed from another thread.
+    *static_cast<void**>(p) = tls_inst_free_head;
+    tls_inst_free_head = p;
+}
 
 Inst::Inst(OpCode code) : op_code(code) {}
 
@@ -217,9 +276,21 @@ bool Inst::HasSideEffects() {
     }
     // Value-returning atomics still mutate guest memory when their old value
     // is dead (LOCK NOT is the common case). They must not be removed by DCE.
+    //
+    // Host calls belong in the same bucket: CallLambda/CallLocation/CallDynamic
+    // are opaque to this IR (UniformEliminationPass already treats them as
+    // full barriers), and the x86 frontend uses them for helpers that write
+    // guest state through the state pointer rather than through their return
+    // value -- FNINIT, the SoftFloat x87 helpers, xsave, and so on. Their U64
+    // return is frequently unused, and deleting them silently drops the guest
+    // side effect: with these three missing from this list, function-mode
+    // compilation dropped the x87 control-word / TOP updates and
+    // "x87 directed edge semantics" read TOP=0 after nine FLD1s instead of 7.
     if (op_code == OpCode::CompareAndSwap || op_code == OpCode::CompareAndSwap128 ||
         op_code == OpCode::AtomicExchange || op_code == OpCode::AtomicFetchAdd ||
-        op_code == OpCode::AtomicRMW || op_code == OpCode::X87Op) {
+        op_code == OpCode::AtomicRMW || op_code == OpCode::X87Op ||
+        op_code == OpCode::CallLambda || op_code == OpCode::CallLocation ||
+        op_code == OpCode::CallDynamic) {
         return true;
     }
     auto &ir_info = GetIRMetaInfo(op_code);
@@ -264,6 +335,12 @@ bool Inst::HasFlagsSavePseudo() {
 
 void Inst::DestroyArg(u8 arg_idx) {
     auto &arg = ArgAt(arg_idx);
+    // An empty slot has nothing to unregister and is already blank. Most
+    // instructions use one or two of the five, and ~Inst runs this over all
+    // five again after ReleaseArgs has blanked them.
+    if (arg.IsVoid()) {
+        return;
+    }
     if (arg.IsValue()) {
         UnUse(arg.Get<Value>());
     } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
@@ -284,6 +361,23 @@ void Inst::DestroyArgs() {
     for (u8 i = 0; i < max_args; ++i) {
         DestroyArg(i);
     }
+}
+
+void Inst::ReleaseArgs() {
+    for (auto& arg : arguments) {
+        if (arg.IsVoid()) {
+            continue;
+        }
+        if (arg.IsParams()) {
+            // The only argument that owns heap memory. Params::Destroy does
+            // not null first_param, so blanking the slot below is what keeps
+            // ~Inst from walking a freed chain.
+            arg.Get<Params>().Destroy();
+        }
+        arg = {};
+    }
+    next_pseudo_inst = {};
+    num_use = 0;
 }
 
 void Inst::Reset() {

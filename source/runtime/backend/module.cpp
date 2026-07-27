@@ -39,31 +39,9 @@ static AddressNodeRef ToNodeRef(ir::AddressNode* node) {
     }
 }
 
-static void AddNodeRef(ir::AddressNode* node) {
-    switch (node->node_type) {
-        case ir::AddressNode::Function:
-            IntrusivePtrAddRef((ir::Function*)node);
-            break;
-        case ir::AddressNode::Block:
-            IntrusivePtrAddRef((ir::Block*)node);
-            break;
-        default:
-            break;
-    }
-}
+static void AddNodeRef(ir::AddressNode* node) { ir::AddressNodeAddRef(node); }
 
-static void ReleaseNodeRef(ir::AddressNode* node) {
-    switch (node->node_type) {
-        case ir::AddressNode::Function:
-            IntrusivePtrRelease((ir::Function*)node);
-            break;
-        case ir::AddressNode::Block:
-            IntrusivePtrRelease((ir::Block*)node);
-            break;
-        default:
-            break;
-    }
-}
+static void ReleaseNodeRef(ir::AddressNode* node) { ir::AddressNodeRelease(node); }
 
 DataAllocator::DataAllocator(swift::u32 size) {
     mem_map = std::make_unique<MemMap>(size, true);
@@ -100,6 +78,31 @@ Module::Module(AddressSpace& space,
         , module_config(m_config)
         , address_node_map{start.Value(), end.Value()} {}
 
+// Drops the module's reference to every node it still maps -- it does NOT
+// delete them.
+//
+// A map entry is one strong reference, taken by Push/GetNodeOrCreate and
+// dropped by Remove. Never calling this leaked every node still resident at
+// teardown; deleting instead of releasing would be worse than the leak,
+// because SmcTracker holds its own ir::NodeRef on exactly these nodes (that is
+// what 8d8ddba changed it to, after a borrowed pointer there was a
+// use-after-free), and callers can be holding IntrusivePtr handles from
+// GetNode/GetNodes. Releasing is correct under every one of those: the node
+// dies here only if this map held the last reference.
+//
+// Ordering note for the common teardown path: AddressSpace declares
+// smc_tracker before default_module/modules, so ~AddressSpace destroys the
+// tracker -- and with it the page records' node references -- before any
+// ~Module runs. Modules unmapped earlier are held alive by the shared_ptr
+// inside SmcTracker::TrackedNode until the tracker lets go. Neither ordering
+// is relied on for safety here; the refcount is.
+Module::~Module() {
+    std::unique_lock guard(inner_lock);
+    address_node_map.ReleaseAll(
+            [](const ir::AddressNode* node) { return node->location.Value(); },
+            &ReleaseNodeRef);
+}
+
 bool Module::Push(ir::AddressNode* node) {
     ASSERT(node);
     auto loc = node->GetStartLocation().Value();
@@ -113,24 +116,33 @@ bool Module::Push(ir::AddressNode* node) {
 }
 
 void Module::Remove(ir::AddressNode* node) {
+    // Identity-checked and idempotent. SMC invalidation can detach the same
+    // node twice (a publisher re-registers it with the tracker between
+    // TakeDirtyNodes and DetachNode, so the retry loop collects it again), and
+    // the map may already hold a *different*, freshly created node at the same
+    // location. Removing by location alone would then evict the new node and
+    // release the old node's map reference a second time -- a refcount
+    // underflow that frees a live node.
+    bool erased = false;
     {
         std::unique_lock guard(inner_lock);
-        address_node_map.Remove(node->location.Value());
+        if (address_node_map.Get(node->location.Value()) == node) {
+            address_node_map.Remove(node->location.Value());
+            erased = true;
+        }
     }
-    ReleaseNodeRef(node);
+    if (erased) {
+        ReleaseNodeRef(node);
+    }
 }
 
-AddressNodeRefs Module::RemoveRange(ir::Location start, ir::Location end) {
-    std::unique_lock guard(inner_lock);
-    auto nodes_ptr = address_node_map.GetRange(start.Value(), end.Value());
-    AddressNodeRefs nodes{};
-    for (auto node_ptr : nodes_ptr) {
-        nodes.push_back(ToNodeRef(node_ptr));
-        address_node_map.Remove(node_ptr->location.Value());
-        ReleaseNodeRef(node_ptr);
-    }
-    return nodes;
-}
+// RemoveRange used to live here: remove-by-location plus an unconditional
+// release, over a whole range. It had no callers and carried the exact
+// identity bug Module::Remove documents above -- if the map had since been
+// repopulated at one of those locations with a different node, it evicted the
+// new node and released the old node's reference a second time. Deleted rather
+// than fixed: SMC invalidation reaches the same effect through
+// SmcTracker::TakeRangeNodes + DetachNode, which is identity-checked.
 
 AddressNodeRef Module::GetNode(ir::Location location) {
     std::shared_lock guard(inner_lock);
@@ -347,10 +359,6 @@ void Module::ReclaimCode(u8* exec_ptr) {
             return;
         }
     }
-}
-
-void Module::DestroyNodes() {
-    address_node_map.Destroy();
 }
 
 }  // namespace swift::runtime::backend

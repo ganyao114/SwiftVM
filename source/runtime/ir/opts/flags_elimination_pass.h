@@ -12,7 +12,10 @@ class FlagsEliminationPass {
 public:
     static void Run(HIRBuilder *hir_builder);
     static void Run(HIRFunction *hir_function);
-    static void Run(Block *block);
+    // `hir_function` is non-null only on the function-compilation path: the
+    // pass deletes instructions, and in an HIRFunction every deletion has to go
+    // through EraseInst so the HIRValue use lists stay consistent.
+    static void Run(Block *block, HIRFunction *hir_function = nullptr);
 };
 
 }  // namespace swift::runtime::ir

@@ -14,6 +14,7 @@
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/backend/translate_table.h"
+#include "runtime/common/perf_stats.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
 #include "runtime/ir/opts/pass_pipeline.h"
@@ -32,6 +33,29 @@ std::unique_ptr<Instance> Instance::Make(const Config& config) {
 // right State. void* because Runtime::Impl is a private nested type.
 static thread_local void* tls_active_runtime{};
 
+// Thread-local pointer to the Runtime::Impl this thread *owns*, valid from
+// construction to destruction rather than only while guest code runs.
+//
+// Host code outside JitRun writes guest memory too: syscall emulation copying
+// results into a guest buffer, and the clone-thread teardown store that
+// CLONE_CHILD_CLEARTID requires. Such a write lands on a *write-protected*
+// guest page whenever the target shares a page with translated code (freestanding
+// guests routinely put .bss in the same page as .text). That is an ordinary SMC
+// write-protect fault, but tls_active_runtime is null there — Runtime::Run has
+// already returned — so the SMC handler used to decline it and the process died
+// on an "unhandled host fault". Faulting host code is *outside* guest execution,
+// so opening the write window and retrying the store is exactly right: a host
+// store into a code page is self-modifying code and must invalidate.
+//
+// Indirected through a shared slot rather than stored as a raw pointer: a
+// Runtime may be destroyed by a thread other than the one that created it, and
+// the slot (not the Impl) is what the owning thread's TLS keeps alive, so the
+// handler can never observe a dangling Impl.
+struct OwnerSlot {
+    std::atomic<void*> impl{nullptr};
+};
+static thread_local std::shared_ptr<OwnerSlot> tls_owner_slot{};
+
 struct Runtime::Impl final {
     explicit Impl(backend::AddressSpace* address_space) : address_space(address_space) {
         state_buffer.resize(sizeof(backend::State) +
@@ -47,6 +71,11 @@ struct Runtime::Impl final {
         // reserved pt register and the interpreter reads it from here.
         // nullptr (identity) keeps the zero-overhead fast path.
         state->pt = address_space->GetConfig().memory_base;
+        // Bounded guest window: truncate every guest address to the window
+        // before pt is added. 0 in the config = disabled.
+        state->guest_addr_mask = address_space->GetConfig().guest_addr_mask
+                                         ? address_space->GetConfig().guest_addr_mask
+                                         : UINT64_MAX;
         // Interpreter wild-pointer guard: any guest address >= loc_end is
         // definitionally invalid; the interpreter checks this before every
         // memory access and raises PageFatal instead of crashing the host.
@@ -66,10 +95,31 @@ struct Runtime::Impl final {
             state->rsb_top = &rsb_buffer.rsb_frames[backend::rsb_stack_size];
         }
         jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
+        // Claim this thread for host-side SMC fault recovery (see OwnerSlot).
+        // A thread that constructs a second Runtime keeps the newest; either
+        // resolves to the same AddressSpace and SmcTracker.
+        if (!tls_owner_slot) {
+            tls_owner_slot = std::make_shared<OwnerSlot>();
+        }
+        owner_slot = tls_owner_slot;
+        owner_slot->impl.store(this, std::memory_order_release);
     }
 
     ~Impl() {
+        // NOTE: a write window opened by host code on a thread that then exits
+        // is deliberately NOT closed here. Closing it looked prudent, but a
+        // mutation test (delete the call, run the suites) could not tell the
+        // two versions apart -- and it is not needed: SmcTracker already
+        // collects translations published during another thread's open window
+        // (see RegisterNode's !rec.dirty guard and CloseWriteWindow's retry
+        // loop), and any thread that goes on running closes the window after
+        // its next JitRun. Unverified defensive work is not kept.
         address_space->GetSmcTracker().UnregisterRuntime(smc_epoch);
+        if (owner_slot) {
+            void* expected = this;
+            owner_slot->impl.compare_exchange_strong(
+                    expected, nullptr, std::memory_order_acq_rel, std::memory_order_relaxed);
+        }
     }
 
     // Host-fault recovery (SignalHandler chain, priority kFaultPriority).
@@ -92,7 +142,14 @@ struct Runtime::Impl final {
 
     static bool HandleSmcFault(void* ctx, ucontext_t* uctx, int sig, siginfo_t* info) {
         (void) ctx;
+        // The owner slot covers host code between JitRuns (syscall emulation,
+        // thread teardown); tls_active_runtime is the same object while guest
+        // code runs. Both resolve to this thread's AddressSpace, which is all
+        // HandleWriteFault needs.
         auto* self = static_cast<Impl*>(tls_active_runtime);
+        if (!self && tls_owner_slot) {
+            self = static_cast<Impl*>(tls_owner_slot->impl.load(std::memory_order_acquire));
+        }
         if (!self) return false;
         if (sig != SIGSEGV && sig != SIGBUS) {
             return false;
@@ -154,6 +211,31 @@ struct Runtime::Impl final {
 
         if (!current_module) {
             return HaltReason::CodeMiss | HaltReason::ModuleMiss;
+        }
+        // The IR interpreter is the execution engine for enable_jit=false. It
+        // is NOT a fallback for a dispatch-table miss while the JIT is on: the
+        // IR held by the module has been through the JIT pipeline and is no
+        // longer valid input for it. Two concrete ways that goes wrong, both
+        // observed:
+        //  - UniformEliminationPass rewrites reads of a statically allocated
+        //    uniform into GetHostGPR (Config::buffers_static_alloc; the x86
+        //    frontend pins guest rbx/rsp/rbp into x20/x19/x21). The
+        //    interpreter has no host-register file and RunGetHostGPR yields 0,
+        //    so `ret` pops from guest address 0 and the guest thread dies of
+        //    PageFatal.
+        //  - Terminals that mean "go back to the dispatcher"
+        //    (ReturnToDispatch/Invalid/PopRSBHint, and a Switch with no
+        //    matching case) return HaltReason::None without advancing
+        //    current_loc. The loop below has no dispatch step, so it re-runs
+        //    the same block forever.
+        // Neither is reachable without SMC: a dispatch slot is only ever
+        // zeroed while its module node is still live by SmcTracker's write
+        // fault (ClearDispatchSlots runs in the signal handler, DetachNode
+        // only later in CloseWriteWindow). Report CodeMiss instead so the
+        // translator recompiles and republishes the unit -- exactly what
+        // already happens when the node itself is gone.
+        if (address_space->GetConfig().enable_jit) {
+            return HaltReason::CodeMiss;
         }
 
         HaltReason hr{HaltReason::None};
@@ -292,6 +374,8 @@ struct Runtime::Impl final {
     // state->l1_code_cache pointer even from const Run paths.
     mutable TranslateTable l1_code_cache{l1_cache_bits};
     backend::SmcTracker::RuntimeToken smc_epoch{};
+    // Kept alive alongside the creating thread's tls_owner_slot; see OwnerSlot.
+    std::shared_ptr<OwnerSlot> owner_slot{};
     backend::interp::InterpStack interp_stack;
     std::atomic_bool running{true};
     backend::Trampolines::RuntimeEntry jit_entry{};
@@ -355,10 +439,42 @@ namespace backend {
 namespace {
 
 bool X87TopVirtRequested() {
-    const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
-    const char* x87_jit = std::getenv("SVM_X87_JIT");
-    return topvirt && std::strcmp(topvirt, "0") != 0 &&
-           x87_jit && std::strcmp(x87_jit, "0") != 0;
+    // Cached: runs once per compiled unit, and Darwin's getenv walks `environ`.
+    static const bool requested = [] {
+        const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
+        const char* x87_jit = std::getenv("SVM_X87_JIT");
+        return topvirt && std::strcmp(topvirt, "0") != 0 &&
+               x87_jit && std::strcmp(x87_jit, "0") != 0;
+    }();
+    return requested;
+}
+
+// Reserve the dedicated x87 TOP register (arm64::kX87TopVirtGPR) so neither
+// block nor function mode can park a live IR value there.
+//
+// The reservation is *verified*, never assumed. Mark() on an already-reserved
+// code is a silent no-op, while the x87 emitter writes its TOP register
+// unconditionally -- which is precisely how reserving x20 here corrupted guest
+// state: the x86 frontend statically pins guest RBX to x20 through
+// Config::buffers_static_alloc, the trampoline had already marked it, this
+// Mark() did nothing, and every x87 block overwrote guest RBX with TOP.
+//
+// No FPRs are reserved. The D28-D31 pinned x87 read cache was retired together
+// with the inline register-arithmetic emitter (ec413cb), and nothing in the
+// backend or frontend names v28-v31 any more. Measured, the removed pin was
+// inert rather than expensive: values_spilled is 5920 in the full swift_test
+// with and without it, v28-v31 are allocated 8 times either way (all in
+// non-x87 units), and pinning as many as 24 FPRs in x87 units still produces
+// zero spills -- X87Op holds its operands in the uniform buffer and the
+// SoftFloat helpers, not in the FPR file. It is deleted because it is dead,
+// not because it cost anything measurable.
+void ReserveX87TopVirtRegs(GPRSMask& gprs) {
+    ASSERT_MSG(!gprs.Get(arm64::kX87TopVirtGPR),
+               "x87 TOPVIRT register x{} is already reserved by the static "
+               "uniform map or the runtime ABI; the x87 emitter would clobber "
+               "it",
+               arm64::kX87TopVirtGPR);
+    gprs.Mark(arm64::kX87TopVirtGPR);
 }
 
 bool HasX87Op(ir::Block* block) {
@@ -377,6 +493,48 @@ bool HasX87Op(ir::HIRFunction* function) {
         }
     }
     return false;
+}
+
+// JIT disk cache hook (backend/jit_cache.h). Off unless SVM_JIT_CACHE is set;
+// the unit is described by its guest block ranges plus the offset of each
+// block's entry inside the emitted buffer.
+void RecordJitCacheUnit(const std::shared_ptr<backend::Module>& module,
+                        VAddr guest_start,
+                        bool is_function,
+                        const std::vector<SerialBlock>& blocks,
+                        const CodeBuffer& buffer) {
+    auto* cache = module->GetAddressSpace().GetJitDiskCache();
+    if (!cache) {
+        return;
+    }
+    cache->RecordUnit(module,
+                      guest_start,
+                      is_function,
+                      buffer.rw_data,
+                      static_cast<u32>(buffer.size),
+                      blocks);
+}
+
+// PassPipeline::BuildDefault builds a nine-entry vector of std::function
+// objects. It was rebuilt for every compiled unit even though its only input,
+// the address space's UniformInfo, is fixed for the life of that address space
+// -- so under lazy function compilation it ran once per decoded guest block.
+//
+// Cached per thread and keyed on the UniformInfo pointer rather than in a
+// plain static: an embedder can hold several Instances with different uniform
+// layouts, and a mismatched pipeline would silently apply the wrong uniform
+// map. A key change rebuilds; in the single-address-space case that never
+// happens after the first unit.
+const ir::PassPipeline& GetPassPipeline(const ir::UniformInfo* uni_info) {
+    static thread_local ir::PassPipeline cached{};
+    static thread_local const ir::UniformInfo* cached_key{};
+    static thread_local bool cached_valid{false};
+    if (!cached_valid || cached_key != uni_info) {
+        cached = ir::PassPipeline::BuildDefault(uni_info);
+        cached_key = uni_info;
+        cached_valid = true;
+    }
+    return cached;
 }
 
 size_t PrepareFunctionGuestRanges(ir::HIRFunction* function) {
@@ -410,6 +568,18 @@ size_t PrepareFunctionGuestRanges(ir::HIRFunction* function) {
     return decoded_blocks;
 }
 
+// Escape hatch for the release added at the end of TranslateIR(HIRFunction*).
+// `SVM_FUNC_IR_FREE=0` restores the old behaviour (function-mode IR retained
+// for the lifetime of the compiled unit), which is how the two sides of the
+// memory measurement are produced from one binary.
+bool FuncIRFreeEnabled() {
+    static const bool on = [] {
+        const char* e = std::getenv("SVM_FUNC_IR_FREE");
+        return !e || std::strcmp(e, "0") != 0;
+    }();
+    return on;
+}
+
 }  // namespace
 
 bool PublishIRFunction(const std::shared_ptr<backend::Module>& module,
@@ -435,44 +605,57 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     // with where it is actually emitted. Skipped for a single-block function
     // beyond the (harmless) renumber. Must run after EndFunction (the driver
     // calls it) since predecessors/successors are built there.
+    PerfScope perf_rpo{GetPerfStats().rpo_ns};
     function->ComputeRPO();
     function->IdByRPO();
-    const bool dump_ir = std::getenv("SVM_DUMP_IR") != nullptr;
+    perf_rpo.Stop();
+    static const bool dump_ir = std::getenv("SVM_DUMP_IR") != nullptr;
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} rpo-ready\n", func_start);
     const auto& address_space = module->GetAddressSpace();
     const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
                                       ? &address_space.GetUniformInfo() : nullptr;
-    auto pipeline = ir::PassPipeline::BuildDefault(uni_info);
-    pipeline.RunFunction(function, module->GetModuleConfig().optimizations);
+    PerfScope perf_opt{GetPerfStats().opt_ns};
+    GetPassPipeline(uni_info).RunFunction(function, module->GetModuleConfig().optimizations);
+    perf_opt.Stop();
+    // The function passes delete instructions (flag elimination, then dead-code
+    // elimination), which punches holes in the numbering established above.
+    // RegisterAllocPass indexes its interval table by instruction id and sizes
+    // it from MaxInstrCount(), so the ids must be dense in emission order
+    // again before allocation. This is the function-mode counterpart of
+    // PassPipeline::RunBlock's trailing Block::ReIdInstr().
+    PerfScope perf_rpo2{GetPerfStats().rpo_ns};
+    function->IdByRPO();
+    perf_rpo2.Stop();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} opts-ready\n", func_start);
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     const bool reserve_x87_topvirt =
             X87TopVirtRequested() && HasX87Op(function);
     if (reserve_x87_topvirt) {
-        // Dedicated callee-saved TOP/cache-validity register. Reserve it
-        // before allocation so neither block nor function mode can assign a
-        // live IR value to it.
-        gprs.Mark(20);
+        ReserveX87TopVirtRegs(gprs);
     }
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    if (reserve_x87_topvirt) {
-        // Pin the hot half of the x87 stack only. Reserving all eight FPRs
-        // exhausted the finite spill arena in large function-mode units.
-        for (u32 code = 28; code < 32; ++code) {
-            fprs.Mark(code);
-        }
-    }
+    PerfScope perf_ra{GetPerfStats().regalloc_ns};
     backend::RegAlloc reg_alloc{static_cast<u32>(function->MaxInstrCount()), gprs, fprs};
     ir::RegisterAllocPass::Run(function, &reg_alloc);
+    perf_ra.Stop();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} regalloc-ready\n", func_start);
+    PerfScope perf_cg{GetPerfStats().codegen_ns};
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate(function);
+    perf_cg.Stop();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} emit-ready\n", func_start);
     auto buffer_size = context.CurrentBufferSize();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} size={}\n", func_start, buffer_size);
     if (auto [idx, buffer] = module->AllocCodeCache(buffer_size);
         idx != backend::INVALID_CACHE_ID) {
+        PerfScope perf_pub{GetPerfStats().publish_ns};
+        PerfAdd(GetPerfStats().host_bytes, buffer_size);
+        PerfAdd(GetPerfStats().ir_insts, function->MaxInstrCount());
+        if (PerfPerUnit()) {
+            fmt::print(stderr, "[svm-unit] pc={:#x} ir={} host={}\n", func_start,
+                       function->MaxInstrCount(), buffer_size);
+        }
         context.Flush(buffer);
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} flush-ready\n", func_start);
         jit_state.jit_state = backend::JitState::Cached;
@@ -494,6 +677,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
         // External links, RSB return targets, and code misses are allowed to
         // land at a basic-block boundary inside this compiled unit.
         auto& mutable_address_space = module->GetAddressSpace();
+        std::vector<backend::SerialBlock> cache_blocks;
         for (auto& hir_block : function->GetHIRBlocksRPO()) {
             auto* block = hir_block.GetBlock();
             if (block->GetInstList().empty()) {
@@ -503,6 +687,10 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
             const auto offset = context.GetCodeOffset(guest);
             ASSERT(offset >= 0 && static_cast<size_t>(offset) < buffer.size);
             mutable_address_space.PushCodeCache(guest, buffer.exec_data + offset);
+            cache_blocks.push_back({guest,
+                                    block->GetEndLocation().Value(),
+                                    static_cast<u32>(offset),
+                                    0});
             if (!module->GetModuleConfig().read_only) {
                 mutable_address_space.GetSmcTracker().RegisterNode(
                         module,
@@ -512,6 +700,42 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
             }
         }
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} entries-ready\n", func_start);
+        RecordJitCacheUnit(module, func_start, true, cache_blocks, buffer);
+
+        // Release the function's IR. Block mode has always done this (the
+        // Block::DestroyInstrs at the end of TranslateIR(IntrusivePtr<Block>));
+        // function mode never did, so every instruction of every compiled
+        // function stayed allocated until the unit was invalidated or the
+        // module torn down -- i.e. for the whole process in the normal case.
+        //
+        // Nothing reads it again:
+        //  - the host code is emitted and flushed, and the fault table, the L2
+        //    dispatch slots, the SMC ranges and the disk-cache record are all
+        //    written above from data that lives in the AddressNode (guest
+        //    start/end) or in the JitCache, not in the instruction list;
+        //  - Runtime::Impl::Interpreter refuses to run module IR whenever the
+        //    JIT is on and returns CodeMiss instead (see the comment there);
+        //    the enable_jit=false path never reaches this function, it
+        //    publishes through PublishIRFunction and keeps its IR;
+        //  - JitContext::Forward's `cur_function->FindBlock` only ever inspects
+        //    the unit being emitted right now;
+        //  - the AOT collector re-reads the published node's blocks, but only
+        //    their guest start/end;
+        //  - the disk-cache *load* path already publishes function nodes whose
+        //    blocks hold no instructions at all (jit_cache.cpp), so this is a
+        //    shape the rest of the runtime is required to handle anyway.
+        //
+        // The write lock mirrors the block path, which destroys under
+        // ir_block->LockWrite(). It is uncontended here: Translate() holds the
+        // frontend's coarse translate lock and the module read lock, so an
+        // invalidation cannot be detaching this node concurrently.
+        if (FuncIRFreeEnabled()) {
+            // Outside publish_ns so that counter keeps meaning what it did.
+            perf_pub.Stop();
+            PerfScope perf_free{GetPerfStats().ir_free_ns};
+            auto ir_guard = ir_function->LockWrite();
+            ir_function->DestroyInstrs();
+        }
         return buffer.exec_data;
     }
     return nullptr;
@@ -534,14 +758,9 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     const bool reserve_x87_topvirt =
             X87TopVirtRequested() && HasX87Op(ir_block);
     if (reserve_x87_topvirt) {
-        gprs.Mark(20);
+        ReserveX87TopVirtRegs(gprs);
     }
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    if (reserve_x87_topvirt) {
-        for (u32 code = 28; code < 32; ++code) {
-            fprs.Mark(code);
-        }
-    }
     backend::RegAlloc reg_alloc{static_cast<u32>(block->MaxInstrCount()), gprs, fprs};
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
@@ -573,21 +792,15 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     // Optimize passes
     const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
                                       ? &address_space.GetUniformInfo() : nullptr;
-    auto pipeline = ir::PassPipeline::BuildDefault(uni_info);
-    pipeline.RunBlock(block.get(), module_config.optimizations);
+    GetPassPipeline(uni_info).RunBlock(block.get(), module_config.optimizations);
 
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     const bool reserve_x87_topvirt =
             X87TopVirtRequested() && HasX87Op(block.get());
     if (reserve_x87_topvirt) {
-        gprs.Mark(20);
+        ReserveX87TopVirtRegs(gprs);
     }
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    if (reserve_x87_topvirt) {
-        for (u32 code = 28; code < 32; ++code) {
-            fprs.Mark(code);
-        }
-    }
     backend::RegAlloc reg_alloc{static_cast<u32>(block->MaxInstrId()), gprs, fprs};
 
     ir::RegisterAllocPass::Run(block.get(), &reg_alloc);
@@ -624,6 +837,12 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
             }
             address_space.GetSmcTracker().RegisterNode(
                     module, block.get(), block_start, block->GetEndLocation().Value());
+        }
+        {
+            const VAddr start = block->GetStartLocation().Value();
+            const std::vector<backend::SerialBlock> cache_blocks{
+                    {start, block->GetEndLocation().Value(), 0, 0}};
+            RecordJitCacheUnit(module, start, false, cache_blocks, buffer);
         }
         block->DestroyInstrs();
         return buffer.exec_data;

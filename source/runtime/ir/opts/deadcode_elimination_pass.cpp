@@ -8,7 +8,32 @@
 
 namespace swift::runtime::ir {
 
-void DeadCodeEliminationPass::Run(Block* block) {
+namespace {
+
+// A guest memory read is architecturally observable even when nobody consumes
+// its result: it can fault.  `mov (%rax), %rax` with a wild pointer must raise
+// the guest page fault whether or not the loaded value is later overwritten --
+// bad_pointer_x86_64 is exactly that program, and it exits 1 (PageFatal) rather
+// than reaching its "the load succeeded" exit 42.
+//
+// Inst::HasSideEffects() reasons from use counts and return types and so calls
+// an unused load removable.  Nothing hit that before, because the front end
+// always stored a load's result into a guest register and the store held the
+// load alive; once dead uniform stores are eliminated the store can disappear
+// and the load with it.  The fault, not the value, is the side effect.
+[[nodiscard]] bool Removable(Inst& inst) {
+    switch (inst.GetOp()) {
+        case OpCode::LoadMemory:
+        case OpCode::LoadMemoryTSO:
+            return false;
+        default:
+            return !inst.HasSideEffects();
+    }
+}
+
+}  // namespace
+
+void DeadCodeEliminationPass::Run(Block* block, HIRFunction* hir_function) {
     auto& inst_list = block->GetInstList();
     // Iterate to a fixpoint: removing an instruction can kill the last use of
     // an EARLIER def (e.g. once FlagEliminationPass drops a dead SaveFlags,
@@ -20,9 +45,16 @@ void DeadCodeEliminationPass::Run(Block* block) {
         changed = false;
         for (auto it = inst_list.begin(); it != inst_list.end();) {
             auto pre = it;
-            if (!it->HasSideEffects()) {
-                it = inst_list.erase(it);
-                delete pre.operator->();
+            if (Removable(*it)) {
+                if (hir_function) {
+                    // EraseInst unlinks from inst_list itself; step past the
+                    // victim before it is freed.
+                    ++it;
+                    hir_function->EraseInst(block, pre.operator->());
+                } else {
+                    it = inst_list.erase(it);
+                    delete pre.operator->();
+                }
                 changed = true;
             } else {
                 ++it;
@@ -39,7 +71,7 @@ void DeadCodeEliminationPass::Run(HIRBuilder* hir_builder) {
 
 void DeadCodeEliminationPass::Run(HIRFunction* hir_function) {
     for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
-        Run(hir_block.GetBlock());
+        Run(hir_block.GetBlock(), hir_function);
     }
 }
 

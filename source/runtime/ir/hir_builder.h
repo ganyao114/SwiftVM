@@ -106,8 +106,6 @@ struct HIRValue final {
     ValueAllocated allocated{};
     HIRUseList uses{};
 
-    IntrusiveMapNode map_node{};
-
     HIRValue() : value(), block(nullptr){};
     HIRValue(const Value& value) : value(value), block(nullptr){};
     explicit HIRValue(const Value& value, HIRBlock* block);
@@ -116,17 +114,6 @@ struct HIRValue final {
     void UnUse(Inst* inst, u8 idx);
 
     [[nodiscard]] u16 GetOrderId() const;
-
-    // for rbtree compare
-    static NOINLINE int Compare(const HIRValue& lhs, const HIRValue& rhs) {
-        if (rhs.GetOrderId() > lhs.GetOrderId()) {
-            return 1;
-        } else if (rhs.GetOrderId() < lhs.GetOrderId()) {
-            return -1;
-        } else {
-            return 0;
-        }
-    }
 };
 
 struct HIRLocal {
@@ -134,23 +121,32 @@ struct HIRLocal {
     HIRValue* current_value{};
 };
 
-class HIRLoop final {
-public:
-    static HIRLoop* Create(HIRFunction* function, HIRBlock* header, size_t length);
-
-    explicit HIRLoop(HIRFunction* function, HIRBlock* header, size_t length);
-    [[nodiscard]] HIRBlock* GetHeader() const;
-    [[nodiscard]] HIRBlockVector GetLoopVector() const;
-
-    IntrusiveListNode node{};
-
-private:
-    HIRBlockVector loop;
-};
+// HIRLoop / HIRLoopList lived here. Removed, not repaired: the constructor
+// took a single `HIRBlock* header` and memcpy'd `length * sizeof(HIRBlock*)`
+// bytes OUT OF THAT ONE OBJECT, so every loop it built was the header block's
+// own fields reinterpreted as block pointers, reading past the object once
+// length exceeded sizeof(HIRBlock)/8. Its only producer (ComputeLoopInformation
+// in ir/opts/cfg_analysis_pass.cpp) was deleted in the previous round, and the
+// only accessor of the resulting list, HIRFunction::GetHIRLoop, never had a
+// caller anywhere in the tree -- so the type had no way left to be either
+// exercised or validated. A "fixed" constructor with no producer and no
+// consumer is an unverifiable claim; whoever next needs loop information should
+// add the type back together with the analysis that fills it and the code that
+// reads it.
 #pragma pack(pop)
 
-using HIRLoopList = IntrusiveList<&HIRLoop::node>;
-using HIRValueMap = IntrusiveMap<&HIRValue::map_node>;
+// Instruction id -> the HIRValue that instruction defines (null for the
+// void-typed ones), dense over 0..MaxInstrCount()-1.
+//
+// This was an intrusive red-black tree keyed on the defining instruction's id,
+// which made every use-chain lookup a tree walk through a NOINLINE comparator
+// and forced IdByRPO to erase and re-insert every value just to re-key it.
+// Instruction ids are already assigned densely and monotonically as
+// instructions are appended, so the tree was an index over a sequence that is
+// its own index. Iterating the vector in index order visits values in
+// ascending id, exactly as the tree's in-order walk did -- which is what the
+// linear-scan allocator relies on.
+using HIRValueMap = Vector<HIRValue*>;
 
 class HIRBlock final : public DataContext {
     friend class HIRFunction;
@@ -280,12 +276,18 @@ public:
     void SetCurBlock(HIRBlock* block);
     HIRValue* AppendValue(HIRBlock* block, Inst* inst);
     void DestroyHIRValue(HIRValue* value);
+    // Removes `inst` from its block and frees it, keeping the function-level
+    // HIRValue bookkeeping consistent: every HIRUse this instruction holds on
+    // another value is unregistered first, and the instruction's own HIRValue
+    // (if it defines one) is erased from `values`. A plain `delete` would leave
+    // dangling HIRUse nodes behind, which the function-level register allocator
+    // dereferences when it computes live-interval ends.
+    void EraseInst(Block* block, Inst* inst);
     HIRBlock* GetEntryBlock();
     HIRBlock* GetCurrentBlock();
     HIRBlockVector& GetHIRBlocks();
     HIRBlockList& GetHIRBlockList();
     HIRBlockList& GetHIRBlocksRPO();
-    HIRLoopList& GetHIRLoop();
     HIRValueMap& GetHIRValues();
     HIRValue* GetHIRValue(const Value& value);
     HIRPools& GetMemPool();
@@ -293,7 +295,6 @@ public:
     void ReleaseFunctionOwnership();
     void AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional = false);
     void RemoveEdge(Edge* edge);
-    void AddLoop(HIRLoop* loop);
     void MergeAdjacentBlocks(HIRBlock* left, HIRBlock* right);
     bool SplitBlock(HIRBlock* new_block, HIRBlock* old_block);
     // Populates blocks_rpo with the reverse-post-order of the CFG reachable
@@ -317,13 +318,13 @@ public:
 private:
     friend class HIRBuilder;
     friend class HIRBlock;
-    friend class HIRLoop;
 
     struct {
         u32 current_slot{0};
     } spill_stack{};
 
     void UseInst(Inst* inst);
+    void UnUseInst(Inst* inst);
 
     u16 max_local_id{};
     Function* function;
@@ -340,9 +341,12 @@ private:
     // Reverse Post Order
     HIRBlockList blocks_rpo{};
     HIRValueMap values{};
+    // Scratch target for IdByRPO's rebuild of `values`; kept as a member so the
+    // second (post-pass) renumbering reuses the first one's buffer instead of
+    // allocating again.
+    HIRValueMap reid_scratch{};
     HIRBlock* current_block{};
     HIRBlock* entry_block{};
-    HIRLoopList loops{};
 };
 
 using HIRFunctionList = IntrusiveList<&HIRFunction::list_node>;
@@ -354,6 +358,17 @@ struct HIRPools {
         values.ReleaseContents();
         edges.ReleaseContents();
         uses.ReleaseContents();
+    }
+
+    // Returns the pools to their construction state, ready for another
+    // compilation unit, without freeing the backing chunks. Destructors run
+    // exactly as they would if the pools were destroyed: ObjectPool's
+    // destruct=true instantiations (functions and blocks) release their
+    // objects, so an HIRFunction that still owns its ir::Function still deletes
+    // it here.
+    void Reset() {
+        ReleaseContents();
+        mem_arena.Reset();
     }
 
     explicit HIRPools(u32 func_cap = 1);
@@ -368,6 +383,32 @@ struct HIRPools {
     ObjectPool<HIRValue> values;
     ObjectPool<Edge> edges;
     ObjectPool<HIRUse> uses;
+};
+
+// Borrows a per-thread HIRPools instead of building one per compiled unit.
+//
+// Constructing HIRPools means six allocator round trips and destroying it means
+// six more; under lazy function compilation that is once per decoded guest
+// block, which made it pure fixed overhead of the pipeline rather than work on
+// behalf of the unit. The lease hands back a pool set that has been Reset() to
+// the same state a freshly constructed one would be in.
+//
+// A second, nested lease on the same thread (a builder constructed while
+// another is alive) gets its own privately owned HIRPools, so nesting stays
+// correct rather than sharing one arena between two builders.
+class HIRPoolLease {
+public:
+    explicit HIRPoolLease(u32 func_cap);
+    ~HIRPoolLease();
+
+    HIRPoolLease(const HIRPoolLease&) = delete;
+    HIRPoolLease& operator=(const HIRPoolLease&) = delete;
+
+    HIRPools& Get() const { return *pools; }
+
+private:
+    HIRPools* pools{};
+    std::unique_ptr<HIRPools> owned{};
 };
 
 class HIRBuilder {
@@ -412,7 +453,25 @@ public:
                        op);
             return nullptr;
         }
-        return current_function->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
+        // AdvancePC coalescing -- see FoldAdvancePC. Guarded by the argument
+        // shape so the branch folds away for every other opcode.
+        if constexpr (sizeof...(Args) == 1 &&
+                      (std::is_same_v<std::decay_t<Args>, Imm> && ...)) {
+            if (advpc_coalesce && op == OpCode::AdvancePC && FoldAdvancePC(args...)) {
+                return nullptr;
+            }
+        }
+        if (LeavesPendingFlags(op)) {
+            flags_since_advance = true;
+        }
+        auto* inst =
+                current_function->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
+        if (op == OpCode::AdvancePC) {
+            last_advance = inst;
+            last_advance_block = current_function->GetCurrentBlock();
+            flags_since_advance = false;
+        }
+        return inst;
     }
 
 #define INST(name, ret, ...)                                                                       \
@@ -456,11 +515,68 @@ public:
 private:
     Location GetNextLocation(const Terminal& term);
 
-    HIRPools pools;
+    // `AdvancePC` is not program-counter motion -- no backend emits any -- it is
+    // the guest instruction boundary at which the arm64 backend commits its
+    // lazily kept flag state (EmitAdvancePC = MergeNZCV + FlushFlags) and at
+    // which the interpreter does nothing at all. Its immediate is read in
+    // exactly one other place: the sum over a block is that block's guest byte
+    // length (backend/runtime.cpp, SMC range registration).
+    //
+    // Measured over the 25 e2e guests: 21 562 AdvancePC reach the backend and
+    // only 4 016 (18.6%) find pending NZCV, 2 543 (11.8%) a pending ClearFlags
+    // -- at least 69.6% emit nothing whatsoever while still costing a pool
+    // object, a HIRValue slot, and one visit in every pass, in RegAlloc and in
+    // codegen. That is 13.4% of all IR.
+    //
+    // So drop the ones that cannot do anything, and fold their immediate
+    // *backwards* into the last AdvancePC that was kept in the same block. That
+    // direction matters: the running sum of the retained immediates equals the
+    // sum of all of them after every single step, so no block-close hook is
+    // needed and the guest byte length is preserved exactly -- including for
+    // blocks whose trailing AdvancePC is dropped by the terminal rule above.
+    //
+    // "Cannot do anything" = no instruction since the last retained AdvancePC
+    // can leave pending flag state (LeavesPendingFlags). The emitted host code
+    // is therefore byte-identical, which is the check this is verified with
+    // (SVM_PROF=2 per-unit ir/host fingerprints) rather than a claim.
+    bool FoldAdvancePC(const Imm& imm);
+    static bool AdvancePCCoalesceEnabled();
+
+    // Every opcode whose backend emission can leave state that EmitAdvancePC
+    // would have to commit. `nzcv_dirty` is only ever set by SaveHostFlags and
+    // SaveNZ, both of which are reached exclusively from emitters gated on a
+    // SaveFlags pseudo-operation; `flags_clear` only by EmitClearFlags.
+    // SetCarry/SetOverflow are listed because they touch the guest flags word
+    // directly, so a boundary after them is kept even though they self-flush.
+    static constexpr bool LeavesPendingFlags(OpCode op) {
+        switch (op) {
+            case OpCode::SaveFlags:
+            case OpCode::ClearFlags:
+            case OpCode::SetCarry:
+            case OpCode::SetOverflow:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    // Declared first so it outlives every member that allocates from it: the
+    // lease's destructor is what returns the pools to a clean state, and it
+    // must run after hir_functions has released its (intrusively linked)
+    // HIRFunction objects.
+    HIRPoolLease pool_lease;
+    HIRPools& pools;
     HIRFunctionList hir_functions{};
     Location current_location;
     HIRFunction* current_function{};
     bool defer_function_end{};
+    // AdvancePC coalescing state. last_advance_block is compared by pointer so
+    // no block-transition hook is needed: If/LinkBlock/Switch/SetCurBlock all
+    // move current_block, and a mismatch simply means "no fold target here".
+    Inst* last_advance{};
+    HIRBlock* last_advance_block{};
+    bool flags_since_advance{false};
+    const bool advpc_coalesce{AdvancePCCoalesceEnabled()};
 };
 
 void DfsHIRBlock(HIRBlock* start, HIRBlock* end, HIRBlockSet& visited);

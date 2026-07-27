@@ -9,7 +9,8 @@
 // Flag model in this IR (see ir.inc):
 //   writes: SaveFlags(value, mask) / ClearFlags(mask) / SetCarry / SetOverflow
 //   reads:  TestFlags / TestNotFlags (mask), GetFlags (whole register),
-//           Adc / Sbb (implicit C), CondSelect (implicit NZCV via host cond)
+//           Adc / Sbb (implicit C), CondSelect / CondSet (implicit NZCV via
+//           host cond)
 // The guest flags live in the backend flags register (JIT) / state word
 // (interpreter) across blocks, so every bit is live-out of a block.
 //
@@ -20,14 +21,23 @@
 
 #include "flags_elimination_pass.h"
 
+#include <cstring>
 #include <unordered_map>
 #include <vector>
 
 #include "fmt/format.h"
 
+
+// Cached diagnostic-env probes: these sit on the per-block path and
+// Darwin's getenv() walks `environ` on every call.
+static bool EnvOnce(const char* name) { return std::getenv(name) != nullptr; }
+static const bool kEnv_dump_ir = EnvOnce("SVM_DUMP_IR");
+static const bool kEnv_dump_ir_post = EnvOnce("SVM_DUMP_IR_POST");
+static const bool kEnv_flags_debug = EnvOnce("SVM_FLAGS_DEBUG");
+
 namespace swift::runtime::ir {
 
-void FlagsEliminationPass::Run(Block* block) {
+void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
     auto& inst_list = block->GetInstList();
 
     // Adc/Sbb read the carry written by the preceding guest instruction.
@@ -61,29 +71,63 @@ void FlagsEliminationPass::Run(Block* block) {
             case OpCode::SaveFlags: {
                 stat_save++;
                 const Flags mask = inst.GetArg<Flags>(1);
-                // Never delete or narrow a SaveFlags that writes C: carry
-                // persists across blocks and a later block's Adc/Sbb may
-                // read it. Per-block liveness cannot model this dependency.
-                // Do NOT modify `needed` — this preserved instruction must
-                // not "kill" any bits for earlier writers.
+                // PF and AF are the two x86 status bits with no host
+                // equivalent, and they are what makes an arithmetic guest
+                // instruction expensive: the arm64 back end spends one BFI on
+                // parity (SaveParity) and an EOR/EOR/UBFX/BFI plus a scratch
+                // GPR on the auxiliary carry (SaveAuxiliaryCarry), for two bits
+                // that only JP/JNP/SETP, LAHF, PUSHF and the BCD instructions
+                // ever read.  Measured over the 25 e2e guests plus the bench
+                // kernels, CMP alone cost 16.4 host instructions per guest
+                // instruction, and CMP/TEST/ADD/SUB/XOR/AND/INC together were
+                // ~48% of all emitted IR.
+                //
+                // Narrowing the mask in general is unsafe -- the emitter reads
+                // the pseudo mask to choose between the flag-setting and plain
+                // form of a host instruction, so dropping an NZCV bit changes
+                // which instruction is emitted.  PF and AF are exactly the bits
+                // that take no part in that decision (`needs_nzcv` tests
+                // Flags::NZCV, and both back ends read this same mask), which
+                // is what makes narrowing *these two* safe where a general
+                // narrowing is not.
+                constexpr Flags kSoftBits = Flags::Parity | Flags::AuxiliaryCarry;
+                // Bisect switch, mirroring SVM_UNIFORM_DSE / SVM_CONST_CSE.
+                static const bool narrow_off = [] {
+                    const char* e = std::getenv("SVM_FLAG_NARROW");
+                    return e && std::strcmp(e, "0") == 0;
+                }();
+                const Flags narrowed =
+                        narrow_off ? mask : (mask & ~(kSoftBits & ~needed));
+
+                // Never delete a SaveFlags that writes C: carry persists across
+                // blocks and a later block's Adc/Sbb may read it. Per-block
+                // liveness cannot model that dependency, so such a write also
+                // does not "kill" NZCV/OF for earlier writers.
                 if (True(mask & Flags::Carry)) {
+                    if (narrowed != mask) {
+                        inst.SetArg(1, narrowed);
+                        stat_shrunk++;
+                    }
+                    // It does still unconditionally overwrite whichever of
+                    // PF/AF remain in the mask, so those are dead for earlier
+                    // writers even under the conservative carry rule.
+                    needed &= ~(narrowed & kSoftBits);
                     break;
                 }
-                const Flags live = mask & needed;
+                const Flags live = narrowed & needed;
                 if (False(live)) {
                     stat_save_dead++;
                     victims.push_back(&inst);
-                    if (std::getenv("SVM_FLAGS_DEBUG")) {
+                    if (kEnv_flags_debug) {
                         fmt::print("[flags-elim-dbg] block {:#x}: DELETE SaveFlags mask={} needed={}\n",
                                    block->GetStartLocation().Value(), FlagsString(mask), FlagsString(needed));
                     }
                 } else {
-                    // No narrowing — keep the original mask intact.
-                    // Narrowing interacts badly with the JIT's lazy NZCV
-                    // window (the emitter checks the pseudo mask to decide
-                    // flag-setting vs non-flag form; a narrowed mask can
-                    // switch forms and change host NZCV behavior).
-                    needed &= ~mask;
+                    if (narrowed != mask) {
+                        inst.SetArg(1, narrowed);
+                        stat_shrunk++;
+                    }
+                    needed &= ~narrowed;
                 }
                 break;
             }
@@ -133,7 +177,8 @@ void FlagsEliminationPass::Run(Block* block) {
                 needed |= Flags::Carry;
                 break;
             case OpCode::CondSelect:
-                // Host conditional select reads NZCV directly.
+            case OpCode::CondSet:
+                // Host conditional select / set reads NZCV directly.
                 needed |= Flags::NZCV;
                 break;
             case OpCode::BindLabel:
@@ -155,18 +200,22 @@ void FlagsEliminationPass::Run(Block* block) {
     }
 
     for (auto* victim : victims) {
-        inst_list.erase(inst_list.iterator_to(*victim));
-        delete victim;
+        if (hir_function) {
+            hir_function->EraseInst(block, victim);
+        } else {
+            inst_list.erase(inst_list.iterator_to(*victim));
+            delete victim;
+        }
     }
 
-    if (std::getenv("SVM_DUMP_IR") &&
+    if (kEnv_dump_ir &&
         (stat_save || stat_clear || stat_setcv)) {
         fmt::print("[flags-elim] block {:#x}: SaveFlags {} -> {} (-{}), ClearFlags {} -> {} "
                    "(-{}), SetC/V {} -> {} (-{}), masks narrowed {}\n",
                    block->GetStartLocation().Value(), stat_save, stat_save - stat_save_dead,
                    stat_save_dead, stat_clear, stat_clear - stat_clear_dead, stat_clear_dead,
                    stat_setcv, stat_setcv - stat_setcv_dead, stat_setcv_dead, stat_shrunk);
-        if (std::getenv("SVM_DUMP_IR_POST")) {
+        if (kEnv_dump_ir_post) {
             fmt::print("--- post-elim block {:#x} ---\n{}\n",
                        block->GetStartLocation().Value(), block->ToString());
         }
@@ -181,7 +230,7 @@ void FlagsEliminationPass::Run(HIRBuilder* hir_builder) {
 
 void FlagsEliminationPass::Run(HIRFunction* hir_function) {
     for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
-        Run(hir_block.GetBlock());
+        Run(hir_block.GetBlock(), hir_function);
     }
 }
 

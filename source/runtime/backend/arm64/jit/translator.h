@@ -12,6 +12,32 @@
 
 namespace swift::runtime::backend::arm64 {
 
+// Host GPR that SVM_X87_TOPVIRT dedicates to the cached x87 TOP.
+//
+// THE ONE HARD CONSTRAINT: the code must still be *free* in the mask the
+// trampoline hands to the allocator, i.e. absent from the runtime ABI set and
+// from Config::buffers_static_alloc. This is why it is NOT x20. The x86
+// frontend statically pins guest RBX to x20 (translator/x86/translator.cpp
+// arm64_backend_regs_map), TrampolinesArm64::Build had therefore already
+// marked it, the runtime's `gprs.Mark(20)` was a silent no-op, and the
+// emitter's `mov w20, ...` landed directly in guest RBX -- guest RBX read back
+// as a TOP value 0..7 in ~92% of the x87 fuzz iterations. Reserving is now
+// guarded by an ASSERT at the site in runtime.cpp so a future static-register
+// map cannot re-create that quietly.
+//
+// x22 is `arg` in defines.h, named only by the mutually exclusive
+// enable_asm_interp trampoline path, and never by generated code.
+//
+// Callee-saved is NOT a requirement, though x22 happens to be one. Mutating
+// this to a caller-saved code (x2) survived every suite, and the reason is
+// real rather than a coverage gap: the TOP cache is dead at block boundaries
+// (BeginX87TopVirtBlock clears x87_top_cache_valid), so the only call it can
+// live across is EmitHostCall, whose save set is context.GetLiveGPRs() --
+// which already contains the runtime's reserved registers. Codes <= 17 are
+// therefore preserved across a helper call too. x16/x17 remain unusable for a
+// different reason (vixl's UseScratchRegisterScope).
+constexpr u32 kX87TopVirtGPR = 22;
+
 namespace HostFlagsBit {
     constexpr auto N = 31;
     constexpr auto Z = 30;
@@ -168,6 +194,13 @@ private:
     MemOperand BiasMem(const Register &base, bool atomic = false);
     MemOperand BiasMem(const Register &base, s64 imm, bool atomic = false);
 
+    // Bounded guest window (Config::guest_addr_mask): materializes the host
+    // address of a guest address into `dst` as (guest & mask) + pt. Used by
+    // the forms that need a single base register (exclusives, host calls).
+    // With a 32-bit window this is one instruction — the same Add the
+    // unbounded path emitted — because UXTW does the truncation for free.
+    void EmitGuestToHost(const Register &dst, const Register &guest_addr);
+
     // Host C-ABI call helper (saves/restores caller-saved allocated GPRs)
     void EmitHostCall(const ir::Lambda &lambda,
                       const std::vector<ir::DataClass> &args,
@@ -225,17 +258,32 @@ private:
     // True when Config::memory_base / page_table is set: every guest memory
     // access goes through the pt bias register (guest addr + pt = host addr).
     bool use_memory_base{false};
+    // Bounded guest window (Config::guest_addr_mask, 0 = disabled). Every
+    // guest address is truncated to `guest_addr_mask` before pt is added, so
+    // the access can only land inside the embedder's window reservation.
+    u64 guest_addr_mask{0};
+    // guest_addr_mask == 0xFFFFFFFF: the arm64 [Xn, Wm, UXTW] addressing mode
+    // computes pt + zext32(guest) in the *same* instruction the unbounded
+    // path already used, so a 32-bit window costs nothing.
+    bool window_uxtw{false};
     // TOP virtualization is deliberately a second opt-in layered on the
     // reduced x87 JIT. It stays default-off until host Unicorn qualification
     // has covered the new block/function paths.
     bool x87_topvirt_requested{false};
     bool x87_topvirt_function_eligible{false};
     bool translating_function{false};
+    // Set by EmitSetLocation when the next guest location is a compile-time
+    // constant, cleared by every other instruction (Translate(ir::Inst*)).
+    // A ReturnToDispatch/Invalid terminal reached with this set is a direct
+    // jmp/call: the dispatch-table slot for that exact address can be read
+    // inline instead of returning to the trampoline's hash lookup.
+    std::optional<u64> static_next_loc{};
+    // Emits the inline dispatch for `static_next_loc`; returns false when no
+    // static target is known and the caller must Ret to the dispatcher.
+    bool EmitStaticForward();
     bool x87_top_block_codegen_enabled{false};
     bool x87_top_cache_valid{false};
     bool x87_top_cache_for_current{false};
-    bool x87_pin_cache_possible{false};
-    bool x87_pin_cache_for_current{false};
     std::map<ir::Block*, X87TopBlockInfo> x87_top_blocks{};
 };
 

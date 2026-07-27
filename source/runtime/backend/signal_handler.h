@@ -57,6 +57,14 @@ public:
     // page (i.e. the fault is a protection violation, not a wild pointer).
     using GuestMapProbe = bool (*)(void* ctx, std::uintptr_t fault_host_addr);
 
+    // Range form of the same oracle, for the helpers that must validate
+    // *before* dereferencing (x87/fxsave, rep-string walks) rather than
+    // recover afterwards: returns how many contiguous bytes from
+    // `host_addr` are backed by guest mappings, capped at `length`.
+    // One indirect call answers a whole walk, which is what keeps this
+    // affordable in front of a four-byte `rep movsb`.
+    using GuestRangeProbe = u64 (*)(void* ctx, std::uintptr_t host_addr, u64 length);
+
     // Installs the process-wide sigaction handlers and the calling thread's
     // alternate signal stack. Idempotent.
     static void Install();
@@ -73,13 +81,28 @@ public:
     // Removes every handler registered with this ctx.
     static void UnregisterHandler(void* ctx);
 
-    // Frontend hook: IsGuestAddressMapped() below consults it.
+    // Frontend hook: IsGuestAddressMapped() below consults it. The range
+    // probe is optional; without it GuestMappedBytes falls back to the
+    // single-address probe, one call per host page.
     static void SetGuestMapProbe(GuestMapProbe probe, void* ctx);
+    static void SetGuestRangeProbe(GuestRangeProbe probe, void* ctx);
+
+    // Contiguous mapped bytes from `host_addr`, capped at `length`. Returns
+    // `length` unchanged when no probe is installed (embedders without an
+    // oracle keep the unchecked behaviour).
+    static u64 GuestMappedBytes(std::uintptr_t host_addr, u64 length);
 
     // True if the probe says this host fault address maps to a guest page.
     // Without a probe, conservatively returns false (fault treated as a wild
     // guest pointer when the PC is inside JIT code).
     static bool IsGuestAddressMapped(std::uintptr_t fault_host_addr);
+
+    // True once an embedder has installed a probe. Lets non-fault callers
+    // (instruction fetch, which must validate *before* dereferencing rather
+    // than recover afterwards) tell "not mapped" from "no oracle available":
+    // embedders without a probe -- unit tests, fuzzers, identity mappings --
+    // must keep the unchecked behaviour.
+    static bool HasGuestMapProbe();
 
     // --- ucontext accessors (OS/arch abstraction) --------------------------
     static std::uintptr_t GetContextPC(const ucontext_t* uctx);

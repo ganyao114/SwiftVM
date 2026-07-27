@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 #include "runtime/common/types.h"
 
 namespace swift::x86 {
@@ -8,11 +10,6 @@ namespace swift::x86 {
 // reduced pipeline. SoftFloat writes clear it; certified native/f64 values set
 // it. FXSAVE/FXRSTOR never expose or restore the padding.
 constexpr u8 kX87ReducedMarker = 0xA5;
-// An exact helper result that is finite and inside the normal binary64 range.
-// Its architectural ext80 payload remains untouched, but a later opt-in
-// reduced operation may explicitly round it to f64 instead of keeping the
-// whole arithmetic chain on the helper path.
-constexpr u8 kX87ReducedReadyMarker = 0xA6;
 
 // X87Dispatch command encoding.  The frontend supplies one command word and
 // one optional guest address; the helper updates the architectural x87 fields
@@ -118,6 +115,24 @@ constexpr u64 MakeX87Command(X87Action action,
            (static_cast<u64>(operation) << 24) |
            (static_cast<u64>(flags) << 32);
 }
+
+// Bit the x87/fxsave helpers set in their return value when a guest address
+// they had to dereference is not backed by a guest mapping. The architectural
+// outcome is #PF, but the fault happens in a live *host* frame that
+// runtime.cpp's HandleFault cannot unwind, so the helper validates instead,
+// declines to touch the memory, and reports the fault through its result; the
+// emitted code turns that bit into a guest-visible PageFatal (decoder_x87.cc's
+// CallX87, decoder_xsave.cc). Bit 63 is free in every helper result: the only
+// values the helpers return are FSW (16 bits) and the FCOMI flag triple.
+constexpr u64 kX87GuestFault = u64(1) << 63;
+
+// Guest -> host pointer for helpers that dereference guest memory from host
+// code. Applies the bounded-guest-window mask (isolation: host memory is
+// unreachable) and, when the embedder installed one, its guest-mapping oracle
+// (availability: an unmapped address returns nullptr instead of faulting in an
+// unrecoverable host frame, and latches kX87GuestFault for the caller).
+// Returns nullptr unless [address, address + size) is fully backed.
+u8* GuestPointer(u64 address, size_t size);
 
 u64 X87Dispatch(u64 context, u64 command, u64 guest_address);
 u64 X87Fxsave(u64 context, u64 guest_address);

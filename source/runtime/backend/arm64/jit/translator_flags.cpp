@@ -71,7 +71,14 @@ void JitTranslator::SaveLogicalResultFlags(Register& result,
         default:
             PANIC();
     }
-    __ Bics(ip, ip, 0);
+    // NZ from the sign-extended result, with C/V cleared — the x86 logical-op
+    // flag shape. Must NOT be spelled `Bics(ip, ip, 0)`: vixl inverts a BIC
+    // immediate, and the resulting all-ones is not a legal logical immediate,
+    // so LogicalMacro synthesizes it through UseScratchRegisterScope and
+    // silently clobbers x16 (vixl's tmp_list_ is {x16, x17}, which this
+    // backend does not reserve from the register allocator). Tst is the
+    // register form of ANDS and yields the identical NZCV with no scratch.
+    __ Tst(ip, ip);
     MergeLogicalFlagsNZ(pseudo.set);
     if (True(pseudo.set & ir::Flags::Parity)) {
         SaveParity(result);
@@ -166,7 +173,9 @@ void JitTranslator::SaveNZ(Register& value, ir::ValueType type) {
         default:
             PANIC();
     }
-    __ Bics(ip, ip, 0);
+    // Same reasoning as SaveLogicalResultFlags: Tst avoids the vixl x16
+    // scratch that `Bics(ip, ip, 0)` would take.
+    __ Tst(ip, ip);
     if (save_in_nzcv) {
         nzcv_dirty = true;
     } else {
@@ -175,25 +184,47 @@ void JitTranslator::SaveNZ(Register& value, ir::ValueType type) {
     }
 }
 
+// SaveCV / SaveOF set C+V (resp. V) when `value` does not fit in `type` --
+// the x86 mul/imul CF/OF shape, computed from the upper half of a widened
+// product.
+//
+// Both used to have a `save_in_nzcv` path that wrote the bits into the HOST
+// NZCV register with Msr and then set nzcv_dirty = false.  Every one of those
+// three spellings was wrong, and they compounded:
+//
+//   * nzcv_dirty = false makes MergeNZCV() a no-op, so bits placed in host
+//     NZCV were never copied into `flags` -- CF/OF were silently dropped.
+//   * Setting nzcv_dirty = true instead would not have helped: the Msr sits
+//     inside the Cbz skip, so on the no-overflow path host NZCV still holds
+//     the PREVIOUS producer's result and merging it would invent flags.
+//   * nzcv_requested was never widened to C|V, so MergeNZCV's mask would have
+//     filtered the bits out even if the other two had been right.
+//
+// The lazy-NZCV representation cannot express "conditionally set two bits", so
+// do not try: commit any pending producer up front (MergeNZCV is a no-op when
+// nothing is pending -- both call sites already invoke it) and then OR the bits
+// straight into the `flags` register, which is what the non-lazy branch and
+// EmitMul's inline signed-overflow path have always done.  Nothing here touches
+// host NZCV afterwards; Lsr, Cbz and a non-flag-setting Orr all leave it alone.
+//
+// Reachability, as of this commit: the x86 frontend cannot get here.  Its
+// mul/imul lowering (MulWithFlags in frontend/x86/decoder_alu.cc) deliberately
+// materialises CF/OF through a separate `t = bad << 63; SaveFlags(t + t, C|V)`
+// producer rather than hanging SaveFlags(CV) on the Mul itself, and its only
+// ir::Div is the RCL/RCR modulus, which carries no flags.  SaveOF has no caller
+// at all.  So this is a latent-bug fix, exercised by the codegen-shape test
+// "SaveCV commits x86 CF/OF into the flags register" in tests/main_case.cpp
+// (which builds the Mul + SaveFlags(C|V) IR the frontend does not currently
+// emit), not by any guest program.
 void JitTranslator::SaveCV(Register& value, ir::ValueType type) {
     if (type == ir::ValueType::U64) {
         return;
     }
+    MergeNZCV();
     Label pass;
     __ Lsr(ip, value, ir::GetValueSizeByte(type) * 8);
     __ Cbz(ip, &pass);
-    if (save_in_nzcv) {
-        if (nzcv_dirty) {
-            __ Mrs(ip, NZCV);
-            __ Orr(ip, ip, 3u << HostFlagsBit::V);
-            nzcv_dirty = false;
-        } else {
-            __ Orr(ip, xzr, 3u << HostFlagsBit::V);
-        }
-        __ Msr(NZCV, ip);
-    } else {
-        __ Orr(flags, flags, 3u << HostFlagsBit::V);
-    }
+    __ Orr(flags, flags, 3u << HostFlagsBit::V);
     __ Bind(&pass);
 }
 
@@ -201,21 +232,11 @@ void JitTranslator::SaveOF(Register& value, ir::ValueType type) {
     if (type == ir::ValueType::U64) {
         return;
     }
+    MergeNZCV();
     Label pass;
     __ Lsr(ip, value, ir::GetValueSizeByte(type) * 8);
     __ Cbz(ip, &pass);
-    if (save_in_nzcv) {
-        if (nzcv_dirty) {
-            __ Mrs(ip, NZCV);
-            __ Orr(ip, ip, 1u << HostFlagsBit::V);
-            nzcv_dirty = false;
-        } else {
-            __ Orr(ip, xzr, 1u << HostFlagsBit::V);
-        }
-        __ Msr(NZCV, ip);
-    } else {
-        __ Orr(flags, flags, 1u << HostFlagsBit::V);
-    }
+    __ Orr(flags, flags, 1u << HostFlagsBit::V);
     __ Bind(&pass);
 }
 

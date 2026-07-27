@@ -19,7 +19,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstring>
+#include <memory>
 #include <span>
 #include <shared_mutex>
 #include <string>
@@ -39,21 +41,43 @@ public:
     // aligned to this.
     static constexpr u64 kHostPageSize = 0x4000;
 
+    // --- Bounded guest window (address-space isolation) -------------------
+    // Default number of guest address bits. 32 is special-cased everywhere it
+    // matters: the arm64 JIT can express `host = pt + zext32(guest)` with the
+    // register-offset-with-extend addressing mode, so truncation is free.
+    static constexpr u32 kDefaultWindowBits = 32;
+    // The mmap arena starts at half the window and grows up; the classic guest
+    // stack (0x7FF00000) and brk live below it.
+    static constexpr u64 kNullGuardEnd = 0x10000;
+
     GuestMemory() = default;
     ~GuestMemory() = default;
 
-    // Guest->host bias (host address = guest address + bias). Must be
-    // host-page aligned. Set once by the loader after reserving the image
+    // Guest->host bias (host address = (guest address & mask) + bias). Must
+    // be host-page aligned. Set once by the loader after reserving the image
     // span; 0 means identity mapping.
     void SetBias(u64 bias) { bias_ = bias; }
     [[nodiscard]] u64 GetBias() const { return bias_; }
 
+    // Reserves the whole guest window ([0, 2^bits) guest) as one PROT_NONE
+    // host region and installs the bias. Every later mapping is carved out of
+    // this reservation with MAP_FIXED, so no guest address — masked to `bits`
+    // bits — can ever name host memory outside it. bits == 0 disables the
+    // window and keeps the legacy unbounded bias mode.
+    bool ReserveWindow(u32 bits);
+    [[nodiscard]] bool Windowed() const { return window_bits_ != 0; }
+    [[nodiscard]] u32 WindowBits() const { return window_bits_; }
+    // Address mask applied to every guest address before the bias is added.
+    // ~0 when the window is disabled (legacy behaviour).
+    [[nodiscard]] u64 Mask() const { return mask_; }
+    [[nodiscard]] u64 WindowSize() const { return window_bits_ ? (u64(1) << window_bits_) : 0; }
+
     // Guest address -> host pointer (the ONLY place the bias is applied).
     [[nodiscard]] void* ToHost(VAddr guest_addr) const {
-        return reinterpret_cast<void*>(guest_addr + bias_);
+        return reinterpret_cast<void*>((guest_addr & mask_) + bias_);
     }
     [[nodiscard]] const void* ToHostConst(VAddr guest_addr) const {
-        return reinterpret_cast<const void*>(guest_addr + bias_);
+        return reinterpret_cast<const void*>((guest_addr & mask_) + bias_);
     }
     // Host pointer -> guest address.
     [[nodiscard]] VAddr ToGuest(const void* host_ptr) const {
@@ -61,11 +85,14 @@ public:
     }
 
     // Map anonymous zero pages at an exact guest address (host map at
-    // guest + bias). Returns false on failure.
+    // guest + bias). Returns false on failure. In windowed mode the range
+    // must lie inside the window; the map is carved out of the reservation
+    // and therefore replaces whatever guest pages were there (callers that
+    // need Linux' "fail if occupied" semantics test RangeIsMapped first).
     bool MapFixed(VAddr addr, u64 size);
 
-    // Map anonymous pages at a host-chosen address; returns the *guest*
-    // address (host - bias) or 0 on failure.
+    // Map anonymous pages at a free guest address; returns the *guest*
+    // address or 0 on failure. Windowed: first fit in the mmap arena.
     VAddr MapAnywhere(u64 size);
 
     // Reserves the guest image span at a host-chosen location and installs
@@ -82,8 +109,20 @@ public:
     // runtime::MemoryInterface — bias translation (instruction fetch).
     bool Read(void* dest, size_t addr, size_t size) override;
     bool Write(void* src, size_t addr, size_t size) override;
+    // Instruction fetch, and the ONLY guest access the frontend makes from
+    // host code. It must be validated: the bias is a plain add, so an
+    // unmapped guest address yields a host pointer into whatever the host
+    // happens to have there — a wild guest branch target would fault the HOST
+    // translator (host pc outside every JIT buffer, so runtime.cpp's
+    // HandleFault cannot recover it) instead of killing only the guest.
+    // Returning nullptr routes the caller to ExitReason::PageFatal; every
+    // caller in runtime/frontend/x86 already handles it.
     void* GetPointer(void* src) override {
-        return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(src) + bias_);
+        const auto guest = reinterpret_cast<VAddr>(src);
+        if (!RangeIsMapped(guest, 1)) {
+            return nullptr;
+        }
+        return ToHost(guest);
     }
 
     // Typed helpers for guest memory access.
@@ -115,6 +154,30 @@ public:
     // True if every byte of [addr, addr+size) lies inside one mapped region.
     bool RangeIsMapped(VAddr addr, u64 size) const;
 
+    // Number of contiguous mapped bytes starting at `addr`, capped at
+    // `length` (and at the window end). 0 means `addr` itself is unmapped.
+    //
+    // This is the probe the *helpers* use — x87/fxsave and the rep-string
+    // walks, which dereference guest memory from host frames a fault cannot
+    // be recovered from — so it must be cheap enough to sit in front of a
+    // `rep movsb` of four bytes. With the window enabled it is a lock-free
+    // read of a page-presence bitmap (one bit per 16 KiB host page); the
+    // shared_mutex + interval binary search is only the unwindowed fallback.
+    //
+    // The overwhelmingly common shape — a windowed access that fits in one
+    // host page — is inlined here; everything else goes out of line.
+    [[nodiscard]] u64 MappedBytesFrom(VAddr addr, u64 length) const {
+        if (page_bitmap_) {
+            const VAddr base = addr & mask_;
+            const u64 in_page = kHostPageSize - (base & (kHostPageSize - 1));
+            if (length <= in_page) {
+                return PageBit(base) ? length : 0;
+            }
+        }
+        return MappedBytesFromSlow(addr, length);
+    }
+    [[nodiscard]] u64 MappedBytesFromSlow(VAddr addr, u64 length) const;
+
     bool TryReadBytes(VAddr addr, std::span<u8> out);
     bool TryWriteBytes(VAddr addr, std::span<const u8> data);
 
@@ -142,9 +205,34 @@ private:
     void TrackUnmap(VAddr addr, u64 size);
     void TrackUnmapLocked(VAddr addr, u64 size);
     [[nodiscard]] bool RangeIsMappedLocked(VAddr addr, u64 size) const;
+    // First free [addr, addr+size) hole at or above `from` inside the window.
+    [[nodiscard]] VAddr FindFreeLocked(VAddr from, u64 size) const;
+    // Page-presence bitmap, one bit per host page of the window; nullptr when
+    // the window is disabled. Written only under mapped_regions_mutex (so the
+    // bitmap and mapped_regions never disagree for a caller that is not
+    // racing its own mmap), read without any lock.
+    void SetPageBits(VAddr addr, u64 size, bool present);
+    [[nodiscard]] bool PageBit(VAddr addr) const {
+        const u64 page = (addr & mask_) >> kHostPageShift;
+        return (page_bitmap_[page >> 6].load(std::memory_order_relaxed) >> (page & 63)) & 1;
+    }
+    static constexpr u32 kHostPageShift = 14;  // kHostPageSize == 1 << 14
+    static_assert(kHostPageSize == (u64(1) << kHostPageShift));
+    // calloc, not new[]: at the 47-bit maximum the bitmap is 1 GiB and
+    // value-initializing it would fault in every page. calloc hands back
+    // fresh zero pages, and all-zero bytes are a valid representation of
+    // std::atomic<u64>{0}.
+    struct BitmapFree {
+        void operator()(std::atomic<u64>* p) const noexcept { std::free(p); }
+    };
+    std::unique_ptr<std::atomic<u64>[], BitmapFree> page_bitmap_;
     mutable std::shared_mutex mapped_regions_mutex;
     std::vector<std::pair<VAddr, VAddr>> mapped_regions;
     u64 bias_{};
+    // Bounded guest window. window_bits_ == 0 => disabled, mask_ == ~0.
+    u32 window_bits_{};
+    u64 mask_{~u64(0)};
+    VAddr arena_base_{};
 };
 
 }  // namespace swift::linux

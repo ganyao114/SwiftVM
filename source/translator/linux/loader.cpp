@@ -106,19 +106,16 @@ LoadedImage ElfLoader::Load(const std::string& path) {
                  span_start,
                  memory->GetBias());
     } else {
-        // Static PIE: self-relocating, so it has no absolute-address problem
-        // and stays on the proven identity path (guest addr == host addr,
-        // Config::memory_base = nullptr, zero-overhead fast path).
-        // TODO: move PIE onto the bias path as well once the x86 frontend's
-        // rep movs/stos host helpers (decoder.cc RepMovs/RepStos*) translate
-        // guest pointers — they currently dereference them directly, which
-        // only works identity mapped.
+        // Static PIE: self-relocating, so it can be placed anywhere. With the
+        // bounded guest window that "anywhere" is a free guest address inside
+        // the window, exactly like every other mapping; the host-chosen
+        // identity placement it used before could not be bounded.
         auto base = memory->MapAnywhere(span);
         if (!base) {
             PANIC("Failed to reserve guest address span for image! file = {}", path);
         }
         guest_base = base - span_start;
-        LOG_INFO("ET_DYN loaded identity-mapped: guest base {:#x}", guest_base);
+        LOG_INFO("ET_DYN loaded at guest base {:#x}", guest_base);
     }
 
     // Copy segment file contents into the reservation (guest addresses; the

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <limits>
 
+#include "runtime/backend/signal_handler.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "translator/x86/cpu.h"
 
@@ -246,32 +247,91 @@ softfloat_state StateFromControl(const ThreadContext64& ctx, bool force_extended
     return state;
 }
 
-u8* GuestPointer(u64 address) {
-    return reinterpret_cast<u8*>(address + GetGuestMemBias());
+// Guest -> host pointer for the x87 / fxsave helpers.
+//
+// These run in *host* code, so a fault taken here is unrecoverable:
+// runtime.cpp's HandleFault only rewinds faults whose host pc lies inside a
+// JIT buffer, and this frame's does not. Two guards, in order:
+//   1. the bounded guest window mask (Config::guest_addr_mask) — a wild guest
+//      address can then only ever name an in-window guest page, never host
+//      memory. This is the isolation guarantee and is unconditional.
+//   2. the embedder's guest-mapping oracle — an in-window but *unmapped*
+//      address yields nullptr and the caller skips the access, so the host
+//      survives. Embedders without an oracle (unit tests, fuzzers, identity
+//      mappings) keep the raw behaviour.
+// [address, address + size) must be backed in full.
+//
+// A rejected access is NOT silently skipped: the guest-visible outcome is
+// #PF, so kGuestFaultLatch below records it and the helper entry points OR
+// x86::kX87GuestFault into their result. The emitted code checks that bit and
+// exits the block with HaltReason::PageFatal, which is how every other
+// synchronous guest memory fault is reported.
+}  // namespace  (GuestPointer is declared in x87.h)
+
+namespace {
+// Set by GuestPointer when it refuses an access, consumed (and cleared) by
+// the helper entry points. Thread-local: guest threads run helpers
+// concurrently on their own host threads.
+thread_local bool g_guest_fault_latch = false;
+
+bool TakeGuestFault() {
+    const bool faulted = g_guest_fault_latch;
+    g_guest_fault_latch = false;
+    return faulted;
 }
+}  // namespace
+
+u8* GuestPointer(u64 address, size_t size) {
+    const u64 mask = GetGuestAddrMask();
+    const u64 masked = address & mask;
+    if (size == 0 || (mask != UINT64_MAX && size > mask - masked + 1)) {
+        g_guest_fault_latch = true;
+        return nullptr;
+    }
+    auto* host = reinterpret_cast<u8*>(masked + GetGuestMemBias());
+    // One range probe covers the whole access, so a hole in the middle is
+    // caught too -- the old first/last-byte pair relied on the access being
+    // smaller than the mapping granularity.
+    if (runtime::backend::SignalHandler::GuestMappedBytes(
+                reinterpret_cast<std::uintptr_t>(host), size) < size) {
+        g_guest_fault_latch = true;
+        return nullptr;
+    }
+    return host;
+}
+
+namespace {
 
 template <typename T>
 T LoadGuest(u64 address) {
     T value{};
-    std::memcpy(&value, GuestPointer(address), sizeof(value));
+    if (const auto* p = GuestPointer(address, sizeof(T))) {
+        std::memcpy(&value, p, sizeof(value));
+    }
     return value;
 }
 
 template <typename T>
 void StoreGuest(u64 address, T value) {
-    std::memcpy(GuestPointer(address), &value, sizeof(value));
+    if (auto* p = GuestPointer(address, sizeof(T))) {
+        std::memcpy(p, &value, sizeof(value));
+    }
 }
 
 extFloat80_t LoadExt80(u64 address) {
     extFloat80_t value{};
-    std::memcpy(&value.signif, GuestPointer(address), 8);
-    std::memcpy(&value.signExp, GuestPointer(address) + 8, 2);
+    if (const auto* p = GuestPointer(address, 10)) {
+        std::memcpy(&value.signif, p, 8);
+        std::memcpy(&value.signExp, p + 8, 2);
+    }
     return value;
 }
 
 void StoreExt80(u64 address, const extFloat80_t& value) {
-    std::memcpy(GuestPointer(address), &value.signif, 8);
-    std::memcpy(GuestPointer(address) + 8, &value.signExp, 2);
+    if (auto* p = GuestPointer(address, 10)) {
+        std::memcpy(p, &value.signif, 8);
+        std::memcpy(p + 8, &value.signExp, 2);
+    }
 }
 
 extFloat80_t Signed64ToExt80(s64 integer) {
@@ -285,16 +345,51 @@ extFloat80_t Signed64ToExt80(s64 integer) {
     return value;
 }
 
+// x87 defines C1 as the rounding *direction*: set when the significand was
+// rounded up, i.e. when the delivered magnitude exceeds the exact source
+// magnitude.  It is NOT "the delivered value is arithmetically greater than
+// the source".  Rosetta real-x86 arbitration:
+//   FIST m32 of -1.5, round-to-nearest -> stores -2 with C1=1, even though -2
+//     is the *smaller* value (|-2| > |-1.5| is what C1 reports);
+//   FST m32 of -1e40, masked overflow  -> stores -inf with C1=1;
+//   FST m32 of -1e-60, round toward -inf -> stores -denormal_min with C1=1.
+// The inexact flag alone gives the magnitude of the error, never its
+// direction, so an explicit comparison is unavoidable.
+bool RoundedUpInMagnitude(extFloat80_t source, extFloat80_t stored) {
+    source.signExp &= 0x7FFF;
+    stored.signExp &= 0x7FFF;
+    softfloat_state scratch{};
+    // A NaN compares false in both directions, which is exactly right: a NaN
+    // result never raises #P, and C1 is only meaningful when #P is signalled.
+    return extF80_lt(&scratch, source, stored);
+}
+
 extFloat80_t LoadMemoryValue(ThreadContext64& ctx, X87Format format, u64 address) {
     auto state = StateFromControl(ctx, true);
+    // FLD m32/m64 of a signaling NaN is an invalid operation: real x86 raises
+    // #IA and pushes the quieted value, so a later consumer (FSQRT, FADD, ...)
+    // sees IE already set. SoftFloat records that in `state`, which used to be
+    // discarded here — the quieting happened but the exception never reached
+    // the status word.
+    //
+    // NOTE: Unicorn does not propagate IE here either, but it also never reads
+    // FSW after FLD, so the differential fuzz cannot observe this and needs no
+    // mask; the directed assertions in x86_fuzz.cpp are the only coverage.
+    // Real x86 behaviour was established by Rosetta arbitration.
+    // Widening m32/m64 to ext80 is always exact, so the only flag SoftFloat can
+    // produce here is invalid (from an SNaN); no spurious PE/UE is possible.
     switch (format) {
         case X87Format::Float32: {
             float32_t value{.v = LoadGuest<u32>(address)};
-            return f32_to_extF80(&state, value);
+            const auto result = f32_to_extF80(&state, value);
+            RaiseSoftFloat(ctx, state.exceptionFlags);
+            return result;
         }
         case X87Format::Float64: {
             float64_t value{.v = LoadGuest<u64>(address)};
-            return f64_to_extF80(&state, value);
+            const auto result = f64_to_extF80(&state, value);
+            RaiseSoftFloat(ctx, state.exceptionFlags);
+            return result;
         }
         case X87Format::Float80:
             return LoadExt80(address);
@@ -371,13 +466,36 @@ void StoreFloat(ThreadContext64& ctx, X87Format format, u64 address) {
     const auto value = Read(ctx, 0);
     auto state = StateFromControl(ctx);
     ctx.x87_fsw &= static_cast<u16>(~kSwC1);
+
+    // FST/FSTP report the rounding direction in C1 exactly like FIST/FISTP do
+    // (see RoundedUpInMagnitude).  Widening the narrowed result back to ext80
+    // is always exact, so the magnitude comparison against the source is the
+    // architectural predicate, covering masked overflow (delivered infinity is
+    // a round-up) and masked underflow (delivered zero is not) for free.
+    //
+    // NOTE: Unicorn never reads FSW after FST, so the differential fuzz cannot
+    // observe C1 here at all; the directed assertions in x86_fuzz.cpp are the
+    // only coverage, and their expectations come from Rosetta real-x86 runs.
+    softfloat_state widen{};
+    const auto mark_round_up = [&](const extFloat80_t& stored) {
+        if (RoundedUpInMagnitude(value, stored)) ctx.x87_fsw |= kSwC1;
+    };
     if (format == X87Format::Float32) {
         const auto out = extF80_to_f32(&state, value);
         StoreGuest<u32>(address, out.v);
+        mark_round_up(f32_to_extF80(&widen, out));
     } else if (format == X87Format::Float64) {
         const auto out = extF80_to_f64(&state, value);
         StoreGuest<u64>(address, out.v);
+        mark_round_up(f64_to_extF80(&widen, out));
     } else {
+        // FST/FSTP m80 copies the ext80 datum bit for bit, so no rounding is
+        // possible and C1 is architecturally always 0 — the blanket clear
+        // above is the whole story.  Verified on real x86: FSTP m80 of a value
+        // that is inexact in every narrower format reports C1=0 and PE=0, and
+        // still clears a C1 that an immediately preceding FXAM had set.  The
+        // ARM64 mid-tier inline m80 store agrees (`And fsw, 0xFDFF` in
+        // translator_x87.cpp).
         StoreExt80(address, value);
     }
     RaiseSoftFloat(ctx, state.exceptionFlags);
@@ -407,6 +525,29 @@ void StoreInteger(ThreadContext64& ctx,
     const u8 rounding = truncate ? softfloat_round_minMag : state.roundingMode;
     ctx.x87_fsw &= static_cast<u16>(~kSwC1);
 
+    // C1 reports the rounding direction: set when the significand was rounded
+    // up, which for a store means the delivered magnitude exceeds the source
+    // magnitude (see RoundedUpInMagnitude).  Widen the integer result back to
+    // ext80 and compare — the inexact flag alone gives magnitude, not sign.
+    // Only called on the paths that actually store a converted result: when
+    // #IA forces the integer indefinite value, C1 stays 0.
+    //
+    // The predicate is a *magnitude* comparison, not "stored > source": real
+    // x86 stores -2 for FIST(-1.5) under round-to-nearest with C1=1 even
+    // though -2 is the smaller value.  An earlier value comparison here was
+    // therefore inverted for every negative source.
+    //
+    // NOTE: Unicorn never reads FSW after FIST, so the differential fuzz
+    // cannot observe C1 here; the directed assertions in x86_fuzz.cpp are the
+    // only coverage, and their expectations come from Rosetta real-x86 runs.
+    // Signed64ToExt80, not i64_to_extF80: the vendored SoftFloat build does not
+    // include the latter's translation unit.
+    const auto mark_round_up = [&](s64 stored) {
+        if (RoundedUpInMagnitude(value, Signed64ToExt80(stored))) {
+            ctx.x87_fsw |= kSwC1;
+        }
+    };
+
     // SoftFloat's integer conversion entry points are intended to return their
     // configured NaN sentinel, but x87 must not let any NaN payload reach the
     // finite significand-shift path.  All FIST/FISTP/FISTTP widths use the
@@ -423,6 +564,7 @@ void StoreInteger(ThreadContext64& ctx,
             indefinite();
         } else {
             StoreGuest<u64>(address, static_cast<u64>(out));
+            mark_round_up(out);
         }
     } else {
         const s32 out = extF80_to_i32(&state, value, rounding, true);
@@ -435,8 +577,10 @@ void StoreInteger(ThreadContext64& ctx,
             StoreGuest<u16>(address, 0x8000);
         } else if (format == X87Format::Int16) {
             StoreGuest<u16>(address, static_cast<u16>(out));
+            mark_round_up(out);
         } else {
             StoreGuest<u32>(address, static_cast<u32>(out));
+            mark_round_up(out);
         }
     }
     RaiseSoftFloat(ctx, state.exceptionFlags);
@@ -972,13 +1116,36 @@ void Unary(ThreadContext64& ctx, X87Unary operation) {
             break;
         case X87Unary::Sqrt: {
             auto state = StateFromControl(ctx);
-            value = extF80_sqrt(&state, value);
+            const auto result = extF80_sqrt(&state, value);
+            // C1 is the rounding direction here too, but unlike a store there
+            // is no exact result to compare against.  Recompute toward zero:
+            // that mode always delivers the smaller-magnitude neighbour of the
+            // exact root, so "differs from it" is precisely "the significand
+            // was rounded up".  Guarded by the inexact flag, so exactly-
+            // representable roots pay nothing.
+            if (state.exceptionFlags & softfloat_flag_inexact) {
+                auto toward_zero = StateFromControl(ctx);
+                toward_zero.roundingMode = softfloat_round_minMag;
+                const auto down = extF80_sqrt(&toward_zero, value);
+                if (result.signif != down.signif ||
+                    result.signExp != down.signExp) {
+                    ctx.x87_fsw |= kSwC1;
+                }
+            }
+            value = result;
             RaiseSoftFloat(ctx, state.exceptionFlags);
             break;
         }
         case X87Unary::Round: {
             auto state = StateFromControl(ctx, true);
-            value = extF80_roundToInt(&state, value, state.roundingMode, true);
+            const auto rounded =
+                    extF80_roundToInt(&state, value, state.roundingMode, true);
+            // FRNDINT's result is directly comparable with its own source, so
+            // the direction needs no second computation.  Magnitude, not
+            // value: real x86 rounds -1.5 to -2 with C1=1 under both
+            // round-to-nearest and round toward -inf.
+            if (RoundedUpInMagnitude(value, rounded)) ctx.x87_fsw |= kSwC1;
+            value = rounded;
             RaiseSoftFloat(ctx, state.exceptionFlags);
             break;
         }
@@ -1019,7 +1186,8 @@ u8 AbridgedTag(const ThreadContext64& ctx) {
 }
 
 void StoreEnvironment(ThreadContext64& ctx, u64 address) {
-    auto* out = GuestPointer(address);
+    auto* out = GuestPointer(address, 28);
+    if (!out) return;
     const u32 fcw = ctx.x87_fcw;
     const u32 fsw = ctx.x87_fsw;
     const u32 ftw = ctx.x87_ftw;
@@ -1040,7 +1208,8 @@ void StoreEnvironment(ThreadContext64& ctx, u64 address) {
 }
 
 void LoadEnvironment(ThreadContext64& ctx, u64 address) {
-    const auto* in = GuestPointer(address);
+    const auto* in = GuestPointer(address, 28);
+    if (!in) return;
     u32 fcw{}, fsw{}, ftw{}, fip{}, fcs_fop{}, fdp{};
     std::memcpy(&fcw, in + 0, 4);
     std::memcpy(&fsw, in + 4, 4);
@@ -1059,7 +1228,7 @@ void LoadEnvironment(ThreadContext64& ctx, u64 address) {
 
 }  // namespace
 
-u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
+static u64 X87DispatchImpl(u64 context, u64 command_word, u64 guest_address) {
     if (X87DispatchStatsEnabled()) {
         g_x87_dispatch_calls.fetch_add(1, std::memory_order_relaxed);
     }
@@ -1087,14 +1256,31 @@ u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
             break;
         case X87Action::StoreFloat:
             StoreFloat(ctx, command.format, guest_address);
-            if (command.flags & X87Pop) Pop(ctx);
+            if (command.flags & X87Pop) {
+                // Same reasoning as StoreInt below: FSTP's pop belongs to the
+                // same instruction as the store and must not erase the
+                // rounding direction StoreFloat just recorded in C1.
+                const u16 c1 = ctx.x87_fsw & kSwC1;
+                Pop(ctx);
+                ctx.x87_fsw = static_cast<u16>((ctx.x87_fsw & ~kSwC1) | c1);
+            }
             break;
         case X87Action::StoreInt:
             StoreInteger(ctx,
                          command.format,
                          guest_address,
                          (command.flags & X87Truncate) != 0);
-            if (command.flags & X87Pop) Pop(ctx);
+            if (command.flags & X87Pop) {
+                // FISTP's pop belongs to the same instruction as the store, so
+                // it must not erase the rounding direction StoreInteger just
+                // recorded in C1. Pop() clears C1 as a blanket rule — correct
+                // where C1 carries no other meaning — so carry the store's
+                // value across it. A stack underflow has already forced C1 to
+                // 0 via StackFault, and that 0 is preserved here too.
+                const u16 c1 = ctx.x87_fsw & kSwC1;
+                Pop(ctx);
+                ctx.x87_fsw = static_cast<u16>((ctx.x87_fsw & ~kSwC1) | c1);
+            }
             break;
         case X87Action::LoadReg: {
             const auto value =
@@ -1105,6 +1291,15 @@ u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
         case X87Action::StoreReg:
             if (Require(ctx, 0)) {
                 Write(ctx, command.index, Read(ctx, 0));
+                // A register-to-register FST/FSTP transfers the ext80 datum
+                // unrounded, so C1 is architecturally 0 rather than left at
+                // whatever the previous instruction put there.  Verified on
+                // real x86: FXAM of a negative (C1=1) followed by FST ST(1)
+                // reports C1=0.  The ARM64 mid-tier inline path already did
+                // this (`And fsw, 0xFDFF` in translator_x87.cpp); the helper
+                // did not.  The underflow branch needs no clear because
+                // Require -> StackFault has already forced C1 to 0.
+                ctx.x87_fsw &= static_cast<u16>(~kSwC1);
             } else {
                 Write(ctx, command.index, kIndefinite);
             }
@@ -1181,9 +1376,21 @@ u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
     return 0;
 }
 
-u64 X87Fxsave(u64 context, u64 guest_address) {
+// Public entry points: clear the latch, run the operation, and report any
+// refused guest access to the emitted code through kX87GuestFault. The x87
+// state may already be partially updated when the fault is reported; that is
+// visible only through the halt diagnostics, because PageFatal terminates the
+// guest thread rather than delivering a resumable #PF.
+u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
+    TakeGuestFault();
+    const u64 result = X87DispatchImpl(context, command_word, guest_address);
+    return result | (TakeGuestFault() ? kX87GuestFault : 0);
+}
+
+static u64 X87FxsaveImpl(u64 context, u64 guest_address) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
-    auto* out = GuestPointer(guest_address);
+    auto* out = GuestPointer(guest_address, 512);
+    if (!out) return 0;
     std::memset(out, 0, 512);
     std::memcpy(out + 0, &ctx.x87_fcw, 2);
     std::memcpy(out + 2, &ctx.x87_fsw, 2);
@@ -1203,9 +1410,16 @@ u64 X87Fxsave(u64 context, u64 guest_address) {
     return 0;
 }
 
-u64 X87Fxrstor(u64 context, u64 guest_address) {
+u64 X87Fxsave(u64 context, u64 guest_address) {
+    TakeGuestFault();
+    const u64 result = X87FxsaveImpl(context, guest_address);
+    return result | (TakeGuestFault() ? kX87GuestFault : 0);
+}
+
+static u64 X87FxrstorImpl(u64 context, u64 guest_address) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
-    const auto* in = GuestPointer(guest_address);
+    const auto* in = GuestPointer(guest_address, 512);
+    if (!in) return 0;
     std::memcpy(&ctx.x87_fcw, in + 0, 2);
     std::memcpy(&ctx.x87_fsw, in + 2, 2);
     u8 abridged{};
@@ -1228,6 +1442,12 @@ u64 X87Fxrstor(u64 context, u64 guest_address) {
     }
     RecomputeSummary(ctx);
     return 0;
+}
+
+u64 X87Fxrstor(u64 context, u64 guest_address) {
+    TakeGuestFault();
+    const u64 result = X87FxrstorImpl(context, guest_address);
+    return result | (TakeGuestFault() ? kX87GuestFault : 0);
 }
 
 }  // namespace swift::x86

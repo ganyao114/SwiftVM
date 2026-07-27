@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "perf_stats.h"
 #include "types.h"
 
 namespace swift::runtime {
@@ -12,7 +13,16 @@ template <typename T, bool destruct = false>
     requires std::is_destructible_v<T> || (!destruct)
 class ObjectPool {
 public:
-    explicit ObjectPool(size_t chunk_size = 64) : new_chunk_size{chunk_size * sizeof(T)} {
+    // chunk_size is a count of T, not a byte size: Chunk's constructor takes an
+    // object count (`num_objects`) and FreeChunk() hands new_chunk_size
+    // straight to it. Multiplying by sizeof(T) here -- as this constructor used
+    // to -- allocated sizeof(T) times too many objects, i.e. sizeof(T)^2 bytes
+    // per requested object. HIRPools' five pools came to 1.65 MB per compiled
+    // unit (measured with SVM_PROF's pool_bytes: 1.87 GB over 1131 units on
+    // func_tests) where 26 KB is what the requested capacities describe. The
+    // pools are still grown on demand by FreeChunk, so nothing but the
+    // allocation size changes.
+    explicit ObjectPool(size_t chunk_size = 64) : new_chunk_size{chunk_size} {
         node = &chunks.emplace_back(new_chunk_size);
     }
 
@@ -56,7 +66,11 @@ private:
     struct Chunk {
         explicit Chunk() = default;
         explicit Chunk(size_t size)
-                : num_objects{size}, storage{std::make_unique<Storage[]>(size)} {}
+                : num_objects{size}, storage{std::make_unique<Storage[]>(size)} {
+            if (PerfEnabled()) {
+                PerfAdd(GetPerfStats().pool_bytes, size * sizeof(Storage));
+            }
+        }
 
         Chunk& operator=(Chunk&& rhs) noexcept {
             Release();

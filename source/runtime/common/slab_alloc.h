@@ -80,8 +80,24 @@ public:
         allocator.Free(obj);
     }
 
+    // First initialization wins; later calls are ignored.
+    //
+    // The slab is a process-global, one-shot resource and SlabObject::TryFree
+    // tells a slab pointer from a malloc'd one *only* by testing [start, end).
+    // Re-initializing therefore cannot be honoured: it would (a) orphan every
+    // object still living in the previous region, so freeing one hands libc an
+    // interior pointer of a live malloc block ("pointer being freed was not
+    // allocated"), and (b) chain the new region's free nodes on top of the old
+    // list -- SlabAllocator::Initialize only sets the object size, it does not
+    // reset `head` -- so once the new region drains, Allocate() starts handing
+    // out addresses from the orphaned region and every free of one aborts.
     void Initialize(void* memory, size_t memory_size) {
         ASSERT(memory != nullptr);
+
+        if (initialized) {
+            return;
+        }
+        initialized = true;
 
         auto object_size = sizeof(T);
 
@@ -100,6 +116,9 @@ public:
     }
 
     void Initialize(size_t object_size) {
+        if (initialized) {
+            return;
+        }
         slab_memory = malloc(sizeof(T) * object_size);
         if (slab_memory) {
             Initialize(slab_memory, sizeof(T) * object_size);
@@ -111,6 +130,7 @@ private:
     uintptr_t start{};
     uintptr_t end{};
     void* slab_memory{};
+    bool initialized{};
 };
 
 template <class T, bool override = false> class SlabObject {

@@ -2,12 +2,65 @@
 // Created by 甘尧 on 2023/10/13.
 //
 
+#include <algorithm>
 #include "reg_alloc.h"
 
 namespace swift::runtime::backend {
 
+// See reg_alloc.h for what this table is and who enforces it.
+//
+// Only opcodes that exceed the default appear here. Every entry is a measured
+// peak over the full corpus, cross-checked against the emitter source:
+//
+//  * X87Op reaches eight GPRs. Not because of any one arm: LoadFloat(m80),
+//    StoreFloat(m80), LoadInt, StoreInt, Compare, Unary/FSQRT, LoadReg and
+//    StoreReg each hold exactly eight (status word, tag word, one or two
+//    physical indices, a shift, an address, and the value being rebuilt), so
+//    retiring an arm does not move this bound -- the retired reduced-precision
+//    Binary arm also held eight, and dropping it left the peak unchanged.
+//    Eight remains the largest demand in the corpus; everything else is <= 5.
+//  * VecFCvtFloatToInt open-codes the x86 "invalid conversion -> INT_MIN"
+//    rule per lane and holds five GPRs across it.
+//  * VecFCvtPacked and VecFMulAdd hold five vector temporaries.
+//  * The float arithmetic family needs no GPR at all: since the NaN fixup
+//    became NEON (three vector temporaries, all lanes at once) their demand is
+//    that three plus whatever the calling emitter is already holding -- two
+//    for the 32-bit scalar shapes (merge target + the FPR-materialised right
+//    operand), one for the 64-bit ones, none for the packed ones.
+ScratchNeed ScratchBudget(ir::OpCode op) {
+    switch (op) {
+        // --- eight GPRs --------------------------------------------------
+        case ir::OpCode::X87Op:
+            return {8, kDefaultScratchFPR};
+        // --- five GPRs ---------------------------------------------------
+        case ir::OpCode::VecFCvtFloatToInt:
+            return {5, kDefaultScratchFPR};
+        // --- five FPRs ---------------------------------------------------
+        case ir::OpCode::VecFAddScalar32:
+        case ir::OpCode::VecFSubScalar32:
+        case ir::OpCode::VecFMulScalar32:
+        case ir::OpCode::VecFDivScalar32:
+        case ir::OpCode::VecFCvtPacked:
+        case ir::OpCode::VecFMulAdd:
+            return {kDefaultScratchGPR, 5};
+        // --- four FPRs ---------------------------------------------------
+        case ir::OpCode::VecFAddScalar64:
+        case ir::OpCode::VecFSubScalar64:
+        case ir::OpCode::VecFMulScalar64:
+        case ir::OpCode::VecFDivScalar64:
+            return {kDefaultScratchGPR, 4};
+        default:
+            return {kDefaultScratchGPR, kDefaultScratchFPR};
+    }
+}
+
 RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs)
         : alloc_result(instr_size), gprs(gprs), fprs(fprs) {}
+
+void RegAlloc::ResetAllocations() {
+    std::fill(alloc_result.begin(), alloc_result.end(), Map{});
+    current_ir = nullptr;
+}
 
 void RegAlloc::MapRegister(u32 id, ir::HostFPR fpr) {
     auto& map = alloc_result[id];

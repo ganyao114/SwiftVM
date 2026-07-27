@@ -221,21 +221,12 @@ void JitTranslator::BeginX87TopVirtBlock(ir::Block* block) {
             it != x87_top_blocks.end() &&
             it->second.eligible &&
             (!translating_function || x87_topvirt_function_eligible);
-    x87_pin_cache_possible = false;
-    x87_pin_cache_for_current = false;
 }
 
 void JitTranslator::PrepareX87TopCache(ir::Inst* inst) {
     x87_top_cache_for_current = false;
-    x87_pin_cache_for_current = false;
     if (!x87_top_block_codegen_enabled ||
         inst->GetOp() != ir::OpCode::X87Op) {
-        if (x87_pin_cache_possible) {
-            // x20[2:0] is cached TOP; x20[11:8] is the valid mask for
-            // D28-D31 (logical ST0-ST3).
-            __ And(WRegister{20}, WRegister{20}, 7);
-            x87_pin_cache_possible = false;
-        }
         return;
     }
 
@@ -246,10 +237,6 @@ void JitTranslator::PrepareX87TopCache(ir::Inst* inst) {
     const int delta = X87CommandTopDelta(
             command_word, known, reset, reset_top);
     if (!known) {
-        if (x87_pin_cache_possible) {
-            __ And(WRegister{20}, WRegister{20}, 7);
-            x87_pin_cache_possible = false;
-        }
         x87_top_cache_valid = false;
         return;
     }
@@ -257,16 +244,14 @@ void JitTranslator::PrepareX87TopCache(ir::Inst* inst) {
         constexpr u32 kFsw =
                 state_offset_uniform_buffer +
                 offsetof(swift::x86::ThreadContext64, x87_fsw);
-        const XRegister cached_top{20};
+        const XRegister cached_top{kX87TopVirtGPR};
         __ Ldrh(cached_top.W(), MemOperand(state, kFsw));
-        // INVARIANT: this whole-register Ubfx is also the pin-mask reset.
-        // Pins (x20[11:8], D28-D31 read cache) are compile-time invalidated
-        // at every block entry, but the runtime mask bits survive control
-        // flow between blocks. Every pin READ is gated behind a pin-binary
-        // Prepare, and every such Prepare passes through this reload (cache
-        // starts invalid per block) — the Ubfx zeroes the stale mask before
-        // any pin can be consumed. If this reload ever becomes mask-
-        // preserving, block-exit pin clears become mandatory instead.
+        // INVARIANT: the TOP register holds nothing but TOP, so this
+        // whole-register Ubfx fully defines it. The retired Binary arm also
+        // kept a D28-D31 read cache whose validity mask lived in bits [11:8]
+        // and survived control flow between blocks; that mask is gone, and any
+        // future reuse of the upper bits must re-establish its own cross-block
+        // clearing rule rather than assuming this reload does it.
         __ Ubfx(cached_top.W(), cached_top.W(), 11, 3);
         x87_top_cache_valid = true;
     }
@@ -277,22 +262,7 @@ void JitTranslator::PrepareX87TopCache(ir::Inst* inst) {
     } else {
         x87_top_cache_for_current = true;
     }
-
-    const auto action =
-            static_cast<swift::x86::X87Action>(command_word & 0xFF);
-    const auto format =
-            static_cast<swift::x86::X87Format>((command_word >> 8) & 0xFF);
-    const bool pin_binary =
-            action == swift::x86::X87Action::Binary &&
-            (format == swift::x86::X87Format::Register ||
-             format == swift::x86::X87Format::Float32 ||
-             format == swift::x86::X87Format::Float64);
-    if (pin_binary && delta == 0 && !reset) {
-        x87_pin_cache_for_current = true;
-    } else if (x87_pin_cache_possible) {
-        __ And(WRegister{20}, WRegister{20}, 7);
-        x87_pin_cache_possible = false;
-    }
+    (void)delta;
 }
 
 void JitTranslator::FinishX87TopCache(ir::Inst* inst) {
@@ -308,21 +278,18 @@ void JitTranslator::FinishX87TopCache(ir::Inst* inst) {
     if (!known) {
         x87_top_cache_valid = false;
     } else if (reset) {
-        __ Mov(WRegister{20}, reset_top & 7);
+        __ Mov(WRegister{kX87TopVirtGPR}, reset_top & 7);
         x87_top_cache_valid = true;
     } else if (delta != 0) {
-        // Pins were invalidated in Prepare. Fold the instruction's stack
-        // effect into the cached runtime entry TOP, modulo eight.
+        // Fold the instruction's stack effect into the cached runtime entry
+        // TOP, modulo eight.
         if (delta > 0) {
-            __ Add(WRegister{20}, WRegister{20}, delta);
+            __ Add(WRegister{kX87TopVirtGPR}, WRegister{kX87TopVirtGPR}, delta);
         } else {
-            __ Sub(WRegister{20}, WRegister{20}, -delta);
+            __ Sub(WRegister{kX87TopVirtGPR}, WRegister{kX87TopVirtGPR}, -delta);
         }
-        __ And(WRegister{20}, WRegister{20}, 7);
+        __ And(WRegister{kX87TopVirtGPR}, WRegister{kX87TopVirtGPR}, 7);
         x87_top_cache_valid = true;
-    }
-    if (x87_pin_cache_for_current) {
-        x87_pin_cache_possible = true;
     }
 }
 
@@ -361,8 +328,6 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
     constexpr u32 kReducedMarkerOffset =
             offsetof(swift::x86::X87Reg, reserved);
     constexpr u8 kReducedMarker = swift::x86::kX87ReducedMarker;
-    constexpr u8 kReducedReadyMarker =
-            swift::x86::kX87ReducedReadyMarker;
 
     const u64 command_word = command.Get();
     const auto action = static_cast<swift::x86::X87Action>(command_word & 0xFF);
@@ -374,7 +339,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
     auto load_top = [&](const Register& destination,
                         const Register& fsw) {
         if (x87_top_cache_for_current) {
-            __ Mov(destination.W(), WRegister{20});
+            __ Mov(destination.W(), WRegister{kX87TopVirtGPR});
             __ And(destination.W(), destination.W(), 7);
         } else {
             __ Ubfx(destination.W(), fsw.W(), 11, 3);
@@ -719,6 +684,11 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ Ldrh(ftw.W(), MemOperand(state, kFtw));
             __ Ldrh(fcw.W(), MemOperand(state, kFcw));
+            // C1 is cleared up front so that both the invalid path and the
+            // converted path start from 0; the converted path re-sets it below
+            // when the store rounded up.  The register copy is dead on every
+            // `slow` branch, which reloads FSW inside the helper.
+            __ And(fsw.W(), fsw.W(), 0xFDFF);
             load_top(top, fsw);
             __ Lsl(shift.W(), top.W(), 1);
             __ Lsr(sign_exp.W(), ftw.W(), shift.W());
@@ -821,6 +791,16 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Fcmp(input_fp.D(), rounded_fp.D());
             __ Cset(scratch.W(), ne);
             __ Orr(fsw.W(), fsw.W(), Operand{scratch.W(), LSL, 5});
+            // C1 is the rounding *direction*: set when the stored magnitude
+            // exceeds the source magnitude, matching StoreInteger in
+            // x87.cpp. Magnitude, not value — real x86 stores -2 for
+            // FIST(-1.5) under round-to-nearest with C1=1. Both temporaries
+            // are dead after the PE compare above, so they can be clobbered.
+            __ Fabs(input_fp.D(), input_fp.D());
+            __ Fabs(rounded_fp.D(), rounded_fp.D());
+            __ Fcmp(rounded_fp.D(), input_fp.D());
+            __ Cset(scratch.W(), gt);
+            __ Orr(fsw.W(), fsw.W(), Operand{scratch.W(), LSL, 9});
             __ B(&store);
 
             __ Bind(&invalid);
@@ -833,7 +813,6 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Orr(fsw.W(), fsw.W(), 1);  // IE
 
             __ Bind(&store);
-            __ And(fsw.W(), fsw.W(), 0xFDFF);  // C1=0
             const auto out = use_memory_base ? BiasMem(guest) : MemOperand(guest);
             if (format == swift::x86::X87Format::Int16) {
                 __ Strh(converted.W(), out);
@@ -850,7 +829,12 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 __ Orr(ftw.W(), ftw.W(), scratch.W());
                 __ Add(top.W(), top.W(), 1);
                 __ And(top.W(), top.W(), 7);
-                __ And(fsw.W(), fsw.W(), 0xC5FF);
+                // 0xC7FF, not the 0xC5FF used by pops elsewhere: FISTP's pop
+                // belongs to the same instruction as the store, so it must
+                // clear TOP without erasing the rounding direction recorded in
+                // C1 above. This mirrors the cross-pop preservation in
+                // X87Dispatch's StoreInt arm.
+                __ And(fsw.W(), fsw.W(), 0xC7FF);
                 __ Orr(fsw.W(), fsw.W(), Operand{top.W(), LSL, 11});
                 __ Strh(ftw.W(), MemOperand(state, kFtw));
             }
@@ -871,476 +855,94 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Bind(&done);
             return;
         }
-        case swift::x86::X87Action::Binary: {
-            // Reduced-precision register and m32real/m64real arithmetic. The
-            // architectural state remains ext80; stack operands must carry
-            // certified f64 provenance. Memory NaN/Inf values, empty/special
-            // stack values, non-RNE control words, and PC below 64 all bail to
-            // the bit-exact SoftFloat implementation. Every finite normal f32
-            // is exactly representable as f64; m64real is already binary64.
-            const bool register_form =
-                    format == swift::x86::X87Format::Register;
-            const bool memory_real =
-                    format == swift::x86::X87Format::Float32 ||
-                    format == swift::x86::X87Format::Float64;
-            if (!register_form && !memory_real) {
-                break;
-            }
-
-            auto fsw = context.GetTmpX();
-            auto ftw = context.GetTmpX();
-            auto fcw = context.GetTmpX();
-            auto left_physical = context.GetTmpX();
-            auto right_physical = context.GetTmpX();
-            auto scratch = context.GetTmpX();
-            auto left_address = context.GetTmpX();
-            // x12/x13 are permanently reserved by the trampoline mask for
-            // atomic emitters. X87Op is mutually exclusive with an atomic
-            // instruction, so using them explicitly bounds this emitter's
-            // generic scratch demand without risking a live guest value.
-            auto right_address = atomic_pair_scratch;
-            auto left_bits = context.GetTmpX();
-            auto right_bits = atomic_scratch;
-            // FCW is dead after the entry guard and is overwritten with FPSR
-            // before its next use, so it can carry the conversion marker.
-            auto round_bits = fcw;
-            auto left_fp = context.GetTmpV();
-            auto right_fp = context.GetTmpV();
-            const u8 left_logical =
-                    register_form &&
-                            (command_flags & swift::x86::X87DestIndex)
-                            ? index
-                            : 0;
-            const u8 right_logical =
-                    register_form
-                            ? ((command_flags & swift::x86::X87DestIndex)
-                                       ? 0
-                                       : index)
-                            : 0;
-            const bool left_cacheable = left_logical < 4;
-            const bool right_cacheable = right_logical < 4;
-            const VRegister left_pin =
-                    VRegister::GetVRegFromCode(28 + (left_logical & 3));
-            const VRegister right_pin =
-                    VRegister::GetVRegFromCode(28 + (right_logical & 3));
-            const WRegister pin_mask{20};
-            Register guest{};
-            if (memory_real) {
-                guest = context.X(address);
-            }
-            Label slow;
-            Label done;
-
-            __ Ldrh(fcw.W(), MemOperand(state, kFcw));
-            __ And(scratch.W(), fcw.W(), 0x0F00);
-            __ Cmp(scratch.W(), 0x0300);  // PC=64 and RC=nearest-even.
-            __ B(ne, &slow);
-
-            __ Ldrh(fsw.W(), MemOperand(state, kFsw));
-            __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            load_top(left_physical, fsw);
-            if (register_form &&
-                (command_flags & swift::x86::X87DestIndex)) {
-                __ Add(left_physical.W(), left_physical.W(), index);
-                __ And(left_physical.W(), left_physical.W(), 7);
-                load_top(right_physical, fsw);
-            } else if (register_form) {
-                __ Add(right_physical.W(), left_physical.W(), index);
-                __ And(right_physical.W(), right_physical.W(), 7);
-            }
-
-            // Stack source tags must be non-empty. Special values deliberately
-            // stay on SoftFloat even when their payload happens to fit f64.
-            auto require_nonempty = [&](const Register& physical) {
-                __ Lsl(scratch.W(), physical.W(), 1);
-                __ Lsr(scratch.W(), ftw.W(), scratch.W());
-                __ And(scratch.W(), scratch.W(), 3);
-                __ Cmp(scratch.W(), 3);
-                __ B(eq, &slow);
-            };
-            require_nonempty(left_physical);
-            if (register_form) {
-                require_nonempty(right_physical);
-            }
-
-            __ Add(left_address, state, kRegs);
-            __ Add(left_address,
-                   left_address,
-                   Operand{left_physical, LSL, 4});
-            if (register_form) {
-                __ Add(right_address, state, kRegs);
-                __ Add(right_address,
-                       right_address,
-                       Operand{right_physical, LSL, 4});
-            }
-
-            // Spell out the two conversions rather than retaining a label in
-            // a lambda: VIXL labels must have stable storage.
-            auto convert_one = [&](const Register& ext_address,
-                                   const Register& bits,
-                                   const Register& exponent,
-                                   const VRegister& fp) {
-                auto sign_exp = scratch;
-                Label marker_ready;
-                Label input_zero;
-                Label round_increment;
-                Label round_ready;
-                Label exponent_ready;
-                Label converted;
-                __ Ldrb(round_bits.W(),
-                        MemOperand(ext_address, kReducedMarkerOffset));
-                __ Cmp(round_bits.W(), kReducedMarker);
-                __ B(eq, &marker_ready);
-                __ Cmp(round_bits.W(), kReducedReadyMarker);
-                __ B(ne, &slow);
-                __ Bind(&marker_ready);
-                __ Ldr(bits, MemOperand(ext_address));
-                __ Ldrh(sign_exp.W(), MemOperand(ext_address, 8));
-                __ And(exponent.W(), sign_exp.W(), 0x7FFF);
-                __ Cbz(exponent.W(), &input_zero);
-                __ Cmp(exponent.W(), 0x3C01);
-                __ B(lt, &slow);
-                __ Cmp(exponent.W(), 0x43FE);
-                __ B(gt, &slow);
-                __ Tst(bits, 0x8000000000000000ull);
-                __ B(eq, &slow);
-
-                // Canonical marker values must already have the eleven ext80
-                // tail bits clear.  Runtime-revalidated helper results retain
-                // those bits architecturally and are rounded to nearest-even
-                // only when a later reduced operation actually consumes them.
-                __ And(exponent, bits, 0x7FF);
-                __ Lsr(bits, bits, 11);
-                __ Cmp(round_bits.W(), kReducedMarker);
-                __ B(ne, &round_ready);
-                __ Cbnz(exponent, &slow);
-                __ B(&exponent_ready);
-
-                __ Bind(&round_ready);
-                __ Cmp(exponent, 0x400);
-                __ B(gt, &round_increment);
-                __ B(lt, &exponent_ready);
-                __ Tbz(bits, 0, &exponent_ready);
-                __ Bind(&round_increment);
-                __ Add(bits, bits, 1);
-
-                __ Bind(&exponent_ready);
-                __ And(exponent.W(), sign_exp.W(), 0x7FFF);
-                __ Sub(exponent.W(), exponent.W(), 0x3C00);
-                // Rounding 1.111... may carry in to a new exponent.
-                Label no_round_carry;
-                __ Tbz(bits, 53, &no_round_carry);
-                __ Lsr(bits, bits, 1);
-                __ Add(exponent.W(), exponent.W(), 1);
-                __ Bind(&no_round_carry);
-                __ Lsl(exponent, exponent, 52);
-                __ And(bits, bits, 0x000FFFFFFFFFFFFFull);
-                __ Orr(bits, bits, exponent);
-                __ Ubfx(sign_exp, sign_exp, 15, 1);
-                __ Orr(bits, bits, Operand{sign_exp, LSL, 63});
-                __ Fmov(fp.D(), bits);
-                __ B(&converted);
-
-                __ Bind(&input_zero);
-                __ Cbnz(bits, &slow);
-                __ Ubfx(bits, sign_exp, 15, 1);
-                __ Lsl(bits, bits, 63);
-                __ Fmov(fp.D(), bits);
-                __ Bind(&converted);
-            };
-
-            Label left_not_pinned;
-            Label left_ready;
-            if (x87_pin_cache_for_current && left_cacheable) {
-                __ Tbz(pin_mask, 8 + left_logical, &left_not_pinned);
-                __ Fmov(left_fp.D(), left_pin.D());
-                __ B(&left_ready);
-                __ Bind(&left_not_pinned);
-            }
-            convert_one(left_address, left_bits, right_bits, left_fp);
-            if (x87_pin_cache_for_current && left_cacheable) {
-                __ Fmov(left_pin.D(), left_fp.D());
-                __ Orr(pin_mask, pin_mask, 1u << (8 + left_logical));
-                __ Bind(&left_ready);
-            }
-            if (register_form) {
-                Label right_not_pinned;
-                Label right_ready;
-                if (x87_pin_cache_for_current && right_cacheable) {
-                    __ Tbz(pin_mask, 8 + right_logical, &right_not_pinned);
-                    __ Fmov(right_fp.D(), right_pin.D());
-                    __ B(&right_ready);
-                    __ Bind(&right_not_pinned);
-                }
-                convert_one(right_address, right_bits, left_bits, right_fp);
-                if (x87_pin_cache_for_current && right_cacheable) {
-                    __ Fmov(right_pin.D(), right_fp.D());
-                    __ Orr(pin_mask, pin_mask, 1u << (8 + right_logical));
-                    __ Bind(&right_ready);
-                }
-            } else if (format == swift::x86::X87Format::Float32) {
-                __ Ldr(right_bits.W(),
-                       use_memory_base ? BiasMem(guest) : MemOperand(guest));
-                // ARM and x87 differ in NaN propagation/invalid-result details;
-                // keep all memory NaN/Inf and denormal inputs on SoftFloat.
-                __ And(left_bits.W(), right_bits.W(), 0x7F800000u);
-                __ Cmp(left_bits.W(), 0x7F800000u);
-                __ B(eq, &slow);
-                Label memory_f32_ready;
-                __ Cbnz(left_bits.W(), &memory_f32_ready);
-                __ And(left_bits.W(), right_bits.W(), 0x007FFFFFu);
-                __ Cbnz(left_bits.W(), &slow);  // preserve x87 DE
-                __ Bind(&memory_f32_ready);
-                __ Fmov(right_fp.S(), right_bits.W());
-                __ Fcvt(right_fp.D(), right_fp.S());
-            } else {
-                __ Ldr(right_bits,
-                       use_memory_base ? BiasMem(guest) : MemOperand(guest));
-                __ Ubfx(left_bits, right_bits, 52, 11);
-                __ Cmp(left_bits, 0x7FF);
-                __ B(eq, &slow);
-                Label memory_f64_ready;
-                __ Cbnz(left_bits, &memory_f64_ready);
-                __ And(left_bits,
-                       right_bits,
-                       UINT64_C(0x000FFFFFFFFFFFFF));
-                __ Cbnz(left_bits, &slow);  // preserve x87 DE
-                __ Bind(&memory_f64_ready);
-                __ Fmov(right_fp.D(), right_bits);
-            }
-
-            if (command_flags & swift::x86::X87Reverse) {
-                std::swap(left_fp, right_fp);
-            }
-
-            __ Msr(FPSR, xzr);
-            switch (static_cast<swift::x86::X87Binary>(operation)) {
-                case swift::x86::X87Binary::Add:
-                    __ Fadd(left_fp.D(), left_fp.D(), right_fp.D());
-                    break;
-                case swift::x86::X87Binary::Mul:
-                    __ Fmul(left_fp.D(), left_fp.D(), right_fp.D());
-                    break;
-                case swift::x86::X87Binary::Sub:
-                    __ Fsub(left_fp.D(), left_fp.D(), right_fp.D());
-                    break;
-                case swift::x86::X87Binary::Div:
-                    __ Fdiv(left_fp.D(), left_fp.D(), right_fp.D());
-                    break;
-            }
-            __ Mrs(fcw, FPSR);
-            // ARM's invalid-operation default NaN encoding/propagation is not
-            // the x87 SoftFloat result (notably 0/0). Keep every IOC result on
-            // the exact helper before publishing architectural state.
-            __ Tbnz(fcw, 0, &slow);  // FPSR.IOC
-
-            // A binary64 add/sub may discard low bits that the 64-bit ext80
-            // significand would retain.  The marked operands only prove that
-            // conversion to f64 is lossless; they do not prove that the
-            // arithmetic result is.  Bail out before publishing any state
-            // when ARM reports an inexact add/sub, and let SoftFloat compute
-            // the architectural ext80 result.  Exact f64 add/sub operations
-            // remain on the native path.  Mul/div deliberately retain the
-            // opt-in reduced-precision behavior documented by the probe.
-            if (static_cast<swift::x86::X87Binary>(operation) ==
-                        swift::x86::X87Binary::Add ||
-                static_cast<swift::x86::X87Binary>(operation) ==
-                        swift::x86::X87Binary::Sub) {
-                __ Tbnz(fcw, 4, &slow);  // FPSR.IXC
-            }
-            __ Fmov(left_bits, left_fp.D());
-
-            // Convert the binary64 result back to an exact ext80 encoding.
-            // Reduced-mode overflow therefore becomes ext80 infinity and
-            // reduced-mode underflow remains the corresponding f64 subnormal.
-            auto exponent = right_bits;
-            auto sign_exp = scratch;
-            auto significand = left_bits;
-            auto shift = right_address;
-            Label result_subnormal;
-            Label result_zero;
-            Label result_special;
-            Label result_ready;
-            __ Ubfx(exponent, left_bits, 52, 11);
-            __ Ubfx(sign_exp, left_bits, 63, 1);
-            __ Lsl(sign_exp, sign_exp, 15);
-            __ And(significand, left_bits, 0x000FFFFFFFFFFFFFull);
-            __ Cbz(exponent, &result_subnormal);
-            __ Cmp(exponent, 0x7FF);
-            __ B(eq, &result_special);
-            __ Add(exponent, exponent, 0x3C00);
-            __ Orr(sign_exp, sign_exp, exponent);
-            __ Lsl(significand, significand, 11);
-            __ Orr(significand, significand, 0x8000000000000000ull);
-            __ B(&result_ready);
-            __ Bind(&result_subnormal);
-            __ Cbz(significand, &result_zero);
-            __ Clz(shift, significand);
-            __ Lsl(significand, significand, shift);
-            __ Mov(exponent, 0x3C0C);
-            __ Sub(exponent, exponent, shift);
-            __ Orr(sign_exp, sign_exp, exponent);
-            __ B(&result_ready);
-            __ Bind(&result_zero);
-            __ Mov(significand, 0);
-            __ B(&result_ready);
-            __ Bind(&result_special);
-            __ Orr(sign_exp, sign_exp, 0x7FFF);
-            __ Lsl(significand, significand, 11);
-            __ Orr(significand, significand, 0x8000000000000000ull);
-            __ Bind(&result_ready);
-            __ Str(significand, MemOperand(left_address));
-            __ Strh(sign_exp.W(), MemOperand(left_address, 8));
-            __ Str(wzr, MemOperand(left_address, 10));
-            __ Strh(wzr, MemOperand(left_address, 14));
-            __ Mov(exponent.W(), kReducedMarker);
-            __ Strb(exponent.W(),
-                    MemOperand(left_address, kReducedMarkerOffset));
-            if (x87_pin_cache_for_current && left_cacheable) {
-                // The architectural ext80 image above is the source of truth;
-                // the D-register is only a read cache for the next operation.
-                __ Fmov(left_pin.D(), left_fp.D());
-                __ Orr(pin_mask, pin_mask, 1u << (8 + left_logical));
-            }
-
-            // Reclassify the destination tag.
-            __ Lsl(shift.W(), left_physical.W(), 1);
-            __ Mov(exponent.W(), 3);
-            __ Lsl(exponent.W(), exponent.W(), shift.W());
-            __ Bic(ftw.W(), ftw.W(), exponent.W());
-            Label tag_valid;
-            Label tag_special;
-            Label tag_done;
-            __ And(exponent.W(), sign_exp.W(), 0x7FFF);
-            __ Cmp(exponent.W(), 0x7FFF);
-            __ B(eq, &tag_special);
-            __ Cbnz(exponent.W(), &tag_valid);
-            __ Cbnz(significand, &tag_special);
-            __ Mov(exponent.W(), 1);  // zero
-            __ B(&tag_done);
-            __ Bind(&tag_special);
-            __ Mov(exponent.W(), 2);
-            __ B(&tag_done);
-            __ Bind(&tag_valid);
-            __ Mov(exponent.W(), 0);
-            __ Bind(&tag_done);
-            __ Lsl(exponent.W(), exponent.W(), shift.W());
-            __ Orr(ftw.W(), ftw.W(), exponent.W());
-
-            // Map ARM FPSR exception bits to the x87 sticky exception bits.
-            auto exceptions = exponent;
-            auto flag = shift;
-            __ And(exceptions.W(), fcw.W(), 1);           // IOC -> IE
-            __ Ubfx(flag.W(), fcw.W(), 1, 4);             // DZC..IXC
-            __ Lsl(flag.W(), flag.W(), 2);                // -> ZE..PE
-            __ Orr(exceptions.W(), exceptions.W(), flag.W());
-            __ Ubfx(flag.W(), fcw.W(), 7, 1);             // IDC -> DE
-            __ Orr(exceptions.W(), exceptions.W(), Operand{flag.W(), LSL, 1});
-            __ Orr(fsw.W(), fsw.W(), exceptions.W());
-            __ And(fsw.W(), fsw.W(), 0xFDFF);             // C1=0
-
-            // Unmasked pending exceptions set ES and B.
-            __ Ldrh(fcw.W(), MemOperand(state, kFcw));
-            __ And(flag.W(), fsw.W(), 0x3F);
-            __ Bic(flag.W(), flag.W(), fcw.W());
-            Label no_pending;
-            Label summary_done;
-            __ Cbz(flag.W(), &no_pending);
-            __ Orr(fsw.W(), fsw.W(), 0x8080);
-            __ B(&summary_done);
-            __ Bind(&no_pending);
-            __ And(fsw.W(), fsw.W(), 0x7F7F);
-            __ Bind(&summary_done);
-
-            if (command_flags & swift::x86::X87Pop) {
-                // Pop the old ST0 after writing ST(i).
-                load_top(right_physical, fsw);
-                __ Lsl(shift.W(), right_physical.W(), 1);
-                __ Mov(exponent.W(), 3);
-                __ Lsl(exponent.W(), exponent.W(), shift.W());
-                __ Orr(ftw.W(), ftw.W(), exponent.W());
-                __ Add(right_physical.W(), right_physical.W(), 1);
-                __ And(right_physical.W(), right_physical.W(), 7);
-                __ And(fsw.W(), fsw.W(), 0xC5FF);
-                __ Orr(fsw.W(),
-                       fsw.W(),
-                       Operand{right_physical.W(), LSL, 11});
-            }
-            __ Strh(ftw.W(), MemOperand(state, kFtw));
-            __ Strh(fsw.W(), MemOperand(state, kFsw));
-            zero_result();
-            __ B(&done);
-            __ Bind(&slow);
-            if (x87_pin_cache_for_current) {
-                // The exact helper may publish ext80-only state and the
-                // platform ABI does not preserve D28-D31. Invalidate the
-                // whole read cache before crossing the host-call boundary.
-                __ And(pin_mask, pin_mask, 7);
-            }
-            fallback();
-
-            // The exact helper clears reduced provenance.  Revalidate the
-            // result at runtime so one bailout does not permanently poison a
-            // register-arithmetic chain.  Pop forms leave their result at the
-            // new ST(0); non-pop ST(i) destinations retain their logical
-            // index.  The exact ext80 payload is never rewritten here.
-            __ Ldrh(fsw.W(), MemOperand(state, kFsw));
-            __ Ldrh(ftw.W(), MemOperand(state, kFtw));
-            // The helper has already applied this instruction's pop. The
-            // block TOP cache is advanced only by FinishX87TopCache after the
-            // emitter returns, so revalidation must read the helper-published
-            // architectural TOP rather than the still-preinstruction cache.
-            __ Ubfx(left_physical.W(), fsw.W(), 11, 3);
-            if (!(command_flags & swift::x86::X87Pop) &&
-                (command_flags & swift::x86::X87DestIndex)) {
-                __ Add(left_physical.W(), left_physical.W(), index);
-                __ And(left_physical.W(), left_physical.W(), 7);
-            }
-            __ Lsl(right_physical.W(), left_physical.W(), 1);
-            __ Lsr(scratch.W(), ftw.W(), right_physical.W());
-            __ And(scratch.W(), scratch.W(), 3);
-            Label revalidate_done;
-            Label revalidate_zero;
-            Label revalidate_canonical;
-            Label revalidate_ready;
-            __ Cmp(scratch.W(), 3);
-            __ B(eq, &revalidate_done);
-            __ Add(left_address, state, kRegs);
-            __ Add(left_address,
-                   left_address,
-                   Operand{left_physical, LSL, 4});
-            __ Ldr(left_bits, MemOperand(left_address));
-            __ Ldrh(scratch.W(), MemOperand(left_address, 8));
-            __ And(right_bits.W(), scratch.W(), 0x7FFF);
-            __ Cbz(right_bits.W(), &revalidate_zero);
-            __ Cmp(right_bits.W(), 0x3C01);
-            __ B(lt, &revalidate_done);
-            __ Cmp(right_bits.W(), 0x43FE);
-            __ B(gt, &revalidate_done);
-            __ Tst(left_bits, 0x8000000000000000ull);
-            __ B(eq, &revalidate_done);
-            __ And(right_address, left_bits, 0x7FF);
-            __ Cbz(right_address, &revalidate_canonical);
-            // A non-canonical result at the top binary64 exponent could round
-            // to infinity; keep that edge on the exact helper chain.
-            __ Cmp(right_bits.W(), 0x43FE);
-            __ B(eq, &revalidate_done);
-            __ B(&revalidate_ready);
-            __ Bind(&revalidate_zero);
-            __ Cbnz(left_bits, &revalidate_done);
-            __ Bind(&revalidate_canonical);
-            __ Mov(right_bits.W(), kReducedMarker);
-            __ Strb(right_bits.W(),
-                    MemOperand(left_address, kReducedMarkerOffset));
-            __ B(&revalidate_done);
-            __ Bind(&revalidate_ready);
-            __ Mov(right_bits.W(), kReducedReadyMarker);
-            __ Strb(right_bits.W(),
-                    MemOperand(left_address, kReducedMarkerOffset));
-            __ Bind(&revalidate_done);
-            __ Bind(&done);
-            return;
-        }
+        case swift::x86::X87Action::Binary:
+            // Deliberately NOT inlined -- retired after measurement.
+            //
+            // The reduced-precision inline form used to live here. It was the
+            // single largest emitter in the whole corpus at 1041-1083 B per
+            // instruction (58% of x87_bench's emitted bytes, 53% of
+            // x87_topvirt_stress's), and it did not pay for them:
+            //
+            //   x87_bench   (FADD bails on IXC every iteration)
+            //               inline 0.2028 s -> helper 0.1028 s
+            //   exact probe (every operand certified, zero bailouts,
+            //               6e6 inline operations)
+            //               inline 0.1350 s -> helper 0.0960 s
+            //
+            // The second row is the load-bearing one: even at a 100% fast-path
+            // hit rate the inline form lost to six million SoftFloat helper
+            // calls. Attributed with a build that dropped only the FPSR
+            // round trip (`Msr FPSR, xzr` before the operation, `Mrs FPSR`
+            // after, which is how the arm recovered IOC/IXC): the same guest
+            // then ran in 0.0637 s. That is ~11.9 ns -- roughly 42 cycles --
+            // per operation spent on two system-register accesses that
+            // serialise against every in-flight FP instruction. It was 53% of
+            // the inline path's runtime and it is unavoidable while ARM's
+            // exception flags are the source of the x87 sticky bits.
+            //
+            // So the arm is retired rather than shrunk: the helper is both
+            // smaller and faster today.
+            //
+            // THE "FPSR-FREE" WAY BACK WAS MEASURED AND DOES NOT CLEAR THE BAR.
+            //
+            // This comment used to propose one: stop asking FPSR, since with
+            // operands restricted to finite normals and zeroes IE/ZE/OE/UE fall
+            // out of the operand and result bits, and PE is one fused
+            // multiply-add away (`e = fma(a, b, -r) != 0` for MUL, `fma(q, -b,
+            // a)` for DIV, a two-sum for ADD/SUB). The arithmetic is right. The
+            // hit rate is not there, and the FPSR round trip was never the only
+            // thing in the way.
+            //
+            // Instrumented X87Dispatch::Binary under SVM_X87_JIT=1 with exactly
+            // the guards such an arm would use (convert_canonical's exponent
+            // window and integer-bit/low-11-bits-zero test, the Sqrt arm's
+            // (fcw & 0x0F00) == 0x0300, result normality checked before the
+            // residual). Fraction of operations the fast path would have served:
+            //
+            //   x87_bench      Add/Mul/Div, 2e6 each      0.00% / 0.00% / 0.00%
+            //   ldprobe        long double harmonic sum   Add 50.00%, Div 0.01%
+            //   x87_midtier    Add, 2 ops                 100%
+            //   real_busy, func_tests, func_tests_musl, bench_suite,
+            //   real_hello + 22 other guests              zero Binary ops
+            //
+            // Break-even is h = W/(S+W), where S is per-op saving and W is
+            // bail waste. Two-sum is six serially dependent FP ops, so ADD/SUB
+            // saves only ~0.4 ns against the helper's 16.0 ns and needs
+            // ~90-98%; MUL/DIV saves ~3.9 ns and needs ~51-83%.
+            //
+            // The ldprobe row is the load-bearing one, and it is a steel-man,
+            // not an adversary: a naive `acc += 1.0/k` harmonic sum, which is
+            // why anyone reaches for long double at all. Its 50% Add rate
+            // decomposes exactly -- 300000 `k += 1.0` counter increments
+            // (dyadic, always exact) and 300000 accumulations (never exact).
+            // EVERY HIT IS THE LOOP COUNTER. Not one hit is the numeric work.
+            // Its Div rate is 19 hits, precisely the 19 powers of two in
+            // [1, 300000] -- the exact set where 1.0/k is representable.
+            //
+            // Nor is provenance the binding constraint, which was the obvious
+            // objection (the live helper always clears the reduced marker, so a
+            // naive probe undercounts every accumulator chain after its first
+            // operation). Modelled with a shadow marker that a hit would have
+            // left certified: of x87_bench's 8724 provenance-only misses, the
+            // number that would then have been exact anyway was ZERO. 99.85% of
+            // bails are values needing more than 53 bits. That is arithmetic,
+            // not plumbing, and no amount of flag cleverness moves it.
+            //
+            // The deeper reason is structural: code reaches for long double
+            // exactly when binary64 does not suffice, and this fast path
+            // requires that binary64 does suffice. Those sets are nearly
+            // complementary. x86-64 SysV routes float/double through SSE, so
+            // every Binary op in this entire corpus originates in one of three
+            // hand-written x87 test guests.
+            //
+            // Do not re-derive this from the FPSR cost alone. Removing the 42
+            // cycles is necessary and insufficient.
+            //
+            // Every other inline arm was priced the same way and every one of
+            // them earns its bytes -- disabling Exchange/LoadConstant/Sqrt/
+            // StoreReg individually costs 15-32% wall clock. Binary was the
+            // only loss.
+            break;
         case swift::x86::X87Action::Compare: {
             const bool register_form =
                     format == swift::x86::X87Format::Register;

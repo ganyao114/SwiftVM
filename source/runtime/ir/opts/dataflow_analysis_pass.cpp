@@ -12,14 +12,22 @@ void DataflowAnalysisPass::Run(HIRBuilder* hir_builder) {
     }
 }
 
+// This pass has no implementation and no callers anywhere in the tree --
+// PassPipeline never registers it and nothing else calls Run(). The body used
+// to allocate one
+// BitVector per HIR block, size them, and return without reading any of them:
+// pure allocation churn on a path that, had it ever been wired in, would have
+// run once per compiled unit. The scaffolding is kept (the declaration is the
+// record of the intended pass) but it no longer allocates.
+//
+// If dataflow analysis is implemented here later, note the shape the old body
+// assumed and did not check: it indexed `incoming_bitvectors` by
+// HIRBlock::GetOrderId() while sizing the vector from MaxBlockCount(). That
+// holds only as long as order ids stay dense over [0, MaxBlockCount()), which
+// is an invariant of the RPO numbering, not of the block list -- assert it
+// rather than inherit it.
 void DataflowAnalysisPass::Run(HIRFunction* hir_function) {
-    auto &hir_blocks = hir_function->GetHIRBlocks();
-    StackVector<BitVector, 16> incoming_bitvectors{hir_function->MaxBlockCount()};
-    for (auto hir_block : hir_blocks) {
-        auto &values = hir_block->GetHIRValues();
-        incoming_bitvectors[hir_block->GetOrderId()] = BitVector{values.size()};
-    }
-
+    (void)hir_function;
 }
 
 }  // namespace swift::runtime::ir
