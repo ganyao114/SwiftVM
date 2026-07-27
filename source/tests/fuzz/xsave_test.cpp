@@ -51,10 +51,10 @@
 //    helpers are shared, but the surrounding IR (uniform loads for RFBM, the
 //    conditional terminal in XGETBV) is lowered independently.
 //
-// The dispatch for I_XGETBV / I_XSAVE / I_XRSTOR lives in decoder.cc, which
-// this work was not allowed to edit; the exact patch is at the top of
-// decoder_xsave.cc.  Until it is merged the three opcodes still #UD, so the
-// case detects that and reports it loudly instead of failing.
+// The decoder dispatch is part of the facility contract: with SVM_XSAVE=1,
+// any XGETBV trap is a hard failure before the layout checks begin.  With the
+// gate off, the facility cases skip and the separate hidden-facility case
+// verifies that CPUID stays clear and the opcodes still #UD.
 
 #include <algorithm>
 #include <array>
@@ -126,6 +126,11 @@ constexpr u32 kRefXmmOffset = 160;
 constexpr u32 kRefMxcsrOffset = 24;
 
 constexpr u64 kX87 = 1, kSse = 2, kYmm = 4;
+
+bool EnvOn(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && std::strcmp(value, "0") != 0;
+}
 
 // Byte ranges XSAVE must write, per RFBM, as required by the SDM.  Rosetta
 // agrees for every RFBM except 0x1 and 0x5, where it additionally writes
@@ -233,10 +238,10 @@ std::string DescribeMap(const std::vector<bool>& written) {
 }  // namespace
 
 TEST_CASE("x86 xsave facility vs rosetta reference") {
-    // Both switches must be visible to the decoder before any block that
-    // contains cpuid / xgetbv / xsave is translated.  xsave.h queries getenv
-    // per decode precisely so this works.
-    ScopedEnv xsave_on{"SVM_XSAVE", "1"};
+    if (!EnvOn("SVM_XSAVE")) {
+        SUCCEED("SVM_XSAVE is not set; XSAVE facility checks skipped");
+        return;
+    }
     // Drive XCR0's YMM bit directly rather than through SVM_AVX: that one is
     // cached in a function-local static by X64Decoder::AvxEnabled(), so
     // setting it here would leave the AVX decoder on for every later case in
@@ -357,7 +362,7 @@ TEST_CASE("x86 xsave facility vs rosetta reference") {
 
     const auto no_setup = [](ThreadContext64&, u8*) {};
 
-    // ---- is the decoder.cc dispatch merged? --------------------------------
+    // ---- dispatch must be live whenever the facility is advertised ---------
     {
         CodeBuf probe;
         EmitXgetbvInsn(probe);
@@ -366,13 +371,8 @@ TEST_CASE("x86 xsave facility vs rosetta reference") {
         const u64 probe_addr = base + code_cursor * 0x100;
         ++code_cursor;
         const auto r = run(jit_core, probe, no_setup, probe_addr);
-        if (r.exit != int(swift::translator::None)) {
-            WARN("XGETBV still traps: the I_XGETBV / I_XSAVE / I_XRSTOR dispatch from the "
-                 "patch block at the top of decoder_xsave.cc has not been merged into "
-                 "decoder.cc yet, so this case cannot exercise the facility.");
-            SUCCEED("xsave dispatch not wired into decoder.cc");
-            return;
-        }
+        INFO("SVM_XSAVE advertises XGETBV, so the dispatch probe must execute");
+        REQUIRE(r.exit == int(swift::translator::None));
     }
 
     // ---- CPUID -------------------------------------------------------------
@@ -389,11 +389,15 @@ TEST_CASE("x86 xsave facility vs rosetta reference") {
         const auto leaf1 = cpuid(1, 0);
         CHECK((leaf1.rcx & (1u << 26)) != 0);  // XSAVE advertised
         CHECK((leaf1.rcx & (1u << 27)) != 0);  // OSXSAVE advertised
-        // The mainline contract for this change: the XSAVE *mechanism* goes in,
-        // the AVX feature bits stay off.  Turning them on is one `| (1u << 28)`
-        // on kLeaf1Ecx and one `| (1u << 5)` on kLeaf7Ebx in decoder_misc.cc.
-        CHECK((leaf1.rcx & (1u << 28)) == 0);  // AVX still hidden
-        CHECK(cpuid(7, 0).rbx == (1u << 18));  // RDSEED only; AVX2 still hidden
+        // AVX/FMA/AVX2 are advertised only when both SVM_AVX and SVM_XSAVE
+        // are on.  The default CTest environment enables both; a focused
+        // SVM_XSAVE-only run deliberately keeps all three hidden.
+        const bool avx_reported = EnvOn("SVM_AVX");
+        CHECK(((leaf1.rcx & (1u << 28)) != 0) == avx_reported);
+        CHECK(((leaf1.rcx & (1u << 12)) != 0) == avx_reported);
+        const auto leaf7 = cpuid(7, 0);
+        CHECK((leaf7.rbx & (1u << 18)) != 0);  // RDSEED
+        CHECK(((leaf7.rbx & (1u << 5)) != 0) == avx_reported);
         // Leaf 0 must still cover 0xD, otherwise the enumeration is unreachable.
         CHECK(cpuid(0, 0).rax >= 0xD);
 
@@ -439,7 +443,7 @@ TEST_CASE("x86 xsave facility vs rosetta reference") {
         for (u64 index : {1ull, 2ull, 0xFFFFFFFFull}) {
             const auto bad = both(fmt::format("xgetbv({})", index), c,
                                   [index](ThreadContext64& ctx, u8*) { ctx.rcx.qword = index; });
-            CHECK(bad.exit != int(swift::translator::None));
+            CHECK(bad.exit == int(swift::translator::IllegalCode));
         }
     }
 
@@ -820,7 +824,7 @@ TEST_CASE("x86 xsave stays hidden when disabled") {
         CodeBuf c;
         EmitXgetbvInsn(c);
         const auto [exit, eax, ebx, ecx, edx] = run(c, 0, 0, 0x3000);
-        CHECK(exit != int(swift::translator::None));  // #UD
+        CHECK(exit == int(swift::translator::IllegalCode));  // #UD
         (void)eax;
         (void)ebx;
         (void)ecx;
@@ -830,7 +834,17 @@ TEST_CASE("x86 xsave stays hidden when disabled") {
         CodeBuf c;
         EmitXsaveInsn(c, 0, false, false);
         const auto [exit, eax, ebx, ecx, edx] = run(c, 7, 0, 0x4000);
-        CHECK(exit != int(swift::translator::None));  // #UD
+        CHECK(exit == int(swift::translator::IllegalCode));  // #UD
+        (void)eax;
+        (void)ebx;
+        (void)ecx;
+        (void)edx;
+    }
+    {
+        CodeBuf c;
+        EmitXsaveInsn(c, 0, true, false);
+        const auto [exit, eax, ebx, ecx, edx] = run(c, 7, 0, 0x5000);
+        CHECK(exit == int(swift::translator::IllegalCode));  // #UD
         (void)eax;
         (void)ebx;
         (void)ecx;
@@ -844,7 +858,10 @@ TEST_CASE("x86 xsave stays hidden when disabled") {
 // 576, or the other way round, is exactly the drift that makes a guest write
 // past its own buffer.
 TEST_CASE("x86 xsave without the ymm component") {
-    ScopedEnv xsave_on{"SVM_XSAVE", "1"};
+    if (!EnvOn("SVM_XSAVE")) {
+        SUCCEED("SVM_XSAVE is not set; XSAVE no-YMM checks skipped");
+        return;
+    }
     ScopedEnv ymm_off{"SVM_XSAVE_YMM", "0"};
     ScopedEnv jit_on{"SVM_ENABLE_JIT", "1"};
 
@@ -884,15 +901,12 @@ TEST_CASE("x86 xsave without the ymm component") {
         return std::tuple{exit, ctx.rax.qword, ctx.rbx.qword, ctx.rcx.qword, ctx.rdx.qword};
     };
 
-    {  // Same dispatch gate as the case above.
+    {  // Same hard dispatch requirement as the case above.
         CodeBuf c;
         EmitXgetbvInsn(c);
         const auto [exit, eax, ebx, ecx, edx] = run(c, 0, 0, 0x800);
         (void)eax; (void)ebx; (void)ecx; (void)edx;
-        if (exit != int(swift::translator::None)) {
-            SUCCEED("xsave dispatch not wired into decoder.cc");
-            return;
-        }
+        REQUIRE(exit == int(swift::translator::None));
     }
     {  // CPUID.0xD.0: bitmap 0x3, and an area that stops after the header.
         CodeBuf c;
