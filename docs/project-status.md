@@ -105,7 +105,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
   ③ 与 golden 对拍。
   **`host_bytes` 只在同一构建内比**——发射的 host 指针立即数长度随翻译器自身布局
   变化，跨构建会漂几百字节而代码其实一致;跨构建只比 `ir_insts` 与每单元列表。
-  动态 glibc guest 的初始栈含 `argv[0]`，过去直接从 checkout 启动会让路径字符串
+  glibc guest（real_* 均为**静态**链接）的初始栈含 `argv[0]` 与 AT_EXECFN，过去直接从 checkout 启动会让路径字符串
   长度改变可达块和函数单元切分。门禁现将**所有** guest（含静态 guest）**复制**到
   固定的 `/tmp/svm_fp_guests/` 并从该路径启动；必须复制而非软链——loader 会
   realpath guest 路径并把解析后路径作为 AT_EXECFN 压进 guest 初始栈,软链会把
@@ -529,6 +529,13 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
     被原地替换为同尺寸内容且 mtime 被保留，ID 可能不变。加载阶段仍会逐块校验 guest
     bytes，所以影响被限制在 build ID 未能隔离的 host-code cache 候选，而不是绕过
     guest 代码漂移检查。需要更强的发布/攻击模型时应改为内容或构建系统提供的 ID。
+15. **无动态链接 glibc guest 覆盖**:tests 里的 real_*/func_tests 全部为**静态**
+    链接;glibc 动态加载器(ld.so)启动路径从未执行过。静态 glibc 启动同样走
+    ifunc + xgetbv,所以 XSAVE/AVX 门控链路有覆盖,但 ld.so 专属的
+    (relocation/DT_DEBUG/共享库 ifunc)行为是空白。
+16. **XSAVE 语义分歧(已文档化,接受)**:XSAVE/XRSTOR 不强制 64 字节对齐 #GP、
+    保留位/XCOMP/超 XCR0 位一律屏蔽不 #GP、MXCSR 非法位屏蔽;XGETBV ECX!=0 应
+    #GP(0) 但无 #GP 出口类型,以 terminal IllegalCode 近似(decoder_xsave.cc)。
 
 ---
 
