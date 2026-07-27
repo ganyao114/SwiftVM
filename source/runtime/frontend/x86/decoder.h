@@ -378,6 +378,12 @@ private:
     void DecodeStos(_DInst& insn);
 
     void DecodeCpuid(_DInst& insn);
+    [[nodiscard]] static bool FsgsbaseEnabled();
+    [[nodiscard]] static bool AdxEnabled();
+    void DecodeFsgsbase(_DInst& insn, bool write, bool gs);
+    // Raw decoder result: 0 = not this family, UINT32_MAX = recognized but
+    // truncated at the mapped fetch boundary, otherwise architectural length.
+    u32 DecodeUserlandRaw(const u8* code, size_t available);
     void DecodeTimestamp(bool rdtscp);
     void DecodeRandom(_DInst& insn);
     void DecodeRandomRegister(_RegisterType reg, u32 width);

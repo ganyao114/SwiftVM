@@ -105,6 +105,10 @@ XSAVE_SCOPE = {
 
 CONCURRENT_SCOPE = {"I_CMPXCHG16B"}
 
+# Instructions accepted by SwiftVM's bounded raw-byte predecoder even though
+# this distorm snapshot has no corresponding mnemonic enum.
+RAW_HANDLED = {"adcx", "adox", "rdpkru", "wrpkru"}
+
 
 def enum_mnemonics() -> set[str]:
     return set(re.findall(r"\b(I_[A-Z0-9_]+)\s*=", MNEMONICS.read_text()))
@@ -237,6 +241,8 @@ def write_report(path: pathlib.Path, fixtures: list[pathlib.Path]) -> None:
     observed_missing: list[tuple[str, int, str]] = []
     decoder_blind: list[tuple[str, int]] = []
     for mnemonic, count in sorted(disasm.items()):
+        if mnemonic in RAW_HANDLED:
+            continue
         normalized = normalize_objdump(mnemonic)
         if normalized is None:
             continue
@@ -255,6 +261,8 @@ def write_report(path: pathlib.Path, fixtures: list[pathlib.Path]) -> None:
         f"- distorm enum entries: {len(all_names)}",
         f"- decoder switch cases: {len(handled)}",
         f"- unhandled enum entries: {len(all_names - handled)}",
+        f"- raw-predecoded instructions absent from distorm: {len(RAW_HANDLED)} "
+        f"({', '.join(sorted(RAW_HANDLED))})",
     ]
     for category in (
         "handled", "userland-basic", "SSE2-baseline-adjacent",
@@ -335,6 +343,12 @@ def write_report(path: pathlib.Path, fixtures: list[pathlib.Path]) -> None:
         "| SSE3/SSSE3/SSE4.1/SSE4.2 | gated by SVM_SSE4/SVM_SSE42STR; "
         "decoder_sse4.cc + decoder_sse42str.cc | coherent |",
         "| BMI1/BMI2 | gated by SVM_BMI; decoder_bmi.cc | coherent |",
+        "| FSGSBASE | gated by SVM_FSGSBASE; distorm mnemonic dispatch plus "
+        "operand fixup | coherent |",
+        "| ADX | gated by SVM_ADX; raw legacy-ModRM decode with independent "
+        "CF/OF lowering | coherent |",
+        "| PKRU | raw RDPKRU/WRPKRU architectural register only; CPUID.PKU is "
+        "clear because access enforcement is absent | coherent under-advertising |",
         "| SEP | not advertised; no 32-bit compat frontend | coherent |",
         "| CX16 | advertised (leaf 1 ECX.13); CMPXCHG16B via CompareAndSwap128 IR "
         "+ LDAXP/STLXP | coherent |",

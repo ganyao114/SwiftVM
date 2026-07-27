@@ -18,6 +18,7 @@ add_library(fronted_x86 STATIC decoder.cc
     decoder_avx_fma.cc
     decoder_bmi.cc
     decoder_xsave.cc
+    decoder_userland_ext.cc
     vex_decoder.cc
     x87.cpp
     x87.h

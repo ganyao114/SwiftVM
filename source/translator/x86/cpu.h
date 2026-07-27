@@ -255,6 +255,10 @@ struct ThreadContext64 {
     // SSE MXCSR (status/control): updated by ldmxcsr / stmxcsr / fxrstor.
     // Default after RESET per the Intel SDM.
     u32 mxcsr{0x1F80};
+    // Architectural PKRU register only. Memory-protection-key enforcement is
+    // intentionally not modelled, so CPUID.PKU stays clear; unconditional
+    // RDPKRU/WRPKRU users still observe a coherent, reset-zero register.
+    u32 pkru{};
     // Cross-block carry polarity: the sticky flags store the host (ARM)
     // carry, which after a sub-family op is the INVERSE of the x86 CF. The
     // decoder tracks the polarity within a block but cannot know it at block

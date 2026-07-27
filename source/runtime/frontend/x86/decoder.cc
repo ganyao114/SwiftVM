@@ -108,6 +108,33 @@ static void FixupMovbeOperandSize(_DInst& insn, const u8* code) {
     }
 }
 
+static void FixupFsgsbaseOperand(_DInst& insn, const u8* code) {
+    if (insn.opcode != I_RDFSBASE && insn.opcode != I_RDGSBASE &&
+        insn.opcode != I_WRFSBASE && insn.opcode != I_WRGSBASE) {
+        return;
+    }
+    // This snapshot has the right mnemonic/length table entries, but its
+    // shared operand descriptor selects ModRM.reg (the /0../3 opcode selector)
+    // instead of ModRM.r/m and always assigns a 64-bit GPR. Recover the actual
+    // operand and REX.W width from the bytes before normal dispatch.
+    u8 rex = 0;
+    for (u32 i = 0; i + 2 < insn.size; ++i) {
+        if ((code[i] & 0xF0) == 0x40) {
+            rex = code[i];
+        }
+        if (code[i] != 0x0F || code[i + 1] != 0xAE) {
+            continue;
+        }
+        const u8 modrm = code[i + 2];
+        const u32 index = (modrm & 7) | ((rex & 1) ? 8 : 0);
+        const bool wide = (rex & 8) != 0;
+        insn.ops[0].type = O_REG;
+        insn.ops[0].index = static_cast<u8>((wide ? R_RAX : R_EAX) + index);
+        insn.ops[0].size = wide ? 64 : 32;
+        return;
+    }
+}
+
 ABIDescriptor GetABIDescriptor32() { return {{}, {}, general_return_x86, float_return_x86}; }
 
 ABIDescriptor GetABIDescriptor64() {
@@ -296,6 +323,20 @@ void X64Decoder::Decode() {
             end_decode = assembler->EndCommit();
             continue;
         }
+        // ADX and PKRU are newer than this distorm snapshot. Decode their raw
+        // bytes before distorm so an unknown opcode cannot consume one byte
+        // and desynchronise the stream. FSGSBASE is intentionally absent here:
+        // the snapshot has complete mnemonic and operand decode entries for it.
+        const u32 userland_size = DecodeUserlandRaw(code_ptr, fetch_avail);
+        if (userland_size == UINT32_MAX) {
+            Interrupt(InterruptReason::PAGE_FATAL);
+            break;
+        }
+        if (userland_size != 0) {
+            assembler->AdvancePC(ir::Imm{userland_size});
+            end_decode = assembler->EndCommit();
+            continue;
+        }
         // VEX (AVX/AVX2). This distorm snapshot cannot carry AVX: of 117 probed
         // encodings, 40 come back I_UNDEFINED and another 38 silently drop
         // VEX.L, reporting a 256-bit encoding as 128-bit XMM operands. So VEX
@@ -381,6 +422,7 @@ void X64Decoder::Decode() {
         }
         _DInst insn = DisDecode(code_ptr, 0x10, is_64bit);
         FixupMovbeOperandSize(insn, code_ptr);
+        FixupFsgsbaseOperand(insn, code_ptr);
         if (insn.opcode == UINT16_MAX || insn.size == 0) {
             // size == 0 would loop forever at the same pc.
             Interrupt(InterruptReason::ILL_CODE);
@@ -481,6 +523,18 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             break;
         case I_CPUID:
             DecodeCpuid(insn);
+            break;
+        case I_RDFSBASE:
+            DecodeFsgsbase(insn, false, false);
+            break;
+        case I_RDGSBASE:
+            DecodeFsgsbase(insn, false, true);
+            break;
+        case I_WRFSBASE:
+            DecodeFsgsbase(insn, true, false);
+            break;
+        case I_WRGSBASE:
+            DecodeFsgsbase(insn, true, true);
             break;
         case I_RDTSC:
             DecodeTimestamp(false);
