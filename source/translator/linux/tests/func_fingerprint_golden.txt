@@ -629,12 +629,8 @@ real_hello pc=0x415380 ir=14
 real_hello pc=0x415387 ir=10
 real_hello pc=0x41538d ir=23
 real_hello pc=0x41539b ir=17
+real_hello pc=0x4153e5 ir=37
 real_hello pc=0x415400 ir=12
-real_hello pc=0x415406 ir=18
-real_hello pc=0x415411 ir=56
-real_hello pc=0x415439 ir=54
-real_hello pc=0x4154c0 ir=49
-real_hello pc=0x4154e3 ir=19
 real_hello pc=0x417b20 ir=40
 real_hello pc=0x417b4a ir=23
 real_hello pc=0x417b5a ir=21
@@ -841,8 +837,8 @@ real_hello pc=0x450e4d ir=9
 real_hello pc=0x450eb0 ir=69
 real_hello pc=0x450efd ir=9
 real_hello pc=0x450f01 ir=11
-real_hello pc=0x450f05 ir=71
 real_hello pc=0x450f20 ir=107
+real_hello pc=0x450f49 ir=28
 real_hello pc=0x452bb0 ir=39
 real_hello pc=0x452bd0 ir=28
 real_hello pc=0x452be5 ir=20
@@ -1037,7 +1033,7 @@ real_hello pc=0x47e050 ir=11
 real_hello pc=0x47e059 ir=16
 real_hello pc=0x47e05f ir=1
 real_hello pc=0x47f074 ir=23
-real_hello TOTALS func_units=937 block_units=0 decoded_blocks=937 ir_insts=25713
+real_hello TOTALS func_units=933 block_units=0 decoded_blocks=933 ir_insts=25511
 real_hello_musl pc=0x401000 ir=17
 real_hello_musl pc=0x401010 ir=18
 real_hello_musl pc=0x40101c ir=7
@@ -1840,10 +1836,10 @@ real_busy pc=0x4165d1 ir=56
 real_busy pc=0x4165f9 ir=54
 real_busy pc=0x416680 ir=49
 real_busy pc=0x4166a3 ir=19
-real_busy pc=0x416780 ir=86
-real_busy pc=0x4167bb ir=1
-real_busy pc=0x416940 ir=86
-real_busy pc=0x41697b ir=1
+real_busy pc=0x416880 ir=65
+real_busy pc=0x4168bb ir=1
+real_busy pc=0x4169c0 ir=86
+real_busy pc=0x4169fb ir=1
 real_busy pc=0x417f20 ir=28
 real_busy pc=0x417f42 ir=12
 real_busy pc=0x417fc9 ir=27
@@ -2202,8 +2198,8 @@ real_busy pc=0x45a94d ir=9
 real_busy pc=0x45a9b0 ir=69
 real_busy pc=0x45a9fd ir=9
 real_busy pc=0x45aa01 ir=11
+real_busy pc=0x45aa05 ir=71
 real_busy pc=0x45aa20 ir=107
-real_busy pc=0x45aa49 ir=28
 real_busy pc=0x45b260 ir=24
 real_busy pc=0x45b275 ir=24
 real_busy pc=0x45b2d0 ir=24
@@ -2256,11 +2252,6 @@ real_busy pc=0x46dd1b ir=34
 real_busy pc=0x46dd2d ir=10
 real_busy pc=0x46dd32 ir=28
 real_busy pc=0x46dd44 ir=6
-real_busy pc=0x46df80 ir=66
-real_busy pc=0x46e028 ir=43
-real_busy pc=0x46e052 ir=15
-real_busy pc=0x46e05c ir=8
-real_busy pc=0x46e078 ir=81
 real_busy pc=0x46e100 ir=33
 real_busy pc=0x46e124 ir=29
 real_busy pc=0x46e12f ir=23
@@ -2270,15 +2261,17 @@ real_busy pc=0x46e17c ir=12
 real_busy pc=0x46e185 ir=15
 real_busy pc=0x46e193 ir=13
 real_busy pc=0x46e1a0 ir=33
+real_busy pc=0x46e1a3 ir=29
+real_busy pc=0x46e200 ir=43
+real_busy pc=0x46e22a ir=15
+real_busy pc=0x46e234 ir=8
+real_busy pc=0x46e250 ir=51
 real_busy pc=0x46e2e0 ir=17
 real_busy pc=0x46e2ef ir=40
 real_busy pc=0x46e301 ir=10
 real_busy pc=0x46e310 ir=43
 real_busy pc=0x46e328 ir=26
 real_busy pc=0x46e33a ir=13
-real_busy pc=0x46e344 ir=10
-real_busy pc=0x46e34c ir=10
-real_busy pc=0x46e350 ir=17
 real_busy pc=0x46e380 ir=34
 real_busy pc=0x4731d0 ir=26
 real_busy pc=0x4735a0 ir=28
@@ -2324,14 +2317,6 @@ real_busy pc=0x476190 ir=40
 real_busy pc=0x4761a7 ir=14
 real_busy pc=0x4761b0 ir=82
 real_busy pc=0x4761ed ir=38
-real_busy pc=0x47b6b0 ir=17
-real_busy pc=0x47b6bf ir=18
-real_busy pc=0x47b6c9 ir=20
-real_busy pc=0x47b6f0 ir=9
-real_busy pc=0x47b6f4 ir=15
-real_busy pc=0x47b702 ir=16
-real_busy pc=0x47b740 ir=7
-real_busy pc=0x47b745 ir=8
 real_busy pc=0x482cc0 ir=44
 real_busy pc=0x482cd4 ir=26
 real_busy pc=0x482ce2 ir=34
@@ -2434,7 +2419,7 @@ real_busy pc=0x485030 ir=11
 real_busy pc=0x485039 ir=16
 real_busy pc=0x48503f ir=1
 real_busy pc=0x486054 ir=23
-real_busy TOTALS func_units=1234 block_units=0 decoded_blocks=1234 ir_insts=33115
+real_busy TOTALS func_units=1223 block_units=0 decoded_blocks=1223 ir_insts=32923
 real_busy_musl pc=0x401000 ir=17
 real_busy_musl pc=0x401010 ir=18
 real_busy_musl pc=0x40101c ir=7
@@ -3462,12 +3447,8 @@ func_tests pc=0x40ef00 ir=31
 func_tests pc=0x40ef10 ir=15
 func_tests pc=0x40ef14 ir=6
 func_tests pc=0x40ef22 ir=11
+func_tests pc=0x40ef25 ir=37
 func_tests pc=0x40ef40 ir=12
-func_tests pc=0x40ef46 ir=18
-func_tests pc=0x40ef51 ir=56
-func_tests pc=0x40ef79 ir=54
-func_tests pc=0x40f000 ir=49
-func_tests pc=0x40f023 ir=19
 func_tests pc=0x410fe0 ir=36
 func_tests pc=0x411007 ir=35
 func_tests pc=0x411027 ir=24
@@ -3857,8 +3838,8 @@ func_tests pc=0x42ed0d ir=9
 func_tests pc=0x42ed70 ir=69
 func_tests pc=0x42edbd ir=9
 func_tests pc=0x42edc1 ir=11
-func_tests pc=0x42edc5 ir=71
 func_tests pc=0x42ede0 ir=107
+func_tests pc=0x42ee09 ir=28
 func_tests pc=0x430680 ir=22
 func_tests pc=0x43068d ir=12
 func_tests pc=0x430694 ir=12
@@ -4105,7 +4086,7 @@ func_tests pc=0x47e740 ir=11
 func_tests pc=0x47e749 ir=16
 func_tests pc=0x47e74f ir=1
 func_tests pc=0x47f764 ir=23
-func_tests TOTALS func_units=1147 block_units=0 decoded_blocks=1147 ir_insts=32613
+func_tests TOTALS func_units=1143 block_units=0 decoded_blocks=1143 ir_insts=32411
 func_tests_musl pc=0x401000 ir=17
 func_tests_musl pc=0x401010 ir=18
 func_tests_musl pc=0x40101c ir=7

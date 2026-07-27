@@ -12,6 +12,32 @@
 
 namespace swift::runtime::backend::arm64 {
 
+// Host GPR that SVM_X87_TOPVIRT dedicates to the cached x87 TOP.
+//
+// THE ONE HARD CONSTRAINT: the code must still be *free* in the mask the
+// trampoline hands to the allocator, i.e. absent from the runtime ABI set and
+// from Config::buffers_static_alloc. This is why it is NOT x20. The x86
+// frontend statically pins guest RBX to x20 (translator/x86/translator.cpp
+// arm64_backend_regs_map), TrampolinesArm64::Build had therefore already
+// marked it, the runtime's `gprs.Mark(20)` was a silent no-op, and the
+// emitter's `mov w20, ...` landed directly in guest RBX -- guest RBX read back
+// as a TOP value 0..7 in ~92% of the x87 fuzz iterations. Reserving is now
+// guarded by an ASSERT at the site in runtime.cpp so a future static-register
+// map cannot re-create that quietly.
+//
+// x22 is `arg` in defines.h, named only by the mutually exclusive
+// enable_asm_interp trampoline path, and never by generated code.
+//
+// Callee-saved is NOT a requirement, though x22 happens to be one. Mutating
+// this to a caller-saved code (x2) survived every suite, and the reason is
+// real rather than a coverage gap: the TOP cache is dead at block boundaries
+// (BeginX87TopVirtBlock clears x87_top_cache_valid), so the only call it can
+// live across is EmitHostCall, whose save set is context.GetLiveGPRs() --
+// which already contains the runtime's reserved registers. Codes <= 17 are
+// therefore preserved across a helper call too. x16/x17 remain unusable for a
+// different reason (vixl's UseScratchRegisterScope).
+constexpr u32 kX87TopVirtGPR = 22;
+
 namespace HostFlagsBit {
     constexpr auto N = 31;
     constexpr auto Z = 30;

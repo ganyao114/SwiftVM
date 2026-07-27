@@ -244,14 +244,14 @@ void JitTranslator::PrepareX87TopCache(ir::Inst* inst) {
         constexpr u32 kFsw =
                 state_offset_uniform_buffer +
                 offsetof(swift::x86::ThreadContext64, x87_fsw);
-        const XRegister cached_top{20};
+        const XRegister cached_top{kX87TopVirtGPR};
         __ Ldrh(cached_top.W(), MemOperand(state, kFsw));
-        // INVARIANT: x20 holds nothing but TOP, so this whole-register Ubfx
-        // fully defines it. The retired Binary arm also kept a D28-D31 read
-        // cache whose validity mask lived in x20[11:8] and survived control
-        // flow between blocks; that mask is gone, and any future reuse of the
-        // upper bits must re-establish its own cross-block clearing rule
-        // rather than assuming this reload does it.
+        // INVARIANT: the TOP register holds nothing but TOP, so this
+        // whole-register Ubfx fully defines it. The retired Binary arm also
+        // kept a D28-D31 read cache whose validity mask lived in bits [11:8]
+        // and survived control flow between blocks; that mask is gone, and any
+        // future reuse of the upper bits must re-establish its own cross-block
+        // clearing rule rather than assuming this reload does it.
         __ Ubfx(cached_top.W(), cached_top.W(), 11, 3);
         x87_top_cache_valid = true;
     }
@@ -278,17 +278,17 @@ void JitTranslator::FinishX87TopCache(ir::Inst* inst) {
     if (!known) {
         x87_top_cache_valid = false;
     } else if (reset) {
-        __ Mov(WRegister{20}, reset_top & 7);
+        __ Mov(WRegister{kX87TopVirtGPR}, reset_top & 7);
         x87_top_cache_valid = true;
     } else if (delta != 0) {
         // Fold the instruction's stack effect into the cached runtime entry
         // TOP, modulo eight.
         if (delta > 0) {
-            __ Add(WRegister{20}, WRegister{20}, delta);
+            __ Add(WRegister{kX87TopVirtGPR}, WRegister{kX87TopVirtGPR}, delta);
         } else {
-            __ Sub(WRegister{20}, WRegister{20}, -delta);
+            __ Sub(WRegister{kX87TopVirtGPR}, WRegister{kX87TopVirtGPR}, -delta);
         }
-        __ And(WRegister{20}, WRegister{20}, 7);
+        __ And(WRegister{kX87TopVirtGPR}, WRegister{kX87TopVirtGPR}, 7);
         x87_top_cache_valid = true;
     }
 }
@@ -339,7 +339,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
     auto load_top = [&](const Register& destination,
                         const Register& fsw) {
         if (x87_top_cache_for_current) {
-            __ Mov(destination.W(), WRegister{20});
+            __ Mov(destination.W(), WRegister{kX87TopVirtGPR});
             __ And(destination.W(), destination.W(), 7);
         } else {
             __ Ubfx(destination.W(), fsw.W(), 11, 3);

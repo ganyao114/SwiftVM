@@ -449,6 +449,34 @@ bool X87TopVirtRequested() {
     return requested;
 }
 
+// Reserve the dedicated x87 TOP register (arm64::kX87TopVirtGPR) so neither
+// block nor function mode can park a live IR value there.
+//
+// The reservation is *verified*, never assumed. Mark() on an already-reserved
+// code is a silent no-op, while the x87 emitter writes its TOP register
+// unconditionally -- which is precisely how reserving x20 here corrupted guest
+// state: the x86 frontend statically pins guest RBX to x20 through
+// Config::buffers_static_alloc, the trampoline had already marked it, this
+// Mark() did nothing, and every x87 block overwrote guest RBX with TOP.
+//
+// No FPRs are reserved. The D28-D31 pinned x87 read cache was retired together
+// with the inline register-arithmetic emitter (ec413cb), and nothing in the
+// backend or frontend names v28-v31 any more. Measured, the removed pin was
+// inert rather than expensive: values_spilled is 5920 in the full swift_test
+// with and without it, v28-v31 are allocated 8 times either way (all in
+// non-x87 units), and pinning as many as 24 FPRs in x87 units still produces
+// zero spills -- X87Op holds its operands in the uniform buffer and the
+// SoftFloat helpers, not in the FPR file. It is deleted because it is dead,
+// not because it cost anything measurable.
+void ReserveX87TopVirtRegs(GPRSMask& gprs) {
+    ASSERT_MSG(!gprs.Get(arm64::kX87TopVirtGPR),
+               "x87 TOPVIRT register x{} is already reserved by the static "
+               "uniform map or the runtime ABI; the x87 emitter would clobber "
+               "it",
+               arm64::kX87TopVirtGPR);
+    gprs.Mark(arm64::kX87TopVirtGPR);
+}
+
 bool HasX87Op(ir::Block* block) {
     for (auto& inst : block->GetInstList()) {
         if (inst.GetOp() == ir::OpCode::X87Op) {
@@ -591,19 +619,9 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     const bool reserve_x87_topvirt =
             X87TopVirtRequested() && HasX87Op(function);
     if (reserve_x87_topvirt) {
-        // Dedicated callee-saved TOP/cache-validity register. Reserve it
-        // before allocation so neither block nor function mode can assign a
-        // live IR value to it.
-        gprs.Mark(20);
+        ReserveX87TopVirtRegs(gprs);
     }
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    if (reserve_x87_topvirt) {
-        // Pin the hot half of the x87 stack only. Reserving all eight FPRs
-        // exhausted the finite spill arena in large function-mode units.
-        for (u32 code = 28; code < 32; ++code) {
-            fprs.Mark(code);
-        }
-    }
     PerfScope perf_ra{GetPerfStats().regalloc_ns};
     backend::RegAlloc reg_alloc{static_cast<u32>(function->MaxInstrCount()), gprs, fprs};
     ir::RegisterAllocPass::Run(function, &reg_alloc);
@@ -693,14 +711,9 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     const bool reserve_x87_topvirt =
             X87TopVirtRequested() && HasX87Op(ir_block);
     if (reserve_x87_topvirt) {
-        gprs.Mark(20);
+        ReserveX87TopVirtRegs(gprs);
     }
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    if (reserve_x87_topvirt) {
-        for (u32 code = 28; code < 32; ++code) {
-            fprs.Mark(code);
-        }
-    }
     backend::RegAlloc reg_alloc{static_cast<u32>(block->MaxInstrCount()), gprs, fprs};
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
@@ -738,14 +751,9 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     const bool reserve_x87_topvirt =
             X87TopVirtRequested() && HasX87Op(block.get());
     if (reserve_x87_topvirt) {
-        gprs.Mark(20);
+        ReserveX87TopVirtRegs(gprs);
     }
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    if (reserve_x87_topvirt) {
-        for (u32 code = 28; code < 32; ++code) {
-            fprs.Mark(code);
-        }
-    }
     backend::RegAlloc reg_alloc{static_cast<u32>(block->MaxInstrId()), gprs, fprs};
 
     ir::RegisterAllocPass::Run(block.get(), &reg_alloc);
