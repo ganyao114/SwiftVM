@@ -27,10 +27,23 @@ source/translator/linux/tests/Makefile
 source/translator/linux/tests/cmake_install.cmake
 
 # Guest-side test/bench ELFs and generated reference tables: build products of
-# source/translator/linux/tests/build_*.sh, not sources. Committing them would
-# put an x86-64 ELF in an ARM64 repo and let a stale binary silently pass a run.
+# source/translator/linux/tests/build_*.sh, not sources.
+#
+# These patterns keep ad-hoc/debug build products out of `git status`. They do
+# NOT mean "guest ELFs are not committed": every guest a harness loads IS in the
+# tree (force-added), because a fresh clone has no x86-64 cross toolchain and
+# could otherwise run nothing. The consequence is a trap -- a new guest silently
+# stays out of a clone -- and it has fired: bench_suite_x86_64 and its golden
+# checksum table were ignored, so bench_run.py in any fresh clone/worktree ran
+# 2 of 7 workloads and verified 0 checksums, without a word of complaint.
+# If you add a guest a harness depends on, add a `!` line below AND make the
+# harness fail loudly when it is missing (bench_run.py require_inputs()).
 source/translator/linux/tests/*_x86_64
 source/translator/linux/tests/*_host
 source/translator/linux/tests/*.elf
 source/translator/linux/tests/bench_*.txt
 source/translator/linux/tests/bench_*.json
+# Exceptions -- must stay last, git's last matching pattern wins.
+!source/translator/linux/tests/bench_suite_x86_64
+!source/translator/linux/tests/bench_suite_x86_64.native.txt
+!source/translator/linux/tests/bench_suite_x86_64.baseline.txt

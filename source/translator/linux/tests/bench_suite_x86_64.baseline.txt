@@ -1,0 +1,51 @@
+# SwiftVM performance baseline -- checked-in reference numbers
+#
+# Regenerate with:
+#   python3 source/translator/linux/tests/bench_run.py \
+#       --svm <build>/source/translator/linux/svm_translator_linux --reps 15 \
+#       --out source/translator/linux/tests/bench_suite_x86_64.baseline.txt
+#
+# Build: CMAKE_BUILD_TYPE=Release, Apple clang 21, commit 2bbf1f1, measured in a
+# detached git worktree so that concurrent work on master could not change the
+# binary under test.  Host: Darwin 27 / Apple M4 Max (10 P + 4 E cores), AC power.
+#
+# Every rep verifies the guest checksum against bench_suite_x86_64.native.txt and
+# the exit code against the table in bench_run.py, so a number here cannot come
+# from a run that computed the wrong answer or crashed.
+#
+# READ THIS BEFORE COMPARING.  Absolute wall times are load-dependent: this is a
+# shared workstation and macOS offers no frequency pinning, no cpuset and no
+# taskset.  Three 15-rep runs of the identical binary at different host loads are
+# recorded below.  WITHIN a run the relative MAD is 0.1-2.9%; ACROSS runs the
+# spread with host load reaches 15%.  Therefore:
+#   - compare configurations only inside ONE interleaved bench_run.py invocation
+#     (that is what bench_config_matrix.txt is for);
+#   - never compare against a run whose recorded loadavg range does not overlap;
+#   - prefer min_s over median_s when the loads differ; min is the closest thing
+#     to an interference-free sample.
+
+=== run 1 (host loadavg 6.40 .. 7.28) ===
+int         default          0.4176   0.4126   0.0036   0.4155   0.85%
+fp          default          0.3920   0.3893   0.0004   0.3885   0.09%
+mem         default          0.5127   0.5077   0.0040   0.5110   0.78%
+branch      default          0.4183   0.4159   0.0009   0.4155   0.21%
+call        default          0.4074   0.3906   0.0041   0.4028   1.00%
+func_tests  default          0.0307   0.0303   0.0001   0.0285   0.43%
+
+=== run 2 (host loadavg 9.53 .. 11.96) ===
+int         default          0.4209   0.4157   0.0043   0.4177   1.01%
+fp          default          0.3934   0.3879   0.0028   0.3898   0.72%
+mem         default          0.5175   0.5105   0.0051   0.5128   0.98%
+branch      default          0.4173   0.4137   0.0031   0.4135   0.74%
+call        default          0.4051   0.3940   0.0044   0.4018   1.09%
+func_tests  default          0.0307   0.0295   0.0008   0.0286   2.46%
+x87_bench   default          0.2420   0.2385   0.0020   0.2391   0.84%
+
+=== run 3 (host loadavg 13.05 .. 16.30 -- most contended) ===
+int         default          0.4393   0.4297   0.0038   0.4349   0.85%
+fp          default          0.4061   0.4041   0.0013   0.4033   0.31%
+mem         default          0.5566   0.5431   0.0105   0.5518   1.89%
+branch      default          0.4323   0.4259   0.0030   0.4290   0.69%
+call        default          0.4161   0.4037   0.0069   0.4124   1.65%
+func_tests  default          0.0316   0.0302   0.0009   0.0290   2.74%
+x87_bench   default          0.2452   0.2428   0.0009   0.2422   0.38%
