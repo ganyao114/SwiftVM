@@ -16,7 +16,8 @@ add_executable(swift_test
         fuzz/sse4_test.cpp
         fuzz/sse42str_test.cpp
         fuzz/xsave_test.cpp
-        fuzz/bmi_test.cpp)
+        fuzz/bmi_test.cpp
+        fuzz/userland_ext_test.cpp)
 
 target_link_libraries(swift_test PUBLIC swift_translator swift::runtime Catch2::Catch2WithMain slang_compiler)
 
@@ -40,7 +41,7 @@ endif()
 # directly.
 add_test(swift_test swift_test --durations yes)
 set_tests_properties(swift_test PROPERTIES
-        ENVIRONMENT "SVM_AVX=1;SVM_BMI=1;SVM_XSAVE=1")
+        ENVIRONMENT "SVM_AVX=1;SVM_BMI=1;SVM_XSAVE=1;SVM_FSGSBASE=1;SVM_ADX=1")
 
 add_executable(swift_vm main.cpp)
 target_link_libraries(swift_vm PUBLIC fronted_arm64 fronted_x86 swift::runtime slang_compiler)

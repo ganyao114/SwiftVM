@@ -127,8 +127,10 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     // BMI2 is safe -- the string variants stay unselected and memcpy/memset,
     // whose AVX variants are fully covered, still get the fast path.
     const u32 leaf7_ebx = kLeaf7Ebx |
-                          (avx_reported ? (1u << 5) : 0u) |       // AVX2
-                          (BmiEnabled() ? ((1u << 3) | (1u << 8)) : 0u);
+                          (FsgsbaseEnabled() ? (1u << 0) : 0u) |  // FSGSBASE
+                          (avx_reported ? (1u << 5) : 0u) |        // AVX2
+                          (BmiEnabled() ? ((1u << 3) | (1u << 8)) : 0u) |
+                          (AdxEnabled() ? (1u << 19) : 0u);       // ADX
     // CPUID.0xD: the XSAVE state-component enumeration.  Every value is
     // derived from the layout constants in xsave.h, which are the same ones
     // XsaveHelper writes through -- a guest sizing its save area from EBX

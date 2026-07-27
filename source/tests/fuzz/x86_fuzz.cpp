@@ -1856,6 +1856,10 @@ TEST_CASE("Fuzz x86 cpuid") {
                               std::strcmp(std::getenv("SVM_XSAVE"), "0") != 0;
         const bool bmi_on = std::getenv("SVM_BMI") &&
                             std::strcmp(std::getenv("SVM_BMI"), "0") != 0;
+        const bool fsgsbase_on = std::getenv("SVM_FSGSBASE") &&
+                                 std::strcmp(std::getenv("SVM_FSGSBASE"), "0") != 0;
+        const bool adx_on = std::getenv("SVM_ADX") &&
+                            std::strcmp(std::getenv("SVM_ADX"), "0") != 0;
         // AVX needs its whole enabling chain, so the bit follows both gates.
         const bool avx_on = std::getenv("SVM_AVX") &&
                             std::strcmp(std::getenv("SVM_AVX"), "0") != 0;
@@ -1903,10 +1907,14 @@ TEST_CASE("Fuzz x86 cpuid") {
             case 7:
                 // AVX2 (bit 5) tracks SVM_AVX *and* SVM_XSAVE together -- AVX
                 // is incoherent without the XSAVE/XGETBV enabling protocol.
-                // BMI1 (bit 3) / BMI2 (bit 8) track SVM_BMI independently.
+                // FSGSBASE (bit 0), BMI1/BMI2 (bits 3/8), and ADX (bit 19)
+                // each track their independent implementation gate.
                 REQUIRE(sig[1] == ((1u << 18) |
+                                   (fsgsbase_on ? (1u << 0) : 0u) |
                                    (avx_reported ? (1u << 5) : 0u) |
-                                   (bmi_on ? ((1u << 3) | (1u << 8)) : 0u)));
+                                   (bmi_on ? ((1u << 3) | (1u << 8)) : 0u) |
+                                   (adx_on ? (1u << 19) : 0u)));
+                REQUIRE((sig[2] & (1u << 3)) == 0);  // PKU deliberately hidden
                 break;
             case 0x15:
                 REQUIRE(sig[0] == 1);              // denominator
