@@ -139,6 +139,28 @@ bool X64Decoder::TsoOrdered(const _DInst& insn) const {
     return (insn.flags & FLAG_LOCK) != 0;
 }
 
+bool X64Decoder::VexTsoOrdered(const VexInsn& insn) const {
+    // VEX encodings cannot carry LOCK, so only the AcqRel mode gate applies.
+    if (GetTsoMode() != runtime::TsoMode::AcqRel) {
+        return false;
+    }
+
+    // Mirror IsThreadPrivateAddress's stack/base-index relaxation. VexInsn
+    // keeps architectural register numbers rather than distorm register
+    // enums, where 4/5 are RSP/RBP (and ESP/EBP in 32-bit addressing).
+    // VexInsn does not retain the accepted segment override, so an FS/GS VEX
+    // access cannot be proven TLS-private here and remains conservatively
+    // ordered.
+    if (!insn.RmIsRegister()) {
+        const auto stack_reg = [](u8 reg) { return reg == 4 || reg == 5; };
+        if ((!insn.base_none && stack_reg(insn.base)) ||
+            (!insn.index_none && stack_reg(insn.index))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 ir::Value X64Decoder::MemLoad(const ir::Operand& addr, ir::ValueType type, bool tso) {
     if (tso) {
         return assembler->LoadMemoryTSO(addr).SetType(type);
@@ -2531,7 +2553,9 @@ void X64Decoder::DecodeVexMovVec(_DInst& insn) {
         if (op1.type == O_REG) {
             v = XmmRead(XmmOf(VecIndex(static_cast<_RegisterType>(op1.index))));
         } else {
-            v = __ LoadMemory(ir::Operand{FlatAddress(insn, op1)}).SetType(ir::ValueType::V128);
+            v = MemLoad(ir::Operand{FlatAddress(insn, op1)},
+                        ir::ValueType::V128,
+                        TsoOrdered(insn));
         }
         XmmWrite(XmmOf(dst), v);
         ZeroYmmHigh(dst);
@@ -2539,7 +2563,7 @@ void X64Decoder::DecodeVexMovVec(_DInst& insn) {
         // Store form: m128, xmm. No destination register, so no upper half to
         // clear (vmovntdq degrades to a plain store, as the SSE path does).
         auto v = XmmRead(XmmOf(VecIndex(static_cast<_RegisterType>(op1.index))));
-        __ StoreMemory(ir::Operand{FlatAddress(insn, op0)}, v);
+        MemStore(ir::Operand{FlatAddress(insn, op0)}, v, TsoOrdered(insn));
     }
 }
 

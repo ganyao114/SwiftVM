@@ -85,7 +85,7 @@
 //     lane, zero mask).  That is pure x86 trivia and stays here; the IR sees
 //     only "extract lane", "insert lane", "and with a constant".
 //   * A masked memory access becomes a per-element conditional access built
-//     from NotGoto / BindLabel / LoadMemory / StoreMemory -- the same shape
+//     from NotGoto / BindLabel / MemLoad / MemStore -- the same shape
 //     DecodeMaskmovdqu has used for MASKMOVDQU since before AVX existed.
 //
 // A dedicated `VecSelect(mask, a, b)` would be a legitimate neutral primitive
@@ -276,8 +276,9 @@ void X64Decoder::DecodeAvxInsertPs(const VexInsn& v) {
         element = __ And(container, ir::Operand{ir::Imm(0xFFFFFFFFull)})
                           .SetType(ir::ValueType::U64);
     } else {
-        element = __ ZeroExtend64(__ LoadMemory(ir::Operand{VexAddress(v)})
-                                          .SetType(ir::ValueType::U32))
+        element = __ ZeroExtend64(MemLoad(ir::Operand{VexAddress(v)},
+                                         ir::ValueType::U32,
+                                         VexTsoOrdered(v)))
                           .SetType(ir::ValueType::U64);
     }
 
@@ -382,11 +383,11 @@ void X64Decoder::DecodeAvxMaskMov(const VexInsn& v, u32 lane_bits, bool store) {
                                                .SetType(ir::ValueType::U64);
                 MemStore(ir::Operand{address, offset, ir::OperandPlus},
                          NarrowTo(value, element_type),
-                         false);
+                         VexTsoOrdered(v));
             } else {
                 auto value = MemLoad(ir::Operand{address, offset, ir::OperandPlus},
                                      element_type,
-                                     false);
+                                     VexTsoOrdered(v));
                 if (lane_bits == 64) {
                     // The element IS the qword: a plain write, no merge.
                     if (q == 0) {

@@ -237,7 +237,7 @@ ir::Value X64Decoder::VexLoadVec(const VexInsn& v) {
     if (v.RmIsRegister()) {
         return XmmRead(XmmOf(v.rm));
     }
-    return __ LoadMemory(ir::Operand{VexAddress(v)}).SetType(ir::ValueType::V128);
+    return MemLoad(ir::Operand{VexAddress(v)}, ir::ValueType::V128, VexTsoOrdered(v));
 }
 
 // The r/m operand as two V128 halves (C1).
@@ -246,9 +246,11 @@ X64Decoder::VecHalves X64Decoder::VexLoadVec256(const VexInsn& v) {
         return {XmmRead(XmmOf(v.rm)), YmmHighRead(v.rm)};
     }
     auto addr = VexAddress(v);
-    auto lo = __ LoadMemory(ir::Operand{addr}).SetType(ir::ValueType::V128);
-    auto hi = __ LoadMemory(ir::Operand{__ Add(addr, ir::Operand{ir::Imm(u64(16))})})
-                      .SetType(ir::ValueType::V128);
+    const bool tso = VexTsoOrdered(v);
+    auto lo = MemLoad(ir::Operand{addr}, ir::ValueType::V128, tso);
+    auto hi = MemLoad(ir::Operand{__ Add(addr, ir::Operand{ir::Imm(u64(16))})},
+                      ir::ValueType::V128,
+                      tso);
     return {lo, hi};
 }
 
@@ -259,8 +261,9 @@ ir::Value X64Decoder::VexLoadScalar(const VexInsn& v, u32 lane_bits) {
     if (v.RmIsRegister()) {
         return XmmLo(XmmOf(v.rm));
     }
-    return __ LoadMemory(ir::Operand{VexAddress(v)})
-            .SetType(lane_bits == 32 ? ir::ValueType::U32 : ir::ValueType::U64);
+    return MemLoad(ir::Operand{VexAddress(v)},
+                   lane_bits == 32 ? ir::ValueType::U32 : ir::ValueType::U64,
+                   VexTsoOrdered(v));
 }
 
 // The r/m operand of a scalar form as a V128 with the value in lane 0, which
@@ -270,8 +273,9 @@ ir::Value X64Decoder::VexLoadScalarVec(const VexInsn& v, u32 lane_bits) {
     if (v.RmIsRegister()) {
         return XmmRead(XmmOf(v.rm));
     }
-    auto raw = __ LoadMemory(ir::Operand{VexAddress(v)})
-                       .SetType(lane_bits == 32 ? ir::ValueType::U32 : ir::ValueType::U64);
+    auto raw = MemLoad(ir::Operand{VexAddress(v)},
+                       lane_bits == 32 ? ir::ValueType::U32 : ir::ValueType::U64,
+                       VexTsoOrdered(v));
     return __ VecDup64(__ ZeroExtend64(raw)).SetType(ir::ValueType::V128);
 }
 
@@ -516,8 +520,9 @@ void X64Decoder::DecodeAvxFpCvtPs2Pd(const VexInsn& v) {
         // a memory source is 8 bytes, so it is loaded as a qword and dropped
         // into lane 0 (lane 1 is never read by kind 6's Fcvtl).
         auto source = v.RmIsRegister() ? XmmRead(XmmOf(v.rm))
-                                       : __ VecDup64(__ LoadMemory(ir::Operand{VexAddress(v)})
-                                                             .SetType(ir::ValueType::U64))
+                                       : __ VecDup64(MemLoad(ir::Operand{VexAddress(v)},
+                                                            ir::ValueType::U64,
+                                                            VexTsoOrdered(v)))
                                                  .SetType(ir::ValueType::V128);
         VexWrite128(v.reg, __ VecFCvtPacked(source, k));
         return;
@@ -928,10 +933,10 @@ void X64Decoder::DecodeAvxFpMovScalar(const VexInsn& v, u32 lane_bits, bool stor
     if (!v.RmIsRegister()) {
         if (store) {
             auto value = XmmLo(XmmOf(v.reg));
-            MemStore(ir::Operand{VexAddress(v)}, NarrowTo(value, type), false);
+            MemStore(ir::Operand{VexAddress(v)}, NarrowTo(value, type), VexTsoOrdered(v));
             return;
         }
-        auto raw = __ LoadMemory(ir::Operand{VexAddress(v)}).SetType(type);
+        auto raw = MemLoad(ir::Operand{VexAddress(v)}, type, VexTsoOrdered(v));
         auto lo = lane_bits == 32 ? __ ZeroExtend64(raw).SetType(ir::ValueType::U64) : raw;
         VexWriteHalves(v.reg, lo, __ LoadImm(ir::Imm(u64(0))));
         return;
@@ -970,7 +975,7 @@ void X64Decoder::DecodeAvxFpMovScalar(const VexInsn& v, u32 lane_bits, bool stor
 void X64Decoder::DecodeAvxFpMovLoHi(const VexInsn& v, bool high, bool store) {
     if (store) {
         auto value = high ? XmmHi(XmmOf(v.reg)) : XmmLo(XmmOf(v.reg));
-        MemStore(ir::Operand{VexAddress(v)}, value, false);
+        MemStore(ir::Operand{VexAddress(v)}, value, VexTsoOrdered(v));
         return;
     }
     ir::Value from_rm;
@@ -978,7 +983,9 @@ void X64Decoder::DecodeAvxFpMovLoHi(const VexInsn& v, bool high, bool store) {
         // vmovhlps reads src2's HIGH qword; vmovlhps reads its LOW qword.
         from_rm = high ? XmmLo(XmmOf(v.rm)) : XmmHi(XmmOf(v.rm));
     } else {
-        from_rm = __ LoadMemory(ir::Operand{VexAddress(v)}).SetType(ir::ValueType::U64);
+        from_rm = MemLoad(ir::Operand{VexAddress(v)},
+                          ir::ValueType::U64,
+                          VexTsoOrdered(v));
     }
     if (high) {
         VexWriteHalves(v.reg, XmmLo(XmmOf(v.vvvv)), from_rm);
@@ -1044,7 +1051,9 @@ void X64Decoder::DecodeAvxFpCvtSi2Scalar(const VexInsn& v, u32 dst_bits) {
     if (v.RmIsRegister()) {
         source = R(GprOf(v.rm, v.w));
     } else {
-        source = __ LoadMemory(ir::Operand{VexAddress(v)}).SetType(GetSize(src_bits));
+        source = MemLoad(ir::Operand{VexAddress(v)},
+                         GetSize(src_bits),
+                         VexTsoOrdered(v));
     }
     auto converted = __ VecFCvtIntToFloat(source, ir::Imm(src_bits), ir::Imm(dst_bits));
     auto merge_lo = XmmLo(XmmOf(v.vvvv));
@@ -1086,8 +1095,9 @@ void X64Decoder::DecodeAvxFpCvtWiden(const VexInsn& v, u32 kind) {
     const auto k = ir::Imm(kind);
     if (!v.Is256()) {
         auto source = v.RmIsRegister() ? XmmRead(XmmOf(v.rm))
-                                       : __ VecDup64(__ LoadMemory(ir::Operand{VexAddress(v)})
-                                                             .SetType(ir::ValueType::U64))
+                                       : __ VecDup64(MemLoad(ir::Operand{VexAddress(v)},
+                                                            ir::ValueType::U64,
+                                                            VexTsoOrdered(v)))
                                                  .SetType(ir::ValueType::V128);
         VexWrite128(v.reg, __ VecFCvtPacked(source, k));
         return;
@@ -1256,7 +1266,9 @@ void X64Decoder::DecodeAvxFpExtract(const VexInsn& v, u32 element_bits) {
         R(GprOf(v.rm, element_bits == 64), value);
         return;
     }
-    MemStore(ir::Operand{VexAddress(v)}, NarrowTo(value, GetSize(element_bits)), false);
+    MemStore(ir::Operand{VexAddress(v)},
+             NarrowTo(value, GetSize(element_bits)),
+             VexTsoOrdered(v));
 }
 
 // vpinsrb / vpinsrw / vpinsrd / vpinsrq.
@@ -1276,7 +1288,9 @@ void X64Decoder::DecodeAvxFpInsert(const VexInsn& v, u32 element_bits) {
     if (v.RmIsRegister()) {
         value = R(GprOf(v.rm, element_bits == 64));
     } else {
-        value = __ LoadMemory(ir::Operand{VexAddress(v)}).SetType(GetSize(element_bits));
+        value = MemLoad(ir::Operand{VexAddress(v)},
+                        GetSize(element_bits),
+                        VexTsoOrdered(v));
         if (element_bits != 64) {
             value = __ ZeroExtend64(value).SetType(ir::ValueType::U64);
         }

@@ -34,9 +34,10 @@
 // "masked-off bytes must not introduce memory faults" -- and for gather that
 // property is not a nicety, it is the whole ballgame (see MEASURED SEMANTICS).
 //
-// Every load therefore goes through LoadMemory, so the JIT fault table and the
-// interpreter's range check both work here unchanged, and no backend file is
-// touched by this family at all.
+// Every load therefore goes through MemLoad, which selects LoadMemoryTSO in
+// AcqRel mode and otherwise keeps the existing LoadMemory IR. The JIT fault
+// table and interpreter range check work unchanged, with no gather-specific
+// backend path.
 //
 // ---------------------------------------------------------------------------
 // MEASURED SEMANTICS (Rosetta, arch -x86_64, macOS 27 -- not assumed)
@@ -302,7 +303,7 @@ void X64Decoder::DecodeAvxGatherOp(const VexInsn& v, u32 element_bits, u32 index
                            .SetType(addr_type);
         }
 
-        auto loaded = __ LoadMemory(ir::Operand{addr}).SetType(load_type);
+        auto loaded = MemLoad(ir::Operand{addr}, load_type, VexTsoOrdered(v));
 
         // ---- merge into the destination element ---------------------------
         // The destination slot is re-read HERE rather than hoisted: an earlier

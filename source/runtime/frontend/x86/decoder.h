@@ -355,6 +355,7 @@ private:
     // just that instruction's accesses (force_tso covers the implicitly
     // locked memory XCHG, which carries no LOCK prefix in the encoding).
     [[nodiscard]] bool TsoOrdered(const _DInst& insn) const;
+    [[nodiscard]] bool VexTsoOrdered(const VexInsn& insn) const;
     ir::Value MemLoad(const ir::Operand& addr, ir::ValueType type, bool tso);
     void MemStore(const ir::Operand& addr, ir::Value value, bool tso);
 
