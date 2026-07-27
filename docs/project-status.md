@@ -106,9 +106,11 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
   **`host_bytes` 只在同一构建内比**——发射的 host 指针立即数长度随翻译器自身布局
   变化，跨构建会漂几百字节而代码其实一致;跨构建只比 `ir_insts` 与每单元列表。
   动态 glibc guest 的初始栈含 `argv[0]`，过去直接从 checkout 启动会让路径字符串
-  长度改变可达块和函数单元切分。门禁现将**所有** guest（含静态 guest）软链接到
-  固定的 `/tmp/svm_fp_guests/` 并从该路径启动；golden 已在固定路径下重生成，
-  checkout/worktree 位置不再参与指纹。
+  长度改变可达块和函数单元切分。门禁现将**所有** guest（含静态 guest）**复制**到
+  固定的 `/tmp/svm_fp_guests/` 并从该路径启动；必须复制而非软链——loader 会
+  realpath guest 路径并把解析后路径作为 AT_EXECFN 压进 guest 初始栈,软链会把
+  真实 checkout 路径漏进栈里(实测:__memcpy_ssse3 路径选择漂移,±4 单元)。
+  golden 已在固定路径下重生成,checkout/worktree 位置不再参与指纹。
   用法:`run_func_fingerprint_tests.sh <svm>` / `--update` / `--against <svm_B>`。
   同一构建的重复 check 仍先做带 `host_bytes` 的双跑确定性检查。
 

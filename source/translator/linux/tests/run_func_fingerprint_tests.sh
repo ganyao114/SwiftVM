@@ -65,9 +65,13 @@ GUESTS=(
     func_tests func_tests_musl
 )
 
-# Stage every guest behind a checkout-independent pathname. Symlinks keep this
-# cheap for the large glibc binaries; the path passed to the translator (and
-# therefore the guest's argv[0]) is the stable link, not its checkout target.
+# Stage every guest behind a checkout-independent pathname. These MUST be
+# copies, not symlinks: the loader realpath()s the guest path (loader.cpp) and
+# pushes the RESOLVED path onto the guest stack as AT_EXECFN, so a symlink
+# leaks the true checkout path into the guest's initial stack and the
+# fingerprint becomes checkout-dependent again (this exact defeat was observed:
+# __memcpy_ssse3 path selection shifted, ±4 units). A regular file at a fixed
+# path realpaths to itself.
 mkdir -p "$STAGE_DIR" || {
     echo "FAIL: cannot create fixed guest staging directory $STAGE_DIR"
     exit 2
@@ -75,13 +79,13 @@ mkdir -p "$STAGE_DIR" || {
 for g in "${GUESTS[@]}"; do
     src="$HERE/${g}_x86_64"
     if [ -x "$src" ]; then
-        ln -sfn "$src" "$STAGE_DIR/${g}_x86_64" || {
+        cp -f "$src" "$STAGE_DIR/${g}_x86_64" || {
             echo "FAIL: cannot stage $src at $STAGE_DIR"
             exit 2
         }
     fi
 done
-echo "guest staging: $STAGE_DIR (fixed argv[0])"
+echo "guest staging: $STAGE_DIR (fixed argv[0]/AT_EXECFN, copies not symlinks)"
 
 # One guest's fingerprint on stdout. `SVM_FUNC_BASE=1` is the default but is
 # pinned here so the gate keeps meaning the same thing if the default moves.
