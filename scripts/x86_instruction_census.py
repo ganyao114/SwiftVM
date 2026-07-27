@@ -328,10 +328,16 @@ def write_report(path: pathlib.Path, fixtures: list[pathlib.Path]) -> None:
         "SYSRET remains guest-kernel-only | coherent for userland |",
         "| MMX | not advertised; MMX-register-only leftovers are explicitly "
         "out of scope | coherent |",
-        "| XSAVE/OSXSAVE | not advertised; XGETBV raises #UD; XSAVE/XRSTOR skipped | "
-        "coherent |",
+        "| XSAVE/OSXSAVE | gated by SVM_XSAVE; XGETBV/XSAVE/XRSTOR wired to "
+        "emitters in decoder_xsave.cc | coherent |",
+        "| AVX/AVX2/FMA | gated by SVM_AVX+SVM_XSAVE; self-contained raw VEX "
+        "decoder (vex_decoder.cc) bypasses distorm | coherent |",
+        "| SSE3/SSSE3/SSE4.1/SSE4.2 | gated by SVM_SSE4/SVM_SSE42STR; "
+        "decoder_sse4.cc + decoder_sse42str.cc | coherent |",
+        "| BMI1/BMI2 | gated by SVM_BMI; decoder_bmi.cc | coherent |",
         "| SEP | not advertised; no 32-bit compat frontend | coherent |",
-        "| CX16 | not advertised | cross-branch TODO only; CMPXCHG16B untouched |",
+        "| CX16 | advertised (leaf 1 ECX.13); CMPXCHG16B via CompareAndSwap128 IR "
+        "+ LDAXP/STLXP | coherent |",
         "",
         "## Test-fixture disassembly: mnemonics not handled by the decoder",
         "",
