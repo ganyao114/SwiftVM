@@ -81,6 +81,41 @@ WORKLOADS = [
 GOLDEN = os.path.join(HERE, "bench_suite_x86_64.native.txt")
 
 
+def require_inputs(workloads):
+    """Abort unless every guest and every golden checksum this run needs exists.
+
+    This is not defensive padding.  The guest ELFs live under a `*_x86_64`
+    .gitignore pattern and are force-added one by one; bench_suite_x86_64 and
+    bench_suite_x86_64.native.txt were never added, so in every fresh clone or
+    worktree this harness skipped 5 of its 7 workloads and compared 0 checksums
+    -- and still printed a well-formed baseline table.  A harness that reports
+    success on 2/7 coverage is worse than one that does not run: it launders a
+    coverage hole into a green result.  Missing input is a hard error, checked
+    up front so it costs a second rather than a 15-rep run.
+    """
+    missing = []
+    for name, guest, _argv, key, _rc, _desc in workloads:
+        gpath = os.path.join(HERE, guest)
+        if not os.path.exists(gpath):
+            missing.append("workload %-10s guest missing: %s" % (name, gpath))
+    if not os.path.exists(GOLDEN):
+        missing.append("golden checksum table missing: %s" % GOLDEN)
+    else:
+        golden = load_golden()
+        for name, _guest, _argv, key, _rc, _desc in workloads:
+            if key is not None and key not in golden:
+                missing.append("workload %-10s has no '%s' entry in %s"
+                               % (name, key, os.path.basename(GOLDEN)))
+    if missing:
+        sys.exit("FATAL: benchmark inputs are missing -- refusing to report a\n"
+                 "partial run as a baseline:\n  %s\n\n"
+                 "Rebuild them with:\n"
+                 "  bash %s/build_bench_tests.sh\n"
+                 "and make sure they are tracked by git (see the exceptions at the\n"
+                 "bottom of .gitignore) so a fresh clone measures the same things."
+                 % ("\n  ".join(missing), HERE))
+
+
 def load_golden():
     out = {}
     if not os.path.exists(GOLDEN):
@@ -140,6 +175,12 @@ def main():
 
     only = set(args.only.split(",")) if args.only else None
     workloads = [w for w in WORKLOADS if only is None or w[0] in only]
+    if only:
+        unknown = only - {w[0] for w in WORKLOADS}
+        if unknown:
+            sys.exit("FATAL: --only names no such workload: %s (have: %s)"
+                     % (", ".join(sorted(unknown)), ", ".join(w[0] for w in WORKLOADS)))
+    require_inputs(workloads)
 
     golden = load_golden()
     base_env = dict(os.environ)
@@ -156,9 +197,7 @@ def main():
     # rep 0 is a discarded warm-up; interleave everything else.
     for rep in range(args.reps + 1):
         for name, guest, argv, key, want_rc, _desc in workloads:
-            gpath = os.path.join(HERE, guest)
-            if not os.path.exists(gpath):
-                continue
+            gpath = os.path.join(HERE, guest)   # existence proven by require_inputs()
             for cname, cenv in configs:
                 env = dict(base_env)
                 env.update(cenv)
@@ -168,7 +207,7 @@ def main():
                 if want_rc is not None and rc != want_rc:
                     sys.exit("FATAL: %s/%s exited %d, expected %d -- a crashed run is "
                              "not a fast run\n%s" % (name, cname, rc, want_rc, out[-800:]))
-                if key is not None and key in golden:
+                if key is not None:   # golden[key] proven present by require_inputs()
                     m = re.search(r"^%s\s+(\S+)$" % re.escape(key), out, re.M)
                     if not m:
                         sys.exit("FATAL: %s/%s produced no '%s' line (rc=%d)\n%s"

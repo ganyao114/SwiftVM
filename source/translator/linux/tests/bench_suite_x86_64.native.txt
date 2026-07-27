@@ -1,0 +1,9 @@
+# bench_suite_x86_64 golden checksums
+# produced by build_bench_tests.sh from a real x86-64 execution
+# (arch -x86_64 on Apple Silicon); scale=1 for every kernel.
+int    0x105ad9f429eccccc
+fp     0x532dfc3f44b15cbe
+mem    0x5eac156a4d4ce784
+branch 0xdb17d164f01bca6b
+call   0xee79813b94536693
+exit=0
