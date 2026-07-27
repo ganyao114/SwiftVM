@@ -164,10 +164,6 @@ void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
         return;
     }
     for (VAddr page = first; page <= last; page += page_size_) {
-        if (std::find(disabled_pages_.begin(), disabled_pages_.end(), page) !=
-            disabled_pages_.end()) {
-            continue;
-        }
         auto& rec = pages_[page];
         const bool duplicate = std::any_of(
                 rec.nodes.begin(), rec.nodes.end(), [&](const TrackedNode& tracked) {
@@ -379,34 +375,25 @@ void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& current_l
             MetadataGuard guard(*this);
             nodes = TakeDirtyNodes(space, &current_l1);
             if (nodes.empty()) {
-                for (auto it = pages_.begin(); it != pages_.end();) {
-                    auto& rec = it->second;
+                // An empty batch IMPLIES every dirty page now has an empty
+                // node list: TakeDirtyNodes visits every dirty page, collects
+                // its nodes, and only then erases them from the records, so
+                // "it returned nothing" and "no dirty page still tracks a
+                // node" are the same statement. There is therefore nothing
+                // left to detach and nothing to re-protect here -- pages are
+                // re-protected by RegisterNode when a new translation is
+                // published on them, which is the only moment protecting them
+                // again is useful.
+                for (auto& [page, rec] : pages_) {
                     if (!rec.dirty) {
-                        ++it;
                         continue;
                     }
                     rec.dirty = false;
-                    rec.invalidations++;
-                    if (rec.nodes.empty()) {
-                        // Keep an RW tombstone until the page is either
-                        // re-protected by RegisterNode or synchronously
-                        // unmapped. It closes the delayed-second-fault race
-                        // described in HandleWriteFault.
-                        rec.claim_stale_fault = true;
-                        ++it;
-                        continue;
-                    }
-                    if (rec.invalidations > kMaxInvalidations) {
-                        disabled_pages_.push_back(it->first);
-                        rec.claim_stale_fault = true;
-                        ++it;
-                        continue;
-                    }
-                    if (SetPageProtected(it->first, true)) {
-                        rec.write_protected = true;
-                        rec.claim_stale_fault = false;
-                    }
-                    ++it;
+                    // Keep an RW tombstone until the page is either
+                    // re-protected by RegisterNode or synchronously unmapped.
+                    // It closes the delayed-second-fault race described in
+                    // HandleWriteFault.
+                    rec.claim_stale_fault = true;
                 }
                 break;
             }
@@ -501,7 +488,6 @@ void SmcTracker::DisableAndUnprotectAll() {
             }
         }
         dead_pages.swap(pages_);
-        disabled_pages_.clear();
     }
     dead_pages.clear();
     ReclaimRetiredLocked();

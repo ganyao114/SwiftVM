@@ -128,14 +128,46 @@ public:
         return {};
     }
 
-    void Destroy() {
-        for (auto &intrusive_map : intrusive_maps) {
+    // Empties the map, handing every node to `on_release` instead of deleting
+    // it, and leaves the map usable (all buckets dropped).
+    //
+    // There is deliberately NO Destroy()-style variant that `delete`s the
+    // nodes, and adding one back would be a use-after-free. A map entry here
+    // is one *reference* to a node, not sole ownership of it: SmcTracker holds
+    // its own strong ir::NodeRef on exactly the nodes this map contains (see
+    // the TrackedNode comment in smc_tracker.h -- borrowing there was the UAF
+    // fixed by 8d8ddba), and callers hold IntrusivePtr<Block>/<Function>
+    // handles obtained from Module::GetNode*. Deleting from here frees memory
+    // those owners are still reading. The owner-agnostic way to end this map's
+    // participation is to drop its reference and let the refcount decide, so
+    // that is the only operation offered.
+    // `key_of(node)` must return the address the node was Put() under; it is
+    // used to clear the node's bucket. Clearing bucket-by-bucket rather than
+    // wiping `hash_map` wholesale is not micro-optimisation: hash_map is sized
+    // from the module's address range, and the default module spans
+    // [0, 1<<49) at 1 MB per bucket -- 537 million slots over a lazily
+    // committed 4 GB VirtualVector. Writing nullptr across all of it faults in
+    // the entire 4 GB and cost a flat ~0.18 s of system time on every process
+    // exit (measured: `hello` went 0.01 s -> 0.19 s, and the cost was flat in
+    // the number of nodes, which is what gave the wipe away). The populated
+    // buckets are at most one per node.
+    template <typename KeyFn, typename F>
+    void ReleaseAll(KeyFn&& key_of, F&& on_release) {
+        for (auto& intrusive_map : intrusive_maps) {
             for (auto it = intrusive_map.begin(); it != intrusive_map.end();) {
-                auto pre = it;
+                // Unlink and read the key before releasing: on_release may run
+                // the node's destructor, and both the intrusive hook and the
+                // key live inside the node.
+                auto* node = it.operator->();
+                const auto addr = key_of(node);
                 it = intrusive_map.erase(it);
-                delete pre.operator->();
+                if (InRange(addr)) {
+                    hash_map[Hash(addr)] = nullptr;
+                }
+                on_release(node);
             }
         }
+        intrusive_maps.clear();
     }
 
 private:
