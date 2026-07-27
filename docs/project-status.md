@@ -540,10 +540,23 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
     被原地替换为同尺寸内容且 mtime 被保留，ID 可能不变。加载阶段仍会逐块校验 guest
     bytes，所以影响被限制在 build ID 未能隔离的 host-code cache 候选，而不是绕过
     guest 代码漂移检查。需要更强的发布/攻击模型时应改为内容或构建系统提供的 ID。
-15. **无动态链接 glibc guest 覆盖**:tests 里的 real_*/func_tests 全部为**静态**
-    链接;glibc 动态加载器(ld.so)启动路径从未执行过。静态 glibc 启动同样走
-    ifunc + xgetbv,所以 XSAVE/AVX 门控链路有覆盖,但 ld.so 专属的
-    (relocation/DT_DEBUG/共享库 ifunc)行为是空白。
+15. ~~**无动态链接 glibc guest 覆盖**~~:**已落地**(2026-07-28,`b269527`)。采用
+    QEMU linux-user 模型——不实现链接语义，loader 解析 PT_INTERP、把 glibc 2.38
+    ld.so 映射进 guest 窗口并以正确 auxv(AT_BASE/AT_ENTRY/AT_PHDR…)把控制权交给
+    它，重定位/IRELATIVE/lazy binding 全部作为 guest 代码翻译执行。配套：
+    `SVM_SYSROOT` 路径重定向(绝对路径优先 sysroot、不存在回退 host，未设置时
+    逐字节旧行为)、MAP_FIXED 4KiB 亚页段加载(保留同 host 页相邻段字节)、
+    `run_dynamic_tests.sh`(默认/AVX+XSAVE/lazy/eager 3 正例+缺 sysroot 负例，
+    AVX+XSAVE 配置实测跨 `_dl_runtime_resolve_xsavec`)。静态 auxv 布局字节级
+    冻结,fingerprint 4400 零 diff。三个记录在案的语义分歧：
+    ① **亚页 mprotect 不强制**:glibc RELRO 是 4KiB 对齐但跨 16KiB host 页边界的
+    范围，host 无法表达(扩大会误伤同页可写邻数据)——16KiB 可表达范围真
+    Protect+SMC 失效，亚页范围返回成功不强制;仅对真实硬件上会 SIGSEGV 的
+    guest 代码可观测(guest 窗口已被地址空间隔离兜底)。完整 enforcement 需软件
+    guest 页权限表,列为后续。② **MMX ABI 标记**:glibc GNU property 把 MMX 计入
+    x86-64-baseline,无此位 ld.so 拒绝加载任何 DSO——CPUID.1:EDX.MMX 经
+    `SVM_X86_64_ABI_BASELINE` 仅限 PT_INTERP 启动广告,MMX 指令本身仍响亮 #UD;
+    静态 guest CPUID 不变。③ munmap/mremap 亚页操作仍是 16KiB 粒度近似。
 16. **XSAVE 语义分歧(已文档化,接受)**:XSAVE/XRSTOR 不强制 64 字节对齐 #GP、
     保留位/XCOMP/超 XCR0 位一律屏蔽不 #GP、MXCSR 非法位屏蔽;XGETBV ECX!=0 应
     #GP(0) 但无 #GP 出口类型,以 terminal IllegalCode 近似(decoder_xsave.cc)。
