@@ -114,20 +114,19 @@ X64Decoder::VecHalves X64Decoder::LoadAvx256Src(_DInst& insn, _Operand& op) {
     // distorm snapshot reports a 128-bit memory operand even when VEX.L=1, so
     // the prefix's L bit (already checked by the caller) is the only truth.
     auto addr = FlatAddress(insn, op);
-    auto lo = __ LoadMemory(ir::Operand{addr}).SetType(ir::ValueType::V128);
-    auto hi = __ LoadMemory(ir::Operand{__ Add(addr, ir::Operand{ir::Imm(u64(16))})})
-                      .SetType(ir::ValueType::V128);
+    const bool tso = TsoOrdered(insn);
+    auto lo = MemLoad(ir::Operand{addr}, ir::ValueType::V128, tso);
+    auto hi = MemLoad(ir::Operand{__ Add(addr, ir::Operand{ir::Imm(u64(16))})},
+                      ir::ValueType::V128,
+                      tso);
     return {lo, hi};
 }
 
 void X64Decoder::StoreAvx256Dst(_DInst& insn, _Operand& op, ir::Value lo, ir::Value hi) {
     auto addr = FlatAddress(insn, op);
-    // Plain (non-TSO) accesses, matching the existing 128-bit DecodeMovVec:
-    // vector memory never participates in the lock/atomic paths, and ordering
-    // the two halves individually would not restore the 32-byte indivisibility
-    // the split already gave up.
-    __ StoreMemory(ir::Operand{addr}, lo);
-    __ StoreMemory(ir::Operand{__ Add(addr, ir::Operand{ir::Imm(u64(16))})}, hi);
+    const bool tso = TsoOrdered(insn);
+    MemStore(ir::Operand{addr}, lo, tso);
+    MemStore(ir::Operand{__ Add(addr, ir::Operand{ir::Imm(u64(16))})}, hi, tso);
 }
 
 void X64Decoder::WriteAvx256(u32 index, ir::Value lo, ir::Value hi) {
@@ -271,7 +270,9 @@ void X64Decoder::DecodeAvx256BroadcastSS(_DInst& insn) {
                        ir::Operand{ir::Imm(0xFFFFFFFFull)});
     } else {
         dword = __ ZeroExtend64(
-                __ LoadMemory(ir::Operand{FlatAddress(insn, op1)}).SetType(ir::ValueType::U32));
+                MemLoad(ir::Operand{FlatAddress(insn, op1)},
+                        ir::ValueType::U32,
+                        TsoOrdered(insn)));
     }
     // Build the 64-bit lane pair first: VecDup64 only replicates qwords.
     auto pair = __ Or(dword, ir::Operand{__ LslImm(dword, ir::Imm(u64(32)))});

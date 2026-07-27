@@ -416,9 +416,9 @@ ir::Value X64Decoder::AvxIntNarrowSrc(const VexInsn& v, u32 bytes) {
     }
     auto address = ir::Operand{VexAddress(v)};
     if (bytes >= 16) {
-        return __ LoadMemory(address).SetType(ir::ValueType::V128);
+        return MemLoad(address, ir::ValueType::V128, VexTsoOrdered(v));
     }
-    auto raw = __ LoadMemory(address).SetType(GetSize(bytes * 8));
+    auto raw = MemLoad(address, GetSize(bytes * 8), VexTsoOrdered(v));
     ir::Value widened = raw;
     if (bytes != 8) {
         widened = __ ZeroExtend64(raw);
@@ -474,8 +474,9 @@ void X64Decoder::DecodeAvxIntZeroDst(const VexInsn& v) {
 void X64Decoder::DecodeAvxIntShiftCount(const VexInsn& v, u32 kind, u32 lane_bits) {
     ir::Value count = v.RmIsRegister()
                               ? XmmLo(XmmOf(v.rm))
-                              : __ LoadMemory(ir::Operand{VexAddress(v)})
-                                        .SetType(ir::ValueType::U64);
+                              : MemLoad(ir::Operand{VexAddress(v)},
+                                        ir::ValueType::U64,
+                                        VexTsoOrdered(v));
     const auto lanes = ir::Imm(lane_bits);
     const auto apply = [&](ir::Value value) -> ir::Value {
         if (kind == 0) {
@@ -568,7 +569,9 @@ void X64Decoder::DecodeAvxIntBroadcast(const VexInsn& v, u32 element_bits) {
                               .SetType(ir::ValueType::U64);
         }
     } else {
-        auto raw = __ LoadMemory(ir::Operand{VexAddress(v)}).SetType(GetSize(element_bits));
+        auto raw = MemLoad(ir::Operand{VexAddress(v)},
+                           GetSize(element_bits),
+                           VexTsoOrdered(v));
         element = raw;
         if (element_bits != 64) {
             element = __ ZeroExtend64(raw);
@@ -591,11 +594,11 @@ void X64Decoder::DecodeAvxIntBroadcast(const VexInsn& v, u32 element_bits) {
 // vbroadcasti128 ymm, m128.  Memory operand only; the register form is #UD.
 void X64Decoder::DecodeAvxIntBroadcast128(const VexInsn& v) {
     auto address = VexAddress(v);
-    auto lo = __ LoadMemory(ir::Operand{address}).SetType(ir::ValueType::V128);
+    auto lo = MemLoad(ir::Operand{address}, ir::ValueType::V128, VexTsoOrdered(v));
     // A second load rather than reusing `lo`: both halves are separate IR
     // values under C1 and sharing one would tie the two register writes to a
     // single live range across the whole block.
-    auto hi = __ LoadMemory(ir::Operand{address}).SetType(ir::ValueType::V128);
+    auto hi = MemLoad(ir::Operand{address}, ir::ValueType::V128, VexTsoOrdered(v));
     VexWrite256(v.reg, lo, hi);
 }
 
@@ -620,7 +623,9 @@ void X64Decoder::DecodeAvxIntExtract128(const VexInsn& v) {
     if (v.RmIsRegister()) {
         VexWrite128(v.rm, value);
     } else {
-        __ StoreMemory(ir::Operand{VexAddress(v)}, value.SetType(ir::ValueType::V128));
+        MemStore(ir::Operand{VexAddress(v)},
+                 value.SetType(ir::ValueType::V128),
+                 VexTsoOrdered(v));
     }
 }
 
