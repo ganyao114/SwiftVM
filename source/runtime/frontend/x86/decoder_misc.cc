@@ -1,5 +1,7 @@
 #include <array>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <random>
 #include <time.h>
 #include "runtime/frontend/x86/decoder_internal.h"
@@ -66,7 +68,14 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     (void)insn;
     // Baseline: SSE2 userland plus the explicitly implemented scalar
     // facilities (CX16, MOVBE, RDRAND, RDSEED, TSC, RDTSCP). AVX-512, ERMS and
-    // MMX stay unreported so glibc's ifunc dispatch keeps away from them.
+    // MMX normally stays unreported so glibc's ifunc dispatch keeps away from
+    // it. A real x86-64 PT_INTERP process is the one exception: glibc's GNU
+    // property check defines x86-64-baseline as including the architectural
+    // MMX CPUID bit and refuses to load even a baseline DSO without it.
+    // The linux launcher sets the internal SVM_X86_64_ABI_BASELINE marker only
+    // for that process shape. MMX opcodes themselves remain rejected by the
+    // blanket guard in decoder.cc, so an unexpected MMX execution still fails
+    // loudly rather than corrupting the aliased XMM register file.
     //
     // AVX/AVX2 and BMI1/BMI2 are advertised only behind their opt-in gates.
     // The discipline this file has always followed is "never advertise what
@@ -80,6 +89,10 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
                                     | (1u << 24)  // FXSR
                                     | (1u << 25)  // SSE
                                     | (1u << 26); // SSE2
+    const char* abi_baseline_env = std::getenv("SVM_X86_64_ABI_BASELINE");
+    const bool abi_baseline =
+            abi_baseline_env && std::strcmp(abi_baseline_env, "0") != 0;
+    const u32 leaf1_edx = kSse2Edx | (abi_baseline ? (1u << 23) : 0u);
     // SSE3 / SSSE3 / SSE4.1 are backed by decoder_sse4.cc (64 mnemonics,
     // 4020 Rosetta rows).  POPCNT is I_POPCNT, long implemented.
     //
@@ -199,7 +212,7 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
             emit_sub(0xD, 2, {kXsaveYmmSize, kXsaveYmmOffset, 0, 0});
         }
     }
-    emit(1, {0x000306C3, 0, leaf1_ecx, kSse2Edx}); // Haswell-ish model + CX16
+    emit(1, {0x000306C3, 0, leaf1_ecx, leaf1_edx}); // Haswell-ish model + CX16
     // "GenuineIntel" + max basic leaf.
     emit(0, {0x15, 0x756E6547, 0x6C65746E, 0x49656E69});
 }

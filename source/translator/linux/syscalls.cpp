@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <vector>
 #include "base/logging.h"
+#include "path_utils.h"
 #include "syscalls.h"
 #include "translator/x86/cpu.h"
 
@@ -29,7 +30,9 @@ static constexpr u64 GUEST_MAP_FIXED = 0x10;
 static constexpr u64 GUEST_MAP_ANONYMOUS = 0x20;
 
 // Guest mprotect protections (asm-generic mman).
+static constexpr u64 GUEST_PROT_READ = 0x01;
 static constexpr u64 GUEST_PROT_WRITE = 0x02;
+static constexpr u64 GUEST_PROT_EXEC = 0x04;
 
 // Guest AT_* constants (asm-generic fcntl).
 static constexpr u64 GUEST_AT_FDCWD = static_cast<u64>(-100);
@@ -747,6 +750,7 @@ s64 SyscallHandler::SysBrk(u64 addr) {
 s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u64 offset) {
     std::lock_guard guard(process->memory_mutex);
     if (length == 0) return -EINVAL_;
+    if (offset % GuestMemory::kGuestPageSize != 0) return -EINVAL_;
     const bool anonymous = (flags & GUEST_MAP_ANONYMOUS) != 0;
     if (!anonymous) {
         // File-backed mappings: only private mappings are supported. Since
@@ -762,13 +766,25 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
 
     VAddr guest_addr = 0;
     if (flags & GUEST_MAP_FIXED) {
-        if (addr % GuestMemory::kHostPageSize != 0) return -EINVAL_;
-        // MAP_FIXED replaces existing *guest* mappings in the range; unmap
-        // them first (host MapFixed never clobbers).
-        // SMC: the replaced range may hold translated code — invalidate it.
-        if (smc_invalidate_) smc_invalidate_(addr, addr + map_length);
-        memory->Unmap(addr, map_length);
-        if (!memory->MapFixed(addr, map_length)) return -ENOMEM_;
+        if (addr % GuestMemory::kGuestPageSize != 0 || addr + length < addr) {
+            return -EINVAL_;
+        }
+        // Linux x86_64 has 4 KiB guest pages while macOS/arm64 can only map
+        // 16 KiB host pages. A fixed ELF segment commonly begins in the
+        // middle of an already-backed host page (libc's second PT_LOAD begins
+        // at +0x26000). Preserve that page and replace only the requested
+        // guest bytes; mapping the whole host page again would destroy the
+        // tail of the preceding segment.
+        const VAddr host_start = GuestMemory::RoundDownHostPage(addr);
+        const VAddr host_end = GuestMemory::RoundHostPage(addr + length);
+        if (smc_invalidate_) smc_invalidate_(addr, addr + length);
+        for (VAddr page = host_start; page < host_end;
+             page += GuestMemory::kHostPageSize) {
+            if (!memory->RangeIsMapped(page, GuestMemory::kHostPageSize) &&
+                !memory->MapFixed(page, GuestMemory::kHostPageSize)) {
+                return -ENOMEM_;
+            }
+        }
         guest_addr = addr;
     } else if (addr != 0 && addr % GuestMemory::kHostPageSize == 0) {
         // Address hint: honor it if the range is free, else fall back.
@@ -785,6 +801,11 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
     }
     if (!guest_addr) return -ENOMEM_;
 
+    // Anonymous MAP_FIXED must clear an already-backed subpage. File mappings
+    // also need zero-fill after EOF. New MapAnywhere/MapFixed pages are
+    // already zeroed, so doing this uniformly is harmless and makes the
+    // replacement semantics explicit.
+    std::memset(memory->ToHost(guest_addr), 0, static_cast<size_t>(length));
     if (!anonymous) {
         u64 done = 0;
         while (done < length) {
@@ -816,8 +837,33 @@ s64 SyscallHandler::SysMunmap(u64 addr, u64 length) {
 
 s64 SyscallHandler::SysMprotect(u64 addr, u64 len, u64 prot) {
     std::lock_guard guard(process->memory_mutex);
-    // Guest protections are advisory for us: the host never executes guest
-    // code and the JIT reads/writes guest memory as data. Pretend success.
+    if (len == 0 || addr % GuestMemory::kGuestPageSize != 0) return -EINVAL_;
+    if ((prot & ~(GUEST_PROT_READ | GUEST_PROT_WRITE | GUEST_PROT_EXEC)) != 0) {
+        return -EINVAL_;
+    }
+    const u64 guest_len = GuestMemory::RoundGuestPage(len);
+    if (addr + guest_len < addr) return -EINVAL_;
+    if (!memory->RangeIsMapped(addr, guest_len)) return -ENOMEM_;
+    const bool host_page_exact =
+        addr % GuestMemory::kHostPageSize == 0 &&
+        (addr + guest_len) % GuestMemory::kHostPageSize == 0;
+    if (host_page_exact) {
+        if (!memory->Protect(addr,
+                             guest_len,
+                             (prot & GUEST_PROT_READ) != 0,
+                             (prot & GUEST_PROT_WRITE) != 0,
+                             (prot & GUEST_PROT_EXEC) != 0)) {
+            return HostErrno();
+        }
+    } else {
+        // Linux protects 4 KiB guest pages, but macOS/arm64 can only protect
+        // complete 16 KiB host pages. Expanding a RELRO range would also make
+        // writable neighboring guest subpages read-only, so leave the range
+        // unenforced and report success. Those RELRO neighbors consequently
+        // remain writable; this is guest-visible only to code that would fault
+        // on real hardware. A future software permission table can enforce
+        // guest-page permissions without changing adjacent host subpages.
+    }
     // SMC: PROT_WRITE on a range that holds translated code means the guest
     // is about to patch it — invalidate any stale blocks now, before the
     // write happens (the write-protect trap may not fire on an already-writable
@@ -949,9 +995,11 @@ s64 SyscallHandler::SysSysinfo(u64 buf) {
 s64 SyscallHandler::SysOpenat(u64 dirfd, u64 path, u64 flags, u64 mode) {
     std::string p;
     if (!memory->TryReadCString(path, p)) return -EFAULT_;
+    const bool absolute = !p.empty() && p.front() == '/';
+    p = ResolveGuestPath(p);
     const int hflags = GuestToHostOpenFlags(flags);
     int ret;
-    if (dirfd == GUEST_AT_FDCWD) {
+    if (dirfd == GUEST_AT_FDCWD || absolute) {
         ret = ::open(p.c_str(), hflags, static_cast<mode_t>(mode & 07777));
     } else {
         ret = ::openat(static_cast<int>(dirfd), p.c_str(), hflags, static_cast<mode_t>(mode & 07777));
@@ -994,8 +1042,10 @@ s64 SyscallHandler::SysFstatat(u64 dirfd, u64 path, u64 statbuf, u64 flags) {
     }
     std::string p;
     if (!memory->TryReadCString(path, p)) return -EFAULT_;
+    const bool absolute = !p.empty() && p.front() == '/';
+    p = ResolveGuestPath(p);
     int ret;
-    if (dirfd == GUEST_AT_FDCWD) {
+    if (dirfd == GUEST_AT_FDCWD || absolute) {
         ret = (flags & GUEST_AT_SYMLINK_NOFOLLOW) ? ::lstat(p.c_str(), &hst) : ::stat(p.c_str(), &hst);
     } else {
         ret = ::fstatat(static_cast<int>(dirfd),
@@ -1010,13 +1060,15 @@ s64 SyscallHandler::SysFstatat(u64 dirfd, u64 path, u64 statbuf, u64 flags) {
 s64 SyscallHandler::SysFaccessat(u64 dirfd, u64 path, u64 mode, u64 flags) {
     std::string p;
     if (!memory->TryReadCString(path, p)) return -EFAULT_;
+    const bool absolute = !p.empty() && p.front() == '/';
+    p = ResolveGuestPath(p);
     if (flags) {
         // AT_EACCESS / AT_SYMLINK_NOFOLLOW semantics are ignored; the
         // emulated process has euid == uid anyway.
         LOG_WARNING("faccessat: flags {:#x} ignored", flags);
     }
     int ret;
-    if (dirfd == GUEST_AT_FDCWD) {
+    if (dirfd == GUEST_AT_FDCWD || absolute) {
         ret = ::access(p.c_str(), static_cast<int>(mode));
     } else {
         ret = ::faccessat(static_cast<int>(dirfd), p.c_str(), static_cast<int>(mode), 0);
@@ -1032,7 +1084,9 @@ s64 SyscallHandler::SysReadlinkat(u64 dirfd, u64 path, u64 buf, u64 bufsize) {
         // Emulated /proc: the running guest binary.
         target = exe_path.empty() ? "/swiftvm/guest" : exe_path;
     } else {
-        if (dirfd != GUEST_AT_FDCWD) {
+        const bool absolute = !p.empty() && p.front() == '/';
+        p = ResolveGuestPath(p);
+        if (dirfd != GUEST_AT_FDCWD && !absolute) {
             LOG_WARNING("readlinkat with dirfd {} not supported (path {})", static_cast<s64>(dirfd), p);
             return -ENOSYS_;
         }
@@ -1051,8 +1105,10 @@ s64 SyscallHandler::SysReadlinkat(u64 dirfd, u64 path, u64 buf, u64 bufsize) {
 s64 SyscallHandler::SysUnlinkat(u64 dirfd, u64 path, u64 flags) {
     std::string p;
     if (!memory->TryReadCString(path, p)) return -EFAULT_;
+    const bool absolute = !p.empty() && p.front() == '/';
+    p = ResolveGuestPath(p);
     int ret;
-    if (dirfd == GUEST_AT_FDCWD) {
+    if (dirfd == GUEST_AT_FDCWD || absolute) {
         ret = (flags & GUEST_AT_REMOVEDIR) ? ::rmdir(p.c_str()) : ::unlink(p.c_str());
     } else {
         ret = ::unlinkat(static_cast<int>(dirfd),
