@@ -185,10 +185,13 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
         // same for every supported component.  XSETBV is not implemented, so
         // XCR0 is fixed at the supported set and EBX == ECX.
         emit_sub(0xD, 0, {u32(xcr0), xsave_size, xsave_size, u32(xcr0 >> 32)});
-        // Subleaf 1 is deliberately absent, so it falls through to the zeros
-        // the accumulator starts from: its EAX advertises XSAVEOPT[0] /
-        // XSAVEC[1] / XGETBV-with-ECX=1[2] / XSAVES[3], none of which are
-        // implemented.  Hardware reports all-zero for it too.
+        // Subleaf 1: advertise XSAVEOPT[0] and XSAVEC[1]. XGETBV with ECX=1
+        // and the privileged XSAVES/XRSTORS pair remain unsupported, so bits
+        // 2 and 3 stay clear. The simplified XSAVEC path uses standard offsets
+        // (XCOMP_BV=0), so its required area size IS the standard size: SDM
+        // §13.2 makes EBX the XSAVEC area size whenever EAX[1]=1, and a guest
+        // that allocates from EBX must not under-allocate.
+        emit_sub(0xD, 1, {(1u << 0) | (1u << 1), xsave_size, 0, 0});
         if (xcr0 & kXstateYmm) {
             // Subleaf 2: size and offset of the YMM_Hi128 component.
             emit_sub(0xD, 2, {kXsaveYmmSize, kXsaveYmmOffset, 0, 0});

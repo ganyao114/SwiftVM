@@ -1,17 +1,21 @@
-// XSAVE facility emitters and helpers: XGETBV, XSAVE/XSAVE64, and
-// XRSTOR/XRSTOR64.  decoder.cc dispatches the diStorm mnemonics here; the
+// XSAVE facility emitters and helpers: XGETBV, XSAVE/XSAVE64,
+// XSAVEOPT/XSAVEOPT64, XSAVEC/XSAVEC64, and XRSTOR/XRSTOR64. decoder.cc
+// dispatches the diStorm mnemonics (plus its raw XSAVEC predecode) here; the
 // shared SVM_XSAVE gate keeps opcode availability coherent with CPUID.
 //
 // WHAT IS AND IS NOT IMPLEMENTED
 // ---------------------------------------------------------------------------
 // Implemented: XGETBV(ECX=0), CPUID.0xD subleaves 0/1/2 (in decoder_misc.cc),
-// XSAVE, XSAVE64, XRSTOR, XRSTOR64 -- including the RFBM/XSTATE_BV logic and
-// the INIT-state semantics of XRSTOR.
+// XSAVE, XSAVE64, XSAVEOPT, XSAVEOPT64, XSAVEC, XSAVEC64, XRSTOR, and
+// XRSTOR64 -- including the RFBM/XSTATE_BV logic and the INIT-state semantics
+// of XRSTOR.
 //
-// NOT implemented: XSAVEC, XSAVEOPT, XSAVES/XRSTORS, XSETBV.  CPUID.0xD.1
-// reports EAX=0 accordingly, so a guest that respects CPUID never emits them;
-// they are left to fall through DecodeSwitch's default (FALLBACK) rather than
-// being half-done.  The compacted format (XCOMP_BV) therefore never appears.
+// NOT implemented: XSAVES/XRSTORS and XSETBV. XSAVES/XRSTORS can execute only
+// at CPL 0 (Intel SDM Vol. 1, Sections 13.11 and 13.12), while SwiftVM runs
+// user-mode guests; CPUID.0xD.1:EAX[3] therefore remains clear and their
+// opcodes remain #UD. The compacted format is deliberately not modelled:
+// as an intentional SDM divergence, XSAVEC uses the standard layout and keeps
+// XCOMP_BV zero.
 //
 // FAULTS.  This runtime has no #GP delivery path (InterruptReason has no
 // general-protection reason and no signal is synthesised), so the SDM's #GP
@@ -154,6 +158,18 @@ u64 XsaveHelper(u64 context, u64 guest_address, u64 requested) {
     return 0;
 }
 
+u64 XsavecHelper(u64 context, u64 guest_address, u64 requested) {
+    const u64 status = XsaveHelper(context, guest_address, requested);
+    if (status != 0) return status;
+
+    // The simplified XSAVEC contract uses the standard layout, so make the
+    // format tag deterministic even when the guest buffer was pre-poisoned.
+    u8* out = GuestBytes(guest_address, XsaveAreaSize());
+    const u64 xcomp_bv = 0;
+    std::memcpy(out + kXsaveXcompBvOffset, &xcomp_bv, sizeof(xcomp_bv));
+    return 0;
+}
+
 u64 XrstorHelper(u64 context, u64 guest_address, u64 requested) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     const u64 xcr0 = GuestXcr0();
@@ -250,6 +266,34 @@ void EmitXsave(ir::Assembler* assembler,
     // An unmapped XSAVE area is a guest #PF, not a no-op. CheckMemoryAlignment
     // is the runtime's generic "exit the block with PageFatal if (v & mask)"
     // primitive; see decoder_x87.cc's RaiseIfGuestFault.
+    __ SetLocation(ir::Lambda{ir::Imm{insn_pc}});
+    __ CheckMemoryAlignment(status, ir::Imm(kX87GuestFault));
+}
+
+void EmitXsaveopt(ir::Assembler* assembler,
+                  ir::Value address,
+                  VAddr next_pc,
+                  VAddr insn_pc) {
+    // XSAVEOPT may omit components in INIT state, but it is also conforming
+    // to write every requested component. Reuse the conservative XSAVE path.
+    EmitXsave(assembler, address, next_pc, insn_pc, false);
+}
+
+void EmitXsavec(ir::Assembler* assembler,
+                ir::Value address,
+                VAddr next_pc,
+                VAddr insn_pc) {
+    // SwiftVM does not expose the compacted layout: XCOMP_BV stays zero, so
+    // component offsets are the standard-format offsets and save semantics
+    // are identical to XSAVE.
+    if (!XsaveEnabled()) {
+        EmitUndefined(assembler, next_pc);
+        return;
+    }
+    auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
+    auto rfbm = EmitRequestedFeatureMask(assembler);
+    auto status = __ CallHost(&XsavecHelper, context, address, rfbm)
+                          .SetType(ir::ValueType::U64);
     __ SetLocation(ir::Lambda{ir::Imm{insn_pc}});
     __ CheckMemoryAlignment(status, ir::Imm(kX87GuestFault));
 }
