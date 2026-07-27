@@ -96,9 +96,6 @@ void CFGAnalysisPass::Run(HIRFunction* hir_function) {
 
     // Build Reverse Post Order & Build Dom Tree
     ComputeDominanceInformation(hir_function);
-
-    // Collect looper
-    ComputeLoopInformation(hir_function);
 }
 
 bool CFGAnalysisPass::UpdateDominatorOfSuccessor(HIRBlock* block, HIRBlock* successor) {
@@ -220,27 +217,40 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
     }
 }
 
-void CFGAnalysisPass::ComputeLoopInformation(HIRFunction* hir_function) {
-    for (auto& block : hir_function->GetHIRBlocksRPO()) {
-        auto& back_edges = block.GetBackEdges();
-        if (!back_edges.empty()) {
-            auto dominator = block.GetDominator();
-            for (auto& back_edge : back_edges) {
-                auto header = back_edge.target;
-                if (header != dominator) {
-                    StackVector<HIRBlock*, 4> loop{};
-                    loop.push_back(&block);
-                    HIRBlockSet visited{};
-                    DfsHIRBlock(&block, header, visited);
-                    for (HIRBlock* loop_block : visited) {
-                        loop.push_back(loop_block);
-                    }
-                    auto hir_loop = HIRLoop::Create(hir_function, *loop.begin(), loop.size());
-                    hir_function->AddLoop(hir_loop);
-                }
-            }
-        }
-    }
-}
+// ComputeLoopInformation used to run here. It built a bogus HIRLoop for every
+// natural loop it found and then threw the result away.
+//
+// THE DEFECT. It collected the loop's member blocks into a local StackVector
+// and called `HIRLoop::Create(hir_function, *loop.begin(), loop.size())`, whose
+// second parameter is typed `HIRBlock*`. `*loop.begin()` is the vector's FIRST
+// ELEMENT -- one HIRBlock pointer -- not a pointer to the vector's storage, and
+// HIRLoop::HIRLoop (ir/hir_builder.cpp) then does
+//     std::memcpy(loop.data(), (void*)header, sizeof(HIRBlock*) * length);
+// So it copies `length` pointers out of a single HIRBlock OBJECT: the "loop
+// members" it produced were that block's own fields reinterpreted as
+// HIRBlock*, and it read past the end of the object once
+// `length > sizeof(HIRBlock)/8` (21 on this build, sizeof(HIRBlock) == 168).
+//
+// MEASURED, before deleting it, with a probe on the reconstructed call:
+// across the whole swift_test suite the body ran EXACTLY ONCE, for a 3-block
+// loop -- 24 bytes read from a 168-byte object, i.e. type-confused garbage
+// that stayed inside the object -- and it ran ZERO times over eight guest
+// binaries (func_tests, func_tests_musl, real_busy, real_hello, loop,
+// basic_coverage_smoke, x87_bench, vec_float_nan_pressure). So the read is
+// unambiguously wrong on every execution, but on the workloads available here
+// it was never observed to actually leave the object; that needs a natural
+// loop of 22+ blocks. Reported as a latent overrun, not as one caught in the
+// act.
+//
+// WHY DELETED RATHER THAN REPAIRED. The product is unreachable twice over.
+// HIRFunction::AddLoop only appends to `loops`, and HIRFunction::GetHIRLoop()
+// -- its only accessor -- has no callers anywhere in the tree. And
+// CFGAnalysisPass::Run itself is called only from source/tests/main_case.cpp
+// (three unit tests); PassPipeline never registers it, so this pass does not
+// run in the production translation pipeline at all. Repairing the memcpy
+// means changing HIRLoop's constructor in ir/hir_builder.cpp to take the block
+// array it actually wants -- worth doing when somebody needs loop information,
+// together with a consumer that proves it correct. HIRLoop, AddLoop and
+// GetHIRLoop are left in place (another owner's file) and now have no callers.
 
 }  // namespace swift::runtime::ir

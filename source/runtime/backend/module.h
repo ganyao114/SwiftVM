@@ -88,11 +88,11 @@ public:
                     const ir::Location& end,
                     const ModuleConfig& m_config);
 
+    ~Module();
+
     bool Push(ir::AddressNode* block);
 
     void Remove(ir::AddressNode* block);
-
-    [[maybe_unused]] AddressNodeRefs RemoveRange(ir::Location start, ir::Location end);
 
     [[nodiscard]] AddressNodeRef GetNode(ir::Location location);
 
@@ -152,8 +152,6 @@ public:
     [[nodiscard]] AddressSpace& GetAddressSpace() const { return address_space; }
 
 private:
-    void DestroyNodes();
-
     const ModuleConfig module_config;
     AddressSpace& address_space;
     ir::Location module_start;

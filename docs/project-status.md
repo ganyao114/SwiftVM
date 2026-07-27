@@ -26,6 +26,15 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 **9-binary 矩阵**（双 TSO 模式全过）:`hello=42 loop=186 real_hello=42 real_hello_musl=42 real_busy=0 real_busy_musl=0 bad_pointer=1 smc=99 clone_futex_smoke=0`
 **func_tests**:function/block/interpreter 三模式 checksum `9f52b7d59285dbe5`
 **TSO litmus**:relaxed `mp_bad>0`（检测器有效）,acqrel `mp_bad=0`（红线）
+> 2026-07-27:relaxed 那一支曾**静默失效**——`mp_bad` 从 79–3173 掉到 0–1(实测 12/12
+> 为 0),退出码由稳定 1 变成偶发 1。**红线没破,但红线也因此什么都不证明**:看不见
+> 违例的检测器，对坏实现和好实现都报 0。根因是 `mp_data` 与 `mp_flag` 挤在同一个
+> 8 字节粒度里，两条 store 在写缓冲里合并、消费者的核拿不到新 flag 而不同时拿到新
+> data——窗口不是变窄，是被缓存协议关死了。修法是**每个共享字独占一条 cache line**
+> (`.balign 128`)+ 四个 data 字 + 把 MP 阶段改成**按证据配额**(攒够 `MP_TARGET=64`
+> 个违例就停,否则最多跑 `MP_ITERATIONS=4000000`)。修后实测:relaxed 40/40 恒
+> `mp_bad=64`、退出 1(块模式 10/10 同),acqrel 40/40 恒 0、退出 0(块模式 10/10 同)。
+> **不要把 relaxed 的期望改成 0** 来「修」这条测试——那是把死掉的检测器改成绿灯。
 
 ---
 
@@ -77,6 +86,26 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
   13 形状 × 3 种 lowering；干净 HEAD 上 9 通过/29 失败）。
 - **func_tests**:真实 C 多块函数，三模式 checksum 必须逐位一致。
 - **MT/TSO**:clone_* 五件套 + litmus(mp/sb00 合法方差区间历史已知）。
+- ⚠ **e2e 退出码对「函数模式错编译」是盲的**。函数编译整个包在 `try/catch` 里
+  (`translator/x86/translator.cpp` 的 `catch (const std::exception&)`):一个单元
+  错编译到触发断言，异常并不会让运行失败——它退到**块编译**兜底,guest 照样算出
+  正确的退出码。于是 25 个 guest 的退出码矩阵全绿，而它本该考核的那条路径已经
+  静默停跑了。这不是假设:一次针对函数路径的定向变异(M1)第一次就是凭这份证据被
+  判成「存活」,只有每单元发射轨迹才看出它其实已经把全部函数单元踢进了块兜底。
+  **实测(2026-07-27)**:注入一个让部分单元抛异常的变异后，25 个退出码与基线
+  **逐行相同**,而 `run_func_fingerprint_tests.sh` 立刻红——函数单元 4447 → 1855,
+  `real_hello` 的 `ir_insts` 27718 → 11782。
+- **函数编译发射指纹门禁**(`run_func_fingerprint_tests.sh`,常驻):11 个**单线程**
+  guest 在 `SVM_PROF=2` 下的每单元 `[svm-unit] pc/ir` 列表 + `func_units /
+  block_units / decoded_blocks / ir_insts` 总计,对拍检入的
+  `func_fingerprint_golden.txt`(4447 单元)。三个门:
+  ① 同一构建跑两遍必须逐字节一致(**这一档才带 `host_bytes`**);
+  ② 单元总数 < 1000 直接判死(防「golden 由已经坏掉的构建生成」的自我一致陷阱);
+  ③ 与 golden 对拍。
+  **`host_bytes` 只在同一构建内比**——发射的 host 指针立即数长度随翻译器自身布局
+  变化，跨构建会漂几百字节而代码其实一致;跨构建只比 `ir_insts` 与每单元列表。
+  用法:`run_func_fingerprint_tests.sh <svm>` / `--update` / `--against <svm_B>`。
+  已验证 golden 跨构建稳定(本轮工作构建与独立 baseline 构建指纹逐行相同)。
 
 ---
 

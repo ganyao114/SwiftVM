@@ -235,6 +235,8 @@ func_tests 5.1%、**x87_bench 90.8%**。
 | #2 后续：函数编译惰性化（`SVM_FUNC_LAZY`，默认 1 块/单元） | 未提交 | **`func_tests` 墙钟 −10.1%**（0.0386 → 0.0347 s，同次交错、rel MAD ≤1.5%）；**发射 host 字节 −30.3%**（344 000 → 239 920）；**编译的 guest 块 −29.7%**（1631 → 1147）；`call`/`int`/`branch`/`mem`/`fp` 持平 | 见下方「#2 后续」 |
 | §6b RSB 命中率 1.81% —— 根因已定位并修复 | 未提交 | **`func_tests` 命中率 1.81% → 94.70%**、`real_busy` 2.52% → 92.35%、`real_hello` 2.73% → 93.50%、`real_busy_musl` 46.28% → 62.81%；`bench call` 100.00% 不变。**墙钟测不出**（`call` +0.2%、`func_tests` +2.5%，均在 MAD 内） | 见下方「§6b 续：RSB 根因」。改动一条指令：pop 未命中时 `rsb_ptr += 16` |
 | §3.4 `CheckCond` 的 `LoadImm/LoadImm/CondSelect` → `CondSet` | 未提交 | **全语料 IR −2.08%**（146 830 → 143 783）、**发射 host 字节 −1.65%**（739 496 → 727 308）；`LoadImm` 条数 **−20.0%**（15 199 → 12 152）。**墙钟测不出**（8 个 workload 全在 MAD 内，宿主 loadavg 41–49） | 新增 `CondSet(Cond) -> 0/1` IR，ARM64 落 `CSET`、解释器落 `EvalCondition`。26 个程序的确定性计数，见下方「§3.4 续」 |
+| §6e `AdvancePC` 合并（「惰性 NZCV」里唯一有数据支持的那部分） | 未提交 | **全语料 IR −7.09%**（132 952 → 123 528）；发射 host 字节 −0.02%（4 400 个单元里 32 个变小、**0 个变大**、单元集合逐个一致）。**`translate_ns` 只 −1.3~−1.5%** | 在 `HIRBuilder::AppendInst` 里把不可能做任何事的 `AdvancePC` 丢掉，立即数**向后**折进本块上一条保留的 `AdvancePC`。见 §6e |
+| §6f `ir::Inst` 每条走一次 `malloc` | 未提交 | 函数模式 **`decode_ns` −7.6~−9.2%**、`translate_ns` −1.6~−2.1%；**块模式 `translate_ns` −4.9~−5.4%**。max RSS 不升 | `Inst` 的 slab 只有 `swift_test` 初始化过，产品路径一直退化成 malloc/free。改成线程局部 bump arena + free list。见 §6f |
 
 两项都用「同一干净基座产出的两个二进制、同一次调用内交错、中位数」测得，
 所以结论不受宿主负载影响。#3 另有 25 个 guest e2e 程序的**退出码逐行比对**。
@@ -635,6 +637,132 @@ ARM64 落一条 `CSET`，解释器落 `EvalCondition`。26 个程序的确定性
 （`x87_midtier` 同量级：46 条 `X87Op` / 12 648 字节 = 275 字节/条）。本轮**没有改动**
 x87：`X87Op` 是全语料唯一需要 8 个临时 GPR 的 opcode，且 `x87.cpp` 与 `translator_x87.cpp`
 在最近三个提交里连续被改过，风险/收益比不如上面两项。
+
+### 6e. 「惰性 NZCV」：先量，结果推翻了它的前提（2026-07-27，基座 `14c4b60`）
+
+`docs/ir-expansion-attribution.md` §2 记 `AdvancePC` 占 **12.56% 的 IR / 7.66% 的 host
+字节**，上一轮据此估计惰性化能省 **翻译侧 1.0–1.3 ms（−8~−11%）**。先在独立 worktree
+里给 `EmitAdvancePC` 加三个计数器（25 个 e2e guest，函数模式默认档）：
+
+| | 次数 | 占 `adv_seen` |
+|---|---|---|
+| `adv_seen`（到达后端的 `AdvancePC`） | 21 562 | 100% |
+| 其中 NZCV 真的脏、要发 `Mrs/And/And/Orr` | **4 016** | **18.6%** |
+| 其中有待落地的 `ClearFlags` | 2 543 | 11.8% |
+| `merge_total`（后端全部 `MergeNZCV` 发射点） | 4 601 | — |
+
+两个结论：**(a) 至少 69.6% 的 `AdvancePC` 一条 host 指令都不发**，那 7.66% 全部来自
+剩下的 18.6%；**(b) 87% 的 merge 就发生在 `AdvancePC` 上**，而 ALU 发射器（`EmitAdd`
+等）在写 NZCV 之前本来就先 `MergeNZCV()`。所以「把落地推迟到用时」只是把 merge 从
+指令边界挪到消费点或块尾，**并不会减少 merge 的条数**——`flags` 是跨块存活的 guest
+EFLAGS，块尾必须落地。惰性化能省的只有 `Condition` 终结符那两条 `LoadNZCVFromFlags`。
+
+因此本轮只做**有数据支持的那一半**：把不可能做任何事的 `AdvancePC` 从 IR 里删掉。
+
+**做法**（`HIRBuilder::AppendInst` / `FoldAdvancePC`，`SVM_ADVPC_COALESCE=0` 可关）：
+自上一条**保留**的 `AdvancePC` 以来若没有出现 `SaveFlags`/`ClearFlags`/`SetCarry`/
+`SetOverflow`，这条 `AdvancePC` 就丢弃，立即数**向后**折进上一条保留的那条。方向是
+关键：向后折之后「已保留立即数之和 == 全部立即数之和」在每一步都成立，因此不需要任何
+块结束钩子，**块的 guest 字节长度逐块不变**（`runtime.cpp` 的 SMC 范围就是这个和）。
+向前累加能再多删约 2%（每块第一条），代价是需要 10 处块切换钩子且会动块长度——**没做**。
+
+**结果（22 个 guest 的逐单元指纹，`SVM_PROF=2`）**：IR 132 952 → 123 528（−7.09%）；
+host 字节 934 116 → 933 948（−0.02%）；**单元集合逐个一致，32 个单元变小、0 个变大**。
+那 32 个单元的**机制未确证**。第一个假设——`EmitMemOperand` 的 post-index peephole
+只往后看 3 条指令（`translator.cpp:398` 的 `search_times < 3`），`AdvancePC` 占掉窗口
+里一格——**用实验否掉了**：把该 peephole 整个关掉重建两侧，同样这 32 个单元、同样的
+差值。剩下最可能的是**寄存器分配**：活跃区间按指令位置算，少 7% 的指令会挪动区间端点，
+进而改变 `EmitHostCall` 按活跃集裁剪出来的保存集（一对 `Stp/Ldp` = 8 字节）与
+`context.R(v, true)` 能否省掉一条 `Mov`。差值恰好都是 4/8 字节，与这个解释相符。
+
+**但翻译时间几乎没动**：同一次交错、11–13 reps 中位数，`func_tests` −0.33%、
+`real_busy` −0.17%、`real_hello` −0.36%、`func_tests_musl` −0.21%（`opt_ns`/`regalloc_ns`/
+`codegen_ns` 各降 0.2–2%，`decode_ns` 反升 0.4–1.4%，正负相抵）。
+**这是本节最该记住的一条：`AdvancePC` 是 IR 里最便宜的一条指令**（VOID、无值、
+在每个 pass 的 `switch` 里都落 `default`），它占 12.6% 的**条数**不等于占 12.6% 的
+**成本**。上一轮 1.0–1.3 ms 的估计正是按条数占比外推的，实测差了一个数量级。
+（叠加 §6f 之后合计 `translate_ns` −2.05~−3.89%；用 `SVM_ADVPC_COALESCE=0` 分离出
+本节自己的份额是 −1.28 / −1.59 / −2.27 / +0.07 个百分点，四个 guest 相差很大，
+说明它已经掉进噪声里了。）
+
+**变异测试**：
+
+| 变异 | 结果 |
+|---|---|
+| A1：`FoldAdvancePC` 忽略 `flags_since_advance`（连真正的落地点也丢） | 25 个 e2e 里 5 个退出码错（func_tests 101→134、func_tests_musl 101→1、real_busy 0→134、real_hello 42→134、x87_topvirt_stress 0→1）。**被抓** |
+| A3：`LeavesPendingFlags` 不再算 `SaveFlags` | 4 个 e2e 退出码错。**被抓** |
+| A2：向后折时**丢掉**立即数（块 guest 长度缩水） | 25 个 e2e、swift_test 四配置 94/94、`run_smc_stress_tests.sh` 200 轮**全绿**。**没被抓** |
+
+A2 是一个真实的覆盖缺口，值得单独记：**仓库里没有任何测试钉住「一个块的
+`AdvancePC` 立即数之和 == 该块的 guest 字节长度」**。它逃掉是因为 SMC 写保护是宿主页
+（16 KiB）粒度、且相邻块首尾相接，块长度缩水几乎总能被下一个块的范围盖住。
+本节选向后折而不是向前累加，正是因为向后折在算术上**不可能**丢字节——测试抓不到的
+不变量，只能靠构造来保证。
+
+### 6f. `decode_ns` 的真正大头：`ir::Inst` 每条走一次 `malloc`
+
+上一轮的猜测是「`HIRUse` 都是独立池对象，小型内联 use 列表能去掉大部分流量」，未测。
+**先量：** 在 `HIRValue::Use` 与 `HIRFunction::UseInst` 里加边际成本探针（每次多做 N 遍
+同样的工作，11 次取中位数，25 个 guest 的 use 分布另计）：
+
+| 项 | 单价 | 全量 | 占 `func_tests` 的 `decode_ns`（2.84 ms） |
+|---|---|---|---|
+| `ObjectPool::Create`（`HIRUse`） | **1.0 ns** | 23 036 次 | **0.8%** |
+| `UseInst` 的元数据遍历 | ~3.3 ns/条 | 32 078 条 | ~3.7% |
+| **`new Inst` + `delete`** | **24.9 ns** | 32 078 条 | **~19%（只算分配侧）** |
+| 裸 `malloc+free(sizeof(Inst))` | 15.8 ns | — | — |
+
+use 分布（25 个 guest，98 165 个 `HIRValue`）：**86.2% 恰好 1 个 use**、4.1% 为 0、
+8.1% 为 2、1.6% ≥3。内联 use 槽确实能去掉 89% 的 `HIRUse` 池对象——**但那是 0.8%**。
+**猜测被证伪**，没有做。
+
+真正的大头是它旁边那条：`Inst : SlabObject<Inst, true>`，而 `InitializeSlabHeap`
+**只有 `source/tests/main_case.cpp` 调用过**。也就是说 `swift_test` 用 slab，
+`svm_translator_linux` 与任何嵌入方一直在走 `TryAllocate` 的退化分支：一次
+seq_cst `ldar`（永远读到空表）+ 一次 `malloc`，每条 IR 指令一次。
+
+**把 slab 打开不是解**：`SlabHeap::Initialize` 建自由表是每个对象一次 seq_cst CAS
+（按 `main_case.cpp` 的规模是一百万次），而 `SlabAllocator::Allocate/Free` 本身各是一个
+seq_cst CAS 循环，和 malloc 同量级。
+
+**做法**（`instr.h`/`instr.cpp`）：`Inst` 自己的 `operator new`/`delete`，线程局部
+64 KiB bump arena + free list；槽位对齐到 16 字节（`Inst` 是 `pack(1)`，而运行时到处
+按普通指针读它的 `next_pseudo_inst`/`list_node`）。chunk **永不归还**——一条 `Inst`
+可能被另一个线程释放，所以没有哪个 chunk 归某个线程所有；free list 因此也不设上限，
+「挂在 free list 上」和「arena 里的空闲空间」是同一件事。
+
+**中间结果值得记**：只做 free list（不做 bump）在默认的**函数模式**下是 **+0.5~+1.0%
+的净亏**——因为函数模式根本不调用 `Block::DestroyInstrs`，IR 指令是**泄漏**的
+（§6 已列为未测项），free list 永远是空的。块模式（会析构）同一版本 **−5.9%**。
+这条差异本身就是「函数模式 IR 泄漏」的一个可测量后果。
+
+**最终实测**（同一次交错、11 reps 中位数，含 §6e）：
+
+| guest | 模式 | `translate_ns` | `decode_ns` | 仅 §6f（`SVM_ADVPC_COALESCE=0`）的 `translate_ns` |
+|---|---|---|---|---|
+| func_tests | 函数（默认） | **−3.36%** | **−9.69%** | −2.08% |
+| real_busy | 函数 | −3.62% | −10.84% | −2.03% |
+| real_hello | 函数 | −3.89% | −11.86% | −1.62% |
+| func_tests_musl | 函数 | −2.05% | −8.63% | −2.12% |
+| func_tests | 块（`SVM_FUNC_BASE=0`） | −4.91% | — | −4.97% |
+| real_busy | 块 | −5.25% | — | −5.13% |
+| real_hello | 块 | −5.19% | — | −5.41% |
+| func_tests_musl | 块 | −5.27% | — | −5.33% |
+
+max RSS 不升（func_tests 147 504 → 147 056 KiB，real_busy 149 136 → 147 152，
+clone_lock_rmw 156 176 → 156 080）。
+
+**墙钟：不做结论。** 宿主 loadavg 43，81 reps 交错、中位数：func_tests −1.05%、
+real_busy −2.59%、real_hello −1.16%、func_tests_musl −0.97%——四个方向一致且与
+「翻译占 59% × translate_ns −2~−4%」的预测相符，但**每一个都落在本次运行的 MAD
+（1.4–3.4%）之内**，所以这四个数只能算「不矛盾」，不能算「更快」。
+
+**变异测试**：
+
+| 变异 | 结果 |
+|---|---|
+| B1：chunk 边界判据 `left < kInstSlot` 改成 `left == 0`（每个 chunk 溢出最多一格） | 25 个 e2e 全绿；`swift_test` **逐用例**跑（每个用例一个进程）也全绿；但**单进程跑完整个 `swift_test`** 三次分别 139/138/133（SIGSEGV/SIGBUS/SIGTRAP）。**被抓**——只在长命进程里，per-case harness 分配量不够碰到 chunk 边界 |
+| B2：槽位不对齐（`kInstSlot = sizeof(Inst)`） | 25 个 e2e、单进程 `swift_test` 三次全绿。**没被抓**（arm64 普通访存容忍非对齐；对齐是按可移植性与 `ldp/stp` 保守保留的） |
 
 ## 7. 本轮做的唯一非测量改动
 
