@@ -3,9 +3,11 @@
 //
 
 #include <algorithm>
+#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <climits>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -13,7 +15,9 @@
 #include <string>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/times.h>
 #include <sys/uio.h>
+#include <type_traits>
 #include <unistd.h>
 #include <vector>
 #include "base/logging.h"
@@ -178,6 +182,167 @@ struct GuestTms {
     s64 cstime;
 };
 
+// Linux x86-64 rt_sigframe payload. The public portion follows the kernel ABI
+// closely enough for SA_SIGINFO handlers to inspect and edit the interrupted
+// GPR state. SwiftVM keeps one private record after the architectural frame so
+// rt_sigreturn can also restore translator-private state (lazy flags, YMM high
+// halves, x87 tags, segment bases) that Linux's ucontext does not describe in
+// SwiftVM's internal representation.
+static constexpr u64 GUEST_SIG_DFL = 0;
+static constexpr u64 GUEST_SIG_IGN = 1;
+static constexpr u64 GUEST_SIGALRM = 14;
+static constexpr u64 GUEST_SA_RESTORER = 0x04000000;
+static constexpr u64 GUEST_SA_NODEFER = 0x40000000;
+static constexpr u64 GUEST_SA_RESETHAND = 0x80000000;
+static constexpr u64 GUEST_SIGNAL_REDZONE = 128;
+static constexpr u64 GUEST_SIGNAL_PRIVATE_MAGIC = 0x53564d5349473634ULL;  // "SVMSIG64"
+
+enum GuestX64Greg : size_t {
+    GREG_R8,
+    GREG_R9,
+    GREG_R10,
+    GREG_R11,
+    GREG_R12,
+    GREG_R13,
+    GREG_R14,
+    GREG_R15,
+    GREG_RDI,
+    GREG_RSI,
+    GREG_RBP,
+    GREG_RBX,
+    GREG_RDX,
+    GREG_RAX,
+    GREG_RCX,
+    GREG_RSP,
+    GREG_RIP,
+    GREG_EFL,
+    GREG_CSGSFS,
+    GREG_ERR,
+    GREG_TRAPNO,
+    GREG_OLDMASK,
+    GREG_CR2,
+    GREG_COUNT,
+};
+
+struct GuestX64Stack {
+    u64 sp;
+    s32 flags;
+    s32 pad;
+    u64 size;
+};
+static_assert(sizeof(GuestX64Stack) == 24);
+
+struct GuestX64MContext {
+    std::array<u64, GREG_COUNT> gregs;
+    u64 fpregs;
+    std::array<u64, 8> reserved;
+};
+static_assert(sizeof(GuestX64MContext) == 256);
+
+struct GuestX64UContext {
+    u64 flags;
+    u64 link;
+    GuestX64Stack stack;
+    GuestX64MContext mcontext;
+    std::array<u64, 16> sigmask;
+};
+static_assert(sizeof(GuestX64UContext) == 424);
+
+struct GuestSigInfo {
+    u32 signo;
+    u32 error;
+    s32 code;
+    u32 pad0;
+    std::array<u32, 28> pad;
+};
+static_assert(sizeof(GuestSigInfo) == 128);
+
+struct GuestFpXSwBytes {
+    u32 magic1;
+    u32 extended_size;
+    u64 xfeatures;
+    u32 xstate_size;
+    std::array<u32, 7> padding;
+};
+static_assert(sizeof(GuestFpXSwBytes) == 48);
+
+struct GuestX64FpState {
+    u16 fcw;
+    u16 fsw;
+    u16 ftw;
+    u16 fop;
+    u64 fip;
+    u64 fdp;
+    u32 mxcsr;
+    u32 mxcsr_mask;
+    std::array<std::array<u8, 16>, 8> st;
+    std::array<std::array<u8, 16>, 16> xmm;
+    std::array<u32, 12> reserved0;
+    GuestFpXSwBytes sw_reserved;
+};
+static_assert(sizeof(GuestX64FpState) == 512);
+
+struct GuestX64XState {
+    GuestX64FpState fpstate;
+    std::array<u64, 8> header;
+    std::array<std::array<u8, 16>, 16> ymm_high;
+    u32 magic2_pad;
+    u32 magic2;
+};
+static_assert(sizeof(GuestX64XState) == 840);
+
+struct GuestSignalPrivate {
+    u64 magic;
+    u64 ucontext_addr;
+    u64 saved_signal_mask;
+    u64 signal;
+    x86::ThreadContext64 saved_context;
+};
+static_assert(std::is_trivially_copyable_v<GuestSignalPrivate>);
+
+struct GuestSignalFrameLayout {
+    u64 return_addr;
+    u64 ucontext_addr;
+    u64 siginfo_addr;
+    u64 fpstate_addr;
+    u64 private_addr;
+    u64 end;
+};
+
+static u64 AlignDown(u64 value, u64 alignment) {
+    return value & ~(alignment - 1);
+}
+
+static GuestSignalFrameLayout MakeSignalFrameLayout(u64 guest_rsp) {
+    const u64 end = AlignDown(guest_rsp - GUEST_SIGNAL_REDZONE, 16);
+    const u64 private_addr =
+            AlignDown(end - static_cast<u64>(sizeof(GuestSignalPrivate)), 16);
+    const u64 fpstate_addr =
+            AlignDown(private_addr - static_cast<u64>(sizeof(GuestX64XState)), 64);
+    const u64 siginfo_addr =
+            AlignDown(fpstate_addr - static_cast<u64>(sizeof(GuestSigInfo)), 16);
+    const u64 ucontext_addr =
+            AlignDown(siginfo_addr - static_cast<u64>(sizeof(GuestX64UContext)), 16);
+    return {
+            .return_addr = ucontext_addr - sizeof(u64),
+            .ucontext_addr = ucontext_addr,
+            .siginfo_addr = siginfo_addr,
+            .fpstate_addr = fpstate_addr,
+            .private_addr = private_addr,
+            .end = end,
+    };
+}
+
+static bool GuestSignalDeliveryEnabled() {
+    const char* enabled = std::getenv("SVM_SIGNAL_DELIVERY");
+    return !enabled || std::strcmp(enabled, "0") != 0;
+}
+
+static bool GuestSignalTraceEnabled() {
+    const char* enabled = std::getenv("SVM_SIGNAL_TRACE");
+    return enabled && std::strcmp(enabled, "0") != 0;
+}
+
 // Translates a host (macOS) errno to a guest (asm-generic) -errno.
 static s64 HostErrno() {
     const int e = errno;
@@ -251,6 +416,7 @@ static u64 X86ToCanonical(u64 nr) {
         case X64_dup: return SYS_dup;
         case X64_dup2: return SYS_x64_dup2;
         case X64_nanosleep: return SYS_nanosleep;
+        case X64_alarm: return SYS_x64_alarm;
         case X64_exit: return SYS_exit;
         case X64_exit_group: return SYS_exit_group;
         case X64_brk: return SYS_brk;
@@ -259,6 +425,7 @@ static u64 X86ToCanonical(u64 nr) {
         case X64_mprotect: return SYS_mprotect;
         case X64_rt_sigaction: return SYS_rt_sigaction;
         case X64_rt_sigprocmask: return SYS_rt_sigprocmask;
+        case X64_rt_sigreturn: return SYS_x64_rt_sigreturn;
         case X64_fcntl: return SYS_fcntl;
         case X64_fsync: return SYS_fsync;
         case X64_fdatasync: return SYS_fdatasync;
@@ -267,6 +434,7 @@ static u64 X86ToCanonical(u64 nr) {
         case X64_unlink: return SYS_x64_unlink;
         case X64_readlink: return SYS_x64_readlink;
         case X64_gettimeofday: return SYS_gettimeofday;
+        case X64_umask: return SYS_umask;
         case X64_sysinfo: return SYS_sysinfo;
         case X64_times: return SYS_times;
         case X64_uname: return SYS_uname;
@@ -307,6 +475,104 @@ SyscallProcessState::SyscallProcessState(GuestMemory* memory, VAddr brk_base)
         , brk_current(brk_base)
         , brk_mapped_end(GuestMemory::RoundHostPage(brk_base)) {}
 
+SyscallProcessState::~SyscallProcessState() {
+    ShutdownAlarm();
+}
+
+void SyscallProcessState::SetAlarmInterrupt(std::function<void()> fn) {
+    std::lock_guard guard(alarm_mutex);
+    alarm_interrupt = std::move(fn);
+}
+
+u64 SyscallProcessState::ArmAlarm(u32 seconds) {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard guard(alarm_mutex);
+
+    u64 remaining = 0;
+    if (alarm_armed && alarm_deadline > now) {
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                alarm_deadline - now).count();
+        constexpr s64 one_second_ns = 1'000'000'000;
+        remaining = static_cast<u64>((ns + one_second_ns - 1) / one_second_ns);
+    }
+
+    ++alarm_generation;
+    alarm_armed = seconds != 0;
+    if (alarm_armed) {
+        alarm_deadline = now + std::chrono::seconds(seconds);
+        if (!alarm_thread.joinable()) {
+            alarm_thread = std::thread([this] { AlarmLoop(); });
+        }
+    }
+    alarm_changed.notify_all();
+    return remaining;
+}
+
+void SyscallProcessState::AlarmLoop() {
+    std::unique_lock lock(alarm_mutex);
+    for (;;) {
+        alarm_changed.wait(lock, [this] { return alarm_shutdown || alarm_armed; });
+        if (alarm_shutdown) return;
+
+        const auto deadline = alarm_deadline;
+        const u64 generation = alarm_generation;
+        if (alarm_changed.wait_until(lock, deadline, [this, generation] {
+                return alarm_shutdown || !alarm_armed ||
+                       alarm_generation != generation;
+            })) {
+            if (alarm_shutdown) return;
+            continue;
+        }
+
+        if (!alarm_armed || alarm_generation != generation) {
+            continue;
+        }
+        alarm_armed = false;
+        pending_signals.fetch_or(u64{1} << (GUEST_SIGALRM - 1),
+                                 std::memory_order_release);
+        auto interrupt = alarm_interrupt;
+        lock.unlock();
+        if (interrupt) {
+            interrupt();
+        }
+        lock.lock();
+    }
+}
+
+void SyscallProcessState::ShutdownAlarm() {
+    {
+        std::lock_guard guard(alarm_mutex);
+        if (alarm_shutdown) return;
+        alarm_shutdown = true;
+        alarm_armed = false;
+        ++alarm_generation;
+        alarm_interrupt = {};
+    }
+    alarm_changed.notify_all();
+    if (alarm_thread.joinable()) {
+        alarm_thread.join();
+    }
+}
+
+u64 SyscallProcessState::ConsumePendingSignal(u64 blocked_mask) {
+    u64 pending = pending_signals.load(std::memory_order_acquire) & ~blocked_mask;
+    while (pending) {
+        const u64 bit = pending & (~pending + 1);
+        u64 expected = pending_signals.load(std::memory_order_acquire);
+        if ((expected & bit) == 0) {
+            pending = expected & ~blocked_mask;
+            continue;
+        }
+        if (pending_signals.compare_exchange_weak(
+                    expected, expected & ~bit,
+                    std::memory_order_acq_rel, std::memory_order_acquire)) {
+            return static_cast<u64>(std::countr_zero(bit)) + 1;
+        }
+        pending = expected & ~blocked_mask;
+    }
+    return 0;
+}
+
 bool SyscallProcessState::StoreGuestU32(u64 uaddr, u32 value) {
     if ((uaddr & (alignof(u32) - 1)) != 0 || !memory->RangeIsMapped(uaddr, sizeof(u32))) {
         return false;
@@ -324,6 +590,266 @@ GuestSigAction SyscallProcessState::GetSignalAction(u64 signal) {
 void SyscallProcessState::SetSignalAction(u64 signal, const GuestSigAction& action) {
     std::lock_guard guard(signal_mutex);
     signal_actions[signal] = action;
+}
+
+static u64 BuildGuestRflags(const x86::ThreadContext64& ctx) {
+    u64 flags = 0x202;  // architectural bit 1 plus userspace IF
+    const u32 compact = ctx.ef.flags;
+    flags |= static_cast<u64>(((compact >> x86::CPUFlagsBit::Carry) & 1) ^
+                              (ctx.carry_inverted & 1)) << 0;
+    flags |= static_cast<u64>((compact >> x86::CPUFlagsBit::Parity) & 1) << 2;
+    flags |= static_cast<u64>((compact >> x86::CPUFlagsBit::FlagAF) & 1) << 4;
+    flags |= static_cast<u64>((compact >> x86::CPUFlagsBit::Zero) & 1) << 6;
+    flags |= static_cast<u64>((compact >> x86::CPUFlagsBit::Signed) & 1) << 7;
+    flags |= static_cast<u64>(ctx.direction & 1) << 10;
+    flags |= static_cast<u64>((compact >> x86::CPUFlagsBit::Overflow) & 1) << 11;
+    return flags;
+}
+
+static void ApplyGuestRflags(x86::ThreadContext64& ctx, u64 rflags) {
+    u32 compact = ctx.ef.flags;
+    constexpr u32 arithmetic_mask =
+            (1u << x86::CPUFlagsBit::Carry) |
+            (1u << x86::CPUFlagsBit::Parity) |
+            (1u << x86::CPUFlagsBit::FlagAF) |
+            (1u << x86::CPUFlagsBit::Zero) |
+            (1u << x86::CPUFlagsBit::Signed) |
+            (1u << x86::CPUFlagsBit::Overflow);
+    compact &= ~arithmetic_mask;
+    compact |= static_cast<u32>(((rflags >> 0) & 1) ^
+                                (ctx.carry_inverted & 1))
+               << x86::CPUFlagsBit::Carry;
+    compact |= static_cast<u32>((rflags >> 2) & 1) << x86::CPUFlagsBit::Parity;
+    compact |= static_cast<u32>((rflags >> 4) & 1) << x86::CPUFlagsBit::FlagAF;
+    compact |= static_cast<u32>((rflags >> 6) & 1) << x86::CPUFlagsBit::Zero;
+    compact |= static_cast<u32>((rflags >> 7) & 1) << x86::CPUFlagsBit::Signed;
+    compact |= static_cast<u32>((rflags >> 11) & 1) << x86::CPUFlagsBit::Overflow;
+    ctx.ef.flags = compact;
+    ctx.direction = static_cast<u8>((rflags >> 10) & 1);
+}
+
+static GuestX64UContext BuildSignalUContext(const x86::ThreadContext64& ctx,
+                                            u64 signal_mask,
+                                            u64 fpstate_addr) {
+    GuestX64UContext uc{};
+    uc.flags = 0x1 | 0x4 | 0x8;  // UC_FP_XSTATE | UC_SIGCONTEXT_SS | STRICT_SS
+    uc.mcontext.fpregs = fpstate_addr;
+    auto& g = uc.mcontext.gregs;
+    g[GREG_R8] = ctx.r8.qword;
+    g[GREG_R9] = ctx.r9.qword;
+    g[GREG_R10] = ctx.r10.qword;
+    g[GREG_R11] = ctx.r11.qword;
+    g[GREG_R12] = ctx.r12.qword;
+    g[GREG_R13] = ctx.r13.qword;
+    g[GREG_R14] = ctx.r14.qword;
+    g[GREG_R15] = ctx.r15.qword;
+    g[GREG_RDI] = ctx.rdi.qword;
+    g[GREG_RSI] = ctx.rsi.qword;
+    g[GREG_RBP] = ctx.rbp.qword;
+    g[GREG_RBX] = ctx.rbx.qword;
+    g[GREG_RDX] = ctx.rdx.qword;
+    g[GREG_RAX] = ctx.rax.qword;
+    g[GREG_RCX] = ctx.rcx.qword;
+    g[GREG_RSP] = ctx.rsp.qword;
+    g[GREG_RIP] = ctx.rip.qword;
+    g[GREG_EFL] = BuildGuestRflags(ctx);
+    g[GREG_CSGSFS] = static_cast<u64>(ctx.cs) |
+                     (static_cast<u64>(ctx.gs) << 16) |
+                     (static_cast<u64>(ctx.fs) << 32) |
+                     (static_cast<u64>(ctx.ss) << 48);
+    g[GREG_OLDMASK] = signal_mask;
+    uc.sigmask[0] = signal_mask;
+    return uc;
+}
+
+static GuestX64XState BuildSignalXState(const x86::ThreadContext64& ctx) {
+    GuestX64XState state{};
+    state.fpstate.fcw = ctx.x87_fcw;
+    state.fpstate.fsw = ctx.x87_fsw;
+    state.fpstate.ftw = ctx.x87_ftw;
+    state.fpstate.fop = ctx.x87_fop;
+    state.fpstate.fip = ctx.x87_fip;
+    state.fpstate.fdp = ctx.x87_fdp;
+    state.fpstate.mxcsr = ctx.mxcsr;
+    state.fpstate.mxcsr_mask = 0x0000ffff;
+    for (size_t i = 0; i < ctx.x87_regs.size(); ++i) {
+        std::memcpy(state.fpstate.st[i].data(), &ctx.x87_regs[i], 10);
+    }
+    for (size_t i = 0; i < ctx.xmms.size(); ++i) {
+        std::memcpy(state.fpstate.xmm[i].data(), &ctx.xmms[i], 16);
+        std::memcpy(state.ymm_high[i].data(), &ctx.ymm_high[i], 16);
+    }
+    state.fpstate.sw_reserved.magic1 = 0x46505853;  // FP_XSTATE_MAGIC1
+    state.fpstate.sw_reserved.extended_size = sizeof(GuestX64XState);
+    state.fpstate.sw_reserved.xfeatures = 0x7;
+    state.fpstate.sw_reserved.xstate_size = sizeof(GuestX64XState);
+    state.header[0] = 0x7;
+    state.magic2 = 0x46505845;  // FP_XSTATE_MAGIC2
+    return state;
+}
+
+static void ApplySignalUContext(x86::ThreadContext64& ctx,
+                                const GuestX64UContext& uc) {
+    const auto& g = uc.mcontext.gregs;
+    ctx.r8.qword = g[GREG_R8];
+    ctx.r9.qword = g[GREG_R9];
+    ctx.r10.qword = g[GREG_R10];
+    ctx.r11.qword = g[GREG_R11];
+    ctx.r12.qword = g[GREG_R12];
+    ctx.r13.qword = g[GREG_R13];
+    ctx.r14.qword = g[GREG_R14];
+    ctx.r15.qword = g[GREG_R15];
+    ctx.rdi.qword = g[GREG_RDI];
+    ctx.rsi.qword = g[GREG_RSI];
+    ctx.rbp.qword = g[GREG_RBP];
+    ctx.rbx.qword = g[GREG_RBX];
+    ctx.rdx.qword = g[GREG_RDX];
+    ctx.rax.qword = g[GREG_RAX];
+    ctx.rcx.qword = g[GREG_RCX];
+    ctx.rsp.qword = g[GREG_RSP];
+    ctx.rip.qword = g[GREG_RIP];
+    ApplyGuestRflags(ctx, g[GREG_EFL]);
+    const u64 selectors = g[GREG_CSGSFS];
+    ctx.cs = static_cast<u16>(selectors);
+    ctx.gs = static_cast<u16>(selectors >> 16);
+    ctx.fs = static_cast<u16>(selectors >> 32);
+    ctx.ss = static_cast<u16>(selectors >> 48);
+}
+
+SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
+    SignalDelivery delivery{};
+    if (isa != GuestISA::kX86_64 || !x86_ctx || !GuestSignalDeliveryEnabled()) {
+        return delivery;
+    }
+
+    const u64 signal = process->ConsumePendingSignal(signal_mask);
+    if (signal == 0) return delivery;
+
+    GuestSigAction action = process->GetSignalAction(signal);
+    if (action.handler == GUEST_SIG_IGN) {
+        return delivery;
+    }
+    if (action.handler == GUEST_SIG_DFL) {
+        delivery.terminated = true;
+        delivery.exit_code = static_cast<u8>(128 + signal);
+        return delivery;
+    }
+    if ((action.flags & GUEST_SA_RESTORER) == 0 || action.restorer == 0) {
+        delivery.terminated = true;
+        delivery.exit_code = 128 + 11;  // malformed handler frame -> SIGSEGV
+        return delivery;
+    }
+
+    auto& ctx = *static_cast<x86::ThreadContext64*>(x86_ctx);
+    const GuestSignalFrameLayout layout = MakeSignalFrameLayout(ctx.rsp.qword);
+    if (layout.return_addr >= layout.end ||
+        !memory->RangeIsMapped(layout.return_addr, layout.end - layout.return_addr)) {
+        delivery.terminated = true;
+        delivery.exit_code = 128 + 11;
+        return delivery;
+    }
+
+    const GuestX64UContext uc =
+            BuildSignalUContext(ctx, signal_mask, layout.fpstate_addr);
+    GuestSigInfo info{};
+    info.signo = static_cast<u32>(signal);
+    info.code = 128;  // SI_KERNEL, matching an ITIMER_REAL expiry
+    const GuestX64XState xstate = BuildSignalXState(ctx);
+    const GuestSignalPrivate private_frame{
+            .magic = GUEST_SIGNAL_PRIVATE_MAGIC,
+            .ucontext_addr = layout.ucontext_addr,
+            .saved_signal_mask = signal_mask,
+            .signal = signal,
+            .saved_context = ctx,
+    };
+    if (!memory->TryWrite(layout.private_addr, private_frame) ||
+        !memory->TryWrite(layout.fpstate_addr, xstate) ||
+        !memory->TryWrite(layout.siginfo_addr, info) ||
+        !memory->TryWrite(layout.ucontext_addr, uc) ||
+        !memory->TryWrite(layout.return_addr, action.restorer)) {
+        delivery.terminated = true;
+        delivery.exit_code = 128 + 11;
+        return delivery;
+    }
+
+    signal_mask |= action.mask;
+    if ((action.flags & GUEST_SA_NODEFER) == 0) {
+        signal_mask |= u64{1} << (signal - 1);
+    }
+    if (action.flags & GUEST_SA_RESETHAND) {
+        process->SetSignalAction(signal, {});
+    }
+
+    // Linux clears DF for handler entry and gives x86-64 handlers the
+    // three-argument form even when SA_SIGINFO is not set.
+    ctx.direction = 0;
+    ctx.rsp.qword = layout.return_addr;
+    ctx.rax.qword = 0;
+    ctx.rdi.qword = signal;
+    ctx.rsi.qword = layout.siginfo_addr;
+    ctx.rdx.qword = layout.ucontext_addr;
+    ctx.rip.qword = action.handler;
+    ctx.x87_fcw = 0x037f;
+    ctx.x87_fsw = 0;
+    ctx.x87_ftw = 0xffff;
+    ctx.mxcsr = 0x1f80;
+    std::memset(ctx.xmms.data(), 0, sizeof(ctx.xmms));
+    std::memset(ctx.ymm_high.data(), 0, sizeof(ctx.ymm_high));
+    if (GuestSignalTraceEnabled()) {
+        std::fprintf(stderr,
+                     "[svm-signal] deliver sig=%llu saved_rip=%#llx saved_rsp=%#llx "
+                     "handler=%#llx frame=%#llx private=%#llx restorer=%#llx\n",
+                     signal,
+                     private_frame.saved_context.rip.qword,
+                     private_frame.saved_context.rsp.qword,
+                     action.handler,
+                     layout.return_addr,
+                     layout.private_addr,
+                     action.restorer);
+    }
+    delivery.delivered = true;
+    return delivery;
+}
+
+s64 SyscallHandler::SysRtSigreturn() {
+    if (isa != GuestISA::kX86_64 || !x86_ctx) return -EINVAL_;
+    auto& ctx = *static_cast<x86::ThreadContext64*>(x86_ctx);
+    GuestX64UContext uc{};
+    if (!memory->TryRead(ctx.rsp.qword, uc) || uc.mcontext.fpregs == 0) {
+        return -EFAULT_;
+    }
+
+    GuestSignalPrivate private_frame{};
+    bool found = false;
+    const u64 scan_begin =
+            (uc.mcontext.fpregs + sizeof(GuestX64XState) + 7) & ~u64{7};
+    for (u64 offset = 0; offset <= 64; offset += 8) {
+        if (memory->TryRead(scan_begin + offset, private_frame) &&
+            private_frame.magic == GUEST_SIGNAL_PRIVATE_MAGIC &&
+            private_frame.ucontext_addr == ctx.rsp.qword) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) return -EFAULT_;
+
+    auto restored = private_frame.saved_context;
+    if (GuestSignalTraceEnabled()) {
+        std::fprintf(stderr,
+                     "[svm-signal] return sig=%llu saved_rip=%#llx saved_rsp=%#llx "
+                     "uc_rip=%#llx uc_rsp=%#llx\n",
+                     private_frame.signal,
+                     restored.rip.qword,
+                     restored.rsp.qword,
+                     uc.mcontext.gregs[GREG_RIP],
+                     uc.mcontext.gregs[GREG_RSP]);
+    }
+    ApplySignalUContext(restored, uc);
+    constexpr u64 unmaskable =
+            (u64{1} << (9 - 1)) | (u64{1} << (19 - 1));
+    signal_mask = uc.sigmask[0] & ~unmaskable;
+    ctx = restored;
+    return 0;
 }
 
 s64 SyscallProcessState::WakeFutex(u64 uaddr, u32 count) {
@@ -565,6 +1091,16 @@ SyscallHandler::Result SyscallHandler::Handle(u64 nr,
             break;
         case SYS_rt_sigprocmask:
             result.ret = SysRtSigprocmask(a0, a1, a2, a3);
+            break;
+        case SYS_x64_rt_sigreturn:
+            result.ret = SysRtSigreturn();
+            result.context_restored = result.ret == 0;
+            break;
+        case SYS_x64_alarm:
+            result.ret = SysAlarm(a0);
+            break;
+        case SYS_umask:
+            result.ret = SysUmask(a0);
             break;
         case SYS_sysinfo:
             result.ret = SysSysinfo(a0);
@@ -1094,9 +1630,19 @@ s64 SyscallHandler::SysClockNanosleep(u64 clock_id,
 }
 
 s64 SyscallHandler::SysTimes(u64 buf) {
-    GuestTms tms{};  // no per-thread CPU accounting: report zeros
-    if (!memory->TryWrite(buf, tms)) return -EFAULT_;
-    return 0;
+    struct tms host {};
+    const clock_t elapsed = ::times(&host);
+    if (elapsed == static_cast<clock_t>(-1)) return HostErrno();
+    if (buf) {
+        const GuestTms guest{
+                .utime = static_cast<s64>(host.tms_utime),
+                .stime = static_cast<s64>(host.tms_stime),
+                .cutime = static_cast<s64>(host.tms_cutime),
+                .cstime = static_cast<s64>(host.tms_cstime),
+        };
+        if (!memory->TryWrite(buf, guest)) return -EFAULT_;
+    }
+    return static_cast<s64>(elapsed);
 }
 
 s64 SyscallHandler::SysSchedGetaffinity(u64 pid, u64 cpusetsize, u64 mask) {
@@ -1141,9 +1687,9 @@ s64 SyscallHandler::SysRtSigaction(u64 signal,
         }
     }
     if (act_addr) {
-        // Signal delivery is not wired into the translated execution loop.
-        // Keep the Linux-visible disposition so registration/query semantics
-        // work; single-threaded benchmarks do not require asynchronous delivery.
+        // The process-level disposition is consumed by block-boundary guest
+        // signal delivery. Keep registration independent from the timer so
+        // later signal sources can use the same frame path.
         process->SetSignalAction(signal, action);
     }
     return 0;
@@ -1182,11 +1728,22 @@ s64 SyscallHandler::SysRtSigprocmask(u64 how,
         return -EFAULT_;
     }
     if (set_addr) {
-        // SwiftVM currently has no asynchronous guest-signal delivery. Keep
-        // the per-thread Linux-visible mask for libc and clone inheritance.
+        // Delivery consults this per-thread mask at every runtime boundary;
+        // clone inherits the same value through CloneRequest.
         signal_mask = next;
     }
     return 0;
+}
+
+s64 SyscallHandler::SysAlarm(u64 seconds) {
+    if (!GuestSignalDeliveryEnabled()) return -ENOSYS_;
+    // alarm(2)'s argument is unsigned int in the x86-64 ABI.
+    return static_cast<s64>(process->ArmAlarm(static_cast<u32>(seconds)));
+}
+
+s64 SyscallHandler::SysUmask(u64 mask) {
+    // umask never fails and always returns the previous process mask.
+    return static_cast<s64>(::umask(static_cast<mode_t>(mask & 0777)));
 }
 
 s64 SyscallHandler::SysSysinfo(u64 buf) {

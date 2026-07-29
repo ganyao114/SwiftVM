@@ -28,6 +28,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -35,6 +36,7 @@
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <unordered_map>
 #include "base/types.h"
 #include "guest_memory.h"
@@ -82,6 +84,7 @@ enum GuestSyscall : u64 {
     SYS_rt_sigprocmask = 135,
     SYS_times = 153,
     SYS_uname = 160,
+    SYS_umask = 166,
     SYS_gettimeofday = 169,
     SYS_getpid = 172,
     SYS_getuid = 174,
@@ -114,6 +117,8 @@ enum GuestSyscall : u64 {
     SYS_x64_dup2,
     SYS_x64_arch_prctl,
     SYS_x64_time,
+    SYS_x64_alarm,
+    SYS_x64_rt_sigreturn,
 };
 
 // x86_64 Linux syscall numbers (arch/x86/entry/syscalls/syscall_64.tbl).
@@ -133,6 +138,7 @@ enum GuestSyscallX64 : u64 {
     X64_brk = 12,
     X64_rt_sigaction = 13,
     X64_rt_sigprocmask = 14,
+    X64_rt_sigreturn = 15,
     X64_ioctl = 16,
     X64_pread64 = 17,
     X64_pwrite64 = 18,
@@ -144,6 +150,7 @@ enum GuestSyscallX64 : u64 {
     X64_dup = 32,
     X64_dup2 = 33,
     X64_nanosleep = 35,
+    X64_alarm = 37,
     X64_getpid = 39,
     X64_clone = 56,
     X64_exit = 60,
@@ -155,6 +162,7 @@ enum GuestSyscallX64 : u64 {
     X64_getcwd = 79,
     X64_unlink = 87,
     X64_readlink = 89,
+    X64_umask = 95,
     X64_gettimeofday = 96,
     X64_sysinfo = 99,
     X64_times = 100,
@@ -235,6 +243,7 @@ static_assert(sizeof(GuestSigAction) == 32);
 class SyscallProcessState {
 public:
     SyscallProcessState(GuestMemory* memory, VAddr brk_base);
+    ~SyscallProcessState();
 
     [[nodiscard]] s64 AllocateTid() {
         return next_tid.fetch_add(1, std::memory_order_relaxed);
@@ -245,6 +254,10 @@ public:
     bool StoreGuestU32(u64 uaddr, u32 value);
     GuestSigAction GetSignalAction(u64 signal);
     void SetSignalAction(u64 signal, const GuestSigAction& action);
+    u64 ArmAlarm(u32 seconds);
+    void SetAlarmInterrupt(std::function<void()> fn);
+    void ShutdownAlarm();
+    [[nodiscard]] u64 ConsumePendingSignal(u64 blocked_mask);
 
     void RequestExitGroup(u8 code);
     [[nodiscard]] bool IsExiting() const {
@@ -272,11 +285,21 @@ private:
 
     void WakeAllFutexesLocked();
     s64 WakeFutexMasked(u64 uaddr, u32 count, u32 bitset);
+    void AlarmLoop();
 
     std::mutex futex_mutex;
     std::unordered_map<VAddr, FutexQueue> futex_queues;
     std::mutex signal_mutex;
     std::array<GuestSigAction, 65> signal_actions{};
+    std::atomic<u64> pending_signals{};
+    std::mutex alarm_mutex;
+    std::condition_variable alarm_changed;
+    std::thread alarm_thread;
+    std::chrono::steady_clock::time_point alarm_deadline{};
+    std::function<void()> alarm_interrupt;
+    u64 alarm_generation{};
+    bool alarm_armed{};
+    bool alarm_shutdown{};
     std::atomic<s64> next_tid{1001};
     std::atomic_bool exiting{false};
     std::atomic<u8> exit_code{0};
@@ -304,6 +327,13 @@ public:
         s64 ret{};
         bool exited{false};
         bool exit_group{false};
+        bool context_restored{false};
+        u8 exit_code{0};
+    };
+
+    struct SignalDelivery {
+        bool delivered{false};
+        bool terminated{false};
         u8 exit_code{0};
     };
 
@@ -332,6 +362,11 @@ public:
     // stale JIT blocks in that range. nullptr/unset = no-op (tests, interp-only).
     void SetSmcInvalidate(std::function<void(VAddr, VAddr)> fn) { smc_invalidate_ = std::move(fn); }
     void SetCloneCallback(CloneCallback fn) { clone_callback_ = std::move(fn); }
+    void SetAlarmInterrupt(std::function<void()> fn) {
+        process->SetAlarmInterrupt(std::move(fn));
+    }
+    void ShutdownAlarm() { process->ShutdownAlarm(); }
+    SignalDelivery DeliverPendingSignal();
 
     // TLS segment bases set via arch_prctl (x86_64 only). Mirrors of the
     // context fields, kept for inspection/tests.
@@ -362,6 +397,9 @@ private:
     s64 SysSchedGetaffinity(u64 pid, u64 cpusetsize, u64 mask);
     s64 SysRtSigaction(u64 signal, u64 act, u64 oldact, u64 sigset_size);
     s64 SysRtSigprocmask(u64 how, u64 set, u64 oldset, u64 sigset_size);
+    s64 SysRtSigreturn();
+    s64 SysAlarm(u64 seconds);
+    s64 SysUmask(u64 mask);
     s64 SysOpenat(u64 dirfd, u64 path, u64 flags, u64 mode);
     s64 SysClose(u64 fd);
     s64 SysLseek(u64 fd, u64 offset, u64 whence);

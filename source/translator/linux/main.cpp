@@ -108,9 +108,11 @@ public:
             , process(std::make_shared<linux::SyscallProcessState>(
                       &memory, image.brk_start)) {
         instance->SetInterpRangeCheck(InterpRangeCheckThunk, &memory);
+        process->SetAlarmInterrupt([this] { InterruptAll(); });
     }
 
     ~X86GuestProcess() {
+        process->ShutdownAlarm();
         JoinAll();
         translator::x86::X86Instance::Destroy(instance);
     }
@@ -206,6 +208,19 @@ private:
                 exit_code = process->GetExitCode();
                 break;
             }
+            const auto pending = syscalls.DeliverPendingSignal();
+            if (pending.terminated) {
+                exit_code = pending.exit_code;
+                process->RequestExitGroup(exit_code);
+                InterruptAll();
+                break;
+            }
+            if (pending.delivered) {
+                // alarm expiry stops the runtime at a translated block
+                // boundary. The guest frame is now installed, so re-enable
+                // execution with the handler RIP as the next location.
+                core->ClearInterrupt();
+            }
             const auto reason = core->Run();
             if (reason == translator::ExitReason::Syscall) {
                 auto result = syscalls.Handle(ctx.rax.qword,
@@ -215,7 +230,9 @@ private:
                                               ctx.r10.qword,
                                               ctx.r8.qword,
                                               ctx.r9.qword);
-                ctx.rax.qword = static_cast<u64>(result.ret);
+                if (!result.context_restored) {
+                    ctx.rax.qword = static_cast<u64>(result.ret);
+                }
                 if (result.exited) {
                     exit_code = result.exit_code;
                     if (result.exit_group) {
@@ -223,6 +240,12 @@ private:
                     }
                     break;
                 }
+            } else if (reason == translator::ExitReason::Signal) {
+                // The timer thread and exit_group use the runtime's
+                // block-boundary interrupt. Clear this core's latch; the loop
+                // above either injects a pending guest signal or observes the
+                // process-wide exit request.
+                core->ClearInterrupt();
             } else if (reason == translator::ExitReason::None) {
                 break;
             } else {

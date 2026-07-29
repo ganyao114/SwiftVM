@@ -820,6 +820,19 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             break;
         case I_CALL: {
             auto ret_type = is_64bit ? ir::ValueType::U64 : ir::ValueType::U32;
+            // An indirect CALL resolves its target before pushing the return
+            // address.  This matters for RSP-relative operands: resolving
+            // call *disp(%rsp) after Push would read eight bytes below the
+            // architectural target slot.  Keep the direct path unchanged so
+            // its established IR/codegen fingerprint is unaffected.
+            if (insn.ops[0].type != O_PC) {
+                auto target = ir::Lambda{Src(insn, insn.ops[0])};
+                Push(__ LoadImm(ir::Imm(pc)), ret_type);
+                __ PushRSB(ir::Lambda(ir::Imm{pc}));
+                __ SetLocation(target);
+                __ ReturnToDispatcher();
+                break;
+            }
             Push(__ LoadImm(ir::Imm(pc)), ret_type);
             __ PushRSB(ir::Lambda(ir::Imm{pc}));
             DecodeCondJump(insn, Cond::AL);
