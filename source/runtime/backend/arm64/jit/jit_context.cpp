@@ -3,6 +3,9 @@
 //
 
 #include "jit_context.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/context.h"
 
@@ -482,7 +485,11 @@ u32 JitContext::GetDispatchIndex(u64 guest_addr) {
     return module->GetDispatchIndex(ir::Location{guest_addr});
 }
 
-void JitContext::Finish() { __ FinalizeCode(); }
+void JitContext::Finish() {
+    vixl::svm_vixl_prof::JitScope prof;
+    __ FinalizeCode();
+    MaybeDumpHostBytes();
+}
 
 u8* JitContext::Flush(const CodeBuffer& code_cache) {
     FlushLabels(reinterpret_cast<VAddr>(code_cache.exec_data));
@@ -513,12 +520,20 @@ bool JitContext::IsUniform(const Register& reg) {
 
 void JitContext::SetCurrent(ir::Block* block) {
     cur_block = block;
+    if (!unit_start_set) {
+        unit_start = block->GetStartLocation().Value();
+        unit_start_set = true;
+    }
     auto label = GetLabel(block->GetStartLocation().Value());
     __ Bind(label);
 }
 
 void JitContext::SetCurrent(ir::Function* function) {
     cur_function = function;
+    if (!unit_start_set) {
+        unit_start = function->GetStartLocation().Value();
+        unit_start_set = true;
+    }
     auto label = GetLabel(function->GetStartLocation().Value());
     __ Bind(label);
 }
@@ -540,6 +555,28 @@ void JitContext::TickIR(ir::Inst* instr) {
     tick_dirty_fprs = cur_dirty_fprs;
     spill_tmp_gprs = 0;
     spill_tmp_fprs = 0;
+}
+
+void JitContext::MaybeDumpHostBytes() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("SVM_VIXL_HOST_DUMP");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    if (!enabled || host_bytes_dumped || !unit_start_set) return;
+    host_bytes_dumped = true;
+    const auto size = masm.GetBuffer()->GetSizeInBytes();
+    const auto* bytes = masm.GetBuffer()->GetStartAddress<const u8*>();
+    unsigned long long hash = 1469598103934665603ull;
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ull;
+    }
+    std::fprintf(stderr, "[svm-host] pc=0x%llx size=%zu hash=%016llx bytes=",
+                 static_cast<unsigned long long>(unit_start), size, hash);
+    for (size_t i = 0; i < size; ++i) {
+        std::fprintf(stderr, "%02x", static_cast<unsigned>(bytes[i]));
+    }
+    std::fputc('\n', stderr);
 }
 
 MacroAssembler& JitContext::GetMasm() { return masm; }

@@ -29,6 +29,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
 
 
 void JitTranslator::Translate(ir::Block* block) {
+    vixl::svm_vixl_prof::JitScope vixl_prof;
     PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
     cur_block = block;
     static_next_loc.reset();
@@ -63,6 +64,7 @@ void JitTranslator::Translate(ir::Block* block) {
 }
 
 void JitTranslator::Translate(ir::HIRFunction* function) {
+    vixl::svm_vixl_prof::JitScope vixl_prof;
     ASSERT(function);
     translating_function = true;
     if (x87_topvirt_requested) {

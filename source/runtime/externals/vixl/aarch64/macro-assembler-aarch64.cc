@@ -385,6 +385,7 @@ void MacroAssembler::Reset() {
 
 
 void MacroAssembler::FinalizeCode(FinalizeOption option) {
+  svm_vixl_prof::Scope prof(svm_vixl_prof::Part::kPoolFixup);
   if (!literal_pool_.IsEmpty()) {
     // The user may decide to emit more code after Finalize, emit a branch if
     // that's the case.
@@ -404,6 +405,7 @@ void MacroAssembler::CheckEmitFor(size_t amount) {
 
 
 void MacroAssembler::CheckEmitPoolsFor(size_t amount) {
+  svm_vixl_prof::Scope prof(svm_vixl_prof::Part::kPoolFixup);
   literal_pool_.CheckEmitFor(amount);
   veneer_pool_.CheckEmitFor(amount);
   checkpoint_ = GetNextCheckPoint();

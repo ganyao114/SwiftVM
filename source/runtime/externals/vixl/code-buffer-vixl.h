@@ -30,6 +30,7 @@
 #include <cstring>
 
 #include "globals-vixl.h"
+#include "svm-vixl-prof.h"
 #include "utils-vixl.h"
 
 namespace vixl {
@@ -158,6 +159,7 @@ class CodeBuffer {
   }
 
   void EnsureSpaceFor(size_t amount, bool* has_grown) {
+    svm_vixl_prof::Scope prof(svm_vixl_prof::Part::kBuffer);
     bool is_full = !HasSpaceFor(amount);
     if (is_full) Grow(capacity_ * 2 + amount);
     VIXL_ASSERT(has_grown != NULL);

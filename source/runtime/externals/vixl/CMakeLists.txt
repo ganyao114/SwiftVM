@@ -8,6 +8,7 @@ set(VIXL_SOURCES
         code-buffer-vixl.cc
         compiler-intrinsics-vixl.cc
         cpu-features.cc
+        svm-vixl-prof.cc
         utils-vixl.cc)
 
 set(VIXL_AARCH32

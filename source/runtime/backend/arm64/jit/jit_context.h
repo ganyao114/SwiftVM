@@ -105,6 +105,7 @@ public:
     [[nodiscard]] vixl::aarch64::Label *GetLabel(LocationDescriptor loc);
 
 private:
+    void MaybeDumpHostBytes();
     void FlushLabels(VAddr target);
 
     // --- RegAlloc::MEM (spilled value) support ---------------------------
@@ -157,6 +158,9 @@ private:
     ir::Inst *cur_inst{};
     RegAlloc& reg_alloc;
     MacroAssembler masm;
+    LocationDescriptor unit_start{};
+    bool unit_start_set{};
+    bool host_bytes_dumped{};
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_gprs;
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_fprs;
     std::map<LocationDescriptor, Label> labels;

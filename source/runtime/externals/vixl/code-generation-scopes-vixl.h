@@ -31,6 +31,7 @@
 
 #include "assembler-base-vixl.h"
 #include "macro-assembler-interface.h"
+#include "svm-vixl-prof.h"
 
 
 namespace vixl {
@@ -188,6 +189,13 @@ class EmissionCheckScope : public CodeBufferCheckScope {
       // Nothing to do.
       return;
     }
+    if (svm_fast_) {
+      masm_->SvmFastCloseEmission();
+      initialised_ = false;
+      svm_fast_ = false;
+      prof_scope_.Stop();
+      return;
+    }
     // Perform the opposite of `Open`, which is:
     //   - Check the code generation limit was not exceeded.
     //   - Release the pools.
@@ -195,6 +203,7 @@ class EmissionCheckScope : public CodeBufferCheckScope {
     if (pool_policy_ == kBlockPools) {
       masm_->ReleasePools();
     }
+    prof_scope_.Stop();
     VIXL_ASSERT(!initialised_);
   }
 
@@ -209,8 +218,15 @@ class EmissionCheckScope : public CodeBufferCheckScope {
       // See `aarch64::MacroAssembler::MoveImmediateHelper()` for an example.
       return;
     }
+    prof_scope_.Start(svm_vixl_prof::Part::kMacro);
     masm_ = masm;
     pool_policy_ = pool_policy;
+    if ((pool_policy_ == kBlockPools) && svm_vixl_prof::FastEnabled() &&
+        masm->TrySvmFastOpenEmission(size)) {
+      svm_fast_ = true;
+      initialised_ = true;
+      return;
+    }
     if (pool_policy_ == kBlockPools) {
       // To avoid duplicating the work to check that enough space is available
       // in the buffer, do not use the more generic `EnsureEmitFor()`. It is
@@ -237,6 +253,8 @@ class EmissionCheckScope : public CodeBufferCheckScope {
 
   MacroAssemblerInterface* masm_;
   PoolPolicy pool_policy_;
+  svm_vixl_prof::Scope prof_scope_;
+  bool svm_fast_ = false;
 };
 
 // Use this scope when you need a one-to-one mapping between methods and

@@ -58,6 +58,7 @@ void Assembler::bind(Label* label) {
 
 
 void Assembler::BindToOffset(Label* label, ptrdiff_t offset) {
+  svm_vixl_prof::Scope prof(svm_vixl_prof::Part::kPoolFixup);
   VIXL_ASSERT((offset >= 0) && (offset <= GetBuffer()->GetCursorOffset()));
   VIXL_ASSERT(offset % kInstructionSize == 0);
 

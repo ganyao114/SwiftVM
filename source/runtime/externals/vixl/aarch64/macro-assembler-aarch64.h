@@ -3473,6 +3473,23 @@ class MacroAssembler : public Assembler, public MacroAssemblerInterface {
     }
   }
 
+  virtual bool TrySvmFastOpenEmission(size_t amount) VIXL_OVERRIDE {
+#ifdef VIXL_DEBUG
+    USE(amount);
+    return false;
+#else
+    // With no pending literal or veneer, pool checking and block/release have
+    // no emitted effect. If the buffer already has room, EnsureSpaceFor is
+    // also a no-op. Skipping that whole protocol cannot change the cursor or
+    // any byte. A macro that creates a pool/forward branch updates the pool's
+    // checkpoint itself; the next scope then takes the generic path.
+    return literal_pool_.IsEmpty() && veneer_pool_.IsEmpty() &&
+           GetBuffer()->HasSpaceFor(amount);
+#endif
+  }
+
+  virtual void SvmFastCloseEmission() VIXL_OVERRIDE {}
+
   // Set the current stack pointer, but don't generate any code.
   void SetStackPointer(const Register& stack_pointer) {
     VIXL_ASSERT(!GetScratchRegisterList()->IncludesAliasOf(stack_pointer));

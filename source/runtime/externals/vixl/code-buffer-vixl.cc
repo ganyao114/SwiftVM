@@ -138,6 +138,7 @@ void CodeBuffer::UpdateData(size_t offset, const void* data, size_t size) {
 
 
 void CodeBuffer::Align() {
+  svm_vixl_prof::Scope prof(svm_vixl_prof::Part::kBuffer);
   byte* end = AlignUp(cursor_, 4);
   const size_t padding_size = end - cursor_;
   VIXL_ASSERT(padding_size <= 4);
@@ -164,6 +165,8 @@ void CodeBuffer::Reset() {
 
 
 void CodeBuffer::Grow(size_t new_capacity) {
+  svm_vixl_prof::Scope prof(svm_vixl_prof::Part::kBuffer);
+  svm_vixl_prof::CountBufferGrow();
   VIXL_ASSERT(managed_);
   VIXL_ASSERT(new_capacity > capacity_);
   ptrdiff_t cursor_offset = GetCursorOffset();

@@ -41,6 +41,15 @@ class MacroAssemblerInterface {
   virtual bool ArePoolsBlocked() const = 0;
 
  protected:
+  // SwiftVM release-only fast path for the very hot EmissionCheckScope
+  // protocol. Implementations return true only when they handled the protocol
+  // without changing its emitted effect; the generic path remains the fallback.
+  virtual bool TrySvmFastOpenEmission(size_t size) {
+    USE(size);
+    return false;
+  }
+  virtual void SvmFastCloseEmission() { VIXL_UNREACHABLE(); }
+
   virtual void SetAllowMacroInstructions(bool allow) = 0;
 
   virtual void BlockPools() = 0;
