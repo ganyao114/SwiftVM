@@ -8,74 +8,6 @@ namespace swift::runtime::ir {
 
 constexpr static auto kDefaultWorklistSize = 8;
 
-// Helper class for finding common dominators of two or more blocks in a graph.
-// The domination information of a graph must not be modified while there is
-// a CommonDominator object as it's internal state could become invalid.
-class CommonDominator {
-public:
-    // Convenience function to find the common dominator of 2 blocks.
-    static HIRBlock* ForPair(HIRBlock* block1, HIRBlock* block2) {
-        CommonDominator finder(block1);
-        finder.Update(block2);
-        return finder.Get();
-    }
-
-    // Create a finder starting with a given block.
-    explicit CommonDominator(HIRBlock* block)
-            : dominator(block), chain_length_(ChainLength(block)) {}
-
-    // Update the common dominator with another block.
-    void Update(HIRBlock* block) {
-        ASSERT(block != nullptr);
-        if (dominator == nullptr) {
-            dominator = block;
-            chain_length_ = ChainLength(block);
-            return;
-        }
-        HIRBlock* block2 = dominator;
-        ASSERT(block2 != nullptr);
-        if (block == block2) {
-            return;
-        }
-        size_t chain_length = ChainLength(block);
-        size_t chain_length2 = chain_length_;
-        // Equalize the chain lengths
-        for (; chain_length > chain_length2; --chain_length) {
-            block = block->GetDominator();
-            ASSERT(block != nullptr);
-        }
-        for (; chain_length2 > chain_length; --chain_length2) {
-            block2 = block2->GetDominator();
-            ASSERT(block2 != nullptr);
-        }
-        // Now run up the chain until we hit the common dominator.
-        while (block != block2) {
-            --chain_length;
-            block = block->GetDominator();
-            ASSERT(block != nullptr);
-            block2 = block2->GetDominator();
-            ASSERT(block2 != nullptr);
-        }
-        dominator = block;
-        chain_length_ = chain_length;
-    }
-
-    [[nodiscard]] HIRBlock* Get() const { return dominator; }
-
-private:
-    static size_t ChainLength(HIRBlock* block) {
-        size_t result = 0;
-        while (block != nullptr) {
-            ++result;
-            block = block->GetDominator();
-        }
-        return result;
-    }
-
-    HIRBlock* dominator;
-    size_t chain_length_;
-};
-
 void CFGAnalysisPass::Run(HIRBuilder* hir_builder) {
     for (auto& hir_func : hir_builder->GetHIRFunctions()) {
         Run(&hir_func);
@@ -88,6 +20,15 @@ void CFGAnalysisPass::Run(HIRFunction* hir_function) {
     auto max_block_counts = hir_function->MaxBlockCount();
     BitVector visited{max_block_counts};
 
+    // Make repeated analysis deterministic. The old implementation appended
+    // another RPO/back-edge/frontier set and reused stale immediate dominators.
+    hir_function->GetHIRBlocksRPO().clear();
+    for (auto* block : blocks) {
+        block->SetDominator(nullptr);
+        block->GetBackEdges().clear();
+        block->GetDomFrontier().clear();
+    }
+
     // Mark Edge Dominates
     FindDominateEdges(hir_function);
 
@@ -98,25 +39,13 @@ void CFGAnalysisPass::Run(HIRFunction* hir_function) {
     ComputeDominanceInformation(hir_function);
 }
 
-bool CFGAnalysisPass::UpdateDominatorOfSuccessor(HIRBlock* block, HIRBlock* successor) {
-    ASSERT(ContainsElement(block->GetSuccessors(), successor));
-
-    auto old_dominator = successor->GetDominator();
-    auto new_dominator =
-            (old_dominator == nullptr) ? block : CommonDominator::ForPair(old_dominator, block);
-
-    if (old_dominator == new_dominator) {
-        return false;
-    } else {
-        successor->SetDominator(new_dominator);
-        return true;
-    }
-}
-
 void CFGAnalysisPass::FindDominateEdges(HIRFunction* hir_function) {
     // Mark Edge Dominates
     for (auto block : hir_function->GetHIRBlocks()) {
         auto& incoming_edges = block->GetIncomingEdges();
+        for (auto& edge : incoming_edges) {
+            edge.flags &= ~Edge::DOMINATES;
+        }
         if (incoming_edges.size() == 1) {
             incoming_edges.begin()->flags |= Edge::DOMINATES;
         }
@@ -165,52 +94,115 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
     auto max_block_counts = hir_function->MaxBlockCount();
     auto& blocks = hir_function->GetHIRBlocks();
     auto entry_block = blocks[0];
-    // Build Reverse Post Order
-    // Number of visits of a given node, indexed by block id
-    StackVector<u16, 32> visits{};
-    visits.resize(max_block_counts);
+
+    // Build a true reverse post order with an iterative DFS. The previous walk
+    // scheduled a block after all non-DFS-back predecessors had been seen, then
+    // assigned its dominator exactly once. That is not a fixed-point algorithm:
+    // an irreducible loop can revise an already-processed block's dominator
+    // through its second entry, without propagating the revision to successors.
+    BitVector visited{max_block_counts};
     // Number of successors visited from a given node, indexed by block id.
     StackVector<u16, 32> successors_visited{};
     successors_visited.resize(max_block_counts);
-    // Nodes for which we need to visit successors.
     StackVector<HIRBlock*, 32> worklist{};
     worklist.reserve(kDefaultWorklistSize);
-    worklist.push_back(entry_block);
-    // RPO List
-    auto& reverse_post_order = hir_function->GetHIRBlocksRPO();
-    reverse_post_order.push_back(*entry_block);
+    StackVector<HIRBlock*, 32> post_order{};
 
+    visited.set(entry_block->GetOrderId());
+    worklist.push_back(entry_block);
     while (!worklist.empty()) {
         auto current = worklist.back();
         auto current_id = current->GetOrderId();
         if (successors_visited[current_id] == current->GetSuccessors().size()) {
+            post_order.push_back(current);
             worklist.pop_back();
         } else {
             auto successor = current->GetSuccessors()[successors_visited[current_id]++];
-            UpdateDominatorOfSuccessor(current, successor);
-
-            // Once all the forward edges have been visited, we know the immediate
-            // dominator of the block. We can then start visiting its successors.
-            if (++visits[successor->GetOrderId()] ==
-                successor->GetPredecessors().size() - successor->GetBackEdges().size()) {
-                reverse_post_order.push_back(*successor);
+            auto successor_id = successor->GetOrderId();
+            if (!visited.test(successor_id)) {
+                visited.set(successor_id);
                 worklist.push_back(successor);
             }
         }
     }
-    // Entry Dom self
+
+    StackVector<HIRBlock*, 32> rpo{};
+    rpo.reserve(post_order.size());
+    auto& reverse_post_order = hir_function->GetHIRBlocksRPO();
+    for (auto it = post_order.rbegin(); it != post_order.rend(); ++it) {
+        rpo.push_back(*it);
+        reverse_post_order.push_back(**it);
+    }
+
+    // Cooper-Harvey-Kennedy: intersect immediate-dominator chains in RPO until
+    // no block changes. Every update moves toward entry in the finite RPO tree,
+    // so this terminates for reducible and irreducible CFGs alike.
+    const auto unreachable_index = max_block_counts;
+    StackVector<u16, 32> rpo_index{};
+    rpo_index.resize(max_block_counts, unreachable_index);
+    for (u16 i = 0; i < rpo.size(); ++i) {
+        rpo_index[rpo[i]->GetOrderId()] = i;
+    }
+
     entry_block->SetDominator(entry_block);
+    auto intersect = [&rpo_index, unreachable_index](HIRBlock* left, HIRBlock* right) {
+        while (left != right) {
+            auto left_index = rpo_index[left->GetOrderId()];
+            auto right_index = rpo_index[right->GetOrderId()];
+            ASSERT(left_index != unreachable_index);
+            ASSERT(right_index != unreachable_index);
+            while (left_index > right_index) {
+                left = left->GetDominator();
+                ASSERT(left != nullptr);
+                left_index = rpo_index[left->GetOrderId()];
+            }
+            while (right_index > left_index) {
+                right = right->GetDominator();
+                ASSERT(right != nullptr);
+                right_index = rpo_index[right->GetOrderId()];
+            }
+        }
+        return left;
+    };
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (u16 i = 1; i < rpo.size(); ++i) {
+            auto* block = rpo[i];
+            HIRBlock* new_dominator = nullptr;
+            for (auto* predecessor : block->GetPredecessors()) {
+                if (predecessor->GetDominator() == nullptr) {
+                    continue;
+                }
+                new_dominator = new_dominator == nullptr
+                                      ? predecessor
+                                      : intersect(predecessor, new_dominator);
+            }
+            ASSERT(new_dominator != nullptr);
+            if (block->GetDominator() != new_dominator) {
+                block->SetDominator(new_dominator);
+                changed = true;
+            }
+        }
+    }
 
     // Dominance Frontier
-    for (auto& block : reverse_post_order) {
-        auto& predecessors = block.GetPredecessors();
+    for (auto* block : rpo) {
+        auto& predecessors = block->GetPredecessors();
         if (predecessors.size() > 1) {
-            auto dom = block.GetDominator();
+            auto dom = block->GetDominator();
             for (auto predecessor : predecessors) {
+                // An unreachable predecessor has no dominator tree. It cannot
+                // contribute to the reachable block's dominance frontier.
+                if (predecessor->GetDominator() == nullptr) {
+                    continue;
+                }
                 auto runner = predecessor;
                 while (runner != dom) {
-                    runner->PushDominance(&block);
+                    runner->PushDominance(block);
                     runner = runner->GetDominator();
+                    ASSERT(runner != nullptr);
                 }
             }
         }
@@ -246,7 +238,7 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
 // HIRFunction::AddLoop only appends to `loops`, and HIRFunction::GetHIRLoop()
 // -- its only accessor -- has no callers anywhere in the tree. And
 // CFGAnalysisPass::Run itself is called only from source/tests/main_case.cpp
-// (three unit tests); PassPipeline never registers it, so this pass does not
+// (unit tests only); PassPipeline never registers it, so this pass does not
 // run in the production translation pipeline at all. Repairing the memcpy
 // means changing HIRLoop's constructor in ir/hir_builder.cpp to take the block
 // array it actually wants -- worth doing when somebody needs loop information,

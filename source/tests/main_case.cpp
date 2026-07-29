@@ -1,12 +1,15 @@
 #include <array>
 #include <bit>
 #include <catch2/catch_test_macros.hpp>
+#include <csignal>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <map>
 #include <string>
 #include <sys/mman.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <vector>
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/ir/hir_builder.h"
@@ -174,6 +177,76 @@ TEST_CASE("Test runtime ir loop") {
     CFGAnalysisPass::Run(&hir_builder);
     LocalEliminationPass::Run(&hir_builder);
     ReIdInstrPass::Run(&hir_builder);
+}
+
+TEST_CASE("CFG analysis terminates and computes dominators for an irreducible loop") {
+    using namespace swift::runtime::ir;
+
+    Inst::InitializeSlabHeap(0x100000);
+    Block::InitializeSlabHeap(0x10000);
+    Function::InitializeSlabHeap(0x2000);
+
+    HIRBuilder hir_builder{1};
+    auto* function = hir_builder.AppendFunction(Location{0}, Location{0x10});
+    auto condition = function->LoadImm<BOOL>(Imm{1u});
+
+    // Minimal trigger (five real blocks plus the synthetic entry):
+    //
+    //            +----------------> exit
+    //            |                   ^
+    //   root --> left --> loop -------+
+    //     |               |  ^
+    //     +-----> right ---+  |
+    //              ^          |
+    //              +----------+
+    //
+    // `right <-> loop` is an irreducible cycle with entries from root and
+    // left. The old one-pass dominator walk first made left dominate exit,
+    // then revised loop's dominator after seeing the second cycle entry without
+    // propagating that revision to exit. Dominance-frontier construction then
+    // chased the stale chain to entry, whose dominator is itself, forever.
+    auto [left, right] =
+            hir_builder.If(terminal::If{condition,
+                                       terminal::LinkBlock{2},
+                                       terminal::LinkBlock{1}});
+    hir_builder.SetCurBlock(left);
+    auto [loop, exit] =
+            hir_builder.If(terminal::If{condition,
+                                       terminal::LinkBlock{4},
+                                       terminal::LinkBlock{3}});
+    hir_builder.SetCurBlock(right);
+    hir_builder.LinkBlock(terminal::LinkBlock{3});
+    hir_builder.SetCurBlock(loop);
+    hir_builder.If(terminal::If{condition,
+                               terminal::LinkBlock{4},
+                               terminal::LinkBlock{2}});
+    hir_builder.SetCurBlock(exit);
+    hir_builder.Return();
+
+    // Run the analysis in a subprocess so a future termination regression
+    // fails this case after two seconds instead of wedging the whole test job.
+    const auto child = fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        alarm(2);
+        CFGAnalysisPass::Run(function);
+        alarm(0);
+
+        auto* entry = function->GetEntryBlock();
+        const bool dominators_are_correct =
+                entry->GetDominator() == entry &&
+                function->GetHIRBlocks()[1]->GetDominator() == entry &&
+                left->GetDominator() == function->GetHIRBlocks()[1] &&
+                right->GetDominator() == function->GetHIRBlocks()[1] &&
+                loop->GetDominator() == function->GetHIRBlocks()[1] &&
+                exit->GetDominator() == function->GetHIRBlocks()[1];
+        _exit(dominators_are_correct ? 0 : 1);
+    }
+
+    int status = 0;
+    REQUIRE(waitpid(child, &status, 0) == child);
+    REQUIRE(WIFEXITED(status));
+    REQUIRE(WEXITSTATUS(status) == 0);
 }
 
 TEST_CASE("Test riscv64 asm") {

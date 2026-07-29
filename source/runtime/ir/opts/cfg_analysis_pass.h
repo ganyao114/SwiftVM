@@ -14,8 +14,6 @@ public:
     static void Run(HIRFunction *hir_function);
 
 private:
-    static bool UpdateDominatorOfSuccessor(HIRBlock* block, HIRBlock* successor);
-
     static void FindDominateEdges(HIRFunction *hir_function);
     static void FindBackEdges(HIRFunction *hir_function, BitVector &visited);
     static void ComputeDominanceInformation(HIRFunction *hir_function);
