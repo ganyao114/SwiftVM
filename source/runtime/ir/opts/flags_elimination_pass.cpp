@@ -55,6 +55,14 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
         }
     }
 
+    // Bisect switch for deleting carry writes that are overwritten on every
+    // in-block path before a read. With the switch off, preserve the old
+    // cross-block-conservative handling exactly.
+    static const bool carry_elim_off = [] {
+        const char* e = std::getenv("SVM_FLAG_CARRY_ELIM");
+        return e && std::strcmp(e, "0") == 0;
+    }();
+
     Flags needed = Flags::All;  // live-out: flags persist across blocks
     // Needed-set snapshots at bound labels, keyed by the Goto/NotGoto inst
     // whose value the label binds (in-block branches are forward-only in the
@@ -63,7 +71,8 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
     std::vector<Inst*> victims;
 
     u32 stat_save{}, stat_save_dead{}, stat_clear{}, stat_clear_dead{}, stat_setcv{},
-        stat_setcv_dead{}, stat_shrunk{};
+        stat_setcv_dead{}, stat_shrunk{}, stat_carry_save{}, stat_carry_save_dead{},
+        stat_carry_write{}, stat_carry_write_dead{};
 
     for (auto it = inst_list.rbegin(); it != inst_list.rend(); ++it) {
         Inst& inst = *it;
@@ -99,11 +108,15 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 const Flags narrowed =
                         narrow_off ? mask : (mask & ~(kSoftBits & ~needed));
 
-                // Never delete a SaveFlags that writes C: carry persists across
-                // blocks and a later block's Adc/Sbb may read it. Per-block
-                // liveness cannot model that dependency, so such a write also
-                // does not "kill" NZCV/OF for earlier writers.
-                if (True(mask & Flags::Carry)) {
+                const bool writes_carry = True(mask & Flags::Carry);
+                if (writes_carry) {
+                    stat_carry_save++;
+                    stat_carry_write++;
+                }
+                // The bisect-off path is the old Gate B behavior: every
+                // SaveFlags(C) survives and only its surviving PF/AF bits kill
+                // earlier writers.
+                if (writes_carry && carry_elim_off) {
                     if (narrowed != mask) {
                         inst.SetArg(1, narrowed);
                         stat_shrunk++;
@@ -117,6 +130,10 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 const Flags live = narrowed & needed;
                 if (False(live)) {
                     stat_save_dead++;
+                    if (writes_carry) {
+                        stat_carry_save_dead++;
+                        stat_carry_write_dead++;
+                    }
                     victims.push_back(&inst);
                     if (kEnv_flags_debug) {
                         fmt::print("[flags-elim-dbg] block {:#x}: DELETE SaveFlags mask={} needed={}\n",
@@ -134,13 +151,20 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
             case OpCode::ClearFlags: {
                 stat_clear++;
                 const Flags mask = inst.GetArg<Flags>(0);
-                // Same C protection as SaveFlags.
-                if (True(mask & Flags::Carry)) {
+                const bool writes_carry = True(mask & Flags::Carry);
+                if (writes_carry) {
+                    stat_carry_write++;
+                }
+                // Bisect-off retains the old unconditional C protection.
+                if (writes_carry && carry_elim_off) {
                     break;
                 }
                 const Flags live = mask & needed;
                 if (False(live)) {
                     stat_clear_dead++;
+                    if (writes_carry) {
+                        stat_carry_write_dead++;
+                    }
                     victims.push_back(&inst);
                 } else {
                     // No narrowing (same as SaveFlags).
@@ -148,10 +172,21 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 }
                 break;
             }
-            case OpCode::SetCarry:
-                // Never delete SetCarry: same cross-block carry reasoning.
+            case OpCode::SetCarry: {
                 stat_setcv++;
+                stat_carry_write++;
+                if (!carry_elim_off) {
+                    const Flags bit = Flags::Carry;
+                    if (False(needed & bit)) {
+                        stat_setcv_dead++;
+                        stat_carry_write_dead++;
+                        victims.push_back(&inst);
+                    } else {
+                        needed &= ~bit;
+                    }
+                }
                 break;
+            }
             case OpCode::SetOverflow: {
                 stat_setcv++;
                 const Flags bit = Flags::Overflow;
@@ -211,10 +246,14 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
     if (kEnv_dump_ir &&
         (stat_save || stat_clear || stat_setcv)) {
         fmt::print("[flags-elim] block {:#x}: SaveFlags {} -> {} (-{}), ClearFlags {} -> {} "
-                   "(-{}), SetC/V {} -> {} (-{}), masks narrowed {}\n",
+                   "(-{}), SetC/V {} -> {} (-{}), masks narrowed {}, CarrySaveFlags {} -> {} "
+                   "(-{}), CarryWrites {} -> {} (-{})\n",
                    block->GetStartLocation().Value(), stat_save, stat_save - stat_save_dead,
                    stat_save_dead, stat_clear, stat_clear - stat_clear_dead, stat_clear_dead,
-                   stat_setcv, stat_setcv - stat_setcv_dead, stat_setcv_dead, stat_shrunk);
+                   stat_setcv, stat_setcv - stat_setcv_dead, stat_setcv_dead, stat_shrunk,
+                   stat_carry_save, stat_carry_save - stat_carry_save_dead,
+                   stat_carry_save_dead, stat_carry_write,
+                   stat_carry_write - stat_carry_write_dead, stat_carry_write_dead);
         if (kEnv_dump_ir_post) {
             fmt::print("--- post-elim block {:#x} ---\n{}\n",
                        block->GetStartLocation().Value(), block->ToString());

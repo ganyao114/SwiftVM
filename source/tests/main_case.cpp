@@ -699,10 +699,8 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     }
     REQUIRE(save_count == 1);
 
-    // Carry is deliberately exempt from removal even when a later write in the
-    // same block covers it: C persists across blocks and a following block's
-    // Adc/Sbb may read it, which per-block liveness cannot model (see the
-    // guard in FlagsEliminationPass::Run). Both writes must therefore survive.
+    // A carry write covered by a later carry write in the same block is dead.
+    // SVM_FLAG_CARRY_ELIM=0 retains the old Gate B behavior for bisection.
     Block carry_overwritten{0, Location{0x1800}};
     auto c_lhs = carry_overwritten.LoadImm(Imm{1u});
     auto c_rhs = carry_overwritten.LoadImm(Imm{2u});
@@ -713,13 +711,16 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
 
     FlagsEliminationPass::Run(&carry_overwritten);
 
-    REQUIRE(c_old.Def()->GetPseudoOperations(OpCode::SaveFlags).size() == 1);
+    const bool carry_elim_off = std::getenv("SVM_FLAG_CARRY_ELIM") &&
+                                std::strcmp(std::getenv("SVM_FLAG_CARRY_ELIM"), "0") == 0;
+    REQUIRE(c_old.Def()->GetPseudoOperations(OpCode::SaveFlags).size() ==
+            (carry_elim_off ? 1 : 0));
     REQUIRE(c_new.Def()->GetPseudoOperations(OpCode::SaveFlags).size() == 1);
     size_t carry_save_count = 0;
     for (auto& inst : carry_overwritten.GetInstList()) {
         carry_save_count += inst.GetOp() == OpCode::SaveFlags;
     }
-    REQUIRE(carry_save_count == 2);
+    REQUIRE(carry_save_count == (carry_elim_off ? 2 : 1));
 
     Block carry_read{0, Location{0x2000}};
     auto carry_lhs = carry_read.LoadImm(Imm{5u});
@@ -737,6 +738,168 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     REQUIRE(carry_pseudos.size() == 1);
     REQUIRE(carry_pseudos[0] == carry_save);
     REQUIRE(carry_pseudos[0]->GetArg<Flags>(1) == Flags::All);
+}
+
+TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
+    using namespace swift::runtime::ir;
+
+    auto count_op = [](Block& block, OpCode op) {
+        size_t count = 0;
+        for (auto& inst : block.GetInstList()) {
+            count += inst.GetOp() == op;
+        }
+        return count;
+    };
+    auto contains = [](Block& block, Inst* wanted) {
+        for (auto& inst : block.GetInstList()) {
+            if (&inst == wanted) {
+                return true;
+            }
+        }
+        return false;
+    };
+    auto append_carry_save = [](Block& block, Value lhs, Value rhs) {
+        auto result = block.Add(lhs, Operand{rhs});
+        return block.AppendInst(OpCode::SaveFlags, result, Flags::Carry);
+    };
+
+    const bool carry_elim_off = std::getenv("SVM_FLAG_CARRY_ELIM") &&
+                                std::strcmp(std::getenv("SVM_FLAG_CARRY_ELIM"), "0") == 0;
+    if (carry_elim_off) {
+        // The bisect switch covers every deletion introduced by this change.
+        // Carry writes of all three forms survive exactly as under old Gate B;
+        // unrelated non-carry DSE remains enabled.
+        Block disabled{0, Location{0x3000}};
+        auto lhs = disabled.LoadImm(Imm{1u});
+        auto rhs = disabled.LoadImm(Imm{2u});
+        auto* old_save = append_carry_save(disabled, lhs, rhs);
+        auto* old_clear = disabled.AppendInst(OpCode::ClearFlags, Flags::Carry);
+        auto carry_value = disabled.LoadImm<BOOL>(Imm{1u});
+        auto* old_set = disabled.AppendInst(OpCode::SetCarry, carry_value);
+        auto* old_noncarry =
+                disabled.AppendInst(OpCode::ClearFlags, Flags::Overflow);
+        auto* last_save = append_carry_save(disabled, lhs, rhs);
+        auto* last_noncarry =
+                disabled.AppendInst(OpCode::ClearFlags, Flags::Overflow);
+
+        FlagsEliminationPass::Run(&disabled);
+
+        REQUIRE(contains(disabled, old_save));
+        REQUIRE(contains(disabled, old_clear));
+        REQUIRE(contains(disabled, old_set));
+        REQUIRE_FALSE(contains(disabled, old_noncarry));
+        REQUIRE(contains(disabled, last_save));
+        REQUIRE(contains(disabled, last_noncarry));
+        REQUIRE(count_op(disabled, OpCode::SaveFlags) == 2);
+        REQUIRE(count_op(disabled, OpCode::ClearFlags) == 2);
+        REQUIRE(count_op(disabled, OpCode::SetCarry) == 1);
+        return;
+    }
+
+    // (1) Straight line, no intervening reader: the earlier C write is dead.
+    Block overwritten{1, Location{0x3100}};
+    auto lhs = overwritten.LoadImm(Imm{1u});
+    auto rhs = overwritten.LoadImm(Imm{2u});
+    auto* first = append_carry_save(overwritten, lhs, rhs);
+    auto* last = append_carry_save(overwritten, lhs, rhs);
+
+    FlagsEliminationPass::Run(&overwritten);
+
+    REQUIRE_FALSE(contains(overwritten, first));
+    REQUIRE(contains(overwritten, last));
+    REQUIRE(count_op(overwritten, OpCode::SaveFlags) == 1);
+
+    // (2) A C reader between two writers keeps both writers live.
+    Block read_between{2, Location{0x3200}};
+    lhs = read_between.LoadImm(Imm{3u});
+    rhs = read_between.LoadImm(Imm{4u});
+    first = append_carry_save(read_between, lhs, rhs);
+    read_between.AppendInst(OpCode::TestFlags, Flags::Carry);
+    last = append_carry_save(read_between, lhs, rhs);
+
+    FlagsEliminationPass::Run(&read_between);
+
+    REQUIRE(contains(read_between, first));
+    REQUIRE(contains(read_between, last));
+    REQUIRE(count_op(read_between, OpCode::SaveFlags) == 2);
+
+    // (3) Flags::All at block exit makes a lone final C write live.
+    Block live_out{3, Location{0x3300}};
+    lhs = live_out.LoadImm(Imm{5u});
+    rhs = live_out.LoadImm(Imm{6u});
+    auto* only = append_carry_save(live_out, lhs, rhs);
+
+    FlagsEliminationPass::Run(&live_out);
+
+    REQUIRE(contains(live_out, only));
+    REQUIRE(count_op(live_out, OpCode::SaveFlags) == 1);
+
+    // (4) On one path C is read before the later covering write; on the other
+    // path the branch skips directly to that write. The earlier writer is live
+    // on the union of both backward paths.
+    Block branched{4, Location{0x3400}};
+    lhs = branched.LoadImm(Imm{7u});
+    rhs = branched.LoadImm(Imm{8u});
+    first = append_carry_save(branched, lhs, rhs);
+    auto condition = branched.LoadImm<BOOL>(Imm{1u});
+    auto skip_read = branched.NotGoto(condition);
+    branched.AppendInst(OpCode::TestFlags, Flags::Carry);
+    branched.BindLabel(skip_read);
+    last = append_carry_save(branched, lhs, rhs);
+
+    FlagsEliminationPass::Run(&branched);
+
+    REQUIRE(contains(branched, first));
+    REQUIRE(contains(branched, last));
+    REQUIRE(count_op(branched, OpCode::SaveFlags) == 2);
+
+    // (5) ClearFlags(C) and SetCarry are ordinary C writers for liveness.
+    Block clear_covered{5, Location{0x3500}};
+    lhs = clear_covered.LoadImm(Imm{9u});
+    rhs = clear_covered.LoadImm(Imm{10u});
+    auto* clear = clear_covered.AppendInst(OpCode::ClearFlags, Flags::Carry);
+    last = append_carry_save(clear_covered, lhs, rhs);
+
+    FlagsEliminationPass::Run(&clear_covered);
+
+    REQUIRE_FALSE(contains(clear_covered, clear));
+    REQUIRE(contains(clear_covered, last));
+    REQUIRE(count_op(clear_covered, OpCode::ClearFlags) == 0);
+
+    Block set_covered{6, Location{0x3600}};
+    lhs = set_covered.LoadImm(Imm{11u});
+    rhs = set_covered.LoadImm(Imm{12u});
+    auto carry_value = set_covered.LoadImm<BOOL>(Imm{1u});
+    auto* set = set_covered.AppendInst(OpCode::SetCarry, carry_value);
+    last = append_carry_save(set_covered, lhs, rhs);
+
+    FlagsEliminationPass::Run(&set_covered);
+
+    REQUIRE_FALSE(contains(set_covered, set));
+    REQUIRE(contains(set_covered, last));
+    REQUIRE(count_op(set_covered, OpCode::SetCarry) == 0);
+
+    // (7) Gate A remains block-wide: any Adc/Sbb leaves every instruction
+    // untouched, including otherwise-covered C writers.
+    Block gate_a{7, Location{0x3700}};
+    lhs = gate_a.LoadImm(Imm{13u});
+    rhs = gate_a.LoadImm(Imm{14u});
+    first = append_carry_save(gate_a, lhs, rhs);
+    clear = gate_a.AppendInst(OpCode::ClearFlags, Flags::Carry);
+    carry_value = gate_a.LoadImm<BOOL>(Imm{1u});
+    set = gate_a.AppendInst(OpCode::SetCarry, carry_value);
+    gate_a.Sbb(lhs, Operand{rhs});
+    last = append_carry_save(gate_a, lhs, rhs);
+
+    FlagsEliminationPass::Run(&gate_a);
+
+    REQUIRE(contains(gate_a, first));
+    REQUIRE(contains(gate_a, clear));
+    REQUIRE(contains(gate_a, set));
+    REQUIRE(contains(gate_a, last));
+    REQUIRE(count_op(gate_a, OpCode::SaveFlags) == 2);
+    REQUIRE(count_op(gate_a, OpCode::ClearFlags) == 1);
+    REQUIRE(count_op(gate_a, OpCode::SetCarry) == 1);
 }
 
 TEST_CASE("Register allocation gives every spilled value a private slot") {
