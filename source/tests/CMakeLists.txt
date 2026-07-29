@@ -1,4 +1,5 @@
 add_executable(swift_test
+        distorm_fast_test.cpp
         main_case.cpp
         # Decoder-level tests: no Unicorn dependency, so they build and run even
         # where the differential fuzz below is skipped.

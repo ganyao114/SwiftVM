@@ -1,4 +1,5 @@
 add_library(fronted_x86 STATIC decoder.cc
+    distorm_fast.cc
     decoder_alu.cc
     decoder_avx.cc
     decoder_control.cc
@@ -25,6 +26,7 @@ add_library(fronted_x86 STATIC decoder.cc
     xsave.h
     decoder_internal.h
     decoder.h
+    distorm_fast.h
     vex_decoder.h
     cpu.h)
 

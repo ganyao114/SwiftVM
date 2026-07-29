@@ -10,6 +10,7 @@
 #include <cstring>
 #include "runtime/frontend/x86/cpu.h"
 #include "runtime/frontend/x86/decoder_internal.h"
+#include "runtime/frontend/x86/distorm_fast.h"
 #include "runtime/frontend/x86/xsave.h"
 
 namespace swift::x86 {
@@ -264,6 +265,8 @@ void X64Decoder::Decode() {
     swift::runtime::PerfDecodeRunEmptyMicrobench();
     swift::runtime::PerfLoweringRunEmptyMicrobench();
     const bool decode_prof = swift::runtime::PerfDecodeDetailEnabled();
+    const bool fast_enabled = DistormFastEnabled();
+    const bool verify_fast = DistormFastVerifyEnabled();
     u64 prior_fetch_page0 = UINT64_MAX;
     u64 prior_fetch_page1 = UINT64_MAX;
     while (!end_decode) {
@@ -602,11 +605,36 @@ void X64Decoder::Decode() {
             }
         }
         perf_predispatch.Stop();
-        swift::runtime::PerfDecodeScope2 perf_distorm{
-                swift::runtime::GetPerfStats2().decode_distorm};
-        _DInst insn = DisDecode(code_ptr, 0x10, is_64bit);
-        const auto distorm_ns = perf_distorm.Stop();
-        swift::runtime::PerfDecodeRecordOpcode(insn.opcode, distorm_ns);
+        _DInst insn{};
+        _DInst fast_insn{};
+        bool fast_hit = false;
+        if (fast_enabled || verify_fast) {
+            swift::runtime::PerfDecodeScope2 perf_fast{
+                    swift::runtime::GetPerfStats2().decode_raw,
+                    swift::runtime::PerfDecodePath2::Raw};
+            fast_hit = DecodeDistormFast(code_ptr, fetch_avail, is_64bit, fast_insn);
+            if (verify_fast || decode_prof) DistormFastRecordAttempt(fast_hit);
+            if (fast_hit && decode_prof) {
+                swift::runtime::GetPerfStats2().decode_raw_accepted.fetch_add(
+                        1, std::memory_order_relaxed);
+            }
+        }
+        if (!fast_hit || verify_fast || !fast_enabled) {
+            swift::runtime::PerfDecodeScope2 perf_distorm{
+                    swift::runtime::GetPerfStats2().decode_distorm};
+            _DInst distorm_insn = DisDecode(code_ptr, 0x10, is_64bit);
+            const auto distorm_ns = perf_distorm.Stop();
+            swift::runtime::PerfDecodeRecordOpcode(distorm_insn.opcode, distorm_ns);
+            if (fast_hit && verify_fast) {
+                const bool match = DistormFastEquivalent(fast_insn, distorm_insn, code_ptr);
+                DistormFastRecordVerification(match, fast_insn, distorm_insn, code_ptr);
+                insn = match && fast_enabled ? fast_insn : distorm_insn;
+            } else {
+                insn = distorm_insn;
+            }
+        } else {
+            insn = fast_insn;
+        }
         swift::runtime::PerfDecodeScope2 perf_bookkeeping_pre{
                 swift::runtime::GetPerfStats2().decode_bookkeeping};
         FixupMovbeOperandSize(insn, code_ptr);
