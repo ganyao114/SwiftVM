@@ -6,6 +6,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <string>
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -325,6 +326,71 @@ TEST_CASE("Uniform elimination does not propagate conditional stores past labels
 
     UniformEliminationPass::Run(&straight_line, info);
     REQUIRE(straight_load.Def()->GetOp() == OpCode::BitExtract);
+}
+
+TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {
+    using namespace swift::runtime::ir;
+
+    UniformInfo info{.uniform_size = 64};
+    auto make_uniform_block = [] {
+        auto block = std::make_unique<Block>(0, Location{0x3000});
+
+        // Full overwrite: the first store is dead.
+        auto first = block->LoadImm(Imm{0x1111111111111111ull}).SetType(ValueType::U64);
+        auto latest = block->LoadImm(Imm{0x2222222222222222ull}).SetType(ValueType::U64);
+        block->StoreUniform(Uniform{0, ValueType::U64}, first);
+        block->StoreUniform(Uniform{0, ValueType::U64}, latest);
+
+        // Narrow forwarding must stay a BitExtract with the same source/type.
+        block->LoadUniform(Uniform{2, ValueType::U16});
+
+        // The opaque call invalidates forwarding facts. The following load
+        // must remain a LoadUniform in both implementations.
+        Params params{};
+        block->CallDynamic(Lambda(Imm{1u}), params);
+        block->LoadUniform(Uniform{2, ValueType::U16});
+
+        // Two overlapping later stores jointly cover the earlier U64 store.
+        // This pins byte-range aliasing rather than just exact-offset DSE.
+        auto wide = block->LoadImm(Imm{0x3333333333333333ull}).SetType(ValueType::U64);
+        auto low = block->LoadImm(Imm{0x44444444u}).SetType(ValueType::U32);
+        auto high = block->LoadImm(Imm{0x55555555u}).SetType(ValueType::U32);
+        block->StoreUniform(Uniform{16, ValueType::U64}, wide);
+        block->StoreUniform(Uniform{16, ValueType::U32}, low);
+        block->StoreUniform(Uniform{20, ValueType::U32}, high);
+        // Spans two different stored values, so it must not forward.
+        block->LoadUniform(Uniform{18, ValueType::U32});
+        return block;
+    };
+
+    auto legacy = make_uniform_block();
+    auto fast = make_uniform_block();
+    UniformEliminationPass::Run(legacy.get(), info, false);
+    UniformEliminationPass::Run(fast.get(), info, true);
+
+    // ToString includes every opcode, result type, argument and defining id;
+    // equality is therefore a per-instruction IR comparison, not just counts.
+    REQUIRE(fast->ToString() == legacy->ToString());
+    size_t stores = 0;
+    size_t loads = 0;
+    size_t extracts = 0;
+    for (const auto& inst : fast->GetInstList()) {
+        stores += inst.GetOp() == OpCode::StoreUniform;
+        loads += inst.GetOp() == OpCode::LoadUniform;
+        extracts += inst.GetOp() == OpCode::BitExtract;
+    }
+    REQUIRE(stores == 3);
+    REQUIRE(loads == 2);
+    REQUIRE(extracts == 1);
+
+    // No-uniform early return must preserve even an otherwise trivial block.
+    Block legacy_plain{1, Location{0x4000}};
+    Block fast_plain{1, Location{0x4000}};
+    legacy_plain.LoadImm(Imm{7u}).SetType(ValueType::U32);
+    fast_plain.LoadImm(Imm{7u}).SetType(ValueType::U32);
+    UniformEliminationPass::Run(&legacy_plain, info, false);
+    UniformEliminationPass::Run(&fast_plain, info, true);
+    REQUIRE(fast_plain.ToString() == legacy_plain.ToString());
 }
 
 TEST_CASE("Uniform elimination preserves rotate-by-zero carry polarity load") {

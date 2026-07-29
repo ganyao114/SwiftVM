@@ -117,6 +117,7 @@ struct UniformValue {
 
 static void EliminateDeadStores(Block* block, const UniformInfo& info,
                                 HIRFunction* hir_function) {
+    PerfScope2 perf_dse{GetPerfStats2().uniform_dse};
     auto& inst_list = block->GetInstList();
     // killed[i] = byte i of the uniform buffer is overwritten later in this
     // block before any read.
@@ -199,15 +200,59 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
         fmt::print(stderr, "[uniform-dse] block {:#x}: removed {} dead uniform store(s)\n",
                    block->GetStartLocation().Value(), victims.size());
     }
+    if (Perf2Enabled()) {
+        auto& stats = GetPerfStats2();
+        stats.uniform_dse_blocks.fetch_add(1, std::memory_order_relaxed);
+        stats.uniform_dse_victims.fetch_add(victims.size(), std::memory_order_relaxed);
+    }
 }
 
-void UniformEliminationPass::Run(Block* block, const UniformInfo &info, HIRFunction* hir_function) {
+void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fast_path,
+                                 HIRFunction* hir_function) {
+    PerfScope2 perf_forward{GetPerfStats2().uniform_forward};
+
+    // The corpus is dominated by blocks with no uniform operations. Probe only
+    // until the first relevant instruction: a miss replaces the legacy forward
+    // scan and lets us avoid both fixed-size byte tables plus the reverse scan;
+    // a hit pays only the usually short prefix before entering the unchanged
+    // transfer logic below.
+    if (fast_path) {
+        u32 probed_instructions{};
+        bool has_uniform_op = false;
+        for (const auto& inst : block->GetInstList()) {
+            probed_instructions++;
+            const auto op = inst.GetOp();
+            has_uniform_op = op == OpCode::LoadUniform || op == OpCode::StoreUniform;
+            if (has_uniform_op) {
+                break;
+            }
+        }
+        if (Perf2Enabled()) {
+            auto& stats = GetPerfStats2();
+            stats.uniform_probe_insts.fetch_add(probed_instructions, std::memory_order_relaxed);
+            stats.uniform_probe_hits.fetch_add(has_uniform_op, std::memory_order_relaxed);
+        }
+        if (!has_uniform_op) {
+            perf_forward.Stop();
+            if (Perf2Enabled()) {
+                auto& stats = GetPerfStats2();
+                stats.uniform_blocks.fetch_add(1, std::memory_order_relaxed);
+                stats.uniform_no_ops_blocks.fetch_add(1, std::memory_order_relaxed);
+                stats.uniform_insts.fetch_add(probed_instructions, std::memory_order_relaxed);
+            }
+            return;
+        }
+    }
+
     StackVector<UniformValue, 0x100> uniform_values{info.uniform_size};
     u32 load_count{};
     u32 folded_load_count{};
     u32 mapped_load_count{};
     u32 mapped_store_count{};
     u32 invalidation_count{};
+    u32 instruction_count{};
+    u32 store_count{};
+    u32 barrier_count{};
 
     auto invalidate_uniform_values = [&] {
         std::fill(uniform_values.begin(), uniform_values.end(), UniformValue{});
@@ -215,6 +260,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info, HIRFunct
     };
 
     for (auto& inst : block->GetInstList()) {
+        instruction_count++;
         switch (inst.GetOp()) {
             case OpCode::LoadUniform: {
                 load_count++;
@@ -315,6 +361,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info, HIRFunct
                 break;
             }
             case OpCode::StoreUniform: {
+                store_count++;
                 auto uniform = inst.GetArg<Uniform>(0);
                 auto value = inst.GetArg<Value>(1);
                 auto uni_offset{uniform.GetOffset()};
@@ -387,6 +434,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info, HIRFunct
             case OpCode::Goto:
             case OpCode::NotGoto:
             case OpCode::BindLabel:
+                barrier_count++;
                 // Calls are conservatively opaque even though today's x86
                 // helpers do not receive the uniform buffer. MemoryCopy uses
                 // guest addresses today, but is kept opaque at this generic IR
@@ -404,6 +452,19 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info, HIRFunct
             default:
                 break;
         }
+    }
+
+    perf_forward.Stop();
+    if (Perf2Enabled()) {
+        auto& stats = GetPerfStats2();
+        stats.uniform_blocks.fetch_add(1, std::memory_order_relaxed);
+        stats.uniform_no_ops_blocks.fetch_add(load_count + store_count == 0,
+                                               std::memory_order_relaxed);
+        stats.uniform_insts.fetch_add(instruction_count, std::memory_order_relaxed);
+        stats.uniform_loads.fetch_add(load_count, std::memory_order_relaxed);
+        stats.uniform_stores.fetch_add(store_count, std::memory_order_relaxed);
+        stats.uniform_barriers.fetch_add(barrier_count, std::memory_order_relaxed);
+        stats.uniform_invalidations.fetch_add(invalidation_count, std::memory_order_relaxed);
     }
 
     if (kEnv_dump_ir) {
@@ -426,9 +487,21 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info, HIRFunct
         const char* e = PerfGetenv("SVM_UNIFORM_DSE");
         return e && std::strcmp(e, "0") == 0;
     }();
-    if (!dse_off) {
+    // With every uniform byte live-out, a store can be dead only if at least
+    // one later store overwrites it. Fewer than two stores therefore makes the
+    // reverse dataflow scan provably a no-op.
+    if (!dse_off && (!fast_path || store_count >= 2)) {
         EliminateDeadStores(block, info, hir_function);
     }
+}
+
+void UniformEliminationPass::Run(Block* block, const UniformInfo& info,
+                                 HIRFunction* hir_function) {
+    static const bool fast_path = [] {
+        const char* env = PerfGetenv("SVM_UNIFORM_FAST");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
+    Run(block, info, fast_path, hir_function);
 }
 
 void UniformEliminationPass::Run(HIRBuilder* hir_builder, const UniformInfo& info, bool mem_to_regs) {

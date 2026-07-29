@@ -70,6 +70,10 @@ struct PerfStats2 {
 
     PerfCounter2 pass_total;
     PerfCounter2 pass_uniform;
+    // UniformElimination split and corpus-shape probes. They are observed only
+    // with SVM_PROF2, so the production/default path pays no clocks or atomics.
+    PerfCounter2 uniform_forward;
+    PerfCounter2 uniform_dse;
     PerfCounter2 pass_flags;
     PerfCounter2 pass_const;
     PerfCounter2 pass_dce;
@@ -118,7 +122,19 @@ struct PerfStats2 {
     std::atomic<unsigned long long> coarse_scope_calls{0};
     std::atomic<unsigned long long> translate_probe_calls{0};
 
-    static constexpr std::array<const char*, 23> kGetenvNames{{
+    std::atomic<unsigned long long> uniform_blocks{0};
+    std::atomic<unsigned long long> uniform_no_ops_blocks{0};
+    std::atomic<unsigned long long> uniform_insts{0};
+    std::atomic<unsigned long long> uniform_loads{0};
+    std::atomic<unsigned long long> uniform_stores{0};
+    std::atomic<unsigned long long> uniform_barriers{0};
+    std::atomic<unsigned long long> uniform_invalidations{0};
+    std::atomic<unsigned long long> uniform_probe_insts{0};
+    std::atomic<unsigned long long> uniform_probe_hits{0};
+    std::atomic<unsigned long long> uniform_dse_blocks{0};
+    std::atomic<unsigned long long> uniform_dse_victims{0};
+
+    static constexpr std::array<const char*, 24> kGetenvNames{{
             "SVM_FUNC_LAZY",
             "SVM_DUMP_IR",
             "SVM_X87_TOPVIRT",
@@ -129,6 +145,7 @@ struct PerfStats2 {
             "SVM_UNIFORM_DSE",
             "SVM_FLAG_CARRY_ELIM",
             "SVM_RA_1BLK",
+            "SVM_UNIFORM_FAST",
             "SVM_FLAG_NARROW",
             "SVM_AVX",
             "SVM_BMI",
@@ -225,6 +242,8 @@ inline void PerfDumpAtExit() {
     PERF2_DUMP(ir_finalize);
     PERF2_DUMP(pass_total);
     PERF2_DUMP(pass_uniform);
+    PERF2_DUMP(uniform_forward);
+    PERF2_DUMP(uniform_dse);
     PERF2_DUMP(pass_flags);
     PERF2_DUMP(pass_const);
     PERF2_DUMP(pass_dce);
@@ -267,6 +286,16 @@ inline void PerfDumpAtExit() {
                  "translate_probe_calls=%llu\n",
                  g(d.single_units), g(d.multi_units), g(d.single_blocks), g(d.multi_blocks),
                  g(d.coarse_scope_calls), g(d.translate_probe_calls));
+    std::fprintf(stderr,
+                 "[svm-uniform] blocks=%llu no_ops=%llu insts=%llu loads=%llu "
+                 "stores=%llu barriers=%llu invalidations=%llu probe_insts=%llu "
+                 "probe_hits=%llu dse_blocks=%llu "
+                 "dse_victims=%llu\n",
+                 g(d.uniform_blocks), g(d.uniform_no_ops_blocks), g(d.uniform_insts),
+                 g(d.uniform_loads), g(d.uniform_stores), g(d.uniform_barriers),
+                 g(d.uniform_invalidations), g(d.uniform_probe_insts),
+                 g(d.uniform_probe_hits), g(d.uniform_dse_blocks),
+                 g(d.uniform_dse_victims));
     for (size_t i = 0; i < d.kGetenvNames.size(); ++i) {
         const auto calls = g(d.getenv_calls[i]);
         if (calls) {
