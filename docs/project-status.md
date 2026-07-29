@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝与 IR 构建消重（输出恒等）已落地。master = `e15cc04`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）与 decode 前端细分探针（SVM_DECODE_PROF）已落地。master = `7a3c5d6`。
 
 ---
 
@@ -51,6 +51,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | 单块专用 RegAlloc 快路径（`88864e9`） | func_tests：collect_live −22.8%、regalloc −18.4%、translate −2.4~3.3%、墙钟 −2.75%；avx_real：regalloc −37.9%、translate −8.35%（11 轮交错冷 cache 中位数） | **byte-identical 硬约束**：同算法特化（dense 数组代有序 map、min-heap 代链表），`SVM_RA_1BLK=0/1` 含 host_bytes 逐行 diff 0 字节，默认开指纹零 diff；多块单元自动回退通用路径 |
 | UniformElim 早退 + DSE 剪枝（`de89d99`） | func_tests：pass_uniform −24.5%、pass_total −14.7%、translate −3.2~4.2%、墙钟 −2.16%；DSE 扫描块数 −76.1%（3577→855）删除数不变 | 语料 68.94% 的块无 uniform 操作：无 uniform 块早退 + 少于两个 store 跳过 DSE，判定规则零改动；三路指纹（默认/`=0`/`=1`）均零 diff |
 | IR 构建路径消重（`e15cc04`） | func_tests：ir_append −33.0%、translate −1~2.6%、墙钟 −2.0%；arena 高水位两路完全相同 | fresh 参数槽免 DestroyArg、构造后免重复 Validate、use 由模板实参直登记（免 metadata 二次扫描）；输出逐比特恒等，两路指纹零 diff |
+| decode 前端分解（`7a3c5d6` 探针实测，15 语料 315 轮三状态轮换） | decode 桶内：**lowering 63.2%（188.9 ns/指令）**、distorm 14.7%（43.8 ns/次）、预分发 3.1%、外围簿记 3.5%、取指 1.9%、裸解码 0.9%、closure 12.8%；distorm top-20 opcode 覆盖 89.56%（MOV 31.02%）；VEX 裸解析 3.35 ns/次、AVX handler 143.5 ns/条 | SVM_DECODE_PROF 探针（SVM_PROF2 之上加开关），叶 scope 15.226ns/端到端 15.787ns 每边界扣除；探针开/关指纹均零 diff；结论：lowering 是唯一主体（≈翻译 7.2%），"换解码器"上限仅 ~1.7% 翻译，降为二级项目 |
 
 ### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
 
@@ -59,6 +60,9 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 - **分派序列折叠（Mov+Ldr→单 Ldr）**：差分实测四条指令合计 0.305–0.314 ns/次，kernel_call 6400 万次仅 ~20 ms（10%）；折叠上界 ~1.2%。
 - **ComputeRPO/IdByRPO 单独立项裁剪**：W1 分解实测合计仅占翻译 1.14%，全消也不值得；getenv 残余仅 0.068%，同样排除（2026-07-29）。
 - **RecordUnit 批量化（W5，2026-07-29）**：前提证伪——不存在逐 unit 写盘（落盘本来就是退出时 2 次 fwrite、0 seek、0 fsync）。deferred-scan 候选（reloc scan 挪到退出 `Save()`）publish_disk −24.7% 但真实净省仅 0–101µs（0–0.6% translate），墙钟 func_tests 反而 +2.9%，且 pending_units 快照持有到 Save 改变长进程内存行为。最大头（publish_disk 的 53.1% = 1133 次 `/dev/null` guest 可读性探测 syscall）无法安全消除：`MemoryInterface::Read` 是裸 memcpy 返回无条件 true，`GetPointer` 只证明查询时刻可读（munmap 竞态）；真正的修法是 mmap/munmap 同步的 guarded-copy API，未立项。另：cache 跨构建加载天然不可能（build_id 每次 relink 都变，relocation 存 `host_image.base + addend`），build gate 是必要安全边界。
+- **GetPointer 取指校验按页摊销（W7，2026-07-30）**：2 次 GetPointer 合计仅 5.47–5.82 ns/指令、占 decode 1.9–2.0%；按 16 KiB 页摊销理论上减少 ~90% 调用，但折合翻译总耗时上限仅 ~0.2%，还要维护页跨越/映射变化/SMC 安全证明，不单独立项。
+- **优化 `DecodeVexInsn` 裸解析器（W7，2026-07-30）**：仅 3.35 ns/次；AVX 路径的成本在 handler/lowering（143.5 ns/条），不在字节解析，无主体。
+- **distorm 整体替换（W7，2026-07-30 降级）**：实测 distorm 仅占 decode 14.7%，替换上限 ≈ 翻译总耗时 1.7%，工程风险与正确性面高于 top-N 通道，降为二级项目，不排在 lowering 之前。
 
 ---
 
@@ -80,6 +84,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_UNIFORM_FAST | 0/1 | 1 | UniformElim 早退 + DSE 剪枝；=0 走完整旧扫描（两路输出恒等） |
 | SVM_IR_FAST | 0/1 | 1 | IR 构建路径消重；=0 走旧构造/校验/use 扫描（两路输出恒等） |
 | SVM_PROF2 | 0/1 | 0 | 翻译阶段七项分解探针（decode/IR/pass/固定开销/vixl/发布/其他 + 逐 pass + getenv 计数）；发射中性，默认关闭 |
+| SVM_DECODE_PROF | 0/1 | 0 | decode 前端细分探针（fetch/predispatch/raw/distorm/lowering/bookkeeping + opcode 直方图）；需同时 SVM_PROF2=1；发射中性，默认关闭 |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_FORCE_FIXED_STACK | 0/1 | — | 诊断：强制 guest 栈 fixed/fallback(布局 flake repro) |
 | SVM_GUEST_BITS | 0 或 20..47 | 32 | guest 地址窗口位宽。**0 = 无界（未隔离）**，需 `-DSWIFT_ALLOW_UNBOUNDED_GUEST=ON` 才编译进去，普通构建拒绝 |
