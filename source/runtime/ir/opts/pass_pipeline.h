@@ -74,8 +74,6 @@ private:
     static PerfCounter2& CounterFor(Optimizations opt) {
         auto& s = GetPerfStats2();
         switch (opt) {
-            case Optimizations::LocalElimination:
-                return s.pass_local;
             case Optimizations::UniformElimination:
                 return s.pass_uniform;
             case Optimizations::FlagElimination:

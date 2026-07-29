@@ -69,7 +69,6 @@ struct PerfStats2 {
     PerfCounter2 ir_finalize;        // EndFunction / decode-side fixups
 
     PerfCounter2 pass_total;
-    PerfCounter2 pass_local;
     PerfCounter2 pass_uniform;
     PerfCounter2 pass_flags;
     PerfCounter2 pass_const;
@@ -219,7 +218,6 @@ inline void PerfDumpAtExit() {
     PERF2_DUMP(ir_setup);
     PERF2_DUMP(ir_finalize);
     PERF2_DUMP(pass_total);
-    PERF2_DUMP(pass_local);
     PERF2_DUMP(pass_uniform);
     PERF2_DUMP(pass_flags);
     PERF2_DUMP(pass_const);
