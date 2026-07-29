@@ -64,8 +64,6 @@ add_library(swift_runtime STATIC
         ir/opts/dataflow_analysis_pass.h
         ir/opts/cfg_analysis_pass.cpp
         ir/opts/cfg_analysis_pass.h
-        ir/opts/local_elimination_pass.cpp
-        ir/opts/local_elimination_pass.h
         ir/opts/const_folding_pass.cpp
         ir/opts/const_folding_pass.h
         ir/opts/register_alloc_pass.cpp

@@ -6,7 +6,6 @@
 #include "runtime/ir/opts/const_folding_pass.h"
 #include "runtime/ir/opts/deadcode_elimination_pass.h"
 #include "runtime/ir/opts/flags_elimination_pass.h"
-#include "runtime/ir/opts/local_elimination_pass.h"
 #include "runtime/ir/opts/uniform_elimination_pass.h"
 
 namespace swift::runtime::ir {
@@ -14,11 +13,7 @@ namespace swift::runtime::ir {
 PassPipeline PassPipeline::BuildDefault(const UniformInfo* uniform_info) {
     PassPipeline pipeline;
 
-    // Order matters: local/uniform elimination first, then flag/const, then dead code last
-    pipeline.AddBlockPass(Optimizations::LocalElimination, [](Block* block) {
-        LocalEliminationPass::Run(block);
-    });
-
+    // Order matters: uniform elimination first, then flag/const, then dead code last
     if (uniform_info) {
         pipeline.AddBlockPass(Optimizations::UniformElimination,
             [uniform_info](Block* block) {

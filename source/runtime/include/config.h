@@ -38,7 +38,8 @@ enum class Optimizations : std::uint32_t {
     // Bit 8 stays reserved: global_opts is hashed into persisted JIT cache and
     // AOT validity keys, so reusing it would change the meaning of old keys.
     UniformElimination = 1 << 9,
-    LocalElimination = 1 << 10,
+    // Bit 10 stays reserved: global_opts is hashed into persisted JIT cache and
+    // AOT validity keys, so reusing it would change the meaning of old keys.
     DeadCodeRemove = 1 << 11,
     All = UINT32_MAX
 };
@@ -95,6 +96,9 @@ struct Config {
     LocationDescriptor loc_end;
     bool enable_jit;
     bool enable_asm_interp;
+    // Independent of the removed local-elimination optimization pass: ARM64
+    // trampolines still use this to reserve the local register and load
+    // local_buffer.
     bool has_local_operation;
     ISA backend_isa;
     std::uint32_t uniform_buffer_size;

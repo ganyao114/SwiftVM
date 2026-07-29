@@ -159,14 +159,11 @@ IR 是整个系统的核心，所有前端产出和后端消费都围绕它展�
 |---------|------|
 | `ReturnStackBuffer` | 返回栈缓冲优化 |
 | `FunctionBaseCompile` | 函数级编译 |
-| `MemoryToRegister` | 内存到寄存器提升 |
 | `FlagElimination` | 标志位消除 |
 | `ConstantFolding` | 常量折叠 |
 | `StaticCode` | 静态代码优化 |
 | `BlockLink` / `DirectBlockLink` | 基本块链接 |
-| `ConstMemoryFolding` | 常量内存折叠 |
 | `UniformElimination` | Uniform 消除 |
-| `LocalElimination` | 局部变量消除 |
 | `DeadCodeRemove` | 死代码消除 |
 
 ### 4. 后端 (`source/runtime/backend/`)

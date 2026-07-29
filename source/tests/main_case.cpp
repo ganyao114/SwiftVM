@@ -16,7 +16,6 @@
 #include "runtime/ir/ir_meta.h"
 #include "runtime/ir/opts/cfg_analysis_pass.h"
 #include "runtime/ir/opts/const_folding_pass.h"
-#include "runtime/ir/opts/local_elimination_pass.h"
 #include "runtime/ir/opts/flags_elimination_pass.h"
 #include "runtime/ir/opts/reid_instr_pass.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
@@ -83,7 +82,6 @@ TEST_CASE("Test runtime ir") {
 
     hir_builder.Return();
     CFGAnalysisPass::Run(&hir_builder);
-    LocalEliminationPass::Run(&hir_builder);
     ReIdInstrPass::Run(&hir_builder);
     RegAlloc reg_alloc{function->MaxInstrCount(), GPRSMask{0}, FPRSMask{0}};
     RegisterAllocPass::Run(&hir_builder, &reg_alloc);
@@ -136,7 +134,6 @@ TEST_CASE("Test runtime ir cfg") {
 
     hir_builder.Return();
     CFGAnalysisPass::Run(&hir_builder);
-    LocalEliminationPass::Run(&hir_builder);
     ReIdInstrPass::Run(&hir_builder);
 #define ARM64_X_REGS_MASK 0b1111111111111111111
     swift::runtime::backend::GPRSMask gprs{ARM64_X_REGS_MASK};
@@ -175,7 +172,6 @@ TEST_CASE("Test runtime ir loop") {
     hir_builder.Return();
 
     CFGAnalysisPass::Run(&hir_builder);
-    LocalEliminationPass::Run(&hir_builder);
     ReIdInstrPass::Run(&hir_builder);
 }
 
