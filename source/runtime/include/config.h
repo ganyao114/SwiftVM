@@ -27,14 +27,16 @@ enum class Optimizations : std::uint32_t {
     None = 0,
     ReturnStackBuffer = 1 << 0,
     FunctionBaseCompile = 1 << 1,
-    MemoryToRegister = 1 << 2,
+    // Bit 2 stays reserved: global_opts is hashed into persisted JIT cache and
+    // AOT validity keys, so reusing it would change the meaning of old keys.
     FlagElimination = 1 << 3,
     ConstantFolding = 1 << 4,
     StaticCode = 1 << 5,
     BlockLink = 1 << 6,
     DirectBlockLink = 1 << 7,
     StaticModuleOps = StaticCode | DirectBlockLink,
-    ConstMemoryFolding = 1 << 8,
+    // Bit 8 stays reserved: global_opts is hashed into persisted JIT cache and
+    // AOT validity keys, so reusing it would change the meaning of old keys.
     UniformElimination = 1 << 9,
     LocalElimination = 1 << 10,
     DeadCodeRemove = 1 << 11,
