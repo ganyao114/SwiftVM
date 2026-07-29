@@ -257,7 +257,30 @@ static constexpr size_t kFetchWindow = 0x10;
 
 void X64Decoder::Decode() {
     pc = start;
+    swift::runtime::PerfDecodeRunEmptyMicrobench();
+    const bool decode_prof = swift::runtime::PerfDecodeDetailEnabled();
+    u64 prior_fetch_page0 = UINT64_MAX;
+    u64 prior_fetch_page1 = UINT64_MAX;
     while (!end_decode) {
+        swift::runtime::PerfDecodeScope2 perf_instruction{
+                swift::runtime::GetPerfStats2().decode_instruction_total};
+        if (decode_prof) {
+            auto& stats = swift::runtime::GetPerfStats2();
+            stats.decode_attempts.fetch_add(1, std::memory_order_relaxed);
+            constexpr u64 kMappingPageShift = 14;
+            const u64 page0 = pc >> kMappingPageShift;
+            const u64 page1 = (pc + kFetchWindow - 1) >> kMappingPageShift;
+            unsigned new_pages = 0;
+            if (page0 != prior_fetch_page0 && page0 != prior_fetch_page1) {
+                ++new_pages;
+            }
+            if (page1 != page0 && page1 != prior_fetch_page0 && page1 != prior_fetch_page1) {
+                ++new_pages;
+            }
+            stats.decode_page_validation_calls.fetch_add(new_pages, std::memory_order_relaxed);
+            prior_fetch_page0 = page0;
+            prior_fetch_page1 = page1;
+        }
         // Instruction fetch is the one guest access made from *host* code, so
         // it is the one that must never fault: runtime.cpp's HandleFault only
         // recovers faults whose host pc lies inside a JIT buffer, so a fault
@@ -274,17 +297,36 @@ void X64Decoder::Decode() {
         // instruction straddling into an unmapped page is a guest #PF. The
         // padding cannot fake a match in the raw-byte special cases below --
         // every one of them requires a nonzero byte at its last position.
+        swift::runtime::PerfDecodeScope2 perf_fetch{
+                swift::runtime::GetPerfStats2().decode_fetch};
         u8 fetch_buf[kFetchWindow];
+        if (decode_prof) {
+            swift::runtime::GetPerfStats2().decode_fetch_getpointer_calls.fetch_add(
+                    1, std::memory_order_relaxed);
+        }
         auto code_ptr = reinterpret_cast<u8*>(memory->GetPointer(reinterpret_cast<void*>(pc)));
         if (!code_ptr) {
             Interrupt(InterruptReason::PAGE_FATAL);
             break;
         }
         size_t fetch_avail = kFetchWindow;
+        if (decode_prof) {
+            swift::runtime::GetPerfStats2().decode_fetch_getpointer_calls.fetch_add(
+                    1, std::memory_order_relaxed);
+        }
         if (!memory->GetPointer(reinterpret_cast<void*>(pc + kFetchWindow - 1))) {
+            if (decode_prof) {
+                swift::runtime::GetPerfStats2().decode_fetch_short_windows.fetch_add(
+                        1, std::memory_order_relaxed);
+            }
             std::memset(fetch_buf, 0, sizeof(fetch_buf));
             fetch_avail = 0;
             for (size_t i = 0; i < kFetchWindow; ++i) {
+                if (decode_prof) {
+                    auto& stats = swift::runtime::GetPerfStats2();
+                    stats.decode_fetch_getpointer_calls.fetch_add(1, std::memory_order_relaxed);
+                    stats.decode_fetch_bounce_calls.fetch_add(1, std::memory_order_relaxed);
+                }
                 const auto* byte = reinterpret_cast<const u8*>(
                         memory->GetPointer(reinterpret_cast<void*>(pc + i)));
                 if (!byte) break;
@@ -293,14 +335,26 @@ void X64Decoder::Decode() {
             }
             code_ptr = fetch_buf;
         }
+        perf_fetch.Stop();
+        swift::runtime::PerfDecodeScope2 perf_predispatch{
+                swift::runtime::GetPerfStats2().decode_predispatch_inclusive};
         // CET endbr64 / endbr32 (F3 0F 1E FA/FB): distorm doesn't know them,
         // treat as NOP (real binaries start with endbr64).
         if (code_ptr[0] == 0xF3 && code_ptr[1] == 0x0F && code_ptr[2] == 0x1E &&
             (code_ptr[3] == 0xFA || code_ptr[3] == 0xFB)) {
-            __ Nop();
-            pc += 4;
-            assembler->AdvancePC(ir::Imm{4});
-            end_decode = assembler->EndCommit();
+            {
+                swift::runtime::PerfDecodeScope2 perf_raw{
+                        swift::runtime::GetPerfStats2().decode_raw,
+                        swift::runtime::PerfDecodePath2::Raw};
+                __ Nop();
+                pc += 4;
+                assembler->AdvancePC(ir::Imm{4});
+                end_decode = assembler->EndCommit();
+            }
+            if (decode_prof) {
+                swift::runtime::GetPerfStats2().decode_raw_accepted.fetch_add(
+                        1, std::memory_order_relaxed);
+            }
             continue;
         }
         // CET shadow-stack ops distorm doesn't know, both only reachable on
@@ -310,31 +364,52 @@ void X64Decoder::Decode() {
         if (code_ptr[0] == 0xF3 && (code_ptr[1] & 0xF0) == 0x40 && code_ptr[2] == 0x0F &&
             ((code_ptr[3] == 0x1E && (code_ptr[4] & 0xF8) == 0xC8) ||
              (code_ptr[3] == 0xAE && (code_ptr[4] & 0xF8) == 0xE8))) {
-            if (code_ptr[3] == 0x1E) {
-                // rdssp: dst = 0
-                u32 idx = (code_ptr[4] & 7) | ((code_ptr[1] & 1) << 3);
-                auto reg = static_cast<_RegisterType>((code_ptr[1] & 8) ? (R_RAX + idx)
-                                                                        : (R_EAX + idx));
-                R(reg, __ LoadImm(ir::Imm(u64(0))));
+            {
+                swift::runtime::PerfDecodeScope2 perf_raw{
+                        swift::runtime::GetPerfStats2().decode_raw,
+                        swift::runtime::PerfDecodePath2::Raw};
+                if (code_ptr[3] == 0x1E) {
+                    // rdssp: dst = 0
+                    u32 idx = (code_ptr[4] & 7) | ((code_ptr[1] & 1) << 3);
+                    auto reg = static_cast<_RegisterType>((code_ptr[1] & 8) ? (R_RAX + idx)
+                                                                            : (R_EAX + idx));
+                    R(reg, __ LoadImm(ir::Imm(u64(0))));
+                }
+                __ Nop();
+                pc += 5;
+                assembler->AdvancePC(ir::Imm{5});
+                end_decode = assembler->EndCommit();
             }
-            __ Nop();
-            pc += 5;
-            assembler->AdvancePC(ir::Imm{5});
-            end_decode = assembler->EndCommit();
+            if (decode_prof) {
+                swift::runtime::GetPerfStats2().decode_raw_accepted.fetch_add(
+                        1, std::memory_order_relaxed);
+            }
             continue;
         }
         // ADX and PKRU are newer than this distorm snapshot. Decode their raw
         // bytes before distorm so an unknown opcode cannot consume one byte
         // and desynchronise the stream. FSGSBASE is intentionally absent here:
         // the snapshot has complete mnemonic and operand decode entries for it.
-        const u32 userland_size = DecodeUserlandRaw(code_ptr, fetch_avail);
+        u32 userland_size{};
+        {
+            swift::runtime::PerfDecodeScope2 perf_raw{
+                    swift::runtime::GetPerfStats2().decode_raw,
+                    swift::runtime::PerfDecodePath2::Raw};
+            userland_size = DecodeUserlandRaw(code_ptr, fetch_avail);
+            if (userland_size != 0 && userland_size != UINT32_MAX) {
+                assembler->AdvancePC(ir::Imm{userland_size});
+                end_decode = assembler->EndCommit();
+            }
+        }
         if (userland_size == UINT32_MAX) {
             Interrupt(InterruptReason::PAGE_FATAL);
             break;
         }
         if (userland_size != 0) {
-            assembler->AdvancePC(ir::Imm{userland_size});
-            end_decode = assembler->EndCommit();
+            if (decode_prof) {
+                swift::runtime::GetPerfStats2().decode_raw_accepted.fetch_add(
+                        1, std::memory_order_relaxed);
+            }
             continue;
         }
         // VEX (AVX/AVX2). This distorm snapshot cannot carry AVX: of 117 probed
@@ -352,7 +427,15 @@ void X64Decoder::Decode() {
         const bool avx_on = AvxEnabled();
         const bool bmi_on = BmiEnabled();
         if ((avx_on || bmi_on) && HasVexPrefix(code_ptr, kMaxInsnBytes)) {
-            const auto vex = DecodeVexInsn(code_ptr, kMaxInsnBytes);
+            swift::runtime::PerfDecodeScope2 perf_raw{
+                    swift::runtime::GetPerfStats2().decode_raw,
+                    swift::runtime::PerfDecodePath2::Vex};
+            VexInsn vex;
+            {
+                swift::runtime::PerfDecodeScope2 perf_vex_core{
+                        swift::runtime::GetPerfStats2().decode_vex_core};
+                vex = DecodeVexInsn(code_ptr, kMaxInsnBytes);
+            }
             // vex.length beyond the fetch window means the encoding was
             // completed out of the zero padding: it runs into an unmapped
             // page, so the guest faults rather than executing it.
@@ -377,6 +460,14 @@ void X64Decoder::Decode() {
                       DecodeAvxSse4(vex) || DecodeSse42StrVex(vex)))) {
                     assembler->AdvancePC(ir::Imm{vex.length});
                     end_decode = assembler->EndCommit();
+                    const auto vex_ns = perf_raw.Stop();
+                    if (decode_prof) {
+                        auto& stats = swift::runtime::GetPerfStats2();
+                        stats.decode_raw_accepted.fetch_add(1, std::memory_order_relaxed);
+                        stats.decode_vex_accepted.fetch_add(1, std::memory_order_relaxed);
+                        stats.decode_vex.calls.fetch_add(1, std::memory_order_relaxed);
+                        stats.decode_vex.ns.fetch_add(vex_ns, std::memory_order_relaxed);
+                    }
                     continue;
                 }
                 pc = saved_pc;
@@ -386,10 +477,19 @@ void X64Decoder::Decode() {
         // instruction. Decode it here so the architectural free+pop operation
         // remains available and the stream advances by its real length.
         if (code_ptr[0] == 0xDF && (code_ptr[1] & 0xF8) == 0xC0) {
-            DecodeX87FreePop(static_cast<u8>(code_ptr[1] & 7));
-            pc += 2;
-            assembler->AdvancePC(ir::Imm{2});
-            end_decode = assembler->EndCommit();
+            {
+                swift::runtime::PerfDecodeScope2 perf_raw{
+                        swift::runtime::GetPerfStats2().decode_raw,
+                        swift::runtime::PerfDecodePath2::Raw};
+                DecodeX87FreePop(static_cast<u8>(code_ptr[1] & 7));
+                pc += 2;
+                assembler->AdvancePC(ir::Imm{2});
+                end_decode = assembler->EndCommit();
+            }
+            if (decode_prof) {
+                swift::runtime::GetPerfStats2().decode_raw_accepted.fetch_add(
+                        1, std::memory_order_relaxed);
+            }
             continue;
         }
         // XSAVEC/XSAVEC64 (legacy prefixes + [REX] 0F C7 /4, memory only).
@@ -419,18 +519,31 @@ void X64Decoder::Decode() {
                 u8 surrogate[kFetchWindow];
                 std::memcpy(surrogate, code_ptr, sizeof(surrogate));
                 surrogate[opcode_offset + 1] = 0xAE;
+                swift::runtime::PerfDecodeScope2 perf_distorm{
+                        swift::runtime::GetPerfStats2().decode_distorm};
                 auto insn = DisDecode(surrogate, sizeof(surrogate), is_64bit);
+                const auto distorm_ns = perf_distorm.Stop();
+                swift::runtime::PerfDecodeRecordOpcode(insn.opcode, distorm_ns);
                 if ((insn.opcode == I_XSAVE || insn.opcode == I_XSAVE64) &&
                     insn.size != 0) {
                     if (insn.size > fetch_avail) {
                         Interrupt(InterruptReason::PAGE_FATAL);
                         break;
                     }
-                    insn_pc = pc;
-                    pc += insn.size;
-                    EmitXsavec(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc);
-                    assembler->AdvancePC(ir::Imm{insn.size});
-                    end_decode = assembler->EndCommit();
+                    {
+                        swift::runtime::PerfDecodeScope2 perf_raw{
+                                swift::runtime::GetPerfStats2().decode_raw,
+                                swift::runtime::PerfDecodePath2::Raw};
+                        insn_pc = pc;
+                        pc += insn.size;
+                        EmitXsavec(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc);
+                        assembler->AdvancePC(ir::Imm{insn.size});
+                        end_decode = assembler->EndCommit();
+                    }
+                    if (decode_prof) {
+                        swift::runtime::GetPerfStats2().decode_raw_accepted.fetch_add(
+                                1, std::memory_order_relaxed);
+                    }
                     continue;
                 }
             }
@@ -452,18 +565,34 @@ void X64Decoder::Decode() {
             }
             if (code_ptr[seed_offset] == 0x0F && code_ptr[seed_offset + 1] == 0xC7 &&
                 (code_ptr[seed_offset + 2] & 0xF8) == 0xF8) {
-                const u32 index = (code_ptr[seed_offset + 2] & 7) | ((rex & 1) << 3);
-                const u32 width = (rex & 8) ? 64 : (operand16 ? 16 : 32);
-                const auto first = width == 64 ? R_RAX : (width == 32 ? R_EAX : R_AX);
-                DecodeRandomRegister(static_cast<_RegisterType>(first + index), width);
-                const u32 size = seed_offset + 3;
-                pc += size;
-                assembler->AdvancePC(ir::Imm{size});
-                end_decode = assembler->EndCommit();
+                {
+                    swift::runtime::PerfDecodeScope2 perf_raw{
+                            swift::runtime::GetPerfStats2().decode_raw,
+                            swift::runtime::PerfDecodePath2::Raw};
+                    const u32 index = (code_ptr[seed_offset + 2] & 7) | ((rex & 1) << 3);
+                    const u32 width = (rex & 8) ? 64 : (operand16 ? 16 : 32);
+                    const auto first = width == 64 ? R_RAX : (width == 32 ? R_EAX : R_AX);
+                    DecodeRandomRegister(static_cast<_RegisterType>(first + index), width);
+                    const u32 size = seed_offset + 3;
+                    pc += size;
+                    assembler->AdvancePC(ir::Imm{size});
+                    end_decode = assembler->EndCommit();
+                }
+                if (decode_prof) {
+                    swift::runtime::GetPerfStats2().decode_raw_accepted.fetch_add(
+                            1, std::memory_order_relaxed);
+                }
                 continue;
             }
         }
+        perf_predispatch.Stop();
+        swift::runtime::PerfDecodeScope2 perf_distorm{
+                swift::runtime::GetPerfStats2().decode_distorm};
         _DInst insn = DisDecode(code_ptr, 0x10, is_64bit);
+        const auto distorm_ns = perf_distorm.Stop();
+        swift::runtime::PerfDecodeRecordOpcode(insn.opcode, distorm_ns);
+        swift::runtime::PerfDecodeScope2 perf_bookkeeping_pre{
+                swift::runtime::GetPerfStats2().decode_bookkeeping};
         FixupMovbeOperandSize(insn, code_ptr);
         FixupFsgsbaseOperand(insn, code_ptr);
         if (insn.opcode == UINT16_MAX || insn.size == 0) {
@@ -500,12 +629,23 @@ void X64Decoder::Decode() {
         // VEX handlers re-read the prefix bytes (see DecodeVex): distorm does
         // not expose VEX.L/W/vvvv and mis-sizes the AVX2 integer forms.
         insn_bytes = code_ptr;
-        if (!DecodeSwitch(insn)) {
+        perf_bookkeeping_pre.Stop();
+        swift::runtime::PerfDecodeScope2 perf_lowering{
+                swift::runtime::GetPerfStats2().decode_lowering,
+                swift::runtime::PerfDecodePath2::Lowering};
+        const bool lowered = DecodeSwitch(insn);
+        perf_lowering.Stop();
+        if (!lowered) {
             Interrupt(InterruptReason::FALLBACK);
             break;
         }
-        assembler->AdvancePC(ir::Imm{insn.size});
-        end_decode = assembler->EndCommit();
+        {
+            swift::runtime::PerfDecodeScope2 perf_bookkeeping_post{
+                    swift::runtime::GetPerfStats2().decode_bookkeeping,
+                    swift::runtime::PerfDecodePath2::Bookkeeping};
+            assembler->AdvancePC(ir::Imm{insn.size});
+            end_decode = assembler->EndCommit();
+        }
     }
 }
 

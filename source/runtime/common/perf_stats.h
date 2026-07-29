@@ -119,6 +119,36 @@ struct PerfStats2 {
     PerfCounter2 cache_load;
     PerfCounter2 cache_revive;
 
+    // W7 decode-front-end attribution. SVM_DECODE_PROF=1 enables these in
+    // addition to SVM_PROF2. They are translation-only: no generated-code
+    // execution path consults or updates them.
+    PerfCounter2 decode_fetch;
+    PerfCounter2 decode_instruction_total;
+    PerfCounter2 decode_predispatch_inclusive;
+    PerfCounter2 decode_raw;
+    PerfCounter2 decode_distorm;
+    PerfCounter2 decode_lowering;
+    PerfCounter2 decode_bookkeeping;
+    PerfCounter2 decode_raw_ir_append;
+    PerfCounter2 decode_lowering_ir_append;
+    PerfCounter2 decode_bookkeeping_ir_append;
+    PerfCounter2 decode_vex;
+    PerfCounter2 decode_vex_core;
+    PerfCounter2 decode_vex_ir_append;
+    PerfCounter2 decode_empty;
+    std::atomic<unsigned long long> decode_empty_wall_ns{0};
+    std::atomic<unsigned long long> decode_attempts{0};
+    std::atomic<unsigned long long> decode_fetch_getpointer_calls{0};
+    std::atomic<unsigned long long> decode_fetch_bounce_calls{0};
+    std::atomic<unsigned long long> decode_fetch_short_windows{0};
+    std::atomic<unsigned long long> decode_page_validation_calls{0};
+    std::atomic<unsigned long long> decode_raw_accepted{0};
+    std::atomic<unsigned long long> decode_vex_accepted{0};
+    std::atomic<unsigned long long> decode_distorm_instructions{0};
+    static constexpr size_t kDecodeOpcodeSlots = 0x3000;
+    std::array<std::atomic<unsigned long long>, kDecodeOpcodeSlots> decode_opcode_ns{};
+    std::array<std::atomic<unsigned long long>, kDecodeOpcodeSlots> decode_opcode_calls{};
+
     PerfCounter2 translate_single;
     PerfCounter2 translate_multi;
     PerfCounter2 fixed_single;
@@ -208,6 +238,16 @@ inline bool Perf2Enabled() {
 inline thread_local bool perf2_translation_active{};
 inline thread_local unsigned perf2_unit_blocks{};
 
+enum class PerfDecodePath2 : unsigned char {
+    None,
+    Raw,
+    Vex,
+    Lowering,
+    Bookkeeping,
+};
+
+inline thread_local PerfDecodePath2 perf2_decode_path{};
+
 inline bool PerfEnabled() {
     static const bool enabled = [] {
         if (std::getenv("SVM_PROF") == nullptr && !Perf2Enabled()) {
@@ -291,6 +331,20 @@ inline void PerfDumpAtExit() {
     PERF2_DUMP(ir_free);
     PERF2_DUMP(cache_load);
     PERF2_DUMP(cache_revive);
+    PERF2_DUMP(decode_fetch);
+    PERF2_DUMP(decode_instruction_total);
+    PERF2_DUMP(decode_predispatch_inclusive);
+    PERF2_DUMP(decode_raw);
+    PERF2_DUMP(decode_distorm);
+    PERF2_DUMP(decode_lowering);
+    PERF2_DUMP(decode_bookkeeping);
+    PERF2_DUMP(decode_raw_ir_append);
+    PERF2_DUMP(decode_lowering_ir_append);
+    PERF2_DUMP(decode_bookkeeping_ir_append);
+    PERF2_DUMP(decode_vex);
+    PERF2_DUMP(decode_vex_core);
+    PERF2_DUMP(decode_vex_ir_append);
+    PERF2_DUMP(decode_empty);
     PERF2_DUMP(translate_single);
     PERF2_DUMP(translate_multi);
     PERF2_DUMP(fixed_single);
@@ -302,6 +356,23 @@ inline void PerfDumpAtExit() {
                  "translate_probe_calls=%llu\n",
                  g(d.single_units), g(d.multi_units), g(d.single_blocks), g(d.multi_blocks),
                  g(d.coarse_scope_calls), g(d.translate_probe_calls));
+    std::fprintf(stderr,
+                 "[svm-decode] attempts=%llu fetch_getpointer_calls=%llu "
+                 "fetch_bounce_calls=%llu fetch_short_windows=%llu "
+                 "page_validation_calls=%llu raw_accepted=%llu vex_accepted=%llu "
+                 "distorm_instructions=%llu empty_wall_ns=%llu\n",
+                 g(d.decode_attempts), g(d.decode_fetch_getpointer_calls),
+                 g(d.decode_fetch_bounce_calls), g(d.decode_fetch_short_windows),
+                 g(d.decode_page_validation_calls), g(d.decode_raw_accepted),
+                 g(d.decode_vex_accepted), g(d.decode_distorm_instructions),
+                 g(d.decode_empty_wall_ns));
+    for (size_t i = 0; i < d.kDecodeOpcodeSlots; ++i) {
+        const auto calls = g(d.decode_opcode_calls[i]);
+        if (calls) {
+            std::fprintf(stderr, "[svm-decode-op] opcode=%zu calls=%llu ns=%llu\n",
+                         i, calls, g(d.decode_opcode_ns[i]));
+        }
+    }
     std::fprintf(stderr,
                  "[svm-uniform] blocks=%llu no_ops=%llu insts=%llu loads=%llu "
                  "stores=%llu barriers=%llu invalidations=%llu probe_insts=%llu "
@@ -332,6 +403,36 @@ inline bool PerfIRDetailEnabled() {
     }();
     return enabled;
 }
+
+inline bool PerfDecodeDetailEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("SVM_DECODE_PROF");
+        return Perf2Enabled() && env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
+class PerfDecodePathScope2 {
+public:
+    explicit PerfDecodePathScope2(PerfDecodePath2 path)
+            : prior(perf2_decode_path), active(PerfDecodeDetailEnabled()) {
+        if (active) {
+            perf2_decode_path = path;
+        }
+    }
+    ~PerfDecodePathScope2() {
+        if (active) {
+            perf2_decode_path = prior;
+        }
+    }
+
+    PerfDecodePathScope2(const PerfDecodePathScope2&) = delete;
+    PerfDecodePathScope2& operator=(const PerfDecodePathScope2&) = delete;
+
+private:
+    PerfDecodePath2 prior{};
+    bool active{};
+};
 
 inline void PerfIRDetailRecord(PerfCounter2& counter,
                                std::chrono::steady_clock::time_point begin,
@@ -413,6 +514,31 @@ public:
                                 std::chrono::steady_clock::now() - start)
                                 .count();
         counter->ns.fetch_add(static_cast<unsigned long long>(ns), std::memory_order_relaxed);
+        if (PerfDecodeDetailEnabled() && counter == &GetPerfStats2().ir_append) {
+            auto& s = GetPerfStats2();
+            auto add = [ns](PerfCounter2& out) {
+                out.calls.fetch_add(1, std::memory_order_relaxed);
+                out.ns.fetch_add(static_cast<unsigned long long>(ns),
+                                 std::memory_order_relaxed);
+            };
+            switch (perf2_decode_path) {
+                case PerfDecodePath2::Raw:
+                    add(s.decode_raw_ir_append);
+                    break;
+                case PerfDecodePath2::Vex:
+                    add(s.decode_raw_ir_append);
+                    add(s.decode_vex_ir_append);
+                    break;
+                case PerfDecodePath2::Lowering:
+                    add(s.decode_lowering_ir_append);
+                    break;
+                case PerfDecodePath2::Bookkeeping:
+                    add(s.decode_bookkeeping_ir_append);
+                    break;
+                case PerfDecodePath2::None:
+                    break;
+            }
+        }
         counter = nullptr;
         return static_cast<unsigned long long>(ns);
     }
@@ -424,6 +550,74 @@ private:
     PerfCounter2* counter;
     std::chrono::steady_clock::time_point start{};
 };
+
+// Detail-only counterpart: unlike PerfScope2, SVM_PROF2 by itself does not
+// activate it. The optional path lets central IR-append scopes attribute their
+// nested time without changing the append sites.
+class PerfDecodeScope2 {
+public:
+    explicit PerfDecodeScope2(PerfCounter2& counter,
+                              PerfDecodePath2 path = PerfDecodePath2::None)
+            : counter(PerfDecodeDetailEnabled() ? &counter : nullptr),
+              prior(perf2_decode_path) {
+        if (this->counter) {
+            this->counter->calls.fetch_add(1, std::memory_order_relaxed);
+            perf2_decode_path = path;
+            start = std::chrono::steady_clock::now();
+        }
+    }
+    ~PerfDecodeScope2() { Stop(); }
+
+    unsigned long long Stop() {
+        if (!counter) return 0;
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - start)
+                                .count();
+        counter->ns.fetch_add(static_cast<unsigned long long>(ns), std::memory_order_relaxed);
+        counter = nullptr;
+        perf2_decode_path = prior;
+        return static_cast<unsigned long long>(ns);
+    }
+
+    PerfDecodeScope2(const PerfDecodeScope2&) = delete;
+    PerfDecodeScope2& operator=(const PerfDecodeScope2&) = delete;
+
+private:
+    PerfCounter2* counter{};
+    PerfDecodePath2 prior{};
+    std::chrono::steady_clock::time_point start{};
+};
+
+inline void PerfDecodeRecordOpcode(unsigned opcode, unsigned long long ns) {
+    if (!PerfDecodeDetailEnabled()) return;
+    auto& s = GetPerfStats2();
+    s.decode_distorm_instructions.fetch_add(1, std::memory_order_relaxed);
+    if (opcode >= s.kDecodeOpcodeSlots) return;
+    s.decode_opcode_calls[opcode].fetch_add(1, std::memory_order_relaxed);
+    s.decode_opcode_ns[opcode].fetch_add(ns, std::memory_order_relaxed);
+}
+
+inline void PerfDecodeRunEmptyMicrobench() {
+    if (!PerfDecodeDetailEnabled()) return;
+    static const bool ran = [] {
+        const char* env = std::getenv("SVM_DECODE_PROF_EMPTY");
+        if (!env || std::strcmp(env, "0") == 0) return true;
+        unsigned long long iterations = std::strtoull(env, nullptr, 10);
+        if (iterations < 1000) iterations = 1000000;
+        auto& s = GetPerfStats2();
+        const auto begin = std::chrono::steady_clock::now();
+        for (unsigned long long i = 0; i < iterations; ++i) {
+            PerfScope2 empty{s.decode_empty};
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now() - begin)
+                                     .count();
+        s.decode_empty_wall_ns.fetch_add(static_cast<unsigned long long>(elapsed),
+                                         std::memory_order_relaxed);
+        return true;
+    }();
+    (void)ran;
+}
 
 class PerfTranslationScope2 {
 public:
