@@ -64,6 +64,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 - **GetPointer 取指校验按页摊销（W7，2026-07-30）**：2 次 GetPointer 合计仅 5.47–5.82 ns/指令、占 decode 1.9–2.0%；按 16 KiB 页摊销理论上减少 ~90% 调用，但折合翻译总耗时上限仅 ~0.2%，还要维护页跨越/映射变化/SMC 安全证明，不单独立项。
 - **优化 `DecodeVexInsn` 裸解析器（W7，2026-07-30）**：仅 3.35 ns/次；AVX 路径的成本在 handler/lowering（143.5 ns/条），不在字节解析，无主体。
 - **distorm 整体替换（W7，2026-07-30 降级）**：实测 distorm 仅占 decode 14.7%，替换上限 ≈ 翻译总耗时 1.7%，工程风险与正确性面高于 top-N 通道，降为二级项目，不排在 lowering 之前。
+- **lowering regvalue/flags 决策开销压缩（W9，2026-07-30）**：四个候选（R/V offset 预计算、NarrowTo 本地尺寸表、flags 条件表简化、GetValueSizeByte 移位）单项收益全部低于噪声，总账两语料方向相反（func_tests translate −0.83% / real_busy +1.24%，15–21 轮交错中位数），全部撤回、工作树零改动。结论：lowering 簿记开销在当前粒度压无可压，decode 线簿记层面封顶；剩余仅 top-N distorm 快速通道（~0.8%）与分发压扁（~0.2%）两个小项。
 
 ---
 
