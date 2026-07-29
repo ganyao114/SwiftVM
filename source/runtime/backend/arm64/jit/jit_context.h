@@ -104,6 +104,9 @@ public:
 
     [[nodiscard]] vixl::aarch64::Label *GetLabel(LocationDescriptor loc);
 
+    [[nodiscard]] bool ExecProfileEnabled() const { return exec_profile_enabled; }
+    void RecordExecCounter(u32 state_offset, u32 amount = 1);
+
 private:
     void MaybeDumpHostBytes();
     void FlushLabels(VAddr target);
@@ -161,6 +164,8 @@ private:
     LocationDescriptor unit_start{};
     bool unit_start_set{};
     bool host_bytes_dumped{};
+    bool exec_profile_enabled{};
+    u32 exec_access_pad{};
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_gprs;
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_fprs;
     std::map<LocationDescriptor, Label> labels;

@@ -7,6 +7,9 @@
 #include "runtime/frontend/x86/cpu.h"
 #include "trampolines.h"
 #include "defines.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #define __ assembler.
 namespace swift::runtime::backend::arm64 {
@@ -28,6 +31,17 @@ void TrampolinesArm64::Build() {
                                                label_return_host.GetLocation());
     call_host = reinterpret_cast<CallHost>(code_buffer->exec_data +
                                            label_call_host.GetLocation());
+    const char* exec_map = std::getenv("SVM_EXEC_MAP");
+    if (exec_map && std::strcmp(exec_map, "0") != 0) {
+        std::fprintf(stderr,
+                     "[svm-exec-map] trampoline=%p..%p entry=%p return=%p call=%p size=%zu\n",
+                     static_cast<void*>(code_buffer->exec_data),
+                     static_cast<void*>(code_buffer->exec_data + buffer_size),
+                     reinterpret_cast<void*>(runtime_entry),
+                     reinterpret_cast<void*>(return_host),
+                     reinterpret_cast<void*>(call_host),
+                     buffer_size);
+    }
 
     // GPR registers can use
     // Mask convention (shared with the linear-scan pass and JitContext):
@@ -114,6 +128,17 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     // mode keep the historical x24 (loc) to leave generated code untouched.
     const bool has_pt = config.page_table || config.memory_base;
     const XRegister loc_reg = has_pt ? XRegister(ip6.GetCode()) : XRegister(loc.GetCode());
+    const bool exec_prof = [] {
+        const char* env = std::getenv("SVM_EXEC_PROF");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    auto record = [&](u32 offset) {
+        if (!exec_prof) return;
+        __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
+        __ Ldr(ip1, MemOperand(ip0, offset));
+        __ Add(ip1, ip1, 1);
+        __ Str(ip1, MemOperand(ip0, offset));
+    };
     __ Bind(&label_runtime_entry);
     BuildSaveHostCallee(assembler);
 
@@ -143,6 +168,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
 
     // align loc
     __ Bind(&code_dispatcher);
+    record(exec_offset_dispatch_entries);
     __ Ldr(loc_reg, MemOperand(state, state_offset_current_loc));
     __ Lsr(loc_index, loc_reg, 2);
 
@@ -163,7 +189,9 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Sub(l1_index, l1_index, loc_reg);
     __ Cbnz(l1_index, &query_step_1);
     __ Ldr(forward, MemOperand(l1_start, -0x8));
-    __ Cbnz(forward, &go_guest);
+    __ Cbz(forward, &query_step_2);
+    record(exec_offset_dispatch_l1_hit);
+    __ B(&go_guest);
 
     // query l2 cache
     __ Bind(&query_step_2);
@@ -179,6 +207,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Cbnz(l2_index, &query_step_3);
     __ Ldr(forward, MemOperand(l2_start, -0x8));
     __ Cbz(forward, &code_cache_miss);
+    record(exec_offset_dispatch_l2_hit);
 
     // write to l1 cache
     __ Ldr(l2_index, MemOperand(l1_start, -0x8));
@@ -211,6 +240,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Ret();
 
     __ Bind(&code_cache_miss);
+    record(exec_offset_dispatch_miss);
     __ Mov(w0, 0x8);
     __ B(&label_return_host);
 

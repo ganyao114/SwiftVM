@@ -31,6 +31,26 @@ struct RSBBuffer {
     std::array<RSBFrame, rsb_stack_size + 2> rsb_frames{};
 };
 
+// Default-off execution-side measurement counters. Generated code only
+// touches these when SVM_EXEC_PROF is enabled at translation time.
+struct ExecProfileCounters {
+    u64 exit_direct{};
+    u64 exit_indirect{};
+    u64 exit_call{};
+    u64 exit_ret{};
+    u64 exit_syscall{};
+    u64 link_hit{};
+    u64 link_miss{};
+    u64 rsb_hit{};
+    u64 rsb_miss{};
+    u64 dispatch_entries{};
+    u64 dispatch_l1_hit{};
+    u64 dispatch_l2_hit{};
+    u64 dispatch_miss{};
+    u64 gpr_uniform_accesses{};
+    u64 access_pad{};
+};
+
 union CPUFlags {
     u64 flags{};
     BitField<ir::FlagsBit::Carry, 1, u64> carry;
@@ -107,5 +127,22 @@ constexpr u32 state_offset_rsb_bottom = offsetof(State, rsb_bottom);
 constexpr u32 state_offset_rsb_top = offsetof(State, rsb_top);
 constexpr u32 state_offset_host_flags = offsetof(State, host_cpu_flags);
 constexpr u32 state_offset_blocking_linkage_address = offsetof(State, blocking_linkage_address);
+constexpr u32 state_offset_exec_profile_ptr = offsetof(State, interface);
+constexpr u32 exec_offset_exit_direct = offsetof(ExecProfileCounters, exit_direct);
+constexpr u32 exec_offset_exit_indirect = offsetof(ExecProfileCounters, exit_indirect);
+constexpr u32 exec_offset_exit_call = offsetof(ExecProfileCounters, exit_call);
+constexpr u32 exec_offset_exit_ret = offsetof(ExecProfileCounters, exit_ret);
+constexpr u32 exec_offset_exit_syscall = offsetof(ExecProfileCounters, exit_syscall);
+constexpr u32 exec_offset_link_hit = offsetof(ExecProfileCounters, link_hit);
+constexpr u32 exec_offset_link_miss = offsetof(ExecProfileCounters, link_miss);
+constexpr u32 exec_offset_rsb_hit = offsetof(ExecProfileCounters, rsb_hit);
+constexpr u32 exec_offset_rsb_miss = offsetof(ExecProfileCounters, rsb_miss);
+constexpr u32 exec_offset_dispatch_entries = offsetof(ExecProfileCounters, dispatch_entries);
+constexpr u32 exec_offset_dispatch_l1_hit = offsetof(ExecProfileCounters, dispatch_l1_hit);
+constexpr u32 exec_offset_dispatch_l2_hit = offsetof(ExecProfileCounters, dispatch_l2_hit);
+constexpr u32 exec_offset_dispatch_miss = offsetof(ExecProfileCounters, dispatch_miss);
+constexpr u32 exec_offset_gpr_uniform_accesses =
+        offsetof(ExecProfileCounters, gpr_uniform_accesses);
+constexpr u32 exec_offset_access_pad = offsetof(ExecProfileCounters, access_pad);
 
 }  // namespace swift::runtime::backend

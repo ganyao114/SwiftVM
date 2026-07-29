@@ -272,6 +272,7 @@ private:
     bool x87_topvirt_requested{false};
     bool x87_topvirt_function_eligible{false};
     bool translating_function{false};
+    bool cur_block_is_call{};
     // Set by EmitSetLocation when the next guest location is a compile-time
     // constant, cleared by every other instruction (Translate(ir::Inst*)).
     // A ReturnToDispatch/Invalid terminal reached with this set is a direct

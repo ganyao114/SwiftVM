@@ -418,10 +418,25 @@ struct X86Instance::Impl final {
         std::span<UniformMapDesc> static_regs =
                 enable_static_regs ? std::span<UniformMapDesc>{arm64_backend_regs_map}
                                    : std::span<UniformMapDesc>{};
+        const char* block_link_env = std::getenv("SVM_BLOCK_LINK");
+        const bool enable_block_link =
+                !block_link_env || std::strcmp(block_link_env, "0") != 0;
+        // Measurement-only escape hatch: this existing mode embeds already
+        // compiled host targets and is not SMC-safe without incoming-link
+        // invalidation, so it remains strictly opt-in.
+        const char* direct_block_link_env = std::getenv("SVM_DIRECT_BLOCK_LINK");
+        const bool enable_direct_block_link =
+                direct_block_link_env &&
+                std::strcmp(direct_block_link_env, "0") != 0;
         auto global_opts = Optimizations::ReturnStackBuffer | Optimizations::FlagElimination |
                            Optimizations::DeadCodeRemove | Optimizations::StaticCode |
-                           Optimizations::ConstantFolding | Optimizations::BlockLink |
-                           Optimizations::FunctionBaseCompile;
+                           Optimizations::ConstantFolding | Optimizations::FunctionBaseCompile;
+        if (enable_block_link) {
+            global_opts |= Optimizations::BlockLink;
+        }
+        if (enable_direct_block_link) {
+            global_opts |= Optimizations::DirectBlockLink;
+        }
         if (enable_uniform_elim) {
             global_opts |= Optimizations::UniformElimination;
         }

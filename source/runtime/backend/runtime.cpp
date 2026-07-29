@@ -4,6 +4,10 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <utility>
 #include "runtime/backend/address_space.h"
@@ -61,6 +65,10 @@ struct Runtime::Impl final {
         state_buffer.resize(sizeof(backend::State) +
                             address_space->GetConfig().uniform_buffer_size);
         state = reinterpret_cast<backend::State*>(state_buffer.data());
+        const char* exec_prof = std::getenv("SVM_EXEC_PROF");
+        if (exec_prof && std::strcmp(exec_prof, "0") != 0) {
+            state->interface = &exec_profile;
+        }
         // Wire the dispatcher's code-cache tables: L1 is per-runtime, L2 is the
         // address-space wide translate table that PushCodeCache writes to.
         state->l1_code_cache = l1_code_cache.Data();
@@ -106,6 +114,46 @@ struct Runtime::Impl final {
     }
 
     ~Impl() {
+        const char* exec_prof = std::getenv("SVM_EXEC_PROF");
+        if (exec_prof && std::strcmp(exec_prof, "0") != 0) {
+            const auto elapsed_ns = exec_profile_started
+                                            ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                      std::chrono::steady_clock::now() -
+                                                      exec_profile_start)
+                                                      .count()
+                                            : 0;
+            const auto& p = exec_profile;
+            const u64 exits = p.exit_direct + p.exit_indirect + p.exit_call +
+                              p.exit_ret + p.exit_syscall;
+            const double seconds = static_cast<double>(elapsed_ns) / 1.0e9;
+            std::fprintf(
+                    stderr,
+                    "[svm-exec] elapsed_s=%.9f exits=%llu exits_per_s=%.3f "
+                    "direct=%llu indirect=%llu call=%llu ret=%llu syscall=%llu "
+                    "link_hit=%llu link_miss=%llu rsb_hit=%llu rsb_miss=%llu "
+                    "dispatch=%llu l1_hit=%llu l2_hit=%llu miss=%llu "
+                    "gpr_uniform=%llu pad=%s\n",
+                    seconds,
+                    static_cast<unsigned long long>(exits),
+                    seconds > 0 ? static_cast<double>(exits) / seconds : 0.0,
+                    static_cast<unsigned long long>(p.exit_direct),
+                    static_cast<unsigned long long>(p.exit_indirect),
+                    static_cast<unsigned long long>(p.exit_call),
+                    static_cast<unsigned long long>(p.exit_ret),
+                    static_cast<unsigned long long>(p.exit_syscall),
+                    static_cast<unsigned long long>(p.link_hit),
+                    static_cast<unsigned long long>(p.link_miss),
+                    static_cast<unsigned long long>(p.rsb_hit),
+                    static_cast<unsigned long long>(p.rsb_miss),
+                    static_cast<unsigned long long>(p.dispatch_entries),
+                    static_cast<unsigned long long>(p.dispatch_l1_hit),
+                    static_cast<unsigned long long>(p.dispatch_l2_hit),
+                    static_cast<unsigned long long>(p.dispatch_miss),
+                    static_cast<unsigned long long>(p.gpr_uniform_accesses),
+                    std::getenv("SVM_EXEC_ACCESS_PAD")
+                            ? std::getenv("SVM_EXEC_ACCESS_PAD")
+                            : "0");
+        }
         // NOTE: a write window opened by host code on a thread that then exits
         // is deliberately NOT closed here. Closing it looked prudent, but a
         // mutation test (delete the call, run the suites) could not tell the
@@ -287,6 +335,10 @@ struct Runtime::Impl final {
     }
 
     [[nodiscard]] HaltReason Run() const {
+        if (!exec_profile_started) {
+            exec_profile_start = std::chrono::steady_clock::now();
+            exec_profile_started = true;
+        }
         // Publish this runtime to the host signal handler chain and make sure
         // this thread has an alternate signal stack while guest code runs.
         backend::SignalHandler::InstallThreadAltStack();
@@ -379,6 +431,9 @@ struct Runtime::Impl final {
     backend::interp::InterpStack interp_stack;
     std::atomic_bool running{true};
     backend::Trampolines::RuntimeEntry jit_entry{};
+    backend::ExecProfileCounters exec_profile{};
+    mutable bool exec_profile_started{};
+    mutable std::chrono::steady_clock::time_point exec_profile_start{};
 };
 
 Runtime::Runtime(Instance* instance)

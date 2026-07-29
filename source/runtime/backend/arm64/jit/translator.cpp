@@ -32,11 +32,32 @@ void JitTranslator::Translate(ir::Block* block) {
     vixl::svm_vixl_prof::JitScope vixl_prof;
     PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
     cur_block = block;
+    cur_block_is_call = false;
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() == ir::OpCode::PushRSB) {
+            cur_block_is_call = true;
+            break;
+        }
+    }
     static_next_loc.reset();
     if (x87_topvirt_requested && !translating_function) {
         AnalyzeX87TopVirt(block);
     }
     context.SetCurrent(block);
+    // Count the remaining x86 GPR uniform-buffer traffic dynamically without
+    // instrumenting each access: add the block's static emitted access count
+    // once on entry. ThreadContext64 begins with the 16 8-byte GPRs, so the
+    // first 128 uniform bytes are exactly the register-residency region.
+    u32 gpr_uniform_accesses = 0;
+    for (auto& inst : block->GetInstList()) {
+        if ((inst.GetOp() == ir::OpCode::LoadUniform ||
+             inst.GetOp() == ir::OpCode::StoreUniform) &&
+            inst.GetArg<ir::Uniform>(0).GetOffset() < 16 * sizeof(u64)) {
+            ++gpr_uniform_accesses;
+        }
+    }
+    context.RecordExecCounter(exec_offset_gpr_uniform_accesses,
+                              gpr_uniform_accesses);
     BeginX87TopVirtBlock(block);
     perf_prologue.Stop();
     // Function-mode IdByRPO assigns global instruction ids, while
@@ -97,24 +118,33 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             // Flat decoded blocks have no explicit terminal: the next location was
             // already written to state->current_loc by a SetLocation instruction.
             MergeNZCV();
+            context.RecordExecCounter(static_next_loc ? exec_offset_exit_direct
+                                                      : exec_offset_exit_indirect);
             if (!EmitStaticForward()) {
                 __ Ret();
             }
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToDispatch>) {
             MergeNZCV();
+            context.RecordExecCounter(
+                    cur_block_is_call ? exec_offset_exit_call
+                                      : (static_next_loc ? exec_offset_exit_direct
+                                                         : exec_offset_exit_indirect));
             if (!EmitStaticForward()) {
                 __ Ret();
             }
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToHost>) {
             MergeNZCV();
+            context.RecordExecCounter(exec_offset_exit_syscall);
             __ Mov(ipw, static_cast<u32>(HaltReason::CallHost));
             __ Str(ipw, MemOperand(state, state_offset_halt_reason));
             __ Ret();
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlock>) {
             MergeNZCV();
+            context.RecordExecCounter(exec_offset_exit_direct);
             context.Forward(term.next);
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
             MergeNZCV();
+            context.RecordExecCounter(exec_offset_exit_direct);
             context.Forward(term.next);
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
             // Return Stack Buffer: this is the real pop+predict site. It must
@@ -124,6 +154,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             // register to be current. EmitRSBPop ends in Br (hit) or Ret (miss/
             // underflow), so it fully terminates the block.
             MergeNZCV();
+            context.RecordExecCounter(exec_offset_exit_ret);
             if (True(context.GetConfig().global_opts & Optimizations::ReturnStackBuffer)) {
                 context.EmitRSBPop();
             } else {
@@ -158,6 +189,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
                 __ Bind(&next_case);
             }
             // No case matched: bail out to the dispatcher.
+            context.RecordExecCounter(exec_offset_exit_indirect);
             __ Ret();
         } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
             Label no_halt;

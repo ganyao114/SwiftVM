@@ -3,6 +3,7 @@
 //
 
 #include "jit_context.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,7 +20,24 @@ static_assert(kMaxSpillSlots == sizeof(State::spill_area) / sizeof(u64),
               "spill slot count mismatch between reg_alloc.h and context.h");
 
 JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_alloc)
-        : module(module), reg_alloc(reg_alloc) {}
+        : module(module), reg_alloc(reg_alloc) {
+    const char* prof = std::getenv("SVM_EXEC_PROF");
+    exec_profile_enabled = prof && std::strcmp(prof, "0") != 0;
+    if (exec_profile_enabled) {
+        if (const char* pad = std::getenv("SVM_EXEC_ACCESS_PAD")) {
+            exec_access_pad = static_cast<u32>(std::min(std::strtoul(pad, nullptr, 10), 64ul));
+        }
+    }
+}
+
+void JitContext::RecordExecCounter(u32 offset, u32 amount) {
+    if (!exec_profile_enabled || amount == 0) return;
+    ASSERT(amount < 4096);
+    __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
+    __ Ldr(ip1, MemOperand(ip0, offset));
+    __ Add(ip1, ip1, amount);
+    __ Str(ip1, MemOperand(ip0, offset));
+}
 
 bool JitContext::HasAllocation(const ir::Value& value) {
     return reg_alloc.ValueType(value) != RegAlloc::NONE;
@@ -257,6 +275,14 @@ bool JitContext::ForwardStatic(ir::Location location) {
     if (!target_module || target_module != module) {
         return false;
     }
+    if (module->GetModuleConfig().HasOpt(Optimizations::DirectBlockLink)) {
+        if (auto code = target_module->GetJitCache(location.Value()); code) {
+            FlushSpillWrites();
+            __ Mov(ip, reinterpret_cast<VAddr>(code));
+            __ Br(ip);
+            return true;
+        }
+    }
     // The Ret this replaces leaves the translator without touching JitContext,
     // so a spilled def from the block's last instruction would never reach its
     // slot; branching straight to the next unit makes that visible.
@@ -266,8 +292,10 @@ bool JitContext::ForwardStatic(ir::Location location) {
     __ Mov(ipw, dispatcher_index);
     __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
     __ Cbz(ip, &empty_slot);
+    RecordExecCounter(exec_offset_link_hit);
     __ Br(ip);
     __ Bind(&empty_slot);
+    RecordExecCounter(exec_offset_link_miss);
     __ Ret();
     return true;
 }
@@ -341,8 +369,10 @@ void JitContext::Forward(ir::Location location) {
                         __ Mov(ipw, dispatcher_index);
                         __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
                         __ Cbz(ip, &empty_slot);
+                        RecordExecCounter(exec_offset_link_hit);
                         __ Br(ip);
                         __ Bind(&empty_slot);
+                        RecordExecCounter(exec_offset_link_miss);
                         __ Mov(ip, location.Value());
                         __ Str(ip, MemOperand(state, state_offset_current_loc));
                         __ Ret();
@@ -378,9 +408,11 @@ void JitContext::Forward(ir::Location location) {
             __ Mov(ipw, dispatcher_index);
             __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
             __ Cbz(ip, &empty_slot);
+            RecordExecCounter(exec_offset_link_hit);
             __ Br(ip);
             // empty slot -> back to the dispatcher for the target location.
             __ Bind(&empty_slot);
+            RecordExecCounter(exec_offset_link_miss);
             __ Mov(ip, location.Value());
             __ Str(ip, MemOperand(state, state_offset_current_loc));
             __ Ret();
@@ -455,6 +487,7 @@ void JitContext::EmitRSBPop() {
     __ Cbz(ip2, &rsb_miss);               // empty slot → fallback
     // Commit the pop and jump directly to the target's compiled code.
     __ Add(rsb_ptr, rsb_ptr, 16);
+    RecordExecCounter(exec_offset_rsb_hit);
     __ Br(ip2);
     // Miss with a frame present: DISCARD that frame before falling back.
     //
@@ -478,6 +511,7 @@ void JitContext::EmitRSBPop() {
     __ Add(rsb_ptr, rsb_ptr, 16);
     // Underflow: no frame was read, so there is nothing to discard.
     __ Bind(&rsb_empty);
+    RecordExecCounter(exec_offset_rsb_miss);
     __ Ret();
 }
 
@@ -494,6 +528,12 @@ void JitContext::Finish() {
 u8* JitContext::Flush(const CodeBuffer& code_cache) {
     FlushLabels(reinterpret_cast<VAddr>(code_cache.exec_data));
     Finish();
+    if (std::getenv("SVM_EXEC_MAP") || std::getenv("SVM_VIXL_HOST_DUMP")) {
+        std::fprintf(stderr, "[svm-host-map] pc=0x%llx exec=%p size=%u\n",
+                     static_cast<unsigned long long>(unit_start),
+                     static_cast<void*>(code_cache.exec_data),
+                     CurrentBufferSize());
+    }
     std::memcpy(code_cache.rw_data, masm.GetBuffer()->GetStartAddress<u8*>(), code_cache.size);
     code_cache.Flush();
     return code_cache.exec_data;
@@ -526,6 +566,13 @@ void JitContext::SetCurrent(ir::Block* block) {
     }
     auto label = GetLabel(block->GetStartLocation().Value());
     __ Bind(label);
+    if (exec_access_pad) {
+        __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
+    }
+    for (u32 i = 0; i < exec_access_pad; ++i) {
+        __ Ldr(ip1, MemOperand(ip0, exec_offset_access_pad));
+        __ Str(ip1, MemOperand(ip0, exec_offset_access_pad));
+    }
 }
 
 void JitContext::SetCurrent(ir::Function* function) {
