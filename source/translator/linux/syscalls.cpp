@@ -260,6 +260,9 @@ static u64 X86ToCanonical(u64 nr) {
         case X64_rt_sigaction: return SYS_rt_sigaction;
         case X64_rt_sigprocmask: return SYS_rt_sigprocmask;
         case X64_fcntl: return SYS_fcntl;
+        case X64_fsync: return SYS_fsync;
+        case X64_fdatasync: return SYS_fdatasync;
+        case X64_ftruncate: return SYS_ftruncate;
         case X64_getcwd: return SYS_getcwd;
         case X64_unlink: return SYS_x64_unlink;
         case X64_readlink: return SYS_x64_readlink;
@@ -583,6 +586,15 @@ SyscallHandler::Result SyscallHandler::Handle(u64 nr,
             break;
         case SYS_pwrite64:
             result.ret = SysPwrite64(a0, a1, a2, a3);
+            break;
+        case SYS_fsync:
+            result.ret = SysFsync(a0, false);
+            break;
+        case SYS_fdatasync:
+            result.ret = SysFsync(a0, true);
+            break;
+        case SYS_ftruncate:
+            result.ret = SysFtruncate(a0, a1);
             break;
         case SYS_fstat:
             result.ret = SysFstat(a0, a1);
@@ -1234,6 +1246,29 @@ s64 SyscallHandler::SysPwrite64(u64 fd, u64 buf, u64 count, u64 offset) {
                         memory->ToHostConst(buf),
                         count,
                         static_cast<off_t>(offset));
+    return ret < 0 ? HostErrno() : ret;
+}
+
+s64 SyscallHandler::SysFsync(u64 fd, bool data_only) {
+#if defined(__APPLE__)
+    (void) data_only;
+    // Darwin fsync(2) does not require the drive to flush its own volatile
+    // cache. Linux fsync/fdatasync promise completion after the requested
+    // data has reached permanent storage, so use F_FULLFSYNC for both. This
+    // deliberately over-synchronizes metadata for fdatasync rather than
+    // weakening its durability guarantee.
+    const int ret = ::fcntl(static_cast<int>(fd), F_FULLFSYNC);
+#else
+    const int ret = data_only
+            ? ::fdatasync(static_cast<int>(fd))
+            : ::fsync(static_cast<int>(fd));
+#endif
+    return ret < 0 ? HostErrno() : ret;
+}
+
+s64 SyscallHandler::SysFtruncate(u64 fd, u64 length) {
+    if (length > static_cast<u64>(INT64_MAX)) return -EINVAL_;
+    const int ret = ::ftruncate(static_cast<int>(fd), static_cast<off_t>(length));
     return ret < 0 ? HostErrno() : ret;
 }
 

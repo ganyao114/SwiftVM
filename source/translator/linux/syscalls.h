@@ -50,6 +50,7 @@ enum GuestSyscall : u64 {
     SYS_fcntl = 25,
     SYS_ioctl = 29,
     SYS_unlinkat = 35,
+    SYS_ftruncate = 46,
     SYS_faccessat = 48,
     SYS_openat = 56,
     SYS_close = 57,
@@ -65,6 +66,8 @@ enum GuestSyscall : u64 {
     SYS_readlinkat = 78,
     SYS_newfstatat = 79,
     SYS_fstat = 80,
+    SYS_fsync = 82,
+    SYS_fdatasync = 83,
     SYS_exit = 93,
     SYS_exit_group = 94,
     SYS_set_tid_address = 96,
@@ -146,6 +149,9 @@ enum GuestSyscallX64 : u64 {
     X64_exit = 60,
     X64_uname = 63,
     X64_fcntl = 72,
+    X64_fsync = 74,
+    X64_fdatasync = 75,
+    X64_ftruncate = 77,
     X64_getcwd = 79,
     X64_unlink = 87,
     X64_readlink = 89,
@@ -361,6 +367,8 @@ private:
     s64 SysLseek(u64 fd, u64 offset, u64 whence);
     s64 SysPread64(u64 fd, u64 buf, u64 count, u64 offset);
     s64 SysPwrite64(u64 fd, u64 buf, u64 count, u64 offset);
+    s64 SysFsync(u64 fd, bool data_only);
+    s64 SysFtruncate(u64 fd, u64 length);
     s64 SysFstat(u64 fd, u64 statbuf);
     s64 SysFstatat(u64 dirfd, u64 path, u64 statbuf, u64 flags);
     s64 SysFaccessat(u64 dirfd, u64 path, u64 mode, u64 flags);
