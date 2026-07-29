@@ -90,9 +90,19 @@ struct Arm64Instance::Impl final {
                 // dispatcher safely (see JitContext::Forward).
                 // ReturnStackBuffer: call/ret pairs skip the dispatcher on
                 //   a correct RSB prediction (JitContext::EmitRSBPush/Pop).
-                // DirectBlockLink: known targets branch via Mov+Br (SMC-safe,
-                //   no backpatching); unknown targets fall back to the
-                //   indirect dispatch table.
+                // DirectBlockLink: known targets branch via Mov+Br with the
+                //   bare host code address baked in at JIT time (no
+                //   backpatching); unknown targets fall back to the indirect
+                //   dispatch table. WARNING: despite the form being
+                //   backpatch-free, this is NOT SMC-safe for cross-unit
+                //   links -- SMC invalidation clears only the target's L1/L2
+                //   slots, there is no target->source incoming-link table,
+                //   and a still-live source block can Br into a buffer that
+                //   ReclaimCode has already freed. It stays enabled here for
+                //   historical reasons; the x86 frontend keeps it off for
+                //   exactly this reason. Fixing it properly means a delink
+                //   mechanism (incoming-link registry + detach-time unlink),
+                //   not a config flip.
                 // FunctionBaseCompile: whole-function decode + compile
                 //   (TranslateIR(HIRFunction*) path). The function-level linear
                 //   scan now accounts for terminal uses and runs over an RPO

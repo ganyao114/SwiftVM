@@ -438,9 +438,17 @@ struct X86Instance::Impl final {
                 // path now falls back to the dispatcher on an empty dispatch
                 // slot (write target to current_loc + Ret) instead of
                 // `br 0x0`, so backward branches to not-yet-compiled blocks
-                // are safe. DirectBlockLink stays off: its backpatched direct
-                // branches need a delink mechanism to cooperate with SMC
-                // (Phase 4).
+                // are safe. DirectBlockLink stays off. Since c15ceb8 the
+                // direct-link form is Mov+Br with the target's bare host code
+                // address baked in at JIT time (no backpatching), but it is
+                // still not SMC-safe for cross-unit links: SMC invalidation
+                // only clears the target's L1/L2 slots, there is no
+                // target->source incoming-link table, and once ReclaimCode
+                // frees the detached buffer a still-live source block would
+                // Br into freed memory. Enabling it would also disable the
+                // JIT disk cache entirely (jit_cache.cpp), trading a measured
+                // ~11.4 ms warm-cache benefit on func_tests for a ~0.01 ms
+                // theoretical upper bound. See the arm64 frontend comment.
                 // FunctionBaseCompile: whole-function decode + compile.
                 //   Enabled by default; SVM_FUNC_BASE=0 is the escape hatch.
                 //   function-level linear scan now handles terminal uses over an
