@@ -20,6 +20,10 @@ bool Block::HasTerminal() const { return block_term.which() != 0; }
 
 void Block::AppendInst(Inst* inst) {
     Inst::Validate(inst);
+    AppendInstUnchecked(inst);
+}
+
+void Block::AppendInstUnchecked(Inst* inst) {
     inst_list.push_back(*inst);
 }
 

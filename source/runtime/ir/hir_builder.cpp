@@ -86,8 +86,16 @@ HIRUse::HIRUse(Inst* inst, u8 arg_idx) : inst(inst), arg_idx(arg_idx) {}
 HIRFunction::HIRFunction(Function* function,
                          const Location& begin,
                          const Location& end,
-                         HIRPools& pools)
-        : function(function), begin(begin), end(end), pools(pools) {
+                         HIRPools& pools,
+                         bool ir_fast)
+        : function(function), begin(begin), end(end), ir_fast(ir_fast), pools(pools) {
+    if (ir_fast) {
+        // Most lazy-compiled units fit in 64 instructions. Avoid the geometric
+        // 1/2/4/... growth of the append-time dense id table on that common
+        // path. reid_scratch is intentionally not reserved here: IdByRPO knows
+        // its exact final size and already reserves once.
+        values.reserve(64);
+    }
     entry_block = AppendBlock(Location::INVALID);
     auto first_block = AppendBlock(begin);
     AddEdge(entry_block, first_block);
@@ -116,6 +124,25 @@ void HIRFunction::SetCurBlock(HIRBlock* block) { current_block = block; }
 
 HIRValue* HIRFunction::AppendValue(HIRBlock* hir_block, Inst* inst) {
     ASSERT(hir_block);
+    const bool detail = PerfIRDetailEnabled();
+    auto begin = detail ? std::chrono::steady_clock::now()
+                        : std::chrono::steady_clock::time_point{};
+    HIRValue* hir_value = AppendValueRecord(hir_block, inst);
+    if (detail) {
+        const auto end = std::chrono::steady_clock::now();
+        PerfIRDetailRecord(GetPerfStats2().ir_value, begin, end);
+        begin = end;
+    }
+    UseInst(inst);
+    if (detail) {
+        const auto end = std::chrono::steady_clock::now();
+        PerfIRDetailRecord(GetPerfStats2().ir_use, begin, end);
+    }
+    TrackLocal(inst);
+    return hir_value;
+}
+
+HIRValue* HIRFunction::AppendValueRecord(HIRBlock* hir_block, Inst* inst) {
     HIRValue* hir_value{};
     if (inst->HasValue()) {
         hir_value = pools.values.Create(Value{inst}, hir_block);
@@ -137,7 +164,10 @@ HIRValue* HIRFunction::AppendValue(HIRBlock* hir_block, Inst* inst) {
         }
         values[id] = hir_value;
     }
-    UseInst(inst);
+    return hir_value;
+}
+
+void HIRFunction::TrackLocal(Inst* inst) {
     switch (inst->GetOp()) {
         case OpCode::StoreLocal:
         case OpCode::LoadLocal:
@@ -149,7 +179,6 @@ HIRValue* HIRFunction::AppendValue(HIRBlock* hir_block, Inst* inst) {
         default:
             break;
     }
-    return hir_value;
 }
 
 void HIRFunction::DestroyHIRValue(HIRValue* value) {
@@ -311,6 +340,9 @@ void HIRFunction::EndBlock(Terminal terminal) {
 }
 
 void HIRFunction::EndFunction() {
+    const bool detail = PerfIRDetailEnabled();
+    auto begin = detail ? std::chrono::steady_clock::now()
+                        : std::chrono::steady_clock::time_point{};
     blocks = pools.CreateBlockVector(MaxBlockCount());
     for (auto& block : block_list) {
         // Function vector
@@ -341,6 +373,10 @@ void HIRFunction::EndFunction() {
         }
     }
     block_list.clear();
+    if (detail) {
+        PerfIRDetailRecord(
+                GetPerfStats2().ir_finish_blocks, begin, std::chrono::steady_clock::now());
+    }
 }
 
 u16 HIRFunction::MaxBlockCount() { return block_order_id; }
@@ -539,12 +575,13 @@ HIRPoolLease::~HIRPoolLease() {
     tls_pools_in_use = false;
 }
 
-HIRBuilder::HIRBuilder(u32 func_cap, bool defer_function_end)
+HIRBuilder::HIRBuilder(u32 func_cap, bool defer_function_end, bool ir_fast)
         : pool_lease(func_cap), pools(pool_lease.Get()),
-          defer_function_end(defer_function_end) {}
+          defer_function_end(defer_function_end), ir_fast(ir_fast) {}
 
 HIRFunction* HIRBuilder::AppendFunction(Location start, Location end) {
-    current_function = pools.functions.Create(new Function(start), start, end, pools);
+    current_function =
+            pools.functions.Create(new Function(start), start, end, pools, ir_fast);
     hir_functions.push_back(*current_function);
     SetCurBlock(current_function->AppendBlock(start, end));
     return current_function;

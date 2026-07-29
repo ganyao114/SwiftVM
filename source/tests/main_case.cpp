@@ -393,6 +393,238 @@ TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {
     REQUIRE(fast_plain.ToString() == legacy_plain.ToString());
 }
 
+namespace {
+
+struct IRBuildFixture {
+    explicit IRBuildFixture(bool fast)
+            : builder(1, true, fast) {
+        using namespace swift::runtime::ir;
+
+        function = builder.AppendFunction(Location{0x1000}, Location{0x1200});
+        const Local local{.id = 7, .type = ValueType::U64};
+        function->DefineLocal(local);
+
+        auto imm = function->LoadImm(Imm{0x1122334455667788ull})
+                           .SetType(ValueType::U64);
+        first_inst = imm.Def();
+        auto uniform =
+                function->LoadUniform(Uniform{24, ValueType::U64}).SetType(ValueType::U64);
+        auto operand =
+                function->Add(imm, Operand{uniform, imm, OperandLsl}).SetType(ValueType::U64);
+        auto selected =
+                function->CondSelect(Cond::EQ, operand, uniform).SetType(ValueType::U64);
+        function->SaveFlags(selected, Flags::All);
+        function->StoreLocal(local, selected);
+        auto local_value = function->LoadLocal(local).SetType(ValueType::U64);
+
+        // Lambda-as-Value plus three ordinary Value slots.
+        [[maybe_unused]] auto lambda_result =
+                function->CallLambda(Lambda{selected}, imm, uniform, operand)
+                        .SetType(ValueType::U64);
+
+        // Params deliberately repeats `imm`: order and duplicates are part of
+        // the HIR use-list contract, not a set.
+        Params params{};
+        params.Push(imm);
+        params.Push(Imm{0xa5a5u});
+        params.Push(uniform);
+        params.Push(imm);
+        [[maybe_unused]] auto dynamic_result =
+                function->CallDynamic(Lambda{Imm{0x1234ull}}, params)
+                        .SetType(ValueType::U64);
+        function->StoreUniform(Uniform{40, ValueType::U64}, local_value);
+
+        // More than one 64 KiB Inst arena chunk even at the minimum possible
+        // slot size. All instructions stay live until both fixtures have been
+        // compared, pinning pointer stability across growth.
+        for (unsigned i = 0; i < 1536; ++i) {
+            function->Nop();
+        }
+
+        auto* next = builder.LinkBlock(terminal::LinkBlock{Location{0x1100}});
+        builder.SetCurBlock(next);
+        auto tail = function->Add(selected, Operand{imm}).SetType(ValueType::U64);
+        function->StoreUniform(Uniform{48, ValueType::U64}, tail);
+        function->EndBlock(terminal::ReturnToDispatch{});
+        function->EndFunction();
+        function->ComputeRPO();
+        function->IdByRPO();
+    }
+
+    swift::runtime::ir::HIRBuilder builder;
+    swift::runtime::ir::HIRFunction* function{};
+    swift::runtime::ir::Inst* first_inst{};
+};
+
+std::string IRSnapshotArg(swift::runtime::ir::Arg& arg) {
+    using namespace swift::runtime::ir;
+    switch (arg.GetType()) {
+        case ArgType::Void:
+            return "void";
+        case ArgType::Value: {
+            const auto value = arg.Get<Value>();
+            return fmt::format("value:{}:{}", value.Id(), static_cast<unsigned>(value.Type()));
+        }
+        case ArgType::Imm: {
+            const auto imm = arg.Get<Imm>();
+            return fmt::format("imm:{}:{}", static_cast<unsigned>(imm.GetType()), imm.Get());
+        }
+        case ArgType::Cond:
+            return fmt::format("cond:{}", static_cast<unsigned>(arg.Get<Cond>()));
+        case ArgType::Flags:
+            return fmt::format("flags:{}", static_cast<std::uint64_t>(arg.Get<Flags>()));
+        case ArgType::Operand: {
+            const auto op = arg.Get<Operand::Op>();
+            return fmt::format(
+                    "operand:{}:{}", static_cast<unsigned>(op.type), op.shift_ext);
+        }
+        case ArgType::Local: {
+            const auto local = arg.Get<Local>();
+            return fmt::format(
+                    "local:{}:{}", local.id, static_cast<unsigned>(local.type));
+        }
+        case ArgType::Uniform: {
+            const auto uniform = arg.Get<Uniform>();
+            return fmt::format("uniform:{}:{}",
+                               uniform.GetOffset(),
+                               static_cast<unsigned>(uniform.GetType()));
+        }
+        case ArgType::Lambda: {
+            const auto lambda = arg.Get<Lambda>();
+            if (lambda.IsValue()) {
+                const auto value = lambda.GetValue();
+                return fmt::format(
+                        "lambda-value:{}:{}", value.Id(), static_cast<unsigned>(value.Type()));
+            }
+            const auto imm = lambda.GetImm();
+            return fmt::format(
+                    "lambda-imm:{}:{}", static_cast<unsigned>(imm.GetType()), imm.Get());
+        }
+        case ArgType::Params: {
+            std::string out{"params"};
+            for (const auto& param : arg.Get<Params>()) {
+                if (param.data.IsValue()) {
+                    out += fmt::format(
+                            ":v{}:{}", param.data.value.Id(),
+                            static_cast<unsigned>(param.data.value.Type()));
+                } else {
+                    out += fmt::format(
+                            ":i{}:{}", static_cast<unsigned>(param.data.imm.GetType()),
+                            param.data.imm.Get());
+                }
+            }
+            return out;
+        }
+    }
+    return "invalid";
+}
+
+}  // namespace
+
+TEST_CASE("IR build fast path is field-identical across all argument shapes") {
+    using namespace swift::runtime::ir;
+
+    IRBuildFixture legacy{false};
+    IRBuildFixture fast{true};
+    auto* lhs = legacy.function;
+    auto* rhs = fast.function;
+
+    REQUIRE(lhs->MaxBlockCount() == rhs->MaxBlockCount());
+    REQUIRE(lhs->MaxInstrCount() == rhs->MaxInstrCount());
+    REQUIRE(lhs->MaxLocalCount() == rhs->MaxLocalCount());
+    REQUIRE(lhs->GetHIRBlocks().size() == rhs->GetHIRBlocks().size());
+    REQUIRE(lhs->GetHIRBlocksRPO().size() == rhs->GetHIRBlocksRPO().size());
+
+    // The first instruction was allocated before >1536 later live objects.
+    // Its address and initialized fields must remain valid after arena growth.
+    REQUIRE(legacy.first_inst->GetOp() == OpCode::LoadImm);
+    REQUIRE(fast.first_inst->GetOp() == OpCode::LoadImm);
+    REQUIRE(legacy.first_inst->GetArg<Imm>(0).Get() == 0x1122334455667788ull);
+    REQUIRE(fast.first_inst->GetArg<Imm>(0).Get() == 0x1122334455667788ull);
+
+    for (std::size_t block_index = 0; block_index < lhs->GetHIRBlocks().size();
+         ++block_index) {
+        auto* left_hir = lhs->GetHIRBlocks()[block_index];
+        auto* right_hir = rhs->GetHIRBlocks()[block_index];
+        INFO("block " << block_index);
+        REQUIRE(left_hir->GetOrderId() == right_hir->GetOrderId());
+        REQUIRE(left_hir->GetPredecessors().size() == right_hir->GetPredecessors().size());
+        REQUIRE(left_hir->GetSuccessors().size() == right_hir->GetSuccessors().size());
+        for (std::size_t i = 0; i < left_hir->GetPredecessors().size(); ++i) {
+            REQUIRE(left_hir->GetPredecessors()[i]->GetOrderId() ==
+                    right_hir->GetPredecessors()[i]->GetOrderId());
+        }
+        for (std::size_t i = 0; i < left_hir->GetSuccessors().size(); ++i) {
+            REQUIRE(left_hir->GetSuccessors()[i]->GetOrderId() ==
+                    right_hir->GetSuccessors()[i]->GetOrderId());
+        }
+
+        auto* left_block = left_hir->GetBlock();
+        auto* right_block = right_hir->GetBlock();
+        REQUIRE(left_block->GetStartLocation() == right_block->GetStartLocation());
+        REQUIRE(left_block->GetEndLocation() == right_block->GetEndLocation());
+        REQUIRE(fmt::format("{}", left_block->GetTerminal()) ==
+                fmt::format("{}", right_block->GetTerminal()));
+
+        auto left_it = left_block->GetInstList().begin();
+        auto right_it = right_block->GetInstList().begin();
+        for (; left_it != left_block->GetInstList().end() &&
+               right_it != right_block->GetInstList().end();
+             ++left_it, ++right_it) {
+            const auto& left_inst = *left_it;
+            const auto& right_inst = *right_it;
+            INFO("instruction id " << left_inst.Id());
+            REQUIRE(left_inst.GetOp() == right_inst.GetOp());
+            REQUIRE(left_inst.Id() == right_inst.Id());
+            REQUIRE(left_inst.ReturnType() == right_inst.ReturnType());
+            REQUIRE(left_inst.VirRegID() == right_inst.VirRegID());
+            REQUIRE(const_cast<Inst&>(left_inst).GetUses(false) ==
+                    const_cast<Inst&>(right_inst).GetUses(false));
+            for (unsigned slot = 0; slot < Inst::max_args; ++slot) {
+                INFO("physical argument slot " << slot);
+                REQUIRE(IRSnapshotArg(left_inst.ArgAt(slot)) ==
+                        IRSnapshotArg(right_inst.ArgAt(slot)));
+            }
+            auto left_pseudo = const_cast<Inst&>(left_inst).GetPseudoOperations();
+            auto right_pseudo = const_cast<Inst&>(right_inst).GetPseudoOperations();
+            REQUIRE(left_pseudo.size() == right_pseudo.size());
+            for (std::size_t i = 0; i < left_pseudo.size(); ++i) {
+                REQUIRE(left_pseudo[i]->Id() == right_pseudo[i]->Id());
+                REQUIRE(left_pseudo[i]->GetOp() == right_pseudo[i]->GetOp());
+            }
+        }
+        REQUIRE(left_it == left_block->GetInstList().end());
+        REQUIRE(right_it == right_block->GetInstList().end());
+    }
+
+    const auto& left_values = lhs->GetHIRValues();
+    const auto& right_values = rhs->GetHIRValues();
+    REQUIRE(left_values.size() == right_values.size());
+    for (std::size_t id = 0; id < left_values.size(); ++id) {
+        auto* left_value = left_values[id];
+        auto* right_value = right_values[id];
+        INFO("HIR value id " << id);
+        REQUIRE((left_value == nullptr) == (right_value == nullptr));
+        if (!left_value) {
+            continue;
+        }
+        REQUIRE(left_value->value.Id() == right_value->value.Id());
+        REQUIRE(left_value->value.Type() == right_value->value.Type());
+        REQUIRE(left_value->block->GetOrderId() == right_value->block->GetOrderId());
+        REQUIRE(left_value->allocated.type == right_value->allocated.type);
+
+        auto left_use = left_value->uses.begin();
+        auto right_use = right_value->uses.begin();
+        for (; left_use != left_value->uses.end() && right_use != right_value->uses.end();
+             ++left_use, ++right_use) {
+            REQUIRE(left_use->inst->Id() == right_use->inst->Id());
+            REQUIRE(left_use->arg_idx == right_use->arg_idx);
+        }
+        REQUIRE(left_use == left_value->uses.end());
+        REQUIRE(right_use == right_value->uses.end());
+    }
+}
+
 TEST_CASE("Uniform elimination preserves rotate-by-zero carry polarity load") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;

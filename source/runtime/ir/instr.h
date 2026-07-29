@@ -62,6 +62,22 @@ public:
         (SetArg(arg_index(args), args), ...);
     }
 
+    // Initial construction only: the constructor has already made every slot
+    // Void, so SetArg's DestroyArg walk cannot own or unregister anything.
+    // Keeping this separate from SetArgs makes the SVM_IR_FAST=0 path an exact
+    // copy of the historical mutation-capable route.
+    template <typename... Args> void SetArgsFresh(const Args&... args) {
+        constexpr auto arg_count = sizeof...(args);
+        static_assert(arg_count <= max_args);
+        int index{};
+        auto arg_index = [&](const Arg& arg) -> int {
+            auto res = index;
+            index += PhysicalSlots(arg.IsOperand() ? ArgType::Operand : ArgType::Void);
+            return res;
+        };
+        (SetArgFresh(arg_index(args), args), ...);
+    }
+
     template <InstAllocator Allocator, typename... Args>
     static Inst* Create(Allocator& allocator, OpCode op, const Args&... args) {
         auto inst = allocator.New(op);
@@ -93,6 +109,17 @@ public:
     void SetArg(int index, const Lambda& arg);
     void SetArg(int index, const Operand& arg);
     void SetArg(int index, const Params& arg);
+    void SetArgFresh(int index, const Void& arg);
+    void SetArgFresh(int index, const Value& arg);
+    void SetArgFresh(int index, const Imm& arg);
+    void SetArgFresh(int index, const Cond& arg);
+    void SetArgFresh(int index, const Flags& arg);
+    void SetArgFresh(int index, const Operand::Op& arg);
+    void SetArgFresh(int index, const Local& arg);
+    void SetArgFresh(int index, const Uniform& arg);
+    void SetArgFresh(int index, const Lambda& arg);
+    void SetArgFresh(int index, const Operand& arg);
+    void SetArgFresh(int index, const Params& arg);
 
     template <typename T>
     [[nodiscard]] T GetArg(int index) const {
@@ -230,6 +257,10 @@ private:
 #pragma pack(pop)
 
 using InstList = IntrusiveList<&Inst::list_node>;
+
+// Process-constant bisect switch. Default on; SVM_IR_FAST=0 restores every
+// construction/append/use-registration path changed by W6.
+bool IRBuildFastEnabled();
 
 }  // namespace swift::runtime::ir
 

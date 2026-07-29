@@ -157,14 +157,22 @@ public:
 
     template <typename... Args> Inst* CreateInst(OpCode op, const Args&... args) {
         auto inst = new Inst(op);
-        inst->SetArgs(std::forward<const Args&>(args)...);
+        if (IRBuildFastEnabled()) {
+            inst->SetArgsFresh(std::forward<const Args&>(args)...);
+        } else {
+            inst->SetArgs(std::forward<const Args&>(args)...);
+        }
         return inst;
     }
 
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
     HIRValue* AppendInst(OpCode op, const Args&... args) {
         auto inst = new Inst(op);
-        inst->SetArgs(std::forward<const Args&>(args)...);
+        if (IRBuildFastEnabled()) {
+            inst->SetArgsFresh(std::forward<const Args&>(args)...);
+        } else {
+            inst->SetArgs(std::forward<const Args&>(args)...);
+        }
         if constexpr (RetType::TYPE != ValueType::VOID) {
             inst->SetReturn(RetType::TYPE);
         }
@@ -239,21 +247,66 @@ public:
     explicit HIRFunction(Function* function,
                          const Location& begin,
                          const Location& end,
-                         HIRPools& pools);
+                         HIRPools& pools,
+                         bool ir_fast);
     ~HIRFunction();
 
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
     Inst* AppendInst(OpCode op, const Args&... args) {
         PerfScope2 perf_ir_append{GetPerfStats2().ir_append};
         ASSERT(current_block);
+        if (PerfIRDetailEnabled()) {
+            auto begin = std::chrono::steady_clock::now();
+            auto inst = new Inst(op);
+            auto end = std::chrono::steady_clock::now();
+            PerfIRDetailRecord(GetPerfStats2().ir_alloc, begin, end);
+
+            begin = std::chrono::steady_clock::now();
+            if (ir_fast) {
+                inst->SetArgsFresh(std::forward<const Args&>(args)...);
+            } else {
+                inst->SetArgs(std::forward<const Args&>(args)...);
+            }
+            if constexpr (RetType::TYPE != ValueType::VOID) {
+                inst->SetReturn(RetType::TYPE);
+            }
+            inst->SetId(inst_order_id++);
+            end = std::chrono::steady_clock::now();
+            PerfIRDetailRecord(GetPerfStats2().ir_args, begin, end);
+
+            begin = std::chrono::steady_clock::now();
+            if (ir_fast) {
+                current_block->block->AppendInstUnchecked(inst);
+            } else {
+                current_block->block->AppendInst(inst);
+            }
+            end = std::chrono::steady_clock::now();
+            PerfIRDetailRecord(GetPerfStats2().ir_link, begin, end);
+
+            if (ir_fast) {
+                AppendValueFast(current_block, inst, args...);
+            } else {
+                AppendValue(current_block, inst);
+            }
+            return inst;
+        }
         auto inst = new Inst(op);
-        inst->SetArgs(std::forward<const Args&>(args)...);
+        if (ir_fast) {
+            inst->SetArgsFresh(std::forward<const Args&>(args)...);
+        } else {
+            inst->SetArgs(std::forward<const Args&>(args)...);
+        }
         inst->SetId(inst_order_id++);
         if constexpr (RetType::TYPE != ValueType::VOID) {
             inst->SetReturn(RetType::TYPE);
         }
-        current_block->block->AppendInst(inst);
-        AppendValue(current_block, inst);
+        if (ir_fast) {
+            current_block->block->AppendInstUnchecked(inst);
+            AppendValueFast(current_block, inst, args...);
+        } else {
+            current_block->block->AppendInst(inst);
+            AppendValue(current_block, inst);
+        }
         return inst;
     }
 
@@ -265,7 +318,9 @@ public:
                     #name ": argument count mismatch (see ir.inc)");                               \
         auto inst = AppendInst(OpCode::name, std::forward<const Args&>(args)...);                  \
         if constexpr (RetType::TYPE != ValueType::VOID) {                                          \
-            inst->SetReturn(RetType::TYPE);                                                        \
+            if (!ir_fast) {                                                                         \
+                inst->SetReturn(RetType::TYPE);                                                    \
+            }                                                                                       \
         }                                                                                          \
         return ret{inst};                                                                          \
     }
@@ -326,6 +381,71 @@ private:
 
     void UseInst(Inst* inst);
     void UnUseInst(Inst* inst);
+    HIRValue* AppendValueRecord(HIRBlock* block, Inst* inst);
+    void TrackLocal(Inst* inst);
+
+    template <typename ArgTypeT>
+    void UseFreshArg(Inst* inst, u8 physical, const ArgTypeT& arg) {
+        using T = std::decay_t<ArgTypeT>;
+        if constexpr (std::is_base_of_v<Value, T>) {
+            if (auto* hir_value = GetHIRValue(static_cast<const Value&>(arg)); hir_value) {
+                hir_value->Use(inst, physical);
+            }
+        } else if constexpr (std::is_same_v<T, Lambda>) {
+            if (arg.IsValue()) {
+                if (auto* hir_value = GetHIRValue(arg.GetValue()); hir_value) {
+                    hir_value->Use(inst, physical);
+                }
+            }
+        } else if constexpr (std::is_same_v<T, Params>) {
+            for (auto param : arg) {
+                if (auto data = param.data; data.IsValue()) {
+                    if (auto* hir_value = GetHIRValue(data.value); hir_value) {
+                        hir_value->Use(inst, HIRUse::USE_FUNC_CALL);
+                    }
+                }
+            }
+        } else if constexpr (std::is_same_v<T, Operand>) {
+            const auto left = arg.GetLeft();
+            const auto right = arg.GetRight();
+            if (left.IsValue()) {
+                if (auto* hir_value = GetHIRValue(left.value); hir_value) {
+                    hir_value->Use(inst, physical + 1);
+                }
+            }
+            if (right.IsValue()) {
+                if (auto* hir_value = GetHIRValue(right.value); hir_value) {
+                    hir_value->Use(inst, physical + 2);
+                }
+            }
+        }
+    }
+
+    template <typename... Args>
+    HIRValue* AppendValueFast(HIRBlock* block, Inst* inst, const Args&... args) {
+        const bool detail = PerfIRDetailEnabled();
+        auto begin = detail ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
+        auto* hir_value = AppendValueRecord(block, inst);
+        if (detail) {
+            const auto end = std::chrono::steady_clock::now();
+            PerfIRDetailRecord(GetPerfStats2().ir_value, begin, end);
+            begin = end;
+        }
+        u8 physical{};
+        auto use_arg = [&](const auto& arg) {
+            UseFreshArg(inst, physical, arg);
+            using T = std::decay_t<decltype(arg)>;
+            physical += std::is_same_v<T, Operand> ? PhysicalSlots(ArgType::Operand) : 1;
+        };
+        (use_arg(args), ...);
+        if (detail) {
+            PerfIRDetailRecord(
+                    GetPerfStats2().ir_use, begin, std::chrono::steady_clock::now());
+        }
+        TrackLocal(inst);
+        return hir_value;
+    }
 
     u16 max_local_id{};
     Function* function;
@@ -335,6 +455,7 @@ private:
     u16 block_order_id{};
     u16 inst_order_id{};
     u16 value_count{};
+    bool ir_fast{};
     HIRPools& pools;
 
     HIRBlockVector blocks{};
@@ -427,7 +548,9 @@ public:
     // defer_function_end keeps the HIR function open when one decoded block
     // reaches ret/syscall/indirect control flow. Whole-function discovery
     // decodes the remaining queued CFG blocks before calling EndFunction().
-    explicit HIRBuilder(u32 func_cap = 1, bool defer_function_end = false);
+    explicit HIRBuilder(u32 func_cap = 1,
+                        bool defer_function_end = false,
+                        bool ir_fast = IRBuildFastEnabled());
 
     HIRFunction* AppendFunction(Location start, Location end = {});
 
@@ -571,6 +694,7 @@ private:
     Location current_location;
     HIRFunction* current_function{};
     bool defer_function_end{};
+    bool ir_fast{};
     // AdvancePC coalescing state. last_advance_block is compared by pointer so
     // no block-transition hook is needed: If/LinkBlock/Switch/SetCurBlock all
     // move current_block, and a mismatch simply means "no fold target here".

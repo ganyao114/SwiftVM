@@ -67,6 +67,15 @@ struct PerfStats2 {
     PerfCounter2 ir_append;          // central HIR/Block instruction append
     PerfCounter2 ir_setup;           // builder/function/block setup
     PerfCounter2 ir_finalize;        // EndFunction / decode-side fixups
+    // Default-off W6 attribution probes. SVM_IR_DETAIL=1 enables them; the
+    // normal SVM_PROF2 path deliberately does not pay their per-instruction
+    // clocks and atomics.
+    PerfCounter2 ir_alloc;
+    PerfCounter2 ir_args;
+    PerfCounter2 ir_link;
+    PerfCounter2 ir_value;
+    PerfCounter2 ir_use;
+    PerfCounter2 ir_finish_blocks;
 
     PerfCounter2 pass_total;
     PerfCounter2 pass_uniform;
@@ -134,7 +143,7 @@ struct PerfStats2 {
     std::atomic<unsigned long long> uniform_dse_blocks{0};
     std::atomic<unsigned long long> uniform_dse_victims{0};
 
-    static constexpr std::array<const char*, 24> kGetenvNames{{
+    static constexpr std::array<const char*, 25> kGetenvNames{{
             "SVM_FUNC_LAZY",
             "SVM_DUMP_IR",
             "SVM_X87_TOPVIRT",
@@ -146,6 +155,7 @@ struct PerfStats2 {
             "SVM_FLAG_CARRY_ELIM",
             "SVM_RA_1BLK",
             "SVM_UNIFORM_FAST",
+            "SVM_IR_FAST",
             "SVM_FLAG_NARROW",
             "SVM_AVX",
             "SVM_BMI",
@@ -240,6 +250,12 @@ inline void PerfDumpAtExit() {
     PERF2_DUMP(ir_append);
     PERF2_DUMP(ir_setup);
     PERF2_DUMP(ir_finalize);
+    PERF2_DUMP(ir_alloc);
+    PERF2_DUMP(ir_args);
+    PERF2_DUMP(ir_link);
+    PERF2_DUMP(ir_value);
+    PERF2_DUMP(ir_use);
+    PERF2_DUMP(ir_finish_blocks);
     PERF2_DUMP(pass_total);
     PERF2_DUMP(pass_uniform);
     PERF2_DUMP(uniform_forward);
@@ -307,6 +323,23 @@ inline void PerfDumpAtExit() {
 
 inline void PerfAdd(std::atomic<unsigned long long>& counter, unsigned long long v) {
     counter.fetch_add(v, std::memory_order_relaxed);
+}
+
+inline bool PerfIRDetailEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("SVM_IR_DETAIL");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
+inline void PerfIRDetailRecord(PerfCounter2& counter,
+                               std::chrono::steady_clock::time_point begin,
+                               std::chrono::steady_clock::time_point end) {
+    const auto ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+    counter.calls.fetch_add(1, std::memory_order_relaxed);
+    counter.ns.fetch_add(static_cast<unsigned long long>(ns), std::memory_order_relaxed);
 }
 
 // SVM_PROF=2 additionally prints one line per compiled unit, which is what

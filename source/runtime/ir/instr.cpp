@@ -28,6 +28,14 @@ constexpr size_t kInstSlot = (sizeof(Inst) + 15u) & ~size_t(15u);
 constexpr size_t kChunkBytes = 64u * 1024u;
 }  // namespace
 
+bool IRBuildFastEnabled() {
+    static const bool enabled = [] {
+        const char* env = PerfGetenv("SVM_IR_FAST");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
 void* Inst::operator new(size_t sz) {
     ASSERT(sz == sizeof(Inst));
     if (auto* head = tls_inst_free_head) {
@@ -160,6 +168,93 @@ void Inst::SetArg(int index, const Operand& arg) {
 
 void Inst::SetArg(int index, const Params& params) {
     DestroyArg(index);
+    arguments[index] = params;
+    for (auto param : params) {
+        if (auto data = param.data; data.IsValue()) {
+            Use(data.value);
+        }
+    }
+}
+
+void Inst::SetArgFresh(int index, const Void& arg) {
+    assert(arguments[index].IsVoid());
+    arguments[index] = arg;
+}
+
+void Inst::SetArgFresh(int index, const Value& arg) {
+    assert(arguments[index].IsVoid());
+    arguments[index] = arg;
+    Use(arg);
+    if (HasValue() && ret_type == ValueType::VOID) {
+        ret_type = arg.Type();
+    }
+}
+
+void Inst::SetArgFresh(int index, const Imm& arg) {
+    assert(arguments[index].IsVoid());
+    arguments[index] = arg;
+    if (HasValue() && ret_type == ValueType::VOID) {
+        ret_type = arg.GetType();
+    }
+}
+
+void Inst::SetArgFresh(int index, const Cond& arg) {
+    assert(arguments[index].IsVoid());
+    arguments[index] = arg;
+}
+
+void Inst::SetArgFresh(int index, const Flags& arg) {
+    assert(arguments[index].IsVoid());
+    arguments[index] = arg;
+}
+
+void Inst::SetArgFresh(int index, const Local& arg) {
+    assert(arguments[index].IsVoid());
+    arguments[index] = arg;
+    if (ret_type == ValueType::VOID && GetIRMetaInfo(op_code).return_type != ArgType::Void) {
+        ret_type = arg.type;
+    }
+}
+
+void Inst::SetArgFresh(int index, const Uniform& arg) {
+    assert(arguments[index].IsVoid());
+    arguments[index] = arg;
+    if (HasValue() && ret_type == ValueType::VOID) {
+        ret_type = arg.GetType();
+    }
+}
+
+void Inst::SetArgFresh(int index, const Lambda& arg) {
+    assert(arguments[index].IsVoid());
+    arguments[index] = arg;
+    if (arg.IsValue()) {
+        Use(arg.GetValue());
+    }
+}
+
+void Inst::SetArgFresh(int index, const Operand::Op& arg) {
+    assert(arguments[index].IsVoid());
+    arguments[index] = arg;
+}
+
+void Inst::SetArgFresh(int index, const Operand& arg) {
+    ASSERT(index + PhysicalSlots(ArgType::Operand) - 1 < max_args);
+    assert(arguments[index].IsVoid());
+    arguments[index++] = arg;
+    assert(arguments[index].IsVoid());
+    arguments[index++] = arg.left.ToArgClass();
+    assert(arguments[index].IsVoid());
+    arguments[index++] = arg.right.ToArgClass();
+    if (arg.left.type == ArgType::Value) {
+        Use(arg.left.value);
+    }
+    if (arg.right.type == ArgType::Value) {
+        Use(arg.right.value);
+    }
+}
+
+void Inst::SetArgFresh(int index, const Params& params) {
+    assert(arguments[index].IsVoid());
     arguments[index] = params;
     for (auto param : params) {
         if (auto data = param.data; data.IsValue()) {

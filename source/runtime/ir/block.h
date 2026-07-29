@@ -84,16 +84,55 @@ public:
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
     Inst* AppendInst(OpCode op, const Args&... args) {
         PerfScope2 perf_ir_append{GetPerfStats2().ir_append};
+        if (PerfIRDetailEnabled()) {
+            const bool ir_fast = IRBuildFastEnabled();
+            auto begin = std::chrono::steady_clock::now();
+            auto inst = new Inst(op);
+            auto end = std::chrono::steady_clock::now();
+            PerfIRDetailRecord(GetPerfStats2().ir_alloc, begin, end);
+
+            begin = std::chrono::steady_clock::now();
+            if (ir_fast) {
+                inst->SetArgsFresh(std::forward<const Args&>(args)...);
+            } else {
+                inst->SetArgs(std::forward<const Args&>(args)...);
+            }
+            if constexpr (RetType::TYPE != ValueType::VOID) {
+                inst->SetReturn(RetType::TYPE);
+            }
+            end = std::chrono::steady_clock::now();
+            PerfIRDetailRecord(GetPerfStats2().ir_args, begin, end);
+
+            begin = std::chrono::steady_clock::now();
+            if (ir_fast) {
+                AppendInstUnchecked(inst);
+            } else {
+                AppendInst(inst);
+            }
+            end = std::chrono::steady_clock::now();
+            PerfIRDetailRecord(GetPerfStats2().ir_link, begin, end);
+            return inst;
+        }
+        const bool ir_fast = IRBuildFastEnabled();
         auto inst = new Inst(op);
-        inst->SetArgs(std::forward<const Args&>(args)...);
+        if (ir_fast) {
+            inst->SetArgsFresh(std::forward<const Args&>(args)...);
+        } else {
+            inst->SetArgs(std::forward<const Args&>(args)...);
+        }
         if constexpr (RetType::TYPE != ValueType::VOID) {
             inst->SetReturn(RetType::TYPE);
         }
-        AppendInst(inst);
+        if (ir_fast) {
+            AppendInstUnchecked(inst);
+        } else {
+            AppendInst(inst);
+        }
         return inst;
     }
 
     void AppendInst(Inst* inst);
+    void AppendInstUnchecked(Inst* inst);
     void InsertBefore(Inst* inst, Inst* before);
     void InsertAfter(Inst* inst, Inst* after);
     void RemoveInst(Inst* inst);
