@@ -423,7 +423,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo &info, HIRFunct
     // Escape hatch for bisecting a suspected DSE bug against the load-folding
     // half of this pass, which SVM_UNIFORM_ELIM=0 cannot separate.
     static const bool dse_off = [] {
-        const char* e = std::getenv("SVM_UNIFORM_DSE");
+        const char* e = PerfGetenv("SVM_UNIFORM_DSE");
         return e && std::strcmp(e, "0") == 0;
     }();
     if (!dse_off) {

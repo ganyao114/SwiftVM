@@ -19,7 +19,7 @@ void HostMemMove(void* dst, const void* src, size_t size) {
 }
 
 struct TsoEmissionStats {
-    const bool enabled{std::getenv("SVM_TSO_STATS") != nullptr};
+    const bool enabled{PerfGetenv("SVM_TSO_STATS") != nullptr};
     std::atomic<u64> load_sites{};
     std::atomic<u64> store_sites{};
     std::atomic<u64> scalar_fast_sites{};

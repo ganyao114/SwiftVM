@@ -8,6 +8,7 @@
 #include <shared_mutex>
 #include "runtime/backend/jit_code.h"
 #include "runtime/common/cast_utils.h"
+#include "runtime/common/perf_stats.h"
 #include "runtime/common/spin_lock.h"
 #include "runtime/common/variant_util.h"
 #include "runtime/ir/instr.h"
@@ -82,6 +83,7 @@ public:
 
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
     Inst* AppendInst(OpCode op, const Args&... args) {
+        PerfScope2 perf_ir_append{GetPerfStats2().ir_append};
         auto inst = new Inst(op);
         inst->SetArgs(std::forward<const Args&>(args)...);
         if constexpr (RetType::TYPE != ValueType::VOID) {

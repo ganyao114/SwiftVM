@@ -376,7 +376,7 @@ static const bool kEnvFuncBaseOff = [] {
 // relied on that, publishing every decoded block into the L2 dispatch table.
 static size_t LazyFuncBudget() {
     static const size_t budget = [] () -> size_t {
-        if (const char* env = std::getenv("SVM_FUNC_LAZY")) {
+        if (const char* env = PerfGetenv("SVM_FUNC_LAZY")) {
             const long v = std::strtol(env, nullptr, 10);
             if (v <= 0) {
                 return 1024;  // disabled: above every cap => eager decoding
@@ -479,11 +479,13 @@ struct X86Instance::Impl final {
         // frontend's function fallback sets or decode/publish IR at a time.
         // Already-published JIT code remains concurrently executable.
         std::lock_guard translate_guard(translate_mutex);
+        PerfTranslationScope2 perf_detail;
         PerfScope perf_total{GetPerfStats().translate_ns};
         // Another thread may have published this exact location while we
         // waited for the coarse lock. Reuse it instead of compiling a duplicate
         // function whose Module::Push would fail and surface as IllegalCode.
         if (address_space->GetConfig().enable_jit) {
+            PerfScope2 perf_lookup{GetPerfStats2().publish_lookup};
             if (auto* published = address_space->GetCodeCache(pc)) {
                 return published;
             }
@@ -491,7 +493,9 @@ struct X86Instance::Impl final {
         if (compile_observer) {
             compile_observer(compile_observer_ctx, pc);
         }
+        PerfScope2 perf_module_lookup{GetPerfStats2().publish_lookup};
         auto module = address_space->GetModule(pc);
+        perf_module_lookup.Stop();
         auto& m_config = module->GetModuleConfig();
         // Function-level compilation is default-on when the optimization is
         // present; SVM_FUNC_BASE=0 is the explicit block-only escape hatch.
@@ -516,8 +520,10 @@ struct X86Instance::Impl final {
             func_stats.Attempt();
             try {
             auto jit_guard = module->ModuleLockRead();
+            PerfScope2 perf_ir_setup{GetPerfStats2().ir_setup};
             ir::HIRBuilder builder{1, true};
             auto* hir_func = builder.AppendFunction(pc);
+            perf_ir_setup.Stop();
 
             // The current linear-scan allocator is intentionally conservative
             // and does not yet qualify very large libc CFGs (for example
@@ -580,6 +586,7 @@ struct X86Instance::Impl final {
                     builder.SetCurBlock(addr);
                     ir::Assembler assembler{&builder};
                     x86::X64Decoder decoder{addr, &memory_impl, &assembler, true};
+                    PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();
                     ++decoded_count;
                 }
@@ -591,7 +598,9 @@ struct X86Instance::Impl final {
                     break;
                 }
             }
+            PerfScope2 perf_ir_finalize{GetPerfStats2().ir_finalize};
             hir_func->EndFunction();
+            perf_ir_finalize.Stop();
             perf_decode.Stop();
             PerfAdd(GetPerfStats().func_units, 1);
             PerfAdd(GetPerfStats().decoded_blocks, decoded_count);
@@ -652,6 +661,7 @@ struct X86Instance::Impl final {
                 }
                 func_stats.BlockCap(pc, decoded_count);
             } else {
+                perf_detail.Classify(static_cast<unsigned>(decoded_blocks));
                 if (!module->GetAddressSpace().GetConfig().enable_jit) {
                     if (!backend::PublishIRFunction(module, hir_func)) {
                         throw std::runtime_error("failed to publish interpreted HIR function");
@@ -707,7 +717,8 @@ struct X86Instance::Impl final {
         // it are meaningless until we clear it.
         const bool fresh = backend::IsEmpty(module->GetNode(pc));
         auto node = module->GetNodeOrCreate(pc, func_base);
-        auto code_cache = VisitVariant<void*>(node, [module, pc, fresh](auto x) -> void* {
+        auto code_cache = VisitVariant<void*>(
+                node, [module, pc, fresh, &perf_detail](auto x) -> void* {
             using T = std::decay_t<decltype(x)>;
             if constexpr (std::is_same_v<T, IntrusivePtr<ir::Function>>) {
                 // TODO: function-based compilation
@@ -719,9 +730,14 @@ struct X86Instance::Impl final {
                     // jit_cache so TranslateIR doesn't mistake the new block
                     // for a cached one.
                     std::memset(&x->GetJitCache(), 0, sizeof(backend::JitCache));
+                    PerfScope2 perf_ir_setup{GetPerfStats2().ir_setup};
                     ir::Assembler assembler{x.get()};
                     x86::X64Decoder decoder{pc, &memory_impl, &assembler, true};
+                    perf_ir_setup.Stop();
+                    PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();
+                    perf_decode_detail.Stop();
+                    PerfScope2 perf_ir_finalize{GetPerfStats2().ir_finalize};
                     // Root causes fixed in runtime (2026-07-22), workarounds
                     // retired:
                     //  - GetArg<Operand> tolerates a Void right side and the
@@ -735,6 +751,7 @@ struct X86Instance::Impl final {
                     //    so MaterializeTerminalCondUse is retired.
                     FixupSingleSidedOperands(x.get());
                     PinUnusedCallLambdas(x.get());
+                    perf_ir_finalize.Stop();
                     if (kEnvDumpIr) {
                         fmt::print("--- block {:#x} ---\n{}\n", pc, x->ToString());
                     }
@@ -744,12 +761,14 @@ struct X86Instance::Impl final {
                     // Runtime::Impl::Interpreter() picks it up by location.
                     return nullptr;
                 }
+                perf_detail.Classify(1);
                 return backend::TranslateIR(module, x.get());
             } else {
                 return nullptr;
             }
         });
         if (code_cache) {
+            PerfScope2 perf_l2{GetPerfStats2().publish_l2};
             address_space->PushCodeCache(pc, code_cache);
         }
         return code_cache;

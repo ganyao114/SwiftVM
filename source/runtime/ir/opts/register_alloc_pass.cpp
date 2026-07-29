@@ -4,6 +4,7 @@
 
 #include "register_alloc_pass.h"
 #include "base/logging.h"
+#include "runtime/common/perf_stats.h"
 
 namespace swift::runtime::ir {
 
@@ -169,11 +170,13 @@ public:
 
     void AllocateRegisters() {
         // Step 1: Collect live intervals
+        PerfScope2 perf_collect_live{GetPerfStats2().collect_live};
         if (function) {
             CollectLiveIntervals(function);
         } else {
             CollectLiveIntervals(block);
         }
+        perf_collect_live.Stop();
 
         // Step 2: Sort live intervals
         std::sort(live_interval.begin(), live_interval.end());

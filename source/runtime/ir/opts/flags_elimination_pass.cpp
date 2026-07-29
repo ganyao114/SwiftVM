@@ -59,7 +59,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
     // in-block path before a read. With the switch off, preserve the old
     // cross-block-conservative handling exactly.
     static const bool carry_elim_off = [] {
-        const char* e = std::getenv("SVM_FLAG_CARRY_ELIM");
+        const char* e = PerfGetenv("SVM_FLAG_CARRY_ELIM");
         return e && std::strcmp(e, "0") == 0;
     }();
 
@@ -102,7 +102,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 constexpr Flags kSoftBits = Flags::Parity | Flags::AuxiliaryCarry;
                 // Bisect switch, mirroring SVM_UNIFORM_DSE / SVM_CONST_CSE.
                 static const bool narrow_off = [] {
-                    const char* e = std::getenv("SVM_FLAG_NARROW");
+                    const char* e = PerfGetenv("SVM_FLAG_NARROW");
                     return e && std::strcmp(e, "0") == 0;
                 }();
                 const Flags narrowed =

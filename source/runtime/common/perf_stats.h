@@ -14,6 +14,8 @@
 //
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -51,19 +53,135 @@ struct PerfStats {
     std::atomic<unsigned long long> ir_arena_bytes{0};
 };
 
+struct PerfCounter2 {
+    std::atomic<unsigned long long> ns{0};
+    std::atomic<unsigned long long> calls{0};
+};
+
+// Measure-first W1 probe. This is deliberately separate from PerfStats:
+// SVM_PROF keeps its stable output/fingerprint contract, while SVM_PROF2 opts
+// into the more intrusive fine-grained clocks below.
+struct PerfStats2 {
+    PerfCounter2 translate_total;
+    PerfCounter2 decode_total;       // X64Decoder::Decode, including IR append
+    PerfCounter2 ir_append;          // central HIR/Block instruction append
+    PerfCounter2 ir_setup;           // builder/function/block setup
+    PerfCounter2 ir_finalize;        // EndFunction / decode-side fixups
+
+    PerfCounter2 pass_total;
+    PerfCounter2 pass_local;
+    PerfCounter2 pass_uniform;
+    PerfCounter2 pass_flags;
+    PerfCounter2 pass_const;
+    PerfCounter2 pass_dce;
+    PerfCounter2 reid_block;
+
+    PerfCounter2 compute_rpo;
+    PerfCounter2 id_rpo_pre;
+    PerfCounter2 id_rpo_post;
+    PerfCounter2 regalloc_total;
+    PerfCounter2 collect_live;
+
+    PerfCounter2 codegen_total;
+    PerfCounter2 codegen_prologue;
+    PerfCounter2 codegen_body;
+    PerfCounter2 codegen_terminal;
+
+    PerfCounter2 publish_total;
+    PerfCounter2 publish_prepare;
+    PerfCounter2 publish_lookup;
+    PerfCounter2 publish_alloc;
+    PerfCounter2 publish_flush;
+    PerfCounter2 publish_module;
+    PerfCounter2 publish_fault;
+    PerfCounter2 publish_l2;
+    PerfCounter2 publish_smc;
+    PerfCounter2 publish_disk;
+
+    PerfCounter2 ir_free;
+    PerfCounter2 cache_load;
+    PerfCounter2 cache_revive;
+
+    PerfCounter2 translate_single;
+    PerfCounter2 translate_multi;
+    PerfCounter2 fixed_single;
+    PerfCounter2 fixed_multi;
+    std::atomic<unsigned long long> single_units{0};
+    std::atomic<unsigned long long> multi_units{0};
+    std::atomic<unsigned long long> single_blocks{0};
+    std::atomic<unsigned long long> multi_blocks{0};
+
+    std::atomic<unsigned long long> coarse_scope_calls{0};
+    std::atomic<unsigned long long> translate_probe_calls{0};
+
+    static constexpr std::array<const char*, 22> kGetenvNames{{
+            "SVM_FUNC_LAZY",
+            "SVM_DUMP_IR",
+            "SVM_X87_TOPVIRT",
+            "SVM_X87_JIT",
+            "SVM_FUNC_IR_FREE",
+            "SVM_ADVPC_COALESCE",
+            "SVM_CONST_CSE",
+            "SVM_UNIFORM_DSE",
+            "SVM_FLAG_CARRY_ELIM",
+            "SVM_FLAG_NARROW",
+            "SVM_AVX",
+            "SVM_BMI",
+            "SVM_SSE4",
+            "SVM_SSE42STR",
+            "SVM_XSAVE",
+            "SVM_XSAVE_YMM",
+            "SVM_X86_64_ABI_BASELINE",
+            "SVM_ADX",
+            "SVM_PKRU",
+            "SVM_FSGSBASE",
+            "SVM_X87_JIT_STATS",
+            "SVM_TSO_STATS",
+    }};
+    std::array<std::atomic<unsigned long long>, kGetenvNames.size()> getenv_ns{};
+    std::array<std::atomic<unsigned long long>, kGetenvNames.size()> getenv_calls{};
+};
+
 inline PerfStats& GetPerfStats() {
     static PerfStats stats{};
     return stats;
 }
 
+inline PerfStats2& GetPerfStats2() {
+    static PerfStats2 stats{};
+    return stats;
+}
+
 void PerfDumpAtExit();
+
+inline void PerfRegisterDumpAtExit() {
+    static const bool registered = [] {
+        std::atexit(PerfDumpAtExit);
+        return true;
+    }();
+    (void)registered;
+}
+
+inline bool Perf2Enabled() {
+    static const bool enabled = [] {
+        const bool on = std::getenv("SVM_PROF2") != nullptr;
+        if (on) {
+            PerfRegisterDumpAtExit();
+        }
+        return on;
+    }();
+    return enabled;
+}
+
+inline thread_local bool perf2_translation_active{};
+inline thread_local unsigned perf2_unit_blocks{};
 
 inline bool PerfEnabled() {
     static const bool enabled = [] {
-        if (std::getenv("SVM_PROF") == nullptr) {
+        if (std::getenv("SVM_PROF") == nullptr && !Perf2Enabled()) {
             return false;
         }
-        std::atexit(PerfDumpAtExit);
+        PerfRegisterDumpAtExit();
         return true;
     }();
     return enabled;
@@ -87,6 +205,66 @@ inline void PerfDumpAtExit() {
     // gate on a line that *starts* with "func_units=", so anything appended to
     // the line above would have to be stripped there as well.
     std::fprintf(stderr, "[svm-prof] ir_arena_bytes=%llu\n", g(s.ir_arena_bytes));
+
+    if (!Perf2Enabled()) {
+        return;
+    }
+    auto& d = GetPerfStats2();
+#define PERF2_DUMP(name)                                                                            \
+    std::fprintf(stderr, "[svm-prof2] " #name "_ns=%llu " #name "_calls=%llu\n",                  \
+                 g(d.name.ns), g(d.name.calls))
+    PERF2_DUMP(translate_total);
+    PERF2_DUMP(decode_total);
+    PERF2_DUMP(ir_append);
+    PERF2_DUMP(ir_setup);
+    PERF2_DUMP(ir_finalize);
+    PERF2_DUMP(pass_total);
+    PERF2_DUMP(pass_local);
+    PERF2_DUMP(pass_uniform);
+    PERF2_DUMP(pass_flags);
+    PERF2_DUMP(pass_const);
+    PERF2_DUMP(pass_dce);
+    PERF2_DUMP(reid_block);
+    PERF2_DUMP(compute_rpo);
+    PERF2_DUMP(id_rpo_pre);
+    PERF2_DUMP(id_rpo_post);
+    PERF2_DUMP(regalloc_total);
+    PERF2_DUMP(collect_live);
+    PERF2_DUMP(codegen_total);
+    PERF2_DUMP(codegen_prologue);
+    PERF2_DUMP(codegen_body);
+    PERF2_DUMP(codegen_terminal);
+    PERF2_DUMP(publish_total);
+    PERF2_DUMP(publish_prepare);
+    PERF2_DUMP(publish_lookup);
+    PERF2_DUMP(publish_alloc);
+    PERF2_DUMP(publish_flush);
+    PERF2_DUMP(publish_module);
+    PERF2_DUMP(publish_fault);
+    PERF2_DUMP(publish_l2);
+    PERF2_DUMP(publish_smc);
+    PERF2_DUMP(publish_disk);
+    PERF2_DUMP(ir_free);
+    PERF2_DUMP(cache_load);
+    PERF2_DUMP(cache_revive);
+    PERF2_DUMP(translate_single);
+    PERF2_DUMP(translate_multi);
+    PERF2_DUMP(fixed_single);
+    PERF2_DUMP(fixed_multi);
+#undef PERF2_DUMP
+    std::fprintf(stderr,
+                 "[svm-prof2] single_units=%llu multi_units=%llu "
+                 "single_blocks=%llu multi_blocks=%llu coarse_scope_calls=%llu "
+                 "translate_probe_calls=%llu\n",
+                 g(d.single_units), g(d.multi_units), g(d.single_blocks), g(d.multi_blocks),
+                 g(d.coarse_scope_calls), g(d.translate_probe_calls));
+    for (size_t i = 0; i < d.kGetenvNames.size(); ++i) {
+        const auto calls = g(d.getenv_calls[i]);
+        if (calls) {
+            std::fprintf(stderr, "[svm-getenv] name=%s calls=%llu ns=%llu\n",
+                         d.kGetenvNames[i], calls, g(d.getenv_ns[i]));
+        }
+    }
 }
 
 inline void PerfAdd(std::atomic<unsigned long long>& counter, unsigned long long v) {
@@ -111,6 +289,13 @@ public:
     explicit PerfScope(std::atomic<unsigned long long>& counter)
             : counter(PerfEnabled() ? &counter : nullptr) {
         if (this->counter) {
+            if (Perf2Enabled()) {
+                GetPerfStats2().coarse_scope_calls.fetch_add(1, std::memory_order_relaxed);
+                if (perf2_translation_active) {
+                    GetPerfStats2().translate_probe_calls.fetch_add(1,
+                                                                    std::memory_order_relaxed);
+                }
+            }
             start = std::chrono::steady_clock::now();
         }
     }
@@ -134,5 +319,135 @@ private:
     std::atomic<unsigned long long>* counter;
     std::chrono::steady_clock::time_point start{};
 };
+
+class PerfScope2 {
+public:
+    explicit PerfScope2(PerfCounter2& counter)
+            : counter(Perf2Enabled() ? &counter : nullptr) {
+        if (this->counter) {
+            this->counter->calls.fetch_add(1, std::memory_order_relaxed);
+            if (perf2_translation_active) {
+                GetPerfStats2().translate_probe_calls.fetch_add(1, std::memory_order_relaxed);
+            }
+            start = std::chrono::steady_clock::now();
+        }
+    }
+    ~PerfScope2() { Stop(); }
+
+    unsigned long long Stop() {
+        if (!counter) {
+            return 0;
+        }
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - start)
+                                .count();
+        counter->ns.fetch_add(static_cast<unsigned long long>(ns), std::memory_order_relaxed);
+        counter = nullptr;
+        return static_cast<unsigned long long>(ns);
+    }
+
+    PerfScope2(const PerfScope2&) = delete;
+    PerfScope2& operator=(const PerfScope2&) = delete;
+
+private:
+    PerfCounter2* counter;
+    std::chrono::steady_clock::time_point start{};
+};
+
+class PerfTranslationScope2 {
+public:
+    PerfTranslationScope2()
+            : scope(GetPerfStats2().translate_total), prior(perf2_translation_active) {
+        if (Perf2Enabled()) {
+            perf2_translation_active = true;
+            GetPerfStats2().translate_probe_calls.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    ~PerfTranslationScope2() {
+        if (!Perf2Enabled()) {
+            return;
+        }
+        const auto ns = scope.Stop();
+        auto& s = GetPerfStats2();
+        if (perf2_unit_blocks == 1) {
+            s.translate_single.ns.fetch_add(ns, std::memory_order_relaxed);
+            s.translate_single.calls.fetch_add(1, std::memory_order_relaxed);
+        } else if (perf2_unit_blocks > 1) {
+            s.translate_multi.ns.fetch_add(ns, std::memory_order_relaxed);
+            s.translate_multi.calls.fetch_add(1, std::memory_order_relaxed);
+        }
+        perf2_unit_blocks = 0;
+        perf2_translation_active = prior;
+    }
+
+    void Classify(unsigned blocks) {
+        if (Perf2Enabled()) {
+            perf2_unit_blocks = blocks;
+            auto& s = GetPerfStats2();
+            if (blocks == 1) {
+                s.single_units.fetch_add(1, std::memory_order_relaxed);
+                s.single_blocks.fetch_add(1, std::memory_order_relaxed);
+            } else if (blocks > 1) {
+                s.multi_units.fetch_add(1, std::memory_order_relaxed);
+                s.multi_blocks.fetch_add(blocks, std::memory_order_relaxed);
+            }
+        }
+    }
+
+private:
+    PerfScope2 scope;
+    bool prior{};
+};
+
+struct PerfFixedSnapshot2 {
+    unsigned long long compute{};
+    unsigned long long id_pre{};
+    unsigned long long id_post{};
+    unsigned long long regalloc{};
+
+    PerfFixedSnapshot2() {
+        if (!Perf2Enabled()) return;
+        auto& s = GetPerfStats2();
+        compute = s.compute_rpo.ns.load(std::memory_order_relaxed);
+        id_pre = s.id_rpo_pre.ns.load(std::memory_order_relaxed);
+        id_post = s.id_rpo_post.ns.load(std::memory_order_relaxed);
+        regalloc = s.regalloc_total.ns.load(std::memory_order_relaxed);
+    }
+
+    void Record(unsigned blocks) const {
+        if (!Perf2Enabled() || blocks == 0) return;
+        auto& s = GetPerfStats2();
+        const auto ns =
+                s.compute_rpo.ns.load(std::memory_order_relaxed) - compute +
+                s.id_rpo_pre.ns.load(std::memory_order_relaxed) - id_pre +
+                s.id_rpo_post.ns.load(std::memory_order_relaxed) - id_post +
+                s.regalloc_total.ns.load(std::memory_order_relaxed) - regalloc;
+        auto& out = blocks == 1 ? s.fixed_single : s.fixed_multi;
+        out.ns.fetch_add(ns, std::memory_order_relaxed);
+        out.calls.fetch_add(1, std::memory_order_relaxed);
+    }
+};
+
+inline const char* PerfGetenv(const char* name) {
+    if (!Perf2Enabled() || !perf2_translation_active) {
+        return std::getenv(name);
+    }
+    auto& s = GetPerfStats2();
+    const auto begin = std::chrono::steady_clock::now();
+    const char* value = std::getenv(name);
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - begin)
+                            .count();
+    s.translate_probe_calls.fetch_add(1, std::memory_order_relaxed);
+    for (size_t i = 0; i < s.kGetenvNames.size(); ++i) {
+        if (std::strcmp(name, s.kGetenvNames[i]) == 0) {
+            s.getenv_calls[i].fetch_add(1, std::memory_order_relaxed);
+            s.getenv_ns[i].fetch_add(static_cast<unsigned long long>(ns),
+                                     std::memory_order_relaxed);
+            break;
+        }
+    }
+    return value;
+}
 
 }  // namespace swift::runtime

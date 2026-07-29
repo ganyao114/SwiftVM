@@ -557,7 +557,7 @@ bool HIRBuilder::AdvancePCCoalesceEnabled() {
     // a member by the constructor so the guard-variable load stays off the
     // per-instruction path.
     static const bool enabled = [] {
-        const char* env = std::getenv("SVM_ADVPC_COALESCE");
+        const char* env = PerfGetenv("SVM_ADVPC_COALESCE");
         return !env || std::strcmp(env, "0") != 0;
     }();
     return enabled;

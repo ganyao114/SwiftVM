@@ -115,7 +115,7 @@ void X64Decoder::RaiseIfGuestFault(ir::Value helper_result, u64 faulting_pc) {
 
 ir::Value X64Decoder::CallX87(u64 command, ir::Value guest_address) {
     auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
-    const char* jit = std::getenv("SVM_X87_JIT");
+    const char* jit = swift::runtime::PerfGetenv("SVM_X87_JIT");
     ir::Value result;
     if (jit && std::strcmp(jit, "0") != 0) {
         // The mid-tier inlines some commands and zeroes the result on those

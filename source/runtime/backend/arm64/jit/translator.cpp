@@ -18,8 +18,8 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     window_uxtw = guest_addr_mask == 0xFFFFFFFFull;
     // Cached: JitTranslator is constructed once per compiled unit.
     static const bool requested = [] {
-        const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
-        const char* x87_jit = std::getenv("SVM_X87_JIT");
+        const char* topvirt = PerfGetenv("SVM_X87_TOPVIRT");
+        const char* x87_jit = PerfGetenv("SVM_X87_JIT");
         return topvirt && std::strcmp(topvirt, "0") != 0 &&
                x87_jit && std::strcmp(x87_jit, "0") != 0;
     }();
@@ -29,6 +29,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
 
 
 void JitTranslator::Translate(ir::Block* block) {
+    PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
     cur_block = block;
     static_next_loc.reset();
     if (x87_topvirt_requested && !translating_function) {
@@ -36,6 +37,7 @@ void JitTranslator::Translate(ir::Block* block) {
     }
     context.SetCurrent(block);
     BeginX87TopVirtBlock(block);
+    perf_prologue.Stop();
     // Function-mode IdByRPO assigns global instruction ids, while
     // Block::MaxInstrId remains the block-local count established at decode.
     // Never shrink a function-sized bitmap back to that local count: memory
@@ -43,6 +45,7 @@ void JitTranslator::Translate(ir::Block* block) {
     // suppress.
     disable_instructions.resize(
             std::max<size_t>(disable_instructions.size(), block->MaxInstrId()));
+    PerfScope2 perf_body{GetPerfStats2().codegen_body};
     for (auto& inst : block->GetInstList()) {
         cur_instr = &inst;
         if (inst.Id() < disable_instructions.size() && disable_instructions.test(inst.Id())) {
@@ -52,7 +55,9 @@ void JitTranslator::Translate(ir::Block* block) {
         Translate(&inst);
         FinishX87TopCache(&inst);
     }
+    perf_body.Stop();
 
+    PerfScope2 perf_terminal{GetPerfStats2().codegen_terminal};
     FlushFlags();
     EmitTerminal(block->GetTerminal());
 }

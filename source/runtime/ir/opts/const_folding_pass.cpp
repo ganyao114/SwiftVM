@@ -85,7 +85,7 @@ constexpr u32 kReuseWindow = 8;
 void DedupConstants(Block* block) {
     // Bisect switch, mirroring SVM_UNIFORM_DSE.
     static const bool off = [] {
-        const char* e = std::getenv("SVM_CONST_CSE");
+        const char* e = PerfGetenv("SVM_CONST_CSE");
         return e && std::strcmp(e, "0") == 0;
     }();
     if (off) return;

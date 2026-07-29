@@ -63,7 +63,7 @@ constexpr u16 kX87InitFtw = 0xFFFF;  // full tag word: every slot empty
 // first translation in the process happened to observe.
 // ---------------------------------------------------------------------------
 inline bool XsaveEnvOn(const char* name) {
-    const char* value = std::getenv(name);
+    const char* value = swift::runtime::PerfGetenv(name);
     return value != nullptr && std::strcmp(value, "0") != 0;
 }
 
@@ -88,7 +88,7 @@ inline bool XsaveEnabled() { return XsaveEnvOn("SVM_XSAVE"); }
 // variable.  The XSAVE differential test therefore drives this bit directly
 // and never touches SVM_AVX.
 inline u64 GuestXcr0() {
-    const char* ymm = std::getenv("SVM_XSAVE_YMM");
+    const char* ymm = swift::runtime::PerfGetenv("SVM_XSAVE_YMM");
     const bool with_ymm = ymm ? std::strcmp(ymm, "0") != 0 : XsaveEnvOn("SVM_AVX");
     return kXstateX87 | kXstateSse | (with_ymm ? kXstateYmm : 0);
 }

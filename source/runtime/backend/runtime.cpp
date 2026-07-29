@@ -441,8 +441,8 @@ namespace {
 bool X87TopVirtRequested() {
     // Cached: runs once per compiled unit, and Darwin's getenv walks `environ`.
     static const bool requested = [] {
-        const char* topvirt = std::getenv("SVM_X87_TOPVIRT");
-        const char* x87_jit = std::getenv("SVM_X87_JIT");
+        const char* topvirt = PerfGetenv("SVM_X87_TOPVIRT");
+        const char* x87_jit = PerfGetenv("SVM_X87_JIT");
         return topvirt && std::strcmp(topvirt, "0") != 0 &&
                x87_jit && std::strcmp(x87_jit, "0") != 0;
     }();
@@ -574,7 +574,7 @@ size_t PrepareFunctionGuestRanges(ir::HIRFunction* function) {
 // memory measurement are produced from one binary.
 bool FuncIRFreeEnabled() {
     static const bool on = [] {
-        const char* e = std::getenv("SVM_FUNC_IR_FREE");
+        const char* e = PerfGetenv("SVM_FUNC_IR_FREE");
         return !e || std::strcmp(e, "0") != 0;
     }();
     return on;
@@ -595,7 +595,10 @@ bool PublishIRFunction(const std::shared_ptr<backend::Module>& module,
 void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunction* function) {
     auto ir_function = function->GetFunction();
     auto func_start = ir_function->GetStartLocation().Value();
-    PrepareFunctionGuestRanges(function);
+    PerfFixedSnapshot2 fixed_snapshot;
+    PerfScope2 perf_prepare{GetPerfStats2().publish_prepare};
+    const auto decoded_blocks = PrepareFunctionGuestRanges(function);
+    perf_prepare.Stop();
     auto& jit_state = ir_function->GetJitCache();
     // Establish a consistent RPO layout before allocation/emission: the
     // function-level linear scan and the emitter (Translate(HIRFunction*) walks
@@ -606,10 +609,14 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     // beyond the (harmless) renumber. Must run after EndFunction (the driver
     // calls it) since predecessors/successors are built there.
     PerfScope perf_rpo{GetPerfStats().rpo_ns};
+    PerfScope2 perf_compute_rpo{GetPerfStats2().compute_rpo};
     function->ComputeRPO();
+    perf_compute_rpo.Stop();
+    PerfScope2 perf_id_pre{GetPerfStats2().id_rpo_pre};
     function->IdByRPO();
+    perf_id_pre.Stop();
     perf_rpo.Stop();
-    static const bool dump_ir = std::getenv("SVM_DUMP_IR") != nullptr;
+    static const bool dump_ir = PerfGetenv("SVM_DUMP_IR") != nullptr;
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} rpo-ready\n", func_start);
     const auto& address_space = module->GetAddressSpace();
     const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
@@ -624,7 +631,9 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     // again before allocation. This is the function-mode counterpart of
     // PassPipeline::RunBlock's trailing Block::ReIdInstr().
     PerfScope perf_rpo2{GetPerfStats().rpo_ns};
+    PerfScope2 perf_id_post{GetPerfStats2().id_rpo_post};
     function->IdByRPO();
+    perf_id_post.Stop();
     perf_rpo2.Stop();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} opts-ready\n", func_start);
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
@@ -635,19 +644,28 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     }
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
     PerfScope perf_ra{GetPerfStats().regalloc_ns};
+    PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
     backend::RegAlloc reg_alloc{static_cast<u32>(function->MaxInstrCount()), gprs, fprs};
     ir::RegisterAllocPass::Run(function, &reg_alloc);
+    perf_ra_detail.Stop();
     perf_ra.Stop();
+    fixed_snapshot.Record(static_cast<unsigned>(decoded_blocks));
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} regalloc-ready\n", func_start);
     PerfScope perf_cg{GetPerfStats().codegen_ns};
+    PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate(function);
+    perf_cg_detail.Stop();
     perf_cg.Stop();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} emit-ready\n", func_start);
     auto buffer_size = context.CurrentBufferSize();
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} size={}\n", func_start, buffer_size);
-    if (auto [idx, buffer] = module->AllocCodeCache(buffer_size);
+    PerfScope2 perf_pub_total{GetPerfStats2().publish_total};
+    PerfScope2 perf_pub_alloc{GetPerfStats2().publish_alloc};
+    auto allocation = module->AllocCodeCache(buffer_size);
+    perf_pub_alloc.Stop();
+    if (auto [idx, buffer] = allocation;
         idx != backend::INVALID_CACHE_ID) {
         PerfScope perf_pub{GetPerfStats().publish_ns};
         PerfAdd(GetPerfStats().host_bytes, buffer_size);
@@ -656,13 +674,18 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
             fmt::print(stderr, "[svm-unit] pc={:#x} ir={} host={}\n", func_start,
                        function->MaxInstrCount(), buffer_size);
         }
+        PerfScope2 perf_pub_flush{GetPerfStats2().publish_flush};
         context.Flush(buffer);
+        perf_pub_flush.Stop();
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} flush-ready\n", func_start);
         jit_state.jit_state = backend::JitState::Cached;
         jit_state.cache_id = idx;
         jit_state.offset_in = buffer.offset;
         jit_state.cache_size = buffer.size;
-        if (!module->Push(ir_function)) {
+        PerfScope2 perf_pub_module{GetPerfStats2().publish_module};
+        const bool pushed = module->Push(ir_function);
+        perf_pub_module.Stop();
+        if (!pushed) {
             jit_state = {};
             if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
                 cache->FreeCode(buffer.exec_data);
@@ -671,7 +694,10 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
         }
         function->ReleaseFunctionOwnership();
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} publish-ready\n", func_start);
-        module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, func_start);
+        {
+            PerfScope2 perf_pub_fault{GetPerfStats2().publish_fault};
+            module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, func_start);
+        }
 
         // Publish every decoded block label, not only the function entry.
         // External links, RSB return targets, and code misses are allowed to
@@ -686,12 +712,16 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
             const auto guest = block->GetStartLocation().Value();
             const auto offset = context.GetCodeOffset(guest);
             ASSERT(offset >= 0 && static_cast<size_t>(offset) < buffer.size);
-            mutable_address_space.PushCodeCache(guest, buffer.exec_data + offset);
+            {
+                PerfScope2 perf_pub_l2{GetPerfStats2().publish_l2};
+                mutable_address_space.PushCodeCache(guest, buffer.exec_data + offset);
+            }
             cache_blocks.push_back({guest,
                                     block->GetEndLocation().Value(),
                                     static_cast<u32>(offset),
                                     0});
             if (!module->GetModuleConfig().read_only) {
+                PerfScope2 perf_pub_smc{GetPerfStats2().publish_smc};
                 mutable_address_space.GetSmcTracker().RegisterNode(
                         module,
                         ir_function,
@@ -700,7 +730,10 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
             }
         }
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} entries-ready\n", func_start);
-        RecordJitCacheUnit(module, func_start, true, cache_blocks, buffer);
+        {
+            PerfScope2 perf_pub_disk{GetPerfStats2().publish_disk};
+            RecordJitCacheUnit(module, func_start, true, cache_blocks, buffer);
+        }
 
         // Release the function's IR. Block mode has always done this (the
         // Block::DestroyInstrs at the end of TranslateIR(IntrusivePtr<Block>));
@@ -732,7 +765,9 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
         if (FuncIRFreeEnabled()) {
             // Outside publish_ns so that counter keeps meaning what it did.
             perf_pub.Stop();
+            perf_pub_total.Stop();
             PerfScope perf_free{GetPerfStats().ir_free_ns};
+            PerfScope2 perf_free_detail{GetPerfStats2().ir_free};
             auto ir_guard = ir_function->LockWrite();
             ir_function->DestroyInstrs();
         }
@@ -803,18 +838,31 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
     backend::RegAlloc reg_alloc{static_cast<u32>(block->MaxInstrId()), gprs, fprs};
 
+    PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
     ir::RegisterAllocPass::Run(block.get(), &reg_alloc);
+    perf_ra_detail.Stop();
 
+    PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate(block.get());
+    perf_cg_detail.Stop();
     auto buffer_size = context.CurrentBufferSize();
-    if (auto [idx, buffer] = module->AllocCodeCache(buffer_size);
+    PerfScope2 perf_pub_total{GetPerfStats2().publish_total};
+    PerfScope2 perf_pub_alloc{GetPerfStats2().publish_alloc};
+    auto allocation = module->AllocCodeCache(buffer_size);
+    perf_pub_alloc.Stop();
+    if (auto [idx, buffer] = allocation;
         idx != backend::INVALID_CACHE_ID) {
+        PerfScope2 perf_pub_flush{GetPerfStats2().publish_flush};
         context.Flush(buffer);
-        module->AddFaultEntry(buffer.exec_data,
-                              buffer.exec_data + buffer.size,
-                              block->GetStartLocation().Value());
+        perf_pub_flush.Stop();
+        {
+            PerfScope2 perf_pub_fault{GetPerfStats2().publish_fault};
+            module->AddFaultEntry(buffer.exec_data,
+                                  buffer.exec_data + buffer.size,
+                                  block->GetStartLocation().Value());
+        }
         jit_state.jit_state = backend::JitState::Cached;
         jit_state.cache_id = idx;
         jit_state.offset_in = buffer.offset;
@@ -835,15 +883,19 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
             if (block_size) {
                 block->SetEndLocation(ir::Location(block_start + block_size));
             }
+            PerfScope2 perf_pub_smc{GetPerfStats2().publish_smc};
             address_space.GetSmcTracker().RegisterNode(
                     module, block.get(), block_start, block->GetEndLocation().Value());
         }
         {
+            PerfScope2 perf_pub_disk{GetPerfStats2().publish_disk};
             const VAddr start = block->GetStartLocation().Value();
             const std::vector<backend::SerialBlock> cache_blocks{
                     {start, block->GetEndLocation().Value(), 0, 0}};
             RecordJitCacheUnit(module, start, false, cache_blocks, buffer);
         }
+        perf_pub_total.Stop();
+        PerfScope2 perf_free_detail{GetPerfStats2().ir_free};
         block->DestroyInstrs();
         return buffer.exec_data;
     }

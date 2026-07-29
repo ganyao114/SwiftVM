@@ -16,7 +16,7 @@ using namespace swift::runtime::frontend;
 namespace {
 
 bool EnvOn(const char* name) {
-    const char* value = std::getenv(name);
+    const char* value = swift::runtime::PerfGetenv(name);
     return value != nullptr && std::strcmp(value, "0") != 0;
 }
 

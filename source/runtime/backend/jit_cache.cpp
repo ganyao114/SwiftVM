@@ -15,6 +15,7 @@
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/module.h"
 #include "runtime/common/logging.h"
+#include "runtime/common/perf_stats.h"
 #include "runtime/ir/function.h"
 
 namespace swift::runtime::backend {
@@ -269,6 +270,7 @@ void JitDiskCache::Save() {
 // Loading
 // --------------------------------------------------------------------------
 bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const SerialUnit& unit) {
+    PerfScope2 perf_revive{GetPerfStats2().cache_revive};
     // 1. The guest bytes this code was produced from must still be there.
     for (const auto& block : unit.blocks) {
         u64 hash{};
@@ -374,6 +376,7 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
 }
 
 void JitDiskCache::Load(const std::shared_ptr<Module>& module) {
+    PerfScope2 perf_load{GetPerfStats2().cache_load};
     if (!enabled || !module) {
         return;
     }

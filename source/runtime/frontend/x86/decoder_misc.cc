@@ -89,7 +89,8 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
                                     | (1u << 24)  // FXSR
                                     | (1u << 25)  // SSE
                                     | (1u << 26); // SSE2
-    const char* abi_baseline_env = std::getenv("SVM_X86_64_ABI_BASELINE");
+    const char* abi_baseline_env =
+            swift::runtime::PerfGetenv("SVM_X86_64_ABI_BASELINE");
     const bool abi_baseline =
             abi_baseline_env && std::strcmp(abi_baseline_env, "0") != 0;
     const u32 leaf1_edx = kSse2Edx | (abi_baseline ? (1u << 23) : 0u);

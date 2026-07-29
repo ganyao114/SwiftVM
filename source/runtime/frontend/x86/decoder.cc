@@ -2301,7 +2301,7 @@ bool X64Decoder::AvxEnabled() {
     // Read once: DecodeSwitch consults this per instruction and getenv is not
     // required to be cheap (or thread-safe against setenv).
     static const bool enabled = [] {
-        const char* env = std::getenv("SVM_AVX");
+        const char* env = swift::runtime::PerfGetenv("SVM_AVX");
         return env && std::strcmp(env, "0") != 0;
     }();
     return enabled;

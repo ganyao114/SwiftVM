@@ -244,6 +244,7 @@ public:
 
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
     Inst* AppendInst(OpCode op, const Args&... args) {
+        PerfScope2 perf_ir_append{GetPerfStats2().ir_append};
         ASSERT(current_block);
         auto inst = new Inst(op);
         inst->SetArgs(std::forward<const Args&>(args)...);

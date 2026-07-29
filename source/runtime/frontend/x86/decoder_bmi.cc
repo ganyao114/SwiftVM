@@ -245,7 +245,7 @@ u64 BmiLzcnt64(u64 v, u64 width) {
 // BMI at all.
 bool X64Decoder::BmiEnabled() {
     static const bool enabled = [] {
-        const char* env = std::getenv("SVM_BMI");
+        const char* env = swift::runtime::PerfGetenv("SVM_BMI");
         return env && std::strcmp(env, "0") != 0;
     }();
     return enabled;
