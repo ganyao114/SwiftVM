@@ -34,11 +34,18 @@ static constexpr u64 GUEST_PROT_READ = 0x01;
 static constexpr u64 GUEST_PROT_WRITE = 0x02;
 static constexpr u64 GUEST_PROT_EXEC = 0x04;
 
-// Guest AT_* constants (asm-generic fcntl).
-static constexpr u64 GUEST_AT_FDCWD = static_cast<u64>(-100);
+// Guest AT_* constants (asm-generic fcntl). dirfd is an `int` in the Linux
+// syscall ABI, so only its low 32 bits are significant. x86_64 callers commonly
+// materialize AT_FDCWD with a write to edi, producing the zero-extended u64
+// value 0x00000000ffffff9c in the raw syscall register.
+static constexpr u64 GUEST_AT_FDCWD = 0xffffff9c;
 static constexpr u64 GUEST_AT_SYMLINK_NOFOLLOW = 0x100;
 static constexpr u64 GUEST_AT_REMOVEDIR = 0x200;
 static constexpr u64 GUEST_AT_EMPTY_PATH = 0x1000;
+
+static bool IsGuestAtFdcwd(u64 dirfd) {
+    return (dirfd & UINT32_MAX) == GUEST_AT_FDCWD;
+}
 
 // arch_prctl codes (x86_64 only).
 static constexpr u64 ARCH_SET_GS = 0x1001;
@@ -999,7 +1006,7 @@ s64 SyscallHandler::SysOpenat(u64 dirfd, u64 path, u64 flags, u64 mode) {
     p = ResolveGuestPath(p);
     const int hflags = GuestToHostOpenFlags(flags);
     int ret;
-    if (dirfd == GUEST_AT_FDCWD || absolute) {
+    if (IsGuestAtFdcwd(dirfd) || absolute) {
         ret = ::open(p.c_str(), hflags, static_cast<mode_t>(mode & 07777));
     } else {
         ret = ::openat(static_cast<int>(dirfd), p.c_str(), hflags, static_cast<mode_t>(mode & 07777));
@@ -1045,7 +1052,7 @@ s64 SyscallHandler::SysFstatat(u64 dirfd, u64 path, u64 statbuf, u64 flags) {
     const bool absolute = !p.empty() && p.front() == '/';
     p = ResolveGuestPath(p);
     int ret;
-    if (dirfd == GUEST_AT_FDCWD || absolute) {
+    if (IsGuestAtFdcwd(dirfd) || absolute) {
         ret = (flags & GUEST_AT_SYMLINK_NOFOLLOW) ? ::lstat(p.c_str(), &hst) : ::stat(p.c_str(), &hst);
     } else {
         ret = ::fstatat(static_cast<int>(dirfd),
@@ -1068,7 +1075,7 @@ s64 SyscallHandler::SysFaccessat(u64 dirfd, u64 path, u64 mode, u64 flags) {
         LOG_WARNING("faccessat: flags {:#x} ignored", flags);
     }
     int ret;
-    if (dirfd == GUEST_AT_FDCWD || absolute) {
+    if (IsGuestAtFdcwd(dirfd) || absolute) {
         ret = ::access(p.c_str(), static_cast<int>(mode));
     } else {
         ret = ::faccessat(static_cast<int>(dirfd), p.c_str(), static_cast<int>(mode), 0);
@@ -1086,7 +1093,7 @@ s64 SyscallHandler::SysReadlinkat(u64 dirfd, u64 path, u64 buf, u64 bufsize) {
     } else {
         const bool absolute = !p.empty() && p.front() == '/';
         p = ResolveGuestPath(p);
-        if (dirfd != GUEST_AT_FDCWD && !absolute) {
+        if (!IsGuestAtFdcwd(dirfd) && !absolute) {
             LOG_WARNING("readlinkat with dirfd {} not supported (path {})", static_cast<s64>(dirfd), p);
             return -ENOSYS_;
         }
@@ -1108,7 +1115,7 @@ s64 SyscallHandler::SysUnlinkat(u64 dirfd, u64 path, u64 flags) {
     const bool absolute = !p.empty() && p.front() == '/';
     p = ResolveGuestPath(p);
     int ret;
-    if (dirfd == GUEST_AT_FDCWD || absolute) {
+    if (IsGuestAtFdcwd(dirfd) || absolute) {
         ret = (flags & GUEST_AT_REMOVEDIR) ? ::rmdir(p.c_str()) : ::unlink(p.c_str());
     } else {
         ret = ::unlinkat(static_cast<int>(dirfd),
