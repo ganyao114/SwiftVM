@@ -114,6 +114,8 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_SYSCALL_RT_SIGACTION | 0/1 | 1 | guest 信号 disposition 登记/查询；=0 恢复 ENOSYS |
 | SVM_SYSCALL_RT_SIGPROCMASK | 0/1 | 1 | guest 每线程信号 mask；=0 恢复 ENOSYS |
 | SVM_SYSCALL_MMAP_SHARED_READ | 0/1 | 1 | file-backed MAP_SHARED\|PROT_READ 只读快照；=0 恢复拒绝 |
+| SVM_SIGNAL_DELIVERY | 0/1 | 1 | guest 信号投递框架（alarm 到期块边界注入 + 完整 signal frame + rt_sigreturn）；=0 恢复 ENOSYS |
+| SVM_SIGNAL_TRACE | 0/1 | 0 | 信号注入/返回地址追踪 |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_EXEC_PROF | 0/1 | 0 | 执行侧探针：块退出分布、slot-link/RSB 命中、dispatcher L1/L2/miss、GPR uniform 访问计数；发射中性（W12 实测），默认关闭 |
 | SVM_EXEC_MAP | 0/1 | 0 | JIT unit/trampoline 地址区间输出（配合 sample 分类 leaf PC） |
