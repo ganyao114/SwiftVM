@@ -1,10 +1,10 @@
-# SwiftVM 项目状态（2026-07-29）
+# SwiftVM 项目状态（2026-07-30）
 
 本文档记录当前里程碑状态、已验证能力、性能快照与已知问题。架构细节见 [ARCHITECTURE.md](../ARCHITECTURE.md)，x86 指令覆盖清单见 [x86-instruction-census.md](x86-instruction-census.md)。
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）已落地。master = `7e2a9c5`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖五个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray 全部跑通且输出与原生一致），FEX 对比基线已建立。master = `6ec0114`。
 
 ---
 
@@ -56,6 +56,21 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | top-N distorm 快速通道（`4fb9ee1`） | distorm 调用 −75.6%（func_tests 5658→1379）；distorm 桶 −67~68%；decode 桶 −1.87~1.94%（两语料一致）；translate −0.2~0.6%（方向全正、亚 1%） | 保守裸解码 top-20 形状（MOV/PUSH/POP/RET/短 Jcc/ALU/LEA/CALL/JMP/MOVZX/SHL/SHR），不确定编码一律回退 distorm；`SVM_DISTORM_VERIFY=1` 双解码逐字段对账 52,024 次 + 109 万 SIB 扫描零不一致；指纹两态零 diff |
 | vixl EmissionCheckScope 快路径（`7e2a9c5`） | vixl 桶分解：Emit* 外层 49% / 编码本体 34.4% / 码缓冲 14.7% / 池修正 1.8%；两语料 buffer 增长 0 次（增长策略路线数据不支持）；实测 codegen 桶 −3.8~8.1%、translate −0.05~4.16%（高负载下方向一致） | literal/veneer 池均空 + 缓冲充足时跳过 EnsureSpaceFor/pool 协议（该条件下原路径确定性无动作）；VIXL_DEBUG 恒走通用路径；lldb 禁 ASLR 1,145 unit 490KB host 文本两态 cmp=0；`SVM_VIXL_FAST=0` 回退、`SVM_VIXL_PROF` 细分探针 |
 
+### FEX 对比基线（2026-07-30，`SwiftVM-bench` harness，暖 cache，5 reps median，同一静态 x86_64 二进制三环境）
+
+**优化轴转向**：W1–W11 全部优化**翻译时**（冷 cache func_tests 墙钟）；下表测的是**热码执行质量**——被否路线的"无头寸"结论（func_tests/翻译时语料）对此轴不适用。
+
+| benchmark | metric | SwiftVM | FEX(优化全开) | Rosetta | SVM/FEX | 胜者 |
+|---|---|---:|---:|---:|---:|---|
+| coremark（PORT_DIR=linux 重编） | iters/s ↑ | 6,818 | 28,394 | 32,216 | 0.240 | FEX |
+| stream Copy | MB/s ↑ | 51,751 | 86,511 | 27,444 | 0.598 | FEX（**SVM 赢 Rosetta 1.89×**）|
+| stream Scale / Add / Triad | MB/s ↑ | 20,326 / 27,509 / 21,747 | 84,520 / 93,330 / 93,321 | 73,269 / 86,214 / 95,352 | 0.24 / 0.30 / 0.23 | FEX |
+| smallpt 64spp 320x240 | s ↓ | 39.90 | 5.37 | 5.44 | 7.43 | FEX |
+| sqlite speedtest1（文件模式） | s ↓ | 15.56 | 9.94 | 12.42 | 1.566 | FEX |
+| c-ray scene 64spp 320x240 单线程 | s ↓ | 37.0 | 12.67 | 12.88 | 2.92 | FEX |
+
+正确性：全部 8 项 oracle 三环境签名一致（coremark CRC、stream Validates、smallpt/c-ray 像素 hash、sqlite 77 行测试名序列）。FEX 配置：`FEX_MULTIBLOCK=1 FEX_ABILOCALFLAGS=1 FEX_CACHEOBJECTCODECOMPILATION=1`（FEX-2405-222）。为跑通语料修的 ABI 缺陷：AT_FDCWD 零扩展识别（`927ba2e`）、pwrite64/rt_sigaction/rt_sigprocmask/time/sched_getaffinity/clock_nanosleep + 只读 MAP_SHARED 快照（`b086cf2`）、fsync/fdatasync/ftruncate（`6ec0114`）。差距主嫌疑（待 W12 执行侧分解证实）：guest GPR 多数驻留内存 + 块间无直接链接。
+
 ### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
 
 - **函数单元做大 / 跨块优化**：`c0b5861` 已扫 1→64 块/单元，墙钟全在 MAD 内、发射字节单调涨；`SVM_FUNC_LAZY=1`（默认）下每单元一块，跨块没有主体。
@@ -94,6 +109,9 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_DISTORM_VERIFY | 0/1 | 0 | 双解码逐字段对账（不一致强制采用 distorm 结果并计数），审计用 |
 | SVM_VIXL_FAST | 0/1 | 1 | vixl EmissionCheckScope 快路径；=0 走原通用协议（两路 host 字节逐字节一致） |
 | SVM_VIXL_PROF | 0/1 | 0 | vixl 发射细分探针（Emit 外层/编码本体/码缓冲/池修正）；发射中性，默认关闭 |
+| SVM_SYSCALL_RT_SIGACTION | 0/1 | 1 | guest 信号 disposition 登记/查询；=0 恢复 ENOSYS |
+| SVM_SYSCALL_RT_SIGPROCMASK | 0/1 | 1 | guest 每线程信号 mask；=0 恢复 ENOSYS |
+| SVM_SYSCALL_MMAP_SHARED_READ | 0/1 | 1 | file-backed MAP_SHARED\|PROT_READ 只读快照；=0 恢复拒绝 |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_FORCE_FIXED_STACK | 0/1 | — | 诊断：强制 guest 栈 fixed/fallback(布局 flake repro) |
 | SVM_GUEST_BITS | 0 或 20..47 | 32 | guest 地址窗口位宽。**0 = 无界（未隔离）**，需 `-DSWIFT_ALLOW_UNBOUNDED_GUEST=ON` 才编译进去，普通构建拒绝 |
