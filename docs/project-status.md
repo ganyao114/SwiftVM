@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝（输出恒等）已落地。master = `de89d99`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝与 IR 构建消重（输出恒等）已落地。master = `e15cc04`。
 
 ---
 
@@ -50,6 +50,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | 翻译阶段分解（`3f5e475` 探针实测，冷 cache func_tests） | pass 20.7%（UniformElim 单项 11.9%）/ 函数级固定 20.1%（RegAlloc 19.0%，CollectLiveIntervals 12.5%；RPO+IdByRPO×2 仅 1.14%）/ vixl 18.5% / 发布 15.9%（Disk RecordUnit 8.3%）/ IR 构建 11.8% / decode 11.4%，未归因 2.6% | SVM_PROF2 探针，17.17ns/边界扣除，默认关闭时墙钟差 +0.051%（噪声内）；发射中性双向验证（开/关指纹均零 diff） |
 | 单块专用 RegAlloc 快路径（`88864e9`） | func_tests：collect_live −22.8%、regalloc −18.4%、translate −2.4~3.3%、墙钟 −2.75%；avx_real：regalloc −37.9%、translate −8.35%（11 轮交错冷 cache 中位数） | **byte-identical 硬约束**：同算法特化（dense 数组代有序 map、min-heap 代链表），`SVM_RA_1BLK=0/1` 含 host_bytes 逐行 diff 0 字节，默认开指纹零 diff；多块单元自动回退通用路径 |
 | UniformElim 早退 + DSE 剪枝（`de89d99`） | func_tests：pass_uniform −24.5%、pass_total −14.7%、translate −3.2~4.2%、墙钟 −2.16%；DSE 扫描块数 −76.1%（3577→855）删除数不变 | 语料 68.94% 的块无 uniform 操作：无 uniform 块早退 + 少于两个 store 跳过 DSE，判定规则零改动；三路指纹（默认/`=0`/`=1`）均零 diff |
+| IR 构建路径消重（`e15cc04`） | func_tests：ir_append −33.0%、translate −1~2.6%、墙钟 −2.0%；arena 高水位两路完全相同 | fresh 参数槽免 DestroyArg、构造后免重复 Validate、use 由模板实参直登记（免 metadata 二次扫描）；输出逐比特恒等，两路指纹零 diff |
 
 ### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
 
@@ -77,6 +78,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_FLAG_CARRY_ELIM | 0/1 | 1 | Carry Gate B（块内全路径覆盖 C 写删除）；=0 精确恢复旧 Gate B 行为 |
 | SVM_RA_1BLK | 0/1 | 1 | 单块专用 RegAlloc/LiveIntervals 快路径；=0 走通用路径（两路 byte-identical） |
 | SVM_UNIFORM_FAST | 0/1 | 1 | UniformElim 早退 + DSE 剪枝；=0 走完整旧扫描（两路输出恒等） |
+| SVM_IR_FAST | 0/1 | 1 | IR 构建路径消重；=0 走旧构造/校验/use 扫描（两路输出恒等） |
 | SVM_PROF2 | 0/1 | 0 | 翻译阶段七项分解探针（decode/IR/pass/固定开销/vixl/发布/其他 + 逐 pass + getenv 计数）；发射中性，默认关闭 |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_FORCE_FIXED_STACK | 0/1 | — | 诊断：强制 guest 栈 fixed/fallback(布局 flake repro) |
