@@ -244,6 +244,7 @@ static u64 X86ToCanonical(u64 nr) {
         case X64_writev: return SYS_writev;
         case X64_ioctl: return SYS_ioctl;
         case X64_pread64: return SYS_pread64;
+        case X64_pwrite64: return SYS_pwrite64;
         case X64_access: return SYS_x64_access;
         case X64_mremap: return SYS_mremap;
         case X64_madvise: return SYS_madvise;
@@ -256,6 +257,8 @@ static u64 X86ToCanonical(u64 nr) {
         case X64_mmap: return SYS_mmap;
         case X64_munmap: return SYS_munmap;
         case X64_mprotect: return SYS_mprotect;
+        case X64_rt_sigaction: return SYS_rt_sigaction;
+        case X64_rt_sigprocmask: return SYS_rt_sigprocmask;
         case X64_fcntl: return SYS_fcntl;
         case X64_getcwd: return SYS_getcwd;
         case X64_unlink: return SYS_x64_unlink;
@@ -265,8 +268,11 @@ static u64 X86ToCanonical(u64 nr) {
         case X64_times: return SYS_times;
         case X64_uname: return SYS_uname;
         case X64_clock_gettime: return SYS_clock_gettime;
+        case X64_clock_nanosleep: return SYS_clock_nanosleep;
         case X64_arch_prctl: return SYS_x64_arch_prctl;
+        case X64_time: return SYS_x64_time;
         case X64_futex: return SYS_futex;
+        case X64_sched_getaffinity: return SYS_sched_getaffinity;
         case X64_getdents64: return SYS_getdents64;
         case X64_set_tid_address: return SYS_set_tid_address;
         case X64_tgkill: return SYS_tgkill;
@@ -305,6 +311,16 @@ bool SyscallProcessState::StoreGuestU32(u64 uaddr, u32 value) {
     auto* word = static_cast<u32*>(memory->ToHost(uaddr));
     std::atomic_ref<u32>(*word).store(value, std::memory_order_release);
     return true;
+}
+
+GuestSigAction SyscallProcessState::GetSignalAction(u64 signal) {
+    std::lock_guard guard(signal_mutex);
+    return signal_actions[signal];
+}
+
+void SyscallProcessState::SetSignalAction(u64 signal, const GuestSigAction& action) {
+    std::lock_guard guard(signal_mutex);
+    signal_actions[signal] = action;
 }
 
 s64 SyscallProcessState::WakeFutex(u64 uaddr, u32 count) {
@@ -526,11 +542,26 @@ SyscallHandler::Result SyscallHandler::Handle(u64 nr,
         case SYS_gettimeofday:
             result.ret = SysGettimeofday(a0, a1);
             break;
+        case SYS_x64_time:
+            result.ret = SysTime(a0);
+            break;
         case SYS_nanosleep:
             result.ret = SysNanosleep(a0, a1);
             break;
+        case SYS_clock_nanosleep:
+            result.ret = SysClockNanosleep(a0, a1, a2, a3);
+            break;
         case SYS_times:
             result.ret = SysTimes(a0);
+            break;
+        case SYS_sched_getaffinity:
+            result.ret = SysSchedGetaffinity(a0, a1, a2);
+            break;
+        case SYS_rt_sigaction:
+            result.ret = SysRtSigaction(a0, a1, a2, a3);
+            break;
+        case SYS_rt_sigprocmask:
+            result.ret = SysRtSigprocmask(a0, a1, a2, a3);
             break;
         case SYS_sysinfo:
             result.ret = SysSysinfo(a0);
@@ -549,6 +580,9 @@ SyscallHandler::Result SyscallHandler::Handle(u64 nr,
             break;
         case SYS_pread64:
             result.ret = SysPread64(a0, a1, a2, a3);
+            break;
+        case SYS_pwrite64:
+            result.ret = SysPwrite64(a0, a1, a2, a3);
             break;
         case SYS_fstat:
             result.ret = SysFstat(a0, a1);
@@ -760,11 +794,25 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
     if (offset % GuestMemory::kGuestPageSize != 0) return -EINVAL_;
     const bool anonymous = (flags & GUEST_MAP_ANONYMOUS) != 0;
     if (!anonymous) {
-        // File-backed mappings: only private mappings are supported. Since
-        // guest pages are host RW anyway we map anonymous memory and pread
-        // the file contents into it (no copy-on-write, no write-back).
-        if (!(flags & GUEST_MAP_PRIVATE)) {
-            LOG_WARNING("guest mmap: shared file mappings not supported (fd {}, flags {:#x})", fd, flags);
+        // File-backed mappings use anonymous guest storage populated with
+        // pread. MAP_PRIVATE has snapshot semantics naturally. A read-only
+        // MAP_SHARED mapping is also safe as a snapshot because the guest
+        // cannot dirty it; writable shared mappings still need real writeback
+        // and coherence support.
+        const bool private_mapping = (flags & GUEST_MAP_PRIVATE) != 0;
+        const bool readonly_shared =
+                (flags & GUEST_MAP_SHARED) != 0 &&
+                (prot & GUEST_PROT_WRITE) == 0;
+        const char* shared_enabled = std::getenv("SVM_SYSCALL_MMAP_SHARED_READ");
+        const bool shared_disabled =
+                shared_enabled && std::strcmp(shared_enabled, "0") == 0;
+        if (!private_mapping && (!readonly_shared || shared_disabled)) {
+            LOG_WARNING(
+                    "guest mmap: writable/disabled shared file mapping not supported "
+                    "(fd {}, prot {:#x}, flags {:#x})",
+                    fd,
+                    prot,
+                    flags);
             return -ENOSYS_;
         }
         if (fd < 0) return -EBADF_;
@@ -971,6 +1019,18 @@ s64 SyscallHandler::SysGettimeofday(u64 tv, u64 tz) {
     return 0;
 }
 
+s64 SyscallHandler::SysTime(u64 tloc) {
+    struct timespec host_ts {};
+    if (::clock_gettime(CLOCK_REALTIME, &host_ts) != 0) {
+        return HostErrno();
+    }
+    const s64 seconds = host_ts.tv_sec;
+    if (tloc && !memory->TryWrite(tloc, seconds)) {
+        return -EFAULT_;
+    }
+    return seconds;
+}
+
 s64 SyscallHandler::SysNanosleep(u64 req_addr, u64 rem_addr) {
     GuestTimespec req{};
     if (!memory->TryRead(req_addr, req)) return -EFAULT_;
@@ -979,9 +1039,141 @@ s64 SyscallHandler::SysNanosleep(u64 req_addr, u64 rem_addr) {
     return 0;
 }
 
+s64 SyscallHandler::SysClockNanosleep(u64 clock_id,
+                                      u64 flags,
+                                      u64 req_addr,
+                                      u64 rem_addr) {
+    (void) rem_addr;  // No delivered guest signals, so no EINTR remainder.
+    if ((flags & ~u64{1}) != 0) return -EINVAL_;  // TIMER_ABSTIME
+
+    clockid_t host_clock;
+    switch (clock_id) {
+        case 0: host_clock = CLOCK_REALTIME; break;
+        case 1: host_clock = CLOCK_MONOTONIC; break;
+        default: return -EINVAL_;
+    }
+
+    GuestTimespec req{};
+    if (!memory->TryRead(req_addr, req)) return -EFAULT_;
+    if (req.sec < 0 || req.nsec < 0 || req.nsec >= 1'000'000'000) {
+        return -EINVAL_;
+    }
+
+    struct timespec delay{req.sec, req.nsec};
+    if (flags & 1) {
+        struct timespec now {};
+        if (::clock_gettime(host_clock, &now) != 0) return HostErrno();
+        if (req.sec < now.tv_sec ||
+            (req.sec == now.tv_sec && req.nsec <= now.tv_nsec)) {
+            return 0;
+        }
+        delay.tv_sec = req.sec - now.tv_sec;
+        delay.tv_nsec = req.nsec - now.tv_nsec;
+        if (delay.tv_nsec < 0) {
+            --delay.tv_sec;
+            delay.tv_nsec += 1'000'000'000;
+        }
+    }
+
+    while (::nanosleep(&delay, &delay) != 0) {
+        if (errno != EINTR) return HostErrno();
+    }
+    return 0;
+}
+
 s64 SyscallHandler::SysTimes(u64 buf) {
     GuestTms tms{};  // no per-thread CPU accounting: report zeros
     if (!memory->TryWrite(buf, tms)) return -EFAULT_;
+    return 0;
+}
+
+s64 SyscallHandler::SysSchedGetaffinity(u64 pid, u64 cpusetsize, u64 mask) {
+    (void) pid;  // SwiftVM exposes one virtual process containing all guest tids.
+    const long host_count = ::sysconf(_SC_NPROCESSORS_ONLN);
+    const u64 cpu_count = host_count > 0 ? static_cast<u64>(host_count) : 1;
+    const u64 result_size = std::max<u64>(sizeof(u64), ((cpu_count + 63) / 64) * sizeof(u64));
+    if (cpusetsize < result_size) return -EINVAL_;
+    if (!memory->RangeIsMapped(mask, result_size)) return -EFAULT_;
+
+    auto* guest_mask = static_cast<u8*>(memory->ToHost(mask));
+    std::memset(guest_mask, 0, static_cast<size_t>(result_size));
+    for (u64 cpu = 0; cpu < cpu_count; ++cpu) {
+        guest_mask[cpu / 8] |= static_cast<u8>(1u << (cpu % 8));
+    }
+    return static_cast<s64>(result_size);
+}
+
+s64 SyscallHandler::SysRtSigaction(u64 signal,
+                                   u64 act_addr,
+                                   u64 oldact_addr,
+                                   u64 sigset_size) {
+    if (const char* enabled = std::getenv("SVM_SYSCALL_RT_SIGACTION");
+        enabled && std::strcmp(enabled, "0") == 0) {
+        return -ENOSYS_;
+    }
+    if (signal == 0 || signal > 64 || sigset_size != sizeof(u64)) {
+        return -EINVAL_;
+    }
+    if (act_addr && (signal == 9 || signal == 19)) {  // SIGKILL / SIGSTOP
+        return -EINVAL_;
+    }
+
+    GuestSigAction action{};
+    if (act_addr && !memory->TryRead(act_addr, action)) {
+        return -EFAULT_;
+    }
+    if (oldact_addr) {
+        const GuestSigAction old_action = process->GetSignalAction(signal);
+        if (!memory->TryWrite(oldact_addr, old_action)) {
+            return -EFAULT_;
+        }
+    }
+    if (act_addr) {
+        // Signal delivery is not wired into the translated execution loop.
+        // Keep the Linux-visible disposition so registration/query semantics
+        // work; single-threaded benchmarks do not require asynchronous delivery.
+        process->SetSignalAction(signal, action);
+    }
+    return 0;
+}
+
+s64 SyscallHandler::SysRtSigprocmask(u64 how,
+                                     u64 set_addr,
+                                     u64 oldset_addr,
+                                     u64 sigset_size) {
+    if (const char* enabled = std::getenv("SVM_SYSCALL_RT_SIGPROCMASK");
+        enabled && std::strcmp(enabled, "0") == 0) {
+        return -ENOSYS_;
+    }
+    if (sigset_size != sizeof(u64)) return -EINVAL_;
+
+    u64 requested{};
+    if (set_addr && !memory->TryRead(set_addr, requested)) {
+        return -EFAULT_;
+    }
+
+    u64 next = signal_mask;
+    if (set_addr) {
+        constexpr u64 unmaskable =
+                (u64{1} << (9 - 1)) |   // SIGKILL
+                (u64{1} << (19 - 1));   // SIGSTOP
+        requested &= ~unmaskable;
+        switch (how) {
+            case 0: next |= requested; break;   // SIG_BLOCK
+            case 1: next &= ~requested; break;  // SIG_UNBLOCK
+            case 2: next = requested; break;    // SIG_SETMASK
+            default: return -EINVAL_;
+        }
+    }
+
+    if (oldset_addr && !memory->TryWrite(oldset_addr, signal_mask)) {
+        return -EFAULT_;
+    }
+    if (set_addr) {
+        // SwiftVM currently has no asynchronous guest-signal delivery. Keep
+        // the per-thread Linux-visible mask for libc and clone inheritance.
+        signal_mask = next;
+    }
     return 0;
 }
 
@@ -1031,6 +1223,17 @@ s64 SyscallHandler::SysPread64(u64 fd, u64 buf, u64 count, u64 offset) {
                        memory->ToHost(buf),
                        count,
                        static_cast<off_t>(offset));
+    return ret < 0 ? HostErrno() : ret;
+}
+
+s64 SyscallHandler::SysPwrite64(u64 fd, u64 buf, u64 count, u64 offset) {
+    if (offset > static_cast<u64>(INT64_MAX)) return -EINVAL_;
+    if (count == 0) return 0;
+    if (!memory->RangeIsMapped(buf, count)) return -EFAULT_;
+    auto ret = ::pwrite(static_cast<int>(fd),
+                        memory->ToHostConst(buf),
+                        count,
+                        static_cast<off_t>(offset));
     return ret < 0 ? HostErrno() : ret;
 }
 
@@ -1217,7 +1420,8 @@ s64 SyscallHandler::SysClone(u64 flags,
         !memory->RangeIsMapped(child_tid, sizeof(u32))) {
         return -EFAULT_;
     }
-    return clone_callback_(CloneRequest{flags, child_stack, parent_tid, child_tid, tls});
+    return clone_callback_(
+            CloneRequest{flags, child_stack, parent_tid, child_tid, tls, signal_mask});
 }
 
 s64 SyscallHandler::SysArchPrctl(u64 code, u64 addr) {

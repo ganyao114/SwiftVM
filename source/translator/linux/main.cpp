@@ -120,7 +120,7 @@ public:
         initial.rip.qword = image.entry;
         initial.rsp.qword = guest_sp;
         initial.ef.flags = 0x202;
-        const int leader_code = RunThread(initial, 1000, 0, true);
+        const int leader_code = RunThread(initial, 1000, 0, 0, true);
         JoinAll();
         const int exit_code = process->IsExiting() ? process->GetExitCode() : leader_code;
         LOG_INFO("Guest process exited with code {}", exit_code);
@@ -141,6 +141,7 @@ private:
         }
         const VAddr clear_child_tid =
                 (request.flags & kCloneChildClearTid) ? request.child_tid : 0;
+        const u64 signal_mask = request.signal_mask;
 
         // Both TID stores are visible before the child is allowed to run.
         if ((request.flags & kCloneParentSetTid) &&
@@ -154,8 +155,9 @@ private:
 
         active_threads.fetch_add(1, std::memory_order_acq_rel);
         try {
-            std::thread host_thread([this, child_context, child_tid, clear_child_tid] {
-                RunThread(child_context, child_tid, clear_child_tid, false);
+            std::thread host_thread(
+                    [this, child_context, child_tid, clear_child_tid, signal_mask] {
+                RunThread(child_context, child_tid, clear_child_tid, signal_mask, false);
             });
             {
                 std::lock_guard guard(threads_mutex);
@@ -173,6 +175,7 @@ private:
     int RunThread(x86::ThreadContext64 initial,
                   s64 tid,
                   VAddr initial_clear_child_tid,
+                  u64 initial_signal_mask,
                   bool leader) {
         auto* core = translator::x86::X86Core::Make(instance);
         {
@@ -183,7 +186,13 @@ private:
         std::memcpy(&ctx, &initial, sizeof(ctx));
 
         linux::SyscallHandler syscalls{
-                &memory, image.brk_start, linux::GuestISA::kX86_64, image.path, process, tid};
+                &memory,
+                image.brk_start,
+                linux::GuestISA::kX86_64,
+                image.path,
+                process,
+                tid,
+                initial_signal_mask};
         syscalls.SetClearChildTid(initial_clear_child_tid);
         syscalls.SetSmcInvalidate(
                 [this](VAddr start, VAddr end) { instance->InvalidateCodeRange(start, end); });

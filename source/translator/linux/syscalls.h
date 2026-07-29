@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -60,6 +61,7 @@ enum GuestSyscall : u64 {
     SYS_readv = 65,
     SYS_writev = 66,
     SYS_pread64 = 67,
+    SYS_pwrite64 = 68,
     SYS_readlinkat = 78,
     SYS_newfstatat = 79,
     SYS_fstat = 80,
@@ -70,7 +72,11 @@ enum GuestSyscall : u64 {
     SYS_set_robust_list = 99,
     SYS_nanosleep = 101,
     SYS_clock_gettime = 113,
+    SYS_clock_nanosleep = 115,
+    SYS_sched_getaffinity = 123,
     SYS_tgkill = 131,
+    SYS_rt_sigaction = 134,
+    SYS_rt_sigprocmask = 135,
     SYS_times = 153,
     SYS_uname = 160,
     SYS_gettimeofday = 169,
@@ -104,6 +110,7 @@ enum GuestSyscall : u64 {
     SYS_x64_unlink,
     SYS_x64_dup2,
     SYS_x64_arch_prctl,
+    SYS_x64_time,
 };
 
 // x86_64 Linux syscall numbers (arch/x86/entry/syscalls/syscall_64.tbl).
@@ -121,8 +128,11 @@ enum GuestSyscallX64 : u64 {
     X64_mprotect = 10,
     X64_munmap = 11,
     X64_brk = 12,
+    X64_rt_sigaction = 13,
+    X64_rt_sigprocmask = 14,
     X64_ioctl = 16,
     X64_pread64 = 17,
+    X64_pwrite64 = 18,
     X64_readv = 19,
     X64_writev = 20,
     X64_access = 21,
@@ -148,10 +158,13 @@ enum GuestSyscallX64 : u64 {
     X64_getegid = 108,
     X64_arch_prctl = 158,
     X64_gettid = 186,
+    X64_time = 201,
     X64_futex = 202,
+    X64_sched_getaffinity = 204,
     X64_getdents64 = 217,
     X64_set_tid_address = 218,
     X64_clock_gettime = 228,
+    X64_clock_nanosleep = 230,
     X64_exit_group = 231,
     X64_tgkill = 234,
     X64_openat = 257,
@@ -199,6 +212,16 @@ enum GuestErrno : s64 {
     ETIMEDOUT_ = 110,
 };
 
+// Linux x86_64/asm-generic kernel sigaction ABI. The signal mask passed to
+// rt_sigaction is one 64-bit kernel word even though libc's sigset_t is larger.
+struct GuestSigAction {
+    u64 handler;
+    u64 flags;
+    u64 restorer;
+    u64 mask;
+};
+static_assert(sizeof(GuestSigAction) == 32);
+
 // Process-wide state shared by every emulated guest thread. Guest address
 // mappings, the program break, futex queues, and exit_group are Linux process
 // state; keeping them here prevents each per-thread SyscallHandler from
@@ -214,6 +237,8 @@ public:
     s64 Futex(u64 uaddr, u64 op, u64 val, u64 timeout, u64 uaddr2, u64 val3);
     s64 WakeFutex(u64 uaddr, u32 count);
     bool StoreGuestU32(u64 uaddr, u32 value);
+    GuestSigAction GetSignalAction(u64 signal);
+    void SetSignalAction(u64 signal, const GuestSigAction& action);
 
     void RequestExitGroup(u8 code);
     [[nodiscard]] bool IsExiting() const {
@@ -244,6 +269,8 @@ private:
 
     std::mutex futex_mutex;
     std::unordered_map<VAddr, FutexQueue> futex_queues;
+    std::mutex signal_mutex;
+    std::array<GuestSigAction, 65> signal_actions{};
     std::atomic<s64> next_tid{1001};
     std::atomic_bool exiting{false};
     std::atomic<u8> exit_code{0};
@@ -260,11 +287,12 @@ public:
                             GuestISA isa = GuestISA::kArm64,
                             std::string exe_path = {},
                             std::shared_ptr<SyscallProcessState> process = {},
-                            s64 tid = 1000)
+                            s64 tid = 1000,
+                            u64 signal_mask = 0)
             : memory(memory), isa(isa), exe_path(std::move(exe_path)),
               process(process ? std::move(process)
                               : std::make_shared<SyscallProcessState>(memory, brk_base)),
-              tid(tid) {}
+              tid(tid), signal_mask(signal_mask) {}
 
     struct Result {
         s64 ret{};
@@ -279,6 +307,7 @@ public:
         VAddr parent_tid{};
         VAddr child_tid{};
         u64 tls{};
+        u64 signal_mask{};
     };
     using CloneCallback = std::function<s64(const CloneRequest&)>;
 
@@ -320,12 +349,18 @@ private:
     s64 SysUname(u64 buf);
     s64 SysClockGettime(u64 clock_id, u64 ts);
     s64 SysGettimeofday(u64 tv, u64 tz);
+    s64 SysTime(u64 tloc);
     s64 SysNanosleep(u64 req, u64 rem);
+    s64 SysClockNanosleep(u64 clock_id, u64 flags, u64 req, u64 rem);
     s64 SysTimes(u64 buf);
+    s64 SysSchedGetaffinity(u64 pid, u64 cpusetsize, u64 mask);
+    s64 SysRtSigaction(u64 signal, u64 act, u64 oldact, u64 sigset_size);
+    s64 SysRtSigprocmask(u64 how, u64 set, u64 oldset, u64 sigset_size);
     s64 SysOpenat(u64 dirfd, u64 path, u64 flags, u64 mode);
     s64 SysClose(u64 fd);
     s64 SysLseek(u64 fd, u64 offset, u64 whence);
     s64 SysPread64(u64 fd, u64 buf, u64 count, u64 offset);
+    s64 SysPwrite64(u64 fd, u64 buf, u64 count, u64 offset);
     s64 SysFstat(u64 fd, u64 statbuf);
     s64 SysFstatat(u64 dirfd, u64 path, u64 statbuf, u64 flags);
     s64 SysFaccessat(u64 dirfd, u64 path, u64 mode, u64 flags);
@@ -359,6 +394,7 @@ private:
     u64 robust_list_head{};
     u64 robust_list_len{};
     s64 tid{};
+    u64 signal_mask{};
     VAddr clear_child_tid{};
     // SMC callback — see SetSmcInvalidate. nullptr = no SMC tracking active.
     std::function<void(VAddr, VAddr)> smc_invalidate_;
