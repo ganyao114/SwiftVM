@@ -328,9 +328,9 @@ void JitContext::Forward(ir::Location location) {
                 } else {
                     // Target not yet compiled: fall back to the indirect
                     // link (dispatch table) if available, otherwise the
-                    // dispatcher.  This avoids the BlockLinkStub backpatch
-                    // path which is not SMC-safe (the patched B would
-                    // dangle after invalidation).
+                    // dispatcher.  Backpatching a direct B here would dangle
+                    // after invalidation, so the target-not-yet-compiled arm
+                    // never patches code in place.
                     if (self_module_forward &&
                         module_config.HasOpt(Optimizations::BlockLink)) {
                         u32 dispatcher_index = target_module->GetDispatchIndex(location);
@@ -550,20 +550,6 @@ vixl::aarch64::Label* JitContext::GetLabel(LocationDescriptor location) {
     } else {
         return &labels.try_emplace(location).first->second;
     }
-}
-
-void JitContext::BlockLinkStub(ir::Location location) {
-    Label current;
-    __ Bind(&current);
-    __ Adr(ip0, &current);
-    __ Str(ip0, MemOperand(state, state_offset_blocking_linkage_address));
-    __ Mov(ipw0, (u32)HaltReason::BlockLinkage);
-    __ Str(ipw0, MemOperand(state, state_offset_halt_reason));
-    __ Mov(ip0, cur_block->GetStartLocation().Value());
-    __ Str(ip0, MemOperand(state, state_offset_prev_loc));
-    __ Mov(ip0, location.Value());
-    __ Str(ip0, MemOperand(state, state_offset_current_loc));
-    __ Ret();
 }
 
 void JitContext::FlushLabels(VAddr target) {

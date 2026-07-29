@@ -105,8 +105,6 @@ public:
     [[nodiscard]] vixl::aarch64::Label *GetLabel(LocationDescriptor loc);
 
 private:
-    void BlockLinkStub(ir::Location location);
-
     void FlushLabels(VAddr target);
 
     // --- RegAlloc::MEM (spilled value) support ---------------------------
