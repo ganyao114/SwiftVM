@@ -1,10 +1,10 @@
-# SwiftVM 项目状态（2026-07-26）
+# SwiftVM 项目状态（2026-07-29）
 
 本文档记录当前里程碑状态、已验证能力、性能快照与已知问题。架构细节见 [ARCHITECTURE.md](../ARCHITECTURE.md)，x86 指令覆盖清单见 [x86-instruction-census.md](x86-instruction-census.md)。
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地。master = `76cdcd0`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）。master = `1bc324b`。
 
 ---
 
@@ -46,6 +46,13 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | x87 bench SVM_X87_JIT=1 | 2,000,001 calls / ~0.45s | FADD/FSUB 的 IXC 位精确守卫仍 bail |
 | compare/sqrt 循环 opt-in | 40,038 → 6 helper calls | 中盘内联收益 |
 | TOP 虚拟化 | stock bench 持平（0.45→0.46s) | bailout 主导，收益在 x87 密集内联段；默认 OFF |
+| FlagsElimination Carry Gate B 放开（`f4d67be`） | 指纹 IR −4.37%（120,000→114,756，4400 unit 零变化零 fallback）；flag 密集 kernel host_bytes −7~8%；墙钟 branch −52%、int −32.5%、mem −10.6%、call −5.5%（bench_run.py 15 reps 交错，rel MAD <1%），fp/func_tests/x87 噪声内 | 块内被全路径覆盖的 C 写删除；`needed = Flags::All` 块出口全 live 不动，跨块保守性不变；在线删除与离线全路径分类对账（avx_real 402/402 精确） |
+
+### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
+
+- **函数单元做大 / 跨块优化**：`c0b5861` 已扫 1→64 块/单元，墙钟全在 MAD 内、发射字节单调涨；`SVM_FUNC_LAZY=1`（默认）下每单元一块，跨块没有主体。
+- **x86 DirectBlockLink**：Mov+Br 无 backpatch 但跨 unit 仍非 SMC-safe（无 target→source incoming-link 表，ReclaimCode 释放后源块 Br 进已释放内存）；且开启即禁用整个 JIT disk cache（func_tests 热 cache 收益 ~11.4 ms vs 直接链接上界 ~0.01 ms）。
+- **分派序列折叠（Mov+Ldr→单 Ldr）**：差分实测四条指令合计 0.305–0.314 ns/次，kernel_call 6400 万次仅 ~20 ms（10%）；折叠上界 ~1.2%。
 
 ---
 
@@ -62,6 +69,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_ENABLE_JIT | 0/1 | 1 | 0=纯解释器 |
 | SVM_STATIC_REGS | 0/1 | 1 | RSP→x19、RBX→x20、RBP→x21 |
 | SVM_UNIFORM_ELIM | 0/1 | 1 | uniform 消除 pass |
+| SVM_FLAG_CARRY_ELIM | 0/1 | 1 | Carry Gate B（块内全路径覆盖 C 写删除）；=0 精确恢复旧 Gate B 行为 |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_FORCE_FIXED_STACK | 0/1 | — | 诊断：强制 guest 栈 fixed/fallback(布局 flake repro) |
 | SVM_GUEST_BITS | 0 或 20..47 | 32 | guest 地址窗口位宽。**0 = 无界（未隔离）**，需 `-DSWIFT_ALLOW_UNBOUNDED_GUEST=ON` 才编译进去，普通构建拒绝 |
