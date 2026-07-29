@@ -81,16 +81,27 @@ static bool LiveRangeCrossesHostGPRWrite(const HostGPRWriteMap& writes,
 
 class LinearScanAllocator {
 public:
-    explicit LinearScanAllocator(HIRFunction* function, backend::RegAlloc* alloc, u32 gpr_res,
-                                 u32 fpr_res)
+    explicit LinearScanAllocator(HIRFunction* function,
+                                 backend::RegAlloc* alloc,
+                                 u32 gpr_res,
+                                 u32 fpr_res,
+                                 bool single_block_fast_path = false)
             : function(function), block(), reg_alloc(alloc), live_interval(), active_lives(),
-              gpr_reserve(gpr_res), fpr_reserve(fpr_res) {
+              gpr_reserve(gpr_res), fpr_reserve(fpr_res),
+              single_block_fast_path(single_block_fast_path) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(function->MaxInstrCount());
+        if (single_block_fast_path) {
+            fast_active_lives.reserve(function->MaxInstrCount());
+        }
     }
 
-    explicit LinearScanAllocator(Block* block, backend::RegAlloc* alloc, u32 gpr_res, u32 fpr_res)
+    explicit LinearScanAllocator(Block* block,
+                                 backend::RegAlloc* alloc,
+                                 u32 gpr_res,
+                                 u32 fpr_res,
+                                 bool = false)
             : function(), block(block), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res) {
         active_gprs = alloc->GetGprs();
@@ -172,16 +183,23 @@ public:
         // Step 1: Collect live intervals
         PerfScope2 perf_collect_live{GetPerfStats2().collect_live};
         if (function) {
-            CollectLiveIntervals(function);
+            if (single_block_fast_path) {
+                CollectLiveIntervalsSingleBlock(function);
+            } else {
+                CollectLiveIntervals(function);
+            }
         } else {
             CollectLiveIntervals(block);
         }
         perf_collect_live.Stop();
 
         // Step 2: Sort live intervals
+        PerfScope2 perf_sort{GetPerfStats2().regalloc_sort};
         std::sort(live_interval.begin(), live_interval.end());
+        perf_sort.Stop();
 
         // Step 3: Alloc Registers
+        PerfScope2 perf_assign{GetPerfStats2().regalloc_assign};
         //
         // Instructions that define no value (VOID ops such as StoreMemory)
         // own no live interval, but the JIT still asks GetTmpX/GetTmpV for
@@ -237,12 +255,21 @@ public:
             // The lifetime model is the same one the register arms already
             // trust: `end` is the last instruction that names the value, so the
             // slot is reusable exactly when the register would have been.
-            active_lives.push_back(interval);
+            if (single_block_fast_path) {
+                fast_active_lives.push_back(interval);
+                std::push_heap(fast_active_lives.begin(), fast_active_lives.end(),
+                               [](const LiveInterval& left, const LiveInterval& right) {
+                                   return left.end > right.end;
+                               });
+            } else {
+                active_lives.push_back(interval);
+            }
             reg_alloc->SetActiveRegs(interval.inst->Id(), active_gprs, active_fprs);
             next_id = std::max(next_id, interval.start + 1);
         }
         // Fill any remaining instructions after the last interval start.
         fill_gap(instr_count);
+        perf_assign.Stop();
 
         if (spill_count) {
             LOG_WARNING("RegisterAllocPass: {} value(s) spilled to stack slots (highest slot {})",
@@ -330,6 +357,7 @@ private:
     }
 
     void CollectLiveIntervals(HIRFunction* hir_function) {
+        PerfScope2 perf_scan{GetPerfStats2().regalloc_live_scan};
         // A value referenced ONLY by a block terminal (terminal::If.cond, a
         // Switch dispatch value, ...) never appears in the HIRValue use list:
         // HIRFunction::UseInst walks instruction arguments only, and EndBlock
@@ -393,6 +421,8 @@ private:
                     };
             walk_terminal(lir_block->GetTerminal());
         }
+        perf_scan.Stop();
+        PerfScope2 perf_values{GetPerfStats2().regalloc_live_values};
         // GetHIRValues() is indexed by instruction id, so this visits values in
         // ascending id -- the order the linear scan below requires -- and holds a
         // null for every instruction that defines no value.
@@ -449,9 +479,144 @@ private:
             }
             live_interval.push_back({hir_value.value.Def(), start, end});
         }
+        perf_values.Stop();
+    }
+
+    void CollectLiveIntervalsSingleBlock(HIRFunction* hir_function) {
+        auto& rpo = hir_function->GetHIRBlocksRPO();
+        ASSERT_MSG(rpo.size() == 1, "single-block register allocator received {} blocks",
+                   rpo.size());
+        auto* lir_block = rpo.front().GetBlock();
+        const auto instr_count = static_cast<u32>(hir_function->MaxInstrCount());
+
+        // Exact specialization of the function collector above: instruction ids
+        // are dense in a one-block function, so two id-indexed arrays and a tiny
+        // write list replace three ordered maps. Interval construction order and
+        // every lifetime rule remain unchanged.
+        StackVector<u16, 64> actual_use_end{};
+        actual_use_end.resize(instr_count);
+        StackVector<std::pair<u16, u16>, 8> host_gpr_writes{};
+
+        PerfScope2 perf_scan{GetPerfStats2().regalloc_live_scan};
+        u16 block_end = 0;
+        for (auto& inst : lir_block->GetInstList()) {
+            block_end = std::max<u16>(block_end, inst.Id());
+            if (inst.GetOp() == OpCode::SetHostGPR) {
+                const auto host_reg = static_cast<u16>(inst.GetArg<Imm>(1).Get());
+                host_gpr_writes.emplace_back(host_reg, inst.Id());
+            }
+            auto record_use = [&actual_use_end, &inst](Value value) {
+                auto source = ResolveBitCastSource(value);
+                auto& end = actual_use_end[source.Id()];
+                end = std::max<u16>(end, inst.Id());
+            };
+            // Inline Inst::GetValues so the one-block collector does not build
+            // and destroy a temporary small_vector for every instruction.
+            // The slot walk and the Value/Lambda/Params cases are identical.
+            for (u8 i = 0; i < Inst::max_args; ++i) {
+                auto& arg = inst.ArgAt(i);
+                if (arg.IsValue()) {
+                    record_use(arg.Get<Value>());
+                } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
+                    record_use(arg.Get<Lambda>().GetValue());
+                } else if (arg.IsParams()) {
+                    for (auto param : arg.Get<Params>()) {
+                        if (auto data = param.data; data.IsValue()) {
+                            record_use(data.value);
+                        }
+                    }
+                }
+            }
+        }
+        if (block_end != 0) {
+            auto extend_use = [&actual_use_end, block_end](const Value& value) {
+                if (!value.Defined()) {
+                    return;
+                }
+                auto id = ResolveBitCastSource(value).Id();
+                auto& end = actual_use_end[id];
+                end = std::max(end, block_end);
+            };
+            std::function<void(const Terminal&)> walk_terminal =
+                    [&walk_terminal, &extend_use](const Terminal& term) {
+                        VisitVariant<void>(term, [&walk_terminal, &extend_use](auto t) {
+                            using T = std::decay_t<decltype(t)>;
+                            if constexpr (std::is_same_v<T, terminal::If>) {
+                                extend_use(t.cond);
+                                walk_terminal(t.then_);
+                                walk_terminal(t.else_);
+                            } else if constexpr (std::is_same_v<T, terminal::Switch>) {
+                                extend_use(t.value);
+                                for (auto& c : t.cases) {
+                                    walk_terminal(c.then);
+                                }
+                            } else if constexpr (std::is_same_v<T, terminal::Condition>) {
+                                walk_terminal(t.then_);
+                                walk_terminal(t.else_);
+                            } else if constexpr (std::is_same_v<T, terminal::CheckHalt>) {
+                                walk_terminal(t.else_);
+                            }
+                        });
+                    };
+            walk_terminal(lir_block->GetTerminal());
+        }
+        perf_scan.Stop();
+
+        PerfScope2 perf_values{GetPerfStats2().regalloc_live_values};
+        for (auto* hir_value_ptr : hir_function->GetHIRValues()) {
+            if (!hir_value_ptr) {
+                continue;
+            }
+            auto& hir_value = *hir_value_ptr;
+            auto* instr = hir_value.value.Def();
+            auto start = hir_value.GetOrderId();
+            u32 end{hir_value.GetOrderId()};
+            // Preserve the generic collector's use-list maximum even when an
+            // optimization has left a stale use behind. The current-argument
+            // scan below is the matching second maximum: it catches rewritten
+            // BitCast roots whose new use is absent from the old list.
+            std::for_each(hir_value.uses.begin(), hir_value.uses.end(), [&end](auto& use) {
+                end = std::max(end, static_cast<u32>(use.inst->Id()));
+            });
+            end = std::max<u32>(end, actual_use_end[instr->Id()]);
+
+            const bool host_reg_alias = instr->IsGetHostRegOperation();
+            const bool full_gpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostGPR &&
+                                      GetValueSizeByte(instr->ReturnType()) == sizeof(u64);
+            const bool fixed_fpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostFPR;
+            const auto host_index =
+                    host_reg_alias ? static_cast<u16>(instr->GetArg<Imm>(0).Get()) : u16{};
+            const bool crosses_host_write =
+                    full_gpr_get &&
+                    std::any_of(host_gpr_writes.begin(), host_gpr_writes.end(),
+                                [host_index, instr, end](const auto& write) {
+                                    return write.first == host_index && instr->Id() < write.second &&
+                                           write.second <= end;
+                                });
+            const bool fixed_gpr_get = full_gpr_get && !crosses_host_write;
+            if (fixed_fpr_get || fixed_gpr_get) {
+                if (fixed_fpr_get) {
+                    reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{host_index});
+                } else {
+                    reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{host_index});
+                }
+                continue;
+            }
+            if (instr->IsBitCastOperation()) {
+                auto from = instr->GetArg<Value>(0);
+                reg_alloc->MapReference(from.Id(), instr->Id());
+                continue;
+            }
+            if (instr->IsPseudoOperation()) {
+                start = instr->GetArg<Value>(0).Id();
+            }
+            live_interval.push_back({instr, start, end});
+        }
+        perf_values.Stop();
     }
 
     void CollectLiveIntervals(Block* lir_block) {
+        PerfScope2 perf_scan{GetPerfStats2().regalloc_live_scan};
         ASSERT_MSG(lir_block, "block == null");
         ASSERT_MSG(!lir_block->IsEmptyBlock(), "block is empty");
         StackVector<u16, 64> use_end{};
@@ -514,6 +679,8 @@ private:
                     };
             walk_terminal(lir_block->GetTerminal());
         }
+        perf_scan.Stop();
+        PerfScope2 perf_values{GetPerfStats2().regalloc_live_values};
         for (auto& instr : lir_block->GetInstList()) {
             const bool host_reg_alias = instr.IsGetHostRegOperation();
             const bool full_gpr_get = host_reg_alias && instr.GetOp() == OpCode::GetHostGPR &&
@@ -567,26 +734,43 @@ private:
                 live_interval.push_back({&instr, start, end});
             }
         }
+        perf_values.Stop();
     }
 
     void ExpireOldIntervals(LiveInterval& current) {
+        if (single_block_fast_path) {
+            const auto later_end = [](const LiveInterval& left, const LiveInterval& right) {
+                return left.end > right.end;
+            };
+            while (!fast_active_lives.empty() &&
+                   fast_active_lives.front().end < current.start) {
+                std::pop_heap(fast_active_lives.begin(), fast_active_lives.end(), later_end);
+                ReleaseInterval(fast_active_lives.back());
+                fast_active_lives.pop_back();
+            }
+            return;
+        }
         for (auto it = active_lives.begin(); it != active_lives.end();) {
             if (it->end < current.start) {
-                auto value_type = reg_alloc->ValueType(ir::Value(it->inst));
-                if (value_type == backend::RegAlloc::GPR) {
-                    FreeGPR(reg_alloc->ValueGPR(it->inst->Id()).id);
-                } else if (value_type == backend::RegAlloc::FPR) {
-                    FreeFPR(reg_alloc->ValueFPR(it->inst->Id()).id);
-                } else {
-                    auto slot = reg_alloc->ValueMem(it->inst->Id()).offset;
-                    FreeSpill(slot);
-                    if (IsFloatValue(it->inst)) {
-                        FreeSpill(slot + 1);
-                    }
-                }
+                ReleaseInterval(*it);
                 it = active_lives.erase(it);  // Remove expired intervals
             } else {
                 ++it;
+            }
+        }
+    }
+
+    void ReleaseInterval(const LiveInterval& interval) {
+        auto value_type = reg_alloc->ValueType(ir::Value(interval.inst));
+        if (value_type == backend::RegAlloc::GPR) {
+            FreeGPR(reg_alloc->ValueGPR(interval.inst->Id()).id);
+        } else if (value_type == backend::RegAlloc::FPR) {
+            FreeFPR(reg_alloc->ValueFPR(interval.inst->Id()).id);
+        } else {
+            auto slot = reg_alloc->ValueMem(interval.inst->Id()).offset;
+            FreeSpill(slot);
+            if (IsFloatValue(interval.inst)) {
+                FreeSpill(slot + 1);
             }
         }
     }
@@ -710,10 +894,12 @@ private:
     backend::RegAlloc* reg_alloc;
     Vector<LiveInterval> live_interval;
     List<LiveInterval> active_lives;
+    Vector<LiveInterval> fast_active_lives;
     backend::GPRSMask active_gprs;
     backend::FPRSMask active_fprs;
     const u32 gpr_reserve{0};
     const u32 fpr_reserve{0};
+    const bool single_block_fast_path{false};
     Vector<bool> spill_slots{};
     // Spill telemetry (reported at the end of AllocateRegisters): spilling
     // has never triggered on current workloads, so any hit is worth a log
@@ -858,7 +1044,9 @@ static void CollectUnitBudget(HIRFunction* function, u32& gpr, u32& fpr, u32& re
 }
 
 template <typename Unit>
-static void RunVerified(Unit* unit, backend::RegAlloc* reg_alloc) {
+static void RunVerified(Unit* unit,
+                        backend::RegAlloc* reg_alloc,
+                        bool single_block_fast_path = false) {
     // Attempt one: the ordinary emitter shape. Every unit in the corpus stops
     // here, so nothing above this point may walk the instruction list -- the
     // whole-unit budget scan below is deliberately deferred until an escalation
@@ -866,9 +1054,12 @@ static void RunVerified(Unit* unit, backend::RegAlloc* reg_alloc) {
     // notices a redundant pass).
     {
         LinearScanAllocator scan{unit, reg_alloc, backend::kDefaultScratchGPR,
-                                 backend::kDefaultScratchFPR};
+                                 backend::kDefaultScratchFPR, single_block_fast_path};
         scan.AllocateRegisters();
-        if (scan.Verify()) {
+        PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
+        const bool verified = scan.Verify();
+        perf_verify.Stop();
+        if (verified) {
             return;
         }
     }
@@ -894,9 +1085,12 @@ static void RunVerified(Unit* unit, backend::RegAlloc* reg_alloc) {
     };
     for (auto& rung : ladder) {
         reg_alloc->ResetAllocations();
-        LinearScanAllocator scan{unit, reg_alloc, rung.gpr, rung.fpr};
+        LinearScanAllocator scan{unit, reg_alloc, rung.gpr, rung.fpr, single_block_fast_path};
         scan.AllocateRegisters();
-        if (scan.Verify()) {
+        PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
+        const bool verified = scan.Verify();
+        perf_verify.Stop();
+        if (verified) {
             LOG_WARNING("RegisterAllocPass: scratch reserve escalated to {}/{}", rung.gpr,
                         rung.fpr);
             return;
@@ -912,7 +1106,19 @@ static void RunVerified(Unit* unit, backend::RegAlloc* reg_alloc) {
 }
 
 void RegisterAllocPass::Run(HIRFunction* hir_function, backend::RegAlloc* reg_alloc) {
-    RunVerified(hir_function, reg_alloc);
+    static const bool single_block_fast_path = [] {
+        const char* env = PerfGetenv("SVM_RA_1BLK");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
+    Run(hir_function, reg_alloc, single_block_fast_path);
+}
+
+void RegisterAllocPass::Run(HIRFunction* hir_function,
+                            backend::RegAlloc* reg_alloc,
+                            bool single_block_fast_path) {
+    const bool use_fast_path =
+            single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
+    RunVerified(hir_function, reg_alloc, use_fast_path);
 }
 
 void RegisterAllocPass::Run(ir::Block* block, backend::RegAlloc* reg_alloc) {

@@ -13,6 +13,12 @@ class RegisterAllocPass {
 public:
     static void Run(HIRBuilder *hir_builder, backend::RegAlloc *reg_alloc);
     static void Run(HIRFunction *hir_function, backend::RegAlloc *reg_alloc);
+    // Explicit selector used by the equivalence tests to run both algorithms
+    // in one process. Production callers use the overload above, which reads
+    // SVM_RA_1BLK once and defaults to the fast path.
+    static void Run(HIRFunction *hir_function,
+                    backend::RegAlloc *reg_alloc,
+                    bool single_block_fast_path);
     static void Run(ir::Block *block, backend::RegAlloc *reg_alloc);
 };
 

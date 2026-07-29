@@ -1045,6 +1045,96 @@ TEST_CASE("Register allocation gives every spilled value a private slot") {
     check_disjoint_slots(5, 5, 1, 1);   // odd-sized stack before a SIMD pair
 }
 
+TEST_CASE("Single-block register allocation is map-identical to the general path") {
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::backend;
+
+    // One real block containing all high-risk shapes: fixed host-register
+    // aliases (both crossing and non-crossing writes), a host call, a terminal-
+    // only value, a BitCast alias, and enough simultaneous scalar liveness to
+    // force spills in the deliberately small register pool below.
+    HIRBuilder builder{1, true};
+    auto* function = builder.AppendFunction(Location{0x1000}, Location{0x1100});
+
+    auto pinned =
+            function->GetHostGPR(HostRegIndex(0), Imm{0u}).SetType(ValueType::U64);
+    auto snapshot =
+            function->GetHostGPR(HostRegIndex(1), Imm{0u}).SetType(ValueType::U64);
+    auto fixed_fpr =
+            function->GetHostFPR(HostRegIndex(2), Imm{0u}).SetType(ValueType::V128);
+
+    std::vector<Value> live;
+    for (std::uint64_t i = 0; i < 14; ++i) {
+        live.push_back(function->LoadImm(Imm{0x100u + i}).SetType(ValueType::U64));
+    }
+    auto alias = function->BitCast(live[3]).SetType(ValueType::U64);
+
+    // The SetHostGPR crosses snapshot's lifetime, so snapshot must receive a
+    // normal allocation instead of aliasing host register 1.
+    function->SetHostGPR(live[0], HostRegIndex(1), Imm{0u});
+    auto pinned_use = function->Add(pinned, Operand{live[1]}).SetType(ValueType::U64);
+    auto snapshot_use =
+            function->Add(snapshot, Operand{alias}).SetType(ValueType::U64);
+
+    Params params{};
+    params.Push(live[2]);
+    params.Push(snapshot_use);
+    params.Push(pinned_use);
+    function->CallDynamic(Lambda{Imm{1ull}}, params);
+
+    // Consume the pressure values after the call so all of them cross it.
+    Value sum = live.back();
+    for (int i = static_cast<int>(live.size()) - 2; i >= 0; --i) {
+        sum = function->Add(sum, Operand{live[i]}).SetType(ValueType::U64);
+    }
+    sum = function->Add(sum, Operand{snapshot_use}).SetType(ValueType::U64);
+    function->StoreUniform(Uniform{0, ValueType::U64}, sum);
+    function->StoreUniform(Uniform{16, ValueType::V128}, fixed_fpr);
+
+    auto terminal_cond = function->TestNotZero(live[4]);
+    function->EndBlock(terminal::If{
+            terminal_cond, terminal::ReturnToDispatch{}, terminal::ReturnToHost{}});
+    function->EndFunction();
+    function->ComputeRPO();
+    function->IdByRPO();
+    REQUIRE(function->GetHIRBlocksRPO().size() == 1);
+
+    // Bits set are unavailable. Leave six allocatable GPRs/FPRs, less the
+    // default scratch reserve, so the block must take the spill path.
+    constexpr std::uint32_t available_gprs = 0x000003f0u;  // x4..x9
+    constexpr std::uint32_t available_fprs = 0x00000f78u;  // v3..v6, v8..v11
+    GPRSMask gprs{~available_gprs};
+    FPRSMask fprs{~available_fprs};
+    RegAlloc general{function->MaxInstrCount(), gprs, fprs};
+    RegAlloc fast{function->MaxInstrCount(), gprs, fprs};
+    RegAlloc selected{function->MaxInstrCount(), gprs, fprs};
+
+    RegisterAllocPass::Run(function, &general, false);
+    RegisterAllocPass::Run(function, &fast, true);
+    RegisterAllocPass::Run(function, &selected);
+
+    REQUIRE(general.MapCount() == fast.MapCount());
+    bool saw_spill = false;
+    for (std::uint32_t id = 0; id < general.MapCount(); ++id) {
+        INFO("allocation map id " << id);
+        REQUIRE(general.Mapping(id) == fast.Mapping(id));
+        saw_spill |= general.Mapping(id).type == RegAlloc::MEM;
+    }
+    REQUIRE(saw_spill);
+    REQUIRE(general.ValueType(pinned) == RegAlloc::GPR);
+    REQUIRE(general.ValueGPR(pinned).id == 0);
+    REQUIRE(general.ValueType(snapshot) != RegAlloc::REF);
+    REQUIRE(general.ValueType(fixed_fpr) == RegAlloc::FPR);
+    REQUIRE(general.ValueFPR(fixed_fpr).id == 2);
+
+    const char* env = std::getenv("SVM_RA_1BLK");
+    const auto& expected = env && std::strcmp(env, "0") == 0 ? general : fast;
+    for (std::uint32_t id = 0; id < selected.MapCount(); ++id) {
+        INFO("production selector map id " << id);
+        REQUIRE(selected.Mapping(id) == expected.Mapping(id));
+    }
+}
+
 // Builds a block that keeps `live` scalar values simultaneously live across a
 // VecFAdd -- the emitter with the largest scratch appetite in the backend
 // (JitTranslator::EmitVecFloatNaNFixup holds eight GPRs at once). Consuming

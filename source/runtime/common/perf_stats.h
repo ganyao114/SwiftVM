@@ -80,6 +80,11 @@ struct PerfStats2 {
     PerfCounter2 id_rpo_post;
     PerfCounter2 regalloc_total;
     PerfCounter2 collect_live;
+    PerfCounter2 regalloc_live_scan;
+    PerfCounter2 regalloc_live_values;
+    PerfCounter2 regalloc_sort;
+    PerfCounter2 regalloc_assign;
+    PerfCounter2 regalloc_verify;
 
     PerfCounter2 codegen_total;
     PerfCounter2 codegen_prologue;
@@ -113,7 +118,7 @@ struct PerfStats2 {
     std::atomic<unsigned long long> coarse_scope_calls{0};
     std::atomic<unsigned long long> translate_probe_calls{0};
 
-    static constexpr std::array<const char*, 22> kGetenvNames{{
+    static constexpr std::array<const char*, 23> kGetenvNames{{
             "SVM_FUNC_LAZY",
             "SVM_DUMP_IR",
             "SVM_X87_TOPVIRT",
@@ -123,6 +128,7 @@ struct PerfStats2 {
             "SVM_CONST_CSE",
             "SVM_UNIFORM_DSE",
             "SVM_FLAG_CARRY_ELIM",
+            "SVM_RA_1BLK",
             "SVM_FLAG_NARROW",
             "SVM_AVX",
             "SVM_BMI",
@@ -228,6 +234,11 @@ inline void PerfDumpAtExit() {
     PERF2_DUMP(id_rpo_post);
     PERF2_DUMP(regalloc_total);
     PERF2_DUMP(collect_live);
+    PERF2_DUMP(regalloc_live_scan);
+    PERF2_DUMP(regalloc_live_values);
+    PERF2_DUMP(regalloc_sort);
+    PERF2_DUMP(regalloc_assign);
+    PERF2_DUMP(regalloc_verify);
     PERF2_DUMP(codegen_total);
     PERF2_DUMP(codegen_prologue);
     PERF2_DUMP(codegen_body);

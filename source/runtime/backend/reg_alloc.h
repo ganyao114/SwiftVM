@@ -52,6 +52,8 @@ public:
         return mask & (T(1) << bit);
     }
 
+    bool operator==(const RegisterMask&) const = default;
+
     void Mark(u32 bit) {
         mask |= (T(1) << bit);
     }
@@ -161,6 +163,8 @@ public:
         u16 slot{};
         GPRSMask dirty_gprs{0};
         FPRSMask dirty_fprs{0};
+
+        bool operator==(const Map&) const = default;
     };
 
     [[nodiscard]] const GPRSMask& GetGprs() const;
@@ -189,6 +193,7 @@ public:
     [[nodiscard]] GPRSMask DirtyGPR(u32 id) const { return alloc_result[id].dirty_gprs; }
     [[nodiscard]] FPRSMask DirtyFPR(u32 id) const { return alloc_result[id].dirty_fprs; }
     [[nodiscard]] u32 MapCount() const { return static_cast<u32>(alloc_result.size()); }
+    [[nodiscard]] const Map& Mapping(u32 id) const { return alloc_result[id]; }
 
     void SetCurrent(ir::Inst *inst);
 
