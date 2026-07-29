@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）已落地。master = `4fb9ee1`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）已落地。master = `7e2a9c5`。
 
 ---
 
@@ -54,6 +54,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | decode 前端分解（`7a3c5d6` 探针实测，15 语料 315 轮三状态轮换） | decode 桶内：**lowering 63.2%（188.9 ns/指令）**、distorm 14.7%（43.8 ns/次）、预分发 3.1%、外围簿记 3.5%、取指 1.9%、裸解码 0.9%、closure 12.8%；distorm top-20 opcode 覆盖 89.56%（MOV 31.02%）；VEX 裸解析 3.35 ns/次、AVX handler 143.5 ns/条 | SVM_DECODE_PROF 探针（SVM_PROF2 之上加开关），叶 scope 15.226ns/端到端 15.787ns 每边界扣除；探针开/关指纹均零 diff；结论：lowering 是唯一主体（≈翻译 7.2%），"换解码器"上限仅 ~1.7% 翻译，降为二级项目 |
 | lowering 桶分解（`77d1993` 探针实测，10 语料三态轮换） | lowering 桶内：**寄存器读写/值物化 46.3%（≈翻译 3.3%）**、**flags 簿记 18.3%（≈1.3%）**、分发 10.6%、地址解析 5.8%、访存决策 3.7%、handler 剩余 15.4%；MOV 142.5 ns/条（频率 31% 成本 20%），CPUID 6518 ns/条但全语料仅 9 次；AVX 构成不同构（flags≈0、regvalue 54.6%） | SVM_LOW_PROF 逐指令 thread_local 记账 + 最外层 part 归属，26.4ns/边界回归扣除；探针开/关指纹均零 diff；结论：压缩对象是 regvalue+flags（输出恒等约束下），地址/访存路径无主体 |
 | top-N distorm 快速通道（`4fb9ee1`） | distorm 调用 −75.6%（func_tests 5658→1379）；distorm 桶 −67~68%；decode 桶 −1.87~1.94%（两语料一致）；translate −0.2~0.6%（方向全正、亚 1%） | 保守裸解码 top-20 形状（MOV/PUSH/POP/RET/短 Jcc/ALU/LEA/CALL/JMP/MOVZX/SHL/SHR），不确定编码一律回退 distorm；`SVM_DISTORM_VERIFY=1` 双解码逐字段对账 52,024 次 + 109 万 SIB 扫描零不一致；指纹两态零 diff |
+| vixl EmissionCheckScope 快路径（`7e2a9c5`） | vixl 桶分解：Emit* 外层 49% / 编码本体 34.4% / 码缓冲 14.7% / 池修正 1.8%；两语料 buffer 增长 0 次（增长策略路线数据不支持）；实测 codegen 桶 −3.8~8.1%、translate −0.05~4.16%（高负载下方向一致） | literal/veneer 池均空 + 缓冲充足时跳过 EnsureSpaceFor/pool 协议（该条件下原路径确定性无动作）；VIXL_DEBUG 恒走通用路径；lldb 禁 ASLR 1,145 unit 490KB host 文本两态 cmp=0；`SVM_VIXL_FAST=0` 回退、`SVM_VIXL_PROF` 细分探针 |
 
 ### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
 
@@ -91,6 +92,8 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_LOW_PROF | 0/1 | 0 | lowering 桶细分探针（dispatch/address/memory/flags/regvalue part 归属 + opcode/group/kind 三套桶）；需同时 SVM_PROF2=1 SVM_DECODE_PROF=1；发射中性，默认关闭 |
 | SVM_DISTORM_FAST | 0/1 | 1 | top-N distorm 快速通道；=0 全部回退 distorm（两路 IR 恒等） |
 | SVM_DISTORM_VERIFY | 0/1 | 0 | 双解码逐字段对账（不一致强制采用 distorm 结果并计数），审计用 |
+| SVM_VIXL_FAST | 0/1 | 1 | vixl EmissionCheckScope 快路径；=0 走原通用协议（两路 host 字节逐字节一致） |
+| SVM_VIXL_PROF | 0/1 | 0 | vixl 发射细分探针（Emit 外层/编码本体/码缓冲/池修正）；发射中性，默认关闭 |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_FORCE_FIXED_STACK | 0/1 | — | 诊断：强制 guest 栈 fixed/fallback(布局 flake repro) |
 | SVM_GUEST_BITS | 0 或 20..47 | 32 | guest 地址窗口位宽。**0 = 无界（未隔离）**，需 `-DSWIFT_ALLOW_UNBOUNDED_GUEST=ON` 才编译进去，普通构建拒绝 |
