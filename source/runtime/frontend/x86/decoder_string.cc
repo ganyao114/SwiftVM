@@ -360,6 +360,7 @@ void X64Decoder::DecodeMovs(_DInst& insn) {
 }
 
 void X64Decoder::DecodeStos(_DInst& insn) {
+    swift::runtime::PerfLoweringHandlerBegin();
     auto& op0 = insn.ops[0];
     const auto size = GetSize(op0.size);
     auto dst_reg = is_64bit ? _RegisterType::R_RDI : _RegisterType::R_EDI;

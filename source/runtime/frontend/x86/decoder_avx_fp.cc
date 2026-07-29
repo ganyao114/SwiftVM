@@ -203,6 +203,8 @@ _RegisterType GprOf(u32 index, bool is_64bit) {
 // ever does, it decodes here as a flat access, so this is a deviation worth
 // knowing about rather than a silent nonexistent case.
 ir::Value X64Decoder::VexAddress(const VexInsn& v) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::Address};
     const auto type = is_64bit ? ir::ValueType::U64 : ir::ValueType::U32;
     const auto disp = static_cast<s64>(v.displacement);
     if (v.rip_relative) {

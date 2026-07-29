@@ -189,6 +189,8 @@ bool X64Decoder::VexTsoOrdered(const VexInsn& insn) const {
 }
 
 ir::Value X64Decoder::MemLoad(const ir::Operand& addr, ir::ValueType type, bool tso) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::Memory};
     if (tso) {
         return assembler->LoadMemoryTSO(addr).SetType(type);
     }
@@ -196,6 +198,8 @@ ir::Value X64Decoder::MemLoad(const ir::Operand& addr, ir::ValueType type, bool 
 }
 
 void X64Decoder::MemStore(const ir::Operand& addr, ir::Value value, bool tso) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::Memory};
     if (tso) {
         assembler->StoreMemoryTSO(addr, value);
     } else {
@@ -258,6 +262,7 @@ static constexpr size_t kFetchWindow = 0x10;
 void X64Decoder::Decode() {
     pc = start;
     swift::runtime::PerfDecodeRunEmptyMicrobench();
+    swift::runtime::PerfLoweringRunEmptyMicrobench();
     const bool decode_prof = swift::runtime::PerfDecodeDetailEnabled();
     u64 prior_fetch_page0 = UINT64_MAX;
     u64 prior_fetch_page1 = UINT64_MAX;
@@ -452,12 +457,23 @@ void X64Decoder::Decode() {
                 // No opcode collision: BMI lives on 0F38 F2/F3/F5/F6/F7 and
                 // 0F3A F0, while the AVX handlers' F2..F6 cases are all on the
                 // 0F map.
-                if (DecodeBmi(vex) ||
-                    (avx_on &&
-                     (DecodeAvxMul(vex) || DecodeAvxFma(vex) || DecodeAvxInt(vex) ||
-                      DecodeAvxFp(vex) || DecodeAvxHadd(vex) || DecodeAvxBlend(vex) ||
-                      DecodeAvxGather(vex) || DecodeAvxMisc(vex) ||
-                      DecodeAvxSse4(vex) || DecodeSse42StrVex(vex)))) {
+                swift::runtime::PerfDecodeScope2 perf_vex_lowering{
+                        swift::runtime::GetPerfStats2().decode_lowering,
+                        swift::runtime::PerfDecodePath2::Vex};
+                const unsigned vex_operands =
+                        2u + unsigned(vex.vvvv_valid) + unsigned(vex.has_imm8);
+                swift::runtime::PerfLoweringBegin(
+                        UINT32_MAX, vex_operands, !vex.RmIsRegister(), true);
+                const bool vex_lowered =
+                        DecodeBmi(vex) ||
+                        (avx_on &&
+                         (DecodeAvxMul(vex) || DecodeAvxFma(vex) || DecodeAvxInt(vex) ||
+                          DecodeAvxFp(vex) || DecodeAvxHadd(vex) || DecodeAvxBlend(vex) ||
+                          DecodeAvxGather(vex) || DecodeAvxMisc(vex) ||
+                          DecodeAvxSse4(vex) || DecodeSse42StrVex(vex)));
+                const auto vex_lowering_ns = perf_vex_lowering.Stop();
+                swift::runtime::PerfLoweringFinish(vex_lowering_ns, vex_lowered);
+                if (vex_lowered) {
                     assembler->AdvancePC(ir::Imm{vex.length});
                     end_decode = assembler->EndCommit();
                     const auto vex_ns = perf_raw.Stop();
@@ -633,8 +649,18 @@ void X64Decoder::Decode() {
         swift::runtime::PerfDecodeScope2 perf_lowering{
                 swift::runtime::GetPerfStats2().decode_lowering,
                 swift::runtime::PerfDecodePath2::Lowering};
+        unsigned operand_count = 0;
+        bool has_memory = false;
+        for (const auto& op : insn.ops) {
+            if (op.type == O_NONE) continue;
+            ++operand_count;
+            has_memory = has_memory || op.type == O_SMEM || op.type == O_MEM ||
+                         op.type == O_DISP;
+        }
+        swift::runtime::PerfLoweringBegin(insn.opcode, operand_count, has_memory);
         const bool lowered = DecodeSwitch(insn);
-        perf_lowering.Stop();
+        const auto lowering_ns = perf_lowering.Stop();
+        swift::runtime::PerfLoweringFinish(lowering_ns, lowered);
         if (!lowered) {
             Interrupt(InterruptReason::FALLBACK);
             break;
@@ -643,8 +669,17 @@ void X64Decoder::Decode() {
             swift::runtime::PerfDecodeScope2 perf_bookkeeping_post{
                     swift::runtime::GetPerfStats2().decode_bookkeeping,
                     swift::runtime::PerfDecodePath2::Bookkeeping};
-            assembler->AdvancePC(ir::Imm{insn.size});
-            end_decode = assembler->EndCommit();
+            {
+                swift::runtime::PerfDecodeScope2 perf_advance{
+                        swift::runtime::GetPerfStats2().decode_advance_pc,
+                        swift::runtime::PerfDecodePath2::Bookkeeping};
+                assembler->AdvancePC(ir::Imm{insn.size});
+            }
+            {
+                swift::runtime::PerfDecodeScope2 perf_end_commit{
+                        swift::runtime::GetPerfStats2().decode_end_commit};
+                end_decode = assembler->EndCommit();
+            }
         }
     }
 }
@@ -1844,6 +1879,8 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
 }
 
 ir::Value X64Decoder::R(_RegisterType reg) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     ASSERT(reg <= _RegisterType::R_RIP);
     auto& info = x86_regs_table[reg];
     if (info.high && info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::R15) {
@@ -1857,6 +1894,8 @@ ir::Value X64Decoder::R(_RegisterType reg) {
 }
 
 ir::Value X64Decoder::V(_RegisterType reg) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     ASSERT(reg <= _RegisterType::R_YMM15);
     return __ LoadUniform(ToVReg(x86_regs_table[reg]));
 }
@@ -1887,6 +1926,8 @@ ir::Value X64Decoder::NarrowTo(ir::Value value, ir::ValueType type) {
 }
 
 void X64Decoder::R(_RegisterType reg, ir::Value value) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     auto& info = x86_regs_table[reg];
     if (info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::R15) {
         if (info.high) {
@@ -1912,6 +1953,8 @@ void X64Decoder::R(_RegisterType reg, ir::Value value) {
 }
 
 void X64Decoder::V(_RegisterType reg, ir::Value value) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     __ StoreUniform(ToVReg(x86_regs_table[reg]), value);
 }
 
@@ -1923,6 +1966,8 @@ void X64Decoder::Interrupt(InterruptReason reason) {
 }
 
 ir::BOOL X64Decoder::CheckCond(Cond cond) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::Flags};
     switch (cond) {
         case Cond::AL:
             return __ LoadImm(ir::Imm(true));
@@ -2016,6 +2061,8 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
 }
 
 ir::Value X64Decoder::CarryValue() {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::Flags};
     auto raw = __ TestFlags(ir::Flags::Carry).SetType(ir::ValueType::U8);
     switch (carry_) {
         case CarryPolarity::Inverted:
@@ -2030,6 +2077,8 @@ ir::Value X64Decoder::CarryValue() {
 }
 
 void X64Decoder::StorePolarity(bool inverted) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::Flags};
     // StoreUniform uses the value's width, not the Uniform declaration's
     // width. Keep this byte-typed so it cannot overwrite the adjacent DF byte.
     __ StoreUniform(PolarityUniform(), __ LoadImm(ir::Imm(u8(inverted ? 1 : 0))));
@@ -2058,6 +2107,8 @@ void X64Decoder::CondGoto(ir::BOOL cond, ir::Lambda then_, ir::Location else_) {
 }
 
 ir::Value X64Decoder::ToValue(const ir::DataClass& data) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     return data.IsImm() ? __ LoadImm(data.imm) : data.value;
 }
 
@@ -2191,6 +2242,8 @@ ir::Value X64Decoder::SegmentBase(_RegisterType segment) {
 }
 
 X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::Address};
     Operand address_operand{};
     switch (op.type) {
         case O_SMEM: {
@@ -2569,21 +2622,33 @@ ir::Uniform X64Decoder::YmmHighUniform(u32 index) {
                        ir::ValueType::V128};
 }
 
-ir::Value X64Decoder::YmmHighRead(u32 index) { return __ LoadUniform(YmmHighUniform(index)); }
+ir::Value X64Decoder::YmmHighRead(u32 index) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
+    return __ LoadUniform(YmmHighUniform(index));
+}
 
 void X64Decoder::YmmHighWrite(u32 index, ir::Value value) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     __ StoreUniform(YmmHighUniform(index), value.SetType(ir::ValueType::V128));
 }
 
 ir::Value X64Decoder::YmmHighLo(u32 index) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     return __ LoadUniform(ir::Uniform{YmmHighUniform(index).GetOffset(), ir::ValueType::U64});
 }
 
 ir::Value X64Decoder::YmmHighHi(u32 index) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     return __ LoadUniform(ir::Uniform{YmmHighUniform(index).GetOffset() + 8, ir::ValueType::U64});
 }
 
 void X64Decoder::YmmHighLo(u32 index, ir::Value value) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     // NarrowTo normalizes untyped (CallLambda) values so the store has a width,
     // mirroring XmmLo/XmmHi.
     __ StoreUniform(ir::Uniform{YmmHighUniform(index).GetOffset(), ir::ValueType::U64},
@@ -2591,11 +2656,15 @@ void X64Decoder::YmmHighLo(u32 index, ir::Value value) {
 }
 
 void X64Decoder::YmmHighHi(u32 index, ir::Value value) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     __ StoreUniform(ir::Uniform{YmmHighUniform(index).GetOffset() + 8, ir::ValueType::U64},
                     NarrowTo(value, ir::ValueType::U64));
 }
 
 void X64Decoder::ZeroYmmHigh(u32 index) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     // Two U64 zero stores rather than one V128: the vector IR has no
     // "materialize zero vector" op, and LoadImm produces a scalar.
     auto zero = __ LoadImm(ir::Imm(u64(0)));

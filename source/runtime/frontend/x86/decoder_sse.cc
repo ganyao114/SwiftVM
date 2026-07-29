@@ -428,10 +428,14 @@ u64 UcomisdFlags(u64 a, u64 b) {
 }
 
 ir::Value X64Decoder::XmmRead(_RegisterType reg) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     return __ LoadUniform(ToVReg(x86_regs_table[reg]));
 }
 
 void X64Decoder::XmmWrite(_RegisterType reg, ir::Value value) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     __ StoreUniform(ToVReg(x86_regs_table[reg]), value);
 }
 
@@ -443,27 +447,37 @@ ir::Value X64Decoder::LoadSrcVec(_DInst& insn, _Operand& op) {
 }
 
 ir::Value X64Decoder::XmmLo(_RegisterType reg) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     auto off = ToVReg(x86_regs_table[reg]).GetOffset();
     return __ LoadUniform(ir::Uniform{off, ir::ValueType::U64});
 }
 
 ir::Value X64Decoder::XmmHi(_RegisterType reg) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     auto off = ToVReg(x86_regs_table[reg]).GetOffset();
     return __ LoadUniform(ir::Uniform{off + 8, ir::ValueType::U64});
 }
 
 void X64Decoder::XmmLo(_RegisterType reg, ir::Value value) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     auto off = ToVReg(x86_regs_table[reg]).GetOffset();
     // NarrowTo normalizes untyped (CallLambda) values so the store has a width.
     __ StoreUniform(ir::Uniform{off, ir::ValueType::U64}, NarrowTo(value, ir::ValueType::U64));
 }
 
 void X64Decoder::XmmHi(_RegisterType reg, ir::Value value) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::RegValue};
     auto off = ToVReg(x86_regs_table[reg]).GetOffset();
     __ StoreUniform(ir::Uniform{off + 8, ir::ValueType::U64}, NarrowTo(value, ir::ValueType::U64));
 }
 
 ir::Value X64Decoder::FlatAddress(_DInst& insn, _Operand& op) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::Address};
     auto address_operand = GetAddress(insn, op);
     // TSO / vector memory forms only encode [base]: fold the address into a
     // single value (same treatment as Src()).
@@ -711,6 +725,7 @@ void X64Decoder::DecodeMuludq(_DInst& insn) {
 }
 
 void X64Decoder::DecodeMovd(_DInst& insn) {
+    swift::runtime::PerfLoweringHandlerBegin();
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
     // REX.W forms (66 REX.W 0F 6E/7E) are 64-bit: alias to the movq path.
@@ -814,6 +829,7 @@ void X64Decoder::DecodeMovss(_DInst& insn) {
 }
 
 void X64Decoder::DecodeMovHalf(_DInst& insn, bool high) {
+    swift::runtime::PerfLoweringHandlerBegin();
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
     if (op0.type == O_REG && IsV(static_cast<_RegisterType>(op0.index))) {

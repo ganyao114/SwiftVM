@@ -58,6 +58,28 @@ struct PerfCounter2 {
     std::atomic<unsigned long long> calls{0};
 };
 
+enum class PerfLoweringPart2 : unsigned char {
+    Address,
+    Memory,
+    Flags,
+    RegValue,
+    Count,
+};
+
+struct PerfLoweringBucket2 {
+    std::atomic<unsigned long long> calls{0};
+    std::atomic<unsigned long long> total_ns{0};
+    std::atomic<unsigned long long> append_ns{0};
+    std::atomic<unsigned long long> dispatch_ns{0};
+    std::atomic<unsigned long long> boundaries{0};
+    std::array<std::atomic<unsigned long long>,
+               static_cast<size_t>(PerfLoweringPart2::Count)>
+            part_ns{};
+    std::array<std::atomic<unsigned long long>,
+               static_cast<size_t>(PerfLoweringPart2::Count)>
+            part_append_ns{};
+};
+
 // Measure-first W1 probe. This is deliberately separate from PerfStats:
 // SVM_PROF keeps its stable output/fingerprint contract, while SVM_PROF2 opts
 // into the more intrusive fine-grained clocks below.
@@ -148,6 +170,23 @@ struct PerfStats2 {
     static constexpr size_t kDecodeOpcodeSlots = 0x3000;
     std::array<std::atomic<unsigned long long>, kDecodeOpcodeSlots> decode_opcode_ns{};
     std::array<std::atomic<unsigned long long>, kDecodeOpcodeSlots> decode_opcode_calls{};
+
+    // W8 lowering attribution. SVM_LOW_PROF=1 additionally records one local
+    // (non-atomic) sample per translated instruction, then aggregates here.
+    // The four explicitly scoped parts are inclusive of central IR append;
+    // part_append_ns records that nested append time so reports can retain
+    // W7's "lowering excludes ir_append" accounting exactly.
+    static constexpr size_t kLoweringKinds = 2;  // 0 legacy, 1 raw-VEX AVX/BMI
+    static constexpr size_t kLoweringGroups = 6;  // op-count 0/1/2+ x no-mem/mem
+    std::array<PerfLoweringBucket2, kLoweringKinds> lowering_kind{};
+    std::array<PerfLoweringBucket2, kLoweringGroups> lowering_group{};
+    std::array<PerfLoweringBucket2, kDecodeOpcodeSlots> lowering_opcode{};
+    std::atomic<unsigned long long> lowering_empty_wall_ns{0};
+    std::atomic<unsigned long long> lowering_empty_recorded_ns{0};
+    std::atomic<unsigned long long> lowering_empty_calls{0};
+
+    PerfCounter2 decode_advance_pc;
+    PerfCounter2 decode_end_commit;
 
     PerfCounter2 translate_single;
     PerfCounter2 translate_multi;
@@ -345,6 +384,8 @@ inline void PerfDumpAtExit() {
     PERF2_DUMP(decode_vex_core);
     PERF2_DUMP(decode_vex_ir_append);
     PERF2_DUMP(decode_empty);
+    PERF2_DUMP(decode_advance_pc);
+    PERF2_DUMP(decode_end_commit);
     PERF2_DUMP(translate_single);
     PERF2_DUMP(translate_multi);
     PERF2_DUMP(fixed_single);
@@ -373,6 +414,38 @@ inline void PerfDumpAtExit() {
                          i, calls, g(d.decode_opcode_ns[i]));
         }
     }
+    static constexpr std::array<const char*, 4> kLowerPartNames{
+            "address", "memory", "flags", "regvalue"};
+    auto dump_lower = [&](const char* tag, size_t id, const PerfLoweringBucket2& b) {
+        const auto calls = g(b.calls);
+        if (!calls) return;
+        std::fprintf(stderr,
+                     "[svm-lower-%s] id=%zu calls=%llu total_ns=%llu append_ns=%llu "
+                     "dispatch_ns=%llu boundaries=%llu",
+                     tag, id, calls, g(b.total_ns), g(b.append_ns), g(b.dispatch_ns),
+                     g(b.boundaries));
+        for (size_t p = 0; p < kLowerPartNames.size(); ++p) {
+            std::fprintf(stderr, " %s_ns=%llu %s_append_ns=%llu",
+                         kLowerPartNames[p], g(b.part_ns[p]),
+                         kLowerPartNames[p], g(b.part_append_ns[p]));
+        }
+        std::fputc('\n', stderr);
+    };
+    for (size_t i = 0; i < d.kLoweringKinds; ++i) {
+        dump_lower("kind", i, d.lowering_kind[i]);
+    }
+    for (size_t i = 0; i < d.kLoweringGroups; ++i) {
+        dump_lower("group", i, d.lowering_group[i]);
+    }
+    for (size_t i = 0; i < d.kDecodeOpcodeSlots; ++i) {
+        if (g(d.lowering_opcode[i].calls)) {
+            dump_lower("op", i, d.lowering_opcode[i]);
+        }
+    }
+    std::fprintf(stderr,
+                 "[svm-lower-empty] calls=%llu wall_ns=%llu recorded_ns=%llu\n",
+                 g(d.lowering_empty_calls), g(d.lowering_empty_wall_ns),
+                 g(d.lowering_empty_recorded_ns));
     std::fprintf(stderr,
                  "[svm-uniform] blocks=%llu no_ops=%llu insts=%llu loads=%llu "
                  "stores=%llu barriers=%llu invalidations=%llu probe_insts=%llu "
@@ -411,6 +484,141 @@ inline bool PerfDecodeDetailEnabled() {
     }();
     return enabled;
 }
+
+inline bool PerfLoweringDetailEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("SVM_LOW_PROF");
+        return PerfDecodeDetailEnabled() && env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
+struct PerfLoweringLocal2 {
+    bool active{};
+    bool avx{};
+    bool first_boundary{};
+    unsigned opcode{};
+    unsigned group{};
+    unsigned depth{};
+    PerfLoweringPart2 part{PerfLoweringPart2::Address};
+    std::chrono::steady_clock::time_point start{};
+    std::chrono::steady_clock::time_point part_start{};
+    unsigned long long append_ns{};
+    unsigned long long dispatch_ns{};
+    unsigned long long boundaries{};
+    std::array<unsigned long long, static_cast<size_t>(PerfLoweringPart2::Count)> part_ns{};
+    std::array<unsigned long long, static_cast<size_t>(PerfLoweringPart2::Count)>
+            part_append_ns{};
+};
+
+inline thread_local PerfLoweringLocal2 perf2_lowering_local{};
+
+inline unsigned PerfLoweringGroup(unsigned operand_count, bool has_memory) {
+    const unsigned count_class = operand_count == 0 ? 0 : operand_count == 1 ? 1 : 2;
+    return count_class * 2 + (has_memory ? 1 : 0);
+}
+
+inline void PerfLoweringBegin(unsigned opcode, unsigned operand_count, bool has_memory,
+                              bool avx = false) {
+    if (!PerfLoweringDetailEnabled()) return;
+    auto& l = perf2_lowering_local;
+    l = {};
+    l.active = true;
+    l.avx = avx;
+    l.opcode = opcode;
+    l.group = PerfLoweringGroup(operand_count, has_memory);
+    l.start = std::chrono::steady_clock::now();
+}
+
+inline void PerfLoweringFirstBoundary(std::chrono::steady_clock::time_point when) {
+    auto& l = perf2_lowering_local;
+    if (!l.active || l.first_boundary) return;
+    l.first_boundary = true;
+    l.dispatch_ns = static_cast<unsigned long long>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(when - l.start).count());
+}
+
+inline void PerfLoweringHandlerBegin() {
+    if (perf2_lowering_local.active && !perf2_lowering_local.first_boundary) {
+        PerfLoweringFirstBoundary(std::chrono::steady_clock::now());
+    }
+}
+
+inline void PerfLoweringRecordAppend(unsigned long long ns) {
+    auto& l = perf2_lowering_local;
+    if (!l.active) return;
+    l.append_ns += ns;
+    if (l.depth != 0) {
+        l.part_append_ns[static_cast<size_t>(l.part)] += ns;
+    }
+}
+
+inline void PerfLoweringAccumulate(PerfLoweringBucket2& b,
+                                   const PerfLoweringLocal2& l,
+                                   unsigned long long total_ns) {
+    b.calls.fetch_add(1, std::memory_order_relaxed);
+    b.total_ns.fetch_add(total_ns, std::memory_order_relaxed);
+    b.append_ns.fetch_add(l.append_ns, std::memory_order_relaxed);
+    b.dispatch_ns.fetch_add(l.dispatch_ns, std::memory_order_relaxed);
+    b.boundaries.fetch_add(l.boundaries, std::memory_order_relaxed);
+    for (size_t p = 0; p < static_cast<size_t>(PerfLoweringPart2::Count); ++p) {
+        b.part_ns[p].fetch_add(l.part_ns[p], std::memory_order_relaxed);
+        b.part_append_ns[p].fetch_add(l.part_append_ns[p], std::memory_order_relaxed);
+    }
+}
+
+inline void PerfLoweringFinish(unsigned long long total_ns, bool accepted = true) {
+    auto& l = perf2_lowering_local;
+    if (!l.active) return;
+    if (!l.first_boundary) {
+        PerfLoweringFirstBoundary(std::chrono::steady_clock::now());
+    }
+    if (accepted) {
+        auto& s = GetPerfStats2();
+        PerfLoweringAccumulate(s.lowering_kind[l.avx ? 1 : 0], l, total_ns);
+        if (!l.avx) {
+            PerfLoweringAccumulate(s.lowering_group[l.group], l, total_ns);
+            if (l.opcode < s.kDecodeOpcodeSlots) {
+                PerfLoweringAccumulate(s.lowering_opcode[l.opcode], l, total_ns);
+            }
+        }
+    }
+    l.active = false;
+}
+
+class PerfLoweringPartScope2 {
+public:
+    explicit PerfLoweringPartScope2(PerfLoweringPart2 part) {
+        auto& l = perf2_lowering_local;
+        if (!l.active) return;
+        if (l.depth++ != 0) return;
+        outer = true;
+        l.part = part;
+        ++l.boundaries;
+        const auto now = std::chrono::steady_clock::now();
+        PerfLoweringFirstBoundary(now);
+        l.part_start = now;
+    }
+
+    ~PerfLoweringPartScope2() {
+        auto& l = perf2_lowering_local;
+        if (!l.active) return;
+        if (!outer) {
+            --l.depth;
+            return;
+        }
+        const auto end = std::chrono::steady_clock::now();
+        l.part_ns[static_cast<size_t>(l.part)] += static_cast<unsigned long long>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(end - l.part_start).count());
+        --l.depth;
+    }
+
+    PerfLoweringPartScope2(const PerfLoweringPartScope2&) = delete;
+    PerfLoweringPartScope2& operator=(const PerfLoweringPartScope2&) = delete;
+
+private:
+    bool outer{};
+};
 
 class PerfDecodePathScope2 {
 public:
@@ -502,6 +710,12 @@ public:
                 GetPerfStats2().translate_probe_calls.fetch_add(1, std::memory_order_relaxed);
             }
             start = std::chrono::steady_clock::now();
+            if (PerfLoweringDetailEnabled() &&
+                this->counter == &GetPerfStats2().ir_append &&
+                perf2_lowering_local.active) {
+                lowering_append = true;
+                PerfLoweringFirstBoundary(start);
+            }
         }
     }
     ~PerfScope2() { Stop(); }
@@ -514,6 +728,9 @@ public:
                                 std::chrono::steady_clock::now() - start)
                                 .count();
         counter->ns.fetch_add(static_cast<unsigned long long>(ns), std::memory_order_relaxed);
+        if (lowering_append) {
+            PerfLoweringRecordAppend(static_cast<unsigned long long>(ns));
+        }
         if (PerfDecodeDetailEnabled() && counter == &GetPerfStats2().ir_append) {
             auto& s = GetPerfStats2();
             auto add = [ns](PerfCounter2& out) {
@@ -549,6 +766,7 @@ public:
 private:
     PerfCounter2* counter;
     std::chrono::steady_clock::time_point start{};
+    bool lowering_append{};
 };
 
 // Detail-only counterpart: unlike PerfScope2, SVM_PROF2 by itself does not
@@ -614,6 +832,36 @@ inline void PerfDecodeRunEmptyMicrobench() {
                                      .count();
         s.decode_empty_wall_ns.fetch_add(static_cast<unsigned long long>(elapsed),
                                          std::memory_order_relaxed);
+        return true;
+    }();
+    (void)ran;
+}
+
+inline void PerfLoweringRunEmptyMicrobench() {
+    if (!PerfLoweringDetailEnabled()) return;
+    static const bool ran = [] {
+        const char* env = std::getenv("SVM_LOW_PROF_EMPTY");
+        if (!env || std::strcmp(env, "0") == 0) return true;
+        unsigned long long iterations = std::strtoull(env, nullptr, 10);
+        if (iterations < 1000) iterations = 1000000;
+        auto& l = perf2_lowering_local;
+        l = {};
+        l.active = true;
+        const auto begin = std::chrono::steady_clock::now();
+        for (unsigned long long i = 0; i < iterations; ++i) {
+            PerfLoweringPartScope2 empty{PerfLoweringPart2::Address};
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now() - begin)
+                                     .count();
+        auto& s = GetPerfStats2();
+        s.lowering_empty_calls.fetch_add(iterations, std::memory_order_relaxed);
+        s.lowering_empty_wall_ns.fetch_add(static_cast<unsigned long long>(elapsed),
+                                           std::memory_order_relaxed);
+        s.lowering_empty_recorded_ns.fetch_add(
+                l.part_ns[static_cast<size_t>(PerfLoweringPart2::Address)],
+                std::memory_order_relaxed);
+        l.active = false;
         return true;
     }();
     (void)ran;

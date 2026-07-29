@@ -65,6 +65,7 @@ void GuestRandom(u64* destination, u64 width) {
 }  // namespace
 
 void X64Decoder::DecodeCpuid(_DInst& insn) {
+    swift::runtime::PerfLoweringHandlerBegin();
     (void)insn;
     // Baseline: SSE2 userland plus the explicitly implemented scalar
     // facilities (CX16, MOVBE, RDRAND, RDSEED, TSC, RDTSCP). AVX-512, ERMS and

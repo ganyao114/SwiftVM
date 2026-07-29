@@ -169,6 +169,8 @@ static ir::Value MulWithFlags(ir::Assembler* assembler, ir::Value a, ir::Value b
 
 ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op, u32 width,
                                      ir::Flags flag_mask) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::Flags};
     const bool sub = op == ArithOp::Sub || op == ArithOp::Sbb;
     const bool use_carry = op == ArithOp::Adc || op == ArithOp::Sbb;
     // The native host adc/sbc consumes the stored carry directly, which is only
@@ -623,6 +625,8 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
 }
 
 void X64Decoder::SaveLogicFlags(ir::Value result, u32 width) {
+    swift::runtime::PerfLoweringPartScope2 perf{
+            swift::runtime::PerfLoweringPart2::Flags};
     // AND / OR / XOR / TEST: CF = OF = 0, AF undefined (cleared here),
     // SF / ZF / PF from the result.
     if (width < 32) {
@@ -1102,6 +1106,7 @@ void X64Decoder::DecodeCmpxchg16b(_DInst& insn) {
 }
 
 void X64Decoder::DecodeBitScan(_DInst& insn, bool reverse) {
+    swift::runtime::PerfLoweringHandlerBegin();
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
     // distorm reports 32-bit operands for the 66-prefixed (16-bit) form of
