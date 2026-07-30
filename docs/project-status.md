@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×；SHA 随信号根治默认转正，sha256 7.5×）+ PCLMULQDQ imm=0x11 直发 PMULL2（W21）、ZExt32→64 单节点折叠（W19 默认 ON，32 位 GPR 写每处省一条 host mov）+ XMM uniform 转发开关化（W22 默认 ON ≡ 现状，审计量化既有收益）+ rt_sigreturn 内核语义重写（W20f，P0#3 根治：删 guest 栈私有帧，uc+fpstate ABI 恢复）。master = `0a40a6b`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×；SHA 随信号根治默认转正，sha256 7.5×）+ PCLMULQDQ imm=0x11 直发 PMULL2（W21）、ZExt32→64 单节点折叠（W19 默认 ON，32 位 GPR 写每处省一条 host mov）+ XMM uniform 转发开关化（W22 默认 ON ≡ 现状，审计量化既有收益）+ rt_sigreturn 内核语义重写（W20f，P0#3 根治：删 guest 栈私有帧，uc+fpstate ABI 恢复）+ 标量 SSE tied-destination/FEAT_AFP scalar-insert（W23 默认 ON，smallpt 1.38×）。master = `ac124f0`。
 
 ---
 
@@ -86,6 +86,8 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 **W20f rt_sigreturn 私有帧竞态根治（2026-07-30，`32e7341`，P0 #3 关闭）**：根因——`GuestSignalPrivate` 帧写在 guest 栈、sigreturn 靠 magic+`ucontext_addr==rsp` 在 ±64B 窗口扫描找回；密集 SIGALRM 下相邻投递 rsp 有 ≤64B 抖动，已消费帧的 magic 残留栈中，扫描**先命中上一周期残帧**（宿主机镜像对照实测 `found_at` 比 `delivered_at` 低 0x20）；残帧校验槽被栈复写数据（saved rbp 恰好指向活跃 uc 区）骗过，`saved_context` 已被 guest 栈流量污染（fs_base=0），而 ucontext 完好 → gregs 正常 + fs_base=0 → 恢复执行后第一个 `fs:0x28` PageFatal。修法按真实 Linux 语义：内核从不保存/恢复 fs_base/gs_base，FPU 经 fpstate/xstate ABI 恢复——**删除私有帧+扫描**（不是修补）：sigreturn 从当前 ctx 出发只套 uc + 新增 `ApplySignalXState`（校验 MAGIC1/2）；顺带修掉旧路径用陈旧值覆盖 `interrupt` 的隐患。`SVM_SIGNAL_PRIVATE_FRAME=1` 保留旧路径（注明已知竞态，仅供二分）。回归 `sigreturn_stale_frame`（handler 持续校验 TLS + 交替 ±32B 栈深制造残帧窗口；legacy 路径如期复现 PageFatal 反证测试命中）。验收：openssl sha256 ×30 零 PageFatal（基线 ~10-15%）、SHA-NI ×15 零崩、指纹/func_tests/swift_test 全绿。
 **SVM_X86_CRYPTO_SHA 默认转正（2026-07-30，`0a40a6b`）**：W15 拆 opt-in 的唯一理由就是 P0 #3（SHA+SIGALRM ~50% 崩），根治后翻转。openssl sha256 16k：60.6 → 456.1 MB/s（7.5×）；`=0` 精确回退软件路径。指纹零 diff（语料无 SHA）、KAT 双模式 rc=0（此前默认路径因 CPUID 不广告而空跑）。
 
+**W23 标量 SSE tied-destination + FEAT_AFP scalar-insert（2026-07-30，`ac124f0`，默认 ON）**：x86 标量 SSE 语义是「只写 lane0、保留高 lane」，此前需要显式 merge；host FEAT_AFP 的 FPCR.NEP 让标量 AdvSIMD 天然只更新 lane0。三部分：①register_alloc `TryTieScalarInsert`——源 interval 恰在当前指令 start 结束时把物理寄存器转移给结果（从 active 移除但不释放）；②8 个标量 emitter 走 tied 快路径，NaN 优先级（left NaN→left quieted，否则 right，否则 indefinite）、minmax unordered/equal 选 src2、sqrt 负数→indefinite 均用 Fcmp+Bif/Bit 保持 x86 精确语义；③trampolines 在 runtime 入口保存 FPCR 并置 NEP，interp/host-call 边界恢复。config hash 纳入 AFP → JIT cache key 自动区分。独立交错 A/B（orchestrator 复测）：smallpt **1.383× 中位**（7 对，image.ppm oracle 每对一致）、c-ray 1.009×、ON 稳定性 0/10 异常——codex 曾以单个 c-ray 超时为由发成默认 OFF，复测证实该超时是噪声（OFF 侧同样偶发）。`SVM_SSE_SCALAR_INSERT=0` 精确回退。指纹对 golden 零 diff（IR 不变）、func_tests 三模式、swift_test 110 例全绿、smallpt 默认 ON 与 =0 输出逐字节相同。
+
 ### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
 
 - **W17 pressure-aware XMM 驻留（2026-07-30，三轮全负，轴关闭）**：部分 pin（top-N/XMM0–7）STREAM −0.9~−9.0%——少 pin 守不住收益、全 pin 挤爆 FPR 池，无中间甜点；lazy-fill 单独不够（c-ray 热 unit 很快摸满 16 XMM）；per-unit 可驱逐 pin（=3）在 c-ray 上触发 **55 分钟 400% CPU 死循环**（编译/重翻译环路，门禁语料覆盖不到），最终只能退成安全 no-op。结论：此轴关闭，W13 旗标对（XMM_STATIC=1 + NAN_FAST=1 捆绑）即最终形态。
@@ -137,6 +139,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_FLAG_FULL_ELIM | 0/1 | 0 | FlagsElimination 全 flag 位缩窄（W14 实验开关）；实测收益噪声级故默认 OFF，=1 开启 |
 | SVM_X86_CRYPTO_NI | 0/1 | 1 | x86 AES-NI+PCLMULQDQ 硬加速（W15）；host 无 FEAT_AES/PMULL 时自动回退 ILL_CODE，=0 强制软件路径 |
 | SVM_X86_CRYPTO_SHA | 0/1 | 1 | x86 SHA256 NI（W15，需 CRYPTO_NI 同开 + host FEAT_SHA256）；2026-07-30 随 P0 #3 根治默认转正（sha256 7.5×），=0 回退软件路径 |
+| SVM_SSE_SCALAR_INSERT | 0/1 | 1 | 标量 SSE tied-destination + FEAT_AFP FPCR.NEP（W23，smallpt 1.383×）；host 无 FEAT_AFP 时自动关闭，=0 精确回退 merge 旧路径 |
 | SVM_X86_GCM_PCLMUL2 | 0/1 | 1 | PCLMULQDQ imm=0x11 直发 PMULL2（W21，省 2×DUP，与 FEX 同形）；=0 回退 DUP+PMULL。实测性能中性（两组交错 A/B 同机噪声内），按 codegen 简化落地 |
 | SVM_GPR_ZEXT_COALESCE | 0/1 | 1 | 32 位 GPR 写 ZExt32→ZExt64 两节点折为 ZeroExtend32To64 单节点（W19）；=0 精确恢复两节点旧 lowering（与 W19 前 golden 零 diff） |
 | SVM_XMM_UNIFORM_FWD | 0/1 | 1 | XMM range 的 uniform store→load SSA 转发 + 死写删除（W22 开关化；行为与 W14 家族既有转发一致）。=0 精确禁止该范围转发/DSE，GPR 路径不变 |
@@ -567,7 +570,7 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
    仍建议保留 §3 的 emitter 纪律：新增高压 emitter 时仍需数峰值临时数（现池=14),`ReserveTmpX` 对 x16/x17 已无必要但无害。
    **v31 已排除**:vixl 的 `fptmp_list_` = {d31} 同样未保留,但 `AllocFPR` 低位优先且空闲 FPR 有 28 个,v31 是最后一个才会发出;且经审计后端没有任何 emitter 会触发 vixl 取 FP scratch 的两条路径(`Fcmp` 立即数形式、mem-to-mem `Mov`)。实际不可达,无需处理。
 3. ~~**SIGALRM × 长跑 → ~10–20% PageFatal**~~：**已根治（2026-07-30，`32e7341`）**。根因 = rt_sigreturn 的 `GuestSignalPrivate` 栈扫描命中上一信号周期的残留帧（magic 残留 + ucontext_addr 槽被 saved rbp 骗过），`saved_context` 被 guest 栈流量污染（fs_base=0）而 ucontext 完好。修复 = 按内核语义删私有帧：sigreturn 从当前 ctx 出发只套 uc + fpstate（fs_base/gs_base 从不随信号保存/恢复）。详见 §2 W20f 条目；`SVM_SIGNAL_PRIVATE_FRAME=1` 保留旧路径供二分。SHA-NI 已随此默认转正（`0a40a6b`）。
-4. **Fuzz x86 bit ops 随机 SIGILL（2026-07-30 发现，根因排查中 W24）**：`swift_test "*bit ops*"` 随机 seed 命中率 ~1/3~1/5，`SWIFT_FUZZ_SEED=5070672046091958327` 确定性复现；pc==addr 落在 code cache 内 → host 侧非法编码被执行，首要嫌疑 vixl unallocated sentinel（W21 Pmull2 前科同类）。与信号无关的 master 潜伏 bug。
+4. ~~**Fuzz x86 bit ops 随机 SIGILL**~~：**已根治（2026-07-30，`ad40395`），根因在 Unicorn 不在我们**。Unicorn 2.1.4 ARM64 JIT `tcg_out_rotl` 在 TCG 把 32 位 CL 循环计数常量折叠为 0 时发射未分配的 `extr Wd,Wn,Wm,#32`（种子 5070672046091958327：`xor rcx,rcx; rol cl,cl; lahf; seto r15b; hlt`）。我们侧的 rotate lowering 经新增专项回归（"Fuzz x86 bit ops SIGILL repro"，原始字节直跑 SwiftVM，断言 RCX=0/AH=0x46/OF 不变）验证正确；fuzz harness 在 `__aarch64__` 差分运行时把 CL 钉在 1..width-1 绕开 Unicorn 缺陷。
 
 ### P1 — 忠实度差异（默认路径冻结，不影响 Unicorn fuzz)
 
