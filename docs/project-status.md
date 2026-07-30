@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×）+ PCLMULQDQ imm=0x11 直发 PMULL2（W21）、ZExt32→64 单节点折叠（W19 默认 ON，32 位 GPR 写每处省一条 host mov）。master = `fe9ee1d`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×）+ PCLMULQDQ imm=0x11 直发 PMULL2（W21）、ZExt32→64 单节点折叠（W19 默认 ON，32 位 GPR 写每处省一条 host mov）+ XMM uniform 转发开关化（W22 默认 ON ≡ 现状，审计量化既有收益）。master = `e3d1280`。
 
 ---
 
@@ -81,6 +81,8 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 
 **W19 ZExt 单节点折叠（2026-07-30，`fe9ee1d`，默认 ON）**：32 位 GPR 写的 lowering 由 `ZeroExtend64(ZeroExtend32(v))` 两节点折为新 opcode `ZeroExtend32To64`（U64 结果、显式 32 位截断语义；JIT 复用 ZExt32 的 W 写路径——arm64 写 W 即清零高半；解释器显式 `& UINT32_MAX`）。每个 32 位 GPR 写省一条 host mov。`SVM_GPR_ZEXT_COALESCE=0` 精确恢复两节点旧 lowering。全量指纹审计（orchestrator 独立 OFF/ON 发射）：4400 unit 集不变、**1832 unit IR 下降、零增长**、合计 −4328 IR——纯节点数削减，golden 重生成。性能（orchestrator 独立交错 A/B）：coremark **+10.9%**（4/4 对为正）、7zip Tot MIPS **+2.9%**（3/3 对为正）；codex 独立数据 zip7 +8.5%/coremark +2.8%/sqlite −4.2% wall，方向互证。
 
+**W22 XMM uniform 转发开关化（2026-07-30，`e3d1280`，默认 ON ≡ 现状）**：审计定论——UniformElimination（W14 家族）**本已覆盖 V128 store→load BitCast 转发**；本变更把 XMM guest-state range 显式建模（`config.xmm_uniform_ranges` → `UniformInfo`，range 进 JIT cache config hash），`SVM_XMM_UNIFORM_FWD=0` 提供精确 OFF 审计路径（禁止该范围 SSA forwarding + DSE，GPR 路径不变）。不改变默认性能；价值 = 模块级回退开关 + 行为钉死单测 + 审计量化既有转发对 FEX 差距的实际贡献（OFF→ON：aes-128-gcm 2.04×、smallpt 1.33×、STREAM Copy +17.7%、coremark +2.2%；GHASH 热 unit uniform 访问 123→38）。附带查证：c-ray 输出 PNG 的 MD5 不稳定是 **tEXt 内嵌 RenderTime 墙钟**，像素逐字节确定——c-ray oracle 必须用像素 hash 而非文件 md5。
+
 ### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
 
 - **W17 pressure-aware XMM 驻留（2026-07-30，三轮全负，轴关闭）**：部分 pin（top-N/XMM0–7）STREAM −0.9~−9.0%——少 pin 守不住收益、全 pin 挤爆 FPR 池，无中间甜点；lazy-fill 单独不够（c-ray 热 unit 很快摸满 16 XMM）；per-unit 可驱逐 pin（=3）在 c-ray 上触发 **55 分钟 400% CPU 死循环**（编译/重翻译环路，门禁语料覆盖不到），最终只能退成安全 no-op。结论：此轴关闭，W13 旗标对（XMM_STATIC=1 + NAN_FAST=1 捆绑）即最终形态。
@@ -134,6 +136,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_X86_CRYPTO_SHA | 0/1 | 0 | x86 SHA256 NI opt-in（W15，需 CRYPTO_NI 同开 + host FEAT_SHA256）；默认 OFF 因 P0 #3 潜伏信号损坏在 SHA 路径暴露面大，根治后翻默认 |
 | SVM_X86_GCM_PCLMUL2 | 0/1 | 1 | PCLMULQDQ imm=0x11 直发 PMULL2（W21，省 2×DUP，与 FEX 同形）；=0 回退 DUP+PMULL。实测性能中性（两组交错 A/B 同机噪声内），按 codegen 简化落地 |
 | SVM_GPR_ZEXT_COALESCE | 0/1 | 1 | 32 位 GPR 写 ZExt32→ZExt64 两节点折为 ZeroExtend32To64 单节点（W19）；=0 精确恢复两节点旧 lowering（与 W19 前 golden 零 diff） |
+| SVM_XMM_UNIFORM_FWD | 0/1 | 1 | XMM range 的 uniform store→load SSA 转发 + 死写删除（W22 开关化；行为与 W14 家族既有转发一致）。=0 精确禁止该范围转发/DSE，GPR 路径不变 |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_EXEC_PROF | 0/1 | 0 | 执行侧探针：块退出分布、slot-link/RSB 命中、dispatcher L1/L2/miss、GPR uniform 访问计数；发射中性（W12 实测），默认关闭 |
 | SVM_EXEC_MAP | 0/1 | 0 | JIT unit/trampoline 地址区间输出（配合 sample 分类 leaf PC） |
