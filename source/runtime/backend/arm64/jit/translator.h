@@ -285,9 +285,9 @@ private:
     // extension destination directly, and GetOperand computes into its
     // allocated address register. SVM_MEM_NARROW_FUSE=0 restores the old
     // load+extend and temporary+transport-move shapes.
-    // Keep default OFF for the W34 delivery; restoring it is a separate
-    // rollout decision after the correctness fix.
-    bool mem_narrow_fuse{false};
+    // Safe by construction after the GetOperand RA-tie fix: the emitter only
+    // peels when the allocator transferred register ownership (SharesGPR).
+    bool mem_narrow_fuse{true};
     // TOP virtualization is deliberately a second opt-in layered on the
     // reduced x87 JIT. It stays default-off until host Unicorn qualification
     // has covered the new block/function paths.

@@ -65,11 +65,9 @@ static Value ResolveBitCastSource(Value value) {
 }
 
 static bool MemNarrowFuseEnabled() {
-    // Keep opt-in for this delivery; restoring the default is a separate
-    // rollout decision after the W34 correctness fix.
     static const bool enabled = [] {
         const char* env = PerfGetenv("SVM_MEM_NARROW_FUSE");
-        return env && std::strcmp(env, "0") != 0;
+        return !env || std::strcmp(env, "0") != 0;
     }();
     return enabled;
 }
