@@ -91,24 +91,50 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 // instruction, and CMP/TEST/ADD/SUB/XOR/AND/INC together were
                 // ~48% of all emitted IR.
                 //
-                // Narrowing the mask in general is unsafe -- the emitter reads
-                // the pseudo mask to choose between the flag-setting and plain
-                // form of a host instruction, so dropping an NZCV bit changes
-                // which instruction is emitted.  PF and AF are exactly the bits
-                // that take no part in that decision (`needs_nzcv` tests
-                // Flags::NZCV, and both back ends read this same mask), which
-                // is what makes narrowing *these two* safe where a general
-                // narrowing is not.
+                // The ARM64 emitters now honor every bit in a partial pseudo:
+                // arithmetic uses the flag-setting form iff at least one NZCV
+                // bit remains, SaveHostFlags/MergeNZCV commit exactly the
+                // requested NZCV subset, and AF/PF are independently guarded.
+                // Therefore a surviving SaveFlags may be narrowed to precisely
+                // the bits live here, instead of retaining dead sibling bits.
+                //
+                // SVM_FLAG_FULL_ELIM=0 (and the unset default) is the exact
+                // pre-W14 behavior: only the already-shipped PF/AF narrowing
+                // below is applied. W14 keeps this opt-in because CoreMark A/B
+                // found its 76 emitted bytes to be execution-time neutral.
                 constexpr Flags kSoftBits = Flags::Parity | Flags::AuxiliaryCarry;
-                // Bisect switch, mirroring SVM_UNIFORM_DSE / SVM_CONST_CSE.
                 static const bool narrow_off = [] {
                     const char* e = PerfGetenv("SVM_FLAG_NARROW");
                     return e && std::strcmp(e, "0") == 0;
                 }();
-                const Flags narrowed =
-                        narrow_off ? mask : (mask & ~(kSoftBits & ~needed));
-
+                static const bool full_elim_on = [] {
+                    const char* e = PerfGetenv("SVM_FLAG_FULL_ELIM");
+                    return e && std::strcmp(e, "0") != 0;
+                }();
                 const bool writes_carry = True(mask & Flags::Carry);
+                // Keep the older carry switch independently exact: when it is
+                // off, a C-writing pseudo follows the pre-Gate-B path even if
+                // W14 full-bit narrowing is otherwise enabled.
+                const bool legacy_carry_path = writes_carry && carry_elim_off;
+                Flags narrowed = full_elim_on && !legacy_carry_path
+                                         ? (mask & needed)
+                                         : (narrow_off
+                                                    ? mask
+                                                    : (mask & ~(kSoftBits & ~needed)));
+                if (full_elim_on && !legacy_carry_path) {
+                    // Mul/Div's backend helper materializes C and V as one
+                    // coupled x86 overflow result. It can omit both, but cannot
+                    // currently commit only one of the pair. All ordinary ALU
+                    // emitters below this IR layer support fully independent
+                    // NZCV masks.
+                    auto* producer = inst.GetArg<Value>(0).Def();
+                    if (producer &&
+                        (producer->GetOp() == OpCode::Mul ||
+                         producer->GetOp() == OpCode::Div) &&
+                        True(narrowed & Flags::CV)) {
+                        narrowed |= mask & Flags::CV;
+                    }
+                }
                 if (writes_carry) {
                     stat_carry_save++;
                     stat_carry_write++;
@@ -116,7 +142,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 // The bisect-off path is the old Gate B behavior: every
                 // SaveFlags(C) survives and only its surviving PF/AF bits kill
                 // earlier writers.
-                if (writes_carry && carry_elim_off) {
+                if (legacy_carry_path) {
                     if (narrowed != mask) {
                         inst.SetArg(1, narrowed);
                         stat_shrunk++;
@@ -167,8 +193,15 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                     }
                     victims.push_back(&inst);
                 } else {
-                    // No narrowing (same as SaveFlags).
-                    needed &= ~mask;
+                    static const bool full_elim_on = [] {
+                        const char* e = PerfGetenv("SVM_FLAG_FULL_ELIM");
+                        return e && std::strcmp(e, "0") != 0;
+                    }();
+                    if (full_elim_on && live != mask) {
+                        inst.SetArg(0, live);
+                        stat_shrunk++;
+                    }
+                    needed &= ~live;
                 }
                 break;
             }

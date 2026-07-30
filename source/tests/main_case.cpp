@@ -326,6 +326,56 @@ TEST_CASE("Uniform elimination does not propagate conditional stores past labels
 
     UniformEliminationPass::Run(&straight_line, info);
     REQUIRE(straight_load.Def()->GetOp() == OpCode::BitExtract);
+
+    // A value established before the branch dominates both successors. W14's
+    // path merge keeps it when the guarded region leaves that uniform byte
+    // untouched, while SVM_UNIFORM_PATH_FWD=0 restores the old label barrier.
+    Block dominated{2, Location{0x3000}};
+    auto dominating_value = dominated.LoadImm(Imm{7u}).SetType(ValueType::U8);
+    dominated.StoreUniform(Uniform{32, ValueType::U8}, dominating_value);
+    auto dominated_cond = dominated.LoadImm<BOOL>(Imm{1u});
+    auto dominated_skip = dominated.NotGoto(dominated_cond);
+    dominated.LoadImm(Imm{99u});
+    dominated.BindLabel(dominated_skip);
+    auto dominated_load = dominated.LoadUniform(Uniform{32, ValueType::U8});
+
+    UniformEliminationPass::Run(&dominated, info);
+    const bool path_forward_off = std::getenv("SVM_UNIFORM_PATH_FWD") &&
+                                  std::strcmp(std::getenv("SVM_UNIFORM_PATH_FWD"), "0") == 0;
+    REQUIRE(dominated_load.Def()->GetOp() ==
+            (path_forward_off ? OpCode::LoadUniform : OpCode::BitExtract));
+
+    // A write on only the fallthrough edge must still prevent forwarding.
+    Block differing{3, Location{0x4000}};
+    auto before = differing.LoadImm(Imm{7u}).SetType(ValueType::U8);
+    differing.StoreUniform(Uniform{32, ValueType::U8}, before);
+    auto differing_cond = differing.LoadImm<BOOL>(Imm{1u});
+    auto differing_skip = differing.NotGoto(differing_cond);
+    auto guarded = differing.LoadImm(Imm{9u}).SetType(ValueType::U8);
+    differing.StoreUniform(Uniform{32, ValueType::U8}, guarded);
+    differing.BindLabel(differing_skip);
+    auto differing_load = differing.LoadUniform(Uniform{32, ValueType::U8});
+
+    UniformEliminationPass::Run(&differing, info);
+    REQUIRE(differing_load.Def()->GetOp() == OpCode::LoadUniform);
+
+    // The reverse walk uses the same path intersection. A guarded write is
+    // dead when a later store overwrites it after the merge on both paths.
+    Block guarded_dead{4, Location{0x5000}};
+    auto dead_cond = guarded_dead.LoadImm<BOOL>(Imm{1u});
+    auto dead_skip = guarded_dead.NotGoto(dead_cond);
+    auto dead_value = guarded_dead.LoadImm(Imm{3u}).SetType(ValueType::U8);
+    guarded_dead.StoreUniform(Uniform{32, ValueType::U8}, dead_value);
+    guarded_dead.BindLabel(dead_skip);
+    auto final_value = guarded_dead.LoadImm(Imm{4u}).SetType(ValueType::U8);
+    guarded_dead.StoreUniform(Uniform{32, ValueType::U8}, final_value);
+
+    UniformEliminationPass::Run(&guarded_dead, info);
+    size_t guarded_store_count{};
+    for (const auto& inst : guarded_dead.GetInstList()) {
+        guarded_store_count += inst.GetOp() == OpCode::StoreUniform;
+    }
+    REQUIRE(guarded_store_count == (path_forward_off ? 2 : 1));
 }
 
 TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {
@@ -1105,6 +1155,23 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     REQUIRE(carry_pseudos.size() == 1);
     REQUIRE(carry_pseudos[0] == carry_save);
     REQUIRE(carry_pseudos[0]->GetArg<Flags>(1) == Flags::All);
+
+    // A reader between two full writes needs only its tested bit from the
+    // earlier producer. W14 narrows the surviving pseudo to that bit; the
+    // module switch restores the old full mask exactly.
+    Block partial{0, Location{0x2800}};
+    auto p_old = partial.Add(lhs, Operand{rhs});
+    auto* p_old_save = partial.AppendInst(OpCode::SaveFlags, p_old, Flags::All);
+    partial.AppendInst(OpCode::TestFlags, Flags::Zero);
+    auto p_new = partial.Add(lhs, Operand{rhs});
+    partial.AppendInst(OpCode::SaveFlags, p_new, Flags::All);
+
+    FlagsEliminationPass::Run(&partial);
+
+    const bool full_elim_on = std::getenv("SVM_FLAG_FULL_ELIM") &&
+                              std::strcmp(std::getenv("SVM_FLAG_FULL_ELIM"), "0") != 0;
+    REQUIRE(p_old_save->GetArg<Flags>(1) ==
+            (full_elim_on ? Flags::Zero : Flags::NZCV));
 }
 
 TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {

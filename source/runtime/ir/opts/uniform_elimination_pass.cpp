@@ -5,6 +5,8 @@
 #include "uniform_elimination_pass.h"
 
 #include <cstring>
+#include <unordered_map>
+#include <vector>
 
 namespace swift::runtime::ir {
 
@@ -23,6 +25,14 @@ struct UniformValue {
         return value.Defined();
     }
 };
+
+[[nodiscard]] static bool PathForwardOff() {
+    static const bool off = [] {
+        const char* e = PerfGetenv("SVM_UNIFORM_PATH_FWD");
+        return e && std::strcmp(e, "0") == 0;
+    }();
+    return off;
+}
 
 // --- dead uniform store elimination ----------------------------------------
 //
@@ -125,6 +135,12 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
     killed.resize(info.uniform_size);
     std::fill(killed.begin(), killed.end(), u8{0});
     StackVector<Inst*, 16> victims{};
+    // Backward counterpart of the forward value intersection below. At a
+    // BindLabel, `killed` describes writes after the merge and therefore
+    // applies to both incoming paths. Keep that state for the taken edge, walk
+    // the fallthrough edge, then intersect at its Goto/NotGoto: a byte is dead
+    // before the branch only when it is overwritten on both successors.
+    std::unordered_map<Inst*, std::vector<u8>> label_killed;
 
     auto clear_all = [&] { std::fill(killed.begin(), killed.end(), u8{0}); };
 
@@ -177,11 +193,34 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
             case OpCode::GetHostGPR:
             case OpCode::GetHostFPR:
             case OpCode::SetLocation:
-            case OpCode::Goto:
-            case OpCode::NotGoto:
-            case OpCode::BindLabel:
                 clear_all();
                 break;
+            case OpCode::BindLabel:
+                if (PathForwardOff()) {
+                    clear_all();
+                } else {
+                    label_killed[inst.GetArg<Value>(0).Def()] =
+                            std::vector<u8>(killed.begin(), killed.end());
+                }
+                break;
+            case OpCode::Goto:
+            case OpCode::NotGoto: {
+                if (PathForwardOff()) {
+                    clear_all();
+                    break;
+                }
+                auto taken = label_killed.find(&inst);
+                if (taken == label_killed.end() ||
+                    taken->second.size() != killed.size()) {
+                    clear_all();
+                    break;
+                }
+                for (size_t i = 0; i < killed.size(); ++i) {
+                    killed[i] &= taken->second[i];
+                }
+                label_killed.erase(taken);
+                break;
+            }
             default:
                 break;
         }
@@ -245,6 +284,16 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     }
 
     StackVector<UniformValue, 0x100> uniform_values{info.uniform_size};
+    // A local Goto/NotGoto has two successors: the following instruction and
+    // its BindLabel. Facts established before the branch dominate both paths,
+    // so dropping the whole table at each marker needlessly reloads guest state
+    // after shift/count guard regions. Snapshot the taken edge and intersect it
+    // with the fallthrough state at the label. A byte survives only when both
+    // paths name the same defining value and byte offset.
+    //
+    // The opt-out is intentionally scoped to this path merge; all legacy
+    // straight-line forwarding and barriers remain byte-for-byte unchanged.
+    std::unordered_map<Inst*, std::vector<UniformValue>> label_values;
     u32 load_count{};
     u32 folded_load_count{};
     u32 mapped_load_count{};
@@ -253,6 +302,8 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     u32 instruction_count{};
     u32 store_count{};
     u32 barrier_count{};
+    u32 path_merge_count{};
+    u32 path_merge_bytes{};
 
     auto invalidate_uniform_values = [&] {
         std::fill(uniform_values.begin(), uniform_values.end(), UniformValue{});
@@ -451,9 +502,6 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
             case OpCode::SetHostGPR:
             case OpCode::SetHostFPR:
             case OpCode::SetLocation:
-            case OpCode::Goto:
-            case OpCode::NotGoto:
-            case OpCode::BindLabel:
                 barrier_count++;
                 // Calls are conservatively opaque even though today's x86
                 // helpers do not receive the uniform buffer. MemoryCopy uses
@@ -461,14 +509,52 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 // layer. SetLocation covers interrupt/syscall exits; terminals
                 // end the block and therefore have no following load to fold.
                 // Direct SetHost* operations mutate statically mapped state
-                // outside the byte cache. Intra-block branches are barriers as
-                // well: the pass is deliberately path-insensitive, so a store
-                // between Goto/NotGoto and BindLabel is not known to execute on
-                // every path reaching the label. BindLabel is the essential
-                // merge barrier; clearing at the branch too keeps facts scoped
-                // to one straight-line region.
+                // outside the byte cache. Local branches are handled by the
+                // path-intersection cases below.
                 invalidate_uniform_values();
                 break;
+            case OpCode::Goto:
+            case OpCode::NotGoto:
+                barrier_count++;
+                if (PathForwardOff()) {
+                    invalidate_uniform_values();
+                } else {
+                    label_values[&inst] =
+                            std::vector<UniformValue>(uniform_values.begin(),
+                                                      uniform_values.end());
+                }
+                break;
+            case OpCode::BindLabel: {
+                barrier_count++;
+                if (PathForwardOff()) {
+                    invalidate_uniform_values();
+                    break;
+                }
+                auto* branch = inst.GetArg<Value>(0).Def();
+                auto target = label_values.find(branch);
+                if (target == label_values.end() ||
+                    target->second.size() != uniform_values.size()) {
+                    invalidate_uniform_values();
+                    break;
+                }
+                u32 preserved{};
+                for (size_t i = 0; i < uniform_values.size(); ++i) {
+                    const auto& taken = target->second[i];
+                    auto& fallthrough = uniform_values[i];
+                    const bool same = taken.Defined() && fallthrough.Defined() &&
+                                      taken.value == fallthrough.value &&
+                                      taken.offset == fallthrough.offset;
+                    if (!same) {
+                        fallthrough = {};
+                    } else {
+                        preserved++;
+                    }
+                }
+                path_merge_count++;
+                path_merge_bytes += preserved;
+                label_values.erase(target);
+                break;
+            }
             default:
                 break;
         }
@@ -490,11 +576,12 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     if (kEnv_dump_ir) {
         fmt::print(stderr,
                    "[uniform-elim] block {:#x}: LoadUniform {} -> {} "
-                   "(folded {}, mapped {}), mapped stores {}, invalidations {}\n",
+                   "(folded {}, mapped {}), mapped stores {}, invalidations {}, "
+                   "path merges {} ({} byte-facts preserved)\n",
                    block->GetStartLocation().Value(), load_count,
                    load_count - folded_load_count - mapped_load_count,
                    folded_load_count, mapped_load_count, mapped_store_count,
-                   invalidation_count);
+                   invalidation_count, path_merge_count, path_merge_bytes);
         if (kEnv_dump_ir_post) {
             fmt::print(stderr, "--- post-uniform block {:#x} ---\n{}\n",
                        block->GetStartLocation().Value(), block->ToString());
