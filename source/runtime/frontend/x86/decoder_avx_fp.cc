@@ -327,7 +327,14 @@ void X64Decoder::DecodeAvxFpArith(const VexInsn& v, VecFloatOp op, u32 lane_bits
 // of the *third* operand's register alone, not of the destination.
 void X64Decoder::DecodeAvxFpArithScalar(const VexInsn& v, VecFloatOp op, u32 lane_bits) {
     auto left = XmmRead(XmmOf(v.vvvv));
-    auto right = VexLoadScalar(v, lane_bits);
+    auto right = ScalarVOperandsEnabled()
+                         ? (v.RmIsRegister()
+                                    ? XmmRead(XmmOf(v.rm))
+                                    : MemLoad(ir::Operand{VexAddress(v)},
+                                              lane_bits == 32 ? ir::ValueType::V32
+                                                              : ir::ValueType::V64,
+                                              VexTsoOrdered(v)))
+                         : VexLoadScalar(v, lane_bits);
     ir::Value result;
     if (lane_bits == 64) {
         switch (op) {

@@ -231,6 +231,11 @@ u64 Interpreter::ReadScalar(InterpStack& stack, ir::Value value) {
     return GetReg<u64>(stack, value);
 }
 
+u64 Interpreter::ReadScalarBits(InterpStack& stack, ir::Value value) {
+    return ir::IsFloatValueType(value.Type()) ? static_cast<u64>(ReadVec(stack, value))
+                                              : ReadScalar(stack, value);
+}
+
 Interpreter::u128 Interpreter::ReadVec(InterpStack& stack, ir::Value value) {
     return GetReg<u128>(stack, value);
 }
@@ -2645,7 +2650,7 @@ void Interpreter::RunVecFAddScalar32(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
-                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              ReadScalarBits(stack, inst->GetArg<ir::Value>(1)),
                               [](float a, float b) { return a + b; }));
 }
 
@@ -2653,7 +2658,7 @@ void Interpreter::RunVecFSubScalar32(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
-                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              ReadScalarBits(stack, inst->GetArg<ir::Value>(1)),
                               [](float a, float b) { return a - b; }));
 }
 
@@ -2661,7 +2666,7 @@ void Interpreter::RunVecFMulScalar32(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
-                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              ReadScalarBits(stack, inst->GetArg<ir::Value>(1)),
                               [](float a, float b) { return a * b; }));
 }
 
@@ -2669,7 +2674,7 @@ void Interpreter::RunVecFDivScalar32(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
-                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              ReadScalarBits(stack, inst->GetArg<ir::Value>(1)),
                               [](float a, float b) { return a / b; }));
 }
 
@@ -2677,7 +2682,7 @@ void Interpreter::RunVecFAddScalar64(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
-                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              ReadScalarBits(stack, inst->GetArg<ir::Value>(1)),
                               [](double a, double b) { return a + b; }));
 }
 
@@ -2685,7 +2690,7 @@ void Interpreter::RunVecFSubScalar64(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
-                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              ReadScalarBits(stack, inst->GetArg<ir::Value>(1)),
                               [](double a, double b) { return a - b; }));
 }
 
@@ -2693,7 +2698,7 @@ void Interpreter::RunVecFMulScalar64(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
-                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              ReadScalarBits(stack, inst->GetArg<ir::Value>(1)),
                               [](double a, double b) { return a * b; }));
 }
 
@@ -2701,7 +2706,7 @@ void Interpreter::RunVecFDivScalar64(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
-                              ReadScalar(stack, inst->GetArg<ir::Value>(1)),
+                              ReadScalarBits(stack, inst->GetArg<ir::Value>(1)),
                               [](double a, double b) { return a / b; }));
 }
 

@@ -50,6 +50,7 @@ private:
     };
 
     u64 ReadScalar(InterpStack& stack, ir::Value value);
+    u64 ReadScalarBits(InterpStack& stack, ir::Value value);
     u128 ReadVec(InterpStack& stack, ir::Value value);
     void WriteScalar(InterpStack& stack, ir::Inst* inst, u64 value);
     void WriteVec(InterpStack& stack, ir::Inst* inst, u128 value);

@@ -198,6 +198,14 @@ ir::Value X64Decoder::MemLoad(const ir::Operand& addr, ir::ValueType type, bool 
     return assembler->LoadMemory(addr).SetType(type);
 }
 
+bool X64Decoder::ScalarVOperandsEnabled() {
+    static const bool enabled = [] {
+        const char* env = swift::runtime::PerfGetenv("SVM_SSE_SCALAR_V_OPERANDS");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
 void X64Decoder::MemStore(const ir::Operand& addr, ir::Value value, bool tso) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::Memory};

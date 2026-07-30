@@ -86,6 +86,8 @@ public:
 #undef INST
 
 private:
+    VRegister GetVecScalarOperand(ir::Value value, u32 lane_bits);
+
     struct X87TopExpression {
         // relative=true means (translation-unit entry TOP + value) & 7.
         // Otherwise value is an architectural absolute TOP.

@@ -1271,150 +1271,151 @@ void JitTranslator::EmitVecSha256Rnds2(ir::Inst* inst) {
     __ Rev64(result.V4S(), result.V4S());
 }
 
+VRegister JitTranslator::GetVecScalarOperand(ir::Value value, u32 lane_bits) {
+    ASSERT(lane_bits == 32 || lane_bits == 64);
+    if (ir::IsFloatValueType(value.Type())) {
+        return context.V(value);
+    }
+    auto result = context.GetTmpV();
+    if (lane_bits == 32) {
+        __ Fmov(result.S(), context.W(value));
+    } else {
+        __ Fmov(result.D(), context.X(value));
+    }
+    return result;
+}
+
 void JitTranslator::EmitVecFAddScalar32(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
-    auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     if (sse_scalar_insert) {
         EmitVecFScalarBinaryTied(inst, 32);
         return;
     }
     auto scalar = context.GetTmpV();
-    auto rhs = context.GetTmpV();
-    __ Fmov(rhs.S(), right);
-    __ Fadd(scalar.S(), left.S(), rhs.S());
-    EmitVecFloatNaNFixup(scalar, left, rhs, 32, 1);
+    auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
+    __ Fadd(scalar.S(), left.S(), right.S());
+    EmitVecFloatNaNFixup(scalar, left, right, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
 
 void JitTranslator::EmitVecFSubScalar32(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
-    auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     if (sse_scalar_insert) {
         EmitVecFScalarBinaryTied(inst, 32);
         return;
     }
     auto scalar = context.GetTmpV();
-    auto rhs = context.GetTmpV();
-    __ Fmov(rhs.S(), right);
-    __ Fsub(scalar.S(), left.S(), rhs.S());
-    EmitVecFloatNaNFixup(scalar, left, rhs, 32, 1);
+    auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
+    __ Fsub(scalar.S(), left.S(), right.S());
+    EmitVecFloatNaNFixup(scalar, left, right, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
 
 void JitTranslator::EmitVecFMulScalar32(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
-    auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     if (sse_scalar_insert) {
         EmitVecFScalarBinaryTied(inst, 32);
         return;
     }
     auto scalar = context.GetTmpV();
-    auto rhs = context.GetTmpV();
-    __ Fmov(rhs.S(), right);
-    __ Fmul(scalar.S(), left.S(), rhs.S());
-    EmitVecFloatNaNFixup(scalar, left, rhs, 32, 1);
+    auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
+    __ Fmul(scalar.S(), left.S(), right.S());
+    EmitVecFloatNaNFixup(scalar, left, right, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
 
 void JitTranslator::EmitVecFDivScalar32(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
-    auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     if (sse_scalar_insert) {
         EmitVecFScalarBinaryTied(inst, 32);
         return;
     }
     auto scalar = context.GetTmpV();
-    auto rhs = context.GetTmpV();
-    __ Fmov(rhs.S(), right);
-    __ Fdiv(scalar.S(), left.S(), rhs.S());
-    EmitVecFloatNaNFixup(scalar, left, rhs, 32, 1);
+    auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
+    __ Fdiv(scalar.S(), left.S(), right.S());
+    EmitVecFloatNaNFixup(scalar, left, right, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
 
 void JitTranslator::EmitVecFAddScalar64(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
-    auto right = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     if (sse_scalar_insert) {
         EmitVecFScalarBinaryTied(inst, 64);
         return;
     }
-    auto rhs = context.GetTmpV();
-    __ Fmov(rhs.D(), right);
-    __ Fadd(result.D(), left.D(), rhs.D());
-    EmitVecFloatNaNFixup(result, left, rhs, 64, 1);
+    auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
+    __ Fadd(result.D(), left.D(), right.D());
+    EmitVecFloatNaNFixup(result, left, right, 64, 1);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
 void JitTranslator::EmitVecFSubScalar64(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
-    auto right = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     if (sse_scalar_insert) {
         EmitVecFScalarBinaryTied(inst, 64);
         return;
     }
-    auto rhs = context.GetTmpV();
-    __ Fmov(rhs.D(), right);
-    __ Fsub(result.D(), left.D(), rhs.D());
-    EmitVecFloatNaNFixup(result, left, rhs, 64, 1);
+    auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
+    __ Fsub(result.D(), left.D(), right.D());
+    EmitVecFloatNaNFixup(result, left, right, 64, 1);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
 void JitTranslator::EmitVecFMulScalar64(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
-    auto right = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     if (sse_scalar_insert) {
         EmitVecFScalarBinaryTied(inst, 64);
         return;
     }
-    auto rhs = context.GetTmpV();
-    __ Fmov(rhs.D(), right);
-    __ Fmul(result.D(), left.D(), rhs.D());
-    EmitVecFloatNaNFixup(result, left, rhs, 64, 1);
+    auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
+    __ Fmul(result.D(), left.D(), right.D());
+    EmitVecFloatNaNFixup(result, left, right, 64, 1);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
 void JitTranslator::EmitVecFDivScalar64(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
-    auto right = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     if (sse_scalar_insert) {
         EmitVecFScalarBinaryTied(inst, 64);
         return;
     }
-    auto rhs = context.GetTmpV();
-    __ Fmov(rhs.D(), right);
-    __ Fdiv(result.D(), left.D(), rhs.D());
-    EmitVecFloatNaNFixup(result, left, rhs, 64, 1);
+    auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
+    __ Fdiv(result.D(), left.D(), right.D());
+    EmitVecFloatNaNFixup(result, left, right, 64, 1);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
 void JitTranslator::EmitVecFScalarBinaryTied(ir::Inst* inst, u32 lane_bits) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
-    auto right = context.GetTmpV();
+    auto right_value = inst->GetArg<ir::Value>(1);
+    const bool right_is_vector = ir::IsFloatValueType(right_value.Type());
+    auto right = right_is_vector ? context.V(right_value) : context.GetTmpV();
     if (result.GetCode() != left.GetCode()) {
         // A still-live dst-in cannot be tied by RA. Seed the new destination
         // once, then let NEP update lane 0 in place; this is still one copy
         // instead of the legacy post-op full-copy plus lane insert.
         __ Orr(result.V16B(), left.V16B(), left.V16B());
     }
-    if (lane_bits == 32) {
-        __ Fmov(right.S(), context.W(inst->GetArg<ir::Value>(1)));
-    } else {
-        __ Fmov(right.D(), context.X(inst->GetArg<ir::Value>(1)));
+    if (!right_is_vector) {
+        if (lane_bits == 32) {
+            __ Fmov(right.S(), context.W(right_value));
+        } else {
+            __ Fmov(right.D(), context.X(right_value));
+        }
     }
-
     auto emit_operation = [&] {
         switch (inst->GetOp()) {
             case ir::OpCode::VecFAddScalar32:

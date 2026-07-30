@@ -504,6 +504,15 @@ ir::Value X64Decoder::LoadSrcLo(_DInst& insn, _Operand& op) {
     return __ LoadMemory(ir::Operand{FlatAddress(insn, op)}).SetType(ir::ValueType::U64);
 }
 
+ir::Value X64Decoder::LoadSrcScalarVec(_DInst& insn, _Operand& op, u32 lane_bits) {
+    ASSERT(lane_bits == 32 || lane_bits == 64);
+    if (op.type == O_REG) {
+        return XmmRead(static_cast<_RegisterType>(op.index));
+    }
+    return __ LoadMemory(ir::Operand{FlatAddress(insn, op)})
+            .SetType(lane_bits == 32 ? ir::ValueType::V32 : ir::ValueType::V64);
+}
+
 ir::Value X64Decoder::LoadSrcHi(_DInst& insn, _Operand& op) {
     if (op.type == O_REG) {
         return XmmHi(static_cast<_RegisterType>(op.index));
@@ -1120,7 +1129,9 @@ void X64Decoder::DecodeCvtss2sd(_DInst& insn) {
 void X64Decoder::DecodeScalarFloatOp(_DInst& insn, VecFloatOp op, u32 lane_bits) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     auto left = XmmRead(dst);
-    auto right = LoadSrcLo(insn, insn.ops[1]);
+    auto right = ScalarVOperandsEnabled()
+                         ? LoadSrcScalarVec(insn, insn.ops[1], lane_bits)
+                         : LoadSrcLo(insn, insn.ops[1]);
     ir::Value result;
     if (lane_bits == 64) {
         switch (op) {

@@ -532,6 +532,8 @@ private:
     // DecodeVecIROp).
     ir::Value LoadSrcLo(_DInst& insn, _Operand& op);
     ir::Value LoadSrcHi(_DInst& insn, _Operand& op);
+    ir::Value LoadSrcScalarVec(_DInst& insn, _Operand& op, u32 lane_bits);
+    static bool ScalarVOperandsEnabled();
 
     // Fold a memory/register address operand to a single address value
     // (TSO forms only encode [base], see Src()).
