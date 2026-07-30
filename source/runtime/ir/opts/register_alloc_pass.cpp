@@ -65,8 +65,8 @@ static Value ResolveBitCastSource(Value value) {
 }
 
 static bool MemNarrowFuseEnabled() {
-    // Default OFF: baseline2 exposed guest PageFatals (stream/smallpt/sqlite)
-    // with the fuse enabled. Opt-in until W34 root-causes it.
+    // Keep opt-in for this delivery; restoring the default is a separate
+    // rollout decision after the W34 correctness fix.
     static const bool enabled = [] {
         const char* env = PerfGetenv("SVM_MEM_NARROW_FUSE");
         return env && std::strcmp(env, "0") != 0;
@@ -248,7 +248,13 @@ public:
             ExpireOldIntervals(interval);
 
             if (!IsFloatValue(interval.inst)) {
-                if (TryTieNarrowLoad(interval)) {
+                if (TryTieMemoryOperand(interval)) {
+                    // A single-use identity GetOperand and its source share a
+                    // register. The GetOperand result then owns that register
+                    // until the memory operation, so the emitter can remove
+                    // the identity copy without extending the source SSA's
+                    // live range.
+                } else if (TryTieNarrowLoad(interval)) {
                     // A plain narrow load and its extension chain share one W/X
                     // register. The ARM64 emitter can then replace
                     // LDRH+SXTH (or LDRB+UXTB) with the extending load itself,
@@ -397,7 +403,58 @@ private:
     }
 
     bool TryTieNarrowLoad(LiveInterval& current) {
-        auto source = NarrowLoadTieSource(current.inst);
+        return TryTieGPR(current, NarrowLoadTieSource(current.inst));
+    }
+
+    bool DirectlyFeedsMemory(Inst* inst) const {
+        auto in_block = [&](Block* candidate) {
+            bool found = false;
+            for (auto& next : candidate->GetInstList()) {
+                if (found) {
+                    bool uses_value = false;
+                    for (auto used : next.GetValues()) {
+                        uses_value |= used.Def() == inst;
+                    }
+                    if (!uses_value) {
+                        continue;
+                    }
+                    return next.GetOp() == OpCode::LoadMemory ||
+                           next.GetOp() == OpCode::StoreMemory ||
+                           next.GetOp() == OpCode::LoadMemoryTSO ||
+                           next.GetOp() == OpCode::StoreMemoryTSO;
+                }
+                found = &next == inst;
+            }
+            return false;
+        };
+        if (block) {
+            return in_block(block);
+        }
+        for (auto* hir_block : function->GetHIRBlocks()) {
+            if (in_block(hir_block->GetBlock())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    Value MemoryOperandTieSource(Inst* inst) const {
+        if (!MemNarrowFuseEnabled() || inst->GetOp() != OpCode::GetOperand ||
+            inst->GetUses() != 1 || !DirectlyFeedsMemory(inst)) {
+            return {};
+        }
+        const auto operand = inst->GetArg<Operand>(0);
+        if (!operand.GetRight().Null() || !operand.GetLeft().IsValue()) {
+            return {};
+        }
+        return operand.GetLeft().value;
+    }
+
+    bool TryTieMemoryOperand(LiveInterval& current) {
+        return TryTieGPR(current, MemoryOperandTieSource(current.inst));
+    }
+
+    bool TryTieGPR(LiveInterval& current, Value source) {
         if (!source.Defined() || source.Id() == current.inst->Id() ||
             reg_alloc->ValueType(source) != backend::RegAlloc::GPR) {
             return false;

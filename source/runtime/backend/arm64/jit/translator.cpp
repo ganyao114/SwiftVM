@@ -451,18 +451,19 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                 addr_value.Def()->GetUses() == 1) {
                 auto source_operand = addr_value.Def()->GetArg<ir::Operand>(0);
                 auto source_left = source_operand.GetLeft();
-                if (source_operand.GetRight().Null() && source_left.IsValue()) {
+                if (source_operand.GetRight().Null() && source_left.IsValue() &&
+                    context.SharesGPR(addr_value, source_left.value)) {
                     // A simple EA does not need to be materialised in the
-                    // GetOperand result register. Feed the original address
-                    // register to the memory instruction and suppress only
-                    // that pure transport; the memory instruction remains at
-                    // the same point and is still the sole faulting operation.
+                    // GetOperand result register. The RA tie makes the result
+                    // own that same register through the memory use, so
+                    // consume the live result allocation here rather than
+                    // extending the source SSA's lifetime in the emitter.
                     disable_instructions.set(addr_value.Def()->Id());
-                    auto source_reg = context.R(source_left.value, true);
+                    auto address_reg = context.R(addr_value, true);
                     if (use_memory_base) {
-                        return BiasMem(source_reg, atomic);
+                        return BiasMem(address_reg, atomic);
                     }
-                    return MemOperand{source_reg};
+                    return MemOperand{address_reg};
                 }
             }
             auto& instr_list = cur_block->GetInstList();

@@ -2419,6 +2419,70 @@ TEST_CASE("Spill slots are recycled, not merely handed out") {
     }
 }
 
+// --- Peeled GetOperand must retain its address register ----------------------
+//
+// SVM_MEM_NARROW_FUSE originally suppressed a single-use identity GetOperand
+// in the emitter and made the following memory operation read the wrapper's
+// source directly.  Register allocation still considered that source dead at
+// GetOperand, however, and could reuse its register for a StoreMemory value:
+//
+//   LoadUniform address -> x0
+//   GetOperand(address)  -> x1   (suppressed)
+//   LoadUniform value    -> x0
+//   StoreMemory          -> str x0, [x0]  // value used as its own address
+//
+// The optimized form is valid only when RA transfers the source register to
+// the GetOperand result, whose interval remains live through StoreMemory.
+TEST_CASE("peeled GetOperand keeps its address live through the memory use") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::backend;
+
+    auto* raw_block = new Block(0, Location{0x6f00});
+    IntrusivePtr<Block> block{raw_block};
+    auto address =
+            raw_block->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
+    auto memory_address =
+            raw_block->GetOperand(Operand{address}).SetType(ValueType::U64);
+    auto value =
+            raw_block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+    raw_block->StoreMemory(Operand{memory_address}, value);
+    raw_block->SetTerminal(terminal::ReturnToDispatch{});
+    raw_block->ReIdInstr();
+
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+    };
+    AddressSpace address_space{config};
+    auto module = address_space.GetDefaultModule();
+    RegAlloc reg_alloc{raw_block->MaxInstrId(),
+                       address_space.GetTrampolines().GetGPRRegs(),
+                       address_space.GetTrampolines().GetFPRRegs()};
+    RegisterAllocPass::Run(raw_block, &reg_alloc);
+
+    const char* fuse = std::getenv("SVM_MEM_NARROW_FUSE");
+    const bool enabled = fuse && std::strcmp(fuse, "0") != 0;
+    if (enabled) {
+        REQUIRE(reg_alloc.ValueType(address) == RegAlloc::GPR);
+        REQUIRE(reg_alloc.ValueType(memory_address) == RegAlloc::GPR);
+        REQUIRE(reg_alloc.ValueType(value) == RegAlloc::GPR);
+        REQUIRE(reg_alloc.ValueGPR(address).id ==
+                reg_alloc.ValueGPR(memory_address).id);
+        REQUIRE(reg_alloc.ValueGPR(memory_address).id !=
+                reg_alloc.ValueGPR(value).id);
+    }
+
+    arm64::JitContext context{module, reg_alloc};
+    arm64::JitTranslator translator{context};
+    translator.Translate(raw_block);
+    context.Finish();
+    REQUIRE(context.CurrentBufferSize() > 0);
+}
+
 // --- x86 mul CF/OF must reach the flags register -----------------------------
 //
 // JitTranslator::SaveCV/SaveOF used to write their C/V bits into the HOST NZCV

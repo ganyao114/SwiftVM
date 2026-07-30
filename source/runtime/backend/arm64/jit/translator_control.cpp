@@ -314,7 +314,8 @@ void JitTranslator::EmitGetOperand(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto result = context.R(ir::Value{inst});
     if (mem_narrow_fuse && operand.GetRight().Null() &&
-        operand.GetLeft().IsValue() && inst->GetUses() == 1) {
+        operand.GetLeft().IsValue() && inst->GetUses() == 1 &&
+        context.SharesGPR(ir::Value{inst}, operand.GetLeft().value)) {
         bool feeds_memory = false;
         auto it = cur_block->GetInstList().iterator_to(*inst);
         for (++it; it != cur_block->GetInstList().end(); ++it) {
@@ -332,8 +333,7 @@ void JitTranslator::EmitGetOperand(ir::Inst* inst) {
             break;
         }
         if (feeds_memory) {
-            // EmitMemOperand peels this single-use wrapper and consumes the
-            // original address register directly.
+            // EmitMemOperand consumes this result's tied register directly.
             return;
         }
     }
