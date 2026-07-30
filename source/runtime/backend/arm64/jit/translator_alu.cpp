@@ -1028,6 +1028,12 @@ void JitTranslator::EmitVecFloatNaNFixup(const VRegister& result,
                                          const VRegister& right,
                                          u32 lane_bits,
                                          u32 lane_count) {
+    // Explicitly opt-in semantic relaxation. The immediately preceding NEON
+    // arithmetic instruction becomes the final lane result; no operand-order
+    // payload selection or x86 indefinite-NaN substitution is emitted.
+    if (sse_nan_fast) {
+        return;
+    }
     ASSERT(lane_bits == 32 || lane_bits == 64);
     // The scalar forms (lane_count == 1) define lane 0 only; their callers
     // merge the surviving lanes from `left` after this returns. Keeping the

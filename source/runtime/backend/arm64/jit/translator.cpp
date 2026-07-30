@@ -5,6 +5,7 @@
 #include <cstring>
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
+#include "translator/x86/cpu.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -16,6 +17,9 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
     guest_addr_mask = config.guest_addr_mask;
     window_uxtw = guest_addr_mask == 0xFFFFFFFFull;
+    if (const char* nan_fast = PerfGetenv("SVM_SSE_NAN_FAST")) {
+        sse_nan_fast = std::strcmp(nan_fast, "0") != 0;
+    }
     // Cached: JitTranslator is constructed once per compiled unit.
     static const bool requested = [] {
         const char* topvirt = PerfGetenv("SVM_X87_TOPVIRT");
@@ -49,15 +53,24 @@ void JitTranslator::Translate(ir::Block* block) {
     // once on entry. ThreadContext64 begins with the 16 8-byte GPRs, so the
     // first 128 uniform bytes are exactly the register-residency region.
     u32 gpr_uniform_accesses = 0;
+    u32 xmm_uniform_accesses = 0;
+    constexpr u32 kXmmBegin = offsetof(swift::x86::ThreadContext64, xmms);
+    constexpr u32 kXmmEnd = kXmmBegin + sizeof(swift::x86::ThreadContext64::xmms);
     for (auto& inst : block->GetInstList()) {
         if ((inst.GetOp() == ir::OpCode::LoadUniform ||
-             inst.GetOp() == ir::OpCode::StoreUniform) &&
-            inst.GetArg<ir::Uniform>(0).GetOffset() < 16 * sizeof(u64)) {
-            ++gpr_uniform_accesses;
+             inst.GetOp() == ir::OpCode::StoreUniform)) {
+            const u32 offset = inst.GetArg<ir::Uniform>(0).GetOffset();
+            if (offset < 16 * sizeof(u64)) {
+                ++gpr_uniform_accesses;
+            } else if (offset >= kXmmBegin && offset < kXmmEnd) {
+                ++xmm_uniform_accesses;
+            }
         }
     }
     context.RecordExecCounter(exec_offset_gpr_uniform_accesses,
                               gpr_uniform_accesses);
+    context.RecordExecCounter(exec_offset_xmm_uniform_accesses,
+                              xmm_uniform_accesses);
     BeginX87TopVirtBlock(block);
     perf_prologue.Stop();
     // Function-mode IdByRPO assigns global instruction ids, while

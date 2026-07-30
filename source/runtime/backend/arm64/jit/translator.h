@@ -206,6 +206,11 @@ private:
                       const std::vector<ir::DataClass> &args,
                       bool has_result,
                       const Register &result);
+    // Helpers such as XSAVE/XRSTOR dereference ThreadContext64 directly and
+    // therefore need the statically resident SIMD uniforms synchronized at
+    // that exact call boundary.
+    void SpillStaticFPRUniforms();
+    void RestoreStaticFPRUniforms();
 
     void ClearFlags(ir::Flags flags);
 
@@ -266,6 +271,9 @@ private:
     // computes pt + zext32(guest) in the *same* instruction the unbounded
     // path already used, so a 32-bit window costs nothing.
     bool window_uxtw{false};
+    // Default-off aggressive SSE/AVX floating-point policy: keep the raw NEON
+    // result instead of repairing x86 NaN payload priority and quieting.
+    bool sse_nan_fast{false};
     // TOP virtualization is deliberately a second opt-in layered on the
     // reduced x87 JIT. It stays default-off until host Unicorn qualification
     // has covered the new block/function paths.

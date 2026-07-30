@@ -64,9 +64,9 @@ static Value ResolveBitCastSource(Value value) {
     return value;
 }
 
-using HostGPRWriteMap = Map<u16, Vector<u32>>;
+using HostRegWriteMap = Map<u16, Vector<u32>>;
 
-static bool LiveRangeCrossesHostGPRWrite(const HostGPRWriteMap& writes,
+static bool LiveRangeCrossesHostRegWrite(const HostRegWriteMap& writes,
                                          u16 host_reg,
                                          u32 def_id,
                                          u32 use_end) {
@@ -371,7 +371,8 @@ private:
         // the block that owns the terminal (function-global id).
         Map<u32, u32> terminal_end{};
         Map<u32, u32> actual_use_end{};
-        HostGPRWriteMap host_gpr_writes{};
+        HostRegWriteMap host_gpr_writes{};
+        HostRegWriteMap host_fpr_writes{};
         for (auto* hir_block : hir_function->GetHIRBlocks()) {
             auto* lir_block = hir_block->GetBlock();
             u32 block_end = 0;
@@ -380,6 +381,9 @@ private:
                 if (inst.GetOp() == OpCode::SetHostGPR) {
                     const auto host_reg = static_cast<u16>(inst.GetArg<Imm>(1).Get());
                     host_gpr_writes[host_reg].push_back(inst.Id());
+                } else if (inst.GetOp() == OpCode::SetHostFPR) {
+                    const auto host_reg = static_cast<u16>(inst.GetArg<Imm>(1).Get());
+                    host_fpr_writes[host_reg].push_back(inst.Id());
                 }
                 for (auto value : inst.GetValues()) {
                     auto source = ResolveBitCastSource(value);
@@ -451,7 +455,12 @@ private:
             const bool host_reg_alias = instr->IsGetHostRegOperation();
             const bool full_gpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostGPR &&
                                       GetValueSizeByte(instr->ReturnType()) == sizeof(u64);
-            const bool fixed_fpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostFPR;
+            // Scalar views of a pinned SIMD register (XmmLo/XmmHi) still
+            // produce GPR values: EmitGetHostFPR materializes them with UMOV.
+            // Only vector-typed reads can alias the fixed FPR directly.
+            const bool fixed_fpr_get =
+                    host_reg_alias && instr->GetOp() == OpCode::GetHostFPR &&
+                    IsFloatValueType(instr->ReturnType());
             const auto host_index =
                     host_reg_alias ? static_cast<u16>(instr->GetArg<Imm>(0).Get()) : u16{};
             // A fixed mapping aliases this SSA value directly to the pinned
@@ -459,10 +468,12 @@ private:
             // SetHostGPR can overwrite that register before the value's last use.
             const bool fixed_gpr_get =
                     full_gpr_get &&
-                    !LiveRangeCrossesHostGPRWrite(host_gpr_writes, host_index, instr->Id(), end);
-            if (fixed_fpr_get || fixed_gpr_get) {
-                auto is_float = fixed_fpr_get;
-                if (is_float) {
+                    !LiveRangeCrossesHostRegWrite(host_gpr_writes, host_index, instr->Id(), end);
+            const bool fixed_fpr_alias =
+                    fixed_fpr_get &&
+                    !LiveRangeCrossesHostRegWrite(host_fpr_writes, host_index, instr->Id(), end);
+            if (fixed_fpr_alias || fixed_gpr_get) {
+                if (fixed_fpr_alias) {
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{host_index});
                 } else {
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{host_index});
@@ -496,6 +507,7 @@ private:
         StackVector<u16, 64> actual_use_end{};
         actual_use_end.resize(instr_count);
         StackVector<std::pair<u16, u16>, 8> host_gpr_writes{};
+        StackVector<std::pair<u16, u16>, 8> host_fpr_writes{};
 
         PerfScope2 perf_scan{GetPerfStats2().regalloc_live_scan};
         u16 block_end = 0;
@@ -504,6 +516,9 @@ private:
             if (inst.GetOp() == OpCode::SetHostGPR) {
                 const auto host_reg = static_cast<u16>(inst.GetArg<Imm>(1).Get());
                 host_gpr_writes.emplace_back(host_reg, inst.Id());
+            } else if (inst.GetOp() == OpCode::SetHostFPR) {
+                const auto host_reg = static_cast<u16>(inst.GetArg<Imm>(1).Get());
+                host_fpr_writes.emplace_back(host_reg, inst.Id());
             }
             auto record_use = [&actual_use_end, &inst](Value value) {
                 auto source = ResolveBitCastSource(value);
@@ -583,7 +598,9 @@ private:
             const bool host_reg_alias = instr->IsGetHostRegOperation();
             const bool full_gpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostGPR &&
                                       GetValueSizeByte(instr->ReturnType()) == sizeof(u64);
-            const bool fixed_fpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostFPR;
+            const bool fixed_fpr_get =
+                    host_reg_alias && instr->GetOp() == OpCode::GetHostFPR &&
+                    IsFloatValueType(instr->ReturnType());
             const auto host_index =
                     host_reg_alias ? static_cast<u16>(instr->GetArg<Imm>(0).Get()) : u16{};
             const bool crosses_host_write =
@@ -594,8 +611,16 @@ private:
                                            write.second <= end;
                                 });
             const bool fixed_gpr_get = full_gpr_get && !crosses_host_write;
-            if (fixed_fpr_get || fixed_gpr_get) {
-                if (fixed_fpr_get) {
+            const bool crosses_host_fpr_write =
+                    fixed_fpr_get &&
+                    std::any_of(host_fpr_writes.begin(), host_fpr_writes.end(),
+                                [host_index, instr, end](const auto& write) {
+                                    return write.first == host_index && instr->Id() < write.second &&
+                                           write.second <= end;
+                                });
+            const bool fixed_fpr_alias = fixed_fpr_get && !crosses_host_fpr_write;
+            if (fixed_fpr_alias || fixed_gpr_get) {
+                if (fixed_fpr_alias) {
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{host_index});
                 } else {
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{host_index});
@@ -621,11 +646,15 @@ private:
         ASSERT_MSG(!lir_block->IsEmptyBlock(), "block is empty");
         StackVector<u16, 64> use_end{};
         use_end.resize(std::max<u32>(lir_block->MaxInstrId(), lir_block->GetInstList().size()));
-        HostGPRWriteMap host_gpr_writes{};
+        HostRegWriteMap host_gpr_writes{};
+        HostRegWriteMap host_fpr_writes{};
         for (auto& instr : lir_block->GetInstList()) {
             if (instr.GetOp() == OpCode::SetHostGPR) {
                 const auto host_reg = static_cast<u16>(instr.GetArg<Imm>(1).Get());
                 host_gpr_writes[host_reg].push_back(instr.Id());
+            } else if (instr.GetOp() == OpCode::SetHostFPR) {
+                const auto host_reg = static_cast<u16>(instr.GetArg<Imm>(1).Get());
+                host_fpr_writes[host_reg].push_back(instr.Id());
             }
             if (!instr.IsGetHostRegOperation() && !instr.IsBitCastOperation()) {
                 // SetHost* is a normal use. Pinned registers are reserved from
@@ -685,17 +714,23 @@ private:
             const bool host_reg_alias = instr.IsGetHostRegOperation();
             const bool full_gpr_get = host_reg_alias && instr.GetOp() == OpCode::GetHostGPR &&
                                       GetValueSizeByte(instr.ReturnType()) == sizeof(u64);
-            const bool fixed_fpr_get = host_reg_alias && instr.GetOp() == OpCode::GetHostFPR;
+            const bool fixed_fpr_get =
+                    host_reg_alias && instr.GetOp() == OpCode::GetHostFPR &&
+                    IsFloatValueType(instr.ReturnType());
             const auto host_index =
                     host_reg_alias ? static_cast<u16>(instr.GetArg<Imm>(0).Get()) : u16{};
             // See the function-level collector above: a crossing write makes
             // the GetHostGPR result a snapshot, not a zero-cost alias.
             const bool fixed_gpr_get =
                     full_gpr_get &&
-                    !LiveRangeCrossesHostGPRWrite(
+                    !LiveRangeCrossesHostRegWrite(
                             host_gpr_writes, host_index, instr.Id(), use_end[instr.Id()]);
-            if (fixed_fpr_get || fixed_gpr_get) {
-                if (fixed_fpr_get) {
+            const bool fixed_fpr_alias =
+                    fixed_fpr_get &&
+                    !LiveRangeCrossesHostRegWrite(
+                            host_fpr_writes, host_index, instr.Id(), use_end[instr.Id()]);
+            if (fixed_fpr_alias || fixed_gpr_get) {
+                if (fixed_fpr_alias) {
                     reg_alloc->MapRegister(instr.Id(), HostFPR{host_index});
                 } else {
                     reg_alloc->MapRegister(instr.Id(), HostGPR{host_index});

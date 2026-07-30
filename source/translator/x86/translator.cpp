@@ -37,11 +37,44 @@ using namespace swift::x86;
 // receive the uniform buffer and must preserve x19-x21 by the platform ABI.
 // The legacy asm-interpreter uses x21 as `handle`; this x86 Config leaves that
 // mutually-exclusive path disabled.
-static UniformMapDesc arm64_backend_regs_map[] = {
+static UniformMapDesc arm64_backend_gpr_regs_map[] = {
         {offsetof(ThreadContext64, rbx), 8, 20, false},
         {offsetof(ThreadContext64, rsp), 8, 19, false},
         {offsetof(ThreadContext64, rbp), 8, 21, false},
 };
+
+// XMM0-15 stay resident in v16-v31 for the whole guest run.  v0-v15 remain
+// available to the linear scan and emitter scratch (v11-v14 are the backend's
+// pre-existing reserved SIMD scratch registers).  The descriptors are ordered
+// by uniform offset so the trampoline emits eight LDP/STP pairs at runtime
+// entry/host exit.  AVX keeps its existing split representation: these are the
+// low 128 bits, while ThreadContext64::ymm_high remains memory resident.
+#define SVM_XMM_STATIC_DESC(i) \
+    {offsetof(ThreadContext64, xmms) + (i) * sizeof(Xmm), 16, 16 + (i), true}
+static UniformMapDesc arm64_backend_xmm_regs_map[] = {
+        SVM_XMM_STATIC_DESC(0),  SVM_XMM_STATIC_DESC(1),
+        SVM_XMM_STATIC_DESC(2),  SVM_XMM_STATIC_DESC(3),
+        SVM_XMM_STATIC_DESC(4),  SVM_XMM_STATIC_DESC(5),
+        SVM_XMM_STATIC_DESC(6),  SVM_XMM_STATIC_DESC(7),
+        SVM_XMM_STATIC_DESC(8),  SVM_XMM_STATIC_DESC(9),
+        SVM_XMM_STATIC_DESC(10), SVM_XMM_STATIC_DESC(11),
+        SVM_XMM_STATIC_DESC(12), SVM_XMM_STATIC_DESC(13),
+        SVM_XMM_STATIC_DESC(14), SVM_XMM_STATIC_DESC(15),
+};
+static UniformMapDesc arm64_backend_gpr_xmm_regs_map[] = {
+        {offsetof(ThreadContext64, rbx), 8, 20, false},
+        {offsetof(ThreadContext64, rsp), 8, 19, false},
+        {offsetof(ThreadContext64, rbp), 8, 21, false},
+        SVM_XMM_STATIC_DESC(0),  SVM_XMM_STATIC_DESC(1),
+        SVM_XMM_STATIC_DESC(2),  SVM_XMM_STATIC_DESC(3),
+        SVM_XMM_STATIC_DESC(4),  SVM_XMM_STATIC_DESC(5),
+        SVM_XMM_STATIC_DESC(6),  SVM_XMM_STATIC_DESC(7),
+        SVM_XMM_STATIC_DESC(8),  SVM_XMM_STATIC_DESC(9),
+        SVM_XMM_STATIC_DESC(10), SVM_XMM_STATIC_DESC(11),
+        SVM_XMM_STATIC_DESC(12), SVM_XMM_STATIC_DESC(13),
+        SVM_XMM_STATIC_DESC(14), SVM_XMM_STATIC_DESC(15),
+};
+#undef SVM_XMM_STATIC_DESC
 
 // Instruction-fetch memory interface for the x86 decoder. With guest
 // address virtualization (memory_base), guest address G is backed by host
@@ -415,9 +448,26 @@ struct X86Instance::Impl final {
         const bool enable_static_regs =
                 enable_jit && enable_uniform_elim &&
                 (!static_regs_env || std::strcmp(static_regs_env, "0") != 0);
-        std::span<UniformMapDesc> static_regs =
-                enable_static_regs ? std::span<UniformMapDesc>{arm64_backend_regs_map}
-                                   : std::span<UniformMapDesc>{};
+        // Independent from SVM_STATIC_REGS: SVM_XMM_STATIC=1 adds the sixteen
+        // SIMD mappings; the default keeps the old memory-resident XMM
+        // lowering.  Default-off by measurement (W13 A/B, 2026-07): pinned
+        // alone is a net regression (7-metric geomean 0.969; c-ray -26%
+        // throughput from FPR-pool pressure in NaN-repair-heavy code).  The
+        // wins need SVM_SSE_NAN_FAST=1 alongside (combined geomean 1.205), so
+        // the two are documented as a pair.  Interpreter mode never installs
+        // host-register mappings.
+        const char* xmm_static_env = std::getenv("SVM_XMM_STATIC");
+        const bool enable_xmm_static =
+                enable_jit && enable_uniform_elim && xmm_static_env &&
+                std::strcmp(xmm_static_env, "0") != 0;
+        std::span<UniformMapDesc> static_regs;
+        if (enable_static_regs && enable_xmm_static) {
+            static_regs = arm64_backend_gpr_xmm_regs_map;
+        } else if (enable_static_regs) {
+            static_regs = arm64_backend_gpr_regs_map;
+        } else if (enable_xmm_static) {
+            static_regs = arm64_backend_xmm_regs_map;
+        }
         const char* block_link_env = std::getenv("SVM_BLOCK_LINK");
         const bool enable_block_link =
                 !block_link_env || std::strcmp(block_link_env, "0") != 0;

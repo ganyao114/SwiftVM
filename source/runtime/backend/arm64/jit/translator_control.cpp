@@ -5,9 +5,35 @@
 #include "runtime/frontend/x86/x87.h"
 #include "translator/x86/cpu.h"
 
+namespace swift::x86 {
+u64 XsaveHelper(u64 context, u64 guest_address, u64 rfbm);
+u64 XsavecHelper(u64 context, u64 guest_address, u64 rfbm);
+u64 XrstorHelper(u64 context, u64 guest_address, u64 rfbm);
+}  // namespace swift::x86
+
 namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
+
+void JitTranslator::SpillStaticFPRUniforms() {
+    for (const auto& desc : context.GetConfig().buffers_static_alloc) {
+        if (!desc.is_float) continue;
+        ASSERT_MSG(desc.size == sizeof(u128),
+                   "direct-context helper sync only supports V128 static uniforms");
+        __ Str(VRegister::GetQRegFromCode(desc.reg),
+               MemOperand(state, state_offset_uniform_buffer + desc.offset));
+    }
+}
+
+void JitTranslator::RestoreStaticFPRUniforms() {
+    for (const auto& desc : context.GetConfig().buffers_static_alloc) {
+        if (!desc.is_float) continue;
+        ASSERT_MSG(desc.size == sizeof(u128),
+                   "direct-context helper sync only supports V128 static uniforms");
+        __ Ldr(VRegister::GetQRegFromCode(desc.reg),
+               MemOperand(state, state_offset_uniform_buffer + desc.offset));
+    }
+}
 
 void JitTranslator::EmitAdvancePC(ir::Inst* inst) {
     MergeNZCV();
@@ -82,6 +108,25 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     std::optional<XRegister> lambda_value;
     if (lambda.IsValue()) {
         lambda_value.emplace(context.X(lambda.GetValue()));
+    }
+
+    // Most helpers receive only ordinary scalar arguments and cannot observe
+    // the uniform buffer. XSAVE/XRSTOR are the exception: they take a
+    // ThreadContext64* and directly read/write xmms[]. Keep the boundary
+    // narrow so x87/SoftFloat helpers do not pay sixteen state stores/loads.
+    bool sync_xmm_before = false;
+    bool sync_xmm_after = false;
+    if (!lambda.IsValue()) {
+        const auto target = lambda.GetImm().Get();
+        sync_xmm_before =
+                target == reinterpret_cast<VAddr>(&swift::x86::XsaveHelper) ||
+                target == reinterpret_cast<VAddr>(&swift::x86::XsavecHelper) ||
+                target == reinterpret_cast<VAddr>(&swift::x86::XrstorHelper);
+        sync_xmm_after =
+                target == reinterpret_cast<VAddr>(&swift::x86::XrstorHelper);
+    }
+    if (sync_xmm_before) {
+        SpillStaticFPRUniforms();
     }
 
     // Save the caller-saved registers that are actually live across the call,
@@ -241,6 +286,9 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
         __ Ldr(result, MemOperand(sp, kResultSlot));
     }
     __ Add(sp, sp, kSaveBytes);
+    if (sync_xmm_after) {
+        RestoreStaticFPRUniforms();
+    }
 }
 
 void JitTranslator::EmitCallLambda(ir::Inst* inst) {

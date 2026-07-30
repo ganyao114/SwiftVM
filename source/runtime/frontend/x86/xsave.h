@@ -105,6 +105,7 @@ inline u32 XsaveAreaSize() {
 // take it in EDX:EAX and the decoder assembles it from the IR register values.
 // ---------------------------------------------------------------------------
 u64 XsaveHelper(u64 context, u64 guest_address, u64 rfbm);
+u64 XsavecHelper(u64 context, u64 guest_address, u64 rfbm);
 u64 XrstorHelper(u64 context, u64 guest_address, u64 rfbm);
 u64 XgetbvHelper(u64 context);
 

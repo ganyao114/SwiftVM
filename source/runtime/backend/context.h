@@ -48,6 +48,7 @@ struct ExecProfileCounters {
     u64 dispatch_l2_hit{};
     u64 dispatch_miss{};
     u64 gpr_uniform_accesses{};
+    u64 xmm_uniform_accesses{};
     u64 access_pad{};
 };
 
@@ -143,6 +144,8 @@ constexpr u32 exec_offset_dispatch_l2_hit = offsetof(ExecProfileCounters, dispat
 constexpr u32 exec_offset_dispatch_miss = offsetof(ExecProfileCounters, dispatch_miss);
 constexpr u32 exec_offset_gpr_uniform_accesses =
         offsetof(ExecProfileCounters, gpr_uniform_accesses);
+constexpr u32 exec_offset_xmm_uniform_accesses =
+        offsetof(ExecProfileCounters, xmm_uniform_accesses);
 constexpr u32 exec_offset_access_pad = offsetof(ExecProfileCounters, access_pad);
 
 }  // namespace swift::runtime::backend

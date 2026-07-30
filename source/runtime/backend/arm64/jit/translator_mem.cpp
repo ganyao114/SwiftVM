@@ -254,15 +254,42 @@ void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitGetHostFPR(ir::Inst* inst) {
-    auto offset = inst->GetArg<ir::Imm>(1).Get();
-    if (!offset) {
-        return;
-    }
     auto reg_index = inst->GetArg<ir::Imm>(0).Get();
     auto host_reg = VRegister::GetQRegFromCode(reg_index);
-    auto ret_reg = context.V(ir::Value{inst});
-    if (host_reg != ret_reg) {
-        PANIC("GetHostFPR!");
+    const u32 offset = inst->GetArg<ir::Imm>(1).Get();
+    const auto value_type = inst->ReturnType();
+    const u32 size = ir::GetValueSizeByte(value_type);
+    ASSERT_MSG(offset + size <= sizeof(u128) && offset % size == 0,
+               "invalid fixed FPR read offset {} size {}", offset, size);
+
+    if (!ir::IsFloatValueType(value_type)) {
+        auto result = context.R(ir::Value{inst});
+        const u32 lane = offset / size;
+        switch (size) {
+            case 1: __ Umov(result.W(), host_reg.V16B(), lane); break;
+            case 2: __ Umov(result.W(), host_reg.V8H(), lane); break;
+            case 4: __ Umov(result.W(), host_reg.V4S(), lane); break;
+            case 8: __ Umov(result.X(), host_reg.V2D(), lane); break;
+            default: PANIC("unsupported scalar fixed FPR read size {}", size);
+        }
+        return;
+    }
+
+    auto result = context.V(ir::Value{inst});
+    if (size == sizeof(u128)) {
+        ASSERT(offset == 0);
+        if (host_reg != result) {
+            __ Orr(result.V16B(), host_reg.V16B(), host_reg.V16B());
+        }
+        return;
+    }
+    const u32 lane = offset / size;
+    switch (size) {
+        case 1: __ Ins(result.V16B(), 0, host_reg.V16B(), lane); break;
+        case 2: __ Ins(result.V8H(), 0, host_reg.V8H(), lane); break;
+        case 4: __ Ins(result.V4S(), 0, host_reg.V4S(), lane); break;
+        case 8: __ Ins(result.V2D(), 0, host_reg.V2D(), lane); break;
+        default: PANIC("unsupported vector fixed FPR read size {}", size);
     }
 }
 
@@ -284,7 +311,43 @@ void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitSetHostFPR(ir::Inst* inst) {
+    auto value = inst->GetArg<ir::Value>(0);
+    const u32 reg_index = inst->GetArg<ir::Imm>(1).Get();
+    const u32 offset = inst->GetArg<ir::Imm>(2).Get();
+    const u32 size = ir::GetValueSizeByte(value.Type());
+    auto host_reg = VRegister::GetQRegFromCode(reg_index);
+    ASSERT_MSG(offset + size <= sizeof(u128) && offset % size == 0,
+               "invalid fixed FPR write offset {} size {}", offset, size);
 
+    if (!ir::IsFloatValueType(value.Type())) {
+        auto source = context.R(value);
+        const u32 lane = offset / size;
+        switch (size) {
+            case 1: __ Ins(host_reg.V16B(), lane, source.W()); break;
+            case 2: __ Ins(host_reg.V8H(), lane, source.W()); break;
+            case 4: __ Ins(host_reg.V4S(), lane, source.W()); break;
+            case 8: __ Ins(host_reg.V2D(), lane, source.X()); break;
+            default: PANIC("unsupported scalar fixed FPR write size {}", size);
+        }
+        return;
+    }
+
+    auto source = context.V(value);
+    if (size == sizeof(u128)) {
+        ASSERT(offset == 0);
+        if (source != host_reg) {
+            __ Orr(host_reg.V16B(), source.V16B(), source.V16B());
+        }
+        return;
+    }
+    const u32 lane = offset / size;
+    switch (size) {
+        case 1: __ Ins(host_reg.V16B(), lane, source.V16B(), 0); break;
+        case 2: __ Ins(host_reg.V8H(), lane, source.V8H(), 0); break;
+        case 4: __ Ins(host_reg.V4S(), lane, source.V4S(), 0); break;
+        case 8: __ Ins(host_reg.V2D(), lane, source.V2D(), 0); break;
+        default: PANIC("unsupported vector fixed FPR write size {}", size);
+    }
 }
 
 void JitTranslator::EmitLoadUniform(ir::Inst* inst) {

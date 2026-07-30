@@ -1360,6 +1360,8 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
             function->GetHostGPR(HostRegIndex(1), Imm{0u}).SetType(ValueType::U64);
     auto fixed_fpr =
             function->GetHostFPR(HostRegIndex(2), Imm{0u}).SetType(ValueType::V128);
+    auto fpr_snapshot =
+            function->GetHostFPR(HostRegIndex(7), Imm{0u}).SetType(ValueType::V128);
 
     std::vector<Value> live;
     for (std::uint64_t i = 0; i < 14; ++i) {
@@ -1370,6 +1372,10 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
     // The SetHostGPR crosses snapshot's lifetime, so snapshot must receive a
     // normal allocation instead of aliasing host register 1.
     function->SetHostGPR(live[0], HostRegIndex(1), Imm{0u});
+    // Same snapshot rule for pinned SIMD state: this write crosses
+    // fpr_snapshot's lifetime, so the old v7 value must first be copied to a
+    // dynamic FPR (or a spill slot).
+    function->SetHostFPR(fixed_fpr, HostRegIndex(7), Imm{0u});
     auto pinned_use = function->Add(pinned, Operand{live[1]}).SetType(ValueType::U64);
     auto snapshot_use =
             function->Add(snapshot, Operand{alias}).SetType(ValueType::U64);
@@ -1388,6 +1394,7 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
     sum = function->Add(sum, Operand{snapshot_use}).SetType(ValueType::U64);
     function->StoreUniform(Uniform{0, ValueType::U64}, sum);
     function->StoreUniform(Uniform{16, ValueType::V128}, fixed_fpr);
+    function->StoreUniform(Uniform{32, ValueType::V128}, fpr_snapshot);
 
     auto terminal_cond = function->TestNotZero(live[4]);
     function->EndBlock(terminal::If{
@@ -1424,6 +1431,10 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
     REQUIRE(general.ValueType(snapshot) != RegAlloc::REF);
     REQUIRE(general.ValueType(fixed_fpr) == RegAlloc::FPR);
     REQUIRE(general.ValueFPR(fixed_fpr).id == 2);
+    REQUIRE(general.ValueType(fpr_snapshot) != RegAlloc::REF);
+    if (general.ValueType(fpr_snapshot) == RegAlloc::FPR) {
+        REQUIRE(general.ValueFPR(fpr_snapshot).id != 7);
+    }
 
     const char* env = std::getenv("SVM_RA_1BLK");
     const auto& expected = env && std::strcmp(env, "0") == 0 ? general : fast;

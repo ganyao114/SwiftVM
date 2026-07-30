@@ -132,7 +132,7 @@ struct Runtime::Impl final {
                     "direct=%llu indirect=%llu call=%llu ret=%llu syscall=%llu "
                     "link_hit=%llu link_miss=%llu rsb_hit=%llu rsb_miss=%llu "
                     "dispatch=%llu l1_hit=%llu l2_hit=%llu miss=%llu "
-                    "gpr_uniform=%llu pad=%s\n",
+                    "gpr_uniform=%llu xmm_uniform=%llu pad=%s\n",
                     seconds,
                     static_cast<unsigned long long>(exits),
                     seconds > 0 ? static_cast<double>(exits) / seconds : 0.0,
@@ -150,6 +150,7 @@ struct Runtime::Impl final {
                     static_cast<unsigned long long>(p.dispatch_l2_hit),
                     static_cast<unsigned long long>(p.dispatch_miss),
                     static_cast<unsigned long long>(p.gpr_uniform_accesses),
+                    static_cast<unsigned long long>(p.xmm_uniform_accesses),
                     std::getenv("SVM_EXEC_ACCESS_PAD")
                             ? std::getenv("SVM_EXEC_ACCESS_PAD")
                             : "0");
