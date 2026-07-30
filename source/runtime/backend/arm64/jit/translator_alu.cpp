@@ -1,11 +1,25 @@
 #include "translator.h"
 
+#include <cstring>
+
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/context.h"
 
 namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
+
+namespace {
+
+bool GcmPclMul2Enabled() {
+    const char* env = PerfGetenv("SVM_X86_GCM_PCLMUL2");
+    // This is a targeted fast path for the high-high PCLMUL selector used by
+    // OpenSSL's Karatsuba GHASH fold.  Keep an exact process-level fallback
+    // while defaulting to the architecturally equivalent PMULL2 instruction.
+    return !env || std::strcmp(env, "0") != 0;
+}
+
+}  // namespace
 
 void JitTranslator::EmitAdd(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
@@ -941,6 +955,7 @@ constexpr u32 kAesimc = 0x4E287800;
 // the 128-bit polynomial-product form; omitting it emits a different crypto
 // encoding and corrupts even the low/low PCLMULQDQ case.
 constexpr u32 kPmull = 0x0EE0E000;
+constexpr u32 kPmull2 = kPmull | 0x40000000;
 constexpr u32 kSha256H = 0x5E004000;
 constexpr u32 kSha256H2 = 0x5E005000;
 constexpr u32 kSha256Su0 = 0x5E282800;
@@ -1047,6 +1062,15 @@ void JitTranslator::EmitVecPclMul(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     const u32 select = inst->GetArg<ir::Imm>(2).Get();
+    // PCLMULQDQ's high-high form maps exactly to ARM64 PMULL2.  Routing it
+    // through two lane DUPs plus PMULL inflated the GHASH Karatsuba fold by
+    // two host instructions per 0x11 multiply; FEX takes this PMULL2 form.
+    if ((select & 0x11) == 0x11 && GcmPclMul2Enabled()) {
+        // The VIXL snapshot exposes Pmull2 but emits an unallocated sentinel
+        // for it.  Keep this beside the existing raw PMULL encoding instead.
+        masm.dci(Crypto3(kPmull2, result, left, right));
+        return;
+    }
     // PMULL consumes lane 0.  Duplicate a selected high 64-bit lane when the
     // x86 immediate asks for it; the actual multiplication remains one PMULL.
     if (select & 0x01) {
