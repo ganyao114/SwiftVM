@@ -2208,6 +2208,11 @@ void JitTranslator::EmitBitExtract(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Imm>(1).Get();
     auto bits = inst->GetArg<ir::Imm>(2).Get();
     auto result = context.R(ir::Value{inst});
+    if (shift_imm_fast && left == 0 &&
+        bits == ir::GetValueSizeByte(inst->ReturnType()) * 8 &&
+        context.SharesGPR(value, ir::Value{inst})) {
+        return;
+    }
     __ Ubfx(result, context.R(value), left, bits);
 }
 
@@ -2249,6 +2254,14 @@ void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
     auto result = context.W(ir::Value{inst});
     auto src = context.W(value);
+    if (shift_imm_fast && value.Def() &&
+        value.Def()->GetOp() == ir::OpCode::LoadUniform &&
+        ir::GetValueSizeByte(value.Type()) <= 2 &&
+        context.SharesGPR(value, ir::Value{inst})) {
+        // LDRB/LDRH already wrote a W register and therefore already provided
+        // the zero extension needed by an immediate GPR shift.
+        return;
+    }
     switch (ir::GetValueSizeByte(value.Type())) {
         case 1:
             __ Uxtb(result, src);

@@ -456,6 +456,28 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = ir::Value{inst};
     auto type = inst->ReturnType();
+    ir::Inst* narrow_consumer = nullptr;
+    if (mem_narrow_fuse && ir::GetValueSizeByte(type) <= 2 && inst->GetUses() == 1) {
+        auto& list = cur_block->GetInstList();
+        auto it = list.iterator_to(*inst);
+        for (++it; it != list.end(); ++it) {
+            bool uses_load = false;
+            for (auto used : it->GetValues()) {
+                uses_load |= used.Def() == inst;
+            }
+            if (!uses_load) {
+                continue;
+            }
+            const bool extending =
+                    (it->GetOp() == ir::OpCode::SignExtend ||
+                     it->GetOp() == ir::OpCode::ZeroExtend32) &&
+                    it->GetArg<ir::Value>(0).Def() == inst;
+            if (extending && context.SharesGPR(value, ir::Value{it.operator->()})) {
+                narrow_consumer = it.operator->();
+            }
+            break;
+        }
+    }
     // Q loads cannot use the register-offset encoding used for [base + pt],
     // and must not consume the synthetic post-index produced by the generic
     // address peephole. The ARM64 frontend lowers pair writeback into normal
@@ -466,11 +488,29 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
-            __ Ldrb(context.W(value), vixl_operand);
+            if (narrow_consumer && narrow_consumer->GetOp() == ir::OpCode::SignExtend) {
+                if (ir::GetValueSizeByte(narrow_consumer->ReturnType()) == 8) {
+                    __ Ldrsb(context.X(value), vixl_operand);
+                } else {
+                    __ Ldrsb(context.W(value), vixl_operand);
+                }
+            } else {
+                // LDRB's W destination already performs ZeroExtend32.
+                __ Ldrb(context.W(value), vixl_operand);
+            }
             break;
         case ir::ValueType::S16:
         case ir::ValueType::U16:
-            __ Ldrh(context.W(value), vixl_operand);
+            if (narrow_consumer && narrow_consumer->GetOp() == ir::OpCode::SignExtend) {
+                if (ir::GetValueSizeByte(narrow_consumer->ReturnType()) == 8) {
+                    __ Ldrsh(context.X(value), vixl_operand);
+                } else {
+                    __ Ldrsh(context.W(value), vixl_operand);
+                }
+            } else {
+                // LDRH's W destination already performs ZeroExtend32.
+                __ Ldrh(context.W(value), vixl_operand);
+            }
             break;
         case ir::ValueType::S32:
         case ir::ValueType::U32:
@@ -498,6 +538,9 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
         default:
             PANIC("UnImplement!");
             break;
+    }
+    if (narrow_consumer) {
+        disable_instructions.set(narrow_consumer->Id());
     }
 }
 

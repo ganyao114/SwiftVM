@@ -64,6 +64,19 @@ static Value ResolveBitCastSource(Value value) {
     return value;
 }
 
+static bool MemNarrowFuseEnabled() {
+    static const bool enabled = [] {
+        const char* env = PerfGetenv("SVM_MEM_NARROW_FUSE");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool ShiftImmFastEnabled() {
+    const char* env = PerfGetenv("SVM_SHIFT_IMM_FAST");
+    return !env || std::strcmp(env, "0") != 0;
+}
+
 using HostRegWriteMap = Map<u16, Vector<u32>>;
 
 static bool LiveRangeCrossesHostRegWrite(const HostRegWriteMap& writes,
@@ -90,7 +103,8 @@ public:
             : function(function), block(), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               single_block_fast_path(single_block_fast_path),
-              scalar_insert(scalar_insert) {
+              scalar_insert(scalar_insert),
+              shift_imm_fast(ShiftImmFastEnabled()) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(function->MaxInstrCount());
@@ -107,7 +121,8 @@ public:
                                  bool scalar_insert = false)
             : function(), block(block), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
-              scalar_insert(scalar_insert) {
+              scalar_insert(scalar_insert),
+              shift_imm_fast(ShiftImmFastEnabled()) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(block->GetInstList().size());
@@ -231,7 +246,12 @@ public:
             ExpireOldIntervals(interval);
 
             if (!IsFloatValue(interval.inst)) {
-                if (auto alloc = AllocGPR(); alloc >= 0) {
+                if (TryTieNarrowLoad(interval)) {
+                    // A plain narrow load and its extension chain share one W/X
+                    // register. The ARM64 emitter can then replace
+                    // LDRH+SXTH (or LDRB+UXTB) with the extending load itself,
+                    // and a following 32->64 W write becomes a true no-op.
+                } else if (auto alloc = AllocGPR(); alloc >= 0) {
                     reg_alloc->MapRegister(interval.inst->Id(), HostGPR{(u16)alloc});
                 } else {
                     SpillAtInterval(interval);
@@ -288,6 +308,127 @@ public:
     }
 
 private:
+    bool DirectlyFeedsImmediateShift(Inst* inst) const {
+        auto in_block = [&](Block* candidate) {
+            bool found = false;
+            for (auto& next : candidate->GetInstList()) {
+                if (found) {
+                    return (next.GetOp() == OpCode::LslImm ||
+                            next.GetOp() == OpCode::LsrImm ||
+                            next.GetOp() == OpCode::AsrImm) &&
+                           next.GetArg<Value>(0).Def() == inst;
+                }
+                found = &next == inst;
+            }
+            return false;
+        };
+        if (block) {
+            return in_block(block);
+        }
+        for (auto* hir_block : function->GetHIRBlocks()) {
+            if (in_block(hir_block->GetBlock())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    Value NarrowLoadTieSource(Inst* inst) const {
+        if (shift_imm_fast) {
+            if (inst->GetOp() == OpCode::BitExtract &&
+                inst->GetArg<Imm>(1).Get() == 0 &&
+                inst->GetArg<Imm>(2).Get() == GetValueSizeByte(inst->ReturnType()) * 8 &&
+                DirectlyFeedsImmediateShift(inst)) {
+                return ResolveBitCastSource(inst->GetArg<Value>(0));
+            } else if (inst->GetOp() == OpCode::ZeroExtend32) {
+                auto source = ResolveBitCastSource(inst->GetArg<Value>(0));
+                if (source.Defined() && source.Def()->GetOp() == OpCode::LoadUniform &&
+                    GetValueSizeByte(source.Type()) <= 2 &&
+                    DirectlyFeedsImmediateShift(inst)) {
+                    return source;
+                }
+            } else if (inst->GetOp() == OpCode::ZeroExtend32To64) {
+                auto source = ResolveBitCastSource(inst->GetArg<Value>(0));
+                // Only a 32-bit (W-write) shift makes the extension a no-op:
+                // a 64-bit shift leaves live upper bits (e.g. the sign
+                // extension of imul/cdq's high half) that the ZExt must clear.
+                if (source.Defined() &&
+                    (source.Def()->GetOp() == OpCode::LslImm ||
+                     source.Def()->GetOp() == OpCode::LsrImm ||
+                     source.Def()->GetOp() == OpCode::AsrImm) &&
+                    GetValueSizeByte(source.Def()->ReturnType()) == 4) {
+                    return source;
+                }
+            }
+        }
+        if (!MemNarrowFuseEnabled()) {
+            return {};
+        }
+        switch (inst->GetOp()) {
+            case OpCode::SignExtend:
+            case OpCode::ZeroExtend32: {
+                auto source = ResolveBitCastSource(inst->GetArg<Value>(0));
+                if (source.Defined() && source.Def()->GetOp() == OpCode::LoadMemory &&
+                    GetValueSizeByte(source.Type()) <= 2) {
+                    return source;
+                }
+                break;
+            }
+            case OpCode::ZeroExtend32To64: {
+                auto source = ResolveBitCastSource(inst->GetArg<Value>(0));
+                if (!source.Defined() ||
+                    (source.Def()->GetOp() != OpCode::SignExtend &&
+                     source.Def()->GetOp() != OpCode::ZeroExtend32)) {
+                    break;
+                }
+                auto load = ResolveBitCastSource(source.Def()->GetArg<Value>(0));
+                if (load.Defined() && load.Def()->GetOp() == OpCode::LoadMemory &&
+                    GetValueSizeByte(load.Type()) <= 2) {
+                    return source;
+                }
+                break;
+            }
+            default:
+                break;
+        }
+        return {};
+    }
+
+    bool TryTieNarrowLoad(LiveInterval& current) {
+        auto source = NarrowLoadTieSource(current.inst);
+        if (!source.Defined() || source.Id() == current.inst->Id() ||
+            reg_alloc->ValueType(source) != backend::RegAlloc::GPR) {
+            return false;
+        }
+
+        auto matches = [&](const LiveInterval& live) {
+            return live.inst->Id() == source.Id() && live.end == current.start;
+        };
+        bool removed = false;
+        if (single_block_fast_path) {
+            auto it = std::find_if(fast_active_lives.begin(), fast_active_lives.end(), matches);
+            if (it != fast_active_lives.end()) {
+                fast_active_lives.erase(it);
+                std::make_heap(fast_active_lives.begin(), fast_active_lives.end(),
+                               [](const LiveInterval& left, const LiveInterval& right) {
+                                   return left.end > right.end;
+                               });
+                removed = true;
+            }
+        } else {
+            auto it = std::find_if(active_lives.begin(), active_lives.end(), matches);
+            if (it != active_lives.end()) {
+                active_lives.erase(it);
+                removed = true;
+            }
+        }
+        if (!removed) {
+            return false;
+        }
+        reg_alloc->MapRegister(current.inst->Id(), reg_alloc->ValueGPR(source));
+        return true;
+    }
+
     Value ScalarInsertTieSource(Inst* inst) const {
         // FEX-style AES rounds are destructive on the state operand.  When
         // that SSA value dies at this instruction, give the result its host
@@ -1029,6 +1170,7 @@ private:
     const u32 fpr_reserve{0};
     const bool single_block_fast_path{false};
     const bool scalar_insert{false};
+    const bool shift_imm_fast{false};
     Vector<bool> spill_slots{};
     // Spill telemetry (reported at the end of AllocateRegisters): spilling
     // has never triggered on current workloads, so any hit is worth a log

@@ -280,6 +280,12 @@ private:
     // FEAT_AFP + FPCR.NEP is active for guest code, so scalar Advanced SIMD
     // instructions can update a tied destination's lane 0 in place.
     bool sse_scalar_insert{false};
+    bool shift_imm_fast{true};
+    // Default-on W29 lowering: signed/unsigned narrow loads consume their
+    // extension destination directly, and GetOperand computes into its
+    // allocated address register. SVM_MEM_NARROW_FUSE=0 restores the old
+    // load+extend and temporary+transport-move shapes.
+    bool mem_narrow_fuse{true};
     // TOP virtualization is deliberately a second opt-in layered on the
     // reduced x87 JIT. It stays default-off until host Unicorn qualification
     // has covered the new block/function paths.

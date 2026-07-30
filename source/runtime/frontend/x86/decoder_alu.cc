@@ -728,33 +728,62 @@ void X64Decoder::DecodeShlShr(_DInst& insn, bool shr) { DecodeShift(insn, shr ? 
 
 void X64Decoder::DecodeSar(_DInst& insn) { DecodeShift(insn, 2); }
 
+static bool ShiftImmFastEnabled() {
+    const char* env = swift::runtime::PerfGetenv("SVM_SHIFT_IMM_FAST");
+    return !env || std::strcmp(env, "0") != 0;
+}
+
 void X64Decoder::DecodeShift(_DInst& insn, int kind) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
 
     auto width = op0.size;
     auto left = ToValue(Src(insn, op0));
-    auto count_raw = ToValue(Src(insn, op1));
+    auto count_data = Src(insn, op1);
 
     // x86 masks the shift count to 5 bits (6 bits for 64 bit operands),
     // regardless of the operand width; the backend shift ops mask to their
     // own width, so narrow shifts must run in a 32 bit container.
     auto count_mask = width == 64 ? ir::Imm(0x3Fu) : ir::Imm(0x1Fu);
-    auto count = __ And(count_raw, ir::Operand{count_mask});
+    const u32 constant_count =
+            count_data.IsImm() ? static_cast<u32>(count_data.imm.Get() & count_mask.Get())
+                               : UINT32_MAX;
+    const bool shift_imm_fast = ShiftImmFastEnabled();
+    const bool constant_zero = shift_imm_fast && constant_count == 0;
+    const bool immediate_fast =
+            shift_imm_fast && constant_count > 0 && constant_count < width;
+
+    // An effective immediate count of zero is a true x86 no-op for the value
+    // and flags. Keep Dst so a memory operand retains the old load/store and
+    // fault behaviour, but do not manufacture a flag guard or change the
+    // frontend's known carry polarity.
+    if (constant_zero) {
+        Dst(insn, op0, left);
+        return;
+    }
+
+    ir::Value count;
+    if (!immediate_fast) {
+        auto count_raw = ToValue(count_data);
+        count = __ And(count_raw, ir::Operand{count_mask});
+    }
     ir::Value shifted = width < 32 ? __ ZeroExtend32(left) : left;
 
     ir::Value result;
     ir::Value sar_ext;  // sign-extended operand for SAR (reused for its CF)
     if (kind == 0) {
-        result = __ LslValue(shifted, count);
+        result = immediate_fast ? __ LslImm(shifted, ir::Imm(constant_count))
+                                : __ LslValue(shifted, count);
     } else if (kind == 1) {
-        result = __ LsrValue(shifted, count);
+        result = immediate_fast ? __ LsrImm(shifted, ir::Imm(constant_count))
+                                : __ LsrValue(shifted, count);
     } else {
         // Narrow SAR must sign extend to 32 bits first: the backend shift is a
         // 32/64 bit op, an unsigned narrow value would shift in zeros.
         sar_ext = width < 32 ? __ SignExtend(left).SetType(ir::ValueType::S32)
                              : left.SetType(GetSignedContainer(width));
-        result = __ AsrValue(sar_ext, count);
+        result = immediate_fast ? __ AsrImm(sar_ext, ir::Imm(constant_count))
+                                : __ AsrValue(sar_ext, count);
     }
     result = result.SetCastType(GetSize(width));
     // For narrow shifts the flag-defining op must be typed at the guest
@@ -764,8 +793,12 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
             ? __ And(result, ir::Operand{ir::Imm((u64(1) << width) - 1)}).SetType(GetSize(width))
             : result;
 
-    // A zero shift count leaves the flags untouched; skip the flag update.
-    auto skip_flags = __ NotGoto(__ TestNotZero(count));
+    // A runtime-dependent zero count leaves flags untouched. The immediate
+    // fast path is statically known nonzero and needs neither test nor branch.
+    ir::Value skip_flags;
+    if (!immediate_fast) {
+        skip_flags = __ NotGoto(__ TestNotZero(count));
+    }
     // SF / ZF / PF from the result via a flag-setting logical op (which also
     // clears C / V / AF). CF and OF are then set explicitly via SetCarry /
     // SetOverflow, which write the flag bits directly without disturbing N/Z.
@@ -775,18 +808,32 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
     // CF = last bit shifted out (count >= 1 in this region):
     //   SHL: bit (width-1) of (orig << (count-1)) == bit (width-count) of orig.
     //   SHR/SAR: bit 0 of (orig >> (count-1))     == bit (count-1) of orig.
-    auto count_m1 = __ Sub(count, ir::Operand{ir::Imm(u64(1))});
     ir::Value cf;
-    if (kind == 0) {
-        auto shl = __ LslValue(shifted, count_m1);
-        cf = __ And(__ LsrImm(shl, ir::Imm(u64(width - 1))), ir::Operand{ir::Imm(u64(1))});
-    } else if (kind == 1) {
-        // SHR: bits beyond the width shift out as 0, so a logical shift suffices.
-        cf = __ And(__ LsrValue(shifted, count_m1), ir::Operand{ir::Imm(u64(1))});
+    if (immediate_fast) {
+        if (kind == 0) {
+            cf = __ And(__ LsrImm(shifted, ir::Imm(u64(width - constant_count))),
+                        ir::Operand{ir::Imm(u64(1))});
+        } else if (kind == 1) {
+            cf = __ And(__ LsrImm(shifted, ir::Imm(u64(constant_count - 1))),
+                        ir::Operand{ir::Imm(u64(1))});
+        } else {
+            cf = __ And(__ AsrImm(sar_ext, ir::Imm(u64(constant_count - 1))),
+                        ir::Operand{ir::Imm(u64(1))});
+        }
     } else {
-        // SAR: counts beyond the width shift out the sign bit, so use an
-        // arithmetic shift of the sign-extended operand.
-        cf = __ And(__ AsrValue(sar_ext, count_m1), ir::Operand{ir::Imm(u64(1))});
+        auto count_m1 = __ Sub(count, ir::Operand{ir::Imm(u64(1))});
+        if (kind == 0) {
+            auto shl = __ LslValue(shifted, count_m1);
+            cf = __ And(__ LsrImm(shl, ir::Imm(u64(width - 1))),
+                        ir::Operand{ir::Imm(u64(1))});
+        } else if (kind == 1) {
+            // SHR: bits beyond the width shift out as 0, so a logical shift suffices.
+            cf = __ And(__ LsrValue(shifted, count_m1), ir::Operand{ir::Imm(u64(1))});
+        } else {
+            // SAR: counts beyond the width shift out the sign bit, so use an
+            // arithmetic shift of the sign-extended operand.
+            cf = __ And(__ AsrValue(sar_ext, count_m1), ir::Operand{ir::Imm(u64(1))});
+        }
     }
     __ SetCarry(cf);
 
@@ -806,12 +853,16 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
     __ SetOverflow(of);
 
     StorePolarity(false);  // CF stored Direct; skipped with the update when count == 0
-    __ BindLabel(skip_flags);
-    // The shift count is runtime-dependent: count == 0 preserves the previous
-    // carry and its polarity, count != 0 sets CF Direct. The frontend cannot know
-    // which at decode time, so mark the polarity unknown and let consumers
-    // normalize through the runtime polarity byte (stored above for count != 0).
-    carry_ = CarryPolarity::Unknown;
+    if (immediate_fast) {
+        carry_ = CarryPolarity::Direct;
+    } else {
+        __ BindLabel(skip_flags);
+        // The shift count is runtime-dependent: count == 0 preserves the previous
+        // carry and its polarity, count != 0 sets CF Direct. The frontend cannot know
+        // which at decode time, so mark the polarity unknown and let consumers
+        // normalize through the runtime polarity byte (stored above for count != 0).
+        carry_ = CarryPolarity::Unknown;
+    }
 
     Dst(insn, op0, result);
 }

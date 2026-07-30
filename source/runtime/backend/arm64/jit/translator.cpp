@@ -18,6 +18,12 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     guest_addr_mask = config.guest_addr_mask;
     window_uxtw = guest_addr_mask == 0xFFFFFFFFull;
     sse_scalar_insert = True(config.arm64_features & Arm64Features::AFP);
+    if (const char* shift_fast = PerfGetenv("SVM_SHIFT_IMM_FAST")) {
+        shift_imm_fast = std::strcmp(shift_fast, "0") != 0;
+    }
+    if (const char* mem_fuse = PerfGetenv("SVM_MEM_NARROW_FUSE")) {
+        mem_narrow_fuse = std::strcmp(mem_fuse, "0") != 0;
+    }
     if (const char* nan_fast = PerfGetenv("SVM_SSE_NAN_FAST")) {
         sse_nan_fast = std::strcmp(nan_fast, "0") != 0;
     }
@@ -441,6 +447,24 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
         } else {
             // Match Case: load store post/index & push/pop
             auto addr_value = ir_op.GetLeft().value;
+            if (mem_narrow_fuse && addr_value.Def()->GetOp() == ir::OpCode::GetOperand &&
+                addr_value.Def()->GetUses() == 1) {
+                auto source_operand = addr_value.Def()->GetArg<ir::Operand>(0);
+                auto source_left = source_operand.GetLeft();
+                if (source_operand.GetRight().Null() && source_left.IsValue()) {
+                    // A simple EA does not need to be materialised in the
+                    // GetOperand result register. Feed the original address
+                    // register to the memory instruction and suppress only
+                    // that pure transport; the memory instruction remains at
+                    // the same point and is still the sole faulting operation.
+                    disable_instructions.set(addr_value.Def()->Id());
+                    auto source_reg = context.R(source_left.value, true);
+                    if (use_memory_base) {
+                        return BiasMem(source_reg, atomic);
+                    }
+                    return MemOperand{source_reg};
+                }
+            }
             auto& instr_list = cur_block->GetInstList();
             auto instr = addr_value.Def();
             // With the pt bias active, post-index forms cannot express

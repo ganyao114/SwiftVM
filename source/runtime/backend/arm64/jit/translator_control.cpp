@@ -313,7 +313,80 @@ void JitTranslator::EmitCallLambda(ir::Inst* inst) {
 void JitTranslator::EmitGetOperand(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto result = context.R(ir::Value{inst});
-    __ Mov(result, EmitOperand(operand));
+    if (mem_narrow_fuse && operand.GetRight().Null() &&
+        operand.GetLeft().IsValue() && inst->GetUses() == 1) {
+        bool feeds_memory = false;
+        auto it = cur_block->GetInstList().iterator_to(*inst);
+        for (++it; it != cur_block->GetInstList().end(); ++it) {
+            bool uses_address = false;
+            for (auto used : it->GetValues()) {
+                uses_address |= used.Def() == inst;
+            }
+            if (!uses_address) {
+                continue;
+            }
+            feeds_memory = it->GetOp() == ir::OpCode::LoadMemory ||
+                           it->GetOp() == ir::OpCode::StoreMemory ||
+                           it->GetOp() == ir::OpCode::LoadMemoryTSO ||
+                           it->GetOp() == ir::OpCode::StoreMemoryTSO;
+            break;
+        }
+        if (feeds_memory) {
+            // EmitMemOperand peels this single-use wrapper and consumes the
+            // original address register directly.
+            return;
+        }
+    }
+    if (!mem_narrow_fuse || operand.GetRight().Null()) {
+        __ Mov(result, EmitOperand(operand));
+        return;
+    }
+
+    // GetOperand is the materialised guest EA used by memory IR. EmitOperand
+    // historically built a composite address in scratch and this final Mov
+    // transported it into `result`. Computing into the allocated destination
+    // directly is identical arithmetic and preserves the later memory access
+    // (hence its fault point), while removing that transport instruction.
+    Register left;
+    if (operand.GetLeft().IsImm()) {
+        __ Mov(result, operand.GetLeft().imm.Get());
+        left = result;
+    } else {
+        left = context.R(operand.GetLeft().value, true);
+    }
+    Register dst = left.Is64Bits() ? result.X() : result.W();
+    auto right = operand.GetRight();
+    if (right.IsImm()) {
+        const auto imm = right.imm.GetSigned();
+        if (operand.GetOp() == ir::OperandOp::Plus) {
+            if (__ IsImmAddSub(imm)) {
+                __ Add(dst, left, imm);
+            } else {
+                __ Mov(dst, imm);
+                __ Add(dst, left, dst);
+            }
+        } else if (operand.GetOp() == ir::OperandOp::LSL) {
+            __ Lsl(dst, left, imm);
+        } else if (operand.GetOp() == ir::OperandOp::LSR) {
+            __ Lsr(dst, left, imm);
+        } else {
+            PANIC();
+        }
+        return;
+    }
+
+    auto right_reg = context.R(right.value, true);
+    if (operand.GetOp() == ir::OperandOp::Plus) {
+        __ Add(dst, left, right_reg);
+    } else if (operand.GetOp() == ir::OperandOp::LSL) {
+        __ Lsl(dst, left, right_reg);
+    } else if (operand.GetOp() == ir::OperandOp::LSR) {
+        __ Lsr(dst, left, right_reg);
+    } else if (operand.GetOp() == ir::OperandOp::PlusExt) {
+        __ Add(dst, left, Operand{right_reg, LSL, operand.GetOp().shift_ext});
+    } else {
+        PANIC();
+    }
 }
 
 void JitTranslator::EmitCallDynamic(ir::Inst* inst) {

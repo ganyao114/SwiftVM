@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <map>
@@ -1049,6 +1050,276 @@ TEST_CASE("MMX-form shared opcodes are refused instead of run on the XMM file") 
         REQUIRE_FALSE(sse.refused);
         REQUIRE(sse.touched_xmm);
     }
+}
+
+TEST_CASE("GPR immediate shifts specialize only nonzero in-range counts") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+
+    struct ShiftFastScope {
+        bool had_old{};
+        std::string old;
+        ShiftFastScope() {
+            if (const char* value = std::getenv("SVM_SHIFT_IMM_FAST")) {
+                had_old = true;
+                old = value;
+            }
+            setenv("SVM_SHIFT_IMM_FAST", "1", 1);
+        }
+        ~ShiftFastScope() {
+            if (had_old) setenv("SVM_SHIFT_IMM_FAST", old.c_str(), 1);
+            else unsetenv("SVM_SHIFT_IMM_FAST");
+        }
+    } shift_fast_scope;
+
+    struct MemIf final : MemoryInterface {
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+
+    struct Kind {
+        swift::u8 group;
+        OpCode imm;
+        OpCode value;
+    };
+    const std::array kinds{
+            Kind{4, OpCode::LslImm, OpCode::LslValue},
+            Kind{5, OpCode::LsrImm, OpCode::LsrValue},
+            Kind{7, OpCode::AsrImm, OpCode::AsrValue},
+    };
+    const std::array widths{8u, 16u, 32u, 64u};
+
+    auto decode = [&](swift::u32 width, swift::u8 group, swift::u8 count, bool by_cl) {
+        std::vector<swift::u8> code;
+        if (width == 16) code.push_back(0x66);
+        if (width == 64) code.push_back(0x48);
+        code.push_back(by_cl ? (width == 8 ? 0xD2 : 0xD3)
+                             : (width == 8 ? 0xC0 : 0xC1));
+        code.push_back(
+                static_cast<swift::u8>(0xC0 | (group << 3)));  // r/m = AL/AX/EAX/RAX
+        if (!by_cl) code.push_back(count);
+        code.push_back(0xF4);  // hlt terminates Decode
+
+        const auto address = reinterpret_cast<VAddr>(code.data());
+        auto block = std::make_unique<Block>(0, Location{address});
+        Assembler assembler{block.get()};
+        X64Decoder decoder{address, &memory, &assembler, true};
+        decoder.Decode();
+        return block;
+    };
+
+    for (auto kind : kinds) {
+        for (swift::u32 width : widths) {
+            const std::array counts{0u, 1u, width - 1, width, width + 1};
+            for (swift::u32 raw_count : counts) {
+                INFO("group=" << unsigned(kind.group) << " width=" << width
+                              << " count=" << raw_count);
+                auto block =
+                        decode(width, kind.group, static_cast<swift::u8>(raw_count), false);
+                bool has_imm = false;
+                bool has_value = false;
+                bool has_guard = false;
+                bool has_flag_write = false;
+                for (auto& inst : block->GetInstList()) {
+                    has_imm |= inst.GetOp() == kind.imm;
+                    has_value |= inst.GetOp() == kind.value;
+                    has_guard |= inst.GetOp() == OpCode::NotGoto;
+                    has_flag_write |= inst.GetOp() == OpCode::SaveFlags ||
+                                      inst.GetOp() == OpCode::SetCarry ||
+                                      inst.GetOp() == OpCode::SetOverflow;
+                }
+
+                const swift::u32 effective = raw_count & (width == 64 ? 0x3Fu : 0x1Fu);
+                if (effective == 0) {
+                    REQUIRE_FALSE(has_imm);
+                    REQUIRE_FALSE(has_value);
+                    REQUIRE_FALSE(has_guard);
+                    REQUIRE_FALSE(has_flag_write);
+                } else if (effective < width) {
+                    REQUIRE(has_imm);
+                    REQUIRE_FALSE(has_value);
+                    REQUIRE_FALSE(has_guard);
+                    REQUIRE(has_flag_write);
+                } else {
+                    // 8/16-bit counts at or above the operand width retain the
+                    // generic 32-bit-container path and its zero-count guard.
+                    REQUIRE(has_value);
+                    REQUIRE(has_guard);
+                    REQUIRE(has_flag_write);
+                }
+            }
+
+            // CL is runtime data even if the test initializes it later; it must
+            // retain x86's 5/6-bit mask and zero-count flag guard.
+            auto cl_block = decode(width, kind.group, 0, true);
+            bool has_value = false;
+            bool has_guard = false;
+            for (auto& inst : cl_block->GetInstList()) {
+                has_value |= inst.GetOp() == kind.value;
+                has_guard |= inst.GetOp() == OpCode::NotGoto;
+            }
+            REQUIRE(has_value);
+            REQUIRE(has_guard);
+        }
+    }
+}
+
+TEST_CASE("GPR immediate shift boundary results and defined flags execute correctly") {
+    using namespace swift::x86;
+
+    struct ShiftFastScope {
+        bool had_old{};
+        std::string old;
+        ShiftFastScope() {
+            if (const char* value = std::getenv("SVM_SHIFT_IMM_FAST")) {
+                had_old = true;
+                old = value;
+            }
+            setenv("SVM_SHIFT_IMM_FAST", "1", 1);
+        }
+        ~ShiftFastScope() {
+            if (had_old) setenv("SVM_SHIFT_IMM_FAST", old.c_str(), 1);
+            else unsetenv("SVM_SHIFT_IMM_FAST");
+        }
+    } shift_fast_scope;
+
+    constexpr swift::u64 input = UINT64_C(0x8123456789ab8181);
+    struct Kind {
+        swift::u8 group;
+    };
+    const std::array kinds{Kind{4}, Kind{5}, Kind{7}};
+    const std::array widths{8u, 16u, 32u, 64u};
+    constexpr size_t stride = 32;
+    constexpr size_t case_count = 3 * 4 * 5;
+
+    void* guest_code = mmap(nullptr, stride * case_count, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(guest_code != MAP_FAILED);
+    auto* code_base = static_cast<swift::u8*>(guest_code);
+    size_t case_index = 0;
+    for (auto kind : kinds) {
+        for (swift::u32 width : widths) {
+            const std::array counts{0u, 1u, width - 1, width, width + 1};
+            for (swift::u32 raw_count : counts) {
+                auto* p = code_base + case_index++ * stride;
+                // cmp rbx,rbx; stc gives a known pre-shift state:
+                // CF=PF=ZF=1, SF=OF=0. AF is intentionally not checked.
+                *p++ = 0x48;
+                *p++ = 0x39;
+                *p++ = 0xDB;
+                *p++ = 0xF9;
+                if (width == 16) *p++ = 0x66;
+                if (width == 64) *p++ = 0x48;
+                *p++ = width == 8 ? 0xC0 : 0xC1;
+                *p++ = static_cast<swift::u8>(0xC0 | (kind.group << 3));
+                *p++ = static_cast<swift::u8>(raw_count);
+                // Preserve the shifted value before LAHF overwrites AH, then
+                // capture OF separately in DL.
+                *p++ = 0x49;
+                *p++ = 0x89;
+                *p++ = 0xC0;  // mov r8,rax
+                *p++ = 0x9F;  // lahf
+                *p++ = 0x0F;
+                *p++ = 0x90;
+                *p++ = 0xC2;  // seto dl
+                *p++ = 0xF4;  // hlt
+            }
+        }
+    }
+    REQUIRE(case_index == case_count);
+
+    backend::SmcTracker::SetEnabled(false);
+    auto* instance = swift::translator::x86::X86Instance::Make();
+    auto* core = swift::translator::x86::X86Core::Make(instance);
+    auto& context = core->GetContext();
+    case_index = 0;
+    for (auto kind : kinds) {
+        for (swift::u32 width : widths) {
+            const std::array counts{0u, 1u, width - 1, width, width + 1};
+            const swift::u64 width_mask =
+                    width == 64 ? UINT64_MAX : ((UINT64_C(1) << width) - 1);
+            const swift::u64 original = input & width_mask;
+            const bool original_sign = ((original >> (width - 1)) & 1) != 0;
+            for (swift::u32 raw_count : counts) {
+                INFO("group=" << unsigned(kind.group) << " width=" << width
+                              << " count=" << raw_count);
+                const swift::u32 count = raw_count & (width == 64 ? 0x3Fu : 0x1Fu);
+                swift::u64 lane = original;
+                if (count != 0) {
+                    if (kind.group == 4) {
+                        lane = count >= width ? 0 : (original << count) & width_mask;
+                    } else if (kind.group == 5) {
+                        lane = count >= width ? 0 : original >> count;
+                    } else if (count >= width) {
+                        lane = original_sign ? width_mask : 0;
+                    } else {
+                        lane = original >> count;
+                        if (original_sign) {
+                            const auto retained = (UINT64_C(1) << (width - count)) - 1;
+                            lane |= width_mask & ~retained;
+                        }
+                    }
+                }
+                const swift::u64 expected_result =
+                        width == 64 ? lane
+                                    : (width == 32 ? lane
+                                                   : ((input & ~width_mask) | lane));
+
+                context.rip.qword =
+                        reinterpret_cast<swift::u64>(code_base + case_index++ * stride);
+                context.rax.qword = input;
+                context.rbx.qword = UINT64_C(0x1122334455667788);
+                context.rdx.qword = 0;
+                REQUIRE(core->Run() == swift::translator::ExitReason::None);
+                REQUIRE(context.r8.qword == expected_result);
+
+                const swift::u8 captured = context.rax.low.low.high;
+                swift::u8 flag_mask = 0xC4;  // SF/ZF/PF
+                swift::u8 expected = 0;
+                if (count == 0) {
+                    flag_mask |= 0x01;
+                    expected = 0x45;  // preserved CF/PF/ZF
+                } else {
+                    expected |= lane == 0 ? 0x40 : 0;
+                    expected |= ((lane >> (width - 1)) & 1) ? 0x80 : 0;
+                    expected |= (std::popcount(static_cast<swift::u8>(lane)) & 1) == 0
+                                        ? 0x04
+                                        : 0;
+                    if (count < width) {
+                        flag_mask |= 0x01;
+                        const swift::u64 cf =
+                                kind.group == 4 ? (original >> (width - count)) & 1
+                                                : (original >> (count - 1)) & 1;
+                        expected |= static_cast<swift::u8>(cf);
+                    }
+                }
+                REQUIRE((captured & flag_mask) == (expected & flag_mask));
+
+                if (count == 0 || count == 1) {
+                    const swift::u8 expected_of =
+                            count == 0
+                                    ? 0
+                                    : (kind.group == 4
+                                               ? static_cast<swift::u8>(
+                                                         ((lane >> (width - 1)) & 1) ^
+                                                         ((original >> (width - 1)) & 1))
+                                               : (kind.group == 5 ? original_sign : false));
+                    REQUIRE(context.rdx.low.low.low == expected_of);
+                }
+            }
+        }
+    }
+
+    swift::translator::x86::X86Core::Destroy(core);
+    swift::translator::x86::X86Instance::Destroy(instance);
+    backend::SmcTracker::SetEnabled(true);
+    munmap(guest_code, stride * case_count);
 }
 
 TEST_CASE("Uniform elimination uses the latest full GPR store for a narrow load") {
