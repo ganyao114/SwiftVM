@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化两波落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）。master = `1e88fb4`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化三波落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×）。master = `f6bd6a5`。
 
 ---
 
@@ -77,7 +77,11 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 
 **W14 执行侧第二波（2026-07-30，`b4f5c52` + golden `1e88fb4`）**：UniformElimination 局部路径交汇（`SVM_UNIFORM_PATH_FWD`，**默认 ON**）——Goto/NotGoto 前建立的 uniform 事实支配两条后继，BindLabel 处与 fallthrough 逐字节求交保留，反向 DSE 对称删除被双路径覆盖的 guarded 写；FlagsElimination 全位缩窄（`SVM_FLAG_FULL_ELIM`，**默认 OFF**——实测 76B 收益噪声级，保留为实验开关）。coremark 热块 0x402df8：GPR state 20→14、flags 簿记 19→13、host 120→111；动态 gpr_uniform −10.7%。性能（orchestrator 独立交错 A/B 9 轮，与 codex 两组数据互证）：coremark **+8.6~8.9%**，stream 四项交替 ±0.34% 内无回退。golden 重生成：201 unit IR 下降（合计 −1086）、unit 集不变、零增长；`SVM_UNIFORM_PATH_FWD=0` 与旧 golden 零 diff（回退精确性坐实）。W16 调研附带定论：地址重算瘦身对 smallpt/c-ray/7zip <1.03 不立项（访存已在 [x24, wN, uxtw] 折叠）；7zip 热点的 memcpy/rep movs 假说否掉（sample 零命中）；三项共同最大可压类别是 move/merge（18–39%，部分是 SSE 标量 lane 语义必需）。
 
+**W15 x86 crypto NI（2026-07-30，`f6bd6a5`）**：AES-NI 五指令（AESENC/ENCLAST/DEC/DECLAST/KEYGENASSIST）+ PCLMULQDQ 落地，FEX 映射（AESE(0)→AESMC→XOR key；keygenassist TBL swizzle + RCON 在 byte 4/12；PMULL 需 0x00c00000 size 位）；SHA256RNDS2/MSG1/MSG2 按 FEX Zip/Rev64 state 映射实现。开关：`SVM_X86_CRYPTO_NI` **默认 ON**（host FEAT_AES+FEAT_PMULL 门控，env=0 精确回退 ILL_CODE）；`SVM_X86_CRYPTO_SHA=1` **opt-in 默认 OFF**（需 bundle ON + host FEAT_SHA256——默认 OFF 不是实现风险，是 master 潜伏信号损坏（见 P0 #3）在 SHA 路径暴露面更大，待根治后翻默认）。CPUID：leaf1 ECX bit1+bit25，leaf7 EBX bit29（仅 SHA 开启时报告）；OPENSSL_ia32cap 透传。解释器软件实现（GF S-box / 位循环 PCLMUL / NEON SHA256 intrinsics）与 JIT 语义一致。KAT（NIST SP 800-38A/38D、独立 bit-serial GHASH oracle、FIPS 动态 keygen、100MiB SHA-256 digest 对 host）默认 ON rc=0 / crypto=0 rc=1。性能（orchestrator 独立交错 A/B）：aes-128-gcm 16k 83.6k → ~700k kB/s（**~9×**，FEX 1774k 的 0.39，GHASH 路径差距待分解）；coremark 中性（1.00）。门禁：指纹默认/crypto=0 双态 vs golden 零 diff（未重生成）、func_tests 三模式、swift_test 126320 assertions、trio/smc/clone_smc_mt 全过。
+
 ### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
+
+- **W17 pressure-aware XMM 驻留（2026-07-30，三轮全负，轴关闭）**：部分 pin（top-N/XMM0–7）STREAM −0.9~−9.0%——少 pin 守不住收益、全 pin 挤爆 FPR 池，无中间甜点；lazy-fill 单独不够（c-ray 热 unit 很快摸满 16 XMM）；per-unit 可驱逐 pin（=3）在 c-ray 上触发 **55 分钟 400% CPU 死循环**（编译/重翻译环路，门禁语料覆盖不到），最终只能退成安全 no-op。结论：此轴关闭，W13 旗标对（XMM_STATIC=1 + NAN_FAST=1 捆绑）即最终形态。
 
 - **函数单元做大 / 跨块优化**：`c0b5861` 已扫 1→64 块/单元，墙钟全在 MAD 内、发射字节单调涨；`SVM_FUNC_LAZY=1`（默认）下每单元一块，跨块没有主体。
 - **x86 DirectBlockLink**：Mov+Br 无 backpatch 但跨 unit 仍非 SMC-safe（无 target→source incoming-link 表，ReclaimCode 释放后源块 Br 进已释放内存）；且开启即禁用整个 JIT disk cache（func_tests 热 cache 收益 ~11.4 ms vs 直接链接上界 ~0.01 ms）。
@@ -124,6 +128,8 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_SSE_NAN_FAST | 0/1 | 0 | **激进类**：跳过 SSE/共享 AVX FP 的 x86 NaN payload/quiet 修正；偏离 NaN 位级语义（边界见 W13 段），五语料 oracle 无感 |
 | SVM_UNIFORM_PATH_FWD | 0/1 | 1 | UniformElim 局部路径交汇（W14）；=0 精确恢复逐 label 清空旧行为（与 W14 前 golden 零 diff） |
 | SVM_FLAG_FULL_ELIM | 0/1 | 0 | FlagsElimination 全 flag 位缩窄（W14 实验开关）；实测收益噪声级故默认 OFF，=1 开启 |
+| SVM_X86_CRYPTO_NI | 0/1 | 1 | x86 AES-NI+PCLMULQDQ 硬加速（W15）；host 无 FEAT_AES/PMULL 时自动回退 ILL_CODE，=0 强制软件路径 |
+| SVM_X86_CRYPTO_SHA | 0/1 | 0 | x86 SHA256 NI opt-in（W15，需 CRYPTO_NI 同开 + host FEAT_SHA256）；默认 OFF 因 P0 #3 潜伏信号损坏在 SHA 路径暴露面大，根治后翻默认 |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_EXEC_PROF | 0/1 | 0 | 执行侧探针：块退出分布、slot-link/RSB 命中、dispatcher L1/L2/miss、GPR uniform 访问计数；发射中性（W12 实测），默认关闭 |
 | SVM_EXEC_MAP | 0/1 | 0 | JIT unit/trampoline 地址区间输出（配合 sample 分类 leaf PC） |
@@ -550,6 +556,7 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
    **根治已落地**:x16/x17 加入 `trampolines.cpp` 的保留清单，池 16→14。该方案曾于 `96c6971` 全局保留、`5211e81` 因 SSE 高压回归而回退;**当年回归的真正原因很可能就是它把代码推上了当时静默损坏的 spill 路径**（见遗留 #1)——先修 spill 是重试它的前提。实测：非 fuzz 24 PASS/1 FAIL(仅既有 #10b),Unicorn 差分 fuzz **32 PASS/0 FAIL**;且最重的定向用例（glibc 72-block 函数、large lambda-free CFG、SSE batch B、x87)在池 14 下**spill 次数仍为 0**,即保留两个寄存器没有把任何现有 workload 推上 spill 路径。
    仍建议保留 §3 的 emitter 纪律：新增高压 emitter 时仍需数峰值临时数（现池=14),`ReserveTmpX` 对 x16/x17 已无必要但无害。
    **v31 已排除**:vixl 的 `fptmp_list_` = {d31} 同样未保留,但 `AllocFPR` 低位优先且空闲 FPR 有 28 个,v31 是最后一个才会发出;且经审计后端没有任何 emitter 会触发 vixl 取 FP scratch 的两条路径(`Fcmp` 立即数形式、mem-to-mem `Mov`)。实际不可达,无需处理。
+3. **SIGALRM × 长跑 → ~10–20% PageFatal（2026-07-30 发现，未根治）**:`openssl speed -seconds 8`（sha256/aes-gcm 均可,**与 crypto 开关无关**）在 master 独立快照上 ×10 即有 ~1–2 次 `Guest thread 1000 halted: reason 2`,崩点在堆路径(free/malloc)漂移;JIT 与解释器同现 → 共享机制（信号帧/上下文保存恢复）。必要组合 = SIGALRM × 足够长的运行。已排除:red zone（信号帧已扣 GUEST_SIGNAL_REDZONE=128,sha asm 不碰 rsp）、dispatcher PC + lazy flags 恢复候选（修补后崩溃率不归零,已撤回）、host_cpu_flags/RSB。头号嫌疑 = `uc_fpstate` XMM/fpsr 保存恢复不全。W20b（信号投递/rt_sigreturn 两端逐寄存器校验 + malloc/free 边界强制注入）在途。临时缓解:SHA-NI 拆成 opt-in 默认 OFF（W15）。
 
 ### P1 — 忠实度差异（默认路径冻结，不影响 Unicorn fuzz)
 
