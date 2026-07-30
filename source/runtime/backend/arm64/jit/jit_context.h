@@ -30,6 +30,7 @@ public:
 
     [[nodiscard]] CPUReg Get(const ir::Value& value);
     [[nodiscard]] bool HasAllocation(const ir::Value& value);
+    [[nodiscard]] bool SharesGPR(const ir::Value& left, const ir::Value& right);
     [[nodiscard]] Register R(const ir::Value& value, bool auto_cast = false);
     [[nodiscard]] XRegister X(const ir::Value& value);
     [[nodiscard]] WRegister W(const ir::Value& value);
