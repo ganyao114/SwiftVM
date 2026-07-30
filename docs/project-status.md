@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×；SHA 随信号根治默认转正，sha256 7.5×）+ PCLMULQDQ imm=0x11 直发 PMULL2（W21）、ZExt32→64 单节点折叠（W19 默认 ON，32 位 GPR 写每处省一条 host mov）+ XMM uniform 转发开关化（W22 默认 ON ≡ 现状，审计量化既有收益）+ rt_sigreturn 内核语义重写（W20f，P0#3 根治：删 guest 栈私有帧，uc+fpstate ABI 恢复）+ 标量 SSE tied-destination/FEAT_AFP scalar-insert（W23 默认 ON，smallpt 1.38×）+ 标量 SSE 操作数 V 类化（W27 默认 ON，smallpt 再 1.23×）+ GHASH/AES FEX-style lowering（W28 默认 ON，GHASH 热 unit −31.9%）+ 窄 load 融合/GPR 常量 shift（W29 默认 ON，coremark +3.8%；项B 后经 baseline2 事故→根因修复→恢复默认，见 W34）+ XMM load→load SSA 转发（W31 默认 ON，GHASH 再 −7 条）+ 精确 NaN cold path（W37 默认 ON，smallpt 1.274×）+ unit-local flags 四件套（W38 默认 ON，coremark +4.86%）+ 结构化 AddressMode（W39 默认 ON，STREAM 几何 +3.6%）；x64 decode 入口重构（W40 纯重构，Decode 473→3 行、DecodeSwitch 六家族分文件，最大 McCabe 511→140）。master = `29f9993`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×；SHA 随信号根治默认转正，sha256 7.5×）+ PCLMULQDQ imm=0x11 直发 PMULL2（W21）、ZExt32→64 单节点折叠（W19 默认 ON，32 位 GPR 写每处省一条 host mov）+ XMM uniform 转发开关化（W22 默认 ON ≡ 现状，审计量化既有收益）+ rt_sigreturn 内核语义重写（W20f，P0#3 根治：删 guest 栈私有帧，uc+fpstate ABI 恢复）+ 标量 SSE tied-destination/FEAT_AFP scalar-insert（W23 默认 ON，smallpt 1.38×）+ 标量 SSE 操作数 V 类化（W27 默认 ON，smallpt 再 1.23×）+ GHASH/AES FEX-style lowering（W28 默认 ON，GHASH 热 unit −31.9%）+ 窄 load 融合/GPR 常量 shift（W29 默认 ON，coremark +3.8%；项B 后经 baseline2 事故→根因修复→恢复默认，见 W34）+ XMM load→load SSA 转发（W31 默认 ON，GHASH 再 −7 条）+ 精确 NaN cold path（W37 默认 ON，smallpt 1.274×）+ unit-local flags 四件套（W38 默认 ON，coremark +4.86%）+ 结构化 AddressMode（W39 默认 ON，STREAM 几何 +3.6%）；x64 decode 入口重构（W40 纯重构，Decode 473→3 行、DecodeSwitch 六家族分文件，最大 McCabe 511→140）。master = `170b6a6`。
 
 ---
 
@@ -90,6 +90,24 @@ baseline2 = W23–W31 全部落地后的站位（baseline1 数字见 git 历史�
 **W40 x64 decode 入口重构（2026-07-31，`4261b1a`，用户点名的纯重构）**：`Decode()` 473 行/McCabe 57 → 三行委托 + 显式 DecodePipeline（fetch/predispatch/distorm/lowering 各成 stage，StepResult 枚举替代隐式 continue/break/return false）；1,225 行/503 case 的 DecodeSwitch 移入新文件 decoder_dispatch.cc 按 base/x87/SSE/SSE-float/SSE-misc/extended 六家族拆分，最大单函数 McCabe 511→140；家族分派与内部 stage always_inline 消除 +1.8% 函数边界成本。decoder.cc 3,044→1,913 行。零行为变化硬证据：指纹 vs golden 零 diff、swift_test 114/126,903、func_tests 三模式 checksum 不变、翻译墙钟 +0.36%（±1% 内）。
 
 正确性：baseline2 全部 8 项 oracle 三环境签名一致（复跑后）。FEX 配置：`FEX_MULTIBLOCK=1 FEX_ABILOCALFLAGS=1 FEX_CACHEOBJECTCODECOMPILATION=1`（FEX-2405-222）。为跑通语料修的 ABI 缺陷：AT_FDCWD 零扩展识别（`927ba2e`）、pwrite64/rt_sigaction/rt_sigprocmask/time/sched_getaffinity/clock_nanosleep + 只读 MAP_SHARED 快照（`b086cf2`）、fsync/fdatasync/ftruncate（`6ec0114`）。
+
+### FEX 对比基线（2026-07-31 baseline3，同 harness，暖 cache，5 reps median，24/24 oracle cell ok=1）
+
+baseline3 = W37/W38/W39/W40 全部落地后的站位（当前权威基线）。全部 10 项相对 baseline2 提升。
+
+| benchmark | metric | SwiftVM | FEX(优化全开) | Rosetta | SVM/FEX | 胜者 |
+|---|---|---:|---:|---:|---:|---|
+| coremark 95k iters | iters/s ↑ | 8,748 | 28,585 | 32,804 | 0.306 | FEX（baseline2 0.278）|
+| stream Copy | MB/s ↑ | 56,748 | 82,126 | 26,664 | 0.691 | FEX（**SVM 赢 Rosetta 2.13×**）|
+| stream Scale / Add / Triad | MB/s ↑ | 27,645 / 38,092 / 32,808 | 80,140 / 89,136 / 89,754 | 74,402 / 87,376 / 94,664 | 0.345 / 0.427 / 0.366 | FEX（三项相对 baseline2 +44/+47/+56%）|
+| smallpt 64spp 320x240 | s ↓ | 14.94 | 5.34 | 5.59 | 2.798 | FEX（baseline2 4.52，W37 主贡献）|
+| sqlite speedtest1（文件模式） | s ↓ | 15.19 | 10.84 | 13.64 | 1.401 | FEX（baseline2 1.68）|
+| c-ray scene 64spp 320x240 单线程 | s ↓ | 19.00 | 13.22 | 13.62 | 1.437 | FEX（baseline2 2.64，近乎翻倍）|
+| 7zip b -mmt1 | Tot MIPS ↑ | 2,131 | 4,476 | 4,949 | 0.476 | FEX（baseline2 0.403）|
+| openssl sha256 16k | kB/s ↑ | 445,052 | 177,076 | 424,204 | **2.513** | **SwiftVM**（也超 Rosetta 1.049×）|
+| openssl aes-128-gcm 16k | kB/s ↑ | 1,278,514 | 2,062,191 | 3,197,952 | 0.620 | FEX |
+
+**osslaes baseline2 数字作废（测量诚信教训）**：baseline2 的"6.859× 胜"是假象——FEX 该轮 rep_1 正常（1,015,822 ops/8s ≈ 2.0 GB/s）但 rep_2–5 集体劣化 10–17×（59k–92k ops），median 恰好落在劣化样本上；baseline3 的 FEX 五 reps 全部稳定在 ~1.0M ops（2.0 GB/s），与 baseline2 rep_1 互证。**真实站位 = SVM 1.28 GB/s vs FEX 2.06 GB/s = 0.620（FEX 胜），Rosetta 3.2 GB/s 表明天花板还远。** GHASH/XMM-state 路径（W26 已标记）重新成为优化目标。教训进流程：跨轮倍率异常（尤其 >3× 的"胜"）必须逐 rep 审查原始输出再记账。
 
 **W12 执行侧分解（2026-07-30，探针已合 `c3d96a5`：SVM_EXEC_PROF/SVM_EXEC_MAP）**：(1) dispatch-slot 块链接 + RSB **早已默认启用**——dispatcher 仅占块退出 0.49%/1.13%/0.0003%，现有链接已贡献 1.453×，direct-B 再压上限 ≈0，此路线死亡；(2) GPR pin A/B 中性（SVM_STATIC_REGS=0/1 差 0.3% 噪声内，orchestrator 复测一致），全 16 pin 需整体 ABI 重做且 ceiling 仅 ~1.19×，不是 4–7× 的解释；(3) 真因是**指令级膨胀**——coremark 热块 14 guest→120 host（GPR state 16.7%、flags 簿记 12.5%、冗余 move）；STREAM Copy(80B/iter，95 host) vs Scale(16B/iter，60 host) 指令密度差 3.16× 与吞吐差 2.57× 吻合；单条 guest `mulpd` → 15 条 host（13 条 NaN payload 修正 + 2 条 XMM state 往返），XMM0–15 全驻留内存；`cmp+jne` flags 12 条；每次访存地址重算 5 条。路线排序：SIMD/XMM 驻留+NaN 快路径（W13，已落地 `599e6fb`）→ flags/跨指令值保持（W14）→ GPR ABI（须 A/B 证明）→ 块 direct patch（已否）。
 
