@@ -17,7 +17,7 @@ namespace {
 bool StructuredAddressModeEnabled() {
     static const bool enabled = [] {
         const char* env = PerfGetenv("SVM_ADDRMODE_STRUCT");
-        return env && std::strcmp(env, "0") != 0;
+        return !env || std::strcmp(env, "0") != 0;
     }();
     return enabled;
 }

@@ -857,7 +857,7 @@ ir::Value X64Decoder::R(_RegisterType reg) {
 bool X64Decoder::StructuredAddressModeEnabled() {
     static const bool enabled = [] {
         const char* env = swift::runtime::PerfGetenv("SVM_ADDRMODE_STRUCT");
-        return env && std::strcmp(env, "0") != 0;
+        return !env || std::strcmp(env, "0") != 0;
     }();
     return enabled;
 }
