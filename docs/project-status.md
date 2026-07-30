@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×；SHA 随信号根治默认转正，sha256 7.5×）+ PCLMULQDQ imm=0x11 直发 PMULL2（W21）、ZExt32→64 单节点折叠（W19 默认 ON，32 位 GPR 写每处省一条 host mov）+ XMM uniform 转发开关化（W22 默认 ON ≡ 现状，审计量化既有收益）+ rt_sigreturn 内核语义重写（W20f，P0#3 根治：删 guest 栈私有帧，uc+fpstate ABI 恢复）+ 标量 SSE tied-destination/FEAT_AFP scalar-insert（W23 默认 ON，smallpt 1.38×）+ 标量 SSE 操作数 V 类化（W27 默认 ON，smallpt 再 1.23×）+ GHASH/AES FEX-style lowering（W28 默认 ON，GHASH 热 unit −31.9%）+ 窄 load 融合/GPR 常量 shift（W29 默认 ON，coremark +3.8%）。master = `858fba2`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×；SHA 随信号根治默认转正，sha256 7.5×）+ PCLMULQDQ imm=0x11 直发 PMULL2（W21）、ZExt32→64 单节点折叠（W19 默认 ON，32 位 GPR 写每处省一条 host mov）+ XMM uniform 转发开关化（W22 默认 ON ≡ 现状，审计量化既有收益）+ rt_sigreturn 内核语义重写（W20f，P0#3 根治：删 guest 栈私有帧，uc+fpstate ABI 恢复）+ 标量 SSE tied-destination/FEAT_AFP scalar-insert（W23 默认 ON，smallpt 1.38×）+ 标量 SSE 操作数 V 类化（W27 默认 ON，smallpt 再 1.23×）+ GHASH/AES FEX-style lowering（W28 默认 ON，GHASH 热 unit −31.9%）+ 窄 load 融合/GPR 常量 shift（W29 默认 ON，coremark +3.8%）。master = `489b0bf`。
 
 ---
 
@@ -96,6 +96,12 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 
 **W30 跨块 flag liveness + edge materialization（2026-07-30，否掉未合入）**：W25 预估的 58 条热路径消除在 PageFatal 红线 + 保守回退下只剩 **332→328**；edge materialization 使 ON 态 IR +23.3%、host bytes +25.5%；coremark A/B ON 反而 −0.95%。**轴关闭**：机械上限 1.07× 在安全物化成本下不可达，负证据数字存档，658 行实现已随 worktree 丢弃。
 
+**W31 XMM uniform load→load SSA 转发（2026-07-30，`489b0bf`，默认 ON）**：W22 的 UniformElim 只从 StoreUniform 建 byte facts，首次 LoadUniform 不入表；补上后同地址重复 load 复用首载值（LoadUniform→BitCast→DCE，alias/barrier/label 规则全复用）。GHASH `0x634960` 123→116、AES `0x760790` 102→92、`0x761480` 206→201（合计 −22 条，orchestrator 复核一致）。`SVM_XMM_SSA_FWD2=0` 精确回退（OFF 逐字节一致）。指纹两态零 diff、func_tests 三模式两态、swift_test 113 例、KAT×3 全绿；受载 A/B GCM +0.4%/CBC +1.6% 方向正，按指令消除落地。
+
+**W32 GPR direct-link trace forwarding（2026-07-30，否掉未合入）**：PoC 证实 link-hit 边界成本确实为 0，但新增静态 GPR 触发 uniform byte cache 全表失效（+18 条）+ partial-write/桥接（+48 条），20 条目标消除净剩 2 条；top-5 总 host 288→334（+16%）、全语料 IR +2.96%、coremark 净 −3.58%。**轴关闭**。至此跨 unit 结构轴三连灭（W30 flags / W32 GPR trace / W17 XMM 驻留），共同死因 = 边界/失效成本吃掉机械上限；此后跨 unit 立项必须先交边界成本净账。
+
+**合并事故记录（2026-07-30，`d3cd7dd` 修复）**：W29 合并提交漏 add `jit_context.h/cpp`（SharesGPR），工作区残留使本地构建通过但干净检出编译失败（W31/W32 先后撞上）。流程补丁：合并提交后必须 `git status` 干净 + `git diff --stat HEAD` 对账。
+
 ### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
 
 - **W17 pressure-aware XMM 驻留（2026-07-30，三轮全负，轴关闭）**：部分 pin（top-N/XMM0–7）STREAM −0.9~−9.0%——少 pin 守不住收益、全 pin 挤爆 FPR 池，无中间甜点；lazy-fill 单独不够（c-ray 热 unit 很快摸满 16 XMM）；per-unit 可驱逐 pin（=3）在 c-ray 上触发 **55 分钟 400% CPU 死循环**（编译/重翻译环路，门禁语料覆盖不到），最终只能退成安全 no-op。结论：此轴关闭，W13 旗标对（XMM_STATIC=1 + NAN_FAST=1 捆绑）即最终形态。
@@ -155,6 +161,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_AES_ZERO_REUSE | 0/1 | 1 | AES 轮共享零 key + RA tie 免拷贝（W28）；=0 回退逐轮 zero+copy |
 | SVM_MEM_NARROW_FUSE | 0/1 | 1 | 窄 load 扩展融合 + GetOperand 透传/EA 直算（W29，coremark +3.8%）；=0 回退 load+extend 与 transport mov |
 | SVM_SHIFT_IMM_FAST | 0/1 | 1 | GPR 常量 SHL/SHR/SAR 立即数专门化（W29）；=0 回退可变计数 guard 路径 |
+| SVM_XMM_SSA_FWD2 | 0/1 | 1 | XMM uniform load→load SSA 转发（W31）；=0 精确回退仅 store→load 旧机制 |
 | SVM_X86_GCM_PCLMUL2 | 0/1 | 1 | PCLMULQDQ imm=0x11 直发 PMULL2（W21，省 2×DUP，与 FEX 同形）；=0 回退 DUP+PMULL。实测性能中性（两组交错 A/B 同机噪声内），按 codegen 简化落地 |
 | SVM_GPR_ZEXT_COALESCE | 0/1 | 1 | 32 位 GPR 写 ZExt32→ZExt64 两节点折为 ZeroExtend32To64 单节点（W19）；=0 精确恢复两节点旧 lowering（与 W19 前 golden 零 diff） |
 | SVM_XMM_UNIFORM_FWD | 0/1 | 1 | XMM range 的 uniform store→load SSA 转发 + 死写删除（W22 开关化；行为与 W14 家族既有转发一致）。=0 精确禁止该范围转发/DSE，GPR 路径不变 |
