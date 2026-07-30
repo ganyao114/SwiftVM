@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖五个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray 全部跑通且输出与原生一致），FEX 对比基线已建立。master = `6ec0114`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧第一波优化落地：XMM0–15 静态驻留 v16–v31 + SSE NaN 快路径（双开关默认 OFF，组合 geomean 1.205）。master = `599e6fb`。
 
 ---
 
@@ -71,7 +71,9 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 
 正确性：全部 8 项 oracle 三环境签名一致（coremark CRC、stream Validates、smallpt/c-ray 像素 hash、sqlite 77 行测试名序列）。FEX 配置：`FEX_MULTIBLOCK=1 FEX_ABILOCALFLAGS=1 FEX_CACHEOBJECTCODECOMPILATION=1`（FEX-2405-222）。为跑通语料修的 ABI 缺陷：AT_FDCWD 零扩展识别（`927ba2e`）、pwrite64/rt_sigaction/rt_sigprocmask/time/sched_getaffinity/clock_nanosleep + 只读 MAP_SHARED 快照（`b086cf2`）、fsync/fdatasync/ftruncate（`6ec0114`）。
 
-**W12 执行侧分解（2026-07-30，探针已合 `c3d96a5`：SVM_EXEC_PROF/SVM_EXEC_MAP）**：(1) dispatch-slot 块链接 + RSB **早已默认启用**——dispatcher 仅占块退出 0.49%/1.13%/0.0003%，现有链接已贡献 1.453×，direct-B 再压上限 ≈0，此路线死亡；(2) GPR pin A/B 中性（SVM_STATIC_REGS=0/1 差 0.3% 噪声内，orchestrator 复测一致），全 16 pin 需整体 ABI 重做且 ceiling 仅 ~1.19×，不是 4–7× 的解释；(3) 真因是**指令级膨胀**——coremark 热块 14 guest→120 host（GPR state 16.7%、flags 簿记 12.5%、冗余 move）；STREAM Copy(80B/iter，95 host) vs Scale(16B/iter，60 host) 指令密度差 3.16× 与吞吐差 2.57× 吻合；单条 guest `mulpd` → 15 条 host（13 条 NaN payload 修正 + 2 条 XMM state 往返），XMM0–15 全驻留内存；`cmp+jne` flags 12 条；每次访存地址重算 5 条。路线排序：SIMD/XMM 驻留+NaN 快路径（W13，进行中）→ flags/跨指令值保持 → GPR ABI（须 A/B 证明）→ 块 direct patch（已否）。
+**W12 执行侧分解（2026-07-30，探针已合 `c3d96a5`：SVM_EXEC_PROF/SVM_EXEC_MAP）**：(1) dispatch-slot 块链接 + RSB **早已默认启用**——dispatcher 仅占块退出 0.49%/1.13%/0.0003%，现有链接已贡献 1.453×，direct-B 再压上限 ≈0，此路线死亡；(2) GPR pin A/B 中性（SVM_STATIC_REGS=0/1 差 0.3% 噪声内，orchestrator 复测一致），全 16 pin 需整体 ABI 重做且 ceiling 仅 ~1.19×，不是 4–7× 的解释；(3) 真因是**指令级膨胀**——coremark 热块 14 guest→120 host（GPR state 16.7%、flags 簿记 12.5%、冗余 move）；STREAM Copy(80B/iter，95 host) vs Scale(16B/iter，60 host) 指令密度差 3.16× 与吞吐差 2.57× 吻合；单条 guest `mulpd` → 15 条 host（13 条 NaN payload 修正 + 2 条 XMM state 往返），XMM0–15 全驻留内存；`cmp+jne` flags 12 条；每次访存地址重算 5 条。路线排序：SIMD/XMM 驻留+NaN 快路径（W13，已落地 `599e6fb`）→ flags/跨指令值保持（W14）→ GPR ABI（须 A/B 证明）→ 块 direct patch（已否）。
+
+**W13 执行侧第一波（2026-07-30，`599e6fb`，双开关默认 OFF）**：XMM0–15 静态驻留 v16–v31（`SVM_XMM_STATIC=1`；XmmLo/Hi 经 UMOV/INS 桥、分配器固定 FPR 快照语义、XSAVE/XRSTOR 边界显式同步、AVX 低半驻留）+ SSE/共享 AVX FP NaN 快路径（`SVM_SSE_NAN_FAST=1`，激进类；每 f32 算术 −9 条、f64 −12 条修正；偏离限于 NaN payload 优先级/符号位与 invalid indefinite 符号，vec_float_nan_pressure 按设计 rc=2）。orchestrator 独立 A/B（REPS=5/3 warm，oracle 全过）：单独 XMM 7 项 geomean **0.969**（Copy +10.6%/smallpt +3.8%，但 c-ray −26% 吞吐——NaN 修正密集码挤占动态 FPR 池，Scale/Add −3%）→ **默认 OFF**；组合旗标对 geomean **1.205**（Scale +29%/Add +25%/Triad +50%/smallpt 1.44×/Copy +8.6%，c-ray 恢复噪音级）——`SVM_XMM_STATIC=1 SVM_SSE_NAN_FAST=1` 为对 FEX 的推荐性能旗标对（与 FEX 需 env 旗标开优化对等）。EXEC_PROF 证实 xmm_uniform 流量 43.4 亿→0。合入时附带修掉指纹门 ASLR 假阳性（`c316570`：CallLambda 宿主机地址 imm 固定 4 指令料化——vixl 零块省略会让页对齐 helper（RepMovs）的料化长度按进程 1/4 概率摆动）。遗留：XMM 单独开启的 c-ray/Scale 回退根因（候选：dirty/lazy-fill 状态机，需扩大 fault/跨线程恢复证明面）。
 
 ### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
 
@@ -116,6 +118,8 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_SYSCALL_MMAP_SHARED_READ | 0/1 | 1 | file-backed MAP_SHARED\|PROT_READ 只读快照；=0 恢复拒绝 |
 | SVM_SIGNAL_DELIVERY | 0/1 | 1 | guest 信号投递框架（alarm 到期块边界注入 + 完整 signal frame + rt_sigreturn）；=0 恢复 ENOSYS |
 | SVM_SIGNAL_TRACE | 0/1 | 0 | 信号注入/返回地址追踪 |
+| SVM_XMM_STATIC | 0/1 | 0 | XMM0–15 静态驻留 v16–v31；=1 开启。单独开启当前净回退（W13 实测 geomean 0.969），须配合 SVM_SSE_NAN_FAST=1 使用（组合 1.205） |
+| SVM_SSE_NAN_FAST | 0/1 | 0 | **激进类**：跳过 SSE/共享 AVX FP 的 x86 NaN payload/quiet 修正；偏离 NaN 位级语义（边界见 W13 段），五语料 oracle 无感 |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_EXEC_PROF | 0/1 | 0 | 执行侧探针：块退出分布、slot-link/RSB 命中、dispatcher L1/L2/miss、GPR uniform 访问计数；发射中性（W12 实测），默认关闭 |
 | SVM_EXEC_MAP | 0/1 | 0 | JIT unit/trampoline 地址区间输出（配合 sample 分类 leaf PC） |
