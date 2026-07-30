@@ -212,7 +212,7 @@ struct PerfStats2 {
     std::atomic<unsigned long long> uniform_dse_blocks{0};
     std::atomic<unsigned long long> uniform_dse_victims{0};
 
-    static constexpr std::array<const char*, 33> kGetenvNames{{
+    static constexpr std::array<const char*, 34> kGetenvNames{{
             "SVM_FUNC_LAZY",
             "SVM_DUMP_IR",
             "SVM_X87_TOPVIRT",
@@ -242,6 +242,7 @@ struct PerfStats2 {
             "SVM_SSE_SCALAR_V_OPERANDS",
             "SVM_MEM_NARROW_FUSE",
             "SVM_SHIFT_IMM_FAST",
+            "SVM_XMM_SSA_FWD2",
             "SVM_VEC_IMM_SHIFT",
             "SVM_VEC_CONST_CACHE",
             "SVM_VEC_BYTESHIFT_EXT",

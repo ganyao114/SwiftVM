@@ -389,6 +389,8 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     info.xmm_uniform_ranges.push_back({16, 32});
     const bool xmm_forward_off = std::getenv("SVM_XMM_UNIFORM_FWD") &&
                                  std::strcmp(std::getenv("SVM_XMM_UNIFORM_FWD"), "0") == 0;
+    const bool xmm_ssa_fwd2_off = std::getenv("SVM_XMM_SSA_FWD2") &&
+                                 std::strcmp(std::getenv("SVM_XMM_SSA_FWD2"), "0") == 0;
 
     Block straight{0, Location{0x1000}};
     auto vector_value = straight.LoadImm(Imm{0u}).SetType(ValueType::V128);
@@ -434,6 +436,33 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
         stores += inst.GetOp() == OpCode::StoreUniform;
     }
     REQUIRE(stores == (xmm_forward_off ? 2 : 1));
+
+    // Phase 2 seeds the byte table from a materialized XMM load as well as a
+    // store. This is the hot AES/GHASH shape: a live-in key/state register is
+    // read repeatedly without an intervening architectural write.
+    Block repeated_load{3, Location{0x4000}};
+    auto first_vector_load = repeated_load.LoadUniform(Uniform{16, ValueType::V128});
+    auto second_vector_load = repeated_load.LoadUniform(Uniform{16, ValueType::V128});
+    auto first_lane_load = repeated_load.LoadUniform(Uniform{24, ValueType::U64});
+    auto second_lane_load = repeated_load.LoadUniform(Uniform{24, ValueType::U64});
+    UniformEliminationPass::Run(&repeated_load, info);
+    REQUIRE(first_vector_load.Def()->GetOp() == OpCode::LoadUniform);
+    REQUIRE(first_lane_load.Def()->GetOp() == OpCode::LoadUniform);
+    const auto repeated_expected =
+            (!xmm_forward_off && !xmm_ssa_fwd2_off) ? OpCode::BitCast
+                                                    : OpCode::LoadUniform;
+    REQUIRE(second_vector_load.Def()->GetOp() == repeated_expected);
+    REQUIRE(second_lane_load.Def()->GetOp() == repeated_expected);
+
+    // An intervening write must still replace the load fact byte-for-byte.
+    Block invalidated_load{4, Location{0x5000}};
+    invalidated_load.LoadUniform(Uniform{16, ValueType::V128});
+    auto replacement = invalidated_load.LoadImm(Imm{4u}).SetType(ValueType::V128);
+    invalidated_load.StoreUniform(Uniform{16, ValueType::V128}, replacement);
+    auto after_store = invalidated_load.LoadUniform(Uniform{16, ValueType::V128});
+    UniformEliminationPass::Run(&invalidated_load, info);
+    REQUIRE(after_store.Def()->GetOp() ==
+            (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
 }
 
 TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {

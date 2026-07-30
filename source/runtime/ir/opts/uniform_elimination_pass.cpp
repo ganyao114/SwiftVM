@@ -47,6 +47,18 @@ struct UniformValue {
     return off;
 }
 
+// Phase 2 complements store->load forwarding with load->load forwarding for
+// XMM state only. A first load is a valid byte fact until the same barriers and
+// stores that already delimit the legacy table; subsequent identical views can
+// therefore reuse it without touching the architectural context again.
+[[nodiscard]] static bool XmmSsaForward2Off() {
+    static const bool off = [] {
+        const char* e = PerfGetenv("SVM_XMM_SSA_FWD2");
+        return e && std::strcmp(e, "0") == 0;
+    }();
+    return off;
+}
+
 // --- dead uniform store elimination ----------------------------------------
 //
 // The forward pass above forwards uniform *loads*; nothing removed a uniform
@@ -441,6 +453,17 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                         inst.BitExtract(value_load, Imm(value_offset * 8u), Imm(uni_size * 8u)).SetReturn(uni_type);
                     }
                     folded_load_count++;
+                } else if (!xmm_forward_disabled && !XmmSsaForward2Off() &&
+                           info.IsXmmUniformRange(uni_offset, uni_size)) {
+                    // Unlike a store fact, this value names the load itself.
+                    // Recording every byte preserves the existing continuity
+                    // check for full V128 and U64 lane views. A later partial
+                    // view that cannot be represented safely simply replaces
+                    // the covered bytes with its own materialized load.
+                    const Value loaded{&inst};
+                    for (u8 offset = 0; offset < uni_size; ++offset) {
+                        uniform_values[uni_offset + offset] = {loaded, offset};
+                    }
                 }
                 break;
             }
