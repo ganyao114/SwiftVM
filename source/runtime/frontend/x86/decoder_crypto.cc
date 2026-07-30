@@ -80,12 +80,30 @@ void X64Decoder::DecodeAes(_DInst& insn, u32 kind) {
     const auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     const auto source = LoadSrcVec(insn, insn.ops[1]);
     const auto destination = XmmRead(dst);
+    const bool reuse_zero =
+            kind < 4 && VecLoweringEnabled("SVM_AES_ZERO_REUSE");
+    ir::Value zero;
+    if (reuse_zero) {
+        zero = __ VecSharedZero().SetType(ir::ValueType::V128);
+    }
     ir::Value result;
     switch (kind) {
-        case 0: result = __ VecAesEnc(destination, source); break;
-        case 1: result = __ VecAesEncLast(destination, source); break;
-        case 2: result = __ VecAesDec(destination, source); break;
-        case 3: result = __ VecAesDecLast(destination, source); break;
+        case 0:
+            result = reuse_zero ? __ VecAesEncFast(destination, source, zero)
+                                : __ VecAesEnc(destination, source);
+            break;
+        case 1:
+            result = reuse_zero ? __ VecAesEncLastFast(destination, source, zero)
+                                : __ VecAesEncLast(destination, source);
+            break;
+        case 2:
+            result = reuse_zero ? __ VecAesDecFast(destination, source, zero)
+                                : __ VecAesDec(destination, source);
+            break;
+        case 3:
+            result = reuse_zero ? __ VecAesDecLastFast(destination, source, zero)
+                                : __ VecAesDecLast(destination, source);
+            break;
         case 4:
             // AESKEYGENASSIST is register/m128 source plus imm8.  distorm
             // supplies it as the same two vector operands as the round ops.

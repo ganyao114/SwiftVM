@@ -1990,6 +1990,42 @@ void Interpreter::RunVecShiftRightArithmetic(ir::Inst* inst, InterpStack& stack)
              }));
 }
 
+void Interpreter::RunVecShiftLeftImm(ir::Inst* inst, InterpStack& stack) {
+    const auto value = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u64 count = inst->GetArg<ir::Imm>(1).Get();
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    WriteVec(stack, inst, VecLaneBinary(value, 0, lane_bits, [count, lane_bits](u64 lane, u64) {
+                 return count >= lane_bits ? 0 : lane << count;
+             }));
+}
+
+void Interpreter::RunVecShiftRightImm(ir::Inst* inst, InterpStack& stack) {
+    const auto value = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u64 count = inst->GetArg<ir::Imm>(1).Get();
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    WriteVec(stack, inst, VecLaneBinary(value, 0, lane_bits, [count, lane_bits](u64 lane, u64) {
+                 return count >= lane_bits ? 0 : lane >> count;
+             }));
+}
+
+void Interpreter::RunVecShiftRightArithmeticImm(ir::Inst* inst, InterpStack& stack) {
+    const auto value = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u64 raw_count = inst->GetArg<ir::Imm>(1).Get();
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    const u32 count = static_cast<u32>(std::min(raw_count, u64(lane_bits - 1)));
+    WriteVec(stack, inst, VecLaneBinary(value, 0, lane_bits, [count, lane_bits](u64 lane, u64) {
+                 return static_cast<u64>(SignedLane(lane, lane_bits) >> count);
+             }));
+}
+
+void Interpreter::RunVecByteShift(ir::Inst* inst, InterpStack& stack) {
+    const auto value = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u32 count = inst->GetArg<ir::Imm>(2).Get();
+    const bool left = inst->GetArg<ir::Imm>(3).Get() != 0;
+    ASSERT(count > 0 && count < 16);
+    WriteVec(stack, inst, left ? value << (count * 8) : value >> (count * 8));
+}
+
 void Interpreter::RunVecShuffle32(ir::Inst* inst, InterpStack& stack) {
     const auto src = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const u32 control = inst->GetArg<ir::Imm>(1).Get();
@@ -1999,6 +2035,30 @@ void Interpreter::RunVecShuffle32(ir::Inst* inst, InterpStack& stack) {
         result |= static_cast<u128>(static_cast<u32>(src >> (selected * 32))) << (lane * 32);
     }
     WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecLoadConst(ir::Inst* inst, InterpStack& stack) {
+    const u64 low = inst->GetArg<ir::Imm>(0).Get();
+    const u64 high = inst->GetArg<ir::Imm>(1).Get();
+    WriteVec(stack, inst, static_cast<u128>(low) | (static_cast<u128>(high) << 64));
+}
+
+void Interpreter::RunVecShuffle32Indexed(ir::Inst* inst, InterpStack& stack) {
+    const auto src = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto indexes = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    u128 result = 0;
+    for (u32 byte = 0; byte < 16; ++byte) {
+        const u8 index = static_cast<u8>(indexes >> (byte * 8));
+        if (index < 16) {
+            result |= static_cast<u128>(static_cast<u8>(src >> (index * 8)))
+                      << (byte * 8);
+        }
+    }
+    WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecSharedZero(ir::Inst* inst, InterpStack& stack) {
+    WriteVec(stack, inst, 0);
 }
 
 void Interpreter::RunVecShuffle16(ir::Inst* inst, InterpStack& stack) {
@@ -2135,6 +2195,22 @@ void Interpreter::RunVecAesDecLast(ir::Inst* inst, InterpStack& stack) {
     AesShiftRows(data, true);
     for (unsigned i = 0; i < data.size(); ++i) data[i] ^= key[i];
     WriteVec(stack, inst, FromAesBlock(data));
+}
+
+void Interpreter::RunVecAesEncFast(ir::Inst* inst, InterpStack& stack) {
+    RunVecAesEnc(inst, stack);
+}
+
+void Interpreter::RunVecAesEncLastFast(ir::Inst* inst, InterpStack& stack) {
+    RunVecAesEncLast(inst, stack);
+}
+
+void Interpreter::RunVecAesDecFast(ir::Inst* inst, InterpStack& stack) {
+    RunVecAesDec(inst, stack);
+}
+
+void Interpreter::RunVecAesDecLastFast(ir::Inst* inst, InterpStack& stack) {
+    RunVecAesDecLast(inst, stack);
 }
 
 void Interpreter::RunVecAesKeygenAssist(ir::Inst* inst, InterpStack& stack) {

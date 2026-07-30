@@ -878,6 +878,7 @@ private:
     void DecodeAvxIntZeroDst(const VexInsn& v);
     void DecodeAvxIntShiftCount(const VexInsn& v, u32 kind, u32 lane_bits);
     void DecodeAvxIntShiftImm(const VexInsn& v, u32 kind, u32 lane_bits);
+    void DecodeAvxIntByteShift(const VexInsn& v, bool left);
     void DecodeAvxIntExtend(const VexInsn& v, u32 src_bits, u32 dst_bits, bool is_signed);
     void DecodeAvxIntBroadcast(const VexInsn& v, u32 element_bits);
     void DecodeAvxIntBroadcast128(const VexInsn& v);

@@ -182,9 +182,26 @@ INST(VecMadd16, Value, Value, Value)
 INST(VecShiftLeft, Value, Value, Value, Imm)
 INST(VecShiftRight, Value, Value, Value, Imm)
 INST(VecShiftRightArithmetic, Value, Value, Value, Imm)
+// Immediate forms keep a compile-time x86 count out of the scalar register
+// allocator and map directly to NEON SHL/USHR/SSHR.  The first Imm is the raw
+// count and the second is the lane width.
+INST(VecShiftLeftImm, Value, Value, Imm, Imm)
+INST(VecShiftRightImm, Value, Value, Imm, Imm)
+INST(VecShiftRightArithmeticImm, Value, Value, Imm, Imm)
+// Whole-128-bit byte shift.  `zero` is an explicit SSA input so one zero
+// vector can be shared safely within a straight-line block region.  The Imms
+// are byte count (1..15) and direction (nonzero = left).
+INST(VecByteShift, Value, Value, Value, Imm, Imm)
 
 // Shuffle/duplication operations.
 INST(VecShuffle32, Value, Value, Imm)
+// Block-cached 128-bit constants and an indexed PSHUFD form. Keeping the
+// indexes as SSA lets the constant-folding pass reuse one materialization for
+// repeated controls without pinning an emitter scratch register.
+INST(VecLoadConst, Value, Imm, Imm)
+INST(VecShuffle32Indexed, Value, Value, Value)
+// One-instruction all-zero vector, block-local CSE-able like VecLoadConst.
+INST(VecSharedZero, Value)
 INST(VecShuffle16, Value, Value, Imm, Imm)
 INST(VecZip, Value, Value, Value, Imm, Imm)
 INST(VecDupPairs32, Value, Value, Imm)
@@ -203,6 +220,12 @@ INST(VecAesEnc, Value, Value, Value)
 INST(VecAesEncLast, Value, Value, Value)
 INST(VecAesDec, Value, Value, Value)
 INST(VecAesDecLast, Value, Value, Value)
+// FEX-style round forms take a shared zero-key vector explicitly.  They also
+// permit the allocator to tie the result to the dying state input.
+INST(VecAesEncFast, Value, Value, Value, Value)
+INST(VecAesEncLastFast, Value, Value, Value, Value)
+INST(VecAesDecFast, Value, Value, Value, Value)
+INST(VecAesDecLastFast, Value, Value, Value, Value)
 INST(VecAesKeygenAssist, Value, Value, Imm)
 INST(VecPclMul, Value, Value, Value, Imm)
 INST(VecSha256Msg1, Value, Value, Value)

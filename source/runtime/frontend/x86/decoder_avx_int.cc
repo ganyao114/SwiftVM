@@ -498,9 +498,28 @@ void X64Decoder::DecodeAvxIntShiftCount(const VexInsn& v, u32 kind, u32 lane_bit
 // the source is r/m and ModRM.reg is the /n opcode extension.  Reading them the
 // usual way round silently swaps source and destination.
 void X64Decoder::DecodeAvxIntShiftImm(const VexInsn& v, u32 kind, u32 lane_bits) {
-    auto count = __ LoadImm(ir::Imm(u64(v.imm8))).SetType(ir::ValueType::U64);
     const auto lanes = ir::Imm(lane_bits);
+    const bool use_imm = VecLoweringEnabled("SVM_VEC_IMM_SHIFT");
+    // Keep the disabled path byte-for-byte equivalent at IR level: VEX.256
+    // shares one scalar count between both 128-bit lanes.
+    ir::Value count;
+    if (!use_imm) {
+        count = __ LoadImm(ir::Imm(u64(v.imm8))).SetType(ir::ValueType::U64);
+    }
     const auto apply = [&](ir::Value value) -> ir::Value {
+        if (use_imm) {
+            if (kind == 0) {
+                return __ VecShiftLeftImm(value, ir::Imm(u64(v.imm8)), lanes)
+                        .SetType(ir::ValueType::V128);
+            }
+            if (kind == 1) {
+                return __ VecShiftRightImm(value, ir::Imm(u64(v.imm8)), lanes)
+                        .SetType(ir::ValueType::V128);
+            }
+            return __ VecShiftRightArithmeticImm(
+                            value, ir::Imm(u64(v.imm8)), lanes)
+                    .SetType(ir::ValueType::V128);
+        }
         if (kind == 0) {
             return __ VecShiftLeft(value, count, lanes).SetType(ir::ValueType::V128);
         }
@@ -512,6 +531,20 @@ void X64Decoder::DecodeAvxIntShiftImm(const VexInsn& v, u32 kind, u32 lane_bits)
     if (v.l) {
         VexWrite256(v.vvvv, apply(XmmRead(XmmOf(v.rm))), apply(YmmHighRead(v.rm)));
     } else {
+        VexWrite128(v.vvvv, apply(XmmRead(XmmOf(v.rm))));
+    }
+}
+
+void X64Decoder::DecodeAvxIntByteShift(const VexInsn& v, bool left) {
+    const auto apply = [&](ir::Value value) {
+        return VecByteShiftLowered(assembler, value, v.imm8, left);
+    };
+    if (v.l) {
+        VexWrite256(v.vvvv,
+                    apply(XmmRead(XmmOf(v.rm))),
+                    apply(YmmHighRead(v.rm)));
+    } else {
+        // VexWrite128 supplies the required upper-128 zero even for count=0.
         VexWrite128(v.vvvv, apply(XmmRead(XmmOf(v.rm))));
     }
 }
@@ -817,8 +850,7 @@ bool X64Decoder::DecodeAvxInt(const VexInsn& v) {
                         DecodeAvxIntUnary(
                                 v,
                                 [](ir::Assembler* as, ir::Value a, u32 param) {
-                                    return as->VecShuffle32(a, ir::Imm(param))
-                                            .SetType(ir::ValueType::V128);
+                                    return VecShuffle32Lowered(as, a, param);
                                 },
                                 v.imm8);
                         return true;
@@ -897,9 +929,21 @@ bool X64Decoder::DecodeAvxInt(const VexInsn& v) {
                         case 6:
                             DecodeAvxIntShiftImm(v, 0, lane);
                             return true;
+                        case 3:
+                            if (lane == 64 &&
+                                VecLoweringEnabled("SVM_VEC_BYTESHIFT_EXT")) {
+                                DecodeAvxIntByteShift(v, false);
+                                return true;
+                            }
+                            return false;
+                        case 7:
+                            if (lane == 64 &&
+                                VecLoweringEnabled("SVM_VEC_BYTESHIFT_EXT")) {
+                                DecodeAvxIntByteShift(v, true);
+                                return true;
+                            }
+                            return false;
                         default:
-                            // /3 vpsrldq and /7 vpslldq are byte shifts, a
-                            // different operation with no handler here.
                             return false;
                     }
                 }

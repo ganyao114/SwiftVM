@@ -772,6 +772,91 @@ TEST_CASE("Uniform elimination preserves rotate-by-zero carry polarity load") {
     REQUIRE(polarity_loads == 1);
 }
 
+TEST_CASE("FEX-style vector immediate shift boundary IR") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+
+    // PSLLQ xmm0,{0,63,64,255}; PSRLQ xmm0,{0,63,64,255};
+    // PSLLDQ xmm0,{0,15,16}; PSRLDQ xmm0,{0,15,16}; HLT.
+    // These are the x86 semantic cliffs which must never be reduced modulo
+    // the element/vector width by an AArch64 immediate encoding.
+    std::vector<swift::u8> code;
+    const auto append = [&](std::initializer_list<swift::u8> bytes) {
+        code.insert(code.end(), bytes.begin(), bytes.end());
+    };
+    for (swift::u8 count : {swift::u8{0}, swift::u8{63}, swift::u8{64}, swift::u8{255}}) {
+        append({0x66, 0x0F, 0x73, 0xF0, count});  // /6 PSLLQ
+    }
+    for (swift::u8 count : {swift::u8{0}, swift::u8{63}, swift::u8{64}, swift::u8{255}}) {
+        append({0x66, 0x0F, 0x73, 0xD0, count});  // /2 PSRLQ
+    }
+    for (swift::u8 count : {swift::u8{0}, swift::u8{15}, swift::u8{16}}) {
+        append({0x66, 0x0F, 0x73, 0xF8, count});  // /7 PSLLDQ
+    }
+    for (swift::u8 count : {swift::u8{0}, swift::u8{15}, swift::u8{16}}) {
+        append({0x66, 0x0F, 0x73, 0xD8, count});  // /3 PSRLDQ
+    }
+    code.push_back(0xF4);
+
+    struct MemIf final : MemoryInterface {
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+
+    const auto address = reinterpret_cast<VAddr>(code.data());
+    Block block{0, Location{address}};
+    Assembler assembler{&block};
+    X64Decoder decoder{address, &memory, &assembler, true};
+    decoder.Decode();
+
+    std::vector<swift::u64> left_counts;
+    std::vector<swift::u64> right_counts;
+    std::vector<std::pair<swift::u64, bool>> byte_shifts;
+    size_t variable_shifts = 0;
+    size_t shared_zeroes = 0;
+    for (auto& inst : block.GetInstList()) {
+        switch (inst.GetOp()) {
+            case OpCode::VecShiftLeftImm:
+                REQUIRE(inst.GetArg<Imm>(2).Get() == 64);
+                left_counts.push_back(inst.GetArg<Imm>(1).Get());
+                break;
+            case OpCode::VecShiftRightImm:
+                REQUIRE(inst.GetArg<Imm>(2).Get() == 64);
+                right_counts.push_back(inst.GetArg<Imm>(1).Get());
+                break;
+            case OpCode::VecByteShift:
+                byte_shifts.emplace_back(
+                        inst.GetArg<Imm>(2).Get(),
+                        inst.GetArg<Imm>(3).Get() != 0);
+                break;
+            case OpCode::VecShiftLeft:
+            case OpCode::VecShiftRight:
+                ++variable_shifts;
+                break;
+            case OpCode::VecSharedZero:
+                ++shared_zeroes;
+                break;
+            default:
+                break;
+        }
+    }
+
+    REQUIRE(left_counts == std::vector<swift::u64>{0, 63, 64, 255});
+    REQUIRE(right_counts == std::vector<swift::u64>{0, 63, 64, 255});
+    REQUIRE(variable_shifts == 0);
+    // count=0 is identity and emits no byte-shift IR; count=16 is represented
+    // by the explicit all-zero vector. Only the two count=15 cases reach EXT.
+    REQUIRE((byte_shifts ==
+             std::vector<std::pair<swift::u64, bool>>{{15, true}, {15, false}}));
+    REQUIRE(shared_zeroes == 4);  // one for each 15 and 16 lowering before CSE
+}
+
 TEST_CASE("Constant CSE does not reuse a constant materialized under a branch") {
     using namespace swift::runtime::ir;
 

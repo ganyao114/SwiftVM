@@ -868,8 +868,8 @@ void X64Decoder::DecodeMovmsk(_DInst& insn, bool pd) {
 
 void X64Decoder::DecodePshufd(_DInst& insn) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
-    auto result = __ VecShuffle32(LoadSrcVec(insn, insn.ops[1]), ir::Imm(insn.imm.byte))
-                          .SetType(ir::ValueType::V128);
+    auto result = VecShuffle32Lowered(
+            assembler, LoadSrcVec(insn, insn.ops[1]), insn.imm.byte);
     XmmWrite(dst, result);
 }
 
@@ -900,6 +900,16 @@ void X64Decoder::DecodeShufps(_DInst& insn, bool pd) {
 void X64Decoder::DecodePshiftDQ(_DInst& insn, bool left) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     u64 imm = insn.imm.byte;
+    if (VecLoweringEnabled("SVM_VEC_BYTESHIFT_EXT")) {
+        // Legacy shift-by-zero is a true identity: avoiding XmmWrite also
+        // preserves the old no-IR shape.  VEX.128 has a different upper-lane
+        // contract and is handled separately in decoder_avx_int.cc.
+        if (imm == 0) {
+            return;
+        }
+        XmmWrite(dst, VecByteShiftLowered(assembler, XmmRead(dst), imm, left));
+        return;
+    }
     if (imm == 0) {
         return;  // identity
     }
@@ -945,16 +955,30 @@ void X64Decoder::DecodePshiftDQ(_DInst& insn, bool left) {
 void X64Decoder::DecodePshift(_DInst& insn, bool left, int kind) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     auto& op1 = insn.ops[1];
-    ir::Value count;
+    const u32 lane_bits = 16u << kind;
+    ir::Value result;
     if (op1.type == O_IMM) {
-        count = __ LoadImm(ir::Imm(u64(insn.imm.byte)));
+        if (VecLoweringEnabled("SVM_VEC_IMM_SHIFT")) {
+            result = left
+                             ? __ VecShiftLeftImm(
+                                       XmmRead(dst),
+                                       ir::Imm(u64(insn.imm.byte)),
+                                       ir::Imm(lane_bits))
+                             : __ VecShiftRightImm(
+                                       XmmRead(dst),
+                                       ir::Imm(u64(insn.imm.byte)),
+                                       ir::Imm(lane_bits));
+        } else {
+            auto count = __ LoadImm(ir::Imm(u64(insn.imm.byte)));
+            result = left ? __ VecShiftLeft(XmmRead(dst), count, ir::Imm(lane_bits))
+                          : __ VecShiftRight(XmmRead(dst), count, ir::Imm(lane_bits));
+        }
     } else {
         // xmm/m128 count operand: the count is the low qword.
-        count = LoadSrcLo(insn, op1);
+        auto count = LoadSrcLo(insn, op1);
+        result = left ? __ VecShiftLeft(XmmRead(dst), count, ir::Imm(lane_bits))
+                      : __ VecShiftRight(XmmRead(dst), count, ir::Imm(lane_bits));
     }
-    const u32 lane_bits = 16u << kind;
-    auto result = left ? __ VecShiftLeft(XmmRead(dst), count, ir::Imm(lane_bits))
-                       : __ VecShiftRight(XmmRead(dst), count, ir::Imm(lane_bits));
     XmmWrite(dst, result.SetType(ir::ValueType::V128));
 }
 
@@ -962,16 +986,23 @@ void X64Decoder::DecodePshiftA(_DInst& insn, int kind) {
     // psraw/psrad: arithmetic right shift, saturating.
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     auto& op1 = insn.ops[1];
-    ir::Value count;
-    if (op1.type == O_IMM) {
-        count = __ LoadImm(ir::Imm(u64(insn.imm.byte)));
-    } else {
-        count = LoadSrcLo(insn, op1);
-    }
     const u32 lane_bits = 16u << kind;
-    auto result = __ VecShiftRightArithmetic(XmmRead(dst), count, ir::Imm(lane_bits))
-                          .SetType(ir::ValueType::V128);
-    XmmWrite(dst, result);
+    ir::Value result;
+    if (op1.type == O_IMM) {
+        if (VecLoweringEnabled("SVM_VEC_IMM_SHIFT")) {
+            result = __ VecShiftRightArithmeticImm(
+                    XmmRead(dst),
+                    ir::Imm(u64(insn.imm.byte)),
+                    ir::Imm(lane_bits));
+        } else {
+            auto count = __ LoadImm(ir::Imm(u64(insn.imm.byte)));
+            result = __ VecShiftRightArithmetic(XmmRead(dst), count, ir::Imm(lane_bits));
+        }
+    } else {
+        auto count = LoadSrcLo(insn, op1);
+        result = __ VecShiftRightArithmetic(XmmRead(dst), count, ir::Imm(lane_bits));
+    }
+    XmmWrite(dst, result.SetType(ir::ValueType::V128));
 }
 
 void X64Decoder::DecodePshufw(_DInst& insn, bool high) {

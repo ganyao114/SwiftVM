@@ -1,8 +1,56 @@
 #pragma once
 
+#include <cstring>
 #include "runtime/frontend/x86/decoder.h"
 
 namespace swift::x86 {
+
+// Lowering-only gates default on and accept =0 as an exact rollback.  Keep the
+// getenv read uncached: the process-level JIT cache hash observes the same
+// names, and test subprocesses can exercise either path independently.
+inline bool VecLoweringEnabled(const char* name) {
+    const char* env = swift::runtime::PerfGetenv(name);
+    return !env || std::strcmp(env, "0") != 0;
+}
+
+inline ir::Value VecSharedZero(ir::Assembler* assembler) {
+    return assembler->VecSharedZero().SetType(ir::ValueType::V128);
+}
+
+inline ir::Value VecShuffle32Lowered(
+        ir::Assembler* assembler, ir::Value source, u32 control) {
+    if (!VecLoweringEnabled("SVM_VEC_CONST_CACHE")) {
+        return assembler->VecShuffle32(source, ir::Imm(control))
+                .SetType(ir::ValueType::V128);
+    }
+    u64 index_lo = 0;
+    u64 index_hi = 0;
+    for (u32 byte = 0; byte < 16; ++byte) {
+        const u32 output_lane = byte / 4;
+        const u32 selected_lane = (control >> (output_lane * 2)) & 3;
+        const u8 index = selected_lane * 4 + (byte & 3);
+        auto& half = byte < 8 ? index_lo : index_hi;
+        half |= u64(index) << ((byte & 7) * 8);
+    }
+    auto indexes = assembler->VecLoadConst(ir::Imm(index_lo), ir::Imm(index_hi))
+                           .SetType(ir::ValueType::V128);
+    return assembler->VecShuffle32Indexed(source, indexes)
+            .SetType(ir::ValueType::V128);
+}
+
+inline ir::Value VecByteShiftLowered(
+        ir::Assembler* assembler, ir::Value source, u32 count, bool left) {
+    if (count == 0) {
+        return source;
+    }
+    auto zero = VecSharedZero(assembler);
+    if (count >= 16) {
+        return zero;
+    }
+    return assembler->VecByteShift(
+                            source, zero, ir::Imm(count), ir::Imm(left ? 1u : 0u))
+            .SetType(ir::ValueType::V128);
+}
 
 u64 Paddb64(u64 a, u64 b);
 u64 Psubb64(u64 a, u64 b);

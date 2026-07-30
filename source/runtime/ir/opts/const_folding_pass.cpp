@@ -79,21 +79,43 @@ struct ImmKeyHash {
     }
 };
 
+struct VecKey {
+    u64 low;
+    u64 high;
+
+    bool operator==(const VecKey& rhs) const {
+        return low == rhs.low && high == rhs.high;
+    }
+};
+
+struct VecKeyHash {
+    std::size_t operator()(const VecKey& key) const {
+        return std::hash<u64>{}(key.low) ^
+               (std::hash<u64>{}(key.high) + 0x9E3779B97F4A7C15ull);
+    }
+};
+
 // IR instructions; roughly one guest instruction's worth of expansion.
 constexpr u32 kReuseWindow = 8;
 
 void DedupConstants(Block* block) {
     // Bisect switch, mirroring SVM_UNIFORM_DSE.
-    static const bool off = [] {
+    static const bool imm_off = [] {
         const char* e = PerfGetenv("SVM_CONST_CSE");
         return e && std::strcmp(e, "0") == 0;
     }();
-    if (off) return;
     struct Entry {
         Value value;
         u32 index;
     };
     std::unordered_map<ImmKey, Entry, ImmKeyHash> canonical;
+    // These two constants exist specifically for the vector lowering gates.
+    // Unlike scalar LoadImm, their reuse is block-wide: one 16-byte table or
+    // one zero vector is worth keeping live across the GHASH/AES straight-line
+    // body.  Control-flow pseudo labels clear them below, so a definition is
+    // never reused from a path which may not have executed.
+    std::unordered_map<VecKey, Value, VecKeyHash> vec_canonical;
+    Value zero_canonical{};
     // duplicate LoadImm def -> the value that replaces it
     std::unordered_map<Inst*, Value> replacement;
     u32 index = 0;
@@ -109,6 +131,8 @@ void DedupConstants(Block* block) {
                 // already rewritten stay rewritten -- they were rewritten to a
                 // definition that dominated them.
                 canonical.clear();
+                vec_canonical.clear();
+                zero_canonical = {};
                 continue;
             default:
                 break;
@@ -137,7 +161,27 @@ void DedupConstants(Block* block) {
                 }
             }
         }
-        if (inst.GetOp() != OpCode::LoadImm) {
+        if (inst.GetOp() == OpCode::VecLoadConst) {
+            const VecKey key{
+                    inst.GetArg<Imm>(0).Get(),
+                    inst.GetArg<Imm>(1).Get(),
+            };
+            auto [it, inserted] =
+                    vec_canonical.try_emplace(key, Value{&inst});
+            if (!inserted) {
+                replacement.emplace(&inst, it->second);
+            }
+            continue;
+        }
+        if (inst.GetOp() == OpCode::VecSharedZero) {
+            if (zero_canonical.Defined()) {
+                replacement.emplace(&inst, zero_canonical);
+            } else {
+                zero_canonical = Value{&inst};
+            }
+            continue;
+        }
+        if (inst.GetOp() != OpCode::LoadImm || imm_off) {
             continue;
         }
         const auto imm = inst.GetArg<Imm>(0);

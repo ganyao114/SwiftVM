@@ -766,6 +766,67 @@ void JitTranslator::EmitVecShiftRightArithmetic(ir::Inst* inst) {
     __ Sshl(VecLaneFormat(result, lane_bits), VecLaneFormat(value, lane_bits), shift_format);
 }
 
+void JitTranslator::EmitVecShiftLeftImm(ir::Inst* inst) {
+    auto value = context.V(inst->GetArg<ir::Value>(0));
+    auto result = context.V(ir::Value{inst});
+    const u32 count = inst->GetArg<ir::Imm>(1).Get();
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    if (count == 0) {
+        if (result.GetCode() != value.GetCode()) {
+            __ Orr(result.V16B(), value.V16B(), value.V16B());
+        }
+    } else if (count >= lane_bits) {
+        __ Eor(result.V16B(), result.V16B(), result.V16B());
+    } else {
+        __ Shl(VecLaneFormat(result, lane_bits), VecLaneFormat(value, lane_bits), count);
+    }
+}
+
+void JitTranslator::EmitVecShiftRightImm(ir::Inst* inst) {
+    auto value = context.V(inst->GetArg<ir::Value>(0));
+    auto result = context.V(ir::Value{inst});
+    const u32 count = inst->GetArg<ir::Imm>(1).Get();
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    if (count == 0) {
+        if (result.GetCode() != value.GetCode()) {
+            __ Orr(result.V16B(), value.V16B(), value.V16B());
+        }
+    } else if (count >= lane_bits) {
+        __ Eor(result.V16B(), result.V16B(), result.V16B());
+    } else {
+        __ Ushr(VecLaneFormat(result, lane_bits), VecLaneFormat(value, lane_bits), count);
+    }
+}
+
+void JitTranslator::EmitVecShiftRightArithmeticImm(ir::Inst* inst) {
+    auto value = context.V(inst->GetArg<ir::Value>(0));
+    auto result = context.V(ir::Value{inst});
+    const u32 raw_count = inst->GetArg<ir::Imm>(1).Get();
+    const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    const u32 count = std::min(raw_count, lane_bits - 1);
+    if (count == 0) {
+        if (result.GetCode() != value.GetCode()) {
+            __ Orr(result.V16B(), value.V16B(), value.V16B());
+        }
+    } else {
+        __ Sshr(VecLaneFormat(result, lane_bits), VecLaneFormat(value, lane_bits), count);
+    }
+}
+
+void JitTranslator::EmitVecByteShift(ir::Inst* inst) {
+    auto value = context.V(inst->GetArg<ir::Value>(0));
+    auto zero = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    const u32 count = inst->GetArg<ir::Imm>(2).Get();
+    const bool left = inst->GetArg<ir::Imm>(3).Get() != 0;
+    ASSERT(count > 0 && count < 16);
+    if (left) {
+        __ Ext(result.V16B(), zero.V16B(), value.V16B(), 16 - count);
+    } else {
+        __ Ext(result.V16B(), value.V16B(), zero.V16B(), count);
+    }
+}
+
 void JitTranslator::EmitVecShuffle32(ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
@@ -786,6 +847,35 @@ void JitTranslator::EmitVecShuffle32(ir::Inst* inst) {
     __ Mov(tmp, index_hi);
     __ Ins(indexes.V2D(), 1, tmp);
     __ Tbl(result.V16B(), src.V16B(), indexes.V16B());
+}
+
+void JitTranslator::EmitVecLoadConst(ir::Inst* inst) {
+    auto result = context.V(ir::Value{inst});
+    auto tmp = context.GetTmpX();
+    const u64 low = inst->GetArg<ir::Imm>(0).Get();
+    const u64 high = inst->GetArg<ir::Imm>(1).Get();
+    // JitContext sizes the code-cache allocation before FinalizeCode() emits
+    // VIXL's pending literal pool.  A literal LDR here therefore makes the
+    // finalized unit larger than its allocation and truncates/corrupts the
+    // pool.  Keep the block-local SSA cache, but materialize its one canonical
+    // table with the established PIC-safe sequence until code-cache sizing can
+    // account for deferred pools.
+    __ Mov(tmp, low);
+    __ Fmov(result.D(), tmp);
+    __ Mov(tmp, high);
+    __ Ins(result.V2D(), 1, tmp);
+}
+
+void JitTranslator::EmitVecShuffle32Indexed(ir::Inst* inst) {
+    auto src = context.V(inst->GetArg<ir::Value>(0));
+    auto indexes = context.V(inst->GetArg<ir::Value>(1));
+    auto result = context.V(ir::Value{inst});
+    __ Tbl(result.V16B(), src.V16B(), indexes.V16B());
+}
+
+void JitTranslator::EmitVecSharedZero(ir::Inst* inst) {
+    auto result = context.V(ir::Value{inst});
+    __ Eor(result.V16B(), result.V16B(), result.V16B());
 }
 
 void JitTranslator::EmitVecShuffle16(ir::Inst* inst) {
@@ -1016,6 +1106,56 @@ void JitTranslator::EmitVecAesDecLast(ir::Inst* inst) {
     auto zero = context.GetTmpV();
     __ Eor(zero.V16B(), zero.V16B(), zero.V16B());
     __ Orr(result.V16B(), data.V16B(), data.V16B());
+    masm.dci(Crypto2(kAesd, result, zero));
+    __ Eor(result.V16B(), result.V16B(), key.V16B());
+}
+
+void JitTranslator::EmitVecAesEncFast(ir::Inst* inst) {
+    auto data = context.V(inst->GetArg<ir::Value>(0));
+    auto key = context.V(inst->GetArg<ir::Value>(1));
+    auto zero = context.V(inst->GetArg<ir::Value>(2));
+    auto result = context.V(ir::Value{inst});
+    if (result.GetCode() != data.GetCode()) {
+        __ Orr(result.V16B(), data.V16B(), data.V16B());
+    }
+    masm.dci(Crypto2(kAese, result, zero));
+    masm.dci(Crypto2(kAesmc, result, result));
+    __ Eor(result.V16B(), result.V16B(), key.V16B());
+}
+
+void JitTranslator::EmitVecAesEncLastFast(ir::Inst* inst) {
+    auto data = context.V(inst->GetArg<ir::Value>(0));
+    auto key = context.V(inst->GetArg<ir::Value>(1));
+    auto zero = context.V(inst->GetArg<ir::Value>(2));
+    auto result = context.V(ir::Value{inst});
+    if (result.GetCode() != data.GetCode()) {
+        __ Orr(result.V16B(), data.V16B(), data.V16B());
+    }
+    masm.dci(Crypto2(kAese, result, zero));
+    __ Eor(result.V16B(), result.V16B(), key.V16B());
+}
+
+void JitTranslator::EmitVecAesDecFast(ir::Inst* inst) {
+    auto data = context.V(inst->GetArg<ir::Value>(0));
+    auto key = context.V(inst->GetArg<ir::Value>(1));
+    auto zero = context.V(inst->GetArg<ir::Value>(2));
+    auto result = context.V(ir::Value{inst});
+    if (result.GetCode() != data.GetCode()) {
+        __ Orr(result.V16B(), data.V16B(), data.V16B());
+    }
+    masm.dci(Crypto2(kAesd, result, zero));
+    masm.dci(Crypto2(kAesimc, result, result));
+    __ Eor(result.V16B(), result.V16B(), key.V16B());
+}
+
+void JitTranslator::EmitVecAesDecLastFast(ir::Inst* inst) {
+    auto data = context.V(inst->GetArg<ir::Value>(0));
+    auto key = context.V(inst->GetArg<ir::Value>(1));
+    auto zero = context.V(inst->GetArg<ir::Value>(2));
+    auto result = context.V(ir::Value{inst});
+    if (result.GetCode() != data.GetCode()) {
+        __ Orr(result.V16B(), data.V16B(), data.V16B());
+    }
     masm.dci(Crypto2(kAesd, result, zero));
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }

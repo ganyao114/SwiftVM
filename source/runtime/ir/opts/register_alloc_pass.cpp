@@ -289,6 +289,20 @@ public:
 
 private:
     Value ScalarInsertTieSource(Inst* inst) const {
+        // FEX-style AES rounds are destructive on the state operand.  When
+        // that SSA value dies at this instruction, give the result its host
+        // register and eliminate the otherwise mandatory vector copy.  The
+        // fast opcodes are emitted only under SVM_AES_ZERO_REUSE, so =0
+        // restores both the old IR and the old allocation.
+        switch (inst->GetOp()) {
+            case OpCode::VecAesEncFast:
+            case OpCode::VecAesEncLastFast:
+            case OpCode::VecAesDecFast:
+            case OpCode::VecAesDecLastFast:
+                return inst->GetArg<Value>(0);
+            default:
+                break;
+        }
         if (!scalar_insert) {
             return {};
         }
