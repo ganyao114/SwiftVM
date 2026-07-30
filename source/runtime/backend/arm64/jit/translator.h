@@ -76,11 +76,14 @@ public:
     // atomic: the operand feeds an instruction without register-offset
     // addressing forms (Ldar/Stlr), so under memory_base the pt bias is
     // folded into a scratch register instead of [base + pt].
+    // structured_guest_ea is set only by ordinary V128 Load/StoreMemory; TSO
+    // and atomic callers retain the established address materialization.
     MemOperand EmitMemOperand(ir::Operand &ir_op,
                               ir::ValueType type,
                               bool pair = false,
                               bool atomic = false,
-                              bool allow_writeback = true);
+                              bool allow_writeback = true,
+                              bool structured_guest_ea = false);
 
 #define INST(name, ...) void Emit##name(ir::Inst *inst);
 #include "runtime/ir/ir.inc"

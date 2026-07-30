@@ -788,6 +788,7 @@ private:
         }
         swift::runtime::PerfLoweringBegin(
                 insn.opcode, operand_count, has_memory);
+        decoder.BeginStructuredAddressInstruction(insn.opcode);
         const bool lowered = decoder.DecodeSwitch(insn);
         const auto lowering_ns = perf_lowering.Stop();
         swift::runtime::PerfLoweringFinish(lowering_ns, lowered);
@@ -853,6 +854,77 @@ ir::Value X64Decoder::R(_RegisterType reg) {
     return __ LoadUniform(ToReg(info));
 }
 
+bool X64Decoder::StructuredAddressModeEnabled() {
+    static const bool enabled = [] {
+        const char* env = swift::runtime::PerfGetenv("SVM_ADDRMODE_STRUCT");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
+bool X64Decoder::StructuredAddressChainOpcode(u16 opcode) {
+    // Formal W39 promotion of the measured W33 STREAM chain. This list is
+    // intentionally closed: adding an opcode means auditing that its lowering
+    // neither writes a GPR behind R(reg,value) nor emits an intra-block label.
+    switch (opcode) {
+        case I_MOVAPS:
+        case I_MOVAPD:
+        case I_MOVNTPS:
+        case I_MOVNTPD:
+        case I_ADDPD:
+        case I_MULPD:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void X64Decoder::BeginStructuredAddressInstruction(u16 opcode) {
+    structured_address_chain_active =
+            StructuredAddressModeEnabled() && StructuredAddressChainOpcode(opcode);
+    if (!structured_address_chain_active) {
+        // This executes before lowering the non-whitelisted instruction.
+        // Plain V128 memory inside that instruction may still carry a
+        // structured Operand, but its state loads are not retained into the
+        // next instruction.
+        ClearStructuredAddressState();
+    }
+}
+
+void X64Decoder::ClearStructuredAddressState() {
+    structured_address_gprs.fill({});
+}
+
+void X64Decoder::InvalidateStructuredAddressReg(_RegisterType reg) {
+    if (!StructuredAddressModeEnabled() || reg > _RegisterType::R_RIP) {
+        return;
+    }
+    const auto& info = x86_regs_table[reg];
+    if (info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::R15) {
+        // All aliases have the same X86RegInfo::index, including AH and every
+        // 8/16/32-bit low view, so a partial write invalidates the full parent.
+        structured_address_gprs[info.index - X86RegInfo::Rax] = {};
+    }
+}
+
+ir::Value X64Decoder::AddressGprValue(_RegisterType reg) {
+    if (!StructuredAddressModeEnabled() || !building_structured_address ||
+        !structured_address_chain_active) {
+        return R(reg);
+    }
+    ASSERT(reg <= _RegisterType::R_RIP);
+    const auto& info = x86_regs_table[reg];
+    if (info.high || info.type != ir::ValueType::U64 ||
+        info.index < X86RegInfo::Rax || info.index > X86RegInfo::R15) {
+        return R(reg);
+    }
+    auto& canonical = structured_address_gprs[info.index - X86RegInfo::Rax];
+    if (!canonical.Defined()) {
+        canonical = R(reg);
+    }
+    return canonical;
+}
+
 ir::Value X64Decoder::V(_RegisterType reg) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::RegValue};
@@ -903,6 +975,7 @@ static bool GprZextCoalesceEnabled() {
 void X64Decoder::R(_RegisterType reg, ir::Value value) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::RegValue};
+    InvalidateStructuredAddressReg(reg);
     auto& info = x86_regs_table[reg];
     if (info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::R15) {
         if (info.high) {
@@ -1422,7 +1495,7 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
                 // RIP relative: pc already points at the next instruction.
                 address_operand.left = ir::Imm(pc & addr_mask);
             } else {
-                address_operand.left = R(static_cast<_RegisterType>(op.index));
+                address_operand.left = AddressGprValue(static_cast<_RegisterType>(op.index));
             }
 
             if (!is_default && (segment != R_NONE)) {
@@ -1474,20 +1547,20 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
                         // pc already points at the next instruction.
                         address_operand.left = ir::Imm(pc & addr_mask);
                     } else {
-                        address_operand.left = R(static_cast<_RegisterType>(insn.base));
+                        address_operand.left = AddressGprValue(static_cast<_RegisterType>(insn.base));
                     }
                 } else {
                     // Segment override combined with a base register: fold the base
                     // in arithmetically (segment scaling above stays dropped).
                     address_operand.left =
                             __ Add(address_operand.left.value,
-                                   ir::Operand{R(static_cast<_RegisterType>(insn.base))});
+                                   ir::Operand{AddressGprValue(static_cast<_RegisterType>(insn.base))});
                 }
                 if (op.index != R_NONE) {
-                    address_operand.right = R(static_cast<_RegisterType>(op.index));
+                    address_operand.right = AddressGprValue(static_cast<_RegisterType>(op.index));
                 }
             } else if (op.index != R_NONE) {
-                address_operand.left = R(static_cast<_RegisterType>(op.index));
+                address_operand.left = AddressGprValue(static_cast<_RegisterType>(op.index));
             }
             if (insn.scale != 0) {
                 if (insn.scale == 2)

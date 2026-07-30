@@ -495,7 +495,8 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                                          ir::ValueType type,
                                          bool pair,
                                          bool atomic,
-                                         bool allow_writeback) {
+                                         bool allow_writeback,
+                                         bool structured_guest_ea) {
     auto access_size = ir::GetValueSizeByte(type);
     if (ir_op.GetRight().Null()) {
         if (ir_op.GetLeft().IsImm()) {
@@ -671,7 +672,14 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             auto right_reg = context.R(right.value, true);
             if (ir_op.GetOp() == ir::OperandOp::Plus) {
                 if (use_memory_base) {
-                    __ Add(mem_scratch, left_reg, right_reg);
+                    if (structured_guest_ea && window_uxtw) {
+                        // Compute the guest EA in W form before applying the
+                        // host bias: pt + ((base + index) mod 2^32).
+                        // This deliberately is not a prebiased base.
+                        __ Add(mem_scratch.W(), left_reg.W(), right_reg.W());
+                    } else {
+                        __ Add(mem_scratch, left_reg, right_reg);
+                    }
                     return BiasMem(mem_scratch, atomic);
                 }
                 return MemOperand{left_reg, right_reg};
@@ -689,9 +697,23 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                 return MemOperand{left_reg, right_reg, LSR};
             } else if (ir_op.GetOp() == ir::OperandOp::PlusExt) {
                 auto shift_amount = ir_op.GetOp().shift_ext;
+                if (structured_guest_ea && use_memory_base) {
+                    if (window_uxtw) {
+                        // Keep base/index/scale in one wrapping W add.
+                        // BiasMem supplies the final pt + Wguest, UXTW step.
+                        __ Add(mem_scratch.W(),
+                               left_reg.W(),
+                               Operand{right_reg.W(), LSL, shift_amount});
+                    } else {
+                        __ Add(mem_scratch, left_reg, Operand{right_reg, LSL, shift_amount});
+                    }
+                    return BiasMem(mem_scratch, atomic);
+                }
                 if (ir::GetValueSizeByte(right.value.Type()) == shift_amount) {
                     if (use_memory_base) {
-                        __ Add(mem_scratch, left_reg, Operand{right_reg, LSL, shift_amount});
+                        __ Add(mem_scratch,
+                               left_reg,
+                               Operand{right_reg, LSL, shift_amount});
                         return BiasMem(mem_scratch, atomic);
                     }
                     return MemOperand{left_reg, right_reg, LSL, shift_amount};

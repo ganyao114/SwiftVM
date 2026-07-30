@@ -802,6 +802,214 @@ TEST_CASE("Uniform elimination preserves rotate-by-zero carry polarity load") {
     REQUIRE(polarity_loads == 1);
 }
 
+TEST_CASE("structured V128 address wraps inside the 4GB guest window") {
+    using namespace swift::translator;
+    using namespace swift::translator::x86;
+
+    const long page_long = sysconf(_SC_PAGESIZE);
+    REQUIRE(page_long > 0);
+    const auto page = static_cast<size_t>(page_long);
+    auto* window = static_cast<swift::u8*>(
+            mmap(nullptr, page * 2, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANON, -1, 0));
+    REQUIRE(window != MAP_FAILED);
+
+    const std::array<swift::u8, 16> expected{
+            0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+            0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f,
+    };
+    std::memcpy(window + 0x10, expected.data(), expected.size());
+
+    // movaps xmm0,[rax+0x18]; hlt
+    // 0xfffffff8 + 0x18 = 0x100000010, whose 4GB-window address is 0x10.
+    constexpr swift::u64 code_guest = 0x1000;
+    const std::array<swift::u8, 5> code{0x0f, 0x28, 0x40, 0x18, 0xf4};
+    REQUIRE(code_guest + code.size() < page * 2);
+    std::memcpy(window + code_guest, code.data(), code.size());
+
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    auto* instance = X86Instance::Make(window, UINT32_MAX);
+    auto* core = X86Core::Make(instance);
+    auto& context = core->GetContext();
+    context.rip.qword = code_guest;
+    context.rax.qword = UINT64_C(0xfffffff8);
+
+    const auto exit = core->Run();
+    INFO("SVM_ADDRMODE_STRUCT="
+         << (std::getenv("SVM_ADDRMODE_STRUCT")
+                     ? std::getenv("SVM_ADDRMODE_STRUCT")
+                     : "<unset>"));
+    REQUIRE(exit == ExitReason::None);
+    REQUIRE(std::memcmp(&context.xmm0, expected.data(), expected.size()) == 0);
+
+    X86Core::Destroy(core);
+    X86Instance::Destroy(instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(window, page * 2);
+}
+
+TEST_CASE("two structured V128 accesses fault on the second page after the first commits") {
+    using namespace swift::translator;
+    using namespace swift::translator::x86;
+
+    const long page_long = sysconf(_SC_PAGESIZE);
+    REQUIRE(page_long > 0);
+    const auto page = static_cast<size_t>(page_long);
+    auto* data = static_cast<swift::u8*>(
+            mmap(nullptr, page * 2, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANON, -1, 0));
+    auto* code_page = static_cast<swift::u8*>(
+            mmap(nullptr, page, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANON, -1, 0));
+    REQUIRE(data != MAP_FAILED);
+    REQUIRE(code_page != MAP_FAILED);
+
+    const std::array<swift::u8, 16> first{
+            0x01, 0x12, 0x23, 0x34, 0x45, 0x56, 0x67, 0x78,
+            0x89, 0x9a, 0xab, 0xbc, 0xcd, 0xde, 0xef, 0xf0,
+    };
+    std::memcpy(data + page - first.size(), first.data(), first.size());
+    REQUIRE(mprotect(data + page, page, PROT_NONE) == 0);
+
+    // movaps xmm0,[rax]; movaps xmm1,[rax+0x10]; hlt
+    const std::array<swift::u8, 8> code{
+            0x0f, 0x28, 0x00, 0x0f, 0x28, 0x48, 0x10, 0xf4,
+    };
+    std::memcpy(code_page, code.data(), code.size());
+
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    auto* instance = X86Instance::Make();
+    auto* core = X86Core::Make(instance);
+    auto& context = core->GetContext();
+    context.rip.qword = reinterpret_cast<swift::u64>(code_page);
+    context.rax.qword = reinterpret_cast<swift::u64>(data + page - first.size());
+    std::memset(&context.xmm0, 0x5a, sizeof(context.xmm0));
+    std::memset(&context.xmm1, 0xa5, sizeof(context.xmm1));
+    std::array<swift::u8, 16> second_before{};
+    std::memcpy(second_before.data(), &context.xmm1, second_before.size());
+
+    REQUIRE(core->Run() == ExitReason::PageFatal);
+    // The two guest memory nodes stay separate and ordered: the first value is
+    // architecturally visible, while the faulting second load commits nothing.
+    REQUIRE(std::memcmp(&context.xmm0, first.data(), first.size()) == 0);
+    REQUIRE(std::memcmp(&context.xmm1,
+                        second_before.data(),
+                        second_before.size()) == 0);
+
+    X86Core::Destroy(core);
+    X86Instance::Destroy(instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    REQUIRE(mprotect(data + page, page, PROT_READ | PROT_WRITE) == 0);
+    munmap(data, page * 2);
+    munmap(code_page, page);
+}
+
+TEST_CASE("structured address reloads RAX after every partial alias write") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::translator;
+    using namespace swift::translator::x86;
+    using namespace swift::x86;
+
+    const long page_long = sysconf(_SC_PAGESIZE);
+    REQUIRE(page_long > 0);
+    const auto page = static_cast<size_t>(page_long);
+    auto* window = static_cast<swift::u8*>(
+            mmap(nullptr, page * 2, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANON, -1, 0));
+    REQUIRE(window != MAP_FAILED);
+
+    const std::array<swift::u8, 16> first{
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+    };
+    const std::array<swift::u8, 16> second{
+            0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88,
+            0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00,
+    };
+    std::memcpy(window + 0x100, first.data(), first.size());
+    std::memcpy(window + 0x180, second.data(), second.size());
+
+    struct AliasCase {
+        const char* name;
+        std::vector<swift::u8> write;
+    };
+    const std::array cases{
+            AliasCase{"AL", {0xb0, 0x80}},
+            AliasCase{"AX", {0x66, 0xb8, 0x80, 0x01}},
+            AliasCase{"EAX", {0xb8, 0x80, 0x01, 0x00, 0x00}},
+    };
+
+    struct WindowMemory final : MemoryInterface {
+        explicit WindowMemory(swift::u8* base) : base(base) {}
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, base + addr, size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(base + addr, src, size);
+        }
+        void* GetPointer(void* src) override {
+            return base + reinterpret_cast<uintptr_t>(src);
+        }
+        swift::u8* base;
+    } decode_memory{window};
+
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    auto* instance = X86Instance::Make(window, UINT32_MAX);
+    auto* core = X86Core::Make(instance);
+    for (size_t i = 0; i < cases.size(); ++i) {
+        INFO("partial alias " << cases[i].name);
+        const swift::u64 code_guest = 0x1000 + i * 0x100;
+        std::vector<swift::u8> code{0x0f, 0x28, 0x00};  // movaps xmm0,[rax]
+        code.insert(code.end(), cases[i].write.begin(), cases[i].write.end());
+        code.insert(code.end(), {0x0f, 0x28, 0x08, 0xf4});  // movaps xmm1,[rax]; hlt
+        REQUIRE(code_guest + code.size() < page * 2);
+        std::memcpy(window + code_guest, code.data(), code.size());
+
+        // Structural half of the test: in ON mode both memory nodes carry the
+        // address state LoadUniform directly, and the alias write forces two
+        // distinct definitions rather than reusing the first snapshot.
+        Block block{0, Location{code_guest}};
+        Assembler assembler{&block};
+        X64Decoder decoder{code_guest, &decode_memory, &assembler, true};
+        decoder.Decode();
+        std::vector<Inst*> v128_loads;
+        for (auto& inst : block.GetInstList()) {
+            if (inst.GetOp() == OpCode::LoadMemory &&
+                inst.ReturnType() == ValueType::V128) {
+                v128_loads.push_back(&inst);
+            }
+        }
+        REQUIRE(v128_loads.size() == 2);
+        const char* gate = std::getenv("SVM_ADDRMODE_STRUCT");
+        const bool structured = gate && std::strcmp(gate, "0") != 0;
+        if (structured) {
+            const auto first_addr = v128_loads[0]->GetArg<Operand>(0);
+            const auto second_addr = v128_loads[1]->GetArg<Operand>(0);
+            REQUIRE(first_addr.GetRight().Null());
+            REQUIRE(second_addr.GetRight().Null());
+            REQUIRE(first_addr.GetLeft().IsValue());
+            REQUIRE(second_addr.GetLeft().IsValue());
+            REQUIRE(first_addr.GetLeft().value.Def()->GetOp() == OpCode::LoadUniform);
+            REQUIRE(second_addr.GetLeft().value.Def()->GetOp() == OpCode::LoadUniform);
+            REQUIRE(first_addr.GetLeft().value != second_addr.GetLeft().value);
+        }
+
+        auto& context = core->GetContext();
+        context.rip.qword = code_guest;
+        context.rax.qword = 0x100;
+        std::memset(&context.xmm0, 0, sizeof(context.xmm0));
+        std::memset(&context.xmm1, 0, sizeof(context.xmm1));
+        REQUIRE(core->Run() == ExitReason::None);
+        REQUIRE(std::memcmp(&context.xmm0, first.data(), first.size()) == 0);
+        REQUIRE(std::memcmp(&context.xmm1, second.data(), second.size()) == 0);
+    }
+    X86Core::Destroy(core);
+    X86Instance::Destroy(instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(window, page * 2);
+}
+
 TEST_CASE("FEX-style vector immediate shift boundary IR") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;

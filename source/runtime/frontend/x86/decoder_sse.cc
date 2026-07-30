@@ -443,7 +443,7 @@ ir::Value X64Decoder::LoadSrcVec(_DInst& insn, _Operand& op) {
     if (op.type == O_REG) {
         return XmmRead(static_cast<_RegisterType>(op.index));
     }
-    return __ LoadMemory(ir::Operand{FlatAddress(insn, op)}).SetType(ir::ValueType::V128);
+    return __ LoadMemory(PlainStructuredAddress(insn, op)).SetType(ir::ValueType::V128);
 }
 
 ir::Value X64Decoder::XmmLo(_RegisterType reg) {
@@ -483,6 +483,44 @@ ir::Value X64Decoder::FlatAddress(_DInst& insn, _Operand& op) {
     // single value (same treatment as Src()).
     return __ GetOperand(address_operand.ToIROperand())
             .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
+}
+
+bool X64Decoder::CanStructureAddress(const _DInst& insn, const _Operand& op) const {
+    if (!StructuredAddressModeEnabled()) {
+        return false;
+    }
+    if ((SEGMENT_GET(insn.segment) != R_NONE) && !SEGMENT_IS_DEFAULT(insn.segment)) {
+        return false;
+    }
+    switch (op.type) {
+        case O_SMEM:
+        case O_DISP:
+            // One base/absolute term plus an optional displacement.
+            return true;
+        case O_MEM: {
+            const bool has_base = insn.base != R_NONE;
+            const bool has_index = op.index != R_NONE;
+            const bool has_nonzero_disp = insn.dispSize && insn.disp != 0;
+            // ir::Operand has left/right but no independent third data term.
+            // Preserve only shapes it can carry without first materialising an
+            // Add into SSA. Zero displacements are, of course, free.
+            return !(has_base && has_index && has_nonzero_disp) &&
+                   !(!has_base && has_index && insn.scale != 0 && has_nonzero_disp);
+        }
+        default:
+            return false;
+    }
+}
+
+ir::Operand X64Decoder::PlainStructuredAddress(_DInst& insn, _Operand& op) {
+    if (!CanStructureAddress(insn, op)) {
+        return ir::Operand{FlatAddress(insn, op)};
+    }
+    const bool was_building = building_structured_address;
+    building_structured_address = true;
+    auto address = GetAddress(insn, op).ToIROperand();
+    building_structured_address = was_building;
+    return address;
 }
 
 X64Decoder::VecHalves X64Decoder::LoadSrcHalves(_DInst& insn, _Operand& op) {
@@ -783,13 +821,14 @@ void X64Decoder::DecodeMovVec(_DInst& insn) {
         if (op1.type == O_REG) {
             v = __ LoadUniform(ToVReg(x86_regs_table[op1.index]));
         } else {
-            v = __ LoadMemory(ir::Operand{FlatAddress(insn, op1)}).SetType(ir::ValueType::V128);
+            v = __ LoadMemory(PlainStructuredAddress(insn, op1))
+                        .SetType(ir::ValueType::V128);
         }
         __ StoreUniform(ToVReg(x86_regs_table[op0.index]), v);
     } else {
         // Store: m128, xmm (movntdq/movntps degrade to plain stores).
         auto v = __ LoadUniform(ToVReg(x86_regs_table[op1.index]));
-        __ StoreMemory(ir::Operand{FlatAddress(insn, op0)}, v);
+        __ StoreMemory(PlainStructuredAddress(insn, op0), v);
     }
 }
 

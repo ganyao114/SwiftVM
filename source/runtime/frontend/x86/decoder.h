@@ -566,6 +566,29 @@ private:
     // (TSO forms only encode [base], see Src()).
     ir::Value FlatAddress(_DInst& insn, _Operand& op);
 
+    // Default-off structured effective addresses for ordinary (non-TSO,
+    // non-atomic, non-helper) V128 memory nodes. The IR Operand can represent
+    // at most two address terms, so the formal fast path is deliberately
+    // limited to:
+    //   absolute, base, base+disp, index<<scale, base+(index<<scale).
+    // A non-default segment or base+index+nonzero-disp needs a third term and
+    // falls back to FlatAddress. Future plain GPR memory handlers may use the
+    // same entry point once their fault/order contract is audited.
+    ir::Operand PlainStructuredAddress(_DInst& insn, _Operand& op);
+    [[nodiscard]] bool CanStructureAddress(const _DInst& insn,
+                                           const _Operand& op) const;
+
+    // Canonical address-GPR SSA snapshots. This is frontend value numbering,
+    // not an emitter peephole: every structured memory Operand names the same
+    // LoadUniform SSA value until the architectural GPR changes. Retention is
+    // confined to the audited straight-line STREAM opcode chain below.
+    ir::Value AddressGprValue(_RegisterType reg);
+    void BeginStructuredAddressInstruction(u16 opcode);
+    void ClearStructuredAddressState();
+    void InvalidateStructuredAddressReg(_RegisterType reg);
+    static bool StructuredAddressModeEnabled();
+    static bool StructuredAddressChainOpcode(u16 opcode);
+
     // dst(xmm) op= src(xmm/m128), computed per 64-bit half by a host helper.
     using VecHalfFn = u64 (*)(u64, u64);
     void DecodeVecHalfOp(_DInst& insn, VecHalfFn fn);
@@ -1075,6 +1098,9 @@ private:
     ir::Flags local_nzcv_valid_{ir::Flags::None};
     VAddr local_fcmp_next_pc_{UINT64_MAX};
     ir::Value local_fcmp_value_{};
+    std::array<ir::Value, 16> structured_address_gprs{};
+    bool building_structured_address{false};
+    bool structured_address_chain_active{false};
 };
 
 void FromHost(backend::State* state, ThreadContext64* ctx);

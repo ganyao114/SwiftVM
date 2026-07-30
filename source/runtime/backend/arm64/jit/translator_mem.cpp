@@ -14,6 +14,14 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
+bool StructuredAddressModeEnabled() {
+    static const bool enabled = [] {
+        const char* env = PerfGetenv("SVM_ADDRMODE_STRUCT");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
 void HostMemMove(void* dst, const void* src, size_t size) {
     std::memmove(dst, src, size);
 }
@@ -484,7 +492,15 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     // Add + two memory operations, so folding it here would write back after
     // the first half of an LDP/STP pair rather than after the pair.
     const bool q_access = type == ir::ValueType::V128;
-    auto vixl_operand = EmitMemOperand(operand, type, false, q_access, !q_access);
+    const bool structured_guest_ea =
+            q_access && StructuredAddressModeEnabled() && !operand.GetRight().Null();
+    auto vixl_operand =
+            EmitMemOperand(operand,
+                           type,
+                           false,
+                           q_access,
+                           !q_access,
+                           structured_guest_ea);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
@@ -551,7 +567,15 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
     // See EmitLoadMemory: materialize guest + pt for Q accesses and preserve
     // the frontend's explicit pre/post-index writeback Add instructions.
     const bool q_access = type == ir::ValueType::V128;
-    auto vixl_operand = EmitMemOperand(operand, type, false, q_access, !q_access);
+    const bool structured_guest_ea =
+            q_access && StructuredAddressModeEnabled() && !operand.GetRight().Null();
+    auto vixl_operand =
+            EmitMemOperand(operand,
+                           type,
+                           false,
+                           q_access,
+                           !q_access,
+                           structured_guest_ea);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
