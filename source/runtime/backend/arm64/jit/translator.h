@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <vector>
 #include "base/common_funcs.h"
@@ -241,6 +242,37 @@ private:
                               u32 lane_bits,
                               u32 lane_count = 0);
     void EmitVecFScalarBinaryTied(ir::Inst *inst, u32 lane_bits);
+    VRegister PreserveNaNColdSource(const VRegister &source,
+                                    const VRegister &result,
+                                    const VRegister &reserved);
+
+    enum class VecNaNColdKind : u8 {
+        BinaryScalar32,
+        BinaryScalar64,
+        BinaryPacked32,
+        BinaryPacked64,
+        SqrtScalar32,
+        SqrtScalar64,
+        SqrtPacked32,
+        SqrtPacked64,
+    };
+
+    struct VecNaNColdSite {
+        VecNaNColdKind kind;
+        VRegister left;
+        VRegister right;
+        VRegister result;
+        std::unique_ptr<Label> slow{std::make_unique<Label>()};
+        std::unique_ptr<Label> continuation{std::make_unique<Label>()};
+        std::unique_ptr<Label> repaired{std::make_unique<Label>()};
+    };
+
+    void QueueVecNaNColdPath(VecNaNColdKind kind,
+                             const VRegister &result,
+                             const VRegister &left,
+                             const VRegister &right = NoVReg);
+    void EmitVecNaNColdPaths();
+    void EmitVecNaNColdHandler(VecNaNColdKind kind);
 
     [[nodiscard]] PseudoFlags GetPseudoFlags(ir::Inst *inst);
 
@@ -277,6 +309,11 @@ private:
     // Default-off aggressive SSE/AVX floating-point policy: keep the raw NEON
     // result instead of repairing x86 NaN payload priority and quieting.
     bool sse_nan_fast{false};
+    // Default-on exact policy: keep the common path to the host FP operation
+    // plus one combined result-NaN test, and defer the x86 payload/indefinite
+    // repair to shared block-local stubs. =0 restores the legacy inline
+    // lowering byte-for-byte; SVM_SSE_NAN_FAST still wins when explicitly set.
+    bool sse_nan_coldpath{true};
     // FEAT_AFP + FPCR.NEP is active for guest code, so scalar Advanced SIMD
     // instructions can update a tied destination's lane 0 in place.
     bool sse_scalar_insert{false};
@@ -308,6 +345,7 @@ private:
     bool x87_top_cache_valid{false};
     bool x87_top_cache_for_current{false};
     std::map<ir::Block*, X87TopBlockInfo> x87_top_blocks{};
+    std::vector<std::unique_ptr<VecNaNColdSite>> vec_nan_cold_sites{};
 };
 
 }

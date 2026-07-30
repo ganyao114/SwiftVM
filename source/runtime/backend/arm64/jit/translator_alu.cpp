@@ -1285,6 +1285,221 @@ VRegister JitTranslator::GetVecScalarOperand(ir::Value value, u32 lane_bits) {
     return result;
 }
 
+VRegister JitTranslator::PreserveNaNColdSource(const VRegister& source,
+                                                const VRegister& result,
+                                                const VRegister& reserved) {
+    if (sse_nan_coldpath && !sse_nan_fast &&
+        source.GetCode() == result.GetCode()) {
+        __ Orr(reserved.V16B(), source.V16B(), source.V16B());
+        return reserved;
+    }
+    return source;
+}
+
+void JitTranslator::QueueVecNaNColdPath(VecNaNColdKind kind,
+                                        const VRegister& result,
+                                        const VRegister& left,
+                                        const VRegister& right) {
+    auto site = std::make_unique<VecNaNColdSite>(
+            VecNaNColdSite{kind, left, right, result});
+
+    // For add/sub/mul/div, this one predicate is the exact OR of all reasons
+    // the repair is needed:
+    //
+    //   isnan(result) ==
+    //       isnan(left) || isnan(right) || operation_was_invalid
+    //
+    // FSQRT has the analogous identity with a NaN input or a negative finite
+    // input. The host operation therefore performs both input and generated-
+    // NaN detection for us, with a single conditional branch at the site.
+    const bool scalar =
+            kind == VecNaNColdKind::BinaryScalar32 ||
+            kind == VecNaNColdKind::BinaryScalar64 ||
+            kind == VecNaNColdKind::SqrtScalar32 ||
+            kind == VecNaNColdKind::SqrtScalar64;
+    const bool bits32 =
+            kind == VecNaNColdKind::BinaryScalar32 ||
+            kind == VecNaNColdKind::BinaryPacked32 ||
+            kind == VecNaNColdKind::SqrtScalar32 ||
+            kind == VecNaNColdKind::SqrtPacked32;
+
+    if (scalar) {
+        // FCMP owns NZCV. Commit a preceding lazy x86 flag producer before
+        // using it as the cold predicate; the FP opcode itself defines no x86
+        // integer flags.
+        MergeNZCV();
+        if (bits32) {
+            __ Fcmp(result.S(), result.S());
+        } else {
+            __ Fcmp(result.D(), result.D());
+        }
+        __ B(site->slow.get(), vs);
+    } else if (bits32) {
+        // FCMEQ produces all ones for every ordered lane. UMINV reduces that
+        // to zero iff at least one lane is NaN, while leaving NZCV untouched.
+        __ Fcmeq(ipv3.V4S(), result.V4S(), result.V4S());
+        __ Uminv(ipv3.S(), ipv3.V4S());
+        __ Fmov(ipw, ipv3.S());
+        __ Cbz(ipw, site->slow.get());
+    } else {
+        __ Fcmeq(ipv3.V2D(), result.V2D(), result.V2D());
+        __ Umov(ip0, ipv3.V2D(), 0);
+        __ Umov(ip1, ipv3.V2D(), 1);
+        __ And(ip0, ip0, ip1);
+        __ Cbz(ip0, site->slow.get());
+    }
+
+    __ Bind(site->continuation.get());
+    vec_nan_cold_sites.push_back(std::move(site));
+}
+
+void JitTranslator::EmitVecNaNColdHandler(VecNaNColdKind kind) {
+    const bool binary =
+            kind == VecNaNColdKind::BinaryScalar32 ||
+            kind == VecNaNColdKind::BinaryScalar64 ||
+            kind == VecNaNColdKind::BinaryPacked32 ||
+            kind == VecNaNColdKind::BinaryPacked64;
+    const bool scalar =
+            kind == VecNaNColdKind::BinaryScalar32 ||
+            kind == VecNaNColdKind::BinaryScalar64 ||
+            kind == VecNaNColdKind::SqrtScalar32 ||
+            kind == VecNaNColdKind::SqrtScalar64;
+    const bool bits32 =
+            kind == VecNaNColdKind::BinaryScalar32 ||
+            kind == VecNaNColdKind::BinaryPacked32 ||
+            kind == VecNaNColdKind::SqrtScalar32 ||
+            kind == VecNaNColdKind::SqrtPacked32;
+    const u32 lane_bits = bits32 ? 32 : 64;
+    auto bytes = [scalar](const VRegister& v) {
+        return scalar ? v.V8B() : v.V16B();
+    };
+    auto ordered = [&](const VRegister& d, const VRegister& s) {
+        if (scalar) {
+            if (bits32) {
+                __ Fcmeq(d.S(), s.S(), s.S());
+            } else {
+                __ Fcmeq(d.D(), s.D(), s.D());
+            }
+        } else if (bits32) {
+            __ Fcmeq(d.V4S(), s.V4S(), s.V4S());
+        } else {
+            __ Fcmeq(d.V2D(), s.V2D(), s.V2D());
+        }
+    };
+    auto splat = [&](const VRegister& d, bool indefinite) {
+        if (indefinite) {
+            __ Mvni(d.V4S(), lane_bits == 32 ? 0x3F : 0x07, MSL, 16);
+        } else {
+            __ Movi(d.V4S(), lane_bits == 32 ? 0x00400000u : 0x00080000u);
+        }
+        if (lane_bits == 64) {
+            __ Shl(d.V2D(), d.V2D(), 32);
+        }
+    };
+    auto insert_scalar = [&](const VRegister& dst, const VRegister& src) {
+        if (bits32) {
+            __ Ins(dst.V4S(), 0, src.V4S(), 0);
+        } else {
+            __ Ins(dst.V2D(), 0, src.V2D(), 0);
+        }
+    };
+
+    if (binary) {
+        // Cold ABI:
+        //   v11 = original operand 1
+        //   v12 = original operand 2, then selected/quieted replacement
+        //   v13 = hardware result, then repaired result
+        //   v14 = ordered mask
+        ordered(ipv3, ipv0);
+        __ Bif(bytes(ipv1), bytes(ipv0), bytes(ipv3));
+        ordered(ipv3, ipv1);
+        if (bits32) {
+            __ Orr(ipv1.V4S(), 0x40, 16);
+        } else {
+            splat(ipv0, false);
+            __ Orr(bytes(ipv1), bytes(ipv1), bytes(ipv0));
+        }
+        splat(ipv0, true);
+        __ Bit(bytes(ipv1), bytes(ipv0), bytes(ipv3));
+        if (scalar) {
+            insert_scalar(ipv2, ipv1);
+        } else {
+            ordered(ipv3, ipv2);
+            __ Bif(bytes(ipv2), bytes(ipv1), bytes(ipv3));
+        }
+    } else {
+        // Unary SQRT selects a quieted source NaN, or x86's negative
+        // indefinite when an ordered (therefore negative finite) input made
+        // FSQRT return NaN. Valid lanes retain the hardware result.
+        ordered(ipv3, ipv0);
+        if (bits32) {
+            __ Orr(ipv0.V4S(), 0x40, 16);
+        } else {
+            splat(ipv1, false);
+            __ Orr(bytes(ipv0), bytes(ipv0), bytes(ipv1));
+        }
+        splat(ipv1, true);
+        __ Bit(bytes(ipv0), bytes(ipv1), bytes(ipv3));
+        if (scalar) {
+            insert_scalar(ipv2, ipv0);
+        } else {
+            ordered(ipv3, ipv2);
+            __ Bif(bytes(ipv2), bytes(ipv0), bytes(ipv3));
+        }
+    }
+    __ Br(atomic_pair_scratch);
+}
+
+void JitTranslator::EmitVecNaNColdPaths() {
+    if (vec_nan_cold_sites.empty()) {
+        return;
+    }
+
+    constexpr size_t kKindCount = 8;
+    std::array<Label, kKindCount> handlers;
+    std::array<bool, kKindCount> used{};
+    auto index = [](VecNaNColdKind kind) {
+        return static_cast<size_t>(kind);
+    };
+    auto is_binary = [](VecNaNColdKind kind) {
+        return kind == VecNaNColdKind::BinaryScalar32 ||
+               kind == VecNaNColdKind::BinaryScalar64 ||
+               kind == VecNaNColdKind::BinaryPacked32 ||
+               kind == VecNaNColdKind::BinaryPacked64;
+    };
+
+    // Normal execution has already terminated before this point. Each cold
+    // veneer copies the site-specific physical registers into the fixed ABI,
+    // calls one shared repair body, writes the repaired value back, and
+    // resumes immediately after that site's test.
+    for (auto& site : vec_nan_cold_sites) {
+        const auto i = index(site->kind);
+        used[i] = true;
+        __ Bind(site->slow.get());
+        if (site->left.GetCode() != ipv0.GetCode()) {
+            __ Orr(ipv0.V16B(), site->left.V16B(), site->left.V16B());
+        }
+        if (is_binary(site->kind) && site->right.GetCode() != ipv1.GetCode()) {
+            __ Orr(ipv1.V16B(), site->right.V16B(), site->right.V16B());
+        }
+        __ Orr(ipv2.V16B(), site->result.V16B(), site->result.V16B());
+        __ Adr(atomic_pair_scratch, site->repaired.get());
+        __ B(&handlers[i]);
+        __ Bind(site->repaired.get());
+        __ Orr(site->result.V16B(), ipv2.V16B(), ipv2.V16B());
+        __ B(site->continuation.get());
+    }
+
+    for (size_t i = 0; i < kKindCount; ++i) {
+        if (!used[i]) {
+            continue;
+        }
+        __ Bind(&handlers[i]);
+        EmitVecNaNColdHandler(static_cast<VecNaNColdKind>(i));
+    }
+    vec_nan_cold_sites.clear();
+}
+
 void JitTranslator::EmitVecFAddScalar32(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
@@ -1294,8 +1509,10 @@ void JitTranslator::EmitVecFAddScalar32(ir::Inst* inst) {
     }
     auto scalar = context.GetTmpV();
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
+    auto repair_left = PreserveNaNColdSource(left, scalar, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, scalar, ipv1);
     __ Fadd(scalar.S(), left.S(), right.S());
-    EmitVecFloatNaNFixup(scalar, left, right, 32, 1);
+    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -1309,8 +1526,10 @@ void JitTranslator::EmitVecFSubScalar32(ir::Inst* inst) {
     }
     auto scalar = context.GetTmpV();
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
+    auto repair_left = PreserveNaNColdSource(left, scalar, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, scalar, ipv1);
     __ Fsub(scalar.S(), left.S(), right.S());
-    EmitVecFloatNaNFixup(scalar, left, right, 32, 1);
+    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -1324,8 +1543,10 @@ void JitTranslator::EmitVecFMulScalar32(ir::Inst* inst) {
     }
     auto scalar = context.GetTmpV();
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
+    auto repair_left = PreserveNaNColdSource(left, scalar, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, scalar, ipv1);
     __ Fmul(scalar.S(), left.S(), right.S());
-    EmitVecFloatNaNFixup(scalar, left, right, 32, 1);
+    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -1339,8 +1560,10 @@ void JitTranslator::EmitVecFDivScalar32(ir::Inst* inst) {
     }
     auto scalar = context.GetTmpV();
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
+    auto repair_left = PreserveNaNColdSource(left, scalar, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, scalar, ipv1);
     __ Fdiv(scalar.S(), left.S(), right.S());
-    EmitVecFloatNaNFixup(scalar, left, right, 32, 1);
+    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -1353,8 +1576,10 @@ void JitTranslator::EmitVecFAddScalar64(ir::Inst* inst) {
         return;
     }
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
+    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
     __ Fadd(result.D(), left.D(), right.D());
-    EmitVecFloatNaNFixup(result, left, right, 64, 1);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
@@ -1366,8 +1591,10 @@ void JitTranslator::EmitVecFSubScalar64(ir::Inst* inst) {
         return;
     }
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
+    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
     __ Fsub(result.D(), left.D(), right.D());
-    EmitVecFloatNaNFixup(result, left, right, 64, 1);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
@@ -1379,8 +1606,10 @@ void JitTranslator::EmitVecFMulScalar64(ir::Inst* inst) {
         return;
     }
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
+    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
     __ Fmul(result.D(), left.D(), right.D());
-    EmitVecFloatNaNFixup(result, left, right, 64, 1);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
@@ -1392,8 +1621,10 @@ void JitTranslator::EmitVecFDivScalar64(ir::Inst* inst) {
         return;
     }
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
+    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
     __ Fdiv(result.D(), left.D(), right.D());
-    EmitVecFloatNaNFixup(result, left, right, 64, 1);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
@@ -1448,6 +1679,17 @@ void JitTranslator::EmitVecFScalarBinaryTied(ir::Inst* inst, u32 lane_bits) {
     };
     if (sse_nan_fast) {
         emit_operation();
+        return;
+    }
+    if (sse_nan_coldpath) {
+        auto repair_left = PreserveNaNColdSource(left, result, ipv0);
+        auto repair_right = PreserveNaNColdSource(right, result, ipv1);
+        emit_operation();
+        EmitVecFloatNaNFixup(result,
+                             repair_left,
+                             repair_right,
+                             lane_bits,
+                             1);
         return;
     }
 
@@ -1515,6 +1757,20 @@ void JitTranslator::EmitVecFloatNaNFixup(const VRegister& result,
         return;
     }
     ASSERT(lane_bits == 32 || lane_bits == 64);
+    if (sse_nan_coldpath) {
+        QueueVecNaNColdPath(
+                lane_count == 1
+                        ? (lane_bits == 32
+                                   ? VecNaNColdKind::BinaryScalar32
+                                   : VecNaNColdKind::BinaryScalar64)
+                        : (lane_bits == 32
+                                   ? VecNaNColdKind::BinaryPacked32
+                                   : VecNaNColdKind::BinaryPacked64),
+                result,
+                left,
+                right);
+        return;
+    }
     // The scalar forms (lane_count == 1) define lane 0 only; their callers
     // merge the surviving lanes from `left` after this returns. Keeping the
     // bitwise ops 64-bit wide there is not an optimisation but a correctness
@@ -1604,11 +1860,13 @@ void JitTranslator::EmitVecFAdd(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
     if (lane_bits == 32)
         __ Fadd(result.V4S(), left.V4S(), right.V4S());
     else
         __ Fadd(result.V2D(), left.V2D(), right.V2D());
-    EmitVecFloatNaNFixup(result, left, right, lane_bits);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits);
 }
 
 void JitTranslator::EmitVecFSub(ir::Inst* inst) {
@@ -1616,11 +1874,13 @@ void JitTranslator::EmitVecFSub(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
     if (lane_bits == 32)
         __ Fsub(result.V4S(), left.V4S(), right.V4S());
     else
         __ Fsub(result.V2D(), left.V2D(), right.V2D());
-    EmitVecFloatNaNFixup(result, left, right, lane_bits);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits);
 }
 
 void JitTranslator::EmitVecFMul(ir::Inst* inst) {
@@ -1628,11 +1888,13 @@ void JitTranslator::EmitVecFMul(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
     if (lane_bits == 32)
         __ Fmul(result.V4S(), left.V4S(), right.V4S());
     else
         __ Fmul(result.V2D(), left.V2D(), right.V2D());
-    EmitVecFloatNaNFixup(result, left, right, lane_bits);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits);
 }
 
 void JitTranslator::EmitVecFDiv(ir::Inst* inst) {
@@ -1640,11 +1902,13 @@ void JitTranslator::EmitVecFDiv(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
     if (lane_bits == 32)
         __ Fdiv(result.V4S(), left.V4S(), right.V4S());
     else
         __ Fdiv(result.V2D(), left.V2D(), right.V2D());
-    EmitVecFloatNaNFixup(result, left, right, lane_bits);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits);
 }
 
 void JitTranslator::EmitVecFMinMax(ir::Inst* inst) {
@@ -1713,6 +1977,25 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
             __ Orr(result.V16B(), merge.V16B(), merge.V16B());
         }
         if (kind == 0) {
+            if (sse_nan_coldpath) {
+                auto repair_source = source;
+                if (source.GetCode() == result.GetCode()) {
+                    __ Orr(ipv0.V16B(), source.V16B(), source.V16B());
+                    repair_source = ipv0;
+                }
+                if (bits == 32) {
+                    __ Fsqrt(result.S(), source.S());
+                    QueueVecNaNColdPath(VecNaNColdKind::SqrtScalar32,
+                                        result,
+                                        repair_source);
+                } else {
+                    __ Fsqrt(result.D(), source.D());
+                    QueueVecNaNColdPath(VecNaNColdKind::SqrtScalar64,
+                                        result,
+                                        repair_source);
+                }
+                return;
+            }
             // Compare before FSQRT because source may be the tied result.
             // Negative finite inputs select x86's signed indefinite; NaN and
             // -0.0 retain the hardware result.
@@ -1773,14 +2056,28 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
     // the same IR opcode and were wrong in the same way.
     if (bits == 32) {
         if (kind == 0) {
-            __ Fsqrt(value.V4S(), source.V4S());
-            auto negative = context.GetTmpV();
-            auto indef = context.GetTmpV();
-            auto imm = context.GetTmpX();
-            __ Fcmlt(negative.V4S(), source.V4S(), 0.0);
-            __ Mov(imm.W(), 0xFFC00000u);
-            __ Dup(indef.V4S(), imm.W());
-            __ Bit(value.V16B(), indef.V16B(), negative.V16B());
+            if (sse_nan_coldpath) {
+                auto repair_source = source;
+                if (source.GetCode() == value.GetCode()) {
+                    __ Orr(ipv0.V16B(), source.V16B(), source.V16B());
+                    repair_source = ipv0;
+                }
+                __ Fsqrt(value.V4S(), source.V4S());
+                QueueVecNaNColdPath(
+                        scalar ? VecNaNColdKind::SqrtScalar32
+                               : VecNaNColdKind::SqrtPacked32,
+                        value,
+                        repair_source);
+            } else {
+                __ Fsqrt(value.V4S(), source.V4S());
+                auto negative = context.GetTmpV();
+                auto indef = context.GetTmpV();
+                auto imm = context.GetTmpX();
+                __ Fcmlt(negative.V4S(), source.V4S(), 0.0);
+                __ Mov(imm.W(), 0xFFC00000u);
+                __ Dup(indef.V4S(), imm.W());
+                __ Bit(value.V16B(), indef.V16B(), negative.V16B());
+            }
         } else if (kind == 1) {
             __ Frecpe(value.V4S(), source.V4S());
             auto step = context.GetTmpV();
@@ -1802,14 +2099,28 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
             }
         }
     } else {
-        __ Fsqrt(value.V2D(), source.V2D());
-        auto negative = context.GetTmpV();
-        auto indef = context.GetTmpV();
-        auto imm = context.GetTmpX();
-        __ Fcmlt(negative.V2D(), source.V2D(), 0.0);
-        __ Mov(imm, UINT64_C(0xFFF8000000000000));
-        __ Dup(indef.V2D(), imm);
-        __ Bit(value.V16B(), indef.V16B(), negative.V16B());
+        if (sse_nan_coldpath) {
+            auto repair_source = source;
+            if (source.GetCode() == value.GetCode()) {
+                __ Orr(ipv0.V16B(), source.V16B(), source.V16B());
+                repair_source = ipv0;
+            }
+            __ Fsqrt(value.V2D(), source.V2D());
+            QueueVecNaNColdPath(
+                    scalar ? VecNaNColdKind::SqrtScalar64
+                           : VecNaNColdKind::SqrtPacked64,
+                    value,
+                    repair_source);
+        } else {
+            __ Fsqrt(value.V2D(), source.V2D());
+            auto negative = context.GetTmpV();
+            auto indef = context.GetTmpV();
+            auto imm = context.GetTmpX();
+            __ Fcmlt(negative.V2D(), source.V2D(), 0.0);
+            __ Mov(imm, UINT64_C(0xFFF8000000000000));
+            __ Dup(indef.V2D(), imm);
+            __ Bit(value.V16B(), indef.V16B(), negative.V16B());
+        }
     }
     if (!scalar) {
         __ Orr(result.V16B(), value.V16B(), value.V16B());

@@ -27,6 +27,9 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     if (const char* nan_fast = PerfGetenv("SVM_SSE_NAN_FAST")) {
         sse_nan_fast = std::strcmp(nan_fast, "0") != 0;
     }
+    if (const char* nan_coldpath = PerfGetenv("SVM_SSE_NAN_COLDPATH")) {
+        sse_nan_coldpath = std::strcmp(nan_coldpath, "0") != 0;
+    }
     // Cached: JitTranslator is constructed once per compiled unit.
     static const bool requested = [] {
         const char* topvirt = PerfGetenv("SVM_X87_TOPVIRT");
@@ -41,6 +44,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
 
 void JitTranslator::Translate(ir::Block* block) {
     vixl::svm_vixl_prof::JitScope vixl_prof;
+    ASSERT(vec_nan_cold_sites.empty());
     PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
     cur_block = block;
     cur_block_is_call = false;
@@ -102,6 +106,7 @@ void JitTranslator::Translate(ir::Block* block) {
     PerfScope2 perf_terminal{GetPerfStats2().codegen_terminal};
     FlushFlags();
     EmitTerminal(block->GetTerminal());
+    EmitVecNaNColdPaths();
 }
 
 void JitTranslator::Translate(ir::HIRFunction* function) {
