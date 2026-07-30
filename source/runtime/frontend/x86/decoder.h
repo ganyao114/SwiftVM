@@ -284,6 +284,8 @@ public:
     void Decode();
 
 private:
+    class DecodePipeline;
+
     enum SSEMCSREnables : u32 {
         IM = 1 << 7,
         DM = 1 << 8,
@@ -370,6 +372,12 @@ private:
     void CondGoto(ir::BOOL cond, ir::Lambda then_, ir::Location else_);
 
     bool DecodeSwitch(_DInst& insn);
+    bool DecodeBaseOpcode(_DInst& insn);
+    bool DecodeX87Opcode(_DInst& insn);
+    bool DecodeSseOpcode(_DInst& insn);
+    bool DecodeSseFloatOpcode(_DInst& insn);
+    bool DecodeSseMiscOpcode(_DInst& insn);
+    bool DecodeExtendedOpcode(_DInst& insn);
 
     void DecodeMov(_DInst& insn);
 

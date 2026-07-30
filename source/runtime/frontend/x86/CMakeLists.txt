@@ -1,4 +1,5 @@
 add_library(fronted_x86 STATIC decoder.cc
+    decoder_dispatch.cc
     distorm_fast.cc
     decoder_alu.cc
     decoder_avx.cc
