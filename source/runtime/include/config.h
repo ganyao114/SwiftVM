@@ -21,6 +21,16 @@ struct UniformMapDesc {
             : offset(offset), size(size), reg(reg), is_float(f) {}
 };
 
+// A guest-state range with no host-register allocation attached.  Frontends
+// use this to identify architectural vector state to generic IR passes while
+// keeping the actual context layout out of the runtime layer.
+struct UniformRangeDesc {
+    std::uint32_t offset;
+    std::uint16_t size;
+
+    constexpr UniformRangeDesc(uint32_t o, uint32_t s) : offset(o), size(s) {}
+};
+
 enum ISA : uint8_t { kNone = 0, kArm, kArm64, kX86, kX86_64, kRiscv32, kRiscv64, kLoongArch };
 
 enum class Optimizations : std::uint32_t {
@@ -103,6 +113,10 @@ struct Config {
     ISA backend_isa;
     std::uint32_t uniform_buffer_size;
     std::span<UniformMapDesc> buffers_static_alloc;  // 静态分配
+    // XMM low halves are ordinary Load/StoreUniform accesses, not bespoke IR
+    // ops.  This optional description lets UniformElimination distinguish
+    // their scalar XmmLo/XmmHi views from unrelated U64 uniforms.
+    std::span<UniformRangeDesc> xmm_uniform_ranges;
     bool static_program;
     Optimizations global_opts;
     Arm64Features arm64_features{Arm64Features::None};

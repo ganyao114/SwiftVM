@@ -34,6 +34,19 @@ struct UniformValue {
     return off;
 }
 
+// Keep the XMM state resident only within one IR unit.  This switch controls
+// the Load/StoreUniform byte facts and their matching dead-store sweep; it
+// neither changes the trampoline's entry fill/exit spill nor enables any
+// cross-block residency.  The x86 frontend supplies the range so U64
+// XmmLo/XmmHi views are covered alongside direct V128 accesses.
+[[nodiscard]] static bool XmmUniformForwardOff() {
+    static const bool off = [] {
+        const char* e = PerfGetenv("SVM_XMM_UNIFORM_FWD");
+        return e && std::strcmp(e, "0") == 0;
+    }();
+    return off;
+}
+
 // --- dead uniform store elimination ----------------------------------------
 //
 // The forward pass above forwards uniform *loads*; nothing removed a uniform
@@ -154,6 +167,9 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 // The backend stores according to the *value* width, not the
                 // descriptor width -- the same rule the forward pass tracks.
                 const u32 size = GetValueSizeByte(value.Type());
+                if (XmmUniformForwardOff() && info.IsXmmUniformRange(off, size)) {
+                    break;
+                }
                 if (off + size > killed.size()) {
                     break;
                 }
@@ -177,6 +193,9 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 const auto uniform = inst.GetArg<Uniform>(0);
                 const u32 off = uniform.GetOffset();
                 const u32 size = GetValueSizeByte(uniform.GetType());
+                if (XmmUniformForwardOff() && info.IsXmmUniformRange(off, size)) {
+                    break;
+                }
                 for (u32 i = 0; i < size && off + i < killed.size(); ++i) {
                     killed[off + i] = 0;
                 }
@@ -320,6 +339,8 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 auto uni_type{uniform.GetType()};
                 auto uni_size{GetValueSizeByte(uni_type)};
                 auto is_float{IsFloatValueType(uni_type)};
+                const bool xmm_forward_disabled =
+                        XmmUniformForwardOff() && info.IsXmmUniformRange(uni_offset, uni_size);
                 ASSERT_MSG(uni_offset + uni_size <= uniform_values.size(),
                            "uniform load [{}, {}) exceeds uniform buffer size {}",
                            uni_offset, uni_offset + uni_size, uniform_values.size());
@@ -369,7 +390,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
 
                 Value value_load{};
                 u8 value_offset{0};
-                for (u8 offset = 0; offset < uni_size; ++offset) {
+                for (u8 offset = 0; !xmm_forward_disabled && offset < uni_size; ++offset) {
                     auto &uni_value = uniform_values[uni_offset + offset];
                     if (!uni_value.Defined()) {
                         value_load = {};
@@ -431,6 +452,8 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 auto value_type{value.Type()};
                 auto value_size{GetValueSizeByte(value_type)};
                 auto value_is_float{IsFloatValueType(value_type)};
+                const bool xmm_forward_disabled =
+                        XmmUniformForwardOff() && info.IsXmmUniformRange(uni_offset, value_size);
                 ASSERT_MSG(uni_offset + value_size <= uniform_values.size(),
                            "uniform store [{}, {}) exceeds uniform buffer size {}",
                            uni_offset, uni_offset + value_size, uniform_values.size());
@@ -489,8 +512,10 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 // mismatched descriptor cannot make untouched bytes look
                 // overwritten. Loads spanning old and new values fail the
                 // value/offset-continuity check above.
-                for (u8 offset = 0; offset < value_size; ++offset) {
-                    uniform_values[uni_offset + offset] = {value, offset};
+                if (!xmm_forward_disabled) {
+                    for (u8 offset = 0; offset < value_size; ++offset) {
+                        uniform_values[uni_offset + offset] = {value, offset};
+                    }
                 }
                 break;
             }

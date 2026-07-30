@@ -732,6 +732,14 @@ u64 ComputeConfigHash(const Config& config) {
         h = HashU64(desc.reg, h);
         h = HashU64(desc.is_float ? 1 : 0, h);
     }
+    // These ranges steer block-local XMM Load/StoreUniform forwarding, so a
+    // cache image compiled for one frontend state layout cannot be reused for
+    // another one.
+    h = HashU64(config.xmm_uniform_ranges.size(), h);
+    for (const auto& range : config.xmm_uniform_ranges) {
+        h = HashU64(range.offset, h);
+        h = HashU64(range.size, h);
+    }
     return h;
 }
 

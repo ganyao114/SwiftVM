@@ -76,6 +76,13 @@ static UniformMapDesc arm64_backend_gpr_xmm_regs_map[] = {
 };
 #undef SVM_XMM_STATIC_DESC
 
+// This describes guest architectural state only; it does not pin any host
+// FPRs.  UniformElimination uses it to include the U64 XmmLo/XmmHi views in
+// SVM_XMM_UNIFORM_FWD's scope as well as direct V128 accesses.
+static UniformRangeDesc x86_xmm_uniform_ranges[] = {
+        {offsetof(ThreadContext64, xmms), sizeof(ThreadContext64::xmms)},
+};
+
 // Instruction-fetch memory interface for the x86 decoder. With guest
 // address virtualization (memory_base), guest address G is backed by host
 // memory at G + bias; the loader installs the bias via SetBias (0 =
@@ -498,6 +505,7 @@ struct X86Instance::Impl final {
                 .backend_isa = swift::runtime::kArm64,
                 .uniform_buffer_size = sizeof(ThreadContext64) + kScratchUniformSize,
                 .buffers_static_alloc = static_regs,
+                .xmm_uniform_ranges = x86_xmm_uniform_ranges,
                 .static_program = false,
                 // Block linking enabled: JitContext::Forward's indirect-link
                 // path now falls back to the dispatcher on an empty dispatch

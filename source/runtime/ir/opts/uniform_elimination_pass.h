@@ -8,6 +8,8 @@
 #include "runtime/common/range_map.h"
 #include "runtime/backend/reg_alloc.h"
 
+#include <vector>
+
 namespace swift::runtime::ir {
 
 struct UniformRegister {
@@ -22,11 +24,26 @@ struct UniformRegister {
     bool operator!=(const UniformRegister& rhs) const { return !(rhs == *this); }
 };
 
+struct UniformRange {
+    u32 begin{};
+    u32 end{};
+};
+
 struct UniformInfo {
     u32 uniform_size{};
     backend::GPRSMask uni_gprs{};
     backend::FPRSMask uni_fprs{};
     RangeMap<u32, UniformRegister> uniform_regs_map{};
+    std::vector<UniformRange> xmm_uniform_ranges{};
+
+    [[nodiscard]] bool IsXmmUniformRange(u32 offset, u32 size) const {
+        for (const auto& range : xmm_uniform_ranges) {
+            if (offset >= range.begin && offset + size <= range.end) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 class UniformEliminationPass {

@@ -378,6 +378,63 @@ TEST_CASE("Uniform elimination does not propagate conditional stores past labels
     REQUIRE(guarded_store_count == (path_forward_off ? 2 : 1));
 }
 
+TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
+    using namespace swift::runtime::ir;
+
+    // The pass is runtime-generic, so describe a synthetic XMM slot exactly
+    // as the x86 frontend does: both the full V128 access and the two U64
+    // architectural views live in one byte range.
+    UniformInfo info{.uniform_size = 64};
+    info.xmm_uniform_ranges.push_back({16, 32});
+    const bool xmm_forward_off = std::getenv("SVM_XMM_UNIFORM_FWD") &&
+                                 std::strcmp(std::getenv("SVM_XMM_UNIFORM_FWD"), "0") == 0;
+
+    Block straight{0, Location{0x1000}};
+    auto vector_value = straight.LoadImm(Imm{0u}).SetType(ValueType::V128);
+    straight.StoreUniform(Uniform{16, ValueType::V128}, vector_value);
+    auto vector_load = straight.LoadUniform(Uniform{16, ValueType::V128});
+    auto scalar_value = straight.LoadImm(Imm{0x1122334455667788ull}).SetType(ValueType::U64);
+    straight.StoreUniform(Uniform{24, ValueType::U64}, scalar_value);
+    auto scalar_load = straight.LoadUniform(Uniform{24, ValueType::U64});
+
+    UniformEliminationPass::Run(&straight, info);
+    REQUIRE(vector_load.Def()->GetOp() ==
+            (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
+    REQUIRE(scalar_load.Def()->GetOp() ==
+            (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
+
+    // A fact established before the guarded region dominates both paths. The
+    // same byte-for-byte intersection used by W14's GPR path must preserve it
+    // for a V128 value too.
+    Block guarded{1, Location{0x2000}};
+    auto guarded_value = guarded.LoadImm(Imm{1u}).SetType(ValueType::V128);
+    guarded.StoreUniform(Uniform{16, ValueType::V128}, guarded_value);
+    auto condition = guarded.LoadImm<BOOL>(Imm{1u});
+    auto skip = guarded.NotGoto(condition);
+    guarded.LoadImm(Imm{7u});
+    guarded.BindLabel(skip);
+    auto merged_load = guarded.LoadUniform(Uniform{16, ValueType::V128});
+    UniformEliminationPass::Run(&guarded, info);
+    REQUIRE(merged_load.Def()->GetOp() ==
+            (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
+
+    // With no read between them, the first whole-XMM store is dead only while
+    // this forwarding family is enabled.  The off mode is intentionally a
+    // precise rollback: neither vector forwarding nor its dead-store sweep
+    // touches the XMM range.
+    Block dead_store{2, Location{0x3000}};
+    auto old_value = dead_store.LoadImm(Imm{2u}).SetType(ValueType::V128);
+    auto new_value = dead_store.LoadImm(Imm{3u}).SetType(ValueType::V128);
+    dead_store.StoreUniform(Uniform{16, ValueType::V128}, old_value);
+    dead_store.StoreUniform(Uniform{16, ValueType::V128}, new_value);
+    UniformEliminationPass::Run(&dead_store, info);
+    size_t stores{};
+    for (const auto& inst : dead_store.GetInstList()) {
+        stores += inst.GetOp() == OpCode::StoreUniform;
+    }
+    REQUIRE(stores == (xmm_forward_off ? 2 : 1));
+}
+
 TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {
     using namespace swift::runtime::ir;
 
