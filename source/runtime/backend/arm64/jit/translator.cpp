@@ -3,6 +3,8 @@
 #include "translator.h"
 
 #include <cstring>
+#include <functional>
+#include <iterator>
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
 #include "translator/x86/cpu.h"
@@ -187,7 +189,12 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             }
         } else if constexpr (std::is_same_v<T, ir::terminal::If>) {
             Label else_label;
-            __ Cbz(context.W(term.cond), &else_label);
+            if (auto local = LocalConditionFor(term.cond)) {
+                __ B(&else_label,
+                     static_cast<Condition>(static_cast<u8>(*local) ^ 1));
+            } else {
+                __ Cbz(context.W(term.cond), &else_label);
+            }
             EmitTerminal(term.then_);
             __ Bind(&else_label);
             EmitTerminal(term.else_);
@@ -228,6 +235,71 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             PANIC("Unknown terminal!");
         }
     });
+}
+
+std::optional<Condition> JitTranslator::LocalConditionFor(ir::Value value) const {
+    if (!value.Def()) {
+        return std::nullopt;
+    }
+    if (auto it = local_conditions.find(value.Def()); it != local_conditions.end()) {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
+bool JitTranslator::RecordLocalCondition(ir::Inst* inst, ir::Cond cond) {
+    if (inst->GetUses() != 1) {
+        return false;
+    }
+    auto& list = cur_block->GetInstList();
+    for (auto it = std::next(list.iterator_to(*inst)); it != list.end(); ++it) {
+        bool names = false;
+        for (auto value : it->GetValues()) {
+            names = names || value.Def() == inst;
+        }
+        if (!names) {
+            continue;
+        }
+        const bool supported =
+                (it->GetOp() == ir::OpCode::Goto ||
+                 it->GetOp() == ir::OpCode::NotGoto) &&
+                        it->GetArg<ir::Value>(0).Def() == inst ||
+                it->GetOp() == ir::OpCode::Select &&
+                        it->GetArg<ir::Value>(0).Def() == inst;
+        if (!supported) {
+            return false;
+        }
+        local_conditions.emplace(inst, MapCond(cond));
+        return true;
+    }
+
+    bool terminal_use = false;
+    std::function<void(const ir::Terminal&)> visit = [&](const ir::Terminal& terminal) {
+        VisitVariant<void>(terminal, [&](auto term) {
+            using T = std::decay_t<decltype(term)>;
+            if constexpr (std::is_same_v<T, ir::terminal::If>) {
+                if (term.cond.Def() == inst) {
+                    terminal_use = true;
+                }
+                visit(term.then_);
+                visit(term.else_);
+            } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
+                visit(term.then_);
+                visit(term.else_);
+            } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
+                visit(term.else_);
+            } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
+                for (const auto& arm : term.cases) {
+                    visit(arm.then);
+                }
+            }
+        });
+    };
+    visit(cur_block->GetTerminal());
+    if (terminal_use) {
+        local_conditions.emplace(inst, MapCond(cond));
+    }
+    return terminal_use;
 }
 
 // A direct jmp/call decodes to SetLocation(imm) + ReturnToDispatcher, and the

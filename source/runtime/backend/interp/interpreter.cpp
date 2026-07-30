@@ -1322,6 +1322,62 @@ void Interpreter::RunSetOverflow(ir::Inst* inst, InterpStack& stack) {
     fl = on ? (fl | (u64(1) << kHostFlagV)) : (fl & ~(u64(1) << kHostFlagV));
 }
 
+void Interpreter::RunInvertCarry(ir::Inst* inst, InterpStack& stack) {
+    state.host_cpu_flags ^= u64(1) << kHostFlagC;
+}
+
+void Interpreter::RunPublishFCmpFlags(ir::Inst* inst, InterpStack& stack) {
+    const u64 packed = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    constexpr u64 replaced =
+            (u64(1) << kHostFlagN) |
+            (u64(1) << kHostFlagZ) |
+            (u64(1) << kHostFlagC) |
+            (u64(1) << kHostFlagV) |
+            (u64(1) << kHostAF) |
+            (u64(0xff) << kHostParityByte);
+    u64& flags = state.host_cpu_flags;
+    flags &= ~replaced;
+    flags |= (packed & 1) << kHostFlagC;
+    flags |= ((packed >> 2) & 1) << kHostFlagZ;
+    flags |= (((packed >> 1) & 1) ^ 1) << kHostParityByte;
+}
+
+void Interpreter::RunLocalCondSet(ir::Inst* inst, InterpStack& stack) {
+    WriteScalar(stack, inst, EvalCondition(inst->GetArg<ir::Cond>(0)) ? 1 : 0);
+}
+
+void Interpreter::RunFCmpCondSet(ir::Inst* inst, InterpStack& stack) {
+    const u64 packed = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    const bool less = (packed & 7) == 1;
+    const bool equal = (packed & 7) == 4;
+    const bool unordered = (packed & 7) == 7;
+    const bool n = less;
+    const bool z = equal;
+    const bool c = !less;
+    const bool v = unordered;
+    bool take = false;
+    switch (inst->GetArg<ir::Cond>(1)) {
+        case ir::Cond::EQ: take = z; break;
+        case ir::Cond::NE: take = !z; break;
+        case ir::Cond::CS: take = c; break;
+        case ir::Cond::CC: take = !c; break;
+        case ir::Cond::MI: take = n; break;
+        case ir::Cond::PL: take = !n; break;
+        case ir::Cond::VS: take = v; break;
+        case ir::Cond::VC: take = !v; break;
+        case ir::Cond::HI: take = c && !z; break;
+        case ir::Cond::LS: take = !c || z; break;
+        case ir::Cond::GE: take = n == v; break;
+        case ir::Cond::LT: take = n != v; break;
+        case ir::Cond::GT: take = !z && n == v; break;
+        case ir::Cond::LE: take = z || n != v; break;
+        case ir::Cond::AL:
+        case ir::Cond::NV:
+        default: take = true; break;
+    }
+    WriteScalar(stack, inst, take ? 1 : 0);
+}
+
 void Interpreter::RunLslImm(ir::Inst* inst, InterpStack& stack) {
     const u32 bits = TypeBits(inst->ReturnType());
     const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & MaskBits(bits);

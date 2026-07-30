@@ -329,6 +329,47 @@ void JitTranslator::EmitSetOverflow(ir::Inst* inst) {
     __ Bfi(flags, bit.X(), HostFlagsBit::V, 1);
 }
 
+void JitTranslator::EmitInvertCarry(ir::Inst* inst) {
+    // CFINV operates on host NZCV.  A known in-unit producer leaves its C
+    // there; otherwise restore the committed ABI word first.  Mark only C as
+    // pending so the eventual merge cannot overwrite unrelated guest bits.
+    if (!(save_in_nzcv && nzcv_dirty)) {
+        LoadNZCVFromFlags();
+    }
+    {
+        vixl::CPUFeaturesScope flagm(&masm, vixl::CPUFeatures::kFlagM);
+        __ Cfinv();
+    }
+    nzcv_requested |= HostFlags::C;
+    nzcv_dirty = true;
+}
+
+void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
+    MergeNZCV();
+    FlushFlags();
+    auto packed = context.R(inst->GetArg<ir::Value>(0));
+    auto bit = context.GetTmpX();
+    constexpr u64 replaced =
+            (u64(1) << HostFlagsBit::N) |
+            (u64(1) << HostFlagsBit::Z) |
+            (u64(1) << HostFlagsBit::C) |
+            (u64(1) << HostFlagsBit::V) |
+            (u64(1) << HostFlagsBit::AuxiliaryCarry) |
+            (u64(0xff) << HostFlagsBit::ParityByte);
+    u64 keep = ~replaced;
+    __ And(flags, flags, ForceCast<s64>(keep));
+
+    // VecFCmp: bit0=CF, bit1=PF, bit2=ZF.  PF's ABI slot stores a raw
+    // parity byte, so 0 spells PF=1 and 1 spells PF=0.
+    __ Ubfx(bit, packed, 0, 1);
+    __ Bfi(flags, bit, HostFlagsBit::C, 1);
+    __ Ubfx(bit, packed, 2, 1);
+    __ Bfi(flags, bit, HostFlagsBit::Z, 1);
+    __ Ubfx(bit, packed, 1, 1);
+    __ Eor(bit, bit, 1);
+    __ Bfi(flags, bit, HostFlagsBit::ParityByte, 8);
+}
+
 void JitTranslator::FlushFlags() {
     if (flags_clear != ir::Flags::None) {
         ClearFlags(flags_clear);

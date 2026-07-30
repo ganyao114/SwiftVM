@@ -231,6 +231,17 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 }
                 break;
             }
+            case OpCode::InvertCarry:
+                // Representation transform: output C is live exactly when its
+                // input C is.  Keep this deliberately conservative; the
+                // frontend only emits it between a known producer and ADC/SBB.
+                needed |= Flags::Carry;
+                break;
+            case OpCode::PublishFCmpFlags:
+                // UCOMIS/COMIS define all six observable arithmetic flags
+                // (OF/SF/AF clear, CF/PF/ZF from the relation).
+                needed &= ~Flags::All;
+                break;
             case OpCode::TestFlags:
             case OpCode::TestNotFlags:
                 needed |= inst.GetArg<Flags>(0);
@@ -246,8 +257,12 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 break;
             case OpCode::CondSelect:
             case OpCode::CondSet:
+            case OpCode::LocalCondSet:
                 // Host conditional select / set reads NZCV directly.
                 needed |= Flags::NZCV;
+                break;
+            case OpCode::FCmpCondSet:
+                // Reads the named VecFCmp relation, not the guest flags word.
                 break;
             case OpCode::BindLabel:
                 label_needed[inst.GetArg<Value>(0).Def()] |= needed;

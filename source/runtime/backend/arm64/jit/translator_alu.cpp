@@ -32,6 +32,52 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
 
     if (!pseudo_flags.Null()) {
         const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
+        if (needs_nzcv && ir::GetValueSizeByte(inst->ReturnType()) <= 2) {
+            // Align the architectural sign bit with W[31], perform one
+            // flag-setting operation, then shift the result back down in the
+            // same destination.  The shift does not alter NZCV.  Preserve an
+            // input only when linear scan tied it to the destination, because
+            // AF still needs the original bit 4 after the result is produced.
+            Register af_left = left_register.W();
+            if (context.SharesGPR(left, ir::Value{inst})) {
+                auto saved = context.GetTmpX();
+                __ Mov(saved.W(), left_register.W());
+                af_left = saved.W();
+            }
+            if (right.GetLeft().IsValue() &&
+                context.SharesGPR(right.GetLeft().value, ir::Value{inst})) {
+                auto saved = context.GetTmpX();
+                __ Mov(saved.W(), right_operand);
+                right_operand = Operand{saved.W()};
+            }
+            const u32 shift = 32 - ir::GetValueSizeByte(inst->ReturnType()) * 8;
+            __ Lsl(result.W(), af_left.W(), shift);
+            Operand aligned_right;
+            if (right_operand.IsImmediate()) {
+                auto saved = context.GetTmpX();
+                __ Mov(saved.W(), static_cast<u32>(right_operand.GetImmediate()));
+                aligned_right = Operand{saved.W(), LSL, shift};
+            } else if (!right_operand.IsShiftedRegister()) {
+                aligned_right = Operand{right_operand.GetRegister().W(), LSL, shift};
+            } else {
+                auto saved = context.GetTmpX();
+                __ Mov(saved.W(), right_operand);
+                right_operand = Operand{saved.W()};
+                aligned_right = Operand{saved.W(), LSL, shift};
+            }
+            MergeNZCV();
+            __ Adds(result.W(), result.W(), aligned_right);
+            __ Lsr(result.W(), result.W(), shift);
+            auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
+            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            if (True(pseudo_flags.set & ir::Flags::Parity)) {
+                SaveParity(result);
+            }
+            if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
+                SaveAuxiliaryCarry(af_left, right_operand, result);
+            }
+            return;
+        }
         if (needs_nzcv) {
             MergeNZCV();
             __ Adds(result, left_register, right_operand);
@@ -63,6 +109,47 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
 
     if (!pseudo_flags.Null()) {
         const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
+        if (needs_nzcv && ir::GetValueSizeByte(inst->ReturnType()) <= 2) {
+            Register af_left = left_register.W();
+            if (context.SharesGPR(left, ir::Value{inst})) {
+                auto saved = context.GetTmpX();
+                __ Mov(saved.W(), left_register.W());
+                af_left = saved.W();
+            }
+            if (right.GetLeft().IsValue() &&
+                context.SharesGPR(right.GetLeft().value, ir::Value{inst})) {
+                auto saved = context.GetTmpX();
+                __ Mov(saved.W(), right_operand);
+                right_operand = Operand{saved.W()};
+            }
+            const u32 shift = 32 - ir::GetValueSizeByte(inst->ReturnType()) * 8;
+            __ Lsl(result.W(), af_left.W(), shift);
+            Operand aligned_right;
+            if (right_operand.IsImmediate()) {
+                auto saved = context.GetTmpX();
+                __ Mov(saved.W(), static_cast<u32>(right_operand.GetImmediate()));
+                aligned_right = Operand{saved.W(), LSL, shift};
+            } else if (!right_operand.IsShiftedRegister()) {
+                aligned_right = Operand{right_operand.GetRegister().W(), LSL, shift};
+            } else {
+                auto saved = context.GetTmpX();
+                __ Mov(saved.W(), right_operand);
+                right_operand = Operand{saved.W()};
+                aligned_right = Operand{saved.W(), LSL, shift};
+            }
+            MergeNZCV();
+            __ Subs(result.W(), result.W(), aligned_right);
+            __ Lsr(result.W(), result.W(), shift);
+            auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
+            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            if (True(pseudo_flags.set & ir::Flags::Parity)) {
+                SaveParity(result);
+            }
+            if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
+                SaveAuxiliaryCarry(af_left, right_operand, result);
+            }
+            return;
+        }
         if (needs_nzcv) {
             MergeNZCV();
             __ Subs(result, left_register, right_operand);
@@ -2718,6 +2805,10 @@ void JitTranslator::EmitSelect(ir::Inst* inst) {
     auto true_value = inst->GetArg<ir::Value>(1);
     auto false_value = inst->GetArg<ir::Value>(2);
     auto result = context.R(ir::Value{inst});
+    if (auto local = LocalConditionFor(cond)) {
+        __ Csel(result, context.R(true_value), context.R(false_value), *local);
+        return;
+    }
     MergeNZCV();
     __ Cmp(context.W(cond), 0);
     __ Csel(result, context.R(true_value), context.R(false_value), ne);
@@ -2751,6 +2842,26 @@ void JitTranslator::EmitCondSet(ir::Inst* inst) {
         LoadNZCVFromFlags();
     }
     __ Cset(result, MapCond(cond));
+}
+
+void JitTranslator::EmitLocalCondSet(ir::Inst* inst) {
+    auto cond = inst->GetArg<ir::Cond>(0);
+    ASSERT(inst->ReturnType() != ir::ValueType::VOID);
+    if (RecordLocalCondition(inst, cond)) {
+        return;
+    }
+    __ Cset(context.R(ir::Value{inst}), MapCond(cond));
+}
+
+void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
+    auto cond = inst->GetArg<ir::Cond>(1);
+    ASSERT(inst->GetArg<ir::Value>(0).Def() &&
+           inst->GetArg<ir::Value>(0).Def()->GetOp() == ir::OpCode::VecFCmp);
+    ASSERT(inst->ReturnType() != ir::ValueType::VOID);
+    if (RecordLocalCondition(inst, cond)) {
+        return;
+    }
+    __ Cset(context.R(ir::Value{inst}), MapCond(cond));
 }
 
 void JitTranslator::EmitZero(ir::Inst* inst) {

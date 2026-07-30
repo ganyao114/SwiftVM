@@ -8,6 +8,9 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <sys/sysctl.h>
+#endif
 #include "runtime/frontend/x86/cpu.h"
 #include "runtime/frontend/x86/decoder_internal.h"
 #include "runtime/frontend/x86/distorm_fast.h"
@@ -942,6 +945,10 @@ void X64Decoder::Interrupt(InterruptReason reason) {
 ir::BOOL X64Decoder::CheckCond(Cond cond) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::Flags};
+    if (auto local = TryLocalCondition(cond);
+        local && local->fcmp.Def() && FlagsFcmpFuseEnabled()) {
+        return __ FCmpCondSet(local->fcmp, local->arm).SetType(ir::ValueType::U8);
+    }
     switch (cond) {
         case Cond::AL:
             return __ LoadImm(ir::Imm(true));
@@ -1032,6 +1039,177 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
     // back ends now assert on it.  U8 is what the old LoadImm(u8) pair gave
     // CondSelect, so the register width is unchanged.
     return __ CondSet(arm).SetType(ir::ValueType::U8);
+}
+
+bool X64Decoder::FlagsNarrowAlignEnabled() {
+    const char* env = runtime::PerfGetenv("SVM_FLAGS_NARROW_ALIGN");
+    return !env || std::strcmp(env, "0") != 0;
+}
+
+bool X64Decoder::FlagsCfinvEnabled() {
+    const char* env = runtime::PerfGetenv("SVM_FLAGS_CFINV");
+    if (env && std::strcmp(env, "0") == 0) {
+        return false;
+    }
+#if defined(__APPLE__) && defined(__aarch64__)
+    static const bool supported = [] {
+        int value = 0;
+        size_t size = sizeof(value);
+        return sysctlbyname("hw.optional.arm.FEAT_FlagM", &value, &size, nullptr, 0) == 0 &&
+               size == sizeof(value) && value != 0;
+    }();
+    return supported;
+#else
+    return false;
+#endif
+}
+
+bool X64Decoder::FlagsTerminalJccEnabled() {
+    const char* env = runtime::PerfGetenv("SVM_FLAGS_TERMINAL_JCC");
+    return !env || std::strcmp(env, "0") != 0;
+}
+
+bool X64Decoder::FlagsFcmpFuseEnabled() {
+    const char* env = runtime::PerfGetenv("SVM_FLAGS_FCMP_FUSE");
+    return !env || std::strcmp(env, "0") != 0;
+}
+
+void X64Decoder::MarkLocalNZCV(ir::Flags valid) {
+    local_nzcv_next_pc_ = pc;
+    local_nzcv_valid_ = valid & ir::Flags::NZCV;
+}
+
+void X64Decoder::PublishFCmpFlags(ir::Value packed) {
+    __ PublishFCmpFlags(packed);
+    carry_ = CarryPolarity::Direct;
+    StorePolarity(false);
+    local_fcmp_next_pc_ = pc;
+    local_fcmp_value_ = packed;
+}
+
+std::optional<X64Decoder::LocalCondition> X64Decoder::TryLocalCondition(Cond cond) {
+    // FCMP relations are deliberately mapped from IEEE outcomes, not from the
+    // materialized x86 shadow.  These are exactly the single-condition sets:
+    // less|unordered, greater|equal, greater, less|equal|unordered, unordered,
+    // and ordered.  EQ/NE need two ARM conditions and stay on the old path.
+    if (FlagsFcmpFuseEnabled() && local_fcmp_next_pc_ == insn_pc &&
+        local_fcmp_value_.Def()) {
+        switch (cond) {
+            case Cond::CS:
+            case Cond::BT:
+                return LocalCondition{ir::Cond::LT, local_fcmp_value_};
+            case Cond::CC:
+            case Cond::AE:
+                return LocalCondition{ir::Cond::GE, local_fcmp_value_};
+            case Cond::HI:
+            case Cond::AT:
+                return LocalCondition{ir::Cond::GT, local_fcmp_value_};
+            case Cond::LS:
+            case Cond::BE:
+                return LocalCondition{ir::Cond::LE, local_fcmp_value_};
+            case Cond::PA:
+                return LocalCondition{ir::Cond::VS, local_fcmp_value_};
+            case Cond::NP:
+                return LocalCondition{ir::Cond::VC, local_fcmp_value_};
+            default:
+                break;
+        }
+    }
+
+    if (!FlagsTerminalJccEnabled() || local_nzcv_next_pc_ != insn_pc) {
+        return std::nullopt;
+    }
+
+    ir::Flags need{};
+    ir::Cond arm{};
+    switch (cond) {
+        case Cond::EQ:
+            need = ir::Flags::Zero;
+            arm = ir::Cond::EQ;
+            break;
+        case Cond::NE:
+            need = ir::Flags::Zero;
+            arm = ir::Cond::NE;
+            break;
+        case Cond::MI:
+        case Cond::SN:
+            need = ir::Flags::Negate;
+            arm = ir::Cond::MI;
+            break;
+        case Cond::PL:
+        case Cond::NS:
+            need = ir::Flags::Negate;
+            arm = ir::Cond::PL;
+            break;
+        case Cond::VS:
+            need = ir::Flags::Overflow;
+            arm = ir::Cond::VS;
+            break;
+        case Cond::VC:
+            need = ir::Flags::Overflow;
+            arm = ir::Cond::VC;
+            break;
+        case Cond::GE:
+            need = ir::Flags::Negate | ir::Flags::Overflow;
+            arm = ir::Cond::GE;
+            break;
+        case Cond::LT:
+            need = ir::Flags::Negate | ir::Flags::Overflow;
+            arm = ir::Cond::LT;
+            break;
+        case Cond::GT:
+            need = ir::Flags::Negate | ir::Flags::Overflow | ir::Flags::Zero;
+            arm = ir::Cond::GT;
+            break;
+        case Cond::LE:
+            need = ir::Flags::Negate | ir::Flags::Overflow | ir::Flags::Zero;
+            arm = ir::Cond::LE;
+            break;
+        case Cond::CS:
+        case Cond::BT:
+            need = ir::Flags::Carry;
+            if (carry_ == CarryPolarity::Direct) {
+                arm = ir::Cond::CS;
+            } else if (carry_ == CarryPolarity::Inverted) {
+                arm = ir::Cond::CC;
+            } else {
+                return std::nullopt;
+            }
+            break;
+        case Cond::CC:
+        case Cond::AE:
+            need = ir::Flags::Carry;
+            if (carry_ == CarryPolarity::Direct) {
+                arm = ir::Cond::CC;
+            } else if (carry_ == CarryPolarity::Inverted) {
+                arm = ir::Cond::CS;
+            } else {
+                return std::nullopt;
+            }
+            break;
+        case Cond::HI:
+        case Cond::AT:
+            need = ir::Flags::Carry | ir::Flags::Zero;
+            if (carry_ != CarryPolarity::Inverted) {
+                return std::nullopt;
+            }
+            arm = ir::Cond::HI;
+            break;
+        case Cond::LS:
+        case Cond::BE:
+            need = ir::Flags::Carry | ir::Flags::Zero;
+            if (carry_ != CarryPolarity::Inverted) {
+                return std::nullopt;
+            }
+            arm = ir::Cond::LS;
+            break;
+        default:
+            return std::nullopt;
+    }
+    if ((local_nzcv_valid_ & need) != need) {
+        return std::nullopt;
+    }
+    return LocalCondition{arm, {}};
 }
 
 ir::Value X64Decoder::CarryValue() {

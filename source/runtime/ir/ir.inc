@@ -103,6 +103,16 @@ INST(ClearFlags, Void, Flags)
 // flag is derived rather than produced by a host flag-setting op (shift CF/OF).
 INST(SetCarry, Void, Value)
 INST(SetOverflow, Void, Value)
+// Toggle the current carry representation in place.  The x86 frontend uses
+// this only inside one translation unit to normalize a known carry polarity
+// before ADC/SBB; the ARM64 backend lowers it to FEAT_FLAGM CFINV and the
+// interpreter toggles its virtual host-C bit.
+INST(InvertCarry, Void)
+// Publish VecFCmp's compact {CF,PF,ZF} result to the unchanged x86 flags ABI,
+// clearing OF/SF/AF as UCOMIS/COMIS require.  Keeping this as one side-effecting
+// operation lets the ARM64 backend update x26 without flag-setting integer
+// helpers, so the FCMP NZCV remains available to an immediate local consumer.
+INST(PublishFCmpFlags, Void, Value)
 // Shift
 // LogicalShiftLeft
 INST(LslImm, Value, Value, Imm)
@@ -387,3 +397,13 @@ INST(MulHigh, Value, Value, Value, Imm)
 // most numerous IR opcode in the corpus at 15.15%
 // (docs/ir-expansion-attribution.md 2).
 INST(CondSet, BOOL, Cond)
+// Same architectural result as CondSet, but emitted only when the frontend has
+// proved that the immediately preceding guest flag producer is in this unit
+// and no intervening guest instruction can have clobbered host NZCV.  A sole
+// branch/select consumer can therefore fold this marker to B.cond/CSEL.
+INST(LocalCondSet, BOOL, Cond)
+// Condition over the host FP NZCV produced by the named VecFCmp.  The Value
+// edge pins the producer and gives the interpreter the compact comparison
+// result; ARM64 can fold a sole branch/select consumer directly into the
+// already-emitted FCMP.
+INST(FCmpCondSet, BOOL, Value, Cond)

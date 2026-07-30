@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "cpu.h"
 #include "distorm.h"
 #include "mnemonics.h"
@@ -371,6 +373,22 @@ private:
 
     void CondGoto(ir::BOOL cond, ir::Lambda then_, ir::Location else_);
 
+    struct LocalCondition {
+        ir::Cond arm{};
+        ir::Value fcmp{};
+    };
+
+    // A local condition is available only for the guest instruction
+    // immediately following its producer.  The returned ARM condition reads
+    // the still-current host NZCV; fcmp is non-null for an FP relation.
+    [[nodiscard]] std::optional<LocalCondition> TryLocalCondition(Cond cond);
+    void MarkLocalNZCV(ir::Flags valid);
+    void PublishFCmpFlags(ir::Value packed);
+    [[nodiscard]] static bool FlagsNarrowAlignEnabled();
+    [[nodiscard]] static bool FlagsCfinvEnabled();
+    [[nodiscard]] static bool FlagsTerminalJccEnabled();
+    [[nodiscard]] static bool FlagsFcmpFuseEnabled();
+
     bool DecodeSwitch(_DInst& insn);
     bool DecodeBaseOpcode(_DInst& insn);
     bool DecodeX87Opcode(_DInst& insn);
@@ -474,7 +492,8 @@ private:
     // pollute the sticky flags register (its N/C/V are always 0 and its Z is
     // only set when the true Z is set).
     ir::Value ArithWithFlags(
-            ir::Value left, ir::Value right, ArithOp op, u32 width, ir::Flags flag_mask);
+            ir::Value left, ir::Value right, ArithOp op, u32 width, ir::Flags flag_mask,
+            bool terminal_compare = false);
 
     // Current CF as a 0/1 value, honoring the tracked carry polarity (and
     // the runtime polarity byte at block entry).
@@ -497,7 +516,7 @@ private:
 
     void DecodeAndNot(_DInst& insn);
 
-    void SaveLogicFlags(ir::Value result, u32 width);
+    void SaveLogicFlags(ir::Value result, u32 width, bool terminal_test = false);
 
     // Extend a value to a (wider) type, signed or unsigned.
     ir::Value Extend(ir::Value value, ir::ValueType type, bool sign);
@@ -1052,6 +1071,10 @@ private:
     bool is_64bit{false};
     VAddr addr_mask{UINT64_MAX};
     CarryPolarity carry_{CarryPolarity::Unknown};
+    VAddr local_nzcv_next_pc_{UINT64_MAX};
+    ir::Flags local_nzcv_valid_{ir::Flags::None};
+    VAddr local_fcmp_next_pc_{UINT64_MAX};
+    ir::Value local_fcmp_value_{};
 };
 
 void FromHost(backend::State* state, ThreadContext64* ctx);

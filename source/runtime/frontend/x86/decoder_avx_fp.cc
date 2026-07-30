@@ -484,6 +484,10 @@ void X64Decoder::DecodeAvxFpComis(const VexInsn& v, u32 lane_bits) {
     auto a = XmmLo(XmmOf(v.reg));
     auto b = VexLoadScalar(v, lane_bits);
     auto f = __ VecFCmp(a, b, ir::Imm(lane_bits)).SetType(ir::ValueType::U64);
+    if (FlagsFcmpFuseEnabled()) {
+        PublishFCmpFlags(f);
+        return;
+    }
     // OF / SF / AF cleared; ZF / PF / CF from the compare result.
     __ ClearFlags(ir::Flags::Overflow | ir::Flags::Negate | ir::Flags::AuxiliaryCarry);
     auto one = __ LoadImm(ir::Imm(u64(1)));

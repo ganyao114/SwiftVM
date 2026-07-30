@@ -1380,6 +1380,10 @@ void X64Decoder::DecodeUcomis(_DInst& insn, u32 lane_bits) {
     auto a = XmmLo(static_cast<_RegisterType>(insn.ops[0].index));
     auto b = LoadSrcLo(insn, insn.ops[1]);
     auto f = __ VecFCmp(a, b, ir::Imm(lane_bits)).SetType(ir::ValueType::U64);
+    if (FlagsFcmpFuseEnabled()) {
+        PublishFCmpFlags(f);
+        return;
+    }
     // OF / SF / AF cleared; ZF / PF / CF from the compare result.
     __ ClearFlags(ir::Flags::Overflow | ir::Flags::Negate | ir::Flags::AuxiliaryCarry);
     auto one = __ LoadImm(ir::Imm(u64(1)));

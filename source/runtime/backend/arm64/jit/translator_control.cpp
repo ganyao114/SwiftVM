@@ -51,11 +51,20 @@ void JitTranslator::EmitPopRSB(ir::Inst* inst) {
 
 void JitTranslator::EmitNotGoto(ir::Inst* inst) {
     auto cond = inst->GetArg<ir::Value>(0);
+    if (auto local = LocalConditionFor(cond)) {
+        __ B(GetLocalLabel(inst),
+             static_cast<Condition>(static_cast<u8>(*local) ^ 1));
+        return;
+    }
     __ Cbz(context.W(cond), GetLocalLabel(inst));
 }
 
 void JitTranslator::EmitGoto(ir::Inst* inst) {
     auto cond = inst->GetArg<ir::Value>(0);
+    if (auto local = LocalConditionFor(cond)) {
+        __ B(GetLocalLabel(inst), *local);
+        return;
+    }
     __ Cbnz(context.W(cond), GetLocalLabel(inst));
 }
 

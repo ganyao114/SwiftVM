@@ -164,6 +164,9 @@ static Arm64Features DetectArm64Features() {
     if (scalar_insert && sysctl_feature("hw.optional.arm.FEAT_AFP")) {
         features |= Arm64Features::AFP;
     }
+    if (sysctl_feature("hw.optional.arm.FEAT_FlagM")) {
+        features |= Arm64Features::FlagM;
+    }
 #endif
 
     // Diagnostic/bring-up override. The default remains the OS feature probe;

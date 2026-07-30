@@ -173,6 +173,12 @@ private:
 
     static Condition MapCond(ir::Cond cond);
 
+    // Records a LocalCondSet/FCmpCondSet whose sole use is a branch or select.
+    // The marker itself then emits no CSET; its consumer reads the producer's
+    // still-live host NZCV directly.
+    bool RecordLocalCondition(ir::Inst *inst, ir::Cond cond);
+    [[nodiscard]] std::optional<Condition> LocalConditionFor(ir::Value value) const;
+
     // Merge pending guest flags kept in host NZCV into the flags register
     void MergeNZCV();
 
@@ -286,6 +292,7 @@ private:
     ir::Inst *cur_instr{};
     BitVector disable_instructions{};
     std::map<ir::Inst *, Label> local_labels{};
+    std::map<ir::Inst *, Condition> local_conditions{};
     ir::Flags flags_set{};
     ir::Flags flags_clear{};
     bool save_in_nzcv{true};

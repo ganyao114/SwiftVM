@@ -678,6 +678,8 @@ private:
             case OpCode::ClearFlags:
             case OpCode::SetCarry:
             case OpCode::SetOverflow:
+            case OpCode::InvertCarry:
+            case OpCode::PublishFCmpFlags:
                 return true;
             default:
                 return false;

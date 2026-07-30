@@ -32,6 +32,14 @@ ScratchNeed ScratchBudget(ir::OpCode op) {
         // --- eight GPRs --------------------------------------------------
         case ir::OpCode::X87Op:
             return {8, kDefaultScratchFPR};
+        // --- four GPRs ---------------------------------------------------
+        // The 8/16-bit flag-setting path sign-aligns both operands to W[31]:
+        // one save per RA-tied operand (left/right), one to materialize an
+        // immediate or shifted-register right for the aligned form, and one
+        // more inside SaveAuxiliaryCarry while those three are still leased.
+        case ir::OpCode::Add:
+        case ir::OpCode::Sub:
+            return {4, kDefaultScratchFPR};
         // --- five GPRs ---------------------------------------------------
         case ir::OpCode::VecFCvtFloatToInt:
             return {5, kDefaultScratchFPR};

@@ -17,6 +17,17 @@ void X64Decoder::DecodeCondJump(_DInst& insn, Cond cond) {
         __ SetLocation(address);
         __ ReturnToDispatcher();
     } else {
+        if (!address.IsValue()) {
+            if (auto local = TryLocalCondition(cond)) {
+                ir::BOOL check_result =
+                        local->fcmp.Def()
+                                ? __ FCmpCondSet(local->fcmp, local->arm)
+                                          .SetType(ir::ValueType::U8)
+                                : __ LocalCondSet(local->arm).SetType(ir::ValueType::U8);
+                CondGoto(check_result, address, pc);
+                return;
+            }
+        }
         auto check_result = CheckCond(cond);
         CondGoto(check_result, address, pc);
     }
@@ -32,6 +43,11 @@ void X64Decoder::DecodeZeroCheckJump(_DInst& insn, _RegisterType reg) {
 
 void X64Decoder::DecodeSetCC(_DInst& insn, Cond cond) {
     auto check_result = CheckCond(cond);
+    if (FlagsFcmpFuseEnabled() && check_result.Def() &&
+        check_result.Def()->GetOp() == ir::OpCode::FCmpCondSet) {
+        Dst(insn, insn.ops[0], check_result);
+        return;
+    }
     auto one = __ LoadImm(ir::Imm(u8(1)));
     auto zero = __ LoadImm(ir::Imm(u8(0)));
     auto result = __ Select(check_result, one, zero);

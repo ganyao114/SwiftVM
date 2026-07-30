@@ -168,7 +168,7 @@ static ir::Value MulWithFlags(ir::Assembler* assembler, ir::Value a, ir::Value b
 }
 
 ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op, u32 width,
-                                     ir::Flags flag_mask) {
+                                     ir::Flags flag_mask, bool terminal_compare) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::Flags};
     const bool sub = op == ArithOp::Sub || op == ArithOp::Sbb;
@@ -183,6 +183,18 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
                         : op == ArithOp::Sbb ? carry_ == CarryPolarity::Inverted
                                              : true;
     bool native = width == 64 || width == 32;
+    if (native && use_carry && !carry_native && FlagsCfinvEnabled() &&
+        carry_ != CarryPolarity::Unknown) {
+        // The preceding in-unit producer left a known host-C polarity.  CFINV
+        // changes representation, not architectural x86 CF; the ADC/SBB below
+        // immediately overwrites C and publishes its own polarity, so no
+        // intermediate carry_inverted store is needed.
+        __ InvertCarry();
+        carry_ = carry_ == CarryPolarity::Direct ? CarryPolarity::Inverted
+                                                 : CarryPolarity::Direct;
+        carry_native = op == ArithOp::Adc ? carry_ == CarryPolarity::Direct
+                                         : carry_ == CarryPolarity::Inverted;
+    }
     if (native) {
         if (use_carry && !carry_native) {
             // Normalize the stored host carry to the polarity the native
@@ -221,6 +233,33 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
         if (True(flag_mask & ir::Flags::Carry)) {
             carry_ = sub ? CarryPolarity::Inverted : CarryPolarity::Direct;
             StorePolarity(sub);
+        }
+        if (terminal_compare) {
+            MarkLocalNZCV(flag_mask);
+        }
+        return result;
+    }
+    if (!use_carry && FlagsNarrowAlignEnabled()) {
+        // AArch64 has no byte/halfword ADDS/SUBS.  Keep the operation in one
+        // typed producer and let the backend align both operands to bit 31:
+        // the flag-setting result is then shifted back down in place.  This
+        // gives exact narrow N/Z/C/V, while PF reuses that same result and AF
+        // sees the original operands.  The interpreter already computes
+        // SaveFlags from the producer's architectural return width.
+        const auto type = GetSize(width);
+        ir::Value result;
+        if (sub) {
+            result = __ Sub(left.SetType(type), ir::Operand{right.SetType(type)}).SetType(type);
+        } else {
+            result = __ Add(left.SetType(type), ir::Operand{right.SetType(type)}).SetType(type);
+        }
+        __ SaveFlags(result, flag_mask);
+        if (True(flag_mask & ir::Flags::Carry)) {
+            carry_ = sub ? CarryPolarity::Inverted : CarryPolarity::Direct;
+            StorePolarity(sub);
+        }
+        if (terminal_compare) {
+            MarkLocalNZCV(flag_mask);
         }
         return result;
     }
@@ -295,6 +334,9 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
             carry_ = sub ? CarryPolarity::Inverted : CarryPolarity::Direct;
             StorePolarity(sub);
         }
+        if (terminal_compare) {
+            MarkLocalNZCV(flag_mask);
+        }
         // The store width follows the value's type (EmitStoreUniform), so the
         // result must carry the guest width type (32 -> 16/8 is W-safe).
         return value.SetCastType(GetSize(width));
@@ -323,7 +365,8 @@ void X64Decoder::DecodeAddSub(_DInst& insn, bool sub, bool save_res, bool exchan
 
     // ADD / SUB / CMP update CF, OF, ZF, SF, PF and AF.
     auto result = ArithWithFlags(left, right, sub ? ArithOp::Sub : ArithOp::Add, op0.size,
-                                 ir::Flags::All);
+                                 ir::Flags::All,
+                                 !save_res && !exchange && !locked_rmw);
 
     if (exchange) {
         Dst(insn, op1, left);
@@ -624,7 +667,7 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
     // TODO: divide errors (#DE) are not raised; flags are undefined per spec.
 }
 
-void X64Decoder::SaveLogicFlags(ir::Value result, u32 width) {
+void X64Decoder::SaveLogicFlags(ir::Value result, u32 width, bool terminal_test) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::Flags};
     // AND / OR / XOR / TEST: CF = OF = 0, AF undefined (cleared here),
@@ -642,6 +685,9 @@ void X64Decoder::SaveLogicFlags(ir::Value result, u32 width) {
     }
     carry_ = CarryPolarity::Direct;  // CF == 0, same under either polarity
     StorePolarity(false);
+    if (terminal_test) {
+        MarkLocalNZCV(ir::Flags::Negate | ir::Flags::Zero);
+    }
 }
 
 void X64Decoder::DecodeAnd(_DInst& insn, bool save_result) {
@@ -665,7 +711,7 @@ void X64Decoder::DecodeAnd(_DInst& insn, bool save_result) {
 
     auto result = __ And(left, ir::Operand{right});
 
-    SaveLogicFlags(result, op0.size);
+    SaveLogicFlags(result, op0.size, !save_result && !locked_rmw);
 
     if (save_result && !locked_rmw) {
         Dst(insn, op0, result);
