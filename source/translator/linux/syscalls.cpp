@@ -184,10 +184,7 @@ struct GuestTms {
 
 // Linux x86-64 rt_sigframe payload. The public portion follows the kernel ABI
 // closely enough for SA_SIGINFO handlers to inspect and edit the interrupted
-// GPR state. SwiftVM keeps one private record after the architectural frame so
-// rt_sigreturn can also restore translator-private state (lazy flags, YMM high
-// halves, x87 tags, segment bases) that Linux's ucontext does not describe in
-// SwiftVM's internal representation.
+// GPR and floating-point state.
 static constexpr u64 GUEST_SIG_DFL = 0;
 static constexpr u64 GUEST_SIG_IGN = 1;
 static constexpr u64 GUEST_SIGALRM = 14;
@@ -305,7 +302,6 @@ struct GuestSignalFrameLayout {
     u64 ucontext_addr;
     u64 siginfo_addr;
     u64 fpstate_addr;
-    u64 private_addr;
     u64 end;
 };
 
@@ -313,12 +309,15 @@ static u64 AlignDown(u64 value, u64 alignment) {
     return value & ~(alignment - 1);
 }
 
-static GuestSignalFrameLayout MakeSignalFrameLayout(u64 guest_rsp) {
+static GuestSignalFrameLayout MakeSignalFrameLayout(u64 guest_rsp,
+                                                    bool use_private_frame) {
     const u64 end = AlignDown(guest_rsp - GUEST_SIGNAL_REDZONE, 16);
-    const u64 private_addr =
-            AlignDown(end - static_cast<u64>(sizeof(GuestSignalPrivate)), 16);
+    const u64 frame_top =
+            use_private_frame
+                    ? AlignDown(end - static_cast<u64>(sizeof(GuestSignalPrivate)), 16)
+                    : end;
     const u64 fpstate_addr =
-            AlignDown(private_addr - static_cast<u64>(sizeof(GuestX64XState)), 64);
+            AlignDown(frame_top - static_cast<u64>(sizeof(GuestX64XState)), 64);
     const u64 siginfo_addr =
             AlignDown(fpstate_addr - static_cast<u64>(sizeof(GuestSigInfo)), 16);
     const u64 ucontext_addr =
@@ -328,7 +327,6 @@ static GuestSignalFrameLayout MakeSignalFrameLayout(u64 guest_rsp) {
             .ucontext_addr = ucontext_addr,
             .siginfo_addr = siginfo_addr,
             .fpstate_addr = fpstate_addr,
-            .private_addr = private_addr,
             .end = end,
     };
 }
@@ -340,6 +338,13 @@ static bool GuestSignalDeliveryEnabled() {
 
 static bool GuestSignalTraceEnabled() {
     const char* enabled = std::getenv("SVM_SIGNAL_TRACE");
+    return enabled && std::strcmp(enabled, "0") != 0;
+}
+
+static bool GuestSignalPrivateFrameEnabled() {
+    // Legacy bisection path only. Its guest-stack magic scan has a known race
+    // with stale, already-consumed signal frames.
+    const char* enabled = std::getenv("SVM_SIGNAL_PRIVATE_FRAME");
     return enabled && std::strcmp(enabled, "0") != 0;
 }
 
@@ -616,15 +621,14 @@ static void ApplyGuestRflags(x86::ThreadContext64& ctx, u64 rflags) {
             (1u << x86::CPUFlagsBit::Signed) |
             (1u << x86::CPUFlagsBit::Overflow);
     compact &= ~arithmetic_mask;
-    compact |= static_cast<u32>(((rflags >> 0) & 1) ^
-                                (ctx.carry_inverted & 1))
-               << x86::CPUFlagsBit::Carry;
+    compact |= static_cast<u32>((rflags >> 0) & 1) << x86::CPUFlagsBit::Carry;
     compact |= static_cast<u32>((rflags >> 2) & 1) << x86::CPUFlagsBit::Parity;
     compact |= static_cast<u32>((rflags >> 4) & 1) << x86::CPUFlagsBit::FlagAF;
     compact |= static_cast<u32>((rflags >> 6) & 1) << x86::CPUFlagsBit::Zero;
     compact |= static_cast<u32>((rflags >> 7) & 1) << x86::CPUFlagsBit::Signed;
     compact |= static_cast<u32>((rflags >> 11) & 1) << x86::CPUFlagsBit::Overflow;
     ctx.ef.flags = compact;
+    ctx.carry_inverted = 0;
     ctx.direction = static_cast<u8>((rflags >> 10) & 1);
 }
 
@@ -688,6 +692,25 @@ static GuestX64XState BuildSignalXState(const x86::ThreadContext64& ctx) {
     return state;
 }
 
+static void ApplySignalXState(x86::ThreadContext64& ctx,
+                              const GuestX64XState& state) {
+    ctx.x87_fcw = state.fpstate.fcw;
+    ctx.x87_fsw = state.fpstate.fsw;
+    ctx.x87_ftw = state.fpstate.ftw;
+    ctx.x87_fop = state.fpstate.fop;
+    ctx.x87_fip = state.fpstate.fip;
+    ctx.x87_fdp = state.fpstate.fdp;
+    ctx.mxcsr = state.fpstate.mxcsr;
+    for (size_t i = 0; i < ctx.x87_regs.size(); ++i) {
+        ctx.x87_regs[i] = {};
+        std::memcpy(&ctx.x87_regs[i], state.fpstate.st[i].data(), 10);
+    }
+    for (size_t i = 0; i < ctx.xmms.size(); ++i) {
+        std::memcpy(&ctx.xmms[i], state.fpstate.xmm[i].data(), 16);
+        std::memcpy(&ctx.ymm_high[i], state.ymm_high[i].data(), 16);
+    }
+}
+
 static void ApplySignalUContext(x86::ThreadContext64& ctx,
                                 const GuestX64UContext& uc) {
     const auto& g = uc.mcontext.gregs;
@@ -741,7 +764,9 @@ SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
     }
 
     auto& ctx = *static_cast<x86::ThreadContext64*>(x86_ctx);
-    const GuestSignalFrameLayout layout = MakeSignalFrameLayout(ctx.rsp.qword);
+    const bool use_private_frame = GuestSignalPrivateFrameEnabled();
+    const GuestSignalFrameLayout layout =
+            MakeSignalFrameLayout(ctx.rsp.qword, use_private_frame);
     if (layout.return_addr >= layout.end ||
         !memory->RangeIsMapped(layout.return_addr, layout.end - layout.return_addr)) {
         delivery.terminated = true;
@@ -762,7 +787,9 @@ SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
             .signal = signal,
             .saved_context = ctx,
     };
-    if (!memory->TryWrite(layout.private_addr, private_frame) ||
+    const u64 private_addr =
+            AlignDown(layout.end - static_cast<u64>(sizeof(GuestSignalPrivate)), 16);
+    if ((use_private_frame && !memory->TryWrite(private_addr, private_frame)) ||
         !memory->TryWrite(layout.fpstate_addr, xstate) ||
         !memory->TryWrite(layout.siginfo_addr, info) ||
         !memory->TryWrite(layout.ucontext_addr, uc) ||
@@ -795,7 +822,7 @@ SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
     ctx.mxcsr = 0x1f80;
     std::memset(ctx.xmms.data(), 0, sizeof(ctx.xmms));
     std::memset(ctx.ymm_high.data(), 0, sizeof(ctx.ymm_high));
-    if (GuestSignalTraceEnabled()) {
+    if (GuestSignalTraceEnabled() && use_private_frame) {
         std::fprintf(stderr,
                      "[svm-signal] deliver sig=%llu saved_rip=%#llx saved_rsp=%#llx "
                      "handler=%#llx frame=%#llx private=%#llx restorer=%#llx\n",
@@ -804,7 +831,17 @@ SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
                      private_frame.saved_context.rsp.qword,
                      action.handler,
                      layout.return_addr,
-                     layout.private_addr,
+                     private_addr,
+                     action.restorer);
+    } else if (GuestSignalTraceEnabled()) {
+        std::fprintf(stderr,
+                     "[svm-signal] deliver sig=%llu saved_rip=%#llx saved_rsp=%#llx "
+                     "handler=%#llx frame=%#llx restorer=%#llx\n",
+                     signal,
+                     uc.mcontext.gregs[GREG_RIP],
+                     uc.mcontext.gregs[GREG_RSP],
+                     action.handler,
+                     layout.return_addr,
                      action.restorer);
     }
     delivery.delivered = true;
@@ -819,32 +856,50 @@ s64 SyscallHandler::SysRtSigreturn() {
         return -EFAULT_;
     }
 
-    GuestSignalPrivate private_frame{};
-    bool found = false;
-    const u64 scan_begin =
-            (uc.mcontext.fpregs + sizeof(GuestX64XState) + 7) & ~u64{7};
-    for (u64 offset = 0; offset <= 64; offset += 8) {
-        if (memory->TryRead(scan_begin + offset, private_frame) &&
-            private_frame.magic == GUEST_SIGNAL_PRIVATE_MAGIC &&
-            private_frame.ucontext_addr == ctx.rsp.qword) {
-            found = true;
-            break;
+    if (GuestSignalPrivateFrameEnabled()) {
+        GuestSignalPrivate private_frame{};
+        bool found = false;
+        const u64 scan_begin =
+                (uc.mcontext.fpregs + sizeof(GuestX64XState) + 7) & ~u64{7};
+        for (u64 offset = 0; offset <= 64; offset += 8) {
+            if (memory->TryRead(scan_begin + offset, private_frame) &&
+                private_frame.magic == GUEST_SIGNAL_PRIVATE_MAGIC &&
+                private_frame.ucontext_addr == ctx.rsp.qword) {
+                found = true;
+                break;
+            }
         }
-    }
-    if (!found) return -EFAULT_;
+        if (!found) return -EFAULT_;
 
-    auto restored = private_frame.saved_context;
-    if (GuestSignalTraceEnabled()) {
-        std::fprintf(stderr,
-                     "[svm-signal] return sig=%llu saved_rip=%#llx saved_rsp=%#llx "
-                     "uc_rip=%#llx uc_rsp=%#llx\n",
-                     private_frame.signal,
-                     restored.rip.qword,
-                     restored.rsp.qword,
-                     uc.mcontext.gregs[GREG_RIP],
-                     uc.mcontext.gregs[GREG_RSP]);
+        auto restored = private_frame.saved_context;
+        if (GuestSignalTraceEnabled()) {
+            std::fprintf(stderr,
+                         "[svm-signal] return sig=%llu saved_rip=%#llx saved_rsp=%#llx "
+                         "uc_rip=%#llx uc_rsp=%#llx\n",
+                         private_frame.signal,
+                         restored.rip.qword,
+                         restored.rsp.qword,
+                         uc.mcontext.gregs[GREG_RIP],
+                         uc.mcontext.gregs[GREG_RSP]);
+        }
+        ApplySignalUContext(restored, uc);
+        constexpr u64 unmaskable =
+                (u64{1} << (9 - 1)) | (u64{1} << (19 - 1));
+        signal_mask = uc.sigmask[0] & ~unmaskable;
+        ctx = restored;
+        return 0;
     }
+
+    GuestX64XState xstate{};
+    if (!memory->TryRead(uc.mcontext.fpregs, xstate) ||
+        xstate.fpstate.sw_reserved.magic1 != 0x46505853 ||
+        xstate.magic2 != 0x46505845) {
+        return -EFAULT_;
+    }
+
+    auto restored = ctx;
     ApplySignalUContext(restored, uc);
+    ApplySignalXState(restored, xstate);
     constexpr u64 unmaskable =
             (u64{1} << (9 - 1)) | (u64{1} << (19 - 1));
     signal_mask = uc.sigmask[0] & ~unmaskable;
