@@ -85,10 +85,12 @@ public:
                                  backend::RegAlloc* alloc,
                                  u32 gpr_res,
                                  u32 fpr_res,
-                                 bool single_block_fast_path = false)
+                                 bool single_block_fast_path = false,
+                                 bool scalar_insert = false)
             : function(function), block(), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
-              single_block_fast_path(single_block_fast_path) {
+              single_block_fast_path(single_block_fast_path),
+              scalar_insert(scalar_insert) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(function->MaxInstrCount());
@@ -101,9 +103,11 @@ public:
                                  backend::RegAlloc* alloc,
                                  u32 gpr_res,
                                  u32 fpr_res,
-                                 bool = false)
+                                 bool = false,
+                                 bool scalar_insert = false)
             : function(), block(block), reg_alloc(alloc), live_interval(), active_lives(),
-              gpr_reserve(gpr_res), fpr_reserve(fpr_res) {
+              gpr_reserve(gpr_res), fpr_reserve(fpr_res),
+              scalar_insert(scalar_insert) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(block->GetInstList().size());
@@ -233,7 +237,13 @@ public:
                     SpillAtInterval(interval);
                 }
             } else {
-                if (auto alloc = AllocFPR(); alloc >= 0) {
+                if (TryTieScalarInsert(interval)) {
+                    // The destination inherits the source's live physical
+                    // register. The source interval was removed from the
+                    // active set without freeing it, and the result interval
+                    // is added below. This is the post-RA move kill: no copy is
+                    // introduced for the emitter to remove later.
+                } else if (auto alloc = AllocFPR(); alloc >= 0) {
                     reg_alloc->MapRegister(interval.inst->Id(), HostFPR{(u16)alloc});
                 } else {
                     SpillAtInterval(interval);
@@ -278,6 +288,75 @@ public:
     }
 
 private:
+    Value ScalarInsertTieSource(Inst* inst) const {
+        if (!scalar_insert) {
+            return {};
+        }
+        switch (inst->GetOp()) {
+            case OpCode::VecFAddScalar32:
+            case OpCode::VecFSubScalar32:
+            case OpCode::VecFMulScalar32:
+            case OpCode::VecFDivScalar32:
+            case OpCode::VecFAddScalar64:
+            case OpCode::VecFSubScalar64:
+            case OpCode::VecFMulScalar64:
+            case OpCode::VecFDivScalar64:
+                return inst->GetArg<Value>(0);
+            case OpCode::VecFMinMax:
+                if (inst->GetArg<Imm>(4).Get() != 0) {
+                    return inst->GetArg<Value>(0);
+                }
+                break;
+            case OpCode::VecFUnary:
+                if (inst->GetArg<Imm>(4).Get() != 0) {
+                    return inst->GetArg<Value>(1);
+                }
+                break;
+            default:
+                break;
+        }
+        return {};
+    }
+
+    bool TryTieScalarInsert(LiveInterval& current) {
+        auto source = ScalarInsertTieSource(current.inst);
+        if (!source.Defined()) {
+            return false;
+        }
+        source = ResolveBitCastSource(source);
+        if (!source.Defined() || source.Id() == current.inst->Id() ||
+            reg_alloc->ValueType(source) != backend::RegAlloc::FPR) {
+            return false;
+        }
+
+        auto matches = [&](const LiveInterval& live) {
+            return live.inst->Id() == source.Id() && live.end == current.start;
+        };
+        bool removed = false;
+        if (single_block_fast_path) {
+            auto it = std::find_if(fast_active_lives.begin(), fast_active_lives.end(), matches);
+            if (it != fast_active_lives.end()) {
+                fast_active_lives.erase(it);
+                std::make_heap(fast_active_lives.begin(), fast_active_lives.end(),
+                               [](const LiveInterval& left, const LiveInterval& right) {
+                                   return left.end > right.end;
+                               });
+                removed = true;
+            }
+        } else {
+            auto it = std::find_if(active_lives.begin(), active_lives.end(), matches);
+            if (it != active_lives.end()) {
+                active_lives.erase(it);
+                removed = true;
+            }
+        }
+        if (!removed) {
+            return false;
+        }
+        reg_alloc->MapRegister(current.inst->Id(), reg_alloc->ValueFPR(source));
+        return true;
+    }
+
     // True when a value ends up in State::spill_area, so every access to it
     // costs a scratch register.
     bool IsSpilled(const Value& value) {
@@ -935,6 +1014,7 @@ private:
     const u32 gpr_reserve{0};
     const u32 fpr_reserve{0};
     const bool single_block_fast_path{false};
+    const bool scalar_insert{false};
     Vector<bool> spill_slots{};
     // Spill telemetry (reported at the end of AllocateRegisters): spilling
     // has never triggered on current workloads, so any hit is worth a log
@@ -1081,7 +1161,8 @@ static void CollectUnitBudget(HIRFunction* function, u32& gpr, u32& fpr, u32& re
 template <typename Unit>
 static void RunVerified(Unit* unit,
                         backend::RegAlloc* reg_alloc,
-                        bool single_block_fast_path = false) {
+                        bool single_block_fast_path = false,
+                        bool scalar_insert = false) {
     // Attempt one: the ordinary emitter shape. Every unit in the corpus stops
     // here, so nothing above this point may walk the instruction list -- the
     // whole-unit budget scan below is deliberately deferred until an escalation
@@ -1089,7 +1170,8 @@ static void RunVerified(Unit* unit,
     // notices a redundant pass).
     {
         LinearScanAllocator scan{unit, reg_alloc, backend::kDefaultScratchGPR,
-                                 backend::kDefaultScratchFPR, single_block_fast_path};
+                                 backend::kDefaultScratchFPR, single_block_fast_path,
+                                 scalar_insert};
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -1120,7 +1202,8 @@ static void RunVerified(Unit* unit,
     };
     for (auto& rung : ladder) {
         reg_alloc->ResetAllocations();
-        LinearScanAllocator scan{unit, reg_alloc, rung.gpr, rung.fpr, single_block_fast_path};
+        LinearScanAllocator scan{unit, reg_alloc, rung.gpr, rung.fpr, single_block_fast_path,
+                                 scalar_insert};
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -1140,12 +1223,21 @@ static void RunVerified(Unit* unit,
                 pool_gpr, pool_fpr, base_gpr, base_fpr, reload_bound);
 }
 
-void RegisterAllocPass::Run(HIRFunction* hir_function, backend::RegAlloc* reg_alloc) {
+void RegisterAllocPass::Run(HIRFunction* hir_function,
+                            backend::RegAlloc* reg_alloc) {
+    RunWithScalarInsert(hir_function, reg_alloc, false);
+}
+
+void RegisterAllocPass::RunWithScalarInsert(HIRFunction* hir_function,
+                                            backend::RegAlloc* reg_alloc,
+                                            bool scalar_insert) {
     static const bool single_block_fast_path = [] {
         const char* env = PerfGetenv("SVM_RA_1BLK");
         return !env || std::strcmp(env, "0") != 0;
     }();
-    Run(hir_function, reg_alloc, single_block_fast_path);
+    const bool use_fast_path =
+            single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
+    RunVerified(hir_function, reg_alloc, use_fast_path, scalar_insert);
 }
 
 void RegisterAllocPass::Run(HIRFunction* hir_function,
@@ -1153,11 +1245,13 @@ void RegisterAllocPass::Run(HIRFunction* hir_function,
                             bool single_block_fast_path) {
     const bool use_fast_path =
             single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
-    RunVerified(hir_function, reg_alloc, use_fast_path);
+    RunVerified(hir_function, reg_alloc, use_fast_path, false);
 }
 
-void RegisterAllocPass::Run(ir::Block* block, backend::RegAlloc* reg_alloc) {
-    RunVerified(block, reg_alloc);
+void RegisterAllocPass::Run(ir::Block* block,
+                            backend::RegAlloc* reg_alloc,
+                            bool scalar_insert) {
+    RunVerified(block, reg_alloc, false, scalar_insert);
 }
 
 void VRegisterAllocPass::Run(ir::Block* block) {

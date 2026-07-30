@@ -140,6 +140,13 @@ static runtime::TsoMode TsoModeFromEnvironment() {
 
 static Arm64Features DetectArm64Features() {
     Arm64Features features = Arm64Features::None;
+    // Aggressive per-module switch, default ON (independent interleaved A/B:
+    // smallpt 1.383x median with image oracle intact, c-ray ~1.01x with zero
+    // ON-only anomalies across 10 extra runs). Requires host FEAT_AFP;
+    // SVM_SSE_SCALAR_INSERT=0 forces the exact pre-feature path.
+    const char* scalar_insert_env = std::getenv("SVM_SSE_SCALAR_INSERT");
+    const bool scalar_insert =
+            !scalar_insert_env || std::strcmp(scalar_insert_env, "0") != 0;
 
 #if defined(__APPLE__) && defined(__aarch64__)
     auto sysctl_feature = [](const char* name) {
@@ -153,6 +160,9 @@ static Arm64Features DetectArm64Features() {
     }
     if (sysctl_feature("hw.optional.arm.FEAT_LRCPC2")) {
         features |= Arm64Features::RCpcImm;
+    }
+    if (scalar_insert && sysctl_feature("hw.optional.arm.FEAT_AFP")) {
+        features |= Arm64Features::AFP;
     }
 #endif
 

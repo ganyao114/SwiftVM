@@ -702,7 +702,9 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     PerfScope perf_ra{GetPerfStats().regalloc_ns};
     PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
     backend::RegAlloc reg_alloc{static_cast<u32>(function->MaxInstrCount()), gprs, fprs};
-    ir::RegisterAllocPass::Run(function, &reg_alloc);
+    ir::RegisterAllocPass::RunWithScalarInsert(
+            function, &reg_alloc,
+            True(module->GetAddressSpace().GetConfig().arm64_features & Arm64Features::AFP));
     perf_ra_detail.Stop();
     perf_ra.Stop();
     fixed_snapshot.Record(static_cast<unsigned>(decoded_blocks));
@@ -895,7 +897,9 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     backend::RegAlloc reg_alloc{static_cast<u32>(block->MaxInstrId()), gprs, fprs};
 
     PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
-    ir::RegisterAllocPass::Run(block.get(), &reg_alloc);
+    ir::RegisterAllocPass::Run(
+            block.get(), &reg_alloc,
+            True(module->GetAddressSpace().GetConfig().arm64_features & Arm64Features::AFP));
     perf_ra_detail.Stop();
 
     PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};

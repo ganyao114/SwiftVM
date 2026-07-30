@@ -17,6 +17,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
     guest_addr_mask = config.guest_addr_mask;
     window_uxtw = guest_addr_mask == 0xFFFFFFFFull;
+    sse_scalar_insert = True(config.arm64_features & Arm64Features::AFP);
     if (const char* nan_fast = PerfGetenv("SVM_SSE_NAN_FAST")) {
         sse_nan_fast = std::strcmp(nan_fast, "0") != 0;
     }

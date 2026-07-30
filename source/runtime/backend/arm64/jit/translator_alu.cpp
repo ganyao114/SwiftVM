@@ -1135,6 +1135,10 @@ void JitTranslator::EmitVecFAddScalar32(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
+    if (sse_scalar_insert) {
+        EmitVecFScalarBinaryTied(inst, 32);
+        return;
+    }
     auto scalar = context.GetTmpV();
     auto rhs = context.GetTmpV();
     __ Fmov(rhs.S(), right);
@@ -1148,6 +1152,10 @@ void JitTranslator::EmitVecFSubScalar32(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
+    if (sse_scalar_insert) {
+        EmitVecFScalarBinaryTied(inst, 32);
+        return;
+    }
     auto scalar = context.GetTmpV();
     auto rhs = context.GetTmpV();
     __ Fmov(rhs.S(), right);
@@ -1161,6 +1169,10 @@ void JitTranslator::EmitVecFMulScalar32(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
+    if (sse_scalar_insert) {
+        EmitVecFScalarBinaryTied(inst, 32);
+        return;
+    }
     auto scalar = context.GetTmpV();
     auto rhs = context.GetTmpV();
     __ Fmov(rhs.S(), right);
@@ -1174,6 +1186,10 @@ void JitTranslator::EmitVecFDivScalar32(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
+    if (sse_scalar_insert) {
+        EmitVecFScalarBinaryTied(inst, 32);
+        return;
+    }
     auto scalar = context.GetTmpV();
     auto rhs = context.GetTmpV();
     __ Fmov(rhs.S(), right);
@@ -1187,6 +1203,10 @@ void JitTranslator::EmitVecFAddScalar64(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
+    if (sse_scalar_insert) {
+        EmitVecFScalarBinaryTied(inst, 64);
+        return;
+    }
     auto rhs = context.GetTmpV();
     __ Fmov(rhs.D(), right);
     __ Fadd(result.D(), left.D(), rhs.D());
@@ -1198,6 +1218,10 @@ void JitTranslator::EmitVecFSubScalar64(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
+    if (sse_scalar_insert) {
+        EmitVecFScalarBinaryTied(inst, 64);
+        return;
+    }
     auto rhs = context.GetTmpV();
     __ Fmov(rhs.D(), right);
     __ Fsub(result.D(), left.D(), rhs.D());
@@ -1209,6 +1233,10 @@ void JitTranslator::EmitVecFMulScalar64(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
+    if (sse_scalar_insert) {
+        EmitVecFScalarBinaryTied(inst, 64);
+        return;
+    }
     auto rhs = context.GetTmpV();
     __ Fmov(rhs.D(), right);
     __ Fmul(result.D(), left.D(), rhs.D());
@@ -1220,11 +1248,118 @@ void JitTranslator::EmitVecFDivScalar64(ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
+    if (sse_scalar_insert) {
+        EmitVecFScalarBinaryTied(inst, 64);
+        return;
+    }
     auto rhs = context.GetTmpV();
     __ Fmov(rhs.D(), right);
     __ Fdiv(result.D(), left.D(), rhs.D());
     EmitVecFloatNaNFixup(result, left, rhs, 64, 1);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
+}
+
+void JitTranslator::EmitVecFScalarBinaryTied(ir::Inst* inst, u32 lane_bits) {
+    auto left = context.V(inst->GetArg<ir::Value>(0));
+    auto result = context.V(ir::Value{inst});
+    auto right = context.GetTmpV();
+    if (result.GetCode() != left.GetCode()) {
+        // A still-live dst-in cannot be tied by RA. Seed the new destination
+        // once, then let NEP update lane 0 in place; this is still one copy
+        // instead of the legacy post-op full-copy plus lane insert.
+        __ Orr(result.V16B(), left.V16B(), left.V16B());
+    }
+    if (lane_bits == 32) {
+        __ Fmov(right.S(), context.W(inst->GetArg<ir::Value>(1)));
+    } else {
+        __ Fmov(right.D(), context.X(inst->GetArg<ir::Value>(1)));
+    }
+
+    auto emit_operation = [&] {
+        switch (inst->GetOp()) {
+            case ir::OpCode::VecFAddScalar32:
+                __ Fadd(result.S(), left.S(), right.S());
+                break;
+            case ir::OpCode::VecFSubScalar32:
+                __ Fsub(result.S(), left.S(), right.S());
+                break;
+            case ir::OpCode::VecFMulScalar32:
+                __ Fmul(result.S(), left.S(), right.S());
+                break;
+            case ir::OpCode::VecFDivScalar32:
+                __ Fdiv(result.S(), left.S(), right.S());
+                break;
+            case ir::OpCode::VecFAddScalar64:
+                __ Fadd(result.D(), left.D(), right.D());
+                break;
+            case ir::OpCode::VecFSubScalar64:
+                __ Fsub(result.D(), left.D(), right.D());
+                break;
+            case ir::OpCode::VecFMulScalar64:
+                __ Fmul(result.D(), left.D(), right.D());
+                break;
+            case ir::OpCode::VecFDivScalar64:
+                __ Fdiv(result.D(), left.D(), right.D());
+                break;
+            default:
+                PANIC();
+        }
+    };
+    if (sse_nan_fast) {
+        emit_operation();
+        return;
+    }
+
+    // Build the exact x86 NaN result before a tied operation overwrites
+    // `left`. All bitwise work targets temporaries; only the rare NaN result
+    // takes the lane insert below, so ordinary arithmetic has no merge path.
+    auto ordered = context.GetTmpV();
+    auto propagated = context.GetTmpV();
+    auto tmp = context.GetTmpV();
+    auto ordered_scalar = [&](const VRegister& d, const VRegister& s) {
+        if (lane_bits == 32) {
+            __ Fcmeq(d.S(), s.S(), s.S());
+        } else {
+            __ Fcmeq(d.D(), s.D(), s.D());
+        }
+    };
+    auto bytes = [](const VRegister& v) { return v.V8B(); };
+    auto splat = [&](const VRegister& d, bool indefinite) {
+        if (indefinite) {
+            __ Mvni(d.V4S(), lane_bits == 32 ? 0x3F : 0x07, MSL, 16);
+        } else {
+            __ Movi(d.V4S(), lane_bits == 32 ? 0x00400000u : 0x00080000u);
+        }
+        if (lane_bits == 64) {
+            __ Shl(d.V2D(), d.V2D(), 32);
+        }
+    };
+
+    ordered_scalar(ordered, left);
+    __ Orr(bytes(propagated), bytes(right), bytes(right));
+    __ Bif(bytes(propagated), bytes(left), bytes(ordered));
+    ordered_scalar(ordered, propagated);
+    if (lane_bits == 32) {
+        __ Orr(propagated.V4S(), 0x40, 16);
+    } else {
+        splat(tmp, false);
+        __ Orr(bytes(propagated), bytes(propagated), bytes(tmp));
+    }
+    splat(tmp, true);
+    __ Bit(bytes(propagated), bytes(tmp), bytes(ordered));
+
+    emit_operation();
+    Label done;
+    if (lane_bits == 32) {
+        __ Fcmp(result.S(), result.S());
+        __ B(&done, vc);
+        __ Ins(result.V4S(), 0, propagated.V4S(), 0);
+    } else {
+        __ Fcmp(result.D(), result.D());
+        __ B(&done, vc);
+        __ Ins(result.V2D(), 0, propagated.V2D(), 0);
+    }
+    __ Bind(&done);
 }
 
 void JitTranslator::EmitVecFloatNaNFixup(const VRegister& result,
@@ -1378,6 +1513,25 @@ void JitTranslator::EmitVecFMinMax(ir::Inst* inst) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const bool maximum = inst->GetArg<ir::Imm>(3).Get() != 0;
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    if (sse_scalar_insert && scalar) {
+        // x86 selects operand 2 for unordered and equal. Keep dst-in as the
+        // default, and insert operand 2 only when it wins.
+        if (result.GetCode() != left.GetCode()) {
+            __ Orr(result.V16B(), left.V16B(), left.V16B());
+        }
+        Label keep_left;
+        if (bits == 32) {
+            __ Fcmp(left.S(), right.S());
+            __ B(&keep_left, maximum ? gt : mi);
+            __ Ins(result.V4S(), 0, right.V4S(), 0);
+        } else {
+            __ Fcmp(left.D(), right.D());
+            __ B(&keep_left, maximum ? gt : mi);
+            __ Ins(result.V2D(), 0, right.V2D(), 0);
+        }
+        __ Bind(&keep_left);
+        return;
+    }
     auto mask = context.GetTmpV();
     auto selected = context.GetTmpV();
     if (bits == 32) {
@@ -1411,6 +1565,58 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const u32 kind = inst->GetArg<ir::Imm>(3).Get();
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    if (sse_scalar_insert && scalar &&
+        (result.GetCode() == merge.GetCode() || source.GetCode() != result.GetCode()) &&
+        (kind == 0 || source.GetCode() != result.GetCode())) {
+        if (result.GetCode() != merge.GetCode()) {
+            __ Orr(result.V16B(), merge.V16B(), merge.V16B());
+        }
+        if (kind == 0) {
+            // Compare before FSQRT because source may be the tied result.
+            // Negative finite inputs select x86's signed indefinite; NaN and
+            // -0.0 retain the hardware result.
+            if (bits == 32) {
+                __ Fcmp(source.S(), 0.0);
+                __ Fsqrt(result.S(), source.S());
+                auto indef = context.GetTmpV();
+                auto imm = context.GetTmpX();
+                __ Mov(imm.W(), 0xFFC00000u);
+                __ Fmov(indef.S(), imm.W());
+                Label done;
+                __ B(&done, pl);
+                __ Ins(result.V4S(), 0, indef.V4S(), 0);
+                __ Bind(&done);
+            } else {
+                __ Fcmp(source.D(), 0.0);
+                __ Fsqrt(result.D(), source.D());
+                auto indef = context.GetTmpV();
+                auto imm = context.GetTmpX();
+                __ Mov(imm, UINT64_C(0xFFF8000000000000));
+                __ Fmov(indef.D(), imm);
+                Label done;
+                __ B(&done, pl);
+                __ Ins(result.V2D(), 0, indef.V2D(), 0);
+                __ Bind(&done);
+            }
+        } else if (kind == 1) {
+            __ Frecpe(result.S(), source.S());
+            auto step = context.GetTmpV();
+            for (u32 i = 0; i < 2; ++i) {
+                __ Frecps(step.S(), source.S(), result.S());
+                __ Fmul(result.S(), result.S(), step.S());
+            }
+        } else {
+            __ Frsqrte(result.S(), source.S());
+            auto square = context.GetTmpV();
+            auto step = context.GetTmpV();
+            for (u32 i = 0; i < 2; ++i) {
+                __ Fmul(square.S(), result.S(), result.S());
+                __ Frsqrts(step.S(), source.S(), square.S());
+                __ Fmul(result.S(), result.S(), step.S());
+            }
+        }
+        return;
+    }
     auto value = context.GetTmpV();
     // x86 SQRT of a negative operand raises #I and delivers the QNaN
     // *indefinite*, whose sign bit is SET (0xFFC00000 / 0xFFF8000000000000).

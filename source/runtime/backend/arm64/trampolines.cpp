@@ -127,6 +127,12 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     // must live elsewhere; ip6 (x9) is free in the dispatcher. In identity
     // mode keep the historical x24 (loc) to leave generated code untouched.
     const bool has_pt = config.page_table || config.memory_base;
+    const bool scalar_insert =
+            True(config.arm64_features & Arm64Features::AFP);
+    // FEAT_AFP.NEP retains every lane except the scalar destination lane.
+    // AH deliberately remains clear: changing it process-wide also changes
+    // packed FP edge cases that are outside this optimisation's scope.
+    constexpr u32 kFpcrNep = 1u << 2;
     const XRegister loc_reg = has_pt ? XRegister(ip6.GetCode()) : XRegister(loc.GetCode());
     const bool exec_prof = [] {
         const char* env = std::getenv("SVM_EXEC_PROF");
@@ -141,6 +147,15 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     };
     __ Bind(&label_runtime_entry);
     BuildSaveHostCallee(assembler);
+    if (scalar_insert) {
+        // FEAT_AFP.NEP makes scalar Advanced SIMD instructions update only
+        // lane 0. Keep the caller's FPCR on our stack, and expose the original
+        // value to every host/C++ call below.
+        __ Mrs(ip, FPCR);
+        __ Stp(ip, xzr, MemOperand(sp, -16, PreIndex));
+        __ Orr(ip, ip, kFpcrNep);
+        __ Msr(FPCR, ip);
+    }
 
     __ Mov(state, x0);
     __ Mov(forward, x1);
@@ -220,7 +235,16 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
         __ Tbz(forward, 63, &jump_guest);
         __ Bind(&go_interp);
         __ Ldp(arg, handle, MemOperand(forward, 16, PostIndex));
+        if (scalar_insert) {
+            __ Ldr(ip, MemOperand(sp));
+            __ Msr(FPCR, ip);
+        }
         __ Blr(handle);
+        if (scalar_insert) {
+            __ Ldr(ip, MemOperand(sp));
+            __ Orr(ip, ip, kFpcrNep);
+            __ Msr(FPCR, ip);
+        }
         __ Bfc(forward, 63, 1);
         __ Bind(&jump_guest);
     }
@@ -236,6 +260,10 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Str(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
     __ Str(flags, MemOperand(state, state_offset_host_flags));
     BuildSaveStaticUniform(assembler);
+    if (scalar_insert) {
+        __ Ldp(ip, ip0, MemOperand(sp, 16, PostIndex));
+        __ Msr(FPCR, ip);
+    }
     BuildRestoreHostCallee(assembler);
     __ Ret();
 
@@ -250,12 +278,21 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Str(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
     __ Str(flags, MemOperand(state, state_offset_host_flags));
     BuildSaveStaticUniform(assembler);
+    if (scalar_insert) {
+        __ Ldr(ip, MemOperand(sp));
+        __ Msr(FPCR, ip);
+    }
     __ Mov(ip, reinterpret_cast<uintptr_t>(&TrampolinesArm64::CallHostTrampoline));
     __ Stp(x29, x30, MemOperand(sp, -16, PreIndex));
     __ Mov(x0, reinterpret_cast<uintptr_t>(this));
     __ Mov(x1, state);
     __ Blr(ip);
     __ Ldp(x29, x30, MemOperand(sp, 16, PostIndex));
+    if (scalar_insert) {
+        __ Ldr(ip, MemOperand(sp));
+        __ Orr(ip, ip, kFpcrNep);
+        __ Msr(FPCR, ip);
+    }
     __ Ldr(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
     __ Ldr(flags, MemOperand(state, state_offset_host_flags));
     BuildRestoreStaticUniform(assembler);

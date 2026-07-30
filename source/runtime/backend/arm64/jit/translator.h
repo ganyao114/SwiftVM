@@ -238,6 +238,7 @@ private:
                               const VRegister &right,
                               u32 lane_bits,
                               u32 lane_count = 0);
+    void EmitVecFScalarBinaryTied(ir::Inst *inst, u32 lane_bits);
 
     [[nodiscard]] PseudoFlags GetPseudoFlags(ir::Inst *inst);
 
@@ -274,6 +275,9 @@ private:
     // Default-off aggressive SSE/AVX floating-point policy: keep the raw NEON
     // result instead of repairing x86 NaN payload priority and quieting.
     bool sse_nan_fast{false};
+    // FEAT_AFP + FPCR.NEP is active for guest code, so scalar Advanced SIMD
+    // instructions can update a tied destination's lane 0 in place.
+    bool sse_scalar_insert{false};
     // TOP virtualization is deliberately a second opt-in layered on the
     // reduced x87 JIT. It stays default-off until host Unicorn qualification
     // has covered the new block/function paths.
