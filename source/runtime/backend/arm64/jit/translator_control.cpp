@@ -201,7 +201,19 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
             __ Mov(ip, fn);
         }
     } else {
-        __ Mov(ip, lambda.GetImm().Get());
+        // Fixed-width materialization: vixl's Mov() elides zero 16-bit
+        // chunks, which makes the emitted length depend on where ASLR placed
+        // the helper in *this* process (a page-aligned helper such as RepMovs
+        // drops a chunk with probability ~1/4 per process).  The function-mode
+        // fingerprint's self-consistency check compares host byte counts
+        // across two processes, so chunk elision reads as nondeterministic
+        // codegen.  movz+3xmovk is always 16 bytes and stays scannable by
+        // code_serial's relocation pass.
+        const u64 target = lambda.GetImm().Get();
+        __ movz(ip, target & 0xFFFFu, 0);
+        __ movk(ip, (target >> 16) & 0xFFFFu, 16);
+        __ movk(ip, (target >> 32) & 0xFFFFu, 32);
+        __ movk(ip, (target >> 48) & 0xFFFFu, 48);
     }
     __ Blr(ip);
 
