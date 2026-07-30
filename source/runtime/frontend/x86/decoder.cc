@@ -2005,6 +2005,21 @@ ir::Value X64Decoder::NarrowTo(ir::Value value, ir::ValueType type) {
     return value;
 }
 
+// A 32-bit x86 GPR write replaces the full 64-bit architectural register
+// with the zero-extended W result. The old lowering expressed that as a
+// U32-producing ZeroExtend32 followed by a U64-producing ZeroExtend64. The
+// folded opcode retains the U64 result type required by StoreUniform while
+// keeping the operation's semantic truncation width explicitly 32 bits.
+//
+// SVM_GPR_ZEXT_COALESCE=0 restores the exact two-node pre-W19 lowering.
+static bool GprZextCoalesceEnabled() {
+    static const bool enabled = [] {
+        const char* env = swift::runtime::PerfGetenv("SVM_GPR_ZEXT_COALESCE");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
 void X64Decoder::R(_RegisterType reg, ir::Value value) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::RegValue};
@@ -2024,7 +2039,9 @@ void X64Decoder::R(_RegisterType reg, ir::Value value) {
         if (is_64bit && info.type == ir::ValueType::U32) {
             // x86-64: 32 bit GPR writes zero the upper 32 bits.
             auto offset = ToReg(info).GetOffset();
-            auto zext = __ ZeroExtend64(__ ZeroExtend32(value));
+            auto zext = GprZextCoalesceEnabled()
+                                ? __ ZeroExtend32To64(value)
+                                : __ ZeroExtend64(__ ZeroExtend32(value));
             __ StoreUniform(ir::Uniform{offset, ir::ValueType::U64}, zext);
             return;
         }

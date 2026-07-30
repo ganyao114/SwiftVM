@@ -1232,6 +1232,12 @@ void Interpreter::RunZeroExtend32(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(0)));
 }
 
+void Interpreter::RunZeroExtend32To64(ir::Inst* inst, InterpStack& stack) {
+    // Unlike ZeroExtend32, this result is U64-typed; apply the opcode's
+    // 32-bit semantic mask explicitly before the U64 WriteScalar.
+    WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(0)) & UINT32_MAX);
+}
+
 void Interpreter::RunZeroExtend64(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(0)));
 }

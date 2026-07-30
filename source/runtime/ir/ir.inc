@@ -80,6 +80,10 @@ INST(Sbb, Value, Value, Operand)
 INST(Mul, Value, Value, Operand)
 INST(Div, Value, Value, Operand)
 INST(ZeroExtend32, U32, Value)
+// Zero-extend the low 32 bits and retain a U64 result. This is distinct from
+// changing ZeroExtend32's return type: backends must still perform the 32-bit
+// truncation before the value is consumed as U64.
+INST(ZeroExtend32To64, U64, Value)
 INST(ZeroExtend64, U64, Value)
 INST(SignExtend, Value, Value)
 // And & Or

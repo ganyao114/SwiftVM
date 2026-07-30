@@ -1917,6 +1917,13 @@ void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
     }
 }
 
+void JitTranslator::EmitZeroExtend32To64(ir::Inst* inst) {
+    // The destination remains U64-typed in IR so the following StoreUniform
+    // updates the full guest GPR. On arm64, writing W is exactly the required
+    // 32->64 zero extension and clears the paired X register's high half.
+    EmitZeroExtend32(inst);
+}
+
 void JitTranslator::EmitZeroExtend64(ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
     auto result = context.X(ir::Value{inst});
