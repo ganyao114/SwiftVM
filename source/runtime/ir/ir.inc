@@ -191,6 +191,20 @@ INST(VecInsert16, Value, Value, Value, Imm)
 INST(VecMovMask, Value, Value, Imm)
 INST(VecTableLookup8, Value, Value, Value)
 
+// 128-bit crypto primitives.  These are deliberately whole-instruction IR
+// operations: the ARM64 backend keeps them in SIMD registers and emits the
+// architectural Crypto Extension instructions, rather than routing a hot
+// guest instruction through a host helper.
+INST(VecAesEnc, Value, Value, Value)
+INST(VecAesEncLast, Value, Value, Value)
+INST(VecAesDec, Value, Value, Value)
+INST(VecAesDecLast, Value, Value, Value)
+INST(VecAesKeygenAssist, Value, Value, Imm)
+INST(VecPclMul, Value, Value, Value, Imm)
+INST(VecSha256Msg1, Value, Value, Value)
+INST(VecSha256Msg2, Value, Value, Value)
+INST(VecSha256Rnds2, Value, Value, Value, Value)
+
 // Scalar f32 arithmetic preserving bits [127:32] of the left operand.
 INST(VecFAddScalar32, Value, Value, Value)
 INST(VecFSubScalar32, Value, Value, Value)

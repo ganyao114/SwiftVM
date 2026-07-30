@@ -48,6 +48,14 @@ ScratchNeed ScratchBudget(ir::OpCode op) {
         case ir::OpCode::VecFSubScalar64:
         case ir::OpCode::VecFMulScalar64:
         case ir::OpCode::VecFDivScalar64:
+        // AESKEYGENASSIST keeps the S-box output, zero key, TBL control and
+        // RCON vector live together.  The other crypto ops stay at or below
+        // the default three-vector scratch budget.
+        case ir::OpCode::VecAesKeygenAssist:
+            return {kDefaultScratchGPR, 4};
+        case ir::OpCode::VecSha256Rnds2:
+            // SHA256RNDS2 must retain both pre-round state vectors while
+            // producing SHA256H and SHA256H2, plus the duplicated XMM0 key.
             return {kDefaultScratchGPR, 4};
         default:
             return {kDefaultScratchGPR, kDefaultScratchFPR};

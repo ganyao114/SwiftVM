@@ -394,11 +394,32 @@ void X64Decoder::Decode() {
             }
             continue;
         }
-        // ADX and PKRU are newer than this distorm snapshot. Decode their raw
+        // SHA-NI, ADX and PKRU are newer than this distorm snapshot. Decode raw
         // bytes before distorm so an unknown opcode cannot consume one byte
         // and desynchronise the stream. FSGSBASE is intentionally absent here:
         // the snapshot has complete mnemonic and operand decode entries for it.
         u32 userland_size{};
+        {
+            swift::runtime::PerfDecodeScope2 perf_raw{
+                    swift::runtime::GetPerfStats2().decode_raw,
+                    swift::runtime::PerfDecodePath2::Raw};
+            userland_size = DecodeShaRaw(code_ptr, fetch_avail);
+            if (userland_size != 0 && userland_size != UINT32_MAX) {
+                assembler->AdvancePC(ir::Imm{userland_size});
+                end_decode = assembler->EndCommit();
+            }
+        }
+        if (userland_size == UINT32_MAX) {
+            Interrupt(InterruptReason::PAGE_FATAL);
+            break;
+        }
+        if (userland_size != 0) {
+            if (decode_prof) {
+                swift::runtime::GetPerfStats2().decode_raw_accepted.fetch_add(
+                        1, std::memory_order_relaxed);
+            }
+            continue;
+        }
         {
             swift::runtime::PerfDecodeScope2 perf_raw{
                     swift::runtime::GetPerfStats2().decode_raw,
@@ -1692,6 +1713,24 @@ bool X64Decoder::DecodeSwitch(_DInst& insn) {
             break;
         case I_PMULLW:
             DecodeVecMul(insn, 16);
+            break;
+        case I_AESENC:
+            DecodeAes(insn, 0);
+            break;
+        case I_AESENCLAST:
+            DecodeAes(insn, 1);
+            break;
+        case I_AESDEC:
+            DecodeAes(insn, 2);
+            break;
+        case I_AESDECLAST:
+            DecodeAes(insn, 3);
+            break;
+        case I_AESKEYGENASSIST:
+            DecodeAes(insn, 4);
+            break;
+        case I_PCLMULQDQ:
+            DecodePclmul(insn);
             break;
         case I_PMULHW:
             DecodeVecMulHigh16(insn, true);

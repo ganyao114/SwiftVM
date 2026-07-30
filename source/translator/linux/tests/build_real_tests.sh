@@ -41,6 +41,14 @@ if [ "$SUFFIX" = x86_64 ]; then
     gcc -nostdlib -static -Wl,--build-id=none \
         -o vec_float_nan_pressure_x86_64 vec_float_nan_pressure_x86_64.S
     gcc -nostdlib -static -Wl,--build-id=none \
+        -o aes_round_kat_x86_64 aes_round_kat_x86_64.S
+    gcc -nostdlib -static -Wl,--build-id=none \
+        -o aes_keygen_kat_x86_64 aes_keygen_kat_x86_64.S
+    gcc -nostdlib -static -Wl,--build-id=none \
+        -o aes_assist_kat_x86_64 aes_assist_kat_x86_64.S
+    gcc -nostdlib -static -Wl,--build-id=none \
+        -o sha256_ni_kat_x86_64 sha256_ni_kat_x86_64.S
+    gcc -nostdlib -static -Wl,--build-id=none \
         -o x87_midtier_x86_64 x87_midtier_x86_64.S
     gcc -nostdlib -static -Wl,--build-id=none \
         -o x87_topvirt_stress_x86_64 x87_topvirt_stress_x86_64.S

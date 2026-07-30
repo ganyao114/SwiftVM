@@ -661,6 +661,14 @@ private:
     // decoder_sse42str.cc and nothing else.  DecodeCpuid must consult THIS
     // one before setting bit 20, or the gate and the advertisement drift.
     [[nodiscard]] static bool Sse42StrEnabled();
+    // SVM_X86_CRYPTO_NI gates the legacy AES-NI/PCLMULQDQ decoder cases and
+    // their CPUID bits together.  The host probe is part of the gate so an
+    // unsupported ARM host still gets the exact pre-crypto #UD behaviour.
+    [[nodiscard]] static bool CryptoNiEnabled();
+    // SHA-NI is deliberately separate and defaults OFF behind
+    // SVM_X86_CRYPTO_SHA=1; it must remain independent from the stable
+    // AES-NI/PCLMULQDQ capability bundle.
+    [[nodiscard]] static bool ShaNiEnabled();
 
     // Raw VEX prefix fields, parsed from the instruction bytes rather than
     // taken from distorm.  This is NOT redundant: this distorm snapshot
@@ -773,6 +781,13 @@ private:
     void DecodeVexMovq(_DInst& insn);
     // vzeroupper / vzeroall.
     void DecodeVzero(bool all);
+
+    // Legacy (non-VEX) AES-NI/PCLMULQDQ.  The VEX/VAES forms intentionally
+    // remain outside this work item.
+    void DecodeAes(_DInst& insn, u32 kind);
+    void DecodePclmul(_DInst& insn);
+    u32 DecodeShaRaw(const u8* code, size_t available);
+    void DecodeSha(_DInst& insn, u32 kind);
 
     // ---- VEX floating point (decoder_avx_fp.cc) --------------------------
     // Single entry point, tried from the VEX dispatch once the prefix is

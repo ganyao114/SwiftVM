@@ -121,6 +121,8 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     // missing -- so AVX is reported only when BOTH gates are on. SVM_XSAVE
     // alone still reports XSAVE/OSXSAVE, which is coherent on its own.
     const bool avx_reported = AvxEnabled() && XsaveEnabled();
+    const bool crypto_reported = CryptoNiEnabled();
+    const bool sha_reported = ShaNiEnabled();
     // FMA (ECX.12) rides on the same condition as AVX and not on one of its
     // own: the FMA3 handler is dispatched from inside the `avx_on` group of the
     // VEX chain in decoder.cc, so it is reachable in exactly the cases AVX is
@@ -133,6 +135,7 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
     // exactly this.
     const u32 leaf1_ecx = kLeaf1Ecx | (Sse4Enabled() ? kSse4Ecx : 0u) |
                           (Sse42StrEnabled() ? (1u << 20) : 0u) |  // SSE4.2
+                          (crypto_reported ? ((1u << 1) | (1u << 25)) : 0u) | // PCLMUL, AES
                           (XsaveEnabled() ? ((1u << 26) | (1u << 27)) : 0u) |
                           (avx_reported ? ((1u << 28) | (1u << 12)) : 0u);  // AVX, FMA
     // BMI1 (bit 3) and BMI2 (bit 8) follow SVM_BMI. They are deliberately
@@ -145,7 +148,8 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
                           (FsgsbaseEnabled() ? (1u << 0) : 0u) |  // FSGSBASE
                           (avx_reported ? (1u << 5) : 0u) |        // AVX2
                           (BmiEnabled() ? ((1u << 3) | (1u << 8)) : 0u) |
-                          (AdxEnabled() ? (1u << 19) : 0u);       // ADX
+                          (AdxEnabled() ? (1u << 19) : 0u) |
+                          (sha_reported ? (1u << 29) : 0u);      // SHA
     // CPUID.0xD: the XSAVE state-component enumeration.  Every value is
     // derived from the layout constants in xsave.h, which are the same ones
     // XsaveHelper writes through -- a guest sizing its save area from EBX

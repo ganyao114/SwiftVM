@@ -350,6 +350,13 @@ int main(int argc, char** argv) {
     if (const char* bind_now = std::getenv("LD_BIND_NOW")) {
         guest_envs.emplace_back(std::string("LD_BIND_NOW=") + bind_now);
     }
+    // Keep OpenSSL's guest-side capability override available to the launcher.
+    // It is both a standard compatibility knob and useful for selecting one
+    // advertised x86 crypto subset while leaving the translator's own SVM_*
+    // controls host-only.
+    if (const char* ia32cap = std::getenv("OPENSSL_ia32cap")) {
+        guest_envs.emplace_back(std::string("OPENSSL_ia32cap=") + ia32cap);
+    }
 
     // 1. Guest address space. Every guest address is truncated to a bounded
     //    window and then biased into one host reservation, so no guest
