@@ -65,9 +65,11 @@ static Value ResolveBitCastSource(Value value) {
 }
 
 static bool MemNarrowFuseEnabled() {
+    // Default OFF: baseline2 exposed guest PageFatals (stream/smallpt/sqlite)
+    // with the fuse enabled. Opt-in until W34 root-causes it.
     static const bool enabled = [] {
         const char* env = PerfGetenv("SVM_MEM_NARROW_FUSE");
-        return !env || std::strcmp(env, "0") != 0;
+        return env && std::strcmp(env, "0") != 0;
     }();
     return enabled;
 }

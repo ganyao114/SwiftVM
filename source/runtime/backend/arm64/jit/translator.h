@@ -285,7 +285,9 @@ private:
     // extension destination directly, and GetOperand computes into its
     // allocated address register. SVM_MEM_NARROW_FUSE=0 restores the old
     // load+extend and temporary+transport-move shapes.
-    bool mem_narrow_fuse{true};
+    // Default OFF: baseline2 exposed guest PageFatals (stream/smallpt/sqlite)
+    // with the fuse enabled. Opt-in (=1) until W34 root-causes it.
+    bool mem_narrow_fuse{false};
     // TOP virtualization is deliberately a second opt-in layered on the
     // reduced x87 JIT. It stays default-off until host Unicorn qualification
     // has covered the new block/function paths.
