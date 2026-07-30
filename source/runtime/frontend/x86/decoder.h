@@ -665,9 +665,8 @@ private:
     // their CPUID bits together.  The host probe is part of the gate so an
     // unsupported ARM host still gets the exact pre-crypto #UD behaviour.
     [[nodiscard]] static bool CryptoNiEnabled();
-    // SHA-NI is deliberately separate and defaults OFF behind
-    // SVM_X86_CRYPTO_SHA=1; it must remain independent from the stable
-    // AES-NI/PCLMULQDQ capability bundle.
+    // SHA-NI rides on the AES-NI/PCLMULQDQ bundle (CPUID + decoder gated
+    // together) and defaults ON; SVM_X86_CRYPTO_SHA=0 opts out.
     [[nodiscard]] static bool ShaNiEnabled();
 
     // Raw VEX prefix fields, parsed from the instruction bytes rather than

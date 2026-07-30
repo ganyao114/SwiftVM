@@ -62,13 +62,13 @@ bool X64Decoder::ShaNiEnabled() {
     static const bool host_has_sha256 = HostSha256Extension();
     const char* crypto_env = swift::runtime::PerfGetenv("SVM_X86_CRYPTO_NI");
     const char* sha_env = swift::runtime::PerfGetenv("SVM_X86_CRYPTO_SHA");
-    // SHA-NI is an opt-in extension of the otherwise stable AES-NI/PCLMUL
-    // bundle.  Keep the CPUID advertisement and decoder gate identical: a
-    // default OpenSSL process consequently selects its software SHA path,
-    // while SVM_X86_CRYPTO_SHA=1 enables the experimental SHA instructions
-    // only when the complete crypto bundle is enabled as well.
+    // SHA-NI rides on the AES-NI/PCLMUL bundle and is enabled by default
+    // (SVM_X86_CRYPTO_SHA=0 opts out).  It stayed opt-in while the latent
+    // signal-frame corruption (fixed in 32e7341) made OpenSSL's alarm-driven
+    // speed runs crash; keep the CPUID advertisement and decoder gate
+    // identical so guests see a consistent feature set.
     return host_has_sha256 && (!crypto_env || std::strcmp(crypto_env, "0") != 0) &&
-           sha_env && std::strcmp(sha_env, "0") != 0;
+           (!sha_env || std::strcmp(sha_env, "0") != 0);
 }
 
 void X64Decoder::DecodeAes(_DInst& insn, u32 kind) {
