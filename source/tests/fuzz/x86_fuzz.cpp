@@ -1870,6 +1870,14 @@ TEST_CASE("Fuzz x86 cpuid") {
         const bool sse4_on = !sse4_env || std::strcmp(sse4_env, "0") != 0;
         const char* sse42str_env = std::getenv("SVM_SSE42STR");
         const bool sse42str_on = !sse42str_env || std::strcmp(sse42str_env, "0") != 0;
+        // Crypto bundle and SHA are default-ON; the leaf-7 SHA bit follows
+        // the same AND of the two gates as X64Decoder::ShaNiEnabled (host
+        // FEAT_SHA256 is assumed, matching the rest of this suite's host
+        // coupling).
+        const char* crypto_env = std::getenv("SVM_X86_CRYPTO_NI");
+        const char* sha_env = std::getenv("SVM_X86_CRYPTO_SHA");
+        const bool sha_on = (!crypto_env || std::strcmp(crypto_env, "0") != 0) &&
+                            (!sha_env || std::strcmp(sha_env, "0") != 0);
         switch (leaf) {
             case 0:
                 REQUIRE(sig[0] == 0x15);
@@ -1913,7 +1921,8 @@ TEST_CASE("Fuzz x86 cpuid") {
                                    (fsgsbase_on ? (1u << 0) : 0u) |
                                    (avx_reported ? (1u << 5) : 0u) |
                                    (bmi_on ? ((1u << 3) | (1u << 8)) : 0u) |
-                                   (adx_on ? (1u << 19) : 0u)));
+                                   (adx_on ? (1u << 19) : 0u) |
+                                   (sha_on ? (1u << 29) : 0u)));
                 REQUIRE((sig[2] & (1u << 3)) == 0);  // PKU deliberately hidden
                 break;
             case 0x15:
@@ -7169,6 +7178,14 @@ TEST_CASE("Fuzz x86 bit ops") {
         } else {
             // CL count form (D3 /0, /1): count can be clobbered by the prefix, so
             // don't trust it for OF.
+#if defined(__aarch64__)
+            // Unicorn 2.1.4's ARM64 JIT emits the unallocated
+            // `extr Wd, Wn, Wm, #32` encoding when its TCG optimizer proves a
+            // 32-bit-container CL rotate count is zero. Keep the differential
+            // oracle on non-zero dynamic counts; the SwiftVM-only regression
+            // below retains coverage of the zero-count D2 C1 case.
+            EmitMovRegImm(b, 64, kRcx, u64(env.RandInt(1, width - 1)));
+#endif
             EmitOperandPrefix(b, width);
             EmitRexForRegReg(b, width, 0, dst, width == 8, false);
             b.B(width == 8 ? 0xD2 : 0xD3);
@@ -7180,6 +7197,28 @@ TEST_CASE("Fuzz x86 bit ops") {
         env.RunIteration(b.c, FlagMask{u32(kAhAll & ~kAhAF), of_checkable}, "rol");
     }
     REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz x86 bit ops SIGILL repro") {
+    FuzzEnv env;
+    // Seed 5070672046091958327, cursor 1958:
+    //   xor rcx, rcx; rol cl, cl; lahf; seto r15b; hlt
+    // A zero rotate count must preserve both the zero byte and XOR's flags.
+    const std::vector<u8> code = {
+            0x48, 0x31, 0xC9, 0xD2, 0xC1, 0x9F, 0x41, 0x0F, 0x90, 0xC7, 0xF4,
+    };
+    std::memcpy(env.host_mem, code.data(), code.size());
+    env.ctx->rax.qword = 0x1122334455667788ull;
+    env.ctx->rcx.qword = 0xFFEEDDCCBBAA0099ull;
+    env.ctx->r15.qword = 0;
+    env.ctx->rip.qword = env.base;
+    env.ctx->rsp.qword = env.stack_addr;
+
+    env.core->Run();
+
+    REQUIRE(env.ctx->rcx.qword == 0);
+    REQUIRE(env.ctx->rax.qword == 0x1122334455664688ull);
+    REQUIRE((env.ctx->r15.qword & 0xFF) == 0);
 }
 
 // =============================== new instruction families ===============================
