@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化三波落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×）+ PCLMULQDQ imm=0x11 直发 PMULL2（W21）。master = `414b186`。
+x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 glibc/musl 静态二进制上端到端验证通过；多线程 guest(clone/futex)、TSO 内存序、SMC 自修改代码（含 MT 安全回收）、SSE2 基线、x87(opt-in JIT）均已落地；FlagsElimination 放开 Carry Gate B（块内全路径覆盖死写删除）；翻译阶段七项分解探针（SVM_PROF2）、单块专用 RegAlloc 快路径（byte-identical）、UniformElim 早退剪枝、IR 构建消重（输出恒等）、decode 前端细分探针（SVM_DECODE_PROF）与 lowering 桶细分探针（SVM_LOW_PROF）、top-N distorm 快速通道、vixl EmissionCheckScope 快路径均已落地；syscall 面已覆盖七个主流 benchmark 语料（coremark/stream/smallpt/sqlite-speedtest1/c-ray/7zip/openssl-speed 全部跑通且输出与原生一致），FEX 对比基线已建立；执行侧优化落地：XMM0–15 静态驻留 + SSE NaN 快路径（W13 双开关默认 OFF，组合 geomean 1.205）、UniformElim 路径交汇（W14 默认 ON，coremark +8.6~8.9%）、x86 AES-NI/PCLMUL/SHA256 NI（W15，aes-128-gcm ~9×）+ PCLMULQDQ imm=0x11 直发 PMULL2（W21）、ZExt32→64 单节点折叠（W19 默认 ON，32 位 GPR 写每处省一条 host mov）。master = `fe9ee1d`。
 
 ---
 
@@ -79,6 +79,8 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 
 **W15 x86 crypto NI（2026-07-30，`f6bd6a5`）**：AES-NI 五指令（AESENC/ENCLAST/DEC/DECLAST/KEYGENASSIST）+ PCLMULQDQ 落地，FEX 映射（AESE(0)→AESMC→XOR key；keygenassist TBL swizzle + RCON 在 byte 4/12；PMULL 需 0x00c00000 size 位）；SHA256RNDS2/MSG1/MSG2 按 FEX Zip/Rev64 state 映射实现。开关：`SVM_X86_CRYPTO_NI` **默认 ON**（host FEAT_AES+FEAT_PMULL 门控，env=0 精确回退 ILL_CODE）；`SVM_X86_CRYPTO_SHA=1` **opt-in 默认 OFF**（需 bundle ON + host FEAT_SHA256——默认 OFF 不是实现风险，是 master 潜伏信号损坏（见 P0 #3）在 SHA 路径暴露面更大，待根治后翻默认）。CPUID：leaf1 ECX bit1+bit25，leaf7 EBX bit29（仅 SHA 开启时报告）；OPENSSL_ia32cap 透传。解释器软件实现（GF S-box / 位循环 PCLMUL / NEON SHA256 intrinsics）与 JIT 语义一致。KAT（NIST SP 800-38A/38D、独立 bit-serial GHASH oracle、FIPS 动态 keygen、100MiB SHA-256 digest 对 host）默认 ON rc=0 / crypto=0 rc=1。性能（orchestrator 独立交错 A/B）：aes-128-gcm 16k 83.6k → ~700k kB/s（**~9×**，FEX 1774k 的 0.39，GHASH 路径差距待分解）；coremark 中性（1.00）。门禁：指纹默认/crypto=0 双态 vs golden 零 diff（未重生成）、func_tests 三模式、swift_test 126320 assertions、trio/smc/clone_smc_mt 全过。
 
+**W19 ZExt 单节点折叠（2026-07-30，`fe9ee1d`，默认 ON）**：32 位 GPR 写的 lowering 由 `ZeroExtend64(ZeroExtend32(v))` 两节点折为新 opcode `ZeroExtend32To64`（U64 结果、显式 32 位截断语义；JIT 复用 ZExt32 的 W 写路径——arm64 写 W 即清零高半；解释器显式 `& UINT32_MAX`）。每个 32 位 GPR 写省一条 host mov。`SVM_GPR_ZEXT_COALESCE=0` 精确恢复两节点旧 lowering。全量指纹审计（orchestrator 独立 OFF/ON 发射）：4400 unit 集不变、**1832 unit IR 下降、零增长**、合计 −4328 IR——纯节点数削减，golden 重生成。性能（orchestrator 独立交错 A/B）：coremark **+10.9%**（4/4 对为正）、7zip Tot MIPS **+2.9%**（3/3 对为正）；codex 独立数据 zip7 +8.5%/coremark +2.8%/sqlite −4.2% wall，方向互证。
+
 ### 已实测否掉的优化路线（2026-07-28，数字见各提交/记忆，勿重复立项）
 
 - **W17 pressure-aware XMM 驻留（2026-07-30，三轮全负，轴关闭）**：部分 pin（top-N/XMM0–7）STREAM −0.9~−9.0%——少 pin 守不住收益、全 pin 挤爆 FPR 池，无中间甜点；lazy-fill 单独不够（c-ray 热 unit 很快摸满 16 XMM）；per-unit 可驱逐 pin（=3）在 c-ray 上触发 **55 分钟 400% CPU 死循环**（编译/重翻译环路，门禁语料覆盖不到），最终只能退成安全 no-op。结论：此轴关闭，W13 旗标对（XMM_STATIC=1 + NAN_FAST=1 捆绑）即最终形态。
@@ -131,6 +133,7 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 | SVM_X86_CRYPTO_NI | 0/1 | 1 | x86 AES-NI+PCLMULQDQ 硬加速（W15）；host 无 FEAT_AES/PMULL 时自动回退 ILL_CODE，=0 强制软件路径 |
 | SVM_X86_CRYPTO_SHA | 0/1 | 0 | x86 SHA256 NI opt-in（W15，需 CRYPTO_NI 同开 + host FEAT_SHA256）；默认 OFF 因 P0 #3 潜伏信号损坏在 SHA 路径暴露面大，根治后翻默认 |
 | SVM_X86_GCM_PCLMUL2 | 0/1 | 1 | PCLMULQDQ imm=0x11 直发 PMULL2（W21，省 2×DUP，与 FEX 同形）；=0 回退 DUP+PMULL。实测性能中性（两组交错 A/B 同机噪声内），按 codegen 简化落地 |
+| SVM_GPR_ZEXT_COALESCE | 0/1 | 1 | 32 位 GPR 写 ZExt32→ZExt64 两节点折为 ZeroExtend32To64 单节点（W19）；=0 精确恢复两节点旧 lowering（与 W19 前 golden 零 diff） |
 | SVM_ARM64_LRCPC | 0/1 | 1 | TSO LRCPC 快路径 |
 | SVM_EXEC_PROF | 0/1 | 0 | 执行侧探针：块退出分布、slot-link/RSB 命中、dispatcher L1/L2/miss、GPR uniform 访问计数；发射中性（W12 实测），默认关闭 |
 | SVM_EXEC_MAP | 0/1 | 0 | JIT unit/trampoline 地址区间输出（配合 sample 分类 leaf PC） |
@@ -557,7 +560,7 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
    **根治已落地**:x16/x17 加入 `trampolines.cpp` 的保留清单，池 16→14。该方案曾于 `96c6971` 全局保留、`5211e81` 因 SSE 高压回归而回退;**当年回归的真正原因很可能就是它把代码推上了当时静默损坏的 spill 路径**（见遗留 #1)——先修 spill 是重试它的前提。实测：非 fuzz 24 PASS/1 FAIL(仅既有 #10b),Unicorn 差分 fuzz **32 PASS/0 FAIL**;且最重的定向用例（glibc 72-block 函数、large lambda-free CFG、SSE batch B、x87)在池 14 下**spill 次数仍为 0**,即保留两个寄存器没有把任何现有 workload 推上 spill 路径。
    仍建议保留 §3 的 emitter 纪律：新增高压 emitter 时仍需数峰值临时数（现池=14),`ReserveTmpX` 对 x16/x17 已无必要但无害。
    **v31 已排除**:vixl 的 `fptmp_list_` = {d31} 同样未保留,但 `AllocFPR` 低位优先且空闲 FPR 有 28 个,v31 是最后一个才会发出;且经审计后端没有任何 emitter 会触发 vixl 取 FP scratch 的两条路径(`Fcmp` 立即数形式、mem-to-mem `Mov`)。实际不可达,无需处理。
-3. **SIGALRM × 长跑 → ~10–20% PageFatal（2026-07-30 发现，未根治）**:`openssl speed -seconds 8`（sha256/aes-gcm 均可,**与 crypto 开关无关**）在 master 独立快照上 ×10 即有 ~1–2 次 `Guest thread 1000 halted: reason 2`,崩点在堆路径(free/malloc)漂移;JIT 与解释器同现 → 共享机制（信号帧/上下文保存恢复）。必要组合 = SIGALRM × 足够长的运行。已排除:red zone（信号帧已扣 GUEST_SIGNAL_REDZONE=128,sha asm 不碰 rsp）、dispatcher PC + lazy flags 恢复候选（修补后崩溃率不归零,已撤回）、host_cpu_flags/RSB。头号嫌疑 = `uc_fpstate` XMM/fpsr 保存恢复不全。W20b（信号投递/rt_sigreturn 两端逐寄存器校验 + malloc/free 边界强制注入）在途。临时缓解:SHA-NI 拆成 opt-in 默认 OFF（W15）。
+3. **SIGALRM × 长跑 → ~10–20% PageFatal（2026-07-30 发现，未根治）**:`openssl speed -seconds 8`（sha256/aes-gcm 均可,**与 crypto 开关无关**）在 master 独立快照上 ×10 即有 ~1–2 次 `Guest thread 1000 halted: reason 2`,崩点在堆路径(free/malloc)漂移;JIT 与解释器同现 → 共享机制（信号帧/上下文保存恢复）。**判别矩阵（W20c）：SIGALRM 是必要变量——无信号 1GiB 长跑 0/10，信号×纯计算/信号×堆churn 最小 guest 均 0/10；MALLOC_CHECK_=3+MALLOC_PERTURB_ 未把崩点前移。** 已排除:red zone、dispatcher PC + lazy flags 候选、host_cpu_flags/RSB、信号帧内容（投递/rt_sigreturn 两端逐字节一致）、fpstate 840B 布局（与 FEX 一致）、trampoline 采样后丢 Signal（独立缺陷，修补后 OpenSSL 仍 1/20 崩，非根因已撤回）。未排除：帧写到错误地址（rsp 采样/越界进堆）。临时缓解:SHA-NI 拆成 opt-in 默认 OFF（W15）。
 
 ### P1 — 忠实度差异（默认路径冻结，不影响 Unicorn fuzz)
 
