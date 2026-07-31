@@ -397,13 +397,13 @@ TEST_CASE("Uniform range mode keeps mapped GPR, XMM, and ordinary byte facts loc
                           std::strcmp(std::getenv("SVM_IR_UNIFORM_RANGE"), "0") != 0;
 
     Block block{0, Location{0x6000}};
-    auto ordinary = block.LoadImm(Imm{0x1111111111111111ull}).SetType(ValueType::U64);
+    auto ordinary = block.LoadImm(Imm{std::uint64_t(0x1111111111111111ull)}).SetType(ValueType::U64);
     block.StoreUniform(Uniform{0, ValueType::U64}, ordinary);
-    auto other_gpr = block.LoadImm(Imm{0x2222222222222222ull}).SetType(ValueType::U64);
+    auto other_gpr = block.LoadImm(Imm{std::uint64_t(0x2222222222222222ull)}).SetType(ValueType::U64);
     block.StoreUniform(Uniform{32, ValueType::U64}, other_gpr);
     auto xmm = block.LoadImm(Imm{0u}).SetType(ValueType::V128);
     block.StoreUniform(Uniform{48, ValueType::V128}, xmm);
-    auto target_gpr = block.LoadImm(Imm{0x3333333333333333ull}).SetType(ValueType::U64);
+    auto target_gpr = block.LoadImm(Imm{std::uint64_t(0x3333333333333333ull)}).SetType(ValueType::U64);
     block.StoreUniform(Uniform{16, ValueType::U64}, target_gpr);
     auto target_patch =
             block.LoadImm(Imm{std::uint16_t{0x4444}}).SetType(ValueType::U16);
@@ -442,15 +442,15 @@ TEST_CASE("Uniform helper effect sets preserve only unaffected facts") {
                           std::strcmp(std::getenv("SVM_IR_UNIFORM_RANGE"), "0") != 0;
 
     auto seed = [](Block& block) {
-        auto low = block.LoadImm(Imm{0x1111111111111111ull}).SetType(ValueType::U64);
-        auto high = block.LoadImm(Imm{0x2222222222222222ull}).SetType(ValueType::U64);
+        auto low = block.LoadImm(Imm{std::uint64_t(0x1111111111111111ull)}).SetType(ValueType::U64);
+        auto high = block.LoadImm(Imm{std::uint64_t(0x2222222222222222ull)}).SetType(ValueType::U64);
         block.StoreUniform(Uniform{0, ValueType::U64}, low);
         block.StoreUniform(Uniform{16, ValueType::U64}, high);
     };
 
     Block pure{0, Location{0x7000}};
     seed(pure);
-    pure.CallLambda(Lambda{DataClass{Imm{1ull}}, UniformEffectId::None});
+    pure.CallLambda(Lambda{DataClass{Imm{std::uint64_t(1ull)}}, UniformEffectId::None});
     auto pure_low = pure.LoadUniform(Uniform{0, ValueType::U64});
     auto pure_high = pure.LoadUniform(Uniform{16, ValueType::U64});
     UniformEliminationPass::Run(&pure, info);
@@ -461,7 +461,7 @@ TEST_CASE("Uniform helper effect sets preserve only unaffected facts") {
 
     Block ranged{1, Location{0x8000}};
     seed(ranged);
-    ranged.CallLambda(Lambda{DataClass{Imm{1ull}}, touched_id});
+    ranged.CallLambda(Lambda{DataClass{Imm{std::uint64_t(1ull)}}, touched_id});
     auto ranged_low = ranged.LoadUniform(Uniform{0, ValueType::U64});
     auto ranged_high = ranged.LoadUniform(Uniform{16, ValueType::U64});
     UniformEliminationPass::Run(&ranged, info);
@@ -471,7 +471,7 @@ TEST_CASE("Uniform helper effect sets preserve only unaffected facts") {
 
     Block unknown{2, Location{0x9000}};
     seed(unknown);
-    unknown.CallLambda(Lambda{Imm{1ull}});
+    unknown.CallLambda(Lambda{Imm{std::uint64_t(1ull)}});
     auto unknown_low = unknown.LoadUniform(Uniform{0, ValueType::U64});
     auto unknown_high = unknown.LoadUniform(Uniform{16, ValueType::U64});
     UniformEliminationPass::Run(&unknown, info);
@@ -480,11 +480,11 @@ TEST_CASE("Uniform helper effect sets preserve only unaffected facts") {
 
     Block dead_store{3, Location{0xa000}};
     auto old_value =
-            dead_store.LoadImm(Imm{0x1111111111111111ull}).SetType(ValueType::U64);
+            dead_store.LoadImm(Imm{std::uint64_t(0x1111111111111111ull)}).SetType(ValueType::U64);
     auto new_value =
-            dead_store.LoadImm(Imm{0x2222222222222222ull}).SetType(ValueType::U64);
+            dead_store.LoadImm(Imm{std::uint64_t(0x2222222222222222ull)}).SetType(ValueType::U64);
     dead_store.StoreUniform(Uniform{0, ValueType::U64}, old_value);
-    dead_store.CallLambda(Lambda{DataClass{Imm{1ull}}, UniformEffectId::None});
+    dead_store.CallLambda(Lambda{DataClass{Imm{std::uint64_t(1ull)}}, UniformEffectId::None});
     dead_store.StoreUniform(Uniform{0, ValueType::U64}, new_value);
     UniformEliminationPass::Run(&dead_store, info);
     size_t stores{};
@@ -514,7 +514,7 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     auto vector_value = straight.LoadImm(Imm{0u}).SetType(ValueType::V128);
     straight.StoreUniform(Uniform{16, ValueType::V128}, vector_value);
     auto vector_load = straight.LoadUniform(Uniform{16, ValueType::V128});
-    auto scalar_value = straight.LoadImm(Imm{0x1122334455667788ull}).SetType(ValueType::U64);
+    auto scalar_value = straight.LoadImm(Imm{std::uint64_t(0x1122334455667788ull)}).SetType(ValueType::U64);
     straight.StoreUniform(Uniform{24, ValueType::U64}, scalar_value);
     auto scalar_load = straight.LoadUniform(Uniform{24, ValueType::U64});
 
@@ -591,8 +591,8 @@ TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {
         auto block = std::make_unique<Block>(0, Location{0x3000});
 
         // Full overwrite: the first store is dead.
-        auto first = block->LoadImm(Imm{0x1111111111111111ull}).SetType(ValueType::U64);
-        auto latest = block->LoadImm(Imm{0x2222222222222222ull}).SetType(ValueType::U64);
+        auto first = block->LoadImm(Imm{std::uint64_t(0x1111111111111111ull)}).SetType(ValueType::U64);
+        auto latest = block->LoadImm(Imm{std::uint64_t(0x2222222222222222ull)}).SetType(ValueType::U64);
         block->StoreUniform(Uniform{0, ValueType::U64}, first);
         block->StoreUniform(Uniform{0, ValueType::U64}, latest);
 
@@ -607,7 +607,7 @@ TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {
 
         // Two overlapping later stores jointly cover the earlier U64 store.
         // This pins byte-range aliasing rather than just exact-offset DSE.
-        auto wide = block->LoadImm(Imm{0x3333333333333333ull}).SetType(ValueType::U64);
+        auto wide = block->LoadImm(Imm{std::uint64_t(0x3333333333333333ull)}).SetType(ValueType::U64);
         auto low = block->LoadImm(Imm{0x44444444u}).SetType(ValueType::U32);
         auto high = block->LoadImm(Imm{0x55555555u}).SetType(ValueType::U32);
         block->StoreUniform(Uniform{16, ValueType::U64}, wide);
@@ -659,7 +659,7 @@ struct IRBuildFixture {
         const Local local{.id = 7, .type = ValueType::U64};
         function->DefineLocal(local);
 
-        auto imm = function->LoadImm(Imm{0x1122334455667788ull})
+        auto imm = function->LoadImm(Imm{std::uint64_t(0x1122334455667788ull)})
                            .SetType(ValueType::U64);
         first_inst = imm.Def();
         auto uniform =
@@ -685,7 +685,7 @@ struct IRBuildFixture {
         params.Push(uniform);
         params.Push(imm);
         [[maybe_unused]] auto dynamic_result =
-                function->CallDynamic(Lambda{Imm{0x1234ull}}, params)
+                function->CallDynamic(Lambda{Imm{std::uint64_t(0x1234ull)}}, params)
                         .SetType(ValueType::U64);
         function->StoreUniform(Uniform{40, ValueType::U64}, local_value);
 
@@ -2219,7 +2219,7 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
     params.Push(live[2]);
     params.Push(snapshot_use);
     params.Push(pinned_use);
-    function->CallDynamic(Lambda{Imm{1ull}}, params);
+    function->CallDynamic(Lambda{Imm{std::uint64_t(1ull)}}, params);
 
     // Consume the pressure values after the call so all of them cross it.
     Value sum = live.back();
@@ -2904,10 +2904,10 @@ TEST_CASE("SaveCV commits x86 CF/OF into the flags register") {
 static swift::runtime::ir::Block* BuildCondSetArithmeticBlock() {
     using namespace swift::runtime::ir;
     auto* block = new Block(0, Location{0x7100});
-    auto flags_value = block->LoadImm(Imm{0ull}).SetType(ValueType::U64);
+    auto flags_value = block->LoadImm(Imm{std::uint64_t(0ull)}).SetType(ValueType::U64);
     block->SaveFlags(flags_value, Flags::NZ);
     auto one = block->CondSet(Cond::EQ).SetType(ValueType::U64);
-    auto base = block->LoadImm(Imm{41ull}).SetType(ValueType::U64);
+    auto base = block->LoadImm(Imm{std::uint64_t(41ull)}).SetType(ValueType::U64);
     auto sum = block->Add(base, Operand{one});
     block->StoreUniform(Uniform{0, ValueType::U64}, sum);
     block->SetTerminal(terminal::ReturnToDispatch{});
