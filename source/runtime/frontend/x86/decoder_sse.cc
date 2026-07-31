@@ -924,6 +924,23 @@ void X64Decoder::DecodePshufd(_DInst& insn) {
 void X64Decoder::DecodeShufps(_DInst& insn, bool pd) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     u64 imm = insn.imm.byte;
+    if (!pd && VecLoweringOptInEnabled("SVM_VEC_SHUFPS_NEON")) {
+        // Read the complete old destination before touching the source. Legacy
+        // SHUFPS is destructive two-operand syntax even though the IR is
+        // naturally three-operand.
+        auto a = XmmRead(dst);
+        ir::Value source;
+        if (insn.ops[1].type == O_REG &&
+            static_cast<_RegisterType>(insn.ops[1].index) == dst) {
+            source = a;
+        } else {
+            source = LoadSrcVec(insn, insn.ops[1]);
+        }
+        auto result = __ VecShuffle32TwoSrc(a, source, ir::Imm(imm))
+                              .SetType(ir::ValueType::V128);
+        XmmWrite(dst, result);
+        return;
+    }
     auto a_lo = XmmLo(dst);
     auto a_hi = XmmHi(dst);
     auto b = LoadSrcHalves(insn, insn.ops[1]);

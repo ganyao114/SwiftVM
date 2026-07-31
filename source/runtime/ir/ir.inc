@@ -205,6 +205,9 @@ INST(VecByteShift, Value, Value, Value, Imm, Imm)
 
 // Shuffle/duplication operations.
 INST(VecShuffle32, Value, Value, Imm)
+// Legacy SHUFPS: result lanes 0..1 select from `left`, lanes 2..3 from
+// `right`; each 2-bit imm8 field selects one dword of its respective source.
+INST(VecShuffle32TwoSrc, Value, Value, Value, Imm)
 // Block-cached 128-bit constants and an indexed PSHUFD form. Keeping the
 // indexes as SSA lets the constant-folding pass reuse one materialization for
 // repeated controls without pinning an emitter scratch register.

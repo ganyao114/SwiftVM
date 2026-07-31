@@ -936,6 +936,134 @@ void JitTranslator::EmitVecShuffle32(ir::Inst* inst) {
     __ Tbl(result.V16B(), src.V16B(), indexes.V16B());
 }
 
+void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
+    const auto left_value = inst->GetArg<ir::Value>(0);
+    const auto right_value = inst->GetArg<ir::Value>(1);
+    auto left = context.V(left_value);
+    auto right = context.V(right_value);
+    auto result = context.V(ir::Value{inst});
+    const u32 control = inst->GetArg<ir::Imm>(2).Get() & 0xFFu;
+    const bool same_source = left_value.Id() == right_value.Id();
+
+    // One-instruction shapes. The 64-bit ZIPs select one complete qword from
+    // each source; the 32-bit UZPs select even/odd dwords. EXT covers the
+    // contiguous a[2..3],b[0..1] form.
+    if (control == 0x44) {
+        __ Zip1(result.V2D(), left.V2D(), right.V2D());
+        return;
+    }
+    if (control == 0xEE) {
+        __ Zip2(result.V2D(), left.V2D(), right.V2D());
+        return;
+    }
+    if (control == 0x4E) {
+        __ Ext(result.V16B(), left.V16B(), right.V16B(), 8);
+        return;
+    }
+    if (control == 0x88) {
+        __ Uzp1(result.V4S(), left.V4S(), right.V4S());
+        return;
+    }
+    if (control == 0xDD) {
+        __ Uzp2(result.V4S(), left.V4S(), right.V4S());
+        return;
+    }
+
+    if (same_source) {
+        // Alias-only shapes gain more one-instruction mappings because both
+        // architectural operands name the same old destination.
+        switch (control) {
+            case 0xE4:
+                if (result.GetCode() != left.GetCode()) {
+                    __ Orr(result.V16B(), left.V16B(), left.V16B());
+                }
+                return;
+            case 0x00: __ Dup(result.V4S(), left.V4S(), 0); return;
+            case 0x55: __ Dup(result.V4S(), left.V4S(), 1); return;
+            case 0xAA: __ Dup(result.V4S(), left.V4S(), 2); return;
+            case 0xFF: __ Dup(result.V4S(), left.V4S(), 3); return;
+            case 0x39: __ Ext(result.V16B(), left.V16B(), left.V16B(), 4); return;
+            case 0x93: __ Ext(result.V16B(), left.V16B(), left.V16B(), 12); return;
+            case 0x50: __ Zip1(result.V4S(), left.V4S(), left.V4S()); return;
+            case 0xFA: __ Zip2(result.V4S(), left.V4S(), left.V4S()); return;
+            case 0xA0: __ Trn1(result.V4S(), left.V4S(), left.V4S()); return;
+            case 0xF5: __ Trn2(result.V4S(), left.V4S(), left.V4S()); return;
+            // c-ray's two dominant splat-low shapes preserve the old high
+            // qword. When RA ties result to source, one INS is sufficient.
+            case 0xE0:
+            case 0xE5: {
+                if (result.GetCode() != left.GetCode()) {
+                    __ Orr(result.V16B(), left.V16B(), left.V16B());
+                }
+                const u32 selected = control & 3;
+                const u32 destination = selected == 0 ? 1 : 0;
+                __ Ins(result.V4S(), destination, left.V4S(), selected);
+                return;
+            }
+            default: break;
+        }
+
+        // A single table is sufficient for every remaining alias control.
+        auto indexes = context.GetTmpV();
+        auto tmp = context.GetTmpX();
+        u64 index_lo = 0;
+        u64 index_hi = 0;
+        for (u32 byte = 0; byte < 16; ++byte) {
+            const u32 lane = byte / 4;
+            const u8 index = u8(((control >> (lane * 2)) & 3) * 4 + (byte & 3));
+            auto& half = byte < 8 ? index_lo : index_hi;
+            half |= u64(index) << ((byte & 7) * 8);
+        }
+        __ Mov(tmp, index_lo);
+        __ Fmov(indexes.D(), tmp);
+        __ Mov(tmp, index_hi);
+        __ Ins(indexes.V2D(), 1, tmp);
+        __ Tbl(result.V16B(), left.V16B(), indexes.V16B());
+        return;
+    }
+
+    u64 index_lo = 0;
+    u64 index_hi = 0;
+    for (u32 byte = 0; byte < 16; ++byte) {
+        const u32 lane = byte / 4;
+        const u32 table_base = lane < 2 ? 0 : 16;
+        const u8 index =
+                u8(table_base + ((control >> (lane * 2)) & 3) * 4 + (byte & 3));
+        auto& half = byte < 8 ? index_lo : index_hi;
+        half |= u64(index) << ((byte & 7) * 8);
+    }
+
+    VRegister table0;
+    VRegister table1;
+    if (context.TryGetConsecutiveTmpV2(table0, table1)) {
+        auto indexes = context.GetTmpV();
+        auto tmp = context.GetTmpX();
+        __ Orr(table0.V16B(), left.V16B(), left.V16B());
+        __ Orr(table1.V16B(), right.V16B(), right.V16B());
+        __ Mov(tmp, index_lo);
+        __ Fmov(indexes.D(), tmp);
+        __ Mov(tmp, index_hi);
+        __ Ins(indexes.V2D(), 1, tmp);
+        __ Tbl(result.V16B(), table0.V16B(), table1.V16B(), indexes.V16B());
+        return;
+    }
+
+    // Extremely fragmented high-pressure fallback: two arbitrary scratch
+    // registers are enough for TBL(left) followed by TBX(right). It has the
+    // same 32-byte table semantics and still never leaves generated code.
+    auto indexes = context.GetTmpV();
+    auto sixteen = context.GetTmpV();
+    auto tmp = context.GetTmpX();
+    __ Mov(tmp, index_lo);
+    __ Fmov(indexes.D(), tmp);
+    __ Mov(tmp, index_hi);
+    __ Ins(indexes.V2D(), 1, tmp);
+    __ Tbl(result.V16B(), left.V16B(), indexes.V16B());
+    __ Movi(sixteen.V16B(), 16);
+    __ Sub(indexes.V16B(), indexes.V16B(), sixteen.V16B());
+    __ Tbx(result.V16B(), right.V16B(), indexes.V16B());
+}
+
 void JitTranslator::EmitVecLoadConst(ir::Inst* inst) {
     auto result = context.V(ir::Value{inst});
     auto tmp = context.GetTmpX();

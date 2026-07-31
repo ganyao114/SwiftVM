@@ -13,6 +13,14 @@ inline bool VecLoweringEnabled(const char* name) {
     return !env || std::strcmp(env, "0") != 0;
 }
 
+// Opt-in vector lowerings use this while they are still under workload A/B.
+// Unlike VecLoweringEnabled, an unset variable deliberately selects the old
+// path so a freshly built binary is a true rollback baseline.
+inline bool VecLoweringOptInEnabled(const char* name) {
+    const char* env = swift::runtime::PerfGetenv(name);
+    return env && std::strcmp(env, "0") != 0;
+}
+
 inline ir::Value VecSharedZero(ir::Assembler* assembler) {
     return assembler->VecSharedZero().SetType(ir::ValueType::V128);
 }
@@ -78,6 +86,7 @@ u64 Pmullw64(u64 a, u64 b);
 u64 Pmaddwd64(u64 a, u64 b);
 u64 Movshdup64(u64 a, u64 b);
 u64 Movsldup64(u64 a, u64 b);
+u64 ShufpsHalf(u64 lo, u64 hi, u64 imm_half);
 u64 AddpsHalf(u64 a, u64 b);
 u64 SubpsHalf(u64 a, u64 b);
 u64 MulpsHalf(u64 a, u64 b);

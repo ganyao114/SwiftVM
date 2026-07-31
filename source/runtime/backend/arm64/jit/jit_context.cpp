@@ -264,6 +264,28 @@ VRegister JitContext::GetTmpV() {
     PANIC("No free temporary VREG");
 }
 
+bool JitContext::TryGetConsecutiveTmpV2(VRegister& first, VRegister& second) {
+    const u32 used = static_cast<u32>(cur_dirty_fprs.GetMarkedCount() -
+                                      tick_dirty_fprs.GetMarkedCount()) -
+                     spill_tmp_fprs;
+    ASSERT_MSG(used + 2 <= CurrentBudget().fpr,
+               "scratch FPR budget exceeded emitting opcode {}: declared {}, asked for {}. "
+               "Raise its entry in backend::ScratchBudget (reg_alloc.cpp)",
+               cur_inst ? static_cast<u32>(cur_inst->GetOp()) : 0u,
+               CurrentBudget().fpr,
+               used + 2);
+    for (u32 code = 0; code + 1 < cur_dirty_fprs.GetAllCount(); ++code) {
+        if (!cur_dirty_fprs.Get(code) && !cur_dirty_fprs.Get(code + 1)) {
+            cur_dirty_fprs.Mark(code);
+            cur_dirty_fprs.Mark(code + 1);
+            first = VRegister::GetVRegFromCode(code);
+            second = VRegister::GetVRegFromCode(code + 1);
+            return true;
+        }
+    }
+    return false;
+}
+
 void JitContext::ReserveTmpX(const XRegister& reg) {
     cur_dirty_gprs.Mark(reg.GetCode());
 }

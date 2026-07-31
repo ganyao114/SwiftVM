@@ -47,3 +47,7 @@ set_tests_properties(swift_test PROPERTIES
 
 add_executable(swift_vm main.cpp)
 target_link_libraries(swift_vm PUBLIC fronted_arm64 fronted_x86 swift::runtime slang_compiler)
+
+add_executable(shufps_test shufps_test.cpp)
+target_link_libraries(shufps_test PUBLIC swift_translator swift::runtime Catch2::Catch2WithMain)
+add_test(shufps_test shufps_test)

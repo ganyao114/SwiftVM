@@ -39,6 +39,9 @@ public:
     [[nodiscard]] XRegister GetTmpX();
     [[nodiscard]] Register GetTmpGPR(ir::ValueType type);
     [[nodiscard]] VRegister GetTmpV();
+    // TBL with two tables encodes a consecutive register pair. Return false
+    // without changing the scratch mask when pressure leaves no such pair.
+    [[nodiscard]] bool TryGetConsecutiveTmpV2(VRegister& first, VRegister& second);
     // Registers unavailable for the current IR instruction: RegAlloc's live set
     // here (a conservative superset -- see register_alloc_pass.cpp), the
     // runtime's reserved registers, and every scratch GetTmpX/GetTmpV has

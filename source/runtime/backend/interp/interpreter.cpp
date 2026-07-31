@@ -2098,6 +2098,20 @@ void Interpreter::RunVecShuffle32(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, result);
 }
 
+void Interpreter::RunVecShuffle32TwoSrc(ir::Inst* inst, InterpStack& stack) {
+    const auto left = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto right = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    const u32 control = inst->GetArg<ir::Imm>(2).Get();
+    u128 result = 0;
+    for (u32 lane = 0; lane < 4; ++lane) {
+        const u32 selected = (control >> (lane * 2)) & 3;
+        const auto source = lane < 2 ? left : right;
+        result |= static_cast<u128>(static_cast<u32>(source >> (selected * 32)))
+                  << (lane * 32);
+    }
+    WriteVec(stack, inst, result);
+}
+
 void Interpreter::RunVecLoadConst(ir::Inst* inst, InterpStack& stack) {
     const u64 low = inst->GetArg<ir::Imm>(0).Get();
     const u64 high = inst->GetArg<ir::Imm>(1).Get();
