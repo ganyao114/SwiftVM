@@ -27,11 +27,48 @@
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "compiler/slang/slang.h"
 #include "assembler_riscv64.h"
 #include "fmt/format.h"
 #include "translator/x86/translator.h"
+
+TEST_CASE("hot coalesce probe classifies static opportunities") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+
+    REQUIRE(PerfStats2::kGetenvNames.size() == 55);
+    REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
+            "SVM_RA_HOT_COALESCE");
+    STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
+
+    REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
+    REQUIRE(HotCoalesceIsMoveBridge("  fmov d0, x3"));
+    REQUIRE(HotCoalesceIsMoveBridge("ubfx x4, x5, #0x0, #0x20"));
+    REQUIRE(HotCoalesceIsMoveBridge("lsl x1, x2, #0"));
+    REQUIRE_FALSE(HotCoalesceIsMoveBridge("add x1, x2, x3"));
+    REQUIRE_FALSE(HotCoalesceIsMoveBridge("lsl x1, x2, #1"));
+
+    Block block{0, Location{0x7100}};
+    Assembler assembler{&block};
+    for (swift::u32 offset : {0u, 8u, 16u, 24u}) {
+        (void)assembler.LoadUniform<U64>(Uniform{offset, ValueType::U64});
+    }
+    const auto stored = assembler.LoadImm<U64>(Imm{1});
+    assembler.StoreUniform(Uniform{32, ValueType::U64}, stored);
+    assembler.StoreUniform(Uniform{40, ValueType::U64}, stored);
+    (void)assembler.LoadImm<U64>(Imm{2});
+    (void)assembler.LoadUniform<U64>(Uniform{64, ValueType::U64});
+    (void)assembler.LoadUniform<U64>(Uniform{64, ValueType::U64});
+
+    const auto stats = HotCoalesceAnalyzeUniformSequences(&block);
+    REQUIRE(stats.sequences == 2);
+    REQUIRE(stats.load_pairs == 2);
+    REQUIRE(stats.store_pairs == 1);
+    REQUIRE(stats.same_offset == 1);
+    REQUIRE(stats.saved_instructions == 4);
+}
 
 TEST_CASE("Test compiler") {
     using namespace swift::slang;

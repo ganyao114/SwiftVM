@@ -1637,21 +1637,26 @@ void JitTranslator::QueueVecNaNColdPath(VecNaNColdKind kind,
         // using it as the cold predicate; the FP opcode itself defines no x86
         // integer flags.
         MergeNZCV();
+        context.BeginHotNaNGuard(2);
         if (bits32) {
             __ Fcmp(result.S(), result.S());
         } else {
             __ Fcmp(result.D(), result.D());
         }
         __ B(site->slow.get(), vs);
+        context.EndHotNaNGuard();
     } else if (bits32) {
         // FCMEQ produces all ones for every ordered lane. UMINV reduces that
         // to zero iff at least one lane is NaN, while leaving NZCV untouched.
+        context.BeginHotNaNGuard(4);
         __ Fcmeq(ipv3.V4S(), result.V4S(), result.V4S());
         __ Uminv(ipv3.S(), ipv3.V4S());
         const auto ordered = context.GetSharedTmpX();
         __ Fmov(ordered.W(), ipv3.S());
         __ Cbz(ordered.W(), site->slow.get());
+        context.EndHotNaNGuard();
     } else {
+        context.BeginHotNaNGuard(5);
         __ Fcmeq(ipv3.V2D(), result.V2D(), result.V2D());
         const auto lane0 =
                 backend::ScratchXPoolEnabled() ? context.GetTmpX() : ip0;
@@ -1661,6 +1666,7 @@ void JitTranslator::QueueVecNaNColdPath(VecNaNColdKind kind,
         __ Umov(lane1, ipv3.V2D(), 1);
         __ And(lane0, lane0, lane1);
         __ Cbz(lane0, site->slow.get());
+        context.EndHotNaNGuard();
     }
 
     __ Bind(site->continuation.get());

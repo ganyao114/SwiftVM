@@ -24,6 +24,8 @@ add_library(swift_runtime STATIC
         common/virtual_vector.h
         common/bit_fields.h
         common/function_info.h
+        common/hot_coalesce_prof.cpp
+        common/hot_coalesce_prof.h
         common/cast_utils.h
         common/lru_cache.h
         common/range_mutex.h

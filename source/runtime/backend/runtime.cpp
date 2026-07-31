@@ -18,6 +18,7 @@
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/backend/translate_table.h"
+#include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/common/perf_stats.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
@@ -66,8 +67,17 @@ struct Runtime::Impl final {
                             address_space->GetConfig().uniform_buffer_size);
         state = reinterpret_cast<backend::State*>(state_buffer.data());
         const char* exec_prof = std::getenv("SVM_EXEC_PROF");
-        if (exec_prof && std::strcmp(exec_prof, "0") != 0) {
-            state->interface = &exec_profile;
+        const bool exec_profile_enabled =
+                exec_prof && std::strcmp(exec_prof, "0") != 0;
+        hot_coalesce_enabled = HotCoalesceProfEnabled();
+        if (hot_coalesce_enabled) {
+            hot_coalesce_counters.resize(
+                    static_cast<size_t>(kHotCoalesceMaxUnits) *
+                    kHotCoalesceCounterCount);
+            profile_interface.hot_coalesce_counters = hot_coalesce_counters.data();
+        }
+        if (exec_profile_enabled || hot_coalesce_enabled) {
+            state->interface = &profile_interface;
         }
         // Wire the dispatcher's code-cache tables: L1 is per-runtime, L2 is the
         // address-space wide translate table that PushCodeCache writes to.
@@ -122,7 +132,7 @@ struct Runtime::Impl final {
                                                       exec_profile_start)
                                                       .count()
                                             : 0;
-            const auto& p = exec_profile;
+            const auto& p = profile_interface.exec;
             const u64 exits = p.exit_direct + p.exit_indirect + p.exit_call +
                               p.exit_ret + p.exit_syscall;
             const double seconds = static_cast<double>(elapsed_ns) / 1.0e9;
@@ -154,6 +164,9 @@ struct Runtime::Impl final {
                     std::getenv("SVM_EXEC_ACCESS_PAD")
                             ? std::getenv("SVM_EXEC_ACCESS_PAD")
                             : "0");
+        }
+        if (hot_coalesce_enabled) {
+            HotCoalesceSubmitThread(hot_coalesce_counters);
         }
         // NOTE: a write window opened by host code on a thread that then exits
         // is deliberately NOT closed here. Closing it looked prudent, but a
@@ -439,7 +452,9 @@ struct Runtime::Impl final {
     backend::interp::InterpStack interp_stack;
     std::atomic_bool running{true};
     backend::Trampolines::RuntimeEntry jit_entry{};
-    backend::ExecProfileCounters exec_profile{};
+    backend::RuntimeProfileInterface profile_interface{};
+    std::vector<u64> hot_coalesce_counters{};
+    bool hot_coalesce_enabled{};
     mutable bool exec_profile_started{};
     mutable std::chrono::steady_clock::time_point exec_profile_start{};
 };

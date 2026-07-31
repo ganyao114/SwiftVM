@@ -7,6 +7,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
+
+#include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/context.h"
 
@@ -33,6 +36,7 @@ JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_allo
             exec_access_pad = static_cast<u32>(std::min(std::strtoul(pad, nullptr, 10), 64ul));
         }
     }
+    hot_coalesce_enabled = HotCoalesceProfEnabled();
 }
 
 void JitContext::RecordExecCounter(u32 offset, u32 amount) {
@@ -46,6 +50,70 @@ void JitContext::RecordExecCounter(u32 offset, u32 amount) {
     __ Ldr(ip1, MemOperand(ip0, offset));
     __ Add(ip1, ip1, amount);
     __ Str(ip1, MemOperand(ip0, offset));
+}
+
+void JitContext::RecordHotCounter(HotCoalesceCounter counter, u32 amount) {
+    if (!hot_coalesce_enabled || hot_coalesce_slot == kHotCoalesceInvalidSlot ||
+        amount == 0) {
+        return;
+    }
+    ASSERT(amount < 4096);
+    const u32 begin = CurrentBufferSize();
+    // Do not reserve ip0/ip1 in the allocator: doing so changes the spill
+    // shape this probe is meant to observe.  The probe is deliberately slow
+    // when enabled, so preserve any live allocator values across the counter
+    // sequence on the aligned host stack instead.
+    __ Stp(ip0, ip1, MemOperand(sp, -16, PreIndex));
+    __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
+    __ Ldr(ip0, MemOperand(ip0, profile_offset_hot_coalesce_counters));
+    const u64 byte_offset =
+            (static_cast<u64>(hot_coalesce_slot) * kHotCoalesceCounterCount +
+             static_cast<u32>(counter)) *
+            sizeof(u64);
+    __ Mov(ip1, byte_offset);
+    __ Add(ip0, ip0, ip1);
+    __ Ldr(ip1, MemOperand(ip0));
+    __ Add(ip1, ip1, amount);
+    __ Str(ip1, MemOperand(ip0));
+    __ Ldp(ip0, ip1, MemOperand(sp, 16, PostIndex));
+    if (hot_collecting) {
+        hot_probe_ranges.push_back({begin, CurrentBufferSize()});
+    }
+}
+
+void JitContext::RecordHotSpillReload() {
+    if (!hot_coalesce_enabled) return;
+    ++hot_shape.spill_reloads;
+    RecordHotCounter(HotCoalesceCounter::SpillReloads);
+}
+
+void JitContext::RecordHotSpillWriteback() {
+    if (!hot_coalesce_enabled) return;
+    ++hot_shape.spill_writebacks;
+    RecordHotCounter(HotCoalesceCounter::SpillWritebacks);
+}
+
+void JitContext::BeginHotNaNGuard(u32 instruction_count) {
+    if (!hot_coalesce_enabled) return;
+    ASSERT(!hot_nan_open);
+    RecordHotCounter(HotCoalesceCounter::NaNGuardInstructions,
+                     instruction_count);
+    hot_nan_start = CurrentBufferSize();
+    hot_nan_expected = instruction_count;
+    hot_nan_open = true;
+    hot_shape.nan_guard_instructions += instruction_count;
+}
+
+void JitContext::EndHotNaNGuard() {
+    if (!hot_coalesce_enabled) return;
+    ASSERT(hot_nan_open);
+    const u32 end = CurrentBufferSize();
+    ASSERT(end >= hot_nan_start);
+    ASSERT((end - hot_nan_start) / vixl::aarch64::kInstructionSize ==
+           hot_nan_expected);
+    hot_nan_ranges.push_back({hot_nan_start, end});
+    hot_nan_open = false;
+    hot_nan_expected = 0;
 }
 
 bool JitContext::HasAllocation(const ir::Value& value) {
@@ -159,6 +227,7 @@ Register JitContext::SpillGPR(const ir::Value& value) {
     auto tmp = GetSpillTmpX();
     __ Ldr(tmp, MemOperand(state, offset));
     if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_loads;
+    RecordHotSpillReload();
     spill_use_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
     return tmp;
 }
@@ -184,6 +253,7 @@ VRegister JitContext::SpillFPR(const ir::Value& value) {
     auto tmp = GetSpillTmpV();
     __ Ldr(tmp.Q(), MemOperand(state, offset));
     if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_loads;
+    RecordHotSpillReload();
     spill_use_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
     return tmp;
 }
@@ -197,6 +267,7 @@ void JitContext::FlushSpillWrites() {
             __ Str(XRegister(write.reg), MemOperand(state, offset));
         }
         if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_stores;
+        RecordHotSpillWriteback();
     }
     pending_spill_writes.clear();
 }
@@ -603,6 +674,53 @@ void JitContext::Finish() {
     }
 }
 
+void JitContext::FinishHotCoalesceBlock() {
+    if (!hot_coalesce_enabled || hot_coalesce_slot == kHotCoalesceInvalidSlot) {
+        return;
+    }
+    ASSERT(hot_collecting);
+    ASSERT(!hot_nan_open);
+    hot_collecting = false;
+    const u32 end = CurrentBufferSize();
+    ASSERT(end >= hot_code_start);
+
+    auto in_range = [](u32 offset, const std::vector<HotCodeRange>& ranges) {
+        return std::any_of(ranges.begin(), ranges.end(), [offset](const auto& range) {
+            return offset >= range.begin && offset < range.end;
+        });
+    };
+    u32 probe_instructions = 0;
+    for (const auto& range : hot_probe_ranges) {
+        ASSERT(range.end >= range.begin);
+        probe_instructions +=
+                (range.end - range.begin) / vixl::aarch64::kInstructionSize;
+    }
+    hot_shape.host_instructions =
+            (end - hot_code_start) / vixl::aarch64::kInstructionSize -
+            probe_instructions;
+
+    vixl::aarch64::Decoder decoder;
+    vixl::aarch64::Disassembler disassembler;
+    decoder.AppendVisitor(&disassembler);
+    const auto* bytes = masm.GetBuffer()->GetStartAddress<const u8*>();
+    for (u32 offset = hot_code_start; offset < end;
+         offset += vixl::aarch64::kInstructionSize) {
+        if (in_range(offset, hot_probe_ranges) || in_range(offset, hot_nan_ranges)) {
+            continue;
+        }
+        const auto* instruction =
+                reinterpret_cast<const vixl::aarch64::Instruction*>(bytes + offset);
+        decoder.Decode(instruction);
+        if (HotCoalesceIsMoveBridge(disassembler.GetOutput())) {
+            ++hot_shape.move_bridges;
+        }
+    }
+    HotCoalesceUpdateUnit(hot_coalesce_slot, hot_shape);
+    hot_coalesce_slot = kHotCoalesceInvalidSlot;
+    hot_probe_ranges.clear();
+    hot_nan_ranges.clear();
+}
+
 u8* JitContext::Flush(const CodeBuffer& code_cache) {
     FlushLabels(reinterpret_cast<VAddr>(code_cache.exec_data));
     Finish();
@@ -644,6 +762,20 @@ void JitContext::SetCurrent(ir::Block* block) {
     }
     auto label = GetLabel(block->GetStartLocation().Value());
     __ Bind(label);
+    if (hot_coalesce_enabled) {
+        ASSERT(!hot_collecting);
+        hot_coalesce_slot =
+                HotCoalesceRegisterUnit(block->GetStartLocation().Value());
+        hot_shape = {};
+        hot_shape.guest_entry = block->GetStartLocation().Value();
+        hot_shape.uniform = HotCoalesceAnalyzeUniformSequences(block);
+        hot_probe_ranges.clear();
+        hot_nan_ranges.clear();
+        hot_collecting = false;
+        RecordHotCounter(HotCoalesceCounter::Entries);
+        hot_code_start = CurrentBufferSize();
+        hot_collecting = hot_coalesce_slot != kHotCoalesceInvalidSlot;
+    }
     if (exec_access_pad) {
         __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
     }

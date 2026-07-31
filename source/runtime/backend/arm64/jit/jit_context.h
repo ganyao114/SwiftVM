@@ -12,6 +12,7 @@
 #include "runtime/backend/arm64/constant.h"
 #include "runtime/backend/code_cache.h"
 #include "runtime/backend/reg_alloc.h"
+#include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/common/types.h"
 #include "runtime/include/config.h"
 #include "runtime/ir/instr.h"
@@ -130,10 +131,17 @@ public:
 
     [[nodiscard]] bool ExecProfileEnabled() const { return exec_profile_enabled; }
     void RecordExecCounter(u32 state_offset, u32 amount = 1);
+    [[nodiscard]] bool HotCoalesceEnabled() const { return hot_coalesce_enabled; }
+    void FinishHotCoalesceBlock();
+    void BeginHotNaNGuard(u32 instruction_count);
+    void EndHotNaNGuard();
 
 private:
     void MaybeDumpHostBytes();
     void FlushLabels(VAddr target);
+    void RecordHotCounter(HotCoalesceCounter counter, u32 amount = 1);
+    void RecordHotSpillReload();
+    void RecordHotSpillWriteback();
 
     // --- RegAlloc::MEM (spilled value) support ---------------------------
     // A value the linear scan could not keep in a host register lives in
@@ -195,7 +203,21 @@ private:
     bool host_bytes_dumped{};
     bool ra_shape_submitted{};
     bool exec_profile_enabled{};
+    bool hot_coalesce_enabled{};
     u32 exec_access_pad{};
+    u32 hot_coalesce_slot{kHotCoalesceInvalidSlot};
+    u32 hot_code_start{};
+    u32 hot_nan_start{};
+    u32 hot_nan_expected{};
+    bool hot_collecting{};
+    bool hot_nan_open{};
+    HotCoalesceUnitStatic hot_shape{};
+    struct HotCodeRange {
+        u32 begin{};
+        u32 end{};
+    };
+    std::vector<HotCodeRange> hot_probe_ranges{};
+    std::vector<HotCodeRange> hot_nan_ranges{};
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_gprs;
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_fprs;
     std::map<LocationDescriptor, Label> labels;

@@ -14,6 +14,7 @@
 
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/module.h"
+#include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/common/logging.h"
 #include "runtime/common/perf_stats.h"
 #include "runtime/ir/function.h"
@@ -70,6 +71,13 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     }
     print_stats = EnvOn("SVM_JIT_CACHE_STATS");
     dir = env;
+    // Profiled JIT units embed a process-local counter slot. Serializing one
+    // would revive code with no matching metadata slot in the next process.
+    // The probe is measurement-only, so disable disk caching while it is on.
+    if (HotCoalesceProfEnabled()) {
+        LOG_WARNING("SVM_JIT_CACHE: SVM_RA_HOT_COALESCE is incompatible; cache disabled");
+        return;
+    }
     const auto& config = address_space.GetConfig();
     if (host_image.size == 0) {
         LOG_WARNING("SVM_JIT_CACHE: host image span unknown; cache disabled");

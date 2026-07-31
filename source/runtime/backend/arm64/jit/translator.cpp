@@ -96,6 +96,10 @@ void JitTranslator::Translate(ir::Block* block) {
     FlushFlags();
     EmitTerminal(block->GetTerminal());
     context.EndTerminalScratch();
+    // Close the W71 accounting window before out-of-line NaN repair stubs.
+    // The hot guard remains in the block; cold handlers are not executed on
+    // the normal path and therefore do not belong in static x entry counts.
+    context.FinishHotCoalesceBlock();
     context.BeginColdScratch();
     EmitVecNaNColdPaths();
     context.EndColdScratch();
