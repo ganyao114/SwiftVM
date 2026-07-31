@@ -107,7 +107,8 @@ inline u32 XsaveAreaSize() {
 u64 XsaveHelper(u64 context, u64 guest_address, u64 rfbm);
 u64 XsavecHelper(u64 context, u64 guest_address, u64 rfbm);
 u64 XrstorHelper(u64 context, u64 guest_address, u64 rfbm);
-u64 XgetbvHelper(u64 context);
+u64 XgetbvContextHelper(u64 context);
+u64 XgetbvHelper(u64 ecx);
 
 // ---------------------------------------------------------------------------
 // Emitters.  Deliberately free functions taking the assembler rather than

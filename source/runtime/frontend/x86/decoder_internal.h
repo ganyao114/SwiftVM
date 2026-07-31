@@ -21,6 +21,14 @@ inline bool VecLoweringOptInEnabled(const char* name) {
     return env && std::strcmp(env, "0") != 0;
 }
 
+// W54 opt-in: pass guest register values explicitly across the small x86 host
+// helper ABI instead of letting helpers read or write ThreadContext64.  Keep
+// this uncached so differential tests can translate both forms in one process.
+inline bool HelperValuesEnabled() {
+    const char* env = swift::runtime::PerfGetenv("SVM_X86_HELPER_VALUES");
+    return env && std::strcmp(env, "0") != 0;
+}
+
 inline ir::Value VecSharedZero(ir::Assembler* assembler) {
     return assembler->VecSharedZero().SetType(ir::ValueType::V128);
 }

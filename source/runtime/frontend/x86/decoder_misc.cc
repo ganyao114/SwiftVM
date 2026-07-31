@@ -45,11 +45,13 @@ u64 HostRandom() {
     return (u64(random()) << 32) | u64(random());
 }
 
-void ReadGuestTsc(ThreadContext64* context) {
+void ReadGuestTscContext(ThreadContext64* context) {
     const u64 tsc = ReadVirtualTsc();
     context->rax.low.dword = u32(tsc);
     context->rdx.low.dword = u32(tsc >> 32);
 }
+
+u64 ReadGuestTsc() { return ReadVirtualTsc(); }
 
 ir::UniformEffectId ReadGuestTscEffects() {
     static constexpr std::array ranges{
@@ -61,7 +63,7 @@ ir::UniformEffectId ReadGuestTscEffects() {
     return id;
 }
 
-void GuestRandom(u64* destination, u64 width) {
+void GuestRandomContext(u64* destination, u64 width) {
     const u64 value = HostRandom();
     if (width == 16) {
         *destination = (*destination & ~u64(0xFFFF)) | u16(value);
@@ -71,6 +73,8 @@ void GuestRandom(u64* destination, u64 width) {
         *destination = value;
     }
 }
+
+u64 GuestRandom() { return HostRandom(); }
 
 }  // namespace
 
@@ -234,12 +238,19 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
 }
 
 void X64Decoder::DecodeTimestamp(bool rdtscp) {
-    // Write through the context instead of returning the counter in an
-    // allocatable IR value. This also makes the operation explicitly
-    // side-effecting and avoids keeping a volatile value live across the host
-    // call in either backend.
-    auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
-    __ CallHostWithUniformEffects(ReadGuestTscEffects(), &ReadGuestTsc, context);
+    if (HelperValuesEnabled()) {
+        auto tsc = __ CallHostUniformPure(&ReadGuestTsc).SetType(ir::ValueType::U64);
+        R(_RegisterType::R_EAX,
+          __ BitExtract(tsc, ir::Imm(0u), ir::Imm(32u)).SetType(ir::ValueType::U32));
+        R(_RegisterType::R_EDX,
+          __ BitExtract(tsc, ir::Imm(32u), ir::Imm(32u))
+                  .SetCastType(ir::ValueType::U32));
+    } else {
+        // Legacy ABI: the helper writes EAX/EDX through ThreadContext64 and
+        // W50 metadata describes the affected byte ranges.
+        auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
+        __ CallHostWithUniformEffects(ReadGuestTscEffects(), &ReadGuestTscContext, context);
+    }
     if (rdtscp) {
         // A single virtual CPU/core identity is exposed.
         R(_RegisterType::R_ECX, __ LoadImm(ir::Imm(u64(0))));
@@ -247,10 +258,15 @@ void X64Decoder::DecodeTimestamp(bool rdtscp) {
 }
 
 void X64Decoder::DecodeRandomRegister(_RegisterType reg, u32 width) {
-    const auto destination =
-            __ GetUniformAddress(ir::Imm(ToReg(x86_regs_table[reg]).GetOffset()))
-                    .SetType(ir::ValueType::U64);
-    __ CallHost(&GuestRandom, destination, __ LoadImm(ir::Imm(u64(width))));
+    if (HelperValuesEnabled()) {
+        auto value = __ CallHostUniformPure(&GuestRandom).SetType(ir::ValueType::U64);
+        R(reg, __ BitExtract(value, ir::Imm(0u), ir::Imm(width)).SetType(GetSize(width)));
+    } else {
+        const auto destination =
+                __ GetUniformAddress(ir::Imm(ToReg(x86_regs_table[reg]).GetOffset()))
+                        .SetType(ir::ValueType::U64);
+        __ CallHost(&GuestRandomContext, destination, __ LoadImm(ir::Imm(u64(width))));
+    }
     // RDRAND/RDSEED report success in CF and clear OF/SF/ZF/AF/PF.
     __ ClearFlags(ir::Flags::All);
     __ SetCarry(__ LoadImm(ir::Imm(u64(1))));

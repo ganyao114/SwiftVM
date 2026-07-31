@@ -100,7 +100,7 @@ ir::Value EmitRequestedFeatureMask(ir::Assembler* assembler) {
 
 }  // namespace
 
-u64 XgetbvHelper(u64 context) {
+u64 XgetbvContextHelper(u64 context) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     // ECX selects the extended control register.  Only XCR0 exists here:
     // XCR1 (ECX=1) requires CPUID.0xD.1:EAX[2], which is reported clear, so
@@ -113,6 +113,11 @@ u64 XgetbvHelper(u64 context) {
     ctx.rax.qword = static_cast<u32>(xcr0);
     ctx.rdx.qword = static_cast<u32>(xcr0 >> 32);
     return 0;
+}
+
+u64 XgetbvHelper(u64 ecx) {
+    constexpr u64 kFault = u64(1) << 63;
+    return u32(ecx) == 0 ? GuestXcr0() : kFault;
 }
 
 u64 XsaveHelper(u64 context, u64 guest_address, u64 requested) {
@@ -242,15 +247,47 @@ void EmitXgetbv(ir::Assembler* assembler, VAddr next_pc) {
         EmitUndefined(assembler, next_pc);
         return;
     }
-    auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
-    auto faulted =
-            __ CallHostWithUniformEffects(XgetbvEffects(), &XgetbvHelper, context);
-    // ECX != 0 is a #GP.  The helper has already recorded the reason, so the
-    // block terminates back to the host on that path and links to the next
-    // instruction on the normal one.  Making the exit a terminal (instead of
-    // just setting the field) is what actually stops execution.
+    ir::Value fault_value;
+    if (HelperValuesEnabled()) {
+        const ir::Uniform uni_interrupt{offsetof(ThreadContext64, interrupt),
+                                        ir::ValueType::U32};
+        auto old_rax = __ LoadUniform(
+                ir::Uniform{offsetof(ThreadContext64, rax), ir::ValueType::U64});
+        auto old_rdx = __ LoadUniform(
+                ir::Uniform{offsetof(ThreadContext64, rdx), ir::ValueType::U64});
+        auto ecx = __ LoadUniform(
+                ir::Uniform{offsetof(ThreadContext64, rcx), ir::ValueType::U32});
+        auto packed = __ CallHostUniformPure(&XgetbvHelper, ecx)
+                              .SetType(ir::ValueType::U64);
+        fault_value = __ BitExtract(packed, ir::Imm(63u), ir::Imm(1u))
+                              .SetCastType(ir::ValueType::U32);
+        auto succeeded = __ TestZero(fault_value);
+        auto xcr0_low = __ BitExtract(packed, ir::Imm(0u), ir::Imm(32u))
+                                .SetType(ir::ValueType::U32);
+        auto xcr0_high = __ BitExtract(packed, ir::Imm(32u), ir::Imm(32u))
+                                 .SetCastType(ir::ValueType::U32);
+        __ StoreUniform(ir::Uniform{offsetof(ThreadContext64, rax), ir::ValueType::U64},
+                        __ Select(succeeded, __ ZeroExtend32To64(xcr0_low), old_rax)
+                                .SetType(ir::ValueType::U64));
+        __ StoreUniform(ir::Uniform{offsetof(ThreadContext64, rdx), ir::ValueType::U64},
+                        __ Select(succeeded, __ ZeroExtend32To64(xcr0_high), old_rdx)
+                                .SetType(ir::ValueType::U64));
+        // Keep the StoreUniform value immediate and execute it only on the
+        // fault path; a successful XGETBV must not leave a stale ILL_CODE.
+        auto no_fault = __ NotGoto(__ TestNotZero(fault_value));
+        __ StoreUniform(
+                uni_interrupt,
+                __ LoadImm(ir::Imm(static_cast<u32>(InterruptReason::ILL_CODE))));
+        __ BindLabel(no_fault);
+    } else {
+        auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
+        fault_value = __ CallHostWithUniformEffects(
+                XgetbvEffects(), &XgetbvContextHelper, context);
+    }
+    // ECX != 0 is a #GP approximation.  Both ABIs terminate back to the host
+    // on that path and link to the next instruction on the normal one.
     __ SetLocation(ir::Lambda{ir::Imm{next_pc}});
-    __ If(ir::terminal::If{__ TestNotZero(faulted),
+    __ If(ir::terminal::If{__ TestNotZero(fault_value),
                            ir::terminal::ReturnToHost{},
                            ir::terminal::LinkBlock{next_pc}});
 }

@@ -52,7 +52,7 @@ _RegisterType SegmentForPrefix(u8 prefix) {
 // general-protection delivery path, so match XGETBV's established convention:
 // record ILL_CODE and terminate the block. The architectural write is atomic
 // with respect to this check -- a fault leaves PKRU unchanged.
-u64 WritePkru(u64 context) {
+u64 WritePkruContext(u64 context) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     if (ctx.rcx.low.dword != 0 || ctx.rdx.low.dword != 0) {
         ctx.interrupt = InterruptReason::ILL_CODE;
@@ -60,6 +60,11 @@ u64 WritePkru(u64 context) {
     }
     ctx.pkru = ctx.rax.low.dword;
     return 0;
+}
+
+u64 WritePkru(u64 rax, u64 rcx, u64 rdx) {
+    (void)rax;
+    return u32(rcx) != 0 || u32(rdx) != 0;
 }
 
 ir::UniformEffectId WritePkruEffects() {
@@ -127,10 +132,35 @@ u32 X64Decoder::DecodeUserlandRaw(const u8* code, size_t available) {
                 R(R_EAX, __ LoadUniform(pkru));
                 R(R_EDX, __ LoadImm(ir::Imm(u32(0))));
             } else {
-                auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
-                auto faulted =
-                        __ CallHostWithUniformEffects(WritePkruEffects(), &WritePkru, context)
-                                .SetType(ir::ValueType::U64);
+                ir::Value faulted;
+                if (HelperValuesEnabled()) {
+                    const ir::Uniform uni_interrupt{
+                            offsetof(ThreadContext64, interrupt), ir::ValueType::U32};
+                    const ir::Uniform uni_pkru{
+                            offsetof(ThreadContext64, pkru), ir::ValueType::U32};
+                    auto eax = R(R_EAX);
+                    auto ecx = R(R_ECX);
+                    auto edx = R(R_EDX);
+                    faulted = __ CallHostUniformPure(&WritePkru, eax, ecx, edx)
+                                      .SetType(ir::ValueType::U64);
+                    auto succeeded = __ TestZero(faulted);
+                    auto old_pkru = __ LoadUniform(uni_pkru).SetType(ir::ValueType::U32);
+                    __ StoreUniform(uni_pkru,
+                                    __ Select(succeeded, eax, old_pkru)
+                                            .SetType(ir::ValueType::U32));
+                    auto no_fault = __ NotGoto(__ TestNotZero(faulted));
+                    __ StoreUniform(
+                            uni_interrupt,
+                            __ LoadImm(ir::Imm(
+                                    static_cast<u32>(InterruptReason::ILL_CODE))));
+                    __ BindLabel(no_fault);
+                } else {
+                    auto context =
+                            __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
+                    faulted = __ CallHostWithUniformEffects(
+                                      WritePkruEffects(), &WritePkruContext, context)
+                                      .SetType(ir::ValueType::U64);
+                }
                 __ SetLocation(ir::Lambda{ir::Imm{pc}});
                 __ If(ir::terminal::If{__ TestNotZero(faulted),
                                        ir::terminal::ReturnToHost{},
