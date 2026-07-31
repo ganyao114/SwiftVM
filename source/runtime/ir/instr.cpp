@@ -344,7 +344,8 @@ ValueType Inst::ReturnType() const {
 bool Inst::HasValue() { return meta::HasValue(GetIRMetaInfo(op_code).return_type); }
 
 bool Inst::IsPseudoOperation() {
-    return op_code == OpCode::GetFlags || op_code == OpCode::SaveFlags || op_code == OpCode::GetResult;
+    return op_code == OpCode::GetFlags || op_code == OpCode::SaveFlags ||
+           op_code == OpCode::BranchOnlyFlags || op_code == OpCode::GetResult;
 }
 
 bool Inst::IsGetHostRegOperation() {
@@ -420,7 +421,8 @@ bool Inst::HasFlagsSavePseudo() {
     auto pseudo_inst = next_pseudo_inst;
     while (pseudo_inst) {
         ASSERT(pseudo_inst->GetArg<Value>(0).Def() == this);
-        if (pseudo_inst->GetOp() == OpCode::SaveFlags) {
+        if (pseudo_inst->GetOp() == OpCode::SaveFlags ||
+            pseudo_inst->GetOp() == OpCode::BranchOnlyFlags) {
             return true;
         }
         pseudo_inst = pseudo_inst->next_pseudo_inst;

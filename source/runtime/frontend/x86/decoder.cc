@@ -1166,14 +1166,79 @@ bool X64Decoder::FlagsTerminalJccEnabled() {
     return !env || std::strcmp(env, "0") != 0;
 }
 
+bool X64Decoder::FlagsBranchOnlyEnabled() {
+    const char* env = runtime::PerfGetenv("SVM_FLAGS_BRANCH_ONLY");
+    return env && std::strcmp(env, "0") != 0;
+}
+
+bool X64Decoder::SuccessorFlagsDead(VAddr successor) const {
+    // This is the block/lazy-function counterpart of the HIR CFG fixed point:
+    // prove only a very small straight-line prefix. Any mapping boundary,
+    // helper/control instruction, unknown opcode, or flag read is an immediate
+    // conservative failure. MOV/LEA/NOP may precede the first full flag kill;
+    // this matches the existing flags pass, where ordinary direct memory IR
+    // is not a flags observer or helper boundary.
+    constexpr u16 kArithmeticFlags = D_CF | D_PF | D_AF | D_ZF | D_SF | D_OF;
+    u16 incoming = kArithmeticFlags;
+    VAddr cursor = successor;
+    for (u32 count = 0; count < 8; ++count) {
+        std::array<u8, 16> bytes{};
+        size_t available = 0;
+        for (; available < bytes.size(); ++available) {
+            const auto* byte = reinterpret_cast<const u8*>(
+                    memory->GetPointer(reinterpret_cast<void*>(cursor + available)));
+            if (!byte) {
+                break;
+            }
+            bytes[available] = *byte;
+        }
+        if (available == 0) {
+            return false;
+        }
+        auto insn = DisDecode(bytes.data(), bytes.size(), is_64bit);
+        if (insn.opcode == UINT16_MAX || insn.size == 0 ||
+            insn.size > available || META_GET_FC(insn.meta) != FC_NONE ||
+            (insn.flags & (FLAG_LOCK | FLAG_REP | FLAG_REPNZ |
+                           FLAG_PRIVILEGED_INSTRUCTION)) != 0) {
+            return false;
+        }
+        if ((insn.testedFlagsMask & incoming) != 0) {
+            return false;
+        }
+        incoming &= ~(insn.modifiedFlagsMask | insn.undefinedFlagsMask);
+        if (incoming == 0) {
+            return true;
+        }
+        if (insn.modifiedFlagsMask != 0 || insn.undefinedFlagsMask != 0) {
+            // Partial writers such as INC preserve some incoming bits. Do not
+            // reason through their frontend-specific carry handling.
+            return false;
+        }
+        switch (insn.opcode) {
+            case I_MOV:
+            case I_MOVZX:
+            case I_MOVSX:
+            case I_MOVSXD:
+            case I_LEA:
+            case I_NOP:
+                break;
+            default:
+                return false;
+        }
+        cursor += insn.size;
+    }
+    return false;
+}
+
 bool X64Decoder::FlagsFcmpFuseEnabled() {
     const char* env = runtime::PerfGetenv("SVM_FLAGS_FCMP_FUSE");
     return !env || std::strcmp(env, "0") != 0;
 }
 
-void X64Decoder::MarkLocalNZCV(ir::Flags valid) {
+void X64Decoder::MarkLocalNZCV(ir::Flags valid, ir::Value result) {
     local_nzcv_next_pc_ = pc;
-    local_nzcv_valid_ = valid & ir::Flags::NZCV;
+    local_nzcv_valid_ = valid & (ir::Flags::NZCV | ir::Flags::Parity);
+    local_flags_value_ = result;
 }
 
 void X64Decoder::PublishFCmpFlags(ir::Value packed) {
@@ -1195,20 +1260,20 @@ std::optional<X64Decoder::LocalCondition> X64Decoder::TryLocalCondition(Cond con
         switch (cond) {
             case Cond::CS:
             case Cond::BT:
-                return LocalCondition{ir::Cond::LT, local_fcmp_value_};
+                return LocalCondition{ir::Cond::LT, local_fcmp_value_, {}, false};
             case Cond::CC:
             case Cond::AE:
-                return LocalCondition{ir::Cond::GE, local_fcmp_value_};
+                return LocalCondition{ir::Cond::GE, local_fcmp_value_, {}, false};
             case Cond::HI:
             case Cond::AT:
-                return LocalCondition{ir::Cond::GT, local_fcmp_value_};
+                return LocalCondition{ir::Cond::GT, local_fcmp_value_, {}, false};
             case Cond::LS:
             case Cond::BE:
-                return LocalCondition{ir::Cond::LE, local_fcmp_value_};
+                return LocalCondition{ir::Cond::LE, local_fcmp_value_, {}, false};
             case Cond::PA:
-                return LocalCondition{ir::Cond::VS, local_fcmp_value_};
+                return LocalCondition{ir::Cond::VS, local_fcmp_value_, {}, false};
             case Cond::NP:
-                return LocalCondition{ir::Cond::VC, local_fcmp_value_};
+                return LocalCondition{ir::Cond::VC, local_fcmp_value_, {}, false};
             default:
                 break;
         }
@@ -1216,6 +1281,13 @@ std::optional<X64Decoder::LocalCondition> X64Decoder::TryLocalCondition(Cond con
 
     if (!FlagsTerminalJccEnabled() || local_nzcv_next_pc_ != insn_pc) {
         return std::nullopt;
+    }
+
+    if (FlagsBranchOnlyEnabled() && (cond == Cond::PA || cond == Cond::NP) &&
+        True(local_nzcv_valid_ & ir::Flags::Parity) &&
+        local_flags_value_.Def()) {
+        return LocalCondition{
+                {}, {}, local_flags_value_, cond == Cond::NP};
     }
 
     ir::Flags need{};
@@ -1307,7 +1379,7 @@ std::optional<X64Decoder::LocalCondition> X64Decoder::TryLocalCondition(Cond con
     if ((local_nzcv_valid_ & need) != need) {
         return std::nullopt;
     }
-    return LocalCondition{arm, {}};
+    return LocalCondition{arm, {}, {}, false};
 }
 
 ir::Value X64Decoder::CarryValue() {

@@ -377,18 +377,22 @@ private:
     struct LocalCondition {
         ir::Cond arm{};
         ir::Value fcmp{};
+        ir::Value parity{};
+        bool parity_inverted{};
     };
 
     // A local condition is available only for the guest instruction
     // immediately following its producer.  The returned ARM condition reads
     // the still-current host NZCV; fcmp is non-null for an FP relation.
     [[nodiscard]] std::optional<LocalCondition> TryLocalCondition(Cond cond);
-    void MarkLocalNZCV(ir::Flags valid);
+    void MarkLocalNZCV(ir::Flags valid, ir::Value result);
     void PublishFCmpFlags(ir::Value packed);
     [[nodiscard]] static bool FlagsNarrowAlignEnabled();
     [[nodiscard]] static bool FlagsCfinvEnabled();
     [[nodiscard]] static bool FlagsTerminalJccEnabled();
+    [[nodiscard]] static bool FlagsBranchOnlyEnabled();
     [[nodiscard]] static bool FlagsFcmpFuseEnabled();
+    [[nodiscard]] bool SuccessorFlagsDead(VAddr successor) const;
     [[nodiscard]] bool FlagsFcmpCompactEnabled() const {
         return flags_fcmp_compact_;
     }
@@ -1104,6 +1108,7 @@ private:
     CarryPolarity carry_{CarryPolarity::Unknown};
     VAddr local_nzcv_next_pc_{UINT64_MAX};
     ir::Flags local_nzcv_valid_{ir::Flags::None};
+    ir::Value local_flags_value_{};
     VAddr local_fcmp_next_pc_{UINT64_MAX};
     ir::Value local_fcmp_value_{};
     std::array<ir::Value, 16> structured_address_gprs{};

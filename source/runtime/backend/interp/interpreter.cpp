@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <alloca.h>
 #include "interpreter.h"
+#include <bit>
 #include "runtime/backend/atomic_fallback.h"
 #include "runtime/common/variant_util.h"
 #include "runtime/frontend/x86/x87.h"
@@ -1318,6 +1319,13 @@ void Interpreter::RunSaveFlags(ir::Inst* inst, InterpStack& stack) {
     SaveGuestFlags(stack, inst->GetArg<ir::Value>(0).Def(), inst->GetArg<ir::Flags>(1));
 }
 
+void Interpreter::RunBranchOnlyFlags(ir::Inst* inst, InterpStack& stack) {
+    // The interpreter has no ambient host NZCV lifetime to exploit. Preserve
+    // the exact architectural result for the following LocalCondSet; the
+    // function-level liveness proof guarantees no successor observes it.
+    SaveGuestFlags(stack, inst->GetArg<ir::Value>(0).Def(), inst->GetArg<ir::Flags>(1));
+}
+
 void Interpreter::RunTestFlags(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, TestGuestFlags(inst->GetArg<ir::Flags>(0)) ? 1 : 0);
 }
@@ -1370,6 +1378,17 @@ void Interpreter::RunPublishFCmpFlags(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunLocalCondSet(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, EvalCondition(inst->GetArg<ir::Cond>(0)) ? 1 : 0);
 }
+
+void Interpreter::RunLocalParitySet(ir::Inst* inst, InterpStack& stack) {
+    const u8 value = static_cast<u8>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
+    bool even = (std::popcount(value) & 1u) == 0;
+    if (inst->GetArg<ir::Imm>(1).Get() != 0) {
+        even = !even;
+    }
+    WriteScalar(stack, inst, even ? 1 : 0);
+}
+
+void Interpreter::RunBranchOnlyEdges(ir::Inst* inst, InterpStack& stack) {}
 
 void Interpreter::RunFCmpCondSet(ir::Inst* inst, InterpStack& stack) {
     const u64 packed = ReadScalar(stack, inst->GetArg<ir::Value>(0));

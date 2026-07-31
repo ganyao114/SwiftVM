@@ -215,7 +215,7 @@ struct PerfStats2 {
     std::atomic<unsigned long long> uniform_dse_blocks{0};
     std::atomic<unsigned long long> uniform_dse_victims{0};
 
-    static constexpr std::array<const char*, 51> kGetenvNames{{
+    static constexpr std::array<const char*, 52> kGetenvNames{{
             "SVM_MEM_IDENTITY",
             "SVM_FUNC_LAZY",
             "SVM_DUMP_IR",
@@ -260,6 +260,7 @@ struct PerfStats2 {
             "SVM_FLAGS_TERMINAL_JCC",
             "SVM_FLAGS_FCMP_FUSE",
             "SVM_FLAGS_FCMP_COMPACT",
+            "SVM_FLAGS_BRANCH_ONLY",
             "SVM_ADDRMODE_STRUCT",
             "SVM_JIT_CACHE_EXEC_ID",
             "SVM_SMC_DIRTY_HINT",

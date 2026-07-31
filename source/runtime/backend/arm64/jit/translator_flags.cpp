@@ -83,8 +83,10 @@ void JitTranslator::SaveLogicalResultFlags(Register& result,
     // backend does not reserve from the register allocator). Tst is the
     // register form of ANDS and yields the identical NZCV with no scratch.
     __ Tst(scratch, scratch);
-    MergeLogicalFlagsNZ(pseudo.set);
-    if (True(pseudo.set & ir::Flags::Parity)) {
+    if (!pseudo.branch_only) {
+        MergeLogicalFlagsNZ(pseudo.set);
+    }
+    if (!pseudo.branch_only && True(pseudo.set & ir::Flags::Parity)) {
         SaveParity(result);
     }
 }
@@ -293,24 +295,35 @@ void JitTranslator::TestAuxiliaryCarry(const Register& result) {
 JitTranslator::PseudoFlags JitTranslator::GetPseudoFlags(ir::Inst* inst) {
     ir::Flags result_set{};
     ir::Flags result_clear{};
+    bool branch_only = false;
     if (auto pseudos = inst->GetPseudoOperations(); !pseudos.empty()) {
         for (auto& pseudo : pseudos) {
             if (pseudo->GetOp() == ir::OpCode::SaveFlags) {
                 auto guest_flags = pseudo->GetArg<ir::Flags>(1);
                 result_set |= guest_flags;
+            } else if (pseudo->GetOp() == ir::OpCode::BranchOnlyFlags) {
+                auto guest_flags = pseudo->GetArg<ir::Flags>(1);
+                result_set |= guest_flags;
+                branch_only = true;
             } else if (pseudo->GetOp() == ir::OpCode::ClearFlags) {
                 auto guest_flags = pseudo->GetArg<ir::Flags>(0);
                 result_clear |= guest_flags;
             }
         }
     }
-    return {result_set, result_clear};
+    return {result_set, result_clear, branch_only};
 }
 
 void JitTranslator::EmitSaveFlags(ir::Inst* inst) {
     // Multiple SaveFlags may appear in one flush window (e.g. the x86 frontend
     // emits separate PF/AF and NZCV saves for narrow ALU ops); merge them.
     flags_set |= inst->GetArg<ir::Flags>(1);
+}
+
+void JitTranslator::EmitBranchOnlyFlags(ir::Inst* inst) {
+    // Its producer has already left the exact requested NZCV live.  Recording
+    // flags_set/nzcv_dirty here would make AdvancePC or the terminal flush
+    // materialize the very architectural state this marker exists to avoid.
 }
 
 void JitTranslator::EmitClearFlags(ir::Inst* inst) {

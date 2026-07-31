@@ -235,7 +235,7 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
             StorePolarity(sub);
         }
         if (terminal_compare) {
-            MarkLocalNZCV(flag_mask);
+            MarkLocalNZCV(flag_mask, result);
         }
         return result;
     }
@@ -259,7 +259,7 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
             StorePolarity(sub);
         }
         if (terminal_compare) {
-            MarkLocalNZCV(flag_mask);
+            MarkLocalNZCV(flag_mask, result);
         }
         return result;
     }
@@ -335,7 +335,7 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
             StorePolarity(sub);
         }
         if (terminal_compare) {
-            MarkLocalNZCV(flag_mask);
+            MarkLocalNZCV(flag_mask, value);
         }
         // The store width follows the value's type (EmitStoreUniform), so the
         // result must carry the guest width type (32 -> 16/8 is W-safe).
@@ -366,7 +366,9 @@ void X64Decoder::DecodeAddSub(_DInst& insn, bool sub, bool save_res, bool exchan
     // ADD / SUB / CMP update CF, OF, ZF, SF, PF and AF.
     auto result = ArithWithFlags(left, right, sub ? ArithOp::Sub : ArithOp::Add, op0.size,
                                  ir::Flags::All,
-                                 !save_res && !exchange && !locked_rmw);
+                                 (!save_res && !exchange && !locked_rmw) ||
+                                         (FlagsBranchOnlyEnabled() &&
+                                          !exchange && !locked_rmw));
 
     if (exchange) {
         Dst(insn, op1, left);
@@ -686,7 +688,11 @@ void X64Decoder::SaveLogicFlags(ir::Value result, u32 width, bool terminal_test)
     carry_ = CarryPolarity::Direct;  // CF == 0, same under either polarity
     StorePolarity(false);
     if (terminal_test) {
-        MarkLocalNZCV(ir::Flags::Negate | ir::Flags::Zero);
+        MarkLocalNZCV(
+                FlagsBranchOnlyEnabled()
+                        ? (ir::Flags::NZCV | ir::Flags::Parity)
+                        : (ir::Flags::Negate | ir::Flags::Zero),
+                result);
     }
 }
 

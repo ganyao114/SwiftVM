@@ -100,9 +100,11 @@ private:
     struct PseudoFlags {
         ir::Flags set{};
         ir::Flags clear{};
+        bool branch_only{};
 
         [[nodiscard]] bool Null() const {
-            return set == ir::Flags::None && clear == ir::Flags::None;
+            return set == ir::Flags::None && clear == ir::Flags::None &&
+                   !branch_only;
         }
 
         [[nodiscard]] bool IsNZCV() const {

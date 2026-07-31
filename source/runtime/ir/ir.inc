@@ -101,6 +101,14 @@ INST(AndNot, Value, Value, Operand)
 // Flags from result
 INST(GetFlags, Value, Value, Flags)
 INST(SaveFlags, Void, Value, Flags)
+// A SaveFlags-shaped pseudo whose value is consumed only by the immediately
+// following terminal condition.  The interpreter materializes the requested
+// bits exactly like SaveFlags.  ARM64 instead keeps the producer's NZCV live
+// for LocalCondSet and emits no architectural flags-word write.
+//
+// FlagsEliminationPass is the only producer of this IR and only after proving
+// both CFG successors have dead flags-in.  It must never cross a unit edge.
+INST(BranchOnlyFlags, Void, Value, Flags)
 INST(TestFlags, Value, Flags)
 INST(TestNotFlags, Value, Flags)
 INST(ClearFlags, Void, Flags)
@@ -414,6 +422,15 @@ INST(CondSet, BOOL, Cond)
 // and no intervening guest instruction can have clobbered host NZCV.  A sole
 // branch/select consumer can therefore fold this marker to B.cond/CSEL.
 INST(LocalCondSet, BOOL, Cond)
+// Parity condition over the low byte of a named local producer. Imm is 0 for
+// x86 PF (even parity) and 1 for its inverse. Unlike TestFlags this does not
+// read or write the architectural flags word.
+INST(LocalParitySet, BOOL, Value, Imm)
+// Decoder-side conservative proof that both direct terminal-Jcc successors
+// kill incoming arithmetic flags before any read, fault, helper or control
+// edge. FlagsEliminationPass consumes and removes this marker; backends keep
+// no-op implementations as a defensive fallback.
+INST(BranchOnlyEdges, Void)
 // Condition over the host FP NZCV produced by the named VecFCmp.  The Value
 // edge pins the producer and gives the interpreter the compact comparison
 // result; ARM64 can fold a sole branch/select consumer directly into the

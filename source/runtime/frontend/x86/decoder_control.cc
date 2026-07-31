@@ -19,9 +19,19 @@ void X64Decoder::DecodeCondJump(_DInst& insn, Cond cond) {
     } else {
         if (!address.IsValue()) {
             if (auto local = TryLocalCondition(cond)) {
+                if (FlagsBranchOnlyEnabled() &&
+                    SuccessorFlagsDead(address.GetImm().Get()) &&
+                    SuccessorFlagsDead(pc)) {
+                    __ BranchOnlyEdges();
+                }
                 ir::BOOL check_result =
                         local->fcmp.Def()
                                 ? __ FCmpCondSet(local->fcmp, local->arm)
+                                          .SetType(ir::ValueType::U8)
+                        : local->parity.Def()
+                                ? __ LocalParitySet(
+                                          local->parity,
+                                          ir::Imm(u8(local->parity_inverted ? 1 : 0)))
                                           .SetType(ir::ValueType::U8)
                                 : __ LocalCondSet(local->arm).SetType(ir::ValueType::U8);
                 CondGoto(check_result, address, pc);

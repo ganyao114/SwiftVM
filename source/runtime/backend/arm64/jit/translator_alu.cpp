@@ -78,32 +78,44 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
                 right_operand = Operand{saved.W()};
                 aligned_right = Operand{saved.W(), LSL, shift};
             }
-            MergeNZCV();
+            if (!pseudo_flags.branch_only) {
+                MergeNZCV();
+            }
             __ Adds(result.W(), result.W(), aligned_right);
             __ Lsr(result.W(), result.W(), shift);
             auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
-            if (True(pseudo_flags.set & ir::Flags::Parity)) {
+            if (!pseudo_flags.branch_only) {
+                SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            }
+            if (!pseudo_flags.branch_only &&
+                True(pseudo_flags.set & ir::Flags::Parity)) {
                 SaveParity(result);
             }
-            if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
+            if (!pseudo_flags.branch_only &&
+                True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
                 SaveAuxiliaryCarry(af_left, right_operand, result);
             }
             return;
         }
         if (needs_nzcv) {
-            MergeNZCV();
+            if (!pseudo_flags.branch_only) {
+                MergeNZCV();
+            }
             __ Adds(result, left_register, right_operand);
             auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            if (!pseudo_flags.branch_only) {
+                SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            }
         } else {
             // AF/PF only: use non-flag form to avoid clobbering host NZCV.
             __ Add(result, left_register, right_operand);
         }
-        if (True(pseudo_flags.set & ir::Flags::Parity)) {
+        if (!pseudo_flags.branch_only &&
+            True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }
-        if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
+        if (!pseudo_flags.branch_only &&
+            True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
             SaveAuxiliaryCarry(left_register, right_operand, result);
         }
     } else {
@@ -163,31 +175,43 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
                 right_operand = Operand{saved.W()};
                 aligned_right = Operand{saved.W(), LSL, shift};
             }
-            MergeNZCV();
+            if (!pseudo_flags.branch_only) {
+                MergeNZCV();
+            }
             __ Subs(result.W(), result.W(), aligned_right);
             __ Lsr(result.W(), result.W(), shift);
             auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
-            if (True(pseudo_flags.set & ir::Flags::Parity)) {
+            if (!pseudo_flags.branch_only) {
+                SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            }
+            if (!pseudo_flags.branch_only &&
+                True(pseudo_flags.set & ir::Flags::Parity)) {
                 SaveParity(result);
             }
-            if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
+            if (!pseudo_flags.branch_only &&
+                True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
                 SaveAuxiliaryCarry(af_left, right_operand, result);
             }
             return;
         }
         if (needs_nzcv) {
-            MergeNZCV();
+            if (!pseudo_flags.branch_only) {
+                MergeNZCV();
+            }
             __ Subs(result, left_register, right_operand);
             auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            if (!pseudo_flags.branch_only) {
+                SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            }
         } else {
             __ Sub(result, left_register, right_operand);
         }
-        if (True(pseudo_flags.set & ir::Flags::Parity)) {
+        if (!pseudo_flags.branch_only &&
+            True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }
-        if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
+        if (!pseudo_flags.branch_only &&
+            True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
             SaveAuxiliaryCarry(left_register, right_operand, result);
         }
     } else {
@@ -214,14 +238,18 @@ void JitTranslator::EmitAdc(ir::Inst* inst) {
         if (needs_nzcv) {
             __ Adcs(result, left_register, right_operand);
             auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            if (!pseudo_flags.branch_only) {
+                SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            }
         } else {
             __ Adc(result, left_register, right_operand);
         }
-        if (True(pseudo_flags.set & ir::Flags::Parity)) {
+        if (!pseudo_flags.branch_only &&
+            True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }
-        if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
+        if (!pseudo_flags.branch_only &&
+            True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
             SaveAuxiliaryCarry(left_register, right_operand, result);
         }
     } else {
@@ -248,14 +276,18 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
         if (needs_nzcv) {
             __ Sbcs(result, left_register, right_operand);
             auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            if (!pseudo_flags.branch_only) {
+                SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+            }
         } else {
             __ Sbc(result, left_register, right_operand);
         }
-        if (True(pseudo_flags.set & ir::Flags::Parity)) {
+        if (!pseudo_flags.branch_only &&
+            True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }
-        if (True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
+        if (!pseudo_flags.branch_only &&
+            True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
             SaveAuxiliaryCarry(left_register, right_operand, result);
         }
     } else {
@@ -286,11 +318,16 @@ void JitTranslator::EmitAnd(ir::Inst* inst) {
     auto pseudo_flags = GetPseudoFlags(inst);
 
     if (!pseudo_flags.Null()) {
-        MergeNZCV();
+        if (!pseudo_flags.branch_only) {
+            MergeNZCV();
+        }
         // x86 logical ops: N/Z from the result, C/V cleared.
         __ Ands(result, left_register, right_operand);
-        MergeLogicalFlagsNZ(pseudo_flags.set);
-        if (True(pseudo_flags.set & ir::Flags::Parity)) {
+        if (!pseudo_flags.branch_only) {
+            MergeLogicalFlagsNZ(pseudo_flags.set);
+        }
+        if (!pseudo_flags.branch_only &&
+            True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }
     } else {
@@ -310,10 +347,15 @@ void JitTranslator::EmitAndNot(ir::Inst* inst) {
     auto pseudo_flags = GetPseudoFlags(inst);
 
     if (!pseudo_flags.Null()) {
-        MergeNZCV();
+        if (!pseudo_flags.branch_only) {
+            MergeNZCV();
+        }
         __ Bics(result, left_register, right_operand);
-        MergeLogicalFlagsNZ(pseudo_flags.set);
-        if (True(pseudo_flags.set & ir::Flags::Parity)) {
+        if (!pseudo_flags.branch_only) {
+            MergeLogicalFlagsNZ(pseudo_flags.set);
+        }
+        if (!pseudo_flags.branch_only &&
+            True(pseudo_flags.set & ir::Flags::Parity)) {
             SaveParity(result);
         }
     } else {
@@ -330,7 +372,7 @@ void JitTranslator::EmitOr(ir::Inst* inst) {
 
     auto pseudo_flags = GetPseudoFlags(inst);
 
-    if (!pseudo_flags.Null()) {
+    if (!pseudo_flags.Null() && !pseudo_flags.branch_only) {
         MergeNZCV();
     }
     __ Orr(result, left_register, right_operand);
@@ -361,7 +403,7 @@ void JitTranslator::EmitXor(ir::Inst* inst) {
 
     auto pseudo_flags = GetPseudoFlags(inst);
 
-    if (!pseudo_flags.Null()) {
+    if (!pseudo_flags.Null() && !pseudo_flags.branch_only) {
         MergeNZCV();
     }
     __ Eor(result, left_register, right_operand);
@@ -3091,6 +3133,31 @@ void JitTranslator::EmitLocalCondSet(ir::Inst* inst) {
     }
     __ Cset(context.R(ir::Value{inst}), MapCond(cond));
 }
+
+void JitTranslator::EmitLocalParitySet(ir::Inst* inst) {
+    auto result = context.R(ir::Value{inst}).W();
+    auto source = context.R(inst->GetArg<ir::Value>(0)).W();
+    __ Mov(result, source);
+    __ Eor(result, result, Operand{result, LSR, 4});
+    __ Eor(result, result, Operand{result, LSR, 2});
+    __ Eor(result, result, Operand{result, LSR, 1});
+    const bool inverted = inst->GetArg<ir::Imm>(1).Get() != 0;
+    // The folded low bit is one for odd parity. A terminal JP consumes Z=1,
+    // while JNP consumes Z=0; record that condition so the terminal emits a
+    // direct B.cond instead of materialising a boolean and testing it again.
+    if (RecordLocalCondition(
+                inst, inverted ? ir::Cond::NE : ir::Cond::EQ)) {
+        __ Tst(result, 1);
+        return;
+    }
+    __ And(result, result, 1);
+    // The folded xor is 1 for odd parity. x86 PF wants even parity; the
+    // immediate selects PF (0) versus !PF (1).
+    const u32 invert = static_cast<u32>(inverted);
+    __ Eor(result, result, 1u ^ invert);
+}
+
+void JitTranslator::EmitBranchOnlyEdges(ir::Inst* inst) {}
 
 void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
     auto cond = inst->GetArg<ir::Cond>(1);
