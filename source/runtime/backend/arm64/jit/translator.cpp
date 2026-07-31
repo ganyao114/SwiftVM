@@ -32,14 +32,6 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     if (const char* nan_coldpath = PerfGetenv("SVM_SSE_NAN_COLDPATH")) {
         sse_nan_coldpath = std::strcmp(nan_coldpath, "0") != 0;
     }
-    // Cached: JitTranslator is constructed once per compiled unit.
-    static const bool requested = [] {
-        const char* topvirt = PerfGetenv("SVM_X87_TOPVIRT");
-        const char* x87_jit = PerfGetenv("SVM_X87_JIT");
-        return topvirt && std::strcmp(topvirt, "0") != 0 &&
-               x87_jit && std::strcmp(x87_jit, "0") != 0;
-    }();
-    x87_topvirt_requested = requested;
 }
 
 
@@ -57,9 +49,6 @@ void JitTranslator::Translate(ir::Block* block) {
         }
     }
     static_next_loc.reset();
-    if (x87_topvirt_requested && !translating_function) {
-        AnalyzeX87TopVirt(block);
-    }
     context.SetCurrent(block);
     // Count the remaining x86 GPR uniform-buffer traffic dynamically without
     // instrumenting each access: add the block's static emitted access count
@@ -84,7 +73,6 @@ void JitTranslator::Translate(ir::Block* block) {
                               gpr_uniform_accesses);
     context.RecordExecCounter(exec_offset_xmm_uniform_accesses,
                               xmm_uniform_accesses);
-    BeginX87TopVirtBlock(block);
     perf_prologue.Stop();
     // Function-mode IdByRPO assigns global instruction ids, while
     // Block::MaxInstrId remains the block-local count established at decode.
@@ -99,9 +87,7 @@ void JitTranslator::Translate(ir::Block* block) {
         if (inst.Id() < disable_instructions.size() && disable_instructions.test(inst.Id())) {
             continue;
         }
-        PrepareX87TopCache(&inst);
         Translate(&inst);
-        FinishX87TopCache(&inst);
     }
     perf_body.Stop();
 
@@ -114,10 +100,6 @@ void JitTranslator::Translate(ir::Block* block) {
 void JitTranslator::Translate(ir::HIRFunction* function) {
     vixl::svm_vixl_prof::JitScope vixl_prof;
     ASSERT(function);
-    translating_function = true;
-    if (x87_topvirt_requested) {
-        AnalyzeX87TopVirt(function);
-    }
     context.SetCurrent(function->GetFunction());
     disable_instructions.resize(function->MaxInstrCount());
     for (auto& hir_block : function->GetHIRBlocksRPO()) {
@@ -135,7 +117,6 @@ void JitTranslator::Translate(ir::HIRFunction* function) {
         }
         Translate(block);
     }
-    translating_function = false;
 }
 
 void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {

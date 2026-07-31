@@ -13,31 +13,20 @@
 
 namespace swift::runtime::backend::arm64 {
 
-// Host GPR that SVM_X87_TOPVIRT dedicates to the cached x87 TOP.
+// x87 TOP has no dedicated host register. Every inline X87Op extracts it into
+// one of that opcode's ordinary allocator-protected scratch GPRs: one UBFX
+// when the emitter already holds FSW, or LDRH+UBFX when it does not. Stack
+// effects are merged into the emitter's existing FSW update and written back
+// architecturally before the instruction ends, so no TOP value is live across
+// an IR instruction, block edge, or helper call.
 //
-// THE ONE HARD CONSTRAINT: the code must still be *free* in the mask the
-// trampoline hands to the allocator, i.e. absent from the runtime ABI set and
-// from Config::buffers_static_alloc. This is why it is NOT x20. The x86
-// frontend statically pins guest RBX to x20 (translator/x86/translator.cpp
-// arm64_backend_regs_map), TrampolinesArm64::Build had therefore already
-// marked it, the runtime's `gprs.Mark(20)` was a silent no-op, and the
-// emitter's `mov w20, ...` landed directly in guest RBX -- guest RBX read back
-// as a TOP value 0..7 in ~92% of the x87 fuzz iterations. Reserving is now
-// guarded by an ASSERT at the site in runtime.cpp so a future static-register
-// map cannot re-create that quietly.
-//
-// x22 is `arg` in defines.h, named only by the mutually exclusive
-// enable_asm_interp trampoline path, and never by generated code.
-//
-// Callee-saved is NOT a requirement, though x22 happens to be one. Mutating
-// this to a caller-saved code (x2) survived every suite, and the reason is
-// real rather than a coverage gap: the TOP cache is dead at block boundaries
-// (BeginX87TopVirtBlock clears x87_top_cache_valid), so the only call it can
-// live across is EmitHostCall, whose save set is context.GetLiveGPRs() --
-// which already contains the runtime's reserved registers. Codes <= 17 are
-// therefore preserved across a helper call too. x16/x17 remain unusable for a
-// different reason (vixl's UseScratchRegisterScope).
-constexpr u32 kX87TopVirtGPR = 22;
+// This is a structural invariant, not merely the default configuration. The
+// retired SVM_X87_TOPVIRT cache once named a fixed GPR; its first implementation
+// silently reused x20 after the trampoline had pinned guest RBX there, because
+// a second Mark() was a no-op. TrampolinesArm64::Build now rejects every static
+// uniform mapping that overlaps the runtime ABI or another descriptor, while
+// the x87 emitter names no fixed TOP register at all. In particular x22 stays
+// an ordinary allocator/static-mapping candidate for the full-pin work.
 
 namespace HostFlagsBit {
     constexpr auto N = 31;
@@ -91,39 +80,6 @@ public:
 
 private:
     VRegister GetVecScalarOperand(ir::Value value, u32 lane_bits);
-
-    struct X87TopExpression {
-        // relative=true means (translation-unit entry TOP + value) & 7.
-        // Otherwise value is an architectural absolute TOP.
-        bool relative{true};
-        u8 value{};
-
-        bool operator==(const X87TopExpression&) const = default;
-    };
-
-    struct X87TopTransfer {
-        // Unknown transfers (currently FLDENV) make the whole function
-        // ineligible. reset=true means the input TOP is discarded.
-        bool known{true};
-        bool reset{};
-        u8 value{};
-    };
-
-    struct X87TopBlockInfo {
-        bool eligible{};
-        X87TopExpression entry{};
-        X87TopExpression exit{};
-    };
-
-    [[nodiscard]] X87TopTransfer AnalyzeX87TopTransfer(ir::Block* block) const;
-    [[nodiscard]] X87TopExpression ApplyX87TopTransfer(
-            const X87TopExpression& entry,
-            const X87TopTransfer& transfer) const;
-    void AnalyzeX87TopVirt(ir::Block* block);
-    void AnalyzeX87TopVirt(ir::HIRFunction* function);
-    void BeginX87TopVirtBlock(ir::Block* block);
-    void PrepareX87TopCache(ir::Inst* inst);
-    void FinishX87TopCache(ir::Inst* inst);
 
     void AcquireUnalignedAtomicLock(const Register& scratch);
     void ReleaseUnalignedAtomicLock();
@@ -336,12 +292,6 @@ private:
     // Safe by construction after the GetOperand RA-tie fix: the emitter only
     // peels when the allocator transferred register ownership (SharesGPR).
     bool mem_narrow_fuse{true};
-    // TOP virtualization is deliberately a second opt-in layered on the
-    // reduced x87 JIT. It stays default-off until host Unicorn qualification
-    // has covered the new block/function paths.
-    bool x87_topvirt_requested{false};
-    bool x87_topvirt_function_eligible{false};
-    bool translating_function{false};
     bool cur_block_is_call{};
     // Set by EmitSetLocation when the next guest location is a compile-time
     // constant, cleared by every other instruction (Translate(ir::Inst*)).
@@ -352,10 +302,6 @@ private:
     // Emits the inline dispatch for `static_next_loc`; returns false when no
     // static target is known and the caller must Ret to the dispatcher.
     bool EmitStaticForward();
-    bool x87_top_block_codegen_enabled{false};
-    bool x87_top_cache_valid{false};
-    bool x87_top_cache_for_current{false};
-    std::map<ir::Block*, X87TopBlockInfo> x87_top_blocks{};
     std::vector<std::unique_ptr<VecNaNColdSite>> vec_nan_cold_sites{};
 };
 

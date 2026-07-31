@@ -215,10 +215,9 @@ expect_reject "guest ELF on disk changed" "does not match" \
 
 # (b) a switch that participates in the hash
 # SVM_STATIC_REGS / SVM_TSO_MODE reach Config, so they trip the *config*
-# hash (which is checked first). SVM_X87_TOPVIRT changes register reservation
-# inside TranslateIR without touching Config, so it can only be caught by the
-# environment hash -- which is exactly why code_serial hashes raw SVM_*/SWIFT_*
-# strings instead of interpreted semantics.
+# hash (which is checked first). SVM_X87_TOPVIRT remains in the environment
+# identity for artifact compatibility after its dedicated-register path was
+# retired, so this case directly exercises the raw SVM_*/SWIFT_* hash.
 expect_reject "SVM_STATIC_REGS=0 at run time" "Config differs" \
     env SVM_STATIC_REGS=0 "$AOT" run --aot "$BASE"
 expect_reject "SVM_TSO_MODE=acqrel at run time" "Config differs" \

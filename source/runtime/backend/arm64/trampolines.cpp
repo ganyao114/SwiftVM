@@ -99,8 +99,16 @@ void TrampolinesArm64::Build() {
 
     for (auto& desc : config.buffers_static_alloc) {
         if (desc.is_float) {
+            ASSERT_MSG(!fpr_regs.Get(desc.reg),
+                       "static uniform FPR v{} overlaps the runtime ABI or "
+                       "another static descriptor",
+                       desc.reg);
             fpr_regs.Mark(desc.reg);
         } else {
+            ASSERT_MSG(!gpr_regs.Get(desc.reg),
+                       "static uniform GPR x{} overlaps the runtime ABI or "
+                       "another static descriptor",
+                       desc.reg);
             gpr_regs.Mark(desc.reg);
         }
     }
