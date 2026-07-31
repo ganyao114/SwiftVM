@@ -25,6 +25,7 @@ namespace swift::linux {
 bool GuestMemory::ReserveWindow(u32 bits) {
     ASSERT(bias_ == 0);       // the reservation installs the bias; call once
     ASSERT(window_bits_ == 0);
+    ASSERT(!identity_mode_);
     if (bits == 0) return true;  // window disabled: legacy unbounded bias mode
     ASSERT(bits >= 20 && bits <= 47);
     const u64 size = u64(1) << bits;
@@ -134,7 +135,17 @@ bool GuestMemory::MapFixed(VAddr addr, u64 size) {
                   errno);
         return false;
     }
-    ASSERT(reinterpret_cast<VAddr>(res) == host_addr);
+    // Linux kernels before 4.17 may ignore the unknown NOREPLACE flag and
+    // treat the address as a hint. Never accept such a result: identity mode
+    // promises exact placement and must not silently become biased.
+    if (reinterpret_cast<VAddr>(res) != host_addr) {
+        munmap(res, map_size);
+        LOG_ERROR("GuestMemory: MAP_FIXED_NOREPLACE did not map the requested host "
+                  "address {:#x} (got {}); Linux 4.17+ is required",
+                  host_addr,
+                  res);
+        return false;
+    }
 #endif
     TrackMap(addr, map_size);
     return true;
@@ -183,6 +194,27 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
             return false;
         }
         return MapFixed(guest_start, map_size);
+    }
+    if (identity_mode_) {
+#if defined(__linux__)
+        // Exact, non-clobbering placement. A collision with the translator
+        // PIE, its DSOs/heap, the host stack, vDSO, or any other host mapping
+        // is reported to the caller. Do not silently fall back to bias mode:
+        // SVM_MEM_IDENTITY=ON is an explicit codegen/isolation contract.
+        if (!MapFixed(guest_start, map_size)) {
+            LOG_ERROR("GuestMemory: identity image span [{:#x}, {:#x}) is unavailable; "
+                      "disable SVM_MEM_IDENTITY to use the isolated bias window",
+                      guest_start,
+                      guest_start + map_size);
+            return false;
+        }
+        LOG_INFO("GuestMemory: identity image span guest=host [{:#x}, {:#x})",
+                 guest_start,
+                 guest_start + map_size);
+        return true;
+#else
+        PANIC("GuestMemory identity mode is only supported on Linux hosts");
+#endif
     }
     ASSERT(bias_ == 0);  // the image reservation installs the bias; call once
     // Diagnostic fixed-stack repro: put the image at a stable high host hint,

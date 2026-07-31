@@ -316,8 +316,8 @@ void X64Decoder::DecodeAvxFmaScalar(const VexInsn& v, u32 order, u32 flags, u32 
     auto result_lo = __ VecExtract64(result, ir::Imm(0u)).SetType(ir::ValueType::U64);
     ir::Value lo;
     if (lane_bits == 32) {
-        lo = __ Or(__ And(dest_lo, ir::Operand{ir::Imm(0xFFFFFFFF00000000ull)}),
-                   ir::Operand{__ And(result_lo, ir::Operand{ir::Imm(0xFFFFFFFFull)})});
+        lo = __ Or(__ And(dest_lo, ir::Operand{ir::Imm(u64(0xFFFFFFFF00000000))}),
+                   ir::Operand{__ And(result_lo, ir::Operand{ir::Imm(u64(0xFFFFFFFF))})});
     } else {
         lo = result_lo;
     }

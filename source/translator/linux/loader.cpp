@@ -97,22 +97,25 @@ LoadedImage ElfLoader::Load(const std::string& path) {
     const u64 span = span_end - span_start;
 
     // Address modes:
-    //  - ET_EXEC: the guest runs at its *linked* addresses (guest load bias
-    //    0); the host cannot necessarily map there (macOS pagezero bans the
-    //    low 4GB), so the image is reserved at a host-chosen address and the
-    //    guest->host bias is installed in GuestMemory ("memory_base" mode).
-    //    Every guest memory access (JIT pt register, interpreter, syscall
-    //    layer, instruction fetch) applies that bias.
-    //  - ET_DYN (static PIE): self-relocating, no absolute-address problem,
-    //    so it stays on the proven identity path for now (see below).
+    //  - Default / every macOS launch: the image lives in the bounded guest
+    //    window and every runtime access applies its non-zero host bias.
+    //  - Linux SVM_MEM_IDENTITY=ON: ET_EXEC is mapped with
+    //    MAP_FIXED_NOREPLACE at its linked address. ET_DYN mappings chosen
+    //    below are also guest==host because GuestMemory has zero bias.
     VAddr guest_base = 0;
     if (elf_type == ELFIO::ET_EXEC) {
         if (!memory->MapImageAnywhere(span_start, span)) {
             PANIC("Failed to reserve guest address span for image! file = {}", path);
         }
-        LOG_INFO("ET_EXEC loaded in memory_base (bias) mode: guest {:#x} host_bias {:#x}",
-                 span_start,
-                 memory->GetBias());
+        if (memory->IdentityMode()) {
+            LOG_INFO("ET_EXEC loaded in Linux identity mode: guest=host {:#x}",
+                     span_start);
+        } else {
+            LOG_INFO("ET_EXEC loaded in memory_base (bias) mode: guest {:#x} "
+                     "host_bias {:#x}",
+                     span_start,
+                     memory->GetBias());
+        }
     } else if (!interpreter.empty()) {
         // Keep a dynamically linked PIE below the classic stack and leave a
         // large brk gap. MapAnywhere's arena is reserved for ld.so and the

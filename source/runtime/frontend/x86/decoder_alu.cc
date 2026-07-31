@@ -1138,7 +1138,7 @@ void X64Decoder::DecodeCmpxchg8b(_DInst& insn) {
     // CMPXCHG8B m64: compare EDX:EAX with [m64].
     // Equal: [m64] = ECX:EBX, ZF=1.  Not equal: EDX:EAX = [m64], ZF=0.
     auto addr = FlatAddress(insn, insn.ops[0]);
-    const auto kLo32 = ir::Imm(0xFFFFFFFFull);
+    const auto kLo32 = ir::Imm(u64(0xFFFFFFFF));
     auto eax = __ ZeroExtend64(__ And(R(_RegisterType::R_EAX), ir::Operand{kLo32}));
     auto edx = __ ZeroExtend64(__ And(R(_RegisterType::R_EDX), ir::Operand{kLo32}));
     auto expected = __ Or(__ LslImm(edx, ir::Imm(32u)), ir::Operand{eax});

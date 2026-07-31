@@ -820,7 +820,7 @@ void X64Decoder::DecodeSseInsertPs(_DInst& insn) {
         if (source_lane % 2 != 0) {
             container = __ LsrImm(container, ir::Imm(32u)).SetType(kU64);
         }
-        word = __ And(container, ir::Operand{ir::Imm(0xFFFFFFFFull)}).SetType(kU64);
+        word = __ And(container, ir::Operand{ir::Imm(u64(0xFFFFFFFF))}).SetType(kU64);
     } else {
         word = __ ZeroExtend64(
                 __ LoadMemory(ir::Operand{FlatAddress(insn, src)}).SetType(ir::ValueType::U32));
@@ -859,14 +859,14 @@ void X64Decoder::DecodeSseExtract(_DInst& insn, u32 element_bits) {
         if (index % 2 != 0) {
             container = __ LsrImm(container, ir::Imm(32u)).SetType(kU64);
         }
-        value = __ And(container, ir::Operand{ir::Imm(0xFFFFFFFFull)}).SetType(kU64);
+        value = __ And(container, ir::Operand{ir::Imm(u64(0xFFFFFFFF))}).SetType(kU64);
     } else {
         auto word = __ VecExtract16(source, ir::Imm(index / 2)).SetType(ir::ValueType::U32);
         auto container = __ ZeroExtend64(word).SetType(kU64);
         if (index % 2 != 0) {
             container = __ LsrImm(container, ir::Imm(8u)).SetType(kU64);
         }
-        value = __ And(container, ir::Operand{ir::Imm(0xFFull)}).SetType(kU64);
+        value = __ And(container, ir::Operand{ir::Imm(u64(0xFF))}).SetType(kU64);
     }
     auto& out = insn.ops[0];
     if (out.type == O_REG) {
@@ -909,7 +909,7 @@ void X64Decoder::DecodeSseInsert(_DInst& insn, u32 element_bits) {
         auto word = __ VecExtract16(target, ir::Imm(index / 2)).SetType(ir::ValueType::U32);
         auto container = __ ZeroExtend64(word).SetType(kU64);
         const u64 keep = index % 2 == 0 ? 0xFF00ull : 0x00FFull;
-        auto byte = __ And(value, ir::Operand{ir::Imm(0xFFull)}).SetType(kU64);
+        auto byte = __ And(value, ir::Operand{ir::Imm(u64(0xFF))}).SetType(kU64);
         if (index % 2 != 0) {
             byte = __ LslImm(byte, ir::Imm(8u)).SetType(kU64);
         }

@@ -116,6 +116,19 @@ void TrampolinesArm64::Build() {
             gpr_regs.Mark(desc.reg);
         }
     }
+
+    if (const char* dump = std::getenv("SVM_VIXL_HOST_DUMP");
+        dump && std::strcmp(dump, "0") != 0) {
+        const bool has_pt = config.page_table || config.memory_base;
+        std::fprintf(stderr,
+                     "[svm-reg-mask] memory_base=%d page_table=%d "
+                     "x24_reserved=%d x10_reserved=%d dispatcher_loc=x%d\n",
+                     config.memory_base != nullptr,
+                     config.page_table != nullptr,
+                     gpr_regs.Get(24),
+                     gpr_regs.Get(10),
+                     has_pt ? ip6.GetCode() : loc.GetCode());
+    }
 }
 
 #define loc_index ip0

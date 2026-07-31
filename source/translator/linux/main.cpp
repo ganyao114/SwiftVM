@@ -358,10 +358,19 @@ int main(int argc, char** argv) {
         guest_envs.emplace_back(std::string("OPENSSL_ia32cap=") + ia32cap);
     }
 
-    // 1. Guest address space. Every guest address is truncated to a bounded
-    //    window and then biased into one host reservation, so no guest
-    //    address — wild pointer, 0xFFFF'FFFF'FFFF'FFFF, signed wraparound —
-    //    can name host memory. SVM_GUEST_BITS overrides the window size.
+    // 1. Guest address space. The default is a bounded, biased reservation:
+    //    every guest address is truncated to the window before the bias is
+    //    added, so no wild guest pointer can name unrelated host memory.
+    //    SVM_GUEST_BITS overrides the window size.
+    //
+    //    Linux hosts may explicitly request SVM_MEM_IDENTITY=ON. That skips
+    //    the window and maps guest addresses directly at the same host
+    //    addresses with MAP_FIXED_NOREPLACE. It releases the JIT's pt (x24)
+    //    and mem_scratch (x10) reservations, but a wild guest pointer can then
+    //    reach translator/DSO/stack mappings. Identity is therefore opt-in
+    //    and never silently falls back to bias mode on a fixed-map collision.
+    //    macOS does not inspect this switch and always follows the historical
+    //    bounded-bias path (its 4GB pagezero prevents low ET_EXEC identity).
     //
     //    SVM_GUEST_BITS=0 restores the old unbounded bias mode, in which the
     //    guest can read and write arbitrary host memory. That is the defect
@@ -371,35 +380,52 @@ int main(int argc, char** argv) {
     //    run_isolation_tests.sh uses a dedicated build to demonstrate it.
     linux::GuestMemory memory;
     {
-        u32 window_bits = linux::GuestMemory::kDefaultWindowBits;
-        if (const char* env = std::getenv("SVM_GUEST_BITS")) {
-            const long v = std::strtol(env, nullptr, 0);
-            if (v == 0) {
-#ifdef SWIFT_ALLOW_UNBOUNDED_GUEST
-                window_bits = 0;
-#else
-                LOG_ERROR(
-                        "SVM_GUEST_BITS=0 (unbounded guest address space) is not compiled "
-                        "into this build. It lets the guest read and write host memory and "
-                        "exists only so run_isolation_tests.sh can demonstrate the defect; "
-                        "rebuild with -DSWIFT_ALLOW_UNBOUNDED_GUEST=ON to get it.");
-                return 2;
-#endif
-            } else if (v >= 20 && v <= 47) {
-                window_bits = static_cast<u32>(v);
-            } else {
-                LOG_ERROR("SVM_GUEST_BITS={} out of range (0 or 20..47); using {}",
-                          env,
-                          window_bits);
-            }
+        bool identity_mode = false;
+#if defined(__linux__)
+        if (const char* env = std::getenv("SVM_MEM_IDENTITY")) {
+            identity_mode = std::strcmp(env, "0") != 0 &&
+                            std::strcmp(env, "OFF") != 0 &&
+                            std::strcmp(env, "off") != 0;
         }
-        if (!memory.ReserveWindow(window_bits)) {
-            PANIC("Failed to reserve the {}-bit guest address window", window_bits);
-        }
-        if (window_bits == 0) {
+        if (identity_mode) {
+            memory.EnableIdentityMode();
             LOG_WARNING(
-                    "SVM_GUEST_BITS=0: guest address space is UNBOUNDED — the guest can "
-                    "read and write host memory. Diagnostics only.");
+                    "SVM_MEM_IDENTITY=ON: Linux guest addresses map directly onto the "
+                    "host address space. Guest wild pointers can access translator "
+                    "mappings; fixed-address conflicts are fatal.");
+        }
+#endif
+        u32 window_bits = linux::GuestMemory::kDefaultWindowBits;
+        if (!identity_mode) {
+            if (const char* env = std::getenv("SVM_GUEST_BITS")) {
+                const long v = std::strtol(env, nullptr, 0);
+                if (v == 0) {
+#ifdef SWIFT_ALLOW_UNBOUNDED_GUEST
+                    window_bits = 0;
+#else
+                    LOG_ERROR(
+                            "SVM_GUEST_BITS=0 (unbounded guest address space) is not compiled "
+                            "into this build. It lets the guest read and write host memory and "
+                            "exists only so run_isolation_tests.sh can demonstrate the defect; "
+                            "rebuild with -DSWIFT_ALLOW_UNBOUNDED_GUEST=ON to get it.");
+                    return 2;
+#endif
+                } else if (v >= 20 && v <= 47) {
+                    window_bits = static_cast<u32>(v);
+                } else {
+                    LOG_ERROR("SVM_GUEST_BITS={} out of range (0 or 20..47); using {}",
+                              env,
+                              window_bits);
+                }
+            }
+            if (!memory.ReserveWindow(window_bits)) {
+                PANIC("Failed to reserve the {}-bit guest address window", window_bits);
+            }
+            if (window_bits == 0) {
+                LOG_WARNING(
+                        "SVM_GUEST_BITS=0: guest address space is UNBOUNDED — the guest can "
+                        "read and write host memory. Diagnostics only.");
+            }
         }
     }
 

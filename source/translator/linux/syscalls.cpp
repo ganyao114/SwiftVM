@@ -66,21 +66,22 @@ static constexpr u64 FUTEX_CMD_MASK = 0x7f;
 static constexpr u64 FUTEX_CLOCK_REALTIME = 0x100;
 
 // clone(2) flags used by glibc/musl pthread_create.
-static constexpr u64 CLONE_VM = 0x00000100;
-static constexpr u64 CLONE_FS = 0x00000200;
-static constexpr u64 CLONE_FILES = 0x00000400;
-static constexpr u64 CLONE_SIGHAND = 0x00000800;
-static constexpr u64 CLONE_THREAD = 0x00010000;
-static constexpr u64 CLONE_SYSVSEM = 0x00040000;
-static constexpr u64 CLONE_SETTLS = 0x00080000;
-static constexpr u64 CLONE_PARENT_SETTID = 0x00100000;
-static constexpr u64 CLONE_CHILD_CLEARTID = 0x00200000;
-static constexpr u64 CLONE_DETACHED = 0x00400000;  // obsolete, still passed by musl
-static constexpr u64 CLONE_CHILD_SETTID = 0x01000000;
+static constexpr u64 GUEST_CLONE_VM = 0x00000100;
+static constexpr u64 GUEST_CLONE_FS = 0x00000200;
+static constexpr u64 GUEST_CLONE_FILES = 0x00000400;
+static constexpr u64 GUEST_CLONE_SIGHAND = 0x00000800;
+static constexpr u64 GUEST_CLONE_THREAD = 0x00010000;
+static constexpr u64 GUEST_CLONE_SYSVSEM = 0x00040000;
+static constexpr u64 GUEST_CLONE_SETTLS = 0x00080000;
+static constexpr u64 GUEST_CLONE_PARENT_SETTID = 0x00100000;
+static constexpr u64 GUEST_CLONE_CHILD_CLEARTID = 0x00200000;
+static constexpr u64 GUEST_CLONE_DETACHED = 0x00400000;  // obsolete, still passed by musl
+static constexpr u64 GUEST_CLONE_CHILD_SETTID = 0x01000000;
 static constexpr u64 SUPPORTED_THREAD_CLONE_FLAGS =
-        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD |
-        CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID |
-        CLONE_CHILD_CLEARTID | CLONE_DETACHED | CLONE_CHILD_SETTID;
+        GUEST_CLONE_VM | GUEST_CLONE_FS | GUEST_CLONE_FILES | GUEST_CLONE_SIGHAND |
+        GUEST_CLONE_THREAD | GUEST_CLONE_SYSVSEM | GUEST_CLONE_SETTLS |
+        GUEST_CLONE_PARENT_SETTID | GUEST_CLONE_CHILD_CLEARTID |
+        GUEST_CLONE_DETACHED | GUEST_CLONE_CHILD_SETTID;
 
 // mremap flags.
 static constexpr u64 MREMAP_MAYMOVE = 1;
@@ -1592,8 +1593,20 @@ s64 SyscallHandler::SysClockGettime(u64 clock_id, u64 ts) {
         case 1: host_id = CLOCK_MONOTONIC; break;
         case 2: host_id = CLOCK_PROCESS_CPUTIME_ID; break;
         case 3: host_id = CLOCK_THREAD_CPUTIME_ID; break;
-        case 4: host_id = CLOCK_MONOTONIC_RAW_APPROX; break;  // CLOCK_MONOTONIC_RAW
-        case 6: host_id = CLOCK_UPTIME_RAW_APPROX; break;     // CLOCK_BOOTTIME
+        case 4:
+#if defined(__APPLE__)
+            host_id = CLOCK_MONOTONIC_RAW_APPROX;
+#else
+            host_id = CLOCK_MONOTONIC_RAW;
+#endif
+            break;
+        case 6:
+#if defined(__APPLE__)
+            host_id = CLOCK_UPTIME_RAW_APPROX;
+#else
+            host_id = CLOCK_BOOTTIME;
+#endif
+            break;
         default: return -EINVAL_;
     }
     struct timespec host_ts {};
@@ -2051,7 +2064,8 @@ s64 SyscallHandler::SysClone(u64 flags,
                              u64 parent_tid,
                              u64 child_tid,
                              u64 tls) {
-    const u64 required = CLONE_VM | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
+    const u64 required =
+            GUEST_CLONE_VM | GUEST_CLONE_FILES | GUEST_CLONE_SIGHAND | GUEST_CLONE_THREAD;
     if ((flags & required) != required || (flags & ~SUPPORTED_THREAD_CLONE_FLAGS) != 0) {
         LOG_WARNING("clone flags {:#x} are not a supported pthread thread clone", flags);
         return -EINVAL_;
@@ -2059,11 +2073,11 @@ s64 SyscallHandler::SysClone(u64 flags,
     if (!child_stack || !clone_callback_) {
         return -EINVAL_;
     }
-    if ((flags & CLONE_PARENT_SETTID) &&
+    if ((flags & GUEST_CLONE_PARENT_SETTID) &&
         !memory->RangeIsMapped(parent_tid, sizeof(u32))) {
         return -EFAULT_;
     }
-    if ((flags & (CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID)) &&
+    if ((flags & (GUEST_CLONE_CHILD_SETTID | GUEST_CLONE_CHILD_CLEARTID)) &&
         !memory->RangeIsMapped(child_tid, sizeof(u32))) {
         return -EFAULT_;
     }
@@ -2124,6 +2138,15 @@ s64 SyscallHandler::SysGetrandom(u64 buf, u64 buflen, u64 flags) {
 }
 
 s64 SyscallHandler::WriteGuestStat(u64 guest_buf, const struct stat& h) {
+#if defined(__APPLE__)
+    const auto& host_atime = h.st_atimespec;
+    const auto& host_mtime = h.st_mtimespec;
+    const auto& host_ctime = h.st_ctimespec;
+#else
+    const auto& host_atime = h.st_atim;
+    const auto& host_mtime = h.st_mtim;
+    const auto& host_ctime = h.st_ctim;
+#endif
     if (isa == GuestISA::kX86_64) {
         GuestStatX64 s{};
         s.st_dev = h.st_dev;
@@ -2136,12 +2159,12 @@ s64 SyscallHandler::WriteGuestStat(u64 guest_buf, const struct stat& h) {
         s.st_size = h.st_size;
         s.st_blksize = h.st_blksize;
         s.st_blocks = h.st_blocks;
-        s.atime = h.st_atimespec.tv_sec;
-        s.st_atime_nsec = h.st_atimespec.tv_nsec;
-        s.mtime = h.st_mtimespec.tv_sec;
-        s.st_mtime_nsec = h.st_mtimespec.tv_nsec;
-        s.ctime = h.st_ctimespec.tv_sec;
-        s.st_ctime_nsec = h.st_ctimespec.tv_nsec;
+        s.atime = host_atime.tv_sec;
+        s.st_atime_nsec = host_atime.tv_nsec;
+        s.mtime = host_mtime.tv_sec;
+        s.st_mtime_nsec = host_mtime.tv_nsec;
+        s.ctime = host_ctime.tv_sec;
+        s.st_ctime_nsec = host_ctime.tv_nsec;
         return memory->TryWrite(guest_buf, s) ? 0 : -EFAULT_;
     }
     GuestStatArm64 s{};
@@ -2155,12 +2178,12 @@ s64 SyscallHandler::WriteGuestStat(u64 guest_buf, const struct stat& h) {
     s.st_size = h.st_size;
     s.st_blksize = h.st_blksize;
     s.st_blocks = h.st_blocks;
-    s.atime = h.st_atimespec.tv_sec;
-    s.st_atime_nsec = h.st_atimespec.tv_nsec;
-    s.mtime = h.st_mtimespec.tv_sec;
-    s.st_mtime_nsec = h.st_mtimespec.tv_nsec;
-    s.ctime = h.st_ctimespec.tv_sec;
-    s.st_ctime_nsec = h.st_ctimespec.tv_nsec;
+    s.atime = host_atime.tv_sec;
+    s.st_atime_nsec = host_atime.tv_nsec;
+    s.mtime = host_mtime.tv_sec;
+    s.st_mtime_nsec = host_mtime.tv_nsec;
+    s.ctime = host_ctime.tv_sec;
+    s.st_ctime_nsec = host_ctime.tv_nsec;
     return memory->TryWrite(guest_buf, s) ? 0 : -EFAULT_;
 }
 

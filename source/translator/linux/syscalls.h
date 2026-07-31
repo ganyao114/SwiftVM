@@ -42,6 +42,70 @@
 #include "guest_memory.h"
 #include "loader.h"
 
+#if defined(__linux__)
+// glibc exposes host syscall numbers as SYS_* macros. This header deliberately
+// uses the same names for the guest's canonical AArch64 numbering, so remove
+// the host spellings after all system headers have been included. Callers of
+// this guest-emulation interface must not mix in host SYS_* constants.
+#undef SYS_getcwd
+#undef SYS_dup
+#undef SYS_fcntl
+#undef SYS_ioctl
+#undef SYS_unlinkat
+#undef SYS_ftruncate
+#undef SYS_faccessat
+#undef SYS_openat
+#undef SYS_close
+#undef SYS_pipe2
+#undef SYS_getdents64
+#undef SYS_lseek
+#undef SYS_read
+#undef SYS_write
+#undef SYS_readv
+#undef SYS_writev
+#undef SYS_pread64
+#undef SYS_pwrite64
+#undef SYS_readlinkat
+#undef SYS_newfstatat
+#undef SYS_fstat
+#undef SYS_fsync
+#undef SYS_fdatasync
+#undef SYS_exit
+#undef SYS_exit_group
+#undef SYS_set_tid_address
+#undef SYS_futex
+#undef SYS_set_robust_list
+#undef SYS_nanosleep
+#undef SYS_clock_gettime
+#undef SYS_clock_nanosleep
+#undef SYS_sched_getaffinity
+#undef SYS_tgkill
+#undef SYS_rt_sigaction
+#undef SYS_rt_sigprocmask
+#undef SYS_times
+#undef SYS_uname
+#undef SYS_umask
+#undef SYS_gettimeofday
+#undef SYS_getpid
+#undef SYS_getuid
+#undef SYS_geteuid
+#undef SYS_getgid
+#undef SYS_getegid
+#undef SYS_gettid
+#undef SYS_sysinfo
+#undef SYS_clone
+#undef SYS_brk
+#undef SYS_munmap
+#undef SYS_mremap
+#undef SYS_mmap
+#undef SYS_mprotect
+#undef SYS_madvise
+#undef SYS_prlimit64
+#undef SYS_getrandom
+#undef SYS_rseq
+#undef SYS_faccessat2
+#endif
+
 namespace swift::linux {
 
 // Canonical syscall numbering (asm-generic unistd == AArch64). x86_64

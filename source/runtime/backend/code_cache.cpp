@@ -24,7 +24,7 @@ CodeCache::~CodeCache() {
 
 void CodeCache::Init() {
     code_mem = std::make_unique<MemMap>(max_size, true);
-#if __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     code_mem_mapped = reinterpret_cast<u8*>(code_mem->Map(code_mem->GetSize(), 0, MemMap::ReadExe));
 #endif
 
@@ -52,7 +52,7 @@ std::optional<CodeBuffer> CodeCache::AllocCode(size_t size) {
 
     CodeBuffer result_buffer{
             result, result, static_cast<u32>(result - code_mem->GetMemory()), size};
-#if __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     if (code_mem_mapped) {
         result_buffer.exec_data = result - code_mem->GetMemory() + code_mem_mapped;
     }
@@ -62,7 +62,7 @@ std::optional<CodeBuffer> CodeCache::AllocCode(size_t size) {
 
 bool CodeCache::FreeCode(u8* exec_ptr) {
     ASSERT(!read_only);
-#if __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     if (code_mem_mapped) {
         exec_ptr = code_mem->GetMemory() + (exec_ptr - code_mem_mapped);
     }
@@ -72,7 +72,7 @@ bool CodeCache::FreeCode(u8* exec_ptr) {
 }
 
 bool CodeCache::Contain(const u8* exec_ptr) {
-#if __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     if (code_mem_mapped) {
         return exec_ptr >= code_mem_mapped && exec_ptr <= (code_mem_mapped + max_size);
     } else
@@ -86,7 +86,7 @@ u8* CodeCache::GetExePtr(u32 offset) {
     if (offset > max_size) {
         return nullptr;
     }
-#if __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     if (code_mem_mapped) {
         return code_mem_mapped + offset;
     } else
@@ -104,7 +104,7 @@ u8* CodeCache::GetRWPtr(u32 offset) {
 }
 
 u8* CodeCache::GetRWPtr(const u8* exec_ptr) {
-#if __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     if (code_mem_mapped) {
         if (exec_ptr < code_mem_mapped || exec_ptr > (code_mem_mapped + max_size)) {
             return nullptr;

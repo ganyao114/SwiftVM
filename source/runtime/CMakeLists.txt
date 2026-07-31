@@ -133,6 +133,16 @@ add_library(swift_runtime STATIC
         backend/host_function.h
         ${RUNTIME_ARCH_SOURCE})
 
+# GCC requires the AArch64 crypto extension at compile time before its
+# vsha256* intrinsics can be inlined. The x86 SHA frontend already gates
+# execution on the runtime host feature; this option only makes the existing
+# interpreter implementation buildable on Linux and leaves macOS unchanged.
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "arm64" IN_LIST ARCHITECTURE)
+    set_source_files_properties(
+            backend/interp/interpreter.cpp
+            PROPERTIES COMPILE_OPTIONS "-march=armv8-a+crypto")
+endif ()
+
 find_package(Boost 1.57)
 target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl riscv64_asm dlmalloc)
 add_library(swift::runtime ALIAS swift_runtime)

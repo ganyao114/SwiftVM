@@ -9,13 +9,11 @@
 // (argc / argv / envp / auxv).
 //
 // Address modes:
-//  - ET_EXEC: the guest runs at its *linked* addresses (position-dependent
-//    absolute references work unchanged); the image is reserved at a
-//    host-chosen address and the guest->host bias is installed in GuestMemory
-//    ("memory_base" mode), on macOS sidestepping the pagezero low-4GB
-//    mapping ban.
-//  - ET_DYN (static PIE): self-relocating, so it stays on the proven
-//    identity path (guest addr == host addr) for now — see loader.cpp.
+//  - Default, and always on macOS: a bounded guest window provides a non-zero
+//    guest->host bias (memory_base), sidestepping macOS pagezero and isolating
+//    guest pointers from unrelated host mappings.
+//  - Linux SVM_MEM_IDENTITY=ON: guest mappings use their host-identical
+//    addresses; fixed ET_EXEC spans are non-clobbering and fail on collision.
 //
 
 #pragma once

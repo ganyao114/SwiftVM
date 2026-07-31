@@ -973,8 +973,8 @@ void X64Decoder::DecodeAvxFpMovScalar(const VexInsn& v, u32 lane_bits, bool stor
     auto scalar = XmmLo(XmmOf(src2));
     ir::Value lo;
     if (lane_bits == 32) {
-        lo = __ Or(__ And(merge_lo, ir::Operand{ir::Imm(0xFFFFFFFF00000000ull)}),
-                   ir::Operand{__ And(scalar, ir::Operand{ir::Imm(0xFFFFFFFFull)})});
+        lo = __ Or(__ And(merge_lo, ir::Operand{ir::Imm(u64(0xFFFFFFFF00000000))}),
+                   ir::Operand{__ And(scalar, ir::Operand{ir::Imm(u64(0xFFFFFFFF))})});
     } else {
         lo = scalar;
     }
@@ -1057,9 +1057,9 @@ void X64Decoder::DecodeAvxFpCvtScalarFloat(const VexInsn& v, u32 src_bits) {
         VexWriteHalves(v.reg, converted.SetType(ir::ValueType::U64), merge_hi);
         return;
     }
-    auto lo = __ Or(__ And(merge_lo, ir::Operand{ir::Imm(0xFFFFFFFF00000000ull)}),
+    auto lo = __ Or(__ And(merge_lo, ir::Operand{ir::Imm(u64(0xFFFFFFFF00000000))}),
                     ir::Operand{__ And(__ ZeroExtend64(converted),
-                                       ir::Operand{ir::Imm(0xFFFFFFFFull)})});
+                                       ir::Operand{ir::Imm(u64(0xFFFFFFFF))})});
     VexWriteHalves(v.reg, lo, merge_hi);
 }
 
@@ -1086,9 +1086,9 @@ void X64Decoder::DecodeAvxFpCvtSi2Scalar(const VexInsn& v, u32 dst_bits) {
         VexWriteHalves(v.reg, converted.SetType(ir::ValueType::U64), merge_hi);
         return;
     }
-    auto lo = __ Or(__ And(merge_lo, ir::Operand{ir::Imm(0xFFFFFFFF00000000ull)}),
+    auto lo = __ Or(__ And(merge_lo, ir::Operand{ir::Imm(u64(0xFFFFFFFF00000000))}),
                     ir::Operand{__ And(__ ZeroExtend64(converted),
-                                       ir::Operand{ir::Imm(0xFFFFFFFFull)})});
+                                       ir::Operand{ir::Imm(u64(0xFFFFFFFF))})});
     VexWriteHalves(v.reg, lo, merge_hi);
 }
 
@@ -1271,7 +1271,7 @@ void X64Decoder::DecodeAvxFpExtract(const VexInsn& v, u32 element_bits) {
         if (index % 2 != 0) {
             container = __ LsrImm(container, ir::Imm(32u)).SetType(ir::ValueType::U64);
         }
-        value = __ And(container, ir::Operand{ir::Imm(0xFFFFFFFFull)})
+        value = __ And(container, ir::Operand{ir::Imm(u64(0xFFFFFFFF))})
                         .SetType(ir::ValueType::U64);
     } else if (element_bits == 16) {
         auto word = __ VecExtract16(source, ir::Imm(index)).SetType(ir::ValueType::U32);
@@ -1282,7 +1282,7 @@ void X64Decoder::DecodeAvxFpExtract(const VexInsn& v, u32 element_bits) {
         if (index % 2 != 0) {
             container = __ LsrImm(container, ir::Imm(8u)).SetType(ir::ValueType::U64);
         }
-        value = __ And(container, ir::Operand{ir::Imm(0xFFull)}).SetType(ir::ValueType::U64);
+        value = __ And(container, ir::Operand{ir::Imm(u64(0xFF))}).SetType(ir::ValueType::U64);
     }
     if (v.RmIsRegister()) {
         // vpextrq is the only 64-bit destination; everything else writes the
@@ -1325,7 +1325,7 @@ void X64Decoder::DecodeAvxFpInsert(const VexInsn& v, u32 element_bits) {
         auto old_word = __ VecExtract16(result, ir::Imm(lane)).SetType(ir::ValueType::U32);
         auto old = __ ZeroExtend64(old_word).SetType(ir::ValueType::U64);
         const u64 keep = index % 2 == 0 ? 0xFF00ull : 0x00FFull;
-        auto byte = __ And(value, ir::Operand{ir::Imm(0xFFull)}).SetType(ir::ValueType::U64);
+        auto byte = __ And(value, ir::Operand{ir::Imm(u64(0xFF))}).SetType(ir::ValueType::U64);
         if (index % 2 != 0) {
             byte = __ LslImm(byte, ir::Imm(8u)).SetType(ir::ValueType::U64);
         }

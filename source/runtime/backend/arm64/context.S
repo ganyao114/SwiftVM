@@ -102,7 +102,10 @@ code_dispatcher:
 go_guest:
     tbz args, 63, jump_guest
 go_interp:
-    bfc args, 63, 1
+    // Clear the interpreter tag bit. Use the base-ISA logical immediate
+    // spelling instead of the BFC alias, which GNU as rejects under its
+    // default AArch64 architecture level.
+    and args, args, #0x7fffffffffffffff
     ldp arg, handle, [args], #16
     blr handle
 jump_guest:

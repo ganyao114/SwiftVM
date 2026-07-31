@@ -771,7 +771,7 @@ void X64Decoder::DecodeMuludq(_DInst& insn) {
     auto a_lo = XmmLo(dst);
     auto a_hi = XmmHi(dst);
     auto b = LoadSrcHalves(insn, insn.ops[1]);
-    const auto kLo32 = ir::Imm(0xFFFFFFFFull);
+    const auto kLo32 = ir::Imm(u64(0xFFFFFFFF));
     auto lo =
             __ Mul(__ And(a_lo, ir::Operand{kLo32}), ir::Operand{__ And(b.lo, ir::Operand{kLo32})});
     auto hi =
@@ -869,9 +869,9 @@ void X64Decoder::DecodeMovss(_DInst& insn) {
         auto dst = static_cast<_RegisterType>(op0.index);
         if (op1.type == O_REG) {
             // xmm, xmm: low dword copied, upper 96 bits preserved.
-            auto merged = __ Or(__ And(XmmLo(dst), ir::Operand{ir::Imm(0xFFFFFFFF00000000ull)}),
+            auto merged = __ Or(__ And(XmmLo(dst), ir::Operand{ir::Imm(u64(0xFFFFFFFF00000000))}),
                                 ir::Operand{__ And(XmmLo(static_cast<_RegisterType>(op1.index)),
-                                                   ir::Operand{ir::Imm(0xFFFFFFFFull)})});
+                                                   ir::Operand{ir::Imm(u64(0xFFFFFFFF))})});
             XmmLo(dst, merged);
         } else {
             // xmm, m32: low dword loaded, upper 96 bits zeroed.
@@ -1122,8 +1122,8 @@ void X64Decoder::DecodeCvtsi2ss(_DInst& insn) {
                                                 false);
     auto converted =
             __ VecFCvtIntToFloat(src, ir::Imm(width), ir::Imm(32)).SetType(ir::ValueType::U32);
-    auto merged = __ Or(__ And(XmmLo(dst), ir::Operand{ir::Imm(0xFFFFFFFF00000000ull)}),
-                        ir::Operand{__ And(converted, ir::Operand{ir::Imm(0xFFFFFFFFull)})});
+    auto merged = __ Or(__ And(XmmLo(dst), ir::Operand{ir::Imm(u64(0xFFFFFFFF00000000))}),
+                        ir::Operand{__ And(converted, ir::Operand{ir::Imm(u64(0xFFFFFFFF))})});
     XmmLo(dst, merged);
 }
 
@@ -1179,8 +1179,8 @@ void X64Decoder::DecodeCvtsd2ss(_DInst& insn) {
     auto src = LoadSrcLo(insn, insn.ops[1]);
     auto old_lo = XmmLo(dst);
     auto new_f32 = __ VecFCvtScalar(src, ir::Imm(64));
-    auto result = __ Or(__ And(old_lo, ir::Operand{ir::Imm(0xFFFFFFFF00000000ull)}),
-                        ir::Operand{__ And(new_f32, ir::Operand{ir::Imm(0xFFFFFFFFull)})});
+    auto result = __ Or(__ And(old_lo, ir::Operand{ir::Imm(u64(0xFFFFFFFF00000000))}),
+                        ir::Operand{__ And(new_f32, ir::Operand{ir::Imm(u64(0xFFFFFFFF))})});
     XmmLo(dst, result);
 }
 

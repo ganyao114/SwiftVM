@@ -161,7 +161,7 @@ std::uintptr_t SignalHandler::GetContextPC(const ucontext_t* uctx) {
 #if defined(__APPLE__) && defined(__aarch64__)
     return static_cast<std::uintptr_t>(uctx->uc_mcontext->__ss.__pc);
 #elif defined(__linux__) && defined(__aarch64__)
-    return static_cast<std::uintptr_t>(uctx->uc_mcontext->pc);
+    return static_cast<std::uintptr_t>(uctx->uc_mcontext.pc);
 #elif defined(__APPLE__) && defined(__x86_64__)
     return static_cast<std::uintptr_t>(uctx->uc_mcontext->__ss.__rip);
 #elif defined(__linux__) && defined(__x86_64__)
@@ -175,7 +175,7 @@ void SignalHandler::SetContextPC(ucontext_t* uctx, std::uintptr_t pc) {
 #if defined(__APPLE__) && defined(__aarch64__)
     uctx->uc_mcontext->__ss.__pc = pc;
 #elif defined(__linux__) && defined(__aarch64__)
-    uctx->uc_mcontext->pc = pc;
+    uctx->uc_mcontext.pc = pc;
 #elif defined(__APPLE__) && defined(__x86_64__)
     uctx->uc_mcontext->__ss.__rip = pc;
 #elif defined(__linux__) && defined(__x86_64__)
@@ -187,7 +187,7 @@ void SignalHandler::SetContextReturnValue(ucontext_t* uctx, u64 value) {
 #if defined(__APPLE__) && defined(__aarch64__)
     uctx->uc_mcontext->__ss.__x[0] = value;
 #elif defined(__linux__) && defined(__aarch64__)
-    uctx->uc_mcontext->regs[0] = value;
+    uctx->uc_mcontext.regs[0] = value;
 #elif defined(__APPLE__) && defined(__x86_64__)
     uctx->uc_mcontext->__ss.__rax = value;
 #elif defined(__linux__) && defined(__x86_64__)

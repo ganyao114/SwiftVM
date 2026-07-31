@@ -267,7 +267,7 @@ void X64Decoder::DecodeAvx256BroadcastSS(_DInst& insn) {
     if (op1.type == O_REG) {
         // AVX2 register form: the low dword of the source's LOW half.
         dword = __ And(XmmLo(XmmOf(VecIndex(static_cast<_RegisterType>(op1.index)))),
-                       ir::Operand{ir::Imm(0xFFFFFFFFull)});
+                       ir::Operand{ir::Imm(u64(0xFFFFFFFF))});
     } else {
         dword = __ ZeroExtend64(
                 MemLoad(ir::Operand{FlatAddress(insn, op1)},

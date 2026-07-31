@@ -273,7 +273,7 @@ void X64Decoder::DecodeAvxInsertPs(const VexInsn& v) {
         if (count_s % 2 != 0) {
             container = __ LsrImm(container, ir::Imm(32u)).SetType(ir::ValueType::U64);
         }
-        element = __ And(container, ir::Operand{ir::Imm(0xFFFFFFFFull)})
+        element = __ And(container, ir::Operand{ir::Imm(u64(0xFFFFFFFF))})
                           .SetType(ir::ValueType::U64);
     } else {
         element = __ ZeroExtend64(MemLoad(ir::Operand{VexAddress(v)},
