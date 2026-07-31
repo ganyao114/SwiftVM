@@ -65,8 +65,10 @@ public:
     // affordable in front of a four-byte `rep movsb`.
     using GuestRangeProbe = u64 (*)(void* ctx, std::uintptr_t host_addr, u64 length);
 
-    // Installs the process-wide sigaction handlers and the calling thread's
-    // alternate signal stack. Idempotent.
+    // Ensures the process-wide sigaction handlers are installed and installs
+    // the calling thread's alternate signal stack. Reasserting the actions is
+    // intentional: another process-wide signal user may have replaced them
+    // since the previous call. Idempotent.
     static void Install();
 
     // Sets up the alternate signal stack for the *current* thread.

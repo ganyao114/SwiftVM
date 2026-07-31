@@ -5,6 +5,9 @@
 #include <sys/types.h>
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
+#elif defined(__aarch64__) && defined(__linux__)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
 #endif
 
 #include "runtime/frontend/x86/decoder_internal.h"
@@ -41,6 +44,8 @@ bool HostSha256Extension() {
     size_t size = sizeof(value);
     return sysctlbyname("hw.optional.arm.FEAT_SHA256", &value, &size, nullptr, 0) == 0 &&
            value != 0;
+#elif defined(__aarch64__) && defined(__linux__)
+    return (getauxval(AT_HWCAP) & HWCAP_SHA2) != 0;
 #else
     return false;
 #endif

@@ -30,8 +30,6 @@ std::array<HandlerEntry, kMaxHandlers> g_handlers{};
 std::atomic<size_t> g_handler_count{0};
 std::mutex g_register_lock{};
 
-std::atomic_bool g_installed{false};
-
 std::atomic<SignalHandler::GuestMapProbe> g_guest_probe{nullptr};
 std::atomic<void*> g_guest_probe_ctx{nullptr};
 std::atomic<SignalHandler::GuestRangeProbe> g_guest_range_probe{nullptr};
@@ -54,10 +52,16 @@ const char* SignalName(int sig) {
 
 void SignalHandler::Install() {
     InstallThreadAltStack();
-    bool expected = false;
-    if (!g_installed.compare_exchange_strong(expected, true)) {
-        return;
-    }
+    // Do not remember only that these actions were installed once. Another
+    // process-wide signal user can temporarily replace them and later restore
+    // the actions that preceded it. Catch2's POSIX fatal-condition guard does
+    // exactly that around every test case: after the first case constructs a
+    // Runtime, its teardown restores the old SIGSEGV action. A later Runtime
+    // must therefore reassert SwiftVM's actions or a guest page fault escapes
+    // directly to the host.
+    //
+    // Installing the same actions again is idempotent, and Runtime's callback
+    // entries remain registered exactly once separately in runtime.cpp.
     struct sigaction sa {};
     sa.sa_sigaction = &SignalHandler::HandleSignal;
     sigemptyset(&sa.sa_mask);
