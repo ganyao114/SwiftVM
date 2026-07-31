@@ -28,6 +28,8 @@ add_library(swift_runtime STATIC
         common/lru_cache.h
         common/range_mutex.h
         common/range_map.h
+        common/ra_shape_prof.cpp
+        common/ra_shape_prof.h
         common/spin_lock.cpp
         common/spin_lock.h
         common/spin_lock.h

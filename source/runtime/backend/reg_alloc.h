@@ -7,6 +7,7 @@
 #include <bit>
 #include "base/common_funcs.h"
 #include "runtime/common/types.h"
+#include "runtime/common/ra_shape_prof.h"
 #include "runtime/ir/block.h"
 #include "runtime/ir/host_reg.h"
 
@@ -225,6 +226,8 @@ public:
     [[nodiscard]] u32 MapCount() const { return static_cast<u32>(alloc_result.size()); }
     [[nodiscard]] const Map& Mapping(u32 id) const { return alloc_result[id]; }
     [[nodiscard]] u32 SpillCount() const;
+    [[nodiscard]] RAShapeUnitCounters& RAShape() { return ra_shape; }
+    [[nodiscard]] const RAShapeUnitCounters& RAShape() const { return ra_shape; }
 
     // Refines the pool for one compilation unit after a first allocation pass
     // has proved that the unit spills. The caller must ResetAllocations and
@@ -249,6 +252,7 @@ private:
     ir::Inst *current_ir{};
     GPRSMask gprs;
     const FPRSMask fprs;
+    RAShapeUnitCounters ra_shape{};
 };
 
 }

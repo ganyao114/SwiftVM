@@ -158,6 +158,7 @@ Register JitContext::SpillGPR(const ir::Value& value) {
     }
     auto tmp = GetSpillTmpX();
     __ Ldr(tmp, MemOperand(state, offset));
+    if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_loads;
     spill_use_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
     return tmp;
 }
@@ -182,6 +183,7 @@ VRegister JitContext::SpillFPR(const ir::Value& value) {
     }
     auto tmp = GetSpillTmpV();
     __ Ldr(tmp.Q(), MemOperand(state, offset));
+    if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_loads;
     spill_use_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
     return tmp;
 }
@@ -194,6 +196,7 @@ void JitContext::FlushSpillWrites() {
         } else {
             __ Str(XRegister(write.reg), MemOperand(state, offset));
         }
+        if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_stores;
     }
     pending_spill_writes.clear();
 }
@@ -309,6 +312,7 @@ bool JitContext::TryGetConsecutiveTmpV2(VRegister& first, VRegister& second) {
             return true;
         }
     }
+    if (RAShapeProfEnabled()) ++reg_alloc.RAShape().consecutive_pair_fallbacks;
     return false;
 }
 
@@ -593,6 +597,10 @@ void JitContext::Finish() {
     vixl::svm_vixl_prof::JitScope prof;
     __ FinalizeCode();
     MaybeDumpHostBytes();
+    if (RAShapeProfEnabled() && !ra_shape_submitted) {
+        RAShapeSubmitUnit(reg_alloc.RAShape());
+        ra_shape_submitted = true;
+    }
 }
 
 u8* JitContext::Flush(const CodeBuffer& code_cache) {

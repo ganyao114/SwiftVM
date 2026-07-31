@@ -197,6 +197,44 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
         }
     }
 
+    if (RAShapeProfEnabled()) {
+        const auto abi = lambda.IsValue()
+                ? RAShapeHelperABI::IndirectAAPCS
+                : (sync_xmm_before || sync_xmm_after
+                           ? RAShapeHelperABI::XStateSyncAAPCS
+                           : RAShapeHelperABI::DirectAAPCS);
+        RAShapeHelperCounters call{};
+        call.calls = 1;
+        // Save+restore of the live caller-saved GPR/FPR sets, plus the
+        // explicit x29/x30 link pair. Argument loads and the result slot are
+        // call plumbing, not caller-state snapshots, and stay out of this
+        // counter by definition.
+        call.snapshot_instructions =
+                2 * ((save_gprs.size() + 1) / 2 +
+                     (save_fprs.size() + 1) / 2 + 1);
+        call.snapshot_code_bytes = call.snapshot_instructions * 4;
+        call.snapshot_memory_bytes =
+                2 * (save_gprs.size() * sizeof(u64) +
+                     save_fprs.size() * sizeof(u128) + 2 * sizeof(u64));
+        u64 static_fprs = 0;
+        for (const auto& desc : context.GetConfig().buffers_static_alloc) {
+            static_fprs += desc.is_float;
+        }
+        call.xmm_sync_instructions =
+                static_fprs * (u64(sync_xmm_before) + u64(sync_xmm_after));
+        call.xmm_sync_memory_bytes = call.xmm_sync_instructions * sizeof(u128);
+        auto& total = context.GetRAShapeCounters().helpers[static_cast<size_t>(abi)];
+        total.calls += call.calls;
+        total.snapshot_instructions += call.snapshot_instructions;
+        total.snapshot_code_bytes += call.snapshot_code_bytes;
+        total.snapshot_memory_bytes += call.snapshot_memory_bytes;
+        total.xmm_sync_instructions += call.xmm_sync_instructions;
+        total.xmm_sync_memory_bytes += call.xmm_sync_memory_bytes;
+        if (!lambda.IsValue()) {
+            RAShapeRecordHelperTarget(lambda.GetImm().Get(), abi, call);
+        }
+    }
+
     std::array<int, 18> gpr_slot{};
     gpr_slot.fill(-1);
     u32 cursor{0};

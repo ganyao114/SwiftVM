@@ -118,6 +118,9 @@ public:
     // Address-space config (JIT needs it for the memory_base bias fast-path
     // decision in EmitMemOperand).
     [[nodiscard]] const Config& GetConfig() { return module->GetAddressSpace().GetConfig(); }
+    [[nodiscard]] RAShapeUnitCounters& GetRAShapeCounters() {
+        return reg_alloc.RAShape();
+    }
 
     void SetCurrent(ir::Function *function);
     void SetCurrent(ir::Block *block);
@@ -190,6 +193,7 @@ private:
     LocationDescriptor unit_start{};
     bool unit_start_set{};
     bool host_bytes_dumped{};
+    bool ra_shape_submitted{};
     bool exec_profile_enabled{};
     u32 exec_access_pad{};
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_gprs;

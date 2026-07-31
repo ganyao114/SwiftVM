@@ -142,6 +142,13 @@ public:
     }
 
     [[nodiscard]] u32 SpillCount() const { return spill_count; }
+    [[nodiscard]] u32 SpillHighWater() const {
+        return spill_count ? max_spill_slot + 1 : 0;
+    }
+    [[nodiscard]] u32 MaxLiveGPR() const { return max_live_gpr; }
+    [[nodiscard]] u32 MaxLiveFPR() const { return max_live_fpr; }
+    [[nodiscard]] u32 GPRReserve() const { return gpr_reserve; }
+    [[nodiscard]] u32 FPRReserve() const { return fpr_reserve; }
 
     static u32 ScratchOnlyGPRs(OpCode op, const backend::GPRSMask& pool) {
         u32 count = backend::X86PinExtLevel3AluScratchEnabled(pool, op) ? 1u : 0u;
@@ -589,6 +596,14 @@ private:
     }
 
     void RecordActiveRegs(u32 id) {
+        auto base_gprs = reg_alloc->GetGprs();
+        auto base_fprs = reg_alloc->GetFprs();
+        const u32 allocated_gprs =
+                active_gprs.GetMarkedCount() - base_gprs.GetMarkedCount();
+        const u32 allocated_fprs =
+                active_fprs.GetMarkedCount() - base_fprs.GetMarkedCount();
+        max_live_gpr = std::max(max_live_gpr, allocated_gprs + active_spill_gpr);
+        max_live_fpr = std::max(max_live_fpr, allocated_fprs + active_spill_fpr);
         auto gprs = active_gprs;
         if (id < fixed_gpr_clobbers.size()) {
             const u32 fixed = fixed_gpr_clobbers[id];
@@ -1423,6 +1438,11 @@ private:
             FreeSpill(slot);
             if (IsFloatValue(interval.inst)) {
                 FreeSpill(slot + 1);
+                ASSERT(active_spill_fpr > 0);
+                --active_spill_fpr;
+            } else {
+                ASSERT(active_spill_gpr > 0);
+                --active_spill_gpr;
             }
         }
     }
@@ -1526,6 +1546,11 @@ private:
                    "spill area exhausted: slot {} (+{}) >= {} reserved slots",
                    slot, slot_size, backend::kMaxSpillSlots);
         spill_count++;
+        if (is_float) {
+            ++active_spill_fpr;
+        } else {
+            ++active_spill_gpr;
+        }
         max_spill_slot = std::max(max_spill_slot, slot + slot_size - 1);
     }
 
@@ -1565,6 +1590,10 @@ private:
     // line — it means the JIT's defensive MEM path is being exercised.
     u32 spill_count{0};
     u32 max_spill_slot{0};
+    u32 active_spill_gpr{0};
+    u32 active_spill_fpr{0};
+    u32 max_live_gpr{0};
+    u32 max_live_fpr{0};
 };
 
 class VRegisterAllocator {
@@ -1733,8 +1762,33 @@ static void RunVerified(Unit* unit,
                 LOG_WARNING("RegisterAllocPass: {} initial spill(s); x18 reserved for this unit",
                             spills);
             }
+            return true;
         }
 #endif
+        return false;
+    };
+    auto record_shape = [&](const LinearScanAllocator& scan) {
+        if (!RAShapeProfEnabled()) return;
+        auto& shape = reg_alloc->RAShape();
+        shape = {};
+        shape.ra_valid = true;
+        auto gprs = reg_alloc->GetGprs();
+        auto fprs = reg_alloc->GetFprs();
+        shape.gpr_pool = gprs.GetClearCount();
+        shape.fpr_pool = fprs.GetClearCount();
+        shape.max_live_gpr = scan.MaxLiveGPR();
+        shape.max_live_fpr = scan.MaxLiveFPR();
+        shape.scratch_gpr = scan.GPRReserve();
+        shape.scratch_fpr = scan.FPRReserve();
+        shape.spill_defs = scan.SpillCount();
+        shape.spill_high_water = scan.SpillHighWater();
+        if constexpr (std::is_same_v<Unit, Block>) {
+            RAShapeAnalyzeFlags(unit, shape);
+        } else {
+            for (auto* hir_block : unit->GetHIRBlocks()) {
+                RAShapeAnalyzeFlags(hir_block->GetBlock(), shape);
+            }
+        }
     };
     const bool scratch_only_enabled =
             backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs());
@@ -1756,7 +1810,8 @@ static void RunVerified(Unit* unit,
         const bool verified = scan.Verify();
         perf_verify.Stop();
         if (verified) {
-            rerun_with_conditional_spill_scratch();
+            if (rerun_with_conditional_spill_scratch()) return;
+            record_shape(scan);
             return;
         }
     }
@@ -1824,7 +1879,8 @@ static void RunVerified(Unit* unit,
                 LOG_WARNING("RegisterAllocPass: scratch reserve escalated to {}/{}", rung.gpr,
                             rung.fpr);
             }
-            rerun_with_conditional_spill_scratch();
+            if (rerun_with_conditional_spill_scratch()) return;
+            record_shape(scan);
             return;
         }
     }
