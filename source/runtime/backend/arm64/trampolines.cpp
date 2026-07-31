@@ -7,6 +7,7 @@
 #include "runtime/frontend/x86/cpu.h"
 #include "trampolines.h"
 #include "defines.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -128,22 +129,35 @@ void TrampolinesArm64::Build() {
     if (const char* dump = std::getenv("SVM_VIXL_HOST_DUMP");
         dump && std::strcmp(dump, "0") != 0) {
         const bool has_pt = config.page_table || config.memory_base;
+        const bool pin_ext_level3 =
+                static_gprs.Get(6) && static_gprs.Get(7) &&
+                static_gprs.Get(8) && static_gprs.Get(9);
         std::fprintf(stderr,
                      "[svm-reg-mask] memory_base=%d page_table=%d "
                      "x24_reserved=%d x10_reserved=%d dispatcher_loc=x%d "
                      "pin_ext=%d pin_ext_level2=%d x0_x5_reserved=%d "
+                     "pin_ext_level3=%d x6_x9_reserved=%d "
+                     "xpool_requested=%d xpool_effective=%d xpool_auto_level3=%d "
                      "x22_reserved=%d x23_reserved=%d "
                      "x29_reserved=%d allocatable_gprs=%u\n",
                      config.memory_base != nullptr,
                      config.page_table != nullptr,
                      gpr_regs.Get(24),
                      gpr_regs.Get(10),
-                     has_pt ? ip6.GetCode() : loc.GetCode(),
+                     has_pt ? (pin_ext_level3 ? atomic_pair_scratch.GetCode()
+                                              : ip6.GetCode())
+                            : loc.GetCode(),
                      static_gprs.Get(22) && static_gprs.Get(23) && static_gprs.Get(29),
                      static_gprs.Get(0) && static_gprs.Get(1) && static_gprs.Get(2) &&
                              static_gprs.Get(3) && static_gprs.Get(4) && static_gprs.Get(5),
                      gpr_regs.Get(0) && gpr_regs.Get(1) && gpr_regs.Get(2) &&
                              gpr_regs.Get(3) && gpr_regs.Get(4) && gpr_regs.Get(5),
+                     pin_ext_level3,
+                     gpr_regs.Get(6) && gpr_regs.Get(7) &&
+                             gpr_regs.Get(8) && gpr_regs.Get(9),
+                     backend::ScratchXPoolRequested(),
+                     backend::ScratchXPoolEnabled(),
+                     backend::ScratchXPoolAutoEnabled(),
                      gpr_regs.Get(22),
                      gpr_regs.Get(23),
                      gpr_regs.Get(29),
@@ -169,8 +183,10 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     // When guest addresses are virtualized (page_table / memory_base), x24 is
     // the persistent pt register (holds the guest->host bias for the whole
     // guest execution), so the dispatcher's scratch "current location" value
-    // must live elsewhere; ip6 (x9) is free in the dispatcher. In identity
-    // mode keep the historical x24 (loc) to leave generated code untouched.
+    // must live elsewhere. Levels 0-2 retain ip6/x9 byte-for-byte; level 3 pins
+    // guest R15 there, so use dispatcher-only x13 instead. Dynamic values are
+    // dead whenever control has returned to this dispatcher. Identity mode
+    // retains the historical x24 (loc).
     const bool has_pt = config.page_table || config.memory_base;
     const bool scalar_insert =
             True(config.arm64_features & Arm64Features::AFP);
@@ -178,7 +194,13 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     // AH deliberately remains clear: changing it process-wide also changes
     // packed FP edge cases that are outside this optimisation's scope.
     constexpr u32 kFpcrNep = 1u << 2;
-    const XRegister loc_reg = has_pt ? XRegister(ip6.GetCode()) : XRegister(loc.GetCode());
+    const bool level3_x9_pin = std::any_of(
+            config.buffers_static_alloc.begin(),
+            config.buffers_static_alloc.end(),
+            [](const auto& desc) { return !desc.is_float && desc.reg == 9; });
+    const XRegister loc_reg = has_pt
+            ? XRegister(level3_x9_pin ? atomic_pair_scratch.GetCode() : ip6.GetCode())
+            : XRegister(loc.GetCode());
     bool caller_saved_static_pins = false;
     for (const auto& desc : config.buffers_static_alloc) {
         caller_saved_static_pins |= !desc.is_float && desc.reg <= 5;

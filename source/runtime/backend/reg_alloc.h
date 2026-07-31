@@ -73,11 +73,23 @@ private:
 using GPRSMask = RegisterMask<u32>;
 using FPRSMask = RegisterMask<u32>;
 
-// True only for an actual level-2 x86 pool: the environment level alone is
+// Raw XPOOL request and effective state. Pin level 3 forces the effective state
+// on because pinning x6-x9 would otherwise leave only x14/x15 as value GPRs.
+[[nodiscard]] bool ScratchXPoolRequested();
+[[nodiscard]] bool ScratchXPoolAutoEnabled();
+[[nodiscard]] bool X86PinExtLevel3Requested();
+
+// True only for an actual level-2/3 x86 pool: the environment level alone is
 // insufficient because swift_test and non-x86 frontends can construct an
-// AddressSpace without the x0-x5 static descriptors while inheriting env vars.
+// AddressSpace without the expected static descriptors while inheriting vars.
 [[nodiscard]] bool X86PinExtLevel2Enabled(const GPRSMask& pool);
+[[nodiscard]] bool X86PinExtLevel3Enabled(const GPRSMask& pool);
 [[nodiscard]] bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool);
+// Level 3 can lease the bias-mode x10 reservation to pure high-pressure ALU
+// lowering.
+// It never enters the value pool and memory opcodes never see it as scratch.
+[[nodiscard]] bool X86PinExtLevel3AluScratchEnabled(const GPRSMask& pool,
+                                                    ir::OpCode op);
 
 // Number of u64 spill slots reserved in State::spill_area (context.h).
 // The linear-scan pass panics instead of handing out a slot beyond this:

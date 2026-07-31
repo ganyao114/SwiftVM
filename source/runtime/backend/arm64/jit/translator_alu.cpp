@@ -2908,7 +2908,7 @@ void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
             extracted->GetArg<ir::Imm>(2).Get() ==
                     ir::GetValueSizeByte(value.Type()) * 8 &&
             source.Def() && source.Def()->GetOp() == ir::OpCode::GetHostGPR &&
-            source.Def()->GetArg<ir::Imm>(0).Get() <= 5) {
+            source.Def()->GetArg<ir::Imm>(0).Get() <= 9) {
             // UBFX already zero-filled the tied W destination.
             return;
         }
@@ -2948,7 +2948,7 @@ void JitTranslator::EmitZeroExtend32To64(ir::Inst* inst) {
                 it->GetArg<ir::Value>(0).Def() == inst &&
                 it->GetArg<ir::Imm>(2).Get() == 0) {
                 const u32 target = it->GetArg<ir::Imm>(1).Get();
-                if (target <= 5 || target == 22 || target == 23 || target == 29) {
+                if (target <= 9 || target == 22 || target == 23 || target == 29) {
                     fused_pin_zext32.insert(inst);
                     return;
                 }

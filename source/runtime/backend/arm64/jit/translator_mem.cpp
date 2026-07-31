@@ -250,7 +250,7 @@ void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
     auto reg_index = inst->GetArg<ir::Imm>(0).Get();
     const u32 value_size = ir::GetValueSizeByte(inst->ReturnType());
     const bool pin_ext_reg =
-            reg_index <= 5 || reg_index == 22 || reg_index == 23 || reg_index == 29;
+            reg_index <= 9 || reg_index == 22 || reg_index == 23 || reg_index == 29;
     if (offset == 0 && pin_ext_reg &&
         inst->GetUses() == 1 && value_size <= sizeof(u32)) {
         auto& list = cur_block->GetInstList();
@@ -266,18 +266,24 @@ void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
             if (!names_value) {
                 continue;
             }
+            // Narrow And/Xor reads stay fused for the callee-saved pins
+            // (22/23/29) below level 3 — the W56-proven shape. The x6-x9
+            // caller-saved pins keep codex's conservative restriction.
             const bool direct_alu =
                     (it->GetOp() == ir::OpCode::And || it->GetOp() == ir::OpCode::Xor) &&
-                    ir::GetValueSizeByte(it->ReturnType()) <= sizeof(u32);
-            const bool direct_level2_alu =
-                    reg_index <= 5 &&
+                    ir::GetValueSizeByte(it->ReturnType()) <= sizeof(u32) &&
+                    (reg_index <= 5 || value_size == sizeof(u32) ||
+                     (reg_index >= 22 && !backend::X86PinExtLevel3Requested()));
+            const bool direct_caller_pin_alu =
+                    reg_index <= 9 &&
                     (it->GetOp() == ir::OpCode::Add || it->GetOp() == ir::OpCode::Sub) &&
-                    ir::GetValueSizeByte(it->ReturnType()) <= sizeof(u32);
+                    ir::GetValueSizeByte(it->ReturnType()) <= sizeof(u32) &&
+                    (reg_index <= 5 || value_size == sizeof(u32));
             const bool direct_extend =
                     (value_size == sizeof(u8) || value_size == sizeof(u16)) &&
                     it->GetOp() == ir::OpCode::ZeroExtend32 &&
                     it->GetArg<ir::Value>(0).Def() == inst;
-            if (direct_alu || direct_level2_alu || direct_extend) {
+            if (direct_alu || direct_caller_pin_alu || direct_extend) {
                 fused_pin_gpr_reads.emplace(inst, static_cast<u16>(reg_index));
                 return;
             }
@@ -292,8 +298,8 @@ void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
         if (host_reg != ret_reg) {
             __ Mov(ret_reg, host_reg);
         }
-    } else if (bit_offset == 0 && bit_width == 32 && reg_index <= 5) {
-        // A level-2 U32 GetHostGPR may be allocated directly to its static
+    } else if (bit_offset == 0 && bit_width == 32 && reg_index <= 9) {
+        // A caller-saved-pin U32 GetHostGPR may be allocated directly to its static
         // W register. Reading W already supplies x86's required zero extension.
         if (host_reg.W() != ret_reg.W()) {
             __ Mov(ret_reg.W(), host_reg.W());
@@ -357,7 +363,7 @@ void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
     ASSERT_MSG(bit_offset + bit_width <= 64,
                "invalid fixed GPR write offset {} width {}", bit_offset, bit_width);
     const bool pin_ext_reg =
-            reg_index <= 5 || reg_index == 22 || reg_index == 23 || reg_index == 29;
+            reg_index <= 9 || reg_index == 22 || reg_index == 23 || reg_index == 29;
     if (bit_offset == 0 && bit_width == 32 && pin_ext_reg) {
         if (value_reg.W() != host_reg.W()) {
             __ Mov(host_reg.W(), value_reg.W());

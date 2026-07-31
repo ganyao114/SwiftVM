@@ -8,20 +8,32 @@
 
 namespace swift::runtime::backend {
 
-bool ScratchXPoolEnabled() {
-    static const bool enabled = [] {
-        const char* value = PerfGetenv("SVM_JIT_SCRATCH_XPOOL");
-        return value && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
-
 static int X86PinExtLevel() {
     static const int level = [] {
         const char* value = PerfGetenv("SVM_X86_PIN_EXT");
         return value ? std::max(0, std::atoi(value)) : 0;
     }();
     return level;
+}
+
+bool ScratchXPoolRequested() {
+    static const bool requested = [] {
+        const char* value = PerfGetenv("SVM_JIT_SCRATCH_XPOOL");
+        return value && std::strcmp(value, "0") != 0;
+    }();
+    return requested;
+}
+
+bool ScratchXPoolAutoEnabled() {
+    return X86PinExtLevel() >= 3 && !ScratchXPoolRequested();
+}
+
+bool X86PinExtLevel3Requested() {
+    return X86PinExtLevel() >= 3;
+}
+
+bool ScratchXPoolEnabled() {
+    return ScratchXPoolRequested() || X86PinExtLevel() >= 3;
 }
 
 bool X86PinExtLevel2Enabled(const GPRSMask& pool) {
@@ -36,9 +48,29 @@ bool X86PinExtLevel2Enabled(const GPRSMask& pool) {
     return true;
 }
 
+bool X86PinExtLevel3Enabled(const GPRSMask& pool) {
+    if (X86PinExtLevel() < 3) {
+        return false;
+    }
+    for (u32 code = 0; code <= 9; ++code) {
+        if (!pool.Get(code)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool) {
     return X86PinExtLevel2Enabled(pool) && !ScratchXPoolEnabled() &&
            pool.Get(12) && pool.Get(13);
+}
+
+bool X86PinExtLevel3AluScratchEnabled(const GPRSMask& pool, ir::OpCode op) {
+    return X86PinExtLevel3Enabled(pool) && pool.Get(10) &&
+           (op == ir::OpCode::Add || op == ir::OpCode::Sub ||
+            op == ir::OpCode::VecFCvtFloatToInt ||
+            op == ir::OpCode::CallLambda || op == ir::OpCode::CallDynamic ||
+            op == ir::OpCode::CallLocation);
 }
 
 static bool X86PinExtEnabled() {
@@ -123,10 +155,22 @@ u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
 //    operand), one for the 64-bit ones, none for the packed ones.
 ScratchNeed ScratchBudget(ir::OpCode op) {
     switch (op) {
+        case ir::OpCode::AtomicExchange:
+            // Level 3's spill-aware accounting must use the measured emitter
+            // peak, not the generic three-register default: address, desired
+            // and result reloads replace ordinary value locations, while the
+            // emitter itself only holds MergeNZCV's shared temporary. The
+            // exclusive status/value registers are fixed clobbers accounted
+            // separately by the allocator.
+            if (X86PinExtLevel() >= 3) {
+                return {1, kDefaultScratchFPR};
+            }
+            return {kDefaultScratchGPR, kDefaultScratchFPR};
         // --- x87 GPRs ----------------------------------------------------
         case ir::OpCode::X87Op:
-            if (X86PinExtLevel() >= 2 && !ScratchXPoolEnabled()) {
-                // Six dynamic registers cannot cover the inline x87 peak.
+            if ((X86PinExtLevel() >= 2 && !ScratchXPoolEnabled()) ||
+                X86PinExtLevel() >= 3) {
+                // The reduced dynamic pool cannot cover the inline x87 peak.
                 // The emitter deliberately selects its exact host-helper
                 // fallback in this state; price that ordinary call shape.
                 return {kDefaultScratchGPR, kDefaultScratchFPR};

@@ -685,6 +685,15 @@ void JitContext::TickIR(ir::Inst* instr) {
             }
         }
     }
+    // In bias mode x10 is permanently outside the value pool. Level 3 leases
+    // it only to pure high-pressure ALU emission, where it cannot overlap
+    // mem_scratch's address role. This is the eighth slot needed by a
+    // five-register emitter plus high-pressure spill reloads.
+    if (backend::X86PinExtLevel3AluScratchEnabled(reg_alloc.GetGprs(),
+                                                  instr->GetOp())) {
+        cur_dirty_gprs.Clear(10);
+        tick_dirty_gprs.Clear(10);
+    }
     BeginVixlScratch(true);
 }
 

@@ -172,14 +172,13 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     if (lambda_value && lambda_value->GetCode() <= 17) {
         live_gprs.Mark(lambda_value->GetCode());
     }
-    // SVM_X86_PIN_EXT=2 maps guest RSI/RDI/R8-R11 to the AAPCS64
-    // caller-saved argument registers x0-x5. They are architectural state even
-    // when no allocator value is live here: argument setup and BLR may clobber
-    // every one of them. Union the static descriptors explicitly so this
-    // correctness boundary does not depend on the allocator mask containing
-    // reserved registers.
+    // SVM_X86_PIN_EXT=2/3 maps guest RSI-R15 to AAPCS64 caller-saved x0-x9.
+    // They are architectural state even when no allocator value is live here:
+    // argument setup and BLR may clobber every one of them. Union the static
+    // descriptors explicitly so this correctness boundary does not depend on
+    // the allocator mask containing reserved registers.
     for (const auto& desc : context.GetConfig().buffers_static_alloc) {
-        if (!desc.is_float && desc.reg <= 5) {
+        if (!desc.is_float && desc.reg <= 9) {
             live_gprs.Mark(desc.reg);
         }
     }

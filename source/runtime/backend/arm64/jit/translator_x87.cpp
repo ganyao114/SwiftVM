@@ -77,9 +77,10 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 has_result,
                 result);
     };
-    if (!backend::ScratchXPoolEnabled()) {
+    if (!backend::ScratchXPoolEnabled() || backend::X86PinExtLevel3Requested()) {
         bool level2_pins = true;
-        for (u32 code = 0; code <= 5; ++code) {
+        const u32 last_pin = backend::X86PinExtLevel3Requested() ? 9u : 5u;
+        for (u32 code = 0; code <= last_pin; ++code) {
             level2_pins &= std::any_of(
                     context.GetConfig().buffers_static_alloc.begin(),
                     context.GetConfig().buffers_static_alloc.end(),
@@ -88,10 +89,8 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                     });
         }
         if (level2_pins) {
-            // The six-register value pool cannot sustain the eight-temporary
-            // inline x87 peak. Preserve correctness and switch independence
-            // by using the existing exact helper path; enabling XPOOL retains
-            // the inline lowering.
+            // The reduced value pool cannot sustain the inline x87 peak plus
+            // reloads. Preserve correctness via the existing exact helper.
             fallback();
             return;
         }

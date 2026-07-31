@@ -132,12 +132,15 @@ public:
 
     [[nodiscard]] u32 SpillCount() const { return spill_count; }
 
-    static u32 ScratchOnlyGPRs(OpCode op, bool enabled) {
-        if (!enabled) {
-            return 0;
+    static u32 ScratchOnlyGPRs(OpCode op, const backend::GPRSMask& pool) {
+        u32 count = backend::X86PinExtLevel3AluScratchEnabled(pool, op) ? 1u : 0u;
+        const bool level2_scratch = backend::X86PinExtScratchOnlyEnabled(pool);
+        if (level2_scratch) {
+            const u32 fixed = backend::FixedGPRClobbers(op, true);
+            count += ((fixed & (1u << 12)) ? 0u : 1u) +
+                     ((fixed & (1u << 13)) ? 0u : 1u);
         }
-        const u32 fixed = backend::FixedGPRClobbers(op, enabled);
-        return ((fixed & (1u << 12)) ? 0u : 1u) + ((fixed & (1u << 13)) ? 0u : 1u);
+        return count;
     }
 
     // Re-reads the masks this scan recorded and confirms each instruction is
@@ -163,10 +166,8 @@ public:
                         continue;
                     }
                     ok &= static_cast<u32>(reg_alloc->DirtyGPR(inst.Id()).GetClearCount()) +
-                                          ScratchOnlyGPRs(
-                                                  inst.GetOp(),
-                                                  backend::X86PinExtScratchOnlyEnabled(
-                                                          reg_alloc->GetGprs())) >=
+                                          ScratchOnlyGPRs(inst.GetOp(),
+                                                          reg_alloc->GetGprs()) >=
                                   need.gpr &&
                           static_cast<u32>(reg_alloc->DirtyFPR(inst.Id()).GetClearCount()) >=
                                   need.fpr;
@@ -394,7 +395,7 @@ private:
                     continue;
                 }
                 const u32 target = store->GetArg<Imm>(1).Get();
-                if (!(target <= 5 || target == 22 || target == 23 || target == 29)) {
+                if (!(target <= 9 || target == 22 || target == 23 || target == 29)) {
                     continue;
                 }
 
@@ -498,7 +499,7 @@ private:
                         // into a W55 callee-saved pin, with every snapshot use
                         // before the source changes (the CRC EDI->EDX chain).
                         const bool safe_level2_snapshot =
-                                source_uses > 1 && source_host <= 5 &&
+                                source_uses > 1 && source_host <= 9 &&
                                 (target == 22 || target == 23 || target == 29) &&
                                 !source_used_after_write;
                         if (source_written && !safe_level2_snapshot) {
@@ -648,7 +649,7 @@ private:
                     DirectlyFeedsImmediateShift(inst)) {
                     auto input = source.Def()->GetArg<Value>(0);
                     if (input.Def() && input.Def()->GetOp() == OpCode::GetHostGPR &&
-                        input.Def()->GetArg<Imm>(0).Get() <= 5) {
+                        input.Def()->GetArg<Imm>(0).Get() <= 9) {
                         return source;
                     }
                 }
@@ -937,8 +938,7 @@ private:
         auto gprs = reg_alloc->DirtyGPR(id);
         auto fprs = reg_alloc->DirtyFPR(id);
         const u32 scratch_only_gprs =
-                ScratchOnlyGPRs(inst->GetOp(),
-                                backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs()));
+                ScratchOnlyGPRs(inst->GetOp(), reg_alloc->GetGprs());
         u32 need_gpr = need.gpr + reload_gpr + extra_gpr;
         // Add/Sub's five-register declaration is the no-spill worst case:
         // tied inputs must be preserved for AF/PF after the destination is
@@ -1680,11 +1680,10 @@ static void CollectUnitBudget(Block* block,
                               u32& gpr,
                               u32& fpr,
                               u32& reload_bound,
-                              bool scratch_only_enabled) {
+                              const backend::GPRSMask& pool) {
     for (auto& inst : block->GetInstList()) {
         auto need = backend::ScratchBudget(inst.GetOp());
-        const u32 scratch_only =
-                LinearScanAllocator::ScratchOnlyGPRs(inst.GetOp(), scratch_only_enabled);
+        const u32 scratch_only = LinearScanAllocator::ScratchOnlyGPRs(inst.GetOp(), pool);
         gpr = std::max<u32>(gpr, need.gpr > scratch_only ? need.gpr - scratch_only : 0);
         fpr = std::max<u32>(fpr, need.fpr);
         reload_bound = std::max<u32>(reload_bound, static_cast<u32>(inst.GetValues().size()) + 1);
@@ -1695,10 +1694,10 @@ static void CollectUnitBudget(HIRFunction* function,
                               u32& gpr,
                               u32& fpr,
                               u32& reload_bound,
-                              bool scratch_only_enabled) {
+                              const backend::GPRSMask& pool) {
     for (auto* hir_block : function->GetHIRBlocks()) {
         CollectUnitBudget(
-                hir_block->GetBlock(), gpr, fpr, reload_bound, scratch_only_enabled);
+                hir_block->GetBlock(), gpr, fpr, reload_bound, pool);
     }
 }
 
@@ -1735,7 +1734,7 @@ static void RunVerified(Unit* unit,
                       unit_gpr,
                       unit_fpr,
                       reload_bound,
-                      scratch_only_enabled);
+                      reg_alloc->GetGprs());
 
     // A reserve at or above the pool size would leave the scan nothing to
     // allocate, so each rung is clamped to leave one register allocatable.
@@ -1744,16 +1743,43 @@ static void RunVerified(Unit* unit,
     // tests use to force the spill path.
     const auto pool_gpr = static_cast<u32>(backend::GPRSMask{reg_alloc->GetGprs()}.GetClearCount());
     const auto pool_fpr = static_cast<u32>(backend::FPRSMask{reg_alloc->GetFprs()}.GetClearCount());
-    const auto clamp = [](u32 want, u32 pool) { return pool ? std::min(want, pool - 1) : 0u; };
+    const bool level3 = backend::X86PinExtLevel3Enabled(reg_alloc->GetGprs());
+    const auto clamp_gpr = [level3](u32 want, u32 pool) {
+        if (!pool) {
+            return 0u;
+        }
+        // Level 3 may need the all-spill terminal rung: spilled definitions
+        // are emitted into reload scratch, so correctness does not require a
+        // value register to remain allocatable.
+        return std::min(want, level3 ? pool : pool - 1);
+    };
+    const auto clamp_fpr = [](u32 want, u32 pool) {
+        return pool ? std::min(want, pool - 1) : 0u;
+    };
     const u32 base_gpr = std::max<u32>(unit_gpr, default_gpr_reserve);
     const u32 base_fpr = std::max<u32>(unit_fpr, backend::kDefaultScratchFPR);
-    const struct {
+    struct ReserveRung {
         u32 gpr;
         u32 fpr;
-    } ladder[] = {
-            {clamp(base_gpr, pool_gpr), clamp(base_fpr, pool_fpr)},
-            {clamp(base_gpr + reload_bound, pool_gpr), clamp(base_fpr + reload_bound, pool_fpr)},
     };
+    Vector<ReserveRung> ladder{};
+    auto add_rung = [&](u32 gpr, u32 fpr) {
+        ReserveRung rung{clamp_gpr(gpr, pool_gpr), clamp_fpr(fpr, pool_fpr)};
+        if (ladder.empty() || ladder.back().gpr != rung.gpr ||
+            ladder.back().fpr != rung.fpr) {
+            ladder.push_back(rung);
+        }
+    };
+    add_rung(base_gpr, base_fpr);
+    if (level3) {
+        // With seven dynamic GPRs, jumping straight from the emitter reserve
+        // to the all-spill rung is counterproductive: it turns ordinary
+        // three-operand ops into four-reload shapes. Walk the two intermediate
+        // balances and stop at the first verified allocation.
+        add_rung(base_gpr + 1, base_fpr + 1);
+        add_rung(base_gpr + 2, base_fpr + 2);
+    }
+    add_rung(base_gpr + reload_bound, base_fpr + reload_bound);
     for (auto& rung : ladder) {
         reg_alloc->ResetAllocations();
         LinearScanAllocator scan{unit, reg_alloc, rung.gpr, rung.fpr, single_block_fast_path,
