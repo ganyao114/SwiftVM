@@ -45,6 +45,22 @@ public:
                           std::forward<const Args&>(args)...);
     }
 
+    template <typename LambdaT, typename... Args>
+    Value CallHostWithUniformEffects(UniformEffectId effects, LambdaT l, const Args&... args) {
+        constexpr static auto MAX_ARG = 3;
+        auto arg_count = sizeof...(args);
+        ASSERT(arg_count <= MAX_ARG);
+        return CallLambda(
+                Lambda{DataClass{Imm{reinterpret_cast<VAddr>(FptrCast(l))}}, effects},
+                std::forward<const Args&>(args)...);
+    }
+
+    template <typename LambdaT, typename... Args>
+    Value CallHostUniformPure(LambdaT l, const Args&... args) {
+        return CallHostWithUniformEffects(UniformEffectId::None, l,
+                                          std::forward<const Args&>(args)...);
+    }
+
     HIRBuilder::ElseThen If(const terminal::If& if_);
 
     HIRBlock* LinkBlock(const terminal::LinkBlock& switch_);

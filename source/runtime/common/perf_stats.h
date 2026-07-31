@@ -207,12 +207,15 @@ struct PerfStats2 {
     std::atomic<unsigned long long> uniform_stores{0};
     std::atomic<unsigned long long> uniform_barriers{0};
     std::atomic<unsigned long long> uniform_invalidations{0};
+    std::atomic<unsigned long long> uniform_full_invalidations{0};
+    std::atomic<unsigned long long> uniform_range_invalidations{0};
+    std::atomic<unsigned long long> uniform_preserved_facts{0};
     std::atomic<unsigned long long> uniform_probe_insts{0};
     std::atomic<unsigned long long> uniform_probe_hits{0};
     std::atomic<unsigned long long> uniform_dse_blocks{0};
     std::atomic<unsigned long long> uniform_dse_victims{0};
 
-    static constexpr std::array<const char*, 46> kGetenvNames{{
+    static constexpr std::array<const char*, 47> kGetenvNames{{
             "SVM_MEM_IDENTITY",
             "SVM_FUNC_LAZY",
             "SVM_DUMP_IR",
@@ -225,6 +228,7 @@ struct PerfStats2 {
             "SVM_FLAG_CARRY_ELIM",
             "SVM_RA_1BLK",
             "SVM_UNIFORM_FAST",
+            "SVM_IR_UNIFORM_RANGE",
             "SVM_IR_FAST",
             "SVM_FLAG_NARROW",
             "SVM_AVX",
@@ -469,13 +473,17 @@ inline void PerfDumpAtExit() {
                  g(d.lowering_empty_recorded_ns));
     std::fprintf(stderr,
                  "[svm-uniform] blocks=%llu no_ops=%llu insts=%llu loads=%llu "
-                 "stores=%llu barriers=%llu invalidations=%llu probe_insts=%llu "
-                 "probe_hits=%llu dse_blocks=%llu "
+                 "stores=%llu barriers=%llu invalidations=%llu "
+                 "full_invalidations=%llu range_invalidations=%llu "
+                 "preserved_facts=%llu probe_insts=%llu probe_hits=%llu dse_blocks=%llu "
                  "dse_victims=%llu\n",
                  g(d.uniform_blocks), g(d.uniform_no_ops_blocks), g(d.uniform_insts),
                  g(d.uniform_loads), g(d.uniform_stores), g(d.uniform_barriers),
-                 g(d.uniform_invalidations), g(d.uniform_probe_insts),
-                 g(d.uniform_probe_hits), g(d.uniform_dse_blocks),
+                 g(d.uniform_invalidations),
+                 g(d.uniform_full_invalidations), g(d.uniform_range_invalidations),
+                 g(d.uniform_preserved_facts), g(d.uniform_probe_insts),
+                 g(d.uniform_probe_hits),
+                 g(d.uniform_dse_blocks),
                  g(d.uniform_dse_victims));
     for (size_t i = 0; i < d.kGetenvNames.size(); ++i) {
         const auto calls = g(d.getenv_calls[i]);

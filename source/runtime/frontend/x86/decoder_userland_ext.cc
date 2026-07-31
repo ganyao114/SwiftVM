@@ -2,6 +2,7 @@
 // in the vendored distorm snapshot: ADX and PKRU use raw bytes; FSGSBASE uses
 // distorm's existing F3 0F AE /0../3 table entries.
 
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -61,6 +62,17 @@ u64 WritePkru(u64 context) {
     return 0;
 }
 
+ir::UniformEffectId WritePkruEffects() {
+    static constexpr std::array ranges{
+            ir::UniformEffectRange{offsetof(ThreadContext64, interrupt),
+                                   sizeof(InterruptReason)},
+            ir::UniformEffectRange{offsetof(ThreadContext64, pkru), sizeof(u32)},
+    };
+    static constexpr ir::UniformEffectSet effects{ranges.data(), ranges.size()};
+    static const auto id = ir::RegisterUniformEffectSet(&effects);
+    return id;
+}
+
 }  // namespace
 
 bool X64Decoder::FsgsbaseEnabled() { return EnvOn("SVM_FSGSBASE"); }
@@ -116,7 +128,9 @@ u32 X64Decoder::DecodeUserlandRaw(const u8* code, size_t available) {
                 R(R_EDX, __ LoadImm(ir::Imm(u32(0))));
             } else {
                 auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
-                auto faulted = __ CallHost(&WritePkru, context).SetType(ir::ValueType::U64);
+                auto faulted =
+                        __ CallHostWithUniformEffects(WritePkruEffects(), &WritePkru, context)
+                                .SetType(ir::ValueType::U64);
                 __ SetLocation(ir::Lambda{ir::Imm{pc}});
                 __ If(ir::terminal::If{__ TestNotZero(faulted),
                                        ir::terminal::ReturnToHost{},

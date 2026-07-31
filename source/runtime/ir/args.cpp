@@ -3,6 +3,9 @@
 //
 
 #include "args.h"
+#include <array>
+#include <atomic>
+#include <mutex>
 #include "runtime/common/logging.h"
 #include "runtime/ir/instr.h"
 
@@ -113,13 +116,67 @@ ArgClass DataClass::ToArgClass() const {
     }
 }
 
-Imm& Lambda::GetImm() {
+namespace {
+
+constexpr u8 kUniformEffectTag = 0x80;
+constexpr u8 kUniformEffectMask = 0x7f;
+constexpr size_t kMaxUniformEffectSets = kUniformEffectMask + 1;
+
+std::array<const UniformEffectSet*, kMaxUniformEffectSets> uniform_effect_sets{
+        nullptr, &kNoUniformEffects};
+std::mutex uniform_effect_sets_mutex;
+std::atomic<u8> uniform_effect_set_count{2};
+
+}  // namespace
+
+UniformEffectId RegisterUniformEffectSet(const UniformEffectSet* effects) {
+    ASSERT(effects);
+    std::scoped_lock lock{uniform_effect_sets_mutex};
+    const auto count = uniform_effect_set_count.load(std::memory_order_relaxed);
+    for (u8 id = 1; id < count; ++id) {
+        if (uniform_effect_sets[id] == effects) {
+            return static_cast<UniformEffectId>(id);
+        }
+    }
+    ASSERT(count < kMaxUniformEffectSets);
+    if (count >= kMaxUniformEffectSets) {
+        return UniformEffectId::Unknown;
+    }
+    const auto id = count;
+    uniform_effect_sets[id] = effects;
+    uniform_effect_set_count.store(id + 1, std::memory_order_release);
+    return static_cast<UniformEffectId>(id);
+}
+
+const UniformEffectSet* LookupUniformEffectSet(UniformEffectId id) {
+    const auto index = static_cast<u8>(id);
+    if (index >= uniform_effect_set_count.load(std::memory_order_acquire)) {
+        return nullptr;
+    }
+    return uniform_effect_sets[index];
+}
+
+Lambda::Lambda(const DataClass& value, UniformEffectId effects) : address(value) {
     ASSERT(address.type == ArgType::Imm);
+    const auto id = static_cast<u8>(effects);
+    ASSERT(id > 0 && id <= kUniformEffectMask);
+    if (id == 0 || id > kUniformEffectMask) {
+        return;
+    }
+    address.type = static_cast<ArgType>(kUniformEffectTag | id);
+}
+
+bool Lambda::IsTaggedImm() const {
+    return (static_cast<u8>(address.type) & kUniformEffectTag) != 0;
+}
+
+Imm& Lambda::GetImm() {
+    ASSERT(address.type == ArgType::Imm || IsTaggedImm());
     return address.imm;
 }
 
 Imm& Lambda::GetImm() const {
-    ASSERT(address.type == ArgType::Imm);
+    ASSERT(address.type == ArgType::Imm || IsTaggedImm());
     return address.imm;
 }
 
@@ -134,6 +191,13 @@ Value& Lambda::GetValue() const {
 }
 
 bool Lambda::IsValue() const { return address.IsValue(); }
+
+UniformEffectId Lambda::GetUniformEffectId() const {
+    if (!IsTaggedImm()) {
+        return UniformEffectId::Unknown;
+    }
+    return static_cast<UniformEffectId>(static_cast<u8>(address.type) & kUniformEffectMask);
+}
 
 void Params::Push(const Value& data) { Push(new Param(data)); }
 

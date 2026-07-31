@@ -34,6 +34,7 @@
 // already does), so they bypass SMC tracking; an XSAVE area overlapping
 // translated code will not invalidate it.
 
+#include <array>
 #include <cstring>
 #include "runtime/frontend/x86/decoder_internal.h"
 #include "runtime/frontend/x86/x87.h"
@@ -73,6 +74,18 @@ void EmitUndefined(ir::Assembler* assembler, VAddr next_pc) {
     __ StoreUniform(uni_interrupt,
                     __ LoadImm(ir::Imm(static_cast<u32>(InterruptReason::ILL_CODE))));
     __ ReturnToHost();
+}
+
+ir::UniformEffectId XgetbvEffects() {
+    static constexpr std::array ranges{
+            ir::UniformEffectRange{offsetof(ThreadContext64, rax), sizeof(u64)},
+            ir::UniformEffectRange{offsetof(ThreadContext64, rdx), sizeof(u64)},
+            ir::UniformEffectRange{offsetof(ThreadContext64, interrupt),
+                                   sizeof(InterruptReason)},
+    };
+    static constexpr ir::UniformEffectSet effects{ranges.data(), ranges.size()};
+    static const auto id = ir::RegisterUniformEffectSet(&effects);
+    return id;
 }
 
 // RFBM arrives in EDX:EAX.  Read the two dwords out of the guest context and
@@ -230,7 +243,8 @@ void EmitXgetbv(ir::Assembler* assembler, VAddr next_pc) {
         return;
     }
     auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
-    auto faulted = __ CallHost(&XgetbvHelper, context);
+    auto faulted =
+            __ CallHostWithUniformEffects(XgetbvEffects(), &XgetbvHelper, context);
     // ECX != 0 is a #GP.  The helper has already recorded the reason, so the
     // block terminates back to the host on that path and links to the next
     // instruction on the normal one.  Making the exit a terminal (instead of
@@ -260,7 +274,7 @@ void EmitXsave(ir::Assembler* assembler,
         status = __ CallHost(&XrstorHelper, context, address, rfbm)
                          .SetType(ir::ValueType::U64);
     } else {
-        status = __ CallHost(&XsaveHelper, context, address, rfbm)
+        status = __ CallHostUniformPure(&XsaveHelper, context, address, rfbm)
                          .SetType(ir::ValueType::U64);
     }
     // An unmapped XSAVE area is a guest #PF, not a no-op. CheckMemoryAlignment
@@ -292,7 +306,7 @@ void EmitXsavec(ir::Assembler* assembler,
     }
     auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
     auto rfbm = EmitRequestedFeatureMask(assembler);
-    auto status = __ CallHost(&XsavecHelper, context, address, rfbm)
+    auto status = __ CallHostUniformPure(&XsavecHelper, context, address, rfbm)
                           .SetType(ir::ValueType::U64);
     __ SetLocation(ir::Lambda{ir::Imm{insn_pc}});
     __ CheckMemoryAlignment(status, ir::Imm(kX87GuestFault));

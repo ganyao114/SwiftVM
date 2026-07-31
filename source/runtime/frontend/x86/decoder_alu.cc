@@ -618,8 +618,8 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
                             : __ ZeroExtend64(__ ZeroExtend32(ax));
             auto hi = sign ? __ AsrImm(num, ir::Imm(63u)) : __ LoadImm(ir::Imm(u64(0)));
             auto den = Extend(src, ir::ValueType::U64, sign);
-            auto quot = __ CallHost(div_q, hi, num, den);
-            auto rem = __ CallHost(div_r, hi, num, den);
+            auto quot = __ CallHostUniformPure(div_q, hi, num, den);
+            auto rem = __ CallHostUniformPure(div_r, hi, num, den);
             R(_RegisterType::R_AL, quot);
             R(_RegisterType::R_AH, rem);
             break;
@@ -632,8 +632,8 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
                             : __ ZeroExtend64(num32);
             auto hi = sign ? __ AsrImm(num, ir::Imm(63u)) : __ LoadImm(ir::Imm(u64(0)));
             auto den = Extend(src, ir::ValueType::U64, sign);
-            auto quot = __ CallHost(div_q, hi, num, den);
-            auto rem = __ CallHost(div_r, hi, num, den);
+            auto quot = __ CallHostUniformPure(div_q, hi, num, den);
+            auto rem = __ CallHostUniformPure(div_r, hi, num, den);
             R(_RegisterType::R_AX, quot);
             R(_RegisterType::R_DX, rem);
             break;
@@ -645,8 +645,8 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
             auto hi = sign ? __ AsrImm(num.SetType(ir::ValueType::U64), ir::Imm(63u))
                            : __ LoadImm(ir::Imm(u64(0)));
             auto den = Extend(src, ir::ValueType::U64, sign);
-            auto quot = __ CallHost(div_q, hi, num, den);
-            auto rem = __ CallHost(div_r, hi, num, den);
+            auto quot = __ CallHostUniformPure(div_q, hi, num, den);
+            auto rem = __ CallHostUniformPure(div_r, hi, num, den);
             R(_RegisterType::R_EAX, quot);
             R(_RegisterType::R_EDX, rem);
             break;
@@ -655,8 +655,8 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
             auto lo = R(_RegisterType::R_RAX);
             auto hi = R(_RegisterType::R_RDX);
             auto den = Extend(src, ir::ValueType::U64, sign);
-            auto quot = __ CallHost(div_q, hi, lo, den);
-            auto rem = __ CallHost(div_r, hi, lo, den);
+            auto quot = __ CallHostUniformPure(div_q, hi, lo, den);
+            auto rem = __ CallHostUniformPure(div_r, hi, lo, den);
             R(_RegisterType::R_RAX, quot);
             R(_RegisterType::R_RDX, rem);
             break;

@@ -51,6 +51,16 @@ void ReadGuestTsc(ThreadContext64* context) {
     context->rdx.low.dword = u32(tsc >> 32);
 }
 
+ir::UniformEffectId ReadGuestTscEffects() {
+    static constexpr std::array ranges{
+            ir::UniformEffectRange{offsetof(ThreadContext64, rax), sizeof(u32)},
+            ir::UniformEffectRange{offsetof(ThreadContext64, rdx), sizeof(u32)},
+    };
+    static constexpr ir::UniformEffectSet effects{ranges.data(), ranges.size()};
+    static const auto id = ir::RegisterUniformEffectSet(&effects);
+    return id;
+}
+
 void GuestRandom(u64* destination, u64 width) {
     const u64 value = HostRandom();
     if (width == 16) {
@@ -229,7 +239,7 @@ void X64Decoder::DecodeTimestamp(bool rdtscp) {
     // side-effecting and avoids keeping a volatile value live across the host
     // call in either backend.
     auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
-    __ CallHost(&ReadGuestTsc, context);
+    __ CallHostWithUniformEffects(ReadGuestTscEffects(), &ReadGuestTsc, context);
     if (rdtscp) {
         // A single virtual CPU/core identity is exposed.
         R(_RegisterType::R_ECX, __ LoadImm(ir::Imm(u64(0))));

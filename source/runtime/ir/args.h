@@ -187,6 +187,28 @@ struct DataClass {
     [[nodiscard]] ArgClass ToArgClass() const;
 };
 
+struct UniformEffectRange {
+    u32 offset{};
+    u32 size{};
+};
+
+// Uniform bytes a helper may write. This metadata is intentionally not used
+// for dead-store elimination because it does not describe helper reads.
+struct UniformEffectSet {
+    const UniformEffectRange* ranges{};
+    u8 count{};
+};
+
+enum class UniformEffectId : u8 {
+    Unknown = 0,
+    None = 1,
+};
+
+inline constexpr UniformEffectSet kNoUniformEffects{};
+
+UniformEffectId RegisterUniformEffectSet(const UniformEffectSet* effects);
+const UniformEffectSet* LookupUniformEffectSet(UniformEffectId id);
+
 class Lambda {
 public:
     using FuncAddr = DataClass;
@@ -199,14 +221,19 @@ public:
 
     constexpr Lambda(const Imm& imm) : address(imm) {}
 
+    Lambda(const DataClass& value, UniformEffectId effects);
+
     bool IsValue() const;
 
     Value& GetValue();
     Value& GetValue() const;
     Imm& GetImm();
     Imm& GetImm() const;
+    UniformEffectId GetUniformEffectId() const;
 
 private:
+    [[nodiscard]] bool IsTaggedImm() const;
+
     mutable FuncAddr address;
 };
 

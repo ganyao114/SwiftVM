@@ -4,6 +4,7 @@
 
 #include "uniform_elimination_pass.h"
 
+#include <algorithm>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -16,6 +17,39 @@ namespace swift::runtime::ir {
 static bool EnvOnce(const char* name) { return std::getenv(name) != nullptr; }
 static const bool kEnv_dump_ir = EnvOnce("SVM_DUMP_IR");
 static const bool kEnv_dump_ir_post = EnvOnce("SVM_DUMP_IR_POST");
+
+[[nodiscard]] static bool UniformRangeEnabled() {
+    static const bool enabled = [] {
+        const char* value = PerfGetenv("SVM_IR_UNIFORM_RANGE");
+        return value && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+[[nodiscard]] static const UniformEffectSet* HelperUniformEffects(const Inst& inst) {
+    switch (inst.GetOp()) {
+        case OpCode::CallLambda:
+        case OpCode::CallDynamic:
+        case OpCode::CallLocation:
+            return LookupUniformEffectSet(inst.GetArg<Lambda>(0).GetUniformEffectId());
+        default:
+            return nullptr;
+    }
+}
+
+[[nodiscard]] static bool ValidUniformEffects(const UniformEffectSet& effects,
+                                              u32 uniform_size) {
+    if (effects.count && !effects.ranges) {
+        return false;
+    }
+    for (u8 i = 0; i < effects.count; ++i) {
+        const auto& range = effects.ranges[i];
+        if (range.offset > uniform_size || range.size > uniform_size - range.offset) {
+            return false;
+        }
+    }
+    return true;
+}
 
 struct UniformValue {
     Value value{};
@@ -330,6 +364,9 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     u32 mapped_load_count{};
     u32 mapped_store_count{};
     u32 invalidation_count{};
+    u32 full_invalidation_count{};
+    u32 range_invalidation_count{};
+    u64 preserved_fact_count{};
     u32 instruction_count{};
     u32 store_count{};
     u32 barrier_count{};
@@ -339,6 +376,37 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     auto invalidate_uniform_values = [&] {
         std::fill(uniform_values.begin(), uniform_values.end(), UniformValue{});
         invalidation_count++;
+        full_invalidation_count++;
+    };
+    auto invalidate_helper_effects = [&](const Inst& inst) {
+        const auto* effects = HelperUniformEffects(inst);
+        if (!effects || !ValidUniformEffects(*effects, uniform_values.size())) {
+            invalidate_uniform_values();
+            return;
+        }
+        for (u8 range_index = 0; range_index < effects->count; ++range_index) {
+            const auto& range = effects->ranges[range_index];
+            std::fill(uniform_values.begin() + range.offset,
+                      uniform_values.begin() + range.offset + range.size, UniformValue{});
+        }
+        invalidation_count++;
+        range_invalidation_count++;
+        preserved_fact_count += std::count_if(
+                uniform_values.begin(), uniform_values.end(),
+                [](const UniformValue& value) { return value.Defined(); });
+    };
+    auto update_mapped_gpr_facts = [&](u32 offset, u32 size, const Value& value) {
+        preserved_fact_count += std::count_if(
+                uniform_values.begin(), uniform_values.begin() + offset,
+                [](const UniformValue& fact) { return fact.Defined(); });
+        preserved_fact_count += std::count_if(
+                uniform_values.begin() + offset + size, uniform_values.end(),
+                [](const UniformValue& fact) { return fact.Defined(); });
+        for (u32 byte = 0; byte < size; ++byte) {
+            uniform_values[offset + byte] = {value, static_cast<u8>(byte)};
+        }
+        invalidation_count++;
+        range_invalidation_count++;
     };
 
     for (auto& inst : block->GetInstList()) {
@@ -356,6 +424,65 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 ASSERT_MSG(uni_offset + uni_size <= uniform_values.size(),
                            "uniform load [{}, {}) exceeds uniform buffer size {}",
                            uni_offset, uni_offset + uni_size, uniform_values.size());
+                auto try_forward_load = [&] {
+                    Value value_load{};
+                    u8 value_offset{0};
+                    for (u8 offset = 0; !xmm_forward_disabled && offset < uni_size; ++offset) {
+                        auto& uni_value = uniform_values[uni_offset + offset];
+                        if (!uni_value.Defined()) {
+                            value_load = {};
+                            break;
+                        }
+                        if (offset == 0) {
+                            value_load = uni_value.value;
+                            value_offset = uni_value.offset;
+                        } else if (value_load != uni_value.value ||
+                                   uni_value.offset != value_offset + offset) {
+                            value_load = {};
+                            break;
+                        }
+                    }
+
+                    // BitCast is a zero-cost register alias; it does NOT implement
+                    // the zero-extension of a narrow uniform load. Use it only
+                    // when the load consumes the complete stored value. A partial
+                    // scalar load, including one at byte offset zero, needs a real
+                    // BitExtract/UBFX so upper source bits cannot leak into users
+                    // such as a host-call argument. BitExtract is GPR-only in the
+                    // current backend, so partial vector/FPR folds stay disabled.
+                    const auto value_size = value_load.Defined()
+                                                  ? GetValueSizeByte(value_load.Type())
+                                                  : 0;
+                    const bool same_reg_class =
+                            value_load.Defined() &&
+                            IsFloatValueType(value_load.Type()) == is_float;
+                    // Narrow arithmetic producers use a W/X-register container and
+                    // are not required to clear bits above their logical width.
+                    // A Value cast wrapper changes Value::Type(), but does not emit
+                    // any narrowing instruction. Therefore even an apparently
+                    // same-width U8/U16/U32 store/load pair must extract explicitly:
+                    // a U32 wrapper may still name a U64 producer, and CallLambda
+                    // consumes its X register. Only a complete U64 scalar or exact
+                    // FPR value is guaranteed safe as a zero-cost alias.
+                    const bool full_value =
+                            same_reg_class && value_offset == 0 &&
+                            uni_size == value_size && (is_float || uni_size == sizeof(u64));
+                    const bool scalar_extract =
+                            same_reg_class && !is_float &&
+                            value_offset + uni_size <= value_size;
+                    if (!full_value && !scalar_extract) {
+                        return false;
+                    }
+                    inst.Reset();
+                    if (full_value) {
+                        inst.BitCast(value_load).SetReturn(uni_type);
+                    } else {
+                        inst.BitExtract(value_load, Imm(value_offset * 8u),
+                                        Imm(uni_size * 8u)).SetReturn(uni_type);
+                    }
+                    folded_load_count++;
+                    return true;
+                };
                 auto uniform_register = info.uniform_regs_map.GetValueAt(uniform.GetOffset());
                 if (uniform_register.Null()) {
                     for (u8 offset = 1; offset < uni_size; ++offset) {
@@ -386,6 +513,10 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                         PANIC("Cross uniform load: {}", fmt::format("{}", inst));
                         break;
                     }
+                    if (UniformRangeEnabled() && !uniform_register.host_reg.is_fpr &&
+                        try_forward_load()) {
+                        break;
+                    }
                     inst.Reset();
                     const bool mapped_fpr = uniform_register.host_reg.is_fpr;
                     auto reg_index = mapped_fpr ? uniform_register.host_reg.fpr.id
@@ -400,60 +531,10 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     break;
                 }
 
-                Value value_load{};
-                u8 value_offset{0};
-                for (u8 offset = 0; !xmm_forward_disabled && offset < uni_size; ++offset) {
-                    auto &uni_value = uniform_values[uni_offset + offset];
-                    if (!uni_value.Defined()) {
-                        value_load = {};
-                        break;
-                    }
-                    if (offset == 0) {
-                        value_load = uni_value.value;
-                        value_offset = uni_value.offset;
-                    } else if (value_load != uni_value.value ||
-                               uni_value.offset != value_offset + offset) {
-                        value_load = {};
-                        break;
-                    }
+                if (try_forward_load()) {
+                    break;
                 }
-
-                // BitCast is a zero-cost register alias; it does NOT implement
-                // the zero-extension of a narrow uniform load. Use it only
-                // when the load consumes the complete stored value. A partial
-                // scalar load, including one at byte offset zero, needs a real
-                // BitExtract/UBFX so upper source bits cannot leak into users
-                // such as a host-call argument. BitExtract is GPR-only in the
-                // current backend, so partial vector/FPR folds stay disabled.
-                const auto value_size = value_load.Defined()
-                                              ? GetValueSizeByte(value_load.Type())
-                                              : 0;
-                const bool same_reg_class =
-                        value_load.Defined() &&
-                        IsFloatValueType(value_load.Type()) == is_float;
-                // Narrow arithmetic producers use a W/X-register container and
-                // are not required to clear bits above their logical width.
-                // A Value cast wrapper changes Value::Type(), but does not emit
-                // any narrowing instruction. Therefore even an apparently
-                // same-width U8/U16/U32 store/load pair must extract explicitly:
-                // a U32 wrapper may still name a U64 producer, and CallLambda
-                // consumes its X register. Only a complete U64 scalar or exact
-                // FPR value is guaranteed safe as a zero-cost alias.
-                const bool full_value =
-                        same_reg_class && value_offset == 0 &&
-                        uni_size == value_size && (is_float || uni_size == sizeof(u64));
-                const bool scalar_extract =
-                        same_reg_class && !is_float &&
-                        value_offset + uni_size <= value_size;
-                if (full_value || scalar_extract) {
-                    inst.Reset();
-                    if (full_value) {
-                        inst.BitCast(value_load).SetReturn(uni_type);
-                    } else {
-                        inst.BitExtract(value_load, Imm(value_offset * 8u), Imm(uni_size * 8u)).SetReturn(uni_type);
-                    }
-                    folded_load_count++;
-                } else if (!xmm_forward_disabled && !XmmSsaForward2Off() &&
+                if (!xmm_forward_disabled && !XmmSsaForward2Off() &&
                            info.IsXmmUniformRange(uni_offset, uni_size)) {
                     // Unlike a store fact, this value names the load itself.
                     // Recording every byte preserves the existing continuity
@@ -520,14 +601,17 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                         inst.SetHostGPR(value, HostRegIndex(reg_index), offset_in);
                     }
                     mapped_store_count++;
-                    // A mapped store mutates the live host register directly.
-                    // Treat it like SetHostGPR for the path-insensitive cache:
-                    // a later load of another uniform must not fold through a
-                    // value captured before this write. This matters when a
-                    // static RSP store (ENTER/LEAVE) is followed by a load of
-                    // RBP in a function-compiled block; otherwise the load can
-                    // become a BitCast of the old pinned x19 value.
-                    invalidate_uniform_values();
+                    if (UniformRangeEnabled() && !mapped_fpr &&
+                        uni_reg_size == sizeof(u64)) {
+                        // The pinned GPR now contains this value in exactly the
+                        // bytes written by SetHostGPR. Keep every other byte
+                        // fact, including untouched bytes in this same GPR.
+                        update_mapped_gpr_facts(uni_offset, value_size, value);
+                    } else {
+                        // OFF retains the legacy opaque mapped-store barrier.
+                        // Mapped FPR stores stay conservative in this phase.
+                        invalidate_uniform_values();
+                    }
                     break;
                 }
                 // The backend stores according to the Value type, not the
@@ -544,6 +628,13 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
             }
             case OpCode::CallLambda:
             case OpCode::CallDynamic:
+                barrier_count++;
+                if (UniformRangeEnabled()) {
+                    invalidate_helper_effects(inst);
+                } else {
+                    invalidate_uniform_values();
+                }
+                break;
             case OpCode::X87Op:
             case OpCode::MemoryCopy:
             case OpCode::MemoryCopyTSO:
@@ -619,17 +710,26 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
         stats.uniform_stores.fetch_add(store_count, std::memory_order_relaxed);
         stats.uniform_barriers.fetch_add(barrier_count, std::memory_order_relaxed);
         stats.uniform_invalidations.fetch_add(invalidation_count, std::memory_order_relaxed);
+        stats.uniform_full_invalidations.fetch_add(full_invalidation_count,
+                                                   std::memory_order_relaxed);
+        stats.uniform_range_invalidations.fetch_add(range_invalidation_count,
+                                                    std::memory_order_relaxed);
+        stats.uniform_preserved_facts.fetch_add(preserved_fact_count,
+                                                std::memory_order_relaxed);
     }
 
     if (kEnv_dump_ir) {
         fmt::print(stderr,
                    "[uniform-elim] block {:#x}: LoadUniform {} -> {} "
                    "(folded {}, mapped {}), mapped stores {}, invalidations {}, "
+                   "full {}, range {}, preserved facts {}, "
                    "path merges {} ({} byte-facts preserved)\n",
                    block->GetStartLocation().Value(), load_count,
                    load_count - folded_load_count - mapped_load_count,
                    folded_load_count, mapped_load_count, mapped_store_count,
-                   invalidation_count, path_merge_count, path_merge_bytes);
+                   invalidation_count, full_invalidation_count,
+                   range_invalidation_count, preserved_fact_count,
+                   path_merge_count, path_merge_bytes);
         if (kEnv_dump_ir_post) {
             fmt::print(stderr, "--- post-uniform block {:#x} ---\n{}\n",
                        block->GetStartLocation().Value(), block->ToString());

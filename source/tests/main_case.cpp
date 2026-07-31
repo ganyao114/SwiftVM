@@ -379,6 +379,124 @@ TEST_CASE("Uniform elimination does not propagate conditional stores past labels
     REQUIRE(guarded_store_count == (path_forward_off ? 2 : 1));
 }
 
+TEST_CASE("Uniform range mode keeps mapped GPR, XMM, and ordinary byte facts local") {
+    using namespace swift::runtime::ir;
+
+    UniformInfo info{.uniform_size = 96};
+    auto map_gpr = [&](std::uint32_t begin, std::uint16_t host_id) {
+        UniformRegister reg{.uniform = Uniform{begin, ValueType::U64}};
+        reg.host_reg.gpr = HostGPR{host_id};
+        reg.host_reg.is_fpr = false;
+        info.uniform_regs_map.Map(begin, begin + sizeof(std::uint64_t), reg);
+    };
+    map_gpr(16, 20);
+    map_gpr(32, 21);
+    info.xmm_uniform_ranges.push_back({48, 64});
+
+    const bool range_on = std::getenv("SVM_IR_UNIFORM_RANGE") &&
+                          std::strcmp(std::getenv("SVM_IR_UNIFORM_RANGE"), "0") != 0;
+
+    Block block{0, Location{0x6000}};
+    auto ordinary = block.LoadImm(Imm{0x1111111111111111ull}).SetType(ValueType::U64);
+    block.StoreUniform(Uniform{0, ValueType::U64}, ordinary);
+    auto other_gpr = block.LoadImm(Imm{0x2222222222222222ull}).SetType(ValueType::U64);
+    block.StoreUniform(Uniform{32, ValueType::U64}, other_gpr);
+    auto xmm = block.LoadImm(Imm{0u}).SetType(ValueType::V128);
+    block.StoreUniform(Uniform{48, ValueType::V128}, xmm);
+    auto target_gpr = block.LoadImm(Imm{0x3333333333333333ull}).SetType(ValueType::U64);
+    block.StoreUniform(Uniform{16, ValueType::U64}, target_gpr);
+    auto target_patch =
+            block.LoadImm(Imm{std::uint16_t{0x4444}}).SetType(ValueType::U16);
+    block.StoreUniform(Uniform{18, ValueType::U16}, target_patch);
+
+    auto untouched_target = block.LoadUniform(Uniform{16, ValueType::U16});
+    auto written_target = block.LoadUniform(Uniform{18, ValueType::U16});
+    auto preserved_gpr = block.LoadUniform(Uniform{32, ValueType::U64});
+    auto preserved_xmm = block.LoadUniform(Uniform{48, ValueType::V128});
+    auto preserved_ordinary = block.LoadUniform(Uniform{0, ValueType::U64});
+
+    UniformEliminationPass::Run(&block, info);
+    REQUIRE(untouched_target.Def()->GetOp() ==
+            (range_on ? OpCode::BitExtract : OpCode::GetHostGPR));
+    REQUIRE(written_target.Def()->GetOp() ==
+            (range_on ? OpCode::BitExtract : OpCode::GetHostGPR));
+    REQUIRE(preserved_gpr.Def()->GetOp() ==
+            (range_on ? OpCode::BitCast : OpCode::GetHostGPR));
+    REQUIRE(preserved_xmm.Def()->GetOp() ==
+            (range_on ? OpCode::BitCast : OpCode::LoadUniform));
+    REQUIRE(preserved_ordinary.Def()->GetOp() ==
+            (range_on ? OpCode::BitCast : OpCode::LoadUniform));
+}
+
+TEST_CASE("Uniform helper effect sets preserve only unaffected facts") {
+    using namespace swift::runtime::ir;
+
+    UniformInfo info{.uniform_size = 32};
+    static constexpr std::array touched_ranges{
+            UniformEffectRange{0, sizeof(std::uint64_t)},
+    };
+    static constexpr UniformEffectSet touched_effects{
+            touched_ranges.data(), touched_ranges.size()};
+    const auto touched_id = RegisterUniformEffectSet(&touched_effects);
+    const bool range_on = std::getenv("SVM_IR_UNIFORM_RANGE") &&
+                          std::strcmp(std::getenv("SVM_IR_UNIFORM_RANGE"), "0") != 0;
+
+    auto seed = [](Block& block) {
+        auto low = block.LoadImm(Imm{0x1111111111111111ull}).SetType(ValueType::U64);
+        auto high = block.LoadImm(Imm{0x2222222222222222ull}).SetType(ValueType::U64);
+        block.StoreUniform(Uniform{0, ValueType::U64}, low);
+        block.StoreUniform(Uniform{16, ValueType::U64}, high);
+    };
+
+    Block pure{0, Location{0x7000}};
+    seed(pure);
+    pure.CallLambda(Lambda{DataClass{Imm{1ull}}, UniformEffectId::None});
+    auto pure_low = pure.LoadUniform(Uniform{0, ValueType::U64});
+    auto pure_high = pure.LoadUniform(Uniform{16, ValueType::U64});
+    UniformEliminationPass::Run(&pure, info);
+    REQUIRE(pure_low.Def()->GetOp() ==
+            (range_on ? OpCode::BitCast : OpCode::LoadUniform));
+    REQUIRE(pure_high.Def()->GetOp() ==
+            (range_on ? OpCode::BitCast : OpCode::LoadUniform));
+
+    Block ranged{1, Location{0x8000}};
+    seed(ranged);
+    ranged.CallLambda(Lambda{DataClass{Imm{1ull}}, touched_id});
+    auto ranged_low = ranged.LoadUniform(Uniform{0, ValueType::U64});
+    auto ranged_high = ranged.LoadUniform(Uniform{16, ValueType::U64});
+    UniformEliminationPass::Run(&ranged, info);
+    REQUIRE(ranged_low.Def()->GetOp() == OpCode::LoadUniform);
+    REQUIRE(ranged_high.Def()->GetOp() ==
+            (range_on ? OpCode::BitCast : OpCode::LoadUniform));
+
+    Block unknown{2, Location{0x9000}};
+    seed(unknown);
+    unknown.CallLambda(Lambda{Imm{1ull}});
+    auto unknown_low = unknown.LoadUniform(Uniform{0, ValueType::U64});
+    auto unknown_high = unknown.LoadUniform(Uniform{16, ValueType::U64});
+    UniformEliminationPass::Run(&unknown, info);
+    REQUIRE(unknown_low.Def()->GetOp() == OpCode::LoadUniform);
+    REQUIRE(unknown_high.Def()->GetOp() == OpCode::LoadUniform);
+
+    Block dead_store{3, Location{0xa000}};
+    auto old_value =
+            dead_store.LoadImm(Imm{0x1111111111111111ull}).SetType(ValueType::U64);
+    auto new_value =
+            dead_store.LoadImm(Imm{0x2222222222222222ull}).SetType(ValueType::U64);
+    dead_store.StoreUniform(Uniform{0, ValueType::U64}, old_value);
+    dead_store.CallLambda(Lambda{DataClass{Imm{1ull}}, UniformEffectId::None});
+    dead_store.StoreUniform(Uniform{0, ValueType::U64}, new_value);
+    UniformEliminationPass::Run(&dead_store, info);
+    size_t stores{};
+    for (const auto& inst : dead_store.GetInstList()) {
+        stores += inst.GetOp() == OpCode::StoreUniform;
+    }
+    // Effect sets describe helper writes for forward fact invalidation. They
+    // do not claim the helper cannot read uniform state, so reverse DSE keeps
+    // every helper as an observation barrier.
+    REQUIRE(stores == 2);
+}
+
 TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     using namespace swift::runtime::ir;
 
