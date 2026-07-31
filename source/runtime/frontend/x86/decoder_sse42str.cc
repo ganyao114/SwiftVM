@@ -1068,6 +1068,18 @@ extern "C" u64 SwiftSse42StrEvalVariant(unsigned variant, u64 a_lo, u64 a_hi, u6
     }
 }
 
+// Interpreter implementation of the dedicated W58 IR operation.  Keeping the
+// semantic work in this translation unit makes the JIT and interpreter share
+// the already exhaustively cross-checked evaluator while the ARM64 backend
+// replaces the call with direct instructions.
+extern "C" u64 SwiftSse42StrEvalImplicit(u64 a_lo,
+                                         u64 a_hi,
+                                         u64 b_lo,
+                                         u64 b_hi,
+                                         u64 imm8) {
+    return Sse42StrEvalFast(a_lo, a_hi, b_lo, b_hi, imm8 & 0xFFu);
+}
+
 // ---------------------------------------------------------------------------
 // Explicit lengths: |signed| saturated at n
 // ---------------------------------------------------------------------------
@@ -1159,18 +1171,27 @@ void X64Decoder::DecodeSse42StrBody(_RegisterType reg1,
         ctl = __ LoadImm(ir::Imm(u64(imm8))).SetType(kU64);
     }
 
-    // The first operand is always a register, so its halves are two uniform
-    // reads; the second has already been loaded as a V128 by the caller (the
-    // memory form goes through the IR memory path so a fault is a guest fault).
-    auto token = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Sse42StrStage)}},
-                               XmmLo(reg1),
-                               XmmHi(reg1),
-                               ctl);
-    auto packed = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Sse42StrEval)}},
-                                __ VecExtract64(src2, ir::Imm(0u)).SetType(kU64),
-                                __ VecExtract64(src2, ir::Imm(1u)).SetType(kU64),
-                                token)
-                          .SetType(kU64);
+    ir::Value packed;
+    if (!explicit_length && Sse42StringInlineEnabled()) {
+        // The implicit family has no dynamic scalar inputs: both lengths come
+        // from the first zero element.  A dedicated IR node therefore carries
+        // the two vectors and compile-time imm8 directly to the JIT emitter.
+        // The memory form was loaded above and keeps the existing guest-fault
+        // path.  OFF does not construct this node at all.
+        packed = __ Sse42Str(XmmRead(reg1), src2, ir::Imm(imm8)).SetType(kU64);
+    } else {
+        // Historical path, intentionally unchanged for default-OFF and for
+        // explicit-length PCMPESTRI/M.
+        auto token = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Sse42StrStage)}},
+                                   XmmLo(reg1),
+                                   XmmHi(reg1),
+                                   ctl);
+        packed = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Sse42StrEval)}},
+                               __ VecExtract64(src2, ir::Imm(0u)).SetType(kU64),
+                               __ VecExtract64(src2, ir::Imm(1u)).SetType(kU64),
+                               token)
+                         .SetType(kU64);
+    }
 
     if (mask_form) {
         // The destination is the IMPLICIT XMM0.  distorm reports no operand for

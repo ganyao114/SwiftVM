@@ -23,6 +23,14 @@
 #include "runtime/frontend/x86/x87.h"
 #include "runtime/ir/atomic_rmw.h"
 
+namespace swift::x86 {
+extern "C" u64 SwiftSse42StrEvalImplicit(u64 a_lo,
+                                         u64 a_hi,
+                                         u64 b_lo,
+                                         u64 b_hi,
+                                         u64 imm8);
+}
+
 namespace swift::runtime::backend::interp {
 
 using ir::ValueType;
@@ -1066,6 +1074,19 @@ void Interpreter::RunCallLambda(ir::Inst* inst, InterpStack& stack) {
         }
     }
     WriteScalar(stack, inst, CallHostFunc(stack, lambda, args));
+}
+
+void Interpreter::RunSse42Str(ir::Inst* inst, InterpStack& stack) {
+    const u128 a = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const u128 b = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    WriteScalar(stack,
+                inst,
+                swift::x86::SwiftSse42StrEvalImplicit(
+                        static_cast<u64>(a),
+                        static_cast<u64>(a >> 64),
+                        static_cast<u64>(b),
+                        static_cast<u64>(b >> 64),
+                        inst->GetArg<ir::Imm>(2).Get()));
 }
 
 void Interpreter::RunX87Op(ir::Inst* inst, InterpStack& stack) {

@@ -47,6 +47,11 @@ INST(Select, Value, BOOL, Value, Value)
 INST(CondSelect, Value, Cond, Value, Value)
 INST(BindLabel, Void, Value)
 INST(CallLambda, Value, Lambda, Value, Value, Value)
+// SSE4.2 PCMPISTRI/M common core.  Both operands are V128 and imm8 is a
+// compile-time immediate; the result packs IntRes2, index and ZF/SF/CF/OF.
+// PCMPESTRI/M retain their helper path because their explicit lengths are
+// dynamic and are not the W58 hot path.
+INST(Sse42Str, Value, Value, Value, Imm)
 INST(CallLocation, Value, Lambda, Params)
 INST(CallDynamic, Value, Lambda, Params)
 INST(AddPhi, Value, Params)

@@ -138,6 +138,10 @@ ScratchNeed ScratchBudget(ir::OpCode op) {
             // SHA256RNDS2 must retain both pre-round state vectors while
             // producing SHA256H and SHA256H2, plus the duplicated XMM0 key.
             return {kDefaultScratchGPR, 4};
+        case ir::OpCode::Sse42Str:
+            // Two implicit lengths plus scalar mask/index work, and four NEON
+            // temporaries for equal-ordered's accumulator/row/validity/ones.
+            return {4, 4};
         default:
             return {kDefaultScratchGPR, kDefaultScratchFPR};
     }

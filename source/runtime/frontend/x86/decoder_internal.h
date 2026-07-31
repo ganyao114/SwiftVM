@@ -29,6 +29,15 @@ inline bool HelperValuesEnabled() {
     return env && std::strcmp(env, "0") != 0;
 }
 
+// W58 opt-in: lower the implicit-length SSE4.2 string comparisons to a
+// dedicated IR operation whose ARM64 backend is emitted inline.  Only the
+// literal value "1" enables it; an unset variable is the exact historical
+// two-CallLambda path.
+inline bool Sse42StringInlineEnabled() {
+    const char* env = swift::runtime::PerfGetenv("SVM_SSE42_STRING_INLINE");
+    return env && std::strcmp(env, "1") == 0;
+}
+
 inline ir::Value VecSharedZero(ir::Assembler* assembler) {
     return assembler->VecSharedZero().SetType(ir::ValueType::V128);
 }
