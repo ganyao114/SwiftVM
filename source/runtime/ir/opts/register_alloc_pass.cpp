@@ -77,6 +77,17 @@ static bool ShiftImmFastEnabled() {
     return !env || std::strcmp(env, "0") != 0;
 }
 
+// Spill/escalation 诊断打印默认关闭：它们随编译线程异步产生，会混入 guest
+// stdout（sqlite speedtest 一类边跑边输出的负载会被打断行），且非用户可行动项。
+// 需要排查 regalloc 行为时设 SVM_RA_DIAG=1 打开。
+static bool RaDiagEnabled() {
+    static const bool enabled = [] {
+        const char* env = PerfGetenv("SVM_RA_DIAG");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
 using HostRegWriteMap = Map<u16, Vector<u32>>;
 
 static bool LiveRangeCrossesHostRegWrite(const HostRegWriteMap& writes,
@@ -323,7 +334,7 @@ public:
         perf_assign.Stop();
 
         FusePinnedWriteChains();
-        if (spill_count) {
+        if (spill_count && RaDiagEnabled()) {
             LOG_WARNING("RegisterAllocPass: {} value(s) spilled to stack slots (highest slot {})",
                         spill_count, max_spill_slot);
         }
@@ -1789,8 +1800,10 @@ static void RunVerified(Unit* unit,
         const bool verified = scan.Verify();
         perf_verify.Stop();
         if (verified) {
-            LOG_WARNING("RegisterAllocPass: scratch reserve escalated to {}/{}", rung.gpr,
-                        rung.fpr);
+            if (RaDiagEnabled()) {
+                LOG_WARNING("RegisterAllocPass: scratch reserve escalated to {}/{}", rung.gpr,
+                            rung.fpr);
+            }
             return;
         }
     }
