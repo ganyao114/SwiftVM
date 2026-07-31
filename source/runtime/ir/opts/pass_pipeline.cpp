@@ -7,6 +7,7 @@
 #include "runtime/ir/opts/deadcode_elimination_pass.h"
 #include "runtime/ir/opts/flags_elimination_pass.h"
 #include "runtime/ir/opts/uniform_elimination_pass.h"
+#include "runtime/ir/opts/uniform_store_sink_pass.h"
 
 namespace swift::runtime::ir {
 
@@ -22,6 +23,14 @@ PassPipeline PassPipeline::BuildDefault(const UniformInfo* uniform_info) {
         pipeline.AddFunctionPass(Optimizations::UniformElimination,
             [uniform_info](HIRFunction* function) {
                 UniformEliminationPass::Run(function, *uniform_info, true);
+            });
+        pipeline.AddBlockPass(Optimizations::XmmFaultSink,
+            [uniform_info](Block* block) {
+                UniformStoreSinkPass::Run(block, *uniform_info);
+            });
+        pipeline.AddFunctionPass(Optimizations::XmmFaultSink,
+            [uniform_info](HIRFunction* function) {
+                UniformStoreSinkPass::Run(function, *uniform_info);
             });
     }
 

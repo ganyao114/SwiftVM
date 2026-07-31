@@ -75,6 +75,7 @@ private:
         auto& s = GetPerfStats2();
         switch (opt) {
             case Optimizations::UniformElimination:
+            case Optimizations::XmmFaultSink:
                 return s.pass_uniform;
             case Optimizations::FlagElimination:
                 return s.pass_flags;

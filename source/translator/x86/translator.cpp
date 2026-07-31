@@ -510,6 +510,10 @@ struct X86Instance::Impl final {
         const bool enable_xmm_static =
                 enable_jit && enable_uniform_elim && xmm_static_env &&
                 std::strcmp(xmm_static_env, "0") != 0;
+        const char* xmm_fault_sink_env = PerfGetenv("SVM_XMM_FAULT_SINK");
+        const bool enable_xmm_fault_sink =
+                enable_jit && xmm_fault_sink_env &&
+                std::strcmp(xmm_fault_sink_env, "0") != 0;
         // W55 opt-in extension of the scalar static map. It is deliberately
         // independent of SVM_JIT_SCRATCH_XPOOL; both may be enabled together.
         const char* pin_ext_env = std::getenv("SVM_X86_PIN_EXT");
@@ -548,6 +552,9 @@ struct X86Instance::Impl final {
         }
         if (enable_uniform_elim) {
             global_opts |= Optimizations::UniformElimination;
+        }
+        if (enable_xmm_fault_sink) {
+            global_opts |= Optimizations::XmmFaultSink;
         }
         Config config{
                 .loc_start = 0,

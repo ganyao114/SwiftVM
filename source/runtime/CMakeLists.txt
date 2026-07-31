@@ -72,6 +72,8 @@ add_library(swift_runtime STATIC
         ir/opts/reid_instr_pass.h
         ir/opts/uniform_elimination_pass.cpp
         ir/opts/uniform_elimination_pass.h
+        ir/opts/uniform_store_sink_pass.cpp
+        ir/opts/uniform_store_sink_pass.h
         ir/opts/flags_elimination_pass.cpp
         ir/opts/flags_elimination_pass.h
         ir/opts/deadcode_elimination_pass.cpp

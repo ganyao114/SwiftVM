@@ -51,6 +51,7 @@ enum class Optimizations : std::uint32_t {
     // Bit 10 stays reserved: global_opts is hashed into persisted JIT cache and
     // AOT validity keys, so reusing it would change the meaning of old keys.
     DeadCodeRemove = 1 << 11,
+    XmmFaultSink = 1 << 12,
     All = UINT32_MAX
 };
 
