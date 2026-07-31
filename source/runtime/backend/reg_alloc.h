@@ -73,6 +73,12 @@ private:
 using GPRSMask = RegisterMask<u32>;
 using FPRSMask = RegisterMask<u32>;
 
+// True only for an actual level-2 x86 pool: the environment level alone is
+// insufficient because swift_test and non-x86 frontends can construct an
+// AddressSpace without the x0-x5 static descriptors while inheriting env vars.
+[[nodiscard]] bool X86PinExtLevel2Enabled(const GPRSMask& pool);
+[[nodiscard]] bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool);
+
 // Number of u64 spill slots reserved in State::spill_area (context.h).
 // The linear-scan pass panics instead of handing out a slot beyond this:
 // an out-of-range slot would silently overwrite the uniform buffer that
@@ -139,7 +145,7 @@ struct ScratchNeed {
 // direct SwiftVM uses (atomic status/value registers, host-call/terminal
 // register, cold-path return register), not VIXL's dynamically leased scratch
 // registers.
-[[nodiscard]] u32 FixedGPRClobbers(ir::OpCode op);
+[[nodiscard]] u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only = false);
 inline constexpr u32 kTerminalFixedGPRClobbers = 1u << 11;
 
 // Ordinary emitters: the widest generic shape is a 3-GPR ALU sequence

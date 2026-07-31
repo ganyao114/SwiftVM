@@ -131,7 +131,8 @@ void TrampolinesArm64::Build() {
         std::fprintf(stderr,
                      "[svm-reg-mask] memory_base=%d page_table=%d "
                      "x24_reserved=%d x10_reserved=%d dispatcher_loc=x%d "
-                     "pin_ext=%d x22_reserved=%d x23_reserved=%d "
+                     "pin_ext=%d pin_ext_level2=%d x0_x5_reserved=%d "
+                     "x22_reserved=%d x23_reserved=%d "
                      "x29_reserved=%d allocatable_gprs=%u\n",
                      config.memory_base != nullptr,
                      config.page_table != nullptr,
@@ -139,6 +140,10 @@ void TrampolinesArm64::Build() {
                      gpr_regs.Get(10),
                      has_pt ? ip6.GetCode() : loc.GetCode(),
                      static_gprs.Get(22) && static_gprs.Get(23) && static_gprs.Get(29),
+                     static_gprs.Get(0) && static_gprs.Get(1) && static_gprs.Get(2) &&
+                             static_gprs.Get(3) && static_gprs.Get(4) && static_gprs.Get(5),
+                     gpr_regs.Get(0) && gpr_regs.Get(1) && gpr_regs.Get(2) &&
+                             gpr_regs.Get(3) && gpr_regs.Get(4) && gpr_regs.Get(5),
                      gpr_regs.Get(22),
                      gpr_regs.Get(23),
                      gpr_regs.Get(29),
@@ -174,6 +179,15 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     // packed FP edge cases that are outside this optimisation's scope.
     constexpr u32 kFpcrNep = 1u << 2;
     const XRegister loc_reg = has_pt ? XRegister(ip6.GetCode()) : XRegister(loc.GetCode());
+    bool caller_saved_static_pins = false;
+    for (const auto& desc : config.buffers_static_alloc) {
+        caller_saved_static_pins |= !desc.is_float && desc.reg <= 5;
+    }
+    // The historical dispatcher used w0 for the halt-reason probe and cache
+    // miss value. At pin level 2, x0 is guest RSI and must survive until the
+    // static-uniform spill (or the next linked block), so use the dispatcher
+    // scratch x11 instead. Keep OFF/level-1 byte-identical.
+    const WRegister halt_reg = caller_saved_static_pins ? ipw : w0;
     const bool exec_prof = [] {
         const char* env = std::getenv("SVM_EXEC_PROF");
         return env && std::strcmp(env, "0") != 0;
@@ -291,8 +305,8 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Blr(forward);
 
     // load exception
-    __ Ldr(w0, MemOperand(state, state_offset_halt_reason));
-    __ Cbz(w0, &code_dispatcher);
+    __ Ldr(halt_reg, MemOperand(state, state_offset_halt_reason));
+    __ Cbz(halt_reg, &code_dispatcher);
     __ Bind(&label_return_host);
     // clear execption
     __ Str(wzr, MemOperand(state, state_offset_halt_reason));
@@ -300,6 +314,11 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Str(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
     __ Str(flags, MemOperand(state, state_offset_host_flags));
     BuildSaveStaticUniform(assembler);
+    if (caller_saved_static_pins) {
+        // x0 is the C-ABI return register for JitRun. Delay publishing the
+        // halt reason until guest RSI has been written back above.
+        __ Mov(w0, halt_reg);
+    }
     if (scalar_insert) {
         __ Ldp(ip, ip0, MemOperand(sp, 16, PostIndex));
         __ Msr(FPCR, ip);
@@ -309,7 +328,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
 
     __ Bind(&code_cache_miss);
     record(exec_offset_dispatch_miss);
-    __ Mov(w0, 0x8);
+    __ Mov(halt_reg, 0x8);
     __ B(&label_return_host);
 
     __ Bind(&label_call_host);

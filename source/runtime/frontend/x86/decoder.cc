@@ -862,7 +862,7 @@ ir::Value X64Decoder::R(_RegisterType reg) {
 static bool PinExtPartialWritesEnabled() {
     static const bool enabled = [] {
         const char* value = swift::runtime::PerfGetenv("SVM_X86_PIN_EXT");
-        return value && std::strcmp(value, "0") != 0;
+        return value && std::atoi(value) >= 1;
     }();
     return enabled;
 }

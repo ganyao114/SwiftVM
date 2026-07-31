@@ -77,6 +77,25 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 has_result,
                 result);
     };
+    if (!backend::ScratchXPoolEnabled()) {
+        bool level2_pins = true;
+        for (u32 code = 0; code <= 5; ++code) {
+            level2_pins &= std::any_of(
+                    context.GetConfig().buffers_static_alloc.begin(),
+                    context.GetConfig().buffers_static_alloc.end(),
+                    [code](const auto& desc) {
+                        return !desc.is_float && desc.reg == code;
+                    });
+        }
+        if (level2_pins) {
+            // The six-register value pool cannot sustain the eight-temporary
+            // inline x87 peak. Preserve correctness and switch independence
+            // by using the existing exact helper path; enabling XPOOL retains
+            // the inline lowering.
+            fallback();
+            return;
+        }
+    }
 
     switch (action) {
         case swift::x86::X87Action::Init: {

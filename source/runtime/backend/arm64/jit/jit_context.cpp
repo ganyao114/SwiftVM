@@ -665,11 +665,24 @@ void JitContext::TickIR(ir::Inst* instr) {
     spill_tmp_fprs = 0;
     shared_tmp_gpr = -1;
     auxiliary_scratch = false;
-    const u32 fixed = backend::FixedGPRClobbers(instr->GetOp());
+    const bool scratch_only =
+            backend::X86PinExtScratchOnlyEnabled(reg_alloc.GetGprs());
+    const u32 fixed = backend::FixedGPRClobbers(instr->GetOp(), scratch_only);
     for (u32 code = 0; code < 32; ++code) {
         if (fixed & (1u << code)) {
             cur_dirty_gprs.Mark(code);
             tick_dirty_gprs.Mark(code);
+        }
+    }
+    if (scratch_only) {
+        // x12/x13 remain outside the allocator's value pool, preserving the
+        // documented six-register level-2 pool. Lease them only as explicit
+        // instruction-local scratch when the opcode has no fixed use.
+        for (u32 code : {12u, 13u}) {
+            if (!(fixed & (1u << code))) {
+                cur_dirty_gprs.Clear(code);
+                tick_dirty_gprs.Clear(code);
+            }
         }
     }
     BeginVixlScratch(true);
@@ -744,6 +757,12 @@ void JitContext::BeginTerminalScratch() {
             cur_dirty_gprs.Mark(code);
             tick_dirty_gprs.Mark(code);
         }
+    }
+    if (backend::X86PinExtScratchOnlyEnabled(reg_alloc.GetGprs())) {
+        cur_dirty_gprs.Clear(12);
+        cur_dirty_gprs.Clear(13);
+        tick_dirty_gprs.Clear(12);
+        tick_dirty_gprs.Clear(13);
     }
     BeginVixlScratch(true);
 }

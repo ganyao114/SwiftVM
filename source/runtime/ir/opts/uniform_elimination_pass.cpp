@@ -529,7 +529,8 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                         break;
                     }
                     const bool pin_ext_gpr = !uniform_register.host_reg.is_fpr &&
-                            (uniform_register.host_reg.gpr.id == 22 ||
+                            (uniform_register.host_reg.gpr.id <= 5 ||
+                             uniform_register.host_reg.gpr.id == 22 ||
                              uniform_register.host_reg.gpr.id == 23 ||
                              uniform_register.host_reg.gpr.id == 29);
                     if ((UniformRangeEnabled() || pin_ext_gpr) &&
@@ -631,7 +632,8 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     }
                     mapped_store_count++;
                     const bool pin_ext_gpr = !mapped_fpr &&
-                            (reg_index == 22 || reg_index == 23 || reg_index == 29);
+                            (reg_index <= 5 || reg_index == 22 ||
+                             reg_index == 23 || reg_index == 29);
                     if ((UniformRangeEnabled() || pin_ext_gpr) && !mapped_fpr &&
                         uni_reg_size == sizeof(u64)) {
                         // The pinned GPR now contains this value in exactly the

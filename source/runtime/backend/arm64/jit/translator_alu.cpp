@@ -24,9 +24,22 @@ bool GcmPclMul2Enabled() {
 void JitTranslator::EmitAdd(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
-    auto right_operand = EmitOperand(right);
+    auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
+        if (value.Def()) {
+            if (auto it = fused_pin_gpr_reads.find(value.Def());
+                it != fused_pin_gpr_reads.end()) {
+                return WRegister(it->second);
+            }
+        }
+        return std::nullopt;
+    };
+    auto right_pinned = right.GetLeft().IsValue()
+            ? pinned_w(right.GetLeft().value)
+            : std::nullopt;
+    auto right_operand = right_pinned ? Operand{*right_pinned} : EmitOperand(right);
     auto result = context.R(ir::Value{inst});
-    auto left_register = context.R(left, true);
+    auto left_pinned = pinned_w(left);
+    Register left_register = left_pinned ? Register{*left_pinned} : context.R(left, true);
 
     auto pseudo_flags = GetPseudoFlags(inst);
 
@@ -101,9 +114,22 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
 void JitTranslator::EmitSub(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
-    auto right_operand = EmitOperand(right);
+    auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
+        if (value.Def()) {
+            if (auto it = fused_pin_gpr_reads.find(value.Def());
+                it != fused_pin_gpr_reads.end()) {
+                return WRegister(it->second);
+            }
+        }
+        return std::nullopt;
+    };
+    auto right_pinned = right.GetLeft().IsValue()
+            ? pinned_w(right.GetLeft().value)
+            : std::nullopt;
+    auto right_operand = right_pinned ? Operand{*right_pinned} : EmitOperand(right);
     auto result = context.R(ir::Value{inst});
-    auto left_register = context.R(left, true);
+    auto left_pinned = pinned_w(left);
+    Register left_register = left_pinned ? Register{*left_pinned} : context.R(left, true);
 
     auto pseudo_flags = GetPseudoFlags(inst);
 
@@ -2832,6 +2858,19 @@ void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
         // the zero extension needed by an immediate GPR shift.
         return;
     }
+    if (value.Def() && value.Def()->GetOp() == ir::OpCode::BitExtract &&
+        context.SharesGPR(value, ir::Value{inst})) {
+        auto extracted = value.Def();
+        auto source = extracted->GetArg<ir::Value>(0);
+        if (extracted->GetArg<ir::Imm>(1).Get() == 0 &&
+            extracted->GetArg<ir::Imm>(2).Get() ==
+                    ir::GetValueSizeByte(value.Type()) * 8 &&
+            source.Def() && source.Def()->GetOp() == ir::OpCode::GetHostGPR &&
+            source.Def()->GetArg<ir::Imm>(0).Get() <= 5) {
+            // UBFX already zero-filled the tied W destination.
+            return;
+        }
+    }
     switch (ir::GetValueSizeByte(value.Type())) {
         case 1:
             __ Uxtb(result, src);
@@ -2848,6 +2887,11 @@ void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitZeroExtend32To64(ir::Inst* inst) {
+    auto source = inst->GetArg<ir::Value>(0);
+    if (ir::GetValueSizeByte(source.Type()) == sizeof(u32) &&
+        context.SharesGPR(source, ir::Value{inst})) {
+        return;
+    }
     if (inst->GetUses() == 1) {
         auto& list = cur_block->GetInstList();
         for (auto it = std::next(list.iterator_to(*inst)); it != list.end(); ++it) {
@@ -2862,7 +2906,7 @@ void JitTranslator::EmitZeroExtend32To64(ir::Inst* inst) {
                 it->GetArg<ir::Value>(0).Def() == inst &&
                 it->GetArg<ir::Imm>(2).Get() == 0) {
                 const u32 target = it->GetArg<ir::Imm>(1).Get();
-                if (target == 22 || target == 23 || target == 29) {
+                if (target <= 5 || target == 22 || target == 23 || target == 29) {
                     fused_pin_zext32.insert(inst);
                     return;
                 }

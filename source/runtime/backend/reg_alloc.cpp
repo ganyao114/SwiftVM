@@ -16,16 +16,41 @@ bool ScratchXPoolEnabled() {
     return enabled;
 }
 
-static bool X86PinExtEnabled() {
-    static const bool enabled = [] {
+static int X86PinExtLevel() {
+    static const int level = [] {
         const char* value = PerfGetenv("SVM_X86_PIN_EXT");
-        return value && std::strcmp(value, "0") != 0;
+        return value ? std::max(0, std::atoi(value)) : 0;
     }();
-    return enabled;
+    return level;
 }
 
-u32 FixedGPRClobbers(ir::OpCode op) {
-    if (!ScratchXPoolEnabled()) {
+bool X86PinExtLevel2Enabled(const GPRSMask& pool) {
+    if (X86PinExtLevel() < 2) {
+        return false;
+    }
+    for (u32 code = 0; code <= 5; ++code) {
+        if (!pool.Get(code)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool) {
+    return X86PinExtLevel2Enabled(pool) && !ScratchXPoolEnabled() &&
+           pool.Get(12) && pool.Get(13);
+}
+
+static bool X86PinExtEnabled() {
+    return X86PinExtLevel() >= 1;
+}
+
+u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
+    // Level 2 without XPOOL leases the otherwise globally-reserved x12/x13 as
+    // scratch-only registers. It therefore needs the same fixed-clobber
+    // exclusions even though those registers remain unavailable to linear
+    // scan as value locations.
+    if (!ScratchXPoolEnabled() && !scratch_only) {
         return 0;
     }
     constexpr u32 x11 = 1u << 11;
@@ -42,6 +67,12 @@ u32 FixedGPRClobbers(ir::OpCode op) {
         // Pair CAS additionally holds the second observed half in x13.
         case ir::OpCode::CompareAndSwap128:
             return x11 | x12 | x13;
+        // The OFF-XPOOL x87 lowering names x12/x13 directly.
+        case ir::OpCode::X87Op:
+            // Level 2 without XPOOL takes the exact helper fallback instead
+            // of the high-pressure inline lowering, so this pair is available
+            // as instruction-local scratch there.
+            return 0;
         // Host-call target and fixed-location materialization.
         case ir::OpCode::CallLambda:
         case ir::OpCode::CallDynamic:
@@ -94,6 +125,12 @@ ScratchNeed ScratchBudget(ir::OpCode op) {
     switch (op) {
         // --- x87 GPRs ----------------------------------------------------
         case ir::OpCode::X87Op:
+            if (X86PinExtLevel() >= 2 && !ScratchXPoolEnabled()) {
+                // Six dynamic registers cannot cover the inline x87 peak.
+                // The emitter deliberately selects its exact host-helper
+                // fallback in this state; price that ordinary call shape.
+                return {kDefaultScratchGPR, kDefaultScratchFPR};
+            }
             // OFF retains the historical accounting: two explicit ip0/ip1
             // exclusions plus six emitter temporaries. ON makes VIXL scratch
             // explicit and leases the former x12/x13 x87 work registers, so

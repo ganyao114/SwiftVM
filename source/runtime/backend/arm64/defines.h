@@ -42,6 +42,9 @@
 #define handle      x21
 // x29 is not used as a generated-code frame chain. SVM_X86_PIN_EXT may hold
 // guest RDX in it; every helper path already preserves x29 together with LR.
+// At level 2, guest RSI/RDI/R8-R11 live in x0-x5. Those are not named here:
+// EmitHostCall discovers their static descriptors and preserves them across
+// argument setup and the AAPCS64 caller-saved boundary.
 
 #define ip          x11
 // mem_scratch: reserved scratch for folding the pt bias into memory operands

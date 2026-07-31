@@ -132,6 +132,14 @@ public:
 
     [[nodiscard]] u32 SpillCount() const { return spill_count; }
 
+    static u32 ScratchOnlyGPRs(OpCode op, bool enabled) {
+        if (!enabled) {
+            return 0;
+        }
+        const u32 fixed = backend::FixedGPRClobbers(op, enabled);
+        return ((fixed & (1u << 12)) ? 0u : 1u) + ((fixed & (1u << 13)) ? 0u : 1u);
+    }
+
     // Re-reads the masks this scan recorded and confirms each instruction is
     // left enough free registers for its emitter (backend::ScratchBudget) plus
     // one reload register per distinct spilled value it names. This is exactly
@@ -154,7 +162,11 @@ public:
                     if (inst.Id() >= reg_alloc->MapCount()) {
                         continue;
                     }
-                    ok &= static_cast<u32>(reg_alloc->DirtyGPR(inst.Id()).GetClearCount()) >=
+                    ok &= static_cast<u32>(reg_alloc->DirtyGPR(inst.Id()).GetClearCount()) +
+                                          ScratchOnlyGPRs(
+                                                  inst.GetOp(),
+                                                  backend::X86PinExtScratchOnlyEnabled(
+                                                          reg_alloc->GetGprs())) >=
                                   need.gpr &&
                           static_cast<u32>(reg_alloc->DirtyFPR(inst.Id()).GetClearCount()) >=
                                   need.fpr;
@@ -309,6 +321,7 @@ public:
         fill_gap(instr_count);
         perf_assign.Stop();
 
+        FusePinnedWriteChains();
         if (spill_count) {
             LOG_WARNING("RegisterAllocPass: {} value(s) spilled to stack slots (highest slot {})",
                         spill_count, max_spill_slot);
@@ -316,15 +329,223 @@ public:
     }
 
 private:
+    void FusePinnedWriteChains() {
+        if (!backend::X86PinExtLevel2Enabled(reg_alloc->GetGprs())) {
+            return;
+        }
+        auto fuse_block = [&](Block* lir_block) {
+            auto& list = lir_block->GetInstList();
+            // Full-width exchanges are represented as mutually dependent
+            // GetHost/SetHost pairs. Moving any neighbouring 32-bit producer
+            // into a static destination before those pairs have consumed
+            // their snapshots can create an implicit physical-register cycle.
+            // Leave such blocks entirely to the ordinary copy-preserving path.
+            const bool has_full_static_exchange_shape =
+                    std::any_of(list.begin(), list.end(), [](Inst& inst) {
+                        if (inst.GetOp() != OpCode::SetHostGPR) {
+                            return false;
+                        }
+                        const auto value = inst.GetArg<Value>(0);
+                        return GetValueSizeByte(value.Type()) == sizeof(u64) &&
+                               (!value.Def() ||
+                                value.Def()->GetOp() != OpCode::ZeroExtend32To64);
+                    });
+            if (has_full_static_exchange_shape) {
+                return;
+            }
+            auto observes_host = [](Inst& inst, u32 host) {
+                if ((inst.GetOp() == OpCode::GetHostGPR &&
+                     inst.GetArg<Imm>(0).Get() == host) ||
+                    (inst.GetOp() == OpCode::SetHostGPR &&
+                     inst.GetArg<Imm>(1).Get() == host)) {
+                    return true;
+                }
+                for (auto value : inst.GetValues()) {
+                    value = ResolveBitCastSource(value);
+                    if (value.Def() && value.Def()->GetOp() == OpCode::GetHostGPR &&
+                        value.Def()->GetArg<Imm>(0).Get() == host) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            for (auto zext = list.begin(); zext != list.end(); ++zext) {
+                if (zext->GetOp() != OpCode::ZeroExtend32To64) {
+                    continue;
+                }
+                const auto source = zext->GetArg<Value>(0);
+                if (!source.Def() || GetValueSizeByte(source.Type()) != sizeof(u32)) {
+                    continue;
+                }
+                auto store = list.end();
+                for (auto scan = std::next(zext); scan != list.end(); ++scan) {
+                    bool uses_zext = false;
+                    for (auto value : scan->GetValues()) {
+                        uses_zext |= value.Def() == zext.operator->();
+                    }
+                    if (uses_zext) {
+                        store = scan;
+                        break;
+                    }
+                }
+                if (store == list.end() || store->GetOp() != OpCode::SetHostGPR ||
+                    store->GetArg<Value>(0).Def() != zext.operator->() ||
+                    store->GetArg<Imm>(2).Get() != 0) {
+                    continue;
+                }
+                const u32 target = store->GetArg<Imm>(1).Get();
+                if (!(target <= 5 || target == 22 || target == 23 || target == 29)) {
+                    continue;
+                }
+
+                u32 source_uses = 0;
+                u32 zext_uses = 0;
+                bool after_store = false;
+                bool target_overwritten = false;
+                bool zext_used_after_overwrite = false;
+                for (auto scan = list.begin(); scan != list.end(); ++scan) {
+                    for (auto value : scan->GetValues()) {
+                        source_uses += value.Def() == source.Def();
+                        if (value.Def() == zext.operator->()) {
+                            zext_uses++;
+                            zext_used_after_overwrite |= target_overwritten;
+                        }
+                    }
+                    if (after_store && scan->GetOp() == OpCode::SetHostGPR &&
+                        scan->GetArg<Imm>(1).Get() == target) {
+                        target_overwritten = true;
+                    }
+                    after_store |= scan.operator->() == store.operator->();
+                }
+                if (zext_uses == 0 || zext_used_after_overwrite) {
+                    continue;
+                }
+                // Both producer/value must be block-local. GetUses() is global
+                // to the HIR function, while the counts above cover this block.
+                // Equality therefore excludes an unseen successor/predecessor
+                // consumer before any fixed-register remap is attempted.
+                if (zext->GetUses() != zext_uses ||
+                    source.Def()->GetUses() != source_uses) {
+                    continue;
+                }
+
+                bool target_observed_before_store = false;
+                for (auto scan = std::next(zext); scan != store; ++scan) {
+                    target_observed_before_store |= observes_host(*scan, target);
+                }
+                if (target_observed_before_store) {
+                    continue;
+                }
+
+                // Publish the zext directly in the static target. It remains a
+                // valid snapshot for later SSA users because the scan above
+                // rejected every crossing write.
+                reg_alloc->MapRegister(zext->Id(), HostGPR{static_cast<u16>(target)});
+
+                auto producer = list.end();
+                for (auto scan = list.begin(); scan != zext; ++scan) {
+                    if (scan.operator->() == source.Def()) {
+                        producer = scan;
+                        break;
+                    }
+                }
+                if (producer == list.end()) {
+                    continue;
+                }
+                // Multi-use producers are normally left in their allocated
+                // snapshot. A fixed-register read is the useful exception:
+                // after copying source->target, later SSA users may read the
+                // target until the next architectural target write. CRC's
+                // initial EDI snapshot has exactly this shape.
+                if (source_uses != 1 && producer->GetOp() != OpCode::GetHostGPR) {
+                    continue;
+                }
+                bool source_used_after_target_write = false;
+                bool later_target_write = false;
+                for (auto scan = std::next(store); scan != list.end(); ++scan) {
+                    if (scan->GetOp() == OpCode::SetHostGPR &&
+                        scan->GetArg<Imm>(1).Get() == target) {
+                        later_target_write = true;
+                    }
+                    if (later_target_write) {
+                        for (auto value : scan->GetValues()) {
+                            source_used_after_target_write |= value.Def() == source.Def();
+                        }
+                    }
+                }
+                if (source_used_after_target_write) {
+                    continue;
+                }
+                switch (producer->GetOp()) {
+                    case OpCode::GetHostGPR: {
+                        const u32 source_host = producer->GetArg<Imm>(0).Get();
+                        bool source_written = false;
+                        bool source_used_after_write = false;
+                        for (auto scan = std::next(producer); scan != list.end(); ++scan) {
+                            if (scan->GetOp() == OpCode::SetHostGPR &&
+                                scan->GetArg<Imm>(1).Get() == source_host) {
+                                source_written = true;
+                            }
+                            if (source_written) {
+                                for (auto value : scan->GetValues()) {
+                                    source_used_after_write |= value.Def() == source.Def();
+                                }
+                            }
+                        }
+                        // Ordinary one-use moves keep the strict no-source-
+                        // write rule, which rejects both halves of XCHG. The
+                        // one multi-use exception is a level-2 source copied
+                        // into a W55 callee-saved pin, with every snapshot use
+                        // before the source changes (the CRC EDI->EDX chain).
+                        const bool safe_level2_snapshot =
+                                source_uses > 1 && source_host <= 5 &&
+                                (target == 22 || target == 23 || target == 29) &&
+                                !source_used_after_write;
+                        if (source_written && !safe_level2_snapshot) {
+                            continue;
+                        }
+                        break;
+                    }
+                    case OpCode::Add:
+                    case OpCode::Sub:
+                    case OpCode::And:
+                    case OpCode::Or:
+                    case OpCode::Xor:
+                        break;
+                    default:
+                        continue;
+                }
+                for (auto scan = std::next(producer); scan != zext; ++scan) {
+                    target_observed_before_store |= observes_host(*scan, target);
+                }
+                if (!target_observed_before_store) {
+                    reg_alloc->MapRegister(
+                            producer->Id(), HostGPR{static_cast<u16>(target)});
+                }
+            }
+        };
+        if (function) {
+            // Remap only chains whose global use counts prove that every
+            // producer/value consumer is inside the block being scanned.
+            for (auto* hir_block : function->GetHIRBlocks()) {
+                fuse_block(hir_block->GetBlock());
+            }
+        } else {
+            fuse_block(block);
+        }
+    }
+
     void InitializeFixedClobbers() {
         fixed_gpr_clobbers.resize(InstrCount());
+        const bool scratch_only =
+                backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs());
         auto add_block = [&](Block* lir_block) {
             bool has_inst = false;
             u32 last_id = 0;
             for (auto& inst : lir_block->GetInstList()) {
                 if (inst.Id() < fixed_gpr_clobbers.size()) {
                     fixed_gpr_clobbers[inst.Id()] |=
-                            backend::FixedGPRClobbers(inst.GetOp());
+                            backend::FixedGPRClobbers(inst.GetOp(), scratch_only);
                 }
                 has_inst = true;
                 last_id = std::max<u32>(last_id, inst.Id());
@@ -419,6 +640,17 @@ private:
                     GetValueSizeByte(source.Type()) <= 2 &&
                     DirectlyFeedsImmediateShift(inst)) {
                     return source;
+                }
+                if (source.Defined() && source.Def()->GetOp() == OpCode::BitExtract &&
+                    source.Def()->GetArg<Imm>(1).Get() == 0 &&
+                    source.Def()->GetArg<Imm>(2).Get() ==
+                            GetValueSizeByte(source.Type()) * 8 &&
+                    DirectlyFeedsImmediateShift(inst)) {
+                    auto input = source.Def()->GetArg<Value>(0);
+                    if (input.Def() && input.Def()->GetOp() == OpCode::GetHostGPR &&
+                        input.Def()->GetArg<Imm>(0).Get() <= 5) {
+                        return source;
+                    }
                 }
             } else if (inst->GetOp() == OpCode::ZeroExtend32To64) {
                 auto source = ResolveBitCastSource(inst->GetArg<Value>(0));
@@ -679,8 +911,8 @@ private:
             return true;  // no mask was recorded for this id
         }
         auto need = backend::ScratchBudget(inst->GetOp());
-        u32 need_gpr = need.gpr + extra_gpr;
-        u32 need_fpr = need.fpr + extra_fpr;
+        u32 reload_gpr = 0;
+        u32 reload_fpr = 0;
         // One reload register per DISTINCT spilled value the instruction
         // names -- distinct because JitContext memoizes reloads per
         // (instruction, value).
@@ -694,7 +926,7 @@ private:
                 return;
             }
             counted.push_back(source.Id());
-            (IsFloatValue(source.Def()) ? need_fpr : need_gpr)++;
+            (IsFloatValue(source.Def()) ? reload_fpr : reload_gpr)++;
         };
         for (auto& value : inst->GetValues()) {
             add(value);
@@ -704,7 +936,23 @@ private:
         }
         auto gprs = reg_alloc->DirtyGPR(id);
         auto fprs = reg_alloc->DirtyFPR(id);
-        return static_cast<u32>(gprs.GetClearCount()) >= need_gpr &&
+        const u32 scratch_only_gprs =
+                ScratchOnlyGPRs(inst->GetOp(),
+                                backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs()));
+        u32 need_gpr = need.gpr + reload_gpr + extra_gpr;
+        // Add/Sub's five-register declaration is the no-spill worst case:
+        // tied inputs must be preserved for AF/PF after the destination is
+        // overwritten. A spilled operand/result cannot be tied, and its reload
+        // register replaces that preservation temporary. Charge the larger of
+        // the no-spill peak and the ordinary three-register shape plus reloads
+        // instead of adding both mutually-exclusive peaks.
+        if (scratch_only_gprs &&
+            (inst->GetOp() == OpCode::Add || inst->GetOp() == OpCode::Sub)) {
+            need_gpr = std::max<u32>(
+                    need.gpr, backend::kDefaultScratchGPR + reload_gpr) + extra_gpr;
+        }
+        const u32 need_fpr = need.fpr + reload_fpr + extra_fpr;
+        return static_cast<u32>(gprs.GetClearCount()) + scratch_only_gprs >= need_gpr &&
                static_cast<u32>(fprs.GetClearCount()) >= need_fpr;
     }
 
@@ -811,6 +1059,8 @@ private:
                 end = std::max(end, it->second);
             }
             const bool host_reg_alias = instr->IsGetHostRegOperation();
+            const auto host_index =
+                    host_reg_alias ? static_cast<u16>(instr->GetArg<Imm>(0).Get()) : u16{};
             const bool full_gpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostGPR &&
                                       GetValueSizeByte(instr->ReturnType()) == sizeof(u64);
             // Scalar views of a pinned SIMD register (XmmLo/XmmHi) still
@@ -819,8 +1069,6 @@ private:
             const bool fixed_fpr_get =
                     host_reg_alias && instr->GetOp() == OpCode::GetHostFPR &&
                     IsFloatValueType(instr->ReturnType());
-            const auto host_index =
-                    host_reg_alias ? static_cast<u16>(instr->GetArg<Imm>(0).Get()) : u16{};
             // A fixed mapping aliases this SSA value directly to the pinned
             // register. Preserve snapshot semantics by forcing a copy when a
             // SetHostGPR can overwrite that register before the value's last use.
@@ -954,13 +1202,13 @@ private:
             end = std::max<u32>(end, actual_use_end[instr->Id()]);
 
             const bool host_reg_alias = instr->IsGetHostRegOperation();
+            const auto host_index =
+                    host_reg_alias ? static_cast<u16>(instr->GetArg<Imm>(0).Get()) : u16{};
             const bool full_gpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostGPR &&
                                       GetValueSizeByte(instr->ReturnType()) == sizeof(u64);
             const bool fixed_fpr_get =
                     host_reg_alias && instr->GetOp() == OpCode::GetHostFPR &&
                     IsFloatValueType(instr->ReturnType());
-            const auto host_index =
-                    host_reg_alias ? static_cast<u16>(instr->GetArg<Imm>(0).Get()) : u16{};
             const bool crosses_host_write =
                     full_gpr_get &&
                     std::any_of(host_gpr_writes.begin(), host_gpr_writes.end(),
@@ -1070,13 +1318,13 @@ private:
         PerfScope2 perf_values{GetPerfStats2().regalloc_live_values};
         for (auto& instr : lir_block->GetInstList()) {
             const bool host_reg_alias = instr.IsGetHostRegOperation();
+            const auto host_index =
+                    host_reg_alias ? static_cast<u16>(instr.GetArg<Imm>(0).Get()) : u16{};
             const bool full_gpr_get = host_reg_alias && instr.GetOp() == OpCode::GetHostGPR &&
                                       GetValueSizeByte(instr.ReturnType()) == sizeof(u64);
             const bool fixed_fpr_get =
                     host_reg_alias && instr.GetOp() == OpCode::GetHostFPR &&
                     IsFloatValueType(instr.ReturnType());
-            const auto host_index =
-                    host_reg_alias ? static_cast<u16>(instr.GetArg<Imm>(0).Get()) : u16{};
             // See the function-level collector above: a crossing write makes
             // the GetHostGPR result a snapshot, not a zero-cost alias.
             const bool fixed_gpr_get =
@@ -1428,18 +1676,29 @@ void RegisterAllocPass::Run(HIRBuilder* hir_builder, backend::RegAlloc* reg_allo
 // construction -- reserving the unit's largest opcode budget plus its largest
 // possible reload count leaves every instruction more free registers than it
 // can ask for -- so the loop cannot spin.
-static void CollectUnitBudget(Block* block, u32& gpr, u32& fpr, u32& reload_bound) {
+static void CollectUnitBudget(Block* block,
+                              u32& gpr,
+                              u32& fpr,
+                              u32& reload_bound,
+                              bool scratch_only_enabled) {
     for (auto& inst : block->GetInstList()) {
         auto need = backend::ScratchBudget(inst.GetOp());
-        gpr = std::max<u32>(gpr, need.gpr);
+        const u32 scratch_only =
+                LinearScanAllocator::ScratchOnlyGPRs(inst.GetOp(), scratch_only_enabled);
+        gpr = std::max<u32>(gpr, need.gpr > scratch_only ? need.gpr - scratch_only : 0);
         fpr = std::max<u32>(fpr, need.fpr);
         reload_bound = std::max<u32>(reload_bound, static_cast<u32>(inst.GetValues().size()) + 1);
     }
 }
 
-static void CollectUnitBudget(HIRFunction* function, u32& gpr, u32& fpr, u32& reload_bound) {
+static void CollectUnitBudget(HIRFunction* function,
+                              u32& gpr,
+                              u32& fpr,
+                              u32& reload_bound,
+                              bool scratch_only_enabled) {
     for (auto* hir_block : function->GetHIRBlocks()) {
-        CollectUnitBudget(hir_block->GetBlock(), gpr, fpr, reload_bound);
+        CollectUnitBudget(
+                hir_block->GetBlock(), gpr, fpr, reload_bound, scratch_only_enabled);
     }
 }
 
@@ -1448,13 +1707,19 @@ static void RunVerified(Unit* unit,
                         backend::RegAlloc* reg_alloc,
                         bool single_block_fast_path = false,
                         bool scalar_insert = false) {
+    const bool scratch_only_enabled =
+            backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs());
+    const u32 scratch_only = scratch_only_enabled ? 2u : 0u;
+    const u32 default_gpr_reserve = backend::kDefaultScratchGPR > scratch_only
+            ? backend::kDefaultScratchGPR - scratch_only
+            : 0u;
     // Attempt one: the ordinary emitter shape. Every unit in the corpus stops
     // here, so nothing above this point may walk the instruction list -- the
     // whole-unit budget scan below is deliberately deferred until an escalation
     // is known to be necessary (func_tests is dominated by translation cost and
     // notices a redundant pass).
     {
-        LinearScanAllocator scan{unit, reg_alloc, backend::kDefaultScratchGPR,
+        LinearScanAllocator scan{unit, reg_alloc, default_gpr_reserve,
                                  backend::kDefaultScratchFPR, single_block_fast_path,
                                  scalar_insert};
         scan.AllocateRegisters();
@@ -1466,7 +1731,11 @@ static void RunVerified(Unit* unit,
         }
     }
     u32 unit_gpr = 0, unit_fpr = 0, reload_bound = 0;
-    CollectUnitBudget(unit, unit_gpr, unit_fpr, reload_bound);
+    CollectUnitBudget(unit,
+                      unit_gpr,
+                      unit_fpr,
+                      reload_bound,
+                      scratch_only_enabled);
 
     // A reserve at or above the pool size would leave the scan nothing to
     // allocate, so each rung is clamped to leave one register allocatable.
@@ -1476,7 +1745,7 @@ static void RunVerified(Unit* unit,
     const auto pool_gpr = static_cast<u32>(backend::GPRSMask{reg_alloc->GetGprs()}.GetClearCount());
     const auto pool_fpr = static_cast<u32>(backend::FPRSMask{reg_alloc->GetFprs()}.GetClearCount());
     const auto clamp = [](u32 want, u32 pool) { return pool ? std::min(want, pool - 1) : 0u; };
-    const u32 base_gpr = std::max<u32>(unit_gpr, backend::kDefaultScratchGPR);
+    const u32 base_gpr = std::max<u32>(unit_gpr, default_gpr_reserve);
     const u32 base_fpr = std::max<u32>(unit_fpr, backend::kDefaultScratchFPR);
     const struct {
         u32 gpr;
