@@ -10,16 +10,22 @@ namespace swift::runtime::backend {
 
 static int X86PinExtLevel() {
     static const int level = [] {
+        // Default level 2 after the flip A/B (bundle with XPOOL, coremark
+        // 5/5 pairs positive, median 1.22). Level 3 stays opt-in only: its
+        // measured coremark delta vs level 2 is -10.18%. =0 restores the
+        // pre-W55 dynamic-only allocation as the rollback.
         const char* value = PerfGetenv("SVM_X86_PIN_EXT");
-        return value ? std::max(0, std::atoi(value)) : 0;
+        return value ? std::max(0, std::atoi(value)) : 2;
     }();
     return level;
 }
 
 bool ScratchXPoolRequested() {
     static const bool requested = [] {
+        // Default ON after the flip A/B (bundled with PIN_EXT=2); =0
+        // restores the old dynamic scratch pool as the rollback.
         const char* value = PerfGetenv("SVM_JIT_SCRATCH_XPOOL");
-        return value && std::strcmp(value, "0") != 0;
+        return !value || std::strcmp(value, "0") != 0;
     }();
     return requested;
 }

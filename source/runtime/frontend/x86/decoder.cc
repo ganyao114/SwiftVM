@@ -861,8 +861,11 @@ ir::Value X64Decoder::R(_RegisterType reg) {
 
 static bool PinExtPartialWritesEnabled() {
     static const bool enabled = [] {
+        // Default ON after the flip A/B (PIN_EXT=2 bundle, coremark 5/5
+        // pairs positive, median 1.22); =0 selects the RMW fallback as the
+        // rollback.
         const char* value = swift::runtime::PerfGetenv("SVM_X86_PIN_EXT");
-        return value && std::atoi(value) >= 1;
+        return !value || std::atoi(value) >= 1;
     }();
     return enabled;
 }

@@ -603,8 +603,12 @@ struct X86Instance::Impl final {
         // adds the remaining four. The backend makes XPOOL effective at level
         // 3 because the non-XPOOL value pool would contain only x14/x15.
         const char* pin_ext_env = std::getenv("SVM_X86_PIN_EXT");
-        const int pin_ext_level = enable_static_regs && pin_ext_env
-                ? std::atoi(pin_ext_env)
+        // Default level 2 after the flip A/B (bundle with XPOOL, coremark
+        // 5/5 pairs positive, median 1.22); =0 restores the pre-W55 map as
+        // the rollback. Level 3 stays opt-in only (measured -10.18% vs
+        // level 2 on coremark).
+        const int pin_ext_level = enable_static_regs
+                ? (pin_ext_env ? std::atoi(pin_ext_env) : 2)
                 : 0;
         const bool enable_pin_ext = pin_ext_level >= 1;
         const bool enable_pin_ext2 = pin_ext_level >= 2;
