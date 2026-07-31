@@ -108,11 +108,12 @@ INST(SetOverflow, Void, Value)
 // before ADC/SBB; the ARM64 backend lowers it to FEAT_FLAGM CFINV and the
 // interpreter toggles its virtual host-C bit.
 INST(InvertCarry, Void)
-// Publish VecFCmp's compact {CF,PF,ZF} result to the unchanged x86 flags ABI,
-// clearing OF/SF/AF as UCOMIS/COMIS require.  Keeping this as one side-effecting
-// operation lets the ARM64 backend update x26 without flag-setting integer
-// helpers, so the FCMP NZCV remains available to an immediate local consumer.
-INST(PublishFCmpFlags, Void, Value)
+// Publish VecFCmp's result to the unchanged x86 flags ABI, clearing OF/SF/AF
+// as UCOMIS/COMIS require.  Imm records the unit-local lowering selected by
+// the frontend: 0 consumes the legacy {CF,PF,ZF} packed value, 1 consumes the
+// compact path's ordered bit and AXFLAG-transformed NZCV.  The interpreter
+// always retains architectural VecFCmp semantics.
+INST(PublishFCmpFlags, Void, Value, Imm)
 // Shift
 // LogicalShiftLeft
 INST(LslImm, Value, Value, Imm)
@@ -265,7 +266,10 @@ INST(VecFMinMax, Value, Value, Value, Imm, Imm, Imm)
 INST(VecFUnary, Value, Value, Value, Imm, Imm, Imm)
 
 // Scalar compare result: bit 0 = CF, bit 1 = PF, bit 2 = ZF.
-INST(VecFCmp, Value, Value, Value, Imm)
+// The final Imm records whether this unit selected the FlagM2 compact
+// lowering.  It is deliberately in IR rather than re-probed by the backend,
+// so one unit cannot mix paths if process state changes while compiling.
+INST(VecFCmp, Value, Value, Value, Imm, Imm)
 // Lane-wise compare to an all-ones / all-zeros mask.  The predicate (second
 // Imm) is a RELATION SET, not an ISA's compare encoding: an IEEE 754 compare
 // of two lanes has exactly four mutually exclusive outcomes, and the predicate

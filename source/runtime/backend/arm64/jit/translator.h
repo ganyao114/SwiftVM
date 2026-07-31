@@ -181,6 +181,7 @@ private:
     // still-live host NZCV directly.
     bool RecordLocalCondition(ir::Inst *inst, ir::Cond cond);
     [[nodiscard]] std::optional<Condition> LocalConditionFor(ir::Value value) const;
+    [[nodiscard]] static bool IsCompactFCmp(ir::Value value);
 
     // Merge pending guest flags kept in host NZCV into the flags register
     void MergeNZCV();

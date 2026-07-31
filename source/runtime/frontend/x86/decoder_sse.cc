@@ -453,6 +453,15 @@ ir::Value X64Decoder::XmmLo(_RegisterType reg) {
     return __ LoadUniform(ir::Uniform{off, ir::ValueType::U64});
 }
 
+ir::Value X64Decoder::XmmScalarV(_RegisterType reg, u32 lane_bits) {
+    ASSERT(lane_bits == 32 || lane_bits == 64);
+    auto off = ToVReg(x86_regs_table[reg]).GetOffset();
+    return __ LoadUniform(
+            ir::Uniform{off,
+                        lane_bits == 32 ? ir::ValueType::V32
+                                        : ir::ValueType::V64});
+}
+
 ir::Value X64Decoder::XmmHi(_RegisterType reg) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::RegValue};
@@ -545,7 +554,7 @@ ir::Value X64Decoder::LoadSrcLo(_DInst& insn, _Operand& op) {
 ir::Value X64Decoder::LoadSrcScalarVec(_DInst& insn, _Operand& op, u32 lane_bits) {
     ASSERT(lane_bits == 32 || lane_bits == 64);
     if (op.type == O_REG) {
-        return XmmRead(static_cast<_RegisterType>(op.index));
+        return XmmScalarV(static_cast<_RegisterType>(op.index), lane_bits);
     }
     return __ LoadMemory(ir::Operand{FlatAddress(insn, op)})
             .SetType(lane_bits == 32 ? ir::ValueType::V32 : ir::ValueType::V64);
@@ -1433,9 +1442,13 @@ void X64Decoder::DecodeFxsave(_DInst& insn, bool restore) {
 }
 
 void X64Decoder::DecodeUcomis(_DInst& insn, u32 lane_bits) {
-    auto a = XmmLo(static_cast<_RegisterType>(insn.ops[0].index));
-    auto b = LoadSrcLo(insn, insn.ops[1]);
-    auto f = __ VecFCmp(a, b, ir::Imm(lane_bits)).SetType(ir::ValueType::U64);
+    const bool compact = FlagsFcmpFuseEnabled() && FlagsFcmpCompactEnabled();
+    auto a = compact ? XmmScalarV(static_cast<_RegisterType>(insn.ops[0].index), lane_bits)
+                     : XmmLo(static_cast<_RegisterType>(insn.ops[0].index));
+    auto b = compact ? LoadSrcScalarVec(insn, insn.ops[1], lane_bits)
+                     : LoadSrcLo(insn, insn.ops[1]);
+    auto f = __ VecFCmp(a, b, ir::Imm(lane_bits), ir::Imm(u32(compact)))
+                     .SetType(ir::ValueType::U64);
     if (FlagsFcmpFuseEnabled()) {
         PublishFCmpFlags(f);
         return;

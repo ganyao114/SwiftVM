@@ -481,9 +481,20 @@ void X64Decoder::DecodeAvxFpCmpMask(const VexInsn& v, u32 lane_bits, bool scalar
 // not this file's to change.  The two must stay in step; VecFCmp is the single
 // source of the compare itself, so only the EFLAGS plumbing is repeated.
 void X64Decoder::DecodeAvxFpComis(const VexInsn& v, u32 lane_bits) {
-    auto a = XmmLo(XmmOf(v.reg));
-    auto b = VexLoadScalar(v, lane_bits);
-    auto f = __ VecFCmp(a, b, ir::Imm(lane_bits)).SetType(ir::ValueType::U64);
+    const bool compact = FlagsFcmpFuseEnabled() && FlagsFcmpCompactEnabled();
+    const auto scalar_type =
+            lane_bits == 32 ? ir::ValueType::V32 : ir::ValueType::V64;
+    auto a = compact ? XmmScalarV(XmmOf(v.reg), lane_bits)
+                     : XmmLo(XmmOf(v.reg));
+    auto b = compact
+                     ? (v.RmIsRegister()
+                                ? XmmScalarV(XmmOf(v.rm), lane_bits)
+                                : MemLoad(ir::Operand{VexAddress(v)},
+                                          scalar_type,
+                                          VexTsoOrdered(v)))
+                     : VexLoadScalar(v, lane_bits);
+    auto f = __ VecFCmp(a, b, ir::Imm(lane_bits), ir::Imm(u32(compact)))
+                     .SetType(ir::ValueType::U64);
     if (FlagsFcmpFuseEnabled()) {
         PublishFCmpFlags(f);
         return;

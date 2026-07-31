@@ -281,7 +281,8 @@ public:
     X64Decoder(VAddr start,
                runtime::MemoryInterface* memory,
                ir::Assembler* visitor,
-               bool is_64bit);
+               bool is_64bit,
+               runtime::Arm64Features arm64_features = runtime::Arm64Features::None);
 
     void Decode();
 
@@ -388,6 +389,9 @@ private:
     [[nodiscard]] static bool FlagsCfinvEnabled();
     [[nodiscard]] static bool FlagsTerminalJccEnabled();
     [[nodiscard]] static bool FlagsFcmpFuseEnabled();
+    [[nodiscard]] bool FlagsFcmpCompactEnabled() const {
+        return flags_fcmp_compact_;
+    }
 
     bool DecodeSwitch(_DInst& insn);
     bool DecodeBaseOpcode(_DInst& insn);
@@ -560,6 +564,7 @@ private:
     ir::Value LoadSrcLo(_DInst& insn, _Operand& op);
     ir::Value LoadSrcHi(_DInst& insn, _Operand& op);
     ir::Value LoadSrcScalarVec(_DInst& insn, _Operand& op, u32 lane_bits);
+    ir::Value XmmScalarV(_RegisterType reg, u32 lane_bits);
     static bool ScalarVOperandsEnabled();
 
     // Fold a memory/register address operand to a single address value
@@ -1092,6 +1097,9 @@ private:
     runtime::MemoryInterface* memory;
     bool end_decode{false};
     bool is_64bit{false};
+    // Snapshotted from the owning Config when this compilation unit's decoder
+    // is constructed.  PublishFCmpFlags also records the decision in IR.
+    bool flags_fcmp_compact_{false};
     VAddr addr_mask{UINT64_MAX};
     CarryPolarity carry_{CarryPolarity::Unknown};
     VAddr local_nzcv_next_pc_{UINT64_MAX};

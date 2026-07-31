@@ -167,6 +167,9 @@ static Arm64Features DetectArm64Features() {
     if (sysctl_feature("hw.optional.arm.FEAT_FlagM")) {
         features |= Arm64Features::FlagM;
     }
+    if (sysctl_feature("hw.optional.arm.FEAT_FlagM2")) {
+        features |= Arm64Features::AXFlag;
+    }
 #endif
 
     // Diagnostic/bring-up override. The default remains the OS feature probe;
@@ -671,7 +674,12 @@ struct X86Instance::Impl final {
                     }
                     builder.SetCurBlock(addr);
                     ir::Assembler assembler{&builder};
-                    x86::X64Decoder decoder{addr, &memory_impl, &assembler, true};
+                    x86::X64Decoder decoder{
+                            addr,
+                            &memory_impl,
+                            &assembler,
+                            true,
+                            address_space->GetConfig().arm64_features};
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();
                     ++decoded_count;
@@ -818,7 +826,12 @@ struct X86Instance::Impl final {
                     std::memset(&x->GetJitCache(), 0, sizeof(backend::JitCache));
                     PerfScope2 perf_ir_setup{GetPerfStats2().ir_setup};
                     ir::Assembler assembler{x.get()};
-                    x86::X64Decoder decoder{pc, &memory_impl, &assembler, true};
+                    x86::X64Decoder decoder{
+                            pc,
+                            &memory_impl,
+                            &assembler,
+                            true,
+                            module->GetAddressSpace().GetConfig().arm64_features};
                     perf_ir_setup.Stop();
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();

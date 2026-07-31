@@ -345,9 +345,33 @@ void JitTranslator::EmitInvertCarry(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
+    const bool compact = inst->GetArg<ir::Imm>(1).Get() != 0;
+    auto packed = inst->GetArg<ir::Value>(0);
+    ASSERT(compact == IsCompactFCmp(packed));
+
+    if (compact) {
+        // VecFCmp left ARM FP NZCV live and materialized ordered (VC) as the
+        // result GPR.  AXFLAG transforms it as follows:
+        //   less/unordered -> C=0, equal/greater -> C=1  (inverted x86 CF)
+        //   equal/unordered -> Z=1                       (x86 ZF)
+        //   N=V=0                                           (x86 SF/OF)
+        // Keep those four bits lazy in host NZCV, update the two non-NZCV
+        // fields in x26, and leave the representation otherwise unchanged.
+        auto ordered = context.R(packed);
+        __ Bfi(flags, ordered, HostFlagsBit::ParityByte, 8);
+        __ Bfc(flags, HostFlagsBit::AuxiliaryCarry, 1);
+        {
+            vixl::CPUFeaturesScope flagm2(&masm, vixl::CPUFeatures::kAXFlag);
+            __ Axflag();
+        }
+        nzcv_requested = HostFlags::NZCV;
+        nzcv_dirty = true;
+        return;
+    }
+
     MergeNZCV();
     FlushFlags();
-    auto packed = context.R(inst->GetArg<ir::Value>(0));
+    auto packed_reg = context.R(packed);
     auto bit = context.GetTmpX();
     constexpr u64 replaced =
             (u64(1) << HostFlagsBit::N) |
@@ -361,11 +385,11 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
 
     // VecFCmp: bit0=CF, bit1=PF, bit2=ZF.  PF's ABI slot stores a raw
     // parity byte, so 0 spells PF=1 and 1 spells PF=0.
-    __ Ubfx(bit, packed, 0, 1);
+    __ Ubfx(bit, packed_reg, 0, 1);
     __ Bfi(flags, bit, HostFlagsBit::C, 1);
-    __ Ubfx(bit, packed, 2, 1);
+    __ Ubfx(bit, packed_reg, 2, 1);
     __ Bfi(flags, bit, HostFlagsBit::Z, 1);
-    __ Ubfx(bit, packed, 1, 1);
+    __ Ubfx(bit, packed_reg, 1, 1);
     __ Eor(bit, bit, 1);
     __ Bfi(flags, bit, HostFlagsBit::ParityByte, 8);
 }

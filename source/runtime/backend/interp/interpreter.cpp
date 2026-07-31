@@ -1328,6 +1328,7 @@ void Interpreter::RunInvertCarry(ir::Inst* inst, InterpStack& stack) {
 
 void Interpreter::RunPublishFCmpFlags(ir::Inst* inst, InterpStack& stack) {
     const u64 packed = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    const bool compact = inst->GetArg<ir::Imm>(1).Get() != 0;
     constexpr u64 replaced =
             (u64(1) << kHostFlagN) |
             (u64(1) << kHostFlagZ) |
@@ -1337,7 +1338,10 @@ void Interpreter::RunPublishFCmpFlags(ir::Inst* inst, InterpStack& stack) {
             (u64(0xff) << kHostParityByte);
     u64& flags = state.host_cpu_flags;
     flags &= ~replaced;
-    flags |= (packed & 1) << kHostFlagC;
+    // The compact JIT path uses AXFLAG, whose C is the inverse of x86 CF.
+    // Mirror that representation here because the decoder records the same
+    // unit-local carry polarity for all downstream consumers.
+    flags |= ((packed & 1) ^ u64(compact)) << kHostFlagC;
     flags |= ((packed >> 2) & 1) << kHostFlagZ;
     flags |= (((packed >> 1) & 1) ^ 1) << kHostParityByte;
 }

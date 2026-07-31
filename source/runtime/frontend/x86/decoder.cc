@@ -256,9 +256,14 @@ ir::Uniform ToVReg(const X86RegInfo& info) {
 X64Decoder::X64Decoder(VAddr start,
                        runtime::MemoryInterface* memory,
                        ir::Assembler* visitor,
-                       bool is_64bit)
+                       bool is_64bit,
+                       runtime::Arm64Features arm64_features)
         : start(start), pc(start), assembler(visitor), memory(memory), is_64bit(is_64bit) {
     addr_mask = is_64bit ? UINT64_MAX : UINT32_MAX;
+    const char* compact = runtime::PerfGetenv("SVM_FLAGS_FCMP_COMPACT");
+    flags_fcmp_compact_ =
+            compact && std::strcmp(compact, "0") != 0 &&
+            True(arm64_features & runtime::Arm64Features::AXFlag);
 }
 
 // x86-64's architectural maximum instruction length. Bounds every raw-byte
@@ -1153,9 +1158,10 @@ void X64Decoder::MarkLocalNZCV(ir::Flags valid) {
 }
 
 void X64Decoder::PublishFCmpFlags(ir::Value packed) {
-    __ PublishFCmpFlags(packed);
-    carry_ = CarryPolarity::Direct;
-    StorePolarity(false);
+    const bool compact = FlagsFcmpCompactEnabled();
+    __ PublishFCmpFlags(packed, ir::Imm(u32(compact)));
+    carry_ = compact ? CarryPolarity::Inverted : CarryPolarity::Direct;
+    StorePolarity(compact);
     local_fcmp_next_pc_ = pc;
     local_fcmp_value_ = packed;
 }

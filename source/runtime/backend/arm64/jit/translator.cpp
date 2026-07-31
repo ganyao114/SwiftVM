@@ -247,6 +247,11 @@ std::optional<Condition> JitTranslator::LocalConditionFor(ir::Value value) const
     return std::nullopt;
 }
 
+bool JitTranslator::IsCompactFCmp(ir::Value value) {
+    return value.Def() && value.Def()->GetOp() == ir::OpCode::VecFCmp &&
+           value.Def()->GetArg<ir::Imm>(3).Get() != 0;
+}
+
 bool JitTranslator::RecordLocalCondition(ir::Inst* inst, ir::Cond cond) {
     if (inst->GetUses() != 1) {
         return false;

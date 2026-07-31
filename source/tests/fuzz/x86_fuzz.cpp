@@ -4984,6 +4984,289 @@ TEST_CASE("SSE batch B directed edge semantics") {
     munmap(arena, kArenaSize);
 }
 
+TEST_CASE("COMIS compact flags all consumers JIT interpreter differential") {
+    enum class Relation : u8 { Less, Equal, Greater, Unordered };
+    struct CompareCase {
+        const char* name;
+        u32 a32;
+        u32 b32;
+        u64 a64;
+        u64 b64;
+        Relation relation;
+    };
+    static constexpr CompareCase kCases[] = {
+            {"normal-less", 0xBF800000u, 0x3F800000u,
+             0xBFF0000000000000ull, 0x3FF0000000000000ull, Relation::Less},
+            {"normal-equal", 0x3F800000u, 0x3F800000u,
+             0x3FF0000000000000ull, 0x3FF0000000000000ull, Relation::Equal},
+            {"normal-greater", 0x40000000u, 0x3F800000u,
+             0x4000000000000000ull, 0x3FF0000000000000ull, Relation::Greater},
+            {"+0-vs--0", 0x00000000u, 0x80000000u,
+             0x0000000000000000ull, 0x8000000000000000ull, Relation::Equal},
+            {"-0-vs-+0", 0x80000000u, 0x00000000u,
+             0x8000000000000000ull, 0x0000000000000000ull, Relation::Equal},
+            {"-inf-vs-normal", 0xFF800000u, 0x3F800000u,
+             0xFFF0000000000000ull, 0x3FF0000000000000ull, Relation::Less},
+            {"normal-vs-+inf", 0x3F800000u, 0x7F800000u,
+             0x3FF0000000000000ull, 0x7FF0000000000000ull, Relation::Less},
+            {"+inf-vs-normal", 0x7F800000u, 0x3F800000u,
+             0x7FF0000000000000ull, 0x3FF0000000000000ull, Relation::Greater},
+            {"normal-vs--inf", 0x3F800000u, 0xFF800000u,
+             0x3FF0000000000000ull, 0xFFF0000000000000ull, Relation::Greater},
+            {"+inf-equal", 0x7F800000u, 0x7F800000u,
+             0x7FF0000000000000ull, 0x7FF0000000000000ull, Relation::Equal},
+            {"-inf-equal", 0xFF800000u, 0xFF800000u,
+             0xFFF0000000000000ull, 0xFFF0000000000000ull, Relation::Equal},
+            {"qnan-lhs", 0x7FC12345u, 0x3F800000u,
+             0x7FF8123456789ABCull, 0x3FF0000000000000ull, Relation::Unordered},
+            {"qnan-rhs", 0x3F800000u, 0x7FC12345u,
+             0x3FF0000000000000ull, 0x7FF8123456789ABCull, Relation::Unordered},
+            {"snan-lhs", 0x7FA12345u, 0x3F800000u,
+             0x7FF0123456789ABCull, 0x3FF0000000000000ull, Relation::Unordered},
+            {"snan-rhs", 0x3F800000u, 0x7FA12345u,
+             0x3FF0000000000000ull, 0x7FF0123456789ABCull, Relation::Unordered},
+    };
+    struct Variant {
+        const char* name;
+        u8 prefix;
+        u8 opcode;
+        bool is_double;
+    };
+    static constexpr Variant kVariants[] = {
+            {"UCOMISS", 0xF3, 0x2E, false},
+            {"COMISS", 0xF3, 0x2F, false},
+            {"UCOMISD", 0x66, 0x2E, true},
+            {"COMISD", 0x66, 0x2F, true},
+    };
+
+    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    const bool had_old_jit = old_jit != nullptr;
+    setenv("SVM_ENABLE_JIT", "1", 1);
+    auto* jit_instance = X86Instance::Make();
+    setenv("SVM_ENABLE_JIT", "0", 1);
+    auto* interp_instance = X86Instance::Make();
+    if (had_old_jit)
+        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    else
+        unsetenv("SVM_ENABLE_JIT");
+
+    constexpr size_t kArenaSize = 0x1000000;
+    runtime::backend::SmcTracker::SetEnabled(false);
+    void* arena =
+            mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 data = base + 0x800000;
+    const u64 stack = base + 0x700000;
+    size_t code_cursor = 1;
+
+    auto* jit_core = X86Core::Make(jit_instance);
+    auto* interp_core = X86Core::Make(interp_instance);
+    auto* jit_ctx = &jit_core->GetContext();
+    auto* interp_ctx = &interp_core->GetContext();
+
+    constexpr s32 kLhsOff = 0x100;
+    constexpr s32 kRhsOff = 0x120;
+    constexpr s32 kJccOff = 0x200;
+    constexpr s32 kSetccOff = 0x220;
+    constexpr s32 kCmovOff = 0x240;
+    const auto mem = [](s32 off) {
+        MemOp m{};
+        m.disp = off;
+        return m;
+    };
+    const auto emit_store_imm8 = [&](CodeBuf& b, s32 off, u8 value) {
+        const MemOp m = mem(off);
+        EmitRex(b, false, false, false, kDataReg >= 8);
+        b.B(0xC6);
+        EmitModRMMem(b, 0, m);
+        b.B(value);
+    };
+    const auto emit_setcc_mem = [&](CodeBuf& b, u8 cc, s32 off) {
+        const MemOp m = mem(off);
+        EmitRex(b, false, false, false, kDataReg >= 8);
+        b.B(0x0F);
+        b.B(u8(0x90 + cc));
+        EmitModRMMem(b, 0, m);
+    };
+    const auto emit_flag_seed = [](CodeBuf& b) {
+        EmitMovRegImm(b, 32, kRax, 0x7FFFFFFFu);
+        EmitAluRegImm(b, 0, 32, kRax, 1, true);
+    };
+    const auto emit_compare = [&](CodeBuf& b,
+                                  const Variant& variant,
+                                  bool memory_rhs) {
+        EmitSseLoad(b, 0xF3, 0x6F, 0, mem(kLhsOff));
+        if (memory_rhs) {
+            EmitSseLoad(b, variant.prefix, variant.opcode, 0, mem(kRhsOff));
+        } else {
+            EmitSseLoad(b, 0xF3, 0x6F, 1, mem(kRhsOff));
+            EmitSseFloatRR(b, variant.prefix, variant.opcode);
+        }
+    };
+    const auto expected_cond = [](u8 cc, bool cf, bool pf, bool zf) {
+        switch (cc) {
+            case 0x0: return false;
+            case 0x1: return true;
+            case 0x2: return cf;
+            case 0x3: return !cf;
+            case 0x4: return zf;
+            case 0x5: return !zf;
+            case 0x6: return cf || zf;
+            case 0x7: return !cf && !zf;
+            case 0x8: return false;
+            case 0x9: return true;
+            case 0xA: return pf;
+            case 0xB: return !pf;
+            case 0xC: return false;
+            case 0xD: return true;
+            case 0xE: return zf;
+            case 0xF: return !zf;
+        }
+        return false;
+    };
+
+    struct Result {
+        std::array<u8, 16> jcc{};
+        std::array<u8, 16> setcc{};
+        std::array<u64, 16> cmov{};
+        u8 ah{};
+        u64 pushed{};
+        u64 carry_result{};
+
+        bool operator==(const Result&) const = default;
+    };
+    const auto install = [&](CodeBuf code) {
+        code.B(0xF4);
+        const u64 address = base + code_cursor++ * 0x1000;
+        REQUIRE(code.c.size() < 0x1000);
+        std::memcpy(reinterpret_cast<void*>(address), code.c.data(), code.c.size());
+        return address;
+    };
+    const auto run = [&](X86Core* core,
+                         ThreadContext64* ctx,
+                         u64 address,
+                         bool capture_consumers) {
+        std::memset(reinterpret_cast<void*>(data + kJccOff), 0, 0x200);
+        ctx->rax.qword = 0;
+        ctx->r10.qword = 0;
+        ctx->r11.qword = 0;
+        ctx->r13.qword = data;
+        ctx->rsp.qword = stack;
+        ctx->direction = 0;
+        ctx->rip.qword = address;
+        core->Run();
+        Result result;
+        if (capture_consumers) {
+            std::memcpy(result.jcc.data(),
+                        reinterpret_cast<void*>(data + kJccOff),
+                        result.jcc.size());
+            std::memcpy(result.setcc.data(),
+                        reinterpret_cast<void*>(data + kSetccOff),
+                        result.setcc.size());
+            std::memcpy(result.cmov.data(),
+                        reinterpret_cast<void*>(data + kCmovOff),
+                        sizeof(result.cmov));
+            result.ah = static_cast<u8>(ctx->rax.qword >> 8);
+            result.pushed = ctx->r10.qword;
+        } else {
+            result.carry_result = ctx->r10.qword;
+        }
+        return result;
+    };
+
+    size_t comparisons = 0;
+    for (size_t vi = 0; vi < std::size(kVariants); ++vi) {
+        const auto& variant = kVariants[vi];
+        for (size_t ci = 0; ci < std::size(kCases); ++ci) {
+            const auto& test = kCases[ci];
+            const u64 lhs = variant.is_double ? test.a64 : u64(test.a32);
+            const u64 rhs = variant.is_double ? test.b64 : u64(test.b32);
+            std::memcpy(reinterpret_cast<void*>(data + kLhsOff), &lhs, sizeof(lhs));
+            std::memcpy(reinterpret_cast<void*>(data + kRhsOff), &rhs, sizeof(rhs));
+            const bool memory_rhs = ((vi + ci) & 1) != 0;
+
+            const bool unordered = test.relation == Relation::Unordered;
+            const bool cf = unordered || test.relation == Relation::Less;
+            const bool pf = unordered;
+            const bool zf = unordered || test.relation == Relation::Equal;
+            const u64 expected_flags = 0x202ull | u64(cf) | (u64(pf) << 2) | (u64(zf) << 6);
+            const u8 expected_ah = static_cast<u8>(expected_flags);
+
+            CodeBuf consumers;
+            emit_flag_seed(consumers);
+            emit_compare(consumers, variant, memory_rhs);
+            for (u8 cc = 0; cc < 16; ++cc) {
+                consumers.B(u8(0x70 + (cc ^ 1)));
+                const size_t skip_at = consumers.Pos();
+                consumers.B(0);
+                emit_store_imm8(consumers, kJccOff + cc, 1);
+                consumers.Patch8(skip_at, s8(consumers.Pos() - (skip_at + 1)));
+            }
+            for (u8 cc = 0; cc < 16; ++cc) {
+                emit_setcc_mem(consumers, cc, kSetccOff + cc);
+            }
+            EmitMovRegImm(consumers, 64, kR11, 1);
+            for (u8 cc = 0; cc < 16; ++cc) {
+                EmitMovRegImm(consumers, 64, kR10, 0);
+                EmitCmovcc(consumers, cc, 64, kR10, kR11);
+                EmitMovMemReg(consumers, 64, mem(kCmovOff + cc * 8), kR10);
+            }
+            consumers.B(0x9F);  // LAHF
+            consumers.B(0x9C);  // PUSHFQ
+            EmitPopReg(consumers, kR10);
+            const u64 consumers_addr = install(std::move(consumers));
+            const Result jit = run(jit_core, jit_ctx, consumers_addr, true);
+            const Result interp = run(interp_core, interp_ctx, consumers_addr, true);
+            INFO(fmt::format("{} {} rhs={}",
+                             variant.name, test.name, memory_rhs ? "mem" : "xmm"));
+            INFO(fmt::format("AH={:02x}/{:02x} PUSHF={:x}/{:x}",
+                             jit.ah, interp.ah, jit.pushed, interp.pushed));
+            for (u8 cc = 0; cc < 16; ++cc) {
+                INFO(fmt::format("cc={:x} J={}/{} S={}/{} C={}/{}",
+                                 cc,
+                                 jit.jcc[cc], interp.jcc[cc],
+                                 jit.setcc[cc], interp.setcc[cc],
+                                 jit.cmov[cc], interp.cmov[cc]));
+            }
+            REQUIRE(jit == interp);
+            REQUIRE(jit.ah == expected_ah);
+            REQUIRE(jit.pushed == expected_flags);
+            for (u8 cc = 0; cc < 16; ++cc) {
+                const u8 expected = expected_cond(cc, cf, pf, zf) ? 1 : 0;
+                REQUIRE(jit.jcc[cc] == expected);
+                REQUIRE(jit.setcc[cc] == expected);
+                REQUIRE(jit.cmov[cc] == expected);
+            }
+
+            for (u8 group : {u8(2), u8(3)}) {
+                CodeBuf carry;
+                emit_flag_seed(carry);
+                emit_compare(carry, variant, memory_rhs);
+                EmitMovRegImm(carry, 64, kR10, 0);
+                EmitMovRegImm(carry, 64, kR11, 0);
+                EmitAluRegReg(carry, group, 64, kR10, kR11);
+                const u64 carry_addr = install(std::move(carry));
+                const Result carry_jit = run(jit_core, jit_ctx, carry_addr, false);
+                const Result carry_interp = run(interp_core, interp_ctx, carry_addr, false);
+                REQUIRE(carry_jit == carry_interp);
+                const u64 expected = group == 2 ? u64(cf) : (cf ? ~0ull : 0ull);
+                REQUIRE(carry_jit.carry_result == expected);
+            }
+            ++comparisons;
+        }
+    }
+    REQUIRE(comparisons == std::size(kVariants) * std::size(kCases));
+
+    X86Core::Destroy(jit_core);
+    X86Core::Destroy(interp_core);
+    X86Instance::Destroy(jit_instance);
+    X86Instance::Destroy(interp_instance);
+    runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
 TEST_CASE("x87 directed edge semantics") {
     constexpr size_t kArenaSize = 0x80000;
     void* arena =

@@ -2349,26 +2349,35 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitVecFCmp(ir::Inst* inst) {
-    auto left_raw = context.X(inst->GetArg<ir::Value>(0));
-    auto right_raw = context.X(inst->GetArg<ir::Value>(1));
+    auto left = GetVecScalarOperand(inst->GetArg<ir::Value>(0),
+                                    inst->GetArg<ir::Imm>(2).Get());
+    auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1),
+                                     inst->GetArg<ir::Imm>(2).Get());
     auto result = context.X(ir::Value{inst});
-    auto bit = context.GetTmpX();
-    auto left = context.GetTmpV();
-    auto right = context.GetTmpV();
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
+    const bool compact = inst->GetArg<ir::Imm>(3).Get() != 0;
+    // FCMP overwrites host NZCV.  Guest decoding normally puts an AdvancePC
+    // boundary immediately before us; keep the IR opcode safe on its own too.
+    MergeNZCV();
+    FlushFlags();
     if (bits == 32) {
-        __ Fmov(left.S(), left_raw.W());
-        __ Fmov(right.S(), right_raw.W());
         __ Fcmp(left.S(), right.S());
     } else {
-        __ Fmov(left.D(), left_raw);
-        __ Fmov(right.D(), right_raw);
         __ Fcmp(left.D(), right.D());
+    }
+
+    if (compact) {
+        // Preserve the one relation AXFLAG discards.  VC is ordered, which is
+        // also the raw parity byte representation: 1 has odd parity (PF=0),
+        // while unordered produces 0 (PF=1).
+        __ Cset(result, vc);
+        return;
     }
 
     // ARM FPCompare NZCV: less=N, equal=Z, greater=C, unordered=C|V.
     // x86 UCOMIS flags are CF=less|unordered, PF=unordered,
     // ZF=equal|unordered.
+    auto bit = context.GetTmpX();
     __ Cset(bit, lt);
     __ Mov(result, bit);
     __ Cset(bit, vs);
@@ -2983,9 +2992,46 @@ void JitTranslator::EmitLocalCondSet(ir::Inst* inst) {
 
 void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
     auto cond = inst->GetArg<ir::Cond>(1);
-    ASSERT(inst->GetArg<ir::Value>(0).Def() &&
-           inst->GetArg<ir::Value>(0).Def()->GetOp() == ir::OpCode::VecFCmp);
+    auto fcmp = inst->GetArg<ir::Value>(0);
+    ASSERT(fcmp.Def() && fcmp.Def()->GetOp() == ir::OpCode::VecFCmp);
     ASSERT(inst->ReturnType() != ir::ValueType::VOID);
+
+    if (IsCompactFCmp(fcmp)) {
+        // PublishFCmpFlags has already applied AXFLAG.  Re-express W38's raw
+        // FCMP conditions over that x86-shaped NZCV so terminal B.cond/CSEL
+        // fusion remains available.
+        ir::Cond mapped{};
+        bool nzcv_condition = true;
+        switch (cond) {
+            case ir::Cond::LT: mapped = ir::Cond::CC; break;  // x86 CF
+            case ir::Cond::GE: mapped = ir::Cond::CS; break;  // !CF
+            case ir::Cond::GT: mapped = ir::Cond::HI; break;  // !CF && !ZF
+            case ir::Cond::LE: mapped = ir::Cond::LS; break;  // CF || ZF
+            case ir::Cond::VS:  // unordered = !ordered
+            case ir::Cond::VC:  // ordered
+                nzcv_condition = false;
+                break;
+            default:
+                PANIC("unexpected compact FCmp condition");
+        }
+        if (nzcv_condition) {
+            if (RecordLocalCondition(inst, mapped)) {
+                return;
+            }
+            __ Cset(context.R(ir::Value{inst}), MapCond(mapped));
+            return;
+        }
+
+        auto result = context.R(ir::Value{inst});
+        auto ordered = context.R(fcmp);
+        if (cond == ir::Cond::VS) {
+            __ Eor(result.W(), ordered.W(), 1);
+        } else if (result.GetCode() != ordered.GetCode()) {
+            __ Mov(result.W(), ordered.W());
+        }
+        return;
+    }
+
     if (RecordLocalCondition(inst, cond)) {
         return;
     }
