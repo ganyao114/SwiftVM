@@ -27,42 +27,42 @@ constexpr std::uint64_t kGuestPageSize = 0x1000;
 
 // x86-64 Linux syscall numbers used below.
 enum : std::uint64_t {
-    SYS_read = 0,
-    SYS_write = 1,
-    SYS_close = 3,
-    SYS_fstat = 5,
-    SYS_mmap = 9,
-    SYS_mprotect = 10,
-    SYS_munmap = 11,
-    SYS_brk = 12,
-    SYS_rt_sigaction = 13,
-    SYS_rt_sigprocmask = 14,
-    SYS_ioctl = 16,
-    SYS_writev = 20,
-    SYS_access = 21,
-    SYS_madvise = 28,
-    SYS_getpid = 39,
-    SYS_exit = 60,
-    SYS_uname = 63,
-    SYS_readlink = 89,
-    SYS_getuid = 102,
-    SYS_getgid = 104,
-    SYS_geteuid = 107,
-    SYS_getegid = 108,
-    SYS_sigaltstack = 131,
-    SYS_arch_prctl = 158,
-    SYS_futex = 202,
-    SYS_set_tid_address = 218,
-    SYS_clock_gettime = 228,
-    SYS_exit_group = 231,
-    SYS_openat = 257,
-    SYS_newfstatat = 262,
-    SYS_set_robust_list = 273,
-    SYS_prlimit64 = 302,
-    SYS_getrandom = 318,
-    SYS_readlinkat = 267,
-    SYS_statx = 332,
-    SYS_rseq = 334,
+    kGuestSys_read = 0,
+    kGuestSys_write = 1,
+    kGuestSys_close = 3,
+    kGuestSys_fstat = 5,
+    kGuestSys_mmap = 9,
+    kGuestSys_mprotect = 10,
+    kGuestSys_munmap = 11,
+    kGuestSys_brk = 12,
+    kGuestSys_rt_sigaction = 13,
+    kGuestSys_rt_sigprocmask = 14,
+    kGuestSys_ioctl = 16,
+    kGuestSys_writev = 20,
+    kGuestSys_access = 21,
+    kGuestSys_madvise = 28,
+    kGuestSys_getpid = 39,
+    kGuestSys_exit = 60,
+    kGuestSys_uname = 63,
+    kGuestSys_readlink = 89,
+    kGuestSys_getuid = 102,
+    kGuestSys_getgid = 104,
+    kGuestSys_geteuid = 107,
+    kGuestSys_getegid = 108,
+    kGuestSys_sigaltstack = 131,
+    kGuestSys_arch_prctl = 158,
+    kGuestSys_futex = 202,
+    kGuestSys_set_tid_address = 218,
+    kGuestSys_clock_gettime = 228,
+    kGuestSys_exit_group = 231,
+    kGuestSys_openat = 257,
+    kGuestSys_newfstatat = 262,
+    kGuestSys_set_robust_list = 273,
+    kGuestSys_prlimit64 = 302,
+    kGuestSys_getrandom = 318,
+    kGuestSys_readlinkat = 267,
+    kGuestSys_statx = 332,
+    kGuestSys_rseq = 334,
 };
 
 constexpr std::int64_t kEnosys = -38;
@@ -273,7 +273,7 @@ bool JitGuestEnv::HandleSyscall() {
     std::int64_t ret = kEnosys;
 
     switch (nr) {
-        case SYS_write: {
+        case kGuestSys_write: {
             if (!space_.RangeIsMapped(a1, a2)) {
                 ret = -14;  // EFAULT
                 break;
@@ -287,7 +287,7 @@ bool JitGuestEnv::HandleSyscall() {
             }
             break;
         }
-        case SYS_writev: {
+        case kGuestSys_writev: {
             std::int64_t total = 0;
             for (std::uint64_t i = 0; i < a2; ++i) {
                 const std::uint64_t iov = a1 + i * 16;
@@ -309,7 +309,7 @@ bool JitGuestEnv::HandleSyscall() {
             ret = total;
             break;
         }
-        case SYS_brk: {
+        case kGuestSys_brk: {
             if (a0 == 0) {
                 ret = static_cast<std::int64_t>(brk_);
             } else if (a0 >= brk_start_ && a0 < brk_start_ + (4u << 20)) {
@@ -320,7 +320,7 @@ bool JitGuestEnv::HandleSyscall() {
             }
             break;
         }
-        case SYS_mmap: {
+        case kGuestSys_mmap: {
             const std::uint64_t len = (a1 + kGuestPageSize - 1) & ~(kGuestPageSize - 1);
             const std::uint64_t addr = a0 != 0 ? a0 : mmap_next_;
             if (!space_.MapFixed(addr, len)) {
@@ -334,17 +334,17 @@ bool JitGuestEnv::HandleSyscall() {
             ret = static_cast<std::int64_t>(addr);
             break;
         }
-        case SYS_munmap:
-        case SYS_mprotect:
-        case SYS_madvise:
-        case SYS_rt_sigaction:
-        case SYS_rt_sigprocmask:
-        case SYS_sigaltstack:
-        case SYS_set_robust_list:
-        case SYS_close:
+        case kGuestSys_munmap:
+        case kGuestSys_mprotect:
+        case kGuestSys_madvise:
+        case kGuestSys_rt_sigaction:
+        case kGuestSys_rt_sigprocmask:
+        case kGuestSys_sigaltstack:
+        case kGuestSys_set_robust_list:
+        case kGuestSys_close:
             ret = 0;
             break;
-        case SYS_arch_prctl:
+        case kGuestSys_arch_prctl:
             if (a0 == ARCH_SET_FS) {
                 ctx.fs_base = a1;
                 ret = 0;
@@ -355,17 +355,17 @@ bool JitGuestEnv::HandleSyscall() {
                 ret = kEinval;
             }
             break;
-        case SYS_set_tid_address:
-        case SYS_getpid:
+        case kGuestSys_set_tid_address:
+        case kGuestSys_getpid:
             ret = 1000;
             break;
-        case SYS_getuid:
-        case SYS_geteuid:
-        case SYS_getgid:
-        case SYS_getegid:
+        case kGuestSys_getuid:
+        case kGuestSys_geteuid:
+        case kGuestSys_getgid:
+        case kGuestSys_getegid:
             ret = 0;
             break;
-        case SYS_uname: {
+        case kGuestSys_uname: {
             if (space_.RangeIsMapped(a0, 6 * 65)) {
                 auto* p = static_cast<char*>(space_.ToHost(a0));
                 std::memset(p, 0, 6 * 65);
@@ -380,7 +380,7 @@ bool JitGuestEnv::HandleSyscall() {
             }
             break;
         }
-        case SYS_getrandom: {
+        case kGuestSys_getrandom: {
             if (space_.RangeIsMapped(a0, a1)) {
                 auto* p = static_cast<unsigned char*>(space_.ToHost(a0));
                 // Deterministic: reproducibility beats entropy in a test VM.
@@ -393,7 +393,7 @@ bool JitGuestEnv::HandleSyscall() {
             }
             break;
         }
-        case SYS_prlimit64: {
+        case kGuestSys_prlimit64: {
             // rlim_cur / rlim_max for RLIMIT_STACK; glibc reads it for the
             // thread stack size.
             if (a3 != 0 && space_.RangeIsMapped(a3, 16)) {
@@ -405,7 +405,7 @@ bool JitGuestEnv::HandleSyscall() {
             ret = 0;
             break;
         }
-        case SYS_clock_gettime: {
+        case kGuestSys_clock_gettime: {
             if (space_.RangeIsMapped(a1, 16)) {
                 const std::uint64_t sec = 1700000000;
                 const std::uint64_t nsec = 0;
@@ -415,23 +415,23 @@ bool JitGuestEnv::HandleSyscall() {
             ret = 0;
             break;
         }
-        case SYS_readlink:
-        case SYS_readlinkat:
-        case SYS_openat:
-        case SYS_access:
-        case SYS_statx:
-        case SYS_newfstatat:
-        case SYS_fstat:
-        case SYS_read:
-        case SYS_ioctl:
+        case kGuestSys_readlink:
+        case kGuestSys_readlinkat:
+        case kGuestSys_openat:
+        case kGuestSys_access:
+        case kGuestSys_statx:
+        case kGuestSys_newfstatat:
+        case kGuestSys_fstat:
+        case kGuestSys_read:
+        case kGuestSys_ioctl:
             ret = kEnoent;
             break;
-        case SYS_futex:
-        case SYS_rseq:
+        case kGuestSys_futex:
+        case kGuestSys_rseq:
             ret = kEnosys;
             break;
-        case SYS_exit:
-        case SYS_exit_group:
+        case kGuestSys_exit:
+        case kGuestSys_exit_group:
             exited_ = true;
             exit_code_ = a0;
             ctx.rax.qword = 0;

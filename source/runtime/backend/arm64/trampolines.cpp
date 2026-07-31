@@ -4,7 +4,6 @@
 
 #include "runtime/backend/cache_clear.h"
 #include "runtime/backend/context.h"
-#include "runtime/frontend/x86/cpu.h"
 #include "trampolines.h"
 #include "defines.h"
 #include <algorithm>
@@ -618,7 +617,6 @@ void* TrampolinesArm64::BuildFunctionTrampoline(MacroAssembler& assembler,
                                                 ISA frontend_isa) {
     auto empty_type = func->signatures.empty();
     auto ret_type = empty_type ? ParamType::Void : func->signatures[0];
-    auto abi_desc = x86::GetABIDescriptor64();
 
     if (empty_type) {
 
