@@ -7,6 +7,7 @@
 #include <string>
 
 #include "abi_stubs_index.h"
+#include "runtime/backend/signal_handler.h"
 
 namespace svmtest {
 
@@ -53,6 +54,13 @@ void BringUpGlibc() {
 }  // namespace
 
 JitGuestEnv& Vm(VmKind kind) {
+    // Catch2 replaces SIGSEGV while each test case runs, then restores the
+    // action that preceded that case. The fixture deliberately keeps this
+    // Runtime alive across cases, so its constructor cannot reassert SwiftVM's
+    // handler for later cases. Treat obtaining the shared VM as its activation
+    // boundary: the guest fault tests still execute the real JIT recovery path,
+    // while production Runtime::Run avoids three sigaction calls per entry.
+    swift::runtime::backend::SignalHandler::Install();
     if (g_have && g_kind == kind) {
         return *g_env;
     }
