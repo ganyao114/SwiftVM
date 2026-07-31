@@ -933,7 +933,13 @@ void X64Decoder::DecodePshufd(_DInst& insn) {
 void X64Decoder::DecodeShufps(_DInst& insn, bool pd) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     u64 imm = insn.imm.byte;
-    if (!pd && VecLoweringOptInEnabled("SVM_VEC_SHUFPS_NEON")) {
+    // Default ON after the flip A/B (c-ray 5/5 pairs positive, median 1.44);
+    // SVM_VEC_SHUFPS_NEON=0 selects the old helper path as the rollback.
+    static const bool shufps_neon = [] {
+        const char* env = swift::runtime::PerfGetenv("SVM_VEC_SHUFPS_NEON");
+        return !env || std::strcmp(env, "0") != 0;
+    }();
+    if (!pd && shufps_neon) {
         // Read the complete old destination before touching the source. Legacy
         // SHUFPS is destructive two-operand syntax even though the IR is
         // naturally three-operand.
