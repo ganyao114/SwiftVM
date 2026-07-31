@@ -204,6 +204,13 @@ enum class UniformEffectId : u8 {
     None = 1,
 };
 
+// ABI metadata for a direct host helper call. Every existing Lambda keeps the
+// conservative normal AAPCS default, including all indirect calls.
+enum class HelperABI : u8 {
+    NormalAAPCS,
+    PreserveAllLeaf,
+};
+
 inline constexpr UniformEffectSet kNoUniformEffects{};
 
 UniformEffectId RegisterUniformEffectSet(const UniformEffectSet* effects);
@@ -223,6 +230,8 @@ public:
 
     Lambda(const DataClass& value, UniformEffectId effects);
 
+    Lambda(const DataClass& value, HelperABI abi);
+
     bool IsValue() const;
 
     Value& GetValue();
@@ -230,6 +239,7 @@ public:
     Imm& GetImm();
     Imm& GetImm() const;
     UniformEffectId GetUniformEffectId() const;
+    HelperABI GetHelperABI() const;
 
 private:
     [[nodiscard]] bool IsTaggedImm() const;

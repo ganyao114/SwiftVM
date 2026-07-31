@@ -38,9 +38,9 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 55);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 56);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_RA_HOT_COALESCE");
+            "SVM_HELPER_LEAF_ABI");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));

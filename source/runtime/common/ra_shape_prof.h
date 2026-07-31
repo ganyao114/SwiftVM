@@ -19,6 +19,7 @@ namespace swift::runtime {
 
 enum class RAShapeHelperABI : u8 {
     DirectAAPCS,
+    DirectPreserveAll,
     IndirectAAPCS,
     XStateSyncAAPCS,
     Count,

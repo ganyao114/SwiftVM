@@ -2,6 +2,7 @@
 
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
+#include "runtime/common/helper_abi.h"
 #include "runtime/frontend/x86/x87.h"
 #include "translator/x86/cpu.h"
 
@@ -12,6 +13,22 @@ u64 XrstorHelper(u64 context, u64 guest_address, u64 rfbm);
 }  // namespace swift::x86
 
 namespace swift::runtime::backend::arm64 {
+
+namespace {
+
+bool LeafHelperABIEnabled() {
+    static const bool enabled = [] {
+#if SVM_HAS_HELPER_PRESERVE_ALL
+        const char* value = PerfGetenv("SVM_HELPER_LEAF_ABI");
+        return value && std::strcmp(value, "0") != 0;
+#else
+        return false;
+#endif
+    }();
+    return enabled;
+}
+
+}  // namespace
 
 #define __ masm.
 
@@ -138,6 +155,15 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
         SpillStaticFPRUniforms();
     }
 
+    // The metadata is present only on direct helpers whose definition carries
+    // the same preserve_all convention. The process-constant switch defaults
+    // off, leaving the established AAPCS snapshot byte-for-byte unchanged.
+    // Unsupported compilers cannot enable the path even if the environment
+    // variable is present.
+    const bool preserve_all_leaf =
+            LeafHelperABIEnabled() && !lambda.IsValue() &&
+            lambda.GetHelperABI() == ir::HelperABI::PreserveAllLeaf;
+
     // Save the caller-saved registers that are actually live across the call,
     // plus x29/x30: the Blr below clobbers the link register holding this
     // block's return address back to the dispatcher.  x18 is reserved on
@@ -159,6 +185,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     // (docs/perf-baseline.md 5.3).  An integer-only block has just the four
     // reserved ipv0-ipv3 marked out of 32 FPRs.
     GPRSMask live_gprs = context.GetLiveGPRs();
+    GPRSMask argument_gprs{};
     // Argument registers are unioned in explicitly instead of trusting the
     // mask to contain them.  The argument setup below reads each one back from
     // its save slot (loading x0 first would otherwise clobber a later
@@ -167,10 +194,12 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     for (const auto& reg : value_args) {
         if (reg.GetCode() <= 17) {
             live_gprs.Mark(reg.GetCode());
+            argument_gprs.Mark(reg.GetCode());
         }
     }
     if (lambda_value && lambda_value->GetCode() <= 17) {
         live_gprs.Mark(lambda_value->GetCode());
+        argument_gprs.Mark(lambda_value->GetCode());
     }
     // SVM_X86_PIN_EXT=2/3 maps guest RSI-R15 to AAPCS64 caller-saved x0-x9.
     // They are architectural state even when no allocator value is live here:
@@ -178,21 +207,25 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     // descriptors explicitly so this correctness boundary does not depend on
     // the allocator mask containing reserved registers.
     for (const auto& desc : context.GetConfig().buffers_static_alloc) {
-        if (!desc.is_float && desc.reg <= 9) {
+        // preserve_all keeps x9-x15. x9 therefore needs no snapshot unless it
+        // is an argument source; x0-x8 remain caller-saved.
+        if (!desc.is_float && desc.reg <= (preserve_all_leaf ? 8 : 9)) {
             live_gprs.Mark(desc.reg);
         }
     }
 
     boost::container::small_vector<u32, 18> save_gprs;
     for (u32 code = 0; code <= 17; ++code) {
-        if (live_gprs.Get(code)) {
+        const bool leaf_clobbered = code <= 8 || code >= 16;
+        if (live_gprs.Get(code) &&
+            (!preserve_all_leaf || leaf_clobbered || argument_gprs.Get(code))) {
             save_gprs.push_back(code);
         }
     }
     boost::container::small_vector<u32, 32> save_fprs;
     const FPRSMask& live_fprs = context.GetLiveFPRs();
     for (u32 code = 0; code < 32; ++code) {
-        if (live_fprs.Get(code)) {
+        if (live_fprs.Get(code) && (!preserve_all_leaf || code <= 7)) {
             save_fprs.push_back(code);
         }
     }
@@ -200,9 +233,11 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     if (RAShapeProfEnabled()) {
         const auto abi = lambda.IsValue()
                 ? RAShapeHelperABI::IndirectAAPCS
-                : (sync_xmm_before || sync_xmm_after
-                           ? RAShapeHelperABI::XStateSyncAAPCS
-                           : RAShapeHelperABI::DirectAAPCS);
+                : (preserve_all_leaf
+                           ? RAShapeHelperABI::DirectPreserveAll
+                           : (sync_xmm_before || sync_xmm_after
+                                      ? RAShapeHelperABI::XStateSyncAAPCS
+                                      : RAShapeHelperABI::DirectAAPCS));
         RAShapeHelperCounters call{};
         call.calls = 1;
         // Save+restore of the live caller-saved GPR/FPR sets, plus the

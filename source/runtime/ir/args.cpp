@@ -119,7 +119,8 @@ ArgClass DataClass::ToArgClass() const {
 namespace {
 
 constexpr u8 kUniformEffectTag = 0x80;
-constexpr u8 kUniformEffectMask = 0x7f;
+constexpr u8 kHelperABITag = 0x40;
+constexpr u8 kUniformEffectMask = 0x3f;
 constexpr size_t kMaxUniformEffectSets = kUniformEffectMask + 1;
 
 std::array<const UniformEffectSet*, kMaxUniformEffectSets> uniform_effect_sets{
@@ -166,8 +167,15 @@ Lambda::Lambda(const DataClass& value, UniformEffectId effects) : address(value)
     address.type = static_cast<ArgType>(kUniformEffectTag | id);
 }
 
+Lambda::Lambda(const DataClass& value, HelperABI abi) : address(value) {
+    ASSERT(address.type == ArgType::Imm);
+    if (abi == HelperABI::PreserveAllLeaf) {
+        address.type = static_cast<ArgType>(kHelperABITag);
+    }
+}
+
 bool Lambda::IsTaggedImm() const {
-    return (static_cast<u8>(address.type) & kUniformEffectTag) != 0;
+    return (static_cast<u8>(address.type) & (kUniformEffectTag | kHelperABITag)) != 0;
 }
 
 Imm& Lambda::GetImm() {
@@ -193,10 +201,16 @@ Value& Lambda::GetValue() const {
 bool Lambda::IsValue() const { return address.IsValue(); }
 
 UniformEffectId Lambda::GetUniformEffectId() const {
-    if (!IsTaggedImm()) {
+    if ((static_cast<u8>(address.type) & kUniformEffectTag) == 0) {
         return UniformEffectId::Unknown;
     }
     return static_cast<UniformEffectId>(static_cast<u8>(address.type) & kUniformEffectMask);
+}
+
+HelperABI Lambda::GetHelperABI() const {
+    return (static_cast<u8>(address.type) & kHelperABITag) != 0
+            ? HelperABI::PreserveAllLeaf
+            : HelperABI::NormalAAPCS;
 }
 
 void Params::Push(const Value& data) { Push(new Param(data)); }

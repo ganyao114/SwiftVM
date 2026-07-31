@@ -111,6 +111,8 @@ const char* HelperABIName(RAShapeHelperABI abi) {
     switch (abi) {
         case RAShapeHelperABI::DirectAAPCS:
             return "direct_aapcs";
+        case RAShapeHelperABI::DirectPreserveAll:
+            return "direct_preserve_all";
         case RAShapeHelperABI::IndirectAAPCS:
             return "indirect_aapcs";
         case RAShapeHelperABI::XStateSyncAAPCS:

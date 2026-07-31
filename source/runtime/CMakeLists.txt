@@ -26,6 +26,7 @@ add_library(swift_runtime STATIC
         common/function_info.h
         common/hot_coalesce_prof.cpp
         common/hot_coalesce_prof.h
+        common/helper_abi.h
         common/cast_utils.h
         common/lru_cache.h
         common/range_mutex.h

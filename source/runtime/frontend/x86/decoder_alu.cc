@@ -1,4 +1,5 @@
 #include "runtime/frontend/x86/decoder_internal.h"
+#include "runtime/common/helper_abi.h"
 #include "runtime/ir/atomic_rmw.h"
 
 namespace swift::x86 {
@@ -74,8 +75,12 @@ static u64 Crc32c64(u64 crc, u64 data, u64 nbytes) {
 
 // Bit scans (bsf / bsr). Zero source: the destination is left unchanged
 // (handled in IR); the helper value is ignored then.
-static u64 Bsf64(u64 v) { return v ? u64(__builtin_ctzll(v)) : 0; }
-static u64 Bsr64(u64 v) { return v ? u64(63 - __builtin_clzll(v)) : 0; }
+static SVM_HELPER_PRESERVE_ALL u64 Bsf64(u64 v) {
+    return v ? u64(__builtin_ctzll(v)) : 0;
+}
+static SVM_HELPER_PRESERVE_ALL u64 Bsr64(u64 v) {
+    return v ? u64(63 - __builtin_clzll(v)) : 0;
+}
 
 static u64 DivRS64(u64 hi, u64 lo, u64 den) {
     auto sden = static_cast<s64>(den);
@@ -1237,7 +1242,10 @@ void X64Decoder::DecodeBitScan(_DInst& insn, bool reverse) {
     auto flagged = __ Or(src64, ir::Operand{ir::Imm(u64(0))});
     __ SaveFlags(flagged, ir::Flags::Zero);
     auto scan = __ CallLambda(
-            ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(reverse ? &Bsr64 : &Bsf64)}}, src64);
+            ir::Lambda{ir::DataClass{ir::Imm{reinterpret_cast<VAddr>(
+                               reverse ? &Bsr64 : &Bsf64)}},
+                       ir::HelperABI::PreserveAllLeaf},
+            src64);
     // A zero source leaves the destination unchanged (Unicorn keeps the value
     // and still performs the width's zero-extension). Run the select at U64
     // with both operands uniformly typed: a mixed-width select mis-sizes the

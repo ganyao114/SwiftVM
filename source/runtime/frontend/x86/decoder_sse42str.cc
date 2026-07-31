@@ -331,6 +331,7 @@
 #define SVM_SSE42STR_NEON 0
 #endif
 
+#include "runtime/common/helper_abi.h"
 #include "runtime/frontend/x86/decoder_internal.h"
 #include "runtime/frontend/x86/vex_decoder.h"
 
@@ -373,7 +374,7 @@ struct Sse42StrStaged {
 // running string compares cannot see each other's operand.
 thread_local Sse42StrStaged g_sse42_str_src1;
 
-u64 Sse42StrStage(u64 lo, u64 hi, u64 ctl) {
+SVM_HELPER_PRESERVE_ALL u64 Sse42StrStage(u64 lo, u64 hi, u64 ctl) {
     g_sse42_str_src1.lo = lo;
     g_sse42_str_src1.hi = hi;
     g_sse42_str_src1.ctl = ctl;
@@ -1182,7 +1183,12 @@ void X64Decoder::DecodeSse42StrBody(_RegisterType reg1,
     } else {
         // Historical path, intentionally unchanged for default-OFF and for
         // explicit-length PCMPESTRI/M.
-        auto token = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Sse42StrStage)}},
+        auto token = __ CallLambda(ir::Lambda{
+                                           ir::DataClass{ir::Imm{reinterpret_cast<VAddr>(
+                                                   &Sse42StrStage)}},
+                                           SVM_HELPER_TLS_IS_LEAF
+                                                   ? ir::HelperABI::PreserveAllLeaf
+                                                   : ir::HelperABI::NormalAAPCS},
                                    XmmLo(reg1),
                                    XmmHi(reg1),
                                    ctl);
