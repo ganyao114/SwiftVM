@@ -33,19 +33,14 @@ JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_allo
 void JitContext::RecordExecCounter(u32 offset, u32 amount) {
     if (!exec_profile_enabled || amount == 0) return;
     ASSERT(amount < 4096);
-    if (backend::ScratchXPoolEnabled() && vixl_scratch_scope) {
-        auto base = GetTmpX();
-        auto value = GetTmpX();
-        __ Ldr(base, MemOperand(state, state_offset_exec_profile_ptr));
-        __ Ldr(value, MemOperand(base, offset));
-        __ Add(value, value, amount);
-        __ Str(value, MemOperand(base, offset));
-    } else {
-        __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
-        __ Ldr(ip1, MemOperand(ip0, offset));
-        __ Add(ip1, ip1, amount);
-        __ Str(ip1, MemOperand(ip0, offset));
-    }
+    // FixedGPRClobbers reserves ip0/ip1 for every opcode while profiling is
+    // enabled. A terminal may emit several counters; using this fixed pair
+    // keeps their scratch demand constant instead of leasing two more XPOOL
+    // registers for every counter and eventually exceeding ScratchBudget.
+    __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
+    __ Ldr(ip1, MemOperand(ip0, offset));
+    __ Add(ip1, ip1, amount);
+    __ Str(ip1, MemOperand(ip0, offset));
 }
 
 bool JitContext::HasAllocation(const ir::Value& value) {

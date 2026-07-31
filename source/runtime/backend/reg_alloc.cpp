@@ -83,17 +83,35 @@ static bool X86PinExtEnabled() {
     return X86PinExtLevel() >= 1;
 }
 
+static bool ExecProfileEnabled() {
+    static const bool enabled = [] {
+        const char* value = PerfGetenv("SVM_EXEC_PROF");
+        return value && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
+    constexpr u32 x11 = 1u << 11;
+    constexpr u32 x12 = 1u << 12;
+    constexpr u32 x13 = 1u << 13;
+    constexpr u32 ip0 = 1u << 16;
+    constexpr u32 ip1 = 1u << 17;
+    // Execution counters are emitted at block entry and in terminals, outside
+    // any one opcode's ordinary scratch lifetime. Under XPOOL, reserve VIXL's
+    // ip0/ip1 across every live interval so the counters can use a stable
+    // fixed pair instead of accumulating two dynamically-leased GPRs inside a
+    // terminal. Profiling OFF keeps the allocator contract byte-for-byte
+    // unchanged.
+    const u32 exec_profile_clobbers =
+            ScratchXPoolEnabled() && ExecProfileEnabled() ? ip0 | ip1 : 0;
     // Level 2 without XPOOL leases the otherwise globally-reserved x12/x13 as
     // scratch-only registers. It therefore needs the same fixed-clobber
     // exclusions even though those registers remain unavailable to linear
     // scan as value locations.
     if (!ScratchXPoolEnabled() && !scratch_only) {
-        return 0;
+        return exec_profile_clobbers;
     }
-    constexpr u32 x11 = 1u << 11;
-    constexpr u32 x12 = 1u << 12;
-    constexpr u32 x13 = 1u << 13;
     switch (op) {
         // x11 is the exclusive-store status register; x12 holds the value
         // that must survive until the store-exclusive.
@@ -101,16 +119,16 @@ u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
         case ir::OpCode::AtomicExchange:
         case ir::OpCode::AtomicFetchAdd:
         case ir::OpCode::AtomicRMW:
-            return x11 | x12;
+            return exec_profile_clobbers | x11 | x12;
         // Pair CAS additionally holds the second observed half in x13.
         case ir::OpCode::CompareAndSwap128:
-            return x11 | x12 | x13;
+            return exec_profile_clobbers | x11 | x12 | x13;
         // The OFF-XPOOL x87 lowering names x12/x13 directly.
         case ir::OpCode::X87Op:
             // Level 2 without XPOOL takes the exact helper fallback instead
             // of the high-pressure inline lowering, so this pair is available
             // as instruction-local scratch there.
-            return 0;
+            return exec_profile_clobbers;
         // Host-call target and fixed-location materialization.
         case ir::OpCode::CallLambda:
         case ir::OpCode::CallDynamic:
@@ -119,7 +137,7 @@ u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
         case ir::OpCode::MemoryCopyTSO:
         case ir::OpCode::SetLocation:
         case ir::OpCode::CheckMemoryAlignment:
-            return x11;
+            return exec_profile_clobbers | x11;
         // Exact NaN cold veneers use x13 as their link register. A value live
         // across the originating FP opcode must therefore never occupy it.
         case ir::OpCode::VecFAddScalar32:
@@ -135,9 +153,9 @@ u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
         case ir::OpCode::VecFMul:
         case ir::OpCode::VecFDiv:
         case ir::OpCode::VecFUnary:
-            return x13;
+            return exec_profile_clobbers | x13;
         default:
-            return 0;
+            return exec_profile_clobbers;
     }
 }
 
