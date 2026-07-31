@@ -38,6 +38,7 @@ private:
 
     Label label_runtime_entry;
     Label label_code_dispatcher;
+    Label label_fault_return_host;
     Label label_return_host;
     Label label_call_host;
     std::unordered_map<LocationDescriptor, CallHost> call_host_trampolines{};

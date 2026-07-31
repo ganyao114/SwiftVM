@@ -231,14 +231,11 @@ struct Runtime::Impl final {
         // Recover the guest context: resume the guest at the faulting block's
         // entry and report PageFatal through the normal halt path.
         self->state->current_loc = ir::Location(entry.guest_loc);
-        // label_return_host clears state->halt_reason and returns w0 to the
-        // host caller, so the halt reason travels in x0. It also saves the
-        // statically allocated guest registers and restores the host callee
-        // saves off the stack — both valid here because JIT blocks never
-        // unbalance sp and the reserved state/flags registers are intact at
-        // any guest memory access.
-        backend::SignalHandler::SetContextReturnValue(uctx,
-                                                      static_cast<u64>(HaltReason::PageFatal));
+        // The recovery entry reloads this value into its configuration-specific
+        // halt register before saving statically allocated guest registers.
+        // This preserves guest RSI in x0 at pin levels 2/3 while still returning
+        // PageFatal in the C-ABI result register after the static spill.
+        self->state->halt_reason = HaltReason::PageFatal;
         backend::SignalHandler::SetContextPC(
                 uctx,
                 reinterpret_cast<std::uintptr_t>(

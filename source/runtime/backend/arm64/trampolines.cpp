@@ -29,7 +29,7 @@ void TrampolinesArm64::Build() {
     // vixl label locations are non-negative byte offsets from the buffer
     // start (see vixl Label::GetLocation / IsBound).
     return_host = reinterpret_cast<ReturnHost>(code_buffer->exec_data +
-                                               label_return_host.GetLocation());
+                                               label_fault_return_host.GetLocation());
     call_host = reinterpret_cast<CallHost>(code_buffer->exec_data +
                                            label_call_host.GetLocation());
     const char* exec_map = std::getenv("SVM_EXEC_MAP");
@@ -326,6 +326,11 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     }
     __ Blr(forward);
 
+    // Fault recovery enters before the halt-reason load. In pin levels 2/3,
+    // x0 is guest RSI and halt_reg is x11, so recovery must publish PageFatal
+    // through State rather than overwriting either register in the saved
+    // machine context.
+    __ Bind(&label_fault_return_host);
     // load exception
     __ Ldr(halt_reg, MemOperand(state, state_offset_halt_reason));
     __ Cbz(halt_reg, &code_dispatcher);

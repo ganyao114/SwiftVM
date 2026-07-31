@@ -1001,6 +1001,8 @@ TEST_CASE("two structured V128 accesses fault on the second page after the first
     auto& context = core->GetContext();
     context.rip.qword = reinterpret_cast<swift::u64>(code_page);
     context.rax.qword = reinterpret_cast<swift::u64>(data + page - first.size());
+    constexpr swift::u64 rsi_before = UINT64_C(0x9b8a796857463524);
+    context.rsi.qword = rsi_before;
     std::memset(&context.xmm0, 0x5a, sizeof(context.xmm0));
     std::memset(&context.xmm1, 0xa5, sizeof(context.xmm1));
     std::array<swift::u8, 16> second_before{};
@@ -1013,6 +1015,7 @@ TEST_CASE("two structured V128 accesses fault on the second page after the first
     REQUIRE(std::memcmp(&context.xmm1,
                         second_before.data(),
                         second_before.size()) == 0);
+    REQUIRE(context.rsi.qword == rsi_before);
 
     X86Core::Destroy(core);
     X86Instance::Destroy(instance);

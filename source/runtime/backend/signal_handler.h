@@ -109,9 +109,6 @@ public:
     // --- ucontext accessors (OS/arch abstraction) --------------------------
     static std::uintptr_t GetContextPC(const ucontext_t* uctx);
     static void SetContextPC(ucontext_t* uctx, std::uintptr_t pc);
-    // Writes the value a trampoline-style frame would return to its host
-    // caller (x0 on arm64 hosts) — used to fabricate a HaltReason.
-    static void SetContextReturnValue(ucontext_t* uctx, u64 value);
 
 private:
     static void HandleSignal(int sig, siginfo_t* info, void* raw_uctx);

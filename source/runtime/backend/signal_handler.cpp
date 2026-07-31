@@ -187,18 +187,6 @@ void SignalHandler::SetContextPC(ucontext_t* uctx, std::uintptr_t pc) {
 #endif
 }
 
-void SignalHandler::SetContextReturnValue(ucontext_t* uctx, u64 value) {
-#if defined(__APPLE__) && defined(__aarch64__)
-    uctx->uc_mcontext->__ss.__x[0] = value;
-#elif defined(__linux__) && defined(__aarch64__)
-    uctx->uc_mcontext.regs[0] = value;
-#elif defined(__APPLE__) && defined(__x86_64__)
-    uctx->uc_mcontext->__ss.__rax = value;
-#elif defined(__linux__) && defined(__x86_64__)
-    uctx->uc_mcontext.gregs[REG_RAX] = static_cast<greg_t>(value);
-#endif
-}
-
 void SignalHandler::HandleSignal(int sig, siginfo_t* info, void* raw_uctx) {
     auto* uctx = static_cast<ucontext_t*>(raw_uctx);
     const size_t count = g_handler_count.load(std::memory_order_acquire);
