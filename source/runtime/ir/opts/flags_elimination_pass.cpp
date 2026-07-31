@@ -43,8 +43,9 @@ namespace swift::runtime::ir {
 namespace {
 
 bool BranchOnlyEnabled() {
+    // Default ON after the flip A/B; =0 is the full-materialization rollback.
     const char* env = PerfGetenv("SVM_FLAGS_BRANCH_ONLY");
-    return env && std::strcmp(env, "0") != 0;
+    return !env || std::strcmp(env, "0") != 0;
 }
 
 bool IsHelperBoundary(OpCode op) {

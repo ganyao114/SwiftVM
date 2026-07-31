@@ -1167,8 +1167,10 @@ bool X64Decoder::FlagsTerminalJccEnabled() {
 }
 
 bool X64Decoder::FlagsBranchOnlyEnabled() {
+    // Default ON after the flip A/B (7z Tot-MIPS 5/5 pairs positive, median
+    // +5.0%); =0 keeps full EFLAGS materialization as the rollback.
     const char* env = runtime::PerfGetenv("SVM_FLAGS_BRANCH_ONLY");
-    return env && std::strcmp(env, "0") != 0;
+    return !env || std::strcmp(env, "0") != 0;
 }
 
 bool X64Decoder::SuccessorFlagsDead(VAddr successor) const {
