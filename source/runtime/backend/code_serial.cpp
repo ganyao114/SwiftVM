@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <string_view>
@@ -609,6 +610,11 @@ u64 HashU64(u64 value, u64 seed) { return HashBytes(&value, sizeof(value), seed)
 
 namespace {
 constexpr u64 kFnvOffset = 0xCBF29CE484222325ull;
+// Domain-separate the executable-only guest identity from the legacy
+// all-argv identity. OFF intentionally retains the exact old hash so existing
+// cache entries remain usable; ON cannot alias it merely because argv happens
+// to contain the same bytes as the file identity fields.
+constexpr u64 kExecGuestIdDomain = 0x53564D4558454349ull;  // "SVMEXECI"
 
 std::string SelfExePath() {
 #ifdef __APPLE__
@@ -747,6 +753,22 @@ u64 ComputeGuestId() {
     static const u64 id = [] {
         const auto argv = ProcessArgv();
         u64 h = kFnvOffset;
+
+        const char* exec_id = std::getenv("SVM_JIT_CACHE_EXEC_ID");
+        if (exec_id && exec_id[0] && std::strcmp(exec_id, "0") != 0) {
+            h = HashU64(kExecGuestIdDomain, h);
+            // argv[0] is the SwiftVM launcher, whose code identity is already
+            // covered by build_id. argv[1] is the guest ELF selected by the
+            // Linux frontend. Later arguments are copied into the guest's
+            // initial stack and cannot steer translation/code generation.
+            if (argv.size() >= 2) {
+                h = HashFileIdentity(argv[1], h);
+            }
+            return h;
+        }
+
+        // Compatibility mode (the default): preserve the legacy all-argv key
+        // byte-for-byte, including its lack of separators between arguments.
         for (std::size_t i = 0; i < argv.size(); ++i) {
             h = HashBytes(argv[i].data(), argv[i].size(), h);
         }

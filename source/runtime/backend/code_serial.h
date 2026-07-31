@@ -227,9 +227,12 @@ u64 ComputeEnvHash();
 // never in an instruction immediate.
 u64 ComputeConfigHash(const Config& config);
 
-// Identity of the guest image, derived from the host process command line and
-// (when argv[1] names a readable file) its size + mtime. Used to name the
-// cache file and as a coarse header check; it is not what makes revival safe.
+// Identity of the guest image. By default this preserves the legacy all-argv
+// hash. SVM_JIT_CACHE_EXEC_ID=1 instead uses only argv[1]'s path + file
+// identity, with a separate hash domain; argv[0] is already covered by
+// build_id and argv[2..] are guest data. Used to name the cache file and as a
+// coarse header check; SerialBlock::guest_bytes_hash is the authoritative
+// load-time safety check.
 u64 ComputeGuestId();
 
 }  // namespace swift::runtime::backend
