@@ -392,6 +392,16 @@ struct Runtime::Impl final {
                 break;
             }
         }
+        // SignalInterrupt() is the only writer that clears running. If the
+        // interrupt lands between two Run() calls, the loop above is skipped;
+        // returning None would make the consumer retry Run() forever without
+        // reaching ClearInterrupt(). Preserve the interrupt as the only valid
+        // reason for this empty-loop exit. CacheMiss and BlockLinkage keep
+        // their existing in-loop continue semantics.
+        if (hr == HaltReason::None &&
+            !running.load(std::memory_order_acquire)) {
+            return HaltReason::Signal;
+        }
         return hr;
     }
 

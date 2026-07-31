@@ -288,6 +288,26 @@ TEST_CASE("Test runtime") {
     REQUIRE(module->Push(block2));
 }
 
+TEST_CASE("Runtime preserves an interrupt between Run calls") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+    };
+    AddressSpace address_space{config};
+    Runtime runtime{&address_space};
+
+    REQUIRE(runtime.Run() == HaltReason::CodeMiss);
+    runtime.SignalInterrupt();
+    REQUIRE(runtime.Run() == HaltReason::Signal);
+    runtime.ClearInterrupt();
+    REQUIRE(runtime.Run() == HaltReason::CodeMiss);
+}
+
 TEST_CASE("Test block ir print") {
     using namespace swift::runtime::backend;
     using namespace swift::runtime::ir;
