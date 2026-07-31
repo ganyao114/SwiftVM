@@ -331,6 +331,17 @@ const GPRSMask& RegAlloc::GetGprs() const { return gprs; }
 
 const FPRSMask& RegAlloc::GetFprs() const { return fprs; }
 
+u32 RegAlloc::SpillCount() const {
+    return static_cast<u32>(std::count_if(
+            alloc_result.begin(), alloc_result.end(),
+            [](const Map& map) { return map.type == MEM; }));
+}
+
+void RegAlloc::ReserveGPRForUnit(u32 code) {
+    ASSERT(code < 32);
+    gprs.Mark(code);
+}
+
 GPRSMask RegAlloc::GetDirtyGPR() const {
     return alloc_result[current_ir->Id()].dirty_gprs;
 }

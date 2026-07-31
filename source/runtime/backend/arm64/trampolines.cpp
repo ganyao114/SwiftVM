@@ -139,6 +139,7 @@ void TrampolinesArm64::Build() {
                      "pin_ext_level3=%d x6_x9_reserved=%d "
                      "xpool_requested=%d xpool_effective=%d xpool_auto_level3=%d "
                      "x22_reserved=%d x23_reserved=%d "
+                     "x18_reserved=%d x18_spill_conditional=%d "
                      "x29_reserved=%d allocatable_gprs=%u\n",
                      config.memory_base != nullptr,
                      config.page_table != nullptr,
@@ -160,6 +161,12 @@ void TrampolinesArm64::Build() {
                      backend::ScratchXPoolAutoEnabled(),
                      gpr_regs.Get(22),
                      gpr_regs.Get(23),
+                     gpr_regs.Get(18),
+#if defined(__linux__) && !defined(__ANDROID__)
+                     1,
+#else
+                     0,
+#endif
                      gpr_regs.Get(29),
                      static_cast<unsigned>(gpr_regs.GetClearCount()));
     }
@@ -394,12 +401,22 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
 #undef forward
 
 void TrampolinesArm64::BuildSaveHostCallee(MacroAssembler& assembler) {
+#if defined(__linux__) && !defined(__ANDROID__)
+    __ Stp(x18, x19, MemOperand(sp, -16, PreIndex));
+    __ Stp(x20, x21, MemOperand(sp, -16, PreIndex));
+    __ Stp(x22, x23, MemOperand(sp, -16, PreIndex));
+    __ Stp(x24, x25, MemOperand(sp, -16, PreIndex));
+    __ Stp(x26, x27, MemOperand(sp, -16, PreIndex));
+    __ Stp(x28, x29, MemOperand(sp, -16, PreIndex));
+    __ Stp(x30, xzr, MemOperand(sp, -16, PreIndex));
+#else
     __ Stp(x19, x20, MemOperand(sp, -16, PreIndex));
     __ Stp(x21, x22, MemOperand(sp, -16, PreIndex));
     __ Stp(x23, x24, MemOperand(sp, -16, PreIndex));
     __ Stp(x25, x26, MemOperand(sp, -16, PreIndex));
     __ Stp(x27, x28, MemOperand(sp, -16, PreIndex));
     __ Stp(x29, x30, MemOperand(sp, -16, PreIndex));
+#endif
 
     __ Stp(q8, q9, MemOperand(sp, -32, PreIndex));
     __ Stp(q10, q11, MemOperand(sp, -32, PreIndex));
@@ -413,12 +430,22 @@ void TrampolinesArm64::BuildRestoreHostCallee(MacroAssembler& assembler) {
     __ Ldp(q10, q11, MemOperand(sp, 32, PostIndex));
     __ Ldp(q8, q9, MemOperand(sp, 32, PostIndex));
 
+#if defined(__linux__) && !defined(__ANDROID__)
+    __ Ldp(x30, xzr, MemOperand(sp, 16, PostIndex));
+    __ Ldp(x28, x29, MemOperand(sp, 16, PostIndex));
+    __ Ldp(x26, x27, MemOperand(sp, 16, PostIndex));
+    __ Ldp(x24, x25, MemOperand(sp, 16, PostIndex));
+    __ Ldp(x22, x23, MemOperand(sp, 16, PostIndex));
+    __ Ldp(x20, x21, MemOperand(sp, 16, PostIndex));
+    __ Ldp(x18, x19, MemOperand(sp, 16, PostIndex));
+#else
     __ Ldp(x29, x30, MemOperand(sp, 16, PostIndex));
     __ Ldp(x27, x28, MemOperand(sp, 16, PostIndex));
     __ Ldp(x25, x26, MemOperand(sp, 16, PostIndex));
     __ Ldp(x23, x24, MemOperand(sp, 16, PostIndex));
     __ Ldp(x21, x22, MemOperand(sp, 16, PostIndex));
     __ Ldp(x19, x20, MemOperand(sp, 16, PostIndex));
+#endif
 }
 
 void TrampolinesArm64::BuildSaveStaticUniform(MacroAssembler& assembler) {

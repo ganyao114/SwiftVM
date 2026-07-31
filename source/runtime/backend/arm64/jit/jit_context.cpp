@@ -21,6 +21,11 @@ static_assert(kMaxSpillSlots == sizeof(State::spill_area) / sizeof(u64),
 
 JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_alloc)
         : module(module), reg_alloc(reg_alloc) {
+#if defined(__linux__) && !defined(__ANDROID__)
+    const bool has_spill = reg_alloc.SpillCount() != 0;
+    ASSERT_MSG(!has_spill || reg_alloc.GetGprs().Get(18),
+               "spilling unit reached emission without conditional x18 reservation");
+#endif
     const char* prof = std::getenv("SVM_EXEC_PROF");
     exec_profile_enabled = prof && std::strcmp(prof, "0") != 0;
     if (exec_profile_enabled) {
@@ -236,6 +241,16 @@ XRegister JitContext::GetTmpX() {
 // value per instruction) together with the allocation pass, which verifies
 // that every instruction was left room for exactly that many.
 XRegister JitContext::GetSpillTmpX() {
+#if defined(__linux__) && !defined(__ANDROID__)
+    // The first scalar spill in an instruction gets the register reserved
+    // expressly for it. This leaves all allocator headroom available for any
+    // additional distinct spilled operands and makes total value-pool
+    // exhaustion unable to remove the final reload/write-back scratch.
+    if (!spill_scratch_in_use) {
+        spill_scratch_in_use = true;
+        return spill_scratch;
+    }
+#endif
     if (auto alloc = cur_dirty_gprs.GetFirstClear(); alloc >= 0) {
         cur_dirty_gprs.Mark(alloc);
         spill_tmp_gprs++;
@@ -658,6 +673,9 @@ void JitContext::TickIR(ir::Inst* instr) {
     tick_dirty_fprs = cur_dirty_fprs;
     spill_tmp_gprs = 0;
     spill_tmp_fprs = 0;
+#if defined(__linux__) && !defined(__ANDROID__)
+    spill_scratch_in_use = false;
+#endif
     shared_tmp_gpr = -1;
     auxiliary_scratch = false;
     const bool scratch_only =

@@ -46,6 +46,16 @@
 // here: EmitHostCall discovers their static descriptors and preserves them
 // across argument setup and the AAPCS64 caller-saved boundary.
 
+// Desktop Linux dedicates x18 to scalar spill reload/write-back only in units
+// whose first allocation pass actually spills. Such a unit is reallocated
+// with x18 marked in its private pool baseline; zero-spill units retain x18 as
+// an ordinary GetTmpX/RA temporary and emit exactly as before. Darwin's
+// platform ABI already reserves x18; Android is excluded because bionic may
+// use it for shadow-call-stack state.
+#if defined(__linux__) && !defined(__ANDROID__)
+#define spill_scratch x18
+#endif
+
 #define ip          x11
 // mem_scratch: reserved scratch for folding the pt bias into memory operands
 // (EmitMemOperand / EmitCompareAndSwap) when Config::page_table /

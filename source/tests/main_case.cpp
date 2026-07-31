@@ -2399,11 +2399,30 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
     auto module = address_space.GetDefaultModule();
     const auto gprs = address_space.GetTrampolines().GetGPRRegs();
     const auto fprs = address_space.GetTrampolines().GetFPRRegs();
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Trampoline construction must not tax every unit: x18 starts in the
+    // ordinary dynamic pool and is removed only after a unit proves it spills.
+    REQUIRE_FALSE(gprs.Get(18));
+#endif
 
-    auto check_and_emit = [&](Block* raw) {
+#if defined(__linux__) && !defined(__ANDROID__)
+    bool saw_conditional_spill_unit = false;
+#endif
+    auto check_and_emit = [&](Block* raw, int expected_spill = -1) {
         swift::runtime::IntrusivePtr<Block> block{raw};
         RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs};
         RegisterAllocPass::Run(block.get(), &reg_alloc);
+#if defined(__linux__) && !defined(__ANDROID__)
+        const bool has_spill = reg_alloc.SpillCount() != 0;
+        saw_conditional_spill_unit |= has_spill;
+        if (expected_spill >= 0) {
+            REQUIRE(has_spill == (expected_spill != 0));
+        }
+        // This is the mask JitContext seeds into every instruction's dirty
+        // baseline. Spilling units exclude x18; zero-spill units retain the
+        // exact trampoline pool and may receive x18 from ordinary GetTmpX.
+        REQUIRE(reg_alloc.GetGprs().Get(18) == has_spill);
+#endif
 
         // 1. The allocation must leave every instruction the scratch its
         //    emitter is declared to need, plus a reload register for each
@@ -2448,6 +2467,15 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
         REQUIRE(context.CurrentBufferSize() > 0);
     };
 
+#if defined(__linux__) && !defined(__ANDROID__)
+    auto* no_spill = new Block(0, Location{0x1800});
+    const auto immediate = no_spill->LoadImm(Imm{7u});
+    no_spill->StoreUniform(Uniform{0, ValueType::U32}, immediate);
+    no_spill->SetTerminal(terminal::ReturnToDispatch{});
+    no_spill->ReIdInstr();
+    check_and_emit(no_spill, 0);
+#endif
+
     for (unsigned live : {8u, 16u, 24u, 40u}) {
         INFO("live scalar values across the VecFAdd: " << live);
         check_and_emit(BuildScratchPressureBlock(live));
@@ -2460,6 +2488,9 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
         INFO("values read twice across a saturated file: " << live);
         check_and_emit(BuildReloadPressureBlock(live));
     }
+#if defined(__linux__) && !defined(__ANDROID__)
+    REQUIRE(saw_conditional_spill_unit);
+#endif
 }
 
 // --- spill-slot recycling ----------------------------------------------------

@@ -224,6 +224,13 @@ public:
     [[nodiscard]] FPRSMask DirtyFPR(u32 id) const { return alloc_result[id].dirty_fprs; }
     [[nodiscard]] u32 MapCount() const { return static_cast<u32>(alloc_result.size()); }
     [[nodiscard]] const Map& Mapping(u32 id) const { return alloc_result[id]; }
+    [[nodiscard]] u32 SpillCount() const;
+
+    // Refines the pool for one compilation unit after a first allocation pass
+    // has proved that the unit spills. The caller must ResetAllocations and
+    // rerun the pass before emission, so no existing mapping can alias the
+    // newly reserved register.
+    void ReserveGPRForUnit(u32 code);
 
     void SetCurrent(ir::Inst *inst);
 
@@ -240,7 +247,7 @@ private:
     Vector<Map> alloc_result;
     u32 stack_size{};
     ir::Inst *current_ir{};
-    const GPRSMask gprs;
+    GPRSMask gprs;
     const FPRSMask fprs;
 };
 

@@ -1717,6 +1717,25 @@ static void RunVerified(Unit* unit,
                         backend::RegAlloc* reg_alloc,
                         bool single_block_fast_path = false,
                         bool scalar_insert = false) {
+    auto rerun_with_conditional_spill_scratch = [&] {
+#if defined(__linux__) && !defined(__ANDROID__)
+        const u32 spills = reg_alloc->SpillCount();
+        if (spills != 0 && !reg_alloc->GetGprs().Get(18)) {
+            // The first pass answers the only question that justifies paying
+            // for x18: does this unit spill at all? If yes, rerun with x18 in
+            // this unit's pool baseline. Reusing the first allocation would
+            // be unsafe because it may already have assigned a live value to
+            // x18, which the spill reload path must be free to overwrite.
+            reg_alloc->ReserveGPRForUnit(18);
+            reg_alloc->ResetAllocations();
+            RunVerified(unit, reg_alloc, single_block_fast_path, scalar_insert);
+            if (RaDiagEnabled()) {
+                LOG_WARNING("RegisterAllocPass: {} initial spill(s); x18 reserved for this unit",
+                            spills);
+            }
+        }
+#endif
+    };
     const bool scratch_only_enabled =
             backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs());
     const u32 scratch_only = scratch_only_enabled ? 2u : 0u;
@@ -1737,6 +1756,7 @@ static void RunVerified(Unit* unit,
         const bool verified = scan.Verify();
         perf_verify.Stop();
         if (verified) {
+            rerun_with_conditional_spill_scratch();
             return;
         }
     }
@@ -1804,6 +1824,7 @@ static void RunVerified(Unit* unit,
                 LOG_WARNING("RegisterAllocPass: scratch reserve escalated to {}/{}", rung.gpr,
                             rung.fpr);
             }
+            rerun_with_conditional_spill_scratch();
             return;
         }
     }

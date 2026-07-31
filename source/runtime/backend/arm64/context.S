@@ -1,11 +1,20 @@
 #include "marcos.h"
 
 save_host_callee:
+#if defined(__linux__) && !defined(__ANDROID__)
+    stp x18, x19, [sp, #-16]!
+    stp x20, x21, [sp, #-16]!
+    stp x22, x23, [sp, #-16]!
+    stp x24, x25, [sp, #-16]!
+    stp x26, x27, [sp, #-16]!
+    stp x28, xzr, [sp, #-16]!
+#else
     stp x19, x20, [sp, #-16]!
     stp x21, x22, [sp, #-16]!
     stp x23, x24, [sp, #-16]!
     stp x25, x26, [sp, #-16]!
     stp x27, x28, [sp, #-16]!
+#endif
 
     stp q8, q9,   [sp, #-32]!
     stp q10, q11, [sp, #-32]!
@@ -19,11 +28,20 @@ restore_host_callee:
     ldp q10, q11, [sp], #32
     ldp q8, q9,   [sp], #32
 
+#if defined(__linux__) && !defined(__ANDROID__)
+    ldp x28, xzr, [sp], #16
+    ldp x26, x27, [sp], #16
+    ldp x24, x25, [sp], #16
+    ldp x22, x23, [sp], #16
+    ldp x20, x21, [sp], #16
+    ldp x18, x19, [sp], #16
+#else
     ldp x27, x28, [sp], #16
     ldp x25, x26, [sp], #16
     ldp x23, x24, [sp], #16
     ldp x21, x22, [sp], #16
     ldp x19, x20, [sp], #16
+#endif
     ret
 
 

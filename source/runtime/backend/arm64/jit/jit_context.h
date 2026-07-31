@@ -146,10 +146,12 @@ private:
     //
     // Limitations (spilling has never triggered on current workloads, so
     // this path is defensive):
-    //  - Reload/write-back scratch registers come from GetTmpX/GetTmpV;
-    //    under total register exhaustion those PANIC (loudly) instead of
-    //    silently corrupting state. A fully robust spill needs one
-    //    permanently reserved scratch register in the trampoline mask.
+    //  - On desktop Linux, units with any spill are reallocated with x18 in
+    //    their private reserved baseline. The first scalar spill reload/write-
+    //    back of each instruction uses x18; further scalar reloads use the
+    //    allocator's verified headroom. Zero-spill units leave x18 dynamic.
+    //    SIMD spill scratch still comes from GetTmpV and PANICs loudly if that
+    //    contract is ever violated.
     //  - The spill area holds kMaxSpillSlots u64 slots; the allocator
     //    PANICs beyond that rather than overrunning the uniform buffer.
     //  - A few block terminals (Invalid/ReturnToDispatch/ReturnToHost/
@@ -214,6 +216,12 @@ private:
     FPRSMask tick_dirty_fprs{};
     u32 spill_tmp_gprs{};
     u32 spill_tmp_fprs{};
+#if defined(__linux__) && !defined(__ANDROID__)
+    // x18 is already marked in this spilling unit's pool baseline, so using it does not
+    // contribute to spill_tmp_gprs (that counter only discounts newly marked
+    // dynamic reload registers from the emitter scratch budget).
+    bool spill_scratch_in_use{};
+#endif
     int shared_tmp_gpr{-1};
     bool auxiliary_scratch{};
     std::unique_ptr<UseScratchRegisterScope> vixl_scratch_scope{};
