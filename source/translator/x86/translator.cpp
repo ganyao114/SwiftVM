@@ -593,9 +593,11 @@ struct X86Instance::Impl final {
                 enable_jit && enable_uniform_elim && xmm_static_env &&
                 std::strcmp(xmm_static_env, "0") != 0;
         const char* xmm_fault_sink_env = PerfGetenv("SVM_XMM_FAULT_SINK");
+        // Default ON after the flip A/B (smallpt 5/5 pairs positive, median
+        // 1.26, pixel-identical output); =0 selects the eager-store rollback.
         const bool enable_xmm_fault_sink =
-                enable_jit && xmm_fault_sink_env &&
-                std::strcmp(xmm_fault_sink_env, "0") != 0;
+                enable_jit && (!xmm_fault_sink_env ||
+                               std::strcmp(xmm_fault_sink_env, "0") != 0);
         // W55/W56/W60 opt-in extension of the scalar static map. Level 1 is the
         // byte-identical W55 map; level 2 adds six caller-saved pins; level 3
         // adds the remaining four. The backend makes XPOOL effective at level
