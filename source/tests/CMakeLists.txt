@@ -1,6 +1,7 @@
 add_executable(swift_test
         distorm_fast_test.cpp
         main_case.cpp
+        smc_tracker_test.cpp
         # Decoder-level tests: no Unicorn dependency, so they build and run even
         # where the differential fuzz below is skipped.
         fuzz/vex_decoder_test.cpp

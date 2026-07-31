@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <sys/mman.h>
@@ -18,6 +21,16 @@ namespace swift::runtime::backend {
 
 namespace {
 std::atomic_bool g_smc_enabled{true};
+
+bool EnvIsOne(const char* name) {
+    const char* value = std::getenv(name);
+    return value && std::strcmp(value, "1") == 0;
+}
+
+bool EnvIsEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    return value && std::strcmp(value, "0") != 0;
+}
 }
 
 void SmcTracker::SetEnabled(bool enabled) {
@@ -32,8 +45,39 @@ SmcTracker::SmcTracker(u64 guest_bias, u64 guest_addr_mask)
         : bias_(guest_bias)
         , mask_(guest_addr_mask ? guest_addr_mask : UINT64_MAX)
         , page_size_(static_cast<u64>(getpagesize()))
-        , page_mask_(page_size_ - 1) {
+        , page_mask_(page_size_ - 1)
+        , dirty_hint_enabled_(EnvIsOne("SVM_SMC_DIRTY_HINT"))
+        , close_profile_enabled_(EnvIsEnabled("SVM_EXEC_PROF")) {
     ASSERT((page_size_ & page_mask_) == 0);
+}
+
+SmcTracker::~SmcTracker() {
+    if (!close_profile_enabled_) {
+        return;
+    }
+    const auto calls = close_calls_.load(std::memory_order_relaxed);
+    const auto fast = close_fast_returns_.load(std::memory_order_relaxed);
+    const auto slow = close_slow_calls_.load(std::memory_order_relaxed);
+    const auto total_ns = close_total_ns_.load(std::memory_order_relaxed);
+    const auto fast_ns = close_fast_ns_.load(std::memory_order_relaxed);
+    const auto slow_ns = close_slow_ns_.load(std::memory_order_relaxed);
+    std::fprintf(stderr,
+                 "[svm-smc] dirty_hint=%u close_calls=%llu fast=%llu slow=%llu "
+                 "fast_pct=%.3f total_ns=%llu fast_ns=%llu slow_ns=%llu\n",
+                 dirty_hint_enabled_ ? 1u : 0u,
+                 calls,
+                 fast,
+                 slow,
+                 calls ? static_cast<double>(fast) * 100.0 / static_cast<double>(calls) : 0.0,
+                 total_ns,
+                 fast_ns,
+                 slow_ns);
+}
+
+void SmcTracker::MarkCloseWorkPending() {
+    if (dirty_hint_enabled_) {
+        close_work_pending_.store(true, std::memory_order_seq_cst);
+    }
 }
 
 void SmcTracker::LockMetadata() const {
@@ -165,6 +209,13 @@ void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
     }
     for (VAddr page = first; page <= last; page += page_size_) {
         auto& rec = pages_[page];
+        // Preserve the lock-free close invariant before publishing another
+        // translation into an already-open write window. Normally the fault
+        // already left the hint set; this store makes RegisterNode itself
+        // conservative if that setup ever changes.
+        if (rec.dirty) {
+            MarkCloseWorkPending();
+        }
         const bool duplicate = std::any_of(
                 rec.nodes.begin(), rec.nodes.end(), [&](const TrackedNode& tracked) {
                     return tracked.node.Get() == node &&
@@ -295,11 +346,17 @@ bool SmcTracker::HandleWriteFault(AddressSpace& space,
     // first handler completed mprotect. The page is now writable and the
     // pending fault can safely resume.
     if (rec.dirty && !rec.write_protected) {
+        MarkCloseWorkPending();
         return true;
     }
     if (!rec.write_protected) {
         return false;
     }
+    // This is the publication edge used by CloseWriteWindow's lock-free
+    // proof. It must precede both opening the host page and rec.dirty=true:
+    // seeing false may mean "the fault has not opened its window yet", never
+    // "the page is already RW/dirty but the hint has not caught up".
+    MarkCloseWorkPending();
     if (!SetPageProtected(it->first, false)) {
         return false;
     }
@@ -328,6 +385,10 @@ void SmcTracker::Retire(std::vector<ReclaimCandidate>& candidates) {
     if (candidates.empty()) {
         return;
     }
+    // Cover QSBR work with the same close hint. A false positive is harmless;
+    // publishing before the epoch/list mutation prevents a lock-free close
+    // from skipping reclaim work that is already pending.
+    MarkCloseWorkPending();
     // Dispatch visibility was removed before this release operation. A
     // Runtime that publishes the resulting epoch must therefore observe the
     // cleared tables and cannot newly enter one of these allocations.
@@ -358,6 +419,10 @@ void SmcTracker::ReclaimRetiredLocked() {
     for (auto& retired : ready) {
         retired.module->ReclaimCode(retired.exec_ptr);
     }
+    // Keep the hint true until the actual ReclaimCode calls finish, not merely
+    // until entries move out of retired_. MaybeClear takes metadata_lock_, so a
+    // concurrent fault cannot have its true publication overwritten.
+    MaybeClearCloseWorkPending();
 }
 
 void SmcTracker::ReclaimRetired() {
@@ -365,7 +430,56 @@ void SmcTracker::ReclaimRetired() {
     ReclaimRetiredLocked();
 }
 
+void SmcTracker::MaybeClearCloseWorkPending() {
+    if (!dirty_hint_enabled_) {
+        return;
+    }
+    MetadataGuard guard(*this);
+    if (!retired_.empty()) {
+        return;
+    }
+    const bool dirty = std::any_of(pages_.begin(), pages_.end(), [](const auto& entry) {
+        return entry.second.dirty;
+    });
+    if (!dirty) {
+        close_work_pending_.store(false, std::memory_order_seq_cst);
+    }
+}
+
 void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& current_l1) {
+    const auto profile_start =
+            close_profile_enabled_ ? std::chrono::steady_clock::now()
+                                   : std::chrono::steady_clock::time_point{};
+    if (close_profile_enabled_) {
+        close_calls_.fetch_add(1, std::memory_order_relaxed);
+    }
+    // pending_count_ is redundant with close_work_pending_ by invariant, but
+    // retaining it as a second conservative gate makes any future reclaim
+    // producer fail toward the slow path. Neither load is executed when the
+    // default-OFF switch is unset.
+    //
+    // CloseWriteWindow returns void and its Runtime caller never branches on
+    // whether a close did work; the only observable effects are the dirty
+    // detach/re-protect/tombstone and reclaim side effects covered by the two
+    // gates below.
+    if (dirty_hint_enabled_ &&
+        !close_work_pending_.load(std::memory_order_seq_cst) &&
+        pending_count_.load(std::memory_order_acquire) == 0) {
+        if (close_profile_enabled_) {
+            const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now() - profile_start)
+                                    .count();
+            close_fast_returns_.fetch_add(1, std::memory_order_relaxed);
+            close_fast_ns_.fetch_add(static_cast<unsigned long long>(ns),
+                                    std::memory_order_relaxed);
+            close_total_ns_.fetch_add(static_cast<unsigned long long>(ns),
+                                     std::memory_order_relaxed);
+        }
+        return;
+    }
+    if (close_profile_enabled_) {
+        close_slow_calls_.fetch_add(1, std::memory_order_relaxed);
+    }
     std::lock_guard invalidation_guard(invalidation_mutex_);
     std::vector<ReclaimCandidate> candidates;
 
@@ -412,6 +526,15 @@ void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& current_l
 
     Retire(candidates);
     ReclaimRetiredLocked();
+    if (close_profile_enabled_) {
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - profile_start)
+                                .count();
+        close_slow_ns_.fetch_add(static_cast<unsigned long long>(ns),
+                                std::memory_order_relaxed);
+        close_total_ns_.fetch_add(static_cast<unsigned long long>(ns),
+                                 std::memory_order_relaxed);
+    }
 }
 
 void SmcTracker::InvalidateRange(AddressSpace& space,

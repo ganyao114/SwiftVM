@@ -54,6 +54,7 @@ public:
     // Config::memory_base (0 = identity mapping).
     // guest_addr_mask: bounded-guest-window mask (see Config), 0 = disabled.
     explicit SmcTracker(u64 guest_bias, u64 guest_addr_mask = 0);
+    ~SmcTracker();
 
     // Called after a block/function is fully published. Every host page
     // overlapping [guest_start, guest_end) is write-protected and records the
@@ -194,6 +195,8 @@ private:
     void Retire(std::vector<ReclaimCandidate>& candidates);
     void ReclaimRetiredLocked();
     void ReclaimRetired();
+    void MarkCloseWorkPending();
+    void MaybeClearCloseWorkPending();
 
     const u64 bias_;
     // Guest window mask; UINT64_MAX when the window is disabled. Every guest
@@ -203,6 +206,8 @@ private:
     const u64 mask_;
     const u64 page_size_;
     const u64 page_mask_;
+    const bool dirty_hint_enabled_;
+    const bool close_profile_enabled_;
     std::map<VAddr, PageRecord> pages_{};
     std::vector<RuntimeToken> runtimes_{};
     std::vector<RetiredCode> retired_{};
@@ -211,6 +216,30 @@ private:
     std::atomic<u64> global_epoch_{1};
     std::atomic<size_t> pending_count_{0};
     std::atomic_bool multithreaded_{false};
+    // SVM_SMC_DIRTY_HINT's lock-free CloseWriteWindow proof.
+    //
+    // Invariant:
+    //  * HandleWriteFault publishes true BEFORE making a tracked page writable
+    //    or setting PageRecord::dirty. RegisterNode republishes true before it
+    //    adds a node to an already-dirty page.
+    //  * Retire publishes true before adding any QSBR-retired allocation.
+    //  * false may be published only while invalidation_mutex_ is held and,
+    //    under metadata_lock_, every page is observed non-dirty and retired_
+    //    is empty. HandleWriteFault/RegisterNode take that same metadata lock,
+    //    so a later dirty transition cannot be overwritten by the clear.
+    //
+    // The seq_cst order is deliberately stronger than PageRecord's
+    // metadata-lock acquire/release order: a lock-free close that observes
+    // false is ordered before any later write-window opening, or after the
+    // final locked scan that consumed all earlier dirty/reclaim work. Stale
+    // true only costs a slow close; stale false is not an allowed outcome.
+    std::atomic_bool close_work_pending_{false};
+    std::atomic<unsigned long long> close_calls_{0};
+    std::atomic<unsigned long long> close_fast_returns_{0};
+    std::atomic<unsigned long long> close_slow_calls_{0};
+    std::atomic<unsigned long long> close_total_ns_{0};
+    std::atomic<unsigned long long> close_fast_ns_{0};
+    std::atomic<unsigned long long> close_slow_ns_{0};
     bool locally_enabled_{true};
 };
 
