@@ -2240,14 +2240,22 @@ TEST_CASE("Fuzz x86 decode robustness") {
                     b.c.size());
         try {
             struct MemIf : public swift::runtime::MemoryInterface {
+                MemIf(u64 begin_, size_t size) : begin(begin_), end(begin_ + size) {}
+
                 bool Read(void* dest, size_t addr, size_t size) override {
                     return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
                 }
                 bool Write(void* src, size_t addr, size_t size) override {
                     return std::memcpy(reinterpret_cast<void*>(addr), src, size);
                 }
-                void* GetPointer(void* src) override { return src; }
-            } mem_if;
+                void* GetPointer(void* src) override {
+                    const auto addr = reinterpret_cast<uintptr_t>(src);
+                    return addr >= begin && addr < end ? src : nullptr;
+                }
+
+                uintptr_t begin;
+                uintptr_t end;
+            } mem_if{env.base, FuzzEnv::kMemSize};
             swift::runtime::ir::Block block{0, swift::runtime::ir::Location{code_addr}};
             swift::runtime::ir::Assembler assembler{&block};
             X64Decoder decoder{code_addr, &mem_if, &assembler, true};
