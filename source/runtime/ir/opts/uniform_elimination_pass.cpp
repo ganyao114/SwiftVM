@@ -348,6 +348,21 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
         }
     }
 
+    // W55 descriptors would otherwise be converted to SetHostGPR before the
+    // reverse sweep, making each mapped write an opaque barrier and losing the
+    // existing dead-store wins. Run the same proven sweep on the original
+    // Load/StoreUniform stream first, then skip the post-conversion sweep.
+    // OFF retains the historical pass order byte-for-byte.
+    static const bool dse_off = [] {
+        const char* e = PerfGetenv("SVM_UNIFORM_DSE");
+        return e && std::strcmp(e, "0") == 0;
+    }();
+    const bool pin_ext_dse = info.uni_gprs.Get(22) && info.uni_gprs.Get(23) &&
+                             info.uni_gprs.Get(29);
+    if (pin_ext_dse && !dse_off) {
+        EliminateDeadStores(block, info, hir_function);
+    }
+
     StackVector<UniformValue, 0x100> uniform_values{info.uniform_size};
     // A local Goto/NotGoto has two successors: the following instruction and
     // its BindLabel. Facts established before the branch dominate both paths,
@@ -513,8 +528,12 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                         PANIC("Cross uniform load: {}", fmt::format("{}", inst));
                         break;
                     }
-                    if (UniformRangeEnabled() && !uniform_register.host_reg.is_fpr &&
-                        try_forward_load()) {
+                    const bool pin_ext_gpr = !uniform_register.host_reg.is_fpr &&
+                            (uniform_register.host_reg.gpr.id == 22 ||
+                             uniform_register.host_reg.gpr.id == 23 ||
+                             uniform_register.host_reg.gpr.id == 29);
+                    if ((UniformRangeEnabled() || pin_ext_gpr) &&
+                        !uniform_register.host_reg.is_fpr && try_forward_load()) {
                         break;
                     }
                     inst.Reset();
@@ -528,6 +547,16 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                         inst.GetHostGPR(HostRegIndex(reg_index), offset_in).SetReturn(uni_type);
                     }
                     mapped_load_count++;
+                    if (pin_ext_gpr) {
+                        // Seed load-to-load forwarding for the new resident
+                        // GPRs. Snapshot safety is enforced later by the
+                        // allocator's SetHost crossing check; a repeated full
+                        // load can therefore become a zero-cost BitCast alias.
+                        const Value loaded{&inst};
+                        for (u8 byte = 0; byte < uni_size; ++byte) {
+                            uniform_values[uni_offset + byte] = {loaded, byte};
+                        }
+                    }
                     break;
                 }
 
@@ -601,11 +630,17 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                         inst.SetHostGPR(value, HostRegIndex(reg_index), offset_in);
                     }
                     mapped_store_count++;
-                    if (UniformRangeEnabled() && !mapped_fpr &&
+                    const bool pin_ext_gpr = !mapped_fpr &&
+                            (reg_index == 22 || reg_index == 23 || reg_index == 29);
+                    if ((UniformRangeEnabled() || pin_ext_gpr) && !mapped_fpr &&
                         uni_reg_size == sizeof(u64)) {
                         // The pinned GPR now contains this value in exactly the
                         // bytes written by SetHostGPR. Keep every other byte
                         // fact, including untouched bytes in this same GPR.
+                        // W55's extended pins always use this W50 range-local
+                        // path: a new hot mapped store must not turn into a
+                        // whole-context fact barrier merely because the global
+                        // diagnostic switch remains at its default OFF.
                         update_mapped_gpr_facts(uni_offset, value_size, value);
                     } else {
                         // OFF retains the legacy opaque mapped-store barrier.
@@ -738,15 +773,13 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
 
     // Escape hatch for bisecting a suspected DSE bug against the load-folding
     // half of this pass, which SVM_UNIFORM_ELIM=0 cannot separate.
-    static const bool dse_off = [] {
-        const char* e = PerfGetenv("SVM_UNIFORM_DSE");
-        return e && std::strcmp(e, "0") == 0;
-    }();
     // With every uniform byte live-out, a store can be dead only if at least
     // one later store overwrites it. Fewer than two stores therefore makes the
     // reverse dataflow scan provably a no-op.
     if (!dse_off && (!fast_path || store_count >= 2)) {
-        EliminateDeadStores(block, info, hir_function);
+        if (!pin_ext_dse) {
+            EliminateDeadStores(block, info, hir_function);
+        }
     }
 }
 

@@ -30,14 +30,25 @@ using namespace swift::x86;
 
 // Conservative static guest->host map. RBX/RSP/RBP are hot general, stack and
 // frame registers; x19-x21 are AArch64 ABI callee-saved and do not overlap the
-// runtime's x24-x28 state/cache/flags/RSB/page-table assignments. Descriptors
-// stay sorted by uniform offset so the trampoline can pair adjacent saves.
+// runtime's x24-x28 state/cache/flags/RSB/page-table assignments. SVM_X86_PIN_EXT
+// extends the map with RAX/RCX in callee-saved x22/x23 and RDX in x29. x29 is
+// already preserved with LR at every helper boundary. Descriptors stay sorted
+// by uniform offset so the trampoline can pair adjacent saves.
 // The trampoline reserves them from linear scan, restores them on runtime
 // entry and spills them on every host exit. Inline CallLambda helpers do not
-// receive the uniform buffer and must preserve x19-x21 by the platform ABI.
+// receive the uniform buffer and must preserve x19-x23 by the platform ABI;
+// x29 is saved explicitly alongside LR.
 // The legacy asm-interpreter uses x21 as `handle`; this x86 Config leaves that
 // mutually-exclusive path disabled.
 static UniformMapDesc arm64_backend_gpr_regs_map[] = {
+        {offsetof(ThreadContext64, rbx), 8, 20, false},
+        {offsetof(ThreadContext64, rsp), 8, 19, false},
+        {offsetof(ThreadContext64, rbp), 8, 21, false},
+};
+static UniformMapDesc arm64_backend_gpr_regs_ext_map[] = {
+        {offsetof(ThreadContext64, rax), 8, 22, false},
+        {offsetof(ThreadContext64, rcx), 8, 23, false},
+        {offsetof(ThreadContext64, rdx), 8, 29, false},
         {offsetof(ThreadContext64, rbx), 8, 20, false},
         {offsetof(ThreadContext64, rsp), 8, 19, false},
         {offsetof(ThreadContext64, rbp), 8, 21, false},
@@ -62,6 +73,22 @@ static UniformMapDesc arm64_backend_xmm_regs_map[] = {
         SVM_XMM_STATIC_DESC(14), SVM_XMM_STATIC_DESC(15),
 };
 static UniformMapDesc arm64_backend_gpr_xmm_regs_map[] = {
+        {offsetof(ThreadContext64, rbx), 8, 20, false},
+        {offsetof(ThreadContext64, rsp), 8, 19, false},
+        {offsetof(ThreadContext64, rbp), 8, 21, false},
+        SVM_XMM_STATIC_DESC(0),  SVM_XMM_STATIC_DESC(1),
+        SVM_XMM_STATIC_DESC(2),  SVM_XMM_STATIC_DESC(3),
+        SVM_XMM_STATIC_DESC(4),  SVM_XMM_STATIC_DESC(5),
+        SVM_XMM_STATIC_DESC(6),  SVM_XMM_STATIC_DESC(7),
+        SVM_XMM_STATIC_DESC(8),  SVM_XMM_STATIC_DESC(9),
+        SVM_XMM_STATIC_DESC(10), SVM_XMM_STATIC_DESC(11),
+        SVM_XMM_STATIC_DESC(12), SVM_XMM_STATIC_DESC(13),
+        SVM_XMM_STATIC_DESC(14), SVM_XMM_STATIC_DESC(15),
+};
+static UniformMapDesc arm64_backend_gpr_ext_xmm_regs_map[] = {
+        {offsetof(ThreadContext64, rax), 8, 22, false},
+        {offsetof(ThreadContext64, rcx), 8, 23, false},
+        {offsetof(ThreadContext64, rdx), 8, 29, false},
         {offsetof(ThreadContext64, rbx), 8, 20, false},
         {offsetof(ThreadContext64, rsp), 8, 19, false},
         {offsetof(ThreadContext64, rbp), 8, 21, false},
@@ -483,9 +510,18 @@ struct X86Instance::Impl final {
         const bool enable_xmm_static =
                 enable_jit && enable_uniform_elim && xmm_static_env &&
                 std::strcmp(xmm_static_env, "0") != 0;
+        // W55 opt-in extension of the scalar static map. It is deliberately
+        // independent of SVM_JIT_SCRATCH_XPOOL; both may be enabled together.
+        const char* pin_ext_env = std::getenv("SVM_X86_PIN_EXT");
+        const bool enable_pin_ext =
+                enable_static_regs && pin_ext_env && std::strcmp(pin_ext_env, "0") != 0;
         std::span<UniformMapDesc> static_regs;
-        if (enable_static_regs && enable_xmm_static) {
+        if (enable_pin_ext && enable_xmm_static) {
+            static_regs = arm64_backend_gpr_ext_xmm_regs_map;
+        } else if (enable_static_regs && enable_xmm_static) {
             static_regs = arm64_backend_gpr_xmm_regs_map;
+        } else if (enable_pin_ext) {
+            static_regs = arm64_backend_gpr_regs_ext_map;
         } else if (enable_static_regs) {
             static_regs = arm64_backend_gpr_regs_map;
         } else if (enable_xmm_static) {

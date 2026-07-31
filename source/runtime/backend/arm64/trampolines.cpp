@@ -56,7 +56,10 @@ void TrampolinesArm64::Build() {
 #endif
 
     gpr_regs.Mark(x31.GetCode());  // sp
-    gpr_regs.Mark(fp.GetCode());   // fp
+    // x29 is unavailable to linear scan in every mode, but W55 may use it as
+    // the static RDX mapping. Mark it after validating static descriptors so
+    // that the descriptor-overlap assertion still rejects every real runtime
+    // ABI collision and duplicate descriptor.
     // x30 is the link register. Guest values live across a CallLambda must
     // never be allocated here: the host call and the generated block's final
     // return both require the architectural LR value.
@@ -101,33 +104,45 @@ void TrampolinesArm64::Build() {
     fpr_regs.Mark(ipv2.GetCode());
     fpr_regs.Mark(ipv3.GetCode());
 
+    GPRSMask static_gprs{0};
+    FPRSMask static_fprs{0};
     for (auto& desc : config.buffers_static_alloc) {
         if (desc.is_float) {
-            ASSERT_MSG(!fpr_regs.Get(desc.reg),
+            ASSERT_MSG(!fpr_regs.Get(desc.reg) && !static_fprs.Get(desc.reg),
                        "static uniform FPR v{} overlaps the runtime ABI or "
                        "another static descriptor",
                        desc.reg);
+            static_fprs.Mark(desc.reg);
             fpr_regs.Mark(desc.reg);
         } else {
-            ASSERT_MSG(!gpr_regs.Get(desc.reg),
+            ASSERT_MSG(!gpr_regs.Get(desc.reg) && !static_gprs.Get(desc.reg),
                        "static uniform GPR x{} overlaps the runtime ABI or "
                        "another static descriptor",
                        desc.reg);
+            static_gprs.Mark(desc.reg);
             gpr_regs.Mark(desc.reg);
         }
     }
+    gpr_regs.Mark(fp.GetCode());  // fp / optional static RDX (x29)
 
     if (const char* dump = std::getenv("SVM_VIXL_HOST_DUMP");
         dump && std::strcmp(dump, "0") != 0) {
         const bool has_pt = config.page_table || config.memory_base;
         std::fprintf(stderr,
                      "[svm-reg-mask] memory_base=%d page_table=%d "
-                     "x24_reserved=%d x10_reserved=%d dispatcher_loc=x%d\n",
+                     "x24_reserved=%d x10_reserved=%d dispatcher_loc=x%d "
+                     "pin_ext=%d x22_reserved=%d x23_reserved=%d "
+                     "x29_reserved=%d allocatable_gprs=%u\n",
                      config.memory_base != nullptr,
                      config.page_table != nullptr,
                      gpr_regs.Get(24),
                      gpr_regs.Get(10),
-                     has_pt ? ip6.GetCode() : loc.GetCode());
+                     has_pt ? ip6.GetCode() : loc.GetCode(),
+                     static_gprs.Get(22) && static_gprs.Get(23) && static_gprs.Get(29),
+                     gpr_regs.Get(22),
+                     gpr_regs.Get(23),
+                     gpr_regs.Get(29),
+                     static_cast<unsigned>(gpr_regs.GetClearCount()));
     }
 }
 

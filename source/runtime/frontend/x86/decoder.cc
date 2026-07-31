@@ -859,6 +859,14 @@ ir::Value X64Decoder::R(_RegisterType reg) {
     return __ LoadUniform(ToReg(info));
 }
 
+static bool PinExtPartialWritesEnabled() {
+    static const bool enabled = [] {
+        const char* value = swift::runtime::PerfGetenv("SVM_X86_PIN_EXT");
+        return value && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 bool X64Decoder::StructuredAddressModeEnabled() {
     static const bool enabled = [] {
         const char* env = swift::runtime::PerfGetenv("SVM_ADDRMODE_STRUCT");
@@ -984,6 +992,17 @@ void X64Decoder::R(_RegisterType reg, ir::Value value) {
     auto& info = x86_regs_table[reg];
     if (info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::R15) {
         if (info.high) {
+            if (PinExtPartialWritesEnabled() &&
+                info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::Rdx) {
+                // AH/CH/DH are byte 1 of the newly pinned parent. Keep this as
+                // a byte store: UniformElimination turns it into one BFI at
+                // offset 8, while memory-backed/interpreter execution updates
+                // exactly the same byte in ThreadContext64.
+                auto offset = ToReg(info).GetOffset() + 1;
+                __ StoreUniform(ir::Uniform{offset, ir::ValueType::U8},
+                                NarrowTo(value, ir::ValueType::U8));
+                return;
+            }
             // AH / CH / DH / BH: read-modify-write bits [15:8], keep the rest.
             auto offset = ToReg(info).GetOffset();
             auto parent = __ LoadUniform(ir::Uniform{offset, ir::ValueType::U64});

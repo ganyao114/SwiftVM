@@ -16,6 +16,14 @@ bool ScratchXPoolEnabled() {
     return enabled;
 }
 
+static bool X86PinExtEnabled() {
+    static const bool enabled = [] {
+        const char* value = PerfGetenv("SVM_X86_PIN_EXT");
+        return value && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 u32 FixedGPRClobbers(ir::OpCode op) {
     if (!ScratchXPoolEnabled()) {
         return 0;
@@ -99,7 +107,12 @@ ScratchNeed ScratchBudget(ir::OpCode op) {
         // more inside SaveAuxiliaryCarry while those three are still leased.
         case ir::OpCode::Add:
         case ir::OpCode::Sub:
-            return {4, kDefaultScratchFPR};
+            // A narrow Add/Sub whose tied input aliases one of the extended
+            // pinned GPRs needs one extra preservation temporary. OFF keeps
+            // the historical reserve and byte-for-byte allocation; ON makes
+            // the fifth register explicit in the scratch contract.
+            return {static_cast<u8>(X86PinExtEnabled() ? 5 : 4),
+                    kDefaultScratchFPR};
         // --- five GPRs ---------------------------------------------------
         case ir::OpCode::VecFCvtFloatToInt:
             return {5, kDefaultScratchFPR};

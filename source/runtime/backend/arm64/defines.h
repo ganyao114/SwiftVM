@@ -34,9 +34,14 @@
 // and the dispatcher scratch location moves to ip6 (see
 // TrampolinesArm64::BuildRuntimeEntry).
 #define pt          x24
+// x22/x23 are legacy asm-interpreter argument registers. The x86 JIT never
+// enables that mutually-exclusive path, so SVM_X86_PIN_EXT may hold guest
+// RAX/RCX here for the whole JIT run. Both remain ABI callee-saved.
 #define args        x23
 #define arg         x22
 #define handle      x21
+// x29 is not used as a generated-code frame chain. SVM_X86_PIN_EXT may hold
+// guest RDX in it; every helper path already preserves x29 together with LR.
 
 #define ip          x11
 // mem_scratch: reserved scratch for folding the pt bias into memory operands

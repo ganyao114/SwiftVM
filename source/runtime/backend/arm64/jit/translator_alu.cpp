@@ -240,9 +240,22 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
 void JitTranslator::EmitAnd(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
-    auto right_operand = EmitOperand(right);
+    auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
+        if (value.Def()) {
+            if (auto it = fused_pin_gpr_reads.find(value.Def());
+                it != fused_pin_gpr_reads.end()) {
+                return WRegister(it->second);
+            }
+        }
+        return std::nullopt;
+    };
+    auto right_pinned = right.GetLeft().IsValue()
+            ? pinned_w(right.GetLeft().value)
+            : std::nullopt;
+    auto right_operand = right_pinned ? Operand{*right_pinned} : EmitOperand(right);
     auto result = context.R(ir::Value{inst});
-    auto left_register = context.R(left, true);
+    auto left_pinned = pinned_w(left);
+    Register left_register = left_pinned ? Register{*left_pinned} : context.R(left, true);
 
     auto pseudo_flags = GetPseudoFlags(inst);
 
@@ -303,9 +316,22 @@ void JitTranslator::EmitOr(ir::Inst* inst) {
 void JitTranslator::EmitXor(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
-    auto right_operand = EmitOperand(right);
+    auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
+        if (value.Def()) {
+            if (auto it = fused_pin_gpr_reads.find(value.Def());
+                it != fused_pin_gpr_reads.end()) {
+                return WRegister(it->second);
+            }
+        }
+        return std::nullopt;
+    };
+    auto right_pinned = right.GetLeft().IsValue()
+            ? pinned_w(right.GetLeft().value)
+            : std::nullopt;
+    auto right_operand = right_pinned ? Operand{*right_pinned} : EmitOperand(right);
     auto result = context.R(ir::Value{inst});
-    auto left_register = context.R(left, true);
+    auto left_pinned = pinned_w(left);
+    Register left_register = left_pinned ? Register{*left_pinned} : context.R(left, true);
 
     auto pseudo_flags = GetPseudoFlags(inst);
 
@@ -2793,7 +2819,11 @@ void JitTranslator::EmitTestNotZero(ir::Inst* inst) {
 void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
     auto result = context.W(ir::Value{inst});
-    auto src = context.W(value);
+    auto fused = value.Def() ? fused_pin_gpr_reads.find(value.Def())
+                             : fused_pin_gpr_reads.end();
+    auto src = fused != fused_pin_gpr_reads.end()
+            ? WRegister(fused->second)
+            : context.W(value);
     if (shift_imm_fast && value.Def() &&
         value.Def()->GetOp() == ir::OpCode::LoadUniform &&
         ir::GetValueSizeByte(value.Type()) <= 2 &&
@@ -2818,6 +2848,28 @@ void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitZeroExtend32To64(ir::Inst* inst) {
+    if (inst->GetUses() == 1) {
+        auto& list = cur_block->GetInstList();
+        for (auto it = std::next(list.iterator_to(*inst)); it != list.end(); ++it) {
+            bool names_value = false;
+            for (auto used : it->GetValues()) {
+                names_value |= used.Def() == inst;
+            }
+            if (!names_value) {
+                continue;
+            }
+            if (it->GetOp() == ir::OpCode::SetHostGPR &&
+                it->GetArg<ir::Value>(0).Def() == inst &&
+                it->GetArg<ir::Imm>(2).Get() == 0) {
+                const u32 target = it->GetArg<ir::Imm>(1).Get();
+                if (target == 22 || target == 23 || target == 29) {
+                    fused_pin_zext32.insert(inst);
+                    return;
+                }
+            }
+            break;
+        }
+    }
     // The destination remains U64-typed in IR so the following StoreUniform
     // updates the full guest GPR. On arm64, writing W is exactly the required
     // 32->64 zero extension and clears the paired X register's high half.

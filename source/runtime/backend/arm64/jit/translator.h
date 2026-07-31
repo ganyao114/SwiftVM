@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 #include "base/common_funcs.h"
 #include "jit_context.h"
@@ -253,6 +254,12 @@ private:
     BitVector disable_instructions{};
     std::map<ir::Inst *, Label> local_labels{};
     std::map<ir::Inst *, Condition> local_conditions{};
+    // ZeroExtend32To64 values whose sole consumer is a W55 full pinned write.
+    // Their producer emits nothing; EmitSetHostGPR reads the original W value.
+    std::unordered_set<ir::Inst*> fused_pin_zext32{};
+    // Narrow mapped reads whose single audited consumer can use the pinned W
+    // register directly (for example CL masking and U32 XOR).
+    std::map<ir::Inst*, u16> fused_pin_gpr_reads{};
     ir::Flags flags_set{};
     ir::Flags flags_clear{};
     bool save_in_nzcv{true};

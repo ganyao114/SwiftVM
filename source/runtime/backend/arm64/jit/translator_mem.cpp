@@ -248,10 +248,40 @@ MemOperand JitTranslator::BiasMem(const Register& base, s64 imm, bool atomic) {
 void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
     auto offset = inst->GetArg<ir::Imm>(1).Get();
     auto reg_index = inst->GetArg<ir::Imm>(0).Get();
+    const u32 value_size = ir::GetValueSizeByte(inst->ReturnType());
+    if (offset == 0 && (reg_index == 22 || reg_index == 23 || reg_index == 29) &&
+        inst->GetUses() == 1 && value_size <= sizeof(u32)) {
+        auto& list = cur_block->GetInstList();
+        for (auto it = std::next(list.iterator_to(*inst)); it != list.end(); ++it) {
+            if (it->GetOp() == ir::OpCode::SetHostGPR &&
+                it->GetArg<ir::Imm>(1).Get() == reg_index) {
+                break;  // the materialized read must retain snapshot semantics
+            }
+            bool names_value = false;
+            for (auto used : it->GetValues()) {
+                names_value |= used.Def() == inst;
+            }
+            if (!names_value) {
+                continue;
+            }
+            const bool direct_alu =
+                    (it->GetOp() == ir::OpCode::And || it->GetOp() == ir::OpCode::Xor) &&
+                    ir::GetValueSizeByte(it->ReturnType()) <= sizeof(u32);
+            const bool direct_extend =
+                    (value_size == sizeof(u8) || value_size == sizeof(u16)) &&
+                    it->GetOp() == ir::OpCode::ZeroExtend32 &&
+                    it->GetArg<ir::Value>(0).Def() == inst;
+            if (direct_alu || direct_extend) {
+                fused_pin_gpr_reads.emplace(inst, static_cast<u16>(reg_index));
+                return;
+            }
+            break;
+        }
+    }
     auto host_reg = XRegister(reg_index);
     auto ret_reg = context.X(ir::Value{inst});
     const auto bit_offset = offset * 8;
-    const auto bit_width = ir::GetValueSizeByte(inst->ReturnType()) * 8;
+    const auto bit_width = value_size * 8;
     if (bit_offset == 0 && bit_width == 64) {
         if (host_reg != ret_reg) {
             __ Mov(ret_reg, host_reg);
@@ -306,14 +336,37 @@ void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
     auto reg_index = inst->GetArg<ir::Imm>(1).Get();
     auto host_reg = XRegister(reg_index);
     auto value = inst->GetArg<ir::Value>(0);
-    auto value_reg = context.X(value);
+    const bool fused_zext32 = value.Def() && fused_pin_zext32.contains(value.Def());
+    auto value_reg = fused_zext32
+            ? context.X(value.Def()->GetArg<ir::Value>(0))
+            : context.X(value);
     const auto bit_offset = offset * 8;
     const auto bit_width = ir::GetValueSizeByte(value.Type()) * 8;
-    if (bit_offset == 0 && bit_width == 64) {
+    ASSERT_MSG(bit_offset + bit_width <= 64,
+               "invalid fixed GPR write offset {} width {}", bit_offset, bit_width);
+    const bool pin_ext_reg = reg_index == 22 || reg_index == 23 || reg_index == 29;
+    if (bit_offset == 0 && bit_width == 32 && pin_ext_reg) {
+        if (value_reg.W() != host_reg.W()) {
+            __ Mov(host_reg.W(), value_reg.W());
+        }
+    } else if (bit_offset == 0 && bit_width == 64) {
         if (value_reg != host_reg) {
-            __ Mov(host_reg, value_reg);
+            // x86-64 EAX/ECX/EDX writes reach here as a U64
+            // ZeroExtend32To64 value so memory-backed StoreUniform can still
+            // replace all eight context bytes. For the W55 pinned registers,
+            // use the architectural W write: AArch64 clears bits [63:32]
+            // naturally, exactly matching the x86 rule.
+            const bool zext32 = fused_zext32 || (value.Def() &&
+                    value.Def()->GetOp() == ir::OpCode::ZeroExtend32To64);
+            if (pin_ext_reg && zext32) {
+                __ Mov(host_reg.W(), value_reg.W());
+            } else {
+                __ Mov(host_reg, value_reg);
+            }
         }
     } else {
+        // Low byte/word and AH/CH/DH (offset == 1) all lower to one BFI,
+        // preserving every untouched bit of the pinned 64-bit parent.
         __ Bfi(host_reg, value_reg, bit_offset, bit_width);
     }
 }
