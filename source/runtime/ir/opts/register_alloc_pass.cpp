@@ -108,6 +108,7 @@ public:
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(function->MaxInstrCount());
+        InitializeFixedClobbers();
         if (single_block_fast_path) {
             fast_active_lives.reserve(function->MaxInstrCount());
         }
@@ -126,6 +127,7 @@ public:
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(block->GetInstList().size());
+        InitializeFixedClobbers();
     }
 
     [[nodiscard]] u32 SpillCount() const { return spill_count; }
@@ -237,7 +239,7 @@ public:
         auto fill_gap = [&](u32 end) {
             end = std::min(end, instr_count);
             for (; next_id < end; next_id++) {
-                reg_alloc->SetActiveRegs(next_id, active_gprs, active_fprs);
+                RecordActiveRegs(next_id);
             }
         };
         for (auto& interval : live_interval) {
@@ -257,7 +259,7 @@ public:
                     // register. The ARM64 emitter can then replace
                     // LDRH+SXTH (or LDRB+UXTB) with the extending load itself,
                     // and a following 32->64 W write becomes a true no-op.
-                } else if (auto alloc = AllocGPR(); alloc >= 0) {
+                } else if (auto alloc = AllocGPR(interval); alloc >= 0) {
                     reg_alloc->MapRegister(interval.inst->Id(), HostGPR{(u16)alloc});
                 } else {
                     SpillAtInterval(interval);
@@ -300,7 +302,7 @@ public:
             } else {
                 active_lives.push_back(interval);
             }
-            reg_alloc->SetActiveRegs(interval.inst->Id(), active_gprs, active_fprs);
+            RecordActiveRegs(interval.inst->Id());
             next_id = std::max(next_id, interval.start + 1);
         }
         // Fill any remaining instructions after the last interval start.
@@ -314,6 +316,71 @@ public:
     }
 
 private:
+    void InitializeFixedClobbers() {
+        fixed_gpr_clobbers.resize(InstrCount());
+        auto add_block = [&](Block* lir_block) {
+            bool has_inst = false;
+            u32 last_id = 0;
+            for (auto& inst : lir_block->GetInstList()) {
+                if (inst.Id() < fixed_gpr_clobbers.size()) {
+                    fixed_gpr_clobbers[inst.Id()] |=
+                            backend::FixedGPRClobbers(inst.GetOp());
+                }
+                has_inst = true;
+                last_id = std::max<u32>(last_id, inst.Id());
+            }
+            // Every block terminal/link sequence owns x11. Recording that
+            // clobber at the block's final instruction extends the exclusion
+            // to values consumed by terminal::If/Switch as well.
+            if (backend::ScratchXPoolEnabled() && has_inst &&
+                last_id < fixed_gpr_clobbers.size()) {
+                fixed_gpr_clobbers[last_id] |=
+                        backend::kTerminalFixedGPRClobbers;
+            }
+        };
+        if (function) {
+            for (auto* hir_block : function->GetHIRBlocks()) {
+                add_block(hir_block->GetBlock());
+            }
+        } else {
+            add_block(block);
+        }
+        for (u32 id = 0; id < fixed_gpr_clobbers.size(); ++id) {
+            const u32 fixed = fixed_gpr_clobbers[id];
+            for (u32 code = 0; code < 32; ++code) {
+                if (fixed & (1u << code)) {
+                    fixed_gpr_clobber_points[code].push_back(id);
+                }
+            }
+        }
+    }
+
+    void RecordActiveRegs(u32 id) {
+        auto gprs = active_gprs;
+        if (id < fixed_gpr_clobbers.size()) {
+            const u32 fixed = fixed_gpr_clobbers[id];
+            for (u32 code = 0; code < 32; ++code) {
+                if (fixed & (1u << code)) {
+                    gprs.Mark(code);
+                }
+            }
+        }
+        reg_alloc->SetActiveRegs(id, gprs, active_fprs);
+    }
+
+    [[nodiscard]] u32 IntervalFixedClobbers(const LiveInterval& interval) const {
+        u32 result = 0;
+        for (u32 code = 0; code < fixed_gpr_clobber_points.size(); ++code) {
+            const auto& points = fixed_gpr_clobber_points[code];
+            const auto it =
+                    std::lower_bound(points.begin(), points.end(), interval.start);
+            if (it != points.end() && *it <= interval.end) {
+                result |= 1u << code;
+            }
+        }
+        return result;
+    }
+
     bool DirectlyFeedsImmediateShift(Inst* inst) const {
         auto in_block = [&](Block* candidate) {
             bool found = false;
@@ -1116,13 +1183,16 @@ private:
     // the moment that instruction is reached, so refusing to allocate below
     // the reserve here is what guarantees GetTmpX/GetTmpV find a register at
     // every instruction of the unit.
-    int AllocGPR() {
+    int AllocGPR(const LiveInterval& interval) {
         if (static_cast<u32>(active_gprs.GetClearCount()) <= gpr_reserve) {
             return -1;
         }
-        if (auto alloc = active_gprs.GetFirstClear(); alloc >= 0) {
-            active_gprs.Mark(alloc);
-            return alloc;
+        const u32 forbidden = IntervalFixedClobbers(interval);
+        for (u32 code = 0; code < active_gprs.GetAllCount(); ++code) {
+            if (!active_gprs.Get(code) && !(forbidden & (1u << code))) {
+                active_gprs.Mark(code);
+                return static_cast<int>(code);
+            }
         }
         return -1;
     }
@@ -1229,6 +1299,8 @@ private:
     const bool scalar_insert{false};
     const bool shift_imm_fast{false};
     Vector<bool> spill_slots{};
+    Vector<u32> fixed_gpr_clobbers{};
+    std::array<Vector<u32>, 32> fixed_gpr_clobber_points{};
     // Spill telemetry (reported at the end of AllocateRegisters): spilling
     // has never triggered on current workloads, so any hit is worth a log
     // line — it means the JIT's defensive MEM path is being exercised.

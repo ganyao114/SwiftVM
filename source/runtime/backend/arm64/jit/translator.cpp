@@ -92,9 +92,13 @@ void JitTranslator::Translate(ir::Block* block) {
     perf_body.Stop();
 
     PerfScope2 perf_terminal{GetPerfStats2().codegen_terminal};
+    context.BeginTerminalScratch();
     FlushFlags();
     EmitTerminal(block->GetTerminal());
+    context.EndTerminalScratch();
+    context.BeginColdScratch();
     EmitVecNaNColdPaths();
+    context.EndColdScratch();
 }
 
 void JitTranslator::Translate(ir::HIRFunction* function) {
@@ -362,6 +366,7 @@ void JitTranslator::Translate(ir::Inst* inst) {
     }
 
 #undef INST
+    context.EndInstructionScratch();
 }
 
 bool JitTranslator::MatchMemoryOffsetCase(ir::Inst* inst) { return false; }

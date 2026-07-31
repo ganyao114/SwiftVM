@@ -52,6 +52,23 @@ public:
     [[nodiscard]] const FPRSMask& GetLiveFPRs() const { return cur_dirty_fprs; }
     // Exclude a register from GetTmpX for the current IR instruction only.
     void ReserveTmpX(const XRegister& reg);
+    // Reusable helper scratch for short, non-overlapping backend bookkeeping
+    // (principally flag materialization). It is leased once per emission and
+    // then reused, matching the old fixed x11 lifetime without globally
+    // reserving x11.
+    [[nodiscard]] XRegister GetSharedTmpX();
+
+    // TickIR opens the per-opcode VIXL scratch contract. The translator closes
+    // it immediately after the opcode emitter returns. Terminals get their own
+    // contract because they share the last instruction's live mask.
+    void EndInstructionScratch();
+    void BeginTerminalScratch();
+    void EndTerminalScratch();
+    // Cold NaN stubs resume an earlier instruction and therefore may not use
+    // any implicit GPR scratch at all; their explicit x13 ABI is declared on
+    // the originating opcode.
+    void BeginColdScratch();
+    void EndColdScratch();
 
     void Forward(ir::Location location);
     // Inline dispatch to a compile-time-constant guest location, for the
@@ -152,6 +169,9 @@ private:
     [[nodiscard]] XRegister GetSpillTmpX();
     [[nodiscard]] VRegister GetSpillTmpV();
     [[nodiscard]] backend::ScratchNeed CurrentBudget() const;
+    void BeginVixlScratch(bool allow_pool);
+    void EndVixlScratch();
+    void ExcludeVixlScratch(const XRegister& reg);
 
     struct PendingSpillWrite {
         u16 slot;    // spill slot index
@@ -194,6 +214,9 @@ private:
     FPRSMask tick_dirty_fprs{};
     u32 spill_tmp_gprs{};
     u32 spill_tmp_fprs{};
+    int shared_tmp_gpr{-1};
+    bool auxiliary_scratch{};
+    std::unique_ptr<UseScratchRegisterScope> vixl_scratch_scope{};
 };
 
 }  // namespace swift::runtime::backend::arm64

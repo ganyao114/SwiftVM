@@ -12,13 +12,6 @@ namespace swift::runtime::backend::arm64 {
 
 
 void JitTranslator::EmitX87Op(ir::Inst* inst) {
-    // VIXL MacroAssembler may clobber ip0/ip1 while materializing immediates.
-    // Keep them out of this instruction's long-lived temporary set without
-    // shrinking the register allocator globally (which can force unrelated,
-    // high-pressure emitters into the spill path).
-    context.ReserveTmpX(ip0);
-    context.ReserveTmpX(ip1);
-
     const auto context_value = inst->GetArg<ir::Value>(0);
     const auto command = inst->GetArg<ir::Imm>(1);
     const auto address = inst->GetArg<ir::Value>(2);
@@ -383,8 +376,12 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto bits = context.GetTmpX();
             auto sign_exp = context.GetTmpX();
             auto reg_address = context.GetTmpX();
-            auto scratch = atomic_scratch;
-            auto converted = atomic_pair_scratch;
+            const auto scratch =
+                    backend::ScratchXPoolEnabled() ? context.GetTmpX()
+                                                   : atomic_scratch;
+            const auto converted =
+                    backend::ScratchXPoolEnabled() ? context.GetTmpX()
+                                                   : atomic_pair_scratch;
             auto guest = context.X(address);
             auto input_fp = context.GetTmpV();
             auto rounded_fp = context.GetTmpV();
@@ -683,8 +680,12 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto scratch = context.GetTmpX();
             auto left_address = context.GetTmpX();
             auto left_bits = context.GetTmpX();
-            auto right_address = atomic_pair_scratch;
-            auto right_bits = atomic_scratch;
+            const auto right_address =
+                    backend::ScratchXPoolEnabled() ? context.GetTmpX()
+                                                   : atomic_pair_scratch;
+            const auto right_bits =
+                    backend::ScratchXPoolEnabled() ? context.GetTmpX()
+                                                   : atomic_scratch;
             auto left_fp = context.GetTmpV();
             auto right_fp = context.GetTmpV();
             Register guest{};

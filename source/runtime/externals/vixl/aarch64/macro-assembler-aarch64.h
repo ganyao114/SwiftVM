@@ -3517,6 +3517,31 @@ class MacroAssembler : public Assembler, public MacroAssemblerInterface {
     return current_scratch_scope_;
   }
 
+  // SwiftVM per-emission scratch audit. The contract is inert unless the
+  // backend explicitly opens it; other VIXL users retain the stock behavior.
+  void SvmBeginScratchContract(RegList allowed) {
+    VIXL_CHECK(!svm_scratch_contract_active_);
+    svm_scratch_contract_active_ = true;
+    svm_scratch_allowed_ = allowed;
+    svm_scratch_acquired_ = 0;
+  }
+  void SvmRecordScratchAcquire(const CPURegister& reg) {
+    if (svm_scratch_contract_active_ && reg.IsRegister()) {
+      const RegList bit = reg.GetBit();
+      VIXL_CHECK((svm_scratch_allowed_ & bit) != 0);
+      svm_scratch_acquired_ |= bit;
+    }
+  }
+  RegList SvmEndScratchContract() {
+    VIXL_CHECK(svm_scratch_contract_active_);
+    VIXL_CHECK((svm_scratch_acquired_ & ~svm_scratch_allowed_) == 0);
+    const RegList acquired = svm_scratch_acquired_;
+    svm_scratch_contract_active_ = false;
+    svm_scratch_allowed_ = 0;
+    svm_scratch_acquired_ = 0;
+    return acquired;
+  }
+
   // Like printf, but print at run-time from generated code.
   //
   // The caller must ensure that arguments for floating-point placeholders
@@ -3754,6 +3779,9 @@ class MacroAssembler : public Assembler, public MacroAssemblerInterface {
   CPURegList fptmp_list_;
 
   UseScratchRegisterScope* current_scratch_scope_;
+  bool svm_scratch_contract_active_{false};
+  RegList svm_scratch_allowed_{0};
+  RegList svm_scratch_acquired_{0};
 
   LiteralPool literal_pool_;
   VeneerPool veneer_pool_;
@@ -3940,7 +3968,7 @@ class UseScratchRegisterScope {
   void ExcludeAll();
 
  private:
-  static CPURegister AcquireNextAvailable(CPURegList* available);
+  CPURegister AcquireNextAvailable(CPURegList* available);
 
   static void ReleaseByCode(CPURegList* available, int code);
 

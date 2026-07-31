@@ -142,7 +142,7 @@ private:
     // Merge pending guest flags kept in host NZCV into the flags register
     void MergeNZCV();
 
-    // Restore host NZCV from the flags register (clobbers ip)
+    // Restore host NZCV from the flags register (uses the emission's shared scratch).
     void LoadNZCVFromFlags();
 
     // Merge host N/Z into the flags register and clear stale C/V (x86 logical ops)

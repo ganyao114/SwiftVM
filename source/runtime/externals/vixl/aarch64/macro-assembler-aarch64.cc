@@ -3037,6 +3037,7 @@ CPURegister UseScratchRegisterScope::AcquireNextAvailable(
   VIXL_CHECK(!available->IsEmpty());
   CPURegister result = available->PopLowestIndex();
   VIXL_ASSERT(!AreAliased(result, xzr, sp));
+  masm_->SvmRecordScratchAcquire(result);
   return result;
 }
 

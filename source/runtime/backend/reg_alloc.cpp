@@ -4,21 +4,76 @@
 
 #include <algorithm>
 #include "reg_alloc.h"
+#include "runtime/common/perf_stats.h"
 
 namespace swift::runtime::backend {
+
+bool ScratchXPoolEnabled() {
+    static const bool enabled = [] {
+        const char* value = PerfGetenv("SVM_JIT_SCRATCH_XPOOL");
+        return value && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+u32 FixedGPRClobbers(ir::OpCode op) {
+    if (!ScratchXPoolEnabled()) {
+        return 0;
+    }
+    constexpr u32 x11 = 1u << 11;
+    constexpr u32 x12 = 1u << 12;
+    constexpr u32 x13 = 1u << 13;
+    switch (op) {
+        // x11 is the exclusive-store status register; x12 holds the value
+        // that must survive until the store-exclusive.
+        case ir::OpCode::CompareAndSwap:
+        case ir::OpCode::AtomicExchange:
+        case ir::OpCode::AtomicFetchAdd:
+        case ir::OpCode::AtomicRMW:
+            return x11 | x12;
+        // Pair CAS additionally holds the second observed half in x13.
+        case ir::OpCode::CompareAndSwap128:
+            return x11 | x12 | x13;
+        // Host-call target and fixed-location materialization.
+        case ir::OpCode::CallLambda:
+        case ir::OpCode::CallDynamic:
+        case ir::OpCode::CallLocation:
+        case ir::OpCode::MemoryCopy:
+        case ir::OpCode::MemoryCopyTSO:
+        case ir::OpCode::SetLocation:
+        case ir::OpCode::CheckMemoryAlignment:
+            return x11;
+        // Exact NaN cold veneers use x13 as their link register. A value live
+        // across the originating FP opcode must therefore never occupy it.
+        case ir::OpCode::VecFAddScalar32:
+        case ir::OpCode::VecFSubScalar32:
+        case ir::OpCode::VecFMulScalar32:
+        case ir::OpCode::VecFDivScalar32:
+        case ir::OpCode::VecFAddScalar64:
+        case ir::OpCode::VecFSubScalar64:
+        case ir::OpCode::VecFMulScalar64:
+        case ir::OpCode::VecFDivScalar64:
+        case ir::OpCode::VecFAdd:
+        case ir::OpCode::VecFSub:
+        case ir::OpCode::VecFMul:
+        case ir::OpCode::VecFDiv:
+        case ir::OpCode::VecFUnary:
+            return x13;
+        default:
+            return 0;
+    }
+}
 
 // See reg_alloc.h for what this table is and who enforces it.
 //
 // Only opcodes that exceed the default appear here. Every entry is a measured
 // peak over the full corpus, cross-checked against the emitter source:
 //
-//  * X87Op reaches eight GPRs. Not because of any one arm: LoadFloat(m80),
-//    StoreFloat(m80), LoadInt, StoreInt, Compare, Unary/FSQRT, LoadReg and
-//    StoreReg each hold exactly eight (status word, tag word, one or two
-//    physical indices, a shift, an address, and the value being rebuilt), so
-//    retiring an arm does not move this bound -- the retired reduced-precision
-//    Binary arm also held eight, and dropping it left the peak unchanged.
-//    Eight remains the largest demand in the corpus; everything else is <= 5.
+//  * X87Op historically declared eight: six emitter temporaries plus the
+//    explicit ip0/ip1 exclusions required by VIXL's implicit pool. W52 ON
+//    removes those exclusions and leases the two former x12/x13 work
+//    registers, making the checked dynamic peak six. OFF retains eight so its
+//    allocation and host bytes remain identical.
 //  * VecFCvtFloatToInt open-codes the x86 "invalid conversion -> INT_MIN"
 //    rule per lane and holds five GPRs across it.
 //  * VecFCvtPacked and VecFMulAdd hold five vector temporaries.
@@ -29,9 +84,14 @@ namespace swift::runtime::backend {
 //    operand), one for the 64-bit ones, none for the packed ones.
 ScratchNeed ScratchBudget(ir::OpCode op) {
     switch (op) {
-        // --- eight GPRs --------------------------------------------------
+        // --- x87 GPRs ----------------------------------------------------
         case ir::OpCode::X87Op:
-            return {8, kDefaultScratchFPR};
+            // OFF retains the historical accounting: two explicit ip0/ip1
+            // exclusions plus six emitter temporaries. ON makes VIXL scratch
+            // explicit and leases the former x12/x13 x87 work registers, so
+            // the measured dynamic peak is six.
+            return {static_cast<u8>(ScratchXPoolEnabled() ? 6 : 8),
+                    kDefaultScratchFPR};
         // --- four GPRs ---------------------------------------------------
         // The 8/16-bit flag-setting path sign-aligns both operands to W[31]:
         // one save per RA-tied operand (left/right), one to materialize an

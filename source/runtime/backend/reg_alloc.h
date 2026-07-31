@@ -130,6 +130,18 @@ struct ScratchNeed {
     u8 fpr;
 };
 
+// W52 opt-in scratch-pool contract. OFF preserves the historical global
+// reservation byte-for-byte. ON lets the allocator use x11-x17 and protects
+// only the registers an opcode explicitly clobbers.
+[[nodiscard]] bool ScratchXPoolEnabled();
+
+// Bit mask of architecturally fixed GPR clobbers for one opcode. These are
+// direct SwiftVM uses (atomic status/value registers, host-call/terminal
+// register, cold-path return register), not VIXL's dynamically leased scratch
+// registers.
+[[nodiscard]] u32 FixedGPRClobbers(ir::OpCode op);
+inline constexpr u32 kTerminalFixedGPRClobbers = 1u << 11;
+
 // Ordinary emitters: the widest generic shape is a 3-GPR ALU sequence
 // (Add/Sub/And/Or/Xor/Mul with a folded operand) and a 3-FPR vector sequence.
 inline constexpr u8 kDefaultScratchGPR = 3;

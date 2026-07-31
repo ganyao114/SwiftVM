@@ -1554,14 +1554,19 @@ void JitTranslator::QueueVecNaNColdPath(VecNaNColdKind kind,
         // to zero iff at least one lane is NaN, while leaving NZCV untouched.
         __ Fcmeq(ipv3.V4S(), result.V4S(), result.V4S());
         __ Uminv(ipv3.S(), ipv3.V4S());
-        __ Fmov(ipw, ipv3.S());
-        __ Cbz(ipw, site->slow.get());
+        const auto ordered = context.GetSharedTmpX();
+        __ Fmov(ordered.W(), ipv3.S());
+        __ Cbz(ordered.W(), site->slow.get());
     } else {
         __ Fcmeq(ipv3.V2D(), result.V2D(), result.V2D());
-        __ Umov(ip0, ipv3.V2D(), 0);
-        __ Umov(ip1, ipv3.V2D(), 1);
-        __ And(ip0, ip0, ip1);
-        __ Cbz(ip0, site->slow.get());
+        const auto lane0 =
+                backend::ScratchXPoolEnabled() ? context.GetTmpX() : ip0;
+        const auto lane1 =
+                backend::ScratchXPoolEnabled() ? context.GetTmpX() : ip1;
+        __ Umov(lane0, ipv3.V2D(), 0);
+        __ Umov(lane1, ipv3.V2D(), 1);
+        __ And(lane0, lane0, lane1);
+        __ Cbz(lane0, site->slow.get());
     }
 
     __ Bind(site->continuation.get());
@@ -2016,8 +2021,8 @@ void JitTranslator::EmitVecFloatNaNFixup(const VRegister& result,
     // instructions, no GPR): MOVI/MVNI cannot encode the 64-bit patterns
     // directly, but each is its 32-bit half shifted into place. Going through
     // MacroAssembler::Movi(vd, u64) instead would spill the value through
-    // VIXL's ip0/ip1 scratch -- reserved, so correct, but a GPR round trip and
-    // three instructions where these are two.
+    // VIXL's scratch pool -- contract-leased, so correct, but a GPR round trip
+    // and three instructions where these are two.
     auto splat = [&](const VRegister& d, bool indefinite) {
         if (indefinite) {
             // MSL: ~((imm8 << 16) | 0xFFFF).
@@ -2920,8 +2925,9 @@ void JitTranslator::EmitMul(ir::Inst* inst) {
         if (is_signed) {
             // Overflow when the upper half is not the sign extension of the result.
             Label no_overflow;
-            __ Sxtw(ip, wide.W());
-            __ Cmp(ip, wide);
+            const auto sign_extended = context.GetSharedTmpX();
+            __ Sxtw(sign_extended, wide.W());
+            __ Cmp(sign_extended, wide);
             __ B(&no_overflow, eq);
             __ Orr(flags, flags, 3u << HostFlagsBit::V);
             __ Bind(&no_overflow);
@@ -3134,10 +3140,6 @@ void JitTranslator::EmitVecFMulAdd(ir::Inst* inst) {
     const bool negate_product = (flags & 1u) != 0;
     const bool negate_addend = (flags & 2u) != 0;
     ASSERT(lane_bits == 32 || lane_bits == 64);
-
-    // Mov of a wide immediate may use VIXL's ip0/ip1 scratches.
-    context.ReserveTmpX(ip0);
-    context.ReserveTmpX(ip1);
 
     auto acc = context.GetTmpV();
     auto ok = context.GetTmpV();      // lanes where every source is non-NaN

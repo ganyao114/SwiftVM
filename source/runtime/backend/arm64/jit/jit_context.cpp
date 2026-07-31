@@ -33,10 +33,19 @@ JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_allo
 void JitContext::RecordExecCounter(u32 offset, u32 amount) {
     if (!exec_profile_enabled || amount == 0) return;
     ASSERT(amount < 4096);
-    __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
-    __ Ldr(ip1, MemOperand(ip0, offset));
-    __ Add(ip1, ip1, amount);
-    __ Str(ip1, MemOperand(ip0, offset));
+    if (backend::ScratchXPoolEnabled() && vixl_scratch_scope) {
+        auto base = GetTmpX();
+        auto value = GetTmpX();
+        __ Ldr(base, MemOperand(state, state_offset_exec_profile_ptr));
+        __ Ldr(value, MemOperand(base, offset));
+        __ Add(value, value, amount);
+        __ Str(value, MemOperand(base, offset));
+    } else {
+        __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
+        __ Ldr(ip1, MemOperand(ip0, offset));
+        __ Add(ip1, ip1, amount);
+        __ Str(ip1, MemOperand(ip0, offset));
+    }
 }
 
 bool JitContext::HasAllocation(const ir::Value& value) {
@@ -190,6 +199,9 @@ void JitContext::FlushSpillWrites() {
 }
 
 backend::ScratchNeed JitContext::CurrentBudget() const {
+    if (auxiliary_scratch) {
+        return {7, backend::kDefaultScratchFPR};
+    }
     // Block terminals are emitted after the last instruction's TickIR and
     // share its masks; they take no scratch of their own, so charging them to
     // the default budget is exact.
@@ -213,7 +225,9 @@ XRegister JitContext::GetTmpX() {
                cur_inst ? static_cast<u32>(cur_inst->GetOp()) : 0u, CurrentBudget().gpr, used + 1);
     if (auto alloc = cur_dirty_gprs.GetFirstClear(); alloc >= 0) {
         cur_dirty_gprs.Mark(alloc);
-        return XRegister(alloc);
+        XRegister result(alloc);
+        ExcludeVixlScratch(result);
+        return result;
     }
     // Unreachable while the linear scan honours ScratchBudget: it never
     // assigns a value if that would drop the free count to the unit's
@@ -230,7 +244,9 @@ XRegister JitContext::GetSpillTmpX() {
     if (auto alloc = cur_dirty_gprs.GetFirstClear(); alloc >= 0) {
         cur_dirty_gprs.Mark(alloc);
         spill_tmp_gprs++;
-        return XRegister(alloc);
+        XRegister result(alloc);
+        ExcludeVixlScratch(result);
+        return result;
     }
     PANIC("No free temporary GPR for spill reload");
 }
@@ -288,6 +304,17 @@ bool JitContext::TryGetConsecutiveTmpV2(VRegister& first, VRegister& second) {
 
 void JitContext::ReserveTmpX(const XRegister& reg) {
     cur_dirty_gprs.Mark(reg.GetCode());
+    ExcludeVixlScratch(reg);
+}
+
+XRegister JitContext::GetSharedTmpX() {
+    if (!backend::ScratchXPoolEnabled()) {
+        return ip;
+    }
+    if (shared_tmp_gpr < 0) {
+        shared_tmp_gpr = GetTmpX().GetCode();
+    }
+    return XRegister(shared_tmp_gpr);
 }
 
 bool JitContext::ForwardStatic(ir::Location location) {
@@ -475,36 +502,41 @@ void JitContext::ReturnToDispatcher(const Register& location) {
 
 void JitContext::EmitRSBPush(u64 guest_return_addr, u32 dispatch_index) {
     Label rsb_full;
+    const auto bound = backend::ScratchXPoolEnabled() ? GetTmpX() : ip0;
+    const auto guest = backend::ScratchXPoolEnabled() ? GetTmpX() : ip0;
+    const auto slot = backend::ScratchXPoolEnabled() ? GetTmpX() : ip1;
     // Overflow guard: if rsb_ptr has already reached the bottom of the buffer
     // (state->rsb_bottom == &rsb_frames[0], stack full), a pre-decrement push
     // would store out of bounds — skip the push and let the ret take the slow
     // dispatcher path instead. Unsigned compare: skip when rsb_ptr <= bottom.
-    __ Ldr(ip0, MemOperand(state, state_offset_rsb_bottom));
-    __ Cmp(rsb_ptr, ip0);
+    __ Ldr(bound, MemOperand(state, state_offset_rsb_bottom));
+    __ Cmp(rsb_ptr, bound);
     __ B(&rsb_full, ls);
     // ip0 (x16) = guest return address, ip1 (x17) = dispatch table slot.
-    __ Mov(ip0, guest_return_addr);
-    __ Mov(ip1, static_cast<u64>(dispatch_index));
+    __ Mov(guest, guest_return_addr);
+    __ Mov(slot, static_cast<u64>(dispatch_index));
     // Pre-decrement push: rsb_ptr -= 16, then store the pair.
-    __ Stp(ip0, ip1, MemOperand(rsb_ptr, -16, PreIndex));
+    __ Stp(guest, slot, MemOperand(rsb_ptr, -16, PreIndex));
     __ Bind(&rsb_full);
 }
 
 void JitContext::EmitRSBPop() {
     Label rsb_miss, rsb_empty;
+    const auto predicted = backend::ScratchXPoolEnabled() ? GetTmpX() : ip0;
+    const auto actual = backend::ScratchXPoolEnabled() ? GetTmpX() : ip1;
     // Underflow guard: if rsb_ptr has reached the empty top of the stack
     // (state->rsb_top == &rsb_frames[rsb_stack_size]), there are more guest
     // rets than recorded calls, so no valid prediction exists — fall back to
     // the dispatcher without reading the buffer (avoids an out-of-bounds load
     // and a wild branch). Unsigned compare: fall back when rsb_ptr >= top.
-    __ Ldr(ip0, MemOperand(state, state_offset_rsb_top));
-    __ Cmp(rsb_ptr, ip0);
+    __ Ldr(predicted, MemOperand(state, state_offset_rsb_top));
+    __ Cmp(rsb_ptr, predicted);
     __ B(&rsb_empty, hs);
     // Load the predicted guest return address from the top RSB frame.
-    __ Ldr(ip0, MemOperand(rsb_ptr, 0));
+    __ Ldr(predicted, MemOperand(rsb_ptr, 0));
     // Load the actual return target (set by the frontend's ret instruction).
-    __ Ldr(ip1, MemOperand(state, state_offset_current_loc));
-    __ Cmp(ip0, ip1);
+    __ Ldr(actual, MemOperand(state, state_offset_current_loc));
+    __ Cmp(predicted, actual);
     __ B(&rsb_miss, ne);
     // Prediction hit: load the L2 dispatch-table slot index and look up the
     // compiled code pointer.  cache (x27) holds the L2 table base at all
@@ -614,6 +646,7 @@ void JitContext::SetCurrent(ir::Function* function) {
 }
 
 void JitContext::TickIR(ir::Inst* instr) {
+    EndVixlScratch();
     // Deferred spill write-back for the previous instruction's def (if
     // any) must land before anything else: from this instruction on the
     // scratch register holding it may be reused, and uses reload from the
@@ -630,6 +663,105 @@ void JitContext::TickIR(ir::Inst* instr) {
     tick_dirty_fprs = cur_dirty_fprs;
     spill_tmp_gprs = 0;
     spill_tmp_fprs = 0;
+    shared_tmp_gpr = -1;
+    auxiliary_scratch = false;
+    const u32 fixed = backend::FixedGPRClobbers(instr->GetOp());
+    for (u32 code = 0; code < 32; ++code) {
+        if (fixed & (1u << code)) {
+            cur_dirty_gprs.Mark(code);
+            tick_dirty_gprs.Mark(code);
+        }
+    }
+    BeginVixlScratch(true);
+}
+
+void JitContext::BeginVixlScratch(bool allow_pool) {
+    if (!backend::ScratchXPoolEnabled()) {
+        return;
+    }
+    ASSERT(!vixl_scratch_scope);
+    u32 allowed = 0;
+    if (allow_pool) {
+        for (u32 code = 11; code <= 17; ++code) {
+            if (!cur_dirty_gprs.Get(code)) {
+                allowed |= 1u << code;
+            }
+        }
+    }
+    masm.SvmBeginScratchContract(allowed);
+    vixl_scratch_scope = std::make_unique<UseScratchRegisterScope>(&masm);
+    vixl_scratch_scope->Exclude(*masm.GetScratchRegisterList());
+    if (!allow_pool) {
+        return;
+    }
+    for (u32 code = 11; code <= 17; ++code) {
+        if (allowed & (1u << code)) {
+            vixl_scratch_scope->Include(XRegister(code));
+        }
+    }
+}
+
+void JitContext::EndVixlScratch() {
+    if (vixl_scratch_scope) {
+        vixl_scratch_scope.reset();
+        const auto acquired = masm.SvmEndScratchContract();
+        const u32 explicit_used =
+                static_cast<u32>(cur_dirty_gprs.GetMarkedCount() -
+                                 tick_dirty_gprs.GetMarkedCount()) -
+                spill_tmp_gprs;
+        const u32 vixl_used =
+                static_cast<u32>(__builtin_popcountll(acquired));
+        ASSERT_MSG(explicit_used + vixl_used <= CurrentBudget().gpr,
+                   "combined scratch GPR budget exceeded emitting opcode {}: "
+                   "declared {}, explicit {}, VIXL {}",
+                   cur_inst ? static_cast<u32>(cur_inst->GetOp()) : 0u,
+                   CurrentBudget().gpr,
+                   explicit_used,
+                   vixl_used);
+    }
+}
+
+void JitContext::ExcludeVixlScratch(const XRegister& reg) {
+    if (vixl_scratch_scope) {
+        vixl_scratch_scope->Exclude(reg);
+    }
+}
+
+void JitContext::EndInstructionScratch() {
+    EndVixlScratch();
+}
+
+void JitContext::BeginTerminalScratch() {
+    EndVixlScratch();
+    cur_dirty_gprs = tick_dirty_gprs;
+    cur_dirty_fprs = tick_dirty_fprs;
+    spill_tmp_gprs = 0;
+    spill_tmp_fprs = 0;
+    shared_tmp_gpr = -1;
+    auxiliary_scratch = true;
+    for (u32 code = 0; code < 32; ++code) {
+        if (backend::kTerminalFixedGPRClobbers & (1u << code)) {
+            cur_dirty_gprs.Mark(code);
+            tick_dirty_gprs.Mark(code);
+        }
+    }
+    BeginVixlScratch(true);
+}
+
+void JitContext::EndTerminalScratch() {
+    EndVixlScratch();
+    auxiliary_scratch = false;
+}
+
+void JitContext::BeginColdScratch() {
+    EndVixlScratch();
+    auxiliary_scratch = true;
+    BeginVixlScratch(false);
+}
+
+void JitContext::EndColdScratch() {
+    EndVixlScratch();
+    auxiliary_scratch = false;
 }
 
 void JitContext::MaybeDumpHostBytes() {

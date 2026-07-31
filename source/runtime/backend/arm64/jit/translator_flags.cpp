@@ -9,24 +9,26 @@ namespace swift::runtime::backend::arm64 {
 
 void JitTranslator::MergeNZCV() {
     if (save_in_nzcv && nzcv_dirty) {
+        const auto scratch = context.GetSharedTmpX();
         // Only merge the NZCV bits that SaveFlags actually requested.
         // Bits NOT requested (e.g. C/V when only SF/ZF were saved) keep
         // their existing value in the flags register, so a ClearFlags(CF)
         // between two flag-setting instructions is not overwritten.
         const u64 req = static_cast<u64>(nzcv_requested);
         u64 keep = ~req;
-        __ Mrs(ip, NZCV);
+        __ Mrs(scratch, NZCV);
         __ And(flags, flags, ForceCast<s64>(keep));
-        __ And(ip, ip, static_cast<u32>(req));
-        __ Orr(flags, flags, ip);
+        __ And(scratch, scratch, static_cast<u32>(req));
+        __ Orr(flags, flags, scratch);
         nzcv_dirty = false;
         nzcv_requested = {};
     }
 }
 
 void JitTranslator::LoadNZCVFromFlags() {
-    __ And(ip, flags, static_cast<u64>(HostFlags::NZCV));
-    __ Msr(NZCV, ip);
+    const auto scratch = context.GetSharedTmpX();
+    __ And(scratch, flags, static_cast<u64>(HostFlags::NZCV));
+    __ Msr(NZCV, scratch);
 }
 
 void JitTranslator::MergeLogicalFlagsNZ(ir::Flags requested) {
@@ -39,11 +41,12 @@ void JitTranslator::MergeLogicalFlagsNZ(ir::Flags requested) {
     if (!requested_nz) {
         return;
     }
+    const auto scratch = context.GetSharedTmpX();
     u64 keep = ~requested_nz;
-    __ Mrs(ip, NZCV);
+    __ Mrs(scratch, NZCV);
     __ And(flags, flags, ForceCast<s64>(keep));
-    __ And(ip, ip, static_cast<u32>(requested_nz));
-    __ Orr(flags, flags, ip);
+    __ And(scratch, scratch, static_cast<u32>(requested_nz));
+    __ Orr(flags, flags, scratch);
     nzcv_dirty = false;
     nzcv_requested = {};
 }
@@ -51,22 +54,23 @@ void JitTranslator::MergeLogicalFlagsNZ(ir::Flags requested) {
 void JitTranslator::SaveLogicalResultFlags(Register& result,
                                            ir::ValueType type,
                                            const PseudoFlags& pseudo) {
+    const auto scratch = context.GetSharedTmpX();
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
-            __ Sxtb(ip, result.W());
+            __ Sxtb(scratch, result.W());
             break;
         case ir::ValueType::S16:
         case ir::ValueType::U16:
-            __ Sxth(ip, result.W());
+            __ Sxth(scratch, result.W());
             break;
         case ir::ValueType::S32:
         case ir::ValueType::U32:
-            __ Sxtw(ip, result.W());
+            __ Sxtw(scratch, result.W());
             break;
         case ir::ValueType::S64:
         case ir::ValueType::U64:
-            __ Mov(ip, result);
+            __ Mov(scratch, result);
             break;
         default:
             PANIC();
@@ -78,7 +82,7 @@ void JitTranslator::SaveLogicalResultFlags(Register& result,
     // silently clobbers x16 (vixl's tmp_list_ is {x16, x17}, which this
     // backend does not reserve from the register allocator). Tst is the
     // register form of ANDS and yields the identical NZCV with no scratch.
-    __ Tst(ip, ip);
+    __ Tst(scratch, scratch);
     MergeLogicalFlagsNZ(pseudo.set);
     if (True(pseudo.set & ir::Flags::Parity)) {
         SaveParity(result);
@@ -108,11 +112,12 @@ void JitTranslator::SaveHostFlags(HostFlags host, ir::Flags guest) {
         nzcv_requested |= host_need_saved;
         nzcv_dirty = true;
     } else {
-        __ Mrs(ip, NZCV);
+        const auto scratch = context.GetSharedTmpX();
+        __ Mrs(scratch, NZCV);
         if (host_need_saved != host) {
-            __ And(ip, ip, static_cast<u32>(host_need_saved));
+            __ And(scratch, scratch, static_cast<u32>(host_need_saved));
         }
-        __ Orr(flags, flags, ip);
+        __ Orr(flags, flags, scratch);
     }
 }
 
@@ -143,8 +148,9 @@ void JitTranslator::ClearFlags(ir::Flags guest) {
     }
     if (True(guest & ir::Flags::Parity)) {
         // Clear Parity: an odd-parity byte makes TestParityFlag read PF = 0.
-        __ Mov(ip, 1);
-        __ Bfi(flags, ip, HostFlagsBit::ParityByte, 8);
+        const auto scratch = context.GetSharedTmpX();
+        __ Mov(scratch, 1);
+        __ Bfi(flags, scratch, HostFlagsBit::ParityByte, 8);
     }
     if (True(guest & ir::Flags::AuxiliaryCarry)) {
         // AF is a single bit (carry into bit 4).
@@ -157,30 +163,31 @@ void JitTranslator::SaveParity(Register& value) {
 }
 
 void JitTranslator::SaveNZ(Register& value, ir::ValueType type) {
+    const auto scratch = context.GetSharedTmpX();
     switch (type) {
         case ir::ValueType::U8:
-            __ Sxtb(ip, value);
+            __ Sxtb(scratch, value);
             break;
         case ir::ValueType::U16:
-            __ Sxth(ip, value);
+            __ Sxth(scratch, value);
             break;
         case ir::ValueType::U32:
-            __ Sxtw(ip, value);
+            __ Sxtw(scratch, value);
             break;
         case ir::ValueType::U64:
-            __ Mov(ip, value);
+            __ Mov(scratch, value);
             break;
         default:
             PANIC();
     }
     // Same reasoning as SaveLogicalResultFlags: Tst avoids the vixl x16
     // scratch that `Bics(ip, ip, 0)` would take.
-    __ Tst(ip, ip);
+    __ Tst(scratch, scratch);
     if (save_in_nzcv) {
         nzcv_dirty = true;
     } else {
-        __ Mrs(ip, NZCV);
-        __ Orr(flags, flags, ip);
+        __ Mrs(scratch, NZCV);
+        __ Orr(flags, flags, scratch);
     }
 }
 
@@ -221,9 +228,10 @@ void JitTranslator::SaveCV(Register& value, ir::ValueType type) {
         return;
     }
     MergeNZCV();
+    const auto scratch = context.GetSharedTmpX();
     Label pass;
-    __ Lsr(ip, value, ir::GetValueSizeByte(type) * 8);
-    __ Cbz(ip, &pass);
+    __ Lsr(scratch, value, ir::GetValueSizeByte(type) * 8);
+    __ Cbz(scratch, &pass);
     __ Orr(flags, flags, 3u << HostFlagsBit::V);
     __ Bind(&pass);
 }
@@ -233,9 +241,10 @@ void JitTranslator::SaveOF(Register& value, ir::ValueType type) {
         return;
     }
     MergeNZCV();
+    const auto scratch = context.GetSharedTmpX();
     Label pass;
-    __ Lsr(ip, value, ir::GetValueSizeByte(type) * 8);
-    __ Cbz(ip, &pass);
+    __ Lsr(scratch, value, ir::GetValueSizeByte(type) * 8);
+    __ Cbz(scratch, &pass);
     __ Orr(flags, flags, 1u << HostFlagsBit::V);
     __ Bind(&pass);
 }
@@ -423,10 +432,11 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
     auto result = context.W(ir::Value{inst});
     auto nzcv_mask = static_cast<u32>(GuestNZCVToHost(test));
     bool first{true};
+    const auto scratch = context.GetSharedTmpX();
     if (nzcv_mask) {
         if (save_in_nzcv && nzcv_dirty) {
-            __ Mrs(ip, NZCV);
-            __ Tst(ip, nzcv_mask);
+            __ Mrs(scratch, NZCV);
+            __ Tst(scratch, nzcv_mask);
         } else {
             __ Tst(flags, nzcv_mask);
         }
@@ -434,20 +444,20 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
         first = false;
     }
     if (True(test & ir::Flags::Parity)) {
-        TestParityFlag(ip);
+        TestParityFlag(scratch);
         if (first) {
-            __ Mov(result, ip.W());
+            __ Mov(result, scratch.W());
         } else {
-            __ And(result, result, ip.W());
+            __ And(result, result, scratch.W());
         }
         first = false;
     }
     if (True(test & ir::Flags::AuxiliaryCarry)) {
-        TestAuxiliaryCarry(ip);
+        TestAuxiliaryCarry(scratch);
         if (first) {
-            __ Mov(result, ip.W());
+            __ Mov(result, scratch.W());
         } else {
-            __ And(result, result, ip.W());
+            __ And(result, result, scratch.W());
         }
         first = false;
     }
@@ -462,8 +472,9 @@ void JitTranslator::EmitTestNotFlags(ir::Inst* inst) {
     if (nzcv_mask && !True(test & (ir::Flags::Parity | ir::Flags::AuxiliaryCarry))) {
         auto result = context.W(ir::Value{inst});
         if (save_in_nzcv && nzcv_dirty) {
-            __ Mrs(ip, NZCV);
-            __ Tst(ip, nzcv_mask);
+            const auto scratch = context.GetSharedTmpX();
+            __ Mrs(scratch, NZCV);
+            __ Tst(scratch, nzcv_mask);
         } else {
             __ Tst(flags, nzcv_mask);
         }
