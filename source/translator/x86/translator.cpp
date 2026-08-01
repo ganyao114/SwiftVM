@@ -102,9 +102,11 @@ static UniformMapDesc arm64_backend_gpr_regs_ext3_map[] = {
 };
 
 // XMM0-15 stay resident in v16-v31 for the whole guest run.  v0-v15 remain
-// available to the linear scan and emitter scratch (v11-v14 are the backend's
-// pre-existing reserved SIMD scratch registers).  The descriptors are ordered
-// by uniform offset so the trampoline emits eight LDP/STP pairs at runtime
+// available to the linear scan and emitter scratch (v11-v14 are normally the
+// backend's reserved SIMD scratch registers; SVM_XMM_POOL_EXT leases them to
+// the allocator and preserves their cold ABI only on the NaN slow edge). The
+// descriptors are ordered by uniform offset so the trampoline emits eight
+// LDP/STP pairs at runtime
 // entry/host exit.  AVX keeps its existing split representation: these are the
 // low 128 bits, while ThreadContext64::ymm_high remains memory resident.
 #define SVM_XMM_STATIC_DESC(i) \
@@ -619,6 +621,14 @@ struct X86Instance::Impl final {
         const bool enable_xmm_static =
                 enable_jit && enable_uniform_elim && xmm_static_env &&
                 std::strcmp(xmm_static_env, "0") != 0;
+        // W80: XMM_STATIC leaves v0-v15 for dynamic values, but the W37 NaN
+        // cold ABI historically reserved v11-v14 for the entire run. The
+        // modifier is deliberately inert unless XMM static residency itself
+        // is active; OFF therefore preserves the old allocator and bytes.
+        const char* xmm_pool_ext_env = PerfGetenv("SVM_XMM_POOL_EXT");
+        const bool enable_xmm_pool_ext =
+                enable_xmm_static && xmm_pool_ext_env &&
+                std::strcmp(xmm_pool_ext_env, "0") != 0;
         const char* xmm_fault_sink_env = PerfGetenv("SVM_XMM_FAULT_SINK");
         // Default ON after the flip A/B (smallpt 5/5 pairs positive, median
         // 1.26, pixel-identical output); =0 selects the eager-store rollback.
@@ -684,6 +694,9 @@ struct X86Instance::Impl final {
         }
         if (enable_xmm_fault_sink) {
             global_opts |= Optimizations::XmmFaultSink;
+        }
+        if (enable_xmm_pool_ext) {
+            global_opts |= Optimizations::XmmPoolExt;
         }
         Config config{
                 .loc_start = 0,

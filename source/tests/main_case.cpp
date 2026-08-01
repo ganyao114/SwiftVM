@@ -24,6 +24,7 @@
 #include "runtime/ir/opts/uniform_elimination_pass.h"
 #include "runtime/backend/mem_map.h"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/runtime.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
@@ -38,9 +39,9 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 56);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 57);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_HELPER_LEAF_ABI");
+            "SVM_XMM_POOL_EXT");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -2525,6 +2526,122 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
         INFO("values read twice across a saturated file: " << live);
         check_and_emit(BuildReloadPressureBlock(live));
     }
+
+    // W80 FPR-pool pressure probe. Keep fourteen V128 values live until the
+    // reduction begins: the historical XMM_STATIC pool (v0-v10,v15) must
+    // spill, while returning v11-v14 gives the scan enough headroom. Backend
+    // ASSERTs deliberately do not change Catch's established assertion/case
+    // totals, but still fail the suite loudly if either invariant regresses.
+    auto build_fpr_pressure = [] {
+        auto* block = new Block(0, Location{0x2800});
+        std::vector<Value> values;
+        for (unsigned i = 0; i < 14; ++i) {
+            values.push_back(block->LoadUniform<TypedValue<ValueType::V128>>(
+                    Uniform{static_cast<std::uint32_t>(i * 16), ValueType::V128}));
+        }
+        Value sum = values.back();
+        for (int i = static_cast<int>(values.size()) - 2; i >= 0; --i) {
+            sum = block->VecFAdd<TypedValue<ValueType::V128>>(
+                    sum, values[i], Imm{32u});
+        }
+        block->StoreUniform(Uniform{0, ValueType::V128}, sum);
+        block->SetTerminal(terminal::LinkBlock{0x2900});
+        block->ReIdInstr();
+        return block;
+    };
+    FPRSMask xmm_pool12{};
+    FPRSMask xmm_pool16{};
+    for (std::uint32_t code = 16; code < 32; ++code) {
+        xmm_pool12.Mark(code);
+        xmm_pool16.Mark(code);
+    }
+    for (std::uint32_t code = 11; code <= 14; ++code) {
+        xmm_pool12.Mark(code);
+    }
+    swift::runtime::IntrusivePtr<Block> pressure12{build_fpr_pressure()};
+    swift::runtime::IntrusivePtr<Block> pressure16{build_fpr_pressure()};
+    RegAlloc alloc12{pressure12->MaxInstrId(), gprs, xmm_pool12};
+    RegAlloc alloc16{pressure16->MaxInstrId(), gprs, xmm_pool16};
+    RegisterAllocPass::Run(pressure12.get(), &alloc12);
+    RegisterAllocPass::Run(pressure16.get(), &alloc16);
+    INFO("W80 FPR pressure spills pool12=" << alloc12.SpillCount()
+                                            << " pool16=" << alloc16.SpillCount());
+    ASSERT_MSG(alloc12.SpillCount() > 0,
+               "W80 pressure shape no longer saturates the 12-FPR pool");
+    ASSERT_MSG(alloc16.SpillCount() < alloc12.SpillCount(),
+               "W80 v11-v14 release did not reduce FPR spills: {} -> {}",
+               alloc12.SpillCount(), alloc16.SpillCount());
+
+    // Emit the reduced-spill map with the cold ABI active. Any insufficient
+    // scratch reserve or unsafe fixed-v11-v14 assumption asserts here.
+    swift::runtime::Config pool_ext_config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = swift::runtime::kArm64,
+            .global_opts = swift::runtime::Optimizations::XmmPoolExt,
+    };
+    swift::runtime::backend::AddressSpace pool_ext_space{pool_ext_config};
+    arm64::JitContext pool_ext_context{pool_ext_space.GetDefaultModule(), alloc16};
+    arm64::JitTranslator pool_ext_translator{pool_ext_context};
+    pool_ext_translator.Translate(pressure16.get());
+    pool_ext_context.Finish();
+    ASSERT(pool_ext_context.CurrentBufferSize() > 0);
+
+    // Execute the same >12-live shape through each real trampoline pool, not
+    // merely through hand-built RegAlloc masks. Keep v16-v31 reserved as the
+    // XMM_STATIC contract requires, but map them outside this probe's input /
+    // output area so the runtime-entry save does not overwrite the result.
+    auto execute_fpr_pressure = [&](bool pool_ext) {
+        std::vector<swift::runtime::UniformMapDesc> static_xmms;
+        static_xmms.reserve(16);
+        for (std::uint32_t i = 0; i < 16; ++i) {
+            static_xmms.emplace_back(256 + i * 16, 16, 16 + i, true);
+        }
+        swift::runtime::Config exec_config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = swift::runtime::kArm64,
+                .uniform_buffer_size = 512,
+                .buffers_static_alloc = static_xmms,
+                .global_opts = pool_ext
+                        ? swift::runtime::Optimizations::XmmPoolExt
+                        : swift::runtime::Optimizations::None,
+        };
+        AddressSpace exec_space{exec_config};
+        ASSERT_MSG(exec_space.GetTrampolines().GetFPRRegs().GetClearCount() ==
+                           (pool_ext ? 16 : 12),
+                   "W80 effective FPR pool is not {}",
+                   pool_ext ? 16 : 12);
+        swift::runtime::IntrusivePtr<Block> exec_block{build_fpr_pressure()};
+        auto* code = swift::runtime::backend::TranslateIR(
+                exec_space.GetDefaultModule(), exec_block);
+        ASSERT(code != nullptr);
+
+        swift::runtime::Runtime runtime{&exec_space};
+        auto uniform = runtime.GetUniformBuffer();
+        for (std::uint32_t i = 0; i < 14; ++i) {
+            const std::array<float, 4> lanes{
+                    float(i + 1), float(i + 1), float(i + 1), float(i + 1)};
+            std::memcpy(uniform.data() + i * 16, lanes.data(), sizeof(lanes));
+        }
+        runtime.SetLocation(0x2800);
+        const auto halt = exec_space.GetTrampolines().GetRuntimeEntry()(
+                runtime.GetState(), code);
+        ASSERT(halt == swift::runtime::HaltReason::CodeMiss);
+        std::array<float, 4> result{};
+        std::memcpy(result.data(), uniform.data(), sizeof(result));
+        for (float lane : result) {
+            ASSERT_MSG(lane == 105.0f,
+                       "W80 pressure result corrupted with pool {}: {}",
+                       pool_ext ? 16 : 12, lane);
+        }
+        return result;
+    };
+    ASSERT(execute_fpr_pressure(false) == execute_fpr_pressure(true));
 #if defined(__linux__) && !defined(__ANDROID__)
     REQUIRE(saw_conditional_spill_unit);
 #endif

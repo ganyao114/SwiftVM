@@ -20,6 +20,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     guest_addr_mask = config.guest_addr_mask;
     window_uxtw = guest_addr_mask == 0xFFFFFFFFull;
     sse_scalar_insert = True(config.arm64_features & Arm64Features::AFP);
+    xmm_pool_ext = True(config.global_opts & Optimizations::XmmPoolExt);
     if (const char* shift_fast = PerfGetenv("SVM_SHIFT_IMM_FAST")) {
         shift_imm_fast = std::strcmp(shift_fast, "0") != 0;
     }

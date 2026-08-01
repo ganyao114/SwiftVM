@@ -290,6 +290,9 @@ private:
     // repair to shared block-local stubs. =0 restores the legacy inline
     // lowering byte-for-byte; SVM_SSE_NAN_FAST still wins when explicitly set.
     bool sse_nan_coldpath{true};
+    // W80: v11-v14 are allocator-visible. Hot guards use ordinary scratch;
+    // the out-of-line NaN veneer preserves the four-register cold ABI.
+    bool xmm_pool_ext{false};
     // FEAT_AFP + FPCR.NEP is active for guest code, so scalar Advanced SIMD
     // instructions can update a tied destination's lane 0 in place.
     bool sse_scalar_insert{false};

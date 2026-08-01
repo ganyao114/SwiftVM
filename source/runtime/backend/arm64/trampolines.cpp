@@ -99,10 +99,16 @@ void TrampolinesArm64::Build() {
 
     // FPR registers can use
     fpr_regs.Reset(0);
-    fpr_regs.Mark(ipv0.GetCode());
-    fpr_regs.Mark(ipv1.GetCode());
-    fpr_regs.Mark(ipv2.GetCode());
-    fpr_regs.Mark(ipv3.GetCode());
+    // W37's fixed NaN cold ABI uses v11-v14. W80 can lease those registers
+    // to ordinary values when XMM static residency has already removed
+    // v16-v31 from the pool: the cold veneer saves/restores all four before
+    // clobbering them. The option is set only for XMM_STATIC+POOL_EXT.
+    if (False(config.global_opts & Optimizations::XmmPoolExt)) {
+        fpr_regs.Mark(ipv0.GetCode());
+        fpr_regs.Mark(ipv1.GetCode());
+        fpr_regs.Mark(ipv2.GetCode());
+        fpr_regs.Mark(ipv3.GetCode());
+    }
 
     GPRSMask static_gprs{0};
     FPRSMask static_fprs{0};

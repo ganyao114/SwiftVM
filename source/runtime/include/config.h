@@ -52,6 +52,10 @@ enum class Optimizations : std::uint32_t {
     // AOT validity keys, so reusing it would change the meaning of old keys.
     DeadCodeRemove = 1 << 11,
     XmmFaultSink = 1 << 12,
+    // SVM_XMM_POOL_EXT: when XMM0-15 occupy v16-v31, return the W37 cold-path
+    // ABI registers v11-v14 to the dynamic FPR allocator. NaN slow veneers
+    // preserve them explicitly before entering the fixed cold handler.
+    XmmPoolExt = 1 << 13,
     All = UINT32_MAX
 };
 
