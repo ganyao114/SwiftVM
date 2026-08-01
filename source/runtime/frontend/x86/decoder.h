@@ -388,7 +388,7 @@ private:
     void MarkLocalNZCV(ir::Flags valid, ir::Value result);
     void PublishFCmpFlags(ir::Value packed);
     [[nodiscard]] static bool FlagsNarrowAlignEnabled();
-    [[nodiscard]] static bool FlagsCfinvEnabled();
+    [[nodiscard]] bool FlagsCfinvEnabled() const;
     [[nodiscard]] static bool FlagsTerminalJccEnabled();
     [[nodiscard]] static bool FlagsBranchOnlyEnabled();
     [[nodiscard]] static bool FlagsFcmpFuseEnabled();
@@ -1102,7 +1102,9 @@ private:
     bool end_decode{false};
     bool is_64bit{false};
     // Snapshotted from the owning Config when this compilation unit's decoder
-    // is constructed.  PublishFCmpFlags also records the decision in IR.
+    // is constructed.  CFINV still honors SVM_FLAGS_CFINV=0 at decode time;
+    // PublishFCmpFlags also records the FlagM2 decision in IR.
+    bool flags_cfinv_supported_{false};
     bool flags_fcmp_compact_{false};
     VAddr addr_mask{UINT64_MAX};
     CarryPolarity carry_{CarryPolarity::Unknown};

@@ -9,6 +9,19 @@
 #include <unordered_set>
 #if defined(__APPLE__) && defined(__aarch64__)
 #include <sys/sysctl.h>
+#elif defined(__aarch64__) && defined(__linux__)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+
+// Linux arm64 UAPI: arch/arm64/include/uapi/asm/hwcap.h.  Keep the fallback
+// for builds against older kernel headers; these are bits 27 and 7 (not the
+// unrelated PMULL/SVE2 bits 4 and 1).
+#ifndef HWCAP_FLAGM
+#define HWCAP_FLAGM (1UL << 27)
+#endif
+#ifndef HWCAP2_FLAGM2
+#define HWCAP2_FLAGM2 (1UL << 7)
+#endif
 #endif
 #include "fmt/format.h"
 #include "base/scope_exit.h"
@@ -279,6 +292,20 @@ static Arm64Features DetectArm64Features() {
     if (sysctl_feature("hw.optional.arm.FEAT_FlagM2")) {
         features |= Arm64Features::AXFlag;
     }
+#elif defined(__aarch64__) && defined(__linux__)
+    // HWCAP is a process constant.  Cache both auxv reads so every Instance
+    // receives the same feature bitmap, which is then part of ConfigHash.
+    static const Arm64Features flag_features = [] {
+        Arm64Features detected = Arm64Features::None;
+        if ((getauxval(AT_HWCAP) & HWCAP_FLAGM) != 0) {
+            detected |= Arm64Features::FlagM;
+        }
+        if ((getauxval(AT_HWCAP2) & HWCAP2_FLAGM2) != 0) {
+            detected |= Arm64Features::AXFlag;
+        }
+        return detected;
+    }();
+    features |= flag_features;
 #endif
 
     // Diagnostic/bring-up override. The default remains the OS feature probe;

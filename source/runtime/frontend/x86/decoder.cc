@@ -8,9 +8,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-#if defined(__APPLE__) && defined(__aarch64__)
-#include <sys/sysctl.h>
-#endif
 #include "runtime/frontend/x86/cpu.h"
 #include "runtime/frontend/x86/decoder_internal.h"
 #include "runtime/frontend/x86/distorm_fast.h"
@@ -260,6 +257,8 @@ X64Decoder::X64Decoder(VAddr start,
                        runtime::Arm64Features arm64_features)
         : start(start), pc(start), assembler(visitor), memory(memory), is_64bit(is_64bit) {
     addr_mask = is_64bit ? UINT64_MAX : UINT32_MAX;
+    flags_cfinv_supported_ =
+            True(arm64_features & runtime::Arm64Features::FlagM);
     const char* compact = runtime::PerfGetenv("SVM_FLAGS_FCMP_COMPACT");
     flags_fcmp_compact_ =
             compact && std::strcmp(compact, "0") != 0 &&
@@ -1146,22 +1145,12 @@ bool X64Decoder::FlagsNarrowAlignEnabled() {
     return !env || std::strcmp(env, "0") != 0;
 }
 
-bool X64Decoder::FlagsCfinvEnabled() {
+bool X64Decoder::FlagsCfinvEnabled() const {
     const char* env = runtime::PerfGetenv("SVM_FLAGS_CFINV");
     if (env && std::strcmp(env, "0") == 0) {
         return false;
     }
-#if defined(__APPLE__) && defined(__aarch64__)
-    static const bool supported = [] {
-        int value = 0;
-        size_t size = sizeof(value);
-        return sysctlbyname("hw.optional.arm.FEAT_FlagM", &value, &size, nullptr, 0) == 0 &&
-               size == sizeof(value) && value != 0;
-    }();
-    return supported;
-#else
-    return false;
-#endif
+    return flags_cfinv_supported_;
 }
 
 bool X64Decoder::FlagsTerminalJccEnabled() {
