@@ -80,7 +80,7 @@ static bool ShiftImmFastEnabled() {
 static bool IntWidthTieEnabled() {
     static const bool enabled = [] {
         const char* env = PerfGetenv("SVM_RA_INTWIDTH_TIE");
-        return env && std::strcmp(env, "0") != 0;
+        return !env || std::strcmp(env, "0") != 0;
     }();
     return enabled;
 }
