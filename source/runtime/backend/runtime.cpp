@@ -14,6 +14,7 @@
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/constant.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/backend/arm64/fpcr_mode.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/interp/interpreter.h"
 #include "runtime/backend/runtime.h"
@@ -28,6 +29,9 @@
 #include "runtime/ir/opts/register_alloc_pass.h"
 
 namespace swift::runtime {
+
+static_assert(std::atomic<u64>::is_always_lock_free,
+              "signal-time FPCR handoff must not call a locking atomic runtime");
 
 constexpr static auto l1_cache_bits = 18;
 
@@ -211,6 +215,13 @@ struct Runtime::Impl final {
     // CloseWriteWindow after the current JitRun returns.
     static constexpr int kSmcPriority = 0;
 
+    void RestoreHostFPCRForSignal() const {
+        if (!jit_guest_fpcr_active.load(std::memory_order_acquire)) {
+            return;
+        }
+        backend::arm64::WriteNativeFPCR(jit_host_fpcr.load(std::memory_order_relaxed));
+    }
+
     static bool HandleSmcFault(void* ctx, ucontext_t* uctx, int sig, siginfo_t* info) {
         (void) ctx;
         // The owner slot covers host code between JitRuns (syscall emulation,
@@ -222,6 +233,10 @@ struct Runtime::Impl final {
             self = static_cast<Impl*>(tls_owner_slot->impl.load(std::memory_order_acquire));
         }
         if (!self) return false;
+        // Signal callbacks are C++ host code. A guest/SMC fault may interrupt
+        // either generated code or a direct helper; restoring is idempotent
+        // for the latter, whose FPCR is already native.
+        self->RestoreHostFPCRForSignal();
         if (sig != SIGSEGV && sig != SIGBUS) {
             return false;
         }
@@ -234,6 +249,7 @@ struct Runtime::Impl final {
         (void) ctx;
         auto* self = static_cast<Impl*>(tls_active_runtime);
         if (!self) return false;
+        self->RestoreHostFPCRForSignal();
         if (sig != SIGSEGV && sig != SIGBUS) {
             return false;  // SIGILL in JIT code is a host codegen bug: crash
         }
@@ -422,7 +438,17 @@ struct Runtime::Impl final {
                     LinkBlock(pre_block_vaddr, linkage_cache_place, current_loc, cache);
                 }
                 // JIT Run!
+                const bool manage_guest_fpcr =
+                        address_space->GetConfig().sse_afp_nan;
+                if (manage_guest_fpcr) {
+                    jit_host_fpcr.store(backend::arm64::ReadNativeFPCR(),
+                                        std::memory_order_relaxed);
+                    jit_guest_fpcr_active.store(true, std::memory_order_release);
+                }
                 hr = JitRun(cache);
+                if (manage_guest_fpcr) {
+                    jit_guest_fpcr_active.store(false, std::memory_order_release);
+                }
                 // Read after the generated return. If a newer invalidation
                 // arrived after its poll, CloseWriteWindow below consumes it
                 // too. If one arrives after this load, the exact-generation
@@ -517,6 +543,11 @@ struct Runtime::Impl final {
     bool hot_coalesce_enabled{};
     mutable bool exec_profile_started{};
     mutable std::chrono::steady_clock::time_point exec_profile_start{};
+    // Signal handlers run on the interrupted guest thread and cannot recover
+    // the runtime-entry FPCR slot from an arbitrary direct-helper stack frame.
+    // Keep a lock-free copy alongside an active marker for that boundary.
+    mutable std::atomic<u64> jit_host_fpcr{};
+    mutable std::atomic_bool jit_guest_fpcr_active{false};
 };
 
 Runtime::Runtime(Instance* instance)
@@ -734,7 +765,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     backend::RegAlloc reg_alloc{static_cast<u32>(function->MaxInstrCount()), gprs, fprs};
     ir::RegisterAllocPass::RunWithScalarInsert(
             function, &reg_alloc,
-            True(module->GetAddressSpace().GetConfig().arm64_features & Arm64Features::AFP));
+            module->GetAddressSpace().GetConfig().sse_scalar_insert);
     perf_ra_detail.Stop();
     perf_ra.Stop();
     fixed_snapshot.Record(static_cast<unsigned>(decoded_blocks));
@@ -966,7 +997,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
     ir::RegisterAllocPass::Run(
             block.get(), &reg_alloc,
-            True(module->GetAddressSpace().GetConfig().arm64_features & Arm64Features::AFP));
+            module->GetAddressSpace().GetConfig().sse_scalar_insert);
     perf_ra_detail.Stop();
 
     PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};

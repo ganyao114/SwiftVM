@@ -1594,9 +1594,53 @@ VRegister JitTranslator::GetVecScalarOperand(ir::Value value, u32 lane_bits) {
     return result;
 }
 
-VRegister JitTranslator::PreserveNaNColdSource(const VRegister& source,
+bool JitTranslator::UseAFPNaN(ir::Inst* inst) const {
+    if (!sse_afp_nan || !inst) {
+        return false;
+    }
+
+    // P1 is deliberately an opcode-and-shape allowlist. Do not infer finite
+    // values or admit a neighbouring FP opcode merely because AH happens to
+    // improve its behaviour. Scalar binary opcodes encode their element type
+    // in the opcode; packed binary and unary shapes carry it as an immediate.
+    switch (inst->GetOp()) {
+        case ir::OpCode::VecFAddScalar32:
+        case ir::OpCode::VecFSubScalar32:
+        case ir::OpCode::VecFMulScalar32:
+        case ir::OpCode::VecFDivScalar32:
+        case ir::OpCode::VecFAddScalar64:
+        case ir::OpCode::VecFSubScalar64:
+        case ir::OpCode::VecFMulScalar64:
+        case ir::OpCode::VecFDivScalar64:
+            return true;
+        case ir::OpCode::VecFAdd:
+        case ir::OpCode::VecFSub:
+        case ir::OpCode::VecFMul:
+        case ir::OpCode::VecFDiv: {
+            const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+            return lane_bits == 32 || lane_bits == 64;
+        }
+        case ir::OpCode::VecFUnary: {
+            const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
+            const u32 kind = inst->GetArg<ir::Imm>(3).Get();
+            const u32 scalar = inst->GetArg<ir::Imm>(4).Get();
+            return kind == 0 && (lane_bits == 32 || lane_bits == 64) &&
+                   scalar <= 1;
+        }
+        default:
+            // FMA, MIN/MAX, COMIS, RCP and RSQRT stay on their existing
+            // correction/lowering paths until separately proven.
+            return false;
+    }
+}
+
+VRegister JitTranslator::PreserveNaNColdSource(ir::Inst* inst,
+                                                const VRegister& source,
                                                 const VRegister& result,
                                                 const VRegister& reserved) {
+    if (UseAFPNaN(inst)) {
+        return source;
+    }
     if (sse_nan_coldpath && !sse_nan_fast &&
         source.GetCode() == result.GetCode()) {
         // With W80 the old fixed cold-ABI register may hold a live allocator
@@ -1864,10 +1908,10 @@ void JitTranslator::EmitVecFAddScalar32(ir::Inst* inst) {
     }
     auto scalar = context.GetTmpV();
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
-    auto repair_left = PreserveNaNColdSource(left, scalar, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, scalar, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, scalar, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, scalar, ipv1);
     __ Fadd(scalar.S(), left.S(), right.S());
-    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1);
+    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1, inst);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -1881,10 +1925,10 @@ void JitTranslator::EmitVecFSubScalar32(ir::Inst* inst) {
     }
     auto scalar = context.GetTmpV();
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
-    auto repair_left = PreserveNaNColdSource(left, scalar, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, scalar, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, scalar, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, scalar, ipv1);
     __ Fsub(scalar.S(), left.S(), right.S());
-    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1);
+    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1, inst);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -1898,10 +1942,10 @@ void JitTranslator::EmitVecFMulScalar32(ir::Inst* inst) {
     }
     auto scalar = context.GetTmpV();
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
-    auto repair_left = PreserveNaNColdSource(left, scalar, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, scalar, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, scalar, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, scalar, ipv1);
     __ Fmul(scalar.S(), left.S(), right.S());
-    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1);
+    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1, inst);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -1915,10 +1959,10 @@ void JitTranslator::EmitVecFDivScalar32(ir::Inst* inst) {
     }
     auto scalar = context.GetTmpV();
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 32);
-    auto repair_left = PreserveNaNColdSource(left, scalar, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, scalar, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, scalar, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, scalar, ipv1);
     __ Fdiv(scalar.S(), left.S(), right.S());
-    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1);
+    EmitVecFloatNaNFixup(scalar, repair_left, repair_right, 32, 1, inst);
     __ Orr(result.V16B(), left.V16B(), left.V16B());
     __ Ins(result.V4S(), 0, scalar.V4S(), 0);
 }
@@ -1931,10 +1975,10 @@ void JitTranslator::EmitVecFAddScalar64(ir::Inst* inst) {
         return;
     }
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
-    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, result, ipv1);
     __ Fadd(result.D(), left.D(), right.D());
-    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1, inst);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
@@ -1946,10 +1990,10 @@ void JitTranslator::EmitVecFSubScalar64(ir::Inst* inst) {
         return;
     }
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
-    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, result, ipv1);
     __ Fsub(result.D(), left.D(), right.D());
-    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1, inst);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
@@ -1961,10 +2005,10 @@ void JitTranslator::EmitVecFMulScalar64(ir::Inst* inst) {
         return;
     }
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
-    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, result, ipv1);
     __ Fmul(result.D(), left.D(), right.D());
-    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1, inst);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
@@ -1976,10 +2020,10 @@ void JitTranslator::EmitVecFDivScalar64(ir::Inst* inst) {
         return;
     }
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1), 64);
-    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, result, ipv1);
     __ Fdiv(result.D(), left.D(), right.D());
-    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, 64, 1, inst);
     __ Ins(result.V2D(), 1, left.V2D(), 1);
 }
 
@@ -2032,19 +2076,20 @@ void JitTranslator::EmitVecFScalarBinaryTied(ir::Inst* inst, u32 lane_bits) {
                 PANIC();
         }
     };
-    if (sse_nan_fast) {
+    if (UseAFPNaN(inst) || sse_nan_fast) {
         emit_operation();
         return;
     }
     if (sse_nan_coldpath) {
-        auto repair_left = PreserveNaNColdSource(left, result, ipv0);
-        auto repair_right = PreserveNaNColdSource(right, result, ipv1);
+        auto repair_left = PreserveNaNColdSource(inst, left, result, ipv0);
+        auto repair_right = PreserveNaNColdSource(inst, right, result, ipv1);
         emit_operation();
         EmitVecFloatNaNFixup(result,
                              repair_left,
                              repair_right,
                              lane_bits,
-                             1);
+                             1,
+                             inst);
         return;
     }
 
@@ -2104,11 +2149,12 @@ void JitTranslator::EmitVecFloatNaNFixup(const VRegister& result,
                                          const VRegister& left,
                                          const VRegister& right,
                                          u32 lane_bits,
-                                         u32 lane_count) {
+                                         u32 lane_count,
+                                         ir::Inst* inst) {
     // Explicitly opt-in semantic relaxation. The immediately preceding NEON
     // arithmetic instruction becomes the final lane result; no operand-order
     // payload selection or x86 indefinite-NaN substitution is emitted.
-    if (sse_nan_fast) {
+    if (UseAFPNaN(inst) || sse_nan_fast) {
         return;
     }
     ASSERT(lane_bits == 32 || lane_bits == 64);
@@ -2215,13 +2261,13 @@ void JitTranslator::EmitVecFAdd(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
-    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, result, ipv1);
     if (lane_bits == 32)
         __ Fadd(result.V4S(), left.V4S(), right.V4S());
     else
         __ Fadd(result.V2D(), left.V2D(), right.V2D());
-    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits, 0, inst);
 }
 
 void JitTranslator::EmitVecFSub(ir::Inst* inst) {
@@ -2229,13 +2275,13 @@ void JitTranslator::EmitVecFSub(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
-    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, result, ipv1);
     if (lane_bits == 32)
         __ Fsub(result.V4S(), left.V4S(), right.V4S());
     else
         __ Fsub(result.V2D(), left.V2D(), right.V2D());
-    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits, 0, inst);
 }
 
 void JitTranslator::EmitVecFMul(ir::Inst* inst) {
@@ -2243,13 +2289,13 @@ void JitTranslator::EmitVecFMul(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
-    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, result, ipv1);
     if (lane_bits == 32)
         __ Fmul(result.V4S(), left.V4S(), right.V4S());
     else
         __ Fmul(result.V2D(), left.V2D(), right.V2D());
-    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits, 0, inst);
 }
 
 void JitTranslator::EmitVecFDiv(ir::Inst* inst) {
@@ -2257,13 +2303,13 @@ void JitTranslator::EmitVecFDiv(ir::Inst* inst) {
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     const u32 lane_bits = inst->GetArg<ir::Imm>(2).Get();
-    auto repair_left = PreserveNaNColdSource(left, result, ipv0);
-    auto repair_right = PreserveNaNColdSource(right, result, ipv1);
+    auto repair_left = PreserveNaNColdSource(inst, left, result, ipv0);
+    auto repair_right = PreserveNaNColdSource(inst, right, result, ipv1);
     if (lane_bits == 32)
         __ Fdiv(result.V4S(), left.V4S(), right.V4S());
     else
         __ Fdiv(result.V2D(), left.V2D(), right.V2D());
-    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits);
+    EmitVecFloatNaNFixup(result, repair_left, repair_right, lane_bits, 0, inst);
 }
 
 void JitTranslator::EmitVecFMinMax(ir::Inst* inst) {
@@ -2332,6 +2378,14 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
             __ Orr(result.V16B(), merge.V16B(), merge.V16B());
         }
         if (kind == 0) {
+            if (UseAFPNaN(inst)) {
+                if (bits == 32) {
+                    __ Fsqrt(result.S(), source.S());
+                } else {
+                    __ Fsqrt(result.D(), source.D());
+                }
+                return;
+            }
             if (sse_nan_coldpath) {
                 auto repair_source = source;
                 if (source.GetCode() == result.GetCode()) {
@@ -2411,7 +2465,9 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
     // the same IR opcode and were wrong in the same way.
     if (bits == 32) {
         if (kind == 0) {
-            if (sse_nan_coldpath) {
+            if (UseAFPNaN(inst)) {
+                __ Fsqrt(value.V4S(), source.V4S());
+            } else if (sse_nan_coldpath) {
                 auto repair_source = source;
                 if (source.GetCode() == value.GetCode()) {
                     repair_source = xmm_pool_ext ? context.GetTmpV() : ipv0;
@@ -2454,7 +2510,9 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
             }
         }
     } else {
-        if (sse_nan_coldpath) {
+        if (UseAFPNaN(inst)) {
+            __ Fsqrt(value.V2D(), source.V2D());
+        } else if (sse_nan_coldpath) {
             auto repair_source = source;
             if (source.GetCode() == value.GetCode()) {
                 repair_source = xmm_pool_ext ? context.GetTmpV() : ipv0;

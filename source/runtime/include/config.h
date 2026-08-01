@@ -125,6 +125,11 @@ struct Config {
     bool static_program;
     Optimizations global_opts;
     Arm64Features arm64_features{Arm64Features::None};
+    // Effective policy switches, deliberately separate from the hardware
+    // capability bitmap above.  FEAT_AFP is a host fact; these decide which
+    // guest-code paths are allowed to consume it.
+    bool sse_scalar_insert{false};
+    bool sse_afp_nan{false};
     // Memory ordering for guest accesses (frontends read this and install it
     // via their mode hook, e.g. x86::SetTsoMode). Hardware mode is a promise
     // from the embedder that the host already runs in a TSO memory model.

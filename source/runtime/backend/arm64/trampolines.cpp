@@ -4,6 +4,7 @@
 
 #include "runtime/backend/cache_clear.h"
 #include "runtime/backend/context.h"
+#include "runtime/backend/arm64/fpcr_mode.h"
 #include "runtime/common/backedge_control.h"
 #include "trampolines.h"
 #include "defines.h"
@@ -201,8 +202,9 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     // dead whenever control has returned to this dispatcher. Identity mode
     // retains the historical x24 (loc).
     const bool has_pt = config.page_table || config.memory_base;
-    const bool scalar_insert =
-            True(config.arm64_features & Arm64Features::AFP);
+    const bool scalar_insert = config.sse_scalar_insert;
+    const bool afp_nan = config.sse_afp_nan;
+    const bool manage_fpcr = scalar_insert || afp_nan;
     // FEAT_AFP.NEP retains every lane except the scalar destination lane.
     // AH deliberately remains clear: changing it process-wide also changes
     // packed FP edge cases that are outside this optimisation's scope.
@@ -236,7 +238,16 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     };
     __ Bind(&label_runtime_entry);
     BuildSaveHostCallee(assembler);
-    if (scalar_insert) {
+    if (afp_nan) {
+        // AFP NaN mode owns the complete guest FPCR. Save the caller value,
+        // then construct guest state solely from MXCSR after publishing the
+        // State pointer; inheriting DN/FZ/RMode here corrupts guest semantics.
+        __ Mrs(ip, FPCR);
+        __ Stp(ip, xzr, MemOperand(sp, -16, PreIndex));
+        __ Mov(state, x0);
+        EmitSseAFPGuestFPCR(assembler, state, ip, ip0, ip1);
+        __ Msr(FPCR, ip);
+    } else if (scalar_insert) {
         // FEAT_AFP.NEP makes scalar Advanced SIMD instructions update only
         // lane 0. Keep the caller's FPCR on our stack, and expose the original
         // value to every host/C++ call below.
@@ -244,9 +255,11 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
         __ Stp(ip, xzr, MemOperand(sp, -16, PreIndex));
         __ Orr(ip, ip, kFpcrNep);
         __ Msr(FPCR, ip);
+        __ Mov(state, x0);
+    } else {
+        __ Mov(state, x0);
     }
 
-    __ Mov(state, x0);
     __ Mov(forward, x1);
     // load cache_ptr
     __ Ldr(cache, MemOperand(state, state_offset_l2_code_cache));
@@ -329,12 +342,15 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
         __ Tbz(forward, 63, &jump_guest);
         __ Bind(&go_interp);
         __ Ldp(arg, handle, MemOperand(forward, 16, PostIndex));
-        if (scalar_insert) {
+        if (manage_fpcr) {
             __ Ldr(ip, MemOperand(sp));
             __ Msr(FPCR, ip);
         }
         __ Blr(handle);
-        if (scalar_insert) {
+        if (afp_nan) {
+            EmitSseAFPGuestFPCR(assembler, state, ip, ip0, ip1);
+            __ Msr(FPCR, ip);
+        } else if (scalar_insert) {
             __ Ldr(ip, MemOperand(sp));
             __ Orr(ip, ip, kFpcrNep);
             __ Msr(FPCR, ip);
@@ -364,7 +380,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
         // halt reason until guest RSI has been written back above.
         __ Mov(w0, halt_reg);
     }
-    if (scalar_insert) {
+    if (manage_fpcr) {
         __ Ldp(ip, ip0, MemOperand(sp, 16, PostIndex));
         __ Msr(FPCR, ip);
     }
@@ -382,7 +398,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Str(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
     __ Str(flags, MemOperand(state, state_offset_host_flags));
     BuildSaveStaticUniform(assembler);
-    if (scalar_insert) {
+    if (manage_fpcr) {
         __ Ldr(ip, MemOperand(sp));
         __ Msr(FPCR, ip);
     }
@@ -392,7 +408,10 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Mov(x1, state);
     __ Blr(ip);
     __ Ldp(x29, x30, MemOperand(sp, 16, PostIndex));
-    if (scalar_insert) {
+    if (afp_nan) {
+        EmitSseAFPGuestFPCR(assembler, state, ip, ip0, ip1);
+        __ Msr(FPCR, ip);
+    } else if (scalar_insert) {
         __ Ldr(ip, MemOperand(sp));
         __ Orr(ip, ip, kFpcrNep);
         __ Msr(FPCR, ip);

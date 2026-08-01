@@ -22,6 +22,9 @@
 #ifndef HWCAP2_FLAGM2
 #define HWCAP2_FLAGM2 (1UL << 7)
 #endif
+#ifndef HWCAP2_AFP
+#define HWCAP2_AFP (1UL << 20)
+#endif
 #endif
 #include "fmt/format.h"
 #include "base/scope_exit.h"
@@ -264,13 +267,6 @@ static runtime::TsoMode TsoModeFromEnvironment() {
 
 static Arm64Features DetectArm64Features() {
     Arm64Features features = Arm64Features::None;
-    // Aggressive per-module switch, default ON (independent interleaved A/B:
-    // smallpt 1.383x median with image oracle intact, c-ray ~1.01x with zero
-    // ON-only anomalies across 10 extra runs). Requires host FEAT_AFP;
-    // SVM_SSE_SCALAR_INSERT=0 forces the exact pre-feature path.
-    const char* scalar_insert_env = std::getenv("SVM_SSE_SCALAR_INSERT");
-    const bool scalar_insert =
-            !scalar_insert_env || std::strcmp(scalar_insert_env, "0") != 0;
 
 #if defined(__APPLE__) && defined(__aarch64__)
     auto sysctl_feature = [](const char* name) {
@@ -285,7 +281,7 @@ static Arm64Features DetectArm64Features() {
     if (sysctl_feature("hw.optional.arm.FEAT_LRCPC2")) {
         features |= Arm64Features::RCpcImm;
     }
-    if (scalar_insert && sysctl_feature("hw.optional.arm.FEAT_AFP")) {
+    if (sysctl_feature("hw.optional.arm.FEAT_AFP")) {
         features |= Arm64Features::AFP;
     }
     if (sysctl_feature("hw.optional.arm.FEAT_FlagM")) {
@@ -305,6 +301,9 @@ static Arm64Features DetectArm64Features() {
         if ((getauxval(AT_HWCAP2) & HWCAP2_FLAGM2) != 0) {
             detected |= Arm64Features::AXFlag;
         }
+        if ((getauxval(AT_HWCAP2) & HWCAP2_AFP) != 0) {
+            detected |= Arm64Features::AFP;
+        }
         return detected;
     }();
     features |= flag_features;
@@ -322,6 +321,37 @@ static Arm64Features DetectArm64Features() {
         }
     }
     return features;
+}
+
+static bool SSEScalarInsertEnabled(Arm64Features features) {
+#if defined(__APPLE__) && defined(__aarch64__)
+    // Preserve W23 exactly: it was default-on on AFP-capable macOS hosts and
+    // unavailable on Linux because the old Linux probe never published AFP.
+    // Hardware capability is now platform-neutral, so policy must be kept
+    // separate or merely detecting AFP would change Linux OFF codegen.
+    const char* value = std::getenv("SVM_SSE_SCALAR_INSERT");
+    return True(features & Arm64Features::AFP) &&
+           (!value || std::strcmp(value, "0") != 0);
+#else
+    (void) features;
+    return false;
+#endif
+}
+
+static bool SSEAFPNanEnabled(Arm64Features features) {
+    const char* value = PerfGetenv("SVM_SSE_AFP_NAN");
+    const bool requested = value && std::strcmp(value, "0") != 0;
+    if (!requested) {
+        return false;
+    }
+    if (True(features & Arm64Features::AFP)) {
+        return true;
+    }
+    static std::once_flag warning_once;
+    std::call_once(warning_once, [] {
+        LOG_WARNING("SVM_SSE_AFP_NAN requested but FEAT_AFP is unavailable; using guarded SSE path");
+    });
+    return false;
 }
 
 // WORKAROUND (runtime bug, ir/instr.h Inst::GetArg<Operand>): the x86
@@ -698,6 +728,9 @@ struct X86Instance::Impl final {
         if (enable_xmm_pool_ext) {
             global_opts |= Optimizations::XmmPoolExt;
         }
+        const Arm64Features arm64_features = DetectArm64Features();
+        const bool sse_scalar_insert = SSEScalarInsertEnabled(arm64_features);
+        const bool sse_afp_nan = SSEAFPNanEnabled(arm64_features);
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ul << 49,
@@ -729,7 +762,9 @@ struct X86Instance::Impl final {
                 //   RPO numbering, and complex/failed functions fall back to
                 //   block compilation.
                 .global_opts = global_opts,
-                .arm64_features = DetectArm64Features(),
+                .arm64_features = arm64_features,
+                .sse_scalar_insert = sse_scalar_insert,
+                .sse_afp_nan = sse_afp_nan,
                 .tso_mode = TsoModeFromEnvironment(),
                 .stack_alignment = 16,
                 .page_table = nullptr,
@@ -864,7 +899,8 @@ struct X86Instance::Impl final {
                             &memory_impl,
                             &assembler,
                             true,
-                            address_space->GetConfig().arm64_features};
+                            address_space->GetConfig().arm64_features,
+                            address_space->GetConfig().sse_afp_nan};
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();
                     ++decoded_count;
@@ -1016,7 +1052,8 @@ struct X86Instance::Impl final {
                             &memory_impl,
                             &assembler,
                             true,
-                            module->GetAddressSpace().GetConfig().arm64_features};
+                            module->GetAddressSpace().GetConfig().arm64_features,
+                            module->GetAddressSpace().GetConfig().sse_afp_nan};
                     perf_ir_setup.Stop();
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();

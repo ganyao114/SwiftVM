@@ -282,7 +282,8 @@ public:
                runtime::MemoryInterface* memory,
                ir::Assembler* visitor,
                bool is_64bit,
-               runtime::Arm64Features arm64_features = runtime::Arm64Features::None);
+               runtime::Arm64Features arm64_features = runtime::Arm64Features::None,
+               bool sse_afp_nan = false);
 
     void Decode();
 
@@ -1106,6 +1107,7 @@ private:
     // PublishFCmpFlags also records the FlagM2 decision in IR.
     bool flags_cfinv_supported_{false};
     bool flags_fcmp_compact_{false};
+    bool sse_afp_nan_{false};
     VAddr addr_mask{UINT64_MAX};
     CarryPolarity carry_{CarryPolarity::Unknown};
     VAddr local_nzcv_next_pc_{UINT64_MAX};

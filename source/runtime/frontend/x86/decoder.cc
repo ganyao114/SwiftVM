@@ -254,7 +254,8 @@ X64Decoder::X64Decoder(VAddr start,
                        runtime::MemoryInterface* memory,
                        ir::Assembler* visitor,
                        bool is_64bit,
-                       runtime::Arm64Features arm64_features)
+                       runtime::Arm64Features arm64_features,
+                       bool sse_afp_nan)
         : start(start), pc(start), assembler(visitor), memory(memory), is_64bit(is_64bit) {
     addr_mask = is_64bit ? UINT64_MAX : UINT32_MAX;
     flags_cfinv_supported_ =
@@ -263,6 +264,7 @@ X64Decoder::X64Decoder(VAddr start,
     flags_fcmp_compact_ =
             compact && std::strcmp(compact, "0") != 0 &&
             True(arm64_features & runtime::Arm64Features::AXFlag);
+    sse_afp_nan_ = sse_afp_nan;
 }
 
 // x86-64's architectural maximum instruction length. Bounds every raw-byte

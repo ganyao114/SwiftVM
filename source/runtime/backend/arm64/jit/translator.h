@@ -248,9 +248,12 @@ private:
                               const VRegister &left,
                               const VRegister &right,
                               u32 lane_bits,
-                              u32 lane_count = 0);
+                              u32 lane_count,
+                              ir::Inst *inst);
     void EmitVecFScalarBinaryTied(ir::Inst *inst, u32 lane_bits);
-    VRegister PreserveNaNColdSource(const VRegister &source,
+    [[nodiscard]] bool UseAFPNaN(ir::Inst *inst) const;
+    VRegister PreserveNaNColdSource(ir::Inst *inst,
+                                    const VRegister &source,
                                     const VRegister &result,
                                     const VRegister &reserved);
 
@@ -335,6 +338,7 @@ private:
     // FEAT_AFP + FPCR.NEP is active for guest code, so scalar Advanced SIMD
     // instructions can update a tied destination's lane 0 in place.
     bool sse_scalar_insert{false};
+    bool sse_afp_nan{false};
     bool shift_imm_fast{true};
     // W29 lowering: signed/unsigned narrow loads consume their
     // extension destination directly, and GetOperand computes into its

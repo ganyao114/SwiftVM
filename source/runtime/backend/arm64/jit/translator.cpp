@@ -21,7 +21,8 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
     guest_addr_mask = config.guest_addr_mask;
     window_uxtw = guest_addr_mask == 0xFFFFFFFFull;
-    sse_scalar_insert = True(config.arm64_features & Arm64Features::AFP);
+    sse_scalar_insert = config.sse_scalar_insert;
+    sse_afp_nan = config.sse_afp_nan;
     xmm_pool_ext = True(config.global_opts & Optimizations::XmmPoolExt);
     if (const char* shift_fast = PerfGetenv("SVM_SHIFT_IMM_FAST")) {
         shift_imm_fast = std::strcmp(shift_fast, "0") != 0;

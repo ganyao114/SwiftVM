@@ -1400,6 +1400,10 @@ void X64Decoder::DecodeMxcsr(_DInst& insn, bool load) {
     if (load) {
         auto v = __ LoadMemory(ir::Operand{addr}).SetType(ir::ValueType::U32);
         __ StoreUniform(uni_mxcsr, v);
+        if (sse_afp_nan_) {
+            __ SetLocation(ir::Lambda{ir::Imm{pc}});
+            __ ReturnToDispatcher();
+        }
     } else {
         __ StoreMemory(ir::Operand{addr}, __ LoadUniform(uni_mxcsr));
     }
@@ -1443,6 +1447,10 @@ void X64Decoder::DecodeFxsave(_DInst& insn, bool restore) {
             auto v = __ LoadMemory(ir::Operand{addr, kXsaveXmmOff + s32(16 * i), ir::OperandPlus})
                              .SetType(ir::ValueType::V128);
             __ StoreUniform(uni_xmm, v);
+        }
+        if (sse_afp_nan_) {
+            __ SetLocation(ir::Lambda{ir::Imm{pc}});
+            __ ReturnToDispatcher();
         }
     }
 }

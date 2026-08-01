@@ -114,7 +114,8 @@ SVM_DISPATCH_STAGE bool X64Decoder::DecodeBaseOpcode(_DInst& insn) {
             break;
         case I_XSAVE:
         case I_XSAVE64:
-            EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, false);
+            EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, false,
+                      sse_afp_nan_);
             break;
         case I_XSAVEOPT:
         case I_XSAVEOPT64:
@@ -122,7 +123,8 @@ SVM_DISPATCH_STAGE bool X64Decoder::DecodeBaseOpcode(_DInst& insn) {
             break;
         case I_XRSTOR:
         case I_XRSTOR64:
-            EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, true);
+            EmitXsave(assembler, FlatAddress(insn, insn.ops[0]), pc, insn_pc, true,
+                      sse_afp_nan_);
             break;
         case I_UD2:
             Interrupt(InterruptReason::ILL_CODE);

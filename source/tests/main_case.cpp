@@ -26,6 +26,7 @@
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/smc_tracker.h"
+#include "runtime/backend/arm64/fpcr_mode.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/common/hot_coalesce_prof.h"
@@ -35,13 +36,40 @@
 #include "fmt/format.h"
 #include "translator/x86/translator.h"
 
+namespace {
+
+swift::u64 ReadFPCRFromHostHelper() {
+    return swift::runtime::backend::arm64::ReadNativeFPCR();
+}
+
+class ScopedNativeFPCR {
+public:
+    explicit ScopedNativeFPCR(swift::u64 value)
+            : saved(swift::runtime::backend::arm64::ReadNativeFPCR()) {
+        swift::runtime::backend::arm64::WriteNativeFPCR(value);
+        installed = swift::runtime::backend::arm64::ReadNativeFPCR();
+    }
+
+    ~ScopedNativeFPCR() {
+        swift::runtime::backend::arm64::WriteNativeFPCR(saved);
+    }
+
+    [[nodiscard]] swift::u64 Installed() const { return installed; }
+
+private:
+    swift::u64 saved{};
+    swift::u64 installed{};
+};
+
+}  // namespace
+
 TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 60);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 61);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_RA_INTWIDTH_TIE");
+            "SVM_SSE_AFP_NAN");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -2622,6 +2650,707 @@ static swift::runtime::ir::Block* BuildReloadPressureBlock(unsigned live) {
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
     return block;
+}
+
+TEST_CASE("AFP guest FPCR is rebuilt from MXCSR across host-call boundaries") {
+#if defined(__aarch64__)
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    constexpr std::uint32_t kResultBeforeOffset = sizeof(swift::x86::ThreadContext64);
+    constexpr std::uint32_t kResultAfterOffset = kResultBeforeOffset + 16;
+    constexpr std::uint32_t kHostFPCRSeenOffset = kResultAfterOffset + 16;
+    constexpr std::uint32_t kDazResultOffset = kHostFPCRSeenOffset + 16;
+    constexpr std::uint32_t kFtzResultOffset = kDazResultOffset + 16;
+    constexpr std::uint64_t kGuestPC = 0x2a00;
+    constexpr std::uint32_t kMxcsrRoundUp = 0x1f80u | (2u << 13);
+
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+            .uniform_buffer_size = sizeof(swift::x86::ThreadContext64) + 96,
+            .arm64_features = Arm64Features::AFP,
+            .sse_afp_nan = true,
+    };
+    AddressSpace address_space{config};
+
+    auto* raw_block = new Block(0, Location{kGuestPC});
+    IntrusivePtr<Block> block{raw_block};
+    auto lhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
+            Uniform{offsetof(swift::x86::ThreadContext64, xmm0), ValueType::V128});
+    auto rhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
+            Uniform{offsetof(swift::x86::ThreadContext64, xmm1), ValueType::V128});
+    raw_block->StoreUniform(
+            Uniform{offsetof(swift::x86::ThreadContext64, mxcsr), ValueType::U32},
+            raw_block->LoadImm(Imm{swift::u32{kMxcsrRoundUp}}).SetType(ValueType::U32));
+    auto before = raw_block->VecFAddScalar32<TypedValue<ValueType::V128>>(lhs, rhs);
+    raw_block->StoreUniform(Uniform{kResultBeforeOffset, ValueType::V128}, before);
+    auto host_fpcr = raw_block
+                             ->CallLambda(Lambda{Imm{swift::u64{
+                                     reinterpret_cast<swift::VAddr>(
+                                             FptrCast(&ReadFPCRFromHostHelper))}}})
+                             .SetType(ValueType::U64);
+    raw_block->StoreUniform(Uniform{kHostFPCRSeenOffset, ValueType::U64}, host_fpcr);
+    auto after = raw_block->VecFAddScalar32<TypedValue<ValueType::V128>>(lhs, rhs);
+    raw_block->StoreUniform(Uniform{kResultAfterOffset, ValueType::V128}, after);
+
+    auto daz_lhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
+            Uniform{offsetof(swift::x86::ThreadContext64, xmm2), ValueType::V128});
+    auto daz_rhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
+            Uniform{offsetof(swift::x86::ThreadContext64, xmm3), ValueType::V128});
+    raw_block->StoreUniform(
+            Uniform{offsetof(swift::x86::ThreadContext64, mxcsr), ValueType::U32},
+            raw_block->LoadImm(Imm{swift::u32{0x1fc0}}).SetType(ValueType::U32));
+    auto daz_result =
+            raw_block->VecFMulScalar32<TypedValue<ValueType::V128>>(daz_lhs, daz_rhs);
+    raw_block->StoreUniform(Uniform{kDazResultOffset, ValueType::V128}, daz_result);
+
+    auto ftz_lhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
+            Uniform{offsetof(swift::x86::ThreadContext64, xmm4), ValueType::V128});
+    auto ftz_rhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
+            Uniform{offsetof(swift::x86::ThreadContext64, xmm5), ValueType::V128});
+    raw_block->StoreUniform(
+            Uniform{offsetof(swift::x86::ThreadContext64, mxcsr), ValueType::U32},
+            raw_block->LoadImm(Imm{swift::u32{0x9f80}}).SetType(ValueType::U32));
+    auto ftz_result =
+            raw_block->VecFMulScalar32<TypedValue<ValueType::V128>>(ftz_lhs, ftz_rhs);
+    raw_block->StoreUniform(Uniform{kFtzResultOffset, ValueType::V128}, ftz_result);
+    raw_block->SetTerminal(terminal::LinkBlock{Location{kGuestPC + 0x100}});
+    raw_block->ReIdInstr();
+
+    auto* code = TranslateIR(address_space.GetDefaultModule(), block);
+    REQUIRE(code != nullptr);
+    Runtime runtime{&address_space};
+    auto uniform = runtime.GetUniformBuffer();
+    const std::array<std::uint32_t, 4> lhs_bits{0x3f800000u, 0u, 0u, 0u};
+    const std::array<std::uint32_t, 4> rhs_bits{0x33800000u, 0u, 0u, 0u};
+    std::memcpy(uniform.data() + offsetof(swift::x86::ThreadContext64, xmm0),
+                lhs_bits.data(), sizeof(lhs_bits));
+    std::memcpy(uniform.data() + offsetof(swift::x86::ThreadContext64, xmm1),
+                rhs_bits.data(), sizeof(rhs_bits));
+    const std::array<std::uint32_t, 4> daz_lhs_bits{0x00000001u, 0u, 0u, 0u};
+    const std::array<std::uint32_t, 4> daz_rhs_bits{0x4b000000u, 0u, 0u, 0u};
+    const std::array<std::uint32_t, 4> ftz_lhs_bits{0x00800000u, 0u, 0u, 0u};
+    const std::array<std::uint32_t, 4> ftz_rhs_bits{0x3f000000u, 0u, 0u, 0u};
+    std::memcpy(uniform.data() + offsetof(swift::x86::ThreadContext64, xmm2),
+                daz_lhs_bits.data(), sizeof(daz_lhs_bits));
+    std::memcpy(uniform.data() + offsetof(swift::x86::ThreadContext64, xmm3),
+                daz_rhs_bits.data(), sizeof(daz_rhs_bits));
+    std::memcpy(uniform.data() + offsetof(swift::x86::ThreadContext64, xmm4),
+                ftz_lhs_bits.data(), sizeof(ftz_lhs_bits));
+    std::memcpy(uniform.data() + offsetof(swift::x86::ThreadContext64, xmm5),
+                ftz_rhs_bits.data(), sizeof(ftz_rhs_bits));
+
+    // Deliberately install host-owned DN/FZ and a different rounding mode.
+    // The helper must observe this value exactly, while guest arithmetic must
+    // use MXCSR.RC=round-up and must not inherit either host bit.
+    ScopedNativeFPCR host_fpcr_scope{(1ull << 25) | (1ull << 24) | (1ull << 23)};
+    runtime.SetLocation(kGuestPC);
+    const auto halt = address_space.GetTrampolines().GetRuntimeEntry()(
+            runtime.GetState(), code);
+    REQUIRE(halt == HaltReason::CodeMiss);
+
+    std::uint32_t before_bits{};
+    std::uint32_t after_bits{};
+    std::uint32_t daz_bits{};
+    std::uint32_t ftz_bits{};
+    std::uint64_t helper_fpcr{};
+    std::memcpy(&before_bits, uniform.data() + kResultBeforeOffset, sizeof(before_bits));
+    std::memcpy(&helper_fpcr, uniform.data() + kHostFPCRSeenOffset, sizeof(helper_fpcr));
+    std::memcpy(&after_bits, uniform.data() + kResultAfterOffset, sizeof(after_bits));
+    std::memcpy(&daz_bits, uniform.data() + kDazResultOffset, sizeof(daz_bits));
+    std::memcpy(&ftz_bits, uniform.data() + kFtzResultOffset, sizeof(ftz_bits));
+    REQUIRE(before_bits == 0x3f800001u);
+    REQUIRE(after_bits == before_bits);
+    REQUIRE(daz_bits == 0u);
+    REQUIRE(ftz_bits == 0u);
+    REQUIRE(helper_fpcr == host_fpcr_scope.Installed());
+    REQUIRE(arm64::ReadNativeFPCR() == host_fpcr_scope.Installed());
+#else
+    SUCCEED("AFP FPCR execution probe requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("AFP translated SSE arithmetic matches the 64-case x86 NaN truth matrix") {
+    using namespace swift::runtime::backend;
+    using namespace swift::translator::x86;
+
+    struct Op {
+        swift::u8 prefix;
+        swift::u8 opcode;
+        const char* name;
+        bool f64;
+    };
+    constexpr std::array ops{
+            Op{0xf3, 0x58, "addss", false}, Op{0xf3, 0x5c, "subss", false},
+            Op{0xf3, 0x59, "mulss", false}, Op{0xf3, 0x5e, "divss", false},
+            Op{0xf2, 0x58, "addsd", true},  Op{0xf2, 0x5c, "subsd", true},
+            Op{0xf2, 0x59, "mulsd", true},  Op{0xf2, 0x5e, "divsd", true},
+    };
+    struct Pair {
+        swift::u64 lhs;
+        swift::u64 rhs;
+        swift::u64 expected;
+        const char* name;
+    };
+    constexpr std::array pairs32{
+            Pair{0x7fc01234u, 0xffc05678u, 0x7fc01234u, "qq"},
+            Pair{0x7fc01234u, 0xff802222u, 0x7fc01234u, "qs"},
+            Pair{0x7f801111u, 0xffc05678u, 0x7fc01111u, "sq"},
+            Pair{0x7f801111u, 0xff802222u, 0x7fc01111u, "ss"},
+            Pair{0x7fc01234u, 0x3f800000u, 0x7fc01234u, "qn"},
+            Pair{0x3f800000u, 0xffc05678u, 0xffc05678u, "nq"},
+            Pair{0x7f801111u, 0x3f800000u, 0x7fc01111u, "sn"},
+            Pair{0x3f800000u, 0xff802222u, 0xffc02222u, "ns"},
+    };
+    constexpr std::array pairs64{
+            Pair{0x7ff8000000001234ull, 0xfff8000000005678ull,
+                 0x7ff8000000001234ull, "qq"},
+            Pair{0x7ff8000000001234ull, 0xfff0000000002222ull,
+                 0x7ff8000000001234ull, "qs"},
+            Pair{0x7ff0000000001111ull, 0xfff8000000005678ull,
+                 0x7ff8000000001111ull, "sq"},
+            Pair{0x7ff0000000001111ull, 0xfff0000000002222ull,
+                 0x7ff8000000001111ull, "ss"},
+            Pair{0x7ff8000000001234ull, 0x3ff0000000000000ull,
+                 0x7ff8000000001234ull, "qn"},
+            Pair{0x3ff0000000000000ull, 0xfff8000000005678ull,
+                 0xfff8000000005678ull, "nq"},
+            Pair{0x7ff0000000001111ull, 0x3ff0000000000000ull,
+                 0x7ff8000000001111ull, "sn"},
+            Pair{0x3ff0000000000000ull, 0xfff0000000002222ull,
+                 0xfff8000000002222ull, "ns"},
+    };
+
+    void* guest_code = mmap(nullptr, 4096, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(guest_code != MAP_FAILED);
+    auto* bytes = static_cast<swift::u8*>(guest_code);
+    std::size_t case_index = 0;
+    for (const auto& op : ops) {
+        for (std::size_t pair_index = 0; pair_index < pairs32.size(); ++pair_index) {
+            const std::size_t offset = case_index++ * 16;
+            bytes[offset + 0] = op.prefix;
+            bytes[offset + 1] = 0x0f;
+            bytes[offset + 2] = op.opcode;
+            bytes[offset + 3] = 0xc1;
+            bytes[offset + 4] = 0xf4;
+        }
+    }
+
+    SmcTracker::SetEnabled(false);
+    auto* instance = X86Instance::Make();
+    auto* core = X86Core::Make(instance);
+    auto& context = core->GetContext();
+    struct Outcome {
+        bool passed;
+        const char* op;
+        const char* pair;
+        swift::u64 result;
+    };
+    std::vector<Outcome> outcomes;
+    outcomes.reserve(64);
+    case_index = 0;
+    for (const auto& op : ops) {
+        const auto& pairs = op.f64 ? pairs64 : pairs32;
+        for (const auto& pair : pairs) {
+            const std::size_t offset = case_index++ * 16;
+            context.rip.qword = reinterpret_cast<swift::VAddr>(guest_code) + offset;
+            context.xmm0 = swift::x86::Xmm{};
+            context.xmm1 = swift::x86::Xmm{};
+            context.xmm0.l[0] = pair.lhs;
+            if (op.f64) {
+                context.xmm0.l[1] = 0x99aabbcc55667788ull;
+            } else {
+                context.xmm0.i[1] = 0x11223344u;
+                context.xmm0.i[2] = 0x55667788u;
+                context.xmm0.i[3] = 0x99aabbccu;
+            }
+            context.xmm1.l[0] = pair.rhs;
+            core->Run();
+            const bool value_ok = op.f64
+                                          ? context.xmm0.l[0] == pair.expected
+                                          : context.xmm0.i[0] ==
+                                                    static_cast<swift::u32>(pair.expected);
+            const bool upper_ok = op.f64
+                                          ? context.xmm0.l[1] == 0x99aabbcc55667788ull
+                                          : context.xmm0.i[1] == 0x11223344u &&
+                                                    context.xmm0.i[2] == 0x55667788u &&
+                                                    context.xmm0.i[3] == 0x99aabbccu;
+            outcomes.push_back(
+                    Outcome{value_ok && upper_ok, op.name, pair.name, context.xmm0.l[0]});
+        }
+    }
+    X86Core::Destroy(core);
+    X86Instance::Destroy(instance);
+    SmcTracker::SetEnabled(true);
+    munmap(guest_code, 4096);
+    for (const auto& outcome : outcomes) {
+        INFO(outcome.op << " " << outcome.pair << " result="
+                        << fmt::format("{:016x}", outcome.result));
+        REQUIRE(outcome.passed);
+    }
+}
+
+TEST_CASE("AFP environment gate applies MXCSR changes through translated x86 code") {
+#if defined(__aarch64__)
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::translator::x86;
+
+    // ldmxcsr [rip+5]; addss xmm0,xmm1; hlt; dd 0x5f80 (round-up)
+    const std::array<swift::u8, 16> guest{
+            0x0f, 0xae, 0x15, 0x05, 0x00, 0x00, 0x00,
+            0xf3, 0x0f, 0x58, 0xc1, 0xf4,
+            0x80, 0x5f, 0x00, 0x00,
+    };
+    void* guest_code = mmap(nullptr, 4096, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(guest_code != MAP_FAILED);
+    std::memcpy(guest_code, guest.data(), guest.size());
+
+    SmcTracker::SetEnabled(false);
+    auto* instance = X86Instance::Make();
+    const auto& config = instance->GetAddressSpace()->GetConfig();
+    const bool capable = True(config.arm64_features & Arm64Features::AFP);
+    const bool effective = config.sse_afp_nan;
+    auto* core = X86Core::Make(instance);
+    auto& context = core->GetContext();
+    context.rip.qword = reinterpret_cast<swift::VAddr>(guest_code);
+    context.xmm0.i[0] = 0x3f800000u;
+    context.xmm1.i[0] = 0x33800000u;
+    const auto host_fpcr = arm64::ReadNativeFPCR();
+    core->Run();
+    const auto result = context.xmm0.i[0];
+    const auto restored_fpcr = arm64::ReadNativeFPCR();
+    X86Core::Destroy(core);
+    X86Instance::Destroy(instance);
+    SmcTracker::SetEnabled(true);
+    munmap(guest_code, 4096);
+
+    const char* requested_value = std::getenv("SVM_SSE_AFP_NAN");
+    const bool requested = requested_value && std::strcmp(requested_value, "0") != 0;
+    REQUIRE(effective == (requested && capable));
+#if defined(__APPLE__)
+    // Apple silicon exposes FEAT_AFP. This also prevents an ON full-suite run
+    // from passing merely because capability detection silently fell back.
+    REQUIRE(capable);
+#endif
+    REQUIRE(result == (effective ? 0x3f800001u : 0x3f800000u));
+    REQUIRE(restored_fpcr == host_fpcr);
+#else
+    SUCCEED("AFP environment execution probe requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("AFP mode terminates units after architectural MXCSR restores") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+
+    struct MemIf final : MemoryInterface {
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+
+    auto check = [&](std::array<swift::u8, 16> bytes, bool xsave) {
+        const char* old = std::getenv("SVM_XSAVE");
+        const bool had_old = old != nullptr;
+        const std::string old_value = old ? old : "";
+        if (xsave) setenv("SVM_XSAVE", "1", 1);
+
+        const auto address = reinterpret_cast<VAddr>(bytes.data());
+        Block block{0, Location{address}};
+        Assembler assembler{&block};
+        X64Decoder decoder{address, &memory, &assembler, true,
+                           Arm64Features::AFP, true};
+        decoder.Decode();
+
+        if (had_old) setenv("SVM_XSAVE", old_value.c_str(), 1);
+        else unsetenv("SVM_XSAVE");
+
+        const auto terminal = block.GetTerminal();
+        REQUIRE(boost::get<terminal::ReturnToDispatch>(&terminal) != nullptr);
+        std::size_t next_pc_stores = 0;
+        for (auto& inst : block.GetInstList()) {
+            if (inst.GetOp() != OpCode::SetLocation) continue;
+            auto location = inst.GetArg<Lambda>(0);
+            if (!location.IsValue() && location.GetImm().Get() == address + 3) {
+                ++next_pc_stores;
+            }
+        }
+        REQUIRE(next_pc_stores == 1);
+    };
+
+    auto instruction = [](swift::u8 modrm) {
+        std::array<swift::u8, 16> bytes{};
+        bytes[0] = 0x0f;
+        bytes[1] = 0xae;
+        bytes[2] = modrm;
+        bytes[3] = 0xf4;
+        return bytes;
+    };
+
+    SECTION("LDMXCSR") { check(instruction(0x10), false); }
+    SECTION("FXRSTOR") { check(instruction(0x08), false); }
+    SECTION("XRSTOR") { check(instruction(0x28), true); }
+}
+
+TEST_CASE("AFP mode brackets direct MemoryCopy host calls with native FPCR") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+            .arm64_features = Arm64Features::AFP,
+            .sse_afp_nan = true,
+    };
+    AddressSpace address_space{config};
+    IntrusivePtr<Block> block{new Block(0, Location{0x2b00})};
+    block->MemoryCopy(Lambda{Imm{swift::u64{0x2000}}},
+                      Lambda{Imm{swift::u64{0x1000}}}, Imm{swift::u32{16}});
+    block->SetTerminal(terminal::LinkBlock{Location{0x2c00}});
+    block->ReIdInstr();
+
+    RegAlloc reg_alloc{block->MaxInstrId(),
+                       address_space.GetTrampolines().GetGPRRegs(),
+                       address_space.GetTrampolines().GetFPRRegs()};
+    RegisterAllocPass::Run(block.get(), &reg_alloc);
+    arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
+    arm64::JitTranslator translator{context};
+    translator.Translate(block.get());
+    context.Finish();
+
+    auto& masm = context.GetMasm();
+    auto* first = masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+    auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+    vixl::aarch64::Decoder decoder;
+    vixl::aarch64::Disassembler disassembler;
+    decoder.AppendVisitor(&disassembler);
+    std::size_t fpcr_writes = 0;
+    std::size_t indirect_calls = 0;
+    std::string text;
+    for (const auto* instruction = first; instruction < last;
+         instruction = instruction->GetNextInstruction()) {
+        decoder.Decode(instruction);
+        const std::string_view line = disassembler.GetOutput();
+        fpcr_writes += line.find("msr fpcr") != std::string_view::npos;
+        indirect_calls += line.find("blr ") != std::string_view::npos;
+        text += line;
+        text += '\n';
+    }
+    INFO(text);
+    REQUIRE(indirect_calls == 1);
+    REQUIRE(fpcr_writes == 2);
+}
+
+namespace {
+
+enum class AFPShapeOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Sqrt,
+    Fma,
+    Min,
+    Max,
+    Comis,
+    Rcp,
+    Rsqrt,
+};
+
+struct AFPShapeCode {
+    std::string text;
+    std::size_t instructions{};
+};
+
+std::string NormalizeDisasmForCompare(std::string text) {
+    constexpr std::string_view kAddressPrefix{"(addr 0x"};
+    constexpr std::string_view kReplacement{"(addr <normalized>)"};
+    auto is_hex = [](char c) {
+        return (c >= '0' && c <= '9') ||
+               (c >= 'a' && c <= 'f') ||
+               (c >= 'A' && c <= 'F');
+    };
+
+    std::size_t search_from = 0;
+    while (true) {
+        const auto begin = text.find(kAddressPrefix, search_from);
+        if (begin == std::string::npos) {
+            break;
+        }
+        const auto digits_begin = begin + kAddressPrefix.size();
+        auto end = digits_begin;
+        while (end < text.size() && is_hex(text[end])) {
+            ++end;
+        }
+        if (end == digits_begin || end == text.size() || text[end] != ')') {
+            search_from = digits_begin;
+            continue;
+        }
+        text.replace(begin, end - begin + 1, kReplacement);
+        search_from = begin + kReplacement.size();
+    }
+    return text;
+}
+
+AFPShapeCode CompileAFPShape(AFPShapeOp op,
+                             swift::u32 lane_bits,
+                             bool scalar,
+                             bool scalar_insert,
+                             bool afp_nan) {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+            .arm64_features = Arm64Features::AFP,
+            .sse_scalar_insert = scalar_insert,
+            .sse_afp_nan = afp_nan,
+    };
+    AddressSpace address_space{config};
+    IntrusivePtr<Block> block{new Block(0, Location{0x2d00})};
+    auto left = block->LoadUniform(Uniform{0, ValueType::V128})
+                        .SetType(ValueType::V128);
+    auto right = block->LoadUniform(Uniform{16, ValueType::V128})
+                         .SetType(ValueType::V128);
+    auto third = block->LoadUniform(Uniform{32, ValueType::V128})
+                         .SetType(ValueType::V128);
+    Value result;
+    switch (op) {
+        case AFPShapeOp::Add:
+            if (!scalar) {
+                result = block->VecFAdd(left, right, Imm{swift::u32{lane_bits}});
+            } else if (lane_bits == 32) {
+                result = block->VecFAddScalar32(left, right);
+            } else {
+                result = block->VecFAddScalar64(left, right);
+            }
+            break;
+        case AFPShapeOp::Sub:
+            if (!scalar) {
+                result = block->VecFSub(left, right, Imm{swift::u32{lane_bits}});
+            } else if (lane_bits == 32) {
+                result = block->VecFSubScalar32(left, right);
+            } else {
+                result = block->VecFSubScalar64(left, right);
+            }
+            break;
+        case AFPShapeOp::Mul:
+            if (!scalar) {
+                result = block->VecFMul(left, right, Imm{swift::u32{lane_bits}});
+            } else if (lane_bits == 32) {
+                result = block->VecFMulScalar32(left, right);
+            } else {
+                result = block->VecFMulScalar64(left, right);
+            }
+            break;
+        case AFPShapeOp::Div:
+            if (!scalar) {
+                result = block->VecFDiv(left, right, Imm{swift::u32{lane_bits}});
+            } else if (lane_bits == 32) {
+                result = block->VecFDivScalar32(left, right);
+            } else {
+                result = block->VecFDivScalar64(left, right);
+            }
+            break;
+        case AFPShapeOp::Sqrt:
+            result = block->VecFUnary(left,
+                                      left,
+                                      Imm{swift::u32{lane_bits}},
+                                      Imm{swift::u32{0}},
+                                      Imm{swift::u32{scalar ? 1u : 0u}});
+            break;
+        case AFPShapeOp::Fma:
+            result = block->VecFMulAdd(left,
+                                       right,
+                                       third,
+                                       Imm{swift::u32{lane_bits}},
+                                       Imm{swift::u32{0}});
+            break;
+        case AFPShapeOp::Min:
+        case AFPShapeOp::Max:
+            result = block->VecFMinMax(left,
+                                       right,
+                                       Imm{swift::u32{lane_bits}},
+                                       Imm{swift::u32{op == AFPShapeOp::Max ? 1u : 0u}},
+                                       Imm{swift::u32{scalar ? 1u : 0u}});
+            break;
+        case AFPShapeOp::Comis: {
+            auto flags = block->VecFCmp(left,
+                                        right,
+                                        Imm{swift::u32{lane_bits}},
+                                        Imm{swift::u32{0}})
+                                 .SetType(ValueType::U64);
+            block->StoreUniform(Uniform{48, ValueType::U64}, flags);
+            break;
+        }
+        case AFPShapeOp::Rcp:
+        case AFPShapeOp::Rsqrt:
+            result = block->VecFUnary(
+                    left,
+                    left,
+                    Imm{swift::u32{lane_bits}},
+                    Imm{swift::u32{op == AFPShapeOp::Rcp ? 1u : 2u}},
+                    Imm{swift::u32{scalar ? 1u : 0u}});
+            break;
+    }
+    if (op != AFPShapeOp::Comis) {
+        block->StoreUniform(Uniform{48, ValueType::V128},
+                            result.SetType(ValueType::V128));
+    }
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+
+    RegAlloc reg_alloc{block->MaxInstrId(),
+                       address_space.GetTrampolines().GetGPRRegs(),
+                       address_space.GetTrampolines().GetFPRRegs()};
+    RegisterAllocPass::Run(block.get(), &reg_alloc, scalar_insert);
+    arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
+    arm64::JitTranslator translator{context};
+    translator.Translate(block.get());
+    context.Finish();
+
+    auto& masm = context.GetMasm();
+    auto* first = masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+    auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+    vixl::aarch64::Decoder decoder;
+    vixl::aarch64::Disassembler disassembler;
+    decoder.AppendVisitor(&disassembler);
+    AFPShapeCode code;
+    for (const auto* instruction = first; instruction < last;
+         instruction = instruction->GetNextInstruction()) {
+        decoder.Decode(instruction);
+        code.text += disassembler.GetOutput();
+        code.text += '\n';
+        ++code.instructions;
+    }
+    return code;
+}
+
+const char* AFPShapeName(AFPShapeOp op) {
+    switch (op) {
+        case AFPShapeOp::Add: return "add";
+        case AFPShapeOp::Sub: return "sub";
+        case AFPShapeOp::Mul: return "mul";
+        case AFPShapeOp::Div: return "div";
+        case AFPShapeOp::Sqrt: return "sqrt";
+        case AFPShapeOp::Fma: return "fma";
+        case AFPShapeOp::Min: return "min";
+        case AFPShapeOp::Max: return "max";
+        case AFPShapeOp::Comis: return "comis";
+        case AFPShapeOp::Rcp: return "rcp";
+        case AFPShapeOp::Rsqrt: return "rsqrt";
+    }
+    return "unknown";
+}
+
+}  // namespace
+
+TEST_CASE("AFP P1 removes guards only for the arithmetic allowlist") {
+    constexpr std::array included{
+            AFPShapeOp::Add,
+            AFPShapeOp::Sub,
+            AFPShapeOp::Mul,
+            AFPShapeOp::Div,
+            AFPShapeOp::Sqrt,
+    };
+    for (const auto op : included) {
+        for (const swift::u32 lane_bits : {swift::u32{32}, swift::u32{64}}) {
+            for (const bool scalar : {false, true}) {
+                for (const bool scalar_insert : {false, true}) {
+                    if (!scalar && scalar_insert) continue;
+                    INFO(AFPShapeName(op) << " f" << lane_bits
+                                          << (scalar ? " scalar" : " packed")
+                                          << (scalar_insert ? " tied" : " legacy"));
+                    const auto off = CompileAFPShape(
+                            op, lane_bits, scalar, scalar_insert, false);
+                    const auto on = CompileAFPShape(
+                            op, lane_bits, scalar, scalar_insert, true);
+                    INFO("OFF:\n" << off.text << "ON:\n" << on.text);
+                    REQUIRE(on.instructions < off.instructions);
+                    if (scalar) {
+                        REQUIRE(off.text.find("b.vs") != std::string::npos);
+                        REQUIRE(on.text.find("b.vs") == std::string::npos);
+                    } else if (lane_bits == 32) {
+                        REQUIRE(off.text.find("uminv") != std::string::npos);
+                        REQUIRE(on.text.find("uminv") == std::string::npos);
+                    } else {
+                        REQUIRE(off.text.find("cbz") != std::string::npos);
+                        REQUIRE(on.text.find("cbz") == std::string::npos);
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("AFP P1 leaves excluded FP opcode lowering unchanged") {
+    REQUIRE(NormalizeDisasmForCompare(
+                    "b.mi #+0x8 (addr 0xaA09)\nmov x0, #0x123") ==
+            "b.mi #+0x8 (addr <normalized>)\nmov x0, #0x123");
+
+    struct ExcludedShape {
+        AFPShapeOp op;
+        swift::u32 lane_bits;
+        bool scalar;
+    };
+    constexpr std::array excluded{
+            ExcludedShape{AFPShapeOp::Fma, 32, false},
+            ExcludedShape{AFPShapeOp::Fma, 64, false},
+            ExcludedShape{AFPShapeOp::Min, 32, false},
+            ExcludedShape{AFPShapeOp::Min, 64, true},
+            ExcludedShape{AFPShapeOp::Max, 32, true},
+            ExcludedShape{AFPShapeOp::Max, 64, false},
+            ExcludedShape{AFPShapeOp::Comis, 32, true},
+            ExcludedShape{AFPShapeOp::Comis, 64, true},
+            ExcludedShape{AFPShapeOp::Rcp, 32, false},
+            ExcludedShape{AFPShapeOp::Rcp, 32, true},
+            ExcludedShape{AFPShapeOp::Rsqrt, 32, false},
+            ExcludedShape{AFPShapeOp::Rsqrt, 32, true},
+    };
+    for (const auto& shape : excluded) {
+        for (const bool scalar_insert : {false, true}) {
+            if (!shape.scalar && scalar_insert) continue;
+            INFO(AFPShapeName(shape.op) << " f" << shape.lane_bits
+                                        << (shape.scalar ? " scalar" : " packed")
+                                        << (scalar_insert ? " tied" : " legacy"));
+            const auto off = CompileAFPShape(shape.op,
+                                             shape.lane_bits,
+                                             shape.scalar,
+                                             scalar_insert,
+                                             false);
+            const auto on = CompileAFPShape(shape.op,
+                                            shape.lane_bits,
+                                            shape.scalar,
+                                            scalar_insert,
+                                            true);
+            INFO("OFF:\n" << off.text << "ON:\n" << on.text);
+            REQUIRE(on.instructions == off.instructions);
+            REQUIRE(NormalizeDisasmForCompare(on.text) ==
+                    NormalizeDisasmForCompare(off.text));
+        }
+    }
 }
 
 TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {

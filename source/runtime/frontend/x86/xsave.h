@@ -123,7 +123,8 @@ void EmitXsave(ir::Assembler* assembler,
                ir::Value address,
                VAddr next_pc,
                VAddr insn_pc,
-               bool restore);
+               bool restore,
+               bool sse_afp_nan = false);
 void EmitXsaveopt(ir::Assembler* assembler,
                   ir::Value address,
                   VAddr next_pc,

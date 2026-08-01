@@ -1,0 +1,55 @@
+#pragma once
+
+#include "aarch64/macro-assembler-aarch64.h"
+#include "runtime/backend/context.h"
+#include "translator/x86/cpu.h"
+
+namespace swift::runtime::backend::arm64 {
+
+using namespace vixl::aarch64;
+
+inline constexpr u64 kSseAFPGuestFPCRBase = (u64{1} << 1) | (u64{1} << 2);
+
+// Build the complete guest FPCR from architectural MXCSR state.  Do not use
+// the caller's FPCR as a base: DN/FZ/RMode and trap controls are host state.
+// x86 RC encodes down/up as 01/10, while Arm FPCR encodes up/down as 01/10,
+// so the two source bits deliberately cross on their way to RMode[23:22].
+inline void EmitSseAFPGuestFPCR(MacroAssembler& masm,
+                                const XRegister& state_reg,
+                                const XRegister& result,
+                                const XRegister& mxcsr,
+                                const XRegister& bit) {
+    masm.Ldr(mxcsr.W(),
+             MemOperand(state_reg,
+                        state_offset_uniform_buffer +
+                                offsetof(swift::x86::ThreadContext64, mxcsr)));
+    masm.Mov(result, kSseAFPGuestFPCRBase);
+    masm.Ubfx(bit, mxcsr, 6, 1);   // MXCSR.DAZ -> FPCR.FIZ[0]
+    masm.Orr(result, result, bit);
+    masm.Ubfx(bit, mxcsr, 15, 1);  // MXCSR.FTZ -> FPCR.FZ[24]
+    masm.Orr(result, result, Operand(bit, LSL, 24));
+    masm.Ubfx(bit, mxcsr, 13, 1);  // MXCSR.RC low -> FPCR.RMode high
+    masm.Orr(result, result, Operand(bit, LSL, 23));
+    masm.Ubfx(bit, mxcsr, 14, 1);  // MXCSR.RC high -> FPCR.RMode low
+    masm.Orr(result, result, Operand(bit, LSL, 22));
+}
+
+inline u64 ReadNativeFPCR() {
+#if defined(__aarch64__)
+    u64 value{};
+    asm volatile("mrs %0, fpcr" : "=r"(value));
+    return value;
+#else
+    return 0;
+#endif
+}
+
+inline void WriteNativeFPCR(u64 value) {
+#if defined(__aarch64__)
+    asm volatile("msr fpcr, %0" : : "r"(value) : "memory");
+#else
+    (void) value;
+#endif
+}
+
+}  // namespace swift::runtime::backend::arm64

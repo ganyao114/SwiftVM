@@ -2,6 +2,7 @@
 
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
+#include "runtime/backend/arm64/fpcr_mode.h"
 #include "runtime/common/helper_abi.h"
 #include "runtime/frontend/x86/x87.h"
 #include "translator/x86/cpu.h"
@@ -338,6 +339,13 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
         }
     }
 
+    // Every direct helper executes under the caller's native FP environment.
+    // The runtime-entry frame sits immediately above this helper frame.
+    if (sse_afp_nan) {
+        __ Ldr(ip0, MemOperand(sp, kSaveBytes));
+        __ Msr(FPCR, ip0);
+    }
+
     // Function address.
     if (lambda.IsValue()) {
         auto fn = *lambda_value;
@@ -364,6 +372,12 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     __ Blr(ip);
 
     __ Str(x0, MemOperand(sp, kResultSlot));
+    if (sse_afp_nan) {
+        // A helper such as XRSTOR may have updated context.mxcsr. Rebuild from
+        // current guest state, never from the saved caller FPCR.
+        EmitSseAFPGuestFPCR(masm, state, ip, ip0, ip1);
+        __ Msr(FPCR, ip);
+    }
 
     for (size_t i = 0; i + 1 < save_fprs.size(); i += 2) {
         __ Ldp(VRegister::GetQRegFromCode(save_fprs[i]),

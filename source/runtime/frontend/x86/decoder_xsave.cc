@@ -296,7 +296,8 @@ void EmitXsave(ir::Assembler* assembler,
                ir::Value address,
                VAddr next_pc,
                VAddr insn_pc,
-               bool restore) {
+               bool restore,
+               bool sse_afp_nan) {
     if (!XsaveEnabled()) {
         EmitUndefined(assembler, next_pc);
         return;
@@ -319,6 +320,10 @@ void EmitXsave(ir::Assembler* assembler,
     // primitive; see decoder_x87.cc's RaiseIfGuestFault.
     __ SetLocation(ir::Lambda{ir::Imm{insn_pc}});
     __ CheckMemoryAlignment(status, ir::Imm(kX87GuestFault));
+    if (restore && sse_afp_nan) {
+        __ SetLocation(ir::Lambda{ir::Imm{next_pc}});
+        __ ReturnToDispatcher();
+    }
 }
 
 void EmitXsaveopt(ir::Assembler* assembler,

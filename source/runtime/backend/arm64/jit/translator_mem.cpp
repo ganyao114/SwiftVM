@@ -7,6 +7,7 @@
 #include "runtime/backend/atomic_fallback.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
+#include "runtime/backend/arm64/fpcr_mode.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -526,6 +527,17 @@ void JitTranslator::EmitStoreUniform(ir::Inst* inst) {
             PANIC();
         }
     });
+    if (sse_afp_nan &&
+        uni.GetOffset() == offsetof(swift::x86::ThreadContext64, mxcsr)) {
+        // StoreUniform has no save frame around it. Lease all three operands
+        // from the allocator-visible scratch pool so XPOOL cannot place a
+        // live guest value in a fixed ip register that this sync clobbers.
+        const auto fpcr = context.GetTmpX();
+        const auto mxcsr = context.GetTmpX();
+        const auto bit = context.GetTmpX();
+        EmitSseAFPGuestFPCR(masm, state, fpcr, mxcsr, bit);
+        __ Msr(FPCR, fpcr);
+    }
 }
 
 void JitTranslator::EmitLoadLocal(ir::Inst* inst) { PANIC("TODO"); }
@@ -1047,8 +1059,16 @@ void JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
         EmitGuestToHost(x1, x1);
     }
     __ Mov(x2, size);
+    if (sse_afp_nan) {
+        __ Ldr(ip0, MemOperand(sp, kSaveBytes));
+        __ Msr(FPCR, ip0);
+    }
     __ Mov(ip, reinterpret_cast<uintptr_t>(&HostMemMove));
     __ Blr(ip);
+    if (sse_afp_nan) {
+        EmitSseAFPGuestFPCR(masm, state, ip, ip0, ip1);
+        __ Msr(FPCR, ip);
+    }
 
     for (u32 i = 0; i < 32; ++i) {
         __ Ldr(VRegister::GetVRegFromCode(i).Q(), MemOperand(sp, kGprSaveBytes + i * 16));
