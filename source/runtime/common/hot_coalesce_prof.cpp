@@ -6,8 +6,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "runtime/common/perf_stats.h"
@@ -299,6 +301,119 @@ void DumpAtExit() {
                      Percent(bucket.state_saved_dynamic, bucket.host_dynamic));
     }
 
+    // Layout view keeps individual versions instead of aggregating by guest
+    // PC. This makes ON/OFF code-size shifts, alignment and resolved link
+    // distances directly comparable even when a block was retranslated.
+    std::map<VAddr, const ProcessSlot*> target_hosts;
+    for (u32 i = 0; i < count; ++i) {
+        const auto& slot = process.slots[i];
+        if (!slot.shape.host_address) continue;
+        auto [it, inserted] = target_hosts.emplace(slot.shape.guest_entry, &slot);
+        if (!inserted &&
+            Dynamic(slot, HotCoalesceCounter::Entries) >
+                    Dynamic(*it->second, HotCoalesceCounter::Entries)) {
+            it->second = &slot;
+        }
+    }
+    std::vector<std::pair<u32, u64>> layout_rank;
+    for (u32 i = 0; i < count; ++i) {
+        const auto& slot = process.slots[i];
+        const u64 slot_entries = Dynamic(slot, HotCoalesceCounter::Entries);
+        if (slot_entries && slot.shape.host_address) {
+            layout_rank.emplace_back(
+                    i, slot_entries * std::max<u32>(slot.shape.host_instructions, 1));
+        }
+    }
+    std::sort(layout_rank.begin(), layout_rank.end(), [](const auto& left,
+                                                         const auto& right) {
+        if (left.second != right.second) return left.second > right.second;
+        return left.first < right.first;
+    });
+    if (layout_rank.size() > 20) layout_rank.resize(20);
+
+    u64 link_edges = 0;
+    u64 resolved_edges = 0;
+    u64 self_edges = 0;
+    u64 forward_edges = 0;
+    u64 backward_edges = 0;
+    u64 same_line_edges = 0;
+    u64 same_page_edges = 0;
+    u64 potential_dynamic = 0;
+    for (u32 i = 0; i < count; ++i) {
+        const auto& slot = process.slots[i];
+        const auto entries_for_slot = Dynamic(slot, HotCoalesceCounter::Entries);
+        if (!entries_for_slot) continue;
+        for (u32 edge = 0; edge < slot.shape.link_target_count; ++edge) {
+            ++link_edges;
+            potential_dynamic += entries_for_slot;
+            const VAddr target_pc = slot.shape.link_targets[edge];
+            if (target_pc == slot.shape.guest_entry) ++self_edges;
+            auto target = target_hosts.find(target_pc);
+            if (target == target_hosts.end()) continue;
+            ++resolved_edges;
+            const VAddr target_host = target->second->shape.host_address;
+            if (target_host >= slot.shape.host_address) {
+                ++forward_edges;
+            } else {
+                ++backward_edges;
+            }
+            same_line_edges +=
+                    (target_host >> 6) == (slot.shape.host_address >> 6);
+            same_page_edges +=
+                    (target_host >> 12) == (slot.shape.host_address >> 12);
+        }
+    }
+    std::fprintf(out,
+                 "[svm-hot-layout-summary] static_edges=%llu resolved_edges=%llu "
+                 "self_edges=%llu forward_edges=%llu backward_edges=%llu "
+                 "same_line_edges=%llu same_page_edges=%llu "
+                 "potential_dynamic_edges=%llu\n",
+                 PrintU64(link_edges), PrintU64(resolved_edges),
+                 PrintU64(self_edges), PrintU64(forward_edges),
+                 PrintU64(backward_edges), PrintU64(same_line_edges),
+                 PrintU64(same_page_edges), PrintU64(potential_dynamic));
+
+    for (size_t rank = 0; rank < layout_rank.size(); ++rank) {
+        const u32 slot_index = layout_rank[rank].first;
+        const auto& slot = process.slots[slot_index];
+        const auto& shape = slot.shape;
+        std::fprintf(out,
+                     "[svm-hot-layout] rank=%zu slot=%u pc=0x%llx host=0x%llx "
+                     "host_offset=%u host_bytes=%u host_mod64=%llu "
+                     "host_mod128=%llu host_mod4096=%llu entries=%llu "
+                     "host_static=%u nan_static=%u targets=%u overflow=%u",
+                     rank + 1, slot_index,
+                     static_cast<unsigned long long>(shape.guest_entry),
+                     static_cast<unsigned long long>(shape.host_address),
+                     shape.host_offset, shape.host_bytes,
+                     PrintU64(shape.host_address & 63),
+                     PrintU64(shape.host_address & 127),
+                     PrintU64(shape.host_address & 4095),
+                     PrintU64(Dynamic(slot, HotCoalesceCounter::Entries)),
+                     shape.host_instructions, shape.nan_guard_instructions,
+                     shape.link_target_count, shape.link_target_overflow);
+        for (u32 edge = 0; edge < shape.link_target_count; ++edge) {
+            const VAddr target_pc = shape.link_targets[edge];
+            auto target = target_hosts.find(target_pc);
+            if (target == target_hosts.end()) {
+                std::fprintf(out, " target%u_pc=0x%llx target%u_host=unresolved",
+                             edge,
+                             static_cast<unsigned long long>(target_pc), edge);
+                continue;
+            }
+            const VAddr target_host = target->second->shape.host_address;
+            const auto delta = static_cast<long long>(target_host) -
+                               static_cast<long long>(shape.host_address);
+            std::fprintf(out,
+                         " target%u_pc=0x%llx target%u_host=0x%llx "
+                         "target%u_delta=%lld",
+                         edge, static_cast<unsigned long long>(target_pc), edge,
+                         static_cast<unsigned long long>(target_host), edge,
+                         delta);
+        }
+        std::fputc('\n', out);
+    }
+
     std::fflush(out);
     if (close_out) std::fclose(out);
 }
@@ -347,6 +462,12 @@ u32 HotCoalesceRegisterUnit(VAddr guest_entry) {
 void HotCoalesceUpdateUnit(u32 slot, const HotCoalesceUnitStatic& counters) {
     if (slot == kHotCoalesceInvalidSlot || slot >= kHotCoalesceMaxUnits) return;
     Counters().slots[slot].shape = counters;
+}
+
+void HotCoalesceSetUnitHostBase(u32 slot, VAddr host_base) {
+    if (slot == kHotCoalesceInvalidSlot || slot >= kHotCoalesceMaxUnits) return;
+    auto& shape = Counters().slots[slot].shape;
+    shape.host_address = host_base + shape.host_offset;
 }
 
 void HotCoalesceSubmitThread(std::span<const u64> counters) {
@@ -432,6 +553,37 @@ HotCoalesceUniformStats HotCoalesceAnalyzeUniformSequences(const ir::Block* bloc
     }
     flush_run();
     return out;
+}
+
+void HotCoalesceAnalyzeLinkTargets(const ir::Block* block,
+                                   HotCoalesceUnitStatic& out) {
+    if (!block) return;
+    auto add = [&](VAddr target) {
+        if (out.link_target_count < out.link_targets.size()) {
+            out.link_targets[out.link_target_count++] = target;
+        } else if (out.link_target_overflow != UINT8_MAX) {
+            ++out.link_target_overflow;
+        }
+    };
+    std::function<void(const ir::Terminal&)> visit;
+    visit = [&](const ir::Terminal& terminal) {
+        VisitVariant<void>(terminal, [&](const auto& item) {
+            using T = std::decay_t<decltype(item)>;
+            if constexpr (std::is_same_v<T, ir::terminal::LinkBlock> ||
+                          std::is_same_v<T, ir::terminal::LinkBlockFast>) {
+                add(item.next.Value());
+            } else if constexpr (std::is_same_v<T, ir::terminal::If> ||
+                                 std::is_same_v<T, ir::terminal::Condition>) {
+                visit(item.then_);
+                visit(item.else_);
+            } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
+                visit(item.else_);
+            } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
+                for (const auto& item_case : item.cases) visit(item_case.then);
+            }
+        });
+    };
+    visit(block->GetTerminal());
 }
 
 bool HotCoalesceIsMoveBridge(std::string_view text) {

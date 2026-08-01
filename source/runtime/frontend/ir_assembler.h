@@ -46,6 +46,24 @@ public:
     }
 
     template <typename LambdaT, typename... Args>
+    Value CallHostWithTraits(HelperCallTraits traits, LambdaT l, const Args&... args) {
+        constexpr static auto MAX_ARG = 3;
+        auto arg_count = sizeof...(args);
+        ASSERT(arg_count <= MAX_ARG);
+        return CallLambda(
+                Lambda{DataClass{Imm{reinterpret_cast<VAddr>(FptrCast(l))}}, traits},
+                std::forward<const Args&>(args)...);
+    }
+
+    template <typename LambdaT, typename... Args>
+    Value CallHostFPFree(LambdaT l, const Args&... args) {
+        return CallHostWithTraits(
+                HelperCallTraits{.host_fp = HostFpEffect::FPCRTransparent},
+                l,
+                std::forward<const Args&>(args)...);
+    }
+
+    template <typename LambdaT, typename... Args>
     Value CallHostWithUniformEffects(UniformEffectId effects, LambdaT l, const Args&... args) {
         constexpr static auto MAX_ARG = 3;
         auto arg_count = sizeof...(args);
@@ -59,6 +77,17 @@ public:
     Value CallHostUniformPure(LambdaT l, const Args&... args) {
         return CallHostWithUniformEffects(UniformEffectId::None, l,
                                           std::forward<const Args&>(args)...);
+    }
+
+    template <typename LambdaT, typename... Args>
+    Value CallHostUniformPureFPFree(LambdaT l, const Args&... args) {
+        return CallHostWithTraits(
+                HelperCallTraits{
+                        .uniform = UniformEffectId::None,
+                        .host_fp = HostFpEffect::FPCRTransparent,
+                },
+                l,
+                std::forward<const Args&>(args)...);
     }
 
     HIRBuilder::ElseThen If(const terminal::If& if_);

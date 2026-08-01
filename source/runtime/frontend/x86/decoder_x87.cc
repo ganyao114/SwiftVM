@@ -124,7 +124,20 @@ ir::Value X64Decoder::CallX87(u64 command, ir::Value guest_address) {
                          .SetType(ir::ValueType::U64);
     } else {
         auto encoded = __ LoadImm(ir::Imm(command)).SetType(ir::ValueType::U64);
-        result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Dispatch)}},
+        // Keep AFP OFF byte-identical: the dedicated target address is itself
+        // a codegen-visible immediate even though EmitHostCall would ignore
+        // the effect tag when AFP is inactive.
+        const bool fp_free = sse_afp_nan_ &&
+                             X87CommandFPCRTransparent(command);
+        const auto target = fp_free ? &X87DispatchFPFree : &X87Dispatch;
+        result = __ CallLambda(
+                               ir::Lambda{
+                                       ir::DataClass{ir::Imm{reinterpret_cast<VAddr>(target)}},
+                                       ir::HelperCallTraits{
+                                               .host_fp = fp_free
+                                                       ? ir::HostFpEffect::FPCRTransparent
+                                                       : ir::HostFpEffect::MayTouch,
+                                       }},
                                context,
                                encoded,
                                guest_address)

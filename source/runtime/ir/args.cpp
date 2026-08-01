@@ -120,7 +120,8 @@ namespace {
 
 constexpr u8 kUniformEffectTag = 0x80;
 constexpr u8 kHelperABITag = 0x40;
-constexpr u8 kUniformEffectMask = 0x3f;
+constexpr u8 kHostFpTransparentTag = 0x20;
+constexpr u8 kUniformEffectMask = 0x1f;
 constexpr size_t kMaxUniformEffectSets = kUniformEffectMask + 1;
 
 std::array<const UniformEffectSet*, kMaxUniformEffectSets> uniform_effect_sets{
@@ -157,25 +158,38 @@ const UniformEffectSet* LookupUniformEffectSet(UniformEffectId id) {
     return uniform_effect_sets[index];
 }
 
-Lambda::Lambda(const DataClass& value, UniformEffectId effects) : address(value) {
-    ASSERT(address.type == ArgType::Imm);
-    const auto id = static_cast<u8>(effects);
-    ASSERT(id > 0 && id <= kUniformEffectMask);
-    if (id == 0 || id > kUniformEffectMask) {
-        return;
-    }
-    address.type = static_cast<ArgType>(kUniformEffectTag | id);
-}
+Lambda::Lambda(const DataClass& value, UniformEffectId effects)
+        : Lambda(value,
+                 HelperCallTraits{.uniform = effects}) {}
 
-Lambda::Lambda(const DataClass& value, HelperABI abi) : address(value) {
+Lambda::Lambda(const DataClass& value, HelperABI abi)
+        : Lambda(value,
+                 HelperCallTraits{.abi = abi}) {}
+
+Lambda::Lambda(const DataClass& value, HelperCallTraits traits) : address(value) {
     ASSERT(address.type == ArgType::Imm);
-    if (abi == HelperABI::PreserveAllLeaf) {
-        address.type = static_cast<ArgType>(kHelperABITag);
+    u8 tags = 0;
+    const auto id = static_cast<u8>(traits.uniform);
+    if (traits.uniform != UniformEffectId::Unknown) {
+        ASSERT(id > 0 && id <= kUniformEffectMask);
+        if (id > 0 && id <= kUniformEffectMask) {
+            tags |= kUniformEffectTag | id;
+        }
+    }
+    if (traits.abi == HelperABI::PreserveAllLeaf) {
+        tags |= kHelperABITag;
+    }
+    if (traits.host_fp == HostFpEffect::FPCRTransparent) {
+        tags |= kHostFpTransparentTag;
+    }
+    if (tags) {
+        address.type = static_cast<ArgType>(tags);
     }
 }
 
 bool Lambda::IsTaggedImm() const {
-    return (static_cast<u8>(address.type) & (kUniformEffectTag | kHelperABITag)) != 0;
+    return (static_cast<u8>(address.type) &
+            (kUniformEffectTag | kHelperABITag | kHostFpTransparentTag)) != 0;
 }
 
 Imm& Lambda::GetImm() {
@@ -211,6 +225,12 @@ HelperABI Lambda::GetHelperABI() const {
     return (static_cast<u8>(address.type) & kHelperABITag) != 0
             ? HelperABI::PreserveAllLeaf
             : HelperABI::NormalAAPCS;
+}
+
+HostFpEffect Lambda::GetHostFpEffect() const {
+    return (static_cast<u8>(address.type) & kHostFpTransparentTag) != 0
+            ? HostFpEffect::FPCRTransparent
+            : HostFpEffect::MayTouch;
 }
 
 void Params::Push(const Value& data) { Push(new Param(data)); }

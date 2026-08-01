@@ -1228,10 +1228,66 @@ void LoadEnvironment(ThreadContext64& ctx, u64 address) {
 
 }  // namespace
 
-static u64 X87DispatchImpl(u64 context, u64 command_word, u64 guest_address) {
+static bool X87DispatchFPFreeImpl(ThreadContext64& ctx,
+                                  const DecodedCommand& command,
+                                  u64 guest_address,
+                                  u64& result) {
+    result = 0;
+    switch (command.action) {
+        case X87Action::LoadFloat:
+            Push(ctx, LoadMemoryValue(ctx, command.format, guest_address));
+            if (command.format == X87Format::Float64) {
+                ctx.x87_regs[Top(ctx)].reserved[0] = kX87ReducedMarker;
+            }
+            break;
+        case X87Action::StoreFloat:
+            StoreFloat(ctx, command.format, guest_address);
+            if (command.flags & X87Pop) {
+                const u16 c1 = ctx.x87_fsw & kSwC1;
+                Pop(ctx);
+                ctx.x87_fsw = static_cast<u16>((ctx.x87_fsw & ~kSwC1) | c1);
+            }
+            break;
+        case X87Action::StoreReg:
+            if (Require(ctx, 0)) {
+                Write(ctx, command.index, Read(ctx, 0));
+                // FST/FSTP transfers ext80 without rounding and clears C1.
+                ctx.x87_fsw &= static_cast<u16>(~kSwC1);
+            } else {
+                Write(ctx, command.index, kIndefinite);
+            }
+            if (command.flags & X87Pop) Pop(ctx);
+            break;
+        case X87Action::Remainder:
+            Remainder(ctx, static_cast<X87Remainder>(command.operation));
+            break;
+        case X87Action::LoadConstant:
+            Push(ctx, Constant(static_cast<X87Constant>(command.operation)));
+            break;
+        case X87Action::StoreControl:
+            StoreGuest<u16>(guest_address, ctx.x87_fcw);
+            break;
+        case X87Action::StoreStatus:
+            if (command.format == X87Format::Register) {
+                result = ctx.x87_fsw;
+            } else {
+                StoreGuest<u16>(guest_address, ctx.x87_fsw);
+            }
+            break;
+        default:
+            return false;
+    }
+    return true;
+}
+
+static void RecordX87DispatchCall() {
     if (X87DispatchStatsEnabled()) {
         g_x87_dispatch_calls.fetch_add(1, std::memory_order_relaxed);
     }
+}
+
+static u64 X87DispatchImpl(u64 context, u64 command_word, u64 guest_address) {
+    RecordX87DispatchCall();
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     const auto command = DecodeCommand(command_word);
     switch (command.action) {
@@ -1384,6 +1440,23 @@ static u64 X87DispatchImpl(u64 context, u64 command_word, u64 guest_address) {
 u64 X87Dispatch(u64 context, u64 command_word, u64 guest_address) {
     TakeGuestFault();
     const u64 result = X87DispatchImpl(context, command_word, guest_address);
+    return result | (TakeGuestFault() ? kX87GuestFault : 0);
+}
+
+u64 X87DispatchFPFree(u64 context, u64 command_word, u64 guest_address) {
+    TakeGuestFault();
+    if (!X87CommandFPCRTransparent(command_word)) {
+        // Fail closed: never tail into X87Dispatch while guest AFP FPCR is
+        // installed. The emitted caller turns this bit into PageFatal.
+        return kX87GuestFault;
+    }
+    RecordX87DispatchCall();
+    auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
+    const auto command = DecodeCommand(command_word);
+    u64 result{};
+    const bool handled =
+            X87DispatchFPFreeImpl(ctx, command, guest_address, result);
+    ASSERT(handled);
     return result | (TakeGuestFault() ? kX87GuestFault : 0);
 }
 

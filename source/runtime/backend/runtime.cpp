@@ -77,6 +77,11 @@ struct Runtime::Impl final {
         const bool exec_profile_enabled =
                 exec_prof && std::strcmp(exec_prof, "0") != 0;
         fpcr_tax_profile_enabled = FpcrTaxProfEnabled();
+        fpcr_timing_enabled = FpcrTaxTimingEnabled();
+        if (fpcr_timing_enabled) {
+            fpcr_timing = std::make_unique<FpcrTimingBuffer>();
+            profile_interface.fpcr_timing = fpcr_timing.get();
+        }
         hot_coalesce_enabled = HotCoalesceProfEnabled();
         if (hot_coalesce_enabled) {
             hot_coalesce_counters.resize(
@@ -92,7 +97,7 @@ struct Runtime::Impl final {
             state->l1_code_cache = l1_code_cache.Data();
         }
         if (exec_profile_enabled || hot_coalesce_enabled ||
-            fpcr_tax_profile_enabled) {
+            fpcr_tax_profile_enabled || fpcr_timing_enabled) {
             state->interface = &profile_interface;
         }
         // Wire the dispatcher's code-cache tables: L1 is per-runtime, L2 is the
@@ -187,6 +192,9 @@ struct Runtime::Impl final {
         if (fpcr_tax_profile_enabled) {
             FpcrTaxSubmit(profile_interface.fpcr_tax);
         }
+        if (fpcr_timing_enabled) {
+            FpcrTimingSubmit(*fpcr_timing);
+        }
         // NOTE: a write window opened by host code on a thread that then exits
         // is deliberately NOT closed here. Closing it looked prudent, but a
         // mutation test (delete the call, run the suites) could not tell the
@@ -240,8 +248,10 @@ struct Runtime::Impl final {
         }
         if (!self) return false;
         // Signal callbacks are C++ host code. A guest/SMC fault may interrupt
-        // either generated code or a direct helper; restoring is idempotent
-        // for the latter, whose FPCR is already native.
+        // generated code, a conservative helper already using host FPCR, or
+        // an FPCR-transparent helper deliberately still using guest FPCR.
+        // Restore is idempotent for the conservative helper and mandatory for
+        // the transparent one; sigreturn restores the interrupted ucontext.
         self->RestoreHostFPCRForSignal();
         if (sig != SIGSEGV && sig != SIGBUS) {
             return false;
@@ -546,8 +556,10 @@ struct Runtime::Impl final {
     backend::Trampolines::RuntimeEntry jit_entry{};
     backend::RuntimeProfileInterface profile_interface{};
     std::vector<u64> hot_coalesce_counters{};
+    std::unique_ptr<FpcrTimingBuffer> fpcr_timing{};
     bool hot_coalesce_enabled{};
     bool fpcr_tax_profile_enabled{};
+    bool fpcr_timing_enabled{};
     mutable bool exec_profile_started{};
     mutable std::chrono::steady_clock::time_point exec_profile_start{};
     // Signal handlers run on the interrupted guest thread and cannot recover

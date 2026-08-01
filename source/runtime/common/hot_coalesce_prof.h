@@ -5,6 +5,7 @@
 // so guest threads never contend on a shared counter in the JIT hot path.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <span>
 #include <string_view>
@@ -30,6 +31,7 @@ enum class HotCoalesceCounter : u32 {
 
 constexpr u32 kHotCoalesceCounterCount =
         static_cast<u32>(HotCoalesceCounter::Count);
+constexpr u32 kHotCoalesceMaxLinkTargets = 4;
 
 struct HotCoalesceUniformStats {
     u32 sequences{};
@@ -41,21 +43,30 @@ struct HotCoalesceUniformStats {
 
 struct HotCoalesceUnitStatic {
     VAddr guest_entry{};
+    VAddr host_address{};
+    u32 host_offset{};
+    u32 host_bytes{};
     u32 host_instructions{};
     u32 spill_reloads{};
     u32 spill_writebacks{};
     u32 move_bridges{};
     u32 nan_guard_instructions{};
+    std::array<VAddr, kHotCoalesceMaxLinkTargets> link_targets{};
+    u8 link_target_count{};
+    u8 link_target_overflow{};
     HotCoalesceUniformStats uniform{};
 };
 
 [[nodiscard]] bool HotCoalesceProfEnabled();
 [[nodiscard]] u32 HotCoalesceRegisterUnit(VAddr guest_entry);
 void HotCoalesceUpdateUnit(u32 slot, const HotCoalesceUnitStatic& counters);
+void HotCoalesceSetUnitHostBase(u32 slot, VAddr host_base);
 void HotCoalesceSubmitThread(std::span<const u64> counters);
 
 [[nodiscard]] HotCoalesceUniformStats HotCoalesceAnalyzeUniformSequences(
         const ir::Block* block);
+void HotCoalesceAnalyzeLinkTargets(const ir::Block* block,
+                                   HotCoalesceUnitStatic& out);
 [[nodiscard]] bool HotCoalesceIsMoveBridge(std::string_view disassembly);
 
 }  // namespace swift::runtime

@@ -710,6 +710,8 @@ void JitContext::FinishHotCoalesceBlock() {
     hot_collecting = false;
     const u32 end = CurrentBufferSize();
     ASSERT(end >= hot_code_start);
+    ASSERT(end >= hot_shape.host_offset);
+    hot_shape.host_bytes = end - hot_shape.host_offset;
 
     auto in_range = [](u32 offset, const std::vector<HotCodeRange>& ranges) {
         return std::any_of(ranges.begin(), ranges.end(), [offset](const auto& range) {
@@ -751,6 +753,10 @@ void JitContext::FinishHotCoalesceBlock() {
 u8* JitContext::Flush(const CodeBuffer& code_cache) {
     FlushLabels(reinterpret_cast<VAddr>(code_cache.exec_data));
     Finish();
+    for (u32 slot : hot_coalesce_slots) {
+        HotCoalesceSetUnitHostBase(
+                slot, reinterpret_cast<VAddr>(code_cache.exec_data));
+    }
     if (std::getenv("SVM_EXEC_MAP") || std::getenv("SVM_VIXL_HOST_DUMP")) {
         std::fprintf(stderr, "[svm-host-map] pc=0x%llx exec=%p size=%u\n",
                      static_cast<unsigned long long>(unit_start),
@@ -795,7 +801,12 @@ void JitContext::SetCurrent(ir::Block* block, bool split_backedge_entry) {
                 HotCoalesceRegisterUnit(block->GetStartLocation().Value());
         hot_shape = {};
         hot_shape.guest_entry = block->GetStartLocation().Value();
+        hot_shape.host_offset = CurrentBufferSize();
         hot_shape.uniform = HotCoalesceAnalyzeUniformSequences(block);
+        HotCoalesceAnalyzeLinkTargets(block, hot_shape);
+        if (hot_coalesce_slot != kHotCoalesceInvalidSlot) {
+            hot_coalesce_slots.push_back(hot_coalesce_slot);
+        }
         hot_probe_ranges.clear();
         hot_nan_ranges.clear();
         hot_collecting = false;

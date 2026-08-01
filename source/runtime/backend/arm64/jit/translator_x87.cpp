@@ -71,8 +71,21 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 ir::DataClass{command},
                 ir::DataClass{address},
         };
+        // Keep AFP OFF byte-identical: the target address is materialized in
+        // generated code, independently of whether EmitHostCall consumes the
+        // FP-effect tag.
+        const bool fp_free = sse_afp_nan &&
+                             swift::x86::X87CommandFPCRTransparent(command_word);
+        const auto target = fp_free ? &swift::x86::X87DispatchFPFree
+                                    : &swift::x86::X87Dispatch;
         EmitHostCall(
-                ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&swift::x86::X87Dispatch)}},
+                ir::Lambda{
+                        ir::DataClass{ir::Imm{reinterpret_cast<VAddr>(target)}},
+                        ir::HelperCallTraits{
+                                .host_fp = fp_free
+                                        ? ir::HostFpEffect::FPCRTransparent
+                                        : ir::HostFpEffect::MayTouch,
+                        }},
                 args,
                 has_result,
                 result);

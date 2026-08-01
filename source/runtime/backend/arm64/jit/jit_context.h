@@ -214,6 +214,7 @@ private:
     bool hot_coalesce_enabled{};
     u32 exec_access_pad{};
     u32 hot_coalesce_slot{kHotCoalesceInvalidSlot};
+    std::vector<u32> hot_coalesce_slots{};
     u32 hot_code_start{};
     u32 hot_nan_start{};
     u32 hot_nan_expected{};

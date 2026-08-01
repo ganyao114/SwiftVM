@@ -116,6 +116,30 @@ constexpr u64 MakeX87Command(X87Action action,
            (static_cast<u64>(flags) << 32);
 }
 
+// Actions whose dedicated dispatch path was audited to use integer/SoftFloat
+// code only and may therefore execute while AFP guest FPCR remains installed.
+// Keep this a closed allowlist: an unreviewed action is conservative by
+// default, even if its implementation currently looks similar to one below.
+constexpr bool X87ActionFPCRTransparent(X87Action action) {
+    switch (action) {
+        case X87Action::LoadFloat:
+        case X87Action::StoreFloat:
+        case X87Action::StoreReg:
+        case X87Action::Remainder:
+        case X87Action::LoadConstant:
+        case X87Action::StoreControl:
+        case X87Action::StoreStatus:
+            return true;
+        default:
+            return false;
+    }
+}
+
+constexpr bool X87CommandFPCRTransparent(u64 command) {
+    return X87ActionFPCRTransparent(
+            static_cast<X87Action>(command & 0xFF));
+}
+
 // Bit the x87/fxsave helpers set in their return value when a guest address
 // they had to dereference is not backed by a guest mapping. The architectural
 // outcome is #PF, but the fault happens in a live *host* frame that
@@ -135,6 +159,7 @@ constexpr u64 kX87GuestFault = u64(1) << 63;
 u8* GuestPointer(u64 address, size_t size);
 
 u64 X87Dispatch(u64 context, u64 command, u64 guest_address);
+u64 X87DispatchFPFree(u64 context, u64 command, u64 guest_address);
 u64 X87Fxsave(u64 context, u64 guest_address);
 u64 X87Fxrstor(u64 context, u64 guest_address);
 

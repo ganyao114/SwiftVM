@@ -67,6 +67,9 @@ struct RuntimeProfileInterface {
     // contend on process-global atomics. Keep this last to preserve every
     // existing execution/hot-coalesce/backedge offset.
     std::array<u64, kFpcrTaxCounterCount> fpcr_tax{};
+    // Diagnostic-only direct-helper timing buffer. It is allocated per
+    // Runtime, so the sampled JIT path never contends with another thread.
+    FpcrTimingBuffer* fpcr_timing{};
 };
 
 union CPUFlags {
@@ -198,5 +201,7 @@ constexpr u32 profile_offset_l1_code_cache =
         offsetof(RuntimeProfileInterface, l1_code_cache);
 constexpr u32 profile_offset_fpcr_tax =
         offsetof(RuntimeProfileInterface, fpcr_tax);
+constexpr u32 profile_offset_fpcr_timing =
+        offsetof(RuntimeProfileInterface, fpcr_timing);
 
 }  // namespace swift::runtime::backend

@@ -211,6 +211,22 @@ enum class HelperABI : u8 {
     PreserveAllLeaf,
 };
 
+// Host floating-point environment effects for a direct helper call. The zero
+// value is deliberately conservative so every existing/new Lambda remains a
+// full FPCR boundary until its call site explicitly opts in.
+enum class HostFpEffect : u8 {
+    MayTouch = 0,
+    FPCRTransparent,
+};
+
+struct HelperCallTraits {
+    UniformEffectId uniform{UniformEffectId::Unknown};
+    HelperABI abi{HelperABI::NormalAAPCS};
+    HostFpEffect host_fp{HostFpEffect::MayTouch};
+};
+
+static_assert(static_cast<u8>(HostFpEffect::MayTouch) == 0);
+
 inline constexpr UniformEffectSet kNoUniformEffects{};
 
 UniformEffectId RegisterUniformEffectSet(const UniformEffectSet* effects);
@@ -232,6 +248,8 @@ public:
 
     Lambda(const DataClass& value, HelperABI abi);
 
+    Lambda(const DataClass& value, HelperCallTraits traits);
+
     bool IsValue() const;
 
     Value& GetValue();
@@ -240,6 +258,7 @@ public:
     Imm& GetImm() const;
     UniformEffectId GetUniformEffectId() const;
     HelperABI GetHelperABI() const;
+    HostFpEffect GetHostFpEffect() const;
 
 private:
     [[nodiscard]] bool IsTaggedImm() const;

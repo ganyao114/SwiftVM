@@ -24,6 +24,7 @@
 #include "runtime/ir/opts/uniform_elimination_pass.h"
 #include "runtime/backend/mem_map.h"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/code_serial.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
@@ -31,6 +32,7 @@
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/frontend/x86/decoder.h"
+#include "runtime/frontend/x86/x87.h"
 #include "compiler/slang/slang.h"
 #include "assembler_riscv64.h"
 #include "fmt/format.h"
@@ -47,6 +49,38 @@ swift::u64 WriteMXCSRFromHostHelper(swift::u64 context, swift::u64 mxcsr) {
             reinterpret_cast<swift::x86::ThreadContext64*>(context);
     thread_context->mxcsr = static_cast<swift::u32>(mxcsr);
     return 0;
+}
+
+swift::u64 g_fpcr_transparent_helper_fpcr{};
+swift::u64 g_fpcr_transparent_helper_fpsr{};
+
+__attribute__((noinline)) swift::u64 ObserveFPEnvironmentFromTransparentHelper() {
+#if defined(__aarch64__)
+    asm volatile("mrs %0, fpcr" : "=r"(g_fpcr_transparent_helper_fpcr));
+    asm volatile("mrs %0, fpsr" : "=r"(g_fpcr_transparent_helper_fpsr));
+#else
+    g_fpcr_transparent_helper_fpcr = 0;
+    g_fpcr_transparent_helper_fpsr = 0;
+#endif
+    return swift::u64{0x5a5a5a5a5a5a5a5a};
+}
+
+swift::u64 ReadNativeFPSR() {
+#if defined(__aarch64__)
+    swift::u64 value{};
+    asm volatile("mrs %0, fpsr" : "=r"(value));
+    return value;
+#else
+    return 0;
+#endif
+}
+
+void WriteNativeFPSR(swift::u64 value) {
+#if defined(__aarch64__)
+    asm volatile("msr fpsr, %0" : : "r"(value) : "memory");
+#else
+    (void)value;
+#endif
 }
 
 class ScopedNativeFPCR {
@@ -68,15 +102,31 @@ private:
     swift::u64 installed{};
 };
 
+class ScopedNativeFPSR {
+public:
+    explicit ScopedNativeFPSR(swift::u64 value) : saved(ReadNativeFPSR()) {
+        WriteNativeFPSR(value);
+        installed = ReadNativeFPSR();
+    }
+
+    ~ScopedNativeFPSR() { WriteNativeFPSR(saved); }
+
+    [[nodiscard]] swift::u64 Installed() const { return installed; }
+
+private:
+    swift::u64 saved{};
+    swift::u64 installed{};
+};
+
 }  // namespace
 
 TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 62);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 64);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_FPCR_TAX_PROF");
+            "SVM_FPCR_TAX_TIMING");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -104,6 +154,40 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     REQUIRE(stats.store_pairs == 1);
     REQUIRE(stats.same_offset == 1);
     REQUIRE(stats.saved_instructions == 4);
+}
+
+TEST_CASE("helper FP effects default conservative and compose with ABI metadata") {
+    using namespace swift::runtime::ir;
+
+    const auto address = DataClass{Imm{swift::u64{0x1234}}};
+    const Lambda ordinary{address};
+    REQUIRE(ordinary.GetHostFpEffect() == HostFpEffect::MayTouch);
+    REQUIRE(ordinary.GetHelperABI() == HelperABI::NormalAAPCS);
+    REQUIRE(ordinary.GetUniformEffectId() == UniformEffectId::Unknown);
+
+    const Lambda combined{
+            address,
+            HelperCallTraits{
+                    .uniform = UniformEffectId::None,
+                    .abi = HelperABI::PreserveAllLeaf,
+                    .host_fp = HostFpEffect::FPCRTransparent,
+            }};
+    REQUIRE(combined.GetImm().Get() == swift::u64{0x1234});
+    REQUIRE(combined.GetHostFpEffect() == HostFpEffect::FPCRTransparent);
+    REQUIRE(combined.GetHelperABI() == HelperABI::PreserveAllLeaf);
+    REQUIRE(combined.GetUniformEffectId() == UniformEffectId::None);
+}
+
+TEST_CASE("config hash includes programmatic effective AFP policy") {
+    swift::runtime::Config off{};
+    swift::runtime::Config on{};
+    on.sse_afp_nan = true;
+
+    REQUIRE(swift::runtime::backend::ComputeConfigHash(off) !=
+            swift::runtime::backend::ComputeConfigHash(on));
+    on.sse_afp_nan = false;
+    REQUIRE(swift::runtime::backend::ComputeConfigHash(off) ==
+            swift::runtime::backend::ComputeConfigHash(on));
 }
 
 TEST_CASE("Test compiler") {
@@ -3089,6 +3173,218 @@ TEST_CASE("AFP mode brackets direct MemoryCopy host calls with native FPCR") {
     INFO(text);
     REQUIRE(indirect_calls == 1);
     REQUIRE(fpcr_writes == 2);
+}
+
+TEST_CASE("AFP transparent helper calls retain guest FPCR without changing FPSR") {
+#if defined(__aarch64__)
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    constexpr swift::u32 kResultOffset = sizeof(swift::x86::ThreadContext64);
+    constexpr swift::u64 kGuestPC = 0x2c80;
+    constexpr swift::u32 kMxcsrRoundUp = 0x1f80u | (2u << 13);
+    constexpr swift::u64 kExpectedGuestFPCR =
+            arm64::kSseAFPGuestFPCRBase | (swift::u64{1} << 22);
+
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+            .uniform_buffer_size = sizeof(swift::x86::ThreadContext64) + 16,
+            .arm64_features = Arm64Features::AFP,
+            .sse_afp_nan = true,
+    };
+    AddressSpace address_space{config};
+    IntrusivePtr<Block> block{new Block(0, Location{kGuestPC})};
+    const auto result =
+            block->CallLambda(
+                         Lambda{DataClass{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
+                                        FptrCast(&ObserveFPEnvironmentFromTransparentHelper))}}},
+                                HelperCallTraits{
+                                        .host_fp = HostFpEffect::FPCRTransparent,
+                                }})
+                    .SetType(ValueType::U64);
+    block->StoreUniform(Uniform{kResultOffset, ValueType::U64}, result);
+    block->SetTerminal(terminal::LinkBlock{Location{kGuestPC + 0x100}});
+    block->ReIdInstr();
+
+    auto* code = TranslateIR(address_space.GetDefaultModule(), block);
+    REQUIRE(code != nullptr);
+    Runtime runtime{&address_space};
+    auto uniform = runtime.GetUniformBuffer();
+    std::memcpy(uniform.data() + offsetof(swift::x86::ThreadContext64, mxcsr),
+                &kMxcsrRoundUp,
+                sizeof(kMxcsrRoundUp));
+    g_fpcr_transparent_helper_fpcr = 0;
+    g_fpcr_transparent_helper_fpsr = 0;
+
+    ScopedNativeFPCR host_fpcr_scope{(swift::u64{1} << 25) |
+                                     (swift::u64{1} << 24) |
+                                     (swift::u64{1} << 23)};
+    ScopedNativeFPSR host_fpsr_scope{0x0800001full};
+    runtime.SetLocation(kGuestPC);
+    const auto halt = address_space.GetTrampolines().GetRuntimeEntry()(
+            runtime.GetState(), code);
+    REQUIRE(halt == HaltReason::CodeMiss);
+
+    swift::u64 stored_result{};
+    std::memcpy(&stored_result,
+                uniform.data() + kResultOffset,
+                sizeof(stored_result));
+    REQUIRE(stored_result == swift::u64{0x5a5a5a5a5a5a5a5a});
+    REQUIRE(g_fpcr_transparent_helper_fpcr == kExpectedGuestFPCR);
+    REQUIRE(g_fpcr_transparent_helper_fpsr == host_fpsr_scope.Installed());
+    REQUIRE(ReadNativeFPSR() == host_fpsr_scope.Installed());
+    REQUIRE(arm64::ReadNativeFPCR() == host_fpcr_scope.Installed());
+#else
+    SUCCEED("AFP transparent-helper execution probe requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("AFP transparent helper call shape omits only its FPCR switch pair") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    auto compile = [](HostFpEffect effect) {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+                .arm64_features = Arm64Features::AFP,
+                .sse_afp_nan = true,
+        };
+        AddressSpace address_space{config};
+        IntrusivePtr<Block> block{new Block(0, Location{0x2cc0})};
+        (void)block->CallLambda(
+                Lambda{DataClass{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
+                               FptrCast(&ObserveFPEnvironmentFromTransparentHelper))}}},
+                       HelperCallTraits{.host_fp = effect}});
+        block->SetTerminal(terminal::LinkBlock{Location{0x2dc0}});
+        block->ReIdInstr();
+
+        RegAlloc reg_alloc{block->MaxInstrId(),
+                           address_space.GetTrampolines().GetGPRRegs(),
+                           address_space.GetTrampolines().GetFPRRegs()};
+        RegisterAllocPass::Run(block.get(), &reg_alloc);
+        arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block.get());
+        context.Finish();
+
+        auto& masm = context.GetMasm();
+        const auto* first =
+                masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+        const auto* last =
+                masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        std::size_t fpcr_writes = 0;
+        std::size_t indirect_calls = 0;
+        for (auto* instruction = first; instruction < last;
+             instruction = instruction->GetNextInstruction()) {
+            decoder.Decode(instruction);
+            const std::string_view line = disassembler.GetOutput();
+            fpcr_writes += line.find("msr fpcr") != std::string_view::npos;
+            indirect_calls += line.find("blr ") != std::string_view::npos;
+        }
+        return std::pair{fpcr_writes, indirect_calls};
+    };
+
+    const auto conservative = compile(HostFpEffect::MayTouch);
+    const auto transparent = compile(HostFpEffect::FPCRTransparent);
+    REQUIRE(conservative.second == 1);
+    REQUIRE(transparent.second == 1);
+    REQUIRE(conservative.first == 2);
+    REQUIRE(transparent.first == 0);
+}
+
+TEST_CASE("x87 FPCR-transparent action allowlist is exact and fails closed") {
+    using namespace swift::x86;
+
+    for (swift::u8 raw = static_cast<swift::u8>(X87Action::Init);
+         raw <= static_cast<swift::u8>(X87Action::LoadEnvironment);
+        ++raw) {
+        const auto action = static_cast<X87Action>(raw);
+        const bool expected = action == X87Action::LoadFloat ||
+                              action == X87Action::StoreFloat ||
+                              action == X87Action::StoreReg ||
+                              action == X87Action::Remainder ||
+                              action == X87Action::LoadConstant ||
+                              action == X87Action::StoreControl ||
+                              action == X87Action::StoreStatus;
+        INFO("x87 action " << static_cast<unsigned>(raw));
+        REQUIRE(X87ActionFPCRTransparent(action) == expected);
+        REQUIRE(X87CommandFPCRTransparent(MakeX87Command(action)) == expected);
+    }
+
+    REQUIRE(X87DispatchFPFree(
+                    0,
+                    MakeX87Command(X87Action::Init),
+                    0) == kX87GuestFault);
+}
+
+TEST_CASE("x87 FPCR-transparent dispatcher target is effective-AFP gated") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+
+    struct MemIf final : MemoryInterface {
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+
+    const char* old_jit = std::getenv("SVM_X87_JIT");
+    const bool had_old_jit = old_jit != nullptr;
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    unsetenv("SVM_X87_JIT");
+
+    auto decode_target = [&](bool effective_afp) {
+        // FLD1 is the audited LoadConstant action; HLT terminates the unit.
+        std::array<swift::u8, 16> bytes{0xd9, 0xe8, 0xf4};
+        const auto address = reinterpret_cast<VAddr>(bytes.data());
+        Block block{0, Location{address}};
+        Assembler assembler{&block};
+        X64Decoder decoder{address, &memory, &assembler, true,
+                           effective_afp ? Arm64Features::AFP
+                                         : Arm64Features::None,
+                           effective_afp};
+        decoder.Decode();
+
+        for (auto& inst : block.GetInstList()) {
+            if (inst.GetOp() != OpCode::CallLambda) continue;
+            const auto lambda = inst.GetArg<Lambda>(0);
+            if (lambda.IsValue()) continue;
+            const auto target = lambda.GetImm().Get();
+            if (target == reinterpret_cast<VAddr>(&X87Dispatch) ||
+                target == reinterpret_cast<VAddr>(&X87DispatchFPFree)) {
+                return std::pair{target, lambda.GetHostFpEffect()};
+            }
+        }
+        FAIL("FLD1 did not emit an x87 helper call");
+        return std::pair{VAddr{0}, HostFpEffect::MayTouch};
+    };
+
+    const auto off = decode_target(false);
+    const auto on = decode_target(true);
+    if (had_old_jit) setenv("SVM_X87_JIT", old_jit_value.c_str(), 1);
+    else unsetenv("SVM_X87_JIT");
+
+    REQUIRE(off.first == reinterpret_cast<VAddr>(&X87Dispatch));
+    REQUIRE(off.second == HostFpEffect::MayTouch);
+    REQUIRE(on.first == reinterpret_cast<VAddr>(&X87DispatchFPFree));
+    REQUIRE(on.second == HostFpEffect::FPCRTransparent);
 }
 
 namespace {

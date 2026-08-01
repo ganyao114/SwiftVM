@@ -1186,9 +1186,12 @@ void X64Decoder::DecodeSse42StrBody(_RegisterType reg1,
         auto token = __ CallLambda(ir::Lambda{
                                            ir::DataClass{ir::Imm{reinterpret_cast<VAddr>(
                                                    &Sse42StrStage)}},
-                                           SVM_HELPER_TLS_IS_LEAF
-                                                   ? ir::HelperABI::PreserveAllLeaf
-                                                   : ir::HelperABI::NormalAAPCS},
+                                           ir::HelperCallTraits{
+                                                   .abi = SVM_HELPER_TLS_IS_LEAF
+                                                           ? ir::HelperABI::PreserveAllLeaf
+                                                           : ir::HelperABI::NormalAAPCS,
+                                                   .host_fp = ir::HostFpEffect::FPCRTransparent,
+                                           }},
                                    XmmLo(reg1),
                                    XmmHi(reg1),
                                    ctl);

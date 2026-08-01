@@ -339,6 +339,10 @@ private:
     // instructions can update a tied destination's lane 0 in place.
     bool sse_scalar_insert{false};
     bool sse_afp_nan{false};
+    // W90 phase-2 diagnostics. skip_switch is intentionally unsafe and only
+    // affects direct helper FPCR bracketing when explicitly requested.
+    bool fpcr_tax_skip_switch{false};
+    bool fpcr_tax_timing{false};
     bool shift_imm_fast{true};
     // W29 lowering: signed/unsigned narrow loads consume their
     // extension destination directly, and GetOperand computes into its
