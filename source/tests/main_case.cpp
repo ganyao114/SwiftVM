@@ -3050,7 +3050,7 @@ TEST_CASE("AFP environment gate applies MXCSR changes through translated x86 cod
     munmap(guest_code, 4096);
 
     const char* requested_value = std::getenv("SVM_SSE_AFP_NAN");
-    const bool requested = requested_value && std::strcmp(requested_value, "0") != 0;
+    const bool requested = !requested_value || std::strcmp(requested_value, "0") != 0;
     REQUIRE(effective == (requested && capable));
 #if defined(__APPLE__)
     // Apple silicon exposes FEAT_AFP. This also prevents an ON full-suite run

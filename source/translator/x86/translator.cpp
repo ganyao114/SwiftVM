@@ -340,7 +340,7 @@ static bool SSEScalarInsertEnabled(Arm64Features features) {
 
 static bool SSEAFPNanEnabled(Arm64Features features) {
     const char* value = PerfGetenv("SVM_SSE_AFP_NAN");
-    const bool requested = value && std::strcmp(value, "0") != 0;
+    const bool requested = !value || std::strcmp(value, "0") != 0;
     if (!requested) {
         return false;
     }
@@ -349,7 +349,7 @@ static bool SSEAFPNanEnabled(Arm64Features features) {
     }
     static std::once_flag warning_once;
     std::call_once(warning_once, [] {
-        LOG_WARNING("SVM_SSE_AFP_NAN requested but FEAT_AFP is unavailable; using guarded SSE path");
+        LOG_WARNING("SVM_SSE_AFP_NAN defaults on but FEAT_AFP is unavailable; using guarded SSE path");
     });
     return false;
 }
