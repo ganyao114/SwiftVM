@@ -93,6 +93,18 @@ struct UniformValue {
     return off;
 }
 
+// A V32/V64 scalar operand names the low lane of the same FPR value as the
+// frontend's architectural V128 XMM store/load. Keep that view as a typed SSA
+// alias instead of forcing a uniform-buffer round trip merely because its IR
+// width is narrower. SVM_XMM_NARROW_FWD=0 restores the pre-fix rule for A/B.
+[[nodiscard]] static bool XmmNarrowForwardOff() {
+    static const bool off = [] {
+        const char* e = PerfGetenv("SVM_XMM_NARROW_FWD");
+        return e && std::strcmp(e, "0") == 0;
+    }();
+    return off;
+}
+
 // --- dead uniform store elimination ----------------------------------------
 //
 // The forward pass above forwards uniform *loads*; nothing removed a uniform
@@ -185,7 +197,7 @@ struct UniformValue {
 }
 
 static void EliminateDeadStores(Block* block, const UniformInfo& info,
-                                HIRFunction* hir_function) {
+                                HIRFunction* hir_function, bool xmm_only = false) {
     PerfScope2 perf_dse{GetPerfStats2().uniform_dse};
     auto& inst_list = block->GetInstList();
     // killed[i] = byte i of the uniform buffer is overwritten later in this
@@ -213,6 +225,9 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 // The backend stores according to the *value* width, not the
                 // descriptor width -- the same rule the forward pass tracks.
                 const u32 size = GetValueSizeByte(value.Type());
+                if (xmm_only && !info.IsXmmUniformRange(off, size)) {
+                    break;
+                }
                 if (XmmUniformForwardOff() && info.IsXmmUniformRange(off, size)) {
                     break;
                 }
@@ -239,6 +254,9 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 const auto uniform = inst.GetArg<Uniform>(0);
                 const u32 off = uniform.GetOffset();
                 const u32 size = GetValueSizeByte(uniform.GetType());
+                if (xmm_only && !info.IsXmmUniformRange(off, size)) {
+                    break;
+                }
                 if (XmmUniformForwardOff() && info.IsXmmUniformRange(off, size)) {
                     break;
                 }
@@ -253,12 +271,19 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
             case OpCode::X87Op:
             case OpCode::MemoryCopy:
             case OpCode::MemoryCopyTSO:
-            case OpCode::SetHostGPR:
             case OpCode::SetHostFPR:
-            case OpCode::GetHostGPR:
             case OpCode::GetHostFPR:
             case OpCode::SetLocation:
                 clear_all();
+                break;
+            case OpCode::SetHostGPR:
+            case OpCode::GetHostGPR:
+                // In the XMM-only cleanup these operations touch a disjoint,
+                // statically mapped GPR and cannot observe the XMM uniform
+                // bytes. The full generic sweep stays conservative.
+                if (!xmm_only) {
+                    clear_all();
+                }
                 break;
             case OpCode::BindLabel:
                 if (PathForwardOff()) {
@@ -306,7 +331,12 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
     }
     if (Perf2Enabled()) {
         auto& stats = GetPerfStats2();
-        stats.uniform_dse_blocks.fetch_add(1, std::memory_order_relaxed);
+        // The PIN_EXT repair sweep revisits the same block for XMM stores
+        // only. Keep the historical one-block/one-count probe contract while
+        // still reporting every additional victim it finds.
+        if (!xmm_only) {
+            stats.uniform_dse_blocks.fetch_add(1, std::memory_order_relaxed);
+        }
         stats.uniform_dse_victims.fetch_add(victims.size(), std::memory_order_relaxed);
     }
 }
@@ -461,10 +491,11 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     // BitCast is a zero-cost register alias; it does NOT implement
                     // the zero-extension of a narrow uniform load. Use it only
                     // when the load consumes the complete stored value. A partial
-                    // scalar load, including one at byte offset zero, needs a real
-                    // BitExtract/UBFX so upper source bits cannot leak into users
-                    // such as a host-call argument. BitExtract is GPR-only in the
-                    // current backend, so partial vector/FPR folds stay disabled.
+                    // scalar integer load needs a real BitExtract/UBFX so upper
+                    // source bits cannot leak into users such as a host-call
+                    // argument. BitExtract is GPR-only in the current backend, so
+                    // nonzero-offset partial vector/FPR folds stay disabled; the
+                    // zero-offset low-lane alias is handled explicitly below.
                     const auto value_size = value_load.Defined()
                                                   ? GetValueSizeByte(value_load.Type())
                                                   : 0;
@@ -482,14 +513,23 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     const bool full_value =
                             same_reg_class && value_offset == 0 &&
                             uni_size == value_size && (is_float || uni_size == sizeof(u64));
+                    // A low V32/V64 view of a wider FPR value needs no extract:
+                    // every consumer addresses lane zero of the same physical
+                    // SIMD register. UniformStoreSinkPass already relies on
+                    // this exact alias rule for pending XMM stores; applying it
+                    // to the ordinary byte-fact table closes the earlier
+                    // store/load and load/load forwarding gap as well.
+                    const bool low_fpr_view =
+                            !XmmNarrowForwardOff() && same_reg_class && is_float &&
+                            value_offset == 0 && uni_size < value_size;
                     const bool scalar_extract =
                             same_reg_class && !is_float &&
                             value_offset + uni_size <= value_size;
-                    if (!full_value && !scalar_extract) {
+                    if (!full_value && !low_fpr_view && !scalar_extract) {
                         return false;
                     }
                     inst.Reset();
-                    if (full_value) {
+                    if (full_value || low_fpr_view) {
                         inst.BitCast(value_load).SetReturn(uni_type);
                     } else {
                         inst.BitExtract(value_load, Imm(value_offset * 8u),
@@ -781,6 +821,13 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     if (!dse_off && (!fast_path || store_count >= 2)) {
         if (!pin_ext_dse) {
             EliminateDeadStores(block, info, hir_function);
+        } else if (!XmmNarrowForwardOff()) {
+            // PIN_EXT must run the generic sweep before mapped StoreUniforms
+            // become SetHostGPR. That early sweep still sees V32/V64 loads and
+            // therefore cannot know they will fold to a V128 SSA value below.
+            // Revisit only XMM stores after forwarding; mapped GPR operations
+            // are disjoint and no longer block the newly exposed dead stores.
+            EliminateDeadStores(block, info, hir_function, true);
         }
     }
 }

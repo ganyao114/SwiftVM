@@ -124,7 +124,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 64);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 65);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
             "SVM_FPCR_TAX_TIMING");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
@@ -697,11 +697,15 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
                                  std::strcmp(std::getenv("SVM_XMM_UNIFORM_FWD"), "0") == 0;
     const bool xmm_ssa_fwd2_off = std::getenv("SVM_XMM_SSA_FWD2") &&
                                  std::strcmp(std::getenv("SVM_XMM_SSA_FWD2"), "0") == 0;
+    const bool xmm_narrow_fwd_off = std::getenv("SVM_XMM_NARROW_FWD") &&
+                                    std::strcmp(std::getenv("SVM_XMM_NARROW_FWD"), "0") == 0;
 
     Block straight{0, Location{0x1000}};
     auto vector_value = straight.LoadImm(Imm{0u}).SetType(ValueType::V128);
     straight.StoreUniform(Uniform{16, ValueType::V128}, vector_value);
     auto vector_load = straight.LoadUniform(Uniform{16, ValueType::V128});
+    auto narrow64_load = straight.LoadUniform(Uniform{16, ValueType::V64});
+    auto narrow32_load = straight.LoadUniform(Uniform{16, ValueType::V32});
     auto scalar_value = straight.LoadImm(Imm{std::uint64_t(0x1122334455667788ull)}).SetType(ValueType::U64);
     straight.StoreUniform(Uniform{24, ValueType::U64}, scalar_value);
     auto scalar_load = straight.LoadUniform(Uniform{24, ValueType::U64});
@@ -709,6 +713,13 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     UniformEliminationPass::Run(&straight, info);
     REQUIRE(vector_load.Def()->GetOp() ==
             (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
+    const auto narrow_expected =
+            (!xmm_forward_off && !xmm_narrow_fwd_off) ? OpCode::BitCast
+                                                      : OpCode::LoadUniform;
+    REQUIRE(narrow64_load.Def()->GetOp() == narrow_expected);
+    REQUIRE(narrow64_load.Type() == ValueType::V64);
+    REQUIRE(narrow32_load.Def()->GetOp() == narrow_expected);
+    REQUIRE(narrow32_load.Type() == ValueType::V32);
     REQUIRE(scalar_load.Def()->GetOp() ==
             (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
 
@@ -748,17 +759,26 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     // read repeatedly without an intervening architectural write.
     Block repeated_load{3, Location{0x4000}};
     auto first_vector_load = repeated_load.LoadUniform(Uniform{16, ValueType::V128});
+    auto low_lane_load = repeated_load.LoadUniform(Uniform{16, ValueType::V64});
     auto second_vector_load = repeated_load.LoadUniform(Uniform{16, ValueType::V128});
     auto first_lane_load = repeated_load.LoadUniform(Uniform{24, ValueType::U64});
     auto second_lane_load = repeated_load.LoadUniform(Uniform{24, ValueType::U64});
     UniformEliminationPass::Run(&repeated_load, info);
     REQUIRE(first_vector_load.Def()->GetOp() == OpCode::LoadUniform);
+    REQUIRE(low_lane_load.Def()->GetOp() ==
+            (!xmm_forward_off && !xmm_ssa_fwd2_off && !xmm_narrow_fwd_off
+                     ? OpCode::BitCast
+                     : OpCode::LoadUniform));
     REQUIRE(first_lane_load.Def()->GetOp() == OpCode::LoadUniform);
-    const auto repeated_expected =
+    const auto repeated_vector_expected =
+            (!xmm_forward_off && !xmm_ssa_fwd2_off && !xmm_narrow_fwd_off)
+                    ? OpCode::BitCast
+                    : OpCode::LoadUniform;
+    const auto repeated_lane_expected =
             (!xmm_forward_off && !xmm_ssa_fwd2_off) ? OpCode::BitCast
                                                     : OpCode::LoadUniform;
-    REQUIRE(second_vector_load.Def()->GetOp() == repeated_expected);
-    REQUIRE(second_lane_load.Def()->GetOp() == repeated_expected);
+    REQUIRE(second_vector_load.Def()->GetOp() == repeated_vector_expected);
+    REQUIRE(second_lane_load.Def()->GetOp() == repeated_lane_expected);
 
     // An intervening write must still replace the load fact byte-for-byte.
     Block invalidated_load{4, Location{0x5000}};
@@ -769,6 +789,62 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     UniformEliminationPass::Run(&invalidated_load, info);
     REQUIRE(after_store.Def()->GetOp() ==
             (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
+
+    // The same narrow types must remain in the FPR class when the XMM slot is
+    // statically mapped. GetHostFPR aliases the pinned V register (subject to
+    // the allocator's existing snapshot check); it must never fall back to a
+    // LoadUniform just because the architectural mapping itself is V128.
+    UniformInfo mapped_info{.uniform_size = 64};
+    UniformRegister mapped_xmm{.uniform = Uniform{16, ValueType::V128}};
+    mapped_xmm.host_reg.fpr = HostFPR{20};
+    mapped_xmm.host_reg.is_fpr = true;
+    mapped_info.uniform_regs_map.Map(16, 32, mapped_xmm);
+    mapped_info.xmm_uniform_ranges.push_back({16, 32});
+    Block mapped{5, Location{0x6000}};
+    auto mapped_v64 = mapped.LoadUniform(Uniform{16, ValueType::V64});
+    auto mapped_v32 = mapped.LoadUniform(Uniform{16, ValueType::V32});
+    UniformEliminationPass::Run(&mapped, mapped_info);
+    REQUIRE(mapped_v64.Def()->GetOp() == OpCode::GetHostFPR);
+    REQUIRE(mapped_v64.Type() == ValueType::V64);
+    REQUIRE(mapped_v32.Def()->GetOp() == OpCode::GetHostFPR);
+    REQUIRE(mapped_v32.Type() == ValueType::V32);
+
+    // PIN_EXT performs its generic DSE before mapped GPR stores become
+    // SetHostGPR. A narrow XMM load is still materialized at that point, so a
+    // second XMM-only sweep must collect the old store after the load folds;
+    // the disjoint mapped GPR write is not an XMM observation boundary.
+    UniformInfo pinned_info{.uniform_size = 128};
+    auto map_pin = [&](std::uint32_t offset, std::uint16_t host_id) {
+        UniformRegister pin{.uniform = Uniform{offset, ValueType::U64}};
+        pin.host_reg.gpr = HostGPR{host_id};
+        pin.host_reg.is_fpr = false;
+        pinned_info.uniform_regs_map.Map(offset, offset + 8, pin);
+        pinned_info.uni_gprs.Mark(host_id);
+    };
+    map_pin(0, 22);
+    map_pin(8, 23);
+    map_pin(16, 29);
+    pinned_info.xmm_uniform_ranges.push_back({64, 80});
+    Block pinned{6, Location{0x7000}};
+    auto old_xmm = pinned.LoadImm(Imm{5u}).SetType(ValueType::V128);
+    pinned.StoreUniform(Uniform{64, ValueType::V128}, old_xmm);
+    auto pinned_lane = pinned.LoadUniform(Uniform{64, ValueType::V64});
+    auto pin_value = pinned.LoadImm(Imm{std::uint64_t{7}}).SetType(ValueType::U64);
+    pinned.StoreUniform(Uniform{0, ValueType::U64}, pin_value);
+    auto new_xmm = pinned.LoadImm(Imm{6u}).SetType(ValueType::V128);
+    pinned.StoreUniform(Uniform{64, ValueType::V128}, new_xmm);
+    UniformEliminationPass::Run(&pinned, pinned_info);
+    REQUIRE(pinned_lane.Def()->GetOp() ==
+            (xmm_forward_off || xmm_narrow_fwd_off ? OpCode::LoadUniform
+                                                   : OpCode::BitCast));
+    size_t pinned_xmm_stores{};
+    for (const auto& inst : pinned.GetInstList()) {
+        if (inst.GetOp() != OpCode::StoreUniform) continue;
+        const auto uniform = inst.GetArg<Uniform>(0);
+        pinned_xmm_stores += uniform.GetOffset() == 64;
+    }
+    REQUIRE(pinned_xmm_stores ==
+            (xmm_forward_off || xmm_narrow_fwd_off ? 2 : 1));
 }
 
 TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {
