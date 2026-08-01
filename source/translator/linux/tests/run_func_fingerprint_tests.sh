@@ -14,6 +14,21 @@
 #   run_func_fingerprint_tests.sh <svm_translator_linux> --update   # rewrite golden
 #   run_func_fingerprint_tests.sh <svm_A> --against <svm_B>         # A/B two builds
 #
+# PLATFORM / FEATURE GOLDEN SHARDS:
+#   A function fingerprint is execution-driven. Host-visible syscall metadata
+#   (for example /dev/null st_blksize) and lowering features can legitimately
+#   select different guest units or IR. When a matching shard exists, check and
+#   --update select:
+#
+#     func_fingerprint_golden.<darwin|linux>-<flagm|noflagm>.txt
+#
+#   `flagm` means CFINV is effective for this run: the host advertises FlagM and
+#   SVM_FLAGS_CFINV is not forced to 0. SVM_FP_GOLDEN_PROFILE can name a fixture
+#   explicitly, and SVM_FP_GOLDEN_DIR can redirect shards to a candidate
+#   directory without touching the checked-in golden. If no shard has been
+#   installed and neither override is set, the legacy single golden remains the
+#   reference, preserving the historical command line and --update behaviour.
+#
 # WHY THIS EXISTS: GUEST EXIT CODES ARE BLIND TO FUNCTION-MODE MISCOMPILES.
 #
 # The function compiler is wrapped in try/catch. A unit that miscompiles badly
@@ -48,12 +63,69 @@ SVM="${1:-}"
 MODE="${2:-check}"
 OTHER="${3:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-GOLDEN="$HERE/func_fingerprint_golden.txt"
+LEGACY_GOLDEN="$HERE/func_fingerprint_golden.txt"
 STAGE_DIR="/tmp/svm_fp_guests"
+
+detect_golden_profile() {
+    local platform flagm=no
+    case "$(uname -s)" in
+        Darwin)
+            platform=darwin
+            if [ "${SVM_FLAGS_CFINV:-}" != 0 ] &&
+               [ "$(sysctl -n hw.optional.arm.FEAT_FlagM 2>/dev/null || true)" = 1 ]; then
+                flagm=yes
+            fi
+            ;;
+        Linux)
+            platform=linux
+            if [ "${SVM_FLAGS_CFINV:-}" != 0 ] &&
+               grep -qw flagm /proc/cpuinfo 2>/dev/null; then
+                flagm=yes
+            fi
+            ;;
+        *)
+            # This translator is currently gated on Darwin/Linux, but keep an
+            # unambiguous profile name for bring-up on another host.
+            platform="$(uname -s | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '_')"
+            ;;
+    esac
+    printf '%s-%s\n' "$platform" "$([ "$flagm" = yes ] && printf flagm || printf noflagm)"
+}
+
+GOLDEN_PROFILE="${SVM_FP_GOLDEN_PROFILE:-$(detect_golden_profile)}"
+case "$GOLDEN_PROFILE" in
+    *[!A-Za-z0-9._-]*|'')
+        echo "FAIL: invalid SVM_FP_GOLDEN_PROFILE '$GOLDEN_PROFILE'"
+        exit 2
+        ;;
+esac
+
+GOLDEN_DIR="${SVM_FP_GOLDEN_DIR:-$HERE}"
+SHARD_GOLDEN="$GOLDEN_DIR/func_fingerprint_golden.$GOLDEN_PROFILE.txt"
+GOLDEN="$LEGACY_GOLDEN"
+USING_GOLDEN_SHARD=no
+
+if [ -n "${SVM_FP_GOLDEN_DIR:-}" ] || [ -n "${SVM_FP_GOLDEN_PROFILE:-}" ]; then
+    # An explicit fixture request must never silently compare another profile.
+    GOLDEN="$SHARD_GOLDEN"
+    USING_GOLDEN_SHARD=yes
+elif [ -f "$SHARD_GOLDEN" ]; then
+    GOLDEN="$SHARD_GOLDEN"
+    USING_GOLDEN_SHARD=yes
+elif compgen -G "$HERE/func_fingerprint_golden.*.txt" >/dev/null; then
+    # Once shards are installed, a new platform/feature combination requires
+    # its own fixture instead of falling back to a misleading legacy profile.
+    GOLDEN="$SHARD_GOLDEN"
+    USING_GOLDEN_SHARD=yes
+fi
 
 if [ -z "$SVM" ] || [ ! -x "$SVM" ]; then
     echo "usage: run_func_fingerprint_tests.sh <svm_translator_linux> [--update|--against <svm_B>]"
     exit 2
+fi
+
+if [ "$USING_GOLDEN_SHARD" = yes ] && [ "$MODE" != --against ]; then
+    echo "golden profile: $GOLDEN_PROFILE ($GOLDEN)"
 fi
 
 # Single-threaded, deterministic guests only. A multithreaded guest compiles a
@@ -156,6 +228,10 @@ all_fingerprints "$SVM" no > "$tmp/a"
 # --- gate 2: cross-build comparison ----------------------------------------
 case "$MODE" in
     --update)
+        mkdir -p "$(dirname "$GOLDEN")" || {
+            echo "FAIL: cannot create golden directory $(dirname "$GOLDEN")"
+            exit 2
+        }
         cp "$tmp/a" "$GOLDEN"
         echo "wrote $GOLDEN ($(grep -c ' pc=' "$GOLDEN") units)"
         exit 0
