@@ -53,6 +53,15 @@ void JitTranslator::RestoreStaticFPRUniforms() {
 }
 
 void JitTranslator::EmitAdvancePC(ir::Inst* inst) {
+    if (backedge_flags_plan && backedge_flags_plan->optimized &&
+        backedge_flags_plan->final_advance == inst) {
+        // This is the last architectural boundary before the proven self/
+        // single-cold terminal. Keep the requested NZCV live for the self
+        // edge; both cold exits materialize it in their veneers.
+        flags_set = ir::Flags::None;
+        flags_clear = ir::Flags::None;
+        return;
+    }
     MergeNZCV();
     FlushFlags();
 }

@@ -259,9 +259,18 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size) {
     return {ref.first->first, *ref.first->second.AllocCode(size)};
 }
 
-void Module::AddFaultEntry(u8* host_start, u8* host_end, VAddr guest_loc) {
+void Module::AddFaultEntry(u8* host_start,
+                           u8* host_end,
+                           VAddr guest_loc,
+                           u8* owner_start,
+                           u8* recovery) {
+    ASSERT(host_start < host_end);
     std::unique_lock guard(cache_lock);
-    FaultEntry entry{host_start, host_end, guest_loc};
+    FaultEntry entry{host_start,
+                     host_end,
+                     owner_start ? owner_start : host_start,
+                     recovery,
+                     guest_loc};
     auto it = std::lower_bound(fault_table.begin(),
                                fault_table.end(),
                                host_start,
@@ -271,26 +280,38 @@ void Module::AddFaultEntry(u8* host_start, u8* host_end, VAddr guest_loc) {
 
 bool Module::LookupFault(const u8* host_pc, FaultEntry& out) {
     std::shared_lock guard(cache_lock);
-    // Last entry with host_start <= host_pc, then check the range.
+    // Entries may overlap: a whole-unit committed-state fallback covers gaps
+    // between precise per-block ranges. Prefer the most specific containing
+    // range, and prefer a recovery veneer over the fallback for equal starts.
     auto it = std::upper_bound(fault_table.begin(),
                                fault_table.end(),
                                host_pc,
                                [](const u8* pc, const FaultEntry& e) { return pc < e.host_start; });
-    if (it == fault_table.begin()) {
+    const FaultEntry* best = nullptr;
+    while (it != fault_table.begin()) {
+        --it;
+        if (!it->Contains(host_pc)) {
+            continue;
+        }
+        if (!best || it->host_start > best->host_start ||
+            (it->host_start == best->host_start && it->recovery && !best->recovery)) {
+            best = &*it;
+        }
+        if (best && it->host_start < best->host_start) {
+            break;
+        }
+    }
+    if (!best) {
         return false;
     }
-    --it;
-    if (!it->Contains(host_pc)) {
-        return false;
-    }
-    out = *it;
+    out = *best;
     return true;
 }
 
 void Module::RemoveFaultEntries(const u8* host_start) {
     std::unique_lock guard(cache_lock);
     std::erase_if(fault_table,
-                  [&](const FaultEntry& e) { return e.host_start == host_start; });
+                  [&](const FaultEntry& e) { return e.owner_start == host_start; });
 }
 
 static u8* DetachBlock(Module& module, ir::Block* block) {
@@ -352,7 +373,7 @@ void Module::ReclaimCode(u8* exec_ptr) {
     }
     std::unique_lock guard(cache_lock);
     std::erase_if(fault_table,
-                  [&](const FaultEntry& entry) { return entry.host_start == exec_ptr; });
+                  [&](const FaultEntry& entry) { return entry.owner_start == exec_ptr; });
     for (auto& [index, cache] : code_caches) {
         if (cache.Contain(exec_ptr)) {
             cache.FreeCode(exec_ptr);

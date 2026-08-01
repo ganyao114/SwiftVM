@@ -440,7 +440,9 @@ bool JitContext::ForwardStatic(ir::Location location) {
     return true;
 }
 
-void JitContext::Forward(ir::Location location) {
+void JitContext::Forward(ir::Location location,
+                         Label* backedge_exit,
+                         Label* self_target) {
     ASSERT(cur_block);
     // Block exit: land any pending spill write-back before the transfer
     // (a spilled value defined by the block's last instruction may be live
@@ -451,7 +453,14 @@ void JitContext::Forward(ir::Location location) {
         self_forward = location == cur_function->GetStartLocation();
     }
     if (self_forward) {
-        auto self_label{GetLabel(location.Value())};
+        auto self_label = self_target ? self_target : GetLabel(location.Value());
+        if (backedge_exit) {
+            // State::exit_request is deliberately the first field, so this
+            // acquire poll is exactly two hot instructions. The release
+            // publishers are SignalInterrupt and SmcTracker invalidation.
+            __ Ldar(ip0, MemOperand(state, state_offset_exit_request));
+            __ Cbnz(ip0, backedge_exit);
+        }
         __ B(self_label);
     } else {
         auto target_module = module->GetAddressSpace().GetModule(location.Value());
@@ -754,7 +763,7 @@ bool JitContext::IsUniform(const Register& reg) {
     }
 }
 
-void JitContext::SetCurrent(ir::Block* block) {
+void JitContext::SetCurrent(ir::Block* block, bool split_backedge_entry) {
     cur_block = block;
     if (!unit_start_set) {
         unit_start = block->GetStartLocation().Value();
@@ -772,6 +781,14 @@ void JitContext::SetCurrent(ir::Block* block) {
         hot_probe_ranges.clear();
         hot_nan_ranges.clear();
         hot_collecting = false;
+    }
+    if (!split_backedge_entry) {
+        BeginBackedgeBody();
+    }
+}
+
+void JitContext::BeginBackedgeBody() {
+    if (hot_coalesce_enabled) {
         RecordHotCounter(HotCoalesceCounter::Entries);
         hot_code_start = CurrentBufferSize();
         hot_collecting = hot_coalesce_slot != kHotCoalesceInvalidSlot;

@@ -71,7 +71,9 @@ public:
     void BeginColdScratch();
     void EndColdScratch();
 
-    void Forward(ir::Location location);
+    void Forward(ir::Location location,
+                 Label* backedge_exit = nullptr,
+                 Label* self_target = nullptr);
     // Inline dispatch to a compile-time-constant guest location, for the
     // "SetLocation(imm) + ReturnToDispatch" shape a direct jmp/call decodes to.
     // Emits nothing and returns false when the target is not linkable (unknown
@@ -124,7 +126,10 @@ public:
     }
 
     void SetCurrent(ir::Function *function);
-    void SetCurrent(ir::Block *block);
+    void SetCurrent(ir::Block *block, bool split_backedge_entry = false);
+    // Completes a split block entry after the translator has emitted the
+    // published-entry branch and bound the self-only body label.
+    void BeginBackedgeBody();
     void TickIR(ir::Inst* instr);
 
     [[nodiscard]] vixl::aarch64::Label *GetLabel(LocationDescriptor loc);

@@ -55,11 +55,23 @@ DECLARE_ENUM_FLAG_OPERATORS(HostFlags)
 
 class JitTranslator {
 public:
+    struct BackedgeBlockMetadata {
+        u64 guest_start{};
+        u32 host_begin{};
+        u32 host_end{};
+        u32 recovery_offset{};
+    };
+
     explicit JitTranslator(JitContext& ctx);
 
     void Translate(ir::Block *block);
 
     void Translate(ir::HIRFunction *function);
+
+    [[nodiscard]] const std::vector<BackedgeBlockMetadata>&
+    GetBackedgeBlockMetadata() const {
+        return backedge_block_metadata;
+    }
 
     Operand EmitOperand(ir::Operand &ir_op);
 
@@ -80,6 +92,30 @@ public:
 #undef INST
 
 private:
+    struct BackedgeFlagsPlan {
+        bool optimized{true};
+        bool self_is_then{};
+        ir::Location self_target{};
+        ir::Location cold_target{};
+        u8 carry_inverted{};
+        HostFlags requested{};
+        ir::Inst* polarity_load{};
+        ir::Inst* polarity_store{};
+        ir::Inst* final_advance{};
+        std::unique_ptr<Label> local_entry{std::make_unique<Label>()};
+        std::unique_ptr<Label> external_entry{std::make_unique<Label>()};
+        std::unique_ptr<Label> cold_exit{std::make_unique<Label>()};
+        std::unique_ptr<Label> fault_recovery{std::make_unique<Label>()};
+        bool cold_referenced{};
+    };
+
+    [[nodiscard]] std::unique_ptr<BackedgeFlagsPlan>
+    PlanBackedgeFlags(ir::Block* block);
+    [[nodiscard]] bool EmitBackedgeFlagsTerminal(const ir::Terminal& terminal);
+    void EmitBackedgeMaterialize(const BackedgeFlagsPlan& plan);
+    void EmitBackedgeColdPaths();
+    [[nodiscard]] static bool PreservesHostNZCV(ir::OpCode op);
+    [[nodiscard]] static bool MayFaultOrObserve(ir::OpCode op);
     VRegister GetVecScalarOperand(ir::Value value, u32 lane_bits);
 
     void AcquireUnalignedAtomicLock(const Register& scratch);
@@ -124,6 +160,9 @@ private:
 
     // Terminals
     void EmitTerminal(const ir::Terminal &terminal);
+    [[nodiscard]] bool HasSelfEdge(const ir::Terminal& terminal) const;
+    [[nodiscard]] bool IsSelfEdge(ir::Location target) const;
+    void EmitBackedgeExitStub();
 
     // Labels used by Goto / NotGoto / BindLabel
     Label *GetLocalLabel(ir::Inst *inst);
@@ -304,6 +343,8 @@ private:
     // Safe by construction after the GetOperand RA-tie fix: the emitter only
     // peels when the allocator transferred register ownership (SharesGPR).
     bool mem_narrow_fuse{true};
+    bool backedge_latch{false};
+    bool backedge_flags{false};
     bool cur_block_is_call{};
     // Set by EmitSetLocation when the next guest location is a compile-time
     // constant, cleared by every other instruction (Translate(ir::Inst*)).
@@ -314,6 +355,12 @@ private:
     // Emits the inline dispatch for `static_next_loc`; returns false when no
     // static target is known and the caller must Ret to the dispatcher.
     bool EmitStaticForward();
+    std::unique_ptr<Label> backedge_exit_label{};
+    bool backedge_exit_referenced{};
+    std::unique_ptr<BackedgeFlagsPlan> backedge_flags_plan{};
+    u32 backedge_host_begin{};
+    u32 backedge_host_end{};
+    std::vector<BackedgeBlockMetadata> backedge_block_metadata{};
     std::vector<std::unique_ptr<VecNaNColdSite>> vec_nan_cold_sites{};
 };
 

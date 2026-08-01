@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "runtime/backend/address_space.h"
+#include "runtime/common/backedge_control.h"
 #include "runtime/backend/module.h"
 #include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/common/logging.h"
@@ -76,6 +77,13 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     // The probe is measurement-only, so disable disk caching while it is on.
     if (HotCoalesceProfEnabled()) {
         LOG_WARNING("SVM_JIT_CACHE: SVM_RA_HOT_COALESCE is incompatible; cache disabled");
+        return;
+    }
+    if (BackedgeFlagsEnabled()) {
+        // P1 recovery veneers are block-local code offsets. SerialBlock does
+        // not yet serialize that relocation/eligibility contract, so refuse
+        // disk reuse rather than reviving a unit with an imprecise recipe.
+        LOG_WARNING("SVM_JIT_CACHE: SVM_BACKEDGE_FLAGS is incompatible; cache disabled");
         return;
     }
     const auto& config = address_space.GetConfig();
@@ -359,7 +367,37 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
         dirty = true;
         return false;
     }
-    module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, unit.guest_start);
+    module->AddFaultEntry(buffer.exec_data,
+                          buffer.exec_data + buffer.size,
+                          unit.guest_start,
+                          buffer.exec_data);
+    for (size_t i = 0; BackedgeLatchEnabled() && i < unit.blocks.size(); ++i) {
+        const u32 begin = unit.blocks[i].code_offset;
+        const u32 end = i + 1 < unit.blocks.size()
+                ? unit.blocks[i + 1].code_offset
+                : static_cast<u32>(buffer.size);
+        if (begin >= end || end > buffer.size) {
+            // The serialized unit passed the structural reader but does not
+            // describe non-overlapping emitted block subranges. Reject it
+            // instead of falling back to imprecise function-entry recovery.
+            module->Remove(node);
+            if (unit.is_function) {
+                delete static_cast<ir::Function*>(node);
+            } else {
+                delete static_cast<ir::Block*>(node);
+            }
+            if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
+                cache->FreeCode(buffer.exec_data);
+            }
+            stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
+            dirty = true;
+            return false;
+        }
+        module->AddFaultEntry(buffer.exec_data + begin,
+                              buffer.exec_data + end,
+                              unit.blocks[i].guest_start,
+                              buffer.exec_data);
+    }
 
     // 5. Make every block entry reachable from the dispatcher, and re-arm SMC.
     for (const auto& block : unit.blocks) {

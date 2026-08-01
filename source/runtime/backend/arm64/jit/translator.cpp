@@ -2,11 +2,13 @@
 
 #include "translator.h"
 
+#include <algorithm>
 #include <cstring>
 #include <functional>
 #include <iterator>
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
+#include "runtime/common/backedge_control.h"
 #include "translator/x86/cpu.h"
 
 namespace swift::runtime::backend::arm64 {
@@ -33,6 +35,8 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     if (const char* nan_coldpath = PerfGetenv("SVM_SSE_NAN_COLDPATH")) {
         sse_nan_coldpath = std::strcmp(nan_coldpath, "0") != 0;
     }
+    backedge_latch = BackedgeLatchEnabled();
+    backedge_flags = BackedgeFlagsEnabled();
 }
 
 
@@ -50,7 +54,30 @@ void JitTranslator::Translate(ir::Block* block) {
         }
     }
     static_next_loc.reset();
-    context.SetCurrent(block);
+    // Function mode keeps one function-sized suppression bitmap. Grow it
+    // before the per-block backedge proof marks the two sunk IR instructions.
+    disable_instructions.resize(
+            std::max<size_t>(disable_instructions.size(), block->MaxInstrId()));
+    backedge_flags_plan = PlanBackedgeFlags(block);
+    if (backedge_flags_plan) {
+        disable_instructions.set(backedge_flags_plan->polarity_load->Id());
+        disable_instructions.set(backedge_flags_plan->polarity_store->Id());
+    }
+    backedge_exit_referenced = false;
+    backedge_exit_label =
+            backedge_latch && HasSelfEdge(block->GetTerminal())
+                    ? std::make_unique<Label>()
+                    : nullptr;
+    context.SetCurrent(block, backedge_flags_plan != nullptr);
+    if (backedge_flags_plan) {
+        // Every published/external entry takes the cold initializer below;
+        // only the self edge targets local_entry. This makes host NZCV valid
+        // before a pre-producer guest fault without charging the steady loop.
+        __ B(backedge_flags_plan->external_entry.get());
+        __ Bind(backedge_flags_plan->local_entry.get());
+        context.BeginBackedgeBody();
+        backedge_host_begin = context.CurrentBufferSize();
+    }
     // Count the remaining x86 GPR uniform-buffer traffic dynamically without
     // instrumenting each access: add the block's static emitted access count
     // once on entry. ThreadContext64 begins with the 16 8-byte GPRs, so the
@@ -75,13 +102,6 @@ void JitTranslator::Translate(ir::Block* block) {
     context.RecordExecCounter(exec_offset_xmm_uniform_accesses,
                               xmm_uniform_accesses);
     perf_prologue.Stop();
-    // Function-mode IdByRPO assigns global instruction ids, while
-    // Block::MaxInstrId remains the block-local count established at decode.
-    // Never shrink a function-sized bitmap back to that local count: memory
-    // operand peepholes index it with the global ids of instructions they
-    // suppress.
-    disable_instructions.resize(
-            std::max<size_t>(disable_instructions.size(), block->MaxInstrId()));
     PerfScope2 perf_body{GetPerfStats2().codegen_body};
     for (auto& inst : block->GetInstList()) {
         cur_instr = &inst;
@@ -95,13 +115,20 @@ void JitTranslator::Translate(ir::Block* block) {
     PerfScope2 perf_terminal{GetPerfStats2().codegen_terminal};
     context.BeginTerminalScratch();
     FlushFlags();
-    EmitTerminal(block->GetTerminal());
+    if (!EmitBackedgeFlagsTerminal(block->GetTerminal())) {
+        EmitTerminal(block->GetTerminal());
+    }
     context.EndTerminalScratch();
+    if (backedge_flags_plan) {
+        backedge_host_end = context.CurrentBufferSize();
+    }
     // Close the W71 accounting window before out-of-line NaN repair stubs.
     // The hot guard remains in the block; cold handlers are not executed on
     // the normal path and therefore do not belong in static x entry counts.
     context.FinishHotCoalesceBlock();
     context.BeginColdScratch();
+    EmitBackedgeExitStub();
+    EmitBackedgeColdPaths();
     EmitVecNaNColdPaths();
     context.EndColdScratch();
 }
@@ -126,6 +153,443 @@ void JitTranslator::Translate(ir::HIRFunction* function) {
         }
         Translate(block);
     }
+}
+
+bool JitTranslator::PreservesHostNZCV(ir::OpCode op) {
+    // Deliberately narrow emitter audit. These are the only pre-producer
+    // operations admitted by the first spike; every listed ARM64 lowering is
+    // flag-neutral (including its address arithmetic and CBNZ/TBZ guards).
+    switch (op) {
+        case ir::OpCode::LoadUniform:
+        case ir::OpCode::StoreUniform:
+        case ir::OpCode::LoadMemory:
+        case ir::OpCode::StoreMemory:
+        case ir::OpCode::GetHostGPR:
+        case ir::OpCode::GetHostFPR:
+        case ir::OpCode::SetHostGPR:
+        case ir::OpCode::SetHostFPR:
+        case ir::OpCode::LoadImm:
+        case ir::OpCode::AdvancePC:
+        case ir::OpCode::BitCast:
+        case ir::OpCode::GetOperand:
+        case ir::OpCode::Zero:
+        case ir::OpCode::ZeroExtend32:
+        case ir::OpCode::ZeroExtend32To64:
+        case ir::OpCode::VecFAdd:
+        case ir::OpCode::VecFSub:
+        case ir::OpCode::VecFMul:
+        // These lower to their non-S forms when no surviving SaveFlags pseudo
+        // names them. The proof stops at the first producer that does have
+        // such a pseudo, so earlier dead-flags pointer arithmetic is neutral.
+        case ir::OpCode::Add:
+        case ir::OpCode::Sub:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool JitTranslator::MayFaultOrObserve(ir::OpCode op) {
+    switch (op) {
+        case ir::OpCode::LoadMemory:
+        case ir::OpCode::StoreMemory:
+        case ir::OpCode::LoadMemoryTSO:
+        case ir::OpCode::StoreMemoryTSO:
+        case ir::OpCode::MemoryCopy:
+        case ir::OpCode::MemoryCopyTSO:
+        case ir::OpCode::CompareAndSwap:
+        case ir::OpCode::CompareAndSwap128:
+        case ir::OpCode::CheckMemoryAlignment:
+        case ir::OpCode::AtomicExchange:
+        case ir::OpCode::AtomicFetchAdd:
+        case ir::OpCode::AtomicRMW:
+        case ir::OpCode::CallLambda:
+        case ir::OpCode::CallLocation:
+        case ir::OpCode::CallDynamic:
+        case ir::OpCode::X87Op:
+        case ir::OpCode::Sse42Str:
+            return true;
+        default:
+            return false;
+    }
+}
+
+std::unique_ptr<JitTranslator::BackedgeFlagsPlan>
+JitTranslator::PlanBackedgeFlags(ir::Block* block) {
+    if (!backedge_flags || !block) {
+        return nullptr;
+    }
+
+    std::optional<ir::Location> then_target;
+    std::optional<ir::Location> else_target;
+    ir::Value condition{};
+    VisitVariant<void>(block->GetTerminal(), [&](const auto& term) {
+        using T = std::decay_t<decltype(term)>;
+        if constexpr (std::is_same_v<T, ir::terminal::If>) {
+            condition = term.cond;
+            auto direct = [](const ir::Terminal& edge) -> std::optional<ir::Location> {
+                return VisitVariant<std::optional<ir::Location>>(
+                        edge, [](const auto& target) -> std::optional<ir::Location> {
+                            using E = std::decay_t<decltype(target)>;
+                            if constexpr (std::is_same_v<E, ir::terminal::LinkBlock> ||
+                                          std::is_same_v<E, ir::terminal::LinkBlockFast>) {
+                                return target.next;
+                            }
+                            return std::nullopt;
+                        });
+            };
+            then_target = direct(term.then_);
+            else_target = direct(term.else_);
+        }
+    });
+    if (!then_target || !else_target || !condition.Def() ||
+        condition.Def()->GetOp() != ir::OpCode::LocalCondSet) {
+        return nullptr;
+    }
+    const auto self = block->GetStartLocation();
+    const bool then_self = *then_target == self;
+    const bool else_self = *else_target == self;
+    if (then_self == else_self) {
+        return nullptr;
+    }
+
+    ir::Inst* first_producer = nullptr;
+    ir::Inst* final_save = nullptr;
+    ir::Flags final_requested{};
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() != ir::OpCode::SaveFlags) {
+            continue;
+        }
+        auto* producer = inst.GetArg<ir::Value>(0).Def();
+        if (!producer) {
+            return nullptr;
+        }
+        if (!first_producer || producer->Id() < first_producer->Id()) {
+            first_producer = producer;
+        }
+        const auto requested = inst.GetArg<ir::Flags>(1);
+        if (True(requested & ir::Flags::Parity) &&
+            True(requested & ir::Flags::AuxiliaryCarry) &&
+            True(requested & ir::Flags::NZCV)) {
+            final_save = &inst;
+            final_requested = requested;
+        }
+    }
+    if (!first_producer || !final_save) {
+        if (PerfGetenv("SVM_DUMP_IR")) {
+            fmt::print(stderr, "[backedge-proof] {:#x} reject flags producer\n",
+                       block->GetStartLocation().Value());
+        }
+        return nullptr;
+    }
+
+    ir::Inst* polarity_store = nullptr;
+    ir::Inst* polarity_load = nullptr;
+    u8 polarity = 0;
+    constexpr u32 kCarryOffset = offsetof(swift::x86::ThreadContext64,
+                                          carry_inverted);
+    for (auto& inst : block->GetInstList()) {
+        if (inst.Id() <= final_save->Id() ||
+            inst.GetOp() != ir::OpCode::StoreUniform) {
+            continue;
+        }
+        const auto uniform = inst.GetArg<ir::Uniform>(0);
+        if (uniform.GetOffset() != kCarryOffset ||
+            uniform.GetType() != ir::ValueType::U8) {
+            continue;
+        }
+        auto value = inst.GetArg<ir::Value>(1);
+        auto* def = value.Def();
+        if (!def || def->GetOp() != ir::OpCode::LoadImm ||
+            value.Type() != ir::ValueType::U8 || def->GetUses() != 1) {
+            if (PerfGetenv("SVM_DUMP_IR")) {
+                fmt::print(stderr,
+                           "[backedge-proof] {:#x} reject polarity value def={} op={} type={} uses={}\n",
+                           block->GetStartLocation().Value(),
+                           def != nullptr,
+                           def ? static_cast<u32>(def->GetOp()) : UINT32_MAX,
+                           static_cast<u32>(value.Type()),
+                           def ? def->GetUses() : UINT32_MAX);
+            }
+            return nullptr;
+        }
+        const u64 immediate = def->GetArg<ir::Imm>(0).Get();
+        if (immediate > 1) {
+            return nullptr;
+        }
+        polarity_store = &inst;
+        polarity_load = def;
+        polarity = static_cast<u8>(immediate);
+    }
+    if (!polarity_store || !polarity_load ||
+        polarity_store->Id() >= condition.Def()->Id()) {
+        if (PerfGetenv("SVM_DUMP_IR")) {
+            fmt::print(stderr,
+                       "[backedge-proof] {:#x} reject polarity store={} load={} cond={}\n",
+                       block->GetStartLocation().Value(),
+                       polarity_store ? polarity_store->Id() : UINT32_MAX,
+                       polarity_load ? polarity_load->Id() : UINT32_MAX,
+                       condition.Def()->Id());
+        }
+        return nullptr;
+    }
+
+    // The old block-entry flags stay live until the first producer. A fault is
+    // allowed in that prefix; the per-block veneer below reconstructs them.
+    for (auto& inst : block->GetInstList()) {
+        if (&inst == first_producer) {
+            break;
+        }
+        if (!PreservesHostNZCV(inst.GetOp())) {
+            if (PerfGetenv("SVM_DUMP_IR")) {
+                fmt::print(stderr,
+                           "[backedge-proof] {:#x} reject pre-producer op={} id={}\n",
+                           block->GetStartLocation().Value(),
+                           static_cast<u32>(inst.GetOp()), inst.Id());
+            }
+            return nullptr;
+        }
+    }
+    // Once the next producer overwrites host NZCV there may be no synchronous
+    // fault or architectural observer before the terminal safepoint.
+    for (auto& inst : block->GetInstList()) {
+        if (inst.Id() > first_producer->Id() && MayFaultOrObserve(inst.GetOp())) {
+            if (PerfGetenv("SVM_DUMP_IR")) {
+                fmt::print(stderr,
+                           "[backedge-proof] {:#x} reject post-producer fault op={} id={} producer={}\n",
+                           block->GetStartLocation().Value(),
+                           static_cast<u32>(inst.GetOp()), inst.Id(), first_producer->Id());
+            }
+            return nullptr;
+        }
+    }
+    // The tail after the omitted store is intentionally tiny: advancing the
+    // guest PC and consuming the already-live local condition only.
+    ir::Inst* final_advance = nullptr;
+    for (auto& inst : block->GetInstList()) {
+        if (inst.Id() <= polarity_store->Id()) {
+            continue;
+        }
+        if (inst.GetOp() != ir::OpCode::AdvancePC &&
+            inst.GetOp() != ir::OpCode::LocalCondSet &&
+            inst.GetOp() != ir::OpCode::ZeroExtend32 &&
+            inst.GetOp() != ir::OpCode::ZeroExtend32To64 &&
+            inst.GetOp() != ir::OpCode::SetHostGPR) {
+            if (PerfGetenv("SVM_DUMP_IR")) {
+                fmt::print(stderr,
+                           "[backedge-proof] {:#x} reject tail op={} id={}\n",
+                           block->GetStartLocation().Value(),
+                           static_cast<u32>(inst.GetOp()), inst.Id());
+            }
+            return nullptr;
+        }
+        if (inst.GetOp() == ir::OpCode::AdvancePC) {
+            if (final_advance) {
+                return nullptr;
+            }
+            final_advance = &inst;
+        }
+    }
+    if (!final_advance || final_advance->Id() >= condition.Def()->Id()) {
+        return nullptr;
+    }
+
+    auto plan = std::make_unique<BackedgeFlagsPlan>();
+    plan->self_is_then = then_self;
+    plan->self_target = self;
+    plan->cold_target = then_self ? *else_target : *then_target;
+    plan->carry_inverted = polarity;
+    plan->requested = GuestNZCVToHost(final_requested & ir::Flags::NZCV);
+    plan->polarity_load = polarity_load;
+    plan->polarity_store = polarity_store;
+    plan->final_advance = final_advance;
+    if (PerfGetenv("SVM_DUMP_IR")) {
+        fmt::print(stderr, "[backedge-proof] {:#x} eligible\n",
+                   block->GetStartLocation().Value());
+    }
+    return plan;
+}
+
+void JitTranslator::EmitBackedgeMaterialize(const BackedgeFlagsPlan& plan) {
+    __ Mov(ipw1, plan.carry_inverted);
+    __ Strb(ipw1,
+            MemOperand(state,
+                       state_offset_uniform_buffer +
+                               offsetof(swift::x86::ThreadContext64,
+                                        carry_inverted)));
+    const u64 requested = static_cast<u64>(plan.requested);
+    u64 keep = ~requested;
+    __ Mrs(ip0, NZCV);
+    __ And(flags, flags, ForceCast<s64>(keep));
+    __ And(ip0, ip0, static_cast<u32>(requested));
+    __ Orr(flags, flags, ip0);
+}
+
+bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
+    if (!backedge_flags_plan) {
+        return false;
+    }
+    auto& plan = *backedge_flags_plan;
+    if (!save_in_nzcv || !nzcv_dirty || nzcv_requested != plan.requested) {
+        if (PerfGetenv("SVM_DUMP_IR")) {
+            fmt::print(stderr,
+                       "[backedge-proof] {:#x} emitter fallback save={} dirty={} actual={:#x} expected={:#x}\n",
+                       cur_block->GetStartLocation().Value(),
+                       save_in_nzcv,
+                       nzcv_dirty,
+                       static_cast<u64>(nzcv_requested),
+                       static_cast<u64>(plan.requested));
+        }
+        // Static proof and emitter state disagreed. Recreate the omitted
+        // polarity write, commit through the ordinary path, and let the
+        // generic terminal keep this block correct (but unoptimized).
+        __ Mov(ipw1, plan.carry_inverted);
+        __ Strb(ipw1,
+                MemOperand(state,
+                           state_offset_uniform_buffer +
+                                   offsetof(swift::x86::ThreadContext64,
+                                            carry_inverted)));
+        MergeNZCV();
+        plan.optimized = false;
+        return false;
+    }
+
+    ir::Value condition{};
+    VisitVariant<void>(terminal, [&](const auto& term) {
+        using T = std::decay_t<decltype(term)>;
+        if constexpr (std::is_same_v<T, ir::terminal::If>) {
+            condition = term.cond;
+        }
+    });
+    if (!condition.Def()) {
+        return false;
+    }
+    if (auto local = LocalConditionFor(condition)) {
+        const auto branch_to_cold = plan.self_is_then
+                ? static_cast<Condition>(static_cast<u8>(*local) ^ 1)
+                : *local;
+        __ B(backedge_flags_plan->cold_exit.get(), branch_to_cold);
+    } else if (plan.self_is_then) {
+        __ Cbz(context.W(condition), backedge_flags_plan->cold_exit.get());
+    } else {
+        __ Cbnz(context.W(condition), backedge_flags_plan->cold_exit.get());
+    }
+    plan.cold_referenced = true;
+    context.RecordExecCounter(exec_offset_exit_direct);
+    backedge_exit_referenced = true;
+    context.Forward(plan.self_target,
+                    backedge_exit_label.get(),
+                    plan.local_entry.get());
+    return true;
+}
+
+void JitTranslator::EmitBackedgeColdPaths() {
+    if (!backedge_flags_plan) {
+        return;
+    }
+    auto& plan = *backedge_flags_plan;
+
+    __ Bind(plan.external_entry.get());
+    // All non-self entries begin with committed x26/State. Dispatcher lookup
+    // clobbers NZCV. Normalize the committed carry representation to this
+    // block's compile-time polarity before reconstructing host NZCV: a fault
+    // before the first producer must see the same local ABI on an external
+    // first iteration as it does after a self edge.
+    Label polarity_ready;
+    __ Ldrb(ipw0,
+            MemOperand(state,
+                       state_offset_uniform_buffer +
+                               offsetof(swift::x86::ThreadContext64,
+                                        carry_inverted)));
+    __ Cmp(ipw0, plan.carry_inverted);
+    __ B(&polarity_ready, eq);
+    __ Eor(flags, flags, static_cast<u64>(HostFlags::C));
+    __ Bind(&polarity_ready);
+    __ Mov(ipw0, plan.carry_inverted);
+    __ Strb(ipw0,
+            MemOperand(state,
+                       state_offset_uniform_buffer +
+                               offsetof(swift::x86::ThreadContext64,
+                                        carry_inverted)));
+    __ And(ip0, flags, static_cast<u64>(HostFlags::NZCV));
+    __ Msr(NZCV, ip0);
+    __ B(plan.local_entry.get());
+
+    if (plan.optimized && plan.cold_referenced) {
+        __ Bind(plan.cold_exit.get());
+        EmitBackedgeMaterialize(plan);
+        context.RecordExecCounter(exec_offset_exit_direct);
+        context.Forward(plan.cold_target);
+    }
+
+    u32 recovery_offset = 0;
+    if (plan.optimized) {
+        recovery_offset = context.CurrentBufferSize();
+        __ Bind(plan.fault_recovery.get());
+        EmitBackedgeMaterialize(plan);
+        __ Ret();
+    }
+    backedge_block_metadata.push_back({cur_block->GetStartLocation().Value(),
+                                       backedge_host_begin,
+                                       backedge_host_end,
+                                       recovery_offset});
+    // The next emitted block always starts from the committed ABI. The local
+    // state represented by this object has been materialized on every edge
+    // that can reach it.
+    nzcv_dirty = false;
+    nzcv_requested = {};
+    backedge_flags_plan.reset();
+}
+
+bool JitTranslator::IsSelfEdge(ir::Location target) const {
+    return cur_block && target == cur_block->GetStartLocation();
+}
+
+bool JitTranslator::HasSelfEdge(const ir::Terminal& terminal) const {
+    return VisitVariant<bool>(terminal, [this](const auto& term) {
+        using T = std::decay_t<decltype(term)>;
+        if constexpr (std::is_same_v<T, ir::terminal::LinkBlock> ||
+                      std::is_same_v<T, ir::terminal::LinkBlockFast>) {
+            return IsSelfEdge(term.next);
+        } else if constexpr (std::is_same_v<T, ir::terminal::If> ||
+                             std::is_same_v<T, ir::terminal::Condition>) {
+            return HasSelfEdge(term.then_) || HasSelfEdge(term.else_);
+        } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
+            return HasSelfEdge(term.else_);
+        } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
+            return std::any_of(term.cases.begin(), term.cases.end(),
+                               [this](const auto& item) {
+                                   return HasSelfEdge(item.then);
+                               });
+        } else {
+            return false;
+        }
+    });
+}
+
+void JitTranslator::EmitBackedgeExitStub() {
+    if (!backedge_exit_label || !backedge_exit_referenced) {
+        backedge_exit_label.reset();
+        return;
+    }
+    Label signal;
+    Label publish;
+    __ Bind(backedge_exit_label.get());
+    if (backedge_flags_plan && backedge_flags_plan->optimized) {
+        EmitBackedgeMaterialize(*backedge_flags_plan);
+    }
+    __ Mov(ip1, cur_block->GetStartLocation().Value());
+    __ Str(ip1, MemOperand(state, state_offset_current_loc));
+    __ Tbnz(ip0, 63, &signal);
+    __ Mov(ipw1, static_cast<u32>(HaltReason::CodeMiss));
+    __ B(&publish);
+    __ Bind(&signal);
+    __ Mov(ipw1, static_cast<u32>(HaltReason::Signal));
+    __ Bind(&publish);
+    __ Str(ipw1, MemOperand(state, state_offset_halt_reason));
+    __ Ret();
+    backedge_exit_label.reset();
+    backedge_exit_referenced = false;
 }
 
 void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
@@ -158,11 +622,25 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlock>) {
             MergeNZCV();
             context.RecordExecCounter(exec_offset_exit_direct);
-            context.Forward(term.next);
+            auto* exit = IsSelfEdge(term.next) && backedge_exit_label
+                    ? backedge_exit_label.get()
+                    : nullptr;
+            backedge_exit_referenced |= exit != nullptr;
+            auto* self_target = IsSelfEdge(term.next) && backedge_flags_plan
+                    ? backedge_flags_plan->local_entry.get()
+                    : nullptr;
+            context.Forward(term.next, exit, self_target);
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
             MergeNZCV();
             context.RecordExecCounter(exec_offset_exit_direct);
-            context.Forward(term.next);
+            auto* exit = IsSelfEdge(term.next) && backedge_exit_label
+                    ? backedge_exit_label.get()
+                    : nullptr;
+            backedge_exit_referenced |= exit != nullptr;
+            auto* self_target = IsSelfEdge(term.next) && backedge_flags_plan
+                    ? backedge_flags_plan->local_entry.get()
+                    : nullptr;
+            context.Forward(term.next, exit, self_target);
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
             // Return Stack Buffer: this is the real pop+predict site. It must
             // run here (not at the PopRSB instruction) because guest flags have

@@ -58,6 +58,10 @@ struct ExecProfileCounters {
 struct RuntimeProfileInterface {
     ExecProfileCounters exec{};
     u64* hot_coalesce_counters{};
+    // SVM_BACKEDGE_LATCH reuses State's first word for the request, so the
+    // runtime-private L1 pointer lives here in that mode. Appending this field
+    // preserves all existing profile-counter offsets.
+    void* l1_code_cache{};
 };
 
 union CPUFlags {
@@ -70,7 +74,16 @@ union CPUFlags {
 };
 
 struct State {
-    void* l1_code_cache{};
+    // Preserve the legacy State layout exactly. With the default-OFF latch,
+    // this is the historical L1 pointer. With the latch enabled, the same
+    // first word is an atomic request (Signal in bit 63, counted SMC requests
+    // below it), while RuntimeProfileInterface carries the L1 pointer. Keeping
+    // the request at offset zero makes the hot poll exactly LDAR+CBNZ without
+    // shifting any existing State/uniform address in the OFF build.
+    union {
+        void* l1_code_cache{};
+        alignas(8) u64 exit_request;
+    };
     void* l2_code_cache{};
     void* interface{};
     HaltReason halt_reason{HaltReason::None};
@@ -123,6 +136,9 @@ struct State {
 };
 
 constexpr u32 state_offset_uniform_buffer = offsetof(State, uniform_buffer_begin);
+constexpr u32 state_offset_exit_request = offsetof(State, exit_request);
+static_assert(state_offset_exit_request == 0);
+static_assert(sizeof(State::l1_code_cache) == sizeof(State::exit_request));
 constexpr u32 state_offset_spill_area = offsetof(State, spill_area);
 constexpr u32 state_offset_local_buffer = offsetof(State, local_buffer);
 constexpr u32 state_offset_l1_code_cache = offsetof(State, l1_code_cache);
@@ -173,5 +189,7 @@ constexpr u32 exec_offset_access_pad = offsetof(RuntimeProfileInterface, exec) +
                                        offsetof(ExecProfileCounters, access_pad);
 constexpr u32 profile_offset_hot_coalesce_counters =
         offsetof(RuntimeProfileInterface, hot_coalesce_counters);
+constexpr u32 profile_offset_l1_code_cache =
+        offsetof(RuntimeProfileInterface, l1_code_cache);
 
 }  // namespace swift::runtime::backend

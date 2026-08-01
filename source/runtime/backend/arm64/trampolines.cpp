@@ -4,6 +4,7 @@
 
 #include "runtime/backend/cache_clear.h"
 #include "runtime/backend/context.h"
+#include "runtime/common/backedge_control.h"
 #include "trampolines.h"
 #include "defines.h"
 #include <algorithm>
@@ -276,7 +277,12 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Lsr(loc_index, loc_reg, 2);
 
     // query l1 cache
-    __ Ldr(l1_cache, MemOperand(state, state_offset_l1_code_cache));
+    if (BackedgeLatchEnabled()) {
+        __ Ldr(l1_cache, MemOperand(state, state_offset_exec_profile_ptr));
+        __ Ldr(l1_cache, MemOperand(l1_cache, profile_offset_l1_code_cache));
+    } else {
+        __ Ldr(l1_cache, MemOperand(state, state_offset_l1_code_cache));
+    }
     __ Eor(l1_index, loc_index, Operand(loc_index, LSR, L1_CODE_CACHE_BITS));
     __ And(l1_index, l1_index, L1_CODE_CACHE_HASH);
     __ Add(l1_start, l1_cache, Operand(l1_index, LSL, 4));

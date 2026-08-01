@@ -27,15 +27,15 @@ struct ModuleConfig {
 
 struct NoneAddressNode {};
 
-// JIT fault table entry: one per compiled unit (block or function). Records
-// the host PC range the unit was emitted to and the guest address to resume
-// at if a host fault (wild guest pointer) is raised inside that range. The
-// granularity is the whole unit (no per-instruction host->guest map): on a
-// fault the guest resumes at the unit's entry, which is precise enough for
-// PageFatal reporting (Phase 3) and SMC invalidation (Phase 4).
+// JIT fault table entry. Function units may contribute one subrange per
+// emitted guest block; owner_start keeps all entries tied to the allocation
+// that must be retired together. recovery is optional and defaults to the
+// global committed-state fault return.
 struct FaultEntry {
     u8* host_start{};
     u8* host_end{};
+    u8* owner_start{};
+    u8* recovery{};
     VAddr guest_loc{};
 
     [[nodiscard]] bool Contains(const u8* host_pc) const {
@@ -128,7 +128,11 @@ public:
 
     // Records the host PC range of a freshly compiled unit (called right
     // after JitContext::Flush in TranslateIR).
-    void AddFaultEntry(u8* host_start, u8* host_end, VAddr guest_loc);
+    void AddFaultEntry(u8* host_start,
+                       u8* host_end,
+                       VAddr guest_loc,
+                       u8* owner_start = nullptr,
+                       u8* recovery = nullptr);
 
     // Finds the fault entry whose host range contains host_pc. Called from
     // the host signal handler; takes the cache lock shared.
@@ -143,8 +147,7 @@ public:
     [[nodiscard]] u8* DetachNode(ir::AddressNode* node);
     void ReclaimCode(u8* exec_ptr);
 
-    // Drops every fault-table entry recorded for the unit emitted at
-    // host_start (one entry per compiled unit).
+    // Drops every fault-table subrange owned by the allocation at host_start.
     void RemoveFaultEntries(const u8* host_start);
 
     [[nodiscard]] AddressSpace& GetAddressSpace() { return address_space; }

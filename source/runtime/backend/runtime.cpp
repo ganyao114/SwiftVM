@@ -3,6 +3,7 @@
 //
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -19,6 +20,7 @@
 #include "runtime/backend/signal_handler.h"
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/hot_coalesce_prof.h"
+#include "runtime/common/backedge_control.h"
 #include "runtime/common/perf_stats.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
@@ -76,14 +78,21 @@ struct Runtime::Impl final {
                     kHotCoalesceCounterCount);
             profile_interface.hot_coalesce_counters = hot_coalesce_counters.data();
         }
+        profile_interface.l1_code_cache = l1_code_cache.Data();
+        if (BackedgeLatchEnabled()) {
+            state->exit_request = 0;
+            state->interface = &profile_interface;
+        } else {
+            state->l1_code_cache = l1_code_cache.Data();
+        }
         if (exec_profile_enabled || hot_coalesce_enabled) {
             state->interface = &profile_interface;
         }
         // Wire the dispatcher's code-cache tables: L1 is per-runtime, L2 is the
         // address-space wide translate table that PushCodeCache writes to.
-        state->l1_code_cache = l1_code_cache.Data();
         state->l2_code_cache = address_space->GetCodeCacheTable().Data();
-        smc_epoch = address_space->GetSmcTracker().RegisterRuntime(l1_code_cache);
+        smc_epoch = address_space->GetSmcTracker().RegisterRuntime(
+                l1_code_cache, &state->exit_request);
         // Guest address virtualization: Config::memory_base carries the
         // guest->host bias (host = guest + bias); the JIT keeps it in the
         // reserved pt register and the interpreter reads it from here.
@@ -249,10 +258,12 @@ struct Runtime::Impl final {
         // This preserves guest RSI in x0 at pin levels 2/3 while still returning
         // PageFatal in the C-ABI result register after the static spill.
         self->state->halt_reason = HaltReason::PageFatal;
-        backend::SignalHandler::SetContextPC(
-                uctx,
-                reinterpret_cast<std::uintptr_t>(
-                        self->address_space->GetTrampolines().GetReturnHost()));
+        const auto recovery_pc = entry.recovery
+                                         ? reinterpret_cast<std::uintptr_t>(entry.recovery)
+                                         : reinterpret_cast<std::uintptr_t>(
+                                                   self->address_space->GetTrampolines()
+                                                           .GetReturnHost());
+        backend::SignalHandler::SetContextPC(uctx, recovery_pc);
         return true;
     }
 
@@ -263,6 +274,27 @@ struct Runtime::Impl final {
     [[nodiscard]] LocationDescriptor GetLocation() const { return state->current_loc.Value(); }
 
     [[nodiscard]] HaltReason JitRun(void* cache) const { return jit_entry(state, cache); }
+
+    [[nodiscard]] u64 LoadExitRequest() const {
+        return std::atomic_ref<u64>(state->exit_request)
+                .load(std::memory_order_acquire);
+    }
+
+    void AcknowledgeSmcRequest(u64 observed) const {
+        if ((observed & kBackedgeSmcRequestMask) == 0) {
+            return;
+        }
+        auto request = std::atomic_ref<u64>(state->exit_request);
+        u64 expected = observed;
+        const u64 desired = observed & kBackedgeSignalRequest;
+        // Clear only the exact SMC generation seen before CloseWriteWindow.
+        // A concurrent invalidation changes the low counter, makes this CAS
+        // fail, and is therefore observed by the next boundary/backedge.
+        request.compare_exchange_strong(expected,
+                                        desired,
+                                        std::memory_order_acq_rel,
+                                        std::memory_order_acquire);
+    }
 
     [[nodiscard]] HaltReason Interpreter() const {
         auto current_loc = state->current_loc.Value();
@@ -365,6 +397,17 @@ struct Runtime::Impl final {
         while (running.load(std::memory_order_acquire)) {
             auto current_loc = GetLocation();
             auto& smc = address_space->GetSmcTracker();
+            if (BackedgeLatchEnabled()) {
+                const u64 request = LoadExitRequest();
+                if (request & kBackedgeSmcRequestMask) {
+                    // Covers an SMC write made by host syscall emulation
+                    // between JitRuns: slots are already clear, and closing
+                    // before cache lookup prevents entry into/disk revival of
+                    // a node from the open write window.
+                    smc.CloseWriteWindow(*address_space, l1_code_cache);
+                    AcknowledgeSmcRequest(request);
+                }
+            }
             // Publish before cache lookup, not merely before JitRun: a pointer
             // fetched while an invalidation races must remain epoch-protected
             // until the trampoline returns.
@@ -380,6 +423,13 @@ struct Runtime::Impl final {
                 }
                 // JIT Run!
                 hr = JitRun(cache);
+                // Read after the generated return. If a newer invalidation
+                // arrived after its poll, CloseWriteWindow below consumes it
+                // too. If one arrives after this load, the exact-generation
+                // CAS fails and the next boundary observes it.
+                const u64 observed = BackedgeLatchEnabled()
+                        ? LoadExitRequest()
+                        : 0;
                 // The runtime is now quiescent with respect to retired JIT
                 // code. This is an atomic-only fast path unless reclamation
                 // work is actually pending.
@@ -394,6 +444,16 @@ struct Runtime::Impl final {
                 // is ever enabled, the linkage patch below must be ordered
                 // against invalidation of the *previous* block.
                 smc.CloseWriteWindow(*address_space, l1_code_cache);
+                if (BackedgeLatchEnabled()) {
+                    AcknowledgeSmcRequest(observed);
+                    // A Signal may race after the generated poll selected an
+                    // SMC-only CodeMiss veneer. The sticky atomic bit, not
+                    // the non-atomic halt_reason sampled by the trampoline,
+                    // is authoritative at this boundary.
+                    if (LoadExitRequest() & kBackedgeSignalRequest) {
+                        hr = HaltReason::Signal;
+                    }
+                }
             } else {
                 smc.EndJit(smc_epoch);
                 // IR Interpreter
@@ -488,14 +548,24 @@ HaltReason Runtime::Step() { return HaltReason::None; }
 
 void Runtime::SignalInterrupt() {
     impl->running.store(false, std::memory_order_release);
-    // The JIT trampoline samples halt_reason after every returned block. This
-    // makes an interrupt observable while Run() is inside generated code
-    // instead of waiting for an unrelated guest syscall.
-    impl->state->halt_reason = HaltReason::Signal;
+    if (BackedgeLatchEnabled()) {
+        // Release publishes running=false to the generated LDAR poll. The
+        // high bit is sticky until ClearInterrupt and does not collide with
+        // the monotonically counted SMC requests in the low bits.
+        std::atomic_ref<u64>(impl->state->exit_request)
+                .fetch_or(kBackedgeSignalRequest, std::memory_order_release);
+    } else {
+        // Exact legacy path when the default-OFF latch is disabled.
+        impl->state->halt_reason = HaltReason::Signal;
+    }
 }
 
 void Runtime::ClearInterrupt() {
     impl->state->halt_reason = HaltReason::None;
+    if (BackedgeLatchEnabled()) {
+        std::atomic_ref<u64>(impl->state->exit_request)
+                .fetch_and(kBackedgeSmcRequestMask, std::memory_order_acq_rel);
+    }
     impl->running.store(true, std::memory_order_release);
 }
 
@@ -712,11 +782,6 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
         }
         function->ReleaseFunctionOwnership();
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} publish-ready\n", func_start);
-        {
-            PerfScope2 perf_pub_fault{GetPerfStats2().publish_fault};
-            module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, func_start);
-        }
-
         // Publish every decoded block label, not only the function entry.
         // External links, RSB return targets, and code misses are allowed to
         // land at a basic-block boundary inside this compiled unit.
@@ -745,6 +810,47 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
                         ir_function,
                         block->GetStartLocation().Value(),
                         block->GetEndLocation().Value());
+            }
+        }
+        {
+            PerfScope2 perf_pub_fault{GetPerfStats2().publish_fault};
+            if (BackedgeLatchEnabled()) {
+                // Keep the legacy whole-unit entry as a committed-state
+                // fallback for metadata gaps/cold stubs. Overlapping precise
+                // entries below win in Module::LookupFault.
+                module->AddFaultEntry(buffer.exec_data,
+                                      buffer.exec_data + buffer.size,
+                                      func_start,
+                                      buffer.exec_data);
+                const auto& backedges = translator.GetBackedgeBlockMetadata();
+                for (size_t i = 0; i < cache_blocks.size(); ++i) {
+                    const auto recovery = std::find_if(
+                            backedges.begin(), backedges.end(), [&](const auto& item) {
+                                return item.guest_start == cache_blocks[i].guest_start;
+                            });
+                    const u32 begin = recovery != backedges.end()
+                            ? recovery->host_begin
+                            : cache_blocks[i].code_offset;
+                    const u32 end = recovery != backedges.end()
+                            ? recovery->host_end
+                            : (i + 1 < cache_blocks.size()
+                                       ? cache_blocks[i + 1].code_offset
+                                       : static_cast<u32>(buffer.size));
+                    ASSERT(begin < end && end <= buffer.size);
+                    module->AddFaultEntry(buffer.exec_data + begin,
+                                          buffer.exec_data + end,
+                                          cache_blocks[i].guest_start,
+                                          buffer.exec_data,
+                                          recovery != backedges.end() &&
+                                                          recovery->recovery_offset
+                                                  ? buffer.exec_data +
+                                                            recovery->recovery_offset
+                                                  : nullptr);
+                }
+            } else {
+                module->AddFaultEntry(buffer.exec_data,
+                                      buffer.exec_data + buffer.size,
+                                      func_start);
             }
         }
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} entries-ready\n", func_start);
@@ -818,6 +924,17 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
         idx != backend::INVALID_CACHE_ID) {
         context.Flush(buffer);
         module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, block_start);
+        if (BackedgeLatchEnabled()) {
+            for (const auto& item : translator.GetBackedgeBlockMetadata()) {
+                module->AddFaultEntry(buffer.exec_data + item.host_begin,
+                                      buffer.exec_data + item.host_end,
+                                      item.guest_start,
+                                      buffer.exec_data,
+                                      item.recovery_offset
+                                              ? buffer.exec_data + item.recovery_offset
+                                              : nullptr);
+            }
+        }
         jit_state.jit_state = backend::JitState::Cached;
         jit_state.cache_id = idx;
         jit_state.offset_in = buffer.offset;
@@ -872,6 +989,17 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
             module->AddFaultEntry(buffer.exec_data,
                                   buffer.exec_data + buffer.size,
                                   block->GetStartLocation().Value());
+            if (BackedgeLatchEnabled()) {
+                for (const auto& item : translator.GetBackedgeBlockMetadata()) {
+                    module->AddFaultEntry(buffer.exec_data + item.host_begin,
+                                          buffer.exec_data + item.host_end,
+                                          item.guest_start,
+                                          buffer.exec_data,
+                                          item.recovery_offset
+                                                  ? buffer.exec_data + item.recovery_offset
+                                                  : nullptr);
+                }
+            }
         }
         jit_state.jit_state = backend::JitState::Cached;
         jit_state.cache_id = idx;

@@ -43,10 +43,14 @@ public:
     static constexpr u64 kInactiveEpoch = UINT64_MAX;
 
     struct RuntimeEpoch {
-        explicit RuntimeEpoch(TranslateTable* table) : l1(table) {}
+        RuntimeEpoch(TranslateTable* table, u64* request)
+                : l1(table), exit_request(request) {}
 
         std::atomic<u64> active_epoch{kInactiveEpoch};
         TranslateTable* l1{};
+        // Points at State::exit_request. The Runtime owns State for at least
+        // as long as this token remains registered.
+        u64* exit_request{};
     };
     using RuntimeToken = std::shared_ptr<RuntimeEpoch>;
 
@@ -68,7 +72,8 @@ public:
     // can yield a JIT pointer; EndJit runs immediately after trampoline
     // return. Entry publishes and validates a generation using atomics only;
     // reclamation locking occurs only while pending_count_ is non-zero.
-    [[nodiscard]] RuntimeToken RegisterRuntime(TranslateTable& l1);
+    [[nodiscard]] RuntimeToken RegisterRuntime(TranslateTable& l1,
+                                               u64* exit_request = nullptr);
     void UnregisterRuntime(const RuntimeToken& token);
     void BeginJit(const RuntimeToken& token);
     void EndJit(const RuntimeToken& token);
@@ -182,6 +187,7 @@ private:
     void ClearDispatchSlots(AddressSpace& space,
                             TranslateTable* extra_l1,
                             const TrackedNode& tracked);
+    void PublishExitRequest();
     [[nodiscard]] std::vector<TrackedNode> TakeDirtyNodes(AddressSpace& space,
                                                           TranslateTable* extra_l1);
     [[nodiscard]] std::vector<TrackedNode> TakeRangeNodes(AddressSpace& space,

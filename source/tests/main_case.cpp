@@ -39,9 +39,9 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 57);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 59);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_XMM_POOL_EXT");
+            "SVM_BACKEDGE_FLAGS");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -339,11 +339,22 @@ TEST_CASE("Runtime preserves an interrupt between Run calls") {
     AddressSpace address_space{config};
     Runtime runtime{&address_space};
 
-    REQUIRE(runtime.Run() == HaltReason::CodeMiss);
-    runtime.SignalInterrupt();
-    REQUIRE(runtime.Run() == HaltReason::Signal);
-    runtime.ClearInterrupt();
-    REQUIRE(runtime.Run() == HaltReason::CodeMiss);
+    bool initial_miss = true;
+    bool interrupt_seen = true;
+    bool resumed_miss = true;
+    for (unsigned iteration = 0; iteration < 1000; ++iteration) {
+        initial_miss &= runtime.Run() == HaltReason::CodeMiss;
+        // Deliberately publish after Run has returned and before the next Run:
+        // this is the W64 empty-loop window, repeated without changing the
+        // suite's assertion count.
+        runtime.SignalInterrupt();
+        interrupt_seen &= runtime.Run() == HaltReason::Signal;
+        runtime.ClearInterrupt();
+        resumed_miss &= runtime.Run() == HaltReason::CodeMiss;
+    }
+    REQUIRE(initial_miss);
+    REQUIRE(interrupt_seen);
+    REQUIRE(resumed_miss);
 }
 
 TEST_CASE("Test block ir print") {
