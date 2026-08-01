@@ -2,6 +2,7 @@
 
 #include "aarch64/macro-assembler-aarch64.h"
 #include "runtime/backend/context.h"
+#include "runtime/common/fpcr_tax_prof.h"
 #include "translator/x86/cpu.h"
 
 namespace swift::runtime::backend::arm64 {
@@ -9,20 +10,19 @@ namespace swift::runtime::backend::arm64 {
 using namespace vixl::aarch64;
 
 inline constexpr u64 kSseAFPGuestFPCRBase = (u64{1} << 1) | (u64{1} << 2);
+inline constexpr s32 kSseAFPRuntimeFrameSize = 32;
+inline constexpr s32 kSseAFPHostFPCROffset = 0;
+inline constexpr s32 kSseAFPGuestFPCROffset = 8;
+inline constexpr s32 kSseAFPSourceMXCSROffset = 16;
 
 // Build the complete guest FPCR from architectural MXCSR state.  Do not use
 // the caller's FPCR as a base: DN/FZ/RMode and trap controls are host state.
 // x86 RC encodes down/up as 01/10, while Arm FPCR encodes up/down as 01/10,
 // so the two source bits deliberately cross on their way to RMode[23:22].
-inline void EmitSseAFPGuestFPCR(MacroAssembler& masm,
-                                const XRegister& state_reg,
-                                const XRegister& result,
-                                const XRegister& mxcsr,
-                                const XRegister& bit) {
-    masm.Ldr(mxcsr.W(),
-             MemOperand(state_reg,
-                        state_offset_uniform_buffer +
-                                offsetof(swift::x86::ThreadContext64, mxcsr)));
+inline void EmitSseAFPGuestFPCRFromMXCSR(MacroAssembler& masm,
+                                         const XRegister& result,
+                                         const XRegister& mxcsr,
+                                         const XRegister& bit) {
     masm.Mov(result, kSseAFPGuestFPCRBase);
     masm.Ubfx(bit, mxcsr, 6, 1);   // MXCSR.DAZ -> FPCR.FIZ[0]
     masm.Orr(result, result, bit);
@@ -32,6 +32,53 @@ inline void EmitSseAFPGuestFPCR(MacroAssembler& masm,
     masm.Orr(result, result, Operand(bit, LSL, 23));
     masm.Ubfx(bit, mxcsr, 14, 1);  // MXCSR.RC high -> FPCR.RMode low
     masm.Orr(result, result, Operand(bit, LSL, 22));
+}
+
+inline void EmitSseAFPGuestFPCR(MacroAssembler& masm,
+                                const XRegister& state_reg,
+                                const XRegister& result,
+                                const XRegister& mxcsr,
+                                const XRegister& bit) {
+    masm.Ldr(mxcsr.W(),
+             MemOperand(state_reg,
+                        state_offset_uniform_buffer +
+                                offsetof(swift::x86::ThreadContext64, mxcsr)));
+    EmitSseAFPGuestFPCRFromMXCSR(masm, result, mxcsr, bit);
+}
+
+// Restore guest FPCR after any host boundary. Every path compares the current
+// architectural MXCSR with the source cached in this JitRun's stack frame;
+// there are deliberately no helper-specific cleanliness exemptions.
+template <typename RecordCounter>
+inline void EmitSseAFPRestoreGuestFPCRCached(MacroAssembler& masm,
+                                             const XRegister& state_reg,
+                                             s32 frame_offset,
+                                             const XRegister& result,
+                                             const XRegister& mxcsr,
+                                             const XRegister& bit,
+                                             RecordCounter&& record) {
+    Label cached;
+    Label apply;
+    record(FpcrTaxCounter::CacheLookup);
+    masm.Ldp(result,
+             bit,
+             MemOperand(sp, frame_offset + kSseAFPGuestFPCROffset));
+    masm.Ldr(mxcsr.W(),
+             MemOperand(state_reg,
+                        state_offset_uniform_buffer +
+                                offsetof(swift::x86::ThreadContext64, mxcsr)));
+    masm.Cmp(mxcsr.W(), bit.W());
+    masm.B(&cached, eq);
+    record(FpcrTaxCounter::RebuildExecuted);
+    EmitSseAFPGuestFPCRFromMXCSR(masm, result, mxcsr, bit);
+    masm.Stp(result,
+             mxcsr,
+             MemOperand(sp, frame_offset + kSseAFPGuestFPCROffset));
+    masm.B(&apply);
+    masm.Bind(&cached);
+    record(FpcrTaxCounter::CacheHit);
+    masm.Bind(&apply);
+    masm.Msr(FPCR, result);
 }
 
 inline u64 ReadNativeFPCR() {

@@ -36,6 +36,7 @@ JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_allo
             exec_access_pad = static_cast<u32>(std::min(std::strtoul(pad, nullptr, 10), 64ul));
         }
     }
+    fpcr_tax_profile_enabled = FpcrTaxProfEnabled();
     hot_coalesce_enabled = HotCoalesceProfEnabled();
 }
 
@@ -50,6 +51,23 @@ void JitContext::RecordExecCounter(u32 offset, u32 amount) {
     __ Ldr(ip1, MemOperand(ip0, offset));
     __ Add(ip1, ip1, amount);
     __ Str(ip1, MemOperand(ip0, offset));
+}
+
+void JitContext::RecordFpcrTaxCounter(FpcrTaxCounter counter) {
+    if (!fpcr_tax_profile_enabled) return;
+    const auto index = static_cast<u32>(counter);
+    ASSERT(index < kFpcrTaxCounterCount);
+    // Preserve ip0/ip1 instead of reserving them in RegAlloc. The probe must
+    // observe the production RA shape rather than SVM_EXEC_PROF's fixed-
+    // clobber variant.
+    __ Stp(ip0, ip1, MemOperand(sp, -16, PreIndex));
+    __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
+    __ Ldr(ip1,
+           MemOperand(ip0, profile_offset_fpcr_tax + index * sizeof(u64)));
+    __ Add(ip1, ip1, 1);
+    __ Str(ip1,
+           MemOperand(ip0, profile_offset_fpcr_tax + index * sizeof(u64)));
+    __ Ldp(ip0, ip1, MemOperand(sp, 16, PostIndex));
 }
 
 void JitContext::RecordHotCounter(HotCoalesceCounter counter, u32 amount) {

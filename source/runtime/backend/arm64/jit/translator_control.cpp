@@ -342,7 +342,9 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     // Every direct helper executes under the caller's native FP environment.
     // The runtime-entry frame sits immediately above this helper frame.
     if (sse_afp_nan) {
-        __ Ldr(ip0, MemOperand(sp, kSaveBytes));
+        context.RecordFpcrTaxCounter(FpcrTaxCounter::DirectHelper);
+        __ Ldr(ip0,
+               MemOperand(sp, kSaveBytes + kSseAFPHostFPCROffset));
         __ Msr(FPCR, ip0);
     }
 
@@ -373,10 +375,19 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
 
     __ Str(x0, MemOperand(sp, kResultSlot));
     if (sse_afp_nan) {
-        // A helper such as XRSTOR may have updated context.mxcsr. Rebuild from
-        // current guest state, never from the saved caller FPCR.
-        EmitSseAFPGuestFPCR(masm, state, ip, ip0, ip1);
-        __ Msr(FPCR, ip);
+        // A helper such as XRSTOR or a NaN cold handler may have updated
+        // context.mxcsr. Every helper takes the same compare path; none is
+        // trusted through a target-specific cleanliness exemption.
+        EmitSseAFPRestoreGuestFPCRCached(
+                masm,
+                state,
+                kSaveBytes,
+                ip,
+                ip0,
+                ip1,
+                [this](FpcrTaxCounter counter) {
+                    context.RecordFpcrTaxCounter(counter);
+                });
     }
 
     for (size_t i = 0; i + 1 < save_fprs.size(); i += 2) {

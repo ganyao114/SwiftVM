@@ -12,6 +12,7 @@
 #include "runtime/backend/arm64/constant.h"
 #include "runtime/backend/code_cache.h"
 #include "runtime/backend/reg_alloc.h"
+#include "runtime/common/fpcr_tax_prof.h"
 #include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/common/types.h"
 #include "runtime/include/config.h"
@@ -136,6 +137,7 @@ public:
 
     [[nodiscard]] bool ExecProfileEnabled() const { return exec_profile_enabled; }
     void RecordExecCounter(u32 state_offset, u32 amount = 1);
+    void RecordFpcrTaxCounter(FpcrTaxCounter counter);
     [[nodiscard]] bool HotCoalesceEnabled() const { return hot_coalesce_enabled; }
     void FinishHotCoalesceBlock();
     void BeginHotNaNGuard(u32 instruction_count);
@@ -208,6 +210,7 @@ private:
     bool host_bytes_dumped{};
     bool ra_shape_submitted{};
     bool exec_profile_enabled{};
+    bool fpcr_tax_profile_enabled{};
     bool hot_coalesce_enabled{};
     u32 exec_access_pad{};
     u32 hot_coalesce_slot{kHotCoalesceInvalidSlot};

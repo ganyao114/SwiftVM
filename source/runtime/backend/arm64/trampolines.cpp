@@ -6,6 +6,7 @@
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
 #include "runtime/common/backedge_control.h"
+#include "runtime/common/fpcr_tax_prof.h"
 #include "trampolines.h"
 #include "defines.h"
 #include <algorithm>
@@ -204,6 +205,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     const bool has_pt = config.page_table || config.memory_base;
     const bool scalar_insert = config.sse_scalar_insert;
     const bool afp_nan = config.sse_afp_nan;
+    const bool fpcr_tax_prof = afp_nan && FpcrTaxProfEnabled();
     const bool manage_fpcr = scalar_insert || afp_nan;
     // FEAT_AFP.NEP retains every lane except the scalar destination lane.
     // AH deliberately remains clear: changing it process-wide also changes
@@ -236,6 +238,20 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
         __ Add(ip1, ip1, 1);
         __ Str(ip1, MemOperand(ip0, offset));
     };
+    auto record_fpcr_tax = [&](FpcrTaxCounter counter) {
+        if (!fpcr_tax_prof) return;
+        const auto index = static_cast<u32>(counter);
+        __ Stp(ip0, ip1, MemOperand(sp, -16, PreIndex));
+        __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
+        __ Ldr(ip1,
+               MemOperand(ip0,
+                          profile_offset_fpcr_tax + index * sizeof(u64)));
+        __ Add(ip1, ip1, 1);
+        __ Str(ip1,
+               MemOperand(ip0,
+                          profile_offset_fpcr_tax + index * sizeof(u64)));
+        __ Ldp(ip0, ip1, MemOperand(sp, 16, PostIndex));
+    };
     __ Bind(&label_runtime_entry);
     BuildSaveHostCallee(assembler);
     if (afp_nan) {
@@ -243,9 +259,15 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
         // then construct guest state solely from MXCSR after publishing the
         // State pointer; inheriting DN/FZ/RMode here corrupts guest semantics.
         __ Mrs(ip, FPCR);
-        __ Stp(ip, xzr, MemOperand(sp, -16, PreIndex));
+        __ Stp(ip,
+               xzr,
+               MemOperand(sp, -kSseAFPRuntimeFrameSize, PreIndex));
         __ Mov(state, x0);
+        record_fpcr_tax(FpcrTaxCounter::RebuildExecuted);
         EmitSseAFPGuestFPCR(assembler, state, ip, ip0, ip1);
+        __ Stp(ip,
+               ip0,
+               MemOperand(sp, kSseAFPGuestFPCROffset));
         __ Msr(FPCR, ip);
     } else if (scalar_insert) {
         // FEAT_AFP.NEP makes scalar Advanced SIMD instructions update only
@@ -259,6 +281,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     } else {
         __ Mov(state, x0);
     }
+    record_fpcr_tax(FpcrTaxCounter::RuntimeEntry);
 
     __ Mov(forward, x1);
     // load cache_ptr
@@ -285,6 +308,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
 
     // align loc
     __ Bind(&code_dispatcher);
+    record_fpcr_tax(FpcrTaxCounter::DispatcherEntry);
     record(exec_offset_dispatch_entries);
     __ Ldr(loc_reg, MemOperand(state, state_offset_current_loc));
     __ Lsr(loc_index, loc_reg, 2);
@@ -341,6 +365,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     if (config.enable_asm_interp) {
         __ Tbz(forward, 63, &jump_guest);
         __ Bind(&go_interp);
+        record_fpcr_tax(FpcrTaxCounter::AsmInterpreter);
         __ Ldp(arg, handle, MemOperand(forward, 16, PostIndex));
         if (manage_fpcr) {
             __ Ldr(ip, MemOperand(sp));
@@ -348,8 +373,8 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
         }
         __ Blr(handle);
         if (afp_nan) {
-            EmitSseAFPGuestFPCR(assembler, state, ip, ip0, ip1);
-            __ Msr(FPCR, ip);
+            EmitSseAFPRestoreGuestFPCRCached(
+                    assembler, state, 0, ip, ip0, ip1, record_fpcr_tax);
         } else if (scalar_insert) {
             __ Ldr(ip, MemOperand(sp));
             __ Orr(ip, ip, kFpcrNep);
@@ -369,6 +394,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Ldr(halt_reg, MemOperand(state, state_offset_halt_reason));
     __ Cbz(halt_reg, &code_dispatcher);
     __ Bind(&label_return_host);
+    record_fpcr_tax(FpcrTaxCounter::RuntimeReturn);
     // clear execption
     __ Str(wzr, MemOperand(state, state_offset_halt_reason));
     // write back rsb
@@ -380,7 +406,12 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
         // halt reason until guest RSI has been written back above.
         __ Mov(w0, halt_reg);
     }
-    if (manage_fpcr) {
+    if (afp_nan) {
+        __ Ldp(ip,
+               ip0,
+               MemOperand(sp, kSseAFPRuntimeFrameSize, PostIndex));
+        __ Msr(FPCR, ip);
+    } else if (scalar_insert) {
         __ Ldp(ip, ip0, MemOperand(sp, 16, PostIndex));
         __ Msr(FPCR, ip);
     }
@@ -393,6 +424,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ B(&label_return_host);
 
     __ Bind(&label_call_host);
+    record_fpcr_tax(FpcrTaxCounter::CallHost);
     __ Mov(ipw, static_cast<u32>(HaltReason::CallHost));
     __ Str(ipw, MemOperand(state, state_offset_halt_reason));
     __ Str(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
@@ -409,8 +441,8 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Blr(ip);
     __ Ldp(x29, x30, MemOperand(sp, 16, PostIndex));
     if (afp_nan) {
-        EmitSseAFPGuestFPCR(assembler, state, ip, ip0, ip1);
-        __ Msr(FPCR, ip);
+        EmitSseAFPRestoreGuestFPCRCached(
+                assembler, state, 0, ip, ip0, ip1, record_fpcr_tax);
     } else if (scalar_insert) {
         __ Ldr(ip, MemOperand(sp));
         __ Orr(ip, ip, kFpcrNep);

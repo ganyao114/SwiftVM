@@ -42,6 +42,13 @@ swift::u64 ReadFPCRFromHostHelper() {
     return swift::runtime::backend::arm64::ReadNativeFPCR();
 }
 
+swift::u64 WriteMXCSRFromHostHelper(swift::u64 context, swift::u64 mxcsr) {
+    auto* thread_context =
+            reinterpret_cast<swift::x86::ThreadContext64*>(context);
+    thread_context->mxcsr = static_cast<swift::u32>(mxcsr);
+    return 0;
+}
+
 class ScopedNativeFPCR {
 public:
     explicit ScopedNativeFPCR(swift::u64 value)
@@ -67,9 +74,9 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 61);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 62);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_SSE_AFP_NAN");
+            "SVM_FPCR_TAX_PROF");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -2663,6 +2670,7 @@ TEST_CASE("AFP guest FPCR is rebuilt from MXCSR across host-call boundaries") {
     constexpr std::uint32_t kHostFPCRSeenOffset = kResultAfterOffset + 16;
     constexpr std::uint32_t kDazResultOffset = kHostFPCRSeenOffset + 16;
     constexpr std::uint32_t kFtzResultOffset = kDazResultOffset + 16;
+    constexpr std::uint32_t kHelperMutationResultOffset = kFtzResultOffset + 16;
     constexpr std::uint64_t kGuestPC = 0x2a00;
     constexpr std::uint32_t kMxcsrRoundUp = 0x1f80u | (2u << 13);
 
@@ -2697,6 +2705,26 @@ TEST_CASE("AFP guest FPCR is rebuilt from MXCSR across host-call boundaries") {
     raw_block->StoreUniform(Uniform{kHostFPCRSeenOffset, ValueType::U64}, host_fpcr);
     auto after = raw_block->VecFAddScalar32<TypedValue<ValueType::V128>>(lhs, rhs);
     raw_block->StoreUniform(Uniform{kResultAfterOffset, ValueType::V128}, after);
+
+    // Direct helpers are opaque: cold handlers and restore helpers may update
+    // context.mxcsr.  Mutate it behind the JIT's back and prove that the
+    // post-call cache comparison takes the miss path and rebuilds guest FPCR.
+    auto context_address =
+            raw_block->GetUniformAddress(Imm{swift::u64{0}}).SetType(ValueType::U64);
+    auto nearest_mxcsr = raw_block->LoadImm(Imm{swift::u64{0x1f80}})
+                                 .SetType(ValueType::U64);
+    (void)raw_block
+            ->CallLambda(
+                    Lambda{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
+                            FptrCast(&WriteMXCSRFromHostHelper))}}},
+                    context_address,
+                    nearest_mxcsr)
+            .SetType(ValueType::U64);
+    auto after_helper_mutation =
+            raw_block->VecFAddScalar32<TypedValue<ValueType::V128>>(lhs, rhs);
+    raw_block->StoreUniform(
+            Uniform{kHelperMutationResultOffset, ValueType::V128},
+            after_helper_mutation);
 
     auto daz_lhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
             Uniform{offsetof(swift::x86::ThreadContext64, xmm2), ValueType::V128});
@@ -2758,16 +2786,21 @@ TEST_CASE("AFP guest FPCR is rebuilt from MXCSR across host-call boundaries") {
     std::uint32_t after_bits{};
     std::uint32_t daz_bits{};
     std::uint32_t ftz_bits{};
+    std::uint32_t helper_mutation_bits{};
     std::uint64_t helper_fpcr{};
     std::memcpy(&before_bits, uniform.data() + kResultBeforeOffset, sizeof(before_bits));
     std::memcpy(&helper_fpcr, uniform.data() + kHostFPCRSeenOffset, sizeof(helper_fpcr));
     std::memcpy(&after_bits, uniform.data() + kResultAfterOffset, sizeof(after_bits));
     std::memcpy(&daz_bits, uniform.data() + kDazResultOffset, sizeof(daz_bits));
     std::memcpy(&ftz_bits, uniform.data() + kFtzResultOffset, sizeof(ftz_bits));
+    std::memcpy(&helper_mutation_bits,
+                uniform.data() + kHelperMutationResultOffset,
+                sizeof(helper_mutation_bits));
     REQUIRE(before_bits == 0x3f800001u);
     REQUIRE(after_bits == before_bits);
     REQUIRE(daz_bits == 0u);
     REQUIRE(ftz_bits == 0u);
+    REQUIRE(helper_mutation_bits == 0x3f800000u);
     REQUIRE(helper_fpcr == host_fpcr_scope.Installed());
     REQUIRE(arm64::ReadNativeFPCR() == host_fpcr_scope.Installed());
 #else

@@ -21,6 +21,7 @@
 #include "runtime/backend/signal_handler.h"
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/hot_coalesce_prof.h"
+#include "runtime/common/fpcr_tax_prof.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/perf_stats.h"
 #include "runtime/include/sruntime.h"
@@ -75,6 +76,7 @@ struct Runtime::Impl final {
         const char* exec_prof = std::getenv("SVM_EXEC_PROF");
         const bool exec_profile_enabled =
                 exec_prof && std::strcmp(exec_prof, "0") != 0;
+        fpcr_tax_profile_enabled = FpcrTaxProfEnabled();
         hot_coalesce_enabled = HotCoalesceProfEnabled();
         if (hot_coalesce_enabled) {
             hot_coalesce_counters.resize(
@@ -89,7 +91,8 @@ struct Runtime::Impl final {
         } else {
             state->l1_code_cache = l1_code_cache.Data();
         }
-        if (exec_profile_enabled || hot_coalesce_enabled) {
+        if (exec_profile_enabled || hot_coalesce_enabled ||
+            fpcr_tax_profile_enabled) {
             state->interface = &profile_interface;
         }
         // Wire the dispatcher's code-cache tables: L1 is per-runtime, L2 is the
@@ -180,6 +183,9 @@ struct Runtime::Impl final {
         }
         if (hot_coalesce_enabled) {
             HotCoalesceSubmitThread(hot_coalesce_counters);
+        }
+        if (fpcr_tax_profile_enabled) {
+            FpcrTaxSubmit(profile_interface.fpcr_tax);
         }
         // NOTE: a write window opened by host code on a thread that then exits
         // is deliberately NOT closed here. Closing it looked prudent, but a
@@ -541,6 +547,7 @@ struct Runtime::Impl final {
     backend::RuntimeProfileInterface profile_interface{};
     std::vector<u64> hot_coalesce_counters{};
     bool hot_coalesce_enabled{};
+    bool fpcr_tax_profile_enabled{};
     mutable bool exec_profile_started{};
     mutable std::chrono::steady_clock::time_point exec_profile_start{};
     // Signal handlers run on the interrupted guest thread and cannot recover
