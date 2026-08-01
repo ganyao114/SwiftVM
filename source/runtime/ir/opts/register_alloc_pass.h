@@ -25,6 +25,12 @@ public:
     static void Run(ir::Block *block,
                     backend::RegAlloc *reg_alloc,
                     bool scalar_insert = false);
+    // Explicit gate selector for unit tests that compare OFF and ON allocation
+    // in one process. Production callers use the overload above, which reads
+    // SVM_RA_INTWIDTH_TIE once and defaults to OFF.
+    static void RunForIntWidthTieTest(ir::Block *block,
+                                     backend::RegAlloc *reg_alloc,
+                                     bool intwidth_tie);
 };
 
 class VRegisterAllocPass {

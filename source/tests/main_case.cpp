@@ -39,9 +39,9 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 59);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 60);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_BACKEDGE_FLAGS");
+            "SVM_RA_INTWIDTH_TIE");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -2248,6 +2248,207 @@ TEST_CASE("Register allocation gives every spilled value a private slot") {
     check_disjoint_slots(0, 10, 8, 2);  // vector-only pressure
     check_disjoint_slots(10, 6, 2, 2);  // mixed
     check_disjoint_slots(5, 5, 1, 1);   // odd-sized stack before a SIMD pair
+}
+
+TEST_CASE("integer width ties require exact last-use and a proven W write") {
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::backend;
+
+    const GPRSMask gprs{~((1u << 19) - 1u)};
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+
+    auto check = [&](Block* raw,
+                     Value source,
+                     Value result,
+                     bool expect_off_tie,
+                     bool expect_on_tie) {
+        swift::runtime::IntrusivePtr<Block> block{raw};
+        raw->SetTerminal(terminal::ReturnToDispatch{});
+        raw->ReIdInstr();
+
+        RegAlloc off{raw->MaxInstrId(), gprs, fprs};
+        RegisterAllocPass::RunForIntWidthTieTest(raw, &off, false);
+        REQUIRE(off.ValueType(source) == RegAlloc::GPR);
+        REQUIRE(off.ValueType(result) == RegAlloc::GPR);
+        REQUIRE((off.ValueGPR(source).id == off.ValueGPR(result).id) ==
+                expect_off_tie);
+
+        RegAlloc on{raw->MaxInstrId(), gprs, fprs};
+        RegisterAllocPass::RunForIntWidthTieTest(raw, &on, true);
+        REQUIRE(on.ValueType(source) == RegAlloc::GPR);
+        REQUIRE(on.ValueType(result) == RegAlloc::GPR);
+        REQUIRE((on.ValueGPR(source).id == on.ValueGPR(result).id) ==
+                expect_on_tie);
+    };
+
+    SECTION("U32 load producer") {
+        auto* block = new Block(0, Location{0x8600});
+        auto source = block->LoadUniform<TypedValue<ValueType::U32>>(
+                Uniform{0, ValueType::U32});
+        auto result = block->ZeroExtend32To64(source);
+        block->StoreUniform(Uniform{8, ValueType::U64}, result);
+        check(block, source, result, false, true);
+    }
+
+    SECTION("U32 ALU producer") {
+        auto* block = new Block(0, Location{0x8610});
+        auto left = block->LoadImm(Imm{0xffffffffu}).SetType(ValueType::U32);
+        auto right = block->LoadImm(Imm{0x12345678u}).SetType(ValueType::U32);
+        auto source = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto result = block->ZeroExtend32To64(source);
+        block->StoreUniform(Uniform{8, ValueType::U64}, result);
+        check(block, source, result, false, true);
+    }
+
+    SECTION("U32 shift producer remains compatible with the existing tie") {
+        auto* block = new Block(0, Location{0x8620});
+        auto input = block->LoadUniform<TypedValue<ValueType::U32>>(
+                Uniform{0, ValueType::U32});
+        auto source = block->LsrImm(input, Imm{3u}).SetType(ValueType::U32);
+        auto result = block->ZeroExtend32To64(source);
+        block->StoreUniform(Uniform{8, ValueType::U64}, result);
+        check(block, source, result, true, true);
+    }
+
+    SECTION("two consecutive identity ties keep the original W producer") {
+        auto* block = new Block(0, Location{0x8630});
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
+                Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(Imm{7u}).SetType(ValueType::U32);
+        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
+                               .SetType(ValueType::U32);
+        auto result = block->ZeroExtend32To64(extract);
+        block->StoreUniform(Uniform{8, ValueType::U64}, result);
+
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        RegAlloc off{block->MaxInstrId(), gprs, fprs};
+        RegisterAllocPass::RunForIntWidthTieTest(block, &off, false);
+        REQUIRE(off.ValueGPR(producer).id != off.ValueGPR(extract).id);
+        REQUIRE(off.ValueGPR(extract).id != off.ValueGPR(result).id);
+
+        RegAlloc on{block->MaxInstrId(), gprs, fprs};
+        RegisterAllocPass::RunForIntWidthTieTest(block, &on, true);
+        REQUIRE(on.ValueGPR(producer).id == on.ValueGPR(extract).id);
+        REQUIRE(on.ValueGPR(extract).id == on.ValueGPR(result).id);
+    }
+
+    SECTION("GetHostGPR is a W view, not a W write") {
+        auto* block = new Block(0, Location{0x8640});
+        auto source = block->GetHostGPR(HostRegIndex(0), Imm{0u})
+                              .SetType(ValueType::U32);
+        auto result = block->ZeroExtend32To64(source);
+        block->StoreUniform(Uniform{8, ValueType::U64}, result);
+        check(block, source, result, false, false);
+    }
+
+    SECTION("identity BitExtract cannot launder a GetHostGPR high half") {
+        auto* block = new Block(0, Location{0x8650});
+        auto host = block->GetHostGPR(HostRegIndex(0), Imm{0u})
+                            .SetType(ValueType::U32);
+        auto source = block->BitExtract(host, Imm{0u}, Imm{32u})
+                              .SetType(ValueType::U32);
+        auto result = block->ZeroExtend32To64(source);
+        block->StoreUniform(Uniform{8, ValueType::U64}, result);
+        check(block, source, result, false, false);
+    }
+
+    SECTION("pure BitCast is not a physical W write") {
+        auto* block = new Block(0, Location{0x8660});
+        auto producer = block->LoadUniform<TypedValue<ValueType::U32>>(
+                Uniform{0, ValueType::U32});
+        auto source = block->BitCast(producer).SetType(ValueType::U32);
+        auto result = block->ZeroExtend32To64(source);
+        block->StoreUniform(Uniform{8, ValueType::U64}, result);
+        check(block, source, result, false, false);
+    }
+
+    SECTION("a later source use defeats the authoritative last-use proof") {
+        auto* block = new Block(0, Location{0x8670});
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
+                Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(Imm{1u}).SetType(ValueType::U32);
+        auto source = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto result = block->ZeroExtend32To64(source);
+        auto late = block->Add(source, Operand{right}).SetType(ValueType::U32);
+        block->StoreUniform(Uniform{8, ValueType::U64}, result);
+        block->StoreUniform(Uniform{16, ValueType::U32}, late);
+        check(block, source, result, false, false);
+    }
+}
+
+TEST_CASE("integer width chains keep X high halves zero for W and X consumers") {
+    using namespace swift::x86;
+
+    struct Program {
+        std::vector<swift::u8> bytes;
+        bool memory_source;
+    };
+    const std::array programs{
+            // mov eax,ecx; add eax,edx; shr eax,3; mov r8,rax; hlt
+            Program{{0x89, 0xc8, 0x01, 0xd0, 0xc1, 0xe8, 0x03,
+                     0x49, 0x89, 0xc0, 0xf4}, false},
+            // mov eax,[rsi]; add eax,edx; shl eax,1; mov r8d,eax;
+            // mov r9,r8; hlt. The W consumer must clear r8's old high half
+            // before the following X consumer observes it.
+            Program{{0x8b, 0x06, 0x01, 0xd0, 0xd1, 0xe0,
+                     0x41, 0x89, 0xc0, 0x4d, 0x89, 0xc1, 0xf4}, true},
+    };
+    const std::array upper_patterns{
+            UINT64_C(0x0000000000000000),
+            UINT64_C(0xffffffffffffffff),
+            UINT64_C(0xa5a5f00d5a5a1234),
+    };
+
+    void* guest_code = mmap(nullptr, 4096, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANON, -1, 0);
+    void* guest_data = mmap(nullptr, 4096, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(guest_code != MAP_FAILED);
+    REQUIRE(guest_data != MAP_FAILED);
+    *reinterpret_cast<swift::u32*>(guest_data) = 0xf13579bdu;
+
+    backend::SmcTracker::SetEnabled(false);
+    auto* instance = swift::translator::x86::X86Instance::Make();
+    for (std::size_t program_index = 0; program_index < programs.size(); ++program_index) {
+        const auto& program = programs[program_index];
+        auto* program_code = static_cast<swift::u8*>(guest_code) + program_index * 64;
+        std::memcpy(program_code, program.bytes.data(), program.bytes.size());
+        for (auto upper : upper_patterns) {
+            INFO("memory source=" << program.memory_source << " upper=0x" << std::hex
+                                  << upper);
+            auto* core = swift::translator::x86::X86Core::Make(instance);
+            auto& context = core->GetContext();
+            context.rip.qword = reinterpret_cast<VAddr>(program_code);
+            context.rax.qword = upper;
+            context.rcx.qword = upper ^ UINT64_C(0x0123456789abcdef);
+            context.rdx.qword = upper ^ UINT64_C(0xfedcba9876543210);
+            context.rsi.qword = reinterpret_cast<VAddr>(guest_data);
+            context.r8.qword = upper;
+            context.r9.qword = upper;
+            core->Run();
+
+            const swift::u32 left = program.memory_source
+                    ? *reinterpret_cast<swift::u32*>(guest_data)
+                    : static_cast<swift::u32>(upper ^ UINT64_C(0x0123456789abcdef));
+            const swift::u32 sum = left +
+                    static_cast<swift::u32>(upper ^ UINT64_C(0xfedcba9876543210));
+            const swift::u64 expected = program.memory_source
+                    ? static_cast<swift::u32>(sum << 1)
+                    : static_cast<swift::u32>(sum >> 3);
+            REQUIRE(context.rax.qword == expected);
+            REQUIRE(context.r8.qword == expected);
+            if (program.memory_source) {
+                REQUIRE(context.r9.qword == expected);
+            }
+            swift::translator::x86::X86Core::Destroy(core);
+        }
+    }
+    swift::translator::x86::X86Instance::Destroy(instance);
+    backend::SmcTracker::SetEnabled(true);
+    munmap(guest_data, 4096);
+    munmap(guest_code, 4096);
 }
 
 TEST_CASE("Single-block register allocation is map-identical to the general path") {

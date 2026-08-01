@@ -77,6 +77,14 @@ static bool ShiftImmFastEnabled() {
     return !env || std::strcmp(env, "0") != 0;
 }
 
+static bool IntWidthTieEnabled() {
+    static const bool enabled = [] {
+        const char* env = PerfGetenv("SVM_RA_INTWIDTH_TIE");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
 // Spill/escalation 诊断打印默认关闭：它们随编译线程异步产生，会混入 guest
 // stdout（sqlite speedtest 一类边跑边输出的负载会被打断行），且非用户可行动项。
 // 需要排查 regalloc 行为时设 SVM_RA_DIAG=1 打开。
@@ -110,11 +118,13 @@ public:
                                  u32 gpr_res,
                                  u32 fpr_res,
                                  bool single_block_fast_path = false,
-                                 bool scalar_insert = false)
+                                 bool scalar_insert = false,
+                                 bool intwidth_tie = false)
             : function(function), block(), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               single_block_fast_path(single_block_fast_path),
               scalar_insert(scalar_insert),
+              intwidth_tie(intwidth_tie),
               shift_imm_fast(ShiftImmFastEnabled()) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
@@ -130,10 +140,12 @@ public:
                                  u32 gpr_res,
                                  u32 fpr_res,
                                  bool = false,
-                                 bool scalar_insert = false)
+                                 bool scalar_insert = false,
+                                 bool intwidth_tie = false)
             : function(), block(block), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               scalar_insert(scalar_insert),
+              intwidth_tie(intwidth_tie),
               shift_imm_fast(ShiftImmFastEnabled()) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
@@ -290,6 +302,11 @@ public:
                     // register. The ARM64 emitter can then replace
                     // LDRH+SXTH (or LDRB+UXTB) with the extending load itself,
                     // and a following 32->64 W write becomes a true no-op.
+                } else if (intwidth_tie && TryTieIntWidth(interval)) {
+                    // A proven W-clean source dies exactly at an identity
+                    // 32-bit bridge. Transfer its physical register to the
+                    // result so the existing SharesGPR emitter path removes
+                    // the bridge without extending the source interval.
                 } else if (auto alloc = AllocGPR(interval); alloc >= 0) {
                     reg_alloc->MapRegister(interval.inst->Id(), HostGPR{(u16)alloc});
                 } else {
@@ -776,6 +793,48 @@ private:
 
     bool TryTieMemoryOperand(LiveInterval& current) {
         return TryTieGPR(current, MemoryOperandTieSource(current.inst));
+    }
+
+    bool HasKnownWWrite(Value value) const {
+        if (!value.Defined()) {
+            return false;
+        }
+        auto* def = value.Def();
+        // These are aliases/reads, not physical W writes. In particular a
+        // U32 GetHostGPR only selects the W view of a pinned X register; it
+        // does not prove that X[63:32] is zero.
+        if (def->GetOp() == OpCode::GetHostGPR || def->IsBitCastOperation()) {
+            return false;
+        }
+        if (def->GetOp() == OpCode::BitExtract &&
+            GetValueSizeByte(def->ReturnType()) == sizeof(u32) &&
+            def->GetArg<Imm>(1).Get() == 0 &&
+            def->GetArg<Imm>(2).Get() == 32) {
+            return HasKnownWWrite(def->GetArg<Value>(0));
+        }
+        if (def->GetOp() == OpCode::ZeroExtend32To64 &&
+            GetValueSizeByte(def->GetArg<Value>(0).Type()) == sizeof(u32)) {
+            return HasKnownWWrite(def->GetArg<Value>(0));
+        }
+        return GetValueSizeByte(def->ReturnType()) == sizeof(u32);
+    }
+
+    Value IntWidthTieSource(Inst* inst) const {
+        Value source{};
+        if (inst->GetOp() == OpCode::BitExtract &&
+            GetValueSizeByte(inst->ReturnType()) == sizeof(u32) &&
+            inst->GetArg<Imm>(1).Get() == 0 &&
+            inst->GetArg<Imm>(2).Get() == 32) {
+            source = inst->GetArg<Value>(0);
+        } else if (inst->GetOp() == OpCode::ZeroExtend32To64 &&
+                   GetValueSizeByte(inst->GetArg<Value>(0).Type()) == sizeof(u32)) {
+            source = inst->GetArg<Value>(0);
+        }
+        return HasKnownWWrite(source) ? source : Value{};
+    }
+
+    bool TryTieIntWidth(LiveInterval& current) {
+        return TryTieGPR(current, IntWidthTieSource(current.inst));
     }
 
     bool TryTieGPR(LiveInterval& current, Value source) {
@@ -1581,6 +1640,7 @@ private:
     const u32 fpr_reserve{0};
     const bool single_block_fast_path{false};
     const bool scalar_insert{false};
+    const bool intwidth_tie{false};
     const bool shift_imm_fast{false};
     Vector<bool> spill_slots{};
     Vector<u32> fixed_gpr_clobbers{};
@@ -1745,7 +1805,8 @@ template <typename Unit>
 static void RunVerified(Unit* unit,
                         backend::RegAlloc* reg_alloc,
                         bool single_block_fast_path = false,
-                        bool scalar_insert = false) {
+                        bool scalar_insert = false,
+                        bool intwidth_tie = false) {
     auto rerun_with_conditional_spill_scratch = [&] {
 #if defined(__linux__) && !defined(__ANDROID__)
         const u32 spills = reg_alloc->SpillCount();
@@ -1757,7 +1818,8 @@ static void RunVerified(Unit* unit,
             // x18, which the spill reload path must be free to overwrite.
             reg_alloc->ReserveGPRForUnit(18);
             reg_alloc->ResetAllocations();
-            RunVerified(unit, reg_alloc, single_block_fast_path, scalar_insert);
+            RunVerified(unit, reg_alloc, single_block_fast_path, scalar_insert,
+                        intwidth_tie);
             if (RaDiagEnabled()) {
                 LOG_WARNING("RegisterAllocPass: {} initial spill(s); x18 reserved for this unit",
                             spills);
@@ -1804,7 +1866,7 @@ static void RunVerified(Unit* unit,
     {
         LinearScanAllocator scan{unit, reg_alloc, default_gpr_reserve,
                                  backend::kDefaultScratchFPR, single_block_fast_path,
-                                 scalar_insert};
+                                 scalar_insert, intwidth_tie};
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -1869,7 +1931,7 @@ static void RunVerified(Unit* unit,
     for (auto& rung : ladder) {
         reg_alloc->ResetAllocations();
         LinearScanAllocator scan{unit, reg_alloc, rung.gpr, rung.fpr, single_block_fast_path,
-                                 scalar_insert};
+                                 scalar_insert, intwidth_tie};
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -1907,7 +1969,8 @@ void RegisterAllocPass::RunWithScalarInsert(HIRFunction* hir_function,
     }();
     const bool use_fast_path =
             single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
-    RunVerified(hir_function, reg_alloc, use_fast_path, scalar_insert);
+    RunVerified(hir_function, reg_alloc, use_fast_path, scalar_insert,
+                IntWidthTieEnabled());
 }
 
 void RegisterAllocPass::Run(HIRFunction* hir_function,
@@ -1915,13 +1978,20 @@ void RegisterAllocPass::Run(HIRFunction* hir_function,
                             bool single_block_fast_path) {
     const bool use_fast_path =
             single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
-    RunVerified(hir_function, reg_alloc, use_fast_path, false);
+    RunVerified(hir_function, reg_alloc, use_fast_path, false,
+                IntWidthTieEnabled());
 }
 
 void RegisterAllocPass::Run(ir::Block* block,
                             backend::RegAlloc* reg_alloc,
                             bool scalar_insert) {
-    RunVerified(block, reg_alloc, false, scalar_insert);
+    RunVerified(block, reg_alloc, false, scalar_insert, IntWidthTieEnabled());
+}
+
+void RegisterAllocPass::RunForIntWidthTieTest(ir::Block* block,
+                                              backend::RegAlloc* reg_alloc,
+                                              bool intwidth_tie) {
+    RunVerified(block, reg_alloc, false, false, intwidth_tie);
 }
 
 void VRegisterAllocPass::Run(ir::Block* block) {
