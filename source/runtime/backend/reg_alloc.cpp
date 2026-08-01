@@ -5,6 +5,7 @@
 #include <algorithm>
 #include "reg_alloc.h"
 #include "runtime/common/perf_stats.h"
+#include "runtime/frontend/x86/x87.h"
 
 namespace swift::runtime::backend {
 
@@ -123,12 +124,14 @@ u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
         // Pair CAS additionally holds the second observed half in x13.
         case ir::OpCode::CompareAndSwap128:
             return exec_profile_clobbers | x11 | x12 | x13;
-        // The OFF-XPOOL x87 lowering names x12/x13 directly.
+        // X87 uses an instruction-specific scratch/fixed-clobber contract.
         case ir::OpCode::X87Op:
             // Level 2 without XPOOL takes the exact helper fallback instead
-            // of the high-pressure inline lowering, so this pair is available
-            // as instruction-local scratch there.
-            return exec_profile_clobbers;
+            // of the high-pressure inline lowering. Under XPOOL reserve ip0
+            // as X87's dedicated VIXL immediate-synthesis register; the Inst
+            // overload below adds x12/x13 only for arms that name that pair.
+            return exec_profile_clobbers |
+                   (ScratchXPoolEnabled() ? ip0 : 0);
         // Host-call target and fixed-location materialization.
         case ir::OpCode::CallLambda:
         case ir::OpCode::CallDynamic:
@@ -159,16 +162,31 @@ u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
     }
 }
 
+u32 FixedGPRClobbers(const ir::Inst& inst, bool scratch_only) {
+    u32 fixed = FixedGPRClobbers(inst.GetOp(), scratch_only);
+    if (inst.GetOp() != ir::OpCode::X87Op || !ScratchXPoolEnabled()) {
+        return fixed;
+    }
+    const u64 command = inst.GetArg<ir::Imm>(1).Get();
+    const auto action = static_cast<swift::x86::X87Action>(command & 0xFF);
+    if (action == swift::x86::X87Action::StoreInt ||
+        action == swift::x86::X87Action::Compare) {
+        fixed |= (1u << 12) | (1u << 13);
+    }
+    return fixed;
+}
+
 // See reg_alloc.h for what this table is and who enforces it.
 //
 // Only opcodes that exceed the default appear here. Every entry is a measured
 // peak over the full corpus, cross-checked against the emitter source:
 //
-//  * X87Op historically declared eight: six emitter temporaries plus the
-//    explicit ip0/ip1 exclusions required by VIXL's implicit pool. W52 ON
-//    removes those exclusions and leases the two former x12/x13 work
-//    registers, making the checked dynamic peak six. OFF retains eight so its
-//    allocation and host bytes remain identical.
+//  * X87Op holds eight dynamic emitter temporaries in its widest inline arms.
+//    StoreInt/Compare additionally name fixed x12/x13, while every XPOOL arm
+//    materializes VIXL immediates through fixed ip0. W52 incorrectly priced the
+//    XPOOL shape as six and converted the two fixed users to extra dynamic
+//    leases. The Inst overload below carries the narrower per-command peaks;
+//    fixed registers are accounted separately and cannot hold a live value.
 //  * VecFCvtFloatToInt open-codes the x86 "invalid conversion -> INT_MIN"
 //    rule per lane and holds five GPRs across it.
 //  * VecFCvtPacked and VecFMulAdd hold five vector temporaries.
@@ -199,12 +217,9 @@ ScratchNeed ScratchBudget(ir::OpCode op) {
                 // fallback in this state; price that ordinary call shape.
                 return {kDefaultScratchGPR, kDefaultScratchFPR};
             }
-            // OFF retains the historical accounting: two explicit ip0/ip1
-            // exclusions plus six emitter temporaries. ON makes VIXL scratch
-            // explicit and leases the former x12/x13 x87 work registers, so
-            // the measured dynamic peak is six.
-            return {static_cast<u8>(ScratchXPoolEnabled() ? 6 : 8),
-                    kDefaultScratchFPR};
+            // x12/x13 and XPOOL's dedicated VIXL ip0 are fixed clobbers, not
+            // part of this dynamic count.
+            return {8, kDefaultScratchFPR};
         // --- four GPRs ---------------------------------------------------
         // The 8/16-bit flag-setting path sign-aligns both operands to W[31]:
         // one save per RA-tied operand (left/right), one to materialize an
@@ -250,6 +265,25 @@ ScratchNeed ScratchBudget(ir::OpCode op) {
         default:
             return {kDefaultScratchGPR, kDefaultScratchFPR};
     }
+}
+
+ScratchNeed ScratchBudget(const ir::Inst& inst) {
+    auto need = ScratchBudget(inst.GetOp());
+    if (inst.GetOp() != ir::OpCode::X87Op || !ScratchXPoolEnabled()) {
+        return need;
+    }
+    const u64 command = inst.GetArg<ir::Imm>(1).Get();
+    const auto action = static_cast<swift::x86::X87Action>(command & 0xFF);
+    const auto format = static_cast<swift::x86::X87Format>((command >> 8) & 0xFF);
+    if (action == swift::x86::X87Action::LoadFloat &&
+        format == swift::x86::X87Format::Float80) {
+        need.gpr = 6;
+    } else if (action == swift::x86::X87Action::Compare) {
+        need.gpr = 6;
+    } else if (action == swift::x86::X87Action::StoreInt) {
+        need.gpr = 7;
+    }
+    return need;
 }
 
 RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs)

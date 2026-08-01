@@ -176,7 +176,7 @@ public:
             bool ok = true;
             auto check_budgets = [&](Block* lir_block) {
                 for (auto& inst : lir_block->GetInstList()) {
-                    auto need = backend::ScratchBudget(inst.GetOp());
+                    auto need = backend::ScratchBudget(inst);
                     if (need.gpr <= gpr_reserve && need.fpr <= fpr_reserve) {
                         continue;
                     }
@@ -564,7 +564,7 @@ private:
             for (auto& inst : lir_block->GetInstList()) {
                 if (inst.Id() < fixed_gpr_clobbers.size()) {
                     fixed_gpr_clobbers[inst.Id()] |=
-                            backend::FixedGPRClobbers(inst.GetOp(), scratch_only);
+                            backend::FixedGPRClobbers(inst, scratch_only);
                 }
                 has_inst = true;
                 last_id = std::max<u32>(last_id, inst.Id());
@@ -937,7 +937,7 @@ private:
         if (id >= reg_alloc->MapCount()) {
             return true;  // no mask was recorded for this id
         }
-        auto need = backend::ScratchBudget(inst->GetOp());
+        auto need = backend::ScratchBudget(*inst);
         u32 reload_gpr = 0;
         u32 reload_fpr = 0;
         // One reload register per DISTINCT spilled value the instruction
@@ -1722,7 +1722,7 @@ static void CollectUnitBudget(Block* block,
                               u32& reload_bound,
                               const backend::GPRSMask& pool) {
     for (auto& inst : block->GetInstList()) {
-        auto need = backend::ScratchBudget(inst.GetOp());
+        auto need = backend::ScratchBudget(inst);
         const u32 scratch_only = LinearScanAllocator::ScratchOnlyGPRs(inst.GetOp(), pool);
         gpr = std::max<u32>(gpr, need.gpr > scratch_only ? need.gpr - scratch_only : 0);
         fpr = std::max<u32>(fpr, need.fpr);

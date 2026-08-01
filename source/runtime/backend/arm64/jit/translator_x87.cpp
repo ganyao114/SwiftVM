@@ -172,10 +172,8 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto ftw = context.GetTmpX();
             auto top = context.GetTmpX();
             auto shift = context.GetTmpX();
-            auto tag = context.GetTmpX();
             auto significand = context.GetTmpX();
             auto sign_exp = context.GetTmpX();
-            auto reg_address = context.GetTmpX();
             auto guest = context.X(address);
             Label slow;
             Label tag_special;
@@ -189,40 +187,47 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Add(top.W(), top.W(), 7);
             __ And(top.W(), top.W(), 7);
             __ Lsl(shift.W(), top.W(), 1);
-            __ Lsr(tag.W(), ftw.W(), shift.W());
-            __ And(tag.W(), tag.W(), 3);
-            __ Cmp(tag.W(), 3);
+            // significand has not been loaded yet, so use it for the incoming
+            // tag test. This keeps the m80-load dynamic peak at six.
+            __ Lsr(significand.W(), ftw.W(), shift.W());
+            __ And(significand.W(), significand.W(), 3);
+            __ Cmp(significand.W(), 3);
             __ B(ne, &slow);
             __ Ldr(significand,
                    use_memory_base ? BiasMem(guest) : MemOperand(guest));
             __ Ldrh(sign_exp.W(),
                     use_memory_base ? BiasMem(guest, s64{8}) : MemOperand(guest, 8));
-            __ Add(reg_address, state, kRegs);
-            __ Add(reg_address, reg_address, Operand{top, LSL, 4});
-            __ Str(significand, MemOperand(reg_address));
-            __ Strh(sign_exp.W(), MemOperand(reg_address, 8));
-            __ Str(wzr, MemOperand(reg_address, 10));
-            __ Strh(wzr, MemOperand(reg_address, 14));
+            // The tag-position shift is dead after the test above. Reuse it
+            // for the destination address, and later for the rebuilt tag.
+            __ Add(shift, state, kRegs);
+            __ Add(shift, shift, Operand{top, LSL, 4});
+            __ Str(significand, MemOperand(shift));
+            __ Strh(sign_exp.W(), MemOperand(shift, 8));
+            __ Str(wzr, MemOperand(shift, 10));
+            __ Strh(wzr, MemOperand(shift, 14));
 
-            __ And(tag.W(), sign_exp.W(), 0x7FFF);
-            __ Cmp(tag.W(), 0x7FFF);
+            __ And(shift.W(), sign_exp.W(), 0x7FFF);
+            __ Cmp(shift.W(), 0x7FFF);
             __ B(eq, &tag_special);
-            __ Cbnz(tag.W(), &tag_valid);
+            __ Cbnz(shift.W(), &tag_valid);
             __ Cbz(significand, &tag_zero);
             __ Bind(&tag_special);
-            __ Mov(tag.W(), 2);
+            __ Mov(shift.W(), 2);
             __ B(&tag_ready);
             __ Bind(&tag_zero);
-            __ Mov(tag.W(), 1);
+            __ Mov(shift.W(), 1);
             __ B(&tag_ready);
             __ Bind(&tag_valid);
-            __ Mov(tag.W(), 0);
+            __ Mov(shift.W(), 0);
             __ Bind(&tag_ready);
-            __ Mov(reg_address.W(), 3);
-            __ Lsl(reg_address.W(), reg_address.W(), shift.W());
-            __ Bic(ftw.W(), ftw.W(), reg_address.W());
-            __ Lsl(tag.W(), tag.W(), shift.W());
-            __ Orr(ftw.W(), ftw.W(), tag.W());
+            // sign_exp and significand are both dead after classification;
+            // reuse them for the tag position and mask.
+            __ Lsl(sign_exp.W(), top.W(), 1);
+            __ Mov(significand.W(), 3);
+            __ Lsl(significand.W(), significand.W(), sign_exp.W());
+            __ Bic(ftw.W(), ftw.W(), significand.W());
+            __ Lsl(shift.W(), shift.W(), sign_exp.W());
+            __ Orr(ftw.W(), ftw.W(), shift.W());
             __ And(fsw.W(), fsw.W(), 0xC5FF);
             __ Orr(fsw.W(), fsw.W(), Operand{top.W(), LSL, 11});
             __ Strh(ftw.W(), MemOperand(state, kFtw));
@@ -393,13 +398,8 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto shift = context.GetTmpX();
             auto bits = context.GetTmpX();
             auto sign_exp = context.GetTmpX();
-            auto reg_address = context.GetTmpX();
-            const auto scratch =
-                    backend::ScratchXPoolEnabled() ? context.GetTmpX()
-                                                   : atomic_scratch;
-            const auto converted =
-                    backend::ScratchXPoolEnabled() ? context.GetTmpX()
-                                                   : atomic_pair_scratch;
+            const auto scratch = atomic_scratch;
+            const auto converted = atomic_pair_scratch;
             auto guest = context.X(address);
             auto input_fp = context.GetTmpV();
             auto rounded_fp = context.GetTmpV();
@@ -432,17 +432,17 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Cmp(sign_exp.W(), 3);
             __ B(eq, &slow);  // empty stack uses exact stack-fault helper
 
-            __ Add(reg_address, state, kRegs);
-            __ Add(reg_address, reg_address, Operand{top, LSL, 4});
+            __ Add(converted, state, kRegs);
+            __ Add(converted, converted, Operand{top, LSL, 4});
             __ Ldrb(scratch.W(),
-                    MemOperand(reg_address, kReducedMarkerOffset));
+                    MemOperand(converted, kReducedMarkerOffset));
             __ Cmp(scratch.W(), kReducedMarker);
             // Only the A5 marker certifies a reduced value. Unmarked ext80
             // values may contain precision below binary64, so those
             // conversions must remain on SoftFloat.
             __ B(ne, &slow);
-            __ Ldr(bits, MemOperand(reg_address));
-            __ Ldrh(sign_exp.W(), MemOperand(reg_address, 8));
+            __ Ldr(bits, MemOperand(converted));
+            __ Ldrh(sign_exp.W(), MemOperand(converted, 8));
             __ And(shift.W(), sign_exp.W(), 0x7FFF);
             __ Cbz(shift.W(), &input_zero);
             __ Cmp(shift.W(), 0x7FFF);
@@ -693,17 +693,11 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto fsw = context.GetTmpX();
             auto ftw = context.GetTmpX();
             auto left_physical = context.GetTmpX();
-            auto right_physical = context.GetTmpX();
             auto shift = context.GetTmpX();
             auto scratch = context.GetTmpX();
             auto left_address = context.GetTmpX();
-            auto left_bits = context.GetTmpX();
-            const auto right_address =
-                    backend::ScratchXPoolEnabled() ? context.GetTmpX()
-                                                   : atomic_pair_scratch;
-            const auto right_bits =
-                    backend::ScratchXPoolEnabled() ? context.GetTmpX()
-                                                   : atomic_scratch;
+            const auto left_bits = atomic_pair_scratch;
+            const auto right_bits = atomic_scratch;
             auto left_fp = context.GetTmpV();
             auto right_fp = context.GetTmpV();
             Register guest{};
@@ -722,9 +716,9 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Cmp(scratch.W(), 3);
             __ B(eq, &slow);
             if (register_form) {
-                __ Add(right_physical.W(), left_physical.W(), index);
-                __ And(right_physical.W(), right_physical.W(), 7);
-                __ Lsl(shift.W(), right_physical.W(), 1);
+                __ Add(scratch.W(), left_physical.W(), index);
+                __ And(scratch.W(), scratch.W(), 7);
+                __ Lsl(shift.W(), scratch.W(), 1);
                 __ Lsr(scratch.W(), ftw.W(), shift.W());
                 __ And(scratch.W(), scratch.W(), 3);
                 __ Cmp(scratch.W(), 3);
@@ -735,13 +729,6 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Add(left_address,
                    left_address,
                    Operand{left_physical, LSL, 4});
-            if (register_form) {
-                __ Add(right_address, state, kRegs);
-                __ Add(right_address,
-                       right_address,
-                       Operand{right_physical, LSL, 4});
-            }
-
             auto convert_canonical = [&](const Register& ext_address,
                                          const Register& bits,
                                          const Register& exponent,
@@ -787,10 +774,13 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
 
             convert_canonical(left_address, left_bits, right_bits, left_fp);
             if (register_form) {
-                convert_canonical(right_address,
-                                  right_bits,
-                                  left_bits,
-                                  right_fp);
+                __ Add(scratch.W(), left_physical.W(), index);
+                __ And(scratch.W(), scratch.W(), 7);
+                __ Add(left_address, state, kRegs);
+                __ Add(left_address,
+                       left_address,
+                       Operand{scratch, LSL, 4});
+                convert_canonical(left_address, right_bits, left_bits, right_fp);
             } else if (format == swift::x86::X87Format::Float32) {
                 __ Ldr(right_bits.W(),
                        use_memory_base ? BiasMem(guest) : MemOperand(guest));

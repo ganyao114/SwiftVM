@@ -159,6 +159,8 @@ struct ScratchNeed {
 // register, cold-path return register), not VIXL's dynamically leased scratch
 // registers.
 [[nodiscard]] u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only = false);
+[[nodiscard]] u32 FixedGPRClobbers(const ir::Inst& inst,
+                                   bool scratch_only = false);
 inline constexpr u32 kTerminalFixedGPRClobbers = 1u << 11;
 
 // Ordinary emitters: the widest generic shape is a 3-GPR ALU sequence
@@ -173,8 +175,11 @@ inline constexpr u8 kDefaultScratchFPR = 3;
 // of distinct spilled values it names -- which the allocator counts directly
 // rather than guessing at.
 
-// Scratch budget for one IR opcode. Total function, never fails.
+// Conservative budget by opcode, plus the precise instruction-level contract
+// used whenever the caller has the full IR instruction. Total functions;
+// never fail.
 [[nodiscard]] ScratchNeed ScratchBudget(ir::OpCode op);
+[[nodiscard]] ScratchNeed ScratchBudget(const ir::Inst& inst);
 
 class RegAlloc : DeleteCopyAndMove {
 public:

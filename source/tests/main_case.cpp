@@ -2468,7 +2468,7 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
         //    per instruction however often the instruction names it). This is
         //    the contract GetTmpX relies on.
         for (auto& inst : block->GetInstList()) {
-            auto need = ScratchBudget(inst.GetOp());
+            auto need = ScratchBudget(inst);
             unsigned reloads_gpr = 0, reloads_fpr = 0;
             std::vector<std::uint32_t> counted;
             auto count = [&](const Value& value) {

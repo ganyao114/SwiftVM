@@ -279,7 +279,7 @@ backend::ScratchNeed JitContext::CurrentBudget() const {
     // Block terminals are emitted after the last instruction's TickIR and
     // share its masks; they take no scratch of their own, so charging them to
     // the default budget is exact.
-    return cur_inst ? backend::ScratchBudget(cur_inst->GetOp())
+    return cur_inst ? backend::ScratchBudget(*cur_inst)
                     : backend::ScratchNeed{backend::kDefaultScratchGPR,
                                            backend::kDefaultScratchFPR};
 }
@@ -820,7 +820,7 @@ void JitContext::TickIR(ir::Inst* instr) {
     auxiliary_scratch = false;
     const bool scratch_only =
             backend::X86PinExtScratchOnlyEnabled(reg_alloc.GetGprs());
-    const u32 fixed = backend::FixedGPRClobbers(instr->GetOp(), scratch_only);
+    const u32 fixed = backend::FixedGPRClobbers(*instr, scratch_only);
     for (u32 code = 0; code < 32; ++code) {
         if (fixed & (1u << code)) {
             cur_dirty_gprs.Mark(code);
@@ -857,10 +857,18 @@ void JitContext::BeginVixlScratch(bool allow_pool) {
     ASSERT(!vixl_scratch_scope);
     u32 allowed = 0;
     if (allow_pool) {
-        for (u32 code = 11; code <= 17; ++code) {
-            if (!cur_dirty_gprs.Get(code)) {
-                allowed |= 1u << code;
+        const bool x87 = cur_inst && cur_inst->GetOp() == ir::OpCode::X87Op;
+        if (!x87) {
+            for (u32 code = 11; code <= 17; ++code) {
+                if (!cur_dirty_gprs.Get(code)) {
+                    allowed |= 1u << code;
+                }
             }
+        } else {
+            // X87's widest inline arms can occupy every dynamic pool slot.
+            // ip0 is an opcode fixed clobber, so RA cannot place a live value
+            // there; make it VIXL's sole immediate-synthesis register.
+            allowed |= 1u << ip0.GetCode();
         }
     }
     masm.SvmBeginScratchContract(allowed);
@@ -884,8 +892,11 @@ void JitContext::EndVixlScratch() {
                 static_cast<u32>(cur_dirty_gprs.GetMarkedCount() -
                                  tick_dirty_gprs.GetMarkedCount()) -
                 spill_tmp_gprs;
-        const u32 vixl_used =
-                static_cast<u32>(__builtin_popcountll(acquired));
+        // A VIXL register already declared as a fixed opcode clobber consumes
+        // no dynamic scratch headroom; RA excluded it independently.
+        const u32 fixed = cur_inst ? backend::FixedGPRClobbers(*cur_inst) : 0;
+        const u32 vixl_used = static_cast<u32>(
+                __builtin_popcountll(acquired & ~fixed));
         ASSERT_MSG(explicit_used + vixl_used <= CurrentBudget().gpr,
                    "combined scratch GPR budget exceeded emitting opcode {}: "
                    "declared {}, explicit {}, VIXL {}",
