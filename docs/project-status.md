@@ -61,6 +61,11 @@ x86_64 guest → 自定义 IR → host ARM64 JIT(vixl) 的 DBT 主干在真实 g
 
 **对比方法论转向（2026-08-02，用户指令）**：放弃等空闲窗口的墙钟 A/B，转向确定性的生成码质量直接对比——SwiftVM `SVM_PROF=2` [svm-unit] vs FEX `--blockjitnaming --dumpir` + perf-map（host = 总尺寸 − header/tail − RIP 重建表）。首份对比（smallpt 全尺寸，产物 `/private/tmp/fex-vs-svm-{pc,functions}.tsv`）：总 host 字节 SVM 315KB vs FEX 159KB = **1.98x**（修复后 1.96x）；热函数 main 2.61x、radiance 2.58x、__sincos_sse2 2.70x；逐 pc 比值稳定 2.4–3.2x，最差主像素循环重复块 4.05x。FEX 密度 13.5 host 字节/guest 指令，SVM ≈27。**静态 codegen 密度是动态流量之外的第二条战线**，逐 pc TSV 已就位作为后续立项输入。
 
+**静态密度双侧分解收官（2026-08-02，探针 `335450b` SVM_DENSITY_PROF 默认 OFF）**：
+- **SVM 侧**（`/private/tmp/svm-density-decomp-report.md`，全量 1769 unit/48,639 IR/315,020B 逐 emitter 精确闭合）：boundary 38.16% 静态/25.42% 动态加权、move/width 19.61%/16.49%、uniform 残余 7.14%/14.35%、flags 6.17%/9.43%、真实工作 28.92%/34.31%、**NaN 专用序列精确 0B**（AFP 已吸收，W69/W75 的 ~10% 账不可外推到当前 master）。可动面：uniform pair/coalesce 严格上限 **1.94%**（最高可信）、boundary 待子序列拆账（25.42% 包络）、move/flags 需 post-W88 严格子集审计；spill 0.006% 与 NaN 关闭。口径修正：smallpt 进度条 `\r` 会让 19 条 [svm-unit] 落在逻辑行中间，提取不能用行首锚定。
+- **FEX 侧**（`/private/tmp/fex-shape-decomp-report.md`，1837 IR 文件 100% 解析）：**FEX post-IR 5.21 op/guest 比 SVM 的 3.9 还大——差距的本质是 IR 节点发射率**：FEX 30% 结构/元数据 nop + 24% fixed-register state 标记被 RA 变成同寄存器约束（零发射），大热块真实工作与 host 指令 ~1:1。spill 全语料为零；multiblock 只换 entry 集合（共有 unit 逐项相同，净省 0.98%）再坐实 W35 死区；全量 3.38 host insn/guest（1.14 只是 33+ guest 大热块形态）。
+- **合并结论**：立项顺序 = ①uniform pair/coalesce 1.94%（严格上限已知）②boundary/terminal 25.42% 子序列拆账（FEX 对照：entry 2 条 + 可回补 direct branch）③move/flags 严格子集审计。两项下钻调研已派出。
+
 ### FEX 对比基线（2026-07-31 baseline2，`SwiftVM-bench` harness，暖 cache，5 reps median，同一静态 x86_64 二进制三环境）
 
 baseline2 = W23–W31 全部落地后的站位（baseline1 数字见 git 历史）。zip7/osslsha/osslaes 为本轮新接入的三格。
