@@ -36,7 +36,10 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
     auto right_pinned = right.GetLeft().IsValue()
             ? pinned_w(right.GetLeft().value)
             : std::nullopt;
-    auto right_operand = right_pinned ? Operand{*right_pinned} : EmitOperand(right);
+    const auto induction_immediate = MatchInductionImmediate(inst);
+    auto right_operand = induction_immediate
+            ? Operand{static_cast<s64>(*induction_immediate)}
+            : (right_pinned ? Operand{*right_pinned} : EmitOperand(right));
     auto result = context.R(ir::Value{inst});
     auto left_pinned = pinned_w(left);
     Register left_register = left_pinned ? Register{*left_pinned} : context.R(left, true);

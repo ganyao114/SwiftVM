@@ -124,9 +124,9 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 66);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 68);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_FPCR_TAX_TIMING");
+            "SVM_INDUCT_TIE");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -274,6 +274,20 @@ TEST_CASE("link suffix common plan ignores a single terminal leaf") {
     REQUIRE(plan.GetStats().saved_bytes == 0);
     MacroAssembler masm{};
     REQUIRE_FALSE(plan.TryEmit(0, kSuffix, masm));
+}
+
+TEST_CASE("config hash includes independent A1 and induction policies") {
+    swift::runtime::Config base{};
+    swift::runtime::Config a1{};
+    swift::runtime::Config induction{};
+    a1.mem_hostbase_fold = true;
+    induction.induct_tie = true;
+
+    const auto base_hash = swift::runtime::backend::ComputeConfigHash(base);
+    REQUIRE(swift::runtime::backend::ComputeConfigHash(a1) != base_hash);
+    REQUIRE(swift::runtime::backend::ComputeConfigHash(induction) != base_hash);
+    REQUIRE(swift::runtime::backend::ComputeConfigHash(a1) !=
+            swift::runtime::backend::ComputeConfigHash(induction));
 }
 
 TEST_CASE("Test compiler") {
@@ -1314,6 +1328,48 @@ TEST_CASE("structured V128 address wraps inside the 4GB guest window") {
     X86Instance::Destroy(instance);
     swift::runtime::backend::SmcTracker::SetEnabled(true);
     munmap(window, page * 2);
+}
+
+TEST_CASE("A1 host-base fold gate is exact and Q UXTW encoding is valid") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend::arm64;
+    using namespace vixl::aarch64;
+
+    REQUIRE(HostBaseFoldEligible(true, true, UINT32_MAX,
+                                 ir::ValueType::V128, true, true, false));
+    REQUIRE_FALSE(HostBaseFoldEligible(false, true, UINT32_MAX,
+                                       ir::ValueType::V128, true, true, false));
+    REQUIRE_FALSE(HostBaseFoldEligible(true, false, UINT32_MAX,
+                                       ir::ValueType::V128, true, true, false));
+    REQUIRE_FALSE(HostBaseFoldEligible(true, true, 0,
+                                       ir::ValueType::V128, true, true, false));
+    REQUIRE_FALSE(HostBaseFoldEligible(true, true, UINT32_MAX,
+                                       ir::ValueType::U64, true, true, false));
+    REQUIRE_FALSE(HostBaseFoldEligible(true, true, UINT32_MAX,
+                                       ir::ValueType::V128, false, true, false));
+    REQUIRE_FALSE(HostBaseFoldEligible(true, true, UINT32_MAX,
+                                       ir::ValueType::V128, true, false, false));
+    REQUIRE_FALSE(HostBaseFoldEligible(true, true, UINT32_MAX,
+                                       ir::ValueType::V128, true, true, true));
+
+    MacroAssembler masm;
+    masm.Ldr(q0, MemOperand{x24, w10, UXTW});
+    masm.Str(q1, MemOperand{x24, w11, UXTW});
+    masm.FinalizeCode();
+    auto* first = masm.GetBuffer()->GetStartAddress<const Instruction*>();
+    auto* second = first->GetNextInstruction();
+    REQUIRE(first[0].GetInstructionBits() == 0x3cea4b00u);
+    REQUIRE(second->GetInstructionBits() == 0x3cab4b01u);
+
+    Decoder decoder;
+    Disassembler disassembler;
+    decoder.AppendVisitor(&disassembler);
+    decoder.Decode(&first[0]);
+    REQUIRE(std::string_view(disassembler.GetOutput()).find(
+                    "ldr q0, [x24, w10, uxtw]") != std::string_view::npos);
+    decoder.Decode(second);
+    REQUIRE(std::string_view(disassembler.GetOutput()).find(
+                    "str q1, [x24, w11, uxtw]") != std::string_view::npos);
 }
 
 TEST_CASE("two structured V128 accesses fault on the second page after the first commits") {
@@ -2656,6 +2712,60 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
         block->StoreUniform(Uniform{16, ValueType::U32}, late);
         check(block, source, result, false, false);
+    }
+}
+
+TEST_CASE("64-bit induction ties require exact last-use and matching pinned publish") {
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::backend;
+
+    const GPRSMask gprs{~((1u << 19) - 1u)};
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+
+    auto check = [&](bool use_source_after_add,
+                     swift::u16 publish_target,
+                     bool active_flags,
+                     bool expect_tie) {
+        auto* raw = new Block(0, Location{0x86a0});
+        swift::runtime::IntrusivePtr<Block> block{raw};
+        auto source = raw->GetHostGPR(HostRegIndex(22), Imm{0u})
+                              .SetType(ValueType::U64);
+        auto immediate = raw->LoadImm(Imm{swift::u64{16}}).SetType(ValueType::U64);
+        auto alias = raw->BitCast(source).SetType(ValueType::U64);
+        auto result = raw->Add(alias, Operand{immediate}).SetType(ValueType::U64);
+        if (active_flags) {
+            raw->SaveFlags(result, Flags::All);
+        }
+        if (use_source_after_add) {
+            raw->StoreUniform(Uniform{24, ValueType::U64}, source);
+        }
+        raw->SetHostGPR(result, HostRegIndex(publish_target), Imm{0u});
+        raw->StoreUniform(Uniform{32, ValueType::U64}, result);
+        raw->SetTerminal(terminal::ReturnToDispatch{});
+        raw->ReIdInstr();
+
+        RegAlloc off{raw->MaxInstrId(), gprs, fprs};
+        RegisterAllocPass::RunForInductTieTest(raw, &off, false);
+        REQUIRE(off.ValueGPR(source).id == 22);
+        REQUIRE(off.ValueGPR(result).id != 22);
+
+        RegAlloc on{raw->MaxInstrId(), gprs, fprs};
+        RegisterAllocPass::RunForInductTieTest(raw, &on, true);
+        REQUIRE(on.ValueGPR(source).id == 22);
+        REQUIRE((on.ValueGPR(result).id == 22) == expect_tie);
+    };
+
+    SECTION("exact last use and matching target tie") {
+        check(false, 22, false, true);
+    }
+    SECTION("source live after result start falls back") {
+        check(true, 22, false, false);
+    }
+    SECTION("different architectural target falls back") {
+        check(false, 23, false, false);
+    }
+    SECTION("live full-width flags reject destructive source") {
+        check(false, 22, true, false);
     }
 }
 

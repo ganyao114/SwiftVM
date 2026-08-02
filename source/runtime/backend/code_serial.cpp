@@ -723,6 +723,8 @@ u64 ComputeConfigHash(const Config& config) {
     // path is also separated by ComputeEnvHash, but embedders may construct a
     // Config directly without an SVM_SSE_AFP_NAN environment variable.
     h = HashU64(config.sse_afp_nan ? 1 : 0, h);
+    h = HashU64(config.mem_hostbase_fold ? 1 : 0, h);
+    h = HashU64(config.induct_tie ? 1 : 0, h);
     h = HashU64(static_cast<u64>(config.tso_mode), h);
     h = HashU64(config.stack_alignment, h);
     h = HashU64(config.guest_addr_mask, h);

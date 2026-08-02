@@ -28,6 +28,18 @@ bool UniformPairAuditEnabled() {
     return enabled;
 }
 
+ir::Value ResolveBitCastValue(ir::Value value) {
+    while (value.Defined() && value.Def()->IsBitCastOperation()) {
+        value = value.Def()->GetArg<ir::Value>(0);
+    }
+    return value;
+}
+
+bool IsA64AddImmediate(u64 value) {
+    return value <= 0xfff ||
+           ((value & 0xfff) == 0 && (value >> 12) <= 0xfff);
+}
+
 struct UniformAuditAccess {
     ir::Inst* inst{};
     bool store{};
@@ -295,6 +307,8 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
     guest_addr_mask = config.guest_addr_mask;
     window_uxtw = guest_addr_mask == 0xFFFFFFFFull;
+    mem_hostbase_fold = config.mem_hostbase_fold;
+    induct_tie = config.induct_tie;
     sse_scalar_insert = config.sse_scalar_insert;
     sse_afp_nan = config.sse_afp_nan;
     fpcr_tax_skip_switch = sse_afp_nan && FpcrTaxSkipSwitchEnabled();
@@ -316,6 +330,86 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     backedge_flags = BackedgeFlagsEnabled();
     if (const char* common = PerfGetenv("SVM_LINK_SUFFIX_COMMON")) {
         link_suffix_common = std::strcmp(common, "0") != 0;
+    }
+}
+
+std::optional<u64> JitTranslator::MatchInductionImmediate(ir::Inst* inst) {
+    if (!induct_tie || !inst || inst->GetOp() != ir::OpCode::Add ||
+        ir::GetValueSizeByte(inst->ReturnType()) != sizeof(u64)) {
+        return std::nullopt;
+    }
+    const auto right = inst->GetArg<ir::Operand>(1);
+    if (!right.GetRight().Null() || !right.GetLeft().IsValue()) {
+        return std::nullopt;
+    }
+    const auto immediate = right.GetLeft().value;
+    if (!immediate.Def() || immediate.Def()->GetOp() != ir::OpCode::LoadImm ||
+        immediate.Def()->GetUses() == 0 ||
+        ir::GetValueSizeByte(immediate.Type()) != sizeof(u64)) {
+        return std::nullopt;
+    }
+    const u64 value = immediate.Def()->GetArg<ir::Imm>(0).Get();
+    if (!IsA64AddImmediate(value)) {
+        return std::nullopt;
+    }
+
+    const auto source = ResolveBitCastValue(inst->GetArg<ir::Value>(0));
+    if (!source.Def() || source.Def()->GetOp() != ir::OpCode::GetHostGPR ||
+        !context.SharesGPR(source, ir::Value{inst})) {
+        return std::nullopt;
+    }
+
+    // Hard emitter guard: re-prove that the in-place result is published to
+    // the same architectural pin before any observer/faulting instruction.
+    const u64 source_host = source.Def()->GetArg<ir::Imm>(0).Get();
+    bool after_add = false;
+    for (auto& next : cur_block->GetInstList()) {
+        if (&next == inst) {
+            after_add = true;
+            continue;
+        }
+        if (!after_add) {
+            continue;
+        }
+        if (next.GetOp() == ir::OpCode::SetHostGPR) {
+            const auto published = ResolveBitCastValue(next.GetArg<ir::Value>(0));
+            if (published.Def() == inst && next.GetArg<ir::Imm>(1).Get() == source_host &&
+                next.GetArg<ir::Imm>(2).Get() == 0) {
+                return value;
+            }
+            return std::nullopt;
+        }
+        if (next.GetOp() == ir::OpCode::SaveFlags) {
+            if (next.GetArg<ir::Flags>(1) != ir::Flags::None) {
+                return std::nullopt;
+            }
+            continue;
+        }
+        if (next.GetOp() != ir::OpCode::LoadImm && !next.IsBitCastOperation()) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
+void JitTranslator::PlanInductionTies(ir::Block* block) {
+    if (!induct_tie) {
+        return;
+    }
+    std::map<ir::Inst*, u32> matched_uses;
+    for (auto& inst : block->GetInstList()) {
+        if (!MatchInductionImmediate(&inst)) {
+            continue;
+        }
+        const auto right = inst.GetArg<ir::Operand>(1).GetLeft().value;
+        ++matched_uses[right.Def()];
+    }
+    for (const auto& [load, uses] : matched_uses) {
+        // A CSE'd induction constant (Copy's shared #80) is removable only
+        // when every SSA consumer is a guarded in-place immediate site.
+        if (uses == load->GetUses()) {
+            disable_instructions.set(load->Id());
+        }
     }
 }
 
@@ -558,6 +652,7 @@ void JitTranslator::Translate(ir::Block* block) {
                     ? std::make_unique<Label>()
                     : nullptr;
     context.SetCurrent(block, backedge_flags_plan != nullptr);
+    PlanInductionTies(block);
     if (backedge_flags_plan) {
         // Every published/external entry takes the cold initializer below;
         // only the self edge targets local_entry. This makes host NZCV valid

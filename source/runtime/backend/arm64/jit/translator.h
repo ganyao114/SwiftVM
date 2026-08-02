@@ -45,6 +45,17 @@ namespace HostFlagsBit {
     constexpr u64 ParityByteMask = u64(0xF) << ParityByte;
 }
 
+// Exact platform/shape gate for folding the guest-memory host bias into a
+// SIMD&FP register-offset load/store.  Exposed for the focused proof-matrix
+// test; the emitter calls this same predicate.
+[[nodiscard]] bool HostBaseFoldEligible(bool enabled,
+                                        bool use_memory_base,
+                                        u64 guest_addr_mask,
+                                        ir::ValueType type,
+                                        bool structured_guest_ea,
+                                        bool guest_add_form,
+                                        bool tso_or_atomic);
+
 enum class HostFlags : u64 {
     N = 1u << HostFlagsBit::N,
     Z = 1u << HostFlagsBit::Z,
@@ -338,6 +349,8 @@ private:
     [[nodiscard]] PseudoFlags GetPseudoFlags(ir::Inst *inst);
 
     [[nodiscard]] bool MatchMemoryOffsetCase(ir::Inst *inst);
+    [[nodiscard]] std::optional<u64> MatchInductionImmediate(ir::Inst *inst);
+    void PlanInductionTies(ir::Block *block);
 
     void FlushFlags();
 
@@ -374,6 +387,8 @@ private:
     // computes pt + zext32(guest) in the *same* instruction the unbounded
     // path already used, so a 32-bit window costs nothing.
     bool window_uxtw{false};
+    bool mem_hostbase_fold{false};
+    bool induct_tie{false};
     // Default-off aggressive SSE/AVX floating-point policy: keep the raw NEON
     // result instead of repairing x86 NaN payload priority and quieting.
     bool sse_nan_fast{false};

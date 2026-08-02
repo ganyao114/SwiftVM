@@ -60,6 +60,21 @@ TsoEmissionStats tso_emission_stats;
 
 }  // namespace
 
+bool HostBaseFoldEligible(bool enabled,
+                          bool use_memory_base,
+                          u64 guest_addr_mask,
+                          ir::ValueType type,
+                          bool structured_guest_ea,
+                          bool guest_add_form,
+                          bool tso_or_atomic) {
+    // The W39 structured operand has already computed the guest EA with W
+    // arithmetic.  Only the bounded 4GB layout may use UXTW here: unbounded
+    // and non-32-bit windows need their existing 64-bit bias/mask sequence.
+    return enabled && use_memory_base && guest_addr_mask == UINT32_MAX &&
+           type == ir::ValueType::V128 && structured_guest_ea && guest_add_form &&
+           !tso_or_atomic;
+}
+
 void JitTranslator::AcquireUnalignedAtomicLock(const Register& scratch) {
     Label retry;
     __ Mov(atomic_scratch,
@@ -579,19 +594,28 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
             break;
         }
     }
-    // Q loads cannot use the register-offset encoding used for [base + pt],
-    // and must not consume the synthetic post-index produced by the generic
-    // address peephole. The ARM64 frontend lowers pair writeback into normal
-    // Add + two memory operations, so folding it here would write back after
-    // the first half of an LDP/STP pair rather than after the pair.
+    // Keep the established materialized-address path for generic Q loads and
+    // do not consume the synthetic post-index produced by the generic address
+    // peephole. A1 opens only the exact bounded W39 Plus form, for which the
+    // SIMD register-offset encoding can carry pt + UXTW(guest EA) directly.
+    // The ARM64 frontend lowers pair writeback into normal Add + two memory
+    // operations, so folding writeback here would update after the first half.
     const bool q_access = type == ir::ValueType::V128;
     const bool structured_guest_ea =
             q_access && StructuredAddressModeEnabled() && !operand.GetRight().Null();
+    const bool fold_host_base =
+            HostBaseFoldEligible(mem_hostbase_fold,
+                                 use_memory_base,
+                                 guest_addr_mask,
+                                 type,
+                                 structured_guest_ea,
+                                 operand.GetOp() == ir::OperandOp::Plus,
+                                 false);
     auto vixl_operand =
             EmitMemOperand(operand,
                            type,
                            false,
-                           q_access,
+                           q_access && !fold_host_base,
                            !q_access,
                            structured_guest_ea);
     switch (type) {
@@ -657,16 +681,24 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = inst->GetArg<ir::Value>(1);
     auto type = value.Type();
-    // See EmitLoadMemory: materialize guest + pt for Q accesses and preserve
-    // the frontend's explicit pre/post-index writeback Add instructions.
+    // See EmitLoadMemory: A1 opens only the exact bounded W39 Plus form; all
+    // other Q accesses keep address materialization and explicit writeback.
     const bool q_access = type == ir::ValueType::V128;
     const bool structured_guest_ea =
             q_access && StructuredAddressModeEnabled() && !operand.GetRight().Null();
+    const bool fold_host_base =
+            HostBaseFoldEligible(mem_hostbase_fold,
+                                 use_memory_base,
+                                 guest_addr_mask,
+                                 type,
+                                 structured_guest_ea,
+                                 operand.GetOp() == ir::OperandOp::Plus,
+                                 false);
     auto vixl_operand =
             EmitMemOperand(operand,
                            type,
                            false,
-                           q_access,
+                           q_access && !fold_host_base,
                            !q_access,
                            structured_guest_ea);
     switch (type) {

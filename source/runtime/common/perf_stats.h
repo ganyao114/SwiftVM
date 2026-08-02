@@ -215,7 +215,7 @@ struct PerfStats2 {
     std::atomic<unsigned long long> uniform_dse_blocks{0};
     std::atomic<unsigned long long> uniform_dse_victims{0};
 
-    static constexpr std::array<const char*, 66> kGetenvNames{{
+    static constexpr std::array<const char*, 68> kGetenvNames{{
             "SVM_MEM_IDENTITY",
             "SVM_FUNC_LAZY",
             "SVM_DUMP_IR",
@@ -282,6 +282,8 @@ struct PerfStats2 {
             "SVM_FPCR_TAX_PROF",
             "SVM_FPCR_TAX_SKIP_SWITCH",
             "SVM_FPCR_TAX_TIMING",
+            "SVM_MEM_HOSTBASE_FOLD",
+            "SVM_INDUCT_TIE",
     }};
     std::array<std::atomic<unsigned long long>, kGetenvNames.size()> getenv_ns{};
     std::array<std::atomic<unsigned long long>, kGetenvNames.size()> getenv_calls{};

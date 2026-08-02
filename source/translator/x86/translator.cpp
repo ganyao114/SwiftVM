@@ -731,6 +731,12 @@ struct X86Instance::Impl final {
         const Arm64Features arm64_features = DetectArm64Features();
         const bool sse_scalar_insert = SSEScalarInsertEnabled(arm64_features);
         const bool sse_afp_nan = SSEAFPNanEnabled(arm64_features);
+        const auto env_enabled = [](const char* name) {
+            const char* value = runtime::PerfGetenv(name);
+            return value && std::strcmp(value, "0") != 0;
+        };
+        const bool mem_hostbase_fold = env_enabled("SVM_MEM_HOSTBASE_FOLD");
+        const bool induct_tie = env_enabled("SVM_INDUCT_TIE");
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ul << 49,
@@ -765,6 +771,8 @@ struct X86Instance::Impl final {
                 .arm64_features = arm64_features,
                 .sse_scalar_insert = sse_scalar_insert,
                 .sse_afp_nan = sse_afp_nan,
+                .mem_hostbase_fold = mem_hostbase_fold,
+                .induct_tie = induct_tie,
                 .tso_mode = TsoModeFromEnvironment(),
                 .stack_alignment = 16,
                 .page_table = nullptr,

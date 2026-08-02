@@ -31,6 +31,9 @@ public:
     static void RunForIntWidthTieTest(ir::Block *block,
                                      backend::RegAlloc *reg_alloc,
                                      bool intwidth_tie);
+    static void RunForInductTieTest(ir::Block *block,
+                                    backend::RegAlloc *reg_alloc,
+                                    bool induct_tie);
 };
 
 class VRegisterAllocPass {

@@ -85,6 +85,14 @@ static bool IntWidthTieEnabled() {
     return enabled;
 }
 
+static bool InductTieEnabled() {
+    static const bool enabled = [] {
+        const char* env = PerfGetenv("SVM_INDUCT_TIE");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
 // Spill/escalation 诊断打印默认关闭：它们随编译线程异步产生，会混入 guest
 // stdout（sqlite speedtest 一类边跑边输出的负载会被打断行），且非用户可行动项。
 // 需要排查 regalloc 行为时设 SVM_RA_DIAG=1 打开。
@@ -119,16 +127,19 @@ public:
                                  u32 fpr_res,
                                  bool single_block_fast_path = false,
                                  bool scalar_insert = false,
-                                 bool intwidth_tie = false)
+                                 bool intwidth_tie = false,
+                                 bool induct_tie = false)
             : function(function), block(), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               single_block_fast_path(single_block_fast_path),
               scalar_insert(scalar_insert),
               intwidth_tie(intwidth_tie),
+              induct_tie(induct_tie),
               shift_imm_fast(ShiftImmFastEnabled()) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(function->MaxInstrCount());
+        fixed_gpr_alias_end.resize(function->MaxInstrCount());
         InitializeFixedClobbers();
         if (single_block_fast_path) {
             fast_active_lives.reserve(function->MaxInstrCount());
@@ -141,15 +152,18 @@ public:
                                  u32 fpr_res,
                                  bool = false,
                                  bool scalar_insert = false,
-                                 bool intwidth_tie = false)
+                                 bool intwidth_tie = false,
+                                 bool induct_tie = false)
             : function(), block(block), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               scalar_insert(scalar_insert),
               intwidth_tie(intwidth_tie),
+              induct_tie(induct_tie),
               shift_imm_fast(ShiftImmFastEnabled()) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(block->GetInstList().size());
+        fixed_gpr_alias_end.resize(block->MaxInstrId());
         InitializeFixedClobbers();
     }
 
@@ -307,6 +321,10 @@ public:
                     // 32-bit bridge. Transfer its physical register to the
                     // result so the existing SharesGPR emitter path removes
                     // the bridge without extending the source interval.
+                } else if (induct_tie && TryTieInduction(interval)) {
+                    // A fixed guest GPR snapshot dies at this U64 induction
+                    // Add. Transfer its pinned owner to the result; the
+                    // emitter still requires SharesGPR before peeling.
                 } else if (auto alloc = AllocGPR(interval); alloc >= 0) {
                     reg_alloc->MapRegister(interval.inst->Id(), HostGPR{(u16)alloc});
                 } else {
@@ -837,7 +855,85 @@ private:
         return TryTieGPR(current, IntWidthTieSource(current.inst));
     }
 
-    bool TryTieGPR(LiveInterval& current, Value source) {
+    static bool IsAddImmediate(u64 value) {
+        return value <= 0xfff ||
+               ((value & 0xfff) == 0 && (value >> 12) <= 0xfff);
+    }
+
+    Value InductionTieSource(Inst* inst) const {
+        if (inst->GetOp() != OpCode::Add ||
+            GetValueSizeByte(inst->ReturnType()) != sizeof(u64)) {
+            return {};
+        }
+        const auto right = inst->GetArg<Operand>(1);
+        if (!right.GetRight().Null() || !right.GetLeft().IsValue()) {
+            return {};
+        }
+        const auto immediate = right.GetLeft().value;
+        if (!immediate.Def() || immediate.Def()->GetOp() != OpCode::LoadImm ||
+            immediate.Def()->GetUses() == 0 ||
+            GetValueSizeByte(immediate.Type()) != sizeof(u64) ||
+            !IsAddImmediate(immediate.Def()->GetArg<Imm>(0).Get())) {
+            return {};
+        }
+
+        auto source = ResolveBitCastSource(inst->GetArg<Value>(0));
+        if (!source.Def() || source.Def()->GetOp() != OpCode::GetHostGPR ||
+            GetValueSizeByte(source.Type()) != sizeof(u64)) {
+            return {};
+        }
+        const u64 source_host = source.Def()->GetArg<Imm>(0).Get();
+
+        auto match_block = [&](Block* candidate) {
+            bool after_add = false;
+            for (auto& next : candidate->GetInstList()) {
+                if (&next == inst) {
+                    after_add = true;
+                    continue;
+                }
+                if (!after_add) {
+                    continue;
+                }
+                if (next.GetOp() == OpCode::SetHostGPR) {
+                    const auto published = ResolveBitCastSource(next.GetArg<Value>(0));
+                    return published.Def() == inst &&
+                           next.GetArg<Imm>(1).Get() == source_host &&
+                           next.GetArg<Imm>(2).Get() == 0 &&
+                           GetValueSizeByte(next.GetArg<Value>(0).Type()) == sizeof(u64);
+                }
+                // These are non-faulting metadata/flag consumers in the
+                // measured induction lowering. Any architectural observer,
+                // host-register access or real operation rejects the early
+                // pinned ownership transfer.
+                if (next.GetOp() == OpCode::SaveFlags) {
+                    if (next.GetArg<Flags>(1) != Flags::None) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (next.GetOp() != OpCode::LoadImm && !next.IsBitCastOperation()) {
+                    return false;
+                }
+            }
+            return false;
+        };
+        if (block) {
+            return match_block(block) ? source : Value{};
+        }
+        for (auto* hir_block : function->GetHIRBlocks()) {
+            if (match_block(hir_block->GetBlock())) {
+                return source;
+            }
+        }
+        return {};
+    }
+
+    bool TryTieInduction(LiveInterval& current) {
+        return TryTieGPR(current, InductionTieSource(current.inst), true);
+    }
+
+    bool TryTieGPR(LiveInterval& current, Value source, bool allow_fixed_owner = false) {
+        source = ResolveBitCastSource(source);
         if (!source.Defined() || source.Id() == current.inst->Id() ||
             reg_alloc->ValueType(source) != backend::RegAlloc::GPR) {
             return false;
@@ -865,7 +961,14 @@ private:
             }
         }
         if (!removed) {
-            return false;
+            if (!allow_fixed_owner || source.Id() >= fixed_gpr_alias_end.size() ||
+                fixed_gpr_alias_end[source.Id()] != current.start) {
+                return false;
+            }
+            const auto source_gpr = reg_alloc->ValueGPR(source);
+            if (!reg_alloc->GetGprs().Get(source_gpr.id)) {
+                return false;
+            }
         }
         reg_alloc->MapRegister(current.inst->Id(), reg_alloc->ValueGPR(source));
         return true;
@@ -1168,6 +1271,7 @@ private:
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{host_index});
                 } else {
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{host_index});
+                    fixed_gpr_alias_end[hir_value.GetOrderId()] = end;
                 }
                 continue;
             }
@@ -1315,6 +1419,7 @@ private:
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{host_index});
                 } else {
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{host_index});
+                    fixed_gpr_alias_end[hir_value.GetOrderId()] = end;
                 }
                 continue;
             }
@@ -1425,6 +1530,7 @@ private:
                     reg_alloc->MapRegister(instr.Id(), HostFPR{host_index});
                 } else {
                     reg_alloc->MapRegister(instr.Id(), HostGPR{host_index});
+                    fixed_gpr_alias_end[instr.Id()] = use_end[instr.Id()];
                 }
                 continue;
             }
@@ -1615,7 +1721,12 @@ private:
 
     void FreeGPR(u32 id) {
         ASSERT(active_gprs.Get(id));
-        active_gprs.Clear(id);
+        // A tied induction result may temporarily own a statically reserved
+        // guest register. Expiry ends the SSA interval but must never return
+        // that architectural register to the scratch/value pool.
+        if (!reg_alloc->GetGprs().Get(id)) {
+            active_gprs.Clear(id);
+        }
     }
 
     void FreeFPR(u32 id) {
@@ -1641,7 +1752,9 @@ private:
     const bool single_block_fast_path{false};
     const bool scalar_insert{false};
     const bool intwidth_tie{false};
+    const bool induct_tie{false};
     const bool shift_imm_fast{false};
+    Vector<u32> fixed_gpr_alias_end{};
     Vector<bool> spill_slots{};
     Vector<u32> fixed_gpr_clobbers{};
     std::array<Vector<u32>, 32> fixed_gpr_clobber_points{};
@@ -1806,7 +1919,8 @@ static void RunVerified(Unit* unit,
                         backend::RegAlloc* reg_alloc,
                         bool single_block_fast_path = false,
                         bool scalar_insert = false,
-                        bool intwidth_tie = false) {
+                        bool intwidth_tie = false,
+                        bool induct_tie = false) {
     auto rerun_with_conditional_spill_scratch = [&] {
 #if defined(__linux__) && !defined(__ANDROID__)
         const u32 spills = reg_alloc->SpillCount();
@@ -1819,7 +1933,7 @@ static void RunVerified(Unit* unit,
             reg_alloc->ReserveGPRForUnit(18);
             reg_alloc->ResetAllocations();
             RunVerified(unit, reg_alloc, single_block_fast_path, scalar_insert,
-                        intwidth_tie);
+                        intwidth_tie, induct_tie);
             if (RaDiagEnabled()) {
                 LOG_WARNING("RegisterAllocPass: {} initial spill(s); x18 reserved for this unit",
                             spills);
@@ -1866,7 +1980,7 @@ static void RunVerified(Unit* unit,
     {
         LinearScanAllocator scan{unit, reg_alloc, default_gpr_reserve,
                                  backend::kDefaultScratchFPR, single_block_fast_path,
-                                 scalar_insert, intwidth_tie};
+                                 scalar_insert, intwidth_tie, induct_tie};
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -1931,7 +2045,7 @@ static void RunVerified(Unit* unit,
     for (auto& rung : ladder) {
         reg_alloc->ResetAllocations();
         LinearScanAllocator scan{unit, reg_alloc, rung.gpr, rung.fpr, single_block_fast_path,
-                                 scalar_insert, intwidth_tie};
+                                 scalar_insert, intwidth_tie, induct_tie};
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -1970,7 +2084,7 @@ void RegisterAllocPass::RunWithScalarInsert(HIRFunction* hir_function,
     const bool use_fast_path =
             single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
     RunVerified(hir_function, reg_alloc, use_fast_path, scalar_insert,
-                IntWidthTieEnabled());
+                IntWidthTieEnabled(), InductTieEnabled());
 }
 
 void RegisterAllocPass::Run(HIRFunction* hir_function,
@@ -1979,19 +2093,26 @@ void RegisterAllocPass::Run(HIRFunction* hir_function,
     const bool use_fast_path =
             single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
     RunVerified(hir_function, reg_alloc, use_fast_path, false,
-                IntWidthTieEnabled());
+                IntWidthTieEnabled(), InductTieEnabled());
 }
 
 void RegisterAllocPass::Run(ir::Block* block,
                             backend::RegAlloc* reg_alloc,
                             bool scalar_insert) {
-    RunVerified(block, reg_alloc, false, scalar_insert, IntWidthTieEnabled());
+    RunVerified(block, reg_alloc, false, scalar_insert,
+                IntWidthTieEnabled(), InductTieEnabled());
 }
 
 void RegisterAllocPass::RunForIntWidthTieTest(ir::Block* block,
                                               backend::RegAlloc* reg_alloc,
                                               bool intwidth_tie) {
     RunVerified(block, reg_alloc, false, false, intwidth_tie);
+}
+
+void RegisterAllocPass::RunForInductTieTest(ir::Block* block,
+                                            backend::RegAlloc* reg_alloc,
+                                            bool induct_tie) {
+    RunVerified(block, reg_alloc, false, false, false, induct_tie);
 }
 
 void VRegisterAllocPass::Run(ir::Block* block) {
