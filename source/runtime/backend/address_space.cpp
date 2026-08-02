@@ -6,6 +6,9 @@
 #include "runtime/backend/arm64/trampolines.h"
 #include "runtime/backend/riscv64/trampolines.h"
 #include "runtime/common/logging.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace swift::runtime::backend {
 
@@ -153,6 +156,32 @@ const ir::UniformInfo& AddressSpace::GetUniformInfo() { return *uniform_info; }
 const ir::UniformInfo& AddressSpace::GetUniformInfo() const { return *uniform_info; }
 
 AddressSpace::~AddressSpace() {
+    const char* exec_prof = std::getenv("SVM_EXEC_PROF");
+    if (exec_prof && std::strcmp(exec_prof, "0") != 0 && DirectLinkV2Enabled()) {
+        const auto stats = link_manager.GetStats();
+        std::fprintf(stderr,
+                     "[svm-direct-link] sites=%zu linked=%zu far=%zu retiring=%zu "
+                     "registered=%llu linker_calls=%llu delinks=%llu max_in_degree=%zu "
+                     "incoming_targets=%zu owners=%zu target_records=%zu bytes_est=%zu "
+                     "signal_invalidations=%llu signal_targets_retained=%zu "
+                     "signal_sites_retained=%zu epoch_sync=%llu\n",
+                     stats.sites,
+                     stats.linked,
+                     stats.far,
+                     stats.retiring,
+                     static_cast<unsigned long long>(stats.sites_registered),
+                     static_cast<unsigned long long>(stats.linker_calls),
+                     static_cast<unsigned long long>(stats.delinks),
+                     stats.max_in_degree,
+                     stats.incoming_targets,
+                     stats.outgoing_owners,
+                     stats.target_records,
+                     stats.estimated_bytes,
+                     static_cast<unsigned long long>(stats.signal_invalidations),
+                     stats.signal_targets_retained,
+                     stats.signal_sites_retained,
+                     static_cast<unsigned long long>(smc_tracker.GetPatchSyncCount()));
+    }
     // Persist before anything is torn down: Save only touches the recorded
     // byte copies and the L2 slot assignment, both still intact here.
     if (jit_disk_cache) {

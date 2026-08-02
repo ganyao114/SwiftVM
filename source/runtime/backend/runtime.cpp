@@ -223,10 +223,10 @@ struct Runtime::Impl final {
     // SMC write-protect fault handler (SignalHandler chain, priority 0 —
     // ahead of the JIT guest-fault recovery). A guest store to a guest page
     // holding translated code faults on the write protection installed by
-    // SmcTracker::RegisterNode; the tracker opens a write window (page back
-    // to RW, stale blocks' dispatch slots zeroed) and the faulting store is
-    // re-executed on sigreturn. Actual invalidation is deferred to
-    // CloseWriteWindow after the current JitRun returns.
+    // SmcTracker::RegisterNode. Direct-v2 generations are deactivated and
+    // incoming branches restored synchronously before the page becomes RW;
+    // dispatch clearing also happens here. Node detach and epoch reclamation
+    // remain deferred to CloseWriteWindow after the current JitRun returns.
     static constexpr int kSmcPriority = 0;
 
     void RestoreHostFPCRForSignal() const {
@@ -801,7 +801,24 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} size={}\n", func_start, buffer_size);
     PerfScope2 perf_pub_total{GetPerfStats2().publish_total};
     PerfScope2 perf_pub_alloc{GetPerfStats2().publish_alloc};
-    auto allocation = module->AllocCodeCache(buffer_size);
+    backend::arm64::JitContext* emitted_context = &context;
+    backend::arm64::JitTranslator* emitted_translator = &translator;
+    std::optional<backend::arm64::JitContext> legacy_context;
+    std::optional<backend::arm64::JitTranslator> legacy_translator;
+    auto allocation = module->AllocCodeCache(buffer_size, context.HasDirectLinkSites());
+    if (allocation.first == backend::INVALID_CACHE_ID && context.HasDirectLinkSites()) {
+        // A unit too large for a <=128MiB trampoline region must not become a
+        // half-direct translation or fail solely because v2 was requested.
+        // Re-emit the entire unit with the legacy slot leaf and allocate it
+        // under the existing unrestricted arena policy.
+        legacy_context.emplace(module, reg_alloc, false);
+        legacy_translator.emplace(*legacy_context);
+        legacy_translator->Translate(function);
+        emitted_context = &*legacy_context;
+        emitted_translator = &*legacy_translator;
+        buffer_size = emitted_context->CurrentBufferSize();
+        allocation = module->AllocCodeCache(buffer_size, false);
+    }
     perf_pub_alloc.Stop();
     if (auto [idx, buffer] = allocation;
         idx != backend::INVALID_CACHE_ID) {
@@ -813,7 +830,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
                        function->MaxInstrCount(), buffer_size);
         }
         PerfScope2 perf_pub_flush{GetPerfStats2().publish_flush};
-        context.Flush(buffer);
+        emitted_context->Flush(buffer);
         perf_pub_flush.Stop();
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} flush-ready\n", func_start);
         jit_state.jit_state = backend::JitState::Cached;
@@ -825,6 +842,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
         perf_pub_module.Stop();
         if (!pushed) {
             jit_state = {};
+            module->DiscardLinkSource(buffer.exec_data);
             if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
                 cache->FreeCode(buffer.exec_data);
             }
@@ -843,10 +861,12 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
                 continue;
             }
             const auto guest = block->GetStartLocation().Value();
-            const auto offset = context.GetCodeOffset(guest);
+            const auto offset = emitted_context->GetCodeOffset(guest);
             ASSERT(offset >= 0 && static_cast<size_t>(offset) < buffer.size);
             {
                 PerfScope2 perf_pub_l2{GetPerfStats2().publish_l2};
+                (void)module->PublishLinkTarget(
+                        ir::Location{guest}, buffer.exec_data + offset, buffer.exec_data);
                 mutable_address_space.PushCodeCache(guest, buffer.exec_data + offset);
             }
             cache_blocks.push_back({guest,
@@ -872,7 +892,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
                                       buffer.exec_data + buffer.size,
                                       func_start,
                                       buffer.exec_data);
-                const auto& backedges = translator.GetBackedgeBlockMetadata();
+                const auto& backedges = emitted_translator->GetBackedgeBlockMetadata();
                 for (size_t i = 0; i < cache_blocks.size(); ++i) {
                     const auto recovery = std::find_if(
                             backedges.begin(), backedges.end(), [&](const auto& item) {
@@ -970,12 +990,26 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     backend::arm64::JitTranslator translator{context};
     translator.Translate(block->GetBlock());
     auto buffer_size = context.CurrentBufferSize();
-    if (auto [idx, buffer] = module->AllocCodeCache(buffer_size);
+    backend::arm64::JitContext* emitted_context = &context;
+    backend::arm64::JitTranslator* emitted_translator = &translator;
+    std::optional<backend::arm64::JitContext> legacy_context;
+    std::optional<backend::arm64::JitTranslator> legacy_translator;
+    auto allocation = module->AllocCodeCache(buffer_size, context.HasDirectLinkSites());
+    if (allocation.first == backend::INVALID_CACHE_ID && context.HasDirectLinkSites()) {
+        legacy_context.emplace(module, reg_alloc, false);
+        legacy_translator.emplace(*legacy_context);
+        legacy_translator->Translate(block->GetBlock());
+        emitted_context = &*legacy_context;
+        emitted_translator = &*legacy_translator;
+        buffer_size = emitted_context->CurrentBufferSize();
+        allocation = module->AllocCodeCache(buffer_size, false);
+    }
+    if (auto [idx, buffer] = allocation;
         idx != backend::INVALID_CACHE_ID) {
-        context.Flush(buffer);
+        emitted_context->Flush(buffer);
         module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, block_start);
         if (BackedgeLatchEnabled()) {
-            for (const auto& item : translator.GetBackedgeBlockMetadata()) {
+            for (const auto& item : emitted_translator->GetBackedgeBlockMetadata()) {
                 module->AddFaultEntry(buffer.exec_data + item.host_begin,
                                       buffer.exec_data + item.host_end,
                                       item.guest_start,
@@ -988,6 +1022,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
         jit_state.jit_state = backend::JitState::Cached;
         jit_state.cache_id = idx;
         jit_state.offset_in = buffer.offset;
+        (void)module->PublishLinkTarget(
+                ir::Location{block_start}, buffer.exec_data, buffer.exec_data);
         return buffer.exec_data;
     }
     return nullptr;
@@ -1027,12 +1063,25 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     auto buffer_size = context.CurrentBufferSize();
     PerfScope2 perf_pub_total{GetPerfStats2().publish_total};
     PerfScope2 perf_pub_alloc{GetPerfStats2().publish_alloc};
-    auto allocation = module->AllocCodeCache(buffer_size);
+    backend::arm64::JitContext* emitted_context = &context;
+    backend::arm64::JitTranslator* emitted_translator = &translator;
+    std::optional<backend::arm64::JitContext> legacy_context;
+    std::optional<backend::arm64::JitTranslator> legacy_translator;
+    auto allocation = module->AllocCodeCache(buffer_size, context.HasDirectLinkSites());
+    if (allocation.first == backend::INVALID_CACHE_ID && context.HasDirectLinkSites()) {
+        legacy_context.emplace(module, reg_alloc, false);
+        legacy_translator.emplace(*legacy_context);
+        legacy_translator->Translate(block.get());
+        emitted_context = &*legacy_context;
+        emitted_translator = &*legacy_translator;
+        buffer_size = emitted_context->CurrentBufferSize();
+        allocation = module->AllocCodeCache(buffer_size, false);
+    }
     perf_pub_alloc.Stop();
     if (auto [idx, buffer] = allocation;
         idx != backend::INVALID_CACHE_ID) {
         PerfScope2 perf_pub_flush{GetPerfStats2().publish_flush};
-        context.Flush(buffer);
+        emitted_context->Flush(buffer);
         perf_pub_flush.Stop();
         {
             PerfScope2 perf_pub_fault{GetPerfStats2().publish_fault};
@@ -1040,7 +1089,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
                                   buffer.exec_data + buffer.size,
                                   block->GetStartLocation().Value());
             if (BackedgeLatchEnabled()) {
-                for (const auto& item : translator.GetBackedgeBlockMetadata()) {
+                for (const auto& item : emitted_translator->GetBackedgeBlockMetadata()) {
                     module->AddFaultEntry(buffer.exec_data + item.host_begin,
                                           buffer.exec_data + item.host_end,
                                           item.guest_start,
@@ -1054,6 +1103,11 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
         jit_state.jit_state = backend::JitState::Cached;
         jit_state.cache_id = idx;
         jit_state.offset_in = buffer.offset;
+        // The target generation is visible before SMC registration. Once a
+        // node can be collected by TakeDirtyNodes, BeginTargetInvalidation is
+        // therefore guaranteed to see and deactivate this publication.
+        (void)module->PublishLinkTarget(
+                block->GetStartLocation(), buffer.exec_data, buffer.exec_data);
         // SMC tracking (Phase 4): fix the block's guest end location (the
         // frontends never set node_size; AdvancePC immediates are per-
         // instruction sizes and survive the opt pipeline, so their sum is

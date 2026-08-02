@@ -56,7 +56,9 @@ u64 HaltReasonReturnSuffixEncoding() {
 static_assert(kMaxSpillSlots == sizeof(State::spill_area) / sizeof(u64),
               "spill slot count mismatch between reg_alloc.h and context.h");
 
-JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_alloc)
+JitContext::JitContext(const std::shared_ptr<Module>& module,
+                       RegAlloc& reg_alloc,
+                       std::optional<bool> direct_link_v2_override)
         : module(module), reg_alloc(reg_alloc) {
 #if defined(__linux__) && !defined(__ANDROID__)
     const bool has_spill = reg_alloc.SpillCount() != 0;
@@ -77,6 +79,12 @@ JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_allo
         return density && std::strcmp(density, "0") != 0;
     }();
     density_profile_enabled = density_enabled;
+    const bool direct_requested =
+            direct_link_v2_override.value_or(DirectLinkV2Enabled());
+    direct_link_v2_active =
+            direct_requested &&
+            module->GetModuleConfig().HasOpt(Optimizations::BlockLink) &&
+            module->PrepareDirectLinkV2Region();
 }
 
 void JitContext::RecordExecCounter(u32 offset, u32 amount) {
@@ -597,7 +605,8 @@ std::optional<u64> JitContext::PlanForwardSuffix(ir::Location location) {
 void JitContext::Forward(ir::Location location,
                          Label* backedge_exit,
                          Label* self_target,
-                         const LinkSuffixEmitter& suffix_emitter) {
+                         const LinkSuffixEmitter& suffix_emitter,
+                         bool allow_direct_link_v2) {
     ASSERT(cur_block);
     // Block exit: land any pending spill write-back before the transfer
     // (a spilled value defined by the block's last instruction may be live
@@ -633,6 +642,18 @@ void JitContext::Forward(ir::Location location,
         const bool self_module_forward{module == target_module};
         const ModuleConfig& module_config{module->GetModuleConfig()};
         const ModuleConfig& target_module_config{target_module->GetModuleConfig()};
+
+        if (allow_direct_link_v2 && direct_link_v2_active && self_module_forward &&
+            module_config.HasOpt(Optimizations::BlockLink)) {
+            // The final RX address is unknown until TranslateIR allocates its
+            // CodeBuffer. Emit exactly one 4-byte BL placeholder and relocate
+            // it to this allocation's region trampoline in Flush(). The site
+            // record is installed there, before any L2 publication.
+            pending_direct_link_sites.push_back(
+                    {CurrentBufferSize(), location.Value()});
+            __ dc32(*EncodeBL(0));
+            return;
+        }
 
         bool direct_link{
                 (self_module_forward && module_config.HasOpt(Optimizations::DirectBlockLink)) ||
@@ -742,6 +763,17 @@ void JitContext::Forward(ir::Location location,
             }
         }
     }
+}
+
+bool JitContext::CanEmitDirectLinkV2(ir::Location location) const {
+    if (!direct_link_v2_active || !cur_block ||
+        location == cur_block->GetStartLocation() ||
+        (cur_function && location == cur_function->GetStartLocation())) {
+        return false;
+    }
+    const auto target_module = module->GetAddressSpace().GetModule(location.Value());
+    return target_module == module &&
+           module->GetModuleConfig().HasOpt(Optimizations::BlockLink);
 }
 
 void JitContext::ReturnToDispatcher(const Register& location) {
@@ -914,6 +946,34 @@ u8* JitContext::Flush(const CodeBuffer& code_cache) {
                      static_cast<unsigned long long>(unit_start),
                      static_cast<void*>(code_cache.exec_data),
                      CurrentBufferSize());
+    }
+    if (!pending_direct_link_sites.empty()) {
+        auto* cache = module->GetCodeCache(code_cache.exec_data);
+        ASSERT(cache);
+        const auto& region = cache->GetRegion();
+        auto* trampoline = static_cast<u8*>(cache->GetRegionTrampoline());
+        ASSERT(trampoline && region.ContainsRx(trampoline));
+        const LinkSourceOwner owner{module.get(), code_cache.exec_data};
+        auto* emitted = masm.GetBuffer()->GetStartAddress<u8*>();
+        for (const auto& pending : pending_direct_link_sites) {
+            ASSERT(static_cast<size_t>(pending.code_offset) + sizeof(u32) <= code_cache.size);
+            auto* rx_site = code_cache.exec_data + pending.code_offset;
+            const auto branch = EncodeBL(trampoline - rx_site);
+            ASSERT(branch);
+            std::memcpy(emitted + pending.code_offset, &*branch, sizeof(*branch));
+            const LinkSiteKey key{
+                    region.id,
+                    code_cache.offset + pending.code_offset,
+            };
+            const LinkSignalPatchSite signal_patch{
+                    .region = region,
+                    .rx_site = rx_site,
+                    .rw_site = code_cache.rw_data + pending.code_offset,
+                    .unlinked_bl = *branch,
+            };
+            ASSERT(module->GetAddressSpace().GetLinkManager().RegisterSite(
+                    key, pending.guest_target, owner, &signal_patch));
+        }
     }
     std::memcpy(code_cache.rw_data, masm.GetBuffer()->GetStartAddress<u8*>(), code_cache.size);
     code_cache.Flush();

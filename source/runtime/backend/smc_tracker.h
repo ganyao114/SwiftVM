@@ -12,8 +12,9 @@
 //  - Another guest CPU may finish code it entered before invalidation.
 //  - Every per-Runtime L1 and the shared AddressSpace L2 are cleared, so a
 //    later dispatch cannot newly enter the retired translation.
-//  - Direct intra-function/self-label edges may remain stale until that CPU
-//    reaches a host boundary; its published epoch keeps the code alive.
+//  - Direct-v2 inter-block edges are synchronously restored to their region
+//    trampoline by the write-fault handler. Intra-function/self-label edges
+//    remain local and may finish until the next existing safepoint.
 //
 // Limitations:
 //  - No mid-block rewind: a block that patches a later instruction in itself
@@ -82,15 +83,17 @@ public:
     void BeginJit(const RuntimeToken& token);
     void EndJit(const RuntimeToken& token);
 
-    // Internal direct-link hook. A delinker calls this only after restoring
-    // every BL and completing D/I-cache maintenance. P0-B tests drive it
-    // directly; production SMC wiring is intentionally deferred to P1. The
-    // same invalidation transaction must then advance global_epoch_ through
-    // Retire before releasing invalidation_mutex_; BeginJit's load order uses
-    // that publication chain to close its entry race with only one patch load.
+    // Internal direct-link hook. Signal and deferred delinkers call this only
+    // after restoring BL and completing D/I-cache maintenance. The deferred
+    // transaction then advances global_epoch_ through Retire before releasing
+    // invalidation_mutex_; BeginJit's load order consumes that publication
+    // chain and closes its entry race with only one patch-epoch load.
     [[nodiscard]] u64 AdvanceCodePatchEpoch();
     [[nodiscard]] u64 GetCodePatchEpoch() const {
         return code_patch_epoch_.load(std::memory_order_seq_cst);
+    }
+    [[nodiscard]] u64 GetPatchSyncCount() const {
+        return patch_sync_count_.load(std::memory_order_relaxed);
     }
     [[nodiscard]] bool CanReclaimAtEpochForTest(u64 retire_epoch) const {
         return CanReclaim(retire_epoch);
@@ -100,8 +103,9 @@ public:
     // leave runtime epochs inactive and retain their cheaper path.
     void EnableMultithreading();
 
-    // Signal-handler path. Opens the page's write window and eagerly zeroes
-    // the shared L2 plus every registered L1 slot for affected nodes.
+    // Signal-handler path. Before opening the page it atomically deactivates
+    // each target generation, restores direct-v2 incoming sites, advances the
+    // code-patch epoch, and eagerly zeroes shared/L1 dispatch slots.
     bool HandleWriteFault(AddressSpace& space,
                           TranslateTable& current_l1,
                           std::uintptr_t fault_host_addr);
@@ -213,6 +217,10 @@ private:
                                                           VAddr first,
                                                           VAddr last);
     void RemoveTrackedNode(ir::AddressNode* node);
+    // invalidation_mutex_ must be held. Every target generation is made
+    // inactive and every incoming instruction is restored to BL before node
+    // detach or the global reclaim epoch may advance.
+    void DelinkTargets(AddressSpace& space, const std::vector<TrackedNode>& nodes);
     [[nodiscard]] bool CanReclaim(u64 retire_epoch) const;
 
     // invalidation_mutex_ must be held.
@@ -239,6 +247,7 @@ private:
     std::mutex invalidation_mutex_{};
     std::atomic<u64> global_epoch_{1};
     std::atomic<u64> code_patch_epoch_{1};
+    std::atomic<u64> patch_sync_count_{0};
     std::atomic<size_t> pending_count_{0};
     std::atomic_bool multithreaded_{false};
     // SVM_SMC_DIRTY_HINT's lock-free CloseWriteWindow proof.

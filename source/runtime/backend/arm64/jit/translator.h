@@ -220,7 +220,8 @@ private:
     void Translate(ir::Inst *inst);
 
     // Terminals
-    void EmitTerminal(const ir::Terminal &terminal);
+    void EmitTerminal(const ir::Terminal &terminal,
+                      bool allow_direct_link_v2 = false);
     [[nodiscard]] bool HasSelfEdge(const ir::Terminal& terminal) const;
     [[nodiscard]] bool IsSelfEdge(ir::Location target) const;
     void EmitBackedgeExitStub();

@@ -433,6 +433,19 @@ void JitTranslator::PlanLinkSuffixes(const ir::Terminal& terminal) {
     if (!link_suffix_common || backedge_flags_plan) {
         return;
     }
+    const bool direct_single_exit = VisitVariant<bool>(terminal, [this](const auto& term) {
+        using T = std::decay_t<decltype(term)>;
+        if constexpr (std::is_same_v<T, ir::terminal::LinkBlock> ||
+                      std::is_same_v<T, ir::terminal::LinkBlockFast>) {
+            return context.CanEmitDirectLinkV2(term.next);
+        }
+        return false;
+    });
+    if (direct_single_exit) {
+        // P1's one-instruction leaf has no str+ret suffix to common. Nested
+        // conditional exits deliberately remain on the P2/legacy planner.
+        return;
+    }
 
     std::vector<std::optional<u64>> encodings;
     std::function<void(const ir::Terminal&)> visit = [&](const ir::Terminal& item) {
@@ -789,7 +802,7 @@ void JitTranslator::Translate(ir::Block* block) {
     boundary_terminal_open = density;
     PlanLinkSuffixes(block->GetTerminal());
     if (!EmitBackedgeFlagsTerminal(block->GetTerminal())) {
-        EmitTerminal(block->GetTerminal());
+        EmitTerminal(block->GetTerminal(), true);
     }
     boundary_terminal_open = false;
     context.EndTerminalScratch();
@@ -1304,8 +1317,9 @@ void JitTranslator::EmitBackedgeExitStub() {
     backedge_exit_referenced = false;
 }
 
-void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
-    VisitVariant<void>(terminal, [this](auto term) {
+void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
+                                 bool allow_direct_link_v2) {
+    VisitVariant<void>(terminal, [this, allow_direct_link_v2](auto term) {
         using T = std::decay_t<decltype(term)>;
         if constexpr (std::is_same_v<T, ir::terminal::Invalid>) {
             // Flat decoded blocks have no explicit terminal: the next location was
@@ -1343,7 +1357,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
             context.Forward(term.next, exit, self_target,
-                            NextLinkSuffixEmitter());
+                            NextLinkSuffixEmitter(), allow_direct_link_v2);
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
@@ -1358,7 +1372,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
             context.Forward(term.next, exit, self_target,
-                            NextLinkSuffixEmitter());
+                            NextLinkSuffixEmitter(), allow_direct_link_v2);
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {

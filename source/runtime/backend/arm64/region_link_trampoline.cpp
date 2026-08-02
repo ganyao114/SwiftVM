@@ -37,6 +37,7 @@ extern "C" void* RegionLinkTrampolineSlow(RegionLinkContext* context,
         !context->region->ContainsRx(rx_site)) {
         return context ? context->dispatcher : nullptr;
     }
+    context->manager->RecordLinkerCall();
     const auto key = SiteKey(*context->region, rx_site);
     for (unsigned attempt = 0; attempt != 3; ++attempt) {
         const auto site = context->manager->QuerySite(key);

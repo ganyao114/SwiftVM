@@ -33,7 +33,9 @@ class JitContext : DeleteCopyAndMove {
 public:
     using LinkSuffixEmitter = std::function<bool(u64)>;
 
-    explicit JitContext(const std::shared_ptr<Module> &module, RegAlloc& reg_alloc);
+    explicit JitContext(const std::shared_ptr<Module> &module,
+                        RegAlloc& reg_alloc,
+                        std::optional<bool> direct_link_v2_override = std::nullopt);
 
     [[nodiscard]] CPUReg Get(const ir::Value& value);
     [[nodiscard]] bool HasAllocation(const ir::Value& value);
@@ -86,7 +88,12 @@ public:
     void Forward(ir::Location location,
                  Label* backedge_exit = nullptr,
                  Label* self_target = nullptr,
-                 const LinkSuffixEmitter& suffix_emitter = {});
+                 const LinkSuffixEmitter& suffix_emitter = {},
+                 bool allow_direct_link_v2 = false);
+    [[nodiscard]] bool CanEmitDirectLinkV2(ir::Location location) const;
+    [[nodiscard]] bool HasDirectLinkSites() const {
+        return !pending_direct_link_sites.empty();
+    }
     // Pre-emission view of the exact final two instruction encodings Forward
     // would use for this link leaf. A later state change may select another
     // Forward path, so emission rechecks the key and falls back per site.
@@ -162,6 +169,11 @@ public:
     [[nodiscard]] u32 DensityNaNBytes() const { return density_nan_bytes; }
 
 private:
+    struct PendingDirectLinkSite {
+        u32 code_offset{};
+        u64 guest_target{};
+    };
+
     void MaybeDumpHostBytes();
     void FlushLabels(VAddr target);
     void RecordHotCounter(HotCoalesceCounter counter, u32 amount = 1);
@@ -231,6 +243,7 @@ private:
     bool fpcr_tax_profile_enabled{};
     bool hot_coalesce_enabled{};
     bool density_profile_enabled{};
+    bool direct_link_v2_active{};
     bool density_nan_open{};
     u32 density_nan_start{};
     u32 density_nan_bytes{};
@@ -263,6 +276,7 @@ private:
     // names, which is the bound backend::kSpillReloadHeadroom encodes.
     std::map<u32, u8> spill_use_scratch;
     std::vector<PendingSpillWrite> pending_spill_writes;
+    std::vector<PendingDirectLinkSite> pending_direct_link_sites;
 
     GPRSMask cur_dirty_gprs{};
     GPRSMask cur_dirty_fprs{};

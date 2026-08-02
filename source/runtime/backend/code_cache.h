@@ -28,7 +28,7 @@ struct CodeRegion {
     u8* rw_base{};
     u8* rx_base{};
     u32 capacity{};
-    // Reserved for P0-B. P0-A deliberately emits no trampoline.
+    // Offset of the region's shared direct-link cold trampoline, when present.
     u32 trampoline_offset{kInvalidTrampolineOffset};
 
     [[nodiscard]] bool ContainsRx(const void* address) const;
@@ -71,8 +71,7 @@ public:
     [[nodiscard]] u8* GetRWPtr(const u8* exec_ptr);
     [[nodiscard]] const CodeRegion& GetRegion() const { return region; }
 
-    // Explicit P0-B initialization: production Forward emission remains
-    // untouched. P1 may call this before registering any site in the region.
+    // Initialize the shared cold trampoline before registering a site.
     [[nodiscard]] bool InitializeRegionTrampoline(LinkManager& manager,
                                                   void* return_host,
                                                   void* dispatcher);

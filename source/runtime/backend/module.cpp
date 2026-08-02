@@ -240,9 +240,41 @@ void* Module::GetJitCache(const JitCache& jit_cache) {
     }
 }
 
-std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size) {
+bool Module::PrepareDirectLinkV2Region() {
     std::unique_lock guard(cache_lock);
     for (auto& [index, cache] : code_caches) {
+        (void)index;
+        if (cache.GetRegionTrampoline()) {
+            return true;
+        }
+    }
+
+    constexpr u32 kMinCodeCacheSize = 32_MB;
+    auto [it, inserted] = code_caches.try_emplace(
+            current_code_cache, address_space.GetConfig(), kMinCodeCacheSize);
+    if (inserted) {
+        ++current_code_cache;
+    }
+    const auto return_host = reinterpret_cast<void*>(
+            address_space.GetTrampolines().GetReturnHost());
+    if (!it->second.InitializeRegionTrampoline(
+                address_space.GetLinkManager(), return_host, return_host)) {
+        LOG_WARNING("SVM_DIRECT_LINK_V2: region {} ({} bytes) cannot host an imm26-wide "
+                    "trampoline; production exits in this module use slot leaves",
+                    it->second.GetRegion().id,
+                    it->second.GetRegion().capacity);
+        return false;
+    }
+    return true;
+}
+
+std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size,
+                                                  bool require_direct_link_region) {
+    std::unique_lock guard(cache_lock);
+    for (auto& [index, cache] : code_caches) {
+        if (require_direct_link_region && !cache.GetRegionTrampoline()) {
+            continue;
+        }
         if (auto buf = cache.AllocCode(size); buf) {
             return {index, *buf};
         }
@@ -252,13 +284,18 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size) {
     // bytes) produced sub-minimum mspace arenas that handed out out-of-bounds
     // pointers and corrupted the JIT heap. Use a sane floor instead.
     constexpr u32 kMinCodeCacheSize = 32_MB;
+    const u32 arena_size = std::max(ModuleCodeCacheSize(size), kMinCodeCacheSize);
+    constexpr u32 kImm26Window = 1u << 27;
+    if (require_direct_link_region && arena_size > kImm26Window) {
+        LOG_WARNING("SVM_DIRECT_LINK_V2: {}-byte unit requires a {}-byte arena; "
+                    "no imm26-wide region can contain it",
+                    size,
+                    arena_size);
+        return {INVALID_CACHE_ID, CodeBuffer{nullptr, nullptr, 0, 0}};
+    }
     auto ref = code_caches.try_emplace(
-            current_code_cache, address_space.GetConfig(),
-            std::max(ModuleCodeCacheSize(size), kMinCodeCacheSize));
-    if (DirectLinkV2Enabled()) {
-        // P0-B reserves the final-form per-region cold trampoline, but does
-        // not register or emit any production Forward site. return_host is
-        // also the dispatcher gate when halt_reason remains zero.
+            current_code_cache, address_space.GetConfig(), arena_size);
+    if (require_direct_link_region || DirectLinkV2Enabled()) {
         const auto return_host = reinterpret_cast<void*>(
                 address_space.GetTrampolines().GetReturnHost());
         if (!ref.first->second.InitializeRegionTrampoline(
@@ -267,10 +304,62 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size) {
                         "trampoline; this region remains unlinked",
                         ref.first->second.GetRegion().id,
                         ref.first->second.GetRegion().capacity);
+            if (require_direct_link_region) {
+                ++current_code_cache;
+                return {INVALID_CACHE_ID, CodeBuffer{nullptr, nullptr, 0, 0}};
+            }
         }
     }
     current_code_cache++;
-    return {ref.first->first, *ref.first->second.AllocCode(size)};
+    auto buffer = ref.first->second.AllocCode(size);
+    if (!buffer) {
+        return {INVALID_CACHE_ID, CodeBuffer{nullptr, nullptr, 0, 0}};
+    }
+    return {ref.first->first, *buffer};
+}
+
+std::optional<CodeRegion> Module::GetCodeRegion(const u8* exec_ptr) {
+    std::shared_lock guard(cache_lock);
+    for (auto& [index, cache] : code_caches) {
+        (void)index;
+        if (cache.Contain(exec_ptr)) {
+            return cache.GetRegion();
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<CodeRegion> Module::GetCodeRegion(CodeRegionId region_id) {
+    std::shared_lock guard(cache_lock);
+    for (auto& [index, cache] : code_caches) {
+        (void)index;
+        if (cache.GetRegion().id == region_id) {
+            return cache.GetRegion();
+        }
+    }
+    return std::nullopt;
+}
+
+u64 Module::PublishLinkTarget(ir::Location guest,
+                              void* host_pc,
+                              const void* allocation) {
+    if (!DirectLinkV2Enabled()) {
+        return 0;
+    }
+    const auto region = GetCodeRegion(static_cast<u8*>(host_pc));
+    if (!region || !region->ContainsRx(host_pc) ||
+        region->trampoline_offset == CodeRegion::kInvalidTrampolineOffset) {
+        return 0;
+    }
+    return address_space.GetLinkManager().PublishTarget(
+            guest.Value(), host_pc, region->id, {this, allocation});
+}
+
+void Module::DiscardLinkSource(const void* allocation) {
+    auto& manager = address_space.GetLinkManager();
+    const LinkSourceOwner owner{this, allocation};
+    (void)manager.DetachSource(owner);
+    (void)manager.PurgeSource(owner);
 }
 
 void Module::AddFaultEntry(u8* host_start,

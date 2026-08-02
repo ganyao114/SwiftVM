@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <unordered_set>
 #include <sys/mman.h>
 #include <unistd.h>
 #include "runtime/backend/address_space.h"
@@ -164,6 +165,7 @@ void SmcTracker::BeginJit(const RuntimeToken& token) {
 #endif
             token->synced_patch_epoch.store(patch_epoch, std::memory_order_seq_cst);
             token->patch_sync_count.fetch_add(1, std::memory_order_relaxed);
+            patch_sync_count_.fetch_add(1, std::memory_order_relaxed);
         }
         token->active_epoch.store(epoch, std::memory_order_seq_cst);
         // Closing the entry race requires validation after publication. If
@@ -329,6 +331,59 @@ void SmcTracker::RemoveTrackedNode(ir::AddressNode* node) {
     }
 }
 
+void SmcTracker::DelinkTargets(AddressSpace& space,
+                               const std::vector<TrackedNode>& nodes) {
+    if (!DirectLinkV2Enabled()) {
+        return;
+    }
+    std::unordered_set<VAddr> targets;
+    for (const auto& tracked : nodes) {
+        auto* node = tracked.node.Get();
+        targets.insert(node->GetStartLocation().Value());
+        if (node->node_type == ir::AddressNode::Function) {
+            for (auto& block : static_cast<ir::Function*>(node)->GetBlocks()) {
+                targets.insert(block.GetStartLocation().Value());
+            }
+        }
+    }
+
+    auto& manager = space.GetLinkManager();
+    size_t restored_linked{};
+    bool patched_any{};
+    for (const auto target : targets) {
+        const auto incoming = manager.BeginTargetInvalidation(target);
+        for (const auto& record : incoming) {
+            auto* source_module =
+                    const_cast<Module*>(static_cast<const Module*>(record.source_owner.module));
+            const auto region = source_module
+                    ? source_module->GetCodeRegion(record.site.region_id)
+                    : std::nullopt;
+            ASSERT_MSG(region, "direct-link source region {} disappeared before QSBR purge",
+                       record.site.region_id);
+            ASSERT(record.site.offset + sizeof(u32) <= region->capacity);
+            auto* rx_site = region->rx_base + record.site.offset;
+            auto* rw_site = region->rw_base + record.site.offset;
+            ASSERT(region->trampoline_offset != CodeRegion::kInvalidTrampolineOffset);
+            auto* trampoline = region->rx_base + region->trampoline_offset;
+            const auto branch = EncodeBL(trampoline - rx_site);
+            ASSERT(branch);
+            ASSERT_MSG(PatchDirectBranch(*region, rx_site, rw_site, *branch),
+                       "failed to restore direct-link site before target retirement");
+            patched_any = true;
+            restored_linked += record.state == LinkSiteState::Linked;
+        }
+    }
+    if (restored_linked) {
+        manager.RecordDelink(restored_linked);
+    }
+    if (patched_any) {
+        // Cache maintenance for every BL above happens-before this patch
+        // generation. Retire() advances global_epoch_ later in the same
+        // invalidation_mutex_ transaction, which is the BeginJit handshake.
+        (void)AdvanceCodePatchEpoch();
+    }
+}
+
 std::vector<SmcTracker::TrackedNode> SmcTracker::TakeDirtyNodes(
         AddressSpace& space, TranslateTable* extra_l1) {
     std::vector<TrackedNode> nodes;
@@ -411,6 +466,31 @@ bool SmcTracker::HandleWriteFault(AddressSpace& space,
     // seeing false may mean "the fault has not opened its window yet", never
     // "the page is already RW/dirty but the hint has not caught up".
     MarkCloseWorkPending();
+    // Direct-link invalidation belongs to the synchronous fault transaction,
+    // while this handler still owns metadata_lock_ and before the page becomes
+    // writable. A slot clear alone cannot stop a B-linked cross-block cycle
+    // from running forever and preventing CloseWriteWindow from being reached.
+    //
+    // SignalInvalidateTarget is lock-free/allocation-free: it atomically
+    // deactivates the generation first, restores every by-value incoming site
+    // to this region's BL trampoline form, waits out an older cold-link commit,
+    // and restores once more. Advancing patch_epoch only after those cache
+    // maintenance operations preserves the P edge consumed by BeginJit.
+    auto signal_invalidate = [&](VAddr target) {
+        const auto result = space.GetLinkManager().SignalInvalidateTarget(target);
+        if (result.found) {
+            (void)AdvanceCodePatchEpoch();
+        }
+    };
+    for (const auto& tracked : rec.nodes) {
+        auto* node = tracked.node.Get();
+        signal_invalidate(node->GetStartLocation().Value());
+        if (node->node_type == ir::AddressNode::Function) {
+            for (auto& block : static_cast<ir::Function*>(node)->GetBlocks()) {
+                signal_invalidate(block.GetStartLocation().Value());
+            }
+        }
+    }
     if (!SetPageProtected(it->first, false)) {
         return false;
     }
@@ -471,6 +551,11 @@ void SmcTracker::ReclaimRetiredLocked() {
         pending_count_.store(retired_.size(), std::memory_order_relaxed);
     }
     for (auto& retired : ready) {
+        // Still under invalidation_mutex_: owner records remain queryable from
+        // detach through the QSBR grace period, and are purged immediately
+        // before the module/cache lock can free and reuse the allocation.
+        auto& manager = retired.module->GetAddressSpace().GetLinkManager();
+        (void)manager.PurgeSource({retired.module.get(), retired.exec_ptr});
         retired.module->ReclaimCode(retired.exec_ptr);
     }
     // Keep the hint true until the actual ReclaimCode calls finish, not merely
@@ -571,8 +656,16 @@ void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& current_l
         // module/node lock. A publisher holds those locks while RegisterNode
         // takes metadata_lock_; the retry loop collects anything it published
         // during this detach phase.
+        // Lock order and irreversible sequence:
+        // invalidation_mutex_ -> LinkManager (target inactive + BL restore) ->
+        // patch epoch -> module/cache detach -> Retire/global epoch. The patch
+        // epoch is advanced inside DelinkTargets after cache maintenance and
+        // before any target allocation can enter the retired list.
+        DelinkTargets(space, nodes);
         for (const auto& tracked : nodes) {
             if (auto* exec_ptr = tracked.module->DetachNode(tracked.node.Get()); exec_ptr) {
+                (void)space.GetLinkManager().DetachSource(
+                        {tracked.module.get(), exec_ptr});
                 candidates.push_back(ReclaimCandidate{tracked.module, exec_ptr});
             }
         }
@@ -632,8 +725,11 @@ void SmcTracker::InvalidateRange(AddressSpace& space,
                 break;
             }
         }
+        DelinkTargets(space, nodes);
         for (const auto& tracked : nodes) {
             if (auto* exec_ptr = tracked.module->DetachNode(tracked.node.Get()); exec_ptr) {
+                (void)space.GetLinkManager().DetachSource(
+                        {tracked.module.get(), exec_ptr});
                 candidates.push_back(ReclaimCandidate{tracked.module, exec_ptr});
             }
         }

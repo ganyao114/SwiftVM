@@ -18,10 +18,12 @@ using swift::runtime::backend::EncodeB;
 using swift::runtime::backend::EncodeBL;
 using swift::runtime::backend::Imm26Reachable;
 using swift::runtime::backend::LinkManager;
+using swift::runtime::backend::LinkSignalPatchSite;
 using swift::runtime::backend::LinkSiteKey;
 using swift::runtime::backend::LinkSiteRecord;
 using swift::runtime::backend::LinkSiteState;
 using swift::runtime::backend::LinkSourceOwner;
+using swift::runtime::backend::LinkTargetRecord;
 using swift::runtime::backend::PatchDirectBranch;
 using swift::runtime::backend::SameRegion;
 using swift::runtime::backend::SiteRwToRx;
@@ -32,6 +34,8 @@ constexpr std::intptr_t kImm26Boundary = (std::intptr_t{1} << 27) - 4;
 static_assert(sizeof(LinkSiteKey) == 16);
 static_assert(sizeof(LinkSourceOwner) == 16);
 static_assert(sizeof(LinkSiteRecord) == 56);
+static_assert(sizeof(LinkSignalPatchSite) == 56);
+static_assert(sizeof(LinkTargetRecord) == 48);
 static_assert(sizeof(CodeRegion) == 32);
 
 Config Arm64Config() {
@@ -220,4 +224,73 @@ TEST_CASE("direct branch patch uses matching RX and RW aliases", "[direct-link][
 #if defined(__aarch64__)
     REQUIRE(function() == 1);
 #endif
+}
+
+TEST_CASE("signal delink deactivates before deferred invalidation resets state",
+          "[direct-link][manager][signal]") {
+    auto config = Arm64Config();
+    CodeCache cache{config, 1u << 20, true};
+    const auto buffer = cache.AllocCode(256);
+    REQUIRE(buffer);
+    const auto& region = cache.GetRegion();
+    auto* rx_site = buffer->exec_data;
+    auto* rw_site = buffer->rw_data;
+    const auto bl = EncodeBL((buffer->exec_data + 64) - rx_site);
+    const auto direct = EncodeB((buffer->exec_data + 128) - rx_site);
+    REQUIRE(bl);
+    REQUIRE(direct);
+    StoreInstruction(rw_site, *bl);
+    buffer->Flush();
+
+    LinkManager manager;
+    const int owner_module{};
+    const int owner_allocation{};
+    constexpr u64 kTarget = 0x5000;
+    const LinkSiteKey key{region.id, buffer->offset};
+    const LinkSignalPatchSite patch{
+            .region = region,
+            .rx_site = rx_site,
+            .rw_site = rw_site,
+            .unlinked_bl = *bl,
+    };
+    REQUIRE(manager.RegisterSite(
+            key, kTarget, {&owner_module, &owner_allocation}, &patch));
+    const auto generation = manager.PublishTarget(
+            kTarget, buffer->exec_data + 128, region.id);
+    REQUIRE(manager.MarkLinked(key, generation, [&](const LinkSiteRecord&) {
+        return PatchDirectBranch(region, rx_site, rw_site, *direct);
+    }));
+    REQUIRE(LoadInstruction(rx_site) == *direct);
+
+    // Models HandleWriteFault winning first. QueryTarget must reject the old
+    // generation immediately, before CloseWriteWindow takes manager mutex_.
+    const auto signal = manager.SignalInvalidateTarget(kTarget);
+    REQUIRE(signal.found);
+    REQUIRE(signal.linked_sites == 1);
+    REQUIRE_FALSE(manager.QueryTarget(kTarget));
+    REQUIRE(LoadInstruction(rx_site) == *bl);
+
+    // Deferred cleanup is intentionally not gated by active==false: it still
+    // returns the incoming record and resets Linked/Far metadata idempotently.
+    const auto deferred = manager.BeginTargetInvalidation(kTarget);
+    REQUIRE(deferred.size() == 1);
+    REQUIRE(deferred.front().state == LinkSiteState::Linked);
+    REQUIRE(manager.QuerySite(key)->state == LinkSiteState::Unlinked);
+    REQUIRE(PatchDirectBranch(region, rx_site, rw_site, *bl));
+    REQUIRE(LoadInstruction(rx_site) == *bl);
+
+    REQUIRE(manager.DetachSource({&owner_module, &owner_allocation}) == 1);
+    REQUIRE(manager.PurgeSource({&owner_module, &owner_allocation}) == 1);
+    REQUIRE_FALSE(manager.QuerySite(key));
+
+    // Model immediate mspace address reuse after PurgeSource. The retained
+    // signal target may still be found, but its physically unlinked/tombstoned
+    // site must never write the recycled allocation.
+    StoreInstruction(rw_site, *direct);
+    buffer->Flush();
+    REQUIRE(manager.SignalInvalidateTarget(kTarget).found);
+    REQUIRE(LoadInstruction(rx_site) == *direct);
+    const auto future_generation = manager.PublishTarget(
+            kTarget, buffer->exec_data + 128, region.id);
+    REQUIRE(manager.QueryTarget(kTarget)->generation == future_generation);
 }

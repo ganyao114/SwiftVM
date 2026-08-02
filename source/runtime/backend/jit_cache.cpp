@@ -73,6 +73,14 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     }
     print_stats = EnvOn("SVM_JIT_CACHE_STATS");
     dir = env;
+    if (DirectLinkV2Enabled()) {
+        // P1 persists neither link-site offsets nor BL relocations. Reviving
+        // such a unit would leave process-relative sites without center-table
+        // ownership, so v2 and disk reuse remain mutually exclusive until P3.
+        LOG_WARNING("SVM_JIT_CACHE: SVM_DIRECT_LINK_V2 is incompatible until P3; "
+                    "cache disabled");
+        return;
+    }
     // Profiled JIT units embed a process-local counter slot. Serializing one
     // would revive code with no matching metadata slot in the next process.
     // The probe is measurement-only, so disable disk caching while it is on.

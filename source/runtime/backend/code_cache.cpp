@@ -96,8 +96,8 @@ bool CodeCache::InitializeRegionTrampoline(LinkManager& manager,
         return true;
     }
     // Merely placing a trampoline "inside" a region is insufficient once the
-    // region spans more than one imm26 window. P0-B does not change Module's
-    // arena policy; callers must leave v2 disabled for such a region.
+    // region spans more than one imm26 window. Production callers leave v2
+    // disabled for such a region and retain the legacy slot leaf.
     if (config.backend_isa != kArm64 || !return_host || !dispatcher ||
         region.capacity > kImm26Window) {
         return false;

@@ -124,7 +124,20 @@ public:
 
     [[nodiscard]] const ModuleConfig& GetModuleConfig() const { return module_config; }
 
-    [[nodiscard]] std::pair<u16, CodeBuffer> AllocCodeCache(u32 size);
+    // Ensures that at least one <=128MiB arena has its region trampoline
+    // initialized before codegen chooses the 4-byte direct-link leaf.
+    [[nodiscard]] bool PrepareDirectLinkV2Region();
+    [[nodiscard]] std::pair<u16, CodeBuffer> AllocCodeCache(
+            u32 size, bool require_direct_link_region = false);
+    [[nodiscard]] std::optional<CodeRegion> GetCodeRegion(const u8* exec_ptr);
+    [[nodiscard]] std::optional<CodeRegion> GetCodeRegion(CodeRegionId region_id);
+    [[nodiscard]] u64 PublishLinkTarget(ir::Location guest,
+                                        void* host_pc,
+                                        const void* allocation);
+    // A flushed allocation that never became module/L2-visible may be
+    // discarded without an SMC/QSBR transaction, but its center-table owner
+    // must still be removed before the bytes are freed.
+    void DiscardLinkSource(const void* allocation);
 
     // Records the host PC range of a freshly compiled unit (called right
     // after JitContext::Flush in TranslateIR).
