@@ -38,6 +38,11 @@ JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_allo
     }
     fpcr_tax_profile_enabled = FpcrTaxProfEnabled();
     hot_coalesce_enabled = HotCoalesceProfEnabled();
+    static const bool density_enabled = [] {
+        const char* density = std::getenv("SVM_DENSITY_PROF");
+        return density && std::strcmp(density, "0") != 0;
+    }();
+    density_profile_enabled = density_enabled;
 }
 
 void JitContext::RecordExecCounter(u32 offset, u32 amount) {
@@ -112,26 +117,39 @@ void JitContext::RecordHotSpillWriteback() {
 }
 
 void JitContext::BeginHotNaNGuard(u32 instruction_count) {
-    if (!hot_coalesce_enabled) return;
-    ASSERT(!hot_nan_open);
-    RecordHotCounter(HotCoalesceCounter::NaNGuardInstructions,
-                     instruction_count);
-    hot_nan_start = CurrentBufferSize();
-    hot_nan_expected = instruction_count;
-    hot_nan_open = true;
-    hot_shape.nan_guard_instructions += instruction_count;
+    if (density_profile_enabled) {
+        ASSERT(!density_nan_open);
+        density_nan_start = CurrentBufferSize();
+        density_nan_open = true;
+    }
+    if (hot_coalesce_enabled) {
+        ASSERT(!hot_nan_open);
+        RecordHotCounter(HotCoalesceCounter::NaNGuardInstructions,
+                         instruction_count);
+        hot_nan_start = CurrentBufferSize();
+        hot_nan_expected = instruction_count;
+        hot_nan_open = true;
+        hot_shape.nan_guard_instructions += instruction_count;
+    }
 }
 
 void JitContext::EndHotNaNGuard() {
-    if (!hot_coalesce_enabled) return;
-    ASSERT(hot_nan_open);
     const u32 end = CurrentBufferSize();
-    ASSERT(end >= hot_nan_start);
-    ASSERT((end - hot_nan_start) / vixl::aarch64::kInstructionSize ==
-           hot_nan_expected);
-    hot_nan_ranges.push_back({hot_nan_start, end});
-    hot_nan_open = false;
-    hot_nan_expected = 0;
+    if (density_profile_enabled) {
+        ASSERT(density_nan_open);
+        ASSERT(end >= density_nan_start);
+        density_nan_bytes += end - density_nan_start;
+        density_nan_open = false;
+    }
+    if (hot_coalesce_enabled) {
+        ASSERT(hot_nan_open);
+        ASSERT(end >= hot_nan_start);
+        ASSERT((end - hot_nan_start) / vixl::aarch64::kInstructionSize ==
+               hot_nan_expected);
+        hot_nan_ranges.push_back({hot_nan_start, end});
+        hot_nan_open = false;
+        hot_nan_expected = 0;
+    }
 }
 
 bool JitContext::HasAllocation(const ir::Value& value) {

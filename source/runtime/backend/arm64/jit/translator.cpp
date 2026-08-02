@@ -3,15 +3,135 @@
 #include "translator.h"
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <iterator>
+#include <numeric>
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/common/backedge_control.h"
 #include "translator/x86/cpu.h"
 
 namespace swift::runtime::backend::arm64 {
+
+namespace {
+
+enum class DensityCategory : size_t {
+    Flags,
+    Uniform,
+    MoveWidth,
+    NaN,
+    Boundary,
+    Work,
+    Count,
+};
+
+// Audit-only, mutually exclusive IR taxonomy. SVM_DENSITY_PROF is default OFF;
+// the emitter-window accounting below does not add instructions to guest code.
+DensityCategory DensityClass(ir::OpCode op) {
+    using O = ir::OpCode;
+    switch (op) {
+        case O::GetFlags:
+        case O::SaveFlags:
+        case O::BranchOnlyFlags:
+        case O::TestFlags:
+        case O::TestNotFlags:
+        case O::ClearFlags:
+        case O::SetCarry:
+        case O::SetOverflow:
+        case O::InvertCarry:
+        case O::PublishFCmpFlags:
+        case O::LocalCondSet:
+        case O::LocalParitySet:
+        case O::FCmpCondSet:
+            return DensityCategory::Flags;
+        case O::LoadUniform:
+        case O::StoreUniform:
+        case O::GetUniformAddress:
+        case O::UniformBarrier:
+            return DensityCategory::Uniform;
+        case O::DefineLocal:
+        case O::LoadLocal:
+        case O::StoreLocal:
+        case O::GetHostGPR:
+        case O::GetHostFPR:
+        case O::SetHostGPR:
+        case O::SetHostFPR:
+        case O::BitCast:
+        case O::GetOperand:
+        case O::GetResult:
+        case O::LoadImm:
+        case O::Zero:
+        case O::ZeroExtend32:
+        case O::ZeroExtend32To64:
+        case O::ZeroExtend64:
+        case O::SignExtend:
+        case O::VecLoadConst:
+        case O::VecSharedZero:
+        case O::VecShuffle32:
+        case O::VecShuffle32TwoSrc:
+        case O::VecShuffle32Indexed:
+        case O::VecShuffle16:
+        case O::VecZip:
+        case O::VecUnzip:
+        case O::VecDupPairs32:
+        case O::VecDup64:
+        case O::VecExtract64:
+        case O::VecExtract16:
+        case O::VecInsert16:
+        case O::VecTableLookup8:
+            return DensityCategory::MoveWidth;
+        case O::VecFAddScalar32:
+        case O::VecFSubScalar32:
+        case O::VecFMulScalar32:
+        case O::VecFDivScalar32:
+        case O::VecFAddScalar64:
+        case O::VecFSubScalar64:
+        case O::VecFMulScalar64:
+        case O::VecFDivScalar64:
+        case O::VecFAdd:
+        case O::VecFSub:
+        case O::VecFMul:
+        case O::VecFDiv:
+        case O::VecFUnary:
+            return DensityCategory::NaN;
+        case O::Goto:
+        case O::NotGoto:
+        case O::BindLabel:
+        case O::Nop:
+        case O::AdvancePC:
+        case O::SetLocation:
+        case O::GetLocation:
+        case O::PushRSB:
+        case O::PopRSB:
+        case O::AddPhi:
+        case O::BranchOnlyEdges:
+            return DensityCategory::Boundary;
+        default:
+            return DensityCategory::Work;
+    }
+}
+
+bool DensityScalarFP(ir::OpCode op) {
+    using O = ir::OpCode;
+    switch (op) {
+        case O::VecFAddScalar32:
+        case O::VecFSubScalar32:
+        case O::VecFMulScalar32:
+        case O::VecFDivScalar32:
+        case O::VecFAddScalar64:
+        case O::VecFSubScalar64:
+        case O::VecFMulScalar64:
+        case O::VecFDivScalar64:
+            return true;
+        default:
+            return false;
+    }
+}
+
+}  // namespace
 
 #define __ masm.
 
@@ -47,6 +167,11 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
 void JitTranslator::Translate(ir::Block* block) {
     vixl::svm_vixl_prof::JitScope vixl_prof;
     ASSERT(vec_nan_cold_sites.empty());
+    const bool density = context.DensityProfileEnabled();
+    const u32 density_start = density ? context.CurrentBufferSize() : 0;
+    std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_ops{};
+    std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_bytes{};
+    u32 density_scalar_fp_ops = 0;
     PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
     cur_block = block;
     cur_block_is_call = false;
@@ -104,24 +229,59 @@ void JitTranslator::Translate(ir::Block* block) {
                               gpr_uniform_accesses);
     context.RecordExecCounter(exec_offset_xmm_uniform_accesses,
                               xmm_uniform_accesses);
+    if (density) {
+        density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
+                context.CurrentBufferSize() - density_start;
+    }
     perf_prologue.Stop();
     PerfScope2 perf_body{GetPerfStats2().codegen_body};
     for (auto& inst : block->GetInstList()) {
+        auto category = DensityCategory::Work;
+        if (density) {
+            category = DensityClass(inst.GetOp());
+            ++density_ops[static_cast<size_t>(category)];
+            density_scalar_fp_ops += DensityScalarFP(inst.GetOp());
+        }
         cur_instr = &inst;
         if (inst.Id() < disable_instructions.size() && disable_instructions.test(inst.Id())) {
             continue;
         }
+        const u32 before = density ? context.CurrentBufferSize() : 0;
+        const u32 nan_before = density ? context.DensityNaNBytes() : 0;
         Translate(&inst);
+        if (density) {
+            const u32 emitted = context.CurrentBufferSize() - before;
+            const u32 nan_emitted = context.DensityNaNBytes() - nan_before;
+            density_bytes[static_cast<size_t>(DensityCategory::NaN)] += nan_emitted;
+            const auto emitted_category =
+                    category == DensityCategory::NaN
+                            ? DensityCategory::Work
+                            : (inst.GetOp() == ir::OpCode::AdvancePC
+                                       ? DensityCategory::Flags
+                                       : category);
+            density_bytes[static_cast<size_t>(emitted_category)] +=
+                    emitted - nan_emitted;
+        }
     }
     perf_body.Stop();
 
     PerfScope2 perf_terminal{GetPerfStats2().codegen_terminal};
     context.BeginTerminalScratch();
+    const u32 flags_before = density ? context.CurrentBufferSize() : 0;
     FlushFlags();
+    if (density) {
+        density_bytes[static_cast<size_t>(DensityCategory::Flags)] +=
+                context.CurrentBufferSize() - flags_before;
+    }
+    const u32 terminal_before = density ? context.CurrentBufferSize() : 0;
     if (!EmitBackedgeFlagsTerminal(block->GetTerminal())) {
         EmitTerminal(block->GetTerminal());
     }
     context.EndTerminalScratch();
+    if (density) {
+        density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
+                context.CurrentBufferSize() - terminal_before;
+    }
     if (backedge_flags_plan) {
         backedge_host_end = context.CurrentBufferSize();
     }
@@ -130,10 +290,36 @@ void JitTranslator::Translate(ir::Block* block) {
     // the normal path and therefore do not belong in static x entry counts.
     context.FinishHotCoalesceBlock();
     context.BeginColdScratch();
+    const u32 boundary_cold_before = density ? context.CurrentBufferSize() : 0;
     EmitBackedgeExitStub();
     EmitBackedgeColdPaths();
+    if (density) {
+        density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
+                context.CurrentBufferSize() - boundary_cold_before;
+    }
+    const u32 nan_cold_before = density ? context.CurrentBufferSize() : 0;
     EmitVecNaNColdPaths();
+    if (density) {
+        density_bytes[static_cast<size_t>(DensityCategory::NaN)] +=
+                context.CurrentBufferSize() - nan_cold_before;
+    }
     context.EndColdScratch();
+    if (density) {
+        const u32 total_ops = std::accumulate(density_ops.begin(), density_ops.end(), 0u);
+        const u32 total_bytes =
+                std::accumulate(density_bytes.begin(), density_bytes.end(), 0u);
+        std::fprintf(stderr,
+                     "[svm-density] pc=0x%llx ops_flags=%u ops_uniform=%u "
+                     "ops_move=%u ops_nan=%u ops_boundary=%u ops_work=%u "
+                     "bytes_flags=%u bytes_uniform=%u bytes_move=%u bytes_nan=%u "
+                     "bytes_boundary=%u bytes_work=%u ops_total=%u bytes_total=%u "
+                     "ops_fp_scalar=%u\n",
+                     static_cast<unsigned long long>(block->GetStartLocation().Value()),
+                     density_ops[0], density_ops[1], density_ops[2], density_ops[3],
+                     density_ops[4], density_ops[5], density_bytes[0], density_bytes[1],
+                     density_bytes[2], density_bytes[3], density_bytes[4], density_bytes[5],
+                     total_ops, total_bytes, density_scalar_fp_ops);
+    }
 }
 
 void JitTranslator::Translate(ir::HIRFunction* function) {

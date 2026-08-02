@@ -142,6 +142,8 @@ public:
     void FinishHotCoalesceBlock();
     void BeginHotNaNGuard(u32 instruction_count);
     void EndHotNaNGuard();
+    [[nodiscard]] bool DensityProfileEnabled() const { return density_profile_enabled; }
+    [[nodiscard]] u32 DensityNaNBytes() const { return density_nan_bytes; }
 
 private:
     void MaybeDumpHostBytes();
@@ -212,6 +214,10 @@ private:
     bool exec_profile_enabled{};
     bool fpcr_tax_profile_enabled{};
     bool hot_coalesce_enabled{};
+    bool density_profile_enabled{};
+    bool density_nan_open{};
+    u32 density_nan_start{};
+    u32 density_nan_bytes{};
     u32 exec_access_pad{};
     u32 hot_coalesce_slot{kHotCoalesceInvalidSlot};
     std::vector<u32> hot_coalesce_slots{};

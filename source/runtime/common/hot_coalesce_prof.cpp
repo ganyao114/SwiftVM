@@ -234,6 +234,21 @@ void DumpAtExit() {
                  PrintU64(state_saved_dynamic),
                  Percent(state_saved_dynamic, host_dynamic));
 
+    const char* dump_all = std::getenv("SVM_RA_HOT_COALESCE_ALL");
+    if (dump_all && std::strcmp(dump_all, "0") != 0) {
+        for (const auto& bucket : buckets) {
+            std::fprintf(out,
+                         "[svm-hot-all] pc=0x%llx versions=%u entries=%llu "
+                         "host_static=%u move_static=%u nan_static=%u "
+                         "spill_static=%u state_saved_static=%u\n",
+                         static_cast<unsigned long long>(bucket.guest_entry),
+                         bucket.versions, PrintU64(bucket.entries),
+                         bucket.host_static_max, bucket.move_static_max,
+                         bucket.nan_static_max, bucket.spill_static_max,
+                         bucket.state_saved_static_max);
+        }
+    }
+
     const auto hot = Rank(buckets, [](const AggregateBucket& bucket) {
         return bucket.host_dynamic;
     });
