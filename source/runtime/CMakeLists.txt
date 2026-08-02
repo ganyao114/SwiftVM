@@ -104,6 +104,8 @@ add_library(swift_runtime STATIC
         backend/entrypoint.h
         backend/code_cache.cpp
         backend/code_cache.h
+        backend/link_manager.cpp
+        backend/link_manager.h
         backend/code_serial.cpp
         backend/code_serial.h
         backend/jit_cache.cpp

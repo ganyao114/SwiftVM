@@ -3,6 +3,7 @@
 //
 #pragma once
 
+#include <limits>
 #include <optional>
 #include "dlmalloc/malloc.h"
 #include "runtime/backend/cache_clear.h"
@@ -11,6 +12,28 @@
 #include "runtime/include/config.h"
 
 namespace swift::runtime::backend {
+
+using CodeRegionId = u64;
+
+struct CodeRegion {
+    static constexpr u32 kInvalidTrampolineOffset = std::numeric_limits<u32>::max();
+
+    CodeRegionId id{};
+    u8* rw_base{};
+    u8* rx_base{};
+    u32 capacity{};
+    // Reserved for P0-B. P0-A deliberately emits no trampoline.
+    u32 trampoline_offset{kInvalidTrampolineOffset};
+
+    [[nodiscard]] bool ContainsRx(const void* address) const;
+    [[nodiscard]] bool ContainsRw(const void* address) const;
+};
+
+[[nodiscard]] u8* SiteRxToRw(const CodeRegion& region, const void* rx_site);
+[[nodiscard]] u8* SiteRwToRx(const CodeRegion& region, const void* rw_site);
+[[nodiscard]] bool SameRegion(const CodeRegion& lhs, const CodeRegion& rhs);
+[[nodiscard]] bool SameRegion(const CodeRegion& region, const void* rx_a, const void* rx_b);
+[[nodiscard]] bool Imm26Reachable(const void* site, const void* target);
 
 struct CodeBuffer {
     explicit CodeBuffer(u8* exec, u8* rw, u32 offset, size_t size)
@@ -40,6 +63,7 @@ public:
     [[nodiscard]] u8* GetExePtr(u32 offset);
     [[nodiscard]] u8* GetRWPtr(u32 offset);
     [[nodiscard]] u8* GetRWPtr(const u8* exec_ptr);
+    [[nodiscard]] const CodeRegion& GetRegion() const { return region; }
 
 private:
     void Init();
@@ -53,6 +77,7 @@ private:
 
     u8* code_mem_mapped{};
     u8* code_cursor{};
+    CodeRegion region{};
 };
 
 }  // namespace swift::runtime::backend

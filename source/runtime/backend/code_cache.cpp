@@ -2,11 +2,75 @@
 // Created by 甘尧 on 2023/9/27.
 //
 
+#include <atomic>
 #include "runtime/backend/code_cache.h"
 #include "runtime/backend/host_isa.h"
 #include "runtime/common/alignment.h"
 
 namespace swift::runtime::backend {
+
+namespace {
+
+std::atomic<CodeRegionId> next_region_id{1};
+
+[[nodiscard]] bool Contains(const u8* base, u32 capacity, const void* address) {
+    if (!base || !address) {
+        return false;
+    }
+    const auto begin = reinterpret_cast<uintptr_t>(base);
+    const auto value = reinterpret_cast<uintptr_t>(address);
+    return value >= begin && value - begin < capacity;
+}
+
+}  // namespace
+
+bool CodeRegion::ContainsRx(const void* address) const {
+    return Contains(rx_base, capacity, address);
+}
+
+bool CodeRegion::ContainsRw(const void* address) const {
+    return Contains(rw_base, capacity, address);
+}
+
+u8* SiteRxToRw(const CodeRegion& region, const void* rx_site) {
+    if (!region.ContainsRx(rx_site)) {
+        return nullptr;
+    }
+    const auto offset =
+            reinterpret_cast<uintptr_t>(rx_site) - reinterpret_cast<uintptr_t>(region.rx_base);
+    return region.rw_base + offset;
+}
+
+u8* SiteRwToRx(const CodeRegion& region, const void* rw_site) {
+    if (!region.ContainsRw(rw_site)) {
+        return nullptr;
+    }
+    const auto offset =
+            reinterpret_cast<uintptr_t>(rw_site) - reinterpret_cast<uintptr_t>(region.rw_base);
+    return region.rx_base + offset;
+}
+
+bool SameRegion(const CodeRegion& lhs, const CodeRegion& rhs) {
+    return lhs.id != 0 && lhs.id == rhs.id;
+}
+
+bool SameRegion(const CodeRegion& region, const void* rx_a, const void* rx_b) {
+    return region.ContainsRx(rx_a) && region.ContainsRx(rx_b);
+}
+
+bool Imm26Reachable(const void* site, const void* target) {
+    constexpr uintptr_t kMaxDistance = (uintptr_t{1} << 27) - 4;
+    if (!site || !target) {
+        return false;
+    }
+    const auto source = reinterpret_cast<uintptr_t>(site);
+    const auto destination = reinterpret_cast<uintptr_t>(target);
+    if ((source & 3u) != 0 || (destination & 3u) != 0) {
+        return false;
+    }
+    return destination >= source ? destination - source <= kMaxDistance
+                                 : source - destination <= kMaxDistance;
+}
 
 CodeCache::CodeCache(const Config& config, u32 size, bool read_only)
         : config(config)
@@ -27,6 +91,14 @@ void CodeCache::Init() {
 #if defined(__APPLE__) || defined(__linux__)
     code_mem_mapped = reinterpret_cast<u8*>(code_mem->Map(code_mem->GetSize(), 0, MemMap::ReadExe));
 #endif
+
+    region = CodeRegion{
+            .id = next_region_id.fetch_add(1, std::memory_order_relaxed),
+            .rw_base = code_mem->GetMemory(),
+            .rx_base = code_mem_mapped ? code_mem_mapped : code_mem->GetMemory(),
+            .capacity = max_size,
+            .trampoline_offset = CodeRegion::kInvalidTrampolineOffset,
+    };
 
     if (!read_only) {
         space_code = create_mspace_with_base(code_mem->GetMemory(), code_mem->GetSize(), 0);
