@@ -162,6 +162,55 @@ bool JitContext::SharesGPR(const ir::Value& left, const ir::Value& right) {
            reg_alloc.ValueGPR(left).id == reg_alloc.ValueGPR(right).id;
 }
 
+bool JitContext::SharesPhysical(const ir::Value& left,
+                                const ir::Value& right) {
+    const auto left_type = reg_alloc.ValueType(left);
+    const auto right_type = reg_alloc.ValueType(right);
+    if (left_type != right_type) return false;
+    if (left_type == RegAlloc::GPR) {
+        return reg_alloc.ValueGPR(left).id == reg_alloc.ValueGPR(right).id;
+    }
+    if (left_type == RegAlloc::FPR) {
+        return reg_alloc.ValueFPR(left).id == reg_alloc.ValueFPR(right).id;
+    }
+    return false;
+}
+
+std::string JitContext::AllocationName(const ir::Value& value) {
+    switch (reg_alloc.ValueType(value)) {
+        case RegAlloc::GPR:
+            return fmt::format("x{}", reg_alloc.ValueGPR(value).id);
+        case RegAlloc::FPR:
+            return fmt::format("v{}", reg_alloc.ValueFPR(value).id);
+        case RegAlloc::MEM:
+            return fmt::format("mem{}", reg_alloc.ValueMem(value).offset);
+        case RegAlloc::NONE:
+            return "none";
+        case RegAlloc::REF:
+            PANIC("unresolved REF allocation");
+    }
+    PANIC("unknown allocation type");
+}
+
+std::string JitContext::DisassembleRange(u32 begin, u32 end) {
+    ASSERT(end >= begin);
+    ASSERT((end - begin) % vixl::aarch64::kInstructionSize == 0);
+    const auto* bytes = masm.GetBuffer()->GetStartAddress<const u8*>();
+    vixl::aarch64::Decoder decoder;
+    vixl::aarch64::Disassembler disassembler;
+    decoder.AppendVisitor(&disassembler);
+    std::string out;
+    for (u32 offset = begin; offset < end;
+         offset += vixl::aarch64::kInstructionSize) {
+        const auto* instruction =
+                reinterpret_cast<const vixl::aarch64::Instruction*>(bytes + offset);
+        decoder.Decode(instruction);
+        if (!out.empty()) out.push_back(';');
+        out.append(disassembler.GetOutput());
+    }
+    return out.empty() ? "<none>" : out;
+}
+
 bool JitContext::IsFloatValue(const ir::Value& value) {
     auto type = value.Type();
     return type >= ir::ValueType::V8 && type <= ir::ValueType::V256;

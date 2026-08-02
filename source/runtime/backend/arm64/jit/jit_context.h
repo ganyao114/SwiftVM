@@ -5,6 +5,7 @@
 #pragma once
 
 #include <map>
+#include <string>
 #include <vector>
 #include "aarch64/macro-assembler-aarch64.h"
 #include "base/common_funcs.h"
@@ -33,6 +34,12 @@ public:
     [[nodiscard]] CPUReg Get(const ir::Value& value);
     [[nodiscard]] bool HasAllocation(const ir::Value& value);
     [[nodiscard]] bool SharesGPR(const ir::Value& left, const ir::Value& right);
+    // Audit-only allocation/host-code views. These are read-only and emit no
+    // guest instructions; SVM_UNIFORM_PAIR_AUDIT uses them after RA/codegen.
+    [[nodiscard]] bool SharesPhysical(const ir::Value& left,
+                                      const ir::Value& right);
+    [[nodiscard]] std::string AllocationName(const ir::Value& value);
+    [[nodiscard]] std::string DisassembleRange(u32 begin, u32 end);
     [[nodiscard]] Register R(const ir::Value& value, bool auto_cast = false);
     [[nodiscard]] XRegister X(const ir::Value& value);
     [[nodiscard]] WRegister W(const ir::Value& value);
