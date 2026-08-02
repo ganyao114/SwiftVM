@@ -1,7 +1,10 @@
 #pragma once
 
+#include <array>
+#include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_set>
 #include <vector>
 #include "base/common_funcs.h"
@@ -92,6 +95,18 @@ public:
 #undef INST
 
 private:
+    enum class BoundarySubsequence : size_t {
+        Prologue,
+        TerminalMain,
+        LinkTail,
+        ColdTail,
+        Count,
+    };
+
+    void ResetBoundaryDensity();
+    void RecordBoundaryRange(BoundarySubsequence category, u32 begin, u32 end);
+    void PrintBoundaryDensity(u64 guest_pc, u32 expected_boundary_bytes);
+
     struct BackedgeFlagsPlan {
         bool optimized{true};
         bool self_is_then{};
@@ -370,6 +385,16 @@ private:
     u32 backedge_host_end{};
     std::vector<BackedgeBlockMetadata> backedge_block_metadata{};
     std::vector<std::unique_ptr<VecNaNColdSite>> vec_nan_cold_sites{};
+    bool boundary_density_enabled{};
+    bool boundary_terminal_open{};
+    u32 boundary_terminal_link_bytes{};
+    std::array<u32, static_cast<size_t>(BoundarySubsequence::Count)>
+            boundary_density_bytes{};
+    std::array<std::map<std::string, u32>,
+               static_cast<size_t>(BoundarySubsequence::Count)>
+            boundary_density_mnemonics{};
+    std::map<std::string, u32> boundary_terminal_link_mnemonics{};
+    std::vector<std::pair<u32, u32>> boundary_terminal_link_ranges{};
 };
 
 }

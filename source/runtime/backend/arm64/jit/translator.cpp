@@ -9,6 +9,8 @@
 #include <functional>
 #include <iterator>
 #include <numeric>
+#include <string_view>
+#include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/common/backedge_control.h"
@@ -162,12 +164,137 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     backedge_flags = BackedgeFlagsEnabled();
 }
 
+void JitTranslator::ResetBoundaryDensity() {
+    boundary_density_enabled = context.DensityProfileEnabled();
+    boundary_terminal_open = false;
+    boundary_terminal_link_bytes = 0;
+    boundary_density_bytes.fill(0);
+    for (auto& mnemonics : boundary_density_mnemonics) {
+        mnemonics.clear();
+    }
+    boundary_terminal_link_mnemonics.clear();
+    boundary_terminal_link_ranges.clear();
+}
+
+void JitTranslator::RecordBoundaryRange(BoundarySubsequence category,
+                                        u32 begin,
+                                        u32 end) {
+    if (!boundary_density_enabled || begin == end) {
+        return;
+    }
+    ASSERT(end > begin);
+    ASSERT((end - begin) % vixl::aarch64::kInstructionSize == 0);
+    const auto index = static_cast<size_t>(category);
+    boundary_density_bytes[index] += end - begin;
+
+    vixl::aarch64::Decoder decoder;
+    vixl::aarch64::Disassembler disassembler;
+    decoder.AppendVisitor(&disassembler);
+    const auto* bytes = masm.GetBuffer()->GetStartAddress<const u8*>();
+    for (u32 offset = begin; offset < end;
+         offset += vixl::aarch64::kInstructionSize) {
+        const auto* instruction =
+                reinterpret_cast<const vixl::aarch64::Instruction*>(bytes + offset);
+        decoder.Decode(instruction);
+        std::string_view text{disassembler.GetOutput()};
+        const auto first = text.find_first_not_of(" \t");
+        if (first == std::string_view::npos) {
+            continue;
+        }
+        text.remove_prefix(first);
+        const auto last = text.find_first_of(" \t");
+        const std::string mnemonic{text.substr(0, last)};
+        ++boundary_density_mnemonics[index][mnemonic];
+        if (category == BoundarySubsequence::LinkTail && boundary_terminal_open) {
+            ++boundary_terminal_link_mnemonics[mnemonic];
+        }
+    }
+    if (category == BoundarySubsequence::LinkTail && boundary_terminal_open) {
+        boundary_terminal_link_bytes += end - begin;
+        boundary_terminal_link_ranges.emplace_back(begin, end);
+    }
+}
+
+void JitTranslator::PrintBoundaryDensity(u64 guest_pc,
+                                         u32 expected_boundary_bytes) {
+    const auto terminal = static_cast<size_t>(BoundarySubsequence::TerminalMain);
+    ASSERT(boundary_density_bytes[terminal] >= boundary_terminal_link_bytes);
+    boundary_density_bytes[terminal] -= boundary_terminal_link_bytes;
+    for (const auto& [mnemonic, count] : boundary_terminal_link_mnemonics) {
+        auto it = boundary_density_mnemonics[terminal].find(mnemonic);
+        ASSERT(it != boundary_density_mnemonics[terminal].end());
+        ASSERT(it->second >= count);
+        it->second -= count;
+        if (it->second == 0) {
+            boundary_density_mnemonics[terminal].erase(it);
+        }
+    }
+
+    const u32 subtotal = std::accumulate(boundary_density_bytes.begin(),
+                                         boundary_density_bytes.end(), 0u);
+    // Strict unit-local commoning proof: two byte-identical final AArch64
+    // instructions can be emitted once, with each duplicate site replaced by
+    // a one-instruction B. Therefore each duplicate beyond the first has an
+    // exact one-instruction (4-byte) removable ceiling. Restrict this to link
+    // leaves inside the terminal; body-side RSB pushes and cold veneers cannot
+    // accidentally enter the proof.
+    std::map<u64, u32> common_suffixes;
+    const auto* host_bytes = masm.GetBuffer()->GetStartAddress<const u8*>();
+    for (const auto& [begin, end] : boundary_terminal_link_ranges) {
+        if (end - begin < 2 * vixl::aarch64::kInstructionSize) {
+            continue;
+        }
+        u64 suffix{};
+        std::memcpy(&suffix, host_bytes + end - sizeof(suffix), sizeof(suffix));
+        ++common_suffixes[suffix];
+    }
+    u32 common2_groups = 0;
+    u32 common2_ranges = 0;
+    u32 common2_saved = 0;
+    for (const auto& [suffix, count] : common_suffixes) {
+        if (count < 2) {
+            continue;
+        }
+        ++common2_groups;
+        common2_ranges += count;
+        common2_saved +=
+                (count - 1) * vixl::aarch64::kInstructionSize;
+    }
+    std::fprintf(stderr,
+                 "[svm-boundary] pc=0x%llx bytes_prologue=%u "
+                 "bytes_terminal=%u bytes_link=%u bytes_cold=%u "
+                 "bytes_total=%u expected_boundary=%u "
+                 "common2_groups=%u common2_ranges=%u common2_saved=%u",
+                 static_cast<unsigned long long>(guest_pc),
+                 boundary_density_bytes[0], boundary_density_bytes[1],
+                 boundary_density_bytes[2], boundary_density_bytes[3], subtotal,
+                 expected_boundary_bytes, common2_groups, common2_ranges,
+                 common2_saved);
+    static constexpr std::array<const char*, 4> names{
+            "prologue", "terminal", "link", "cold"};
+    for (size_t i = 0; i < names.size(); ++i) {
+        std::fprintf(stderr, " mn_%s=", names[i]);
+        if (boundary_density_mnemonics[i].empty()) {
+            std::fputc('-', stderr);
+            continue;
+        }
+        bool first = true;
+        for (const auto& [mnemonic, count] : boundary_density_mnemonics[i]) {
+            std::fprintf(stderr, "%s%s:%u", first ? "" : ",",
+                         mnemonic.c_str(), count);
+            first = false;
+        }
+    }
+    std::fputc('\n', stderr);
+}
+
 
 
 void JitTranslator::Translate(ir::Block* block) {
     vixl::svm_vixl_prof::JitScope vixl_prof;
     ASSERT(vec_nan_cold_sites.empty());
     const bool density = context.DensityProfileEnabled();
+    ResetBoundaryDensity();
     const u32 density_start = density ? context.CurrentBufferSize() : 0;
     std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_ops{};
     std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_bytes{};
@@ -230,6 +357,8 @@ void JitTranslator::Translate(ir::Block* block) {
     context.RecordExecCounter(exec_offset_xmm_uniform_accesses,
                               xmm_uniform_accesses);
     if (density) {
+        RecordBoundaryRange(BoundarySubsequence::Prologue, density_start,
+                            context.CurrentBufferSize());
         density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
                 context.CurrentBufferSize() - density_start;
     }
@@ -261,6 +390,13 @@ void JitTranslator::Translate(ir::Block* block) {
                                        : category);
             density_bytes[static_cast<size_t>(emitted_category)] +=
                     emitted - nan_emitted;
+            if (category == DensityCategory::Boundary &&
+                inst.GetOp() != ir::OpCode::AdvancePC) {
+                RecordBoundaryRange(inst.GetOp() == ir::OpCode::PushRSB
+                                            ? BoundarySubsequence::LinkTail
+                                            : BoundarySubsequence::TerminalMain,
+                                    before, context.CurrentBufferSize());
+            }
         }
     }
     perf_body.Stop();
@@ -274,11 +410,15 @@ void JitTranslator::Translate(ir::Block* block) {
                 context.CurrentBufferSize() - flags_before;
     }
     const u32 terminal_before = density ? context.CurrentBufferSize() : 0;
+    boundary_terminal_open = density;
     if (!EmitBackedgeFlagsTerminal(block->GetTerminal())) {
         EmitTerminal(block->GetTerminal());
     }
+    boundary_terminal_open = false;
     context.EndTerminalScratch();
     if (density) {
+        RecordBoundaryRange(BoundarySubsequence::TerminalMain, terminal_before,
+                            context.CurrentBufferSize());
         density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
                 context.CurrentBufferSize() - terminal_before;
     }
@@ -294,6 +434,8 @@ void JitTranslator::Translate(ir::Block* block) {
     EmitBackedgeExitStub();
     EmitBackedgeColdPaths();
     if (density) {
+        RecordBoundaryRange(BoundarySubsequence::ColdTail, boundary_cold_before,
+                            context.CurrentBufferSize());
         density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
                 context.CurrentBufferSize() - boundary_cold_before;
     }
@@ -319,6 +461,7 @@ void JitTranslator::Translate(ir::Block* block) {
                      density_ops[4], density_ops[5], density_bytes[0], density_bytes[1],
                      density_bytes[2], density_bytes[3], density_bytes[4], density_bytes[5],
                      total_ops, total_bytes, density_scalar_fp_ops);
+        PrintBoundaryDensity(block->GetStartLocation().Value(), density_bytes[4]);
     }
 }
 
@@ -666,9 +809,12 @@ bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
     plan.cold_referenced = true;
     context.RecordExecCounter(exec_offset_exit_direct);
     backedge_exit_referenced = true;
+    const u32 link_before = context.CurrentBufferSize();
     context.Forward(plan.self_target,
                     backedge_exit_label.get(),
                     plan.local_entry.get());
+    RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
+                        context.CurrentBufferSize());
     return true;
 }
 
@@ -818,7 +964,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             auto* self_target = IsSelfEdge(term.next) && backedge_flags_plan
                     ? backedge_flags_plan->local_entry.get()
                     : nullptr;
+            const u32 link_before = context.CurrentBufferSize();
             context.Forward(term.next, exit, self_target);
+            RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
+                                context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
             MergeNZCV();
             context.RecordExecCounter(exec_offset_exit_direct);
@@ -829,7 +978,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             auto* self_target = IsSelfEdge(term.next) && backedge_flags_plan
                     ? backedge_flags_plan->local_entry.get()
                     : nullptr;
+            const u32 link_before = context.CurrentBufferSize();
             context.Forward(term.next, exit, self_target);
+            RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
+                                context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
             // Return Stack Buffer: this is the real pop+predict site. It must
             // run here (not at the PopRSB instruction) because guest flags have
@@ -840,7 +992,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             MergeNZCV();
             context.RecordExecCounter(exec_offset_exit_ret);
             if (True(context.GetConfig().global_opts & Optimizations::ReturnStackBuffer)) {
+                const u32 link_before = context.CurrentBufferSize();
                 context.EmitRSBPop();
+                RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
+                                    context.CurrentBufferSize());
             } else {
                 __ Ret();
             }
@@ -977,7 +1132,11 @@ bool JitTranslator::EmitStaticForward() {
     }
     const u64 target = *static_next_loc;
     static_next_loc.reset();
-    return context.ForwardStatic(ir::Location{target});
+    const u32 link_before = context.CurrentBufferSize();
+    const bool emitted = context.ForwardStatic(ir::Location{target});
+    RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
+                        context.CurrentBufferSize());
+    return emitted;
 }
 
 Label* JitTranslator::GetLocalLabel(ir::Inst* inst) {
