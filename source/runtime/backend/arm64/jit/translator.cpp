@@ -232,6 +232,63 @@ bool DensityScalarFP(ir::OpCode op) {
 
 #define __ masm.
 
+LinkSuffixCommonPlan::LinkSuffixCommonPlan(
+        std::vector<std::optional<u64>> encodings) {
+    sites.resize(encodings.size());
+    canonical_labels.resize(encodings.size());
+    canonical_emitted.resize(encodings.size());
+
+    std::map<u64, std::vector<size_t>> groups;
+    for (size_t i = 0; i < encodings.size(); ++i) {
+        sites[i].encoding = encodings[i];
+        sites[i].canonical = i;
+        if (encodings[i]) {
+            groups[*encodings[i]].push_back(i);
+        }
+    }
+    for (const auto& [encoding, members] : groups) {
+        (void)encoding;
+        if (members.size() < 2) {
+            continue;
+        }
+        const size_t canonical = members.front();
+        canonical_labels[canonical] = std::make_unique<Label>();
+        ++stats.groups;
+        stats.ranges += static_cast<u32>(members.size());
+        stats.saved_bytes += static_cast<u32>(members.size() - 1) *
+                             vixl::aarch64::kInstructionSize;
+        for (const size_t site : members) {
+            sites[site].canonical = canonical;
+            sites[site].shared = true;
+        }
+    }
+}
+
+bool LinkSuffixCommonPlan::TryEmit(size_t site,
+                                   u64 actual_encoding,
+                                   MacroAssembler& masm) {
+    if (site >= sites.size()) {
+        return false;
+    }
+    const auto& planned = sites[site];
+    if (!planned.shared || planned.encoding != actual_encoding) {
+        return false;
+    }
+    const size_t canonical = planned.canonical;
+    ASSERT(canonical < sites.size());
+    ASSERT(canonical_labels[canonical]);
+    if (site == canonical) {
+        masm.Bind(canonical_labels[canonical].get());
+        canonical_emitted[canonical] = true;
+        return false;
+    }
+    if (!canonical_emitted[canonical]) {
+        return false;
+    }
+    masm.B(canonical_labels[canonical].get());
+    return true;
+}
+
 
 JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()) {
     auto& config = ctx.GetConfig();
@@ -257,6 +314,9 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     }
     backedge_latch = BackedgeLatchEnabled();
     backedge_flags = BackedgeFlagsEnabled();
+    if (const char* common = PerfGetenv("SVM_LINK_SUFFIX_COMMON")) {
+        link_suffix_common = std::strcmp(common, "0") != 0;
+    }
 }
 
 void JitTranslator::ResetBoundaryDensity() {
@@ -269,6 +329,51 @@ void JitTranslator::ResetBoundaryDensity() {
     }
     boundary_terminal_link_mnemonics.clear();
     boundary_terminal_link_ranges.clear();
+    link_suffix_plan.reset();
+    link_suffix_site = 0;
+}
+
+void JitTranslator::PlanLinkSuffixes(const ir::Terminal& terminal) {
+    link_suffix_plan.reset();
+    link_suffix_site = 0;
+    if (!link_suffix_common || backedge_flags_plan) {
+        return;
+    }
+
+    std::vector<std::optional<u64>> encodings;
+    std::function<void(const ir::Terminal&)> visit = [&](const ir::Terminal& item) {
+        VisitVariant<void>(item, [&](const auto& term) {
+            using T = std::decay_t<decltype(term)>;
+            if constexpr (std::is_same_v<T, ir::terminal::LinkBlock> ||
+                          std::is_same_v<T, ir::terminal::LinkBlockFast>) {
+                encodings.push_back(context.PlanForwardSuffix(term.next));
+            } else if constexpr (std::is_same_v<T, ir::terminal::If> ||
+                                 std::is_same_v<T, ir::terminal::Condition>) {
+                visit(term.then_);
+                visit(term.else_);
+            } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
+                for (const auto& case_ : term.cases) {
+                    visit(case_.then);
+                }
+            } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
+                visit(term.else_);
+            }
+        });
+    };
+    visit(terminal);
+    link_suffix_plan =
+            std::make_unique<LinkSuffixCommonPlan>(std::move(encodings));
+}
+
+JitContext::LinkSuffixEmitter JitTranslator::NextLinkSuffixEmitter() {
+    if (!link_suffix_plan) {
+        return {};
+    }
+    ASSERT(link_suffix_site < link_suffix_plan->SiteCount());
+    const size_t site = link_suffix_site++;
+    return [this, site](u64 actual_encoding) {
+        return link_suffix_plan->TryEmit(site, actual_encoding, masm);
+    };
 }
 
 void JitTranslator::RecordBoundaryRange(BoundarySubsequence category,
@@ -354,6 +459,15 @@ void JitTranslator::PrintBoundaryDensity(u64 guest_pc,
         common2_ranges += count;
         common2_saved +=
                 (count - 1) * vixl::aarch64::kInstructionSize;
+    }
+    // Once enabled, duplicate sites no longer contain the original suffix, so
+    // the post-emission scan cannot see the opportunity it just consumed. The
+    // plan uses the same full 8-byte key and reports the pre-emission counts.
+    if (link_suffix_common && link_suffix_plan) {
+        const auto& stats = link_suffix_plan->GetStats();
+        common2_groups = stats.groups;
+        common2_ranges = stats.ranges;
+        common2_saved = stats.saved_bytes;
     }
     std::fprintf(stderr,
                  "[svm-boundary] pc=0x%llx bytes_prologue=%u "
@@ -578,6 +692,7 @@ void JitTranslator::Translate(ir::Block* block) {
     }
     const u32 terminal_before = density ? context.CurrentBufferSize() : 0;
     boundary_terminal_open = density;
+    PlanLinkSuffixes(block->GetTerminal());
     if (!EmitBackedgeFlagsTerminal(block->GetTerminal())) {
         EmitTerminal(block->GetTerminal());
     }
@@ -1132,7 +1247,8 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
                     ? backedge_flags_plan->local_entry.get()
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
-            context.Forward(term.next, exit, self_target);
+            context.Forward(term.next, exit, self_target,
+                            NextLinkSuffixEmitter());
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
@@ -1146,7 +1262,8 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
                     ? backedge_flags_plan->local_entry.get()
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
-            context.Forward(term.next, exit, self_target);
+            context.Forward(term.next, exit, self_target,
+                            NextLinkSuffixEmitter());
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {

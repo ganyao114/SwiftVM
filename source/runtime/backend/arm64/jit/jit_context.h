@@ -4,7 +4,9 @@
 
 #pragma once
 
+#include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 #include "aarch64/macro-assembler-aarch64.h"
@@ -29,6 +31,8 @@ using CPUReg = boost::variant<NoneReg, Register, VRegister>;
 
 class JitContext : DeleteCopyAndMove {
 public:
+    using LinkSuffixEmitter = std::function<bool(u64)>;
+
     explicit JitContext(const std::shared_ptr<Module> &module, RegAlloc& reg_alloc);
 
     [[nodiscard]] CPUReg Get(const ir::Value& value);
@@ -81,7 +85,12 @@ public:
 
     void Forward(ir::Location location,
                  Label* backedge_exit = nullptr,
-                 Label* self_target = nullptr);
+                 Label* self_target = nullptr,
+                 const LinkSuffixEmitter& suffix_emitter = {});
+    // Pre-emission view of the exact final two instruction encodings Forward
+    // would use for this link leaf. A later state change may select another
+    // Forward path, so emission rechecks the key and falls back per site.
+    [[nodiscard]] std::optional<u64> PlanForwardSuffix(ir::Location location);
     // Inline dispatch to a compile-time-constant guest location, for the
     // "SetLocation(imm) + ReturnToDispatch" shape a direct jmp/call decodes to.
     // Emits nothing and returns false when the target is not linkable (unknown

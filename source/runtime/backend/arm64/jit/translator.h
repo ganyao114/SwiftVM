@@ -56,6 +56,39 @@ enum class HostFlags : u64 {
 
 DECLARE_ENUM_FLAG_OPERATORS(HostFlags)
 
+// Unit-terminal-local plan for sharing byte-identical two-instruction link
+// suffixes. Sites are grouped by their full 8 encoded bytes. The first site in
+// a repeated group stays inline; an exactly matching later site becomes one B
+// to the first. A runtime key mismatch leaves that site untouched.
+class LinkSuffixCommonPlan {
+public:
+    struct Stats {
+        u32 groups{};
+        u32 ranges{};
+        u32 saved_bytes{};
+    };
+
+    explicit LinkSuffixCommonPlan(std::vector<std::optional<u64>> encodings);
+
+    [[nodiscard]] bool TryEmit(size_t site,
+                               u64 actual_encoding,
+                               MacroAssembler& masm);
+    [[nodiscard]] size_t SiteCount() const { return sites.size(); }
+    [[nodiscard]] const Stats& GetStats() const { return stats; }
+
+private:
+    struct Site {
+        std::optional<u64> encoding{};
+        size_t canonical{};
+        bool shared{};
+    };
+
+    std::vector<Site> sites{};
+    std::vector<std::unique_ptr<Label>> canonical_labels{};
+    std::vector<bool> canonical_emitted{};
+    Stats stats{};
+};
+
 class JitTranslator {
 public:
     struct BackedgeBlockMetadata {
@@ -106,6 +139,8 @@ private:
     void ResetBoundaryDensity();
     void RecordBoundaryRange(BoundarySubsequence category, u32 begin, u32 end);
     void PrintBoundaryDensity(u64 guest_pc, u32 expected_boundary_bytes);
+    void PlanLinkSuffixes(const ir::Terminal& terminal);
+    [[nodiscard]] JitContext::LinkSuffixEmitter NextLinkSuffixEmitter();
 
     struct BackedgeFlagsPlan {
         bool optimized{true};
@@ -368,6 +403,7 @@ private:
     bool mem_narrow_fuse{true};
     bool backedge_latch{false};
     bool backedge_flags{false};
+    bool link_suffix_common{false};
     bool cur_block_is_call{};
     // Set by EmitSetLocation when the next guest location is a compile-time
     // constant, cleared by every other instruction (Translate(ir::Inst*)).
@@ -395,6 +431,8 @@ private:
             boundary_density_mnemonics{};
     std::map<std::string, u32> boundary_terminal_link_mnemonics{};
     std::vector<std::pair<u32, u32>> boundary_terminal_link_ranges{};
+    std::unique_ptr<LinkSuffixCommonPlan> link_suffix_plan{};
+    size_t link_suffix_site{};
 };
 
 }

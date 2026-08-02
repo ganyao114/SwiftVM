@@ -18,6 +18,40 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
+namespace {
+
+template <typename Emit>
+u64 EncodeTwoInstructionSuffix(Emit&& emit) {
+    MacroAssembler assembler{};
+    emit(assembler);
+    assembler.FinalizeCode();
+    ASSERT(assembler.GetBuffer()->GetSizeInBytes() ==
+           2 * vixl::aarch64::kInstructionSize);
+    u64 encoding{};
+    std::memcpy(&encoding,
+                assembler.GetBuffer()->GetStartAddress<const u8*>(),
+                sizeof(encoding));
+    return encoding;
+}
+
+u64 CurrentLocationReturnSuffixEncoding() {
+    static const u64 encoding = EncodeTwoInstructionSuffix([](auto& assembler) {
+        assembler.Str(ip, MemOperand(state, state_offset_current_loc));
+        assembler.Ret();
+    });
+    return encoding;
+}
+
+u64 HaltReasonReturnSuffixEncoding() {
+    static const u64 encoding = EncodeTwoInstructionSuffix([](auto& assembler) {
+        assembler.Str(ipw, MemOperand(state, state_offset_halt_reason));
+        assembler.Ret();
+    });
+    return encoding;
+}
+
+}  // namespace
+
 // The spill slot count reserved in State must match the allocator's limit.
 static_assert(kMaxSpillSlots == sizeof(State::spill_area) / sizeof(u64),
               "spill slot count mismatch between reg_alloc.h and context.h");
@@ -525,9 +559,45 @@ bool JitContext::ForwardStatic(ir::Location location) {
     return true;
 }
 
+std::optional<u64> JitContext::PlanForwardSuffix(ir::Location location) {
+    ASSERT(cur_block);
+    auto self_forward = location == cur_block->GetStartLocation();
+    if (!self_forward && cur_function) {
+        self_forward = location == cur_function->GetStartLocation();
+    }
+    if (self_forward) {
+        return std::nullopt;
+    }
+
+    auto target_module = module->GetAddressSpace().GetModule(location.Value());
+    if (!target_module) {
+        return HaltReasonReturnSuffixEncoding();
+    }
+
+    const bool self_module_forward{module == target_module};
+    const ModuleConfig& module_config{module->GetModuleConfig()};
+    const ModuleConfig& target_module_config{target_module->GetModuleConfig()};
+    const bool direct_link{
+            (self_module_forward && module_config.HasOpt(Optimizations::DirectBlockLink)) ||
+            target_module_config.read_only};
+    if (direct_link) {
+        bool in_function{false};
+        if (cur_function) {
+            auto* target = cur_function->FindBlock(location.Value());
+            in_function = target && !(target->GetInstList().empty() &&
+                                      !target->HasTerminal());
+        }
+        if (in_function || target_module->GetJitCache(location.Value())) {
+            return std::nullopt;
+        }
+    }
+    return CurrentLocationReturnSuffixEncoding();
+}
+
 void JitContext::Forward(ir::Location location,
                          Label* backedge_exit,
-                         Label* self_target) {
+                         Label* self_target,
+                         const LinkSuffixEmitter& suffix_emitter) {
     ASSERT(cur_block);
     // Block exit: land any pending spill write-back before the transfer
     // (a spilled value defined by the block's last instruction may be live
@@ -552,8 +622,11 @@ void JitContext::Forward(ir::Location location,
         if (!target_module) {
             // Module miss
             __ Mov(ipw, static_cast<u32>(HaltReason::ModuleMiss));
-            __ Str(ipw, MemOperand(state, state_offset_halt_reason));
-            __ Ret();
+            if (!suffix_emitter ||
+                !suffix_emitter(HaltReasonReturnSuffixEncoding())) {
+                __ Str(ipw, MemOperand(state, state_offset_halt_reason));
+                __ Ret();
+            }
             return;
         }
 
@@ -608,12 +681,18 @@ void JitContext::Forward(ir::Location location,
                         __ Bind(&empty_slot);
                         RecordExecCounter(exec_offset_link_miss);
                         __ Mov(ip, location.Value());
-                        __ Str(ip, MemOperand(state, state_offset_current_loc));
-                        __ Ret();
+                        if (!suffix_emitter ||
+                            !suffix_emitter(CurrentLocationReturnSuffixEncoding())) {
+                            __ Str(ip, MemOperand(state, state_offset_current_loc));
+                            __ Ret();
+                        }
                     } else {
                         __ Mov(ip, location.Value());
-                        __ Str(ip, MemOperand(state, state_offset_current_loc));
-                        __ Ret();
+                        if (!suffix_emitter ||
+                            !suffix_emitter(CurrentLocationReturnSuffixEncoding())) {
+                            __ Str(ip, MemOperand(state, state_offset_current_loc));
+                            __ Ret();
+                        }
                     }
                 }
             }
@@ -648,13 +727,19 @@ void JitContext::Forward(ir::Location location,
             __ Bind(&empty_slot);
             RecordExecCounter(exec_offset_link_miss);
             __ Mov(ip, location.Value());
-            __ Str(ip, MemOperand(state, state_offset_current_loc));
-            __ Ret();
+            if (!suffix_emitter ||
+                !suffix_emitter(CurrentLocationReturnSuffixEncoding())) {
+                __ Str(ip, MemOperand(state, state_offset_current_loc));
+                __ Ret();
+            }
         } else {
             // do not link
             __ Mov(ip, location.Value());
-            __ Str(ip, MemOperand(state, state_offset_current_loc));
-            __ Ret();
+            if (!suffix_emitter ||
+                !suffix_emitter(CurrentLocationReturnSuffixEncoding())) {
+                __ Str(ip, MemOperand(state, state_offset_current_loc));
+                __ Ret();
+            }
         }
     }
 }

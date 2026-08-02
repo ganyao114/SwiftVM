@@ -124,7 +124,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 65);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 66);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
             "SVM_FPCR_TAX_TIMING");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
@@ -188,6 +188,92 @@ TEST_CASE("config hash includes programmatic effective AFP policy") {
     on.sse_afp_nan = false;
     REQUIRE(swift::runtime::backend::ComputeConfigHash(off) ==
             swift::runtime::backend::ComputeConfigHash(on));
+}
+
+TEST_CASE("JIT cache environment hash separates link suffix commoning") {
+    const char* old = std::getenv("SVM_LINK_SUFFIX_COMMON");
+    const bool had_old = old != nullptr;
+    const std::string old_value = old ? old : "";
+
+    unsetenv("SVM_LINK_SUFFIX_COMMON");
+    const auto missing = swift::runtime::backend::ComputeEnvHash();
+    setenv("SVM_LINK_SUFFIX_COMMON", "0", 1);
+    const auto disabled = swift::runtime::backend::ComputeEnvHash();
+    setenv("SVM_LINK_SUFFIX_COMMON", "1", 1);
+    const auto enabled = swift::runtime::backend::ComputeEnvHash();
+
+    if (had_old) setenv("SVM_LINK_SUFFIX_COMMON", old_value.c_str(), 1);
+    else unsetenv("SVM_LINK_SUFFIX_COMMON");
+
+    REQUIRE(missing != disabled);
+    REQUIRE(disabled != enabled);
+    REQUIRE(missing != enabled);
+}
+
+TEST_CASE("link suffix common plan groups byte-identical double leaves") {
+    using swift::runtime::backend::arm64::LinkSuffixCommonPlan;
+
+    constexpr swift::u64 kSuffix = 0xd65f03c9f9000b4bull;
+    LinkSuffixCommonPlan plan{{kSuffix, kSuffix}};
+    REQUIRE(plan.SiteCount() == 2);
+    REQUIRE(plan.GetStats().groups == 1);
+    REQUIRE(plan.GetStats().ranges == 2);
+    REQUIRE(plan.GetStats().saved_bytes == 4);
+}
+
+TEST_CASE("link suffix common plan falls back for non-identical encodings") {
+    using namespace vixl::aarch64;
+    using swift::runtime::backend::arm64::LinkSuffixCommonPlan;
+
+    constexpr swift::u64 kSuffixA = 0xd65f03c9f9000b4bull;
+    constexpr swift::u64 kSuffixB = 0xd65f03c9f9000f4bull;
+    LinkSuffixCommonPlan plan{{kSuffixA, kSuffixB}};
+    REQUIRE(plan.GetStats().groups == 0);
+    REQUIRE(plan.GetStats().saved_bytes == 0);
+
+    MacroAssembler masm{};
+    REQUIRE_FALSE(plan.TryEmit(0, kSuffixA, masm));
+    REQUIRE_FALSE(plan.TryEmit(1, kSuffixB, masm));
+
+    LinkSuffixCommonPlan changed_after_plan{{kSuffixA, kSuffixA}};
+    REQUIRE_FALSE(changed_after_plan.TryEmit(0, kSuffixB, masm));
+    REQUIRE_FALSE(changed_after_plan.TryEmit(1, kSuffixA, masm));
+}
+
+TEST_CASE("link suffix common branch imm26 lands on retained suffix") {
+    using namespace vixl::aarch64;
+    using swift::runtime::backend::arm64::LinkSuffixCommonPlan;
+
+    constexpr swift::u64 kSuffix = 0xd65f03c9f9000b4bull;
+    LinkSuffixCommonPlan plan{{kSuffix, kSuffix}};
+    MacroAssembler masm{};
+    REQUIRE_FALSE(plan.TryEmit(0, kSuffix, masm));
+    masm.Nop();
+    masm.Nop();
+    REQUIRE(plan.TryEmit(1, kSuffix, masm));
+    masm.FinalizeCode();
+    REQUIRE(masm.GetBuffer()->GetSizeInBytes() == 12);
+
+    swift::u32 branch{};
+    std::memcpy(&branch,
+                masm.GetBuffer()->GetStartAddress<const swift::u8*>() + 8,
+                sizeof(branch));
+    REQUIRE((branch & 0x7c000000u) == 0x14000000u);
+    const auto imm26 = static_cast<swift::s32>(branch << 6) >> 6;
+    REQUIRE(8 + static_cast<swift::s64>(imm26) * 4 == 0);
+}
+
+TEST_CASE("link suffix common plan ignores a single terminal leaf") {
+    using namespace vixl::aarch64;
+    using swift::runtime::backend::arm64::LinkSuffixCommonPlan;
+
+    constexpr swift::u64 kSuffix = 0xd65f03c9f9000b4bull;
+    LinkSuffixCommonPlan plan{{kSuffix}};
+    REQUIRE(plan.GetStats().groups == 0);
+    REQUIRE(plan.GetStats().ranges == 0);
+    REQUIRE(plan.GetStats().saved_bytes == 0);
+    MacroAssembler masm{};
+    REQUIRE_FALSE(plan.TryEmit(0, kSuffix, masm));
 }
 
 TEST_CASE("Test compiler") {
