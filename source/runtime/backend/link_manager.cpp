@@ -90,14 +90,29 @@ std::optional<LinkSiteRecord> LinkManager::QuerySite(LinkSiteKey site) const {
     return std::nullopt;
 }
 
-u64 LinkManager::PublishTarget(u64 guest_target) {
+u64 LinkManager::PublishTarget(u64 guest_target, void* host_pc, CodeRegionId region_id) {
     std::lock_guard guard(mutex_);
     const u64 generation = next_target_generation_++;
     targets_[guest_target] = TargetRecord{
             .generation = generation,
+            .host_pc = host_pc,
+            .region_id = region_id,
             .active = true,
     };
     return generation;
+}
+
+std::optional<LinkTargetRecord> LinkManager::QueryTarget(u64 guest_target) const {
+    std::lock_guard guard(mutex_);
+    if (const auto it = targets_.find(guest_target); it != targets_.end() && it->second.active) {
+        return LinkTargetRecord{
+                .guest_target = guest_target,
+                .host_pc = it->second.host_pc,
+                .region_id = it->second.region_id,
+                .generation = it->second.generation,
+        };
+    }
+    return std::nullopt;
 }
 
 std::optional<u64> LinkManager::QueryTargetGeneration(u64 guest_target) const {

@@ -41,6 +41,16 @@ struct LinkSiteRecord {
     LinkSiteState state{LinkSiteState::Unlinked};
 };
 
+// Host publication paired with the generation checked by the cold linker.
+// region_id==0/host_pc==nullptr is retained for metadata-only users and tests;
+// such a target can never be direct-linked by the region trampoline.
+struct LinkTargetRecord {
+    u64 guest_target{};
+    void* host_pc{};
+    CodeRegionId region_id{};
+    u64 generation{};
+};
+
 struct LinkManagerStats {
     size_t sites{};
     size_t incoming_targets{};
@@ -61,7 +71,10 @@ public:
 
     // Publishing a target assigns a process-local, globally monotonic generation.
     // MarkLinked/MarkFar are the linkage-time generation recheck boundary.
-    [[nodiscard]] u64 PublishTarget(u64 guest_target);
+    [[nodiscard]] u64 PublishTarget(u64 guest_target,
+                                    void* host_pc = nullptr,
+                                    CodeRegionId region_id = 0);
+    [[nodiscard]] std::optional<LinkTargetRecord> QueryTarget(u64 guest_target) const;
     [[nodiscard]] std::optional<u64> QueryTargetGeneration(u64 guest_target) const;
     [[nodiscard]] bool ValidateTargetGeneration(u64 guest_target, u64 generation) const;
     using LinkCommit = std::function<bool(const LinkSiteRecord&)>;
@@ -99,6 +112,8 @@ private:
 
     struct TargetRecord {
         u64 generation{};
+        void* host_pc{};
+        CodeRegionId region_id{};
         bool active{};
     };
 

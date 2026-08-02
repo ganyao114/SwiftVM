@@ -3,7 +3,9 @@
 //
 
 #include <atomic>
+#include <cstring>
 #include "runtime/backend/code_cache.h"
+#include "runtime/backend/arm64/region_link_trampoline.h"
 #include "runtime/backend/host_isa.h"
 #include "runtime/common/alignment.h"
 
@@ -84,6 +86,45 @@ CodeCache::~CodeCache() {
     if (space_code) {
         destroy_mspace(space_code);
     }
+}
+
+bool CodeCache::InitializeRegionTrampoline(LinkManager& manager,
+                                            void* return_host,
+                                            void* dispatcher) {
+    constexpr u32 kImm26Window = 1u << 27;
+    if (region_link_context_) {
+        return true;
+    }
+    // Merely placing a trampoline "inside" a region is insufficient once the
+    // region spans more than one imm26 window. P0-B does not change Module's
+    // arena policy; callers must leave v2 disabled for such a region.
+    if (config.backend_isa != kArm64 || !return_host || !dispatcher ||
+        region.capacity > kImm26Window) {
+        return false;
+    }
+
+    auto context = std::make_unique<arm64::RegionLinkContext>();
+    context->manager = &manager;
+    context->region = &region;
+    context->return_host = return_host;
+    context->dispatcher = dispatcher;
+    auto code = arm64::BuildRegionLinkTrampoline(config, context.get());
+    const auto buffer = AllocCode(code.size());
+    if (!buffer) {
+        return false;
+    }
+    std::memcpy(buffer->rw_data, code.data(), code.size());
+    buffer->Flush();
+    region.trampoline_offset = buffer->offset;
+    region_link_context_ = std::move(context);
+    return true;
+}
+
+void* CodeCache::GetRegionTrampoline() const {
+    if (region.trampoline_offset == CodeRegion::kInvalidTrampolineOffset) {
+        return nullptr;
+    }
+    return region.rx_base + region.trampoline_offset;
 }
 
 void CodeCache::Init() {

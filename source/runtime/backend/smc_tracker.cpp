@@ -112,6 +112,11 @@ bool SmcTracker::SetPageProtected(VAddr page, bool prot_read_only) {
 SmcTracker::RuntimeToken SmcTracker::RegisterRuntime(TranslateTable& l1,
                                                      u64* exit_request) {
     auto token = std::make_shared<RuntimeEpoch>(&l1, exit_request);
+    // Registration occurs at a host boundary before this Runtime can execute
+    // JIT code, so it is born synchronized with the current patch epoch and
+    // pays no first-entry ISB in the no-delink steady state.
+    token->synced_patch_epoch.store(code_patch_epoch_.load(std::memory_order_seq_cst),
+                                    std::memory_order_relaxed);
     MetadataGuard guard(*this);
     runtimes_.push_back(token);
     return token;
@@ -139,7 +144,27 @@ void SmcTracker::BeginJit(const RuntimeToken& token) {
         return;
     }
     for (;;) {
+        // Load the reclaim epoch first. Delink publishes patch_epoch before
+        // advancing global_epoch_ under invalidation_mutex_. Therefore either
+        // this iteration observes the new patch generation, or the existing
+        // global-epoch validation below fails and retries. This ordering keeps
+        // the steady-state tax to one patch load+compare.
         const auto epoch = global_epoch_.load(std::memory_order_seq_cst);
+        const auto patch_epoch = code_patch_epoch_.load(std::memory_order_seq_cst);
+        if (token->synced_patch_epoch.load(std::memory_order_relaxed) < patch_epoch) {
+#if defined(__aarch64__)
+            // Context synchronization is execution-thread-local. Cache
+            // maintenance by the invalidator is not a substitute for ISB on
+            // a core that may have already fetched the old branch.
+            asm volatile("isb" ::: "memory");
+#else
+            // Keeps the protocol testable on non-AArch64 hosts; no generated
+            // A64 instructions can execute there.
+            std::atomic_signal_fence(std::memory_order_seq_cst);
+#endif
+            token->synced_patch_epoch.store(patch_epoch, std::memory_order_seq_cst);
+            token->patch_sync_count.fetch_add(1, std::memory_order_relaxed);
+        }
         token->active_epoch.store(epoch, std::memory_order_seq_cst);
         // Closing the entry race requires validation after publication. If
         // invalidation advanced the epoch between the two loads, retry before
@@ -150,6 +175,10 @@ void SmcTracker::BeginJit(const RuntimeToken& token) {
             return;
         }
     }
+}
+
+u64 SmcTracker::AdvanceCodePatchEpoch() {
+    return code_patch_epoch_.fetch_add(1, std::memory_order_seq_cst) + 1;
 }
 
 void SmcTracker::EndJit(const RuntimeToken& token) {

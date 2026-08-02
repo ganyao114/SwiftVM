@@ -7,6 +7,7 @@
 #include <map>
 #include <mutex>
 #include "runtime/backend/jit_cache.h"
+#include "runtime/backend/link_manager.h"
 #include "runtime/backend/module.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/backend/translate_table.h"
@@ -51,6 +52,8 @@ public:
     // signal handler chain and drives invalidation of stale translations.
     [[nodiscard]] SmcTracker& GetSmcTracker() { return smc_tracker; }
     [[nodiscard]] SmcTracker& GetSmcTracker() const { return smc_tracker; }
+    [[nodiscard]] LinkManager& GetLinkManager() { return link_manager; }
+    [[nodiscard]] const LinkManager& GetLinkManager() const { return link_manager; }
 
     // Syscall-layer hook (Phase 4): the guest is changing permissions or
     // unmapping/remapping [guest_start, guest_end) — synchronously
@@ -92,6 +95,7 @@ private:
     // mutable: SMC page records are tracking metadata, mutated through the
     // signal-handler / const-access paths (same pattern as GetTrampolines).
     mutable SmcTracker smc_tracker;
+    LinkManager link_manager{};
     std::unique_ptr<ir::UniformInfo> uniform_info{};
     std::unique_ptr<JitDiskCache> jit_disk_cache{};
 };

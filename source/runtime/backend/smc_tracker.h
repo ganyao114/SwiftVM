@@ -47,6 +47,10 @@ public:
                 : l1(table), exit_request(request) {}
 
         std::atomic<u64> active_epoch{kInactiveEpoch};
+        // Last code-patch generation for which this execution context has
+        // performed an instruction synchronization barrier.
+        std::atomic<u64> synced_patch_epoch{0};
+        std::atomic<u64> patch_sync_count{0};
         TranslateTable* l1{};
         // Points at State::exit_request. The Runtime owns State for at least
         // as long as this token remains registered.
@@ -77,6 +81,20 @@ public:
     void UnregisterRuntime(const RuntimeToken& token);
     void BeginJit(const RuntimeToken& token);
     void EndJit(const RuntimeToken& token);
+
+    // Internal direct-link hook. A delinker calls this only after restoring
+    // every BL and completing D/I-cache maintenance. P0-B tests drive it
+    // directly; production SMC wiring is intentionally deferred to P1. The
+    // same invalidation transaction must then advance global_epoch_ through
+    // Retire before releasing invalidation_mutex_; BeginJit's load order uses
+    // that publication chain to close its entry race with only one patch load.
+    [[nodiscard]] u64 AdvanceCodePatchEpoch();
+    [[nodiscard]] u64 GetCodePatchEpoch() const {
+        return code_patch_epoch_.load(std::memory_order_seq_cst);
+    }
+    [[nodiscard]] bool CanReclaimAtEpochForTest(u64 retire_epoch) const {
+        return CanReclaim(retire_epoch);
+    }
 
     // Called before the first guest thread is spawned. Single-threaded guests
     // leave runtime epochs inactive and retain their cheaper path.
@@ -220,6 +238,7 @@ private:
     mutable std::atomic_flag metadata_lock_ = ATOMIC_FLAG_INIT;
     std::mutex invalidation_mutex_{};
     std::atomic<u64> global_epoch_{1};
+    std::atomic<u64> code_patch_epoch_{1};
     std::atomic<size_t> pending_count_{0};
     std::atomic_bool multithreaded_{false};
     // SVM_SMC_DIRTY_HINT's lock-free CloseWriteWindow proof.

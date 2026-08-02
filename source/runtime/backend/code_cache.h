@@ -4,6 +4,7 @@
 #pragma once
 
 #include <limits>
+#include <memory>
 #include <optional>
 #include "dlmalloc/malloc.h"
 #include "runtime/backend/cache_clear.h"
@@ -12,6 +13,11 @@
 #include "runtime/include/config.h"
 
 namespace swift::runtime::backend {
+
+class LinkManager;
+namespace arm64 {
+struct RegionLinkContext;
+}
 
 using CodeRegionId = u64;
 
@@ -65,6 +71,16 @@ public:
     [[nodiscard]] u8* GetRWPtr(const u8* exec_ptr);
     [[nodiscard]] const CodeRegion& GetRegion() const { return region; }
 
+    // Explicit P0-B initialization: production Forward emission remains
+    // untouched. P1 may call this before registering any site in the region.
+    [[nodiscard]] bool InitializeRegionTrampoline(LinkManager& manager,
+                                                  void* return_host,
+                                                  void* dispatcher);
+    [[nodiscard]] void* GetRegionTrampoline() const;
+    [[nodiscard]] arm64::RegionLinkContext* GetRegionLinkContext() const {
+        return region_link_context_.get();
+    }
+
 private:
     void Init();
 
@@ -78,6 +94,7 @@ private:
     u8* code_mem_mapped{};
     u8* code_cursor{};
     CodeRegion region{};
+    std::unique_ptr<arm64::RegionLinkContext> region_link_context_{};
 };
 
 }  // namespace swift::runtime::backend

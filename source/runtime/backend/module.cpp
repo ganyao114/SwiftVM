@@ -255,6 +255,20 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size) {
     auto ref = code_caches.try_emplace(
             current_code_cache, address_space.GetConfig(),
             std::max(ModuleCodeCacheSize(size), kMinCodeCacheSize));
+    if (DirectLinkV2Enabled()) {
+        // P0-B reserves the final-form per-region cold trampoline, but does
+        // not register or emit any production Forward site. return_host is
+        // also the dispatcher gate when halt_reason remains zero.
+        const auto return_host = reinterpret_cast<void*>(
+                address_space.GetTrampolines().GetReturnHost());
+        if (!ref.first->second.InitializeRegionTrampoline(
+                    address_space.GetLinkManager(), return_host, return_host)) {
+            LOG_WARNING("SVM_DIRECT_LINK_V2: region {} ({} bytes) cannot host an imm26-wide "
+                        "trampoline; this region remains unlinked",
+                        ref.first->second.GetRegion().id,
+                        ref.first->second.GetRegion().capacity);
+        }
+    }
     current_code_cache++;
     return {ref.first->first, *ref.first->second.AllocCode(size)};
 }
