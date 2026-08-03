@@ -56,6 +56,19 @@ struct ExecProfileCounters {
     u64 region_fallthroughs{};
 };
 
+constexpr size_t kExecutionTraceEntryCount = 32;
+
+struct ExecutionTraceEntry {
+    u64 guest_rip{};
+    u64 guest_rsp{};
+};
+
+struct ExecutionTraceBuffer {
+    // 先写条目再推进 next；同步故障处理器因此只会读取完整条目。
+    alignas(8) std::atomic<u64> next{};
+    std::array<ExecutionTraceEntry, kExecutionTraceEntryCount> entries{};
+};
+
 // Both execution-side probes share State::interface. ExecProfileCounters is
 // deliberately first so SVM_EXEC_PROF's existing offsets and generated code
 // remain byte-identical when the W71 probe is off.
@@ -73,6 +86,8 @@ struct RuntimeProfileInterface {
     // Diagnostic-only direct-helper timing buffer. It is allocated per
     // Runtime, so the sampled JIT path never contends with another thread.
     FpcrTimingBuffer* fpcr_timing{};
+    // 仅 SVM_EXEC_TRACE 使用；每个 Runtime 独占，信号处理器只读。
+    ExecutionTraceBuffer* execution_trace{};
 };
 
 union CPUFlags {
@@ -214,5 +229,7 @@ constexpr u32 profile_offset_fpcr_tax =
         offsetof(RuntimeProfileInterface, fpcr_tax);
 constexpr u32 profile_offset_fpcr_timing =
         offsetof(RuntimeProfileInterface, fpcr_timing);
+constexpr u32 profile_offset_execution_trace =
+        offsetof(RuntimeProfileInterface, execution_trace);
 
 }  // namespace swift::runtime::backend

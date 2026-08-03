@@ -59,9 +59,16 @@ class GuestMemory : public runtime::MemoryInterface {
 public:
     // Guest page size reported to the guest (AT_PAGESZ, mmap/brk rounding).
     static constexpr u64 kGuestPageSize = 0x1000;
-    // Host page granularity on macOS arm64 is 16KB; all mappings must be
-    // aligned to this.
+    // macOS arm64 使用 16KB 宿主页；当前 Linux 启动器运行在 4KB 页环境。
+    // 不能把 Darwin 粒度带到 identity：mmap 只保证按 Linux 宿主页对齐，
+    // 用 16KB 向下取整会把相邻的翻译器映射一起交给 munmap。
+#if defined(__APPLE__)
     static constexpr u64 kHostPageSize = 0x4000;
+    static constexpr u32 kHostPageShift = 14;
+#else
+    static constexpr u64 kHostPageSize = 0x1000;
+    static constexpr u32 kHostPageShift = 12;
+#endif
 
     // --- Bounded guest window (address-space isolation) -------------------
     // Default number of guest address bits. 32 is special-cased everywhere it
@@ -262,7 +269,6 @@ private:
         const u64 page = (addr & mask_) >> kHostPageShift;
         return (page_bitmap_[page >> 6].load(std::memory_order_relaxed) >> (page & 63)) & 1;
     }
-    static constexpr u32 kHostPageShift = 14;  // kHostPageSize == 1 << 14
     static_assert(kHostPageSize == (u64(1) << kHostPageShift));
     // calloc, not new[]: at the 47-bit maximum the bitmap is 1 GiB and
     // value-initializing it would fault in every page. calloc hands back

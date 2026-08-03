@@ -140,6 +140,8 @@ public:
 #undef INST
 
 private:
+    void EmitExecutionTrace(u64 guest_rip);
+
     enum class BoundarySubsequence : size_t {
         Prologue,
         TerminalMain,
@@ -438,6 +440,8 @@ private:
     bool backedge_flags{false};
     bool link_suffix_common{false};
     bool region_edges_active{false};
+    bool execution_trace_enabled{false};
+    int execution_trace_rsp_reg{-1};
     bool cur_block_is_call{};
     // Set by EmitSetLocation when the next guest location is a compile-time
     // constant, cleared by every other instruction (Translate(ir::Inst*)).

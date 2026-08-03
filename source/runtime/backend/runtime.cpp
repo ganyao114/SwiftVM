@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <unistd.h>
 #include <utility>
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/constant.h"
@@ -76,6 +77,12 @@ struct Runtime::Impl final {
         const char* exec_prof = std::getenv("SVM_EXEC_PROF");
         const bool exec_profile_enabled =
                 exec_prof && std::strcmp(exec_prof, "0") != 0;
+        const char* exec_trace = std::getenv("SVM_EXEC_TRACE");
+        execution_trace_enabled =
+                exec_trace && std::strcmp(exec_trace, "0") != 0;
+        if (execution_trace_enabled) {
+            profile_interface.execution_trace = &execution_trace;
+        }
         fpcr_tax_profile_enabled = FpcrTaxProfEnabled();
         fpcr_timing_enabled = FpcrTaxTimingEnabled();
         if (fpcr_timing_enabled) {
@@ -96,7 +103,7 @@ struct Runtime::Impl final {
         } else {
             state->l1_code_cache = l1_code_cache.Data();
         }
-        if (exec_profile_enabled || hot_coalesce_enabled ||
+        if (exec_profile_enabled || execution_trace_enabled || hot_coalesce_enabled ||
             fpcr_tax_profile_enabled || fpcr_timing_enabled) {
             state->interface = &profile_interface;
         }
@@ -273,6 +280,9 @@ struct Runtime::Impl final {
         if (sig != SIGSEGV && sig != SIGBUS) {
             return false;  // SIGILL in JIT code is a host codegen bug: crash
         }
+        if (self->execution_trace_enabled) {
+            self->DumpExecutionTrace(uctx, sig, info);
+        }
         const auto host_pc = reinterpret_cast<u8*>(backend::SignalHandler::GetContextPC(uctx));
         backend::FaultEntry entry{};
         if (!self->address_space->LookupFault(host_pc, entry)) {
@@ -301,6 +311,57 @@ struct Runtime::Impl final {
                                                            .GetReturnHost());
         backend::SignalHandler::SetContextPC(uctx, recovery_pc);
         return true;
+    }
+
+    void DumpExecutionTrace(const ucontext_t* uctx,
+                            int sig,
+                            const siginfo_t* info) const {
+        // 诊断开关专用。沿用默认故障处理器的栈缓冲区加 write 形态，
+        // 不分配内存，也不触碰 GuestMemory 的映射锁。
+        char line[256];
+        const auto next = execution_trace.next.load(std::memory_order_acquire);
+        const auto count = std::min<u64>(next, backend::kExecutionTraceEntryCount);
+        int length = std::snprintf(
+                line,
+                sizeof(line),
+                "[svm-exec-trace] sig=%d host_pc=%p fault_addr=%p "
+                "guest_target=%#llx live_rsp=%#llx host_lr=%#llx next=%llu\n",
+                sig,
+                reinterpret_cast<void*>(backend::SignalHandler::GetContextPC(uctx)),
+                info ? info->si_addr : nullptr,
+                static_cast<unsigned long long>(state->current_loc.Value()),
+                static_cast<unsigned long long>(
+                        backend::SignalHandler::GetContextGPR(uctx, 19)),
+                static_cast<unsigned long long>(
+                        backend::SignalHandler::GetContextGPR(uctx, 30)),
+                static_cast<unsigned long long>(next));
+        if (length > 0) {
+            const auto unused = write(STDERR_FILENO,
+                                      line,
+                                      static_cast<size_t>(
+                                              std::min<int>(length,
+                                                            sizeof(line) - 1)));
+            (void) unused;
+        }
+        for (u64 sequence = next - count; sequence < next; ++sequence) {
+            const auto& entry = execution_trace.entries[
+                    sequence & (backend::kExecutionTraceEntryCount - 1)];
+            length = std::snprintf(
+                    line,
+                    sizeof(line),
+                    "[svm-exec-trace] #%llu guest_rip=%#llx guest_rsp=%#llx\n",
+                    static_cast<unsigned long long>(sequence),
+                    static_cast<unsigned long long>(entry.guest_rip),
+                    static_cast<unsigned long long>(entry.guest_rsp));
+            if (length > 0) {
+                const auto unused = write(
+                        STDERR_FILENO,
+                        line,
+                        static_cast<size_t>(
+                                std::min<int>(length, sizeof(line) - 1)));
+                (void) unused;
+            }
+        }
     }
 
     void SetLocation(LocationDescriptor location) const {
@@ -535,11 +596,13 @@ struct Runtime::Impl final {
     std::atomic_bool running{true};
     backend::Trampolines::RuntimeEntry jit_entry{};
     backend::RuntimeProfileInterface profile_interface{};
+    backend::ExecutionTraceBuffer execution_trace{};
     std::vector<u64> hot_coalesce_counters{};
     std::unique_ptr<FpcrTimingBuffer> fpcr_timing{};
     bool hot_coalesce_enabled{};
     bool fpcr_tax_profile_enabled{};
     bool fpcr_timing_enabled{};
+    bool execution_trace_enabled{};
     mutable bool exec_profile_started{};
     mutable std::chrono::steady_clock::time_point exec_profile_start{};
     // Signal handlers run on the interrupted guest thread and cannot recover

@@ -108,6 +108,7 @@ public:
 
     // --- ucontext accessors (OS/arch abstraction) --------------------------
     static std::uintptr_t GetContextPC(const ucontext_t* uctx);
+    static std::uintptr_t GetContextGPR(const ucontext_t* uctx, u32 index);
     static void SetContextPC(ucontext_t* uctx, std::uintptr_t pc);
 
 private:

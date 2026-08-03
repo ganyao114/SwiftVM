@@ -67,6 +67,8 @@ JitContext::JitContext(const std::shared_ptr<Module>& module,
 #endif
     const char* prof = std::getenv("SVM_EXEC_PROF");
     exec_profile_enabled = prof && std::strcmp(prof, "0") != 0;
+    const char* trace = std::getenv("SVM_EXEC_TRACE");
+    execution_trace_enabled = trace && std::strcmp(trace, "0") != 0;
     if (exec_profile_enabled) {
         if (const char* pad = std::getenv("SVM_EXEC_ACCESS_PAD")) {
             exec_access_pad = static_cast<u32>(std::min(std::strtoul(pad, nullptr, 10), 64ul));
@@ -94,6 +96,29 @@ void JitContext::RecordExecCounter(u32 offset, u32 amount) {
     __ Ldr(ip1, MemOperand(ip0, offset));
     __ Add(ip1, ip1, amount);
     __ Str(ip1, MemOperand(ip0, offset));
+}
+
+void JitContext::RecordExecutionTrace(u64 guest_rip,
+                                      const XRegister& guest_rsp) {
+    if (!execution_trace_enabled) return;
+    static_assert((kExecutionTraceEntryCount &
+                   (kExecutionTraceEntryCount - 1)) == 0);
+    static_assert(offsetof(ExecutionTraceBuffer, next) == 0);
+    static_assert(sizeof(ExecutionTraceEntry) == 16);
+
+    // 该探针只在块入口运行，此时动态值尚未装入 x14-x17。先写完整条目，
+    // 再用 release store 发布序号，信号处理器不会看到半写条目。
+    __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
+    __ Ldr(ip0, MemOperand(ip0, profile_offset_execution_trace));
+    __ Ldr(ip1, MemOperand(ip0, offsetof(ExecutionTraceBuffer, next)));
+    __ And(ip2, ip1, kExecutionTraceEntryCount - 1);
+    __ Add(ip2, ip0, Operand(ip2, LSL, 4));
+    __ Mov(ip3, guest_rip);
+    __ Stp(ip3,
+           guest_rsp,
+           MemOperand(ip2, offsetof(ExecutionTraceBuffer, entries)));
+    __ Add(ip1, ip1, 1);
+    __ Stlr(ip1, MemOperand(ip0));
 }
 
 void JitContext::RecordFpcrTaxCounter(FpcrTaxCounter counter) {

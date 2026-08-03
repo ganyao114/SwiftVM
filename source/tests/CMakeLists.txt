@@ -6,6 +6,7 @@ add_executable(swift_test
         direct_link_production_test.cpp
         jit_cache_direct_link_test.cpp
         main_case.cpp
+        ../translator/linux/guest_memory.cpp
         smc_tracker_test.cpp
         # Decoder-level tests: no Unicorn dependency, so they build and run even
         # where the differential fuzz below is skipped.

@@ -175,6 +175,21 @@ std::uintptr_t SignalHandler::GetContextPC(const ucontext_t* uctx) {
 #endif
 }
 
+std::uintptr_t SignalHandler::GetContextGPR(const ucontext_t* uctx, u32 index) {
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (index < 29) return uctx->uc_mcontext->__ss.__x[index];
+    if (index == 29) return uctx->uc_mcontext->__ss.__fp;
+    if (index == 30) return uctx->uc_mcontext->__ss.__lr;
+    return 0;
+#elif defined(__linux__) && defined(__aarch64__)
+    return index < 31 ? uctx->uc_mcontext.regs[index] : 0;
+#else
+    (void) uctx;
+    (void) index;
+    return 0;
+#endif
+}
+
 void SignalHandler::SetContextPC(ucontext_t* uctx, std::uintptr_t pc) {
 #if defined(__APPLE__) && defined(__aarch64__)
     uctx->uc_mcontext->__ss.__pc = pc;

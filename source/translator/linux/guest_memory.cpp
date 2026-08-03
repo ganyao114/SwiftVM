@@ -316,8 +316,21 @@ void GuestMemory::Unmap(VAddr addr, u64 size) {
         TrackUnmap(base, end - base);
         return;
     }
-    munmap(ToHost(base), end - base);
-    TrackUnmap(base, end - base);
+
+    // 恒等模式与翻译器共享宿主地址空间。Linux 允许对 guest 未映射区间执行
+    // munmap；若把数值地址原样转交内核，可能误拆同址的翻译器映射，尤其是
+    // JIT RX code cache。因此只释放本 GuestMemory 确实发布过的交集。
+    std::unique_lock guard(mapped_regions_mutex);
+    for (const auto& region : mapped_regions) {
+        if (region.second <= base) continue;
+        if (region.first >= end) break;
+        const VAddr mapped_begin = std::max(base, region.first);
+        const VAddr mapped_end = std::min(end, region.second);
+        if (mapped_begin < mapped_end) {
+            munmap(ToHost(mapped_begin), mapped_end - mapped_begin);
+        }
+    }
+    TrackUnmapLocked(base, end - base);
 }
 
 bool GuestMemory::Protect(VAddr addr, u64 size, bool read, bool write, bool exec) {

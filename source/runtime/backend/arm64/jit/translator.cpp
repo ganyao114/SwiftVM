@@ -333,6 +333,24 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     if (const char* common = PerfGetenv("SVM_LINK_SUFFIX_COMMON")) {
         link_suffix_common = std::strcmp(common, "0") != 0;
     }
+    execution_trace_enabled = context.ExecutionTraceEnabled();
+    if (execution_trace_enabled) {
+        for (const auto& desc : config.buffers_static_alloc) {
+            if (!desc.is_float && desc.size == sizeof(u64) &&
+                desc.offset == offsetof(swift::x86::ThreadContext64, rsp)) {
+                execution_trace_rsp_reg = desc.reg;
+                break;
+            }
+        }
+        // 当前探针只定义了 x86/x86-64 的 RSP 语义；其他前端不发探针码。
+        execution_trace_enabled = execution_trace_rsp_reg >= 0;
+    }
+}
+
+void JitTranslator::EmitExecutionTrace(u64 guest_rip) {
+    if (!execution_trace_enabled) return;
+    context.RecordExecutionTrace(guest_rip,
+                                 XRegister(execution_trace_rsp_reg));
 }
 
 void JitTranslator::CollectRegionTargets(const ir::Terminal& terminal,
@@ -955,6 +973,7 @@ void JitTranslator::Translate(ir::Block* block) {
         context.BeginBackedgeBody();
         backedge_host_begin = context.CurrentBufferSize();
     }
+    EmitExecutionTrace(block->GetStartLocation().Value());
     // Count the remaining x86 GPR uniform-buffer traffic dynamically without
     // instrumenting each access: add the block's static emitted access count
     // once on entry. ThreadContext64 begins with the 16 8-byte GPRs, so the

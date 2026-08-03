@@ -171,13 +171,52 @@ TEST_CASE("identity image collision performs one bounded-bias fallback") {
     REQUIRE(fallback_attempts == 0);
 }
 
+TEST_CASE("identity guest unmap preserves untracked host mappings") {
+    using swift::linux::GuestMemory;
+
+#if defined(__APPLE__)
+    STATIC_REQUIRE(GuestMemory::kHostPageSize == 0x4000);
+#else
+    STATIC_REQUIRE(GuestMemory::kHostPageSize == GuestMemory::kGuestPageSize);
+#endif
+    constexpr size_t size = GuestMemory::kHostPageSize;
+    auto* host = static_cast<swift::u8*>(
+            mmap(nullptr,
+                 size,
+                 PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS,
+                 -1,
+                 0));
+    REQUIRE(host != MAP_FAILED);
+    host[0] = 0x5a;
+
+    GuestMemory memory;
+    memory.EnableIdentityMode();
+    const auto untracked = reinterpret_cast<swift::VAddr>(host);
+    REQUIRE_FALSE(memory.RangeIsMapped(untracked, size));
+    memory.Unmap(untracked, size);
+
+    // Linux 允许对 guest 未映射区间执行 munmap。恒等模式下它必须保持 guest
+    // no-op，不能误拆翻译器拥有的同数值宿主映射。
+    host[0] ^= 0xff;
+    REQUIRE(host[0] == 0xa5);
+    REQUIRE(mprotect(host, size, PROT_READ | PROT_WRITE) == 0);
+    REQUIRE(munmap(host, size) == 0);
+
+    const auto tracked = memory.MapAnywhere(size);
+    REQUIRE(tracked != 0);
+    REQUIRE(memory.RangeIsMapped(tracked, size));
+    memory.Unmap(tracked, size);
+    REQUIRE_FALSE(memory.RangeIsMapped(tracked, size));
+}
+
 TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 69);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 70);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_REGION_EDGES");
+            "SVM_EXEC_TRACE");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));

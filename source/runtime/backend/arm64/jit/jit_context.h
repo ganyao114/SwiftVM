@@ -176,6 +176,8 @@ public:
 
     [[nodiscard]] bool ExecProfileEnabled() const { return exec_profile_enabled; }
     void RecordExecCounter(u32 state_offset, u32 amount = 1);
+    [[nodiscard]] bool ExecutionTraceEnabled() const { return execution_trace_enabled; }
+    void RecordExecutionTrace(u64 guest_rip, const XRegister& guest_rsp);
     void RecordFpcrTaxCounter(FpcrTaxCounter counter);
     [[nodiscard]] bool HotCoalesceEnabled() const { return hot_coalesce_enabled; }
     void FinishHotCoalesceBlock();
@@ -251,6 +253,7 @@ private:
     bool host_bytes_dumped{};
     bool ra_shape_submitted{};
     bool exec_profile_enabled{};
+    bool execution_trace_enabled{};
     bool fpcr_tax_profile_enabled{};
     bool hot_coalesce_enabled{};
     bool density_profile_enabled{};
