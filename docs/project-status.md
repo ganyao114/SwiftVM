@@ -271,6 +271,7 @@ baseline3 = W37/W38/W39/W40 全部落地后的站位（当前权威基线）。�
 - **优化 `DecodeVexInsn` 裸解析器（W7，2026-07-30）**：仅 3.35 ns/次；AVX 路径的成本在 handler/lowering（143.5 ns/条），不在字节解析，无主体。
 - **distorm 整体替换（W7，2026-07-30 降级）**：实测 distorm 仅占 decode 14.7%，替换上限 ≈ 翻译总耗时 1.7%，工程风险与正确性面高于 top-N 通道，降为二级项目，不排在 lowering 之前。
 - **lowering regvalue/flags 决策开销压缩（W9，2026-07-30）**：四个候选（R/V offset 预计算、NarrowTo 本地尺寸表、flags 条件表简化、GetValueSizeByte 移位）单项收益全部低于噪声，总账两语料方向相反（func_tests translate −0.83% / real_busy +1.24%，15–21 轮交错中位数），全部撤回、工作树零改动。结论：lowering 簿记开销在当前粒度压无可压，decode 线簿记层面封顶；剩余仅 top-N distorm 快速通道（~0.8%）与分发压扁（~0.2%）两个小项。
+- **通用 RA coalescing pass（2026-08-04，逐条存活性审计后否掉）**：move/宽度桥桶（coremark 39.49%/smallpt 29.51%/STREAM 19.35% 动态，W71 口径同基线重测）按「源在该 mov 后即死/可并区间/pin 家冲突/ABI-scratch/真语义」五类逐条归因，与 W71 分类器闭合到 3e-7。**普通 coalescing（不动驻留模型）可消池 = a+b：coremark 0.805%、smallpt 2.200%、STREAM ≈0**，三语料均低于 5% 立项门 → NO-GO。桶主体是 **c 类 fixed-home/pin 发布**（coremark 19.29%/smallpt 5.81%/STREAM 2.92%）+ e 类真语义转换与常量料化（19.07%/21.18%/16.43%）；c 类不是 pass 能消的，它是驻留模型的产物——FEX 靠 fixed-home SRA 让「发布」零发射，对应 GPR 全量 static 映射方向（本审计把该方向的 move 侧可消池量化为 a+b+c = 20.10%/8.01%/2.92%）。幸存原因（file:line 已取证）：`register_alloc_pass.cpp:302-329` 只有四个定向 tie 无通用 coalescing；W88 白名单 840-851 仅认两种宽度链；`TryTieGPR` 935-974 要求 `live.end==current.start`（b 类必拒）。若未来因其它需求共摊成本，唯一相对集中子类是 smallpt scalar-FP exact tie。审计报告 `/private/tmp/move-coalesce-audit-report.md`；探针 `SVM_MOVE_COALESCE_AUDIT` 默认 OFF 只读、uncommitted 留存 w65。
 
 ---
 
