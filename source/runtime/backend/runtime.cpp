@@ -223,7 +223,7 @@ struct Runtime::Impl final {
     // SMC write-protect fault handler (SignalHandler chain, priority 0 —
     // ahead of the JIT guest-fault recovery). A guest store to a guest page
     // holding translated code faults on the write protection installed by
-    // SmcTracker::RegisterNode. Direct-v2 generations are deactivated and
+    // SmcTracker::RegisterNode. Direct-link generations are deactivated and
     // incoming branches restored synchronously before the page becomes RW;
     // dispatch clearing also happens here. Node detach and epoch reclamation
     // remain deferred to CloseWriteWindow after the current JitRun returns.
@@ -447,12 +447,6 @@ struct Runtime::Impl final {
             if (auto cache = hr != HaltReason::CacheMiss ? address_space->GetCodeCache(current_loc)
                                                          : nullptr;
                 cache) {
-                if (hr == HaltReason::BlockLinkage) {
-                    // Do linkage
-                    auto linkage_cache_place = state->blocking_linkage_address;
-                    auto pre_block_vaddr = state->prev_loc.Value();
-                    LinkBlock(pre_block_vaddr, linkage_cache_place, current_loc, cache);
-                }
                 // JIT Run!
                 const bool manage_guest_fpcr =
                         address_space->GetConfig().sse_afp_nan;
@@ -481,10 +475,9 @@ struct Runtime::Impl final {
                 // translations are invalidated now — the guest is back on
                 // the host side, so freeing JIT code and editing module
                 // maps is safe. Runs before the hr checks so it also covers
-                // the CodeMiss/CacheMiss exits. NOTE: with DirectBlockLink
-                // disabled HaltReason::BlockLinkage is never produced; if it
-                // is ever enabled, the linkage patch below must be ordered
-                // against invalidation of the *previous* block.
+                // the CodeMiss/CacheMiss exits. Direct links have already
+                // been restored by the signal-window transaction before any
+                // retired allocation can become reclaimable.
                 smc.CloseWriteWindow(*address_space, l1_code_cache);
                 if (BackedgeLatchEnabled()) {
                     AcknowledgeSmcRequest(observed);
@@ -501,7 +494,7 @@ struct Runtime::Impl final {
                 // IR Interpreter
                 hr = Interpreter();
             }
-            if (hr == HaltReason::CacheMiss || hr == HaltReason::BlockLinkage) {
+            if (hr == HaltReason::CacheMiss) {
                 continue;
             } else {
                 break;
@@ -511,30 +504,13 @@ struct Runtime::Impl final {
         // interrupt lands between two Run() calls, the loop above is skipped;
         // returning None would make the consumer retry Run() forever without
         // reaching ClearInterrupt(). Preserve the interrupt as the only valid
-        // reason for this empty-loop exit. CacheMiss and BlockLinkage keep
-        // their existing in-loop continue semantics.
+        // reason for this empty-loop exit. CacheMiss keeps its existing
+        // in-loop continue semantics.
         if (hr == HaltReason::None &&
             !running.load(std::memory_order_acquire)) {
             return HaltReason::Signal;
         }
         return hr;
-    }
-
-    bool LinkBlock(LocationDescriptor stub_vaddr,
-                   void* link_stub,
-                   LocationDescriptor target_vaddr,
-                   void* target_cache) const {
-        auto src_module = address_space->GetModule(stub_vaddr);
-        auto dest_module = address_space->GetModule(target_vaddr);
-        if (!src_module && src_module != dest_module) {
-            return false;
-        }
-        auto code_cache = dest_module->GetCodeCache(static_cast<u8*>(link_stub));
-        if (auto rw_ptr = code_cache->GetRWPtr(stub_vaddr); rw_ptr) {
-            return address_space->GetTrampolines().LinkBlock(
-                    static_cast<u8*>(link_stub), static_cast<u8*>(target_cache), rw_ptr, true);
-        }
-        return false;
     }
 
     Instance* instance{};
@@ -813,19 +789,19 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     PerfScope2 perf_pub_alloc{GetPerfStats2().publish_alloc};
     backend::arm64::JitContext* emitted_context = &context;
     backend::arm64::JitTranslator* emitted_translator = &translator;
-    std::optional<backend::arm64::JitContext> legacy_context;
-    std::optional<backend::arm64::JitTranslator> legacy_translator;
+    std::optional<backend::arm64::JitContext> fallback_context;
+    std::optional<backend::arm64::JitTranslator> fallback_translator;
     auto allocation = module->AllocCodeCache(buffer_size, context.HasDirectLinkSites());
     if (allocation.first == backend::INVALID_CACHE_ID && context.HasDirectLinkSites()) {
         // A unit too large for a <=128MiB trampoline region must not become a
-        // half-direct translation or fail solely because v2 was requested.
+        // half-direct translation or fail solely because direct linking was selected.
         // Re-emit the entire unit with the legacy slot leaf and allocate it
         // under the existing unrestricted arena policy.
-        legacy_context.emplace(module, reg_alloc, false);
-        legacy_translator.emplace(*legacy_context);
-        legacy_translator->Translate(function);
-        emitted_context = &*legacy_context;
-        emitted_translator = &*legacy_translator;
+        fallback_context.emplace(module, reg_alloc, false);
+        fallback_translator.emplace(*fallback_context);
+        fallback_translator->Translate(function);
+        emitted_context = &*fallback_context;
+        emitted_translator = &*fallback_translator;
         buffer_size = emitted_context->CurrentBufferSize();
         allocation = module->AllocCodeCache(buffer_size, false);
     }
@@ -1003,15 +979,15 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     auto buffer_size = context.CurrentBufferSize();
     backend::arm64::JitContext* emitted_context = &context;
     backend::arm64::JitTranslator* emitted_translator = &translator;
-    std::optional<backend::arm64::JitContext> legacy_context;
-    std::optional<backend::arm64::JitTranslator> legacy_translator;
+    std::optional<backend::arm64::JitContext> fallback_context;
+    std::optional<backend::arm64::JitTranslator> fallback_translator;
     auto allocation = module->AllocCodeCache(buffer_size, context.HasDirectLinkSites());
     if (allocation.first == backend::INVALID_CACHE_ID && context.HasDirectLinkSites()) {
-        legacy_context.emplace(module, reg_alloc, false);
-        legacy_translator.emplace(*legacy_context);
-        legacy_translator->Translate(block->GetBlock());
-        emitted_context = &*legacy_context;
-        emitted_translator = &*legacy_translator;
+        fallback_context.emplace(module, reg_alloc, false);
+        fallback_translator.emplace(*fallback_context);
+        fallback_translator->Translate(block->GetBlock());
+        emitted_context = &*fallback_context;
+        emitted_translator = &*fallback_translator;
         buffer_size = emitted_context->CurrentBufferSize();
         allocation = module->AllocCodeCache(buffer_size, false);
     }
@@ -1076,15 +1052,15 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     PerfScope2 perf_pub_alloc{GetPerfStats2().publish_alloc};
     backend::arm64::JitContext* emitted_context = &context;
     backend::arm64::JitTranslator* emitted_translator = &translator;
-    std::optional<backend::arm64::JitContext> legacy_context;
-    std::optional<backend::arm64::JitTranslator> legacy_translator;
+    std::optional<backend::arm64::JitContext> fallback_context;
+    std::optional<backend::arm64::JitTranslator> fallback_translator;
     auto allocation = module->AllocCodeCache(buffer_size, context.HasDirectLinkSites());
     if (allocation.first == backend::INVALID_CACHE_ID && context.HasDirectLinkSites()) {
-        legacy_context.emplace(module, reg_alloc, false);
-        legacy_translator.emplace(*legacy_context);
-        legacy_translator->Translate(block.get());
-        emitted_context = &*legacy_context;
-        emitted_translator = &*legacy_translator;
+        fallback_context.emplace(module, reg_alloc, false);
+        fallback_translator.emplace(*fallback_context);
+        fallback_translator->Translate(block.get());
+        emitted_context = &*fallback_context;
+        emitted_translator = &*fallback_translator;
         buffer_size = emitted_context->CurrentBufferSize();
         allocation = module->AllocCodeCache(buffer_size, false);
     }

@@ -16,8 +16,6 @@ class TrampolinesRiscv64 : public Trampolines {
 public:
     explicit TrampolinesRiscv64(const Config& config);
 
-    bool LinkBlock(u8* source, u8* target, u8* source_rw, bool pic) override;
-
 private:
     void Build();
 

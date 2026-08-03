@@ -12,7 +12,7 @@
 //  - Another guest CPU may finish code it entered before invalidation.
 //  - Every per-Runtime L1 and the shared AddressSpace L2 are cleared, so a
 //    later dispatch cannot newly enter the retired translation.
-//  - Direct-v2 inter-block edges are synchronously restored to their region
+//  - Direct inter-block edges are synchronously restored to their region
 //    trampoline by the write-fault handler. Intra-function/self-label edges
 //    remain local and may finish until the next existing safepoint.
 //
@@ -104,7 +104,7 @@ public:
     void EnableMultithreading();
 
     // Signal-handler path. Before opening the page it atomically deactivates
-    // each target generation, restores direct-v2 incoming sites, advances the
+    // each target generation, restores direct incoming sites, advances the
     // code-patch epoch, and eagerly zeroes shared/L1 dispatch slots.
     bool HandleWriteFault(AddressSpace& space,
                           TranslateTable& current_l1,

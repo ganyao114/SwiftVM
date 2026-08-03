@@ -21,7 +21,8 @@ enum class HaltReason : std::uint32_t {
     CodeMiss = 0x00000008,
     ModuleMiss = 0x000000010,
     CacheMiss = 0x00000020,
-    BlockLinkage = 0x00000040,
+    // Reserved ABI value: the old untracked linkage patcher was removed.
+    ReservedLinkage = 0x00000040,
     IllegalCode = 0x00000080,
     CallHost = 0x000000100
 };

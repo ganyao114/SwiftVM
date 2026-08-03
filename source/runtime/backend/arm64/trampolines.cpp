@@ -614,40 +614,6 @@ void TrampolinesArm64::BuildRestoreStaticUniform(MacroAssembler& assembler) {
     }
 }
 
-bool TrampolinesArm64::LinkBlock(u8* source, u8* target, u8* source_rw, bool pic) {
-    constexpr auto _4K = 1 << 12;
-    constexpr auto _128MB = 1ULL << 27;
-    constexpr auto _4G = 1ULL << 32;
-    s64 offset = target - source;
-    MacroAssembler masm{};
-    if (std::abs(offset) >= _4G) {
-        if (pic) {
-            return false;
-        }
-        masm.Mov(ip, reinterpret_cast<VAddr>(target));
-        masm.Br(ip);
-    } else if (std::abs(offset) >= _128MB) {
-        auto page_offset = reinterpret_cast<VAddr>(target) % _4K;
-        Label label{};
-        masm.Adrp(ip, &label);
-        masm.Add(ip, ip, page_offset);
-        masm.Br(ip);
-        masm.BindToOffset(&label, offset);
-    } else {
-        Label label{};
-        masm.B(&label);
-        masm.BindToOffset(&label, offset);
-    }
-    masm.FinalizeCode();
-    memcpy(source_rw,
-           masm.GetBuffer()->GetStartAddress<void*>(),
-           masm.GetBuffer()->GetSizeInBytes());
-    ClearDCache(source_rw, 4 * 5);
-    ClearDCache(target, 4 * 5);
-    ClearICache(target, 4 * 5);
-    return true;
-}
-
 void TrampolinesArm64::CallHostTrampoline(TrampolinesArm64* thiz, State* ctx) {
     auto pc = ctx->current_loc.Value();
     HostFunction* function{};

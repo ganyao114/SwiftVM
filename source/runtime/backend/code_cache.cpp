@@ -96,8 +96,8 @@ bool CodeCache::InitializeRegionTrampoline(LinkManager& manager,
         return true;
     }
     // Merely placing a trampoline "inside" a region is insufficient once the
-    // region spans more than one imm26 window. Production callers leave v2
-    // disabled for such a region and retain the legacy slot leaf.
+    // region spans more than one imm26 window. Production callers re-emit
+    // such a unit with the dispatch-slot leaf.
     if (config.backend_isa != kArm64 || !return_host || !dispatcher ||
         region.capacity > kImm26Window) {
         return false;
@@ -158,6 +158,17 @@ std::optional<CodeBuffer> CodeCache::AllocCode(size_t size) {
         }
     } else {
         result = reinterpret_cast<u8*>(mspace_memalign(space_code, inst_alignment, size));
+        // create_mspace_with_base grows from the system when its supplied
+        // arena is exhausted. JIT code outside this dual-mapped CodeRegion
+        // has no RX alias and can also escape the region trampoline's imm26
+        // window, so reject and release such a chunk.
+        const auto base = reinterpret_cast<uintptr_t>(code_mem->GetMemory());
+        const auto address = reinterpret_cast<uintptr_t>(result);
+        if (result &&
+            (address < base || size > max_size || address - base > max_size - size)) {
+            mspace_free(space_code, result);
+            result = nullptr;
+        }
     }
     if (!result) {
         return std::nullopt;

@@ -43,7 +43,7 @@ public:
 
     explicit JitContext(const std::shared_ptr<Module> &module,
                         RegAlloc& reg_alloc,
-                        std::optional<bool> direct_link_v2_override = std::nullopt);
+                        bool enable_direct_link = true);
 
     [[nodiscard]] CPUReg Get(const ir::Value& value);
     [[nodiscard]] bool HasAllocation(const ir::Value& value);
@@ -97,9 +97,8 @@ public:
                  Label* backedge_exit = nullptr,
                  Label* self_target = nullptr,
                  const LinkSuffixEmitter& suffix_emitter = {},
-                 bool allow_direct_link_v2 = false,
                  LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional);
-    [[nodiscard]] bool CanEmitDirectLinkV2(ir::Location location) const;
+    [[nodiscard]] bool CanEmitDirectLink(ir::Location location) const;
     [[nodiscard]] bool HasDirectLinkSites() const {
         return !pending_direct_link_sites.empty();
     }
@@ -250,7 +249,7 @@ private:
     bool fpcr_tax_profile_enabled{};
     bool hot_coalesce_enabled{};
     bool density_profile_enabled{};
-    bool direct_link_v2_active{};
+    bool direct_link_active{};
     bool density_nan_open{};
     u32 density_nan_start{};
     u32 density_nan_bytes{};

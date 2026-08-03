@@ -58,7 +58,7 @@ static_assert(kMaxSpillSlots == sizeof(State::spill_area) / sizeof(u64),
 
 JitContext::JitContext(const std::shared_ptr<Module>& module,
                        RegAlloc& reg_alloc,
-                       std::optional<bool> direct_link_v2_override)
+                       bool enable_direct_link)
         : module(module), reg_alloc(reg_alloc) {
 #if defined(__linux__) && !defined(__ANDROID__)
     const bool has_spill = reg_alloc.SpillCount() != 0;
@@ -79,12 +79,8 @@ JitContext::JitContext(const std::shared_ptr<Module>& module,
         return density && std::strcmp(density, "0") != 0;
     }();
     density_profile_enabled = density_enabled;
-    const bool direct_requested =
-            direct_link_v2_override.value_or(DirectLinkV2Enabled());
-    direct_link_v2_active =
-            direct_requested &&
-            module->GetModuleConfig().HasOpt(Optimizations::BlockLink) &&
-            module->PrepareDirectLinkV2Region();
+    direct_link_active = enable_direct_link && module->IsDirectLinkConfigured() &&
+            module->PrepareDirectLinkRegion();
 }
 
 void JitContext::RecordExecCounter(u32 offset, u32 amount) {
@@ -542,14 +538,6 @@ bool JitContext::ForwardStatic(ir::Location location) {
     if (!target_module || target_module != module) {
         return false;
     }
-    if (module->GetModuleConfig().HasOpt(Optimizations::DirectBlockLink)) {
-        if (auto code = target_module->GetJitCache(location.Value()); code) {
-            FlushSpillWrites();
-            __ Mov(ip, reinterpret_cast<VAddr>(code));
-            __ Br(ip);
-            return true;
-        }
-    }
     // The Ret this replaces leaves the translator without touching JitContext,
     // so a spilled def from the block's last instruction would never reach its
     // slot; branching straight to the next unit makes that visible.
@@ -582,23 +570,6 @@ std::optional<u64> JitContext::PlanForwardSuffix(ir::Location location) {
         return HaltReasonReturnSuffixEncoding();
     }
 
-    const bool self_module_forward{module == target_module};
-    const ModuleConfig& module_config{module->GetModuleConfig()};
-    const ModuleConfig& target_module_config{target_module->GetModuleConfig()};
-    const bool direct_link{
-            (self_module_forward && module_config.HasOpt(Optimizations::DirectBlockLink)) ||
-            target_module_config.read_only};
-    if (direct_link) {
-        bool in_function{false};
-        if (cur_function) {
-            auto* target = cur_function->FindBlock(location.Value());
-            in_function = target && !(target->GetInstList().empty() &&
-                                      !target->HasTerminal());
-        }
-        if (in_function || target_module->GetJitCache(location.Value())) {
-            return std::nullopt;
-        }
-    }
     return CurrentLocationReturnSuffixEncoding();
 }
 
@@ -606,7 +577,6 @@ void JitContext::Forward(ir::Location location,
                          Label* backedge_exit,
                          Label* self_target,
                          const LinkSuffixEmitter& suffix_emitter,
-                         bool allow_direct_link_v2,
                          LinkSiteKind direct_link_kind) {
     ASSERT(cur_block);
     // Block exit: land any pending spill write-back before the transfer
@@ -642,10 +612,7 @@ void JitContext::Forward(ir::Location location,
 
         const bool self_module_forward{module == target_module};
         const ModuleConfig& module_config{module->GetModuleConfig()};
-        const ModuleConfig& target_module_config{target_module->GetModuleConfig()};
-
-        if (allow_direct_link_v2 && direct_link_v2_active && self_module_forward &&
-            module_config.HasOpt(Optimizations::BlockLink)) {
+        if (direct_link_active && self_module_forward) {
             // The final RX address is unknown until TranslateIR allocates its
             // CodeBuffer. Emit exactly one 4-byte BL placeholder and relocate
             // it to this allocation's region trampoline in Flush(). The site
@@ -656,69 +623,7 @@ void JitContext::Forward(ir::Location location,
             return;
         }
 
-        bool direct_link{
-                (self_module_forward && module_config.HasOpt(Optimizations::DirectBlockLink)) ||
-                target_module_config.read_only};
-
-        if (direct_link) {
-            bool in_function{false};
-            if (cur_function) {
-                auto* target = cur_function->FindBlock(location.Value());
-                // Lazy region compilation leaves undecoded successors in the
-                // function as empty, terminal-less blocks.  JitTranslator skips
-                // them, so their label is never bound and a B here would
-                // dangle.  Treat them as external: the code below then takes
-                // the dispatch-slot path, whose empty-slot arm returns to the
-                // dispatcher and gets the target compiled.
-                in_function = target && !(target->GetInstList().empty() &&
-                                          !target->HasTerminal());
-            }
-            if (in_function) {
-                // Intra-function branch: the target label is bound within
-                // this same code buffer by SetCurrent(block).
-                __ B(GetLabel(location.Value()));
-            } else {
-                if (auto code = target_module->GetJitCache(location.Value()); code) {
-                    // Target already compiled: branch directly via Mov+Br.
-                    // A plain B(label) cannot reach across code buffers;
-                    // Mov+Br is position-independent and SMC-safe (the
-                    // address is loaded at JIT time, not backpatched).
-                    __ Mov(ip, reinterpret_cast<VAddr>(code));
-                    __ Br(ip);
-                } else {
-                    // Target not yet compiled: fall back to the indirect
-                    // link (dispatch table) if available, otherwise the
-                    // dispatcher.  Backpatching a direct B here would dangle
-                    // after invalidation, so the target-not-yet-compiled arm
-                    // never patches code in place.
-                    if (self_module_forward &&
-                        module_config.HasOpt(Optimizations::BlockLink)) {
-                        u32 dispatcher_index = target_module->GetDispatchIndex(location);
-                        Label empty_slot;
-                        __ Mov(ipw, dispatcher_index);
-                        __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
-                        __ Cbz(ip, &empty_slot);
-                        RecordExecCounter(exec_offset_link_hit);
-                        __ Br(ip);
-                        __ Bind(&empty_slot);
-                        RecordExecCounter(exec_offset_link_miss);
-                        __ Mov(ip, location.Value());
-                        if (!suffix_emitter ||
-                            !suffix_emitter(CurrentLocationReturnSuffixEncoding())) {
-                            __ Str(ip, MemOperand(state, state_offset_current_loc));
-                            __ Ret();
-                        }
-                    } else {
-                        __ Mov(ip, location.Value());
-                        if (!suffix_emitter ||
-                            !suffix_emitter(CurrentLocationReturnSuffixEncoding())) {
-                            __ Str(ip, MemOperand(state, state_offset_current_loc));
-                            __ Ret();
-                        }
-                    }
-                }
-            }
-        } else if (self_module_forward && module_config.HasOpt(Optimizations::BlockLink)) {
+        if (self_module_forward && module_config.HasOpt(Optimizations::BlockLink)) {
             // Indirect link: jump straight to the target through the module's
             // dispatch-table slot. GetDispatchIndex reserves the slot (value 0)
             // for `location`; once the target is translated, PushCodeCache fills
@@ -766,8 +671,8 @@ void JitContext::Forward(ir::Location location,
     }
 }
 
-bool JitContext::CanEmitDirectLinkV2(ir::Location location) const {
-    if (!direct_link_v2_active || !cur_block ||
+bool JitContext::CanEmitDirectLink(ir::Location location) const {
+    if (!direct_link_active || !cur_block ||
         location == cur_block->GetStartLocation() ||
         (cur_function && location == cur_function->GetStartLocation())) {
         return false;

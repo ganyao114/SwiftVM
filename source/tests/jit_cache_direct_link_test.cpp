@@ -32,8 +32,8 @@ using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
 
-constexpr const char* kPhaseEnv = "DIRECT_LINK_P3_PHASE";
-constexpr const char* kDirEnv = "DIRECT_LINK_P3_DIR";
+constexpr const char* kPhaseEnv = "DIRECT_LINK_CACHE_PHASE";
+constexpr const char* kDirEnv = "DIRECT_LINK_CACHE_DIR";
 constexpr const char* kRoundTripTest =
         "disk cache v4 round trips direct-link sites across processes";
 
@@ -165,7 +165,6 @@ void RunCacheChildPhase(std::string_view phase) {
 #if defined(__aarch64__)
     const char* dir = std::getenv(kDirEnv);
     REQUIRE(dir != nullptr);
-    REQUIRE(setenv("SVM_DIRECT_LINK_V2", "1", 1) == 0);
     REQUIRE(setenv("SVM_JIT_CACHE", dir, 1) == 0);
     REQUIRE(setenv("SVM_BACKEDGE_FLAGS", "0", 1) == 0);
 
@@ -310,7 +309,7 @@ void RunCacheChildPhase(std::string_view phase) {
             REQUIRE(disk->Stats().units_loaded.load() == 0);
             REQUIRE(space.GetCodeCache(Location{source_guest}) == nullptr);
         } else {
-            FAIL("unknown P3 child phase");
+            FAIL("unknown direct-link cache child phase");
         }
     }
     REQUIRE(munmap(guest_memory, guest_size) == 0);

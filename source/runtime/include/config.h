@@ -43,8 +43,8 @@ enum class Optimizations : std::uint32_t {
     ConstantFolding = 1 << 4,
     StaticCode = 1 << 5,
     BlockLink = 1 << 6,
-    DirectBlockLink = 1 << 7,
-    StaticModuleOps = StaticCode | DirectBlockLink,
+    // Bit 7 stays reserved: the removed untracked-link mode used this value,
+    // and global_opts is part of persisted JIT/AOT validity keys.
     // Bit 8 stays reserved: global_opts is hashed into persisted JIT cache and
     // AOT validity keys, so reusing it would change the meaning of old keys.
     UniformElimination = 1 << 9,

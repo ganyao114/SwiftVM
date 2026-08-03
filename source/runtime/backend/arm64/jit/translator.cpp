@@ -443,7 +443,7 @@ void JitTranslator::PlanLinkSuffixes(const ir::Terminal& terminal) {
                 // EmitTerminal still consumes one suffix-plan site per leaf.
                 // Mixed conditional terminals therefore preserve commoning
                 // among only their residual legacy leaves.
-                encodings.push_back(context.CanEmitDirectLinkV2(term.next)
+                encodings.push_back(context.CanEmitDirectLink(term.next)
                                             ? std::nullopt
                                             : context.PlanForwardSuffix(term.next));
             } else if constexpr (std::is_same_v<T, ir::terminal::If> ||
@@ -794,7 +794,7 @@ void JitTranslator::Translate(ir::Block* block) {
     boundary_terminal_open = density;
     PlanLinkSuffixes(block->GetTerminal());
     if (!EmitBackedgeFlagsTerminal(block->GetTerminal())) {
-        EmitTerminal(block->GetTerminal(), true);
+        EmitTerminal(block->GetTerminal());
     }
     boundary_terminal_open = false;
     context.EndTerminalScratch();
@@ -1240,7 +1240,6 @@ void JitTranslator::EmitBackedgeColdPaths() {
                         nullptr,
                         nullptr,
                         {},
-                        true,
                         LinkSiteKind::BackedgeCold);
     }
 
@@ -1315,9 +1314,8 @@ void JitTranslator::EmitBackedgeExitStub() {
 }
 
 void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
-                                 bool allow_direct_link_v2,
                                  LinkSiteKind direct_link_kind) {
-    VisitVariant<void>(terminal, [this, allow_direct_link_v2, direct_link_kind](auto term) {
+    VisitVariant<void>(terminal, [this, direct_link_kind](auto term) {
         using T = std::decay_t<decltype(term)>;
         if constexpr (std::is_same_v<T, ir::terminal::Invalid>) {
             // Flat decoded blocks have no explicit terminal: the next location was
@@ -1355,8 +1353,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
             context.Forward(term.next, exit, self_target,
-                            NextLinkSuffixEmitter(), allow_direct_link_v2,
-                            direct_link_kind);
+                            NextLinkSuffixEmitter(), direct_link_kind);
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
@@ -1371,8 +1368,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
             context.Forward(term.next, exit, self_target,
-                            NextLinkSuffixEmitter(), allow_direct_link_v2,
-                            direct_link_kind);
+                            NextLinkSuffixEmitter(), direct_link_kind);
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
@@ -1400,11 +1396,9 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             } else {
                 __ Cbz(context.W(term.cond), &else_label);
             }
-            EmitTerminal(term.then_, allow_direct_link_v2,
-                         LinkSiteKind::ConditionalThen);
+            EmitTerminal(term.then_, LinkSiteKind::ConditionalThen);
             __ Bind(&else_label);
-            EmitTerminal(term.else_, allow_direct_link_v2,
-                         LinkSiteKind::ConditionalElse);
+            EmitTerminal(term.else_, LinkSiteKind::ConditionalElse);
         } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
             Label else_label;
             auto host_cond = MapCond(term.cond);
@@ -1412,11 +1406,9 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 LoadNZCVFromFlags();
             }
             __ B(&else_label, static_cast<Condition>(static_cast<u8>(host_cond) ^ 1));
-            EmitTerminal(term.then_, allow_direct_link_v2,
-                         LinkSiteKind::ConditionalThen);
+            EmitTerminal(term.then_, LinkSiteKind::ConditionalThen);
             __ Bind(&else_label);
-            EmitTerminal(term.else_, allow_direct_link_v2,
-                         LinkSiteKind::ConditionalElse);
+            EmitTerminal(term.else_, LinkSiteKind::ConditionalElse);
         } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
             // Linear compare chain; each arm ends with its own terminal.
             MergeNZCV();
@@ -1426,8 +1418,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 __ Mov(ip, case_.case_value.Get());
                 __ Cmp(value, ip);
                 __ B(&next_case, ne);
-                EmitTerminal(case_.then, allow_direct_link_v2,
-                             LinkSiteKind::SwitchArm);
+                EmitTerminal(case_.then, LinkSiteKind::SwitchArm);
                 __ Bind(&next_case);
             }
             // No case matched: bail out to the dispatcher.
@@ -1440,8 +1431,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             MergeNZCV();
             __ Ret();
             __ Bind(&no_halt);
-            EmitTerminal(term.else_, allow_direct_link_v2,
-                         LinkSiteKind::CheckHalt);
+            EmitTerminal(term.else_, LinkSiteKind::CheckHalt);
         } else {
             PANIC("Unknown terminal!");
         }

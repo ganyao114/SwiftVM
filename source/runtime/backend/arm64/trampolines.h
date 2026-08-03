@@ -15,8 +15,6 @@ class TrampolinesArm64 : public Trampolines {
 public:
     explicit TrampolinesArm64(const Config& config);
 
-    bool LinkBlock(u8* source, u8* target, u8* source_rw, bool pic) override;
-
     std::optional<CallHost> GetCallHost(HostFunction* func, ISA frontend) override;
 
 private:

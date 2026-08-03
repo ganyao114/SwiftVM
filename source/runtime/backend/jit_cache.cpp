@@ -86,7 +86,7 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
         return;
     }
     if (BackedgeFlagsEnabled()) {
-        // P1 recovery veneers are block-local code offsets. SerialBlock does
+        // Recovery veneers are block-local code offsets. SerialBlock does
         // not yet serialize that relocation/eligibility contract, so refuse
         // disk reuse rather than reviving a unit with an imprecise recipe.
         LOG_WARNING("SVM_JIT_CACHE: SVM_BACKEDGE_FLAGS is incompatible; cache disabled");
@@ -112,10 +112,8 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
                 host_image.base);
         return;
     }
-    if (True(config.global_opts & Optimizations::DirectBlockLink) || config.static_program) {
-        // Direct block links bake another buffer's address into the code; the
-        // scanner would refuse every unit anyway.
-        LOG_WARNING("SVM_JIT_CACHE: DirectBlockLink/static modules are unsupported; cache disabled");
+    if (config.static_program) {
+        LOG_WARNING("SVM_JIT_CACHE: static modules are unsupported; cache disabled");
         return;
     }
     struct stat st {};
@@ -213,7 +211,9 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
     std::vector<u32> normalized_bl;
     normalized_bl.reserve(unit.link_sites.size());
     if (!unit.link_sites.empty()) {
-        if (!DirectLinkV2Enabled()) {
+        // A serialized site list is also a defensive format check: only an
+        // ARM64 BlockLink module may produce or revive these relocations.
+        if (!module->IsDirectLinkConfigured()) {
             stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
             return;
         }
@@ -376,8 +376,7 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
             return false;
         }
     }
-    const bool direct_v2 = DirectLinkV2Enabled();
-    if (!unit.link_sites.empty() && !direct_v2) {
+    if (!unit.link_sites.empty() && !module->IsDirectLinkConfigured()) {
         stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
         dirty = true;
         return false;
@@ -563,11 +562,9 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
     // by the cold linker only after every source record and signal patch record
     // for this allocation exists. Linked state is never restored from disk.
     for (const auto& block : unit.blocks) {
-        if (direct_v2) {
-            (void)module->PublishLinkTarget(ir::Location{block.guest_start},
-                                            buffer.exec_data + block.code_offset,
-                                            buffer.exec_data);
-        }
+        (void)module->PublishLinkTarget(ir::Location{block.guest_start},
+                                        buffer.exec_data + block.code_offset,
+                                        buffer.exec_data);
         address_space.PushCodeCache(ir::Location{block.guest_start},
                                     buffer.exec_data + block.code_offset);
         if (!module->GetModuleConfig().read_only) {

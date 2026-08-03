@@ -2,12 +2,10 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstring>
 #include <limits>
 #include <thread>
 #include "runtime/backend/cache_clear.h"
 #include "runtime/common/logging.h"
-#include "runtime/common/perf_stats.h"
 
 namespace swift::runtime::backend {
 
@@ -598,11 +596,6 @@ void LinkManager::RecordLinkerCall() {
 void LinkManager::RecordDelink(size_t count) {
     std::lock_guard guard(mutex_);
     delinks_ += count;
-}
-
-bool DirectLinkV2Enabled() {
-    const char* value = PerfGetenv("SVM_DIRECT_LINK_V2");
-    return value && std::strcmp(value, "0") != 0;
 }
 
 std::optional<u32> EncodeB(std::intptr_t offset) { return EncodeBranch(offset, kBOpcode); }

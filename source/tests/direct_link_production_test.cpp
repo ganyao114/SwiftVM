@@ -261,8 +261,7 @@ int RunW81Child(bool flags_enabled) {
     const pid_t child = fork();
     REQUIRE(child >= 0);
     if (child == 0) {
-        setenv("SVM_DIRECT_LINK_P2_W81_CHILD", "1", 1);
-        setenv("SVM_DIRECT_LINK_V2", "1", 1);
+        setenv("SVM_DIRECT_LINK_W81_CHILD", "1", 1);
         setenv("SVM_BACKEDGE_LATCH", "1", 1);
         setenv("SVM_BACKEDGE_FLAGS", flags_enabled ? "1" : "0", 1);
         execl(executable.c_str(),
@@ -290,10 +289,116 @@ int RunW81Child(bool flags_enabled) {
 
 }  // namespace
 
+TEST_CASE("direct link keeps structural legacy fallbacks",
+          "[direct-link][production][fallback]") {
+#if defined(__aarch64__)
+    ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
+    const bool cross_module = GENERATE(false, true);
+    DYNAMIC_SECTION("mode=" << (cross_module ? "cross-module target"
+                                             : "BlockLink disabled")) {
+        const size_t page_size = static_cast<size_t>(getpagesize());
+        const size_t guest_size = 8 * page_size;
+        void* guest_memory = mmap(nullptr,
+                                  guest_size,
+                                  PROT_READ | PROT_WRITE,
+                                  MAP_PRIVATE | MAP_ANON,
+                                  -1,
+                                  0);
+        REQUIRE(guest_memory != MAP_FAILED);
+        {
+            const VAddr source_guest = page_size + 0x100;
+            const VAddr target_guest = 5 * page_size + 0x100;
+            Config config{
+                    .loc_start = 0,
+                    .loc_end = guest_size,
+                    .enable_jit = true,
+                    .enable_asm_interp = false,
+                    .has_local_operation = false,
+                    .backend_isa = kArm64,
+                    .uniform_buffer_size = 64,
+                    .global_opts = cross_module ? Optimizations::BlockLink
+                                                : Optimizations::None,
+                    .memory_base = guest_memory,
+                    .guest_addr_mask = guest_size - 1,
+            };
+            AddressSpace space{config};
+            auto source_module = space.GetDefaultModule();
+            auto target_module = source_module;
+            if (cross_module) {
+                target_module = space.MapModule(
+                        target_guest,
+                        target_guest + page_size,
+                        ModuleConfig{.optimizations = Optimizations::BlockLink});
+            }
+
+            auto target = BuildTarget(target_guest, 0x1234'5678'9abc'def0ull);
+            auto* target_code = TranslateIR(target_module, target);
+            REQUIRE(target_code != nullptr);
+            space.PushCodeCache(Location{target_guest}, target_code);
+
+            auto source = BuildSource(source_guest, target_guest);
+            auto* source_code = static_cast<u8*>(TranslateIR(source_module, source));
+            REQUIRE(source_code != nullptr);
+            space.PushCodeCache(Location{source_guest}, source_code);
+            REQUIRE(space.GetLinkManager().GetStats().sites == 0);
+
+            const auto region = source_module->GetCodeRegion(source_code);
+            REQUIRE(region);
+            if (cross_module) {
+                // A valid source trampoline does not override the module-
+                // ownership rule: the exit remains a dispatcher leaf.
+                REQUIRE(region->trampoline_offset !=
+                        CodeRegion::kInvalidTrampolineOffset);
+            } else {
+                // Module-level BlockLink is the retained opt-out. It creates
+                // neither link metadata nor a region trampoline.
+                REQUIRE(region->trampoline_offset ==
+                        CodeRegion::kInvalidTrampolineOffset);
+            }
+
+            Runtime runtime{&space};
+            runtime.SetLocation(source_guest);
+            REQUIRE(runtime.Run() == HaltReason::CallHost);
+            u64 observed{};
+            std::memcpy(&observed, runtime.GetUniformBuffer().data(), sizeof(observed));
+            REQUIRE(observed == 0x1234'5678'9abc'def0ull);
+        }
+        REQUIRE(munmap(guest_memory, guest_size) == 0);
+    }
+#else
+    SUCCEED("production direct-link fallback execution requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("oversized direct-link allocation rejects before arena creation",
+          "[direct-link][production][fallback][region]") {
+#if defined(__aarch64__)
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 32,
+            .enable_jit = true,
+            .enable_asm_interp = false,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+            .uniform_buffer_size = 64,
+            .global_opts = Optimizations::BlockLink,
+    };
+    AddressSpace space{config};
+    auto module = space.GetDefaultModule();
+    REQUIRE(module->PrepareDirectLinkRegion());
+    constexpr u32 kJustOverHalfWindow = (1u << 26) + 4;
+    const auto [cache_id, buffer] =
+            module->AllocCodeCache(kJustOverHalfWindow, true);
+    REQUIRE(cache_id == INVALID_CACHE_ID);
+    REQUIRE(buffer.exec_data == nullptr);
+#else
+    SUCCEED("direct-link region sizing requires an AArch64 backend");
+#endif
+}
+
 TEST_CASE("production conditional terminal links and delinks both arms independently",
           "[direct-link][production][conditional][smc]") {
 #if defined(__aarch64__)
-    ScopedEnvironment direct_link{"SVM_DIRECT_LINK_V2", "1"};
     ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
 
     const size_t page_size = static_cast<size_t>(getpagesize());
@@ -420,7 +525,6 @@ TEST_CASE("production conditional terminal links and delinks both arms independe
 TEST_CASE("production direct exit repeatedly delinks recompiles and relinks",
           "[direct-link][production][smc]") {
 #if defined(__aarch64__)
-    ScopedEnvironment direct_link{"SVM_DIRECT_LINK_V2", "1"};
     ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
 
     const size_t page_size = static_cast<size_t>(getpagesize());
@@ -527,7 +631,6 @@ TEST_CASE("production direct exit repeatedly delinks recompiles and relinks",
 TEST_CASE("SMC fault synchronously breaks a production direct-linked block ring",
           "[direct-link][production][smc][signal-ring]") {
 #if defined(__aarch64__)
-    ScopedEnvironment direct_link{"SVM_DIRECT_LINK_V2", "1"};
     ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
     const bool same_thread_fault = GENERATE(false, true);
     DYNAMIC_SECTION("faulting runtime thread=" << same_thread_fault) {
@@ -649,7 +752,6 @@ TEST_CASE("SMC fault synchronously breaks a production direct-linked block ring"
 TEST_CASE("SMC fault boundedly breaks a conditional two-arm production ring",
           "[direct-link][production][conditional][smc][signal-ring][stress]") {
 #if defined(__aarch64__)
-    ScopedEnvironment direct_link{"SVM_DIRECT_LINK_V2", "1"};
     ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
     const bool same_thread_fault = GENERATE(false, true);
     DYNAMIC_SECTION("conditional ring faulting runtime thread=" << same_thread_fault) {
@@ -780,12 +882,11 @@ TEST_CASE("SMC fault boundedly breaks a conditional two-arm production ring",
 TEST_CASE("W81 self edge stays polled while only the cold conditional arm links",
           "[direct-link][production][conditional][smc][w81]") {
 #if defined(__aarch64__)
-    if (!std::getenv("SVM_DIRECT_LINK_P2_W81_CHILD")) {
+    if (!std::getenv("SVM_DIRECT_LINK_W81_CHILD")) {
         REQUIRE(RunW81Child(false) == 0);
         REQUIRE(RunW81Child(true) == 0);
         return;
     }
-    ScopedEnvironment direct_link{"SVM_DIRECT_LINK_V2", "1"};
     ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
     ScopedEnvironment latch{"SVM_BACKEDGE_LATCH", "1"};
     const bool flags_enabled =

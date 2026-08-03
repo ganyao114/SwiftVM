@@ -221,7 +221,6 @@ private:
 
     // Terminals
     void EmitTerminal(const ir::Terminal &terminal,
-                      bool allow_direct_link_v2 = false,
                       LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional);
     [[nodiscard]] bool HasSelfEdge(const ir::Terminal& terminal) const;
     [[nodiscard]] bool IsSelfEdge(ir::Location target) const;

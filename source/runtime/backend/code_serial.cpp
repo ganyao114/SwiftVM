@@ -279,10 +279,10 @@ ScanResult ScanCodeUnit(std::span<const u8> code,
             if (rel) {
                 const s64 target = static_cast<s64>(offset) + *rel;
                 if (target < 0 || target >= static_cast<s64>(code.size())) {
-                    const bool declared_v2_site =
+                    const bool declared_link_site =
                             next_external_bl < allowed_external_bl.size() &&
                             allowed_external_bl[next_external_bl] == offset;
-                    if (!declared_v2_site || !IsBLImm(insn)) {
+                    if (!declared_link_site || !IsBLImm(insn)) {
                         result.reject_reason = "pc-relative branch leaves the unit";
                         return result;
                     }
@@ -347,10 +347,10 @@ ScanResult ScanCodeUnit(std::span<const u8> code,
                     return result;
                 }
                 if (!image.Contains(pending[rn].value)) {
-                    // A constant branch target outside the host image is a
-                    // direct link to another JIT code buffer (Optimizations::
-                    // DirectBlockLink / read-only module). Those addresses are
-                    // not reproducible across runs.
+                    // A constant branch target outside the host image is an
+                    // unsupported cross-buffer address. Those addresses are
+                    // not reproducible across runs; tracked direct-link sites
+                    // use the explicit SerialLinkSite relocation instead.
                     result.reject_reason = "constant branch target outside the host image";
                     return result;
                 }

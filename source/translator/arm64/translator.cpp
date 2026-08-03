@@ -68,7 +68,7 @@ struct Arm64Instance::Impl final {
         const char* jit_env = std::getenv("SVM_ENABLE_JIT");
         const bool enable_jit = jit_env ? std::strcmp(jit_env, "0") != 0 : true;
         auto global_opts = Optimizations::ConstantFolding | Optimizations::DeadCodeRemove |
-                           Optimizations::BlockLink | Optimizations::DirectBlockLink |
+                           Optimizations::BlockLink |
                            Optimizations::ReturnStackBuffer | Optimizations::FunctionBaseCompile;
         const char* uniform_elim_env = std::getenv("SVM_UNIFORM_ELIM");
         if (!uniform_elim_env || std::strcmp(uniform_elim_env, "0") != 0) {
@@ -90,19 +90,9 @@ struct Arm64Instance::Impl final {
                 // dispatcher safely (see JitContext::Forward).
                 // ReturnStackBuffer: call/ret pairs skip the dispatcher on
                 //   a correct RSB prediction (JitContext::EmitRSBPush/Pop).
-                // DirectBlockLink: known targets branch via Mov+Br with the
-                //   bare host code address baked in at JIT time (no
-                //   backpatching); unknown targets fall back to the indirect
-                //   dispatch table. WARNING: despite the form being
-                //   backpatch-free, this is NOT SMC-safe for cross-unit
-                //   links -- SMC invalidation clears only the target's L1/L2
-                //   slots, there is no target->source incoming-link table,
-                //   and a still-live source block can Br into a buffer that
-                //   ReclaimCode has already freed. It stays enabled here for
-                //   historical reasons; the x86 frontend keeps it off for
-                //   exactly this reason. Fixing it properly means a delink
-                //   mechanism (incoming-link registry + detach-time unlink),
-                //   not a config flip.
+                // Eligible same-module static exits use the incoming-link-
+                // tracked direct-link mechanism; structural misses retain
+                // the dispatch-slot/dispatcher fallback.
                 // FunctionBaseCompile: whole-function decode + compile
                 //   (TranslateIR(HIRFunction*) path). The function-level linear
                 //   scan now accounts for terminal uses and runs over an RPO

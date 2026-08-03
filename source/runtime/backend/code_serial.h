@@ -31,7 +31,7 @@
 //     MoveImmediateHelper / OneInstrMoveImmediateHelper), and the backend
 //     emits no other literal. ScanCodeUnit *rejects* any unit that contains a
 //     literal load, an adr/adrp, or an out-of-unit pc-relative branch other
-//     than a caller-declared direct-link-v2 BL site. Those declared words are
+//     than a caller-declared direct-link BL site. Those declared words are
 //     generated from center-table metadata, not inferred from arbitrary code.
 //   * A materialized constant that lands inside the SwiftVM host image but is
 //     not consumed by a modelled use (an indirect branch target or a
@@ -138,7 +138,7 @@ struct SerialBlock {
     u64 guest_bytes_hash{};
 };
 
-// One direct-link v2 branch site inside the unit. The code byte at
+// One direct-link branch site inside the unit. The code byte at
 // `code_offset` is always serialized as the unlinked `bl region_tramp` form;
 // its process-relative immediate is rewritten again when the unit is revived.
 // kind stores LinkSiteKind as a byte without coupling the generic serializer

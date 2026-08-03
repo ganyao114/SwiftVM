@@ -111,7 +111,8 @@ struct State {
     void* pt{};
     void* local_buffer{};
     u64 host_cpu_flags{};
-    void *blocking_linkage_address{};
+    // Preserve State layout after removing the untracked linkage patcher.
+    void *reserved_linkage_address{};
     // Guest address space upper bound (== Config::loc_end). The interpreter
     // checks every LoadMemory/StoreMemory guest address against this limit
     // before dereferencing, converting a wild guest pointer into a clean
@@ -159,7 +160,6 @@ constexpr u32 state_offset_rsb_pointer = offsetof(State, rsb_pointer);
 constexpr u32 state_offset_rsb_bottom = offsetof(State, rsb_bottom);
 constexpr u32 state_offset_rsb_top = offsetof(State, rsb_top);
 constexpr u32 state_offset_host_flags = offsetof(State, host_cpu_flags);
-constexpr u32 state_offset_blocking_linkage_address = offsetof(State, blocking_linkage_address);
 constexpr u32 state_offset_exec_profile_ptr = offsetof(State, interface);
 constexpr u32 exec_offset_exit_direct = offsetof(RuntimeProfileInterface, exec) +
                                         offsetof(ExecProfileCounters, exit_direct);

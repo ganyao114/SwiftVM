@@ -23,7 +23,7 @@ enum class LinkSiteState : u8 {
 };
 
 // Emission origin is observability-only: it never changes linking or
-// invalidation semantics. Conditional kinds let EXEC_PROF account P2's two
+// invalidation semantics. Conditional kinds let EXEC_PROF account two
 // independently patchable arms without charging disabled builds.
 enum class LinkSiteKind : u8 {
     Unconditional,
@@ -245,10 +245,6 @@ private:
     u64 delinks_{};
     size_t max_in_degree_{};
 };
-
-// Default-OFF direct-link-v2 production switch. It is intentionally separate
-// from Optimizations::DirectBlockLink.
-[[nodiscard]] bool DirectLinkV2Enabled();
 
 [[nodiscard]] std::optional<u32> EncodeB(std::intptr_t offset);
 [[nodiscard]] std::optional<u32> EncodeBL(std::intptr_t offset);

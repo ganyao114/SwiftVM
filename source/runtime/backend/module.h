@@ -124,9 +124,10 @@ public:
 
     [[nodiscard]] const ModuleConfig& GetModuleConfig() const { return module_config; }
 
+    [[nodiscard]] bool IsDirectLinkConfigured() const;
     // Ensures that at least one <=128MiB arena has its region trampoline
     // initialized before codegen chooses the 4-byte direct-link leaf.
-    [[nodiscard]] bool PrepareDirectLinkV2Region();
+    [[nodiscard]] bool PrepareDirectLinkRegion();
     [[nodiscard]] std::pair<u16, CodeBuffer> AllocCodeCache(
             u32 size, bool require_direct_link_region = false);
     [[nodiscard]] std::optional<CodeRegion> GetCodeRegion(const u8* exec_ptr);

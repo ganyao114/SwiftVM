@@ -50,10 +50,6 @@ void TrampolinesRiscv64::BuildSaveStaticUniform() {
 
 void TrampolinesRiscv64::BuildRestoreStaticUniform() {}
 
-bool TrampolinesRiscv64::LinkBlock(u8* source, u8* target, u8* source_rw, bool pic) {
-    return false;
-}
-
 }
 
 #undef __

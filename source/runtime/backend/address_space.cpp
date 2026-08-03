@@ -157,7 +157,8 @@ const ir::UniformInfo& AddressSpace::GetUniformInfo() const { return *uniform_in
 
 AddressSpace::~AddressSpace() {
     const char* exec_prof = std::getenv("SVM_EXEC_PROF");
-    if (exec_prof && std::strcmp(exec_prof, "0") != 0 && DirectLinkV2Enabled()) {
+    if (exec_prof && std::strcmp(exec_prof, "0") != 0 && default_module &&
+        default_module->IsDirectLinkConfigured()) {
         const auto stats = link_manager.GetStats();
         const auto kind = [](const auto& values, LinkSiteKind site_kind) {
             return values[static_cast<size_t>(site_kind)];

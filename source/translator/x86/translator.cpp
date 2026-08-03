@@ -703,21 +703,11 @@ struct X86Instance::Impl final {
         const char* block_link_env = std::getenv("SVM_BLOCK_LINK");
         const bool enable_block_link =
                 !block_link_env || std::strcmp(block_link_env, "0") != 0;
-        // Measurement-only escape hatch: this existing mode embeds already
-        // compiled host targets and is not SMC-safe without incoming-link
-        // invalidation, so it remains strictly opt-in.
-        const char* direct_block_link_env = std::getenv("SVM_DIRECT_BLOCK_LINK");
-        const bool enable_direct_block_link =
-                direct_block_link_env &&
-                std::strcmp(direct_block_link_env, "0") != 0;
         auto global_opts = Optimizations::ReturnStackBuffer | Optimizations::FlagElimination |
                            Optimizations::DeadCodeRemove | Optimizations::StaticCode |
                            Optimizations::ConstantFolding | Optimizations::FunctionBaseCompile;
         if (enable_block_link) {
             global_opts |= Optimizations::BlockLink;
-        }
-        if (enable_direct_block_link) {
-            global_opts |= Optimizations::DirectBlockLink;
         }
         if (enable_uniform_elim) {
             global_opts |= Optimizations::UniformElimination;
@@ -747,21 +737,10 @@ struct X86Instance::Impl final {
                 .buffers_static_alloc = static_regs,
                 .xmm_uniform_ranges = x86_xmm_uniform_ranges,
                 .static_program = false,
-                // Block linking enabled: JitContext::Forward's indirect-link
-                // path now falls back to the dispatcher on an empty dispatch
-                // slot (write target to current_loc + Ret) instead of
-                // `br 0x0`, so backward branches to not-yet-compiled blocks
-                // are safe. DirectBlockLink stays off. Since c15ceb8 the
-                // direct-link form is Mov+Br with the target's bare host code
-                // address baked in at JIT time (no backpatching), but it is
-                // still not SMC-safe for cross-unit links: SMC invalidation
-                // only clears the target's L1/L2 slots, there is no
-                // target->source incoming-link table, and once ReclaimCode
-                // frees the detached buffer a still-live source block would
-                // Br into freed memory. Enabling it would also disable the
-                // JIT disk cache entirely (jit_cache.cpp), trading a measured
-                // ~11.4 ms warm-cache benefit on func_tests for a ~0.01 ms
-                // theoretical upper bound. See the arm64 frontend comment.
+                // Block linking uses incoming-link-tracked 4-byte direct
+                // branches for eligible same-module static exits. Empty or
+                // structurally ineligible exits retain the dispatch-slot /
+                // dispatcher fallback.
                 // FunctionBaseCompile: whole-function decode + compile.
                 //   Enabled by default; SVM_FUNC_BASE=0 is the escape hatch.
                 //   function-level linear scan now handles terminal uses over an

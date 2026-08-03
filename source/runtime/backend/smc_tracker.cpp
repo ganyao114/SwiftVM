@@ -333,9 +333,6 @@ void SmcTracker::RemoveTrackedNode(ir::AddressNode* node) {
 
 void SmcTracker::DelinkTargets(AddressSpace& space,
                                const std::vector<TrackedNode>& nodes) {
-    if (!DirectLinkV2Enabled()) {
-        return;
-    }
     std::unordered_set<VAddr> targets;
     for (const auto& tracked : nodes) {
         auto* node = tracked.node.Get();

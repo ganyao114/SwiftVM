@@ -240,7 +240,15 @@ void* Module::GetJitCache(const JitCache& jit_cache) {
     }
 }
 
-bool Module::PrepareDirectLinkV2Region() {
+bool Module::IsDirectLinkConfigured() const {
+    return address_space.GetConfig().backend_isa == kArm64 &&
+           module_config.HasOpt(Optimizations::BlockLink);
+}
+
+bool Module::PrepareDirectLinkRegion() {
+    if (!IsDirectLinkConfigured()) {
+        return false;
+    }
     std::unique_lock guard(cache_lock);
     for (auto& [index, cache] : code_caches) {
         (void)index;
@@ -259,8 +267,8 @@ bool Module::PrepareDirectLinkV2Region() {
             address_space.GetTrampolines().GetReturnHost());
     if (!it->second.InitializeRegionTrampoline(
                 address_space.GetLinkManager(), return_host, return_host)) {
-        LOG_WARNING("SVM_DIRECT_LINK_V2: region {} ({} bytes) cannot host an imm26-wide "
-                    "trampoline; production exits in this module use slot leaves",
+        LOG_WARNING("direct link: region {} ({} bytes) cannot host an imm26-wide "
+                    "trampoline; exits in this module use slot leaves",
                     it->second.GetRegion().id,
                     it->second.GetRegion().capacity);
         return false;
@@ -275,6 +283,9 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size,
         if (require_direct_link_region && !cache.GetRegionTrampoline()) {
             continue;
         }
+        if (size > cache.GetRegion().capacity) {
+            continue;
+        }
         if (auto buf = cache.AllocCode(size); buf) {
             return {index, *buf};
         }
@@ -287,7 +298,7 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size,
     const u32 arena_size = std::max(ModuleCodeCacheSize(size), kMinCodeCacheSize);
     constexpr u32 kImm26Window = 1u << 27;
     if (require_direct_link_region && arena_size > kImm26Window) {
-        LOG_WARNING("SVM_DIRECT_LINK_V2: {}-byte unit requires a {}-byte arena; "
+        LOG_WARNING("direct link: {}-byte unit requires a {}-byte arena; "
                     "no imm26-wide region can contain it",
                     size,
                     arena_size);
@@ -295,12 +306,12 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size,
     }
     auto ref = code_caches.try_emplace(
             current_code_cache, address_space.GetConfig(), arena_size);
-    if (require_direct_link_region || DirectLinkV2Enabled()) {
+    if (require_direct_link_region || IsDirectLinkConfigured()) {
         const auto return_host = reinterpret_cast<void*>(
                 address_space.GetTrampolines().GetReturnHost());
         if (!ref.first->second.InitializeRegionTrampoline(
                     address_space.GetLinkManager(), return_host, return_host)) {
-            LOG_WARNING("SVM_DIRECT_LINK_V2: region {} ({} bytes) cannot host an imm26-wide "
+            LOG_WARNING("direct link: region {} ({} bytes) cannot host an imm26-wide "
                         "trampoline; this region remains unlinked",
                         ref.first->second.GetRegion().id,
                         ref.first->second.GetRegion().capacity);
@@ -343,7 +354,7 @@ std::optional<CodeRegion> Module::GetCodeRegion(CodeRegionId region_id) {
 u64 Module::PublishLinkTarget(ir::Location guest,
                               void* host_pc,
                               const void* allocation) {
-    if (!DirectLinkV2Enabled()) {
+    if (!IsDirectLinkConfigured()) {
         return 0;
     }
     const auto region = GetCodeRegion(static_cast<u8*>(host_pc));

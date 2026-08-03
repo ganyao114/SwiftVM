@@ -23,8 +23,6 @@ public:
 
     explicit Trampolines(const Config& config);
 
-    virtual bool LinkBlock(u8* source, u8* target, u8* source_rw, bool pic);
-
     virtual std::optional<CallHost> GetCallHost(HostFunction* func, ISA frontend);
 
     [[nodiscard]] RuntimeEntry GetRuntimeEntry() const { return runtime_entry; }

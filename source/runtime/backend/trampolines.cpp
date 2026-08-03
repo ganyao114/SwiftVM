@@ -9,8 +9,6 @@ namespace swift::runtime::backend {
 Trampolines::Trampolines(const Config& config)
         : config(config), code_cache(config, 4_MB) {}
 
-bool Trampolines::LinkBlock(u8* source, u8* target, u8* source_rw, bool pic) { return false; }
-
 std::optional<Trampolines::CallHost> Trampolines::GetCallHost(HostFunction* func, ISA frontend) {
     {
         std::unique_lock guard(lock);
