@@ -276,6 +276,22 @@ TEST_CASE("link suffix common plan ignores a single terminal leaf") {
     REQUIRE_FALSE(plan.TryEmit(0, kSuffix, masm));
 }
 
+TEST_CASE("link suffix common plan keeps direct-leaf holes positional") {
+    using namespace vixl::aarch64;
+    using swift::runtime::backend::arm64::LinkSuffixCommonPlan;
+
+    constexpr swift::u64 kSuffix = 0xd65f03c9f9000b4bull;
+    LinkSuffixCommonPlan plan{{std::nullopt, kSuffix, kSuffix}};
+    REQUIRE(plan.SiteCount() == 3);
+    REQUIRE(plan.GetStats().groups == 1);
+    REQUIRE(plan.GetStats().ranges == 2);
+    REQUIRE(plan.GetStats().saved_bytes == 4);
+    MacroAssembler masm{};
+    REQUIRE_FALSE(plan.TryEmit(0, kSuffix, masm));
+    REQUIRE_FALSE(plan.TryEmit(1, kSuffix, masm));
+    REQUIRE(plan.TryEmit(2, kSuffix, masm));
+}
+
 TEST_CASE("config hash includes independent A1 and induction policies") {
     swift::runtime::Config base{};
     swift::runtime::Config a1{};

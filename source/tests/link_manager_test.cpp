@@ -20,6 +20,7 @@ using swift::runtime::backend::Imm26Reachable;
 using swift::runtime::backend::LinkManager;
 using swift::runtime::backend::LinkSignalPatchSite;
 using swift::runtime::backend::LinkSiteKey;
+using swift::runtime::backend::LinkSiteKind;
 using swift::runtime::backend::LinkSiteRecord;
 using swift::runtime::backend::LinkSiteState;
 using swift::runtime::backend::LinkSourceOwner;
@@ -119,8 +120,16 @@ TEST_CASE("LinkManager maintains site target and owner indexes transactionally",
     constexpr LinkSiteKey site_b{1, 20};
     constexpr LinkSiteKey site_c{2, 8};
 
-    REQUIRE(manager.RegisterSite(site_a, target_a, owner_a));
-    REQUIRE(manager.RegisterSite(site_b, target_a, owner_a));
+    REQUIRE(manager.RegisterSite(site_a,
+                                 target_a,
+                                 owner_a,
+                                 nullptr,
+                                 LinkSiteKind::ConditionalThen));
+    REQUIRE(manager.RegisterSite(site_b,
+                                 target_a,
+                                 owner_a,
+                                 nullptr,
+                                 LinkSiteKind::ConditionalElse));
     REQUIRE(manager.RegisterSite(site_c, target_b, owner_b));
     REQUIRE_FALSE(manager.RegisterSite(LinkSiteKey{3, 2}, target_b, owner_b));
     REQUIRE_FALSE(manager.RegisterSite(site_a, target_b, owner_b));
@@ -142,6 +151,15 @@ TEST_CASE("LinkManager maintains site target and owner indexes transactionally",
     REQUIRE(manager.MarkLinked(site_c, generation_b, commit));
     REQUIRE(manager.QuerySite(site_a)->state == LinkSiteState::Linked);
     REQUIRE(manager.QuerySite(site_b)->state == LinkSiteState::Far);
+    REQUIRE(manager.QuerySite(site_a)->kind == LinkSiteKind::ConditionalThen);
+    REQUIRE(manager.QuerySite(site_b)->kind == LinkSiteKind::ConditionalElse);
+    const auto mixed_stats = manager.GetStats();
+    REQUIRE(mixed_stats.sites_by_kind[
+                    static_cast<size_t>(LinkSiteKind::ConditionalThen)] == 1);
+    REQUIRE(mixed_stats.linked_by_kind[
+                    static_cast<size_t>(LinkSiteKind::ConditionalThen)] == 1);
+    REQUIRE(mixed_stats.far_by_kind[
+                    static_cast<size_t>(LinkSiteKind::ConditionalElse)] == 1);
 
     const auto incoming_a = manager.BeginTargetInvalidation(target_a);
     REQUIRE(incoming_a.size() == 2);

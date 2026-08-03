@@ -606,7 +606,8 @@ void JitContext::Forward(ir::Location location,
                          Label* backedge_exit,
                          Label* self_target,
                          const LinkSuffixEmitter& suffix_emitter,
-                         bool allow_direct_link_v2) {
+                         bool allow_direct_link_v2,
+                         LinkSiteKind direct_link_kind) {
     ASSERT(cur_block);
     // Block exit: land any pending spill write-back before the transfer
     // (a spilled value defined by the block's last instruction may be live
@@ -650,7 +651,7 @@ void JitContext::Forward(ir::Location location,
             // it to this allocation's region trampoline in Flush(). The site
             // record is installed there, before any L2 publication.
             pending_direct_link_sites.push_back(
-                    {CurrentBufferSize(), location.Value()});
+                    {CurrentBufferSize(), location.Value(), direct_link_kind});
             __ dc32(*EncodeBL(0));
             return;
         }
@@ -972,7 +973,7 @@ u8* JitContext::Flush(const CodeBuffer& code_cache) {
                     .unlinked_bl = *branch,
             };
             ASSERT(module->GetAddressSpace().GetLinkManager().RegisterSite(
-                    key, pending.guest_target, owner, &signal_patch));
+                    key, pending.guest_target, owner, &signal_patch, pending.kind));
         }
     }
     std::memcpy(code_cache.rw_data, masm.GetBuffer()->GetStartAddress<u8*>(), code_cache.size);

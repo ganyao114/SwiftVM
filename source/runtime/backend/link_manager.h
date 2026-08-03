@@ -22,6 +22,22 @@ enum class LinkSiteState : u8 {
     Retiring,
 };
 
+// Emission origin is observability-only: it never changes linking or
+// invalidation semantics. Conditional kinds let EXEC_PROF account P2's two
+// independently patchable arms without charging disabled builds.
+enum class LinkSiteKind : u8 {
+    Unconditional,
+    ConditionalThen,
+    ConditionalElse,
+    SwitchArm,
+    CheckHalt,
+    BackedgeCold,
+    Count,
+};
+
+inline constexpr size_t kLinkSiteKindCount =
+        static_cast<size_t>(LinkSiteKind::Count);
+
 struct LinkSiteKey {
     CodeRegionId region_id{};
     u32 offset{};
@@ -42,6 +58,7 @@ struct LinkSiteRecord {
     LinkSourceOwner source_owner{};
     u64 target_generation{};
     LinkSiteState state{LinkSiteState::Unlinked};
+    LinkSiteKind kind{LinkSiteKind::Unconditional};
 };
 
 // Fully resolved at ordinary publication time. SignalInvalidation never
@@ -80,6 +97,9 @@ struct LinkManagerStats {
     u64 signal_invalidations{};
     size_t signal_targets_retained{};
     size_t signal_sites_retained{};
+    std::array<size_t, kLinkSiteKindCount> sites_by_kind{};
+    std::array<size_t, kLinkSiteKindCount> linked_by_kind{};
+    std::array<size_t, kLinkSiteKindCount> far_by_kind{};
 };
 
 struct LinkSignalInvalidationResult {
@@ -98,7 +118,8 @@ public:
     [[nodiscard]] bool RegisterSite(LinkSiteKey site,
                                     u64 guest_target,
                                     LinkSourceOwner source_owner,
-                                    const LinkSignalPatchSite* signal_patch = nullptr);
+                                    const LinkSignalPatchSite* signal_patch = nullptr,
+                                    LinkSiteKind kind = LinkSiteKind::Unconditional);
     [[nodiscard]] std::optional<LinkSiteRecord> QuerySite(LinkSiteKey site) const;
 
     // Publishing a target assigns a process-local, globally monotonic generation.

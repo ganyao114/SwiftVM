@@ -89,7 +89,8 @@ public:
                  Label* backedge_exit = nullptr,
                  Label* self_target = nullptr,
                  const LinkSuffixEmitter& suffix_emitter = {},
-                 bool allow_direct_link_v2 = false);
+                 bool allow_direct_link_v2 = false,
+                 LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional);
     [[nodiscard]] bool CanEmitDirectLinkV2(ir::Location location) const;
     [[nodiscard]] bool HasDirectLinkSites() const {
         return !pending_direct_link_sites.empty();
@@ -172,6 +173,7 @@ private:
     struct PendingDirectLinkSite {
         u32 code_offset{};
         u64 guest_target{};
+        LinkSiteKind kind{LinkSiteKind::Unconditional};
     };
 
     void MaybeDumpHostBytes();

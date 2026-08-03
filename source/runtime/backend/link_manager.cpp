@@ -106,9 +106,10 @@ void LinkManager::UnlinkSignalSiteLocked(SignalTarget& target, SignalSite* site)
 bool LinkManager::RegisterSite(LinkSiteKey site,
                                u64 guest_target,
                                LinkSourceOwner source_owner,
-                               const LinkSignalPatchSite* signal_patch) {
+                               const LinkSignalPatchSite* signal_patch,
+                               LinkSiteKind kind) {
     if (site.region_id == 0 || (site.offset & 3u) != 0 || !source_owner.module ||
-        !source_owner.allocation) {
+        !source_owner.allocation || kind == LinkSiteKind::Count) {
         return false;
     }
     if (signal_patch &&
@@ -131,6 +132,7 @@ bool LinkManager::RegisterSite(LinkSiteKey site,
                                                            .site = site,
                                                            .guest_target = guest_target,
                                                            .source_owner = source_owner,
+                                                           .kind = kind,
                                                    });
     if (!inserted) {
         return false;
@@ -524,11 +526,19 @@ LinkManagerStats LinkManager::GetStats() const {
     size_t linked{};
     size_t far{};
     size_t retiring{};
+    std::array<size_t, kLinkSiteKindCount> sites_by_kind{};
+    std::array<size_t, kLinkSiteKindCount> linked_by_kind{};
+    std::array<size_t, kLinkSiteKindCount> far_by_kind{};
     for (const auto& [key, record] : sites_) {
         (void)key;
+        const auto kind = static_cast<size_t>(record.kind);
+        ASSERT(kind < kLinkSiteKindCount);
+        ++sites_by_kind[kind];
         linked += record.state == LinkSiteState::Linked;
         far += record.state == LinkSiteState::Far;
         retiring += record.state == LinkSiteState::Retiring;
+        linked_by_kind[kind] += record.state == LinkSiteState::Linked;
+        far_by_kind[kind] += record.state == LinkSiteState::Far;
     }
     size_t incoming_sites{};
     for (const auto& [target, sites] : incoming_) {
@@ -574,6 +584,9 @@ LinkManagerStats LinkManager::GetStats() const {
             .signal_invalidations = signal_invalidations_.load(std::memory_order_relaxed),
             .signal_targets_retained = signal_targets_storage_.size(),
             .signal_sites_retained = signal_sites_storage_.size(),
+            .sites_by_kind = sites_by_kind,
+            .linked_by_kind = linked_by_kind,
+            .far_by_kind = far_by_kind,
     };
 }
 

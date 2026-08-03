@@ -159,12 +159,17 @@ AddressSpace::~AddressSpace() {
     const char* exec_prof = std::getenv("SVM_EXEC_PROF");
     if (exec_prof && std::strcmp(exec_prof, "0") != 0 && DirectLinkV2Enabled()) {
         const auto stats = link_manager.GetStats();
+        const auto kind = [](const auto& values, LinkSiteKind site_kind) {
+            return values[static_cast<size_t>(site_kind)];
+        };
         std::fprintf(stderr,
                      "[svm-direct-link] sites=%zu linked=%zu far=%zu retiring=%zu "
                      "registered=%llu linker_calls=%llu delinks=%llu max_in_degree=%zu "
                      "incoming_targets=%zu owners=%zu target_records=%zu bytes_est=%zu "
                      "signal_invalidations=%llu signal_targets_retained=%zu "
-                     "signal_sites_retained=%zu epoch_sync=%llu\n",
+                     "signal_sites_retained=%zu epoch_sync=%llu "
+                     "kinds=uncond:%zu/%zu/%zu,then:%zu/%zu/%zu,else:%zu/%zu/%zu,"
+                     "switch:%zu/%zu/%zu,check_halt:%zu/%zu/%zu,backedge_cold:%zu/%zu/%zu\n",
                      stats.sites,
                      stats.linked,
                      stats.far,
@@ -180,7 +185,25 @@ AddressSpace::~AddressSpace() {
                      static_cast<unsigned long long>(stats.signal_invalidations),
                      stats.signal_targets_retained,
                      stats.signal_sites_retained,
-                     static_cast<unsigned long long>(smc_tracker.GetPatchSyncCount()));
+                     static_cast<unsigned long long>(smc_tracker.GetPatchSyncCount()),
+                     kind(stats.sites_by_kind, LinkSiteKind::Unconditional),
+                     kind(stats.linked_by_kind, LinkSiteKind::Unconditional),
+                     kind(stats.far_by_kind, LinkSiteKind::Unconditional),
+                     kind(stats.sites_by_kind, LinkSiteKind::ConditionalThen),
+                     kind(stats.linked_by_kind, LinkSiteKind::ConditionalThen),
+                     kind(stats.far_by_kind, LinkSiteKind::ConditionalThen),
+                     kind(stats.sites_by_kind, LinkSiteKind::ConditionalElse),
+                     kind(stats.linked_by_kind, LinkSiteKind::ConditionalElse),
+                     kind(stats.far_by_kind, LinkSiteKind::ConditionalElse),
+                     kind(stats.sites_by_kind, LinkSiteKind::SwitchArm),
+                     kind(stats.linked_by_kind, LinkSiteKind::SwitchArm),
+                     kind(stats.far_by_kind, LinkSiteKind::SwitchArm),
+                     kind(stats.sites_by_kind, LinkSiteKind::CheckHalt),
+                     kind(stats.linked_by_kind, LinkSiteKind::CheckHalt),
+                     kind(stats.far_by_kind, LinkSiteKind::CheckHalt),
+                     kind(stats.sites_by_kind, LinkSiteKind::BackedgeCold),
+                     kind(stats.linked_by_kind, LinkSiteKind::BackedgeCold),
+                     kind(stats.far_by_kind, LinkSiteKind::BackedgeCold));
     }
     // Persist before anything is torn down: Save only touches the recorded
     // byte copies and the L2 slot assignment, both still intact here.
