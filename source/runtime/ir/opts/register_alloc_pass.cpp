@@ -88,7 +88,7 @@ static bool IntWidthTieEnabled() {
 static bool InductTieEnabled() {
     static const bool enabled = [] {
         const char* env = PerfGetenv("SVM_INDUCT_TIE");
-        return env && std::strcmp(env, "0") != 0;
+        return !env || std::strcmp(env, "0") != 0;
     }();
     return enabled;
 }

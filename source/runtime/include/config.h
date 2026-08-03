@@ -130,9 +130,9 @@ struct Config {
     // guest-code paths are allowed to consume it.
     bool sse_scalar_insert{false};
     bool sse_afp_nan{false};
-    // Default-off ARM64 code-shape spikes.  Keep these as effective Config
-    // inputs (in addition to their SVM_* environment selectors) so AOT/JIT
-    // cache identities cannot alias when an embedder selects them directly.
+    // Effective ARM64 code-shape policies. Keep these as Config inputs (in
+    // addition to their SVM_* environment selectors) so AOT/JIT cache
+    // identities cannot alias when an embedder selects them directly.
     bool mem_hostbase_fold{false};
     bool induct_tie{false};
     // Memory ordering for guest accesses (frontends read this and install it
