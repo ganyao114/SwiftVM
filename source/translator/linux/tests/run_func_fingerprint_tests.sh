@@ -164,15 +164,18 @@ echo "guest staging: $STAGE_DIR (fixed argv[0]/AT_EXECFN, copies not symlinks)"
 
 # One guest's fingerprint on stdout. `SVM_FUNC_BASE=1` is the default but is
 # pinned here so the gate keeps meaning the same thing if the default moves.
-# SVM_JIT_CACHE is cleared: a warm disk cache skips compilation entirely and
-# would report an empty unit list as a pass.
+# SVM_JIT_CACHE is normally cleared: a warm disk cache skips compilation
+# entirely and would report an empty unit list as a pass. P3 coexistence tests
+# may set SVM_FP_JIT_CACHE=1; all_fingerprints then gives each complete pass a
+# distinct empty directory, so caching is enabled without turning the second
+# determinism pass into a no-compilation warm run.
 emit_fingerprint() {
-    local svm="$1" guest="$2" keep_host="$3"
+    local svm="$1" guest="$2" keep_host="$3" cache_dir="$4"
     local source_bin="$HERE/${guest}_x86_64"
     local bin="$STAGE_DIR/${guest}_x86_64"
     [ -x "$source_bin" ] && [ -x "$bin" ] || { echo "$guest MISSING"; return; }
     local raw
-    raw=$(SVM_PROF=2 SVM_FUNC_BASE=1 SVM_JIT_CACHE= "$svm" "$bin" 2>&1 >/dev/null)
+    raw=$(SVM_PROF=2 SVM_FUNC_BASE=1 SVM_JIT_CACHE="$cache_dir" "$svm" "$bin" 2>&1 >/dev/null)
     local units
     if [ "$keep_host" = yes ]; then
         units=$(printf '%s\n' "$raw" | sed -n 's/^\[svm-unit\] //p' | sort)
@@ -189,11 +192,20 @@ emit_fingerprint() {
 
 all_fingerprints() {
     local svm="$1" keep_host="$2"
-    for g in "${GUESTS[@]}"; do emit_fingerprint "$svm" "$g" "$keep_host"; done
+    local cache_dir=""
+    if [ "${SVM_FP_JIT_CACHE:-0}" != 0 ]; then
+        fp_cache_run=$((fp_cache_run + 1))
+        cache_dir="$tmp/jit-cache-$fp_cache_run"
+        mkdir -p "$cache_dir" || exit 2
+    fi
+    for g in "${GUESTS[@]}"; do
+        emit_fingerprint "$svm" "$g" "$keep_host" "$cache_dir"
+    done
 }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+fp_cache_run=0
 
 # --- gate 1: the emitter is deterministic within this build -----------------
 # host_bytes is kept here on purpose; this is the one comparison it is valid

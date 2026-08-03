@@ -29,6 +29,14 @@ using namespace vixl::aarch64;
 struct NoneReg {};
 using CPUReg = boost::variant<NoneReg, Register, VRegister>;
 
+// Allocation-relative description retained after emission so disk-cache v4
+// can normalize every site without reading a concurrently patched code word.
+struct DirectLinkSiteInfo {
+    u32 code_offset{};
+    u64 guest_target{};
+    LinkSiteKind kind{LinkSiteKind::Unconditional};
+};
+
 class JitContext : DeleteCopyAndMove {
 public:
     using LinkSuffixEmitter = std::function<bool(u64)>;
@@ -94,6 +102,9 @@ public:
     [[nodiscard]] bool CanEmitDirectLinkV2(ir::Location location) const;
     [[nodiscard]] bool HasDirectLinkSites() const {
         return !pending_direct_link_sites.empty();
+    }
+    [[nodiscard]] const std::vector<DirectLinkSiteInfo>& GetDirectLinkSites() const {
+        return pending_direct_link_sites;
     }
     // Pre-emission view of the exact final two instruction encodings Forward
     // would use for this link leaf. A later state change may select another
@@ -170,12 +181,6 @@ public:
     [[nodiscard]] u32 DensityNaNBytes() const { return density_nan_bytes; }
 
 private:
-    struct PendingDirectLinkSite {
-        u32 code_offset{};
-        u64 guest_target{};
-        LinkSiteKind kind{LinkSiteKind::Unconditional};
-    };
-
     void MaybeDumpHostBytes();
     void FlushLabels(VAddr target);
     void RecordHotCounter(HotCoalesceCounter counter, u32 amount = 1);
@@ -278,7 +283,7 @@ private:
     // names, which is the bound backend::kSpillReloadHeadroom encodes.
     std::map<u32, u8> spill_use_scratch;
     std::vector<PendingSpillWrite> pending_spill_writes;
-    std::vector<PendingDirectLinkSite> pending_direct_link_sites;
+    std::vector<DirectLinkSiteInfo> pending_direct_link_sites;
 
     GPRSMask cur_dirty_gprs{};
     GPRSMask cur_dirty_fprs{};

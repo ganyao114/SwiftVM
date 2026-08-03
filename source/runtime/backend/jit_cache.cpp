@@ -4,6 +4,7 @@
 
 #include "runtime/backend/jit_cache.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -73,14 +74,6 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     }
     print_stats = EnvOn("SVM_JIT_CACHE_STATS");
     dir = env;
-    if (DirectLinkV2Enabled()) {
-        // P1 persists neither link-site offsets nor BL relocations. Reviving
-        // such a unit would leave process-relative sites without center-table
-        // ownership, so v2 and disk reuse remain mutually exclusive until P3.
-        LOG_WARNING("SVM_JIT_CACHE: SVM_DIRECT_LINK_V2 is incompatible until P3; "
-                    "cache disabled");
-        return;
-    }
     // Profiled JIT units embed a process-local counter slot. Serializing one
     // would revive code with no matching metadata slot in the next process.
     // The probe is measurement-only, so disable disk caching while it is on.
@@ -196,26 +189,94 @@ bool JitDiskCache::HashGuestRange(VAddr start, VAddr end, u64& out) const {
 void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
                               VAddr guest_start,
                               bool is_function,
-                              const u8* code_bytes,
+                              const u8* exec_data,
+                              const u8* rw_data,
                               u32 code_size,
-                              const std::vector<SerialBlock>& blocks) {
+                              const std::vector<SerialBlock>& blocks,
+                              const std::vector<SerialLinkSite>& link_sites) {
     stats.units_compiled.fetch_add(1, std::memory_order_relaxed);
-    if (!enabled || !code_bytes || code_size == 0 || blocks.empty()) {
-        return;
-    }
-    const u64 window =
-            address_space.GetConfig().guest_addr_mask ? address_space.GetConfig().guest_addr_mask + 1
-                                                      : 0;
-    auto scan = ScanCodeUnit({code_bytes, code_size}, host_image, window);
-    if (!scan.ok) {
-        stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
+    if (!enabled || !exec_data || !rw_data || code_size == 0 || blocks.empty()) {
         return;
     }
 
     SerialUnit unit{};
     unit.guest_start = guest_start;
     unit.is_function = is_function ? 1 : 0;
-    unit.code.assign(code_bytes, code_bytes + code_size);
+    unit.link_sites = link_sites;
+    std::sort(unit.link_sites.begin(), unit.link_sites.end(),
+              [](const auto& left, const auto& right) {
+                  return left.code_offset < right.code_offset;
+              });
+
+    std::vector<u32> external_bl_offsets;
+    external_bl_offsets.reserve(unit.link_sites.size());
+    std::vector<u32> normalized_bl;
+    normalized_bl.reserve(unit.link_sites.size());
+    if (!unit.link_sites.empty()) {
+        if (!DirectLinkV2Enabled()) {
+            stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        const auto region = module->GetCodeRegion(exec_data);
+        if (!region || region->trampoline_offset == CodeRegion::kInvalidTrampolineOffset) {
+            stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        auto* trampoline = region->rx_base + region->trampoline_offset;
+        u32 previous_offset{};
+        bool first = true;
+        for (const auto& site : unit.link_sites) {
+            if ((site.code_offset & 3u) != 0 ||
+                static_cast<size_t>(site.code_offset) + sizeof(u32) > code_size ||
+                (!first && site.code_offset == previous_offset) ||
+                site.kind >= static_cast<u8>(LinkSiteKind::Count)) {
+                stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            auto* rx_site = exec_data + site.code_offset;
+            if (!region->ContainsRx(rx_site)) {
+                stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            const auto branch = EncodeBL(trampoline - rx_site);
+            if (!branch) {
+                stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            external_bl_offsets.push_back(site.code_offset);
+            normalized_bl.push_back(*branch);
+            previous_offset = site.code_offset;
+            first = false;
+        }
+    }
+
+    // Copy immutable spans only. A live linker or invalidator may atomically
+    // patch a site at this exact moment; never read that word through memcpy.
+    // Each skipped word is synthesized as the unlinked BL form, so the stored
+    // snapshot is independent of Linked/Far/Unlinked runtime state.
+    unit.code.resize(code_size);
+    size_t cursor{};
+    for (size_t i = 0; i < unit.link_sites.size(); ++i) {
+        const size_t offset = unit.link_sites[i].code_offset;
+        if (offset > cursor) {
+            std::memcpy(unit.code.data() + cursor, rw_data + cursor, offset - cursor);
+        }
+        std::memcpy(unit.code.data() + offset, &normalized_bl[i], sizeof(u32));
+        cursor = offset + sizeof(u32);
+    }
+    if (cursor < code_size) {
+        std::memcpy(unit.code.data() + cursor, rw_data + cursor, code_size - cursor);
+    }
+
+    const u64 window =
+            address_space.GetConfig().guest_addr_mask ? address_space.GetConfig().guest_addr_mask + 1
+                                                      : 0;
+    auto scan = ScanCodeUnit(unit.code, host_image, window, external_bl_offsets);
+    if (!scan.ok) {
+        stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
     unit.relocs = std::move(scan.relocs);
     unit.blocks.reserve(blocks.size());
     for (auto block : blocks) {
@@ -315,9 +376,25 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
             return false;
         }
     }
+    const bool direct_v2 = DirectLinkV2Enabled();
+    if (!unit.link_sites.empty() && !direct_v2) {
+        stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
+        dirty = true;
+        return false;
+    }
+    for (const auto& site : unit.link_sites) {
+        if ((site.code_offset & 3u) != 0 ||
+            static_cast<size_t>(site.code_offset) + sizeof(u32) > unit.code.size() ||
+            site.kind >= static_cast<u8>(LinkSiteKind::Count)) {
+            stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
+            dirty = true;
+            return false;
+        }
+    }
 
     // 2. Place the code.
-    auto [idx, buffer] = module->AllocCodeCache(static_cast<u32>(unit.code.size()));
+    auto [idx, buffer] = module->AllocCodeCache(
+            static_cast<u32>(unit.code.size()), !unit.link_sites.empty());
     if (idx == INVALID_CACHE_ID) {
         stats.reject_alloc.fetch_add(1, std::memory_order_relaxed);
         dirty = true;
@@ -336,6 +413,36 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
         stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
         dirty = true;
         return false;
+    }
+    std::optional<CodeRegion> direct_region;
+    std::vector<u32> unlinked_bl;
+    if (!unit.link_sites.empty()) {
+        direct_region = module->GetCodeRegion(buffer.exec_data);
+        if (!direct_region ||
+            direct_region->trampoline_offset == CodeRegion::kInvalidTrampolineOffset) {
+            if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
+                cache->FreeCode(buffer.exec_data);
+            }
+            stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
+            dirty = true;
+            return false;
+        }
+        auto* trampoline = direct_region->rx_base + direct_region->trampoline_offset;
+        unlinked_bl.reserve(unit.link_sites.size());
+        for (const auto& site : unit.link_sites) {
+            auto* rx_site = buffer.exec_data + site.code_offset;
+            const auto branch = EncodeBL(trampoline - rx_site);
+            if (!branch) {
+                if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
+                    cache->FreeCode(buffer.exec_data);
+                }
+                stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
+                dirty = true;
+                return false;
+            }
+            std::memcpy(buffer.rw_data + site.code_offset, &*branch, sizeof(*branch));
+            unlinked_bl.push_back(*branch);
+        }
     }
     buffer.Flush();
 
@@ -412,8 +519,55 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
                               buffer.exec_data);
     }
 
-    // 5. Make every block entry reachable from the dispatcher, and re-arm SMC.
+    // 5. Install every source record only after all code words are in their
+    // unlinked BL form, and before publishing any target or L2 entry. A partial
+    // registration is rolled back as one owner transaction.
+    if (direct_region) {
+        const LinkSourceOwner owner{module.get(), buffer.exec_data};
+        for (size_t i = 0; i < unit.link_sites.size(); ++i) {
+            const auto& site = unit.link_sites[i];
+            auto* rx_site = buffer.exec_data + site.code_offset;
+            auto* rw_site = buffer.rw_data + site.code_offset;
+            const LinkSiteKey key{direct_region->id, buffer.offset + site.code_offset};
+            const LinkSignalPatchSite signal_patch{
+                    .region = *direct_region,
+                    .rx_site = rx_site,
+                    .rw_site = rw_site,
+                    .unlinked_bl = unlinked_bl[i],
+            };
+            if (!address_space.GetLinkManager().RegisterSite(
+                        key,
+                        site.guest_target,
+                        owner,
+                        &signal_patch,
+                        static_cast<LinkSiteKind>(site.kind))) {
+                module->DiscardLinkSource(buffer.exec_data);
+                module->Remove(node);
+                module->RemoveFaultEntries(buffer.exec_data);
+                if (unit.is_function) {
+                    delete static_cast<ir::Function*>(node);
+                } else {
+                    delete static_cast<ir::Block*>(node);
+                }
+                if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
+                    cache->FreeCode(buffer.exec_data);
+                }
+                stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
+                dirty = true;
+                return false;
+            }
+        }
+    }
+
+    // 6. Target publication is deliberately last: a revived site can be found
+    // by the cold linker only after every source record and signal patch record
+    // for this allocation exists. Linked state is never restored from disk.
     for (const auto& block : unit.blocks) {
+        if (direct_v2) {
+            (void)module->PublishLinkTarget(ir::Location{block.guest_start},
+                                            buffer.exec_data + block.code_offset,
+                                            buffer.exec_data);
+        }
         address_space.PushCodeCache(ir::Location{block.guest_start},
                                     buffer.exec_data + block.code_offset);
         if (!module->GetModuleConfig().read_only) {

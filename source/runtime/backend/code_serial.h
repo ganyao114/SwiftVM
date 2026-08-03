@@ -30,9 +30,9 @@
 //     pool (it is movz/movn/movk/orr-immediate only -- see
 //     MoveImmediateHelper / OneInstrMoveImmediateHelper), and the backend
 //     emits no other literal. ScanCodeUnit *rejects* any unit that contains a
-//     literal load, an adr/adrp, or an out-of-unit pc-relative branch, so a
-//     unit that ever grows embedded data stops being cacheable instead of
-//     being decoded wrongly.
+//     literal load, an adr/adrp, or an out-of-unit pc-relative branch other
+//     than a caller-declared direct-link-v2 BL site. Those declared words are
+//     generated from center-table metadata, not inferred from arbitrary code.
 //   * A materialized constant that lands inside the SwiftVM host image but is
 //     not consumed by a modelled use (an indirect branch target or a
 //     load/store base) also rejects the unit. Missing a *use* class therefore
@@ -113,7 +113,8 @@ struct ScanResult {
 // comment.
 ScanResult ScanCodeUnit(std::span<const u8> code,
                         const HostImageInfo& image,
-                        u64 guest_window_size);
+                        u64 guest_window_size,
+                        std::span<const u32> external_bl_offsets = {});
 
 // Rewrite the movz/movk runs listed in `relocs` so they materialize
 // (image.base + addend). `rw_code` must point at a writable alias of the unit
@@ -137,12 +138,24 @@ struct SerialBlock {
     u64 guest_bytes_hash{};
 };
 
+// One direct-link v2 branch site inside the unit. The code byte at
+// `code_offset` is always serialized as the unlinked `bl region_tramp` form;
+// its process-relative immediate is rewritten again when the unit is revived.
+// kind stores LinkSiteKind as a byte without coupling the generic serializer
+// to LinkManager's runtime-only data structures.
+struct SerialLinkSite {
+    u32 code_offset{};
+    u64 guest_target{};
+    u8 kind{};
+};
+
 struct SerialUnit {
     u64 guest_start{};
     u8 is_function{};
     std::vector<u8> code{};
     std::vector<SerialBlock> blocks{};
     std::vector<Relocation> relocs{};
+    std::vector<SerialLinkSite> link_sites{};
 };
 
 // --------------------------------------------------------------------------
@@ -206,7 +219,7 @@ struct ValidityKey {
     bool operator==(const ValidityKey&) const = default;
 };
 
-constexpr u64 kCacheFormatVersion = 3;
+constexpr u64 kCacheFormatVersion = 4;
 
 u64 HashBytes(const void* data, std::size_t size, u64 seed);
 u64 HashU64(u64 value, u64 seed);

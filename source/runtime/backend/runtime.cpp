@@ -643,17 +643,27 @@ void RecordJitCacheUnit(const std::shared_ptr<backend::Module>& module,
                         VAddr guest_start,
                         bool is_function,
                         const std::vector<SerialBlock>& blocks,
-                        const CodeBuffer& buffer) {
+                        const CodeBuffer& buffer,
+                        const backend::arm64::JitContext& context) {
     auto* cache = module->GetAddressSpace().GetJitDiskCache();
     if (!cache) {
         return;
     }
+    std::vector<SerialLinkSite> link_sites;
+    link_sites.reserve(context.GetDirectLinkSites().size());
+    for (const auto& site : context.GetDirectLinkSites()) {
+        link_sites.push_back({site.code_offset,
+                              site.guest_target,
+                              static_cast<u8>(site.kind)});
+    }
     cache->RecordUnit(module,
                       guest_start,
                       is_function,
+                      buffer.exec_data,
                       buffer.rw_data,
                       static_cast<u32>(buffer.size),
-                      blocks);
+                      blocks,
+                      link_sites);
 }
 
 // PassPipeline::BuildDefault builds a nine-entry vector of std::function
@@ -926,7 +936,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
         if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} entries-ready\n", func_start);
         {
             PerfScope2 perf_pub_disk{GetPerfStats2().publish_disk};
-            RecordJitCacheUnit(module, func_start, true, cache_blocks, buffer);
+            RecordJitCacheUnit(
+                    module, func_start, true, cache_blocks, buffer, *emitted_context);
         }
 
         // Release the function's IR. Block mode has always done this (the
@@ -1134,7 +1145,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
             const VAddr start = block->GetStartLocation().Value();
             const std::vector<backend::SerialBlock> cache_blocks{
                     {start, block->GetEndLocation().Value(), 0, 0}};
-            RecordJitCacheUnit(module, start, false, cache_blocks, buffer);
+            RecordJitCacheUnit(
+                    module, start, false, cache_blocks, buffer, *emitted_context);
         }
         perf_pub_total.Stop();
         PerfScope2 perf_free_detail{GetPerfStats2().ir_free};

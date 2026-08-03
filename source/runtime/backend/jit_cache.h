@@ -60,8 +60,10 @@ public:
                     VAddr guest_start,
                     bool is_function,
                     const u8* exec_data,
+                    const u8* rw_data,
                     u32 code_size,
-                    const std::vector<SerialBlock>& blocks);
+                    const std::vector<SerialBlock>& blocks,
+                    const std::vector<SerialLinkSite>& link_sites);
 
     // Flush to disk (atomic rename). Called from ~AddressSpace.
     void Save();

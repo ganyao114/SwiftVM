@@ -167,6 +167,7 @@ inline bool IsAdrp(u32 insn) { return (insn & 0x9F000000u) == 0x90000000u; }
 
 // --- pc-relative branches -------------------------------------------------
 inline bool IsBImm(u32 insn) { return (insn & 0x7C000000u) == 0x14000000u; }  // b / bl
+inline bool IsBLImm(u32 insn) { return (insn & 0xFC000000u) == 0x94000000u; }
 inline s64 BImmOffset(u32 insn) {
     s32 imm26 = static_cast<s32>(insn & 0x03FFFFFFu);
     imm26 = (imm26 << 6) >> 6;  // sign extend
@@ -200,7 +201,8 @@ struct Pending {
 
 ScanResult ScanCodeUnit(std::span<const u8> code,
                         const HostImageInfo& image,
-                        u64 guest_window_size) {
+                        u64 guest_window_size,
+                        std::span<const u32> external_bl_offsets) {
     ScanResult result{};
     if (code.size() % kInstSize != 0 || code.empty()) {
         result.reject_reason = "unit size is not a multiple of 4";
@@ -218,6 +220,22 @@ ScanResult ScanCodeUnit(std::span<const u8> code,
     }
 
     const std::size_t n_inst = code.size() / kInstSize;
+    std::vector<u32> allowed_external_bl(external_bl_offsets.begin(),
+                                         external_bl_offsets.end());
+    std::sort(allowed_external_bl.begin(), allowed_external_bl.end());
+    if (std::adjacent_find(allowed_external_bl.begin(), allowed_external_bl.end()) !=
+        allowed_external_bl.end()) {
+        result.reject_reason = "duplicate external BL offset";
+        return result;
+    }
+    for (const u32 offset : allowed_external_bl) {
+        if ((offset & (kInstSize - 1)) != 0 ||
+            static_cast<std::size_t>(offset) + kInstSize > code.size()) {
+            result.reject_reason = "external BL offset is out of range";
+            return result;
+        }
+    }
+    std::size_t next_external_bl{};
     std::array<Pending, 32> pending{};
     // Materializations that landed inside the host image, in program order.
     struct Candidate {
@@ -261,8 +279,14 @@ ScanResult ScanCodeUnit(std::span<const u8> code,
             if (rel) {
                 const s64 target = static_cast<s64>(offset) + *rel;
                 if (target < 0 || target >= static_cast<s64>(code.size())) {
-                    result.reject_reason = "pc-relative branch leaves the unit";
-                    return result;
+                    const bool declared_v2_site =
+                            next_external_bl < allowed_external_bl.size() &&
+                            allowed_external_bl[next_external_bl] == offset;
+                    if (!declared_v2_site || !IsBLImm(insn)) {
+                        result.reject_reason = "pc-relative branch leaves the unit";
+                        return result;
+                    }
+                    ++next_external_bl;
                 }
             }
         }
@@ -360,6 +384,11 @@ ScanResult ScanCodeUnit(std::span<const u8> code,
         // here (dropping on instructions that write nothing) is safe, it only
         // shortens the window in which a constant is recognized.
         invalidate(insn & 0x1Fu);
+    }
+
+    if (next_external_bl != allowed_external_bl.size()) {
+        result.reject_reason = "declared external BL is not an out-of-unit BL";
+        return result;
     }
 
     // Completeness guard: a host-image constant that no modelled use consumed
@@ -547,6 +576,12 @@ void WriteUnit(BlobWriter& w, const SerialUnit& unit) {
         w.U64(r.addend);
         w.U64(r.recorded_value);
     }
+    w.U32(static_cast<u32>(unit.link_sites.size()));
+    for (const auto& site : unit.link_sites) {
+        w.U32(site.code_offset);
+        w.U64(site.guest_target);
+        w.U8(site.kind);
+    }
 }
 
 bool ReadUnit(BlobReader& r, SerialUnit& unit) {
@@ -588,6 +623,24 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit) {
         }
         rel.kind = static_cast<RelocKind>(kind);
         rel.use = static_cast<RelocUse>(use);
+    }
+    if (!r.U32(count) || count > r.Remaining() / 13) {
+        return false;
+    }
+    unit.link_sites.resize(count);
+    u32 previous_offset{};
+    bool first = true;
+    for (auto& site : unit.link_sites) {
+        if (!r.U32(site.code_offset) || !r.U64(site.guest_target) || !r.U8(site.kind)) {
+            return false;
+        }
+        if ((site.code_offset & 3u) != 0 ||
+            static_cast<size_t>(site.code_offset) + sizeof(u32) > code_size ||
+            (!first && site.code_offset <= previous_offset)) {
+            return false;
+        }
+        previous_offset = site.code_offset;
+        first = false;
     }
     return true;
 }
