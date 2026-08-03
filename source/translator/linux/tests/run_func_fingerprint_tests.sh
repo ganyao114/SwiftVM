@@ -67,20 +67,42 @@ LEGACY_GOLDEN="$HERE/func_fingerprint_golden.txt"
 STAGE_DIR="/tmp/svm_fp_guests"
 
 detect_golden_profile() {
-    local platform flagm=no
+    local platform flagm=no value grep_rc
     case "$(uname -s)" in
         Darwin)
             platform=darwin
-            if [ "${SVM_FLAGS_CFINV:-}" != 0 ] &&
-               [ "$(sysctl -n hw.optional.arm.FEAT_FlagM 2>/dev/null || true)" = 1 ]; then
-                flagm=yes
+            if [ "${SVM_FLAGS_CFINV:-}" != 0 ]; then
+                if ! value="$(sysctl -n hw.optional.arm.FEAT_FlagM 2>&1)"; then
+                    echo "FAIL: cannot detect Darwin FlagM: $value" >&2
+                    return 2
+                fi
+                case "$value" in
+                    0) ;;
+                    1) flagm=yes ;;
+                    *)
+                        echo "FAIL: invalid Darwin FlagM value '$value'" >&2
+                        return 2
+                        ;;
+                esac
             fi
             ;;
         Linux)
             platform=linux
-            if [ "${SVM_FLAGS_CFINV:-}" != 0 ] &&
-               grep -qw flagm /proc/cpuinfo 2>/dev/null; then
-                flagm=yes
+            if [ "${SVM_FLAGS_CFINV:-}" != 0 ]; then
+                if [ ! -r /proc/cpuinfo ]; then
+                    echo "FAIL: cannot detect Linux FlagM: /proc/cpuinfo is not readable" >&2
+                    return 2
+                fi
+                grep -qw flagm /proc/cpuinfo 2>/dev/null
+                grep_rc=$?
+                case "$grep_rc" in
+                    0) flagm=yes ;;
+                    1) ;;
+                    *)
+                        echo "FAIL: cannot detect Linux FlagM: grep exited $grep_rc" >&2
+                        return 2
+                        ;;
+                esac
             fi
             ;;
         *)
@@ -92,7 +114,11 @@ detect_golden_profile() {
     printf '%s-%s\n' "$platform" "$([ "$flagm" = yes ] && printf flagm || printf noflagm)"
 }
 
-GOLDEN_PROFILE="${SVM_FP_GOLDEN_PROFILE:-$(detect_golden_profile)}"
+if [ -n "${SVM_FP_GOLDEN_PROFILE:-}" ]; then
+    GOLDEN_PROFILE="$SVM_FP_GOLDEN_PROFILE"
+else
+    GOLDEN_PROFILE="$(detect_golden_profile)" || exit $?
+fi
 case "$GOLDEN_PROFILE" in
     *[!A-Za-z0-9._-]*|'')
         echo "FAIL: invalid SVM_FP_GOLDEN_PROFILE '$GOLDEN_PROFILE'"
