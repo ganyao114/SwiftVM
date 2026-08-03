@@ -13,6 +13,7 @@
 #include <atomic>
 #include <climits>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -358,19 +359,20 @@ int main(int argc, char** argv) {
         guest_envs.emplace_back(std::string("OPENSSL_ia32cap=") + ia32cap);
     }
 
-    // 1. Guest address space. The default is a bounded, biased reservation:
-    //    every guest address is truncated to the window before the bias is
-    //    added, so no wild guest pointer can name unrelated host memory.
-    //    SVM_GUEST_BITS overrides the window size.
+    // 1. Guest address space. Linux defaults to guest==host identity mapping,
+    //    which keeps the original address in JIT memory operands and releases
+    //    the pt (x24) and mem_scratch (x10) reservations. Identity does not
+    //    isolate guest wild pointers from translator/DSO/stack mappings.
     //
-    //    Linux hosts may explicitly request SVM_MEM_IDENTITY=ON. That skips
-    //    the window and maps guest addresses directly at the same host
-    //    addresses with MAP_FIXED_NOREPLACE. It releases the JIT's pt (x24)
-    //    and mem_scratch (x10) reservations, but a wild guest pointer can then
-    //    reach translator/DSO/stack mappings. Identity is therefore opt-in
-    //    and never silently falls back to bias mode on a fixed-map collision.
-    //    macOS does not inspect this switch and always follows the historical
-    //    bounded-bias path (its 4GB pagezero prevents low ET_EXEC identity).
+    //    SVM_MEM_IDENTITY=0/OFF/off explicitly selects the bounded bias window;
+    //    setting SVM_GUEST_BITS also requests that window and chooses its size.
+    //    SVM_MEM_IDENTITY=1 remains accepted and is equivalent to the Linux
+    //    default. If the initial exact map collides, GuestMemory reports a
+    //    warning and retries with the default bounded window.
+    //
+    //    macOS does not inspect SVM_MEM_IDENTITY and always follows the
+    //    bounded-bias path (its 4GB pagezero prevents low ET_EXEC identity);
+    //    its existing SVM_GUEST_BITS window-size override remains available.
     //
     //    SVM_GUEST_BITS=0 restores the old unbounded bias mode, in which the
     //    guest can read and write arbitrary host memory. That is the defect
@@ -380,25 +382,30 @@ int main(int argc, char** argv) {
     //    run_isolation_tests.sh uses a dedicated build to demonstrate it.
     linux::GuestMemory memory;
     {
-        bool identity_mode = false;
+        const char* identity_env = nullptr;
+        const char* guest_bits_env = std::getenv("SVM_GUEST_BITS");
 #if defined(__linux__)
-        if (const char* env = std::getenv("SVM_MEM_IDENTITY")) {
-            identity_mode = std::strcmp(env, "0") != 0 &&
-                            std::strcmp(env, "OFF") != 0 &&
-                            std::strcmp(env, "off") != 0;
-        }
-        if (identity_mode) {
+        identity_env = std::getenv("SVM_MEM_IDENTITY");
+#endif
+        const auto policy = linux::SelectGuestMemoryLaunchPolicy(
+#if defined(__linux__)
+                true,
+#else
+                false,
+#endif
+                identity_env,
+                guest_bits_env);
+        if (policy.identity) {
             memory.EnableIdentityMode();
             LOG_WARNING(
-                    "SVM_MEM_IDENTITY=ON: Linux guest addresses map directly onto the "
+                    "Linux identity memory mode: guest addresses map directly onto the "
                     "host address space. Guest wild pointers can access translator "
-                    "mappings; fixed-address conflicts are fatal.");
+                    "mappings; use SVM_MEM_IDENTITY=0 for the bounded bias window.");
         }
-#endif
         u32 window_bits = linux::GuestMemory::kDefaultWindowBits;
-        if (!identity_mode) {
-            if (const char* env = std::getenv("SVM_GUEST_BITS")) {
-                const long v = std::strtol(env, nullptr, 0);
+        if (!policy.identity) {
+            if (guest_bits_env) {
+                const long v = std::strtol(guest_bits_env, nullptr, 0);
                 if (v == 0) {
 #ifdef SWIFT_ALLOW_UNBOUNDED_GUEST
                     window_bits = 0;
@@ -414,7 +421,7 @@ int main(int argc, char** argv) {
                     window_bits = static_cast<u32>(v);
                 } else {
                     LOG_ERROR("SVM_GUEST_BITS={} out of range (0 or 20..47); using {}",
-                              env,
+                              guest_bits_env,
                               window_bits);
                 }
             }
@@ -469,6 +476,18 @@ int main(int argc, char** argv) {
     } catch (const std::exception& e) {
         LOG_ERROR("Cannot start guest: {}", e.what());
         return 2;
+    }
+    if (const char* trace = std::getenv("SVM_MEM_MODE_TRACE");
+        trace && std::strcmp(trace, "0") != 0) {
+        std::fprintf(stderr,
+                     "[svm-mem-mode] identity=%u use_memory_base=%u mask=0x%llx "
+                     "window_bits=%u bias=0x%llx\n",
+                     memory.IdentityMode(),
+                     memory.GetBias() != 0,
+                     static_cast<unsigned long long>(
+                             memory.Windowed() ? memory.Mask() : 0),
+                     memory.WindowBits(),
+                     static_cast<unsigned long long>(memory.GetBias()));
     }
     if (image.isa == linux::GuestISA::kX86_64 && image.interpreter_base != 0) {
         // glibc's GNU-property x86-64-baseline test includes the architectural

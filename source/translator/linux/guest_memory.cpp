@@ -3,6 +3,7 @@
 //
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -75,6 +76,10 @@ bool GuestMemory::ReserveWindow(u32 bits) {
 }
 
 bool GuestMemory::MapFixed(VAddr addr, u64 size) {
+    return MapFixedImpl(addr, size, false);
+}
+
+bool GuestMemory::MapFixedImpl(VAddr addr, u64 size, bool quiet_failure) {
     ASSERT(addr % kHostPageSize == 0);
     auto map_size = RoundHostPage(size);
     if (window_bits_ != 0) {
@@ -128,11 +133,14 @@ bool GuestMemory::MapFixed(VAddr addr, u64 size) {
                      -1,
                      0);
     if (res == MAP_FAILED) {
-        LOG_ERROR("GuestMemory: fixed map failed at guest {:#x} (host {:#x}) size {:#x} errno {}",
-                  addr,
-                  host_addr,
-                  map_size,
-                  errno);
+        if (!quiet_failure) {
+            LOG_ERROR("GuestMemory: fixed map failed at guest {:#x} (host {:#x}) "
+                      "size {:#x} errno {}",
+                      addr,
+                      host_addr,
+                      map_size,
+                      errno);
+        }
         return false;
     }
     // Linux kernels before 4.17 may ignore the unknown NOREPLACE flag and
@@ -140,15 +148,27 @@ bool GuestMemory::MapFixed(VAddr addr, u64 size) {
     // promises exact placement and must not silently become biased.
     if (reinterpret_cast<VAddr>(res) != host_addr) {
         munmap(res, map_size);
-        LOG_ERROR("GuestMemory: MAP_FIXED_NOREPLACE did not map the requested host "
-                  "address {:#x} (got {}); Linux 4.17+ is required",
-                  host_addr,
-                  res);
+        errno = EOPNOTSUPP;
+        if (!quiet_failure) {
+            LOG_ERROR("GuestMemory: MAP_FIXED_NOREPLACE did not map the requested host "
+                      "address {:#x} (got {}); Linux 4.17+ is required",
+                      host_addr,
+                      res);
+        }
         return false;
     }
 #endif
     TrackMap(addr, map_size);
     return true;
+}
+
+bool GuestMemory::FallBackIdentityToWindow() {
+    ASSERT(identity_mode_);
+    ASSERT(bias_ == 0);
+    ASSERT(window_bits_ == 0);
+    ASSERT(mapped_regions.empty());
+    identity_mode_ = false;
+    return ReserveWindow(kDefaultWindowBits);
 }
 
 VAddr GuestMemory::MapAnywhere(u64 size) {
@@ -197,21 +217,43 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
     }
     if (identity_mode_) {
 #if defined(__linux__)
-        // Exact, non-clobbering placement. A collision with the translator
-        // PIE, its DSOs/heap, the host stack, vDSO, or any other host mapping
-        // is reported to the caller. Do not silently fall back to bias mode:
-        // SVM_MEM_IDENTITY=ON is an explicit codegen/isolation contract.
-        if (!MapFixed(guest_start, map_size)) {
-            LOG_ERROR("GuestMemory: identity image span [{:#x}, {:#x}) is unavailable; "
-                      "disable SVM_MEM_IDENTITY to use the isolated bias window",
-                      guest_start,
-                      guest_start + map_size);
-            return false;
-        }
-        LOG_INFO("GuestMemory: identity image span guest=host [{:#x}, {:#x})",
-                 guest_start,
-                 guest_start + map_size);
-        return true;
+        // The initial image span is one all-or-nothing mapping. If exact
+        // placement collides, no guest mapping has been published yet, so it
+        // is safe to select the same bounded window used by explicit bias mode
+        // and retry through the common windowed branch.
+        int identity_errno = 0;
+        return TryIdentityWithFallback(
+                [&] {
+                    const char* force_collision =
+                            std::getenv("SVM_MEM_IDENTITY_TEST_COLLISION");
+                    if (force_collision && std::strcmp(force_collision, "0") != 0) {
+                        errno = EEXIST;
+                        identity_errno = errno;
+                        return false;
+                    }
+                    if (!MapFixedImpl(guest_start, map_size, true)) {
+                        identity_errno = errno;
+                        return false;
+                    }
+                    LOG_INFO("GuestMemory: identity image span guest=host [{:#x}, {:#x})",
+                             guest_start,
+                             guest_start + map_size);
+                    return true;
+                },
+                [&] {
+                    LOG_WARNING("GuestMemory: identity image span [{:#x}, {:#x}) is "
+                                "unavailable (errno {}); falling back to the {}-bit "
+                                "bounded bias window",
+                                guest_start,
+                                guest_start + map_size,
+                                identity_errno,
+                                kDefaultWindowBits);
+                    if (!FallBackIdentityToWindow()) {
+                        LOG_ERROR("GuestMemory: bounded bias fallback reservation failed");
+                        return false;
+                    }
+                    return MapImageAnywhere(guest_start, map_size);
+                });
 #else
         PANIC("GuestMemory identity mode is only supported on Linux hosts");
 #endif

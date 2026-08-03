@@ -16,9 +16,9 @@
 #   so `base` and `base + 2^k` (k >= window bits) must alias.  If they do not,
 #   the access left the window — which is exactly "it reached host memory".
 #
-#   The suite therefore fails on the unbounded build (SVM_GUEST_BITS=0) and
-#   passes on the bounded one.  Run it both ways to see the regression it
-#   locks down:
+#   Linux now defaults to identity mapping, so the fixed half explicitly sets
+#   SVM_MEM_IDENTITY=0. The suite fails on the unbounded build
+#   (SVM_GUEST_BITS=0) and passes on the bounded one. Run it both ways:
 #       SVM_ISOLATION_EXPECT=broken run_isolation_tests.sh <unbounded-build>
 #
 #   The unbounded mode is COMPILE-time gated: an ordinary build refuses
@@ -51,7 +51,7 @@ trap 'rm -rf "$WORK"' EXIT
 # SVM_GUEST_BITS=0 reproduces the pre-fix unbounded behaviour, and only a
 # build configured with -DSWIFT_ALLOW_UNBOUNDED_GUEST=ON has it compiled in.
 BROKEN="${SVM_ISOLATION_EXPECT:-fixed}"
-ENVPFX=""
+ENVPFX="SVM_MEM_IDENTITY=0"
 if [ "$BROKEN" = "broken" ]; then
     ENVPFX="SVM_GUEST_BITS=0"
     probe="$(SVM_GUEST_BITS=0 "$SVM" /nonexistent-guest-elf 2>&1)"
@@ -101,11 +101,7 @@ report() {  # report <name> <ok|bad> <detail>
 }
 
 run_guest() {  # run_guest <elf> -> sets RC
-    if [ -n "$ENVPFX" ]; then
-        env $ENVPFX "$SVM" "$1" >/dev/null 2>&1
-    else
-        "$SVM" "$1" >/dev/null 2>&1
-    fi
+    env $ENVPFX "$SVM" "$1" >/dev/null 2>&1
     RC=$?
 }
 

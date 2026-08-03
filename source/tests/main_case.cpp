@@ -36,6 +36,7 @@
 #include "compiler/slang/slang.h"
 #include "assembler_riscv64.h"
 #include "fmt/format.h"
+#include "translator/linux/guest_memory.h"
 #include "translator/x86/translator.h"
 
 namespace {
@@ -119,6 +120,56 @@ private:
 };
 
 }  // namespace
+
+TEST_CASE("Linux guest memory launch policy defaults to identity") {
+    using swift::linux::SelectGuestMemoryLaunchPolicy;
+
+    REQUIRE(SelectGuestMemoryLaunchPolicy(true, nullptr, nullptr).identity);
+    REQUIRE_FALSE(SelectGuestMemoryLaunchPolicy(true, "0", nullptr).identity);
+    REQUIRE_FALSE(SelectGuestMemoryLaunchPolicy(true, "OFF", nullptr).identity);
+    REQUIRE_FALSE(SelectGuestMemoryLaunchPolicy(true, "off", nullptr).identity);
+    REQUIRE(SelectGuestMemoryLaunchPolicy(true, "1", nullptr).identity);
+
+    // Any explicit window-size request wins over the identity selector.
+    REQUIRE_FALSE(SelectGuestMemoryLaunchPolicy(true, nullptr, "32").identity);
+    REQUIRE_FALSE(SelectGuestMemoryLaunchPolicy(true, "1", "36").identity);
+
+    // macOS passes linux_host=false and ignores the identity selector.
+    REQUIRE_FALSE(SelectGuestMemoryLaunchPolicy(false, nullptr, nullptr).identity);
+    REQUIRE_FALSE(SelectGuestMemoryLaunchPolicy(false, "1", nullptr).identity);
+}
+
+TEST_CASE("identity image collision performs one bounded-bias fallback") {
+    using swift::linux::GuestMemory;
+
+    int identity_attempts = 0;
+    int fallback_attempts = 0;
+    REQUIRE(GuestMemory::TryIdentityWithFallback(
+            [&] {
+                ++identity_attempts;
+                return false;
+            },
+            [&] {
+                ++fallback_attempts;
+                return true;
+            }));
+    REQUIRE(identity_attempts == 1);
+    REQUIRE(fallback_attempts == 1);
+
+    identity_attempts = 0;
+    fallback_attempts = 0;
+    REQUIRE(GuestMemory::TryIdentityWithFallback(
+            [&] {
+                ++identity_attempts;
+                return true;
+            },
+            [&] {
+                ++fallback_attempts;
+                return false;
+            }));
+    REQUIRE(identity_attempts == 1);
+    REQUIRE(fallback_attempts == 0);
+}
 
 TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;

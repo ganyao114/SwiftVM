@@ -9,11 +9,10 @@
 // (argc / argv / envp / auxv).
 //
 // Address modes:
-//  - Default, and always on macOS: a bounded guest window provides a non-zero
-//    guest->host bias (memory_base), sidestepping macOS pagezero and isolating
-//    guest pointers from unrelated host mappings.
-//  - Linux SVM_MEM_IDENTITY=ON: guest mappings use their host-identical
-//    addresses; fixed ET_EXEC spans are non-clobbering and fail on collision.
+//  - Linux defaults to host-identical guest mappings. A fixed ET_EXEC collision
+//    falls back to the bounded bias window before loading continues.
+//  - macOS always uses bounded bias. Linux selects it with
+//    SVM_MEM_IDENTITY=0 or SVM_GUEST_BITS.
 //
 
 #pragma once

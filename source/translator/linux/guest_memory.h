@@ -2,12 +2,11 @@
 // Guest (ARM64 / x86_64 Linux) memory management for the SwiftVM linux loader.
 //
 // Address model:
-//  - The default, and the only mode on macOS, backs every guest address G at
-//    G + bias ("memory_base" mode — the runtime backend applies the same bias
-//    in JIT/interp memory accesses via Config::memory_base / State::pt).
-//  - Linux may explicitly opt into identity mode, where mappings are placed
-//    directly at G without replacement. This removes the runtime bias but
-//    also removes the bounded window's isolation from unrelated host maps.
+//  - Linux defaults to identity mode: mappings are placed directly at G
+//    without replacement. This removes the runtime bias, but a guest wild
+//    pointer may then name an unrelated host mapping.
+//  - macOS always uses the bounded bias window. Linux selects the same mode
+//    explicitly with SVM_MEM_IDENTITY=0 or SVM_GUEST_BITS.
 //
 // ALL public methods of this class take and return *guest* addresses; the
 // bias conversion is centralized here (ToHost/ToGuest) so callers (loader,
@@ -33,6 +32,28 @@
 #include "runtime/include/config.h"
 
 namespace swift::linux {
+
+struct GuestMemoryLaunchPolicy {
+    bool identity{};
+};
+
+// Keep environment precedence in a pure helper so the four launch modes can
+// be tested without reserving a process address space. On macOS linux_host is
+// false, so the identity selector is ignored; the launcher still parses its
+// existing SVM_GUEST_BITS window-size override after this decision.
+inline GuestMemoryLaunchPolicy SelectGuestMemoryLaunchPolicy(
+        bool linux_host,
+        const char* identity_value,
+        const char* guest_bits_value) {
+    if (!linux_host || guest_bits_value) {
+        return {.identity = false};
+    }
+    const bool explicitly_disabled = identity_value &&
+            (std::strcmp(identity_value, "0") == 0 ||
+             std::strcmp(identity_value, "OFF") == 0 ||
+             std::strcmp(identity_value, "off") == 0);
+    return {.identity = !explicitly_disabled};
+}
 
 class GuestMemory : public runtime::MemoryInterface {
 public:
@@ -61,14 +82,26 @@ public:
     [[nodiscard]] u64 GetBias() const { return bias_; }
 
     // Select Linux host identity mapping before any reservation or mapping.
-    // SVM_MEM_IDENTITY is intentionally interpreted by the Linux launcher,
-    // not here, so macOS never calls this and retains its existing bias path.
+    // The launcher never calls this on macOS.
     void EnableIdentityMode() {
         ASSERT(bias_ == 0);
         ASSERT(window_bits_ == 0);
         identity_mode_ = true;
     }
     [[nodiscard]] bool IdentityMode() const { return identity_mode_; }
+
+    // Shared control-flow primitive for the initial Linux ET_EXEC mapping.
+    // The fallback callback is invoked exactly once only after the identity
+    // attempt fails; keeping this generic allows collision injection tests to
+    // cover the transaction without platform-specific mmap side effects.
+    template <typename IdentityAttempt, typename BiasFallback>
+    static bool TryIdentityWithFallback(IdentityAttempt&& identity_attempt,
+                                        BiasFallback&& bias_fallback) {
+        if (identity_attempt()) {
+            return true;
+        }
+        return bias_fallback();
+    }
 
     // Reserves the whole guest window ([0, 2^bits) guest) as one PROT_NONE
     // host region and installs the bias. Every later mapping is carved out of
@@ -209,6 +242,8 @@ public:
     static constexpr u64 RoundDownHostPage(u64 v) { return v & ~(kHostPageSize - 1); }
 
 private:
+    bool MapFixedImpl(VAddr addr, u64 size, bool quiet_failure);
+    bool FallBackIdentityToWindow();
     // Tracked guest mappings (sorted, disjoint [start, end) host-page
     // granularity intervals, in *guest* addresses). Maintained by
     // MapFixed/MapAnywhere/Unmap.
@@ -240,9 +275,8 @@ private:
     mutable std::shared_mutex mapped_regions_mutex;
     std::vector<std::pair<VAddr, VAddr>> mapped_regions;
     u64 bias_{};
-    // Explicit Linux host identity mode. This is distinct from the legacy
-    // unwindowed-bias setup: MapImageAnywhere must map at guest_start instead
-    // of choosing a host address and installing a bias.
+    // Linux host identity mode. This is distinct from unwindowed bias:
+    // MapImageAnywhere maps at guest_start rather than choosing a host base.
     bool identity_mode_{};
     // Bounded guest window. window_bits_ == 0 => disabled, mask_ == ~0.
     u32 window_bits_{};

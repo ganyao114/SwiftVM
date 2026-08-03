@@ -97,11 +97,11 @@ LoadedImage ElfLoader::Load(const std::string& path) {
     const u64 span = span_end - span_start;
 
     // Address modes:
-    //  - Default / every macOS launch: the image lives in the bounded guest
-    //    window and every runtime access applies its non-zero host bias.
-    //  - Linux SVM_MEM_IDENTITY=ON: ET_EXEC is mapped with
-    //    MAP_FIXED_NOREPLACE at its linked address. ET_DYN mappings chosen
-    //    below are also guest==host because GuestMemory has zero bias.
+    //  - Linux defaults to identity: ET_EXEC uses MAP_FIXED_NOREPLACE at its
+    //    linked address; ET_DYN mappings are guest==host because bias is zero.
+    //  - macOS and explicit Linux bias mode use the bounded guest window.
+    //    An initial Linux identity collision switches GuestMemory to this mode
+    //    before MapImageAnywhere returns.
     VAddr guest_base = 0;
     if (elf_type == ELFIO::ET_EXEC) {
         if (!memory->MapImageAnywhere(span_start, span)) {
@@ -136,8 +136,8 @@ LoadedImage ElfLoader::Load(const std::string& path) {
     } else {
         // Static PIE: self-relocating, so it can be placed anywhere. With the
         // bounded guest window that "anywhere" is a free guest address inside
-        // the window, exactly like every other mapping; the host-chosen
-        // identity placement it used before could not be bounded.
+        // the window. In identity mode the host-selected address is also the
+        // guest address.
         auto base = memory->MapAnywhere(span);
         if (!base) {
             PANIC("Failed to reserve guest address span for image! file = {}", path);
