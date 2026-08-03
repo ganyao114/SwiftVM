@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -222,6 +223,22 @@ private:
     // Terminals
     void EmitTerminal(const ir::Terminal &terminal,
                       LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional);
+    void PrepareRegionEdges(ir::HIRFunction* function);
+    void CollectRegionTargets(const ir::Terminal& terminal,
+                              std::vector<u64>& targets) const;
+    [[nodiscard]] std::optional<ir::Location>
+    RegionLeafTarget(const ir::Terminal& terminal) const;
+    [[nodiscard]] bool IsRegionInternalEdge(ir::Location target) const;
+    [[nodiscard]] bool IsRegionCycleEdge(ir::Location target) const;
+    [[nodiscard]] bool HasRegionCycleEdgeFromCurrent() const;
+    [[nodiscard]] bool CanRegionFallThrough(ir::Location target) const;
+    void EmitRegionEdge(ir::Location target,
+                        bool fallthrough = false,
+                        bool record_edge_counters = true);
+    [[nodiscard]] bool EmitRegionIf(const ir::terminal::If& terminal,
+                                    bool allow_fallthrough);
+    [[nodiscard]] bool EmitRegionCondition(const ir::terminal::Condition& terminal,
+                                           bool allow_fallthrough);
     [[nodiscard]] bool HasSelfEdge(const ir::Terminal& terminal) const;
     [[nodiscard]] bool IsSelfEdge(ir::Location target) const;
     void EmitBackedgeExitStub();
@@ -420,6 +437,7 @@ private:
     bool backedge_latch{false};
     bool backedge_flags{false};
     bool link_suffix_common{false};
+    bool region_edges_active{false};
     bool cur_block_is_call{};
     // Set by EmitSetLocation when the next guest location is a compile-time
     // constant, cleared by every other instruction (Translate(ir::Inst*)).
@@ -449,6 +467,13 @@ private:
     std::vector<std::pair<u32, u32>> boundary_terminal_link_ranges{};
     std::unique_ptr<LinkSuffixCommonPlan> link_suffix_plan{};
     size_t link_suffix_site{};
+    std::unordered_set<u64> region_blocks{};
+    std::set<std::pair<u64, u64>> region_cycle_edges{};
+    std::optional<u64> next_region_block{};
+    u32 region_block_edges{};
+    u32 region_block_cycles{};
+    u32 region_block_fallthroughs{};
+    u32 region_block_local_branch_bytes{};
 };
 
 }

@@ -5,6 +5,7 @@
 #include "address_space.h"
 #include "runtime/backend/arm64/trampolines.h"
 #include "runtime/backend/riscv64/trampolines.h"
+#include "runtime/common/backedge_control.h"
 #include "runtime/common/logging.h"
 #include <cstdio>
 #include <cstdlib>
@@ -14,8 +15,14 @@ namespace swift::runtime::backend {
 
 AddressSpace::AddressSpace(const Config& config)
         : config(config)
-        , smc_tracker(reinterpret_cast<u64>(config.memory_base), config.guest_addr_mask) {
+        , smc_tracker(reinterpret_cast<u64>(config.memory_base),
+                      config.guest_addr_mask,
+                      BackedgeLatchEnabled() || config.region_edges) {
     Init();
+}
+
+bool AddressSpace::ExitLatchEnabled() const {
+    return BackedgeLatchEnabled() || config.region_edges;
 }
 
 void AddressSpace::Init() {

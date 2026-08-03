@@ -2,6 +2,7 @@ add_executable(swift_test
         distorm_fast_test.cpp
         link_manager_test.cpp
         region_link_trampoline_test.cpp
+        region_edges_test.cpp
         direct_link_production_test.cpp
         jit_cache_direct_link_test.cpp
         main_case.cpp

@@ -778,6 +778,10 @@ u64 ComputeConfigHash(const Config& config) {
     h = HashU64(config.sse_afp_nan ? 1 : 0, h);
     h = HashU64(config.mem_hostbase_fold ? 1 : 0, h);
     h = HashU64(config.induct_tie ? 1 : 0, h);
+    // OFF 沿用既有 cache identity；ON 额外隔离不同 unit 边界和本地分支。
+    if (config.region_edges) {
+        h = HashU64(1, h);
+    }
     h = HashU64(static_cast<u64>(config.tso_mode), h);
     h = HashU64(config.stack_alignment, h);
     h = HashU64(config.guest_addr_mask, h);

@@ -79,6 +79,7 @@ public:
 
     [[nodiscard]] const Config &GetConfig();
     [[nodiscard]] const Config &GetConfig() const;
+    [[nodiscard]] bool ExitLatchEnabled() const;
 
     [[nodiscard]] const ir::UniformInfo &GetUniformInfo();
     [[nodiscard]] const ir::UniformInfo &GetUniformInfo() const;

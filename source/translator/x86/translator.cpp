@@ -727,6 +727,9 @@ struct X86Instance::Impl final {
         };
         const bool mem_hostbase_fold = env_default_on("SVM_MEM_HOSTBASE_FOLD");
         const bool induct_tie = env_default_on("SVM_INDUCT_TIE");
+        const char* region_edges_env = runtime::PerfGetenv("SVM_REGION_EDGES");
+        const bool region_edges =
+                region_edges_env && std::strcmp(region_edges_env, "0") != 0;
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ul << 49,
@@ -752,6 +755,7 @@ struct X86Instance::Impl final {
                 .sse_afp_nan = sse_afp_nan,
                 .mem_hostbase_fold = mem_hostbase_fold,
                 .induct_tie = induct_tie,
+                .region_edges = region_edges,
                 .tso_mode = TsoModeFromEnvironment(),
                 .stack_alignment = 16,
                 .page_table = nullptr,
@@ -841,8 +845,11 @@ struct X86Instance::Impl final {
             const size_t lazy_budget =
                     decode_budget_override != 0
                             ? decode_budget_override
-                            : (address_space->GetConfig().enable_jit ? LazyFuncBudget()
-                                                                     : kMaxFuncBlocks);
+                            : (address_space->GetConfig().enable_jit
+                                       ? (address_space->GetConfig().region_edges
+                                                  ? 1024
+                                                  : LazyFuncBudget())
+                                       : kMaxFuncBlocks);
             const size_t decode_cap = std::min(lazy_budget, kMaxFuncBlocks);
             const bool lazy = lazy_budget < kMaxFuncBlocks;
             size_t decoded_count = 0;

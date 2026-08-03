@@ -124,9 +124,9 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 68);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 69);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_INDUCT_TIE");
+            "SVM_REGION_EDGES");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -292,16 +292,19 @@ TEST_CASE("link suffix common plan keeps direct-leaf holes positional") {
     REQUIRE(plan.TryEmit(2, kSuffix, masm));
 }
 
-TEST_CASE("config hash includes independent A1 and induction policies") {
+TEST_CASE("config hash includes independent code-shape policies") {
     swift::runtime::Config base{};
     swift::runtime::Config a1{};
     swift::runtime::Config induction{};
+    swift::runtime::Config region{};
     a1.mem_hostbase_fold = true;
     induction.induct_tie = true;
+    region.region_edges = true;
 
     const auto base_hash = swift::runtime::backend::ComputeConfigHash(base);
     REQUIRE(swift::runtime::backend::ComputeConfigHash(a1) != base_hash);
     REQUIRE(swift::runtime::backend::ComputeConfigHash(induction) != base_hash);
+    REQUIRE(swift::runtime::backend::ComputeConfigHash(region) != base_hash);
     REQUIRE(swift::runtime::backend::ComputeConfigHash(a1) !=
             swift::runtime::backend::ComputeConfigHash(induction));
 }

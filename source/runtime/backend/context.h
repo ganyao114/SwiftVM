@@ -51,6 +51,9 @@ struct ExecProfileCounters {
     u64 gpr_uniform_accesses{};
     u64 xmm_uniform_accesses{};
     u64 access_pad{};
+    u64 region_edges{};
+    u64 region_cycle_polls{};
+    u64 region_fallthroughs{};
 };
 
 // Both execution-side probes share State::interface. ExecProfileCounters is
@@ -195,6 +198,14 @@ constexpr u32 exec_offset_xmm_uniform_accesses =
         offsetof(ExecProfileCounters, xmm_uniform_accesses);
 constexpr u32 exec_offset_access_pad = offsetof(RuntimeProfileInterface, exec) +
                                        offsetof(ExecProfileCounters, access_pad);
+constexpr u32 exec_offset_region_edges = offsetof(RuntimeProfileInterface, exec) +
+                                         offsetof(ExecProfileCounters, region_edges);
+constexpr u32 exec_offset_region_cycle_polls =
+        offsetof(RuntimeProfileInterface, exec) +
+        offsetof(ExecProfileCounters, region_cycle_polls);
+constexpr u32 exec_offset_region_fallthroughs =
+        offsetof(RuntimeProfileInterface, exec) +
+        offsetof(ExecProfileCounters, region_fallthroughs);
 constexpr u32 profile_offset_hot_coalesce_counters =
         offsetof(RuntimeProfileInterface, hot_coalesce_counters);
 constexpr u32 profile_offset_l1_code_cache =

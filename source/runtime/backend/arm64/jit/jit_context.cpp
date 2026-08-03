@@ -671,6 +671,21 @@ void JitContext::Forward(ir::Location location,
     }
 }
 
+void JitContext::ForwardLocal(ir::Location location,
+                              Label* cycle_exit,
+                              bool fallthrough) {
+    ASSERT(cur_block);
+    FlushSpillWrites();
+    if (cycle_exit) {
+        // release 侧在信号和 SMC 失效路径发布请求；这里只对成环边付 acquire 税。
+        __ Ldar(ip0, MemOperand(state, state_offset_exit_request));
+        __ Cbnz(ip0, cycle_exit);
+    }
+    if (!fallthrough) {
+        __ B(GetInternalLabel(location.Value()));
+    }
+}
+
 bool JitContext::CanEmitDirectLink(ir::Location location) const {
     if (!direct_link_active || !cur_block ||
         location == cur_block->GetStartLocation() ||
@@ -934,6 +949,13 @@ void JitContext::SetCurrent(ir::Block* block, bool split_backedge_entry) {
     }
 }
 
+void JitContext::BindInternalEntry(LocationDescriptor location) {
+    auto* label = GetInternalLabel(location);
+    ASSERT(!label->IsBound());
+    // 当前只内部化控制边，状态 ABI 仍逐块提交，因此两个入口暂时同址。
+    __ Bind(label);
+}
+
 void JitContext::BeginBackedgeBody() {
     if (hot_coalesce_enabled) {
         RecordHotCounter(HotCoalesceCounter::Entries);
@@ -1152,6 +1174,13 @@ vixl::aarch64::Label* JitContext::GetLabel(LocationDescriptor location) {
     }
 }
 
+vixl::aarch64::Label* JitContext::GetInternalLabel(LocationDescriptor location) {
+    if (auto itr = internal_labels.find(location); itr != internal_labels.end()) {
+        return &itr->second;
+    }
+    return &internal_labels.try_emplace(location).first->second;
+}
+
 void JitContext::FlushLabels(VAddr target) {
     for (auto &[location, label] : labels) {
         if (label.IsBound()) {
@@ -1159,6 +1188,11 @@ void JitContext::FlushLabels(VAddr target) {
         }
         ptrdiff_t offset = location - target;
         __ BindToOffset(&label, offset);
+    }
+    for (auto& [location, label] : internal_labels) {
+        ASSERT_MSG(label.IsBound(),
+                   "region internal target {:#x} was not emitted in this unit",
+                   location);
     }
 }
 

@@ -90,7 +90,7 @@ struct Runtime::Impl final {
             profile_interface.hot_coalesce_counters = hot_coalesce_counters.data();
         }
         profile_interface.l1_code_cache = l1_code_cache.Data();
-        if (BackedgeLatchEnabled()) {
+        if (address_space->ExitLatchEnabled()) {
             state->exit_request = 0;
             state->interface = &profile_interface;
         } else {
@@ -163,7 +163,8 @@ struct Runtime::Impl final {
                     "direct=%llu indirect=%llu call=%llu ret=%llu syscall=%llu "
                     "link_hit=%llu link_miss=%llu rsb_hit=%llu rsb_miss=%llu "
                     "dispatch=%llu l1_hit=%llu l2_hit=%llu miss=%llu "
-                    "gpr_uniform=%llu xmm_uniform=%llu pad=%s\n",
+                    "gpr_uniform=%llu xmm_uniform=%llu region_edges=%llu "
+                    "region_cycle_polls=%llu region_fallthroughs=%llu pad=%s\n",
                     seconds,
                     static_cast<unsigned long long>(exits),
                     seconds > 0 ? static_cast<double>(exits) / seconds : 0.0,
@@ -182,6 +183,9 @@ struct Runtime::Impl final {
                     static_cast<unsigned long long>(p.dispatch_miss),
                     static_cast<unsigned long long>(p.gpr_uniform_accesses),
                     static_cast<unsigned long long>(p.xmm_uniform_accesses),
+                    static_cast<unsigned long long>(p.region_edges),
+                    static_cast<unsigned long long>(p.region_cycle_polls),
+                    static_cast<unsigned long long>(p.region_fallthroughs),
                     std::getenv("SVM_EXEC_ACCESS_PAD")
                             ? std::getenv("SVM_EXEC_ACCESS_PAD")
                             : "0");
@@ -429,7 +433,7 @@ struct Runtime::Impl final {
         while (running.load(std::memory_order_acquire)) {
             auto current_loc = GetLocation();
             auto& smc = address_space->GetSmcTracker();
-            if (BackedgeLatchEnabled()) {
+            if (address_space->ExitLatchEnabled()) {
                 const u64 request = LoadExitRequest();
                 if (request & kBackedgeSmcRequestMask) {
                     // Covers an SMC write made by host syscall emulation
@@ -463,7 +467,7 @@ struct Runtime::Impl final {
                 // arrived after its poll, CloseWriteWindow below consumes it
                 // too. If one arrives after this load, the exact-generation
                 // CAS fails and the next boundary observes it.
-                const u64 observed = BackedgeLatchEnabled()
+                const u64 observed = address_space->ExitLatchEnabled()
                         ? LoadExitRequest()
                         : 0;
                 // The runtime is now quiescent with respect to retired JIT
@@ -479,7 +483,7 @@ struct Runtime::Impl final {
                 // been restored by the signal-window transaction before any
                 // retired allocation can become reclaimable.
                 smc.CloseWriteWindow(*address_space, l1_code_cache);
-                if (BackedgeLatchEnabled()) {
+                if (address_space->ExitLatchEnabled()) {
                     AcknowledgeSmcRequest(observed);
                     // A Signal may race after the generated poll selected an
                     // SMC-only CodeMiss veneer. The sticky atomic bit, not
@@ -574,7 +578,7 @@ HaltReason Runtime::Step() { return HaltReason::None; }
 
 void Runtime::SignalInterrupt() {
     impl->running.store(false, std::memory_order_release);
-    if (BackedgeLatchEnabled()) {
+    if (impl->address_space->ExitLatchEnabled()) {
         // Release publishes running=false to the generated LDAR poll. The
         // high bit is sticky until ClearInterrupt and does not collide with
         // the monotonically counted SMC requests in the low bits.
@@ -588,7 +592,7 @@ void Runtime::SignalInterrupt() {
 
 void Runtime::ClearInterrupt() {
     impl->state->halt_reason = HaltReason::None;
-    if (BackedgeLatchEnabled()) {
+    if (impl->address_space->ExitLatchEnabled()) {
         std::atomic_ref<u64>(impl->state->exit_request)
                 .fetch_and(kBackedgeSmcRequestMask, std::memory_order_acq_rel);
     }
@@ -870,7 +874,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
         }
         {
             PerfScope2 perf_pub_fault{GetPerfStats2().publish_fault};
-            if (BackedgeLatchEnabled()) {
+            if (mutable_address_space.ExitLatchEnabled()) {
                 // Keep the legacy whole-unit entry as a committed-state
                 // fallback for metadata gaps/cold stubs. Overlapping precise
                 // entries below win in Module::LookupFault.
@@ -995,7 +999,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
         idx != backend::INVALID_CACHE_ID) {
         emitted_context->Flush(buffer);
         module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, block_start);
-        if (BackedgeLatchEnabled()) {
+        if (module->GetAddressSpace().ExitLatchEnabled()) {
             for (const auto& item : emitted_translator->GetBackedgeBlockMetadata()) {
                 module->AddFaultEntry(buffer.exec_data + item.host_begin,
                                       buffer.exec_data + item.host_end,
@@ -1075,7 +1079,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
             module->AddFaultEntry(buffer.exec_data,
                                   buffer.exec_data + buffer.size,
                                   block->GetStartLocation().Value());
-            if (BackedgeLatchEnabled()) {
+            if (module->GetAddressSpace().ExitLatchEnabled()) {
                 for (const auto& item : emitted_translator->GetBackedgeBlockMetadata()) {
                     module->AddFaultEntry(buffer.exec_data + item.host_begin,
                                           buffer.exec_data + item.host_end,

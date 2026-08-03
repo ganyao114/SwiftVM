@@ -43,13 +43,16 @@ bool SmcTracker::IsEnabled() {
     return g_smc_enabled.load(std::memory_order_relaxed);
 }
 
-SmcTracker::SmcTracker(u64 guest_bias, u64 guest_addr_mask)
+SmcTracker::SmcTracker(u64 guest_bias,
+                       u64 guest_addr_mask,
+                       bool exit_latch_enabled)
         : bias_(guest_bias)
         , mask_(guest_addr_mask ? guest_addr_mask : UINT64_MAX)
         , page_size_(static_cast<u64>(getpagesize()))
         , page_mask_(page_size_ - 1)
         , dirty_hint_enabled_(EnvIsOne("SVM_SMC_DIRTY_HINT"))
-        , close_profile_enabled_(EnvIsEnabled("SVM_EXEC_PROF")) {
+        , close_profile_enabled_(EnvIsEnabled("SVM_EXEC_PROF"))
+        , exit_latch_enabled_(exit_latch_enabled) {
     ASSERT((page_size_ & page_mask_) == 0);
 }
 
@@ -307,7 +310,7 @@ void SmcTracker::ClearDispatchSlots(AddressSpace& space,
 }
 
 void SmcTracker::PublishExitRequest() {
-    if (!BackedgeLatchEnabled()) {
+    if (!exit_latch_enabled_) {
         return;
     }
     static_assert(std::atomic_ref<u64>::required_alignment <= alignof(u64));

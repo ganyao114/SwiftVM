@@ -314,7 +314,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Lsr(loc_index, loc_reg, 2);
 
     // query l1 cache
-    if (BackedgeLatchEnabled()) {
+    if (BackedgeLatchEnabled() || config.region_edges) {
         __ Ldr(l1_cache, MemOperand(state, state_offset_exec_profile_ptr));
         __ Ldr(l1_cache, MemOperand(l1_cache, profile_offset_l1_code_cache));
     } else {

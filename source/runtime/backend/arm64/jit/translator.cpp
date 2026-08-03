@@ -326,11 +326,287 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     if (const char* nan_coldpath = PerfGetenv("SVM_SSE_NAN_COLDPATH")) {
         sse_nan_coldpath = std::strcmp(nan_coldpath, "0") != 0;
     }
-    backedge_latch = BackedgeLatchEnabled();
-    backedge_flags = BackedgeFlagsEnabled();
+    backedge_latch = BackedgeLatchEnabled() || config.region_edges;
+    if (const char* value = PerfGetenv("SVM_BACKEDGE_FLAGS")) {
+        backedge_flags = backedge_latch && std::strcmp(value, "0") != 0;
+    }
     if (const char* common = PerfGetenv("SVM_LINK_SUFFIX_COMMON")) {
         link_suffix_common = std::strcmp(common, "0") != 0;
     }
+}
+
+void JitTranslator::CollectRegionTargets(const ir::Terminal& terminal,
+                                         std::vector<u64>& targets) const {
+    VisitVariant<void>(terminal, [&](const auto& term) {
+        using T = std::decay_t<decltype(term)>;
+        if constexpr (std::is_same_v<T, ir::terminal::LinkBlock> ||
+                      std::is_same_v<T, ir::terminal::LinkBlockFast>) {
+            targets.push_back(term.next.Value());
+        } else if constexpr (std::is_same_v<T, ir::terminal::If> ||
+                             std::is_same_v<T, ir::terminal::Condition>) {
+            CollectRegionTargets(term.then_, targets);
+            CollectRegionTargets(term.else_, targets);
+        } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
+            for (const auto& item : term.cases) {
+                CollectRegionTargets(item.then, targets);
+            }
+        } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
+            CollectRegionTargets(term.else_, targets);
+        }
+    });
+}
+
+void JitTranslator::PrepareRegionEdges(ir::HIRFunction* function) {
+    region_edges_active = context.GetConfig().region_edges;
+    region_blocks.clear();
+    region_cycle_edges.clear();
+    if (!region_edges_active) {
+        return;
+    }
+
+    std::vector<ir::Block*> blocks;
+    for (auto& hir_block : function->GetHIRBlocksRPO()) {
+        auto* block = hir_block.GetBlock();
+        if (block->GetInstList().empty() && !block->HasTerminal()) {
+            continue;
+        }
+        blocks.push_back(block);
+        region_blocks.insert(block->GetStartLocation().Value());
+    }
+    if (blocks.size() < 2) {
+        region_edges_active = false;
+        region_blocks.clear();
+        return;
+    }
+
+    std::map<u64, std::vector<u64>> graph;
+    for (auto* block : blocks) {
+        const u64 source = block->GetStartLocation().Value();
+        auto& successors = graph[source];
+        std::vector<u64> targets;
+        CollectRegionTargets(block->GetTerminal(), targets);
+        for (const u64 target : targets) {
+            if (region_blocks.contains(target) &&
+                std::find(successors.begin(), successors.end(), target) ==
+                        successors.end()) {
+                successors.push_back(target);
+            }
+        }
+    }
+
+    enum class Color : u8 { White, Gray, Black };
+    std::map<u64, Color> colors;
+    std::function<void(u64)> visit = [&](u64 source) {
+        colors[source] = Color::Gray;
+        for (const u64 target : graph[source]) {
+            const auto color = colors.contains(target) ? colors[target] : Color::White;
+            if (color == Color::Gray) {
+                // DFS 回边覆盖每个有向环；非成环边不承担 safepoint 税。
+                region_cycle_edges.emplace(source, target);
+            } else if (color == Color::White) {
+                visit(target);
+            }
+        }
+        colors[source] = Color::Black;
+    };
+    for (auto* block : blocks) {
+        const u64 location = block->GetStartLocation().Value();
+        if (!colors.contains(location)) {
+            visit(location);
+        }
+    }
+}
+
+std::optional<ir::Location>
+JitTranslator::RegionLeafTarget(const ir::Terminal& terminal) const {
+    std::optional<ir::Location> result;
+    VisitVariant<void>(terminal, [&](const auto& term) {
+        using T = std::decay_t<decltype(term)>;
+        if constexpr (std::is_same_v<T, ir::terminal::LinkBlock> ||
+                      std::is_same_v<T, ir::terminal::LinkBlockFast>) {
+            result = term.next;
+        }
+    });
+    return result;
+}
+
+bool JitTranslator::IsRegionInternalEdge(ir::Location target) const {
+    return region_edges_active && region_blocks.contains(target.Value());
+}
+
+bool JitTranslator::IsRegionCycleEdge(ir::Location target) const {
+    return region_edges_active && cur_block &&
+           region_cycle_edges.contains(
+                   {cur_block->GetStartLocation().Value(), target.Value()});
+}
+
+bool JitTranslator::HasRegionCycleEdgeFromCurrent() const {
+    if (!region_edges_active || !cur_block) {
+        return false;
+    }
+    const u64 source = cur_block->GetStartLocation().Value();
+    return std::any_of(region_cycle_edges.begin(), region_cycle_edges.end(),
+                       [&](const auto& edge) { return edge.first == source; });
+}
+
+bool JitTranslator::CanRegionFallThrough(ir::Location target) const {
+    return next_region_block && *next_region_block == target.Value() &&
+           !backedge_exit_label && !backedge_flags_plan &&
+           vec_nan_cold_sites.empty();
+}
+
+void JitTranslator::EmitRegionEdge(ir::Location target,
+                                   bool fallthrough,
+                                   bool record_edge_counters) {
+    ASSERT(IsRegionInternalEdge(target));
+    MergeNZCV();
+    if (record_edge_counters) {
+        context.RecordExecCounter(exec_offset_exit_direct);
+        context.RecordExecCounter(exec_offset_region_edges);
+    }
+    ++region_block_edges;
+    const bool cycle = IsRegionCycleEdge(target);
+    if (cycle) {
+        ASSERT(backedge_exit_label);
+        context.RecordExecCounter(exec_offset_region_cycle_polls);
+        backedge_exit_referenced = true;
+        ++region_block_cycles;
+    }
+    if (fallthrough) {
+        context.RecordExecCounter(exec_offset_region_fallthroughs);
+        ++region_block_fallthroughs;
+    } else {
+        region_block_local_branch_bytes += sizeof(u32);
+    }
+    const u32 link_before = context.CurrentBufferSize();
+    context.ForwardLocal(target,
+                         cycle ? backedge_exit_label.get() : nullptr,
+                         fallthrough);
+    RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
+                        context.CurrentBufferSize());
+}
+
+bool JitTranslator::EmitRegionIf(const ir::terminal::If& terminal,
+                                 bool allow_fallthrough) {
+    const auto then_target = RegionLeafTarget(terminal.then_);
+    const auto else_target = RegionLeafTarget(terminal.else_);
+    if (!then_target || !else_target ||
+        !IsRegionInternalEdge(*then_target) ||
+        !IsRegionInternalEdge(*else_target)) {
+        return false;
+    }
+
+    const auto local = LocalConditionFor(terminal.cond);
+    // MergeNZCV 只使用 MRS/AND/ORR，不改 host NZCV；因此可在条件判定前提交一次。
+    MergeNZCV();
+    auto branch = [&](Label* label, bool on_true) {
+        if (local) {
+            const auto cond = on_true
+                    ? *local
+                    : static_cast<Condition>(static_cast<u8>(*local) ^ 1);
+            __ B(label, cond);
+        } else if (on_true) {
+            __ Cbnz(context.W(terminal.cond), label);
+        } else {
+            __ Cbz(context.W(terminal.cond), label);
+        }
+    };
+    auto needs_stub = [&](ir::Location target) { return IsRegionCycleEdge(target); };
+
+    context.RecordExecCounter(exec_offset_exit_direct);
+    context.RecordExecCounter(exec_offset_region_edges);
+
+    const bool then_fallthrough = allow_fallthrough &&
+                                  CanRegionFallThrough(*then_target) &&
+                                  !needs_stub(*else_target);
+    const bool else_fallthrough = allow_fallthrough &&
+                                  CanRegionFallThrough(*else_target) &&
+                                  !needs_stub(*then_target);
+    if (then_fallthrough || else_fallthrough) {
+        const auto fall = then_fallthrough ? *then_target : *else_target;
+        const auto taken = then_fallthrough ? *else_target : *then_target;
+        ASSERT(!needs_stub(taken));
+        branch(context.GetInternalLabel(taken.Value()), !then_fallthrough);
+        ++region_block_edges;
+        EmitRegionEdge(fall, true, false);
+        return true;
+    }
+
+    Label then_stub;
+    const bool stub = needs_stub(*then_target);
+    branch(stub ? &then_stub
+                : context.GetInternalLabel(then_target->Value()),
+           true);
+    if (!stub) {
+        ++region_block_edges;
+    }
+    EmitRegionEdge(*else_target, false, false);
+    if (stub) {
+        __ Bind(&then_stub);
+        EmitRegionEdge(*then_target, false, false);
+    }
+    return true;
+}
+
+bool JitTranslator::EmitRegionCondition(
+        const ir::terminal::Condition& terminal,
+        bool allow_fallthrough) {
+    const auto then_target = RegionLeafTarget(terminal.then_);
+    const auto else_target = RegionLeafTarget(terminal.else_);
+    if (!then_target || !else_target ||
+        !IsRegionInternalEdge(*then_target) ||
+        !IsRegionInternalEdge(*else_target)) {
+        return false;
+    }
+
+    const auto host_cond = MapCond(terminal.cond);
+    // 与 EmitRegionIf 相同，提交 flags 的指令保持当前 NZCV，条件可直接复用。
+    if (save_in_nzcv && nzcv_dirty) {
+        MergeNZCV();
+    } else {
+        LoadNZCVFromFlags();
+    }
+    auto branch = [&](Label* label, bool on_true) {
+        const auto cond = on_true
+                ? host_cond
+                : static_cast<Condition>(static_cast<u8>(host_cond) ^ 1);
+        __ B(label, cond);
+    };
+    auto needs_stub = [&](ir::Location target) { return IsRegionCycleEdge(target); };
+
+    context.RecordExecCounter(exec_offset_exit_direct);
+    context.RecordExecCounter(exec_offset_region_edges);
+
+    const bool then_fallthrough = allow_fallthrough &&
+                                  CanRegionFallThrough(*then_target) &&
+                                  !needs_stub(*else_target);
+    const bool else_fallthrough = allow_fallthrough &&
+                                  CanRegionFallThrough(*else_target) &&
+                                  !needs_stub(*then_target);
+    if (then_fallthrough || else_fallthrough) {
+        const auto fall = then_fallthrough ? *then_target : *else_target;
+        const auto taken = then_fallthrough ? *else_target : *then_target;
+        ASSERT(!needs_stub(taken));
+        branch(context.GetInternalLabel(taken.Value()), !then_fallthrough);
+        ++region_block_edges;
+        EmitRegionEdge(fall, true, false);
+        return true;
+    }
+
+    Label then_stub;
+    const bool stub = needs_stub(*then_target);
+    branch(stub ? &then_stub
+                : context.GetInternalLabel(then_target->Value()),
+           true);
+    if (!stub) {
+        ++region_block_edges;
+    }
+    EmitRegionEdge(*else_target, false, false);
+    if (stub) {
+        __ Bind(&then_stub);
+        EmitRegionEdge(*then_target, false, false);
+    }
+    return true;
 }
 
 std::optional<u64> JitTranslator::MatchInductionImmediate(ir::Inst* inst) {
@@ -439,6 +715,9 @@ void JitTranslator::PlanLinkSuffixes(const ir::Terminal& terminal) {
             using T = std::decay_t<decltype(term)>;
             if constexpr (std::is_same_v<T, ir::terminal::LinkBlock> ||
                           std::is_same_v<T, ir::terminal::LinkBlockFast>) {
+                if (IsRegionInternalEdge(term.next)) {
+                    return;
+                }
                 // Keep a positional hole for every direct leaf because
                 // EmitTerminal still consumes one suffix-plan site per leaf.
                 // Mixed conditional terminals therefore preserve commoning
@@ -634,6 +913,10 @@ void JitTranslator::Translate(ir::Block* block) {
     u32 density_scalar_fp_ops = 0;
     PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
     cur_block = block;
+    region_block_edges = 0;
+    region_block_cycles = 0;
+    region_block_fallthroughs = 0;
+    region_block_local_branch_bytes = 0;
     cur_block_is_call = false;
     for (auto& inst : block->GetInstList()) {
         if (inst.GetOp() == ir::OpCode::PushRSB) {
@@ -653,10 +936,15 @@ void JitTranslator::Translate(ir::Block* block) {
     }
     backedge_exit_referenced = false;
     backedge_exit_label =
-            backedge_latch && HasSelfEdge(block->GetTerminal())
+            backedge_latch &&
+                            (HasSelfEdge(block->GetTerminal()) ||
+                             HasRegionCycleEdgeFromCurrent())
                     ? std::make_unique<Label>()
                     : nullptr;
     context.SetCurrent(block, backedge_flags_plan != nullptr);
+    if (region_edges_active) {
+        context.BindInternalEntry(block->GetStartLocation().Value());
+    }
     PlanInductionTies(block);
     if (backedge_flags_plan) {
         // Every published/external entry takes the cold initializer below;
@@ -845,6 +1133,18 @@ void JitTranslator::Translate(ir::Block* block) {
                      total_ops, total_bytes, density_scalar_fp_ops);
         PrintBoundaryDensity(block->GetStartLocation().Value(), density_bytes[4]);
     }
+    if (region_edges_active && (density || context.ExecProfileEnabled())) {
+        std::fprintf(stderr,
+                     "[svm-region-edge] pc=0x%llx edges=%u cycles=%u "
+                     "fallthrough=%u local_branch_bytes=%u poll_bytes=%u\n",
+                     static_cast<unsigned long long>(
+                             block->GetStartLocation().Value()),
+                     region_block_edges,
+                     region_block_cycles,
+                     region_block_fallthroughs,
+                     region_block_local_branch_bytes,
+                     static_cast<u32>(region_block_cycles * 2u * sizeof(u32)));
+    }
 }
 
 void JitTranslator::Translate(ir::HIRFunction* function) {
@@ -852,7 +1152,16 @@ void JitTranslator::Translate(ir::HIRFunction* function) {
     ASSERT(function);
     context.SetCurrent(function->GetFunction());
     disable_instructions.resize(function->MaxInstrCount());
+    PrepareRegionEdges(function);
+    std::vector<ir::Block*> emitted_blocks;
     for (auto& hir_block : function->GetHIRBlocksRPO()) {
+        auto* block = hir_block.GetBlock();
+        if (block->GetInstList().empty() && !block->HasTerminal()) {
+            continue;
+        }
+        emitted_blocks.push_back(block);
+    }
+    for (size_t i = 0; i < emitted_blocks.size(); ++i) {
         // Undecoded successor left behind by lazy region compilation (and by
         // the pre-existing 128-block cap): no instructions and no terminal.
         // Emitting it would bind a label nobody branches to and then fall into
@@ -861,12 +1170,15 @@ void JitTranslator::Translate(ir::HIRFunction* function) {
         // deliberately never published (TranslateIR skips empty blocks), so the
         // only way in is JitContext::Forward, which routes to it through the L2
         // dispatch slot instead.
-        auto* block = hir_block.GetBlock();
-        if (block->GetInstList().empty() && !block->HasTerminal()) {
-            continue;
-        }
+        auto* block = emitted_blocks[i];
+        next_region_block = i + 1 < emitted_blocks.size()
+                ? std::optional<u64>{emitted_blocks[i + 1]
+                                             ->GetStartLocation()
+                                             .Value()}
+                : std::nullopt;
         Translate(block);
     }
+    next_region_block.reset();
 }
 
 bool JitTranslator::PreservesHostNZCV(ir::OpCode op) {
@@ -1190,6 +1502,13 @@ bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
     }
     plan.cold_referenced = true;
     context.RecordExecCounter(exec_offset_exit_direct);
+    if (IsRegionInternalEdge(plan.self_target)) {
+        context.RecordExecCounter(exec_offset_region_edges);
+        context.RecordExecCounter(exec_offset_region_cycle_polls);
+        ++region_block_edges;
+        ++region_block_cycles;
+        region_block_local_branch_bytes += sizeof(u32);
+    }
     backedge_exit_referenced = true;
     const u32 link_before = context.CurrentBufferSize();
     context.Forward(plan.self_target,
@@ -1235,12 +1554,16 @@ void JitTranslator::EmitBackedgeColdPaths() {
     if (plan.optimized && plan.cold_referenced) {
         __ Bind(plan.cold_exit.get());
         EmitBackedgeMaterialize(plan);
-        context.RecordExecCounter(exec_offset_exit_direct);
-        context.Forward(plan.cold_target,
-                        nullptr,
-                        nullptr,
-                        {},
-                        LinkSiteKind::BackedgeCold);
+        if (IsRegionInternalEdge(plan.cold_target)) {
+            EmitRegionEdge(plan.cold_target);
+        } else {
+            context.RecordExecCounter(exec_offset_exit_direct);
+            context.Forward(plan.cold_target,
+                            nullptr,
+                            nullptr,
+                            {},
+                            LinkSiteKind::BackedgeCold);
+        }
     }
 
     u32 recovery_offset = 0;
@@ -1342,6 +1665,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             __ Str(ipw, MemOperand(state, state_offset_halt_reason));
             __ Ret();
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlock>) {
+            if (IsRegionInternalEdge(term.next)) {
+                EmitRegionEdge(term.next);
+                return;
+            }
             MergeNZCV();
             context.RecordExecCounter(exec_offset_exit_direct);
             auto* exit = IsSelfEdge(term.next) && backedge_exit_label
@@ -1357,6 +1684,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
+            if (IsRegionInternalEdge(term.next)) {
+                EmitRegionEdge(term.next);
+                return;
+            }
             MergeNZCV();
             context.RecordExecCounter(exec_offset_exit_direct);
             auto* exit = IsSelfEdge(term.next) && backedge_exit_label
@@ -1389,6 +1720,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 __ Ret();
             }
         } else if constexpr (std::is_same_v<T, ir::terminal::If>) {
+            if (EmitRegionIf(term,
+                             direct_link_kind == LinkSiteKind::Unconditional)) {
+                return;
+            }
             Label else_label;
             if (auto local = LocalConditionFor(term.cond)) {
                 __ B(&else_label,
@@ -1400,6 +1735,11 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             __ Bind(&else_label);
             EmitTerminal(term.else_, LinkSiteKind::ConditionalElse);
         } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
+            if (EmitRegionCondition(
+                        term,
+                        direct_link_kind == LinkSiteKind::Unconditional)) {
+                return;
+            }
             Label else_label;
             auto host_cond = MapCond(term.cond);
             if (!(save_in_nzcv && nzcv_dirty)) {

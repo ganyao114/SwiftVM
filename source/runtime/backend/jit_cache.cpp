@@ -85,14 +85,15 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
         LOG_WARNING("SVM_JIT_CACHE: SVM_FPCR_TAX_PROF is incompatible; cache disabled");
         return;
     }
-    if (BackedgeFlagsEnabled()) {
+    const auto& config = address_space.GetConfig();
+    if (BackedgeFlagsEnabled() ||
+        (config.region_edges && EnvOn("SVM_BACKEDGE_FLAGS"))) {
         // Recovery veneers are block-local code offsets. SerialBlock does
         // not yet serialize that relocation/eligibility contract, so refuse
         // disk reuse rather than reviving a unit with an imprecise recipe.
         LOG_WARNING("SVM_JIT_CACHE: SVM_BACKEDGE_FLAGS is incompatible; cache disabled");
         return;
     }
-    const auto& config = address_space.GetConfig();
     if (host_image.size == 0) {
         LOG_WARNING("SVM_JIT_CACHE: host image span unknown; cache disabled");
         return;
@@ -490,7 +491,9 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
                           buffer.exec_data + buffer.size,
                           unit.guest_start,
                           buffer.exec_data);
-    for (size_t i = 0; BackedgeLatchEnabled() && i < unit.blocks.size(); ++i) {
+    for (size_t i = 0;
+         address_space.ExitLatchEnabled() && i < unit.blocks.size();
+         ++i) {
         const u32 begin = unit.blocks[i].code_offset;
         const u32 end = i + 1 < unit.blocks.size()
                 ? unit.blocks[i + 1].code_offset

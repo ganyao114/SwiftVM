@@ -98,6 +98,9 @@ public:
                  Label* self_target = nullptr,
                  const LinkSuffixEmitter& suffix_emitter = {},
                  LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional);
+    void ForwardLocal(ir::Location location,
+                      Label* cycle_exit = nullptr,
+                      bool fallthrough = false);
     [[nodiscard]] bool CanEmitDirectLink(ir::Location location) const;
     [[nodiscard]] bool HasDirectLinkSites() const {
         return !pending_direct_link_sites.empty();
@@ -162,12 +165,14 @@ public:
 
     void SetCurrent(ir::Function *function);
     void SetCurrent(ir::Block *block, bool split_backedge_entry = false);
+    void BindInternalEntry(LocationDescriptor location);
     // Completes a split block entry after the translator has emitted the
     // published-entry branch and bound the self-only body label.
     void BeginBackedgeBody();
     void TickIR(ir::Inst* instr);
 
     [[nodiscard]] vixl::aarch64::Label *GetLabel(LocationDescriptor loc);
+    [[nodiscard]] vixl::aarch64::Label *GetInternalLabel(LocationDescriptor loc);
 
     [[nodiscard]] bool ExecProfileEnabled() const { return exec_profile_enabled; }
     void RecordExecCounter(u32 state_offset, u32 amount = 1);
@@ -271,6 +276,7 @@ private:
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_gprs;
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_fprs;
     std::map<LocationDescriptor, Label> labels;
+    std::map<LocationDescriptor, Label> internal_labels;
     // value id -> scratch reg code for the current instruction's spilled
     // def (repeated def accesses within one instruction must return the
     // same register); cleared at every TickIR.

@@ -13,8 +13,8 @@
 //  - Every per-Runtime L1 and the shared AddressSpace L2 are cleared, so a
 //    later dispatch cannot newly enter the retired translation.
 //  - Direct inter-block edges are synchronously restored to their region
-//    trampoline by the write-fault handler. Intra-function/self-label edges
-//    remain local and may finish until the next existing safepoint.
+//    trampoline by the write-fault handler. Region 内部环的 DFS 回边带 acquire
+//    poll；整 function 失效后，执行线程在下一条成环边有界退出。
 //
 // Limitations:
 //  - No mid-block rewind: a block that patches a later instruction in itself
@@ -62,7 +62,9 @@ public:
     // guest_bias: guest->host address bias (host = guest + bias), from
     // Config::memory_base (0 = identity mapping).
     // guest_addr_mask: bounded-guest-window mask (see Config), 0 = disabled.
-    explicit SmcTracker(u64 guest_bias, u64 guest_addr_mask = 0);
+    explicit SmcTracker(u64 guest_bias,
+                        u64 guest_addr_mask = 0,
+                        bool exit_latch_enabled = false);
     ~SmcTracker();
 
     // Called after a block/function is fully published. Every host page
@@ -240,6 +242,7 @@ private:
     const u64 page_mask_;
     const bool dirty_hint_enabled_;
     const bool close_profile_enabled_;
+    const bool exit_latch_enabled_;
     std::map<VAddr, PageRecord> pages_{};
     std::vector<RuntimeToken> runtimes_{};
     std::vector<RetiredCode> retired_{};
