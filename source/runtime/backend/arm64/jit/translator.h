@@ -439,6 +439,8 @@ private:
     // 只处理寻址 EA：固定别名的末次使用可转交给 GetOperand result；
     // identity frontend 另把简单复合地址直接保留到 memory IR。
     bool addr_ea_tie{true};
+    // 绝对地址常量直接物化到 GetOperand 的分配结果，避免临时寄存器搬运。
+    bool abs_const_mat{false};
     bool backedge_latch{false};
     bool backedge_flags{false};
     bool link_suffix_common{false};

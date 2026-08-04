@@ -540,6 +540,10 @@ void JitTranslator::EmitCallLambda(ir::Inst* inst) {
 void JitTranslator::EmitGetOperand(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto result = context.R(ir::Value{inst});
+    if (abs_const_mat && operand.GetRight().Null() && operand.GetLeft().IsImm()) {
+        __ Mov(result, operand.GetLeft().imm.Get());
+        return;
+    }
     if ((mem_narrow_fuse || addr_ea_tie) && operand.GetRight().Null() &&
         operand.GetLeft().IsValue() && inst->GetUses() == 1 &&
         context.SharesGPR(ir::Value{inst}, operand.GetLeft().value)) {

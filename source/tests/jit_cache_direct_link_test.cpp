@@ -371,6 +371,36 @@ TEST_CASE("disk cache scanner accepts only metadata-declared external BL sites",
     REQUIRE_FALSE(ScanCodeUnit(code, image, 0x100000, sites).ok);
 }
 
+TEST_CASE("disk cache scanner keeps move-wide constants and rejects PC-relative data",
+          "[jit-cache][serializer]") {
+    const HostImageInfo image{.base = 0x100000000ull, .size = 0x100000};
+
+    SECTION("两条 move-wide guest 常量可持久化") {
+        const std::array<u32, 2> words{0xd28fc206u, 0xf2a00986u};
+        const auto code = std::span<const u8>{
+                reinterpret_cast<const u8*>(words.data()), sizeof(words)};
+        REQUIRE(ScanCodeUnit(code, image, 0x1000000).ok);
+    }
+
+    SECTION("ADRP 必须走非持久化回退") {
+        const std::array<u32, 1> words{0x90000000u};
+        const auto code = std::span<const u8>{
+                reinterpret_cast<const u8*>(words.data()), sizeof(words)};
+        const auto scan = ScanCodeUnit(code, image, 0x1000000);
+        REQUIRE_FALSE(scan.ok);
+        REQUIRE(scan.reject_reason == "unit contains adr/adrp");
+    }
+
+    SECTION("literal load 必须走非持久化回退") {
+        const std::array<u32, 1> words{0x58000000u};
+        const auto code = std::span<const u8>{
+                reinterpret_cast<const u8*>(words.data()), sizeof(words)};
+        const auto scan = ScanCodeUnit(code, image, 0x1000000);
+        REQUIRE_FALSE(scan.ok);
+        REQUIRE(scan.reject_reason == "unit contains a literal-pool load");
+    }
+}
+
 TEST_CASE("disk cache v4 serializes arbitrary link-site records and kinds",
           "[direct-link][jit-cache][serializer]") {
     SerialUnit input{};

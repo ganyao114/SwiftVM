@@ -214,7 +214,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 71);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 72);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
             "SVM_EXEC_TRACE");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
@@ -294,6 +294,26 @@ TEST_CASE("JIT cache environment hash separates link suffix commoning") {
 
     if (had_old) setenv("SVM_LINK_SUFFIX_COMMON", old_value.c_str(), 1);
     else unsetenv("SVM_LINK_SUFFIX_COMMON");
+
+    REQUIRE(missing != disabled);
+    REQUIRE(disabled != enabled);
+    REQUIRE(missing != enabled);
+}
+
+TEST_CASE("JIT cache environment hash separates absolute constant materialization") {
+    const char* old = std::getenv("SVM_ABS_CONST_MAT");
+    const bool had_old = old != nullptr;
+    const std::string old_value = old ? old : "";
+
+    unsetenv("SVM_ABS_CONST_MAT");
+    const auto missing = swift::runtime::backend::ComputeEnvHash();
+    setenv("SVM_ABS_CONST_MAT", "0", 1);
+    const auto disabled = swift::runtime::backend::ComputeEnvHash();
+    setenv("SVM_ABS_CONST_MAT", "1", 1);
+    const auto enabled = swift::runtime::backend::ComputeEnvHash();
+
+    if (had_old) setenv("SVM_ABS_CONST_MAT", old_value.c_str(), 1);
+    else unsetenv("SVM_ABS_CONST_MAT");
 
     REQUIRE(missing != disabled);
     REQUIRE(disabled != enabled);
@@ -4756,6 +4776,47 @@ TEST_CASE("composite memory EA survives only in identity mode") {
     REQUIRE(bias_imm.GetRight().Null());
     REQUIRE(bias_imm.GetLeft().IsValue());
     REQUIRE(bias_imm.GetLeft().value.Def()->GetOp() == OpCode::GetOperand);
+}
+
+TEST_CASE("absolute GetOperand materializes directly into its result") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+    };
+    AddressSpace address_space{config};
+    IntrusivePtr<Block> block{new Block(0, Location{0x7800})};
+    auto address =
+            block->GetOperand(Operand{Imm{swift::u64{0x004c7e10}}})
+                    .SetType(ValueType::U64);
+    block->ReIdInstr();
+
+    const GPRSMask gprs{~((1u << 8) - 1u)};
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+    RegAlloc alloc{block->MaxInstrId(), gprs, fprs};
+    alloc.MapRegister(address.Id(), HostGPR{6});
+    auto active_gprs = gprs;
+    auto active_fprs = fprs;
+    active_gprs.Mark(6);
+    alloc.SetActiveRegs(address.Id(), active_gprs, active_fprs);
+
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    arm64::JitTranslator translator{context};
+    context.TickIR(address.Def());
+    const auto begin = context.CurrentBufferSize();
+    translator.EmitGetOperand(address.Def());
+    context.EndInstructionScratch();
+    const auto bytes = context.CurrentBufferSize() - begin;
+
+    const char* gate = std::getenv("SVM_ABS_CONST_MAT");
+    const bool enabled = gate && std::strcmp(gate, "0") != 0;
+    REQUIRE(bytes == (enabled ? 8 : 12));
 }
 
 // --- x86 mul CF/OF must reach the flags register -----------------------------

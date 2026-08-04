@@ -323,6 +323,9 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     if (const char* ea_tie = PerfGetenv("SVM_ADDR_EA_TIE")) {
         addr_ea_tie = std::strcmp(ea_tie, "0") != 0;
     }
+    if (const char* abs_const = PerfGetenv("SVM_ABS_CONST_MAT")) {
+        abs_const_mat = std::strcmp(abs_const, "0") != 0;
+    }
     if (const char* nan_fast = PerfGetenv("SVM_SSE_NAN_FAST")) {
         sse_nan_fast = std::strcmp(nan_fast, "0") != 0;
     }
