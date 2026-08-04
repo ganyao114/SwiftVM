@@ -75,7 +75,7 @@ static bool MemNarrowFuseEnabled() {
 static bool AddrEATieEnabled() {
     static const bool enabled = [] {
         const char* env = PerfGetenv("SVM_ADDR_EA_TIE");
-        return env && std::strcmp(env, "0") != 0;
+        return !env || std::strcmp(env, "0") != 0;
     }();
     return enabled;
 }

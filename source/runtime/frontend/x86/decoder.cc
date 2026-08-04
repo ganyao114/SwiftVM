@@ -268,7 +268,7 @@ X64Decoder::X64Decoder(VAddr start,
             True(arm64_features & runtime::Arm64Features::AXFlag);
     sse_afp_nan_ = sse_afp_nan;
     const char* ea_tie = runtime::PerfGetenv("SVM_ADDR_EA_TIE");
-    addr_ea_tie_ = ea_tie && std::strcmp(ea_tie, "0") != 0;
+    addr_ea_tie_ = !ea_tie || std::strcmp(ea_tie, "0") != 0;
 }
 
 // x86-64's architectural maximum instruction length. Bounds every raw-byte

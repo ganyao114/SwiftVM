@@ -4689,7 +4689,7 @@ TEST_CASE("address EA tie transfers a terminal fixed alias") {
     RegisterAllocPass::Run(raw, &alloc);
 
     const char* gate = std::getenv("SVM_ADDR_EA_TIE");
-    const bool enabled = gate && std::strcmp(gate, "0") != 0;
+    const bool enabled = !gate || std::strcmp(gate, "0") != 0;
     REQUIRE(alloc.ValueGPR(source).id == 6);
     REQUIRE((alloc.ValueGPR(address).id == alloc.ValueGPR(source).id) == enabled);
     REQUIRE(alloc.ValueGPR(address).id != alloc.ValueGPR(value).id);
@@ -4733,7 +4733,7 @@ TEST_CASE("composite memory EA survives only in identity mode") {
     };
 
     const char* gate = std::getenv("SVM_ADDR_EA_TIE");
-    const bool enabled = gate && std::strcmp(gate, "0") != 0;
+    const bool enabled = !gate || std::strcmp(gate, "0") != 0;
     // mov eax,[rbx+8]; hlt。末尾补零只用于固定数组长度。
     auto [identity_imm_block, identity_imm] =
             decode_address({0x8b, 0x43, 0x08, 0xf4, 0x00}, true);
