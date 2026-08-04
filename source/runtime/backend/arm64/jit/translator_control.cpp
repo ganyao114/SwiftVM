@@ -540,7 +540,7 @@ void JitTranslator::EmitCallLambda(ir::Inst* inst) {
 void JitTranslator::EmitGetOperand(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto result = context.R(ir::Value{inst});
-    if (mem_narrow_fuse && operand.GetRight().Null() &&
+    if ((mem_narrow_fuse || addr_ea_tie) && operand.GetRight().Null() &&
         operand.GetLeft().IsValue() && inst->GetUses() == 1 &&
         context.SharesGPR(ir::Value{inst}, operand.GetLeft().value)) {
         bool feeds_memory = false;

@@ -72,6 +72,14 @@ static bool MemNarrowFuseEnabled() {
     return enabled;
 }
 
+static bool AddrEATieEnabled() {
+    static const bool enabled = [] {
+        const char* env = PerfGetenv("SVM_ADDR_EA_TIE");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
 static bool ShiftImmFastEnabled() {
     const char* env = PerfGetenv("SVM_SHIFT_IMM_FAST");
     return !env || std::strcmp(env, "0") != 0;
@@ -798,7 +806,8 @@ private:
     }
 
     Value MemoryOperandTieSource(Inst* inst) const {
-        if (!MemNarrowFuseEnabled() || inst->GetOp() != OpCode::GetOperand ||
+        if ((!MemNarrowFuseEnabled() && !AddrEATieEnabled()) ||
+            inst->GetOp() != OpCode::GetOperand ||
             inst->GetUses() != 1 || !DirectlyFeedsMemory(inst)) {
             return {};
         }
@@ -810,7 +819,11 @@ private:
     }
 
     bool TryTieMemoryOperand(LiveInterval& current) {
-        return TryTieGPR(current, MemoryOperandTieSource(current.inst));
+        // 新开关只放宽“固定别名在此处终止”的所有权转移证明；不会把普通
+        // 计算结果提前发布到固定家，也不会越过后续 SetHostGPR。
+        return TryTieGPR(current,
+                         MemoryOperandTieSource(current.inst),
+                         AddrEATieEnabled());
     }
 
     bool HasKnownWWrite(Value value) const {

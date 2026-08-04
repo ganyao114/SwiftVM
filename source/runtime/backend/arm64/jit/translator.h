@@ -436,6 +436,9 @@ private:
     // Safe by construction after the GetOperand RA-tie fix: the emitter only
     // peels when the allocator transferred register ownership (SharesGPR).
     bool mem_narrow_fuse{true};
+    // 只处理寻址 EA：固定别名的末次使用可转交给 GetOperand result；
+    // identity frontend 另把简单复合地址直接保留到 memory IR。
+    bool addr_ea_tie{false};
     bool backedge_latch{false};
     bool backedge_flags{false};
     bool link_suffix_common{false};

@@ -255,8 +255,10 @@ X64Decoder::X64Decoder(VAddr start,
                        ir::Assembler* visitor,
                        bool is_64bit,
                        runtime::Arm64Features arm64_features,
-                       bool sse_afp_nan)
-        : start(start), pc(start), assembler(visitor), memory(memory), is_64bit(is_64bit) {
+                       bool sse_afp_nan,
+                       bool identity_addressing)
+        : start(start), pc(start), assembler(visitor), memory(memory), is_64bit(is_64bit),
+          identity_addressing_(identity_addressing) {
     addr_mask = is_64bit ? UINT64_MAX : UINT32_MAX;
     flags_cfinv_supported_ =
             True(arm64_features & runtime::Arm64Features::FlagM);
@@ -265,6 +267,8 @@ X64Decoder::X64Decoder(VAddr start,
             compact && std::strcmp(compact, "0") != 0 &&
             True(arm64_features & runtime::Arm64Features::AXFlag);
     sse_afp_nan_ = sse_afp_nan;
+    const char* ea_tie = runtime::PerfGetenv("SVM_ADDR_EA_TIE");
+    addr_ea_tie_ = ea_tie && std::strcmp(ea_tie, "0") != 0;
 }
 
 // x86-64's architectural maximum instruction length. Bounds every raw-byte
@@ -1480,10 +1484,15 @@ ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op, bool force_tso) {
                 // and omit its dynamic LDAPR/STLR alignment branch.
                 result = MemLoad(address_operand.ToIROperand(), size, true);
             } else {
-                auto address =
-                        __ GetOperand(address_operand.ToIROperand())
-                                .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
-                result = MemLoad(ir::Operand{address}, size, false);
+                if (PreserveMemoryEA(address_operand, size)) {
+                    result = MemLoad(address_operand.ToIROperand(), size, false);
+                } else {
+                    auto address =
+                            __ GetOperand(address_operand.ToIROperand())
+                                    .SetType(is_64bit ? ir::ValueType::U64
+                                                     : ir::ValueType::U32);
+                    result = MemLoad(ir::Operand{address}, size, false);
+                }
             }
             break;
         }
@@ -1526,10 +1535,15 @@ void X64Decoder::Dst(_DInst& insn, _Operand& operand, const ir::DataClass& data,
                 // path; register-derived addresses are checked dynamically.
                 MemStore(address.ToIROperand(), value, true);
             } else {
-                auto folded =
-                        __ GetOperand(address.ToIROperand())
-                                .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32);
-                MemStore(ir::Operand{folded}, value, false);
+                if (PreserveMemoryEA(address, value.Type())) {
+                    MemStore(address.ToIROperand(), value, false);
+                } else {
+                    auto folded =
+                            __ GetOperand(address.ToIROperand())
+                                    .SetType(is_64bit ? ir::ValueType::U64
+                                                     : ir::ValueType::U32);
+                    MemStore(ir::Operand{folded}, value, false);
+                }
             }
             break;
         }
@@ -1546,6 +1560,31 @@ ir::DataClass X64Decoder::GetOperand(const X64Decoder::Operand& operand) {
     } else {
         return __ GetOperand(operand.ToIROperand());
     }
+}
+
+bool X64Decoder::PreserveMemoryEA(const X64Decoder::Operand& operand,
+                                  ir::ValueType access_type) const {
+    if (!addr_ea_tie_ || !identity_addressing_) {
+        return false;
+    }
+    const auto ir_operand = operand.ToIROperand();
+    if (!ir_operand.GetLeft().IsValue() || ir_operand.GetRight().Null() ||
+        ir::GetValueSizeByte(ir_operand.GetLeft().value.Type()) != sizeof(u64)) {
+        return false;
+    }
+    // 只保留现有 ARM64 memory emitter 已能直接编码的两类结构；其它地址
+    // 仍先经 GetOperand 物化，避免把本开关扩成通用地址重写。
+    if (ir_operand.GetOp() == ir::OperandOp::Plus &&
+        ir_operand.GetRight().IsImm()) {
+        return true;
+    }
+    if (ir_operand.GetOp() != ir::OperandOp::PlusExt ||
+        !ir_operand.GetRight().IsValue() ||
+        ir::GetValueSizeByte(ir_operand.GetRight().value.Type()) != sizeof(u64)) {
+        return false;
+    }
+    const auto shift = ir_operand.GetOp().shift_ext;
+    return shift < 4 && (u64{1} << shift) == ir::GetValueSizeByte(access_type);
 }
 
 ir::Value X64Decoder::SegmentBase(_RegisterType segment) {

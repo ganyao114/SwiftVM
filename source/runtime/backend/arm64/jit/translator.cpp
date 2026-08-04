@@ -320,6 +320,9 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     if (const char* mem_fuse = PerfGetenv("SVM_MEM_NARROW_FUSE")) {
         mem_narrow_fuse = std::strcmp(mem_fuse, "0") != 0;
     }
+    if (const char* ea_tie = PerfGetenv("SVM_ADDR_EA_TIE")) {
+        addr_ea_tie = std::strcmp(ea_tie, "0") != 0;
+    }
     if (const char* nan_fast = PerfGetenv("SVM_SSE_NAN_FAST")) {
         sse_nan_fast = std::strcmp(nan_fast, "0") != 0;
     }
@@ -2095,7 +2098,8 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
         } else {
             // Match Case: load store post/index & push/pop
             auto addr_value = ir_op.GetLeft().value;
-            if (mem_narrow_fuse && addr_value.Def()->GetOp() == ir::OpCode::GetOperand &&
+            if ((mem_narrow_fuse || addr_ea_tie) &&
+                addr_value.Def()->GetOp() == ir::OpCode::GetOperand &&
                 addr_value.Def()->GetUses() == 1) {
                 auto source_operand = addr_value.Def()->GetArg<ir::Operand>(0);
                 auto source_left = source_operand.GetLeft();
@@ -2279,7 +2283,11 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                     }
                     return BiasMem(mem_scratch, atomic);
                 }
-                if (ir::GetValueSizeByte(right.value.Type()) == shift_amount) {
+                const bool ea_scaled_offset =
+                        addr_ea_tie && !use_memory_base && shift_amount < 4 &&
+                        (u64{1} << shift_amount) == access_size;
+                if (ea_scaled_offset ||
+                    ir::GetValueSizeByte(right.value.Type()) == shift_amount) {
                     if (use_memory_base) {
                         __ Add(mem_scratch,
                                left_reg,

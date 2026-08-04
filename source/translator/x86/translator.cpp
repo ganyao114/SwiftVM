@@ -894,7 +894,9 @@ struct X86Instance::Impl final {
                             &assembler,
                             true,
                             address_space->GetConfig().arm64_features,
-                            address_space->GetConfig().sse_afp_nan};
+                            address_space->GetConfig().sse_afp_nan,
+                            !address_space->GetConfig().memory_base &&
+                                    !address_space->GetConfig().page_table};
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();
                     ++decoded_count;
@@ -1047,7 +1049,9 @@ struct X86Instance::Impl final {
                             &assembler,
                             true,
                             module->GetAddressSpace().GetConfig().arm64_features,
-                            module->GetAddressSpace().GetConfig().sse_afp_nan};
+                            module->GetAddressSpace().GetConfig().sse_afp_nan,
+                            !module->GetAddressSpace().GetConfig().memory_base &&
+                                    !module->GetAddressSpace().GetConfig().page_table};
                     perf_ir_setup.Stop();
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();

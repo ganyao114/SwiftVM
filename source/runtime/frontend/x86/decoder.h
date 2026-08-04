@@ -283,7 +283,8 @@ public:
                ir::Assembler* visitor,
                bool is_64bit,
                runtime::Arm64Features arm64_features = runtime::Arm64Features::None,
-               bool sse_afp_nan = false);
+               bool sse_afp_nan = false,
+               bool identity_addressing = false);
 
     void Decode();
 
@@ -340,6 +341,9 @@ private:
     static bool IsV(_RegisterType reg);
 
     ir::DataClass GetOperand(const Operand& operand);
+
+    [[nodiscard]] bool PreserveMemoryEA(const Operand& operand,
+                                        ir::ValueType access_type) const;
 
     ir::Value R(_RegisterType reg);
 
@@ -1108,6 +1112,8 @@ private:
     bool flags_cfinv_supported_{false};
     bool flags_fcmp_compact_{false};
     bool sse_afp_nan_{false};
+    bool addr_ea_tie_{false};
+    bool identity_addressing_{false};
     VAddr addr_mask{UINT64_MAX};
     CarryPolarity carry_{CarryPolarity::Unknown};
     VAddr local_nzcv_next_pc_{UINT64_MAX};

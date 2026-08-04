@@ -214,7 +214,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 70);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 71);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
             "SVM_EXEC_TRACE");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
@@ -4666,6 +4666,96 @@ TEST_CASE("peeled GetOperand keeps its address live through the memory use") {
     translator.Translate(raw_block);
     context.Finish();
     REQUIRE(context.CurrentBufferSize() > 0);
+}
+
+TEST_CASE("address EA tie transfers a terminal fixed alias") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::backend;
+
+    auto* raw = new Block(0, Location{0x6f20});
+    IntrusivePtr<Block> block{raw};
+    auto source = raw->GetHostGPR(HostRegIndex(6), Imm{0u}).SetType(ValueType::U64);
+    auto address = raw->GetOperand(Operand{source}).SetType(ValueType::U64);
+    auto value = raw->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+    raw->StoreMemory(Operand{address}, value);
+    raw->SetTerminal(terminal::ReturnToDispatch{});
+    raw->ReIdInstr();
+
+    // x6 模拟静态映射的固定家；普通线性扫描不能把其它值分配到它。
+    const GPRSMask gprs{~((1u << 19) - 1u) | (1u << 6)};
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+    RegAlloc alloc{raw->MaxInstrId(), gprs, fprs};
+    RegisterAllocPass::Run(raw, &alloc);
+
+    const char* gate = std::getenv("SVM_ADDR_EA_TIE");
+    const bool enabled = gate && std::strcmp(gate, "0") != 0;
+    REQUIRE(alloc.ValueGPR(source).id == 6);
+    REQUIRE((alloc.ValueGPR(address).id == alloc.ValueGPR(source).id) == enabled);
+    REQUIRE(alloc.ValueGPR(address).id != alloc.ValueGPR(value).id);
+}
+
+TEST_CASE("composite memory EA survives only in identity mode") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+
+    struct MemIf final : MemoryInterface {
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+
+    auto decode_address = [&](std::array<swift::u8, 5> bytes, bool identity) {
+        const auto pc = reinterpret_cast<VAddr>(bytes.data());
+        auto* raw = new Block(0, Location{pc});
+        IntrusivePtr<Block> block{raw};
+        Assembler assembler{raw};
+        X64Decoder decoder{pc,
+                           &memory,
+                           &assembler,
+                           true,
+                           Arm64Features::None,
+                           false,
+                           identity};
+        decoder.Decode();
+        for (auto& inst : raw->GetInstList()) {
+            if (inst.GetOp() == OpCode::LoadMemory) {
+                return std::pair{block, inst.GetArg<Operand>(0)};
+            }
+        }
+        FAIL("memory load was not decoded");
+        return std::pair{block, Operand{}};
+    };
+
+    const char* gate = std::getenv("SVM_ADDR_EA_TIE");
+    const bool enabled = gate && std::strcmp(gate, "0") != 0;
+    // mov eax,[rbx+8]; hlt。末尾补零只用于固定数组长度。
+    auto [identity_imm_block, identity_imm] =
+            decode_address({0x8b, 0x43, 0x08, 0xf4, 0x00}, true);
+    auto [bias_imm_block, bias_imm] =
+            decode_address({0x8b, 0x43, 0x08, 0xf4, 0x00}, false);
+    // mov eax,[rbx+rcx*4]; hlt。
+    auto [identity_ext_block, identity_ext] =
+            decode_address({0x8b, 0x04, 0x8b, 0xf4, 0x00}, true);
+
+    REQUIRE((!identity_imm.GetRight().Null()) == enabled);
+    if (enabled) {
+        REQUIRE(identity_imm.GetOp() == OperandOp::Plus);
+        REQUIRE(identity_imm.GetRight().IsImm());
+        REQUIRE(identity_ext.GetOp() == OperandOp::PlusExt);
+        REQUIRE(identity_ext.GetRight().IsValue());
+    } else {
+        REQUIRE(identity_ext.GetRight().Null());
+    }
+    // bias 不论开关状态都保留旧的 GetOperand 单值边界。
+    REQUIRE(bias_imm.GetRight().Null());
+    REQUIRE(bias_imm.GetLeft().IsValue());
+    REQUIRE(bias_imm.GetLeft().value.Def()->GetOp() == OpCode::GetOperand);
 }
 
 // --- x86 mul CF/OF must reach the flags register -----------------------------
