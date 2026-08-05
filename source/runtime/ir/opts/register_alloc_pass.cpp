@@ -104,7 +104,14 @@ static bool InductTieEnabled() {
 static bool SpillEvictEnabled() {
     static const bool enabled = [] {
         const char* env = PerfGetenv("SVM_RA_SPILL_EVICT");
-        return env && std::strcmp(env, "0") != 0;
+        // Default ON after the orb eight-cell grid (L2/L3 x evict x coremark/
+        // smallpt, all identity): L3 smallpt spill_dynamic -74.4% with every
+        // other cell neutral, regalloc_ns worst +5.5% of a 0.25% bucket
+        // (translate +0.013%, no long tail), and the Verify-failed fallback to
+        // the original reserve ladder exercised by 26 real units. The mac
+        // bounded-bias shape is the headline: L3 coremark spill -93.01%,
+        // host_dynamic -10.17%. =0 restores the pure ladder as the rollback.
+        return !env || std::strcmp(env, "0") != 0;
     }();
     return enabled;
 }
