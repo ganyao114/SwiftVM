@@ -86,8 +86,11 @@ static bool X86PinExtEnabled() {
 
 bool ScratchPreciseRequested() {
     static const bool enabled = [] {
+        // Default ON after the merge A/B (L2 coremark spill 3.04B -> 20,
+        // host_dynamic -1.44%; L3 modestly positive, Linux neutral). =0
+        // restores the opcode-wide Add/Sub budget as the rollback.
         const char* value = PerfGetenv("SVM_SCRATCH_PRECISE");
-        return value && std::strcmp(value, "0") != 0;
+        return !value || std::strcmp(value, "0") != 0;
     }();
     return enabled;
 }
