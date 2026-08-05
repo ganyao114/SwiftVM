@@ -180,6 +180,8 @@ inline constexpr u8 kDefaultScratchFPR = 3;
 // never fail.
 [[nodiscard]] ScratchNeed ScratchBudget(ir::OpCode op);
 [[nodiscard]] ScratchNeed ScratchBudget(const ir::Inst& inst);
+[[nodiscard]] ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst);
+[[nodiscard]] bool ScratchPreciseRequested();
 
 class RegAlloc : DeleteCopyAndMove {
 public:

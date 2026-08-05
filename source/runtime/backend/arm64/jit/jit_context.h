@@ -85,6 +85,9 @@ public:
     // it immediately after the opcode emitter returns. Terminals get their own
     // contract because they share the last instruction's live mask.
     void EndInstructionScratch();
+    [[nodiscard]] u32 LastInstructionScratchGPR() const {
+        return last_instruction_scratch_gpr;
+    }
     void BeginTerminalScratch();
     void EndTerminalScratch();
     // Cold NaN stubs resume an earlier instruction and therefore may not use
@@ -302,6 +305,7 @@ private:
     FPRSMask tick_dirty_fprs{};
     u32 spill_tmp_gprs{};
     u32 spill_tmp_fprs{};
+    u32 last_instruction_scratch_gpr{};
 #if defined(__linux__) && !defined(__ANDROID__)
     // x18 is already marked in this spilling unit's pool baseline, so using it does not
     // contribute to spill_tmp_gprs (that counter only discounts newly marked

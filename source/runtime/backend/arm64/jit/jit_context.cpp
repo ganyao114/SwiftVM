@@ -20,6 +20,14 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
+bool ScratchPrecisePeakAuditEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SVM_SCRATCH_PRECISE_PEAK_AUDIT");
+        return value && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 template <typename Emit>
 u64 EncodeTwoInstructionSuffix(Emit&& emit) {
     MacroAssembler assembler{};
@@ -441,10 +449,25 @@ XRegister JitContext::GetTmpX() {
     const u32 used = static_cast<u32>(cur_dirty_gprs.GetMarkedCount() -
                                       tick_dirty_gprs.GetMarkedCount()) -
                      spill_tmp_gprs;
+    if (ScratchPrecisePeakAuditEnabled() && cur_inst &&
+        (cur_inst->GetOp() == ir::OpCode::Add ||
+         cur_inst->GetOp() == ir::OpCode::Sub)) {
+        std::fprintf(stderr,
+                     "[svm-scratch-lease] unit=0x%llx id=%u op=%s type=%u "
+                     "asked=%u budget=%u\n",
+                     static_cast<unsigned long long>(unit_start), cur_inst->Id(),
+                     ir::GetIRMetaInfo(cur_inst->GetOp()).name,
+                     static_cast<u32>(cur_inst->ReturnType()), used + 1,
+                     CurrentBudget().gpr);
+    }
     ASSERT_MSG(used < CurrentBudget().gpr,
-               "scratch GPR budget exceeded emitting opcode {}: declared {}, asked for {}. "
+               "scratch GPR budget exceeded in unit {:#x} id {} opcode {} type {}: "
+               "declared {}, asked for {}. "
                "Raise its entry in backend::ScratchBudget (reg_alloc.cpp)",
-               cur_inst ? static_cast<u32>(cur_inst->GetOp()) : 0u, CurrentBudget().gpr, used + 1);
+               unit_start, cur_inst ? cur_inst->Id() : 0u,
+               cur_inst ? static_cast<u32>(cur_inst->GetOp()) : 0u,
+               cur_inst ? static_cast<u32>(cur_inst->ReturnType()) : 0u,
+               CurrentBudget().gpr, used + 1);
     if (auto alloc = cur_dirty_gprs.GetFirstClear(); alloc >= 0) {
         cur_dirty_gprs.Mark(alloc);
         XRegister result(alloc);
@@ -1108,6 +1131,45 @@ void JitContext::EndVixlScratch() {
         const u32 fixed = cur_inst ? backend::FixedGPRClobbers(*cur_inst) : 0;
         const u32 vixl_used = static_cast<u32>(
                 __builtin_popcountll(acquired & ~fixed));
+        last_instruction_scratch_gpr = explicit_used + vixl_used;
+        if (ScratchPrecisePeakAuditEnabled() && cur_inst &&
+            (cur_inst->GetOp() == ir::OpCode::Add ||
+             cur_inst->GetOp() == ir::OpCode::Sub)) {
+            ir::Flags flags{};
+            bool branch_only = false;
+            for (auto* pseudo : cur_inst->GetPseudoOperations()) {
+                if (pseudo->GetOp() == ir::OpCode::SaveFlags) {
+                    flags |= pseudo->GetArg<ir::Flags>(1);
+                } else if (pseudo->GetOp() == ir::OpCode::BranchOnlyFlags) {
+                    flags |= pseudo->GetArg<ir::Flags>(1);
+                    branch_only = true;
+                }
+            }
+            const auto right = cur_inst->GetArg<ir::Operand>(1);
+            const auto right_op = right.GetOp();
+            const char* right_shape = right.GetRight().Null()
+                    ? (right.GetLeft().IsImm() ? "imm" : "reg")
+                    : (right_op == ir::OperandOp::LSL ||
+                               right_op == ir::OperandOp::LSR
+                               ? "shift"
+                               : "composite");
+            std::fprintf(stderr,
+                         "[svm-scratch-peak] unit=0x%llx id=%u op=%s type=%u "
+                         "flags=0x%llx branch_only=%u right=%s right_op=%u "
+                         "explicit=%u vixl=%u peak=%u budget=%u\n",
+                         static_cast<unsigned long long>(unit_start),
+                         cur_inst->Id(),
+                         ir::GetIRMetaInfo(cur_inst->GetOp()).name,
+                         static_cast<u32>(cur_inst->ReturnType()),
+                         static_cast<unsigned long long>(flags),
+                         branch_only ? 1u : 0u,
+                         right_shape,
+                         static_cast<u32>(right_op.type),
+                         explicit_used,
+                         vixl_used,
+                         explicit_used + vixl_used,
+                         CurrentBudget().gpr);
+        }
         ASSERT_MSG(explicit_used + vixl_used <= CurrentBudget().gpr,
                    "combined scratch GPR budget exceeded emitting opcode {}: "
                    "declared {}, explicit {}, VIXL {}",

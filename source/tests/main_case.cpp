@@ -214,9 +214,9 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 72);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 73);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_EXEC_TRACE");
+            "SVM_SCRATCH_PRECISE");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -4316,6 +4316,182 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
 #if defined(__linux__) && !defined(__ANDROID__)
     REQUIRE(saw_conditional_spill_unit);
 #endif
+}
+
+TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::backend;
+
+    enum class RightShape { Reg, LargeImm, Shift, Composite };
+    auto make_price = [](ValueType type, Flags flags, bool branch_only,
+                         RightShape shape) {
+        Block block{0, Location{0x1d00}};
+        auto left = block.LoadImm(Imm{7u}).SetType(type);
+        auto other = block.LoadImm(Imm{3u}).SetType(type);
+        Operand right{other};
+        switch (shape) {
+            case RightShape::Reg:
+                break;
+            case RightShape::LargeImm:
+                right = Operand{Imm{swift::u64{0x123456789}}};
+                break;
+            case RightShape::Shift:
+                right = Operand{other, Imm{1u}, OperandLsl};
+                break;
+            case RightShape::Composite:
+                right = Operand{left, other, OperandPlus};
+                break;
+        }
+        auto result = block.Add(left, right).SetType(type);
+        if (branch_only) {
+            block.AppendInst(OpCode::BranchOnlyFlags, result, flags);
+        } else if (flags != Flags::None) {
+            block.SaveFlags(result, flags);
+        }
+        return PreciseAddSubScratchBudget(*result.Def()).gpr;
+    };
+
+    REQUIRE(make_price(ValueType::U64, Flags::None, false, RightShape::Reg) == 0);
+    REQUIRE(make_price(ValueType::U64, Flags::Parity, false, RightShape::Reg) == 0);
+    REQUIRE(make_price(ValueType::U64, Flags::AuxiliaryCarry, false, RightShape::Reg) == 1);
+    REQUIRE(make_price(ValueType::U64, Flags::NZCV, false, RightShape::Reg) == 1);
+    REQUIRE(make_price(ValueType::U64, Flags::All, false, RightShape::Reg) == 2);
+    REQUIRE(make_price(ValueType::U64, Flags::All, false, RightShape::LargeImm) == 3);
+    REQUIRE(make_price(ValueType::U64, Flags::All, false, RightShape::Shift) == 2);
+    REQUIRE(make_price(ValueType::U64, Flags::All, false, RightShape::Composite) == 3);
+    REQUIRE(make_price(ValueType::U64, Flags::All, true, RightShape::Composite) == 1);
+    REQUIRE(make_price(ValueType::U8, Flags::All, false, RightShape::Reg) == 3);
+    REQUIRE(make_price(ValueType::U16, Flags::All, false, RightShape::Composite) == 4);
+    REQUIRE(make_price(ValueType::U8, Flags::All, true, RightShape::Composite) == 2);
+    REQUIRE(make_price(ValueType::U16, Flags::AuxiliaryCarry, false,
+                       RightShape::Composite) == 2);
+
+    auto make_host_price = [](ValueType type, Flags flags) {
+        Block block{0, Location{0x1d80}};
+        auto left = block.GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(type);
+        auto result = block.Add(left, Operand{left}).SetType(type);
+        if (flags != Flags::None) block.SaveFlags(result, flags);
+        return PreciseAddSubScratchBudget(*result.Def()).gpr;
+    };
+    REQUIRE(make_host_price(ValueType::U16, Flags::None) == 2);
+    REQUIRE(make_host_price(ValueType::U16, Flags::All) == 5);
+    REQUIRE(make_host_price(ValueType::U32, Flags::All) == 2);
+
+    swift::runtime::Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = swift::runtime::kArm64,
+    };
+    AddressSpace address_space{config};
+    auto module = address_space.GetDefaultModule();
+    const auto gprs = address_space.GetTrampolines().GetGPRRegs();
+    const auto fprs = address_space.GetTrampolines().GetFPRRegs();
+
+    Block allocation_contract{0, Location{0x1dc0}};
+    auto contract_left =
+            allocation_contract.LoadImm(Imm{7u}).SetType(ValueType::U16);
+    auto contract_right =
+            allocation_contract.LoadImm(Imm{3u}).SetType(ValueType::U16);
+    auto contract_result = allocation_contract
+                                   .Add(contract_left, Operand{contract_right})
+                                   .SetType(ValueType::U16);
+    allocation_contract.SaveFlags(contract_result, Flags::All);
+    allocation_contract.ReIdInstr();
+    RegAlloc contract_alloc{allocation_contract.MaxInstrId(), gprs, fprs};
+    RegisterAllocPass::Run(&allocation_contract, &contract_alloc);
+    REQUIRE(contract_alloc.ValueType(contract_left) == RegAlloc::GPR);
+    REQUIRE(contract_alloc.ValueType(contract_right) == RegAlloc::GPR);
+    REQUIRE(contract_alloc.ValueType(contract_result) == RegAlloc::GPR);
+    REQUIRE(contract_alloc.ValueGPR(contract_result).id !=
+            contract_alloc.ValueGPR(contract_left).id);
+    REQUIRE(contract_alloc.ValueGPR(contract_result).id !=
+            contract_alloc.ValueGPR(contract_right).id);
+
+    auto measure = [&](ValueType type, Flags flags, bool branch_only,
+                       RightShape shape, bool host_read = false) {
+        Block block{0, Location{0x1e00}};
+        Value left;
+        Value other;
+        if (host_read) {
+            left = block.GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(type);
+            other = block.GetHostGPR(HostRegIndex(23), Imm{0u}).SetType(type);
+        } else {
+            left = block.LoadImm(Imm{7u}).SetType(type);
+            other = block.LoadImm(Imm{3u}).SetType(type);
+        }
+        auto pending = block.Add(left, Operand{other}).SetType(ValueType::U64);
+        block.SaveFlags(pending, Flags::All);
+        Operand right{left};
+        switch (shape) {
+            case RightShape::Reg:
+                break;
+            case RightShape::LargeImm:
+                right = Operand{Imm{swift::u64{0x123456789}}};
+                break;
+            case RightShape::Shift:
+                right = Operand{left, Imm{1u}, OperandLsl};
+                break;
+            case RightShape::Composite:
+                right = Operand{left, other, OperandPlus};
+                break;
+        }
+        auto target = block.Add(left, right).SetType(type);
+        if (branch_only) {
+            block.AppendInst(OpCode::BranchOnlyFlags, target, flags);
+        } else if (flags != Flags::None) {
+            block.SaveFlags(target, flags);
+        }
+        block.ReIdInstr();
+
+        RegAlloc alloc{block.MaxInstrId(), gprs, fprs};
+        alloc.MapRegister(left.Id(), HostGPR{22});
+        alloc.MapRegister(other.Id(), HostGPR{23});
+        alloc.MapRegister(pending.Id(), HostGPR{24});
+        // Current RA does not tie narrow Add/Sub destinations to either input.
+        // Keep the emitter measurement on that allocation contract.
+        alloc.MapRegister(target.Id(), HostGPR{10});
+        auto active_gprs = gprs;
+        auto active_fprs = fprs;
+        alloc.SetActiveRegs(pending.Id(), active_gprs, active_fprs);
+        alloc.SetActiveRegs(target.Id(), active_gprs, active_fprs);
+
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        context.SetCurrent(&block);
+        context.TickIR(pending.Def());
+        translator.EmitAdd(pending.Def());
+        context.EndInstructionScratch();
+        context.TickIR(target.Def());
+        // Measure independently of either OFF's legacy cap or ON's proposed
+        // price. Terminal scratch supplies a seven-register observation
+        // envelope but otherwise uses the same per-instruction masks.
+        context.BeginTerminalScratch();
+        translator.EmitAdd(target.Def());
+        context.EndTerminalScratch();
+        const swift::u32 peak = context.LastInstructionScratchGPR();
+        const swift::u32 price = PreciseAddSubScratchBudget(*target.Def()).gpr;
+        INFO("type " << static_cast<unsigned>(type) << " flags "
+                     << static_cast<unsigned long long>(flags) << " branch "
+                     << branch_only << " shape " << static_cast<unsigned>(shape)
+                     << " peak " << peak << " price " << price);
+        REQUIRE(peak <= price);
+        context.Finish();
+        return peak;
+    };
+
+    REQUIRE(measure(ValueType::U64, Flags::None, false, RightShape::Reg) == 0);
+    REQUIRE(measure(ValueType::U64, Flags::All, false, RightShape::LargeImm) == 3);
+    REQUIRE(measure(ValueType::U64, Flags::All, false, RightShape::Composite) == 3);
+    REQUIRE(measure(ValueType::U64, Flags::All, true, RightShape::Composite) == 1);
+    REQUIRE(measure(ValueType::U8, Flags::All, false, RightShape::Reg) == 3);
+    REQUIRE(measure(ValueType::U16, Flags::All, false, RightShape::Composite) == 4);
+    REQUIRE(measure(ValueType::U8, Flags::All, true, RightShape::Composite) == 2);
+    REQUIRE(measure(ValueType::U16, Flags::None, false, RightShape::Reg,
+                    true) == 2);
+    REQUIRE(measure(ValueType::U16, Flags::All, false, RightShape::Reg,
+                    true) == 5);
 }
 
 // --- spill-slot recycling ----------------------------------------------------

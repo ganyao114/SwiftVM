@@ -1141,13 +1141,15 @@ private:
         const u32 scratch_only_gprs =
                 ScratchOnlyGPRs(inst->GetOp(), reg_alloc->GetGprs());
         u32 need_gpr = need.gpr + reload_gpr + extra_gpr;
-        // Add/Sub's five-register declaration is the no-spill worst case:
+        // Legacy Add/Sub's five-register declaration is the no-spill worst case:
         // tied inputs must be preserved for AF/PF after the destination is
         // overwritten. A spilled operand/result cannot be tied, and its reload
         // register replaces that preservation temporary. Charge the larger of
         // the no-spill peak and the ordinary three-register shape plus reloads
-        // instead of adding both mutually-exclusive peaks.
-        if (scratch_only_gprs &&
+        // instead of adding both mutually-exclusive peaks. Precise pricing
+        // excludes those dead preservation arms, so ordinary scratch and
+        // reload registers are independent and use the direct sum above.
+        if (!backend::ScratchPreciseRequested() && scratch_only_gprs &&
             (inst->GetOp() == OpCode::Add || inst->GetOp() == OpCode::Sub)) {
             need_gpr = std::max<u32>(
                     need.gpr, backend::kDefaultScratchGPR + reload_gpr) + extra_gpr;

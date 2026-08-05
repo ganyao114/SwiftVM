@@ -84,6 +84,98 @@ static bool X86PinExtEnabled() {
     return X86PinExtLevel() >= 1;
 }
 
+bool ScratchPreciseRequested() {
+    static const bool enabled = [] {
+        const char* value = PerfGetenv("SVM_SCRATCH_PRECISE");
+        return value && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool IsEncodedAddSubImmediate(s64 value) {
+    return value >= 0 &&
+           (value <= 0xfff ||
+            ((static_cast<u64>(value) & 0xfff) == 0 &&
+             (static_cast<u64>(value) >> 12) <= 0xfff));
+}
+
+static u8 NarrowHostReadScratch(const ir::DataClass& data) {
+    if (!data.IsValue()) return 0;
+    const auto value = data.value;
+    return ir::GetValueSizeByte(value.Type()) <= 2 && value.Def() &&
+                   value.Def()->IsGetHostRegOperation()
+            ? 1
+            : 0;
+}
+
+static u8 AddSubOperandScratch(const ir::Operand& right) {
+    if (right.GetRight().Null()) {
+        if (right.GetLeft().IsImm()) {
+            return !IsEncodedAddSubImmediate(
+                           right.GetLeft().imm.GetSigned())
+                    ? 1
+                    : 0;
+        }
+        return NarrowHostReadScratch(right.GetLeft());
+    }
+    u8 need = NarrowHostReadScratch(right.GetLeft()) +
+              NarrowHostReadScratch(right.GetRight());
+    if (right.GetRight().IsImm() &&
+        (right.GetOp() == ir::OperandOp::LSL ||
+         right.GetOp() == ir::OperandOp::LSR)) {
+        return need;
+    }
+    return need + 1;
+}
+
+ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
+    ASSERT(inst.GetOp() == ir::OpCode::Add || inst.GetOp() == ir::OpCode::Sub);
+    ir::Flags requested{};
+    bool branch_only = false;
+    for (auto* pseudo : const_cast<ir::Inst&>(inst).GetPseudoOperations()) {
+        if (pseudo->GetOp() == ir::OpCode::SaveFlags) {
+            requested |= pseudo->GetArg<ir::Flags>(1);
+        } else if (pseudo->GetOp() == ir::OpCode::BranchOnlyFlags) {
+            requested |= pseudo->GetArg<ir::Flags>(1);
+            branch_only = true;
+        }
+    }
+
+    const auto right = inst.GetArg<ir::Operand>(1);
+    const u8 operand_scratch =
+            NarrowHostReadScratch(ir::DataClass{inst.GetArg<ir::Value>(0)}) +
+            AddSubOperandScratch(right);
+    const bool narrow_nzcv = ir::GetValueSizeByte(inst.ReturnType()) <= 2 &&
+                             True(requested & ir::Flags::NZCV);
+    if (narrow_nzcv) {
+        // Current RA has no narrow Add/Sub destination tie: its result cannot
+        // share either input, so the two emitter preservation arms are dead for
+        // allocated code. The aligned right needs one register in the worst
+        // operand form; EmitOperand's own materialization was counted above.
+        u8 need = operand_scratch + 1;
+        if (!branch_only) {
+            // A preceding lazy producer can require MergeNZCV. AF is a
+            // separate GetTmpX after the aligned operands are still leased.
+            need += 1;
+            if (True(requested & ir::Flags::AuxiliaryCarry)) {
+                need += 1;
+            }
+        }
+        return {need, kDefaultScratchFPR};
+    }
+
+    u8 need = operand_scratch;
+    if (!branch_only) {
+        if (True(requested & ir::Flags::NZCV)) {
+            ++need;
+        }
+        if (True(requested & ir::Flags::AuxiliaryCarry)) {
+            ++need;
+        }
+    }
+    return {need, kDefaultScratchFPR};
+}
+
 static bool ExecProfileEnabled() {
     static const bool enabled = [] {
         const char* value = PerfGetenv("SVM_EXEC_PROF");
@@ -269,6 +361,10 @@ ScratchNeed ScratchBudget(ir::OpCode op) {
 
 ScratchNeed ScratchBudget(const ir::Inst& inst) {
     auto need = ScratchBudget(inst.GetOp());
+    if (ScratchPreciseRequested() &&
+        (inst.GetOp() == ir::OpCode::Add || inst.GetOp() == ir::OpCode::Sub)) {
+        return PreciseAddSubScratchBudget(inst);
+    }
     if (inst.GetOp() != ir::OpCode::X87Op || !ScratchXPoolEnabled()) {
         return need;
     }
