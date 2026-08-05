@@ -2868,6 +2868,26 @@ TEST_CASE("64-bit induction ties require exact last-use and matching pinned publ
     SECTION("live full-width flags reject destructive source") {
         check(false, 22, true, false);
     }
+
+    SECTION("later pinned overwrite while result snapshot is live falls back") {
+        auto* raw = new Block(0, Location{0x86b0});
+        swift::runtime::IntrusivePtr<Block> block{raw};
+        auto source = raw->GetHostGPR(HostRegIndex(22), Imm{0u})
+                              .SetType(ValueType::U64);
+        auto immediate = raw->LoadImm(Imm{swift::u64{32}}).SetType(ValueType::U64);
+        auto result = raw->Add(source, Operand{immediate}).SetType(ValueType::U64);
+        raw->SetHostGPR(result, HostRegIndex(22), Imm{0u});
+        auto next = raw->Add(result, Operand{immediate}).SetType(ValueType::U64);
+        raw->SetHostGPR(next, HostRegIndex(22), Imm{0u});
+        raw->StoreUniform(Uniform{32, ValueType::U64}, result);
+        raw->SetTerminal(terminal::ReturnToDispatch{});
+        raw->ReIdInstr();
+
+        RegAlloc on{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        RegisterAllocPass::RunForInductTieTest(raw, &on, true);
+        REQUIRE(on.ValueGPR(source).id == 22);
+        REQUIRE(on.ValueGPR(result).id != 22);
+    }
 }
 
 TEST_CASE("integer width chains keep X high halves zero for W and X consumers") {

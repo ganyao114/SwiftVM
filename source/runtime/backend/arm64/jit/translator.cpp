@@ -491,7 +491,16 @@ std::optional<u64> JitTranslator::MatchInductionImmediate(ir::Inst* inst) {
     // Hard emitter guard: re-prove that the in-place result is published to
     // the same architectural pin before any observer/faulting instruction.
     const u64 source_host = source.Def()->GetArg<ir::Imm>(0).Get();
+    u32 result_end = inst->Id();
+    for (auto& next : cur_block->GetInstList()) {
+        for (auto value : next.GetValues()) {
+            if (ResolveBitCastValue(value).Def() == inst) {
+                result_end = std::max<u32>(result_end, next.Id());
+            }
+        }
+    }
     bool after_add = false;
+    bool published = false;
     for (auto& next : cur_block->GetInstList()) {
         if (&next == inst) {
             after_add = true;
@@ -501,12 +510,24 @@ std::optional<u64> JitTranslator::MatchInductionImmediate(ir::Inst* inst) {
             continue;
         }
         if (next.GetOp() == ir::OpCode::SetHostGPR) {
-            const auto published = ResolveBitCastValue(next.GetArg<ir::Value>(0));
-            if (published.Def() == inst && next.GetArg<ir::Imm>(1).Get() == source_host &&
-                next.GetArg<ir::Imm>(2).Get() == 0) {
-                return value;
+            const auto next_value = ResolveBitCastValue(next.GetArg<ir::Value>(0));
+            if (!published) {
+                if (next_value.Def() != inst ||
+                    next.GetArg<ir::Imm>(1).Get() != source_host ||
+                    next.GetArg<ir::Imm>(2).Get() != 0) {
+                    return std::nullopt;
+                }
+                published = true;
+                continue;
             }
-            return std::nullopt;
+            if (next.Id() <= result_end &&
+                next.GetArg<ir::Imm>(1).Get() == source_host) {
+                return std::nullopt;
+            }
+            continue;
+        }
+        if (published) {
+            continue;
         }
         if (next.GetOp() == ir::OpCode::SaveFlags) {
             if (next.GetArg<ir::Flags>(1) != ir::Flags::None) {
@@ -518,7 +539,7 @@ std::optional<u64> JitTranslator::MatchInductionImmediate(ir::Inst* inst) {
             return std::nullopt;
         }
     }
-    return std::nullopt;
+    return published ? std::optional<u64>{value} : std::nullopt;
 }
 
 void JitTranslator::PlanInductionTies(ir::Block* block) {

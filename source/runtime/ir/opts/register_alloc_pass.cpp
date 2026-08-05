@@ -903,7 +903,7 @@ private:
                ((value & 0xfff) == 0 && (value >> 12) <= 0xfff);
     }
 
-    Value InductionTieSource(Inst* inst) const {
+    Value InductionTieSource(Inst* inst, u32 result_end) const {
         if (inst->GetOp() != OpCode::Add ||
             GetValueSizeByte(inst->ReturnType()) != sizeof(u64)) {
             return {};
@@ -929,6 +929,7 @@ private:
 
         auto match_block = [&](Block* candidate) {
             bool after_add = false;
+            bool published = false;
             for (auto& next : candidate->GetInstList()) {
                 if (&next == inst) {
                     after_add = true;
@@ -938,11 +939,29 @@ private:
                     continue;
                 }
                 if (next.GetOp() == OpCode::SetHostGPR) {
-                    const auto published = ResolveBitCastSource(next.GetArg<Value>(0));
-                    return published.Def() == inst &&
-                           next.GetArg<Imm>(1).Get() == source_host &&
-                           next.GetArg<Imm>(2).Get() == 0 &&
-                           GetValueSizeByte(next.GetArg<Value>(0).Type()) == sizeof(u64);
+                    const auto value = ResolveBitCastSource(next.GetArg<Value>(0));
+                    if (!published) {
+                        if (value.Def() != inst ||
+                            next.GetArg<Imm>(1).Get() != source_host ||
+                            next.GetArg<Imm>(2).Get() != 0 ||
+                            GetValueSizeByte(next.GetArg<Value>(0).Type()) != sizeof(u64)) {
+                            return false;
+                        }
+                        published = true;
+                        continue;
+                    }
+                    // The result aliases the architectural pin after its first
+                    // publication. A later write to that pin invalidates the
+                    // SSA snapshot if the result is still live (for example
+                    // RAX+=32; RCX=RAX; RAX+=32; load [RCX]).
+                    if (next.Id() <= result_end &&
+                        next.GetArg<Imm>(1).Get() == source_host) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (published) {
+                    continue;
                 }
                 // These are non-faulting metadata/flag consumers in the
                 // measured induction lowering. Any architectural observer,
@@ -958,7 +977,7 @@ private:
                     return false;
                 }
             }
-            return false;
+            return published;
         };
         if (block) {
             return match_block(block) ? source : Value{};
@@ -972,7 +991,8 @@ private:
     }
 
     bool TryTieInduction(LiveInterval& current) {
-        return TryTieGPR(current, InductionTieSource(current.inst), true);
+        return TryTieGPR(
+                current, InductionTieSource(current.inst, current.end), true);
     }
 
     bool TryTieGPR(LiveInterval& current, Value source, bool allow_fixed_owner = false) {
