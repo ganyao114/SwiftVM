@@ -214,9 +214,9 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 73);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 74);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_SCRATCH_PRECISE");
+            "SVM_RA_SPILL_EVICT");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -3144,6 +3144,92 @@ static swift::runtime::ir::Block* BuildReloadPressureBlock(unsigned live) {
     return block;
 }
 
+struct SpillEvictChoiceBlock {
+    swift::runtime::ir::Block* block{};
+    swift::runtime::ir::Value longest{};
+    swift::runtime::ir::Value arriving{};
+};
+
+static SpillEvictChoiceBlock BuildSpillEvictChoiceBlock() {
+    using namespace swift::runtime::ir;
+    auto* block = new Block(0, Location{0x2400});
+    auto longest = block->LoadImm(Imm{swift::u64{1}});
+    auto middle = block->LoadImm(Imm{swift::u64{2}});
+    auto shortest = block->LoadImm(Imm{swift::u64{3}});
+    auto arriving = block->LoadImm(Imm{swift::u64{4}});
+    auto first = block->Add(arriving, Operand{shortest});
+    auto second = block->Add(first, Operand{middle});
+    auto total = block->Add(second, Operand{longest});
+    block->StoreUniform(Uniform{0, ValueType::U64}, total);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    return {block, longest, arriving};
+}
+
+static swift::runtime::ir::Block* BuildSpillEvictFallbackBlock() {
+    using namespace swift::runtime::ir;
+    auto* block = new Block(0, Location{0x2410});
+    std::vector<Value> anchors;
+    for (swift::u64 value = 1; value <= 7; ++value) {
+        anchors.push_back(block->LoadImm(Imm{value}));
+    }
+    auto arriving = block->LoadImm(Imm{swift::u64{8}});
+    auto vector = block->LoadUniform<TypedValue<ValueType::V128>>(
+            Uniform{32, ValueType::V128});
+    auto converted = block->VecFCvtFloatToInt(
+            vector, Imm{32u}, Imm{64u}, Imm{0u}).SetType(ValueType::U64);
+    block->StoreUniform(Uniform{40, ValueType::U64}, converted);
+    Value total = arriving;
+    for (auto it = anchors.rbegin(); it != anchors.rend(); ++it) {
+        total = block->Add(total, Operand{*it});
+    }
+    block->StoreUniform(Uniform{0, ValueType::U64}, total);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    return block;
+}
+
+TEST_CASE("Spill eviction chooses farthest end and preserves verified fallback") {
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    // Six free registers and the ordinary reserve of three leave exactly
+    // three value locations. The fourth definition is shorter-lived than all
+    // three active values, while `longest` has the unique farthest end.
+    const GPRSMask gprs{~((1u << 6) - 1u)};
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+    auto off_case = BuildSpillEvictChoiceBlock();
+    swift::runtime::IntrusivePtr<Block> off_block{off_case.block};
+    RegAlloc off{off_case.block->MaxInstrId(), gprs, fprs};
+    const auto off_result = RegisterAllocPass::RunForSpillEvictTest(
+            off_case.block, &off, false);
+    REQUIRE(off.ValueType(off_case.arriving) == RegAlloc::MEM);
+    REQUIRE(off_result.eviction_restarts == 0);
+
+    auto on_case = BuildSpillEvictChoiceBlock();
+    swift::runtime::IntrusivePtr<Block> on_block{on_case.block};
+    RegAlloc on{on_case.block->MaxInstrId(), gprs, fprs};
+    const auto on_result = RegisterAllocPass::RunForSpillEvictTest(
+            on_case.block, &on, true);
+    REQUIRE(on_result.eviction_restarts >= 1);
+    REQUIRE_FALSE(on_result.fell_back_to_ladder);
+    REQUIRE(on.ValueType(on_case.longest) == RegAlloc::MEM);
+    REQUIRE(on.ValueType(on_case.arriving) == RegAlloc::GPR);
+
+    // This block deliberately reads many long-lived spilled values while the
+    // opcode scratch budget is also live. If the default-reserve eviction
+    // attempt cannot satisfy Verify(), it must be discarded and the existing
+    // reserve ladder must produce the final allocation.
+    swift::runtime::IntrusivePtr<Block> fallback_block{BuildSpillEvictFallbackBlock()};
+    const GPRSMask fallback_gprs{~((1u << 10) - 1u)};
+    RegAlloc fallback{fallback_block->MaxInstrId(), fallback_gprs, fprs};
+    const auto fallback_result = RegisterAllocPass::RunForSpillEvictTest(
+            fallback_block.get(), &fallback, true);
+    REQUIRE(fallback_result.eviction_restarts >= 1);
+    REQUIRE(fallback_result.fell_back_to_ladder);
+    REQUIRE(fallback_result.final_gpr_reserve > 3);
+}
+
 TEST_CASE("AFP guest FPCR is rebuilt from MXCSR across host-call boundaries") {
 #if defined(__aarch64__)
     using namespace swift::runtime;
@@ -4699,7 +4785,11 @@ TEST_CASE("Spill slots are recycled, not merely handed out") {
         RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs};
         // Pre-fix this call itself threw ("spill area exhausted: slot 64 (+1)
         // >= 64 reserved slots") long before any assertion below could run.
-        RegisterAllocPass::Run(block.get(), &reg_alloc);
+        // Select the historical spill-current policy explicitly: this test's
+        // pressure generator relies on hundreds of churn spills, while the
+        // farthest-end experiment deliberately removes most of them.
+        (void)RegisterAllocPass::RunForSpillEvictTest(
+                block.get(), &reg_alloc, false);
 
         auto ranges = live_ranges(block.get());
         struct Occupancy {

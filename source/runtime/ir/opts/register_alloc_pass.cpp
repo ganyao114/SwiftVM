@@ -101,6 +101,14 @@ static bool InductTieEnabled() {
     return enabled;
 }
 
+static bool SpillEvictEnabled() {
+    static const bool enabled = [] {
+        const char* env = PerfGetenv("SVM_RA_SPILL_EVICT");
+        return env && std::strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
 // Spill/escalation 诊断打印默认关闭：它们随编译线程异步产生，会混入 guest
 // stdout（sqlite speedtest 一类边跑边输出的负载会被打断行），且非用户可行动项。
 // 需要排查 regalloc 行为时设 SVM_RA_DIAG=1 打开。
@@ -136,13 +144,17 @@ public:
                                  bool single_block_fast_path = false,
                                  bool scalar_insert = false,
                                  bool intwidth_tie = false,
-                                 bool induct_tie = false)
+                                 bool induct_tie = false,
+                                 const Vector<u32>* forced_spills = nullptr,
+                                 bool select_eviction = false)
             : function(function), block(), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               single_block_fast_path(single_block_fast_path),
               scalar_insert(scalar_insert),
               intwidth_tie(intwidth_tie),
               induct_tie(induct_tie),
+              forced_spills(forced_spills),
+              select_eviction(select_eviction),
               shift_imm_fast(ShiftImmFastEnabled()) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
@@ -161,12 +173,16 @@ public:
                                  bool = false,
                                  bool scalar_insert = false,
                                  bool intwidth_tie = false,
-                                 bool induct_tie = false)
+                                 bool induct_tie = false,
+                                 const Vector<u32>* forced_spills = nullptr,
+                                 bool select_eviction = false)
             : function(), block(block), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               scalar_insert(scalar_insert),
               intwidth_tie(intwidth_tie),
               induct_tie(induct_tie),
+              forced_spills(forced_spills),
+              select_eviction(select_eviction),
               shift_imm_fast(ShiftImmFastEnabled()) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
@@ -183,6 +199,11 @@ public:
     [[nodiscard]] u32 MaxLiveFPR() const { return max_live_fpr; }
     [[nodiscard]] u32 GPRReserve() const { return gpr_reserve; }
     [[nodiscard]] u32 FPRReserve() const { return fpr_reserve; }
+    [[nodiscard]] bool HasEvictionCandidate() const { return has_eviction_candidate; }
+    [[nodiscard]] u32 EvictionCandidate() const {
+        ASSERT(has_eviction_candidate);
+        return eviction_candidate;
+    }
 
     static u32 ScratchOnlyGPRs(OpCode op, const backend::GPRSMask& pool) {
         u32 count = backend::X86PinExtLevel3AluScratchEnabled(pool, op) ? 1u : 0u;
@@ -312,7 +333,9 @@ public:
 
             ExpireOldIntervals(interval);
 
-            if (!IsFloatValue(interval.inst)) {
+            if (IsForcedSpill(interval)) {
+                SpillAtInterval(interval);
+            } else if (!IsFloatValue(interval.inst)) {
                 if (TryTieMemoryOperand(interval)) {
                     // A single-use identity GetOperand and its source share a
                     // register. The GetOperand result then owns that register
@@ -336,6 +359,7 @@ public:
                 } else if (auto alloc = AllocGPR(interval); alloc >= 0) {
                     reg_alloc->MapRegister(interval.inst->Id(), HostGPR{(u16)alloc});
                 } else {
+                    SelectEvictionCandidate(interval, false);
                     SpillAtInterval(interval);
                 }
             } else {
@@ -348,6 +372,7 @@ public:
                 } else if (auto alloc = AllocFPR(); alloc >= 0) {
                     reg_alloc->MapRegister(interval.inst->Id(), HostFPR{(u16)alloc});
                 } else {
+                    SelectEvictionCandidate(interval, true);
                     SpillAtInterval(interval);
                 }
             }
@@ -391,6 +416,56 @@ public:
     }
 
 private:
+    bool IsForcedSpill(const LiveInterval& interval) const {
+        return forced_spills &&
+               std::find(forced_spills->begin(), forced_spills->end(),
+                         interval.inst->Id()) != forced_spills->end();
+    }
+
+    void SelectEvictionCandidate(const LiveInterval& current, bool is_float) {
+        if (!select_eviction || has_eviction_candidate) {
+            return;
+        }
+        const u32 forbidden = is_float ? 0 : IntervalFixedClobbers(current);
+        const LiveInterval* best = nullptr;
+        auto consider = [&](const LiveInterval& active) {
+            if (active.end <= current.end) {
+                return;
+            }
+            const auto type = reg_alloc->ValueType(Value{active.inst});
+            if (is_float ? type != backend::RegAlloc::FPR
+                         : type != backend::RegAlloc::GPR) {
+                return;
+            }
+            if (!is_float) {
+                const u32 code = reg_alloc->ValueGPR(active.inst->Id()).id;
+                // A fixed-home/tied static register cannot be returned to the
+                // value pool, and a register forbidden across the incoming
+                // interval would not make that interval allocatable anyway.
+                if (reg_alloc->GetGprs().Get(code) || (forbidden & (1u << code))) {
+                    return;
+                }
+            }
+            if (!best || active.end > best->end ||
+                (active.end == best->end && active.inst->Id() < best->inst->Id())) {
+                best = &active;
+            }
+        };
+        if (single_block_fast_path) {
+            for (const auto& active : fast_active_lives) {
+                consider(active);
+            }
+        } else {
+            for (const auto& active : active_lives) {
+                consider(active);
+            }
+        }
+        if (best) {
+            has_eviction_candidate = true;
+            eviction_candidate = best->inst->Id();
+        }
+    }
+
     void FusePinnedWriteChains() {
         if (!backend::X86PinExtLevel2Enabled(reg_alloc->GetGprs())) {
             return;
@@ -1768,7 +1843,11 @@ private:
     const bool scalar_insert{false};
     const bool intwidth_tie{false};
     const bool induct_tie{false};
+    const Vector<u32>* forced_spills{};
+    const bool select_eviction{false};
     const bool shift_imm_fast{false};
+    bool has_eviction_candidate{false};
+    u32 eviction_candidate{0};
     Vector<u32> fixed_gpr_alias_end{};
     Vector<bool> spill_slots{};
     Vector<u32> fixed_gpr_clobbers{};
@@ -1935,7 +2014,9 @@ static void RunVerified(Unit* unit,
                         bool single_block_fast_path = false,
                         bool scalar_insert = false,
                         bool intwidth_tie = false,
-                        bool induct_tie = false) {
+                        bool induct_tie = false,
+                        bool spill_evict = SpillEvictEnabled(),
+                        RegisterAllocPass::SpillEvictTestResult* test_result = nullptr) {
     auto rerun_with_conditional_spill_scratch = [&] {
 #if defined(__linux__) && !defined(__ANDROID__)
         const u32 spills = reg_alloc->SpillCount();
@@ -1948,7 +2029,7 @@ static void RunVerified(Unit* unit,
             reg_alloc->ReserveGPRForUnit(18);
             reg_alloc->ResetAllocations();
             RunVerified(unit, reg_alloc, single_block_fast_path, scalar_insert,
-                        intwidth_tie, induct_tie);
+                        intwidth_tie, induct_tie, spill_evict, test_result);
             if (RaDiagEnabled()) {
                 LOG_WARNING("RegisterAllocPass: {} initial spill(s); x18 reserved for this unit",
                             spills);
@@ -1981,6 +2062,15 @@ static void RunVerified(Unit* unit,
             }
         }
     };
+    auto record_test_result = [&](const LinearScanAllocator& scan,
+                                  u32 eviction_restarts,
+                                  bool fell_back_to_ladder) {
+        if (!test_result) return;
+        test_result->eviction_restarts = eviction_restarts;
+        test_result->final_gpr_reserve = scan.GPRReserve();
+        test_result->final_fpr_reserve = scan.FPRReserve();
+        test_result->fell_back_to_ladder = fell_back_to_ladder;
+    };
     const bool scratch_only_enabled =
             backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs());
     const u32 scratch_only = scratch_only_enabled ? 2u : 0u;
@@ -1992,7 +2082,38 @@ static void RunVerified(Unit* unit,
     // whole-unit budget scan below is deliberately deferred until an escalation
     // is known to be necessary (func_tests is dominated by translation cost and
     // notices a redundant pass).
-    {
+    u32 eviction_restarts = 0;
+    bool eviction_fallback = false;
+    if (spill_evict) {
+        Vector<u32> forced_spills{};
+        while (true) {
+            if (eviction_restarts) {
+                reg_alloc->ResetAllocations();
+            }
+            LinearScanAllocator scan{unit, reg_alloc, default_gpr_reserve,
+                                     backend::kDefaultScratchFPR,
+                                     single_block_fast_path, scalar_insert,
+                                     intwidth_tie, induct_tie, &forced_spills,
+                                     true};
+            scan.AllocateRegisters();
+            if (scan.HasEvictionCandidate()) {
+                forced_spills.push_back(scan.EvictionCandidate());
+                ++eviction_restarts;
+                continue;
+            }
+            PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
+            const bool verified = scan.Verify();
+            perf_verify.Stop();
+            if (verified) {
+                if (rerun_with_conditional_spill_scratch()) return;
+                record_shape(scan);
+                record_test_result(scan, eviction_restarts, false);
+                return;
+            }
+            eviction_fallback = true;
+            break;
+        }
+    } else {
         LinearScanAllocator scan{unit, reg_alloc, default_gpr_reserve,
                                  backend::kDefaultScratchFPR, single_block_fast_path,
                                  scalar_insert, intwidth_tie, induct_tie};
@@ -2003,6 +2124,7 @@ static void RunVerified(Unit* unit,
         if (verified) {
             if (rerun_with_conditional_spill_scratch()) return;
             record_shape(scan);
+            record_test_result(scan, 0, false);
             return;
         }
     }
@@ -2072,6 +2194,7 @@ static void RunVerified(Unit* unit,
             }
             if (rerun_with_conditional_spill_scratch()) return;
             record_shape(scan);
+            record_test_result(scan, eviction_restarts, eviction_fallback);
             return;
         }
     }
@@ -2128,6 +2251,16 @@ void RegisterAllocPass::RunForInductTieTest(ir::Block* block,
                                             backend::RegAlloc* reg_alloc,
                                             bool induct_tie) {
     RunVerified(block, reg_alloc, false, false, false, induct_tie);
+}
+
+RegisterAllocPass::SpillEvictTestResult RegisterAllocPass::RunForSpillEvictTest(
+        ir::Block* block,
+        backend::RegAlloc* reg_alloc,
+        bool spill_evict) {
+    SpillEvictTestResult result{};
+    RunVerified(block, reg_alloc, false, false, IntWidthTieEnabled(),
+                InductTieEnabled(), spill_evict, &result);
+    return result;
 }
 
 void VRegisterAllocPass::Run(ir::Block* block) {

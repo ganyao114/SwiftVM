@@ -11,6 +11,13 @@ namespace swift::runtime::ir {
 
 class RegisterAllocPass {
 public:
+    struct SpillEvictTestResult {
+        u32 eviction_restarts{};
+        u32 final_gpr_reserve{};
+        u32 final_fpr_reserve{};
+        bool fell_back_to_ladder{};
+    };
+
     static void Run(HIRBuilder *hir_builder, backend::RegAlloc *reg_alloc);
     static void Run(HIRFunction *hir_function, backend::RegAlloc *reg_alloc);
     static void RunWithScalarInsert(HIRFunction *hir_function,
@@ -34,6 +41,10 @@ public:
     static void RunForInductTieTest(ir::Block *block,
                                     backend::RegAlloc *reg_alloc,
                                     bool induct_tie);
+    static SpillEvictTestResult RunForSpillEvictTest(
+            ir::Block *block,
+            backend::RegAlloc *reg_alloc,
+            bool spill_evict);
 };
 
 class VRegisterAllocPass {
