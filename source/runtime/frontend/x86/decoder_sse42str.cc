@@ -1173,7 +1173,7 @@ void X64Decoder::DecodeSse42StrBody(_RegisterType reg1,
     }
 
     ir::Value packed;
-    if (!explicit_length && Sse42StringInlineEnabled()) {
+    if (!explicit_length && Sse42StringInlineEnabled(features_.sse42_string_inline)) {
         // The implicit family has no dynamic scalar inputs: both lengths come
         // from the first zero element.  A dedicated IR node therefore carries
         // the two vectors and compile-time imm8 directly to the JIT emitter.

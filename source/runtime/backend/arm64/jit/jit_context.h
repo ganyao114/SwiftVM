@@ -162,6 +162,7 @@ public:
     // Address-space config (JIT needs it for the memory_base bias fast-path
     // decision in EmitMemOperand).
     [[nodiscard]] const Config& GetConfig() { return module->GetAddressSpace().GetConfig(); }
+    [[nodiscard]] const FeatureSet& GetFeatures() const { return features; }
     [[nodiscard]] RAShapeUnitCounters& GetRAShapeCounters() {
         return reg_alloc.RAShape();
     }
@@ -246,6 +247,7 @@ private:
     };
 
     std::shared_ptr<Module> module;
+    const FeatureSet features;
     ir::Function *cur_function{};
     ir::Block *cur_block{};
     ir::Inst *cur_inst{};

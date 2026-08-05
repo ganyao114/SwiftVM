@@ -116,6 +116,7 @@ struct Arm64Instance::Impl final {
     [[nodiscard]] void* Translate(LocationDescriptor pc) const {
         auto module = address_space->GetModule(pc);
         auto& m_config = module->GetModuleConfig();
+        const auto features = backend::ResolveFeatureSet(m_config);
         // Function-level compilation is default-on when the optimization is
         // present; SVM_FUNC_BASE=0 is the explicit block-only escape hatch.
         auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&
@@ -138,7 +139,7 @@ struct Arm64Instance::Impl final {
             func_stats.Attempt();
             try {
             auto jit_guard = module->ModuleLockRead();
-            ir::HIRBuilder builder{1, true};
+            ir::HIRBuilder builder{1, true, features};
             auto* hir_func = builder.AppendFunction(pc);
 
             // See the x86 driver: very large libc CFGs remain on the proven

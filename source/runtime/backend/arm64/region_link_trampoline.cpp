@@ -5,6 +5,7 @@
 #include "aarch64/macro-assembler-aarch64.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
 #include "runtime/common/alignment.h"
+#include "runtime/externals/vixl/svm-vixl-prof.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -93,7 +94,9 @@ extern "C" void* RegionLinkTrampolineSlow(RegionLinkContext* context,
 }
 
 std::vector<u8> BuildRegionLinkTrampoline(const Config& config,
-                                           RegionLinkContext* context) {
+                                           RegionLinkContext* context,
+                                           const FeatureSet& features) {
+    vixl::svm_vixl_prof::JitScope vixl_prof{features.vixl_fast};
     MacroAssembler masm;
     std::vector<u16> gprs;
     std::vector<u16> fprs;

@@ -167,9 +167,9 @@ TEST_CASE("region trampoline preserves x30 and every static-pin configuration",
                                         << " afp=" << afp_nan) {
                     auto descriptors = PinDescriptors(level, xmm_static);
                     auto config = TestConfig(descriptors, afp_nan);
-                    TrampolinesArm64 runtime_trampolines{config};
+                    TrampolinesArm64 runtime_trampolines{config, FeatureSet{}};
                     LinkManager manager;
-                    CodeCache cache{config, 1u << 20};
+                    CodeCache cache{config, 1u << 20, FeatureSet{}};
                     auto* return_host = reinterpret_cast<void*>(
                             runtime_trampolines.GetReturnHost());
                     REQUIRE(cache.InitializeRegionTrampoline(
@@ -306,7 +306,7 @@ TEST_CASE("region linker caches Far state and preserves dispatcher fallback",
     std::vector<UniformMapDesc> descriptors;
     auto config = TestConfig(descriptors);
     LinkManager manager;
-    CodeCache cache{config, 1u << 20};
+    CodeCache cache{config, 1u << 20, FeatureSet{}};
     const int return_stub{};
     const int dispatcher_stub{};
     REQUIRE(cache.InitializeRegionTrampoline(
@@ -345,9 +345,9 @@ TEST_CASE("direct-link concurrent patch invalidation and mspace reuse stress",
 #if defined(__aarch64__)
     std::vector<UniformMapDesc> descriptors;
     auto config = TestConfig(descriptors);
-    TrampolinesArm64 runtime_trampolines{config};
+    TrampolinesArm64 runtime_trampolines{config, FeatureSet{}};
     LinkManager manager;
-    CodeCache cache{config, 1u << 20};
+    CodeCache cache{config, 1u << 20, FeatureSet{}};
     auto* return_host = reinterpret_cast<void*>(runtime_trampolines.GetReturnHost());
     // The production dispatcher hardcodes the full L1/L2 table geometry. This
     // scratch harness uses tiny tables, so its preset dispatcher entry is a

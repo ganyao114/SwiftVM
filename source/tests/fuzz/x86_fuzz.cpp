@@ -751,7 +751,9 @@ struct FuzzEnv {
         } mem_if;
         swift::runtime::ir::Block block{0, swift::runtime::ir::Location{code_addr}};
         swift::runtime::ir::Assembler assembler{&block};
-        X64Decoder decoder{code_addr, &mem_if, &assembler, true};
+        X64Decoder decoder{code_addr, &mem_if, &assembler, true,
+                           swift::runtime::Arm64Features::None, false, false,
+                           swift::runtime::FeatureSet{}};
         decoder.Decode();
         std::cout << block.ToString() << std::endl;
     }
@@ -1080,7 +1082,9 @@ TEST_CASE("Fuzz x86 debug repro") {
         swift::runtime::ir::Block blk{0, swift::runtime::ir::Location{addr}};
         swift::runtime::ir::Assembler asmb{&blk};
         try {
-            X64Decoder dec{addr, &mem_if, &asmb, true};
+            X64Decoder dec{addr, &mem_if, &asmb, true,
+                           swift::runtime::Arm64Features::None, false, false,
+                           swift::runtime::FeatureSet{}};
             dec.Decode();
             std::cout << fmt::format("evex: decoded, interrupt={}\n", int(env.ctx->interrupt));
         } catch (const std::exception& e) {
@@ -2251,7 +2255,9 @@ TEST_CASE("Fuzz x86 decode robustness") {
             } mem_if{env.base, FuzzEnv::kMemSize};
             swift::runtime::ir::Block block{0, swift::runtime::ir::Location{code_addr}};
             swift::runtime::ir::Assembler assembler{&block};
-            X64Decoder decoder{code_addr, &mem_if, &assembler, true};
+            X64Decoder decoder{code_addr, &mem_if, &assembler, true,
+                               swift::runtime::Arm64Features::None, false, false,
+                               swift::runtime::FeatureSet{}};
             decoder.Decode();
         } catch (const std::exception& e) {
             FAIL(fmt::format("decoder threw on bytes {}: {}", env.DumpCode(b.c), e.what()));

@@ -135,6 +135,47 @@ void ParseConfig(SvmConfig& config) {
 
 }  // namespace
 
+bool FeatureSet::Get(FeatureId id) const {
+    switch (id) {
+#define SVM_FEATURE_GET(field, default_value) case FeatureId::field: return field;
+        SVM_FEATURE_FIELDS(SVM_FEATURE_GET)
+#undef SVM_FEATURE_GET
+        case FeatureId::Count: break;
+    }
+    return false;
+}
+
+void FeatureSet::Set(FeatureId id, bool value) {
+    switch (id) {
+#define SVM_FEATURE_SET(field, default_value) case FeatureId::field: field = value; return;
+        SVM_FEATURE_FIELDS(SVM_FEATURE_SET)
+#undef SVM_FEATURE_SET
+        case FeatureId::Count: return;
+    }
+}
+
+bool FeatureOverrides::Empty() const {
+    return std::none_of(values.begin(), values.end(),
+                        [](const auto& value) { return value.has_value(); });
+}
+
+std::optional<bool> FeatureOverrides::Get(FeatureId id) const {
+    if (id == FeatureId::Count) return std::nullopt;
+    return values[static_cast<std::size_t>(id)];
+}
+
+void FeatureOverrides::Set(FeatureId id, bool value) {
+    if (id != FeatureId::Count) values[static_cast<std::size_t>(id)] = value;
+}
+
+FeatureSet SvmConfig::GetFeatureSet() const {
+    FeatureSet features;
+#define SVM_FEATURE_COPY(field, default_value) features.field = field;
+    SVM_FEATURE_FIELDS(SVM_FEATURE_COPY)
+#undef SVM_FEATURE_COPY
+    return features;
+}
+
 const SvmConfig& GetSvmConfig() {
     auto& state = State();
     std::call_once(*state.once, [&state] { ParseConfig(state.config); });
@@ -175,8 +216,6 @@ void EnableSvmX86AbiBaselineForDriver() {
 }
 
 bool SvmVixlProfEnabled() { return GetSvmConfig().vixl_prof; }
-bool SvmVixlFastEnabled() { return GetSvmConfig().vixl_fast; }
-
 bool IsKnownSvmConfigName(std::string_view name) {
     return std::find(kSvmConfigEnvNames.begin(), kSvmConfigEnvNames.end(), name) !=
            kSvmConfigEnvNames.end();

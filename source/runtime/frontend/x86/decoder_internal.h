@@ -27,8 +27,8 @@ inline bool HelperValuesEnabled() {
 // dedicated IR operation whose ARM64 backend is emitted inline.  Only the
 // literal value "1" enables it; an unset variable is the exact historical
 // two-CallLambda path.
-inline bool Sse42StringInlineEnabled() {
-    return swift::runtime::GetSvmConfig().sse42_string_inline;
+inline bool Sse42StringInlineEnabled(bool enabled) {
+    return enabled;
 }
 
 inline ir::Value VecSharedZero(ir::Assembler* assembler) {
@@ -36,8 +36,9 @@ inline ir::Value VecSharedZero(ir::Assembler* assembler) {
 }
 
 inline ir::Value VecShuffle32Lowered(
-        ir::Assembler* assembler, ir::Value source, u32 control) {
-    if (!VecLoweringEnabled(swift::runtime::GetSvmConfig().vec_const_cache)) {
+        ir::Assembler* assembler, ir::Value source, u32 control,
+        bool const_cache_enabled) {
+    if (!VecLoweringEnabled(const_cache_enabled)) {
         return assembler->VecShuffle32(source, ir::Imm(control))
                 .SetType(ir::ValueType::V128);
     }

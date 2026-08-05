@@ -74,8 +74,10 @@ bool Imm26Reachable(const void* site, const void* target) {
                                  : source - destination <= kMaxDistance;
 }
 
-CodeCache::CodeCache(const Config& config, u32 size, bool read_only)
+CodeCache::CodeCache(const Config& config, u32 size,
+                     const FeatureSet& features, bool read_only)
         : config(config)
+        , features(features)
         , max_size(size)
         , inst_alignment(GetInstructionSetInstructionAlignment(config.backend_isa))
         , read_only(read_only) {
@@ -108,7 +110,7 @@ bool CodeCache::InitializeRegionTrampoline(LinkManager& manager,
     context->region = &region;
     context->return_host = return_host;
     context->dispatcher = dispatcher;
-    auto code = arm64::BuildRegionLinkTrampoline(config, context.get());
+    auto code = arm64::BuildRegionLinkTrampoline(config, context.get(), features);
     const auto buffer = AllocCode(code.size());
     if (!buffer) {
         return false;

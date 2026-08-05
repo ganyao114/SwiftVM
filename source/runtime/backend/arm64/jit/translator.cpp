@@ -309,17 +309,20 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     sse_afp_nan = config.sse_afp_nan;
     fpcr_tax_skip_switch = sse_afp_nan && FpcrTaxSkipSwitchEnabled();
     fpcr_tax_timing = sse_afp_nan && FpcrTaxTimingEnabled();
-    xmm_pool_ext = True(config.global_opts & Optimizations::XmmPoolExt);
-    const auto& svm_config = GetSvmConfig();
-    shift_imm_fast = svm_config.shift_imm_fast;
-    mem_narrow_fuse = svm_config.mem_narrow_fuse;
-    addr_ea_tie = svm_config.addr_ea_tie;
-    abs_const_mat = svm_config.abs_const_mat;
-    sse_nan_fast = svm_config.sse_nan_fast;
-    sse_nan_coldpath = svm_config.sse_nan_coldpath;
+    const auto& features = ctx.GetFeatures();
+    // Config 仍提供本期不迁移的物理池 capability；FeatureSet 可在 module
+    // 级关闭该代码形状。P3 若要从全局 OFF 提升为 ON，需同时提供对应池。
+    xmm_pool_ext = features.xmm_pool_ext &&
+            True(config.global_opts & Optimizations::XmmPoolExt);
+    shift_imm_fast = features.shift_imm_fast;
+    mem_narrow_fuse = features.mem_narrow_fuse;
+    addr_ea_tie = features.addr_ea_tie;
+    abs_const_mat = features.abs_const_mat;
+    sse_nan_fast = features.sse_nan_fast;
+    sse_nan_coldpath = features.sse_nan_coldpath;
     backedge_latch = BackedgeLatchEnabled() || config.region_edges;
-    backedge_flags = backedge_latch && svm_config.backedge_flags;
-    link_suffix_common = svm_config.link_suffix_common;
+    backedge_flags = backedge_latch && GetSvmConfig().backedge_flags;
+    link_suffix_common = features.link_suffix_common;
     execution_trace_enabled = context.ExecutionTraceEnabled();
     if (execution_trace_enabled) {
         for (const auto& desc : config.buffers_static_alloc) {
@@ -883,7 +886,7 @@ void JitTranslator::PrintBoundaryDensity(u64 guest_pc,
 
 
 void JitTranslator::Translate(ir::Block* block) {
-    vixl::svm_vixl_prof::JitScope vixl_prof;
+    vixl::svm_vixl_prof::JitScope vixl_prof{context.GetFeatures().vixl_fast};
     ASSERT(vec_nan_cold_sites.empty());
     const bool density = context.DensityProfileEnabled();
     ResetBoundaryDensity();
@@ -1154,7 +1157,7 @@ void JitTranslator::Translate(ir::Block* block) {
 }
 
 void JitTranslator::Translate(ir::HIRFunction* function) {
-    vixl::svm_vixl_prof::JitScope vixl_prof;
+    vixl::svm_vixl_prof::JitScope vixl_prof{context.GetFeatures().vixl_fast};
     ASSERT(function);
     context.SetCurrent(function->GetFunction());
     disable_instructions.resize(function->MaxInstrCount());

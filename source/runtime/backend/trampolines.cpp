@@ -6,8 +6,8 @@
 
 namespace swift::runtime::backend {
 
-Trampolines::Trampolines(const Config& config)
-        : config(config), code_cache(config, 4_MB) {}
+Trampolines::Trampolines(const Config& config, const FeatureSet& features)
+        : config(config), code_cache(config, 4_MB, features) {}
 
 std::optional<Trampolines::CallHost> Trampolines::GetCallHost(HostFunction* func, ISA frontend) {
     {

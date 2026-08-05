@@ -42,6 +42,8 @@
 
 namespace {
 
+using swift::runtime::FeatureSet;
+
 swift::u64 ReadFPCRFromHostHelper() {
     return swift::runtime::backend::arm64::ReadNativeFPCR();
 }
@@ -284,6 +286,35 @@ TEST_CASE("config hash includes programmatic effective AFP policy") {
             swift::runtime::backend::ComputeConfigHash(on));
 }
 
+TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+
+    STATIC_REQUIRE(kFeatureCount == 48);
+    const auto& svm = GetSvmConfig();
+    const auto snapshot = svm.GetFeatureSet();
+#define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
+    SVM_FEATURE_FIELDS(CHECK_FEATURE_COPY)
+#undef CHECK_FEATURE_COPY
+
+    ModuleConfig empty{};
+    const auto resolved_empty = ResolveFeatureSet(empty);
+#define CHECK_EMPTY_RESOLVE(field, default_value) \
+    REQUIRE(resolved_empty.field == snapshot.field);
+    SVM_FEATURE_FIELDS(CHECK_EMPTY_RESOLVE)
+#undef CHECK_EMPTY_RESOLVE
+
+    ModuleConfig overridden{};
+    overridden.feature_overrides.Set(FeatureId::const_cse, !snapshot.const_cse);
+    const auto resolved_override = ResolveFeatureSet(overridden);
+    REQUIRE(resolved_override.const_cse != snapshot.const_cse);
+    REQUIRE(resolved_override.uniform_dse == snapshot.uniform_dse);
+
+    Config config{};
+    REQUIRE(ComputeConfigHash(config, empty) == ComputeConfigHash(config));
+    REQUIRE(ComputeConfigHash(config, overridden) != ComputeConfigHash(config));
+}
+
 TEST_CASE("JIT cache environment hash separates link suffix commoning") {
     const char* old = swift::runtime::GetRawSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON");
     const bool had_old = old != nullptr;
@@ -435,7 +466,7 @@ TEST_CASE("Test runtime ir") {
     Inst::InitializeSlabHeap(0x100000);
     Block::InitializeSlabHeap(0x10000);
     Function::InitializeSlabHeap(0x2000);
-    HIRBuilder hir_builder{1};
+    HIRBuilder hir_builder{1, false, FeatureSet{}};
     auto function = hir_builder.AppendFunction(Location{0}, Location{0x10});
     Local local_arg1{
             .id = 0,
@@ -475,8 +506,9 @@ TEST_CASE("Test runtime ir") {
     hir_builder.Return();
     CFGAnalysisPass::Run(&hir_builder);
     ReIdInstrPass::Run(&hir_builder);
-    RegAlloc reg_alloc{function->MaxInstrCount(), GPRSMask{0}, FPRSMask{0}};
-    RegisterAllocPass::Run(&hir_builder, &reg_alloc);
+    RegAlloc reg_alloc{function->MaxInstrCount(), GPRSMask{0}, FPRSMask{0},
+                       FeatureSet{}};
+    RegisterAllocPass::Run(&hir_builder, &reg_alloc, FeatureSet{});
 
     MemMap mem_arena{0x100000, true};
 
@@ -490,7 +522,7 @@ TEST_CASE("Test runtime ir cfg") {
     Inst::InitializeSlabHeap(0x100000);
     Block::InitializeSlabHeap(0x10000);
     Function::InitializeSlabHeap(0x2000);
-    HIRBuilder hir_builder{1};
+    HIRBuilder hir_builder{1, false, FeatureSet{}};
     auto function = hir_builder.AppendFunction(Location{0}, Location{0x10});
     Local local_arg1{
             .id = 0,
@@ -530,8 +562,8 @@ TEST_CASE("Test runtime ir cfg") {
 #define ARM64_X_REGS_MASK 0b1111111111111111111
     swift::runtime::backend::GPRSMask gprs{ARM64_X_REGS_MASK};
     swift::runtime::backend::FPRSMask fprs{ARM64_X_REGS_MASK};
-    RegAlloc reg_alloc{0x100, gprs, fprs};
-    RegisterAllocPass::Run(&hir_builder, &reg_alloc);
+    RegAlloc reg_alloc{0x100, gprs, fprs, FeatureSet{}};
+    RegisterAllocPass::Run(&hir_builder, &reg_alloc, FeatureSet{});
 
     assert(local2.Defined());
 
@@ -548,7 +580,7 @@ TEST_CASE("Test runtime ir loop") {
     Inst::InitializeSlabHeap(0x100000);
     Block::InitializeSlabHeap(0x10000);
     Function::InitializeSlabHeap(0x2000);
-    HIRBuilder hir_builder{1};
+    HIRBuilder hir_builder{1, false, FeatureSet{}};
     auto function = hir_builder.AppendFunction(Location{0}, Location{0x10});
     Local local1{
             .id = 0,
@@ -574,7 +606,7 @@ TEST_CASE("CFG analysis terminates and computes dominators for an irreducible lo
     Block::InitializeSlabHeap(0x10000);
     Function::InitializeSlabHeap(0x2000);
 
-    HIRBuilder hir_builder{1};
+    HIRBuilder hir_builder{1, false, FeatureSet{}};
     auto* function = hir_builder.AppendFunction(Location{0}, Location{0x10});
     auto condition = function->LoadImm<BOOL>(Imm{1u});
 
@@ -738,7 +770,7 @@ TEST_CASE("Uniform elimination does not propagate conditional stores past labels
     conditional.BindLabel(skip_store);
     auto merged_load = conditional.LoadUniform(Uniform{32, ValueType::U8});
 
-    UniformEliminationPass::Run(&conditional, info);
+    UniformEliminationPass::Run(&conditional, info, FeatureSet{});
     REQUIRE(merged_load.Def()->GetOp() == OpCode::LoadUniform);
 
     Block straight_line{1, Location{0x2000}};
@@ -746,7 +778,7 @@ TEST_CASE("Uniform elimination does not propagate conditional stores past labels
     straight_line.StoreUniform(Uniform{32, ValueType::U8}, straight_value);
     auto straight_load = straight_line.LoadUniform(Uniform{32, ValueType::U8});
 
-    UniformEliminationPass::Run(&straight_line, info);
+    UniformEliminationPass::Run(&straight_line, info, FeatureSet{});
     REQUIRE(straight_load.Def()->GetOp() == OpCode::BitExtract);
 
     // A value established before the branch dominates both successors. W14's
@@ -761,7 +793,7 @@ TEST_CASE("Uniform elimination does not propagate conditional stores past labels
     dominated.BindLabel(dominated_skip);
     auto dominated_load = dominated.LoadUniform(Uniform{32, ValueType::U8});
 
-    UniformEliminationPass::Run(&dominated, info);
+    UniformEliminationPass::Run(&dominated, info, FeatureSet{});
     const bool path_forward_off =
             !swift::runtime::GetSvmConfig().uniform_path_fwd;
     REQUIRE(dominated_load.Def()->GetOp() ==
@@ -778,7 +810,7 @@ TEST_CASE("Uniform elimination does not propagate conditional stores past labels
     differing.BindLabel(differing_skip);
     auto differing_load = differing.LoadUniform(Uniform{32, ValueType::U8});
 
-    UniformEliminationPass::Run(&differing, info);
+    UniformEliminationPass::Run(&differing, info, FeatureSet{});
     REQUIRE(differing_load.Def()->GetOp() == OpCode::LoadUniform);
 
     // The reverse walk uses the same path intersection. A guarded write is
@@ -792,7 +824,7 @@ TEST_CASE("Uniform elimination does not propagate conditional stores past labels
     auto final_value = guarded_dead.LoadImm(Imm{4u}).SetType(ValueType::U8);
     guarded_dead.StoreUniform(Uniform{32, ValueType::U8}, final_value);
 
-    UniformEliminationPass::Run(&guarded_dead, info);
+    UniformEliminationPass::Run(&guarded_dead, info, FeatureSet{});
     size_t guarded_store_count{};
     for (const auto& inst : guarded_dead.GetInstList()) {
         guarded_store_count += inst.GetOp() == OpCode::StoreUniform;
@@ -835,7 +867,7 @@ TEST_CASE("Uniform range mode keeps mapped GPR, XMM, and ordinary byte facts loc
     auto preserved_xmm = block.LoadUniform(Uniform{48, ValueType::V128});
     auto preserved_ordinary = block.LoadUniform(Uniform{0, ValueType::U64});
 
-    UniformEliminationPass::Run(&block, info);
+    UniformEliminationPass::Run(&block, info, FeatureSet{});
     REQUIRE(untouched_target.Def()->GetOp() ==
             (range_on ? OpCode::BitExtract : OpCode::GetHostGPR));
     REQUIRE(written_target.Def()->GetOp() ==
@@ -872,7 +904,7 @@ TEST_CASE("Uniform helper effect sets preserve only unaffected facts") {
     pure.CallLambda(Lambda{DataClass{Imm{std::uint64_t(1ull)}}, UniformEffectId::None});
     auto pure_low = pure.LoadUniform(Uniform{0, ValueType::U64});
     auto pure_high = pure.LoadUniform(Uniform{16, ValueType::U64});
-    UniformEliminationPass::Run(&pure, info);
+    UniformEliminationPass::Run(&pure, info, FeatureSet{});
     REQUIRE(pure_low.Def()->GetOp() ==
             (range_on ? OpCode::BitCast : OpCode::LoadUniform));
     REQUIRE(pure_high.Def()->GetOp() ==
@@ -883,7 +915,7 @@ TEST_CASE("Uniform helper effect sets preserve only unaffected facts") {
     ranged.CallLambda(Lambda{DataClass{Imm{std::uint64_t(1ull)}}, touched_id});
     auto ranged_low = ranged.LoadUniform(Uniform{0, ValueType::U64});
     auto ranged_high = ranged.LoadUniform(Uniform{16, ValueType::U64});
-    UniformEliminationPass::Run(&ranged, info);
+    UniformEliminationPass::Run(&ranged, info, FeatureSet{});
     REQUIRE(ranged_low.Def()->GetOp() == OpCode::LoadUniform);
     REQUIRE(ranged_high.Def()->GetOp() ==
             (range_on ? OpCode::BitCast : OpCode::LoadUniform));
@@ -893,7 +925,7 @@ TEST_CASE("Uniform helper effect sets preserve only unaffected facts") {
     unknown.CallLambda(Lambda{Imm{std::uint64_t(1ull)}});
     auto unknown_low = unknown.LoadUniform(Uniform{0, ValueType::U64});
     auto unknown_high = unknown.LoadUniform(Uniform{16, ValueType::U64});
-    UniformEliminationPass::Run(&unknown, info);
+    UniformEliminationPass::Run(&unknown, info, FeatureSet{});
     REQUIRE(unknown_low.Def()->GetOp() == OpCode::LoadUniform);
     REQUIRE(unknown_high.Def()->GetOp() == OpCode::LoadUniform);
 
@@ -905,7 +937,7 @@ TEST_CASE("Uniform helper effect sets preserve only unaffected facts") {
     dead_store.StoreUniform(Uniform{0, ValueType::U64}, old_value);
     dead_store.CallLambda(Lambda{DataClass{Imm{std::uint64_t(1ull)}}, UniformEffectId::None});
     dead_store.StoreUniform(Uniform{0, ValueType::U64}, new_value);
-    UniformEliminationPass::Run(&dead_store, info);
+    UniformEliminationPass::Run(&dead_store, info, FeatureSet{});
     size_t stores{};
     for (const auto& inst : dead_store.GetInstList()) {
         stores += inst.GetOp() == OpCode::StoreUniform;
@@ -939,7 +971,7 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     straight.StoreUniform(Uniform{24, ValueType::U64}, scalar_value);
     auto scalar_load = straight.LoadUniform(Uniform{24, ValueType::U64});
 
-    UniformEliminationPass::Run(&straight, info);
+    UniformEliminationPass::Run(&straight, info, FeatureSet{});
     REQUIRE(vector_load.Def()->GetOp() ==
             (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
     const auto narrow_expected =
@@ -963,7 +995,7 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     guarded.LoadImm(Imm{7u});
     guarded.BindLabel(skip);
     auto merged_load = guarded.LoadUniform(Uniform{16, ValueType::V128});
-    UniformEliminationPass::Run(&guarded, info);
+    UniformEliminationPass::Run(&guarded, info, FeatureSet{});
     REQUIRE(merged_load.Def()->GetOp() ==
             (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
 
@@ -976,7 +1008,7 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     auto new_value = dead_store.LoadImm(Imm{3u}).SetType(ValueType::V128);
     dead_store.StoreUniform(Uniform{16, ValueType::V128}, old_value);
     dead_store.StoreUniform(Uniform{16, ValueType::V128}, new_value);
-    UniformEliminationPass::Run(&dead_store, info);
+    UniformEliminationPass::Run(&dead_store, info, FeatureSet{});
     size_t stores{};
     for (const auto& inst : dead_store.GetInstList()) {
         stores += inst.GetOp() == OpCode::StoreUniform;
@@ -992,7 +1024,7 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     auto second_vector_load = repeated_load.LoadUniform(Uniform{16, ValueType::V128});
     auto first_lane_load = repeated_load.LoadUniform(Uniform{24, ValueType::U64});
     auto second_lane_load = repeated_load.LoadUniform(Uniform{24, ValueType::U64});
-    UniformEliminationPass::Run(&repeated_load, info);
+    UniformEliminationPass::Run(&repeated_load, info, FeatureSet{});
     REQUIRE(first_vector_load.Def()->GetOp() == OpCode::LoadUniform);
     REQUIRE(low_lane_load.Def()->GetOp() ==
             (!xmm_forward_off && !xmm_ssa_fwd2_off && !xmm_narrow_fwd_off
@@ -1015,7 +1047,7 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     auto replacement = invalidated_load.LoadImm(Imm{4u}).SetType(ValueType::V128);
     invalidated_load.StoreUniform(Uniform{16, ValueType::V128}, replacement);
     auto after_store = invalidated_load.LoadUniform(Uniform{16, ValueType::V128});
-    UniformEliminationPass::Run(&invalidated_load, info);
+    UniformEliminationPass::Run(&invalidated_load, info, FeatureSet{});
     REQUIRE(after_store.Def()->GetOp() ==
             (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
 
@@ -1032,7 +1064,7 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     Block mapped{5, Location{0x6000}};
     auto mapped_v64 = mapped.LoadUniform(Uniform{16, ValueType::V64});
     auto mapped_v32 = mapped.LoadUniform(Uniform{16, ValueType::V32});
-    UniformEliminationPass::Run(&mapped, mapped_info);
+    UniformEliminationPass::Run(&mapped, mapped_info, FeatureSet{});
     REQUIRE(mapped_v64.Def()->GetOp() == OpCode::GetHostFPR);
     REQUIRE(mapped_v64.Type() == ValueType::V64);
     REQUIRE(mapped_v32.Def()->GetOp() == OpCode::GetHostFPR);
@@ -1062,7 +1094,7 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     pinned.StoreUniform(Uniform{0, ValueType::U64}, pin_value);
     auto new_xmm = pinned.LoadImm(Imm{6u}).SetType(ValueType::V128);
     pinned.StoreUniform(Uniform{64, ValueType::V128}, new_xmm);
-    UniformEliminationPass::Run(&pinned, pinned_info);
+    UniformEliminationPass::Run(&pinned, pinned_info, FeatureSet{});
     REQUIRE(pinned_lane.Def()->GetOp() ==
             (xmm_forward_off || xmm_narrow_fwd_off ? OpCode::LoadUniform
                                                    : OpCode::BitCast));
@@ -1113,8 +1145,8 @@ TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {
 
     auto legacy = make_uniform_block();
     auto fast = make_uniform_block();
-    UniformEliminationPass::Run(legacy.get(), info, false);
-    UniformEliminationPass::Run(fast.get(), info, true);
+    UniformEliminationPass::Run(legacy.get(), info, false, FeatureSet{});
+    UniformEliminationPass::Run(fast.get(), info, true, FeatureSet{});
 
     // ToString includes every opcode, result type, argument and defining id;
     // equality is therefore a per-instruction IR comparison, not just counts.
@@ -1136,8 +1168,8 @@ TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {
     Block fast_plain{1, Location{0x4000}};
     legacy_plain.LoadImm(Imm{7u}).SetType(ValueType::U32);
     fast_plain.LoadImm(Imm{7u}).SetType(ValueType::U32);
-    UniformEliminationPass::Run(&legacy_plain, info, false);
-    UniformEliminationPass::Run(&fast_plain, info, true);
+    UniformEliminationPass::Run(&legacy_plain, info, false, FeatureSet{});
+    UniformEliminationPass::Run(&fast_plain, info, true, FeatureSet{});
     REQUIRE(fast_plain.ToString() == legacy_plain.ToString());
 }
 
@@ -1199,7 +1231,7 @@ struct IRBuildFixture {
         function->IdByRPO();
     }
 
-    swift::runtime::ir::HIRBuilder builder;
+    swift::runtime::ir::HIRBuilder builder{1, false, FeatureSet{}};
     swift::runtime::ir::HIRFunction* function{};
     swift::runtime::ir::Inst* first_inst{};
 };
@@ -1396,11 +1428,12 @@ TEST_CASE("Uniform elimination preserves rotate-by-zero carry polarity load") {
     const auto address = reinterpret_cast<VAddr>(code.data());
     Block block{0, Location{address}};
     Assembler assembler{&block};
-    X64Decoder decoder{address, &memory, &assembler, true};
+    X64Decoder decoder{address, &memory, &assembler, true,
+                       Arm64Features::None, false, false, FeatureSet{}};
     decoder.Decode();
 
     UniformInfo info{.uniform_size = sizeof(ThreadContext64)};
-    UniformEliminationPass::Run(&block, info);
+    UniformEliminationPass::Run(&block, info, FeatureSet{});
 
     const auto polarity_offset = offsetof(ThreadContext64, carry_inverted);
     size_t polarity_loads = 0;
@@ -1627,7 +1660,8 @@ TEST_CASE("structured address reloads RAX after every partial alias write") {
         // distinct definitions rather than reusing the first snapshot.
         Block block{0, Location{code_guest}};
         Assembler assembler{&block};
-        X64Decoder decoder{code_guest, &decode_memory, &assembler, true};
+        X64Decoder decoder{code_guest, &decode_memory, &assembler, true,
+                           Arm64Features::None, false, false, FeatureSet{}};
         decoder.Decode();
         std::vector<Inst*> v128_loads;
         for (auto& inst : block.GetInstList()) {
@@ -1705,7 +1739,8 @@ TEST_CASE("FEX-style vector immediate shift boundary IR") {
     const auto address = reinterpret_cast<VAddr>(code.data());
     Block block{0, Location{address}};
     Assembler assembler{&block};
-    X64Decoder decoder{address, &memory, &assembler, true};
+    X64Decoder decoder{address, &memory, &assembler, true,
+                       Arm64Features::None, false, false, FeatureSet{}};
     decoder.Decode();
 
     std::vector<swift::u64> left_counts;
@@ -1776,7 +1811,7 @@ TEST_CASE("Constant CSE does not reuse a constant materialized under a branch") 
     conditional.StoreUniform(Uniform{8, ValueType::U32}, merged);
     conditional.SetTerminal(terminal::ReturnToDispatch{});
 
-    ConstFoldingPass::Run(&conditional);
+    ConstFoldingPass::Run(&conditional, FeatureSet{});
 
     auto arg_of_store = [](Block& block, std::uint32_t offset) -> Inst* {
         Inst* found = nullptr;
@@ -1805,7 +1840,7 @@ TEST_CASE("Constant CSE does not reuse a constant materialized under a branch") 
     straight_line.StoreUniform(Uniform{8, ValueType::U32}, second);
     straight_line.SetTerminal(terminal::ReturnToDispatch{});
 
-    ConstFoldingPass::Run(&straight_line);
+    ConstFoldingPass::Run(&straight_line, FeatureSet{});
 
     REQUIRE(arg_of_store(straight_line, 8) == first.Def());
     REQUIRE(arg_of_store(straight_line, 8) != second.Def());
@@ -1849,7 +1884,8 @@ TEST_CASE("MMX-form shared opcodes are refused instead of run on the XMM file") 
         const auto address = reinterpret_cast<VAddr>(bytes.data());
         Block block{0, Location{address}};
         Assembler assembler{&block};
-        X64Decoder decoder{address, &memory, &assembler, true};
+        X64Decoder decoder{address, &memory, &assembler, true,
+                           Arm64Features::None, false, false, FeatureSet{}};
         decoder.Decode();
 
         Outcome out{false, false};
@@ -2001,7 +2037,8 @@ TEST_CASE("GPR immediate shifts specialize only nonzero in-range counts") {
         const auto address = reinterpret_cast<VAddr>(code.data());
         auto block = std::make_unique<Block>(0, Location{address});
         Assembler assembler{block.get()};
-        X64Decoder decoder{address, &memory, &assembler, true};
+        X64Decoder decoder{address, &memory, &assembler, true,
+                           Arm64Features::None, false, false, FeatureSet{}};
         decoder.Decode();
         return block;
     };
@@ -2237,7 +2274,8 @@ TEST_CASE("Uniform elimination uses the latest full GPR store for a narrow load"
     const auto address = reinterpret_cast<VAddr>(code.data());
     Block block{0, Location{address}};
     Assembler assembler{&block};
-    X64Decoder decoder{address, &memory, &assembler, true};
+    X64Decoder decoder{address, &memory, &assembler, true,
+                       Arm64Features::None, false, false, FeatureSet{}};
     decoder.Decode();
 
     const auto rbx_offset = offsetof(ThreadContext64, rbx);
@@ -2259,7 +2297,7 @@ TEST_CASE("Uniform elimination uses the latest full GPR store for a narrow load"
     REQUIRE(narrow_rbx_load != nullptr);
 
     UniformInfo info{.uniform_size = sizeof(ThreadContext64)};
-    UniformEliminationPass::Run(&block, info);
+    UniformEliminationPass::Run(&block, info, FeatureSet{});
 
     REQUIRE(narrow_rbx_load->GetOp() == OpCode::BitExtract);
     REQUIRE(narrow_rbx_load->GetArg<Value>(0) == latest_rbx_store);
@@ -2408,7 +2446,7 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     auto new_result = overwritten.Add(lhs, Operand{rhs});
     auto* new_save = overwritten.AppendInst(OpCode::SaveFlags, new_result, Flags::NZ);
 
-    FlagsEliminationPass::Run(&overwritten);
+    FlagsEliminationPass::Run(&overwritten, nullptr, FeatureSet{});
 
     REQUIRE(old_result.Def()->GetPseudoOperations(OpCode::SaveFlags).empty());
     auto new_pseudos = new_result.Def()->GetPseudoOperations(OpCode::SaveFlags);
@@ -2431,7 +2469,7 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     auto c_new = carry_overwritten.Add(c_lhs, Operand{c_rhs});
     carry_overwritten.AppendInst(OpCode::SaveFlags, c_new, Flags::All);
 
-    FlagsEliminationPass::Run(&carry_overwritten);
+    FlagsEliminationPass::Run(&carry_overwritten, nullptr, FeatureSet{});
 
     const bool carry_elim_off =
             !swift::runtime::GetSvmConfig().flag_carry_elim;
@@ -2452,7 +2490,7 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     auto sbb_result = carry_read.Sbb(carry_lhs, Operand{carry_rhs});
     carry_read.AppendInst(OpCode::SaveFlags, sbb_result, Flags::All);
 
-    FlagsEliminationPass::Run(&carry_read);
+    FlagsEliminationPass::Run(&carry_read, nullptr, FeatureSet{});
 
     // Sbb reads the preceding carry, so its producer stays live. Its mask must
     // remain whole: the JIT cannot safely turn this into a C-only pseudo.
@@ -2471,7 +2509,7 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     auto p_new = partial.Add(lhs, Operand{rhs});
     partial.AppendInst(OpCode::SaveFlags, p_new, Flags::All);
 
-    FlagsEliminationPass::Run(&partial);
+    FlagsEliminationPass::Run(&partial, nullptr, FeatureSet{});
 
     const bool full_elim_on = swift::runtime::GetSvmConfig().flag_full_elim;
     REQUIRE(p_old_save->GetArg<Flags>(1) ==
@@ -2520,7 +2558,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
         auto* last_noncarry =
                 disabled.AppendInst(OpCode::ClearFlags, Flags::Overflow);
 
-        FlagsEliminationPass::Run(&disabled);
+        FlagsEliminationPass::Run(&disabled, nullptr, FeatureSet{});
 
         REQUIRE(contains(disabled, old_save));
         REQUIRE(contains(disabled, old_clear));
@@ -2541,7 +2579,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     auto* first = append_carry_save(overwritten, lhs, rhs);
     auto* last = append_carry_save(overwritten, lhs, rhs);
 
-    FlagsEliminationPass::Run(&overwritten);
+    FlagsEliminationPass::Run(&overwritten, nullptr, FeatureSet{});
 
     REQUIRE_FALSE(contains(overwritten, first));
     REQUIRE(contains(overwritten, last));
@@ -2555,7 +2593,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     read_between.AppendInst(OpCode::TestFlags, Flags::Carry);
     last = append_carry_save(read_between, lhs, rhs);
 
-    FlagsEliminationPass::Run(&read_between);
+    FlagsEliminationPass::Run(&read_between, nullptr, FeatureSet{});
 
     REQUIRE(contains(read_between, first));
     REQUIRE(contains(read_between, last));
@@ -2567,7 +2605,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     rhs = live_out.LoadImm(Imm{6u});
     auto* only = append_carry_save(live_out, lhs, rhs);
 
-    FlagsEliminationPass::Run(&live_out);
+    FlagsEliminationPass::Run(&live_out, nullptr, FeatureSet{});
 
     REQUIRE(contains(live_out, only));
     REQUIRE(count_op(live_out, OpCode::SaveFlags) == 1);
@@ -2585,7 +2623,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     branched.BindLabel(skip_read);
     last = append_carry_save(branched, lhs, rhs);
 
-    FlagsEliminationPass::Run(&branched);
+    FlagsEliminationPass::Run(&branched, nullptr, FeatureSet{});
 
     REQUIRE(contains(branched, first));
     REQUIRE(contains(branched, last));
@@ -2598,7 +2636,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     auto* clear = clear_covered.AppendInst(OpCode::ClearFlags, Flags::Carry);
     last = append_carry_save(clear_covered, lhs, rhs);
 
-    FlagsEliminationPass::Run(&clear_covered);
+    FlagsEliminationPass::Run(&clear_covered, nullptr, FeatureSet{});
 
     REQUIRE_FALSE(contains(clear_covered, clear));
     REQUIRE(contains(clear_covered, last));
@@ -2611,7 +2649,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     auto* set = set_covered.AppendInst(OpCode::SetCarry, carry_value);
     last = append_carry_save(set_covered, lhs, rhs);
 
-    FlagsEliminationPass::Run(&set_covered);
+    FlagsEliminationPass::Run(&set_covered, nullptr, FeatureSet{});
 
     REQUIRE_FALSE(contains(set_covered, set));
     REQUIRE(contains(set_covered, last));
@@ -2629,7 +2667,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     gate_a.Sbb(lhs, Operand{rhs});
     last = append_carry_save(gate_a, lhs, rhs);
 
-    FlagsEliminationPass::Run(&gate_a);
+    FlagsEliminationPass::Run(&gate_a, nullptr, FeatureSet{});
 
     REQUIRE(contains(gate_a, first));
     REQUIRE(contains(gate_a, clear));
@@ -2681,8 +2719,8 @@ TEST_CASE("Register allocation gives every spilled value a private slot") {
         // bit SET = unavailable; leave only the lowest `free_*` clear.
         GPRSMask gprs{~((1u << free_gprs) - 1u)};
         FPRSMask fprs{~((1u << free_fprs) - 1u)};
-        RegAlloc reg_alloc{0x200, gprs, fprs};
-        RegisterAllocPass::Run(&block, &reg_alloc);
+        RegAlloc reg_alloc{0x200, gprs, fprs, FeatureSet{}};
+        RegisterAllocPass::Run(&block, &reg_alloc, false, FeatureSet{});
 
         std::map<std::uint32_t, int> occupancy;
         int spilled = 0;
@@ -2730,14 +2768,14 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
         raw->SetTerminal(terminal::ReturnToDispatch{});
         raw->ReIdInstr();
 
-        RegAlloc off{raw->MaxInstrId(), gprs, fprs};
+        RegAlloc off{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocPass::RunForIntWidthTieTest(raw, &off, false);
         REQUIRE(off.ValueType(source) == RegAlloc::GPR);
         REQUIRE(off.ValueType(result) == RegAlloc::GPR);
         REQUIRE((off.ValueGPR(source).id == off.ValueGPR(result).id) ==
                 expect_off_tie);
 
-        RegAlloc on{raw->MaxInstrId(), gprs, fprs};
+        RegAlloc on{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocPass::RunForIntWidthTieTest(raw, &on, true);
         REQUIRE(on.ValueType(source) == RegAlloc::GPR);
         REQUIRE(on.ValueType(result) == RegAlloc::GPR);
@@ -2787,12 +2825,12 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
 
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
-        RegAlloc off{block->MaxInstrId(), gprs, fprs};
+        RegAlloc off{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocPass::RunForIntWidthTieTest(block, &off, false);
         REQUIRE(off.ValueGPR(producer).id != off.ValueGPR(extract).id);
         REQUIRE(off.ValueGPR(extract).id != off.ValueGPR(result).id);
 
-        RegAlloc on{block->MaxInstrId(), gprs, fprs};
+        RegAlloc on{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocPass::RunForIntWidthTieTest(block, &on, true);
         REQUIRE(on.ValueGPR(producer).id == on.ValueGPR(extract).id);
         REQUIRE(on.ValueGPR(extract).id == on.ValueGPR(result).id);
@@ -2871,12 +2909,12 @@ TEST_CASE("64-bit induction ties require exact last-use and matching pinned publ
         raw->SetTerminal(terminal::ReturnToDispatch{});
         raw->ReIdInstr();
 
-        RegAlloc off{raw->MaxInstrId(), gprs, fprs};
+        RegAlloc off{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocPass::RunForInductTieTest(raw, &off, false);
         REQUIRE(off.ValueGPR(source).id == 22);
         REQUIRE(off.ValueGPR(result).id != 22);
 
-        RegAlloc on{raw->MaxInstrId(), gprs, fprs};
+        RegAlloc on{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocPass::RunForInductTieTest(raw, &on, true);
         REQUIRE(on.ValueGPR(source).id == 22);
         REQUIRE((on.ValueGPR(result).id == 22) == expect_tie);
@@ -2977,7 +3015,7 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
     // aliases (both crossing and non-crossing writes), a host call, a terminal-
     // only value, a BitCast alias, and enough simultaneous scalar liveness to
     // force spills in the deliberately small register pool below.
-    HIRBuilder builder{1, true};
+    HIRBuilder builder{1, true, FeatureSet{}};
     auto* function = builder.AppendFunction(Location{0x1000}, Location{0x1100});
 
     auto pinned =
@@ -3036,13 +3074,13 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
     constexpr std::uint32_t available_fprs = 0x00000f78u;  // v3..v6, v8..v11
     GPRSMask gprs{~available_gprs};
     FPRSMask fprs{~available_fprs};
-    RegAlloc general{function->MaxInstrCount(), gprs, fprs};
-    RegAlloc fast{function->MaxInstrCount(), gprs, fprs};
-    RegAlloc selected{function->MaxInstrCount(), gprs, fprs};
+    RegAlloc general{function->MaxInstrCount(), gprs, fprs, FeatureSet{}};
+    RegAlloc fast{function->MaxInstrCount(), gprs, fprs, FeatureSet{}};
+    RegAlloc selected{function->MaxInstrCount(), gprs, fprs, FeatureSet{}};
 
-    RegisterAllocPass::Run(function, &general, false);
-    RegisterAllocPass::Run(function, &fast, true);
-    RegisterAllocPass::Run(function, &selected);
+    RegisterAllocPass::Run(function, &general, false, FeatureSet{});
+    RegisterAllocPass::Run(function, &fast, true, FeatureSet{});
+    RegisterAllocPass::Run(function, &selected, FeatureSet{});
 
     REQUIRE(general.MapCount() == fast.MapCount());
     bool saw_spill = false;
@@ -3197,7 +3235,7 @@ TEST_CASE("Spill eviction chooses farthest end and preserves verified fallback")
     const FPRSMask fprs{~((1u << 8) - 1u)};
     auto off_case = BuildSpillEvictChoiceBlock();
     swift::runtime::IntrusivePtr<Block> off_block{off_case.block};
-    RegAlloc off{off_case.block->MaxInstrId(), gprs, fprs};
+    RegAlloc off{off_case.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     const auto off_result = RegisterAllocPass::RunForSpillEvictTest(
             off_case.block, &off, false);
     REQUIRE(off.ValueType(off_case.arriving) == RegAlloc::MEM);
@@ -3205,7 +3243,7 @@ TEST_CASE("Spill eviction chooses farthest end and preserves verified fallback")
 
     auto on_case = BuildSpillEvictChoiceBlock();
     swift::runtime::IntrusivePtr<Block> on_block{on_case.block};
-    RegAlloc on{on_case.block->MaxInstrId(), gprs, fprs};
+    RegAlloc on{on_case.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     const auto on_result = RegisterAllocPass::RunForSpillEvictTest(
             on_case.block, &on, true);
     REQUIRE(on_result.eviction_restarts >= 1);
@@ -3219,7 +3257,8 @@ TEST_CASE("Spill eviction chooses farthest end and preserves verified fallback")
     // reserve ladder must produce the final allocation.
     swift::runtime::IntrusivePtr<Block> fallback_block{BuildSpillEvictFallbackBlock()};
     const GPRSMask fallback_gprs{~((1u << 10) - 1u)};
-    RegAlloc fallback{fallback_block->MaxInstrId(), fallback_gprs, fprs};
+    RegAlloc fallback{fallback_block->MaxInstrId(), fallback_gprs, fprs,
+                      FeatureSet{}};
     const auto fallback_result = RegisterAllocPass::RunForSpillEvictTest(
             fallback_block.get(), &fallback, true);
     REQUIRE(fallback_result.eviction_restarts >= 1);
@@ -3572,7 +3611,7 @@ TEST_CASE("AFP mode terminates units after architectural MXCSR restores") {
         Block block{0, Location{address}};
         Assembler assembler{&block};
         X64Decoder decoder{address, &memory, &assembler, true,
-                           Arm64Features::AFP, true};
+                           Arm64Features::AFP, true, false, FeatureSet{}};
         decoder.Decode();
 
         if (had_old) swift::runtime::SetSvmConfigEnvForTest("SVM_XSAVE", old_value.c_str(), 1);
@@ -3628,8 +3667,9 @@ TEST_CASE("AFP mode brackets direct MemoryCopy host calls with native FPCR") {
 
     RegAlloc reg_alloc{block->MaxInstrId(),
                        address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs()};
-    RegisterAllocPass::Run(block.get(), &reg_alloc);
+                       address_space.GetTrampolines().GetFPRRegs(),
+                       FeatureSet{}};
+    RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
     arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -3753,8 +3793,9 @@ TEST_CASE("AFP transparent helper call shape omits only its FPCR switch pair") {
 
         RegAlloc reg_alloc{block->MaxInstrId(),
                            address_space.GetTrampolines().GetGPRRegs(),
-                           address_space.GetTrampolines().GetFPRRegs()};
-        RegisterAllocPass::Run(block.get(), &reg_alloc);
+                           address_space.GetTrampolines().GetFPRRegs(),
+                           FeatureSet{}};
+        RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
         arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
@@ -3842,7 +3883,7 @@ TEST_CASE("x87 FPCR-transparent dispatcher target is effective-AFP gated") {
         X64Decoder decoder{address, &memory, &assembler, true,
                            effective_afp ? Arm64Features::AFP
                                          : Arm64Features::None,
-                           effective_afp};
+                           effective_afp, false, FeatureSet{}};
         decoder.Decode();
 
         for (auto& inst : block.GetInstList()) {
@@ -4036,8 +4077,9 @@ AFPShapeCode CompileAFPShape(AFPShapeOp op,
 
     RegAlloc reg_alloc{block->MaxInstrId(),
                        address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs()};
-    RegisterAllocPass::Run(block.get(), &reg_alloc, scalar_insert);
+                       address_space.GetTrampolines().GetFPRRegs(),
+                       FeatureSet{}};
+    RegisterAllocPass::Run(block.get(), &reg_alloc, scalar_insert, FeatureSet{});
     arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -4201,8 +4243,8 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
 #endif
     auto check_and_emit = [&](Block* raw, int expected_spill = -1) {
         swift::runtime::IntrusivePtr<Block> block{raw};
-        RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs};
-        RegisterAllocPass::Run(block.get(), &reg_alloc);
+        RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
 #if defined(__linux__) && !defined(__ANDROID__)
         const bool has_spill = reg_alloc.SpillCount() != 0;
         saw_conditional_spill_unit |= has_spill;
@@ -4221,7 +4263,7 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
         //    per instruction however often the instruction names it). This is
         //    the contract GetTmpX relies on.
         for (auto& inst : block->GetInstList()) {
-            auto need = ScratchBudget(inst);
+            auto need = ScratchBudget(inst, FeatureSet{});
             unsigned reloads_gpr = 0, reloads_fpr = 0;
             std::vector<std::uint32_t> counted;
             auto count = [&](const Value& value) {
@@ -4313,10 +4355,10 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
     }
     swift::runtime::IntrusivePtr<Block> pressure12{build_fpr_pressure()};
     swift::runtime::IntrusivePtr<Block> pressure16{build_fpr_pressure()};
-    RegAlloc alloc12{pressure12->MaxInstrId(), gprs, xmm_pool12};
-    RegAlloc alloc16{pressure16->MaxInstrId(), gprs, xmm_pool16};
-    RegisterAllocPass::Run(pressure12.get(), &alloc12);
-    RegisterAllocPass::Run(pressure16.get(), &alloc16);
+    RegAlloc alloc12{pressure12->MaxInstrId(), gprs, xmm_pool12, FeatureSet{}};
+    RegAlloc alloc16{pressure16->MaxInstrId(), gprs, xmm_pool16, FeatureSet{}};
+    RegisterAllocPass::Run(pressure12.get(), &alloc12, false, FeatureSet{});
+    RegisterAllocPass::Run(pressure16.get(), &alloc16, false, FeatureSet{});
     INFO("W80 FPR pressure spills pool12=" << alloc12.SpillCount()
                                             << " pool16=" << alloc16.SpillCount());
     ASSERT_MSG(alloc12.SpillCount() > 0,
@@ -4481,8 +4523,9 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
                                    .SetType(ValueType::U16);
     allocation_contract.SaveFlags(contract_result, Flags::All);
     allocation_contract.ReIdInstr();
-    RegAlloc contract_alloc{allocation_contract.MaxInstrId(), gprs, fprs};
-    RegisterAllocPass::Run(&allocation_contract, &contract_alloc);
+    RegAlloc contract_alloc{allocation_contract.MaxInstrId(), gprs, fprs,
+                            FeatureSet{}};
+    RegisterAllocPass::Run(&allocation_contract, &contract_alloc, false, FeatureSet{});
     REQUIRE(contract_alloc.ValueType(contract_left) == RegAlloc::GPR);
     REQUIRE(contract_alloc.ValueType(contract_right) == RegAlloc::GPR);
     REQUIRE(contract_alloc.ValueType(contract_result) == RegAlloc::GPR);
@@ -4527,7 +4570,7 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
         }
         block.ReIdInstr();
 
-        RegAlloc alloc{block.MaxInstrId(), gprs, fprs};
+        RegAlloc alloc{block.MaxInstrId(), gprs, fprs, FeatureSet{}};
         alloc.MapRegister(left.Id(), HostGPR{22});
         alloc.MapRegister(other.Id(), HostGPR{23});
         alloc.MapRegister(pending.Id(), HostGPR{24});
@@ -4778,7 +4821,7 @@ TEST_CASE("Spill slots are recycled, not merely handed out") {
 
     auto check_recycling = [&](Block* raw, unsigned expect_min_spills) {
         swift::runtime::IntrusivePtr<Block> block{raw};
-        RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs};
+        RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
         // Pre-fix this call itself threw ("spill area exhausted: slot 64 (+1)
         // >= 64 reserved slots") long before any assertion below could run.
         // Select the historical spill-current policy explicitly: this test's
@@ -4928,8 +4971,9 @@ TEST_CASE("peeled GetOperand keeps its address live through the memory use") {
     auto module = address_space.GetDefaultModule();
     RegAlloc reg_alloc{raw_block->MaxInstrId(),
                        address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs()};
-    RegisterAllocPass::Run(raw_block, &reg_alloc);
+                       address_space.GetTrampolines().GetFPRRegs(),
+                       FeatureSet{}};
+    RegisterAllocPass::Run(raw_block, &reg_alloc, false, FeatureSet{});
 
     const bool enabled = swift::runtime::GetSvmConfig().mem_narrow_fuse;
     if (enabled) {
@@ -4966,8 +5010,8 @@ TEST_CASE("address EA tie transfers a terminal fixed alias") {
     // x6 模拟静态映射的固定家；普通线性扫描不能把其它值分配到它。
     const GPRSMask gprs{~((1u << 19) - 1u) | (1u << 6)};
     const FPRSMask fprs{~((1u << 8) - 1u)};
-    RegAlloc alloc{raw->MaxInstrId(), gprs, fprs};
-    RegisterAllocPass::Run(raw, &alloc);
+    RegAlloc alloc{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    RegisterAllocPass::Run(raw, &alloc, false, FeatureSet{});
 
     const bool enabled = swift::runtime::GetSvmConfig().addr_ea_tie;
     REQUIRE(alloc.ValueGPR(source).id == 6);
@@ -5001,7 +5045,8 @@ TEST_CASE("composite memory EA survives only in identity mode") {
                            true,
                            Arm64Features::None,
                            false,
-                           identity};
+                           identity,
+                           FeatureSet{}};
         decoder.Decode();
         for (auto& inst : raw->GetInstList()) {
             if (inst.GetOp() == OpCode::LoadMemory) {
@@ -5058,7 +5103,7 @@ TEST_CASE("absolute GetOperand materializes directly into its result") {
 
     const GPRSMask gprs{~((1u << 8) - 1u)};
     const FPRSMask fprs{~((1u << 8) - 1u)};
-    RegAlloc alloc{block->MaxInstrId(), gprs, fprs};
+    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     alloc.MapRegister(address.Id(), HostGPR{6});
     auto active_gprs = gprs;
     auto active_fprs = fprs;
@@ -5126,8 +5171,8 @@ TEST_CASE("SaveCV commits x86 CF/OF into the flags register") {
     const auto fprs = address_space.GetTrampolines().GetFPRRegs();
 
     swift::runtime::IntrusivePtr<Block> block{BuildMulCarryOverflowBlock()};
-    RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs};
-    RegisterAllocPass::Run(block.get(), &reg_alloc);
+    RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
 
     arm64::JitContext context{module, reg_alloc};
     arm64::JitTranslator translator{context};
@@ -5200,8 +5245,8 @@ TEST_CASE("CondSet materializes exactly one for arithmetic consumers") {
     const auto fprs = address_space.GetTrampolines().GetFPRRegs();
 
     swift::runtime::IntrusivePtr<Block> block{BuildCondSetArithmeticBlock()};
-    RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs};
-    RegisterAllocPass::Run(block.get(), &reg_alloc);
+    RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
 
     arm64::JitContext context{module, reg_alloc};
     arm64::JitTranslator translator{context};

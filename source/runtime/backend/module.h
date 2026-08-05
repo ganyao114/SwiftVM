@@ -9,6 +9,7 @@
 #include "runtime/backend/code_cache.h"
 #include "runtime/common/address_hash_map.h"
 #include "runtime/common/range_mutex.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/common/types.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
@@ -21,9 +22,21 @@ class AddressSpace;
 struct ModuleConfig {
     bool read_only{};
     Optimizations optimizations{Optimizations::None};
+    FeatureOverrides feature_overrides{};
 
     [[nodiscard]] bool HasOpt(Optimizations cmp) const { return True(optimizations & cmp); }
 };
+
+[[nodiscard]] inline FeatureSet ResolveFeatureSet(const ModuleConfig& config) {
+    auto features = GetSvmConfig().GetFeatureSet();
+    for (std::size_t i = 0; i < kFeatureCount; ++i) {
+        const auto id = static_cast<FeatureId>(i);
+        if (const auto value = config.feature_overrides.Get(id)) {
+            features.Set(id, *value);
+        }
+    }
+    return features;
+}
 
 struct NoneAddressNode {};
 

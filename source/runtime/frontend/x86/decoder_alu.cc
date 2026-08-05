@@ -785,10 +785,6 @@ void X64Decoder::DecodeShlShr(_DInst& insn, bool shr) { DecodeShift(insn, shr ? 
 
 void X64Decoder::DecodeSar(_DInst& insn) { DecodeShift(insn, 2); }
 
-static bool ShiftImmFastEnabled() {
-    return swift::runtime::GetSvmConfig().shift_imm_fast;
-}
-
 void X64Decoder::DecodeShift(_DInst& insn, int kind) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
@@ -804,7 +800,7 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
     const u32 constant_count =
             count_data.IsImm() ? static_cast<u32>(count_data.imm.Get() & count_mask.Get())
                                : UINT32_MAX;
-    const bool shift_imm_fast = ShiftImmFastEnabled();
+    const bool shift_imm_fast = features_.shift_imm_fast;
     const bool constant_zero = shift_imm_fast && constant_count == 0;
     const bool immediate_fast =
             shift_imm_fast && constant_count > 0 && constant_count < width;

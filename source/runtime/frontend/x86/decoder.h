@@ -11,6 +11,7 @@
 #include "mnemonics.h"
 #include "runtime/backend/context.h"
 #include "runtime/frontend/ir_assembler.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/include/config.h"
 #include "vex_decoder.h"
 
@@ -284,12 +285,15 @@ public:
                bool is_64bit,
                runtime::Arm64Features arm64_features = runtime::Arm64Features::None,
                bool sse_afp_nan = false,
-               bool identity_addressing = false);
+               bool identity_addressing = false,
+               const runtime::FeatureSet& features = runtime::FeatureSet{});
 
     void Decode();
 
 private:
     class DecodePipeline;
+
+    [[nodiscard]] const runtime::FeatureSet& Features() const { return features_; }
 
     enum SSEMCSREnables : u32 {
         IM = 1 << 7,
@@ -392,11 +396,11 @@ private:
     [[nodiscard]] std::optional<LocalCondition> TryLocalCondition(Cond cond);
     void MarkLocalNZCV(ir::Flags valid, ir::Value result);
     void PublishFCmpFlags(ir::Value packed);
-    [[nodiscard]] static bool FlagsNarrowAlignEnabled();
+    [[nodiscard]] bool FlagsNarrowAlignEnabled() const;
     [[nodiscard]] bool FlagsCfinvEnabled() const;
-    [[nodiscard]] static bool FlagsTerminalJccEnabled();
-    [[nodiscard]] static bool FlagsBranchOnlyEnabled();
-    [[nodiscard]] static bool FlagsFcmpFuseEnabled();
+    [[nodiscard]] bool FlagsTerminalJccEnabled() const;
+    [[nodiscard]] bool FlagsBranchOnlyEnabled() const;
+    [[nodiscard]] bool FlagsFcmpFuseEnabled() const;
     [[nodiscard]] bool SuccessorFlagsDead(VAddr successor) const;
     [[nodiscard]] bool FlagsFcmpCompactEnabled() const {
         return flags_fcmp_compact_;
@@ -574,7 +578,7 @@ private:
     ir::Value LoadSrcHi(_DInst& insn, _Operand& op);
     ir::Value LoadSrcScalarVec(_DInst& insn, _Operand& op, u32 lane_bits);
     ir::Value XmmScalarV(_RegisterType reg, u32 lane_bits);
-    static bool ScalarVOperandsEnabled();
+    bool ScalarVOperandsEnabled() const;
 
     // Fold a memory/register address operand to a single address value
     // (TSO forms only encode [base], see Src()).
@@ -600,7 +604,7 @@ private:
     void BeginStructuredAddressInstruction(u16 opcode);
     void ClearStructuredAddressState();
     void InvalidateStructuredAddressReg(_RegisterType reg);
-    static bool StructuredAddressModeEnabled();
+    bool StructuredAddressModeEnabled() const;
     static bool StructuredAddressChainOpcode(u16 opcode);
 
     // dst(xmm) op= src(xmm/m128), computed per 64-bit half by a host helper.
@@ -1114,6 +1118,7 @@ private:
     bool sse_afp_nan_{false};
     bool addr_ea_tie_{false};
     bool identity_addressing_{false};
+    runtime::FeatureSet features_{};
     VAddr addr_mask{UINT64_MAX};
     CarryPolarity carry_{CarryPolarity::Unknown};
     VAddr local_nzcv_next_pc_{UINT64_MAX};

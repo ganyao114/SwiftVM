@@ -7,7 +7,6 @@
 
 namespace swift { namespace runtime {
 bool SvmVixlProfEnabled();
-bool SvmVixlFastEnabled();
 }}  // namespace swift::runtime
 
 namespace vixl {
@@ -44,6 +43,7 @@ Counters& GetCounters() {
 
 thread_local LocalCounters local;
 thread_local unsigned recording_depth;
+thread_local bool jit_fast_enabled = true;
 
 void Dump() {
   FlushThread();
@@ -75,20 +75,23 @@ bool Enabled() {
 }
 
 bool FastEnabled() {
-  return swift::runtime::SvmVixlFastEnabled();
+  return jit_fast_enabled;
 }
 
 bool Recording() {
   return recording_depth != 0 && Enabled();
 }
 
-void BeginJit() {
+bool BeginJit(bool fast_enabled) {
+  const bool previous = jit_fast_enabled;
+  jit_fast_enabled = fast_enabled;
   if (Enabled()) ++recording_depth;
+  return previous;
 }
 
-void EndJit() {
-  if (recording_depth == 0) return;
-  if (--recording_depth == 0) FlushThread();
+void EndJit(bool previous_fast_enabled) {
+  jit_fast_enabled = previous_fast_enabled;
+  if (recording_depth != 0 && --recording_depth == 0) FlushThread();
 }
 
 bool Enter(Part part) {

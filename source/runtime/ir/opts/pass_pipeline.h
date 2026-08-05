@@ -19,8 +19,8 @@ struct UniformInfo;
 
 // A single optimization pass entry
 struct PassEntry {
-    using BlockPassFn = std::function<void(Block*)>;
-    using FunctionPassFn = std::function<void(HIRFunction*)>;
+    using BlockPassFn = std::function<void(Block*, const FeatureSet&)>;
+    using FunctionPassFn = std::function<void(HIRFunction*, const FeatureSet&)>;
 
     Optimizations required_opt{Optimizations::None};
     BlockPassFn block_pass{};
@@ -40,13 +40,14 @@ public:
         entries.push_back({opt, {}, std::move(pass)});
     }
 
-    void RunBlock(Block* block, Optimizations enabled_opts) const {
+    void RunBlock(Block* block, Optimizations enabled_opts,
+                  const FeatureSet& features) const {
         PerfScope2 perf_total{GetPerfStats2().pass_total};
         for (auto& entry : entries) {
             if (!entry.block_pass) continue;
             if (entry.required_opt == Optimizations::None || True(enabled_opts & entry.required_opt)) {
                 PerfScope2 perf_pass{CounterFor(entry.required_opt)};
-                entry.block_pass(block);
+                entry.block_pass(block, features);
             }
         }
         perf_total.Stop();
@@ -56,13 +57,14 @@ public:
         block->ReIdInstr();
     }
 
-    void RunFunction(HIRFunction* function, Optimizations enabled_opts) const {
+    void RunFunction(HIRFunction* function, Optimizations enabled_opts,
+                     const FeatureSet& features) const {
         PerfScope2 perf_total{GetPerfStats2().pass_total};
         for (auto& entry : entries) {
             if (!entry.function_pass) continue;
             if (entry.required_opt == Optimizations::None || True(enabled_opts & entry.required_opt)) {
                 PerfScope2 perf_pass{CounterFor(entry.required_opt)};
-                entry.function_pass(function);
+                entry.function_pass(function, features);
             }
         }
     }

@@ -48,13 +48,16 @@ struct UniformInfo {
 
 class UniformEliminationPass {
 public:
-    static void Run(HIRBuilder *hir_builder, const UniformInfo &info, bool to_regs);
-    static void Run(HIRFunction *hir_function, const UniformInfo &info, bool to_regs);
-    static void Run(Block *block, const UniformInfo &config, HIRFunction *hir_function = nullptr);
+    static void Run(HIRBuilder *hir_builder, const UniformInfo &info, bool to_regs,
+                    const FeatureSet& features);
+    static void Run(HIRFunction *hir_function, const UniformInfo &info, bool to_regs,
+                    const FeatureSet& features);
+    static void Run(Block *block, const UniformInfo &config,
+                    const FeatureSet& features, HIRFunction *hir_function = nullptr);
     // Explicit selector for byte-for-byte A/B tests in one process. Production
     // callers use the overload above, which reads SVM_UNIFORM_FAST once.
     static void Run(Block *block, const UniformInfo &config, bool fast_path,
-                    HIRFunction *hir_function = nullptr);
+                    const FeatureSet& features, HIRFunction *hir_function = nullptr);
 };
 
 }  // namespace swift::runtime::ir

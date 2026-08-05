@@ -776,7 +776,16 @@ bool PublishIRFunction(const std::shared_ptr<backend::Module>& module,
     return true;
 }
 
+static FeatureSet ResolveBackendFeatures(const std::shared_ptr<backend::Module>& module) {
+    auto features = backend::ResolveFeatureSet(module->GetModuleConfig());
+    // induction tie 已由 Config 承载，本期保持既有所有权；FeatureSet 中保留
+    // 同名槽位只是为了与 B 类字段表一一对应，P3 再统一去重。
+    features.induct_tie = module->GetAddressSpace().GetConfig().induct_tie;
+    return features;
+}
+
 void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunction* function) {
+    const auto features = ResolveBackendFeatures(module);
     auto ir_function = function->GetFunction();
     auto func_start = ir_function->GetStartLocation().Value();
     PerfFixedSnapshot2 fixed_snapshot;
@@ -806,7 +815,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
                                       ? &address_space.GetUniformInfo() : nullptr;
     PerfScope perf_opt{GetPerfStats().opt_ns};
-    GetPassPipeline(uni_info).RunFunction(function, module->GetModuleConfig().optimizations);
+    GetPassPipeline(uni_info).RunFunction(
+            function, module->GetModuleConfig().optimizations, features);
     perf_opt.Stop();
     // The function passes delete instructions (flag elimination, then dead-code
     // elimination), which punches holes in the numbering established above.
@@ -824,10 +834,12 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
     PerfScope perf_ra{GetPerfStats().regalloc_ns};
     PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
-    backend::RegAlloc reg_alloc{static_cast<u32>(function->MaxInstrCount()), gprs, fprs};
+    backend::RegAlloc reg_alloc{
+            static_cast<u32>(function->MaxInstrCount()), gprs, fprs, features};
     ir::RegisterAllocPass::RunWithScalarInsert(
             function, &reg_alloc,
-            module->GetAddressSpace().GetConfig().sse_scalar_insert);
+            module->GetAddressSpace().GetConfig().sse_scalar_insert,
+            features);
     perf_ra_detail.Stop();
     perf_ra.Stop();
     fixed_snapshot.Record(static_cast<unsigned>(decoded_blocks));
@@ -1027,9 +1039,11 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
         return module->GetJitCache(jit_state);
     }
     const auto& address_space = module->GetAddressSpace();
+    const auto features = ResolveBackendFeatures(module);
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    backend::RegAlloc reg_alloc{static_cast<u32>(block->MaxInstrCount()), gprs, fprs};
+    backend::RegAlloc reg_alloc{
+            static_cast<u32>(block->MaxInstrCount()), gprs, fprs, features};
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate(block->GetBlock());
@@ -1082,21 +1096,25 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     }
 
     const auto& module_config = module->GetModuleConfig();
+    const auto features = ResolveBackendFeatures(module);
     const auto& address_space = module->GetAddressSpace();
 
     // Optimize passes
     const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
                                       ? &address_space.GetUniformInfo() : nullptr;
-    GetPassPipeline(uni_info).RunBlock(block.get(), module_config.optimizations);
+    GetPassPipeline(uni_info).RunBlock(
+            block.get(), module_config.optimizations, features);
 
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    backend::RegAlloc reg_alloc{static_cast<u32>(block->MaxInstrId()), gprs, fprs};
+    backend::RegAlloc reg_alloc{
+            static_cast<u32>(block->MaxInstrId()), gprs, fprs, features};
 
     PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
     ir::RegisterAllocPass::Run(
             block.get(), &reg_alloc,
-            module->GetAddressSpace().GetConfig().sse_scalar_insert);
+            module->GetAddressSpace().GetConfig().sse_scalar_insert,
+            features);
     perf_ra_detail.Stop();
 
     PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};

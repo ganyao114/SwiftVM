@@ -64,37 +64,6 @@ static Value ResolveBitCastSource(Value value) {
     return value;
 }
 
-static bool MemNarrowFuseEnabled() {
-    return GetSvmConfig().mem_narrow_fuse;
-}
-
-static bool AddrEATieEnabled() {
-    return GetSvmConfig().addr_ea_tie;
-}
-
-static bool ShiftImmFastEnabled() {
-    return GetSvmConfig().shift_imm_fast;
-}
-
-static bool IntWidthTieEnabled() {
-    return GetSvmConfig().ra_intwidth_tie;
-}
-
-static bool InductTieEnabled() {
-    return GetSvmConfig().induct_tie;
-}
-
-static bool SpillEvictEnabled() {
-    // Default ON after the orb eight-cell grid (L2/L3 x evict x coremark/
-    // smallpt, all identity): L3 smallpt spill_dynamic -74.4% with every
-    // other cell neutral, regalloc_ns worst +5.5% of a 0.25% bucket
-    // (translate +0.013%, no long tail), and the Verify-failed fallback to
-    // the original reserve ladder exercised by 26 real units. The mac
-    // bounded-bias shape is the headline: L3 coremark spill -93.01%,
-    // host_dynamic -10.17%. =0 restores the pure ladder as the rollback.
-    return GetSvmConfig().ra_spill_evict;
-}
-
 // Spill/escalation 诊断打印默认关闭：它们随编译线程异步产生，会混入 guest
 // stdout（sqlite speedtest 一类边跑边输出的负载会被打断行），且非用户可行动项。
 // 需要排查 regalloc 行为时设 SVM_RA_DIAG=1 打开。
@@ -128,7 +97,8 @@ public:
                                  bool intwidth_tie = false,
                                  bool induct_tie = false,
                                  const Vector<u32>* forced_spills = nullptr,
-                                 bool select_eviction = false)
+                                 bool select_eviction = false,
+                                 const FeatureSet& features = FeatureSet{})
             : function(function), block(), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               single_block_fast_path(single_block_fast_path),
@@ -137,7 +107,7 @@ public:
               induct_tie(induct_tie),
               forced_spills(forced_spills),
               select_eviction(select_eviction),
-              shift_imm_fast(ShiftImmFastEnabled()) {
+              shift_imm_fast(features.shift_imm_fast), features(features) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(function->MaxInstrCount());
@@ -157,7 +127,8 @@ public:
                                  bool intwidth_tie = false,
                                  bool induct_tie = false,
                                  const Vector<u32>* forced_spills = nullptr,
-                                 bool select_eviction = false)
+                                 bool select_eviction = false,
+                                 const FeatureSet& features = FeatureSet{})
             : function(), block(block), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               scalar_insert(scalar_insert),
@@ -165,7 +136,7 @@ public:
               induct_tie(induct_tie),
               forced_spills(forced_spills),
               select_eviction(select_eviction),
-              shift_imm_fast(ShiftImmFastEnabled()) {
+              shift_imm_fast(features.shift_imm_fast), features(features) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(block->GetInstList().size());
@@ -187,11 +158,13 @@ public:
         return eviction_candidate;
     }
 
-    static u32 ScratchOnlyGPRs(OpCode op, const backend::GPRSMask& pool) {
+    static u32 ScratchOnlyGPRs(OpCode op, const backend::GPRSMask& pool,
+                               const FeatureSet& features) {
         u32 count = backend::X86PinExtLevel3AluScratchEnabled(pool, op) ? 1u : 0u;
-        const bool level2_scratch = backend::X86PinExtScratchOnlyEnabled(pool);
+        const bool level2_scratch =
+                backend::X86PinExtScratchOnlyEnabled(pool, features);
         if (level2_scratch) {
-            const u32 fixed = backend::FixedGPRClobbers(op, true);
+            const u32 fixed = backend::FixedGPRClobbers(op, features, true);
             count += ((fixed & (1u << 12)) ? 0u : 1u) +
                      ((fixed & (1u << 13)) ? 0u : 1u);
         }
@@ -213,7 +186,7 @@ public:
             bool ok = true;
             auto check_budgets = [&](Block* lir_block) {
                 for (auto& inst : lir_block->GetInstList()) {
-                    auto need = backend::ScratchBudget(inst);
+                    auto need = backend::ScratchBudget(inst, features);
                     if (need.gpr <= gpr_reserve && need.fpr <= fpr_reserve) {
                         continue;
                     }
@@ -222,7 +195,7 @@ public:
                     }
                     ok &= static_cast<u32>(reg_alloc->DirtyGPR(inst.Id()).GetClearCount()) +
                                           ScratchOnlyGPRs(inst.GetOp(),
-                                                          reg_alloc->GetGprs()) >=
+                                                          reg_alloc->GetGprs(), features) >=
                                   need.gpr &&
                           static_cast<u32>(reg_alloc->DirtyFPR(inst.Id()).GetClearCount()) >=
                                   need.fpr;
@@ -657,14 +630,14 @@ private:
     void InitializeFixedClobbers() {
         fixed_gpr_clobbers.resize(InstrCount());
         const bool scratch_only =
-                backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs());
+                backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs(), features);
         auto add_block = [&](Block* lir_block) {
             bool has_inst = false;
             u32 last_id = 0;
             for (auto& inst : lir_block->GetInstList()) {
                 if (inst.Id() < fixed_gpr_clobbers.size()) {
                     fixed_gpr_clobbers[inst.Id()] |=
-                            backend::FixedGPRClobbers(inst, scratch_only);
+                            backend::FixedGPRClobbers(inst, features, scratch_only);
                 }
                 has_inst = true;
                 last_id = std::max<u32>(last_id, inst.Id());
@@ -672,7 +645,7 @@ private:
             // Every block terminal/link sequence owns x11. Recording that
             // clobber at the block's final instruction extends the exclusion
             // to values consumed by terminal::If/Switch as well.
-            if (backend::ScratchXPoolEnabled() && has_inst &&
+            if (backend::ScratchXPoolEnabled(features) && has_inst &&
                 last_id < fixed_gpr_clobbers.size()) {
                 fixed_gpr_clobbers[last_id] |=
                         backend::kTerminalFixedGPRClobbers;
@@ -793,7 +766,7 @@ private:
                 }
             }
         }
-        if (!MemNarrowFuseEnabled()) {
+        if (!features.mem_narrow_fuse) {
             return {};
         }
         switch (inst->GetOp()) {
@@ -863,7 +836,7 @@ private:
     }
 
     Value MemoryOperandTieSource(Inst* inst) const {
-        if ((!MemNarrowFuseEnabled() && !AddrEATieEnabled()) ||
+        if ((!features.mem_narrow_fuse && !features.addr_ea_tie) ||
             inst->GetOp() != OpCode::GetOperand ||
             inst->GetUses() != 1 || !DirectlyFeedsMemory(inst)) {
             return {};
@@ -880,7 +853,7 @@ private:
         // 计算结果提前发布到固定家，也不会越过后续 SetHostGPR。
         return TryTieGPR(current,
                          MemoryOperandTieSource(current.inst),
-                         AddrEATieEnabled());
+                         features.addr_ea_tie);
     }
 
     bool HasKnownWWrite(Value value) const {
@@ -1169,7 +1142,7 @@ private:
         if (id >= reg_alloc->MapCount()) {
             return true;  // no mask was recorded for this id
         }
-        auto need = backend::ScratchBudget(*inst);
+        auto need = backend::ScratchBudget(*inst, features);
         u32 reload_gpr = 0;
         u32 reload_fpr = 0;
         // One reload register per DISTINCT spilled value the instruction
@@ -1196,7 +1169,7 @@ private:
         auto gprs = reg_alloc->DirtyGPR(id);
         auto fprs = reg_alloc->DirtyFPR(id);
         const u32 scratch_only_gprs =
-                ScratchOnlyGPRs(inst->GetOp(), reg_alloc->GetGprs());
+                ScratchOnlyGPRs(inst->GetOp(), reg_alloc->GetGprs(), features);
         u32 need_gpr = need.gpr + reload_gpr + extra_gpr;
         // Legacy Add/Sub's five-register declaration is the no-spill worst case:
         // tied inputs must be preserved for AF/PF after the destination is
@@ -1206,7 +1179,7 @@ private:
         // instead of adding both mutually-exclusive peaks. Precise pricing
         // excludes those dead preservation arms, so ordinary scratch and
         // reload registers are independent and use the direct sum above.
-        if (!backend::ScratchPreciseRequested() && scratch_only_gprs &&
+        if (!backend::ScratchPreciseRequested(features) && scratch_only_gprs &&
             (inst->GetOp() == OpCode::Add || inst->GetOp() == OpCode::Sub)) {
             need_gpr = std::max<u32>(
                     need.gpr, backend::kDefaultScratchGPR + reload_gpr) + extra_gpr;
@@ -1828,6 +1801,7 @@ private:
     const Vector<u32>* forced_spills{};
     const bool select_eviction{false};
     const bool shift_imm_fast{false};
+    const FeatureSet features;
     bool has_eviction_candidate{false};
     u32 eviction_candidate{0};
     Vector<u32> fixed_gpr_alias_end{};
@@ -1950,9 +1924,10 @@ private:
     u16 active_v_regs_cursor{0};
 };
 
-void RegisterAllocPass::Run(HIRBuilder* hir_builder, backend::RegAlloc* reg_alloc) {
+void RegisterAllocPass::Run(HIRBuilder* hir_builder, backend::RegAlloc* reg_alloc,
+                            const FeatureSet& features) {
     for (auto& hir_func : hir_builder->GetHIRFunctions()) {
-        Run(&hir_func, reg_alloc);
+        Run(&hir_func, reg_alloc, features);
     }
 }
 
@@ -1969,10 +1944,12 @@ static void CollectUnitBudget(Block* block,
                               u32& gpr,
                               u32& fpr,
                               u32& reload_bound,
-                              const backend::GPRSMask& pool) {
+                              const backend::GPRSMask& pool,
+                              const FeatureSet& features) {
     for (auto& inst : block->GetInstList()) {
-        auto need = backend::ScratchBudget(inst);
-        const u32 scratch_only = LinearScanAllocator::ScratchOnlyGPRs(inst.GetOp(), pool);
+        auto need = backend::ScratchBudget(inst, features);
+        const u32 scratch_only =
+                LinearScanAllocator::ScratchOnlyGPRs(inst.GetOp(), pool, features);
         gpr = std::max<u32>(gpr, need.gpr > scratch_only ? need.gpr - scratch_only : 0);
         fpr = std::max<u32>(fpr, need.fpr);
         reload_bound = std::max<u32>(reload_bound, static_cast<u32>(inst.GetValues().size()) + 1);
@@ -1983,21 +1960,23 @@ static void CollectUnitBudget(HIRFunction* function,
                               u32& gpr,
                               u32& fpr,
                               u32& reload_bound,
-                              const backend::GPRSMask& pool) {
+                              const backend::GPRSMask& pool,
+                              const FeatureSet& features) {
     for (auto* hir_block : function->GetHIRBlocks()) {
         CollectUnitBudget(
-                hir_block->GetBlock(), gpr, fpr, reload_bound, pool);
+                hir_block->GetBlock(), gpr, fpr, reload_bound, pool, features);
     }
 }
 
 template <typename Unit>
 static void RunVerified(Unit* unit,
                         backend::RegAlloc* reg_alloc,
+                        const FeatureSet& features,
                         bool single_block_fast_path = false,
                         bool scalar_insert = false,
                         bool intwidth_tie = false,
                         bool induct_tie = false,
-                        bool spill_evict = SpillEvictEnabled(),
+                        bool spill_evict = true,
                         RegisterAllocPass::SpillEvictTestResult* test_result = nullptr) {
     auto rerun_with_conditional_spill_scratch = [&] {
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -2010,7 +1989,7 @@ static void RunVerified(Unit* unit,
             // x18, which the spill reload path must be free to overwrite.
             reg_alloc->ReserveGPRForUnit(18);
             reg_alloc->ResetAllocations();
-            RunVerified(unit, reg_alloc, single_block_fast_path, scalar_insert,
+            RunVerified(unit, reg_alloc, features, single_block_fast_path, scalar_insert,
                         intwidth_tie, induct_tie, spill_evict, test_result);
             if (RaDiagEnabled()) {
                 LOG_WARNING("RegisterAllocPass: {} initial spill(s); x18 reserved for this unit",
@@ -2054,7 +2033,7 @@ static void RunVerified(Unit* unit,
         test_result->fell_back_to_ladder = fell_back_to_ladder;
     };
     const bool scratch_only_enabled =
-            backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs());
+            backend::X86PinExtScratchOnlyEnabled(reg_alloc->GetGprs(), features);
     const u32 scratch_only = scratch_only_enabled ? 2u : 0u;
     const u32 default_gpr_reserve = backend::kDefaultScratchGPR > scratch_only
             ? backend::kDefaultScratchGPR - scratch_only
@@ -2076,7 +2055,7 @@ static void RunVerified(Unit* unit,
                                      backend::kDefaultScratchFPR,
                                      single_block_fast_path, scalar_insert,
                                      intwidth_tie, induct_tie, &forced_spills,
-                                     true};
+                                     true, features};
             scan.AllocateRegisters();
             if (scan.HasEvictionCandidate()) {
                 forced_spills.push_back(scan.EvictionCandidate());
@@ -2098,7 +2077,8 @@ static void RunVerified(Unit* unit,
     } else {
         LinearScanAllocator scan{unit, reg_alloc, default_gpr_reserve,
                                  backend::kDefaultScratchFPR, single_block_fast_path,
-                                 scalar_insert, intwidth_tie, induct_tie};
+                                 scalar_insert, intwidth_tie, induct_tie,
+                                 nullptr, false, features};
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -2115,7 +2095,8 @@ static void RunVerified(Unit* unit,
                       unit_gpr,
                       unit_fpr,
                       reload_bound,
-                      reg_alloc->GetGprs());
+                      reg_alloc->GetGprs(),
+                      features);
 
     // A reserve at or above the pool size would leave the scan nothing to
     // allocate, so each rung is clamped to leave one register allocatable.
@@ -2164,7 +2145,8 @@ static void RunVerified(Unit* unit,
     for (auto& rung : ladder) {
         reg_alloc->ResetAllocations();
         LinearScanAllocator scan{unit, reg_alloc, rung.gpr, rung.fpr, single_block_fast_path,
-                                 scalar_insert, intwidth_tie, induct_tie};
+                                 scalar_insert, intwidth_tie, induct_tie,
+                                 nullptr, false, features};
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -2190,46 +2172,59 @@ static void RunVerified(Unit* unit,
 }
 
 void RegisterAllocPass::Run(HIRFunction* hir_function,
-                            backend::RegAlloc* reg_alloc) {
-    RunWithScalarInsert(hir_function, reg_alloc, false);
+                            backend::RegAlloc* reg_alloc,
+                            const FeatureSet& features) {
+    RunWithScalarInsert(hir_function, reg_alloc, false, features);
 }
 
 void RegisterAllocPass::RunWithScalarInsert(HIRFunction* hir_function,
                                             backend::RegAlloc* reg_alloc,
-                                            bool scalar_insert) {
-    const bool single_block_fast_path = GetSvmConfig().ra_1blk;
+                                            bool scalar_insert,
+                                            const FeatureSet& features) {
+    const bool single_block_fast_path = features.ra_1blk;
     const bool use_fast_path =
             single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
-    RunVerified(hir_function, reg_alloc, use_fast_path, scalar_insert,
-                IntWidthTieEnabled(), InductTieEnabled());
+    RunVerified(hir_function, reg_alloc, features, use_fast_path, scalar_insert,
+                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_spill_evict);
 }
 
 void RegisterAllocPass::Run(HIRFunction* hir_function,
                             backend::RegAlloc* reg_alloc,
-                            bool single_block_fast_path) {
+                            bool single_block_fast_path,
+                            const FeatureSet& features) {
     const bool use_fast_path =
             single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
-    RunVerified(hir_function, reg_alloc, use_fast_path, false,
-                IntWidthTieEnabled(), InductTieEnabled());
+    RunVerified(hir_function, reg_alloc, features, use_fast_path, false,
+                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_spill_evict);
 }
 
 void RegisterAllocPass::Run(ir::Block* block,
                             backend::RegAlloc* reg_alloc,
-                            bool scalar_insert) {
-    RunVerified(block, reg_alloc, false, scalar_insert,
-                IntWidthTieEnabled(), InductTieEnabled());
+                            bool scalar_insert,
+                            const FeatureSet& features) {
+    RunVerified(block, reg_alloc, features, false, scalar_insert,
+                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_spill_evict);
 }
 
 void RegisterAllocPass::RunForIntWidthTieTest(ir::Block* block,
                                               backend::RegAlloc* reg_alloc,
                                               bool intwidth_tie) {
-    RunVerified(block, reg_alloc, false, false, intwidth_tie);
+    auto features = FeatureSet{};
+    features.ra_intwidth_tie = intwidth_tie;
+    RunVerified(block, reg_alloc, features, false, false, intwidth_tie,
+                features.induct_tie, features.ra_spill_evict);
 }
 
 void RegisterAllocPass::RunForInductTieTest(ir::Block* block,
                                             backend::RegAlloc* reg_alloc,
                                             bool induct_tie) {
-    RunVerified(block, reg_alloc, false, false, false, induct_tie);
+    auto features = FeatureSet{};
+    features.induct_tie = induct_tie;
+    RunVerified(block, reg_alloc, features, false, false,
+                features.ra_intwidth_tie, induct_tie, features.ra_spill_evict);
 }
 
 RegisterAllocPass::SpillEvictTestResult RegisterAllocPass::RunForSpillEvictTest(
@@ -2237,8 +2232,11 @@ RegisterAllocPass::SpillEvictTestResult RegisterAllocPass::RunForSpillEvictTest(
         backend::RegAlloc* reg_alloc,
         bool spill_evict) {
     SpillEvictTestResult result{};
-    RunVerified(block, reg_alloc, false, false, IntWidthTieEnabled(),
-                InductTieEnabled(), spill_evict, &result);
+    auto features = FeatureSet{};
+    features.ra_spill_evict = spill_evict;
+    RunVerified(block, reg_alloc, features, false, false,
+                features.ra_intwidth_tie, features.induct_tie,
+                spill_evict, &result);
     return result;
 }
 

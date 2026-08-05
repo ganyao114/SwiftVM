@@ -8,6 +8,7 @@
 #include "base/common_funcs.h"
 #include "runtime/common/types.h"
 #include "runtime/common/ra_shape_prof.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/ir/block.h"
 #include "runtime/ir/host_reg.h"
 
@@ -76,8 +77,8 @@ using FPRSMask = RegisterMask<u32>;
 
 // Raw XPOOL request and effective state. Pin level 3 forces the effective state
 // on because pinning x6-x9 would otherwise leave only x14/x15 as value GPRs.
-[[nodiscard]] bool ScratchXPoolRequested();
-[[nodiscard]] bool ScratchXPoolAutoEnabled();
+[[nodiscard]] bool ScratchXPoolRequested(const FeatureSet& features);
+[[nodiscard]] bool ScratchXPoolAutoEnabled(const FeatureSet& features);
 [[nodiscard]] bool X86PinExtLevel3Requested();
 
 // True only for an actual level-2/3 x86 pool: the environment level alone is
@@ -85,7 +86,8 @@ using FPRSMask = RegisterMask<u32>;
 // AddressSpace without the expected static descriptors while inheriting vars.
 [[nodiscard]] bool X86PinExtLevel2Enabled(const GPRSMask& pool);
 [[nodiscard]] bool X86PinExtLevel3Enabled(const GPRSMask& pool);
-[[nodiscard]] bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool);
+[[nodiscard]] bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool,
+                                               const FeatureSet& features);
 // Level 3 can lease the bias-mode x10 reservation to pure high-pressure ALU
 // lowering.
 // It never enters the value pool and memory opcodes never see it as scratch.
@@ -152,14 +154,16 @@ struct ScratchNeed {
 // W52 opt-in scratch-pool contract. OFF preserves the historical global
 // reservation byte-for-byte. ON lets the allocator use x11-x17 and protects
 // only the registers an opcode explicitly clobbers.
-[[nodiscard]] bool ScratchXPoolEnabled();
+[[nodiscard]] bool ScratchXPoolEnabled(const FeatureSet& features);
 
 // Bit mask of architecturally fixed GPR clobbers for one opcode. These are
 // direct SwiftVM uses (atomic status/value registers, host-call/terminal
 // register, cold-path return register), not VIXL's dynamically leased scratch
 // registers.
-[[nodiscard]] u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only = false);
+[[nodiscard]] u32 FixedGPRClobbers(ir::OpCode op, const FeatureSet& features,
+                                   bool scratch_only = false);
 [[nodiscard]] u32 FixedGPRClobbers(const ir::Inst& inst,
+                                   const FeatureSet& features,
                                    bool scratch_only = false);
 inline constexpr u32 kTerminalFixedGPRClobbers = 1u << 11;
 
@@ -178,15 +182,17 @@ inline constexpr u8 kDefaultScratchFPR = 3;
 // Conservative budget by opcode, plus the precise instruction-level contract
 // used whenever the caller has the full IR instruction. Total functions;
 // never fail.
-[[nodiscard]] ScratchNeed ScratchBudget(ir::OpCode op);
-[[nodiscard]] ScratchNeed ScratchBudget(const ir::Inst& inst);
+[[nodiscard]] ScratchNeed ScratchBudget(ir::OpCode op, const FeatureSet& features);
+[[nodiscard]] ScratchNeed ScratchBudget(const ir::Inst& inst,
+                                        const FeatureSet& features);
 [[nodiscard]] ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst);
-[[nodiscard]] bool ScratchPreciseRequested();
+[[nodiscard]] bool ScratchPreciseRequested(const FeatureSet& features);
 
 class RegAlloc : DeleteCopyAndMove {
 public:
 
-    explicit RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs);
+    explicit RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
+                      const FeatureSet& features);
 
     enum Type : u16 {
         NONE,
@@ -207,6 +213,7 @@ public:
 
     [[nodiscard]] const GPRSMask& GetGprs() const;
     [[nodiscard]] const FPRSMask& GetFprs() const;
+    [[nodiscard]] const FeatureSet& GetFeatures() const { return features; }
 
     void MapRegister(u32 id, ir::HostGPR gpr);
     void MapRegister(u32 id, ir::HostFPR fpr);
@@ -259,6 +266,7 @@ private:
     ir::Inst *current_ir{};
     GPRSMask gprs;
     const FPRSMask fprs;
+    const FeatureSet features;
     RAShapeUnitCounters ra_shape{};
 };
 

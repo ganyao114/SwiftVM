@@ -259,7 +259,8 @@ bool Module::PrepareDirectLinkRegion() {
 
     constexpr u32 kMinCodeCacheSize = 32_MB;
     auto [it, inserted] = code_caches.try_emplace(
-            current_code_cache, address_space.GetConfig(), kMinCodeCacheSize);
+            current_code_cache, address_space.GetConfig(), kMinCodeCacheSize,
+            ResolveFeatureSet(module_config));
     if (inserted) {
         ++current_code_cache;
     }
@@ -305,7 +306,8 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size,
         return {INVALID_CACHE_ID, CodeBuffer{nullptr, nullptr, 0, 0}};
     }
     auto ref = code_caches.try_emplace(
-            current_code_cache, address_space.GetConfig(), arena_size);
+            current_code_cache, address_space.GetConfig(), arena_size,
+            ResolveFeatureSet(module_config));
     if (require_direct_link_region || IsDirectLinkConfigured()) {
         const auto return_host = reinterpret_cast<void*>(
                 address_space.GetTrampolines().GetReturnHost());

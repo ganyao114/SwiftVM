@@ -90,7 +90,8 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 has_result,
                 result);
     };
-    if (!backend::ScratchXPoolEnabled() || backend::X86PinExtLevel3Requested()) {
+    if (!backend::ScratchXPoolEnabled(context.GetFeatures()) ||
+        backend::X86PinExtLevel3Requested()) {
         bool level2_pins = true;
         const u32 last_pin = backend::X86PinExtLevel3Requested() ? 9u : 5u;
         for (u32 code = 0; code <= last_pin; ++code) {

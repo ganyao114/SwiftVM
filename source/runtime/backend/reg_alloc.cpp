@@ -17,22 +17,22 @@ static int X86PinExtLevel() {
     return static_cast<int>(GetSvmConfig().x86_pin_ext);
 }
 
-bool ScratchXPoolRequested() {
+bool ScratchXPoolRequested(const FeatureSet& features) {
     // Default ON after the flip A/B (bundled with PIN_EXT=2); =0
     // restores the old dynamic scratch pool as the rollback.
-    return GetSvmConfig().jit_scratch_xpool;
+    return features.jit_scratch_xpool;
 }
 
-bool ScratchXPoolAutoEnabled() {
-    return X86PinExtLevel() >= 3 && !ScratchXPoolRequested();
+bool ScratchXPoolAutoEnabled(const FeatureSet& features) {
+    return X86PinExtLevel() >= 3 && !ScratchXPoolRequested(features);
 }
 
 bool X86PinExtLevel3Requested() {
     return X86PinExtLevel() >= 3;
 }
 
-bool ScratchXPoolEnabled() {
-    return ScratchXPoolRequested() || X86PinExtLevel() >= 3;
+bool ScratchXPoolEnabled(const FeatureSet& features) {
+    return ScratchXPoolRequested(features) || X86PinExtLevel() >= 3;
 }
 
 bool X86PinExtLevel2Enabled(const GPRSMask& pool) {
@@ -59,8 +59,9 @@ bool X86PinExtLevel3Enabled(const GPRSMask& pool) {
     return true;
 }
 
-bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool) {
-    return X86PinExtLevel2Enabled(pool) && !ScratchXPoolEnabled() &&
+bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool,
+                                 const FeatureSet& features) {
+    return X86PinExtLevel2Enabled(pool) && !ScratchXPoolEnabled(features) &&
            pool.Get(12) && pool.Get(13);
 }
 
@@ -76,11 +77,11 @@ static bool X86PinExtEnabled() {
     return X86PinExtLevel() >= 1;
 }
 
-bool ScratchPreciseRequested() {
+bool ScratchPreciseRequested(const FeatureSet& features) {
     // Default ON after the merge A/B (L2 coremark spill 3.04B -> 20,
     // host_dynamic -1.44%; L3 modestly positive, Linux neutral). =0
     // restores the opcode-wide Add/Sub budget as the rollback.
-    return GetSvmConfig().scratch_precise;
+    return features.scratch_precise;
 }
 
 static bool IsEncodedAddSubImmediate(s64 value) {
@@ -171,7 +172,8 @@ static bool ExecProfileEnabled() {
     return GetSvmConfig().exec_prof;
 }
 
-u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
+u32 FixedGPRClobbers(ir::OpCode op, const FeatureSet& features,
+                     bool scratch_only) {
     constexpr u32 x11 = 1u << 11;
     constexpr u32 x12 = 1u << 12;
     constexpr u32 x13 = 1u << 13;
@@ -184,12 +186,12 @@ u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
     // terminal. Profiling OFF keeps the allocator contract byte-for-byte
     // unchanged.
     const u32 exec_profile_clobbers =
-            ScratchXPoolEnabled() && ExecProfileEnabled() ? ip0 | ip1 : 0;
+            ScratchXPoolEnabled(features) && ExecProfileEnabled() ? ip0 | ip1 : 0;
     // Level 2 without XPOOL leases the otherwise globally-reserved x12/x13 as
     // scratch-only registers. It therefore needs the same fixed-clobber
     // exclusions even though those registers remain unavailable to linear
     // scan as value locations.
-    if (!ScratchXPoolEnabled() && !scratch_only) {
+    if (!ScratchXPoolEnabled(features) && !scratch_only) {
         return exec_profile_clobbers;
     }
     switch (op) {
@@ -210,7 +212,7 @@ u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
             // as X87's dedicated VIXL immediate-synthesis register; the Inst
             // overload below adds x12/x13 only for arms that name that pair.
             return exec_profile_clobbers |
-                   (ScratchXPoolEnabled() ? ip0 : 0);
+                   (ScratchXPoolEnabled(features) ? ip0 : 0);
         // Host-call target and fixed-location materialization.
         case ir::OpCode::CallLambda:
         case ir::OpCode::CallDynamic:
@@ -241,9 +243,10 @@ u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {
     }
 }
 
-u32 FixedGPRClobbers(const ir::Inst& inst, bool scratch_only) {
-    u32 fixed = FixedGPRClobbers(inst.GetOp(), scratch_only);
-    if (inst.GetOp() != ir::OpCode::X87Op || !ScratchXPoolEnabled()) {
+u32 FixedGPRClobbers(const ir::Inst& inst, const FeatureSet& features,
+                     bool scratch_only) {
+    u32 fixed = FixedGPRClobbers(inst.GetOp(), features, scratch_only);
+    if (inst.GetOp() != ir::OpCode::X87Op || !ScratchXPoolEnabled(features)) {
         return fixed;
     }
     const u64 command = inst.GetArg<ir::Imm>(1).Get();
@@ -274,7 +277,7 @@ u32 FixedGPRClobbers(const ir::Inst& inst, bool scratch_only) {
 //    that three plus whatever the calling emitter is already holding -- two
 //    for the 32-bit scalar shapes (merge target + the FPR-materialised right
 //    operand), one for the 64-bit ones, none for the packed ones.
-ScratchNeed ScratchBudget(ir::OpCode op) {
+ScratchNeed ScratchBudget(ir::OpCode op, const FeatureSet& features) {
     switch (op) {
         case ir::OpCode::AtomicExchange:
             // Level 3's spill-aware accounting must use the measured emitter
@@ -289,7 +292,7 @@ ScratchNeed ScratchBudget(ir::OpCode op) {
             return {kDefaultScratchGPR, kDefaultScratchFPR};
         // --- x87 GPRs ----------------------------------------------------
         case ir::OpCode::X87Op:
-            if ((X86PinExtLevel() >= 2 && !ScratchXPoolEnabled()) ||
+            if ((X86PinExtLevel() >= 2 && !ScratchXPoolEnabled(features)) ||
                 X86PinExtLevel() >= 3) {
                 // The reduced dynamic pool cannot cover the inline x87 peak.
                 // The emitter deliberately selects its exact host-helper
@@ -346,13 +349,13 @@ ScratchNeed ScratchBudget(ir::OpCode op) {
     }
 }
 
-ScratchNeed ScratchBudget(const ir::Inst& inst) {
-    auto need = ScratchBudget(inst.GetOp());
-    if (ScratchPreciseRequested() &&
+ScratchNeed ScratchBudget(const ir::Inst& inst, const FeatureSet& features) {
+    auto need = ScratchBudget(inst.GetOp(), features);
+    if (ScratchPreciseRequested(features) &&
         (inst.GetOp() == ir::OpCode::Add || inst.GetOp() == ir::OpCode::Sub)) {
         return PreciseAddSubScratchBudget(inst);
     }
-    if (inst.GetOp() != ir::OpCode::X87Op || !ScratchXPoolEnabled()) {
+    if (inst.GetOp() != ir::OpCode::X87Op || !ScratchXPoolEnabled(features)) {
         return need;
     }
     const u64 command = inst.GetArg<ir::Imm>(1).Get();
@@ -369,8 +372,17 @@ ScratchNeed ScratchBudget(const ir::Inst& inst) {
     return need;
 }
 
-RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs)
-        : alloc_result(instr_size), gprs(gprs), fprs(fprs) {}
+RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
+                   const FeatureSet& features)
+        : alloc_result(instr_size), gprs(gprs), fprs(fprs), features(features) {
+    // Trampolines 暴露跨 module 的最大 GPR 并集。XPOOL 关闭时在 unit 私有
+    // allocator 里恢复旧保留集，保持默认发码不变，同时允许 module 快照分叉。
+    if (!ScratchXPoolEnabled(features)) {
+        for (u32 code : {11u, 12u, 13u, 16u, 17u}) {
+            this->gprs.Mark(code);
+        }
+    }
+}
 
 void RegAlloc::ResetAllocations() {
     std::fill(alloc_result.begin(), alloc_result.end(), Map{});

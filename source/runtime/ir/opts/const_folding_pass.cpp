@@ -98,9 +98,9 @@ struct VecKeyHash {
 // IR instructions; roughly one guest instruction's worth of expansion.
 constexpr u32 kReuseWindow = 8;
 
-void DedupConstants(Block* block) {
+void DedupConstants(Block* block, const FeatureSet& features) {
     // Bisect switch, mirroring SVM_UNIFORM_DSE.
-    const bool imm_off = !GetSvmConfig().const_cse;
+    const bool imm_off = !features.const_cse;
     struct Entry {
         Value value;
         u32 index;
@@ -200,18 +200,20 @@ void DedupConstants(Block* block) {
 
 }  // namespace
 
-void ConstFoldingPass::Run(HIRBuilder* hir_builder) {
+void ConstFoldingPass::Run(HIRBuilder* hir_builder, const FeatureSet& features) {
     for (auto &hir_func : hir_builder->GetHIRFunctions()) {
-        Run(&hir_func);
+        Run(&hir_func, features);
     }
 }
 
-void ConstFoldingPass::Run(HIRFunction* hir_function) {
+void ConstFoldingPass::Run(HIRFunction* hir_function, const FeatureSet& features) {
     for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
-        DedupConstants(hir_block.GetBlock());
+        DedupConstants(hir_block.GetBlock(), features);
     }
 }
 
-void ConstFoldingPass::Run(Block* block) { DedupConstants(block); }
+void ConstFoldingPass::Run(Block* block, const FeatureSet& features) {
+    DedupConstants(block, features);
+}
 
 }

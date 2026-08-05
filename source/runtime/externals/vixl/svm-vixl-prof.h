@@ -16,8 +16,8 @@ enum class Part {
 bool Enabled();
 bool FastEnabled();
 bool Recording();
-void BeginJit();
-void EndJit();
+bool BeginJit(bool fast_enabled);
+void EndJit(bool previous_fast_enabled);
 bool Enter(Part part);
 void Leave(Part part, unsigned long long ns);
 void CountBufferGrow();
@@ -25,11 +25,15 @@ void FlushThread();
 
 class JitScope {
  public:
-  JitScope() { BeginJit(); }
-  ~JitScope() { EndJit(); }
+  explicit JitScope(bool fast_enabled)
+      : previous_fast_enabled_(BeginJit(fast_enabled)) {}
+  ~JitScope() { EndJit(previous_fast_enabled_); }
 
   JitScope(const JitScope&) = delete;
   JitScope& operator=(const JitScope&) = delete;
+
+ private:
+  bool previous_fast_enabled_;
 };
 
 class Scope {

@@ -3,6 +3,7 @@
 //
 
 #include "runtime/backend/code_serial.h"
+#include "runtime/backend/module.h"
 #include "runtime/common/svm_config.h"
 
 #include <algorithm>
@@ -811,6 +812,22 @@ u64 ComputeConfigHash(const Config& config) {
     for (const auto& range : config.xmm_uniform_ranges) {
         h = HashU64(range.offset, h);
         h = HashU64(range.size, h);
+    }
+    return h;
+}
+
+u64 ComputeConfigHash(const Config& config, const ModuleConfig& module_config) {
+    u64 h = ComputeConfigHash(config);
+    // 空覆盖必须保持旧 cache identity；只有 P3 真正设置 module override 时才
+    // 进入独立哈希域，并只序列化显式项。
+    if (module_config.feature_overrides.Empty()) return h;
+    h = HashU64(0x53564d4645415455ull, h);  // "SVMFEATU"
+    for (std::size_t i = 0; i < kFeatureCount; ++i) {
+        const auto id = static_cast<FeatureId>(i);
+        if (const auto value = module_config.feature_overrides.Get(id)) {
+            h = HashU64(i, h);
+            h = HashU64(*value ? 1 : 0, h);
+        }
     }
     return h;
 }

@@ -53,7 +53,7 @@ bool WaitRegion(Predicate&& predicate, std::chrono::milliseconds timeout) {
 }
 
 struct RegionFunction {
-    HIRBuilder builder{1, true};
+    HIRBuilder builder{1, true, swift::runtime::FeatureSet{}};
     HIRFunction* function{};
 };
 

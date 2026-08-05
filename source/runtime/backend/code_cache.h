@@ -10,6 +10,7 @@
 #include "runtime/backend/cache_clear.h"
 #include "runtime/backend/mem_map.h"
 #include "runtime/common/types.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/include/config.h"
 
 namespace swift::runtime::backend {
@@ -59,7 +60,8 @@ struct CodeBuffer {
 
 class CodeCache {
 public:
-    explicit CodeCache(const Config& config, u32 size, bool read_only = false);
+    explicit CodeCache(const Config& config, u32 size,
+                       const FeatureSet& features, bool read_only = false);
 
     ~CodeCache();
 
@@ -84,6 +86,7 @@ private:
     void Init();
 
     const Config& config;
+    const FeatureSet features;
     const size_t inst_alignment;
     const bool read_only;
     u32 max_size;

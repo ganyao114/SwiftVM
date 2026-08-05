@@ -10,9 +10,9 @@ namespace swift::runtime::ir {
 
 class ConstFoldingPass {
 public:
-    static void Run(HIRBuilder *hir_builder);
-    static void Run(HIRFunction *hir_function);
-    static void Run(Block *block);
+    static void Run(HIRBuilder *hir_builder, const FeatureSet& features);
+    static void Run(HIRFunction *hir_function, const FeatureSet& features);
+    static void Run(Block *block, const FeatureSet& features);
 };
 
 }  // namespace swift::runtime::ir

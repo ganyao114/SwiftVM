@@ -11,11 +11,11 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool GcmPclMul2Enabled() {
+bool GcmPclMul2Enabled(const FeatureSet& features) {
     // This is a targeted fast path for the high-high PCLMUL selector used by
     // OpenSSL's Karatsuba GHASH fold.  Keep an exact process-level fallback
     // while defaulting to the architecturally equivalent PMULL2 instruction.
-    return GetSvmConfig().x86_gcm_pclmul2;
+    return features.x86_gcm_pclmul2;
 }
 
 }  // namespace
@@ -1516,7 +1516,7 @@ void JitTranslator::EmitVecPclMul(ir::Inst* inst) {
     // PCLMULQDQ's high-high form maps exactly to ARM64 PMULL2.  Routing it
     // through two lane DUPs plus PMULL inflated the GHASH Karatsuba fold by
     // two host instructions per 0x11 multiply; FEX takes this PMULL2 form.
-    if ((select & 0x11) == 0x11 && GcmPclMul2Enabled()) {
+    if ((select & 0x11) == 0x11 && GcmPclMul2Enabled(context.GetFeatures())) {
         // The VIXL snapshot exposes Pmull2 but emits an unallocated sentinel
         // for it.  Keep this beside the existing raw PMULL encoding instead.
         masm.dci(Crypto3(kPmull2, result, left, right));
@@ -1711,9 +1711,9 @@ void JitTranslator::QueueVecNaNColdPath(VecNaNColdKind kind,
         const auto ordered_mask = xmm_pool_ext ? context.GetTmpV() : ipv3;
         __ Fcmeq(ordered_mask.V2D(), result.V2D(), result.V2D());
         const auto lane0 =
-                backend::ScratchXPoolEnabled() ? context.GetTmpX() : ip0;
+                backend::ScratchXPoolEnabled(context.GetFeatures()) ? context.GetTmpX() : ip0;
         const auto lane1 =
-                backend::ScratchXPoolEnabled() ? context.GetTmpX() : ip1;
+                backend::ScratchXPoolEnabled(context.GetFeatures()) ? context.GetTmpX() : ip1;
         __ Umov(lane0, ordered_mask.V2D(), 0);
         __ Umov(lane1, ordered_mask.V2D(), 1);
         __ And(lane0, lane0, lane1);

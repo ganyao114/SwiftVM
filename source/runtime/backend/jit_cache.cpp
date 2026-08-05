@@ -139,7 +139,8 @@ JitDiskCache::~JitDiskCache() {
 ValidityKey JitDiskCache::Key() const {
     return ValidityKey{kCacheFormatVersion,
                        ComputeBuildId(),
-                       ComputeConfigHash(address_space.GetConfig()),
+                       ComputeConfigHash(address_space.GetConfig(),
+                                         address_space.GetDefaultModule()->GetModuleConfig()),
                        ComputeEnvHash(),
                        ComputeGuestId()};
 }

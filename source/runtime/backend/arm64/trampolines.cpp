@@ -7,6 +7,7 @@
 #include "runtime/backend/arm64/fpcr_mode.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/fpcr_tax_prof.h"
+#include "runtime/externals/vixl/svm-vixl-prof.h"
 #include "trampolines.h"
 #include "defines.h"
 #include <algorithm>
@@ -17,9 +18,12 @@
 #define __ assembler.
 namespace swift::runtime::backend::arm64 {
 
-TrampolinesArm64::TrampolinesArm64(const Config& config) : Trampolines(config) { Build(); }
+TrampolinesArm64::TrampolinesArm64(const Config& config,
+                                   const FeatureSet& features)
+        : Trampolines(config, features), features(features) { Build(); }
 
 void TrampolinesArm64::Build() {
+    vixl::svm_vixl_prof::JitScope vixl_prof{features.vixl_fast};
     MacroAssembler assembler{};
     BuildRuntimeEntry(assembler);
     __ FinalizeCode();
@@ -81,11 +85,9 @@ void TrampolinesArm64::Build() {
         gpr_regs.Mark(local.GetCode());
     }
     gpr_regs.Mark(flags.GetCode());
-    if (!backend::ScratchXPoolEnabled()) {
-        gpr_regs.Mark(ip.GetCode());
-        gpr_regs.Mark(atomic_scratch.GetCode());
-        gpr_regs.Mark(atomic_pair_scratch.GetCode());
-    }
+    // x11-x13/x16-x17 是否进入 value pool 是单 unit FeatureSet 决策。
+    // 这里保留可用并集，RegAlloc 构造时再按该 unit 的快照收紧；否则默认
+    // module 的值会永久限制同一 AddressSpace 里的其他 module。
     // vixl's MacroAssembler synthesizes un-encodable immediates and
     // out-of-range memory offsets through UseScratchRegisterScope, whose
     // default pool is tmp_list_ = {x16, x17} (macro-assembler-aarch64.cc).
@@ -94,10 +96,6 @@ void TrampolinesArm64::Build() {
     // OFF retains the historical global reservation. ON hands the explicit
     // x11-x17 availability set to each emission's VIXL scratch scope, so an
     // allocator assignment and an implicit VIXL lease cannot overlap.
-    if (!backend::ScratchXPoolEnabled()) {
-        gpr_regs.Mark(ip0.GetCode());
-        gpr_regs.Mark(ip1.GetCode());
-    }
 
     // FPR registers can use
     fpr_regs.Reset(0);
@@ -163,9 +161,9 @@ void TrampolinesArm64::Build() {
                      pin_ext_level3,
                      gpr_regs.Get(6) && gpr_regs.Get(7) &&
                              gpr_regs.Get(8) && gpr_regs.Get(9),
-                     backend::ScratchXPoolRequested(),
-                     backend::ScratchXPoolEnabled(),
-                     backend::ScratchXPoolAutoEnabled(),
+                     backend::ScratchXPoolRequested(features),
+                     backend::ScratchXPoolEnabled(features),
+                     backend::ScratchXPoolAutoEnabled(features),
                      gpr_regs.Get(22),
                      gpr_regs.Get(23),
                      gpr_regs.Get(18),

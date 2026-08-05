@@ -16,8 +16,8 @@ namespace swift::runtime::ir {
 static bool EnvDumpIr() { return GetSvmConfig().dump_ir; }
 static bool EnvDumpIrPost() { return GetSvmConfig().dump_ir_post; }
 
-[[nodiscard]] static bool UniformRangeEnabled() {
-    return GetSvmConfig().ir_uniform_range;
+[[nodiscard]] static bool UniformRangeEnabled(const FeatureSet& features) {
+    return features.ir_uniform_range;
 }
 
 [[nodiscard]] static const UniformEffectSet* HelperUniformEffects(const Inst& inst) {
@@ -54,8 +54,8 @@ struct UniformValue {
     }
 };
 
-[[nodiscard]] static bool PathForwardOff() {
-    return !GetSvmConfig().uniform_path_fwd;
+[[nodiscard]] static bool PathForwardOff(const FeatureSet& features) {
+    return !features.uniform_path_fwd;
 }
 
 // Keep the XMM state resident only within one IR unit.  This switch controls
@@ -63,24 +63,24 @@ struct UniformValue {
 // neither changes the trampoline's entry fill/exit spill nor enables any
 // cross-block residency.  The x86 frontend supplies the range so U64
 // XmmLo/XmmHi views are covered alongside direct V128 accesses.
-[[nodiscard]] static bool XmmUniformForwardOff() {
-    return !GetSvmConfig().xmm_uniform_fwd;
+[[nodiscard]] static bool XmmUniformForwardOff(const FeatureSet& features) {
+    return !features.xmm_uniform_fwd;
 }
 
 // Phase 2 complements store->load forwarding with load->load forwarding for
 // XMM state only. A first load is a valid byte fact until the same barriers and
 // stores that already delimit the legacy table; subsequent identical views can
 // therefore reuse it without touching the architectural context again.
-[[nodiscard]] static bool XmmSsaForward2Off() {
-    return !GetSvmConfig().xmm_ssa_fwd2;
+[[nodiscard]] static bool XmmSsaForward2Off(const FeatureSet& features) {
+    return !features.xmm_ssa_fwd2;
 }
 
 // A V32/V64 scalar operand names the low lane of the same FPR value as the
 // frontend's architectural V128 XMM store/load. Keep that view as a typed SSA
 // alias instead of forcing a uniform-buffer round trip merely because its IR
 // width is narrower. SVM_XMM_NARROW_FWD=0 restores the pre-fix rule for A/B.
-[[nodiscard]] static bool XmmNarrowForwardOff() {
-    return !GetSvmConfig().xmm_narrow_fwd;
+[[nodiscard]] static bool XmmNarrowForwardOff(const FeatureSet& features) {
+    return !features.xmm_narrow_fwd;
 }
 
 // --- dead uniform store elimination ----------------------------------------
@@ -175,7 +175,9 @@ struct UniformValue {
 }
 
 static void EliminateDeadStores(Block* block, const UniformInfo& info,
-                                HIRFunction* hir_function, bool xmm_only = false) {
+                                HIRFunction* hir_function,
+                                const FeatureSet& features,
+                                bool xmm_only = false) {
     PerfScope2 perf_dse{GetPerfStats2().uniform_dse};
     auto& inst_list = block->GetInstList();
     // killed[i] = byte i of the uniform buffer is overwritten later in this
@@ -206,7 +208,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 if (xmm_only && !info.IsXmmUniformRange(off, size)) {
                     break;
                 }
-                if (XmmUniformForwardOff() && info.IsXmmUniformRange(off, size)) {
+                if (XmmUniformForwardOff(features) && info.IsXmmUniformRange(off, size)) {
                     break;
                 }
                 if (off + size > killed.size()) {
@@ -235,7 +237,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 if (xmm_only && !info.IsXmmUniformRange(off, size)) {
                     break;
                 }
-                if (XmmUniformForwardOff() && info.IsXmmUniformRange(off, size)) {
+                if (XmmUniformForwardOff(features) && info.IsXmmUniformRange(off, size)) {
                     break;
                 }
                 for (u32 i = 0; i < size && off + i < killed.size(); ++i) {
@@ -264,7 +266,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 }
                 break;
             case OpCode::BindLabel:
-                if (PathForwardOff()) {
+                if (PathForwardOff(features)) {
                     clear_all();
                 } else {
                     label_killed[inst.GetArg<Value>(0).Def()] =
@@ -273,7 +275,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 break;
             case OpCode::Goto:
             case OpCode::NotGoto: {
-                if (PathForwardOff()) {
+                if (PathForwardOff(features)) {
                     clear_all();
                     break;
                 }
@@ -320,6 +322,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
 }
 
 void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fast_path,
+                                 const FeatureSet& features,
                                  HIRFunction* hir_function) {
     PerfScope2 perf_forward{GetPerfStats2().uniform_forward};
 
@@ -361,11 +364,11 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     // existing dead-store wins. Run the same proven sweep on the original
     // Load/StoreUniform stream first, then skip the post-conversion sweep.
     // OFF retains the historical pass order byte-for-byte.
-    const bool dse_off = !GetSvmConfig().uniform_dse;
+    const bool dse_off = !features.uniform_dse;
     const bool pin_ext_dse = info.uni_gprs.Get(22) && info.uni_gprs.Get(23) &&
                              info.uni_gprs.Get(29);
     if (pin_ext_dse && !dse_off) {
-        EliminateDeadStores(block, info, hir_function);
+        EliminateDeadStores(block, info, hir_function, features);
     }
 
     StackVector<UniformValue, 0x100> uniform_values{info.uniform_size};
@@ -440,7 +443,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 auto uni_size{GetValueSizeByte(uni_type)};
                 auto is_float{IsFloatValueType(uni_type)};
                 const bool xmm_forward_disabled =
-                        XmmUniformForwardOff() && info.IsXmmUniformRange(uni_offset, uni_size);
+                        XmmUniformForwardOff(features) && info.IsXmmUniformRange(uni_offset, uni_size);
                 ASSERT_MSG(uni_offset + uni_size <= uniform_values.size(),
                            "uniform load [{}, {}) exceeds uniform buffer size {}",
                            uni_offset, uni_offset + uni_size, uniform_values.size());
@@ -495,7 +498,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     // to the ordinary byte-fact table closes the earlier
                     // store/load and load/load forwarding gap as well.
                     const bool low_fpr_view =
-                            !XmmNarrowForwardOff() && same_reg_class && is_float &&
+                            !XmmNarrowForwardOff(features) && same_reg_class && is_float &&
                             value_offset == 0 && uni_size < value_size;
                     const bool scalar_extract =
                             same_reg_class && !is_float &&
@@ -548,7 +551,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                              uniform_register.host_reg.gpr.id == 22 ||
                              uniform_register.host_reg.gpr.id == 23 ||
                              uniform_register.host_reg.gpr.id == 29);
-                    if ((UniformRangeEnabled() || pin_ext_gpr) &&
+                    if ((UniformRangeEnabled(features) || pin_ext_gpr) &&
                         !uniform_register.host_reg.is_fpr && try_forward_load()) {
                         break;
                     }
@@ -579,7 +582,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 if (try_forward_load()) {
                     break;
                 }
-                if (!xmm_forward_disabled && !XmmSsaForward2Off() &&
+                if (!xmm_forward_disabled && !XmmSsaForward2Off(features) &&
                            info.IsXmmUniformRange(uni_offset, uni_size)) {
                     // Unlike a store fact, this value names the load itself.
                     // Recording every byte preserves the existing continuity
@@ -602,7 +605,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 auto value_size{GetValueSizeByte(value_type)};
                 auto value_is_float{IsFloatValueType(value_type)};
                 const bool xmm_forward_disabled =
-                        XmmUniformForwardOff() && info.IsXmmUniformRange(uni_offset, value_size);
+                        XmmUniformForwardOff(features) && info.IsXmmUniformRange(uni_offset, value_size);
                 ASSERT_MSG(uni_offset + value_size <= uniform_values.size(),
                            "uniform store [{}, {}) exceeds uniform buffer size {}",
                            uni_offset, uni_offset + value_size, uniform_values.size());
@@ -649,7 +652,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     const bool pin_ext_gpr = !mapped_fpr &&
                             (reg_index <= 9 || reg_index == 22 ||
                              reg_index == 23 || reg_index == 29);
-                    if ((UniformRangeEnabled() || pin_ext_gpr) && !mapped_fpr &&
+                    if ((UniformRangeEnabled(features) || pin_ext_gpr) && !mapped_fpr &&
                         uni_reg_size == sizeof(u64)) {
                         // The pinned GPR now contains this value in exactly the
                         // bytes written by SetHostGPR. Keep every other byte
@@ -681,7 +684,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
             case OpCode::CallLambda:
             case OpCode::CallDynamic:
                 barrier_count++;
-                if (UniformRangeEnabled()) {
+                if (UniformRangeEnabled(features)) {
                     invalidate_helper_effects(inst);
                 } else {
                     invalidate_uniform_values();
@@ -707,7 +710,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
             case OpCode::Goto:
             case OpCode::NotGoto:
                 barrier_count++;
-                if (PathForwardOff()) {
+                if (PathForwardOff(features)) {
                     invalidate_uniform_values();
                 } else {
                     label_values[&inst] =
@@ -717,7 +720,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 break;
             case OpCode::BindLabel: {
                 barrier_count++;
-                if (PathForwardOff()) {
+                if (PathForwardOff(features)) {
                     invalidate_uniform_values();
                     break;
                 }
@@ -795,35 +798,37 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     // reverse dataflow scan provably a no-op.
     if (!dse_off && (!fast_path || store_count >= 2)) {
         if (!pin_ext_dse) {
-            EliminateDeadStores(block, info, hir_function);
-        } else if (!XmmNarrowForwardOff()) {
+            EliminateDeadStores(block, info, hir_function, features);
+        } else if (!XmmNarrowForwardOff(features)) {
             // PIN_EXT must run the generic sweep before mapped StoreUniforms
             // become SetHostGPR. That early sweep still sees V32/V64 loads and
             // therefore cannot know they will fold to a V128 SSA value below.
             // Revisit only XMM stores after forwarding; mapped GPR operations
             // are disjoint and no longer block the newly exposed dead stores.
-            EliminateDeadStores(block, info, hir_function, true);
+            EliminateDeadStores(block, info, hir_function, features, true);
         }
     }
 }
 
 void UniformEliminationPass::Run(Block* block, const UniformInfo& info,
+                                 const FeatureSet& features,
                                  HIRFunction* hir_function) {
-    const bool fast_path = GetSvmConfig().uniform_fast;
-    Run(block, info, fast_path, hir_function);
+    Run(block, info, features.uniform_fast, features, hir_function);
 }
 
-void UniformEliminationPass::Run(HIRBuilder* hir_builder, const UniformInfo& info, bool mem_to_regs) {
+void UniformEliminationPass::Run(HIRBuilder* hir_builder, const UniformInfo& info,
+                                 bool mem_to_regs, const FeatureSet& features) {
     for (auto &func : hir_builder->GetHIRFunctions()) {
-        Run(&func, info, mem_to_regs);
+        Run(&func, info, mem_to_regs, features);
     }
 }
 
-void UniformEliminationPass::Run(HIRFunction* hir_func, const UniformInfo& info, bool mem_to_regs) {
+void UniformEliminationPass::Run(HIRFunction* hir_func, const UniformInfo& info,
+                                 bool mem_to_regs, const FeatureSet& features) {
     (void)mem_to_regs;
     for (auto* hir_block : hir_func->GetHIRBlocks()) {
         if (hir_block) {
-            Run(hir_block->GetBlock(), info, hir_func);
+            Run(hir_block->GetBlock(), info, features, hir_func);
         }
     }
 }

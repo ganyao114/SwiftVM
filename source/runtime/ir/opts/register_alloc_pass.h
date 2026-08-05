@@ -18,20 +18,25 @@ public:
         bool fell_back_to_ladder{};
     };
 
-    static void Run(HIRBuilder *hir_builder, backend::RegAlloc *reg_alloc);
-    static void Run(HIRFunction *hir_function, backend::RegAlloc *reg_alloc);
+    static void Run(HIRBuilder *hir_builder, backend::RegAlloc *reg_alloc,
+                    const FeatureSet& features);
+    static void Run(HIRFunction *hir_function, backend::RegAlloc *reg_alloc,
+                    const FeatureSet& features);
     static void RunWithScalarInsert(HIRFunction *hir_function,
                                     backend::RegAlloc *reg_alloc,
-                                    bool scalar_insert);
+                                    bool scalar_insert,
+                                    const FeatureSet& features);
     // Explicit selector used by the equivalence tests to run both algorithms
     // in one process. Production callers use the overload above, which reads
     // SVM_RA_1BLK once and defaults to the fast path.
     static void Run(HIRFunction *hir_function,
                     backend::RegAlloc *reg_alloc,
-                    bool single_block_fast_path);
+                    bool single_block_fast_path,
+                    const FeatureSet& features);
     static void Run(ir::Block *block,
                     backend::RegAlloc *reg_alloc,
-                    bool scalar_insert = false);
+                    bool scalar_insert,
+                    const FeatureSet& features);
     // Explicit gate selector for unit tests that compare OFF and ON allocation
     // in one process. Production callers use the overload above, which reads
     // SVM_RA_INTWIDTH_TIE once and defaults to OFF.

@@ -50,6 +50,8 @@
 
 namespace swift::runtime::backend {
 
+struct ModuleConfig;
+
 // --------------------------------------------------------------------------
 // Host image identity
 // --------------------------------------------------------------------------
@@ -239,6 +241,7 @@ u64 ComputeEnvHash();
 // only its page offset and nullness -- its value lives in a register (pt) and
 // never in an instruction immediate.
 u64 ComputeConfigHash(const Config& config);
+u64 ComputeConfigHash(const Config& config, const ModuleConfig& module_config);
 
 // Identity of the guest image. By default this preserves the legacy all-argv
 // hash. SVM_JIT_CACHE_EXEC_ID=1 instead uses only argv[1]'s path + file

@@ -83,7 +83,7 @@ void X64Decoder::DecodeAes(_DInst& insn, u32 kind) {
     const auto source = LoadSrcVec(insn, insn.ops[1]);
     const auto destination = XmmRead(dst);
     const bool reuse_zero =
-            kind < 4 && VecLoweringEnabled(swift::runtime::GetSvmConfig().aes_zero_reuse);
+            kind < 4 && VecLoweringEnabled(features_.aes_zero_reuse);
     ir::Value zero;
     if (reuse_zero) {
         zero = __ VecSharedZero().SetType(ir::ValueType::V128);

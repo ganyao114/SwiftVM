@@ -63,7 +63,8 @@ static_assert(kMaxSpillSlots == sizeof(State::spill_area) / sizeof(u64),
 JitContext::JitContext(const std::shared_ptr<Module>& module,
                        RegAlloc& reg_alloc,
                        bool enable_direct_link)
-        : module(module), reg_alloc(reg_alloc) {
+        : module(module), features(ResolveFeatureSet(module->GetModuleConfig())),
+          reg_alloc(reg_alloc) {
 #if defined(__linux__) && !defined(__ANDROID__)
     const bool has_spill = reg_alloc.SpillCount() != 0;
     ASSERT_MSG(!has_spill || reg_alloc.GetGprs().Get(18),
@@ -425,7 +426,7 @@ backend::ScratchNeed JitContext::CurrentBudget() const {
     // Block terminals are emitted after the last instruction's TickIR and
     // share its masks; they take no scratch of their own, so charging them to
     // the default budget is exact.
-    return cur_inst ? backend::ScratchBudget(*cur_inst)
+    return cur_inst ? backend::ScratchBudget(*cur_inst, features)
                     : backend::ScratchNeed{backend::kDefaultScratchGPR,
                                            backend::kDefaultScratchFPR};
 }
@@ -554,7 +555,7 @@ void JitContext::ReserveTmpX(const XRegister& reg) {
 }
 
 XRegister JitContext::GetSharedTmpX() {
-    if (!backend::ScratchXPoolEnabled()) {
+    if (!backend::ScratchXPoolEnabled(features)) {
         return ip;
     }
     if (shared_tmp_gpr < 0) {
@@ -757,9 +758,9 @@ void JitContext::ReturnToDispatcher(const Register& location) {
 
 void JitContext::EmitRSBPush(u64 guest_return_addr, u32 dispatch_index) {
     Label rsb_full;
-    const auto bound = backend::ScratchXPoolEnabled() ? GetTmpX() : ip0;
-    const auto guest = backend::ScratchXPoolEnabled() ? GetTmpX() : ip0;
-    const auto slot = backend::ScratchXPoolEnabled() ? GetTmpX() : ip1;
+    const auto bound = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip0;
+    const auto guest = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip0;
+    const auto slot = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip1;
     // Overflow guard: if rsb_ptr has already reached the bottom of the buffer
     // (state->rsb_bottom == &rsb_frames[0], stack full), a pre-decrement push
     // would store out of bounds — skip the push and let the ret take the slow
@@ -777,8 +778,8 @@ void JitContext::EmitRSBPush(u64 guest_return_addr, u32 dispatch_index) {
 
 void JitContext::EmitRSBPop() {
     Label rsb_miss, rsb_empty;
-    const auto predicted = backend::ScratchXPoolEnabled() ? GetTmpX() : ip0;
-    const auto actual = backend::ScratchXPoolEnabled() ? GetTmpX() : ip1;
+    const auto predicted = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip0;
+    const auto actual = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip1;
     // Underflow guard: if rsb_ptr has reached the empty top of the stack
     // (state->rsb_top == &rsb_frames[rsb_stack_size]), there are more guest
     // rets than recorded calls, so no valid prediction exists — fall back to
@@ -835,7 +836,7 @@ u32 JitContext::GetDispatchIndex(u64 guest_addr) {
 }
 
 void JitContext::Finish() {
-    vixl::svm_vixl_prof::JitScope prof;
+    vixl::svm_vixl_prof::JitScope prof{features.vixl_fast};
     __ FinalizeCode();
     MaybeDumpHostBytes();
     if (RAShapeProfEnabled() && !ra_shape_submitted) {
@@ -1044,8 +1045,8 @@ void JitContext::TickIR(ir::Inst* instr) {
     shared_tmp_gpr = -1;
     auxiliary_scratch = false;
     const bool scratch_only =
-            backend::X86PinExtScratchOnlyEnabled(reg_alloc.GetGprs());
-    const u32 fixed = backend::FixedGPRClobbers(*instr, scratch_only);
+            backend::X86PinExtScratchOnlyEnabled(reg_alloc.GetGprs(), features);
+    const u32 fixed = backend::FixedGPRClobbers(*instr, features, scratch_only);
     for (u32 code = 0; code < 32; ++code) {
         if (fixed & (1u << code)) {
             cur_dirty_gprs.Mark(code);
@@ -1076,7 +1077,7 @@ void JitContext::TickIR(ir::Inst* instr) {
 }
 
 void JitContext::BeginVixlScratch(bool allow_pool) {
-    if (!backend::ScratchXPoolEnabled()) {
+    if (!backend::ScratchXPoolEnabled(features)) {
         return;
     }
     ASSERT(!vixl_scratch_scope);
@@ -1119,7 +1120,7 @@ void JitContext::EndVixlScratch() {
                 spill_tmp_gprs;
         // A VIXL register already declared as a fixed opcode clobber consumes
         // no dynamic scratch headroom; RA excluded it independently.
-        const u32 fixed = cur_inst ? backend::FixedGPRClobbers(*cur_inst) : 0;
+        const u32 fixed = cur_inst ? backend::FixedGPRClobbers(*cur_inst, features) : 0;
         const u32 vixl_used = static_cast<u32>(
                 __builtin_popcountll(acquired & ~fixed));
         last_instruction_scratch_gpr = explicit_used + vixl_used;
@@ -1195,7 +1196,7 @@ void JitContext::BeginTerminalScratch() {
             tick_dirty_gprs.Mark(code);
         }
     }
-    if (backend::X86PinExtScratchOnlyEnabled(reg_alloc.GetGprs())) {
+    if (backend::X86PinExtScratchOnlyEnabled(reg_alloc.GetGprs(), features)) {
         cur_dirty_gprs.Clear(12);
         cur_dirty_gprs.Clear(13);
         tick_dirty_gprs.Clear(12);

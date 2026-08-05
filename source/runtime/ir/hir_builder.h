@@ -7,6 +7,7 @@
 #include <span>
 #include "runtime/common/mem_arena.h"
 #include "runtime/common/object_pool.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/ir/function.h"
 #include "runtime/ir/host_reg.h"
 #include "runtime/ir/module.h"
@@ -550,7 +551,11 @@ public:
     // decodes the remaining queued CFG blocks before calling EndFunction().
     explicit HIRBuilder(u32 func_cap = 1,
                         bool defer_function_end = false,
-                        bool ir_fast = IRBuildFastEnabled());
+                        bool ir_fast = IRBuildFastEnabled(),
+                        const FeatureSet& features = FeatureSet{});
+    HIRBuilder(u32 func_cap, bool defer_function_end,
+               const FeatureSet& features)
+            : HIRBuilder(func_cap, defer_function_end, IRBuildFastEnabled(), features) {}
 
     HIRFunction* AppendFunction(Location start, Location end = {});
 
@@ -664,7 +669,6 @@ private:
     // is therefore byte-identical, which is the check this is verified with
     // (SVM_PROF=2 per-unit ir/host fingerprints) rather than a claim.
     bool FoldAdvancePC(const Imm& imm);
-    static bool AdvancePCCoalesceEnabled();
 
     // Every opcode whose backend emission can leave state that EmitAdvancePC
     // would have to commit. `nzcv_dirty` is only ever set by SaveHostFlags and
@@ -703,7 +707,7 @@ private:
     Inst* last_advance{};
     HIRBlock* last_advance_block{};
     bool flags_since_advance{false};
-    const bool advpc_coalesce{AdvancePCCoalesceEnabled()};
+    const bool advpc_coalesce;
 };
 
 void DfsHIRBlock(HIRBlock* start, HIRBlock* end, HIRBlockSet& visited);

@@ -575,9 +575,11 @@ HIRPoolLease::~HIRPoolLease() {
     tls_pools_in_use = false;
 }
 
-HIRBuilder::HIRBuilder(u32 func_cap, bool defer_function_end, bool ir_fast)
+HIRBuilder::HIRBuilder(u32 func_cap, bool defer_function_end, bool ir_fast,
+                       const FeatureSet& features)
         : pool_lease(func_cap), pools(pool_lease.Get()),
-          defer_function_end(defer_function_end), ir_fast(ir_fast) {}
+          defer_function_end(defer_function_end), ir_fast(ir_fast),
+          advpc_coalesce(features.advpc_coalesce) {}
 
 HIRFunction* HIRBuilder::AppendFunction(Location start, Location end) {
     current_function =
@@ -588,13 +590,6 @@ HIRFunction* HIRBuilder::AppendFunction(Location start, Location end) {
 }
 
 HIRFunctionList& HIRBuilder::GetHIRFunctions() { return hir_functions; }
-
-bool HIRBuilder::AdvancePCCoalesceEnabled() {
-    // Escape hatch for bisection; see the header for what this does. Cached in
-    // a member by the constructor so the guard-variable load stays off the
-    // per-instruction path.
-    return GetSvmConfig().advpc_coalesce;
-}
 
 bool HIRBuilder::FoldAdvancePC(const Imm& imm) {
     // A flag producer since the last boundary makes this AdvancePC a real

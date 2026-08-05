@@ -21,7 +21,8 @@ public:
     using ReturnHost = void (*)();
     using CallHost = void (*)();
 
-    explicit Trampolines(const Config& config);
+    explicit Trampolines(const Config& config,
+                         const FeatureSet& features = FeatureSet{});
 
     virtual std::optional<CallHost> GetCallHost(HostFunction* func, ISA frontend);
 

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -9,6 +10,85 @@
 #include "base/types.h"
 
 namespace swift::runtime {
+
+// 纯单 unit codegen 开关。此表与 docs/svm-config-classification.md 的 B 类
+// 一一对应；FeatureSet 在翻译入口解析一次，后续路径不得反向读取全局配置。
+#define SVM_FEATURE_FIELDS(X) \
+    X(advpc_coalesce, true) \
+    X(const_cse, true) \
+    X(uniform_dse, true) \
+    X(flag_carry_elim, true) \
+    X(ra_1blk, true) \
+    X(uniform_fast, true) \
+    X(ir_uniform_range, false) \
+    X(flag_narrow, true) \
+    X(sse42_string_inline, false) \
+    X(sse_scalar_insert, true) \
+    X(sse_scalar_v_operands, true) \
+    X(mem_narrow_fuse, true) \
+    X(addr_ea_tie, true) \
+    X(abs_const_mat, false) \
+    X(shift_imm_fast, true) \
+    X(xmm_ssa_fwd2, true) \
+    X(xmm_narrow_fwd, true) \
+    X(link_suffix_common, false) \
+    X(vec_imm_shift, true) \
+    X(vec_const_cache, true) \
+    X(vec_byteshift_ext, true) \
+    X(vec_shufps_neon, true) \
+    X(aes_zero_reuse, true) \
+    X(sse_nan_coldpath, true) \
+    X(flags_narrow_align, true) \
+    X(flags_terminal_jcc, true) \
+    X(flags_fcmp_fuse, true) \
+    X(flags_fcmp_compact, false) \
+    X(flags_branch_only, true) \
+    X(addrmode_struct, true) \
+    X(jit_scratch_xpool, true) \
+    X(xmm_fault_sink, true) \
+    X(helper_leaf_abi, false) \
+    X(xmm_pool_ext, false) \
+    X(ra_intwidth_tie, true) \
+    X(sse_afp_nan, true) \
+    X(mem_hostbase_fold, true) \
+    X(induct_tie, true) \
+    X(scratch_precise, true) \
+    X(ra_spill_evict, true) \
+    X(flag_full_elim, false) \
+    X(gpr_zext_coalesce, true) \
+    X(sse_nan_fast, false) \
+    X(uniform_elim, true) \
+    X(uniform_path_fwd, true) \
+    X(vixl_fast, true) \
+    X(x86_gcm_pclmul2, true) \
+    X(xmm_uniform_fwd, true)
+
+enum class FeatureId : std::size_t {
+#define SVM_FEATURE_ID(field, default_value) field,
+    SVM_FEATURE_FIELDS(SVM_FEATURE_ID)
+#undef SVM_FEATURE_ID
+    Count,
+};
+
+inline constexpr std::size_t kFeatureCount =
+        static_cast<std::size_t>(FeatureId::Count);
+
+struct FeatureSet {
+#define SVM_FEATURE_MEMBER(field, default_value) bool field{default_value};
+    SVM_FEATURE_FIELDS(SVM_FEATURE_MEMBER)
+#undef SVM_FEATURE_MEMBER
+
+    [[nodiscard]] bool Get(FeatureId id) const;
+    void Set(FeatureId id, bool value);
+};
+
+struct FeatureOverrides {
+    std::array<std::optional<bool>, kFeatureCount> values{};
+
+    [[nodiscard]] bool Empty() const;
+    [[nodiscard]] std::optional<bool> Get(FeatureId id) const;
+    void Set(FeatureId id, bool value);
+};
 
 // 单一环境配置表。parse 一列命名原读取点的精确判定；source_comment 保留迁移依据。
 // 新增开关必须只在此表登记，PerfStats2 注册表和 code-cache 环境哈希均由此生成。
@@ -158,6 +238,8 @@ struct SvmConfig {
     bool field##_is_set{};
     SVM_CONFIG_FIELDS(SVM_DECLARE_FIELD)
 #undef SVM_DECLARE_FIELD
+
+    [[nodiscard]] FeatureSet GetFeatureSet() const;
 };
 
 struct SvmConfigFieldInfo {

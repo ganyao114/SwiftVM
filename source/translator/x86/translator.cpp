@@ -754,6 +754,7 @@ struct X86Instance::Impl final {
         auto module = address_space->GetModule(pc);
         perf_module_lookup.Stop();
         auto& m_config = module->GetModuleConfig();
+        const auto features = backend::ResolveFeatureSet(m_config);
         // Function-level compilation is default-on when the optimization is
         // present; SVM_FUNC_BASE=0 is the explicit block-only escape hatch.
         auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&
@@ -778,7 +779,7 @@ struct X86Instance::Impl final {
             try {
             auto jit_guard = module->ModuleLockRead();
             PerfScope2 perf_ir_setup{GetPerfStats2().ir_setup};
-            ir::HIRBuilder builder{1, true};
+            ir::HIRBuilder builder{1, true, features};
             auto* hir_func = builder.AppendFunction(pc);
             perf_ir_setup.Stop();
 
@@ -853,7 +854,8 @@ struct X86Instance::Impl final {
                             address_space->GetConfig().arm64_features,
                             address_space->GetConfig().sse_afp_nan,
                             !address_space->GetConfig().memory_base &&
-                                    !address_space->GetConfig().page_table};
+                                    !address_space->GetConfig().page_table,
+                            features};
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();
                     ++decoded_count;
@@ -986,7 +988,7 @@ struct X86Instance::Impl final {
         const bool fresh = backend::IsEmpty(module->GetNode(pc));
         auto node = module->GetNodeOrCreate(pc, func_base);
         auto code_cache = VisitVariant<void*>(
-                node, [module, pc, fresh, &perf_detail](auto x) -> void* {
+                node, [module, pc, fresh, &perf_detail, features](auto x) -> void* {
             using T = std::decay_t<decltype(x)>;
             if constexpr (std::is_same_v<T, IntrusivePtr<ir::Function>>) {
                 // TODO: function-based compilation
@@ -1008,7 +1010,8 @@ struct X86Instance::Impl final {
                             module->GetAddressSpace().GetConfig().arm64_features,
                             module->GetAddressSpace().GetConfig().sse_afp_nan,
                             !module->GetAddressSpace().GetConfig().memory_base &&
-                                    !module->GetAddressSpace().GetConfig().page_table};
+                                    !module->GetAddressSpace().GetConfig().page_table,
+                            features};
                     perf_ir_setup.Stop();
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();

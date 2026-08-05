@@ -13,7 +13,7 @@ using namespace vixl::aarch64;
 
 class TrampolinesArm64 : public Trampolines {
 public:
-    explicit TrampolinesArm64(const Config& config);
+    explicit TrampolinesArm64(const Config& config, const FeatureSet& features);
 
     std::optional<CallHost> GetCallHost(HostFunction* func, ISA frontend) override;
 
@@ -39,6 +39,7 @@ private:
     Label label_fault_return_host;
     Label label_return_host;
     Label label_call_host;
+    const FeatureSet features;
     std::unordered_map<LocationDescriptor, CallHost> call_host_trampolines{};
     std::unordered_map<u64, void *> signature_trampolines{};
 };

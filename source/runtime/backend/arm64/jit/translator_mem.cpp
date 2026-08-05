@@ -15,8 +15,8 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool StructuredAddressModeEnabled() {
-    return GetSvmConfig().addrmode_struct;
+bool StructuredAddressModeEnabled(const FeatureSet& features) {
+    return features.addrmode_struct;
 }
 
 void HostMemMove(void* dst, const void* src, size_t size) {
@@ -598,7 +598,8 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     // operations, so folding writeback here would update after the first half.
     const bool q_access = type == ir::ValueType::V128;
     const bool structured_guest_ea =
-            q_access && StructuredAddressModeEnabled() && !operand.GetRight().Null();
+            q_access && StructuredAddressModeEnabled(context.GetFeatures()) &&
+            !operand.GetRight().Null();
     const bool fold_host_base =
             HostBaseFoldEligible(mem_hostbase_fold,
                                  use_memory_base,
@@ -681,7 +682,8 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
     // other Q accesses keep address materialization and explicit writeback.
     const bool q_access = type == ir::ValueType::V128;
     const bool structured_guest_ea =
-            q_access && StructuredAddressModeEnabled() && !operand.GetRight().Null();
+            q_access && StructuredAddressModeEnabled(context.GetFeatures()) &&
+            !operand.GetRight().Null();
     const bool fold_host_base =
             HostBaseFoldEligible(mem_hostbase_fold,
                                  use_memory_base,

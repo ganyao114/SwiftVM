@@ -11,6 +11,7 @@ using swift::u32;
 using swift::u64;
 using swift::u8;
 using swift::runtime::Config;
+using swift::runtime::FeatureSet;
 using swift::runtime::backend::CodeCache;
 using swift::runtime::backend::CodeRegion;
 using swift::runtime::backend::DecodeBranchTarget;
@@ -88,7 +89,7 @@ TEST_CASE("direct link imm26 B and BL encode/decode boundaries", "[direct-link]"
 
 TEST_CASE("CodeCache region converts RX and RW aliases by one offset", "[direct-link][region]") {
     auto config = Arm64Config();
-    CodeCache cache{config, 1u << 20, true};
+    CodeCache cache{config, 1u << 20, FeatureSet{}, true};
     const auto buffer = cache.AllocCode(64);
     REQUIRE(buffer);
     const CodeRegion& region = cache.GetRegion();
@@ -101,7 +102,7 @@ TEST_CASE("CodeCache region converts RX and RW aliases by one offset", "[direct-
     REQUIRE(SameRegion(region, buffer->exec_data, buffer->exec_data + 60));
     REQUIRE_FALSE(SameRegion(region, buffer->exec_data, buffer->exec_data + region.capacity));
 
-    CodeCache other{config, 1u << 20, true};
+    CodeCache other{config, 1u << 20, FeatureSet{}, true};
     REQUIRE_FALSE(SameRegion(region, other.GetRegion()));
 }
 
@@ -196,7 +197,7 @@ TEST_CASE("LinkManager maintains site target and owner indexes transactionally",
 
 TEST_CASE("direct branch patch uses matching RX and RW aliases", "[direct-link][patch]") {
     auto config = Arm64Config();
-    CodeCache cache{config, 1u << 20, true};
+    CodeCache cache{config, 1u << 20, FeatureSet{}, true};
     const auto buffer = cache.AllocCode(64);
     REQUIRE(buffer);
     const auto& region = cache.GetRegion();
@@ -247,7 +248,7 @@ TEST_CASE("direct branch patch uses matching RX and RW aliases", "[direct-link][
 TEST_CASE("signal delink deactivates before deferred invalidation resets state",
           "[direct-link][manager][signal]") {
     auto config = Arm64Config();
-    CodeCache cache{config, 1u << 20, true};
+    CodeCache cache{config, 1u << 20, FeatureSet{}, true};
     const auto buffer = cache.AllocCode(256);
     REQUIRE(buffer);
     const auto& region = cache.GetRegion();

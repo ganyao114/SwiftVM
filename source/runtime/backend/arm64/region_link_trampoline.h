@@ -24,6 +24,7 @@ extern "C" void* RegionLinkTrampolineSlow(RegionLinkContext* context,
 // Produces the final-form per-region trampoline. The returned bytes are copied
 // to a CodeCache allocation by CodeCache::InitializeRegionTrampoline.
 [[nodiscard]] std::vector<u8> BuildRegionLinkTrampoline(const Config& config,
-                                                         RegionLinkContext* context);
+                                                         RegionLinkContext* context,
+                                                         const FeatureSet& features);
 
 }  // namespace swift::runtime::backend::arm64

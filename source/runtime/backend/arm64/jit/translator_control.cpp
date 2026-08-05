@@ -17,9 +17,9 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool LeafHelperABIEnabled() {
+bool LeafHelperABIEnabled(const FeatureSet& features) {
 #if SVM_HAS_HELPER_PRESERVE_ALL
-    return GetSvmConfig().helper_leaf_abi;
+    return features.helper_leaf_abi;
 #else
     return false;
 #endif
@@ -167,7 +167,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     // Unsupported compilers cannot enable the path even if the environment
     // variable is present.
     const bool preserve_all_leaf =
-            LeafHelperABIEnabled() && !lambda.IsValue() &&
+            LeafHelperABIEnabled(context.GetFeatures()) && !lambda.IsValue() &&
             lambda.GetHelperABI() == ir::HelperABI::PreserveAllLeaf;
     const bool fpcr_transparent =
             sse_afp_nan && !lambda.IsValue() &&

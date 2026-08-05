@@ -198,8 +198,8 @@ ir::Value X64Decoder::MemLoad(const ir::Operand& addr, ir::ValueType type, bool 
     return assembler->LoadMemory(addr).SetType(type);
 }
 
-bool X64Decoder::ScalarVOperandsEnabled() {
-    return swift::runtime::GetSvmConfig().sse_scalar_v_operands;
+bool X64Decoder::ScalarVOperandsEnabled() const {
+    return features_.sse_scalar_v_operands;
 }
 
 void X64Decoder::MemStore(const ir::Operand& addr, ir::Value value, bool tso) {
@@ -252,16 +252,17 @@ X64Decoder::X64Decoder(VAddr start,
                        bool is_64bit,
                        runtime::Arm64Features arm64_features,
                        bool sse_afp_nan,
-                       bool identity_addressing)
+                       bool identity_addressing,
+                       const runtime::FeatureSet& features)
         : start(start), pc(start), assembler(visitor), memory(memory), is_64bit(is_64bit),
-          identity_addressing_(identity_addressing) {
+          identity_addressing_(identity_addressing), features_(features) {
     addr_mask = is_64bit ? UINT64_MAX : UINT32_MAX;
     flags_cfinv_supported_ =
             True(arm64_features & runtime::Arm64Features::FlagM);
-    flags_fcmp_compact_ = runtime::GetSvmConfig().flags_fcmp_compact &&
+    flags_fcmp_compact_ = features_.flags_fcmp_compact &&
                           True(arm64_features & runtime::Arm64Features::AXFlag);
     sse_afp_nan_ = sse_afp_nan;
-    addr_ea_tie_ = runtime::GetSvmConfig().addr_ea_tie;
+    addr_ea_tie_ = features_.addr_ea_tie;
 }
 
 // x86-64's architectural maximum instruction length. Bounds every raw-byte
@@ -864,8 +865,8 @@ static bool PinExtPartialWritesEnabled() {
     return swift::runtime::GetSvmConfig().x86_pin_ext >= 1;
 }
 
-bool X64Decoder::StructuredAddressModeEnabled() {
-    return swift::runtime::GetSvmConfig().addrmode_struct;
+bool X64Decoder::StructuredAddressModeEnabled() const {
+    return features_.addrmode_struct;
 }
 
 bool X64Decoder::StructuredAddressChainOpcode(u16 opcode) {
@@ -970,10 +971,6 @@ ir::Value X64Decoder::NarrowTo(ir::Value value, ir::ValueType type) {
 // keeping the operation's semantic truncation width explicitly 32 bits.
 //
 // SVM_GPR_ZEXT_COALESCE=0 restores the exact two-node pre-W19 lowering.
-static bool GprZextCoalesceEnabled() {
-    return swift::runtime::GetSvmConfig().gpr_zext_coalesce;
-}
-
 void X64Decoder::R(_RegisterType reg, ir::Value value) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::RegValue};
@@ -1005,7 +1002,7 @@ void X64Decoder::R(_RegisterType reg, ir::Value value) {
         if (is_64bit && info.type == ir::ValueType::U32) {
             // x86-64: 32 bit GPR writes zero the upper 32 bits.
             auto offset = ToReg(info).GetOffset();
-            auto zext = GprZextCoalesceEnabled()
+            auto zext = features_.gpr_zext_coalesce
                                 ? __ ZeroExtend32To64(value)
                                 : __ ZeroExtend64(__ ZeroExtend32(value));
             __ StoreUniform(ir::Uniform{offset, ir::ValueType::U64}, zext);
@@ -1127,8 +1124,8 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
     return __ CondSet(arm).SetType(ir::ValueType::U8);
 }
 
-bool X64Decoder::FlagsNarrowAlignEnabled() {
-    return runtime::GetSvmConfig().flags_narrow_align;
+bool X64Decoder::FlagsNarrowAlignEnabled() const {
+    return features_.flags_narrow_align;
 }
 
 bool X64Decoder::FlagsCfinvEnabled() const {
@@ -1138,14 +1135,14 @@ bool X64Decoder::FlagsCfinvEnabled() const {
     return flags_cfinv_supported_;
 }
 
-bool X64Decoder::FlagsTerminalJccEnabled() {
-    return runtime::GetSvmConfig().flags_terminal_jcc;
+bool X64Decoder::FlagsTerminalJccEnabled() const {
+    return features_.flags_terminal_jcc;
 }
 
-bool X64Decoder::FlagsBranchOnlyEnabled() {
+bool X64Decoder::FlagsBranchOnlyEnabled() const {
     // Default ON after the flip A/B (7z Tot-MIPS 5/5 pairs positive, median
     // +5.0%); =0 keeps full EFLAGS materialization as the rollback.
-    return runtime::GetSvmConfig().flags_branch_only;
+    return features_.flags_branch_only;
 }
 
 bool X64Decoder::SuccessorFlagsDead(VAddr successor) const {
@@ -1207,8 +1204,8 @@ bool X64Decoder::SuccessorFlagsDead(VAddr successor) const {
     return false;
 }
 
-bool X64Decoder::FlagsFcmpFuseEnabled() {
-    return runtime::GetSvmConfig().flags_fcmp_fuse;
+bool X64Decoder::FlagsFcmpFuseEnabled() const {
+    return features_.flags_fcmp_fuse;
 }
 
 void X64Decoder::MarkLocalNZCV(ir::Flags valid, ir::Value result) {

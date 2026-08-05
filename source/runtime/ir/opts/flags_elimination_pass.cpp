@@ -40,9 +40,9 @@ namespace swift::runtime::ir {
 
 namespace {
 
-bool BranchOnlyEnabled() {
+bool BranchOnlyEnabled(const FeatureSet& features) {
     // Default ON after the flip A/B; =0 is the full-materialization rollback.
-    return GetSvmConfig().flags_branch_only;
+    return features.flags_branch_only;
 }
 
 bool IsHelperBoundary(OpCode op) {
@@ -435,10 +435,11 @@ bool TryBranchOnly(Block* block,
 
 }  // namespace
 
-void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
+void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function,
+                               const FeatureSet& features) {
     auto& inst_list = block->GetInstList();
 
-    if (BranchOnlyEnabled() && !hir_function) {
+    if (BranchOnlyEnabled(features) && !hir_function) {
         BranchOnlyStats stats;
         const LiveMap no_live_in;
         TryBranchOnly(block, nullptr, nullptr, no_live_in, stats);
@@ -477,7 +478,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
     // Bisect switch for deleting carry writes that are overwritten on every
     // in-block path before a read. With the switch off, preserve the old
     // cross-block-conservative handling exactly.
-    const bool carry_elim_off = !GetSvmConfig().flag_carry_elim;
+    const bool carry_elim_off = !features.flag_carry_elim;
 
     Flags needed = Flags::All;  // live-out: flags persist across blocks
     // Needed-set snapshots at bound labels, keyed by the Goto/NotGoto inst
@@ -527,8 +528,8 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 // below is applied. W14 keeps this opt-in because CoreMark A/B
                 // found its 76 emitted bytes to be execution-time neutral.
                 constexpr Flags kSoftBits = Flags::Parity | Flags::AuxiliaryCarry;
-                const bool narrow_off = !GetSvmConfig().flag_narrow;
-                const bool full_elim_on = GetSvmConfig().flag_full_elim;
+                const bool narrow_off = !features.flag_narrow;
+                const bool full_elim_on = features.flag_full_elim;
                 const bool writes_carry = True(mask & Flags::Carry);
                 // Keep the older carry switch independently exact: when it is
                 // off, a C-writing pseudo follows the pre-Gate-B path even if
@@ -611,7 +612,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                     }
                     victims.push_back(&inst);
                 } else {
-                    const bool full_elim_on = GetSvmConfig().flag_full_elim;
+                    const bool full_elim_on = features.flag_full_elim;
                     if (full_elim_on && live != mask) {
                         inst.SetArg(0, live);
                         stat_shrunk++;
@@ -724,14 +725,15 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
     }
 }
 
-void FlagsEliminationPass::Run(HIRBuilder* hir_builder) {
+void FlagsEliminationPass::Run(HIRBuilder* hir_builder, const FeatureSet& features) {
     for (auto& hir_func : hir_builder->GetHIRFunctions()) {
-        Run(&hir_func);
+        Run(&hir_func, features);
     }
 }
 
-void FlagsEliminationPass::Run(HIRFunction* hir_function) {
-    if (BranchOnlyEnabled()) {
+void FlagsEliminationPass::Run(HIRFunction* hir_function,
+                               const FeatureSet& features) {
+    if (BranchOnlyEnabled(features)) {
         const auto live_in = ComputeFunctionLiveIn(hir_function);
         BranchOnlyStats stats;
         for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
@@ -748,7 +750,7 @@ void FlagsEliminationPass::Run(HIRFunction* hir_function) {
         }
     }
     for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
-        Run(hir_block.GetBlock(), hir_function);
+        Run(hir_block.GetBlock(), hir_function, features);
     }
 }
 

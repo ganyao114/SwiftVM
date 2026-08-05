@@ -34,7 +34,8 @@ void AddressSpace::Init() {
     // build trampolines
     switch (config.backend_isa) {
         case kArm64:
-            trampolines = std::make_unique<arm64::TrampolinesArm64>(config);
+            trampolines = std::make_unique<arm64::TrampolinesArm64>(
+                    config, ResolveFeatureSet(default_module_config));
             break;
         case kRiscv64:
             trampolines = std::make_unique<riscv64::TrampolinesRiscv64>(config);

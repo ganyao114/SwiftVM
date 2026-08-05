@@ -17,25 +17,30 @@ PassPipeline PassPipeline::BuildDefault(const UniformInfo* uniform_info) {
     // Order matters: uniform elimination first, then flag/const, then dead code last
     if (uniform_info) {
         pipeline.AddBlockPass(Optimizations::UniformElimination,
-            [uniform_info](Block* block) {
-                UniformEliminationPass::Run(block, *uniform_info);
+            [uniform_info](Block* block, const FeatureSet& features) {
+                if (!features.uniform_elim) return;
+                UniformEliminationPass::Run(block, *uniform_info, features);
             });
         pipeline.AddFunctionPass(Optimizations::UniformElimination,
-            [uniform_info](HIRFunction* function) {
-                UniformEliminationPass::Run(function, *uniform_info, true);
+            [uniform_info](HIRFunction* function, const FeatureSet& features) {
+                if (!features.uniform_elim) return;
+                UniformEliminationPass::Run(function, *uniform_info, true, features);
             });
         pipeline.AddBlockPass(Optimizations::XmmFaultSink,
-            [uniform_info](Block* block) {
+            [uniform_info](Block* block, const FeatureSet& features) {
+                if (!features.xmm_fault_sink) return;
                 UniformStoreSinkPass::Run(block, *uniform_info);
             });
         pipeline.AddFunctionPass(Optimizations::XmmFaultSink,
-            [uniform_info](HIRFunction* function) {
+            [uniform_info](HIRFunction* function, const FeatureSet& features) {
+                if (!features.xmm_fault_sink) return;
                 UniformStoreSinkPass::Run(function, *uniform_info);
             });
     }
 
-    pipeline.AddBlockPass(Optimizations::FlagElimination, [](Block* block) {
-        FlagsEliminationPass::Run(block);
+    pipeline.AddBlockPass(Optimizations::FlagElimination,
+                          [](Block* block, const FeatureSet& features) {
+        FlagsEliminationPass::Run(block, nullptr, features);
     });
     // Function compilation used to run ONLY the uniform-elimination entry
     // (RunFunction skips every entry without a function_pass), so a
@@ -43,25 +48,29 @@ PassPipeline PassPipeline::BuildDefault(const UniformInfo* uniform_info) {
     // compilation removed. Measured on bench_suite kernel_int: 446 host
     // instructions per loop iteration vs 386 for the same guest block under
     // SVM_FUNC_BASE=0.
-    pipeline.AddFunctionPass(Optimizations::FlagElimination, [](HIRFunction* function) {
-        FlagsEliminationPass::Run(function);
+    pipeline.AddFunctionPass(Optimizations::FlagElimination,
+                             [](HIRFunction* function, const FeatureSet& features) {
+        FlagsEliminationPass::Run(function, features);
     });
 
-    pipeline.AddBlockPass(Optimizations::ConstantFolding, [](Block* block) {
-        ConstFoldingPass::Run(block);
+    pipeline.AddBlockPass(Optimizations::ConstantFolding,
+                          [](Block* block, const FeatureSet& features) {
+        ConstFoldingPass::Run(block, features);
     });
     // Same wiring gap d42bb4f fixed for flag elimination: without a function
     // entry the pass simply never runs on a function-compiled unit.
-    pipeline.AddFunctionPass(Optimizations::ConstantFolding, [](HIRFunction* function) {
-        ConstFoldingPass::Run(function);
+    pipeline.AddFunctionPass(Optimizations::ConstantFolding,
+                             [](HIRFunction* function, const FeatureSet& features) {
+        ConstFoldingPass::Run(function, features);
     });
 
-    pipeline.AddBlockPass(Optimizations::DeadCodeRemove, [](Block* block) {
+    pipeline.AddBlockPass(Optimizations::DeadCodeRemove, [](Block* block, const FeatureSet&) {
         DeadCodeEliminationPass::Run(block);
     });
     // Must stay last: it collects the def chains that flag elimination just
     // orphaned.
-    pipeline.AddFunctionPass(Optimizations::DeadCodeRemove, [](HIRFunction* function) {
+    pipeline.AddFunctionPass(Optimizations::DeadCodeRemove,
+                             [](HIRFunction* function, const FeatureSet&) {
         DeadCodeEliminationPass::Run(function);
     });
 
