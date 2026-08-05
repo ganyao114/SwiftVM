@@ -21,7 +21,6 @@ enum class RAShapeHelperABI : u8 {
     DirectAAPCS,
     DirectPreserveAll,
     IndirectAAPCS,
-    XStateSyncAAPCS,
     Count,
 };
 
@@ -30,8 +29,6 @@ struct RAShapeHelperCounters {
     u64 snapshot_instructions{};
     u64 snapshot_code_bytes{};
     u64 snapshot_memory_bytes{};
-    u64 xmm_sync_instructions{};
-    u64 xmm_sync_memory_bytes{};
 };
 
 // One compilation unit's local accumulator.  RegAlloc owns it; JitContext

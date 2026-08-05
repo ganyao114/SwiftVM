@@ -217,7 +217,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 138);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 132);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -290,7 +290,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 48);
+    STATIC_REQUIRE(kFeatureCount == 46);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -315,26 +315,6 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     REQUIRE(ComputeConfigHash(config, overridden) != ComputeConfigHash(config));
 }
 
-TEST_CASE("JIT cache environment hash separates link suffix commoning") {
-    const char* old = swift::runtime::GetRawSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON");
-    const bool had_old = old != nullptr;
-    const std::string old_value = old ? old : "";
-
-    swift::runtime::UnsetSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON");
-    const auto missing = swift::runtime::backend::ComputeEnvHash();
-    swift::runtime::SetSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON", "0", 1);
-    const auto disabled = swift::runtime::backend::ComputeEnvHash();
-    swift::runtime::SetSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON", "1", 1);
-    const auto enabled = swift::runtime::backend::ComputeEnvHash();
-
-    if (had_old) swift::runtime::SetSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON", old_value.c_str(), 1);
-    else swift::runtime::UnsetSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON");
-
-    REQUIRE(missing == disabled);
-    REQUIRE(disabled != enabled);
-    REQUIRE(missing != enabled);
-}
-
 TEST_CASE("JIT cache environment hash separates absolute constant materialization") {
     const char* old = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ABS_CONST_MAT");
     const bool had_old = old != nullptr;
@@ -353,88 +333,6 @@ TEST_CASE("JIT cache environment hash separates absolute constant materializatio
     REQUIRE(missing == disabled);
     REQUIRE(disabled != enabled);
     REQUIRE(missing != enabled);
-}
-
-TEST_CASE("link suffix common plan groups byte-identical double leaves") {
-    using swift::runtime::backend::arm64::LinkSuffixCommonPlan;
-
-    constexpr swift::u64 kSuffix = 0xd65f03c9f9000b4bull;
-    LinkSuffixCommonPlan plan{{kSuffix, kSuffix}};
-    REQUIRE(plan.SiteCount() == 2);
-    REQUIRE(plan.GetStats().groups == 1);
-    REQUIRE(plan.GetStats().ranges == 2);
-    REQUIRE(plan.GetStats().saved_bytes == 4);
-}
-
-TEST_CASE("link suffix common plan falls back for non-identical encodings") {
-    using namespace vixl::aarch64;
-    using swift::runtime::backend::arm64::LinkSuffixCommonPlan;
-
-    constexpr swift::u64 kSuffixA = 0xd65f03c9f9000b4bull;
-    constexpr swift::u64 kSuffixB = 0xd65f03c9f9000f4bull;
-    LinkSuffixCommonPlan plan{{kSuffixA, kSuffixB}};
-    REQUIRE(plan.GetStats().groups == 0);
-    REQUIRE(plan.GetStats().saved_bytes == 0);
-
-    MacroAssembler masm{};
-    REQUIRE_FALSE(plan.TryEmit(0, kSuffixA, masm));
-    REQUIRE_FALSE(plan.TryEmit(1, kSuffixB, masm));
-
-    LinkSuffixCommonPlan changed_after_plan{{kSuffixA, kSuffixA}};
-    REQUIRE_FALSE(changed_after_plan.TryEmit(0, kSuffixB, masm));
-    REQUIRE_FALSE(changed_after_plan.TryEmit(1, kSuffixA, masm));
-}
-
-TEST_CASE("link suffix common branch imm26 lands on retained suffix") {
-    using namespace vixl::aarch64;
-    using swift::runtime::backend::arm64::LinkSuffixCommonPlan;
-
-    constexpr swift::u64 kSuffix = 0xd65f03c9f9000b4bull;
-    LinkSuffixCommonPlan plan{{kSuffix, kSuffix}};
-    MacroAssembler masm{};
-    REQUIRE_FALSE(plan.TryEmit(0, kSuffix, masm));
-    masm.Nop();
-    masm.Nop();
-    REQUIRE(plan.TryEmit(1, kSuffix, masm));
-    masm.FinalizeCode();
-    REQUIRE(masm.GetBuffer()->GetSizeInBytes() == 12);
-
-    swift::u32 branch{};
-    std::memcpy(&branch,
-                masm.GetBuffer()->GetStartAddress<const swift::u8*>() + 8,
-                sizeof(branch));
-    REQUIRE((branch & 0x7c000000u) == 0x14000000u);
-    const auto imm26 = static_cast<swift::s32>(branch << 6) >> 6;
-    REQUIRE(8 + static_cast<swift::s64>(imm26) * 4 == 0);
-}
-
-TEST_CASE("link suffix common plan ignores a single terminal leaf") {
-    using namespace vixl::aarch64;
-    using swift::runtime::backend::arm64::LinkSuffixCommonPlan;
-
-    constexpr swift::u64 kSuffix = 0xd65f03c9f9000b4bull;
-    LinkSuffixCommonPlan plan{{kSuffix}};
-    REQUIRE(plan.GetStats().groups == 0);
-    REQUIRE(plan.GetStats().ranges == 0);
-    REQUIRE(plan.GetStats().saved_bytes == 0);
-    MacroAssembler masm{};
-    REQUIRE_FALSE(plan.TryEmit(0, kSuffix, masm));
-}
-
-TEST_CASE("link suffix common plan keeps direct-leaf holes positional") {
-    using namespace vixl::aarch64;
-    using swift::runtime::backend::arm64::LinkSuffixCommonPlan;
-
-    constexpr swift::u64 kSuffix = 0xd65f03c9f9000b4bull;
-    LinkSuffixCommonPlan plan{{std::nullopt, kSuffix, kSuffix}};
-    REQUIRE(plan.SiteCount() == 3);
-    REQUIRE(plan.GetStats().groups == 1);
-    REQUIRE(plan.GetStats().ranges == 2);
-    REQUIRE(plan.GetStats().saved_bytes == 4);
-    MacroAssembler masm{};
-    REQUIRE_FALSE(plan.TryEmit(0, kSuffix, masm));
-    REQUIRE_FALSE(plan.TryEmit(1, kSuffix, masm));
-    REQUIRE(plan.TryEmit(2, kSuffix, masm));
 }
 
 TEST_CASE("config hash includes independent code-shape policies") {
@@ -1050,25 +948,6 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     UniformEliminationPass::Run(&invalidated_load, info, FeatureSet{});
     REQUIRE(after_store.Def()->GetOp() ==
             (xmm_forward_off ? OpCode::LoadUniform : OpCode::BitCast));
-
-    // The same narrow types must remain in the FPR class when the XMM slot is
-    // statically mapped. GetHostFPR aliases the pinned V register (subject to
-    // the allocator's existing snapshot check); it must never fall back to a
-    // LoadUniform just because the architectural mapping itself is V128.
-    UniformInfo mapped_info{.uniform_size = 64};
-    UniformRegister mapped_xmm{.uniform = Uniform{16, ValueType::V128}};
-    mapped_xmm.host_reg.fpr = HostFPR{20};
-    mapped_xmm.host_reg.is_fpr = true;
-    mapped_info.uniform_regs_map.Map(16, 32, mapped_xmm);
-    mapped_info.xmm_uniform_ranges.push_back({16, 32});
-    Block mapped{5, Location{0x6000}};
-    auto mapped_v64 = mapped.LoadUniform(Uniform{16, ValueType::V64});
-    auto mapped_v32 = mapped.LoadUniform(Uniform{16, ValueType::V32});
-    UniformEliminationPass::Run(&mapped, mapped_info, FeatureSet{});
-    REQUIRE(mapped_v64.Def()->GetOp() == OpCode::GetHostFPR);
-    REQUIRE(mapped_v64.Type() == ValueType::V64);
-    REQUIRE(mapped_v32.Def()->GetOp() == OpCode::GetHostFPR);
-    REQUIRE(mapped_v32.Type() == ValueType::V32);
 
     // PIN_EXT performs its generic DSE before mapped GPR stores become
     // SetHostGPR. A narrow XMM load is still materialized at that point, so a
@@ -3024,8 +2903,6 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
             function->GetHostGPR(HostRegIndex(1), Imm{0u}).SetType(ValueType::U64);
     auto fixed_fpr =
             function->GetHostFPR(HostRegIndex(2), Imm{0u}).SetType(ValueType::V128);
-    auto fpr_snapshot =
-            function->GetHostFPR(HostRegIndex(7), Imm{0u}).SetType(ValueType::V128);
 
     std::vector<Value> live;
     for (std::uint64_t i = 0; i < 14; ++i) {
@@ -3036,10 +2913,6 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
     // The SetHostGPR crosses snapshot's lifetime, so snapshot must receive a
     // normal allocation instead of aliasing host register 1.
     function->SetHostGPR(live[0], HostRegIndex(1), Imm{0u});
-    // Same snapshot rule for pinned SIMD state: this write crosses
-    // fpr_snapshot's lifetime, so the old v7 value must first be copied to a
-    // dynamic FPR (or a spill slot).
-    function->SetHostFPR(fixed_fpr, HostRegIndex(7), Imm{0u});
     auto pinned_use = function->Add(pinned, Operand{live[1]}).SetType(ValueType::U64);
     auto snapshot_use =
             function->Add(snapshot, Operand{alias}).SetType(ValueType::U64);
@@ -3058,7 +2931,6 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
     sum = function->Add(sum, Operand{snapshot_use}).SetType(ValueType::U64);
     function->StoreUniform(Uniform{0, ValueType::U64}, sum);
     function->StoreUniform(Uniform{16, ValueType::V128}, fixed_fpr);
-    function->StoreUniform(Uniform{32, ValueType::V128}, fpr_snapshot);
 
     auto terminal_cond = function->TestNotZero(live[4]);
     function->EndBlock(terminal::If{
@@ -3095,11 +2967,6 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
     REQUIRE(general.ValueType(snapshot) != RegAlloc::REF);
     REQUIRE(general.ValueType(fixed_fpr) == RegAlloc::FPR);
     REQUIRE(general.ValueFPR(fixed_fpr).id == 2);
-    REQUIRE(general.ValueType(fpr_snapshot) != RegAlloc::REF);
-    if (general.ValueType(fpr_snapshot) == RegAlloc::FPR) {
-        REQUIRE(general.ValueFPR(fpr_snapshot).id != 7);
-    }
-
     const auto& expected = swift::runtime::GetSvmConfig().ra_1blk ? fast : general;
     for (std::uint32_t id = 0; id < selected.MapCount(); ++id) {
         INFO("production selector map id " << id);
@@ -4322,121 +4189,6 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
         check_and_emit(BuildReloadPressureBlock(live));
     }
 
-    // W80 FPR-pool pressure probe. Keep fourteen V128 values live until the
-    // reduction begins: the historical XMM_STATIC pool (v0-v10,v15) must
-    // spill, while returning v11-v14 gives the scan enough headroom. Backend
-    // ASSERTs deliberately do not change Catch's established assertion/case
-    // totals, but still fail the suite loudly if either invariant regresses.
-    auto build_fpr_pressure = [] {
-        auto* block = new Block(0, Location{0x2800});
-        std::vector<Value> values;
-        for (unsigned i = 0; i < 14; ++i) {
-            values.push_back(block->LoadUniform<TypedValue<ValueType::V128>>(
-                    Uniform{static_cast<std::uint32_t>(i * 16), ValueType::V128}));
-        }
-        Value sum = values.back();
-        for (int i = static_cast<int>(values.size()) - 2; i >= 0; --i) {
-            sum = block->VecFAdd<TypedValue<ValueType::V128>>(
-                    sum, values[i], Imm{32u});
-        }
-        block->StoreUniform(Uniform{0, ValueType::V128}, sum);
-        block->SetTerminal(terminal::LinkBlock{0x2900});
-        block->ReIdInstr();
-        return block;
-    };
-    FPRSMask xmm_pool12{};
-    FPRSMask xmm_pool16{};
-    for (std::uint32_t code = 16; code < 32; ++code) {
-        xmm_pool12.Mark(code);
-        xmm_pool16.Mark(code);
-    }
-    for (std::uint32_t code = 11; code <= 14; ++code) {
-        xmm_pool12.Mark(code);
-    }
-    swift::runtime::IntrusivePtr<Block> pressure12{build_fpr_pressure()};
-    swift::runtime::IntrusivePtr<Block> pressure16{build_fpr_pressure()};
-    RegAlloc alloc12{pressure12->MaxInstrId(), gprs, xmm_pool12, FeatureSet{}};
-    RegAlloc alloc16{pressure16->MaxInstrId(), gprs, xmm_pool16, FeatureSet{}};
-    RegisterAllocPass::Run(pressure12.get(), &alloc12, false, FeatureSet{});
-    RegisterAllocPass::Run(pressure16.get(), &alloc16, false, FeatureSet{});
-    INFO("W80 FPR pressure spills pool12=" << alloc12.SpillCount()
-                                            << " pool16=" << alloc16.SpillCount());
-    ASSERT_MSG(alloc12.SpillCount() > 0,
-               "W80 pressure shape no longer saturates the 12-FPR pool");
-    ASSERT_MSG(alloc16.SpillCount() < alloc12.SpillCount(),
-               "W80 v11-v14 release did not reduce FPR spills: {} -> {}",
-               alloc12.SpillCount(), alloc16.SpillCount());
-
-    // Emit the reduced-spill map with the cold ABI active. Any insufficient
-    // scratch reserve or unsafe fixed-v11-v14 assumption asserts here.
-    swift::runtime::Config pool_ext_config{
-            .loc_start = 0,
-            .loc_end = 1ull << 48,
-            .enable_jit = true,
-            .has_local_operation = false,
-            .backend_isa = swift::runtime::kArm64,
-            .global_opts = swift::runtime::Optimizations::XmmPoolExt,
-    };
-    swift::runtime::backend::AddressSpace pool_ext_space{pool_ext_config};
-    arm64::JitContext pool_ext_context{pool_ext_space.GetDefaultModule(), alloc16};
-    arm64::JitTranslator pool_ext_translator{pool_ext_context};
-    pool_ext_translator.Translate(pressure16.get());
-    pool_ext_context.Finish();
-    ASSERT(pool_ext_context.CurrentBufferSize() > 0);
-
-    // Execute the same >12-live shape through each real trampoline pool, not
-    // merely through hand-built RegAlloc masks. Keep v16-v31 reserved as the
-    // XMM_STATIC contract requires, but map them outside this probe's input /
-    // output area so the runtime-entry save does not overwrite the result.
-    auto execute_fpr_pressure = [&](bool pool_ext) {
-        std::vector<swift::runtime::UniformMapDesc> static_xmms;
-        static_xmms.reserve(16);
-        for (std::uint32_t i = 0; i < 16; ++i) {
-            static_xmms.emplace_back(256 + i * 16, 16, 16 + i, true);
-        }
-        swift::runtime::Config exec_config{
-                .loc_start = 0,
-                .loc_end = 1ull << 48,
-                .enable_jit = true,
-                .has_local_operation = false,
-                .backend_isa = swift::runtime::kArm64,
-                .uniform_buffer_size = 512,
-                .buffers_static_alloc = static_xmms,
-                .global_opts = pool_ext
-                        ? swift::runtime::Optimizations::XmmPoolExt
-                        : swift::runtime::Optimizations::None,
-        };
-        AddressSpace exec_space{exec_config};
-        ASSERT_MSG(exec_space.GetTrampolines().GetFPRRegs().GetClearCount() ==
-                           (pool_ext ? 16 : 12),
-                   "W80 effective FPR pool is not {}",
-                   pool_ext ? 16 : 12);
-        swift::runtime::IntrusivePtr<Block> exec_block{build_fpr_pressure()};
-        auto* code = swift::runtime::backend::TranslateIR(
-                exec_space.GetDefaultModule(), exec_block);
-        ASSERT(code != nullptr);
-
-        swift::runtime::Runtime runtime{&exec_space};
-        auto uniform = runtime.GetUniformBuffer();
-        for (std::uint32_t i = 0; i < 14; ++i) {
-            const std::array<float, 4> lanes{
-                    float(i + 1), float(i + 1), float(i + 1), float(i + 1)};
-            std::memcpy(uniform.data() + i * 16, lanes.data(), sizeof(lanes));
-        }
-        runtime.SetLocation(0x2800);
-        const auto halt = exec_space.GetTrampolines().GetRuntimeEntry()(
-                runtime.GetState(), code);
-        ASSERT(halt == swift::runtime::HaltReason::CodeMiss);
-        std::array<float, 4> result{};
-        std::memcpy(result.data(), uniform.data(), sizeof(result));
-        for (float lane : result) {
-            ASSERT_MSG(lane == 105.0f,
-                       "W80 pressure result corrupted with pool {}: {}",
-                       pool_ext ? 16 : 12, lane);
-        }
-        return result;
-    };
-    ASSERT(execute_fpr_pressure(false) == execute_fpr_pressure(true));
 #if defined(__linux__) && !defined(__ANDROID__)
     REQUIRE(saw_conditional_spill_unit);
 #endif

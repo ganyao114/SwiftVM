@@ -104,105 +104,6 @@ static UniformMapDesc arm64_backend_gpr_regs_ext3_map[] = {
         {offsetof(ThreadContext64, r15), 8, 9, false},
 };
 
-// XMM0-15 stay resident in v16-v31 for the whole guest run.  v0-v15 remain
-// available to the linear scan and emitter scratch (v11-v14 are normally the
-// backend's reserved SIMD scratch registers; SVM_XMM_POOL_EXT leases them to
-// the allocator and preserves their cold ABI only on the NaN slow edge). The
-// descriptors are ordered by uniform offset so the trampoline emits eight
-// LDP/STP pairs at runtime
-// entry/host exit.  AVX keeps its existing split representation: these are the
-// low 128 bits, while ThreadContext64::ymm_high remains memory resident.
-#define SVM_XMM_STATIC_DESC(i) \
-    {offsetof(ThreadContext64, xmms) + (i) * sizeof(Xmm), 16, 16 + (i), true}
-static UniformMapDesc arm64_backend_xmm_regs_map[] = {
-        SVM_XMM_STATIC_DESC(0),  SVM_XMM_STATIC_DESC(1),
-        SVM_XMM_STATIC_DESC(2),  SVM_XMM_STATIC_DESC(3),
-        SVM_XMM_STATIC_DESC(4),  SVM_XMM_STATIC_DESC(5),
-        SVM_XMM_STATIC_DESC(6),  SVM_XMM_STATIC_DESC(7),
-        SVM_XMM_STATIC_DESC(8),  SVM_XMM_STATIC_DESC(9),
-        SVM_XMM_STATIC_DESC(10), SVM_XMM_STATIC_DESC(11),
-        SVM_XMM_STATIC_DESC(12), SVM_XMM_STATIC_DESC(13),
-        SVM_XMM_STATIC_DESC(14), SVM_XMM_STATIC_DESC(15),
-};
-static UniformMapDesc arm64_backend_gpr_xmm_regs_map[] = {
-        {offsetof(ThreadContext64, rbx), 8, 20, false},
-        {offsetof(ThreadContext64, rsp), 8, 19, false},
-        {offsetof(ThreadContext64, rbp), 8, 21, false},
-        SVM_XMM_STATIC_DESC(0),  SVM_XMM_STATIC_DESC(1),
-        SVM_XMM_STATIC_DESC(2),  SVM_XMM_STATIC_DESC(3),
-        SVM_XMM_STATIC_DESC(4),  SVM_XMM_STATIC_DESC(5),
-        SVM_XMM_STATIC_DESC(6),  SVM_XMM_STATIC_DESC(7),
-        SVM_XMM_STATIC_DESC(8),  SVM_XMM_STATIC_DESC(9),
-        SVM_XMM_STATIC_DESC(10), SVM_XMM_STATIC_DESC(11),
-        SVM_XMM_STATIC_DESC(12), SVM_XMM_STATIC_DESC(13),
-        SVM_XMM_STATIC_DESC(14), SVM_XMM_STATIC_DESC(15),
-};
-static UniformMapDesc arm64_backend_gpr_ext_xmm_regs_map[] = {
-        {offsetof(ThreadContext64, rax), 8, 22, false},
-        {offsetof(ThreadContext64, rcx), 8, 23, false},
-        {offsetof(ThreadContext64, rdx), 8, 29, false},
-        {offsetof(ThreadContext64, rbx), 8, 20, false},
-        {offsetof(ThreadContext64, rsp), 8, 19, false},
-        {offsetof(ThreadContext64, rbp), 8, 21, false},
-        SVM_XMM_STATIC_DESC(0),  SVM_XMM_STATIC_DESC(1),
-        SVM_XMM_STATIC_DESC(2),  SVM_XMM_STATIC_DESC(3),
-        SVM_XMM_STATIC_DESC(4),  SVM_XMM_STATIC_DESC(5),
-        SVM_XMM_STATIC_DESC(6),  SVM_XMM_STATIC_DESC(7),
-        SVM_XMM_STATIC_DESC(8),  SVM_XMM_STATIC_DESC(9),
-        SVM_XMM_STATIC_DESC(10), SVM_XMM_STATIC_DESC(11),
-        SVM_XMM_STATIC_DESC(12), SVM_XMM_STATIC_DESC(13),
-        SVM_XMM_STATIC_DESC(14), SVM_XMM_STATIC_DESC(15),
-};
-static UniformMapDesc arm64_backend_gpr_ext2_xmm_regs_map[] = {
-        {offsetof(ThreadContext64, rax), 8, 22, false},
-        {offsetof(ThreadContext64, rcx), 8, 23, false},
-        {offsetof(ThreadContext64, rdx), 8, 29, false},
-        {offsetof(ThreadContext64, rbx), 8, 20, false},
-        {offsetof(ThreadContext64, rsp), 8, 19, false},
-        {offsetof(ThreadContext64, rbp), 8, 21, false},
-        {offsetof(ThreadContext64, rsi), 8, 0, false},
-        {offsetof(ThreadContext64, rdi), 8, 1, false},
-        {offsetof(ThreadContext64, r8), 8, 2, false},
-        {offsetof(ThreadContext64, r9), 8, 3, false},
-        {offsetof(ThreadContext64, r10), 8, 4, false},
-        {offsetof(ThreadContext64, r11), 8, 5, false},
-        SVM_XMM_STATIC_DESC(0),  SVM_XMM_STATIC_DESC(1),
-        SVM_XMM_STATIC_DESC(2),  SVM_XMM_STATIC_DESC(3),
-        SVM_XMM_STATIC_DESC(4),  SVM_XMM_STATIC_DESC(5),
-        SVM_XMM_STATIC_DESC(6),  SVM_XMM_STATIC_DESC(7),
-        SVM_XMM_STATIC_DESC(8),  SVM_XMM_STATIC_DESC(9),
-        SVM_XMM_STATIC_DESC(10), SVM_XMM_STATIC_DESC(11),
-        SVM_XMM_STATIC_DESC(12), SVM_XMM_STATIC_DESC(13),
-        SVM_XMM_STATIC_DESC(14), SVM_XMM_STATIC_DESC(15),
-};
-static UniformMapDesc arm64_backend_gpr_ext3_xmm_regs_map[] = {
-        {offsetof(ThreadContext64, rax), 8, 22, false},
-        {offsetof(ThreadContext64, rcx), 8, 23, false},
-        {offsetof(ThreadContext64, rdx), 8, 29, false},
-        {offsetof(ThreadContext64, rbx), 8, 20, false},
-        {offsetof(ThreadContext64, rsp), 8, 19, false},
-        {offsetof(ThreadContext64, rbp), 8, 21, false},
-        {offsetof(ThreadContext64, rsi), 8, 0, false},
-        {offsetof(ThreadContext64, rdi), 8, 1, false},
-        {offsetof(ThreadContext64, r8), 8, 2, false},
-        {offsetof(ThreadContext64, r9), 8, 3, false},
-        {offsetof(ThreadContext64, r10), 8, 4, false},
-        {offsetof(ThreadContext64, r11), 8, 5, false},
-        {offsetof(ThreadContext64, r12), 8, 6, false},
-        {offsetof(ThreadContext64, r13), 8, 7, false},
-        {offsetof(ThreadContext64, r14), 8, 8, false},
-        {offsetof(ThreadContext64, r15), 8, 9, false},
-        SVM_XMM_STATIC_DESC(0),  SVM_XMM_STATIC_DESC(1),
-        SVM_XMM_STATIC_DESC(2),  SVM_XMM_STATIC_DESC(3),
-        SVM_XMM_STATIC_DESC(4),  SVM_XMM_STATIC_DESC(5),
-        SVM_XMM_STATIC_DESC(6),  SVM_XMM_STATIC_DESC(7),
-        SVM_XMM_STATIC_DESC(8),  SVM_XMM_STATIC_DESC(9),
-        SVM_XMM_STATIC_DESC(10), SVM_XMM_STATIC_DESC(11),
-        SVM_XMM_STATIC_DESC(12), SVM_XMM_STATIC_DESC(13),
-        SVM_XMM_STATIC_DESC(14), SVM_XMM_STATIC_DESC(15),
-};
-#undef SVM_XMM_STATIC_DESC
-
 // This describes guest architectural state only; it does not pin any host
 // FPRs.  UniformElimination uses it to include the U64 XmmLo/XmmHi views in
 // SVM_XMM_UNIFORM_FWD's scope as well as direct V128 accesses.
@@ -611,22 +512,6 @@ struct X86Instance::Impl final {
         const bool enable_static_regs =
                 enable_jit && enable_uniform_elim &&
                 svm_config.static_regs;
-        // Independent from SVM_STATIC_REGS: SVM_XMM_STATIC=1 adds the sixteen
-        // SIMD mappings; the default keeps the old memory-resident XMM
-        // lowering.  Default-off by measurement (W13 A/B, 2026-07): pinned
-        // alone is a net regression (7-metric geomean 0.969; c-ray -26%
-        // throughput from FPR-pool pressure in NaN-repair-heavy code).  The
-        // wins need SVM_SSE_NAN_FAST=1 alongside (combined geomean 1.205), so
-        // the two are documented as a pair.  Interpreter mode never installs
-        // host-register mappings.
-        const bool enable_xmm_static =
-                enable_jit && enable_uniform_elim && svm_config.xmm_static;
-        // W80: XMM_STATIC leaves v0-v15 for dynamic values, but the W37 NaN
-        // cold ABI historically reserved v11-v14 for the entire run. The
-        // modifier is deliberately inert unless XMM static residency itself
-        // is active; OFF therefore preserves the old allocator and bytes.
-        const bool enable_xmm_pool_ext =
-                enable_xmm_static && svm_config.xmm_pool_ext;
         // Default ON after the flip A/B (smallpt 5/5 pairs positive, median
         // 1.26, pixel-identical output); =0 selects the eager-store rollback.
         const bool enable_xmm_fault_sink =
@@ -646,15 +531,7 @@ struct X86Instance::Impl final {
         const bool enable_pin_ext2 = pin_ext_level >= 2;
         const bool enable_pin_ext3 = pin_ext_level >= 3;
         std::span<UniformMapDesc> static_regs;
-        if (enable_pin_ext3 && enable_xmm_static) {
-            static_regs = arm64_backend_gpr_ext3_xmm_regs_map;
-        } else if (enable_pin_ext2 && enable_xmm_static) {
-            static_regs = arm64_backend_gpr_ext2_xmm_regs_map;
-        } else if (enable_pin_ext && enable_xmm_static) {
-            static_regs = arm64_backend_gpr_ext_xmm_regs_map;
-        } else if (enable_static_regs && enable_xmm_static) {
-            static_regs = arm64_backend_gpr_xmm_regs_map;
-        } else if (enable_pin_ext3) {
+        if (enable_pin_ext3) {
             static_regs = arm64_backend_gpr_regs_ext3_map;
         } else if (enable_pin_ext2) {
             static_regs = arm64_backend_gpr_regs_ext2_map;
@@ -662,8 +539,6 @@ struct X86Instance::Impl final {
             static_regs = arm64_backend_gpr_regs_ext_map;
         } else if (enable_static_regs) {
             static_regs = arm64_backend_gpr_regs_map;
-        } else if (enable_xmm_static) {
-            static_regs = arm64_backend_xmm_regs_map;
         }
         const bool enable_block_link = svm_config.block_link;
         auto global_opts = Optimizations::ReturnStackBuffer | Optimizations::FlagElimination |
@@ -677,9 +552,6 @@ struct X86Instance::Impl final {
         }
         if (enable_xmm_fault_sink) {
             global_opts |= Optimizations::XmmFaultSink;
-        }
-        if (enable_xmm_pool_ext) {
-            global_opts |= Optimizations::XmmPoolExt;
         }
         const Arm64Features arm64_features = DetectArm64Features();
         const bool sse_scalar_insert = SSEScalarInsertEnabled(arm64_features);

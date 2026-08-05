@@ -31,7 +31,6 @@ namespace swift::runtime {
     X(shift_imm_fast, true) \
     X(xmm_ssa_fwd2, true) \
     X(xmm_narrow_fwd, true) \
-    X(link_suffix_common, false) \
     X(vec_imm_shift, true) \
     X(vec_const_cache, true) \
     X(vec_byteshift_ext, true) \
@@ -47,7 +46,6 @@ namespace swift::runtime {
     X(jit_scratch_xpool, true) \
     X(xmm_fault_sink, true) \
     X(helper_leaf_abi, false) \
-    X(xmm_pool_ext, false) \
     X(ra_intwidth_tie, true) \
     X(sse_afp_nan, true) \
     X(mem_hostbase_fold, true) \
@@ -96,7 +94,6 @@ struct FeatureOverrides {
     X(std::string, mem_identity, "SVM_MEM_IDENTITY", RawString, "", "Linux 内存模型三态；缺省 identity，0/OFF/off 选 bounded bias；原 linux/main.cpp:388") \
     X(u64, func_lazy, "SVM_FUNC_LAZY", FuncLazy, 1, "函数 region decode budget；缺省 1，<=0 回到 eager 1024；原 translator/x86/translator.cpp:603") \
     X(bool, dump_ir, "SVM_DUMP_IR", Presence, false, "IR 诊断打印；变量存在即开（含 =0）；原 runtime/backend/runtime.cpp:813 等") \
-    X(bool, x87_topvirt, "SVM_X87_TOPVIRT", NonZero, false, "已退役 x87 TOP 虚拟化兼容键；缺省 OFF；原 PerfStats2 注册表") \
     X(bool, x87_jit, "SVM_X87_JIT", NonZero, false, "x87 中层 JIT；非 0 开，缺省 OFF；原 decoder_x87.cc:118") \
     X(bool, func_ir_free, "SVM_FUNC_IR_FREE", DefaultOn, true, "函数 IR 发布后释放；缺省 ON，=0 回退；原 runtime.cpp:771") \
     X(bool, advpc_coalesce, "SVM_ADVPC_COALESCE", DefaultOn, true, "AdvancePC 合并；缺省 ON，=0 回退；原 hir_builder.cpp:597") \
@@ -118,7 +115,6 @@ struct FeatureOverrides {
     X(bool, xsave_ymm, "SVM_XSAVE_YMM", InheritAvx, false, "XCR0.YMM override；缺省继承 SVM_AVX，非 0 开；原 xsave.h:91") \
     X(bool, x86_64_abi_baseline, "SVM_X86_64_ABI_BASELINE", NonZero, false, "动态 ELF baseline MMX 标记；非 0 开，缺省 OFF；原 decoder_misc.cc:108") \
     X(bool, adx, "SVM_ADX", NonZero, false, "ADX 解码；非 0 开，缺省 OFF；原 decoder_userland_ext.cc:85") \
-    X(bool, pkru, "SVM_PKRU", NonZero, false, "已退役 PKRU 解码门兼容键；缺省 OFF；原 PerfStats2 注册表") \
     X(bool, fsgsbase, "SVM_FSGSBASE", NonZero, false, "FSGSBASE 解码；非 0 开，缺省 OFF；原 decoder_userland_ext.cc:83") \
     X(bool, x87_jit_stats, "SVM_X87_JIT_STATS", Presence, false, "x87 JIT 统计；变量存在即开；原 x87.cpp:35") \
     X(bool, tso_stats, "SVM_TSO_STATS", Presence, false, "TSO 发码统计；变量存在即开；原 translator_mem.cpp:31") \
@@ -129,7 +125,6 @@ struct FeatureOverrides {
     X(bool, shift_imm_fast, "SVM_SHIFT_IMM_FAST", DefaultOn, true, "shift immediate 快路；缺省 ON，=0 回退；原 decoder_alu.cc:789 等") \
     X(bool, xmm_ssa_fwd2, "SVM_XMM_SSA_FWD2", DefaultOn, true, "XMM load-load SSA 转发；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:90") \
     X(bool, xmm_narrow_fwd, "SVM_XMM_NARROW_FWD", DefaultOn, true, "XMM 窄视图转发；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:102") \
-    X(bool, link_suffix_common, "SVM_LINK_SUFFIX_COMMON", NonZero, false, "link suffix commoning；非 0 开，缺省 OFF；原 translator.cpp:339（成员初值 false）") \
     X(bool, vec_imm_shift, "SVM_VEC_IMM_SHIFT", DefaultOn, true, "vector immediate shift lowering；缺省 ON，=0 回退；原 decoder_sse.cc/decoder_avx_int.cc") \
     X(bool, vec_const_cache, "SVM_VEC_CONST_CACHE", DefaultOn, true, "vector constant cache；缺省 ON，=0 回退；原 decoder_internal.h:47") \
     X(bool, vec_byteshift_ext, "SVM_VEC_BYTESHIFT_EXT", DefaultOn, true, "vector byte-shift lowering；缺省 ON，=0 回退；原 decoder_sse.cc/decoder_avx_int.cc") \
@@ -153,7 +148,6 @@ struct FeatureOverrides {
     X(std::string, ra_shape_prof, "SVM_RA_SHAPE_PROF", RawString, "", "RA shape profile 输出目标；存在且非 0 启用；原 ra_shape_prof.cpp:132/249") \
     X(std::string, ra_hot_coalesce, "SVM_RA_HOT_COALESCE", RawString, "", "hot coalesce profile 输出目标；存在且非 0 启用；原 hot_coalesce_prof.cpp:171/451") \
     X(bool, helper_leaf_abi, "SVM_HELPER_LEAF_ABI", NonZero, false, "leaf helper ABI；非 0 开且受平台能力限制；原 translator_control.cpp:23") \
-    X(bool, xmm_pool_ext, "SVM_XMM_POOL_EXT", NonZero, false, "XMM static 下扩 FPR pool；非 0 开，缺省 OFF；原 translator/x86/translator.cpp:658") \
     X(bool, backedge_latch, "SVM_BACKEDGE_LATCH", NonZero, false, "self-backedge exit latch；非 0 开，缺省 OFF；原 backedge_control.cpp:18") \
     X(bool, backedge_flags, "SVM_BACKEDGE_FLAGS", NonZero, false, "backedge flags 去物化；非 0 开且依赖 latch；原 backedge_control.cpp:24") \
     X(bool, ra_intwidth_tie, "SVM_RA_INTWIDTH_TIE", DefaultOn, true, "整数宽度链 tie；缺省 ON，=0 回退；原 register_alloc_pass.cpp:90") \
@@ -211,7 +205,6 @@ struct FeatureOverrides {
     X(bool, trace, "SVM_TRACE", Presence, false, "guest 执行 trace；变量存在即开；原 translator/x86/translator.cpp:1132") \
     X(std::string, tso_mode, "SVM_TSO_MODE", RawString, "relaxed", "TSO 模式 relaxed/acqrel/hardware；未知值回 relaxed；原 translator/x86/translator.cpp:253") \
     X(bool, uniform_elim, "SVM_UNIFORM_ELIM", DefaultOn, true, "uniform elimination；缺省 ON，=0 回退；原 translator/x86/arm64 translator.cpp") \
-    X(bool, uniform_pair_audit, "SVM_UNIFORM_PAIR_AUDIT", NonZero, false, "uniform pair 只读审计；非 0 开；原 translator.cpp:25") \
     X(bool, uniform_path_fwd, "SVM_UNIFORM_PATH_FWD", DefaultOn, true, "uniform path forwarding；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:65") \
     X(std::string, vixl_host_dump, "SVM_VIXL_HOST_DUMP", RawString, "", "VIXL host 发码诊断非 0 开，host-map 原站点按变量存在；原 jit_context.cpp/trampolines.cpp") \
     X(bool, vixl_prof, "SVM_VIXL_PROF", NonZero, false, "VIXL profile；非 0 开；原 svm-vixl-prof.cc:62") \
@@ -219,7 +212,6 @@ struct FeatureOverrides {
     X(bool, x86_crypto_ni, "SVM_X86_CRYPTO_NI", DefaultOn, true, "AES/PCLMUL 请求；缺省 ON，=0 回退，仍受 host feature 限制；原 decoder_crypto.cc:58") \
     X(bool, x86_crypto_sha, "SVM_X86_CRYPTO_SHA", DefaultOn, true, "SHA-NI 请求；缺省 ON，=0 回退，仍受 host feature 限制；原 decoder_crypto.cc:69") \
     X(bool, x86_gcm_pclmul2, "SVM_X86_GCM_PCLMUL2", DefaultOn, true, "GCM PCLMUL 双路发码；缺省 ON，=0 回退；原 translator_alu.cpp:15") \
-    X(bool, xmm_static, "SVM_XMM_STATIC", NonZero, false, "XMM static residency；非 0 开，缺省 OFF；原 translator/x86/translator.cpp:650") \
     X(bool, xmm_uniform_fwd, "SVM_XMM_UNIFORM_FWD", DefaultOn, true, "XMM store-load forwarding；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:78") \
     X(bool, direct_link_stress_long, "SVM_DIRECT_LINK_STRESS_LONG", Presence, false, "direct-link 长压测；变量存在即开；原 region_link_trampoline_test.cpp:426") \
     X(u32, direct_link_stress_iters, "SVM_DIRECT_LINK_STRESS_ITERS", StressIterations, 100000, "direct-link 压测轮数；atoi 后负数钳 0；缺省短测 100000、long 1000000；原 region_link_trampoline_test.cpp:427") \

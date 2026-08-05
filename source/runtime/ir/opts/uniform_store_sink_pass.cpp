@@ -100,8 +100,8 @@ struct PendingStore {
             return true;
 
         // These operations expose or mutate state outside the ordinary
-        // Load/StoreUniform stream. This also makes SVM_XMM_STATIC coexistence
-        // conservative: any converted Get/SetHostFPR is a flush boundary.
+        // Load/StoreUniform stream; any converted Get/SetHostFPR is a flush
+        // boundary.
         case OpCode::UniformBarrier:
         case OpCode::GetHostGPR:
         case OpCode::GetHostFPR:

@@ -215,15 +215,14 @@ expect_reject "guest ELF on disk changed" "does not match" \
 
 # (b) a switch that participates in the hash
 # SVM_STATIC_REGS / SVM_TSO_MODE reach Config, so they trip the *config*
-# hash (which is checked first). SVM_X87_TOPVIRT remains in the environment
-# identity for artifact compatibility after its dedicated-register path was
-# retired, so this case directly exercises the raw SVM_*/SWIFT_* hash.
+# hash (which is checked first). An unknown SVM_* key directly exercises the
+# raw environment identity fallback.
 expect_reject "SVM_STATIC_REGS=0 at run time" "Config differs" \
     env SVM_STATIC_REGS=0 "$AOT" run --aot "$BASE"
 expect_reject "SVM_TSO_MODE=acqrel at run time" "Config differs" \
     env SVM_TSO_MODE=acqrel "$AOT" run --aot "$BASE"
-expect_reject "SVM_X87_TOPVIRT=1 at run time (env hash only)" "environment differs" \
-    env SVM_X87_TOPVIRT=1 "$AOT" run --aot "$BASE"
+expect_reject "unknown SVM key at run time (env hash only)" "environment differs" \
+    env SVM_RETIRED_CONFIG_PROBE=1 "$AOT" run --aot "$BASE"
 
 # (c) corrupted artifact
 mutate "$BASE" "$WORK/m_info.aot" info-byte

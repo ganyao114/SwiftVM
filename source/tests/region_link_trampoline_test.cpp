@@ -27,7 +27,7 @@ using namespace vixl::aarch64;
 
 constexpr u64 kGuestTarget = 0x401000;
 
-std::vector<UniformMapDesc> PinDescriptors(unsigned level, bool xmm_static) {
+std::vector<UniformMapDesc> PinDescriptors(unsigned level) {
     std::vector<UniformMapDesc> result{
             {offsetof(x86::ThreadContext64, rbx), 8, 20, false},
             {offsetof(x86::ThreadContext64, rsp), 8, 19, false},
@@ -61,14 +61,6 @@ std::vector<UniformMapDesc> PinDescriptors(unsigned level, bool xmm_static) {
         };
         for (u32 i = 0; i < offsets.size(); ++i) {
             result.emplace_back(offsets[i], 8, 6 + i, false);
-        }
-    }
-    if (xmm_static) {
-        for (u32 i = 0; i < 16; ++i) {
-            result.emplace_back(offsetof(x86::ThreadContext64, xmms) + i * sizeof(x86::Xmm),
-                                sizeof(x86::Xmm),
-                                16 + i,
-                                true);
         }
     }
     std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) {
@@ -161,102 +153,99 @@ TEST_CASE("region trampoline preserves x30 and every static-pin configuration",
           "[direct-link][trampoline][x30]") {
 #if defined(__aarch64__)
     for (unsigned level = 0; level <= 3; ++level) {
-        for (const bool xmm_static : {false, true}) {
-            for (const bool afp_nan : {false, true}) {
-                DYNAMIC_SECTION("pin=" << level << " xmm=" << xmm_static
-                                        << " afp=" << afp_nan) {
-                    auto descriptors = PinDescriptors(level, xmm_static);
-                    auto config = TestConfig(descriptors, afp_nan);
-                    TrampolinesArm64 runtime_trampolines{config, FeatureSet{}};
-                    LinkManager manager;
-                    CodeCache cache{config, 1u << 20, FeatureSet{}};
-                    auto* return_host = reinterpret_cast<void*>(
-                            runtime_trampolines.GetReturnHost());
-                    REQUIRE(cache.InitializeRegionTrampoline(
-                            manager, return_host, return_host));
-                    REQUIRE(cache.GetRegion().trampoline_offset !=
-                            CodeRegion::kInvalidTrampolineOffset);
+        for (const bool afp_nan : {false, true}) {
+            DYNAMIC_SECTION("pin=" << level << " afp=" << afp_nan) {
+                auto descriptors = PinDescriptors(level);
+                auto config = TestConfig(descriptors, afp_nan);
+                TrampolinesArm64 runtime_trampolines{config, FeatureSet{}};
+                LinkManager manager;
+                CodeCache cache{config, 1u << 20, FeatureSet{}};
+                auto* return_host = reinterpret_cast<void*>(
+                        runtime_trampolines.GetReturnHost());
+                REQUIRE(cache.InitializeRegionTrampoline(
+                        manager, return_host, return_host));
+                REQUIRE(cache.GetRegion().trampoline_offset !=
+                        CodeRegion::kInvalidTrampolineOffset);
 
-                    auto code = cache.AllocCode(256);
-                    REQUIRE(code);
-                    std::memset(code->rw_data, 0x1f, code->size);
-                    constexpr size_t kSite = 0;
-                    constexpr size_t kTarget1 = 64;
-                    constexpr size_t kTarget2 = 96;
-                    constexpr size_t kTarget3 = 128;
-                    const auto bl = EncodeBL(
-                            static_cast<u8*>(cache.GetRegionTrampoline()) -
-                            (code->exec_data + kSite));
-                    const auto b12 = EncodeB(static_cast<std::intptr_t>(kTarget2 - kTarget1));
-                    const auto b23 = EncodeB(static_cast<std::intptr_t>(kTarget3 - kTarget2));
-                    REQUIRE(bl);
-                    REQUIRE(b12);
-                    REQUIRE(b23);
-                    std::memcpy(code->rw_data + kSite, &*bl, sizeof(*bl));
-                    std::memcpy(code->rw_data + kTarget1, &*b12, sizeof(*b12));
-                    std::memcpy(code->rw_data + kTarget2, &*b23, sizeof(*b23));
-                    u64 observed_lr{};
-                    u64 observed_fpcr{};
-                    MacroAssembler final_target;
-                    final_target.Mov(x11, reinterpret_cast<uintptr_t>(&observed_lr));
-                    final_target.Str(x30, MemOperand(x11));
-                    if (afp_nan) {
-                        final_target.Mrs(x12, FPCR);
-                        final_target.Mov(x11, reinterpret_cast<uintptr_t>(&observed_fpcr));
-                        final_target.Str(x12, MemOperand(x11));
-                    }
-                    final_target.Mov(w11, static_cast<u32>(HaltReason::PageFatal));
-                    final_target.Str(w11, MemOperand(x28, state_offset_halt_reason));
-                    final_target.Ret();
-                    CopyAssembler(*code, kTarget3, final_target);
-                    code->Flush();
-
-                    const int owner_module{};
-                    const int owner_allocation{};
-                    const LinkSiteKey key{cache.GetRegion().id,
-                                          code->offset + static_cast<u32>(kSite)};
-                    REQUIRE(manager.RegisterSite(
-                            key, kGuestTarget, {&owner_module, &owner_allocation}));
-                    const auto generation = manager.PublishTarget(
-                            kGuestTarget,
-                            code->exec_data + kTarget1,
-                            cache.GetRegion().id);
-                    REQUIRE(generation != 0);
-
-                    TestState test_state{config.uniform_buffer_size};
-                    auto uniform = test_state.Uniform(config.uniform_buffer_size);
-                    for (size_t i = 0; i < uniform.size(); ++i) {
-                        uniform[i] = static_cast<u8>(i * 37u + level * 11u + 3u);
-                    }
-                    if (afp_nan) {
-                        constexpr u32 kMxcsr = 0x1f80u | (2u << 13);
-                        std::memcpy(uniform.data() + offsetof(x86::ThreadContext64, mxcsr),
-                                    &kMxcsr,
-                                    sizeof(kMxcsr));
-                    }
-                    const std::vector<u8> expected(uniform.begin(), uniform.end());
-                    const u64 host_fpcr = ReadNativeFPCR();
-                    auto entry = runtime_trampolines.GetRuntimeEntry();
-
-                    REQUIRE(entry(test_state.state, code->exec_data) == HaltReason::PageFatal);
-                    REQUIRE(observed_lr == reinterpret_cast<uintptr_t>(return_host));
-                    REQUIRE(std::equal(uniform.begin(), uniform.end(), expected.begin()));
-                    REQUIRE(manager.QuerySite(key)->state == LinkSiteState::Linked);
-                    REQUIRE(DecodeBranchTarget(code->exec_data + kSite,
-                                               LoadInsn(code->exec_data + kSite)) ==
-                            reinterpret_cast<uintptr_t>(code->exec_data + kTarget1));
-                    if (afp_nan) {
-                        constexpr u64 kExpectedGuestFPCR =
-                                kSseAFPGuestFPCRBase | (u64{1} << 22);
-                        REQUIRE(observed_fpcr == kExpectedGuestFPCR);
-                        REQUIRE(ReadNativeFPCR() == host_fpcr);
-                    }
-
-                    observed_lr = 0;
-                    REQUIRE(entry(test_state.state, code->exec_data) == HaltReason::PageFatal);
-                    REQUIRE(observed_lr == reinterpret_cast<uintptr_t>(return_host));
-                    REQUIRE(std::equal(uniform.begin(), uniform.end(), expected.begin()));
+                auto code = cache.AllocCode(256);
+                REQUIRE(code);
+                std::memset(code->rw_data, 0x1f, code->size);
+                constexpr size_t kSite = 0;
+                constexpr size_t kTarget1 = 64;
+                constexpr size_t kTarget2 = 96;
+                constexpr size_t kTarget3 = 128;
+                const auto bl = EncodeBL(
+                        static_cast<u8*>(cache.GetRegionTrampoline()) -
+                        (code->exec_data + kSite));
+                const auto b12 = EncodeB(static_cast<std::intptr_t>(kTarget2 - kTarget1));
+                const auto b23 = EncodeB(static_cast<std::intptr_t>(kTarget3 - kTarget2));
+                REQUIRE(bl);
+                REQUIRE(b12);
+                REQUIRE(b23);
+                std::memcpy(code->rw_data + kSite, &*bl, sizeof(*bl));
+                std::memcpy(code->rw_data + kTarget1, &*b12, sizeof(*b12));
+                std::memcpy(code->rw_data + kTarget2, &*b23, sizeof(*b23));
+                u64 observed_lr{};
+                u64 observed_fpcr{};
+                MacroAssembler final_target;
+                final_target.Mov(x11, reinterpret_cast<uintptr_t>(&observed_lr));
+                final_target.Str(x30, MemOperand(x11));
+                if (afp_nan) {
+                    final_target.Mrs(x12, FPCR);
+                    final_target.Mov(x11, reinterpret_cast<uintptr_t>(&observed_fpcr));
+                    final_target.Str(x12, MemOperand(x11));
                 }
+                final_target.Mov(w11, static_cast<u32>(HaltReason::PageFatal));
+                final_target.Str(w11, MemOperand(x28, state_offset_halt_reason));
+                final_target.Ret();
+                CopyAssembler(*code, kTarget3, final_target);
+                code->Flush();
+
+                const int owner_module{};
+                const int owner_allocation{};
+                const LinkSiteKey key{cache.GetRegion().id,
+                                      code->offset + static_cast<u32>(kSite)};
+                REQUIRE(manager.RegisterSite(
+                        key, kGuestTarget, {&owner_module, &owner_allocation}));
+                const auto generation = manager.PublishTarget(
+                        kGuestTarget,
+                        code->exec_data + kTarget1,
+                        cache.GetRegion().id);
+                REQUIRE(generation != 0);
+
+                TestState test_state{config.uniform_buffer_size};
+                auto uniform = test_state.Uniform(config.uniform_buffer_size);
+                for (size_t i = 0; i < uniform.size(); ++i) {
+                    uniform[i] = static_cast<u8>(i * 37u + level * 11u + 3u);
+                }
+                if (afp_nan) {
+                    constexpr u32 kMxcsr = 0x1f80u | (2u << 13);
+                    std::memcpy(uniform.data() + offsetof(x86::ThreadContext64, mxcsr),
+                                &kMxcsr,
+                                sizeof(kMxcsr));
+                }
+                const std::vector<u8> expected(uniform.begin(), uniform.end());
+                const u64 host_fpcr = ReadNativeFPCR();
+                auto entry = runtime_trampolines.GetRuntimeEntry();
+
+                REQUIRE(entry(test_state.state, code->exec_data) == HaltReason::PageFatal);
+                REQUIRE(observed_lr == reinterpret_cast<uintptr_t>(return_host));
+                REQUIRE(std::equal(uniform.begin(), uniform.end(), expected.begin()));
+                REQUIRE(manager.QuerySite(key)->state == LinkSiteState::Linked);
+                REQUIRE(DecodeBranchTarget(code->exec_data + kSite,
+                                           LoadInsn(code->exec_data + kSite)) ==
+                        reinterpret_cast<uintptr_t>(code->exec_data + kTarget1));
+                if (afp_nan) {
+                    constexpr u64 kExpectedGuestFPCR =
+                            kSseAFPGuestFPCRBase | (u64{1} << 22);
+                    REQUIRE(observed_fpcr == kExpectedGuestFPCR);
+                    REQUIRE(ReadNativeFPCR() == host_fpcr);
+                }
+
+                observed_lr = 0;
+                REQUIRE(entry(test_state.state, code->exec_data) == HaltReason::PageFatal);
+                REQUIRE(observed_lr == reinterpret_cast<uintptr_t>(return_host));
+                REQUIRE(std::equal(uniform.begin(), uniform.end(), expected.begin()));
             }
         }
     }

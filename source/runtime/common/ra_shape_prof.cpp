@@ -25,8 +25,6 @@ struct AtomicHelperCounters {
     Counter snapshot_instructions{};
     Counter snapshot_code_bytes{};
     Counter snapshot_memory_bytes{};
-    Counter xmm_sync_instructions{};
-    Counter xmm_sync_memory_bytes{};
 };
 
 struct TargetCounters {
@@ -90,8 +88,6 @@ void Add(AtomicHelperCounters& out, const RAShapeHelperCounters& in) {
     Add(out.snapshot_instructions, in.snapshot_instructions);
     Add(out.snapshot_code_bytes, in.snapshot_code_bytes);
     Add(out.snapshot_memory_bytes, in.snapshot_memory_bytes);
-    Add(out.xmm_sync_instructions, in.xmm_sync_instructions);
-    Add(out.xmm_sync_memory_bytes, in.xmm_sync_memory_bytes);
 }
 
 template <size_t N>
@@ -116,8 +112,6 @@ const char* HelperABIName(RAShapeHelperABI abi) {
             return "direct_preserve_all";
         case RAShapeHelperABI::IndirectAAPCS:
             return "indirect_aapcs";
-        case RAShapeHelperABI::XStateSyncAAPCS:
-            return "xstate_sync_aapcs";
         case RAShapeHelperABI::Count:
             break;
     }
@@ -172,14 +166,11 @@ void DumpAtExit() {
         std::fprintf(out,
                      "[svm-ra-shape-helper] abi=%s calls=%llu "
                      "snapshot_instructions=%llu snapshot_code_bytes=%llu "
-                     "snapshot_memory_bytes=%llu xmm_sync_instructions=%llu "
-                     "xmm_sync_memory_bytes=%llu\n",
+                     "snapshot_memory_bytes=%llu\n",
                      HelperABIName(abi), Load(helper.calls),
                      Load(helper.snapshot_instructions),
                      Load(helper.snapshot_code_bytes),
-                     Load(helper.snapshot_memory_bytes),
-                     Load(helper.xmm_sync_instructions),
-                     Load(helper.xmm_sync_memory_bytes));
+                     Load(helper.snapshot_memory_bytes));
     }
 
     std::fprintf(out,

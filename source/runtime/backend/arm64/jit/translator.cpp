@@ -6,7 +6,6 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
-#include <functional>
 #include <iterator>
 #include <numeric>
 #include <string_view>
@@ -20,10 +19,6 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool UniformPairAuditEnabled() {
-    return GetSvmConfig().uniform_pair_audit;
-}
-
 ir::Value ResolveBitCastValue(ir::Value value) {
     while (value.Defined() && value.Def()->IsBitCastOperation()) {
         value = value.Def()->GetArg<ir::Value>(0);
@@ -34,93 +29,6 @@ ir::Value ResolveBitCastValue(ir::Value value) {
 bool IsA64AddImmediate(u64 value) {
     return value <= 0xfff ||
            ((value & 0xfff) == 0 && (value >> 12) <= 0xfff);
-}
-
-struct UniformAuditAccess {
-    ir::Inst* inst{};
-    bool store{};
-    u32 offset{};
-    u32 size{};
-    ir::ValueType type{};
-
-    [[nodiscard]] ir::Value DataValue() const {
-        return store ? inst->GetArg<ir::Value>(1) : ir::Value{inst};
-    }
-};
-
-struct UniformAuditCandidate {
-    UniformAuditAccess left{};
-    UniformAuditAccess right{};
-    const char* kind{};
-    bool pair_encoding{};
-};
-
-std::vector<UniformAuditCandidate> BuildUniformAuditCandidates(ir::Block* block) {
-    std::vector<UniformAuditCandidate> out;
-    std::vector<UniformAuditAccess> run;
-    auto flush_run = [&] {
-        for (size_t i = 0; i + 1 < run.size(); i += 2) {
-            const auto& left = run[i];
-            const auto& right = run[i + 1];
-            const s64 effective = static_cast<s64>(state_offset_uniform_buffer) +
-                                  static_cast<s64>(left.offset);
-            const unsigned access_size_log2 = left.size == 4 ? 2 :
-                                              left.size == 8 ? 3 : 4;
-            const bool encoding =
-                    vixl::aarch64::Assembler::IsImmLSPair(effective,
-                                                          access_size_log2);
-            out.push_back({left, right,
-                           left.store ? "stp_store" : "ldp_load", encoding});
-        }
-        run.clear();
-    };
-
-    UniformAuditAccess previous{};
-    bool have_previous = false;
-    for (auto& inst : block->GetInstList()) {
-        const auto op = inst.GetOp();
-        if (op != ir::OpCode::LoadUniform && op != ir::OpCode::StoreUniform) {
-            flush_run();
-            have_previous = false;
-            continue;
-        }
-        const auto uniform = inst.GetArg<ir::Uniform>(0);
-        UniformAuditAccess current{&inst,
-                                   op == ir::OpCode::StoreUniform,
-                                   uniform.GetOffset(),
-                                   ir::GetValueSizeByte(uniform.GetType()),
-                                   uniform.GetType()};
-
-        if (have_previous && previous.offset == current.offset &&
-            previous.size == current.size) {
-            bool safe = true;
-            if (!previous.store && current.store) {
-                safe = current.inst->GetArg<ir::Value>(1).Def() == previous.inst;
-            }
-            if (safe) {
-                const char* kind = !previous.store && !current.store ? "same_ll" :
-                                   previous.store && current.store ? "same_ss" :
-                                   previous.store ? "same_sl" : "same_ls";
-                out.push_back({previous, current, kind, false});
-            }
-        }
-
-        const bool pairable_size = current.size == 4 || current.size == 8 ||
-                                   current.size == 16;
-        const bool extend = !run.empty() && current.store == run.back().store &&
-                            current.size == run.back().size && pairable_size &&
-                            current.offset == run.back().offset + run.back().size;
-        if (!extend) {
-            flush_run();
-        }
-        if (pairable_size) {
-            run.push_back(current);
-        }
-        previous = current;
-        have_previous = true;
-    }
-    flush_run();
-    return out;
 }
 
 enum class DensityCategory : size_t {
@@ -240,64 +148,6 @@ bool DensityScalarFP(ir::OpCode op) {
 
 #define __ masm.
 
-LinkSuffixCommonPlan::LinkSuffixCommonPlan(
-        std::vector<std::optional<u64>> encodings) {
-    sites.resize(encodings.size());
-    canonical_labels.resize(encodings.size());
-    canonical_emitted.resize(encodings.size());
-
-    std::map<u64, std::vector<size_t>> groups;
-    for (size_t i = 0; i < encodings.size(); ++i) {
-        sites[i].encoding = encodings[i];
-        sites[i].canonical = i;
-        if (encodings[i]) {
-            groups[*encodings[i]].push_back(i);
-        }
-    }
-    for (const auto& [encoding, members] : groups) {
-        (void)encoding;
-        if (members.size() < 2) {
-            continue;
-        }
-        const size_t canonical = members.front();
-        canonical_labels[canonical] = std::make_unique<Label>();
-        ++stats.groups;
-        stats.ranges += static_cast<u32>(members.size());
-        stats.saved_bytes += static_cast<u32>(members.size() - 1) *
-                             vixl::aarch64::kInstructionSize;
-        for (const size_t site : members) {
-            sites[site].canonical = canonical;
-            sites[site].shared = true;
-        }
-    }
-}
-
-bool LinkSuffixCommonPlan::TryEmit(size_t site,
-                                   u64 actual_encoding,
-                                   MacroAssembler& masm) {
-    if (site >= sites.size()) {
-        return false;
-    }
-    const auto& planned = sites[site];
-    if (!planned.shared || planned.encoding != actual_encoding) {
-        return false;
-    }
-    const size_t canonical = planned.canonical;
-    ASSERT(canonical < sites.size());
-    ASSERT(canonical_labels[canonical]);
-    if (site == canonical) {
-        masm.Bind(canonical_labels[canonical].get());
-        canonical_emitted[canonical] = true;
-        return false;
-    }
-    if (!canonical_emitted[canonical]) {
-        return false;
-    }
-    masm.B(canonical_labels[canonical].get());
-    return true;
-}
-
-
 JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()) {
     auto& config = ctx.GetConfig();
     use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
@@ -310,10 +160,6 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     fpcr_tax_skip_switch = sse_afp_nan && FpcrTaxSkipSwitchEnabled();
     fpcr_tax_timing = sse_afp_nan && FpcrTaxTimingEnabled();
     const auto& features = ctx.GetFeatures();
-    // Config 仍提供本期不迁移的物理池 capability；FeatureSet 可在 module
-    // 级关闭该代码形状。P3 若要从全局 OFF 提升为 ON，需同时提供对应池。
-    xmm_pool_ext = features.xmm_pool_ext &&
-            True(config.global_opts & Optimizations::XmmPoolExt);
     shift_imm_fast = features.shift_imm_fast;
     mem_narrow_fuse = features.mem_narrow_fuse;
     addr_ea_tie = features.addr_ea_tie;
@@ -322,7 +168,6 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     sse_nan_coldpath = features.sse_nan_coldpath;
     backedge_latch = BackedgeLatchEnabled() || config.region_edges;
     backedge_flags = backedge_latch && GetSvmConfig().backedge_flags;
-    link_suffix_common = features.link_suffix_common;
     execution_trace_enabled = context.ExecutionTraceEnabled();
     if (execution_trace_enabled) {
         for (const auto& desc : config.buffers_static_alloc) {
@@ -707,59 +552,6 @@ void JitTranslator::ResetBoundaryDensity() {
     }
     boundary_terminal_link_mnemonics.clear();
     boundary_terminal_link_ranges.clear();
-    link_suffix_plan.reset();
-    link_suffix_site = 0;
-}
-
-void JitTranslator::PlanLinkSuffixes(const ir::Terminal& terminal) {
-    link_suffix_plan.reset();
-    link_suffix_site = 0;
-    if (!link_suffix_common || backedge_flags_plan) {
-        return;
-    }
-    std::vector<std::optional<u64>> encodings;
-    std::function<void(const ir::Terminal&)> visit = [&](const ir::Terminal& item) {
-        VisitVariant<void>(item, [&](const auto& term) {
-            using T = std::decay_t<decltype(term)>;
-            if constexpr (std::is_same_v<T, ir::terminal::LinkBlock> ||
-                          std::is_same_v<T, ir::terminal::LinkBlockFast>) {
-                if (IsRegionInternalEdge(term.next)) {
-                    return;
-                }
-                // Keep a positional hole for every direct leaf because
-                // EmitTerminal still consumes one suffix-plan site per leaf.
-                // Mixed conditional terminals therefore preserve commoning
-                // among only their residual legacy leaves.
-                encodings.push_back(context.CanEmitDirectLink(term.next)
-                                            ? std::nullopt
-                                            : context.PlanForwardSuffix(term.next));
-            } else if constexpr (std::is_same_v<T, ir::terminal::If> ||
-                                 std::is_same_v<T, ir::terminal::Condition>) {
-                visit(term.then_);
-                visit(term.else_);
-            } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
-                for (const auto& case_ : term.cases) {
-                    visit(case_.then);
-                }
-            } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
-                visit(term.else_);
-            }
-        });
-    };
-    visit(terminal);
-    link_suffix_plan =
-            std::make_unique<LinkSuffixCommonPlan>(std::move(encodings));
-}
-
-JitContext::LinkSuffixEmitter JitTranslator::NextLinkSuffixEmitter() {
-    if (!link_suffix_plan) {
-        return {};
-    }
-    ASSERT(link_suffix_site < link_suffix_plan->SiteCount());
-    const size_t site = link_suffix_site++;
-    return [this, site](u64 actual_encoding) {
-        return link_suffix_plan->TryEmit(site, actual_encoding, masm);
-    };
 }
 
 void JitTranslator::RecordBoundaryRange(BoundarySubsequence category,
@@ -846,15 +638,6 @@ void JitTranslator::PrintBoundaryDensity(u64 guest_pc,
         common2_saved +=
                 (count - 1) * vixl::aarch64::kInstructionSize;
     }
-    // Once enabled, duplicate sites no longer contain the original suffix, so
-    // the post-emission scan cannot see the opportunity it just consumed. The
-    // plan uses the same full 8-byte key and reports the pre-emission counts.
-    if (link_suffix_common && link_suffix_plan) {
-        const auto& stats = link_suffix_plan->GetStats();
-        common2_groups = stats.groups;
-        common2_ranges = stats.ranges;
-        common2_saved = stats.saved_bytes;
-    }
     std::fprintf(stderr,
                  "[svm-boundary] pc=0x%llx bytes_prologue=%u "
                  "bytes_terminal=%u bytes_link=%u bytes_cold=%u "
@@ -890,31 +673,6 @@ void JitTranslator::Translate(ir::Block* block) {
     ASSERT(vec_nan_cold_sites.empty());
     const bool density = context.DensityProfileEnabled();
     ResetBoundaryDensity();
-    const bool uniform_pair_audit = UniformPairAuditEnabled();
-    const auto uniform_candidates = uniform_pair_audit
-            ? BuildUniformAuditCandidates(block)
-            : std::vector<UniformAuditCandidate>{};
-    if (uniform_pair_audit) {
-        const auto legacy = HotCoalesceAnalyzeUniformSequences(block);
-        if (legacy.saved_instructions != uniform_candidates.size()) {
-            std::fprintf(stderr,
-                         "[svm-uniform-mismatch]\tpc=0x%llx\tlegacy=%u\taudit=%zu\t"
-                         "load_pairs=%u\tstore_pairs=%u\tsame_offset=%u\tblock=%s\n",
-                         static_cast<unsigned long long>(
-                                 block->GetStartLocation().Value()),
-                         legacy.saved_instructions, uniform_candidates.size(),
-                         legacy.load_pairs, legacy.store_pairs,
-                         legacy.same_offset, block->ToString().c_str());
-        }
-    }
-    std::vector<std::pair<u32, u32>> uniform_host_ranges;
-    if (uniform_pair_audit) {
-        u32 range_count = 0;
-        for (const auto& inst : block->GetInstList()) {
-            range_count = std::max(range_count, static_cast<u32>(inst.Id()) + 1);
-        }
-        uniform_host_ranges.resize(range_count);
-    }
     const u32 density_start = density ? context.CurrentBufferSize() : 0;
     std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_ops{};
     std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_bytes{};
@@ -1007,15 +765,8 @@ void JitTranslator::Translate(ir::Block* block) {
             continue;
         }
         const u32 before = density ? context.CurrentBufferSize() : 0;
-        const u32 uniform_before = uniform_pair_audit ? context.CurrentBufferSize() : 0;
         const u32 nan_before = density ? context.DensityNaNBytes() : 0;
         Translate(&inst);
-        if (uniform_pair_audit &&
-            (inst.GetOp() == ir::OpCode::LoadUniform ||
-             inst.GetOp() == ir::OpCode::StoreUniform)) {
-            uniform_host_ranges[inst.Id()] =
-                    {uniform_before, context.CurrentBufferSize()};
-        }
         if (density) {
             const u32 emitted = context.CurrentBufferSize() - before;
             const u32 nan_emitted = context.DensityNaNBytes() - nan_before;
@@ -1039,46 +790,6 @@ void JitTranslator::Translate(ir::Block* block) {
     }
     perf_body.Stop();
 
-    if (uniform_pair_audit) {
-        for (const auto& candidate : uniform_candidates) {
-            const auto left_value = candidate.left.DataValue();
-            const auto right_value = candidate.right.DataValue();
-            const bool copy_shape = std::strcmp(candidate.kind, "same_ll") == 0 ||
-                                    std::strcmp(candidate.kind, "same_sl") == 0;
-            const bool same_physical =
-                    copy_shape && context.SharesPhysical(left_value, right_value);
-            const auto [left_begin, left_end] =
-                    uniform_host_ranges[candidate.left.inst->Id()];
-            const auto [right_begin, right_end] =
-                    uniform_host_ranges[candidate.right.inst->Id()];
-            const auto left_ir = fmt::format("{}", *candidate.left.inst);
-            const auto right_ir = fmt::format("{}", *candidate.right.inst);
-            const auto left_host = context.DisassembleRange(left_begin, left_end);
-            const auto right_host = context.DisassembleRange(right_begin, right_end);
-            std::fprintf(stderr,
-                         "[svm-uniform-pair]\tpc=0x%llx\tkind=%s\t"
-                         "pair_encoding=%u\tcopy_shape=%u\tsame_physical=%u\t"
-                         "id0=%u\tid1=%u\toff0=%u\toff1=%u\tsize0=%u\tsize1=%u\t"
-                         "type0=%s\ttype1=%s\talloc0=%s\talloc1=%s\t"
-                         "host_begin0=%u\thost_end0=%u\thost_begin1=%u\thost_end1=%u\t"
-                         "ir0=%s\tir1=%s\thost0=%s\thost1=%s\n",
-                         static_cast<unsigned long long>(
-                                 block->GetStartLocation().Value()),
-                         candidate.kind, candidate.pair_encoding,
-                         copy_shape, same_physical,
-                         candidate.left.inst->Id(), candidate.right.inst->Id(),
-                         candidate.left.offset, candidate.right.offset,
-                         candidate.left.size, candidate.right.size,
-                         ir::ValueTypeString(candidate.left.type),
-                         ir::ValueTypeString(candidate.right.type),
-                         context.AllocationName(left_value).c_str(),
-                         context.AllocationName(right_value).c_str(),
-                         left_begin, left_end, right_begin, right_end,
-                         left_ir.c_str(), right_ir.c_str(),
-                         left_host.c_str(), right_host.c_str());
-        }
-    }
-
     PerfScope2 perf_terminal{GetPerfStats2().codegen_terminal};
     context.BeginTerminalScratch();
     const u32 flags_before = density ? context.CurrentBufferSize() : 0;
@@ -1089,7 +800,6 @@ void JitTranslator::Translate(ir::Block* block) {
     }
     const u32 terminal_before = density ? context.CurrentBufferSize() : 0;
     boundary_terminal_open = density;
-    PlanLinkSuffixes(block->GetTerminal());
     if (!EmitBackedgeFlagsTerminal(block->GetTerminal())) {
         EmitTerminal(block->GetTerminal());
     }
@@ -1570,7 +1280,6 @@ void JitTranslator::EmitBackedgeColdPaths() {
             context.Forward(plan.cold_target,
                             nullptr,
                             nullptr,
-                            {},
                             LinkSiteKind::BackedgeCold);
         }
     }
@@ -1688,8 +1397,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                     ? backedge_flags_plan->local_entry.get()
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
-            context.Forward(term.next, exit, self_target,
-                            NextLinkSuffixEmitter(), direct_link_kind);
+            context.Forward(term.next, exit, self_target, direct_link_kind);
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
@@ -1707,8 +1415,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                     ? backedge_flags_plan->local_entry.get()
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
-            context.Forward(term.next, exit, self_target,
-                            NextLinkSuffixEmitter(), direct_link_kind);
+            context.Forward(term.next, exit, self_target, direct_link_kind);
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {

@@ -26,7 +26,7 @@ namespace swift::runtime::backend::arm64 {
 // an IR instruction, block edge, or helper call.
 //
 // This is a structural invariant, not merely the default configuration. The
-// retired SVM_X87_TOPVIRT cache once named a fixed GPR; its first implementation
+// A retired TOP cache once named a fixed GPR; its first implementation
 // silently reused x20 after the trampoline had pinned guest RBX there, because
 // a second Mark() was a no-op. TrampolinesArm64::Build now rejects every static
 // uniform mapping that overlaps the runtime ABI or another descriptor, while
@@ -67,39 +67,6 @@ enum class HostFlags : u64 {
 };
 
 DECLARE_ENUM_FLAG_OPERATORS(HostFlags)
-
-// Unit-terminal-local plan for sharing byte-identical two-instruction link
-// suffixes. Sites are grouped by their full 8 encoded bytes. The first site in
-// a repeated group stays inline; an exactly matching later site becomes one B
-// to the first. A runtime key mismatch leaves that site untouched.
-class LinkSuffixCommonPlan {
-public:
-    struct Stats {
-        u32 groups{};
-        u32 ranges{};
-        u32 saved_bytes{};
-    };
-
-    explicit LinkSuffixCommonPlan(std::vector<std::optional<u64>> encodings);
-
-    [[nodiscard]] bool TryEmit(size_t site,
-                               u64 actual_encoding,
-                               MacroAssembler& masm);
-    [[nodiscard]] size_t SiteCount() const { return sites.size(); }
-    [[nodiscard]] const Stats& GetStats() const { return stats; }
-
-private:
-    struct Site {
-        std::optional<u64> encoding{};
-        size_t canonical{};
-        bool shared{};
-    };
-
-    std::vector<Site> sites{};
-    std::vector<std::unique_ptr<Label>> canonical_labels{};
-    std::vector<bool> canonical_emitted{};
-    Stats stats{};
-};
 
 class JitTranslator {
 public:
@@ -153,8 +120,6 @@ private:
     void ResetBoundaryDensity();
     void RecordBoundaryRange(BoundarySubsequence category, u32 begin, u32 end);
     void PrintBoundaryDensity(u64 guest_pc, u32 expected_boundary_bytes);
-    void PlanLinkSuffixes(const ir::Terminal& terminal);
-    [[nodiscard]] JitContext::LinkSuffixEmitter NextLinkSuffixEmitter();
 
     struct BackedgeFlagsPlan {
         bool optimized{true};
@@ -298,11 +263,6 @@ private:
                       const std::vector<ir::DataClass> &args,
                       bool has_result,
                       const Register &result);
-    // Helpers such as XSAVE/XRSTOR dereference ThreadContext64 directly and
-    // therefore need the statically resident SIMD uniforms synchronized at
-    // that exact call boundary.
-    void SpillStaticFPRUniforms();
-    void RestoreStaticFPRUniforms();
 
     void ClearFlags(ir::Flags flags);
 
@@ -417,9 +377,6 @@ private:
     // repair to shared block-local stubs. =0 restores the legacy inline
     // lowering byte-for-byte; SVM_SSE_NAN_FAST still wins when explicitly set.
     bool sse_nan_coldpath{true};
-    // W80: v11-v14 are allocator-visible. Hot guards use ordinary scratch;
-    // the out-of-line NaN veneer preserves the four-register cold ABI.
-    bool xmm_pool_ext{false};
     // FEAT_AFP + FPCR.NEP is active for guest code, so scalar Advanced SIMD
     // instructions can update a tied destination's lane 0 in place.
     bool sse_scalar_insert{false};
@@ -443,7 +400,6 @@ private:
     bool abs_const_mat{false};
     bool backedge_latch{false};
     bool backedge_flags{false};
-    bool link_suffix_common{false};
     bool region_edges_active{false};
     bool execution_trace_enabled{false};
     int execution_trace_rsp_reg{-1};
@@ -474,8 +430,6 @@ private:
             boundary_density_mnemonics{};
     std::map<std::string, u32> boundary_terminal_link_mnemonics{};
     std::vector<std::pair<u32, u32>> boundary_terminal_link_ranges{};
-    std::unique_ptr<LinkSuffixCommonPlan> link_suffix_plan{};
-    size_t link_suffix_site{};
     std::unordered_set<u64> region_blocks{};
     std::set<std::pair<u64, u64>> region_cycle_edges{};
     std::optional<u64> next_region_block{};

@@ -529,17 +529,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     auto uni_reg_offset{uniform_register.uniform.GetOffset()};
                     auto uni_reg_type{uniform_register.uniform.GetType()};
                     auto uni_reg_size{GetValueSizeByte(uni_reg_type)};
-                    // A statically resident V128 is also the architectural
-                    // backing for the scalar XmmLo/XmmHi views.  Those views
-                    // deliberately use U64 IR values, so bridge them through
-                    // GetHostFPR and let the backend UMOV the selected lane to
-                    // a GPR.  Other cross-register-class mappings remain
-                    // invalid.
-                    const bool scalar_from_fpr =
-                            IsFloatValueType(uni_reg_type) && !is_float &&
-                            uni_size <= sizeof(u64);
-                    if ((!scalar_from_fpr &&
-                         IsFloatValueType(uni_reg_type) != is_float) ||
+                    if (IsFloatValueType(uni_reg_type) != is_float ||
                         uni_offset < uni_reg_offset ||
                         (uni_offset + uni_size) > (uni_reg_offset + uni_reg_size) ||
                         info.uniform_regs_map.GetContinuousSizeFrom(uni_offset) < uni_size) {
@@ -624,14 +614,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     auto uni_reg_offset{uniform_register.uniform.GetOffset()};
                     auto uni_reg_type{uniform_register.uniform.GetType()};
                     auto uni_reg_size{GetValueSizeByte(uni_reg_type)};
-                    // Mirror the scalar XMM load bridge above: XmmLo/XmmHi
-                    // stores arrive as U64 values and become INS into the
-                    // pinned V128 register.
-                    const bool scalar_to_fpr =
-                            IsFloatValueType(uni_reg_type) && !value_is_float &&
-                            value_size <= sizeof(u64);
-                    if ((!scalar_to_fpr &&
-                         IsFloatValueType(uni_reg_type) != value_is_float) ||
+                    if (IsFloatValueType(uni_reg_type) != value_is_float ||
                         uni_offset < uni_reg_offset ||
                         (uni_offset + value_size) > (uni_reg_offset + uni_reg_size) ||
                         info.uniform_regs_map.GetContinuousSizeFrom(uni_offset) < value_size) {

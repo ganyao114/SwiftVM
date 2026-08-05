@@ -9,7 +9,6 @@
 #include <cstring>
 #include <string_view>
 
-#include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/context.h"
 
@@ -22,36 +21,6 @@ namespace {
 
 bool ScratchPrecisePeakAuditEnabled() {
     return GetSvmConfig().scratch_precise_peak_audit;
-}
-
-template <typename Emit>
-u64 EncodeTwoInstructionSuffix(Emit&& emit) {
-    MacroAssembler assembler{};
-    emit(assembler);
-    assembler.FinalizeCode();
-    ASSERT(assembler.GetBuffer()->GetSizeInBytes() ==
-           2 * vixl::aarch64::kInstructionSize);
-    u64 encoding{};
-    std::memcpy(&encoding,
-                assembler.GetBuffer()->GetStartAddress<const u8*>(),
-                sizeof(encoding));
-    return encoding;
-}
-
-u64 CurrentLocationReturnSuffixEncoding() {
-    static const u64 encoding = EncodeTwoInstructionSuffix([](auto& assembler) {
-        assembler.Str(ip, MemOperand(state, state_offset_current_loc));
-        assembler.Ret();
-    });
-    return encoding;
-}
-
-u64 HaltReasonReturnSuffixEncoding() {
-    static const u64 encoding = EncodeTwoInstructionSuffix([](auto& assembler) {
-        assembler.Str(ipw, MemOperand(state, state_offset_halt_reason));
-        assembler.Ret();
-    });
-    return encoding;
 }
 
 }  // namespace
@@ -222,55 +191,6 @@ bool JitContext::SharesGPR(const ir::Value& left, const ir::Value& right) {
     return reg_alloc.ValueType(left) == RegAlloc::GPR &&
            reg_alloc.ValueType(right) == RegAlloc::GPR &&
            reg_alloc.ValueGPR(left).id == reg_alloc.ValueGPR(right).id;
-}
-
-bool JitContext::SharesPhysical(const ir::Value& left,
-                                const ir::Value& right) {
-    const auto left_type = reg_alloc.ValueType(left);
-    const auto right_type = reg_alloc.ValueType(right);
-    if (left_type != right_type) return false;
-    if (left_type == RegAlloc::GPR) {
-        return reg_alloc.ValueGPR(left).id == reg_alloc.ValueGPR(right).id;
-    }
-    if (left_type == RegAlloc::FPR) {
-        return reg_alloc.ValueFPR(left).id == reg_alloc.ValueFPR(right).id;
-    }
-    return false;
-}
-
-std::string JitContext::AllocationName(const ir::Value& value) {
-    switch (reg_alloc.ValueType(value)) {
-        case RegAlloc::GPR:
-            return fmt::format("x{}", reg_alloc.ValueGPR(value).id);
-        case RegAlloc::FPR:
-            return fmt::format("v{}", reg_alloc.ValueFPR(value).id);
-        case RegAlloc::MEM:
-            return fmt::format("mem{}", reg_alloc.ValueMem(value).offset);
-        case RegAlloc::NONE:
-            return "none";
-        case RegAlloc::REF:
-            PANIC("unresolved REF allocation");
-    }
-    PANIC("unknown allocation type");
-}
-
-std::string JitContext::DisassembleRange(u32 begin, u32 end) {
-    ASSERT(end >= begin);
-    ASSERT((end - begin) % vixl::aarch64::kInstructionSize == 0);
-    const auto* bytes = masm.GetBuffer()->GetStartAddress<const u8*>();
-    vixl::aarch64::Decoder decoder;
-    vixl::aarch64::Disassembler disassembler;
-    decoder.AppendVisitor(&disassembler);
-    std::string out;
-    for (u32 offset = begin; offset < end;
-         offset += vixl::aarch64::kInstructionSize) {
-        const auto* instruction =
-                reinterpret_cast<const vixl::aarch64::Instruction*>(bytes + offset);
-        decoder.Decode(instruction);
-        if (!out.empty()) out.push_back(';');
-        out.append(disassembler.GetOutput());
-    }
-    return out.empty() ? "<none>" : out;
 }
 
 bool JitContext::IsFloatValue(const ir::Value& value) {
@@ -594,28 +514,9 @@ bool JitContext::ForwardStatic(ir::Location location) {
     return true;
 }
 
-std::optional<u64> JitContext::PlanForwardSuffix(ir::Location location) {
-    ASSERT(cur_block);
-    auto self_forward = location == cur_block->GetStartLocation();
-    if (!self_forward && cur_function) {
-        self_forward = location == cur_function->GetStartLocation();
-    }
-    if (self_forward) {
-        return std::nullopt;
-    }
-
-    auto target_module = module->GetAddressSpace().GetModule(location.Value());
-    if (!target_module) {
-        return HaltReasonReturnSuffixEncoding();
-    }
-
-    return CurrentLocationReturnSuffixEncoding();
-}
-
 void JitContext::Forward(ir::Location location,
                          Label* backedge_exit,
                          Label* self_target,
-                         const LinkSuffixEmitter& suffix_emitter,
                          LinkSiteKind direct_link_kind) {
     ASSERT(cur_block);
     // Block exit: land any pending spill write-back before the transfer
@@ -641,11 +542,8 @@ void JitContext::Forward(ir::Location location,
         if (!target_module) {
             // Module miss
             __ Mov(ipw, static_cast<u32>(HaltReason::ModuleMiss));
-            if (!suffix_emitter ||
-                !suffix_emitter(HaltReasonReturnSuffixEncoding())) {
-                __ Str(ipw, MemOperand(state, state_offset_halt_reason));
-                __ Ret();
-            }
+            __ Str(ipw, MemOperand(state, state_offset_halt_reason));
+            __ Ret();
             return;
         }
 
@@ -693,19 +591,13 @@ void JitContext::Forward(ir::Location location,
             __ Bind(&empty_slot);
             RecordExecCounter(exec_offset_link_miss);
             __ Mov(ip, location.Value());
-            if (!suffix_emitter ||
-                !suffix_emitter(CurrentLocationReturnSuffixEncoding())) {
-                __ Str(ip, MemOperand(state, state_offset_current_loc));
-                __ Ret();
-            }
+            __ Str(ip, MemOperand(state, state_offset_current_loc));
+            __ Ret();
         } else {
             // do not link
             __ Mov(ip, location.Value());
-            if (!suffix_emitter ||
-                !suffix_emitter(CurrentLocationReturnSuffixEncoding())) {
-                __ Str(ip, MemOperand(state, state_offset_current_loc));
-                __ Ret();
-            }
+            __ Str(ip, MemOperand(state, state_offset_current_loc));
+            __ Ret();
         }
     }
 }

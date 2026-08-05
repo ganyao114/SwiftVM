@@ -1645,12 +1645,8 @@ VRegister JitTranslator::PreserveNaNColdSource(ir::Inst* inst,
     }
     if (sse_nan_coldpath && !sse_nan_fast &&
         source.GetCode() == result.GetCode()) {
-        // With W80 the old fixed cold-ABI register may hold a live allocator
-        // value. Lease ordinary instruction scratch instead; it only has to
-        // survive the immediately following branch to this site's veneer.
-        const auto preserved = xmm_pool_ext ? context.GetTmpV() : reserved;
-        __ Orr(preserved.V16B(), source.V16B(), source.V16B());
-        return preserved;
+        __ Orr(reserved.V16B(), source.V16B(), source.V16B());
+        return reserved;
     }
     return source;
 }
@@ -1699,23 +1695,21 @@ void JitTranslator::QueueVecNaNColdPath(VecNaNColdKind kind,
         // FCMEQ produces all ones for every ordered lane. UMINV reduces that
         // to zero iff at least one lane is NaN, while leaving NZCV untouched.
         context.BeginHotNaNGuard(4);
-        const auto ordered_mask = xmm_pool_ext ? context.GetTmpV() : ipv3;
-        __ Fcmeq(ordered_mask.V4S(), result.V4S(), result.V4S());
-        __ Uminv(ordered_mask.S(), ordered_mask.V4S());
+        __ Fcmeq(ipv3.V4S(), result.V4S(), result.V4S());
+        __ Uminv(ipv3.S(), ipv3.V4S());
         const auto ordered = context.GetSharedTmpX();
-        __ Fmov(ordered.W(), ordered_mask.S());
+        __ Fmov(ordered.W(), ipv3.S());
         __ Cbz(ordered.W(), site->slow.get());
         context.EndHotNaNGuard();
     } else {
         context.BeginHotNaNGuard(5);
-        const auto ordered_mask = xmm_pool_ext ? context.GetTmpV() : ipv3;
-        __ Fcmeq(ordered_mask.V2D(), result.V2D(), result.V2D());
+        __ Fcmeq(ipv3.V2D(), result.V2D(), result.V2D());
         const auto lane0 =
                 backend::ScratchXPoolEnabled(context.GetFeatures()) ? context.GetTmpX() : ip0;
         const auto lane1 =
                 backend::ScratchXPoolEnabled(context.GetFeatures()) ? context.GetTmpX() : ip1;
-        __ Umov(lane0, ordered_mask.V2D(), 0);
-        __ Umov(lane1, ordered_mask.V2D(), 1);
+        __ Umov(lane0, ipv3.V2D(), 0);
+        __ Umov(lane1, ipv3.V2D(), 1);
         __ And(lane0, lane0, lane1);
         __ Cbz(lane0, site->slow.get());
         context.EndHotNaNGuard();
@@ -1848,46 +1842,17 @@ void JitTranslator::EmitVecNaNColdPaths() {
         const auto i = index(site->kind);
         used[i] = true;
         __ Bind(site->slow.get());
-        if (xmm_pool_ext) {
-            // v11-v14 may now contain continuation-live allocator values.
-            // Snapshot all four on the genuinely cold edge before loading the
-            // fixed repair ABI. The host stack is per-thread, 16-byte aligned,
-            // independent of architectural XMM state and RA spill coloring.
-            __ Sub(sp, sp, 64);
-            __ Stp(q11, q12, MemOperand(sp, 0));
-            __ Stp(q13, q14, MemOperand(sp, 32));
+        if (site->left.GetCode() != ipv0.GetCode()) {
+            __ Orr(ipv0.V16B(), site->left.V16B(), site->left.V16B());
         }
-        auto load_cold_arg = [&](const VRegister& dst, const VRegister& src) {
-            if (xmm_pool_ext && src.GetCode() >= ipv0.GetCode() &&
-                src.GetCode() <= ipv3.GetCode()) {
-                __ Ldr(dst.Q(), MemOperand(sp, (src.GetCode() - ipv0.GetCode()) * 16));
-            } else if (src.GetCode() != dst.GetCode()) {
-                __ Orr(dst.V16B(), src.V16B(), src.V16B());
-            }
-        };
-        load_cold_arg(ipv0, site->left);
-        if (is_binary(site->kind)) {
-            load_cold_arg(ipv1, site->right);
+        if (is_binary(site->kind) && site->right.GetCode() != ipv1.GetCode()) {
+            __ Orr(ipv1.V16B(), site->right.V16B(), site->right.V16B());
         }
-        load_cold_arg(ipv2, site->result);
+        __ Orr(ipv2.V16B(), site->result.V16B(), site->result.V16B());
         __ Adr(atomic_pair_scratch, site->repaired.get());
         __ B(&handlers[i]);
         __ Bind(site->repaired.get());
-        if (site->result.GetCode() != ipv2.GetCode()) {
-            __ Orr(site->result.V16B(), ipv2.V16B(), ipv2.V16B());
-        }
-        if (xmm_pool_ext) {
-            // The architectural result owns its physical register from the
-            // continuation onward. Restore every other leased cold-ABI
-            // register, including v13 after copying its repaired value out.
-            for (u32 code = ipv0.GetCode(); code <= ipv3.GetCode(); ++code) {
-                if (code != site->result.GetCode()) {
-                    __ Ldr(VRegister::GetQRegFromCode(code),
-                           MemOperand(sp, (code - ipv0.GetCode()) * 16));
-                }
-            }
-            __ Add(sp, sp, 64);
-        }
+        __ Orr(site->result.V16B(), ipv2.V16B(), ipv2.V16B());
         __ B(site->continuation.get());
     }
 
@@ -2391,7 +2356,7 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
             if (sse_nan_coldpath) {
                 auto repair_source = source;
                 if (source.GetCode() == result.GetCode()) {
-                    repair_source = xmm_pool_ext ? context.GetTmpV() : ipv0;
+                    repair_source = ipv0;
                     __ Orr(repair_source.V16B(), source.V16B(), source.V16B());
                 }
                 if (bits == 32) {
@@ -2472,7 +2437,7 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
             } else if (sse_nan_coldpath) {
                 auto repair_source = source;
                 if (source.GetCode() == value.GetCode()) {
-                    repair_source = xmm_pool_ext ? context.GetTmpV() : ipv0;
+                    repair_source = ipv0;
                     __ Orr(repair_source.V16B(), source.V16B(), source.V16B());
                 }
                 __ Fsqrt(value.V4S(), source.V4S());
@@ -2517,7 +2482,7 @@ void JitTranslator::EmitVecFUnary(ir::Inst* inst) {
         } else if (sse_nan_coldpath) {
             auto repair_source = source;
             if (source.GetCode() == value.GetCode()) {
-                repair_source = xmm_pool_ext ? context.GetTmpV() : ipv0;
+                repair_source = ipv0;
                 __ Orr(repair_source.V16B(), source.V16B(), source.V16B());
             }
             __ Fsqrt(value.V2D(), source.V2D());
