@@ -123,10 +123,14 @@ JitDiskCache::~JitDiskCache() {
     if (print_stats) {
         fmt::print(stderr,
                    "[jit-cache] loaded={} compiled={} stored={} "
-                   "reject(header={} guest={} reloc={} alloc={} scan={}) dispatch_slots={}\n",
+                   "feature(match={} skip={}) "
+                   "reject(header={} guest={} reloc={} alloc={} scan={}) "
+                   "dispatch_slots={}\n",
                    stats.units_loaded.load(),
                    stats.units_compiled.load(),
                    stats.units_stored.load(),
+                   stats.feature_match.load(),
+                   stats.reject_feature.load(),
                    stats.reject_header.load(),
                    stats.reject_guest_bytes.load(),
                    stats.reject_reloc.load(),
@@ -137,10 +141,19 @@ JitDiskCache::~JitDiskCache() {
 }
 
 ValidityKey JitDiskCache::Key() const {
+    std::vector<u64> mapped_feature_hashes;
+    for (const auto& module : address_space.GetMappedModules()) {
+        if (!module->GetModuleConfig().feature_overrides.Empty()) {
+            mapped_feature_hashes.push_back(
+                    HashFeatureSet(ResolveFeatureSet(module->GetModuleConfig())));
+        }
+    }
     return ValidityKey{kCacheFormatVersion,
                        ComputeBuildId(),
-                       ComputeConfigHash(address_space.GetConfig(),
-                                         address_space.GetDefaultModule()->GetModuleConfig()),
+                       ComputeConfigHash(
+                               address_space.GetConfig(),
+                               address_space.GetDefaultModule()->GetModuleConfig(),
+                               mapped_feature_hashes),
                        ComputeEnvHash(),
                        ComputeGuestId()};
 }
@@ -195,6 +208,7 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
 
     SerialUnit unit{};
     unit.guest_start = guest_start;
+    unit.feature_hash = HashFeatureSet(ResolveFeatureSet(module->GetModuleConfig()));
     unit.is_function = is_function ? 1 : 0;
     unit.link_sites = link_sites;
     std::sort(unit.link_sites.begin(), unit.link_sites.end(),
@@ -583,9 +597,9 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
     return true;
 }
 
-void JitDiskCache::Load(const std::shared_ptr<Module>& module) {
+void JitDiskCache::Load() {
     PerfScope2 perf_load{GetPerfStats2().cache_load};
-    if (!enabled || !module) {
+    if (load_attempted.exchange(true, std::memory_order_acq_rel) || !enabled) {
         return;
     }
     const auto path = FilePath();
@@ -683,6 +697,15 @@ void JitDiskCache::Load(const std::shared_ptr<Module>& module) {
             stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
+        auto module = address_space.GetModule(unit.guest_start);
+        const auto current_hash =
+                HashFeatureSet(ResolveFeatureSet(module->GetModuleConfig()));
+        if (unit.feature_hash != current_hash) {
+            stats.reject_feature.fetch_add(1, std::memory_order_relaxed);
+            dirty = true;
+            continue;
+        }
+        stats.feature_match.fetch_add(1, std::memory_order_relaxed);
         ReviveUnit(module, unit);
     }
 }

@@ -192,6 +192,8 @@ LoadedImage ElfLoader::Load(const std::string& path) {
     image.entry = guest_base + reader.get_entry();
     image.program_entry = image.entry;
     image.load_bias = guest_base;
+    image.main_start = guest_base + span_start;
+    image.main_end = guest_base + span_end;
     image.phdr = phdr_addr;
     image.phentsize = phentsize;
     image.phnum = phnum;

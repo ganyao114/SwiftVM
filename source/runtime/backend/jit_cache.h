@@ -9,9 +9,9 @@
 //
 // Granularity: one file per (guest identity x validity key), holding one
 // entry per compiled unit (a function in function mode, a block otherwise).
-// Written once at AddressSpace teardown, read once at AddressSpace
-// construction -- the guest ELF is already mapped by then, which is what
-// makes the load-time guest byte check possible.
+// Written once at AddressSpace teardown. The driver reads it once after all
+// modules have been mapped, so each cached unit can be assigned to its current
+// module before the load-time guest byte check and revive.
 //
 #pragma once
 
@@ -35,6 +35,8 @@ struct JitCacheStats {
     std::atomic<u64> units_compiled{};     // units the JIT compiled this run
     std::atomic<u64> reject_header{};      // whole-file rejections
     std::atomic<u64> reject_guest_bytes{}; // per-unit: guest code changed
+    std::atomic<u64> feature_match{};      // per-unit: current module feature match
+    std::atomic<u64> reject_feature{};     // per-unit: current module feature mismatch
     std::atomic<u64> reject_reloc{};       // per-unit: relocation/audit failure
     std::atomic<u64> reject_alloc{};       // per-unit: no code cache room
     std::atomic<u64> reject_scan{};        // units the scanner refused to store
@@ -50,9 +52,9 @@ public:
     [[nodiscard]] static bool Requested();
     [[nodiscard]] bool Enabled() const { return enabled; }
 
-    // Revive everything in the cache file into `module`. Safe to call once,
-    // before any guest code runs.
-    void Load(const std::shared_ptr<Module>& module);
+    // 在 driver 完成 MapModule 后调用一次。每个 unit 按 guest 地址重新查询
+    // 当前 module，并校验其 resolved FeatureSet hash。
+    void Load();
 
     // Called from TranslateIR right after a unit has been published. `blocks`
     // holds one entry per decoded guest block with its offset inside the unit.
@@ -83,6 +85,7 @@ private:
     std::string dir;
     bool enabled{};
     bool print_stats{};
+    std::atomic_bool load_attempted{};
     // Set when this run has something the file does not already contain. A
     // fully warm run leaves it false and skips the write entirely.
     bool dirty{};

@@ -79,6 +79,7 @@ int RunGuest(aot::GuestImage& guest,
             reinterpret_cast<void*>(guest.memory.GetBias()),
             guest.memory.Windowed() ? guest.memory.Mask() : 0);
     instance->SetInterpRangeCheck(InterpRangeCheckThunk, &guest.memory);
+    instance->GetAddressSpace()->LoadJitCache();
 
     std::vector<u64> compile_log;
     if (!dump_compiles.empty()) {

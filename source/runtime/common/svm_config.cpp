@@ -154,6 +154,42 @@ void FeatureSet::Set(FeatureId id, bool value) {
     }
 }
 
+std::string_view FeatureName(FeatureId id) {
+    switch (id) {
+#define SVM_FEATURE_NAME(field, default_value) case FeatureId::field: return #field;
+        SVM_FEATURE_FIELDS(SVM_FEATURE_NAME)
+#undef SVM_FEATURE_NAME
+        case FeatureId::Count: break;
+    }
+    return {};
+}
+
+std::optional<FeatureId> FeatureIdFromName(std::string_view name) {
+#define SVM_FEATURE_BY_NAME(field, default_value) \
+    if (name == #field) return FeatureId::field;
+    SVM_FEATURE_FIELDS(SVM_FEATURE_BY_NAME)
+#undef SVM_FEATURE_BY_NAME
+    return std::nullopt;
+}
+
+u64 HashFeatureSet(const FeatureSet& features) {
+    constexpr u64 kFnvOffset = 0xCBF29CE484222325ull;
+    constexpr u64 kFnvPrime = 0x100000001B3ull;
+    u64 hash = kFnvOffset;
+    auto mix = [&](u8 byte) {
+        hash ^= byte;
+        hash *= kFnvPrime;
+    };
+    for (std::size_t i = 0; i < kFeatureCount; ++i) {
+        const auto id = static_cast<FeatureId>(i);
+        for (u32 shift = 0; shift < 64; shift += 8) {
+            mix(static_cast<u8>((static_cast<u64>(i) >> shift) & 0xff));
+        }
+        mix(features.Get(id) ? 1 : 0);
+    }
+    return hash;
+}
+
 bool FeatureOverrides::Empty() const {
     return std::none_of(values.begin(), values.end(),
                         [](const auto& value) { return value.has_value(); });

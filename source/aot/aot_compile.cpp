@@ -191,6 +191,7 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         instance->SetFunctionDecodeBudget(options.decode_budget);
     }
     auto* address_space = instance->GetAddressSpace();
+    address_space->LoadJitCache();
     const auto& config = address_space->GetConfig();
     const auto& host_image = backend::GetHostImage();
     if (host_image.size == 0) {

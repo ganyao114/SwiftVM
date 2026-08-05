@@ -36,7 +36,7 @@ using namespace swift::runtime::ir;
 constexpr const char* kPhaseEnv = "DIRECT_LINK_CACHE_PHASE";
 constexpr const char* kDirEnv = "DIRECT_LINK_CACHE_DIR";
 constexpr const char* kRoundTripTest =
-        "disk cache v4 round trips direct-link sites across processes";
+        "disk cache v5 round trips direct-link sites across processes";
 
 IntrusivePtr<Block> BuildTarget(VAddr guest, u64 fingerprint) {
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
@@ -188,10 +188,17 @@ void RunCacheChildPhase(std::string_view phase) {
 
     {
         AddressSpace space{MakeConfig(guest_memory, guest_size)};
+        if (phase == "feature-write" || phase == "feature-read") {
+            auto config = space.GetDefaultModule()->GetModuleConfig();
+            config.feature_overrides.Set(FeatureId::ra_spill_evict, false);
+            const auto mapped_guest = phase == "feature-write" ? source_guest : then_guest;
+            space.MapModule(mapped_guest, mapped_guest + 1, config);
+        }
+        space.LoadJitCache();
         auto* disk = space.GetJitDiskCache();
         REQUIRE(disk != nullptr);
         REQUIRE(disk->Enabled());
-        auto module = space.GetDefaultModule();
+        auto module = space.GetModule(source_guest);
 
         if (phase == "write") {
             auto then_block = BuildTarget(then_guest, kThenFingerprint);
@@ -309,6 +316,18 @@ void RunCacheChildPhase(std::string_view phase) {
             REQUIRE(disk->Stats().reject_header.load() == 1);
             REQUIRE(disk->Stats().units_loaded.load() == 0);
             REQUIRE(space.GetCodeCache(Location{source_guest}) == nullptr);
+        } else if (phase == "feature-write") {
+            auto source = BuildTarget(source_guest, kThenFingerprint);
+            auto* source_code = TranslateIR(module, source);
+            REQUIRE(source_code != nullptr);
+            space.PushCodeCache(Location{source_guest}, source_code);
+            disk->Save();
+            REQUIRE(disk->Stats().units_stored.load() == 1);
+        } else if (phase == "feature-read") {
+            REQUIRE(disk->Stats().feature_match.load() == 0);
+            REQUIRE(disk->Stats().reject_feature.load() == 1);
+            REQUIRE(disk->Stats().units_loaded.load() == 0);
+            REQUIRE(space.GetCodeCache(Location{source_guest}) == nullptr);
         } else {
             FAIL("unknown direct-link cache child phase");
         }
@@ -402,10 +421,11 @@ TEST_CASE("disk cache scanner keeps move-wide constants and rejects PC-relative 
     }
 }
 
-TEST_CASE("disk cache v4 serializes arbitrary link-site records and kinds",
+TEST_CASE("disk cache v5 serializes feature hash and arbitrary link-site records",
           "[direct-link][jit-cache][serializer]") {
     SerialUnit input{};
     input.guest_start = 0x1000;
+    input.feature_hash = 0x123456789abcdef0ull;
     input.code.resize(32, 0);
     input.blocks.push_back({0x1000, 0x1004, 0, 0x1234});
     input.link_sites = {
@@ -420,6 +440,7 @@ TEST_CASE("disk cache v4 serializes arbitrary link-site records and kinds",
     REQUIRE(ReadUnit(reader, output));
     REQUIRE(reader.Remaining() == 0);
     REQUIRE(output.guest_start == input.guest_start);
+    REQUIRE(output.feature_hash == input.feature_hash);
     REQUIRE(output.code == input.code);
     REQUIRE(output.link_sites.size() == input.link_sites.size());
     for (size_t i = 0; i < input.link_sites.size(); ++i) {
@@ -446,6 +467,15 @@ TEST_CASE(kRoundTripTest, "[direct-link][jit-cache][production][smc]") {
     RewriteCacheVersion(cache_file, kCacheFormatVersion - 1);
     REQUIRE(RunCacheChild(dir, "reject") == 0);
     REQUIRE(std::filesystem::remove_all(dir) > 0);
+
+    std::array<char, 64> feature_path_template{};
+    std::strcpy(feature_path_template.data(), "/tmp/svm-feature-cache.XXXXXX");
+    char* feature_dir_name = mkdtemp(feature_path_template.data());
+    REQUIRE(feature_dir_name != nullptr);
+    const std::filesystem::path feature_dir{feature_dir_name};
+    REQUIRE(RunCacheChild(feature_dir, "feature-write") == 0);
+    REQUIRE(RunCacheChild(feature_dir, "feature-read") == 0);
+    REQUIRE(std::filesystem::remove_all(feature_dir) > 0);
 #else
     SUCCEED("direct-link code generation requires AArch64");
 #endif

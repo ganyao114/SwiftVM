@@ -153,6 +153,7 @@ struct SerialLinkSite {
 
 struct SerialUnit {
     u64 guest_start{};
+    u64 feature_hash{};
     u8 is_function{};
     std::vector<u8> code{};
     std::vector<SerialBlock> blocks{};
@@ -221,7 +222,7 @@ struct ValidityKey {
     bool operator==(const ValidityKey&) const = default;
 };
 
-constexpr u64 kCacheFormatVersion = 4;
+constexpr u64 kCacheFormatVersion = 5;
 
 u64 HashBytes(const void* data, std::size_t size, u64 seed);
 u64 HashU64(u64 value, u64 seed);
@@ -242,6 +243,9 @@ u64 ComputeEnvHash();
 // never in an instruction immediate.
 u64 ComputeConfigHash(const Config& config);
 u64 ComputeConfigHash(const Config& config, const ModuleConfig& module_config);
+u64 ComputeConfigHash(const Config& config,
+                      const ModuleConfig& default_module_config,
+                      std::span<const u64> mapped_feature_hashes);
 
 // Identity of the guest image. By default this preserves the legacy all-argv
 // hash. SVM_JIT_CACHE_EXEC_ID=1 instead uses only argv[1]'s path + file

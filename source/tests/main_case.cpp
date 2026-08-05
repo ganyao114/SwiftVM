@@ -38,6 +38,7 @@
 #include "assembler_riscv64.h"
 #include "fmt/format.h"
 #include "translator/linux/guest_memory.h"
+#include "translator/linux/module_features.h"
 #include "translator/x86/translator.h"
 
 namespace {
@@ -313,6 +314,62 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     Config config{};
     REQUIRE(ComputeConfigHash(config, empty) == ComputeConfigHash(config));
     REQUIRE(ComputeConfigHash(config, overridden) != ComputeConfigHash(config));
+}
+
+TEST_CASE("module feature binding parser accepts main and ignores bad entries") {
+    using namespace swift::runtime;
+
+    const auto valid = swift::linux::ParseModuleFeatureBindings(
+            "main:ra_spill_evict=0,const_cse=1");
+    REQUIRE(valid.warnings.empty());
+    REQUIRE(valid.main.Get(FeatureId::ra_spill_evict) == false);
+    REQUIRE(valid.main.Get(FeatureId::const_cse) == true);
+
+    const auto mixed = swift::linux::ParseModuleFeatureBindings(
+            "main:ra_spill_evict=2,not_a_feature=1,const_cse=0");
+    REQUIRE(mixed.warnings.size() == 2);
+    REQUIRE_FALSE(mixed.main.Get(FeatureId::ra_spill_evict).has_value());
+    REQUIRE(mixed.main.Get(FeatureId::const_cse) == false);
+
+    const auto unknown_role = swift::linux::ParseModuleFeatureBindings(
+            "interp:ra_spill_evict=0");
+    REQUIRE(unknown_role.warnings.size() == 1);
+    REQUIRE(unknown_role.main.Empty());
+    REQUIRE_FALSE(FeatureIdFromName("RA_SPILL_EVICT").has_value());
+    REQUIRE(FeatureName(FeatureId::ra_spill_evict) == "ra_spill_evict");
+}
+
+TEST_CASE("mapped main-image range owns only its guest addresses") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+
+    Config config{
+            .loc_start = 0,
+            .loc_end = 0x10000,
+            .backend_isa = kArm64,
+    };
+    AddressSpace space{config};
+    auto module_config = space.GetDefaultModule()->GetModuleConfig();
+    module_config.feature_overrides.Set(FeatureId::ra_spill_evict, false);
+    auto main_module = space.MapModule(0x2000, 0x5000, module_config);
+    REQUIRE(space.GetModule(0x1fff) == space.GetDefaultModule());
+    REQUIRE(space.GetModule(0x2000) == main_module);
+    REQUIRE(space.GetModule(0x4fff) == main_module);
+    REQUIRE(space.GetModule(0x5000) == space.GetDefaultModule());
+    REQUIRE_FALSE(ResolveFeatureSet(main_module->GetModuleConfig()).ra_spill_evict);
+    REQUIRE(ResolveFeatureSet(space.GetModule(0x1000)->GetModuleConfig()).ra_spill_evict ==
+            GetSvmConfig().ra_spill_evict);
+
+    const auto base_hash = ComputeConfigHash(
+            config, space.GetDefaultModule()->GetModuleConfig());
+    const std::array<swift::u64, 0> none{};
+    REQUIRE(ComputeConfigHash(config,
+                              space.GetDefaultModule()->GetModuleConfig(),
+                              none) == base_hash);
+    const std::array one{HashFeatureSet(ResolveFeatureSet(module_config))};
+    REQUIRE(ComputeConfigHash(config,
+                              space.GetDefaultModule()->GetModuleConfig(),
+                              one) != base_hash);
 }
 
 TEST_CASE("JIT cache environment hash separates absolute constant materialization") {

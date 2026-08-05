@@ -558,6 +558,7 @@ bool BlobReader::Bytes(void* out, std::size_t n) {
 
 void WriteUnit(BlobWriter& w, const SerialUnit& unit) {
     w.U64(unit.guest_start);
+    w.U64(unit.feature_hash);
     w.U8(unit.is_function);
     w.U32(static_cast<u32>(unit.code.size()));
     w.Bytes(unit.code.data(), unit.code.size());
@@ -589,7 +590,8 @@ void WriteUnit(BlobWriter& w, const SerialUnit& unit) {
 bool ReadUnit(BlobReader& r, SerialUnit& unit) {
     u32 code_size{};
     u32 count{};
-    if (!r.U64(unit.guest_start) || !r.U8(unit.is_function) || !r.U32(code_size)) {
+    if (!r.U64(unit.guest_start) || !r.U64(unit.feature_hash) ||
+        !r.U8(unit.is_function) || !r.U32(code_size)) {
         return false;
     }
     if (code_size == 0 || code_size % 4 != 0 || code_size > r.Remaining()) {
@@ -828,6 +830,22 @@ u64 ComputeConfigHash(const Config& config, const ModuleConfig& module_config) {
             h = HashU64(i, h);
             h = HashU64(*value ? 1 : 0, h);
         }
+    }
+    return h;
+}
+
+u64 ComputeConfigHash(const Config& config,
+                      const ModuleConfig& default_module_config,
+                      std::span<const u64> mapped_feature_hashes) {
+    u64 h = ComputeConfigHash(config, default_module_config);
+    if (mapped_feature_hashes.empty()) return h;
+
+    std::vector<u64> sorted{mapped_feature_hashes.begin(), mapped_feature_hashes.end()};
+    std::sort(sorted.begin(), sorted.end());
+    h = HashU64(0x53564d4d4f444655ull, h);  // "SVMMODFU"
+    h = HashU64(sorted.size(), h);
+    for (const auto feature_hash : sorted) {
+        h = HashU64(feature_hash, h);
     }
     return h;
 }

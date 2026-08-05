@@ -35,6 +35,9 @@ public:
 
     [[nodiscard]] std::shared_ptr<Module> GetDefaultModule();
 
+    // 返回显式 MapModule 建立的唯一 module 集合；default_module 不在其中。
+    [[nodiscard]] std::vector<std::shared_ptr<Module>> GetMappedModules();
+
     void UnmapModule(LocationDescriptor start, LocationDescriptor end);
 
     u32 PushCodeCache(ir::Location location, void* cache);
@@ -73,6 +76,8 @@ public:
     // switch is unset or the environment cannot support it; every caller must
     // handle null by simply compiling as usual.
     [[nodiscard]] JitDiskCache* GetJitDiskCache() const { return jit_disk_cache.get(); }
+    // Driver 在完成 module 映射后调用。重复调用由 JitDiskCache 自身去重。
+    void LoadJitCache();
 
     [[nodiscard]] Trampolines &GetTrampolines();
     [[nodiscard]] Trampolines &GetTrampolines() const;

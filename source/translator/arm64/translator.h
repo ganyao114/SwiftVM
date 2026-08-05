@@ -7,7 +7,13 @@
 #include "cpu.h"
 #include "translator/runtime.h"
 
+namespace swift::runtime::backend {
+class AddressSpace;
+}
+
 namespace swift::translator::arm64 {
+
+namespace backend = swift::runtime::backend;
 
 using namespace swift::arm64;
 
@@ -32,6 +38,8 @@ public:
     // true if [guest_addr, guest_addr+size) is mapped guest memory. Wired by
     // the linux loader to GuestMemory::RangeIsMapped before creating a Core.
     void SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), void* ctx);
+
+    [[nodiscard]] backend::AddressSpace* GetAddressSpace();
 
 private:
     explicit Arm64Instance(void* memory_base, u64 guest_addr_mask);

@@ -147,6 +147,8 @@ bool GuestImage::LoadFromImage(const AotImage& artifact, std::string& error) {
     image.isa = swift::linux::GuestISA::kX86_64;
     image.entry = artifact.guest.entry;
     image.load_bias = 0;
+    image.main_start = span_start;
+    image.main_end = span_end;
     image.phdr = artifact.guest.phdr;
     image.phentsize = artifact.guest.phentsize;
     image.phnum = artifact.guest.phnum;

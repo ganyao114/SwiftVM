@@ -14,6 +14,7 @@
 #include <climits>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -23,6 +24,8 @@
 #include <vector>
 #include "base/logging.h"
 #include "loader.h"
+#include "module_features.h"
+#include "runtime/backend/address_space.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/common/svm_config.h"
 #include "syscalls.h"
@@ -40,12 +43,35 @@ static bool InterpRangeCheckThunk(void* ctx, u64 addr, u64 size) {
     return static_cast<linux::GuestMemory*>(ctx)->RangeIsMapped(addr, size);
 }
 
+static void MapMainModuleAndLoadCache(runtime::backend::AddressSpace* address_space,
+                                      const linux::LoadedImage& image) {
+    auto module_config = address_space->GetDefaultModule()->GetModuleConfig();
+    if (const char* spec = std::getenv("SVM_MODULE_FEATURES")) {
+        auto parsed = linux::ParseModuleFeatureBindings(spec);
+        module_config.feature_overrides = std::move(parsed.main);
+        for (const auto& warning : parsed.warnings) {
+            std::fprintf(stderr, "WARNING: SVM_MODULE_FEATURES: %s\n", warning.c_str());
+        }
+    }
+    if (image.main_start < image.main_end) {
+        address_space->MapModule(image.main_start, image.main_end, module_config);
+    } else {
+        std::fprintf(stderr,
+                     "WARNING: main image module range is empty (%#llx..%#llx); "
+                     "using default module\n",
+                     static_cast<unsigned long long>(image.main_start),
+                     static_cast<unsigned long long>(image.main_end));
+    }
+    address_space->LoadJitCache();
+}
+
 // Runs an ARM64 guest: x8 = syscall nr, x0-x5 = args, result -> x0.
 static int RunArm64Guest(const linux::LoadedImage& image,
                          VAddr guest_sp,
                          linux::GuestMemory& memory) {
     auto* instance = translator::arm64::Arm64Instance::Make(
             reinterpret_cast<void*>(memory.GetBias()), memory.Windowed() ? memory.Mask() : 0);
+    MapMainModuleAndLoadCache(instance->GetAddressSpace(), image);
     // Wire the interpreter wild-pointer guard before creating the core
     // (the core's constructor copies it into the runtime State).
     instance->SetInterpRangeCheck(InterpRangeCheckThunk, &memory);
@@ -109,6 +135,7 @@ public:
                       memory.Windowed() ? memory.Mask() : 0))
             , process(std::make_shared<linux::SyscallProcessState>(
                       &memory, image.brk_start)) {
+        MapMainModuleAndLoadCache(instance->GetAddressSpace(), image);
         instance->SetInterpRangeCheck(InterpRangeCheckThunk, &memory);
         process->SetAlarmInterrupt([this] { InterruptAll(); });
     }

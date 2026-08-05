@@ -388,6 +388,10 @@ void Arm64Instance::SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), v
     impl->range_check_ctx = ctx;
 }
 
+runtime::backend::AddressSpace* Arm64Instance::GetAddressSpace() {
+    return impl->address_space.get();
+}
+
 Arm64Core::Arm64Core(Arm64Instance* instance) : instance(instance) {
     impl = std::make_unique<Impl>(instance);
 }

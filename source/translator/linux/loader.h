@@ -37,6 +37,8 @@ struct LoadedImage {
                          // guest->host bias (ET_EXEC) lives in GuestMemory
                          // (memory.GetBias()).
     VAddr interpreter_base{};  // PT_INTERP load bias (AT_BASE), or zero
+    VAddr main_start{};  // 主镜像 PT_LOAD 合并范围（host-page 对齐，guest 地址）
+    VAddr main_end{};
     VAddr phdr{};        // guest address of the in-memory program header table
     u64 phentsize{};
     u64 phnum{};

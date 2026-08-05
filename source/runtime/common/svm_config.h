@@ -80,6 +80,12 @@ struct FeatureSet {
     void Set(FeatureId id, bool value);
 };
 
+[[nodiscard]] std::string_view FeatureName(FeatureId id);
+[[nodiscard]] std::optional<FeatureId> FeatureIdFromName(std::string_view name);
+// 稳定的字段序列哈希：按 FeatureId 顺序混入 id 和 bool 值，不依赖结构体
+// padding，也不依赖编译器对 bool 的布局。
+[[nodiscard]] u64 HashFeatureSet(const FeatureSet& features);
+
 struct FeatureOverrides {
     std::array<std::optional<bool>, kFeatureCount> values{};
 

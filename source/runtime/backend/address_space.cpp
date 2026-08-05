@@ -7,6 +7,7 @@
 #include "runtime/backend/riscv64/trampolines.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/logging.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -68,27 +69,17 @@ void AddressSpace::Init() {
         }
     }
 
-    // JIT disk cache (off unless SVM_JIT_CACHE names a directory). Loading
-    // here is deliberate: the guest image is mapped before the AddressSpace is
-    // built, so the per-unit guest-byte check has something to verify against,
-    // and every revived unit is published before any guest code can run.
+    // JIT disk cache (off unless SVM_JIT_CACHE names a directory). 这里只构造；
+    // driver 必须先完成 MapModule，再显式 LoadJitCache，cache unit 才能按
+    // guest 地址恢复到正确 module。
     if (JitDiskCache::Requested()) {
         jit_disk_cache = std::make_unique<JitDiskCache>(*this);
-        jit_disk_cache->Load(default_module);
     }
 }
 
 std::shared_ptr<Module> AddressSpace::MapModule(LocationDescriptor start,
                                                 LocationDescriptor end,
                                                 const ModuleConfig& m_config) {
-    if (jit_disk_cache && jit_disk_cache->Enabled()) {
-        LOG_ERROR(
-                "SVM_JIT_CACHE: MapModule({:#x}, {:#x}) creates a second module, but cache "
-                "units have no module identity and are revived into default_module; cache "
-                "ownership is ambiguous",
-                start,
-                end);
-    }
     std::unique_lock guard(lock);
     auto module = std::make_shared<Module>(*this, start, end, m_config);
     modules.Map(start, end, module);
@@ -105,6 +96,21 @@ std::shared_ptr<Module> AddressSpace::GetModule(LocationDescriptor location) {
 }
 
 std::shared_ptr<Module> AddressSpace::GetDefaultModule() { return default_module; }
+
+std::vector<std::shared_ptr<Module>> AddressSpace::GetMappedModules() {
+    std::shared_lock guard(lock);
+    std::vector<std::shared_ptr<Module>> result;
+    modules.ForEachValue([&](const std::shared_ptr<Module>& module) {
+        if (module && std::find(result.begin(), result.end(), module) == result.end()) {
+            result.push_back(module);
+        }
+    });
+    return result;
+}
+
+void AddressSpace::LoadJitCache() {
+    if (jit_disk_cache) jit_disk_cache->Load();
+}
 
 void AddressSpace::UnmapModule(LocationDescriptor start, LocationDescriptor end) {
     std::unique_lock guard(lock);
