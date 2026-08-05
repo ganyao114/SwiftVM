@@ -104,10 +104,7 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
                                     | (1u << 24)  // FXSR
                                     | (1u << 25)  // SSE
                                     | (1u << 26); // SSE2
-    const char* abi_baseline_env =
-            swift::runtime::PerfGetenv("SVM_X86_64_ABI_BASELINE");
-    const bool abi_baseline =
-            abi_baseline_env && std::strcmp(abi_baseline_env, "0") != 0;
+    const bool abi_baseline = swift::runtime::GetSvmConfig().x86_64_abi_baseline;
     const u32 leaf1_edx = kSse2Edx | (abi_baseline ? (1u << 23) : 0u);
     // SSE3 / SSSE3 / SSE4.1 are backed by decoder_sse4.cc (64 mnemonics,
     // 4020 Rosetta rows).  POPCNT is I_POPCNT, long implemented.

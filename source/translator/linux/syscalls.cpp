@@ -333,20 +333,17 @@ static GuestSignalFrameLayout MakeSignalFrameLayout(u64 guest_rsp,
 }
 
 static bool GuestSignalDeliveryEnabled() {
-    const char* enabled = std::getenv("SVM_SIGNAL_DELIVERY");
-    return !enabled || std::strcmp(enabled, "0") != 0;
+    return runtime::GetSvmConfig().signal_delivery;
 }
 
 static bool GuestSignalTraceEnabled() {
-    const char* enabled = std::getenv("SVM_SIGNAL_TRACE");
-    return enabled && std::strcmp(enabled, "0") != 0;
+    return runtime::GetSvmConfig().signal_trace;
 }
 
 static bool GuestSignalPrivateFrameEnabled() {
     // Legacy bisection path only. Its guest-stack magic scan has a known race
     // with stale, already-consumed signal frames.
-    const char* enabled = std::getenv("SVM_SIGNAL_PRIVATE_FRAME");
-    return enabled && std::strcmp(enabled, "0") != 0;
+    return runtime::GetSvmConfig().signal_private_frame;
 }
 
 // Translates a host (macOS) errno to a guest (asm-generic) -errno.
@@ -1407,9 +1404,7 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
         const bool readonly_shared =
                 (flags & GUEST_MAP_SHARED) != 0 &&
                 (prot & GUEST_PROT_WRITE) == 0;
-        const char* shared_enabled = std::getenv("SVM_SYSCALL_MMAP_SHARED_READ");
-        const bool shared_disabled =
-                shared_enabled && std::strcmp(shared_enabled, "0") == 0;
+        const bool shared_disabled = !runtime::GetSvmConfig().syscall_mmap_shared_read;
         if (!private_mapping && (!readonly_shared || shared_disabled)) {
             LOG_WARNING(
                     "guest mmap: writable/disabled shared file mapping not supported "
@@ -1733,8 +1728,7 @@ s64 SyscallHandler::SysRtSigaction(u64 signal,
                                    u64 act_addr,
                                    u64 oldact_addr,
                                    u64 sigset_size) {
-    if (const char* enabled = std::getenv("SVM_SYSCALL_RT_SIGACTION");
-        enabled && std::strcmp(enabled, "0") == 0) {
+    if (!runtime::GetSvmConfig().syscall_rt_sigaction) {
         return -ENOSYS_;
     }
     if (signal == 0 || signal > 64 || sigset_size != sizeof(u64)) {
@@ -1767,8 +1761,7 @@ s64 SyscallHandler::SysRtSigprocmask(u64 how,
                                      u64 set_addr,
                                      u64 oldset_addr,
                                      u64 sigset_size) {
-    if (const char* enabled = std::getenv("SVM_SYSCALL_RT_SIGPROCMASK");
-        enabled && std::strcmp(enabled, "0") == 0) {
+    if (!runtime::GetSvmConfig().syscall_rt_sigprocmask) {
         return -ENOSYS_;
     }
     if (sigset_size != sizeof(u64)) return -EINVAL_;

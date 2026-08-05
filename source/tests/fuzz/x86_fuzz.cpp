@@ -13,6 +13,7 @@
 #include <fmt/format.h>
 #include <sys/mman.h>
 #include <unicorn/unicorn.h>
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "runtime/frontend/x86/x87.h"
@@ -544,8 +545,9 @@ struct FuzzEnv {
         ctx = &core->GetContext();
         std::random_device rd;
         u64 seed = (u64(rd()) << 32) ^ rd();
-        if (const char* s = getenv("SWIFT_FUZZ_SEED")) {
-            seed = strtoull(s, nullptr, 0);
+        const auto& svm_config = swift::runtime::GetSvmConfig();
+        if (svm_config.swift_fuzz_seed_is_set) {
+            seed = strtoull(svm_config.swift_fuzz_seed.c_str(), nullptr, 0);
         }
         rng.seed(seed);
         std::cout << "Fuzz seed: " << seed << std::endl;
@@ -763,15 +765,15 @@ struct FuzzEnv {
         }
         u64 code_addr = base + cursor * kCodeStride;
         cursor++;
-        if (getenv("SWIFT_FUZZ_DUMP_IR")) {
+        if (swift::runtime::GetSvmConfig().swift_fuzz_dump_ir) {
             std::cout << "== cursor " << (cursor - 1) << " code: " << DumpCode(code) << std::endl;
         }
-        if (getenv("SWIFT_FUZZ_TRACE")) {
+        if (swift::runtime::GetSvmConfig().swift_fuzz_trace) {
             std::cout << "== cursor " << (cursor - 1) << " code: " << DumpCode(code) << std::endl;
         }
 
         std::memcpy(reinterpret_cast<u8*>(host_mem) + (code_addr - base), code.data(), code.size());
-        if (getenv("SWIFT_FUZZ_DUMP_IR")) {
+        if (swift::runtime::GetSvmConfig().swift_fuzz_dump_ir) {
             DumpIR(code_addr);
         }
         uc->WriteMemory(code_addr, code);
@@ -940,8 +942,9 @@ struct FuzzEnv {
     }
 
     int Iters(int def) {
-        if (const char* s = getenv("SWIFT_FUZZ_ITERS")) {
-            return atoi(s);
+        const auto& svm_config = swift::runtime::GetSvmConfig();
+        if (svm_config.swift_fuzz_iters_is_set) {
+            return atoi(svm_config.swift_fuzz_iters.c_str());
         }
         return def;
     }
@@ -950,7 +953,7 @@ struct FuzzEnv {
 }  // namespace
 
 TEST_CASE("Fuzz x86 debug repro") {
-    if (!getenv("SWIFT_FUZZ_DEBUG")) {
+    if (!swift::runtime::GetSvmConfig().swift_fuzz_debug) {
         return;
     }
     FuzzEnv env;
@@ -1850,34 +1853,24 @@ TEST_CASE("Fuzz x86 cpuid") {
         env.core->Run();
         u64 sig[4] = {
                 env.ctx->rax.qword, env.ctx->rbx.qword, env.ctx->rcx.qword, env.ctx->rdx.qword};
-        // Gates are read once per process by the decoder, so a plain getenv
-        // here matches what CPUID will actually report.
-        const bool xsave_on = std::getenv("SVM_XSAVE") &&
-                              std::strcmp(std::getenv("SVM_XSAVE"), "0") != 0;
-        const bool bmi_on = std::getenv("SVM_BMI") &&
-                            std::strcmp(std::getenv("SVM_BMI"), "0") != 0;
-        const bool fsgsbase_on = std::getenv("SVM_FSGSBASE") &&
-                                 std::strcmp(std::getenv("SVM_FSGSBASE"), "0") != 0;
-        const bool adx_on = std::getenv("SVM_ADX") &&
-                            std::strcmp(std::getenv("SVM_ADX"), "0") != 0;
+        const auto& svm_config = swift::runtime::GetSvmConfig();
+        const bool xsave_on = svm_config.xsave;
+        const bool bmi_on = svm_config.bmi;
+        const bool fsgsbase_on = svm_config.fsgsbase;
+        const bool adx_on = svm_config.adx;
         // AVX needs its whole enabling chain, so the bit follows both gates.
-        const bool avx_on = std::getenv("SVM_AVX") &&
-                            std::strcmp(std::getenv("SVM_AVX"), "0") != 0;
+        const bool avx_on = svm_config.avx;
         const bool avx_reported = avx_on && xsave_on;
         // SVM_SSE4 is default-ON (unlike the others), so the absence of
         // the variable means enabled.
-        const char* sse4_env = std::getenv("SVM_SSE4");
-        const bool sse4_on = !sse4_env || std::strcmp(sse4_env, "0") != 0;
-        const char* sse42str_env = std::getenv("SVM_SSE42STR");
-        const bool sse42str_on = !sse42str_env || std::strcmp(sse42str_env, "0") != 0;
+        const bool sse4_on = svm_config.sse4;
+        const bool sse42str_on = svm_config.sse42str;
         // Crypto bundle and SHA are default-ON; the leaf-7 SHA bit follows
         // the same AND of the two gates as X64Decoder::ShaNiEnabled (host
         // FEAT_SHA256 is assumed, matching the rest of this suite's host
         // coupling).
-        const char* crypto_env = std::getenv("SVM_X86_CRYPTO_NI");
-        const char* sha_env = std::getenv("SVM_X86_CRYPTO_SHA");
-        const bool sha_on = (!crypto_env || std::strcmp(crypto_env, "0") != 0) &&
-                            (!sha_env || std::strcmp(sha_env, "0") != 0);
+        const bool sha_on = svm_config.x86_crypto_ni &&
+                            svm_config.x86_crypto_sha;
         switch (leaf) {
             case 0:
                 REQUIRE(sig[0] == 0x15);
@@ -3691,19 +3684,19 @@ TEST_CASE("x86 ENTER LEAVE static/function interaction") {
     };
     const ConfigCase cases[] = {{"1", "1"}, {"1", "0"}, {"0", "1"}, {"0", "0"}};
     size_t code_cursor = 0;
-    const auto old_func = getenv("SVM_FUNC_BASE");
-    const auto old_static = getenv("SVM_STATIC_REGS");
-    const auto old_uniform = getenv("SVM_UNIFORM_ELIM");
-    const auto old_jit = getenv("SVM_ENABLE_JIT");
+    const auto old_func = swift::runtime::GetRawSvmConfigEnvForTest("SVM_FUNC_BASE");
+    const auto old_static = swift::runtime::GetRawSvmConfigEnvForTest("SVM_STATIC_REGS");
+    const auto old_uniform = swift::runtime::GetRawSvmConfigEnvForTest("SVM_UNIFORM_ELIM");
+    const auto old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const std::string old_func_value = old_func ? old_func : "";
     const std::string old_static_value = old_static ? old_static : "";
     const std::string old_uniform_value = old_uniform ? old_uniform : "";
     const std::string old_jit_value = old_jit ? old_jit : "";
-    setenv("SVM_UNIFORM_ELIM", "1", 1);
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_UNIFORM_ELIM", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     for (const auto& cfg : cases) {
-        setenv("SVM_FUNC_BASE", cfg.func, 1);
-        setenv("SVM_STATIC_REGS", cfg.statics, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", cfg.func, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_STATIC_REGS", cfg.statics, 1);
         auto* instance = X86Instance::Make();
         auto run = [&](u16 alloc, bool flag_op) {
             std::vector<u8> code;
@@ -3763,24 +3756,24 @@ TEST_CASE("x86 ENTER LEAVE static/function interaction") {
         X86Instance::Destroy(instance);
     }
     if (old_func) {
-        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", old_func_value.c_str(), 1);
     } else {
-        unsetenv("SVM_FUNC_BASE");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_FUNC_BASE");
     }
     if (old_static) {
-        setenv("SVM_STATIC_REGS", old_static_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_STATIC_REGS", old_static_value.c_str(), 1);
     } else {
-        unsetenv("SVM_STATIC_REGS");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_STATIC_REGS");
     }
     if (old_uniform) {
-        setenv("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
     } else {
-        unsetenv("SVM_UNIFORM_ELIM");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_UNIFORM_ELIM");
     }
     if (old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     backend::SmcTracker::SetEnabled(true);
     munmap(arena, kArenaSize);
@@ -3805,19 +3798,19 @@ TEST_CASE("x86 CallLambda function/static interaction") {
     };
     const ConfigCase cases[] = {{"1", "1"}, {"1", "0"}, {"0", "1"}, {"0", "0"}};
     size_t code_cursor = 0;
-    const auto old_func = getenv("SVM_FUNC_BASE");
-    const auto old_static = getenv("SVM_STATIC_REGS");
-    const auto old_uniform = getenv("SVM_UNIFORM_ELIM");
-    const auto old_jit = getenv("SVM_ENABLE_JIT");
-    const auto old_lambda = getenv("SVM_FUNC_LAMBDA");
+    const auto old_func = swift::runtime::GetRawSvmConfigEnvForTest("SVM_FUNC_BASE");
+    const auto old_static = swift::runtime::GetRawSvmConfigEnvForTest("SVM_STATIC_REGS");
+    const auto old_uniform = swift::runtime::GetRawSvmConfigEnvForTest("SVM_UNIFORM_ELIM");
+    const auto old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
+    const auto old_lambda = swift::runtime::GetRawSvmConfigEnvForTest("SVM_FUNC_LAMBDA");
     const std::string old_func_value = old_func ? old_func : "";
     const std::string old_static_value = old_static ? old_static : "";
     const std::string old_uniform_value = old_uniform ? old_uniform : "";
     const std::string old_jit_value = old_jit ? old_jit : "";
     const std::string old_lambda_value = old_lambda ? old_lambda : "";
-    setenv("SVM_UNIFORM_ELIM", "1", 1);
-    setenv("SVM_ENABLE_JIT", "1", 1);
-    setenv("SVM_FUNC_LAMBDA", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_UNIFORM_ELIM", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_LAMBDA", "1", 1);
 
     auto initialize_context = [&](ThreadContext64& ctx, u64 code_addr) {
         std::memset(reinterpret_cast<void*>(fxsave_area), 0xA5, 512);
@@ -3848,8 +3841,8 @@ TEST_CASE("x86 CallLambda function/static interaction") {
     };
 
     for (const auto& cfg : cases) {
-        setenv("SVM_FUNC_BASE", cfg.func, 1);
-        setenv("SVM_STATIC_REGS", cfg.statics, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", cfg.func, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_STATIC_REGS", cfg.statics, 1);
         auto* instance = X86Instance::Make();
 
         // The loop back-edge crosses FXSAVE's CallLambda. RSP is dirty in the
@@ -3943,29 +3936,29 @@ TEST_CASE("x86 CallLambda function/static interaction") {
     }
 
     if (old_func) {
-        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", old_func_value.c_str(), 1);
     } else {
-        unsetenv("SVM_FUNC_BASE");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_FUNC_BASE");
     }
     if (old_static) {
-        setenv("SVM_STATIC_REGS", old_static_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_STATIC_REGS", old_static_value.c_str(), 1);
     } else {
-        unsetenv("SVM_STATIC_REGS");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_STATIC_REGS");
     }
     if (old_uniform) {
-        setenv("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
     } else {
-        unsetenv("SVM_UNIFORM_ELIM");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_UNIFORM_ELIM");
     }
     if (old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     if (old_lambda) {
-        setenv("SVM_FUNC_LAMBDA", old_lambda_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_LAMBDA", old_lambda_value.c_str(), 1);
     } else {
-        unsetenv("SVM_FUNC_LAMBDA");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_FUNC_LAMBDA");
     }
     backend::SmcTracker::SetEnabled(true);
     munmap(arena, kArenaSize);
@@ -3985,24 +3978,24 @@ TEST_CASE("x86 RBX RBP static mapping interaction") {
         const char* statics;
     };
     const ConfigCase cases[] = {{"1", "1"}, {"1", "0"}, {"0", "1"}, {"0", "0"}};
-    const auto old_func = getenv("SVM_FUNC_BASE");
-    const auto old_static = getenv("SVM_STATIC_REGS");
-    const auto old_uniform = getenv("SVM_UNIFORM_ELIM");
-    const auto old_jit = getenv("SVM_ENABLE_JIT");
-    const auto old_lambda = getenv("SVM_FUNC_LAMBDA");
+    const auto old_func = swift::runtime::GetRawSvmConfigEnvForTest("SVM_FUNC_BASE");
+    const auto old_static = swift::runtime::GetRawSvmConfigEnvForTest("SVM_STATIC_REGS");
+    const auto old_uniform = swift::runtime::GetRawSvmConfigEnvForTest("SVM_UNIFORM_ELIM");
+    const auto old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
+    const auto old_lambda = swift::runtime::GetRawSvmConfigEnvForTest("SVM_FUNC_LAMBDA");
     const std::string old_func_value = old_func ? old_func : "";
     const std::string old_static_value = old_static ? old_static : "";
     const std::string old_uniform_value = old_uniform ? old_uniform : "";
     const std::string old_jit_value = old_jit ? old_jit : "";
     const std::string old_lambda_value = old_lambda ? old_lambda : "";
-    setenv("SVM_UNIFORM_ELIM", "1", 1);
-    setenv("SVM_ENABLE_JIT", "1", 1);
-    setenv("SVM_FUNC_LAMBDA", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_UNIFORM_ELIM", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_LAMBDA", "1", 1);
 
     u64 random = 0xD1B54A32D192ED03ull;
     for (const auto& cfg : cases) {
-        setenv("SVM_FUNC_BASE", cfg.func, 1);
-        setenv("SVM_STATIC_REGS", cfg.statics, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", cfg.func, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_STATIC_REGS", cfg.statics, 1);
         auto* instance = X86Instance::Make();
         size_t code_cursor = 0;
         for (int iteration = 0; iteration < 64; ++iteration) {
@@ -4090,29 +4083,29 @@ TEST_CASE("x86 RBX RBP static mapping interaction") {
     }
 
     if (old_func) {
-        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", old_func_value.c_str(), 1);
     } else {
-        unsetenv("SVM_FUNC_BASE");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_FUNC_BASE");
     }
     if (old_static) {
-        setenv("SVM_STATIC_REGS", old_static_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_STATIC_REGS", old_static_value.c_str(), 1);
     } else {
-        unsetenv("SVM_STATIC_REGS");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_STATIC_REGS");
     }
     if (old_uniform) {
-        setenv("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
     } else {
-        unsetenv("SVM_UNIFORM_ELIM");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_UNIFORM_ELIM");
     }
     if (old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     if (old_lambda) {
-        setenv("SVM_FUNC_LAMBDA", old_lambda_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_LAMBDA", old_lambda_value.c_str(), 1);
     } else {
-        unsetenv("SVM_FUNC_LAMBDA");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_FUNC_LAMBDA");
     }
     backend::SmcTracker::SetEnabled(true);
     munmap(arena, kArenaSize);
@@ -4131,23 +4124,23 @@ TEST_CASE("x86 static GetHostGPR alias clobber regression") {
         const char* statics;
     };
     const ConfigCase cases[] = {{"1", "1"}, {"1", "0"}, {"0", "1"}, {"0", "0"}};
-    const auto old_func = getenv("SVM_FUNC_BASE");
-    const auto old_static = getenv("SVM_STATIC_REGS");
-    const auto old_uniform = getenv("SVM_UNIFORM_ELIM");
-    const auto old_jit = getenv("SVM_ENABLE_JIT");
-    const auto old_lambda = getenv("SVM_FUNC_LAMBDA");
+    const auto old_func = swift::runtime::GetRawSvmConfigEnvForTest("SVM_FUNC_BASE");
+    const auto old_static = swift::runtime::GetRawSvmConfigEnvForTest("SVM_STATIC_REGS");
+    const auto old_uniform = swift::runtime::GetRawSvmConfigEnvForTest("SVM_UNIFORM_ELIM");
+    const auto old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
+    const auto old_lambda = swift::runtime::GetRawSvmConfigEnvForTest("SVM_FUNC_LAMBDA");
     const std::string old_func_value = old_func ? old_func : "";
     const std::string old_static_value = old_static ? old_static : "";
     const std::string old_uniform_value = old_uniform ? old_uniform : "";
     const std::string old_jit_value = old_jit ? old_jit : "";
     const std::string old_lambda_value = old_lambda ? old_lambda : "";
-    setenv("SVM_UNIFORM_ELIM", "1", 1);
-    setenv("SVM_ENABLE_JIT", "1", 1);
-    setenv("SVM_FUNC_LAMBDA", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_UNIFORM_ELIM", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_LAMBDA", "1", 1);
 
     for (const auto& cfg : cases) {
-        setenv("SVM_FUNC_BASE", cfg.func, 1);
-        setenv("SVM_STATIC_REGS", cfg.statics, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", cfg.func, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_STATIC_REGS", cfg.statics, 1);
         auto* instance = X86Instance::Make();
         size_t code_cursor = 0;
         auto run = [&](const char* name, CodeBuf code, auto initialize, auto verify) {
@@ -4293,29 +4286,29 @@ TEST_CASE("x86 static GetHostGPR alias clobber regression") {
     }
 
     if (old_func) {
-        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", old_func_value.c_str(), 1);
     } else {
-        unsetenv("SVM_FUNC_BASE");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_FUNC_BASE");
     }
     if (old_static) {
-        setenv("SVM_STATIC_REGS", old_static_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_STATIC_REGS", old_static_value.c_str(), 1);
     } else {
-        unsetenv("SVM_STATIC_REGS");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_STATIC_REGS");
     }
     if (old_uniform) {
-        setenv("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_UNIFORM_ELIM", old_uniform_value.c_str(), 1);
     } else {
-        unsetenv("SVM_UNIFORM_ELIM");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_UNIFORM_ELIM");
     }
     if (old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     if (old_lambda) {
-        setenv("SVM_FUNC_LAMBDA", old_lambda_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_LAMBDA", old_lambda_value.c_str(), 1);
     } else {
-        unsetenv("SVM_FUNC_LAMBDA");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_FUNC_LAMBDA");
     }
     backend::SmcTracker::SetEnabled(true);
     munmap(arena, kArenaSize);
@@ -4342,15 +4335,15 @@ TEST_CASE("x86 function JIT large lambda-free CFG") {
     };
     const size_t stages[] = {15, 23, 31, 39, 47, 59};
 
-    const auto old_func = getenv("SVM_FUNC_BASE");
-    const auto old_jit = getenv("SVM_ENABLE_JIT");
+    const auto old_func = swift::runtime::GetRawSvmConfigEnvForTest("SVM_FUNC_BASE");
+    const auto old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const std::string old_func_value = old_func ? old_func : "";
     const std::string old_jit_value = old_jit ? old_jit : "";
 
     size_t code_cursor = 0;
     for (const auto& mode : modes) {
-        setenv("SVM_FUNC_BASE", mode.func, 1);
-        setenv("SVM_ENABLE_JIT", mode.jit, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", mode.func, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", mode.jit, 1);
         auto* instance = X86Instance::Make();
         for (const size_t stage_count : stages) {
             // An entry jump plus N conditional/add diamonds yields exactly
@@ -4409,14 +4402,14 @@ TEST_CASE("x86 function JIT large lambda-free CFG") {
     }
 
     if (old_func) {
-        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", old_func_value.c_str(), 1);
     } else {
-        unsetenv("SVM_FUNC_BASE");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_FUNC_BASE");
     }
     if (old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     backend::SmcTracker::SetEnabled(true);
     munmap(arena, kArenaSize);
@@ -4512,14 +4505,14 @@ TEST_CASE("x86 extracted glibc 72-block cache-info function") {
             {"block-jit", "0", "1"},
             {"function-interpreter", "1", "0"},
     };
-    const auto old_func = getenv("SVM_FUNC_BASE");
-    const auto old_jit = getenv("SVM_ENABLE_JIT");
+    const auto old_func = swift::runtime::GetRawSvmConfigEnvForTest("SVM_FUNC_BASE");
+    const auto old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const std::string old_func_value = old_func ? old_func : "";
     const std::string old_jit_value = old_jit ? old_jit : "";
 
     for (const auto& mode : modes) {
-        setenv("SVM_FUNC_BASE", mode.func, 1);
-        setenv("SVM_ENABLE_JIT", mode.jit, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", mode.func, 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", mode.jit, 1);
         std::memset(reinterpret_cast<void*>(base + kOutput), 0, 0x20);
         *reinterpret_cast<u64*>(base + kStack - 8) = kReturnHlt;
         auto* instance = X86Instance::Make(reinterpret_cast<void*>(base));
@@ -4542,14 +4535,14 @@ TEST_CASE("x86 extracted glibc 72-block cache-info function") {
     }
 
     if (old_func) {
-        setenv("SVM_FUNC_BASE", old_func_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_FUNC_BASE", old_func_value.c_str(), 1);
     } else {
-        unsetenv("SVM_FUNC_BASE");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_FUNC_BASE");
     }
     if (old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     backend::SmcTracker::SetEnabled(true);
     munmap(arena, kArenaSize);
@@ -5047,17 +5040,17 @@ TEST_CASE("COMIS compact flags all consumers JIT interpreter differential") {
             {"COMISD", 0x66, 0x2F, true},
     };
 
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const std::string old_jit_value = old_jit ? old_jit : "";
     const bool had_old_jit = old_jit != nullptr;
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     if (had_old_jit)
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     else
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
 
     constexpr size_t kArenaSize = 0x1000000;
     runtime::backend::SmcTracker::SetEnabled(false);
@@ -5302,7 +5295,7 @@ TEST_CASE("x87 directed edge semantics") {
         *reinterpret_cast<u16*>(data + displacement + 8) = sign_exp;
     };
 
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
     struct X87BoundarySnapshot {
@@ -5317,7 +5310,7 @@ TEST_CASE("x87 directed edge semantics") {
     // Run the exact interpreter first so the opt-in JIT boundary sweeps below
     // can use it as their local SoftFloat oracle without Unicorn.
     for (const bool jit : {false, true}) {
-        setenv("SVM_ENABLE_JIT", jit ? "1" : "0", 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", jit ? "1" : "0", 1);
         auto* instance = X86Instance::Make();
 
         const auto run = [&](CodeBuf b) {
@@ -6816,9 +6809,9 @@ TEST_CASE("x87 directed edge semantics") {
         X86Instance::Destroy(instance);
     }
     if (had_old_jit)
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     else
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     swift::runtime::backend::SmcTracker::SetEnabled(true);
     munmap(arena, kArenaSize);
 }
@@ -6834,17 +6827,17 @@ TEST_CASE("SSE batch B JIT interpreter differential edge sweep") {
     // Construct both backends up front. X86Instance snapshots SVM_ENABLE_JIT
     // at construction, so this compares identical guest blocks without
     // involving Unicorn or relying on host floating-point behavior.
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const std::string old_jit_value = old_jit ? old_jit : "";
     const bool had_old_jit = old_jit != nullptr;
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     if (had_old_jit)
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     else
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
 
     constexpr size_t kArenaSize = 0x1000000;
     swift::runtime::backend::SmcTracker::SetEnabled(false);
@@ -7905,8 +7898,7 @@ TEST_CASE("Fuzz x86 lods") {
 // it must be set in the environment before the process starts; both cases skip
 // themselves otherwise rather than silently testing the FALLBACK path.
 TEST_CASE("Fuzz x86 avx vex128") {
-    const char* avx_env = std::getenv("SVM_AVX");
-    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; VEX.128 differential skipped");
         return;
     }
@@ -8074,8 +8066,7 @@ TEST_CASE("Fuzz x86 avx vex128") {
 // legacy `movdqu` control block asserts the poison survives an SSE write, which
 // is what makes the zero observed after a VEX write meaningful.
 TEST_CASE("x86 avx vex128 directed C3 zeroing and source order") {
-    const char* avx_env = std::getenv("SVM_AVX");
-    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; VEX.128 directed semantics skipped");
         return;
     }
@@ -8106,17 +8097,17 @@ TEST_CASE("x86 avx vex128 directed C3 zeroing and source order") {
 
     // X86Instance snapshots SVM_ENABLE_JIT at construction, so both backends
     // have to be built here rather than selected per run.
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     if (had_old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
@@ -8653,8 +8644,7 @@ TEST_CASE("x86 avx vex128 directed C3 zeroing and source order") {
 // Both backends are checked against the model, so this is simultaneously the
 // absolute-correctness check and the JIT/interpreter differential.
 TEST_CASE("AVX VEX.128 packed integer directed edge vectors") {
-    const char* avx_env = std::getenv("SVM_AVX");
-    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; VEX.128 ALU edge vectors skipped");
         return;
     }
@@ -8931,18 +8921,18 @@ TEST_CASE("AVX VEX.128 packed integer directed edge vectors") {
     };
 
     // ---- guest harness -----------------------------------------------------
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
     swift::runtime::backend::SmcTracker::SetEnabled(false);
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     if (had_old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
 
     constexpr size_t kArenaSize = 0x100000;
@@ -9167,8 +9157,7 @@ struct Avx256Ref {
 #include "avx256_rosetta_ref.inc"
 
 TEST_CASE("x86 avx256 vs rosetta reference") {
-    const char* avx_env = std::getenv("SVM_AVX");
-    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; VEX.256 Rosetta differential skipped");
         return;
     }
@@ -9297,17 +9286,17 @@ TEST_CASE("x86 avx256 vs rosetta reference") {
     MemOp mout{};
     mout.disp = 0x180;  // result
 
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     if (had_old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);

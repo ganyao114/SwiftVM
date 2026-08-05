@@ -34,8 +34,7 @@ void TrampolinesArm64::Build() {
                                                label_fault_return_host.GetLocation());
     call_host = reinterpret_cast<CallHost>(code_buffer->exec_data +
                                            label_call_host.GetLocation());
-    const char* exec_map = std::getenv("SVM_EXEC_MAP");
-    if (exec_map && std::strcmp(exec_map, "0") != 0) {
+    if (GetSvmConfig().exec_map_is_set && GetSvmConfig().exec_map != "0") {
         std::fprintf(stderr,
                      "[svm-exec-map] trampoline=%p..%p entry=%p return=%p call=%p size=%zu\n",
                      static_cast<void*>(code_buffer->exec_data),
@@ -134,8 +133,8 @@ void TrampolinesArm64::Build() {
     }
     gpr_regs.Mark(fp.GetCode());  // fp / optional static RDX (x29)
 
-    if (const char* dump = std::getenv("SVM_VIXL_HOST_DUMP");
-        dump && std::strcmp(dump, "0") != 0) {
+    if (GetSvmConfig().vixl_host_dump_is_set &&
+        GetSvmConfig().vixl_host_dump != "0") {
         const bool has_pt = config.page_table || config.memory_base;
         const bool pin_ext_level3 =
                 static_gprs.Get(6) && static_gprs.Get(7) &&
@@ -227,10 +226,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     // static-uniform spill (or the next linked block), so use the dispatcher
     // scratch x11 instead. Keep OFF/level-1 byte-identical.
     const WRegister halt_reg = caller_saved_static_pins ? ipw : w0;
-    const bool exec_prof = [] {
-        const char* env = std::getenv("SVM_EXEC_PROF");
-        return env && std::strcmp(env, "0") != 0;
-    }();
+    const bool exec_prof = GetSvmConfig().exec_prof;
     auto record = [&](u32 offset) {
         if (!exec_prof) return;
         __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));

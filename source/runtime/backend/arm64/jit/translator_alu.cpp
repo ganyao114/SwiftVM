@@ -12,11 +12,10 @@ namespace swift::runtime::backend::arm64 {
 namespace {
 
 bool GcmPclMul2Enabled() {
-    const char* env = PerfGetenv("SVM_X86_GCM_PCLMUL2");
     // This is a targeted fast path for the high-high PCLMUL selector used by
     // OpenSSL's Karatsuba GHASH fold.  Keep an exact process-level fallback
     // while defaulting to the architecturally equivalent PMULL2 instruction.
-    return !env || std::strcmp(env, "0") != 0;
+    return GetSvmConfig().x86_gcm_pclmul2;
 }
 
 }  // namespace

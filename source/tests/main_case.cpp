@@ -31,6 +31,7 @@
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/common/hot_coalesce_prof.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "runtime/frontend/x86/x87.h"
 #include "compiler/slang/slang.h"
@@ -214,9 +215,12 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 74);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 138);
+    REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
+    REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
+            "SVM_MEM_IDENTITY");
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_RA_SPILL_EVICT");
+            "SWIFT_FUZZ_TRACE");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -281,41 +285,41 @@ TEST_CASE("config hash includes programmatic effective AFP policy") {
 }
 
 TEST_CASE("JIT cache environment hash separates link suffix commoning") {
-    const char* old = std::getenv("SVM_LINK_SUFFIX_COMMON");
+    const char* old = swift::runtime::GetRawSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON");
     const bool had_old = old != nullptr;
     const std::string old_value = old ? old : "";
 
-    unsetenv("SVM_LINK_SUFFIX_COMMON");
+    swift::runtime::UnsetSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON");
     const auto missing = swift::runtime::backend::ComputeEnvHash();
-    setenv("SVM_LINK_SUFFIX_COMMON", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON", "0", 1);
     const auto disabled = swift::runtime::backend::ComputeEnvHash();
-    setenv("SVM_LINK_SUFFIX_COMMON", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON", "1", 1);
     const auto enabled = swift::runtime::backend::ComputeEnvHash();
 
-    if (had_old) setenv("SVM_LINK_SUFFIX_COMMON", old_value.c_str(), 1);
-    else unsetenv("SVM_LINK_SUFFIX_COMMON");
+    if (had_old) swift::runtime::SetSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON", old_value.c_str(), 1);
+    else swift::runtime::UnsetSvmConfigEnvForTest("SVM_LINK_SUFFIX_COMMON");
 
-    REQUIRE(missing != disabled);
+    REQUIRE(missing == disabled);
     REQUIRE(disabled != enabled);
     REQUIRE(missing != enabled);
 }
 
 TEST_CASE("JIT cache environment hash separates absolute constant materialization") {
-    const char* old = std::getenv("SVM_ABS_CONST_MAT");
+    const char* old = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ABS_CONST_MAT");
     const bool had_old = old != nullptr;
     const std::string old_value = old ? old : "";
 
-    unsetenv("SVM_ABS_CONST_MAT");
+    swift::runtime::UnsetSvmConfigEnvForTest("SVM_ABS_CONST_MAT");
     const auto missing = swift::runtime::backend::ComputeEnvHash();
-    setenv("SVM_ABS_CONST_MAT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ABS_CONST_MAT", "0", 1);
     const auto disabled = swift::runtime::backend::ComputeEnvHash();
-    setenv("SVM_ABS_CONST_MAT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ABS_CONST_MAT", "1", 1);
     const auto enabled = swift::runtime::backend::ComputeEnvHash();
 
-    if (had_old) setenv("SVM_ABS_CONST_MAT", old_value.c_str(), 1);
-    else unsetenv("SVM_ABS_CONST_MAT");
+    if (had_old) swift::runtime::SetSvmConfigEnvForTest("SVM_ABS_CONST_MAT", old_value.c_str(), 1);
+    else swift::runtime::UnsetSvmConfigEnvForTest("SVM_ABS_CONST_MAT");
 
-    REQUIRE(missing != disabled);
+    REQUIRE(missing == disabled);
     REQUIRE(disabled != enabled);
     REQUIRE(missing != enabled);
 }
@@ -758,8 +762,8 @@ TEST_CASE("Uniform elimination does not propagate conditional stores past labels
     auto dominated_load = dominated.LoadUniform(Uniform{32, ValueType::U8});
 
     UniformEliminationPass::Run(&dominated, info);
-    const bool path_forward_off = std::getenv("SVM_UNIFORM_PATH_FWD") &&
-                                  std::strcmp(std::getenv("SVM_UNIFORM_PATH_FWD"), "0") == 0;
+    const bool path_forward_off =
+            !swift::runtime::GetSvmConfig().uniform_path_fwd;
     REQUIRE(dominated_load.Def()->GetOp() ==
             (path_forward_off ? OpCode::LoadUniform : OpCode::BitExtract));
 
@@ -810,8 +814,7 @@ TEST_CASE("Uniform range mode keeps mapped GPR, XMM, and ordinary byte facts loc
     map_gpr(32, 21);
     info.xmm_uniform_ranges.push_back({48, 64});
 
-    const bool range_on = std::getenv("SVM_IR_UNIFORM_RANGE") &&
-                          std::strcmp(std::getenv("SVM_IR_UNIFORM_RANGE"), "0") != 0;
+    const bool range_on = swift::runtime::GetSvmConfig().ir_uniform_range;
 
     Block block{0, Location{0x6000}};
     auto ordinary = block.LoadImm(Imm{std::uint64_t(0x1111111111111111ull)}).SetType(ValueType::U64);
@@ -855,8 +858,7 @@ TEST_CASE("Uniform helper effect sets preserve only unaffected facts") {
     static constexpr UniformEffectSet touched_effects{
             touched_ranges.data(), touched_ranges.size()};
     const auto touched_id = RegisterUniformEffectSet(&touched_effects);
-    const bool range_on = std::getenv("SVM_IR_UNIFORM_RANGE") &&
-                          std::strcmp(std::getenv("SVM_IR_UNIFORM_RANGE"), "0") != 0;
+    const bool range_on = swift::runtime::GetSvmConfig().ir_uniform_range;
 
     auto seed = [](Block& block) {
         auto low = block.LoadImm(Imm{std::uint64_t(0x1111111111111111ull)}).SetType(ValueType::U64);
@@ -922,12 +924,10 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     // architectural views live in one byte range.
     UniformInfo info{.uniform_size = 64};
     info.xmm_uniform_ranges.push_back({16, 32});
-    const bool xmm_forward_off = std::getenv("SVM_XMM_UNIFORM_FWD") &&
-                                 std::strcmp(std::getenv("SVM_XMM_UNIFORM_FWD"), "0") == 0;
-    const bool xmm_ssa_fwd2_off = std::getenv("SVM_XMM_SSA_FWD2") &&
-                                 std::strcmp(std::getenv("SVM_XMM_SSA_FWD2"), "0") == 0;
-    const bool xmm_narrow_fwd_off = std::getenv("SVM_XMM_NARROW_FWD") &&
-                                    std::strcmp(std::getenv("SVM_XMM_NARROW_FWD"), "0") == 0;
+    const auto& svm_config = swift::runtime::GetSvmConfig();
+    const bool xmm_forward_off = !svm_config.xmm_uniform_fwd;
+    const bool xmm_ssa_fwd2_off = !svm_config.xmm_ssa_fwd2;
+    const bool xmm_narrow_fwd_off = !svm_config.xmm_narrow_fwd;
 
     Block straight{0, Location{0x1000}};
     auto vector_value = straight.LoadImm(Imm{0u}).SetType(ValueType::V128);
@@ -1447,8 +1447,8 @@ TEST_CASE("structured V128 address wraps inside the 4GB guest window") {
 
     const auto exit = core->Run();
     INFO("SVM_ADDRMODE_STRUCT="
-         << (std::getenv("SVM_ADDRMODE_STRUCT")
-                     ? std::getenv("SVM_ADDRMODE_STRUCT")
+         << (swift::runtime::GetRawSvmConfigEnvForTest("SVM_ADDRMODE_STRUCT")
+                     ? swift::runtime::GetRawSvmConfigEnvForTest("SVM_ADDRMODE_STRUCT")
                      : "<unset>"));
     REQUIRE(exit == ExitReason::None);
     REQUIRE(std::memcmp(&context.xmm0, expected.data(), expected.size()) == 0);
@@ -1637,8 +1637,7 @@ TEST_CASE("structured address reloads RAX after every partial alias write") {
             }
         }
         REQUIRE(v128_loads.size() == 2);
-        const char* gate = std::getenv("SVM_ADDRMODE_STRUCT");
-        const bool structured = gate && std::strcmp(gate, "0") != 0;
+        const bool structured = swift::runtime::GetSvmConfig().addrmode_struct;
         if (structured) {
             const auto first_addr = v128_loads[0]->GetArg<Operand>(0);
             const auto second_addr = v128_loads[1]->GetArg<Operand>(0);
@@ -1954,15 +1953,15 @@ TEST_CASE("GPR immediate shifts specialize only nonzero in-range counts") {
         bool had_old{};
         std::string old;
         ShiftFastScope() {
-            if (const char* value = std::getenv("SVM_SHIFT_IMM_FAST")) {
+            if (const char* value = swift::runtime::GetRawSvmConfigEnvForTest("SVM_SHIFT_IMM_FAST")) {
                 had_old = true;
                 old = value;
             }
-            setenv("SVM_SHIFT_IMM_FAST", "1", 1);
+            swift::runtime::SetSvmConfigEnvForTest("SVM_SHIFT_IMM_FAST", "1", 1);
         }
         ~ShiftFastScope() {
-            if (had_old) setenv("SVM_SHIFT_IMM_FAST", old.c_str(), 1);
-            else unsetenv("SVM_SHIFT_IMM_FAST");
+            if (had_old) swift::runtime::SetSvmConfigEnvForTest("SVM_SHIFT_IMM_FAST", old.c_str(), 1);
+            else swift::runtime::UnsetSvmConfigEnvForTest("SVM_SHIFT_IMM_FAST");
         }
     } shift_fast_scope;
 
@@ -2070,15 +2069,15 @@ TEST_CASE("GPR immediate shift boundary results and defined flags execute correc
         bool had_old{};
         std::string old;
         ShiftFastScope() {
-            if (const char* value = std::getenv("SVM_SHIFT_IMM_FAST")) {
+            if (const char* value = swift::runtime::GetRawSvmConfigEnvForTest("SVM_SHIFT_IMM_FAST")) {
                 had_old = true;
                 old = value;
             }
-            setenv("SVM_SHIFT_IMM_FAST", "1", 1);
+            swift::runtime::SetSvmConfigEnvForTest("SVM_SHIFT_IMM_FAST", "1", 1);
         }
         ~ShiftFastScope() {
-            if (had_old) setenv("SVM_SHIFT_IMM_FAST", old.c_str(), 1);
-            else unsetenv("SVM_SHIFT_IMM_FAST");
+            if (had_old) swift::runtime::SetSvmConfigEnvForTest("SVM_SHIFT_IMM_FAST", old.c_str(), 1);
+            else swift::runtime::UnsetSvmConfigEnvForTest("SVM_SHIFT_IMM_FAST");
         }
     } shift_fast_scope;
 
@@ -2434,8 +2433,8 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
 
     FlagsEliminationPass::Run(&carry_overwritten);
 
-    const bool carry_elim_off = std::getenv("SVM_FLAG_CARRY_ELIM") &&
-                                std::strcmp(std::getenv("SVM_FLAG_CARRY_ELIM"), "0") == 0;
+    const bool carry_elim_off =
+            !swift::runtime::GetSvmConfig().flag_carry_elim;
     REQUIRE(c_old.Def()->GetPseudoOperations(OpCode::SaveFlags).size() ==
             (carry_elim_off ? 1 : 0));
     REQUIRE(c_new.Def()->GetPseudoOperations(OpCode::SaveFlags).size() == 1);
@@ -2474,8 +2473,7 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
 
     FlagsEliminationPass::Run(&partial);
 
-    const bool full_elim_on = std::getenv("SVM_FLAG_FULL_ELIM") &&
-                              std::strcmp(std::getenv("SVM_FLAG_FULL_ELIM"), "0") != 0;
+    const bool full_elim_on = swift::runtime::GetSvmConfig().flag_full_elim;
     REQUIRE(p_old_save->GetArg<Flags>(1) ==
             (full_elim_on ? Flags::Zero : Flags::NZCV));
 }
@@ -2503,8 +2501,8 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
         return block.AppendInst(OpCode::SaveFlags, result, Flags::Carry);
     };
 
-    const bool carry_elim_off = std::getenv("SVM_FLAG_CARRY_ELIM") &&
-                                std::strcmp(std::getenv("SVM_FLAG_CARRY_ELIM"), "0") == 0;
+    const bool carry_elim_off =
+            !swift::runtime::GetSvmConfig().flag_carry_elim;
     if (carry_elim_off) {
         // The bisect switch covers every deletion introduced by this change.
         // Carry writes of all three forms survive exactly as under old Gate B;
@@ -3064,8 +3062,7 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
         REQUIRE(general.ValueFPR(fpr_snapshot).id != 7);
     }
 
-    const char* env = std::getenv("SVM_RA_1BLK");
-    const auto& expected = env && std::strcmp(env, "0") == 0 ? general : fast;
+    const auto& expected = swift::runtime::GetSvmConfig().ra_1blk ? fast : general;
     for (std::uint32_t id = 0; id < selected.MapCount(); ++id) {
         INFO("production selector map id " << id);
         REQUIRE(selected.Mapping(id) == expected.Mapping(id));
@@ -3536,8 +3533,7 @@ TEST_CASE("AFP environment gate applies MXCSR changes through translated x86 cod
     SmcTracker::SetEnabled(true);
     munmap(guest_code, 4096);
 
-    const char* requested_value = std::getenv("SVM_SSE_AFP_NAN");
-    const bool requested = !requested_value || std::strcmp(requested_value, "0") != 0;
+    const bool requested = swift::runtime::GetSvmConfig().sse_afp_nan;
     REQUIRE(effective == (requested && capable));
 #if defined(__APPLE__)
     // Apple silicon exposes FEAT_AFP. This also prevents an ON full-suite run
@@ -3567,10 +3563,10 @@ TEST_CASE("AFP mode terminates units after architectural MXCSR restores") {
     } memory;
 
     auto check = [&](std::array<swift::u8, 16> bytes, bool xsave) {
-        const char* old = std::getenv("SVM_XSAVE");
+        const char* old = swift::runtime::GetRawSvmConfigEnvForTest("SVM_XSAVE");
         const bool had_old = old != nullptr;
         const std::string old_value = old ? old : "";
-        if (xsave) setenv("SVM_XSAVE", "1", 1);
+        if (xsave) swift::runtime::SetSvmConfigEnvForTest("SVM_XSAVE", "1", 1);
 
         const auto address = reinterpret_cast<VAddr>(bytes.data());
         Block block{0, Location{address}};
@@ -3579,8 +3575,8 @@ TEST_CASE("AFP mode terminates units after architectural MXCSR restores") {
                            Arm64Features::AFP, true};
         decoder.Decode();
 
-        if (had_old) setenv("SVM_XSAVE", old_value.c_str(), 1);
-        else unsetenv("SVM_XSAVE");
+        if (had_old) swift::runtime::SetSvmConfigEnvForTest("SVM_XSAVE", old_value.c_str(), 1);
+        else swift::runtime::UnsetSvmConfigEnvForTest("SVM_XSAVE");
 
         const auto terminal = block.GetTerminal();
         REQUIRE(boost::get<terminal::ReturnToDispatch>(&terminal) != nullptr);
@@ -3832,10 +3828,10 @@ TEST_CASE("x87 FPCR-transparent dispatcher target is effective-AFP gated") {
         void* GetPointer(void* src) override { return src; }
     } memory;
 
-    const char* old_jit = std::getenv("SVM_X87_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_X87_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
-    unsetenv("SVM_X87_JIT");
+    swift::runtime::UnsetSvmConfigEnvForTest("SVM_X87_JIT");
 
     auto decode_target = [&](bool effective_afp) {
         // FLD1 is the audited LoadConstant action; HLT terminates the unit.
@@ -3865,8 +3861,8 @@ TEST_CASE("x87 FPCR-transparent dispatcher target is effective-AFP gated") {
 
     const auto off = decode_target(false);
     const auto on = decode_target(true);
-    if (had_old_jit) setenv("SVM_X87_JIT", old_jit_value.c_str(), 1);
-    else unsetenv("SVM_X87_JIT");
+    if (had_old_jit) swift::runtime::SetSvmConfigEnvForTest("SVM_X87_JIT", old_jit_value.c_str(), 1);
+    else swift::runtime::UnsetSvmConfigEnvForTest("SVM_X87_JIT");
 
     REQUIRE(off.first == reinterpret_cast<VAddr>(&X87Dispatch));
     REQUIRE(off.second == HostFpEffect::MayTouch);
@@ -4935,8 +4931,7 @@ TEST_CASE("peeled GetOperand keeps its address live through the memory use") {
                        address_space.GetTrampolines().GetFPRRegs()};
     RegisterAllocPass::Run(raw_block, &reg_alloc);
 
-    const char* fuse = std::getenv("SVM_MEM_NARROW_FUSE");
-    const bool enabled = fuse && std::strcmp(fuse, "0") != 0;
+    const bool enabled = swift::runtime::GetSvmConfig().mem_narrow_fuse;
     if (enabled) {
         REQUIRE(reg_alloc.ValueType(address) == RegAlloc::GPR);
         REQUIRE(reg_alloc.ValueType(memory_address) == RegAlloc::GPR);
@@ -4974,8 +4969,7 @@ TEST_CASE("address EA tie transfers a terminal fixed alias") {
     RegAlloc alloc{raw->MaxInstrId(), gprs, fprs};
     RegisterAllocPass::Run(raw, &alloc);
 
-    const char* gate = std::getenv("SVM_ADDR_EA_TIE");
-    const bool enabled = !gate || std::strcmp(gate, "0") != 0;
+    const bool enabled = swift::runtime::GetSvmConfig().addr_ea_tie;
     REQUIRE(alloc.ValueGPR(source).id == 6);
     REQUIRE((alloc.ValueGPR(address).id == alloc.ValueGPR(source).id) == enabled);
     REQUIRE(alloc.ValueGPR(address).id != alloc.ValueGPR(value).id);
@@ -5018,8 +5012,7 @@ TEST_CASE("composite memory EA survives only in identity mode") {
         return std::pair{block, Operand{}};
     };
 
-    const char* gate = std::getenv("SVM_ADDR_EA_TIE");
-    const bool enabled = !gate || std::strcmp(gate, "0") != 0;
+    const bool enabled = swift::runtime::GetSvmConfig().addr_ea_tie;
     // mov eax,[rbx+8]; hlt。末尾补零只用于固定数组长度。
     auto [identity_imm_block, identity_imm] =
             decode_address({0x8b, 0x43, 0x08, 0xf4, 0x00}, true);
@@ -5080,8 +5073,7 @@ TEST_CASE("absolute GetOperand materializes directly into its result") {
     context.EndInstructionScratch();
     const auto bytes = context.CurrentBufferSize() - begin;
 
-    const char* gate = std::getenv("SVM_ABS_CONST_MAT");
-    const bool enabled = gate && std::strcmp(gate, "0") != 0;
+    const bool enabled = swift::runtime::GetSvmConfig().abs_const_mat;
     REQUIRE(bytes == (enabled ? 8 : 12));
 }
 

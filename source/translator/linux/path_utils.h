@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <string>
 #include <sys/stat.h>
+#include "runtime/common/svm_config.h"
 
 namespace swift::linux {
 
@@ -15,8 +16,8 @@ inline std::string ResolveGuestPath(const std::string& guest_path) {
     if (guest_path.empty() || guest_path.front() != '/') {
         return guest_path;
     }
-    const char* root_env = std::getenv("SVM_SYSROOT");
-    if (!root_env || !*root_env) {
+    const auto& root_env = runtime::GetSvmConfig().sysroot;
+    if (root_env.empty()) {
         return guest_path;
     }
 

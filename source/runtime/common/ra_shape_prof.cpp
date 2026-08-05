@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "runtime/common/perf_stats.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/reg_alloc.h"
 #include "runtime/ir/block.h"
 
@@ -129,7 +130,10 @@ const char* HelperABIName(RAShapeHelperABI abi) {
 extern "C" __attribute__((noinline, used)) void svm_ra_shape_prof_anchor() {}
 
 void DumpAtExit() {
-    const char* destination = std::getenv("SVM_RA_SHAPE_PROF");
+    const auto& config = GetSvmConfig();
+    const char* destination = config.ra_shape_prof_is_set
+            ? config.ra_shape_prof.c_str()
+            : nullptr;
     FILE* out = stderr;
     bool close_out = false;
     if (destination && *destination && std::strcmp(destination, "1") != 0 &&
@@ -245,12 +249,15 @@ bool IsFaultBoundary(ir::OpCode op) {
 }  // namespace
 
 bool RAShapeProfEnabled() {
-    static const bool enabled = [] {
-        const char* value = PerfGetenv("SVM_RA_SHAPE_PROF");
-        const bool on = value && std::strcmp(value, "0") != 0;
-        if (on) std::atexit(DumpAtExit);
-        return on;
-    }();
+    const auto& config = GetSvmConfig();
+    const bool enabled = config.ra_shape_prof_is_set && config.ra_shape_prof != "0";
+    if (enabled) {
+        static const bool registered = [] {
+            std::atexit(DumpAtExit);
+            return true;
+        }();
+        (void)registered;
+    }
     return enabled;
 }
 

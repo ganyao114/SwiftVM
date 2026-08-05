@@ -3,6 +3,7 @@
 //
 
 #include "runtime/backend/code_serial.h"
+#include "runtime/common/svm_config.h"
 
 #include <algorithm>
 #include <array>
@@ -739,14 +740,16 @@ u64 ComputeBuildId() {
 }
 
 u64 ComputeEnvHash() {
-    std::vector<std::string> entries;
+    // 已知开关哈希类型化快照；未知 SVM_*/SWIFT_* 仍排序兜底，避免漏登记的新
+    // codegen 变量在修表前与已有 cache key 碰撞。
+    auto entries = SerializeSvmConfig(GetSvmConfig());
     for (char** e = environ; e && *e; ++e) {
         const std::string_view sv{*e};
         if (sv.rfind("SVM_", 0) != 0 && sv.rfind("SWIFT_", 0) != 0) {
             continue;
         }
-        // The cache's own knobs do not change codegen.
-        if (sv.rfind("SVM_JIT_CACHE", 0) == 0) {
+        const auto equal = sv.find('=');
+        if (IsKnownSvmConfigName(sv.substr(0, equal))) {
             continue;
         }
         entries.emplace_back(sv);
@@ -817,8 +820,7 @@ u64 ComputeGuestId() {
         const auto argv = ProcessArgv();
         u64 h = kFnvOffset;
 
-        const char* exec_id = std::getenv("SVM_JIT_CACHE_EXEC_ID");
-        if (exec_id && exec_id[0] && std::strcmp(exec_id, "0") != 0) {
+        if (GetSvmConfig().jit_cache_exec_id) {
             h = HashU64(kExecGuestIdDomain, h);
             // argv[0] is the SwiftVM launcher, whose code identity is already
             // covered by build_id. argv[1] is the guest ELF selected by the

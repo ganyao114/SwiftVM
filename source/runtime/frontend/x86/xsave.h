@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "runtime/frontend/x86/decoder.h"
+#include "runtime/common/svm_config.h"
 
 namespace swift::x86 {
 
@@ -62,18 +63,13 @@ constexpr u16 kX87InitFtw = 0xFFFF;  // full tag word: every slot empty
 // flip them between sections; a cached static would freeze whichever value the
 // first translation in the process happened to observe.
 // ---------------------------------------------------------------------------
-inline bool XsaveEnvOn(const char* name) {
-    const char* value = swift::runtime::PerfGetenv(name);
-    return value != nullptr && std::strcmp(value, "0") != 0;
-}
-
 // Master switch for the XSAVE facility: CPUID.1:ECX.XSAVE[26]/OSXSAVE[27],
 // CPUID leaf 0xD, and the XGETBV / XSAVE / XRSTOR opcodes.  Default OFF, which
 // reproduces the pre-existing behaviour exactly (feature bits clear, XGETBV
 // #UD, XSAVE/XRSTOR unhandled).  Architecturally OSXSAVE is CR4.OSXSAVE, and
 // XGETBV is #UD when it is clear -- so gating the opcodes on the same switch
 // that advertises the bit keeps CPUID and behaviour coherent in both settings.
-inline bool XsaveEnabled() { return XsaveEnvOn("SVM_XSAVE"); }
+inline bool XsaveEnabled() { return swift::runtime::GetSvmConfig().xsave; }
 
 // XCR0 as the guest observes it through XGETBV and CPUID.0xD.  x87 and SSE are
 // always set (bit 0 is architecturally always 1 and SSE state is implemented);
@@ -88,8 +84,7 @@ inline bool XsaveEnabled() { return XsaveEnvOn("SVM_XSAVE"); }
 // variable.  The XSAVE differential test therefore drives this bit directly
 // and never touches SVM_AVX.
 inline u64 GuestXcr0() {
-    const char* ymm = swift::runtime::PerfGetenv("SVM_XSAVE_YMM");
-    const bool with_ymm = ymm ? std::strcmp(ymm, "0") != 0 : XsaveEnvOn("SVM_AVX");
+    const bool with_ymm = swift::runtime::GetSvmConfig().xsave_ymm;
     return kXstateX87 | kXstateSse | (with_ymm ? kXstateYmm : 0);
 }
 

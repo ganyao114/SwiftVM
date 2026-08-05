@@ -935,10 +935,7 @@ void X64Decoder::DecodeShufps(_DInst& insn, bool pd) {
     u64 imm = insn.imm.byte;
     // Default ON after the flip A/B (c-ray 5/5 pairs positive, median 1.44);
     // SVM_VEC_SHUFPS_NEON=0 selects the old helper path as the rollback.
-    static const bool shufps_neon = [] {
-        const char* env = swift::runtime::PerfGetenv("SVM_VEC_SHUFPS_NEON");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
+    const bool shufps_neon = swift::runtime::GetSvmConfig().vec_shufps_neon;
     if (!pd && shufps_neon) {
         // Read the complete old destination before touching the source. Legacy
         // SHUFPS is destructive two-operand syntax even though the IR is
@@ -980,7 +977,7 @@ void X64Decoder::DecodeShufps(_DInst& insn, bool pd) {
 void X64Decoder::DecodePshiftDQ(_DInst& insn, bool left) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     u64 imm = insn.imm.byte;
-    if (VecLoweringEnabled("SVM_VEC_BYTESHIFT_EXT")) {
+    if (VecLoweringEnabled(swift::runtime::GetSvmConfig().vec_byteshift_ext)) {
         // Legacy shift-by-zero is a true identity: avoiding XmmWrite also
         // preserves the old no-IR shape.  VEX.128 has a different upper-lane
         // contract and is handled separately in decoder_avx_int.cc.
@@ -1038,7 +1035,7 @@ void X64Decoder::DecodePshift(_DInst& insn, bool left, int kind) {
     const u32 lane_bits = 16u << kind;
     ir::Value result;
     if (op1.type == O_IMM) {
-        if (VecLoweringEnabled("SVM_VEC_IMM_SHIFT")) {
+        if (VecLoweringEnabled(swift::runtime::GetSvmConfig().vec_imm_shift)) {
             result = left
                              ? __ VecShiftLeftImm(
                                        XmmRead(dst),
@@ -1069,7 +1066,7 @@ void X64Decoder::DecodePshiftA(_DInst& insn, int kind) {
     const u32 lane_bits = 16u << kind;
     ir::Value result;
     if (op1.type == O_IMM) {
-        if (VecLoweringEnabled("SVM_VEC_IMM_SHIFT")) {
+        if (VecLoweringEnabled(swift::runtime::GetSvmConfig().vec_imm_shift)) {
             result = __ VecShiftRightArithmeticImm(
                     XmmRead(dst),
                     ir::Imm(u64(insn.imm.byte)),

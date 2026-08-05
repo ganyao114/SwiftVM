@@ -250,15 +250,14 @@ public:
 static MemoryImpl memory_impl{};
 
 static runtime::TsoMode TsoModeFromEnvironment() {
-    const char* value = std::getenv("SVM_TSO_MODE");
-    if (!value || std::strcmp(value, "relaxed") == 0 ||
-        std::strcmp(value, "Relaxed") == 0) {
+    const auto& value = runtime::GetSvmConfig().tso_mode;
+    if (value == "relaxed" || value == "Relaxed") {
         return runtime::TsoMode::Relaxed;
     }
-    if (std::strcmp(value, "acqrel") == 0 || std::strcmp(value, "AcqRel") == 0) {
+    if (value == "acqrel" || value == "AcqRel") {
         return runtime::TsoMode::AcqRel;
     }
-    if (std::strcmp(value, "hardware") == 0 || std::strcmp(value, "Hardware") == 0) {
+    if (value == "hardware" || value == "Hardware") {
         return runtime::TsoMode::Hardware;
     }
     LOG_WARNING("Unknown SVM_TSO_MODE '{}'; using relaxed", value);
@@ -312,11 +311,12 @@ static Arm64Features DetectArm64Features() {
     // Diagnostic/bring-up override. The default remains the OS feature probe;
     // forcing an unsupported instruction will SIGILL, so this is intentionally
     // not a general user-facing mode switch.
-    if (const char* value = std::getenv("SVM_ARM64_LRCPC")) {
-        if (std::strcmp(value, "0") == 0) {
+    const auto& svm_config = runtime::GetSvmConfig();
+    if (svm_config.arm64_lrcpc_override_is_set) {
+        if (svm_config.arm64_lrcpc_override == "0") {
             features = static_cast<Arm64Features>(
                     static_cast<u32>(features) & ~static_cast<u32>(Arm64Features::RCpc));
-        } else if (std::strcmp(value, "1") == 0) {
+        } else if (svm_config.arm64_lrcpc_override == "1") {
             features |= Arm64Features::RCpc;
         }
     }
@@ -329,9 +329,8 @@ static bool SSEScalarInsertEnabled(Arm64Features features) {
     // unavailable on Linux because the old Linux probe never published AFP.
     // Hardware capability is now platform-neutral, so policy must be kept
     // separate or merely detecting AFP would change Linux OFF codegen.
-    const char* value = std::getenv("SVM_SSE_SCALAR_INSERT");
     return True(features & Arm64Features::AFP) &&
-           (!value || std::strcmp(value, "0") != 0);
+           runtime::GetSvmConfig().sse_scalar_insert;
 #else
     (void) features;
     return false;
@@ -339,8 +338,7 @@ static bool SSEScalarInsertEnabled(Arm64Features features) {
 }
 
 static bool SSEAFPNanEnabled(Arm64Features features) {
-    const char* value = PerfGetenv("SVM_SSE_AFP_NAN");
-    const bool requested = !value || std::strcmp(value, "0") != 0;
+    const bool requested = runtime::GetSvmConfig().sse_afp_nan;
     if (!requested) {
         return false;
     }
@@ -571,20 +569,7 @@ static void PinUnusedCallLambdas(ir::Block* block) {
 }
 
 
-// Cached environment probes.  Each of these used to be re-read on every
-// compiled unit; Darwin's getenv() walks `environ` linearly and the function
-// path alone hit it seven times per unit.  All are process-constant switches.
-static bool EnvOnce(const char* name) { return std::getenv(name) != nullptr; }
-static const bool kEnvDumpIr = EnvOnce("SVM_DUMP_IR");
-static const bool kEnvFuncLambdaOff = [] {
-    const char* e = std::getenv("SVM_FUNC_LAMBDA");
-    return e && std::strcmp(e, "0") == 0;
-}();
-static const bool kEnvFuncBaseOff = [] {
-    const char* e = std::getenv("SVM_FUNC_BASE");
-    return e && std::strcmp(e, "0") == 0;
-}();
-
+// 这些开关由进程配置快照统一解析，逐 unit 路径不再扫描 environ。
 // Blocks decoded per function-compile attempt before the region is closed and
 // the remaining successors are left for on-demand compilation.  SVM_FUNC_LAZY=0
 // restores eager whole-function decoding (the pre-2026-07-27 behaviour).
@@ -599,17 +584,7 @@ static const bool kEnvFuncBaseOff = [] {
 // block already is a self-contained entry point.  TranslateIR has always
 // relied on that, publishing every decoded block into the L2 dispatch table.
 static size_t LazyFuncBudget() {
-    static const size_t budget = [] () -> size_t {
-        if (const char* env = PerfGetenv("SVM_FUNC_LAZY")) {
-            const long v = std::strtol(env, nullptr, 10);
-            if (v <= 0) {
-                return 1024;  // disabled: above every cap => eager decoding
-            }
-            return static_cast<size_t>(v);
-        }
-        return 1;
-    }();
-    return budget;
+    return static_cast<size_t>(runtime::GetSvmConfig().func_lazy);
 }
 
 struct X86Instance::Impl final {
@@ -625,20 +600,17 @@ struct X86Instance::Impl final {
         x86::SetGuestAddrMask(guest_addr_mask);
         // SVM_ENABLE_JIT=0 forces the IR interpreter path (same switch as the
         // arm64 core; useful for cross-checking JIT results).
-        const char* jit_env = std::getenv("SVM_ENABLE_JIT");
-        const bool enable_jit = jit_env ? std::strcmp(jit_env, "0") != 0 : true;
+        const auto& svm_config = runtime::GetSvmConfig();
+        const bool enable_jit = svm_config.enable_jit;
         // Default-on, with a diagnostic escape hatch for before/after
         // validation and field bisects.
-        const char* uniform_elim_env = std::getenv("SVM_UNIFORM_ELIM");
-        const bool enable_uniform_elim =
-                !uniform_elim_env || std::strcmp(uniform_elim_env, "0") != 0;
+        const bool enable_uniform_elim = svm_config.uniform_elim;
         // The interpreter's GetHostGPR/SetHostGPR handlers intentionally have
         // no host-register state, so never emit mapped ops in interpreter mode.
         // Default-on; keep an explicit escape hatch for diagnostics.
-        const char* static_regs_env = std::getenv("SVM_STATIC_REGS");
         const bool enable_static_regs =
                 enable_jit && enable_uniform_elim &&
-                (!static_regs_env || std::strcmp(static_regs_env, "0") != 0);
+                svm_config.static_regs;
         // Independent from SVM_STATIC_REGS: SVM_XMM_STATIC=1 adds the sixteen
         // SIMD mappings; the default keeps the old memory-resident XMM
         // lowering.  Default-off by measurement (W13 A/B, 2026-07): pinned
@@ -647,35 +619,28 @@ struct X86Instance::Impl final {
         // wins need SVM_SSE_NAN_FAST=1 alongside (combined geomean 1.205), so
         // the two are documented as a pair.  Interpreter mode never installs
         // host-register mappings.
-        const char* xmm_static_env = std::getenv("SVM_XMM_STATIC");
         const bool enable_xmm_static =
-                enable_jit && enable_uniform_elim && xmm_static_env &&
-                std::strcmp(xmm_static_env, "0") != 0;
+                enable_jit && enable_uniform_elim && svm_config.xmm_static;
         // W80: XMM_STATIC leaves v0-v15 for dynamic values, but the W37 NaN
         // cold ABI historically reserved v11-v14 for the entire run. The
         // modifier is deliberately inert unless XMM static residency itself
         // is active; OFF therefore preserves the old allocator and bytes.
-        const char* xmm_pool_ext_env = PerfGetenv("SVM_XMM_POOL_EXT");
         const bool enable_xmm_pool_ext =
-                enable_xmm_static && xmm_pool_ext_env &&
-                std::strcmp(xmm_pool_ext_env, "0") != 0;
-        const char* xmm_fault_sink_env = PerfGetenv("SVM_XMM_FAULT_SINK");
+                enable_xmm_static && svm_config.xmm_pool_ext;
         // Default ON after the flip A/B (smallpt 5/5 pairs positive, median
         // 1.26, pixel-identical output); =0 selects the eager-store rollback.
         const bool enable_xmm_fault_sink =
-                enable_jit && (!xmm_fault_sink_env ||
-                               std::strcmp(xmm_fault_sink_env, "0") != 0);
+                enable_jit && svm_config.xmm_fault_sink;
         // W55/W56/W60 opt-in extension of the scalar static map. Level 1 is the
         // byte-identical W55 map; level 2 adds six caller-saved pins; level 3
         // adds the remaining four. The backend makes XPOOL effective at level
         // 3 because the non-XPOOL value pool would contain only x14/x15.
-        const char* pin_ext_env = std::getenv("SVM_X86_PIN_EXT");
         // Default level 2 after the flip A/B (bundle with XPOOL, coremark
         // 5/5 pairs positive, median 1.22); =0 restores the pre-W55 map as
         // the rollback. Level 3 stays opt-in only (measured -10.18% vs
         // level 2 on coremark).
         const int pin_ext_level = enable_static_regs
-                ? (pin_ext_env ? std::atoi(pin_ext_env) : 2)
+                ? static_cast<int>(svm_config.x86_pin_ext)
                 : 0;
         const bool enable_pin_ext = pin_ext_level >= 1;
         const bool enable_pin_ext2 = pin_ext_level >= 2;
@@ -700,9 +665,7 @@ struct X86Instance::Impl final {
         } else if (enable_xmm_static) {
             static_regs = arm64_backend_xmm_regs_map;
         }
-        const char* block_link_env = std::getenv("SVM_BLOCK_LINK");
-        const bool enable_block_link =
-                !block_link_env || std::strcmp(block_link_env, "0") != 0;
+        const bool enable_block_link = svm_config.block_link;
         auto global_opts = Optimizations::ReturnStackBuffer | Optimizations::FlagElimination |
                            Optimizations::DeadCodeRemove | Optimizations::StaticCode |
                            Optimizations::ConstantFolding | Optimizations::FunctionBaseCompile;
@@ -721,15 +684,9 @@ struct X86Instance::Impl final {
         const Arm64Features arm64_features = DetectArm64Features();
         const bool sse_scalar_insert = SSEScalarInsertEnabled(arm64_features);
         const bool sse_afp_nan = SSEAFPNanEnabled(arm64_features);
-        const auto env_default_on = [](const char* name) {
-            const char* value = runtime::PerfGetenv(name);
-            return !value || std::strcmp(value, "0") != 0;
-        };
-        const bool mem_hostbase_fold = env_default_on("SVM_MEM_HOSTBASE_FOLD");
-        const bool induct_tie = env_default_on("SVM_INDUCT_TIE");
-        const char* region_edges_env = runtime::PerfGetenv("SVM_REGION_EDGES");
-        const bool region_edges =
-                region_edges_env && std::strcmp(region_edges_env, "0") != 0;
+        const bool mem_hostbase_fold = svm_config.mem_hostbase_fold;
+        const bool induct_tie = svm_config.induct_tie;
+        const bool region_edges = svm_config.region_edges;
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ul << 49,
@@ -800,7 +757,7 @@ struct X86Instance::Impl final {
         // Function-level compilation is default-on when the optimization is
         // present; SVM_FUNC_BASE=0 is the explicit block-only escape hatch.
         auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&
-                         !kEnvFuncBaseOff &&
+                         runtime::GetSvmConfig().func_base &&
                          !function_compilation_disabled &&
                          !block_only_locations.contains(pc);
 
@@ -916,7 +873,7 @@ struct X86Instance::Impl final {
             PerfAdd(GetPerfStats().func_units, 1);
             PerfAdd(GetPerfStats().decoded_blocks, decoded_count);
 
-            if (kEnvDumpIr) {
+            if (runtime::GetSvmConfig().dump_ir) {
                 // stderr: survives the crash that aborts the guest before
                 // buffered stdout would flush. EndFunction (ours or the
                 // assembler's) clears block_list and fills the blocks vector,
@@ -949,7 +906,7 @@ struct X86Instance::Impl final {
                                              });
             }
 
-            const bool allow_func_lambda = !kEnvFuncLambdaOff;
+            const bool allow_func_lambda = runtime::GetSvmConfig().func_lambda;
             if (has_host_call && !allow_func_lambda) {
                 for (auto* hb : hir_func->GetHIRBlocks()) {
                     if (hb && hb != hir_func->GetEntryBlock()) {
@@ -977,11 +934,11 @@ struct X86Instance::Impl final {
                     if (!backend::PublishIRFunction(module, hir_func)) {
                         throw std::runtime_error("failed to publish interpreted HIR function");
                     }
-                    if (kEnvDumpIr) {
+                    if (runtime::GetSvmConfig().dump_ir) {
                         fmt::print(stderr, "[func-compile] {:#x} interp-publish-ready\n", pc);
                     }
                     func_stats.Compiled(decoded_blocks);
-                    if (kEnvDumpIr) {
+                    if (runtime::GetSvmConfig().dump_ir) {
                         fmt::print(stderr, "[func-compile] {:#x} interp-return\n", pc);
                     }
                     compiled = true;
@@ -991,7 +948,7 @@ struct X86Instance::Impl final {
                         throw std::runtime_error("TranslateIR(HIRFunction) returned null");
                     }
                     func_stats.Compiled(decoded_blocks);
-                    if (kEnvDumpIr) {
+                    if (runtime::GetSvmConfig().dump_ir) {
                         fmt::print(stderr, "[func-compile] {:#x} jit-return\n", pc);
                     }
                     compiled = true;
@@ -1007,7 +964,7 @@ struct X86Instance::Impl final {
                 block_only_locations.insert(pc);
                 compiled = false;
             }
-            if (kEnvDumpIr) {
+            if (runtime::GetSvmConfig().dump_ir) {
                 fmt::print(stderr, "[func-compile] {:#x} builder-destroyed\n", pc);
             }
             if (compiled) {
@@ -1071,7 +1028,7 @@ struct X86Instance::Impl final {
                     FixupSingleSidedOperands(x.get());
                     PinUnusedCallLambdas(x.get());
                     perf_ir_finalize.Stop();
-                    if (kEnvDumpIr) {
+                    if (runtime::GetSvmConfig().dump_ir) {
                         fmt::print("--- block {:#x} ---\n{}\n", pc, x->ToString());
                     }
                 }
@@ -1129,7 +1086,7 @@ struct X86Core::Impl final {
     [[nodiscard]] ExitReason Run() {
         // update backend location
         s_runtime->SetLocation(GetCPUContext()->pc.qword);
-        const bool trace = std::getenv("SVM_TRACE") != nullptr;
+        const bool trace = runtime::GetSvmConfig().trace;
         auto hr = HaltReason::None;
         while (hr == HaltReason::None) {
             hr = s_runtime->Run();
@@ -1223,8 +1180,7 @@ void X86Instance::SetInterpRangeCheck(bool (*fn)(void*, uint64_t, uint64_t), voi
 void X86Instance::PrepareForMultithreading() {
     std::lock_guard guard(impl->translate_mutex);
     auto& smc = impl->address_space->GetSmcTracker();
-    const char* smc_mt_env = std::getenv("SVM_SMC_MT");
-    if (smc_mt_env && std::strcmp(smc_mt_env, "0") == 0) {
+    if (!runtime::GetSvmConfig().smc_mt) {
         // Diagnostic fallback to the pre-QSBR behavior: MT continues, but
         // translated pages are unprotected and SMC detection is disabled.
         smc.DisableAndUnprotectAll();

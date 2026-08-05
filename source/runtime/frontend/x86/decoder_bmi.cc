@@ -244,11 +244,7 @@ u64 BmiLzcnt64(u64 v, u64 width) {
 // No CPUID bit is advertised either way, so a well-behaved guest never emits
 // BMI at all.
 bool X64Decoder::BmiEnabled() {
-    static const bool enabled = [] {
-        const char* env = swift::runtime::PerfGetenv("SVM_BMI");
-        return env && std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return swift::runtime::GetSvmConfig().bmi;
 }
 
 // The r/m operand, typed at the architectural width (contract B3).

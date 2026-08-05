@@ -10,25 +10,17 @@
 namespace swift::runtime::backend {
 
 static int X86PinExtLevel() {
-    static const int level = [] {
-        // Default level 2 after the flip A/B (bundle with XPOOL, coremark
-        // 5/5 pairs positive, median 1.22). Level 3 stays opt-in only: its
-        // measured coremark delta vs level 2 is -10.18%. =0 restores the
-        // pre-W55 dynamic-only allocation as the rollback.
-        const char* value = PerfGetenv("SVM_X86_PIN_EXT");
-        return value ? std::max(0, std::atoi(value)) : 2;
-    }();
-    return level;
+    // Default level 2 after the flip A/B (bundle with XPOOL, coremark
+    // 5/5 pairs positive, median 1.22). Level 3 stays opt-in only: its
+    // measured coremark delta vs level 2 is -10.18%. =0 restores the
+    // pre-W55 dynamic-only allocation as the rollback.
+    return static_cast<int>(GetSvmConfig().x86_pin_ext);
 }
 
 bool ScratchXPoolRequested() {
-    static const bool requested = [] {
-        // Default ON after the flip A/B (bundled with PIN_EXT=2); =0
-        // restores the old dynamic scratch pool as the rollback.
-        const char* value = PerfGetenv("SVM_JIT_SCRATCH_XPOOL");
-        return !value || std::strcmp(value, "0") != 0;
-    }();
-    return requested;
+    // Default ON after the flip A/B (bundled with PIN_EXT=2); =0
+    // restores the old dynamic scratch pool as the rollback.
+    return GetSvmConfig().jit_scratch_xpool;
 }
 
 bool ScratchXPoolAutoEnabled() {
@@ -85,14 +77,10 @@ static bool X86PinExtEnabled() {
 }
 
 bool ScratchPreciseRequested() {
-    static const bool enabled = [] {
-        // Default ON after the merge A/B (L2 coremark spill 3.04B -> 20,
-        // host_dynamic -1.44%; L3 modestly positive, Linux neutral). =0
-        // restores the opcode-wide Add/Sub budget as the rollback.
-        const char* value = PerfGetenv("SVM_SCRATCH_PRECISE");
-        return !value || std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
+    // Default ON after the merge A/B (L2 coremark spill 3.04B -> 20,
+    // host_dynamic -1.44%; L3 modestly positive, Linux neutral). =0
+    // restores the opcode-wide Add/Sub budget as the rollback.
+    return GetSvmConfig().scratch_precise;
 }
 
 static bool IsEncodedAddSubImmediate(s64 value) {
@@ -180,11 +168,7 @@ ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
 }
 
 static bool ExecProfileEnabled() {
-    static const bool enabled = [] {
-        const char* value = PerfGetenv("SVM_EXEC_PROF");
-        return value && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().exec_prof;
 }
 
 u32 FixedGPRClobbers(ir::OpCode op, bool scratch_only) {

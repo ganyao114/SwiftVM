@@ -163,8 +163,7 @@ const ir::UniformInfo& AddressSpace::GetUniformInfo() { return *uniform_info; }
 const ir::UniformInfo& AddressSpace::GetUniformInfo() const { return *uniform_info; }
 
 AddressSpace::~AddressSpace() {
-    const char* exec_prof = std::getenv("SVM_EXEC_PROF");
-    if (exec_prof && std::strcmp(exec_prof, "0") != 0 && default_module &&
+    if (GetSvmConfig().exec_prof && default_module &&
         default_module->IsDirectLinkConfigured()) {
         const auto stats = link_manager.GetStats();
         const auto kind = [](const auto& values, LinkSiteKind site_kind) {

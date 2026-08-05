@@ -29,11 +29,7 @@ constexpr size_t kChunkBytes = 64u * 1024u;
 }  // namespace
 
 bool IRBuildFastEnabled() {
-    static const bool enabled = [] {
-        const char* env = PerfGetenv("SVM_IR_FAST");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().ir_fast;
 }
 
 void* Inst::operator new(size_t sz) {

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "runtime/common/perf_stats.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/ir/block.h"
 #include "runtime/ir/ir_types.h"
 
@@ -168,7 +169,10 @@ std::vector<RankedBucket> Rank(const std::vector<AggregateBucket>& buckets,
 }
 
 void DumpAtExit() {
-    const char* destination = std::getenv("SVM_RA_HOT_COALESCE");
+    const auto& config = GetSvmConfig();
+    const char* destination = config.ra_hot_coalesce_is_set
+            ? config.ra_hot_coalesce.c_str()
+            : nullptr;
     FILE* out = stderr;
     bool close_out = false;
     if (destination && *destination && std::strcmp(destination, "1") != 0 &&
@@ -234,8 +238,7 @@ void DumpAtExit() {
                  PrintU64(state_saved_dynamic),
                  Percent(state_saved_dynamic, host_dynamic));
 
-    const char* dump_all = std::getenv("SVM_RA_HOT_COALESCE_ALL");
-    if (dump_all && std::strcmp(dump_all, "0") != 0) {
+    if (config.ra_hot_coalesce_all) {
         for (const auto& bucket : buckets) {
             std::fprintf(out,
                          "[svm-hot-all] pc=0x%llx versions=%u entries=%llu "
@@ -447,18 +450,20 @@ bool PairableSize(u32 size) {
 }  // namespace
 
 bool HotCoalesceProfEnabled() {
-    static const bool enabled = [] {
-        const char* value = PerfGetenv("SVM_RA_HOT_COALESCE");
-        const bool on = value && std::strcmp(value, "0") != 0;
-        if (on) {
+    const auto& config = GetSvmConfig();
+    const bool enabled = config.ra_hot_coalesce_is_set &&
+                         config.ra_hot_coalesce != "0";
+    if (enabled) {
+        static const bool registered = [] {
             // Construct process storage before registering the dump. atexit
             // runs callbacks in reverse registration order, so the dump then
             // observes live counters rather than an already-destroyed static.
             (void)Counters();
             std::atexit(DumpAtExit);
-        }
-        return on;
-    }();
+            return true;
+        }();
+        (void)registered;
+    }
     return enabled;
 }
 

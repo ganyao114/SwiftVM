@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "mnemonics.h"
+#include "runtime/common/svm_config.h"
 
 namespace swift::x86 {
 namespace {
@@ -592,19 +593,11 @@ void PrintInsn(const char* name, const _DInst& insn) {
 }  // namespace
 
 bool DistormFastEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("SVM_DISTORM_FAST");
-        return value == nullptr || std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
+    return swift::runtime::GetSvmConfig().distorm_fast;
 }
 
 bool DistormFastVerifyEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("SVM_DISTORM_VERIFY");
-        return value != nullptr && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
+    return swift::runtime::GetSvmConfig().distorm_verify;
 }
 
 bool DecodeDistormFast(const std::uint8_t* code,

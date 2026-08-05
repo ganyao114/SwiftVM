@@ -31,11 +31,14 @@ void PrintX87DispatchStats() {
 }
 
 bool X87DispatchStatsEnabled() {
-    static const bool enabled = [] {
-        if (!std::getenv("SVM_X87_JIT_STATS")) return false;
-        std::atexit(PrintX87DispatchStats);
-        return true;
-    }();
+    const bool enabled = swift::runtime::GetSvmConfig().x87_jit_stats;
+    if (enabled) {
+        static const bool registered = [] {
+            std::atexit(PrintX87DispatchStats);
+            return true;
+        }();
+        (void)registered;
+    }
     return enabled;
 }
 

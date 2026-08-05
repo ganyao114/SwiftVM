@@ -786,8 +786,7 @@ void X64Decoder::DecodeShlShr(_DInst& insn, bool shr) { DecodeShift(insn, shr ? 
 void X64Decoder::DecodeSar(_DInst& insn) { DecodeShift(insn, 2); }
 
 static bool ShiftImmFastEnabled() {
-    const char* env = swift::runtime::PerfGetenv("SVM_SHIFT_IMM_FAST");
-    return !env || std::strcmp(env, "0") != 0;
+    return swift::runtime::GetSvmConfig().shift_imm_fast;
 }
 
 void X64Decoder::DecodeShift(_DInst& insn, int kind) {

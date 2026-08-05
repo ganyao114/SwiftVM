@@ -55,25 +55,22 @@ bool HostSha256Extension() {
 
 bool X64Decoder::CryptoNiEnabled() {
     static const bool host_has_crypto = HostCryptoExtensions();
-    const char* env = swift::runtime::PerfGetenv("SVM_X86_CRYPTO_NI");
     // Default ON on a host which can execute every instruction advertised by
     // this gate.  A process-level environment is deliberately read on every
     // query, matching the project's other SVM_* feature gates; env_hash keeps
     // cached translations separated.
-    return host_has_crypto && (!env || std::strcmp(env, "0") != 0);
+    return host_has_crypto && swift::runtime::GetSvmConfig().x86_crypto_ni;
 }
 
 bool X64Decoder::ShaNiEnabled() {
     static const bool host_has_sha256 = HostSha256Extension();
-    const char* crypto_env = swift::runtime::PerfGetenv("SVM_X86_CRYPTO_NI");
-    const char* sha_env = swift::runtime::PerfGetenv("SVM_X86_CRYPTO_SHA");
     // SHA-NI rides on the AES-NI/PCLMUL bundle and is enabled by default
     // (SVM_X86_CRYPTO_SHA=0 opts out).  It stayed opt-in while the latent
     // signal-frame corruption (fixed in 32e7341) made OpenSSL's alarm-driven
     // speed runs crash; keep the CPUID advertisement and decoder gate
     // identical so guests see a consistent feature set.
-    return host_has_sha256 && (!crypto_env || std::strcmp(crypto_env, "0") != 0) &&
-           (!sha_env || std::strcmp(sha_env, "0") != 0);
+    const auto& config = swift::runtime::GetSvmConfig();
+    return host_has_sha256 && config.x86_crypto_ni && config.x86_crypto_sha;
 }
 
 void X64Decoder::DecodeAes(_DInst& insn, u32 kind) {
@@ -86,7 +83,7 @@ void X64Decoder::DecodeAes(_DInst& insn, u32 kind) {
     const auto source = LoadSrcVec(insn, insn.ops[1]);
     const auto destination = XmmRead(dst);
     const bool reuse_zero =
-            kind < 4 && VecLoweringEnabled("SVM_AES_ZERO_REUSE");
+            kind < 4 && VecLoweringEnabled(swift::runtime::GetSvmConfig().aes_zero_reuse);
     ir::Value zero;
     if (reuse_zero) {
         zero = __ VecSharedZero().SetType(ir::ValueType::V128);

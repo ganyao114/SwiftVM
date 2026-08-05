@@ -199,11 +199,7 @@ ir::Value X64Decoder::MemLoad(const ir::Operand& addr, ir::ValueType type, bool 
 }
 
 bool X64Decoder::ScalarVOperandsEnabled() {
-    static const bool enabled = [] {
-        const char* env = swift::runtime::PerfGetenv("SVM_SSE_SCALAR_V_OPERANDS");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return swift::runtime::GetSvmConfig().sse_scalar_v_operands;
 }
 
 void X64Decoder::MemStore(const ir::Operand& addr, ir::Value value, bool tso) {
@@ -262,13 +258,10 @@ X64Decoder::X64Decoder(VAddr start,
     addr_mask = is_64bit ? UINT64_MAX : UINT32_MAX;
     flags_cfinv_supported_ =
             True(arm64_features & runtime::Arm64Features::FlagM);
-    const char* compact = runtime::PerfGetenv("SVM_FLAGS_FCMP_COMPACT");
-    flags_fcmp_compact_ =
-            compact && std::strcmp(compact, "0") != 0 &&
-            True(arm64_features & runtime::Arm64Features::AXFlag);
+    flags_fcmp_compact_ = runtime::GetSvmConfig().flags_fcmp_compact &&
+                          True(arm64_features & runtime::Arm64Features::AXFlag);
     sse_afp_nan_ = sse_afp_nan;
-    const char* ea_tie = runtime::PerfGetenv("SVM_ADDR_EA_TIE");
-    addr_ea_tie_ = !ea_tie || std::strcmp(ea_tie, "0") != 0;
+    addr_ea_tie_ = runtime::GetSvmConfig().addr_ea_tie;
 }
 
 // x86-64's architectural maximum instruction length. Bounds every raw-byte
@@ -865,22 +858,14 @@ ir::Value X64Decoder::R(_RegisterType reg) {
 }
 
 static bool PinExtPartialWritesEnabled() {
-    static const bool enabled = [] {
-        // Default ON after the flip A/B (PIN_EXT=2 bundle, coremark 5/5
-        // pairs positive, median 1.22); =0 selects the RMW fallback as the
-        // rollback.
-        const char* value = swift::runtime::PerfGetenv("SVM_X86_PIN_EXT");
-        return !value || std::atoi(value) >= 1;
-    }();
-    return enabled;
+    // Default ON after the flip A/B (PIN_EXT=2 bundle, coremark 5/5
+    // pairs positive, median 1.22); =0 selects the RMW fallback as the
+    // rollback.
+    return swift::runtime::GetSvmConfig().x86_pin_ext >= 1;
 }
 
 bool X64Decoder::StructuredAddressModeEnabled() {
-    static const bool enabled = [] {
-        const char* env = swift::runtime::PerfGetenv("SVM_ADDRMODE_STRUCT");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return swift::runtime::GetSvmConfig().addrmode_struct;
 }
 
 bool X64Decoder::StructuredAddressChainOpcode(u16 opcode) {
@@ -986,11 +971,7 @@ ir::Value X64Decoder::NarrowTo(ir::Value value, ir::ValueType type) {
 //
 // SVM_GPR_ZEXT_COALESCE=0 restores the exact two-node pre-W19 lowering.
 static bool GprZextCoalesceEnabled() {
-    static const bool enabled = [] {
-        const char* env = swift::runtime::PerfGetenv("SVM_GPR_ZEXT_COALESCE");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return swift::runtime::GetSvmConfig().gpr_zext_coalesce;
 }
 
 void X64Decoder::R(_RegisterType reg, ir::Value value) {
@@ -1147,28 +1128,24 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
 }
 
 bool X64Decoder::FlagsNarrowAlignEnabled() {
-    const char* env = runtime::PerfGetenv("SVM_FLAGS_NARROW_ALIGN");
-    return !env || std::strcmp(env, "0") != 0;
+    return runtime::GetSvmConfig().flags_narrow_align;
 }
 
 bool X64Decoder::FlagsCfinvEnabled() const {
-    const char* env = runtime::PerfGetenv("SVM_FLAGS_CFINV");
-    if (env && std::strcmp(env, "0") == 0) {
+    if (!runtime::GetSvmConfig().flags_cfinv) {
         return false;
     }
     return flags_cfinv_supported_;
 }
 
 bool X64Decoder::FlagsTerminalJccEnabled() {
-    const char* env = runtime::PerfGetenv("SVM_FLAGS_TERMINAL_JCC");
-    return !env || std::strcmp(env, "0") != 0;
+    return runtime::GetSvmConfig().flags_terminal_jcc;
 }
 
 bool X64Decoder::FlagsBranchOnlyEnabled() {
     // Default ON after the flip A/B (7z Tot-MIPS 5/5 pairs positive, median
     // +5.0%); =0 keeps full EFLAGS materialization as the rollback.
-    const char* env = runtime::PerfGetenv("SVM_FLAGS_BRANCH_ONLY");
-    return !env || std::strcmp(env, "0") != 0;
+    return runtime::GetSvmConfig().flags_branch_only;
 }
 
 bool X64Decoder::SuccessorFlagsDead(VAddr successor) const {
@@ -1231,8 +1208,7 @@ bool X64Decoder::SuccessorFlagsDead(VAddr successor) const {
 }
 
 bool X64Decoder::FlagsFcmpFuseEnabled() {
-    const char* env = runtime::PerfGetenv("SVM_FLAGS_FCMP_FUSE");
-    return !env || std::strcmp(env, "0") != 0;
+    return runtime::GetSvmConfig().flags_fcmp_fuse;
 }
 
 void X64Decoder::MarkLocalNZCV(ir::Flags valid, ir::Value result) {
@@ -1850,11 +1826,7 @@ void X64Decoder::DecodeLea(_DInst& insn) {
 bool X64Decoder::AvxEnabled() {
     // Read once: DecodeSwitch consults this per instruction and getenv is not
     // required to be cheap (or thread-safe against setenv).
-    static const bool enabled = [] {
-        const char* env = swift::runtime::PerfGetenv("SVM_AVX");
-        return env && std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return swift::runtime::GetSvmConfig().avx;
 }
 
 // True when a 0x66 operand-size prefix precedes the instruction's 0x0F escape

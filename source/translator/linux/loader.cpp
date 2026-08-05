@@ -13,6 +13,7 @@
 #include "elfio/elfio.hpp"
 #include "loader.h"
 #include "path_utils.h"
+#include "runtime/common/svm_config.h"
 
 namespace swift::linux {
 
@@ -274,11 +275,9 @@ VAddr SetupInitialStack(GuestMemory& memory,
     // Prefer the classic high guest address; if the corresponding host range
     // (guest + bias) is not mappable, take any host range and translate it
     // back to a guest address.
-    const char* force_fixed_env = std::getenv("SVM_FORCE_FIXED_STACK");
-    const bool force_fixed =
-            force_fixed_env && std::strcmp(force_fixed_env, "1") == 0;
-    const bool force_fallback =
-            force_fixed_env && std::strcmp(force_fixed_env, "0") == 0;
+    const auto& force_fixed_mode = runtime::GetSvmConfig().force_fixed_stack;
+    const bool force_fixed = force_fixed_mode == "1";
+    const bool force_fallback = force_fixed_mode == "0";
     VAddr stack_top = kGuestStackTop;
     if (force_fallback ||
         !memory.MapFixed(stack_top - kGuestStackSize, kGuestStackSize)) {

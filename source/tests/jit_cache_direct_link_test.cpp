@@ -18,6 +18,7 @@
 #include <mach-o/dyld.h>
 #endif
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/code_serial.h"
 #include "runtime/backend/jit_cache.h"
@@ -163,10 +164,10 @@ Config MakeConfig(void* guest_memory, size_t guest_size) {
 
 void RunCacheChildPhase(std::string_view phase) {
 #if defined(__aarch64__)
-    const char* dir = std::getenv(kDirEnv);
+    const char* dir = swift::runtime::GetRawSvmConfigEnvForTest(kDirEnv);
     REQUIRE(dir != nullptr);
-    REQUIRE(setenv("SVM_JIT_CACHE", dir, 1) == 0);
-    REQUIRE(setenv("SVM_BACKEDGE_FLAGS", "0", 1) == 0);
+    REQUIRE(swift::runtime::SetSvmConfigEnvForTest("SVM_JIT_CACHE", dir, 1) == 0);
+    REQUIRE(swift::runtime::SetSvmConfigEnvForTest("SVM_BACKEDGE_FLAGS", "0", 1) == 0);
 
     const size_t page_size = static_cast<size_t>(getpagesize());
     const size_t guest_size = 16 * page_size;
@@ -324,8 +325,8 @@ int RunCacheChild(const std::filesystem::path& dir, const char* phase) {
     const pid_t child = fork();
     REQUIRE(child >= 0);
     if (child == 0) {
-        setenv(kPhaseEnv, phase, 1);
-        setenv(kDirEnv, dir.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest(kPhaseEnv, phase, 1);
+        swift::runtime::SetSvmConfigEnvForTest(kDirEnv, dir.c_str(), 1);
         execl(executable.c_str(),
               executable.c_str(),
               kRoundTripTest,
@@ -430,7 +431,7 @@ TEST_CASE("disk cache v4 serializes arbitrary link-site records and kinds",
 
 TEST_CASE(kRoundTripTest, "[direct-link][jit-cache][production][smc]") {
 #if defined(__aarch64__)
-    if (const char* phase = std::getenv(kPhaseEnv)) {
+    if (const char* phase = swift::runtime::GetRawSvmConfigEnvForTest(kPhaseEnv)) {
         RunCacheChildPhase(phase);
         return;
     }

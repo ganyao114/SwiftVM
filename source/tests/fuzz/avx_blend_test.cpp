@@ -89,6 +89,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 #include <sys/mman.h>
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "translator/x86/cpu.h"
@@ -182,8 +183,7 @@ constexpr s32 kOffA = 0x00, kOffB = 0x20, kOffM = 0x40, kOffOut = 0x60, kOffPois
 }  // namespace
 
 TEST_CASE("x86 avx blend vs rosetta reference") {
-    const char* avx_env = std::getenv("SVM_AVX");
-    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; VEX blend/extract/maskmov Rosetta differential skipped");
         return;
     }
@@ -365,17 +365,17 @@ TEST_CASE("x86 avx blend vs rosetta reference") {
     const u64 stack = base + 0x200000;
     const u64 data = base + 0x300000;
 
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     if (had_old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
@@ -561,8 +561,7 @@ void OnFault(int) {
 }  // namespace
 
 TEST_CASE("x86 avx vmaskmov fault suppression") {
-    const char* avx_env = std::getenv("SVM_AVX");
-    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; vmaskmov fault-suppression case skipped");
         return;
     }
@@ -578,11 +577,11 @@ TEST_CASE("x86 avx vmaskmov fault suppression") {
     const u64 guard = base + 0x300000;
     REQUIRE(mprotect(reinterpret_cast<void*>(guard), kPage, PROT_NONE) == 0);
 
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
-    unsetenv("SVM_ENABLE_JIT");
+    swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
 

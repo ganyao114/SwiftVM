@@ -88,6 +88,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 #include <sys/mman.h>
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "translator/x86/cpu.h"
@@ -212,15 +213,15 @@ struct ScopedJitEnv {
     bool had;
     std::string value;
     ScopedJitEnv() {
-        const char* old = std::getenv("SVM_ENABLE_JIT");
+        const char* old = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
         had = old != nullptr;
         if (had) value = old;
     }
     ~ScopedJitEnv() {
         if (had) {
-            setenv("SVM_ENABLE_JIT", value.c_str(), 1);
+            swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", value.c_str(), 1);
         } else {
-            unsetenv("SVM_ENABLE_JIT");
+            swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
         }
     }
 };
@@ -429,13 +430,11 @@ struct Sdm {
 }  // namespace
 
 TEST_CASE("x86 sse4.2 string compare vs rosetta and the SDM") {
-    const char* gate = std::getenv("SVM_SSE42STR");
-    if (gate && std::strcmp(gate, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().sse42str) {
         SUCCEED("SVM_SSE42STR=0 disables the handlers; differential skipped");
         return;
     }
-    const char* avx_env = std::getenv("SVM_AVX");
-    const bool avx_on = avx_env && std::strcmp(avx_env, "0") != 0;
+    const bool avx_on = swift::runtime::GetSvmConfig().avx;
 
     std::vector<Vec256> ins_a, ins_b;
     for (const auto& p : kSse42StrPairs) {
@@ -709,9 +708,9 @@ TEST_CASE("x86 sse4.2 string compare vs rosetta and the SDM") {
     const u64 data = base + 0x300000;
 
     ScopedJitEnv jit_env;
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
@@ -877,8 +876,7 @@ TEST_CASE("x86 sse4.2 string compare vs rosetta and the SDM") {
 // with "[SwiftVM] unhandled host fault: SIGBUS", because this arena is plain
 // host mmap rather than a guest mapping the runtime's handler recognizes.
 TEST_CASE("x86 sse4.2 string compare reads only 16 bytes of memory") {
-    const char* gate = std::getenv("SVM_SSE42STR");
-    if (gate && std::strcmp(gate, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().sse42str) {
         SUCCEED("SVM_SSE42STR=0 disables the handlers; guard-page case skipped");
         return;
     }
@@ -892,7 +890,7 @@ TEST_CASE("x86 sse4.2 string compare reads only 16 bytes of memory") {
     const u64 operand = base + kPage * 3 - 16;  // last 16 bytes before the guard
 
     ScopedJitEnv jit_env;
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* instance = X86Instance::Make();
     auto* core = X86Core::Make(instance);
 
@@ -943,13 +941,11 @@ TEST_CASE("x86 sse4.2 string compare reads only 16 bytes of memory") {
 // model the 6104 Rosetta rows above already validated.  This case tests the
 // front end's operand plumbing, not the semantics.
 TEST_CASE("x86 sse4.2 string compare aliasing and REX-extended registers") {
-    const char* gate = std::getenv("SVM_SSE42STR");
-    if (gate && std::strcmp(gate, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().sse42str) {
         SUCCEED("SVM_SSE42STR=0 disables the handlers; aliasing case skipped");
         return;
     }
-    const char* avx_env = std::getenv("SVM_AVX");
-    const bool avx_on = avx_env && std::strcmp(avx_env, "0") != 0;
+    const bool avx_on = swift::runtime::GetSvmConfig().avx;
 
     struct AliasCase {
         const char* label;
@@ -1009,9 +1005,9 @@ TEST_CASE("x86 sse4.2 string compare aliasing and REX-extended registers") {
     const u64 data = base + 0xC0000;
 
     ScopedJitEnv jit_env;
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
@@ -1275,7 +1271,7 @@ TEST_CASE("x86 sse4.2 string compare fast evaluator is fast") {
             {"equal each    (imm 0x1a)", 0x1A},
             {"equal ordered (imm 0x0c)", 0x0C},
     };
-    const bool print = std::getenv("SVM_SSE42STR_BENCH") != nullptr;
+    const bool print = swift::runtime::GetSvmConfig().sse42str_bench;
 
     double total_reference = 0.0;
     double total_runtime = 0.0;
@@ -1334,4 +1330,3 @@ TEST_CASE("x86 sse4.2 string compare fast evaluator is fast") {
          << table);
     REQUIRE(total_reference > total_runtime * 4.0);
 }
-

@@ -2,31 +2,25 @@
 
 #include <cstring>
 #include "runtime/frontend/x86/decoder.h"
+#include "runtime/common/svm_config.h"
 
 namespace swift::x86 {
 
 // Lowering-only gates default on and accept =0 as an exact rollback.  Keep the
 // getenv read uncached: the process-level JIT cache hash observes the same
 // names, and test subprocesses can exercise either path independently.
-inline bool VecLoweringEnabled(const char* name) {
-    const char* env = swift::runtime::PerfGetenv(name);
-    return !env || std::strcmp(env, "0") != 0;
-}
+inline bool VecLoweringEnabled(bool enabled) { return enabled; }
 
 // Opt-in vector lowerings use this while they are still under workload A/B.
 // Unlike VecLoweringEnabled, an unset variable deliberately selects the old
 // path so a freshly built binary is a true rollback baseline.
-inline bool VecLoweringOptInEnabled(const char* name) {
-    const char* env = swift::runtime::PerfGetenv(name);
-    return env && std::strcmp(env, "0") != 0;
-}
+inline bool VecLoweringOptInEnabled(bool enabled) { return enabled; }
 
 // W54 opt-in: pass guest register values explicitly across the small x86 host
 // helper ABI instead of letting helpers read or write ThreadContext64.  Keep
 // this uncached so differential tests can translate both forms in one process.
 inline bool HelperValuesEnabled() {
-    const char* env = swift::runtime::PerfGetenv("SVM_X86_HELPER_VALUES");
-    return env && std::strcmp(env, "0") != 0;
+    return swift::runtime::GetSvmConfig().x86_helper_values;
 }
 
 // W58 opt-in: lower the implicit-length SSE4.2 string comparisons to a
@@ -34,8 +28,7 @@ inline bool HelperValuesEnabled() {
 // literal value "1" enables it; an unset variable is the exact historical
 // two-CallLambda path.
 inline bool Sse42StringInlineEnabled() {
-    const char* env = swift::runtime::PerfGetenv("SVM_SSE42_STRING_INLINE");
-    return env && std::strcmp(env, "1") == 0;
+    return swift::runtime::GetSvmConfig().sse42_string_inline;
 }
 
 inline ir::Value VecSharedZero(ir::Assembler* assembler) {
@@ -44,7 +37,7 @@ inline ir::Value VecSharedZero(ir::Assembler* assembler) {
 
 inline ir::Value VecShuffle32Lowered(
         ir::Assembler* assembler, ir::Value source, u32 control) {
-    if (!VecLoweringEnabled("SVM_VEC_CONST_CACHE")) {
+    if (!VecLoweringEnabled(swift::runtime::GetSvmConfig().vec_const_cache)) {
         return assembler->VecShuffle32(source, ir::Imm(control))
                 .SetType(ir::ValueType::V128);
     }

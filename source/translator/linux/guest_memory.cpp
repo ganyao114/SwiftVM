@@ -20,6 +20,7 @@
 #endif
 #include "base/logging.h"
 #include "guest_memory.h"
+#include "runtime/common/svm_config.h"
 
 namespace swift::linux {
 
@@ -224,9 +225,7 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
         int identity_errno = 0;
         return TryIdentityWithFallback(
                 [&] {
-                    const char* force_collision =
-                            std::getenv("SVM_MEM_IDENTITY_TEST_COLLISION");
-                    if (force_collision && std::strcmp(force_collision, "0") != 0) {
+                    if (runtime::GetSvmConfig().mem_identity_test_collision) {
                         errno = EEXIST;
                         identity_errno = errno;
                         return false;
@@ -266,9 +265,7 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
     // cannot silently fall back to the layout-sensitive path it is meant to
     // eliminate.
     constexpr VAddr kForcedImageHost = 0x20000000000;
-    const char* force_fixed_env = std::getenv("SVM_FORCE_FIXED_STACK");
-    const bool force_fixed =
-            force_fixed_env && std::strcmp(force_fixed_env, "1") == 0;
+    const bool force_fixed = runtime::GetSvmConfig().force_fixed_stack == "1";
     void* const hint =
             force_fixed ? reinterpret_cast<void*>(kForcedImageHost) : nullptr;
     auto* res = mmap(hint,

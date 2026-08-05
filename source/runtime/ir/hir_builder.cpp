@@ -593,11 +593,7 @@ bool HIRBuilder::AdvancePCCoalesceEnabled() {
     // Escape hatch for bisection; see the header for what this does. Cached in
     // a member by the constructor so the guard-variable load stays off the
     // per-instruction path.
-    static const bool enabled = [] {
-        const char* env = PerfGetenv("SVM_ADVPC_COALESCE");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().advpc_coalesce;
 }
 
 bool HIRBuilder::FoldAdvancePC(const Imm& imm) {

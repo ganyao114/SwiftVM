@@ -67,6 +67,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 #include <sys/mman.h>
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/smc_tracker.h"
 #include "translator/x86/cpu.h"
 #include "translator/x86/translator.h"
@@ -148,8 +149,11 @@ constexpr u32 kRefMxcsrOffset = 24;
 constexpr u64 kX87 = 1, kSse = 2, kYmm = 4;
 
 bool EnvOn(const char* name) {
-    const char* value = std::getenv(name);
-    return value != nullptr && std::strcmp(value, "0") != 0;
+    const auto& config = swift::runtime::GetSvmConfig();
+    if (std::strcmp(name, "SVM_XSAVE") == 0) return config.xsave;
+    if (std::strcmp(name, "SVM_AVX") == 0) return config.avx;
+    FAIL("unknown XSAVE configuration name");
+    return false;
 }
 
 // Byte ranges XSAVE must write, per RFBM, as required by the SDM.  Rosetta
@@ -195,20 +199,20 @@ bool InRanges(const std::vector<Range>& ranges, u32 i) {
 struct ScopedEnv {
     ScopedEnv(const char* name_, const char* value)
             : name(name_) {
-        const char* old = std::getenv(name_);
+        const char* old = swift::runtime::GetRawSvmConfigEnvForTest(name_);
         had = old != nullptr;
         if (had) saved = old;
         if (value) {
-            setenv(name_, value, 1);
+            swift::runtime::SetSvmConfigEnvForTest(name_, value, 1);
         } else {
-            unsetenv(name_);
+            swift::runtime::UnsetSvmConfigEnvForTest(name_);
         }
     }
     ~ScopedEnv() {
         if (had) {
-            setenv(name, saved.c_str(), 1);
+            swift::runtime::SetSvmConfigEnvForTest(name, saved.c_str(), 1);
         } else {
-            unsetenv(name);
+            swift::runtime::UnsetSvmConfigEnvForTest(name);
         }
     }
     const char* name;
@@ -282,7 +286,7 @@ TEST_CASE("x86 xsave facility vs rosetta reference") {
     {
         ScopedEnv jit_on{"SVM_ENABLE_JIT", "1"};
         vm.jit_instance = X86Instance::Make();
-        setenv("SVM_ENABLE_JIT", "0", 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
         vm.interp_instance = X86Instance::Make();
     }
     vm.jit_core = X86Core::Make(vm.jit_instance);

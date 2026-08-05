@@ -100,6 +100,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 #include <sys/mman.h>
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "translator/x86/cpu.h"
@@ -267,8 +268,7 @@ const Sse4Ref* FindRow(const char* name, int pair, int imm, int rc) {
 }  // namespace
 
 TEST_CASE("x86 legacy sse4 vs rosetta reference") {
-    const char* sse4_env = std::getenv("SVM_SSE4");
-    if (sse4_env && std::strcmp(sse4_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().sse4) {
         SUCCEED("SVM_SSE4=0 disables the legacy SSE4 handlers; differential skipped");
         return;
     }
@@ -553,17 +553,17 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
     const u64 stack = base + 0x200000;
     const u64 data = base + 0x300000;
 
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     if (had_old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
@@ -642,8 +642,7 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
     for (const auto& ref : kSse4Refs) {
         // The VEX twins need the AVX gate; without it their rows would be
         // reported as decode failures rather than skipped.
-        const char* avx_env = std::getenv("SVM_AVX");
-        const bool avx_on = avx_env && std::strcmp(avx_env, "0") != 0;
+        const bool avx_on = swift::runtime::GetSvmConfig().avx;
         if (IsVex(ref.name) && !avx_on) {
             continue;
         }
@@ -763,8 +762,7 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
 // while leaving all 4020 differential rows green.  The `exit != None` branch
 // below is therefore belt and braces, not the primary signal.
 TEST_CASE("x86 legacy sse4 narrow memory source stays in its page") {
-    const char* sse4_env = std::getenv("SVM_SSE4");
-    if (sse4_env && std::strcmp(sse4_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().sse4) {
         SUCCEED("SVM_SSE4=0 disables the legacy SSE4 handlers");
         return;
     }
@@ -776,11 +774,11 @@ TEST_CASE("x86 legacy sse4 narrow memory source stays in its page") {
     const u64 base = reinterpret_cast<u64>(arena);
     REQUIRE(mprotect(reinterpret_cast<void*>(base + kGuard), 0x4000, PROT_NONE) == 0);
 
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
-    unsetenv("SVM_ENABLE_JIT");
+    swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
 
@@ -885,8 +883,7 @@ TEST_CASE("x86 legacy sse4 narrow memory source stays in its page") {
 // is what keeps that rejection from being quietly dropped when someone
 // simplifies the dispatch.
 TEST_CASE("x86 legacy ssse3 mmx forms are declined") {
-    const char* sse4_env = std::getenv("SVM_SSE4");
-    if (sse4_env && std::strcmp(sse4_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().sse4) {
         SUCCEED("SVM_SSE4=0 disables the legacy SSE4 handlers");
         return;
     }
@@ -895,9 +892,9 @@ TEST_CASE("x86 legacy ssse3 mmx forms are declined") {
     void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     REQUIRE(arena != MAP_FAILED);
     const u64 base = reinterpret_cast<u64>(arena);
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* instance = X86Instance::Make();
-    unsetenv("SVM_ENABLE_JIT");
+    swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     auto* core = X86Core::Make(instance);
 
     // {name, MMX encoding, the 66-prefixed XMM encoding of the same opcode}.

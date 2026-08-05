@@ -10,6 +10,7 @@
 #include <elfio/elfio.hpp>
 #include "fmt/format.h"
 #include "runtime/backend/signal_handler.h"
+#include "runtime/common/svm_config.h"
 
 namespace swift::aot {
 
@@ -49,8 +50,10 @@ bool GuestImage::ReserveWindow(std::string& error) {
         return true;
     }
     u32 window_bits = swift::linux::GuestMemory::kDefaultWindowBits;
-    if (const char* env = std::getenv("SVM_GUEST_BITS")) {
-        const long v = std::strtol(env, nullptr, 0);
+    const auto& svm_config = runtime::GetSvmConfig();
+    if (svm_config.guest_bits_is_set) {
+        const auto& env = svm_config.guest_bits;
+        const long v = std::strtol(env.c_str(), nullptr, 0);
         if (v >= 20 && v <= 47) {
             window_bits = static_cast<u32>(v);
         } else {

@@ -16,11 +16,7 @@ namespace swift::runtime::backend::arm64 {
 namespace {
 
 bool StructuredAddressModeEnabled() {
-    static const bool enabled = [] {
-        const char* env = PerfGetenv("SVM_ADDRMODE_STRUCT");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().addrmode_struct;
 }
 
 void HostMemMove(void* dst, const void* src, size_t size) {
@@ -28,7 +24,7 @@ void HostMemMove(void* dst, const void* src, size_t size) {
 }
 
 struct TsoEmissionStats {
-    const bool enabled{PerfGetenv("SVM_TSO_STATS") != nullptr};
+    const bool enabled{GetSvmConfig().tso_stats};
     std::atomic<u64> load_sites{};
     std::atomic<u64> store_sites{};
     std::atomic<u64> scalar_fast_sites{};

@@ -12,18 +12,12 @@
 namespace swift::runtime::ir {
 
 
-// Cached diagnostic-env probes: these sit on the per-block path and
-// Darwin's getenv() walks `environ` on every call.
-static bool EnvOnce(const char* name) { return std::getenv(name) != nullptr; }
-static const bool kEnv_dump_ir = EnvOnce("SVM_DUMP_IR");
-static const bool kEnv_dump_ir_post = EnvOnce("SVM_DUMP_IR_POST");
+// 诊断开关来自进程级配置快照，不在逐块路径重复扫描 environ。
+static bool EnvDumpIr() { return GetSvmConfig().dump_ir; }
+static bool EnvDumpIrPost() { return GetSvmConfig().dump_ir_post; }
 
 [[nodiscard]] static bool UniformRangeEnabled() {
-    static const bool enabled = [] {
-        const char* value = PerfGetenv("SVM_IR_UNIFORM_RANGE");
-        return value && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().ir_uniform_range;
 }
 
 [[nodiscard]] static const UniformEffectSet* HelperUniformEffects(const Inst& inst) {
@@ -61,11 +55,7 @@ struct UniformValue {
 };
 
 [[nodiscard]] static bool PathForwardOff() {
-    static const bool off = [] {
-        const char* e = PerfGetenv("SVM_UNIFORM_PATH_FWD");
-        return e && std::strcmp(e, "0") == 0;
-    }();
-    return off;
+    return !GetSvmConfig().uniform_path_fwd;
 }
 
 // Keep the XMM state resident only within one IR unit.  This switch controls
@@ -74,11 +64,7 @@ struct UniformValue {
 // cross-block residency.  The x86 frontend supplies the range so U64
 // XmmLo/XmmHi views are covered alongside direct V128 accesses.
 [[nodiscard]] static bool XmmUniformForwardOff() {
-    static const bool off = [] {
-        const char* e = PerfGetenv("SVM_XMM_UNIFORM_FWD");
-        return e && std::strcmp(e, "0") == 0;
-    }();
-    return off;
+    return !GetSvmConfig().xmm_uniform_fwd;
 }
 
 // Phase 2 complements store->load forwarding with load->load forwarding for
@@ -86,11 +72,7 @@ struct UniformValue {
 // stores that already delimit the legacy table; subsequent identical views can
 // therefore reuse it without touching the architectural context again.
 [[nodiscard]] static bool XmmSsaForward2Off() {
-    static const bool off = [] {
-        const char* e = PerfGetenv("SVM_XMM_SSA_FWD2");
-        return e && std::strcmp(e, "0") == 0;
-    }();
-    return off;
+    return !GetSvmConfig().xmm_ssa_fwd2;
 }
 
 // A V32/V64 scalar operand names the low lane of the same FPR value as the
@@ -98,11 +80,7 @@ struct UniformValue {
 // alias instead of forcing a uniform-buffer round trip merely because its IR
 // width is narrower. SVM_XMM_NARROW_FWD=0 restores the pre-fix rule for A/B.
 [[nodiscard]] static bool XmmNarrowForwardOff() {
-    static const bool off = [] {
-        const char* e = PerfGetenv("SVM_XMM_NARROW_FWD");
-        return e && std::strcmp(e, "0") == 0;
-    }();
-    return off;
+    return !GetSvmConfig().xmm_narrow_fwd;
 }
 
 // --- dead uniform store elimination ----------------------------------------
@@ -325,7 +303,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
         }
     }
 
-    if (!victims.empty() && kEnv_dump_ir) {
+    if (!victims.empty() && EnvDumpIr()) {
         fmt::print(stderr, "[uniform-dse] block {:#x}: removed {} dead uniform store(s)\n",
                    block->GetStartLocation().Value(), victims.size());
     }
@@ -383,10 +361,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     // existing dead-store wins. Run the same proven sweep on the original
     // Load/StoreUniform stream first, then skip the post-conversion sweep.
     // OFF retains the historical pass order byte-for-byte.
-    static const bool dse_off = [] {
-        const char* e = PerfGetenv("SVM_UNIFORM_DSE");
-        return e && std::strcmp(e, "0") == 0;
-    }();
+    const bool dse_off = !GetSvmConfig().uniform_dse;
     const bool pin_ext_dse = info.uni_gprs.Get(22) && info.uni_gprs.Get(23) &&
                              info.uni_gprs.Get(29);
     if (pin_ext_dse && !dse_off) {
@@ -795,7 +770,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                                                 std::memory_order_relaxed);
     }
 
-    if (kEnv_dump_ir) {
+    if (EnvDumpIr()) {
         fmt::print(stderr,
                    "[uniform-elim] block {:#x}: LoadUniform {} -> {} "
                    "(folded {}, mapped {}), mapped stores {}, invalidations {}, "
@@ -807,7 +782,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                    invalidation_count, full_invalidation_count,
                    range_invalidation_count, preserved_fact_count,
                    path_merge_count, path_merge_bytes);
-        if (kEnv_dump_ir_post) {
+        if (EnvDumpIrPost()) {
             fmt::print(stderr, "--- post-uniform block {:#x} ---\n{}\n",
                        block->GetStartLocation().Value(), block->ToString());
         }
@@ -834,10 +809,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
 
 void UniformEliminationPass::Run(Block* block, const UniformInfo& info,
                                  HIRFunction* hir_function) {
-    static const bool fast_path = [] {
-        const char* env = PerfGetenv("SVM_UNIFORM_FAST");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
+    const bool fast_path = GetSvmConfig().uniform_fast;
     Run(block, info, fast_path, hir_function);
 }
 

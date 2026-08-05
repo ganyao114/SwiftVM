@@ -65,66 +65,41 @@ static Value ResolveBitCastSource(Value value) {
 }
 
 static bool MemNarrowFuseEnabled() {
-    static const bool enabled = [] {
-        const char* env = PerfGetenv("SVM_MEM_NARROW_FUSE");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().mem_narrow_fuse;
 }
 
 static bool AddrEATieEnabled() {
-    static const bool enabled = [] {
-        const char* env = PerfGetenv("SVM_ADDR_EA_TIE");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().addr_ea_tie;
 }
 
 static bool ShiftImmFastEnabled() {
-    const char* env = PerfGetenv("SVM_SHIFT_IMM_FAST");
-    return !env || std::strcmp(env, "0") != 0;
+    return GetSvmConfig().shift_imm_fast;
 }
 
 static bool IntWidthTieEnabled() {
-    static const bool enabled = [] {
-        const char* env = PerfGetenv("SVM_RA_INTWIDTH_TIE");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().ra_intwidth_tie;
 }
 
 static bool InductTieEnabled() {
-    static const bool enabled = [] {
-        const char* env = PerfGetenv("SVM_INDUCT_TIE");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().induct_tie;
 }
 
 static bool SpillEvictEnabled() {
-    static const bool enabled = [] {
-        const char* env = PerfGetenv("SVM_RA_SPILL_EVICT");
-        // Default ON after the orb eight-cell grid (L2/L3 x evict x coremark/
-        // smallpt, all identity): L3 smallpt spill_dynamic -74.4% with every
-        // other cell neutral, regalloc_ns worst +5.5% of a 0.25% bucket
-        // (translate +0.013%, no long tail), and the Verify-failed fallback to
-        // the original reserve ladder exercised by 26 real units. The mac
-        // bounded-bias shape is the headline: L3 coremark spill -93.01%,
-        // host_dynamic -10.17%. =0 restores the pure ladder as the rollback.
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    // Default ON after the orb eight-cell grid (L2/L3 x evict x coremark/
+    // smallpt, all identity): L3 smallpt spill_dynamic -74.4% with every
+    // other cell neutral, regalloc_ns worst +5.5% of a 0.25% bucket
+    // (translate +0.013%, no long tail), and the Verify-failed fallback to
+    // the original reserve ladder exercised by 26 real units. The mac
+    // bounded-bias shape is the headline: L3 coremark spill -93.01%,
+    // host_dynamic -10.17%. =0 restores the pure ladder as the rollback.
+    return GetSvmConfig().ra_spill_evict;
 }
 
 // Spill/escalation 诊断打印默认关闭：它们随编译线程异步产生，会混入 guest
 // stdout（sqlite speedtest 一类边跑边输出的负载会被打断行），且非用户可行动项。
 // 需要排查 regalloc 行为时设 SVM_RA_DIAG=1 打开。
 static bool RaDiagEnabled() {
-    static const bool enabled = [] {
-        const char* env = PerfGetenv("SVM_RA_DIAG");
-        return env && std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().ra_diag;
 }
 
 using HostRegWriteMap = Map<u16, Vector<u32>>;
@@ -2222,10 +2197,7 @@ void RegisterAllocPass::Run(HIRFunction* hir_function,
 void RegisterAllocPass::RunWithScalarInsert(HIRFunction* hir_function,
                                             backend::RegAlloc* reg_alloc,
                                             bool scalar_insert) {
-    static const bool single_block_fast_path = [] {
-        const char* env = PerfGetenv("SVM_RA_1BLK");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
+    const bool single_block_fast_path = GetSvmConfig().ra_1blk;
     const bool use_fast_path =
             single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
     RunVerified(hir_function, reg_alloc, use_fast_path, scalar_insert,

@@ -69,6 +69,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 #include <sys/mman.h>
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "runtime/frontend/x86/vex_decoder.h"
@@ -172,8 +173,7 @@ u8 TableByte(u64 b) { return u8(b * 31u + 7u); }
 // The differential itself.
 // ---------------------------------------------------------------------------
 TEST_CASE("x86 avx2 gather vs rosetta reference") {
-    const char* avx_env = std::getenv("SVM_AVX");
-    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; AVX2 gather Rosetta differential skipped");
         return;
     }
@@ -272,17 +272,17 @@ TEST_CASE("x86 avx2 gather vs rosetta reference") {
         std::memcpy(reinterpret_cast<void*>(data + kOffPoison + reg * 32), p.data(), 32);
     }
 
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     if (had_old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
@@ -493,8 +493,7 @@ TEST_CASE("x86 avx2 gather vs rosetta reference") {
 // If this case ever regresses, the symptom in a real guest is a spurious
 // SIGSEGV in code that is entirely correct.
 TEST_CASE("x86 avx2 gather does not access masked-off lanes") {
-    const char* avx_env = std::getenv("SVM_AVX");
-    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; gather masked-lane case skipped");
         return;
     }
@@ -506,11 +505,11 @@ TEST_CASE("x86 avx2 gather does not access masked-off lanes") {
     const u64 stack = base + 0x200000;
     const u64 data = base + 0x300000;
 
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
-    unsetenv("SVM_ENABLE_JIT");
+    swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
 
@@ -587,8 +586,7 @@ TEST_CASE("x86 avx2 gather does not access masked-off lanes") {
 // NOT happen is that one of these encodings quietly executes as if it were
 // well-formed, so this case pins the decline.
 TEST_CASE("x86 avx2 gather declines #UD operand shapes") {
-    const char* avx_env = std::getenv("SVM_AVX");
-    if (!avx_env || std::strcmp(avx_env, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; gather #UD case skipped");
         return;
     }
@@ -600,11 +598,11 @@ TEST_CASE("x86 avx2 gather declines #UD operand shapes") {
     const u64 stack = base + 0x200000;
     const u64 data = base + 0x300000;
 
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
-    unsetenv("SVM_ENABLE_JIT");
+    swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
 

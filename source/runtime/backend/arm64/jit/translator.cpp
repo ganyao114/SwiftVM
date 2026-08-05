@@ -21,11 +21,7 @@ namespace swift::runtime::backend::arm64 {
 namespace {
 
 bool UniformPairAuditEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("SVM_UNIFORM_PAIR_AUDIT");
-        return value && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().uniform_pair_audit;
 }
 
 ir::Value ResolveBitCastValue(ir::Value value) {
@@ -314,31 +310,16 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     fpcr_tax_skip_switch = sse_afp_nan && FpcrTaxSkipSwitchEnabled();
     fpcr_tax_timing = sse_afp_nan && FpcrTaxTimingEnabled();
     xmm_pool_ext = True(config.global_opts & Optimizations::XmmPoolExt);
-    if (const char* shift_fast = PerfGetenv("SVM_SHIFT_IMM_FAST")) {
-        shift_imm_fast = std::strcmp(shift_fast, "0") != 0;
-    }
-    if (const char* mem_fuse = PerfGetenv("SVM_MEM_NARROW_FUSE")) {
-        mem_narrow_fuse = std::strcmp(mem_fuse, "0") != 0;
-    }
-    if (const char* ea_tie = PerfGetenv("SVM_ADDR_EA_TIE")) {
-        addr_ea_tie = std::strcmp(ea_tie, "0") != 0;
-    }
-    if (const char* abs_const = PerfGetenv("SVM_ABS_CONST_MAT")) {
-        abs_const_mat = std::strcmp(abs_const, "0") != 0;
-    }
-    if (const char* nan_fast = PerfGetenv("SVM_SSE_NAN_FAST")) {
-        sse_nan_fast = std::strcmp(nan_fast, "0") != 0;
-    }
-    if (const char* nan_coldpath = PerfGetenv("SVM_SSE_NAN_COLDPATH")) {
-        sse_nan_coldpath = std::strcmp(nan_coldpath, "0") != 0;
-    }
+    const auto& svm_config = GetSvmConfig();
+    shift_imm_fast = svm_config.shift_imm_fast;
+    mem_narrow_fuse = svm_config.mem_narrow_fuse;
+    addr_ea_tie = svm_config.addr_ea_tie;
+    abs_const_mat = svm_config.abs_const_mat;
+    sse_nan_fast = svm_config.sse_nan_fast;
+    sse_nan_coldpath = svm_config.sse_nan_coldpath;
     backedge_latch = BackedgeLatchEnabled() || config.region_edges;
-    if (const char* value = PerfGetenv("SVM_BACKEDGE_FLAGS")) {
-        backedge_flags = backedge_latch && std::strcmp(value, "0") != 0;
-    }
-    if (const char* common = PerfGetenv("SVM_LINK_SUFFIX_COMMON")) {
-        link_suffix_common = std::strcmp(common, "0") != 0;
-    }
+    backedge_flags = backedge_latch && svm_config.backedge_flags;
+    link_suffix_common = svm_config.link_suffix_common;
     execution_trace_enabled = context.ExecutionTraceEnabled();
     if (execution_trace_enabled) {
         for (const auto& desc : config.buffers_static_alloc) {
@@ -1327,7 +1308,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
         }
     }
     if (!first_producer || !final_save) {
-        if (PerfGetenv("SVM_DUMP_IR")) {
+        if (GetSvmConfig().dump_ir) {
             fmt::print(stderr, "[backedge-proof] {:#x} reject flags producer\n",
                        block->GetStartLocation().Value());
         }
@@ -1353,7 +1334,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
         auto* def = value.Def();
         if (!def || def->GetOp() != ir::OpCode::LoadImm ||
             value.Type() != ir::ValueType::U8 || def->GetUses() != 1) {
-            if (PerfGetenv("SVM_DUMP_IR")) {
+            if (GetSvmConfig().dump_ir) {
                 fmt::print(stderr,
                            "[backedge-proof] {:#x} reject polarity value def={} op={} type={} uses={}\n",
                            block->GetStartLocation().Value(),
@@ -1374,7 +1355,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
     }
     if (!polarity_store || !polarity_load ||
         polarity_store->Id() >= condition.Def()->Id()) {
-        if (PerfGetenv("SVM_DUMP_IR")) {
+        if (GetSvmConfig().dump_ir) {
             fmt::print(stderr,
                        "[backedge-proof] {:#x} reject polarity store={} load={} cond={}\n",
                        block->GetStartLocation().Value(),
@@ -1392,7 +1373,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
             break;
         }
         if (!PreservesHostNZCV(inst.GetOp())) {
-            if (PerfGetenv("SVM_DUMP_IR")) {
+            if (GetSvmConfig().dump_ir) {
                 fmt::print(stderr,
                            "[backedge-proof] {:#x} reject pre-producer op={} id={}\n",
                            block->GetStartLocation().Value(),
@@ -1405,7 +1386,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
     // fault or architectural observer before the terminal safepoint.
     for (auto& inst : block->GetInstList()) {
         if (inst.Id() > first_producer->Id() && MayFaultOrObserve(inst.GetOp())) {
-            if (PerfGetenv("SVM_DUMP_IR")) {
+            if (GetSvmConfig().dump_ir) {
                 fmt::print(stderr,
                            "[backedge-proof] {:#x} reject post-producer fault op={} id={} producer={}\n",
                            block->GetStartLocation().Value(),
@@ -1426,7 +1407,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
             inst.GetOp() != ir::OpCode::ZeroExtend32 &&
             inst.GetOp() != ir::OpCode::ZeroExtend32To64 &&
             inst.GetOp() != ir::OpCode::SetHostGPR) {
-            if (PerfGetenv("SVM_DUMP_IR")) {
+            if (GetSvmConfig().dump_ir) {
                 fmt::print(stderr,
                            "[backedge-proof] {:#x} reject tail op={} id={}\n",
                            block->GetStartLocation().Value(),
@@ -1454,7 +1435,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
     plan->polarity_load = polarity_load;
     plan->polarity_store = polarity_store;
     plan->final_advance = final_advance;
-    if (PerfGetenv("SVM_DUMP_IR")) {
+    if (GetSvmConfig().dump_ir) {
         fmt::print(stderr, "[backedge-proof] {:#x} eligible\n",
                    block->GetStartLocation().Value());
     }
@@ -1482,7 +1463,7 @@ bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
     }
     auto& plan = *backedge_flags_plan;
     if (!save_in_nzcv || !nzcv_dirty || nzcv_requested != plan.requested) {
-        if (PerfGetenv("SVM_DUMP_IR")) {
+        if (GetSvmConfig().dump_ir) {
             fmt::print(stderr,
                        "[backedge-proof] {:#x} emitter fallback save={} dirty={} actual={:#x} expected={:#x}\n",
                        cur_block->GetStartLocation().Value(),

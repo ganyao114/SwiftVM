@@ -20,6 +20,8 @@ add_library(swift_runtime STATIC
         common/variant_util.h
         common/logging.h
         common/logging.cpp
+        common/svm_config.cpp
+        common/svm_config.h
         common/virtual_vector.cpp
         common/virtual_vector.h
         common/bit_fields.h

@@ -18,15 +18,11 @@ namespace swift::runtime::backend::arm64 {
 namespace {
 
 bool LeafHelperABIEnabled() {
-    static const bool enabled = [] {
 #if SVM_HAS_HELPER_PRESERVE_ALL
-        const char* value = PerfGetenv("SVM_HELPER_LEAF_ABI");
-        return value && std::strcmp(value, "0") != 0;
+    return GetSvmConfig().helper_leaf_abi;
 #else
-        return false;
+    return false;
 #endif
-    }();
-    return enabled;
 }
 
 }  // namespace

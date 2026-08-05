@@ -21,11 +21,7 @@ namespace swift::runtime::backend::arm64 {
 namespace {
 
 bool ScratchPrecisePeakAuditEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("SVM_SCRATCH_PRECISE_PEAK_AUDIT");
-        return value && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().scratch_precise_peak_audit;
 }
 
 template <typename Emit>
@@ -73,21 +69,15 @@ JitContext::JitContext(const std::shared_ptr<Module>& module,
     ASSERT_MSG(!has_spill || reg_alloc.GetGprs().Get(18),
                "spilling unit reached emission without conditional x18 reservation");
 #endif
-    const char* prof = std::getenv("SVM_EXEC_PROF");
-    exec_profile_enabled = prof && std::strcmp(prof, "0") != 0;
-    const char* trace = std::getenv("SVM_EXEC_TRACE");
-    execution_trace_enabled = trace && std::strcmp(trace, "0") != 0;
+    const auto& svm_config = GetSvmConfig();
+    exec_profile_enabled = svm_config.exec_prof;
+    execution_trace_enabled = svm_config.exec_trace;
     if (exec_profile_enabled) {
-        if (const char* pad = std::getenv("SVM_EXEC_ACCESS_PAD")) {
-            exec_access_pad = static_cast<u32>(std::min(std::strtoul(pad, nullptr, 10), 64ul));
-        }
+        exec_access_pad = svm_config.exec_access_pad;
     }
     fpcr_tax_profile_enabled = FpcrTaxProfEnabled();
     hot_coalesce_enabled = HotCoalesceProfEnabled();
-    static const bool density_enabled = [] {
-        const char* density = std::getenv("SVM_DENSITY_PROF");
-        return density && std::strcmp(density, "0") != 0;
-    }();
+    const bool density_enabled = GetSvmConfig().density_prof;
     density_profile_enabled = density_enabled;
     direct_link_active = enable_direct_link && module->IsDirectLinkConfigured() &&
             module->PrepareDirectLinkRegion();
@@ -910,7 +900,8 @@ u8* JitContext::Flush(const CodeBuffer& code_cache) {
         HotCoalesceSetUnitHostBase(
                 slot, reinterpret_cast<VAddr>(code_cache.exec_data));
     }
-    if (std::getenv("SVM_EXEC_MAP") || std::getenv("SVM_VIXL_HOST_DUMP")) {
+    if (GetSvmConfig().exec_map_is_set ||
+        GetSvmConfig().vixl_host_dump_is_set) {
         std::fprintf(stderr, "[svm-host-map] pc=0x%llx exec=%p size=%u\n",
                      static_cast<unsigned long long>(unit_start),
                      static_cast<void*>(code_cache.exec_data),
@@ -1230,10 +1221,8 @@ void JitContext::EndColdScratch() {
 }
 
 void JitContext::MaybeDumpHostBytes() {
-    static const bool enabled = [] {
-        const char* env = std::getenv("SVM_VIXL_HOST_DUMP");
-        return env && std::strcmp(env, "0") != 0;
-    }();
+    const bool enabled = GetSvmConfig().vixl_host_dump_is_set &&
+                         GetSvmConfig().vixl_host_dump != "0";
     if (!enabled || host_bytes_dumped || !unit_start_set) return;
     host_bytes_dumped = true;
     const auto size = masm.GetBuffer()->GetSizeInBytes();

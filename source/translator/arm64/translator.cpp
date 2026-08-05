@@ -65,13 +65,12 @@ struct Arm64Instance::Impl final {
         memory_impl.SetMask(guest_addr_mask);
         // SVM_ENABLE_JIT=0 forces the IR interpreter path (bring-up aid
         // while the JIT is under development).
-        const char* jit_env = std::getenv("SVM_ENABLE_JIT");
-        const bool enable_jit = jit_env ? std::strcmp(jit_env, "0") != 0 : true;
+        const auto& svm_config = runtime::GetSvmConfig();
+        const bool enable_jit = svm_config.enable_jit;
         auto global_opts = Optimizations::ConstantFolding | Optimizations::DeadCodeRemove |
                            Optimizations::BlockLink |
                            Optimizations::ReturnStackBuffer | Optimizations::FunctionBaseCompile;
-        const char* uniform_elim_env = std::getenv("SVM_UNIFORM_ELIM");
-        if (!uniform_elim_env || std::strcmp(uniform_elim_env, "0") != 0) {
+        if (svm_config.uniform_elim) {
             global_opts |= Optimizations::UniformElimination;
         }
         Config config{
@@ -119,9 +118,8 @@ struct Arm64Instance::Impl final {
         auto& m_config = module->GetModuleConfig();
         // Function-level compilation is default-on when the optimization is
         // present; SVM_FUNC_BASE=0 is the explicit block-only escape hatch.
-        const char* fb_env = std::getenv("SVM_FUNC_BASE");
         auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&
-                         (!fb_env || std::strcmp(fb_env, "0") != 0) &&
+                         runtime::GetSvmConfig().func_base &&
                          !function_compilation_disabled &&
                          !block_only_locations.contains(pc);
 
@@ -203,9 +201,7 @@ struct Arm64Instance::Impl final {
                                              });
             }
 
-            const char* func_lambda_env = std::getenv("SVM_FUNC_LAMBDA");
-            const bool allow_func_lambda =
-                    !func_lambda_env || std::strcmp(func_lambda_env, "0") != 0;
+            const bool allow_func_lambda = runtime::GetSvmConfig().func_lambda;
             if (has_host_call && !allow_func_lambda) {
                 for (auto* hb : hir_func->GetHIRBlocks()) {
                     if (hb && hb != hir_func->GetEntryBlock()) {
@@ -227,11 +223,11 @@ struct Arm64Instance::Impl final {
                     if (!backend::PublishIRFunction(module, hir_func)) {
                         throw std::runtime_error("failed to publish interpreted HIR function");
                     }
-                    if (std::getenv("SVM_DUMP_IR")) {
+                    if (runtime::GetSvmConfig().dump_ir) {
                         fmt::print(stderr, "[func-compile] {:#x} interp-publish-ready\n", pc);
                     }
                     func_stats.Compiled(decoded_blocks);
-                    if (std::getenv("SVM_DUMP_IR")) {
+                    if (runtime::GetSvmConfig().dump_ir) {
                         fmt::print(stderr, "[func-compile] {:#x} interp-return\n", pc);
                     }
                     compiled = true;
@@ -241,7 +237,7 @@ struct Arm64Instance::Impl final {
                         throw std::runtime_error("TranslateIR(HIRFunction) returned null");
                     }
                     func_stats.Compiled(decoded_blocks);
-                    if (std::getenv("SVM_DUMP_IR")) {
+                    if (runtime::GetSvmConfig().dump_ir) {
                         fmt::print(stderr, "[func-compile] {:#x} jit-return\n", pc);
                     }
                     compiled = true;
@@ -254,7 +250,7 @@ struct Arm64Instance::Impl final {
                 block_only_locations.insert(pc);
                 compiled = false;
             }
-            if (std::getenv("SVM_DUMP_IR")) {
+            if (runtime::GetSvmConfig().dump_ir) {
                 fmt::print(stderr, "[func-compile] {:#x} builder-destroyed\n", pc);
             }
             if (compiled) {

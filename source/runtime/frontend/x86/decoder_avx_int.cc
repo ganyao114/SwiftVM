@@ -499,7 +499,7 @@ void X64Decoder::DecodeAvxIntShiftCount(const VexInsn& v, u32 kind, u32 lane_bit
 // usual way round silently swaps source and destination.
 void X64Decoder::DecodeAvxIntShiftImm(const VexInsn& v, u32 kind, u32 lane_bits) {
     const auto lanes = ir::Imm(lane_bits);
-    const bool use_imm = VecLoweringEnabled("SVM_VEC_IMM_SHIFT");
+    const bool use_imm = VecLoweringEnabled(swift::runtime::GetSvmConfig().vec_imm_shift);
     // Keep the disabled path byte-for-byte equivalent at IR level: VEX.256
     // shares one scalar count between both 128-bit lanes.
     ir::Value count;
@@ -931,14 +931,14 @@ bool X64Decoder::DecodeAvxInt(const VexInsn& v) {
                             return true;
                         case 3:
                             if (lane == 64 &&
-                                VecLoweringEnabled("SVM_VEC_BYTESHIFT_EXT")) {
+                                VecLoweringEnabled(swift::runtime::GetSvmConfig().vec_byteshift_ext)) {
                                 DecodeAvxIntByteShift(v, false);
                                 return true;
                             }
                             return false;
                         case 7:
                             if (lane == 64 &&
-                                VecLoweringEnabled("SVM_VEC_BYTESHIFT_EXT")) {
+                                VecLoweringEnabled(swift::runtime::GetSvmConfig().vec_byteshift_ext)) {
                                 DecodeAvxIntByteShift(v, true);
                                 return true;
                             }

@@ -66,6 +66,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 #include <sys/mman.h>
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/smc_tracker.h"
 #include "translator/x86/cpu.h"
 #include "translator/x86/translator.h"
@@ -126,8 +127,7 @@ struct Out {
 }  // namespace
 
 TEST_CASE("x86 bmi1/bmi2 vs rosetta reference") {
-    const char* gate = std::getenv("SVM_BMI");
-    if (gate == nullptr || std::strcmp(gate, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().bmi) {
         SUCCEED("SVM_BMI is not set; BMI1/BMI2 differential skipped");
         return;
     }
@@ -184,17 +184,17 @@ TEST_CASE("x86 bmi1/bmi2 vs rosetta reference") {
     const u64 data = base + 0x300000;
     const u64 stack = base + 0x200000;
 
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     if (had_old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
@@ -351,8 +351,7 @@ TEST_CASE("x86 bmi1/bmi2 vs rosetta reference") {
 // place TZCNT and BSF genuinely differ, and it is the case that decides whether
 // the BSF alias may stay once BMI1 is advertised.
 TEST_CASE("x86 bmi VEX.LZ gating and the TZCNT/BSF split") {
-    const char* gate = std::getenv("SVM_BMI");
-    if (gate == nullptr || std::strcmp(gate, "0") == 0) {
+    if (!swift::runtime::GetSvmConfig().bmi) {
         SUCCEED("SVM_BMI is not set; BMI1/BMI2 encoding gates skipped");
         return;
     }
@@ -389,7 +388,7 @@ TEST_CASE("x86 bmi VEX.LZ gating and the TZCNT/BSF split") {
     void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     REQUIRE(arena != MAP_FAILED);
     const u64 base = reinterpret_cast<u64>(arena);
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* core = X86Core::Make(X86Instance::Make());
 
     u32 slot = 1;

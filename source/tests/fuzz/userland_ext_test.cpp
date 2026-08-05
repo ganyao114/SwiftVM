@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include "distorm.h"
 #include "mnemonics.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/smc_tracker.h"
 #include "translator/x86/cpu.h"
 #include "translator/x86/translator.h"
@@ -21,20 +22,20 @@ namespace {
 
 struct ScopedEnv {
     ScopedEnv(const char* name_, const char* value) : name(name_) {
-        const char* old = std::getenv(name);
+        const char* old = swift::runtime::GetRawSvmConfigEnvForTest(name);
         had = old != nullptr;
         if (had) saved = old;
         if (value) {
-            setenv(name, value, 1);
+            swift::runtime::SetSvmConfigEnvForTest(name, value, 1);
         } else {
-            unsetenv(name);
+            swift::runtime::UnsetSvmConfigEnvForTest(name);
         }
     }
     ~ScopedEnv() {
         if (had) {
-            setenv(name, saved.c_str(), 1);
+            swift::runtime::SetSvmConfigEnvForTest(name, saved.c_str(), 1);
         } else {
-            unsetenv(name);
+            swift::runtime::UnsetSvmConfigEnvForTest(name);
         }
     }
     const char* name;

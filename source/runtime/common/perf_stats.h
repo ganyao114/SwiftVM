@@ -22,6 +22,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "runtime/common/svm_config.h"
+
 namespace swift::runtime {
 
 struct PerfStats {
@@ -215,82 +217,7 @@ struct PerfStats2 {
     std::atomic<unsigned long long> uniform_dse_blocks{0};
     std::atomic<unsigned long long> uniform_dse_victims{0};
 
-    static constexpr std::array<const char*, 74> kGetenvNames{{
-            "SVM_MEM_IDENTITY",
-            "SVM_FUNC_LAZY",
-            "SVM_DUMP_IR",
-            "SVM_X87_TOPVIRT",
-            "SVM_X87_JIT",
-            "SVM_FUNC_IR_FREE",
-            "SVM_ADVPC_COALESCE",
-            "SVM_CONST_CSE",
-            "SVM_UNIFORM_DSE",
-            "SVM_FLAG_CARRY_ELIM",
-            "SVM_RA_1BLK",
-            "SVM_UNIFORM_FAST",
-            "SVM_IR_UNIFORM_RANGE",
-            "SVM_IR_FAST",
-            "SVM_FLAG_NARROW",
-            "SVM_AVX",
-            "SVM_BMI",
-            "SVM_SSE4",
-            "SVM_SSE42STR",
-            "SVM_SSE42_STRING_INLINE",
-            "SVM_SSE_SCALAR_INSERT",
-            "SVM_XSAVE",
-            "SVM_XSAVE_YMM",
-            "SVM_X86_64_ABI_BASELINE",
-            "SVM_ADX",
-            "SVM_PKRU",
-            "SVM_FSGSBASE",
-            "SVM_X87_JIT_STATS",
-            "SVM_TSO_STATS",
-            "SVM_SSE_SCALAR_V_OPERANDS",
-            "SVM_MEM_NARROW_FUSE",
-            "SVM_ADDR_EA_TIE",
-            "SVM_ABS_CONST_MAT",
-            "SVM_SHIFT_IMM_FAST",
-            "SVM_XMM_SSA_FWD2",
-            "SVM_XMM_NARROW_FWD",
-            "SVM_LINK_SUFFIX_COMMON",
-            "SVM_VEC_IMM_SHIFT",
-            "SVM_VEC_CONST_CACHE",
-            "SVM_VEC_BYTESHIFT_EXT",
-            "SVM_VEC_SHUFPS_NEON",
-            "SVM_AES_ZERO_REUSE",
-            "SVM_SSE_NAN_COLDPATH",
-            "SVM_FLAGS_NARROW_ALIGN",
-            "SVM_FLAGS_CFINV",
-            "SVM_FLAGS_TERMINAL_JCC",
-            "SVM_FLAGS_FCMP_FUSE",
-            "SVM_FLAGS_FCMP_COMPACT",
-            "SVM_FLAGS_BRANCH_ONLY",
-            "SVM_ADDRMODE_STRUCT",
-            "SVM_JIT_CACHE_EXEC_ID",
-            "SVM_SMC_DIRTY_HINT",
-            "SVM_JIT_SCRATCH_XPOOL",
-            "SVM_X86_HELPER_VALUES",
-            "SVM_X86_PIN_EXT",
-            "SVM_XMM_FAULT_SINK",
-            "SVM_RA_DIAG",
-            "SVM_RA_SHAPE_PROF",
-            "SVM_RA_HOT_COALESCE",
-            "SVM_HELPER_LEAF_ABI",
-            "SVM_XMM_POOL_EXT",
-            "SVM_BACKEDGE_LATCH",
-            "SVM_BACKEDGE_FLAGS",
-            "SVM_RA_INTWIDTH_TIE",
-            "SVM_SSE_AFP_NAN",
-            "SVM_FPCR_TAX_PROF",
-            "SVM_FPCR_TAX_SKIP_SWITCH",
-            "SVM_FPCR_TAX_TIMING",
-            "SVM_MEM_HOSTBASE_FOLD",
-            "SVM_INDUCT_TIE",
-            "SVM_REGION_EDGES",
-            "SVM_EXEC_TRACE",
-            "SVM_SCRATCH_PRECISE",
-            "SVM_RA_SPILL_EVICT",
-    }};
+    static constexpr auto kGetenvNames = kSvmConfigEnvNames;
     std::array<std::atomic<unsigned long long>, kGetenvNames.size()> getenv_ns{};
     std::array<std::atomic<unsigned long long>, kGetenvNames.size()> getenv_calls{};
 };
@@ -316,13 +243,8 @@ inline void PerfRegisterDumpAtExit() {
 }
 
 inline bool Perf2Enabled() {
-    static const bool enabled = [] {
-        const bool on = std::getenv("SVM_PROF2") != nullptr;
-        if (on) {
-            PerfRegisterDumpAtExit();
-        }
-        return on;
-    }();
+    const bool enabled = GetSvmConfig().prof2;
+    if (enabled) PerfRegisterDumpAtExit();
     return enabled;
 }
 
@@ -340,13 +262,8 @@ enum class PerfDecodePath2 : unsigned char {
 inline thread_local PerfDecodePath2 perf2_decode_path{};
 
 inline bool PerfEnabled() {
-    static const bool enabled = [] {
-        if (std::getenv("SVM_PROF") == nullptr && !Perf2Enabled()) {
-            return false;
-        }
-        PerfRegisterDumpAtExit();
-        return true;
-    }();
+    const bool enabled = GetSvmConfig().prof_is_set || Perf2Enabled();
+    if (enabled) PerfRegisterDumpAtExit();
     return enabled;
 }
 
@@ -526,27 +443,15 @@ inline void PerfAdd(std::atomic<unsigned long long>& counter, unsigned long long
 }
 
 inline bool PerfIRDetailEnabled() {
-    static const bool enabled = [] {
-        const char* env = std::getenv("SVM_IR_DETAIL");
-        return env && std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return GetSvmConfig().ir_detail;
 }
 
 inline bool PerfDecodeDetailEnabled() {
-    static const bool enabled = [] {
-        const char* env = std::getenv("SVM_DECODE_PROF");
-        return Perf2Enabled() && env && std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return Perf2Enabled() && GetSvmConfig().decode_prof;
 }
 
 inline bool PerfLoweringDetailEnabled() {
-    static const bool enabled = [] {
-        const char* env = std::getenv("SVM_LOW_PROF");
-        return PerfDecodeDetailEnabled() && env && std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return PerfDecodeDetailEnabled() && GetSvmConfig().low_prof;
 }
 
 struct PerfLoweringLocal2 {
@@ -711,11 +616,8 @@ inline void PerfIRDetailRecord(PerfCounter2& counter,
 // makes a codegen difference attributable: diff the two runs' unit lists and
 // the changed guest addresses fall out.
 inline bool PerfPerUnit() {
-    static const bool on = [] {
-        const char* e = std::getenv("SVM_PROF");
-        return e && std::atoi(e) >= 2;
-    }();
-    return on;
+    const auto& config = GetSvmConfig();
+    return config.prof_is_set && std::atoi(config.prof.c_str()) >= 2;
 }
 
 // Adds the lifetime of the enclosing scope to `counter`. Construction cost is
@@ -874,10 +776,8 @@ inline void PerfDecodeRecordOpcode(unsigned opcode, unsigned long long ns) {
 inline void PerfDecodeRunEmptyMicrobench() {
     if (!PerfDecodeDetailEnabled()) return;
     static const bool ran = [] {
-        const char* env = std::getenv("SVM_DECODE_PROF_EMPTY");
-        if (!env || std::strcmp(env, "0") == 0) return true;
-        unsigned long long iterations = std::strtoull(env, nullptr, 10);
-        if (iterations < 1000) iterations = 1000000;
+        const unsigned long long iterations = GetSvmConfig().decode_prof_empty;
+        if (iterations == 0) return true;
         auto& s = GetPerfStats2();
         const auto begin = std::chrono::steady_clock::now();
         for (unsigned long long i = 0; i < iterations; ++i) {
@@ -896,10 +796,8 @@ inline void PerfDecodeRunEmptyMicrobench() {
 inline void PerfLoweringRunEmptyMicrobench() {
     if (!PerfLoweringDetailEnabled()) return;
     static const bool ran = [] {
-        const char* env = std::getenv("SVM_LOW_PROF_EMPTY");
-        if (!env || std::strcmp(env, "0") == 0) return true;
-        unsigned long long iterations = std::strtoull(env, nullptr, 10);
-        if (iterations < 1000) iterations = 1000000;
+        const unsigned long long iterations = GetSvmConfig().low_prof_empty;
+        if (iterations == 0) return true;
         auto& l = perf2_lowering_local;
         l = {};
         l.active = true;
@@ -997,26 +895,6 @@ struct PerfFixedSnapshot2 {
     }
 };
 
-inline const char* PerfGetenv(const char* name) {
-    if (!Perf2Enabled() || !perf2_translation_active) {
-        return std::getenv(name);
-    }
-    auto& s = GetPerfStats2();
-    const auto begin = std::chrono::steady_clock::now();
-    const char* value = std::getenv(name);
-    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now() - begin)
-                            .count();
-    s.translate_probe_calls.fetch_add(1, std::memory_order_relaxed);
-    for (size_t i = 0; i < s.kGetenvNames.size(); ++i) {
-        if (std::strcmp(name, s.kGetenvNames[i]) == 0) {
-            s.getenv_calls[i].fetch_add(1, std::memory_order_relaxed);
-            s.getenv_ns[i].fetch_add(static_cast<unsigned long long>(ns),
-                                     std::memory_order_relaxed);
-            break;
-        }
-    }
-    return value;
-}
+const char* PerfGetenv(const char* name);
 
 }  // namespace swift::runtime

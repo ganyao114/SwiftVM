@@ -74,12 +74,9 @@ struct Runtime::Impl final {
         state_buffer.resize(sizeof(backend::State) +
                             address_space->GetConfig().uniform_buffer_size);
         state = reinterpret_cast<backend::State*>(state_buffer.data());
-        const char* exec_prof = std::getenv("SVM_EXEC_PROF");
-        const bool exec_profile_enabled =
-                exec_prof && std::strcmp(exec_prof, "0") != 0;
-        const char* exec_trace = std::getenv("SVM_EXEC_TRACE");
-        execution_trace_enabled =
-                exec_trace && std::strcmp(exec_trace, "0") != 0;
+        const auto& svm_config = GetSvmConfig();
+        const bool exec_profile_enabled = svm_config.exec_prof;
+        execution_trace_enabled = svm_config.exec_trace;
         if (execution_trace_enabled) {
             profile_interface.execution_trace = &execution_trace;
         }
@@ -152,8 +149,7 @@ struct Runtime::Impl final {
     }
 
     ~Impl() {
-        const char* exec_prof = std::getenv("SVM_EXEC_PROF");
-        if (exec_prof && std::strcmp(exec_prof, "0") != 0) {
+        if (GetSvmConfig().exec_prof) {
             const auto elapsed_ns = exec_profile_started
                                             ? std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                       std::chrono::steady_clock::now() -
@@ -193,9 +189,7 @@ struct Runtime::Impl final {
                     static_cast<unsigned long long>(p.region_edges),
                     static_cast<unsigned long long>(p.region_cycle_polls),
                     static_cast<unsigned long long>(p.region_fallthroughs),
-                    std::getenv("SVM_EXEC_ACCESS_PAD")
-                            ? std::getenv("SVM_EXEC_ACCESS_PAD")
-                            : "0");
+                    std::to_string(GetSvmConfig().exec_access_pad).c_str());
         }
         if (hot_coalesce_enabled) {
             HotCoalesceSubmitThread(hot_coalesce_counters);
@@ -767,11 +761,7 @@ size_t PrepareFunctionGuestRanges(ir::HIRFunction* function) {
 // for the lifetime of the compiled unit), which is how the two sides of the
 // memory measurement are produced from one binary.
 bool FuncIRFreeEnabled() {
-    static const bool on = [] {
-        const char* e = PerfGetenv("SVM_FUNC_IR_FREE");
-        return !e || std::strcmp(e, "0") != 0;
-    }();
-    return on;
+    return GetSvmConfig().func_ir_free;
 }
 
 }  // namespace
@@ -810,7 +800,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     function->IdByRPO();
     perf_id_pre.Stop();
     perf_rpo.Stop();
-    static const bool dump_ir = PerfGetenv("SVM_DUMP_IR") != nullptr;
+    const bool dump_ir = GetSvmConfig().dump_ir;
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} rpo-ready\n", func_start);
     const auto& address_space = module->GetAddressSpace();
     const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size

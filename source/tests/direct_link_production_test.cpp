@@ -17,6 +17,7 @@
 #endif
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/link_manager.h"
 #include "runtime/backend/runtime.h"
@@ -35,17 +36,17 @@ using namespace swift::runtime::ir;
 class ScopedEnvironment {
 public:
     ScopedEnvironment(const char* name, const char* value) : name_(name) {
-        if (const char* old = std::getenv(name)) {
+        if (const char* old = swift::runtime::GetRawSvmConfigEnvForTest(name)) {
             old_ = old;
         }
-        setenv(name, value, 1);
+        swift::runtime::SetSvmConfigEnvForTest(name, value, 1);
     }
 
     ~ScopedEnvironment() {
         if (old_) {
-            setenv(name_.c_str(), old_->c_str(), 1);
+            swift::runtime::SetSvmConfigEnvForTest(name_.c_str(), old_->c_str(), 1);
         } else {
-            unsetenv(name_.c_str());
+            swift::runtime::UnsetSvmConfigEnvForTest(name_.c_str());
         }
     }
 
@@ -261,9 +262,9 @@ int RunW81Child(bool flags_enabled) {
     const pid_t child = fork();
     REQUIRE(child >= 0);
     if (child == 0) {
-        setenv("SVM_DIRECT_LINK_W81_CHILD", "1", 1);
-        setenv("SVM_BACKEDGE_LATCH", "1", 1);
-        setenv("SVM_BACKEDGE_FLAGS", flags_enabled ? "1" : "0", 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_DIRECT_LINK_W81_CHILD", "1", 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_BACKEDGE_LATCH", "1", 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_BACKEDGE_FLAGS", flags_enabled ? "1" : "0", 1);
         execl(executable.c_str(),
               executable.c_str(),
               "W81 self edge stays polled while only the cold conditional arm links",
@@ -882,15 +883,14 @@ TEST_CASE("SMC fault boundedly breaks a conditional two-arm production ring",
 TEST_CASE("W81 self edge stays polled while only the cold conditional arm links",
           "[direct-link][production][conditional][smc][w81]") {
 #if defined(__aarch64__)
-    if (!std::getenv("SVM_DIRECT_LINK_W81_CHILD")) {
+    if (!GetSvmConfig().direct_link_w81_child) {
         REQUIRE(RunW81Child(false) == 0);
         REQUIRE(RunW81Child(true) == 0);
         return;
     }
     ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
     ScopedEnvironment latch{"SVM_BACKEDGE_LATCH", "1"};
-    const bool flags_enabled =
-            std::strcmp(std::getenv("SVM_BACKEDGE_FLAGS"), "0") != 0;
+    const bool flags_enabled = GetSvmConfig().backedge_flags;
     ScopedEnvironment flags{"SVM_BACKEDGE_FLAGS", flags_enabled ? "1" : "0"};
     DYNAMIC_SECTION("backedge flags=" << flags_enabled) {
         const size_t page_size = static_cast<size_t>(getpagesize());

@@ -5,6 +5,11 @@
 #include <cstdlib>
 #include <cstring>
 
+namespace swift { namespace runtime {
+bool SvmVixlProfEnabled();
+bool SvmVixlFastEnabled();
+}}  // namespace swift::runtime
+
 namespace vixl {
 namespace svm_vixl_prof {
 namespace {
@@ -58,21 +63,19 @@ void Dump() {
 }  // namespace
 
 bool Enabled() {
-  static const bool enabled = [] {
-    const char* env = std::getenv("SVM_VIXL_PROF");
-    const bool on = env && std::strcmp(env, "0") != 0;
-    if (on) std::atexit(Dump);
-    return on;
-  }();
+  const bool enabled = swift::runtime::SvmVixlProfEnabled();
+  if (enabled) {
+    static const bool registered = [] {
+      std::atexit(Dump);
+      return true;
+    }();
+    (void)registered;
+  }
   return enabled;
 }
 
 bool FastEnabled() {
-  static const bool enabled = [] {
-    const char* env = std::getenv("SVM_VIXL_FAST");
-    return !env || std::strcmp(env, "0") != 0;
-  }();
-  return enabled;
+  return swift::runtime::SvmVixlFastEnabled();
 }
 
 bool Recording() {

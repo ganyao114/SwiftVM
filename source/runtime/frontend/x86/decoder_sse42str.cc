@@ -1341,11 +1341,7 @@ bool X64Decoder::DecodeSse42StrVex(const VexInsn& v) {
 // thread-safe against setenv.  DecodeCpuid consults it too, so CPUID can never
 // promise SSE4.2 to a build where the family is switched off (see decoder.h).
 bool X64Decoder::Sse42StrEnabled() {
-    static const bool enabled = [] {
-        const char* env = swift::runtime::PerfGetenv("SVM_SSE42STR");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return swift::runtime::GetSvmConfig().sse42str;
 }
 
 #undef __

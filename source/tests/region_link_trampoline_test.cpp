@@ -7,6 +7,7 @@
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include "aarch64/macro-assembler-aarch64.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
 #include "runtime/backend/arm64/region_link_trampoline.h"
 #include "runtime/backend/arm64/trampolines.h"
@@ -378,10 +379,7 @@ TEST_CASE("direct-link concurrent patch invalidation and mspace reuse stress",
 
     SmcTracker tracker{0};
     tracker.EnableMultithreading();
-    const char* thread_env = std::getenv("SVM_DIRECT_LINK_STRESS_THREADS");
-    const unsigned thread_count = thread_env
-            ? static_cast<unsigned>(std::clamp(std::atoi(thread_env), 1, 8))
-            : std::clamp(std::thread::hardware_concurrency(), 2u, 4u);
+    const unsigned thread_count = GetSvmConfig().direct_link_stress_threads;
     std::vector<std::unique_ptr<TestState>> states;
     std::vector<SmcTracker::RuntimeToken> tokens;
     std::vector<std::thread> workers;
@@ -423,11 +421,8 @@ TEST_CASE("direct-link concurrent patch invalidation and mspace reuse stress",
     }
 
     start.store(true, std::memory_order_release);
-    const bool long_mode = std::getenv("SVM_DIRECT_LINK_STRESS_LONG") != nullptr;
-    const char* iteration_env = std::getenv("SVM_DIRECT_LINK_STRESS_ITERS");
-    const unsigned iterations = iteration_env
-            ? static_cast<unsigned>(std::max(0, std::atoi(iteration_env)))
-            : (long_mode ? 1'000'000 : 100'000);
+    const bool long_mode = GetSvmConfig().direct_link_stress_long;
+    const unsigned iterations = GetSvmConfig().direct_link_stress_iters;
     for (unsigned iteration = 0; iteration < iterations && !failed.load(); ++iteration) {
         const auto incoming = manager.BeginTargetInvalidation(kGuestTarget);
         REQUIRE(incoming.size() == 1);

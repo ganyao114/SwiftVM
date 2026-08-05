@@ -1393,11 +1393,7 @@ bool X64Decoder::DecodeAvxSse4(const VexInsn& v) {
 bool X64Decoder::Sse4Enabled() {
     // Read once: DecodeSse4 consults it per instruction and getenv is neither
     // cheap nor thread-safe against setenv.
-    static const bool enabled = [] {
-        const char* env = swift::runtime::PerfGetenv("SVM_SSE4");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
-    return enabled;
+    return swift::runtime::GetSvmConfig().sse4;
 }
 
 }  // namespace swift::x86

@@ -6,14 +6,14 @@
 #include <cstring>
 #include <string_view>
 #include <fmt/format.h>
+#include "runtime/common/svm_config.h"
 
 namespace swift::translator {
 
 class FunctionCompileStats {
 public:
     explicit FunctionCompileStats(std::string_view isa) : isa(isa) {
-        const char* env = std::getenv("SVM_FUNC_STATS");
-        enabled = env && std::strcmp(env, "0") != 0;
+        enabled = runtime::GetSvmConfig().func_stats;
     }
 
     ~FunctionCompileStats() {

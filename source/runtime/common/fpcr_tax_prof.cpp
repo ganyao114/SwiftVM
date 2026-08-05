@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "runtime/common/perf_stats.h"
+#include "runtime/common/svm_config.h"
 
 namespace swift::runtime {
 
@@ -66,7 +67,10 @@ unsigned long long PrintU64(u64 value) {
 }
 
 void DumpAtExit() {
-    const char* destination = std::getenv("SVM_FPCR_TAX_PROF");
+    const auto& config = GetSvmConfig();
+    const char* destination = config.fpcr_tax_prof_is_set
+            ? config.fpcr_tax_prof.c_str()
+            : nullptr;
     FILE* out = stderr;
     bool close_out = false;
     if (destination && *destination && std::strcmp(destination, "1") != 0 &&
@@ -224,7 +228,10 @@ void PrintDistribution(FILE* out,
 }
 
 void DumpTimingAtExit() {
-    const char* destination = std::getenv("SVM_FPCR_TAX_TIMING");
+    const auto& config = GetSvmConfig();
+    const char* destination = config.fpcr_tax_timing_is_set
+            ? config.fpcr_tax_timing.c_str()
+            : nullptr;
     FILE* out = stderr;
     bool close_out = false;
     if (destination && *destination && std::strcmp(destination, "1") != 0 &&
@@ -354,17 +361,18 @@ void DumpTimingAtExit() {
 }  // namespace
 
 bool FpcrTaxProfEnabled() {
-    static const bool enabled = [] {
-        const char* value = PerfGetenv("SVM_FPCR_TAX_PROF");
-        const bool on = value && std::strcmp(value, "0") != 0;
-        if (on) {
+    const auto& config = GetSvmConfig();
+    const bool enabled = config.fpcr_tax_prof_is_set && config.fpcr_tax_prof != "0";
+    if (enabled) {
+        static const bool registered = [] {
             // Register after constructing storage: atexit callbacks run in
             // reverse order and must observe live process counters.
             (void)Counters();
             std::atexit(DumpAtExit);
-        }
-        return on;
-    }();
+            return true;
+        }();
+        (void)registered;
+    }
     return enabled;
 }
 
@@ -380,29 +388,29 @@ void FpcrTaxSubmit(std::span<const u64> counters) {
 }
 
 bool FpcrTaxSkipSwitchEnabled() {
-    static const bool enabled = [] {
-        const char* value = PerfGetenv("SVM_FPCR_TAX_SKIP_SWITCH");
-        const bool on = value && std::strcmp(value, "0") != 0;
-        if (on) {
+    const bool enabled = GetSvmConfig().fpcr_tax_skip_switch;
+    if (enabled) {
+        static std::once_flag warning_once;
+        std::call_once(warning_once, [] {
             std::fprintf(stderr,
                          "SVM_FPCR_TAX_SKIP_SWITCH: UNSAFE diagnostic; direct helpers "
                          "inherit guest FPCR\n");
-        }
-        return on;
-    }();
+        });
+    }
     return enabled;
 }
 
 bool FpcrTaxTimingEnabled() {
-    static const bool enabled = [] {
-        const char* value = PerfGetenv("SVM_FPCR_TAX_TIMING");
-        const bool on = value && std::strcmp(value, "0") != 0;
-        if (on) {
+    const auto& config = GetSvmConfig();
+    const bool enabled = config.fpcr_tax_timing_is_set && config.fpcr_tax_timing != "0";
+    if (enabled) {
+        static const bool registered = [] {
             (void)Timing();
             std::atexit(DumpTimingAtExit);
-        }
-        return on;
-    }();
+            return true;
+        }();
+        (void)registered;
+    }
     return enabled;
 }
 

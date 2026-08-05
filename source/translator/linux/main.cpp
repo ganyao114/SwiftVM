@@ -24,6 +24,7 @@
 #include "base/logging.h"
 #include "loader.h"
 #include "runtime/backend/signal_handler.h"
+#include "runtime/common/svm_config.h"
 #include "syscalls.h"
 #include "translator/arm64/translator.h"
 #include "translator/x86/translator.h"
@@ -333,6 +334,7 @@ static int RunX86Guest(const linux::LoadedImage& image,
 }
 
 int main(int argc, char** argv) {
+    runtime::InitSvmConfig();
     std::string guest_path;
     std::vector<std::string> guest_args;
     if (argc >= 2) {
@@ -382,10 +384,15 @@ int main(int argc, char** argv) {
     //    run_isolation_tests.sh uses a dedicated build to demonstrate it.
     linux::GuestMemory memory;
     {
+        const auto& svm_config = runtime::GetSvmConfig();
         const char* identity_env = nullptr;
-        const char* guest_bits_env = std::getenv("SVM_GUEST_BITS");
+        const char* guest_bits_env = svm_config.guest_bits_is_set
+                ? svm_config.guest_bits.c_str()
+                : nullptr;
 #if defined(__linux__)
-        identity_env = std::getenv("SVM_MEM_IDENTITY");
+        identity_env = svm_config.mem_identity_is_set
+                ? svm_config.mem_identity.c_str()
+                : nullptr;
 #endif
         const auto policy = linux::SelectGuestMemoryLaunchPolicy(
 #if defined(__linux__)
@@ -477,8 +484,7 @@ int main(int argc, char** argv) {
         LOG_ERROR("Cannot start guest: {}", e.what());
         return 2;
     }
-    if (const char* trace = std::getenv("SVM_MEM_MODE_TRACE");
-        trace && std::strcmp(trace, "0") != 0) {
+    if (runtime::GetSvmConfig().mem_mode_trace) {
         std::fprintf(stderr,
                      "[svm-mem-mode] identity=%u use_memory_base=%u mask=0x%llx "
                      "window_bits=%u bias=0x%llx\n",
@@ -494,7 +500,7 @@ int main(int argc, char** argv) {
         // MMX CPUID bit. Keep this internal compatibility marker scoped to
         // PT_INTERP launches so static-guest CPUID and unit fingerprints stay
         // byte-for-byte unchanged.
-        ::setenv("SVM_X86_64_ABI_BASELINE", "1", 1);
+        runtime::EnableSvmX86AbiBaselineForDriver();
     }
 
     // 3. Guest main stack (argc/argv/envp/auxv).

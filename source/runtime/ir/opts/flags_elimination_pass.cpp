@@ -31,12 +31,10 @@
 #include "runtime/common/variant_util.h"
 
 
-// Cached diagnostic-env probes: these sit on the per-block path and
-// Darwin's getenv() walks `environ` on every call.
-static bool EnvOnce(const char* name) { return std::getenv(name) != nullptr; }
-static const bool kEnv_dump_ir = EnvOnce("SVM_DUMP_IR");
-static const bool kEnv_dump_ir_post = EnvOnce("SVM_DUMP_IR_POST");
-static const bool kEnv_flags_debug = EnvOnce("SVM_FLAGS_DEBUG");
+// 诊断开关来自进程级配置快照，不在逐块路径重复扫描 environ。
+static bool EnvDumpIr() { return swift::runtime::GetSvmConfig().dump_ir; }
+static bool EnvDumpIrPost() { return swift::runtime::GetSvmConfig().dump_ir_post; }
+static bool EnvFlagsDebug() { return swift::runtime::GetSvmConfig().flags_debug; }
 
 namespace swift::runtime::ir {
 
@@ -44,8 +42,7 @@ namespace {
 
 bool BranchOnlyEnabled() {
     // Default ON after the flip A/B; =0 is the full-materialization rollback.
-    const char* env = PerfGetenv("SVM_FLAGS_BRANCH_ONLY");
-    return !env || std::strcmp(env, "0") != 0;
+    return GetSvmConfig().flags_branch_only;
 }
 
 bool IsHelperBoundary(OpCode op) {
@@ -425,7 +422,7 @@ bool TryBranchOnly(Block* block,
         }
     }
     stats.accepted++;
-    if (kEnv_flags_debug) {
+    if (EnvFlagsDebug()) {
         fmt::print("[flags-branch-only] block {:#x}: ACCEPT condition={} parity={} "
                    "successors=({:#x},{:#x}) removed={}\n",
                    block->GetStartLocation().Value(),
@@ -480,10 +477,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
     // Bisect switch for deleting carry writes that are overwritten on every
     // in-block path before a read. With the switch off, preserve the old
     // cross-block-conservative handling exactly.
-    static const bool carry_elim_off = [] {
-        const char* e = PerfGetenv("SVM_FLAG_CARRY_ELIM");
-        return e && std::strcmp(e, "0") == 0;
-    }();
+    const bool carry_elim_off = !GetSvmConfig().flag_carry_elim;
 
     Flags needed = Flags::All;  // live-out: flags persist across blocks
     // Needed-set snapshots at bound labels, keyed by the Goto/NotGoto inst
@@ -533,14 +527,8 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                 // below is applied. W14 keeps this opt-in because CoreMark A/B
                 // found its 76 emitted bytes to be execution-time neutral.
                 constexpr Flags kSoftBits = Flags::Parity | Flags::AuxiliaryCarry;
-                static const bool narrow_off = [] {
-                    const char* e = PerfGetenv("SVM_FLAG_NARROW");
-                    return e && std::strcmp(e, "0") == 0;
-                }();
-                static const bool full_elim_on = [] {
-                    const char* e = PerfGetenv("SVM_FLAG_FULL_ELIM");
-                    return e && std::strcmp(e, "0") != 0;
-                }();
+                const bool narrow_off = !GetSvmConfig().flag_narrow;
+                const bool full_elim_on = GetSvmConfig().flag_full_elim;
                 const bool writes_carry = True(mask & Flags::Carry);
                 // Keep the older carry switch independently exact: when it is
                 // off, a C-writing pseudo follows the pre-Gate-B path even if
@@ -591,7 +579,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                         stat_carry_write_dead++;
                     }
                     victims.push_back(&inst);
-                    if (kEnv_flags_debug) {
+                    if (EnvFlagsDebug()) {
                         fmt::print("[flags-elim-dbg] block {:#x}: DELETE SaveFlags mask={} needed={}\n",
                                    block->GetStartLocation().Value(), FlagsString(mask), FlagsString(needed));
                     }
@@ -623,10 +611,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                     }
                     victims.push_back(&inst);
                 } else {
-                    static const bool full_elim_on = [] {
-                        const char* e = PerfGetenv("SVM_FLAG_FULL_ELIM");
-                        return e && std::strcmp(e, "0") != 0;
-                    }();
+                    const bool full_elim_on = GetSvmConfig().flag_full_elim;
                     if (full_elim_on && live != mask) {
                         inst.SetArg(0, live);
                         stat_shrunk++;
@@ -721,7 +706,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
         }
     }
 
-    if (kEnv_dump_ir &&
+    if (EnvDumpIr() &&
         (stat_save || stat_clear || stat_setcv)) {
         fmt::print("[flags-elim] block {:#x}: SaveFlags {} -> {} (-{}), ClearFlags {} -> {} "
                    "(-{}), SetC/V {} -> {} (-{}), masks narrowed {}, CarrySaveFlags {} -> {} "
@@ -732,7 +717,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function) {
                    stat_carry_save, stat_carry_save - stat_carry_save_dead,
                    stat_carry_save_dead, stat_carry_write,
                    stat_carry_write - stat_carry_write_dead, stat_carry_write_dead);
-        if (kEnv_dump_ir_post) {
+        if (EnvDumpIrPost()) {
             fmt::print("--- post-elim block {:#x} ---\n{}\n",
                        block->GetStartLocation().Value(), block->ToString());
         }
@@ -755,7 +740,7 @@ void FlagsEliminationPass::Run(HIRFunction* hir_function) {
                 TryBranchOnly(block, &hir_block, hir_function, live_in, stats);
             }
         }
-        if (kEnv_flags_debug) {
+        if (EnvFlagsDebug()) {
             fmt::print("[flags-branch-only-summary] candidates={} accepted={} "
                        "reject_edge={} reject_live={} reject_shape={}\n",
                        stats.candidates, stats.accepted, stats.reject_edge,

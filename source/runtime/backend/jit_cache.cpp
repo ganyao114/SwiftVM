@@ -31,11 +31,6 @@ constexpr char kMagic[8] = {'S', 'V', 'M', 'J', 'I', 'T', 'C', '\1'};
 // rather than hash (or probe) an arbitrary range out of a corrupt file.
 constexpr u64 kMaxGuestBlockBytes = 1u << 20;
 
-bool EnvOn(const char* name) {
-    const char* v = std::getenv(name);
-    return v && v[0] && std::strcmp(v, "0") != 0;
-}
-
 // Readability probe that never faults: the kernel validates the buffer and
 // returns EFAULT instead of delivering a signal. mincore() is not usable here
 // because the guest window is one big PROT_NONE reservation -- its pages are
@@ -62,18 +57,17 @@ bool RangeIsReadable(const void* p, std::size_t n) {
 }  // namespace
 
 bool JitDiskCache::Requested() {
-    const char* dir = std::getenv("SVM_JIT_CACHE");
-    return dir && dir[0];
+    return !GetSvmConfig().jit_cache.empty();
 }
 
 JitDiskCache::JitDiskCache(AddressSpace& space)
         : address_space(space), host_image(GetHostImage()) {
-    const char* env = std::getenv("SVM_JIT_CACHE");
-    if (!env || !env[0]) {
+    const auto& svm_config = GetSvmConfig();
+    if (svm_config.jit_cache.empty()) {
         return;
     }
-    print_stats = EnvOn("SVM_JIT_CACHE_STATS");
-    dir = env;
+    print_stats = svm_config.jit_cache_stats;
+    dir = svm_config.jit_cache;
     // Profiled JIT units embed a process-local counter slot. Serializing one
     // would revive code with no matching metadata slot in the next process.
     // The probe is measurement-only, so disable disk caching while it is on.
@@ -87,7 +81,7 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     }
     const auto& config = address_space.GetConfig();
     if (BackedgeFlagsEnabled() ||
-        (config.region_edges && EnvOn("SVM_BACKEDGE_FLAGS"))) {
+        (config.region_edges && svm_config.backedge_flags)) {
         // Recovery veneers are block-local code offsets. SerialBlock does
         // not yet serialize that relocation/eligibility contract, so refuse
         // disk reuse rather than reviving a unit with an imprecise recipe.

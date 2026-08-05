@@ -24,15 +24,6 @@ namespace swift::runtime::backend {
 namespace {
 std::atomic_bool g_smc_enabled{true};
 
-bool EnvIsOne(const char* name) {
-    const char* value = std::getenv(name);
-    return value && std::strcmp(value, "1") == 0;
-}
-
-bool EnvIsEnabled(const char* name) {
-    const char* value = std::getenv(name);
-    return value && std::strcmp(value, "0") != 0;
-}
 }
 
 void SmcTracker::SetEnabled(bool enabled) {
@@ -50,8 +41,8 @@ SmcTracker::SmcTracker(u64 guest_bias,
         , mask_(guest_addr_mask ? guest_addr_mask : UINT64_MAX)
         , page_size_(static_cast<u64>(getpagesize()))
         , page_mask_(page_size_ - 1)
-        , dirty_hint_enabled_(EnvIsOne("SVM_SMC_DIRTY_HINT"))
-        , close_profile_enabled_(EnvIsEnabled("SVM_EXEC_PROF"))
+        , dirty_hint_enabled_(GetSvmConfig().smc_dirty_hint)
+        , close_profile_enabled_(GetSvmConfig().exec_prof)
         , exit_latch_enabled_(exit_latch_enabled) {
     ASSERT((page_size_ & page_mask_) == 0);
 }

@@ -16,11 +16,6 @@ using namespace swift::runtime::frontend;
 
 namespace {
 
-bool EnvOn(const char* name) {
-    const char* value = swift::runtime::PerfGetenv(name);
-    return value != nullptr && std::strcmp(value, "0") != 0;
-}
-
 _RegisterType Gpr(u32 index, u32 width) {
     return static_cast<_RegisterType>((width == 64 ? R_RAX : R_EAX) + index);
 }
@@ -80,9 +75,11 @@ ir::UniformEffectId WritePkruEffects() {
 
 }  // namespace
 
-bool X64Decoder::FsgsbaseEnabled() { return EnvOn("SVM_FSGSBASE"); }
+bool X64Decoder::FsgsbaseEnabled() {
+    return swift::runtime::GetSvmConfig().fsgsbase;
+}
 
-bool X64Decoder::AdxEnabled() { return EnvOn("SVM_ADX"); }
+bool X64Decoder::AdxEnabled() { return swift::runtime::GetSvmConfig().adx; }
 
 void X64Decoder::DecodeFsgsbase(_DInst& insn, bool write, bool gs) {
     // CPUID.7.0:EBX.FSGSBASE stands in for CR4.FSGSBASE, as the XSAVE gate's

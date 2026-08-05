@@ -78,6 +78,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/format.h>
 #include <sys/mman.h>
+#include "runtime/common/svm_config.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "translator/x86/cpu.h"
@@ -189,8 +190,7 @@ u64 WidenMul(u32 x, u32 y, bool is_signed) {
 }  // namespace
 
 TEST_CASE("x86 widening multiply vs rosetta reference") {
-    const char* avx_env = std::getenv("SVM_AVX");
-    const bool avx_on = avx_env && std::strcmp(avx_env, "0") != 0;
+    const bool avx_on = swift::runtime::GetSvmConfig().avx;
 
     std::vector<Vec256> ins_a, ins_b;
     for (const auto& in : kAvxMulInputs) {
@@ -331,17 +331,17 @@ TEST_CASE("x86 widening multiply vs rosetta reference") {
     const u64 data = base + 0x300000;
     constexpr s32 kOffA = 0x00, kOffB = 0x20, kOffOut = 0x40;
 
-    const char* old_jit = std::getenv("SVM_ENABLE_JIT");
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
-    setenv("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
     auto* jit_instance = X86Instance::Make();
-    setenv("SVM_ENABLE_JIT", "0", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
     auto* interp_instance = X86Instance::Make();
     if (had_old_jit) {
-        setenv("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
     } else {
-        unsetenv("SVM_ENABLE_JIT");
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
     }
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
