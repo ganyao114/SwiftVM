@@ -394,7 +394,6 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
     MergeNZCV();
     FlushFlags();
     auto packed_reg = context.R(packed);
-    auto bit = context.GetTmpX();
     constexpr u64 replaced =
             (u64(1) << HostFlagsBit::N) |
             (u64(1) << HostFlagsBit::Z) |
@@ -403,7 +402,12 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
             (u64(1) << HostFlagsBit::AuxiliaryCarry) |
             (u64(0xff) << HostFlagsBit::ParityByte);
     u64 keep = ~replaced;
+    // keep 不是合法 logical immediate，VIXL 要临时占用一枚池寄存器合成掩码。
+    // 必须在 GetTmpX() 之前执行：shared_tmp + packed 重载 + bit 已占满
+    // reserve=3 的池时，再晚一步 VIXL 就无寄存器可借（L3 identity 实测炸点）。
     __ And(flags, flags, ForceCast<s64>(keep));
+
+    auto bit = context.GetTmpX();
 
     // VecFCmp: bit0=CF, bit1=PF, bit2=ZF.  PF's ABI slot stores a raw
     // parity byte, so 0 spells PF=1 and 1 spells PF=0.
