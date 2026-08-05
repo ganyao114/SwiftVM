@@ -2,12 +2,13 @@
 
 来源:SvmConfig 集中化(2026-08-05,master a7f644d)的 P2a 交付,驱动后续按 backend::Module 绑定 FeatureSet 的落地范围。判据:同一进程不同 guest 地址区间若取不同值,会造成 ABI/内存/ISA/loader/cache/探针约定不一致则为 A(进程级,不可绑);确定仅改变单 unit 代码形状且边界自描述则为 B(可按 module 绑);缺关键证明则为 ?(绑定前必须先补证明)。
 
+2026-08-05 精简第一刀(d6c18a1):删除六枚退役开关——D2 零读者 SVM_X87_TOPVIRT/SVM_PKRU,D1b 默认-OFF 实验路径 SVM_LINK_SUFFIX_COMMON(残值归零)/SVM_UNIFORM_PAIR_AUDIT(战役收官)/SVM_XMM_STATIC(W76 净负)/SVM_XMM_POOL_EXT。总数 138→132(A=77/B=46/?=9)。
+
 | 环境变量 / 字段 | 类型 / parser / 默认 | `3aa2620` 原读取点 | 分类与逐项理由 |
 |---|---|---|---|
 | `SVM_MEM_IDENTITY` / `mem_identity` | string / `RawString` / `空串` | `source/translator/linux/main.cpp:388`<br>`source/translator/linux/main.cpp:403` | **A**：控制地址空间、内存/信号/SMC/系统调用语义，不能按 module 分裂。 |
 | `SVM_FUNC_LAZY` / `func_lazy` | u64 / `FuncLazy` / `1` | `source/translator/x86/translator.cpp:603` | **?**：改变 region decode/形成边界，尚缺 L2、重叠 region 和失效可分离证明。 |
 | `SVM_DUMP_IR` / `dump_ir` | bool / `Presence` / `false` | `source/runtime/backend/arm64/jit/translator.cpp:1330`<br>`source/runtime/backend/arm64/jit/translator.cpp:1356`<br>`source/runtime/backend/arm64/jit/translator.cpp:1377`<br>`source/runtime/backend/arm64/jit/translator.cpp:1395` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
-| `SVM_X87_TOPVIRT` / `x87_topvirt` | bool / `NonZero` / `false` | `source/aot/tests/run_aot_tests.sh:225`<br>`source/aot/tests/run_aot_tests.sh:226`<br>`source/runtime/backend/arm64/jit/translator.h:29`<br>`source/runtime/common/perf_stats.h:222` | **?**：退役兼容键且无活动读取点，缺少可绑定对象。 |
 | `SVM_X87_JIT` / `x87_jit` | bool / `NonZero` / `false` | `source/runtime/frontend/x86/decoder_x87.cc:118`<br>`source/tests/main_case.cpp:3835` | **A**：改变 guest ISA/CPUID/解码承诺，同进程分区取不同值会产生 ISA 视图不一致。 |
 | `SVM_FUNC_IR_FREE` / `func_ir_free` | bool / `DefaultOn` / `true` | `source/runtime/backend/runtime.cpp:771` | **A**：控制编译 IR 的全局生命周期/释放策略。 |
 | `SVM_ADVPC_COALESCE` / `advpc_coalesce` | bool / `DefaultOn` / `true` | `source/runtime/ir/hir_builder.cpp:597` | **B**：仅改变单个 unit 内的“AdvancePC 合并”代码形状，不改变边界 ABI。 |
@@ -29,7 +30,6 @@
 | `SVM_XSAVE_YMM` / `xsave_ymm` | bool / `InheritAvx` / `false` | `source/runtime/frontend/x86/xsave.h:91` | **A**：改变 guest ISA/CPUID/解码承诺，同进程分区取不同值会产生 ISA 视图不一致。 |
 | `SVM_X86_64_ABI_BASELINE` / `x86_64_abi_baseline` | bool / `NonZero` / `false` | `source/runtime/frontend/x86/decoder_misc.cc:108`<br>`source/translator/linux/main.cpp:497` | **A**：改变 guest ISA/CPUID/解码承诺，同进程分区取不同值会产生 ISA 视图不一致。 |
 | `SVM_ADX` / `adx` | bool / `NonZero` / `false` | `source/runtime/frontend/x86/decoder_userland_ext.cc:85`<br>`source/tests/fuzz/x86_fuzz.cpp:1861`<br>`source/tests/fuzz/x86_fuzz.cpp:1862` | **A**：改变 guest ISA/CPUID/解码承诺，同进程分区取不同值会产生 ISA 视图不一致。 |
-| `SVM_PKRU` / `pkru` | bool / `NonZero` / `false` | `source/runtime/common/perf_stats.h:244` | **?**：仅旧注册表保留、无活动读取点；未来复用需重审 ISA 门控。 |
 | `SVM_FSGSBASE` / `fsgsbase` | bool / `NonZero` / `false` | `source/runtime/frontend/x86/decoder_userland_ext.cc:83`<br>`source/tests/fuzz/x86_fuzz.cpp:1859`<br>`source/tests/fuzz/x86_fuzz.cpp:1860` | **A**：改变 guest ISA/CPUID/解码承诺，同进程分区取不同值会产生 ISA 视图不一致。 |
 | `SVM_X87_JIT_STATS` / `x87_jit_stats` | bool / `Presence` / `false` | `source/runtime/frontend/x86/x87.cpp:35` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
 | `SVM_TSO_STATS` / `tso_stats` | bool / `Presence` / `false` | `source/runtime/backend/arm64/jit/translator_mem.cpp:31`<br>`source/runtime/backend/arm64/jit/translator_mem.cpp:41` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
@@ -40,7 +40,6 @@
 | `SVM_SHIFT_IMM_FAST` / `shift_imm_fast` | bool / `DefaultOn` / `true` | `source/runtime/backend/arm64/jit/translator.cpp:317`<br>`source/runtime/frontend/x86/decoder_alu.cc:789`<br>`source/runtime/ir/opts/register_alloc_pass.cpp:84`<br>`source/tests/main_case.cpp:1957` | **B**：仅改变单个 unit 内的“shift immediate 快路”代码形状，不改变边界 ABI。 |
 | `SVM_XMM_SSA_FWD2` / `xmm_ssa_fwd2` | bool / `DefaultOn` / `true` | `source/runtime/ir/opts/uniform_elimination_pass.cpp:90`<br>`source/tests/main_case.cpp:927`<br>`source/tests/main_case.cpp:928` | **B**：仅改变单个 unit 内的“XMM load-load SSA 转发”代码形状，不改变边界 ABI。 |
 | `SVM_XMM_NARROW_FWD` / `xmm_narrow_fwd` | bool / `DefaultOn` / `true` | `source/runtime/ir/opts/uniform_elimination_pass.cpp:102`<br>`source/tests/main_case.cpp:929`<br>`source/tests/main_case.cpp:930` | **B**：仅改变单个 unit 内的“XMM 窄视图转发”代码形状，不改变边界 ABI。 |
-| `SVM_LINK_SUFFIX_COMMON` / `link_suffix_common` | bool / `NonZero` / `false` | `source/runtime/backend/arm64/jit/translator.cpp:339`<br>`source/tests/main_case.cpp:284` | **B**：仅改变单个 unit 内的“link suffix commoning”代码形状，不改变边界 ABI。 |
 | `SVM_VEC_IMM_SHIFT` / `vec_imm_shift` | bool / `DefaultOn` / `true` | `source/runtime/frontend/x86/decoder_avx_int.cc:502`<br>`source/runtime/frontend/x86/decoder_sse.cc:1041`<br>`source/runtime/frontend/x86/decoder_sse.cc:1072` | **B**：仅改变单个 unit 内的“vector immediate shift lowering”代码形状，不改变边界 ABI。 |
 | `SVM_VEC_CONST_CACHE` / `vec_const_cache` | bool / `DefaultOn` / `true` | `source/runtime/frontend/x86/decoder_internal.h:47` | **B**：仅改变单个 unit 内的“vector constant cache”代码形状，不改变边界 ABI。 |
 | `SVM_VEC_BYTESHIFT_EXT` / `vec_byteshift_ext` | bool / `DefaultOn` / `true` | `source/runtime/frontend/x86/decoder_avx_int.cc:934`<br>`source/runtime/frontend/x86/decoder_avx_int.cc:941`<br>`source/runtime/frontend/x86/decoder_sse.cc:983` | **B**：仅改变单个 unit 内的“vector byte-shift lowering”代码形状，不改变边界 ABI。 |
@@ -64,7 +63,6 @@
 | `SVM_RA_SHAPE_PROF` / `ra_shape_prof` | string / `RawString` / `空串` | `source/runtime/common/ra_shape_prof.cpp:132`<br>`source/runtime/common/ra_shape_prof.cpp:249` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
 | `SVM_RA_HOT_COALESCE` / `ra_hot_coalesce` | string / `RawString` / `空串` | `source/runtime/backend/jit_cache.cpp:81`<br>`source/runtime/common/hot_coalesce_prof.cpp:171`<br>`source/runtime/common/hot_coalesce_prof.cpp:451` | **A**：控制进程级运行、加载或宿主能力策略，不是纯单-unit 代码形状决策。 |
 | `SVM_HELPER_LEAF_ABI` / `helper_leaf_abi` | bool / `NonZero` / `false` | `source/runtime/backend/arm64/jit/translator_control.cpp:23` | **B**：仅改变单个 unit 内的“leaf helper ABI”代码形状，不改变边界 ABI。 |
-| `SVM_XMM_POOL_EXT` / `xmm_pool_ext` | bool / `NonZero` / `false` | `source/translator/x86/translator.cpp:658` | **B**：仅改变单个 unit 内的“XMM static 下扩 FPR pool”代码形状，不改变边界 ABI。 |
 | `SVM_BACKEDGE_LATCH` / `backedge_latch` | bool / `NonZero` / `false` | `source/runtime/common/backedge_control.cpp:18` | **?**：参与 self-backedge/direct-link 出口协议，尚缺混合链接/摘链证明。 |
 | `SVM_BACKEDGE_FLAGS` / `backedge_flags` | bool / `NonZero` / `false` | `source/runtime/backend/arm64/jit/translator.cpp:336`<br>`source/runtime/backend/jit_cache.cpp:90`<br>`source/runtime/backend/jit_cache.cpp:94`<br>`source/runtime/common/backedge_control.cpp:24` | **?**：改变 backedge flags 去物化契约，尚缺混合 unit 状态证明。 |
 | `SVM_RA_INTWIDTH_TIE` / `ra_intwidth_tie` | bool / `DefaultOn` / `true` | `source/runtime/ir/opts/register_alloc_pass.cpp:90` | **B**：仅改变单个 unit 内的“整数宽度链 tie”代码形状，不改变边界 ABI。 |
@@ -122,7 +120,6 @@
 | `SVM_TRACE` / `trace` | bool / `Presence` / `false` | `source/translator/x86/translator.cpp:1132` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
 | `SVM_TSO_MODE` / `tso_mode` | string / `RawString` / `relaxed` | `source/translator/x86/translator.cpp:253`<br>`source/translator/x86/translator.cpp:264` | **A**：控制地址空间、内存/信号/SMC/系统调用语义，不能按 module 分裂。 |
 | `SVM_UNIFORM_ELIM` / `uniform_elim` | bool / `DefaultOn` / `true` | `source/tests/fuzz/x86_fuzz.cpp:3696`<br>`source/tests/fuzz/x86_fuzz.cpp:3810`<br>`source/translator/arm64/translator.cpp:73`<br>`source/translator/x86/translator.cpp:632` | **B**：仅改变单个 unit 内的“uniform elimination”代码形状，不改变边界 ABI。 |
-| `SVM_UNIFORM_PAIR_AUDIT` / `uniform_pair_audit` | bool / `NonZero` / `false` | `source/runtime/backend/arm64/jit/translator.cpp:25` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
 | `SVM_UNIFORM_PATH_FWD` / `uniform_path_fwd` | bool / `DefaultOn` / `true` | `source/runtime/ir/opts/uniform_elimination_pass.cpp:65`<br>`source/tests/main_case.cpp:761`<br>`source/tests/main_case.cpp:762` | **B**：仅改变单个 unit 内的“uniform path forwarding”代码形状，不改变边界 ABI。 |
 | `SVM_VIXL_HOST_DUMP` / `vixl_host_dump` | string / `RawString` / `空串` | `source/runtime/backend/arm64/jit/jit_context.cpp:913`<br>`source/runtime/backend/arm64/jit/jit_context.cpp:1234`<br>`source/runtime/backend/arm64/trampolines.cpp:137` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
 | `SVM_VIXL_PROF` / `vixl_prof` | bool / `NonZero` / `false` | `source/runtime/externals/vixl/svm-vixl-prof.cc:62` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
@@ -130,7 +127,6 @@
 | `SVM_X86_CRYPTO_NI` / `x86_crypto_ni` | bool / `DefaultOn` / `true` | `source/runtime/frontend/x86/decoder_crypto.cc:58`<br>`source/runtime/frontend/x86/decoder_crypto.cc:68`<br>`source/tests/fuzz/x86_fuzz.cpp:1877` | **A**：改变 guest ISA/CPUID/解码承诺，同进程分区取不同值会产生 ISA 视图不一致。 |
 | `SVM_X86_CRYPTO_SHA` / `x86_crypto_sha` | bool / `DefaultOn` / `true` | `source/runtime/frontend/x86/decoder_crypto.cc:69`<br>`source/tests/fuzz/x86_fuzz.cpp:1878` | **A**：改变 guest ISA/CPUID/解码承诺，同进程分区取不同值会产生 ISA 视图不一致。 |
 | `SVM_X86_GCM_PCLMUL2` / `x86_gcm_pclmul2` | bool / `DefaultOn` / `true` | `source/runtime/backend/arm64/jit/translator_alu.cpp:15` | **B**：仅改变单个 unit 内的“GCM PCLMUL 双路发码”代码形状，不改变边界 ABI。 |
-| `SVM_XMM_STATIC` / `xmm_static` | bool / `NonZero` / `false` | `source/translator/x86/translator.cpp:650` | **A**：改变跨 unit 固定寄存器或 flags ABI，混用会破坏边界契约。 |
 | `SVM_XMM_UNIFORM_FWD` / `xmm_uniform_fwd` | bool / `DefaultOn` / `true` | `source/runtime/ir/opts/uniform_elimination_pass.cpp:78`<br>`source/tests/main_case.cpp:925`<br>`source/tests/main_case.cpp:926` | **B**：仅改变单个 unit 内的“XMM store-load forwarding”代码形状，不改变边界 ABI。 |
 | `SVM_DIRECT_LINK_STRESS_LONG` / `direct_link_stress_long` | bool / `Presence` / `false` | `source/tests/region_link_trampoline_test.cpp:426` | **A**：测试/子进程控制，作用域是整个进程，不是可绑定生产 codegen feature。 |
 | `SVM_DIRECT_LINK_STRESS_ITERS` / `direct_link_stress_iters` | u32 / `StressIterations` / `100000` | `source/tests/region_link_trampoline_test.cpp:427` | **A**：测试/子进程控制，作用域是整个进程，不是可绑定生产 codegen feature。 |
