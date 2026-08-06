@@ -766,6 +766,89 @@ void JitTranslator::Translate(ir::Block* block) {
             }
         }
     }
+    if (density) {
+        std::array<u32, 16> xmm_loads{};
+        std::array<u32, 16> xmm_stores{};
+        std::array<u32, 5> xmm_load_widths{};
+        std::array<u32, 5> xmm_store_widths{};
+        u32 xmm_load_gpr{};
+        u32 xmm_load_fpr{};
+        u32 xmm_store_gpr{};
+        u32 xmm_store_fpr{};
+        auto width_slot = [](u32 size) -> std::optional<size_t> {
+            switch (size) {
+                case 1: return 0;
+                case 2: return 1;
+                case 4: return 2;
+                case 8: return 3;
+                case 16: return 4;
+                default: return std::nullopt;
+            }
+        };
+        for (auto& inst : block->GetInstList()) {
+            const bool load = inst.GetOp() == ir::OpCode::LoadUniform;
+            const bool store = inst.GetOp() == ir::OpCode::StoreUniform;
+            if (!load && !store) {
+                continue;
+            }
+            const auto uniform = inst.GetArg<ir::Uniform>(0);
+            const u32 offset = uniform.GetOffset();
+            const u32 size = load
+                    ? ir::GetValueSizeByte(inst.ReturnType())
+                    : ir::GetValueSizeByte(inst.GetArg<ir::Value>(1).Type());
+            if (offset < kXmmBegin || offset + size > kXmmEnd) {
+                continue;
+            }
+            const u32 relative = offset - kXmmBegin;
+            const u32 index = relative / sizeof(swift::x86::Xmm);
+            if (index >= 16 || relative + size > (index + 1) * sizeof(swift::x86::Xmm)) {
+                continue;
+            }
+            if (load) {
+                ++xmm_loads[index];
+                if (ir::IsFloatValueType(inst.ReturnType())) {
+                    ++xmm_load_fpr;
+                } else {
+                    ++xmm_load_gpr;
+                }
+            } else {
+                ++xmm_stores[index];
+                if (ir::IsFloatValueType(inst.GetArg<ir::Value>(1).Type())) {
+                    ++xmm_store_fpr;
+                } else {
+                    ++xmm_store_gpr;
+                }
+            }
+            if (const auto slot = width_slot(size)) {
+                ++(load ? xmm_load_widths[*slot] : xmm_store_widths[*slot]);
+            }
+        }
+        const u32 load_total = std::accumulate(xmm_loads.begin(), xmm_loads.end(), 0u);
+        const u32 store_total = std::accumulate(xmm_stores.begin(), xmm_stores.end(), 0u);
+        if (load_total || store_total) {
+            std::fprintf(stderr,
+                         "[svm-xmm-state] pc=0x%llx loads=%u stores=%u "
+                         "load_gpr=%u load_fpr=%u store_gpr=%u store_fpr=%u "
+                         "load_w1=%u load_w2=%u load_w4=%u load_w8=%u load_w16=%u "
+                         "store_w1=%u store_w2=%u store_w4=%u store_w8=%u store_w16=%u\n",
+                         static_cast<unsigned long long>(block->GetStartLocation().Value()),
+                         load_total, store_total,
+                         xmm_load_gpr, xmm_load_fpr, xmm_store_gpr, xmm_store_fpr,
+                         xmm_load_widths[0], xmm_load_widths[1], xmm_load_widths[2],
+                         xmm_load_widths[3], xmm_load_widths[4],
+                         xmm_store_widths[0], xmm_store_widths[1], xmm_store_widths[2],
+                         xmm_store_widths[3], xmm_store_widths[4]);
+            for (u32 index = 0; index < 16; ++index) {
+                if (!xmm_loads[index] && !xmm_stores[index]) {
+                    continue;
+                }
+                std::fprintf(stderr,
+                             "[svm-xmm-reg] pc=0x%llx index=%u loads=%u stores=%u\n",
+                             static_cast<unsigned long long>(block->GetStartLocation().Value()),
+                             index, xmm_loads[index], xmm_stores[index]);
+            }
+        }
+    }
     context.RecordExecCounter(exec_offset_gpr_uniform_accesses,
                               gpr_uniform_accesses);
     context.RecordExecCounter(exec_offset_xmm_uniform_accesses,
