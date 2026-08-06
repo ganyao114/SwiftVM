@@ -563,14 +563,16 @@ struct X86Instance::Impl final {
                 enable_xmm_resident && svm_config.xmm_resident_hi;
         if (enable_xmm_resident) {
             static_regs_storage.assign(static_regs.begin(), static_regs.end());
-            // Pool-economy profiling rejects the full high eight: a 12-FPR
-            // value pool creates hot spills.  P1 therefore admits XMM8-11
-            // only, retaining a 16-FPR value pool.  The complete descriptor
-            // table keeps the mechanism range-driven rather than duplicated.
-            const size_t resident_count = enable_xmm_resident_hi ? 12 : 8;
+            // XMM0 is deliberately left in canonical State. STREAM publishes
+            // it twice in each arithmetic loop; forcing both snapshots through
+            // one fixed home creates a loop-carried register-name chain and a
+            // large wall-clock regression despite fewer dynamic instructions.
+            // XMM1-7 retain the profitable resident ABI. P1 still adds the
+            // same XMM8-11 homes; excluding XMM0 raises its value pool to 17.
+            const size_t resident_end = enable_xmm_resident_hi ? 12 : 8;
             static_regs_storage.insert(static_regs_storage.end(),
-                                       arm64_backend_xmm_resident_map.begin(),
-                                       arm64_backend_xmm_resident_map.begin() + resident_count);
+                                       arm64_backend_xmm_resident_map.begin() + 1,
+                                       arm64_backend_xmm_resident_map.begin() + resident_end);
             static_regs = static_regs_storage;
         }
         const bool enable_block_link = svm_config.block_link;

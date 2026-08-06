@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <catch2/catch_test_macros.hpp>
@@ -3292,6 +3293,35 @@ TEST_CASE("guest GPR coalescing keeps publication and snapshot proofs local") {
             }
         }
     }
+}
+
+TEST_CASE("resident XMM ABI leaves the accumulator home in canonical state") {
+    using namespace swift::runtime;
+    using namespace swift::translator::x86;
+
+    if (!GetSvmConfig().xmm_resident) {
+        SUCCEED("SVM_XMM_RESIDENT=0 has no resident XMM ABI");
+        return;
+    }
+
+    auto* instance = X86Instance::Make();
+    const auto mappings = instance->GetAddressSpace()->GetConfig().buffers_static_alloc;
+    const auto xmm_base = offsetof(swift::x86::ThreadContext64, xmms);
+    auto mapped = [&](swift::u32 index, swift::u32 host) {
+        return std::ranges::any_of(mappings, [&](const UniformMapDesc& desc) {
+            return desc.is_float && desc.offset == xmm_base + index * sizeof(swift::x86::Xmm) &&
+                   desc.size == sizeof(swift::x86::Xmm) && desc.reg == host;
+        });
+    };
+    const bool xmm0_mapped = mapped(0, 16);
+    std::array<bool, 7> low_mapped{};
+    for (swift::u32 index = 1; index < 8; ++index) {
+        low_mapped[index - 1] = mapped(index, 16 + index);
+    }
+    X86Instance::Destroy(instance);
+
+    REQUIRE_FALSE(xmm0_mapped);
+    REQUIRE(std::ranges::all_of(low_mapped, [](bool value) { return value; }));
 }
 
 TEST_CASE("resident XMM coalescing preserves snapshots and fixed-home windows") {
