@@ -713,7 +713,10 @@ private:
     }
 
     static bool IsResidentFPRTarget(u32 reg) {
-        return reg >= 16 && reg <= 23;
+        // The actual enabled subset is determined by the allocator's reserved
+        // FPR mask below.  Keeping one architectural range avoids a parallel
+        // high-XMM coalescer and naturally supports the P1 partial map.
+        return reg >= 16 && reg <= 31;
     }
 
     static bool IsResidentFPRProducer(OpCode op) {

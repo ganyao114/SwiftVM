@@ -106,11 +106,15 @@ static UniformMapDesc arm64_backend_gpr_regs_ext3_map[] = {
 
 #define SVM_XMM_RESIDENT_DESC(i) \
     UniformMapDesc{offsetof(ThreadContext64, xmms) + (i) * sizeof(Xmm), 16, 16 + (i), true}
-static constexpr std::array<UniformMapDesc, 8> arm64_backend_xmm_resident_map{{
+static constexpr std::array<UniformMapDesc, 16> arm64_backend_xmm_resident_map{{
         SVM_XMM_RESIDENT_DESC(0), SVM_XMM_RESIDENT_DESC(1),
         SVM_XMM_RESIDENT_DESC(2), SVM_XMM_RESIDENT_DESC(3),
         SVM_XMM_RESIDENT_DESC(4), SVM_XMM_RESIDENT_DESC(5),
         SVM_XMM_RESIDENT_DESC(6), SVM_XMM_RESIDENT_DESC(7),
+        SVM_XMM_RESIDENT_DESC(8), SVM_XMM_RESIDENT_DESC(9),
+        SVM_XMM_RESIDENT_DESC(10), SVM_XMM_RESIDENT_DESC(11),
+        SVM_XMM_RESIDENT_DESC(12), SVM_XMM_RESIDENT_DESC(13),
+        SVM_XMM_RESIDENT_DESC(14), SVM_XMM_RESIDENT_DESC(15),
 }};
 #undef SVM_XMM_RESIDENT_DESC
 
@@ -552,11 +556,21 @@ struct X86Instance::Impl final {
         }
         const bool enable_xmm_resident =
                 enable_jit && enable_uniform_elim && svm_config.xmm_resident;
+        // HI is a strict extension of the process-wide resident ABI.  Keeping
+        // it inert when the base is disabled preserves the established
+        // SVM_XMM_RESIDENT=0 rollback byte-for-byte.
+        const bool enable_xmm_resident_hi =
+                enable_xmm_resident && svm_config.xmm_resident_hi;
         if (enable_xmm_resident) {
             static_regs_storage.assign(static_regs.begin(), static_regs.end());
+            // Pool-economy profiling rejects the full high eight: a 12-FPR
+            // value pool creates hot spills.  P1 therefore admits XMM8-11
+            // only, retaining a 16-FPR value pool.  The complete descriptor
+            // table keeps the mechanism range-driven rather than duplicated.
+            const size_t resident_count = enable_xmm_resident_hi ? 12 : 8;
             static_regs_storage.insert(static_regs_storage.end(),
                                        arm64_backend_xmm_resident_map.begin(),
-                                       arm64_backend_xmm_resident_map.end());
+                                       arm64_backend_xmm_resident_map.begin() + resident_count);
             static_regs = static_regs_storage;
         }
         const bool enable_block_link = svm_config.block_link;
