@@ -110,6 +110,8 @@ private:
     void EmitExecutionTrace(u64 guest_rip);
     [[nodiscard]] bool ReproveCoalescedHostWrite(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCoalescedHostRead(ir::Inst* inst) const;
+    [[nodiscard]] bool ReproveCoalescedHostFPRWrite(ir::Inst* inst) const;
+    [[nodiscard]] bool ReproveCoalescedHostFPRRead(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCachedConstAddress(ir::Inst* inst) const;
 
     enum class BoundarySubsequence : size_t {
@@ -266,6 +268,8 @@ private:
                       const std::vector<ir::DataClass> &args,
                       bool has_result,
                       const Register &result);
+    void SpillStaticFPRUniforms();
+    void RestoreStaticFPRUniforms();
 
     void ClearFlags(ir::Flags flags);
 

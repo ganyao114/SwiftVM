@@ -58,6 +58,8 @@ public:
     // callers use the overload above, which reads SVM_UNIFORM_FAST once.
     static void Run(Block *block, const UniformInfo &config, bool fast_path,
                     const FeatureSet& features, HIRFunction *hir_function = nullptr);
+    static void FinalizeStaticFPRMappings(Block* block, const UniformInfo& info);
+    static void FinalizeStaticFPRMappings(HIRFunction* function, const UniformInfo& info);
 };
 
 }  // namespace swift::runtime::ir

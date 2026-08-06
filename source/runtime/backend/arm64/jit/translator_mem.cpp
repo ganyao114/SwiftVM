@@ -58,6 +58,27 @@ bool IsHostCoalesceProducer(ir::OpCode op) {
     }
 }
 
+bool IsHostFPRCoalesceProducer(ir::OpCode op) {
+    using O = ir::OpCode;
+    switch (op) {
+        case O::LoadUniform:
+        case O::LoadMemory:
+        case O::VecAnd:
+        case O::VecOr:
+        case O::VecXor:
+        case O::VecAdd:
+        case O::VecSub:
+        case O::VecMul:
+        case O::VecFAdd:
+        case O::VecFSub:
+        case O::VecFMul:
+        case O::VecFDiv:
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool IsHostCoalesceObserver(ir::OpCode op) {
     using O = ir::OpCode;
     switch (op) {
@@ -299,6 +320,99 @@ bool JitTranslator::ReproveCoalescedHostRead(ir::Inst* inst) const {
         if (scan.Id() > inst->Id() && scan.Id() <= read_end &&
             scan.GetOp() == ir::OpCode::SetHostGPR &&
             scan.GetArg<ir::Imm>(1).Get() == target) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool JitTranslator::ReproveCoalescedHostFPRRead(ir::Inst* inst) const {
+    if (!inst || inst->GetOp() != ir::OpCode::GetHostFPR ||
+        inst->GetArg<ir::Imm>(1).Get() != 0 ||
+        !ir::IsFloatValueType(inst->ReturnType())) {
+        return false;
+    }
+    const u32 target = inst->GetArg<ir::Imm>(0).Get();
+    if (context.V(ir::Value{inst}).GetCode() != target) {
+        return false;
+    }
+    u32 end = inst->Id();
+    for (auto& scan : cur_block->GetInstList()) {
+        for (auto value : scan.GetValues()) {
+            if (ResolveHostCoalesceBitCast(value).Def() == inst) {
+                end = std::max<u32>(end, scan.Id());
+            }
+        }
+    }
+    for (auto& scan : cur_block->GetInstList()) {
+        if (scan.Id() <= inst->Id() || scan.Id() > end) continue;
+        if (scan.GetOp() == ir::OpCode::SetHostFPR &&
+            scan.GetArg<ir::Imm>(1).Get() == target) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool JitTranslator::ReproveCoalescedHostFPRWrite(ir::Inst* inst) const {
+    if (!inst || inst->GetOp() != ir::OpCode::SetHostFPR ||
+        inst->GetArg<ir::Imm>(2).Get() != 0) {
+        return false;
+    }
+    const u32 target = inst->GetArg<ir::Imm>(1).Get();
+    auto produced = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
+    auto* producer = produced.Def();
+    if (!producer || produced.Type() != ir::ValueType::V128 ||
+        !IsHostFPRCoalesceProducer(producer->GetOp()) ||
+        context.V(produced).GetCode() != target) {
+        return false;
+    }
+
+    auto last_use = [&](ir::Inst* definition) {
+        u32 end = definition->Id();
+        for (auto& scan : cur_block->GetInstList()) {
+            for (auto use : scan.GetValues()) {
+                if (ResolveHostCoalesceBitCast(use).Def() == definition) {
+                    end = std::max<u32>(end, scan.Id());
+                }
+            }
+        }
+        return end;
+    };
+    if (last_use(producer) != inst->Id()) {
+        return false;
+    }
+    for (auto input : producer->GetValues()) {
+        auto root = ResolveHostCoalesceBitCast(input);
+        if (root.Defined() && context.SharesFPR(root, produced) &&
+            last_use(root.Def()) > producer->Id()) {
+            return false;
+        }
+    }
+    for (auto& other : cur_block->GetInstList()) {
+        if (&other == producer || &other == inst || !other.HasValue() ||
+            other.IsBitCastOperation() || other.Id() >= inst->Id()) {
+            continue;
+        }
+        ir::Value value{&other};
+        if (context.SharesFPR(value, produced) &&
+            last_use(&other) > producer->Id()) {
+            return false;
+        }
+    }
+    bool after_producer = false;
+    for (auto& scan : cur_block->GetInstList()) {
+        if (&scan == producer) {
+            after_producer = true;
+            continue;
+        }
+        if (!after_producer) continue;
+        if (&scan == inst) break;
+        if (IsHostCoalesceObserver(scan.GetOp()) ||
+            (scan.GetOp() == ir::OpCode::GetHostFPR &&
+             scan.GetArg<ir::Imm>(0).Get() == target) ||
+            (scan.GetOp() == ir::OpCode::SetHostFPR &&
+             scan.GetArg<ir::Imm>(1).Get() == target)) {
             return false;
         }
     }
@@ -621,15 +735,47 @@ void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitGetHostFPR(ir::Inst* inst) {
-    auto offset = inst->GetArg<ir::Imm>(1).Get();
-    if (!offset) {
+    if (context.IsHostReadCoalesced(inst->Id())) {
+        ASSERT_MSG(ReproveCoalescedHostFPRRead(inst),
+                   "GetHostFPR coalescing proof diverged at IR {}", inst->Id());
         return;
     }
-    auto reg_index = inst->GetArg<ir::Imm>(0).Get();
+    const u32 reg_index = inst->GetArg<ir::Imm>(0).Get();
     auto host_reg = VRegister::GetQRegFromCode(reg_index);
-    auto ret_reg = context.V(ir::Value{inst});
-    if (host_reg != ret_reg) {
-        PANIC("GetHostFPR!");
+    const u32 offset = inst->GetArg<ir::Imm>(1).Get();
+    const auto value_type = inst->ReturnType();
+    const u32 size = ir::GetValueSizeByte(value_type);
+    ASSERT_MSG(offset + size <= sizeof(u128) && offset % size == 0,
+               "invalid fixed FPR read offset {} size {}", offset, size);
+
+    if (!ir::IsFloatValueType(value_type)) {
+        auto result = context.R(ir::Value{inst});
+        const u32 lane = offset / size;
+        switch (size) {
+            case 1: __ Umov(result.W(), host_reg.V16B(), lane); break;
+            case 2: __ Umov(result.W(), host_reg.V8H(), lane); break;
+            case 4: __ Umov(result.W(), host_reg.V4S(), lane); break;
+            case 8: __ Umov(result.X(), host_reg.V2D(), lane); break;
+            default: PANIC("unsupported scalar fixed FPR read size {}", size);
+        }
+        return;
+    }
+
+    auto result = context.V(ir::Value{inst});
+    if (size == sizeof(u128)) {
+        ASSERT(offset == 0);
+        if (host_reg != result) {
+            __ Orr(result.V16B(), host_reg.V16B(), host_reg.V16B());
+        }
+        return;
+    }
+    const u32 lane = offset / size;
+    switch (size) {
+        case 1: __ Ins(result.V16B(), 0, host_reg.V16B(), lane); break;
+        case 2: __ Ins(result.V8H(), 0, host_reg.V8H(), lane); break;
+        case 4: __ Ins(result.V4S(), 0, host_reg.V4S(), lane); break;
+        case 8: __ Ins(result.V2D(), 0, host_reg.V2D(), lane); break;
+        default: PANIC("unsupported vector fixed FPR read size {}", size);
     }
 }
 
@@ -680,6 +826,48 @@ void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitSetHostFPR(ir::Inst* inst) {
+    if (context.IsHostWriteCoalesced(inst->Id())) {
+        ASSERT_MSG(ReproveCoalescedHostFPRWrite(inst),
+                   "SetHostFPR coalescing proof diverged at IR {}", inst->Id());
+        return;
+    }
+    auto value = inst->GetArg<ir::Value>(0);
+    const u32 reg_index = inst->GetArg<ir::Imm>(1).Get();
+    const u32 offset = inst->GetArg<ir::Imm>(2).Get();
+    const u32 size = ir::GetValueSizeByte(value.Type());
+    auto host_reg = VRegister::GetQRegFromCode(reg_index);
+    ASSERT_MSG(offset + size <= sizeof(u128) && offset % size == 0,
+               "invalid fixed FPR write offset {} size {}", offset, size);
+
+    if (!ir::IsFloatValueType(value.Type())) {
+        auto source = context.R(value);
+        const u32 lane = offset / size;
+        switch (size) {
+            case 1: __ Ins(host_reg.V16B(), lane, source.W()); break;
+            case 2: __ Ins(host_reg.V8H(), lane, source.W()); break;
+            case 4: __ Ins(host_reg.V4S(), lane, source.W()); break;
+            case 8: __ Ins(host_reg.V2D(), lane, source.X()); break;
+            default: PANIC("unsupported scalar fixed FPR write size {}", size);
+        }
+        return;
+    }
+
+    auto source = context.V(value);
+    if (size == sizeof(u128)) {
+        ASSERT(offset == 0);
+        if (source != host_reg) {
+            __ Orr(host_reg.V16B(), source.V16B(), source.V16B());
+        }
+        return;
+    }
+    const u32 lane = offset / size;
+    switch (size) {
+        case 1: __ Ins(host_reg.V16B(), lane, source.V16B(), 0); break;
+        case 2: __ Ins(host_reg.V8H(), lane, source.V8H(), 0); break;
+        case 4: __ Ins(host_reg.V4S(), lane, source.V4S(), 0); break;
+        case 8: __ Ins(host_reg.V2D(), lane, source.V2D(), 0); break;
+        default: PANIC("unsupported vector fixed FPR write size {}", size);
+    }
 }
 
 void JitTranslator::EmitLoadUniform(ir::Inst* inst) {

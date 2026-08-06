@@ -198,6 +198,12 @@ bool JitContext::SharesGPR(const ir::Value& left, const ir::Value& right) {
            reg_alloc.ValueGPR(left).id == reg_alloc.ValueGPR(right).id;
 }
 
+bool JitContext::SharesFPR(const ir::Value& left, const ir::Value& right) {
+    return reg_alloc.ValueType(left) == RegAlloc::FPR &&
+           reg_alloc.ValueType(right) == RegAlloc::FPR &&
+           reg_alloc.ValueFPR(left).id == reg_alloc.ValueFPR(right).id;
+}
+
 bool JitContext::IsFloatValue(const ir::Value& value) {
     auto type = value.Type();
     return type >= ir::ValueType::V8 && type <= ir::ValueType::V256;

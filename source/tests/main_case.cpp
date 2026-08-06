@@ -22,6 +22,7 @@
 #include "runtime/ir/opts/reid_instr_pass.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 #include "runtime/ir/opts/uniform_elimination_pass.h"
+#include "runtime/ir/opts/uniform_store_sink_pass.h"
 #include "runtime/backend/mem_map.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/code_serial.h"
@@ -218,7 +219,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 137);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 138);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -2915,7 +2916,6 @@ TEST_CASE("guest GPR coalescing keeps publication and snapshot proofs local") {
         RegisterAllocPass::RunForCoalesceTest(block, alloc.get(), enabled);
         return alloc;
     };
-
     struct ExpandedProducer {
         OpCode op;
         const char* name;
@@ -3292,6 +3292,305 @@ TEST_CASE("guest GPR coalescing keeps publication and snapshot proofs local") {
             }
         }
     }
+}
+
+TEST_CASE("resident XMM coalescing preserves snapshots and fixed-home windows") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    auto gprs = GPRSMask{~((1u << 8) - 1u)};
+    auto resident_fprs = [] {
+        FPRSMask mask{0};
+        mask.Mark(16);
+        return mask;
+    };
+
+    struct Case {
+        IntrusivePtr<Block> block;
+        Value produced;
+        Value conflict;
+        Inst* publish;
+    };
+    auto make_case = [&](OpCode op, swift::u64 location, bool with_conflict = false) {
+        IntrusivePtr<Block> block{new Block(0, Location{location})};
+        auto left = block->LoadUniform(Uniform{0, ValueType::V128});
+        auto right = block->LoadUniform(Uniform{16, ValueType::V128});
+        Value produced{};
+        switch (op) {
+            case OpCode::LoadUniform:
+                produced = left;
+                break;
+            case OpCode::LoadMemory: {
+                auto address = block->LoadUniform(Uniform{64, ValueType::U64});
+                produced = block->LoadMemory(Operand{address}).SetType(ValueType::V128);
+                break;
+            }
+            case OpCode::VecAnd: produced = block->VecAnd(left, right); break;
+            case OpCode::VecOr: produced = block->VecOr(left, right); break;
+            case OpCode::VecXor: produced = block->VecXor(left, right); break;
+            case OpCode::VecAdd: produced = block->VecAdd(left, right, Imm{32u}); break;
+            case OpCode::VecSub: produced = block->VecSub(left, right, Imm{32u}); break;
+            case OpCode::VecMul: produced = block->VecMul(left, right, Imm{32u}); break;
+            case OpCode::VecFAdd: produced = block->VecFAdd(left, right, Imm{32u}); break;
+            case OpCode::VecFSub: produced = block->VecFSub(left, right, Imm{32u}); break;
+            case OpCode::VecFMul: produced = block->VecFMul(left, right, Imm{32u}); break;
+            case OpCode::VecFDiv: produced = block->VecFDiv(left, right, Imm{32u}); break;
+            default: FAIL("missing resident XMM producer test case");
+        }
+        produced = produced.SetType(ValueType::V128);
+        Value conflict{};
+        if (with_conflict) {
+            conflict = block->VecOr(left, right).SetType(ValueType::V128);
+        }
+        auto* publish = block->AppendInst(
+                OpCode::SetHostFPR, produced, HostRegIndex(16), Imm{0u});
+        if (conflict.Defined()) {
+            block->StoreUniform(Uniform{32, ValueType::V128}, conflict);
+        }
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        return Case{std::move(block), produced, conflict, publish};
+    };
+
+    auto allocate = [&](Block* block, bool enabled) {
+        auto alloc = std::make_unique<RegAlloc>(
+                block->MaxInstrId(), gprs, resident_fprs(), FeatureSet{});
+        RegisterAllocPass::RunForXmmResidentTest(block, alloc.get(), enabled);
+        return alloc;
+    };
+    auto emit_size = [&](Block* block, RegAlloc& alloc, swift::u64 location) {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        auto module = address_space.MapModule(
+                LocationDescriptor{location}, LocationDescriptor{location + 0x10},
+                ModuleConfig{});
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block);
+        context.Finish();
+        return context.CurrentBufferSize();
+    };
+
+    constexpr std::array producers{
+            OpCode::LoadUniform, OpCode::LoadMemory,
+            OpCode::VecAnd, OpCode::VecOr, OpCode::VecXor,
+            OpCode::VecAdd, OpCode::VecSub, OpCode::VecMul,
+            OpCode::VecFAdd, OpCode::VecFSub, OpCode::VecFMul, OpCode::VecFDiv,
+    };
+    std::size_t index = 0;
+    for (auto op : producers) {
+        CAPTURE(op);
+        auto item = make_case(op, 0xa000 + index++ * 0x20);
+        auto off = allocate(item.block.get(), false);
+        REQUIRE_FALSE(off->IsHostWriteCoalesced(item.publish->Id()));
+        const auto off_size = emit_size(item.block.get(), *off, 0xb000 + index * 0x20);
+        auto on = allocate(item.block.get(), true);
+        REQUIRE(on->ValueFPR(item.produced).id == 16);
+        REQUIRE(on->IsHostWriteCoalesced(item.publish->Id()));
+        const auto on_size = emit_size(item.block.get(), *on, 0xc000 + index * 0x20);
+        REQUIRE(on_size + vixl::aarch64::kInstructionSize == off_size);
+
+        auto negative = make_case(op, 0xd000 + index * 0x20, true);
+        RegAlloc conflict_alloc{
+                negative.block->MaxInstrId(), gprs, resident_fprs(), FeatureSet{}};
+        RegisterAllocPass::RunForXmmResidentConflictTest(
+                negative.block.get(), &conflict_alloc, negative.conflict.Id(), 16);
+        REQUIRE(conflict_alloc.ValueFPR(negative.conflict).id == 16);
+        REQUIRE_FALSE(conflict_alloc.IsHostWriteCoalesced(negative.publish->Id()));
+    }
+
+    SECTION("a crossing SetHostFPR forces a real snapshot copy") {
+        IntrusivePtr<Block> block{new Block(0, Location{0xa400})};
+        auto snapshot = block->GetHostFPR(HostRegIndex(16), Imm{0u})
+                                .SetType(ValueType::V128);
+        auto replacement = block->LoadUniform(Uniform{16, ValueType::V128});
+        block->SetHostFPR(replacement, HostRegIndex(16), Imm{0u});
+        block->StoreUniform(Uniform{32, ValueType::V128}, snapshot);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto alloc = allocate(block.get(), true);
+        REQUIRE(alloc->ValueFPR(snapshot).id != 16);
+        REQUIRE_FALSE(alloc->IsHostReadCoalesced(snapshot.Id()));
+    }
+
+    SECTION("a third-party fixed-home interval rejects early publication") {
+        IntrusivePtr<Block> block{new Block(0, Location{0xa420})};
+        auto left = block->LoadUniform(Uniform{0, ValueType::V128});
+        auto right = block->LoadUniform(Uniform{16, ValueType::V128});
+        auto candidate = block->VecXor(left, right).SetType(ValueType::V128);
+        auto tied = block->VecOr(left, right).SetType(ValueType::V128);
+        auto* publish = block->AppendInst(
+                OpCode::SetHostFPR, candidate, HostRegIndex(16), Imm{0u});
+        block->StoreUniform(Uniform{32, ValueType::V128}, tied);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        RegAlloc alloc{block->MaxInstrId(), gprs, resident_fprs(), FeatureSet{}};
+        RegisterAllocPass::RunForXmmResidentConflictTest(
+                block.get(), &alloc, tied.Id(), 16);
+        REQUIRE(alloc.ValueFPR(tied).id == 16);
+        REQUIRE_FALSE(alloc.IsHostWriteCoalesced(publish->Id()));
+    }
+
+    SECTION("partial lane and GPR views retain their explicit bridges") {
+        IntrusivePtr<Block> block{new Block(0, Location{0xa440})};
+        auto lane = block->LoadUniform(Uniform{0, ValueType::V64});
+        auto* partial = block->AppendInst(
+                OpCode::SetHostFPR, lane, HostRegIndex(16), Imm{8u});
+        auto scalar = block->GetHostFPR(HostRegIndex(16), Imm{8u})
+                               .SetType(ValueType::U64);
+        block->StoreUniform(Uniform{32, ValueType::U64}, scalar);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto alloc = allocate(block.get(), true);
+        REQUIRE_FALSE(alloc->IsHostWriteCoalesced(partial->Id()));
+        REQUIRE_FALSE(alloc->IsHostReadCoalesced(scalar.Id()));
+    }
+
+    SECTION("resident mappings are finalized after XMM store sinking") {
+        if (!GetSvmConfig().xmm_resident) {
+            SUCCEED("integration shape is enabled by SVM_XMM_RESIDENT=1");
+        } else {
+            UniformInfo info{};
+            info.uniform_size = 64;
+            info.xmm_uniform_ranges.push_back({0, 16});
+            UniformRegister mapped{.uniform = Uniform{0, ValueType::V128}};
+            mapped.host_reg.is_fpr = true;
+            mapped.host_reg.fpr = HostFPR{16};
+            info.uni_fprs.Mark(16);
+            info.uniform_regs_map.Map(0, 16, mapped);
+
+            IntrusivePtr<Block> block{new Block(0, Location{0xa460})};
+            auto left = block->LoadUniform(Uniform{16, ValueType::V128});
+            auto right = block->LoadUniform(Uniform{32, ValueType::V128});
+            block->StoreUniform(Uniform{0, ValueType::V128}, block->VecAnd(left, right));
+            block->StoreUniform(Uniform{0, ValueType::V128}, block->VecOr(left, right));
+            block->SetTerminal(terminal::ReturnToDispatch{});
+            block->ReIdInstr();
+
+            UniformEliminationPass::Run(block.get(), info, FeatureSet{});
+            UniformStoreSinkPass::Run(block.get(), info);
+            UniformEliminationPass::FinalizeStaticFPRMappings(block.get(), info);
+            std::size_t uniform_stores = 0;
+            std::size_t fixed_stores = 0;
+            for (auto& inst : block->GetInstList()) {
+                uniform_stores += inst.GetOp() == OpCode::StoreUniform;
+                fixed_stores += inst.GetOp() == OpCode::SetHostFPR;
+            }
+            REQUIRE(uniform_stores == 0);
+            REQUIRE(fixed_stores == 1);
+        }
+    }
+
+    SECTION("inline helpers snapshot every resident FPR descriptor") {
+        std::vector<UniformMapDesc> descriptors;
+        for (swift::u32 index = 0; index < 8; ++index) {
+            descriptors.emplace_back(index * sizeof(swift::u128), sizeof(swift::u128),
+                                     16 + index, true);
+        }
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+                .uniform_buffer_size = 8 * sizeof(swift::u128),
+                .buffers_static_alloc = descriptors,
+        };
+        AddressSpace address_space{config};
+        IntrusivePtr<Block> block{new Block(0, Location{0xa480})};
+        (void)block->CallLambda(
+                Lambda{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
+                        FptrCast(&ReadFPCRFromHostHelper))}}});
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        RegAlloc alloc{block->MaxInstrId(),
+                       address_space.GetTrampolines().GetGPRRegs(),
+                       address_space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
+        RegisterAllocPass::Run(block.get(), &alloc, false, FeatureSet{});
+        arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block.get());
+        context.Finish();
+
+        auto& masm = context.GetMasm();
+        auto* first = masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+        auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        std::size_t stores = 0;
+        std::size_t loads = 0;
+        for (auto* instruction = first; instruction < last;
+             instruction = instruction->GetNextInstruction()) {
+            decoder.Decode(instruction);
+            const std::string_view line = disassembler.GetOutput();
+            stores += line.find("stp q16, q17") != std::string_view::npos ||
+                      line.find("stp q18, q19") != std::string_view::npos ||
+                      line.find("stp q20, q21") != std::string_view::npos ||
+                      line.find("stp q22, q23") != std::string_view::npos;
+            loads += line.find("ldp q16, q17") != std::string_view::npos ||
+                     line.find("ldp q18, q19") != std::string_view::npos ||
+                     line.find("ldp q20, q21") != std::string_view::npos ||
+                     line.find("ldp q22, q23") != std::string_view::npos;
+        }
+        REQUIRE(stores == 4);
+        REQUIRE(loads == 4);
+    }
+}
+
+TEST_CASE("resident XMM homes survive a guest page fault") {
+    using namespace swift::runtime;
+    using namespace swift::translator::x86;
+
+    if (!GetSvmConfig().xmm_resident) {
+        SUCCEED("fault integration is enabled by SVM_XMM_RESIDENT=1");
+        return;
+    }
+    const long page_long = sysconf(_SC_PAGESIZE);
+    REQUIRE(page_long > 0);
+    const auto page = static_cast<size_t>(page_long);
+    auto* data = static_cast<swift::u8*>(
+            mmap(nullptr, page, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0));
+    auto* code = static_cast<swift::u8*>(
+            mmap(nullptr, page, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANON, -1, 0));
+    REQUIRE(data != MAP_FAILED);
+    REQUIRE(code != MAP_FAILED);
+    // mov (%rax),%rbx; hlt
+    const std::array<swift::u8, 4> guest{0x48, 0x8b, 0x18, 0xf4};
+    std::memcpy(code, guest.data(), guest.size());
+
+    backend::SmcTracker::SetEnabled(false);
+    auto* instance = X86Instance::Make();
+    auto* core = X86Core::Make(instance);
+    auto& state = core->GetContext();
+    state.rip.qword = reinterpret_cast<swift::u64>(code);
+    state.rax.qword = reinterpret_cast<swift::u64>(data);
+    std::array<std::array<swift::u8, 16>, 8> expected{};
+    for (swift::u32 index = 0; index < expected.size(); ++index) {
+        for (swift::u32 byte = 0; byte < expected[index].size(); ++byte) {
+            expected[index][byte] = static_cast<swift::u8>(index * 29u + byte * 7u + 3u);
+        }
+        std::memcpy(&state.xmms[index], expected[index].data(), expected[index].size());
+    }
+    REQUIRE(core->Run() == swift::translator::ExitReason::PageFatal);
+    for (swift::u32 index = 0; index < expected.size(); ++index) {
+        CAPTURE(index);
+        REQUIRE(std::memcmp(&state.xmms[index], expected[index].data(),
+                            expected[index].size()) == 0);
+    }
+    X86Core::Destroy(core);
+    X86Instance::Destroy(instance);
+    backend::SmcTracker::SetEnabled(true);
+    munmap(data, page);
+    munmap(code, page);
 }
 
 TEST_CASE("integer width chains keep X high halves zero for W and X consumers") {

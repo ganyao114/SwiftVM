@@ -104,6 +104,16 @@ static UniformMapDesc arm64_backend_gpr_regs_ext3_map[] = {
         {offsetof(ThreadContext64, r15), 8, 9, false},
 };
 
+#define SVM_XMM_RESIDENT_DESC(i) \
+    UniformMapDesc{offsetof(ThreadContext64, xmms) + (i) * sizeof(Xmm), 16, 16 + (i), true}
+static constexpr std::array<UniformMapDesc, 8> arm64_backend_xmm_resident_map{{
+        SVM_XMM_RESIDENT_DESC(0), SVM_XMM_RESIDENT_DESC(1),
+        SVM_XMM_RESIDENT_DESC(2), SVM_XMM_RESIDENT_DESC(3),
+        SVM_XMM_RESIDENT_DESC(4), SVM_XMM_RESIDENT_DESC(5),
+        SVM_XMM_RESIDENT_DESC(6), SVM_XMM_RESIDENT_DESC(7),
+}};
+#undef SVM_XMM_RESIDENT_DESC
+
 // This describes guest architectural state only; it does not pin any host
 // FPRs.  UniformElimination uses it to include the U64 XmmLo/XmmHi views in
 // SVM_XMM_UNIFORM_FWD's scope as well as direct V128 accesses.
@@ -540,6 +550,15 @@ struct X86Instance::Impl final {
         } else if (enable_static_regs) {
             static_regs = arm64_backend_gpr_regs_map;
         }
+        const bool enable_xmm_resident =
+                enable_jit && enable_uniform_elim && svm_config.xmm_resident;
+        if (enable_xmm_resident) {
+            static_regs_storage.assign(static_regs.begin(), static_regs.end());
+            static_regs_storage.insert(static_regs_storage.end(),
+                                       arm64_backend_xmm_resident_map.begin(),
+                                       arm64_backend_xmm_resident_map.end());
+            static_regs = static_regs_storage;
+        }
         const bool enable_block_link = svm_config.block_link;
         auto global_opts = Optimizations::ReturnStackBuffer | Optimizations::FlagElimination |
                            Optimizations::DeadCodeRemove | Optimizations::StaticCode |
@@ -550,7 +569,7 @@ struct X86Instance::Impl final {
         if (enable_uniform_elim) {
             global_opts |= Optimizations::UniformElimination;
         }
-        if (enable_xmm_fault_sink) {
+        if (enable_xmm_fault_sink || enable_xmm_resident) {
             global_opts |= Optimizations::XmmFaultSink;
         }
         const Arm64Features arm64_features = DetectArm64Features();
@@ -925,6 +944,7 @@ struct X86Instance::Impl final {
         return code_cache;
     }
 
+    std::vector<UniformMapDesc> static_regs_storage{};
     std::unique_ptr<backend::AddressSpace> address_space{};
     mutable std::mutex translate_mutex;
     mutable FunctionCompileStats func_stats{"x86_64"};

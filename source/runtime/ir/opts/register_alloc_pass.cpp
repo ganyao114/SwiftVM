@@ -98,7 +98,8 @@ public:
                                  bool induct_tie = false,
                                  const Vector<u32>* forced_spills = nullptr,
                                  bool select_eviction = false,
-                                 const FeatureSet& features = FeatureSet{})
+                                 const FeatureSet& features = FeatureSet{},
+                                 int xmm_resident_override = -1)
             : function(function), block(), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               single_block_fast_path(single_block_fast_path),
@@ -107,7 +108,10 @@ public:
               induct_tie(induct_tie),
               forced_spills(forced_spills),
               select_eviction(select_eviction),
-              shift_imm_fast(features.shift_imm_fast), features(features) {
+              shift_imm_fast(features.shift_imm_fast), features(features),
+              xmm_resident(xmm_resident_override >= 0
+                                   ? xmm_resident_override != 0
+                                   : GetSvmConfig().xmm_resident) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(function->MaxInstrCount());
@@ -128,7 +132,8 @@ public:
                                  bool induct_tie = false,
                                  const Vector<u32>* forced_spills = nullptr,
                                  bool select_eviction = false,
-                                 const FeatureSet& features = FeatureSet{})
+                                 const FeatureSet& features = FeatureSet{},
+                                 int xmm_resident_override = -1)
             : function(), block(block), reg_alloc(alloc), live_interval(), active_lives(),
               gpr_reserve(gpr_res), fpr_reserve(fpr_res),
               scalar_insert(scalar_insert),
@@ -136,7 +141,10 @@ public:
               induct_tie(induct_tie),
               forced_spills(forced_spills),
               select_eviction(select_eviction),
-              shift_imm_fast(features.shift_imm_fast), features(features) {
+              shift_imm_fast(features.shift_imm_fast), features(features),
+              xmm_resident(xmm_resident_override >= 0
+                                   ? xmm_resident_override != 0
+                                   : GetSvmConfig().xmm_resident) {
         active_gprs = alloc->GetGprs();
         active_fprs = alloc->GetFprs();
         live_interval.reserve(block->GetInstList().size());
@@ -159,6 +167,9 @@ public:
     }
     void CoalesceGuestRegisterAccessesForTest() {
         CoalesceGuestRegisterAccesses();
+    }
+    void CoalesceGuestFPRAccessesForTest() {
+        CoalesceGuestFPRAccesses(true);
     }
 
     static u32 ScratchOnlyGPRs(OpCode op, const backend::GPRSMask& pool,
@@ -368,6 +379,7 @@ public:
 
         FusePinnedWriteChains();
         CoalesceGuestRegisterAccesses();
+        CoalesceGuestFPRAccesses(xmm_resident);
         CacheConstantAddresses();
         if (spill_count && RaDiagEnabled()) {
             LOG_WARNING("RegisterAllocPass: {} value(s) spilled to stack slots (highest slot {})",
@@ -694,6 +706,34 @@ private:
             case OpCode::Sse42Str:
             case OpCode::GetUniformAddress:
             case OpCode::UniformBarrier:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static bool IsResidentFPRTarget(u32 reg) {
+        return reg >= 16 && reg <= 23;
+    }
+
+    static bool IsResidentFPRProducer(OpCode op) {
+        switch (op) {
+            // These emitters either write a fresh destination or use a single
+            // A64 three-register SIMD instruction. Their source/destination
+            // aliasing is architectural; the input-liveness guard below still
+            // rejects an input that must survive the publication point.
+            case OpCode::LoadUniform:
+            case OpCode::LoadMemory:
+            case OpCode::VecAnd:
+            case OpCode::VecOr:
+            case OpCode::VecXor:
+            case OpCode::VecAdd:
+            case OpCode::VecSub:
+            case OpCode::VecMul:
+            case OpCode::VecFAdd:
+            case OpCode::VecFSub:
+            case OpCode::VecFMul:
+            case OpCode::VecFDiv:
                 return true;
             default:
                 return false;
@@ -1107,6 +1147,111 @@ private:
                 }
                 reg_alloc->MapRegister(read.Id(), HostGPR{static_cast<u16>(target)});
                 reg_alloc->MarkHostReadCoalesced(read.Id());
+            }
+        };
+
+        if (function) {
+            for (auto* hir_block : function->GetHIRBlocks()) {
+                coalesce_block(hir_block->GetBlock());
+            }
+        } else {
+            coalesce_block(block);
+        }
+    }
+
+    void CoalesceGuestFPRAccesses(bool enabled = GetSvmConfig().xmm_resident) {
+        if (!enabled) {
+            return;
+        }
+
+        auto coalesce_block = [&](Block* lir_block) {
+            auto& list = lir_block->GetInstList();
+            Vector<u32> use_end(InstrCount());
+            for (auto& inst : list) {
+                for (auto value : inst.GetValues()) {
+                    value = ResolveBitCastSource(value);
+                    if (value.Defined() && value.Id() < use_end.size()) {
+                        use_end[value.Id()] = std::max<u32>(use_end[value.Id()], inst.Id());
+                    }
+                }
+            }
+
+            auto mapped_to = [&](Value value, u32 target) {
+                value = ResolveBitCastSource(value);
+                return value.Defined() &&
+                       reg_alloc->ValueType(value) == backend::RegAlloc::FPR &&
+                       reg_alloc->ValueFPR(value).id == target;
+            };
+
+            for (auto& store : list) {
+                if (store.GetOp() != OpCode::SetHostFPR ||
+                    store.GetArg<Imm>(2).Get() != 0) {
+                    continue;
+                }
+                const u32 target = store.GetArg<Imm>(1).Get();
+                if (!IsResidentFPRTarget(target) || !reg_alloc->GetFprs().Get(target)) {
+                    continue;
+                }
+                Value produced = ResolveBitCastSource(store.GetArg<Value>(0));
+                auto* producer = produced.Def();
+                if (!producer || produced.Id() >= use_end.size() ||
+                    produced.Type() != ValueType::V128 ||
+                    use_end[produced.Id()] != store.Id() ||
+                    !IsResidentFPRProducer(producer->GetOp()) ||
+                    reg_alloc->ValueType(produced) != backend::RegAlloc::FPR) {
+                    continue;
+                }
+                if (mapped_to(produced, target)) {
+                    reg_alloc->MarkHostWriteCoalesced(store.Id());
+                    continue;
+                }
+
+                bool blocked = false;
+                for (auto& other : list) {
+                    if (&other == producer || &other == &store || !other.HasValue() ||
+                        other.IsBitCastOperation() || other.Id() >= store.Id()) {
+                        continue;
+                    }
+                    Value value{&other};
+                    if (mapped_to(value, target) && value.Id() < use_end.size() &&
+                        use_end[value.Id()] > producer->Id()) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) continue;
+
+                bool after_producer = false;
+                for (auto& scan : list) {
+                    if (&scan == producer) {
+                        after_producer = true;
+                        continue;
+                    }
+                    if (!after_producer) continue;
+                    if (&scan == &store) break;
+                    if (IsPinnedCoalesceObserver(scan.GetOp()) ||
+                        (scan.GetOp() == OpCode::GetHostFPR &&
+                         scan.GetArg<Imm>(0).Get() == target) ||
+                        (scan.GetOp() == OpCode::SetHostFPR &&
+                         scan.GetArg<Imm>(1).Get() == target)) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) continue;
+
+                for (auto input : producer->GetValues()) {
+                    auto root = ResolveBitCastSource(input);
+                    if (mapped_to(root, target) && root.Id() < use_end.size() &&
+                        use_end[root.Id()] > producer->Id()) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) continue;
+
+                reg_alloc->MapRegister(producer->Id(), HostFPR{static_cast<u16>(target)});
+                reg_alloc->MarkHostWriteCoalesced(store.Id());
             }
         };
 
@@ -1722,7 +1867,9 @@ private:
         // the block that owns the terminal (function-global id).
         Map<u32, u32> terminal_end{};
         Map<u32, u32> actual_use_end{};
+        Map<u32, u32> definition_block_end{};
         HostRegWriteMap host_gpr_writes{};
+        HostRegWriteMap host_fpr_writes{};
         for (auto* hir_block : hir_function->GetHIRBlocks()) {
             auto* lir_block = hir_block->GetBlock();
             u32 block_end = 0;
@@ -1731,6 +1878,9 @@ private:
                 if (inst.GetOp() == OpCode::SetHostGPR) {
                     const auto host_reg = static_cast<u16>(inst.GetArg<Imm>(1).Get());
                     host_gpr_writes[host_reg].push_back(inst.Id());
+                } else if (inst.GetOp() == OpCode::SetHostFPR) {
+                    const auto host_reg = static_cast<u16>(inst.GetArg<Imm>(1).Get());
+                    host_fpr_writes[host_reg].push_back(inst.Id());
                 }
                 for (auto value : inst.GetValues()) {
                     auto source = ResolveBitCastSource(value);
@@ -1740,6 +1890,9 @@ private:
             }
             if (block_end == 0) {
                 continue;  // empty block — nothing can be live out of it
+            }
+            for (auto& inst : lir_block->GetInstList()) {
+                definition_block_end[inst.Id()] = block_end;
             }
             auto extend_use = [&terminal_end, block_end](const Value& value) {
                 if (!value.Defined()) {
@@ -1805,16 +1958,23 @@ private:
             const bool full_gpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostGPR &&
                                       GetValueSizeByte(instr->ReturnType()) == sizeof(u64);
             const bool fixed_fpr_get =
-                    host_reg_alias && instr->GetOp() == OpCode::GetHostFPR;
+                    host_reg_alias && instr->GetOp() == OpCode::GetHostFPR &&
+                    instr->GetArg<Imm>(1).Get() == 0 &&
+                    IsFloatValueType(instr->ReturnType());
             // A fixed mapping aliases this SSA value directly to the pinned
             // register. Preserve snapshot semantics by forcing a copy when a
             // SetHostGPR can overwrite that register before the value's last use.
             const bool fixed_gpr_get =
                     full_gpr_get &&
                     !LiveRangeCrossesHostRegWrite(host_gpr_writes, host_index, instr->Id(), end);
-            if (fixed_fpr_get || fixed_gpr_get) {
-                if (fixed_fpr_get) {
+            const bool fixed_fpr_alias =
+                    fixed_fpr_get &&
+                    end <= definition_block_end[instr->Id()] &&
+                    !LiveRangeCrossesHostRegWrite(host_fpr_writes, host_index, instr->Id(), end);
+            if (fixed_fpr_alias || fixed_gpr_get) {
+                if (fixed_fpr_alias) {
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{host_index});
+                    reg_alloc->MarkHostReadCoalesced(hir_value.GetOrderId());
                 } else {
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{host_index});
                     fixed_gpr_alias_end[hir_value.GetOrderId()] = end;
@@ -1848,6 +2008,7 @@ private:
         StackVector<u16, 64> actual_use_end{};
         actual_use_end.resize(instr_count);
         StackVector<std::pair<u16, u16>, 8> host_gpr_writes{};
+        StackVector<std::pair<u16, u16>, 8> host_fpr_writes{};
 
         PerfScope2 perf_scan{GetPerfStats2().regalloc_live_scan};
         u16 block_end = 0;
@@ -1856,6 +2017,9 @@ private:
             if (inst.GetOp() == OpCode::SetHostGPR) {
                 const auto host_reg = static_cast<u16>(inst.GetArg<Imm>(1).Get());
                 host_gpr_writes.emplace_back(host_reg, inst.Id());
+            } else if (inst.GetOp() == OpCode::SetHostFPR) {
+                const auto host_reg = static_cast<u16>(inst.GetArg<Imm>(1).Get());
+                host_fpr_writes.emplace_back(host_reg, inst.Id());
             }
             auto record_use = [&actual_use_end, &inst](Value value) {
                 auto source = ResolveBitCastSource(value);
@@ -1938,7 +2102,9 @@ private:
             const bool full_gpr_get = host_reg_alias && instr->GetOp() == OpCode::GetHostGPR &&
                                       GetValueSizeByte(instr->ReturnType()) == sizeof(u64);
             const bool fixed_fpr_get =
-                    host_reg_alias && instr->GetOp() == OpCode::GetHostFPR;
+                    host_reg_alias && instr->GetOp() == OpCode::GetHostFPR &&
+                    instr->GetArg<Imm>(1).Get() == 0 &&
+                    IsFloatValueType(instr->ReturnType());
             const bool crosses_host_write =
                     full_gpr_get &&
                     std::any_of(host_gpr_writes.begin(), host_gpr_writes.end(),
@@ -1947,9 +2113,18 @@ private:
                                            write.second <= end;
                                 });
             const bool fixed_gpr_get = full_gpr_get && !crosses_host_write;
-            if (fixed_fpr_get || fixed_gpr_get) {
-                if (fixed_fpr_get) {
+            const bool crosses_host_fpr_write =
+                    fixed_fpr_get &&
+                    std::any_of(host_fpr_writes.begin(), host_fpr_writes.end(),
+                                [host_index, instr, end](const auto& write) {
+                                    return write.first == host_index && instr->Id() < write.second &&
+                                           write.second <= end;
+                                });
+            const bool fixed_fpr_alias = fixed_fpr_get && !crosses_host_fpr_write;
+            if (fixed_fpr_alias || fixed_gpr_get) {
+                if (fixed_fpr_alias) {
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{host_index});
+                    reg_alloc->MarkHostReadCoalesced(hir_value.GetOrderId());
                 } else {
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{host_index});
                     fixed_gpr_alias_end[hir_value.GetOrderId()] = end;
@@ -1976,10 +2151,14 @@ private:
         StackVector<u16, 64> use_end{};
         use_end.resize(std::max<u32>(lir_block->MaxInstrId(), lir_block->GetInstList().size()));
         HostRegWriteMap host_gpr_writes{};
+        HostRegWriteMap host_fpr_writes{};
         for (auto& instr : lir_block->GetInstList()) {
             if (instr.GetOp() == OpCode::SetHostGPR) {
                 const auto host_reg = static_cast<u16>(instr.GetArg<Imm>(1).Get());
                 host_gpr_writes[host_reg].push_back(instr.Id());
+            } else if (instr.GetOp() == OpCode::SetHostFPR) {
+                const auto host_reg = static_cast<u16>(instr.GetArg<Imm>(1).Get());
+                host_fpr_writes[host_reg].push_back(instr.Id());
             }
             if (!instr.IsGetHostRegOperation() && !instr.IsBitCastOperation()) {
                 // SetHost* is a normal use. Pinned registers are reserved from
@@ -2042,16 +2221,23 @@ private:
             const bool full_gpr_get = host_reg_alias && instr.GetOp() == OpCode::GetHostGPR &&
                                       GetValueSizeByte(instr.ReturnType()) == sizeof(u64);
             const bool fixed_fpr_get =
-                    host_reg_alias && instr.GetOp() == OpCode::GetHostFPR;
+                    host_reg_alias && instr.GetOp() == OpCode::GetHostFPR &&
+                    instr.GetArg<Imm>(1).Get() == 0 &&
+                    IsFloatValueType(instr.ReturnType());
             // See the function-level collector above: a crossing write makes
             // the GetHostGPR result a snapshot, not a zero-cost alias.
             const bool fixed_gpr_get =
                     full_gpr_get &&
                     !LiveRangeCrossesHostRegWrite(
                             host_gpr_writes, host_index, instr.Id(), use_end[instr.Id()]);
-            if (fixed_fpr_get || fixed_gpr_get) {
-                if (fixed_fpr_get) {
+            const bool fixed_fpr_alias =
+                    fixed_fpr_get &&
+                    !LiveRangeCrossesHostRegWrite(
+                            host_fpr_writes, host_index, instr.Id(), use_end[instr.Id()]);
+            if (fixed_fpr_alias || fixed_gpr_get) {
+                if (fixed_fpr_alias) {
                     reg_alloc->MapRegister(instr.Id(), HostFPR{host_index});
+                    reg_alloc->MarkHostReadCoalesced(instr.Id());
                 } else {
                     reg_alloc->MapRegister(instr.Id(), HostGPR{host_index});
                     fixed_gpr_alias_end[instr.Id()] = use_end[instr.Id()];
@@ -2281,6 +2467,7 @@ private:
     const bool select_eviction{false};
     const bool shift_imm_fast{false};
     const FeatureSet features;
+    const bool xmm_resident{false};
     bool has_eviction_candidate{false};
     u32 eviction_candidate{0};
     Vector<u32> fixed_gpr_alias_end{};
@@ -2736,6 +2923,34 @@ void RegisterAllocPass::RunForCoalesceConflictTest(ir::Block* block,
     LinearScanAllocator scan{block, reg_alloc, 0, 0, false, false, false, false,
                              nullptr, false, features};
     scan.CoalesceGuestRegisterAccessesForTest();
+}
+
+void RegisterAllocPass::RunForXmmResidentTest(ir::Block* block,
+                                              backend::RegAlloc* reg_alloc,
+                                              bool enabled) {
+    auto features = FeatureSet{};
+    reg_alloc->ResetAllocations();
+    LinearScanAllocator scan{block, reg_alloc, 0, backend::kDefaultScratchFPR,
+                             false, false, false, false, nullptr, false, features,
+                             enabled ? 1 : 0};
+    scan.AllocateRegisters();
+    ASSERT(scan.Verify());
+}
+
+void RegisterAllocPass::RunForXmmResidentConflictTest(ir::Block* block,
+                                                      backend::RegAlloc* reg_alloc,
+                                                      u32 tied_value_id,
+                                                      u16 target) {
+    auto features = FeatureSet{};
+    reg_alloc->ResetAllocations();
+    LinearScanAllocator initial{block, reg_alloc, 0, backend::kDefaultScratchFPR,
+                                false, false, false, false, nullptr, false, features, 0};
+    initial.AllocateRegisters();
+    ASSERT(initial.Verify());
+    reg_alloc->MapRegister(tied_value_id, HostFPR{target});
+    LinearScanAllocator scan{block, reg_alloc, 0, 0, false, false, false, false,
+                             nullptr, false, features, 0};
+    scan.CoalesceGuestFPRAccessesForTest();
 }
 
 RegisterAllocPass::SpillEvictTestResult RegisterAllocPass::RunForSpillEvictTest(

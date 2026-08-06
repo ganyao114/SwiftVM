@@ -525,11 +525,17 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     }
                 }
                 // static uniform load
-                if (!uniform_register.Null()) {
+                const bool defer_resident_fpr = !uniform_register.Null() &&
+                        uniform_register.host_reg.is_fpr && GetSvmConfig().xmm_resident;
+                if (!uniform_register.Null() && !defer_resident_fpr) {
                     auto uni_reg_offset{uniform_register.uniform.GetOffset()};
                     auto uni_reg_type{uniform_register.uniform.GetType()};
                     auto uni_reg_size{GetValueSizeByte(uni_reg_type)};
-                    if (IsFloatValueType(uni_reg_type) != is_float ||
+                    const bool scalar_from_fpr =
+                            IsFloatValueType(uni_reg_type) && !is_float &&
+                            uni_size <= sizeof(u64);
+                    if ((!scalar_from_fpr &&
+                         IsFloatValueType(uni_reg_type) != is_float) ||
                         uni_offset < uni_reg_offset ||
                         (uni_offset + uni_size) > (uni_reg_offset + uni_reg_size) ||
                         info.uniform_regs_map.GetContinuousSizeFrom(uni_offset) < uni_size) {
@@ -610,11 +616,17 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 // Static uniform store. The whole access must be contained in
                 // one mapping; a cross-boundary access cannot be represented by
                 // a single SetHost* operation.
-                if (!uniform_register.Null()) {
+                const bool defer_resident_fpr = !uniform_register.Null() &&
+                        uniform_register.host_reg.is_fpr && GetSvmConfig().xmm_resident;
+                if (!uniform_register.Null() && !defer_resident_fpr) {
                     auto uni_reg_offset{uniform_register.uniform.GetOffset()};
                     auto uni_reg_type{uniform_register.uniform.GetType()};
                     auto uni_reg_size{GetValueSizeByte(uni_reg_type)};
-                    if (IsFloatValueType(uni_reg_type) != value_is_float ||
+                    const bool scalar_to_fpr =
+                            IsFloatValueType(uni_reg_type) && !value_is_float &&
+                            value_size <= sizeof(u64);
+                    if ((!scalar_to_fpr &&
+                         IsFloatValueType(uni_reg_type) != value_is_float) ||
                         uni_offset < uni_reg_offset ||
                         (uni_offset + value_size) > (uni_reg_offset + uni_reg_size) ||
                         info.uniform_regs_map.GetContinuousSizeFrom(uni_offset) < value_size) {
@@ -812,6 +824,67 @@ void UniformEliminationPass::Run(HIRFunction* hir_func, const UniformInfo& info,
     for (auto* hir_block : hir_func->GetHIRBlocks()) {
         if (hir_block) {
             Run(hir_block->GetBlock(), info, features, hir_func);
+        }
+    }
+}
+
+void UniformEliminationPass::FinalizeStaticFPRMappings(Block* block,
+                                                       const UniformInfo& info) {
+    if (!GetSvmConfig().xmm_resident) {
+        return;
+    }
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() == OpCode::LoadUniform) {
+            const auto uniform = inst.GetArg<Uniform>(0);
+            const u32 offset = uniform.GetOffset();
+            const u32 size = GetValueSizeByte(uniform.GetType());
+            const auto mapped = info.uniform_regs_map.GetValueAt(offset);
+            if (mapped.Null() || !mapped.host_reg.is_fpr) {
+                continue;
+            }
+            const u32 mapped_offset = mapped.uniform.GetOffset();
+            const u32 mapped_size = GetValueSizeByte(mapped.uniform.GetType());
+            const bool scalar_from_fpr = !IsFloatValueType(uniform.GetType()) &&
+                    size <= sizeof(u64);
+            ASSERT_MSG((IsFloatValueType(uniform.GetType()) || scalar_from_fpr) &&
+                               offset >= mapped_offset &&
+                               offset + size <= mapped_offset + mapped_size &&
+                               info.uniform_regs_map.GetContinuousSizeFrom(offset) >= size,
+                       "invalid resident FPR load [{}, {})", offset, offset + size);
+            const u32 reg = mapped.host_reg.fpr.id;
+            inst.Reset();
+            inst.GetHostFPR(HostRegIndex(reg), Imm{offset - mapped_offset})
+                    .SetReturn(uniform.GetType());
+        } else if (inst.GetOp() == OpCode::StoreUniform) {
+            const auto uniform = inst.GetArg<Uniform>(0);
+            const auto value = inst.GetArg<Value>(1);
+            const u32 offset = uniform.GetOffset();
+            const u32 size = GetValueSizeByte(value.Type());
+            const auto mapped = info.uniform_regs_map.GetValueAt(offset);
+            if (mapped.Null() || !mapped.host_reg.is_fpr) {
+                continue;
+            }
+            const u32 mapped_offset = mapped.uniform.GetOffset();
+            const u32 mapped_size = GetValueSizeByte(mapped.uniform.GetType());
+            const bool scalar_to_fpr = !IsFloatValueType(value.Type()) &&
+                    size <= sizeof(u64);
+            ASSERT_MSG((IsFloatValueType(value.Type()) || scalar_to_fpr) &&
+                               offset >= mapped_offset &&
+                               offset + size <= mapped_offset + mapped_size &&
+                               info.uniform_regs_map.GetContinuousSizeFrom(offset) >= size,
+                       "invalid resident FPR store [{}, {})", offset, offset + size);
+            const u32 reg = mapped.host_reg.fpr.id;
+            inst.Reset();
+            inst.SetHostFPR(value, HostRegIndex(reg), Imm{offset - mapped_offset});
+        }
+    }
+}
+
+void UniformEliminationPass::FinalizeStaticFPRMappings(HIRFunction* function,
+                                                       const UniformInfo& info) {
+    for (auto* block : function->GetHIRBlocks()) {
+        if (block) {
+            FinalizeStaticFPRMappings(block->GetBlock(), info);
         }
     }
 }
