@@ -110,6 +110,7 @@ private:
     void EmitExecutionTrace(u64 guest_rip);
     [[nodiscard]] bool ReproveCoalescedHostWrite(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCoalescedHostRead(ir::Inst* inst) const;
+    [[nodiscard]] bool ReproveCachedConstAddress(ir::Inst* inst) const;
 
     enum class BoundarySubsequence : size_t {
         Prologue,

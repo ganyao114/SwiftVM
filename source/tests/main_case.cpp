@@ -218,7 +218,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 133);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 134);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -291,7 +291,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 47);
+    STATIC_REQUIRE(kFeatureCount == 48);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -5353,6 +5353,105 @@ TEST_CASE("absolute GetOperand materializes directly into its result") {
 
     const bool enabled = swift::runtime::GetSvmConfig().abs_const_mat;
     REQUIRE(bytes == (enabled ? 8 : 12));
+}
+
+TEST_CASE("unit-local absolute addresses reuse only verified idle GPR windows") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    struct Result {
+        swift::u32 bytes{};
+        bool anchor{};
+        bool reuse{};
+        bool host_write{};
+    };
+    auto run = [](bool cache, bool tight_pool, bool coalesce) {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        ModuleConfig module_config{};
+        module_config.feature_overrides.Set(FeatureId::const_addr_cache, cache);
+        module_config.feature_overrides.Set(FeatureId::ra_coalesce, coalesce);
+        auto module = address_space.MapModule(
+                LocationDescriptor{0x78a0}, LocationDescriptor{0x78c0}, module_config);
+
+        IntrusivePtr<Block> block{new Block(0, Location{0x78a0})};
+        auto first = block->GetOperand(Operand{Imm{swift::u64{0x004958d8}}})
+                             .SetType(ValueType::U64);
+        (void)block->LoadMemory(Operand{first}).SetType(ValueType::U64);
+        auto second = block->GetOperand(Operand{Imm{swift::u64{0x004958d8}}})
+                              .SetType(ValueType::U64);
+        (void)block->LoadMemory(Operand{second}).SetType(ValueType::U64);
+        Inst* publish = nullptr;
+        if (coalesce) {
+            auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
+                                 .SetType(ValueType::U64);
+            publish = block->AppendInst(
+                    OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+        }
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+
+        GPRSMask gprs{~swift::u32{0}};
+        if (tight_pool) {
+            for (swift::u32 code : {6u, 7u, 8u, 9u}) {
+                gprs.Clear(code);
+            }
+        } else {
+            for (swift::u32 code : {6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u,
+                             15u, 16u, 17u, 18u, 24u}) {
+                gprs.Clear(code);
+            }
+            for (swift::u32 code : {0u, 1u, 2u, 3u, 4u, 5u, 19u, 20u, 21u,
+                             22u, 23u, 25u, 26u, 27u, 28u, 29u, 30u, 31u}) {
+                gprs.Mark(code);
+            }
+        }
+        const FPRSMask fprs{~((1u << 8) - 1u)};
+        auto features = FeatureSet{};
+        features.const_addr_cache = cache;
+        features.ra_coalesce = coalesce;
+        RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
+        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+
+        const bool anchor = alloc.IsConstAddressCached(first.Id());
+        const bool reuse = alloc.IsConstAddressCached(second.Id());
+        const bool host_write = publish && alloc.IsHostWriteCoalesced(publish->Id());
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block.get());
+        context.Finish();
+        return Result{context.CurrentBufferSize(), anchor, reuse, host_write};
+    };
+
+    SECTION("a repeated RIP-style absolute address removes one three-instruction materialization") {
+        const auto off = run(false, false, false);
+        const auto on = run(true, false, false);
+        REQUIRE_FALSE(off.anchor);
+        REQUIRE_FALSE(off.reuse);
+        REQUIRE(on.anchor);
+        REQUIRE(on.reuse);
+        REQUIRE(on.bytes + 3 * vixl::aarch64::kInstructionSize == off.bytes);
+    }
+
+    SECTION("scratch headroom shortage falls back without a cache owner") {
+        const auto tight = run(true, true, false);
+        REQUIRE_FALSE(tight.anchor);
+        REQUIRE_FALSE(tight.reuse);
+    }
+
+    SECTION("guest publication coalescing and address caching remain independent") {
+        const auto both = run(true, false, true);
+        REQUIRE(both.anchor);
+        REQUIRE(both.reuse);
+        REQUIRE(both.host_write);
+    }
 }
 
 // --- x86 mul CF/OF must reach the flags register -----------------------------

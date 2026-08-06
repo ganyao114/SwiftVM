@@ -153,6 +153,15 @@ public:
     [[nodiscard]] bool IsHostReadCoalesced(u32 id) const {
         return reg_alloc.IsHostReadCoalesced(id);
     }
+    [[nodiscard]] bool IsConstAddressCached(u32 id) const {
+        return reg_alloc.IsConstAddressCached(id);
+    }
+    [[nodiscard]] u32 ConstAddressCacheAnchor(u32 id) const {
+        return reg_alloc.ConstAddressCacheAnchor(id);
+    }
+    [[nodiscard]] backend::GPRSMask DirtyGPR(u32 id) const {
+        return reg_alloc.DirtyGPR(id);
+    }
     [[nodiscard]] RAShapeUnitCounters& GetRAShapeCounters() {
         return reg_alloc.RAShape();
     }

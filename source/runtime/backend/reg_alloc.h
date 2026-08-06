@@ -221,8 +221,11 @@ public:
     void MapReference(u32 from, u32 to);
     void MarkHostWriteCoalesced(u32 id);
     void MarkHostReadCoalesced(u32 id);
+    void MarkConstAddressCached(u32 id, u32 anchor_id);
     [[nodiscard]] bool IsHostWriteCoalesced(u32 id) const;
     [[nodiscard]] bool IsHostReadCoalesced(u32 id) const;
+    [[nodiscard]] bool IsConstAddressCached(u32 id) const;
+    [[nodiscard]] u32 ConstAddressCacheAnchor(u32 id) const;
     void SetActiveRegs(u32 id, GPRSMask &gprs, FPRSMask &fprs);
 
     ir::HostGPR ValueGPR(const ir::Value &value);
@@ -268,6 +271,7 @@ private:
     Vector<Map> alloc_result;
     Vector<bool> coalesced_host_writes{};
     Vector<bool> coalesced_host_reads{};
+    Vector<u32> const_address_cache_anchors{};
     u32 stack_size{};
     ir::Inst *current_ir{};
     GPRSMask gprs;

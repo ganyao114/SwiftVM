@@ -474,9 +474,99 @@ void JitTranslator::EmitCallLambda(ir::Inst* inst) {
     EmitHostCall(lambda, args, has_result, result);
 }
 
+bool JitTranslator::ReproveCachedConstAddress(ir::Inst* inst) const {
+    if (!inst || inst->GetOp() != ir::OpCode::GetOperand ||
+        !context.IsConstAddressCached(inst->Id())) {
+        return false;
+    }
+    const u32 anchor_id = context.ConstAddressCacheAnchor(inst->Id());
+    if (anchor_id == inst->Id()) {
+        return true;
+    }
+    auto address = [](ir::Inst* candidate) -> std::optional<u64> {
+        if (!candidate || candidate->GetOp() != ir::OpCode::GetOperand ||
+            candidate->ReturnType() != ir::ValueType::U64) {
+            return std::nullopt;
+        }
+        const auto operand = candidate->GetArg<ir::Operand>(0);
+        if (!operand.GetLeft().IsImm()) {
+            return std::nullopt;
+        }
+        if (operand.GetRight().Null()) {
+            return operand.GetLeft().imm.Get();
+        }
+        if (operand.GetOp() == ir::OperandOp::Plus &&
+            operand.GetRight().IsImm() && operand.GetRight().imm.Get() == 0) {
+            return operand.GetLeft().imm.Get();
+        }
+        return std::nullopt;
+    };
+    const auto current_address = address(inst);
+    if (!current_address) {
+        return false;
+    }
+    ir::Inst* anchor = nullptr;
+    for (auto& scan : cur_block->GetInstList()) {
+        if (scan.Id() == anchor_id) {
+            anchor = &scan;
+            break;
+        }
+    }
+    if (!anchor || !context.IsConstAddressCached(anchor_id) ||
+        context.ConstAddressCacheAnchor(anchor_id) != anchor_id ||
+        address(anchor) != current_address) {
+        return false;
+    }
+    const auto target = context.X(ir::Value{inst}).GetCode();
+    if (context.X(ir::Value{anchor}).GetCode() != target) {
+        return false;
+    }
+    u32 use_id = inst->Id();
+    bool found_use = false;
+    for (auto& scan : cur_block->GetInstList()) {
+        if (scan.Id() <= inst->Id()) {
+            continue;
+        }
+        if (scan.GetOp() == ir::OpCode::Goto ||
+            scan.GetOp() == ir::OpCode::NotGoto ||
+            scan.GetOp() == ir::OpCode::BindLabel) {
+            return false;
+        }
+        bool names = false;
+        for (auto value : scan.GetValues()) {
+            names |= value.Def() == inst;
+        }
+        if (!names) {
+            continue;
+        }
+        found_use = scan.GetOp() == ir::OpCode::LoadMemory ||
+                    scan.GetOp() == ir::OpCode::StoreMemory ||
+                    scan.GetOp() == ir::OpCode::LoadMemoryTSO ||
+                    scan.GetOp() == ir::OpCode::StoreMemoryTSO;
+        use_id = scan.Id();
+        break;
+    }
+    if (!found_use) {
+        return false;
+    }
+    for (auto& scan : cur_block->GetInstList()) {
+        if (scan.Id() >= anchor_id && scan.Id() <= use_id &&
+            !context.DirtyGPR(scan.Id()).Get(target)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void JitTranslator::EmitGetOperand(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto result = context.R(ir::Value{inst});
+    if (context.IsConstAddressCached(inst->Id()) &&
+        context.ConstAddressCacheAnchor(inst->Id()) != inst->Id()) {
+        ASSERT_MSG(ReproveCachedConstAddress(inst),
+                   "constant-address cache proof failed at IR {}", inst->Id());
+        return;
+    }
     if (abs_const_mat && operand.GetRight().Null() && operand.GetLeft().IsImm()) {
         __ Mov(result, operand.GetLeft().imm.Get());
         return;

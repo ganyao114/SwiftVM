@@ -53,6 +53,7 @@ namespace swift::runtime {
     X(scratch_precise, true) \
     X(ra_spill_evict, true) \
     X(ra_coalesce, true) \
+    X(const_addr_cache, false) \
     X(flag_full_elim, false) \
     X(gpr_zext_coalesce, true) \
     X(sse_nan_fast, false) \
@@ -169,6 +170,7 @@ struct FeatureOverrides {
     X(bool, scratch_precise, "SVM_SCRATCH_PRECISE", DefaultOn, true, "Add/Sub 精确 scratch 计费；缺省 ON，=0 回退；原 reg_alloc.cpp:92") \
     X(bool, ra_spill_evict, "SVM_RA_SPILL_EVICT", DefaultOn, true, "RA farthest-end 驱逐；缺省 ON，=0 回退；原 register_alloc_pass.cpp:106") \
     X(bool, ra_coalesce, "SVM_RA_COALESCE", DefaultOn, true, "guest GPR 发布点定向合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
+    X(bool, const_addr_cache, "SVM_CONST_ADDR_CACHE", NonZero, false, "unit 内重复绝对地址寄存器缓存；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
     X(std::string, arm64_lrcpc_override, "SVM_ARM64_LRCPC", RawString, "", "RCpc host 特征 override；仅明确 0/1 生效，缺省或其他值不改探测；原 translator/x86/translator.cpp:315") \
     X(bool, block_link, "SVM_BLOCK_LINK", DefaultOn, true, "direct block link；缺省 ON，=0 回退；原 translator/x86/translator.cpp:703") \
     X(bool, decode_prof, "SVM_DECODE_PROF", NonZero, false, "decode detail profile；非 0 开且依赖 PROF2；原 perf_stats.h:538") \

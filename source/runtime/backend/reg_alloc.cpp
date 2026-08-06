@@ -375,7 +375,9 @@ ScratchNeed ScratchBudget(const ir::Inst& inst, const FeatureSet& features) {
 RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
                    const FeatureSet& features)
         : alloc_result(instr_size), coalesced_host_writes(instr_size),
-          coalesced_host_reads(instr_size), gprs(gprs), fprs(fprs), features(features) {
+          coalesced_host_reads(instr_size),
+          const_address_cache_anchors(instr_size, UINT32_MAX),
+          gprs(gprs), fprs(fprs), features(features) {
     // Trampolines 暴露跨 module 的最大 GPR 并集。XPOOL 关闭时在 unit 私有
     // allocator 里恢复旧保留集，保持默认发码不变，同时允许 module 快照分叉。
     if (!ScratchXPoolEnabled(features)) {
@@ -389,6 +391,8 @@ void RegAlloc::ResetAllocations() {
     std::fill(alloc_result.begin(), alloc_result.end(), Map{});
     std::fill(coalesced_host_writes.begin(), coalesced_host_writes.end(), false);
     std::fill(coalesced_host_reads.begin(), coalesced_host_reads.end(), false);
+    std::fill(const_address_cache_anchors.begin(), const_address_cache_anchors.end(),
+              UINT32_MAX);
     current_ir = nullptr;
 }
 
@@ -426,12 +430,28 @@ void RegAlloc::MarkHostReadCoalesced(u32 id) {
     coalesced_host_reads[id] = true;
 }
 
+void RegAlloc::MarkConstAddressCached(u32 id, u32 anchor_id) {
+    ASSERT(id < const_address_cache_anchors.size());
+    ASSERT(anchor_id < const_address_cache_anchors.size());
+    const_address_cache_anchors[id] = anchor_id;
+}
+
 bool RegAlloc::IsHostWriteCoalesced(u32 id) const {
     return id < coalesced_host_writes.size() && coalesced_host_writes[id];
 }
 
 bool RegAlloc::IsHostReadCoalesced(u32 id) const {
     return id < coalesced_host_reads.size() && coalesced_host_reads[id];
+}
+
+bool RegAlloc::IsConstAddressCached(u32 id) const {
+    return id < const_address_cache_anchors.size() &&
+           const_address_cache_anchors[id] != UINT32_MAX;
+}
+
+u32 RegAlloc::ConstAddressCacheAnchor(u32 id) const {
+    ASSERT(IsConstAddressCached(id));
+    return const_address_cache_anchors[id];
 }
 
 void RegAlloc::SetActiveRegs(swift::u32 id, GPRSMask& gprs, FPRSMask& fprs) {
