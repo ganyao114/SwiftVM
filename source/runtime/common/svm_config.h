@@ -54,6 +54,8 @@ namespace swift::runtime {
     X(ra_spill_evict, true) \
     X(ra_coalesce, true) \
     X(const_addr_cache, false) \
+    X(indirect_l1, false) \
+    X(shadow_lean, false) \
     X(flag_full_elim, false) \
     X(gpr_zext_coalesce, true) \
     X(sse_nan_fast, false) \
@@ -171,11 +173,14 @@ struct FeatureOverrides {
     X(bool, ra_spill_evict, "SVM_RA_SPILL_EVICT", DefaultOn, true, "RA farthest-end 驱逐；缺省 ON，=0 回退；原 register_alloc_pass.cpp:106") \
     X(bool, ra_coalesce, "SVM_RA_COALESCE", DefaultOn, true, "guest GPR 发布点定向合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(bool, const_addr_cache, "SVM_CONST_ADDR_CACHE", NonZero, false, "unit 内重复绝对地址寄存器缓存；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
+    X(bool, indirect_l1, "SVM_INDIRECT_L1", NonZero, false, "间接出口块内 L1 首槽快查；非 0 开，缺省 OFF；原 jit_context.cpp") \
+    X(bool, shadow_lean, "SVM_SHADOW_LEAN", NonZero, false, "RSB frame 复用 L2 slot，缩短 push/pop；非 0 开，缺省 OFF；原 jit_context.cpp") \
     X(std::string, arm64_lrcpc_override, "SVM_ARM64_LRCPC", RawString, "", "RCpc host 特征 override；仅明确 0/1 生效，缺省或其他值不改探测；原 translator/x86/translator.cpp:315") \
     X(bool, block_link, "SVM_BLOCK_LINK", DefaultOn, true, "direct block link；缺省 ON，=0 回退；原 translator/x86/translator.cpp:703") \
     X(bool, decode_prof, "SVM_DECODE_PROF", NonZero, false, "decode detail profile；非 0 开且依赖 PROF2；原 perf_stats.h:538") \
     X(u64, decode_prof_empty, "SVM_DECODE_PROF_EMPTY", EmptyBenchIterations, 0, "decode 空循环校准次数；0/缺省不跑，小于 1000 时取 1000000；原 perf_stats.h:877") \
     X(bool, density_prof, "SVM_DENSITY_PROF", NonZero, false, "静态密度探针；非 0 开，缺省 OFF；原 jit_context.cpp:88") \
+    X(bool, indirect_l1_prof, "SVM_INDIRECT_L1_PROF", NonZero, false, "块内 L1 命中/失败按 guest PC 计数；非 0 开，缺省 OFF；原 hot_coalesce_prof.cpp") \
     X(bool, distorm_fast, "SVM_DISTORM_FAST", DefaultOn, true, "distorm fast decoder；缺省 ON，=0 回退；原 distorm_fast.cc:596") \
     X(bool, distorm_verify, "SVM_DISTORM_VERIFY", NonZero, false, "distorm fast differential verify；非 0 开；原 distorm_fast.cc:604") \
     X(bool, dump_ir_post, "SVM_DUMP_IR_POST", Presence, false, "pass 后 IR 诊断；变量存在即开；原 flags/uniform_elimination_pass.cpp") \

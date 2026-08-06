@@ -203,3 +203,29 @@ TEST_CASE("SMC concurrent write windows invalidate every runtime cache",
     fixture.Tracker().UnregisterRuntime(token_a);
     fixture.Tracker().UnregisterRuntime(token_b);
 }
+
+TEST_CASE("SMC range invalidation clears the L1 value used by inline indirect exits",
+          "[smc][indirect-l1]") {
+    SmcFixture fixture{1};
+    TranslateTable l1{8};
+    auto token = fixture.Tracker().RegisterRuntime(l1);
+    constexpr std::uintptr_t kGuest = 0x180;
+    constexpr std::size_t kFakeCode = 0x1234'5678;
+
+    fixture.Publish(kGuest);
+    fixture.Space().PushCodeCache(Location{kGuest},
+                                  reinterpret_cast<void*>(kFakeCode));
+    REQUIRE(l1.Put(kGuest, kFakeCode));
+    REQUIRE(l1.Lookup(kGuest) == kFakeCode);
+    REQUIRE(fixture.Space().GetCodeCacheTable().Lookup(kGuest) == kFakeCode);
+
+    fixture.Tracker().InvalidateRange(
+            fixture.Space(), &l1, kGuest, kGuest + 1);
+    // Inline dispatch loads this same aligned value word and treats zero as a
+    // miss. The target cannot be reclaimed while an old L1 pointer survives.
+    REQUIRE(l1.Lookup(kGuest) == 0);
+    REQUIRE(fixture.Space().GetCodeCacheTable().Lookup(kGuest) == 0);
+    REQUIRE_FALSE(fixture.HasNode(kGuest));
+
+    fixture.Tracker().UnregisterRuntime(token);
+}

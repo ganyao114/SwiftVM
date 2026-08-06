@@ -218,7 +218,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 134);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 137);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -291,7 +291,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 48);
+    STATIC_REQUIRE(kFeatureCount == 50);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -5452,6 +5452,143 @@ TEST_CASE("unit-local absolute addresses reuse only verified idle GPR windows") 
         REQUIRE(both.reuse);
         REQUIRE(both.host_write);
     }
+}
+
+TEST_CASE("indirect L1 and lean shadow stack are independent and composable") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    struct Result {
+        swift::u32 bytes{};
+        std::map<std::string, swift::u32> mnemonics{};
+        bool host_write_coalesced{};
+    };
+    enum class Shape { Indirect, Call, Return };
+    auto run = [](bool indirect_l1, bool shadow_lean, Shape shape,
+                  bool trailing_instruction, bool coalesce) {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+                .global_opts = Optimizations::All,
+        };
+        AddressSpace address_space{config};
+        ModuleConfig module_config{};
+        module_config.feature_overrides.Set(FeatureId::indirect_l1, indirect_l1);
+        module_config.feature_overrides.Set(FeatureId::shadow_lean, shadow_lean);
+        module_config.feature_overrides.Set(FeatureId::ra_coalesce, coalesce);
+        auto module = address_space.MapModule(
+                LocationDescriptor{0x79a0}, LocationDescriptor{0x79e0}, module_config);
+
+        IntrusivePtr<Block> block{new Block(0, Location{0x79a0})};
+        Inst* publish = nullptr;
+        if (coalesce) {
+            auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
+                                 .SetType(ValueType::U64);
+            publish = block->AppendInst(
+                    OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+        }
+        auto target = block->LoadUniform<TypedValue<ValueType::U64>>(
+                Uniform{0, ValueType::U64});
+        if (shape == Shape::Call) {
+            block->AppendInst(OpCode::PushRSB,
+                              Lambda{Imm{swift::u64{0x42f2b1}}});
+        }
+        block->AppendInst(OpCode::SetLocation, Lambda{target});
+        if (trailing_instruction) {
+            block->AppendInst(OpCode::Nop);
+        }
+        if (shape == Shape::Return) {
+            block->SetTerminal(terminal::PopRSBHint{});
+        } else {
+            block->SetTerminal(terminal::ReturnToDispatch{});
+        }
+        block->ReIdInstr();
+
+        GPRSMask gprs{0};
+        for (swift::u32 code : {0u, 1u, 2u, 3u, 4u, 5u, 19u, 20u, 21u,
+                                22u, 23u, 25u, 26u, 27u, 28u, 29u, 30u, 31u}) {
+            gprs.Mark(code);
+        }
+        const FPRSMask fprs{~((1u << 8) - 1u)};
+        auto features = ResolveFeatureSet(module_config);
+        RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
+        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        const bool host_write = publish && alloc.IsHostWriteCoalesced(publish->Id());
+
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block.get());
+        context.Finish();
+
+        std::map<std::string, swift::u32> mnemonics;
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        auto& masm = context.GetMasm();
+        auto* first = masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+        auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+        for (auto* instruction = first; instruction < last; ++instruction) {
+            decoder.Decode(instruction);
+            std::string_view text{disassembler.GetOutput()};
+            const auto begin = text.find_first_not_of(" \t");
+            if (begin == std::string_view::npos) continue;
+            text.remove_prefix(begin);
+            const auto end = text.find_first_of(" \t");
+            ++mnemonics[std::string{text.substr(0, end)}];
+        }
+        return Result{context.CurrentBufferSize(), std::move(mnemonics), host_write};
+    };
+
+    const auto off = run(false, false, Shape::Indirect, false, true);
+    const auto l1 = run(true, false, Shape::Indirect, false, true);
+    const auto shadow = run(false, true, Shape::Indirect, false, true);
+    auto count = [](const Result& result, std::string_view mnemonic) {
+        auto it = result.mnemonics.find(std::string{mnemonic});
+        return it == result.mnemonics.end() ? 0u : it->second;
+    };
+    REQUIRE(l1.bytes == off.bytes + 10 * vixl::aarch64::kInstructionSize);
+    REQUIRE(shadow.bytes == off.bytes);
+    REQUIRE(count(off, "br") == 0);
+    REQUIRE(count(l1, "br") == 1);
+    // The retained Ret is the L1 miss path back to the unchanged dispatcher.
+    REQUIRE(count(l1, "ret") == 1);
+    REQUIRE(count(l1, "ldp") >= 1);
+    REQUIRE(l1.host_write_coalesced);
+
+    const auto call_off = run(false, false, Shape::Call, false, false);
+    const auto call_l1 = run(true, false, Shape::Call, false, false);
+    const auto call_shadow = run(false, true, Shape::Call, false, false);
+    const auto call_both = run(true, true, Shape::Call, false, false);
+    REQUIRE(call_l1.bytes ==
+            call_off.bytes + 10 * vixl::aarch64::kInstructionSize);
+    REQUIRE(call_shadow.bytes ==
+            call_off.bytes - 2 * vixl::aarch64::kInstructionSize);
+    REQUIRE(call_both.bytes ==
+            call_off.bytes + 8 * vixl::aarch64::kInstructionSize);
+    REQUIRE(call_both.bytes ==
+            call_l1.bytes - 2 * vixl::aarch64::kInstructionSize);
+
+    const auto ret_off = run(false, false, Shape::Return, false, false);
+    const auto ret_l1 = run(true, false, Shape::Return, false, false);
+    const auto ret_shadow = run(false, true, Shape::Return, false, false);
+    const auto ret_both = run(true, true, Shape::Return, false, false);
+    REQUIRE(ret_l1.bytes == ret_off.bytes);
+    REQUIRE(ret_shadow.bytes ==
+            ret_off.bytes - 2 * vixl::aarch64::kInstructionSize);
+    REQUIRE(ret_both.bytes == ret_shadow.bytes);
+
+    // Any instruction after SetLocation clears the retained SSA register;
+    // the feature must then emit the byte-identical dispatcher fallback.
+    const auto trailing_off =
+            run(false, false, Shape::Indirect, true, false);
+    const auto trailing_on =
+            run(true, false, Shape::Indirect, true, false);
+    REQUIRE(trailing_on.bytes == trailing_off.bytes);
+    REQUIRE(count(trailing_on, "br") == 0);
 }
 
 // --- x86 mul CF/OF must reach the flags register -----------------------------

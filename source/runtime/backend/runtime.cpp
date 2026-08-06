@@ -87,7 +87,10 @@ struct Runtime::Impl final {
             profile_interface.fpcr_timing = fpcr_timing.get();
         }
         hot_coalesce_enabled = HotCoalesceProfEnabled();
-        if (hot_coalesce_enabled) {
+        indirect_l1_prof_enabled = IndirectL1ProfEnabled();
+        hot_counter_storage_enabled =
+                hot_coalesce_enabled || indirect_l1_prof_enabled;
+        if (hot_counter_storage_enabled) {
             hot_coalesce_counters.resize(
                     static_cast<size_t>(kHotCoalesceMaxUnits) *
                     kHotCoalesceCounterCount);
@@ -100,7 +103,8 @@ struct Runtime::Impl final {
         } else {
             state->l1_code_cache = l1_code_cache.Data();
         }
-        if (exec_profile_enabled || execution_trace_enabled || hot_coalesce_enabled ||
+        if (exec_profile_enabled || execution_trace_enabled ||
+            hot_counter_storage_enabled ||
             fpcr_tax_profile_enabled || fpcr_timing_enabled) {
             state->interface = &profile_interface;
         }
@@ -191,7 +195,7 @@ struct Runtime::Impl final {
                     static_cast<unsigned long long>(p.region_fallthroughs),
                     std::to_string(GetSvmConfig().exec_access_pad).c_str());
         }
-        if (hot_coalesce_enabled) {
+        if (hot_counter_storage_enabled) {
             HotCoalesceSubmitThread(hot_coalesce_counters);
         }
         if (fpcr_tax_profile_enabled) {
@@ -594,6 +598,8 @@ struct Runtime::Impl final {
     std::vector<u64> hot_coalesce_counters{};
     std::unique_ptr<FpcrTimingBuffer> fpcr_timing{};
     bool hot_coalesce_enabled{};
+    bool indirect_l1_prof_enabled{};
+    bool hot_counter_storage_enabled{};
     bool fpcr_tax_profile_enabled{};
     bool fpcr_timing_enabled{};
     bool execution_trace_enabled{};

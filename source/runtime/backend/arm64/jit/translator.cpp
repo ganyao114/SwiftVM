@@ -712,6 +712,7 @@ void JitTranslator::Translate(ir::Block* block) {
         }
     }
     static_next_loc.reset();
+    dynamic_next_loc.reset();
     // Function mode keeps one function-sized suppression bitmap. Grow it
     // before the per-block backedge proof marks the two sunk IR instructions.
     disable_instructions.resize(
@@ -1385,7 +1386,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             MergeNZCV();
             context.RecordExecCounter(static_next_loc ? exec_offset_exit_direct
                                                       : exec_offset_exit_indirect);
-            if (!EmitStaticForward()) {
+            if (!EmitStaticForward() && !EmitIndirectForward()) {
                 __ Ret();
             }
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToDispatch>) {
@@ -1394,7 +1395,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                     cur_block_is_call ? exec_offset_exit_call
                                       : (static_next_loc ? exec_offset_exit_direct
                                                          : exec_offset_exit_indirect));
-            if (!EmitStaticForward()) {
+            if (!EmitStaticForward() && !EmitIndirectForward()) {
                 __ Ret();
             }
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToHost>) {
@@ -1605,6 +1606,19 @@ bool JitTranslator::EmitStaticForward() {
     return emitted;
 }
 
+bool JitTranslator::EmitIndirectForward() {
+    if (!context.GetFeatures().indirect_l1 || !dynamic_next_loc) {
+        return false;
+    }
+    const auto location = context.X(*dynamic_next_loc);
+    dynamic_next_loc.reset();
+    const u32 link_before = context.CurrentBufferSize();
+    context.ForwardIndirectL1(location);
+    RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
+                        context.CurrentBufferSize());
+    return true;
+}
+
 Label* JitTranslator::GetLocalLabel(ir::Inst* inst) {
     if (auto itr = local_labels.find(inst); itr != local_labels.end()) {
         return &itr->second;
@@ -1649,6 +1663,7 @@ void JitTranslator::Translate(ir::Inst* inst) {
     context.TickIR(inst);
     if (inst->GetOp() != ir::OpCode::SetLocation) {
         static_next_loc.reset();
+        dynamic_next_loc.reset();
     }
 
 #define INST(name, ...)                                                                            \

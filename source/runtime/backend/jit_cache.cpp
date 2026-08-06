@@ -71,8 +71,8 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     // Profiled JIT units embed a process-local counter slot. Serializing one
     // would revive code with no matching metadata slot in the next process.
     // The probe is measurement-only, so disable disk caching while it is on.
-    if (HotCoalesceProfEnabled()) {
-        LOG_WARNING("SVM_JIT_CACHE: SVM_RA_HOT_COALESCE is incompatible; cache disabled");
+    if (HotCounterStorageEnabled()) {
+        LOG_WARNING("SVM_JIT_CACHE: counter-slot profiling is incompatible; cache disabled");
         return;
     }
     if (FpcrTaxProfEnabled()) {

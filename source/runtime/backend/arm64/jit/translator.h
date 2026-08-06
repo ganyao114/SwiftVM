@@ -416,6 +416,11 @@ private:
     // Emits the inline dispatch for `static_next_loc`; returns false when no
     // static target is known and the caller must Ret to the dispatcher.
     bool EmitStaticForward();
+    // Dynamic SetLocation is remembered only while it remains the final body
+    // instruction. The terminal can therefore reuse its still-live register
+    // without extending an SSA lifetime or reloading State::current_loc.
+    std::optional<ir::Value> dynamic_next_loc{};
+    bool EmitIndirectForward();
     std::unique_ptr<Label> backedge_exit_label{};
     bool backedge_exit_referenced{};
     std::unique_ptr<BackedgeFlagsPlan> backedge_flags_plan{};

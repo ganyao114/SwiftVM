@@ -77,6 +77,8 @@ struct AggregateBucket {
     u64 move_dynamic{};
     u64 nan_dynamic{};
     u64 state_saved_dynamic{};
+    u64 indirect_l1_hits{};
+    u64 indirect_l1_misses{};
 };
 
 struct RankedBucket {
@@ -139,6 +141,10 @@ std::vector<AggregateBucket> BuildBuckets(u32 count) {
         bucket.nan_dynamic +=
                 Dynamic(slot, HotCoalesceCounter::NaNGuardInstructions);
         bucket.state_saved_dynamic += StateSavedDynamic(slot);
+        bucket.indirect_l1_hits +=
+                Dynamic(slot, HotCoalesceCounter::IndirectL1Hit);
+        bucket.indirect_l1_misses +=
+                Dynamic(slot, HotCoalesceCounter::IndirectL1Miss);
     }
     std::vector<AggregateBucket> buckets;
     buckets.reserve(by_pc.size());
@@ -237,6 +243,32 @@ void DumpAtExit() {
                  PrintU64(state_pairs), PrintU64(state_same_offset),
                  PrintU64(state_saved_dynamic),
                  Percent(state_saved_dynamic, host_dynamic));
+
+    if (config.indirect_l1_prof) {
+        u64 hits = 0;
+        u64 misses = 0;
+        for (const auto& bucket : buckets) {
+            hits += bucket.indirect_l1_hits;
+            misses += bucket.indirect_l1_misses;
+        }
+        std::fprintf(out,
+                     "[svm-indirect-l1] units=%zu hits=%llu misses=%llu "
+                     "total=%llu hit_pct=%.6f\n",
+                     buckets.size(), PrintU64(hits), PrintU64(misses),
+                     PrintU64(hits + misses), Percent(hits, hits + misses));
+        for (const auto& bucket : buckets) {
+            const u64 total =
+                    bucket.indirect_l1_hits + bucket.indirect_l1_misses;
+            if (!total) continue;
+            std::fprintf(out,
+                         "[svm-indirect-l1-pc] pc=0x%llx versions=%u "
+                         "hits=%llu misses=%llu total=%llu hit_pct=%.6f\n",
+                         static_cast<unsigned long long>(bucket.guest_entry),
+                         bucket.versions, PrintU64(bucket.indirect_l1_hits),
+                         PrintU64(bucket.indirect_l1_misses), PrintU64(total),
+                         Percent(bucket.indirect_l1_hits, total));
+        }
+    }
 
     if (config.ra_hot_coalesce_all) {
         for (const auto& bucket : buckets) {
@@ -449,26 +481,40 @@ bool PairableSize(u32 size) {
 
 }  // namespace
 
+namespace {
+
+bool RegisterDumpIfEnabled(bool enabled) {
+    if (!enabled) return false;
+    static const bool registered = [] {
+        // Construct process storage before registering the dump. atexit runs
+        // callbacks in reverse registration order, so counters remain live.
+        (void)Counters();
+        std::atexit(DumpAtExit);
+        return true;
+    }();
+    (void)registered;
+    return true;
+}
+
+}  // namespace
+
 bool HotCoalesceProfEnabled() {
     const auto& config = GetSvmConfig();
     const bool enabled = config.ra_hot_coalesce_is_set &&
                          config.ra_hot_coalesce != "0";
-    if (enabled) {
-        static const bool registered = [] {
-            // Construct process storage before registering the dump. atexit
-            // runs callbacks in reverse registration order, so the dump then
-            // observes live counters rather than an already-destroyed static.
-            (void)Counters();
-            std::atexit(DumpAtExit);
-            return true;
-        }();
-        (void)registered;
-    }
-    return enabled;
+    return RegisterDumpIfEnabled(enabled);
+}
+
+bool IndirectL1ProfEnabled() {
+    return RegisterDumpIfEnabled(GetSvmConfig().indirect_l1_prof);
+}
+
+bool HotCounterStorageEnabled() {
+    return HotCoalesceProfEnabled() || IndirectL1ProfEnabled();
 }
 
 u32 HotCoalesceRegisterUnit(VAddr guest_entry) {
-    if (!HotCoalesceProfEnabled()) return kHotCoalesceInvalidSlot;
+    if (!HotCounterStorageEnabled()) return kHotCoalesceInvalidSlot;
     auto& process = Counters();
     const u32 slot = process.next_slot.fetch_add(1, std::memory_order_relaxed);
     if (slot >= kHotCoalesceMaxUnits) {
@@ -491,7 +537,7 @@ void HotCoalesceSetUnitHostBase(u32 slot, VAddr host_base) {
 }
 
 void HotCoalesceSubmitThread(std::span<const u64> counters) {
-    if (!HotCoalesceProfEnabled() || counters.empty()) return;
+    if (!HotCounterStorageEnabled() || counters.empty()) return;
     auto& process = Counters();
     const u32 count = std::min(process.next_slot.load(std::memory_order_relaxed),
                                kHotCoalesceMaxUnits);

@@ -11,6 +11,7 @@
 
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/context.h"
+#include "runtime/common/backedge_control.h"
 
 
 namespace swift::runtime::backend::arm64 {
@@ -47,6 +48,9 @@ JitContext::JitContext(const std::shared_ptr<Module>& module,
     }
     fpcr_tax_profile_enabled = FpcrTaxProfEnabled();
     hot_coalesce_enabled = HotCoalesceProfEnabled();
+    indirect_l1_prof_enabled = IndirectL1ProfEnabled();
+    hot_counter_storage_enabled =
+            hot_coalesce_enabled || indirect_l1_prof_enabled;
     const bool density_enabled = GetSvmConfig().density_prof;
     density_profile_enabled = density_enabled;
     direct_link_active = enable_direct_link && module->IsDirectLinkConfigured() &&
@@ -107,7 +111,8 @@ void JitContext::RecordFpcrTaxCounter(FpcrTaxCounter counter) {
 }
 
 void JitContext::RecordHotCounter(HotCoalesceCounter counter, u32 amount) {
-    if (!hot_coalesce_enabled || hot_coalesce_slot == kHotCoalesceInvalidSlot ||
+    if (!hot_counter_storage_enabled ||
+        hot_coalesce_slot == kHotCoalesceInvalidSlot ||
         amount == 0) {
         return;
     }
@@ -635,20 +640,70 @@ void JitContext::ReturnToDispatcher(const Register& location) {
     __ Ret();
 }
 
+void JitContext::ForwardIndirectL1(const Register& location) {
+    Label miss;
+    const auto index = GetTmpX();
+    const auto entry = GetTmpX();
+
+    // Match TranslateTable::Hash and the trampoline's first probe exactly.
+    // Collisions deliberately miss here; the unchanged dispatcher continues
+    // the complete linear probe chain and L2 fallback.
+    __ Lsr(index, location, 2);
+    __ Eor(index, index, Operand(index, LSR, L1_CODE_CACHE_BITS));
+    __ And(index, index, L1_CODE_CACHE_HASH);
+    if (BackedgeLatchEnabled() || GetConfig().region_edges) {
+        __ Ldr(entry, MemOperand(state, state_offset_exec_profile_ptr));
+        __ Ldr(entry, MemOperand(entry, profile_offset_l1_code_cache));
+    } else {
+        __ Ldr(entry, MemOperand(state, state_offset_l1_code_cache));
+    }
+    __ Add(entry, entry, Operand(index, LSL, 4));
+    __ Ldp(index, entry, MemOperand(entry));
+    __ Cmp(index, location);
+    // If the key mismatched, force Z=1; otherwise test the code pointer.
+    __ Ccmp(entry, xzr, ZFlag, eq);
+    __ B(&miss, eq);
+    if (indirect_l1_prof_enabled) {
+        RecordHotCounter(HotCoalesceCounter::IndirectL1Hit);
+    }
+    __ Br(entry);
+    __ Bind(&miss);
+    if (indirect_l1_prof_enabled) {
+        RecordHotCounter(HotCoalesceCounter::IndirectL1Miss);
+    }
+    __ Ret();
+}
+
 // --- Return Stack Buffer (RSB) -------------------------------------------
 // The RSB is a small stack of 16-byte frames in host memory, pointed to by
-// the reserved rsb_ptr register (x25).  Each frame holds:
-//   offset 0: guest_location  (u64) — the guest return address (validation)
-//   offset 8: dispatch_index  (u64) — L2 dispatch-table slot for fast lookup
+// the reserved rsb_ptr register (x25). The default format stores the guest
+// return address followed by the L2 dispatch slot. The lean-shadow format
+// stores that stable slot in both words, so its pop can fetch the L2 key and
+// value together without materializing the guest address at every call site.
 //
 // Push (guest call): pre-decrement rsb_ptr by 16 and store the frame.
-// Pop  (guest ret):  load the frame, compare guest_location with the actual
-//   return target in state->current_loc; on a hit, load the compiled code
-//   pointer from the L2 dispatch table and branch directly — skipping the
-//   trampoline dispatcher round-trip entirely.  On a miss (mismatch, empty
-//   slot, or underflow) fall through to the normal Ret-to-dispatcher path.
+// Pop  (guest ret): load the predicted key and code pointer, compare the key
+//   with state->current_loc, and branch on a hit. On a miss (mismatch, empty
+//   slot, or underflow), fall through to the normal dispatcher path. The two
+//   formats are safe to mix: a default pop rejects a lean-shadow frame, while
+//   a lean-shadow pop accepts either because the second word is always slot.
 
 void JitContext::EmitRSBPush(u64 guest_return_addr, u32 dispatch_index) {
+    if (features.shadow_lean) {
+        Label rsb_full;
+        const auto bound = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip0;
+        const auto slot = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip1;
+        __ Ldr(bound, MemOperand(state, state_offset_rsb_bottom));
+        __ Cmp(rsb_ptr, bound);
+        __ B(&rsb_full, ls);
+        // Keep the 16-byte frame ABI. Both words carry the stable L2 value-slot
+        // index; an OFF pop seeing this frame merely fails its guest-PC compare
+        // and takes the safe dispatcher path.
+        __ Mov(slot, static_cast<u64>(dispatch_index));
+        __ Stp(slot, slot, MemOperand(rsb_ptr, -16, PreIndex));
+        __ Bind(&rsb_full);
+        return;
+    }
     Label rsb_full;
     const auto bound = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip0;
     const auto guest = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip0;
@@ -669,6 +724,31 @@ void JitContext::EmitRSBPush(u64 guest_return_addr, u32 dispatch_index) {
 }
 
 void JitContext::EmitRSBPop() {
+    if (features.shadow_lean) {
+        Label rsb_miss, rsb_empty;
+        const auto predicted = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip0;
+        const auto slot = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip1;
+        __ Ldr(predicted, MemOperand(state, state_offset_rsb_top));
+        __ Cmp(rsb_ptr, predicted);
+        __ B(&rsb_empty, hs);
+        // Pop first: a mismatched prediction is consumed exactly like the old
+        // path. The slot points at the L2 value word; the preceding word is
+        // its immutable guest key. SMC clears the value word before reclaim.
+        __ Ldp(predicted, slot, MemOperand(rsb_ptr, 16, PostIndex));
+        __ Add(slot, cache, Operand(slot, LSL, 3));
+        __ Ldp(predicted, slot, MemOperand(slot, -8));
+        __ Ldr(ip, MemOperand(state, state_offset_current_loc));
+        __ Cmp(predicted, ip);
+        __ B(&rsb_miss, ne);
+        __ Cbz(slot, &rsb_miss);
+        RecordExecCounter(exec_offset_rsb_hit);
+        __ Br(slot);
+        __ Bind(&rsb_miss);
+        __ Bind(&rsb_empty);
+        RecordExecCounter(exec_offset_rsb_miss);
+        __ Ret();
+        return;
+    }
     Label rsb_miss, rsb_empty;
     const auto predicted = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip0;
     const auto actual = backend::ScratchXPoolEnabled(features) ? GetTmpX() : ip1;
@@ -738,7 +818,12 @@ void JitContext::Finish() {
 }
 
 void JitContext::FinishHotCoalesceBlock() {
-    if (!hot_coalesce_enabled || hot_coalesce_slot == kHotCoalesceInvalidSlot) {
+    if (!hot_counter_storage_enabled ||
+        hot_coalesce_slot == kHotCoalesceInvalidSlot) {
+        return;
+    }
+    if (!hot_coalesce_enabled) {
+        hot_coalesce_slot = kHotCoalesceInvalidSlot;
         return;
     }
     ASSERT(hot_collecting);
@@ -860,10 +945,12 @@ void JitContext::SetCurrent(ir::Block* block, bool split_backedge_entry) {
     }
     auto label = GetLabel(block->GetStartLocation().Value());
     __ Bind(label);
-    if (hot_coalesce_enabled) {
-        ASSERT(!hot_collecting);
+    if (hot_counter_storage_enabled) {
+        if (hot_coalesce_enabled) ASSERT(!hot_collecting);
         hot_coalesce_slot =
                 HotCoalesceRegisterUnit(block->GetStartLocation().Value());
+    }
+    if (hot_coalesce_enabled) {
         hot_shape = {};
         hot_shape.guest_entry = block->GetStartLocation().Value();
         hot_shape.host_offset = CurrentBufferSize();

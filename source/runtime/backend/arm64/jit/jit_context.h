@@ -106,19 +106,22 @@ public:
     // trampoline dispatcher as before. state->current_loc has already been
     // written by EmitSetLocation, so the fallback path needs no fixup.
     [[nodiscard]] bool ForwardStatic(ir::Location location);
+    // Checks only the first slot of the existing per-Runtime L1 table. A key
+    // mismatch or cleared value returns through the unchanged dispatcher,
+    // which performs the complete L1 collision-chain and L2 lookup.
+    void ForwardIndirectL1(const Register& location);
     void ReturnToDispatcher(const Register& location);
 
     // --- Return Stack Buffer (RSB) emission --------------------------------
     // Called from the JitTranslator for PushRSB instructions and PopRSBHint
     // terminals when Optimizations::ReturnStackBuffer is enabled.
     //
-    // Push: stores (guest_return_addr, dispatch_index) as a 16-byte frame
-    //   via pre-decrement of rsb_ptr (x25).
-    // Pop:  pops a frame, validates guest_return_addr against
-    //   state->current_loc, and on a hit loads the compiled code pointer
-    //   from the L2 dispatch table and branches directly — skipping the
-    //   trampoline dispatcher.  On a miss (mismatch, empty slot, or
-    //   underflow) falls through to the normal Ret-to-dispatcher path.
+    // Push: stores a 16-byte frame via pre-decrement of rsb_ptr (x25). The
+    //   default format is (guest_return_addr, dispatch_index); lean-shadow
+    //   stores dispatch_index twice to avoid materializing the address.
+    // Pop: pops a frame, validates the predicted guest key against
+    //   state->current_loc, and on a hit branches through the L2 value.
+    //   A miss, empty slot, or underflow uses the normal dispatcher path.
     //
     // Bounds guards (State::rsb_bottom / rsb_top, wired in runtime.cpp):
     //   Push skips when rsb_ptr has reached the buffer bottom (stack full) so
@@ -260,6 +263,8 @@ private:
     bool execution_trace_enabled{};
     bool fpcr_tax_profile_enabled{};
     bool hot_coalesce_enabled{};
+    bool indirect_l1_prof_enabled{};
+    bool hot_counter_storage_enabled{};
     bool density_profile_enabled{};
     bool direct_link_active{};
     bool density_nan_open{};

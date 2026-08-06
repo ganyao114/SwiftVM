@@ -678,8 +678,10 @@ void JitTranslator::EmitSetLocation(ir::Inst* inst) {
     // the stale constant there would turn an indirect jump into a jump back
     // into the middle of the same block.
     static_next_loc.reset();
+    dynamic_next_loc.reset();
     if (location.IsValue()) {
         __ Str(context.X(location.GetValue()), MemOperand(state, state_offset_current_loc));
+        dynamic_next_loc = location.GetValue();
     } else {
         __ Mov(ip, location.GetImm().Get());
         __ Str(ip, MemOperand(state, state_offset_current_loc));

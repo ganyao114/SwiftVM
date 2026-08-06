@@ -26,6 +26,8 @@ enum class HotCoalesceCounter : u32 {
     SpillReloads,
     SpillWritebacks,
     NaNGuardInstructions,
+    IndirectL1Hit,
+    IndirectL1Miss,
     Count,
 };
 
@@ -58,6 +60,8 @@ struct HotCoalesceUnitStatic {
 };
 
 [[nodiscard]] bool HotCoalesceProfEnabled();
+[[nodiscard]] bool IndirectL1ProfEnabled();
+[[nodiscard]] bool HotCounterStorageEnabled();
 [[nodiscard]] u32 HotCoalesceRegisterUnit(VAddr guest_entry);
 void HotCoalesceUpdateUnit(u32 slot, const HotCoalesceUnitStatic& counters);
 void HotCoalesceSetUnitHostBase(u32 slot, VAddr host_base);
