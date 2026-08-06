@@ -7,6 +7,14 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
+void JitTranslator::RecordPFAFDensity(PFAFDensityKind kind, u32 begin) {
+    if (!context.DensityProfileEnabled()) return;
+    // 单块的某个 PF/AF 子桶不会接近 64 KiB。高 16 位保存
+    // 翻译期的 site 数，不增大 JitTranslator，也不改发码。
+    pfaf_density_bytes[static_cast<size_t>(kind)] +=
+            (1u << 16) | (context.CurrentBufferSize() - begin);
+}
+
 void JitTranslator::MergeNZCV() {
     if (save_in_nzcv && nzcv_dirty) {
         const auto scratch = context.GetSharedTmpX();
@@ -149,19 +157,25 @@ void JitTranslator::ClearFlags(ir::Flags guest) {
         __ And(flags, flags, ForceCast<s64>(mask));
     }
     if (True(guest & ir::Flags::Parity)) {
+        const u32 begin = context.CurrentBufferSize();
         // Clear Parity: an odd-parity byte makes TestParityFlag read PF = 0.
         const auto scratch = context.GetSharedTmpX();
         __ Mov(scratch, 1);
         __ Bfi(flags, scratch, HostFlagsBit::ParityByte, 8);
+        RecordPFAFDensity(PFAFDensityKind::PFWrite, begin);
     }
     if (True(guest & ir::Flags::AuxiliaryCarry)) {
+        const u32 begin = context.CurrentBufferSize();
         // AF is a single bit (carry into bit 4).
         __ Bfc(flags, HostFlagsBit::AuxiliaryCarry, 1);
+        RecordPFAFDensity(PFAFDensityKind::AFWrite, begin);
     }
 }
 
 void JitTranslator::SaveParity(Register& value) {
+    const u32 begin = context.CurrentBufferSize();
     __ Bfi(flags, value, HostFlagsBit::ParityByte, 8);
+    RecordPFAFDensity(PFAFDensityKind::PFWrite, begin);
 }
 
 void JitTranslator::SaveNZ(Register& value, ir::ValueType type) {
@@ -252,6 +266,7 @@ void JitTranslator::SaveOF(Register& value, ir::ValueType type) {
 }
 
 void JitTranslator::SaveAuxiliaryCarry(Register &left, const Operand &right, Register &result) {
+    const u32 begin = context.CurrentBufferSize();
     // AF = carry into bit 4 = bit4(left) ^ bit4(right) ^ bit4(result). This holds
     // for add/adc/sub/sbb alike (result already reflects any carry-in). Only the
     // three bit-4s matter, so fold the whole values together and extract bit 4.
@@ -271,6 +286,7 @@ void JitTranslator::SaveAuxiliaryCarry(Register &left, const Operand &right, Reg
     }
     __ Ubfx(tmp, tmp, 4, 1);
     __ Bfi(flags, tmp, HostFlagsBit::AuxiliaryCarry, 1);
+    RecordPFAFDensity(PFAFDensityKind::AFWrite, begin);
 }
 
 void JitTranslator::GetParityFlag(const Register& result) {
@@ -281,15 +297,19 @@ void JitTranslator::GetParityFlag(const Register& result) {
 }
 
 void JitTranslator::TestParityFlag(const Register& result) {
+    const u32 begin = context.CurrentBufferSize();
     GetParityFlag(result);
     __ And(result.W(), result.W(), 1);
     // x86 PF is set on even parity
     __ Eor(result.W(), result.W(), 1);
+    RecordPFAFDensity(PFAFDensityKind::PFRead, begin);
 }
 
 void JitTranslator::TestAuxiliaryCarry(const Register& result) {
+    const u32 begin = context.CurrentBufferSize();
     // AF is stored as a single bit (the carry into bit 4) at AuxiliaryCarry.
     __ Ubfx(result, flags, HostFlagsBit::AuxiliaryCarry, 1);
+    RecordPFAFDensity(PFAFDensityKind::AFRead, begin);
 }
 
 JitTranslator::PseudoFlags JitTranslator::GetPseudoFlags(ir::Inst* inst) {
@@ -380,8 +400,12 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
         // Keep those four bits lazy in host NZCV, update the two non-NZCV
         // fields in x26, and leave the representation otherwise unchanged.
         auto ordered = context.R(packed);
+        u32 begin = context.CurrentBufferSize();
         __ Bfi(flags, ordered, HostFlagsBit::ParityByte, 8);
+        RecordPFAFDensity(PFAFDensityKind::PFWrite, begin);
+        begin = context.CurrentBufferSize();
         __ Bfc(flags, HostFlagsBit::AuxiliaryCarry, 1);
+        RecordPFAFDensity(PFAFDensityKind::AFWrite, begin);
         {
             vixl::CPUFeaturesScope flagm2(&masm, vixl::CPUFeatures::kAXFlag);
             __ Axflag();
@@ -405,7 +429,9 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
     // keep 不是合法 logical immediate，VIXL 要临时占用一枚池寄存器合成掩码。
     // 必须在 GetTmpX() 之前执行：shared_tmp + packed 重载 + bit 已占满
     // reserve=3 的池时，再晚一步 VIXL 就无寄存器可借（L3 identity 实测炸点）。
+    u32 begin = context.CurrentBufferSize();
     __ And(flags, flags, ForceCast<s64>(keep));
+    RecordPFAFDensity(PFAFDensityKind::SharedPack, begin);
 
     auto bit = context.GetTmpX();
 
@@ -415,9 +441,11 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
     __ Bfi(flags, bit, HostFlagsBit::C, 1);
     __ Ubfx(bit, packed_reg, 2, 1);
     __ Bfi(flags, bit, HostFlagsBit::Z, 1);
+    begin = context.CurrentBufferSize();
     __ Ubfx(bit, packed_reg, 1, 1);
     __ Eor(bit, bit, 1);
     __ Bfi(flags, bit, HostFlagsBit::ParityByte, 8);
+    RecordPFAFDensity(PFAFDensityKind::PFWrite, begin);
 }
 
 void JitTranslator::FlushFlags() {
@@ -441,7 +469,9 @@ void JitTranslator::EmitTestBit(ir::Inst* inst) {
 
 void JitTranslator::EmitGetFlags(ir::Inst* inst) {
     MergeNZCV();
+    const u32 begin = context.CurrentBufferSize();
     __ Mov(context.R(ir::Value{inst}), flags);
+    RecordPFAFDensity(PFAFDensityKind::WholeFlags, begin);
 }
 
 void JitTranslator::EmitTestFlags(ir::Inst* inst) {

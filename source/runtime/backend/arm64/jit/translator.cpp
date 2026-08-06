@@ -697,6 +697,9 @@ void JitTranslator::Translate(ir::Block* block) {
     const u32 density_start = density ? context.CurrentBufferSize() : 0;
     std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_ops{};
     std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_bytes{};
+    if (density) {
+        pfaf_density_bytes.fill(0);
+    }
     u32 density_scalar_fp_ops = 0;
     PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
     cur_block = block;
@@ -866,12 +869,28 @@ void JitTranslator::Translate(ir::Block* block) {
                      "ops_move=%u ops_nan=%u ops_boundary=%u ops_work=%u "
                      "bytes_flags=%u bytes_uniform=%u bytes_move=%u bytes_nan=%u "
                      "bytes_boundary=%u bytes_work=%u ops_total=%u bytes_total=%u "
-                     "ops_fp_scalar=%u\n",
+                     "ops_fp_scalar=%u pf_write_bytes=%u pf_read_bytes=%u "
+                     "af_write_bytes=%u af_read_bytes=%u pfaf_shared_bytes=%u "
+                     "whole_flags_bytes=%u pf_write_sites=%u pf_read_sites=%u "
+                     "af_write_sites=%u af_read_sites=%u pfaf_shared_sites=%u "
+                     "whole_flags_sites=%u\n",
                      static_cast<unsigned long long>(block->GetStartLocation().Value()),
                      density_ops[0], density_ops[1], density_ops[2], density_ops[3],
                      density_ops[4], density_ops[5], density_bytes[0], density_bytes[1],
                      density_bytes[2], density_bytes[3], density_bytes[4], density_bytes[5],
-                     total_ops, total_bytes, density_scalar_fp_ops);
+                     total_ops, total_bytes, density_scalar_fp_ops,
+                     pfaf_density_bytes[0] & 0xffffu,
+                     pfaf_density_bytes[1] & 0xffffu,
+                     pfaf_density_bytes[2] & 0xffffu,
+                     pfaf_density_bytes[3] & 0xffffu,
+                     pfaf_density_bytes[4] & 0xffffu,
+                     pfaf_density_bytes[5] & 0xffffu,
+                     pfaf_density_bytes[0] >> 16,
+                     pfaf_density_bytes[1] >> 16,
+                     pfaf_density_bytes[2] >> 16,
+                     pfaf_density_bytes[3] >> 16,
+                     pfaf_density_bytes[4] >> 16,
+                     pfaf_density_bytes[5] >> 16);
         PrintBoundaryDensity(block->GetStartLocation().Value(), density_bytes[4]);
     }
     if (region_edges_active && (density || context.ExecProfileEnabled())) {

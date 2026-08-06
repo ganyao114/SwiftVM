@@ -285,6 +285,18 @@ private:
 
     void TestAuxiliaryCarry(const Register &result);
 
+    enum class PFAFDensityKind : size_t {
+        PFWrite,
+        PFRead,
+        AFWrite,
+        AFRead,
+        SharedPack,
+        WholeFlags,
+        Count,
+    };
+
+    void RecordPFAFDensity(PFAFDensityKind kind, u32 begin);
+
     // ARM and x86 can choose different signs/payloads when a packed FP
     // operation consumes a NaN. Normalize each lane to x86's first-NaN,
     // quiet-preserving rule after the NEON arithmetic instruction.
@@ -436,6 +448,8 @@ private:
     std::array<std::map<std::string, u32>,
                static_cast<size_t>(BoundarySubsequence::Count)>
             boundary_density_mnemonics{};
+    std::array<u32, static_cast<size_t>(PFAFDensityKind::Count)>
+            pfaf_density_bytes{};
     std::map<std::string, u32> boundary_terminal_link_mnemonics{};
     std::vector<std::pair<u32, u32>> boundary_terminal_link_ranges{};
     std::unordered_set<u64> region_blocks{};
