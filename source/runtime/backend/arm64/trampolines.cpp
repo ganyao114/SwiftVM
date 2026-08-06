@@ -38,6 +38,8 @@ void TrampolinesArm64::Build() {
                                                label_fault_return_host.GetLocation());
     call_host = reinterpret_cast<CallHost>(code_buffer->exec_data +
                                            label_call_host.GetLocation());
+    indirect_l1_miss = reinterpret_cast<IndirectL1Miss>(
+            code_buffer->exec_data + label_indirect_l1_miss.GetLocation());
     if (GetSvmConfig().exec_map_is_set && GetSvmConfig().exec_map != "0") {
         std::fprintf(stderr,
                      "[svm-exec-map] trampoline=%p..%p entry=%p return=%p call=%p size=%zu\n",
@@ -299,17 +301,10 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     record_fpcr_tax(FpcrTaxCounter::DispatcherEntry);
     record(exec_offset_dispatch_entries);
     __ Ldr(loc_reg, MemOperand(state, state_offset_current_loc));
-    __ Lsr(loc_index, loc_reg, 2);
 
     // query l1 cache
-    if (BackedgeLatchEnabled() || config.region_edges) {
-        __ Ldr(l1_cache, MemOperand(state, state_offset_exec_profile_ptr));
-        __ Ldr(l1_cache, MemOperand(l1_cache, profile_offset_l1_code_cache));
-    } else {
-        __ Ldr(l1_cache, MemOperand(state, state_offset_l1_code_cache));
-    }
-    __ Eor(l1_index, loc_index, Operand(loc_index, LSR, L1_CODE_CACHE_BITS));
-    __ And(l1_index, l1_index, L1_CODE_CACHE_HASH);
+    __ Ldr(l1_cache, MemOperand(state, state_offset_indirect_l1_code_cache));
+    __ And(l1_index, loc_reg, L1_CODE_CACHE_HASH);
     __ Add(l1_start, l1_cache, Operand(l1_index, LSL, 4));
 
     Label query_step_1;
@@ -328,7 +323,13 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ B(&go_guest);
 
     // query l2 cache
+    // An invalidated inline-L1 value enters at this label. Reload loc_reg
+    // because guest code may use the dispatcher's scratch register, then skip
+    // the L1 probe that selected the safe continuation.
+    __ Bind(&label_indirect_l1_miss);
+    __ Ldr(loc_reg, MemOperand(state, state_offset_current_loc));
     __ Bind(&query_step_2);
+    __ Lsr(loc_index, loc_reg, 2);
     __ Eor(l2_index, loc_index, Operand(loc_index, LSR, L2_CODE_CACHE_BITS));
     __ And(l2_index, l2_index, L2_CODE_CACHE_HASH);
     __ Add(l2_start, l2_cache, Operand(l2_index, LSL, 4));

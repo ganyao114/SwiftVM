@@ -20,6 +20,7 @@ public:
     using RuntimeEntry = HaltReason (*)(void* state_, void* cache_);
     using ReturnHost = void (*)();
     using CallHost = void (*)();
+    using IndirectL1Miss = void (*)();
 
     explicit Trampolines(const Config& config,
                          const FeatureSet& features = FeatureSet{});
@@ -29,6 +30,10 @@ public:
     [[nodiscard]] RuntimeEntry GetRuntimeEntry() const { return runtime_entry; }
 
     [[nodiscard]] ReturnHost GetReturnHost() const { return return_host; }
+
+    [[nodiscard]] IndirectL1Miss GetIndirectL1Miss() const {
+        return indirect_l1_miss;
+    }
 
     [[nodiscard]] GPRSMask GetGPRRegs() const { return gpr_regs; }
 
@@ -41,6 +46,7 @@ protected:
     RuntimeEntry runtime_entry{};
     ReturnHost return_host{};
     CallHost call_host{};
+    IndirectL1Miss indirect_l1_miss{};
     GPRSMask gpr_regs{};
     GPRSMask fpr_regs{};
     std::shared_mutex lock{};

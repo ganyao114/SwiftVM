@@ -17,9 +17,16 @@ static constexpr size_t HASH_TABLE_PAGE_BITS = 23UL;
 
 using TableLock = std::shared_mutex;
 
+enum class TranslateTableHash {
+    Folded,
+    Direct,
+};
+
 class TranslateTable {
 public:
-    explicit TranslateTable(size_t hash_bits_ = HASH_TABLE_PAGE_BITS) : hash_bits{hash_bits_} {
+    explicit TranslateTable(size_t hash_bits_ = HASH_TABLE_PAGE_BITS,
+                            TranslateTableHash hash_mode_ = TranslateTableHash::Folded)
+            : hash_bits{hash_bits_}, hash_mode{hash_mode_} {
         size = 1 << hash_bits;
         Reset();
     }
@@ -27,9 +34,14 @@ public:
     TranslateEntry* Data() { return entries.data(); }
 
     [[nodiscard]] u32 Hash(size_t key) const {
+        if (hash_mode == TranslateTableHash::Direct) {
+            return key & (size - 1);
+        }
         u64 merged = key >> 2;
         return (merged >> hash_bits ^ merged) & (size - 1);
     }
+
+    void SetInvalidValue(size_t value) { invalid_value = value; }
 
     bool Put(size_t key, size_t value) {
         u32 index = Hash(key);
@@ -144,12 +156,11 @@ public:
         } while (!found && index != end && c_key != 0);
     }
 
-    // Zeroes the *value* of the entry for `key`, keeping the key itself. Used
-    // by SMC invalidation: unlike Remove(), this does not break the linear
-    // probe chain for colliding keys, and it is safe against lock-free JIT
-    // readers — the dispatcher and indirect block links read only the value
-    // word (an aligned size_t store is atomic on the supported hosts) and
-    // treat a zero value as a cache miss, falling back to retranslation.
+    // Invalidates the *value* of the entry for `key`, keeping the key itself.
+    // The normal L2 value is zero; an inline-L1 table may instead use a safe
+    // dispatcher continuation. Unlike Remove(), this does not break the
+    // linear probe chain for colliding keys, and the aligned value store is
+    // atomic for generated lock-free readers on the supported hosts.
     // Returns true if the entry was found.
     bool Zero(size_t key) {
         u32 index = Hash(key);
@@ -159,7 +170,7 @@ public:
         do {
             c_key = entries[index].key;
             if (c_key == key) {
-                entries[index].value = 0;
+                entries[index].value = invalid_value;
                 std::atomic_thread_fence(std::memory_order_release);
                 return true;
             }
@@ -217,6 +228,8 @@ private:
     TableLock lock{};
     size_t hash_bits;
     size_t size;
+    TranslateTableHash hash_mode;
+    size_t invalid_value{};
     std::vector<TranslateEntry> entries;
 };
 

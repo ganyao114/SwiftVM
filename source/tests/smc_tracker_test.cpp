@@ -204,13 +204,17 @@ TEST_CASE("SMC concurrent write windows invalidate every runtime cache",
     fixture.Tracker().UnregisterRuntime(token_b);
 }
 
-TEST_CASE("SMC range invalidation clears the L1 value used by inline indirect exits",
+TEST_CASE("SMC range invalidation redirects the L1 value used by inline indirect exits",
           "[smc][indirect-l1]") {
     SmcFixture fixture{1};
-    TranslateTable l1{8};
+    TranslateTable l1{8, swift::runtime::TranslateTableHash::Direct};
     auto token = fixture.Tracker().RegisterRuntime(l1);
     constexpr std::uintptr_t kGuest = 0x180;
     constexpr std::size_t kFakeCode = 0x1234'5678;
+    constexpr std::size_t kSafeL2Continuation = 0x8765'4320;
+    l1.SetInvalidValue(kSafeL2Continuation);
+
+    REQUIRE(l1.Hash(kGuest) == (kGuest & 0xff));
 
     fixture.Publish(kGuest);
     fixture.Space().PushCodeCache(Location{kGuest},
@@ -221,9 +225,9 @@ TEST_CASE("SMC range invalidation clears the L1 value used by inline indirect ex
 
     fixture.Tracker().InvalidateRange(
             fixture.Space(), &l1, kGuest, kGuest + 1);
-    // Inline dispatch loads this same aligned value word and treats zero as a
-    // miss. The target cannot be reclaimed while an old L1 pointer survives.
-    REQUIRE(l1.Lookup(kGuest) == 0);
+    // Inline dispatch loads this same aligned value word. It must see the safe
+    // L2 continuation rather than a reclaimed host pointer or zero branch.
+    REQUIRE(l1.Lookup(kGuest) == kSafeL2Continuation);
     REQUIRE(fixture.Space().GetCodeCacheTable().Lookup(kGuest) == 0);
     REQUIRE_FALSE(fixture.HasNode(kGuest));
 

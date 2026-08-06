@@ -97,6 +97,14 @@ struct Runtime::Impl final {
             profile_interface.hot_coalesce_counters = hot_coalesce_counters.data();
         }
         profile_interface.l1_code_cache = l1_code_cache.Data();
+        state->indirect_l1_code_cache = l1_code_cache.Data();
+        // Production inline probes turn an invalidated key hit into a branch
+        // to the dispatcher's L2 continuation. The diagnostic form keeps zero
+        // so it can distinguish this fallback as a miss.
+        l1_code_cache.SetInvalidValue(indirect_l1_prof_enabled
+                ? 0
+                : reinterpret_cast<size_t>(
+                          address_space->GetTrampolines().GetIndirectL1Miss()));
         if (address_space->ExitLatchEnabled()) {
             state->exit_request = 0;
             state->interface = &profile_interface;
@@ -586,7 +594,8 @@ struct Runtime::Impl final {
     backend::AddressSpace* address_space{};
     // mutable: the JIT dispatcher writes L1 entries through the raw
     // state->l1_code_cache pointer even from const Run paths.
-    mutable TranslateTable l1_code_cache{l1_cache_bits};
+    mutable TranslateTable l1_code_cache{
+            l1_cache_bits, TranslateTableHash::Direct};
     backend::SmcTracker::RuntimeToken smc_epoch{};
     // Kept alive alongside the creating thread's tls_owner_slot; see OwnerSlot.
     std::shared_ptr<OwnerSlot> owner_slot{};

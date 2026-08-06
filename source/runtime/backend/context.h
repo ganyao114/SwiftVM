@@ -129,8 +129,11 @@ struct State {
     void* pt{};
     void* local_buffer{};
     u64 host_cpu_flags{};
-    // Preserve State layout after removing the untracked linkage patcher.
-    void *reserved_linkage_address{};
+    // Runtime-private direct L1 base used by block-inline indirect exits.
+    // This reuses the frozen linkage slot: no State/uniform offset moves.
+    // TranslateTable storage is stable for the Runtime lifetime; SMC changes
+    // entries, never this pointer.
+    void* indirect_l1_code_cache{};
     // Guest address space upper bound (== Config::loc_end). The interpreter
     // checks every LoadMemory/StoreMemory guest address against this limit
     // before dereferencing, converting a wild guest pointer into a clean
@@ -179,6 +182,8 @@ constexpr u32 state_offset_rsb_bottom = offsetof(State, rsb_bottom);
 constexpr u32 state_offset_rsb_top = offsetof(State, rsb_top);
 constexpr u32 state_offset_host_flags = offsetof(State, host_cpu_flags);
 constexpr u32 state_offset_exec_profile_ptr = offsetof(State, interface);
+constexpr u32 state_offset_indirect_l1_code_cache =
+        offsetof(State, indirect_l1_code_cache);
 constexpr u32 exec_offset_exit_direct = offsetof(RuntimeProfileInterface, exec) +
                                         offsetof(ExecProfileCounters, exit_direct);
 constexpr u32 exec_offset_exit_indirect = offsetof(RuntimeProfileInterface, exec) +

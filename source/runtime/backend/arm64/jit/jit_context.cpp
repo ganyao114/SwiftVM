@@ -647,37 +647,37 @@ void JitContext::ReturnToDispatcher(const Register& location) {
 }
 
 void JitContext::ForwardIndirectL1(const Register& location) {
-    Label miss;
     const auto index = GetTmpX();
     const auto entry = GetTmpX();
 
-    // Match TranslateTable::Hash and the trampoline's first probe exactly.
-    // Collisions deliberately miss here; the unchanged dispatcher continues
-    // the complete linear probe chain and L2 fallback.
-    __ Lsr(index, location, 2);
-    __ Eor(index, index, Operand(index, LSR, L1_CODE_CACHE_BITS));
-    __ And(index, index, L1_CODE_CACHE_HASH);
-    if (BackedgeLatchEnabled() || GetConfig().region_edges) {
-        __ Ldr(entry, MemOperand(state, state_offset_exec_profile_ptr));
-        __ Ldr(entry, MemOperand(entry, profile_offset_l1_code_cache));
-    } else {
-        __ Ldr(entry, MemOperand(state, state_offset_l1_code_cache));
-    }
+    // L1 is direct-low-bit hashed; L2 retains the folded hash. The Runtime
+    // publishes this stable per-thread base in an otherwise frozen State slot,
+    // avoiding the latch/profile pointer chase without changing State size.
+    __ Ldr(entry, MemOperand(state, state_offset_indirect_l1_code_cache));
+    __ And(index, location, L1_CODE_CACHE_HASH);
     __ Add(entry, entry, Operand(index, LSL, 4));
     __ Ldp(index, entry, MemOperand(entry));
     __ Cmp(index, location);
-    // If the key mismatched, force Z=1; otherwise test the code pointer.
-    __ Ccmp(entry, xzr, ZFlag, eq);
-    __ B(&miss, eq);
     if (indirect_l1_prof_enabled) {
+        Label miss;
+        // The profiling Runtime keeps invalid values at zero so this arm can
+        // distinguish SMC fallback from a real hit.
+        __ Ccmp(entry, xzr, ZFlag, eq);
+        __ B(&miss, eq);
         RecordHotCounter(HotCoalesceCounter::IndirectL1Hit);
-    }
-    __ Br(entry);
-    __ Bind(&miss);
-    if (indirect_l1_prof_enabled) {
+        __ Br(entry);
+        __ Bind(&miss);
         RecordHotCounter(HotCoalesceCounter::IndirectL1Miss);
+        __ Ret();
+        return;
     }
-    __ Ret();
+
+    // On a key mismatch, x30 is the unchanged trampoline continuation and is
+    // equivalent to Ret. On an SMC-invalidated key hit, entry is the safe L2
+    // continuation installed by TranslateTable::Zero. No stale/zero pointer
+    // can reach Br, and the production path is exactly seven instructions.
+    __ Csel(entry, entry, x30, eq);
+    __ Br(entry);
 }
 
 // --- Return Stack Buffer (RSB) -------------------------------------------

@@ -39,6 +39,7 @@ private:
     Label label_fault_return_host;
     Label label_return_host;
     Label label_call_host;
+    Label label_indirect_l1_miss;
     const FeatureSet features;
     std::unordered_map<LocationDescriptor, CallHost> call_host_trampolines{};
     std::unordered_map<u64, void *> signature_trampolines{};

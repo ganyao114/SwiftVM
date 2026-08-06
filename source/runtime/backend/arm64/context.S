@@ -73,12 +73,10 @@ code_dispatcher:
 
     // align loc
     ldr loc, [state, #OFF_LOC]
-    lsr loc_index, loc, 2
 
     // query l1 cache
     ldr l1_cache, [state, #OFF_L1_CACHE]
-    eor l1_index, loc_index, loc_index, lsr #L1_CODE_CACHE_BITS
-    and l1_index, l1_index, #L1_CODE_CACHE_HASH
+    and l1_index, loc, #L1_CODE_CACHE_HASH
     add l1_start, l1_cache, l1_index, lsl #4
 
 1:  // l1 cache looper
@@ -91,6 +89,7 @@ code_dispatcher:
     blr args
 
 2:  // query l2 cache
+    lsr loc_index, loc, 2
     eor l2_index, loc_index, loc_index, lsr #L2_CODE_CACHE_BITS
     and l2_index, l2_index, #L2_CODE_CACHE_HASH
     add l2_start, l2_cache, l2_index, lsl #4

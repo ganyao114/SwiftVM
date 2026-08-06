@@ -5873,13 +5873,15 @@ TEST_CASE("indirect L1 and lean shadow stack are independent and composable") {
         auto it = result.mnemonics.find(std::string{mnemonic});
         return it == result.mnemonics.end() ? 0u : it->second;
     };
-    REQUIRE(l1.bytes == off.bytes + 10 * vixl::aarch64::kInstructionSize);
+    REQUIRE(l1.bytes == off.bytes + 6 * vixl::aarch64::kInstructionSize);
     REQUIRE(shadow.bytes == off.bytes);
     REQUIRE(count(off, "br") == 0);
     REQUIRE(count(l1, "br") == 1);
-    // The retained Ret is the L1 miss path back to the unchanged dispatcher.
-    REQUIRE(count(l1, "ret") == 1);
-    REQUIRE(count(l1, "ldp") >= 1);
+    // Key mismatch selects x30; an invalidated value selects the dispatcher's
+    // safe L2 continuation. Production therefore has no separate miss Ret.
+    REQUIRE(count(l1, "ret") == 0);
+    REQUIRE(count(l1, "csel") == 1);
+    REQUIRE(count(l1, "and") == count(off, "and") + 1);
     REQUIRE(l1.host_write_coalesced);
 
     const auto call_off = run(false, false, Shape::Call, false, false);
@@ -5887,11 +5889,11 @@ TEST_CASE("indirect L1 and lean shadow stack are independent and composable") {
     const auto call_shadow = run(false, true, Shape::Call, false, false);
     const auto call_both = run(true, true, Shape::Call, false, false);
     REQUIRE(call_l1.bytes ==
-            call_off.bytes + 10 * vixl::aarch64::kInstructionSize);
+            call_off.bytes + 6 * vixl::aarch64::kInstructionSize);
     REQUIRE(call_shadow.bytes ==
             call_off.bytes - 2 * vixl::aarch64::kInstructionSize);
     REQUIRE(call_both.bytes ==
-            call_off.bytes + 8 * vixl::aarch64::kInstructionSize);
+            call_off.bytes + 4 * vixl::aarch64::kInstructionSize);
     REQUIRE(call_both.bytes ==
             call_l1.bytes - 2 * vixl::aarch64::kInstructionSize);
 
