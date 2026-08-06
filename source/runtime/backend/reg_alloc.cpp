@@ -374,7 +374,8 @@ ScratchNeed ScratchBudget(const ir::Inst& inst, const FeatureSet& features) {
 
 RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
                    const FeatureSet& features)
-        : alloc_result(instr_size), gprs(gprs), fprs(fprs), features(features) {
+        : alloc_result(instr_size), coalesced_host_writes(instr_size),
+          coalesced_host_reads(instr_size), gprs(gprs), fprs(fprs), features(features) {
     // Trampolines 暴露跨 module 的最大 GPR 并集。XPOOL 关闭时在 unit 私有
     // allocator 里恢复旧保留集，保持默认发码不变，同时允许 module 快照分叉。
     if (!ScratchXPoolEnabled(features)) {
@@ -386,6 +387,8 @@ RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
 
 void RegAlloc::ResetAllocations() {
     std::fill(alloc_result.begin(), alloc_result.end(), Map{});
+    std::fill(coalesced_host_writes.begin(), coalesced_host_writes.end(), false);
+    std::fill(coalesced_host_reads.begin(), coalesced_host_reads.end(), false);
     current_ir = nullptr;
 }
 
@@ -411,6 +414,24 @@ void RegAlloc::MapReference(u32 from, u32 to) {
     auto& map = alloc_result[to];
     map.type = REF;
     map.slot = from;
+}
+
+void RegAlloc::MarkHostWriteCoalesced(u32 id) {
+    ASSERT(id < coalesced_host_writes.size());
+    coalesced_host_writes[id] = true;
+}
+
+void RegAlloc::MarkHostReadCoalesced(u32 id) {
+    ASSERT(id < coalesced_host_reads.size());
+    coalesced_host_reads[id] = true;
+}
+
+bool RegAlloc::IsHostWriteCoalesced(u32 id) const {
+    return id < coalesced_host_writes.size() && coalesced_host_writes[id];
+}
+
+bool RegAlloc::IsHostReadCoalesced(u32 id) const {
+    return id < coalesced_host_reads.size() && coalesced_host_reads[id];
 }
 
 void RegAlloc::SetActiveRegs(swift::u32 id, GPRSMask& gprs, FPRSMask& fprs) {

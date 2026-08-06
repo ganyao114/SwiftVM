@@ -1,5 +1,6 @@
 #include "translator.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -10,6 +11,279 @@
 #include "runtime/backend/arm64/fpcr_mode.h"
 
 namespace swift::runtime::backend::arm64 {
+
+namespace {
+
+ir::Value ResolveHostCoalesceBitCast(ir::Value value) {
+    while (value.Defined() && value.Def()->IsBitCastOperation()) {
+        value = value.Def()->GetArg<ir::Value>(0);
+    }
+    return value;
+}
+
+bool IsHostCoalesceProducer(ir::OpCode op) {
+    using O = ir::OpCode;
+    switch (op) {
+        case O::LoadImm:
+        case O::LoadUniform:
+        case O::Zero:
+        case O::Add:
+        case O::Sub:
+        case O::And:
+        case O::Or:
+        case O::Xor:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsHostCoalesceObserver(ir::OpCode op) {
+    using O = ir::OpCode;
+    switch (op) {
+        case O::SaveFlags:
+        case O::LoadMemory:
+        case O::StoreMemory:
+        case O::LoadMemoryTSO:
+        case O::StoreMemoryTSO:
+        case O::MemoryCopy:
+        case O::MemoryCopyTSO:
+        case O::CompareAndSwap:
+        case O::CompareAndSwap128:
+        case O::CheckMemoryAlignment:
+        case O::AtomicExchange:
+        case O::AtomicFetchAdd:
+        case O::AtomicRMW:
+        case O::CallLambda:
+        case O::CallLocation:
+        case O::CallDynamic:
+        case O::X87Op:
+        case O::Sse42Str:
+        case O::GetUniformAddress:
+        case O::UniformBarrier:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsKnownHostWWrite(ir::Value value) {
+    value = ResolveHostCoalesceBitCast(value);
+    if (!value.Defined()) {
+        return false;
+    }
+    auto* def = value.Def();
+    if (def->GetOp() == ir::OpCode::GetHostGPR) {
+        return false;
+    }
+    if (def->GetOp() == ir::OpCode::BitExtract &&
+        ir::GetValueSizeByte(def->ReturnType()) == sizeof(u32) &&
+        def->GetArg<ir::Imm>(1).Get() == 0 &&
+        def->GetArg<ir::Imm>(2).Get() == 32) {
+        return IsKnownHostWWrite(def->GetArg<ir::Value>(0));
+    }
+    if (def->GetOp() == ir::OpCode::ZeroExtend32To64 &&
+        ir::GetValueSizeByte(def->GetArg<ir::Value>(0).Type()) == sizeof(u32)) {
+        return IsKnownHostWWrite(def->GetArg<ir::Value>(0));
+    }
+    return ir::GetValueSizeByte(def->ReturnType()) == sizeof(u32);
+}
+
+bool TerminalUsesHostCoalesceValue(const ir::Terminal& terminal_value,
+                                   ir::Inst* definition) {
+    return VisitVariant<bool>(terminal_value, [&](const auto& edge) {
+        using T = std::decay_t<decltype(edge)>;
+        if constexpr (std::is_same_v<T, ir::terminal::If>) {
+            return ResolveHostCoalesceBitCast(edge.cond).Def() == definition ||
+                   TerminalUsesHostCoalesceValue(edge.then_, definition) ||
+                   TerminalUsesHostCoalesceValue(edge.else_, definition);
+        } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
+            if (ResolveHostCoalesceBitCast(edge.value).Def() == definition) {
+                return true;
+            }
+            return std::any_of(edge.cases.begin(), edge.cases.end(),
+                               [&](const auto& item) {
+                                   return TerminalUsesHostCoalesceValue(item.then, definition);
+                               });
+        } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
+            return TerminalUsesHostCoalesceValue(edge.then_, definition) ||
+                   TerminalUsesHostCoalesceValue(edge.else_, definition);
+        } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
+            return TerminalUsesHostCoalesceValue(edge.else_, definition);
+        }
+        return false;
+    });
+}
+
+}  // namespace
+
+bool JitTranslator::ReproveCoalescedHostWrite(ir::Inst* inst) const {
+    if (!inst || inst->GetOp() != ir::OpCode::SetHostGPR ||
+        inst->GetArg<ir::Imm>(2).Get() != 0) {
+        return false;
+    }
+    const u32 target = inst->GetArg<ir::Imm>(1).Get();
+    auto stored = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
+    auto* wrapper = stored.Def();
+    if (!wrapper || wrapper->GetUses() != 1) {
+        return false;
+    }
+    auto produced = stored;
+    bool zero_extend_chain = false;
+    if (wrapper->GetOp() == ir::OpCode::ZeroExtend32To64) {
+        produced = ResolveHostCoalesceBitCast(wrapper->GetArg<ir::Value>(0));
+        zero_extend_chain = true;
+        if (!produced.Def() || produced.Def()->GetUses() != 1 ||
+            !IsKnownHostWWrite(produced)) {
+            return false;
+        }
+    }
+    auto* producer = produced.Def();
+    if (!producer || !IsHostCoalesceProducer(producer->GetOp()) ||
+        context.X(produced).GetCode() != target ||
+        (zero_extend_chain && context.X(stored).GetCode() != target)) {
+        return false;
+    }
+    const u32 width = ir::GetValueSizeByte(produced.Type());
+    if ((width != sizeof(u32) && width != sizeof(u64)) ||
+        (width == sizeof(u32) && !IsKnownHostWWrite(produced))) {
+        return false;
+    }
+
+    auto last_use = [&](ir::Inst* definition) {
+        u32 end = definition->Id();
+        for (auto& scan : cur_block->GetInstList()) {
+            for (auto use : scan.GetValues()) {
+                if (ResolveHostCoalesceBitCast(use).Def() == definition) {
+                    end = std::max<u32>(end, scan.Id());
+                }
+            }
+        }
+        if (TerminalUsesHostCoalesceValue(cur_block->GetTerminal(), definition) &&
+            cur_block->GetInstList().begin() != cur_block->GetInstList().end()) {
+            end = std::max<u32>(end, std::prev(cur_block->GetInstList().end())->Id());
+        }
+        return end;
+    };
+
+    for (auto input : producer->GetValues()) {
+        auto root = ResolveHostCoalesceBitCast(input);
+        if (!root.Defined() || !context.SharesGPR(root, produced)) {
+            continue;
+        }
+        if (last_use(root.Def()) > producer->Id()) {
+            return false;
+        }
+    }
+
+    for (auto& other : cur_block->GetInstList()) {
+        if (&other == producer || &other == wrapper || &other == inst ||
+            !other.HasValue() || other.IsBitCastOperation() ||
+            other.Id() >= inst->Id()) {
+            continue;
+        }
+        ir::Value value{&other};
+        if (context.SharesGPR(value, produced) &&
+            last_use(&other) > producer->Id()) {
+            return false;
+        }
+    }
+
+    bool after_producer = false;
+    for (auto& scan : cur_block->GetInstList()) {
+        if (&scan == producer) {
+            after_producer = true;
+            continue;
+        }
+        if (!after_producer || &scan == wrapper) {
+            continue;
+        }
+        if (&scan == inst) {
+            break;
+        }
+        if (IsHostCoalesceObserver(scan.GetOp()) ||
+            (scan.GetOp() == ir::OpCode::GetHostGPR &&
+             scan.GetArg<ir::Imm>(0).Get() == target) ||
+            (scan.GetOp() == ir::OpCode::SetHostGPR &&
+             scan.GetArg<ir::Imm>(1).Get() == target)) {
+            return false;
+        }
+    }
+    for (auto& scan : cur_block->GetInstList()) {
+        if (scan.Id() <= inst->Id()) {
+            continue;
+        }
+        for (auto value : scan.GetValues()) {
+            if (ResolveHostCoalesceBitCast(value).Def() == wrapper) {
+                return false;
+            }
+        }
+    }
+    if (TerminalUsesHostCoalesceValue(cur_block->GetTerminal(), wrapper)) {
+        return false;
+    }
+    return true;
+}
+
+bool JitTranslator::ReproveCoalescedHostRead(ir::Inst* inst) const {
+    if (!inst || inst->GetOp() != ir::OpCode::GetHostGPR ||
+        inst->GetArg<ir::Imm>(1).Get() != 0 ||
+        ir::GetValueSizeByte(inst->ReturnType()) != sizeof(u32)) {
+        return false;
+    }
+    const u32 target = inst->GetArg<ir::Imm>(0).Get();
+    if (context.X(ir::Value{inst}).GetCode() != target) {
+        return false;
+    }
+    ir::Inst* latest_store = nullptr;
+    bool blocked = false;
+    for (auto& scan : cur_block->GetInstList()) {
+        if (&scan == inst) {
+            break;
+        }
+        if (scan.GetOp() == ir::OpCode::SetHostGPR &&
+            scan.GetArg<ir::Imm>(1).Get() == target) {
+            latest_store = &scan;
+            blocked = false;
+            continue;
+        }
+        if (latest_store && IsHostCoalesceObserver(scan.GetOp())) {
+            blocked = true;
+        }
+    }
+    if (!latest_store || blocked) {
+        return false;
+    }
+    auto published = ResolveHostCoalesceBitCast(latest_store->GetArg<ir::Value>(0));
+    const bool high_zero = published.Def() &&
+            ((published.Def()->GetOp() == ir::OpCode::ZeroExtend32To64 &&
+              ir::GetValueSizeByte(published.Def()->GetArg<ir::Value>(0).Type()) == sizeof(u32)) ||
+             (ir::GetValueSizeByte(published.Type()) == sizeof(u32) &&
+              IsKnownHostWWrite(published)));
+    if (!high_zero) {
+        return false;
+    }
+    u32 read_end = inst->Id();
+    for (auto& scan : cur_block->GetInstList()) {
+        for (auto value : scan.GetValues()) {
+            if (ResolveHostCoalesceBitCast(value).Def() == inst) {
+                read_end = std::max<u32>(read_end, scan.Id());
+            }
+        }
+    }
+    if (TerminalUsesHostCoalesceValue(cur_block->GetTerminal(), inst) &&
+        cur_block->GetInstList().begin() != cur_block->GetInstList().end()) {
+        read_end = std::max<u32>(read_end, std::prev(cur_block->GetInstList().end())->Id());
+    }
+    for (auto& scan : cur_block->GetInstList()) {
+        if (scan.Id() > inst->Id() && scan.Id() <= read_end &&
+            scan.GetOp() == ir::OpCode::SetHostGPR &&
+            scan.GetArg<ir::Imm>(1).Get() == target) {
+            return false;
+        }
+    }
+    return true;
+}
 
 #define __ masm.
 
@@ -258,6 +532,11 @@ MemOperand JitTranslator::BiasMem(const Register& base, s64 imm, bool atomic) {
 }
 
 void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
+    if (context.IsHostReadCoalesced(inst->Id())) {
+        ASSERT_MSG(ReproveCoalescedHostRead(inst),
+                   "GetHostGPR coalescing proof diverged at IR {}", inst->Id());
+        return;
+    }
     auto offset = inst->GetArg<ir::Imm>(1).Get();
     auto reg_index = inst->GetArg<ir::Imm>(0).Get();
     const u32 value_size = ir::GetValueSizeByte(inst->ReturnType());
@@ -335,6 +614,11 @@ void JitTranslator::EmitGetHostFPR(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
+    if (context.IsHostWriteCoalesced(inst->Id())) {
+        ASSERT_MSG(ReproveCoalescedHostWrite(inst),
+                   "SetHostGPR coalescing proof diverged at IR {}", inst->Id());
+        return;
+    }
     auto offset = inst->GetArg<ir::Imm>(2).Get();
     auto reg_index = inst->GetArg<ir::Imm>(1).Get();
     auto host_reg = XRegister(reg_index);

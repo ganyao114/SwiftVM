@@ -157,6 +157,9 @@ public:
         ASSERT(has_eviction_candidate);
         return eviction_candidate;
     }
+    void CoalesceGuestRegisterAccessesForTest() {
+        CoalesceGuestRegisterAccesses();
+    }
 
     static u32 ScratchOnlyGPRs(OpCode op, const backend::GPRSMask& pool,
                                const FeatureSet& features) {
@@ -364,6 +367,7 @@ public:
         perf_assign.Stop();
 
         FusePinnedWriteChains();
+        CoalesceGuestRegisterAccesses();
         if (spill_count && RaDiagEnabled()) {
             LOG_WARNING("RegisterAllocPass: {} value(s) spilled to stack slots (highest slot {})",
                         spill_count, max_spill_slot);
@@ -624,6 +628,292 @@ private:
             }
         } else {
             fuse_block(block);
+        }
+    }
+
+    static bool IsPinnedCoalesceTarget(u32 reg) {
+        return reg <= 9 || reg == 22 || reg == 23 || reg == 29;
+    }
+
+    static bool IsPinnedCoalesceProducer(OpCode op) {
+        switch (op) {
+            case OpCode::LoadImm:
+            case OpCode::LoadUniform:
+            case OpCode::Zero:
+            case OpCode::Add:
+            case OpCode::Sub:
+            case OpCode::And:
+            case OpCode::Or:
+            case OpCode::Xor:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static bool IsPinnedCoalesceObserver(OpCode op) {
+        switch (op) {
+            case OpCode::SaveFlags:
+            case OpCode::LoadMemory:
+            case OpCode::StoreMemory:
+            case OpCode::LoadMemoryTSO:
+            case OpCode::StoreMemoryTSO:
+            case OpCode::MemoryCopy:
+            case OpCode::MemoryCopyTSO:
+            case OpCode::CompareAndSwap:
+            case OpCode::CompareAndSwap128:
+            case OpCode::CheckMemoryAlignment:
+            case OpCode::AtomicExchange:
+            case OpCode::AtomicFetchAdd:
+            case OpCode::AtomicRMW:
+            case OpCode::CallLambda:
+            case OpCode::CallLocation:
+            case OpCode::CallDynamic:
+            case OpCode::X87Op:
+            case OpCode::Sse42Str:
+            case OpCode::GetUniformAddress:
+            case OpCode::UniformBarrier:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    void CoalesceGuestRegisterAccesses() {
+        if (!features.ra_coalesce ||
+            !backend::X86PinExtLevel2Enabled(reg_alloc->GetGprs())) {
+            return;
+        }
+
+        auto coalesce_block = [&](Block* lir_block) {
+            auto& list = lir_block->GetInstList();
+            Vector<u32> use_end(InstrCount());
+            for (auto& inst : list) {
+                for (auto value : inst.GetValues()) {
+                    value = ResolveBitCastSource(value);
+                    if (value.Defined() && value.Id() < use_end.size()) {
+                        use_end[value.Id()] = std::max<u32>(use_end[value.Id()], inst.Id());
+                    }
+                }
+            }
+            if (list.begin() != list.end()) {
+                const u32 block_end = std::prev(list.end())->Id();
+                auto extend_terminal = [&](const Value& value) {
+                    auto root = ResolveBitCastSource(value);
+                    if (root.Defined() && root.Id() < use_end.size()) {
+                        use_end[root.Id()] = std::max(use_end[root.Id()], block_end);
+                    }
+                };
+                std::function<void(const Terminal&)> walk_terminal =
+                        [&](const Terminal& terminal_value) {
+                            VisitVariant<void>(terminal_value, [&](const auto& edge) {
+                                using T = std::decay_t<decltype(edge)>;
+                                if constexpr (std::is_same_v<T, terminal::If>) {
+                                    extend_terminal(edge.cond);
+                                    walk_terminal(edge.then_);
+                                    walk_terminal(edge.else_);
+                                } else if constexpr (std::is_same_v<T, terminal::Switch>) {
+                                    extend_terminal(edge.value);
+                                    for (const auto& item : edge.cases) {
+                                        walk_terminal(item.then);
+                                    }
+                                } else if constexpr (std::is_same_v<T, terminal::Condition>) {
+                                    walk_terminal(edge.then_);
+                                    walk_terminal(edge.else_);
+                                } else if constexpr (std::is_same_v<T, terminal::CheckHalt>) {
+                                    walk_terminal(edge.else_);
+                                }
+                            });
+                        };
+                walk_terminal(lir_block->GetTerminal());
+            }
+
+            auto mapped_to = [&](Value value, u32 target) {
+                value = ResolveBitCastSource(value);
+                return value.Defined() &&
+                       reg_alloc->ValueType(value) == backend::RegAlloc::GPR &&
+                       reg_alloc->ValueGPR(value).id == target;
+            };
+            auto has_target_conflict = [&](Inst* producer, Inst* wrapper,
+                                           Inst* store, u32 target) {
+                for (auto& other : list) {
+                    if (&other == producer || &other == wrapper || &other == store ||
+                        !other.HasValue() || other.IsBitCastOperation() ||
+                        other.Id() >= store->Id()) {
+                        continue;
+                    }
+                    Value value{&other};
+                    if (!mapped_to(value, target)) {
+                        continue;
+                    }
+                    const u32 end = value.Id() < use_end.size() ? use_end[value.Id()] : value.Id();
+                    // A pre-existing tie can define a new value in the
+                    // producer->publication window. Its ordinary emitter then
+                    // writes the fixed home even though no Get/SetHostGPR is
+                    // present for the observer scan to see. Reject every
+                    // third-party target interval intersecting that window,
+                    // from either side of the producer definition.
+                    if (end > producer->Id()) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+            for (auto& store : list) {
+                if (store.GetOp() != OpCode::SetHostGPR ||
+                    store.GetArg<Imm>(2).Get() != 0) {
+                    continue;
+                }
+                const u32 target = store.GetArg<Imm>(1).Get();
+                if (!IsPinnedCoalesceTarget(target) ||
+                    !reg_alloc->GetGprs().Get(target)) {
+                    continue;
+                }
+
+                Value stored = ResolveBitCastSource(store.GetArg<Value>(0));
+                auto* wrapper = stored.Def();
+                if (!wrapper || stored.Id() >= use_end.size() ||
+                    wrapper->GetUses() != 1 || use_end[stored.Id()] != store.Id()) {
+                    continue;
+                }
+
+                Value produced = stored;
+                bool zero_extend_chain = false;
+                if (wrapper->GetOp() == OpCode::ZeroExtend32To64) {
+                    produced = ResolveBitCastSource(wrapper->GetArg<Value>(0));
+                    zero_extend_chain = true;
+                    if (!HasKnownWWrite(produced) || !produced.Def() ||
+                        produced.Id() >= use_end.size() || produced.Def()->GetUses() != 1 ||
+                        use_end[produced.Id()] != wrapper->Id()) {
+                        continue;
+                    }
+                }
+                auto* producer = produced.Def();
+                if (!producer || !IsPinnedCoalesceProducer(producer->GetOp()) ||
+                    reg_alloc->ValueType(produced) != backend::RegAlloc::GPR) {
+                    continue;
+                }
+                const u32 width = GetValueSizeByte(produced.Type());
+                if ((width != sizeof(u32) && width != sizeof(u64)) ||
+                    (width == sizeof(u32) && !HasKnownWWrite(produced))) {
+                    continue;
+                }
+                if (mapped_to(produced, target) &&
+                    (!zero_extend_chain || mapped_to(stored, target))) {
+                    continue;
+                }
+                if (has_target_conflict(producer, wrapper, &store, target)) {
+                    continue;
+                }
+
+                bool after_producer = false;
+                bool blocked = false;
+                for (auto& scan : list) {
+                    if (&scan == producer) {
+                        after_producer = true;
+                        continue;
+                    }
+                    if (!after_producer || &scan == wrapper) {
+                        continue;
+                    }
+                    if (&scan == &store) {
+                        break;
+                    }
+                    if (IsPinnedCoalesceObserver(scan.GetOp()) ||
+                        (scan.GetOp() == OpCode::GetHostGPR &&
+                         scan.GetArg<Imm>(0).Get() == target) ||
+                        (scan.GetOp() == OpCode::SetHostGPR &&
+                         scan.GetArg<Imm>(1).Get() == target)) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) {
+                    continue;
+                }
+                for (auto input : producer->GetValues()) {
+                    auto root = ResolveBitCastSource(input);
+                    if (mapped_to(root, target) && root.Id() < use_end.size() &&
+                        use_end[root.Id()] > producer->Id()) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) {
+                    continue;
+                }
+
+                reg_alloc->MapRegister(producer->Id(), HostGPR{static_cast<u16>(target)});
+                if (zero_extend_chain) {
+                    reg_alloc->MapRegister(wrapper->Id(), HostGPR{static_cast<u16>(target)});
+                }
+                reg_alloc->MarkHostWriteCoalesced(store.Id());
+            }
+
+            for (auto& read : list) {
+                if (read.GetOp() != OpCode::GetHostGPR ||
+                    read.GetArg<Imm>(1).Get() != 0 ||
+                    GetValueSizeByte(read.ReturnType()) != sizeof(u32)) {
+                    continue;
+                }
+                const u32 target = read.GetArg<Imm>(0).Get();
+                if (!IsPinnedCoalesceTarget(target) ||
+                    !reg_alloc->GetGprs().Get(target) || read.Id() >= use_end.size()) {
+                    continue;
+                }
+                Inst* latest_store = nullptr;
+                bool blocked = false;
+                for (auto& scan : list) {
+                    if (&scan == &read) {
+                        break;
+                    }
+                    if (scan.GetOp() == OpCode::SetHostGPR &&
+                        scan.GetArg<Imm>(1).Get() == target) {
+                        latest_store = &scan;
+                        blocked = false;
+                        continue;
+                    }
+                    if (latest_store && IsPinnedCoalesceObserver(scan.GetOp())) {
+                        blocked = true;
+                    }
+                }
+                if (!latest_store || blocked) {
+                    continue;
+                }
+                auto published = ResolveBitCastSource(latest_store->GetArg<Value>(0));
+                const bool high_zero = published.Def() &&
+                        ((published.Def()->GetOp() == OpCode::ZeroExtend32To64 &&
+                          GetValueSizeByte(published.Def()->GetArg<Value>(0).Type()) == sizeof(u32)) ||
+                         (GetValueSizeByte(published.Type()) == sizeof(u32) &&
+                          HasKnownWWrite(published)));
+                if (!high_zero) {
+                    continue;
+                }
+                for (auto& scan : list) {
+                    if (scan.Id() <= read.Id() || scan.Id() > use_end[read.Id()]) {
+                        continue;
+                    }
+                    if (scan.GetOp() == OpCode::SetHostGPR &&
+                        scan.GetArg<Imm>(1).Get() == target) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) {
+                    continue;
+                }
+                reg_alloc->MapRegister(read.Id(), HostGPR{static_cast<u16>(target)});
+                reg_alloc->MarkHostReadCoalesced(read.Id());
+            }
+        };
+
+        if (function) {
+            for (auto* hir_block : function->GetHIRBlocks()) {
+                coalesce_block(hir_block->GetBlock());
+            }
+        } else {
+            coalesce_block(block);
         }
     }
 
@@ -2212,6 +2502,34 @@ void RegisterAllocPass::RunForInductTieTest(ir::Block* block,
     features.induct_tie = induct_tie;
     RunVerified(block, reg_alloc, features, false, false,
                 features.ra_intwidth_tie, induct_tie, features.ra_spill_evict);
+}
+
+void RegisterAllocPass::RunForCoalesceTest(ir::Block* block,
+                                           backend::RegAlloc* reg_alloc,
+                                           bool coalesce) {
+    auto features = FeatureSet{};
+    features.ra_coalesce = coalesce;
+    RunVerified(block, reg_alloc, features, false, false,
+                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_spill_evict);
+}
+
+void RegisterAllocPass::RunForCoalesceConflictTest(ir::Block* block,
+                                                   backend::RegAlloc* reg_alloc,
+                                                   u32 tied_value_id,
+                                                   u16 target) {
+    auto features = FeatureSet{};
+    RunVerified(block, reg_alloc, features, false, false,
+                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_spill_evict);
+    // Model the output of any earlier fixed-home tie independently of its
+    // current opcode-specific matcher. The coalescer must treat that mapping
+    // as authoritative and reject an intersecting publication window.
+    reg_alloc->MapRegister(tied_value_id, HostGPR{target});
+    features.ra_coalesce = true;
+    LinearScanAllocator scan{block, reg_alloc, 0, 0, false, false, false, false,
+                             nullptr, false, features};
+    scan.CoalesceGuestRegisterAccessesForTest();
 }
 
 RegisterAllocPass::SpillEvictTestResult RegisterAllocPass::RunForSpillEvictTest(

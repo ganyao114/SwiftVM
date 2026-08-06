@@ -46,6 +46,13 @@ public:
     static void RunForInductTieTest(ir::Block *block,
                                     backend::RegAlloc *reg_alloc,
                                     bool induct_tie);
+    static void RunForCoalesceTest(ir::Block *block,
+                                   backend::RegAlloc *reg_alloc,
+                                   bool coalesce);
+    static void RunForCoalesceConflictTest(ir::Block *block,
+                                           backend::RegAlloc *reg_alloc,
+                                           u32 tied_value_id,
+                                           u16 target);
     static SpillEvictTestResult RunForSpillEvictTest(
             ir::Block *block,
             backend::RegAlloc *reg_alloc,

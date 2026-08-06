@@ -218,7 +218,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 132);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 133);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -291,7 +291,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 46);
+    STATIC_REQUIRE(kFeatureCount == 47);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -2887,6 +2887,211 @@ TEST_CASE("64-bit induction ties require exact last-use and matching pinned publ
         RegisterAllocPass::RunForInductTieTest(raw, &on, true);
         REQUIRE(on.ValueGPR(source).id == 22);
         REQUIRE(on.ValueGPR(result).id != 22);
+    }
+}
+
+TEST_CASE("guest GPR coalescing keeps publication and snapshot proofs local") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    auto pinned_gprs = [] {
+        GPRSMask mask{0};
+        for (swift::u32 code : {0u, 1u, 2u, 3u, 4u, 5u, 19u, 20u, 21u,
+                                22u, 23u, 25u, 26u, 27u, 28u, 29u, 30u, 31u}) {
+            mask.Mark(code);
+        }
+        return mask;
+    };
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+
+    auto allocate = [&](Block* block, bool enabled) {
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto features = FeatureSet{};
+        features.ra_coalesce = enabled;
+        auto alloc = std::make_unique<RegAlloc>(
+                block->MaxInstrId(), pinned_gprs(), fprs, features);
+        RegisterAllocPass::RunForCoalesceTest(block, alloc.get(), enabled);
+        return alloc;
+    };
+
+    SECTION("last-use full-width publication enters the fixed home") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x86c0})};
+        auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
+                             .SetType(ValueType::U64);
+        auto* publish = block->AppendInst(
+                OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+        auto off = allocate(block.get(), false);
+        REQUIRE(off->ValueGPR(value).id != 22);
+        REQUIRE_FALSE(off->IsHostWriteCoalesced(publish->Id()));
+        auto on = allocate(block.get(), true);
+        REQUIRE(on->ValueGPR(value).id == 22);
+        REQUIRE(on->IsHostWriteCoalesced(publish->Id()));
+    }
+
+    SECTION("a later fixed-home write while the value is live rejects publication") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x86d0})};
+        auto value = block->LoadImm(Imm{swift::u64{11}}).SetType(ValueType::U64);
+        auto* publish = block->AppendInst(
+                OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+        auto next = block->LoadImm(Imm{swift::u64{22}}).SetType(ValueType::U64);
+        block->SetHostGPR(next, HostRegIndex(22), Imm{0u});
+        block->StoreUniform(Uniform{32, ValueType::U64}, value);
+        auto on = allocate(block.get(), true);
+        REQUIRE(on->ValueGPR(value).id != 22);
+        REQUIRE_FALSE(on->IsHostWriteCoalesced(publish->Id()));
+    }
+
+    SECTION("a pre-tied value born inside the publication window rejects coalescing") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x86d8})};
+        auto candidate = block->LoadImm(Imm{swift::u64{11}}).SetType(ValueType::U64);
+        // This definition is between candidate and its logical publication.
+        // The conflict selector models an earlier tie assigning it to x22;
+        // its use after publish makes that fixed-home interval cross the store.
+        auto tied = block->LoadImm(Imm{swift::u64{22}}).SetType(ValueType::U64);
+        auto* publish = block->AppendInst(
+                OpCode::SetHostGPR, candidate, HostRegIndex(22), Imm{0u});
+        block->StoreUniform(Uniform{24, ValueType::U64}, tied);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+
+        auto features = FeatureSet{};
+        features.ra_coalesce = true;
+        RegAlloc control{block->MaxInstrId(), pinned_gprs(), fprs, features};
+        RegisterAllocPass::RunForCoalesceTest(block.get(), &control, true);
+        REQUIRE(control.IsHostWriteCoalesced(publish->Id()));
+
+        RegAlloc conflict{block->MaxInstrId(), pinned_gprs(), fprs, features};
+        RegisterAllocPass::RunForCoalesceConflictTest(
+                block.get(), &conflict, tied.Id(), 22);
+        REQUIRE(conflict.ValueGPR(tied).id == 22);
+        REQUIRE_FALSE(conflict.IsHostWriteCoalesced(publish->Id()));
+    }
+
+    SECTION("flags and fault observers reject early publication") {
+        IntrusivePtr<Block> flag_block{new Block(0, Location{0x86e0})};
+        auto flagged = flag_block->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
+        flag_block->SaveFlags(flagged, Flags::All);
+        auto* flags_publish = flag_block->AppendInst(
+                OpCode::SetHostGPR, flagged, HostRegIndex(22), Imm{0u});
+        auto flags_on = allocate(flag_block.get(), true);
+        REQUIRE_FALSE(flags_on->IsHostWriteCoalesced(flags_publish->Id()));
+
+        IntrusivePtr<Block> fault{new Block(0, Location{0x86f0})};
+        auto value = fault->LoadImm(Imm{swift::u64{9}}).SetType(ValueType::U64);
+        auto address = fault->LoadImm(Imm{swift::u64{0x1000}}).SetType(ValueType::U64);
+        (void)fault->LoadMemory(Operand{address}).SetType(ValueType::U64);
+        auto* fault_publish = fault->AppendInst(
+                OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+        auto fault_on = allocate(fault.get(), true);
+        REQUIRE_FALSE(fault_on->IsHostWriteCoalesced(fault_publish->Id()));
+    }
+
+    SECTION("W-clean publication removes the bridge and feeds a zero-cost U32 read") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x8700})};
+        auto left = block->LoadImm(Imm{swift::u32{0x1234}}).SetType(ValueType::U32);
+        auto right = block->LoadImm(Imm{swift::u32{0x20}}).SetType(ValueType::U32);
+        auto value = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto zext = block->ZeroExtend32To64(value);
+        auto* publish = block->AppendInst(
+                OpCode::SetHostGPR, zext, HostRegIndex(22), Imm{0u});
+        auto read = block->GetHostGPR(HostRegIndex(22), Imm{0u})
+                            .SetType(ValueType::U32);
+        block->StoreUniform(Uniform{40, ValueType::U32}, read);
+        // An unrelated full-width write makes the old block-wide pin-chain
+        // fuse decline this block, so this section exercises only the new gate.
+        auto unrelated = block->LoadImm(Imm{swift::u64{3}}).SetType(ValueType::U64);
+        block->SetHostGPR(unrelated, HostRegIndex(23), Imm{0u});
+
+        auto off = allocate(block.get(), false);
+        REQUIRE(off->ValueGPR(value).id != 22);
+        REQUIRE(off->ValueGPR(read).id != 22);
+        auto on = allocate(block.get(), true);
+        REQUIRE(on->ValueGPR(value).id == 22);
+        REQUIRE(on->ValueGPR(zext).id == 22);
+        REQUIRE(on->ValueGPR(read).id == 22);
+        REQUIRE(on->IsHostWriteCoalesced(publish->Id()));
+        REQUIRE(on->IsHostReadCoalesced(read.Id()));
+    }
+
+    SECTION("unknown high half and a crossing write keep the read bridge") {
+        IntrusivePtr<Block> unknown{new Block(0, Location{0x8710})};
+        auto full = unknown->LoadImm(Imm{swift::u64{0x100000001}})
+                            .SetType(ValueType::U64);
+        unknown->SetHostGPR(full, HostRegIndex(22), Imm{0u});
+        auto read = unknown->GetHostGPR(HostRegIndex(22), Imm{0u})
+                           .SetType(ValueType::U32);
+        unknown->StoreUniform(Uniform{48, ValueType::U32}, read);
+        auto unknown_on = allocate(unknown.get(), true);
+        REQUIRE(unknown_on->ValueGPR(read).id != 22);
+        REQUIRE_FALSE(unknown_on->IsHostReadCoalesced(read.Id()));
+
+        IntrusivePtr<Block> crossing{new Block(0, Location{0x8720})};
+        auto w = crossing->LoadImm(Imm{swift::u32{1}}).SetType(ValueType::U32);
+        auto zext = crossing->ZeroExtend32To64(w);
+        crossing->SetHostGPR(zext, HostRegIndex(22), Imm{0u});
+        auto snapshot = crossing->GetHostGPR(HostRegIndex(22), Imm{0u})
+                                .SetType(ValueType::U32);
+        auto replacement = crossing->LoadImm(Imm{swift::u64{2}})
+                                   .SetType(ValueType::U64);
+        crossing->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
+        crossing->StoreUniform(Uniform{56, ValueType::U32}, snapshot);
+        auto crossing_on = allocate(crossing.get(), true);
+        REQUIRE(crossing_on->ValueGPR(snapshot).id != 22);
+        REQUIRE_FALSE(crossing_on->IsHostReadCoalesced(snapshot.Id()));
+    }
+
+    SECTION("a U32 GetHostGPR is not accepted as a W-clean publication proof") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x8730})};
+        auto source = block->GetHostGPR(HostRegIndex(23), Imm{0u})
+                              .SetType(ValueType::U32);
+        auto zext = block->ZeroExtend32To64(source);
+        auto* publish = block->AppendInst(
+                OpCode::SetHostGPR, zext, HostRegIndex(22), Imm{0u});
+        auto on = allocate(block.get(), true);
+        // The older pinned-write chain may choose x22 as the UBFX destination,
+        // but that UBFX remains the operation which proves/creates the clean W
+        // value. The new pass must not label the whole chain zero-instruction.
+        REQUIRE_FALSE(on->IsHostWriteCoalesced(publish->Id()));
+    }
+
+    SECTION("emitter removes the proven publication instruction") {
+        auto emit_size = [&](bool enabled) {
+            Config config{
+                    .loc_start = 0,
+                    .loc_end = 1ull << 48,
+                    .enable_jit = true,
+                    .has_local_operation = false,
+                    .backend_isa = kArm64,
+            };
+            AddressSpace address_space{config};
+            ModuleConfig module_config{};
+            module_config.feature_overrides.Set(FeatureId::ra_coalesce, enabled);
+            auto module = address_space.MapModule(
+                    LocationDescriptor{0x8740}, LocationDescriptor{0x8750}, module_config);
+
+            IntrusivePtr<Block> block{new Block(0, Location{0x8740})};
+            auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
+                                 .SetType(ValueType::U64);
+            block->SetHostGPR(value, HostRegIndex(22), Imm{0u});
+            block->SetTerminal(terminal::ReturnToDispatch{});
+            block->ReIdInstr();
+
+            auto features = FeatureSet{};
+            features.ra_coalesce = enabled;
+            RegAlloc alloc{block->MaxInstrId(), pinned_gprs(), fprs, features};
+            RegisterAllocPass::RunForCoalesceTest(block.get(), &alloc, enabled);
+            arm64::JitContext context{module, alloc};
+            arm64::JitTranslator translator{context};
+            translator.Translate(block.get());
+            context.Finish();
+            return context.CurrentBufferSize();
+        };
+
+        const auto off = emit_size(false);
+        const auto on = emit_size(true);
+        REQUIRE(on + vixl::aarch64::kInstructionSize == off);
     }
 }
 

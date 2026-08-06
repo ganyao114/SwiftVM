@@ -147,6 +147,12 @@ public:
     // decision in EmitMemOperand).
     [[nodiscard]] const Config& GetConfig() { return module->GetAddressSpace().GetConfig(); }
     [[nodiscard]] const FeatureSet& GetFeatures() const { return features; }
+    [[nodiscard]] bool IsHostWriteCoalesced(u32 id) const {
+        return reg_alloc.IsHostWriteCoalesced(id);
+    }
+    [[nodiscard]] bool IsHostReadCoalesced(u32 id) const {
+        return reg_alloc.IsHostReadCoalesced(id);
+    }
     [[nodiscard]] RAShapeUnitCounters& GetRAShapeCounters() {
         return reg_alloc.RAShape();
     }
