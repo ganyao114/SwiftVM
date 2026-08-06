@@ -2539,6 +2539,10 @@ void RegisterAllocPass::RunForCoalesceConflictTest(ir::Block* block,
                                                    u32 tied_value_id,
                                                    u16 target) {
     auto features = FeatureSet{};
+    // The conflict binding below must be installed before the coalescer's
+    // only run; keep the initial verified pass from coalescing on its own
+    // regardless of the FeatureSet default.
+    features.ra_coalesce = false;
     RunVerified(block, reg_alloc, features, false, false,
                 features.ra_intwidth_tie, features.induct_tie,
                 features.ra_spill_evict);

@@ -52,7 +52,7 @@ namespace swift::runtime {
     X(induct_tie, true) \
     X(scratch_precise, true) \
     X(ra_spill_evict, true) \
-    X(ra_coalesce, false) \
+    X(ra_coalesce, true) \
     X(flag_full_elim, false) \
     X(gpr_zext_coalesce, true) \
     X(sse_nan_fast, false) \
@@ -168,7 +168,7 @@ struct FeatureOverrides {
     X(bool, exec_trace, "SVM_EXEC_TRACE", NonZero, false, "执行 trace 探针；非 0 开，缺省 OFF；原 runtime.cpp:80/jit_context.cpp:78") \
     X(bool, scratch_precise, "SVM_SCRATCH_PRECISE", DefaultOn, true, "Add/Sub 精确 scratch 计费；缺省 ON，=0 回退；原 reg_alloc.cpp:92") \
     X(bool, ra_spill_evict, "SVM_RA_SPILL_EVICT", DefaultOn, true, "RA farthest-end 驱逐；缺省 ON，=0 回退；原 register_alloc_pass.cpp:106") \
-    X(bool, ra_coalesce, "SVM_RA_COALESCE", NonZero, false, "guest GPR 发布点定向合并；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
+    X(bool, ra_coalesce, "SVM_RA_COALESCE", DefaultOn, true, "guest GPR 发布点定向合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(std::string, arm64_lrcpc_override, "SVM_ARM64_LRCPC", RawString, "", "RCpc host 特征 override；仅明确 0/1 生效，缺省或其他值不改探测；原 translator/x86/translator.cpp:315") \
     X(bool, block_link, "SVM_BLOCK_LINK", DefaultOn, true, "direct block link；缺省 ON，=0 回退；原 translator/x86/translator.cpp:703") \
     X(bool, decode_prof, "SVM_DECODE_PROF", NonZero, false, "decode detail profile；非 0 开且依赖 PROF2；原 perf_stats.h:538") \
