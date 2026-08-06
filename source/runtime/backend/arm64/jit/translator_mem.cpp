@@ -30,8 +30,28 @@ bool IsHostCoalesceProducer(ir::OpCode op) {
         case O::Add:
         case O::Sub:
         case O::And:
+        case O::AndNot:
         case O::Or:
         case O::Xor:
+        case O::Adc:
+        case O::Sbb:
+        case O::Mul:
+        case O::Div:
+        case O::Not:
+        case O::LslImm:
+        case O::LslValue:
+        case O::LsrImm:
+        case O::LsrValue:
+        case O::AsrImm:
+        case O::AsrValue:
+        case O::RorImm:
+        case O::RorValue:
+        case O::ByteSwap:
+        case O::BitExtract:
+        case O::BitClear:
+        case O::Select:
+        case O::CondSelect:
+        case O::MulHigh:
             return true;
         default:
             return false;

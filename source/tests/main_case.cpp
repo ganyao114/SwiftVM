@@ -2916,6 +2916,143 @@ TEST_CASE("guest GPR coalescing keeps publication and snapshot proofs local") {
         return alloc;
     };
 
+    struct ExpandedProducer {
+        OpCode op;
+        const char* name;
+    };
+    constexpr std::array expanded_producers{
+            ExpandedProducer{OpCode::Adc, "Adc"},
+            ExpandedProducer{OpCode::Sbb, "Sbb"},
+            ExpandedProducer{OpCode::Mul, "Mul"},
+            ExpandedProducer{OpCode::Div, "Div"},
+            ExpandedProducer{OpCode::AndNot, "AndNot"},
+            ExpandedProducer{OpCode::Not, "Not"},
+            ExpandedProducer{OpCode::LslImm, "LslImm"},
+            ExpandedProducer{OpCode::LslValue, "LslValue"},
+            ExpandedProducer{OpCode::LsrImm, "LsrImm"},
+            ExpandedProducer{OpCode::LsrValue, "LsrValue"},
+            ExpandedProducer{OpCode::AsrImm, "AsrImm"},
+            ExpandedProducer{OpCode::AsrValue, "AsrValue"},
+            ExpandedProducer{OpCode::RorImm, "RorImm"},
+            ExpandedProducer{OpCode::RorValue, "RorValue"},
+            ExpandedProducer{OpCode::ByteSwap, "ByteSwap"},
+            ExpandedProducer{OpCode::BitExtract, "BitExtract"},
+            ExpandedProducer{OpCode::BitClear, "BitClear"},
+            ExpandedProducer{OpCode::Select, "Select"},
+            ExpandedProducer{OpCode::CondSelect, "CondSelect"},
+            ExpandedProducer{OpCode::MulHigh, "MulHigh"},
+    };
+
+    auto append_expanded_producer = [](Block* block, OpCode op,
+                                       ValueType type) -> Value {
+        auto load_scalar = [&](swift::u64 value) {
+            return block->LoadImm(Imm{value}).SetType(type);
+        };
+        auto binary = [&](auto emit) {
+            auto left = load_scalar(0x123456789abcdef0ull);
+            auto right = load_scalar(0x0102030405060708ull);
+            return emit(left, right).SetType(type);
+        };
+        switch (op) {
+            case OpCode::Adc:
+                return binary([&](Value left, Value right) {
+                    return block->Adc(left, Operand{right});
+                });
+            case OpCode::Sbb:
+                return binary([&](Value left, Value right) {
+                    return block->Sbb(left, Operand{right});
+                });
+            case OpCode::Mul:
+                return binary([&](Value left, Value right) {
+                    return block->Mul(left, Operand{right});
+                });
+            case OpCode::Div:
+                return binary([&](Value left, Value right) {
+                    return block->Div(left, Operand{right});
+                });
+            case OpCode::AndNot:
+                return binary([&](Value left, Value right) {
+                    return block->AndNot(left, Operand{right});
+                });
+            case OpCode::Not:
+                return binary([&](Value left, Value right) {
+                    return block->Not(left, Operand{right});
+                });
+            case OpCode::LslImm:
+                return block->LslImm(load_scalar(0x123456789abcdef0ull), Imm{5u})
+                        .SetType(type);
+            case OpCode::LsrImm:
+                return block->LsrImm(load_scalar(0x123456789abcdef0ull), Imm{5u})
+                        .SetType(type);
+            case OpCode::AsrImm:
+                return block->AsrImm(load_scalar(0x923456789abcdef0ull), Imm{5u})
+                        .SetType(type);
+            case OpCode::RorImm:
+                return block->RorImm(load_scalar(0x123456789abcdef0ull), Imm{5u})
+                        .SetType(type);
+            case OpCode::LslValue:
+                return block->LslValue(load_scalar(0x123456789abcdef0ull),
+                                       load_scalar(5)).SetType(type);
+            case OpCode::LsrValue:
+                return block->LsrValue(load_scalar(0x123456789abcdef0ull),
+                                       load_scalar(5)).SetType(type);
+            case OpCode::AsrValue:
+                return block->AsrValue(load_scalar(0x923456789abcdef0ull),
+                                       load_scalar(5)).SetType(type);
+            case OpCode::RorValue:
+                return block->RorValue(load_scalar(0x123456789abcdef0ull),
+                                       load_scalar(5)).SetType(type);
+            case OpCode::ByteSwap:
+                return block->ByteSwap(load_scalar(0x123456789abcdef0ull),
+                                       Imm{type == ValueType::U64 ? 64u : 32u})
+                        .SetType(type);
+            case OpCode::BitExtract:
+                return block->BitExtract(load_scalar(0x123456789abcdef0ull),
+                                         Imm{4u},
+                                         Imm{type == ValueType::U64 ? 60u : 28u})
+                        .SetType(type);
+            case OpCode::BitClear:
+                return block->BitClear(load_scalar(0x123456789abcdef0ull),
+                                       Imm{8u}, Imm{8u})
+                        .SetType(type);
+            case OpCode::Select: {
+                auto cond = block->LoadImm(Imm{swift::u32{1}}).SetType(ValueType::U32);
+                auto on_true = load_scalar(0x123456789abcdef0ull);
+                auto on_false = load_scalar(0x0102030405060708ull);
+                return block->Select(cond, on_true, on_false).SetType(type);
+            }
+            case OpCode::CondSelect: {
+                auto on_true = load_scalar(0x123456789abcdef0ull);
+                auto on_false = load_scalar(0x0102030405060708ull);
+                return block->CondSelect(Cond::EQ, on_true, on_false)
+                        .SetType(type);
+            }
+            case OpCode::MulHigh:
+                return binary([&](Value left, Value right) {
+                    return block->MulHigh(left, right, Imm{0u});
+                });
+            default:
+                return {};
+        }
+    };
+
+    struct ExpandedCase {
+        IntrusivePtr<Block> block;
+        Value produced;
+        Value conflict;
+        Inst* publish;
+    };
+    auto make_expanded_case = [&](OpCode op, ValueType type, swift::u64 location) {
+        IntrusivePtr<Block> block{new Block(0, Location{location})};
+        auto produced = append_expanded_producer(block.get(), op, type);
+        auto conflict = block->LoadImm(Imm{swift::u64{0xfeedfacecafebeef}})
+                                .SetType(ValueType::U64);
+        auto* publish = block->AppendInst(
+                OpCode::SetHostGPR, produced, HostRegIndex(22), Imm{0u});
+        block->StoreUniform(Uniform{24, ValueType::U64}, conflict);
+        return ExpandedCase{std::move(block), produced, conflict, publish};
+    };
+
     SECTION("last-use full-width publication enters the fixed home") {
         IntrusivePtr<Block> block{new Block(0, Location{0x86c0})};
         auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
@@ -3092,6 +3229,68 @@ TEST_CASE("guest GPR coalescing keeps publication and snapshot proofs local") {
         const auto off = emit_size(false);
         const auto on = emit_size(true);
         REQUIRE(on + vixl::aarch64::kInstructionSize == off);
+    }
+
+    SECTION("expanded scalar producers preserve alias emission and conflict proofs") {
+        auto emit_size = [&](OpCode op, ValueType type, swift::u64 location,
+                             bool enabled) {
+            Config config{
+                    .loc_start = 0,
+                    .loc_end = 1ull << 48,
+                    .enable_jit = true,
+                    .has_local_operation = false,
+                    .backend_isa = kArm64,
+            };
+            AddressSpace address_space{config};
+            ModuleConfig module_config{};
+            module_config.feature_overrides.Set(FeatureId::ra_coalesce, enabled);
+            auto module = address_space.MapModule(
+                    LocationDescriptor{location}, LocationDescriptor{location + 0x10},
+                    module_config);
+            auto item = make_expanded_case(op, type, location);
+            auto alloc = allocate(item.block.get(), enabled);
+            arm64::JitContext context{module, *alloc};
+            arm64::JitTranslator translator{context};
+            translator.Translate(item.block.get());
+            context.Finish();
+            return context.CurrentBufferSize();
+        };
+
+        std::size_t case_index = 0;
+        for (std::size_t index = 0; index < expanded_producers.size(); ++index) {
+            const auto [op, name] = expanded_producers[index];
+            const std::array types = {ValueType::U32, ValueType::U64};
+            for (auto type : types) {
+                if (op == OpCode::MulHigh && type == ValueType::U32) {
+                    continue;
+                }
+                CAPTURE(name, type);
+                auto item = make_expanded_case(op, type, 0x8800 + case_index * 0x20);
+                auto off = allocate(item.block.get(), false);
+                REQUIRE(off->ValueGPR(item.produced).id != 22);
+                REQUIRE_FALSE(off->IsHostWriteCoalesced(item.publish->Id()));
+
+                auto on = allocate(item.block.get(), true);
+                CAPTURE(item.produced.Id(), item.produced.Def()->GetUses(),
+                        item.publish->Id(), on->ValueGPR(item.produced).id);
+                REQUIRE(on->ValueGPR(item.produced).id == 22);
+                REQUIRE(on->IsHostWriteCoalesced(item.publish->Id()));
+
+                auto features = FeatureSet{};
+                features.ra_coalesce = true;
+                RegAlloc conflict{item.block->MaxInstrId(), pinned_gprs(), fprs, features};
+                RegisterAllocPass::RunForCoalesceConflictTest(
+                        item.block.get(), &conflict, item.conflict.Id(), 22);
+                REQUIRE(conflict.ValueGPR(item.conflict).id == 22);
+                REQUIRE_FALSE(conflict.IsHostWriteCoalesced(item.publish->Id()));
+
+                const auto location = 0x9800 + case_index * 0x20;
+                const auto off_size = emit_size(op, type, location, false);
+                const auto on_size = emit_size(op, type, location, true);
+                REQUIRE(on_size + vixl::aarch64::kInstructionSize == off_size);
+                ++case_index;
+            }
+        }
     }
 }
 

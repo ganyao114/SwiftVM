@@ -643,8 +643,28 @@ private:
             case OpCode::Add:
             case OpCode::Sub:
             case OpCode::And:
+            case OpCode::AndNot:
             case OpCode::Or:
             case OpCode::Xor:
+            case OpCode::Adc:
+            case OpCode::Sbb:
+            case OpCode::Mul:
+            case OpCode::Div:
+            case OpCode::Not:
+            case OpCode::LslImm:
+            case OpCode::LslValue:
+            case OpCode::LsrImm:
+            case OpCode::LsrValue:
+            case OpCode::AsrImm:
+            case OpCode::AsrValue:
+            case OpCode::RorImm:
+            case OpCode::RorValue:
+            case OpCode::ByteSwap:
+            case OpCode::BitExtract:
+            case OpCode::BitClear:
+            case OpCode::Select:
+            case OpCode::CondSelect:
+            case OpCode::MulHigh:
                 return true;
             default:
                 return false;
