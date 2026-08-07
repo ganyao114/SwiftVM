@@ -73,6 +73,15 @@ IntrusivePtr<Block> BuildSource(VAddr guest, VAddr target) {
     return block;
 }
 
+IntrusivePtr<Block> BuildStaticForwardSource(VAddr guest, VAddr target) {
+    IntrusivePtr<Block> block{new Block(0, Location{guest})};
+    block->SetEndLocation(Location{guest + 1});
+    block->SetLocation(Lambda{Imm{target}});
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    return block;
+}
+
 IntrusivePtr<Block> BuildConditionalSource(VAddr guest,
                                            VAddr then_target,
                                            VAddr else_target) {
@@ -238,6 +247,15 @@ u32 LoadInsn(const void* address) {
     return instruction;
 }
 
+bool ContainsInsn(const u8* begin, size_t size, u32 expected) {
+    for (size_t offset = 0; offset + sizeof(u32) <= size; offset += sizeof(u32)) {
+        if (LoadInsn(begin + offset) == expected) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string CurrentTestExecutable() {
 #if defined(__APPLE__)
     u32 size{};
@@ -368,6 +386,167 @@ TEST_CASE("direct link keeps structural legacy fallbacks",
     }
 #else
     SUCCEED("production direct-link fallback execution requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("direct SCC descending edge observes a pending interrupt",
+          "[direct-link][production][signal][cycle]") {
+#if defined(__aarch64__)
+    ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
+    ScopedEnvironment latch{"SVM_BACKEDGE_LATCH", "1"};
+    ScopedEnvironment flags{"SVM_BACKEDGE_FLAGS", "0"};
+    const bool static_forward = GENERATE(false, true);
+    DYNAMIC_SECTION("descending shape="
+                    << (static_forward ? "SetLocation" : "LinkBlock")) {
+        const size_t page_size = static_cast<size_t>(getpagesize());
+        const size_t guest_size = 4 * page_size;
+        void* guest_memory = mmap(nullptr,
+                                  guest_size,
+                                  PROT_READ | PROT_WRITE,
+                                  MAP_PRIVATE | MAP_ANON,
+                                  -1,
+                                  0);
+        REQUIRE(guest_memory != MAP_FAILED);
+        {
+            const VAddr guest_a = page_size + 0x100;
+            const VAddr guest_b = 3 * page_size + 0x100;
+            Config config{
+                    .loc_start = 0,
+                    .loc_end = guest_size,
+                    .enable_jit = true,
+                    .enable_asm_interp = false,
+                    .has_local_operation = false,
+                    .backend_isa = kArm64,
+                    .uniform_buffer_size = 64,
+                    .global_opts = Optimizations::BlockLink,
+                    .memory_base = guest_memory,
+                    .guest_addr_mask = guest_size - 1,
+            };
+            AddressSpace space{config};
+            auto module = space.GetDefaultModule();
+            auto block_a = BuildSource(guest_a, guest_b);
+            auto block_b = static_forward
+                    ? BuildStaticForwardSource(guest_b, guest_a)
+                    : BuildSource(guest_b, guest_a);
+            auto* code_a = static_cast<u8*>(TranslateIR(module, block_a));
+            auto* code_b = static_cast<u8*>(TranslateIR(module, block_b));
+            REQUIRE(code_a != nullptr);
+            REQUIRE(code_b != nullptr);
+            space.PushCodeCache(Location{guest_a}, code_a);
+            space.PushCodeCache(Location{guest_b}, code_b);
+
+            // ldar x16,[x28]. The ascending A->B edge stays unchanged; the
+            // descending edge carries the two-instruction cycle-cover poll.
+            constexpr u32 kExitRequestLdar = 0xc8dfff90u;
+            const auto region_a = module->GetCodeRegion(code_a);
+            REQUIRE(region_a);
+            const auto sites_a = FindProductionSites(space, *region_a, code_a);
+            const auto site_a = std::find_if(
+                    sites_a.begin(), sites_a.end(), [&](const auto& site) {
+                        return site.record.source_owner.allocation == code_a &&
+                               site.record.guest_target == guest_b;
+                    });
+            REQUIRE(site_a != sites_a.end());
+            REQUIRE_FALSE(ContainsInsn(
+                    code_a,
+                    static_cast<size_t>(site_a->rx - code_a),
+                    kExitRequestLdar));
+            if (static_forward) {
+                REQUIRE(ContainsInsn(code_b, 32, kExitRequestLdar));
+            } else {
+                const auto region_b = module->GetCodeRegion(code_b);
+                REQUIRE(region_b);
+                const auto sites_b = FindProductionSites(space, *region_b, code_b);
+                const auto site_b = std::find_if(
+                        sites_b.begin(), sites_b.end(), [&](const auto& site) {
+                            return site.record.source_owner.allocation == code_b &&
+                                   site.record.guest_target == guest_a;
+                        });
+                REQUIRE(site_b != sites_b.end());
+                REQUIRE(ContainsInsn(
+                        code_b,
+                        static_cast<size_t>(site_b->rx - code_b),
+                        kExitRequestLdar));
+            }
+
+            Runtime runtime{&space};
+            runtime.SetLocation(guest_a);
+            std::atomic_bool runner_done{};
+            std::atomic<u32> runner_halt{};
+            std::thread runner([&] {
+                runner_halt.store(static_cast<u32>(runtime.Run()),
+                                  std::memory_order_release);
+                runner_done.store(true, std::memory_order_release);
+            });
+
+            const size_t expected_links = static_forward ? 1 : 2;
+            REQUIRE(WaitUntil(
+                    [&] {
+                        return space.GetLinkManager().GetStats().linked ==
+                               expected_links;
+                    },
+                    std::chrono::seconds(2)));
+            runtime.SignalInterrupt();
+            const bool bounded = WaitUntil(
+                    [&] { return runner_done.load(std::memory_order_acquire); },
+                    std::chrono::seconds(2));
+            if (!bounded) {
+                space.InvalidateCodeRange(guest_a, guest_b + 1);
+                REQUIRE(WaitUntil(
+                        [&] { return runner_done.load(std::memory_order_acquire); },
+                        std::chrono::seconds(2)));
+            }
+            runner.join();
+            REQUIRE(bounded);
+            REQUIRE(runner_halt.load(std::memory_order_acquire) ==
+                    static_cast<u32>(HaltReason::Signal));
+        }
+        REQUIRE(munmap(guest_memory, guest_size) == 0);
+    }
+#else
+    SUCCEED("direct SCC signal coverage requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("direct SCC cycle cover is inert with the latch disabled",
+          "[direct-link][production][signal][cycle]") {
+#if defined(__aarch64__)
+    ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
+    ScopedEnvironment latch{"SVM_BACKEDGE_LATCH", "0"};
+    const size_t page_size = static_cast<size_t>(getpagesize());
+    const size_t guest_size = 4 * page_size;
+    void* guest_memory = mmap(nullptr,
+                              guest_size,
+                              PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANON,
+                              -1,
+                              0);
+    REQUIRE(guest_memory != MAP_FAILED);
+    {
+        const VAddr low = page_size + 0x100;
+        const VAddr high = 3 * page_size + 0x100;
+        Config config{
+                .loc_start = 0,
+                .loc_end = guest_size,
+                .enable_jit = true,
+                .enable_asm_interp = false,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+                .uniform_buffer_size = 64,
+                .global_opts = Optimizations::BlockLink,
+                .memory_base = guest_memory,
+                .guest_addr_mask = guest_size - 1,
+        };
+        AddressSpace space{config};
+        auto block = BuildStaticForwardSource(high, low);
+        auto* code = static_cast<u8*>(TranslateIR(space.GetDefaultModule(), block));
+        REQUIRE(code != nullptr);
+        constexpr u32 kExitRequestLdar = 0xc8dfff90u;
+        REQUIRE_FALSE(ContainsInsn(code, 32, kExitRequestLdar));
+    }
+    REQUIRE(munmap(guest_memory, guest_size) == 0);
+#else
+    SUCCEED("direct SCC signal coverage requires an AArch64 host");
 #endif
 }
 

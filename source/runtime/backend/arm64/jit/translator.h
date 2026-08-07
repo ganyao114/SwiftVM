@@ -203,6 +203,8 @@ private:
     [[nodiscard]] bool IsRegionInternalEdge(ir::Location target) const;
     [[nodiscard]] bool IsRegionCycleEdge(ir::Location target) const;
     [[nodiscard]] bool HasRegionCycleEdgeFromCurrent() const;
+    [[nodiscard]] bool IsDirectCycleCutEdge(ir::Location target) const;
+    [[nodiscard]] Label* GetDirectCycleExit(ir::Location target);
     [[nodiscard]] bool CanRegionFallThrough(ir::Location target) const;
     void EmitRegionEdge(ir::Location target,
                         bool fallthrough = false,
@@ -214,6 +216,7 @@ private:
     [[nodiscard]] bool HasSelfEdge(const ir::Terminal& terminal) const;
     [[nodiscard]] bool IsSelfEdge(ir::Location target) const;
     void EmitBackedgeExitStub();
+    void EmitDirectCycleExitStubs();
 
     // Labels used by Goto / NotGoto / BindLabel
     Label *GetLocalLabel(ir::Inst *inst);
@@ -417,6 +420,7 @@ private:
     bool addr_ea_tie{true};
     // 绝对地址常量直接物化到 GetOperand 的分配结果，避免临时寄存器搬运。
     bool abs_const_mat{false};
+    bool direct_cycle_latch{false};
     bool backedge_latch{false};
     bool backedge_flags{false};
     bool region_edges_active{false};
@@ -439,6 +443,7 @@ private:
     bool EmitIndirectForward();
     std::unique_ptr<Label> backedge_exit_label{};
     bool backedge_exit_referenced{};
+    std::map<u64, std::unique_ptr<Label>> direct_cycle_exits{};
     std::unique_ptr<BackedgeFlagsPlan> backedge_flags_plan{};
     u32 backedge_host_begin{};
     u32 backedge_host_end{};

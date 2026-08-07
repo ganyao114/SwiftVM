@@ -93,6 +93,7 @@ public:
     void ForwardLocal(ir::Location location,
                       Label* cycle_exit = nullptr,
                       bool fallthrough = false);
+    [[nodiscard]] bool CanBypassDispatcher(ir::Location location) const;
     [[nodiscard]] bool CanEmitDirectLink(ir::Location location) const;
     [[nodiscard]] bool HasDirectLinkSites() const {
         return !pending_direct_link_sites.empty();
@@ -106,7 +107,8 @@ public:
     // module, cross-module, BlockLink disabled); the caller then Rets to the
     // trampoline dispatcher as before. state->current_loc has already been
     // written by EmitSetLocation, so the fallback path needs no fixup.
-    [[nodiscard]] bool ForwardStatic(ir::Location location);
+    [[nodiscard]] bool ForwardStatic(ir::Location location,
+                                     Label* cycle_exit = nullptr);
     // Polls the sticky signal request, then checks only the first slot of the
     // existing per-Runtime L1 table. A key mismatch or cleared value returns
     // through the unchanged dispatcher, which performs the complete L1

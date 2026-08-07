@@ -495,23 +495,24 @@ XRegister JitContext::GetSharedTmpX() {
     return XRegister(shared_tmp_gpr);
 }
 
-bool JitContext::ForwardStatic(ir::Location location) {
-    if (!module->GetModuleConfig().HasOpt(Optimizations::BlockLink)) {
-        return false;
-    }
+bool JitContext::ForwardStatic(ir::Location location, Label* cycle_exit) {
     // Same-module only, like the BlockLink path in Forward(): a slot filled by
     // another module outlives this module's view of it. The lookup also keeps
     // dispatch slots (a finite shared table) from being reserved for addresses
     // no module owns -- a computed jmp into unmapped memory must not consume
     // one.
-    auto target_module = module->GetAddressSpace().GetModule(location.Value());
-    if (!target_module || target_module != module) {
+    if (!CanBypassDispatcher(location)) {
         return false;
     }
+    auto target_module = module;
     // The Ret this replaces leaves the translator without touching JitContext,
     // so a spilled def from the block's last instruction would never reach its
     // slot; branching straight to the next unit makes that visible.
     FlushSpillWrites();
+    if (cycle_exit) {
+        __ Ldar(ip0, MemOperand(state, state_offset_exit_request));
+        __ Cbnz(ip0, cycle_exit);
+    }
     const u32 dispatcher_index = target_module->GetDispatchIndex(location);
     Label empty_slot;
     __ Mov(ipw, dispatcher_index);
@@ -534,19 +535,19 @@ void JitContext::Forward(ir::Location location,
     // (a spilled value defined by the block's last instruction may be live
     // into the target block in function mode).
     FlushSpillWrites();
+    if (backedge_exit) {
+        // State::exit_request is deliberately the first field, so every
+        // cycle-cover poll is exactly two hot instructions. The release
+        // publishers are SignalInterrupt and SmcTracker invalidation.
+        __ Ldar(ip0, MemOperand(state, state_offset_exit_request));
+        __ Cbnz(ip0, backedge_exit);
+    }
     auto self_forward = location == cur_block->GetStartLocation();
     if (!self_forward && cur_function) {
         self_forward = location == cur_function->GetStartLocation();
     }
     if (self_forward) {
         auto self_label = self_target ? self_target : GetLabel(location.Value());
-        if (backedge_exit) {
-            // State::exit_request is deliberately the first field, so this
-            // acquire poll is exactly two hot instructions. The release
-            // publishers are SignalInterrupt and SmcTracker invalidation.
-            __ Ldar(ip0, MemOperand(state, state_offset_exit_request));
-            __ Cbnz(ip0, backedge_exit);
-        }
         __ B(self_label);
     } else {
         auto target_module = module->GetAddressSpace().GetModule(location.Value());
@@ -611,6 +612,13 @@ void JitContext::Forward(ir::Location location,
             __ Ret();
         }
     }
+}
+
+bool JitContext::CanBypassDispatcher(ir::Location location) const {
+    if (!module->GetModuleConfig().HasOpt(Optimizations::BlockLink)) {
+        return false;
+    }
+    return module->GetAddressSpace().GetModule(location.Value()) == module;
 }
 
 void JitContext::ForwardLocal(ir::Location location,

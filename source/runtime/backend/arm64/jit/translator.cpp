@@ -166,7 +166,8 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     abs_const_mat = features.abs_const_mat;
     sse_nan_fast = features.sse_nan_fast;
     sse_nan_coldpath = features.sse_nan_coldpath;
-    backedge_latch = BackedgeLatchEnabled() || config.region_edges;
+    direct_cycle_latch = BackedgeLatchEnabled();
+    backedge_latch = direct_cycle_latch || config.region_edges;
     backedge_flags = backedge_latch && GetSvmConfig().backedge_flags;
     execution_trace_enabled = context.ExecutionTraceEnabled();
     if (execution_trace_enabled) {
@@ -302,9 +303,34 @@ bool JitTranslator::HasRegionCycleEdgeFromCurrent() const {
                        [&](const auto& edge) { return edge.first == source; });
 }
 
+bool JitTranslator::IsDirectCycleCutEdge(ir::Location target) const {
+    if (!direct_cycle_latch || !cur_block ||
+        target.Value() >= cur_block->GetStartLocation().Value()) {
+        return false;
+    }
+    // Guest block starts form a total order, so every non-self directed cycle
+    // has at least one descending edge. This deterministic cut is independent
+    // of translation/cache order; it may conservatively cover acyclic backward
+    // jumps. Region-local edges never visit the dispatcher. External direct
+    // edges can stay in JIT only when BlockLink owns both ends in one module.
+    return IsRegionInternalEdge(target) || context.CanBypassDispatcher(target);
+}
+
+Label* JitTranslator::GetDirectCycleExit(ir::Location target) {
+    if (!IsDirectCycleCutEdge(target)) {
+        return nullptr;
+    }
+    auto& label = direct_cycle_exits[target.Value()];
+    if (!label) {
+        label = std::make_unique<Label>();
+    }
+    return label.get();
+}
+
 bool JitTranslator::CanRegionFallThrough(ir::Location target) const {
     return next_region_block && *next_region_block == target.Value() &&
            !backedge_exit_label && !backedge_flags_plan &&
+           !IsDirectCycleCutEdge(target) &&
            vec_nan_cold_sites.empty();
 }
 
@@ -318,11 +344,16 @@ void JitTranslator::EmitRegionEdge(ir::Location target,
         context.RecordExecCounter(exec_offset_region_edges);
     }
     ++region_block_edges;
-    const bool cycle = IsRegionCycleEdge(target);
+    const bool region_cycle = IsRegionCycleEdge(target);
+    auto* ordered_cycle_exit = region_cycle ? nullptr : GetDirectCycleExit(target);
+    const bool cycle = region_cycle || ordered_cycle_exit;
     if (cycle) {
-        ASSERT(backedge_exit_label);
+        ASSERT(region_cycle ? backedge_exit_label != nullptr
+                            : ordered_cycle_exit != nullptr);
         context.RecordExecCounter(exec_offset_region_cycle_polls);
-        backedge_exit_referenced = true;
+        if (region_cycle) {
+            backedge_exit_referenced = true;
+        }
         ++region_block_cycles;
     }
     if (fallthrough) {
@@ -333,7 +364,8 @@ void JitTranslator::EmitRegionEdge(ir::Location target,
     }
     const u32 link_before = context.CurrentBufferSize();
     context.ForwardLocal(target,
-                         cycle ? backedge_exit_label.get() : nullptr,
+                         region_cycle ? backedge_exit_label.get()
+                                      : ordered_cycle_exit,
                          fallthrough);
     RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                         context.CurrentBufferSize());
@@ -364,7 +396,9 @@ bool JitTranslator::EmitRegionIf(const ir::terminal::If& terminal,
             __ Cbz(context.W(terminal.cond), label);
         }
     };
-    auto needs_stub = [&](ir::Location target) { return IsRegionCycleEdge(target); };
+    auto needs_stub = [&](ir::Location target) {
+        return IsRegionCycleEdge(target) || IsDirectCycleCutEdge(target);
+    };
 
     context.RecordExecCounter(exec_offset_exit_direct);
     context.RecordExecCounter(exec_offset_region_edges);
@@ -425,7 +459,9 @@ bool JitTranslator::EmitRegionCondition(
                 : static_cast<Condition>(static_cast<u8>(host_cond) ^ 1);
         __ B(label, cond);
     };
-    auto needs_stub = [&](ir::Location target) { return IsRegionCycleEdge(target); };
+    auto needs_stub = [&](ir::Location target) {
+        return IsRegionCycleEdge(target) || IsDirectCycleCutEdge(target);
+    };
 
     context.RecordExecCounter(exec_offset_exit_direct);
     context.RecordExecCounter(exec_offset_region_edges);
@@ -703,6 +739,7 @@ void JitTranslator::Translate(ir::Block* block) {
     u32 density_scalar_fp_ops = 0;
     PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
     cur_block = block;
+    ASSERT(direct_cycle_exits.empty());
     region_block_edges = 0;
     region_block_cycles = 0;
     region_block_fallthroughs = 0;
@@ -929,6 +966,7 @@ void JitTranslator::Translate(ir::Block* block) {
     context.BeginColdScratch();
     const u32 boundary_cold_before = density ? context.CurrentBufferSize() : 0;
     EmitBackedgeExitStub();
+    EmitDirectCycleExitStubs();
     EmitBackedgeColdPaths();
     if (density) {
         RecordBoundaryRange(BoundarySubsequence::ColdTail, boundary_cold_before,
@@ -1478,6 +1516,29 @@ void JitTranslator::EmitBackedgeExitStub() {
     backedge_exit_referenced = false;
 }
 
+void JitTranslator::EmitDirectCycleExitStubs() {
+    for (auto& [target, label] : direct_cycle_exits) {
+        ASSERT(label);
+        Label signal;
+        Label publish;
+        __ Bind(label.get());
+        // The poll runs after MergeNZCV and FlushSpillWrites. Publish the edge
+        // target so resuming after the guest signal continues at the committed
+        // terminal boundary rather than repeating the source block.
+        __ Mov(ip1, target);
+        __ Str(ip1, MemOperand(state, state_offset_current_loc));
+        __ Tbnz(ip0, 63, &signal);
+        __ Mov(ipw1, static_cast<u32>(HaltReason::CodeMiss));
+        __ B(&publish);
+        __ Bind(&signal);
+        __ Mov(ipw1, static_cast<u32>(HaltReason::Signal));
+        __ Bind(&publish);
+        __ Str(ipw1, MemOperand(state, state_offset_halt_reason));
+        __ Ret();
+    }
+    direct_cycle_exits.clear();
+}
+
 void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                                  LinkSiteKind direct_link_kind) {
     VisitVariant<void>(terminal, [this, direct_link_kind](auto term) {
@@ -1515,8 +1576,9 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             context.RecordExecCounter(exec_offset_exit_direct);
             auto* exit = IsSelfEdge(term.next) && backedge_exit_label
                     ? backedge_exit_label.get()
-                    : nullptr;
-            backedge_exit_referenced |= exit != nullptr;
+                    : GetDirectCycleExit(term.next);
+            backedge_exit_referenced |=
+                    exit && exit == backedge_exit_label.get();
             auto* self_target = IsSelfEdge(term.next) && backedge_flags_plan
                     ? backedge_flags_plan->local_entry.get()
                     : nullptr;
@@ -1533,8 +1595,9 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             context.RecordExecCounter(exec_offset_exit_direct);
             auto* exit = IsSelfEdge(term.next) && backedge_exit_label
                     ? backedge_exit_label.get()
-                    : nullptr;
-            backedge_exit_referenced |= exit != nullptr;
+                    : GetDirectCycleExit(term.next);
+            backedge_exit_referenced |=
+                    exit && exit == backedge_exit_label.get();
             auto* self_target = IsSelfEdge(term.next) && backedge_flags_plan
                     ? backedge_flags_plan->local_entry.get()
                     : nullptr;
@@ -1702,7 +1765,9 @@ bool JitTranslator::EmitStaticForward() {
     const u64 target = *static_next_loc;
     static_next_loc.reset();
     const u32 link_before = context.CurrentBufferSize();
-    const bool emitted = context.ForwardStatic(ir::Location{target});
+    const auto location = ir::Location{target};
+    const bool emitted = context.ForwardStatic(
+            location, GetDirectCycleExit(location));
     RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                         context.CurrentBufferSize());
     return emitted;
