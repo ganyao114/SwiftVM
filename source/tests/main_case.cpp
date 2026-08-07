@@ -221,7 +221,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 139);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 140);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -294,7 +294,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 50);
+    STATIC_REQUIRE(kFeatureCount == 51);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -4676,7 +4676,8 @@ AFPShapeCode CompileAFPShape(AFPShapeOp op,
                              swift::u32 lane_bits,
                              bool scalar,
                              bool scalar_insert,
-                             bool afp_nan) {
+                             bool afp_nan,
+                             bool afp_minmax = false) {
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
     using namespace swift::runtime::ir;
@@ -4692,6 +4693,12 @@ AFPShapeCode CompileAFPShape(AFPShapeOp op,
             .sse_afp_nan = afp_nan,
     };
     AddressSpace address_space{config};
+    ModuleConfig module_config{};
+    module_config.feature_overrides.Set(FeatureId::sse_afp_minmax,
+                                        afp_minmax);
+    auto module = address_space.MapModule(0x2d00,
+                                          0x2d01,
+                                          module_config);
     IntrusivePtr<Block> block{new Block(0, Location{0x2d00})};
     auto left = block->LoadUniform(Uniform{0, ValueType::V128})
                         .SetType(ValueType::V128);
@@ -4785,12 +4792,13 @@ AFPShapeCode CompileAFPShape(AFPShapeOp op,
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
+    const auto features = ResolveFeatureSet(module_config);
     RegAlloc reg_alloc{block->MaxInstrId(),
                        address_space.GetTrampolines().GetGPRRegs(),
                        address_space.GetTrampolines().GetFPRRegs(),
-                       FeatureSet{}};
-    RegisterAllocPass::Run(block.get(), &reg_alloc, scalar_insert, FeatureSet{});
-    arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
+                       features};
+    RegisterAllocPass::Run(block.get(), &reg_alloc, scalar_insert, features);
+    arm64::JitContext context{module, reg_alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -4810,6 +4818,45 @@ AFPShapeCode CompileAFPShape(AFPShapeOp op,
         ++code.instructions;
     }
     return code;
+}
+
+const char* AFPShapeName(AFPShapeOp op);
+
+TEST_CASE("AFP scalar MIN MAX requires a tied left destination") {
+    for (const auto op : {AFPShapeOp::Min, AFPShapeOp::Max}) {
+        for (const swift::u32 lane_bits : {swift::u32{32}, swift::u32{64}}) {
+            INFO(AFPShapeName(op) << " f" << lane_bits);
+
+            const auto off = CompileAFPShape(
+                    op, lane_bits, true, true, true, false);
+            const auto on = CompileAFPShape(
+                    op, lane_bits, true, true, true, true);
+            INFO("OFF:\n" << off.text << "ON:\n" << on.text);
+            REQUIRE(on.instructions + 2 == off.instructions);
+            REQUIRE(on.text.find(op == AFPShapeOp::Max ? "fmax" : "fmin") !=
+                    std::string::npos);
+            REQUIRE(on.text.find("fcmp") == std::string::npos);
+            REQUIRE(on.text.find("ins") == std::string::npos);
+
+            const auto untied_off = CompileAFPShape(
+                    op, lane_bits, true, false, true, false);
+            const auto untied_on = CompileAFPShape(
+                    op, lane_bits, true, false, true, true);
+            INFO("untied OFF:\n" << untied_off.text
+                                  << "untied ON:\n" << untied_on.text);
+            REQUIRE(untied_on.instructions == untied_off.instructions);
+            REQUIRE(NormalizeDisasmForCompare(untied_on.text) ==
+                    NormalizeDisasmForCompare(untied_off.text));
+
+            const auto no_contract = CompileAFPShape(
+                    op, lane_bits, true, true, false, true);
+            const auto no_contract_off = CompileAFPShape(
+                    op, lane_bits, true, true, false, false);
+            REQUIRE(no_contract.instructions == no_contract_off.instructions);
+            REQUIRE(NormalizeDisasmForCompare(no_contract.text) ==
+                    NormalizeDisasmForCompare(no_contract_off.text));
+        }
+    }
 }
 
 const char* AFPShapeName(AFPShapeOp op) {

@@ -48,6 +48,7 @@ namespace swift::runtime {
     X(helper_leaf_abi, false) \
     X(ra_intwidth_tie, true) \
     X(sse_afp_nan, true) \
+    X(sse_afp_minmax, false) \
     X(mem_hostbase_fold, true) \
     X(induct_tie, true) \
     X(scratch_precise, true) \
@@ -164,6 +165,7 @@ struct FeatureOverrides {
     X(bool, backedge_flags, "SVM_BACKEDGE_FLAGS", NonZero, false, "backedge flags 去物化；非 0 开且依赖 latch；原 backedge_control.cpp:24") \
     X(bool, ra_intwidth_tie, "SVM_RA_INTWIDTH_TIE", DefaultOn, true, "整数宽度链 tie；缺省 ON，=0 回退；原 register_alloc_pass.cpp:90") \
     X(bool, sse_afp_nan, "SVM_SSE_AFP_NAN", DefaultOn, true, "AFP NaN policy 请求；缺省 ON，=0 回退，仍受 host AFP 限制；原 translator/x86/translator.cpp:342") \
+    X(bool, sse_afp_minmax, "SVM_SSE_AFP_MINMAX", NonZero, false, "AFP/AH scalar SSE MIN/MAX 单指令 lowering；非 0 开，缺省 OFF，依赖有效 SVM_SSE_AFP_NAN；原 translator_alu.cpp") \
     X(std::string, fpcr_tax_prof, "SVM_FPCR_TAX_PROF", RawString, "", "FPCR tax profile 输出目标；存在且非 0 启用；原 fpcr_tax_prof.cpp:69/358") \
     X(bool, fpcr_tax_skip_switch, "SVM_FPCR_TAX_SKIP_SWITCH", NonZero, false, "FPCR tax 跳过 switch；非 0 开，缺省 OFF；原 fpcr_tax_prof.cpp:384") \
     X(std::string, fpcr_tax_timing, "SVM_FPCR_TAX_TIMING", RawString, "", "FPCR timing 输出目标；存在且非 0 启用；原 fpcr_tax_prof.cpp:227/398") \

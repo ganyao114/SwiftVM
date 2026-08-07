@@ -2286,6 +2286,23 @@ void JitTranslator::EmitVecFMinMax(ir::Inst* inst) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const bool maximum = inst->GetArg<ir::Imm>(3).Get() != 0;
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
+    if (sse_afp_minmax && scalar && result.GetCode() == left.GetCode()) {
+        // AH selects operand 2 for unordered and equal inputs, matching x86
+        // MIN/MAX including NaN payload and signed-zero selection.  NEP keeps
+        // the tied destination's upper lanes intact.
+        if (bits == 32) {
+            if (maximum)
+                __ Fmax(result.S(), left.S(), right.S());
+            else
+                __ Fmin(result.S(), left.S(), right.S());
+        } else {
+            if (maximum)
+                __ Fmax(result.D(), left.D(), right.D());
+            else
+                __ Fmin(result.D(), left.D(), right.D());
+        }
+        return;
+    }
     if (sse_scalar_insert && scalar) {
         // x86 selects operand 2 for unordered and equal. Keep dst-in as the
         // default, and insert operand 2 only when it wins.

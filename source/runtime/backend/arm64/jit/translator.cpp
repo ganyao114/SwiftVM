@@ -160,6 +160,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     fpcr_tax_skip_switch = sse_afp_nan && FpcrTaxSkipSwitchEnabled();
     fpcr_tax_timing = sse_afp_nan && FpcrTaxTimingEnabled();
     const auto& features = ctx.GetFeatures();
+    sse_afp_minmax = features.sse_afp_minmax && sse_afp_nan;
     shift_imm_fast = features.shift_imm_fast;
     mem_narrow_fuse = features.mem_narrow_fuse;
     addr_ea_tie = features.addr_ea_tie;

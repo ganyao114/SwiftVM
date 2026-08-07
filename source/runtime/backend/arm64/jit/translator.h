@@ -403,6 +403,10 @@ private:
     // instructions can update a tied destination's lane 0 in place.
     bool sse_scalar_insert{false};
     bool sse_afp_nan{false};
+    // FPCR.AH gives scalar FMIN/FMAX the x86 source-2 selection rule for
+    // unordered and equal inputs.  NEP, enabled by the same AFP contract,
+    // preserves the tied destination's upper lanes.
+    bool sse_afp_minmax{false};
     // W90 phase-2 diagnostics. skip_switch is intentionally unsafe and only
     // affects direct helper FPCR bracketing when explicitly requested.
     bool fpcr_tax_skip_switch{false};
