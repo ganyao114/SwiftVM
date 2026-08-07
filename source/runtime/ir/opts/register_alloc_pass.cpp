@@ -3,6 +3,7 @@
 //
 
 #include "register_alloc_pass.h"
+#include <cstdio>
 #include "base/logging.h"
 #include "runtime/common/perf_stats.h"
 
@@ -748,9 +749,8 @@ private:
         u32 use_id{};
     };
 
-    static std::optional<u64> ConstAddressValue(Inst* inst) {
-        if (!inst || inst->GetOp() != OpCode::GetOperand ||
-            inst->ReturnType() != ValueType::U64 || inst->GetUses() != 1) {
+    static std::optional<u64> RawConstAddressValue(Inst* inst) {
+        if (!inst || inst->GetOp() != OpCode::GetOperand) {
             return std::nullopt;
         }
         const auto operand = inst->GetArg<Operand>(0);
@@ -767,6 +767,13 @@ private:
         return std::nullopt;
     }
 
+    static std::optional<u64> ConstAddressValue(Inst* inst) {
+        if (!inst || inst->ReturnType() != ValueType::U64 || inst->GetUses() != 1) {
+            return std::nullopt;
+        }
+        return RawConstAddressValue(inst);
+    }
+
     static bool IsConstAddressBarrier(OpCode op) {
         return op == OpCode::Goto || op == OpCode::NotGoto ||
                op == OpCode::BindLabel;
@@ -777,24 +784,56 @@ private:
             return;
         }
 
+        const bool audit = GetSvmConfig().ra_hot_coalesce_all;
+        const u64 unit_pc = function
+                ? function->GetFunction()->GetStartLocation().Value()
+                : block->GetStartLocation().Value();
+
         auto cache_block = [&](Block* lir_block) {
             struct Group {
                 u64 address{};
                 Vector<ConstAddressCandidate> candidates{};
+                u32 cached_reuses{};
+                u32 residual_no_free{};
+                u32 residual_verify{};
             };
             Vector<Group> groups{};
             auto& list = lir_block->GetInstList();
+            u32 segment = 0;
+            u32 raw = 0;
+            u32 eligible = 0;
+            u32 mismatch_width = 0;
+            u32 mismatch_uses = 0;
+            u32 mismatch_alloc = 0;
+            u32 mismatch_feed = 0;
+            u32 mismatch_barrier = 0;
 
             auto process_groups = [&] {
                 for (auto& group : groups) {
                     if (group.candidates.size() < 2) {
+                        if (audit && !group.candidates.empty()) {
+                            std::fprintf(
+                                    stderr,
+                                    "[svm-const-addr-group] unit=0x%llx block=0x%llx "
+                                    "segment=%u address=0x%llx occurrences=1 potential=0 "
+                                    "cached=0 no_free=0 verify=0\n",
+                                    static_cast<unsigned long long>(unit_pc),
+                                    static_cast<unsigned long long>(
+                                            lir_block->GetStartLocation().Value()),
+                                    segment,
+                                    static_cast<unsigned long long>(group.address));
+                        }
                         continue;
                     }
                     std::size_t first = 0;
                     while (first + 1 < group.candidates.size()) {
                         bool cached = false;
+                        bool saw_free_window = false;
+                        bool saw_verify_failure = false;
                         for (std::size_t last = group.candidates.size() - 1;
                              last > first && !cached; --last) {
+                            bool last_saw_free = false;
+                            bool last_saw_verify_failure = false;
                             const u32 range_begin = group.candidates[first].inst->Id();
                             const u32 range_end = group.candidates[last].use_id;
                             for (u32 target = 0; target < 32 && !cached; ++target) {
@@ -814,6 +853,7 @@ private:
                                 if (!free) {
                                     continue;
                                 }
+                                last_saw_free = true;
 
                                 // 缓存所有者记入每条指令的 active mask。这样
                                 // emitter 瞬时 scratch 与 spill reload 仍由既有硬门
@@ -843,6 +883,7 @@ private:
                                     }
                                 }
                                 if (!verified) {
+                                    last_saw_verify_failure = true;
                                     for (auto& old : saved) {
                                         reg_alloc->SetActiveRegs(old.id, old.gprs, old.fprs);
                                     }
@@ -857,16 +898,56 @@ private:
                                             HostGPR{static_cast<u16>(target)});
                                     reg_alloc->MarkConstAddressCached(candidate->Id(), anchor);
                                 }
+                                group.cached_reuses += static_cast<u32>(last - first);
+                                // 不能覆盖到组尾意味着这里必须重新锚定一次。较长窗口
+                                // 已按从长到短次序全部失败，把这一个残余归到实际失败门。
+                                if (last + 1 < group.candidates.size()) {
+                                    if (saw_verify_failure) {
+                                        ++group.residual_verify;
+                                    } else {
+                                        ++group.residual_no_free;
+                                    }
+                                }
                                 first = last + 1;
                                 cached = true;
                             }
+                            if (!cached) {
+                                saw_free_window |= last_saw_free;
+                                saw_verify_failure |= last_saw_verify_failure;
+                            }
                         }
                         if (!cached) {
+                            if (saw_free_window && saw_verify_failure) {
+                                ++group.residual_verify;
+                            } else {
+                                ++group.residual_no_free;
+                            }
                             ++first;
                         }
                     }
+                    if (audit) {
+                        const u32 potential =
+                                static_cast<u32>(group.candidates.size() - 1);
+                        ASSERT(group.cached_reuses + group.residual_no_free +
+                                       group.residual_verify ==
+                               potential);
+                        std::fprintf(
+                                stderr,
+                                "[svm-const-addr-group] unit=0x%llx block=0x%llx "
+                                "segment=%u address=0x%llx occurrences=%zu potential=%u "
+                                "cached=%u no_free=%u verify=%u\n",
+                                static_cast<unsigned long long>(unit_pc),
+                                static_cast<unsigned long long>(
+                                        lir_block->GetStartLocation().Value()),
+                                segment,
+                                static_cast<unsigned long long>(group.address),
+                                group.candidates.size(), potential,
+                                group.cached_reuses, group.residual_no_free,
+                                group.residual_verify);
+                    }
                 }
                 groups.clear();
+                ++segment;
             };
 
             for (auto& inst : list) {
@@ -874,10 +955,28 @@ private:
                     process_groups();
                     continue;
                 }
+                const auto raw_address = RawConstAddressValue(&inst);
+                if (raw_address) {
+                    ++raw;
+                    if (inst.ReturnType() != ValueType::U64) {
+                        ++mismatch_width;
+                        continue;
+                    }
+                    if (inst.GetUses() != 1) {
+                        ++mismatch_uses;
+                        continue;
+                    }
+                    if (reg_alloc->ValueType(Value{&inst}) != backend::RegAlloc::GPR) {
+                        ++mismatch_alloc;
+                        continue;
+                    }
+                    if (!DirectlyFeedsMemory(&inst)) {
+                        ++mismatch_feed;
+                        continue;
+                    }
+                }
                 const auto address = ConstAddressValue(&inst);
-                if (!address ||
-                    reg_alloc->ValueType(Value{&inst}) != backend::RegAlloc::GPR ||
-                    !DirectlyFeedsMemory(&inst)) {
+                if (!address) {
                     continue;
                 }
                 u32 use_id = inst.Id();
@@ -900,8 +999,10 @@ private:
                     }
                 }
                 if (!valid_use) {
+                    ++mismatch_barrier;
                     continue;
                 }
+                ++eligible;
                 auto group = std::find_if(groups.begin(), groups.end(),
                                           [&](const Group& item) {
                                               return item.address == *address;
@@ -913,6 +1014,17 @@ private:
                 group->candidates.push_back({&inst, use_id});
             }
             process_groups();
+            if (audit && raw) {
+                std::fprintf(
+                        stderr,
+                        "[svm-const-addr-shape] unit=0x%llx block=0x%llx raw=%u "
+                        "eligible=%u width=%u uses=%u alloc=%u feed=%u barrier=%u\n",
+                        static_cast<unsigned long long>(unit_pc),
+                        static_cast<unsigned long long>(
+                                lir_block->GetStartLocation().Value()),
+                        raw, eligible, mismatch_width, mismatch_uses,
+                        mismatch_alloc, mismatch_feed, mismatch_barrier);
+            }
         };
 
         if (function) {
