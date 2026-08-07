@@ -24,6 +24,7 @@ namespace swift::runtime {
     X(flag_narrow, true) \
     X(sse42_string_inline, false) \
     X(sse_scalar_insert, true) \
+    X(sse_scalar_tie, true) \
     X(sse_scalar_v_operands, true) \
     X(mem_narrow_fuse, true) \
     X(addr_ea_tie, true) \
@@ -122,6 +123,7 @@ struct FeatureOverrides {
     X(bool, sse42str, "SVM_SSE42STR", DefaultOn, true, "SSE4.2 string；缺省 ON，=0 回退；原 decoder_sse42str.cc:1345") \
     X(bool, sse42_string_inline, "SVM_SSE42_STRING_INLINE", EqualsOne, false, "SSE4.2 string inline；仅 =1 开，缺省 OFF；原 decoder_internal.h:37") \
     X(bool, sse_scalar_insert, "SVM_SSE_SCALAR_INSERT", DefaultOn, true, "AFP scalar insert 请求；缺省 ON，=0 回退，仍受 host AFP 限制；原 translator/x86/translator.cpp:332") \
+    X(bool, sse_scalar_tie, "SVM_SSE_SCALAR_TIE", DefaultOn, true, "scalar SSE 二元结果与已验证末次使用的固定家 left 合并，依赖有效 scalar insert/AFP 契约；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(bool, xsave, "SVM_XSAVE", NonZero, false, "XSAVE facility；非 0 开，缺省 OFF；原 xsave.h:66") \
     X(bool, xsave_ymm, "SVM_XSAVE_YMM", InheritAvx, false, "XCR0.YMM override；缺省继承 SVM_AVX，非 0 开；原 xsave.h:91") \
     X(bool, x86_64_abi_baseline, "SVM_X86_64_ABI_BASELINE", NonZero, false, "动态 ELF baseline MMX 标记；非 0 开，缺省 OFF；原 decoder_misc.cc:108") \

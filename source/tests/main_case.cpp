@@ -221,7 +221,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 140);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 141);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -294,7 +294,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 51);
+    STATIC_REQUIRE(kFeatureCount == 52);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -3608,6 +3608,161 @@ TEST_CASE("resident XMM coalescing preserves snapshots and fixed-home windows") 
     }
 }
 
+TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    constexpr swift::u32 target = 17;
+    const GPRSMask gprs{~((1u << 8) - 1u)};
+    auto resident_fprs = [] {
+        FPRSMask mask{0};
+        mask.Mark(target);
+        return mask;
+    };
+    struct Case {
+        IntrusivePtr<Block> block;
+        Value left;
+        Value produced;
+        Value conflict;
+        Inst* publish;
+    };
+    auto make_case = [&](OpCode op, swift::u64 location,
+                         bool keep_left_live = false,
+                         bool with_conflict = false) {
+        IntrusivePtr<Block> block{new Block(0, Location{location})};
+        auto left = block->GetHostFPR(HostRegIndex(target), Imm{0u})
+                            .SetType(ValueType::V128);
+        auto right = block->LoadUniform(Uniform{16, ValueType::V128})
+                             .SetType(ValueType::V128);
+        Value produced{};
+        switch (op) {
+            case OpCode::VecFAddScalar32: produced = block->VecFAddScalar32(left, right); break;
+            case OpCode::VecFSubScalar32: produced = block->VecFSubScalar32(left, right); break;
+            case OpCode::VecFMulScalar32: produced = block->VecFMulScalar32(left, right); break;
+            case OpCode::VecFDivScalar32: produced = block->VecFDivScalar32(left, right); break;
+            case OpCode::VecFAddScalar64: produced = block->VecFAddScalar64(left, right); break;
+            case OpCode::VecFSubScalar64: produced = block->VecFSubScalar64(left, right); break;
+            case OpCode::VecFMulScalar64: produced = block->VecFMulScalar64(left, right); break;
+            case OpCode::VecFDivScalar64: produced = block->VecFDivScalar64(left, right); break;
+            default: FAIL("missing scalar FPR tie producer test case");
+        }
+        produced = produced.SetType(ValueType::V128);
+        if (keep_left_live) {
+            block->StoreUniform(Uniform{32, ValueType::V128}, left);
+        }
+        Value conflict{};
+        if (with_conflict) {
+            conflict = block->VecOr(right, right).SetType(ValueType::V128);
+        }
+        auto* publish = block->AppendInst(
+                OpCode::SetHostFPR, produced, HostRegIndex(target), Imm{0u});
+        if (conflict.Defined()) {
+            block->StoreUniform(Uniform{48, ValueType::V128}, conflict);
+        }
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        return Case{std::move(block), left, produced, conflict, publish};
+    };
+    auto allocate = [&](Block* block, bool enabled) {
+        auto features = FeatureSet{};
+        features.sse_scalar_tie = enabled;
+        auto alloc = std::make_unique<RegAlloc>(
+                block->MaxInstrId(), gprs, resident_fprs(), features);
+        RegisterAllocPass::RunForScalarFPRTieTest(block, alloc.get(), enabled);
+        return alloc;
+    };
+    struct Emitted {
+        std::size_t bytes{};
+        std::string text;
+    };
+    auto emit = [&](Block* block, RegAlloc& alloc, swift::u64 location, bool enabled) {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+                .arm64_features = Arm64Features::AFP,
+                .sse_scalar_insert = true,
+                .sse_afp_nan = true,
+        };
+        AddressSpace address_space{config};
+        ModuleConfig module_config{};
+        module_config.feature_overrides.Set(FeatureId::sse_scalar_tie, enabled);
+        auto module = address_space.MapModule(
+                LocationDescriptor{location}, LocationDescriptor{location + 0x10},
+                module_config);
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block);
+        context.Finish();
+        Emitted emitted{.bytes = context.CurrentBufferSize()};
+        auto& masm = context.GetMasm();
+        auto* first = masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+        auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        for (auto* instruction = first; instruction < last;
+             instruction = instruction->GetNextInstruction()) {
+            decoder.Decode(instruction);
+            emitted.text += disassembler.GetOutput();
+            emitted.text += '\n';
+        }
+        return emitted;
+    };
+
+    constexpr std::array producers{
+            OpCode::VecFAddScalar32, OpCode::VecFSubScalar32,
+            OpCode::VecFMulScalar32, OpCode::VecFDivScalar32,
+            OpCode::VecFAddScalar64, OpCode::VecFSubScalar64,
+            OpCode::VecFMulScalar64, OpCode::VecFDivScalar64,
+    };
+    std::size_t index = 0;
+    for (auto op : producers) {
+        CAPTURE(op);
+        auto item = make_case(op, 0xa500 + index * 0x20);
+        auto off = allocate(item.block.get(), false);
+        REQUIRE(off->ValueFPR(item.produced).id != target);
+        REQUIRE_FALSE(off->IsHostWriteCoalesced(item.publish->Id()));
+        auto off_code = emit(item.block.get(), *off, 0xb500 + index * 0x20, false);
+
+        auto on = allocate(item.block.get(), true);
+        REQUIRE(on->ValueFPR(item.left).id == target);
+        REQUIRE(on->ValueFPR(item.produced).id == target);
+        REQUIRE(on->IsHostWriteCoalesced(item.publish->Id()));
+        auto on_code = emit(item.block.get(), *on, 0xc500 + index * 0x20, true);
+        INFO("OFF:\n" << off_code.text << "ON:\n" << on_code.text);
+        REQUIRE(on_code.bytes + 2 * vixl::aarch64::kInstructionSize == off_code.bytes);
+        REQUIRE(on_code.text.find("orr") == std::string::npos);
+
+        auto untied = make_case(op, 0xd500 + index * 0x20, true);
+        auto untied_off = allocate(untied.block.get(), false);
+        auto untied_on = allocate(untied.block.get(), true);
+        REQUIRE(untied_on->ValueFPR(untied.produced).id != target);
+        REQUIRE_FALSE(untied_on->IsHostWriteCoalesced(untied.publish->Id()));
+        auto untied_off_code = emit(
+                untied.block.get(), *untied_off, 0xe500 + index * 0x20, false);
+        auto untied_on_code = emit(
+                untied.block.get(), *untied_on, 0xe500 + index * 0x20, true);
+        REQUIRE(untied_on_code.bytes == untied_off_code.bytes);
+        REQUIRE(untied_on_code.text == untied_off_code.text);
+        ++index;
+    }
+
+    SECTION("a third-party fixed-home write rejects the scalar tie") {
+        auto item = make_case(OpCode::VecFAddScalar64, 0x10500, false, true);
+        auto features = FeatureSet{};
+        features.sse_scalar_tie = true;
+        RegAlloc alloc{item.block->MaxInstrId(), gprs, resident_fprs(), features};
+        RegisterAllocPass::RunForScalarFPRTieConflictTest(
+                item.block.get(), &alloc, item.conflict.Id(), target);
+        REQUIRE(alloc.ValueFPR(item.conflict).id == target);
+        REQUIRE_FALSE(alloc.IsHostWriteCoalesced(item.publish->Id()));
+    }
+}
+
 TEST_CASE("resident XMM homes survive a guest page fault") {
     using namespace swift::runtime;
     using namespace swift::translator::x86;
@@ -5785,6 +5940,7 @@ TEST_CASE("unit-local absolute addresses reuse only verified idle GPR windows") 
         };
         AddressSpace address_space{config};
         ModuleConfig module_config{};
+        module_config.feature_overrides.Set(FeatureId::abs_const_mat, false);
         module_config.feature_overrides.Set(FeatureId::const_addr_cache, cache);
         module_config.feature_overrides.Set(FeatureId::ra_coalesce, coalesce);
         auto module = address_space.MapModule(

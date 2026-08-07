@@ -5154,6 +5154,147 @@ TEST_CASE("SSE scalar MIN MAX AFP JIT interpreter differential") {
     munmap(arena, kArenaSize);
 }
 
+TEST_CASE("SSE scalar arithmetic tied destination JIT interpreter differential") {
+    using Vec128 = std::array<u8, 16>;
+    struct InputCase {
+        const char* name;
+        u32 lhs32;
+        u32 rhs32;
+        u64 lhs64;
+        u64 rhs64;
+    };
+    static constexpr InputCase kCases[] = {
+            {"normal", 0x3FC00000u, 0x40100000u,
+             0x3FF8000000000000ull, 0x4002000000000000ull},
+            {"positive-zero", 0x00000000u, 0x80000000u,
+             0x0000000000000000ull, 0x8000000000000000ull},
+            {"negative-zero", 0x80000000u, 0x00000000u,
+             0x8000000000000000ull, 0x0000000000000000ull},
+            {"qnan", 0x7FC12345u, 0x3F800000u,
+             0x7FF8123456789ABCull, 0x3FF0000000000000ull},
+            {"snan", 0x3F800000u, 0x7FA54321u,
+             0x3FF0000000000000ull, 0x7FF0ABCDEF012345ull},
+            {"infinity", 0x7F800000u, 0xFF800000u,
+             0x7FF0000000000000ull, 0xFFF0000000000000ull},
+    };
+    struct Variant {
+        const char* name;
+        u8 prefix;
+        u8 opcode;
+        bool is_double;
+    };
+    static constexpr Variant kVariants[] = {
+            {"ADDSS", 0xF3, 0x58, false}, {"SUBSS", 0xF3, 0x5C, false},
+            {"MULSS", 0xF3, 0x59, false}, {"DIVSS", 0xF3, 0x5E, false},
+            {"ADDSD", 0xF2, 0x58, true},  {"SUBSD", 0xF2, 0x5C, true},
+            {"MULSD", 0xF2, 0x59, true},  {"DIVSD", 0xF2, 0x5E, true},
+    };
+
+    const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
+    const std::string old_jit_value = old_jit ? old_jit : "";
+    const bool had_old_jit = old_jit != nullptr;
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
+    auto* jit_instance = X86Instance::Make();
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "0", 1);
+    auto* interp_instance = X86Instance::Make();
+    if (had_old_jit)
+        swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", old_jit_value.c_str(), 1);
+    else
+        swift::runtime::UnsetSvmConfigEnvForTest("SVM_ENABLE_JIT");
+
+    constexpr size_t kArenaSize = 0x200000;
+    runtime::backend::SmcTracker::SetEnabled(false);
+    void* arena =
+            mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 data = base + 0x100000;
+    const u64 stack = base + 0x180000;
+    size_t code_cursor = 1;
+    constexpr s32 kLhsOff = 0x180;
+    constexpr s32 kRhsOff = 0x1A0;
+    constexpr s32 kOutOff = 0x1C0;
+    const auto mem = [](s32 off) {
+        MemOp m{};
+        m.disp = off;
+        return m;
+    };
+    auto* jit_core = X86Core::Make(jit_instance);
+    auto* interp_core = X86Core::Make(interp_instance);
+    auto* jit_ctx = &jit_core->GetContext();
+    auto* interp_ctx = &interp_core->GetContext();
+    const auto install = [&](CodeBuf code) {
+        code.B(0xF4);
+        const u64 address = base + code_cursor++ * 0x100;
+        REQUIRE(code.c.size() < 0x100);
+        std::memcpy(reinterpret_cast<void*>(address), code.c.data(), code.c.size());
+        return address;
+    };
+    const auto run = [&](X86Core* core, ThreadContext64* ctx, u64 address) {
+        std::memset(reinterpret_cast<void*>(data + kOutOff), 0, 16);
+        ctx->r13.qword = data;
+        ctx->rsp.qword = stack;
+        ctx->rip.qword = address;
+        core->Run();
+        Vec128 result{};
+        std::memcpy(result.data(), reinterpret_cast<void*>(data + kOutOff), result.size());
+        return result;
+    };
+
+    size_t comparisons = 0;
+    for (const auto& variant : kVariants) {
+        for (const auto& input : kCases) {
+            Vec128 lhs{0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x17, 0x28,
+                       0x39, 0x4A, 0x5B, 0x6C, 0x7D, 0x8E, 0x9F, 0x10};
+            Vec128 rhs{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                       0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xF0, 0x0F};
+            if (variant.is_double) {
+                std::memcpy(lhs.data(), &input.lhs64, sizeof(input.lhs64));
+                std::memcpy(rhs.data(), &input.rhs64, sizeof(input.rhs64));
+            } else {
+                std::memcpy(lhs.data(), &input.lhs32, sizeof(input.lhs32));
+                std::memcpy(rhs.data(), &input.rhs32, sizeof(input.rhs32));
+            }
+            std::memcpy(reinterpret_cast<void*>(data + kLhsOff), lhs.data(), lhs.size());
+            std::memcpy(reinterpret_cast<void*>(data + kRhsOff), rhs.data(), rhs.size());
+
+            for (const bool memory_rhs : {false, true}) {
+                CodeBuf code;
+                // XMM1 在生产 ABI 中有固定家，这里覆盖固定家 tie，
+                // 不只覆盖普通动态 FPR 的末次使用路径。
+                EmitSseLoad(code, 0xF3, 0x6F, 1, mem(kLhsOff));
+                if (memory_rhs) {
+                    EmitSseLoad(code, variant.prefix, variant.opcode, 1, mem(kRhsOff));
+                } else {
+                    EmitSseLoad(code, 0xF3, 0x6F, 2, mem(kRhsOff));
+                    EmitSseFloatRR(code, variant.prefix, variant.opcode, 1, 2);
+                }
+                EmitSseStore(code, 0xF3, 0x7F, mem(kOutOff), 1);
+                const u64 address = install(std::move(code));
+                const Vec128 jit = run(jit_core, jit_ctx, address);
+                const Vec128 interp = run(interp_core, interp_ctx, address);
+                INFO(fmt::format("{} {} rhs={}",
+                                 variant.name,
+                                 input.name,
+                                 memory_rhs ? "mem" : "xmm"));
+                REQUIRE(jit == interp);
+                REQUIRE(std::memcmp(jit.data() + (variant.is_double ? 8 : 4),
+                                    lhs.data() + (variant.is_double ? 8 : 4),
+                                    variant.is_double ? 8 : 12) == 0);
+                ++comparisons;
+            }
+        }
+    }
+    REQUIRE(comparisons == std::size(kVariants) * std::size(kCases) * 2);
+
+    X86Core::Destroy(jit_core);
+    X86Core::Destroy(interp_core);
+    X86Instance::Destroy(jit_instance);
+    X86Instance::Destroy(interp_instance);
+    runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
 TEST_CASE("COMIS compact flags all consumers JIT interpreter differential") {
     enum class Relation : u8 { Less, Equal, Greater, Unordered };
     struct CompareCase {

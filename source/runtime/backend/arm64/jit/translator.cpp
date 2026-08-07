@@ -31,6 +31,23 @@ bool IsA64AddImmediate(u64 value) {
            ((value & 0xfff) == 0 && (value >> 12) <= 0xfff);
 }
 
+bool IsScalarFPRBinary(ir::OpCode op) {
+    using O = ir::OpCode;
+    switch (op) {
+        case O::VecFAddScalar32:
+        case O::VecFSubScalar32:
+        case O::VecFMulScalar32:
+        case O::VecFDivScalar32:
+        case O::VecFAddScalar64:
+        case O::VecFSubScalar64:
+        case O::VecFMulScalar64:
+        case O::VecFDivScalar64:
+            return true;
+        default:
+            return false;
+    }
+}
+
 enum class DensityCategory : size_t {
     Flags,
     Uniform,
@@ -160,6 +177,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     fpcr_tax_skip_switch = sse_afp_nan && FpcrTaxSkipSwitchEnabled();
     fpcr_tax_timing = sse_afp_nan && FpcrTaxTimingEnabled();
     const auto& features = ctx.GetFeatures();
+    sse_scalar_tie = features.sse_scalar_tie;
     sse_afp_minmax = features.sse_afp_minmax && sse_afp_nan;
     shift_imm_fast = features.shift_imm_fast;
     mem_narrow_fuse = features.mem_narrow_fuse;
@@ -943,14 +961,18 @@ void JitTranslator::Translate(ir::Block* block) {
                 const u32 production_emitted =
                         emitted - context.HotProbeBytesInRange(before,
                                                                context.CurrentBufferSize());
+                const bool scalar_binary = IsScalarFPRBinary(inst.GetOp());
+                const bool scalar_tied = scalar_binary && context.SharesFPR(
+                        ir::Value{&inst}, inst.GetArg<ir::Value>(0));
                 std::fprintf(stderr,
                              "[svm-gap-op] block=0x%llx guest_pc=0x%llx id=%u "
-                             "op=%s bytes=%u host_offset=%u\n",
+                             "op=%s bytes=%u host_offset=%u scalar_binary=%u scalar_tied=%u\n",
                              static_cast<unsigned long long>(
                                      block->GetStartLocation().Value()),
                              static_cast<unsigned long long>(audit_guest_pc),
                              inst.Id(), ir::GetIRMetaInfo(inst.GetOp()).name,
-                             production_emitted, before);
+                             production_emitted, before,
+                             scalar_binary ? 1u : 0u, scalar_tied ? 1u : 0u);
             }
         }
         if (inst.GetOp() == ir::OpCode::AdvancePC) {

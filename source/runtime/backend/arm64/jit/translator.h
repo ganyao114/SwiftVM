@@ -111,6 +111,7 @@ private:
     [[nodiscard]] bool ReproveCoalescedHostWrite(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCoalescedHostRead(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCoalescedHostFPRWrite(ir::Inst* inst) const;
+    [[nodiscard]] bool ReproveScalarFPRTie(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCoalescedHostFPRRead(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCachedConstAddress(ir::Inst* inst) const;
 
@@ -402,6 +403,7 @@ private:
     // FEAT_AFP + FPCR.NEP is active for guest code, so scalar Advanced SIMD
     // instructions can update a tied destination's lane 0 in place.
     bool sse_scalar_insert{false};
+    bool sse_scalar_tie{false};
     bool sse_afp_nan{false};
     // FPCR.AH gives scalar FMIN/FMAX the x86 source-2 selection rule for
     // unordered and equal inputs.  NEP, enabled by the same AFP contract,

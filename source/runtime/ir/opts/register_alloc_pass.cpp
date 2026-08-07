@@ -720,7 +720,23 @@ private:
         return reg >= 16 && reg <= 31;
     }
 
-    static bool IsResidentFPRProducer(OpCode op) {
+    static bool IsScalarFPRBinaryProducer(OpCode op) {
+        switch (op) {
+            case OpCode::VecFAddScalar32:
+            case OpCode::VecFSubScalar32:
+            case OpCode::VecFMulScalar32:
+            case OpCode::VecFDivScalar32:
+            case OpCode::VecFAddScalar64:
+            case OpCode::VecFSubScalar64:
+            case OpCode::VecFMulScalar64:
+            case OpCode::VecFDivScalar64:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static bool IsResidentFPRProducer(OpCode op, bool scalar_tie) {
         switch (op) {
             // These emitters either write a fresh destination or use a single
             // A64 three-register SIMD instruction. Their source/destination
@@ -740,7 +756,7 @@ private:
             case OpCode::VecFDiv:
                 return true;
             default:
-                return false;
+                return scalar_tie && IsScalarFPRBinaryProducer(op);
         }
     }
 
@@ -1312,9 +1328,19 @@ private:
                 if (!producer || produced.Id() >= use_end.size() ||
                     produced.Type() != ValueType::V128 ||
                     use_end[produced.Id()] != store.Id() ||
-                    !IsResidentFPRProducer(producer->GetOp()) ||
+                    !IsResidentFPRProducer(producer->GetOp(),
+                                           features.sse_scalar_tie && scalar_insert) ||
                     reg_alloc->ValueType(produced) != backend::RegAlloc::FPR) {
                     continue;
+                }
+                if (IsScalarFPRBinaryProducer(producer->GetOp())) {
+                    auto left = ResolveBitCastSource(producer->GetArg<Value>(0));
+                    if (!left.Defined() || left.Id() >= use_end.size() ||
+                        !reg_alloc->IsHostReadCoalesced(left.Id()) ||
+                        !mapped_to(left, target) ||
+                        use_end[left.Id()] != producer->Id()) {
+                        continue;
+                    }
                 }
                 if (mapped_to(produced, target)) {
                     reg_alloc->MarkHostWriteCoalesced(store.Id());
@@ -3065,6 +3091,37 @@ void RegisterAllocPass::RunForXmmResidentConflictTest(ir::Block* block,
     reg_alloc->MapRegister(tied_value_id, HostFPR{target});
     LinearScanAllocator scan{block, reg_alloc, 0, 0, false, false, false, false,
                              nullptr, false, features, 0};
+    scan.CoalesceGuestFPRAccessesForTest();
+}
+
+void RegisterAllocPass::RunForScalarFPRTieTest(ir::Block* block,
+                                               backend::RegAlloc* reg_alloc,
+                                               bool enabled) {
+    auto features = FeatureSet{};
+    features.sse_scalar_tie = enabled;
+    reg_alloc->ResetAllocations();
+    LinearScanAllocator scan{block, reg_alloc, 0, backend::kDefaultScratchFPR,
+                             false, true, false, false, nullptr, false, features, 1};
+    scan.AllocateRegisters();
+    ASSERT(scan.Verify());
+}
+
+void RegisterAllocPass::RunForScalarFPRTieConflictTest(
+        ir::Block* block,
+        backend::RegAlloc* reg_alloc,
+        u32 tied_value_id,
+        u16 target) {
+    auto features = FeatureSet{};
+    features.sse_scalar_tie = false;
+    reg_alloc->ResetAllocations();
+    LinearScanAllocator initial{block, reg_alloc, 0, backend::kDefaultScratchFPR,
+                                false, true, false, false, nullptr, false, features, 1};
+    initial.AllocateRegisters();
+    ASSERT(initial.Verify());
+    reg_alloc->MapRegister(tied_value_id, HostFPR{target});
+    features.sse_scalar_tie = true;
+    LinearScanAllocator scan{block, reg_alloc, 0, 0, false, true, false, false,
+                             nullptr, false, features, 1};
     scan.CoalesceGuestFPRAccessesForTest();
 }
 

@@ -58,7 +58,24 @@ bool IsHostCoalesceProducer(ir::OpCode op) {
     }
 }
 
-bool IsHostFPRCoalesceProducer(ir::OpCode op) {
+bool IsHostScalarFPRBinaryProducer(ir::OpCode op) {
+    using O = ir::OpCode;
+    switch (op) {
+        case O::VecFAddScalar32:
+        case O::VecFSubScalar32:
+        case O::VecFMulScalar32:
+        case O::VecFDivScalar32:
+        case O::VecFAddScalar64:
+        case O::VecFSubScalar64:
+        case O::VecFMulScalar64:
+        case O::VecFDivScalar64:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsHostFPRCoalesceProducer(ir::OpCode op, bool scalar_tie) {
     using O = ir::OpCode;
     switch (op) {
         case O::LoadUniform:
@@ -75,7 +92,7 @@ bool IsHostFPRCoalesceProducer(ir::OpCode op) {
         case O::VecFDiv:
             return true;
         default:
-            return false;
+            return scalar_tie && IsHostScalarFPRBinaryProducer(op);
     }
 }
 
@@ -363,7 +380,8 @@ bool JitTranslator::ReproveCoalescedHostFPRWrite(ir::Inst* inst) const {
     auto produced = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
     auto* producer = produced.Def();
     if (!producer || produced.Type() != ir::ValueType::V128 ||
-        !IsHostFPRCoalesceProducer(producer->GetOp()) ||
+        !IsHostFPRCoalesceProducer(producer->GetOp(),
+                                   sse_scalar_tie && sse_scalar_insert) ||
         context.V(produced).GetCode() != target) {
         return false;
     }
@@ -381,6 +399,18 @@ bool JitTranslator::ReproveCoalescedHostFPRWrite(ir::Inst* inst) const {
     };
     if (last_use(producer) != inst->Id()) {
         return false;
+    }
+    if (IsHostScalarFPRBinaryProducer(producer->GetOp())) {
+        auto left = ResolveHostCoalesceBitCast(producer->GetArg<ir::Value>(0));
+        if (!left.Defined() || !left.Def() ||
+            left.Def()->GetOp() != ir::OpCode::GetHostFPR ||
+            !context.IsHostReadCoalesced(left.Id()) ||
+            left.Def()->GetArg<ir::Imm>(0).Get() != target ||
+            left.Def()->GetArg<ir::Imm>(1).Get() != 0 ||
+            context.V(left).GetCode() != target ||
+            last_use(left.Def()) != producer->Id()) {
+            return false;
+        }
     }
     for (auto input : producer->GetValues()) {
         auto root = ResolveHostCoalesceBitCast(input);
@@ -417,6 +447,32 @@ bool JitTranslator::ReproveCoalescedHostFPRWrite(ir::Inst* inst) const {
         }
     }
     return true;
+}
+
+bool JitTranslator::ReproveScalarFPRTie(ir::Inst* inst) const {
+    if (!sse_scalar_tie || !sse_scalar_insert || !inst ||
+        !IsHostScalarFPRBinaryProducer(inst->GetOp())) {
+        return false;
+    }
+    auto left = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
+    if (!left.Defined() || !left.Def() ||
+        left.Def()->GetOp() != ir::OpCode::GetHostFPR ||
+        left.Def()->GetArg<ir::Imm>(1).Get() != 0 ||
+        !context.IsHostReadCoalesced(left.Id()) ||
+        context.V(left).GetCode() != context.V(ir::Value{inst}).GetCode()) {
+        return false;
+    }
+    for (auto& scan : cur_block->GetInstList()) {
+        if (scan.Id() <= inst->Id() || scan.GetOp() != ir::OpCode::SetHostFPR ||
+            !context.IsHostWriteCoalesced(scan.Id())) {
+            continue;
+        }
+        auto value = ResolveHostCoalesceBitCast(scan.GetArg<ir::Value>(0));
+        if (value.Def() == inst) {
+            return ReproveCoalescedHostFPRWrite(&scan);
+        }
+    }
+    return false;
 }
 
 #define __ masm.
