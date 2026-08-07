@@ -423,6 +423,53 @@ void DumpAtExit() {
                  PrintU64(backward_edges), PrintU64(same_line_edges),
                  PrintU64(same_page_edges), PrintU64(potential_dynamic));
 
+    if (config.ra_hot_coalesce_all) {
+        // 输出完整的 source/target unit 身份，避免把全局块表命中误算成
+        // 同一编译单元内的边。这里仅扩展诊断日志，不参与发码或分配。
+        for (u32 i = 0; i < count; ++i) {
+            const auto& slot = process.slots[i];
+            const auto& shape = slot.shape;
+            const u64 slot_entries = Dynamic(slot, HotCoalesceCounter::Entries);
+            if (!shape.host_address) continue;
+            const VAddr source_unit = shape.host_address - shape.host_offset;
+            std::fprintf(out,
+                         "[svm-direct-node] slot=%u unit=0x%llx pc=0x%llx "
+                         "entries=%llu targets=%u overflow=%u\n",
+                         i, static_cast<unsigned long long>(source_unit),
+                         static_cast<unsigned long long>(shape.guest_entry),
+                         PrintU64(slot_entries), shape.link_target_count,
+                         shape.link_target_overflow);
+            for (u32 edge = 0; edge < shape.link_target_count; ++edge) {
+                const VAddr target_pc = shape.link_targets[edge];
+                auto target = target_hosts.find(target_pc);
+                if (target == target_hosts.end()) {
+                    std::fprintf(out,
+                                 "[svm-direct-edge] source_unit=0x%llx "
+                                 "source=0x%llx target=0x%llx entries=%llu "
+                                 "target_unit=unresolved same_unit=0\n",
+                                 static_cast<unsigned long long>(source_unit),
+                                 static_cast<unsigned long long>(shape.guest_entry),
+                                 static_cast<unsigned long long>(target_pc),
+                                 PrintU64(slot_entries));
+                    continue;
+                }
+                const auto& target_shape = target->second->shape;
+                const VAddr target_unit =
+                        target_shape.host_address - target_shape.host_offset;
+                std::fprintf(out,
+                             "[svm-direct-edge] source_unit=0x%llx "
+                             "source=0x%llx target=0x%llx entries=%llu "
+                             "target_unit=0x%llx same_unit=%u\n",
+                             static_cast<unsigned long long>(source_unit),
+                             static_cast<unsigned long long>(shape.guest_entry),
+                             static_cast<unsigned long long>(target_pc),
+                             PrintU64(slot_entries),
+                             static_cast<unsigned long long>(target_unit),
+                             source_unit == target_unit ? 1u : 0u);
+            }
+        }
+    }
+
     for (size_t rank = 0; rank < layout_rank.size(); ++rank) {
         const u32 slot_index = layout_rank[rank].first;
         const auto& slot = process.slots[slot_index];

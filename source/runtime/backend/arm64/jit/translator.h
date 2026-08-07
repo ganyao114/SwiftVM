@@ -444,6 +444,7 @@ private:
     std::unique_ptr<Label> backedge_exit_label{};
     bool backedge_exit_referenced{};
     std::map<u64, std::unique_ptr<Label>> direct_cycle_exits{};
+    u32 direct_cycle_cut_edges{};
     std::unique_ptr<BackedgeFlagsPlan> backedge_flags_plan{};
     u32 backedge_host_begin{};
     u32 backedge_host_end{};

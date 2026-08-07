@@ -502,6 +502,14 @@ static size_t LazyFuncBudget() {
     return static_cast<size_t>(runtime::GetSvmConfig().func_lazy);
 }
 
+static size_t RegionFuncBudget() {
+    const size_t budget = LazyFuncBudget();
+    // 单块默认窗无法形成 region；region 开关显式打开时采用实测后的 16 块窗。
+    // 显式 SVM_FUNC_LAZY=2..127 仍可覆盖它，=0 经配置解析保持 eager 1024；
+    // 值 1 是全局默认，region 模式下专门解释为这条 16 块窗。
+    return budget == 1 ? 16 : budget;
+}
+
 struct X86Instance::Impl final {
     // memory_base: guest->host bias (host addr = guest addr + bias), installed
     // by the linux loader; nullptr keeps the identity-mapped fast path.
@@ -712,7 +720,7 @@ struct X86Instance::Impl final {
                             ? decode_budget_override
                             : (address_space->GetConfig().enable_jit
                                        ? (address_space->GetConfig().region_edges
-                                                  ? 1024
+                                                  ? RegionFuncBudget()
                                                   : LazyFuncBudget())
                                        : kMaxFuncBlocks);
             const size_t decode_cap = std::min(lazy_budget, kMaxFuncBlocks);

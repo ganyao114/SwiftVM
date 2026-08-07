@@ -166,7 +166,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     abs_const_mat = features.abs_const_mat;
     sse_nan_fast = features.sse_nan_fast;
     sse_nan_coldpath = features.sse_nan_coldpath;
-    direct_cycle_latch = BackedgeLatchEnabled();
+    direct_cycle_latch = BackedgeLatchEnabled() || config.region_edges;
     backedge_latch = direct_cycle_latch || config.region_edges;
     backedge_flags = backedge_latch && GetSvmConfig().backedge_flags;
     execution_trace_enabled = context.ExecutionTraceEnabled();
@@ -311,8 +311,11 @@ bool JitTranslator::IsDirectCycleCutEdge(ir::Location target) const {
     // Guest block starts form a total order, so every non-self directed cycle
     // has at least one descending edge. This deterministic cut is independent
     // of translation/cache order; it may conservatively cover acyclic backward
-    // jumps. Region-local edges never visit the dispatcher. External direct
-    // edges can stay in JIT only when BlockLink owns both ends in one module.
+    // jumps. A cross-region cycle's only descending edge may itself be local to
+    // one region without forming a region-local cycle, so region mode must cover
+    // both local and external descending edges. Exact DFS cycle edges do not pay
+    // twice: EmitRegionEdge selects the DFS exit before requesting this cut.
+    // External direct edges can stay in JIT only when BlockLink owns both ends.
     return IsRegionInternalEdge(target) || context.CanBypassDispatcher(target);
 }
 
@@ -323,6 +326,7 @@ Label* JitTranslator::GetDirectCycleExit(ir::Location target) {
     auto& label = direct_cycle_exits[target.Value()];
     if (!label) {
         label = std::make_unique<Label>();
+        ++direct_cycle_cut_edges;
     }
     return label.get();
 }
@@ -740,6 +744,7 @@ void JitTranslator::Translate(ir::Block* block) {
     PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
     cur_block = block;
     ASSERT(direct_cycle_exits.empty());
+    direct_cycle_cut_edges = 0;
     region_block_edges = 0;
     region_block_cycles = 0;
     region_block_fallthroughs = 0;
@@ -1025,6 +1030,14 @@ void JitTranslator::Translate(ir::Block* block) {
                      region_block_fallthroughs,
                      region_block_local_branch_bytes,
                      static_cast<u32>(region_block_cycles * 2u * sizeof(u32)));
+    }
+    if (density && direct_cycle_cut_edges) {
+        std::fprintf(stderr,
+                     "[svm-direct-cycle-cover] pc=0x%llx edges=%u poll_bytes=%u\n",
+                     static_cast<unsigned long long>(
+                             block->GetStartLocation().Value()),
+                     direct_cycle_cut_edges,
+                     static_cast<u32>(direct_cycle_cut_edges * 2u * sizeof(u32)));
     }
 }
 
