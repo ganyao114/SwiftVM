@@ -40,7 +40,7 @@ namespace swift::runtime {
     X(flags_narrow_align, true) \
     X(flags_terminal_jcc, true) \
     X(flags_fcmp_fuse, true) \
-    X(flags_fcmp_compact, false) \
+    X(flags_fcmp_compact, true) \
     X(flags_branch_only, true) \
     X(addrmode_struct, true) \
     X(jit_scratch_xpool, true) \
@@ -147,7 +147,7 @@ struct FeatureOverrides {
     X(bool, flags_cfinv, "SVM_FLAGS_CFINV", DefaultOn, true, "FlagM CFINV carry 极性；缺省 ON，=0 回退；原 decoder.cc:1155") \
     X(bool, flags_terminal_jcc, "SVM_FLAGS_TERMINAL_JCC", DefaultOn, true, "terminal Jcc；缺省 ON，=0 回退；原 decoder.cc:1163") \
     X(bool, flags_fcmp_fuse, "SVM_FLAGS_FCMP_FUSE", DefaultOn, true, "FCMP flags fuse；缺省 ON，=0 回退；原 decoder.cc:1234") \
-    X(bool, flags_fcmp_compact, "SVM_FLAGS_FCMP_COMPACT", NonZero, false, "FCMP compact；非 0 开，缺省 OFF；原 decoder.cc:265") \
+    X(bool, flags_fcmp_compact, "SVM_FLAGS_FCMP_COMPACT", DefaultOn, true, "FCMP compact（需 host FlagM2/AXFlag，无则自动回退默认路径）；缺省 ON，=0 回退；原 decoder.cc:265") \
     X(bool, flags_branch_only, "SVM_FLAGS_BRANCH_ONLY", DefaultOn, true, "branch-only flags；缺省 ON，=0 回退；原 flags_elimination_pass.cpp:47/decoder.cc:1170") \
     X(bool, addrmode_struct, "SVM_ADDRMODE_STRUCT", DefaultOn, true, "结构化寻址；缺省 ON，=0 回退；原 translator_mem.cpp:20/decoder.cc:880") \
     X(bool, jit_cache_exec_id, "SVM_JIT_CACHE_EXEC_ID", NonZeroNonEmpty, false, "JIT cache guest-id 使用 argv[1]；非空非 0 开；原 code_serial.cpp:820") \
