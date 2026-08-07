@@ -848,6 +848,18 @@ void JitContext::Finish() {
     }
 }
 
+u32 JitContext::HotProbeBytesInRange(u32 begin, u32 end) const {
+    u32 bytes = 0;
+    for (const auto& range : hot_probe_ranges) {
+        const u32 overlap_begin = std::max(begin, range.begin);
+        const u32 overlap_end = std::min(end, range.end);
+        if (overlap_end > overlap_begin) {
+            bytes += overlap_end - overlap_begin;
+        }
+    }
+    return bytes;
+}
+
 void JitContext::FinishHotCoalesceBlock() {
     if (!hot_counter_storage_enabled ||
         hot_coalesce_slot == kHotCoalesceInvalidSlot) {

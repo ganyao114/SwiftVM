@@ -733,6 +733,7 @@ void JitTranslator::Translate(ir::Block* block) {
     vixl::svm_vixl_prof::JitScope vixl_prof{context.GetFeatures().vixl_fast};
     ASSERT(vec_nan_cold_sites.empty());
     const bool density = context.DensityProfileEnabled();
+    const bool gap_audit = density && GetSvmConfig().ra_hot_coalesce_all;
     ResetBoundaryDensity();
     const u32 density_start = density ? context.CurrentBufferSize() : 0;
     std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_ops{};
@@ -903,6 +904,7 @@ void JitTranslator::Translate(ir::Block* block) {
     }
     perf_prologue.Stop();
     PerfScope2 perf_body{GetPerfStats2().codegen_body};
+    VAddr audit_guest_pc = block->GetStartLocation().Value();
     for (auto& inst : block->GetInstList()) {
         auto category = DensityCategory::Work;
         if (density) {
@@ -936,6 +938,22 @@ void JitTranslator::Translate(ir::Block* block) {
                                             : BoundarySubsequence::TerminalMain,
                                     before, context.CurrentBufferSize());
             }
+            if (gap_audit) {
+                const u32 production_emitted =
+                        emitted - context.HotProbeBytesInRange(before,
+                                                               context.CurrentBufferSize());
+                std::fprintf(stderr,
+                             "[svm-gap-op] block=0x%llx guest_pc=0x%llx id=%u "
+                             "op=%s bytes=%u host_offset=%u\n",
+                             static_cast<unsigned long long>(
+                                     block->GetStartLocation().Value()),
+                             static_cast<unsigned long long>(audit_guest_pc),
+                             inst.Id(), ir::GetIRMetaInfo(inst.GetOp()).name,
+                             production_emitted, before);
+            }
+        }
+        if (inst.GetOp() == ir::OpCode::AdvancePC) {
+            audit_guest_pc += inst.GetArg<ir::Imm>(0).Get();
         }
     }
     perf_body.Stop();
