@@ -253,6 +253,41 @@ void JitTranslator::PrepareRegionEdges(ir::HIRFunction* function) {
         return;
     }
 
+    if (context.DensityProfileEnabled() && GetSvmConfig().ra_hot_coalesce_all) {
+        const u64 unit = function->GetFunction()->GetStartLocation().Value();
+        for (auto* block : blocks) {
+            std::vector<u64> targets;
+            CollectRegionTargets(block->GetTerminal(), targets);
+            bool external = targets.empty();
+            for (const u64 target : targets) {
+                const bool internal = region_blocks.contains(target);
+                external |= !internal;
+                std::fprintf(stderr,
+                             "[svm-gap-cfg-edge] unit=0x%llx block=0x%llx "
+                             "target=0x%llx internal=%u\n",
+                             static_cast<unsigned long long>(unit),
+                             static_cast<unsigned long long>(
+                                     block->GetStartLocation().Value()),
+                             static_cast<unsigned long long>(target),
+                             internal ? 1u : 0u);
+            }
+            // CheckHalt also has an implicit interrupt exit not represented by
+            // its `else_` target. Treat it as an observing edge in the audit.
+            VisitVariant<void>(block->GetTerminal(), [&](const auto& term) {
+                using T = std::decay_t<decltype(term)>;
+                if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
+                    external = true;
+                }
+            });
+            std::fprintf(stderr,
+                         "[svm-gap-cfg] unit=0x%llx block=0x%llx external=%u\n",
+                         static_cast<unsigned long long>(unit),
+                         static_cast<unsigned long long>(
+                                 block->GetStartLocation().Value()),
+                         external ? 1u : 0u);
+        }
+    }
+
     std::map<u64, std::vector<u64>> graph;
     for (auto* block : blocks) {
         const u64 source = block->GetStartLocation().Value();
@@ -938,6 +973,12 @@ void JitTranslator::Translate(ir::Block* block) {
         }
         const u32 before = density ? context.CurrentBufferSize() : 0;
         const u32 nan_before = density ? context.DensityNaNBytes() : 0;
+        const bool audit_advance = gap_audit &&
+                inst.GetOp() == ir::OpCode::AdvancePC;
+        const bool audit_nzcv_dirty = audit_advance && save_in_nzcv && nzcv_dirty;
+        const u64 audit_nzcv_requested = audit_advance
+                ? static_cast<u64>(nzcv_requested)
+                : 0;
         Translate(&inst);
         if (density) {
             const u32 emitted = context.CurrentBufferSize() - before;
@@ -977,7 +1018,8 @@ void JitTranslator::Translate(ir::Block* block) {
                              "[svm-gap-op] block=0x%llx guest_pc=0x%llx id=%u "
                              "op=%s bytes=%u host_offset=%u scalar_binary=%u scalar_tied=%u "
                              "shufps=%u shufps_imm=%u shufps_alias=%u "
-                             "shufps_left_tied=%u shufps_left_fixed=%u\n",
+                             "shufps_left_tied=%u shufps_left_fixed=%u "
+                             "advpc_nzcv_dirty=%u advpc_nzcv_requested=0x%llx\n",
                              static_cast<unsigned long long>(
                                      block->GetStartLocation().Value()),
                              static_cast<unsigned long long>(audit_guest_pc),
@@ -986,7 +1028,9 @@ void JitTranslator::Translate(ir::Block* block) {
                              scalar_binary ? 1u : 0u, scalar_tied ? 1u : 0u,
                              shufps ? 1u : 0u, shufps_imm,
                              shufps_alias ? 1u : 0u, shufps_left_tied ? 1u : 0u,
-                             shufps_left_fixed ? 1u : 0u);
+                             shufps_left_fixed ? 1u : 0u,
+                             audit_nzcv_dirty ? 1u : 0u,
+                             static_cast<unsigned long long>(audit_nzcv_requested));
             }
         }
         if (inst.GetOp() == ir::OpCode::AdvancePC) {
