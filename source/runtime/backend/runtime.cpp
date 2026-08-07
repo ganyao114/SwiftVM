@@ -105,11 +105,14 @@ struct Runtime::Impl final {
                 ? 0
                 : reinterpret_cast<size_t>(
                           address_space->GetTrampolines().GetIndirectL1Miss()));
+        // The inline indirect-L1 signal safepoint is a per-module feature, so
+        // the request word must be valid even when the optional backedge/SMC
+        // latch is disabled for this AddressSpace. The L1 base has its own
+        // stable State slot and no generated ARM64 path needs the legacy union
+        // alias any more.
+        state->exit_request = 0;
         if (address_space->ExitLatchEnabled()) {
-            state->exit_request = 0;
             state->interface = &profile_interface;
-        } else {
-            state->l1_code_cache = l1_code_cache.Data();
         }
         if (exec_profile_enabled || execution_trace_enabled ||
             hot_counter_storage_enabled ||
@@ -592,8 +595,8 @@ struct Runtime::Impl final {
     // restores it across host exits.
     backend::RSBBuffer rsb_buffer{};
     backend::AddressSpace* address_space{};
-    // mutable: the JIT dispatcher writes L1 entries through the raw
-    // state->l1_code_cache pointer even from const Run paths.
+    // mutable: JIT dispatch fills this per-Runtime table even from const Run
+    // paths; State publishes its stable Data() base to generated code.
     mutable TranslateTable l1_code_cache{
             l1_cache_bits, TranslateTableHash::Direct};
     backend::SmcTracker::RuntimeToken smc_epoch{};
@@ -650,24 +653,19 @@ HaltReason Runtime::Step() { return HaltReason::None; }
 
 void Runtime::SignalInterrupt() {
     impl->running.store(false, std::memory_order_release);
-    if (impl->address_space->ExitLatchEnabled()) {
-        // Release publishes running=false to the generated LDAR poll. The
-        // high bit is sticky until ClearInterrupt and does not collide with
-        // the monotonically counted SMC requests in the low bits.
-        std::atomic_ref<u64>(impl->state->exit_request)
-                .fetch_or(kBackedgeSignalRequest, std::memory_order_release);
-    } else {
-        // Exact legacy path when the default-OFF latch is disabled.
-        impl->state->halt_reason = HaltReason::Signal;
-    }
+    // Publish the reason before the sticky request bit. An inline-L1 LDAR that
+    // observes the bit therefore also observes Signal, and its cold Ret can use
+    // the unchanged trampoline return path. Backedge-latch users keep the same
+    // bit and acquire/release contract; the low SMC counter is disjoint.
+    impl->state->halt_reason = HaltReason::Signal;
+    std::atomic_ref<u64>(impl->state->exit_request)
+            .fetch_or(kBackedgeSignalRequest, std::memory_order_release);
 }
 
 void Runtime::ClearInterrupt() {
     impl->state->halt_reason = HaltReason::None;
-    if (impl->address_space->ExitLatchEnabled()) {
-        std::atomic_ref<u64>(impl->state->exit_request)
-                .fetch_and(kBackedgeSmcRequestMask, std::memory_order_acq_rel);
-    }
+    std::atomic_ref<u64>(impl->state->exit_request)
+            .fetch_and(kBackedgeSmcRequestMask, std::memory_order_acq_rel);
     impl->running.store(true, std::memory_order_release);
 }
 

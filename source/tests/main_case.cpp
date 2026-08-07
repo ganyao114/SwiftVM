@@ -33,6 +33,7 @@
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/common/hot_coalesce_prof.h"
+#include "runtime/common/backedge_control.h"
 #include "runtime/common/svm_config.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "runtime/frontend/x86/x87.h"
@@ -683,19 +684,27 @@ TEST_CASE("Runtime preserves an interrupt between Run calls") {
     bool initial_miss = true;
     bool interrupt_seen = true;
     bool resumed_miss = true;
+    bool request_published = true;
+    bool request_cleared = true;
     for (unsigned iteration = 0; iteration < 1000; ++iteration) {
         initial_miss &= runtime.Run() == HaltReason::CodeMiss;
         // Deliberately publish after Run has returned and before the next Run:
-        // this is the W64 empty-loop window, repeated without changing the
+        // this is the W64 empty-loop window, repeated without multiplying the
         // suite's assertion count.
         runtime.SignalInterrupt();
+        request_published &=
+                (runtime.GetState()->exit_request & kBackedgeSignalRequest) != 0;
         interrupt_seen &= runtime.Run() == HaltReason::Signal;
         runtime.ClearInterrupt();
+        request_cleared &=
+                (runtime.GetState()->exit_request & kBackedgeSignalRequest) == 0;
         resumed_miss &= runtime.Run() == HaltReason::CodeMiss;
     }
     REQUIRE(initial_miss);
     REQUIRE(interrupt_seen);
     REQUIRE(resumed_miss);
+    REQUIRE(request_published);
+    REQUIRE(request_cleared);
 }
 
 TEST_CASE("Test block ir print") {
@@ -5903,15 +5912,19 @@ TEST_CASE("indirect L1 and lean shadow stack are independent and composable") {
         auto it = result.mnemonics.find(std::string{mnemonic});
         return it == result.mnemonics.end() ? 0u : it->second;
     };
-    REQUIRE(l1.bytes == off.bytes + 6 * vixl::aarch64::kInstructionSize);
+    // The production fast path is the seven-instruction L1 probe plus an
+    // LDAR/TBNZ signal safepoint. Its cold signal Ret adds one more static
+    // instruction, so replacing the original terminal Ret costs nine.
+    REQUIRE(l1.bytes == off.bytes + 9 * vixl::aarch64::kInstructionSize);
     REQUIRE(shadow.bytes == off.bytes);
     REQUIRE(count(off, "br") == 0);
     REQUIRE(count(l1, "br") == 1);
-    // Key mismatch selects x30; an invalidated value selects the dispatcher's
-    // safe L2 continuation. Production therefore has no separate miss Ret.
-    REQUIRE(count(l1, "ret") == 0);
+    // Key mismatch selects x30; the sole local Ret is the signal cold arm.
+    REQUIRE(count(l1, "ret") == 1);
     REQUIRE(count(l1, "csel") == 1);
     REQUIRE(count(l1, "and") == count(off, "and") + 1);
+    REQUIRE(count(l1, "ldar") == count(off, "ldar") + 1);
+    REQUIRE(count(l1, "tbnz") == count(off, "tbnz") + 1);
     REQUIRE(l1.host_write_coalesced);
 
     const auto call_off = run(false, false, Shape::Call, false, false);
@@ -5919,11 +5932,11 @@ TEST_CASE("indirect L1 and lean shadow stack are independent and composable") {
     const auto call_shadow = run(false, true, Shape::Call, false, false);
     const auto call_both = run(true, true, Shape::Call, false, false);
     REQUIRE(call_l1.bytes ==
-            call_off.bytes + 6 * vixl::aarch64::kInstructionSize);
+            call_off.bytes + 9 * vixl::aarch64::kInstructionSize);
     REQUIRE(call_shadow.bytes ==
             call_off.bytes - 2 * vixl::aarch64::kInstructionSize);
     REQUIRE(call_both.bytes ==
-            call_off.bytes + 4 * vixl::aarch64::kInstructionSize);
+            call_off.bytes + 7 * vixl::aarch64::kInstructionSize);
     REQUIRE(call_both.bytes ==
             call_l1.bytes - 2 * vixl::aarch64::kInstructionSize);
 

@@ -100,12 +100,13 @@ union CPUFlags {
 };
 
 struct State {
-    // Preserve the legacy State layout exactly. With the default-OFF latch,
-    // this is the historical L1 pointer. With the latch enabled, the same
-    // first word is an atomic request (Signal in bit 63, counted SMC requests
-    // below it), while RuntimeProfileInterface carries the L1 pointer. Keeping
-    // the request at offset zero makes the hot poll exactly LDAR+CBNZ without
-    // shifting any existing State/uniform address in the OFF build.
+    // Preserve the legacy State layout exactly. The first word is now always
+    // the atomic exit request: Signal occupies bit 63 and the optional SMC
+    // latch uses the low bits. The historical L1 pointer name remains as a
+    // layout alias, while all ARM64 dispatch paths use the dedicated
+    // indirect_l1_code_cache slot below. Keeping the request at offset zero
+    // makes generated safepoints exactly LDAR plus a conditional branch without
+    // shifting any existing State/uniform address.
     union {
         void* l1_code_cache{};
         alignas(8) u64 exit_request;

@@ -107,9 +107,10 @@ public:
     // trampoline dispatcher as before. state->current_loc has already been
     // written by EmitSetLocation, so the fallback path needs no fixup.
     [[nodiscard]] bool ForwardStatic(ir::Location location);
-    // Checks only the first slot of the existing per-Runtime L1 table. A key
-    // mismatch or cleared value returns through the unchanged dispatcher,
-    // which performs the complete L1 collision-chain and L2 lookup.
+    // Polls the sticky signal request, then checks only the first slot of the
+    // existing per-Runtime L1 table. A key mismatch or cleared value returns
+    // through the unchanged dispatcher, which performs the complete L1
+    // collision-chain and L2 lookup.
     void ForwardIndirectL1(const Register& location);
     void ReturnToDispatcher(const Register& location);
 
