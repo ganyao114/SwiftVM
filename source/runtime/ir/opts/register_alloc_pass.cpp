@@ -1830,6 +1830,15 @@ private:
             default:
                 break;
         }
+        if (features.sse_shufps_imm &&
+            inst->GetOp() == OpCode::VecShuffle32TwoSrc) {
+            const u32 control = inst->GetArg<Imm>(2).Get() & 0xffu;
+            if (control == 0xe4 ||
+                ((control == 0xe0 || control == 0xe5) &&
+                 inst->GetArg<Value>(0).Id() == inst->GetArg<Value>(1).Id())) {
+                return inst->GetArg<Value>(0);
+            }
+        }
         if (!scalar_insert) {
             return {};
         }
@@ -3123,6 +3132,18 @@ void RegisterAllocPass::RunForScalarFPRTieConflictTest(
     LinearScanAllocator scan{block, reg_alloc, 0, 0, false, true, false, false,
                              nullptr, false, features, 1};
     scan.CoalesceGuestFPRAccessesForTest();
+}
+
+void RegisterAllocPass::RunForShufpsImmTieTest(ir::Block* block,
+                                               backend::RegAlloc* reg_alloc,
+                                               bool enabled) {
+    auto features = FeatureSet{};
+    features.sse_shufps_imm = enabled;
+    reg_alloc->ResetAllocations();
+    LinearScanAllocator scan{block, reg_alloc, 0, backend::kDefaultScratchFPR,
+                             false, false, false, false, nullptr, false, features, 0};
+    scan.AllocateRegisters();
+    ASSERT(scan.Verify());
 }
 
 RegisterAllocPass::SpillEvictTestResult RegisterAllocPass::RunForSpillEvictTest(

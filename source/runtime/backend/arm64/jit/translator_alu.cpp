@@ -1032,6 +1032,40 @@ void JitTranslator::EmitVecShuffle32(ir::Inst* inst) {
     __ Tbl(result.V16B(), src.V16B(), indexes.V16B());
 }
 
+bool JitTranslator::ReproveShufpsImmTie(ir::Inst* inst) const {
+    if (!sse_shufps_imm || !inst ||
+        inst->GetOp() != ir::OpCode::VecShuffle32TwoSrc) {
+        return false;
+    }
+    const u32 control = inst->GetArg<ir::Imm>(2).Get() & 0xffu;
+    auto resolve = [](ir::Value value) {
+        while (value.Defined() && value.Def()->IsBitCastOperation()) {
+            value = value.Def()->GetArg<ir::Value>(0);
+        }
+        return value;
+    };
+    auto left = resolve(inst->GetArg<ir::Value>(0));
+    const bool alias_shape = inst->GetArg<ir::Value>(0).Id() ==
+                             inst->GetArg<ir::Value>(1).Id();
+    if (control != 0xe4 &&
+        !((control == 0xe0 || control == 0xe5) && alias_shape)) {
+        return false;
+    }
+    if (!left.Defined() || !left.Def() || context.IsHostReadCoalesced(left.Id()) ||
+        !context.SharesFPR(left, ir::Value{inst})) {
+        return false;
+    }
+    u32 last_use = left.Def()->Id();
+    for (auto& scan : cur_block->GetInstList()) {
+        for (auto use : scan.GetValues()) {
+            if (resolve(use).Def() == left.Def()) {
+                last_use = std::max<u32>(last_use, scan.Id());
+            }
+        }
+    }
+    return last_use == inst->Id();
+}
+
 void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
     const auto left_value = inst->GetArg<ir::Value>(0);
     const auto right_value = inst->GetArg<ir::Value>(1);
@@ -1070,6 +1104,10 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
         // architectural operands name the same old destination.
         switch (control) {
             case 0xE4:
+                if (sse_shufps_imm && result.GetCode() == left.GetCode()) {
+                    ASSERT_MSG(ReproveShufpsImmTie(inst),
+                               "SHUFPS imm tie proof diverged at IR {}", inst->Id());
+                }
                 if (result.GetCode() != left.GetCode()) {
                     __ Orr(result.V16B(), left.V16B(), left.V16B());
                 }
@@ -1088,6 +1126,10 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
             // qword. When RA ties result to source, one INS is sufficient.
             case 0xE0:
             case 0xE5: {
+                if (sse_shufps_imm && result.GetCode() == left.GetCode()) {
+                    ASSERT_MSG(ReproveShufpsImmTie(inst),
+                               "SHUFPS imm tie proof diverged at IR {}", inst->Id());
+                }
                 if (result.GetCode() != left.GetCode()) {
                     __ Orr(result.V16B(), left.V16B(), left.V16B());
                 }
@@ -1115,6 +1157,14 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
         __ Mov(tmp, index_hi);
         __ Ins(indexes.V2D(), 1, tmp);
         __ Tbl(result.V16B(), left.V16B(), indexes.V16B());
+        return;
+    }
+
+    if (sse_shufps_imm && control == 0xe4 &&
+        result.GetCode() == left.GetCode()) {
+        ASSERT_MSG(ReproveShufpsImmTie(inst),
+                   "SHUFPS imm tie proof diverged at IR {}", inst->Id());
+        __ Ins(result.V2D(), 1, right.V2D(), 1);
         return;
     }
 

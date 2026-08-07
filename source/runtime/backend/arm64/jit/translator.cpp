@@ -178,6 +178,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     fpcr_tax_timing = sse_afp_nan && FpcrTaxTimingEnabled();
     const auto& features = ctx.GetFeatures();
     sse_scalar_tie = features.sse_scalar_tie;
+    sse_shufps_imm = features.sse_shufps_imm;
     sse_afp_minmax = features.sse_afp_minmax && sse_afp_nan;
     shift_imm_fast = features.shift_imm_fast;
     mem_narrow_fuse = features.mem_narrow_fuse;
@@ -964,15 +965,28 @@ void JitTranslator::Translate(ir::Block* block) {
                 const bool scalar_binary = IsScalarFPRBinary(inst.GetOp());
                 const bool scalar_tied = scalar_binary && context.SharesFPR(
                         ir::Value{&inst}, inst.GetArg<ir::Value>(0));
+                const bool shufps = inst.GetOp() == ir::OpCode::VecShuffle32TwoSrc;
+                const u32 shufps_imm = shufps ? inst.GetArg<ir::Imm>(2).Get() & 0xffu : 0;
+                const bool shufps_alias = shufps &&
+                        inst.GetArg<ir::Value>(0).Id() == inst.GetArg<ir::Value>(1).Id();
+                const bool shufps_left_tied = shufps && context.SharesFPR(
+                        ir::Value{&inst}, inst.GetArg<ir::Value>(0));
+                const bool shufps_left_fixed = shufps && context.IsHostReadCoalesced(
+                        ResolveBitCastValue(inst.GetArg<ir::Value>(0)).Id());
                 std::fprintf(stderr,
                              "[svm-gap-op] block=0x%llx guest_pc=0x%llx id=%u "
-                             "op=%s bytes=%u host_offset=%u scalar_binary=%u scalar_tied=%u\n",
+                             "op=%s bytes=%u host_offset=%u scalar_binary=%u scalar_tied=%u "
+                             "shufps=%u shufps_imm=%u shufps_alias=%u "
+                             "shufps_left_tied=%u shufps_left_fixed=%u\n",
                              static_cast<unsigned long long>(
                                      block->GetStartLocation().Value()),
                              static_cast<unsigned long long>(audit_guest_pc),
                              inst.Id(), ir::GetIRMetaInfo(inst.GetOp()).name,
                              production_emitted, before,
-                             scalar_binary ? 1u : 0u, scalar_tied ? 1u : 0u);
+                             scalar_binary ? 1u : 0u, scalar_tied ? 1u : 0u,
+                             shufps ? 1u : 0u, shufps_imm,
+                             shufps_alias ? 1u : 0u, shufps_left_tied ? 1u : 0u,
+                             shufps_left_fixed ? 1u : 0u);
             }
         }
         if (inst.GetOp() == ir::OpCode::AdvancePC) {

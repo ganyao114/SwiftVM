@@ -36,6 +36,7 @@ namespace swift::runtime {
     X(vec_const_cache, true) \
     X(vec_byteshift_ext, true) \
     X(vec_shufps_neon, true) \
+    X(sse_shufps_imm, false) \
     X(aes_zero_reuse, true) \
     X(sse_nan_coldpath, true) \
     X(flags_narrow_align, true) \
@@ -144,6 +145,7 @@ struct FeatureOverrides {
     X(bool, vec_const_cache, "SVM_VEC_CONST_CACHE", DefaultOn, true, "vector constant cache；缺省 ON，=0 回退；原 decoder_internal.h:47") \
     X(bool, vec_byteshift_ext, "SVM_VEC_BYTESHIFT_EXT", DefaultOn, true, "vector byte-shift lowering；缺省 ON，=0 回退；原 decoder_sse.cc/decoder_avx_int.cc") \
     X(bool, vec_shufps_neon, "SVM_VEC_SHUFPS_NEON", DefaultOn, true, "SHUFPS NEON lowering；缺省 ON，=0 回退；原 decoder_sse.cc:939") \
+    X(bool, sse_shufps_imm, "SVM_SSE_SHUFPS_IMM", NonZero, false, "SHUFPS 高频 imm 的末次使用 destination tie；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
     X(bool, aes_zero_reuse, "SVM_AES_ZERO_REUSE", DefaultOn, true, "AES shared-zero reuse；缺省 ON，=0 回退；原 decoder_crypto.cc:89") \
     X(bool, sse_nan_coldpath, "SVM_SSE_NAN_COLDPATH", DefaultOn, true, "SSE NaN cold path；缺省 ON，=0 回退；原 translator.cpp:332") \
     X(bool, flags_narrow_align, "SVM_FLAGS_NARROW_ALIGN", DefaultOn, true, "窄 flags 对齐发码；缺省 ON，=0 回退；原 decoder.cc:1150") \

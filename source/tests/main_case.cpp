@@ -221,7 +221,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 141);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 142);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -294,7 +294,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 52);
+    STATIC_REQUIRE(kFeatureCount == 53);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -3760,6 +3760,169 @@ TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window")
                 item.block.get(), &alloc, item.conflict.Id(), target);
         REQUIRE(alloc.ValueFPR(item.conflict).id == target);
         REQUIRE_FALSE(alloc.IsHostWriteCoalesced(item.publish->Id()));
+    }
+}
+
+TEST_CASE("SHUFPS hot immediates tie only an exact last-use destination") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    const GPRSMask gprs{~((1u << 8) - 1u)};
+    struct Case {
+        IntrusivePtr<Block> block;
+        Value left;
+        Value result;
+    };
+    auto make_case = [](swift::u32 control, swift::u64 location,
+                        bool alias, bool keep_left_live) {
+        IntrusivePtr<Block> block{new Block(0, Location{location})};
+        auto left = block->LoadUniform(Uniform{0, ValueType::V128})
+                            .SetType(ValueType::V128);
+        auto right = alias ? left : block->LoadUniform(Uniform{16, ValueType::V128})
+                                          .SetType(ValueType::V128);
+        auto result = block->VecShuffle32TwoSrc(
+                                   left, right, Imm{swift::u64{control}})
+                              .SetType(ValueType::V128);
+        block->StoreUniform(Uniform{32, ValueType::V128}, result);
+        if (keep_left_live) {
+            block->StoreUniform(Uniform{48, ValueType::V128}, left);
+        }
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        return Case{std::move(block), left, result};
+    };
+    auto allocate = [&](Block* block, bool enabled) {
+        auto features = FeatureSet{};
+        features.sse_shufps_imm = enabled;
+        auto alloc = std::make_unique<RegAlloc>(
+                block->MaxInstrId(), gprs, FPRSMask{0}, features);
+        RegisterAllocPass::RunForShufpsImmTieTest(block, alloc.get(), enabled);
+        return alloc;
+    };
+    struct Emitted {
+        std::size_t bytes{};
+        std::string text;
+    };
+    auto emit = [&](Block* block, RegAlloc& alloc,
+                    swift::u64 location, bool enabled) {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        ModuleConfig module_config{};
+        module_config.feature_overrides.Set(FeatureId::sse_shufps_imm, enabled);
+        auto module = address_space.MapModule(
+                LocationDescriptor{location}, LocationDescriptor{location + 0x10},
+                module_config);
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block);
+        context.Finish();
+        Emitted emitted{.bytes = context.CurrentBufferSize()};
+        auto& masm = context.GetMasm();
+        auto* first = masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+        auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        for (auto* instruction = first; instruction < last;
+             instruction = instruction->GetNextInstruction()) {
+            decoder.Decode(instruction);
+            emitted.text += disassembler.GetOutput();
+            emitted.text += '\n';
+        }
+        return emitted;
+    };
+
+    const auto check = [&](swift::u32 control, bool alias,
+                           std::size_t saved_instructions) {
+        auto item = make_case(control, 0x11500 + control, alias, false);
+        auto off = allocate(item.block.get(), false);
+        auto on = allocate(item.block.get(), true);
+        REQUIRE(off->ValueFPR(item.result).id != off->ValueFPR(item.left).id);
+        REQUIRE(on->ValueFPR(item.result).id == on->ValueFPR(item.left).id);
+        auto off_code = emit(item.block.get(), *off, 0x12500 + control, false);
+        auto on_code = emit(item.block.get(), *on, 0x13500 + control, true);
+        INFO("OFF:\n" << off_code.text << "ON:\n" << on_code.text);
+        REQUIRE(on_code.bytes + saved_instructions * vixl::aarch64::kInstructionSize ==
+                off_code.bytes);
+        return on_code;
+    };
+
+    for (swift::u32 control : {0xe0u, 0xe5u}) {
+        auto code = check(control, true, 1);
+        REQUIRE(code.text.find("mov v") != std::string::npos);
+        REQUIRE(code.text.find("tbl") == std::string::npos);
+    }
+    auto alias_identity = check(0xe4, true, 1);
+    REQUIRE(alias_identity.text.find("tbl") == std::string::npos);
+    auto distinct_pair = check(0xe4, false, 12);
+    REQUIRE(distinct_pair.text.find("mov v") != std::string::npos);
+    REQUIRE(distinct_pair.text.find("tbl") == std::string::npos);
+
+    SECTION("a live source keeps the old bytes") {
+        for (const auto [control, alias] :
+             {std::pair{0xe0u, true}, std::pair{0xe5u, true},
+              std::pair{0xe4u, false}}) {
+            auto item = make_case(control, 0x14500 + control, alias, true);
+            auto off = allocate(item.block.get(), false);
+            auto on = allocate(item.block.get(), true);
+            REQUIRE(on->ValueFPR(item.result).id != on->ValueFPR(item.left).id);
+            auto off_code = emit(item.block.get(), *off, 0x15500 + control, false);
+            auto on_code = emit(item.block.get(), *on, 0x15500 + control, true);
+            REQUIRE(on_code.bytes == off_code.bytes);
+            REQUIRE(on_code.text == off_code.text);
+        }
+    }
+
+    SECTION("an unsupported two-source immediate keeps the old bytes") {
+        auto item = make_case(0x55, 0x16555, false, false);
+        auto off = allocate(item.block.get(), false);
+        auto on = allocate(item.block.get(), true);
+        REQUIRE(on->ValueFPR(item.result).id != on->ValueFPR(item.left).id);
+        auto off_code = emit(item.block.get(), *off, 0x17555, false);
+        auto on_code = emit(item.block.get(), *on, 0x17555, true);
+        REQUIRE(on_code.bytes == off_code.bytes);
+        REQUIRE(on_code.text == off_code.text);
+    }
+
+    SECTION("a resident source keeps its fixed home intact") {
+        constexpr swift::u16 target = 19;
+        IntrusivePtr<Block> block{new Block(0, Location{0x18500})};
+        auto left = block->GetHostFPR(HostRegIndex(target), Imm{0u})
+                            .SetType(ValueType::V128);
+        auto result = block->VecShuffle32TwoSrc(
+                                   left, left, Imm{swift::u64{0xe5}})
+                              .SetType(ValueType::V128);
+        block->StoreUniform(Uniform{32, ValueType::V128}, result);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+
+        auto allocate_resident = [&](bool enabled) {
+            auto features = FeatureSet{};
+            features.sse_shufps_imm = enabled;
+            FPRSMask resident{0};
+            resident.Mark(target);
+            auto alloc = std::make_unique<RegAlloc>(
+                    block->MaxInstrId(), gprs, resident, features);
+            RegisterAllocPass::RunForShufpsImmTieTest(
+                    block.get(), alloc.get(), enabled);
+            return alloc;
+        };
+        auto off = allocate_resident(false);
+        auto on = allocate_resident(true);
+        REQUIRE(on->ValueFPR(left).id == target);
+        REQUIRE(on->IsHostReadCoalesced(left.Id()));
+        REQUIRE(on->ValueFPR(result).id != target);
+        auto off_code = emit(block.get(), *off, 0x19500, false);
+        auto on_code = emit(block.get(), *on, 0x19500, true);
+        REQUIRE(on_code.bytes == off_code.bytes);
+        REQUIRE(on_code.text == off_code.text);
     }
 }
 

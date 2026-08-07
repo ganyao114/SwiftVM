@@ -67,6 +67,9 @@ public:
                                                backend::RegAlloc *reg_alloc,
                                                u32 tied_value_id,
                                                u16 target);
+    static void RunForShufpsImmTieTest(ir::Block *block,
+                                       backend::RegAlloc *reg_alloc,
+                                       bool enabled);
     static SpillEvictTestResult RunForSpillEvictTest(
             ir::Block *block,
             backend::RegAlloc *reg_alloc,
