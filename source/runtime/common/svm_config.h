@@ -141,6 +141,7 @@ struct FeatureOverrides {
     X(bool, xmm_narrow_fwd, "SVM_XMM_NARROW_FWD", DefaultOn, true, "XMM 窄视图转发；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:102") \
     X(bool, xmm_resident, "SVM_XMM_RESIDENT", DefaultOn, true, "XMM1-7 固定驻留 v17-v23，XMM0 保持 State；缺省 ON，=0 回退；跨 unit ABI，原 translator/x86/translator.cpp") \
     X(bool, xmm_resident_hi, "SVM_XMM_RESIDENT_HI", NonZero, false, "XMM8-11 固定驻留 v24-v27；非 0 开，缺省 OFF，依赖 SVM_XMM_RESIDENT；跨 unit ABI，原 translator/x86/translator.cpp") \
+    X(u32, xmm_fpr_pool_cap, "SVM_XMM_FPR_POOL_CAP", NonNegativeAtoi, 0, "只读供给曲线探针：把 FPR value pool 钳到 13..20；0/缺省惰性，原 trampolines.cpp") \
     X(bool, vec_imm_shift, "SVM_VEC_IMM_SHIFT", DefaultOn, true, "vector immediate shift lowering；缺省 ON，=0 回退；原 decoder_sse.cc/decoder_avx_int.cc") \
     X(bool, vec_const_cache, "SVM_VEC_CONST_CACHE", DefaultOn, true, "vector constant cache；缺省 ON，=0 回退；原 decoder_internal.h:47") \
     X(bool, vec_byteshift_ext, "SVM_VEC_BYTESHIFT_EXT", DefaultOn, true, "vector byte-shift lowering；缺省 ON，=0 回退；原 decoder_sse.cc/decoder_avx_int.cc") \

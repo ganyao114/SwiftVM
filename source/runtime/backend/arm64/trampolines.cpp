@@ -125,6 +125,22 @@ void TrampolinesArm64::Build() {
             gpr_regs.Mark(desc.reg);
         }
     }
+    const u32 fpr_pool_cap = GetSvmConfig().xmm_fpr_pool_cap;
+    if (fpr_pool_cap != 0) {
+        ASSERT_MSG(fpr_pool_cap >= 13 && fpr_pool_cap <= 20,
+                   "SVM_XMM_FPR_POOL_CAP must be 0 or 13..20, got {}",
+                   fpr_pool_cap);
+        for (u32 code = 24;
+             code <= 31 && fpr_regs.GetClearCount() > fpr_pool_cap;
+             ++code) {
+            ASSERT_MSG(!static_fprs.Get(code),
+                       "FPR pool probe overlaps resident host v{}", code);
+            fpr_regs.Mark(code);
+        }
+        ASSERT_MSG(fpr_regs.GetClearCount() == fpr_pool_cap,
+                   "FPR pool probe could not reach cap {} (actual {})",
+                   fpr_pool_cap, fpr_regs.GetClearCount());
+    }
     gpr_regs.Mark(fp.GetCode());  // fp / optional static RDX (x29)
 
     if (GetSvmConfig().vixl_host_dump_is_set &&
