@@ -1099,12 +1099,13 @@ void JitContext::TickIR(ir::Inst* instr) {
 }
 
 void JitContext::BeginVixlScratch(bool allow_pool) {
-    if (!backend::ScratchXPoolEnabled(features)) {
-        return;
-    }
+    ASSERT(!vixl_scratch_contract_active);
     ASSERT(!vixl_scratch_scope);
-    u32 allowed = 0;
-    if (allow_pool) {
+    const bool audit_gpr = backend::ScratchXPoolEnabled(features);
+    u32 allowed = audit_gpr
+            ? 0
+            : static_cast<u32>(masm.GetScratchRegisterList()->GetList());
+    if (audit_gpr && allow_pool) {
         const bool x87 = cur_inst && cur_inst->GetOp() == ir::OpCode::X87Op;
         if (!x87) {
             for (u32 code = 11; code <= 17; ++code) {
@@ -1119,7 +1120,14 @@ void JitContext::BeginVixlScratch(bool allow_pool) {
             allowed |= 1u << ip0.GetCode();
         }
     }
-    masm.SvmBeginScratchContract(allowed);
+    // VIXL defaults fptmp_list_ to d31. SwiftVM never budgets a hidden V
+    // scratch register, so keep its allow-list empty and fail before a macro
+    // can silently overwrite a resident guest value.
+    masm.SvmBeginScratchContract(allowed, 0);
+    vixl_scratch_contract_active = true;
+    if (!audit_gpr) {
+        return;
+    }
     vixl_scratch_scope = std::make_unique<UseScratchRegisterScope>(&masm);
     vixl_scratch_scope->Exclude(*masm.GetScratchRegisterList());
     if (!allow_pool) {
@@ -1133,9 +1141,17 @@ void JitContext::BeginVixlScratch(bool allow_pool) {
 }
 
 void JitContext::EndVixlScratch() {
-    if (vixl_scratch_scope) {
+    if (vixl_scratch_contract_active) {
+        const bool audit_gpr = static_cast<bool>(vixl_scratch_scope);
         vixl_scratch_scope.reset();
         const auto acquired = masm.SvmEndScratchContract();
+        vixl_scratch_contract_active = false;
+        ASSERT_MSG(acquired.vreg == 0,
+                   "VIXL acquired an unbudgeted scratch V register mask 0x{:x}",
+                   acquired.vreg);
+        if (!audit_gpr) {
+            return;
+        }
         const u32 explicit_used =
                 static_cast<u32>(cur_dirty_gprs.GetMarkedCount() -
                                  tick_dirty_gprs.GetMarkedCount()) -
@@ -1144,7 +1160,7 @@ void JitContext::EndVixlScratch() {
         // no dynamic scratch headroom; RA excluded it independently.
         const u32 fixed = cur_inst ? backend::FixedGPRClobbers(*cur_inst, features) : 0;
         const u32 vixl_used = static_cast<u32>(
-                __builtin_popcountll(acquired & ~fixed));
+                __builtin_popcountll(acquired.gpr & ~fixed));
         last_instruction_scratch_gpr = explicit_used + vixl_used;
         if (ScratchPrecisePeakAuditEnabled() && cur_inst &&
             (cur_inst->GetOp() == ir::OpCode::Add ||

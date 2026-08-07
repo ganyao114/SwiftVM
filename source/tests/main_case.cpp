@@ -1481,6 +1481,44 @@ TEST_CASE("A1 host-base fold gate is exact and Q UXTW encoding is valid") {
                     "str q1, [x24, w11, uxtw]") != std::string_view::npos);
 }
 
+TEST_CASE("SwiftVM VIXL scratch contract rejects hidden V-register leases") {
+    using namespace vixl::aarch64;
+
+    MacroAssembler stock_masm;
+    {
+        UseScratchRegisterScope temps(&stock_masm);
+        const auto stock = temps.AcquireD();
+        REQUIRE(stock.GetCode() == d31.GetCode());
+    }
+
+    MacroAssembler masm;
+    masm.SvmBeginScratchContract(x16.GetBit(), 0);
+    {
+        UseScratchRegisterScope temps(&masm);
+        const auto acquired = temps.AcquireX();
+        REQUIRE(acquired.GetCode() == x16.GetCode());
+    }
+    const auto clean = masm.SvmEndScratchContract();
+    REQUIRE(clean.gpr == x16.GetBit());
+    REQUIRE(clean.vreg == 0);
+
+    const auto child = fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        std::signal(SIGABRT, SIG_DFL);
+        MacroAssembler child_masm;
+        child_masm.SvmBeginScratchContract(
+                child_masm.GetScratchRegisterList()->GetList(), 0);
+        child_masm.Fcmp(d0, 1.0);
+        _exit(0);
+    }
+
+    int status = 0;
+    REQUIRE(waitpid(child, &status, 0) == child);
+    REQUIRE(WIFSIGNALED(status));
+    REQUIRE(WTERMSIG(status) == SIGABRT);
+}
+
 TEST_CASE("two structured V128 accesses fault on the second page after the first commits") {
     using namespace swift::translator;
     using namespace swift::translator::x86;

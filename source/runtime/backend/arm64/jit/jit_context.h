@@ -325,6 +325,7 @@ private:
 #endif
     int shared_tmp_gpr{-1};
     bool auxiliary_scratch{};
+    bool vixl_scratch_contract_active{};
     std::unique_ptr<UseScratchRegisterScope> vixl_scratch_scope{};
 };
 
