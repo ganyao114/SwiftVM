@@ -169,7 +169,7 @@ struct FeatureOverrides {
     X(std::string, fpcr_tax_timing, "SVM_FPCR_TAX_TIMING", RawString, "", "FPCR timing 输出目标；存在且非 0 启用；原 fpcr_tax_prof.cpp:227/398") \
     X(bool, mem_hostbase_fold, "SVM_MEM_HOSTBASE_FOLD", DefaultOn, true, "host-base fold；缺省 ON，=0 回退；原 translator/x86/translator.cpp:728") \
     X(bool, induct_tie, "SVM_INDUCT_TIE", DefaultOn, true, "induction tie；缺省 ON，=0 回退；原 register_alloc_pass.cpp:98") \
-    X(bool, region_edges, "SVM_REGION_EDGES", NonZero, false, "region edge 内部化；非 0 开，缺省 OFF；原 translator/x86/translator.cpp:730") \
+    X(bool, region_edges, "SVM_REGION_EDGES", DefaultOn, true, "region edge 内部化（bounded16）；缺省 ON，=0 回退；原 translator/x86/translator.cpp:730") \
     X(bool, exec_trace, "SVM_EXEC_TRACE", NonZero, false, "执行 trace 探针；非 0 开，缺省 OFF；原 runtime.cpp:80/jit_context.cpp:78") \
     X(bool, scratch_precise, "SVM_SCRATCH_PRECISE", DefaultOn, true, "Add/Sub 精确 scratch 计费；缺省 ON，=0 回退；原 reg_alloc.cpp:92") \
     X(bool, ra_spill_evict, "SVM_RA_SPILL_EVICT", DefaultOn, true, "RA farthest-end 驱逐；缺省 ON，=0 回退；原 register_alloc_pass.cpp:106") \
