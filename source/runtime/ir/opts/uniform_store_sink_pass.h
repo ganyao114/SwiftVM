@@ -12,6 +12,7 @@ struct UniformInfo;
 // own.
 class UniformStoreSinkPass {
 public:
+    static void CaptureLatestSnapshots(Block* block, const UniformInfo& info);
     static void Run(Block* block, const UniformInfo& info, const FeatureSet& features,
                     HIRFunction* hir_function = nullptr);
     static void Run(HIRFunction* hir_function, const UniformInfo& info,

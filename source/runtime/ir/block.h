@@ -64,6 +64,18 @@ struct AddressNode {
     }
 };
 
+// Transient hand-off from uniform DSE to the XMM fault sink. Value is a
+// non-owning SSA reference: it deliberately does not keep the producer live
+// until the sink installs it at the already existing publication point.
+struct UniformSnapshotPlan {
+    Inst* segment_begin{};
+    Inst* boundary{};
+    Inst* latest_store{};
+    Value value{};
+    u32 offset{};
+    u32 size{};
+};
+
 class Block final : public SlabObject<Block, true>,
                     public IntrusiveRefCounter<Block>,
                     public AddressNode {
@@ -166,6 +178,10 @@ public:
 
     [[nodiscard]] u32 MaxInstrId() const { return max_instr_id; }
 
+    [[nodiscard]] std::vector<UniformSnapshotPlan>& GetUniformSnapshotPlans() {
+        return uniform_snapshot_plans;
+    }
+
 #define INST(name, ret, ...)                                                                       \
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
     ret name(const Args&... args) {                                                                \
@@ -203,6 +219,7 @@ private:
     u16 max_instr_id{};
     u16 v_stack{};
     backend::JitCache jit_cache{};
+    std::vector<UniformSnapshotPlan> uniform_snapshot_plans{};
 };
 
 using BlockList = IntrusiveList<&Block::list_node>;

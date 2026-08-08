@@ -1225,6 +1225,66 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
     REQUIRE(add_snapshot_is_raw(false));
     REQUIRE(add_snapshot_is_raw(true));
 
+    // Uniform forwarding can turn a disjoint GPR store into SetHostGPR between
+    // the latest XMM producer and the original fault boundary. The sink must
+    // consume the plan at that newly introduced observation and retarget the
+    // existing carrier; it must not add a second store at the later load.
+    UniformInfo mapped_info = info;
+    UniformRegister mapped_gpr{.uniform = Uniform{16, ValueType::U64}};
+    mapped_gpr.host_reg.gpr = HostGPR{22};
+    mapped_gpr.host_reg.is_fpr = false;
+    mapped_info.uniform_regs_map.Map(16, 24, mapped_gpr);
+    mapped_info.uni_gprs.Mark(22);
+    Block forwarded_boundary{0, Location{0x3438}};
+    auto forwarded_address = forwarded_boundary.LoadImm(Imm{swift::u64{0x1000}})
+                                     .SetType(ValueType::U64);
+    auto forwarded_raw = forwarded_boundary.LoadMemory(Operand{forwarded_address})
+                                 .SetType(ValueType::V128);
+    forwarded_boundary.StoreUniform(Uniform{0, ValueType::V128}, forwarded_raw);
+    auto forwarded_scalar = forwarded_boundary.LoadImm(Imm{swift::u64{0}})
+                                    .SetType(ValueType::V128);
+    auto forwarded_product = forwarded_boundary
+            .VecFMul(forwarded_raw, forwarded_scalar, Imm{64u})
+            .SetType(ValueType::V128);
+    forwarded_boundary.StoreUniform(Uniform{0, ValueType::V128}, forwarded_product);
+    auto mapped_value = forwarded_boundary.LoadImm(Imm{swift::u64{7}})
+                                .SetType(ValueType::U64);
+    forwarded_boundary.StoreUniform(Uniform{16, ValueType::U64}, mapped_value);
+    auto* mapped_write = &forwarded_boundary.GetInstList().back();
+    auto forwarded_rhs_address = forwarded_boundary.LoadImm(Imm{swift::u64{0x2000}})
+                                         .SetType(ValueType::U64);
+    [[maybe_unused]] auto forwarded_rhs =
+            forwarded_boundary.LoadMemory(Operand{forwarded_rhs_address})
+                    .SetType(ValueType::V128);
+    auto forwarded_features = FeatureSet{};
+    forwarded_features.xmm_snapshot_dse = true;
+    UniformEliminationPass::Run(&forwarded_boundary, mapped_info,
+                                forwarded_features);
+    REQUIRE(mapped_write->GetOp() == OpCode::SetHostGPR);
+    UniformStoreSinkPass::Run(&forwarded_boundary, mapped_info,
+                              forwarded_features);
+    Inst* before_mapped_write{};
+    for (auto& inst : forwarded_boundary.GetInstList()) {
+        if (&inst == mapped_write) break;
+        before_mapped_write = &inst;
+    }
+    REQUIRE(before_mapped_write != nullptr);
+    REQUIRE(before_mapped_write->GetOp() == OpCode::StoreUniform);
+    REQUIRE(before_mapped_write->GetArg<Value>(1) == forwarded_product);
+
+    // Resident XMM homes are recovered from their fixed FPRs on a fault and
+    // therefore must never acquire State snapshot plans or publication tax.
+    UniformInfo resident_info = info;
+    UniformRegister resident{.uniform = Uniform{0, ValueType::V128}};
+    resident.host_reg.fpr = HostFPR{17};
+    resident.host_reg.is_fpr = true;
+    resident_info.uniform_regs_map.Map(0, 16, resident);
+    resident_info.uni_fprs.Mark(17);
+    auto resident_shape = make_triad();
+    UniformStoreSinkPass::CaptureLatestSnapshots(resident_shape.block.get(),
+                                                  resident_info);
+    REQUIRE(resident_shape.block->GetUniformSnapshotPlans().empty());
+
     const std::array affected_producers{
             OpCode::VecFAdd, OpCode::VecFSub, OpCode::VecFMul,
             OpCode::VecFDiv, OpCode::VecAdd,  OpCode::VecSub,
@@ -1294,7 +1354,7 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
                 return inst.GetOp() == OpCode::StoreUniform &&
                        inst.GetArg<Value>(1) == loaded;
             });
-    REQUIRE(retained_uses >= 1);
+    REQUIRE(retained_uses == 1);
 }
 
 TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {

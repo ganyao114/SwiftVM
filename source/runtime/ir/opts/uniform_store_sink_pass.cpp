@@ -1,6 +1,7 @@
 #include "uniform_store_sink_pass.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <vector>
 
 #include "runtime/ir/opts/uniform_elimination_pass.h"
@@ -14,6 +15,12 @@ struct PendingStore {
     Value value{};
     u32 offset{};
     u32 size{};
+};
+
+struct SnapshotByte {
+    Value value{};
+    Inst* store{};
+    u8 byte{};
 };
 
 [[nodiscard]] bool Overlaps(u32 left_offset, u32 left_size, u32 right_offset, u32 right_size) {
@@ -223,6 +230,63 @@ struct PendingStore {
 
 }  // namespace
 
+void UniformStoreSinkPass::CaptureLatestSnapshots(Block* block, const UniformInfo& info) {
+    auto& plans = block->GetUniformSnapshotPlans();
+    plans.clear();
+    std::vector<SnapshotByte> latest(info.uniform_size);
+    Inst* segment_begin{};
+
+    auto clear = [&] { std::fill(latest.begin(), latest.end(), SnapshotByte{}); };
+    auto capture = [&](Inst* boundary) {
+        for (const auto& range : info.xmm_uniform_ranges) {
+            for (u32 offset = range.begin; offset + 16 <= range.end; offset += 16) {
+                const auto mapped = info.uniform_regs_map.GetValueAt(offset);
+                if (!mapped.Null() && mapped.host_reg.is_fpr) {
+                    // Resident XMM homes are recovered from v17-v27 by the
+                    // fault path itself. Their canonical State stores are not
+                    // snapshot carriers, so planning them would add exactly
+                    // the publication tax this pass is designed to avoid.
+                    continue;
+                }
+                const auto& first = latest[offset];
+                if (!first.value.Defined() || first.value.Type() != ValueType::V128 ||
+                    first.byte != 0) {
+                    continue;
+                }
+                bool complete = true;
+                for (u32 byte = 1; byte < 16; ++byte) {
+                    const auto& item = latest[offset + byte];
+                    complete &= item.value == first.value && item.store == first.store &&
+                                item.byte == byte;
+                }
+                if (complete) {
+                    plans.push_back({segment_begin, boundary, first.store,
+                                     first.value, offset, 16});
+                }
+            }
+        }
+    };
+
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() == OpCode::StoreUniform) {
+            const auto uniform = inst.GetArg<Uniform>(0);
+            const auto value = inst.GetArg<Value>(1);
+            const u32 offset = uniform.GetOffset();
+            const u32 size = GetValueSizeByte(value.Type());
+            if (offset + size <= latest.size() && info.IsXmmUniformRange(offset, size)) {
+                for (u32 byte = 0; byte < size; ++byte) {
+                    latest[offset + byte] = {value, &inst, static_cast<u8>(byte)};
+                }
+            }
+        }
+        if (IsFaultOrObservationPoint(inst.GetOp())) {
+            capture(&inst);
+            clear();
+            segment_begin = &inst;
+        }
+    }
+}
+
 void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info,
                                const FeatureSet& features,
                                HIRFunction* hir_function) {
@@ -238,9 +302,43 @@ void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info,
 
     std::vector<PendingStore> pending;
     pending.reserve(16);
+    std::vector<SnapshotByte> published(info.uniform_size);
+    std::unordered_map<const Inst*, size_t> positions;
+    positions.reserve(original.size());
+    for (size_t index = 0; index < original.size(); ++index) {
+        positions.emplace(original[index], index);
+    }
+
+    auto published_value = [&](const UniformSnapshotPlan& plan) {
+        if (plan.offset + plan.size > published.size()) {
+            return false;
+        }
+        for (u32 byte = 0; byte < plan.size; ++byte) {
+            const auto& item = published[plan.offset + byte];
+            if (item.value != plan.value || item.byte != byte) {
+                return false;
+            }
+        }
+        return true;
+    };
 
     auto flush = [&](Inst* before, u32 observed_offset, u32 observed_size, bool all) {
         if (pending.empty()) {
+            if (features.xmm_snapshot_dse && before) {
+                for (const auto& plan : block->GetUniformSnapshotPlans()) {
+                    if (plan.boundary == before) {
+                        auto* producer = plan.value.Def();
+                        const bool observable = producer &&
+                                HasObservableUse(block, producer,
+                                                 plan.latest_store);
+                        ASSERT_MSG(published_value(plan) || observable,
+                                   "missing committed XMM snapshot at block {:#x}, "
+                                   "boundary {}, offset {}",
+                                   block->GetStartLocation().Value(), before->Id(),
+                                   plan.offset);
+                    }
+                }
+            }
             return;
         }
 
@@ -271,11 +369,89 @@ void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info,
             for (u32 byte = 0; byte < store.size; ++byte) {
                 fully_covered &= covered[store.offset + byte] != 0;
             }
+            bool later_same_value{};
+            for (size_t later = reverse + 1; later < pending.size(); ++later) {
+                later_same_value |= selected[later] && !victim[later] &&
+                        pending[later].offset == store.offset &&
+                        pending[later].size == store.size &&
+                        pending[later].value == store.value;
+            }
             victim[reverse] = fully_covered &&
-                    !ChainWouldStrandASurvivor(block, store.value, store.inst,
-                                              features.xmm_snapshot_dse);
+                    ((features.xmm_snapshot_dse && later_same_value) ||
+                     !ChainWouldStrandASurvivor(block, store.value, store.inst,
+                                               features.xmm_snapshot_dse));
             for (u32 byte = 0; byte < store.size; ++byte) {
                 covered[store.offset + byte] = 1;
+            }
+        }
+
+        if (features.xmm_snapshot_dse && before) {
+            for (const auto& plan : block->GetUniformSnapshotPlans()) {
+                const auto before_pos = positions.find(before);
+                const auto boundary_pos = positions.find(plan.boundary);
+                const auto producer_pos = positions.find(plan.value.Def());
+                const bool exact_boundary = plan.boundary == before;
+                const bool forwarded_boundary =
+                        before_pos != positions.end() &&
+                        boundary_pos != positions.end() &&
+                        producer_pos != positions.end() &&
+                        producer_pos->second < before_pos->second &&
+                        before_pos->second < boundary_pos->second;
+                if (!exact_boundary && !forwarded_boundary) {
+                    continue;
+                }
+                PendingStore* carrier{};
+                for (size_t index = 0; index < pending.size(); ++index) {
+                    if (selected[index] && !victim[index] &&
+                        pending[index].offset == plan.offset &&
+                        pending[index].size == plan.size) {
+                        carrier = &pending[index];
+                    }
+                }
+                // A mapped GPR operation may become an observation point only
+                // after uniform forwarding. In that case an earlier flush has
+                // already committed this exact XMM value and there is no
+                // carrier left at the original fault boundary. Accept only
+                // that byte-for-byte proof; every other missing carrier is a
+                // broken snapshot plan and remains fail-loud.
+                if (!carrier) {
+                    if (forwarded_boundary) {
+                        // The newly introduced observation may precede this
+                        // slot's carrier even though it lies after the value's
+                        // producer. Leave this plan for the next observation;
+                        // only its original boundary is a mandatory proof.
+                        continue;
+                    }
+                    auto* producer = plan.value.Def();
+                    const bool observable = producer &&
+                            HasObservableUse(block, producer,
+                                             plan.latest_store);
+                    ASSERT_MSG(published_value(plan) || observable,
+                               "missing XMM snapshot carrier at block {:#x}, "
+                               "boundary {}, offset {}, pending {}",
+                               block->GetStartLocation().Value(), before->Id(),
+                               plan.offset, pending.size());
+                    continue;
+                }
+                if (carrier->value != plan.value) {
+                    carrier->inst->SetArg(1, plan.value);
+                    carrier->value = plan.value;
+                }
+            }
+        }
+
+        // Record the canonical State value after this flush. This is analysis
+        // metadata only; it emits no IR. Later plans may use it to prove that
+        // a carrier disappeared solely because an intervening observation
+        // point already published the requested value.
+        for (size_t index = 0; index < pending.size(); ++index) {
+            if (!selected[index] || victim[index]) {
+                continue;
+            }
+            const auto& store = pending[index];
+            for (u32 byte = 0; byte < store.size; ++byte) {
+                published[store.offset + byte] = {
+                        store.value, store.inst, static_cast<u8>(byte)};
             }
         }
 
@@ -346,6 +522,7 @@ void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info,
     // only after a translated unit returns, so this final materialization makes
     // the context read by rt_sigframe construction current as well.
     flush_all(nullptr);
+    block->GetUniformSnapshotPlans().clear();
 }
 
 void UniformStoreSinkPass::Run(HIRFunction* hir_function, const UniformInfo& info,

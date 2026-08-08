@@ -3,6 +3,7 @@
 //
 
 #include "uniform_elimination_pass.h"
+#include "uniform_store_sink_pass.h"
 
 #include <algorithm>
 #include <cstring>
@@ -228,13 +229,6 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
     std::unordered_map<Inst*, std::vector<u8>> label_killed;
 
     auto clear_all = [&] { std::fill(killed.begin(), killed.end(), u8{0}); };
-    auto clear_xmm = [&] {
-        for (const auto& range : info.xmm_uniform_ranges) {
-            const auto begin = std::min<std::size_t>(range.begin, killed.size());
-            const auto end = std::min<std::size_t>(range.end, killed.size());
-            std::fill(killed.begin() + begin, killed.begin() + end, u8{0});
-        }
-    };
 
     for (auto it = inst_list.rbegin(); it != inst_list.rend(); ++it) {
         Inst& inst = *it;
@@ -298,25 +292,6 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
             case OpCode::SetLocation:
                 clear_all();
                 break;
-            case OpCode::LoadMemory:
-            case OpCode::StoreMemory:
-            case OpCode::LoadMemoryTSO:
-            case OpCode::StoreMemoryTSO:
-            case OpCode::CompareAndSwap:
-            case OpCode::CompareAndSwap128:
-            case OpCode::CheckMemoryAlignment:
-            case OpCode::AtomicExchange:
-            case OpCode::AtomicFetchAdd:
-            case OpCode::AtomicRMW:
-                // A synchronous guest fault snapshots XMM state at this exact
-                // point. Forwarded LoadUniform nodes no longer mark the value
-                // live to the reverse DSE, so preserve XMM stores until the
-                // dedicated sink can select the latest SSA value. OFF keeps
-                // the historical dataflow unchanged.
-                if (features.xmm_snapshot_dse) {
-                    clear_xmm();
-                }
-                break;
             case OpCode::SetHostGPR:
             case OpCode::GetHostGPR:
                 // In the XMM-only cleanup these operations touch a disjoint,
@@ -357,6 +332,111 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
         }
     }
 
+    if (features.xmm_snapshot_dse && !victims.empty()) {
+        auto is_victim = [&](const Inst* inst) {
+            return std::find(victims.begin(), victims.end(), inst) != victims.end();
+        };
+        std::vector<UniformSnapshotPlan> retained_plans;
+        retained_plans.reserve(block->GetUniformSnapshotPlans().size());
+        for (const auto& plan : block->GetUniformSnapshotPlans()) {
+            auto* producer = plan.value.Def();
+            auto carrier_reaches_producer = [&](const Inst* carrier) {
+                if (!producer) {
+                    return false;
+                }
+                bool after_carrier{};
+                for (auto& current : inst_list) {
+                    if (&current == producer) {
+                        // A normal StoreUniform follows its producer. If the
+                        // carrier is earlier, reaching the producer without a
+                        // newly mapped GPR observation proves it is still
+                        // pending and can be retargeted there or later.
+                        return true;
+                    }
+                    if (&current == carrier) {
+                        after_carrier = true;
+                        continue;
+                    }
+                    if (after_carrier &&
+                        (current.GetOp() == OpCode::GetHostGPR ||
+                         current.GetOp() == OpCode::SetHostGPR)) {
+                        return false;
+                    }
+                }
+                return false;
+            };
+            bool in_segment = plan.segment_begin == nullptr;
+            bool has_carrier{};
+            Inst* last_victim{};
+            Inst* legacy_carrier{};
+            for (auto& inst : inst_list) {
+                if (&inst == plan.segment_begin) {
+                    in_segment = true;
+                    continue;
+                }
+                if (&inst == plan.boundary) {
+                    break;
+                }
+                if (!in_segment || inst.GetOp() != OpCode::StoreUniform) {
+                    continue;
+                }
+                const auto uniform = inst.GetArg<Uniform>(0);
+                const auto value = inst.GetArg<Value>(1);
+                if (uniform.GetOffset() != plan.offset ||
+                    GetValueSizeByte(value.Type()) != plan.size) {
+                    continue;
+                }
+                if (!carrier_reaches_producer(&inst)) {
+                    continue;
+                }
+                if (is_victim(&inst)) {
+                    last_victim = &inst;
+                    if (ChainWouldStrandASurvivor(block, value, &inst, false)) {
+                        legacy_carrier = &inst;
+                    }
+                } else {
+                    has_carrier = true;
+                }
+            }
+            if (has_carrier) {
+                retained_plans.push_back(plan);
+                continue;
+            }
+            if (legacy_carrier) {
+                // Preserve one publication point that the rollback path keeps
+                // for allocator safety. Retargeting it is instruction-neutral;
+                // unlike the old fault barrier, this never revives a store
+                // absent from the OFF shape.
+                victims.erase(std::remove(victims.begin(), victims.end(),
+                                          legacy_carrier),
+                              victims.end());
+                retained_plans.push_back(plan);
+                continue;
+            }
+            if (last_victim == plan.latest_store && producer &&
+                !HasObservableUse(block, producer, last_victim)) {
+                // This is the only permitted IR-growth case: the latest value
+                // has no path except stores that this DSE batch would erase.
+                // Keep one carrier so DCE cannot strand the producer before
+                // the sink installs the value at the existing publication
+                // point. Values with another real observer need no new store.
+                victims.erase(std::remove(victims.begin(), victims.end(),
+                                          last_victim),
+                              victims.end());
+                retained_plans.push_back(plan);
+                if (EnvDumpIr()) {
+                    fmt::print(stderr,
+                               "[xmm-snapshot-stranded] block={:#x} "
+                               "boundary={} offset={} producer={}\n",
+                               block->GetStartLocation().Value(),
+                               plan.boundary ? plan.boundary->Id() : u16{},
+                               plan.offset, producer->Id());
+                }
+            }
+        }
+        block->GetUniformSnapshotPlans() = std::move(retained_plans);
+    }
+
     for (auto* victim : victims) {
         if (hir_function) {
             hir_function->EraseInst(block, victim);
@@ -386,6 +466,11 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                                  const FeatureSet& features,
                                  HIRFunction* hir_function) {
     PerfScope2 perf_forward{GetPerfStats2().uniform_forward};
+
+    block->GetUniformSnapshotPlans().clear();
+    if (features.xmm_snapshot_dse && features.xmm_fault_sink) {
+        UniformStoreSinkPass::CaptureLatestSnapshots(block, info);
+    }
 
     // The corpus is dominated by blocks with no uniform operations. Probe only
     // until the first relevant instruction: a miss replaces the legacy forward
