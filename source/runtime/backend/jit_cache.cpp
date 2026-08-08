@@ -81,11 +81,12 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     }
     const auto& config = address_space.GetConfig();
     if (BackedgeFlagsEnabled() ||
-        (config.region_edges && svm_config.backedge_flags)) {
+        (config.region_edges && svm_config.backedge_flags) ||
+        svm_config.flags_loop_lazy) {
         // Recovery veneers are block-local code offsets. SerialBlock does
         // not yet serialize that relocation/eligibility contract, so refuse
         // disk reuse rather than reviving a unit with an imprecise recipe.
-        LOG_WARNING("SVM_JIT_CACHE: SVM_BACKEDGE_FLAGS is incompatible; cache disabled");
+        LOG_WARNING("SVM_JIT_CACHE: lazy backedge flags are incompatible; cache disabled");
         return;
     }
     if (host_image.size == 0) {
@@ -205,10 +206,18 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
     if (!enabled || !exec_data || !rw_data || code_size == 0 || blocks.empty()) {
         return;
     }
+    // A module override can enable the B-class feature after the process-level
+    // cache object was created.  SerialBlock has no recovery-veneer offsets;
+    // never persist such a unit.  An old committed unit cannot revive into the
+    // new shape because its FeatureSet hash differs at Load time.
+    const auto resolved_features = ResolveFeatureSet(module->GetModuleConfig());
+    if (resolved_features.flags_loop_lazy) {
+        return;
+    }
 
     SerialUnit unit{};
     unit.guest_start = guest_start;
-    unit.feature_hash = HashFeatureSet(ResolveFeatureSet(module->GetModuleConfig()));
+    unit.feature_hash = HashFeatureSet(resolved_features);
     unit.is_function = is_function ? 1 : 0;
     unit.link_sites = link_sites;
     std::sort(unit.link_sites.begin(), unit.link_sites.end(),

@@ -168,6 +168,8 @@ void RunCacheChildPhase(std::string_view phase) {
     REQUIRE(dir != nullptr);
     REQUIRE(swift::runtime::SetSvmConfigEnvForTest("SVM_JIT_CACHE", dir, 1) == 0);
     REQUIRE(swift::runtime::SetSvmConfigEnvForTest("SVM_BACKEDGE_FLAGS", "0", 1) == 0);
+    REQUIRE(swift::runtime::SetSvmConfigEnvForTest("SVM_FLAGS_LOOP_LAZY", "0", 1) ==
+            0);
 
     const size_t page_size = static_cast<size_t>(getpagesize());
     const size_t guest_size = 16 * page_size;

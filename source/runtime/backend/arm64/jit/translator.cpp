@@ -188,7 +188,11 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     sse_nan_coldpath = features.sse_nan_coldpath;
     direct_cycle_latch = BackedgeLatchEnabled() || config.region_edges;
     backedge_latch = direct_cycle_latch || config.region_edges;
-    backedge_flags = backedge_latch && GetSvmConfig().backedge_flags;
+    // The legacy process-wide switch and the unit FeatureSet select the same
+    // proven representation.  No lazy state may exist without a cycle
+    // observer: RE=0/LATCH=0 therefore remains the ordinary committed path.
+    backedge_flags = backedge_latch &&
+                     (GetSvmConfig().backedge_flags || features.flags_loop_lazy);
     execution_trace_enabled = context.ExecutionTraceEnabled();
     if (execution_trace_enabled) {
         for (const auto& desc : config.buffers_static_alloc) {

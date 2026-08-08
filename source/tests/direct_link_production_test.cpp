@@ -274,7 +274,7 @@ std::string CurrentTestExecutable() {
 #endif
 }
 
-int RunW81Child(bool flags_enabled) {
+int RunW81Child(bool legacy_flags_enabled, bool loop_lazy_enabled = false) {
     const auto executable = CurrentTestExecutable();
     REQUIRE_FALSE(executable.empty());
     const pid_t child = fork();
@@ -282,7 +282,10 @@ int RunW81Child(bool flags_enabled) {
     if (child == 0) {
         swift::runtime::SetSvmConfigEnvForTest("SVM_DIRECT_LINK_W81_CHILD", "1", 1);
         swift::runtime::SetSvmConfigEnvForTest("SVM_BACKEDGE_LATCH", "1", 1);
-        swift::runtime::SetSvmConfigEnvForTest("SVM_BACKEDGE_FLAGS", flags_enabled ? "1" : "0", 1);
+        swift::runtime::SetSvmConfigEnvForTest(
+                "SVM_BACKEDGE_FLAGS", legacy_flags_enabled ? "1" : "0", 1);
+        swift::runtime::SetSvmConfigEnvForTest(
+                "SVM_FLAGS_LOOP_LAZY", loop_lazy_enabled ? "1" : "0", 1);
         execl(executable.c_str(),
               executable.c_str(),
               "W81 self edge stays polled while only the cold conditional arm links",
@@ -1065,13 +1068,18 @@ TEST_CASE("W81 self edge stays polled while only the cold conditional arm links"
     if (!GetSvmConfig().direct_link_w81_child) {
         REQUIRE(RunW81Child(false) == 0);
         REQUIRE(RunW81Child(true) == 0);
+        REQUIRE(RunW81Child(false, true) == 0);
         return;
     }
     ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
     ScopedEnvironment latch{"SVM_BACKEDGE_LATCH", "1"};
-    const bool flags_enabled = GetSvmConfig().backedge_flags;
-    ScopedEnvironment flags{"SVM_BACKEDGE_FLAGS", flags_enabled ? "1" : "0"};
-    DYNAMIC_SECTION("backedge flags=" << flags_enabled) {
+    const bool legacy_flags_enabled = GetSvmConfig().backedge_flags;
+    const bool loop_lazy_enabled = GetSvmConfig().flags_loop_lazy;
+    const bool flags_enabled = legacy_flags_enabled || loop_lazy_enabled;
+    ScopedEnvironment flags{"SVM_BACKEDGE_FLAGS", legacy_flags_enabled ? "1" : "0"};
+    ScopedEnvironment loop_lazy{"SVM_FLAGS_LOOP_LAZY", loop_lazy_enabled ? "1" : "0"};
+    DYNAMIC_SECTION("backedge flags=" << legacy_flags_enabled
+                                       << " loop lazy=" << loop_lazy_enabled) {
         const size_t page_size = static_cast<size_t>(getpagesize());
         const size_t guest_size = 4 * page_size;
         void* guest_memory = mmap(nullptr,
