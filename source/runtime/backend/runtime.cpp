@@ -848,7 +848,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     PerfScope perf_ra{GetPerfStats().regalloc_ns};
     PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
     backend::RegAlloc reg_alloc{
-            static_cast<u32>(function->MaxInstrCount()), gprs, fprs, features};
+            static_cast<u32>(function->MaxInstrCount()), gprs, fprs, features,
+            address_space.GetConfig().sse_afp_nan};
     ir::RegisterAllocPass::RunWithScalarInsert(
             function, &reg_alloc,
             module->GetAddressSpace().GetConfig().sse_scalar_insert,
@@ -1056,7 +1057,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
     backend::RegAlloc reg_alloc{
-            static_cast<u32>(block->MaxInstrCount()), gprs, fprs, features};
+            static_cast<u32>(block->MaxInstrCount()), gprs, fprs, features,
+            address_space.GetConfig().sse_afp_nan};
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate(block->GetBlock());
@@ -1121,7 +1123,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
     backend::RegAlloc reg_alloc{
-            static_cast<u32>(block->MaxInstrId()), gprs, fprs, features};
+            static_cast<u32>(block->MaxInstrId()), gprs, fprs, features,
+            address_space.GetConfig().sse_afp_nan};
 
     PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
     ir::RegisterAllocPass::Run(

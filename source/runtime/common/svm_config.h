@@ -54,6 +54,8 @@ namespace swift::runtime {
     X(mem_hostbase_fold, true) \
     X(induct_tie, true) \
     X(scratch_precise, true) \
+    X(fpr_scratch_precise, false) \
+    X(fpr_ipv_reclaim, false) \
     X(ra_spill_evict, true) \
     X(ra_coalesce, true) \
     X(const_addr_cache, false) \
@@ -179,6 +181,8 @@ struct FeatureOverrides {
     X(bool, region_edges, "SVM_REGION_EDGES", DefaultOn, true, "region edge 内部化（bounded16）；缺省 ON，=0 回退；原 translator/x86/translator.cpp:730") \
     X(bool, exec_trace, "SVM_EXEC_TRACE", NonZero, false, "执行 trace 探针；非 0 开，缺省 OFF；原 runtime.cpp:80/jit_context.cpp:78") \
     X(bool, scratch_precise, "SVM_SCRATCH_PRECISE", DefaultOn, true, "Add/Sub 精确 scratch 计费；缺省 ON，=0 回退；原 reg_alloc.cpp:92") \
+    X(bool, fpr_scratch_precise, "SVM_FPR_SCRATCH_PRECISE", NonZero, false, "FPR 高预算 opcode 按实例精确定价；非 0 开，缺省 OFF；原 reg_alloc.cpp") \
+    X(bool, fpr_ipv_reclaim, "SVM_FPR_IPV_RECLAIM", NonZero, false, "AFP 已覆盖 NaN cold ABI 时归还 v11-v14；非 0 开，缺省 OFF；原 trampolines.cpp") \
     X(bool, ra_spill_evict, "SVM_RA_SPILL_EVICT", DefaultOn, true, "RA farthest-end 驱逐；缺省 ON，=0 回退；原 register_alloc_pass.cpp:106") \
     X(bool, ra_coalesce, "SVM_RA_COALESCE", DefaultOn, true, "guest GPR 发布点定向合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(bool, const_addr_cache, "SVM_CONST_ADDR_CACHE", NonZero, false, "unit 内重复绝对地址寄存器缓存；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \

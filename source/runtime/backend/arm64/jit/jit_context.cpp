@@ -1149,6 +1149,20 @@ void JitContext::EndVixlScratch() {
         ASSERT_MSG(acquired.vreg == 0,
                    "VIXL acquired an unbudgeted scratch V register mask 0x{:x}",
                    acquired.vreg);
+        if (ScratchPrecisePeakAuditEnabled() && cur_inst) {
+            const u32 explicit_fpr =
+                    static_cast<u32>(cur_dirty_fprs.GetMarkedCount() -
+                                     tick_dirty_fprs.GetMarkedCount()) -
+                    spill_tmp_fprs;
+            std::fprintf(stderr,
+                         "[svm-fpr-scratch-peak] unit=0x%llx id=%u op=%s type=%u "
+                         "peak=%u budget=%u\n",
+                         static_cast<unsigned long long>(unit_start),
+                         cur_inst->Id(),
+                         ir::GetIRMetaInfo(cur_inst->GetOp()).name,
+                         static_cast<u32>(cur_inst->ReturnType()),
+                         explicit_fpr, CurrentBudget().fpr);
+        }
         if (!audit_gpr) {
             return;
         }

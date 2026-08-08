@@ -101,10 +101,15 @@ void TrampolinesArm64::Build() {
 
     // FPR registers can use
     fpr_regs.Reset(0);
-    fpr_regs.Mark(ipv0.GetCode());
-    fpr_regs.Mark(ipv1.GetCode());
-    fpr_regs.Mark(ipv2.GetCode());
-    fpr_regs.Mark(ipv3.GetCode());
+    // AFP covers every opcode that can enter QueueVecNaNColdPath. With the
+    // opt-in reclamation gate the shared v11-v14 cold ABI is unreachable and
+    // all four slots can return to the value pool. Non-AFP hosts keep it.
+    if (!config.sse_afp_nan) {
+        fpr_regs.Mark(ipv0.GetCode());
+        fpr_regs.Mark(ipv1.GetCode());
+        fpr_regs.Mark(ipv2.GetCode());
+        fpr_regs.Mark(ipv3.GetCode());
+    }
 
     GPRSMask static_gprs{0};
     FPRSMask static_fprs{0};
@@ -124,22 +129,6 @@ void TrampolinesArm64::Build() {
             static_gprs.Mark(desc.reg);
             gpr_regs.Mark(desc.reg);
         }
-    }
-    const u32 fpr_pool_cap = GetSvmConfig().xmm_fpr_pool_cap;
-    if (fpr_pool_cap != 0) {
-        ASSERT_MSG(fpr_pool_cap >= 13 && fpr_pool_cap <= 20,
-                   "SVM_XMM_FPR_POOL_CAP must be 0 or 13..20, got {}",
-                   fpr_pool_cap);
-        for (u32 code = 24;
-             code <= 31 && fpr_regs.GetClearCount() > fpr_pool_cap;
-             ++code) {
-            ASSERT_MSG(!static_fprs.Get(code),
-                       "FPR pool probe overlaps resident host v{}", code);
-            fpr_regs.Mark(code);
-        }
-        ASSERT_MSG(fpr_regs.GetClearCount() == fpr_pool_cap,
-                   "FPR pool probe could not reach cap {} (actual {})",
-                   fpr_pool_cap, fpr_regs.GetClearCount());
     }
     gpr_regs.Mark(fp.GetCode());  // fp / optional static RDX (x29)
 

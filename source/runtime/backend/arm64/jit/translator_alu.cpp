@@ -1705,6 +1705,8 @@ void JitTranslator::QueueVecNaNColdPath(VecNaNColdKind kind,
                                         const VRegister& result,
                                         const VRegister& left,
                                         const VRegister& right) {
+    ASSERT_MSG(!(context.GetFeatures().fpr_ipv_reclaim && sse_afp_nan),
+               "AFP FPR reclamation reached the v11-v14 NaN cold ABI");
     auto site = std::make_unique<VecNaNColdSite>(
             VecNaNColdSite{kind, left, right, result});
 

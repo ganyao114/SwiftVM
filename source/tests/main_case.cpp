@@ -30,6 +30,7 @@
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
+#include "runtime/backend/arm64/trampolines.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/common/hot_coalesce_prof.h"
@@ -221,7 +222,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 143);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 145);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -294,7 +295,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 53);
+    STATIC_REQUIRE(kFeatureCount == 55);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -317,6 +318,64 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     Config config{};
     REQUIRE(ComputeConfigHash(config, empty) == ComputeConfigHash(config));
     REQUIRE(ComputeConfigHash(config, overridden) != ComputeConfigHash(config));
+}
+
+TEST_CASE("FPR demand-lean prices proven peaks and reclaims only AFP cold ABI") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::backend::arm64;
+    using namespace swift::runtime::ir;
+
+    IntrusivePtr<Block> block{new Block(0, Location{0x7100})};
+    auto left = block->LoadUniform(
+            Uniform{0, ValueType::V128}).SetType(ValueType::V128);
+    auto right = block->LoadUniform(
+            Uniform{16, ValueType::V128}).SetType(ValueType::V128);
+    auto scalar32 = block->VecFAddScalar32(left, right).SetType(ValueType::V128);
+    auto scalar64 = block->VecFAddScalar64(left, right).SetType(ValueType::V128);
+    auto convert_fast = block->VecFCvtPacked(left, Imm{swift::u64{1}})
+                                .SetType(ValueType::V128);
+    auto convert_wide = block->VecFCvtPacked(left, Imm{swift::u64{2}})
+                                .SetType(ValueType::V128);
+
+    FeatureSet off{};
+    FeatureSet on{};
+    on.fpr_scratch_precise = true;
+    REQUIRE(ScratchBudget(*scalar32.Def(), off).fpr == 5);
+    REQUIRE(ScratchBudget(*scalar64.Def(), off).fpr == 4);
+    REQUIRE(ScratchBudget(*convert_fast.Def(), off).fpr == 5);
+    REQUIRE(ScratchBudget(*scalar32.Def(), on).fpr == 1);
+    REQUIRE(ScratchBudget(*scalar64.Def(), on).fpr == 0);
+    REQUIRE(ScratchBudget(*convert_fast.Def(), on).fpr == 1);
+    REQUIRE(ScratchBudget(*convert_wide.Def(), on).fpr == 5);
+
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .backend_isa = kArm64,
+            .uniform_buffer_size = 4096,
+            .sse_afp_nan = true,
+    };
+    FeatureSet keep{};
+    FeatureSet reclaim{};
+    reclaim.fpr_ipv_reclaim = true;
+    TrampolinesArm64 trampolines{config, keep};
+    RegAlloc kept{1, trampolines.GetGPRRegs(), trampolines.GetFPRRegs(), keep,
+                  true};
+    RegAlloc reclaimed{1, trampolines.GetGPRRegs(), trampolines.GetFPRRegs(),
+                       reclaim, true};
+    auto kept_fprs = kept.GetFprs();
+    auto reclaimed_fprs = reclaimed.GetFprs();
+    REQUIRE(kept_fprs.GetClearCount() == 28);
+    REQUIRE(reclaimed_fprs.GetClearCount() == 32);
+
+    config.sse_afp_nan = false;
+    TrampolinesArm64 guarded{config, reclaim};
+    RegAlloc non_afp{1, guarded.GetGPRRegs(), guarded.GetFPRRegs(), reclaim,
+                     false};
+    auto non_afp_fprs = non_afp.GetFprs();
+    REQUIRE(non_afp_fprs.GetClearCount() == 28);
 }
 
 TEST_CASE("module feature binding parser accepts main and ignores bad entries") {

@@ -192,7 +192,7 @@ class RegAlloc : DeleteCopyAndMove {
 public:
 
     explicit RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
-                      const FeatureSet& features);
+                      const FeatureSet& features, bool afp_nan = false);
 
     enum Type : u16 {
         NONE,
@@ -275,7 +275,7 @@ private:
     u32 stack_size{};
     ir::Inst *current_ir{};
     GPRSMask gprs;
-    const FPRSMask fprs;
+    FPRSMask fprs;
     const FeatureSet features;
     RAShapeUnitCounters ra_shape{};
 };

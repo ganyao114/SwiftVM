@@ -355,6 +355,44 @@ ScratchNeed ScratchBudget(const ir::Inst& inst, const FeatureSet& features) {
         (inst.GetOp() == ir::OpCode::Add || inst.GetOp() == ir::OpCode::Sub)) {
         return PreciseAddSubScratchBudget(inst);
     }
+    if (features.fpr_scratch_precise) {
+        switch (inst.GetOp()) {
+            case ir::OpCode::VecFAddScalar32:
+            case ir::OpCode::VecFSubScalar32:
+            case ir::OpCode::VecFMulScalar32:
+            case ir::OpCode::VecFDivScalar32:
+                if (features.sse_nan_coldpath) {
+                    // The non-AFP fallback still needs its scalar result temp;
+                    // a non-vector RHS adds one materialisation temp. The
+                    // NaN-repair vectors belong to the fixed cold ABI.
+                    need.fpr = static_cast<u8>(
+                            1 + !ir::IsFloatValueType(
+                                        inst.GetArg<ir::Value>(1).Type()));
+                }
+                break;
+            case ir::OpCode::VecFAddScalar64:
+            case ir::OpCode::VecFSubScalar64:
+            case ir::OpCode::VecFMulScalar64:
+            case ir::OpCode::VecFDivScalar64:
+                if (features.sse_nan_coldpath) {
+                    // The 64-bit fallback computes in result; only a scalar
+                    // RHS that is not already an FPR needs a temporary.
+                    need.fpr = static_cast<u8>(
+                            !ir::IsFloatValueType(
+                                     inst.GetArg<ir::Value>(1).Type()));
+                }
+                break;
+            case ir::OpCode::VecFCvtPacked: {
+                const u32 kind = inst.GetArg<ir::Imm>(1).Get();
+                // Kinds 2..5 hold invalid/compare/bound/indefinite plus wide.
+                // Every other arm only leases the eagerly-created `wide`.
+                need.fpr = static_cast<u8>(kind >= 2 && kind <= 5 ? 5 : 1);
+                break;
+            }
+            default:
+                break;
+        }
+    }
     if (inst.GetOp() != ir::OpCode::X87Op || !ScratchXPoolEnabled(features)) {
         return need;
     }
@@ -373,7 +411,7 @@ ScratchNeed ScratchBudget(const ir::Inst& inst, const FeatureSet& features) {
 }
 
 RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
-                   const FeatureSet& features)
+                   const FeatureSet& features, bool afp_nan)
         : alloc_result(instr_size), coalesced_host_writes(instr_size),
           coalesced_host_reads(instr_size),
           const_address_cache_anchors(instr_size, UINT32_MAX),
@@ -384,6 +422,33 @@ RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
         for (u32 code : {11u, 12u, 13u, 16u, 17u}) {
             this->gprs.Mark(code);
         }
+    }
+    // v11-v14 are an emitter-local NaN cold ABI, not a cross-unit ABI. Keep
+    // their availability a per-unit FeatureSet decision: the trampoline mask
+    // exposes the AFP-capable union, while an OFF or non-AFP unit restores the
+    // four historical reservations here.
+    if (!features.fpr_ipv_reclaim || !afp_nan) {
+        for (u32 code = 11; code <= 14; ++code) {
+            this->fprs.Mark(code);
+        }
+    }
+    const u32 fpr_pool_cap = GetSvmConfig().xmm_fpr_pool_cap;
+    if (fpr_pool_cap != 0) {
+        ASSERT_MSG(fpr_pool_cap >= 13 && fpr_pool_cap <= 20,
+                   "SVM_XMM_FPR_POOL_CAP must be 0 or 13..20, got {}",
+                   fpr_pool_cap);
+        for (u32 code = 24;
+             code <= 31 && this->fprs.GetClearCount() > fpr_pool_cap;
+             ++code) {
+            this->fprs.Mark(code);
+        }
+        for (u32 code = 15;
+             code-- > 11 && this->fprs.GetClearCount() > fpr_pool_cap;) {
+            this->fprs.Mark(code);
+        }
+        ASSERT_MSG(this->fprs.GetClearCount() == fpr_pool_cap,
+                   "FPR pool probe could not reach cap {} (actual {})",
+                   fpr_pool_cap, this->fprs.GetClearCount());
     }
 }
 
