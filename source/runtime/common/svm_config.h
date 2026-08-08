@@ -54,8 +54,8 @@ namespace swift::runtime {
     X(mem_hostbase_fold, true) \
     X(induct_tie, true) \
     X(scratch_precise, true) \
-    X(fpr_scratch_precise, false) \
-    X(fpr_ipv_reclaim, false) \
+    X(fpr_scratch_precise, true) \
+    X(fpr_ipv_reclaim, true) \
     X(ra_spill_evict, true) \
     X(ra_coalesce, true) \
     X(const_addr_cache, false) \
@@ -142,7 +142,7 @@ struct FeatureOverrides {
     X(bool, xmm_ssa_fwd2, "SVM_XMM_SSA_FWD2", DefaultOn, true, "XMM load-load SSA 转发；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:90") \
     X(bool, xmm_narrow_fwd, "SVM_XMM_NARROW_FWD", DefaultOn, true, "XMM 窄视图转发；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:102") \
     X(bool, xmm_resident, "SVM_XMM_RESIDENT", DefaultOn, true, "XMM1-7 固定驻留 v17-v23，XMM0 保持 State；缺省 ON，=0 回退；跨 unit ABI，原 translator/x86/translator.cpp") \
-    X(bool, xmm_resident_hi, "SVM_XMM_RESIDENT_HI", NonZero, false, "XMM8-11 固定驻留 v24-v27；非 0 开，缺省 OFF，依赖 SVM_XMM_RESIDENT；跨 unit ABI，原 translator/x86/translator.cpp") \
+    X(bool, xmm_resident_hi, "SVM_XMM_RESIDENT_HI", DefaultOn, true, "XMM8-11 固定驻留 v24-v27；缺省 ON，=0 回退，依赖 SVM_XMM_RESIDENT；无害性依赖 SVM_FPR_SCRATCH_PRECISE+SVM_FPR_IPV_RECLAIM 同开（单独关 B 退化为池 17 有税形态）；跨 unit ABI，原 translator/x86/translator.cpp") \
     X(u32, xmm_fpr_pool_cap, "SVM_XMM_FPR_POOL_CAP", NonNegativeAtoi, 0, "只读供给曲线探针：把 FPR value pool 钳到 13..20；0/缺省惰性，原 trampolines.cpp") \
     X(bool, vec_imm_shift, "SVM_VEC_IMM_SHIFT", DefaultOn, true, "vector immediate shift lowering；缺省 ON，=0 回退；原 decoder_sse.cc/decoder_avx_int.cc") \
     X(bool, vec_const_cache, "SVM_VEC_CONST_CACHE", DefaultOn, true, "vector constant cache；缺省 ON，=0 回退；原 decoder_internal.h:47") \
@@ -181,8 +181,8 @@ struct FeatureOverrides {
     X(bool, region_edges, "SVM_REGION_EDGES", DefaultOn, true, "region edge 内部化（bounded16）；缺省 ON，=0 回退；原 translator/x86/translator.cpp:730") \
     X(bool, exec_trace, "SVM_EXEC_TRACE", NonZero, false, "执行 trace 探针；非 0 开，缺省 OFF；原 runtime.cpp:80/jit_context.cpp:78") \
     X(bool, scratch_precise, "SVM_SCRATCH_PRECISE", DefaultOn, true, "Add/Sub 精确 scratch 计费；缺省 ON，=0 回退；原 reg_alloc.cpp:92") \
-    X(bool, fpr_scratch_precise, "SVM_FPR_SCRATCH_PRECISE", NonZero, false, "FPR 高预算 opcode 按实例精确定价；非 0 开，缺省 OFF；原 reg_alloc.cpp") \
-    X(bool, fpr_ipv_reclaim, "SVM_FPR_IPV_RECLAIM", NonZero, false, "AFP 已覆盖 NaN cold ABI 时归还 v11-v14；非 0 开，缺省 OFF；原 trampolines.cpp") \
+    X(bool, fpr_scratch_precise, "SVM_FPR_SCRATCH_PRECISE", DefaultOn, true, "FPR 高预算 opcode 按实例精确定价；缺省 ON，=0 回退；原 reg_alloc.cpp") \
+    X(bool, fpr_ipv_reclaim, "SVM_FPR_IPV_RECLAIM", DefaultOn, true, "AFP 已覆盖 NaN cold ABI 时归还 v11-v14；缺省 ON，=0 回退；单独关本开关时 SVM_XMM_RESIDENT_HI 退化为有税形态；原 trampolines.cpp") \
     X(bool, ra_spill_evict, "SVM_RA_SPILL_EVICT", DefaultOn, true, "RA farthest-end 驱逐；缺省 ON，=0 回退；原 register_alloc_pass.cpp:106") \
     X(bool, ra_coalesce, "SVM_RA_COALESCE", DefaultOn, true, "guest GPR 发布点定向合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(bool, const_addr_cache, "SVM_CONST_ADDR_CACHE", NonZero, false, "unit 内重复绝对地址寄存器缓存；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \

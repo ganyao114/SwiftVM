@@ -339,6 +339,7 @@ TEST_CASE("FPR demand-lean prices proven peaks and reclaims only AFP cold ABI") 
                                 .SetType(ValueType::V128);
 
     FeatureSet off{};
+    off.fpr_scratch_precise = false;
     FeatureSet on{};
     on.fpr_scratch_precise = true;
     REQUIRE(ScratchBudget(*scalar32.Def(), off).fpr == 5);
@@ -358,6 +359,7 @@ TEST_CASE("FPR demand-lean prices proven peaks and reclaims only AFP cold ABI") 
             .sse_afp_nan = true,
     };
     FeatureSet keep{};
+    keep.fpr_ipv_reclaim = false;
     FeatureSet reclaim{};
     reclaim.fpr_ipv_reclaim = true;
     TrampolinesArm64 trampolines{config, keep};
