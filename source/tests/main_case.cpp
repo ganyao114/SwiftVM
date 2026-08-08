@@ -223,7 +223,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 149);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 150);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -296,7 +296,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 59);
+    STATIC_REQUIRE(kFeatureCount == 60);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -3230,6 +3230,225 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
         block->StoreUniform(Uniform{16, ValueType::U32}, late);
         check(block, source, result, false, false);
+    }
+}
+
+TEST_CASE("unit-local width chains share only proven W-clean identity components") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    auto make_gprs = [] {
+        GPRSMask result{swift::u32{0}};
+        for (swift::u32 code : {0u, 1u, 2u, 3u, 4u, 5u, 19u, 20u, 21u,
+                                22u, 23u, 25u, 26u, 27u, 28u, 29u, 30u, 31u}) {
+            result.Mark(code);
+        }
+        return result;
+    };
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+
+    struct Chain {
+        IntrusivePtr<Block> block;
+        Value producer;
+        Value extract;
+        Value extend;
+    };
+    auto make_chain = [](swift::u64 location) {
+        IntrusivePtr<Block> block{new Block(0, Location{location})};
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
+                Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(Imm{swift::u32{7}}).SetType(ValueType::U32);
+        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
+                               .SetType(ValueType::U32);
+        auto extend = block->ZeroExtend32To64(extract).SetType(ValueType::U64);
+        // Both predecessors remain live beyond the next bridge. The old
+        // exact-last-use tie therefore cannot remove either instruction.
+        block->StoreUniform(Uniform{8, ValueType::U64}, extend);
+        block->StoreUniform(Uniform{16, ValueType::U32}, extract);
+        block->StoreUniform(Uniform{20, ValueType::U32}, producer);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        return Chain{std::move(block), producer, extract, extend};
+    };
+    auto allocate = [&](Chain& chain, bool enabled) {
+        auto features = FeatureSet{};
+        features.ra_width_chain = enabled;
+        auto alloc = std::make_unique<RegAlloc>(
+                chain.block->MaxInstrId(), make_gprs(), fprs, features);
+        RegisterAllocPass::RunForWidthChainTest(
+                chain.block.get(), alloc.get(), enabled);
+        return alloc;
+    };
+
+    SECTION("a multi-node identity chain forms one ownership component") {
+        auto chain = make_chain(0x8680);
+        auto off = allocate(chain, false);
+        REQUIRE_FALSE(off->IsWidthChainCoalesced(chain.extract.Id()));
+        REQUIRE_FALSE(off->IsWidthChainCoalesced(chain.extend.Id()));
+        REQUIRE(off->ValueGPR(chain.producer).id != off->ValueGPR(chain.extract).id);
+
+        auto on = allocate(chain, true);
+        REQUIRE(on->IsWidthChainCoalesced(chain.extract.Id()));
+        REQUIRE(on->IsWidthChainCoalesced(chain.extend.Id()));
+        REQUIRE(on->WidthChainAnchor(chain.extract.Id()) == chain.producer.Id());
+        REQUIRE(on->WidthChainAnchor(chain.extend.Id()) == chain.producer.Id());
+        REQUIRE(on->ValueGPR(chain.producer).id == on->ValueGPR(chain.extract).id);
+        REQUIRE(on->ValueGPR(chain.extract).id == on->ValueGPR(chain.extend).id);
+    }
+
+    SECTION("emitter reproof removes exactly two bridge instructions") {
+        auto emit = [&](bool enabled) {
+            Config config{
+                    .loc_start = 0,
+                    .loc_end = 1ull << 48,
+                    .enable_jit = true,
+                    .has_local_operation = false,
+                    .backend_isa = kArm64,
+            };
+            AddressSpace address_space{config};
+            ModuleConfig module_config{};
+            module_config.feature_overrides.Set(FeatureId::ra_width_chain, enabled);
+            auto module = address_space.MapModule(
+                    LocationDescriptor{0x8690}, LocationDescriptor{0x86b0}, module_config);
+            auto chain = make_chain(0x8690);
+            auto features = ResolveFeatureSet(module_config);
+            RegAlloc alloc{chain.block->MaxInstrId(), make_gprs(), fprs, features};
+            RegisterAllocPass::Run(chain.block.get(), &alloc, false, features);
+            arm64::JitContext context{module, alloc};
+            arm64::JitTranslator translator{context};
+            translator.Translate(chain.block.get());
+            context.Finish();
+            return context.CurrentBufferSize();
+        };
+        REQUIRE(emit(true) + 2 * vixl::aarch64::kInstructionSize == emit(false));
+    }
+
+    SECTION("GetHostGPR cannot launder an unknown high half") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x86c0})};
+        auto host = block->GetHostGPR(HostRegIndex(22), Imm{0u})
+                            .SetType(ValueType::U32);
+        auto extract = block->BitExtract(host, Imm{0u}, Imm{32u})
+                              .SetType(ValueType::U32);
+        auto extend = block->ZeroExtend32To64(extract).SetType(ValueType::U64);
+        block->StoreUniform(Uniform{8, ValueType::U64}, extend);
+        block->StoreUniform(Uniform{16, ValueType::U32}, extract);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto features = FeatureSet{};
+        features.ra_width_chain = true;
+        RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
+        RegisterAllocPass::RunForWidthChainTest(block.get(), &alloc, true);
+        REQUIRE_FALSE(alloc.IsWidthChainCoalesced(extract.Id()));
+        REQUIRE_FALSE(alloc.IsWidthChainCoalesced(extend.Id()));
+    }
+
+    SECTION("8 and 16 bit partial definitions never enter a 32-bit component") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x86d0})};
+        auto narrow = block->LoadUniform<TypedValue<ValueType::U16>>(
+                Uniform{0, ValueType::U16});
+        auto fake = block->BitExtract(narrow, Imm{0u}, Imm{32u})
+                           .SetType(ValueType::U32);
+        block->StoreUniform(Uniform{8, ValueType::U32}, fake);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto features = FeatureSet{};
+        features.ra_width_chain = true;
+        RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
+        RegisterAllocPass::RunForWidthChainTest(block.get(), &alloc, true);
+        REQUIRE_FALSE(alloc.IsWidthChainCoalesced(fake.Id()));
+    }
+
+    SECTION("a third-party tied interval crossing the window rejects the bridge") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x86e0})};
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
+                Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(Imm{swift::u32{7}}).SetType(ValueType::U32);
+        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
+                               .SetType(ValueType::U32);
+        auto tied = block->LoadImm(Imm{swift::u64{0xfeedfacecafebeef}})
+                            .SetType(ValueType::U64);
+        block->StoreUniform(Uniform{8, ValueType::U32}, extract);
+        block->StoreUniform(Uniform{16, ValueType::U32}, producer);
+        block->StoreUniform(Uniform{24, ValueType::U64}, tied);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto features = FeatureSet{};
+        features.ra_width_chain = false;
+        RegAlloc control{block->MaxInstrId(), make_gprs(), fprs, features};
+        RegisterAllocPass::RunForWidthChainTest(block.get(), &control, false);
+        const auto target = control.ValueGPR(producer).id;
+
+        RegAlloc conflict{block->MaxInstrId(), make_gprs(), fprs, features};
+        RegisterAllocPass::RunForWidthChainConflictTest(
+                block.get(), &conflict, tied.Id(), target);
+        REQUIRE_FALSE(conflict.IsWidthChainCoalesced(extract.Id()));
+    }
+
+    SECTION("a fixed-home write inside the alias window rejects the bridge") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x86f0})};
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
+                Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(Imm{swift::u32{3}}).SetType(ValueType::U32);
+        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
+                               .SetType(ValueType::U32);
+        auto replacement = block->LoadImm(Imm{swift::u64{99}}).SetType(ValueType::U64);
+        block->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
+        block->StoreUniform(Uniform{8, ValueType::U32}, extract);
+        block->StoreUniform(Uniform{16, ValueType::U32}, producer);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto features = FeatureSet{};
+        RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
+        RegisterAllocPass::RunForWidthChainConflictTest(
+                block.get(), &alloc, producer.Id(), 22);
+        REQUIRE_FALSE(alloc.IsWidthChainCoalesced(extract.Id()));
+    }
+
+    SECTION("an emitter fixed clobber inside the alias window rejects the bridge") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x8700})};
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
+                Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(Imm{swift::u32{3}}).SetType(ValueType::U32);
+        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
+                               .SetType(ValueType::U32);
+        auto arg = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
+        (void)block->CallLambda(Lambda{Imm{swift::u64{0}}}, arg, arg, arg)
+                .SetType(ValueType::U64);
+        block->StoreUniform(Uniform{8, ValueType::U32}, extract);
+        block->StoreUniform(Uniform{16, ValueType::U32}, producer);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto features = FeatureSet{};
+        RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
+        RegisterAllocPass::RunForWidthChainConflictTest(
+                block.get(), &alloc, producer.Id(), 11);
+        REQUIRE_FALSE(alloc.IsWidthChainCoalesced(extract.Id()));
+    }
+
+    SECTION("a faulting observer does not publish or mutate the read-only component") {
+        IntrusivePtr<Block> block{new Block(0, Location{0x8710})};
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
+                Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(Imm{swift::u32{3}}).SetType(ValueType::U32);
+        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
+                               .SetType(ValueType::U32);
+        auto address = block->LoadImm(Imm{swift::u64{0x1000}}).SetType(ValueType::U64);
+        (void)block->LoadMemory(Operand{address}).SetType(ValueType::U64);
+        block->StoreUniform(Uniform{8, ValueType::U32}, extract);
+        block->StoreUniform(Uniform{16, ValueType::U32}, producer);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto features = FeatureSet{};
+        features.ra_width_chain = true;
+        RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
+        RegisterAllocPass::RunForWidthChainTest(block.get(), &alloc, true);
+        REQUIRE(alloc.IsWidthChainCoalesced(extract.Id()));
     }
 }
 

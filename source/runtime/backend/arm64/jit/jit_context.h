@@ -162,6 +162,12 @@ public:
     [[nodiscard]] bool IsHostReadCoalesced(u32 id) const {
         return reg_alloc.IsHostReadCoalesced(id);
     }
+    [[nodiscard]] bool IsWidthChainCoalesced(u32 id) const {
+        return reg_alloc.IsWidthChainCoalesced(id);
+    }
+    [[nodiscard]] u32 WidthChainAnchor(u32 id) const {
+        return reg_alloc.WidthChainAnchor(id);
+    }
     [[nodiscard]] bool IsConstAddressCached(u32 id) const {
         return reg_alloc.IsConstAddressCached(id);
     }

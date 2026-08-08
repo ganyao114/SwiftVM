@@ -21,7 +21,9 @@ ir::Value ResolveHostCoalesceBitCast(ir::Value value) {
     return value;
 }
 
-bool IsHostCoalesceProducer(ir::OpCode op) {
+bool IsKnownHostWWrite(ir::Value value);
+
+bool IsHostCoalesceProducer(ir::OpCode op, bool width_chain) {
     using O = ir::OpCode;
     switch (op) {
         case O::LoadImm:
@@ -53,9 +55,28 @@ bool IsHostCoalesceProducer(ir::OpCode op) {
         case O::CondSelect:
         case O::MulHigh:
             return true;
+        case O::GetHostGPR:
+        case O::SignExtend:
+            return width_chain;
         default:
             return false;
     }
+}
+
+bool IsWidthChainHostWWrite(ir::Value value, u32 target,
+                            const FeatureSet& features) {
+    value = ResolveHostCoalesceBitCast(value);
+    if (!value.Defined()) {
+        return false;
+    }
+    auto* def = value.Def();
+    if (def->GetOp() == ir::OpCode::GetHostGPR) {
+        return features.ra_width_chain &&
+               ir::GetValueSizeByte(def->ReturnType()) == sizeof(u32) &&
+               def->GetArg<ir::Imm>(1).Get() == 0 &&
+               def->GetArg<ir::Imm>(0).Get() != target;
+    }
+    return IsKnownHostWWrite(value);
 }
 
 bool IsHostScalarFPRBinaryProducer(ir::OpCode op) {
@@ -183,7 +204,9 @@ bool JitTranslator::ReproveCoalescedHostWrite(ir::Inst* inst) const {
     const u32 target = inst->GetArg<ir::Imm>(1).Get();
     auto stored = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
     auto* wrapper = stored.Def();
-    if (!wrapper || wrapper->GetUses() != 1) {
+    const bool width_wrapper = stored.Defined() &&
+                               context.IsWidthChainCoalesced(stored.Id());
+    if (!wrapper || (!width_wrapper && wrapper->GetUses() != 1)) {
         return false;
     }
     auto produced = stored;
@@ -191,20 +214,26 @@ bool JitTranslator::ReproveCoalescedHostWrite(ir::Inst* inst) const {
     if (wrapper->GetOp() == ir::OpCode::ZeroExtend32To64) {
         produced = ResolveHostCoalesceBitCast(wrapper->GetArg<ir::Value>(0));
         zero_extend_chain = true;
-        if (!produced.Def() || produced.Def()->GetUses() != 1 ||
-            !IsKnownHostWWrite(produced)) {
+        const bool width_root = produced.Defined() &&
+                                context.IsWidthChainCoalesced(produced.Id()) &&
+                                context.WidthChainAnchor(produced.Id()) == produced.Id();
+        if (!produced.Def() || (!width_root && produced.Def()->GetUses() != 1) ||
+            !IsWidthChainHostWWrite(produced, target, context.GetFeatures())) {
             return false;
         }
     }
     auto* producer = produced.Def();
-    if (!producer || !IsHostCoalesceProducer(producer->GetOp()) ||
+    if (!producer ||
+        !IsHostCoalesceProducer(producer->GetOp(),
+                                context.GetFeatures().ra_width_chain) ||
         context.X(produced).GetCode() != target ||
         (zero_extend_chain && context.X(stored).GetCode() != target)) {
         return false;
     }
     const u32 width = ir::GetValueSizeByte(produced.Type());
     if ((width != sizeof(u32) && width != sizeof(u64)) ||
-        (width == sizeof(u32) && !IsKnownHostWWrite(produced))) {
+        (width == sizeof(u32) &&
+         !IsWidthChainHostWWrite(produced, target, context.GetFeatures()))) {
         return false;
     }
 
@@ -273,6 +302,9 @@ bool JitTranslator::ReproveCoalescedHostWrite(ir::Inst* inst) const {
         }
         for (auto value : scan.GetValues()) {
             if (ResolveHostCoalesceBitCast(value).Def() == wrapper) {
+                if (width_wrapper) {
+                    continue;
+                }
                 return false;
             }
         }

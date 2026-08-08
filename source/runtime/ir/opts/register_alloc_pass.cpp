@@ -169,6 +169,9 @@ public:
     void CoalesceGuestRegisterAccessesForTest() {
         CoalesceGuestRegisterAccesses();
     }
+    void CoalesceWidthChainsForTest() {
+        CoalesceWidthChains();
+    }
     void CoalesceGuestFPRAccessesForTest() {
         CoalesceGuestFPRAccesses(true);
     }
@@ -380,6 +383,7 @@ public:
 
         FusePinnedWriteChains();
         CoalesceGuestRegisterAccesses();
+        CoalesceWidthChains();
         CoalesceGuestFPRAccesses(xmm_resident);
         CacheConstantAddresses();
         if (spill_count && RaDiagEnabled()) {
@@ -680,6 +684,18 @@ private:
             case OpCode::CondSelect:
             case OpCode::MulHigh:
                 return true;
+            default:
+                return false;
+        }
+    }
+
+    static bool IsWidthChainRootProducer(const Inst* producer) {
+        if (!producer || GetValueSizeByte(producer->ReturnType()) != sizeof(u32)) {
+            return false;
+        }
+        switch (producer->GetOp()) {
+            case OpCode::GetHostGPR:
+                return producer->GetArg<Imm>(1).Get() == 0;
             default:
                 return false;
         }
@@ -1052,6 +1068,220 @@ private:
         }
     }
 
+    void CoalesceWidthChains() {
+        if (!features.ra_width_chain) {
+            return;
+        }
+
+        auto coalesce_block = [&](Block* lir_block) {
+            auto& list = lir_block->GetInstList();
+            Vector<u32> use_end(InstrCount());
+            for (auto& inst : list) {
+                for (auto value : inst.GetValues()) {
+                    value = ResolveBitCastSource(value);
+                    if (value.Defined() && value.Id() < use_end.size()) {
+                        use_end[value.Id()] = std::max<u32>(use_end[value.Id()], inst.Id());
+                    }
+                }
+            }
+            if (list.begin() != list.end()) {
+                const u32 block_end = std::prev(list.end())->Id();
+                auto extend_terminal = [&](const Value& value) {
+                    auto root = ResolveBitCastSource(value);
+                    if (root.Defined() && root.Id() < use_end.size()) {
+                        use_end[root.Id()] = std::max(use_end[root.Id()], block_end);
+                    }
+                };
+                std::function<void(const Terminal&)> walk_terminal =
+                        [&](const Terminal& terminal_value) {
+                            VisitVariant<void>(terminal_value, [&](const auto& edge) {
+                                using T = std::decay_t<decltype(edge)>;
+                                if constexpr (std::is_same_v<T, terminal::If>) {
+                                    extend_terminal(edge.cond);
+                                    walk_terminal(edge.then_);
+                                    walk_terminal(edge.else_);
+                                } else if constexpr (std::is_same_v<T, terminal::Switch>) {
+                                    extend_terminal(edge.value);
+                                    for (const auto& item : edge.cases) {
+                                        walk_terminal(item.then);
+                                    }
+                                } else if constexpr (std::is_same_v<T, terminal::Condition>) {
+                                    walk_terminal(edge.then_);
+                                    walk_terminal(edge.else_);
+                                } else if constexpr (std::is_same_v<T, terminal::CheckHalt>) {
+                                    walk_terminal(edge.else_);
+                                }
+                            });
+                        };
+                walk_terminal(lir_block->GetTerminal());
+            }
+
+            auto component_anchor = [&](Value value) {
+                value = ResolveBitCastSource(value);
+                if (!value.Defined()) {
+                    return UINT32_MAX;
+                }
+                return reg_alloc->IsWidthChainCoalesced(value.Id())
+                        ? reg_alloc->WidthChainAnchor(value.Id())
+                        : value.Id();
+            };
+            auto in_component = [&](Value value, u32 anchor) {
+                value = ResolveBitCastSource(value);
+                return value.Defined() && component_anchor(value) == anchor;
+            };
+
+            for (auto& bridge : list) {
+                Value source{};
+                if (bridge.GetOp() == OpCode::BitExtract &&
+                    GetValueSizeByte(bridge.ReturnType()) == sizeof(u32) &&
+                    bridge.GetArg<Imm>(1).Get() == 0 &&
+                    bridge.GetArg<Imm>(2).Get() == 32) {
+                    source = ResolveBitCastSource(bridge.GetArg<Value>(0));
+                } else if (bridge.GetOp() == OpCode::ZeroExtend32To64 &&
+                           GetValueSizeByte(bridge.GetArg<Value>(0).Type()) == sizeof(u32)) {
+                    source = ResolveBitCastSource(bridge.GetArg<Value>(0));
+                } else {
+                    continue;
+                }
+                const bool component_w_write =
+                        source.Defined() && source.Def()->GetOp() == OpCode::GetHostGPR &&
+                        reg_alloc->IsWidthChainCoalesced(source.Id()) &&
+                        reg_alloc->WidthChainAnchor(source.Id()) == source.Id() &&
+                        GetValueSizeByte(source.Type()) == sizeof(u32);
+                if (!source.Defined() ||
+                    (!HasKnownWWrite(source) && !component_w_write) ||
+                    reg_alloc->ValueType(source) != backend::RegAlloc::GPR ||
+                    reg_alloc->ValueType(Value{&bridge}) != backend::RegAlloc::GPR ||
+                    bridge.Id() >= use_end.size() || bridge.GetUses() == 0) {
+                    continue;
+                }
+                const u16 target = reg_alloc->ValueGPR(source).id;
+                const u16 old_target = reg_alloc->ValueGPR(Value{&bridge}).id;
+                if (target == old_target || reg_alloc->GetGprs().Get(target)) {
+                    continue;
+                }
+                const u32 end = std::max<u32>(bridge.Id(), use_end[bridge.Id()]);
+                const u32 anchor = component_anchor(source);
+
+                bool blocked = false;
+                for (auto& other : list) {
+                    if (&other == &bridge || !other.HasValue() ||
+                        other.IsBitCastOperation() || in_component(Value{&other}, anchor) ||
+                        reg_alloc->ValueType(Value{&other}) != backend::RegAlloc::GPR ||
+                        reg_alloc->ValueGPR(Value{&other}).id != target) {
+                        continue;
+                    }
+                    const u32 other_end = other.Id() < use_end.size()
+                            ? std::max<u32>(other.Id(), use_end[other.Id()])
+                            : other.Id();
+                    if (other.Id() <= end && other_end >= bridge.Id()) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) {
+                    continue;
+                }
+                for (auto& scan : list) {
+                    if (scan.Id() < bridge.Id() || scan.Id() > end) {
+                        continue;
+                    }
+                    if (scan.Id() < fixed_gpr_clobbers.size() &&
+                        (fixed_gpr_clobbers[scan.Id()] & (1u << target))) {
+                        blocked = true;
+                        break;
+                    }
+                    if (scan.GetOp() == OpCode::SetHostGPR &&
+                        scan.GetArg<Imm>(1).Get() == target &&
+                        !in_component(scan.GetArg<Value>(0), anchor)) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                // W-alpha ran first and its emitter will independently replay
+                // the fixed-home proof. Do not let this later pass change a
+                // producer/wrapper named by that proof, or introduce a new
+                // interval in the same fixed home before publication.
+                for (auto& store : list) {
+                    if (blocked || store.GetOp() != OpCode::SetHostGPR ||
+                        !reg_alloc->IsHostWriteCoalesced(store.Id())) {
+                        continue;
+                    }
+                    auto stored = ResolveBitCastSource(store.GetArg<Value>(0));
+                    auto produced = stored;
+                    if (stored.Def() && stored.Def()->GetOp() == OpCode::ZeroExtend32To64) {
+                        produced = ResolveBitCastSource(stored.Def()->GetArg<Value>(0));
+                    }
+                    if (stored.Def() == &bridge || produced.Def() == &bridge) {
+                        blocked = true;
+                        break;
+                    }
+                    if (produced.Def()) {
+                        for (auto input : produced.Def()->GetValues()) {
+                            if (ResolveBitCastSource(input).Def() == &bridge) {
+                                blocked = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (blocked) {
+                        break;
+                    }
+                    if (store.GetArg<Imm>(1).Get() == target &&
+                        bridge.Id() < store.Id() && end >= produced.Id()) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) {
+                    continue;
+                }
+
+                struct SavedMask {
+                    u32 id;
+                    backend::GPRSMask gprs;
+                    backend::FPRSMask fprs;
+                };
+                Vector<SavedMask> saved{};
+                for (auto& scan : list) {
+                    if (scan.Id() < bridge.Id() || scan.Id() > end) {
+                        continue;
+                    }
+                    auto gprs = reg_alloc->DirtyGPR(scan.Id());
+                    auto fprs = reg_alloc->DirtyFPR(scan.Id());
+                    saved.push_back({scan.Id(), gprs, fprs});
+                    gprs.Mark(target);
+                    reg_alloc->SetActiveRegs(scan.Id(), gprs, fprs);
+                }
+                bool verified = true;
+                for (auto& scan : list) {
+                    if (scan.Id() >= bridge.Id() && scan.Id() <= end &&
+                        !CheckInstr(&scan, 0, 0)) {
+                        verified = false;
+                        break;
+                    }
+                }
+                if (!verified) {
+                    for (auto& old : saved) {
+                        reg_alloc->SetActiveRegs(old.id, old.gprs, old.fprs);
+                    }
+                    continue;
+                }
+
+                reg_alloc->MapRegister(bridge.Id(), HostGPR{target});
+                reg_alloc->MarkWidthChainCoalesced(bridge.Id(), anchor);
+            }
+        };
+
+        if (function) {
+            for (auto* hir_block : function->GetHIRBlocks()) {
+                coalesce_block(hir_block->GetBlock());
+            }
+        } else {
+            coalesce_block(block);
+        }
+    }
+
     void CoalesceGuestRegisterAccesses() {
         if (!features.ra_coalesce ||
             !backend::X86PinExtLevel2Enabled(reg_alloc->GetGprs())) {
@@ -1146,31 +1376,97 @@ private:
 
                 Value stored = ResolveBitCastSource(store.GetArg<Value>(0));
                 auto* wrapper = stored.Def();
+                const bool tentative_width_root =
+                        features.ra_width_chain && wrapper &&
+                        wrapper->GetOp() == OpCode::ZeroExtend32To64 &&
+                        IsWidthChainRootProducer(
+                                ResolveBitCastSource(wrapper->GetArg<Value>(0)).Def());
                 if (!wrapper || stored.Id() >= use_end.size() ||
-                    wrapper->GetUses() != 1 || use_end[stored.Id()] != store.Id()) {
+                    (!tentative_width_root &&
+                     (wrapper->GetUses() != 1 || use_end[stored.Id()] != store.Id()))) {
                     continue;
                 }
 
                 Value produced = stored;
                 bool zero_extend_chain = false;
+                bool width_root = false;
                 if (wrapper->GetOp() == OpCode::ZeroExtend32To64) {
                     produced = ResolveBitCastSource(wrapper->GetArg<Value>(0));
                     zero_extend_chain = true;
-                    if (!HasKnownWWrite(produced) || !produced.Def() ||
-                        produced.Id() >= use_end.size() || produced.Def()->GetUses() != 1 ||
-                        use_end[produced.Id()] != wrapper->Id()) {
+                    width_root = features.ra_width_chain &&
+                                 IsWidthChainRootProducer(produced.Def());
+                    if ((!HasKnownWWrite(produced) && !width_root) || !produced.Def() ||
+                        produced.Id() >= use_end.size() ||
+                        (!width_root &&
+                         (produced.Def()->GetUses() != 1 ||
+                          use_end[produced.Id()] != wrapper->Id()))) {
                         continue;
                     }
                 }
                 auto* producer = produced.Def();
-                if (!producer || !IsPinnedCoalesceProducer(producer->GetOp()) ||
+                width_root |= features.ra_width_chain &&
+                              IsWidthChainRootProducer(producer);
+                if (!producer ||
+                    (!IsPinnedCoalesceProducer(producer->GetOp()) && !width_root) ||
                     reg_alloc->ValueType(produced) != backend::RegAlloc::GPR) {
                     continue;
                 }
                 const u32 width = GetValueSizeByte(produced.Type());
                 if ((width != sizeof(u32) && width != sizeof(u64)) ||
-                    (width == sizeof(u32) && !HasKnownWWrite(produced))) {
+                    (width == sizeof(u32) &&
+                     !HasKnownWWrite(produced) && !width_root)) {
                     continue;
+                }
+                if (width_root && producer->GetOp() == OpCode::GetHostGPR &&
+                    producer->GetArg<Imm>(0).Get() == target) {
+                    // Reading and then overwriting the same fixed home needs a
+                    // real snapshot. Mapping the read to that home would make
+                    // later consumers observe the newly published value.
+                    continue;
+                }
+                if (reg_alloc->IsWidthChainCoalesced(producer->Id()) &&
+                    reg_alloc->ValueGPR(produced).id != target) {
+                    // One SSA component can publish to several guest homes.
+                    // It owns exactly one physical fixed home; later homes
+                    // retain the ordinary SetHostGPR move.
+                    continue;
+                }
+
+                Vector<Inst*> width_component{};
+                if (width_root) {
+                    width_component.push_back(producer);
+                    if (zero_extend_chain) {
+                        width_component.push_back(wrapper);
+                    }
+                    bool changed = true;
+                    while (changed) {
+                        changed = false;
+                        for (auto& node : list) {
+                            if (std::find(width_component.begin(), width_component.end(),
+                                          &node) != width_component.end()) {
+                                continue;
+                            }
+                            Value input{};
+                            if (node.GetOp() == OpCode::BitExtract &&
+                                GetValueSizeByte(node.ReturnType()) == sizeof(u32) &&
+                                node.GetArg<Imm>(1).Get() == 0 &&
+                                node.GetArg<Imm>(2).Get() == 32) {
+                                input = ResolveBitCastSource(node.GetArg<Value>(0));
+                            } else if (node.GetOp() == OpCode::ZeroExtend32To64 &&
+                                       GetValueSizeByte(node.GetArg<Value>(0).Type()) ==
+                                               sizeof(u32)) {
+                                input = ResolveBitCastSource(node.GetArg<Value>(0));
+                            } else {
+                                continue;
+                            }
+                            if (input.Defined() &&
+                                std::find(width_component.begin(), width_component.end(),
+                                          input.Def()) != width_component.end()) {
+                                width_component.push_back(&node);
+                                changed = true;
+                            }
+                        }
+                    }
                 }
                 if (mapped_to(produced, target) &&
                     (!zero_extend_chain || mapped_to(stored, target))) {
@@ -1217,22 +1513,127 @@ private:
                     continue;
                 }
 
+                if (width_root) {
+                    u32 component_end = producer->Id();
+                    for (auto* node : width_component) {
+                        component_end = std::max<u32>(
+                                component_end,
+                                node->Id() < use_end.size()
+                                        ? std::max<u32>(node->Id(), use_end[node->Id()])
+                                        : node->Id());
+                    }
+                    auto in_width_component = [&](Inst* node) {
+                        return std::find(width_component.begin(), width_component.end(),
+                                         node) != width_component.end();
+                    };
+                    for (auto& other : list) {
+                        if (in_width_component(&other) || &other == &store ||
+                            !other.HasValue() || other.IsBitCastOperation() ||
+                            reg_alloc->ValueType(Value{&other}) != backend::RegAlloc::GPR ||
+                            !mapped_to(Value{&other}, target)) {
+                            continue;
+                        }
+                        const u32 other_end = other.Id() < use_end.size()
+                                ? std::max<u32>(other.Id(), use_end[other.Id()])
+                                : other.Id();
+                        if (other.Id() <= component_end && other_end >= producer->Id()) {
+                            blocked = true;
+                            break;
+                        }
+                    }
+                    for (auto& scan : list) {
+                        if (blocked || scan.Id() < producer->Id() ||
+                            scan.Id() > component_end) {
+                            continue;
+                        }
+                        if ((scan.Id() < fixed_gpr_clobbers.size() &&
+                             (fixed_gpr_clobbers[scan.Id()] & (1u << target))) ||
+                            (scan.GetOp() == OpCode::SetHostGPR &&
+                             &scan != &store && scan.GetArg<Imm>(1).Get() == target)) {
+                            blocked = true;
+                            break;
+                        }
+                    }
+                    if (blocked) {
+                        continue;
+                    }
+
+                    struct SavedMask {
+                        u32 id;
+                        backend::GPRSMask gprs;
+                        backend::FPRSMask fprs;
+                    };
+                    Vector<SavedMask> saved{};
+                    for (auto& scan : list) {
+                        if (scan.Id() < producer->Id() || scan.Id() > component_end) {
+                            continue;
+                        }
+                        auto gprs = reg_alloc->DirtyGPR(scan.Id());
+                        auto fprs = reg_alloc->DirtyFPR(scan.Id());
+                        saved.push_back({scan.Id(), gprs, fprs});
+                        gprs.Mark(target);
+                        reg_alloc->SetActiveRegs(scan.Id(), gprs, fprs);
+                    }
+                    bool verified = true;
+                    for (auto& scan : list) {
+                        if (scan.Id() >= producer->Id() && scan.Id() <= component_end &&
+                            !CheckInstr(&scan, 0, 0)) {
+                            verified = false;
+                            break;
+                        }
+                    }
+                    if (!verified) {
+                        for (auto& old : saved) {
+                            reg_alloc->SetActiveRegs(old.id, old.gprs, old.fprs);
+                        }
+                        continue;
+                    }
+                }
+
                 reg_alloc->MapRegister(producer->Id(), HostGPR{static_cast<u16>(target)});
                 if (zero_extend_chain) {
                     reg_alloc->MapRegister(wrapper->Id(), HostGPR{static_cast<u16>(target)});
                 }
                 reg_alloc->MarkHostWriteCoalesced(store.Id());
+                if (width_root) {
+                    for (auto* node : width_component) {
+                        reg_alloc->MapRegister(node->Id(),
+                                               HostGPR{static_cast<u16>(target)});
+                        reg_alloc->MarkWidthChainCoalesced(node->Id(), producer->Id());
+                    }
+                }
             }
 
             for (auto& read : list) {
                 if (read.GetOp() != OpCode::GetHostGPR ||
                     read.GetArg<Imm>(1).Get() != 0 ||
-                    GetValueSizeByte(read.ReturnType()) != sizeof(u32)) {
+                    GetValueSizeByte(read.ReturnType()) != sizeof(u32) ||
+                    reg_alloc->IsWidthChainCoalesced(read.Id())) {
                     continue;
                 }
                 const u32 target = read.GetArg<Imm>(0).Get();
                 if (!IsPinnedCoalesceTarget(target) ||
                     !reg_alloc->GetGprs().Get(target) || read.Id() >= use_end.size()) {
+                    continue;
+                }
+                bool width_conflict = false;
+                const u32 read_end = std::max<u32>(read.Id(), use_end[read.Id()]);
+                for (auto& node : list) {
+                    if (!node.HasValue() ||
+                        !reg_alloc->IsWidthChainCoalesced(node.Id()) ||
+                        reg_alloc->ValueType(Value{&node}) != backend::RegAlloc::GPR ||
+                        reg_alloc->ValueGPR(Value{&node}).id != target) {
+                        continue;
+                    }
+                    const u32 node_end = node.Id() < use_end.size()
+                            ? std::max<u32>(node.Id(), use_end[node.Id()])
+                            : node.Id();
+                    if (node.Id() <= read_end && node_end >= read.Id()) {
+                        width_conflict = true;
+                        break;
+                    }
+                }
+                if (width_conflict) {
                     continue;
                 }
                 Inst* latest_store = nullptr;
@@ -3087,6 +3488,32 @@ void RegisterAllocPass::RunForCoalesceConflictTest(ir::Block* block,
     LinearScanAllocator scan{block, reg_alloc, 0, 0, false, false, false, false,
                              nullptr, false, features};
     scan.CoalesceGuestRegisterAccessesForTest();
+}
+
+void RegisterAllocPass::RunForWidthChainTest(ir::Block* block,
+                                             backend::RegAlloc* reg_alloc,
+                                             bool enabled) {
+    auto features = FeatureSet{};
+    features.ra_width_chain = enabled;
+    RunVerified(block, reg_alloc, features, false, false,
+                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_spill_evict);
+}
+
+void RegisterAllocPass::RunForWidthChainConflictTest(ir::Block* block,
+                                                     backend::RegAlloc* reg_alloc,
+                                                     u32 tied_value_id,
+                                                     u16 target) {
+    auto features = FeatureSet{};
+    features.ra_width_chain = false;
+    RunVerified(block, reg_alloc, features, false, false,
+                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_spill_evict);
+    reg_alloc->MapRegister(tied_value_id, HostGPR{target});
+    features.ra_width_chain = true;
+    LinearScanAllocator scan{block, reg_alloc, 0, 0, false, false, false, false,
+                             nullptr, false, features};
+    scan.CoalesceWidthChainsForTest();
 }
 
 void RegisterAllocPass::RunForXmmResidentTest(ir::Block* block,

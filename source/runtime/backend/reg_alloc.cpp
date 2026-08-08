@@ -414,6 +414,7 @@ RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
                    const FeatureSet& features, bool afp_nan)
         : alloc_result(instr_size), coalesced_host_writes(instr_size),
           coalesced_host_reads(instr_size),
+          width_chain_anchors(instr_size, UINT32_MAX),
           const_address_cache_anchors(instr_size, UINT32_MAX),
           gprs(gprs), fprs(fprs), features(features) {
     // Trampolines 暴露跨 module 的最大 GPR 并集。XPOOL 关闭时在 unit 私有
@@ -456,6 +457,7 @@ void RegAlloc::ResetAllocations() {
     std::fill(alloc_result.begin(), alloc_result.end(), Map{});
     std::fill(coalesced_host_writes.begin(), coalesced_host_writes.end(), false);
     std::fill(coalesced_host_reads.begin(), coalesced_host_reads.end(), false);
+    std::fill(width_chain_anchors.begin(), width_chain_anchors.end(), UINT32_MAX);
     std::fill(const_address_cache_anchors.begin(), const_address_cache_anchors.end(),
               UINT32_MAX);
     current_ir = nullptr;
@@ -495,6 +497,12 @@ void RegAlloc::MarkHostReadCoalesced(u32 id) {
     coalesced_host_reads[id] = true;
 }
 
+void RegAlloc::MarkWidthChainCoalesced(u32 id, u32 anchor_id) {
+    ASSERT(id < width_chain_anchors.size());
+    ASSERT(anchor_id < width_chain_anchors.size());
+    width_chain_anchors[id] = anchor_id;
+}
+
 void RegAlloc::MarkConstAddressCached(u32 id, u32 anchor_id) {
     ASSERT(id < const_address_cache_anchors.size());
     ASSERT(anchor_id < const_address_cache_anchors.size());
@@ -507,6 +515,15 @@ bool RegAlloc::IsHostWriteCoalesced(u32 id) const {
 
 bool RegAlloc::IsHostReadCoalesced(u32 id) const {
     return id < coalesced_host_reads.size() && coalesced_host_reads[id];
+}
+
+bool RegAlloc::IsWidthChainCoalesced(u32 id) const {
+    return id < width_chain_anchors.size() && width_chain_anchors[id] != UINT32_MAX;
+}
+
+u32 RegAlloc::WidthChainAnchor(u32 id) const {
+    ASSERT(IsWidthChainCoalesced(id));
+    return width_chain_anchors[id];
 }
 
 bool RegAlloc::IsConstAddressCached(u32 id) const {

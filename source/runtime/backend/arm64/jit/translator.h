@@ -114,6 +114,7 @@ private:
     [[nodiscard]] bool ReproveScalarFPRTie(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveShufpsImmTie(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCoalescedHostFPRRead(ir::Inst* inst) const;
+    [[nodiscard]] bool ReproveWidthChainBridge(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCachedConstAddress(ir::Inst* inst) const;
 
     enum class BoundarySubsequence : size_t {
