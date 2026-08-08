@@ -223,7 +223,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 151);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 152);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -296,7 +296,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 61);
+    STATIC_REQUIRE(kFeatureCount == 62);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -3282,6 +3282,64 @@ TEST_CASE("unit-local width chains share only proven W-clean identity components
         return alloc;
     };
 
+    struct LongChain {
+        IntrusivePtr<Block> block;
+        Vector<Value> bridges;
+        Value conflict;
+    };
+    auto make_long_chain = [](swift::u64 location, swift::u32 steps,
+                              bool insert_fault_barrier, bool add_conflict = false) {
+        IntrusivePtr<Block> block{new Block(0, Location{location})};
+        Value conflict{};
+        if (add_conflict) {
+            conflict = block->LoadImm(Imm{swift::u64{0xfeedfacecafebeef}})
+                               .SetType(ValueType::U64);
+        }
+        auto invariant = block->GetHostGPR(HostRegIndex(29), Imm{0u})
+                                 .SetType(ValueType::U32);
+        Value current = block->GetHostGPR(HostRegIndex(22), Imm{0u})
+                                .SetType(ValueType::U32);
+        Vector<Value> bridges{};
+        for (swift::u32 index = 0; index < steps; ++index) {
+            Value left = current;
+            Value right = invariant;
+            if (index != 0) {
+                left = block->BitExtract(current, Imm{0u}, Imm{32u})
+                               .SetType(ValueType::U32);
+                right = block->BitExtract(invariant, Imm{0u}, Imm{32u})
+                                .SetType(ValueType::U32);
+                bridges.push_back(left);
+                bridges.push_back(right);
+            }
+            auto producer = (index & 1u)
+                    ? block->Xor(left, Operand{right}).SetType(ValueType::U32)
+                    : block->Add(left, Operand{right}).SetType(ValueType::U32);
+            auto wrapper = block->ZeroExtend32To64(producer).SetType(ValueType::U64);
+            block->SetHostGPR(wrapper, HostRegIndex(22), Imm{0u});
+            current = wrapper;
+            if (insert_fault_barrier && index + 1 == steps / 2) {
+                auto address = block->LoadImm(Imm{swift::u64{0x1000}})
+                                       .SetType(ValueType::U64);
+                (void)block->LoadMemory(Operand{address}).SetType(ValueType::U64);
+            }
+        }
+        if (conflict.Defined()) {
+            block->StoreUniform(Uniform{24, ValueType::U64}, conflict);
+        }
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        return LongChain{std::move(block), std::move(bridges), conflict};
+    };
+    auto allocate_long = [&](LongChain& chain, bool enabled) {
+        auto features = FeatureSet{};
+        features.ra_width_chain = false;
+        features.ra_width_chain_long = enabled;
+        auto alloc = std::make_unique<RegAlloc>(
+                chain.block->MaxInstrId(), make_gprs(), fprs, features);
+        RegisterAllocPass::Run(chain.block.get(), alloc.get(), false, features);
+        return alloc;
+    };
+
     SECTION("a multi-node identity chain forms one ownership component") {
         auto chain = make_chain(0x8680);
         auto off = allocate(chain, false);
@@ -3449,6 +3507,86 @@ TEST_CASE("unit-local width chains share only proven W-clean identity components
         RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
         RegisterAllocPass::RunForWidthChainTest(block.get(), &alloc, true);
         REQUIRE(alloc.IsWidthChainCoalesced(extract.Id()));
+    }
+
+    SECTION("long Add/Xor publication components coalesce both low-W snapshots") {
+        auto chain = make_long_chain(0x8720, 32, false);
+        auto off = allocate_long(chain, false);
+        REQUIRE(std::none_of(chain.bridges.begin(), chain.bridges.end(),
+                             [&](Value bridge) {
+                                 return off->IsWidthChainCoalesced(bridge.Id());
+                             }));
+
+        auto on = allocate_long(chain, true);
+        REQUIRE(std::all_of(chain.bridges.begin(), chain.bridges.end(),
+                            [&](Value bridge) {
+                                return on->IsWidthChainCoalesced(bridge.Id());
+                            }));
+    }
+
+    SECTION("a 31-step chain stays below the long-component threshold") {
+        auto chain = make_long_chain(0x8730, 31, false);
+        auto on = allocate_long(chain, true);
+        REQUIRE(std::none_of(chain.bridges.begin(), chain.bridges.end(),
+                             [&](Value bridge) {
+                                 return on->IsWidthChainCoalesced(bridge.Id());
+                             }));
+    }
+
+    SECTION("a faulting memory operation splits the component fail-closed") {
+        auto chain = make_long_chain(0x8740, 32, true);
+        auto on = allocate_long(chain, true);
+        REQUIRE(std::none_of(chain.bridges.begin(), chain.bridges.end(),
+                             [&](Value bridge) {
+                                 return on->IsWidthChainCoalesced(bridge.Id());
+                             }));
+    }
+
+    SECTION("a third-party interval crossing a long snapshot still rejects it") {
+        auto chain = make_long_chain(0x8748, 32, false, true);
+        auto features = FeatureSet{};
+        features.ra_width_chain = false;
+        features.ra_width_chain_long = false;
+        RegAlloc control{chain.block->MaxInstrId(), make_gprs(), fprs, features};
+        RegisterAllocPass::Run(chain.block.get(), &control, false, features);
+        auto invariant_bridge = chain.bridges.at(1);
+        auto invariant_source = invariant_bridge.Def()->GetArg<Value>(0);
+        const swift::u16 target = control.ValueGPR(invariant_source).id;
+
+        RegAlloc conflict{chain.block->MaxInstrId(), make_gprs(), fprs, features};
+        RegisterAllocPass::RunForWidthChainLongConflictTest(
+                chain.block.get(), &conflict, chain.conflict.Id(), target);
+        REQUIRE_FALSE(conflict.IsWidthChainCoalesced(invariant_bridge.Id()));
+    }
+
+    SECTION("long-chain emitter reproof removes one instruction per bridge") {
+        auto emit = [&](bool enabled) {
+            Config config{
+                    .loc_start = 0,
+                    .loc_end = 1ull << 48,
+                    .enable_jit = true,
+                    .has_local_operation = false,
+                    .backend_isa = kArm64,
+            };
+            AddressSpace address_space{config};
+            ModuleConfig module_config{};
+            module_config.feature_overrides.Set(FeatureId::ra_width_chain, false);
+            module_config.feature_overrides.Set(FeatureId::ra_width_chain_long, enabled);
+            auto module = address_space.MapModule(
+                    LocationDescriptor{0x8750}, LocationDescriptor{0x8760}, module_config);
+            auto chain = make_long_chain(0x8750, 32, false);
+            auto features = ResolveFeatureSet(module_config);
+            RegAlloc alloc{chain.block->MaxInstrId(), make_gprs(), fprs, features};
+            RegisterAllocPass::Run(chain.block.get(), &alloc, false, features);
+            arm64::JitContext context{module, alloc};
+            arm64::JitTranslator translator{context};
+            translator.Translate(chain.block.get());
+            context.Finish();
+            return std::pair{context.CurrentBufferSize(), chain.bridges.size()};
+        };
+        const auto off = emit(false);
+        const auto on = emit(true);
+        REQUIRE(on.first + on.second * vixl::aarch64::kInstructionSize == off.first);
     }
 }
 

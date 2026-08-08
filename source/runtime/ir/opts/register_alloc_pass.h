@@ -60,6 +60,10 @@ public:
                                              backend::RegAlloc *reg_alloc,
                                              u32 tied_value_id,
                                              u16 target);
+    static void RunForWidthChainLongConflictTest(ir::Block *block,
+                                                 backend::RegAlloc *reg_alloc,
+                                                 u32 tied_value_id,
+                                                 u16 target);
     static void RunForXmmResidentTest(ir::Block *block,
                                       backend::RegAlloc *reg_alloc,
                                       bool enabled);

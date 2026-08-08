@@ -34,7 +34,8 @@ bool IsKnownWidthChainWWrite(ir::Value value, const JitContext& context) {
     }
     auto* def = value.Def();
     if (def->GetOp() == ir::OpCode::GetHostGPR) {
-        return context.GetFeatures().ra_width_chain &&
+        return (context.GetFeatures().ra_width_chain ||
+                context.GetFeatures().ra_width_chain_long) &&
                context.IsWidthChainCoalesced(value.Id()) &&
                context.WidthChainAnchor(value.Id()) == value.Id() &&
                ir::GetValueSizeByte(value.Type()) == sizeof(u32);
@@ -3064,7 +3065,29 @@ bool JitTranslator::ReproveWidthChainBridge(ir::Inst* inst) const {
     } else {
         return false;
     }
-    if (!source.Defined() || !IsKnownWidthChainWWrite(source, context) ||
+    // LONG 的 invariant 输入是 pinned X 的 W view。它只在唯一 U32
+    // Add/Xor consumer 上省 identity 快照，不宣称 X[63:32] 已清零。
+    bool long_u32_snapshot = false;
+    if (context.GetFeatures().ra_width_chain_long && source.Defined() &&
+        source.Def() && source.Def()->GetOp() == ir::OpCode::GetHostGPR &&
+        ir::GetValueSizeByte(source.Type()) == sizeof(u32) && inst->GetUses() == 1) {
+        u32 consumers = 0;
+        for (auto& scan : cur_block->GetInstList()) {
+            for (auto input : scan.GetValues()) {
+                if (ResolveWidthChainBitCast(input).Def() != inst) {
+                    continue;
+                }
+                ++consumers;
+                long_u32_snapshot |=
+                        (scan.GetOp() == ir::OpCode::Add ||
+                         scan.GetOp() == ir::OpCode::Xor) &&
+                        ir::GetValueSizeByte(scan.ReturnType()) == sizeof(u32);
+            }
+        }
+        long_u32_snapshot &= consumers == 1;
+    }
+    if (!source.Defined() ||
+        (!IsKnownWidthChainWWrite(source, context) && !long_u32_snapshot) ||
         !context.SharesGPR(source, ir::Value{inst})) {
         return false;
     }

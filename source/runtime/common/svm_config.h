@@ -62,6 +62,7 @@ namespace swift::runtime {
     X(ra_spill_evict, true) \
     X(ra_coalesce, true) \
     X(ra_width_chain, false) \
+    X(ra_width_chain_long, false) \
     X(const_addr_cache, false) \
     X(indirect_l1, true) \
     X(shadow_lean, true) \
@@ -195,6 +196,7 @@ struct FeatureOverrides {
     X(bool, ra_spill_evict, "SVM_RA_SPILL_EVICT", DefaultOn, true, "RA farthest-end 驱逐；缺省 ON，=0 回退；原 register_alloc_pass.cpp:106") \
     X(bool, ra_coalesce, "SVM_RA_COALESCE", DefaultOn, true, "guest GPR 发布点定向合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(bool, ra_width_chain, "SVM_RA_WIDTH_CHAIN", NonZero, false, "unit 内多节点整数宽度 identity 链合并；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
+    X(bool, ra_width_chain_long, "SVM_RA_WIDTH_CHAIN_LONG", NonZero, false, "unit 内长 Add/Xor 发布链的低 32 位 ownership 合并；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
     X(bool, const_addr_cache, "SVM_CONST_ADDR_CACHE", NonZero, false, "unit 内重复绝对地址寄存器缓存；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
     X(bool, indirect_l1, "SVM_INDIRECT_L1", DefaultOn, true, "间接出口块内 L1 首槽快查，含逐出口信号 safepoint；缺省 ON，=0 回退；原 jit_context.cpp") \
     X(bool, shadow_lean, "SVM_SHADOW_LEAN", DefaultOn, true, "RSB frame 复用 L2 slot，缩短 push/pop；缺省 ON，=0 回退；原 jit_context.cpp") \
