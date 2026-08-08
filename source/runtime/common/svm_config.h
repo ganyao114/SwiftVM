@@ -47,7 +47,7 @@ namespace swift::runtime {
     X(addrmode_struct, true) \
     X(jit_scratch_xpool, true) \
     X(xmm_fault_sink, true) \
-    X(xmm_snapshot_dse, false) \
+    X(xmm_snapshot_dse, true) \
     X(helper_leaf_abi, false) \
     X(ra_intwidth_tie, true) \
     X(sse_afp_nan, true) \
@@ -165,7 +165,7 @@ struct FeatureOverrides {
     X(bool, x86_helper_values, "SVM_X86_HELPER_VALUES", NonZero, false, "helper 显式 guest value ABI；非 0 开，缺省 OFF；原 decoder_internal.h:28") \
     X(u32, x86_pin_ext, "SVM_X86_PIN_EXT", NonNegativeAtoi, 2, "x86 GPR pin level；缺省 2，负数钳为 0；原 reg_alloc.cpp:18/translator.cpp:672") \
     X(bool, xmm_fault_sink, "SVM_XMM_FAULT_SINK", DefaultOn, true, "XMM fault sink；缺省 ON，=0 回退；原 translator.cpp:662") \
-    X(bool, xmm_snapshot_dse, "SVM_XMM_SNAPSHOT_DSE", NonZero, false, "XMM fault 快照保留最新 SSA 值并删除同边界冗余完整快照；非 0 开，缺省 OFF；原 uniform_store_sink_pass.cpp") \
+    X(bool, xmm_snapshot_dse, "SVM_XMM_SNAPSHOT_DSE", DefaultOn, true, "XMM fault 快照发布最新 SSA 值并删除同边界同值冗余快照；缺省 ON,=0 回退(回退保留已实测的陈旧值错误,仅作应急);原 uniform_store_sink_pass.cpp") \
     X(bool, ra_diag, "SVM_RA_DIAG", NonZero, false, "RA 诊断；非 0 开，缺省 OFF；原 register_alloc_pass.cpp:124") \
     X(std::string, ra_shape_prof, "SVM_RA_SHAPE_PROF", RawString, "", "RA shape profile 输出目标；存在且非 0 启用；原 ra_shape_prof.cpp:132/249") \
     X(std::string, ra_hot_coalesce, "SVM_RA_HOT_COALESCE", RawString, "", "hot coalesce profile 输出目标；存在且非 0 启用；原 hot_coalesce_prof.cpp:171/451") \
