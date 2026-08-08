@@ -53,6 +53,10 @@ void AddressSpace::Init() {
             uniform_info->xmm_uniform_ranges.emplace_back(range.offset,
                                                            range.offset + range.size);
         }
+        for (const auto& range : config.loop_gpr_uniform_ranges) {
+            uniform_info->loop_gpr_uniform_ranges.emplace_back(
+                    range.offset, range.offset + range.size);
+        }
         for (auto& desc : config.buffers_static_alloc) {
             auto type = desc.is_float ? ir::GetVecIRValueType(desc.size)
                                       : ir::GetIRValueType(desc.size);

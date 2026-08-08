@@ -5,6 +5,7 @@
 #pragma once
 
 #include <mutex>
+#include <span>
 #include <shared_mutex>
 #include "runtime/backend/jit_code.h"
 #include "runtime/common/cast_utils.h"
@@ -74,6 +75,15 @@ struct UniformSnapshotPlan {
     Value value{};
     u32 offset{};
     u32 size{};
+};
+
+// 单元内单块自环的瞬态发码计划。普通入口执行到 prefix_end，自回边落到
+// 其后；引用由编译期 plan 持有，不序列化也不跨单元共享。
+struct LoopHoistMetadata {
+    Inst* prefix_end{};
+    std::span<Inst*> anchors{};
+    u16 gpr_count{};
+    u16 const_count{};
 };
 
 class Block final : public SlabObject<Block, true>,
@@ -182,6 +192,13 @@ public:
         return uniform_snapshot_plans;
     }
 
+    [[nodiscard]] const LoopHoistMetadata& GetLoopHoistMetadata() const {
+        return loop_hoist_metadata;
+    }
+    void SetLoopHoistMetadata(LoopHoistMetadata metadata) {
+        loop_hoist_metadata = metadata;
+    }
+
 #define INST(name, ret, ...)                                                                       \
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
     ret name(const Args&... args) {                                                                \
@@ -220,6 +237,7 @@ private:
     u16 v_stack{};
     backend::JitCache jit_cache{};
     std::vector<UniformSnapshotPlan> uniform_snapshot_plans{};
+    LoopHoistMetadata loop_hoist_metadata{};
 };
 
 using BlockList = IntrusiveList<&Block::list_node>;

@@ -623,7 +623,8 @@ bool JitContext::CanBypassDispatcher(ir::Location location) const {
 
 void JitContext::ForwardLocal(ir::Location location,
                               Label* cycle_exit,
-                              bool fallthrough) {
+                              bool fallthrough,
+                              Label* local_target) {
     ASSERT(cur_block);
     FlushSpillWrites();
     if (cycle_exit) {
@@ -632,7 +633,7 @@ void JitContext::ForwardLocal(ir::Location location,
         __ Cbnz(ip0, cycle_exit);
     }
     if (!fallthrough) {
-        __ B(GetInternalLabel(location.Value()));
+        __ B(local_target ? local_target : GetInternalLabel(location.Value()));
     }
 }
 

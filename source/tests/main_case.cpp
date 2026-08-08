@@ -20,6 +20,7 @@
 #include "runtime/ir/opts/cfg_analysis_pass.h"
 #include "runtime/ir/opts/const_folding_pass.h"
 #include "runtime/ir/opts/flags_elimination_pass.h"
+#include "runtime/ir/opts/loop_invariant_hoist_pass.h"
 #include "runtime/ir/opts/reid_instr_pass.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 #include "runtime/ir/opts/uniform_elimination_pass.h"
@@ -222,7 +223,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 146);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 148);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -295,7 +296,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 56);
+    STATIC_REQUIRE(kFeatureCount == 58);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -318,6 +319,71 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     Config config{};
     REQUIRE(ComputeConfigHash(config, empty) == ComputeConfigHash(config));
     REQUIRE(ComputeConfigHash(config, overridden) != ComputeConfigHash(config));
+}
+
+TEST_CASE("loop invariant hoist keeps a narrow unit-local proof boundary") {
+    using namespace swift::runtime::ir;
+
+    FeatureSet features{};
+    features.loop_gpr_hoist = true;
+    features.loop_const_hoist = true;
+    UniformInfo info{};
+    info.loop_gpr_uniform_ranges.push_back({0, 16 * sizeof(swift::u64)});
+
+    HIRBuilder builder{1, true, features};
+    constexpr Location loop_pc{0x1750};
+    auto* function = builder.AppendFunction(loop_pc, Location{0x1760});
+    const auto base0 = function->LoadUniform(Uniform{104, ValueType::U64});
+    const auto base1 = function->LoadUniform(Uniform{112, ValueType::U64});
+    const auto index = function->LoadImm(Imm{16u}).SetType(ValueType::U64);
+    const auto address0 = function->Add(base0, Operand{index}).SetType(ValueType::U64);
+    const auto address1 = function->Add(base1, Operand{index}).SetType(ValueType::U64);
+    const auto loaded0 = function->LoadMemory(Operand{address0}).SetType(ValueType::U64);
+    const auto loaded1 = function->LoadMemory(Operand{address1}).SetType(ValueType::U64);
+    (void)loaded0;
+    (void)loaded1;
+    const auto loop_end = function->LoadImm(Imm{swift::u64{0x1312d000}})
+                                  .SetType(ValueType::U64);
+    const auto compare = function->Sub(index, Operand{loop_end}).SetType(ValueType::U64);
+    function->SaveFlags(compare, Flags::NZCV);
+    function->EndBlock(terminal::Condition{
+            Cond::NE, terminal::LinkBlock{loop_pc}, terminal::ReturnToDispatch{}});
+    function->EndFunction();
+    function->ComputeRPO();
+    function->IdByRPO();
+
+    auto* block = function->GetHIRBlocksRPO().front().GetBlock();
+    std::vector<Inst*> original;
+    for (auto& inst : block->GetInstList()) original.push_back(&inst);
+    auto plan = LoopInvariantHoistPlan::Analyze(function, info, features);
+    REQUIRE_FALSE(plan->Empty());
+    plan->Apply();
+    const auto& metadata = block->GetLoopHoistMetadata();
+    REQUIRE(metadata.gpr_count == 1);
+    REQUIRE(metadata.const_count == 1);
+    REQUIRE(metadata.anchors.size() == 2);
+    REQUIRE(metadata.anchors.front()->GetOp() == OpCode::LoadUniform);
+    REQUIRE(metadata.anchors.back()->GetOp() == OpCode::LoadImm);
+
+    plan->Revert();
+    REQUIRE(block->GetLoopHoistMetadata().anchors.empty());
+    std::vector<Inst*> restored;
+    for (auto& inst : block->GetInstList()) restored.push_back(&inst);
+    REQUIRE(restored == original);
+
+    HIRBuilder written_builder{1, true, features};
+    auto* written = written_builder.AppendFunction(loop_pc, Location{0x1760});
+    const auto old_base = written->LoadUniform(Uniform{104, ValueType::U64});
+    const auto new_base = written->Add(old_base, Operand{Imm{8u}}).SetType(ValueType::U64);
+    written->StoreUniform(Uniform{104, ValueType::U64}, new_base);
+    written->EndBlock(terminal::LinkBlock{loop_pc});
+    written->EndFunction();
+    written->ComputeRPO();
+    written->IdByRPO();
+    FeatureSet gpr_only = features;
+    gpr_only.loop_const_hoist = false;
+    auto rejected = LoopInvariantHoistPlan::Analyze(written, info, gpr_only);
+    REQUIRE(rejected->Empty());
 }
 
 TEST_CASE("FPR demand-lean prices proven peaks and reclaims only AFP cold ABI") {

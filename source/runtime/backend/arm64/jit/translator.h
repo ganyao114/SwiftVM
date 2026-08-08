@@ -217,6 +217,7 @@ private:
                                            bool allow_fallthrough);
     [[nodiscard]] bool HasSelfEdge(const ir::Terminal& terminal) const;
     [[nodiscard]] bool IsSelfEdge(ir::Location target) const;
+    [[nodiscard]] Label* LocalBranchTarget(ir::Location target) const;
     void EmitBackedgeExitStub();
     void EmitDirectCycleExitStubs();
 
@@ -454,6 +455,7 @@ private:
     std::map<u64, std::unique_ptr<Label>> direct_cycle_exits{};
     u32 direct_cycle_cut_edges{};
     std::unique_ptr<BackedgeFlagsPlan> backedge_flags_plan{};
+    std::unique_ptr<Label> loop_hoist_body_entry{};
     u32 backedge_host_begin{};
     u32 backedge_host_end{};
     std::vector<BackedgeBlockMetadata> backedge_block_metadata{};

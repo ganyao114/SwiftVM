@@ -28,6 +28,7 @@
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
 #include "runtime/ir/opts/pass_pipeline.h"
+#include "runtime/ir/opts/loop_invariant_hoist_pass.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 
 namespace swift::runtime {
@@ -847,20 +848,43 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
     PerfScope perf_ra{GetPerfStats().regalloc_ns};
     PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
-    backend::RegAlloc reg_alloc{
+    backend::RegAlloc baseline_reg_alloc{
             static_cast<u32>(function->MaxInstrCount()), gprs, fprs, features,
             address_space.GetConfig().sse_afp_nan};
     ir::RegisterAllocPass::RunWithScalarInsert(
-            function, &reg_alloc,
+            function, &baseline_reg_alloc,
             module->GetAddressSpace().GetConfig().sse_scalar_insert,
             features);
+    backend::RegAlloc* reg_alloc = &baseline_reg_alloc;
+    std::unique_ptr<backend::RegAlloc> hoisted_reg_alloc;
+    std::unique_ptr<ir::LoopInvariantHoistPlan> hoist_plan;
+    if (uni_info && (features.loop_gpr_hoist || features.loop_const_hoist)) {
+        hoist_plan = ir::LoopInvariantHoistPlan::Analyze(function, *uni_info, features);
+    }
+    if (hoist_plan && !hoist_plan->Empty()) {
+        hoist_plan->Apply();
+        function->IdByRPO();
+        hoisted_reg_alloc = std::make_unique<backend::RegAlloc>(
+                static_cast<u32>(function->MaxInstrCount()), gprs, fprs, features,
+                address_space.GetConfig().sse_afp_nan);
+        ir::RegisterAllocPass::RunWithScalarInsert(
+                function, hoisted_reg_alloc.get(),
+                module->GetAddressSpace().GetConfig().sse_scalar_insert,
+                features);
+        if (hoisted_reg_alloc->SpillCount() <= baseline_reg_alloc.SpillCount()) {
+            reg_alloc = hoisted_reg_alloc.get();
+        } else {
+            hoist_plan->Revert();
+            function->IdByRPO();
+        }
+    }
     perf_ra_detail.Stop();
     perf_ra.Stop();
     fixed_snapshot.Record(static_cast<unsigned>(decoded_blocks));
     if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} regalloc-ready\n", func_start);
     PerfScope perf_cg{GetPerfStats().codegen_ns};
     PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};
-    backend::arm64::JitContext context{module, reg_alloc};
+    backend::arm64::JitContext context{module, *reg_alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate(function);
     perf_cg_detail.Stop();
@@ -880,7 +904,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
         // half-direct translation or fail solely because direct linking was selected.
         // Re-emit the entire unit with the legacy slot leaf and allocate it
         // under the existing unrestricted arena policy.
-        fallback_context.emplace(module, reg_alloc, false);
+        fallback_context.emplace(module, *reg_alloc, false);
         fallback_translator.emplace(*fallback_context);
         fallback_translator->Translate(function);
         emitted_context = &*fallback_context;

@@ -397,6 +397,9 @@ void JitTranslator::EmitRegionEdge(ir::Location target,
                                    bool fallthrough,
                                    bool record_edge_counters) {
     ASSERT(IsRegionInternalEdge(target));
+    if (fallthrough && IsSelfEdge(target) && loop_hoist_body_entry) {
+        fallthrough = false;
+    }
     MergeNZCV();
     if (record_edge_counters) {
         context.RecordExecCounter(exec_offset_exit_direct);
@@ -425,7 +428,8 @@ void JitTranslator::EmitRegionEdge(ir::Location target,
     context.ForwardLocal(target,
                          region_cycle ? backedge_exit_label.get()
                                       : ordered_cycle_exit,
-                         fallthrough);
+                         fallthrough,
+                         fallthrough ? nullptr : LocalBranchTarget(target));
     RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                         context.CurrentBufferSize());
 }
@@ -472,7 +476,7 @@ bool JitTranslator::EmitRegionIf(const ir::terminal::If& terminal,
         const auto fall = then_fallthrough ? *then_target : *else_target;
         const auto taken = then_fallthrough ? *else_target : *then_target;
         ASSERT(!needs_stub(taken));
-        branch(context.GetInternalLabel(taken.Value()), !then_fallthrough);
+        branch(LocalBranchTarget(taken), !then_fallthrough);
         ++region_block_edges;
         EmitRegionEdge(fall, true, false);
         return true;
@@ -480,8 +484,7 @@ bool JitTranslator::EmitRegionIf(const ir::terminal::If& terminal,
 
     Label then_stub;
     const bool stub = needs_stub(*then_target);
-    branch(stub ? &then_stub
-                : context.GetInternalLabel(then_target->Value()),
+    branch(stub ? &then_stub : LocalBranchTarget(*then_target),
            true);
     if (!stub) {
         ++region_block_edges;
@@ -535,7 +538,7 @@ bool JitTranslator::EmitRegionCondition(
         const auto fall = then_fallthrough ? *then_target : *else_target;
         const auto taken = then_fallthrough ? *else_target : *then_target;
         ASSERT(!needs_stub(taken));
-        branch(context.GetInternalLabel(taken.Value()), !then_fallthrough);
+        branch(LocalBranchTarget(taken), !then_fallthrough);
         ++region_block_edges;
         EmitRegionEdge(fall, true, false);
         return true;
@@ -543,8 +546,7 @@ bool JitTranslator::EmitRegionCondition(
 
     Label then_stub;
     const bool stub = needs_stub(*then_target);
-    branch(stub ? &then_stub
-                : context.GetInternalLabel(then_target->Value()),
+    branch(stub ? &then_stub : LocalBranchTarget(*then_target),
            true);
     if (!stub) {
         ++region_block_edges;
@@ -799,6 +801,15 @@ void JitTranslator::Translate(ir::Block* block) {
     u32 density_scalar_fp_ops = 0;
     PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
     cur_block = block;
+    const auto& loop_hoist = block->GetLoopHoistMetadata();
+    loop_hoist_body_entry = loop_hoist.prefix_end
+            ? std::make_unique<Label>()
+            : nullptr;
+    u32 loop_hoist_prefix_begin = 0;
+    u32 loop_hoist_prefix_ops = 0;
+    ASSERT_MSG(!loop_hoist_body_entry || HasSelfEdge(block->GetTerminal()),
+               "loop-hoist prefix without a self edge at {:#x}",
+               block->GetStartLocation().Value());
     ASSERT(direct_cycle_exits.empty());
     direct_cycle_cut_edges = 0;
     region_block_edges = 0;
@@ -959,6 +970,7 @@ void JitTranslator::Translate(ir::Block* block) {
     }
     perf_prologue.Stop();
     PerfScope2 perf_body{GetPerfStats2().codegen_body};
+    loop_hoist_prefix_begin = context.CurrentBufferSize();
     VAddr audit_guest_pc = block->GetStartLocation().Value();
     for (auto& inst : block->GetInstList()) {
         auto category = DensityCategory::Work;
@@ -980,6 +992,12 @@ void JitTranslator::Translate(ir::Block* block) {
                 ? static_cast<u64>(nzcv_requested)
                 : 0;
         Translate(&inst);
+        if (loop_hoist_body_entry && &inst == loop_hoist.prefix_end) {
+            loop_hoist_prefix_ops =
+                    (context.CurrentBufferSize() - loop_hoist_prefix_begin) /
+                    sizeof(u32);
+            __ Bind(loop_hoist_body_entry.get());
+        }
         if (density) {
             const u32 emitted = context.CurrentBufferSize() - before;
             const u32 nan_emitted = context.DensityNaNBytes() - nan_before;
@@ -1138,6 +1156,15 @@ void JitTranslator::Translate(ir::Block* block) {
                      direct_cycle_cut_edges,
                      static_cast<u32>(direct_cycle_cut_edges * 2u * sizeof(u32)));
     }
+    if (density && loop_hoist.prefix_end) {
+        std::fprintf(stderr,
+                     "[svm-loop-hoist] pc=0x%llx gpr=%u const=%u prefix_ops=%u\n",
+                     static_cast<unsigned long long>(
+                             block->GetStartLocation().Value()),
+                     loop_hoist.gpr_count, loop_hoist.const_count,
+                     loop_hoist_prefix_ops);
+    }
+    loop_hoist_body_entry.reset();
 }
 
 void JitTranslator::Translate(ir::HIRFunction* function) {
@@ -1506,7 +1533,7 @@ bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
     const u32 link_before = context.CurrentBufferSize();
     context.Forward(plan.self_target,
                     backedge_exit_label.get(),
-                    plan.local_entry.get());
+                    LocalBranchTarget(plan.self_target));
     RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                         context.CurrentBufferSize());
     return true;
@@ -1579,6 +1606,18 @@ void JitTranslator::EmitBackedgeColdPaths() {
 
 bool JitTranslator::IsSelfEdge(ir::Location target) const {
     return cur_block && target == cur_block->GetStartLocation();
+}
+
+Label* JitTranslator::LocalBranchTarget(ir::Location target) const {
+    if (IsSelfEdge(target)) {
+        if (loop_hoist_body_entry) {
+            return loop_hoist_body_entry.get();
+        }
+        if (backedge_flags_plan) {
+            return backedge_flags_plan->local_entry.get();
+        }
+    }
+    return context.GetInternalLabel(target.Value());
 }
 
 bool JitTranslator::HasSelfEdge(const ir::Terminal& terminal) const {
@@ -1691,8 +1730,9 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                     : GetDirectCycleExit(term.next);
             backedge_exit_referenced |=
                     exit && exit == backedge_exit_label.get();
-            auto* self_target = IsSelfEdge(term.next) && backedge_flags_plan
-                    ? backedge_flags_plan->local_entry.get()
+            auto* self_target = IsSelfEdge(term.next) &&
+                                        (backedge_flags_plan || loop_hoist_body_entry)
+                    ? LocalBranchTarget(term.next)
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
             context.Forward(term.next, exit, self_target, direct_link_kind);
@@ -1710,8 +1750,9 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                     : GetDirectCycleExit(term.next);
             backedge_exit_referenced |=
                     exit && exit == backedge_exit_label.get();
-            auto* self_target = IsSelfEdge(term.next) && backedge_flags_plan
-                    ? backedge_flags_plan->local_entry.get()
+            auto* self_target = IsSelfEdge(term.next) &&
+                                        (backedge_flags_plan || loop_hoist_body_entry)
+                    ? LocalBranchTarget(term.next)
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
             context.Forward(term.next, exit, self_target, direct_link_kind);

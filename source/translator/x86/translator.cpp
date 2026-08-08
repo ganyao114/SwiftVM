@@ -125,6 +125,10 @@ static UniformRangeDesc x86_xmm_uniform_ranges[] = {
         {offsetof(ThreadContext64, xmms), sizeof(ThreadContext64::xmms)},
 };
 
+static UniformRangeDesc x86_loop_gpr_uniform_ranges[] = {
+        {offsetof(ThreadContext64, rax), 16 * sizeof(u64)},
+};
+
 // Instruction-fetch memory interface for the x86 decoder. With guest
 // address virtualization (memory_base), guest address G is backed by host
 // memory at G + bias; the loader installs the bias via SetBias (0 =
@@ -611,6 +615,7 @@ struct X86Instance::Impl final {
                 .uniform_buffer_size = sizeof(ThreadContext64) + kScratchUniformSize,
                 .buffers_static_alloc = static_regs,
                 .xmm_uniform_ranges = x86_xmm_uniform_ranges,
+                .loop_gpr_uniform_ranges = x86_loop_gpr_uniform_ranges,
                 .static_program = false,
                 // Block linking uses incoming-link-tracked 4-byte direct
                 // branches for eligible same-module static exits. Empty or

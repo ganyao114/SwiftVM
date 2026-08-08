@@ -92,7 +92,8 @@ public:
                  LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional);
     void ForwardLocal(ir::Location location,
                       Label* cycle_exit = nullptr,
-                      bool fallthrough = false);
+                      bool fallthrough = false,
+                      Label* local_target = nullptr);
     [[nodiscard]] bool CanBypassDispatcher(ir::Location location) const;
     [[nodiscard]] bool CanEmitDirectLink(ir::Location location) const;
     [[nodiscard]] bool HasDirectLinkSites() const {

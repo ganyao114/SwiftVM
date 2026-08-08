@@ -815,6 +815,11 @@ u64 ComputeConfigHash(const Config& config) {
         h = HashU64(range.offset, h);
         h = HashU64(range.size, h);
     }
+    h = HashU64(config.loop_gpr_uniform_ranges.size(), h);
+    for (const auto& range : config.loop_gpr_uniform_ranges) {
+        h = HashU64(range.offset, h);
+        h = HashU64(range.size, h);
+    }
     return h;
 }
 

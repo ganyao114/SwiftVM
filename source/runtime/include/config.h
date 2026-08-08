@@ -120,6 +120,9 @@ struct Config {
     // ops.  This optional description lets UniformElimination distinguish
     // their scalar XmmLo/XmmHi views from unrelated U64 uniforms.
     std::span<UniformRangeDesc> xmm_uniform_ranges;
+    // Frontend-owned guest GPR State ranges eligible for strictly unit-local
+    // loop caching. No host-register ABI is attached to this description.
+    std::span<UniformRangeDesc> loop_gpr_uniform_ranges;
     bool static_program;
     Optimizations global_opts;
     Arm64Features arm64_features{Arm64Features::None};

@@ -2044,6 +2044,12 @@ private:
             for (auto& inst : lir_block->GetInstList()) {
                 definition_block_end[inst.Id()] = block_end;
             }
+            // 提升值只在普通入口初始化，自回边直接复用物理寄存器；把其
+            // 区间延到 terminal，禁止线性扫描在循环体内回收该寄存器。
+            for (auto* anchor : lir_block->GetLoopHoistMetadata().anchors) {
+                auto& end = actual_use_end[anchor->Id()];
+                end = std::max(end, block_end);
+            }
             auto extend_use = [&terminal_end, block_end](const Value& value) {
                 if (!value.Defined()) {
                     return;
@@ -2195,6 +2201,10 @@ private:
             }
         }
         if (block_end != 0) {
+            for (auto* anchor : lir_block->GetLoopHoistMetadata().anchors) {
+                auto& end = actual_use_end[anchor->Id()];
+                end = std::max<u16>(end, block_end);
+            }
             auto extend_use = [&actual_use_end, block_end](const Value& value) {
                 if (!value.Defined()) {
                     return;
@@ -2329,6 +2339,10 @@ private:
         // used at the end of the block and must stay live until then.
         if (lir_block->MaxInstrId() > 0) {
             auto block_end = static_cast<u16>(lir_block->MaxInstrId() - 1);
+            for (auto* anchor : lir_block->GetLoopHoistMetadata().anchors) {
+                auto& end = use_end[anchor->Id()];
+                end = std::max(end, block_end);
+            }
             auto extend_use = [&use_end, block_end](const Value& value) {
                 if (!value.Defined()) {
                     return;

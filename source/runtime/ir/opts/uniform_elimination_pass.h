@@ -35,9 +35,19 @@ struct UniformInfo {
     backend::FPRSMask uni_fprs{};
     RangeMap<u32, UniformRegister> uniform_regs_map{};
     std::vector<UniformRange> xmm_uniform_ranges{};
+    std::vector<UniformRange> loop_gpr_uniform_ranges{};
 
     [[nodiscard]] bool IsXmmUniformRange(u32 offset, u32 size) const {
         for (const auto& range : xmm_uniform_ranges) {
+            if (offset >= range.begin && offset + size <= range.end) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool IsLoopGPRUniformRange(u32 offset, u32 size) const {
+        for (const auto& range : loop_gpr_uniform_ranges) {
             if (offset >= range.begin && offset + size <= range.end) {
                 return true;
             }
