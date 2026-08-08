@@ -43,7 +43,37 @@ struct PendingStore {
     }
 }
 
-[[nodiscard]] bool ChainWouldStrandASurvivor(const Value& root, const Inst* store) {
+[[nodiscard]] bool HasObservableUse(Block* block, Inst* root,
+                                    const Inst* ignored_store) {
+    StackVector<Inst*, 16> work{root};
+    u32 visited{};
+    constexpr u32 kMaxVisited = 64;
+    while (!work.empty() && ++visited <= kMaxVisited) {
+        auto* producer = work.back();
+        work.pop_back();
+        for (auto& user : block->GetInstList()) {
+            if (&user == ignored_store || user.GetOp() == OpCode::StoreUniform) {
+                continue;
+            }
+            bool consumes{};
+            for (auto value : user.GetValues()) {
+                consumes |= value.Def() == producer;
+            }
+            if (!consumes) {
+                continue;
+            }
+            if (user.HasSideEffects() || user.GetOp() == OpCode::LoadMemory ||
+                user.GetOp() == OpCode::LoadMemoryTSO) {
+                return true;
+            }
+            work.push_back(&user);
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] bool ChainWouldStrandASurvivor(Block* block, const Value& root,
+                                             const Inst* store, bool precise) {
     StackVector<Inst*, 16> work{};
     u32 visited{};
     constexpr u32 kMaxVisited = 64;
@@ -56,6 +86,15 @@ struct PendingStore {
         }
         auto* def = work.back();
         work.pop_back();
+        // Under the precise mode a producer remains live only when another
+        // non-StoreUniform path reaches a real observer. A raw use count is not
+        // enough because one DSE batch may remove multiple stores. Check that
+        // proof before the opcode; the rollback path preserves the historical
+        // conservative ordering byte-for-byte.
+        if (precise && const_cast<Inst*>(def)->GetUses(false) > 1 &&
+            HasObservableUse(block, def, store)) {
+            continue;
+        }
         if (SurvivesDCE(def)) {
             return true;
         }
@@ -184,7 +223,9 @@ struct PendingStore {
 
 }  // namespace
 
-void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info, HIRFunction* hir_function) {
+void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info,
+                               const FeatureSet& features,
+                               HIRFunction* hir_function) {
     if (!block || info.xmm_uniform_ranges.empty()) {
         return;
     }
@@ -230,7 +271,9 @@ void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info, HIRFunctio
             for (u32 byte = 0; byte < store.size; ++byte) {
                 fully_covered &= covered[store.offset + byte] != 0;
             }
-            victim[reverse] = fully_covered && !ChainWouldStrandASurvivor(store.value, store.inst);
+            victim[reverse] = fully_covered &&
+                    !ChainWouldStrandASurvivor(block, store.value, store.inst,
+                                              features.xmm_snapshot_dse);
             for (u32 byte = 0; byte < store.size; ++byte) {
                 covered[store.offset + byte] = 1;
             }
@@ -305,13 +348,14 @@ void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info, HIRFunctio
     flush_all(nullptr);
 }
 
-void UniformStoreSinkPass::Run(HIRFunction* hir_function, const UniformInfo& info) {
+void UniformStoreSinkPass::Run(HIRFunction* hir_function, const UniformInfo& info,
+                               const FeatureSet& features) {
     if (!hir_function) {
         return;
     }
     for (auto* hir_block : hir_function->GetHIRBlocks()) {
         if (hir_block) {
-            Run(hir_block->GetBlock(), info, hir_function);
+            Run(hir_block->GetBlock(), info, features, hir_function);
         }
     }
 }

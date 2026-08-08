@@ -143,7 +143,37 @@ struct UniformValue {
 // LoadMemory -> ZeroExtend32 -> ZeroExtend64 -> StoreUniform, so checking only
 // the store's immediate operand is not enough.  Found by SVM_FUNC_BASE=0
 // swift_test, the only configuration that takes the block-mode allocator path.
-[[nodiscard]] static bool ChainWouldStrandASurvivor(const Value& root, const Inst* store) {
+[[nodiscard]] static bool HasObservableUse(Block* block, Inst* root,
+                                           const Inst* ignored_store) {
+    StackVector<Inst*, 16> work{root};
+    u32 visited{};
+    constexpr u32 kMaxVisited = 64;
+    while (!work.empty() && ++visited <= kMaxVisited) {
+        auto* producer = work.back();
+        work.pop_back();
+        for (auto& user : block->GetInstList()) {
+            if (&user == ignored_store || user.GetOp() == OpCode::StoreUniform) {
+                continue;
+            }
+            bool consumes{};
+            for (auto value : user.GetValues()) {
+                consumes |= value.Def() == producer;
+            }
+            if (!consumes) {
+                continue;
+            }
+            if (user.HasSideEffects() || user.GetOp() == OpCode::LoadMemory ||
+                user.GetOp() == OpCode::LoadMemoryTSO) {
+                return true;
+            }
+            work.push_back(&user);
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] static bool ChainWouldStrandASurvivor(Block* block, const Value& root,
+                                                    const Inst* store, bool precise) {
     StackVector<Inst*, 16> work{};
     u32 visited = 0;
     constexpr u32 kMaxVisited = 64;  // give up (and keep the store) beyond this
@@ -156,12 +186,16 @@ struct UniformValue {
         }
         auto* def = work.back();
         work.pop_back();
+        // Multiple stores can be removed as one DSE batch, so a raw use count
+        // is not proof. Require a non-StoreUniform path that reaches a real
+        // observer before treating the producer as independently live.
+        const u8 uses = const_cast<Inst*>(def)->GetUses(false);
+        if (precise && uses > 1 && HasObservableUse(block, def, store)) {
+            continue;
+        }
         if (SurvivesDCE(def)) {
             return true;
         }
-        // More than the one use being removed: this producer stays alive, so
-        // nothing behind it dies either.
-        const u8 uses = const_cast<Inst*>(def)->GetUses(false);
         if (uses > 1) {
             continue;
         }
@@ -194,6 +228,13 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
     std::unordered_map<Inst*, std::vector<u8>> label_killed;
 
     auto clear_all = [&] { std::fill(killed.begin(), killed.end(), u8{0}); };
+    auto clear_xmm = [&] {
+        for (const auto& range : info.xmm_uniform_ranges) {
+            const auto begin = std::min<std::size_t>(range.begin, killed.size());
+            const auto end = std::min<std::size_t>(range.end, killed.size());
+            std::fill(killed.begin() + begin, killed.begin() + end, u8{0});
+        }
+    };
 
     for (auto it = inst_list.rbegin(); it != inst_list.rend(); ++it) {
         Inst& inst = *it;
@@ -221,7 +262,8 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                         break;
                     }
                 }
-                if (all_dead && !ChainWouldStrandASurvivor(value, &inst)) {
+                if (all_dead && !ChainWouldStrandASurvivor(
+                                        block, value, &inst, features.xmm_snapshot_dse)) {
                     victims.push_back(&inst);
                     break;  // a removed store kills nothing
                 }
@@ -255,6 +297,25 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
             case OpCode::GetHostFPR:
             case OpCode::SetLocation:
                 clear_all();
+                break;
+            case OpCode::LoadMemory:
+            case OpCode::StoreMemory:
+            case OpCode::LoadMemoryTSO:
+            case OpCode::StoreMemoryTSO:
+            case OpCode::CompareAndSwap:
+            case OpCode::CompareAndSwap128:
+            case OpCode::CheckMemoryAlignment:
+            case OpCode::AtomicExchange:
+            case OpCode::AtomicFetchAdd:
+            case OpCode::AtomicRMW:
+                // A synchronous guest fault snapshots XMM state at this exact
+                // point. Forwarded LoadUniform nodes no longer mark the value
+                // live to the reverse DSE, so preserve XMM stores until the
+                // dedicated sink can select the latest SSA value. OFF keeps
+                // the historical dataflow unchanged.
+                if (features.xmm_snapshot_dse) {
+                    clear_xmm();
+                }
                 break;
             case OpCode::SetHostGPR:
             case OpCode::GetHostGPR:

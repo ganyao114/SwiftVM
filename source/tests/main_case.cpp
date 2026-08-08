@@ -222,7 +222,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 145);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 146);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -295,7 +295,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 55);
+    STATIC_REQUIRE(kFeatureCount == 56);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -1114,6 +1114,187 @@ TEST_CASE("XMM uniform forwarding covers V128 and scalar views") {
     }
     REQUIRE(pinned_xmm_stores ==
             (xmm_forward_off || xmm_narrow_fwd_off ? 2 : 1));
+}
+
+TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe duplicates") {
+    using namespace swift::runtime::ir;
+
+    UniformInfo info{.uniform_size = 32};
+    info.xmm_uniform_ranges.push_back({0, 16});
+
+    struct Shape {
+        std::unique_ptr<Block> block;
+        Inst* observation{};
+        Value raw{};
+        Value product{};
+    };
+
+    auto make_triad = [] {
+        auto block = std::make_unique<Block>(0, Location{0x3410});
+        auto input_address = block->LoadImm(Imm{swift::u64{0x1000}})
+                                     .SetType(ValueType::U64);
+        auto raw = block->LoadMemory(Operand{input_address}).SetType(ValueType::V128);
+        block->StoreUniform(Uniform{0, ValueType::V128}, raw);
+        auto scalar = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::V128);
+        auto product = block->VecFMul(raw, scalar, Imm{64u}).SetType(ValueType::V128);
+        block->StoreUniform(Uniform{0, ValueType::V128}, product);
+        auto rhs_address = block->LoadImm(Imm{swift::u64{0x2000}})
+                                   .SetType(ValueType::U64);
+        auto rhs = block->LoadMemory(Operand{rhs_address}).SetType(ValueType::V128);
+        auto sum = block->VecFAdd(product, rhs, Imm{64u}).SetType(ValueType::V128);
+        block->StoreUniform(Uniform{0, ValueType::V128}, sum);
+        return Shape{std::move(block), rhs.Def(), raw, product};
+    };
+
+    auto run_triad = [&](bool enabled) {
+        auto shape = make_triad();
+        auto features = FeatureSet{};
+        features.xmm_snapshot_dse = enabled;
+        UniformEliminationPass::Run(shape.block.get(), info, features);
+        UniformStoreSinkPass::Run(shape.block.get(), info, features);
+
+        Inst* previous{};
+        std::size_t stores{};
+        for (auto& inst : shape.block->GetInstList()) {
+            if (&inst == shape.observation) {
+                REQUIRE(previous != nullptr);
+                REQUIRE(previous->GetOp() == OpCode::StoreUniform);
+                const auto snapshot = previous->GetArg<Value>(1);
+                REQUIRE(snapshot == (enabled ? shape.product : shape.raw));
+            }
+            stores += inst.GetOp() == OpCode::StoreUniform;
+            previous = &inst;
+        }
+        REQUIRE(stores == 2);
+    };
+    run_triad(false);
+    run_triad(true);
+
+    auto scale_store_count = [&](bool enabled) {
+        Block block{0, Location{swift::u64{0x3420u + static_cast<swift::u32>(enabled)}}};
+        auto input_address = block.LoadImm(Imm{swift::u64{0x1000}})
+                                     .SetType(ValueType::U64);
+        auto raw = block.LoadMemory(Operand{input_address}).SetType(ValueType::V128);
+        block.StoreUniform(Uniform{0, ValueType::V128}, raw);
+        auto scalar = block.LoadImm(Imm{swift::u64{0}}).SetType(ValueType::V128);
+        auto product = block.VecFMul(raw, scalar, Imm{64u}).SetType(ValueType::V128);
+        block.StoreUniform(Uniform{0, ValueType::V128}, product);
+        auto output_address = block.LoadImm(Imm{swift::u64{0x3000}})
+                                      .SetType(ValueType::U64);
+        block.StoreMemory(Operand{output_address}, product);
+
+        auto features = FeatureSet{};
+        features.xmm_snapshot_dse = enabled;
+        UniformEliminationPass::Run(&block, info, features);
+        UniformStoreSinkPass::Run(&block, info, features);
+        return std::count_if(block.GetInstList().begin(), block.GetInstList().end(),
+                             [](const Inst& inst) {
+                                 return inst.GetOp() == OpCode::StoreUniform;
+                             });
+    };
+    REQUIRE(scale_store_count(false) == 2);
+    REQUIRE(scale_store_count(true) == 1);
+
+    auto add_snapshot_is_raw = [&](bool enabled) {
+        Block block{0, Location{swift::u64{0x3430u + static_cast<swift::u32>(enabled)}}};
+        auto input_address = block.LoadImm(Imm{swift::u64{0x1000}})
+                                     .SetType(ValueType::U64);
+        auto raw = block.LoadMemory(Operand{input_address}).SetType(ValueType::V128);
+        block.StoreUniform(Uniform{0, ValueType::V128}, raw);
+        auto rhs_address = block.LoadImm(Imm{swift::u64{0x2000}})
+                                   .SetType(ValueType::U64);
+        auto rhs = block.LoadMemory(Operand{rhs_address}).SetType(ValueType::V128);
+        auto sum = block.VecFAdd(raw, rhs, Imm{64u}).SetType(ValueType::V128);
+        block.StoreUniform(Uniform{0, ValueType::V128}, sum);
+
+        auto features = FeatureSet{};
+        features.xmm_snapshot_dse = enabled;
+        UniformEliminationPass::Run(&block, info, features);
+        UniformStoreSinkPass::Run(&block, info, features);
+        Inst* previous{};
+        for (auto& inst : block.GetInstList()) {
+            if (&inst == rhs.Def()) {
+                REQUIRE(previous != nullptr);
+                REQUIRE(previous->GetOp() == OpCode::StoreUniform);
+                return previous->GetArg<Value>(1) == raw;
+            }
+            previous = &inst;
+        }
+        return false;
+    };
+    REQUIRE(add_snapshot_is_raw(false));
+    REQUIRE(add_snapshot_is_raw(true));
+
+    const std::array affected_producers{
+            OpCode::VecFAdd, OpCode::VecFSub, OpCode::VecFMul,
+            OpCode::VecFDiv, OpCode::VecAdd,  OpCode::VecSub,
+            OpCode::VecXor,
+    };
+    for (const auto op : affected_producers) {
+        Block block{0, Location{swift::u64{0x3440u + static_cast<swift::u32>(op)}}};
+        auto input_address = block.LoadImm(Imm{swift::u64{0x1000}})
+                                     .SetType(ValueType::U64);
+        auto raw = block.LoadMemory(Operand{input_address}).SetType(ValueType::V128);
+        block.StoreUniform(Uniform{0, ValueType::V128}, raw);
+        auto right = block.LoadImm(Imm{swift::u64{0}}).SetType(ValueType::V128);
+        Value produced;
+        switch (op) {
+            case OpCode::VecFAdd: produced = block.VecFAdd(raw, right, Imm{64u}); break;
+            case OpCode::VecFSub: produced = block.VecFSub(raw, right, Imm{64u}); break;
+            case OpCode::VecFMul: produced = block.VecFMul(raw, right, Imm{64u}); break;
+            case OpCode::VecFDiv: produced = block.VecFDiv(raw, right, Imm{64u}); break;
+            case OpCode::VecAdd: produced = block.VecAdd(raw, right, Imm{64u}); break;
+            case OpCode::VecSub: produced = block.VecSub(raw, right, Imm{64u}); break;
+            case OpCode::VecXor: produced = block.VecXor(raw, right); break;
+            default: FAIL("missing fault-snapshot producer case");
+        }
+        produced = produced.SetType(ValueType::V128);
+        block.StoreUniform(Uniform{0, ValueType::V128}, produced);
+        auto rhs_address = block.LoadImm(Imm{swift::u64{0x2000}})
+                                   .SetType(ValueType::U64);
+        auto rhs = block.LoadMemory(Operand{rhs_address}).SetType(ValueType::V128);
+        auto final_value = block.VecXor(produced, rhs).SetType(ValueType::V128);
+        block.StoreUniform(Uniform{0, ValueType::V128}, final_value);
+
+        auto features = FeatureSet{};
+        features.xmm_snapshot_dse = true;
+        UniformEliminationPass::Run(&block, info, features);
+        UniformStoreSinkPass::Run(&block, info, features);
+        Inst* previous{};
+        bool checked{};
+        for (auto& inst : block.GetInstList()) {
+            if (&inst == rhs.Def()) {
+                REQUIRE(previous != nullptr);
+                REQUIRE(previous->GetOp() == OpCode::StoreUniform);
+                REQUIRE(previous->GetArg<Value>(1) == produced);
+                checked = true;
+            }
+            previous = &inst;
+        }
+        REQUIRE(checked);
+    }
+
+    // Two stores are not proof that the faulting producer has another live
+    // consumer: both stores may be DSE victims in the same batch. Keep at
+    // least one use unless a non-uniform-store path reaches an observer.
+    Block stranded{0, Location{0x3490}};
+    auto address = stranded.LoadImm(Imm{swift::u64{0x1000}}).SetType(ValueType::U64);
+    auto loaded = stranded.LoadMemory(Operand{address}).SetType(ValueType::V128);
+    stranded.StoreUniform(Uniform{0, ValueType::V128}, loaded);
+    stranded.StoreUniform(Uniform{0, ValueType::V128}, loaded);
+    auto replacement = stranded.LoadImm(Imm{swift::u64{0}}).SetType(ValueType::V128);
+    stranded.StoreUniform(Uniform{0, ValueType::V128}, replacement);
+    auto precise = FeatureSet{};
+    precise.xmm_snapshot_dse = true;
+    UniformEliminationPass::Run(&stranded, info, precise);
+    UniformStoreSinkPass::Run(&stranded, info, precise);
+    const auto retained_uses = std::count_if(
+            stranded.GetInstList().begin(), stranded.GetInstList().end(),
+            [&](const Inst& inst) {
+                return inst.GetOp() == OpCode::StoreUniform &&
+                       inst.GetArg<Value>(1) == loaded;
+            });
+    REQUIRE(retained_uses >= 1);
 }
 
 TEST_CASE("Uniform fast path is instruction-identical to the legacy pass") {
@@ -3628,7 +3809,7 @@ TEST_CASE("resident XMM coalescing preserves snapshots and fixed-home windows") 
             block->ReIdInstr();
 
             UniformEliminationPass::Run(block.get(), info, FeatureSet{});
-            UniformStoreSinkPass::Run(block.get(), info);
+            UniformStoreSinkPass::Run(block.get(), info, FeatureSet{});
             UniformEliminationPass::FinalizeStaticFPRMappings(block.get(), info);
             std::size_t uniform_stores = 0;
             std::size_t fixed_stores = 0;
@@ -4070,6 +4251,65 @@ TEST_CASE("resident XMM homes survive a guest page fault") {
     X86Instance::Destroy(instance);
     backend::SmcTracker::SetEnabled(true);
     munmap(data, page);
+    munmap(code, page);
+}
+
+TEST_CASE("fault snapshot publishes the latest XMM arithmetic result") {
+    using namespace swift::translator;
+    using namespace swift::translator::x86;
+
+    const long page_long = sysconf(_SC_PAGESIZE);
+    REQUIRE(page_long > 0);
+    const auto page = static_cast<size_t>(page_long);
+    auto* input = static_cast<swift::u8*>(
+            mmap(nullptr, page, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANON, -1, 0));
+    auto* fault = static_cast<swift::u8*>(
+            mmap(nullptr, page, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0));
+    auto* code = static_cast<swift::u8*>(
+            mmap(nullptr, page, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANON, -1, 0));
+    REQUIRE(input != MAP_FAILED);
+    REQUIRE(fault != MAP_FAILED);
+    REQUIRE(code != MAP_FAILED);
+
+    const std::array<double, 2> raw{1.5, -4.0};
+    const std::array<double, 2> scalar{2.0, 3.0};
+    const std::array<double, 2> expected{3.0, -12.0};
+    std::memcpy(input, raw.data(), sizeof(raw));
+
+    // movapd (%rbx),%xmm0; mulpd %xmm1,%xmm0;
+    // addpd (%rax),%xmm0; hlt.  The addpd RHS faults after mulpd has committed.
+    const std::array<swift::u8, 13> guest{
+            0x66, 0x0f, 0x28, 0x03,
+            0x66, 0x0f, 0x59, 0xc1,
+            0x66, 0x0f, 0x58, 0x00,
+            0xf4,
+    };
+    std::memcpy(code, guest.data(), guest.size());
+
+    backend::SmcTracker::SetEnabled(false);
+    auto* instance = X86Instance::Make();
+    auto* core = X86Core::Make(instance);
+    auto& state = core->GetContext();
+    state.rip.qword = reinterpret_cast<swift::u64>(code);
+    state.rax.qword = reinterpret_cast<swift::u64>(fault);
+    state.rbx.qword = reinterpret_cast<swift::u64>(input);
+    std::memcpy(&state.xmm1, scalar.data(), sizeof(scalar));
+
+    REQUIRE(core->Run() == ExitReason::PageFatal);
+    std::array<double, 2> actual{};
+    std::memcpy(actual.data(), &state.xmm0, sizeof(actual));
+    CAPTURE(raw[0], raw[1], expected[0], expected[1], actual[0], actual[1]);
+    const auto& config = swift::runtime::GetSvmConfig();
+    const auto& wanted = config.xmm_snapshot_dse ? expected : raw;
+    REQUIRE(std::memcmp(actual.data(), wanted.data(), sizeof(wanted)) == 0);
+
+    X86Core::Destroy(core);
+    X86Instance::Destroy(instance);
+    backend::SmcTracker::SetEnabled(true);
+    munmap(input, page);
+    munmap(fault, page);
     munmap(code, page);
 }
 

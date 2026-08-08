@@ -29,14 +29,14 @@ PassPipeline PassPipeline::BuildDefault(const UniformInfo* uniform_info) {
         pipeline.AddBlockPass(Optimizations::XmmFaultSink,
             [uniform_info](Block* block, const FeatureSet& features) {
                 if (features.xmm_fault_sink) {
-                    UniformStoreSinkPass::Run(block, *uniform_info);
+                    UniformStoreSinkPass::Run(block, *uniform_info, features);
                 }
                 UniformEliminationPass::FinalizeStaticFPRMappings(block, *uniform_info);
             });
         pipeline.AddFunctionPass(Optimizations::XmmFaultSink,
             [uniform_info](HIRFunction* function, const FeatureSet& features) {
                 if (features.xmm_fault_sink) {
-                    UniformStoreSinkPass::Run(function, *uniform_info);
+                    UniformStoreSinkPass::Run(function, *uniform_info, features);
                 }
                 UniformEliminationPass::FinalizeStaticFPRMappings(function, *uniform_info);
             });

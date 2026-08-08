@@ -12,8 +12,10 @@ struct UniformInfo;
 // own.
 class UniformStoreSinkPass {
 public:
-    static void Run(Block* block, const UniformInfo& info, HIRFunction* hir_function = nullptr);
-    static void Run(HIRFunction* hir_function, const UniformInfo& info);
+    static void Run(Block* block, const UniformInfo& info, const FeatureSet& features,
+                    HIRFunction* hir_function = nullptr);
+    static void Run(HIRFunction* hir_function, const UniformInfo& info,
+                    const FeatureSet& features);
 };
 
 }  // namespace swift::runtime::ir
