@@ -131,6 +131,9 @@ private:
 
     struct BackedgeFlagsPlan {
         bool optimized{true};
+        // dead_successor=true 是 region 单边 flags-dead 形态：热边目标在
+        // 任意观察点前完整覆写 flags，因此不需要跨块 recipe/双入口。
+        bool dead_successor{};
         bool self_is_then{};
         ir::Location self_target{};
         ir::Location cold_target{};
@@ -138,7 +141,21 @@ private:
         HostFlags requested{};
         ir::Inst* polarity_load{};
         ir::Inst* polarity_store{};
+        ir::Inst* final_save{};
         ir::Inst* final_advance{};
+        struct DeferredOperand {
+            enum class Kind : u8 { None, Imm, HostGPR, Uniform } kind{};
+            u64 value{};
+            u8 offset{};
+
+            auto operator<=>(const DeferredOperand&) const = default;
+        };
+        // 严格窄 Sub 子集可在 cold edge 从架构家重读两个输入并重算 PF/AF，
+        // 不延长 SSA interval，也不让 recipe 穿过目标块。
+        bool defer_pfaf{};
+        u8 pfaf_width{};
+        DeferredOperand pfaf_left{};
+        DeferredOperand pfaf_right{};
         std::unique_ptr<Label> local_entry{std::make_unique<Label>()};
         std::unique_ptr<Label> external_entry{std::make_unique<Label>()};
         std::unique_ptr<Label> cold_exit{std::make_unique<Label>()};
@@ -148,8 +165,14 @@ private:
 
     [[nodiscard]] std::unique_ptr<BackedgeFlagsPlan>
     PlanBackedgeFlags(ir::Block* block);
+    [[nodiscard]] bool TargetKillsIncomingFlags(ir::Location target) const;
+    [[nodiscard]] bool PlanRegionBranchPFAF(BackedgeFlagsPlan& plan,
+                                            ir::Inst* producer) const;
+    [[nodiscard]] bool ReproveRegionBranchPFAF() const;
+    [[nodiscard]] bool RegionBranchPFAFActive(ir::Inst* producer) const;
     [[nodiscard]] bool EmitBackedgeFlagsTerminal(const ir::Terminal& terminal);
     void EmitBackedgeMaterialize(const BackedgeFlagsPlan& plan);
+    void EmitRegionBranchPFAF(const BackedgeFlagsPlan& plan);
     void EmitBackedgeColdPaths();
     [[nodiscard]] static bool PreservesHostNZCV(ir::OpCode op);
     [[nodiscard]] static bool MayFaultOrObserve(ir::OpCode op);
@@ -211,7 +234,8 @@ private:
     [[nodiscard]] bool CanRegionFallThrough(ir::Location target) const;
     void EmitRegionEdge(ir::Location target,
                         bool fallthrough = false,
-                        bool record_edge_counters = true);
+                        bool record_edge_counters = true,
+                        bool commit_flags = true);
     [[nodiscard]] bool EmitRegionIf(const ir::terminal::If& terminal,
                                     bool allow_fallthrough);
     [[nodiscard]] bool EmitRegionCondition(const ir::terminal::Condition& terminal,
@@ -433,6 +457,7 @@ private:
     bool direct_cycle_latch{false};
     bool backedge_latch{false};
     bool backedge_flags{false};
+    bool region_branch_flags{false};
     bool region_edges_active{false};
     bool execution_trace_enabled{false};
     int execution_trace_rsp_reg{-1};
@@ -474,6 +499,7 @@ private:
     std::map<std::string, u32> boundary_terminal_link_mnemonics{};
     std::vector<std::pair<u32, u32>> boundary_terminal_link_ranges{};
     std::unordered_set<u64> region_blocks{};
+    std::map<u64, ir::Block*> region_block_map{};
     std::set<std::pair<u64, u64>> region_cycle_edges{};
     std::optional<u64> next_region_block{};
     u32 region_block_edges{};

@@ -312,6 +312,119 @@ void JitTranslator::TestAuxiliaryCarry(const Register& result) {
     RecordPFAFDensity(PFAFDensityKind::AFRead, begin);
 }
 
+bool JitTranslator::PlanRegionBranchPFAF(BackedgeFlagsPlan& plan,
+                                        ir::Inst* producer) const {
+    if (!plan.dead_successor || !producer || !plan.final_save ||
+        plan.final_save->GetArg<ir::Value>(0).Def() != producer ||
+        producer->GetOp() != ir::OpCode::Sub ||
+        (producer->ReturnType() != ir::ValueType::U8 &&
+         producer->ReturnType() != ir::ValueType::U16)) {
+        return false;
+    }
+    const auto requested = plan.final_save->GetArg<ir::Flags>(1);
+    if (!True(requested & ir::Flags::NZCV) ||
+        !True(requested & ir::Flags::Parity) ||
+        !True(requested & ir::Flags::AuxiliaryCarry)) {
+        return false;
+    }
+
+    using Deferred = BackedgeFlagsPlan::DeferredOperand;
+    plan.pfaf_width = static_cast<u8>(ir::GetValueSizeByte(producer->ReturnType()));
+    auto describe = [&](ir::Value value) -> Deferred {
+        auto* def = value.Def();
+        if (!def || ir::GetValueSizeByte(value.Type()) < plan.pfaf_width) {
+            return {};
+        }
+        if (def->GetOp() == ir::OpCode::LoadImm) {
+            return {Deferred::Kind::Imm, def->GetArg<ir::Imm>(0).Get(), 0};
+        }
+        if (def->GetOp() == ir::OpCode::GetHostGPR) {
+            const u64 offset = def->GetArg<ir::Imm>(1).Get();
+            if (offset + plan.pfaf_width > sizeof(u64)) {
+                return {};
+            }
+            return {Deferred::Kind::HostGPR,
+                    def->GetArg<ir::Imm>(0).Get(), static_cast<u8>(offset)};
+        }
+        if (def->GetOp() == ir::OpCode::LoadUniform) {
+            const auto uniform = def->GetArg<ir::Uniform>(0);
+            if (ir::GetValueSizeByte(uniform.GetType()) < plan.pfaf_width) {
+                return {};
+            }
+            return {Deferred::Kind::Uniform, uniform.GetOffset(), 0};
+        }
+        return {};
+    };
+
+    plan.pfaf_left = describe(producer->GetArg<ir::Value>(0));
+    const auto right = producer->GetArg<ir::Operand>(1);
+    if (!right.GetRight().Null()) {
+        return false;
+    }
+    if (right.GetLeft().IsImm()) {
+        plan.pfaf_right = {Deferred::Kind::Imm, right.GetLeft().imm.Get(), 0};
+    } else if (right.GetLeft().IsValue()) {
+        plan.pfaf_right = describe(right.GetLeft().value);
+    }
+    plan.defer_pfaf = plan.pfaf_left.kind != Deferred::Kind::None &&
+                      plan.pfaf_right.kind != Deferred::Kind::None;
+    auto overlaps_uniform = [&](const Deferred& operand,
+                                const ir::Uniform& uniform) {
+        if (operand.kind != Deferred::Kind::Uniform) {
+            return false;
+        }
+        const u64 left_begin = operand.value;
+        const u64 left_end = left_begin + plan.pfaf_width;
+        const u64 right_begin = uniform.GetOffset();
+        const u64 right_end = right_begin + ir::GetValueSizeByte(uniform.GetType());
+        return left_begin < right_end && right_begin < left_end;
+    };
+    for (const auto& scan : cur_block->GetInstList()) {
+        if (scan.Id() <= producer->Id()) {
+            continue;
+        }
+        if (scan.GetOp() == ir::OpCode::StoreUniform) {
+            const auto uniform = scan.GetArg<ir::Uniform>(0);
+            if (overlaps_uniform(plan.pfaf_left, uniform) ||
+                overlaps_uniform(plan.pfaf_right, uniform)) {
+                plan.defer_pfaf = false;
+            }
+        } else if (scan.GetOp() == ir::OpCode::SetHostGPR) {
+            const u64 target = scan.GetArg<ir::Imm>(1).Get();
+            if ((plan.pfaf_left.kind == Deferred::Kind::HostGPR &&
+                 plan.pfaf_left.value == target) ||
+                (plan.pfaf_right.kind == Deferred::Kind::HostGPR &&
+                 plan.pfaf_right.value == target)) {
+                plan.defer_pfaf = false;
+            }
+        }
+    }
+    return plan.defer_pfaf;
+}
+
+bool JitTranslator::ReproveRegionBranchPFAF() const {
+    if (!backedge_flags_plan || !backedge_flags_plan->defer_pfaf ||
+        !backedge_flags_plan->final_save) {
+        return false;
+    }
+    BackedgeFlagsPlan reproved;
+    reproved.dead_successor = true;
+    reproved.final_save = backedge_flags_plan->final_save;
+    auto* producer = reproved.final_save->GetArg<ir::Value>(0).Def();
+    if (!PlanRegionBranchPFAF(reproved, producer)) {
+        return false;
+    }
+    return reproved.pfaf_width == backedge_flags_plan->pfaf_width &&
+           reproved.pfaf_left == backedge_flags_plan->pfaf_left &&
+           reproved.pfaf_right == backedge_flags_plan->pfaf_right;
+}
+
+bool JitTranslator::RegionBranchPFAFActive(ir::Inst* producer) const {
+    return backedge_flags_plan && backedge_flags_plan->defer_pfaf &&
+           backedge_flags_plan->final_save &&
+           backedge_flags_plan->final_save->GetArg<ir::Value>(0).Def() == producer;
+}
+
 JitTranslator::PseudoFlags JitTranslator::GetPseudoFlags(ir::Inst* inst) {
     ir::Flags result_set{};
     ir::Flags result_clear{};
@@ -330,6 +443,9 @@ JitTranslator::PseudoFlags JitTranslator::GetPseudoFlags(ir::Inst* inst) {
                 result_clear |= guest_flags;
             }
         }
+    }
+    if (!branch_only && RegionBranchPFAFActive(inst)) {
+        branch_only = true;
     }
     return {result_set, result_clear, branch_only};
 }

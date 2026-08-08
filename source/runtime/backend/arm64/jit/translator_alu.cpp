@@ -237,13 +237,17 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
                 right_operand = Operand{saved.W()};
                 aligned_right = Operand{saved.W(), LSL, shift};
             }
-            if (!pseudo_flags.branch_only) {
+            const bool region_branch_pfaf = RegionBranchPFAFActive(inst);
+            if (!pseudo_flags.branch_only || region_branch_pfaf) {
                 MergeNZCV();
             }
             __ Subs(result.W(), result.W(), aligned_right);
             __ Lsr(result.W(), result.W(), shift);
             auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
-            if (!pseudo_flags.branch_only) {
+            if (region_branch_pfaf) {
+                nzcv_requested = GuestNZCVToHost(guest_nzcv);
+                nzcv_dirty = true;
+            } else if (!pseudo_flags.branch_only) {
                 SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
             }
             if (!pseudo_flags.branch_only &&

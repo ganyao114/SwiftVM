@@ -24,6 +24,7 @@
 #include "runtime/common/cast_utils.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/block.h"
+#include "runtime/ir/hir_builder.h"
 #include "translator/x86/cpu.h"
 
 namespace {
@@ -228,6 +229,136 @@ IntrusivePtr<Block> BuildEligibleBackedgeFlagsConditional(VAddr guest,
     });
     block->ReIdInstr();
     return block;
+}
+
+struct RegionBranchRun {
+    HaltReason halt{};
+    u64 selector{};
+    u64 observed_flags{};
+    u32 code_size{};
+    u64 code_hash{};
+};
+
+RegionBranchRun RunRegionBranchFunction(bool enabled,
+                                        bool observe_before_overwrite = false,
+                                        bool helper_after_producer = false,
+                                        u8 initial_selector = 1) {
+    constexpr VAddr source_guest = 0x2100;
+    constexpr VAddr hot_guest = 0x2180;
+    constexpr VAddr cold_guest = 0x2200;
+    constexpr u32 selector_offset = 8;
+    constexpr u32 result_offset = sizeof(swift::x86::ThreadContext64);
+
+    FeatureSet features{};
+    features.flags_region_branch = enabled;
+    Config config{
+            .loc_start = 0,
+            .loc_end = 0x4000,
+            .enable_jit = true,
+            .enable_asm_interp = false,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+            .uniform_buffer_size = result_offset + sizeof(u64),
+            .region_edges = true,
+    };
+    AddressSpace space{config};
+    ModuleConfig module_config{.read_only = true};
+    module_config.feature_overrides.Set(FeatureId::flags_region_branch, enabled);
+    auto module = space.MapModule(source_guest, 0x2300, module_config);
+
+    HIRBuilder builder{1, true, features};
+    auto* function = builder.AppendFunction(Location{source_guest},
+                                            Location{cold_guest + 1});
+    if (observe_before_overwrite) {
+        const auto token = function->LoadImm(Imm{u64{0}}).SetType(ValueType::U64);
+        const auto incoming = function->GetFlags(token, Flags::All)
+                                      .SetType(ValueType::U64);
+        function->StoreUniform(Uniform{result_offset, ValueType::U64}, incoming);
+        function->AdvancePC(Imm{u64{1}});
+    }
+    const auto selector = function->LoadUniform(
+            Uniform{selector_offset, ValueType::U8}).SetType(ValueType::U8);
+    const auto one = function->LoadImm(Imm{u8{1}}).SetType(ValueType::U8);
+    const auto result = function->Sub(selector, Operand{one}).SetType(ValueType::U8);
+    function->SaveFlags(result, Flags::All);
+    const auto polarity = function->LoadImm(Imm{u8{1}}).SetType(ValueType::U8);
+    function->StoreUniform(
+            Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted),
+                    ValueType::U8},
+            polarity);
+    if (helper_after_producer) {
+        (void)function
+                ->CallLambda(Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(
+                        FptrCast(&RingTargetProbe)))}})
+                .SetType(ValueType::U64);
+    }
+    function->AdvancePC(Imm{u64{1}});
+    const auto condition = function->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+    auto [hot, cold] = builder.If(terminal::If{
+            condition,
+            terminal::LinkBlock{Location{cold_guest}},
+            terminal::LinkBlock{Location{hot_guest}},
+    });
+    REQUIRE(hot != nullptr);
+    REQUIRE(cold != nullptr);
+
+    builder.SetCurBlock(hot);
+    if (observe_before_overwrite) {
+        const auto hot_token = function->LoadImm(Imm{u64{0}}).SetType(ValueType::U64);
+        const auto incoming = function->GetFlags(hot_token, Flags::All)
+                                      .SetType(ValueType::U64);
+        function->StoreUniform(Uniform{result_offset, ValueType::U64}, incoming);
+        function->AdvancePC(Imm{u64{1}});
+    }
+    const auto hot_left = function->LoadImm(Imm{u8{7}}).SetType(ValueType::U8);
+    const auto hot_right = function->LoadImm(Imm{u8{3}}).SetType(ValueType::U8);
+    const auto hot_result = function->Sub(hot_left, Operand{hot_right})
+                                    .SetType(ValueType::U8);
+    function->SaveFlags(hot_result, Flags::All);
+    const auto hot_polarity = function->LoadImm(Imm{u8{1}}).SetType(ValueType::U8);
+    function->StoreUniform(
+            Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted),
+                    ValueType::U8},
+            hot_polarity);
+    function->AdvancePC(Imm{u64{1}});
+    function->EndBlock(terminal::ReturnToHost{});
+
+    builder.SetCurBlock(cold);
+    const auto token = function->LoadImm(Imm{u64{0}}).SetType(ValueType::U64);
+    const auto final_flags = function->GetFlags(token, Flags::All)
+                                      .SetType(ValueType::U64);
+    function->StoreUniform(Uniform{result_offset, ValueType::U64}, final_flags);
+    function->EndBlock(terminal::ReturnToHost{});
+    function->EndFunction();
+
+    const auto ir_function = function->GetFunction();
+    auto* code = TranslateIR(module, function);
+    REQUIRE(code != nullptr);
+    Runtime runtime{&space};
+    std::memcpy(runtime.GetUniformBuffer().data() + selector_offset,
+                &initial_selector, sizeof(initial_selector));
+    runtime.SetLocation(source_guest);
+    const auto halt = runtime.Run();
+    const u32 code_size = ir_function->GetJitCache().cache_size.get<u32>();
+    u64 code_hash = 1469598103934665603ull;
+    for (u32 index = 0; index < code_size; ++index) {
+        code_hash ^= static_cast<const u8*>(code)[index];
+        code_hash *= 1099511628211ull;
+    }
+    RegionBranchRun run{
+            .halt = halt,
+            .code_size = code_size,
+            .code_hash = code_hash,
+    };
+    u8 final_selector{};
+    std::memcpy(&final_selector,
+                runtime.GetUniformBuffer().data() + selector_offset,
+                sizeof(final_selector));
+    run.selector = final_selector;
+    std::memcpy(&run.observed_flags,
+                runtime.GetUniformBuffer().data() + result_offset,
+                sizeof(run.observed_flags));
+    return run;
 }
 
 bool WaitUntil(const auto& predicate, std::chrono::milliseconds timeout) {
@@ -1175,5 +1306,53 @@ TEST_CASE("W81 self edge stays polled while only the cold conditional arm links"
     }
 #else
     SUCCEED("W81 conditional direct-link execution requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("region branch flags materialize only on the observing exit",
+          "[region][flags][production]") {
+#if defined(__aarch64__)
+    ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
+    const auto off = RunRegionBranchFunction(false);
+    const auto on = RunRegionBranchFunction(true);
+    REQUIRE(off.halt == HaltReason::CallHost);
+    REQUIRE(on.halt == HaltReason::CallHost);
+    REQUIRE(off.selector == 1);
+    REQUIRE(on.selector == 1);
+    REQUIRE(on.observed_flags == off.observed_flags);
+    REQUIRE(on.code_size > off.code_size);
+    REQUIRE(on.code_hash != off.code_hash);
+
+    // A flags observer at the hot target precedes the next full overwrite.
+    // The region proof must reject that edge; execution remains identical.
+    const auto observed_off = RunRegionBranchFunction(false, true, false, 2);
+    const auto observed_on = RunRegionBranchFunction(true, true, false, 2);
+    REQUIRE(observed_off.halt == HaltReason::CallHost);
+    REQUIRE(observed_on.halt == HaltReason::CallHost);
+    REQUIRE(observed_on.selector == observed_off.selector);
+    REQUIRE(observed_on.observed_flags == observed_off.observed_flags);
+    REQUIRE(observed_on.code_size == observed_off.code_size);
+    REQUIRE(observed_on.code_hash == observed_off.code_hash);
+
+    // The non-observing internal target overwrites all six flags before its
+    // AdvancePC and therefore may take the deferred edge directly.
+    const auto hot_off = RunRegionBranchFunction(false, false, false, 2);
+    const auto hot_on = RunRegionBranchFunction(true, false, false, 2);
+    REQUIRE(hot_off.halt == HaltReason::CallHost);
+    REQUIRE(hot_on.halt == HaltReason::CallHost);
+    REQUIRE(hot_on.selector == hot_off.selector);
+
+    // Host calls after the final producer are committed-state boundaries.
+    // They reject the plan just like a faulting memory operation.
+    const auto helper_off = RunRegionBranchFunction(false, false, true);
+    const auto helper_on = RunRegionBranchFunction(true, false, true);
+    REQUIRE(helper_off.halt == HaltReason::CallHost);
+    REQUIRE(helper_on.halt == HaltReason::CallHost);
+    REQUIRE(helper_on.selector == helper_off.selector);
+    REQUIRE(helper_on.observed_flags == helper_off.observed_flags);
+    REQUIRE(helper_on.code_size == helper_off.code_size);
+    REQUIRE(helper_on.code_hash == helper_off.code_hash);
+#else
+    SUCCEED("region branch-flags execution probe requires an AArch64 host");
 #endif
 }

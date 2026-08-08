@@ -193,6 +193,7 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     // observer: RE=0/LATCH=0 therefore remains the ordinary committed path.
     backedge_flags = backedge_latch &&
                      (GetSvmConfig().backedge_flags || features.flags_loop_lazy);
+    region_branch_flags = features.flags_region_branch;
     execution_trace_enabled = context.ExecutionTraceEnabled();
     if (execution_trace_enabled) {
         for (const auto& desc : config.buffers_static_alloc) {
@@ -237,6 +238,7 @@ void JitTranslator::CollectRegionTargets(const ir::Terminal& terminal,
 void JitTranslator::PrepareRegionEdges(ir::HIRFunction* function) {
     region_edges_active = context.GetConfig().region_edges;
     region_blocks.clear();
+    region_block_map.clear();
     region_cycle_edges.clear();
     if (!region_edges_active) {
         return;
@@ -250,10 +252,12 @@ void JitTranslator::PrepareRegionEdges(ir::HIRFunction* function) {
         }
         blocks.push_back(block);
         region_blocks.insert(block->GetStartLocation().Value());
+        region_block_map.emplace(block->GetStartLocation().Value(), block);
     }
     if (blocks.size() < 2) {
         region_edges_active = false;
         region_blocks.clear();
+        region_block_map.clear();
         return;
     }
 
@@ -399,23 +403,31 @@ bool JitTranslator::CanRegionFallThrough(ir::Location target) const {
 
 void JitTranslator::EmitRegionEdge(ir::Location target,
                                    bool fallthrough,
-                                   bool record_edge_counters) {
+                                   bool record_edge_counters,
+                                   bool commit_flags) {
     ASSERT(IsRegionInternalEdge(target));
     if (fallthrough && IsSelfEdge(target) && loop_hoist_body_entry) {
         fallthrough = false;
     }
-    MergeNZCV();
+    if (commit_flags) {
+        MergeNZCV();
+    }
     if (record_edge_counters) {
         context.RecordExecCounter(exec_offset_exit_direct);
         context.RecordExecCounter(exec_offset_region_edges);
     }
     ++region_block_edges;
     const bool region_cycle = IsRegionCycleEdge(target);
-    auto* ordered_cycle_exit = region_cycle ? nullptr : GetDirectCycleExit(target);
-    const bool cycle = region_cycle || ordered_cycle_exit;
+    const bool pending_flags_cycle = !commit_flags && backedge_flags_plan &&
+            backedge_flags_plan->dead_successor && IsDirectCycleCutEdge(target);
+    auto* ordered_cycle_exit = region_cycle || pending_flags_cycle
+            ? nullptr
+            : GetDirectCycleExit(target);
+    const bool cycle = region_cycle || pending_flags_cycle || ordered_cycle_exit;
     if (cycle) {
-        ASSERT(region_cycle ? backedge_exit_label != nullptr
-                            : ordered_cycle_exit != nullptr);
+        ASSERT(region_cycle || pending_flags_cycle
+                       ? backedge_exit_label != nullptr
+                       : ordered_cycle_exit != nullptr);
         context.RecordExecCounter(exec_offset_region_cycle_polls);
         if (region_cycle) {
             backedge_exit_referenced = true;
@@ -430,8 +442,9 @@ void JitTranslator::EmitRegionEdge(ir::Location target,
     }
     const u32 link_before = context.CurrentBufferSize();
     context.ForwardLocal(target,
-                         region_cycle ? backedge_exit_label.get()
-                                      : ordered_cycle_exit,
+                         region_cycle || pending_flags_cycle
+                                 ? backedge_exit_label.get()
+                                 : ordered_cycle_exit,
                          fallthrough,
                          fallthrough ? nullptr : LocalBranchTarget(target));
     RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
@@ -835,28 +848,38 @@ void JitTranslator::Translate(ir::Block* block) {
             std::max<size_t>(disable_instructions.size(), block->MaxInstrId()));
     backedge_flags_plan = PlanBackedgeFlags(block);
     if (backedge_flags_plan) {
-        disable_instructions.set(backedge_flags_plan->polarity_load->Id());
+        if (backedge_flags_plan->polarity_load) {
+            disable_instructions.set(backedge_flags_plan->polarity_load->Id());
+        }
         disable_instructions.set(backedge_flags_plan->polarity_store->Id());
     }
     backedge_exit_referenced = false;
     backedge_exit_label =
             backedge_latch &&
                             (HasSelfEdge(block->GetTerminal()) ||
-                             HasRegionCycleEdgeFromCurrent())
+                             HasRegionCycleEdgeFromCurrent() ||
+                             (backedge_flags_plan &&
+                              backedge_flags_plan->dead_successor &&
+                              IsDirectCycleCutEdge(
+                                      backedge_flags_plan->self_target)))
                     ? std::make_unique<Label>()
                     : nullptr;
-    context.SetCurrent(block, backedge_flags_plan != nullptr);
+    const bool split_flags_entry = backedge_flags_plan &&
+                                   !backedge_flags_plan->dead_successor;
+    context.SetCurrent(block, split_flags_entry);
     if (region_edges_active) {
         context.BindInternalEntry(block->GetStartLocation().Value());
     }
     PlanInductionTies(block);
-    if (backedge_flags_plan) {
+    if (split_flags_entry) {
         // Every published/external entry takes the cold initializer below;
         // only the self edge targets local_entry. This makes host NZCV valid
         // before a pre-producer guest fault without charging the steady loop.
         __ B(backedge_flags_plan->external_entry.get());
         __ Bind(backedge_flags_plan->local_entry.get());
         context.BeginBackedgeBody();
+        backedge_host_begin = context.CurrentBufferSize();
+    } else if (backedge_flags_plan) {
         backedge_host_begin = context.CurrentBufferSize();
     }
     EmitExecutionTrace(block->GetStartLocation().Value());
@@ -1264,9 +1287,77 @@ bool JitTranslator::MayFaultOrObserve(ir::OpCode op) {
     }
 }
 
+bool JitTranslator::TargetKillsIncomingFlags(ir::Location target) const {
+    const auto found = region_block_map.find(target.Value());
+    if (found == region_block_map.end() || !found->second) {
+        return false;
+    }
+
+    ir::Flags incoming = ir::Flags::All;
+    bool killed = false;
+    for (const auto& inst : found->second->GetInstList()) {
+        // A synchronous observer before the complete overwrite would expose
+        // the source block's still-uncommitted NZCV/polarity recipe.
+        // After the overwrite, a fault is still unsafe until AdvancePC has
+        // committed the target instruction's replacement flags.
+        if (MayFaultOrObserve(inst.GetOp())) {
+            return false;
+        }
+        if (killed) {
+            if (inst.GetOp() == ir::OpCode::AdvancePC) {
+                return true;
+            }
+            continue;
+        }
+        switch (inst.GetOp()) {
+            case ir::OpCode::TestFlags:
+            case ir::OpCode::TestNotFlags:
+                if (True(incoming & inst.GetArg<ir::Flags>(0))) return false;
+                break;
+            case ir::OpCode::GetFlags:
+                return false;
+            case ir::OpCode::Adc:
+            case ir::OpCode::Sbb:
+            case ir::OpCode::InvertCarry:
+                if (True(incoming & ir::Flags::Carry)) return false;
+                break;
+            case ir::OpCode::CondSelect:
+            case ir::OpCode::CondSet:
+            case ir::OpCode::LocalCondSet:
+                if (True(incoming & ir::Flags::NZCV)) return false;
+                break;
+            case ir::OpCode::Goto:
+            case ir::OpCode::NotGoto:
+            case ir::OpCode::BindLabel:
+                // Do not prove path-sensitive kills inside a block.
+                return false;
+            case ir::OpCode::SaveFlags:
+                incoming &= ~inst.GetArg<ir::Flags>(1);
+                break;
+            case ir::OpCode::ClearFlags:
+                incoming &= ~inst.GetArg<ir::Flags>(0);
+                break;
+            case ir::OpCode::SetCarry:
+                incoming &= ~ir::Flags::Carry;
+                break;
+            case ir::OpCode::SetOverflow:
+                incoming &= ~ir::Flags::Overflow;
+                break;
+            case ir::OpCode::PublishFCmpFlags:
+            case ir::OpCode::BranchOnlyFlags:
+                incoming = ir::Flags::None;
+                break;
+            default:
+                break;
+        }
+        killed = incoming == ir::Flags::None;
+    }
+    return false;
+}
+
 std::unique_ptr<JitTranslator::BackedgeFlagsPlan>
 JitTranslator::PlanBackedgeFlags(ir::Block* block) {
-    if (!backedge_flags || !block) {
+    if ((!backedge_flags && !region_branch_flags) || !block) {
         return nullptr;
     }
 
@@ -1299,7 +1390,14 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
     const auto self = block->GetStartLocation();
     const bool then_self = *then_target == self;
     const bool else_self = *else_target == self;
-    if (then_self == else_self) {
+    const bool then_dead = region_branch_flags &&
+                           IsRegionInternalEdge(*then_target) &&
+                           TargetKillsIncomingFlags(*then_target);
+    const bool else_dead = region_branch_flags &&
+                           IsRegionInternalEdge(*else_target) &&
+                           TargetKillsIncomingFlags(*else_target);
+    const bool dead_successor = then_dead != else_dead;
+    if (!dead_successor && (!backedge_flags || then_self == else_self)) {
         return nullptr;
     }
 
@@ -1351,7 +1449,8 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
         auto value = inst.GetArg<ir::Value>(1);
         auto* def = value.Def();
         if (!def || def->GetOp() != ir::OpCode::LoadImm ||
-            value.Type() != ir::ValueType::U8 || def->GetUses() != 1) {
+            value.Type() != ir::ValueType::U8 ||
+            (!dead_successor && def->GetUses() != 1)) {
             if (GetSvmConfig().dump_ir) {
                 fmt::print(stderr,
                            "[backedge-proof] {:#x} reject polarity value def={} op={} type={} uses={}\n",
@@ -1384,31 +1483,37 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
         return nullptr;
     }
 
-    // The old block-entry flags stay live until the first producer. A fault is
-    // allowed in that prefix; the per-block veneer below reconstructs them.
-    for (auto& inst : block->GetInstList()) {
-        if (&inst == first_producer) {
-            break;
-        }
-        if (!PreservesHostNZCV(inst.GetOp())) {
-            if (GetSvmConfig().dump_ir) {
-                fmt::print(stderr,
-                           "[backedge-proof] {:#x} reject pre-producer op={} id={}\n",
-                           block->GetStartLocation().Value(),
-                           static_cast<u32>(inst.GetOp()), inst.Id());
+    if (!dead_successor) {
+        // The old block-entry flags stay live until the first producer. A
+        // fault is allowed in that prefix; the self-plan recovery veneer
+        // reconstructs them.
+        for (auto& inst : block->GetInstList()) {
+            if (&inst == first_producer) {
+                break;
             }
-            return nullptr;
+            if (!PreservesHostNZCV(inst.GetOp())) {
+                if (GetSvmConfig().dump_ir) {
+                    fmt::print(stderr,
+                               "[backedge-proof] {:#x} reject pre-producer op={} id={}\n",
+                               block->GetStartLocation().Value(),
+                               static_cast<u32>(inst.GetOp()), inst.Id());
+                }
+                return nullptr;
+            }
         }
     }
     // Once the next producer overwrites host NZCV there may be no synchronous
     // fault or architectural observer before the terminal safepoint.
+    auto* lazy_producer = dead_successor
+            ? final_save->GetArg<ir::Value>(0).Def()
+            : first_producer;
     for (auto& inst : block->GetInstList()) {
-        if (inst.Id() > first_producer->Id() && MayFaultOrObserve(inst.GetOp())) {
+        if (inst.Id() > lazy_producer->Id() && MayFaultOrObserve(inst.GetOp())) {
             if (GetSvmConfig().dump_ir) {
                 fmt::print(stderr,
                            "[backedge-proof] {:#x} reject post-producer fault op={} id={} producer={}\n",
                            block->GetStartLocation().Value(),
-                           static_cast<u32>(inst.GetOp()), inst.Id(), first_producer->Id());
+                           static_cast<u32>(inst.GetOp()), inst.Id(), lazy_producer->Id());
             }
             return nullptr;
         }
@@ -1445,17 +1550,26 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
     }
 
     auto plan = std::make_unique<BackedgeFlagsPlan>();
-    plan->self_is_then = then_self;
-    plan->self_target = self;
-    plan->cold_target = then_self ? *else_target : *then_target;
+    plan->dead_successor = dead_successor;
+    plan->self_is_then = dead_successor ? then_dead : then_self;
+    plan->self_target = dead_successor
+            ? (then_dead ? *then_target : *else_target)
+            : self;
+    plan->cold_target = plan->self_is_then ? *else_target : *then_target;
     plan->carry_inverted = polarity;
     plan->requested = GuestNZCVToHost(final_requested & ir::Flags::NZCV);
-    plan->polarity_load = polarity_load;
+    plan->polarity_load = polarity_load->GetUses() == 1 ? polarity_load : nullptr;
     plan->polarity_store = polarity_store;
+    plan->final_save = final_save;
     plan->final_advance = final_advance;
+    (void)PlanRegionBranchPFAF(*plan, lazy_producer);
     if (GetSvmConfig().dump_ir) {
-        fmt::print(stderr, "[backedge-proof] {:#x} eligible\n",
-                   block->GetStartLocation().Value());
+        fmt::print(stderr,
+                   "[backedge-proof] {:#x} eligible mode={} hot={:#x} cold={:#x} pfaf={}\n",
+                   block->GetStartLocation().Value(),
+                   dead_successor ? "region-dead" : "self-lazy",
+                   plan->self_target.Value(), plan->cold_target.Value(),
+                   plan->defer_pfaf);
     }
     return plan;
 }
@@ -1473,6 +1587,58 @@ void JitTranslator::EmitBackedgeMaterialize(const BackedgeFlagsPlan& plan) {
     __ And(flags, flags, ForceCast<s64>(keep));
     __ And(ip0, ip0, static_cast<u32>(requested));
     __ Orr(flags, flags, ip0);
+}
+
+void JitTranslator::EmitRegionBranchPFAF(const BackedgeFlagsPlan& plan) {
+    if (!plan.defer_pfaf) {
+        return;
+    }
+    ASSERT_MSG(ReproveRegionBranchPFAF(),
+               "region branch PF/AF operand proof drifted before cold emission");
+    using Deferred = BackedgeFlagsPlan::DeferredOperand;
+    auto load = [&](const WRegister& dst, const Deferred& operand) {
+        const u32 bits = plan.pfaf_width * 8;
+        switch (operand.kind) {
+            case Deferred::Kind::Imm: {
+                const u32 mask = bits == 32 ? UINT32_MAX : (1u << bits) - 1;
+                __ Mov(dst, static_cast<u32>(operand.value) & mask);
+                return;
+            }
+            case Deferred::Kind::HostGPR:
+                __ Ubfx(dst, XRegister{static_cast<u32>(operand.value)},
+                        operand.offset * 8, bits);
+                return;
+            case Deferred::Kind::Uniform: {
+                const s32 offset = state_offset_uniform_buffer +
+                                   static_cast<s32>(operand.value);
+                if (plan.pfaf_width == sizeof(u8)) {
+                    __ Ldrb(dst, MemOperand(state, offset));
+                } else {
+                    __ Ldrh(dst, MemOperand(state, offset));
+                }
+                return;
+            }
+            case Deferred::Kind::None:
+                PANIC("invalid deferred PF/AF operand");
+        }
+    };
+
+    // x11 is terminal-owned and is already excluded from the live value set;
+    // x16/x17 are the backend's fixed scratch pair. The cold recomputation is
+    // therefore invisible to RA and cannot extend a hot SSA interval.
+    load(ipw, plan.pfaf_left);
+    load(ipw1, plan.pfaf_right);
+    __ Sub(ipw0, ipw, ipw1);
+    u32 begin = context.CurrentBufferSize();
+    __ Bfi(flags, ip0, HostFlagsBit::ParityByte, 8);
+    RecordPFAFDensity(PFAFDensityKind::PFWrite, begin);
+
+    begin = context.CurrentBufferSize();
+    __ Eor(ipw, ipw, ipw0);
+    __ Eor(ipw, ipw, ipw1);
+    __ Ubfx(ipw, ipw, 4, 1);
+    __ Bfi(flags, ip, HostFlagsBit::AuxiliaryCarry, 1);
+    RecordPFAFDensity(PFAFDensityKind::AFWrite, begin);
 }
 
 bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
@@ -1500,6 +1666,7 @@ bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
                                    offsetof(swift::x86::ThreadContext64,
                                             carry_inverted)));
         MergeNZCV();
+        EmitRegionBranchPFAF(plan);
         plan.optimized = false;
         return false;
     }
@@ -1525,6 +1692,14 @@ bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
         __ Cbnz(context.W(condition), backedge_flags_plan->cold_exit.get());
     }
     plan.cold_referenced = true;
+    if (plan.dead_successor) {
+        // The target's prefix proves the incoming six arithmetic flags dead
+        // before every observer. Keep the pending host NZCV only through the
+        // terminal branch; a cycle poll still routes its cold arm through the
+        // ordinary backedge stub, which materializes this same plan.
+        EmitRegionEdge(plan.self_target, false, true, false);
+        return true;
+    }
     context.RecordExecCounter(exec_offset_exit_direct);
     if (IsRegionInternalEdge(plan.self_target)) {
         context.RecordExecCounter(exec_offset_region_edges);
@@ -1548,6 +1723,30 @@ void JitTranslator::EmitBackedgeColdPaths() {
         return;
     }
     auto& plan = *backedge_flags_plan;
+
+    if (plan.dead_successor) {
+        if (plan.optimized && plan.cold_referenced) {
+            __ Bind(plan.cold_exit.get());
+            EmitBackedgeMaterialize(plan);
+            EmitRegionBranchPFAF(plan);
+            if (IsRegionInternalEdge(plan.cold_target)) {
+                // The veneer above has already committed both the carry
+                // polarity byte and the requested NZCV bits.  Do not charge
+                // the ordinary region-edge merge a second time.
+                EmitRegionEdge(plan.cold_target, false, true, false);
+            } else {
+                context.RecordExecCounter(exec_offset_exit_direct);
+                context.Forward(plan.cold_target,
+                                nullptr,
+                                nullptr,
+                                LinkSiteKind::BackedgeCold);
+            }
+        }
+        nzcv_dirty = false;
+        nzcv_requested = {};
+        backedge_flags_plan.reset();
+        return;
+    }
 
     __ Bind(plan.external_entry.get());
     // All non-self entries begin with committed x26/State. Dispatcher lookup
@@ -1617,7 +1816,7 @@ Label* JitTranslator::LocalBranchTarget(ir::Location target) const {
         if (loop_hoist_body_entry) {
             return loop_hoist_body_entry.get();
         }
-        if (backedge_flags_plan) {
+        if (backedge_flags_plan && !backedge_flags_plan->dead_successor) {
             return backedge_flags_plan->local_entry.get();
         }
     }
