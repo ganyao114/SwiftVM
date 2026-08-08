@@ -70,8 +70,8 @@ namespace swift::runtime {
     X(vixl_fast, true) \
     X(x86_gcm_pclmul2, true) \
     X(xmm_uniform_fwd, true) \
-    X(loop_gpr_hoist, false) \
-    X(loop_const_hoist, false)
+    X(loop_gpr_hoist, true) \
+    X(loop_const_hoist, true)
 
 enum class FeatureId : std::size_t {
 #define SVM_FEATURE_ID(field, default_value) field,
@@ -245,8 +245,8 @@ struct FeatureOverrides {
     X(bool, x86_crypto_sha, "SVM_X86_CRYPTO_SHA", DefaultOn, true, "SHA-NI 请求；缺省 ON，=0 回退，仍受 host feature 限制；原 decoder_crypto.cc:69") \
     X(bool, x86_gcm_pclmul2, "SVM_X86_GCM_PCLMUL2", DefaultOn, true, "GCM PCLMUL 双路发码；缺省 ON，=0 回退；原 translator_alu.cpp:15") \
     X(bool, xmm_uniform_fwd, "SVM_XMM_UNIFORM_FWD", DefaultOn, true, "XMM store-load forwarding；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:78") \
-    X(bool, loop_gpr_hoist, "SVM_LOOP_GPR_HOIST", NonZero, false, "unit-local 单块自环只读 guest GPR 晋升；非 0 开，缺省 OFF；原 loop_invariant_hoist_pass.cpp") \
-    X(bool, loop_const_hoist, "SVM_LOOP_CONST_HOIST", NonZero, false, "unit-local 单块自环 loop-end 宽常量前缀提升；非 0 开，缺省 OFF；原 loop_invariant_hoist_pass.cpp") \
+    X(bool, loop_gpr_hoist, "SVM_LOOP_GPR_HOIST", DefaultOn, true, "unit-local 单块自环只读 guest GPR 晋升；缺省 ON，=0 回退；原 loop_invariant_hoist_pass.cpp") \
+    X(bool, loop_const_hoist, "SVM_LOOP_CONST_HOIST", DefaultOn, true, "unit-local 单块自环 loop-end 宽常量前缀提升；缺省 ON，=0 回退；原 loop_invariant_hoist_pass.cpp") \
     X(bool, direct_link_stress_long, "SVM_DIRECT_LINK_STRESS_LONG", Presence, false, "direct-link 长压测；变量存在即开；原 region_link_trampoline_test.cpp:426") \
     X(u32, direct_link_stress_iters, "SVM_DIRECT_LINK_STRESS_ITERS", StressIterations, 100000, "direct-link 压测轮数；atoi 后负数钳 0；缺省短测 100000、long 1000000；原 region_link_trampoline_test.cpp:427") \
     X(u32, direct_link_stress_threads, "SVM_DIRECT_LINK_STRESS_THREADS", StressThreads, 0, "direct-link 压测线程数；显式 atoi 后钳 1..8，缺省 hardware_concurrency 钳 2..4；原 region_link_trampoline_test.cpp:381") \
