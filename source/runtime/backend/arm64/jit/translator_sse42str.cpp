@@ -32,6 +32,16 @@ void JitTranslator::EmitSse42Str(ir::Inst* inst) {
     auto aux = context.GetTmpV();
     auto ones = context.GetTmpV();
 
+    // VIXL's two-lane Movi macro acquires an extra implicit GPR.  Reuse the
+    // declared scalar temporary after its current value is dead instead, so
+    // the emitter's real peak remains the four GPRs advertised to the RA.
+    const auto emit_u128 = [&](const VRegister& dst, u64 hi, u64 lo) {
+        __ Mov(scalar, lo);
+        __ Ins(dst.V2D(), 0, scalar);
+        __ Mov(scalar, hi);
+        __ Ins(dst.V2D(), 1, scalar);
+    };
+
     // First zero element, or n when there is no zero.  The byte form packs
     // two compare lanes into the low/high nibbles of each narrowed byte; the
     // word form narrows one compare lane per byte.  RBIT+CLZ naturally gives
@@ -130,11 +140,11 @@ void JitTranslator::EmitSse42Str(ir::Inst* inst) {
             // valid2[j] = j < len2.  The arbitrary constants are lane
             // indexes in architectural little-endian element order.
             if (words) {
-                __ Movi(aux.V16B(), 0x0007000600050004ull, 0x0003000200010000ull);
+                emit_u128(aux, 0x0007000600050004ull, 0x0003000200010000ull);
                 __ Dup(row.V8H(), len2.W());
                 __ Cmhi(aux.V8H(), row.V8H(), aux.V8H());
             } else {
-                __ Movi(aux.V16B(), 0x0f0e0d0c0b0a0908ull, 0x0706050403020100ull);
+                emit_u128(aux, 0x0f0e0d0c0b0a0908ull, 0x0706050403020100ull);
                 __ Dup(row.V16B(), len2.W());
                 __ Cmhi(aux.V16B(), row.V16B(), aux.V16B());
             }
@@ -162,12 +172,12 @@ void JitTranslator::EmitSse42Str(ir::Inst* inst) {
     // Collapse all-ones/all-zero comparison lanes to the architectural n-bit
     // IntRes1.  ARM64 has no PMOVMSKB, so use bit weights and horizontal add.
     if (words) {
-        __ Movi(row.V16B(), 0x0080004000200010ull, 0x0008000400020001ull);
+        emit_u128(row, 0x0080004000200010ull, 0x0008000400020001ull);
         __ And(acc.V16B(), acc.V16B(), row.V16B());
         __ Addv(acc.H(), acc.V8H());
         __ Umov(result, acc.V8H(), 0);
     } else {
-        __ Movi(row.V16B(), 0x8040201008040201ull, 0x8040201008040201ull);
+        emit_u128(row, 0x8040201008040201ull, 0x8040201008040201ull);
         __ And(acc.V16B(), acc.V16B(), row.V16B());
         __ Ext(aux.V16B(), acc.V16B(), acc.V16B(), 8);
         __ Addv(acc.B(), acc.V8B());

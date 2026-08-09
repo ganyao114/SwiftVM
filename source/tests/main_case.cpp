@@ -6304,6 +6304,50 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
 #endif
 }
 
+TEST_CASE("SSE4.2 string inline stays within its declared scratch contract") {
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::backend;
+
+    swift::runtime::Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = swift::runtime::kArm64,
+    };
+    AddressSpace address_space{config};
+    auto module = address_space.GetDefaultModule();
+    const auto gprs = address_space.GetTrampolines().GetGPRRegs();
+    const auto fprs = address_space.GetTrampolines().GetFPRRegs();
+
+    // Exercise every control-byte shape. In particular, the equal-ordered
+    // validity vectors and both result-collapse widths used to call VIXL's
+    // two-lane Movi macro, which silently acquired a fifth GPR.
+    for (swift::u32 imm = 0; imm < 256; ++imm) {
+        INFO("SSE4.2 string control byte " << imm);
+        Block block{0, Location{0x1c00 + imm}};
+        auto left = block.LoadUniform(Uniform{0, ValueType::V128});
+        auto right = block.LoadUniform(Uniform{16, ValueType::V128});
+        auto result = block.Sse42Str(left, right, Imm{imm}).SetType(ValueType::U64);
+        block.StoreUniform(Uniform{32, ValueType::U64}, result);
+        block.SetTerminal(terminal::ReturnToDispatch{});
+        block.ReIdInstr();
+
+        RegAlloc alloc{block.MaxInstrId(), gprs, fprs, FeatureSet{}};
+        RegisterAllocPass::Run(&block, &alloc, false, FeatureSet{});
+        REQUIRE(ScratchBudget(*result.Def(), FeatureSet{}).gpr == 4);
+
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        context.SetCurrent(&block);
+        context.TickIR(result.Def());
+        translator.EmitSse42Str(result.Def());
+        context.EndInstructionScratch();
+        REQUIRE(context.LastInstructionScratchGPR() == 4);
+        context.Finish();
+    }
+}
+
 TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
     using namespace swift::runtime::ir;
     using namespace swift::runtime::backend;
