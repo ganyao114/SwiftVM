@@ -224,7 +224,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 155);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 156);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -297,7 +297,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 65);
+    STATIC_REQUIRE(kFeatureCount == 66);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -4629,6 +4629,305 @@ TEST_CASE("AES resident ownership ties only complete verified chains") {
         REQUIRE_FALSE(alloc->IsAesChainTied(only.Id()));
         REQUIRE_FALSE(alloc->IsHostWriteCoalesced(publish->Id()));
     }
+}
+
+TEST_CASE("AES KEYGEN frontend preserves every rcon across register and memory sources") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+
+    struct MemIf final : MemoryInterface {
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+
+    struct Form {
+        swift::u8 modrm;
+        std::optional<swift::u32> source_uniform;
+    };
+    const std::array forms{
+            // AESKEYGENASSIST xmm0,xmm0,imm8: destination/source alias.
+            Form{0xc0, offsetof(ThreadContext64, xmm0)},
+            // AESKEYGENASSIST xmm0,xmm1,imm8: distinct register source.
+            Form{0xc1, offsetof(ThreadContext64, xmm1)},
+            // AESKEYGENASSIST xmm0,[rax],imm8: memory source.
+            Form{0x00, std::nullopt},
+    };
+
+    for (unsigned rcon = 0; rcon < 256; ++rcon) {
+        for (const auto& form : forms) {
+            CAPTURE(rcon, form.modrm);
+            std::array<swift::u8, 7> code{
+                    0x66, 0x0f, 0x3a, 0xdf, form.modrm,
+                    static_cast<swift::u8>(rcon), 0xf4,
+            };
+            const auto address = reinterpret_cast<VAddr>(code.data());
+            Block block{0, Location{address}};
+            Assembler assembler{&block};
+            X64Decoder decoder{address, &memory, &assembler, true,
+                               Arm64Features::None, false, false, FeatureSet{}};
+            decoder.Decode();
+
+            Inst* keygen{};
+            for (auto& inst : block.GetInstList()) {
+                if (inst.GetOp() != OpCode::VecAesKeygenAssist) continue;
+                REQUIRE(keygen == nullptr);
+                keygen = &inst;
+            }
+            if (keygen == nullptr && rcon == 0 && form.modrm == forms.front().modrm) {
+                SUCCEED("AES KEYGEN frontend matrix requires host AES capability");
+                return;
+            }
+            REQUIRE(keygen != nullptr);
+            REQUIRE(keygen->GetArg<Imm>(1).Get() == rcon);
+            const auto source = keygen->GetArg<Value>(0);
+            if (form.source_uniform) {
+                REQUIRE(source.Def()->GetOp() == OpCode::LoadUniform);
+                REQUIRE(source.Def()->GetArg<Uniform>(0).GetOffset() ==
+                        *form.source_uniform);
+            } else {
+                REQUIRE(source.Def()->GetOp() == OpCode::LoadMemory);
+            }
+        }
+    }
+}
+
+TEST_CASE("AES KEYGEN compact uses the immutable runtime prefix and exact lowering") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    constexpr std::array<swift::u64, 2> kSwizzle{
+            0x040B0E010B0E0104ULL,
+            0x0C0306090306090CULL,
+    };
+    auto read_prefix = [](const State* state) {
+        std::array<swift::u64, 2> value{};
+        std::memcpy(value.data(),
+                    reinterpret_cast<const swift::u8*>(state) +
+                            state_offset_named_vector_constants,
+                    sizeof(value));
+        return value;
+    };
+    constexpr swift::u64 kLocation = 0xb1000;
+    constexpr swift::u32 kInputOffset = 0;
+    constexpr swift::u32 kOutputOffset = 16;
+    constexpr swift::u32 kUniformSize = kOutputOffset + 256 * 16;
+
+    FeatureSet hash_off{};
+    FeatureSet hash_on = hash_off;
+    hash_off.keygen_compact = false;
+    hash_on.keygen_compact = true;
+    REQUIRE(HashFeatureSet(hash_off) != HashFeatureSet(hash_on));
+
+    auto make_config = [&] {
+        return Config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+                .uniform_buffer_size = kUniformSize,
+        };
+    };
+    auto make_block = [&](swift::u64 location, bool all_rcon) {
+        IntrusivePtr<Block> block{new Block(0, Location{location})};
+        auto source = block->LoadUniform(Uniform{kInputOffset, ValueType::V128})
+                              .SetType(ValueType::V128);
+        const unsigned count = all_rcon ? 256 : 1;
+        Value first{};
+        for (unsigned rcon = 0; rcon < count; ++rcon) {
+            auto result = block->VecAesKeygenAssist(source, Imm{rcon})
+                                  .SetType(ValueType::V128);
+            if (!first.Defined()) first = result;
+            block->StoreUniform(
+                    Uniform{kOutputOffset + rcon * 16, ValueType::V128}, result);
+        }
+        block->SetTerminal(terminal::LinkBlock{Location{location + 0x100}});
+        block->ReIdInstr();
+        return std::pair{std::move(block), first};
+    };
+
+    SECTION("two runtimes own aligned equal prefixes without sharing State") {
+        auto config = make_config();
+        AddressSpace first_space{config};
+        AddressSpace second_space{config};
+        Runtime first{&first_space};
+        Runtime second{&second_space};
+        const auto* first_state = first.GetState();
+        const auto* second_state = second.GetState();
+        const auto first_constants = read_prefix(first_state);
+        const auto second_constants = read_prefix(second_state);
+        const auto* first_prefix = reinterpret_cast<const swift::u8*>(first_state) +
+                                   state_offset_named_vector_constants;
+
+        REQUIRE(first_state != second_state);
+        REQUIRE(reinterpret_cast<std::uintptr_t>(first_state) % 16 == 0);
+        REQUIRE(reinterpret_cast<std::uintptr_t>(first_prefix) % 16 == 0);
+        REQUIRE(reinterpret_cast<const swift::u8*>(first_state) -
+                        first_prefix ==
+                -state_offset_named_vector_constants);
+        REQUIRE(first_constants == kSwizzle);
+        REQUIRE(second_constants == kSwizzle);
+
+        const auto before = first_constants;
+        first.SignalInterrupt();
+        first.ClearInterrupt();
+        REQUIRE(read_prefix(first_state) == before);
+    }
+
+    struct Emitted {
+        std::size_t bytes{};
+        std::string text;
+    };
+    auto emit = [&](bool enabled, bool alias) {
+        auto [block, first] = make_block(kLocation + enabled * 0x20 + alias * 0x40,
+                                         false);
+        auto features = FeatureSet{};
+        // 两相测试显式钉死初始值，避免未来默认翻转污染 OFF 基线。
+        features.keygen_compact = enabled;
+        Config config = make_config();
+        AddressSpace address_space{config};
+        auto gprs = address_space.GetTrampolines().GetGPRRegs();
+        auto fprs = address_space.GetTrampolines().GetFPRRegs();
+        RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
+        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        if (alias) {
+            const auto source = first.Def()->GetArg<Value>(0);
+            alloc.MapRegister(first.Id(), alloc.ValueFPR(source));
+            REQUIRE(alloc.ValueFPR(first).id == alloc.ValueFPR(source).id);
+        }
+
+        ModuleConfig module_config{};
+        module_config.feature_overrides.Set(FeatureId::keygen_compact, enabled);
+        auto module = address_space.MapModule(
+                LocationDescriptor{block->GetStartLocation().Value()},
+                LocationDescriptor{block->GetStartLocation().Value() + 0x10},
+                module_config);
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block.get());
+        context.Finish();
+
+        Emitted emitted{.bytes = context.CurrentBufferSize()};
+        auto& masm = context.GetMasm();
+        auto* instruction =
+                masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+        auto* end =
+                masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        for (; instruction < end; instruction = instruction->GetNextInstruction()) {
+            decoder.Decode(instruction);
+            emitted.text += disassembler.GetOutput();
+            emitted.text += '\n';
+        }
+        return emitted;
+    };
+
+    const auto off = emit(false, false);
+    const auto on = emit(true, false);
+    INFO("OFF:\n" << off.text << "ON:\n" << on.text);
+    REQUIRE(on.bytes + 11 * vixl::aarch64::kInstructionSize == off.bytes);
+    REQUIRE(on.text.find("ldur q") != std::string::npos);
+    REQUIRE(on.text.find("#-16") != std::string::npos);
+    REQUIRE(on.text.find("dup") != std::string::npos);
+    REQUIRE(off.text.find("ldur q") == std::string::npos);
+
+    SECTION("result and source may alias") {
+        const auto alias = emit(true, true);
+        REQUIRE(alias.text.find("ldur q") != std::string::npos);
+        REQUIRE(alias.text.find("dup") != std::string::npos);
+    }
+
+#if defined(__aarch64__)
+    SECTION("all rcon values match the mathematical lane semantics and preserve the prefix") {
+        const std::array<swift::u8, 16> source{
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+                0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        };
+        auto config = make_config();
+        std::array<swift::u8, 256 * 16> expected{};
+        auto gf_mul = [](swift::u8 left, swift::u8 right) {
+            swift::u8 value = 0;
+            while (right) {
+                if (right & 1) value ^= left;
+                const bool high = (left & 0x80) != 0;
+                left <<= 1;
+                if (high) left ^= 0x1b;
+                right >>= 1;
+            }
+            return value;
+        };
+        auto rotl8 = [](swift::u8 value, unsigned count) {
+            return static_cast<swift::u8>((value << count) | (value >> (8 - count)));
+        };
+        auto sbox = [&](swift::u8 value) {
+            swift::u8 inverse = 0;
+            if (value != 0) {
+                inverse = 1;
+                swift::u8 base = value;
+                for (unsigned exponent = 254; exponent; exponent >>= 1) {
+                    if (exponent & 1) inverse = gf_mul(inverse, base);
+                    base = gf_mul(base, base);
+                }
+            }
+            return static_cast<swift::u8>(
+                    inverse ^ rotl8(inverse, 1) ^ rotl8(inverse, 2) ^
+                    rotl8(inverse, 3) ^ rotl8(inverse, 4) ^ 0x63);
+        };
+        for (unsigned rcon = 0; rcon < 256; ++rcon) {
+            auto* result = expected.data() + rcon * 16;
+            for (unsigned pair = 0; pair < 2; ++pair) {
+                const unsigned source_word = pair == 0 ? 1 : 3;
+                for (unsigned byte = 0; byte < 4; ++byte) {
+                    result[pair * 8 + byte] = sbox(source[source_word * 4 + byte]);
+                    result[pair * 8 + 4 + byte] =
+                            sbox(source[source_word * 4 + ((byte + 1) & 3)]);
+                }
+                result[pair * 8 + 4] ^= static_cast<swift::u8>(rcon);
+            }
+        }
+
+        for (bool enabled : {false, true}) {
+            CAPTURE(enabled);
+            auto [block, first] = make_block(kLocation + 0x2000 + enabled * 0x100, true);
+            (void)first;
+            AddressSpace address_space{config};
+            ModuleConfig module_config{};
+            module_config.feature_overrides.Set(FeatureId::keygen_compact, enabled);
+            auto module = address_space.MapModule(
+                    LocationDescriptor{block->GetStartLocation().Value()},
+                    LocationDescriptor{block->GetStartLocation().Value() + 0x10},
+                    module_config);
+            auto* code = TranslateIR(module, block);
+            REQUIRE(code != nullptr);
+            Runtime runtime{&address_space};
+            const auto prefix_before = read_prefix(runtime.GetState());
+            std::memcpy(runtime.GetUniformBuffer().data(), source.data(), source.size());
+            runtime.SetLocation(block->GetStartLocation().Value());
+            REQUIRE(address_space.GetTrampolines().GetRuntimeEntry()(
+                            runtime.GetState(), code) == HaltReason::CodeMiss);
+            const auto* actual = runtime.GetUniformBuffer().data() + kOutputOffset;
+            const auto mismatch = std::mismatch(
+                    actual, actual + expected.size(), expected.data());
+            if (mismatch.first != actual + expected.size()) {
+                UNSCOPED_INFO("first byte mismatch at " << (mismatch.first - actual)
+                              << ": jit=" << unsigned(*mismatch.first)
+                              << " golden=" << unsigned(*mismatch.second));
+            }
+            REQUIRE(std::memcmp(runtime.GetUniformBuffer().data() + kOutputOffset,
+                                expected.data(), expected.size()) == 0);
+            REQUIRE(read_prefix(runtime.GetState()) == prefix_before);
+        }
+    }
+#endif
 }
 
 TEST_CASE("PSHUFD 0x4e EXT requires an exclusively shared canonical mask") {

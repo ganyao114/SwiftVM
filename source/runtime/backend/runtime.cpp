@@ -47,6 +47,25 @@ std::unique_ptr<Instance> Instance::Make(const Config& config) {
 // right State. void* because Runtime::Impl is a private nested type.
 static thread_local void* tls_active_runtime{};
 
+namespace {
+
+// Runtime 私有的只读向量常量前缀。它不属于 guest State，也不进入
+// uniform/signal/xsave 布局；构造后没有可变访问入口。
+struct alignas(16) RuntimeNamedVectorConstants {
+    std::array<u64, 2> aes_keygen_swizzle{
+            0x040B0E010B0E0104ULL,
+            0x0C0306090306090CULL,
+    };
+};
+
+static_assert(sizeof(RuntimeNamedVectorConstants) == 16);
+static_assert(sizeof(RuntimeNamedVectorConstants) <= 256);
+static_assert(alignof(RuntimeNamedVectorConstants) == alignof(backend::State));
+static_assert(backend::state_offset_named_vector_constants ==
+              -static_cast<s32>(sizeof(RuntimeNamedVectorConstants)));
+
+}  // namespace
+
 // Thread-local pointer to the Runtime::Impl this thread *owns*, valid from
 // construction to destruction rather than only while guest code runs.
 //
@@ -72,9 +91,19 @@ static thread_local std::shared_ptr<OwnerSlot> tls_owner_slot{};
 
 struct Runtime::Impl final {
     explicit Impl(backend::AddressSpace* address_space) : address_space(address_space) {
-        state_buffer.resize(sizeof(backend::State) +
+        state_buffer.resize(sizeof(RuntimeNamedVectorConstants) +
+                            sizeof(backend::State) +
                             address_space->GetConfig().uniform_buffer_size);
-        state = reinterpret_cast<backend::State*>(state_buffer.data());
+        auto* named = state_buffer.data();
+        state = reinterpret_cast<backend::State*>(
+                named + sizeof(RuntimeNamedVectorConstants));
+        ASSERT_MSG(reinterpret_cast<std::uintptr_t>(named) %
+                                   alignof(RuntimeNamedVectorConstants) == 0,
+                   "runtime named-vector prefix is not 16-byte aligned");
+        ASSERT_MSG(reinterpret_cast<std::uintptr_t>(state) % alignof(backend::State) == 0,
+                   "runtime State is not 16-byte aligned after named-vector prefix");
+        constexpr RuntimeNamedVectorConstants constants{};
+        std::memcpy(named, &constants, sizeof(constants));
         const auto& svm_config = GetSvmConfig();
         const bool exec_profile_enabled = svm_config.exec_prof;
         execution_trace_enabled = svm_config.exec_trace;

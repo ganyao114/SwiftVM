@@ -40,6 +40,7 @@ namespace swift::runtime {
     X(sse_shufps_imm, false) \
     X(aes_zero_reuse, true) \
     X(ra_aes_chain_tie, true) \
+    X(keygen_compact, false) \
     X(pshufd_4e_ext, true) \
     X(sse_nan_coldpath, true) \
     X(flags_narrow_align, true) \
@@ -162,6 +163,7 @@ struct FeatureOverrides {
     X(bool, sse_shufps_imm, "SVM_SSE_SHUFPS_IMM", NonZero, false, "SHUFPS 高频 imm 的末次使用 destination tie；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
     X(bool, aes_zero_reuse, "SVM_AES_ZERO_REUSE", DefaultOn, true, "AES shared-zero reuse；缺省 ON，=0 回退；原 decoder_crypto.cc:89") \
     X(bool, ra_aes_chain_tie, "SVM_RA_AES_CHAIN_TIE", DefaultOn, true, "unit 内连续 AESENC destructive producer 与 resident XMM 家 ownership 合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
+    X(bool, keygen_compact, "SVM_KEYGEN_COMPACT", NonZero, false, "AESKEYGENASSIST 从 Runtime 只读前缀加载 swizzle 并用 DUP 构造 rcon；非 0 开，缺省 OFF；原 translator_alu.cpp") \
     X(bool, pshufd_4e_ext, "SVM_PSHUFD_4E_EXT", DefaultOn, true, "PSHUFD 0x4e canonical indexed shuffle 改发 EXT #8；缺省 ON，=0 回退；原 translator_alu.cpp") \
     X(bool, sse_nan_coldpath, "SVM_SSE_NAN_COLDPATH", DefaultOn, true, "SSE NaN cold path；缺省 ON，=0 回退；原 translator.cpp:332") \
     X(bool, flags_narrow_align, "SVM_FLAGS_NARROW_ALIGN", DefaultOn, true, "窄 flags 对齐发码；缺省 ON，=0 回退；原 decoder.cc:1150") \

@@ -99,6 +99,10 @@ union CPUFlags {
     BitField<ir::FlagsBit::Parity, 1, u64> parity;
 };
 
+// Runtime 在 State 前保留一个私有的 16 字节只读常量前缀。这里只公开
+// emitter 所需的只读偏移，storage 类型和内容仍封装在 runtime.cpp。
+constexpr s32 state_offset_named_vector_constants = -16;
+
 struct State {
     // Preserve the legacy State layout exactly. The first word is now always
     // the atomic exit request: Signal occupies bit 63 and the optional SMC
