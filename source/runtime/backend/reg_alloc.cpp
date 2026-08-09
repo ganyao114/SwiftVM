@@ -417,6 +417,7 @@ RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
           width_chain_anchors(instr_size, UINT32_MAX),
           const_address_cache_anchors(instr_size, UINT32_MAX),
           aes_chain_targets(instr_size, UINT16_MAX),
+          pshufd_4e_ext(instr_size),
           gprs(gprs), fprs(fprs), features(features) {
     // Trampolines 暴露跨 module 的最大 GPR 并集。XPOOL 关闭时在 unit 私有
     // allocator 里恢复旧保留集，保持默认发码不变，同时允许 module 快照分叉。
@@ -462,6 +463,7 @@ void RegAlloc::ResetAllocations() {
     std::fill(const_address_cache_anchors.begin(), const_address_cache_anchors.end(),
               UINT32_MAX);
     std::fill(aes_chain_targets.begin(), aes_chain_targets.end(), UINT16_MAX);
+    std::fill(pshufd_4e_ext.begin(), pshufd_4e_ext.end(), false);
     current_ir = nullptr;
 }
 
@@ -516,6 +518,11 @@ void RegAlloc::MarkAesChainTied(u32 id, u16 target) {
     aes_chain_targets[id] = target;
 }
 
+void RegAlloc::MarkPshufd4eExt(u32 id) {
+    ASSERT(id < pshufd_4e_ext.size());
+    pshufd_4e_ext[id] = true;
+}
+
 bool RegAlloc::IsHostWriteCoalesced(u32 id) const {
     return id < coalesced_host_writes.size() && coalesced_host_writes[id];
 }
@@ -550,6 +557,10 @@ bool RegAlloc::IsAesChainTied(u32 id) const {
 u16 RegAlloc::AesChainTarget(u32 id) const {
     ASSERT(IsAesChainTied(id));
     return aes_chain_targets[id];
+}
+
+bool RegAlloc::IsPshufd4eExt(u32 id) const {
+    return id < pshufd_4e_ext.size() && pshufd_4e_ext[id];
 }
 
 void RegAlloc::SetActiveRegs(swift::u32 id, GPRSMask& gprs, FPRSMask& fprs) {

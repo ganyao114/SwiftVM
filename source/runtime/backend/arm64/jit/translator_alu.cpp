@@ -1277,7 +1277,53 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
     __ Tbx(result.V16B(), right.V16B(), indexes.V16B());
 }
 
+bool JitTranslator::ReprovePshufd4eExtConstant(ir::Inst* inst) const {
+    if (!context.GetFeatures().pshufd_4e_ext || !inst ||
+        inst->GetOp() != ir::OpCode::VecLoadConst ||
+        !context.IsPshufd4eExt(inst->Id()) ||
+        inst->GetArg<ir::Imm>(0).Get() != 0x0f0e0d0c0b0a0908ull ||
+        inst->GetArg<ir::Imm>(1).Get() != 0x0706050403020100ull) {
+        return false;
+    }
+
+    u32 local_uses = 0;
+    bool saw_shuffle = false;
+    for (auto& consumer : cur_block->GetInstList()) {
+        for (auto value : consumer.GetValues()) {
+            if (value.Def() != inst) {
+                continue;
+            }
+            ++local_uses;
+            if (consumer.GetOp() != ir::OpCode::VecShuffle32Indexed ||
+                consumer.GetArg<ir::Value>(1).Def() != inst ||
+                consumer.GetArg<ir::Value>(0).Def() == inst ||
+                !context.IsPshufd4eExt(consumer.Id())) {
+                return false;
+            }
+            saw_shuffle = true;
+        }
+    }
+    return saw_shuffle && local_uses == inst->GetUses();
+}
+
+bool JitTranslator::ReprovePshufd4eExtShuffle(ir::Inst* inst) const {
+    if (!context.GetFeatures().pshufd_4e_ext || !inst ||
+        inst->GetOp() != ir::OpCode::VecShuffle32Indexed ||
+        !context.IsPshufd4eExt(inst->Id())) {
+        return false;
+    }
+    auto indexes = inst->GetArg<ir::Value>(1);
+    return indexes.Defined() && indexes.Def() &&
+           context.IsPshufd4eExt(indexes.Id()) &&
+           ReprovePshufd4eExtConstant(indexes.Def());
+}
+
 void JitTranslator::EmitVecLoadConst(ir::Inst* inst) {
+    if (context.IsPshufd4eExt(inst->Id())) {
+        ASSERT_MSG(ReprovePshufd4eExtConstant(inst),
+                   "PSHUFD 0x4e constant proof diverged at IR {}", inst->Id());
+        return;
+    }
     auto result = context.V(ir::Value{inst});
     auto tmp = context.GetTmpX();
     const u64 low = inst->GetArg<ir::Imm>(0).Get();
@@ -1296,8 +1342,14 @@ void JitTranslator::EmitVecLoadConst(ir::Inst* inst) {
 
 void JitTranslator::EmitVecShuffle32Indexed(ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
-    auto indexes = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
+    if (context.IsPshufd4eExt(inst->Id())) {
+        ASSERT_MSG(ReprovePshufd4eExtShuffle(inst),
+                   "PSHUFD 0x4e EXT proof diverged at IR {}", inst->Id());
+        __ Ext(result.V16B(), src.V16B(), src.V16B(), 8);
+        return;
+    }
+    auto indexes = context.V(inst->GetArg<ir::Value>(1));
     __ Tbl(result.V16B(), src.V16B(), indexes.V16B());
 }
 

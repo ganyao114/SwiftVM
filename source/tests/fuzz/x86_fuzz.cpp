@@ -5154,6 +5154,139 @@ TEST_CASE("SSE scalar MIN MAX AFP JIT interpreter differential") {
     munmap(arena, kArenaSize);
 }
 
+TEST_CASE("PSHUFD all immediates match the lane-selection golden model") {
+    using Vec128 = std::array<u8, 16>;
+
+    struct SavedEnv {
+        const char* name;
+        bool present;
+        std::string value;
+    };
+    const auto save_env = [](const char* name) {
+        const char* value = swift::runtime::GetRawSvmConfigEnvForTest(name);
+        return SavedEnv{name, value != nullptr, value ? value : ""};
+    };
+    const auto restore_env = [](const SavedEnv& saved) {
+        if (saved.present) {
+            swift::runtime::SetSvmConfigEnvForTest(
+                    saved.name, saved.value.c_str(), 1);
+        } else {
+            swift::runtime::UnsetSvmConfigEnvForTest(saved.name);
+        }
+    };
+    const auto old_jit = save_env("SVM_ENABLE_JIT");
+    const auto old_gate = save_env("SVM_PSHUFD_4E_EXT");
+    const auto old_cache = save_env("SVM_VEC_CONST_CACHE");
+
+    swift::runtime::SetSvmConfigEnvForTest("SVM_ENABLE_JIT", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_VEC_CONST_CACHE", "1", 1);
+    swift::runtime::SetSvmConfigEnvForTest("SVM_PSHUFD_4E_EXT", "0", 1);
+    auto* off_instance = X86Instance::Make();
+    swift::runtime::SetSvmConfigEnvForTest("SVM_PSHUFD_4E_EXT", "1", 1);
+    auto* on_instance = X86Instance::Make();
+    restore_env(old_gate);
+    restore_env(old_cache);
+    restore_env(old_jit);
+
+    constexpr size_t kArenaSize = 0x200000;
+    swift::runtime::backend::SmcTracker::SetEnabled(false);
+    void* arena = mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(arena != MAP_FAILED);
+    const u64 base = reinterpret_cast<u64>(arena);
+    const u64 data = base + 0x100000;
+    const u64 stack = base + 0x180000;
+    constexpr s32 kSourceOff = 0x100;
+    constexpr s32 kOutputOff = 0x140;
+    const auto mem = [](s32 offset) {
+        MemOp op{};
+        op.disp = offset;
+        return op;
+    };
+
+    auto* off_core = X86Core::Make(off_instance);
+    auto* on_core = X86Core::Make(on_instance);
+    auto* off_ctx = &off_core->GetContext();
+    auto* on_ctx = &on_core->GetContext();
+    const auto run = [&](X86Core* core, ThreadContext64* context,
+                         u64 address, const Vec128& source) {
+        std::memcpy(reinterpret_cast<void*>(data + kSourceOff),
+                    source.data(), source.size());
+        std::memset(reinterpret_cast<void*>(data + kOutputOff), 0, 16);
+        context->r13.qword = data;
+        context->rsp.qword = stack;
+        context->rip.qword = address;
+        core->Run();
+        Vec128 result{};
+        std::memcpy(result.data(), reinterpret_cast<void*>(data + kOutputOff), 16);
+        return result;
+    };
+    const auto golden = [](const Vec128& source, u8 control) {
+        Vec128 result{};
+        for (u32 lane = 0; lane < 4; ++lane) {
+            const u32 selected = (control >> (lane * 2)) & 3;
+            std::memcpy(result.data() + lane * 4,
+                        source.data() + selected * 4, 4);
+        }
+        return result;
+    };
+
+    const std::array<Vec128, 4> sources = {{
+            {0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13,
+             0x20, 0x21, 0x22, 0x23, 0x30, 0x31, 0x32, 0x33},
+            {0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+             0x78, 0x56, 0x34, 0x12, 0xef, 0xcd, 0xab, 0x89},
+            {0x80, 0x00, 0x00, 0x00, 0x7f, 0xff, 0xff, 0xff,
+             0xaa, 0x55, 0xaa, 0x55, 0x55, 0xaa, 0x55, 0xaa},
+            {0x13, 0x37, 0xc0, 0xde, 0xde, 0xad, 0xbe, 0xef,
+             0x5a, 0xa5, 0x69, 0x96, 0x42, 0x24, 0x81, 0x18},
+    }};
+    enum class Form : u8 { Alias, Distinct, Memory };
+    size_t code_cursor = 1;
+    size_t checks = 0;
+    for (u32 control = 0; control < 256; ++control) {
+        for (const Form form : {Form::Alias, Form::Distinct, Form::Memory}) {
+            CodeBuf code;
+            const u8 destination = form == Form::Alias ? 0 : 2;
+            if (form != Form::Memory) {
+                EmitSseLoad(code, 0xF3, 0x6F, 0, mem(kSourceOff));
+                code.B(0x66);
+                code.B(0x0F);
+                code.B(0x70);
+                EmitModRMReg(code, destination, 0);
+            } else {
+                code.B(0x66);
+                EmitSseRexMem(code, mem(kSourceOff));
+                code.B(0x0F);
+                code.B(0x70);
+                EmitModRMMem(code, destination, mem(kSourceOff));
+            }
+            code.B(static_cast<u8>(control));
+            EmitSseStore(code, 0xF3, 0x7F, mem(kOutputOff), destination);
+            code.B(0xF4);
+            const u64 address = base + code_cursor++ * 0x80;
+            REQUIRE(code.c.size() < 0x80);
+            std::memcpy(reinterpret_cast<void*>(address), code.c.data(), code.c.size());
+
+            for (const auto& source : sources) {
+                const auto expected = golden(source, static_cast<u8>(control));
+                CAPTURE(control, static_cast<u32>(form));
+                REQUIRE(run(off_core, off_ctx, address, source) == expected);
+                REQUIRE(run(on_core, on_ctx, address, source) == expected);
+                ++checks;
+            }
+        }
+    }
+    REQUIRE(checks == 256 * 3 * sources.size());
+
+    X86Core::Destroy(off_core);
+    X86Core::Destroy(on_core);
+    X86Instance::Destroy(off_instance);
+    X86Instance::Destroy(on_instance);
+    swift::runtime::backend::SmcTracker::SetEnabled(true);
+    munmap(arena, kArenaSize);
+}
+
 TEST_CASE("SSE scalar arithmetic tied destination JIT interpreter differential") {
     using Vec128 = std::array<u8, 16>;
     struct InputCase {

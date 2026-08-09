@@ -116,6 +116,8 @@ private:
     [[nodiscard]] bool ReproveCoalescedHostFPRRead(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveAesChainTie(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveAesChainHostWrite(ir::Inst* inst) const;
+    [[nodiscard]] bool ReprovePshufd4eExtConstant(ir::Inst* inst) const;
+    [[nodiscard]] bool ReprovePshufd4eExtShuffle(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveWidthChainBridge(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCachedConstAddress(ir::Inst* inst) const;
 

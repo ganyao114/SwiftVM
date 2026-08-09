@@ -224,6 +224,7 @@ public:
     void MarkWidthChainCoalesced(u32 id, u32 anchor_id);
     void MarkConstAddressCached(u32 id, u32 anchor_id);
     void MarkAesChainTied(u32 id, u16 target);
+    void MarkPshufd4eExt(u32 id);
     [[nodiscard]] bool IsHostWriteCoalesced(u32 id) const;
     [[nodiscard]] bool IsHostReadCoalesced(u32 id) const;
     [[nodiscard]] bool IsWidthChainCoalesced(u32 id) const;
@@ -232,6 +233,7 @@ public:
     [[nodiscard]] u32 ConstAddressCacheAnchor(u32 id) const;
     [[nodiscard]] bool IsAesChainTied(u32 id) const;
     [[nodiscard]] u16 AesChainTarget(u32 id) const;
+    [[nodiscard]] bool IsPshufd4eExt(u32 id) const;
     void SetActiveRegs(u32 id, GPRSMask &gprs, FPRSMask &fprs);
 
     ir::HostGPR ValueGPR(const ir::Value &value);
@@ -280,6 +282,7 @@ private:
     Vector<u32> width_chain_anchors{};
     Vector<u32> const_address_cache_anchors{};
     Vector<u16> aes_chain_targets{};
+    Vector<bool> pshufd_4e_ext{};
     u32 stack_size{};
     ir::Inst *current_ir{};
     GPRSMask gprs;

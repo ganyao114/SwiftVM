@@ -385,6 +385,7 @@ public:
         CoalesceGuestRegisterAccesses();
         CoalesceWidthChains();
         CoalesceGuestFPRAccesses(xmm_resident);
+        RecognizePshufd4eExt();
         CacheConstantAddresses();
         if (spill_count && RaDiagEnabled()) {
             LOG_WARNING("RegisterAllocPass: {} value(s) spilled to stack slots (highest slot {})",
@@ -778,6 +779,12 @@ private:
 
     static bool IsAesEncChainProducer(OpCode op) {
         return op == OpCode::VecAesEncFast || op == OpCode::VecAesEncLastFast;
+    }
+
+    static bool IsPshufd4eMask(const Inst& inst) {
+        return inst.GetOp() == OpCode::VecLoadConst &&
+               inst.GetArg<Imm>(0).Get() == 0x0f0e0d0c0b0a0908ull &&
+               inst.GetArg<Imm>(1).Get() == 0x0706050403020100ull;
     }
 
     struct ConstAddressCandidate {
@@ -2089,6 +2096,60 @@ private:
             }
         } else {
             coalesce_block(block);
+        }
+    }
+
+    void RecognizePshufd4eExt() {
+        if (!features.pshufd_4e_ext) {
+            return;
+        }
+
+        auto recognize_block = [&](Block* lir_block) {
+            auto& list = lir_block->GetInstList();
+            for (auto& constant : list) {
+                if (!IsPshufd4eMask(constant)) {
+                    continue;
+                }
+                Vector<Inst*> shuffles;
+                u32 local_uses = 0;
+                bool exact = true;
+                for (auto& consumer : list) {
+                    for (auto value : consumer.GetValues()) {
+                        if (value.Def() != &constant) {
+                            continue;
+                        }
+                        ++local_uses;
+                        if (consumer.GetOp() != OpCode::VecShuffle32Indexed ||
+                            consumer.GetArg<Value>(1).Def() != &constant ||
+                            consumer.GetArg<Value>(0).Def() == &constant) {
+                            exact = false;
+                            continue;
+                        }
+                        if (std::find(shuffles.begin(), shuffles.end(), &consumer) ==
+                            shuffles.end()) {
+                            shuffles.push_back(&consumer);
+                        }
+                    }
+                }
+                // GetUses also sees consumers outside this LIR block and
+                // terminal operands. Exact equality therefore makes mixed or
+                // cross-block use fail closed as one indivisible component.
+                if (!exact || shuffles.empty() || local_uses != constant.GetUses()) {
+                    continue;
+                }
+                reg_alloc->MarkPshufd4eExt(constant.Id());
+                for (auto* shuffle : shuffles) {
+                    reg_alloc->MarkPshufd4eExt(shuffle->Id());
+                }
+            }
+        };
+
+        if (function) {
+            for (auto* hir_block : function->GetHIRBlocks()) {
+                recognize_block(hir_block->GetBlock());
+            }
+        } else {
+            recognize_block(block);
         }
     }
 

@@ -12,6 +12,7 @@
 #include <string>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <tuple>
 #include <unistd.h>
 #include <vector>
 #include "aarch64/disasm-aarch64.h"
@@ -223,7 +224,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 154);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 155);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -296,7 +297,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 64);
+    STATIC_REQUIRE(kFeatureCount == 65);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -4627,6 +4628,152 @@ TEST_CASE("AES resident ownership ties only complete verified chains") {
         auto alloc = allocate(block.get(), true);
         REQUIRE_FALSE(alloc->IsAesChainTied(only.Id()));
         REQUIRE_FALSE(alloc->IsHostWriteCoalesced(publish->Id()));
+    }
+}
+
+TEST_CASE("PSHUFD 0x4e EXT requires an exclusively shared canonical mask") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    constexpr swift::u64 kIndexLo = 0x0f0e0d0c0b0a0908ull;
+    constexpr swift::u64 kIndexHi = 0x0706050403020100ull;
+    const GPRSMask gprs{~((1u << 8) - 1u)};
+
+    struct Case {
+        IntrusivePtr<Block> block;
+        Value source;
+        Value indexes;
+        Value first;
+    };
+    auto make_case = [&](swift::u64 location, bool mixed, bool wrong_mask,
+                         bool two_shuffles) {
+        IntrusivePtr<Block> block{new Block(0, Location{location})};
+        auto source = block->LoadUniform(Uniform{0, ValueType::V128})
+                              .SetType(ValueType::V128);
+        auto indexes = block->VecLoadConst(
+                                    Imm{swift::u64{wrong_mask ? kIndexLo ^ 1u
+                                                               : kIndexLo}},
+                                    Imm{kIndexHi})
+                               .SetType(ValueType::V128);
+        auto first = block->VecShuffle32Indexed(source, indexes)
+                             .SetType(ValueType::V128);
+        block->StoreUniform(Uniform{16, ValueType::V128}, first);
+        if (two_shuffles) {
+            auto second = block->VecShuffle32Indexed(source, indexes)
+                                  .SetType(ValueType::V128);
+            block->StoreUniform(Uniform{32, ValueType::V128}, second);
+        }
+        if (mixed) {
+            auto other = block->VecTableLookup8(source, indexes)
+                                 .SetType(ValueType::V128);
+            block->StoreUniform(Uniform{48, ValueType::V128}, other);
+        }
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        return Case{std::move(block), source, indexes, first};
+    };
+
+    auto allocate = [&](Block* block, bool enabled) {
+        auto features = FeatureSet{};
+        // This is a single production-style allocation, not a two-phase
+        // helper. The selector is nevertheless explicit so a future default
+        // flip cannot contaminate the OFF arm.
+        features.pshufd_4e_ext = enabled;
+        auto alloc = std::make_unique<RegAlloc>(
+                block->MaxInstrId(), gprs, FPRSMask{0}, features);
+        RegisterAllocPass::Run(block, alloc.get(), false, features);
+        return alloc;
+    };
+    struct Emitted {
+        std::size_t bytes{};
+        std::string text;
+    };
+    auto emit = [&](Block* block, RegAlloc& alloc, swift::u64 location,
+                    bool enabled) {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        ModuleConfig module_config{};
+        module_config.feature_overrides.Set(FeatureId::pshufd_4e_ext, enabled);
+        auto module = address_space.MapModule(
+                LocationDescriptor{location}, LocationDescriptor{location + 0x10},
+                module_config);
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block);
+        context.Finish();
+        Emitted emitted{.bytes = context.CurrentBufferSize()};
+        auto& masm = context.GetMasm();
+        auto* first = masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+        auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        for (auto* instruction = first; instruction < last;
+             instruction = instruction->GetNextInstruction()) {
+            decoder.Decode(instruction);
+            emitted.text += disassembler.GetOutput();
+            emitted.text += '\n';
+        }
+        return emitted;
+    };
+
+    auto exact = make_case(0xb0400, false, false, true);
+    auto off = allocate(exact.block.get(), false);
+    auto on = allocate(exact.block.get(), true);
+    REQUIRE_FALSE(off->IsPshufd4eExt(exact.indexes.Id()));
+    REQUIRE(on->IsPshufd4eExt(exact.indexes.Id()));
+    REQUIRE(on->IsPshufd4eExt(exact.first.Id()));
+    auto off_code = emit(exact.block.get(), *off, 0xb0500, false);
+    auto on_code = emit(exact.block.get(), *on, 0xb0600, true);
+    INFO("OFF:\n" << off_code.text << "ON:\n" << on_code.text);
+    REQUIRE(on_code.bytes + 10 * vixl::aarch64::kInstructionSize == off_code.bytes);
+    REQUIRE(on_code.text.find("ext") != std::string::npos);
+    REQUIRE(on_code.text.find("tbl") == std::string::npos);
+
+    SECTION("result and source may alias") {
+        auto item = make_case(0xb0700, false, false, false);
+        auto alloc = allocate(item.block.get(), true);
+        alloc->MapRegister(item.first.Id(), alloc->ValueFPR(item.source));
+        REQUIRE(alloc->ValueFPR(item.first).id == alloc->ValueFPR(item.source).id);
+        auto code = emit(item.block.get(), *alloc, 0xb0800, true);
+        REQUIRE(code.text.find("ext") != std::string::npos);
+        REQUIRE(code.text.find("tbl") == std::string::npos);
+    }
+
+    for (const auto [name, mixed, wrong_mask] : {
+                 std::tuple{"mixed consumer", true, false},
+                 std::tuple{"non-0x4e mask", false, true}}) {
+        DYNAMIC_SECTION(name << " keeps the old bytes") {
+            auto item = make_case(0xb0900 + mixed * 0x20 + wrong_mask * 0x40,
+                                  mixed, wrong_mask, true);
+            auto item_off = allocate(item.block.get(), false);
+            auto item_on = allocate(item.block.get(), true);
+            REQUIRE_FALSE(item_on->IsPshufd4eExt(item.indexes.Id()));
+            auto old_code = emit(item.block.get(), *item_off, 0xb0a00, false);
+            auto new_code = emit(item.block.get(), *item_on, 0xb0a00, true);
+            REQUIRE(new_code.bytes == old_code.bytes);
+            REQUIRE(new_code.text == old_code.text);
+        }
+    }
+
+    SECTION("the canonical mask cannot also be the shuffled source") {
+        auto item = make_case(0xb0b00, false, false, false);
+        item.first.Def()->SetArg(0, item.indexes);
+        item.block->ReIdInstr();
+        auto item_off = allocate(item.block.get(), false);
+        auto item_on = allocate(item.block.get(), true);
+        REQUIRE_FALSE(item_on->IsPshufd4eExt(item.indexes.Id()));
+        auto old_code = emit(item.block.get(), *item_off, 0xb0c00, false);
+        auto new_code = emit(item.block.get(), *item_on, 0xb0c00, true);
+        REQUIRE(new_code.bytes == old_code.bytes);
+        REQUIRE(new_code.text == old_code.text);
     }
 }
 
