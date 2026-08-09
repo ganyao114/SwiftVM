@@ -1543,6 +1543,10 @@ void JitTranslator::EmitVecAesEncFast(ir::Inst* inst) {
     auto key = context.V(inst->GetArg<ir::Value>(1));
     auto zero = context.V(inst->GetArg<ir::Value>(2));
     auto result = context.V(ir::Value{inst});
+    if (context.IsAesChainTied(inst->Id())) {
+        ASSERT_MSG(ReproveAesChainTie(inst),
+                   "AES ownership-chain proof diverged at IR {}", inst->Id());
+    }
     if (result.GetCode() != data.GetCode()) {
         __ Orr(result.V16B(), data.V16B(), data.V16B());
     }
@@ -1556,6 +1560,10 @@ void JitTranslator::EmitVecAesEncLastFast(ir::Inst* inst) {
     auto key = context.V(inst->GetArg<ir::Value>(1));
     auto zero = context.V(inst->GetArg<ir::Value>(2));
     auto result = context.V(ir::Value{inst});
+    if (context.IsAesChainTied(inst->Id())) {
+        ASSERT_MSG(ReproveAesChainTie(inst),
+                   "AES ownership-chain proof diverged at IR {}", inst->Id());
+    }
     if (result.GetCode() != data.GetCode()) {
         __ Orr(result.V16B(), data.V16B(), data.V16B());
     }

@@ -114,6 +114,8 @@ private:
     [[nodiscard]] bool ReproveScalarFPRTie(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveShufpsImmTie(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCoalescedHostFPRRead(ir::Inst* inst) const;
+    [[nodiscard]] bool ReproveAesChainTie(ir::Inst* inst) const;
+    [[nodiscard]] bool ReproveAesChainHostWrite(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveWidthChainBridge(ir::Inst* inst) const;
     [[nodiscard]] bool ReproveCachedConstAddress(ir::Inst* inst) const;
 

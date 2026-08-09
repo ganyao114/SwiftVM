@@ -776,6 +776,10 @@ private:
         }
     }
 
+    static bool IsAesEncChainProducer(OpCode op) {
+        return op == OpCode::VecAesEncFast || op == OpCode::VecAesEncLastFast;
+    }
+
     struct ConstAddressCandidate {
         Inst* inst{};
         u32 use_id{};
@@ -1872,6 +1876,128 @@ private:
                        reg_alloc->ValueFPR(value).id == target;
             };
 
+            auto try_aes_chain = [&](Inst& store, Value produced, u32 target) {
+                if (!features.ra_aes_chain_tie || !produced.Def() ||
+                    !IsAesEncChainProducer(produced.Def()->GetOp())) {
+                    return false;
+                }
+
+                Vector<Inst*> reverse_chain;
+                Value head{};
+                for (auto* node = produced.Def(); node && IsAesEncChainProducer(node->GetOp());) {
+                    reverse_chain.push_back(node);
+                    auto data = ResolveBitCastSource(node->GetArg<Value>(0));
+                    if (!data.Defined() || !data.Def()) {
+                        return false;
+                    }
+                    if (!IsAesEncChainProducer(data.Def()->GetOp())) {
+                        head = data;
+                        break;
+                    }
+                    node = data.Def();
+                }
+                if (reverse_chain.size() < 2 || !head.Defined() || !head.Def() ||
+                    head.Def()->GetOp() != OpCode::GetHostFPR ||
+                    head.Def()->GetArg<Imm>(0).Get() != target ||
+                    head.Def()->GetArg<Imm>(1).Get() != 0 ||
+                    !reg_alloc->IsHostReadCoalesced(head.Id()) ||
+                    !mapped_to(head, target)) {
+                    return false;
+                }
+                std::reverse(reverse_chain.begin(), reverse_chain.end());
+                const auto& chain = reverse_chain;
+                auto is_chain_node = [&](const Inst* candidate) {
+                    return std::find(chain.begin(), chain.end(), candidate) != chain.end();
+                };
+
+                for (std::size_t i = 0; i < chain.size(); ++i) {
+                    auto* node = chain[i];
+                    Value data = ResolveBitCastSource(node->GetArg<Value>(0));
+                    Value expected_data = i == 0 ? head : Value{chain[i - 1]};
+                    if (data.Def() != expected_data.Def() || data.Id() >= use_end.size() ||
+                        use_end[data.Id()] != node->Id() ||
+                        node->ReturnType() != ValueType::V128 ||
+                        reg_alloc->ValueType(Value{node}) != backend::RegAlloc::FPR) {
+                        return false;
+                    }
+                    for (std::size_t arg = 1; arg < 3; ++arg) {
+                        auto input = ResolveBitCastSource(node->GetArg<Value>(arg));
+                        if (mapped_to(input, target)) {
+                            return false;
+                        }
+                    }
+
+                    Inst* expected_consumer = i + 1 < chain.size() ? chain[i + 1] : &store;
+                    u32 semantic_uses = 0;
+                    for (auto& scan : list) {
+                        if (scan.IsBitCastOperation()) {
+                            continue;
+                        }
+                        for (auto value : scan.GetValues()) {
+                            if (ResolveBitCastSource(value).Def() == node) {
+                                if (&scan != expected_consumer) {
+                                    return false;
+                                }
+                                ++semantic_uses;
+                            }
+                        }
+                    }
+                    if (semantic_uses != 1) {
+                        return false;
+                    }
+                }
+
+                const u32 begin = chain.front()->Id();
+                if (produced.Id() >= use_end.size() || use_end[produced.Id()] != store.Id()) {
+                    return false;
+                }
+                for (auto& other : list) {
+                    if (&other == &store || &other == head.Def() || is_chain_node(&other) ||
+                        !other.HasValue() || other.IsBitCastOperation() ||
+                        other.Id() >= store.Id()) {
+                        continue;
+                    }
+                    Value value{&other};
+                    if (mapped_to(value, target) && value.Id() < use_end.size() &&
+                        use_end[value.Id()] > begin) {
+                        return false;
+                    }
+                }
+
+                for (auto& scan : list) {
+                    if (scan.Id() <= begin || scan.Id() >= store.Id() ||
+                        is_chain_node(&scan) || scan.IsBitCastOperation()) {
+                        continue;
+                    }
+                    if ((scan.GetOp() == OpCode::GetHostFPR &&
+                         scan.GetArg<Imm>(0).Get() == target) ||
+                        (scan.GetOp() == OpCode::SetHostFPR &&
+                         scan.GetArg<Imm>(1).Get() == target)) {
+                        return false;
+                    }
+                    // A completed AES node has already committed the resident
+                    // XMM value in its fixed home. Fault recovery saves that
+                    // home through BuildSaveStaticUniform, so an ordinary load
+                    // may fault without observing a stale value. Other generic
+                    // observers keep the existing fail-closed rule.
+                    const bool committed_home_safe =
+                            scan.GetOp() == OpCode::LoadMemory ||
+                            scan.GetOp() == OpCode::StoreMemory ||
+                            scan.GetOp() == OpCode::SaveFlags;
+                    if (IsPinnedCoalesceObserver(scan.GetOp()) &&
+                        !committed_home_safe) {
+                        return false;
+                    }
+                }
+
+                for (auto* node : chain) {
+                    reg_alloc->MapRegister(node->Id(), HostFPR{static_cast<u16>(target)});
+                    reg_alloc->MarkAesChainTied(node->Id(), static_cast<u16>(target));
+                }
+                reg_alloc->MarkHostWriteCoalesced(store.Id());
+                return true;
+            };
+
             for (auto& store : list) {
                 if (store.GetOp() != OpCode::SetHostFPR ||
                     store.GetArg<Imm>(2).Get() != 0) {
@@ -1883,6 +2009,9 @@ private:
                 }
                 Value produced = ResolveBitCastSource(store.GetArg<Value>(0));
                 auto* producer = produced.Def();
+                if (try_aes_chain(store, produced, target)) {
+                    continue;
+                }
                 if (!producer || produced.Id() >= use_end.size() ||
                     produced.Type() != ValueType::V128 ||
                     use_end[produced.Id()] != store.Id() ||
@@ -3715,6 +3844,36 @@ void RegisterAllocPass::RunForXmmResidentConflictTest(ir::Block* block,
     reg_alloc->MapRegister(tied_value_id, HostFPR{target});
     LinearScanAllocator scan{block, reg_alloc, 0, 0, false, false, false, false,
                              nullptr, false, features, 0};
+    scan.CoalesceGuestFPRAccessesForTest();
+}
+
+void RegisterAllocPass::RunForAesChainTieTest(ir::Block* block,
+                                              backend::RegAlloc* reg_alloc,
+                                              bool enabled) {
+    auto features = FeatureSet{};
+    features.ra_aes_chain_tie = enabled;
+    reg_alloc->ResetAllocations();
+    LinearScanAllocator scan{block, reg_alloc, 0, backend::kDefaultScratchFPR,
+                             false, false, false, false, nullptr, false, features, 1};
+    scan.AllocateRegisters();
+    ASSERT(scan.Verify());
+}
+
+void RegisterAllocPass::RunForAesChainTieConflictTest(
+        ir::Block* block,
+        backend::RegAlloc* reg_alloc,
+        u32 tied_value_id,
+        u16 target) {
+    auto features = FeatureSet{};
+    reg_alloc->ResetAllocations();
+    LinearScanAllocator initial{block, reg_alloc, 0, backend::kDefaultScratchFPR,
+                                false, false, false, false, nullptr, false, features, 1};
+    initial.AllocateRegisters();
+    ASSERT(initial.Verify());
+    reg_alloc->MapRegister(tied_value_id, HostFPR{target});
+    features.ra_aes_chain_tie = true;
+    LinearScanAllocator scan{block, reg_alloc, 0, 0, false, false, false, false,
+                             nullptr, false, features, 1};
     scan.CoalesceGuestFPRAccessesForTest();
 }
 

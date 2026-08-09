@@ -403,6 +403,162 @@ bool JitTranslator::ReproveCoalescedHostFPRRead(ir::Inst* inst) const {
     return true;
 }
 
+bool JitTranslator::ReproveAesChainTie(ir::Inst* inst) const {
+    if (!context.GetFeatures().ra_aes_chain_tie || !inst ||
+        (inst->GetOp() != ir::OpCode::VecAesEncFast &&
+         inst->GetOp() != ir::OpCode::VecAesEncLastFast) ||
+        !context.IsAesChainTied(inst->Id())) {
+        return false;
+    }
+    const u32 target = context.AesChainTarget(inst->Id());
+    auto data = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
+    auto key = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(1));
+    auto zero = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(2));
+    if (!data.Defined() || !data.Def() || target < 16 || target > 31 ||
+        context.V(ir::Value{inst}).GetCode() != target ||
+        context.V(data).GetCode() != target ||
+        context.V(key).GetCode() == target ||
+        context.V(zero).GetCode() == target) {
+        return false;
+    }
+
+    u32 data_end = data.Def()->Id();
+    ir::Inst* semantic_consumer = nullptr;
+    u32 semantic_uses = 0;
+    for (auto& scan : cur_block->GetInstList()) {
+        for (auto value : scan.GetValues()) {
+            auto root = ResolveHostCoalesceBitCast(value);
+            if (root.Def() == data.Def()) {
+                data_end = std::max<u32>(data_end, scan.Id());
+            }
+            if (!scan.IsBitCastOperation() && root.Def() == inst) {
+                semantic_consumer = &scan;
+                ++semantic_uses;
+            }
+        }
+    }
+    if (data_end != inst->Id() || semantic_uses != 1 || !semantic_consumer) {
+        return false;
+    }
+
+    const bool predecessor_is_chain =
+            (data.Def()->GetOp() == ir::OpCode::VecAesEncFast ||
+             data.Def()->GetOp() == ir::OpCode::VecAesEncLastFast) &&
+            context.IsAesChainTied(data.Id()) &&
+            context.AesChainTarget(data.Id()) == target;
+    const bool predecessor_is_home =
+            data.Def()->GetOp() == ir::OpCode::GetHostFPR &&
+            data.Def()->GetArg<ir::Imm>(0).Get() == target &&
+            data.Def()->GetArg<ir::Imm>(1).Get() == 0 &&
+            context.IsHostReadCoalesced(data.Id());
+    if (!predecessor_is_chain && !predecessor_is_home) {
+        return false;
+    }
+
+    const bool successor_is_chain =
+            (semantic_consumer->GetOp() == ir::OpCode::VecAesEncFast ||
+             semantic_consumer->GetOp() == ir::OpCode::VecAesEncLastFast) &&
+            context.IsAesChainTied(semantic_consumer->Id()) &&
+            context.AesChainTarget(semantic_consumer->Id()) == target &&
+            ResolveHostCoalesceBitCast(
+                    semantic_consumer->GetArg<ir::Value>(0)).Def() == inst;
+    const bool successor_is_store =
+            semantic_consumer->GetOp() == ir::OpCode::SetHostFPR &&
+            semantic_consumer->GetArg<ir::Imm>(1).Get() == target &&
+            semantic_consumer->GetArg<ir::Imm>(2).Get() == 0 &&
+            context.IsHostWriteCoalesced(semantic_consumer->Id());
+    // A single producer is deliberately outside this spike: the component
+    // must own both the initial read and final publication, not just move one
+    // of the two copies to the other side of the AES instruction.
+    return (predecessor_is_home && successor_is_chain) ||
+           (predecessor_is_chain && (successor_is_chain || successor_is_store));
+}
+
+bool JitTranslator::ReproveAesChainHostWrite(ir::Inst* inst) const {
+    if (!inst || inst->GetOp() != ir::OpCode::SetHostFPR ||
+        inst->GetArg<ir::Imm>(2).Get() != 0) {
+        return false;
+    }
+    const u32 target = inst->GetArg<ir::Imm>(1).Get();
+    auto produced = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
+    if (!produced.Defined() || !produced.Def() ||
+        !context.IsAesChainTied(produced.Id()) ||
+        context.AesChainTarget(produced.Id()) != target ||
+        context.V(produced).GetCode() != target) {
+        return false;
+    }
+
+    std::vector<ir::Inst*> reverse_chain;
+    auto data = produced;
+    while (data.Defined() && data.Def() && context.IsAesChainTied(data.Id())) {
+        auto* node = data.Def();
+        if (!ReproveAesChainTie(node)) {
+            return false;
+        }
+        reverse_chain.push_back(node);
+        data = ResolveHostCoalesceBitCast(node->GetArg<ir::Value>(0));
+    }
+    if (reverse_chain.size() < 2 || !data.Defined() || !data.Def() ||
+        data.Def()->GetOp() != ir::OpCode::GetHostFPR ||
+        data.Def()->GetArg<ir::Imm>(0).Get() != target ||
+        data.Def()->GetArg<ir::Imm>(1).Get() != 0 ||
+        !context.IsHostReadCoalesced(data.Id()) ||
+        context.V(data).GetCode() != target) {
+        return false;
+    }
+    std::reverse(reverse_chain.begin(), reverse_chain.end());
+    auto is_chain_node = [&](const ir::Inst* candidate) {
+        return std::find(reverse_chain.begin(), reverse_chain.end(), candidate) !=
+               reverse_chain.end();
+    };
+
+    auto last_use = [&](ir::Inst* definition) {
+        u32 end = definition->Id();
+        for (auto& scan : cur_block->GetInstList()) {
+            for (auto value : scan.GetValues()) {
+                if (ResolveHostCoalesceBitCast(value).Def() == definition) {
+                    end = std::max<u32>(end, scan.Id());
+                }
+            }
+        }
+        return end;
+    };
+    if (last_use(produced.Def()) != inst->Id()) {
+        return false;
+    }
+    const u32 begin = reverse_chain.front()->Id();
+    for (auto& other : cur_block->GetInstList()) {
+        if (&other == inst || &other == data.Def() || is_chain_node(&other) ||
+            !other.HasValue() || other.IsBitCastOperation() || other.Id() >= inst->Id()) {
+            continue;
+        }
+        ir::Value value{&other};
+        if (context.SharesFPR(value, produced) && last_use(&other) > begin) {
+            return false;
+        }
+    }
+    for (auto& scan : cur_block->GetInstList()) {
+        if (scan.Id() <= begin || scan.Id() >= inst->Id() ||
+            is_chain_node(&scan) || scan.IsBitCastOperation()) {
+            continue;
+        }
+        if ((scan.GetOp() == ir::OpCode::GetHostFPR &&
+             scan.GetArg<ir::Imm>(0).Get() == target) ||
+            (scan.GetOp() == ir::OpCode::SetHostFPR &&
+             scan.GetArg<ir::Imm>(1).Get() == target)) {
+            return false;
+        }
+        const bool committed_home_safe =
+                scan.GetOp() == ir::OpCode::LoadMemory ||
+                scan.GetOp() == ir::OpCode::StoreMemory ||
+                scan.GetOp() == ir::OpCode::SaveFlags;
+        if (IsHostCoalesceObserver(scan.GetOp()) && !committed_home_safe) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool JitTranslator::ReproveCoalescedHostFPRWrite(ir::Inst* inst) const {
     if (!inst || inst->GetOp() != ir::OpCode::SetHostFPR ||
         inst->GetArg<ir::Imm>(2).Get() != 0) {
@@ -411,6 +567,9 @@ bool JitTranslator::ReproveCoalescedHostFPRWrite(ir::Inst* inst) const {
     const u32 target = inst->GetArg<ir::Imm>(1).Get();
     auto produced = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
     auto* producer = produced.Def();
+    if (producer && context.IsAesChainTied(produced.Id())) {
+        return ReproveAesChainHostWrite(inst);
+    }
     if (!producer || produced.Type() != ir::ValueType::V128 ||
         !IsHostFPRCoalesceProducer(producer->GetOp(),
                                    sse_scalar_tie && sse_scalar_insert) ||

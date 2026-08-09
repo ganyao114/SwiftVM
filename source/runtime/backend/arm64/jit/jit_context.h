@@ -174,6 +174,12 @@ public:
     [[nodiscard]] u32 ConstAddressCacheAnchor(u32 id) const {
         return reg_alloc.ConstAddressCacheAnchor(id);
     }
+    [[nodiscard]] bool IsAesChainTied(u32 id) const {
+        return reg_alloc.IsAesChainTied(id);
+    }
+    [[nodiscard]] u16 AesChainTarget(u32 id) const {
+        return reg_alloc.AesChainTarget(id);
+    }
     [[nodiscard]] backend::GPRSMask DirtyGPR(u32 id) const {
         return reg_alloc.DirtyGPR(id);
     }

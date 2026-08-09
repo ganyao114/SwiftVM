@@ -223,7 +223,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 153);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 154);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -296,7 +296,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 63);
+    STATIC_REQUIRE(kFeatureCount == 64);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -4448,6 +4448,185 @@ TEST_CASE("resident XMM coalescing preserves snapshots and fixed-home windows") 
         }
         REQUIRE(stores == descriptor_count / 2);
         REQUIRE(loads == descriptor_count / 2);
+    }
+}
+
+TEST_CASE("AES resident ownership ties only complete verified chains") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    constexpr swift::u32 kTarget = 18;
+    auto gprs = GPRSMask{~((1u << 8) - 1u)};
+    FPRSMask resident_fprs{0};
+    resident_fprs.Mark(kTarget);
+
+    struct Chain {
+        IntrusivePtr<Block> block;
+        Value first;
+        Value last;
+        Value conflict;
+        Inst* publish;
+    };
+    auto make_chain = [&](swift::u64 location, bool last_round,
+                          bool with_store_observer, bool with_extra_use,
+                          bool with_conflict) {
+        IntrusivePtr<Block> block{new Block(0, Location{location})};
+        auto home = block->GetHostFPR(HostRegIndex(kTarget), Imm{0u})
+                            .SetType(ValueType::V128);
+        auto key0 = block->LoadUniform(Uniform{0, ValueType::V128});
+        auto key1 = block->LoadUniform(Uniform{16, ValueType::V128});
+        auto zero = block->LoadUniform(Uniform{32, ValueType::V128});
+        auto first = block->VecAesEncFast(home, key0, zero)
+                             .SetType(ValueType::V128);
+        if (with_store_observer) {
+            auto address = block->LoadUniform(Uniform{64, ValueType::U64});
+            auto payload = block->LoadUniform(Uniform{72, ValueType::U64});
+            block->StoreMemory(Operand{address}, payload);
+        }
+        if (with_extra_use) {
+            block->StoreUniform(Uniform{96, ValueType::V128}, first);
+        }
+        Value last = last_round
+                ? block->VecAesEncLastFast(first, key1, zero)
+                          .SetType(ValueType::V128)
+                : block->VecAesEncFast(first, key1, zero)
+                          .SetType(ValueType::V128);
+        Value conflict{};
+        if (with_conflict) {
+            conflict = block->VecOr(key0, key1).SetType(ValueType::V128);
+        }
+        auto* publish = block->AppendInst(
+                OpCode::SetHostFPR, last, HostRegIndex(kTarget), Imm{0u});
+        if (conflict.Defined()) {
+            block->StoreUniform(Uniform{112, ValueType::V128}, conflict);
+        }
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        return Chain{std::move(block), first, last, conflict, publish};
+    };
+
+    auto allocate = [&](Block* block, bool enabled) {
+        auto alloc = std::make_unique<RegAlloc>(
+                block->MaxInstrId(), gprs, resident_fprs, FeatureSet{});
+        RegisterAllocPass::RunForAesChainTieTest(block, alloc.get(), enabled);
+        return alloc;
+    };
+    auto emit_size = [&](Block* block, RegAlloc& alloc, swift::u64 location,
+                         bool enabled) {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        ModuleConfig module_config{};
+        module_config.feature_overrides.Set(
+                FeatureId::ra_aes_chain_tie, enabled);
+        auto module = address_space.MapModule(
+                LocationDescriptor{location}, LocationDescriptor{location + 0x10},
+                module_config);
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block);
+        context.Finish();
+        return context.CurrentBufferSize();
+    };
+
+    for (bool last_round : {false, true}) {
+        for (bool fault_observer : {false, true}) {
+            CAPTURE(last_round, fault_observer);
+            auto item = make_chain(0xaa00 + last_round * 0x40 + fault_observer * 0x20,
+                                   last_round, fault_observer, false, false);
+            auto off = allocate(item.block.get(), false);
+            REQUIRE_FALSE(off->IsAesChainTied(item.first.Id()));
+            REQUIRE_FALSE(off->IsAesChainTied(item.last.Id()));
+            REQUIRE_FALSE(off->IsHostWriteCoalesced(item.publish->Id()));
+            const auto off_size = emit_size(item.block.get(), *off, 0xab00, false);
+
+            auto on = allocate(item.block.get(), true);
+            REQUIRE(on->ValueFPR(item.first).id == kTarget);
+            REQUIRE(on->ValueFPR(item.last).id == kTarget);
+            REQUIRE(on->IsAesChainTied(item.first.Id()));
+            REQUIRE(on->IsAesChainTied(item.last.Id()));
+            REQUIRE(on->IsHostWriteCoalesced(item.publish->Id()));
+            const auto on_size = emit_size(item.block.get(), *on, 0xac00, true);
+            REQUIRE(on_size + 2 * vixl::aarch64::kInstructionSize == off_size);
+        }
+    }
+
+    SECTION("an intermediate extra use rejects the whole component") {
+        auto item = make_chain(0xad00, false, false, true, false);
+        auto alloc = allocate(item.block.get(), true);
+        REQUIRE_FALSE(alloc->IsAesChainTied(item.first.Id()));
+        REQUIRE_FALSE(alloc->IsAesChainTied(item.last.Id()));
+        REQUIRE_FALSE(alloc->IsHostWriteCoalesced(item.publish->Id()));
+    }
+
+    SECTION("two interleaved resident lanes retain independent ownership") {
+        constexpr swift::u32 kOtherTarget = 19;
+        FPRSMask two_homes{0};
+        two_homes.Mark(kTarget);
+        two_homes.Mark(kOtherTarget);
+        IntrusivePtr<Block> block{new Block(0, Location{0xadc0})};
+        auto home0 = block->GetHostFPR(HostRegIndex(kTarget), Imm{0u})
+                             .SetType(ValueType::V128);
+        auto home1 = block->GetHostFPR(HostRegIndex(kOtherTarget), Imm{0u})
+                             .SetType(ValueType::V128);
+        auto key0 = block->LoadUniform(Uniform{0, ValueType::V128});
+        auto key1 = block->LoadUniform(Uniform{16, ValueType::V128});
+        auto zero = block->LoadUniform(Uniform{32, ValueType::V128});
+        auto first0 = block->VecAesEncFast(home0, key0, zero)
+                              .SetType(ValueType::V128);
+        auto first1 = block->VecAesEncFast(home1, key0, zero)
+                              .SetType(ValueType::V128);
+        auto last0 = block->VecAesEncLastFast(first0, key1, zero)
+                             .SetType(ValueType::V128);
+        auto last1 = block->VecAesEncLastFast(first1, key1, zero)
+                             .SetType(ValueType::V128);
+        auto* publish0 = block->AppendInst(
+                OpCode::SetHostFPR, last0, HostRegIndex(kTarget), Imm{0u});
+        auto* publish1 = block->AppendInst(
+                OpCode::SetHostFPR, last1, HostRegIndex(kOtherTarget), Imm{0u});
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        RegAlloc alloc{block->MaxInstrId(), gprs, two_homes, FeatureSet{}};
+        RegisterAllocPass::RunForAesChainTieTest(block.get(), &alloc, true);
+        REQUIRE(alloc.ValueFPR(first0).id == kTarget);
+        REQUIRE(alloc.ValueFPR(last0).id == kTarget);
+        REQUIRE(alloc.ValueFPR(first1).id == kOtherTarget);
+        REQUIRE(alloc.ValueFPR(last1).id == kOtherTarget);
+        REQUIRE(alloc.IsHostWriteCoalesced(publish0->Id()));
+        REQUIRE(alloc.IsHostWriteCoalesced(publish1->Id()));
+    }
+
+    SECTION("a third-party interval mapped to the resident home rejects the chain") {
+        auto item = make_chain(0xae00, false, false, false, true);
+        RegAlloc alloc{item.block->MaxInstrId(), gprs, resident_fprs, FeatureSet{}};
+        RegisterAllocPass::RunForAesChainTieConflictTest(
+                item.block.get(), &alloc, item.conflict.Id(), kTarget);
+        REQUIRE(alloc.ValueFPR(item.conflict).id == kTarget);
+        REQUIRE_FALSE(alloc.IsAesChainTied(item.first.Id()));
+        REQUIRE_FALSE(alloc.IsAesChainTied(item.last.Id()));
+        REQUIRE_FALSE(alloc.IsHostWriteCoalesced(item.publish->Id()));
+    }
+
+    SECTION("a single producer remains on the existing copy fallback") {
+        IntrusivePtr<Block> block{new Block(0, Location{0xaf00})};
+        auto home = block->GetHostFPR(HostRegIndex(kTarget), Imm{0u})
+                            .SetType(ValueType::V128);
+        auto key = block->LoadUniform(Uniform{0, ValueType::V128});
+        auto zero = block->LoadUniform(Uniform{16, ValueType::V128});
+        auto only = block->VecAesEncFast(home, key, zero).SetType(ValueType::V128);
+        auto* publish = block->AppendInst(
+                OpCode::SetHostFPR, only, HostRegIndex(kTarget), Imm{0u});
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto alloc = allocate(block.get(), true);
+        REQUIRE_FALSE(alloc->IsAesChainTied(only.Id()));
+        REQUIRE_FALSE(alloc->IsHostWriteCoalesced(publish->Id()));
     }
 }
 
