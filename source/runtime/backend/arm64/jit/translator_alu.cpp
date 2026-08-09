@@ -527,6 +527,8 @@ void JitTranslator::EmitByteSwap(ir::Inst* inst) {
     const u32 width = inst->GetArg<ir::Imm>(1).Get();
     switch (width) {
         case 16:
+            ASSERT_MSG(inst->ReturnType() == ir::ValueType::U16,
+                       "16-bit byte swap lost its narrow-result proof");
             __ Rev16(result.W(), context.W(value));
             break;
         case 32:

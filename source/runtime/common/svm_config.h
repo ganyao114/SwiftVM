@@ -30,6 +30,7 @@ namespace swift::runtime {
     X(addr_ea_tie, true) \
     X(abs_const_mat, false) \
     X(shift_imm_fast, true) \
+    X(narrow_rotate_compact, false) \
     X(xmm_ssa_fwd2, true) \
     X(xmm_narrow_fwd, true) \
     X(vec_imm_shift, true) \
@@ -146,6 +147,7 @@ struct FeatureOverrides {
     X(bool, addr_ea_tie, "SVM_ADDR_EA_TIE", DefaultOn, true, "EA tie/composite 保留；缺省 ON，=0 回退；原 decoder.cc:270 等") \
     X(bool, abs_const_mat, "SVM_ABS_CONST_MAT", NonZero, false, "绝对常量物化优化；非 0 开，缺省 OFF；原 translator.cpp:326") \
     X(bool, shift_imm_fast, "SVM_SHIFT_IMM_FAST", DefaultOn, true, "shift immediate 快路；缺省 ON，=0 回退；原 decoder_alu.cc:789 等") \
+    X(bool, narrow_rotate_compact, "SVM_NARROW_ROTATE_COMPACT", NonZero, false, "U16 立即数 8 rotate 紧凑 lowering；非 0 开，缺省 OFF；原 decoder_alu.cc:1335") \
     X(bool, xmm_ssa_fwd2, "SVM_XMM_SSA_FWD2", DefaultOn, true, "XMM load-load SSA 转发；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:90") \
     X(bool, xmm_narrow_fwd, "SVM_XMM_NARROW_FWD", DefaultOn, true, "XMM 窄视图转发；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:102") \
     X(bool, xmm_resident, "SVM_XMM_RESIDENT", DefaultOn, true, "XMM1-7 固定驻留 v17-v23，XMM0 保持 State；缺省 ON，=0 回退；跨 unit ABI，原 translator/x86/translator.cpp") \

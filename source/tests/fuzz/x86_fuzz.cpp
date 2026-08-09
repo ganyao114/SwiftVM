@@ -7815,6 +7815,46 @@ TEST_CASE("Fuzz x86 bit ops SIGILL repro") {
     REQUIRE((env.ctx->r15.qword & 0xFF) == 0);
 }
 
+TEST_CASE("Fuzz x86 narrow rotate compact") {
+    FuzzEnv env;
+    constexpr std::array<u16, 8> sources{
+            0x0000, 0x0001, 0x0080, 0x00ff, 0x8000, 0xff00, 0x7fff, 0xffff,
+    };
+    constexpr std::array<u32, 6> flag_bits{
+            0, 2, 4, 6, 7, 11,  // CF, PF, AF, ZF, SF, OF in RFLAGS
+    };
+
+    // Exhaust every effective U16 count, direction, and initial combination
+    // of the six flags visible through LAHF+SETO.  The source corpus rotates
+    // through byte-boundary and sign-boundary values; destination==source is
+    // the alias form exercised by sqlite's `rol $8,%si`.
+    for (bool left : {false, true}) {
+        for (u8 count = 0; count < 16; ++count) {
+            for (u32 combination = 0; combination < (1u << flag_bits.size()); ++combination) {
+                u32 rflags = 2;  // architecturally fixed bit 1
+                for (u32 bit = 0; bit < flag_bits.size(); ++bit) {
+                    if ((combination & (1u << bit)) != 0) {
+                        rflags |= 1u << flag_bits[bit];
+                    }
+                }
+
+                CodeBuf b;
+                EmitMovRegImm(b, 64, kRsi,
+                              sources[(combination + count + (left ? 1u : 0u)) % sources.size()]);
+                EmitPushImm(b, rflags, false);
+                b.B(0x9d);  // popfq
+                EmitShift(b, left ? 0 : 1, 16, kRsi, count, false);
+                env.EmitFlagCapture(b);
+
+                const bool of_checkable = count == 0 || count == 1;
+                env.RunIteration(b.c, FlagMask{kAhAll, of_checkable},
+                                 left ? "rol16-compact" : "ror16-compact");
+            }
+        }
+    }
+    REQUIRE(env.failures == 0);
+}
+
 // =============================== new instruction families ===============================
 
 TEST_CASE("Fuzz x86 sse2 ext") {

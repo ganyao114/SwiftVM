@@ -1338,29 +1338,47 @@ void X64Decoder::DecodeRotate(_DInst& insn, bool left) {
     const auto width = op0.size;
     const u64 mask = width == 64 ? 63 : 31;
     auto src = width < 32 ? __ ZeroExtend32(ToValue(Src(insn, op0))) : ToValue(Src(insn, op0));
-    auto count_masked = __ And(ToValue(Src(insn, op1)), ir::Operand{ir::Imm(mask)});
-    auto count = count_masked;
-    // 8/16-bit rotates reduce the masked count modulo the width (a rotate by
-    // the width is the identity); 32/64-bit counts are already in range.
-    if (width < 32) {
-        count = __ And(count, ir::Operand{ir::Imm(u64(width - 1))});
-    }
-    // rol(v,c) = (v << c) | (v >> (width - c)); ror swaps the directions.
-    // The complementary shift amount is masked to the width, which also
-    // makes c == 0 come out as the identity (v | v).
-    auto back = __ And(__ Sub(__ LoadImm(ir::Imm(u64(width))), ir::Operand{count}),
-                       ir::Operand{ir::Imm(mask)});
-    auto fwd = left ? __ LslValue(src, count) : __ LsrValue(src, count);
-    auto bwd = left ? __ LsrValue(src, back) : __ LslValue(src, back);
-    auto result = __ Or(fwd, ir::Operand{bwd});
-    if (width < 64) {
-        result = __ And(result, ir::Operand{ir::Imm((u64(1) << width) - 1)});
+    auto count_data = Src(insn, op1);
+    const u32 constant_count =
+            count_data.IsImm() ? static_cast<u32>(count_data.imm.Get() & mask) : UINT32_MAX;
+    // 16-bit rotate by eight is exactly a byte swap.  Keep the first compact
+    // subset deliberately narrow: register destinations only, so memory
+    // read/write and fault ordering stay on the established path.
+    const bool compact = features_.narrow_rotate_compact && op0.type == O_REG && width == 16 &&
+                         constant_count == 8;
+
+    ir::Value count_masked;
+    ir::Value result;
+    if (compact) {
+        result = __ ByteSwap(src, ir::Imm(u64(16))).SetType(ir::ValueType::U16);
+    } else {
+        count_masked = __ And(ToValue(count_data), ir::Operand{ir::Imm(mask)});
+        auto count = count_masked;
+        // 8/16-bit rotates reduce the masked count modulo the width (a rotate by
+        // the width is the identity); 32/64-bit counts are already in range.
+        if (width < 32) {
+            count = __ And(count, ir::Operand{ir::Imm(u64(width - 1))});
+        }
+        // rol(v,c) = (v << c) | (v >> (width - c)); ror swaps the directions.
+        // The complementary shift amount is masked to the width, which also
+        // makes c == 0 come out as the identity (v | v).
+        auto back = __ And(__ Sub(__ LoadImm(ir::Imm(u64(width))), ir::Operand{count}),
+                           ir::Operand{ir::Imm(mask)});
+        auto fwd = left ? __ LslValue(src, count) : __ LsrValue(src, count);
+        auto bwd = left ? __ LsrValue(src, back) : __ LslValue(src, back);
+        result = __ Or(fwd, ir::Operand{bwd});
+        if (width < 64) {
+            result = __ And(result, ir::Operand{ir::Imm((u64(1) << width) - 1)});
+        }
     }
 
     // Rotates affect only CF and OF; N/Z/P/AF are left unchanged. A zero masked
     // count leaves the flags untouched (a full-width rotate has a non-zero masked
     // count, so it still updates CF even though the value is the identity).
-    auto skip_flags = __ NotGoto(__ TestNotZero(count_masked));
+    ir::Value skip_flags;
+    if (!compact) {
+        skip_flags = __ NotGoto(__ TestNotZero(count_masked));
+    }
     // CF = last bit rotated out: ROL -> result bit 0, ROR -> result MSB. Holds
     // for any non-zero count.
     auto msb = __ And(__ LsrImm(result, ir::Imm(u64(width - 1))), ir::Operand{ir::Imm(u64(1))});
@@ -1378,9 +1396,14 @@ void X64Decoder::DecodeRotate(_DInst& insn, bool left) {
     }
     __ SetOverflow(of);
     StorePolarity(false);  // CF stored Direct; skipped with the update when count == 0
-    __ BindLabel(skip_flags);
-    // Count is runtime-dependent (0 preserves the prior carry), so mark unknown.
-    carry_ = CarryPolarity::Unknown;
+    if (!compact) {
+        __ BindLabel(skip_flags);
+        // Count is runtime-dependent (0 preserves the prior carry), so mark unknown.
+        carry_ = CarryPolarity::Unknown;
+    } else {
+        // The immediate compact form is statically non-zero and stores direct CF.
+        carry_ = CarryPolarity::Direct;
+    }
 
     Dst(insn, op0, result.SetCastType(GetSize(width)));
 }

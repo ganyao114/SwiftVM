@@ -223,7 +223,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 152);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 153);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -296,7 +296,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 62);
+    STATIC_REQUIRE(kFeatureCount == 63);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -1759,6 +1759,86 @@ TEST_CASE("Uniform elimination preserves rotate-by-zero carry polarity load") {
         }
     }
     REQUIRE(polarity_loads == 1);
+}
+
+TEST_CASE("narrow rotate compact recognizes only the verified U16 immediate-eight DAG") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+
+    struct MemIf final : MemoryInterface {
+        bool Read(void* dest, size_t addr, size_t size) override {
+            return std::memcpy(dest, reinterpret_cast<const void*>(addr), size);
+        }
+        bool Write(void* src, size_t addr, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(addr), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+
+    struct Shape {
+        size_t byte_swaps{};
+        size_t variable_shifts{};
+        size_t carry_writes{};
+        size_t overflow_writes{};
+    };
+    auto decode = [&](bool enabled, bool left, swift::u8 count) {
+        // 66 C1 /0 ib = rol si,imm8; /1 = ror si,imm8.
+        std::array<swift::u8, 6> code{
+                0x66, 0xc1, static_cast<swift::u8>(left ? 0xc6 : 0xce), count, 0xf4, 0x90,
+        };
+        const auto address = reinterpret_cast<VAddr>(code.data());
+        Block block{0, Location{address}};
+        Assembler assembler{&block};
+        FeatureSet features{};
+        features.narrow_rotate_compact = enabled;
+        X64Decoder decoder{address, &memory, &assembler, true,
+                           Arm64Features::None, false, false, features};
+        decoder.Decode();
+
+        Shape shape{};
+        for (auto& inst : block.GetInstList()) {
+            shape.byte_swaps += inst.GetOp() == OpCode::ByteSwap;
+            shape.variable_shifts +=
+                    inst.GetOp() == OpCode::LslValue || inst.GetOp() == OpCode::LsrValue;
+            shape.carry_writes += inst.GetOp() == OpCode::SetCarry;
+            shape.overflow_writes += inst.GetOp() == OpCode::SetOverflow;
+        }
+        return shape;
+    };
+
+    for (bool left : {false, true}) {
+        for (swift::u8 count = 0; count < 16; ++count) {
+            INFO("direction=" << (left ? "rol" : "ror") << " count=" << unsigned(count));
+            const auto off = decode(false, left, count);
+            const auto on = decode(true, left, count);
+            REQUIRE(off.byte_swaps == 0);
+            REQUIRE(on.byte_swaps == (count == 8 ? 1 : 0));
+            if (count == 8) {
+                REQUIRE(on.variable_shifts == 0);
+                REQUIRE(off.variable_shifts == 2);
+            } else {
+                REQUIRE(on.variable_shifts == off.variable_shifts);
+            }
+            // The compact lowering only changes the value DAG.  CF and OF
+            // production stay present in both directions.
+            REQUIRE(on.carry_writes == off.carry_writes);
+            REQUIRE(on.overflow_writes == off.overflow_writes);
+        }
+    }
+
+    // Memory destinations retain the established read/write and fault path.
+    std::array<swift::u8, 6> memory_code{0x66, 0xc1, 0x00, 0x08, 0xf4, 0x90};
+    const auto address = reinterpret_cast<VAddr>(memory_code.data());
+    Block block{0, Location{address}};
+    Assembler assembler{&block};
+    FeatureSet features{};
+    features.narrow_rotate_compact = true;
+    X64Decoder decoder{address, &memory, &assembler, true,
+                       Arm64Features::None, false, false, features};
+    decoder.Decode();
+    REQUIRE(std::none_of(block.GetInstList().begin(), block.GetInstList().end(),
+                         [](const Inst& inst) { return inst.GetOp() == OpCode::ByteSwap; }));
 }
 
 TEST_CASE("structured V128 address wraps inside the 4GB guest window") {
