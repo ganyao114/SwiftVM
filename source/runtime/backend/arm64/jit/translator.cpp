@@ -582,16 +582,23 @@ std::optional<u64> JitTranslator::MatchInductionImmediate(ir::Inst* inst) {
         return std::nullopt;
     }
     const auto right = inst->GetArg<ir::Operand>(1);
-    if (!right.GetRight().Null() || !right.GetLeft().IsValue()) {
+    if (!right.GetRight().Null()) {
         return std::nullopt;
     }
-    const auto immediate = right.GetLeft().value;
-    if (!immediate.Def() || immediate.Def()->GetOp() != ir::OpCode::LoadImm ||
-        immediate.Def()->GetUses() == 0 ||
-        ir::GetValueSizeByte(immediate.Type()) != sizeof(u64)) {
+    u64 value{};
+    if (right.GetLeft().IsImm() && context.GetFeatures().int_imm_fold) {
+        value = right.GetLeft().imm.Get();
+    } else if (right.GetLeft().IsValue()) {
+        const auto immediate = right.GetLeft().value;
+        if (!immediate.Def() || immediate.Def()->GetOp() != ir::OpCode::LoadImm ||
+            immediate.Def()->GetUses() == 0 ||
+            ir::GetValueSizeByte(immediate.Type()) != sizeof(u64)) {
+            return std::nullopt;
+        }
+        value = immediate.Def()->GetArg<ir::Imm>(0).Get();
+    } else {
         return std::nullopt;
     }
-    const u64 value = immediate.Def()->GetArg<ir::Imm>(0).Get();
     if (!IsA64AddImmediate(value)) {
         return std::nullopt;
     }
@@ -665,8 +672,12 @@ void JitTranslator::PlanInductionTies(ir::Block* block) {
         if (!MatchInductionImmediate(&inst)) {
             continue;
         }
-        const auto right = inst.GetArg<ir::Operand>(1).GetLeft().value;
-        ++matched_uses[right.Def()];
+        const auto right = inst.GetArg<ir::Operand>(1).GetLeft();
+        // Canonical immediates have no LoadImm instruction to suppress.  The
+        // match still carries the in-place ownership proof into EmitAdd.
+        if (right.IsValue()) {
+            ++matched_uses[right.value.Def()];
+        }
     }
     for (const auto& [load, uses] : matched_uses) {
         // A CSE'd induction constant (Copy's shared #80) is removable only

@@ -1207,6 +1207,10 @@ void Interpreter::RunSub(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, l - r);
 }
 
+void Interpreter::RunNeg(ir::Inst* inst, InterpStack& stack) {
+    WriteScalar(stack, inst, u64{0} - ReadScalar(stack, inst->GetArg<ir::Value>(0)));
+}
+
 void Interpreter::RunAdc(ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = EvalOperand(stack, inst->GetArg<ir::Operand>(1));

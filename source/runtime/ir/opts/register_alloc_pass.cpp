@@ -2435,14 +2435,24 @@ private:
             return {};
         }
         const auto right = inst->GetArg<Operand>(1);
-        if (!right.GetRight().Null() || !right.GetLeft().IsValue()) {
+        if (!right.GetRight().Null()) {
             return {};
         }
-        const auto immediate = right.GetLeft().value;
-        if (!immediate.Def() || immediate.Def()->GetOp() != OpCode::LoadImm ||
-            immediate.Def()->GetUses() == 0 ||
-            GetValueSizeByte(immediate.Type()) != sizeof(u64) ||
-            !IsAddImmediate(immediate.Def()->GetArg<Imm>(0).Get())) {
+        u64 immediate_value{};
+        if (right.GetLeft().IsImm() && features.int_imm_fold) {
+            immediate_value = right.GetLeft().imm.Get();
+        } else if (right.GetLeft().IsValue()) {
+            const auto immediate = right.GetLeft().value;
+            if (!immediate.Def() || immediate.Def()->GetOp() != OpCode::LoadImm ||
+                immediate.Def()->GetUses() == 0 ||
+                GetValueSizeByte(immediate.Type()) != sizeof(u64)) {
+                return {};
+            }
+            immediate_value = immediate.Def()->GetArg<Imm>(0).Get();
+        } else {
+            return {};
+        }
+        if (!IsAddImmediate(immediate_value)) {
             return {};
         }
 

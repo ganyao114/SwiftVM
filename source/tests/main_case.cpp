@@ -20,6 +20,7 @@
 #include "runtime/ir/ir_meta.h"
 #include "runtime/ir/opts/cfg_analysis_pass.h"
 #include "runtime/ir/opts/const_folding_pass.h"
+#include "runtime/ir/opts/deadcode_elimination_pass.h"
 #include "runtime/ir/opts/flags_elimination_pass.h"
 #include "runtime/ir/opts/loop_invariant_hoist_pass.h"
 #include "runtime/ir/opts/reid_instr_pass.h"
@@ -225,7 +226,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 156);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 157);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -298,7 +299,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 66);
+    STATIC_REQUIRE(kFeatureCount == 67);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -2279,6 +2280,143 @@ TEST_CASE("Constant CSE does not reuse a constant materialized under a branch") 
 
     REQUIRE(arg_of_store(straight_line, 8) == first.Def());
     REQUIRE(arg_of_store(straight_line, 8) != second.Def());
+}
+
+TEST_CASE("integer immediates fold only into proven single-use ALU consumers") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    auto check_right = [](OpCode op, Imm immediate, ValueType type, Flags flags,
+                          bool expected) {
+        Block block{0, Location{0x2280}};
+        const auto left = block.LoadUniform(Uniform{0, type});
+        const auto constant = block.LoadImm(immediate).SetType(type);
+        Value result;
+        switch (op) {
+            case OpCode::Add:
+                result = block.Add(left, Operand{constant}).SetType(type);
+                break;
+            case OpCode::Sub:
+                result = block.Sub(left, Operand{constant}).SetType(type);
+                break;
+            case OpCode::And:
+                result = block.And(left, Operand{constant}).SetType(type);
+                break;
+            case OpCode::Or:
+                result = block.Or(left, Operand{constant}).SetType(type);
+                break;
+            case OpCode::Xor:
+                result = block.Xor(left, Operand{constant}).SetType(type);
+                break;
+            default:
+                FAIL("not an integer-immediate whitelist opcode");
+        }
+        if (flags != Flags::None) block.SaveFlags(result, flags);
+        FeatureSet features{};
+        features.int_imm_fold = true;
+        ConstFoldingPass::Run(&block, features);
+        INFO("opcode " << static_cast<unsigned>(op) << " type "
+                       << static_cast<unsigned>(type) << " flags "
+                       << static_cast<swift::u64>(flags));
+        REQUIRE(result.Def()->GetArg<Operand>(1).IsImm() == expected);
+        REQUIRE(constant.Def()->GetUses(false) == (expected ? 0 : 1));
+    };
+
+    // Every whitelist family, including the Sub+SaveFlags shape used for Cmp.
+    check_right(OpCode::Add, Imm{1u}, ValueType::U64, Flags::None, true);
+    check_right(OpCode::Sub, Imm{4096u}, ValueType::U64, Flags::All, true);
+    check_right(OpCode::And, Imm{0x7fu}, ValueType::U32, Flags::All, true);
+    check_right(OpCode::Or, Imm{0xff00ff00u}, ValueType::U32, Flags::None, true);
+    check_right(OpCode::Xor, Imm{0x80000000u}, ValueType::U32,
+                Flags::Parity, true);
+
+    // Encoder and narrow-NZCV fail closed. Narrow PF/AF-only is direct and
+    // keeps bit 4 semantics without taking the sign-alignment path.
+    check_right(OpCode::Add, Imm{0x12345u}, ValueType::U64,
+                Flags::None, false);
+    check_right(OpCode::And, Imm{0x01234567u}, ValueType::U32,
+                Flags::None, false);
+    check_right(OpCode::Sub, Imm{7u}, ValueType::U16, Flags::All, false);
+    check_right(OpCode::Sub, Imm{7u}, ValueType::U16,
+                Flags::Parity | Flags::AuxiliaryCarry, true);
+
+    SECTION("gate OFF is byte-for-byte IR inert") {
+        Block block{1, Location{0x2290}};
+        const auto left = block.LoadUniform(Uniform{0, ValueType::U64});
+        const auto constant = block.LoadImm(Imm{1u}).SetType(ValueType::U64);
+        const auto result = block.Add(left, Operand{constant}).SetType(ValueType::U64);
+        FeatureSet features{};
+        features.int_imm_fold = false;
+        ConstFoldingPass::Run(&block, features);
+        REQUIRE_FALSE(result.Def()->GetArg<Operand>(1).IsImm());
+        REQUIRE(result.Def()->GetArg<Operand>(1).GetLeft().value.Def() == constant.Def());
+    }
+
+    SECTION("multi-use and observable constants are rejected") {
+        Block block{2, Location{0x22a0}};
+        const auto left = block.LoadUniform(Uniform{0, ValueType::U64});
+        const auto constant = block.LoadImm(Imm{1u}).SetType(ValueType::U64);
+        const auto add = block.Add(left, Operand{constant}).SetType(ValueType::U64);
+        const auto logical = block.And(left, Operand{constant}).SetType(ValueType::U64);
+        block.StoreUniform(Uniform{8, ValueType::U64}, constant);
+        FeatureSet features{};
+        features.int_imm_fold = true;
+        ConstFoldingPass::Run(&block, features);
+        REQUIRE_FALSE(add.Def()->GetArg<Operand>(1).IsImm());
+        REQUIRE_FALSE(logical.Def()->GetArg<Operand>(1).IsImm());
+        REQUIRE(constant.Def()->GetUses(false) == 3);
+    }
+
+    SECTION("zero-left Sub becomes a unary Neg and keeps its pseudo flags") {
+        Block block{3, Location{0x22b0}};
+        const auto zero = block.LoadImm(Imm{0u}).SetType(ValueType::U16);
+        const auto source = block.LoadUniform(Uniform{0, ValueType::U16});
+        const auto result = block.Sub(zero, Operand{source}).SetType(ValueType::U16);
+        block.SaveFlags(result, Flags::All);
+        FeatureSet features{};
+        features.int_imm_fold = true;
+        ConstFoldingPass::Run(&block, features);
+        REQUIRE(result.Def()->GetOp() == OpCode::Neg);
+        REQUIRE(result.Def()->GetArg<Value>(0).Def() == source.Def());
+        REQUIRE(result.Def()->GetPseudoOperations(OpCode::SaveFlags).size() == 1);
+        REQUIRE(zero.Def()->GetUses(false) == 0);
+    }
+
+    SECTION("folded flags and Neg pass the real allocator and emitter contracts") {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        ModuleConfig module_config{};
+        module_config.feature_overrides.Set(FeatureId::int_imm_fold, true);
+        auto module = address_space.MapModule(0x22c0, 0x23c0, module_config);
+        auto* block = new Block(0, Location{0x22c0});
+        const auto source = block->LoadUniform(Uniform{0, ValueType::U16});
+        const auto zero = block->LoadImm(Imm{0u}).SetType(ValueType::U16);
+        const auto neg = block->Sub(zero, Operand{source}).SetType(ValueType::U16);
+        block->SaveFlags(neg, Flags::All);
+        block->StoreUniform(Uniform{8, ValueType::U16}, neg);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+
+        auto features = ResolveFeatureSet(module_config);
+        ConstFoldingPass::Run(block, features);
+        DeadCodeEliminationPass::Run(block);
+        block->ReIdInstr();
+        RegAlloc alloc{block->MaxInstrId(),
+                       address_space.GetTrampolines().GetGPRRegs(),
+                       address_space.GetTrampolines().GetFPRRegs(), features};
+        RegisterAllocPass::Run(block, &alloc, false, features);
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block);
+        context.Finish();
+        REQUIRE(context.CurrentBufferSize() > 0);
+    }
 }
 
 TEST_CASE("MMX-form shared opcodes are refused instead of run on the XMM file") {

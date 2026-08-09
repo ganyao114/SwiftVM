@@ -97,6 +97,174 @@ struct VecKeyHash {
 
 // IR instructions; roughly one guest instruction's worth of expansion.
 constexpr u32 kReuseWindow = 8;
+// The forensic pool was pre-registered with a five-IR producer/consumer
+// window.  Keep the mechanism inside that audited live-range envelope.
+constexpr u32 kIntegerImmediateUseWindow = 5;
+
+u64 WidthMask(u32 bytes) {
+    return bytes >= sizeof(u64) ? UINT64_MAX : ((u64{1} << (bytes * 8)) - 1);
+}
+
+bool IsAddSubImmediate(s64 value) {
+    if (value < 0) return false;
+    const auto immediate = static_cast<u64>(value);
+    return immediate <= 0xfff ||
+           ((immediate & 0xfff) == 0 && (immediate >> 12) <= 0xfff);
+}
+
+u64 RotateRightWidth(u64 value, u32 amount, u32 width) {
+    const u64 mask = width == 64 ? UINT64_MAX : ((u64{1} << width) - 1);
+    value &= mask;
+    amount %= width;
+    if (amount == 0) return value;
+    return ((value >> amount) | (value << (width - amount))) & mask;
+}
+
+// Exact A64 logical-immediate language: a non-zero/non-all-ones run of ones,
+// rotated within a power-of-two element and replicated to W/X width.
+bool IsLogicalImmediate(u64 value, u32 width) {
+    const u64 width_mask = width == 64 ? UINT64_MAX : UINT32_MAX;
+    value &= width_mask;
+    if (value == 0 || value == width_mask) return false;
+    for (u32 element_bits = 2; element_bits <= width; element_bits <<= 1) {
+        const u64 element_mask = element_bits == 64
+                ? UINT64_MAX
+                : ((u64{1} << element_bits) - 1);
+        const u64 element = value & element_mask;
+        u64 replicated{};
+        for (u32 offset = 0; offset < width; offset += element_bits) {
+            replicated |= element << offset;
+        }
+        if (replicated != value) continue;
+        for (u32 ones = 1; ones < element_bits; ++ones) {
+            const u64 run = ones == 64 ? UINT64_MAX : ((u64{1} << ones) - 1);
+            for (u32 rotation = 0; rotation < element_bits; ++rotation) {
+                if (RotateRightWidth(run, rotation, element_bits) == element) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+std::optional<Imm> AddSubImmediate(const Imm& source, ValueType type) {
+    const u32 bytes = GetValueSizeByte(type);
+    if (bytes == 0 || bytes > sizeof(u64) || IsFloatValueType(type)) {
+        return std::nullopt;
+    }
+    const u32 reg_bits = bytes <= sizeof(u32) ? 32 : 64;
+    const u64 raw = source.Get() & WidthMask(bytes);
+    const u64 widened = raw & (reg_bits == 32 ? UINT32_MAX : UINT64_MAX);
+    if (IsAddSubImmediate(static_cast<s64>(widened))) {
+        return reg_bits == 32 ? Imm{static_cast<u32>(widened)} : Imm{widened};
+    }
+    const s64 signed_value = reg_bits == 32
+            ? static_cast<s64>(static_cast<s32>(static_cast<u32>(widened)))
+            : static_cast<s64>(widened);
+    if (signed_value < 0 && signed_value != INT64_MIN &&
+        IsAddSubImmediate(-signed_value)) {
+        return reg_bits == 32 ? Imm{static_cast<s32>(signed_value)}
+                              : Imm{signed_value};
+    }
+    return std::nullopt;
+}
+
+std::optional<Imm> LogicalImmediate(const Imm& source, ValueType type) {
+    const u32 bytes = GetValueSizeByte(type);
+    if (bytes == 0 || bytes > sizeof(u64) || IsFloatValueType(type)) {
+        return std::nullopt;
+    }
+    const u32 reg_bits = bytes <= sizeof(u32) ? 32 : 64;
+    const u64 raw = source.Get() & WidthMask(bytes);
+    const u64 widened = raw & (reg_bits == 32 ? UINT32_MAX : UINT64_MAX);
+    if (!IsLogicalImmediate(widened, reg_bits)) {
+        return std::nullopt;
+    }
+    return reg_bits == 32 ? Imm{static_cast<u32>(widened)} : Imm{widened};
+}
+
+Flags RequestedFlags(const Inst& inst) {
+    Flags flags{};
+    for (auto& pseudo : const_cast<Inst&>(inst).GetPseudoOperations()) {
+        if (pseudo->GetOp() == OpCode::SaveFlags ||
+            pseudo->GetOp() == OpCode::BranchOnlyFlags) {
+            flags |= pseudo->GetArg<Flags>(1);
+        }
+    }
+    return flags;
+}
+
+// Canonicalize a constant directly into the sole ALU consumer before constant
+// CSE has a chance to merge several short LoadImm ranges into one multi-use
+// range.  The following DCE pass removes the now-orphaned materialization.
+void FoldIntegerImmediates(Block* block, const FeatureSet& features) {
+    if (!features.int_imm_fold) return;
+
+    std::unordered_map<Inst*, u32> seen;
+    u32 index{};
+    for (auto& inst : block->GetInstList()) {
+        seen.emplace(&inst, index++);
+        const auto op = inst.GetOp();
+        if (op != OpCode::Add && op != OpCode::Sub && op != OpCode::And &&
+            op != OpCode::Or && op != OpCode::Xor) {
+            continue;
+        }
+
+        // `0 - x` has its constant on the left, which Operand cannot express.
+        // Give that exact shape a unary canonical form; flags pseudos remain
+        // attached to the producer instruction.
+        if (op == OpCode::Sub) {
+            const auto left = inst.GetArg<Value>(0);
+            const auto right = inst.GetArg<Operand>(1);
+            auto* zero = left.Def();
+            const auto zero_pos = zero ? seen.find(zero) : seen.end();
+            if (zero_pos != seen.end() &&
+                index - 1 - zero_pos->second <= kIntegerImmediateUseWindow &&
+                zero->GetOp() == OpCode::LoadImm &&
+                zero->GetArg<Imm>(0).Get() == 0 && zero->GetUses(false) == 1 &&
+                right.GetRight().Null() && right.GetLeft().IsValue() &&
+                right.GetOp() == OperandPlus) {
+                const auto source = right.GetLeft().value;
+                const auto type = inst.ReturnType();
+                inst.DestroyArgs();
+                inst.SetInst(OpCode::Neg, source);
+                inst.SetReturn(type);
+                continue;
+            }
+        }
+
+        const auto operand = inst.GetArg<Operand>(1);
+        if (!operand.GetRight().Null() || !operand.GetLeft().IsValue() ||
+            operand.GetOp() != OperandPlus) {
+            continue;
+        }
+        auto* load = operand.GetLeft().value.Def();
+        const auto load_pos = load ? seen.find(load) : seen.end();
+        if (load_pos == seen.end() ||
+            index - 1 - load_pos->second > kIntegerImmediateUseWindow ||
+            load->GetOp() != OpCode::LoadImm ||
+            load->GetUses(false) != 1) {
+            continue;
+        }
+
+        // Narrow Add/Sub NZCV uses the mandatory sign-alignment path, which
+        // still materializes an immediate.  Folding it has no host-code win.
+        const u32 bytes = GetValueSizeByte(inst.ReturnType());
+        if ((op == OpCode::Add || op == OpCode::Sub) && bytes <= 2 &&
+            True(RequestedFlags(inst) & Flags::NZCV)) {
+            continue;
+        }
+
+        const auto source = load->GetArg<Imm>(0);
+        const auto folded = (op == OpCode::Add || op == OpCode::Sub)
+                ? AddSubImmediate(source, inst.ReturnType())
+                : LogicalImmediate(source, inst.ReturnType());
+        if (folded) {
+            inst.SetArg(1, Operand{*folded});
+        }
+    }
+}
 
 void DedupConstants(Block* block, const FeatureSet& features) {
     // Bisect switch, mirroring SVM_UNIFORM_DSE.
@@ -208,11 +376,13 @@ void ConstFoldingPass::Run(HIRBuilder* hir_builder, const FeatureSet& features) 
 
 void ConstFoldingPass::Run(HIRFunction* hir_function, const FeatureSet& features) {
     for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
+        FoldIntegerImmediates(hir_block.GetBlock(), features);
         DedupConstants(hir_block.GetBlock(), features);
     }
 }
 
 void ConstFoldingPass::Run(Block* block, const FeatureSet& features) {
+    FoldIntegerImmediates(block, features);
     DedupConstants(block, features);
 }
 

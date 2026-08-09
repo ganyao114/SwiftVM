@@ -436,3 +436,8 @@ INST(BranchOnlyEdges, Void)
 // result; ARM64 can fold a sole branch/select consumer directly into the
 // already-emitted FCMP.
 INST(FCmpCondSet, BOOL, Value, Cond)
+
+// Unit-local canonical form for `0 - value`.  ConstFoldingPass creates it only
+// under SVM_INT_IMM_FOLD after proving the zero LoadImm has this sole use.
+// Keeping it at the end preserves every pre-existing opcode number.
+INST(Neg, Value, Value)

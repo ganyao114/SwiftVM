@@ -286,6 +286,62 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
     }
 }
 
+void JitTranslator::EmitNeg(ir::Inst* inst) {
+    ASSERT(context.GetFeatures().int_imm_fold);
+    const auto source = inst->GetArg<ir::Value>(0);
+    auto source_reg = context.R(source, true);
+    auto result = context.R(ir::Value{inst});
+    Register zero = result.Is64Bits() ? Register{xzr} : Register{wzr};
+    auto pseudo_flags = GetPseudoFlags(inst);
+
+    Register af_source = source_reg;
+    const bool save_af = !pseudo_flags.branch_only &&
+                         True(pseudo_flags.set & ir::Flags::AuxiliaryCarry);
+    if (save_af && context.SharesGPR(source, ir::Value{inst})) {
+        auto saved = context.GetTmpX();
+        __ Mov(saved, source_reg);
+        af_source = source_reg.Is64Bits() ? saved.X() : saved.W();
+    }
+
+    const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
+    if (needs_nzcv && ir::GetValueSizeByte(inst->ReturnType()) <= 2) {
+        const u32 shift = 32 - ir::GetValueSizeByte(inst->ReturnType()) * 8;
+        __ Lsl(result.W(), source_reg.W(), shift);
+        const bool region_branch_pfaf = RegionBranchPFAFActive(inst);
+        if (!pseudo_flags.branch_only || region_branch_pfaf) {
+            MergeNZCV();
+        }
+        __ Subs(result.W(), wzr, result.W());
+        __ Lsr(result.W(), result.W(), shift);
+        const auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
+        if (region_branch_pfaf) {
+            nzcv_requested = GuestNZCVToHost(guest_nzcv);
+            nzcv_dirty = true;
+        } else if (!pseudo_flags.branch_only) {
+            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+        }
+    } else if (needs_nzcv) {
+        if (!pseudo_flags.branch_only) {
+            MergeNZCV();
+        }
+        __ Subs(result, zero, source_reg);
+        if (!pseudo_flags.branch_only) {
+            const auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
+            SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
+        }
+    } else {
+        __ Neg(result, source_reg);
+    }
+
+    if (!pseudo_flags.branch_only &&
+        True(pseudo_flags.set & ir::Flags::Parity)) {
+        SaveParity(result);
+    }
+    if (save_af) {
+        SaveAuxiliaryCarry(zero, Operand{af_source}, result);
+    }
+}
+
 void JitTranslator::EmitAdc(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
@@ -377,7 +433,16 @@ void JitTranslator::EmitAnd(ir::Inst* inst) {
     auto right_pinned = right.GetLeft().IsValue()
             ? pinned_w(right.GetLeft().value)
             : std::nullopt;
-    auto right_operand = right_pinned ? Operand{*right_pinned} : EmitOperand(right);
+    auto right_operand = right_pinned
+            ? Operand{*right_pinned}
+            : (context.GetFeatures().int_imm_fold && right.IsImm() &&
+                       Assembler::IsImmLogical(right.GetLeft().imm.Get(),
+                                               inst->ReturnType() == ir::ValueType::U64 ||
+                                                       inst->ReturnType() == ir::ValueType::S64
+                                                       ? 64
+                                                       : 32)
+                       ? Operand{static_cast<s64>(right.GetLeft().imm.Get())}
+                       : EmitOperand(right));
     auto result = context.R(ir::Value{inst});
     auto left_pinned = pinned_w(left);
     Register left_register = left_pinned ? Register{*left_pinned} : context.R(left, true);
@@ -433,7 +498,15 @@ void JitTranslator::EmitAndNot(ir::Inst* inst) {
 void JitTranslator::EmitOr(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
-    auto right_operand = EmitOperand(right);
+    auto right_operand = context.GetFeatures().int_imm_fold && right.IsImm() &&
+                                 Assembler::IsImmLogical(
+                                         right.GetLeft().imm.Get(),
+                                         inst->ReturnType() == ir::ValueType::U64 ||
+                                                         inst->ReturnType() == ir::ValueType::S64
+                                                 ? 64
+                                                 : 32)
+            ? Operand{static_cast<s64>(right.GetLeft().imm.Get())}
+            : EmitOperand(right);
     auto result = context.R(ir::Value{inst});
     auto left_register = context.R(left, true);
 
@@ -463,7 +536,16 @@ void JitTranslator::EmitXor(ir::Inst* inst) {
     auto right_pinned = right.GetLeft().IsValue()
             ? pinned_w(right.GetLeft().value)
             : std::nullopt;
-    auto right_operand = right_pinned ? Operand{*right_pinned} : EmitOperand(right);
+    auto right_operand = right_pinned
+            ? Operand{*right_pinned}
+            : (context.GetFeatures().int_imm_fold && right.IsImm() &&
+                       Assembler::IsImmLogical(right.GetLeft().imm.Get(),
+                                               inst->ReturnType() == ir::ValueType::U64 ||
+                                                       inst->ReturnType() == ir::ValueType::S64
+                                                       ? 64
+                                                       : 32)
+                       ? Operand{static_cast<s64>(right.GetLeft().imm.Get())}
+                       : EmitOperand(right));
     auto result = context.R(ir::Value{inst});
     auto left_pinned = pinned_w(left);
     Register left_register = left_pinned ? Register{*left_pinned} : context.R(left, true);
