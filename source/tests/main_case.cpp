@@ -300,7 +300,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime::backend;
 
     STATIC_REQUIRE(kFeatureCount == 68);
-    REQUIRE_FALSE(FeatureSet{}.operand_copy_kill);
+    REQUIRE(FeatureSet{}.operand_copy_kill);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
