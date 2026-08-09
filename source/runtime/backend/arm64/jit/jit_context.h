@@ -148,6 +148,9 @@ public:
     [[nodiscard]] u32 HotProbeBytesInRange(u32 begin, u32 end) const;
     [[nodiscard]] ptrdiff_t GetCodeOffset(LocationDescriptor location) const;
     [[nodiscard]] bool IsUniform(const Register& reg);
+    [[nodiscard]] bool IsSpilled(const ir::Value& value) {
+        return reg_alloc.ValueType(value) == RegAlloc::MEM;
+    }
     u8* Flush(const CodeBuffer& code_cache);
 
     [[nodiscard]] MacroAssembler& GetMasm();

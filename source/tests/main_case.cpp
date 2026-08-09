@@ -226,7 +226,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 157);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 158);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -299,7 +299,8 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 67);
+    STATIC_REQUIRE(kFeatureCount == 68);
+    REQUIRE_FALSE(FeatureSet{}.operand_copy_kill);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -2416,6 +2417,160 @@ TEST_CASE("integer immediates fold only into proven single-use ALU consumers") {
         translator.Translate(block);
         context.Finish();
         REQUIRE(context.CurrentBufferSize() > 0);
+    }
+}
+
+TEST_CASE("operand copy kill is a fail-closed Mul emitter fast path") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    enum class Observer { None, ResultSave, ResultBranch, RightSave };
+    enum class RightShape { Value, Immediate };
+    struct Emitted {
+        swift::u32 bytes{};
+        swift::u32 moves{};
+        swift::u32 multiplies{};
+        std::string text{};
+    };
+
+    auto run = [](bool enabled, OpCode op, ValueType type, Observer observer,
+                  RightShape right_shape) {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        ModuleConfig module_config{};
+        module_config.feature_overrides.Set(FeatureId::operand_copy_kill, enabled);
+        auto module = address_space.MapModule(0x22d0, 0x23d0, module_config);
+        IntrusivePtr<Block> block{new Block(0, Location{0x22d0})};
+        const auto left = block->LoadUniform(Uniform{0, type});
+        const auto right_value = block->LoadUniform(Uniform{8, type});
+        if (observer == Observer::RightSave) {
+            block->SaveFlags(right_value, Flags::Parity);
+        }
+        const auto right = right_shape == RightShape::Value
+                ? Operand{right_value}
+                : Operand{Imm{3u}};
+        Value result;
+        switch (op) {
+            case OpCode::Mul:
+                result = block->Mul(left, right).SetType(type);
+                break;
+            case OpCode::Sub:
+                result = block->Sub(left, right).SetType(type);
+                break;
+            case OpCode::Or:
+                result = block->Or(left, right).SetType(type);
+                break;
+            case OpCode::Xor:
+                result = block->Xor(left, right).SetType(type);
+                break;
+            default:
+                FAIL("not an operand-copy-kill matrix opcode");
+        }
+        if (observer == Observer::ResultSave) {
+            block->SaveFlags(result, Flags::All);
+        } else if (observer == Observer::ResultBranch) {
+            block->AppendInst(OpCode::BranchOnlyFlags, result, Flags::NZCV);
+        }
+        block->StoreUniform(Uniform{16, type}, result);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+
+        const auto features = ResolveFeatureSet(module_config);
+        RegAlloc alloc{block->MaxInstrId(),
+                       address_space.GetTrampolines().GetGPRRegs(),
+                       address_space.GetTrampolines().GetFPRRegs(), features};
+        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block.get());
+        context.Finish();
+
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        std::string text;
+        swift::u32 moves{};
+        swift::u32 multiplies{};
+        auto& masm = context.GetMasm();
+        auto* first = masm.GetBuffer()->GetStartAddress<
+                const vixl::aarch64::Instruction*>();
+        auto* last = masm.GetBuffer()->GetEndAddress<
+                const vixl::aarch64::Instruction*>();
+        for (auto* instruction = first; instruction < last; ++instruction) {
+            decoder.Decode(instruction);
+            std::string_view line{disassembler.GetOutput()};
+            const auto begin = line.find_first_not_of(" \t");
+            if (begin != std::string_view::npos) line.remove_prefix(begin);
+            if (line.starts_with("mov ")) ++moves;
+            if (line.starts_with("mul ")) ++multiplies;
+            text.append(line);
+            text.push_back('\n');
+        }
+        return Emitted{context.CurrentBufferSize(), moves, multiplies,
+                       std::move(text)};
+    };
+
+    SECTION("gate OFF is completely inert and gate ON removes one plain Mul copy") {
+        const auto off = run(false, OpCode::Mul, ValueType::U32,
+                             Observer::None, RightShape::Value);
+        const auto off_again = run(false, OpCode::Mul, ValueType::U32,
+                                   Observer::None, RightShape::Value);
+        const auto on = run(true, OpCode::Mul, ValueType::U32,
+                            Observer::None, RightShape::Value);
+        REQUIRE(off.bytes == off_again.bytes);
+        REQUIRE(off.text == off_again.text);
+        REQUIRE(on.bytes + vixl::aarch64::kInstructionSize == off.bytes);
+        REQUIRE(on.moves + 1 == off.moves);
+        REQUIRE(on.multiplies == off.multiplies);
+        REQUIRE(on.multiplies == 1);
+    }
+
+    SECTION("whitelist opcode x observer x width matrix fails closed") {
+        constexpr std::array ops{OpCode::Mul, OpCode::Sub, OpCode::Or,
+                                 OpCode::Xor};
+        constexpr std::array observers{Observer::None, Observer::ResultSave,
+                                       Observer::ResultBranch,
+                                       Observer::RightSave};
+        constexpr std::array widths{ValueType::U16, ValueType::U32,
+                                    ValueType::U64};
+        for (const auto op : ops) {
+            for (const auto observer : observers) {
+                for (const auto type : widths) {
+                    const auto off = run(false, op, type, observer,
+                                         RightShape::Value);
+                    const auto on = run(true, op, type, observer,
+                                        RightShape::Value);
+                    const bool eligible = op == OpCode::Mul &&
+                                          observer == Observer::None &&
+                                          type != ValueType::U16;
+                    INFO("op=" << static_cast<unsigned>(op)
+                               << " observer=" << static_cast<unsigned>(observer)
+                               << " type=" << static_cast<unsigned>(type));
+                    REQUIRE(on.bytes +
+                                    (eligible ? vixl::aarch64::kInstructionSize : 0) ==
+                            off.bytes);
+                    REQUIRE(on.moves + (eligible ? 1u : 0u) == off.moves);
+                }
+            }
+        }
+    }
+
+    SECTION("immediate and induction-compatible operand shapes stay on the old path") {
+        for (const auto type : {ValueType::U32, ValueType::U64}) {
+            const auto off = run(false, OpCode::Mul, type, Observer::None,
+                                 RightShape::Immediate);
+            const auto on = run(true, OpCode::Mul, type, Observer::None,
+                                RightShape::Immediate);
+            REQUIRE(on.bytes == off.bytes);
+            REQUIRE(on.text == off.text);
+        }
     }
 }
 

@@ -3537,9 +3537,32 @@ void JitTranslator::EmitMul(ir::Inst* inst) {
     auto type = left.Type();
     auto result = context.R(ir::Value{inst});
     auto left_register = context.R(left, true);
-    auto multiplier = MaterializeOperand(EmitOperand(right), type);
-
     auto pseudo_flags = GetPseudoFlags(inst);
+    auto right_operand = EmitOperand(right);
+
+    // MaterializeOperand always emits a fresh Mov even when EmitOperand has
+    // already produced the exact register form accepted by A64 Mul.  That
+    // emitter-only temporary has one generated consumer and no IR observers,
+    // so using the source register directly neither deletes an SSA definition
+    // nor changes its lifetime.  Keep every shape that could carry flags,
+    // require a narrow cast, come from a spill, or encode an induction/
+    // composite/immediate operand on the established path.
+    const auto right_part = right.GetLeft();
+    const bool plain_value = right.GetRight().Null() && right_part.IsValue() &&
+                             right_part.value.Defined();
+    const bool unobserved_value =
+            plain_value &&
+            right_part.value.Def()->GetUses(false) ==
+                    right_part.value.Def()->GetUses() &&
+            right_part.value.Def()->GetPseudoOperations().empty();
+    const bool kill_operand_copy =
+            context.GetFeatures().operand_copy_kill &&
+            ir::GetValueSizeByte(type) >= sizeof(u32) && pseudo_flags.Null() &&
+            unobserved_value && !context.IsSpilled(right_part.value) &&
+            right_operand.IsPlainRegister();
+    auto multiplier = kill_operand_copy
+            ? right_operand.GetRegister()
+            : MaterializeOperand(right_operand, type);
 
     const bool is_64 = ir::GetValueSizeByte(type) == 8;
     const bool is_signed = ir::IsSignValueType(type);
