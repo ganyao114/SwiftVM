@@ -3865,6 +3865,10 @@ void RegisterAllocPass::RunForAesChainTieConflictTest(
         u32 tied_value_id,
         u16 target) {
     auto features = FeatureSet{};
+    // 初始分配必须显式关闭 tie:本用例的语义是"先无 tie 分配、再强压冲突、
+    // 最后开 tie 合并验证整组件拒绝";跟随编译期默认会在第一相就打上
+    // tie 标记,而第二相的拒绝无法回滚既有标记,翻盘后测试恒假。
+    features.ra_aes_chain_tie = false;
     reg_alloc->ResetAllocations();
     LinearScanAllocator initial{block, reg_alloc, 0, backend::kDefaultScratchFPR,
                                 false, false, false, false, nullptr, false, features, 1};
