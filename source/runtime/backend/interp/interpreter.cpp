@@ -2342,10 +2342,10 @@ void Interpreter::RunVecAesKeygenAssist(ir::Inst* inst, InterpStack& stack) {
         }
         if (rotate) result[4 * dst_word] ^= rcon;
     };
-    emit_word(0, 3, true);
-    emit_word(1, 3, false);
-    emit_word(2, 1, true);
-    emit_word(3, 1, false);
+    emit_word(0, 1, false);
+    emit_word(1, 1, true);
+    emit_word(2, 3, false);
+    emit_word(3, 3, true);
     WriteVec(stack, inst, FromAesBlock(result));
 }
 

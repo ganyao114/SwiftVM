@@ -29,6 +29,7 @@
 #include "runtime/backend/mem_map.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/code_serial.h"
+#include "runtime/backend/interp/interpreter.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
@@ -4659,9 +4660,66 @@ TEST_CASE("AES KEYGEN frontend preserves every rcon across register and memory s
             Form{0x00, std::nullopt},
     };
 
+    auto gf_mul = [](swift::u8 left, swift::u8 right) {
+        swift::u8 value = 0;
+        while (right) {
+            if (right & 1) value ^= left;
+            const bool high = (left & 0x80) != 0;
+            left <<= 1;
+            if (high) left ^= 0x1b;
+            right >>= 1;
+        }
+        return value;
+    };
+    auto rotl8 = [](swift::u8 value, unsigned count) {
+        return static_cast<swift::u8>((value << count) | (value >> (8 - count)));
+    };
+    auto sbox = [&](swift::u8 value) {
+        swift::u8 inverse = 0;
+        if (value != 0) {
+            inverse = 1;
+            swift::u8 base = value;
+            for (unsigned exponent = 254; exponent; exponent >>= 1) {
+                if (exponent & 1) inverse = gf_mul(inverse, base);
+                base = gf_mul(base, base);
+            }
+        }
+        return static_cast<swift::u8>(
+                inverse ^ rotl8(inverse, 1) ^ rotl8(inverse, 2) ^
+                rotl8(inverse, 3) ^ rotl8(inverse, 4) ^ 0x63);
+    };
+    auto golden = [&](const std::array<swift::u8, 16>& source, swift::u8 rcon) {
+        std::array<swift::u8, 16> result{};
+        for (unsigned pair = 0; pair < 2; ++pair) {
+            const unsigned source_word = pair == 0 ? 1 : 3;
+            for (unsigned byte = 0; byte < 4; ++byte) {
+                result[pair * 8 + byte] = sbox(source[source_word * 4 + byte]);
+                result[pair * 8 + 4 + byte] =
+                        sbox(source[source_word * 4 + ((byte + 1) & 3)]);
+            }
+            result[pair * 8 + 4] ^= rcon;
+        }
+        return result;
+    };
+
+    Config interp_config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = false,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+            .uniform_buffer_size = sizeof(ThreadContext64),
+    };
+    backend::AddressSpace interp_space{interp_config};
+    Runtime interp_runtime{&interp_space};
+    auto* context = reinterpret_cast<ThreadContext64*>(
+            interp_runtime.GetUniformBuffer().data());
+    std::array<bool, 256> sbox_inputs_seen{};
+
     for (unsigned rcon = 0; rcon < 256; ++rcon) {
-        for (const auto& form : forms) {
-            CAPTURE(rcon, form.modrm);
+        for (unsigned form_index = 0; form_index < forms.size(); ++form_index) {
+            const auto& form = forms[form_index];
+            CAPTURE(rcon, form_index, form.modrm);
             std::array<swift::u8, 7> code{
                     0x66, 0x0f, 0x3a, 0xdf, form.modrm,
                     static_cast<swift::u8>(rcon), 0xf4,
@@ -4693,8 +4751,38 @@ TEST_CASE("AES KEYGEN frontend preserves every rcon across register and memory s
             } else {
                 REQUIRE(source.Def()->GetOp() == OpCode::LoadMemory);
             }
+
+            std::array<swift::u8, 16> input{};
+            swift::u32 random = 0x9e3779b9u ^ (rcon * 0x45d9f3bu) ^
+                                (form_index * 0x27d4eb2du);
+            for (auto& byte : input) {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                byte = static_cast<swift::u8>(random);
+            }
+            for (unsigned source_word : {1u, 3u}) {
+                for (unsigned byte = 0; byte < 4; ++byte) {
+                    sbox_inputs_seen[input[source_word * 4 + byte]] = true;
+                }
+            }
+            *context = {};
+            if (form_index == 0) {
+                std::memcpy(&context->xmm0, input.data(), input.size());
+            } else if (form_index == 1) {
+                std::memcpy(&context->xmm1, input.data(), input.size());
+            } else {
+                context->rax.qword = reinterpret_cast<swift::u64>(input.data());
+            }
+            interp_runtime.GetState()->halt_reason = HaltReason::None;
+            backend::interp::Interpreter interpreter{*interp_runtime.GetState(), &block};
+            REQUIRE(interpreter.Run() == HaltReason::CallHost);
+            const auto expected = golden(input, static_cast<swift::u8>(rcon));
+            REQUIRE(std::memcmp(&context->xmm0, expected.data(), expected.size()) == 0);
         }
     }
+    REQUIRE(std::all_of(sbox_inputs_seen.begin(), sbox_inputs_seen.end(),
+                        [](bool seen) { return seen; }));
 }
 
 TEST_CASE("AES KEYGEN compact uses the immutable runtime prefix and exact lowering") {
@@ -4895,6 +4983,7 @@ TEST_CASE("AES KEYGEN compact uses the immutable runtime prefix and exact loweri
             }
         }
 
+        std::array<swift::u8, 256 * 16> jit_off{};
         for (bool enabled : {false, true}) {
             CAPTURE(enabled);
             auto [block, first] = make_block(kLocation + 0x2000 + enabled * 0x100, true);
@@ -4924,8 +5013,24 @@ TEST_CASE("AES KEYGEN compact uses the immutable runtime prefix and exact loweri
             }
             REQUIRE(std::memcmp(runtime.GetUniformBuffer().data() + kOutputOffset,
                                 expected.data(), expected.size()) == 0);
+            if (!enabled) {
+                std::memcpy(jit_off.data(), actual, jit_off.size());
+            }
             REQUIRE(read_prefix(runtime.GetState()) == prefix_before);
         }
+
+        auto [interp_block, interp_first] = make_block(kLocation + 0x2400, true);
+        (void)interp_first;
+        AddressSpace interp_space{config};
+        Runtime interp_runtime{&interp_space};
+        std::memcpy(interp_runtime.GetUniformBuffer().data(), source.data(), source.size());
+        backend::interp::Interpreter interpreter{*interp_runtime.GetState(),
+                                                 interp_block.get()};
+        REQUIRE(interpreter.Run() == HaltReason::None);
+        const auto* interp_actual =
+                interp_runtime.GetUniformBuffer().data() + kOutputOffset;
+        REQUIRE(std::memcmp(interp_actual, expected.data(), expected.size()) == 0);
+        REQUIRE(std::memcmp(interp_actual, jit_off.data(), jit_off.size()) == 0);
     }
 #endif
 }
