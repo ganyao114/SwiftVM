@@ -104,6 +104,9 @@ public:
         active_fprs = alloc->GetFprs();
         live_interval.reserve(function->MaxInstrCount());
         fixed_gpr_alias_end.resize(function->MaxInstrCount());
+        fixed_gpr_affinity.resize(function->MaxInstrCount(), UINT16_MAX);
+        fixed_gpr_affinity_store.resize(function->MaxInstrCount(), UINT32_MAX);
+        fixed_class = backend::FixedGPRClassEnabled(alloc->GetGprs(), features);
         InitializeFixedClobbers();
         if (single_block_fast_path) {
             fast_active_lives.reserve(function->MaxInstrCount());
@@ -137,6 +140,9 @@ public:
         active_fprs = alloc->GetFprs();
         live_interval.reserve(block->GetInstList().size());
         fixed_gpr_alias_end.resize(block->MaxInstrId());
+        fixed_gpr_affinity.resize(block->MaxInstrId(), UINT16_MAX);
+        fixed_gpr_affinity_store.resize(block->MaxInstrId(), UINT32_MAX);
+        fixed_class = backend::FixedGPRClassEnabled(alloc->GetGprs(), features);
         InitializeFixedClobbers();
     }
 
@@ -148,6 +154,11 @@ public:
     [[nodiscard]] u32 MaxLiveFPR() const { return max_live_fpr; }
     [[nodiscard]] u32 GPRReserve() const { return gpr_reserve; }
     [[nodiscard]] u32 FPRReserve() const { return fpr_reserve; }
+    [[nodiscard]] u32 FixedAffinityReads() const { return fixed_affinity_reads; }
+    [[nodiscard]] u32 FixedAffinityWrites() const { return fixed_affinity_writes; }
+    [[nodiscard]] u32 FixedHazards() const { return fixed_hazards; }
+    [[nodiscard]] u32 FixedEvictions() const { return fixed_evictions; }
+    [[nodiscard]] u32 FixedCopiesElided() const { return fixed_copies_elided; }
     [[nodiscard]] bool HasEvictionCandidate() const { return has_eviction_candidate; }
     [[nodiscard]] u32 EvictionCandidate() const {
         ASSERT(has_eviction_candidate);
@@ -258,6 +269,7 @@ public:
         } else {
             CollectLiveIntervals(block);
         }
+        PlanFixedGPRAffinities();
         perf_collect_live.Stop();
 
         // Step 2: Sort live intervals
@@ -293,7 +305,12 @@ public:
 
             ExpireOldIntervals(interval);
 
-            if (IsForcedSpill(interval)) {
+            if (TryAllocateFixedGPR(interval)) {
+                // A fixed-class affinity owns its architectural home for this
+                // SSA interval.  The home remains reserved in the ordinary
+                // value/scratch mask; this is a separate register class, not
+                // extra pool capacity.
+            } else if (IsForcedSpill(interval)) {
                 SpillAtInterval(interval);
             } else if (!IsFloatValue(interval.inst)) {
                 if (TryTieMemoryOperand(interval)) {
@@ -381,6 +398,161 @@ public:
     }
 
 private:
+    void MapFixedRead(u32 id, u16 target) {
+        if (fixed_class && backend::IsFixedGPRHome(target)) {
+            reg_alloc->MapFixedRegister(id, HostGPR{target});
+        } else {
+            reg_alloc->MapRegister(id, HostGPR{target});
+        }
+    }
+
+    void PlanFixedGPRAffinities() {
+        if (!fixed_class) {
+            return;
+        }
+        auto plan_block = [&](Block* lir_block) {
+            auto use_end = CollectGuestGPRUseEnds(lir_block, InstrCount());
+            auto& list = lir_block->GetInstList();
+
+            // Reverse-pass SRA state: a candidate store may publish its source
+            // in the fixed home only when no later/earlier access in the
+            // producer-to-store window creates RAW or WAW ambiguity.  Reads
+            // already proven alias-safe by CollectLiveIntervals seed the same
+            // physical-class range table.
+            for (auto& read : list) {
+                if (read.GetOp() != OpCode::GetHostGPR ||
+                    read.GetArg<Imm>(1).Get() != 0 ||
+                    GetValueSizeByte(read.ReturnType()) != sizeof(u64) ||
+                    !reg_alloc->IsFixedGPR(read.Id())) {
+                    continue;
+                }
+                const u32 target = read.GetArg<Imm>(0).Get();
+                const u32 end = read.Id() < use_end.size()
+                        ? std::max<u32>(read.Id(), use_end[read.Id()])
+                        : read.Id();
+                fixed_ranges[target].push_back({read.Id(), end});
+                ++fixed_affinity_reads;
+                ++fixed_copies_elided;
+            }
+
+            for (auto& store : list) {
+                if (store.GetOp() != OpCode::SetHostGPR ||
+                    store.GetArg<Imm>(2).Get() != 0) {
+                    continue;
+                }
+                const u32 target = store.GetArg<Imm>(1).Get();
+                if (!backend::IsFixedGPRHome(target) ||
+                    !reg_alloc->GetGprs().Get(target)) {
+                    continue;
+                }
+                const auto stored = ResolveBitCastSource(store.GetArg<Value>(0));
+                auto* producer = stored.Def();
+                if (!producer || producer->IsBitCastOperation() ||
+                    !IsPinnedCoalesceProducer(producer->GetOp()) ||
+                    GetValueSizeByte(stored.Type()) != sizeof(u64) ||
+                    stored.Id() >= use_end.size() ||
+                    use_end[stored.Id()] != store.Id() ||
+                    producer->GetUses() != 1 ||
+                    stored.Id() >= fixed_gpr_affinity.size()) {
+                    continue;
+                }
+
+                bool hazard = false;
+                for (auto& scan : list) {
+                    if (scan.Id() < producer->Id() || scan.Id() >= store.Id()) {
+                        continue;
+                    }
+                    if (&scan != producer &&
+                        (IsPinnedCoalesceObserver(scan.GetOp()) ||
+                         (scan.GetOp() == OpCode::GetHostGPR &&
+                          scan.GetArg<Imm>(0).Get() == target) ||
+                         (scan.GetOp() == OpCode::SetHostGPR &&
+                          scan.GetArg<Imm>(1).Get() == target))) {
+                        hazard = true;
+                        break;
+                    }
+                    if (scan.Id() < fixed_gpr_clobbers.size() &&
+                        (fixed_gpr_clobbers[scan.Id()] & (1u << target))) {
+                        hazard = true;
+                        break;
+                    }
+                }
+                if (!hazard) {
+                    for (auto input : producer->GetValues()) {
+                        auto root = ResolveBitCastSource(input);
+                        if (root.Defined() && root.Id() < use_end.size() &&
+                            reg_alloc->ValueType(root) == backend::RegAlloc::GPR &&
+                            reg_alloc->ValueGPR(root).id == target &&
+                            use_end[root.Id()] > producer->Id()) {
+                            hazard = true;
+                            break;
+                        }
+                    }
+                }
+                if (!hazard) {
+                    for (const auto& range : fixed_ranges[target]) {
+                        if (range.first <= store.Id() &&
+                            range.second >= producer->Id()) {
+                            hazard = true;
+                            break;
+                        }
+                    }
+                }
+                if (hazard) {
+                    ++fixed_hazards;
+                    continue;
+                }
+
+                fixed_gpr_affinity[stored.Id()] = static_cast<u16>(target);
+                fixed_gpr_affinity_store[stored.Id()] = store.Id();
+                fixed_ranges[target].push_back({producer->Id(), store.Id()});
+            }
+        };
+        if (function) {
+            for (auto* hir_block : function->GetHIRBlocks()) {
+                plan_block(hir_block->GetBlock());
+            }
+        } else {
+            plan_block(block);
+        }
+    }
+
+    bool TryAllocateFixedGPR(LiveInterval& interval) {
+        if (!fixed_class || IsFloatValue(interval.inst) ||
+            interval.inst->Id() >= fixed_gpr_affinity.size()) {
+            return false;
+        }
+        const u16 target = fixed_gpr_affinity[interval.inst->Id()];
+        if (target == UINT16_MAX) {
+            return false;
+        }
+        // Forward-pass conflict eviction: an overlapping fixed owner keeps its
+        // architectural home; the incoming candidate falls back to the value
+        // class and retains the ordinary SetHostGPR copy.  No instruction is
+        // reordered, and no already-mapped SSA value changes residence.
+        auto conflicts = [&](const LiveInterval& active) {
+            return reg_alloc->ValueType(Value{active.inst}) == backend::RegAlloc::GPR &&
+                   reg_alloc->IsFixedGPR(active.inst->Id()) &&
+                   reg_alloc->ValueGPR(active.inst->Id()).id == target;
+        };
+        const bool conflict = single_block_fast_path
+                ? std::any_of(fast_active_lives.begin(), fast_active_lives.end(), conflicts)
+                : std::any_of(active_lives.begin(), active_lives.end(), conflicts);
+        if (conflict || (IntervalFixedClobbers(interval) & (1u << target))) {
+            ++fixed_evictions;
+            return false;
+        }
+        reg_alloc->MapFixedRegister(interval.inst->Id(), HostGPR{target});
+        fixed_gpr_alias_end[interval.inst->Id()] = interval.end;
+        const u32 store_id = fixed_gpr_affinity_store[interval.inst->Id()];
+        if (store_id != UINT32_MAX) {
+            reg_alloc->MarkHostWriteCoalesced(store_id);
+            ++fixed_affinity_writes;
+            ++fixed_copies_elided;
+        }
+        return true;
+    }
+
     bool IsForcedSpill(const LiveInterval& interval) const {
         return forced_spills &&
                std::find(forced_spills->begin(), forced_spills->end(),
@@ -1341,6 +1513,12 @@ private:
             return true;  // no mask was recorded for this id
         }
         auto need = backend::ScratchBudget(*inst, features);
+        if (fixed_class) {
+            const auto contract = backend::ClassifyGPRContract(
+                    reg_alloc->GetGprs(), *inst, features);
+            ASSERT(contract.hot_instruction_scratch == need.gpr);
+            ASSERT((contract.fixed_clobber_mask & backend::kX86FixedGPRHomes) == 0);
+        }
         u32 reload_gpr = 0;
         u32 reload_fpr = 0;
         // One reload register per DISTINCT spilled value the instruction
@@ -1523,7 +1701,7 @@ private:
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{host_index});
                     reg_alloc->MarkHostReadCoalesced(hir_value.GetOrderId());
                 } else {
-                    reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{host_index});
+                    MapFixedRead(hir_value.GetOrderId(), host_index);
                     fixed_gpr_alias_end[hir_value.GetOrderId()] = end;
                 }
                 continue;
@@ -1677,7 +1855,7 @@ private:
                     reg_alloc->MapRegister(hir_value.GetOrderId(), HostFPR{host_index});
                     reg_alloc->MarkHostReadCoalesced(hir_value.GetOrderId());
                 } else {
-                    reg_alloc->MapRegister(hir_value.GetOrderId(), HostGPR{host_index});
+                    MapFixedRead(hir_value.GetOrderId(), host_index);
                     fixed_gpr_alias_end[hir_value.GetOrderId()] = end;
                 }
                 continue;
@@ -1794,7 +1972,7 @@ private:
                     reg_alloc->MapRegister(instr.Id(), HostFPR{host_index});
                     reg_alloc->MarkHostReadCoalesced(instr.Id());
                 } else {
-                    reg_alloc->MapRegister(instr.Id(), HostGPR{host_index});
+                    MapFixedRead(instr.Id(), host_index);
                     fixed_gpr_alias_end[instr.Id()] = use_end[instr.Id()];
                 }
                 continue;
@@ -2023,9 +2201,13 @@ private:
     const bool shift_imm_fast{false};
     const FeatureSet features;
     const bool xmm_resident{false};
+    bool fixed_class{false};
     bool has_eviction_candidate{false};
     u32 eviction_candidate{0};
     Vector<u32> fixed_gpr_alias_end{};
+    Vector<u16> fixed_gpr_affinity{};
+    Vector<u32> fixed_gpr_affinity_store{};
+    std::array<Vector<std::pair<u32, u32>>, 32> fixed_ranges{};
     Vector<bool> spill_slots{};
     Vector<u32> fixed_gpr_clobbers{};
     std::array<Vector<u32>, 32> fixed_gpr_clobber_points{};
@@ -2038,6 +2220,11 @@ private:
     u32 active_spill_fpr{0};
     u32 max_live_gpr{0};
     u32 max_live_fpr{0};
+    u32 fixed_affinity_reads{0};
+    u32 fixed_affinity_writes{0};
+    u32 fixed_hazards{0};
+    u32 fixed_evictions{0};
+    u32 fixed_copies_elided{0};
 };
 
 VRegisterAllocator::VRegisterAllocator(Block* block)

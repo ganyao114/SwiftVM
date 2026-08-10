@@ -87,6 +87,11 @@ static void RunVerified(Unit* unit,
         shape.scratch_fpr = scan.FPRReserve();
         shape.spill_defs = scan.SpillCount();
         shape.spill_high_water = scan.SpillHighWater();
+        shape.fixed_affinity_reads = scan.FixedAffinityReads();
+        shape.fixed_affinity_writes = scan.FixedAffinityWrites();
+        shape.fixed_hazards = scan.FixedHazards();
+        shape.fixed_evictions = scan.FixedEvictions();
+        shape.fixed_copies_elided = scan.FixedCopiesElided();
         if constexpr (std::is_same_v<Unit, Block>) {
             RAShapeAnalyzeFlags(unit, shape);
         } else {

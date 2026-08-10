@@ -102,6 +102,7 @@ const FlagsRegsAuditRecord* FindFlagsAuditRecord(
 struct AggregateBucket {
     VAddr guest_entry{};
     u32 versions{};
+    u32 host_bytes_max{};
     u32 host_static_max{};
     u32 spill_static_max{};
     u32 spill_static_min{UINT32_MAX};
@@ -151,6 +152,8 @@ std::vector<AggregateBucket> BuildBuckets(u32 count) {
         auto& bucket = by_pc[slot.shape.guest_entry];
         bucket.guest_entry = slot.shape.guest_entry;
         ++bucket.versions;
+        bucket.host_bytes_max =
+                std::max(bucket.host_bytes_max, slot.shape.host_bytes);
         bucket.host_static_max =
                 std::max(bucket.host_static_max, slot.shape.host_instructions);
         const u32 spill_static =
@@ -439,6 +442,10 @@ void DumpAtExit() {
     u64 state_sequences = 0;
     u64 state_pairs = 0;
     u64 state_same_offset = 0;
+    u64 helper_calls_dynamic = 0;
+    u64 helper_snapshot_instructions_dynamic = 0;
+    u64 helper_snapshot_code_bytes_dynamic = 0;
+    u64 helper_snapshot_memory_bytes_dynamic = 0;
     for (u32 i = 0; i < count; ++i) {
         const auto& slot = process.slots[i];
         const auto slot_entries = Dynamic(slot, HotCoalesceCounter::Entries);
@@ -452,6 +459,14 @@ void DumpAtExit() {
         state_sequences += slot.shape.uniform.sequences;
         state_pairs += slot.shape.uniform.load_pairs + slot.shape.uniform.store_pairs;
         state_same_offset += slot.shape.uniform.same_offset;
+        helper_calls_dynamic +=
+                slot_entries * slot.shape.helper_calls;
+        helper_snapshot_instructions_dynamic +=
+                slot_entries * slot.shape.helper_snapshot_instructions;
+        helper_snapshot_code_bytes_dynamic +=
+                slot_entries * slot.shape.helper_snapshot_code_bytes;
+        helper_snapshot_memory_bytes_dynamic +=
+                slot_entries * slot.shape.helper_snapshot_memory_bytes;
     }
     const u64 spill_dynamic = spill_reloads + spill_writebacks;
     std::fprintf(out,
@@ -471,6 +486,13 @@ void DumpAtExit() {
                  PrintU64(state_pairs), PrintU64(state_same_offset),
                  PrintU64(state_saved_dynamic),
                  Percent(state_saved_dynamic, host_dynamic));
+    std::fprintf(out,
+                 "[svm-ra-helper-dynamic] calls=%llu snapshot_instructions=%llu "
+                 "snapshot_code_bytes=%llu snapshot_memory_bytes=%llu\n",
+                 PrintU64(helper_calls_dynamic),
+                 PrintU64(helper_snapshot_instructions_dynamic),
+                 PrintU64(helper_snapshot_code_bytes_dynamic),
+                 PrintU64(helper_snapshot_memory_bytes_dynamic));
 
     if (config.indirect_l1_prof) {
         u64 hits = 0;
@@ -502,11 +524,12 @@ void DumpAtExit() {
         for (const auto& bucket : buckets) {
             std::fprintf(out,
                          "[svm-hot-all] pc=0x%llx versions=%u entries=%llu "
-                         "host_static=%u move_static=%u nan_static=%u "
+                         "host_bytes=%u host_static=%u move_static=%u nan_static=%u "
                          "spill_static=%u state_saved_static=%u\n",
                          static_cast<unsigned long long>(bucket.guest_entry),
                          bucket.versions, PrintU64(bucket.entries),
-                         bucket.host_static_max, bucket.move_static_max,
+                         bucket.host_bytes_max, bucket.host_static_max,
+                         bucket.move_static_max,
                          bucket.nan_static_max, bucket.spill_static_max,
                          bucket.state_saved_static_max);
         }

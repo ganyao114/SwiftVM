@@ -83,7 +83,8 @@ namespace swift::runtime {
     X(xmm_uniform_fwd, true) \
     X(loop_gpr_hoist, true) \
     X(loop_const_hoist, true) \
-    X(flags_regs_audit, false)
+    X(flags_regs_audit, false) \
+    X(ra_fixed_class, false)
 
 enum class FeatureId : std::size_t {
 #define SVM_FEATURE_ID(field, default_value) field,
@@ -274,7 +275,8 @@ struct FeatureOverrides {
     X(std::string, swift_fuzz_iters, "SWIFT_FUZZ_ITERS", RawString, "", "x86 fuzz 迭代数原串；显式时各测试 atoi，缺省沿用各调用方 def；原 x86_fuzz.cpp:943") \
     X(std::string, swift_fuzz_seed, "SWIFT_FUZZ_SEED", RawString, "", "x86 fuzz 随机种子原串；显式时 strtoull(base 0)，缺省 random_device；原 x86_fuzz.cpp:547") \
     X(bool, swift_fuzz_trace, "SWIFT_FUZZ_TRACE", Presence, false, "x86 fuzz trace；变量存在即开；原 x86_fuzz.cpp:769") \
-    X(bool, flags_regs_audit, "SVM_FLAGS_REGS_AUDIT", NonZero, false, "W-beta flags 寄存器化纯计数审计；非 0 开，缺省 OFF；零发码改动")
+    X(bool, flags_regs_audit, "SVM_FLAGS_REGS_AUDIT", NonZero, false, "W-beta flags 寄存器化纯计数审计；非 0 开，缺省 OFF；零发码改动") \
+    X(bool, ra_fixed_class, "SVM_RA_FIXED_CLASS", NonZero, false, "W-gamma guest GPR fixed register class；非 0 开，缺省 OFF；需 SVM_X86_PIN_EXT=3")
 
 struct SvmConfig {
 #define SVM_DECLARE_FIELD(type, field, name, parse, default_value, source_comment) \

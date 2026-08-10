@@ -59,6 +59,23 @@ bool X86PinExtLevel3Enabled(const GPRSMask& pool) {
     return true;
 }
 
+bool FixedGPRClassEnabled(const GPRSMask& pool,
+                          const FeatureSet& features) {
+    if (!features.ra_fixed_class || !X86PinExtLevel3Enabled(pool)) {
+        return false;
+    }
+    for (u32 code = 0; code < 32; ++code) {
+        if ((kX86FixedGPRHomes & (1u << code)) && !pool.Get(code)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsFixedGPRHome(u32 code) {
+    return code < 32 && (kX86FixedGPRHomes & (1u << code));
+}
+
 bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool,
                                  const FeatureSet& features) {
     return X86PinExtLevel2Enabled(pool) && !ScratchXPoolEnabled(features) &&
@@ -258,6 +275,32 @@ u32 FixedGPRClobbers(const ir::Inst& inst, const FeatureSet& features,
     return fixed;
 }
 
+GPRClassContract ClassifyGPRContract(const GPRSMask& pool,
+                                     const ir::Inst& inst,
+                                     const FeatureSet& features) {
+    const u32 fixed = FixedGPRClobbers(inst, features);
+    // x0-x17 are the ordinary AAPCS caller-clobbered GPRs used by generated
+    // helper calls. x18 stays out: Apple reserves it and the Linux conditional
+    // spill path treats it as reload-only capacity, never a helper value home.
+    constexpr u32 kAAPCSCallerClobber = (1u << 18) - 1;
+    const bool cold_continuation = (fixed & (1u << 13)) != 0;
+    const auto need = ScratchBudget(inst, features);
+    auto value_pool = pool;
+    GPRClassContract result{
+            .value_pool = static_cast<u8>(value_pool.GetClearCount()),
+            .hot_instruction_scratch = need.gpr,
+            .cold_edge_scratch = static_cast<u8>(cold_continuation ? 1 : 0),
+            .call_clobber_mask = kAAPCSCallerClobber,
+            .fixed_clobber_mask = fixed,
+    };
+    if (FixedGPRClassEnabled(pool, features)) {
+        ASSERT_MSG((fixed & kX86FixedGPRHomes) == 0,
+                   "fixed clobber mask {:#x} overlaps guest GPR class {:#x}",
+                   fixed, kX86FixedGPRHomes);
+    }
+    return result;
+}
+
 // See reg_alloc.h for what this table is and who enforces it.
 //
 // Only opcodes that exceed the default appear here. Every entry is a measured
@@ -453,24 +496,36 @@ void RegAlloc::MapRegister(u32 id, ir::HostFPR fpr) {
     auto& map = alloc_result[id];
     map.type = FPR;
     map.slot = fpr.id;
+    map.fixed_gpr = false;
 }
 
 void RegAlloc::MapRegister(u32 id, ir::HostGPR gpr) {
     auto& map = alloc_result[id];
     map.type = GPR;
     map.slot = gpr.id;
+    map.fixed_gpr = false;
+}
+
+void RegAlloc::MapFixedRegister(u32 id, ir::HostGPR gpr) {
+    ASSERT(IsFixedGPRHome(gpr.id));
+    auto& map = alloc_result[id];
+    map.type = GPR;
+    map.slot = gpr.id;
+    map.fixed_gpr = true;
 }
 
 void RegAlloc::MapMemSpill(u32 id, ir::SpillSlot slot) {
     auto& map = alloc_result[id];
     map.type = MEM;
     map.slot = slot.offset;
+    map.fixed_gpr = false;
 }
 
 void RegAlloc::MapReference(u32 from, u32 to) {
     auto& map = alloc_result[to];
     map.type = REF;
     map.slot = from;
+    map.fixed_gpr = false;
 }
 
 void RegAlloc::MarkHostWriteCoalesced(u32 id) {
@@ -543,6 +598,12 @@ u16 RegAlloc::AesChainTarget(u32 id) const {
 
 bool RegAlloc::IsPshufd4eExt(u32 id) const {
     return id < pshufd_4e_ext.size() && pshufd_4e_ext[id];
+}
+
+bool RegAlloc::IsFixedGPR(u32 id) const {
+    id = ResolveId(id);
+    return id < alloc_result.size() && alloc_result[id].type == GPR &&
+           alloc_result[id].fixed_gpr;
 }
 
 void RegAlloc::SetActiveRegs(swift::u32 id, GPRSMask& gprs, FPRSMask& fprs) {

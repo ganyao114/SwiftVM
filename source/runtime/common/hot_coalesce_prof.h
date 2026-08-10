@@ -103,6 +103,10 @@ struct HotCoalesceUnitStatic {
     u32 spill_writebacks{};
     u32 move_bridges{};
     u32 nan_guard_instructions{};
+    u32 helper_calls{};
+    u32 helper_snapshot_instructions{};
+    u32 helper_snapshot_code_bytes{};
+    u32 helper_snapshot_memory_bytes{};
     std::array<VAddr, kHotCoalesceMaxLinkTargets> link_targets{};
     u8 link_target_count{};
     u8 link_target_overflow{};

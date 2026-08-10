@@ -94,6 +94,15 @@ using FPRSMask = RegisterMask<u32>;
 [[nodiscard]] bool X86PinExtLevel3AluScratchEnabled(const GPRSMask& pool,
                                                     ir::OpCode op);
 
+// W-gamma fixed-class gate.  The class is meaningful only with the complete
+// sixteen-register level-3 architectural map; a sparse map must keep the
+// established allocator unchanged instead of silently creating a hybrid ABI.
+inline constexpr u32 kX86FixedGPRHomes =
+        (0x3ffu << 0) | (0x1fu << 19) | (1u << 29);
+[[nodiscard]] bool FixedGPRClassEnabled(const GPRSMask& pool,
+                                        const FeatureSet& features);
+[[nodiscard]] bool IsFixedGPRHome(u32 code);
+
 // Number of u64 spill slots reserved in State::spill_area (context.h).
 // The linear-scan pass panics instead of handing out a slot beyond this:
 // an out-of-range slot would silently overwrite the uniform buffer that
@@ -151,6 +160,23 @@ struct ScratchNeed {
     u8 fpr;
 };
 
+// Four independent GPR budgets.  `value_pool` is a count; the remaining
+// fields are contracts for one emission site and never contribute registers
+// to that pool.  Keeping fixed clobbers as a mask prevents the x12/x13 CAS and
+// cold-continuation ABIs from being mistaken for ordinary scratch capacity.
+struct GPRClassContract {
+    u8 value_pool{};
+    u8 hot_instruction_scratch{};
+    u8 cold_edge_scratch{};
+    u32 call_clobber_mask{};
+    u32 fixed_clobber_mask{};
+};
+
+[[nodiscard]] GPRClassContract ClassifyGPRContract(
+        const GPRSMask& pool,
+        const ir::Inst& inst,
+        const FeatureSet& features);
+
 // W52 opt-in scratch-pool contract. OFF preserves the historical global
 // reservation byte-for-byte. ON lets the allocator use x11-x17 and protects
 // only the registers an opcode explicitly clobbers.
@@ -205,6 +231,7 @@ public:
     struct Map {
         Type type{NONE};
         u16 slot{};
+        bool fixed_gpr{};
         GPRSMask dirty_gprs{0};
         FPRSMask dirty_fprs{0};
 
@@ -216,6 +243,7 @@ public:
     [[nodiscard]] const FeatureSet& GetFeatures() const { return features; }
 
     void MapRegister(u32 id, ir::HostGPR gpr);
+    void MapFixedRegister(u32 id, ir::HostGPR gpr);
     void MapRegister(u32 id, ir::HostFPR fpr);
     void MapMemSpill(u32 id, ir::SpillSlot slot);
     void MapReference(u32 from, u32 to);
@@ -234,6 +262,7 @@ public:
     [[nodiscard]] bool IsAesChainTied(u32 id) const;
     [[nodiscard]] u16 AesChainTarget(u32 id) const;
     [[nodiscard]] bool IsPshufd4eExt(u32 id) const;
+    [[nodiscard]] bool IsFixedGPR(u32 id) const;
     void SetActiveRegs(u32 id, GPRSMask &gprs, FPRSMask &fprs);
     // Experimental placement probe: rename only the symmetric dynamic homes
     // after allocation and verification, so allocation/coalescing decisions

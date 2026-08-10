@@ -226,12 +226,12 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 154);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 155);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_FLAGS_REGS_AUDIT");
+            "SVM_RA_FIXED_CLASS");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -299,10 +299,11 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 70);
+    STATIC_REQUIRE(kFeatureCount == 71);
     REQUIRE(FeatureSet{}.operand_copy_kill);
     REQUIRE(FeatureSet{}.zero_store_zr);
     REQUIRE_FALSE(FeatureSet{}.flags_regs_audit);
+    REQUIRE_FALSE(FeatureSet{}.ra_fixed_class);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -4207,6 +4208,57 @@ TEST_CASE("64-bit induction ties require exact last-use and matching pinned publ
         REQUIRE(on.ValueGPR(source).id == 22);
         REQUIRE(on.ValueGPR(result).id != 22);
     }
+}
+
+TEST_CASE("fixed GPR class is level3-only and keeps fixed clobbers disjoint") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    GPRSMask gprs{0};
+    for (swift::u32 code = 0; code < 32; ++code) {
+        if ((kX86FixedGPRHomes & (1u << code)) || code == 10 || code == 18 ||
+            (code >= 24 && code <= 28) || code >= 30) {
+            gprs.Mark(code);
+        }
+    }
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+    auto features = FeatureSet{};
+    features.ra_fixed_class = true;
+
+    REQUIRE(std::popcount(kX86FixedGPRHomes) == 16);
+    REQUIRE(FixedGPRClassEnabled(gprs, features) ==
+            (GetSvmConfig().x86_pin_ext >= 3));
+
+    IntrusivePtr<Block> block{new Block(0, Location{0x86b8})};
+    auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
+                         .SetType(ValueType::U64);
+    auto* publish = block->AppendInst(
+            OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+
+    auto contract = ClassifyGPRContract(gprs, *value.Def(), features);
+    REQUIRE(contract.value_pool == gprs.GetClearCount());
+    REQUIRE((contract.fixed_clobber_mask & kX86FixedGPRHomes) == 0);
+    REQUIRE(contract.hot_instruction_scratch ==
+            ScratchBudget(*value.Def(), features).gpr);
+
+    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
+    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    if (GetSvmConfig().x86_pin_ext >= 3) {
+        REQUIRE(alloc.ValueGPR(value).id == 22);
+        REQUIRE(alloc.IsFixedGPR(value.Id()));
+        REQUIRE(alloc.IsHostWriteCoalesced(publish->Id()));
+    } else {
+        REQUIRE_FALSE(alloc.IsFixedGPR(value.Id()));
+    }
+
+    const swift::u32 cas_clobbers = FixedGPRClobbers(
+            OpCode::CompareAndSwap128, features);
+    REQUIRE((cas_clobbers & ((1u << 12) | (1u << 13))) ==
+            ((1u << 12) | (1u << 13)));
+    REQUIRE((cas_clobbers & kX86FixedGPRHomes) == 0);
 }
 
 TEST_CASE("guest GPR coalescing keeps publication and snapshot proofs local") {

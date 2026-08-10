@@ -2,6 +2,17 @@
 
 namespace swift::runtime::ir {
 
+static void MapGuestFixedGPR(backend::RegAlloc* reg_alloc,
+                             u32 id,
+                             u32 target) {
+    if (backend::FixedGPRClassEnabled(reg_alloc->GetGprs(),
+                                      reg_alloc->GetFeatures())) {
+        reg_alloc->MapFixedRegister(id, HostGPR{static_cast<u16>(target)});
+    } else {
+        reg_alloc->MapRegister(id, HostGPR{static_cast<u16>(target)});
+    }
+}
+
 bool IsPinnedCoalesceTarget(u32 reg) {
     return reg <= 9 || reg == 22 || reg == 23 || reg == 29;
 }
@@ -611,7 +622,7 @@ void CoalesceGuestGPRReads(
         if (blocked) {
             continue;
         }
-        reg_alloc->MapRegister(read.Id(), HostGPR{static_cast<u16>(target)});
+        MapGuestFixedGPR(reg_alloc, read.Id(), target);
         reg_alloc->MarkHostReadCoalesced(read.Id());
     }
 }
@@ -907,15 +918,14 @@ void CoalesceGuestGPRWrites(
             }
         }
 
-        reg_alloc->MapRegister(producer->Id(), HostGPR{static_cast<u16>(target)});
+        MapGuestFixedGPR(reg_alloc, producer->Id(), target);
         if (zero_extend_chain) {
-            reg_alloc->MapRegister(wrapper->Id(), HostGPR{static_cast<u16>(target)});
+            MapGuestFixedGPR(reg_alloc, wrapper->Id(), target);
         }
         reg_alloc->MarkHostWriteCoalesced(store.Id());
         if (width_root) {
             for (auto* node : width_component) {
-                reg_alloc->MapRegister(node->Id(),
-                                       HostGPR{static_cast<u16>(target)});
+                MapGuestFixedGPR(reg_alloc, node->Id(), target);
                 reg_alloc->MarkWidthChainCoalesced(node->Id(), producer->Id());
             }
         }

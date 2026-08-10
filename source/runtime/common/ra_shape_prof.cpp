@@ -49,6 +49,12 @@ struct RAShapeProcessCounters {
     Counter spill_loads{};
     Counter spill_stores{};
     Counter consecutive_pair_fallbacks{};
+    Counter host_bytes{};
+    Counter fixed_affinity_reads{};
+    Counter fixed_affinity_writes{};
+    Counter fixed_hazards{};
+    Counter fixed_evictions{};
+    Counter fixed_copies_elided{};
     std::array<AtomicHelperCounters,
                static_cast<size_t>(RAShapeHelperABI::Count)>
             helpers{};
@@ -146,12 +152,20 @@ void DumpAtExit() {
     std::fprintf(out,
                  "[svm-ra-shape] units=%llu spill_units=%llu flags_units=%llu "
                  "spill_defs=%llu spill_loads=%llu spill_stores=%llu "
-                 "pair_fallbacks=%llu target_overflow=%llu\n",
+                 "pair_fallbacks=%llu host_bytes=%llu target_overflow=%llu\n",
                  Load(counters.units), Load(counters.spill_units),
                  Load(counters.flags_units), Load(counters.spill_defs),
                  Load(counters.spill_loads), Load(counters.spill_stores),
                  Load(counters.consecutive_pair_fallbacks),
+                 Load(counters.host_bytes),
                  Load(counters.target_overflow));
+    std::fprintf(out,
+                 "[svm-ra-shape-fixed] affinity_reads=%llu affinity_writes=%llu "
+                 "hazards=%llu evictions=%llu copies_elided=%llu\n",
+                 Load(counters.fixed_affinity_reads),
+                 Load(counters.fixed_affinity_writes),
+                 Load(counters.fixed_hazards), Load(counters.fixed_evictions),
+                 Load(counters.fixed_copies_elided));
     DumpHistogram(out, "gpr_pool", counters.gpr_pool);
     DumpHistogram(out, "fpr_pool", counters.fpr_pool);
     DumpHistogram(out, "max_live_gpr", counters.max_live_gpr);
@@ -388,6 +402,12 @@ void RAShapeSubmitUnit(const RAShapeUnitCounters& unit) {
     Add(out.spill_loads, unit.spill_loads);
     Add(out.spill_stores, unit.spill_stores);
     Add(out.consecutive_pair_fallbacks, unit.consecutive_pair_fallbacks);
+    Add(out.host_bytes, unit.host_bytes);
+    Add(out.fixed_affinity_reads, unit.fixed_affinity_reads);
+    Add(out.fixed_affinity_writes, unit.fixed_affinity_writes);
+    Add(out.fixed_hazards, unit.fixed_hazards);
+    Add(out.fixed_evictions, unit.fixed_evictions);
+    Add(out.fixed_copies_elided, unit.fixed_copies_elided);
     for (size_t i = 0; i < static_cast<size_t>(RAShapeHelperABI::Count); ++i) {
         Add(out.helpers[i], unit.helpers[i]);
     }

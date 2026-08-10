@@ -871,6 +871,7 @@ void JitContext::Finish() {
     __ FinalizeCode();
     MaybeDumpHostBytes();
     if (RAShapeProfEnabled() && !ra_shape_submitted) {
+        reg_alloc.RAShape().host_bytes = CurrentBufferSize();
         RAShapeSubmitUnit(reg_alloc.RAShape());
         ra_shape_submitted = true;
     }
@@ -919,6 +920,20 @@ void JitContext::FinishHotCoalesceBlock() {
     hot_shape.host_instructions =
             (end - hot_code_start) / vixl::aarch64::kInstructionSize -
             probe_instructions;
+
+    for (const auto& helper : reg_alloc.RAShape().helpers) {
+        ASSERT(helper.calls <= UINT32_MAX);
+        ASSERT(helper.snapshot_instructions <= UINT32_MAX);
+        ASSERT(helper.snapshot_code_bytes <= UINT32_MAX);
+        ASSERT(helper.snapshot_memory_bytes <= UINT32_MAX);
+        hot_shape.helper_calls += static_cast<u32>(helper.calls);
+        hot_shape.helper_snapshot_instructions +=
+                static_cast<u32>(helper.snapshot_instructions);
+        hot_shape.helper_snapshot_code_bytes +=
+                static_cast<u32>(helper.snapshot_code_bytes);
+        hot_shape.helper_snapshot_memory_bytes +=
+                static_cast<u32>(helper.snapshot_memory_bytes);
+    }
 
     vixl::aarch64::Decoder decoder;
     vixl::aarch64::Disassembler disassembler;
