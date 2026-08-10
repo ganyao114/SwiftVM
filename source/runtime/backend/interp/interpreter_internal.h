@@ -24,6 +24,8 @@ constexpr u32 kHostParityByte = 0;  // width 8
 
 u32 TypeBits(ValueType type) { return ir::GetValueSizeByte(type) * 8; }
 
+bool IsVector(ValueType type) { return type >= ValueType::V8 && type <= ValueType::V256; }
+
 u64 MaskBits(u32 bits) { return bits >= 64 ? ~u64(0) : ((u64(1) << bits) - 1); }
 
 u64 SignExtendTo(u64 value, u32 bits) {

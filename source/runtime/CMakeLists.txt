@@ -147,6 +147,7 @@ add_library(swift_runtime STATIC
         backend/riscv64/trampolines.h
         backend/interp/interpreter.cpp
         backend/interp/interpreter_flags.cpp
+        backend/interp/interpreter_memory.cpp
         backend/interp/interpreter.h
         backend/interp/interpreter_internal.h
         backend/cache_clear.cpp
