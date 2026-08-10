@@ -301,7 +301,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
 
     STATIC_REQUIRE(kFeatureCount == 69);
     REQUIRE(FeatureSet{}.operand_copy_kill);
-    REQUIRE_FALSE(FeatureSet{}.zero_store_zr);
+    REQUIRE(FeatureSet{}.zero_store_zr);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);

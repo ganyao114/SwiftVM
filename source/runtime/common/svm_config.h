@@ -18,7 +18,7 @@ namespace swift::runtime {
     X(const_cse, true) \
     X(int_imm_fold, true) \
     X(operand_copy_kill, true) \
-    X(zero_store_zr, false) \
+    X(zero_store_zr, true) \
     X(uniform_dse, true) \
     X(flag_carry_elim, true) \
     X(ra_1blk, true) \
@@ -129,7 +129,7 @@ struct FeatureOverrides {
     X(bool, const_cse, "SVM_CONST_CSE", DefaultOn, true, "常量 CSE；缺省 ON，=0 回退；原 const_folding_pass.cpp:104") \
     X(bool, int_imm_fold, "SVM_INT_IMM_FOLD", DefaultOn, true, "单 block 单用整数 LoadImm 折叠进可编码 ALU immediate；缺省 ON，=0 回退；原 const_folding_pass.cpp") \
     X(bool, operand_copy_kill, "SVM_OPERAND_COPY_KILL", DefaultOn, true, "A64 Mul 已物化寄存器 RHS 的单用 emitter 临时 copy 抑制；缺省 ON，=0 回退；原 translator_alu.cpp:EmitMul") \
-    X(bool, zero_store_zr, "SVM_ZERO_STORE_ZR", NonZero, false, "A64 普通整数 StoreUniform/StoreMemory 的 LoadImm(0) value 直接选 wzr/xzr；单用时抑制物化；非 0 开，缺省 OFF") \
+    X(bool, zero_store_zr, "SVM_ZERO_STORE_ZR", DefaultOn, true, "A64 普通整数 StoreUniform/StoreMemory 的 LoadImm(0) value 直接选 wzr/xzr；单用时抑制物化；缺省 ON，=0 回退") \
     X(bool, uniform_dse, "SVM_UNIFORM_DSE", DefaultOn, true, "uniform dead-store elimination；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:387") \
     X(bool, flag_carry_elim, "SVM_FLAG_CARRY_ELIM", DefaultOn, true, "carry write elimination；缺省 ON，=0 回退；原 flags_elimination_pass.cpp:484") \
     X(bool, ra_1blk, "SVM_RA_1BLK", DefaultOn, true, "单块 RA 快路径；缺省 ON，=0 回退；原 register_alloc_pass.cpp:2226") \
