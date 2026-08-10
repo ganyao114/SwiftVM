@@ -170,6 +170,18 @@ public:
     [[nodiscard]] u32 WidthChainAnchor(u32 id) const {
         return reg_alloc.WidthChainAnchor(id);
     }
+    [[nodiscard]] bool HasWidthComponentOwner(u32 anchor) const {
+        return reg_alloc.HasWidthComponentOwner(anchor);
+    }
+    [[nodiscard]] bool WidthComponentOwnerCommitted(u32 anchor) const {
+        return reg_alloc.WidthComponentOwnerCommitted(anchor);
+    }
+    [[nodiscard]] u16 WidthComponentOwnerTarget(u32 anchor) const {
+        return reg_alloc.WidthComponentOwnerTarget(anchor);
+    }
+    [[nodiscard]] bool WidthComponentOwnerHighZero(u32 anchor) const {
+        return reg_alloc.WidthComponentOwnerHighZero(anchor);
+    }
     [[nodiscard]] bool IsConstAddressCached(u32 id) const {
         return reg_alloc.IsConstAddressCached(id);
     }

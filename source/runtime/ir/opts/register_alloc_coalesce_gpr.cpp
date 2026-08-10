@@ -60,6 +60,15 @@ bool IsWidthChainRootProducer(const Inst* producer) {
     switch (producer->GetOp()) {
         case OpCode::GetHostGPR:
             return producer->GetArg<Imm>(1).Get() == 0;
+        case OpCode::SignExtend:
+        case OpCode::Mul:
+        case OpCode::Add:
+            // All three emit a real W destination for an U32 result.  This is
+            // stronger than a W-view read: the physical X high half is known
+            // zero after the producer.  Their inputs may have multiple uses;
+            // the publication transaction proves every alias window instead
+            // of substituting a last-use heuristic here.
+            return true;
         default:
             return false;
     }
@@ -115,6 +124,96 @@ bool HasKnownWWrite(Value value) {
         return HasKnownWWrite(def->GetArg<Value>(0));
     }
     return GetValueSizeByte(def->ReturnType()) == sizeof(u32);
+}
+
+void PlanWidthComponentOwners(
+        Block* lir_block,
+        backend::RegAlloc* reg_alloc,
+        const FeatureSet& features,
+        const Vector<u32>& use_end) {
+    if (!features.ra_width_chain) {
+        return;
+    }
+    // Owner selection is intentionally made from the untouched linear-scan
+    // result.  The first eligible publication in IR order freezes the fixed
+    // home and the high-half fact; later write/read passes can consume that
+    // decision but can neither replace it nor retry another home.
+    for (auto& store : lir_block->GetInstList()) {
+        if (store.GetOp() != OpCode::SetHostGPR ||
+            store.GetArg<Imm>(2).Get() != 0) {
+            continue;
+        }
+        const u32 target = store.GetArg<Imm>(1).Get();
+        if (!IsPinnedCoalesceTarget(target) ||
+            !reg_alloc->GetGprs().Get(target)) {
+            continue;
+        }
+        auto stored = ResolveBitCastSource(store.GetArg<Value>(0));
+        auto produced = stored;
+        bool zero_extend = false;
+        if (stored.Def() && stored.Def()->GetOp() == OpCode::ZeroExtend32To64 &&
+            GetValueSizeByte(stored.Def()->GetArg<Value>(0).Type()) == sizeof(u32)) {
+            produced = ResolveBitCastSource(stored.Def()->GetArg<Value>(0));
+            zero_extend = true;
+        }
+        auto* root = produced.Def();
+        if (!root || !IsWidthChainRootProducer(root) ||
+            produced.Id() >= use_end.size() || root->Id() >= store.Id() ||
+            reg_alloc->ValueType(produced) != backend::RegAlloc::GPR ||
+            reg_alloc->ValueType(stored) != backend::RegAlloc::GPR) {
+            continue;
+        }
+        // Mapping an U32 producer to the selected home makes its ordinary
+        // emitter write Wtarget (GetHostGPR included), so the published X
+        // high half is zero even when the pre-transaction source was only a
+        // W view.  The wrapper provides the same fact explicitly.
+        const bool high_zero = zero_extend ||
+                GetValueSizeByte(produced.Type()) == sizeof(u32);
+        (void)reg_alloc->FreezeWidthComponentOwner(
+                root->Id(), static_cast<u16>(target), high_zero);
+    }
+}
+
+bool ValidateWidthComponentTransaction(
+        Block* lir_block,
+        backend::RegAlloc* reg_alloc) {
+    Vector<u8> committed_store(reg_alloc->MapCount());
+    for (auto& inst : lir_block->GetInstList()) {
+        if (inst.HasValue() && reg_alloc->IsWidthChainCoalesced(inst.Id())) {
+            const u32 anchor = reg_alloc->WidthChainAnchor(inst.Id());
+            if (reg_alloc->HasWidthComponentOwner(anchor)) {
+                if (!reg_alloc->WidthComponentOwnerCommitted(anchor) ||
+                    reg_alloc->ValueType(Value{&inst}) != backend::RegAlloc::GPR ||
+                    reg_alloc->ValueGPR(Value{&inst}).id !=
+                            reg_alloc->WidthComponentOwnerTarget(anchor)) {
+                    return false;
+                }
+            }
+        }
+        if (inst.GetOp() != OpCode::SetHostGPR ||
+            !reg_alloc->IsHostWriteCoalesced(inst.Id())) {
+            continue;
+        }
+        auto stored = ResolveBitCastSource(inst.GetArg<Value>(0));
+        if (!stored.Defined() || !reg_alloc->IsWidthChainCoalesced(stored.Id())) {
+            continue;
+        }
+        const u32 anchor = reg_alloc->WidthChainAnchor(stored.Id());
+        if (!reg_alloc->HasWidthComponentOwner(anchor) ||
+            !reg_alloc->WidthComponentOwnerCommitted(anchor) ||
+            reg_alloc->WidthComponentOwnerTarget(anchor) !=
+                    inst.GetArg<Imm>(1).Get()) {
+            return false;
+        }
+        committed_store[anchor] = 1;
+    }
+    for (u32 anchor = 0; anchor < reg_alloc->MapCount(); ++anchor) {
+        if (reg_alloc->WidthComponentOwnerCommitted(anchor) &&
+            !committed_store[anchor]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 Vector<u32> CollectWidthChainUseEnds(Block* lir_block, u32 instr_count) {
@@ -601,11 +700,26 @@ void CoalesceGuestGPRReads(
             continue;
         }
         auto published = ResolveBitCastSource(latest_store->GetArg<Value>(0));
-        const bool high_zero = published.Def() &&
+        bool high_zero = published.Def() &&
                 ((published.Def()->GetOp() == OpCode::ZeroExtend32To64 &&
                   GetValueSizeByte(published.Def()->GetArg<Value>(0).Type()) == sizeof(u32)) ||
                  (GetValueSizeByte(published.Type()) == sizeof(u32) &&
                   HasKnownWWrite(published)));
+        if (published.Defined() &&
+            reg_alloc->IsWidthChainCoalesced(published.Id())) {
+            const u32 anchor = reg_alloc->WidthChainAnchor(published.Id());
+            if (reg_alloc->HasWidthComponentOwner(anchor)) {
+                // A read reuse of a component publication is the read half of
+                // the same transaction.  It cannot survive if the write half
+                // failed or selected another home.
+                if (!reg_alloc->WidthComponentOwnerCommitted(anchor) ||
+                    !reg_alloc->IsHostWriteCoalesced(latest_store->Id()) ||
+                    reg_alloc->WidthComponentOwnerTarget(anchor) != target) {
+                    continue;
+                }
+                high_zero = reg_alloc->WidthComponentOwnerHighZero(anchor);
+            }
+        }
         if (!high_zero) {
             continue;
         }
@@ -704,11 +818,11 @@ void CoalesceGuestGPRWrites(
 
         Value stored = ResolveBitCastSource(store.GetArg<Value>(0));
         auto* wrapper = stored.Def();
-        const bool tentative_width_root =
-                features.ra_width_chain && wrapper &&
-                wrapper->GetOp() == OpCode::ZeroExtend32To64 &&
-                IsWidthChainRootProducer(
-                        ResolveBitCastSource(wrapper->GetArg<Value>(0)).Def());
+        const bool tentative_width_root = features.ra_width_chain && wrapper &&
+                (IsWidthChainRootProducer(wrapper) ||
+                 (wrapper->GetOp() == OpCode::ZeroExtend32To64 &&
+                  IsWidthChainRootProducer(
+                          ResolveBitCastSource(wrapper->GetArg<Value>(0)).Def())));
         if (!wrapper || stored.Id() >= use_end.size() ||
             (!tentative_width_root &&
              (wrapper->GetUses() != 1 || use_end[stored.Id()] != store.Id()))) {
@@ -739,6 +853,14 @@ void CoalesceGuestGPRWrites(
             reg_alloc->ValueType(produced) != backend::RegAlloc::GPR) {
             continue;
         }
+        if (width_root &&
+            (!reg_alloc->HasWidthComponentOwner(producer->Id()) ||
+             reg_alloc->WidthComponentOwnerTarget(producer->Id()) != target)) {
+            // The owner was frozen before this pass touched any mapping.  A
+            // second fixed-home publication is an ordinary move; failure of
+            // the selected publication never causes a retry at this home.
+            continue;
+        }
         const u32 width = GetValueSizeByte(produced.Type());
         if ((width != sizeof(u32) && width != sizeof(u64)) ||
             (width == sizeof(u32) &&
@@ -752,17 +874,25 @@ void CoalesceGuestGPRWrites(
             // later consumers observe the newly published value.
             continue;
         }
-        if (reg_alloc->IsWidthChainCoalesced(producer->Id()) &&
-            reg_alloc->ValueGPR(produced).id != target) {
-            // One SSA component can publish to several guest homes.
-            // It owns exactly one physical fixed home; later homes
-            // retain the ordinary SetHostGPR move.
-            continue;
-        }
-
         Vector<Inst*> width_component{};
         if (width_root) {
             width_component.push_back(producer);
+            if (producer->GetOp() == OpCode::SignExtend) {
+                auto source = ResolveBitCastSource(producer->GetArg<Value>(0));
+                auto* source_def = source.Def();
+                if (source_def && source_def->GetOp() == OpCode::LoadMemory &&
+                    GetValueSizeByte(source.Type()) <= sizeof(u16) &&
+                    source_def->GetUses() == 1 &&
+                    source.Id() < use_end.size() &&
+                    use_end[source.Id()] == producer->Id() &&
+                    reg_alloc->ValueType(source) == backend::RegAlloc::GPR) {
+                    // Keep the faulting narrow load in the same immutable
+                    // component.  A fault does not commit its destination;
+                    // success writes Wtarget and lets EmitLoadMemory fold the
+                    // following SignExtend into LDRSB/LDRSH.
+                    width_component.push_back(source_def);
+                }
+            }
             if (zero_extend_chain) {
                 width_component.push_back(wrapper);
             }
@@ -842,8 +972,10 @@ void CoalesceGuestGPRWrites(
         }
 
         if (width_root) {
+            u32 component_start = producer->Id();
             u32 component_end = producer->Id();
             for (auto* node : width_component) {
+                component_start = std::min<u32>(component_start, node->Id());
                 component_end = std::max<u32>(
                         component_end,
                         node->Id() < use_end.size()
@@ -864,18 +996,21 @@ void CoalesceGuestGPRWrites(
                 const u32 other_end = other.Id() < use_end.size()
                         ? std::max<u32>(other.Id(), use_end[other.Id()])
                         : other.Id();
-                if (other.Id() <= component_end && other_end >= producer->Id()) {
+                if (other.Id() <= component_end && other_end >= component_start) {
                     blocked = true;
                     break;
                 }
             }
             for (auto& scan : list) {
-                if (blocked || scan.Id() < producer->Id() ||
+                if (blocked || scan.Id() < component_start ||
                     scan.Id() > component_end) {
                     continue;
                 }
                 if ((scan.Id() < fixed_gpr_clobbers.size() &&
                      (fixed_gpr_clobbers[scan.Id()] & (1u << target))) ||
+                    (scan.Id() < producer->Id() &&
+                     IsPinnedCoalesceObserver(scan.GetOp()) &&
+                     !in_width_component(&scan)) ||
                     (scan.GetOp() == OpCode::SetHostGPR &&
                      &scan != &store && scan.GetArg<Imm>(1).Get() == target)) {
                     blocked = true;
@@ -893,7 +1028,7 @@ void CoalesceGuestGPRWrites(
             };
             Vector<SavedMask> saved{};
             for (auto& scan : list) {
-                if (scan.Id() < producer->Id() || scan.Id() > component_end) {
+                if (scan.Id() < component_start || scan.Id() > component_end) {
                     continue;
                 }
                 auto gprs = reg_alloc->DirtyGPR(scan.Id());
@@ -904,7 +1039,7 @@ void CoalesceGuestGPRWrites(
             }
             bool verified = true;
             for (auto& scan : list) {
-                if (scan.Id() >= producer->Id() && scan.Id() <= component_end &&
+                if (scan.Id() >= component_start && scan.Id() <= component_end &&
                     !CheckInstr(&scan, 0, 0)) {
                     verified = false;
                     break;
@@ -918,6 +1053,11 @@ void CoalesceGuestGPRWrites(
             }
         }
 
+        if (width_root &&
+            !reg_alloc->CommitWidthComponentOwner(producer->Id(),
+                                                   static_cast<u16>(target))) {
+            continue;
+        }
         MapGuestFixedGPR(reg_alloc, producer->Id(), target);
         if (zero_extend_chain) {
             MapGuestFixedGPR(reg_alloc, wrapper->Id(), target);

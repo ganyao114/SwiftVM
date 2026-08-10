@@ -3298,6 +3298,12 @@ bool JitTranslator::ReproveWidthChainBridge(ir::Inst* inst) const {
 
     const u32 end = last_use(inst);
     const u32 target = context.X(source).GetCode();
+    if (context.HasWidthComponentOwner(anchor) &&
+        (!context.WidthComponentOwnerCommitted(anchor) ||
+         context.WidthComponentOwnerTarget(anchor) != target ||
+         !context.WidthComponentOwnerHighZero(anchor))) {
+        return false;
+    }
     const u32 last_id = cur_block->GetInstList().begin() ==
                                 cur_block->GetInstList().end()
             ? 0

@@ -238,6 +238,27 @@ public:
         bool operator==(const Map&) const = default;
     };
 
+    struct WidthComponentOwner {
+        u16 target{UINT16_MAX};
+        bool high_zero{};
+        bool committed{};
+
+        [[nodiscard]] bool Valid() const { return target != UINT16_MAX; }
+        bool operator==(const WidthComponentOwner&) const = default;
+    };
+
+    // The GPR coalescer stages one whole block and publishes it only after the
+    // write/read/width proofs agree.  This snapshot is deliberately limited to
+    // state that family can mutate; pools, spills and scratch contracts remain
+    // allocator construction state and cannot be touched by the transaction.
+    struct GPRCoalesceState {
+        Vector<Map> mappings;
+        Vector<bool> host_writes;
+        Vector<bool> host_reads;
+        Vector<u32> width_anchors;
+        Vector<WidthComponentOwner> width_owners;
+    };
+
     [[nodiscard]] const GPRSMask& GetGprs() const;
     [[nodiscard]] const FPRSMask& GetFprs() const;
     [[nodiscard]] const FeatureSet& GetFeatures() const { return features; }
@@ -250,6 +271,8 @@ public:
     void MarkHostWriteCoalesced(u32 id);
     void MarkHostReadCoalesced(u32 id);
     void MarkWidthChainCoalesced(u32 id, u32 anchor_id);
+    bool FreezeWidthComponentOwner(u32 anchor_id, u16 target, bool high_zero);
+    bool CommitWidthComponentOwner(u32 anchor_id, u16 target);
     void MarkConstAddressCached(u32 id, u32 anchor_id);
     void MarkAesChainTied(u32 id, u16 target);
     void MarkPshufd4eExt(u32 id);
@@ -257,6 +280,12 @@ public:
     [[nodiscard]] bool IsHostReadCoalesced(u32 id) const;
     [[nodiscard]] bool IsWidthChainCoalesced(u32 id) const;
     [[nodiscard]] u32 WidthChainAnchor(u32 id) const;
+    [[nodiscard]] bool HasWidthComponentOwner(u32 anchor_id) const;
+    [[nodiscard]] bool WidthComponentOwnerCommitted(u32 anchor_id) const;
+    [[nodiscard]] u16 WidthComponentOwnerTarget(u32 anchor_id) const;
+    [[nodiscard]] bool WidthComponentOwnerHighZero(u32 anchor_id) const;
+    [[nodiscard]] GPRCoalesceState SaveGPRCoalesceState() const;
+    void RestoreGPRCoalesceState(GPRCoalesceState state);
     [[nodiscard]] bool IsConstAddressCached(u32 id) const;
     [[nodiscard]] u32 ConstAddressCacheAnchor(u32 id) const;
     [[nodiscard]] bool IsAesChainTied(u32 id) const;
@@ -313,6 +342,7 @@ private:
     Vector<bool> coalesced_host_writes{};
     Vector<bool> coalesced_host_reads{};
     Vector<u32> width_chain_anchors{};
+    Vector<WidthComponentOwner> width_component_owners{};
     Vector<u32> const_address_cache_anchors{};
     Vector<u16> aes_chain_targets{};
     Vector<bool> pshufd_4e_ext{};

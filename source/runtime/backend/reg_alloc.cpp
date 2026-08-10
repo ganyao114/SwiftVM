@@ -458,6 +458,7 @@ RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
         : alloc_result(instr_size), coalesced_host_writes(instr_size),
           coalesced_host_reads(instr_size),
           width_chain_anchors(instr_size, UINT32_MAX),
+          width_component_owners(instr_size),
           const_address_cache_anchors(instr_size, UINT32_MAX),
           aes_chain_targets(instr_size, UINT16_MAX),
           pshufd_4e_ext(instr_size),
@@ -485,6 +486,8 @@ void RegAlloc::ResetAllocations() {
     std::fill(coalesced_host_writes.begin(), coalesced_host_writes.end(), false);
     std::fill(coalesced_host_reads.begin(), coalesced_host_reads.end(), false);
     std::fill(width_chain_anchors.begin(), width_chain_anchors.end(), UINT32_MAX);
+    std::fill(width_component_owners.begin(), width_component_owners.end(),
+              WidthComponentOwner{});
     std::fill(const_address_cache_anchors.begin(), const_address_cache_anchors.end(),
               UINT32_MAX);
     std::fill(aes_chain_targets.begin(), aes_chain_targets.end(), UINT16_MAX);
@@ -544,6 +547,28 @@ void RegAlloc::MarkWidthChainCoalesced(u32 id, u32 anchor_id) {
     width_chain_anchors[id] = anchor_id;
 }
 
+bool RegAlloc::FreezeWidthComponentOwner(u32 anchor_id, u16 target,
+                                         bool high_zero) {
+    ASSERT(anchor_id < width_component_owners.size());
+    auto& owner = width_component_owners[anchor_id];
+    if (owner.Valid()) {
+        return owner.target == target && owner.high_zero == high_zero;
+    }
+    owner.target = target;
+    owner.high_zero = high_zero;
+    return true;
+}
+
+bool RegAlloc::CommitWidthComponentOwner(u32 anchor_id, u16 target) {
+    ASSERT(anchor_id < width_component_owners.size());
+    auto& owner = width_component_owners[anchor_id];
+    if (!owner.Valid() || owner.target != target) {
+        return false;
+    }
+    owner.committed = true;
+    return true;
+}
+
 void RegAlloc::MarkConstAddressCached(u32 id, u32 anchor_id) {
     ASSERT(id < const_address_cache_anchors.size());
     ASSERT(anchor_id < const_address_cache_anchors.size());
@@ -575,6 +600,40 @@ bool RegAlloc::IsWidthChainCoalesced(u32 id) const {
 u32 RegAlloc::WidthChainAnchor(u32 id) const {
     ASSERT(IsWidthChainCoalesced(id));
     return width_chain_anchors[id];
+}
+
+bool RegAlloc::HasWidthComponentOwner(u32 anchor_id) const {
+    return anchor_id < width_component_owners.size() &&
+           width_component_owners[anchor_id].Valid();
+}
+
+bool RegAlloc::WidthComponentOwnerCommitted(u32 anchor_id) const {
+    return HasWidthComponentOwner(anchor_id) &&
+           width_component_owners[anchor_id].committed;
+}
+
+u16 RegAlloc::WidthComponentOwnerTarget(u32 anchor_id) const {
+    ASSERT(HasWidthComponentOwner(anchor_id));
+    return width_component_owners[anchor_id].target;
+}
+
+bool RegAlloc::WidthComponentOwnerHighZero(u32 anchor_id) const {
+    ASSERT(HasWidthComponentOwner(anchor_id));
+    return width_component_owners[anchor_id].high_zero;
+}
+
+RegAlloc::GPRCoalesceState RegAlloc::SaveGPRCoalesceState() const {
+    return {alloc_result, coalesced_host_writes, coalesced_host_reads,
+            width_chain_anchors, width_component_owners};
+}
+
+void RegAlloc::RestoreGPRCoalesceState(GPRCoalesceState state) {
+    ASSERT(state.mappings.size() == alloc_result.size());
+    alloc_result = std::move(state.mappings);
+    coalesced_host_writes = std::move(state.host_writes);
+    coalesced_host_reads = std::move(state.host_reads);
+    width_chain_anchors = std::move(state.width_anchors);
+    width_component_owners = std::move(state.width_owners);
 }
 
 bool RegAlloc::IsConstAddressCached(u32 id) const {

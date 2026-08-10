@@ -24,6 +24,14 @@ bool IsPinnedCoalesceProducer(OpCode op);
 bool IsWidthChainRootProducer(const Inst* producer);
 bool IsPinnedCoalesceObserver(OpCode op);
 bool HasKnownWWrite(Value value);
+void PlanWidthComponentOwners(
+        Block* lir_block,
+        backend::RegAlloc* reg_alloc,
+        const FeatureSet& features,
+        const Vector<u32>& use_end);
+bool ValidateWidthComponentTransaction(
+        Block* lir_block,
+        backend::RegAlloc* reg_alloc);
 Vector<u32> CollectWidthChainUseEnds(Block* lir_block, u32 instr_count);
 Vector<u8> CollectLongWidthChainBridges(
         Block* lir_block,

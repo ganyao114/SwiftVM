@@ -236,6 +236,36 @@ bool JitTranslator::ReproveCoalescedHostWrite(ir::Inst* inst) const {
          !IsWidthChainHostWWrite(produced, target, context.GetFeatures()))) {
         return false;
     }
+    if (width_wrapper) {
+        const u32 anchor = context.WidthChainAnchor(stored.Id());
+        if (context.HasWidthComponentOwner(anchor)) {
+            const bool actual_high_zero = zero_extend_chain ||
+                    ir::GetValueSizeByte(produced.Type()) == sizeof(u32);
+            if (!context.WidthComponentOwnerCommitted(anchor) ||
+                context.WidthComponentOwnerTarget(anchor) != target ||
+                context.WidthComponentOwnerHighZero(anchor) != actual_high_zero) {
+                return false;
+            }
+        }
+    }
+    ir::Inst* component_source = nullptr;
+    if (producer->GetOp() == ir::OpCode::SignExtend) {
+        auto source = ResolveHostCoalesceBitCast(producer->GetArg<ir::Value>(0));
+        auto* source_def = source.Def();
+        if (source_def && context.IsWidthChainCoalesced(source.Id())) {
+            if (source_def->GetOp() != ir::OpCode::LoadMemory ||
+                ir::GetValueSizeByte(source.Type()) > sizeof(u16) ||
+                source_def->GetUses() != 1 ||
+                context.WidthChainAnchor(source.Id()) !=
+                        context.WidthChainAnchor(produced.Id()) ||
+                !context.SharesGPR(source, produced)) {
+                return false;
+            }
+            component_source = source_def;
+        }
+    }
+    const u32 proof_start = component_source ? component_source->Id()
+                                             : producer->Id();
 
     auto last_use = [&](ir::Inst* definition) {
         u32 end = definition->Id();
@@ -264,25 +294,26 @@ bool JitTranslator::ReproveCoalescedHostWrite(ir::Inst* inst) const {
     }
 
     for (auto& other : cur_block->GetInstList()) {
-        if (&other == producer || &other == wrapper || &other == inst ||
+        if (&other == component_source || &other == producer ||
+            &other == wrapper || &other == inst ||
             !other.HasValue() || other.IsBitCastOperation() ||
             other.Id() >= inst->Id()) {
             continue;
         }
         ir::Value value{&other};
         if (context.SharesGPR(value, produced) &&
-            last_use(&other) > producer->Id()) {
+            last_use(&other) > proof_start) {
             return false;
         }
     }
 
-    bool after_producer = false;
+    bool after_start = false;
     for (auto& scan : cur_block->GetInstList()) {
-        if (&scan == producer) {
-            after_producer = true;
+        if (scan.Id() == proof_start) {
+            after_start = true;
             continue;
         }
-        if (!after_producer || &scan == wrapper) {
+        if (!after_start || &scan == producer || &scan == wrapper) {
             continue;
         }
         if (&scan == inst) {
@@ -345,11 +376,22 @@ bool JitTranslator::ReproveCoalescedHostRead(ir::Inst* inst) const {
         return false;
     }
     auto published = ResolveHostCoalesceBitCast(latest_store->GetArg<ir::Value>(0));
-    const bool high_zero = published.Def() &&
+    bool high_zero = published.Def() &&
             ((published.Def()->GetOp() == ir::OpCode::ZeroExtend32To64 &&
               ir::GetValueSizeByte(published.Def()->GetArg<ir::Value>(0).Type()) == sizeof(u32)) ||
              (ir::GetValueSizeByte(published.Type()) == sizeof(u32) &&
               IsKnownHostWWrite(published)));
+    if (published.Defined() && context.IsWidthChainCoalesced(published.Id())) {
+        const u32 anchor = context.WidthChainAnchor(published.Id());
+        if (context.HasWidthComponentOwner(anchor)) {
+            if (!context.WidthComponentOwnerCommitted(anchor) ||
+                !context.IsHostWriteCoalesced(latest_store->Id()) ||
+                context.WidthComponentOwnerTarget(anchor) != target) {
+                return false;
+            }
+            high_zero = context.WidthComponentOwnerHighZero(anchor);
+        }
+    }
     if (!high_zero) {
         return false;
     }

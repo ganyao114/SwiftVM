@@ -386,8 +386,12 @@ public:
         perf_assign.Stop();
 
         FusePinnedWriteChains();
-        CoalesceGuestRegisterAccesses();
-        CoalesceWidthChains();
+        if (features.ra_width_chain) {
+            CoalesceGuestRegisterAccessesAndWidthChains();
+        } else {
+            CoalesceGuestRegisterAccesses();
+            CoalesceWidthChains();
+        }
         CoalesceGuestFPRAccesses(xmm_resident);
         RecognizePshufd4eExt();
         CacheConstantAddresses();
@@ -906,6 +910,52 @@ private:
             }
         } else {
             coalesce_block(block);
+        }
+    }
+
+    void CoalesceGuestRegisterAccessesAndWidthChains() {
+        RegisterAllocFamilyCallbacks callbacks{
+                this,
+                [](void* context, Inst* inst, u32 extra_gpr, u32 extra_fpr) {
+                    return static_cast<LinearScanAllocator*>(context)->CheckInstr(
+                            inst, extra_gpr, extra_fpr);
+                },
+                nullptr};
+        const bool host_accesses = features.ra_coalesce &&
+                backend::X86PinExtLevel2Enabled(reg_alloc->GetGprs());
+        auto transact_block = [&](Block* lir_block) {
+            auto saved = reg_alloc->SaveGPRCoalesceState();
+            auto use_end = CollectGuestGPRUseEnds(lir_block, InstrCount());
+
+            // Freeze every multi-publication owner before either half can
+            // alter a mapping.  All subsequent decisions run against one
+            // staged allocation and become visible only if the final owner
+            // validation succeeds.
+            PlanWidthComponentOwners(
+                    lir_block, reg_alloc, features, use_end);
+            if (host_accesses) {
+                CoalesceGuestGPRWrites(
+                        lir_block, reg_alloc, features, use_end,
+                        fixed_gpr_clobbers, callbacks);
+                CoalesceGuestGPRReads(lir_block, reg_alloc, use_end);
+            }
+
+            auto long_bridge = CollectLongWidthChainBridges(
+                    lir_block, reg_alloc, features, InstrCount(), use_end);
+            CoalesceWidthChainBridges(
+                    lir_block, reg_alloc, features, use_end, long_bridge,
+                    fixed_gpr_clobbers, callbacks);
+            if (!ValidateWidthComponentTransaction(lir_block, reg_alloc)) {
+                reg_alloc->RestoreGPRCoalesceState(std::move(saved));
+            }
+        };
+
+        if (function) {
+            for (auto* hir_block : function->GetHIRBlocks()) {
+                transact_block(hir_block->GetBlock());
+            }
+        } else {
+            transact_block(block);
         }
     }
 
