@@ -1172,8 +1172,21 @@ void JitTranslator::EmitGetUniformAddress(ir::Inst* inst) {
 void JitTranslator::EmitStoreUniform(ir::Inst* inst) {
     auto uni = inst->GetArg<ir::Uniform>(0);
     s32 offset = offsetof(State, uniform_buffer_begin) + uni.GetOffset();
-    auto reg = context.Get(inst->GetArg<ir::Value>(1));
-    auto value_type = inst->GetArg<ir::Value>(1).Type();
+    const auto value = inst->GetArg<ir::Value>(1);
+    auto value_type = value.Type();
+    auto* value_def = value.Def();
+    const bool zero_gpr =
+            context.GetFeatures().zero_store_zr && !context.IsSpilled(value) &&
+            value_def && value_def->GetOp() == ir::OpCode::LoadImm &&
+            value_def->GetUses(false) == 1 &&
+            value_def->GetArg<ir::Imm>(0).Get() == 0 &&
+            !ir::IsFloatValueType(value_type) &&
+            ir::GetValueSizeByte(value_type) <= sizeof(u64);
+    CPUReg reg = zero_gpr
+            ? CPUReg{ir::GetValueSizeByte(value_type) == sizeof(u64)
+                             ? Register{xzr}
+                             : Register{wzr}}
+            : context.Get(value);
     VisitVariant<void>(reg, [this, value_type, offset] (auto x) {
         using T = std::decay_t<decltype(x)>;
         if constexpr (std::is_same_v<T, Register>) {
@@ -1374,22 +1387,30 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
                            q_access && !fold_host_base,
                            !q_access,
                            structured_guest_ea);
+    auto* value_def = value.Def();
+    const bool zero_gpr =
+            context.GetFeatures().zero_store_zr && !context.IsSpilled(value) &&
+            value_def && value_def->GetOp() == ir::OpCode::LoadImm &&
+            value_def->GetUses(false) == 1 &&
+            value_def->GetArg<ir::Imm>(0).Get() == 0 &&
+            !ir::IsFloatValueType(type) &&
+            ir::GetValueSizeByte(type) <= sizeof(u64);
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
-            __ Strb(context.W(value), vixl_operand);
+            __ Strb(zero_gpr ? wzr : context.W(value), vixl_operand);
             break;
         case ir::ValueType::S16:
         case ir::ValueType::U16:
-            __ Strh(context.W(value), vixl_operand);
+            __ Strh(zero_gpr ? wzr : context.W(value), vixl_operand);
             break;
         case ir::ValueType::S32:
         case ir::ValueType::U32:
-            __ Str(context.W(value), vixl_operand);
+            __ Str(zero_gpr ? wzr : context.W(value), vixl_operand);
             break;
         case ir::ValueType::S64:
         case ir::ValueType::U64:
-            __ Str(context.X(value), vixl_operand);
+            __ Str(zero_gpr ? xzr : context.X(value), vixl_operand);
             break;
         case ir::ValueType::V8:
             __ Str(context.V(value).B(), vixl_operand);

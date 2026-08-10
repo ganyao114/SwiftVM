@@ -226,7 +226,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 158);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 159);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -299,8 +299,9 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 68);
+    STATIC_REQUIRE(kFeatureCount == 69);
     REQUIRE(FeatureSet{}.operand_copy_kill);
+    REQUIRE_FALSE(FeatureSet{}.zero_store_zr);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);
@@ -2570,6 +2571,183 @@ TEST_CASE("operand copy kill is a fail-closed Mul emitter fast path") {
                                 RightShape::Immediate);
             REQUIRE(on.bytes == off.bytes);
             REQUIRE(on.text == off.text);
+        }
+    }
+}
+
+TEST_CASE("zero store zr is value-only and fail-closed") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    enum class StoreKind { Uniform, Memory };
+    enum class Cardinality { Single, Multi };
+    enum class Observer { None, Save, Branch };
+    struct Emitted {
+        swift::u32 bytes{};
+        swift::u32 moves{};
+        swift::u32 zr_stores{};
+        std::string text{};
+    };
+
+    auto run = [](bool enabled, StoreKind kind, ValueType type, bool zero,
+                  Cardinality cardinality, Observer observer,
+                  bool force_spill = false) {
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        ModuleConfig module_config{};
+        module_config.feature_overrides.Set(FeatureId::zero_store_zr, enabled);
+        auto module = address_space.MapModule(0x23d0, 0x24d0, module_config);
+        IntrusivePtr<Block> block{new Block(0, Location{0x23d0})};
+        const auto stored = block->LoadImm(Imm{zero ? swift::u64{0}
+                                                    : swift::u64{0x5a}})
+                                    .SetType(type);
+        if (observer == Observer::Save) {
+            block->SaveFlags(stored, Flags::Parity);
+        } else if (observer == Observer::Branch) {
+            block->AppendInst(OpCode::BranchOnlyFlags, stored, Flags::NZCV);
+        }
+        if (cardinality == Cardinality::Multi) {
+            const auto other = block->Add(stored, Operand{Imm{1u}}).SetType(type);
+            block->StoreUniform(Uniform{24, type}, other);
+        }
+        if (kind == StoreKind::Uniform) {
+            block->StoreUniform(Uniform{8, type}, stored);
+        } else {
+            const auto address = block->LoadImm(Imm{swift::u64{0x100}})
+                                         .SetType(ValueType::U64);
+            block->StoreMemory(Operand{address}, stored);
+        }
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+
+        const auto features = ResolveFeatureSet(module_config);
+        RegAlloc alloc{block->MaxInstrId(),
+                       address_space.GetTrampolines().GetGPRRegs(),
+                       address_space.GetTrampolines().GetFPRRegs(), features};
+        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        if (force_spill) {
+            alloc.MapMemSpill(stored.Id(), SpillSlot{0});
+        }
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block.get());
+        context.Finish();
+
+        const std::string_view zr_store = [&]() -> std::string_view {
+            switch (type) {
+                case ValueType::U8: return "strb wzr";
+                case ValueType::U16: return "strh wzr";
+                case ValueType::U32: return "str wzr";
+                case ValueType::U64: return "str xzr";
+                default: FAIL("unexpected zero-store matrix width");
+            }
+        }();
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        Emitted emitted{.bytes = context.CurrentBufferSize()};
+        auto& masm = context.GetMasm();
+        auto* first = masm.GetBuffer()->GetStartAddress<
+                const vixl::aarch64::Instruction*>();
+        auto* last = masm.GetBuffer()->GetEndAddress<
+                const vixl::aarch64::Instruction*>();
+        for (auto* instruction = first; instruction < last; ++instruction) {
+            decoder.Decode(instruction);
+            std::string_view line{disassembler.GetOutput()};
+            const auto begin = line.find_first_not_of(" \t");
+            if (begin != std::string_view::npos) line.remove_prefix(begin);
+            emitted.moves += line.starts_with("mov ");
+            emitted.zr_stores += line.starts_with(zr_store);
+            emitted.text.append(line);
+            emitted.text.push_back('\n');
+        }
+        return emitted;
+    };
+
+    SECTION("StoreUniform StoreMemory x width x zero x cardinality x gate") {
+        constexpr std::array kinds{StoreKind::Uniform, StoreKind::Memory};
+        constexpr std::array widths{ValueType::U8, ValueType::U16,
+                                    ValueType::U32, ValueType::U64};
+        constexpr std::array cardinalities{Cardinality::Single,
+                                           Cardinality::Multi};
+        for (const auto kind : kinds) {
+            for (const auto type : widths) {
+                for (const bool zero : {false, true}) {
+                    for (const auto cardinality : cardinalities) {
+                        const auto off = run(false, kind, type, zero,
+                                             cardinality, Observer::None);
+                        const auto off_again = run(false, kind, type, zero,
+                                                   cardinality, Observer::None);
+                        const auto on = run(true, kind, type, zero,
+                                            cardinality, Observer::None);
+                        INFO("kind=" << static_cast<unsigned>(kind)
+                                     << " type=" << static_cast<unsigned>(type)
+                                     << " zero=" << zero
+                                     << " cardinality="
+                                     << static_cast<unsigned>(cardinality));
+                        REQUIRE(off.bytes == off_again.bytes);
+                        REQUIRE(off.text == off_again.text);
+                        if (!zero) {
+                            REQUIRE(on.bytes == off.bytes);
+                            REQUIRE(on.text == off.text);
+                            REQUIRE(on.zr_stores == 0);
+                        } else if (cardinality == Cardinality::Single) {
+                            REQUIRE(on.bytes + vixl::aarch64::kInstructionSize ==
+                                    off.bytes);
+                            REQUIRE(on.moves + 1 == off.moves);
+                            REQUIRE(off.zr_stores == 0);
+                            REQUIRE(on.zr_stores == 1);
+                        } else {
+                            REQUIRE(on.bytes == off.bytes);
+                            REQUIRE(on.moves == off.moves);
+                            REQUIRE(on.text == off.text);
+                            REQUIRE(off.zr_stores == 0);
+                            REQUIRE(on.zr_stores == 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    SECTION("pseudo observers keep the LoadImm materialization") {
+        for (const auto kind : {StoreKind::Uniform, StoreKind::Memory}) {
+            for (const auto type : {ValueType::U8, ValueType::U16,
+                                    ValueType::U32, ValueType::U64}) {
+                for (const auto observer : {Observer::Save, Observer::Branch}) {
+                    const auto off = run(false, kind, type, true,
+                                         Cardinality::Single, observer);
+                    const auto on = run(true, kind, type, true,
+                                        Cardinality::Single, observer);
+                    INFO("kind=" << static_cast<unsigned>(kind)
+                                 << " type=" << static_cast<unsigned>(type)
+                                 << " observer=" << static_cast<unsigned>(observer));
+                    REQUIRE(on.bytes == off.bytes);
+                    REQUIRE(on.moves == off.moves);
+                    REQUIRE(on.text == off.text);
+                    REQUIRE(off.zr_stores == 0);
+                    REQUIRE(on.zr_stores == 0);
+                }
+            }
+        }
+    }
+
+    SECTION("spilled zero stays byte-identical on the old path") {
+        for (const auto kind : {StoreKind::Uniform, StoreKind::Memory}) {
+            const auto off = run(false, kind, ValueType::U64, true,
+                                 Cardinality::Single, Observer::None, true);
+            const auto on = run(true, kind, ValueType::U64, true,
+                                Cardinality::Single, Observer::None, true);
+            REQUIRE(on.bytes == off.bytes);
+            REQUIRE(on.text == off.text);
+            REQUIRE(on.zr_stores == 0);
         }
     }
 }
