@@ -886,3 +886,32 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
   零 reload 独立证明;证明不成则 W-β 全线关闭,flags 账按现状收官。
 - 合并方复跑账:coremark 净 400,100,966 / sqlite 净 6,896,922,与报告
   逐位吻合(漂移 <0.0001%,entry 计数噪声)。
+
+## 2026-08-11 全 pin fixed-class 与宽度链 v2 双并 OFF(锚点 06555c0/013d5d5)
+
+**W-γ 全 pin fixed-class RA spike(06555c0,缺省 OFF,需 SVM_X86_PIN_EXT=3)**:
+按 w66 可行性报告 P6 路径实现——guest 16 GPR 进 RA 一等 fixed class
+(affinity/hazard 封闭、同家 copy 删除)、四类 GPR 契约显式化、RA shape
+逐 unit host_bytes/helper 动态计数。四门全灭 NO-GO:spill 6→1607(267×)、
+host bytes +18.10%、helper caller-save +302、move/桥接 +4.32%(反噬)。
+根因:16 固定家把 value pool 11→7,fail-closed 无 interval split,4,427 条
+静态 copy 删除被 spill 爆炸吞没;热锚 0x402df8 不变。重开前置:可证明
+interval split/relocation 的 RA + level3 正确性修复。机制并 OFF 存证。
+指挥官独立复验:OFF 套件绿、双 profile 指纹 byte-identical、ON spill
+466/715/426=1607 逐字相符。
+
+**level3 既有 SIGSEGV 发现**:SVM_X86_PIN_EXT=3 单独开即在干净 master
+SIGSEGV sqlite(pc=0 addr=0,exit 139;RA warn pool 7/21 cannot cover
+scratch 4/4)。非新代码引入,w68 隔离、指挥官干净二进制复现一致。
+已派 w68 定因修复——全 pin 轴重开条件 #1。
+
+**宽度链 v2 事务式重建(013d5d5,SVM_RA_WIDTH_CHAIN 缺省 OFF 不变)**:
+按 bd3ba4a post-mortem 重开条件实现——不可变 component owner 一次定归属、
+write/read 单轮事务决策(Save/RestoreGPRCoalesceState 整体回退)、
+SignExtend 窄 LoadMemory 多 use 根,emitter 双复证 fail-closed。
+机制成立:块态 CoreMark −3.72%、0x402df8 40→32/23→15、spill 严格零增;
+但 STREAM 形状门挂起(101 PC shape diff、62 unit bytes diff、最大
+0x403020 +252B,热环逐位不变)。**口径纠偏:生产 region 态复测净
+−1.0815%(move 34.48%→33.77%),锚点改善不存活**——codex 块态账与
+region 态账的差异已记入教训,后续密度账一律 region 态。已派 w66 做
+STREAM 逐 diff 归因 + region 态三语料复测。
