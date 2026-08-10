@@ -857,3 +857,18 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
 - **分支隔离验证不足（三次验证）**:cmpxchg16b(x13)+指令覆盖（x30)+16-temp emitter 各自绿、合并才 PANIC;dlmalloc interposition 靠布局 oracle 潜伏。**合并后必须在 master 重跑全量**。
 - **多 worktree 并行**:SwiftVM-{x87,x87mid,x87top,tso,static,sse2,fixstack,nanfix};master 只在主仓库检出。
 - **调试布局 flake 的工具链**:SVM_FORCE_FIXED_STACK + macOS .ips 崩溃报告（~/Library/Logs/DiagnosticReports,python 两行式 json 解析）+ /cores(ulimit -c unlimited，系统会快速清理需立刻分析）+ lldb（注意会改变布局掩盖 flake)。
+
+## placement 2×2 证伪操纵器合并(2026-08-11,master = `aa75763`)
+
+- 双探针默认 OFF:`SVM_PLACEMENT_PAD`(布局固定:按校准表补 NOP 回 OFF 基线
+  绝对地址;模式 2 输出参考点)+ `SVM_RA_HOME_PERM`(命名证伪:RA 验证后
+  x14/x15 对称家一致置换,条数不变)。env 151→153,FeatureSet 67→69。
+- 操纵器正确性已证:格2/格4 同 629 units size_diff=0,top-20 热 PC 偏移/mod64
+  逐位回格 1 参照,密度 digit-exact;默认态双分片指纹对 golden 逐字一致。
+- **墙钟判定等安静窗**:112 采样 0 窗(foreign CPU 787%–1449%),按预注册
+  负载纪律不出数;复跑见提交信息或 tools/placement_2x2_wall.py。
+- 判定矩阵预案:格2≈格1 且 格4≠格2 → 随址(fetch/cache-set);格4 随置换
+  显著移动 → 随名(rename/WAW);双不显著 → 罚单假说证伪另立机理。
+- 旁证判例:指纹 noflagm 分片必须 `SVM_FLAGS_CFINV=0` 实跑自动探测;
+  只设 `SVM_FP_GOLDEN_PROFILE` 覆盖文件名会把 flagm 指纹比到 noflagm golden,
+  假红 ir 336→333 四条。
