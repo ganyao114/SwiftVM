@@ -149,6 +149,9 @@ add_library(swift_runtime STATIC
         backend/interp/interpreter.cpp
         backend/interp/interpreter_flags.cpp
         backend/interp/interpreter_memory.cpp
+        backend/interp/interpreter_vector_crypto.cpp
+        backend/interp/interpreter_vector_float.cpp
+        backend/interp/interpreter_vector_integer.cpp
         backend/interp/interpreter.h
         backend/interp/interpreter_internal.h
         backend/cache_clear.cpp
@@ -162,7 +165,7 @@ add_library(swift_runtime STATIC
 # interpreter implementation buildable on Linux and leaves macOS unchanged.
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "arm64" IN_LIST ARCHITECTURE)
     set_source_files_properties(
-            backend/interp/interpreter.cpp
+            backend/interp/interpreter_vector_crypto.cpp
             PROPERTIES COMPILE_OPTIONS "-march=armv8-a+crypto")
 endif ()
 
