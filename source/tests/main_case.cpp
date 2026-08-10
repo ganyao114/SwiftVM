@@ -226,12 +226,12 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 153);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 154);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SWIFT_FUZZ_TRACE");
+            "SVM_FLAGS_REGS_AUDIT");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -299,9 +299,10 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 69);
+    STATIC_REQUIRE(kFeatureCount == 70);
     REQUIRE(FeatureSet{}.operand_copy_kill);
     REQUIRE(FeatureSet{}.zero_store_zr);
+    REQUIRE_FALSE(FeatureSet{}.flags_regs_audit);
     const auto& svm = GetSvmConfig();
     const auto snapshot = svm.GetFeatureSet();
 #define CHECK_FEATURE_COPY(field, default_value) REQUIRE(snapshot.field == svm.field);

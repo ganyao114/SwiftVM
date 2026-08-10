@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <string_view>
 
 #include "runtime/backend/arm64/defines.h"
@@ -40,8 +41,11 @@ JitContext::JitContext(const std::shared_ptr<Module>& module,
     }
     hot_coalesce_enabled = HotCoalesceProfEnabled();
     indirect_l1_prof_enabled = IndirectL1ProfEnabled();
+    flags_regs_audit_enabled = features.flags_regs_audit;
+    hot_static_shape_enabled = hot_coalesce_enabled || flags_regs_audit_enabled;
     hot_counter_storage_enabled =
-            hot_coalesce_enabled || indirect_l1_prof_enabled;
+            hot_coalesce_enabled || indirect_l1_prof_enabled ||
+            flags_regs_audit_enabled;
     const bool density_enabled = GetSvmConfig().density_prof;
     density_profile_enabled = density_enabled;
     direct_link_active = enable_direct_link && module->IsDirectLinkConfigured() &&
@@ -112,6 +116,34 @@ void JitContext::RecordHotCounter(HotCoalesceCounter counter, u32 amount) {
     if (hot_collecting) {
         hot_probe_ranges.push_back({begin, CurrentBufferSize()});
     }
+}
+
+void JitContext::RecordFlagsRegsAudit(FlagsRegsAuditMergeCause cause,
+                                      FlagsRegsAuditEdgeKind edge,
+                                      FlagsRegsAuditCost cost,
+                                      u32 amount,
+                                      bool site) {
+    if (!flags_regs_audit_enabled || (amount == 0 && !site)) return;
+    auto it = std::find_if(
+            hot_shape.flags_regs_audit.begin(),
+            hot_shape.flags_regs_audit.end(),
+            [cause, edge](const auto& record) {
+                return record.cause == cause && record.edge == edge;
+            });
+    if (it == hot_shape.flags_regs_audit.end()) {
+        hot_shape.flags_regs_audit.push_back({.cause = cause, .edge = edge});
+        it = std::prev(hot_shape.flags_regs_audit.end());
+    }
+    if (site) ++it->sites;
+    it->cost[static_cast<size_t>(cost)] += amount;
+}
+
+void JitContext::CommitFlagsRegsAudit() {
+    if (!flags_regs_audit_enabled ||
+        flags_regs_audit_finished_slot == kHotCoalesceInvalidSlot) {
+        return;
+    }
+    HotCoalesceUpdateUnit(flags_regs_audit_finished_slot, hot_shape);
 }
 
 void JitContext::RecordHotSpillReload() {
@@ -479,6 +511,11 @@ bool JitContext::ForwardStatic(ir::Location location, Label* cycle_exit) {
     const u32 dispatcher_index = target_module->GetDispatchIndex(location);
     Label empty_slot;
     __ Mov(ipw, dispatcher_index);
+    RecordFlagsRegsAudit(FlagsRegsAuditMergeCause::TerminalDispatcher,
+                         FlagsRegsAuditEdgeKind::Dispatcher,
+                         FlagsRegsAuditCost::CacheBaseReloadInstructions,
+                         1,
+                         true);
     __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
     __ Cbz(ip, &empty_slot);
     RecordExecCounter(exec_offset_link_hit);
@@ -531,6 +568,18 @@ void JitContext::Forward(ir::Location location,
             // record is installed there, before any L2 publication.
             pending_direct_link_sites.push_back(
                     {CurrentBufferSize(), location.Value(), direct_link_kind});
+            // The first/unlinked traversal enters a C++ resolver. B0 records
+            // the future NZCV save/restore template here, but its dynamic cost
+            // is weighted by LinkManager::linker_calls rather than block entries.
+            RecordFlagsRegsAudit(FlagsRegsAuditMergeCause::TerminalInternal,
+                                 FlagsRegsAuditEdgeKind::DirectSlow,
+                                 FlagsRegsAuditCost::PackInstructions,
+                                 2,
+                                 true);
+            RecordFlagsRegsAudit(FlagsRegsAuditMergeCause::TerminalInternal,
+                                 FlagsRegsAuditEdgeKind::DirectSlow,
+                                 FlagsRegsAuditCost::UnpackInstructions,
+                                 2);
             __ dc32(*EncodeBL(0));
             return;
         }
@@ -558,6 +607,11 @@ void JitContext::Forward(ir::Location location,
             u32 dispatcher_index = target_module->GetDispatchIndex(location);
             Label empty_slot;
             __ Mov(ipw, dispatcher_index);
+            RecordFlagsRegsAudit(FlagsRegsAuditMergeCause::TerminalDispatcher,
+                                 FlagsRegsAuditEdgeKind::Dispatcher,
+                                 FlagsRegsAuditCost::CacheBaseReloadInstructions,
+                                 1,
+                                 true);
             __ Ldr(ip, MemOperand(cache, ip, LSL, 3));
             __ Cbz(ip, &empty_slot);
             RecordExecCounter(exec_offset_link_hit);
@@ -730,6 +784,11 @@ void JitContext::EmitRSBPop() {
         // path. The slot points at the L2 value word; the preceding word is
         // its immutable guest key. SMC clears the value word before reclaim.
         __ Ldp(predicted, slot, MemOperand(rsb_ptr, 16, PostIndex));
+        RecordFlagsRegsAudit(FlagsRegsAuditMergeCause::TerminalInternal,
+                             FlagsRegsAuditEdgeKind::RSBHit,
+                             FlagsRegsAuditCost::CacheBaseReloadInstructions,
+                             1,
+                             true);
         __ Add(slot, cache, Operand(slot, LSL, 3));
         __ Ldp(predicted, slot, MemOperand(slot, -8));
         __ Ldr(ip, MemOperand(state, state_offset_current_loc));
@@ -766,6 +825,11 @@ void JitContext::EmitRSBPop() {
     // times (loaded once at runtime entry).  dispatch_index == 2*entry+1
     // points straight at the entry's value word (an 8-byte code pointer).
     __ Ldr(ip, MemOperand(rsb_ptr, 8));   // ip (x11) = dispatch_index
+    RecordFlagsRegsAudit(FlagsRegsAuditMergeCause::TerminalInternal,
+                         FlagsRegsAuditEdgeKind::RSBHit,
+                         FlagsRegsAuditCost::CacheBaseReloadInstructions,
+                         1,
+                         true);
     __ Ldr(ip2, MemOperand(cache, ip, LSL, 3));  // ip2 (x14) = code ptr
     __ Cbz(ip2, &rsb_miss);               // empty slot → fallback
     // Commit the pop and jump directly to the target's compiled code.
@@ -829,7 +893,7 @@ void JitContext::FinishHotCoalesceBlock() {
         hot_coalesce_slot == kHotCoalesceInvalidSlot) {
         return;
     }
-    if (!hot_coalesce_enabled) {
+    if (!hot_static_shape_enabled) {
         hot_coalesce_slot = kHotCoalesceInvalidSlot;
         return;
     }
@@ -860,19 +924,25 @@ void JitContext::FinishHotCoalesceBlock() {
     vixl::aarch64::Disassembler disassembler;
     decoder.AppendVisitor(&disassembler);
     const auto* bytes = masm.GetBuffer()->GetStartAddress<const u8*>();
-    for (u32 offset = hot_code_start; offset < end;
-         offset += vixl::aarch64::kInstructionSize) {
-        if (in_range(offset, hot_probe_ranges) || in_range(offset, hot_nan_ranges)) {
-            continue;
-        }
-        const auto* instruction =
-                reinterpret_cast<const vixl::aarch64::Instruction*>(bytes + offset);
-        decoder.Decode(instruction);
-        if (HotCoalesceIsMoveBridge(disassembler.GetOutput())) {
-            ++hot_shape.move_bridges;
+    if (hot_coalesce_enabled) {
+        for (u32 offset = hot_code_start; offset < end;
+             offset += vixl::aarch64::kInstructionSize) {
+            if (in_range(offset, hot_probe_ranges) ||
+                in_range(offset, hot_nan_ranges)) {
+                continue;
+            }
+            const auto* instruction =
+                    reinterpret_cast<const vixl::aarch64::Instruction*>(bytes + offset);
+            decoder.Decode(instruction);
+            if (HotCoalesceIsMoveBridge(disassembler.GetOutput())) {
+                ++hot_shape.move_bridges;
+            }
         }
     }
     HotCoalesceUpdateUnit(hot_coalesce_slot, hot_shape);
+    flags_regs_audit_finished_slot = flags_regs_audit_enabled
+            ? hot_coalesce_slot
+            : kHotCoalesceInvalidSlot;
     hot_coalesce_slot = kHotCoalesceInvalidSlot;
     hot_probe_ranges.clear();
     hot_nan_ranges.clear();
@@ -957,12 +1027,15 @@ void JitContext::SetCurrent(ir::Block* block, bool split_backedge_entry) {
         hot_coalesce_slot =
                 HotCoalesceRegisterUnit(block->GetStartLocation().Value());
     }
-    if (hot_coalesce_enabled) {
+    if (hot_static_shape_enabled) {
+        flags_regs_audit_finished_slot = kHotCoalesceInvalidSlot;
         hot_shape = {};
         hot_shape.guest_entry = block->GetStartLocation().Value();
         hot_shape.host_offset = CurrentBufferSize();
-        hot_shape.uniform = HotCoalesceAnalyzeUniformSequences(block);
-        HotCoalesceAnalyzeLinkTargets(block, hot_shape);
+        if (hot_coalesce_enabled) {
+            hot_shape.uniform = HotCoalesceAnalyzeUniformSequences(block);
+            HotCoalesceAnalyzeLinkTargets(block, hot_shape);
+        }
         if (hot_coalesce_slot != kHotCoalesceInvalidSlot) {
             hot_coalesce_slots.push_back(hot_coalesce_slot);
         }
@@ -983,8 +1056,10 @@ void JitContext::BindInternalEntry(LocationDescriptor location) {
 }
 
 void JitContext::BeginBackedgeBody() {
-    if (hot_coalesce_enabled) {
-        RecordHotCounter(HotCoalesceCounter::Entries);
+    if (hot_static_shape_enabled) {
+        if (hot_coalesce_enabled) {
+            RecordHotCounter(HotCoalesceCounter::Entries);
+        }
         hot_code_start = CurrentBufferSize();
         hot_collecting = hot_coalesce_slot != kHotCoalesceInvalidSlot;
     }

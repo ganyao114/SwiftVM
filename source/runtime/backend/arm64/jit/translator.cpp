@@ -7,12 +7,14 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <numeric>
 #include <sstream>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
@@ -455,6 +457,88 @@ void JitTranslator::PrintBoundaryDensity(u64 guest_pc,
 
 
 
+FlagsRegsAuditEdgeKind JitTranslator::ClassifyFlagsAuditEdge(
+        const ir::Terminal& terminal) const {
+    auto rank = [](FlagsRegsAuditEdgeKind edge) {
+        switch (edge) {
+            case FlagsRegsAuditEdgeKind::Host: return 6;
+            case FlagsRegsAuditEdgeKind::RSBMiss: return 5;
+            case FlagsRegsAuditEdgeKind::Dispatcher: return 4;
+            case FlagsRegsAuditEdgeKind::DirectSlow: return 3;
+            case FlagsRegsAuditEdgeKind::PatchedDirect: return 2;
+            case FlagsRegsAuditEdgeKind::RSBHit: return 1;
+            case FlagsRegsAuditEdgeKind::RegionInternal: return 0;
+            case FlagsRegsAuditEdgeKind::Count: return 7;
+        }
+        return 7;
+    };
+    std::function<FlagsRegsAuditEdgeKind(const ir::Terminal&)> classify;
+    classify = [&](const ir::Terminal& item) {
+        return VisitVariant<FlagsRegsAuditEdgeKind>(item, [&](const auto& term) {
+            using T = std::decay_t<decltype(term)>;
+            if constexpr (std::is_same_v<T, ir::terminal::ReturnToHost>) {
+                return FlagsRegsAuditEdgeKind::Host;
+            } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
+                // Miss is the conservative representative: it includes the
+                // dispatcher continuation and therefore never understates a
+                // future unpack/cache-base cost.
+                return FlagsRegsAuditEdgeKind::RSBMiss;
+            } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlock> ||
+                                 std::is_same_v<T, ir::terminal::LinkBlockFast>) {
+                if (IsRegionInternalEdge(term.next)) {
+                    return FlagsRegsAuditEdgeKind::RegionInternal;
+                }
+                if (context.CanEmitDirectLink(term.next)) {
+                    return FlagsRegsAuditEdgeKind::PatchedDirect;
+                }
+                return FlagsRegsAuditEdgeKind::Dispatcher;
+            } else if constexpr (std::is_same_v<T, ir::terminal::If> ||
+                                 std::is_same_v<T, ir::terminal::Condition>) {
+                const auto then_edge = classify(term.then_);
+                const auto else_edge = classify(term.else_);
+                return rank(then_edge) >= rank(else_edge) ? then_edge : else_edge;
+            } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
+                auto result = FlagsRegsAuditEdgeKind::Dispatcher;
+                for (const auto& case_ : term.cases) {
+                    const auto edge = classify(case_.then);
+                    if (rank(edge) > rank(result)) result = edge;
+                }
+                return result;
+            } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
+                return FlagsRegsAuditEdgeKind::Host;
+            } else {
+                return FlagsRegsAuditEdgeKind::Dispatcher;
+            }
+        });
+    };
+    return classify(terminal);
+}
+
+bool JitTranslator::IsStrictInternalAdvancePC(ir::Block* block,
+                                              ir::Inst* advance) const {
+    if (!context.FlagsRegsAuditEnabled() || !region_edges_active || !block ||
+        !advance) {
+        return false;
+    }
+    bool after = false;
+    for (auto& inst : block->GetInstList()) {
+        if (&inst == advance) {
+            after = true;
+            continue;
+        }
+        if (after && MayFaultOrObserve(inst.GetOp())) {
+            return false;
+        }
+    }
+    if (!after) return false;
+    std::vector<u64> targets;
+    CollectRegionTargets(block->GetTerminal(), targets);
+    if (targets.size() != 2) return false;
+    return std::all_of(targets.begin(), targets.end(), [&](u64 target) {
+        return region_blocks.contains(target);
+    });
+}
+
 JitTranslator::BlockTranslateState
 JitTranslator::PrepareBlockState(ir::Block* block) {
     cur_block = block;
@@ -507,6 +591,7 @@ JitTranslator::PrepareBlockState(ir::Block* block) {
     const bool split_flags_entry = backedge_flags_plan &&
                                    !backedge_flags_plan->dead_successor;
     context.SetCurrent(block, split_flags_entry);
+    flags_audit_block_edge = ClassifyFlagsAuditEdge(block->GetTerminal());
     if (region_edges_active) {
         context.BindInternalEntry(block->GetStartLocation().Value());
     }
@@ -705,13 +790,16 @@ void JitTranslator::TranslateBlockInstructions(
         }
         const u32 before = density ? context.CurrentBufferSize() : 0;
         const u32 nan_before = density ? context.DensityNaNBytes() : 0;
-        const bool audit_advance = gap_audit &&
+        const bool audit_advance = (gap_audit || context.FlagsRegsAuditEnabled()) &&
                 inst.GetOp() == ir::OpCode::AdvancePC;
         const bool audit_nzcv_dirty = audit_advance && save_in_nzcv && nzcv_dirty;
         const u64 audit_nzcv_requested = audit_advance
                 ? static_cast<u64>(nzcv_requested)
                 : 0;
+        flags_audit_strict_advance = audit_nzcv_dirty &&
+                IsStrictInternalAdvancePC(block, &inst);
         Translate(&inst);
+        flags_audit_strict_advance = false;
         if (loop_hoist_body_entry && &inst == loop_hoist.prefix_end) {
             loop_hoist_prefix_ops =
                     (context.CurrentBufferSize() - loop_hoist_prefix_begin) /
@@ -811,6 +899,10 @@ void JitTranslator::EmitBlockTerminalAndColdPaths(
     context.FinishHotCoalesceBlock();
     context.BeginColdScratch();
     const u32 boundary_cold_before = density ? context.CurrentBufferSize() : 0;
+    const u32 flags_audit_cold_begin = context.FlagsRegsAuditEnabled()
+            ? context.CurrentBufferSize()
+            : 0;
+    flags_audit_cold = context.FlagsRegsAuditEnabled();
     EmitBackedgeExitStub();
     EmitDirectCycleExitStubs();
     EmitBackedgeColdPaths();
@@ -827,6 +919,18 @@ void JitTranslator::EmitBlockTerminalAndColdPaths(
                 context.CurrentBufferSize() - nan_cold_before;
     }
     context.EndColdScratch();
+    flags_audit_cold = false;
+    if (context.FlagsRegsAuditEnabled()) {
+        const u32 cold_bytes =
+                context.CurrentBufferSize() - flags_audit_cold_begin;
+        context.RecordFlagsRegsAudit(
+                FlagsRegsAuditMergeCause::FaultVeneer,
+                FlagsRegsAuditEdgeKind::Host,
+                FlagsRegsAuditCost::RecoveryColdBytes,
+                cold_bytes,
+                cold_bytes != 0);
+        context.CommitFlagsRegsAudit();
+    }
 }
 
 void JitTranslator::PrintBlockDensity(

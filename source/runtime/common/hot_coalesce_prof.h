@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <span>
 #include <string_view>
+#include <vector>
 
 #include "runtime/common/types.h"
 
@@ -35,6 +36,55 @@ constexpr u32 kHotCoalesceCounterCount =
         static_cast<u32>(HotCoalesceCounter::Count);
 constexpr u32 kHotCoalesceMaxLinkTargets = 4;
 
+// W-beta B0 is deliberately metadata-only.  These enums describe why a
+// current packed-flags operation exists, which runtime edge will consume it,
+// and the conservative instruction delta of the proposed representation.  No
+// counter in this family is emitted into guest code; dynamic weighting reuses
+// the pre-existing W71 block-entry profile when that independent probe is on.
+enum class FlagsRegsAuditMergeCause : u8 {
+    AdvancePC,
+    TerminalInternal,
+    TerminalDispatcher,
+    HostExit,
+    Helper,
+    PStateClobber,
+    ClearOrPartialWrite,
+    FaultVeneer,
+    Count,
+};
+
+enum class FlagsRegsAuditEdgeKind : u8 {
+    RegionInternal,
+    PatchedDirect,
+    DirectSlow,
+    Dispatcher,
+    RSBHit,
+    RSBMiss,
+    Host,
+    Count,
+};
+
+enum class FlagsRegsAuditCost : u8 {
+    PFSavedInstructions,
+    AFSavedInstructions,
+    MergeSavedInstructions,
+    PackInstructions,
+    UnpackInstructions,
+    CacheBaseReloadInstructions,
+    RecoveryColdBytes,
+    Count,
+};
+
+inline constexpr size_t kFlagsRegsAuditCostCount =
+        static_cast<size_t>(FlagsRegsAuditCost::Count);
+
+struct FlagsRegsAuditRecord {
+    FlagsRegsAuditMergeCause cause{};
+    FlagsRegsAuditEdgeKind edge{};
+    u32 sites{};
+    std::array<u32, kFlagsRegsAuditCostCount> cost{};
+};
+
 struct HotCoalesceUniformStats {
     u32 sequences{};
     u32 load_pairs{};
@@ -57,10 +107,12 @@ struct HotCoalesceUnitStatic {
     u8 link_target_count{};
     u8 link_target_overflow{};
     HotCoalesceUniformStats uniform{};
+    std::vector<FlagsRegsAuditRecord> flags_regs_audit{};
 };
 
 [[nodiscard]] bool HotCoalesceProfEnabled();
 [[nodiscard]] bool IndirectL1ProfEnabled();
+[[nodiscard]] bool FlagsRegsAuditEnabled();
 [[nodiscard]] bool HotCounterStorageEnabled();
 [[nodiscard]] u32 HotCoalesceRegisterUnit(VAddr guest_entry);
 void HotCoalesceUpdateUnit(u32 slot, const HotCoalesceUnitStatic& counters);

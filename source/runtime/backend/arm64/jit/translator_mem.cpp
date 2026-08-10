@@ -1727,7 +1727,8 @@ void JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
         return;
     }
 
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::Helper,
+              FlagsRegsAuditEdgeKind::Host);
     FlushFlags();
 
     // A memory copy is rare but needs true memmove overlap semantics. Call a
@@ -1844,7 +1845,8 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
     auto type = expected.Type();
     auto result = context.R(ir::Value{inst});
 
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
+              flags_audit_block_edge);
 
     // Exclusive instructions take a base register only (no offset forms), so
     // under guest address virtualization the pt bias must be folded in
@@ -1935,7 +1937,8 @@ void JitTranslator::EmitCompareAndSwap128(ir::Inst* inst) {
     const auto desired_hi = inst->GetArg<ir::Value>(4);
     const auto result = context.V(ir::Value{inst});
 
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
+              flags_audit_block_edge);
     if (use_memory_base) {
         EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
@@ -2002,7 +2005,8 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
     const auto type = desired.Type();
     const auto result = context.R(ir::Value{inst});
 
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
+              flags_audit_block_edge);
     if (use_memory_base) {
         EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
@@ -2063,7 +2067,8 @@ void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
     const auto type = addend.Type();
     const auto result = context.R(ir::Value{inst});
 
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
+              flags_audit_block_edge);
     if (use_memory_base) {
         EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
@@ -2136,7 +2141,8 @@ void JitTranslator::EmitAtomicRMW(ir::Inst* inst) {
     const auto type = operand.Type();
     const auto result = context.R(ir::Value{inst});
 
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
+              flags_audit_block_edge);
     if (use_memory_base) {
         EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;

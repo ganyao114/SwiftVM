@@ -55,6 +55,50 @@ double Percent(u64 value, u64 total) {
     return total ? static_cast<double>(value) * 100.0 / static_cast<double>(total) : 0.0;
 }
 
+constexpr std::array<const char*,
+                     static_cast<size_t>(FlagsRegsAuditMergeCause::Count)>
+        kFlagsAuditCauseNames{
+                "AdvancePC",
+                "TerminalInternal",
+                "TerminalDispatcher",
+                "HostExit",
+                "Helper",
+                "PStateClobber",
+                "ClearOrPartialWrite",
+                "FaultVeneer",
+        };
+
+constexpr std::array<const char*,
+                     static_cast<size_t>(FlagsRegsAuditEdgeKind::Count)>
+        kFlagsAuditEdgeNames{
+                "RegionInternal",
+                "PatchedDirect",
+                "DirectSlow",
+                "Dispatcher",
+                "RSBHit",
+                "RSBMiss",
+                "Host",
+        };
+
+u16 FlagsAuditKey(FlagsRegsAuditMergeCause cause,
+                  FlagsRegsAuditEdgeKind edge) {
+    return static_cast<u16>(static_cast<u16>(cause) *
+                                    static_cast<u16>(FlagsRegsAuditEdgeKind::Count) +
+                            static_cast<u16>(edge));
+}
+
+const FlagsRegsAuditRecord* FindFlagsAuditRecord(
+        const HotCoalesceUnitStatic& shape,
+        u16 key) {
+    const auto it = std::find_if(
+            shape.flags_regs_audit.begin(),
+            shape.flags_regs_audit.end(),
+            [key](const auto& record) {
+                return FlagsAuditKey(record.cause, record.edge) == key;
+            });
+    return it == shape.flags_regs_audit.end() ? nullptr : &*it;
+}
+
 struct AggregateBucket {
     VAddr guest_entry{};
     u32 versions{};
@@ -153,6 +197,190 @@ std::vector<AggregateBucket> BuildBuckets(u32 count) {
         buckets.push_back(bucket);
     }
     return buckets;
+}
+
+void DumpFlagsRegsAudit(FILE* out, u32 count) {
+    struct AuditBucket {
+        u32 versions{};
+        u64 entries{};
+        std::map<u16, FlagsRegsAuditRecord> minimum{};
+    };
+    struct AuditTotal {
+        u64 pcs{};
+        u64 sites_static{};
+        u64 entries{};
+        u64 sites_dynamic{};
+        std::array<u64, kFlagsRegsAuditCostCount> cost_static{};
+        std::array<u64, kFlagsRegsAuditCostCount> cost_dynamic{};
+    };
+
+    auto& process = Counters();
+    std::map<VAddr, AuditBucket> by_pc;
+    u64 host_dynamic = 0;
+    for (u32 i = 0; i < count; ++i) {
+        const auto& slot = process.slots[i];
+        auto& bucket = by_pc[slot.shape.guest_entry];
+        const u64 entries = Dynamic(slot, HotCoalesceCounter::Entries);
+        bucket.entries += entries;
+        host_dynamic += entries * slot.shape.host_instructions;
+        if (bucket.versions == 0) {
+            for (const auto& record : slot.shape.flags_regs_audit) {
+                bucket.minimum.emplace(FlagsAuditKey(record.cause, record.edge),
+                                       record);
+            }
+        } else {
+            for (auto it = bucket.minimum.begin(); it != bucket.minimum.end();) {
+                const auto* current = FindFlagsAuditRecord(slot.shape, it->first);
+                if (!current) {
+                    it = bucket.minimum.erase(it);
+                    continue;
+                }
+                it->second.sites = std::min(it->second.sites, current->sites);
+                for (size_t cost = 0; cost < kFlagsRegsAuditCostCount; ++cost) {
+                    it->second.cost[cost] =
+                            std::min(it->second.cost[cost], current->cost[cost]);
+                }
+                ++it;
+            }
+        }
+        ++bucket.versions;
+    }
+
+    constexpr size_t kCauseCount =
+            static_cast<size_t>(FlagsRegsAuditMergeCause::Count);
+    constexpr size_t kEdgeCount =
+            static_cast<size_t>(FlagsRegsAuditEdgeKind::Count);
+    std::array<AuditTotal, kCauseCount * kEdgeCount> totals{};
+    for (const auto& [pc, bucket] : by_pc) {
+        for (const auto& [key, record] : bucket.minimum) {
+            auto& total = totals[key];
+            ++total.pcs;
+            total.sites_static += record.sites;
+            total.entries += bucket.entries;
+            total.sites_dynamic += bucket.entries * record.sites;
+            for (size_t cost = 0; cost < kFlagsRegsAuditCostCount; ++cost) {
+                total.cost_static[cost] += record.cost[cost];
+                if (cost != static_cast<size_t>(
+                                    FlagsRegsAuditCost::RecoveryColdBytes) &&
+                    record.edge != FlagsRegsAuditEdgeKind::DirectSlow) {
+                    total.cost_dynamic[cost] +=
+                            bucket.entries * record.cost[cost];
+                }
+            }
+            std::fprintf(
+                    out,
+                    "[svm-flags-regs-audit-pc] pc=0x%llx versions=%u entries=%llu "
+                    "cause=%s edge=%s sites_static=%u sites_dynamic=%llu "
+                    "pf_saved_static=%u pf_saved_dynamic=%llu "
+                    "af_saved_static=%u af_saved_dynamic=%llu "
+                    "merge_saved_static=%u merge_saved_dynamic=%llu "
+                    "pack_static=%u pack_dynamic=%llu "
+                    "unpack_static=%u unpack_dynamic=%llu "
+                    "cache_reload_static=%u cache_reload_dynamic=%llu "
+                    "recovery_cold_bytes=%u\n",
+                    static_cast<unsigned long long>(pc), bucket.versions,
+                    PrintU64(bucket.entries),
+                    kFlagsAuditCauseNames[static_cast<size_t>(record.cause)],
+                    kFlagsAuditEdgeNames[static_cast<size_t>(record.edge)],
+                    record.sites,
+                    PrintU64(bucket.entries * record.sites),
+                    record.cost[0], PrintU64(bucket.entries * record.cost[0]),
+                    record.cost[1], PrintU64(bucket.entries * record.cost[1]),
+                    record.cost[2], PrintU64(bucket.entries * record.cost[2]),
+                    record.cost[3],
+                    PrintU64(record.edge == FlagsRegsAuditEdgeKind::DirectSlow
+                                     ? 0
+                                     : bucket.entries * record.cost[3]),
+                    record.cost[4],
+                    PrintU64(record.edge == FlagsRegsAuditEdgeKind::DirectSlow
+                                     ? 0
+                                     : bucket.entries * record.cost[4]),
+                    record.cost[5],
+                    PrintU64(record.edge == FlagsRegsAuditEdgeKind::DirectSlow
+                                     ? 0
+                                     : bucket.entries * record.cost[5]),
+                    record.cost[6]);
+        }
+    }
+
+    u64 saved_static = 0;
+    u64 saved_dynamic = 0;
+    u64 cost_static = 0;
+    u64 cost_dynamic = 0;
+    for (size_t cause = 0; cause < kCauseCount; ++cause) {
+        for (size_t edge = 0; edge < kEdgeCount; ++edge) {
+            const auto& total = totals[cause * kEdgeCount + edge];
+            if (!total.pcs) continue;
+            const u64 row_saved_static = total.cost_static[0] +
+                                         total.cost_static[1] +
+                                         total.cost_static[2];
+            const u64 row_saved_dynamic = total.cost_dynamic[0] +
+                                          total.cost_dynamic[1] +
+                                          total.cost_dynamic[2];
+            const u64 row_cost_static = total.cost_static[3] +
+                                        total.cost_static[4] +
+                                        total.cost_static[5];
+            const u64 row_cost_dynamic = total.cost_dynamic[3] +
+                                         total.cost_dynamic[4] +
+                                         total.cost_dynamic[5];
+            saved_static += row_saved_static;
+            saved_dynamic += row_saved_dynamic;
+            cost_static += row_cost_static;
+            cost_dynamic += row_cost_dynamic;
+            std::fprintf(
+                    out,
+                    "[svm-flags-regs-audit] cause=%s edge=%s pcs=%llu "
+                    "sites_static=%llu entries=%llu sites_dynamic=%llu "
+                    "pf_saved_static=%llu pf_saved_dynamic=%llu "
+                    "af_saved_static=%llu af_saved_dynamic=%llu "
+                    "merge_saved_static=%llu merge_saved_dynamic=%llu "
+                    "pack_static=%llu pack_dynamic=%llu "
+                    "unpack_static=%llu unpack_dynamic=%llu "
+                    "cache_reload_static=%llu cache_reload_dynamic=%llu "
+                    "recovery_cold_bytes=%llu net_static=%lld net_dynamic=%lld\n",
+                    kFlagsAuditCauseNames[cause], kFlagsAuditEdgeNames[edge],
+                    PrintU64(total.pcs), PrintU64(total.sites_static),
+                    PrintU64(total.entries), PrintU64(total.sites_dynamic),
+                    PrintU64(total.cost_static[0]),
+                    PrintU64(total.cost_dynamic[0]),
+                    PrintU64(total.cost_static[1]),
+                    PrintU64(total.cost_dynamic[1]),
+                    PrintU64(total.cost_static[2]),
+                    PrintU64(total.cost_dynamic[2]),
+                    PrintU64(total.cost_static[3]),
+                    PrintU64(total.cost_dynamic[3]),
+                    PrintU64(total.cost_static[4]),
+                    PrintU64(total.cost_dynamic[4]),
+                    PrintU64(total.cost_static[5]),
+                    PrintU64(total.cost_dynamic[5]),
+                    PrintU64(total.cost_static[6]),
+                    static_cast<long long>(row_saved_static) -
+                            static_cast<long long>(row_cost_static),
+                    static_cast<long long>(row_saved_dynamic) -
+                            static_cast<long long>(row_cost_dynamic));
+        }
+    }
+    std::fprintf(out,
+                 "[svm-flags-regs-audit-summary] pcs=%zu versions=%u "
+                 "host_dynamic=%llu saved_static=%llu saved_dynamic=%llu "
+                 "new_cost_static=%llu new_cost_dynamic=%llu "
+                 "net_static=%lld net_dynamic=%lld net_pct=%.6f "
+                 "dynamic_source=%s version_policy=min_per_guest_pc\n",
+                 by_pc.size(), count, PrintU64(host_dynamic),
+                 PrintU64(saved_static), PrintU64(saved_dynamic),
+                 PrintU64(cost_static), PrintU64(cost_dynamic),
+                 static_cast<long long>(saved_static) -
+                         static_cast<long long>(cost_static),
+                 static_cast<long long>(saved_dynamic) -
+                         static_cast<long long>(cost_dynamic),
+                 Percent(saved_dynamic >= cost_dynamic
+                                 ? saved_dynamic - cost_dynamic
+                                 : 0,
+                         host_dynamic),
+                 (GetSvmConfig().ra_hot_coalesce_is_set &&
+                  GetSvmConfig().ra_hot_coalesce != "0")
+                         ? "block_entry"
+                         : "none");
 }
 
 template <typename Value>
@@ -511,6 +739,10 @@ void DumpAtExit() {
         std::fputc('\n', out);
     }
 
+    if (config.flags_regs_audit) {
+        DumpFlagsRegsAudit(out, count);
+    }
+
     std::fflush(out);
     if (close_out) std::fclose(out);
 }
@@ -556,8 +788,13 @@ bool IndirectL1ProfEnabled() {
     return RegisterDumpIfEnabled(GetSvmConfig().indirect_l1_prof);
 }
 
+bool FlagsRegsAuditEnabled() {
+    return RegisterDumpIfEnabled(GetSvmConfig().flags_regs_audit);
+}
+
 bool HotCounterStorageEnabled() {
-    return HotCoalesceProfEnabled() || IndirectL1ProfEnabled();
+    return HotCoalesceProfEnabled() || IndirectL1ProfEnabled() ||
+           FlagsRegsAuditEnabled();
 }
 
 u32 HotCoalesceRegisterUnit(VAddr guest_entry) {

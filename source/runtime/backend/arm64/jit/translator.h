@@ -310,8 +310,11 @@ private:
     [[nodiscard]] std::optional<Condition> LocalConditionFor(ir::Value value) const;
     [[nodiscard]] static bool IsCompactFCmp(ir::Value value);
 
-    // Merge pending guest flags kept in host NZCV into the flags register
+    // Merge pending guest flags kept in host NZCV into the flags register.
+    // B0 tags the existing sequence only; the tags never affect emission.
     void MergeNZCV();
+    void MergeNZCV(FlagsRegsAuditMergeCause cause,
+                   FlagsRegsAuditEdgeKind edge);
 
     // Restore host NZCV from the flags register (uses the emission's shared scratch).
     void LoadNZCVFromFlags();
@@ -378,6 +381,10 @@ private:
     };
 
     void RecordPFAFDensity(PFAFDensityKind kind, u32 begin);
+    [[nodiscard]] FlagsRegsAuditEdgeKind
+    ClassifyFlagsAuditEdge(const ir::Terminal& terminal) const;
+    [[nodiscard]] bool IsStrictInternalAdvancePC(ir::Block* block,
+                                                 ir::Inst* advance) const;
 
     // ARM and x86 can choose different signs/payloads when a packed FP
     // operation consumes a NaN. Normalize each lane to x86's first-NaN,
@@ -536,6 +543,10 @@ private:
             boundary_density_mnemonics{};
     std::array<u32, static_cast<size_t>(PFAFDensityKind::Count)>
             pfaf_density_bytes{};
+    FlagsRegsAuditEdgeKind flags_audit_block_edge{
+            FlagsRegsAuditEdgeKind::Dispatcher};
+    bool flags_audit_strict_advance{};
+    bool flags_audit_cold{};
     std::map<std::string, u32> boundary_terminal_link_mnemonics{};
     std::vector<std::pair<u32, u32>> boundary_terminal_link_ranges{};
     std::unordered_set<u64> region_blocks{};

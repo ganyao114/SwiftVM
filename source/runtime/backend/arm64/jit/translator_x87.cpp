@@ -25,7 +25,8 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
     // X87Op mutates the uniform buffer directly. Resolve pending guest flags
     // before any inline path, and before a possible helper branch, so the
     // translator's compile-time flag state is identical on every path.
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::Helper,
+              FlagsRegsAuditEdgeKind::Host);
     FlushFlags();
 
     constexpr u32 kContextBase = state_offset_uniform_buffer;

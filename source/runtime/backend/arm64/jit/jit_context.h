@@ -213,6 +213,15 @@ public:
     void EndHotNaNGuard();
     [[nodiscard]] bool DensityProfileEnabled() const { return density_profile_enabled; }
     [[nodiscard]] u32 DensityNaNBytes() const { return density_nan_bytes; }
+    [[nodiscard]] bool FlagsRegsAuditEnabled() const {
+        return flags_regs_audit_enabled;
+    }
+    void RecordFlagsRegsAudit(FlagsRegsAuditMergeCause cause,
+                              FlagsRegsAuditEdgeKind edge,
+                              FlagsRegsAuditCost cost,
+                              u32 amount,
+                              bool site = false);
+    void CommitFlagsRegsAudit();
 
 private:
     void MaybeDumpHostBytes();
@@ -285,6 +294,8 @@ private:
     bool execution_trace_enabled{};
     bool hot_coalesce_enabled{};
     bool indirect_l1_prof_enabled{};
+    bool flags_regs_audit_enabled{};
+    bool hot_static_shape_enabled{};
     bool hot_counter_storage_enabled{};
     bool density_profile_enabled{};
     bool direct_link_active{};
@@ -293,6 +304,7 @@ private:
     u32 density_nan_bytes{};
     u32 exec_access_pad{};
     u32 hot_coalesce_slot{kHotCoalesceInvalidSlot};
+    u32 flags_regs_audit_finished_slot{kHotCoalesceInvalidSlot};
     std::vector<u32> hot_coalesce_slots{};
     u32 hot_code_start{};
     u32 hot_nan_start{};

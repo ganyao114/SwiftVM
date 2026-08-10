@@ -213,7 +213,8 @@ void JitTranslator::EmitRegionEdge(ir::Location target,
         fallthrough = false;
     }
     if (commit_flags) {
-        MergeNZCV();
+        MergeNZCV(FlagsRegsAuditMergeCause::TerminalInternal,
+                  FlagsRegsAuditEdgeKind::RegionInternal);
     }
     if (record_edge_counters) {
         context.RecordExecCounter(exec_offset_exit_direct);
@@ -266,7 +267,8 @@ bool JitTranslator::EmitRegionIf(const ir::terminal::If& terminal,
 
     const auto local = LocalConditionFor(terminal.cond);
     // MergeNZCV 只使用 MRS/AND/ORR，不改 host NZCV；因此可在条件判定前提交一次。
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
+              FlagsRegsAuditEdgeKind::RegionInternal);
     auto branch = [&](Label* label, bool on_true) {
         if (local) {
             const auto cond = on_true
@@ -331,7 +333,8 @@ bool JitTranslator::EmitRegionCondition(
     const auto host_cond = MapCond(terminal.cond);
     // 与 EmitRegionIf 相同，提交 flags 的指令保持当前 NZCV，条件可直接复用。
     if (save_in_nzcv && nzcv_dirty) {
-        MergeNZCV();
+        MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
+                  FlagsRegsAuditEdgeKind::RegionInternal);
     } else {
         LoadNZCVFromFlags();
     }
@@ -688,7 +691,8 @@ bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
                            state_offset_uniform_buffer +
                                    offsetof(swift::x86::ThreadContext64,
                                             carry_inverted)));
-        MergeNZCV();
+        MergeNZCV(FlagsRegsAuditMergeCause::TerminalInternal,
+                  FlagsRegsAuditEdgeKind::RegionInternal);
         EmitRegionBranchPFAF(plan);
         plan.optimized = false;
         return false;

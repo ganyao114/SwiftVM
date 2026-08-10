@@ -8,15 +8,56 @@ namespace swift::runtime::backend::arm64 {
 #define __ masm.
 
 void JitTranslator::RecordPFAFDensity(PFAFDensityKind kind, u32 begin) {
+    const u32 bytes = context.CurrentBufferSize() - begin;
+    if (context.FlagsRegsAuditEnabled()) {
+        if (!flags_audit_cold) {
+            FlagsRegsAuditCost cost = FlagsRegsAuditCost::PFSavedInstructions;
+            u32 saved = 0;
+            switch (kind) {
+                case PFAFDensityKind::PFRead:
+                    saved = 1;
+                    break;
+                case PFAFDensityKind::AFWrite:
+                    cost = FlagsRegsAuditCost::AFSavedInstructions;
+                    // Only the four-instruction computational AF form has the
+                    // mechanical 4 -> 2 raw-xor saving. Clear/FCmp writes and
+                    // shorter immediate forms receive no credit.
+                    saved = bytes == 4 * sizeof(u32) ? 2 : 0;
+                    break;
+                case PFAFDensityKind::AFRead:
+                    cost = FlagsRegsAuditCost::AFSavedInstructions;
+                    saved = 1;
+                    break;
+                case PFAFDensityKind::PFWrite:
+                case PFAFDensityKind::SharedPack:
+                case PFAFDensityKind::WholeFlags:
+                case PFAFDensityKind::Count:
+                    break;
+            }
+            context.RecordFlagsRegsAudit(
+                    FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+                    flags_audit_block_edge,
+                    cost,
+                    saved,
+                    true);
+        }
+    }
     if (!context.DensityProfileEnabled()) return;
     // 单块的某个 PF/AF 子桶不会接近 64 KiB。高 16 位保存
     // 翻译期的 site 数，不增大 JitTranslator，也不改发码。
     pfaf_density_bytes[static_cast<size_t>(kind)] +=
-            (1u << 16) | (context.CurrentBufferSize() - begin);
+            (1u << 16) | bytes;
 }
 
 void JitTranslator::MergeNZCV() {
+    MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
+              flags_audit_block_edge);
+}
+
+void JitTranslator::MergeNZCV(FlagsRegsAuditMergeCause cause,
+                              FlagsRegsAuditEdgeKind edge) {
     if (save_in_nzcv && nzcv_dirty) {
+        const u32 begin = context.CurrentBufferSize();
         const auto scratch = context.GetSharedTmpX();
         // Only merge the NZCV bits that SaveFlags actually requested.
         // Bits NOT requested (e.g. C/V when only SF/ZF were saved) keep
@@ -30,6 +71,46 @@ void JitTranslator::MergeNZCV() {
         __ Orr(flags, flags, scratch);
         nzcv_dirty = false;
         nzcv_requested = {};
+        const u32 instructions =
+                (context.CurrentBufferSize() - begin) / sizeof(u32);
+        if (flags_audit_cold) {
+            cause = FlagsRegsAuditMergeCause::FaultVeneer;
+            edge = FlagsRegsAuditEdgeKind::Host;
+        }
+        const u32 saved = cause == FlagsRegsAuditMergeCause::AdvancePC &&
+                                  flags_audit_strict_advance &&
+                                  instructions == 4
+                ? instructions
+                : 0;
+        context.RecordFlagsRegsAudit(cause,
+                                     edge,
+                                     FlagsRegsAuditCost::MergeSavedInstructions,
+                                     saved,
+                                     true);
+        // Incremental deltas against the existing four-instruction MergeNZCV:
+        // split PF/AF needs one additional AF insert to pack canonical State;
+        // restoring resident PSTATE after a helper/clobber needs the listed
+        // extra unpack operations. These are conservative B0 model costs, not
+        // emitted instructions.
+        if (cause == FlagsRegsAuditMergeCause::Helper ||
+            cause == FlagsRegsAuditMergeCause::HostExit ||
+            cause == FlagsRegsAuditMergeCause::PStateClobber) {
+            context.RecordFlagsRegsAudit(cause,
+                                         edge,
+                                         FlagsRegsAuditCost::PackInstructions,
+                                         1);
+        }
+        if (cause == FlagsRegsAuditMergeCause::Helper) {
+            context.RecordFlagsRegsAudit(cause,
+                                         edge,
+                                         FlagsRegsAuditCost::UnpackInstructions,
+                                         3);
+        } else if (cause == FlagsRegsAuditMergeCause::PStateClobber) {
+            context.RecordFlagsRegsAudit(cause,
+                                         edge,
+                                         FlagsRegsAuditCost::UnpackInstructions,
+                                         2);
+        }
     }
 }
 
@@ -140,7 +221,8 @@ void JitTranslator::ClearFlags(ir::Flags guest) {
         //
         // Commit a pending lazy producer before clearing the stored bits. This
         // also prevents a later MergeNZCV from resurrecting a bit cleared here.
-        MergeNZCV();
+        MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+                  flags_audit_block_edge);
         u64 mask{UINT64_MAX};
         if (True(guest & ir::Flags::Negate)) {
             mask &= ~(u64(1) << HostFlagsBit::N);
@@ -243,7 +325,8 @@ void JitTranslator::SaveCV(Register& value, ir::ValueType type) {
     if (type == ir::ValueType::U64) {
         return;
     }
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+              flags_audit_block_edge);
     const auto scratch = context.GetSharedTmpX();
     Label pass;
     __ Lsr(scratch, value, ir::GetValueSizeByte(type) * 8);
@@ -256,7 +339,8 @@ void JitTranslator::SaveOF(Register& value, ir::ValueType type) {
     if (type == ir::ValueType::U64) {
         return;
     }
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+              flags_audit_block_edge);
     const auto scratch = context.GetSharedTmpX();
     Label pass;
     __ Lsr(scratch, value, ir::GetValueSizeByte(type) * 8);
@@ -471,7 +555,8 @@ void JitTranslator::EmitSetCarry(ir::Inst* inst) {
     // Set guest CF directly in the flags register from a computed 0/1 value.
     // Merge pending NZCV first so no later merge clobbers the bit we write
     // (MergeNZCV leaves nzcv_dirty=false; Bfi does not set it).
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+              flags_audit_block_edge);
     // A preceding ClearFlags may still be queued in the lazy flag window.
     // Apply it before inserting CF, otherwise the next flush clears the bit
     // just written (RDRAND/RDSEED are the minimal reproducer).
@@ -481,7 +566,8 @@ void JitTranslator::EmitSetCarry(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitSetOverflow(ir::Inst* inst) {
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+              flags_audit_block_edge);
     FlushFlags();
     auto bit = context.R(inst->GetArg<ir::Value>(0));
     __ Bfi(flags, bit.X(), HostFlagsBit::V, 1);
@@ -531,7 +617,8 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
         return;
     }
 
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+              flags_audit_block_edge);
     FlushFlags();
     auto packed_reg = context.R(packed);
     constexpr u64 replaced =
@@ -584,7 +671,8 @@ void JitTranslator::EmitTestBit(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitGetFlags(ir::Inst* inst) {
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+              flags_audit_block_edge);
     const u32 begin = context.CurrentBufferSize();
     __ Mov(context.R(ir::Value{inst}), flags);
     RecordPFAFDensity(PFAFDensityKind::WholeFlags, begin);

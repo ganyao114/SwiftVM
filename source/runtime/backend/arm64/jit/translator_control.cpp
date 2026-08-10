@@ -59,7 +59,8 @@ void JitTranslator::EmitAdvancePC(ir::Inst* inst) {
         flags_clear = ir::Flags::None;
         return;
     }
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::AdvancePC,
+              flags_audit_block_edge);
     FlushFlags();
 }
 
@@ -122,7 +123,8 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
                                  bool has_result,
                                  const Register& result) {
     ASSERT(args.size() <= 8);
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::Helper,
+              FlagsRegsAuditEdgeKind::Host);
     FlushFlags();
 
     // Materialize value arguments before taking the register snapshot. In
@@ -646,7 +648,8 @@ void JitTranslator::EmitCheckMemoryAlignment(ir::Inst* inst) {
     // Tst clobbers NZCV, so commit any pending guest flags first. On failure,
     // Ret returns to the runtime-entry dispatcher, which observes PageFatal in
     // State::halt_reason and exits through the normal guest-fault path.
-    MergeNZCV();
+    MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
+              flags_audit_block_edge);
     __ Tst(address, mask);
     __ B(&aligned, eq);
     __ Mov(ipw, static_cast<u32>(HaltReason::PageFatal));

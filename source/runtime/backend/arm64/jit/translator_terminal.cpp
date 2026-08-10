@@ -17,14 +17,16 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
         if constexpr (std::is_same_v<T, ir::terminal::Invalid>) {
             // Flat decoded blocks have no explicit terminal: the next location was
             // already written to state->current_loc by a SetLocation instruction.
-            MergeNZCV();
+            MergeNZCV(FlagsRegsAuditMergeCause::TerminalDispatcher,
+                      FlagsRegsAuditEdgeKind::Dispatcher);
             context.RecordExecCounter(static_next_loc ? exec_offset_exit_direct
                                                       : exec_offset_exit_indirect);
             if (!EmitStaticForward() && !EmitIndirectForward()) {
                 __ Ret();
             }
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToDispatch>) {
-            MergeNZCV();
+            MergeNZCV(FlagsRegsAuditMergeCause::TerminalDispatcher,
+                      FlagsRegsAuditEdgeKind::Dispatcher);
             context.RecordExecCounter(
                     cur_block_is_call ? exec_offset_exit_call
                                       : (static_next_loc ? exec_offset_exit_direct
@@ -33,7 +35,8 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 __ Ret();
             }
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToHost>) {
-            MergeNZCV();
+            MergeNZCV(FlagsRegsAuditMergeCause::HostExit,
+                      FlagsRegsAuditEdgeKind::Host);
             context.RecordExecCounter(exec_offset_exit_syscall);
             __ Mov(ipw, static_cast<u32>(HaltReason::CallHost));
             __ Str(ipw, MemOperand(state, state_offset_halt_reason));
@@ -43,7 +46,11 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 EmitRegionEdge(term.next);
                 return;
             }
-            MergeNZCV();
+            MergeNZCV(flags_audit_block_edge ==
+                                      FlagsRegsAuditEdgeKind::Dispatcher
+                              ? FlagsRegsAuditMergeCause::TerminalDispatcher
+                              : FlagsRegsAuditMergeCause::TerminalInternal,
+                      flags_audit_block_edge);
             context.RecordExecCounter(exec_offset_exit_direct);
             auto* exit = IsSelfEdge(term.next) && backedge_exit_label
                     ? backedge_exit_label.get()
@@ -63,7 +70,11 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 EmitRegionEdge(term.next);
                 return;
             }
-            MergeNZCV();
+            MergeNZCV(flags_audit_block_edge ==
+                                      FlagsRegsAuditEdgeKind::Dispatcher
+                              ? FlagsRegsAuditMergeCause::TerminalDispatcher
+                              : FlagsRegsAuditMergeCause::TerminalInternal,
+                      flags_audit_block_edge);
             context.RecordExecCounter(exec_offset_exit_direct);
             auto* exit = IsSelfEdge(term.next) && backedge_exit_label
                     ? backedge_exit_label.get()
@@ -85,7 +96,8 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             // branches directly to the return target, which expects the flags
             // register to be current. EmitRSBPop ends in Br (hit) or Ret (miss/
             // underflow), so it fully terminates the block.
-            MergeNZCV();
+            MergeNZCV(FlagsRegsAuditMergeCause::TerminalInternal,
+                      FlagsRegsAuditEdgeKind::RSBMiss);
             context.RecordExecCounter(exec_offset_exit_ret);
             if (True(context.GetConfig().global_opts & Optimizations::ReturnStackBuffer)) {
                 const u32 link_before = context.CurrentBufferSize();
@@ -127,7 +139,8 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             EmitTerminal(term.else_, LinkSiteKind::ConditionalElse);
         } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
             // Linear compare chain; each arm ends with its own terminal.
-            MergeNZCV();
+            MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
+                      flags_audit_block_edge);
             auto value = context.R(term.value);
             for (auto& case_ : term.cases) {
                 Label next_case;
@@ -144,7 +157,8 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             Label no_halt;
             __ Ldr(ipw, MemOperand(state, state_offset_halt_reason));
             __ Cbz(ipw, &no_halt);
-            MergeNZCV();
+            MergeNZCV(FlagsRegsAuditMergeCause::HostExit,
+                      FlagsRegsAuditEdgeKind::Host);
             __ Ret();
             __ Bind(&no_halt);
             EmitTerminal(term.else_, LinkSiteKind::CheckHalt);

@@ -111,8 +111,10 @@ struct Runtime::Impl final {
         }
         hot_coalesce_enabled = HotCoalesceProfEnabled();
         indirect_l1_prof_enabled = IndirectL1ProfEnabled();
+        flags_regs_audit_enabled = FlagsRegsAuditEnabled();
         hot_counter_storage_enabled =
-                hot_coalesce_enabled || indirect_l1_prof_enabled;
+                hot_coalesce_enabled || indirect_l1_prof_enabled ||
+                flags_regs_audit_enabled;
         if (hot_counter_storage_enabled) {
             hot_coalesce_counters.resize(
                     static_cast<size_t>(kHotCoalesceMaxUnits) *
@@ -626,6 +628,7 @@ struct Runtime::Impl final {
     std::vector<u64> hot_coalesce_counters{};
     bool hot_coalesce_enabled{};
     bool indirect_l1_prof_enabled{};
+    bool flags_regs_audit_enabled{};
     bool hot_counter_storage_enabled{};
     bool execution_trace_enabled{};
     mutable bool exec_profile_started{};
