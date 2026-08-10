@@ -874,6 +874,25 @@ void CoalesceGuestGPRWrites(
             // later consumers observe the newly published value.
             continue;
         }
+        if (width_root) {
+            bool displaces_baseline_read = false;
+            for (auto& scan : list) {
+                if (scan.GetOp() == OpCode::GetHostGPR &&
+                    scan.GetArg<Imm>(0).Get() == target &&
+                    reg_alloc->IsHostReadCoalesced(scan.Id())) {
+                    displaces_baseline_read = true;
+                    break;
+                }
+            }
+            if (displaces_baseline_read) {
+                // A gate-OFF read tie has already proved one publication
+                // history for this fixed home.  Replacing any producer in
+                // that history would require invalidating and rebuilding the
+                // read half of the transaction, which is exactly the partial
+                // W-alpha state v2 must not create.  Keep the baseline whole.
+                continue;
+            }
+        }
         Vector<Inst*> width_component{};
         if (width_root) {
             width_component.push_back(producer);
@@ -924,6 +943,17 @@ void CoalesceGuestGPRWrites(
                         changed = true;
                     }
                 }
+            }
+            if (std::any_of(width_component.begin(), width_component.end(),
+                            [&](Inst* node) {
+                                return reg_alloc->IsHostReadCoalesced(node->Id());
+                            })) {
+                // A GetHostGPR that the baseline already mapped to its own
+                // home cannot simultaneously become the root of a component
+                // owned by a different publication home.  That would retain
+                // the read marker while overwriting its mapping, leaving a
+                // half-committed transaction for the emitter to discover.
+                continue;
             }
         }
         if (mapped_to(produced, target) &&

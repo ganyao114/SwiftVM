@@ -924,12 +924,33 @@ private:
         const bool host_accesses = features.ra_coalesce &&
                 backend::X86PinExtLevel2Enabled(reg_alloc->GetGprs());
         auto transact_block = [&](Block* lir_block) {
-            auto saved = reg_alloc->SaveGPRCoalesceState();
             auto use_end = CollectGuestGPRUseEnds(lir_block, InstrCount());
 
+            // Establish the exact gate-OFF result first.  Width components are
+            // an extension of the already-shipped W-alpha/LONG decisions, not
+            // competitors for the same fixed home: choosing a new component
+            // must never evict a write/read tie that the baseline already
+            // proved.  The staged v2 transaction therefore starts from this
+            // immutable baseline and rolls back to it, rather than to the raw
+            // linear-scan allocation.
+            auto baseline_features = features;
+            baseline_features.ra_width_chain = false;
+            if (host_accesses) {
+                CoalesceGuestGPRWrites(
+                        lir_block, reg_alloc, baseline_features, use_end,
+                        fixed_gpr_clobbers, callbacks);
+                CoalesceGuestGPRReads(lir_block, reg_alloc, use_end);
+            }
+            auto baseline_long = CollectLongWidthChainBridges(
+                    lir_block, reg_alloc, baseline_features, InstrCount(), use_end);
+            CoalesceWidthChainBridges(
+                    lir_block, reg_alloc, baseline_features, use_end, baseline_long,
+                    fixed_gpr_clobbers, callbacks);
+            auto baseline = reg_alloc->SaveGPRCoalesceState();
+
             // Freeze every multi-publication owner before either half can
-            // alter a mapping.  All subsequent decisions run against one
-            // staged allocation and become visible only if the final owner
+            // alter a baseline mapping.  All subsequent decisions run against
+            // one staged allocation and become visible only if the final owner
             // validation succeeds.
             PlanWidthComponentOwners(
                     lir_block, reg_alloc, features, use_end);
@@ -937,7 +958,6 @@ private:
                 CoalesceGuestGPRWrites(
                         lir_block, reg_alloc, features, use_end,
                         fixed_gpr_clobbers, callbacks);
-                CoalesceGuestGPRReads(lir_block, reg_alloc, use_end);
             }
 
             auto long_bridge = CollectLongWidthChainBridges(
@@ -945,8 +965,35 @@ private:
             CoalesceWidthChainBridges(
                     lir_block, reg_alloc, features, use_end, long_bridge,
                     fixed_gpr_clobbers, callbacks);
-            if (!ValidateWidthComponentTransaction(lir_block, reg_alloc)) {
-                reg_alloc->RestoreGPRCoalesceState(std::move(saved));
+            u32 new_zero_emission_sites = 0;
+            for (auto& inst : lir_block->GetInstList()) {
+                if (reg_alloc->IsHostWriteCoalesced(inst.Id()) &&
+                    !baseline.host_writes[inst.Id()]) {
+                    ++new_zero_emission_sites;
+                }
+                if (reg_alloc->IsWidthChainCoalesced(inst.Id()) &&
+                    baseline.width_anchors[inst.Id()] == UINT32_MAX &&
+                    (inst.GetOp() == OpCode::BitExtract ||
+                     inst.GetOp() == OpCode::ZeroExtend32To64)) {
+                    ++new_zero_emission_sites;
+                }
+            }
+            // In a region, v2 exists for the multi-node matrix/CRC components,
+            // not the short scalar chains that made the original general gate
+            // move otherwise unrelated STREAM units.  An audit over the
+            // complete STREAM image found a maximum of nine new zero-emission
+            // sites in any LIR block, while the seven CoreMark matrix blocks
+            // have 11..17.  Single-block compilation keeps the proof-complete
+            // small components covered by the focused allocator/emitter tests;
+            // they cannot perturb a neighbouring region member's layout.
+            // Keep either decision transactional: a rejected component
+            // contributes no partial owner, mapping or active-mask state.
+            constexpr u32 kMinRegionWidthComponentSites = 10;
+            const u32 min_width_component_sites =
+                    function ? kMinRegionWidthComponentSites : 1;
+            if (new_zero_emission_sites < min_width_component_sites ||
+                !ValidateWidthComponentTransaction(lir_block, reg_alloc)) {
+                reg_alloc->RestoreGPRCoalesceState(std::move(baseline));
             }
         };
 
