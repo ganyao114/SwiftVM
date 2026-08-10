@@ -915,3 +915,26 @@ SignExtend 窄 LoadMemory 多 use 根,emitter 双复证 fail-closed。
 −1.0815%(move 34.48%→33.77%),锚点改善不存活**——codex 块态账与
 region 态账的差异已记入教训,后续密度账一律 region 态。已派 w66 做
 STREAM 逐 diff 归因 + region 态三语料复测。
+
+## 2026-08-11 level3 SIGSEGV 根修 + 宽度链 v2 STREAM 根修(锚点 52e347e 起)
+
+**宽度链 v2 STREAM 形状根修(52e347e)**:归因结论——v2 抢占了 gate-OFF
+已证成功的 W-α fixed-home tie(非 veneer/layout)。修复:事务先从
+gate-OFF 基线快照起步(回滚目标从裸线性扫描改为含 W-α 的基线),region
+组件门槛 >=10 新零发射点(STREAM 实测单块最多 9,CoreMark matrix 块
+11..17)。修后 STREAM 2547/2547 公共 PC 零 diff、547/547 unit 零 diff、
+热环逐位不变;但生产 region 态主账 CoreMark 0.00%/zip7 −0.13%/sqlite
+−0.0003%——**NO-GO 维持 OFF 定案**:region 编译已内化可合并形态,
+残余宽度桥不是 ownership 合并够得着的。宽度链合并轴关闭。
+
+**level3(SVM_X86_PIN_EXT=3)SIGSEGV 根修(随 52e347e 后一笔)**:
+根因——level3 把 x11–x17 放进 value pool,terminal 间接目标落 x12;
+dynamic_next_loc 隐藏使用不在 IR terminal use-list,BeginTerminalScratch
+释放后 ForwardIndirectL1 把 location/index 别名到同寄存器,CMP x12,x12
+恒等,CSEL 取空 cache 项 0,BR x13 → pc=0。修复:terminal target 全窗
+租住 + level3 scratch 契约闭环(纯 Or/Select 开放 x10;CAS/RMW 动态
+scratch 记 1,告别假压力)+ RA 梯级尽败从 warn-and-continue 改 PANIC
+fail-closed(该路径实证不安全:消费 Verify 拒绝的映射)。全部 scoped
+level3,默认态双 profile 指纹 byte-identical。指挥官独立复验:level3
+sqlite TOTAL 1.619s(原必崩)、level3+FIXED_CLASS sqlite 1.669s、
+level3 c-ray 完成、默认套件绿。全 pin 轴重开条件 #1 解除。
