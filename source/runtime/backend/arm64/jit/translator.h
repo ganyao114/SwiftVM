@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -132,6 +133,46 @@ private:
     void ResetBoundaryDensity();
     void RecordBoundaryRange(BoundarySubsequence category, u32 begin, u32 end);
     void PrintBoundaryDensity(u64 guest_pc, u32 expected_boundary_bytes);
+
+    struct BlockTranslateState {
+        const ir::LoopHoistMetadata* loop_hoist{};
+        u32 loop_hoist_prefix_begin{};
+        u32 loop_hoist_prefix_ops{};
+        bool split_flags_entry{};
+    };
+
+    [[nodiscard]] BlockTranslateState PrepareBlockState(ir::Block* block);
+
+    struct UniformDensityCounts {
+        u32 gpr_uniform_accesses{};
+        u32 xmm_uniform_accesses{};
+    };
+
+    [[nodiscard]] UniformDensityCounts
+    CollectUniformDensity(ir::Block* block, bool density);
+
+    void TranslateBlockInstructions(
+            ir::Block* block,
+            const ir::LoopHoistMetadata& loop_hoist,
+            bool density,
+            bool gap_audit,
+            std::span<u32> density_ops,
+            std::span<u32> density_bytes,
+            u32& density_scalar_fp_ops,
+            u32& loop_hoist_prefix_begin,
+            u32& loop_hoist_prefix_ops);
+
+    void EmitBlockTerminalAndColdPaths(ir::Block* block,
+                                       bool density,
+                                       std::span<u32> density_bytes);
+
+    void PrintBlockDensity(ir::Block* block,
+                           bool density,
+                           std::span<const u32> density_ops,
+                           std::span<const u32> density_bytes,
+                           u32 density_scalar_fp_ops,
+                           const ir::LoopHoistMetadata& loop_hoist,
+                           u32 loop_hoist_prefix_ops);
 
     struct BackedgeFlagsPlan {
         bool optimized{true};

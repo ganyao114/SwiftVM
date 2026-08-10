@@ -451,20 +451,8 @@ void JitTranslator::PrintBoundaryDensity(u64 guest_pc,
 
 
 
-void JitTranslator::Translate(ir::Block* block) {
-    vixl::svm_vixl_prof::JitScope vixl_prof{context.GetFeatures().vixl_fast};
-    ASSERT(vec_nan_cold_sites.empty());
-    const bool density = context.DensityProfileEnabled();
-    const bool gap_audit = density && GetSvmConfig().ra_hot_coalesce_all;
-    ResetBoundaryDensity();
-    const u32 density_start = density ? context.CurrentBufferSize() : 0;
-    std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_ops{};
-    std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_bytes{};
-    if (density) {
-        pfaf_density_bytes.fill(0);
-    }
-    u32 density_scalar_fp_ops = 0;
-    PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
+JitTranslator::BlockTranslateState
+JitTranslator::PrepareBlockState(ir::Block* block) {
     cur_block = block;
     const auto& loop_hoist = block->GetLoopHoistMetadata();
     loop_hoist_body_entry = loop_hoist.prefix_end
@@ -519,18 +507,14 @@ void JitTranslator::Translate(ir::Block* block) {
         context.BindInternalEntry(block->GetStartLocation().Value());
     }
     PlanInductionTies(block);
-    if (split_flags_entry) {
-        // Every published/external entry takes the cold initializer below;
-        // only the self edge targets local_entry. This makes host NZCV valid
-        // before a pre-producer guest fault without charging the steady loop.
-        __ B(backedge_flags_plan->external_entry.get());
-        __ Bind(backedge_flags_plan->local_entry.get());
-        context.BeginBackedgeBody();
-        backedge_host_begin = context.CurrentBufferSize();
-    } else if (backedge_flags_plan) {
-        backedge_host_begin = context.CurrentBufferSize();
-    }
-    EmitExecutionTrace(block->GetStartLocation().Value());
+    return {&loop_hoist,
+            loop_hoist_prefix_begin,
+            loop_hoist_prefix_ops,
+            split_flags_entry};
+}
+
+JitTranslator::UniformDensityCounts
+JitTranslator::CollectUniformDensity(ir::Block* block, bool density) {
     // Count the remaining x86 GPR uniform-buffer traffic dynamically without
     // instrumenting each access: add the block's static emitted access count
     // once on entry. ThreadContext64 begins with the 16 8-byte GPRs, so the
@@ -633,18 +617,19 @@ void JitTranslator::Translate(ir::Block* block) {
             }
         }
     }
-    context.RecordExecCounter(exec_offset_gpr_uniform_accesses,
-                              gpr_uniform_accesses);
-    context.RecordExecCounter(exec_offset_xmm_uniform_accesses,
-                              xmm_uniform_accesses);
-    if (density) {
-        RecordBoundaryRange(BoundarySubsequence::Prologue, density_start,
-                            context.CurrentBufferSize());
-        density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
-                context.CurrentBufferSize() - density_start;
-    }
-    perf_prologue.Stop();
-    PerfScope2 perf_body{GetPerfStats2().codegen_body};
+    return {gpr_uniform_accesses, xmm_uniform_accesses};
+}
+
+void JitTranslator::TranslateBlockInstructions(
+        ir::Block* block,
+        const ir::LoopHoistMetadata& loop_hoist,
+        bool density,
+        bool gap_audit,
+        std::span<u32> density_ops,
+        std::span<u32> density_bytes,
+        u32& density_scalar_fp_ops,
+        u32& loop_hoist_prefix_begin,
+        u32& loop_hoist_prefix_ops) {
     loop_hoist_prefix_begin = context.CurrentBufferSize();
     VAddr audit_guest_pc = block->GetStartLocation().Value();
     for (auto& inst : block->GetInstList()) {
@@ -730,9 +715,12 @@ void JitTranslator::Translate(ir::Block* block) {
             audit_guest_pc += inst.GetArg<ir::Imm>(0).Get();
         }
     }
-    perf_body.Stop();
+}
 
-    PerfScope2 perf_terminal{GetPerfStats2().codegen_terminal};
+void JitTranslator::EmitBlockTerminalAndColdPaths(
+        ir::Block* block,
+        bool density,
+        std::span<u32> density_bytes) {
     context.BeginTerminalScratch();
     const u32 flags_before = density ? context.CurrentBufferSize() : 0;
     FlushFlags();
@@ -778,6 +766,16 @@ void JitTranslator::Translate(ir::Block* block) {
                 context.CurrentBufferSize() - nan_cold_before;
     }
     context.EndColdScratch();
+}
+
+void JitTranslator::PrintBlockDensity(
+        ir::Block* block,
+        bool density,
+        std::span<const u32> density_ops,
+        std::span<const u32> density_bytes,
+        u32 density_scalar_fp_ops,
+        const ir::LoopHoistMetadata& loop_hoist,
+        u32 loop_hoist_prefix_ops) {
     if (density) {
         const u32 total_ops = std::accumulate(density_ops.begin(), density_ops.end(), 0u);
         const u32 total_bytes =
@@ -840,6 +838,76 @@ void JitTranslator::Translate(ir::Block* block) {
                      loop_hoist_prefix_ops);
     }
     loop_hoist_body_entry.reset();
+}
+
+void JitTranslator::Translate(ir::Block* block) {
+    vixl::svm_vixl_prof::JitScope vixl_prof{context.GetFeatures().vixl_fast};
+    ASSERT(vec_nan_cold_sites.empty());
+    const bool density = context.DensityProfileEnabled();
+    const bool gap_audit = density && GetSvmConfig().ra_hot_coalesce_all;
+    ResetBoundaryDensity();
+    const u32 density_start = density ? context.CurrentBufferSize() : 0;
+    std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_ops{};
+    std::array<u32, static_cast<size_t>(DensityCategory::Count)> density_bytes{};
+    if (density) {
+        pfaf_density_bytes.fill(0);
+    }
+    u32 density_scalar_fp_ops = 0;
+    PerfScope2 perf_prologue{GetPerfStats2().codegen_prologue};
+    auto block_state = PrepareBlockState(block);
+    const auto& loop_hoist = *block_state.loop_hoist;
+    u32& loop_hoist_prefix_begin = block_state.loop_hoist_prefix_begin;
+    u32& loop_hoist_prefix_ops = block_state.loop_hoist_prefix_ops;
+    const bool split_flags_entry = block_state.split_flags_entry;
+    if (split_flags_entry) {
+        // Every published/external entry takes the cold initializer below;
+        // only the self edge targets local_entry. This makes host NZCV valid
+        // before a pre-producer guest fault without charging the steady loop.
+        __ B(backedge_flags_plan->external_entry.get());
+        __ Bind(backedge_flags_plan->local_entry.get());
+        context.BeginBackedgeBody();
+        backedge_host_begin = context.CurrentBufferSize();
+    } else if (backedge_flags_plan) {
+        backedge_host_begin = context.CurrentBufferSize();
+    }
+    EmitExecutionTrace(block->GetStartLocation().Value());
+    const auto uniform_density = CollectUniformDensity(block, density);
+    const u32 gpr_uniform_accesses =
+            uniform_density.gpr_uniform_accesses;
+    const u32 xmm_uniform_accesses =
+            uniform_density.xmm_uniform_accesses;
+    context.RecordExecCounter(exec_offset_gpr_uniform_accesses,
+                              gpr_uniform_accesses);
+    context.RecordExecCounter(exec_offset_xmm_uniform_accesses,
+                              xmm_uniform_accesses);
+    if (density) {
+        RecordBoundaryRange(BoundarySubsequence::Prologue, density_start,
+                            context.CurrentBufferSize());
+        density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
+                context.CurrentBufferSize() - density_start;
+    }
+    perf_prologue.Stop();
+    PerfScope2 perf_body{GetPerfStats2().codegen_body};
+    TranslateBlockInstructions(block,
+                               loop_hoist,
+                               density,
+                               gap_audit,
+                               density_ops,
+                               density_bytes,
+                               density_scalar_fp_ops,
+                               loop_hoist_prefix_begin,
+                               loop_hoist_prefix_ops);
+    perf_body.Stop();
+
+    PerfScope2 perf_terminal{GetPerfStats2().codegen_terminal};
+    EmitBlockTerminalAndColdPaths(block, density, density_bytes);
+    PrintBlockDensity(block,
+                      density,
+                      density_ops,
+                      density_bytes,
+                      density_scalar_fp_ops,
+                      loop_hoist,
+                      loop_hoist_prefix_ops);
 }
 
 void JitTranslator::Translate(ir::HIRFunction* function) {
