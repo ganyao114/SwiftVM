@@ -2,7 +2,6 @@
 
 #include "aarch64/macro-assembler-aarch64.h"
 #include "runtime/backend/context.h"
-#include "runtime/common/fpcr_tax_prof.h"
 #include "translator/x86/cpu.h"
 
 namespace swift::runtime::backend::arm64 {
@@ -14,6 +13,17 @@ inline constexpr s32 kSseAFPRuntimeFrameSize = 32;
 inline constexpr s32 kSseAFPHostFPCROffset = 0;
 inline constexpr s32 kSseAFPGuestFPCROffset = 8;
 inline constexpr s32 kSseAFPSourceMXCSROffset = 16;
+
+// Compatibility tags for the two existing translator_mem call sites. The
+// retired FPCR-tax profiler no longer records them; keeping the tags here lets
+// that emitter remain untouched while all generated counter code disappears.
+enum class FpcrTaxCounter : u8 {
+    CacheLookup,
+    RebuildExecuted,
+    CacheHit,
+    StoreMxcsr,
+    MemoryCopy,
+};
 
 // Build the complete guest FPCR from architectural MXCSR state.  Do not use
 // the caller's FPCR as a base: DN/FZ/RMode and trap controls are host state.
@@ -49,17 +59,14 @@ inline void EmitSseAFPGuestFPCR(MacroAssembler& masm,
 // Restore guest FPCR after any host boundary. Every path compares the current
 // architectural MXCSR with the source cached in this JitRun's stack frame;
 // there are deliberately no helper-specific cleanliness exemptions.
-template <typename RecordCounter>
 inline void EmitSseAFPRestoreGuestFPCRCached(MacroAssembler& masm,
                                              const XRegister& state_reg,
                                              s32 frame_offset,
                                              const XRegister& result,
                                              const XRegister& mxcsr,
-                                             const XRegister& bit,
-                                             RecordCounter&& record) {
+                                             const XRegister& bit) {
     Label cached;
     Label apply;
-    record(FpcrTaxCounter::CacheLookup);
     masm.Ldp(result,
              bit,
              MemOperand(sp, frame_offset + kSseAFPGuestFPCROffset));
@@ -69,16 +76,26 @@ inline void EmitSseAFPRestoreGuestFPCRCached(MacroAssembler& masm,
                                 offsetof(swift::x86::ThreadContext64, mxcsr)));
     masm.Cmp(mxcsr.W(), bit.W());
     masm.B(&cached, eq);
-    record(FpcrTaxCounter::RebuildExecuted);
     EmitSseAFPGuestFPCRFromMXCSR(masm, result, mxcsr, bit);
     masm.Stp(result,
              mxcsr,
              MemOperand(sp, frame_offset + kSseAFPGuestFPCROffset));
     masm.B(&apply);
     masm.Bind(&cached);
-    record(FpcrTaxCounter::CacheHit);
     masm.Bind(&apply);
     masm.Msr(FPCR, result);
+}
+
+template <typename IgnoredCounter>
+inline void EmitSseAFPRestoreGuestFPCRCached(MacroAssembler& masm,
+                                             const XRegister& state_reg,
+                                             s32 frame_offset,
+                                             const XRegister& result,
+                                             const XRegister& mxcsr,
+                                             const XRegister& bit,
+                                             IgnoredCounter&&) {
+    EmitSseAFPRestoreGuestFPCRCached(
+            masm, state_reg, frame_offset, result, mxcsr, bit);
 }
 
 inline u64 ReadNativeFPCR() {

@@ -423,13 +423,14 @@ private:
     bool window_uxtw{false};
     bool mem_hostbase_fold{false};
     bool induct_tie{false};
-    // Default-off aggressive SSE/AVX floating-point policy: keep the raw NEON
-    // result instead of repairing x86 NaN payload priority and quieting.
-    bool sse_nan_fast{false};
+    // The retired approximate NaN mode is permanently disabled. Keep this
+    // compile-time constant until the protected ALU emitter is cleaned in its
+    // own change; it generates no branch or runtime state.
+    static constexpr bool sse_nan_fast = false;
     // Default-on exact policy: keep the common path to the host FP operation
     // plus one combined result-NaN test, and defer the x86 payload/indefinite
     // repair to shared block-local stubs. =0 restores the legacy inline
-    // lowering byte-for-byte; SVM_SSE_NAN_FAST still wins when explicitly set.
+    // lowering byte-for-byte.
     bool sse_nan_coldpath{true};
     // FEAT_AFP + FPCR.NEP is active for guest code, so scalar Advanced SIMD
     // instructions can update a tied destination's lane 0 in place.
@@ -441,10 +442,6 @@ private:
     // unordered and equal inputs.  NEP, enabled by the same AFP contract,
     // preserves the tied destination's upper lanes.
     bool sse_afp_minmax{false};
-    // W90 phase-2 diagnostics. skip_switch is intentionally unsafe and only
-    // affects direct helper FPCR bracketing when explicitly requested.
-    bool fpcr_tax_skip_switch{false};
-    bool fpcr_tax_timing{false};
     bool shift_imm_fast{true};
     // W29 lowering: signed/unsigned narrow loads consume their
     // extension destination directly, and GetOperand computes into its

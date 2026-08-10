@@ -145,7 +145,7 @@ std::vector<u8> BuildRegionLinkTrampoline(const Config& config,
 
     if (config.sse_afp_nan) {
         EmitSseAFPRestoreGuestFPCRCached(
-                masm, x28, frame_size, x11, x16, x17, [](FpcrTaxCounter) {});
+                masm, x28, frame_size, x11, x16, x17);
     }
     for (u32 i = 0; i < fprs.size(); ++i) {
         masm.Ldr(VRegister::GetQRegFromCode(fprs[i]),

@@ -324,7 +324,7 @@ void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info,
 
     auto flush = [&](Inst* before, u32 observed_offset, u32 observed_size, bool all) {
         if (pending.empty()) {
-            if (features.xmm_snapshot_dse && before) {
+            if (before) {
                 for (const auto& plan : block->GetUniformSnapshotPlans()) {
                     if (plan.boundary == before) {
                         auto* producer = plan.value.Def();
@@ -377,15 +377,15 @@ void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info,
                         pending[later].value == store.value;
             }
             victim[reverse] = fully_covered &&
-                    ((features.xmm_snapshot_dse && later_same_value) ||
-                     !ChainWouldStrandASurvivor(block, store.value, store.inst,
-                                               features.xmm_snapshot_dse));
+                    (later_same_value ||
+                     !ChainWouldStrandASurvivor(
+                             block, store.value, store.inst, true));
             for (u32 byte = 0; byte < store.size; ++byte) {
                 covered[store.offset + byte] = 1;
             }
         }
 
-        if (features.xmm_snapshot_dse && before) {
+        if (before) {
             for (const auto& plan : block->GetUniformSnapshotPlans()) {
                 const auto before_pos = positions.find(before);
                 const auto boundary_pos = positions.find(plan.boundary);

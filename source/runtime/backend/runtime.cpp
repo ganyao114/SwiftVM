@@ -22,7 +22,6 @@
 #include "runtime/backend/signal_handler.h"
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/hot_coalesce_prof.h"
-#include "runtime/common/fpcr_tax_prof.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/perf_stats.h"
 #include "runtime/include/sruntime.h"
@@ -110,12 +109,6 @@ struct Runtime::Impl final {
         if (execution_trace_enabled) {
             profile_interface.execution_trace = &execution_trace;
         }
-        fpcr_tax_profile_enabled = FpcrTaxProfEnabled();
-        fpcr_timing_enabled = FpcrTaxTimingEnabled();
-        if (fpcr_timing_enabled) {
-            fpcr_timing = std::make_unique<FpcrTimingBuffer>();
-            profile_interface.fpcr_timing = fpcr_timing.get();
-        }
         hot_coalesce_enabled = HotCoalesceProfEnabled();
         indirect_l1_prof_enabled = IndirectL1ProfEnabled();
         hot_counter_storage_enabled =
@@ -145,8 +138,7 @@ struct Runtime::Impl final {
             state->interface = &profile_interface;
         }
         if (exec_profile_enabled || execution_trace_enabled ||
-            hot_counter_storage_enabled ||
-            fpcr_tax_profile_enabled || fpcr_timing_enabled) {
+            hot_counter_storage_enabled) {
             state->interface = &profile_interface;
         }
         // Wire the dispatcher's code-cache tables: L1 is per-runtime, L2 is the
@@ -238,12 +230,6 @@ struct Runtime::Impl final {
         }
         if (hot_counter_storage_enabled) {
             HotCoalesceSubmitThread(hot_coalesce_counters);
-        }
-        if (fpcr_tax_profile_enabled) {
-            FpcrTaxSubmit(profile_interface.fpcr_tax);
-        }
-        if (fpcr_timing_enabled) {
-            FpcrTimingSubmit(*fpcr_timing);
         }
         // NOTE: a write window opened by host code on a thread that then exits
         // is deliberately NOT closed here. Closing it looked prudent, but a
@@ -638,12 +624,9 @@ struct Runtime::Impl final {
     backend::RuntimeProfileInterface profile_interface{};
     backend::ExecutionTraceBuffer execution_trace{};
     std::vector<u64> hot_coalesce_counters{};
-    std::unique_ptr<FpcrTimingBuffer> fpcr_timing{};
     bool hot_coalesce_enabled{};
     bool indirect_l1_prof_enabled{};
     bool hot_counter_storage_enabled{};
-    bool fpcr_tax_profile_enabled{};
-    bool fpcr_timing_enabled{};
     bool execution_trace_enabled{};
     mutable bool exec_profile_started{};
     mutable std::chrono::steady_clock::time_point exec_profile_start{};

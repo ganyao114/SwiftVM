@@ -174,8 +174,6 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     induct_tie = config.induct_tie;
     sse_scalar_insert = config.sse_scalar_insert;
     sse_afp_nan = config.sse_afp_nan;
-    fpcr_tax_skip_switch = sse_afp_nan && FpcrTaxSkipSwitchEnabled();
-    fpcr_tax_timing = sse_afp_nan && FpcrTaxTimingEnabled();
     const auto& features = ctx.GetFeatures();
     sse_scalar_tie = features.sse_scalar_tie;
     sse_shufps_imm = features.sse_shufps_imm;
@@ -184,7 +182,6 @@ JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()
     mem_narrow_fuse = features.mem_narrow_fuse;
     addr_ea_tie = features.addr_ea_tie;
     abs_const_mat = features.abs_const_mat;
-    sse_nan_fast = features.sse_nan_fast;
     sse_nan_coldpath = features.sse_nan_coldpath;
     direct_cycle_latch = BackedgeLatchEnabled() || config.region_edges;
     backedge_latch = direct_cycle_latch || config.region_edges;

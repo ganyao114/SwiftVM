@@ -256,8 +256,8 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                         break;
                     }
                 }
-                if (all_dead && !ChainWouldStrandASurvivor(
-                                        block, value, &inst, features.xmm_snapshot_dse)) {
+                if (all_dead &&
+                    !ChainWouldStrandASurvivor(block, value, &inst, true)) {
                     victims.push_back(&inst);
                     break;  // a removed store kills nothing
                 }
@@ -332,7 +332,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
         }
     }
 
-    if (features.xmm_snapshot_dse && !victims.empty()) {
+    if (!victims.empty()) {
         auto is_victim = [&](const Inst* inst) {
             return std::find(victims.begin(), victims.end(), inst) != victims.end();
         };
@@ -468,7 +468,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     PerfScope2 perf_forward{GetPerfStats2().uniform_forward};
 
     block->GetUniformSnapshotPlans().clear();
-    if (features.xmm_snapshot_dse && features.xmm_fault_sink) {
+    if (features.xmm_fault_sink) {
         UniformStoreSinkPass::CaptureLatestSnapshots(block, info);
     }
 

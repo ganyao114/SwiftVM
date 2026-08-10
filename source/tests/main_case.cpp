@@ -226,7 +226,7 @@ TEST_CASE("hot coalesce probe classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 159);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 151);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_MEM_IDENTITY");
@@ -299,7 +299,7 @@ TEST_CASE("FeatureSet snapshots every B-class field and applies sparse overrides
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 69);
+    STATIC_REQUIRE(kFeatureCount == 67);
     REQUIRE(FeatureSet{}.operand_copy_kill);
     REQUIRE(FeatureSet{}.zero_store_zr);
     const auto& svm = GetSvmConfig();
@@ -1217,10 +1217,9 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
         return Shape{std::move(block), rhs.Def(), raw, product};
     };
 
-    auto run_triad = [&](bool enabled) {
+    auto run_triad = [&] {
         auto shape = make_triad();
         auto features = FeatureSet{};
-        features.xmm_snapshot_dse = enabled;
         UniformEliminationPass::Run(shape.block.get(), info, features);
         UniformStoreSinkPass::Run(shape.block.get(), info, features);
 
@@ -1231,18 +1230,17 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
                 REQUIRE(previous != nullptr);
                 REQUIRE(previous->GetOp() == OpCode::StoreUniform);
                 const auto snapshot = previous->GetArg<Value>(1);
-                REQUIRE(snapshot == (enabled ? shape.product : shape.raw));
+                REQUIRE(snapshot == shape.product);
             }
             stores += inst.GetOp() == OpCode::StoreUniform;
             previous = &inst;
         }
         REQUIRE(stores == 2);
     };
-    run_triad(false);
-    run_triad(true);
+    run_triad();
 
-    auto scale_store_count = [&](bool enabled) {
-        Block block{0, Location{swift::u64{0x3420u + static_cast<swift::u32>(enabled)}}};
+    auto scale_store_count = [&] {
+        Block block{0, Location{0x3420}};
         auto input_address = block.LoadImm(Imm{swift::u64{0x1000}})
                                      .SetType(ValueType::U64);
         auto raw = block.LoadMemory(Operand{input_address}).SetType(ValueType::V128);
@@ -1255,7 +1253,6 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
         block.StoreMemory(Operand{output_address}, product);
 
         auto features = FeatureSet{};
-        features.xmm_snapshot_dse = enabled;
         UniformEliminationPass::Run(&block, info, features);
         UniformStoreSinkPass::Run(&block, info, features);
         return std::count_if(block.GetInstList().begin(), block.GetInstList().end(),
@@ -1263,11 +1260,10 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
                                  return inst.GetOp() == OpCode::StoreUniform;
                              });
     };
-    REQUIRE(scale_store_count(false) == 2);
-    REQUIRE(scale_store_count(true) == 1);
+    REQUIRE(scale_store_count() == 1);
 
-    auto add_snapshot_is_raw = [&](bool enabled) {
-        Block block{0, Location{swift::u64{0x3430u + static_cast<swift::u32>(enabled)}}};
+    auto add_snapshot_is_raw = [&] {
+        Block block{0, Location{0x3430}};
         auto input_address = block.LoadImm(Imm{swift::u64{0x1000}})
                                      .SetType(ValueType::U64);
         auto raw = block.LoadMemory(Operand{input_address}).SetType(ValueType::V128);
@@ -1279,7 +1275,6 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
         block.StoreUniform(Uniform{0, ValueType::V128}, sum);
 
         auto features = FeatureSet{};
-        features.xmm_snapshot_dse = enabled;
         UniformEliminationPass::Run(&block, info, features);
         UniformStoreSinkPass::Run(&block, info, features);
         Inst* previous{};
@@ -1293,8 +1288,7 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
         }
         return false;
     };
-    REQUIRE(add_snapshot_is_raw(false));
-    REQUIRE(add_snapshot_is_raw(true));
+    REQUIRE(add_snapshot_is_raw());
 
     // Uniform forwarding can turn a disjoint GPR store into SetHostGPR between
     // the latest XMM producer and the original fault boundary. The sink must
@@ -1328,7 +1322,6 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
             forwarded_boundary.LoadMemory(Operand{forwarded_rhs_address})
                     .SetType(ValueType::V128);
     auto forwarded_features = FeatureSet{};
-    forwarded_features.xmm_snapshot_dse = true;
     UniformEliminationPass::Run(&forwarded_boundary, mapped_info,
                                 forwarded_features);
     REQUIRE(mapped_write->GetOp() == OpCode::SetHostGPR);
@@ -1388,7 +1381,6 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
         block.StoreUniform(Uniform{0, ValueType::V128}, final_value);
 
         auto features = FeatureSet{};
-        features.xmm_snapshot_dse = true;
         UniformEliminationPass::Run(&block, info, features);
         UniformStoreSinkPass::Run(&block, info, features);
         Inst* previous{};
@@ -1416,7 +1408,6 @@ TEST_CASE("XMM fault snapshots retain the latest SSA value and remove only safe 
     auto replacement = stranded.LoadImm(Imm{swift::u64{0}}).SetType(ValueType::V128);
     stranded.StoreUniform(Uniform{0, ValueType::V128}, replacement);
     auto precise = FeatureSet{};
-    precise.xmm_snapshot_dse = true;
     UniformEliminationPass::Run(&stranded, info, precise);
     UniformStoreSinkPass::Run(&stranded, info, precise);
     const auto retained_uses = std::count_if(
@@ -6065,9 +6056,7 @@ TEST_CASE("fault snapshot publishes the latest XMM arithmetic result") {
     std::array<double, 2> actual{};
     std::memcpy(actual.data(), &state.xmm0, sizeof(actual));
     CAPTURE(raw[0], raw[1], expected[0], expected[1], actual[0], actual[1]);
-    const auto& config = swift::runtime::GetSvmConfig();
-    const auto& wanted = config.xmm_snapshot_dse ? expected : raw;
-    REQUIRE(std::memcmp(actual.data(), wanted.data(), sizeof(wanted)) == 0);
+    REQUIRE(std::memcmp(actual.data(), expected.data(), sizeof(expected)) == 0);
 
     X86Core::Destroy(core);
     X86Instance::Destroy(instance);

@@ -56,7 +56,6 @@ namespace swift::runtime {
     X(addrmode_struct, true) \
     X(jit_scratch_xpool, true) \
     X(xmm_fault_sink, true) \
-    X(xmm_snapshot_dse, true) \
     X(helper_leaf_abi, false) \
     X(ra_intwidth_tie, true) \
     X(sse_afp_nan, true) \
@@ -75,7 +74,6 @@ namespace swift::runtime {
     X(shadow_lean, true) \
     X(flag_full_elim, false) \
     X(gpr_zext_coalesce, true) \
-    X(sse_nan_fast, false) \
     X(uniform_elim, true) \
     X(uniform_path_fwd, true) \
     X(vixl_fast, true) \
@@ -161,7 +159,6 @@ struct FeatureOverrides {
     X(bool, xmm_narrow_fwd, "SVM_XMM_NARROW_FWD", DefaultOn, true, "XMM 窄视图转发；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:102") \
     X(bool, xmm_resident, "SVM_XMM_RESIDENT", DefaultOn, true, "XMM1-7 固定驻留 v17-v23，XMM0 保持 State；缺省 ON，=0 回退；跨 unit ABI，原 translator/x86/translator.cpp") \
     X(bool, xmm_resident_hi, "SVM_XMM_RESIDENT_HI", DefaultOn, true, "XMM8-11 固定驻留 v24-v27；缺省 ON，=0 回退，依赖 SVM_XMM_RESIDENT；无害性依赖 SVM_FPR_SCRATCH_PRECISE+SVM_FPR_IPV_RECLAIM 同开（单独关 B 退化为池 17 有税形态）；跨 unit ABI，原 translator/x86/translator.cpp") \
-    X(u32, xmm_fpr_pool_cap, "SVM_XMM_FPR_POOL_CAP", NonNegativeAtoi, 0, "只读供给曲线探针：把 FPR value pool 钳到 13..20；0/缺省惰性，原 trampolines.cpp") \
     X(bool, vec_imm_shift, "SVM_VEC_IMM_SHIFT", DefaultOn, true, "vector immediate shift lowering；缺省 ON，=0 回退；原 decoder_sse.cc/decoder_avx_int.cc") \
     X(bool, vec_const_cache, "SVM_VEC_CONST_CACHE", DefaultOn, true, "vector constant cache；缺省 ON，=0 回退；原 decoder_internal.h:47") \
     X(bool, vec_byteshift_ext, "SVM_VEC_BYTESHIFT_EXT", DefaultOn, true, "vector byte-shift lowering；缺省 ON，=0 回退；原 decoder_sse.cc/decoder_avx_int.cc") \
@@ -187,7 +184,6 @@ struct FeatureOverrides {
     X(bool, x86_helper_values, "SVM_X86_HELPER_VALUES", NonZero, false, "helper 显式 guest value ABI；非 0 开，缺省 OFF；原 decoder_internal.h:28") \
     X(u32, x86_pin_ext, "SVM_X86_PIN_EXT", NonNegativeAtoi, 2, "x86 GPR pin level；缺省 2，负数钳为 0；原 reg_alloc.cpp:18/translator.cpp:672") \
     X(bool, xmm_fault_sink, "SVM_XMM_FAULT_SINK", DefaultOn, true, "XMM fault sink；缺省 ON，=0 回退；原 translator.cpp:662") \
-    X(bool, xmm_snapshot_dse, "SVM_XMM_SNAPSHOT_DSE", DefaultOn, true, "XMM fault 快照发布最新 SSA 值并删除同边界同值冗余快照；缺省 ON,=0 回退(回退保留已实测的陈旧值错误,仅作应急);原 uniform_store_sink_pass.cpp") \
     X(bool, ra_diag, "SVM_RA_DIAG", NonZero, false, "RA 诊断；非 0 开，缺省 OFF；原 register_alloc_pass.cpp:124") \
     X(std::string, ra_shape_prof, "SVM_RA_SHAPE_PROF", RawString, "", "RA shape profile 输出目标；存在且非 0 启用；原 ra_shape_prof.cpp:132/249") \
     X(std::string, ra_hot_coalesce, "SVM_RA_HOT_COALESCE", RawString, "", "hot coalesce profile 输出目标；存在且非 0 启用；原 hot_coalesce_prof.cpp:171/451") \
@@ -197,9 +193,6 @@ struct FeatureOverrides {
     X(bool, ra_intwidth_tie, "SVM_RA_INTWIDTH_TIE", DefaultOn, true, "整数宽度链 tie；缺省 ON，=0 回退；原 register_alloc_pass.cpp:90") \
     X(bool, sse_afp_nan, "SVM_SSE_AFP_NAN", DefaultOn, true, "AFP NaN policy 请求；缺省 ON，=0 回退，仍受 host AFP 限制；原 translator/x86/translator.cpp:342") \
     X(bool, sse_afp_minmax, "SVM_SSE_AFP_MINMAX", NonZero, false, "AFP/AH scalar SSE MIN/MAX 单指令 lowering；非 0 开，缺省 OFF，依赖有效 SVM_SSE_AFP_NAN；原 translator_alu.cpp") \
-    X(std::string, fpcr_tax_prof, "SVM_FPCR_TAX_PROF", RawString, "", "FPCR tax profile 输出目标；存在且非 0 启用；原 fpcr_tax_prof.cpp:69/358") \
-    X(bool, fpcr_tax_skip_switch, "SVM_FPCR_TAX_SKIP_SWITCH", NonZero, false, "FPCR tax 跳过 switch；非 0 开，缺省 OFF；原 fpcr_tax_prof.cpp:384") \
-    X(std::string, fpcr_tax_timing, "SVM_FPCR_TAX_TIMING", RawString, "", "FPCR timing 输出目标；存在且非 0 启用；原 fpcr_tax_prof.cpp:227/398") \
     X(bool, mem_hostbase_fold, "SVM_MEM_HOSTBASE_FOLD", DefaultOn, true, "host-base fold；缺省 ON，=0 回退；原 translator/x86/translator.cpp:728") \
     X(bool, induct_tie, "SVM_INDUCT_TIE", DefaultOn, true, "induction tie；缺省 ON，=0 回退；原 register_alloc_pass.cpp:98") \
     X(bool, region_edges, "SVM_REGION_EDGES", DefaultOn, true, "region edge 内部化（bounded16）；缺省 ON，=0 回退；原 translator/x86/translator.cpp:730") \
@@ -245,12 +238,9 @@ struct FeatureOverrides {
     X(std::string, prof, "SVM_PROF", RawString, "", "总 profile 级别原串；变量存在即开，atoi>=2 打印 per-unit；原 perf_stats.h:344/715") \
     X(bool, prof2, "SVM_PROF2", Presence, false, "细粒度 translate profile；变量存在即开；原 perf_stats.h:320") \
     X(bool, ra_hot_coalesce_all, "SVM_RA_HOT_COALESCE_ALL", NonZero, false, "hot coalesce 全 unit 明细；非 0 开；原 hot_coalesce_prof.cpp:237") \
-    X(bool, scratch_precise_peak_audit, "SVM_SCRATCH_PRECISE_PEAK_AUDIT", NonZero, false, "scratch 峰值诊断；非 0 开；原 jit_context.cpp:25") \
     X(bool, signal_delivery, "SVM_SIGNAL_DELIVERY", DefaultOn, true, "guest signal delivery；缺省 ON，=0 回退；原 linux/syscalls.cpp:336") \
-    X(bool, signal_private_frame, "SVM_SIGNAL_PRIVATE_FRAME", NonZero, false, "legacy private signal frame；非 0 开；原 linux/syscalls.cpp:348") \
     X(bool, signal_trace, "SVM_SIGNAL_TRACE", NonZero, false, "guest signal trace；非 0 开；原 linux/syscalls.cpp:341") \
     X(bool, smc_mt, "SVM_SMC_MT", DefaultOn, true, "多线程 SMC tracker；缺省 ON，=0 回退；原 translator/x86/translator.cpp:1226") \
-    X(bool, sse_nan_fast, "SVM_SSE_NAN_FAST", NonZero, false, "SSE NaN fast path；非 0 开；原 translator.cpp:329") \
     X(bool, static_regs, "SVM_STATIC_REGS", DefaultOn, true, "GPR static residency；缺省 ON，=0 回退；原 translator/x86/translator.cpp:638") \
     X(bool, syscall_mmap_shared_read, "SVM_SYSCALL_MMAP_SHARED_READ", DefaultOn, true, "只读 MAP_SHARED snapshot；缺省 ON，=0 禁用；原 linux/syscalls.cpp:1410") \
     X(bool, syscall_rt_sigaction, "SVM_SYSCALL_RT_SIGACTION", DefaultOn, true, "rt_sigaction syscall；缺省 ON，=0 返回 ENOSYS；原 linux/syscalls.cpp:1736") \

@@ -168,8 +168,6 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     const bool fpcr_transparent =
             sse_afp_nan && !lambda.IsValue() &&
             lambda.GetHostFpEffect() == ir::HostFpEffect::FPCRTransparent;
-    const bool unsafe_skip_fpcr =
-            sse_afp_nan && fpcr_tax_skip_switch && !fpcr_transparent;
 
     // Save the caller-saved registers that are actually live across the call,
     // plus x29/x30: the Blr below clobbers the link register holding this
@@ -287,10 +285,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     const u32 kSimdSaveOffset = (cursor + 15u) & ~15u;
     const u32 kSnapshotSaveBytes =
             (kSimdSaveOffset + u32(save_fprs.size()) * 16u + 15u) & ~15u;
-    // Diagnostic timing keeps only the current sample pointer in the helper
-    // frame; timestamps are written directly to the Runtime-private buffer.
-    const u32 kTimingSampleSlot = kSnapshotSaveBytes;
-    const u32 kSaveBytes = kSnapshotSaveBytes + (fpcr_tax_timing ? 16u : 0u);
+    const u32 kSaveBytes = kSnapshotSaveBytes;
     auto saved_offset = [&](u32 code) -> u32 {
         ASSERT_MSG(code < gpr_slot.size() && gpr_slot[code] >= 0,
                    "host call argument in an unsaved register");
@@ -334,96 +329,15 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
         }
     }
 
-    auto begin_fpcr_timing = [&] {
-        if (!fpcr_tax_timing) return;
-        Label no_sample;
-        Label dropped;
-        __ Str(xzr, MemOperand(sp, kTimingSampleSlot));
-        __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
-        __ Ldr(ip0, MemOperand(ip0, profile_offset_fpcr_timing));
-        __ Cbz(ip0, &no_sample);
-        __ Ldr(ip1, MemOperand(ip0, offsetof(FpcrTimingBuffer, calls)));
-        __ Add(ip1, ip1, 1);
-        __ Str(ip1, MemOperand(ip0, offsetof(FpcrTimingBuffer, calls)));
-        if (lambda.IsValue()) {
-            __ Tst(ip1, kFpcrTimingSampleMask);
-        } else {
-            // A plain global call-count modulus can phase-lock to a periodic
-            // helper sequence and omit an entire target. Give each static
-            // target a different sampling phase while retaining 1/1024.
-            __ Mov(ip, lambda.GetImm().Get());
-            __ Eor(ip, ip1, Operand(ip, LSR, 4));
-            __ Tst(ip, kFpcrTimingSampleMask);
-        }
-        __ B(&no_sample, ne);
-        __ Ldr(ip1, MemOperand(ip0, offsetof(FpcrTimingBuffer, sample_count)));
-        __ Cmp(ip1, kFpcrTimingMaxSamples);
-        __ B(&dropped, hs);
-        __ Mov(ip, sizeof(FpcrTimingSample));
-        __ Madd(ip2, ip1, ip, ip0);
-        __ Add(ip2, ip2, offsetof(FpcrTimingBuffer, samples));
-        __ Add(ip1, ip1, 1);
-        __ Str(ip1, MemOperand(ip0, offsetof(FpcrTimingBuffer, sample_count)));
-        __ Str(ip2, MemOperand(sp, kTimingSampleSlot));
-        if (lambda.IsValue()) {
-            __ Str(xzr, MemOperand(ip2, offsetof(FpcrTimingSample, target)));
-        } else {
-            __ Mov(ip1, lambda.GetImm().Get());
-            __ Str(ip1, MemOperand(ip2, offsetof(FpcrTimingSample, target)));
-        }
-        if (args.size() > 1) {
-            __ Str(x1, MemOperand(ip2, offsetof(FpcrTimingSample, arg1)));
-        } else {
-            __ Str(xzr, MemOperand(ip2, offsetof(FpcrTimingSample, arg1)));
-        }
-        __ Mov(ip1, fpcr_transparent ? 1 : 0);
-        __ Str(ip1,
-               MemOperand(ip2,
-                          offsetof(FpcrTimingSample, fpcr_transparent)));
-        __ Mrs(ip1, CNTVCT_EL0);
-        __ Str(ip1, MemOperand(ip2, offsetof(FpcrTimingSample, start)));
-        __ B(&no_sample);
-        __ Bind(&dropped);
-        __ Ldr(ip1, MemOperand(ip0, offsetof(FpcrTimingBuffer, dropped)));
-        __ Add(ip1, ip1, 1);
-        __ Str(ip1, MemOperand(ip0, offsetof(FpcrTimingBuffer, dropped)));
-        __ Bind(&no_sample);
-    };
-    auto mark_fpcr_timing = [&](size_t offset) {
-        if (!fpcr_tax_timing) return;
-        Label no_sample;
-        __ Ldr(ip0, MemOperand(sp, kTimingSampleSlot));
-        __ Cbz(ip0, &no_sample);
-        __ Mrs(ip1, CNTVCT_EL0);
-        __ Str(ip1, MemOperand(ip0, offset));
-        __ Bind(&no_sample);
-    };
-
     // Conservative helpers execute under the caller's native FP environment.
     // A direct call site may explicitly certify FPCR transparency; only that
     // narrow allowlist keeps the AFP guest FPCR installed across BLR. The
     // runtime-entry frame sits immediately above this helper frame.
-    if (sse_afp_nan) {
-        context.RecordFpcrTaxCounter(FpcrTaxCounter::DirectHelper);
-        if (fpcr_transparent) {
-            context.RecordFpcrTaxCounter(FpcrTaxCounter::DirectHelperFPFree);
-        }
-    }
-    begin_fpcr_timing();
     if (sse_afp_nan && !fpcr_transparent) {
-        if (unsafe_skip_fpcr) {
-            // UNSAFE diagnostic only. Preserve the production ON layout so a
-            // wall-clock recovery cannot be misattributed to code movement.
-            // These two NOPs replace LDR host_fpcr + MSR FPCR exactly.
-            __ Nop();
-            __ Nop();
-        } else {
-            __ Ldr(ip0,
-                   MemOperand(sp, kSaveBytes + kSseAFPHostFPCROffset));
-            __ Msr(FPCR, ip0);
-        }
+        __ Ldr(ip0,
+               MemOperand(sp, kSaveBytes + kSseAFPHostFPCROffset));
+        __ Msr(FPCR, ip0);
     }
-    mark_fpcr_timing(offsetof(FpcrTimingSample, host_ready));
 
     // Function address.
     if (lambda.IsValue()) {
@@ -450,32 +364,14 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     }
     __ Blr(ip);
 
-    mark_fpcr_timing(offsetof(FpcrTimingSample, helper_done));
     __ Str(x0, MemOperand(sp, kResultSlot));
     if (sse_afp_nan && !fpcr_transparent) {
-        if (unsafe_skip_fpcr) {
-            // Match the 16 static instructions in the cache restore emitter
-            // (hit + inline miss body). SVM_FPCR_TAX_PROF must stay off for
-            // this layout-controlled diagnostic because its counter snippets
-            // intentionally add probe-only code to the production path.
-            for (u32 i = 0; i < 16; ++i) __ Nop();
-        } else {
-            // A helper such as XRSTOR or a NaN cold handler may have updated
-            // context.mxcsr. Every helper takes the same compare path; none is
-            // trusted through a target-specific cleanliness exemption.
-            EmitSseAFPRestoreGuestFPCRCached(
-                    masm,
-                    state,
-                    kSaveBytes,
-                    ip,
-                    ip0,
-                    ip1,
-                    [this](FpcrTaxCounter counter) {
-                        context.RecordFpcrTaxCounter(counter);
-                    });
-        }
+        // A helper such as XRSTOR or a NaN cold handler may have updated
+        // context.mxcsr. Every helper takes the same compare path; none is
+        // trusted through a target-specific cleanliness exemption.
+        EmitSseAFPRestoreGuestFPCRCached(
+                masm, state, kSaveBytes, ip, ip0, ip1);
     }
-    mark_fpcr_timing(offsetof(FpcrTimingSample, guest_ready));
 
     for (size_t i = 0; i + 1 < save_fprs.size(); i += 2) {
         __ Ldp(VRegister::GetQRegFromCode(save_fprs[i]),

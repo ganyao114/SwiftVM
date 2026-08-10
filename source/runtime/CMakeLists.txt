@@ -28,8 +28,6 @@ add_library(swift_runtime STATIC
         common/function_info.h
         common/hot_coalesce_prof.cpp
         common/hot_coalesce_prof.h
-        common/fpcr_tax_prof.cpp
-        common/fpcr_tax_prof.h
         common/backedge_control.cpp
         common/backedge_control.h
         common/helper_abi.h

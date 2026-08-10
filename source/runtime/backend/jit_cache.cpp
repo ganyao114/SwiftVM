@@ -16,7 +16,6 @@
 #include "runtime/backend/address_space.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/backend/module.h"
-#include "runtime/common/fpcr_tax_prof.h"
 #include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/common/logging.h"
 #include "runtime/common/perf_stats.h"
@@ -73,10 +72,6 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     // The probe is measurement-only, so disable disk caching while it is on.
     if (HotCounterStorageEnabled()) {
         LOG_WARNING("SVM_JIT_CACHE: counter-slot profiling is incompatible; cache disabled");
-        return;
-    }
-    if (FpcrTaxProfEnabled()) {
-        LOG_WARNING("SVM_JIT_CACHE: SVM_FPCR_TAX_PROF is incompatible; cache disabled");
         return;
     }
     const auto& config = address_space.GetConfig();

@@ -5,7 +5,6 @@
 
 #include "runtime/common/types.h"
 #include "runtime/common/bit_fields.h"
-#include "runtime/common/fpcr_tax_prof.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/location.h"
 #include "runtime/ir/args.h"
@@ -79,13 +78,6 @@ struct RuntimeProfileInterface {
     // runtime-private L1 pointer lives here in that mode. Appending this field
     // preserves all existing profile-counter offsets.
     void* l1_code_cache{};
-    // W90 probe counters are Runtime-private so generated guest threads never
-    // contend on process-global atomics. Keep this last to preserve every
-    // existing execution/hot-coalesce/backedge offset.
-    std::array<u64, kFpcrTaxCounterCount> fpcr_tax{};
-    // Diagnostic-only direct-helper timing buffer. It is allocated per
-    // Runtime, so the sampled JIT path never contends with another thread.
-    FpcrTimingBuffer* fpcr_timing{};
     // 仅 SVM_EXEC_TRACE 使用；每个 Runtime 独占，信号处理器只读。
     ExecutionTraceBuffer* execution_trace{};
 };
@@ -235,10 +227,6 @@ constexpr u32 profile_offset_hot_coalesce_counters =
         offsetof(RuntimeProfileInterface, hot_coalesce_counters);
 constexpr u32 profile_offset_l1_code_cache =
         offsetof(RuntimeProfileInterface, l1_code_cache);
-constexpr u32 profile_offset_fpcr_tax =
-        offsetof(RuntimeProfileInterface, fpcr_tax);
-constexpr u32 profile_offset_fpcr_timing =
-        offsetof(RuntimeProfileInterface, fpcr_timing);
 constexpr u32 profile_offset_execution_trace =
         offsetof(RuntimeProfileInterface, execution_trace);
 

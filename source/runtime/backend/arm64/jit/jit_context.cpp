@@ -18,14 +18,6 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
-namespace {
-
-bool ScratchPrecisePeakAuditEnabled() {
-    return GetSvmConfig().scratch_precise_peak_audit;
-}
-
-}  // namespace
-
 // The spill slot count reserved in State must match the allocator's limit.
 static_assert(kMaxSpillSlots == sizeof(State::spill_area) / sizeof(u64),
               "spill slot count mismatch between reg_alloc.h and context.h");
@@ -46,7 +38,6 @@ JitContext::JitContext(const std::shared_ptr<Module>& module,
     if (exec_profile_enabled) {
         exec_access_pad = svm_config.exec_access_pad;
     }
-    fpcr_tax_profile_enabled = FpcrTaxProfEnabled();
     hot_coalesce_enabled = HotCoalesceProfEnabled();
     indirect_l1_prof_enabled = IndirectL1ProfEnabled();
     hot_counter_storage_enabled =
@@ -91,23 +82,6 @@ void JitContext::RecordExecutionTrace(u64 guest_rip,
            MemOperand(ip2, offsetof(ExecutionTraceBuffer, entries)));
     __ Add(ip1, ip1, 1);
     __ Stlr(ip1, MemOperand(ip0));
-}
-
-void JitContext::RecordFpcrTaxCounter(FpcrTaxCounter counter) {
-    if (!fpcr_tax_profile_enabled) return;
-    const auto index = static_cast<u32>(counter);
-    ASSERT(index < kFpcrTaxCounterCount);
-    // Preserve ip0/ip1 instead of reserving them in RegAlloc. The probe must
-    // observe the production RA shape rather than SVM_EXEC_PROF's fixed-
-    // clobber variant.
-    __ Stp(ip0, ip1, MemOperand(sp, -16, PreIndex));
-    __ Ldr(ip0, MemOperand(state, state_offset_exec_profile_ptr));
-    __ Ldr(ip1,
-           MemOperand(ip0, profile_offset_fpcr_tax + index * sizeof(u64)));
-    __ Add(ip1, ip1, 1);
-    __ Str(ip1,
-           MemOperand(ip0, profile_offset_fpcr_tax + index * sizeof(u64)));
-    __ Ldp(ip0, ip1, MemOperand(sp, 16, PostIndex));
 }
 
 void JitContext::RecordHotCounter(HotCoalesceCounter counter, u32 amount) {
@@ -371,17 +345,6 @@ XRegister JitContext::GetTmpX() {
     const u32 used = static_cast<u32>(cur_dirty_gprs.GetMarkedCount() -
                                       tick_dirty_gprs.GetMarkedCount()) -
                      spill_tmp_gprs;
-    if (ScratchPrecisePeakAuditEnabled() && cur_inst &&
-        (cur_inst->GetOp() == ir::OpCode::Add ||
-         cur_inst->GetOp() == ir::OpCode::Sub)) {
-        std::fprintf(stderr,
-                     "[svm-scratch-lease] unit=0x%llx id=%u op=%s type=%u "
-                     "asked=%u budget=%u\n",
-                     static_cast<unsigned long long>(unit_start), cur_inst->Id(),
-                     ir::GetIRMetaInfo(cur_inst->GetOp()).name,
-                     static_cast<u32>(cur_inst->ReturnType()), used + 1,
-                     CurrentBudget().gpr);
-    }
     ASSERT_MSG(used < CurrentBudget().gpr,
                "scratch GPR budget exceeded in unit {:#x} id {} opcode {} type {}: "
                "declared {}, asked for {}. "
@@ -1150,20 +1113,6 @@ void JitContext::EndVixlScratch() {
         ASSERT_MSG(acquired.vreg == 0,
                    "VIXL acquired an unbudgeted scratch V register mask 0x{:x}",
                    acquired.vreg);
-        if (ScratchPrecisePeakAuditEnabled() && cur_inst) {
-            const u32 explicit_fpr =
-                    static_cast<u32>(cur_dirty_fprs.GetMarkedCount() -
-                                     tick_dirty_fprs.GetMarkedCount()) -
-                    spill_tmp_fprs;
-            std::fprintf(stderr,
-                         "[svm-fpr-scratch-peak] unit=0x%llx id=%u op=%s type=%u "
-                         "peak=%u budget=%u\n",
-                         static_cast<unsigned long long>(unit_start),
-                         cur_inst->Id(),
-                         ir::GetIRMetaInfo(cur_inst->GetOp()).name,
-                         static_cast<u32>(cur_inst->ReturnType()),
-                         explicit_fpr, CurrentBudget().fpr);
-        }
         if (!audit_gpr) {
             return;
         }
@@ -1177,44 +1126,6 @@ void JitContext::EndVixlScratch() {
         const u32 vixl_used = static_cast<u32>(
                 __builtin_popcountll(acquired.gpr & ~fixed));
         last_instruction_scratch_gpr = explicit_used + vixl_used;
-        if (ScratchPrecisePeakAuditEnabled() && cur_inst &&
-            (cur_inst->GetOp() == ir::OpCode::Add ||
-             cur_inst->GetOp() == ir::OpCode::Sub)) {
-            ir::Flags flags{};
-            bool branch_only = false;
-            for (auto* pseudo : cur_inst->GetPseudoOperations()) {
-                if (pseudo->GetOp() == ir::OpCode::SaveFlags) {
-                    flags |= pseudo->GetArg<ir::Flags>(1);
-                } else if (pseudo->GetOp() == ir::OpCode::BranchOnlyFlags) {
-                    flags |= pseudo->GetArg<ir::Flags>(1);
-                    branch_only = true;
-                }
-            }
-            const auto right = cur_inst->GetArg<ir::Operand>(1);
-            const auto right_op = right.GetOp();
-            const char* right_shape = right.GetRight().Null()
-                    ? (right.GetLeft().IsImm() ? "imm" : "reg")
-                    : (right_op == ir::OperandOp::LSL ||
-                               right_op == ir::OperandOp::LSR
-                               ? "shift"
-                               : "composite");
-            std::fprintf(stderr,
-                         "[svm-scratch-peak] unit=0x%llx id=%u op=%s type=%u "
-                         "flags=0x%llx branch_only=%u right=%s right_op=%u "
-                         "explicit=%u vixl=%u peak=%u budget=%u\n",
-                         static_cast<unsigned long long>(unit_start),
-                         cur_inst->Id(),
-                         ir::GetIRMetaInfo(cur_inst->GetOp()).name,
-                         static_cast<u32>(cur_inst->ReturnType()),
-                         static_cast<unsigned long long>(flags),
-                         branch_only ? 1u : 0u,
-                         right_shape,
-                         static_cast<u32>(right_op.type),
-                         explicit_used,
-                         vixl_used,
-                         explicit_used + vixl_used,
-                         CurrentBudget().gpr);
-        }
         ASSERT_MSG(explicit_used + vixl_used <= CurrentBudget().gpr,
                    "combined scratch GPR budget exceeded emitting opcode {}: "
                    "declared {}, explicit {}, VIXL {}",

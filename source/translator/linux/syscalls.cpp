@@ -193,7 +193,6 @@ static constexpr u64 GUEST_SA_RESTORER = 0x04000000;
 static constexpr u64 GUEST_SA_NODEFER = 0x40000000;
 static constexpr u64 GUEST_SA_RESETHAND = 0x80000000;
 static constexpr u64 GUEST_SIGNAL_REDZONE = 128;
-static constexpr u64 GUEST_SIGNAL_PRIVATE_MAGIC = 0x53564d5349473634ULL;  // "SVMSIG64"
 
 enum GuestX64Greg : size_t {
     GREG_R8,
@@ -289,15 +288,6 @@ struct GuestX64XState {
 };
 static_assert(sizeof(GuestX64XState) == 840);
 
-struct GuestSignalPrivate {
-    u64 magic;
-    u64 ucontext_addr;
-    u64 saved_signal_mask;
-    u64 signal;
-    x86::ThreadContext64 saved_context;
-};
-static_assert(std::is_trivially_copyable_v<GuestSignalPrivate>);
-
 struct GuestSignalFrameLayout {
     u64 return_addr;
     u64 ucontext_addr;
@@ -310,15 +300,10 @@ static u64 AlignDown(u64 value, u64 alignment) {
     return value & ~(alignment - 1);
 }
 
-static GuestSignalFrameLayout MakeSignalFrameLayout(u64 guest_rsp,
-                                                    bool use_private_frame) {
+static GuestSignalFrameLayout MakeSignalFrameLayout(u64 guest_rsp) {
     const u64 end = AlignDown(guest_rsp - GUEST_SIGNAL_REDZONE, 16);
-    const u64 frame_top =
-            use_private_frame
-                    ? AlignDown(end - static_cast<u64>(sizeof(GuestSignalPrivate)), 16)
-                    : end;
     const u64 fpstate_addr =
-            AlignDown(frame_top - static_cast<u64>(sizeof(GuestX64XState)), 64);
+            AlignDown(end - static_cast<u64>(sizeof(GuestX64XState)), 64);
     const u64 siginfo_addr =
             AlignDown(fpstate_addr - static_cast<u64>(sizeof(GuestSigInfo)), 16);
     const u64 ucontext_addr =
@@ -338,12 +323,6 @@ static bool GuestSignalDeliveryEnabled() {
 
 static bool GuestSignalTraceEnabled() {
     return runtime::GetSvmConfig().signal_trace;
-}
-
-static bool GuestSignalPrivateFrameEnabled() {
-    // Legacy bisection path only. Its guest-stack magic scan has a known race
-    // with stale, already-consumed signal frames.
-    return runtime::GetSvmConfig().signal_private_frame;
 }
 
 // Translates a host (macOS) errno to a guest (asm-generic) -errno.
@@ -762,9 +741,7 @@ SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
     }
 
     auto& ctx = *static_cast<x86::ThreadContext64*>(x86_ctx);
-    const bool use_private_frame = GuestSignalPrivateFrameEnabled();
-    const GuestSignalFrameLayout layout =
-            MakeSignalFrameLayout(ctx.rsp.qword, use_private_frame);
+    const GuestSignalFrameLayout layout = MakeSignalFrameLayout(ctx.rsp.qword);
     if (layout.return_addr >= layout.end ||
         !memory->RangeIsMapped(layout.return_addr, layout.end - layout.return_addr)) {
         delivery.terminated = true;
@@ -778,17 +755,7 @@ SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
     info.signo = static_cast<u32>(signal);
     info.code = 128;  // SI_KERNEL, matching an ITIMER_REAL expiry
     const GuestX64XState xstate = BuildSignalXState(ctx);
-    const GuestSignalPrivate private_frame{
-            .magic = GUEST_SIGNAL_PRIVATE_MAGIC,
-            .ucontext_addr = layout.ucontext_addr,
-            .saved_signal_mask = signal_mask,
-            .signal = signal,
-            .saved_context = ctx,
-    };
-    const u64 private_addr =
-            AlignDown(layout.end - static_cast<u64>(sizeof(GuestSignalPrivate)), 16);
-    if ((use_private_frame && !memory->TryWrite(private_addr, private_frame)) ||
-        !memory->TryWrite(layout.fpstate_addr, xstate) ||
+    if (!memory->TryWrite(layout.fpstate_addr, xstate) ||
         !memory->TryWrite(layout.siginfo_addr, info) ||
         !memory->TryWrite(layout.ucontext_addr, uc) ||
         !memory->TryWrite(layout.return_addr, action.restorer)) {
@@ -820,18 +787,7 @@ SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
     ctx.mxcsr = 0x1f80;
     std::memset(ctx.xmms.data(), 0, sizeof(ctx.xmms));
     std::memset(ctx.ymm_high.data(), 0, sizeof(ctx.ymm_high));
-    if (GuestSignalTraceEnabled() && use_private_frame) {
-        std::fprintf(stderr,
-                     "[svm-signal] deliver sig=%llu saved_rip=%#llx saved_rsp=%#llx "
-                     "handler=%#llx frame=%#llx private=%#llx restorer=%#llx\n",
-                     signal,
-                     private_frame.saved_context.rip.qword,
-                     private_frame.saved_context.rsp.qword,
-                     action.handler,
-                     layout.return_addr,
-                     private_addr,
-                     action.restorer);
-    } else if (GuestSignalTraceEnabled()) {
+    if (GuestSignalTraceEnabled()) {
         std::fprintf(stderr,
                      "[svm-signal] deliver sig=%llu saved_rip=%#llx saved_rsp=%#llx "
                      "handler=%#llx frame=%#llx restorer=%#llx\n",
@@ -852,40 +808,6 @@ s64 SyscallHandler::SysRtSigreturn() {
     GuestX64UContext uc{};
     if (!memory->TryRead(ctx.rsp.qword, uc) || uc.mcontext.fpregs == 0) {
         return -EFAULT_;
-    }
-
-    if (GuestSignalPrivateFrameEnabled()) {
-        GuestSignalPrivate private_frame{};
-        bool found = false;
-        const u64 scan_begin =
-                (uc.mcontext.fpregs + sizeof(GuestX64XState) + 7) & ~u64{7};
-        for (u64 offset = 0; offset <= 64; offset += 8) {
-            if (memory->TryRead(scan_begin + offset, private_frame) &&
-                private_frame.magic == GUEST_SIGNAL_PRIVATE_MAGIC &&
-                private_frame.ucontext_addr == ctx.rsp.qword) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) return -EFAULT_;
-
-        auto restored = private_frame.saved_context;
-        if (GuestSignalTraceEnabled()) {
-            std::fprintf(stderr,
-                         "[svm-signal] return sig=%llu saved_rip=%#llx saved_rsp=%#llx "
-                         "uc_rip=%#llx uc_rsp=%#llx\n",
-                         private_frame.signal,
-                         restored.rip.qword,
-                         restored.rsp.qword,
-                         uc.mcontext.gregs[GREG_RIP],
-                         uc.mcontext.gregs[GREG_RSP]);
-        }
-        ApplySignalUContext(restored, uc);
-        constexpr u64 unmaskable =
-                (u64{1} << (9 - 1)) | (u64{1} << (19 - 1));
-        signal_mask = uc.sigmask[0] & ~unmaskable;
-        ctx = restored;
-        return 0;
     }
 
     GuestX64XState xstate{};
