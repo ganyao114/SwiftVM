@@ -6,9 +6,13 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <iterator>
+#include <map>
 #include <numeric>
+#include <sstream>
 #include <string_view>
+#include <tuple>
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
@@ -513,6 +517,62 @@ JitTranslator::PrepareBlockState(ir::Block* block) {
             split_flags_entry};
 }
 
+void JitTranslator::PlacementPoint(const char* kind, u64 guest_pc) {
+    const u32 mode = GetSvmConfig().placement_pad;
+    if (mode == 0) return;
+    const u32 before = context.CurrentBufferSize();
+    if (mode == 2) {
+        std::fprintf(stderr,
+                     "[svm-placement-reference] kind=%s unit=0x%llx pc=0x%llx offset=%u\n",
+                     kind, static_cast<unsigned long long>(placement_unit_pc),
+                     static_cast<unsigned long long>(guest_pc), before);
+        return;
+    }
+    using Key = std::tuple<std::string, u64, u64>;
+    static const std::map<Key, u32> references = [] {
+        std::map<Key, u32> result;
+        std::ifstream input{"/private/tmp/svm-placement-pad-reference.tsv"};
+        std::string line;
+        while (std::getline(input, line)) {
+            std::istringstream fields{line};
+            std::string point;
+            std::string unit_text;
+            std::string pc_text;
+            u32 offset{};
+            if (!(fields >> point >> unit_text >> pc_text >> offset)) continue;
+            result.emplace(Key{point, std::stoull(unit_text, nullptr, 0),
+                               std::stoull(pc_text, nullptr, 0)}, offset);
+        }
+        return result;
+    }();
+    const auto it = references.find(Key{kind, placement_unit_pc, guest_pc});
+    if (it == references.end()) {
+        std::fprintf(stderr,
+                     "[svm-placement-miss] kind=%s unit=0x%llx pc=0x%llx before=%u\n",
+                     kind, static_cast<unsigned long long>(placement_unit_pc),
+                     static_cast<unsigned long long>(guest_pc), before);
+        return;
+    }
+    if (before > it->second) {
+        std::fprintf(stderr,
+                     "[svm-placement-overrun] kind=%s unit=0x%llx pc=0x%llx before=%u target=%u\n",
+                     kind, static_cast<unsigned long long>(placement_unit_pc),
+                     static_cast<unsigned long long>(guest_pc), before, it->second);
+        return;
+    }
+    const u32 ops = (it->second - before) / sizeof(u32);
+    ASSERT_MSG(before + ops * sizeof(u32) == it->second,
+               "placement reference is not instruction aligned");
+    for (u32 i = 0; i < ops; ++i) __ Nop();
+    if (ops != 0) {
+        std::fprintf(stderr,
+                     "[svm-placement-pad] kind=%s unit=0x%llx pc=0x%llx before=%u after=%u ops=%u\n",
+                     kind, static_cast<unsigned long long>(placement_unit_pc),
+                     static_cast<unsigned long long>(guest_pc), before,
+                     context.CurrentBufferSize(), ops);
+    }
+}
+
 JitTranslator::UniformDensityCounts
 JitTranslator::CollectUniformDensity(ir::Block* block, bool density) {
     // Count the remaining x86 GPR uniform-buffer traffic dynamically without
@@ -656,6 +716,7 @@ void JitTranslator::TranslateBlockInstructions(
             loop_hoist_prefix_ops =
                     (context.CurrentBufferSize() - loop_hoist_prefix_begin) /
                     sizeof(u32);
+            PlacementPoint("body", block->GetStartLocation().Value());
             __ Bind(loop_hoist_body_entry.get());
         }
         if (density) {
@@ -843,6 +904,13 @@ void JitTranslator::PrintBlockDensity(
 void JitTranslator::Translate(ir::Block* block) {
     vixl::svm_vixl_prof::JitScope vixl_prof{context.GetFeatures().vixl_fast};
     ASSERT(vec_nan_cold_sites.empty());
+    if (!translating_function) {
+        placement_unit_pc = block->GetStartLocation().Value();
+    }
+    // Keep entry padding outside the block density/hot accounting window.  It
+    // is reached only on the first fallthrough; every self edge targets the
+    // label bound after it.
+    PlacementPoint("block", block->GetStartLocation().Value());
     const bool density = context.DensityProfileEnabled();
     const bool gap_audit = density && GetSvmConfig().ra_hot_coalesce_all;
     ResetBoundaryDensity();
@@ -864,6 +932,7 @@ void JitTranslator::Translate(ir::Block* block) {
         // only the self edge targets local_entry. This makes host NZCV valid
         // before a pre-producer guest fault without charging the steady loop.
         __ B(backedge_flags_plan->external_entry.get());
+        PlacementPoint("flags", block->GetStartLocation().Value());
         __ Bind(backedge_flags_plan->local_entry.get());
         context.BeginBackedgeBody();
         backedge_host_begin = context.CurrentBufferSize();
@@ -908,11 +977,15 @@ void JitTranslator::Translate(ir::Block* block) {
                       density_scalar_fp_ops,
                       loop_hoist,
                       loop_hoist_prefix_ops);
+    if (!translating_function) {
+        PlacementPoint("unit", block->GetStartLocation().Value());
+    }
 }
 
 void JitTranslator::Translate(ir::HIRFunction* function) {
     vixl::svm_vixl_prof::JitScope vixl_prof{context.GetFeatures().vixl_fast};
     ASSERT(function);
+    placement_unit_pc = function->GetFunction()->GetStartLocation().Value();
     context.SetCurrent(function->GetFunction());
     disable_instructions.resize(function->MaxInstrCount());
     PrepareRegionEdges(function);
@@ -924,6 +997,7 @@ void JitTranslator::Translate(ir::HIRFunction* function) {
         }
         emitted_blocks.push_back(block);
     }
+    translating_function = true;
     for (size_t i = 0; i < emitted_blocks.size(); ++i) {
         // Undecoded successor left behind by lazy region compilation (and by
         // the pre-existing 128-block cap): no instructions and no terminal.
@@ -941,6 +1015,8 @@ void JitTranslator::Translate(ir::HIRFunction* function) {
                 : std::nullopt;
         Translate(block);
     }
+    translating_function = false;
+    PlacementPoint("unit", placement_unit_pc);
     next_region_block.reset();
 }
 

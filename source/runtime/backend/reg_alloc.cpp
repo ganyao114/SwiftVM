@@ -551,6 +551,26 @@ void RegAlloc::SetActiveRegs(swift::u32 id, GPRSMask& gprs, FPRSMask& fprs) {
     map.dirty_fprs = fprs;
 }
 
+void RegAlloc::PermutePlacementProbeGPRHomes() {
+    constexpr u32 left = 14;
+    constexpr u32 right = 15;
+    const auto swap_mask_bits = [=](GPRSMask& mask) {
+        const bool left_set = mask.Get(left);
+        const bool right_set = mask.Get(right);
+        if (left_set != right_set) {
+            left_set ? mask.Clear(left) : mask.Mark(left);
+            right_set ? mask.Clear(right) : mask.Mark(right);
+        }
+    };
+    for (auto& map : alloc_result) {
+        if (map.type == GPR) {
+            if (map.slot == left) map.slot = right;
+            else if (map.slot == right) map.slot = left;
+        }
+        swap_mask_bits(map.dirty_gprs);
+    }
+}
+
 ir::HostFPR RegAlloc::ValueFPR(const ir::Value& value) { return ValueFPR(value.Id()); }
 
 ir::HostGPR RegAlloc::ValueGPR(const ir::Value& value) {

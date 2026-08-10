@@ -45,6 +45,11 @@ static void RunVerified(Unit* unit,
                         bool induct_tie = false,
                         bool spill_evict = true,
                         RegisterAllocPass::SpillEvictTestResult* test_result = nullptr) {
+    const auto finish_placement_probe = [&] {
+        if (features.ra_home_perm) {
+            reg_alloc->PermutePlacementProbeGPRHomes();
+        }
+    };
     auto rerun_with_conditional_spill_scratch = [&] {
 #if defined(__linux__) && !defined(__ANDROID__)
         const u32 spills = reg_alloc->SpillCount();
@@ -136,6 +141,7 @@ static void RunVerified(Unit* unit,
                 if (rerun_with_conditional_spill_scratch()) return;
                 record_shape(scan);
                 record_test_result(scan, eviction_restarts, false);
+                finish_placement_probe();
                 return;
             }
             eviction_fallback = true;
@@ -154,6 +160,7 @@ static void RunVerified(Unit* unit,
             if (rerun_with_conditional_spill_scratch()) return;
             record_shape(scan);
             record_test_result(scan, 0, false);
+            finish_placement_probe();
             return;
         }
     }
@@ -226,6 +233,7 @@ static void RunVerified(Unit* unit,
             if (rerun_with_conditional_spill_scratch()) return;
             record_shape(scan);
             record_test_result(scan, eviction_restarts, eviction_fallback);
+            finish_placement_probe();
             return;
         }
     }

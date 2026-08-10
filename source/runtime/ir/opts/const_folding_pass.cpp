@@ -79,6 +79,11 @@ struct ImmKeyHash {
     }
 };
 
+struct ScalarImmEntry {
+    Value value;
+    u32 index;
+};
+
 struct VecKey {
     u64 low;
     u64 high;
@@ -269,11 +274,7 @@ void FoldIntegerImmediates(Block* block, const FeatureSet& features) {
 void DedupConstants(Block* block, const FeatureSet& features) {
     // Bisect switch, mirroring SVM_UNIFORM_DSE.
     const bool imm_off = !features.const_cse;
-    struct Entry {
-        Value value;
-        u32 index;
-    };
-    std::unordered_map<ImmKey, Entry, ImmKeyHash> canonical;
+    std::unordered_map<ImmKey, ScalarImmEntry, ImmKeyHash> canonical;
     // These two constants exist specifically for the vector lowering gates.
     // Unlike scalar LoadImm, their reuse is block-wide: one 16-byte table or
     // one zero vector is worth keeping live across the GHASH/AES straight-line
@@ -354,13 +355,14 @@ void DedupConstants(Block* block, const FeatureSet& features) {
         // from it, so a U32 and a U64 LoadImm of the same bits are different
         // values.
         const ImmKey key{imm.Get(), static_cast<u8>(inst.ReturnType())};
-        auto [it, inserted] = canonical.try_emplace(key, Entry{Value{&inst}, index});
+        auto [it, inserted] =
+                canonical.try_emplace(key, ScalarImmEntry{Value{&inst}, index});
         if (!inserted) {
             if (index - it->second.index <= kReuseWindow) {
                 replacement.emplace(&inst, it->second.value);
             } else {
                 // Too far to reuse: this definition becomes the new anchor.
-                it->second = Entry{Value{&inst}, index};
+                it->second = ScalarImmEntry{Value{&inst}, index};
             }
         }
     }

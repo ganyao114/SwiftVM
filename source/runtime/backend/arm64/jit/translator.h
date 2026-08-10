@@ -174,6 +174,8 @@ private:
                            const ir::LoopHoistMetadata& loop_hoist,
                            u32 loop_hoist_prefix_ops);
 
+    void PlacementPoint(const char* kind, u64 guest_pc);
+
     struct BackedgeFlagsPlan {
         bool optimized{true};
         // dead_successor=true 是 region 单边 flags-dead 形态：热边目标在
@@ -544,6 +546,8 @@ private:
     u32 region_block_cycles{};
     u32 region_block_fallthroughs{};
     u32 region_block_local_branch_bytes{};
+    u64 placement_unit_pc{};
+    bool translating_function{};
 };
 
 }

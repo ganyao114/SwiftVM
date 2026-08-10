@@ -235,6 +235,10 @@ public:
     [[nodiscard]] u16 AesChainTarget(u32 id) const;
     [[nodiscard]] bool IsPshufd4eExt(u32 id) const;
     void SetActiveRegs(u32 id, GPRSMask &gprs, FPRSMask &fprs);
+    // Experimental placement probe: rename only the symmetric dynamic homes
+    // after allocation and verification, so allocation/coalescing decisions
+    // and therefore instruction count remain unchanged.
+    void PermutePlacementProbeGPRHomes();
 
     ir::HostGPR ValueGPR(const ir::Value &value);
     ir::HostFPR ValueFPR(const ir::Value &value);
