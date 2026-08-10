@@ -872,3 +872,17 @@ guest 也拿不到可恢复的 #PF（PageFatal 直接终结该 guest 线程）�
 - 旁证判例:指纹 noflagm 分片必须 `SVM_FLAGS_CFINV=0` 实跑自动探测;
   只设 `SVM_FP_GOLDEN_PROFILE` 覆盖文件名会把 flagm 指纹比到 noflagm golden,
   假红 ir 336→333 四条。
+
+## flags 寄存器化 B0 纯计数批收官(2026-08-11,master = `4f8c192`)
+
+- `SVM_FLAGS_REGS_AUDIT` 默认 OFF 已并:MergeCause×EdgeKind×Cost 纯计数,
+  零发码改动(OFF/ON 指纹逐字,合并方独立复验)。env 153→154,FeatureSet 69→70。
+- **裁决:净动态下界 CoreMark 0.679715% / sqlite 2.291082%,远低于 8% 门,
+  NZCV 全面扩展(B1+)不予放行。** 杀手成本是 x27 被 PF/AF 占用后 L2 cache
+  base 在 dispatcher/RSB 执行边上的 reload(CoreMark −1.017B vs saved
+  +1.417B)。阶段 A 毛下界 4.03%/4.66% 被 B0 收紧为 hot-only(cold tail 剔除)
+  再扣真实新成本后的净账取代。
+- 余留唯一活口:PF/AF split 可作为默认 OFF 实验,前置 = identity 下 x24
+  零 reload 独立证明;证明不成则 W-β 全线关闭,flags 账按现状收官。
+- 合并方复跑账:coremark 净 400,100,966 / sqlite 净 6,896,922,与报告
+  逐位吻合(漂移 <0.0001%,entry 计数噪声)。
