@@ -22,8 +22,6 @@ namespace swift::runtime::backend::arm64 {
 
 using namespace vixl::aarch64;
 
-enum class FpcrTaxCounter : u8;
-
 struct NoneReg {};
 using CPUReg = boost::variant<NoneReg, Register, VRegister>;
 
@@ -209,7 +207,6 @@ public:
     void RecordExecCounter(u32 state_offset, u32 amount = 1);
     [[nodiscard]] bool ExecutionTraceEnabled() const { return execution_trace_enabled; }
     void RecordExecutionTrace(u64 guest_rip, const XRegister& guest_rsp);
-    void RecordFpcrTaxCounter(FpcrTaxCounter) {}
     [[nodiscard]] bool HotCoalesceEnabled() const { return hot_coalesce_enabled; }
     void FinishHotCoalesceBlock();
     void BeginHotNaNGuard(u32 instruction_count);

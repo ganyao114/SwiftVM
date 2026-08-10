@@ -1934,8 +1934,7 @@ VRegister JitTranslator::PreserveNaNColdSource(ir::Inst* inst,
     if (UseAFPNaN(inst)) {
         return source;
     }
-    if (sse_nan_coldpath && !sse_nan_fast &&
-        source.GetCode() == result.GetCode()) {
+    if (sse_nan_coldpath && source.GetCode() == result.GetCode()) {
         __ Orr(reserved.V16B(), source.V16B(), source.V16B());
         return reserved;
     }
@@ -2348,7 +2347,7 @@ void JitTranslator::EmitVecFScalarBinaryTied(ir::Inst* inst, u32 lane_bits) {
                 PANIC();
         }
     };
-    if (UseAFPNaN(inst) || sse_nan_fast) {
+    if (UseAFPNaN(inst)) {
         emit_operation();
         return;
     }
@@ -2423,10 +2422,7 @@ void JitTranslator::EmitVecFloatNaNFixup(const VRegister& result,
                                          u32 lane_bits,
                                          u32 lane_count,
                                          ir::Inst* inst) {
-    // Explicitly opt-in semantic relaxation. The immediately preceding NEON
-    // arithmetic instruction becomes the final lane result; no operand-order
-    // payload selection or x86 indefinite-NaN substitution is emitted.
-    if (UseAFPNaN(inst) || sse_nan_fast) {
+    if (UseAFPNaN(inst)) {
         return;
     }
     ASSERT(lane_bits == 32 || lane_bits == 64);

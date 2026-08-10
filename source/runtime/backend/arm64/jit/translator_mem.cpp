@@ -1228,7 +1228,6 @@ void JitTranslator::EmitStoreUniform(ir::Inst* inst) {
     });
     if (sse_afp_nan &&
         uni.GetOffset() == offsetof(swift::x86::ThreadContext64, mxcsr)) {
-        context.RecordFpcrTaxCounter(FpcrTaxCounter::StoreMxcsr);
         // StoreUniform has no save frame around it. Lease all three operands
         // from the allocator-visible scratch pool so XPOOL cannot place a
         // live guest value in a fixed ip register that this sync clobbers.
@@ -1241,10 +1240,7 @@ void JitTranslator::EmitStoreUniform(ir::Inst* inst) {
                 0,
                 fpcr,
                 mxcsr,
-                bit,
-                [this](FpcrTaxCounter counter) {
-                    context.RecordFpcrTaxCounter(counter);
-                });
+                bit);
     }
 }
 
@@ -1795,7 +1791,6 @@ void JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
     }
     __ Mov(x2, size);
     if (sse_afp_nan) {
-        context.RecordFpcrTaxCounter(FpcrTaxCounter::MemoryCopy);
         __ Ldr(ip0,
                MemOperand(sp, kSaveBytes + kSseAFPHostFPCROffset));
         __ Msr(FPCR, ip0);
@@ -1809,10 +1804,7 @@ void JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
                 kSaveBytes,
                 ip,
                 ip0,
-                ip1,
-                [this](FpcrTaxCounter counter) {
-                    context.RecordFpcrTaxCounter(counter);
-                });
+                ip1);
     }
 
     for (u32 i = 0; i < 32; ++i) {

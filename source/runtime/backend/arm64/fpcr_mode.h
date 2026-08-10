@@ -14,17 +14,6 @@ inline constexpr s32 kSseAFPHostFPCROffset = 0;
 inline constexpr s32 kSseAFPGuestFPCROffset = 8;
 inline constexpr s32 kSseAFPSourceMXCSROffset = 16;
 
-// Compatibility tags for the two existing translator_mem call sites. The
-// retired FPCR-tax profiler no longer records them; keeping the tags here lets
-// that emitter remain untouched while all generated counter code disappears.
-enum class FpcrTaxCounter : u8 {
-    CacheLookup,
-    RebuildExecuted,
-    CacheHit,
-    StoreMxcsr,
-    MemoryCopy,
-};
-
 // Build the complete guest FPCR from architectural MXCSR state.  Do not use
 // the caller's FPCR as a base: DN/FZ/RMode and trap controls are host state.
 // x86 RC encodes down/up as 01/10, while Arm FPCR encodes up/down as 01/10,
@@ -84,18 +73,6 @@ inline void EmitSseAFPRestoreGuestFPCRCached(MacroAssembler& masm,
     masm.Bind(&cached);
     masm.Bind(&apply);
     masm.Msr(FPCR, result);
-}
-
-template <typename IgnoredCounter>
-inline void EmitSseAFPRestoreGuestFPCRCached(MacroAssembler& masm,
-                                             const XRegister& state_reg,
-                                             s32 frame_offset,
-                                             const XRegister& result,
-                                             const XRegister& mxcsr,
-                                             const XRegister& bit,
-                                             IgnoredCounter&&) {
-    EmitSseAFPRestoreGuestFPCRCached(
-            masm, state_reg, frame_offset, result, mxcsr, bit);
 }
 
 inline u64 ReadNativeFPCR() {

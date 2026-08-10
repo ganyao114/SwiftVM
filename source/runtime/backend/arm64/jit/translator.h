@@ -423,10 +423,6 @@ private:
     bool window_uxtw{false};
     bool mem_hostbase_fold{false};
     bool induct_tie{false};
-    // The retired approximate NaN mode is permanently disabled. Keep this
-    // compile-time constant until the protected ALU emitter is cleaned in its
-    // own change; it generates no branch or runtime state.
-    static constexpr bool sse_nan_fast = false;
     // Default-on exact policy: keep the common path to the host FP operation
     // plus one combined result-NaN test, and defer the x86 payload/indefinite
     // repair to shared block-local stubs. =0 restores the legacy inline
