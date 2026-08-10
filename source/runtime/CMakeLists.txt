@@ -77,6 +77,8 @@ add_library(swift_runtime STATIC
         ir/opts/const_folding_pass.h
         ir/opts/register_alloc_pass.cpp
         ir/opts/register_alloc_pass.h
+        ir/opts/register_alloc_internal.h
+        ir/opts/register_alloc_verified.inc
         ir/opts/reid_instr_pass.cpp
         ir/opts/reid_instr_pass.h
         ir/opts/uniform_elimination_pass.cpp
