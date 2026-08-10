@@ -1264,6 +1264,12 @@ void JitContext::EndTerminalScratch() {
     auxiliary_scratch = false;
 }
 
+void JitContext::ReserveLevel3IndirectTarget(const ir::Value& value) {
+    if (backend::X86PinExtLevel3Enabled(reg_alloc.GetGprs())) {
+        ReserveTmpX(X(value));
+    }
+}
+
 void JitContext::BeginColdScratch() {
     EndVixlScratch();
     auxiliary_scratch = true;

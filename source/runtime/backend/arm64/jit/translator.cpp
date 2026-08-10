@@ -871,6 +871,14 @@ void JitTranslator::EmitBlockTerminalAndColdPaths(
         bool density,
         std::span<u32> density_bytes) {
     context.BeginTerminalScratch();
+    if (context.GetFeatures().indirect_l1 && dynamic_next_loc) {
+        // SetLocation has consumed this SSA value, so linear scan may consider
+        // its register dead at the terminal. Level 3 puts x11-x17 in the value
+        // pool; keep the cached target live across FlushFlags and the two L1
+        // lookup scratch leases. Otherwise either window can alias the target
+        // before ForwardIndirectL1 hashes and branches through it.
+        context.ReserveLevel3IndirectTarget(*dynamic_next_loc);
+    }
     const u32 flags_before = density ? context.CurrentBufferSize() : 0;
     FlushFlags();
     if (density) {

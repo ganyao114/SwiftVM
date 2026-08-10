@@ -79,6 +79,7 @@ public:
     }
     void BeginTerminalScratch();
     void EndTerminalScratch();
+    void ReserveLevel3IndirectTarget(const ir::Value& value);
     // Cold NaN stubs resume an earlier instruction and therefore may not use
     // any implicit GPR scratch at all; their explicit x13 ABI is declared on
     // the originating opcode.

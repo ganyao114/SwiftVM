@@ -242,10 +242,17 @@ static void RunVerified(Unit* unit,
             return;
         }
     }
-    // Only reachable when the register pool itself is smaller than one
-    // instruction's scratch demand, which no ARM64 configuration produces. Say
-    // so here, where the unit is still identifiable, instead of letting the
-    // JIT walk into "No free temporary GPR" halfway through an instruction.
+    if (level3) {
+        // No verified allocation exists. The last ladder attempt still
+        // populated RegAlloc, but consuming that mapping would let an emitter
+        // overwrite a live value. Fail closed instead of executing an
+        // allocation Verify() explicitly rejected.
+        PANIC("RegisterAllocPass: pool {}/{} cannot cover scratch demand {}/{} (+{} reloads)",
+              pool_gpr, pool_fpr, base_gpr, base_fpr, reload_bound);
+    }
+    // Preserve the historical behavior for the deliberately undersized masks
+    // used by allocator structure tests. Real ARM64 configurations other than
+    // level 3 do not reach this branch.
     LOG_WARNING("RegisterAllocPass: pool {}/{} cannot cover scratch demand {}/{} (+{} reloads); "
                 "emitting with the largest workable reserve",
                 pool_gpr, pool_fpr, base_gpr, base_fpr, reload_bound);

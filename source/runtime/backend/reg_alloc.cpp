@@ -85,6 +85,7 @@ bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool,
 bool X86PinExtLevel3AluScratchEnabled(const GPRSMask& pool, ir::OpCode op) {
     return X86PinExtLevel3Enabled(pool) && pool.Get(10) &&
            (op == ir::OpCode::Add || op == ir::OpCode::Sub ||
+            op == ir::OpCode::Or || op == ir::OpCode::Select ||
             op == ir::OpCode::VecFCvtFloatToInt ||
             op == ir::OpCode::CallLambda || op == ir::OpCode::CallDynamic ||
             op == ir::OpCode::CallLocation);
@@ -322,13 +323,16 @@ GPRClassContract ClassifyGPRContract(const GPRSMask& pool,
 //    operand), one for the 64-bit ones, none for the packed ones.
 ScratchNeed ScratchBudget(ir::OpCode op, const FeatureSet& features) {
     switch (op) {
+        case ir::OpCode::CompareAndSwap:
         case ir::OpCode::AtomicExchange:
+        case ir::OpCode::AtomicFetchAdd:
+        case ir::OpCode::AtomicRMW:
             // Level 3's spill-aware accounting must use the measured emitter
-            // peak, not the generic three-register default: address, desired
-            // and result reloads replace ordinary value locations, while the
-            // emitter itself only holds MergeNZCV's shared temporary. The
-            // exclusive status/value registers are fixed clobbers accounted
-            // separately by the allocator.
+            // peak, not the generic three-register default: operand/result
+            // reloads replace ordinary value locations, while these emitters
+            // themselves only hold MergeNZCV's shared temporary. The exclusive
+            // status/value registers are fixed clobbers accounted separately
+            // by the allocator.
             if (X86PinExtLevel() >= 3) {
                 return {1, kDefaultScratchFPR};
             }
