@@ -967,3 +967,18 @@ vec-shuffle/crypto/vec-fp)+ 私有 translator_alu_internal.h seam。纯文本
 build 零新增 warning、默认套件绿、五 gate 严格同集、双 profile 指纹
 byte-identical。指挥官 build-master 复验:套件 209/1,053,263 绿、
 指纹双 profile 匹配 golden。卫生道全部留尾清零。
+
+## move/桥接残余桶归因收官(2026-08-12)
+
+coremark 34.483159% move 桶七互斥类逐条闭合(与 hot log 差 4.98e-9):
+宽度桥 11.845502% / fixed-home transport 9.958702% / 其他(算术·LoadImm·EA)
+7.579915% / x26 flags 链 3.655060% / region·terminal 1.443980% /
+helper·FPR≈0。top-10 热 unit 覆盖全 move 47.08%,无未知大尾巴。
+两个反直觉:x27 cache-base 直接 move=0(B0 0.68% 罚单非 mov 形态);
+top-10 无一条命中 third-party-target-conflict。所有 ≥0.5% 类均落回已封存
+路线(width-chain v2 / fixed-class pin / W-β / lazy flags),机械可消下界
+为零——**move 轴向在当前证明体系下耗尽,不再立项**。重开前置(缺一不可):
+fault-safe 跨块 home SSA > 不依赖热路径 lazy recipe 的 flags 载体 >
+有界 signal observer > region 内 width 资格不蒸发的证明。审计存证
+docs/w66-move-attribution-audit.md;生产源码零改动(git 可证),
+probe 前后 top-10 形状逐点一致。
