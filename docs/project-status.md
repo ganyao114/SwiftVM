@@ -938,3 +938,21 @@ fail-closed(该路径实证不安全:消费 Verify 拒绝的映射)。全部 sco
 level3,默认态双 profile 指纹 byte-identical。指挥官独立复验:level3
 sqlite TOTAL 1.619s(原必崩)、level3+FIXED_CLASS sqlite 1.669s、
 level3 c-ray 完成、默认套件绿。全 pin 轴重开条件 #1 解除。
+
+## 2026-08-11 osslsha 定因收官:前提翻转,实为 2.48× 胜场(无代码改动)
+
+纯审计(w66)。**baseline6 "osslsha 2.458" 的真实含义是 SVM 吞吐优势
+2.458×,不是负场**——此前总账误标为负,本轮纠正。逐 size 吞吐
+SVM/FEX:16B 1.22× → 8192B 2.48× → 16384B 2.49×,单调上升曲线与
+EVP 固定税模型(6.1–6.6k host inst/op,16B 占 89%、8192B 仅 6.6%)
+完全自洽。主因:orb 参照二进制 FEX-2405-222(2024-06-11)的实码对
+SHA256RNDS2 未发 sha256h/h2,标量展开 2,351 条/block;我方 725 条/block
+原生 SHA2(/proc/pid/mem 抠码 51,628B 逐字实证;FEX 当前源码
+EncryptionOps.cpp 已有原生 lowering,是参照二进制太旧)。四候选裁决:
+隐式 XMM0 税证伪(热块无每轮搬运;16 条/block XMM0 store 属 fault
+snapshot 正确性)、signal 非主因、move 桶随 size 换主导(8192B 时 SHA
+core 占 93.17%)。**不立项追赶 orb FEX;唯一活口:unit-local SHA
+producer/fixed-home tie 二道审计(43 SetHostFPR+24 GetHostFPR/block,
+第一门=归零可行性,不许预支 67 条毛池)**。baseline7 前必须用
+.cache/FEX 当前源码重建 orb 参照二进制。指挥官抽验:SVM 8192B 实测
+361k kB/s(2×2 墙钟并行污染下),FEX 184k kB/s,方向量级相符。
