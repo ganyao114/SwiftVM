@@ -956,3 +956,14 @@ producer/fixed-home tie 二道审计(43 SetHostFPR+24 GetHostFPR/block,
 第一门=归零可行性,不许预支 67 条毛池)**。baseline7 前必须用
 .cache/FEX 当前源码重建 orb 参照二进制。指挥官抽验:SVM 8192B 实测
 361k kB/s(2×2 墙钟并行污染下),FEX 184k kB/s,方向量级相符。
+
+## 2026-08-11 translator_alu 拆分收官(卫生道真正收官)
+
+translator_alu.cpp 3,984 行按家族拆为六 TU(scalar/scalar-bits/vec-int/
+vec-shuffle/crypto/vec-fp)+ 私有 translator_alu_internal.h seam。纯文本
+移动:143 函数定义零增删、函数体逐字一致——codex 段 SHA 自证 +
+指挥官独立重算(136 个 JitTranslator:: 成员函数体聚合 SHA-256
+9890ab3944a67138ff72f75c 前后逐字相符)。分 11 批交付,批批过门:
+build 零新增 warning、默认套件绿、五 gate 严格同集、双 profile 指纹
+byte-identical。指挥官 build-master 复验:套件 209/1,053,263 绿、
+指纹双 profile 匹配 golden。卫生道全部留尾清零。
