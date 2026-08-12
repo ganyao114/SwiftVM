@@ -999,3 +999,18 @@ interval-split/重定位式冲突回退(与 move 归因前置 #1 跨块 home fac
 同属 RA  redesign)。另发现:Linux host 套件 main_case.cpp 有三个
 预存夹具红(VIXL Instruction facade ++、force-spill 绕过 x18 重跑、
 width-chain 自建 mask),与机制无关,修复面在禁改文件内,待批。
+
+## SRA-capable RA redesign 设计研究收官(2026-08-12)
+
+docs/w66-sra-ra-redesign-design.md。设计可立,拆 P0(不可变 HomeVersion
+/ComponentOwner + HomeTransaction 事务基座)/P1(unit-local fixed-home
+tail relocation,切点一条受控搬运换多条 transport)/P2(region-local
+home-version dataflow,入口 GetHost/出口 SetHost 判 trivial)/P3(跨
+direct-link 双入口 ABI,独立项目)。核心不变量:每笔事务相对已验证
+baseline 单调不劣,任何局部净增逐 unit fail-closed——直接针对
+Phase C 桥接造多于消(+3.53%)的死因。逐条规避三历史否决(池饿死/
+造桥/region 蒸发)。成本:P0–P2 21–30 人日,P3 另 12–18。条件 GO:
+先批 P-1 analysis-only 联合分布审计(conflict × tail × headroom ×
+observer),三条件(净值严格正/dry-run 零新增 spill·helper·bytes/
+region 态存活)满足后才批 P0/P1 实现。十个未解决证明洞诚实列册
+(联合分布缺失、faulting destination 原子性、emitter 单 map 假设等)。
