@@ -1014,3 +1014,27 @@ Phase C 桥接造多于消(+3.53%)的死因。逐条规避三历史否决(池饿
 observer),三条件(净值严格正/dry-run 零新增 spill·helper·bytes/
 region 态存活)满足后才批 P0/P1 实现。十个未解决证明洞诚实列册
 (联合分布缺失、faulting destination 原子性、emitter 单 map 假设等)。
+
+## SRA redesign 双审计收官:P-1/P2 双 NO-GO(2026-08-12)
+
+按设计研究预注册门执行(d8786bc),双 analysis-only 审计同日落锤:
+
+- **P-1 relocation 联合分布**(docs/w68-p1-joint-distribution.md):
+  候选充足(structural 占 conflict 81-85%、headroom=6 占 92%、
+  fault/helper/fixed-clobber 零阻),但 incumbent 余尾≈100% 为 1,
+  一条 relocation 恰换一条 SetHost——**1-for-1 零和**,严格门全灭,
+  Apply=0。死因是 transport cardinality,不是池、不是 observer。
+- **P2 HomeFact census**(docs/w66-p2-homefact-census.md):R 类
+  9.958702% 冻结账五类 digit-exact 闭合——observer/新版本首发 62-90%、
+  partial-write 20%、external-entry 12%,**strict logical-exact 仅
+  0.17%(coremark/sqlite)**;rays 门差 130-937 倍,即使反事实免除
+  public-entry 也差 5.8-12.4 倍;现行 location==home exact=0。
+  毛池主体是必要首发,不是冗余搬运。
+
+**结论:全 pin/SRA 方向丈量到尽头**——容量关已过(pool10/12,
+用户裁示证立),但 selector 级利润池不存在:P1 零和、P2 毛池
+0.17%、P3 双入口也救不回 rays。重开条件两份报告各自钉死。
+副产品:证明洞 #4(RPO 有、dominance 无、结构校验零失败)、
+#5(observer 全表:29 清/2 转移/143 保留)实测回答;发现三套
+既有 observer predicate 漂移(卫生项);Linux 套件 main_case 夹具红
+待批修。
