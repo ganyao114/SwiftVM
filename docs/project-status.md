@@ -1038,3 +1038,31 @@ region 态存活)满足后才批 P0/P1 实现。十个未解决证明洞诚实�
 #5(observer 全表:29 清/2 转移/143 保留)实测回答;发现三套
 既有 observer predicate 漂移(卫生项);Linux 套件 main_case 夹具红
 待批修。
+
+## 2026-08-12 用户双路径审计双 NO-GO(基建压缩 + 活性代价模型)
+
+用户裁示两条路:压缩基建寄存器(x25/x27)挪 callee-saved 槽给 guest 家;
+跨边界值活性在 RA 决策时计入代价。双审计并行(w66/w68),均钉死 NO-GO:
+
+- **路二 活性代价(docs/w68-liveness-cost-audit.md)**:候选事件集为空——
+  当前 region 构造在块边界重建 GetHostGPR SSA 定义,fixed range 没有任何
+  owner 从较早块续命到较晚块的 producer;CoreMark/SQLite region+RE=0、
+  zip7 抽查五项全部 0 事件。负控成立(同块命中 995/6568 等),探针撤销后
+  top-20 形状逐点一致。结论:canonical-per-block 表示下频度不对称尚未形成,
+  不是阈值问题;重开须 HomeFact 类表示落地后重跑同口径探针。
+- **路一 基建压缩(docs/w66-infra-reclaim-migration.md)**:净账矩阵
+  {x27 unpin, x25 unpin, 两者} × {迁最热/次热家},Linux identity 三语料
+  全负(x27 单槽最浅坑 SQLite -0.39%;x25 单槽 -2.20%~-4.89%);Darwin+bias
+  唯一正格 SQLite +716,500(+0.224%)同格 Linux 为 -1,082,082。死因:
+  EmitHostCall 对 caller-saved 家做正确性保存,可删量被 STP/LDP 奇偶配对
+  和参数 overlap 封顶在 ~199 万条,而 x27 reload 税 5.3-7.4 亿、x25
+  push/pop 税 12.3 亿。不装机、不注册 gate。量化重开条件四条钉死
+  (x27 须真实 A/B 证 pool+1 降幅超 5.29 亿 CoreMark/7.43 亿 zip7;x25 须
+  先把 push/pop 双条税降到近零;两槽须 unit-local 可回滚 lease)。
+- 验收:两 worktree 验后 tracked-clean(w66 两处探针残留已由指挥官复归)、
+  探针 token 零命中、净账矩阵逐格算术闭合复核通过、VM 证据 74MB 在档
+  (~/svm-phasec/liveness-evidence, infra-reclaim-audit)。
+
+至此"压缩基建 + RA 代价模型"方向丈量完毕,与 SRA 双审计一致:剩余 move/
+transport 税不存在 selector 级或基建槽级利润池,收益须来自表示层(值从
+第一行起在家的 SRA 形态)或 codegen 密度本身。
