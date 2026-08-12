@@ -982,3 +982,20 @@ fault-safe 跨块 home SSA > 不依赖热路径 lazy recipe 的 flags 载体 >
 有界 signal observer > region 内 width 资格不蒸发的证明。审计存证
 docs/w66-move-attribution-audit.md;生产源码零改动(git 可证),
 probe 前后 top-10 形状逐点一致。
+
+## 全 pin 池预算更正 + Linux pool10 复测收官(2026-08-12)
+
+用户更正成立:fixed-class 池 7 是 Darwin+bias 形态,非物理上限;
+x16/x17(XPOOL 默认 ON)与 x18(Linux 编译期双图 + spill 重跑专用)
+回收早已在 master 默认态。逐寄存器审计(docs/w68-register-reclaim-audit.md):
+Linux identity 全 pin 首轮池 10,结构上限 12(+x25 RSB / +x27 unpin,
+各带代价)。Phase C 在 OrbStack ubuntu aarch64 VM 实测复测
+(docs/w68-phasec-linux-fullpin.md):pool=10 运行时实证,容量灾难消除
+(CoreMark spill unit 104→2、sqlite 543→28),但 P6 四门仍全 FAIL——
+密度 1.0098/1.0011(<1.03)、host bytes +272、helper +210、
+**move/桥接 +3.53% 在 spill 近零下依旧**——证明 move 反噬是
+fail-closed 冲突回退造桥,与容量无关。重开前置收敛为一条:
+interval-split/重定位式冲突回退(与 move 归因前置 #1 跨块 home fact
+同属 RA  redesign)。另发现:Linux host 套件 main_case.cpp 有三个
+预存夹具红(VIXL Instruction facade ++、force-spill 绕过 x18 重跑、
+width-chain 自建 mask),与机制无关,修复面在禁改文件内,待批。
