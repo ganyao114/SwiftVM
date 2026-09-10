@@ -529,7 +529,9 @@ bool JitTranslator::EmitContinuationForward() {
     }
     dynamic_location_miss = nullptr;
     const u32 link_before = context.CurrentBufferSize();
-    const auto fault = context.ForwardContinuation(location, mismatch_site.label.get());
+    const auto fault = context.ForwardContinuation(location,
+                                                   mismatch_site.label.get(),
+                                                   dispatch_site.label.get());
     RecordDeferredFault(fault, dispatch_site.label.get(), FaultRecoveryKind::ExternalContinuation);
     RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                         context.CurrentBufferSize());

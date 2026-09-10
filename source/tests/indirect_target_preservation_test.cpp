@@ -51,9 +51,12 @@ TEST_CASE("indirect L1 cold lookup preserves its target register",
     context.GetMasm().Bind(&miss);
     context.ReturnHost();
     vixl::aarch64::Label continuation_miss;
+    vixl::aarch64::Label continuation_dispatch;
     (void)context.ForwardContinuation(vixl::aarch64::x8,
-                                      &continuation_miss);
+                                      &continuation_miss,
+                                      &continuation_dispatch);
     context.GetMasm().Bind(&continuation_miss);
+    context.GetMasm().Bind(&continuation_dispatch);
     context.ReturnHost();
     context.EndColdScratch();
     context.Finish();
@@ -80,8 +83,12 @@ TEST_CASE("indirect L1 cold lookup preserves its target register",
                text.find(", x8") != std::string::npos &&
                text.find("x8, x8") == std::string::npos;
     }));
+    // External call-miss frames carry a null continuation: the pop must guard
+    // it before blr rather than un-pop, since the mismatch path resets rsb.
     REQUIRE(std::ranges::none_of(instructions, [](const std::string& text) {
-        return text.find("sub x25, x25, #0x10") != std::string::npos ||
-               text.find("cbz") != std::string::npos;
+        return text.find("sub x25, x25, #0x10") != std::string::npos;
+    }));
+    REQUIRE(std::ranges::any_of(instructions, [](const std::string& text) {
+        return text.find("cbz") != std::string::npos;
     }));
 }

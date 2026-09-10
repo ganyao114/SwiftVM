@@ -1100,14 +1100,19 @@ JitContext::ForwardIndirectL1(const Register& location, Label* miss) {
 }
 
 JitContext::FaultRange
-JitContext::ForwardContinuation(const Register& location, Label* miss) {
-    ASSERT(miss);
+JitContext::ForwardContinuation(const Register& location, Label* miss, Label* null_target) {
+    ASSERT(miss && null_target);
     ReserveTmpX(XRegister{location.GetCode()});
     const auto predicted = GetTmpX();
     const auto continuation = GetTmpX();
     ContinuationContract::ConsumeFrame(masm, predicted, continuation);
     __ Cmp(predicted, location);
     __ B(miss, ne);
+    // External call-miss frames carry a null continuation by design: a matching
+    // guest key must still not blr zero. The frame is already consumed, so fall
+    // back to the shared L1 dispatch rather than the miss path, which would
+    // discard valid lower frames.
+    __ Cbz(continuation, null_target);
     const u32 fault_begin = CurrentBufferSize();
     __ Blr(continuation);
     return {fault_begin, CurrentBufferSize()};

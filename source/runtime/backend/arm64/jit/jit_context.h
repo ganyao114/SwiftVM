@@ -205,7 +205,7 @@ public:
     [[nodiscard]] FaultRange
     ForwardIndirectL1(const Register& location, Label* miss = nullptr);
     [[nodiscard]] FaultRange
-    ForwardContinuation(const Register& location, Label* miss);
+    ForwardContinuation(const Register& location, Label* miss, Label* null_target);
     [[nodiscard]] IndirectCallForwardResult ForwardIndirectCall(const Register& location,
                                                                 Label* miss,
                                                                 bool pending_flags = false);
