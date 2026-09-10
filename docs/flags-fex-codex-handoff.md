@@ -3719,8 +3719,13 @@ peepholes.
   | CoreMark `0x0 0x0 0x66 2000 7 1 2000` | 99.999996% / 99.999988% | **0.9539×** |
   | smallpt `4 8 6` | 98.1453% / 98.2431% | **0.8632×** |
   | c-ray `scene.json -j1 -s1 -d4x3` | 99.7399% / 99.6748% | **0.7843×** |
+  | OpenSSL `dgst -sha256` 2 MB | 99.9301% / 99.9117% | **0.6453×** |
 
-  All four tracked workloads now emit fewer entries-weighted host instructions than FEX. Correctness
+  A max-entry weighting (deduplicating split units inside one FEX block) agrees: SQLite 0.8828×,
+  CoreMark 0.9395×, smallpt 0.8132×, c-ray 0.6734×, OpenSSL 0.5876×. All measured workloads now
+  emit fewer entries-weighted host instructions than FEX. STREAM's earlier 0.648× lead stands
+  (profiler timed out this pass, unchanged since). zip7 still hits the guest-side gconv cwd
+  assertion — a guest issue, not codegen. Correctness
   gates held during capture: SQLite stdout complete, smallpt PPM md5 `5a34cbe0…`, CoreMark
   `crcfinal=0xd340`. The largest remaining weighted gaps are all SVM-multi-root duplication inside a
   single small FEX block (`0x4aca2f`: 87 units / 684 host vs FEX 51; `0x46febd`: 245 units /
