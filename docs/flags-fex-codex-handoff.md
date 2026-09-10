@@ -3693,6 +3693,48 @@ peepholes.
   between a third canonical region and the larger remaining hot/cold-layout or cross-root state-ABI
   mechanism.
 
+- `c5984d9` fixes the default-regroup SQLite crash and restores continuation safety. External
+  call-miss frames publish `{guest_key, 0}` by design, so a ret whose predicted key still matches
+  reached `blr` on a zero host continuation; the `1dff969` deferred-fault model only recovers that
+  site while the *popping* object's fault metadata is still registered, and the regroup path can
+  retire the object holding the frame's referent first. The pop now checks `cbz` after the
+  predicted-key match and falls back to the shared L1 dispatch — not the mismatch path, which would
+  reset the whole stack and drop live lower frames. Ordering matters: the `cbz` must follow the key
+  compare, or a popped garbage frame on a reset stack skips the reset and leaves `x25` above empty.
+  Focused continuation/direct-link/indirect-L1/call-miss/fault/SMC groups pass on Mac and Orb
+  (118 + 901k + 52 + 66 + 36 + 452 assertions), and three clean default SQLite `main/10` runs
+  report `TOTAL ~2.0s`.
+
+- Fresh FEX-aligned joins were rebuilt against the live `f2e35f3` measurement build with a new
+  retained tool `tools/svm-linux-cq/fex_join.py`: every SwiftVM hot-all PC joins the tightest
+  containing FEX `[rip, rip+guest_bytes)` block, then each block compares its `host_inst` against
+  the sum of covered SVM `host_static`, weighted by covered SVM entries. No per-unit `guest_inst`
+  is needed because both sides of a block span the same guest range. Multi-region objects attribute
+  their whole `host_static` at the root PC's block, which preserves the aggregate but makes
+  individual rows lumpy. Bounded same-input results at `c5984d9`:
+
+  | workload | coverage (entries / svm host) | SVM/FEX weighted host |
+  |---|---|---:|
+  | SQLite `main/10` | 99.8656% / 99.8524% | **0.8398×** |
+  | CoreMark `0x0 0x0 0x66 2000 7 1 2000` | 99.999996% / 99.999988% | **0.9539×** |
+  | smallpt `4 8 6` | 98.1453% / 98.2431% | **0.8632×** |
+  | c-ray `scene.json -j1 -s1 -d4x3` | 99.7399% / 99.6748% | **0.7843×** |
+
+  All four tracked workloads now emit fewer entries-weighted host instructions than FEX. Correctness
+  gates held during capture: SQLite stdout complete, smallpt PPM md5 `5a34cbe0…`, CoreMark
+  `crcfinal=0xd340`. The largest remaining weighted gaps are all SVM-multi-root duplication inside a
+  single small FEX block (`0x4aca2f`: 87 units / 684 host vs FEX 51; `0x46febd`: 245 units /
+  1,479 vs 107; `0x425aad`: 260 units / 2,094 vs 403) — the next optimization target is
+  redundant per-root code in hot guest windows, not per-unit density.
+
+- `smc_mt_stress` retains a ~1% host-fail flake (`SIGSEGV` from JIT code storing to a
+  guest-mapped-but-inaccessible page near a guard boundary) that fires identically with
+  `SVM_FUNC_LAZY=63` — it is a pre-existing hazard in the SMC invalidation path, not introduced by
+  regroup or `c5984d9`. `run_helper_fault_tests.sh` `fxrstor` fails on a pre-existing
+  scratch-GPR-budget assert (`declared 0, asked for 1`), unrelated. `run_dynamic_tests.sh` marks
+  its three glibc cases FAIL on Orb only because the identity-mode notice line joins stdout; the
+  guest output and exit 42 are correct.
+
 ## Orb loop
 
 ```
