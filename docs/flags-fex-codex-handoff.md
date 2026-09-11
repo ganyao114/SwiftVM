@@ -3776,11 +3776,18 @@ peepholes.
   call-return points and are only resynced at `BeginJit` epoch boundaries, leaving live frames
   stale across an in-flight reclaim), not the cap-retry fix.
 
-  Two supporting fixes landed: `2d10da9` retries an oversized eager function through the bounded
-  lazy-region path instead of the global latch, and corrects `[svm-gap-block]` to sum `AdvancePC`
-  immediates for the guest span (the old `end-start` read zero pre-finalization and fabricated
-  invalid spans at larger budgets). `FUNC_LAZY=128` stays ambiguous (heap-corruption flake under
-  the density profiler); `FUNC_LAZY>=129` and `=0` are equivalent eager.
+  Supporting fix landed: `[svm-gap-block]` now sums `AdvancePC` immediates for the guest span
+  (the old `end-start` read zero pre-finalization and fabricated invalid spans at larger
+  budgets) — `2d10da9`. `FUNC_LAZY=128` stays ambiguous (heap-corruption flake under the density
+  profiler); `FUNC_LAZY>=129` and `=0` are equivalent eager.
+
+  A retry-the-oversized-function-through-lazy-region change was tried and REVERTED (`dd0e389`):
+  removing the `function_compilation_disabled` latch in any form — lazy-region retry or just
+  per-function `block_only` — breaks `main/40` (host SIGSEGV / guest halt at rip=0x5801e2). The
+  latch is load-bearing: after one function overflows `kMaxFuncBlocks`, every later function must
+  stay block-only, because the huge function's undecoded extent leaves internal PCs that would
+  otherwise be recompiled as new function roots overlapping the same guest span. Do not weaken
+  it without fixing the underlying eager-path hazard first.
 
 ## Orb loop
 
