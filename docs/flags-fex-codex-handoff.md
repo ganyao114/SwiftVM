@@ -3770,9 +3770,11 @@ peepholes.
   code-reclamation hazard class that eager's bigger-object lifecycle exposes. Original code masked
   it because the first `kMaxFuncBlocks` overflow latched `function_compilation_disabled` and every
   later function went block-only. Root cause is inside the link/reclaim lifecycle
-  (`DelinkTargets`/`ClearDispatchSlots` already walk `Function::GetBlocks()`, so the hole is likely
-  a generation/QSBR race or an uncovered cache such as a continuation/L1 pointer), not the
-  cap-retry fix.
+  (`DelinkTargets`/`ClearDispatchSlots` already walk `Function::GetBlocks()`, so the hole is not
+  the direct dispatch tables — the likelier uncovered caches are the per-thread `indirect_l1`
+  table and the **RSB/continuation frames**, which hold raw host addresses of mid-object
+  call-return points and are only resynced at `BeginJit` epoch boundaries, leaving live frames
+  stale across an in-flight reclaim), not the cap-retry fix.
 
   Two supporting fixes landed: `2d10da9` retries an oversized eager function through the bounded
   lazy-region path instead of the global latch, and corrects `[svm-gap-block]` to sum `AdvancePC`
