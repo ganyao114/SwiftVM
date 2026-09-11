@@ -707,25 +707,17 @@ struct X86Instance::Impl final {
             void* func_code = nullptr;
             bool compiled = false;
             func_stats.Attempt();
-            // Eager decode caps a function at kMaxFuncBlocks; an oversized
-            // function must not trip the process-wide function-compilation
-            // latch. Retry it through the bounded lazy-region path instead so
-            // only this function pays region overhead.
-            for (bool lazy_region_retry : {false, true}) {
-            bool retry_as_region = false;
             try {
                 constexpr size_t kMaxFuncBlocks = 128;
                 constexpr size_t kRegionBlockCap = 64;
                 const size_t lazy_budget =
-                        lazy_region_retry
-                                ? kRegionBlockCap
-                                : (decode_budget_override != 0
-                                           ? decode_budget_override
-                                           : (address_space->GetConfig().enable_jit
-                                                      ? (address_space->GetConfig().region_edges
-                                                                 ? RegionFuncBudget()
-                                                                 : LazyFuncBudget())
-                                                      : kMaxFuncBlocks));
+                        decode_budget_override != 0
+                                ? decode_budget_override
+                                : (address_space->GetConfig().enable_jit
+                                           ? (address_space->GetConfig().region_edges
+                                                      ? RegionFuncBudget()
+                                                      : LazyFuncBudget())
+                                           : kMaxFuncBlocks);
                 const size_t decode_cap =
                         std::min(lazy_budget, kMaxFuncBlocks);
                 const bool lazy = lazy_budget <= kMaxFuncBlocks;
@@ -754,16 +746,6 @@ struct X86Instance::Impl final {
                                 regions.push_back({pc, 0});
                             }
                             membership_recompile = true;
-                            if (runtime::GetSvmConfig().density_prof) {
-                                std::fprintf(stderr,
-                                        "[svm-regroup] pc=0x%llx retired=0x%llx "
-                                        "blocks=%u\n",
-                                        static_cast<unsigned long long>(pc),
-                                        static_cast<unsigned long long>(
-                                                selection->retired_region.root),
-                                        selection->retired_region
-                                                .decoded_blocks);
-                            }
                         }
                     }
                 }
@@ -873,23 +855,9 @@ struct X86Instance::Impl final {
                             "function contains CallLambda; disabled by SVM_FUNC_LAMBDA=0");
                 }
                 if (hit_block_cap && !lazy) {
-                    if (!lazy_region_retry) {
-                        // Oversized under eager decode: rebuild this function
-                        // through the lazy-region path rather than disabling
-                        // function compilation process-wide.
-                        retry_as_region = true;
-                        if (runtime::GetSvmConfig().density_prof) {
-                            std::fprintf(stderr,
-                                    "[svm-blockcap] pc=0x%llx decoded=%zu "
-                                    "-> retry as lazy region\n",
-                                    static_cast<unsigned long long>(pc),
-                                    decoded_count);
-                        }
-                    } else {
-                        function_compilation_disabled = true;
-                        make_block_only();
-                        func_stats.BlockCap(pc, decoded_count);
-                    }
+                    function_compilation_disabled = true;
+                    make_block_only();
+                    func_stats.BlockCap(pc, decoded_count);
                 } else {
                     perf_detail.Classify(
                             static_cast<unsigned>(decoded_blocks));
@@ -943,10 +911,6 @@ struct X86Instance::Impl final {
                 func_stats.Exception(pc, error.what());
                 block_only_locations.insert(pc);
                 compiled = false;
-            }
-            if (!retry_as_region) {
-                break;
-            }
             }
             if (runtime::GetSvmConfig().dump_ir) {
                 fmt::print(stderr, "[func-compile] {:#x} builder-destroyed\n", pc);
