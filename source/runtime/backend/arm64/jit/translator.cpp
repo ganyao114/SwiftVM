@@ -1012,20 +1012,18 @@ void JitTranslator::TranslateBlockInstructions(
     VAddr audit_guest_pc = block->GetStartLocation().Value();
     if (gap_audit) {
         u32 guest_insts = 0;
-        u64 guest_bytes = 0;
         for (auto& inst : block->GetInstList()) {
-            if (inst.GetOp() == ir::OpCode::AdvancePC) {
-                ++guest_insts;
-                guest_bytes += inst.GetArg<ir::Imm>(0).Get();
-            }
+            if (inst.GetOp() == ir::OpCode::AdvancePC) ++guest_insts;
         }
         std::fprintf(stderr,
-                     "[svm-gap-block] unit=0x%llx block=0x%llx bytes=%llu "
+                     "[svm-gap-block] unit=0x%llx block=0x%llx bytes=%u "
                      "insts=%u\n",
                      static_cast<unsigned long long>(placement_unit_pc),
                      static_cast<unsigned long long>(
                              block->GetStartLocation().Value()),
-                     static_cast<unsigned long long>(guest_bytes),
+                     static_cast<unsigned>(
+                             block->GetEndLocation().Value() -
+                             block->GetStartLocation().Value()),
                      guest_insts);
     }
     for (auto& inst : block->GetInstList()) {
