@@ -283,6 +283,27 @@ private:
                           static_cast<u32>(reason),
                           ctx.rip.qword,
                           ctx.rax.qword);
+                LOG_ERROR(
+                        "  rcx={:#x} rdx={:#x} rbx={:#x} rsp={:#x} rbp={:#x} "
+                        "rsi={:#x} rdi={:#x} r8={:#x} r9={:#x} r10={:#x} "
+                        "r11={:#x} r12={:#x} r13={:#x} r14={:#x} r15={:#x} "
+                        "eflags={:#x}",
+                        ctx.rcx.qword,
+                        ctx.rdx.qword,
+                        ctx.rbx.qword,
+                        ctx.rsp.qword,
+                        ctx.rbp.qword,
+                        ctx.rsi.qword,
+                        ctx.rdi.qword,
+                        ctx.r8.qword,
+                        ctx.r9.qword,
+                        ctx.r10.qword,
+                        ctx.r11.qword,
+                        ctx.r12.qword,
+                        ctx.r13.qword,
+                        ctx.r14.qword,
+                        ctx.r15.qword,
+                        ctx.ef.flags);
                 exit_code = 1;
                 if (leader) {
                     process->RequestExitGroup(exit_code);

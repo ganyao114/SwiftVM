@@ -3795,6 +3795,78 @@ peepholes.
   pre-existing guest fixed-map failure (`errno 17` at 0xfffe08000000) in BOTH modes — not a
   codegen regression.
 
+### Density recalibration after the eager fix (2026-09-11)
+
+Re-profiled eager CoreMark on the post-`95c1103` build to pick the next optimization target.
+Key correction to the earlier "move ops dominate" framing:
+
+- **`move`-class IR ops are ~50% of op *count* but mostly emit 0 host bytes** — `GetHostGPR`,
+  `SetHostGPR`, `GetOperand`, `GetResult`, `DefineLocal`, most `LoadImm`/`ZeroExtend` are already
+  coalesced away by the register allocator + the many `EmitGetHostGPR`/`EmitSetHostGPR` fusion
+  shapes. Op-count share is misleading; **emitted bytes is the honest axis**.
+- Per-op emitted bytes (eager coremark, `[svm-gap-op]`): `LoadMemory` 10.3%, `StoreMemory` 9.4%,
+  `GetOperand` 9.6%, `LoadImm` 9.1%, `SetHostGPR` residual 7.7%, `SetLocation` 7.6% — i.e. real
+  memory work + effective-address materialization + guest-PC stores. `GetHostGPR` is only ~1.5%
+  despite high op count.
+- **Instrumentation caveat**: `SVM_RA_HOT_COALESCE_ALL=1` injects a ~36–40B (9-inst)
+  `RecordHotCounter` probe at every block entry — `[svm-boundary]` `bytes_prologue` reads that
+  probe and looks like a per-block prologue (≈160KB total). With `SVM_DENSITY_PROF` alone
+  `bytes_prologue=0` for every block — **there is no per-block prologue**; pinned GPRs/state are
+  persistent, not reloaded. The clean `[svm-density]` split (probes excluded) is
+  work 41.5% / boundary 27.9% / move 24.1% / flags 4.8% / uniform 1.7%. Boundary here is all
+  exits+links (dispatch machinery), no entry reload. `host_instructions` in `[svm-hot-all]`
+  already subtracts probes, so the equiv-metric numbers were always clean.
+- **Concrete gap vs FEX = unit granularity.** FEX `0x4024c0` = 1 block, 124 host insts for 86
+  guest insts. SVM splits the same region into **4 units** (`0x4024c0`, `0x40251b`, `0x40254f`,
+  `0x402600`). `0x40251b`/`0x40254f` are *internal* branch targets (`jmp8` from `0x40250a` /
+  `0x402528`) that became separate roots because they were reached via an external/indirect
+  entry before the enclosing function decoded — once published, the `has_code` boundary
+  (correctly) keeps them from being absorbed. Each fragment re-pays the exit+link overhead.
+- **Honest-metric status (equiv host/guest-inst)**: SVM is ahead of FEX on every cleanly
+  measurable workload. The per-PC `gap members` join stays misleading for fused eager units
+  (no-member-pcs) — keep using the equiv/weighted numbers.
+
+  Verified equiv `SVM/FEX` host-instruction ratios (`FEX_BLOCKSTATS=1 FEX_MULTIBLOCK=1
+  FEX_HOSTFEATURES=disableavx`, `/usr/local/fex-measure/FEX` @ `f2e35f3`, joined with
+  `tools/svm-linux-cq/fex_join.py`; SVM numbers are probe-clean — `[svm-hot-all]` already
+  subtracts hot-counter instrumentation):
+
+  | workload | equiv SVM/FEX | weighted svm_host | weighted fex_host | entry cov |
+  |---|---|---|---|---|
+  | ossl sha256 | **0.615** | 371.77e9 | 604.30e9 | 98.8% |
+  | ossl aes-128-gcm | **0.709** | 0.541e9 | 0.764e9 | 99.4% |
+  | sqlite `main` | **0.876** | — | — | — |
+  | smallpt | **0.877** | 25.73e9 | 29.33e9 | 93.5% |
+  | coremark | **0.954** | 13.95e9 | 14.62e9 | ~100% |
+
+  Coremark is **identical under lazy and eager** (both `≈0.954`) — the density win is not
+  eager-specific; eager mainly saves wall-clock recompile, not code density.
+
+**Next real lever (structural, not instruction-level):** the per-unit entry+exit is amortized
+by *larger* units. To close the residual gap, either (a) multi-entry units — let a
+mid-function pc reached via dispatch enter the enclosing unit at an internal label instead of
+compiling a fragment (the doc's known "IR-level mid-entry labels" refactor; blocked by SSA
+live-ins needing state re-derivation on a fresh entry), or (b) reduce the fixed entry cost
+(pinned-GPR reload elision for regs the unit provably doesn't read). Both carry correctness
+risk — the eager bug was exactly this ownership/lifecycle class.
+
+**Coverage blockers (correctness, not density):** the remaining gap to "every workload" is
+crashes, not code quality.
+
+- **7-Zip — SVM-side guest-register corruption (all modes).** Deterministic guest fault:
+  `movzx eax, byte[rbp+rcx]` at `0x62a527` (LZMA match-finder byte-table loop). At the halt
+  `rcx=0x10ce24` is **even**, but the loop counter only ever takes `1,3,5,…` (`mov $1,%ecx` /
+  `add $2,%rcx`) — an even rcx is *impossible* via the loop's own increment, so a guest GPR
+  was bound to the wrong value (an RA/SSA corruption, not a bad loop bound — `rdx` correctly
+  holds `0xb`). Reproduces under eager (`FUNC_LAZY=0`) and lazy-region (`FUNC_LAZY=1/64/128`),
+  and independent of `SVM_RA_COALESCE`/`SVM_RA_SPILL_EVICT`/`SVM_UNIFORM_*` (each just moves
+  the crash). Secondary `free(): invalid pointer` / `malloc_consolidate` / `double free`
+  signatures appear on some toggles — a heap-corruption symptom worth an ASan/valgrind pass.
+  Added a full guest-GPR dump to the `Guest halted` path (`translator/linux/main.cpp`) for
+  this class of bug.
+- **c-ray** — pre-existing guest crash near `0xfffe08000000`, both modes (not a regression).
+- **stream** — hangs under default `SVM_MEM_IDENTITY=1`; exits under `=0` (verify output).
+
 ## Orb loop
 
 ```
