@@ -3781,13 +3781,19 @@ peepholes.
   budgets) — `2d10da9`. `FUNC_LAZY=128` stays ambiguous (heap-corruption flake under the density
   profiler); `FUNC_LAZY>=129` and `=0` are equivalent eager.
 
-  A retry-the-oversized-function-through-lazy-region change was tried and REVERTED (`dd0e389`):
-  removing the `function_compilation_disabled` latch in any form — lazy-region retry or just
-  per-function `block_only` — breaks `main/40` (host SIGSEGV / guest halt at rip=0x5801e2). The
-  latch is load-bearing: after one function overflows `kMaxFuncBlocks`, every later function must
-  stay block-only, because the huge function's undecoded extent leaves internal PCs that would
-  otherwise be recompiled as new function roots overlapping the same guest span. Do not weaken
-  it without fixing the underlying eager-path hazard first.
+  RESOLVED (`95c1103`): the size-40 eager fault was an object-ownership overlap, not a
+  reclamation race. The region decoder's `has_code` boundary skip was gated on `config.lazy`, so
+  an eager decode could re-absorb a block already published by an earlier object — orphaning it
+  and leaving inbound direct/indirect links pointing at dead code. The guard now applies in both
+  modes (under eager `IsAccepted` is never set, so it degrades to the plain `has_code` check), and
+  an oversized eager function retries once through the bounded lazy-region path instead of
+  latching `function_compilation_disabled` (the latch only re-arms if the region also overflows).
+  sqlite `main/40` now completes cleanly under `SVM_FUNC_LAZY=0` (15+/15, integrity pass) where it
+  previously SIGSEGV'd on a dead code page. Earlier observation that "the latch is load-bearing"
+  was masking this overlap — the plain per-function `block_only` fallback still overlapped; only
+  the has_code boundary + region retry removes it. Note c-ray currently halts on an unrelated
+  pre-existing guest fixed-map failure (`errno 17` at 0xfffe08000000) in BOTH modes — not a
+  codegen regression.
 
 ## Orb loop
 
