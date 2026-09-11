@@ -3716,9 +3716,11 @@ peepholes.
     decode covers fewer guest instructions inside a window than FEX's eager multiblock, so this
     ratio flatters SVM and is NOT the density metric.
   - **Per-PC density join** (documented formula — per SVM block-PC compare `host_static` vs its
-    decoded guest-instruction count against the containing FEX block's `host_inst/guest_inst`,
-    entries-weighted): SQLite **1.00×** parity, CoreMark **1.18×** behind, smallpt **1.22×**
-    behind. SVM is still behind on per-executed-guest-instruction host density.
+    decoded guest-instruction count against the containing FEX block's `host_inst/guest_inst`):
+    - entries-weighted (dynamic): SQLite **1.00×** parity, CoreMark **1.18×**, smallpt **1.22×**,
+      c-ray **0.90×** ahead.
+    - guest_inst-weighted (static): SQLite **1.01×**, CoreMark **1.06×**, smallpt **1.08×**.
+    Either weighting: SVM is at parity-to-slightly-behind on work-density, not ahead.
 
   Guest-instruction counts for SVM blocks come from `[svm-gap-block] ... bytes=N insts=N` lines
   under `SVM_DENSITY_PROF=1 SVM_RA_HOT_COALESCE_ALL=1` — `bytes` is the authoritative decoded
