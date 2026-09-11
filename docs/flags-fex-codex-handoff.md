@@ -3746,6 +3746,40 @@ peepholes.
   its three glibc cases FAIL on Orb only because the identity-mode notice line joins stdout; the
   guest output and exit 42 are correct.
 
+- **Eager function formation (`SVM_FUNC_LAZY=0`, lazy=false) closes the multi-root duplication
+  gap and beats FEX on the static per-PC density metric on every measured workload**: CoreMark
+  ~0.84×, smallpt ~0.83×, SQLite ~0.89× (all ahead; was 1.06/1.08/1.01 behind-or-parity under the
+  default lazy region). The win is not a larger window — it is that each entry's reachable body is
+  decoded into ONE object, so internal loop entries (e.g. CoreMark `0x402683`) fall through inside
+  the block instead of becoming a separate member block with its own boundary/prologue. Lazy
+  regions cannot cheaply reproduce this: candidates are created per discovered edge target, and
+  `NearestEntry` splits at each one regardless of `has_code`/`local_target` — confirmed by removing
+  the `has_code` skip (no density change) and by inspecting decode order. A lazy-side match needs
+  IR-level mid-entry labels, a larger refactor.
+
+  Wall-clock on completing runs also favors eager (`--version` 64ms vs 140ms; sqlite `main/10`
+  guest TOTAL ~1.0s vs ~2.2s; smallpt/coremark also faster). Eager emits fewer total decoded
+  blocks (CoreMark 1,551 vs lazy 3,735) — lazy re-decodes overlapping member blocks across objects.
+
+  **Blocker — do not make eager the default yet.** `SVM_FUNC_LAZY=0` on sqlite `main/40`
+  deterministically dies during test 100 (`20000 INSERTs`): host `SIGSEGV` on a wild guest
+  pointer plus `free(): invalid next size` heap corruption. It is avoided by `SVM_BLOCK_LINK=0`
+  (direct-link off → completes, 6.48s) and by `SVM_REGION_EDGES=0` (different codegen → completes
+  but loses the fusion win). Exec-trace shows recovered fetch-faults where `host_pc==fault_addr`
+  on 0xfffe… addresses = jumps into reclaimed code, so this is the known stale direct-link /
+  code-reclamation hazard class that eager's bigger-object lifecycle exposes. Original code masked
+  it because the first `kMaxFuncBlocks` overflow latched `function_compilation_disabled` and every
+  later function went block-only. Root cause is inside the link/reclaim lifecycle
+  (`DelinkTargets`/`ClearDispatchSlots` already walk `Function::GetBlocks()`, so the hole is likely
+  a generation/QSBR race or an uncovered cache such as a continuation/L1 pointer), not the
+  cap-retry fix.
+
+  Two supporting fixes landed: `2d10da9` retries an oversized eager function through the bounded
+  lazy-region path instead of the global latch, and corrects `[svm-gap-block]` to sum `AdvancePC`
+  immediates for the guest span (the old `end-start` read zero pre-finalization and fabricated
+  invalid spans at larger budgets). `FUNC_LAZY=128` stays ambiguous (heap-corruption flake under
+  the density profiler); `FUNC_LAZY>=129` and `=0` are equivalent eager.
+
 ## Orb loop
 
 ```
