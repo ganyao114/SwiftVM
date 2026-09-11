@@ -707,17 +707,24 @@ struct X86Instance::Impl final {
             void* func_code = nullptr;
             bool compiled = false;
             func_stats.Attempt();
+            // Oversized eager decode is retried once through the bounded
+            // lazy-region path so only this function pays region overhead
+            // instead of latching function compilation off process-wide.
+            for (bool lazy_region_retry : {false, true}) {
+            bool retry_as_region = false;
             try {
                 constexpr size_t kMaxFuncBlocks = 128;
                 constexpr size_t kRegionBlockCap = 64;
                 const size_t lazy_budget =
-                        decode_budget_override != 0
-                                ? decode_budget_override
-                                : (address_space->GetConfig().enable_jit
-                                           ? (address_space->GetConfig().region_edges
-                                                      ? RegionFuncBudget()
-                                                      : LazyFuncBudget())
-                                           : kMaxFuncBlocks);
+                        lazy_region_retry
+                                ? kRegionBlockCap
+                                : (decode_budget_override != 0
+                                           ? decode_budget_override
+                                           : (address_space->GetConfig().enable_jit
+                                                      ? (address_space->GetConfig().region_edges
+                                                                 ? RegionFuncBudget()
+                                                                 : LazyFuncBudget())
+                                                      : kMaxFuncBlocks));
                 const size_t decode_cap =
                         std::min(lazy_budget, kMaxFuncBlocks);
                 const bool lazy = lazy_budget <= kMaxFuncBlocks;
@@ -855,9 +862,13 @@ struct X86Instance::Impl final {
                             "function contains CallLambda; disabled by SVM_FUNC_LAMBDA=0");
                 }
                 if (hit_block_cap && !lazy) {
-                    function_compilation_disabled = true;
-                    make_block_only();
-                    func_stats.BlockCap(pc, decoded_count);
+                    if (!lazy_region_retry) {
+                        retry_as_region = true;
+                    } else {
+                        function_compilation_disabled = true;
+                        make_block_only();
+                        func_stats.BlockCap(pc, decoded_count);
+                    }
                 } else {
                     perf_detail.Classify(
                             static_cast<unsigned>(decoded_blocks));
@@ -914,6 +925,10 @@ struct X86Instance::Impl final {
             }
             if (runtime::GetSvmConfig().dump_ir) {
                 fmt::print(stderr, "[func-compile] {:#x} builder-destroyed\n", pc);
+            }
+            if (!retry_as_region) {
+                break;
+            }
             }
             if (compiled) {
                 return func_code;

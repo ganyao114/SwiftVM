@@ -101,7 +101,12 @@ FunctionRegionDecodeResult FunctionRegionDecoder::Decode() {
                 continue;
             }
             const auto address = block->GetStartLocation().Value();
-            if (config.lazy && !frontier.IsAccepted(address) && config.has_code(address)) {
+            // A block that already has published code is owned by another
+            // object; absorbing it here would orphan that object and leave
+            // inbound links dangling. Skip it as an external boundary in both
+            // lazy and eager decode — under eager IsAccepted is never set, so
+            // this degrades to the plain has_code guard.
+            if (!frontier.IsAccepted(address) && config.has_code(address)) {
                 continue;
             }
             if (config.local_target(address)) {
