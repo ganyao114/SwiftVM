@@ -43,6 +43,49 @@ def parse_svm(path: str) -> dict[int, tuple[int, int]]:
     return {pc: (sum(e for e, _ in v), max(h for _, h in v)) for pc, v in units.items()}
 
 
+GAP_LINE = re.compile(
+    r"\[svm-gap-op\]\s+(?:unit=(0x[0-9a-f]+)\s+)?block=(0x[0-9a-f]+)\s+guest_pc=(0x[0-9a-f]+)"
+)
+GAP_BLOCK = re.compile(
+    r"\[svm-gap-block\]\s+unit=(0x[0-9a-f]+)\s+block=(0x[0-9a-f]+)\s+"
+    r"bytes=(\d+)\s+insts=(\d+)"
+)
+
+
+def parse_gap_members(path: str) -> dict[int, set[int]]:
+    """Per unit root pc -> set of member guest PCs (from SVM_DENSITY_PROF).
+
+    Newer logs carry `unit=` naming the owning code object's root; older logs
+    only name the IR block, so `block=` is the fallback key.
+    """
+    members: dict[int, set[int]] = {}
+    try:
+        handle = open(path, "rb")
+    except OSError:
+        return members
+    for raw in handle:
+        m = GAP_LINE.search(raw.decode("utf-8", "replace"))
+        if not m:
+            continue
+        key = int(m.group(1) or m.group(2), 16)
+        members.setdefault(key, set()).add(int(m.group(3), 16))
+    return members
+
+
+def parse_gap_blocks(path: str) -> dict[int, int]:
+    """Per IR-block pc -> decoded guest instruction count (authoritative)."""
+    insts: dict[int, int] = {}
+    try:
+        handle = open(path, "rb")
+    except OSError:
+        return insts
+    for raw in handle:
+        m = GAP_BLOCK.search(raw.decode("utf-8", "replace"))
+        if m:
+            insts[int(m.group(2), 16)] = int(m.group(4))
+    return insts
+
+
 def parse_fex(path: str) -> list[tuple[int, int, int, int]]:
     blocks: dict[int, tuple[int, int, int]] = {}
     for line in open(path, errors="replace"):
@@ -59,10 +102,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--svm", required=True)
     ap.add_argument("--fex", required=True)
+    ap.add_argument("--gap", help="SVM_DENSITY_PROF stderr for member guest PCs")
     ap.add_argument("--top", type=int, default=25)
     args = ap.parse_args()
 
     svm = parse_svm(args.svm)
+    members = parse_gap_members(args.gap) if args.gap else {}
+    block_insts = parse_gap_blocks(args.gap) if args.gap else {}
     fex = parse_fex(args.fex)
     if not svm or not fex:
         print("missing input data", file=sys.stderr)
@@ -79,6 +125,15 @@ def main() -> int:
     total_svm_host = sum(e * h for e, h in svm.values())
 
     max_span = max(b[1] for b in fex)
+
+    # doc-formula per-PC join: each svm pc carries guest_inst = its member
+    # count (when --gap is given); the containing FEX block contributes
+    # host_inst/guest_inst weighted by the pc's entries.
+    pc_num = 0  # sum_p e_p * svm_host(p)
+    pc_den_g = 0  # sum_p e_p * svm_guest_inst(p)
+    pc_fex_num = 0  # sum_p e_p * fex host_inst(B(p))
+    pc_fex_den = 0  # sum_p e_p * fex guest_inst(B(p))
+    pc_gap_missing = 0
 
     for pc, (entries, host) in svm.items():
         # candidate blocks: any [rip, rip+bytes) containing pc -> find tightest
@@ -102,6 +157,15 @@ def main() -> int:
         rec[0] += host
         rec[1] += entries
         rec[2] += 1
+        if members or block_insts:
+            g = block_insts.get(pc, 0) or len(members.get(pc, ()))
+            if g == 0:
+                pc_gap_missing += 1
+                continue
+            pc_num += entries * host
+            pc_den_g += entries * g
+            pc_fex_num += entries * hinst
+            pc_fex_den += entries * ginst
 
     covered_entries = total_entries - uncovered_entries
     covered_svm_host = total_svm_host - uncovered_host
@@ -135,6 +199,13 @@ def main() -> int:
     print(f"static: svm_host={static_svm} fex_host={static_fex} "
           f"svm/fex={static_svm / max(1, static_fex):.6f} "
           f"(guest_inst={static_fex_guest})")
+    if members:
+        print(
+            f"per-pc join (gap members): svm={pc_num / max(1, pc_den_g):.6f} "
+            f"fex={pc_fex_num / max(1, pc_fex_den):.6f} host/guest-inst, "
+            f"ratio={pc_num / max(1, pc_den_g) / (pc_fex_num / max(1, pc_fex_den)):.6f} "
+            f"no-member-pcs={pc_gap_missing}"
+        )
 
     rows.sort(key=lambda r: -r[0])
     print(f"\ntop positive gaps (svm_host_sum - fex_host_inst, entries-weighted):")

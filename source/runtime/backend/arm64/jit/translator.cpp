@@ -1010,6 +1010,22 @@ void JitTranslator::TranslateBlockInstructions(
         }
     }
     VAddr audit_guest_pc = block->GetStartLocation().Value();
+    if (gap_audit) {
+        u32 guest_insts = 0;
+        for (auto& inst : block->GetInstList()) {
+            if (inst.GetOp() == ir::OpCode::AdvancePC) ++guest_insts;
+        }
+        std::fprintf(stderr,
+                     "[svm-gap-block] unit=0x%llx block=0x%llx bytes=%u "
+                     "insts=%u\n",
+                     static_cast<unsigned long long>(placement_unit_pc),
+                     static_cast<unsigned long long>(
+                             block->GetStartLocation().Value()),
+                     static_cast<unsigned>(
+                             block->GetEndLocation().Value() -
+                             block->GetStartLocation().Value()),
+                     guest_insts);
+    }
     for (auto& inst : block->GetInstList()) {
         auto category = DensityCategory::Work;
         if (density) {
@@ -1082,12 +1098,13 @@ void JitTranslator::TranslateBlockInstructions(
                         !pf.Null(),
                         static_cast<u32>(pf.set));
                 std::fprintf(stderr,
-                             "[svm-gap-op] block=0x%llx guest_pc=0x%llx id=%u "
+                             "[svm-gap-op] unit=0x%llx block=0x%llx guest_pc=0x%llx id=%u "
                              "op=%s bytes=%u host_offset=%u scalar_binary=%u scalar_tied=%u "
                              "shufps=%u shufps_imm=%u shufps_alias=%u "
                              "shufps_left_tied=%u shufps_left_fixed=%u "
                              "advpc_nzcv_dirty=%u advpc_nzcv_requested=0x%llx "
                              "alu_role=%s value_uses=%u flags=%u pack_b=%u alu_b=%u addr_b=%u\n",
+                             static_cast<unsigned long long>(placement_unit_pc),
                              static_cast<unsigned long long>(
                                      block->GetStartLocation().Value()),
                              static_cast<unsigned long long>(audit_guest_pc),

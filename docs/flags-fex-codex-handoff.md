@@ -3706,31 +3706,35 @@ peepholes.
   report `TOTAL ~2.0s`.
 
 - Fresh FEX-aligned joins were rebuilt against the live `f2e35f3` measurement build with a new
-  retained tool `tools/svm-linux-cq/fex_join.py`: every SwiftVM hot-all PC joins the tightest
-  containing FEX `[rip, rip+guest_bytes)` block, then each block compares its `host_inst` against
-  the sum of covered SVM `host_static`, weighted by covered SVM entries. No per-unit `guest_inst`
-  is needed because both sides of a block span the same guest range. Multi-region objects attribute
-  their whole `host_static` at the root PC's block, which preserves the aggregate but makes
-  individual rows lumpy. Bounded same-input results at `c5984d9`:
+  retained tool `tools/svm-linux-cq/fex_join.py`. Two metrics are now printed; read both before
+  quoting a number:
 
-  | workload | coverage (entries / svm host) | SVM/FEX weighted host |
-  |---|---|---:|
-  | SQLite `main/10` | 99.8656% / 99.8524% | **0.8398×** |
-  | CoreMark `0x0 0x0 0x66 2000 7 1 2000` | 99.999996% / 99.999988% | **0.9539×** |
-  | smallpt `4 8 6` | 98.1453% / 98.2431% | **0.8632×** |
-  | c-ray `scene.json -j1 -s1 -d4x3` | 99.7399% / 99.6748% | **0.7843×** |
-  | OpenSSL `dgst -sha256` 2 MB | 99.9301% / 99.9117% | **0.6453×** |
+  - **Block-volume join** (every SVM hot PC joins the tightest containing FEX
+    `[rip, rip+guest_bytes)` block; per block compare `Σ svm.host_static` vs `fex.host_inst`,
+    weighted by covered entries): SQLite 0.840×, CoreMark 0.954×, smallpt 0.863×, c-ray 0.784×,
+    OpenSSL-SHA256 0.645× — SVM emits less total host code per covered window. CAVEAT: SVM's lazy
+    decode covers fewer guest instructions inside a window than FEX's eager multiblock, so this
+    ratio flatters SVM and is NOT the density metric.
+  - **Per-PC density join** (documented formula — per SVM block-PC compare `host_static` vs its
+    decoded guest-instruction count against the containing FEX block's `host_inst/guest_inst`,
+    entries-weighted): SQLite **1.00×** parity, CoreMark **1.18×** behind, smallpt **1.22×**
+    behind. SVM is still behind on per-executed-guest-instruction host density.
 
-  A max-entry weighting (deduplicating split units inside one FEX block) agrees: SQLite 0.8828×,
-  CoreMark 0.9395×, smallpt 0.8132×, c-ray 0.6734×, OpenSSL 0.5876×. All measured workloads now
-  emit fewer entries-weighted host instructions than FEX. STREAM's earlier 0.648× lead stands
-  (profiler timed out this pass, unchanged since). zip7 still hits the guest-side gconv cwd
-  assertion — a guest issue, not codegen. Correctness
+  Guest-instruction counts for SVM blocks come from `[svm-gap-block] ... bytes=N insts=N` lines
+  under `SVM_DENSITY_PROF=1 SVM_RA_HOT_COALESCE_ALL=1` — `bytes` is the authoritative decoded
+  span (`GetEndLocation()-GetStartLocation()`); `insts` (AdvancePC count) undercounts ~2× because
+  IR passes eliminate/merge AdvancePC ops — the join counts real instructions by disassembling
+  `[block, block+bytes)` with llvm-objdump instead. FEX `guest_inst` is their own decode count
+  (multiblock ranges include undecoded gap code, so never count insts inside a FEX span).
+
+  sqlite RE=0 (`SVM_REGION_EDGES=0`) measures 1.24× behind vs default-region 1.00× — the region
+  pipeline is already denser than block-per-entry for this workload. Correctness
   gates held during capture: SQLite stdout complete, smallpt PPM md5 `5a34cbe0…`, CoreMark
   `crcfinal=0xd340`. The largest remaining weighted gaps are all SVM-multi-root duplication inside a
   single small FEX block (`0x4aca2f`: 87 units / 684 host vs FEX 51; `0x46febd`: 245 units /
-  1,479 vs 107; `0x425aad`: 260 units / 2,094 vs 403) — the next optimization target is
-  redundant per-root code in hot guest windows, not per-unit density.
+  1,479 vs 107; `0x425aad`: 260 units / 2,094 vs 403). Per the corrected density readout, the
+  next target is per-instruction overhead in hot units — the block-volume rows mix in
+  gap-attributed SVM code and overstate the per-site excess.
 
 - `smc_mt_stress` retains a ~1% host-fail flake (`SIGSEGV` from JIT code storing to a
   guest-mapped-but-inaccessible page near a guard boundary) that fires identically with
