@@ -211,6 +211,7 @@ public:
         } else {
             CollectLiveIntervals(block);
         }
+        CollectResidentFPRWrites();
         RecipeFixedGPRAffinities();
         RecipeCallReturnAffinities();
         perf_collect_live.Stop();
@@ -1650,6 +1651,34 @@ private:
         return {};
     }
 
+    void CollectResidentFPRWrites() {
+        if (scalar_tie_fixed_read_end.empty()) {
+            return;
+        }
+        scalar_tie_future_writes.resize(InstrCount(), 0);
+        auto collect = [&](Block* lir_block) {
+            u32 writes = 0;
+            auto& list = lir_block->GetInstList();
+            for (auto it = list.rbegin(); it != list.rend(); ++it) {
+                if (IsPinnedCoalesceObserver(it->GetOp())) {
+                    writes = 0;
+                } else if (it->GetOp() == OpCode::SetHostFPR &&
+                           it->GetArg<Imm>(2).Get() == 0) {
+                    const auto target = it->GetArg<Imm>(1).Get();
+                    if (target < 32) writes |= u32{1} << target;
+                }
+                scalar_tie_future_writes[it->Id()] = writes;
+            }
+        };
+        if (function) {
+            for (auto* hir_block : function->GetHIRBlocks()) {
+                collect(hir_block->GetBlock());
+            }
+        } else {
+            collect(block);
+        }
+    }
+
     bool TryTieScalarInsert(LiveInterval& current) {
         auto source = ScalarInsertTieSource(current.inst);
         if (!source.Defined()) {
@@ -1662,6 +1691,13 @@ private:
         }
         const auto source_fpr = reg_alloc->ValueFPR(source);
         if (reg_alloc->GetFprs().Get(source_fpr.id)) {
+            // The guest register stays live at exits and faults even if this
+            // SSA read dies here. Reuse it only when the same block replaces
+            // its guest value before any operation can observe the old state.
+            if (current.start >= scalar_tie_future_writes.size() ||
+                !(scalar_tie_future_writes[current.start] & (u32{1} << source_fpr.id))) {
+                return false;
+            }
             // Other reads can still require the guest value before this
             // result is published, even when this particular source dies now.
             for (const auto& [read_id, read_end] : scalar_tie_fixed_read_end) {
@@ -2502,6 +2538,7 @@ private:
     backend::FPRSMask active_fprs;
     HostRegWriteMap scalar_tie_fpr_writes;
     Map<u32, u32> scalar_tie_fixed_read_end;
+    Vector<u32> scalar_tie_future_writes;
     const u32 gpr_reserve{0};
     const u32 fpr_reserve{0};
     const bool single_block_fast_path{false};

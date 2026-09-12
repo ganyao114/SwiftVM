@@ -2,7 +2,7 @@
 add_library(swift_ra_test_support STATIC support/register_alloc_test_support.cpp)
 target_link_libraries(swift_ra_test_support PUBLIC swift::runtime)
 
-set(SWIFT_CASE_GROUPS config runtime uniform decode integer gpr fpr fault allocation fp_environment fp_shapes pressure flags coverage)
+set(SWIFT_CASE_GROUPS config runtime uniform decode integer gpr fpr fault allocation fp_environment fp_shapes pressure flags coverage code_buffer)
 foreach(group IN LISTS SWIFT_CASE_GROUPS)
     add_library(swift_cases_${group} OBJECT cases/${group}.cpp)
     target_link_libraries(swift_cases_${group} PUBLIC swift_translator swift_ra_test_support
@@ -20,10 +20,12 @@ add_test(NAME swift_cases_state COMMAND swift_cases_test "Runtime preserves an i
 add_test(NAME swift_cases_configuration COMMAND swift_cases_test "FeatureSet*,config hash*,module feature binding parser*,SVM_FLAGS_REGS*")
 add_test(NAME swift_cases_coverage COMMAND swift_cases_test "bounded byte-table*,bounded streaming*,bounded integer arithmetic*")
 add_test(NAME swift_cases_reachability COMMAND swift_cases_test "Unreachable blocks keep unique IDs*")
+add_test(NAME swift_cases_code_buffer COMMAND swift_cases_test "Vector emission grows a full code buffer*")
+set_tests_properties(swift_cases_code_buffer PROPERTIES LABELS "unit;review" TIMEOUT 5)
 add_test(NAME swift_cases_fcmp COMMAND swift_cases_test "bounded floating comparisons*")
 add_test(NAME swift_cases_fcmp_legacy_carry COMMAND swift_cases_test "bounded floating comparisons*")
 add_test(NAME swift_cases_scalar_live COMMAND swift_cases_test
-        "bounded scalar arithmetic*,bounded scalar minmax*,AFP scalar arithmetic may reuse*,AFP scalar unary*,AFP scalar MIN MAX*,AFP guest FPCR*,AFP translated SSE arithmetic*")
+        "bounded scalar arithmetic*,bounded scalar copy*,bounded scalar minmax*,AFP scalar arithmetic may reuse*,AFP scalar unary*,AFP scalar MIN MAX*,AFP guest FPCR*,AFP translated SSE arithmetic*")
 set_tests_properties(swift_cases_scalar_live PROPERTIES LABELS "unit;review" TIMEOUT 5
         ENVIRONMENT "SVM_SSE_SCALAR_INSERT=1")
 set_tests_properties(swift_cases_fcmp swift_cases_fcmp_legacy_carry PROPERTIES

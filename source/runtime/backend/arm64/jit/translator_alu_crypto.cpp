@@ -50,6 +50,12 @@ u32 Crypto3(u32 opcode, const VRegister& dst, const VRegister& left, const VRegi
     return opcode | (right.GetCode() << 16) | (left.GetCode() << 5) | dst.GetCode();
 }
 
+void EmitCryptoInstruction(MacroAssembler& assembler, u32 encoding) {
+    // Raw encodings need the same buffer and pool checks as macro instructions.
+    SingleEmissionCheckScope scope{&assembler};
+    assembler.dci(encoding);
+}
+
 }  // namespace
 
 void JitTranslator::EmitVecAesEnc(ir::Inst* inst) {
@@ -62,8 +68,8 @@ void JitTranslator::EmitVecAesEnc(ir::Inst* inst) {
     // before SB/SR, so feed it a zero key and add the x86 round key after
     // AESMC.  This is the established ARM/x86 round-order mapping.
     __ Orr(result.V16B(), data.V16B(), data.V16B());
-    masm.dci(Crypto2(kAese, result, zero));
-    masm.dci(Crypto2(kAesmc, result, result));
+    EmitCryptoInstruction(masm, Crypto2(kAese, result, zero));
+    EmitCryptoInstruction(masm, Crypto2(kAesmc, result, result));
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
@@ -74,7 +80,7 @@ void JitTranslator::EmitVecAesEncLast(ir::Inst* inst) {
     auto zero = context.GetTmpV();
     __ Eor(zero.V16B(), zero.V16B(), zero.V16B());
     __ Orr(result.V16B(), data.V16B(), data.V16B());
-    masm.dci(Crypto2(kAese, result, zero));
+    EmitCryptoInstruction(masm, Crypto2(kAese, result, zero));
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
@@ -85,8 +91,8 @@ void JitTranslator::EmitVecAesDec(ir::Inst* inst) {
     auto zero = context.GetTmpV();
     __ Eor(zero.V16B(), zero.V16B(), zero.V16B());
     __ Orr(result.V16B(), data.V16B(), data.V16B());
-    masm.dci(Crypto2(kAesd, result, zero));
-    masm.dci(Crypto2(kAesimc, result, result));
+    EmitCryptoInstruction(masm, Crypto2(kAesd, result, zero));
+    EmitCryptoInstruction(masm, Crypto2(kAesimc, result, result));
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
@@ -97,7 +103,7 @@ void JitTranslator::EmitVecAesDecLast(ir::Inst* inst) {
     auto zero = context.GetTmpV();
     __ Eor(zero.V16B(), zero.V16B(), zero.V16B());
     __ Orr(result.V16B(), data.V16B(), data.V16B());
-    masm.dci(Crypto2(kAesd, result, zero));
+    EmitCryptoInstruction(masm, Crypto2(kAesd, result, zero));
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
@@ -113,8 +119,8 @@ void JitTranslator::EmitVecAesEncFast(ir::Inst* inst) {
     if (result.GetCode() != data.GetCode()) {
         __ Orr(result.V16B(), data.V16B(), data.V16B());
     }
-    masm.dci(Crypto2(kAese, result, zero));
-    masm.dci(Crypto2(kAesmc, result, result));
+    EmitCryptoInstruction(masm, Crypto2(kAese, result, zero));
+    EmitCryptoInstruction(masm, Crypto2(kAesmc, result, result));
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
@@ -130,7 +136,7 @@ void JitTranslator::EmitVecAesEncLastFast(ir::Inst* inst) {
     if (result.GetCode() != data.GetCode()) {
         __ Orr(result.V16B(), data.V16B(), data.V16B());
     }
-    masm.dci(Crypto2(kAese, result, zero));
+    EmitCryptoInstruction(masm, Crypto2(kAese, result, zero));
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
@@ -142,8 +148,8 @@ void JitTranslator::EmitVecAesDecFast(ir::Inst* inst) {
     if (result.GetCode() != data.GetCode()) {
         __ Orr(result.V16B(), data.V16B(), data.V16B());
     }
-    masm.dci(Crypto2(kAesd, result, zero));
-    masm.dci(Crypto2(kAesimc, result, result));
+    EmitCryptoInstruction(masm, Crypto2(kAesd, result, zero));
+    EmitCryptoInstruction(masm, Crypto2(kAesimc, result, result));
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
@@ -155,7 +161,7 @@ void JitTranslator::EmitVecAesDecLastFast(ir::Inst* inst) {
     if (result.GetCode() != data.GetCode()) {
         __ Orr(result.V16B(), data.V16B(), data.V16B());
     }
-    masm.dci(Crypto2(kAesd, result, zero));
+    EmitCryptoInstruction(masm, Crypto2(kAesd, result, zero));
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
@@ -171,11 +177,10 @@ void JitTranslator::EmitVecAesKeygenAssist(ir::Inst* inst) {
 
     __ Eor(zero.V16B(), zero.V16B(), zero.V16B());
     __ Orr(sbox_shifted.V16B(), source.V16B(), source.V16B());
-    masm.dci(Crypto2(kAese, sbox_shifted, zero));
+    EmitCryptoInstruction(masm, Crypto2(kAese, sbox_shifted, zero));
     if (context.GetFeatures().keygen_compact) {
         static_assert(state_offset_aes_keygen_swizzle == -16);
-        masm.ldur(control.Q(),
-                  MemOperand(state, state_offset_aes_keygen_swizzle));
+        __ Ldr(control.Q(), MemOperand(state, state_offset_aes_keygen_swizzle));
         __ Tbl(result.V16B(), sbox_shifted.V16B(), control.V16B());
         __ Mov(scratch, rcon_byte << 32);
         __ Dup(rcon.V2D(), scratch);
@@ -217,7 +222,7 @@ void JitTranslator::EmitVecPclMul(ir::Inst* inst) {
     if ((select & 0x11) == 0x11 && GcmPclMul2Enabled(context.GetFeatures())) {
         // The VIXL capture exposes Pmull2 but emits an unallocated sentinel
         // for it.  Keep this beside the existing raw PMULL encoding instead.
-        masm.dci(Crypto3(kPmull2, result, left, right));
+        EmitCryptoInstruction(masm, Crypto3(kPmull2, result, left, right));
         return;
     }
     // PMULL consumes lane 0.  Duplicate a selected high 64-bit lane when the
@@ -232,7 +237,7 @@ void JitTranslator::EmitVecPclMul(ir::Inst* inst) {
         __ Dup(tmp.V2D(), right.V2D(), 1);
         right = tmp;
     }
-    masm.dci(Crypto3(kPmull, result, left, right));
+    EmitCryptoInstruction(masm, Crypto3(kPmull, result, left, right));
 }
 
 void JitTranslator::EmitVecSha256Msg1(ir::Inst* inst) {
@@ -240,7 +245,7 @@ void JitTranslator::EmitVecSha256Msg1(ir::Inst* inst) {
     auto source = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     __ Orr(result.V16B(), destination.V16B(), destination.V16B());
-    masm.dci(Crypto2(kSha256Su0, result, source));
+    EmitCryptoInstruction(masm, Crypto2(kSha256Su0, result, source));
 }
 
 void JitTranslator::EmitVecSha256Msg2(ir::Inst* inst) {
@@ -254,7 +259,7 @@ void JitTranslator::EmitVecSha256Msg2(ir::Inst* inst) {
     __ Dup(dup.V4S(), destination.V4S(), 3);
     __ Zip2(dup.V2D(), dup.V2D(), source.V2D());
     __ Eor(result.V16B(), result.V16B(), result.V16B());
-    masm.dci(Crypto3(kSha256Su1, result, src1, dup));
+    EmitCryptoInstruction(masm, Crypto3(kSha256Su1, result, src1, dup));
 }
 
 void JitTranslator::EmitVecSha256Rnds2(ir::Inst* inst) {
@@ -274,8 +279,8 @@ void JitTranslator::EmitVecSha256Rnds2(ir::Inst* inst) {
     __ Rev64(efgh.V4S(), efgh.V4S());
     __ Dup(key.V2D(), xmm0.V2D(), 0);
     __ Orr(h2.V16B(), efgh.V16B(), efgh.V16B());
-    masm.dci(Crypto3(kSha256H2, h2, abcd, key));
-    masm.dci(Crypto3(kSha256H, abcd, efgh, key));
+    EmitCryptoInstruction(masm, Crypto3(kSha256H2, h2, abcd, key));
+    EmitCryptoInstruction(masm, Crypto3(kSha256H, abcd, efgh, key));
     __ Zip2(result.V2D(), h2.V2D(), abcd.V2D());
     __ Rev64(result.V4S(), result.V4S());
 }

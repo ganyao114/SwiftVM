@@ -1,5 +1,10 @@
 # Codex handoff: Align SVM flags with FEX
 
+2026-09-13 correctness update: JIT buffer overruns and premature resident XMM
+writes are fixed. The c-ray 1x1 case matches the current FEX reference in both
+Linux memory modes with default optimizations. Eight focused test groups pass.
+See [the current assessment](codegen-status-2026-09-12.md) for validation limits.
+
 2026-09-12 measurement review: see [the current assessment](codegen-status-2026-09-12.md).
 The historical range-weighted ratios below are structural estimates and must not
 be cited as current dynamic instruction counts or speed ratios.

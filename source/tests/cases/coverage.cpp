@@ -150,6 +150,45 @@ TEST_CASE("bounded scalar arithmetic retains a live left operand") {
     }
 }
 
+TEST_CASE("bounded scalar copy preserves the source guest register") {
+    constexpr std::array<swift::u8, 4> operations{0x58, 0x5c, 0x59, 0x5e};
+    constexpr std::array<double, 4> answers{10.0, 6.0, 16.0, 4.0};
+    for (bool single : {false, true}) {
+        for (unsigned index = 0; index < operations.size(); ++index) {
+            CAPTURE(single, index);
+            // MOVAPD xmm2,xmm0; ADD/SUB/MUL/DIV xmm2,xmm1; HLT.
+            // XMM0 remains observable at the exit even without another IR read.
+            const std::vector<swift::u8> code{
+                    0x66, 0x0f, 0x28, 0xd0,
+                    swift::u8(single ? 0xf3 : 0xf2), 0x0f, operations[index], 0xd1,
+                    0xf4};
+            SmallGuest guest(20, code);
+            auto& ctx = guest.core->GetContext();
+            ctx.rip.qword = guest.code_address;
+            ctx.xmm0.l[0] = single ? 0x1122334441000000ull : 0x4020000000000000ull;
+            ctx.xmm0.l[1] = 0x5566778899aabbccull;
+            ctx.xmm1.l[0] = single ? 0xaabbccdd40000000ull : 0x4000000000000000ull;
+            ctx.xmm1.l[1] = 0xddeeff0011223344ull;
+            const auto left = ctx.xmm0;
+            const auto right = ctx.xmm1;
+            auto expected = left;
+            if (single) {
+                const float value = static_cast<float>(answers[index]);
+                std::memcpy(&expected.i[0], &value, sizeof(value));
+            } else {
+                std::memcpy(&expected.l[0], &answers[index], sizeof(double));
+            }
+            REQUIRE(guest.core->Run() == swift::translator::ExitReason::None);
+            CHECK(ctx.xmm0.l[0] == left.l[0]);
+            CHECK(ctx.xmm0.l[1] == left.l[1]);
+            CHECK(ctx.xmm1.l[0] == right.l[0]);
+            CHECK(ctx.xmm1.l[1] == right.l[1]);
+            CHECK(ctx.xmm2.l[0] == expected.l[0]);
+            CHECK(ctx.xmm2.l[1] == expected.l[1]);
+        }
+    }
+}
+
 TEST_CASE("bounded floating comparisons preserve conditions and guest flags") {
     struct Pair {
         double left;

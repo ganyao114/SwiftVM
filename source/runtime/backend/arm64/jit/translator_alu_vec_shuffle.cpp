@@ -428,7 +428,7 @@ void JitTranslator::EmitByteMovMask(const VRegister& source,
                                     const WRegister& result,
                                     const VRegister& work,
                                     const VRegister& packed) {
-    masm.ldur(packed.Q(), MemOperand(state, state_offset_byte_movmask_weights));
+    __ Ldr(packed.Q(), MemOperand(state, state_offset_byte_movmask_weights));
     __ Cmlt(work.V16B(), source.V16B(), 0);
     __ And(packed.V16B(), work.V16B(), packed.V16B());
     __ Addp(packed.V16B(), packed.V16B(), packed.V16B());
