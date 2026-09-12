@@ -5,7 +5,7 @@
 
 namespace swift::runtime::ir {
 
-TEST_CASE("integer identity extracts cancel local width round trips") {
+TEST_CASE("integer direct extracts cancel local width round trips") {
     Block block{0, Location{0x1000}};
     const auto source = block.LoadUniform(Uniform{0, ValueType::U32});
     const auto extended = block.ZeroExtend32To64(source);
@@ -67,7 +67,7 @@ TEST_CASE("integer identity extracts cancel local width round trips") {
     REQUIRE(sign_extensions == 0);
 }
 
-TEST_CASE("integer width elimination rejects non-identity extracts") {
+TEST_CASE("integer width elimination rejects non-direct extracts") {
     Block block{0, Location{0x2000}};
     const auto source = block.LoadUniform(Uniform{0, ValueType::U32});
     const auto extended = block.ZeroExtend32To64(source);

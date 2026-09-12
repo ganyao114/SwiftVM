@@ -69,7 +69,7 @@ run_shape() {  # run_shape <shape> [env...]
 # --- 1. clone worker page fault: guest thread dies, host lives -------------
 echo "== a clone() worker's page fault must kill only that thread =="
 for cfg in "default" "SVM_ENABLE_JIT=0"; do
-    [ "$cfg" = "default" ] && envs=("SVM_UNUSED_PROBE=1") || envs=("$cfg")
+    [ "$cfg" = "default" ] && envs=("SVM_UNUSED_CHECK=1") || envs=("$cfg")
     run_shape clone_pf "${envs[@]}"
     name="clone_pf[$cfg]"
     if echo "$OUT" | grep -q "unhandled host fault"; then
@@ -95,7 +95,7 @@ REP_SHAPES="rep_movs rep_movs_partial rep_stos rep_stos_partial rep_scas rep_cmp
 # x87 mid-tier (which bails to the same helper for the env/save forms), and the
 # IR interpreter. All three must agree.
 for cfg in "default" "SVM_X87_JIT=1" "SVM_ENABLE_JIT=0"; do
-    [ "$cfg" = "default" ] && envs=("SVM_UNUSED_PROBE=1") || envs=("$cfg")
+    [ "$cfg" = "default" ] && envs=("SVM_UNUSED_CHECK=1") || envs=("$cfg")
     for shape in $X87_SHAPES $REP_SHAPES; do
         run_shape "$shape" "${envs[@]}"
         name="$shape[$cfg]"

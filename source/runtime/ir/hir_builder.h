@@ -351,7 +351,7 @@ public:
     // Removes `inst` from its block and frees it, keeping the function-level
     // HIRValue bookkeeping consistent: every HIRUse this instruction holds on
     // another value is unregistered first, and the instruction's own HIRValue
-    // (if it defines one) is erased from `values`. A plain `delete` would leave
+    // (if it defines one) is erased from `values`. A basic `delete` would leave
     // dangling HIRUse nodes behind, which the function-level register allocator
     // dereferences when it computes live-interval ends.
     void EraseInst(Block* block, Inst* inst);

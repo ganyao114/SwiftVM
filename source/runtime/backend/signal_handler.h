@@ -52,10 +52,10 @@ public:
     // resume execution from `uctx`; false = pass to the next handler.
     using FaultCallback = bool (*)(void* ctx, ucontext_t* uctx, int sig, siginfo_t* info);
 
-    // Optional probe registered by the frontend (translator) layer: given a
+    // Optional check registered by the frontend (translator) layer: given a
     // *host* fault address, returns true if it is backed by a mapped guest
     // page (i.e. the fault is a protection violation, not a wild pointer).
-    using GuestMapProbe = bool (*)(void* ctx, std::uintptr_t fault_host_addr);
+    using GuestMapCheck = bool (*)(void* ctx, std::uintptr_t fault_host_addr);
 
     // Range form of the same oracle, for the helpers that must validate
     // *before* dereferencing (x87/fxsave, rep-string walks) rather than
@@ -63,7 +63,7 @@ public:
     // `host_addr` are backed by guest mappings, capped at `length`.
     // One indirect call answers a whole walk, which is what keeps this
     // affordable in front of a four-byte `rep movsb`.
-    using GuestRangeProbe = u64 (*)(void* ctx, std::uintptr_t host_addr, u64 length);
+    using GuestRangeCheck = u64 (*)(void* ctx, std::uintptr_t host_addr, u64 length);
 
     // Ensures the process-wide sigaction handlers are installed and installs
     // the calling thread's alternate signal stack. Reasserting the actions is
@@ -84,27 +84,27 @@ public:
     static void UnregisterHandler(void* ctx);
 
     // Frontend hook: IsGuestAddressMapped() below consults it. The range
-    // probe is optional; without it GuestMappedBytes falls back to the
-    // single-address probe, one call per host page.
-    static void SetGuestMapProbe(GuestMapProbe probe, void* ctx);
-    static void SetGuestRangeProbe(GuestRangeProbe probe, void* ctx);
+    // check is optional; without it GuestMappedBytes falls back to the
+    // single-address check, one call per host page.
+    static void SetGuestMapCheck(GuestMapCheck check, void* ctx);
+    static void SetGuestRangeCheck(GuestRangeCheck check, void* ctx);
 
     // Contiguous mapped bytes from `host_addr`, capped at `length`. Returns
-    // `length` unchanged when no probe is installed (embedders without an
+    // `length` unchanged when no check is installed (embedders without an
     // oracle keep the unchecked behaviour).
     static u64 GuestMappedBytes(std::uintptr_t host_addr, u64 length);
 
-    // True if the probe says this host fault address maps to a guest page.
-    // Without a probe, conservatively returns false (fault treated as a wild
+    // True if the check says this host fault address maps to a guest page.
+    // Without a check, conservatively returns false (fault treated as a wild
     // guest pointer when the PC is inside JIT code).
     static bool IsGuestAddressMapped(std::uintptr_t fault_host_addr);
 
-    // True once an embedder has installed a probe. Lets non-fault callers
+    // True once an embedder has installed a check. Lets non-fault callers
     // (instruction fetch, which must validate *before* dereferencing rather
     // than recover afterwards) tell "not mapped" from "no oracle available":
-    // embedders without a probe -- unit tests, fuzzers, identity mappings --
+    // embedders without a check -- unit tests, fuzzers, direct mappings --
     // must keep the unchecked behaviour.
-    static bool HasGuestMapProbe();
+    static bool HasGuestMapCheck();
 
     // --- ucontext accessors (OS/arch abstraction) --------------------------
     static std::uintptr_t GetContextPC(const ucontext_t* uctx);

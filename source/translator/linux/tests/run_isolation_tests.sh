@@ -8,7 +8,7 @@
 #   guest reservation to any host mapping, and the access simply succeeds:
 #     * READ  — a hand-driven guest read 0xfeedfacf out of the translator's own
 #               Mach-O header;
-#     * WRITE — a hand-driven guest planted 0x4141414141414141 in a host
+#     * WRITE — a hand-driven guest placeed 0x4141414141414141 in a host
 #               malloc() buffer, observed from a host breakpoint.
 #   Both were done with lldb and ASLR off, because the host addresses move per
 #   run.  This suite asserts the same property WITHOUT needing a host address:
@@ -16,8 +16,8 @@
 #   so `base` and `base + 2^k` (k >= window bits) must alias.  If they do not,
 #   the access left the window — which is exactly "it reached host memory".
 #
-#   Linux now defaults to identity mapping, so the fixed half explicitly sets
-#   SVM_MEM_IDENTITY=0. The suite fails on the unbounded build
+#   Linux now defaults to direct mapping, so the fixed half explicitly sets
+#   SVM_MEM_DIRECT=0. The suite fails on the unbounded build
 #   (SVM_GUEST_BITS=0) and passes on the bounded one. Run it both ways:
 #       SVM_ISOLATION_EXPECT=broken run_isolation_tests.sh <unbounded-build>
 #
@@ -51,11 +51,11 @@ trap 'rm -rf "$WORK"' EXIT
 # SVM_GUEST_BITS=0 reproduces the pre-fix unbounded behaviour, and only a
 # build configured with -DSWIFT_ALLOW_UNBOUNDED_GUEST=ON has it compiled in.
 BROKEN="${SVM_ISOLATION_EXPECT:-fixed}"
-ENVPFX="SVM_MEM_IDENTITY=0"
+ENVPFX="SVM_MEM_DIRECT=0"
 if [ "$BROKEN" = "broken" ]; then
     ENVPFX="SVM_GUEST_BITS=0"
-    probe="$(SVM_GUEST_BITS=0 "$SVM" /nonexistent-guest-elf 2>&1)"
-    if echo "$probe" | grep -q "SWIFT_ALLOW_UNBOUNDED_GUEST"; then
+    check="$(SVM_GUEST_BITS=0 "$SVM" /nonexistent-guest-elf 2>&1)"
+    if echo "$check" | grep -q "SWIFT_ALLOW_UNBOUNDED_GUEST"; then
         echo "SKIP: this build refuses SVM_GUEST_BITS=0 (the unbounded mode is compiled" >&2
         echo "      out).  Rebuild with -DSWIFT_ALLOW_UNBOUNDED_GUEST=ON to run the" >&2
         echo "      broken half; the isolation defect cannot be demonstrated otherwise." >&2

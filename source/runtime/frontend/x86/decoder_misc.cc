@@ -27,7 +27,7 @@ u64 ReadVirtualTsc() {
     u64 value, frequency;
     asm volatile("mrs %0, cntvct_el0" : "=r"(value));
     asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
-    // Normalize the architectural counter to the same virtual 1 GHz frequency
+    // Adjust the architectural counter to the same virtual 1 GHz frequency
     // exposed through CPUID.15H.
     return static_cast<u64>(
             (static_cast<unsigned __int128>(value) * 1'000'000'000ull) / frequency);
@@ -152,7 +152,7 @@ void X64Decoder::DecodeTimestamp(bool rdtscp) {
         __ CallHostWithUniformEffects(ReadGuestTscEffects(), &ReadGuestTscContext, context);
     }
     if (rdtscp) {
-        // A single virtual CPU/core identity is exposed.
+        // A single virtual CPU/core direct is exposed.
         R(_RegisterType::R_ECX, __ LoadImm(ir::Imm(u64(0))));
     }
 }

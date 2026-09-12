@@ -7,6 +7,7 @@
 #include <functional>
 
 #include "runtime/backend/arm64/defines.h"
+#include "runtime/backend/arm64/operand_checks.h"
 #include "runtime/backend/context.h"
 #include "runtime/common/div128.h"
 #include "runtime/common/svm_config.h"
@@ -15,22 +16,56 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
+namespace {
+
+struct AuxiliaryCarryInputs {
+    Register left;
+    Operand right;
+};
+
+AuxiliaryCarryInputs CaptureAuxiliaryCarryInputs(
+        JitContext& context, const Register& left, const Operand& right,
+        const Register& result, bool needed) {
+    if (!needed || (left.GetCode() != result.GetCode() &&
+                    (right.IsImmediate() ||
+                     right.GetRegister().GetCode() != result.GetCode()))) {
+        return {left, right};
+    }
+    // AF needs the original operand bits even when the arithmetic overwrites
+    // either input. Their XOR is sufficient and uses one temporary.
+    auto captured = context.GetTmpX();
+    auto& masm = context.GetMasm();
+    if (right.IsImmediate()) {
+        __ Mov(captured, left.X());
+        if ((right.GetImmediate() >> 4) & 1) {
+            __ Eor(captured, captured, 1u << 4);
+        }
+    } else {
+        const auto shift = right.IsShiftedRegister() ? right.GetShift() : LSL;
+        const auto amount = right.IsShiftedRegister() ? right.GetShiftAmount() : 0;
+        __ Eor(captured, left.X(), Operand{right.GetRegister().X(), shift, amount});
+    }
+    return {captured, Operand{0}};
+}
+
+}  // namespace
+
 void JitTranslator::EmitAdd(ir::Inst* inst) {
-    if (auto fusion = narrow_carry_fusions.find(inst);
-        fusion != narrow_carry_fusions.end()) {
+    if (auto fusion = flag_state.narrow_carry_fusions.find(inst);
+        fusion != flag_state.narrow_carry_fusions.end()) {
         const auto reproved = MatchNarrowCarryFusion(inst);
         ASSERT_MSG(reproved && reproved->carry_test == fusion->second.carry_test &&
                            reproved->carry_add == fusion->second.carry_add &&
                            reproved->value.Def() == fusion->second.value.Def(),
                    "narrow carry fusion proof diverged at IR {}", inst->Id());
-        ASSERT(save_in_nzcv && nzcv_dirty);
+        ASSERT(flag_state.save_in_nzcv && flag_state.nzcv_dirty);
         const auto result = context.R(ir::Value{inst});
         const auto value = context.R(fusion->second.value, true);
         __ Adc(result.W(), value.W(), Operand{wzr});
         return;
     }
-    if (auto update = pinned_load_update_instructions.find(inst);
-        update != pinned_load_update_instructions.end() &&
+    if (auto update = pinned_gprs.pinned_load_update_instructions.find(inst);
+        update != pinned_gprs.pinned_load_update_instructions.end() &&
         inst == update->second.update) {
         const auto reproved = MatchPinnedLoadUpdate(inst);
         ASSERT_MSG(reproved && *reproved == update->second,
@@ -114,6 +149,10 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
             FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
             return;
         }
+        auto af_inputs = CaptureAuxiliaryCarryInputs(
+                context, left_register, right_operand, result,
+                !pseudo_flags.branch_only &&
+                        True(pseudo_flags.set & ir::Flags::AuxiliaryCarry));
         if (needs_nzcv) {
             if (!pseudo_flags.branch_only) {
                 BeginFlagsTokenProducer(pseudo_flags);
@@ -133,7 +172,7 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
         }
         if (!pseudo_flags.branch_only &&
             True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(left_register, right_operand, result);
+            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result);
         }
         FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
     } else {
@@ -145,22 +184,22 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
     if (MatchPreIndexMemoryUpdate(inst) || MatchBiasedMemoryUpdate(inst)) {
         return;
     }
-    if (auto plan = narrow_compares.find(inst); plan != narrow_compares.end()) {
+    if (auto candidate = flag_state.narrow_compares.find(inst); candidate != flag_state.narrow_compares.end()) {
         const auto reproved = MatchNarrowCompare(inst);
-        ASSERT_MSG(reproved && *reproved == plan->second,
+        ASSERT_MSG(reproved && *reproved == candidate->second,
                    "narrow compare proof diverged at IR {}", inst->Id());
         auto pseudo_flags = GetPseudoFlags(inst);
         pseudo_flags.set = ir::Flags::Carry;
         const auto result = FlagsResultRegister(inst, pseudo_flags);
-        const auto pinned = ResolvePinnedGPRWUse(plan->second.left, inst);
-        const auto left = pinned ? *pinned : context.W(plan->second.left);
+        const auto pinned = ResolvePinnedGPRWUse(candidate->second.left, inst);
+        const auto left = pinned ? *pinned : context.W(candidate->second.left);
         if (!pseudo_flags.branch_only) {
             BeginFlagsTokenProducer(pseudo_flags);
         }
-        if (plan->second.right) {
-            __ Cmp(left, context.W(*plan->second.right));
+        if (candidate->second.right) {
+            __ Cmp(left, context.W(*candidate->second.right));
         } else {
-            __ Cmp(left, plan->second.immediate);
+            __ Cmp(left, candidate->second.immediate);
         }
         const auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
         if (!pseudo_flags.branch_only) {
@@ -173,20 +212,20 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
         return ResolvePinnedGPRWUse(value, inst);
     };
-    if (dead_narrow_immediate_branch &&
-        dead_narrow_immediate_branch->producer == inst) {
+    if (flag_state.dead_narrow_immediate_branch &&
+        flag_state.dead_narrow_immediate_branch->producer == inst) {
         const auto reproved = MatchDeadNarrowImmediateBranch(inst);
         ASSERT_MSG(reproved &&
                            reproved->producer ==
-                                   dead_narrow_immediate_branch->producer &&
+                                   flag_state.dead_narrow_immediate_branch->producer &&
                            reproved->immediate_load ==
-                                   dead_narrow_immediate_branch->immediate_load &&
+                                   flag_state.dead_narrow_immediate_branch->immediate_load &&
                            reproved->immediate ==
-                                   dead_narrow_immediate_branch->immediate &&
+                                   flag_state.dead_narrow_immediate_branch->immediate &&
                            reproved->required ==
-                                   dead_narrow_immediate_branch->required &&
+                                   flag_state.dead_narrow_immediate_branch->required &&
                            reproved->width ==
-                                   dead_narrow_immediate_branch->width,
+                                   flag_state.dead_narrow_immediate_branch->width,
                    "dead narrow immediate branch proof diverged at IR {}",
                    inst->Id());
         const auto left = inst->GetArg<ir::Value>(0);
@@ -197,17 +236,17 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
         const bool zero_extended_load = left_input.Def() &&
                 left_input.Def()->GetOp() == ir::OpCode::LoadMemory &&
                 ir::GetValueSizeByte(left_input.Def()->ReturnType()) ==
-                        dead_narrow_immediate_branch->width;
+                        flag_state.dead_narrow_immediate_branch->width;
         Register compare = source;
         if (!zero_extended_load) {
-            if (dead_narrow_immediate_branch->width == sizeof(u8)) {
+            if (flag_state.dead_narrow_immediate_branch->width == sizeof(u8)) {
                 __ Uxtb(result, source);
             } else {
                 __ Uxth(result, source);
             }
             compare = result;
         }
-        __ Cmp(compare, dead_narrow_immediate_branch->immediate);
+        __ Cmp(compare, flag_state.dead_narrow_immediate_branch->immediate);
         return;
     }
     auto left = inst->GetArg<ir::Value>(0);
@@ -236,7 +275,7 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
                     pseudo_flags.set == ir::Flags::Zero &&
                     !RegionBranchPFAFActive(inst) &&
                     right.GetLeft().IsValue() && right.GetRight().Null() &&
-                    right_operand.IsPlainRegister();
+                    IsUnmodifiedRegister(right_operand);
             if (branch_only_zero_compare) {
                 const bool left_is_load = is_zero_extended_load(left_input);
                 const bool right_is_load =
@@ -304,8 +343,8 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
             }
             auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
             if (region_branch_pfaf) {
-                nzcv_requested = GuestNZCVToHost(guest_nzcv);
-                nzcv_dirty = true;
+                flag_state.nzcv_requested = GuestNZCVToHost(guest_nzcv);
+                flag_state.nzcv_dirty = true;
             } else if (!pseudo_flags.branch_only) {
                 SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
             }
@@ -320,6 +359,10 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
             FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
             return;
         }
+        auto af_inputs = CaptureAuxiliaryCarryInputs(
+                context, left_register, right_operand, result,
+                !pseudo_flags.branch_only &&
+                        True(pseudo_flags.set & ir::Flags::AuxiliaryCarry));
         if (needs_nzcv) {
             if (!pseudo_flags.branch_only) {
                 BeginFlagsTokenProducer(pseudo_flags);
@@ -338,7 +381,7 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
         }
         if (!pseudo_flags.branch_only &&
             True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(left_register, right_operand, result);
+            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result);
         }
         FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
     } else {
@@ -383,8 +426,8 @@ void JitTranslator::EmitNeg(ir::Inst* inst) {
         }
         const auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
         if (region_branch_pfaf) {
-            nzcv_requested = GuestNZCVToHost(guest_nzcv);
-            nzcv_dirty = true;
+            flag_state.nzcv_requested = GuestNZCVToHost(guest_nzcv);
+            flag_state.nzcv_dirty = true;
         } else if (!pseudo_flags.branch_only) {
             SaveHostFlags(GuestNZCVToHost(guest_nzcv), guest_nzcv);
         }
@@ -420,11 +463,15 @@ void JitTranslator::EmitAdc(ir::Inst* inst) {
     auto left_register = context.R(left, true);
 
     // Bring the guest carry flag into host C.
-    if (!(save_in_nzcv && nzcv_dirty)) {
+    if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
         LoadNZCVFromFlags();
     }
 
     if (!pseudo_flags.Null()) {
+        auto af_inputs = CaptureAuxiliaryCarryInputs(
+                context, left_register, right_operand, result,
+                !pseudo_flags.branch_only &&
+                        True(pseudo_flags.set & ir::Flags::AuxiliaryCarry));
         const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
         if (needs_nzcv) {
             // OFF must not insert MergeNZCV: Adcs consumes live host C.
@@ -445,7 +492,7 @@ void JitTranslator::EmitAdc(ir::Inst* inst) {
         }
         if (!pseudo_flags.branch_only &&
             True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(left_register, right_operand, result);
+            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result);
         }
         FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
     } else {
@@ -462,11 +509,15 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
     auto left_register = context.R(left, true);
 
     // The carry is stored with host (ARM) semantics, so SBC matches the guest borrow.
-    if (!(save_in_nzcv && nzcv_dirty)) {
+    if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
         LoadNZCVFromFlags();
     }
 
     if (!pseudo_flags.Null()) {
+        auto af_inputs = CaptureAuxiliaryCarryInputs(
+                context, left_register, right_operand, result,
+                !pseudo_flags.branch_only &&
+                        True(pseudo_flags.set & ir::Flags::AuxiliaryCarry));
         const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
         if (needs_nzcv) {
             if (FlagsRegsEnabled() && !pseudo_flags.branch_only) {
@@ -486,7 +537,7 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
         }
         if (!pseudo_flags.branch_only &&
             True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(left_register, right_operand, result);
+            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result);
         }
         FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
     } else {
@@ -504,9 +555,9 @@ void JitTranslator::EmitAnd(ir::Inst* inst) {
                 reproved->offset, 1);
         return;
     }
-    if (dead_edge_integer_branch &&
-        dead_edge_integer_branch->producer == inst &&
-        dead_edge_integer_branch->zero_target) {
+    if (flag_state.dead_edge_integer_branch &&
+        flag_state.dead_edge_integer_branch->producer == inst &&
+        flag_state.dead_edge_integer_branch->zero_target) {
         return;
     }
     if (local_conditions.contains(inst)) {
@@ -550,8 +601,8 @@ void JitTranslator::EmitAnd(ir::Inst* inst) {
         __ Ands(result, left_register, right_operand);
         if (!pseudo_flags.branch_only) {
             if (FlagsRegsEnabled()) {
-                nzcv_requested |= GuestNZCVToHost(pseudo_flags.set & ir::Flags::NZ);
-                nzcv_dirty = true;
+                flag_state.nzcv_requested |= GuestNZCVToHost(pseudo_flags.set & ir::Flags::NZ);
+                flag_state.nzcv_dirty = true;
             } else {
                 MergeLogicalFlagsNZ(pseudo_flags.set);
             }
@@ -583,8 +634,8 @@ void JitTranslator::EmitAndNot(ir::Inst* inst) {
         __ Bics(result, left_register, right_operand);
         if (!pseudo_flags.branch_only) {
             if (FlagsRegsEnabled()) {
-                nzcv_requested |= GuestNZCVToHost(pseudo_flags.set & ir::Flags::NZ);
-                nzcv_dirty = true;
+                flag_state.nzcv_requested |= GuestNZCVToHost(pseudo_flags.set & ir::Flags::NZ);
+                flag_state.nzcv_dirty = true;
             } else {
                 MergeLogicalFlagsNZ(pseudo_flags.set);
             }
@@ -657,7 +708,7 @@ void JitTranslator::EmitOr(ir::Inst* inst) {
 void JitTranslator::EmitXor(ir::Inst* inst) {
     auto pseudo_flags = GetPseudoFlags(inst);
     auto result = context.R(ir::Value{inst});
-    if (scalar_identity_analysis.IsSelfXor(inst)) {
+    if (scalar_copy_analysis.IsSelfXor(inst)) {
         if (!pseudo_flags.Null()) {
             if (!pseudo_flags.branch_only) {
                 BeginFlagsTokenProducer(pseudo_flags);
@@ -744,10 +795,10 @@ void JitTranslator::EmitLsrImm(ir::Inst* inst) {
     }
     if (auto fused = fused_narrow_extract_shifts.find(inst);
         fused != fused_narrow_extract_shifts.end()) {
-        const auto plan = narrow_extract_extensions.find(fused->second);
+        const auto candidate = narrow_extract_extensions.find(fused->second);
         const auto reproved = MatchNarrowExtractExtension(fused->second);
-        ASSERT_MSG(plan != narrow_extract_extensions.end() && reproved &&
-                           *reproved == plan->second && reproved->shift == inst,
+        ASSERT_MSG(candidate != narrow_extract_extensions.end() && reproved &&
+                           *reproved == candidate->second && reproved->shift == inst,
                    "narrow extract shift proof diverged at IR {}", inst->Id());
         const u32 lsr = inst->GetArg<ir::Imm>(1).Get();
         __ Ubfx(context.W(ir::Value{inst}), context.W(reproved->source), lsr,
@@ -968,9 +1019,9 @@ void JitTranslator::EmitMul(ir::Inst* inst) {
     auto right = inst->GetArg<ir::Operand>(1);
     auto type = left.Type();
     auto result = context.R(ir::Value{inst});
-    auto pinned = left.Def() ? fused_pin_gpr_reads.find(left.Def())
-                             : fused_pin_gpr_reads.end();
-    Register left_register = pinned != fused_pin_gpr_reads.end()
+    auto pinned = left.Def() ? pinned_gprs.fused_pin_gpr_reads.find(left.Def())
+                             : pinned_gprs.fused_pin_gpr_reads.end();
+    Register left_register = pinned != pinned_gprs.fused_pin_gpr_reads.end()
             ? Register{WRegister(pinned->second)}
             : context.R(left, true);
     auto pseudo_flags = GetPseudoFlags(inst);
@@ -984,10 +1035,10 @@ void JitTranslator::EmitMul(ir::Inst* inst) {
     // require a narrow cast, come from a spill, or encode an induction/
     // composite/immediate operand on the established path.
     const auto right_part = right.GetLeft();
-    const bool plain_value = right.GetRight().Null() && right_part.IsValue() &&
+    const bool basic_value = right.GetRight().Null() && right_part.IsValue() &&
                              right_part.value.Defined();
     const bool unobserved_value =
-            plain_value &&
+            basic_value &&
             right_part.value.Def()->GetUses(false) ==
                     right_part.value.Def()->GetUses() &&
             right_part.value.Def()->GetPseudoOperations().empty();
@@ -995,7 +1046,7 @@ void JitTranslator::EmitMul(ir::Inst* inst) {
             context.GetFeatures().operand_copy_kill &&
             ir::GetValueSizeByte(type) >= sizeof(u32) && pseudo_flags.Null() &&
             unobserved_value && !context.IsSpilled(right_part.value) &&
-            right_operand.IsPlainRegister();
+            IsUnmodifiedRegister(right_operand);
     auto multiplier = kill_operand_copy
             ? right_operand.GetRegister()
             : MaterializeOperand(right_operand, type);
@@ -1054,7 +1105,7 @@ void JitTranslator::EmitCondSelect(ir::Inst* inst) {
     auto true_value = inst->GetArg<ir::Value>(1);
     auto false_value = inst->GetArg<ir::Value>(2);
     auto result = context.R(ir::Value{inst});
-    if (!(save_in_nzcv && nzcv_dirty)) {
+    if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
         LoadNZCVFromFlags();
     }
     __ Csel(result, context.R(true_value), context.R(false_value), MapCond(cond));
@@ -1081,12 +1132,12 @@ void JitTranslator::EmitCondSet(ir::Inst* inst) {
     // data loss in the interpreter, so refuse it in both.
     ASSERT(inst->ReturnType() != ir::ValueType::VOID);
     auto following = cur_block->GetInstList().iterator_to(*inst);
-    if (++following == cur_block->GetInstList().end() && save_in_nzcv &&
-        nzcv_dirty && RecordLocalCondition(inst, cond)) {
+    if (++following == cur_block->GetInstList().end() && flag_state.save_in_nzcv &&
+        flag_state.nzcv_dirty && RecordLocalCondition(inst, cond)) {
         return;
     }
     auto result = context.R(ir::Value{inst});
-    if (!(save_in_nzcv && nzcv_dirty)) {
+    if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
         if (TryEmitCondSetFromFlags(inst, cond)) {
             return;
         }
@@ -1145,14 +1196,39 @@ void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
     }
 
     if (IsCompactFCmp(fcmp)) {
-        // PublishFCmpFlags has already applied AXFLAG.  Re-express W38's raw
-        // FCMP conditions over that x86-shaped NZCV so terminal B.cond/CSEL
-        // fusion remains available.
+        // AXFLAG produces inverted guest carry. An intervening InvertCarry
+        // changes that representation before this consumer; follow the emitted
+        // operations rather than assuming that AXFLAG's carry is still live.
+        bool inverted_carry = true;
+        auto& instructions = cur_block->GetInstList();
+        for (auto scan = std::next(instructions.iterator_to(*fcmp.Def()));
+             scan != instructions.end() && &*scan != inst; ++scan) {
+            if (scan->GetOp() == ir::OpCode::InvertCarry &&
+                &*scan != flag_state.raw_carry_pending) {
+                inverted_carry = !inverted_carry;
+            }
+        }
+        if (!inverted_carry && (cond == ir::Cond::GT || cond == ir::Cond::LE)) {
+            // Direct CF and ZF need two predicates for JA/JBE. Keep NZCV
+            // intact because later guest instructions can still observe it.
+            auto result = context.R(ir::Value{inst}).W();
+            __ Cset(result, cond == ir::Cond::GT ? ne : eq);
+            if (cond == ir::Cond::GT) {
+                __ Csel(result, result, wzr, cc);
+            } else {
+                __ Csinc(result, result, wzr, cc);
+            }
+            return;
+        }
         ir::Cond mapped{};
         bool nzcv_condition = true;
         switch (cond) {
-            case ir::Cond::LT: mapped = ir::Cond::CC; break;  // x86 CF
-            case ir::Cond::GE: mapped = ir::Cond::CS; break;  // !CF
+            case ir::Cond::LT:
+                mapped = inverted_carry ? ir::Cond::CC : ir::Cond::CS;
+                break;
+            case ir::Cond::GE:
+                mapped = inverted_carry ? ir::Cond::CS : ir::Cond::CC;
+                break;
             case ir::Cond::GT: mapped = ir::Cond::HI; break;  // !CF && !ZF
             case ir::Cond::LE: mapped = ir::Cond::LS; break;  // CF || ZF
             case ir::Cond::VS:  // unordered = !ordered
@@ -1174,10 +1250,11 @@ void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
         Register ordered = CanUseCompactFCmpCarrier(fcmp.Def())
                 ? flags.W()
                 : context.R(fcmp).W();
+        // The carrier can already contain committed NZCV bits. Only its low
+        // bit represents ordered, including when SETcc consumes the result.
+        __ And(result.W(), ordered, 1);
         if (cond == ir::Cond::VS) {
-            __ Eor(result.W(), ordered, 1);
-        } else if (result.GetCode() != ordered.GetCode()) {
-            __ Mov(result.W(), ordered);
+            __ Eor(result.W(), result.W(), 1);
         }
         return;
     }

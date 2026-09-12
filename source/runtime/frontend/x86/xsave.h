@@ -11,7 +11,7 @@ namespace swift::x86 {
 // XSAVE state components and XSAVE-area layout (Intel SDM Vol. 1 ch. 13).
 //
 // Every number below was cross-checked against real x86-64 hardware through
-// Rosetta 2; the probes and their results are described in
+// Rosetta 2; the checks and their results are described in
 // source/tests/fuzz/xsave_test.cpp.  Hardware reports
 //   CPUID.0xD.0 -> EAX=0x7 EBX=832 ECX=832 EDX=0
 //   CPUID.0xD.2 -> EAX=256 (size) EBX=576 (offset)

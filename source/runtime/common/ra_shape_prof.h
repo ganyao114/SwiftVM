@@ -1,6 +1,6 @@
-// Read-only register-allocation shape probe (W67).
+// Read-only register-allocation shape check (W67).
 //
-// The probe is translation-only.  No counter is emitted into generated code,
+// The check is translation-only.  No counter is emitted into generated code,
 // and every call site is guarded by the process-constant
 // RAShapeProfEnabled().  Aggregation uses relaxed atomics so concurrently
 // compiling guest threads never race on ordinary integers.
@@ -26,9 +26,9 @@ enum class RAShapeHelperABI : u8 {
 
 struct RAShapeHelperCounters {
     u64 calls{};
-    u64 snapshot_instructions{};
-    u64 snapshot_code_bytes{};
-    u64 snapshot_memory_bytes{};
+    u64 capture_instructions{};
+    u64 capture_code_bytes{};
+    u64 capture_memory_bytes{};
 };
 
 // One compilation unit's local accumulator.  RegAlloc owns it; JitContext

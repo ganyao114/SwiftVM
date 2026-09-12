@@ -28,7 +28,7 @@
 //
 // LAYOUT
 // ------
-//   section 0  addressing-mode probes -- the defect, plus the controls that
+//   section 0  addressing-mode checks -- the defect, plus the controls that
 //              localise it (base register present / scale 1 / VEX handler path)
 //   section 1  the horizontal family on constants that distinguish every lane
 //              permutation, in all three register-aliasing shapes
@@ -175,7 +175,7 @@ static u64 rng_next(void) {
     return rngs;
 }
 
-// Written with plain scalar C so the accumulate step cannot itself be the
+// Written with basic scalar C so the accumulate step cannot itself be the
 // suspect: it is compiled to vmulps/vaddps by -mavx2 -O2 in both builds, and
 // K2/K3 already prove vmulps/vaddps agree.
 static void build_acc(u32 *acc_out) {
@@ -185,18 +185,18 @@ static void build_acc(u32 *acc_out) {
         hdbg_b[i] = (float)(int)(rng_next() % 2001 - 1000) * 0.03125f;
     }
     // Read the freshly-filled arrays back through a volatile pointer: that
-    // forces a plain base-register load, so a difference between THIS and the
+    // forces a basic base-register load, so a difference between THIS and the
     // vectorised loop below is a load-addressing difference, not a store one.
     {
-        static u32 probe[8];
+        static u32 check[8];
         volatile float *pa = hdbg_a, *pb = hdbg_b;
         union { float f; u32 u; } c;
-        for (int k = 0; k < 4; k++) { c.f = pa[k]; probe[k] = c.u; }
-        for (int k = 0; k < 4; k++) { c.f = pb[k]; probe[4 + k] = c.u; }
-        emit_lanes("probe_a0_3_b0_3", probe, 8);
-        for (int k = 0; k < 4; k++) { c.f = pa[4088 + k]; probe[k] = c.u; }
-        for (int k = 0; k < 4; k++) { c.f = pb[4088 + k]; probe[4 + k] = c.u; }
-        emit_lanes("probe_tail", probe, 8);
+        for (int k = 0; k < 4; k++) { c.f = pa[k]; check[k] = c.u; }
+        for (int k = 0; k < 4; k++) { c.f = pb[k]; check[4 + k] = c.u; }
+        emit_lanes("check_a0_3_b0_3", check, 8);
+        for (int k = 0; k < 4; k++) { c.f = pa[4088 + k]; check[k] = c.u; }
+        for (int k = 0; k < 4; k++) { c.f = pb[4088 + k]; check[4 + k] = c.u; }
+        emit_lanes("check_tail", check, 8);
         u32 rl[2] = {(u32)rngs, (u32)(rngs >> 32)};
         emit_lanes("rng_final", rl, 2);
     }
@@ -213,7 +213,7 @@ static void build_acc(u32 *acc_out) {
 }
 
 // ---------------------------------------------------------------------------
-// Addressing-mode probes -- the actual defect this harness found.
+// Addressing-mode checks -- the actual defect this harness found.
 //
 // clang's -fno-pic lowering of `arr[i]` with a 64-bit index is a SIB byte with
 // an index and scale but NO BASE, the array address living in the disp32
@@ -221,7 +221,7 @@ static void build_acc(u32 *acc_out) {
 // avx_real_x86_64 that uses it -- 8 sites, all in k_fdot.
 //
 // A fixed absolute disp32 cannot be used on macOS (everything is PIC and
-// MAP_FIXED in the low 4 GiB is refused), so the probes below put a SMALL
+// MAP_FIXED in the low 4 GiB is refused), so the checks below put a SMALL
 // number in the disp32 and carry the address in the INDEX register instead:
 //
 //     movl 4(,%rax,4), %edx      with rax = p/4 - 1
@@ -229,7 +229,7 @@ static void build_acc(u32 *acc_out) {
 // architecturally reads *p, because EA = index*scale + disp = (p-4) + 4.  Any
 // implementation that instead computes (index + disp) * scale reads
 // (p/4 - 1 + 4) * 4 = p + 12.  Both addresses are inside the caller's array, so
-// the probe is safe and -- unlike an absolute disp32 -- runs on the oracle too.
+// the check is safe and -- unlike an absolute disp32 -- runs on the oracle too.
 // ---------------------------------------------------------------------------
 
 // movl 4(,%rax,4), %edx        -- no base, scale 4, disp32 = 4
@@ -306,7 +306,7 @@ static u32 sibsrc[64] __attribute__((aligned(32)));
 static u32 obuf[64];
 
 static int svm_hdbg_run(void) {
-    // ---- 0. addressing-mode probes -----------------------------------------
+    // ---- 0. addressing-mode checks -----------------------------------------
     for (int i = 0; i < 64; i++) sibsrc[i] = 0xa0000000u + (u32)i;
     sib_nobase_mov32(sibsrc, obuf);
     emit_lanes("sib_nobase_mov32", obuf, 1);

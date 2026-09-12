@@ -55,7 +55,7 @@ Every run used for the tables below passed the five required CRCs and emitted
 `Correct operation validated`.
 
 These wall times are validation diagnostics, not a new SVM/FEX performance
-A/B: the SVM runs contain probes/dumps/gdb and the FEX run is deliberately
+A/B: the SVM runs contain checks/dumps/gdb and the FEX run is deliberately
 CPU-throttled. The performance standing under investigation remains baseline4
 SVM/FEX = 0.403; this report re-attributes its current code shape.
 
@@ -63,7 +63,7 @@ SVM/FEX = 0.403; this report re-attributes its current code shape.
 |---|---|---:|---:|---|
 | W71 aggregate/top-N | SVM + `SVM_RA_HOT_COALESCE` | 150,000 | 20.194 s | validated |
 | byte/host dump | SVM + `SVM_VIXL_HOST_DUMP=1` | 150,000 | 12.228 s | validated |
-| all-entry family weighting | SVM probe under gdb | 150,000 | 17.711 s | validated |
+| all-entry family weighting | SVM check under gdb | 150,000 | 17.711 s | validated |
 | same-PC live capture | FEX, multiblock OFF, ABI-local flags ON | 150,000 | 12.844 s | validated |
 
 The FEX capture was pinned to CPU0 alongside one CPU0 load process solely to
@@ -113,7 +113,7 @@ state_sequences=54 state_pairs=55 state_same_offset=69
 state_saved_dynamic=269334215 state_pct=0.077356
 ```
 
-The probe's `state_pct` is a conservative **saved-instruction candidate**, not
+The check's `state_pct` is a conservative **saved-instruction candidate**, not
 all state traffic. It can overlap mnemonic classes, so it is reported as a
 side-band ceiling and must not be added to the disjoint residual.
 
@@ -279,7 +279,7 @@ DCE.
 ## 5. CoreMark kernel structure
 
 The normal W71 report prints only top 20. To classify all 1,701 executed PCs,
-`/private/tmp/w85-gdb.py` stopped at `DumpAtExit`, read the probe's process slots,
+`/private/tmp/w85-gdb.py` stopped at `DumpAtExit`, read the check's process slots,
 and emitted every `(guest_pc, entries, host_static)` tuple. The command was:
 
 ```sh
@@ -374,7 +374,7 @@ Start audit-first at `0x402df8` and the adjacent matrix loops.
   one proven same-PC block exposes a 2.5684% whole-program mechanical ceiling,
   enough to justify the audit.
 - Default OFF for a spike; require no increase in spill, high-water, scratch
-  escalation, helper snapshots, or host bytes outside candidate units.
+  escalation, helper captures, or host bytes outside candidate units.
 
 ### Possible later project: compact cross-edge flags representation
 

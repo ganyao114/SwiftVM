@@ -4,9 +4,9 @@
 
 **NO-GO，不进入机制 spike。** 在生产 region 形态下，把 x0–x9 中任一
 guest fixed home 迁入一个新释放的 callee-saved 槽，省下的 helper
-snapshot/restore 远小于释放 x25/x27 所引入的热路径税：
+capture/restore 远小于释放 x25/x27 所引入的热路径税：
 
-- Linux identity（本方向的 pool10 主形态）三语料没有一个直接净值为正；
+- Linux direct（本方向的 pool10 主形态）三语料没有一个直接净值为正；
 - Darwin+bias 只有 SQLite 的“释放 x27、迁一个家”是正值：
   `+716,500` 条（`+0.224162% host`），但同一格 Linux 是
   `-1,082,082` 条（`-0.390884%`）；
@@ -18,7 +18,7 @@ snapshot/restore 远小于释放 x25/x27 所引入的热路径税：
   保存，真正可删条数受 `STP/LDP` 奇偶配对和 argument overlap 支配。
 
 因此没有注册 `SVM_*` 开关，也没有生产源码改动。x26/x28 未触碰；x24/x10
-按 identity/bias 既有条件回收处理，不混入 x25/x27 的净账。
+按 direct/bias 既有条件回收处理，不混入 x25/x27 的净账。
 
 ## 1. 口径与探针
 
@@ -34,13 +34,13 @@ snapshot/restore 远小于释放 x25/x27 所引入的热路径税：
 - SQLite：`--size 1 --testset main <fresh-db>`；
 - zip7：`b -mmt1 -md=16m`。
 
-Mac 为 Darwin+bias 图；Orb Ubuntu 为 Linux identity 图。后者实测 pool
+Mac 为 Darwin+bias 图；Orb Ubuntu 为 Linux direct 图。后者实测 pool
 直方图重新对上既有 w68 记录：CoreMark `9:2,10:621`，SQLite
 `9:28,10:4831`；不是把 Darwin pool7 误当 Linux 上限。
 
 ### 1.2 只读计算
 
-临时 probe 在每个已存在的 `CallLambda` 发码点做两次**只读**计算：
+临时 check 在每个已存在的 `CallLambda` 发码点做两次**只读**计算：
 
 1. 当前 `save_gprs` 的真实 `STP/LDP` 指令数；
 2. 假设某个 x0–x9 guest home 已迁至 callee-saved 后重新算配对数；若旧
@@ -68,7 +68,7 @@ Mac 为 Darwin+bias 图；Orb Ubuntu 为 Linux identity 图。后者实测 pool
 表中“逻辑税”是该家在 helper 边界的一次 save + restore；“实际可删”按
 整组 `STP/LDP` 重新配对，才是净账使用值。
 
-### 2.1 Linux identity
+### 2.1 Linux direct
 
 | guest 家 | host | CoreMark 逻辑/可删 | SQLite 逻辑/可删 | zip7 逻辑/可删 |
 |---|---:|---:|---:|---:|
@@ -113,7 +113,7 @@ guest 家更热。
 | 平台 | CoreMark | SQLite | zip7 |
 |---|---:|---:|---:|
 | Darwin+bias | 450 | 3,789,450 | 1,030 |
-| Linux identity | 450 | 3,790,964 | 2,756 |
+| Linux direct | 450 | 3,790,964 | 2,756 |
 
 这说明不能把两个单家节省直接相加。多数现场只少一对 STP/LDP，第二个
 callee 槽主要增加 pool 容量，并不再减少一对 helper 指令。
@@ -160,7 +160,7 @@ x25 不是闲置 callee-save；关闭 RSB 时它已经条件归池，活动 RSB 
 定义：
 
 ```text
-direct net = 实际可删 helper snapshot 指令
+direct net = 实际可删 helper capture 指令
              - x27 cache-base reload
              - x25 RSB pointer load/store
 ```
@@ -168,7 +168,7 @@ direct net = 实际可删 helper snapshot 指令
 “最热家”固定取 x0/RSI；“次热家”取 x2/R8。两者在三语料都并列最佳，
 所以单槽两列数字相同；若取非并列的 x1/x5/x7，只会更差。
 
-### 4.1 Linux identity（裁决主表）
+### 4.1 Linux direct（裁决主表）
 
 | 释放项 | 迁最热 x0 | 迁次热 x2 | 两槽都用时 |
 |---|---:|---:|---:|
@@ -219,10 +219,10 @@ direct net = 实际可删 helper snapshot 指令
 
 ## 6. x24/x10 与 Darwin+bias 单列
 
-既有池审计给出的平台图是：Linux identity 首轮 pool10、Darwin identity
+既有池审计给出的平台图是：Linux direct 首轮 pool10、Darwin direct
 pool9、Darwin+bias pool7（`docs/w68-register-reclaim-audit.md:25-37`）。
 
-- Linux identity 下 x24、x10 已经在 pool，本方向不能重复回收；
+- Linux direct 下 x24、x10 已经在 pool，本方向不能重复回收；
 - bias 下 x24 是 permanent page-table base，x10 是 memory scratch/窄 lease；
   回收它们会给 guest memory operand 增加地址供给和 live interval，不是一个
   免费 callee 家；证据见同报告 `:82`、`:161-170`；
@@ -233,7 +233,7 @@ pool9、Darwin+bias pool7（`docs/w68-register-reclaim-audit.md:25-37`）。
 ## 7. 探针撤销、自证与原始产物
 
 临时插桩已从 mac worktree 与 Orb clone 机械撤销；两边均完成增量重建。
-清理后源码中下列 probe token 全部为零命中：
+清理后源码中下列 check token 全部为零命中：
 
 ```text
 svm-infra
@@ -277,7 +277,7 @@ Correct operation validated
    识别；只证明 SQLite Darwin 的 `+716,500` 不够。
 2. **x25**：必须先把 RSB pointer 的额外税从“每 push/pop 两条”降到接近
    零，同时证明 signal/fault/direct-link 上 pointer 一致性；否则最小门槛
-   是 CoreMark `1,232,065,578` 条，远高于 helper snapshot 池。
+   是 CoreMark `1,232,065,578` 条，远高于 helper capture 池。
 3. **两槽**：必须有 unit-local、可回滚的 pool 使用机制，不能把 pool12
    容量投影直接当收益；CoreMark 直接税门为 `1,761,450,344` 条。
 4. **Darwin+bias**：若另案重开 x24，第一门是 page-table/base 供给的真实

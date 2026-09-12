@@ -228,7 +228,7 @@ RegionLinkTrampolineCode BuildRegionLinkTrampoline(
                  MemOperand(sp, fpr_base + i * sizeof(u128)));
     }
 
-    // BL set LR to site+4. Preserve that identity before setting up AAPCS64
+    // BL set LR to site+4. Preserve that direct before setting up AAPCS64
     // arguments. x28 is the permanent State register in the JIT ABI.
     masm.Ldr(x2, MemOperand(sp, 8));
     masm.Sub(x2, x2, 4);
@@ -287,9 +287,9 @@ RegionLinkTrampolineCode BuildRegionLinkTrampoline(
         offsets[mask] = static_cast<u32>(masm.GetBuffer()->GetSizeInBytes());
         const u64 requested = static_cast<u64>(mask) << 28;
         const u32 lsb = std::countr_zero(requested);
-        const u64 normalized = requested >> lsb;
-        if (!(normalized & (normalized + 1))) {
-            const u32 width = std::bit_width(normalized);
+        const u64 adjusted = requested >> lsb;
+        if (!(adjusted & (adjusted + 1))) {
+            const u32 width = std::bit_width(adjusted);
             masm.Mrs(x16, NZCV);
             masm.Ubfx(x16, x16, lsb, width);
             masm.Bfi(x26, x16, lsb, width);

@@ -1,8 +1,8 @@
-# Phase C：Linux identity pool10 全 pin 复测报告
+# Phase C：Linux direct pool10 全 pin 复测报告
 
 ## 0. 裁决
 
-**NO-GO。** Linux/aarch64 identity 图上，`SVM_X86_PIN_EXT=3` +
+**NO-GO。** Linux/aarch64 direct 图上，`SVM_X86_PIN_EXT=3` +
 `SVM_RA_FIXED_CLASS=1` 的首轮 GPR pool 确为 **10**；发生 spill 的 unit 按既有
 x18 契约以 pool **9** 重跑。这个实测结果推翻了把 Darwin+bias 的 pool7 当成
 物理上限的旧前提，也显著缓和了原 spike 的容量灾难，但尚不足以翻盘：
@@ -44,7 +44,7 @@ host-Linux 编译缺口，也没有改动源码。
 warning occurrence；与此前 Release 完整构建计数相同，均来自现有源码、宏和
 third-party 路径。本批零源码改动，故新增 warning 集合为空。
 
-## 2. Linux identity 与 pool10 的直接证据
+## 2. Linux direct 与 pool10 的直接证据
 
 运行命令的关键部分为：
 
@@ -58,7 +58,7 @@ env -u SVM_EXEC_PROF SVM_JIT_CACHE= \
 程序正常以 guest 约定值 42 退出。运行时打印：
 
 ```text
-Linux identity memory mode: guest addresses map directly onto the host address space...
+Linux direct memory mode: guest addresses map directly onto the host address space...
 [svm-reg-mask] memory_base=0 page_table=0 x24_reserved=0 x10_reserved=0
 dispatcher_loc=x24 pin_ext=1 pin_ext_level2=1 x0_x5_reserved=1
 pin_ext_level3=1 x6_x9_reserved=1 xpool_requested=1 xpool_effective=1
@@ -69,7 +69,7 @@ x18_spill_conditional=1 x29_reserved=1 allocatable_gprs=10
 同次 shape 记录为 `units=2 spill_units=0 host_bytes=136`，GPR pool histogram
 为 `10:2`。这同时证明：
 
-1. Linux 默认运行时是 identity，而不是 bias：`memory_base=0`、
+1. Linux 默认运行时是 direct，而不是 bias：`memory_base=0`、
    `page_table=0`，x24/x10 都未因 bias 被 mark；
 2. level3 + XPOOL 的首轮 value pool 是 10；
 3. x18 在无 spill 的 Linux unit 中进入 pool，只有 spill unit 才条件保留并重跑。
@@ -276,7 +276,7 @@ L3/five-gate 的某些运行还出现 `main_case.cpp:2522`。这些额外失败�
 
 pool10 确实消除了 pool7 的全局容量坍塌，但 fixed-class 当前的收益与成本分布
 仍不对称：大多数 unit 不 spill，少数高压 unit 进入 pool9 retry；同时 fixed
-home affinity 在 helper/clobber 边界增加 snapshot，copy/coalescing 收益又未抵消
+home affinity 在 helper/clobber 边界增加 capture，copy/coalescing 收益又未抵消
 新增 bridge。结果是：动态 host instruction 略降，但静态 host bytes、helper
 边界和 move/bridge 都增长；SQLite 的少数热点 spill 被 entry 权重放大到约
 119 万条。
@@ -309,7 +309,7 @@ linker 或 harness。
 VM 内全部原始产物位于 `/home/swift/svm-phasec/evidence/`：
 
 - `/home/swift/svm-phasec/build-relwithdebinfo.log`：最终构建；
-- `pool-l3-fixed.{out,err,rc,shape}`：identity 与 `allocatable_gprs=10`；
+- `pool-l3-fixed.{out,err,rc,shape}`：direct 与 `allocatable_gprs=10`；
 - `density/{region,re0}-{a,b}-{coremark,sqlite}/`：四组 shape、hot、stdout、
   stderr 与 fresh SQLite DB；
 - `fingerprint/`、`fingerprint-l3-fixed/`：两臂两遍 self-consistency；

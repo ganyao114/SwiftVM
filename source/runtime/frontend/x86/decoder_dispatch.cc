@@ -737,11 +737,11 @@ SVM_DISPATCH_STAGE bool X64Decoder::DecodeSseOpcode(_DInst& insn) {
             break;
         case I_PADDQ:
             // The one shared opcode the register-class test at the top of this
-            // function cannot see. This distorm snapshot decodes BOTH forms of
+            // function cannot see. This distorm capture decodes BOTH forms of
             // PADDQ -- 0F D4 (MMX, mm/m64) and 66 0F D4 (SSE2, xmm/m128) -- with
             // XMM operand indices, identical flags, identical opsize and an
             // empty unusedPrefixesMask; nothing in the _DInst separates them.
-            // Sweeping all 88 MMX-form encodings against this snapshot showed
+            // Sweeping all 88 MMX-form encodings against this capture showed
             // it is the only one with that defect, so it gets the only special
             // case: read the mandatory prefix off the encoding instead.
             if (!HasOperandSizePrefix()) {
@@ -1126,7 +1126,7 @@ SVM_DISPATCH_STAGE bool X64Decoder::DecodeExtendedOpcode(_DInst& insn) {
             DecodeBswap(insn);
             break;
         case I_LZCNT:
-            // With the BMI gate on this adds the CF that the plain LZCNT path
+            // With the BMI gate on this adds the CF that the basic LZCNT path
             // omits; with it off it falls through to today's behaviour.
             DecodeLzcntBmi(insn);
             break;

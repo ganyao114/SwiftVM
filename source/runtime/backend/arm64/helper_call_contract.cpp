@@ -153,7 +153,7 @@ bool HelperCallContract::ArgumentRequiresSlot(u32 code) const {
     return code <= 17 && (!preserves_pinned_state || code <= 2 || code >= 16);
 }
 
-bool HelperCallContract::RequiresGPRSnapshot(u32 code, bool argument_source) const {
+bool HelperCallContract::RequiresGPRCapture(u32 code, bool argument_source) const {
     if (exact_register_clobbers) {
         return ClobbersGPR(code);
     }
@@ -162,7 +162,7 @@ bool HelperCallContract::RequiresGPRSnapshot(u32 code, bool argument_source) con
                                                       code == 11 || code >= 16)));
 }
 
-bool HelperCallContract::RequiresFPRSnapshot(u32 code) const {
+bool HelperCallContract::RequiresFPRCapture(u32 code) const {
     if (exact_register_clobbers) {
         return ClobbersFPR(code);
     }

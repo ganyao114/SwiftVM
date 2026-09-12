@@ -49,7 +49,7 @@ Inst* FindSingleConsumer(Block* block, Inst* definition) {
     return edges == 1 ? consumer : nullptr;
 }
 
-Value IdentitySource(Inst* inst) {
+Value DirectSource(Inst* inst) {
     auto source = inst->GetArg<Value>(0);
     if (inst->ReturnType() != ValueType::U32) {
         return {};
@@ -110,7 +110,7 @@ bool IsU32Consumer(Inst* consumer, Inst* definition) {
     }
 }
 
-void FoldIdentityExtracts(Block* block) {
+void FoldDirectExtracts(Block* block) {
     for (auto& inst : block->GetInstList()) {
         if (inst.GetOp() != OpCode::BitExtract || inst.GetArg<Imm>(1).Get() != 0 ||
             inst.GetArg<Imm>(2).Get() != GetValueSizeByte(inst.ReturnType()) * 8 ||
@@ -118,7 +118,7 @@ void FoldIdentityExtracts(Block* block) {
             continue;
         }
 
-        auto source = IdentitySource(&inst);
+        auto source = DirectSource(&inst);
         if (!source.Defined() || !IsNearbyDefinition(block, source.Def(), &inst)) {
             continue;
         }
@@ -127,6 +127,33 @@ void FoldIdentityExtracts(Block* block) {
         if (consumer && IsU32Consumer(consumer, &inst)) {
             ReplaceSingleUse(consumer, &inst, source);
         }
+    }
+}
+
+void FoldNarrowExtensions(Block* block) {
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() != OpCode::ZeroExtend32) continue;
+        const auto input = inst.GetArg<Value>(0);
+        auto* extract = input.Def();
+        if (!extract || extract->GetOp() != OpCode::BitExtract ||
+            extract->GetArg<Imm>(1).Get() != 0 || extract->GetUses(false) != 1 ||
+            extract->GetUses() != 1) {
+            continue;
+        }
+        const auto width = GetValueSizeByte(input.Type());
+        if ((width != 1 && width != 2) ||
+            GetValueSizeByte(extract->ReturnType()) != width ||
+            extract->GetArg<Imm>(2).Get() != width * 8 ||
+            GetValueSizeByte(inst.ReturnType()) > sizeof(u32)) {
+            continue;
+        }
+        const auto source = extract->GetArg<Value>(0);
+        const auto result_type = inst.ReturnType();
+        // Move the source use before allocation so its live range and spill
+        // backing include the actual read. Delaying it only in the emitter
+        // can read an uninitialized spill slot after a register-only region.
+        inst.Reset();
+        inst.BitExtract(source, Imm{0u}, Imm{width * 8u}).SetReturn(result_type);
     }
 }
 
@@ -140,10 +167,14 @@ void IntegerWidthEliminationPass::Run(HIRBuilder* hir_builder) {
 
 void IntegerWidthEliminationPass::Run(HIRFunction* hir_function) {
     for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
-        FoldIdentityExtracts(hir_block.GetBlock());
+        FoldNarrowExtensions(hir_block.GetBlock());
+        FoldDirectExtracts(hir_block.GetBlock());
     }
 }
 
-void IntegerWidthEliminationPass::Run(Block* block) { FoldIdentityExtracts(block); }
+void IntegerWidthEliminationPass::Run(Block* block) {
+    FoldNarrowExtensions(block);
+    FoldDirectExtracts(block);
+}
 
 }  // namespace swift::runtime::ir

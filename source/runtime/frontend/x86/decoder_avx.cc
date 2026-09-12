@@ -61,7 +61,7 @@
 //      matching 128-bit handling; until that exists, DecodeAvx's L=0 path
 //      correctly declines them (FALLBACK) rather than mis-executing them.
 //
-// Register operand codes are NOT normalized on this path: DecodeAvx rewrites
+// Register operand codes are NOT adjusted on this path: DecodeAvx rewrites
 // YMM codes to their XMM twins only after the IsVex128 check, so operands here
 // may still be R_YMM*.  Everything below therefore goes through VecIndex(),
 // which accepts either register file, and never hands a raw op.index to an SSE
@@ -82,7 +82,7 @@
 //     than base.
 // This is observable only for a guest that resumes after a SIGSEGV/SIGBUS
 // (userland fault handlers, JIT guard pages, mmap-probing allocators).  It is
-// not fixable in the frontend under C1: an exact version needs either a probe
+// not fixable in the frontend under C1: an exact version needs either a check
 // of both halves before either is committed, or a genuine 32-byte IR memory
 // operation (which needs backend work, out of scope per the contract).
 //
@@ -93,7 +93,7 @@
 // mechanism if it ever has to be exact.
 //
 // The non-temporal hint of the VMOVNT* forms is not observable in SwiftVM and
-// degrades to a plain store, exactly as SSE MOVNTDQ already does.
+// degrades to a basic store, exactly as SSE MOVNTDQ already does.
 
 #include "runtime/frontend/x86/decoder_internal.h"
 
@@ -111,7 +111,7 @@ X64Decoder::VecHalves X64Decoder::LoadAvx256Src(_DInst& insn, _Operand& op) {
     // Fold the address once: FlatAddress emits IR, and both halves must share
     // the same base even in the RIP-relative and scaled-index forms.  op.size
     // is deliberately ignored — for the AVX2 packed-integer opcodes this
-    // distorm snapshot reports a 128-bit memory operand even when VEX.L=1, so
+    // distorm capture reports a 128-bit memory operand even when VEX.L=1, so
     // the prefix's L bit (already checked by the caller) is the only truth.
     auto addr = FlatAddress(insn, op);
     const bool tso = TsoOrdered(insn);
@@ -229,7 +229,7 @@ void X64Decoder::DecodeAvx256MinMax(_DInst& insn, bool max, u32 lane_bits, bool 
 // independent — the two 16-bit masks have to be recombined.
 void X64Decoder::DecodeAvx256Pmovmskb(_DInst& insn) {
     // The source comes from the raw ModRM.rm, NOT insn.ops[1]: this distorm
-    // snapshot's VEX VPMOVMSKB table entry has no operand descriptors, so it
+    // capture's VEX VPMOVMSKB table entry has no operand descriptors, so it
     // reports ModRM.reg for both operands (see VexRmRegister). Reading ops[1]
     // returns another register's mask whenever the destination GPR number
     // differs from the source vector register number — verified against
@@ -327,7 +327,7 @@ bool X64Decoder::DecodeAvx256(_DInst& insn, const VexInfo& vex) {
     // Everything remaining is a 3-operand non-destructive form.  Verify the
     // shape distorm produced rather than trusting it: a 2-operand result here
     // would make ops[1] the r/m operand and ops[2] garbage.  Same check as the
-    // VEX.128 path, and it matters more here because this snapshot has no
+    // VEX.128 path, and it matters more here because this capture has no
     // 256-bit table entry for the packed-integer opcodes.
     if (insn.ops[0].type != O_REG || insn.ops[1].type != O_REG || insn.ops[2].type == O_NONE) {
         return false;

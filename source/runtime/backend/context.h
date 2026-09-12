@@ -55,7 +55,7 @@ struct ExecProfileCounters {
     u64 region_fallthroughs{};
 };
 
-constexpr size_t kExecutionTraceEntryCount = 32;
+constexpr size_t kExecutionTraceEntryCount = 4096;
 
 struct ExecutionTraceEntry {
     u64 guest_rip{};

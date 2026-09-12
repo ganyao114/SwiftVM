@@ -16,7 +16,7 @@ unbounded build:
              readback matches.  Without one the store lands `delta` bytes past
              the end of guest memory -- i.e. in host memory -- and the readback
              still shows the sentinel (or the host dies outright).  This is the
-             same defect that let a hand-driven guest plant
+             same defect that let a hand-driven guest place
              0x4141414141414141 in a host malloc buffer.
 
   ``load``   the READ evidence, same trick on the load side: compares
@@ -70,7 +70,7 @@ def _exit(code):
 
 
 def _write_scratch(nbytes, fd=2):
-    """write(fd, scratch, nbytes) -- the probe bytes go to stderr because the
+    """write(fd, scratch, nbytes) -- the check bytes go to stderr because the
     translator's own log chatter goes to stdout, so `2>file` isolates them."""
     return (b"\xb8\x01\x00\x00\x00" +                      # mov eax, 1 (write)
             b"\xbf" + struct.pack("<I", fd) +                 # mov edi, fd

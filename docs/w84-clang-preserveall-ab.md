@@ -70,7 +70,7 @@ SVM_JIT_CACHE= SVM_HELPER_LEAF_ABI=1 SVM_RA_SHAPE_PROF=/tmp/gcc-on.shape    "$G"
 三次 guest 都是 rc `101`，stdout SHA-256 都为
 `9c3194ff498da03869bbabbd81241fd2ec771619281f969c4b4edc55577a6810`。
 
-| 构建/开关 | direct_aapcs calls | DirectPreserveAll calls | snapshot instructions | snapshot code bytes | snapshot memory bytes |
+| 构建/开关 | direct_aapcs calls | DirectPreserveAll calls | capture instructions | capture code bytes | capture memory bytes |
 |---|---:|---:|---:|---:|---:|
 | GCC-ON | 16 | 0 | 288 | 1,152 | 5,536 |
 | Clang-OFF | 16 | 0 | 288 | 1,152 | 5,536 |

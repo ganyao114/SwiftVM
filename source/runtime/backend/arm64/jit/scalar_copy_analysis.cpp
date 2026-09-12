@@ -1,4 +1,4 @@
-#include "scalar_identity_analysis.h"
+#include "scalar_copy_analysis.h"
 
 #include <algorithm>
 
@@ -38,7 +38,7 @@ u32 References(ir::Inst& user, const ir::Inst* value) {
 
 }  // namespace
 
-void ScalarIdentityAnalysis::Analyze(ir::Block* block) {
+void ScalarCopyAnalysis::Analyze(ir::Block* block) {
     self_xors.clear();
     discarded_inputs.clear();
     for (auto& inst : block->GetInstList()) {
@@ -66,9 +66,9 @@ void ScalarIdentityAnalysis::Analyze(ir::Block* block) {
     }
 }
 
-bool ScalarIdentityAnalysis::IsSelfXor(ir::Inst* inst) const { return self_xors.contains(inst); }
+bool ScalarCopyAnalysis::IsSelfXor(ir::Inst* inst) const { return self_xors.contains(inst); }
 
-bool ScalarIdentityAnalysis::InputDiscarded(ir::Inst* inst) const {
+bool ScalarCopyAnalysis::InputDiscarded(ir::Inst* inst) const {
     return discarded_inputs.contains(inst);
 }
 

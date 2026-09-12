@@ -39,7 +39,7 @@ SCRATCH_OFF = 0x2000     # inside the image
 CTID_OFF = 0x40          # in the SAME page as the code: that is the point
 STACK_OFF = 0x7000       # clone worker stack top, also inside the image
 # Far outside the image but inside the default 32-bit guest window, so the
-# access is a plain unmapped-page fault rather than a window escape.
+# access is a basic unmapped-page fault rather than a window escape.
 UNMAPPED = 0x30000000
 
 EHSIZE, PHSIZE = 64, 56

@@ -1,8 +1,10 @@
+#include "base/logging.h"
 //
 // Linux syscall emulation — see syscalls.h for the calling convention.
 //
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cerrno>
 #include <chrono>
@@ -12,6 +14,7 @@
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
+#include <map>
 #include <string>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -455,7 +458,8 @@ SyscallProcessState::SyscallProcessState(GuestMemory* memory, VAddr brk_base)
         : memory(memory)
         , brk_base(brk_base)
         , brk_current(brk_base)
-        , brk_mapped_end(GuestMemory::RoundHostPage(brk_base)) {}
+        , brk_mapped_end(GuestMemory::RoundHostPage(brk_base))
+        , register_dump(runtime::GetSvmConfig().reg_dump) {}
 
 SyscallProcessState::~SyscallProcessState() {
     ShutdownAlarm();
@@ -723,6 +727,14 @@ SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
     }
 
     const u64 signal = process->ConsumePendingSignal(signal_mask);
+    if (GuestSignalTraceEnabled()) {
+        SVM_DIAG_PRINT(Syscall,
+                     "[svm-sigdbg] pend=%#llx mask=%#llx -> signal=%llu\n",
+                     static_cast<unsigned long long>(
+                             process->PeekPendingSignals()),
+                     static_cast<unsigned long long>(signal_mask),
+                     static_cast<unsigned long long>(signal));
+    }
     if (signal == 0) return delivery;
 
     GuestSigAction action = process->GetSignalAction(signal);
@@ -732,6 +744,10 @@ SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
     if (action.handler == GUEST_SIG_DFL) {
         delivery.terminated = true;
         delivery.exit_code = static_cast<u8>(128 + signal);
+        if (getenv("SVM_SYS_DBG")) {
+            SVM_DIAG_PRINT(Syscall, "[sys] guest terminated by sig=%d\n", signal);
+            DumpExecTraceRing();
+        }
         return delivery;
     }
     if ((action.flags & GUEST_SA_RESTORER) == 0 || action.restorer == 0) {
@@ -788,7 +804,7 @@ SyscallHandler::SignalDelivery SyscallHandler::DeliverPendingSignal() {
     std::memset(ctx.xmms.data(), 0, sizeof(ctx.xmms));
     std::memset(ctx.ymm_high.data(), 0, sizeof(ctx.ymm_high));
     if (GuestSignalTraceEnabled()) {
-        std::fprintf(stderr,
+        SVM_DIAG_PRINT(Syscall,
                      "[svm-signal] deliver sig=%llu saved_rip=%#llx saved_rsp=%#llx "
                      "handler=%#llx frame=%#llx restorer=%#llx\n",
                      signal,
@@ -989,6 +1005,59 @@ SyscallHandler::Result SyscallHandler::Handle(u64 nr,
     if (isa == GuestISA::kX86_64) {
         nr = X86ToCanonical(nr);
     }
+    const bool sys_hash = runtime::GetSvmConfig().sys_hash;
+    if (sys_hash && isa == GuestISA::kX86_64 && x86_ctx) {
+        auto* c = static_cast<swift::x86::ThreadContext64*>(x86_ctx);
+        u64 h = 1469598103934665603ull;
+        for (int i = 0; i < 16; ++i) {
+            h = (h ^ c->regs[i].qword) * 1099511628211ull;
+        }
+        h = (h ^ c->rip.qword) * 1099511628211ull;
+        SVM_DIAG_PRINT(Syscall, "[hash] nr=%llu rip=%#llx rh=%#llx\n",
+                     (unsigned long long)raw_nr,
+                     (unsigned long long)c->rip.qword,
+                     (unsigned long long)h);
+        if (process->register_dump.Take(raw_nr)) {
+                static const char* names[16] = {
+                        "rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi",
+                        "r8","r9","r10","r11","r12","r13","r14","r15"};
+                for (int i = 0; i < 16; ++i) {
+                    SVM_DIAG_PRINT(Syscall, "[reg] %s=%#llx\n", names[i],
+                                 (unsigned long long)c->regs[i].qword);
+                }
+        }
+    }
+    if (runtime::GetSvmConfig().sys_dbg &&
+        (nr == SYS_clone || nr == SYS_futex || nr == SYS_x64_alarm ||
+         nr == SYS_rt_sigaction || nr == SYS_rt_sigprocmask ||
+         nr == SYS_mmap || nr == SYS_mremap || nr == SYS_munmap ||
+         nr == SYS_brk || nr == SYS_tgkill || nr == SYS_write ||
+         nr == SYS_exit || nr == SYS_exit_group)) {
+        SVM_DIAG_PRINT(Syscall,
+                     "[sys] nr=%llu a0=%#llx a1=%#llx a2=%#llx a3=%#llx rip_ctx\n",
+                     (unsigned long long)nr, (unsigned long long)a0,
+                     (unsigned long long)a1, (unsigned long long)a2,
+                     (unsigned long long)a3);
+    }
+    static const u64 dump_munmap_len = [] {
+        const char* s = getenv("SVM_TRACE_DUMP_MUNMAP");
+        return s ? std::strtoull(s, nullptr, 0) : 0ull;
+    }();
+    static std::atomic<bool> munmap_dumped{false};
+    if (dump_munmap_len && nr == SYS_munmap && a1 == dump_munmap_len &&
+        !munmap_dumped.exchange(true, std::memory_order_relaxed)) {
+        SVM_DIAG_PRINT(Syscall, "[sys-trace] munmap landmark hit\n");
+        DumpExecTraceRing();
+    }
+    static const bool dump_each_syscall = getenv("SVM_TRACE_DUMP_SYSCALL");
+    if (dump_each_syscall &&
+        (nr == SYS_mmap || nr == SYS_munmap || nr == SYS_mremap ||
+         nr == SYS_brk)) {
+        SVM_DIAG_PRINT(Syscall, "[sys-trace] dump@nr=%llu a0=%#llx a1=%#llx\n",
+                     (unsigned long long)nr, (unsigned long long)a0,
+                     (unsigned long long)a1);
+        DumpExecTraceRing();
+    }
     Result result{};
     switch (nr) {
         case SYS_read:
@@ -1014,6 +1083,11 @@ SyscallHandler::Result SyscallHandler::Handle(u64 nr,
             result.exit_group = true;
             result.exit_code = static_cast<u8>(a0);
             process->RequestExitGroup(result.exit_code);
+            if (getenv("SVM_SYS_DBG") && result.exit_code != 0) {
+                SVM_DIAG_PRINT(Syscall, "[sys] exit_group code=%u\n",
+                             result.exit_code);
+                DumpExecTraceRing();
+            }
             break;
         case SYS_clone:
             result.ret = SysClone(a0, a1, a2, a3, a4);
@@ -1197,6 +1271,12 @@ SyscallHandler::Result SyscallHandler::Handle(u64 nr,
                     result.ret = 0;
                     result.exited = true;
                     result.exit_code = static_cast<u8>(128 + sig);
+                    if (getenv("SVM_SYS_DBG")) {
+                        SVM_DIAG_PRINT(Syscall,
+                                     "[sys] tgkill sig=%llu terminating\n",
+                                     (unsigned long long)sig);
+                        DumpExecTraceRing();
+                    }
                     break;
                 default:
                     result.ret = 0;
@@ -1318,8 +1398,8 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
     const bool anonymous = (flags & GUEST_MAP_ANONYMOUS) != 0;
     if (!anonymous) {
         // File-backed mappings use anonymous guest storage populated with
-        // pread. MAP_PRIVATE has snapshot semantics naturally. A read-only
-        // MAP_SHARED mapping is also safe as a snapshot because the guest
+        // pread. MAP_PRIVATE has capture semantics naturally. A read-only
+        // MAP_SHARED mapping is also safe as a capture because the guest
         // cannot dirty it; writable shared mappings still need real writeback
         // and coherence support.
         const bool private_mapping = (flags & GUEST_MAP_PRIVATE) != 0;
@@ -1338,11 +1418,13 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
         }
         if (fd < 0) return -EBADF_;
     }
-    const u64 map_length = GuestMemory::RoundHostPage(length);
+    const u64 guest_length = GuestMemory::RoundGuestPage(length);
+    const u64 map_length = GuestMemory::RoundHostPage(guest_length);
+    if (guest_length < length || map_length < guest_length) return -EINVAL_;
 
     VAddr guest_addr = 0;
     if (flags & GUEST_MAP_FIXED) {
-        if (addr % GuestMemory::kGuestPageSize != 0 || addr + length < addr) {
+        if (addr % GuestMemory::kGuestPageSize != 0 || addr + guest_length < addr) {
             return -EINVAL_;
         }
         // Linux x86_64 has 4 KiB guest pages while macOS/arm64 can only map
@@ -1352,12 +1434,17 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
         // guest bytes; mapping the whole host page again would destroy the
         // tail of the preceding segment.
         const VAddr host_start = GuestMemory::RoundDownHostPage(addr);
-        const VAddr host_end = GuestMemory::RoundHostPage(addr + length);
-        if (smc_invalidate_) smc_invalidate_(addr, addr + length);
+        const VAddr host_end = GuestMemory::RoundHostPage(addr + guest_length);
+        if (host_end < addr + guest_length) return -EINVAL_;
+        if (smc_invalidate_) smc_invalidate_(addr, addr + guest_length);
         for (VAddr page = host_start; page < host_end;
              page += GuestMemory::kHostPageSize) {
-            if (!memory->RangeIsMapped(page, GuestMemory::kHostPageSize) &&
-                !memory->MapFixed(page, GuestMemory::kHostPageSize)) {
+            if (memory->RangeIsMapped(page, GuestMemory::kHostPageSize)) {
+                const auto begin = std::max(page, addr);
+                const auto end = std::min(page + GuestMemory::kHostPageSize,
+                                          addr + guest_length);
+                std::memset(memory->ToHost(begin), 0, static_cast<size_t>(end - begin));
+            } else if (!memory->MapFixed(page, GuestMemory::kHostPageSize)) {
                 return -ENOMEM_;
             }
         }
@@ -1377,11 +1464,9 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
     }
     if (!guest_addr) return -ENOMEM_;
 
-    // Anonymous MAP_FIXED must clear an already-backed subpage. File mappings
-    // also need zero-fill after EOF. New MapAnywhere/MapFixed pages are
-    // already zeroed, so doing this uniformly is harmless and makes the
-    // replacement semantics explicit.
-    std::memset(memory->ToHost(guest_addr), 0, static_cast<size_t>(length));
+    // New anonymous backing already supplies zero pages. Touching the full
+    // range here commits large allocator reservations before the guest uses
+    // them. Only reused pages were cleared above, including the tail at EOF.
     if (!anonymous) {
         u64 done = 0;
         while (done < length) {

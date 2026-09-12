@@ -4,7 +4,7 @@
 
 `SVM_RA_INTWIDTH_TIE` 已按 W86 的严格证明边界实现，代码中的默认值仍为
 **OFF**。它只在源值同时满足以下条件时，把现有物理 GPR 的所有权转给整数宽度
-identity 结果：
+direct 结果：
 
 1. 候选是允许的 `U32 BitExtract(v, 0, 32)` 或
    `ZeroExtend32To64(U32)`；
@@ -62,24 +62,24 @@ Linux 验收和性能数据由 orchestrator 在安静的 orb Ubuntu/aarch64 VM �
 | `BitExtract(v, 0, 32) -> U32` | `v` 递归证明为 W-clean | 原 `AllocGPR` + 正常 bridge |
 | `ZeroExtend32To64(v: U32)` | `v` 递归证明为 W-clean | 原 `AllocGPR` + 正常 zero extend |
 
-本次没有纳入可选的 `ZeroExtend64(U32)` identity 类，因此无需改变
+本次没有纳入可选的 `ZeroExtend64(U32)` direct 类，因此无需改变
 `EmitZeroExtend64`。一般 `ubfx xD, xS, #0, #32` 也不会因“看起来像截断”而被
 直接接受。
 
 `HasKnownWWrite()` 的递归规则为：
 
 - 普通 U32 producer（Load、ALU、shift 等）是实际 W 写，可接受；
-- 只穿过 identity `BitExtract(...,0,32)` 和 `ZeroExtend32To64(U32)`；
+- 只穿过 direct `BitExtract(...,0,32)` 和 `ZeroExtend32To64(U32)`；
 - `GetHostGPR` 只是 pinned X 寄存器的 W 视图，不是物理 W 写，拒绝；
 - 纯 `BitCast` 不产生物理 W 写，拒绝；
-- 未定义值、非白名单 identity 或证明中断均拒绝。
+- 未定义值、非白名单 direct 或证明中断均拒绝。
 
 selector 命中后仍调用既有 `TryTieGPR`。后者要求 source/result 均为 GPR，且
 source interval 的 `live.end == current.start`；所以所有权转移不会延长 source
 live range，也不会使用 W70/W74 已否决的近似 last-use。
 
 backend 已有 `SharesGPR` no-op 快路径。RA 让 source/result 共享物理 GPR 后，
-emitter 只删除 identity bridge，不引入新指令、不改 IR 语义。
+emitter 只删除 direct bridge，不引入新指令、不改 IR 语义。
 
 ### 2.3 测试新增
 
@@ -237,7 +237,7 @@ CoreMark 150k 的两态结果：
 
 两次统计的总 unit 数可随前述 lazy dump 竞态变化，但每个 unit 的 scratch 档位、
 spill 计数和 high-water 分布形状一致。候选通过所有权转移复用已有寄存器，未增加
-live range，所以结果符合设计预期。helper snapshot 在本优化中没有 ABI 或 pin map
+live range，所以结果符合设计预期。helper capture 在本优化中没有 ABI 或 pin map
 变化；全量/helper/fault 测试两态通过，未出现间接增长或边界错误。
 
 ## 4. 性能 A/B
@@ -324,7 +324,7 @@ orchestrator 的中位摘要为 Copy +1.8%、Scale +2.7%、Add +2.7%、Triad -2.
 
 ### 5.1 已封住的正确性风险
 
-- **高半泄漏**：`GetHostGPR` 和 `BitCast` 不算 W 写；identity 链不能洗白它们。
+- **高半泄漏**：`GetHostGPR` 和 `BitCast` 不算 W 写；direct 链不能洗白它们。
 - **错误所有权转移**：只用 `TryTieGPR` 的权威 interval 边界，不用邻近指令或
   手工 use-count 近似。
 - **live range / spill 回归**：tie 不延长 source；RA_SHAPE_PROF 的 spill、

@@ -10,7 +10,7 @@ FEX 快照：`f2e35f336f0b8bb0df979ffe10e7c6ffbd8af89c`（本机 `/Users/swift/C
 这次精读不支持把“照搬 FEX 形态”作为一个整体项目立项，但支持拆出两个有严格前置门槛的设计方向：
 
 1. **不能把 FEX 归纳成“动态 spill 直落 guest context”**。FEX 的普通 RA spill 是 block-local、furthest-first，实际落 host `sp` 下的 spill frame；落 `CpuStateFrame::State` 的是静态 guest GPR/XMM/PF/AF 以及 NZCV 在退出或 helper ABI 边界的同步。我们自己的动态 spill 反而已经直接落 `State::spill_area`，并且已做到块间无需全量 flush。因此问题 3a 所设想的主体已经存在，不能再次拿它计算静态消除收益。
-2. **Clang `preserve_all` 不能让现有 pin snapshot 归零**。AArch64 上 x0–x8、x16–x18 仍是 caller-saved；我们的 level 2 pin 正好在 x0–x5，level 3 新增 x6–x9，所以 level 2 零收益，level 3 只额外保护 x9。更何况 x0–x7 还是 C 参数寄存器，参数装载本身就会覆盖 guest pin。`x18–x29` 不是正确的目标区：x18 在 Apple ABI 保留，x19–x23/x29 已由普通 AAPCS64 保护，x24–x28 被运行时固定占用。
+2. **Clang `preserve_all` 不能让现有 pin capture 归零**。AArch64 上 x0–x8、x16–x18 仍是 caller-saved；我们的 level 2 pin 正好在 x0–x5，level 3 新增 x6–x9，所以 level 2 零收益，level 3 只额外保护 x9。更何况 x0–x7 还是 C 参数寄存器，参数装载本身就会覆盖 guest pin。`x18–x29` 不是正确的目标区：x18 在 Apple ABI 保留，x19–x23/x29 已由普通 AAPCS64 保护，x24–x28 被运行时固定占用。
 3. **XMM 全驻留只能在“释放四个固定 cold FPR + helper ABI 分类”之后重测**。FEX 是 `v16–v31` 静态、`v2–v15` 动态、`v0/v1` 固定临时，即 14 个动态 FPR；我们开启 XMM pin 后，`v11–v14` 仍被 NaN cold ABI 固定占用，真实动态池只有 `v0–v10,v15` 共 12 个，且高压指令还必须保留 3–5 个 scratch。W13/W17 的负结果与这个结构一致。
 4. **PF/AF 在本仓已经“寄存器驻留”**：它们不是普通内存状态，而是 packed 在 x26 中，PF 保存原始低字节、AF 保存单 bit，NZCV 另在 host PSTATE 中 lazy。另 pin 两个 GPR 不会消掉 PF 的 xor-fold 或 AF 的 bit4 计算，只会把 BFI/UBFX 换成跨寄存器操作，并进一步挤压已经告急的 GPR 池。因此 FEX 的 PF/AF 两个 fixed pseudo-register 不适合原样移植；可继续研究的是 unit-local flag-source SSA，而不是全局再占两个寄存器。
 5. **建议顺序**：先加只读计数与 helper 分类证据；再做 cold-edge FPR 保存设计；只给经证明为 leaf 的 helper 试 `preserve_all`；最后才允许把 XMM static 重新送入 A/B。GPR 全 pin 和 PF/AF 双 pin 暂不立项。
@@ -133,7 +133,7 @@ FEX 的 PF/AF 是两个 fixed pseudo-GPR：IR 的 Load/StorePF/AF 参与 fixed a
 | `trampolines.cpp` 入口/出口 | public `JitRun` 保存 host x19–x30、q8–q15；入口恢复 static uniforms；退出/CallHost 写回全部 static uniforms | public AAPCS 边界保持不变；若有 helper-specific state mask，不应污染总出口；新增 fixed class 后确保 descriptor 顺序和 STP/LDP 配对仍正确 | signal/fault/CallHost/XSAVE 是强观察点，不能延迟越过 |
 | XMM 驻留 | v16–v31 static 默认 OFF；v11–v14 永久 scratch；XSAVE/XRSTOR 显式同步；AVX 上半仍在内存 | 先把 cold ABI 改成 slow-edge save；再恢复 v0–v15 动态池；helper ABI 分类；保留 TBL+TBX 非连续 fallback；静态低 128-bit 与 YMM high 的同步契约不变 | W13/W17 已三轮负；不能再做 top-N/per-unit eviction |
 | flags 驻留 | x26 packed；NZCV lazy；PF raw byte bits 0–7；AF bit 26 | 若试验，只做 unit-local PF/AF source SSA 和 observation-time materialize；helper/terminal/fault 前合并；不新增全局 fixed pin | 与 W38/W47/W59 已有优化重叠，必须防双算收益 |
-| `translator.cpp` pin map | level 2 默认 12 GPR，level 3 全 16；level 3 x0–x9 helper snapshot | 若重开全 pin，映射必须由 RA/ABI 联合设计，不应继续单独扩表；保留 env rollback | 当前 level 3 是明确负基线，不可原地翻默认 |
+| `translator.cpp` pin map | level 2 默认 12 GPR，level 3 全 16；level 3 x0–x9 helper capture | 若重开全 pin，映射必须由 RA/ABI 联合设计，不应继续单独扩表；保留 env rollback | 当前 level 3 是明确负基线，不可原地翻默认 |
 
 ## 4. 机制 A：spill 直落 state 的独立净账
 
@@ -179,13 +179,13 @@ FEX 的 PF/AF 是两个 fixed pseudo-GPR：IR 的 Load/StorePF/AF 参与 fixed a
 
 ### 5.2 对当前 pin map 的精确影响
 
-| 配置 | 当前强制 snapshot | `preserve_all` 后仍须 snapshot | GPR 指令净减 |
+| 配置 | 当前强制 capture | `preserve_all` 后仍须 capture | GPR 指令净减 |
 |---|---:|---:|---:|
 | pin level 2 | x0–x5：3 STP + 3 LDP | x0–x5 全部 | 0 |
 | pin level 3 | x0–x9：5 STP + 5 LDP | x0–x8：通常 4 STP+1 STR 及对称恢复 | 通常仍是 5 store + 5 load；只少 8B 状态，不少指令 |
 | XMM static | v16–v31：8 STP Q + 8 LDP Q | leaf preserve_all 可由 callee 保护 | caller 最多减 16 条内存指令/次 call；callee 成本取决于实际 clobber/下游调用 |
 
-此外，x0–x7 是参数寄存器。即使 helper 本体不使用它们，`EmitHostCall` 的参数装载也会先覆盖其中的 guest pins，故不能取消旧值快照。若真要“pin snapshot 归零”，必须同时改变 helper 参数 ABI、guest pin map 和 C++ 入口方式；Clang 没有任意寄存器集合属性，最终只能靠汇编 thunk、LLVM backend 自定义 CC，或把参数放进固定 context。这已经是完整内部 ABI 重写，不是一个 attribute patch。
+此外，x0–x7 是参数寄存器。即使 helper 本体不使用它们，`EmitHostCall` 的参数装载也会先覆盖其中的 guest pins，故不能取消旧值快照。若真要“pin capture 归零”，必须同时改变 helper 参数 ABI、guest pin map 和 C++ 入口方式；Clang 没有任意寄存器集合属性，最终只能靠汇编 thunk、LLVM backend 自定义 CC，或把参数放进固定 context。这已经是完整内部 ABI 重写，不是一个 attribute patch。
 
 ### 5.3 可落地的窄设计
 
@@ -325,7 +325,7 @@ XMM static 开启后，static v16–v31 作为 reserved bits 进入每条指令�
 
 1. 先做 P0 计数 spike；它是所有后续项目的共同门，不改变生产行为。
 2. 把 P3“cold-edge 保存释放 v11–v14”作为唯一值得继续设计的 RA 基础设施；它直接回应 W13/W17 的确定性失败点。
-3. P2 只面向经反汇编和调用图证明的 leaf helper；其价值主要是保护 XMM static，不是消灭 GPR pin snapshot。
+3. P2 只面向经反汇编和调用图证明的 leaf helper；其价值主要是保护 XMM static，不是消灭 GPR pin capture。
 4. 只有 P2+P3 同时过门，才重测现有 `SVM_XMM_STATIC=1`；在这之前维持默认 OFF。
 5. PF/AF 只允许 unit-local source SSA 实验，不做全局双 pin。
 6. GPR 全 fixed-class RA 暂不立项。若 P0 以后重开，必须以“spill ops ≤ level2 的 1.25×、helper 边界净额≤0”为前置，而不是以 35.1% 静态上限为理由。

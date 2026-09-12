@@ -60,7 +60,7 @@ P0 也没有扩大项目当前对 MXCSR exception sticky/trap 的既有合同。
 |---|---|---|
 | runtime entry / unit exit | entry 保存 caller FPCR；return C++ 前恢复 | entry 从当前 MXCSR 构造 guest FPCR |
 | asm interpreter | 从 runtime-entry 栈槽恢复 host FPCR | 从 interpreter 可能更新后的 context MXCSR 重建 |
-| `EmitHostCall` direct helper | helper snapshot 完成后恢复 host FPCR | 保留返回值后从 context MXCSR 重建，再恢复寄存器 |
+| `EmitHostCall` direct helper | helper capture 完成后恢复 host FPCR | 保留返回值后从 context MXCSR 重建，再恢复寄存器 |
 | trampoline `CallHost` | 写回静态 guest 状态后恢复 host FPCR | C++ 返回后重建，再恢复静态状态 |
 | `EmitMemoryCopy` / `HostMemMove` | 该路径绕过 `EmitHostCall`，单独从 runtime-entry 栈槽恢复 | memmove 返回后重建 |
 | SIGSEGV/SIGBUS、SMC callback | runtime 在进入 JitRun 前发布 lock-free host-FPCR 副本；callback 首先恢复 | sigreturn 保留被中断的 guest ucontext；fault-return trampoline 最终恢复 host |
@@ -189,7 +189,7 @@ host_bytes。
 随后退到 `MRS CTR_EL0`，在 `init_cache_info+88` 自身 SIGILL；crash report 明确栈为
 `init_cache_info -> machine_initialize -> uc_init_engine -> uc_mem_map`，尚未进入 SwiftVM。
 为运行完整 Unicorn suite，测试命令用 build 目录内、不进 git 的 DYLD interpose shim
-只读返回本机 cache line 128，并向 capability probe 返回 Apple silicon 已知存在的 AFP；
+只读返回本机 cache line 128，并向 capability check 返回 Apple silicon 已知存在的 AFP；
 其余 sysctl 仍委托 `sysctlnametomib + sysctl`。OFF/ON 都使用相同 shim。P0 产品代码和
 最终建议不包含该测试环境绕行。
 
@@ -216,7 +216,7 @@ ON/OFF 指令数和助记符序列已经相等，完整文本的唯一差异是
 `b.mi #+0x8 (addr 0xaaab04b25cc8)` 与
 `b.mi #+0x8 (addr 0xaaab04b2ed98)`：VIXL 在反汇编中嵌入 code buffer 绝对地址，
 Linux 上两次编译因分配地址/ASLR 不同而不能逐字符比较。修复新增
-`NormalizeDisasmForCompare`，只把 `(addr 0x<hex>)` 地址注释替换为固定占位符；
+`MaskDisasmAddresses`，只把 `(addr 0x<hex>)` 地址注释替换为固定占位符；
 `#+0x8`、`#0x123` 等有语义的相对偏移和立即数原样保留，并用新增自断言固定该契约。
 这也解释了最终全量比修复前预期多 1 个 assertion。产品 lowering 没有因该失败改动。
 

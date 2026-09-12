@@ -288,13 +288,13 @@ exact。若未来实现 P2，应抽成唯一共享 observer contract；否则证
 
 - `cmake --build build -j8` rc=0；只有仓内既存 warning（`#pragma once`
   in cpp、vendored iterator/intrusive-list、logging macro redefine），无
-  probe warning；
+  check warning；
 - CoreMark 再跑两次均 rc=0、CRC/validation 正确；
-- probe run 与 clean run 的 top-10/top-20/top-50/top-100 公共热 PC：
+- check run 与 clean run 的 top-10/top-20/top-50/top-100 公共热 PC：
   `host_static/move_static/spill_static/host_bytes` **0 diff**；
 - 两次 clean run 自身也有同样的 13–14 个极冷 coverage/version shape
   漂移（多数 entries=0，少数 entries=1–3），说明全公共 PC 的冷项差异是
-  JIT 覆盖噪声而非 probe 发码影响。probe-clean 与 clean-clean 的
+  JIT 覆盖噪声而非 check 发码影响。check-clean 与 clean-clean 的
   top-500 都同为 2 个冷 diff；生产热形状逐点一致。
 
 最终工作区只保留本报告；临时 header、分析脚本、runtime hook 和 gap

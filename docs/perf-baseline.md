@@ -317,7 +317,7 @@ SoftFloat x87、xsave）。**这个缺陷在 DCE 没被接进函数模式时是�
 
 ### #1 `imul r64,r64` 走 host helper 求高 64 位 —— 应内联为 `SMULH`/`UMULH`
 
-**数据（专门做的隔离实验，`imul_probe`，两条循环 guest 指令数完全相同）**
+**数据（专门做的隔离实验，`imul_check`，两条循环 guest 指令数完全相同）**
 
 | 循环 | guest 指令 | host 指令 | host/guest | 20 M 次墙钟 | host_call_sites |
 |---|---|---|---|---|---|

@@ -17,7 +17,6 @@ namespace swift::runtime {
     X(advpc_coalesce, true) \
     X(const_cse, true) \
     X(int_imm_fold, true) \
-    X(placement_pad, false) \
     X(ra_home_perm, false) \
     X(operand_copy_kill, true) \
     X(zero_store_zr, true) \
@@ -122,7 +121,18 @@ struct FeatureOverrides {
 // 单一环境配置表。parse 一列命名原读取点的精确判定；source_comment 保留迁移依据。
 // 新增开关必须只在此表登记，PerfStats2 注册表和 code-cache 环境哈希均由此生成。
 #define SVM_CONFIG_FIELDS(X) \
-    X(std::string, mem_identity, "SVM_MEM_IDENTITY", RawString, "", "Linux 内存模型三态；缺省 identity，0/OFF/off 选 bounded bias；原 linux/main.cpp:388") \
+    X(bool, inv_dbg, "SVM_INV_DBG", Presence, false, "Invalidation diagnostics") \
+    X(bool, frontier_dbg, "SVM_FRONTIER_DBG", Presence, false, "Decoder frontier diagnostics") \
+    X(bool, translate_dbg, "SVM_TRANSLATE_DBG", Presence, false, "Translation diagnostics") \
+    X(bool, smc_dbg, "SVM_SMC_DBG", Presence, false, "Bounded signal-safe SMC diagnostics") \
+    X(bool, sys_hash, "SVM_SYS_HASH", Presence, false, "Syscall register hash diagnostics") \
+    X(bool, sys_dbg, "SVM_SYS_DBG", Presence, false, "Syscall diagnostics") \
+    X(std::string, reg_dump, "SVM_REG_DUMP", RawString, "", "Process-wide syscall number:occurrence") \
+    X(std::string, skip_prep, "SVM_SKIP_PREP", RawString, "", "Process-wide preparation experiment") \
+    X(bool, zext_no_elide, "SVM_ZEXT_NO_ELIDE", Presence, false, "Process-wide zero extension experiment") \
+    X(bool, no_fuse_pin_writes, "SVM_NO_FUSE_PIN_WRITES", Presence, false, "Process-wide pinned write experiment") \
+    X(std::string, placement_reference, "SVM_PLACEMENT_REFERENCE", RawString, "/private/tmp/svm-placement-pad-reference.tsv", "Placement experiment input; disk cache disabled while enabled") \
+    X(std::string, mem_direct, "SVM_MEM_DIRECT", RawString, "", "Linux 内存模型三态；缺省 direct，0/OFF/off 选 bounded bias；原 linux/main.cpp:388") \
     X(u64, func_lazy, "SVM_FUNC_LAZY", FuncLazy, 1, "函数 region decode budget；缺省 1，<=0 回到 eager 1024；原 translator/x86/translator.cpp:603") \
     X(bool, dump_ir, "SVM_DUMP_IR", Presence, false, "IR 诊断打印；变量存在即开（含 =0）；原 runtime/backend/runtime.cpp:813 等") \
     X(bool, x87_jit, "SVM_X87_JIT", NonZero, false, "x87 中层 JIT；非 0 开，缺省 OFF；原 decoder_x87.cc:118") \
@@ -180,8 +190,8 @@ struct FeatureOverrides {
     X(bool, flags_fcmp_fuse, "SVM_FLAGS_FCMP_FUSE", DefaultOn, true, "FCMP flags fuse；缺省 ON，=0 回退；原 decoder.cc:1234") \
     X(bool, flags_fcmp_compact, "SVM_FLAGS_FCMP_COMPACT", DefaultOn, true, "FCMP compact（需 host FlagM2/AXFlag，无则自动回退默认路径）；缺省 ON，=0 回退；原 decoder.cc:265") \
     X(bool, flags_branch_only, "SVM_FLAGS_BRANCH_ONLY", DefaultOn, true, "branch-only flags；缺省 ON，=0 回退；原 flags_elimination_pass.cpp:47/decoder.cc:1170") \
-    X(bool, flags_region_branch, "SVM_FLAGS_REGION_BRANCH", DefaultOn, true, "region 内单边 flags-dead 的 terminal branch 延迟提交；缺省 ON，=0 回退；原 translator.cpp:PlanBackedgeFlags") \
-    X(bool, flags_loop_lazy, "SVM_FLAGS_LOOP_LAZY", NonZero, false, "单元内单块自环 NZCV/polarity 延迟到 cold/fault 出口物化；非 0 开，缺省 OFF；原 translator.cpp:PlanBackedgeFlags") \
+    X(bool, flags_region_branch, "SVM_FLAGS_REGION_BRANCH", DefaultOn, true, "region 内单边 flags-dead 的 terminal branch 延迟提交；缺省 ON，=0 回退；原 translator.cpp:RecipeBackedgeFlags") \
+    X(bool, flags_loop_lazy, "SVM_FLAGS_LOOP_LAZY", NonZero, false, "单元内单块自环 NZCV/polarity 延迟到 cold/fault 出口物化；非 0 开，缺省 OFF；原 translator.cpp:RecipeBackedgeFlags") \
     X(bool, addrmode_struct, "SVM_ADDRMODE_STRUCT", DefaultOn, true, "结构化寻址；缺省 ON，=0 回退；原 translator_mem.cpp:20/decoder.cc:880") \
     X(bool, jit_cache_exec_id, "SVM_JIT_CACHE_EXEC_ID", NonZeroNonEmpty, false, "JIT cache guest-id 使用 argv[1]；非空非 0 开；原 code_serial.cpp:820") \
     X(bool, smc_dirty_hint, "SVM_SMC_DIRTY_HINT", EqualsOne, false, "SMC dirty hint；仅 =1 开，缺省 OFF；原 smc_tracker.cpp:53") \
@@ -208,7 +218,7 @@ struct FeatureOverrides {
     X(bool, ra_spill_evict, "SVM_RA_SPILL_EVICT", DefaultOn, true, "RA farthest-end 驱逐；缺省 ON，=0 回退；原 register_alloc_pass.cpp:106") \
     X(bool, ra_coalesce, "SVM_RA_COALESCE", DefaultOn, true, "guest GPR 发布点定向合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(bool, ra_coalesce_live, "SVM_RA_COALESCE_LIVE", DefaultOn, true, "发布后仍活的 SSA 绑到 pin 家；缺省 ON，=0 回退 last-use W-alpha；同 pin 再写或 caller-saved helper 拒绝") \
-    X(bool, ra_width_chain, "SVM_RA_WIDTH_CHAIN", NonZero, false, "unit 内多节点整数宽度 identity 链合并；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
+    X(bool, ra_width_chain, "SVM_RA_WIDTH_CHAIN", NonZero, false, "unit 内多节点整数宽度 direct 链合并；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
     X(bool, ra_width_chain_long, "SVM_RA_WIDTH_CHAIN_LONG", DefaultOn, true, "unit 内长 Add/Xor 发布链的低 32 位 ownership 合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(bool, const_addr_cache, "SVM_CONST_ADDR_CACHE", DefaultOn, true, "unit 内同页绝对地址共享 guest page base；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(bool, indirect_l1, "SVM_INDIRECT_L1", DefaultOn, true, "间接出口块内 L1 首槽快查，含逐出口信号 safepoint；缺省 ON，=0 回退；原 jit_context.cpp") \
@@ -239,7 +249,7 @@ struct FeatureOverrides {
     X(bool, jit_cache_stats, "SVM_JIT_CACHE_STATS", NonZeroNonEmpty, false, "JIT cache 统计；非空非 0 开；原 jit_cache.cpp:35/75") \
     X(bool, low_prof, "SVM_LOW_PROF", NonZero, false, "lowering detail profile；非 0 开且依赖 decode profile；原 perf_stats.h:546") \
     X(u64, low_prof_empty, "SVM_LOW_PROF_EMPTY", EmptyBenchIterations, 0, "lowering 空循环校准次数；0/缺省不跑，小于 1000 时取 1000000；原 perf_stats.h:899") \
-    X(bool, mem_identity_test_collision, "SVM_MEM_IDENTITY_TEST_COLLISION", NonZero, false, "identity 映射碰撞注入测试；非 0 开；原 guest_memory.cpp:228") \
+    X(bool, mem_direct_test_collision, "SVM_MEM_DIRECT_TEST_COLLISION", NonZero, false, "direct 映射碰撞注入测试；非 0 开；原 guest_memory.cpp:228") \
     X(bool, mem_mode_trace, "SVM_MEM_MODE_TRACE", NonZero, false, "内存模式启动诊断；非 0 开；原 linux/main.cpp:480") \
     X(std::string, prof, "SVM_PROF", RawString, "", "总 profile 级别原串；变量存在即开，atoi>=2 打印 per-unit；原 perf_stats.h:344/715") \
     X(bool, prof2, "SVM_PROF2", Presence, false, "细粒度 translate profile；变量存在即开；原 perf_stats.h:320") \
@@ -248,7 +258,7 @@ struct FeatureOverrides {
     X(bool, signal_trace, "SVM_SIGNAL_TRACE", NonZero, false, "guest signal trace；非 0 开；原 linux/syscalls.cpp:341") \
     X(bool, smc_mt, "SVM_SMC_MT", DefaultOn, true, "多线程 SMC tracker；缺省 ON，=0 回退；原 translator/x86/translator.cpp:1226") \
     X(bool, static_regs, "SVM_STATIC_REGS", DefaultOn, true, "GPR static residency；缺省 ON，=0 回退；原 translator/x86/translator.cpp:638") \
-    X(bool, syscall_mmap_shared_read, "SVM_SYSCALL_MMAP_SHARED_READ", DefaultOn, true, "只读 MAP_SHARED snapshot；缺省 ON，=0 禁用；原 linux/syscalls.cpp:1410") \
+    X(bool, syscall_mmap_shared_read, "SVM_SYSCALL_MMAP_SHARED_READ", DefaultOn, true, "只读 MAP_SHARED capture；缺省 ON，=0 禁用；原 linux/syscalls.cpp:1410") \
     X(bool, syscall_rt_sigaction, "SVM_SYSCALL_RT_SIGACTION", DefaultOn, true, "rt_sigaction syscall；缺省 ON，=0 返回 ENOSYS；原 linux/syscalls.cpp:1736") \
     X(bool, syscall_rt_sigprocmask, "SVM_SYSCALL_RT_SIGPROCMASK", DefaultOn, true, "rt_sigprocmask syscall；缺省 ON，=0 返回 ENOSYS；原 linux/syscalls.cpp:1770") \
     X(std::string, sysroot, "SVM_SYSROOT", RawString, "", "guest 路径 sysroot；非空启用；原 linux/path_utils.h:18") \

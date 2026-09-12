@@ -85,7 +85,7 @@ static void FixupMovbeOperandSize(_DInst& insn, const u8* code) {
         return;
     }
 
-    // This distorm snapshot treats MOVBE's 66H operand-size override as an
+    // This distorm capture treats MOVBE's 66H operand-size override as an
     // unused prefix: both F0 (reg <- mem) and F1 (mem <- reg) are returned
     // with 32-bit operands/register IDs. Recover the architectural 16-bit
     // form from the original bytes before generic Src/Dst processing.
@@ -102,8 +102,8 @@ static void FixupMovbeOperandSize(_DInst& insn, const u8* code) {
             }
         }
         insn.flags &= ~(u16(3) << 8);
-        auto* normalized = &insn;
-        FLAG_SET_OPSIZE(normalized, Decode16Bits);
+        auto* adjusted = &insn;
+        FLAG_SET_OPSIZE(adjusted, Decode16Bits);
         insn.unusedPrefixesMask &= ~(u16(1) << i);
         return;
     }
@@ -114,7 +114,7 @@ static void FixupFsgsbaseOperand(_DInst& insn, const u8* code) {
         insn.opcode != I_WRFSBASE && insn.opcode != I_WRGSBASE) {
         return;
     }
-    // This snapshot has the right mnemonic/length table entries, but its
+    // This capture has the right mnemonic/length table entries, but its
     // shared operand descriptor selects ModRM.reg (the /0../3 opcode selector)
     // instead of ModRM.r/m and always assigns a 64-bit GPR. Recover the actual
     // operand and REX.W width from the bytes before normal dispatch.
@@ -155,7 +155,7 @@ void ToHost(backend::State* state, ThreadContext64* ctx) {
 bool X64Decoder::TsoOrdered(const _DInst& insn) const {
     if (GetTsoMode() == runtime::TsoMode::AcqRel) {
         // ABI-owned stack and TLS locations are private to this guest thread.
-        // Shared acquire/release accesses still order surrounding plain
+        // Shared acquire/release accesses still order surrounding basic
         // accesses, while LOCK must retain its full ordered/atomic semantics.
         if (!(insn.flags & FLAG_LOCK) && IsThreadPrivateAddress(insn)) {
             return false;
@@ -252,14 +252,14 @@ X64Decoder::X64Decoder(VAddr start,
                        bool is_64bit,
                        runtime::Arm64Features arm64_features,
                        bool sse_afp_nan,
-                       bool identity_addressing,
+                       bool direct_addressing,
                        const runtime::FeatureSet& features,
                        VAddr decode_stop,
                        DecodeStopKind decode_stop_kind)
         : start(start), pc(start), decode_stop(decode_stop),
           decode_stop_kind(decode_stop_kind), assembler(visitor), memory(memory),
           is_64bit(is_64bit),
-          identity_addressing_(identity_addressing), features_(features) {
+          direct_addressing_(direct_addressing), features_(features) {
     addr_mask = is_64bit ? UINT64_MAX : UINT32_MAX;
     flags_cfinv_supported_ =
             True(arm64_features & runtime::Arm64Features::FlagM);
@@ -495,7 +495,7 @@ private:
     }
 
     SVM_DECODE_STAGE StepResult DecodeRawExtension() {
-        // SHA-NI, ADX and PKRU are newer than this distorm snapshot.
+        // SHA-NI, ADX and PKRU are newer than this distorm capture.
         u32 size{};
         {
             swift::runtime::PerfDecodeScope2 perf_raw{
@@ -538,7 +538,7 @@ private:
     }
 
     SVM_DECODE_STAGE StepResult DecodeVexInstruction() {
-        // This distorm snapshot cannot preserve all VEX.L/W/vvvv fields, so
+        // This distorm capture cannot preserve all VEX.L/W/vvvv fields, so
         // AVX/AVX2 and BMI instructions take the raw VEX decoder first.
         const bool avx_on = decoder.AvxEnabled();
         const bool bmi_on = decoder.BmiEnabled();
@@ -620,7 +620,7 @@ private:
     }
 
     SVM_DECODE_STAGE StepResult DecodeXsavecInstruction() {
-        // XSAVEC/XSAVEC64 is absent from this distorm snapshot. Substitute
+        // XSAVEC/XSAVEC64 is absent from this distorm capture. Substitute
         // XSAVE's opcode in a bounded copy, then use the shared XSAVE emitter.
         u32 opcode_offset = 0;
         while (opcode_offset < kMaxInsnBytes) {
@@ -912,7 +912,7 @@ void X64Decoder::BeginStructuredAddressInstruction(u16 opcode) {
             StructuredAddressModeEnabled() && StructuredAddressChainOpcode(opcode);
     if (!structured_address_chain_active) {
         // This executes before lowering the non-whitelisted instruction.
-        // Plain V128 memory inside that instruction may still carry a
+        // Basic V128 memory inside that instruction may still carry a
         // structured Operand, but its state loads are not retained into the
         // next instruction.
         ClearStructuredAddressState();
@@ -974,7 +974,7 @@ ir::Value X64Decoder::NarrowTo(ir::Value value, ir::ValueType type) {
     if (want == 8) {
         return __ ZeroExtend64(value);
     }
-    // W-normalize first (safe for any input width), then a cast-type
+    // W-adjust first (safe for any input width), then a cast-type
     // adjustment for sub-32 destinations. (SetType would mutate the producing
     // instruction's own width and still leave the wrapper's cast unchanged —
     // the store width follows the wrapper.)
@@ -1325,7 +1325,7 @@ void X64Decoder::ExtendLocalFCmp(const _DInst& insn) {
 
 std::optional<X64Decoder::LocalCondition> X64Decoder::TryLocalCondition(Cond cond) {
     // FCMP relations are deliberately mapped from IEEE outcomes, not from the
-    // materialized x86 shadow.  These are exactly the single-condition sets:
+    // computed x86 shadow.  These are exactly the single-condition sets:
     // less|unordered, greater|equal, greater, less|equal|unordered, unordered,
     // and ordered.  EQ/NE need two ARM conditions and stay on the old path.
     if (FlagsFcmpFuseEnabled() && local_fcmp_next_pc_ == insn_pc &&
@@ -1664,7 +1664,7 @@ void X64Decoder::WriteBack(_Operand& operand, const ir::DataClass& data,
 
 bool X64Decoder::CanReuseRmwAddress(const _DInst& insn,
                                     const _Operand& operand) const {
-    return identity_addressing_ && addr_ea_tie_ && operand.type == O_MEM &&
+    return direct_addressing_ && addr_ea_tie_ && operand.type == O_MEM &&
            operand.size >= 16 && insn.base != R_NONE && insn.base != R_RIP &&
            operand.index != R_NONE && insn.dispSize && insn.disp &&
            insn.scale == operand.size / 8 &&
@@ -1684,7 +1684,7 @@ ir::DataClass X64Decoder::GetOperand(const X64Decoder::Operand& operand) {
 
 bool X64Decoder::PreserveMemoryEA(const X64Decoder::Operand& operand,
                                   ir::ValueType access_type) const {
-    if (!addr_ea_tie_ || !identity_addressing_) {
+    if (!addr_ea_tie_ || !direct_addressing_) {
         return false;
     }
     const auto ir_operand = operand.ToIROperand();
@@ -1840,7 +1840,7 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
                     // instead of the architectural
                     //     (index << scale) + disp.
                     // Materialise the shift here so the disp fold sees a
-                    // plain value and takes the `right = Imm(disp)` branch.
+                    // basic value and takes the `right = Imm(disp)` branch.
                     // X64Decoder::VexAddress already does it in this order,
                     // which is why the VEX path was correct and this one was
                     // not — clang emits this form for any static array with a
@@ -2125,7 +2125,7 @@ ir::Value X64Decoder::YmmHighHi(u32 index) {
 void X64Decoder::YmmHighLo(u32 index, ir::Value value) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::RegValue};
-    // NarrowTo normalizes untyped (CallLambda) values so the store has a width,
+    // NarrowTo adjusts untyped (CallLambda) values so the store has a width,
     // mirroring XmmLo/XmmHi.
     __ StoreUniform(ir::Uniform{YmmHighUniform(index).GetOffset(), ir::ValueType::U64},
                     NarrowTo(value, ir::ValueType::U64));
@@ -2164,7 +2164,7 @@ bool X64Decoder::DecodeAvx(_DInst& insn) {
     }
     const auto vex = DecodeVex();
     // L is read from the raw prefix, never from distorm's operand sizes: for
-    // the AVX2 packed-integer opcodes this distorm snapshot has no 256-bit
+    // the AVX2 packed-integer opcodes this distorm capture has no 256-bit
     // table entry and reports 128-bit XMM operands for an L=1 encoding without
     // any error. Gating on the real L bit is what keeps that misdecode from
     // reaching a handler. L=1 belongs to the 256-bit handlers.
@@ -2173,7 +2173,7 @@ bool X64Decoder::DecodeAvx(_DInst& insn) {
         // declines here and the block traps as FALLBACK.
         return DecodeAvx256(insn, vex);
     }
-    // Normalize any YMM operand code to its XMM twin. distorm already reports
+    // Adjust any YMM operand code to its XMM twin. distorm already reports
     // XMM for the L=0 encodings we accept, but a YMM code reaching one of the
     // SSE helpers below would silently read/write ymm_high instead of xmms —
     // the wrong 128-bit half, with no diagnostic. One cheap guard here covers
@@ -2191,7 +2191,7 @@ bool X64Decoder::DecodeAvx(_DInst& insn) {
         case I_VMOVAPD:
         case I_VMOVUPD:
         // Non-temporal hints carry no extra semantics in this model, so they
-        // degrade to plain moves exactly as the SSE dispatch does.
+        // degrade to basic moves exactly as the SSE dispatch does.
         case I_VMOVNTDQ:
         case I_VMOVNTDQA:
         case I_VMOVNTPS:
@@ -2347,7 +2347,7 @@ void X64Decoder::DecodeVexMovVec(_DInst& insn) {
         ZeroYmmHigh(dst);
     } else {
         // Store form: m128, xmm. No destination register, so no upper half to
-        // clear (vmovntdq degrades to a plain store, as the SSE path does).
+        // clear (vmovntdq degrades to a basic store, as the SSE path does).
         auto v = XmmRead(XmmOf(VecIndex(static_cast<_RegisterType>(op1.index))));
         MemStore(ir::Operand{FlatAddress(insn, op0)}, v, TsoOrdered(insn));
     }

@@ -32,14 +32,14 @@ extern "C" char** environ;
 namespace swift::runtime::backend {
 
 // ==========================================================================
-// Host image identity
+// Host image direct
 // ==========================================================================
 namespace {
 
 // Anchor whose address is guaranteed to be inside the SwiftVM main image.
 void HostImageAnchor() {}
 
-HostImageInfo ProbeHostImage() {
+HostImageInfo CheckHostImage() {
     HostImageInfo info{};
 #ifdef __APPLE__
     // Image 0 is always the main executable.
@@ -98,7 +98,7 @@ HostImageInfo ProbeHostImage() {
     info.base = ctx.lo;
     info.size = ctx.hi - ctx.lo;
 #endif
-    // Sanity: the anchor must be inside what we computed. If not, the probe is
+    // Sanity: the anchor must be inside what we computed. If not, the check is
     // wrong and every consumer must treat the cache as unavailable.
     const auto anchor = reinterpret_cast<std::uintptr_t>(&HostImageAnchor);
     if (!info.Contains(anchor)) {
@@ -110,7 +110,7 @@ HostImageInfo ProbeHostImage() {
 }  // namespace
 
 const HostImageInfo& GetHostImage() {
-    static const HostImageInfo info = ProbeHostImage();
+    static const HostImageInfo info = CheckHostImage();
     return info;
 }
 
@@ -764,10 +764,10 @@ u64 HashU64(u64 value, u64 seed) { return HashBytes(&value, sizeof(value), seed)
 
 namespace {
 constexpr u64 kFnvOffset = 0xCBF29CE484222325ull;
-// Domain-separate the executable-only guest identity from the legacy
-// all-argv identity. OFF intentionally retains the exact old hash so existing
+// Domain-separate the executable-only guest direct from the legacy
+// all-argv direct. OFF intentionally retains the exact old hash so existing
 // cache entries remain usable; ON cannot alias it merely because argv happens
-// to contain the same bytes as the file identity fields.
+// to contain the same bytes as the file direct fields.
 constexpr u64 kExecGuestIdDomain = 0x53564D4558454349ull;  // "SVMEXECI"
 
 std::string SelfExePath() {
@@ -816,7 +816,7 @@ std::vector<std::string> ProcessArgv() {
     return out;
 }
 
-u64 HashFileIdentity(const std::string& path, u64 seed) {
+u64 HashFileDirect(const std::string& path, u64 seed) {
     struct stat st {};
     if (path.empty() || ::stat(path.c_str(), &st) != 0) {
         return HashBytes(path.data(), path.size(), seed);
@@ -831,7 +831,7 @@ u64 HashFileIdentity(const std::string& path, u64 seed) {
 
 u64 ComputeBuildId() {
     static const u64 id = [] {
-        u64 h = HashFileIdentity(SelfExePath(), kFnvOffset);
+        u64 h = HashFileDirect(SelfExePath(), kFnvOffset);
         // Guard against a stale mtime by folding in the image span too.
         h = HashU64(GetHostImage().size, h);
         return h;
@@ -882,7 +882,7 @@ u64 ComputeConfigHash(const Config& config) {
     h = HashU64(config.sse_afp_nan ? 1 : 0, h);
     h = HashU64(config.mem_hostbase_fold ? 1 : 0, h);
     h = HashU64(config.induct_tie ? 1 : 0, h);
-    // OFF 沿用既有 cache identity；ON 额外隔离不同 unit 边界和本地分支。
+    // OFF 沿用既有 cache direct；ON 额外隔离不同 unit 边界和本地分支。
     if (config.region_edges) {
         h = HashU64(1, h);
     }
@@ -923,7 +923,7 @@ u64 ComputeConfigHash(const Config& config) {
 
 u64 ComputeConfigHash(const Config& config, const ModuleConfig& module_config) {
     u64 h = ComputeConfigHash(config);
-    // 空覆盖必须保持旧 cache identity；只有 P3 真正设置 module override 时才
+    // 空覆盖必须保持旧 cache direct；只有 P3 真正设置 module override 时才
     // 进入独立哈希域，并只序列化显式项。
     if (module_config.feature_overrides.Empty()) return h;
     h = HashU64(0x53564d4645415455ull, h);  // "SVMFEATU"
@@ -960,12 +960,12 @@ u64 ComputeGuestId() {
 
         if (GetSvmConfig().jit_cache_exec_id) {
             h = HashU64(kExecGuestIdDomain, h);
-            // argv[0] is the SwiftVM launcher, whose code identity is already
+            // argv[0] is the SwiftVM launcher, whose code direct is already
             // covered by build_id. argv[1] is the guest ELF selected by the
             // Linux frontend. Later arguments are copied into the guest's
             // initial stack and cannot steer translation/code generation.
             if (argv.size() >= 2) {
-                h = HashFileIdentity(argv[1], h);
+                h = HashFileDirect(argv[1], h);
             }
             return h;
         }
@@ -976,7 +976,7 @@ u64 ComputeGuestId() {
             h = HashBytes(argv[i].data(), argv[i].size(), h);
         }
         if (argv.size() >= 2) {
-            h = HashFileIdentity(argv[1], h);
+            h = HashFileDirect(argv[1], h);
         }
         return h;
     }();

@@ -25,7 +25,7 @@ typedef struct { char a, b, c, d, e, f, g, h; } Chars8;
 typedef struct { long a, b, c; } Big24;
 typedef struct { long a; long b; } TwoLong;
 
-// --- plain integer / floating-point argument passing ------------------------
+// --- basic integer / floating-point argument passing ------------------------
 
 long stub_int_sum9(long a, long b, long c, long d, long e, long f, long g, long h, long i) {
     return a * 1 + b * 3 + c * 7 + d * 11 + e * 13 + f * 17 + g * 19 + h * 23 + i * 29;
@@ -220,7 +220,7 @@ __asm__(".text\n"
         "  subq $16, %rsp\n"
         "  jmp *%rax\n"
 
-        // Snapshots the complete argument register file into a fixed guest
+        // Captures the complete argument register file into a fixed guest
         // address, so a test can assert *placement* and not just the result of
         // some arithmetic the compiler chose.
         ".globl stub_dump_args\n"

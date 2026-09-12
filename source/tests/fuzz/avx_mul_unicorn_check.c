@@ -24,7 +24,7 @@
 //                    DESTINATION instead of from VEX.vvvv, and bits 255:128 are
 //                    left unmodified instead of zeroed.
 //
-// The defect is not specific to this family -- reduced probes show the same for
+// The defect is not specific to this family -- reduced checks show the same for
 // `vpxor xmm0, xmm1, xmm2` (result is ymm0 ^ ymm2, upper half untouched) and
 // for `vpaddd`, and it moves with the destination register (`vpmuludq xmm3,
 // xmm1, xmm2` computes ymm3 * ymm2).  Both symptoms are the one root cause: the

@@ -117,11 +117,11 @@ static_assert(AbiClass<Empty>::value == ArgClass::NoClass);
 static_assert(AllOf(ClassifyType<WithArray>(), {Eightbyte::Integer, Eightbyte::Integer}));
 
 // ===========================================================================
-// Call plans
+// Call recipes
 // ===========================================================================
 
 // Six INTEGER registers, then the stack.
-constexpr auto kInt9 = MakeCallPlan<long, long, long, long, long, long, long, long, long, long>();
+constexpr auto kInt9 = MakeCallRecipe<long, long, long, long, long, long, long, long, long, long>();
 static_assert(kInt9.int_used == 6);
 static_assert(kInt9.args[0].reg[0] == 0 && kInt9.args[0].kind[0] == SlotKind::IntReg);
 static_assert(kInt9.args[5].reg[0] == 5 && kInt9.args[5].kind[0] == SlotKind::IntReg);
@@ -131,7 +131,7 @@ static_assert(kInt9.args[8].on_stack && kInt9.args[8].stack_off == 16);
 static_assert(kInt9.stack_bytes == 24 && kInt9.stack_area == 32);
 
 // Eight vector registers, then the stack.
-constexpr auto kDbl10 = MakeCallPlan<double, double, double, double, double, double, double,
+constexpr auto kDbl10 = MakeCallRecipe<double, double, double, double, double, double, double,
                                      double, double, double, double>();
 static_assert(kDbl10.sse_used == 8);
 static_assert(kDbl10.int_used == 0);
@@ -141,7 +141,7 @@ static_assert(kDbl10.args[9].on_stack && kDbl10.args[9].stack_off == 8);
 
 // THE case that a shared counter would pass by accident only with few
 // arguments: interleaved integers and doubles must advance separately.
-constexpr auto kMix = MakeCallPlan<double, long, double, long, double, long, double, long,
+constexpr auto kMix = MakeCallRecipe<double, long, double, long, double, long, double, long,
                                    double>();
 static_assert(kMix.int_used == 4 && kMix.sse_used == 4);
 static_assert(kMix.args[0].kind[0] == SlotKind::IntReg && kMix.args[0].reg[0] == 0);
@@ -155,7 +155,7 @@ static_assert(kMix.stack_bytes == 0);
 // MEMORY return: %rdi is the hidden buffer pointer and everything integer
 // shifts right by one.  This is the rule docs/aot-design.md §6 calls the
 // easiest to miss.
-constexpr auto kMemRet = MakeCallPlan<Big24, long, long, long>();
+constexpr auto kMemRet = MakeCallRecipe<Big24, long, long, long>();
 static_assert(kMemRet.ret_memory);
 static_assert(kMemRet.ret_size == 24);
 static_assert(kMemRet.args[0].reg[0] == 1);  // %rsi, not %rdi
@@ -163,32 +163,32 @@ static_assert(kMemRet.args[1].reg[0] == 2);  // %rdx
 static_assert(kMemRet.args[2].reg[0] == 3);  // %rcx
 static_assert(kMemRet.int_used == 4);
 // ... and the shift does NOT touch the SSE sequence.
-constexpr auto kMemRetSse = MakeCallPlan<Big24, double, long>();
+constexpr auto kMemRetSse = MakeCallRecipe<Big24, double, long>();
 static_assert(kMemRetSse.args[0].kind[0] == SlotKind::SseReg && kMemRetSse.args[0].reg[0] == 0);
 static_assert(kMemRetSse.args[1].kind[0] == SlotKind::IntReg && kMemRetSse.args[1].reg[0] == 1);
 
 // Without a MEMORY return the same arguments start at %rdi.
-constexpr auto kNoMemRet = MakeCallPlan<long, long, long, long>();
+constexpr auto kNoMemRet = MakeCallRecipe<long, long, long, long>();
 static_assert(!kNoMemRet.ret_memory);
 static_assert(kNoMemRet.args[0].reg[0] == 0);
 static_assert(kNoMemRet.int_used == 3);
 
 // A MEMORY argument occupies the stack whatever else is free.
-constexpr auto kMemArg = MakeCallPlan<long, Big24, long>();
+constexpr auto kMemArg = MakeCallRecipe<long, Big24, long>();
 static_assert(kMemArg.args[0].on_stack && kMemArg.args[0].stack_off == 0);
 static_assert(kMemArg.args[1].kind[0] == SlotKind::IntReg && kMemArg.args[1].reg[0] == 0);
 static_assert(kMemArg.stack_bytes == 24 && kMemArg.stack_area == 32);
 
 // All-or-nothing spill: {SSE,SSE} needs two vector registers; with only one
 // left the WHOLE argument goes to the stack and no half-assignment survives.
-constexpr auto kSpill = MakeCallPlan<double, double, double, double, double, double, double,
+constexpr auto kSpill = MakeCallRecipe<double, double, double, double, double, double, double,
                                      double, TwoDouble>();
 static_assert(kSpill.sse_used == 7);
 static_assert(kSpill.args[7].on_stack);
 static_assert(kSpill.args[7].stack_off == 0);
 // One vector register short is enough to spill: after 7 doubles, xmm7 is the
 // only one left and {SSE,SSE} needs two.
-constexpr auto kSpill8 = MakeCallPlan<double, double, double, double, double, double, double,
+constexpr auto kSpill8 = MakeCallRecipe<double, double, double, double, double, double, double,
                                       double, double, TwoDouble>();
 static_assert(kSpill8.sse_used == 8);
 static_assert(kSpill8.args[8].on_stack);
@@ -196,25 +196,25 @@ static_assert(kSpill8.args[8].on_stack);
 // A later, smaller argument may still take a register after an earlier one
 // spilled -- the psABI reverts assignments per argument, it does not close the
 // register file.
-constexpr auto kLateReg = MakeCallPlan<double, double, double, double, double, double, double,
+constexpr auto kLateReg = MakeCallRecipe<double, double, double, double, double, double, double,
                                        double, TwoDouble, double>();
 static_assert(kLateReg.args[7].on_stack);
 static_assert(kLateReg.args[8].kind[0] == SlotKind::SseReg && kLateReg.args[8].reg[0] == 7);
 
 // Return-value classes.
-static_assert(MakeCallPlan<TwoDouble>().ret_eb[0] == Eightbyte::Sse);
-static_assert(MakeCallPlan<TwoDouble>().ret_eb[1] == Eightbyte::Sse);
-static_assert(MakeCallPlan<DoubleLong>().ret_eb[0] == Eightbyte::Sse);
-static_assert(MakeCallPlan<DoubleLong>().ret_eb[1] == Eightbyte::Integer);
-static_assert(MakeCallPlan<TwoInt>().ret_n_eb == 1);
-static_assert(MakeCallPlan<void>().ret_n_eb == 0);
-static_assert(!MakeCallPlan<void>().ret_memory);
+static_assert(MakeCallRecipe<TwoDouble>().ret_eb[0] == Eightbyte::Sse);
+static_assert(MakeCallRecipe<TwoDouble>().ret_eb[1] == Eightbyte::Sse);
+static_assert(MakeCallRecipe<DoubleLong>().ret_eb[0] == Eightbyte::Sse);
+static_assert(MakeCallRecipe<DoubleLong>().ret_eb[1] == Eightbyte::Integer);
+static_assert(MakeCallRecipe<TwoInt>().ret_n_eb == 1);
+static_assert(MakeCallRecipe<void>().ret_n_eb == 0);
+static_assert(!MakeCallRecipe<void>().ret_memory);
 
 // Stack alignment: the argument area is always a multiple of 16, so %rsp is
 // 16-byte aligned at the call and ≡ 8 (mod 16) inside the callee.
 static_assert(kInt9.stack_area % 16 == 0);
 static_assert(kMemArg.stack_area % 16 == 0);
-static_assert(MakeCallPlan<void, Big17>().stack_area == 32);
+static_assert(MakeCallRecipe<void, Big17>().stack_area == 32);
 
 // Default argument promotions for a variadic tail.
 static_assert(std::is_same_v<VarargPromote<float>, double>);
@@ -231,7 +231,7 @@ static_assert(std::is_same_v<VarargPromote<long>, long>);
 TEST_CASE("SysV classification is resolved at compile time") {
 #ifndef SVM_ABI_STATIC_ASSERTS_OFF
     // Everything of substance above is a static_assert; this case exists so the
-    // translation unit reports as a test and so the runtime-visible plan can be
+    // translation unit reports as a test and so the runtime-visible recipe can be
     // spot-checked.
     STATIC_REQUIRE(kInt9.int_used == 6);
     STATIC_REQUIRE(kMemRet.ret_memory);

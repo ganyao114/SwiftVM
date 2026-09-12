@@ -76,7 +76,7 @@ typedef uint64_t u64;
 // and 1 (AArch64's UMULL) instead of lanes 0 and 2 (what x86 specifies) is
 // visible in the SECOND result lane.  Beyond that each pair aims at something:
 //
-//   lanes     every lane a different small value -- the plain "did the right
+//   lanes     every lane a different small value -- the basic "did the right
 //             lane reach the right place" case, readable by eye in a failure.
 //   signdisc  operands where the signed and unsigned products differ in the
 //             HIGH dword: 0xFFFFFFFF*2 is 0x1FFFFFFFE unsigned and

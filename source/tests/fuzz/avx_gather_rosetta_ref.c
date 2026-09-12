@@ -46,7 +46,7 @@
 // WHAT EACH ROW CONTAINS
 // ----------------------
 // The recorded bytes are ONLY the gather itself.  The stub's register setup
-// and the capture tail are excluded, so the test can plant the operand
+// and the capture tail are excluded, so the test can place the operand
 // registers straight into ThreadContext64 and read the answer straight back --
 // a broken vmovdqu cannot mask a broken gather handler.  A row also carries
 // which architectural registers the gather used (dst / index / mask), because
@@ -86,9 +86,9 @@ typedef int64_t s64;
 
 // ---------------------------------------------------------------------------
 // Input pairs: an index vector and a mask vector, described abstractly so the
-// same pair can be materialized as dword or qword elements.
+// same pair can be computed as dword or qword elements.
 //
-//   idx[i]      the signed index for element i.  Materialized as a dword or a
+//   idx[i]      the signed index for element i.  Computed as a dword or a
 //               sign-extended qword according to the form's index size, so the
 //               negative entries exercise sign extension at BOTH widths.
 //   sel[i]      the 32 bits placed in mask element i.  For a 64-bit mask
@@ -312,7 +312,7 @@ static void hexbytes(char* out, const u8* v, int n) {
 }
 
 // Materialize the pair into INDEX / MASK for a given form.
-static void plant(const Pair* p, int ebits, int ibits, int n) {
+static void place(const Pair* p, int ebits, int ibits, int n) {
     u8* idx = g_data + OFF_INDEX;
     u8* msk = g_data + OFF_MASK;
     // Lanes beyond the form's element count are filled with a recognizable
@@ -350,7 +350,7 @@ static void row(const char* mnemonic, int width, const Shape* s, const Pair* p, 
                 p->name, enc, all);
         return;
     }
-    plant(p, ebits, ibits, n);
+    place(p, ebits, ibits, n);
     memset(g_data + OFF_DST, 0xCC, 32);
     memset(g_data + OFF_MSK, 0xCC, 32);
     for (int r = 0; r < 16; ++r) {
@@ -358,7 +358,7 @@ static void row(const char* mnemonic, int width, const Shape* s, const Pair* p, 
             g_data[OFF_POISON + r * 32 + j] = GATHER_POISON(r, j);
         }
     }
-    // The PLANTED operand bytes are recorded alongside the encoding for the
+    // The PLACEED operand bytes are recorded alongside the encoding for the
     // same reason the encoding itself is: the test then loads exactly what the
     // hardware side loaded, instead of re-deriving the index/mask layout from
     // the form and risking the two sides agreeing on a wrong derivation.
@@ -397,14 +397,14 @@ int main(int argc, char** argv) {
         // Support is decided by EXECUTING a gather, never by CPUID (Rosetta
         // hides the AVX bits without ROSETTA_ADVERTISE_AVX=1 while still
         // executing the instructions).
-        Code probe;
-        probe.n = 0;
-        probe.mark = 0;
-        prologue(&probe, &g_shapes[0]);
-        gather(&probe, 0x90, 0, 1, &g_shapes[0]);
-        epilogue(&probe, &g_shapes[0]);
-        plant(&g_pairs[0], 32, 32, 8);
-        if (!run_stub(&probe)) {
+        Code check;
+        check.n = 0;
+        check.mark = 0;
+        prologue(&check, &g_shapes[0]);
+        gather(&check, 0x90, 0, 1, &g_shapes[0]);
+        epilogue(&check, &g_shapes[0]);
+        place(&g_pairs[0], 32, 32, 8);
+        if (!run_stub(&check)) {
             fprintf(stderr,
                     "FATAL: VEX.256 vpgatherdd raised SIGILL under this runtime.\n"
                     "This generator must run under Rosetta 2 (arch -x86_64) on a host\n"

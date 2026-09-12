@@ -29,7 +29,7 @@ u64 RegionSelector() {
     return g_region_selector.fetch_add(1, std::memory_order_seq_cst) & 1u;
 }
 
-u64 RegionLoopProbe() {
+u64 RegionLoopCheck() {
     g_region_loop_entries.fetch_add(1, std::memory_order_seq_cst);
     if (g_region_fault_armed.exchange(false, std::memory_order_seq_cst)) {
         auto* address = g_region_fault_address.load(std::memory_order_acquire);
@@ -78,7 +78,7 @@ std::unique_ptr<RegionFunction> BuildRegionLoop(VAddr a, VAddr b, VAddr c) {
     function->AdvancePC(Imm{u64{1}});
     (void)function
             ->CallLambda(Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(
-                    FptrCast(&RegionLoopProbe)))}})
+                    FptrCast(&RegionLoopCheck)))}})
             .SetType(ValueType::U64);
     result->builder.LinkBlock(terminal::LinkBlock{Location{a}});
 

@@ -11,12 +11,6 @@ namespace swift::runtime::ir {
 
 class RegisterAllocPass {
 public:
-    struct SpillEvictTestResult {
-        u32 eviction_restarts{};
-        u32 final_gpr_reserve{};
-        u32 final_fpr_reserve{};
-        bool fell_back_to_ladder{};
-    };
 
     static void Run(HIRBuilder *hir_builder, backend::RegAlloc *reg_alloc,
                     const FeatureSet& features);
@@ -37,64 +31,6 @@ public:
                     backend::RegAlloc *reg_alloc,
                     bool scalar_insert,
                     const FeatureSet& features);
-    // Explicit gate selector for unit tests that compare OFF and ON allocation
-    // in one process. Production callers use the overload above, which reads
-    // SVM_RA_INTWIDTH_TIE once and defaults to OFF.
-    static void RunForIntWidthTieTest(ir::Block *block,
-                                     backend::RegAlloc *reg_alloc,
-                                     bool intwidth_tie);
-    static void RunForInductTieTest(ir::Block *block,
-                                    backend::RegAlloc *reg_alloc,
-                                    bool induct_tie);
-    static void RunForCoalesceTest(ir::Block *block,
-                                   backend::RegAlloc *reg_alloc,
-                                   bool coalesce);
-    static void RunForCoalesceLiveTest(ir::Block *block,
-                                       backend::RegAlloc *reg_alloc,
-                                       bool live);
-    static void RunForCoalesceConflictTest(ir::Block *block,
-                                           backend::RegAlloc *reg_alloc,
-                                           u32 tied_value_id,
-                                           u16 target);
-    static void RunForWidthChainTest(ir::Block *block,
-                                     backend::RegAlloc *reg_alloc,
-                                     bool enabled);
-    static void RunForWidthChainConflictTest(ir::Block *block,
-                                             backend::RegAlloc *reg_alloc,
-                                             u32 tied_value_id,
-                                             u16 target);
-    static void RunForWidthChainLongConflictTest(ir::Block *block,
-                                                 backend::RegAlloc *reg_alloc,
-                                                 u32 tied_value_id,
-                                                 u16 target);
-    static void RunForXmmResidentTest(ir::Block *block,
-                                      backend::RegAlloc *reg_alloc,
-                                      bool enabled);
-    static void RunForXmmResidentConflictTest(ir::Block *block,
-                                              backend::RegAlloc *reg_alloc,
-                                              u32 tied_value_id,
-                                              u16 target);
-    static void RunForAesChainTieTest(ir::Block *block,
-                                      backend::RegAlloc *reg_alloc,
-                                      bool enabled);
-    static void RunForAesChainTieConflictTest(ir::Block *block,
-                                              backend::RegAlloc *reg_alloc,
-                                              u32 tied_value_id,
-                                              u16 target);
-    static void RunForScalarFPRTieTest(ir::Block *block,
-                                       backend::RegAlloc *reg_alloc,
-                                       bool enabled);
-    static void RunForScalarFPRTieConflictTest(ir::Block *block,
-                                               backend::RegAlloc *reg_alloc,
-                                               u32 tied_value_id,
-                                               u16 target);
-    static void RunForShufpsImmTieTest(ir::Block *block,
-                                       backend::RegAlloc *reg_alloc,
-                                       bool enabled);
-    static SpillEvictTestResult RunForSpillEvictTest(
-            ir::Block *block,
-            backend::RegAlloc *reg_alloc,
-            bool spill_evict);
 };
 
 class VRegisterAllocPass {

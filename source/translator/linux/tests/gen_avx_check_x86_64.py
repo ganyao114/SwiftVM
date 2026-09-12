@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit a one-instruction guest ELF that probes whether the x86 frontend
+"""Emit a one-instruction guest ELF that checks whether the x86 frontend
 accepts a given VEX (AVX/AVX2) encoding.
 
 DIAGNOSTIC TOOL, NOT A TEST FIXTURE.  It exists to answer one question without
@@ -18,10 +18,10 @@ so the verdict is read straight off the exit status:
     42                             the decoder translated and ran it
     1  + "halted: reason 1"        ExitReason::IllegalCode -- unimplemented;
                                    a real guest process would die here
-    1  + "halted: reason 2"        PageFatal -- a bad probe, not a decode gap
+    1  + "halted: reason 2"        PageFatal -- a bad check, not a decode gap
 
 Usage:
-    python3 gen_avx_probe_x86_64.py MAP PP OPCODE [options] -o out.elf
+    python3 gen_avx_check_x86_64.py MAP PP OPCODE [options] -o out.elf
       MAP     0F | 0F38 | 0F3A
       PP      NP | 66 | F3 | F2
       OPCODE  hex, e.g. D7
@@ -34,7 +34,7 @@ Usage:
     SVM_AVX=1 ./svm_translator_linux out.elf ; echo $?
 
 Example -- VEX.128 vpmovmskb, the one AVX gap reachable from the in-tree glibc:
-    python3 gen_avx_probe_x86_64.py 0F 66 D7 -o vpmovmskb128.elf
+    python3 gen_avx_check_x86_64.py 0F 66 D7 -o vpmovmskb128.elf
 """
 
 import argparse

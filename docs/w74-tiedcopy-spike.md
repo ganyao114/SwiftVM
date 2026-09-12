@@ -13,7 +13,7 @@ Orb Linux c-ray `-s 8 -j 1 -d 160x120` 的 W71 同口径结果为：
 | 分类 | entry-weighted 动态条数 | 占全部 host 指令 | 占 move/桥 |
 |---|---:|---:|---:|
 | a. RA 权威 last-use 可证明的 tied-destination | 260,201 | 0.000970% | 0.003125% |
-| b. RA 权威 last-use 可证明的零宽/identity bridge | 860,249,941 | 3.206644% | 10.332292% |
+| b. RA 权威 last-use 可证明的零宽/direct bridge | 860,249,941 | 3.206644% | 10.332292% |
 | **a+b 可删候选** | **860,510,142** | **3.207614%** | **10.335417%** |
 | c. 其余语义/固定寄存器/lane 搬运 | 7,465,328,289 | 27.827550% | 89.664583% |
 | W71 move/桥总计 | 8,325,838,431 | 31.035164% | 100% |
@@ -83,9 +83,9 @@ a 类只接受具备 destructive/copy emitter、且 tie 后确实能删除一条
 结果：`BitClear`、`BitInsert`、`LocalParitySet`、`GetResult` 与 ordered
 `FCmpCondSet(VC)`。
 
-b 类只接受 identity/宽度链，且同样通过上述 last-use：单 value `GetOperand`、
+b 类只接受 direct/宽度链，且同样通过上述 last-use：单 value `GetOperand`、
 `BitExtract(value, 0, full_width)`、可成为同一 W/X 寄存器的 `ZeroExtend32`、
-`ZeroExtend32To64`、`ZeroExtend64`，以及 64-bit identity `SignExtend`。
+`ZeroExtend32To64`、`ZeroExtend64`，以及 64-bit direct `SignExtend`。
 
 以下都归 c，而没有借 31.04% 的宽松口径冒充可删：
 
@@ -133,7 +133,7 @@ W71 一致。
 其前 230 条是 W71 口径热主线。代表形状包括：
 
 ```text
-lsr  w11, w9, #0             identity width bridge（仅 last-use 成立才计 b）
+lsr  w11, w9, #0             direct width bridge（仅 last-use 成立才计 b）
 mov  v2.16b, v0.16b
 mov  v2.s[0], v3.s[0]        scalar lane merge（c，旧高 lanes 可观察）
 mov  x6, v3.d[0]
@@ -162,7 +162,7 @@ mov/movk x11, ...            terminal dispatch materialization（c）
 
 ## 4. 只读性与工作树验证
 
-临时筛选二进制在 probe OFF 时与 `/tmp/svm-build` 做函数指纹：
+临时筛选二进制在 check OFF 时与 `/tmp/svm-build` 做函数指纹：
 
 ```text
 self-consistency: OK (4400 function units over 11 guests, host_bytes included)

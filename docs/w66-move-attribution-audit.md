@@ -92,7 +92,7 @@ closure delta=-101
 | fixed-home 不在 coalesce target 集 | `:16-18`, `:658-661` | x19/x20/x21 等 callee-saved home 的 GetHost；根本不进 W-α |
 | read 前没有同 block 最新发布，或中间有 observer | `:683-700` | region block 入口的 x22/x23/x29/x0..x9 read；不能凭跨 HIR block 状态猜值 |
 | 最新发布未证明 high32=0 | `:702-724` | U32 view 只是读 W 视图、不是一次物理 W write |
-| read 活跃期内 home 再写 | `:726-734` | 必须保持 snapshot 语义 |
+| read 活跃期内 home 再写 | `:726-734` | 必须保持 capture 语义 |
 | partial SetHost offset 非零 | `:808-811` | `bfxil x22/x29,...,#0,#8/#16`；不允许冒充完整发布 |
 | producer multi-use / store 不是 last use | `:819-829` | 一个 SSA 同时供算术、flags 或另一个 home |
 | zext 根不是已知 W write | `:835-845`, `HasKnownWWrite :105-127` | `ZeroExtend32To64(GetHostGPR)`；读 W 不等于把 X 高半写零 |
@@ -234,7 +234,7 @@ b.ne ...
 +0dc mov   w22,w6                 R  SetHost id86；observer/home-access 穿过 producer→store(:967-990)，home=x22
 ```
 
-这里的 `R` 并非都“差一个 guard 就能删”：`bfxil` 是 8/16-bit architectural write，未满足完整 W/X width proof；两个 read 必须保持旧 home snapshot；多次 x22/x29 publish 的窗口彼此交错，正是 sqlite/width-chain 判例禁止的半事务状态。
+这里的 `R` 并非都“差一个 guard 就能删”：`bfxil` 是 8/16-bit architectural write，未满足完整 W/X width proof；两个 read 必须保持旧 home capture；多次 x22/x29 publish 的窗口彼此交错，正是 sqlite/width-chain 判例禁止的半事务状态。
 
 ### 3.5 0x402de8
 
@@ -277,7 +277,7 @@ b.ne ...
 ```text
 +000 mov  w6,#0x2c                O  LoadImm
 +004 ubfx x7,x29,#0,#8            R  GetHost id88；not-u32(:652-655)，home=x29
-+008 uxtb w9,w7                   O  narrow Sub operand normalize
++008 uxtb w9,w7                   O  narrow Sub operand adjust
 +010 mov  w11,w6                  O  destructive Sub input
 ```
 
@@ -331,7 +331,7 @@ b.ne ...
 +018 uxtb w6,w7                   W  BitExtract8
 +01c uxtb w8,w7                   W  第二 byte view
 +024 mov  w6,w7                   O  byte Or operand copy
-+028 sxtb x8,w6                   O  byte Or/flags normalize
++028 sxtb x8,w6                   O  byte Or/flags adjust
 ```
 
 ## 4. 全程序 owner 细分
@@ -376,7 +376,7 @@ bfi x26,... AF           498,768,799
 | 子类 | dynamic | 占 host | 说明 |
 |---|---:|---:|---|
 | LoadImm/VecLoadConst | 1,795,109,110 | 3.049637% | INT_IMM_FOLD 已 ON；剩余不是已证明的同 block single-use encodable consumer |
-| 算术 fallback（扣除 PF/AF 链） | 2,478,832,126 | 4.211185913% | 窄 Sub/Or operand normalize、destructive input copy；与 width/flags proof 重叠 |
+| 算术 fallback（扣除 PF/AF 链） | 2,478,832,126 | 4.211185913% | 窄 Sub/Or operand adjust、destructive input copy；与 width/flags proof 重叠 |
 | EA/memory owner | 187,827,160 | 0.319092% | 低于 0.5%，且 bounded-bias 三项寻址已有 EA_FIXED_REG NO-GO |
 | 其余极小 owner | 366 | 近零 | 不成池 |
 
@@ -452,8 +452,8 @@ sqlite: rc=0, TOTAL present
 诊断源码改动: 0
 ```
 
-临时 guard probe 撤销并完成最终重建后，又跑了一次 2,000-iteration shape
-capture；top-10 的 `host_static/move_static/unit bytes` 与 probe 前逐点一致：
+临时 guard check 撤销并完成最终重建后，又跑了一次 2,000-iteration shape
+capture；top-10 的 `host_static/move_static/unit bytes` 与 check 前逐点一致：
 
 ```text
 0x4033bb 23/6/132   0x403630 36/11/184  0x403688 36/11/184

@@ -1,4 +1,6 @@
+#include "base/logging.h"
 #include "register_alloc_internal.h"
+#include "runtime/backend/gpr_coalescing_contract.h"
 
 #include <atomic>
 #include <cstdio>
@@ -21,53 +23,11 @@ static void MapGuestFixedGPR(backend::RegAlloc* reg_alloc,
 }
 
 bool IsPinnedCoalesceTarget(u32 reg) {
-    return reg <= 9 || reg == 19 || reg == 20 || reg == 21 ||
-           reg == 22 || reg == 23 || reg == 29;
+    return backend::IsFixedGPRHome(reg);
 }
 
 bool IsPinnedCoalesceProducer(OpCode op) {
-    switch (op) {
-        case OpCode::LoadImm:
-        case OpCode::LoadMemory:
-        case OpCode::LoadUniform:
-        case OpCode::GetHostFPR:
-        case OpCode::Zero:
-        case OpCode::Add:
-        case OpCode::Sub:
-        case OpCode::And:
-        case OpCode::AndNot:
-        case OpCode::Or:
-        case OpCode::Xor:
-        case OpCode::Adc:
-        case OpCode::Sbb:
-        case OpCode::Mul:
-        case OpCode::Div:
-        case OpCode::SignedDiv64:
-        case OpCode::Not:
-        case OpCode::Neg:
-        case OpCode::GetOperand:
-        case OpCode::ZeroExtend32:
-        case OpCode::SignExtend:
-        case OpCode::LslImm:
-        case OpCode::LslValue:
-        case OpCode::LsrImm:
-        case OpCode::LsrValue:
-        case OpCode::AsrImm:
-        case OpCode::AsrValue:
-        case OpCode::RorImm:
-        case OpCode::RorValue:
-        case OpCode::ByteSwap:
-        case OpCode::BitExtract:
-        case OpCode::BitClear:
-        case OpCode::Select:
-        case OpCode::SelectZero:
-        case OpCode::CondSelect:
-        case OpCode::MulHigh:
-        case OpCode::VecMovMask:
-            return true;
-        default:
-            return false;
-    }
+    return backend::IsGPRPublicationProducer(op);
 }
 
 bool IsWidthChainRootProducer(const Inst* producer) {
@@ -142,7 +102,7 @@ bool HasKnownWWrite(Value value) {
     return GetValueSizeByte(def->ReturnType()) == sizeof(u32);
 }
 
-void PlanWidthComponentOwners(
+void RecipeWidthComponentOwners(
         Block* lir_block,
         backend::RegAlloc* reg_alloc,
         const FeatureSet& features,
@@ -473,13 +433,13 @@ void CoalesceWidthChainBridges(
         if (!features.ra_width_chain && !long_candidate) {
             continue;
         }
-        const bool long_u32_snapshot =
+        const bool long_u32_capture =
                 long_candidate && source.Defined() && source.Def() &&
                 source.Def()->GetOp() == OpCode::GetHostGPR &&
                 GetValueSizeByte(source.Type()) == sizeof(u32);
         if (!source.Defined() ||
             (!HasKnownWWrite(source) && !component_w_write &&
-             !long_u32_snapshot) ||
+             !long_u32_capture) ||
             reg_alloc->ValueType(source) != backend::RegAlloc::GPR ||
             reg_alloc->ValueType(Value{&bridge}) != backend::RegAlloc::GPR ||
             bridge.Id() >= use_end.size() || bridge.GetUses() == 0 ||
@@ -927,7 +887,7 @@ void CoalesceGuestGPRWrites(
         if (width_root && producer->GetOp() == OpCode::GetHostGPR &&
             producer->GetArg<Imm>(0).Get() == target) {
             // Reading and then overwriting the same fixed home needs a
-            // real snapshot. Mapping the read to that home would make
+            // real capture. Mapping the read to that home would make
             // later consumers observe the newly published value.
             continue;
         }
@@ -1392,7 +1352,7 @@ void DumpPinnedHostResidual() {
                       get(g_gethost, GetHostResidual::NoStore) +
                       get(g_gethost, GetHostResidual::Observer) +
                       get(g_gethost, GetHostResidual::Other);
-    std::fprintf(stderr,
+    SVM_DIAG_PRINT(RegisterAllocation,
                  "[svm-sethost-residual] stores=%llu coalesced=%llu already_home=%llu "
                  "partial=%llu narrow=%llu callee_home=%llu other_home=%llu "
                  "no_producer=%llu not_producer=%llu live_ok=%llu live_rewrite=%llu "
@@ -1412,7 +1372,7 @@ void DumpPinnedHostResidual() {
                  static_cast<unsigned long long>(get(g_sethost, SetHostResidual::Conflict)),
                  static_cast<unsigned long long>(get(g_sethost, SetHostResidual::Observer)),
                  static_cast<unsigned long long>(get(g_sethost, SetHostResidual::Other)));
-    std::fprintf(stderr,
+    SVM_DIAG_PRINT(RegisterAllocation,
                  "[svm-gethost-residual] reads=%llu coalesced=%llu callee_home=%llu "
                  "other_home=%llu partial=%llu narrow=%llu no_store=%llu observer=%llu "
                  "other=%llu\n",
@@ -1425,15 +1385,15 @@ void DumpPinnedHostResidual() {
                  static_cast<unsigned long long>(get(g_gethost, GetHostResidual::NoStore)),
                  static_cast<unsigned long long>(get(g_gethost, GetHostResidual::Observer)),
                  static_cast<unsigned long long>(get(g_gethost, GetHostResidual::Other)));
-    std::fputs("[svm-sethost-notprod]", stderr);
+    SVM_DIAG_TEXT(RegisterAllocation, "[svm-sethost-notprod]");
     for (u32 op = 0; op < 256; ++op) {
         const u64 n = g_notprod[op].load(std::memory_order_relaxed);
         if (n == 0) {
             continue;
         }
-        std::fprintf(stderr, " op%u=%llu", op, static_cast<unsigned long long>(n));
+        SVM_DIAG_PRINT(RegisterAllocation, " op%u=%llu", op, static_cast<unsigned long long>(n));
     }
-    std::fputc('\n', stderr);
+    SVM_DIAG_PRINT(RegisterAllocation, "%c", '\n');
 }
 
 void Count(SetHostResidual reason) {
@@ -1657,8 +1617,7 @@ void CensusPinnedHostResidual(
     auto g = [&](GetHostResidual r) {
         return get_local[static_cast<u32>(r)];
     };
-    std::fprintf(
-            stderr,
+    SVM_DIAG_PRINT(RegisterAllocation,
             "[svm-sethost-residual-block] pc=0x%llx stores=%llu coalesced=%llu already_home=%llu "
             "partial=%llu narrow=%llu callee_home=%llu other_home=%llu no_producer=%llu "
             "not_producer=%llu live_ok=%llu live_rewrite=%llu live_helper=%llu conflict=%llu "

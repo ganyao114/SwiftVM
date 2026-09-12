@@ -18,7 +18,7 @@ public:
     friend class X86Core;
 
     // memory_base: guest->host bias for guest address virtualization
-    // (host addr = guest addr + bias); nullptr = identity mapping (default).
+    // (host addr = guest addr + bias); nullptr = direct mapping (default).
     // guest_addr_mask: bounded guest window (Config::guest_addr_mask),
     // 0 = unbounded (legacy).
     static X86Instance *Make(void* memory_base = nullptr, u64 guest_addr_mask = 0);
@@ -94,6 +94,7 @@ public:
     void SignalInterrupt() override;
     void ClearInterrupt() override;
     uint64_t GetSyscallNumber() override;
+    std::function<void()> MakeExecutionTraceDumper() const override;
     ThreadContext64& GetContext();
 
 private:

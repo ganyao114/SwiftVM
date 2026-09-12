@@ -51,7 +51,7 @@ static BENCH_NOINLINE u64_t kernel_int(u64_t iters) {
     return a ^ b;
 }
 
-// Float/vector-dense.  Plain C arrays of 4 doubles / 8 floats so clang emits
+// Float/vector-dense.  Basic C arrays of 4 doubles / 8 floats so clang emits
 // packed SSE2 (addpd/mulpd/addps/mulps) with no intrinsics header; the working
 // set stays in registers.
 static BENCH_NOINLINE u64_t kernel_fp(u64_t iters) {

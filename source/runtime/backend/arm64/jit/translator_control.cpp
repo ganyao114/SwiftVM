@@ -44,13 +44,13 @@ void JitTranslator::RestoreStaticFPRUniforms() {
 }
 
 void JitTranslator::EmitAdvancePC(ir::Inst* inst) {
-    if (backedge_flags_plan && backedge_flags_plan->optimized &&
-        backedge_flags_plan->final_advance == inst) {
+    if (backedge_flags_recipe && backedge_flags_recipe->optimized &&
+        backedge_flags_recipe->final_advance == inst) {
         // This is the last architectural boundary before the proven self/
         // single-cold terminal. Keep the requested NZCV live for the self
         // edge; both cold exits materialize it in their veneers.
-        flags_set = ir::Flags::None;
-        flags_clear = ir::Flags::None;
+        flag_state.flags_set = ir::Flags::None;
+        flag_state.flags_clear = ir::Flags::None;
         return;
     }
     if (!FlagsRegsEnabled()) {
@@ -203,10 +203,10 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
         FlushFlags();
     }
 
-    // Materialize value arguments before taking the register snapshot. In
+    // Materialize value arguments before taking the register capture. In
     // function mode an argument can be RegAlloc::MEM; context.X() then reloads
     // it into a caller-saved scratch register. If that reload happens after
-    // the snapshot and argument setup subsequently reads the register's saved
+    // the capture and argument setup subsequently reads the register's saved
     // slot, it passes the stale pre-reload value to the helper.
     std::vector<XRegister> value_args;
     value_args.reserve(args.size());
@@ -287,7 +287,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     // descriptors explicitly so this correctness boundary does not depend on
     // the allocator mask containing reserved registers.
     for (const auto& desc : context.GetConfig().buffers_static_alloc) {
-        // preserve_all keeps x9-x15. x9 therefore needs no snapshot unless it
+        // preserve_all keeps x9-x15. x9 therefore needs no capture unless it
         // is an argument source; x0-x8 remain caller-saved.
         const u32 last_clobbered = preserves_pinned_state
                 ? 2
@@ -302,7 +302,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
 
     boost::container::small_vector<u32, 18> save_gprs;
     for (u32 code = 0; code <= 17; ++code) {
-        if (live_gprs.Get(code) && helper.RequiresGPRSnapshot(code, argument_gprs.Get(code))) {
+        if (live_gprs.Get(code) && helper.RequiresGPRCapture(code, argument_gprs.Get(code))) {
             save_gprs.push_back(code);
         }
     }
@@ -323,7 +323,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
             }
         }
         for (u32 code = 0; code < 32; ++code) {
-            if (live_fprs.Get(code) && helper.RequiresFPRSnapshot(code)) {
+            if (live_fprs.Get(code) && helper.RequiresFPRCapture(code)) {
                 save_fprs.push_back(code);
             }
         }
@@ -339,20 +339,20 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
         call.calls = 1;
         // Save+restore of the live caller-saved GPR/FPR sets, plus the
         // explicit x29/x30 link pair. Argument loads and the result slot are
-        // call plumbing, not caller-state snapshots, and stay out of this
+        // call plumbing, not caller-state captures, and stay out of this
         // counter by definition.
-        call.snapshot_instructions =
+        call.capture_instructions =
                 2 * ((save_gprs.size() + 1) / 2 +
                      (save_fprs.size() + 1) / 2 + 1);
-        call.snapshot_code_bytes = call.snapshot_instructions * 4;
-        call.snapshot_memory_bytes =
+        call.capture_code_bytes = call.capture_instructions * 4;
+        call.capture_memory_bytes =
                 2 * (save_gprs.size() * sizeof(u64) +
                      save_fprs.size() * sizeof(u128) + 2 * sizeof(u64));
         auto& total = context.GetRAShapeCounters().helpers[static_cast<size_t>(abi)];
         total.calls += call.calls;
-        total.snapshot_instructions += call.snapshot_instructions;
-        total.snapshot_code_bytes += call.snapshot_code_bytes;
-        total.snapshot_memory_bytes += call.snapshot_memory_bytes;
+        total.capture_instructions += call.capture_instructions;
+        total.capture_code_bytes += call.capture_code_bytes;
+        total.capture_memory_bytes += call.capture_memory_bytes;
         if (!lambda.IsValue()) {
             RAShapeRecordHelperTarget(lambda.GetImm().Get(), abi, call);
         }
@@ -378,9 +378,9 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     // sp must stay 16-byte aligned, and the Q accesses below want a 16-byte
     // multiple as their base.
     const u32 kSimdSaveOffset = (cursor + 15u) & ~15u;
-    const u32 kSnapshotSaveBytes =
+    const u32 kCapturesaveBytes =
             (kSimdSaveOffset + u32(save_fprs.size()) * 16u + 15u) & ~15u;
-    const u32 kSaveBytes = kSnapshotSaveBytes;
+    const u32 kSaveBytes = kCapturesaveBytes;
     auto saved_offset = [&](u32 code) -> u32 {
         ASSERT_MSG(code < gpr_slot.size() && gpr_slot[code] >= 0,
                    "host call argument in an unsaved register");
@@ -580,11 +580,11 @@ void JitTranslator::EmitCallLambda(ir::Inst* inst) {
 void JitTranslator::EmitGetOperand(ir::Inst* inst) {
     if (const auto address = MatchPinnedMemoryAddress(inst)) {
         if (address->offset == 0) {
-            pinned_gpr_values.emplace(inst, address->target);
+            pinned_gprs.pinned_gpr_values.emplace(inst, address->target);
             return;
         }
         if (context.IsSpilled(ir::Value{inst})) {
-            spilled_memory_operands.emplace(
+            memory_state.spilled_memory_operands.emplace(
                     inst,
                     SpilledMemoryOperand{address->memory,
                                          XRegister(address->target),
@@ -599,11 +599,11 @@ void JitTranslator::EmitGetOperand(ir::Inst* inst) {
     if (EmitCachedConstAddress(inst, result)) {
         return;
     }
-    if (abs_const_mat && operand.GetRight().Null() && operand.GetLeft().IsImm()) {
+    if (memory_state.abs_const_mat && operand.GetRight().Null() && operand.GetLeft().IsImm()) {
         __ Mov(result, operand.GetLeft().imm.Get());
         return;
     }
-    if ((mem_narrow_fuse || addr_ea_tie) && operand.GetRight().Null() &&
+    if ((memory_state.mem_narrow_fuse || memory_state.addr_ea_tie) && operand.GetRight().Null() &&
         operand.GetLeft().IsValue() && inst->GetUses() == 1 &&
         context.SharesGPR(ir::Value{inst}, operand.GetLeft().value)) {
         bool feeds_memory = false;
@@ -627,7 +627,7 @@ void JitTranslator::EmitGetOperand(ir::Inst* inst) {
             return;
         }
     }
-    if (!mem_narrow_fuse || operand.GetRight().Null()) {
+    if (!memory_state.mem_narrow_fuse || operand.GetRight().Null()) {
         __ Mov(result, EmitOperand(operand));
         return;
     }
@@ -721,7 +721,7 @@ void JitTranslator::EmitSetLocation(ir::Inst* inst) {
     auto location = inst->GetArg<ir::Lambda>(0);
     // Any SetLocation invalidates an earlier constant, including a dynamic one:
     // SetLocation is *not* only emitted just before a terminal (decoder_x87.cc
-    // and decoder_xsave.cc plant the faulting PC mid-block), so a block can
+    // and decoder_xsave.cc place the faulting PC mid-block), so a block can
     // hold a constant SetLocation followed by the `jmp *rax` one -- and reusing
     // the stale constant there would turn an indirect jump into a jump back
     // into the middle of the same block.

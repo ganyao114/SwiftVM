@@ -18,7 +18,7 @@
 //     guest_addr_limit and interp_range_check entirely -- RunLoadMemory's
 //     wild-pointer guard exists precisely because the interpreter has no
 //     signal handler.  Trading a guest-visible fault for a host crash is a
-//     strictly worse deviation than anything the plain-IR route costs.
+//     strictly worse deviation than anything the basic-IR route costs.
 //   * An IR opcode that carried gather's x86-specific baggage -- clearing the
 //     mask register as a side effect, VSIB's index-register-inside-the-SIB-byte
 //     encoding, the partial-completion fault model -- would be an x86
@@ -117,7 +117,7 @@
 // VEX.L and vvvv all come back correct.  ONE encoding needs interpretation
 // rather than a fix:
 //
-//     SIB.index == 100b with VEX.X == 0 is "no index register" under a plain
+//     SIB.index == 100b with VEX.X == 0 is "no index register" under a basic
 //     SIB, and vex_decoder.cc reports index_none = true for it.  Under VSIB
 //     there is no such thing as "no index" -- that encoding names vector
 //     register 4.  The raw bits are recoverable without ambiguity, since
@@ -224,7 +224,7 @@ void X64Decoder::DecodeAvxGatherOp(const VexInsn& v, u32 element_bits, u32 index
 
     // Read every source slot ONCE, before the destination is touched.  #UD
     // guarantees dst is neither the index nor the mask, so nothing below can
-    // invalidate these -- but they must still be materialized up front, since
+    // invalidate these -- but they must still be computed up front, since
     // the destination writes are interleaved with the reads in program order.
     const u32 index_slots = (n * index_bits + 63u) / 64u;
     const u32 mask_slots = (n * element_bits + 63u) / 64u;
@@ -298,7 +298,7 @@ void X64Decoder::DecodeAvxGatherOp(const VexInsn& v, u32 element_bits, u32 index
         }
         if (!is_64bit) {
             // 32-bit addressing: the effective address wraps at 4 GiB.  Also
-            // normalizes the type when the address is a bare scaled index.
+            // adjusts the type when the address is a bare scaled index.
             addr = __ And(addr, ir::Operand{ir::Imm(static_cast<u64>(addr_mask))})
                            .SetType(addr_type);
         }
@@ -369,7 +369,7 @@ bool X64Decoder::DecodeAvxGather(const VexInsn& v) {
     if (!v.vvvv_valid) {
         return false;
     }
-    // SIB.index == 100b with VEX.X == 0 is "no index" for a plain SIB and is
+    // SIB.index == 100b with VEX.X == 0 is "no index" for a basic SIB and is
     // reported as index_none; under VSIB it names vector register 4.  See the
     // header note -- the reconstruction is exact, not a guess.
     const u32 index_reg = v.index_none ? 4u : v.index;

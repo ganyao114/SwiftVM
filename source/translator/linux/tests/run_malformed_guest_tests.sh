@@ -13,7 +13,7 @@
 #
 # Why this shape of test: the defects it covers were never one bad opcode,
 # they were one missing check reached from many opcodes.  Guest memory is a
-# plain bias add (host = guest + bias), so *any* guest address dereferenced
+# basic bias add (host = guest + bias), so *any* guest address dereferenced
 # from host code lands somewhere in the host's address space; the JIT's
 # guest-fault recovery in runtime/backend/runtime.cpp only rewrites faults
 # whose host pc is inside a JIT buffer, so a fault taken in the decoder --
@@ -87,7 +87,7 @@ kill_reason() {   # $1 = stderr file, $2 = process rc; echoes "" when the host s
 #   $1 shape (flat|edge)   $2 payload hex   $3 human-readable name
 check() {
     local shape="$1" payload="$2" name="$3"
-    local elf="$WORK/probe.elf" err="$WORK/probe.err"
+    local elf="$WORK/check.elf" err="$WORK/check.err"
     python3 "$GEN" "$shape" "$payload" -o "$elf" || return 2
     local attempt why=""
     for attempt in 1 2 3; do
@@ -113,7 +113,7 @@ run_case() {
 
 echo "== instruction-length desync (VEX prefix + a legacy opcode) =="
 # The reported case.  distorm sizes "C4 E1 <pp> 9B" as a 4-byte WAIT -- it
-# swallows the VEX bytes as plain prefixes -- so the ModRM byte that follows is
+# swallows the VEX bytes as basic prefixes -- so the ModRM byte that follows is
 # decoded as a fresh instruction.  With CB (RETF) there, the guest returns to
 # whatever the stack held (argc == 1) and the decoder is asked to fetch at
 # guest address 1.  Every VEX map/pp combination is checked: 8 of the 12 used

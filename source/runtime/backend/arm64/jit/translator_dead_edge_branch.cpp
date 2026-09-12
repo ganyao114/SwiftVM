@@ -6,7 +6,7 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-struct ConditionPlan {
+struct ConditionRecipe {
     ir::Flags required{};
     ir::Cond raw_condition{};
     std::unordered_set<ir::Inst*> discarded{};
@@ -17,7 +17,7 @@ ir::Inst* OperandDefinition(const ir::Operand& operand) {
     return value.IsValue() ? value.value.Def() : nullptr;
 }
 
-std::optional<ConditionPlan> AnalyzeCondition(ir::Inst* condition) {
+std::optional<ConditionRecipe> AnalyzeCondition(ir::Inst* condition) {
     if (!condition || condition->GetUses() != 1) {
         return std::nullopt;
     }
@@ -25,12 +25,12 @@ std::optional<ConditionPlan> AnalyzeCondition(ir::Inst* condition) {
         switch (condition->GetArg<ir::Cond>(0)) {
             case ir::Cond::EQ:
             case ir::Cond::NE:
-                return ConditionPlan{ir::Flags::Zero,
+                return ConditionRecipe{ir::Flags::Zero,
                                      condition->GetArg<ir::Cond>(0)};
             case ir::Cond::CS:
-                return ConditionPlan{ir::Flags::Carry, ir::Cond::CC};
+                return ConditionRecipe{ir::Flags::Carry, ir::Cond::CC};
             case ir::Cond::CC:
-                return ConditionPlan{ir::Flags::Carry, ir::Cond::CS};
+                return ConditionRecipe{ir::Flags::Carry, ir::Cond::CS};
             default:
                 return std::nullopt;
         }
@@ -72,12 +72,12 @@ std::optional<ConditionPlan> AnalyzeCondition(ir::Inst* condition) {
         carry_test->GetArg<ir::Flags>(0) != ir::Flags::Carry) {
         return std::nullopt;
     }
-    ConditionPlan plan{ir::Flags::Carry | ir::Flags::Zero,
+    ConditionRecipe recipe{ir::Flags::Carry | ir::Flags::Zero,
                        high ? ir::Cond::HI : ir::Cond::LS};
-    plan.discarded.insert(carry_test);
-    plan.discarded.insert(predicate);
-    plan.discarded.insert(zero_condition);
-    return plan;
+    recipe.discarded.insert(carry_test);
+    recipe.discarded.insert(predicate);
+    recipe.discarded.insert(zero_condition);
+    return recipe;
 }
 
 bool IsPolarityStore(const ir::Inst& inst) {
@@ -118,7 +118,7 @@ bool IsFlagObserver(ir::OpCode op) {
 }  // namespace
 
 void JitTranslator::PrepareDeadEdgeIntegerBranch(ir::Block* block) {
-    dead_edge_integer_branch.reset();
+    flag_state.dead_edge_integer_branch.reset();
 
     if (!block->HasDeadEdgeIntegerBranchProof()) {
         return;
@@ -127,8 +127,8 @@ void JitTranslator::PrepareDeadEdgeIntegerBranch(ir::Block* block) {
     auto terminal = block->GetTerminal();
     auto* branch = boost::get<ir::terminal::If>(&terminal);
     auto* condition = branch ? branch->cond.Def() : nullptr;
-    auto condition_plan = AnalyzeCondition(condition);
-    if (!condition_plan) {
+    auto condition_recipe = AnalyzeCondition(condition);
+    if (!condition_recipe) {
         return;
     }
 
@@ -159,11 +159,11 @@ void JitTranslator::PrepareDeadEdgeIntegerBranch(ir::Block* block) {
         --producer_begin;
     }
 
-    DeadEdgeIntegerBranchPlan plan{
+    DeadEdgeIntegerBranch recipe{
             .condition = condition,
-            .required = condition_plan->required,
-            .raw_condition = condition_plan->raw_condition,
-            .discarded = std::move(condition_plan->discarded),
+            .required = condition_recipe->required,
+            .raw_condition = condition_recipe->raw_condition,
+            .discarded = std::move(condition_recipe->discarded),
     };
     u32 inverts = 0;
     u32 polarity_stores = 0;
@@ -176,30 +176,30 @@ void JitTranslator::PrepareDeadEdgeIntegerBranch(ir::Block* block) {
     };
     for (size_t i = producer_begin; i < condition_index; ++i) {
         auto* inst = instructions[i];
-        if (plan.discarded.contains(inst)) {
+        if (recipe.discarded.contains(inst)) {
             continue;
         }
         switch (inst->GetOp()) {
             case ir::OpCode::SaveFlags: {
-                plan.discarded.insert(inst);
+                recipe.discarded.insert(inst);
                 auto value = inst->GetArg<ir::Value>(0);
                 if (!value.Def() ||
-                    (plan.producer && plan.producer != value.Def())) {
+                    (recipe.producer && recipe.producer != value.Def())) {
                     return;
                 }
                 if (value.Def()->GetOp() != ir::OpCode::Sub) {
                     return;
                 }
-                plan.producer = value.Def();
+                recipe.producer = value.Def();
                 break;
             }
             case ir::OpCode::BranchOnlyFlags: {
-                plan.discarded.insert(inst);
+                recipe.discarded.insert(inst);
                 const auto value = inst->GetArg<ir::Value>(0);
-                if (plan.producer || !value.Def() ||
+                if (recipe.producer || !value.Def() ||
                     value.Def()->GetOp() != ir::OpCode::And ||
-                    plan.required != ir::Flags::Zero ||
-                    !True(inst->GetArg<ir::Flags>(1) & plan.required)) {
+                    recipe.required != ir::Flags::Zero ||
+                    !True(inst->GetArg<ir::Flags>(1) & recipe.required)) {
                     return;
                 }
                 const auto left = value.Def()->GetArg<ir::Value>(0);
@@ -210,24 +210,24 @@ void JitTranslator::PrepareDeadEdgeIntegerBranch(ir::Block* block) {
                             resolve_bitcast(right.GetLeft().value).Def()) {
                     return;
                 }
-                plan.producer = value.Def();
+                recipe.producer = value.Def();
                 zero_value = resolve_bitcast(left);
                 break;
             }
             case ir::OpCode::ClearFlags:
-                plan.discarded.insert(inst);
+                recipe.discarded.insert(inst);
                 break;
             case ir::OpCode::InvertCarry:
                 ++inverts;
-                plan.discarded.insert(inst);
+                recipe.discarded.insert(inst);
                 break;
             case ir::OpCode::StoreUniform:
                 if (IsPolarityStore(*inst)) {
                     ++polarity_stores;
-                    plan.discarded.insert(inst);
+                    recipe.discarded.insert(inst);
                     auto* value = inst->GetArg<ir::Value>(1).Def();
                     if (value && value->GetUses(false) == 1) {
-                        plan.discarded.insert(value);
+                        recipe.discarded.insert(value);
                     }
                 }
                 break;
@@ -240,19 +240,19 @@ void JitTranslator::PrepareDeadEdgeIntegerBranch(ir::Block* block) {
     }
     const bool valid_inverts = zero_value.Defined()
             ? inverts == 0
-            : (plan.required == ir::Flags::Zero ? inverts <= 1 : inverts == 1);
-    if (!plan.producer || !valid_inverts ||
+            : (recipe.required == ir::Flags::Zero ? inverts <= 1 : inverts == 1);
+    if (!recipe.producer || !valid_inverts ||
         polarity_stores > 1 ||
-        plan.producer->Id() >= condition->Id()) {
+        recipe.producer->Id() >= condition->Id()) {
         return;
     }
 
     if (zero_value.Defined()) {
-        const u32 width = ir::GetValueSizeByte(plan.producer->ReturnType());
+        const u32 width = ir::GetValueSizeByte(recipe.producer->ReturnType());
         ir::Inst* publication{};
         u16 target{};
         for (auto* inst : instructions) {
-            if (inst->Id() >= plan.producer->Id() ||
+            if (inst->Id() >= recipe.producer->Id() ||
                 inst->GetOp() != ir::OpCode::SetHostGPR ||
                 inst->GetArg<ir::Imm>(2).Get() != 0 ||
                 ir::GetValueSizeByte(inst->GetArg<ir::Value>(0).Type()) != width ||
@@ -281,18 +281,18 @@ void JitTranslator::PrepareDeadEdgeIntegerBranch(ir::Block* block) {
                 return;
             }
         }
-        plan.zero_target = target;
-        plan.zero_is_64 = width == sizeof(u64);
+        recipe.zero_target = target;
+        recipe.zero_is_64 = width == sizeof(u64);
     }
 
     bool after_producer = false;
     for (size_t i = producer_begin; i < condition_index; ++i) {
         auto* inst = instructions[i];
-        if (inst == plan.producer) {
+        if (inst == recipe.producer) {
             after_producer = true;
             continue;
         }
-        if (!after_producer || plan.discarded.contains(inst)) {
+        if (!after_producer || recipe.discarded.contains(inst)) {
             continue;
         }
         if (!RetainsPendingHostNZCV(*inst) || MayFaultOrObserve(*inst)) {
@@ -300,38 +300,38 @@ void JitTranslator::PrepareDeadEdgeIntegerBranch(ir::Block* block) {
         }
     }
 
-    for (auto* inst : plan.discarded) {
+    for (auto* inst : recipe.discarded) {
         disable_instructions.set(inst->Id());
     }
-    local_conditions.emplace(condition, MapCond(plan.raw_condition));
-    dead_edge_integer_branch = std::move(plan);
+    local_conditions.emplace(condition, MapCond(recipe.raw_condition));
+    flag_state.dead_edge_integer_branch = std::move(recipe);
 }
 
 bool JitTranslator::IsDeadEdgeIntegerBranchProducer(ir::Inst* inst) const {
-    return dead_edge_integer_branch && dead_edge_integer_branch->producer == inst;
+    return flag_state.dead_edge_integer_branch && flag_state.dead_edge_integer_branch->producer == inst;
 }
 
 std::optional<ir::Cond> JitTranslator::DeadEdgeIntegerBranchCondition(
         ir::Inst* inst) const {
-    if (!dead_edge_integer_branch || dead_edge_integer_branch->condition != inst) {
+    if (!flag_state.dead_edge_integer_branch || flag_state.dead_edge_integer_branch->condition != inst) {
         return std::nullopt;
     }
-    return dead_edge_integer_branch->raw_condition;
+    return flag_state.dead_edge_integer_branch->raw_condition;
 }
 
 bool JitTranslator::EmitDeadEdgeZeroBranch(ir::Value condition, Label* label,
                                            bool on_true) {
-    if (!dead_edge_integer_branch ||
-        dead_edge_integer_branch->condition != condition.Def() ||
-        !dead_edge_integer_branch->zero_target) {
+    if (!flag_state.dead_edge_integer_branch ||
+        flag_state.dead_edge_integer_branch->condition != condition.Def() ||
+        !flag_state.dead_edge_integer_branch->zero_target) {
         return false;
     }
-    const auto target = XRegister(*dead_edge_integer_branch->zero_target);
-    const auto value = dead_edge_integer_branch->zero_is_64
+    const auto target = XRegister(*flag_state.dead_edge_integer_branch->zero_target);
+    const auto value = flag_state.dead_edge_integer_branch->zero_is_64
             ? Register{target.X()}
             : Register{target.W()};
     const bool zero_on_true =
-            dead_edge_integer_branch->raw_condition == ir::Cond::EQ;
+            flag_state.dead_edge_integer_branch->raw_condition == ir::Cond::EQ;
     if (zero_on_true == on_true) {
         masm.Cbz(value, label);
     } else {
@@ -340,13 +340,13 @@ bool JitTranslator::EmitDeadEdgeZeroBranch(ir::Value condition, Label* label,
     return true;
 }
 
-std::optional<JitTranslator::DeadNarrowImmediateBranchPlan>
+std::optional<JitTranslator::DeadNarrowImmediateBranch>
 JitTranslator::MatchDeadNarrowImmediateBranch(ir::Inst* inst) const {
     if (!inst || inst->GetOp() != ir::OpCode::Sub || inst->GetUses() != 0 ||
         !IsDeadEdgeIntegerBranchProducer(inst)) {
         return std::nullopt;
     }
-    const auto required = dead_edge_integer_branch->required;
+    const auto required = flag_state.dead_edge_integer_branch->required;
     if (required != ir::Flags::Zero && required != ir::Flags::Carry &&
         required != (ir::Flags::Carry | ir::Flags::Zero)) {
         return std::nullopt;
@@ -370,7 +370,7 @@ JitTranslator::MatchDeadNarrowImmediateBranch(ir::Inst* inst) const {
     if (!masm.IsImmAddSub(immediate)) {
         return std::nullopt;
     }
-    return DeadNarrowImmediateBranchPlan{
+    return DeadNarrowImmediateBranch{
             .producer = inst,
             .immediate_load = load,
             .immediate = immediate,
@@ -380,15 +380,15 @@ JitTranslator::MatchDeadNarrowImmediateBranch(ir::Inst* inst) const {
 }
 
 void JitTranslator::PrepareDeadNarrowImmediateBranch() {
-    dead_narrow_immediate_branch.reset();
-    if (!dead_edge_integer_branch) {
+    flag_state.dead_narrow_immediate_branch.reset();
+    if (!flag_state.dead_edge_integer_branch) {
         return;
     }
-    dead_narrow_immediate_branch =
-            MatchDeadNarrowImmediateBranch(dead_edge_integer_branch->producer);
-    if (dead_narrow_immediate_branch) {
+    flag_state.dead_narrow_immediate_branch =
+            MatchDeadNarrowImmediateBranch(flag_state.dead_edge_integer_branch->producer);
+    if (flag_state.dead_narrow_immediate_branch) {
         disable_instructions.set(
-                dead_narrow_immediate_branch->immediate_load->Id());
+                flag_state.dead_narrow_immediate_branch->immediate_load->Id());
     }
 }
 

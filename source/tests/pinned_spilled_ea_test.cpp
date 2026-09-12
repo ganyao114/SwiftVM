@@ -1,3 +1,4 @@
+#include "support/register_alloc_test_support.h"
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -48,7 +49,7 @@ std::vector<std::string> Emit(SpilledEaBlock input, bool biased) {
     const GPRSMask gprs{~((1u << 6) - 1u)};
     const FPRSMask fprs{~((1u << 8) - 1u)};
     RegAlloc alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
-    RegisterAllocPass::RunForSpillEvictTest(input.block.get(), &alloc, false);
+    RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &alloc, false);
     REQUIRE(alloc.ValueType(input.address) == RegAlloc::MEM);
 
     Config config{
@@ -92,10 +93,10 @@ bool Contains(const std::vector<std::string>& instructions,
 }  // namespace
 
 TEST_CASE("spilled pinned-base EA materializes at its memory consumer") {
-    const auto identity = Emit(MakeSpilledEaBlock(), false);
+    const auto direct = Emit(MakeSpilledEaBlock(), false);
     const auto biased = Emit(MakeSpilledEaBlock(), true);
 
-    REQUIRE(Contains(identity, "[x6, #24]"));
+    REQUIRE(Contains(direct, "[x6, #24]"));
     REQUIRE(Contains(biased, "add x10, x6, #0x18 (24)"));
     REQUIRE(Contains(biased, "[x10, x24]"));
 }

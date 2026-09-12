@@ -1,12 +1,11 @@
+#include "runtime/backend/reg_alloc.h"
 #include "translator.h"
 
 namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool IsPinnedGPR(u32 index) {
-    return index <= 9 || (index >= 19 && index <= 23) || index == 29;
-}
+using ::swift::runtime::backend::IsFixedGPRHome;
 
 ir::Value ResolveBitCast(ir::Value value) {
     while (value.Defined() && value.Def()->IsBitCastOperation()) {
@@ -36,7 +35,7 @@ std::optional<s64> ImmediateValue(const ir::Operand& operand) {
 
 std::optional<JitTranslator::PinnedLoadUpdate>
 JitTranslator::MatchPinnedLoadUpdate(ir::Inst* update) {
-    if (use_memory_base || !update || update->GetOp() != ir::OpCode::Add ||
+    if (memory_state.use_memory_base || !update || update->GetOp() != ir::OpCode::Add ||
         update->ReturnType() != ir::ValueType::U64 ||
         !GetPseudoFlags(update).Null()) {
         return std::nullopt;
@@ -50,7 +49,7 @@ JitTranslator::MatchPinnedLoadUpdate(ir::Inst* update) {
         return std::nullopt;
     }
     const u32 target = base_read->GetArg<ir::Imm>(0).Get();
-    if (!IsPinnedGPR(target) || base_read->GetUses(false) != 2) {
+    if (!IsFixedGPRHome(target) || base_read->GetUses(false) != 2) {
         return std::nullopt;
     }
 
@@ -134,17 +133,15 @@ JitTranslator::MatchPinnedLoadUpdate(ir::Inst* update) {
 }
 
 void JitTranslator::PreparePinnedLoadUpdates(ir::Block* block) {
-    pinned_load_updates.clear();
-    pinned_load_update_instructions.clear();
     for (auto& inst : block->GetInstList()) {
-        auto plan = MatchPinnedLoadUpdate(&inst);
-        if (!plan) {
+        auto candidate = MatchPinnedLoadUpdate(&inst);
+        if (!candidate) {
             continue;
         }
-        fused_pin_gpr_reads.emplace(plan->base_read, plan->target);
-        pinned_load_updates.emplace(plan->load, *plan);
-        pinned_load_update_instructions.emplace(plan->update, *plan);
-        pinned_load_update_instructions.emplace(plan->publication, *plan);
+        pinned_gprs.fused_pin_gpr_reads.emplace(candidate->base_read, candidate->target);
+        pinned_gprs.pinned_load_updates.emplace(candidate->load, *candidate);
+        pinned_gprs.pinned_load_update_instructions.emplace(candidate->update, *candidate);
+        pinned_gprs.pinned_load_update_instructions.emplace(candidate->publication, *candidate);
     }
 }
 

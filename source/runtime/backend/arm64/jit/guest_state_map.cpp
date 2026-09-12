@@ -13,8 +13,8 @@ void GuestStateMap::Analyze(ir::Block* next_block,
         found != function_entry_width_facts.end()) {
         block_entry_width_facts = found->second;
     }
-    fault_snapshot_values.clear();
-    fault_width_snapshots.clear();
+    fault_capture_values.clear();
+    fault_width_captures.clear();
     fixed_home_uses.clear();
     fixed_home_use_counts.clear();
     registered_fixed_home_uses.clear();
@@ -65,7 +65,7 @@ bool GuestStateMap::PublicationWindowSafe(
             return false;
         }
         if (MayFaultOrObserve(inst) &&
-            !FaultSnapshotContains(
+            !FaultCaptureContains(
                     inst, home, early_value.Def(),
                     ir::GetValueSizeByte(early_value.Type()) <= sizeof(u32))) {
             return false;

@@ -223,7 +223,7 @@ void CFGAnalysisPass::ComputeDominanceInformation(HIRFunction* hir_function) {
 // HIRBlock*, and it read past the end of the object once
 // `length > sizeof(HIRBlock)/8` (21 on this build, sizeof(HIRBlock) == 168).
 //
-// MEASURED, before deleting it, with a probe on the reconstructed call:
+// MEASURED, before deleting it, with a check on the reconstructed call:
 // across the whole swift_test suite the body ran EXACTLY ONCE, for a 3-block
 // loop -- 24 bytes read from a 168-byte object, i.e. type-confused garbage
 // that stayed inside the object -- and it ran ZERO times over eight guest

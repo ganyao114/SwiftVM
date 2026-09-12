@@ -96,7 +96,7 @@ void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
         return;
     }
     // Guest address virtualization: state.pt carries the guest->host bias
-    // (host = guest + bias); it is 0 for identity mapping.
+    // (host = guest + bias); it is 0 for direct mapping.
     const auto* ptr =
             reinterpret_cast<const void*>(guest_addr + reinterpret_cast<uintptr_t>(state.pt));
     if (IsVector(type)) {
@@ -143,15 +143,15 @@ void Interpreter::RunStoreMemory(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunLoadMemoryTSO(ir::Inst* inst, InterpStack& stack) {
     // TSO ordering is only observable with multiple concurrent guest threads;
     // the interpreter executes one guest thread on one host thread, so a TSO
-    // load is semantically identical to a plain load here (the JIT provides
-    // the ordering with plain load + dmb ishld — see
+    // load is semantically identical to a basic load here (the JIT provides
+    // the ordering with basic load + dmb ishld — see
     // JitTranslator::EmitLoadMemoryTSO).
     RunLoadMemory(inst, stack);
 }
 
 void Interpreter::RunStoreMemoryTSO(ir::Inst* inst, InterpStack& stack) {
     // See RunLoadMemoryTSO: single-threaded execution makes the release
-    // ordering unobservable, so TSO stores degrade to plain stores.
+    // ordering unobservable, so TSO stores degrade to basic stores.
     RunStoreMemory(inst, stack);
 }
 
@@ -160,7 +160,7 @@ void Interpreter::RunMemoryCopy(ir::Inst* inst, InterpStack& stack) {
     auto src = inst->GetArg<ir::Lambda>(1);
     const u64 size = inst->GetArg<ir::Imm>(2).Get();
     // The lambdas evaluate to guest addresses; apply the pt bias (0 for
-    // identity mapping).
+    // direct mapping).
     const auto bias = reinterpret_cast<uintptr_t>(state.pt);
     const auto mask = state.guest_addr_mask;
     std::memmove(reinterpret_cast<void*>((EvalLambda(stack, dst) & mask) + bias),

@@ -208,7 +208,7 @@ static void build_cases(void) {
     // EVERY pairwise product has a remainder below the precision, and every
     // order cancels, because each of A*B + C, A*C + B and C*B + A is
     // (something near 1) minus (something near 1).  The sign of C then selects
-    // between the two halves of the sign flags: with C negative the plain
+    // between the two halves of the sign flags: with C negative the basic
     // "+ addend" mnemonics cancel (vfmadd, vfnmsub), with C positive the
     // subtracting ones do (vfmsub, vfnmadd), and the addsub pair needs one of
     // each on adjacent lanes.  So the sign alternates lane by lane, and the

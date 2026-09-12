@@ -127,7 +127,7 @@ JitTranslator::MatchPinnedMemoryAddress(ir::Inst* address) const {
         return std::nullopt;
     }
 
-    if (offset != 0 && !use_memory_base) {
+    if (offset != 0 && !memory_state.use_memory_base) {
         const auto type = memory->GetOp() == ir::OpCode::LoadMemory
                 ? memory->ReturnType()
                 : memory->GetArg<ir::Value>(1).Type();
@@ -215,11 +215,11 @@ std::optional<u16> JitTranslator::MatchPinnedMemoryValue(ir::Inst* extract) cons
 }
 
 void JitTranslator::PreparePinnedMemoryValues(ir::Block* block) {
-    pinned_memory_values.clear();
+    memory_state.pinned_memory_values.clear();
     for (auto& inst : block->GetInstList()) {
         if (auto target = MatchPinnedMemoryValue(&inst)) {
-            pinned_memory_values.emplace(&inst, *target);
-            fused_pin_gpr_reads.emplace(&inst, *target);
+            memory_state.pinned_memory_values.emplace(&inst, *target);
+            pinned_gprs.fused_pin_gpr_reads.emplace(&inst, *target);
         }
     }
 }

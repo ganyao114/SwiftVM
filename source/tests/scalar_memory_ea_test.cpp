@@ -29,7 +29,7 @@ public:
 
 template <std::size_t Size>
 std::vector<Operand> DecodeMemoryOperands(
-        const std::array<swift::u8, Size>& code, bool identity) {
+        const std::array<swift::u8, Size>& code, bool direct) {
     const auto address = reinterpret_cast<swift::VAddr>(code.data());
     DirectMemory memory;
     Block block{0, Location{address}};
@@ -40,7 +40,7 @@ std::vector<Operand> DecodeMemoryOperands(
                                    true,
                                    swift::x86::Arm64Features::None,
                                    false,
-                                   identity,
+                                   direct,
                                    FeatureSet{}};
     decoder.Decode();
 
@@ -53,7 +53,7 @@ std::vector<Operand> DecodeMemoryOperands(
     return operands;
 }
 
-std::vector<Operand> DecodeScalarMemoryOperands(bool identity) {
+std::vector<Operand> DecodeScalarMemoryOperands(bool direct) {
     return DecodeMemoryOperands(
             std::array<swift::u8, 16>{
                     0xf2, 0x0f, 0x10, 0x48, 0x08,
@@ -61,26 +61,26 @@ std::vector<Operand> DecodeScalarMemoryOperands(bool identity) {
                     0xf2, 0x0f, 0x11, 0x48, 0x18,
                     0xf4,
             },
-            identity);
+            direct);
 }
 
 }  // namespace
 
-TEST_CASE("scalar SSE memory operands remain composite in identity mode") {
-    const auto identity = DecodeScalarMemoryOperands(true);
+TEST_CASE("scalar SSE memory operands remain composite in direct mode") {
+    const auto direct = DecodeScalarMemoryOperands(true);
     const auto biased = DecodeScalarMemoryOperands(false);
 
-    REQUIRE(identity.size() == 3);
+    REQUIRE(direct.size() == 3);
     REQUIRE(biased.size() == 3);
     if (GetSvmConfig().addr_ea_tie) {
-        for (std::size_t i = 0; i < identity.size(); ++i) {
-            REQUIRE(identity[i].GetOp() == OperandOp::Plus);
-            REQUIRE(identity[i].GetLeft().IsValue());
-            REQUIRE(identity[i].GetRight().IsImm());
-            REQUIRE(identity[i].GetRight().imm.Get() == (i + 1) * 8);
+        for (std::size_t i = 0; i < direct.size(); ++i) {
+            REQUIRE(direct[i].GetOp() == OperandOp::Plus);
+            REQUIRE(direct[i].GetLeft().IsValue());
+            REQUIRE(direct[i].GetRight().IsImm());
+            REQUIRE(direct[i].GetRight().imm.Get() == (i + 1) * 8);
         }
     } else {
-        for (const auto& operand : identity) {
+        for (const auto& operand : direct) {
             REQUIRE(operand.GetRight().Null());
         }
     }

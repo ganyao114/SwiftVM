@@ -1,5 +1,7 @@
+#include "base/logging.h"
 #include "register_alloc_spill_reload.h"
 
+#include <cstdio>
 #include <functional>
 #include <map>
 
@@ -193,7 +195,7 @@ std::optional<u16> FindRegionRegister(const Vector<Inst*>& instructions,
     return std::nullopt;
 }
 
-bool TryPlanLoadMemoryOwnershipPair(
+bool TryRecipeLoadMemoryOwnershipPair(
         const Vector<Inst*>& instructions,
         const Terminal& terminal,
         u32 input_id,
@@ -203,7 +205,7 @@ bool TryPlanLoadMemoryOwnershipPair(
         const std::map<u32, bool>& transferable_uses,
         backend::RegAlloc* reg_alloc,
         const FeatureSet& features,
-        Vector<u32>& planned_values) {
+        Vector<u32>& prepared_values) {
     if (input_positions.size() != 1) {
         return false;
     }
@@ -240,8 +242,8 @@ bool TryPlanLoadMemoryOwnershipPair(
         !result_transferable->second ||
         consumer->GetUses(false) != result_count->second ||
         TerminalUsesValue(terminal, result_id, *reg_alloc) ||
-        std::find(planned_values.begin(), planned_values.end(), result_id) !=
-                planned_values.end()) {
+        std::find(prepared_values.begin(), prepared_values.end(), result_id) !=
+                prepared_values.end()) {
         return false;
     }
 
@@ -263,14 +265,33 @@ bool TryPlanLoadMemoryOwnershipPair(
     reg_alloc->MapSpillReload(result_id, consumer->Id(),
                               instructions[result_positions->second.back()]->Id(),
                               HostGPR{*result_reg}, true);
-    planned_values.push_back(result_id);
+    prepared_values.push_back(result_id);
     return true;
 }
 
-void PlanSegment(const Vector<Inst*>& instructions,
+static HIRBlock* FindInstBlock(HIRFunction* function, const Inst* inst) {
+    if (!function || !inst) return nullptr;
+    for (auto* hb : function->GetHIRBlocks()) {
+        for (auto& i : hb->GetBlock()->GetInstList()) {
+            if (&i == inst) return hb;
+        }
+    }
+    return nullptr;
+}
+
+static bool InRPO(HIRFunction* function, const HIRBlock* target) {
+    if (!function || !target) return false;
+    for (auto& hb : function->GetHIRBlocksRPO()) {
+        if (&hb == target) return true;
+    }
+    return false;
+}
+
+void Recipesegment(const Vector<Inst*>& instructions,
                  const Terminal& terminal,
                  backend::RegAlloc* reg_alloc,
-                 const FeatureSet& features) {
+                 const FeatureSet& features,
+                 HIRFunction* function = nullptr) {
     std::map<u32, Vector<size_t>> uses;
     std::map<u32, u32> use_counts;
     std::map<u32, bool> transferable_uses;
@@ -282,6 +303,21 @@ void PlanSegment(const Vector<Inst*>& instructions,
         }
         StackVector<u32, 8> counted{};
         for (auto value : inst->GetValues()) {
+            if (value.Defined() && value.Id() >= reg_alloc->MapCount()) {
+                auto* d = value.Def();
+                auto* db = FindInstBlock(function, d);
+                SVM_DIAG_PRINT(RegisterAllocation,
+                             "[OOB-RECIPE] use_op=%u vid=%u def_op=%u defblk=%p defblk_oid=%u "
+                             "defblk_in_rpo=%d defblk_in_edges=%u defblk_out_edges=%u size=%u\n",
+                             (unsigned)inst->GetOp(), (unsigned)value.Id(),
+                             d ? (unsigned)d->GetOp() : 0xffffu,
+                             (void*)db,
+                             db ? (unsigned)db->GetOrderId() : 0xffffu,
+                             db ? (int)InRPO(function, db) : -1,
+                             db ? (unsigned)db->GetIncomingEdges().size() : 0xffffu,
+                             db ? (unsigned)db->GetOutgoingEdges().size() : 0xffffu,
+                             (unsigned)reg_alloc->MapCount());
+            }
             if (!value.Defined() || reg_alloc->ValueType(value) != backend::RegAlloc::MEM) {
                 continue;
             }
@@ -297,6 +333,21 @@ void PlanSegment(const Vector<Inst*>& instructions,
             uses[value_id].push_back(i);
         }
         for (auto value : inst->GetValues()) {
+            if (value.Defined() && value.Id() >= reg_alloc->MapCount()) {
+                auto* d = value.Def();
+                auto* db = FindInstBlock(function, d);
+                SVM_DIAG_PRINT(RegisterAllocation,
+                             "[OOB-RECIPE2] use_op=%u vid=%u def_op=%u defblk=%p defblk_oid=%u "
+                             "defblk_in_rpo=%d defblk_in_edges=%u defblk_out_edges=%u size=%u\n",
+                             (unsigned)inst->GetOp(), (unsigned)value.Id(),
+                             d ? (unsigned)d->GetOp() : 0xffffu,
+                             (void*)db,
+                             db ? (unsigned)db->GetOrderId() : 0xffffu,
+                             db ? (int)InRPO(function, db) : -1,
+                             db ? (unsigned)db->GetIncomingEdges().size() : 0xffffu,
+                             db ? (unsigned)db->GetOutgoingEdges().size() : 0xffffu,
+                             (unsigned)reg_alloc->MapCount());
+            }
             if (value.Defined() &&
                 reg_alloc->ValueType(value) == backend::RegAlloc::MEM &&
                 !IsFloatValueType(ResolveBitCastSource(value).Type())) {
@@ -310,16 +361,16 @@ void PlanSegment(const Vector<Inst*>& instructions,
         }
     }
 
-    Vector<u32> planned_values;
+    Vector<u32> prepared_values;
     for (auto& [value_id, positions] : uses) {
-        if (std::find(planned_values.begin(), planned_values.end(), value_id) !=
-            planned_values.end()) {
+        if (std::find(prepared_values.begin(), prepared_values.end(), value_id) !=
+            prepared_values.end()) {
             continue;
         }
-        if (TryPlanLoadMemoryOwnershipPair(
+        if (TryRecipeLoadMemoryOwnershipPair(
                     instructions, terminal, value_id, positions, uses,
                     use_counts, transferable_uses, reg_alloc, features,
-                    planned_values)) {
+                    prepared_values)) {
             continue;
         }
         auto definition = std::find_if(instructions.begin(), instructions.end(),
@@ -379,11 +430,12 @@ void PlanSegment(const Vector<Inst*>& instructions,
     }
 }
 
-void PlanBlock(Block* block, backend::RegAlloc* reg_alloc, const FeatureSet& features) {
+void RecipeBlock(Block* block, backend::RegAlloc* reg_alloc, const FeatureSet& features,
+               HIRFunction* function = nullptr) {
     Vector<Inst*> segment;
     auto flush = [&] {
         if (!segment.empty()) {
-            PlanSegment(segment, block->GetTerminal(), reg_alloc, features);
+            Recipesegment(segment, block->GetTerminal(), reg_alloc, features, function);
             segment.clear();
         }
     };
@@ -399,18 +451,18 @@ void PlanBlock(Block* block, backend::RegAlloc* reg_alloc, const FeatureSet& fea
 
 }  // namespace
 
-void PlanSpillReloadRegions(HIRFunction* function,
+void RecipespillReloadRegions(HIRFunction* function,
                             backend::RegAlloc* reg_alloc,
                             const FeatureSet& features) {
-    for (auto* hir_block : function->GetHIRBlocks()) {
-        PlanBlock(hir_block->GetBlock(), reg_alloc, features);
+    for (auto& hir_block : function->GetHIRBlocksRPO()) {
+        RecipeBlock(hir_block.GetBlock(), reg_alloc, features, function);
     }
 }
 
-void PlanSpillReloadRegions(Block* block,
+void RecipespillReloadRegions(Block* block,
                             backend::RegAlloc* reg_alloc,
                             const FeatureSet& features) {
-    PlanBlock(block, reg_alloc, features);
+    RecipeBlock(block, reg_alloc, features);
 }
 
 }  // namespace swift::runtime::ir

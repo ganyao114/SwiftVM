@@ -5,11 +5,14 @@ Inputs:
   --svm   a `SVM_RA_HOT_COALESCE` log carrying `[svm-hot-all] pc entries host_static`
   --fex   a FEX stderr capture with `[fex-blockstat] rip guest_bytes guest_inst host_inst`
 
+This is a code-range structure estimate, not a dynamic-work or speed comparison.
+The input does not carry matched FEX execution counts. Grouping SwiftVM roots
+can also include guest instructions that a particular entry does not execute.
+
 Join rule: every SwiftVM unit pc falls into the tightest FEX block whose
-[rip, rip+guest_bytes) span contains it. Per FEX block we compare the block's
-host_inst against the sum of the covered SwiftVM units' host_static, weighted by
-the covered SwiftVM entries. This avoids needing per-unit guest_inst: the guest
-range is identical for both sides of a block.
+[rip, rip+guest_bytes) span contains it. Report static code volume separately
+from SwiftVM's per-code entry-weighted static count. Neither metric proves
+equal guest work, and no FEX execution count is inferred from SwiftVM entries.
 """
 
 from __future__ import annotations
@@ -19,36 +22,11 @@ import bisect
 import re
 import sys
 
-SVM_LINE = re.compile(
-    r"\[svm-hot-all\]\s+pc=(0x[0-9a-f]+)\s+versions=(\d+)\s+entries=(\d+)\s+"
-    r"host_bytes=(\d+)\s+host_static=(\d+)"
-)
-FEX_LINE = re.compile(
-    r"\[fex-blockstat\]\s+rip=(0x[0-9a-f]+)\s+guest_bytes=(\d+)\s+"
-    r"guest_inst=(\d+)\s+host_inst=(\d+)"
-)
-
-
-def parse_svm(path: str) -> dict[int, tuple[int, int]]:
-    units: dict[int, list[int]] = {}
-    for line in open(path, errors="replace"):
-        m = SVM_LINE.search(line)
-        if not m:
-            continue
-        pc = int(m.group(1), 16)
-        entries = int(m.group(3))
-        host = int(m.group(5))
-        units.setdefault(pc, []).append((entries, host))
-    # same-pc duplicates: keep max host_static, sum entries
-    return {pc: (sum(e for e, _ in v), max(h for _, h in v)) for pc, v in units.items()}
+from hot_records import load_hot, read_fields
 
 
 GAP_LINE = re.compile(
     r"\[svm-gap-op\]\s+(?:unit=(0x[0-9a-f]+)\s+)?block=(0x[0-9a-f]+)\s+guest_pc=(0x[0-9a-f]+)"
-)
-GAP_BLOCK = re.compile(
-    r"\[svm-gap-block\]\s+unit=(0x[0-9a-f]+)\s+block=(0x[0-9a-f]+)\s+"
-    r"bytes=(\d+)\s+insts=(\d+)"
 )
 
 
@@ -59,43 +37,38 @@ def parse_gap_members(path: str) -> dict[int, set[int]]:
     only name the IR block, so `block=` is the fallback key.
     """
     members: dict[int, set[int]] = {}
-    try:
-        handle = open(path, "rb")
-    except OSError:
-        return members
-    for raw in handle:
-        m = GAP_LINE.search(raw.decode("utf-8", "replace"))
-        if not m:
-            continue
-        key = int(m.group(1) or m.group(2), 16)
-        members.setdefault(key, set()).add(int(m.group(3), 16))
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            if "[svm-gap-op]" not in line:
+                continue
+            m = GAP_LINE.search(line)
+            if not m:
+                raise ValueError("incomplete guest membership record")
+            key = int(m.group(1) or m.group(2), 16)
+            members.setdefault(key, set()).add(int(m.group(3), 16))
+    if not members:
+        raise ValueError("no guest membership records")
     return members
-
-
-def parse_gap_blocks(path: str) -> dict[int, int]:
-    """Per IR-block pc -> decoded guest instruction count (authoritative)."""
-    insts: dict[int, int] = {}
-    try:
-        handle = open(path, "rb")
-    except OSError:
-        return insts
-    for raw in handle:
-        m = GAP_BLOCK.search(raw.decode("utf-8", "replace"))
-        if m:
-            insts[int(m.group(2), 16)] = int(m.group(4))
-    return insts
 
 
 def parse_fex(path: str) -> list[tuple[int, int, int, int]]:
     blocks: dict[int, tuple[int, int, int]] = {}
-    for line in open(path, errors="replace"):
-        m = FEX_LINE.search(line)
-        if not m:
-            continue
-        rip = int(m.group(1), 16)
-        blocks[rip] = (int(m.group(2)), int(m.group(3)), int(m.group(4)))
-    out = [(rip, *vals) for rip, vals in sorted(blocks.items())]
-    return out
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            if "[fex-blockstat]" not in line:
+                continue
+            fields = read_fields(line, "[fex-blockstat]",
+                                 ('rip', 'guest_bytes', 'guest_inst', 'host_inst'))
+            rip = fields['rip']
+            shape = tuple(fields[name] for name in ('guest_bytes', 'guest_inst', 'host_inst'))
+            if not all(shape) or rip + shape[0] > 1 << 64:
+                raise ValueError(f"invalid FEX code extent at {rip:#x}")
+            if rip in blocks and blocks[rip] != shape:
+                raise ValueError(f"conflicting FEX code versions at {rip:#x}")
+            blocks[rip] = shape
+    if not blocks:
+        raise ValueError("no FEX block records")
+    return [(rip, *vals) for rip, vals in sorted(blocks.items())]
 
 
 def main() -> int:
@@ -104,38 +77,29 @@ def main() -> int:
     ap.add_argument("--fex", required=True)
     ap.add_argument("--gap", help="SVM_DENSITY_PROF stderr for member guest PCs")
     ap.add_argument("--top", type=int, default=25)
+    ap.add_argument("--min-coverage", type=float, default=99.9)
     args = ap.parse_args()
 
-    svm = parse_svm(args.svm)
+    if args.top < 0 or not 0 <= args.min_coverage <= 100:
+        raise ValueError("invalid --top or --min-coverage")
+    svm = load_hot(args.svm)
     members = parse_gap_members(args.gap) if args.gap else {}
-    block_insts = parse_gap_blocks(args.gap) if args.gap else {}
     fex = parse_fex(args.fex)
-    if not svm or not fex:
-        print("missing input data", file=sys.stderr)
-        return 2
 
     starts = [b[0] for b in fex]
-    ends = [b[0] + b[1] for b in fex]
 
-    # block -> [svm_host_sum, covered_entries, covered_pcs]
+    # block -> [static code volume, entries, unit count, per-code weighted count]
     per_block: dict[int, list[int]] = {}
     uncovered_entries = 0
     uncovered_host = 0
-    total_entries = sum(e for e, _ in svm.values())
-    total_svm_host = sum(e * h for e, h in svm.values())
+    total_entries = sum(unit.entries for unit in svm.values())
+    total_svm_host = sum(unit.weighted_host() for unit in svm.values())
+    if not total_entries or not total_svm_host:
+        raise ValueError("no executed SwiftVM code in capture")
 
     max_span = max(b[1] for b in fex)
 
-    # doc-formula per-PC join: each svm pc carries guest_inst = its member
-    # count (when --gap is given); the containing FEX block contributes
-    # host_inst/guest_inst weighted by the pc's entries.
-    pc_num = 0  # sum_p e_p * svm_host(p)
-    pc_den_g = 0  # sum_p e_p * svm_guest_inst(p)
-    pc_fex_num = 0  # sum_p e_p * fex host_inst(B(p))
-    pc_fex_den = 0  # sum_p e_p * fex guest_inst(B(p))
-    pc_gap_missing = 0
-
-    for pc, (entries, host) in svm.items():
+    for pc, unit in svm.items():
         # candidate blocks: any [rip, rip+bytes) containing pc -> find tightest
         best = -1
         best_span = 1 << 62
@@ -144,28 +108,21 @@ def main() -> int:
             rip, gbytes, ginst, hinst = fex[j]
             if rip < pc - max_span:
                 break  # starts decrease; no earlier block can reach pc
-            if gbytes > pc - rip and gbytes < best_span:
+            contains_members = not args.gap or (
+                pc in members and all(rip <= member < rip + gbytes for member in members[pc]))
+            if gbytes > pc - rip and gbytes < best_span and contains_members:
                 best_span = gbytes
                 best = j
             j -= 1
         if best < 0:
-            uncovered_entries += entries
-            uncovered_host += entries * host
+            uncovered_entries += unit.entries
+            uncovered_host += unit.weighted_host()
             continue
-        rip, gbytes, ginst, hinst = fex[best]
-        rec = per_block.setdefault(best, [0, 0, 0])
-        rec[0] += host
-        rec[1] += entries
+        rec = per_block.setdefault(best, [0, 0, 0, 0])
+        rec[0] += unit.host_static
+        rec[1] += unit.entries
         rec[2] += 1
-        if members or block_insts:
-            g = block_insts.get(pc, 0) or len(members.get(pc, ()))
-            if g == 0:
-                pc_gap_missing += 1
-                continue
-            pc_num += entries * host
-            pc_den_g += entries * g
-            pc_fex_num += entries * hinst
-            pc_fex_den += entries * ginst
+        rec[3] += unit.weighted_host()
 
     covered_entries = total_entries - uncovered_entries
     covered_svm_host = total_svm_host - uncovered_host
@@ -175,45 +132,35 @@ def main() -> int:
     static_fex = sum(fex[i][3] for i in per_block)
     static_fex_guest = sum(fex[i][2] for i in per_block)
 
-    num = 0  # sum_b e_b * svm_host_b
-    den = 0  # sum_b e_b * fex_host_b
-    fex_guest_w = 0
-    svm_guest_w = 0
     rows = []
-    for idx, (svm_host_sum, entries, npcs) in per_block.items():
+    for idx, (svm_host_sum, entries, npcs, weighted) in per_block.items():
         rip, gbytes, ginst, hinst = fex[idx]
-        num += entries * svm_host_sum
-        den += entries * hinst
-        fex_guest_w += entries * ginst
-        rows.append((entries * (svm_host_sum - hinst), rip, svm_host_sum, hinst,
-                     entries, npcs, ginst))
+        rows.append((svm_host_sum - hinst, rip, svm_host_sum, hinst,
+                     entries, npcs, weighted))
 
-    ratio = num / den if den else float("nan")
+    entry_coverage = 100.0 * covered_entries / total_entries
+    host_coverage = 100.0 * covered_svm_host / total_svm_host
     print(f"svm_pcs={len(svm)} fex_blocks={len(fex)} matched_blocks={len(per_block)}")
-    print(f"entry_coverage={100.0 * covered_entries / total_entries:.6f}% "
-          f"svm_host_coverage={100.0 * covered_svm_host / total_svm_host:.6f}%")
-    print(f"weighted: svm_host={num} fex_host={den} svm/fex={ratio:.6f}")
-    print(f"weighted guest_inst (fex-side reference)={fex_guest_w}")
-    print(f"equiv blow-up svm={num / max(1, fex_guest_w):.4f} "
-          f"fex={den / max(1, fex_guest_w):.4f} host/guest-inst")
+    print(f"entry_coverage={entry_coverage:.6f}% svm_host_coverage={host_coverage:.6f}%")
+    print("comparison_kind=range_volume_estimate; not dynamic-work or speed ratios")
+    print(f"entry_weighted_static: svm={covered_svm_host} total={total_svm_host} "
+          f"uncovered={uncovered_host}; not executed instruction counts")
     print(f"static: svm_host={static_svm} fex_host={static_fex} "
           f"svm/fex={static_svm / max(1, static_fex):.6f} "
           f"(guest_inst={static_fex_guest})")
-    if members:
-        print(
-            f"per-pc join (gap members): svm={pc_num / max(1, pc_den_g):.6f} "
-            f"fex={pc_fex_num / max(1, pc_fex_den):.6f} host/guest-inst, "
-            f"ratio={pc_num / max(1, pc_den_g) / (pc_fex_num / max(1, pc_fex_den)):.6f} "
-            f"no-member-pcs={pc_gap_missing}"
-        )
-
     rows.sort(key=lambda r: -r[0])
-    print(f"\ntop positive gaps (svm_host_sum - fex_host_inst, entries-weighted):")
-    for delta_w, rip, sh, fh, e, npcs, ginst in rows[: args.top]:
-        print(f"  0x{rip:x} svm={sh} fex={fh} +{sh - fh} "
-              f"entries={e} weighted=+{delta_w} pcs={npcs} guest_inst={ginst}")
-    return 0
+    print("\nLargest static range differences:")
+    for delta, rip, sh, fh, entries, npcs, weighted in rows[: args.top]:
+        print(f"  0x{rip:x} svm={sh} fex={fh} delta={delta:+d} "
+              f"entries={entries} svm_entry_weighted={weighted} pcs={npcs}")
+    ok = bool(per_block) and min(entry_coverage, host_coverage) >= args.min_coverage
+    print(f"coverage_status={'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError) as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(2) from exc

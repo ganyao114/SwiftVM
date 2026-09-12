@@ -71,8 +71,8 @@ env -u SVM_JIT_CACHE -u SVM_EXEC_PROF \
 源码基线与上述规则一致：
 
 - guest memory 全部是 fault observation point：`source/runtime/ir/opts/uniform_store_sink_pass.cpp:120-136`；
-- Get/SetHost 与控制流边界也会切断 snapshot segment：同文件 `:148-168`、`:270-285`；
-- resident XMM 不另发 State snapshot，而由 fault path 从 v17-v27 保存：同文件 `:241-249`；
+- Get/SetHost 与控制流边界也会切断 capture segment：同文件 `:148-168`、`:270-285`；
+- resident XMM 不另发 State capture，而由 fault path 从 v17-v27 保存：同文件 `:241-249`；
 - fault trampoline 的 `BuildSaveStaticUniform` 确实把静态 FPR 家写回 State：`source/runtime/backend/arm64/trampolines.cpp:485-534`；
 - 当前 resident ABI 是 XMM1-7（以及 HI 时 XMM8-11），XMM0 留在 State：`source/translator/x86/translator.cpp:570-588`。
 
@@ -113,7 +113,7 @@ env -u SVM_JIT_CACHE -u SVM_EXEC_PROF \
 
 另有 `585,586` 位于 conditional terminal 前，故 `41 + 2 = 43`。
 
-这不是把既有“XMM0 每 block 16 条 State snapshot”重复算入 43。XMM0 的 16 个 `StoreUniform u[160]` ids 是：
+这不是把既有“XMM0 每 block 16 条 State capture”重复算入 43。XMM0 的 16 个 `StoreUniform u[160]` ids 是：
 
 ```text
 35,53,101,140,179,218,257,296,335,374,413,452,491,526,547,564

@@ -1,9 +1,11 @@
+#include "base/logging.h"
 //
 // Created by 甘尧 on 2023/9/7.
 //
 #pragma once
 
 #include <algorithm>
+#include "runtime/common/signal_diagnostic.h"
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -158,7 +160,7 @@ struct Runtime::Impl final {
         ASSERT_MSG(reinterpret_cast<std::uintptr_t>(l1_code_cache.Data()) %
                                    l1_code_cache.DataAlignment() == 0,
                    "runtime L1 cache does not satisfy its address-formation alignment");
-        // Production inline probes turn an invalidated key hit into a branch
+        // Production inline checks turn an invalidated key hit into a branch
         // to the dispatcher's L2 continuation. The diagnostic form keeps zero
         // so it can distinguish this fallback as a miss.
         if (indirect_l1_prof_enabled) {
@@ -177,7 +179,7 @@ struct Runtime::Impl final {
         // Guest address virtualization: Config::memory_base carries the
         // guest->host bias (host = guest + bias); the JIT keeps it in the
         // reserved pt register and the interpreter reads it from here.
-        // nullptr (identity) keeps the zero-overhead fast path.
+        // nullptr (direct) keeps the zero-overhead fast path.
         state->pt = address_space->GetConfig().memory_base;
         // Bounded guest window: truncate every guest address to the window
         // before pt is added. 0 in the config = disabled.
@@ -224,8 +226,7 @@ struct Runtime::Impl final {
             const u64 exits = p.exit_direct + p.exit_indirect + p.exit_call +
                               p.exit_ret + p.exit_syscall;
             const double seconds = static_cast<double>(elapsed_ns) / 1.0e9;
-            std::fprintf(
-                    stderr,
+            SVM_DIAG_PRINT(Runtime,
                     "[svm-exec] elapsed_s=%.9f exits=%llu exits_per_s=%.3f "
                     "direct=%llu indirect=%llu call=%llu ret=%llu syscall=%llu "
                     "link_hit=%llu link_miss=%llu rsb_hit=%llu rsb_miss=%llu "
@@ -358,6 +359,17 @@ struct Runtime::Impl final {
         if (GetInterruptL1Mapping().Contains(fault_addr)) {
             const auto request = std::atomic_ref<u64>(self->state->exit_request)
                                          .load(std::memory_order_acquire);
+            if (self->execution_trace_enabled) {
+                SignalDiagnostic diagnostic("[svm-il1]");
+                diagnostic.Field("fa", fault_addr);
+                diagnostic.Field("pc", reinterpret_cast<std::uintptr_t>(host_pc));
+                diagnostic.Field("req", request);
+                diagnostic.Field("l1", reinterpret_cast<std::uintptr_t>(self->state->indirect_l1_code_cache));
+                diagnostic.Field("il1", reinterpret_cast<std::uintptr_t>(GetInterruptL1Mapping().Data()));
+                diagnostic.Field("i_call", reinterpret_cast<std::uintptr_t>(self->state->indirect_call_l1_code_cache));
+                diagnostic.Field("p_call", reinterpret_cast<std::uintptr_t>(self->state->pending_call_l1_code_cache));
+                diagnostic.Write();
+            }
             if ((request & kBackedgeSignalRequest) != 0) {
                 const bool has_entry =
                         self->address_space->LookupFault(host_pc, entry);
@@ -450,51 +462,25 @@ struct Runtime::Impl final {
     void DumpExecutionTrace(const ucontext_t* uctx,
                             int sig,
                             const siginfo_t* info) const {
-        // 诊断开关专用。沿用默认故障处理器的栈缓冲区加 write 形态，
-        // 不分配内存，也不触碰 GuestMemory 的映射锁。
-        char line[256];
         const auto next = execution_trace.next.load(std::memory_order_acquire);
         const auto count = std::min<u64>(next, backend::kExecutionTraceEntryCount);
-        int length = std::snprintf(
-                line,
-                sizeof(line),
-                "[svm-exec-trace] sig=%d host_pc=%p fault_addr=%p "
-                "guest_target=%#llx live_rsp=%#llx host_lr=%#llx next=%llu\n",
-                sig,
-                reinterpret_cast<void*>(backend::SignalHandler::GetContextPC(uctx)),
-                info ? info->si_addr : nullptr,
-                static_cast<unsigned long long>(state->current_loc.Value()),
-                static_cast<unsigned long long>(
-                        backend::SignalHandler::GetContextGPR(uctx, 19)),
-                static_cast<unsigned long long>(
-                        backend::SignalHandler::GetContextGPR(uctx, 30)),
-                static_cast<unsigned long long>(next));
-        if (length > 0) {
-            const auto unused = write(STDERR_FILENO,
-                                      line,
-                                      static_cast<size_t>(
-                                              std::min<int>(length,
-                                                            sizeof(line) - 1)));
-            (void) unused;
-        }
+        SignalDiagnostic diagnostic("[svm-exec-trace]");
+        diagnostic.Field("sig", sig);
+        diagnostic.Field("host_pc", backend::SignalHandler::GetContextPC(uctx));
+        diagnostic.Field("fault_addr", reinterpret_cast<std::uintptr_t>(info ? info->si_addr : nullptr));
+        diagnostic.Field("guest_target", state->current_loc.Value());
+        diagnostic.Field("live_rsp", backend::SignalHandler::GetContextGPR(uctx, 19));
+        diagnostic.Field("host_lr", backend::SignalHandler::GetContextGPR(uctx, 30));
+        diagnostic.Field("next", next);
+        diagnostic.Write();
         for (u64 sequence = next - count; sequence < next; ++sequence) {
             const auto& entry = execution_trace.entries[
                     sequence & (backend::kExecutionTraceEntryCount - 1)];
-            length = std::snprintf(
-                    line,
-                    sizeof(line),
-                    "[svm-exec-trace] #%llu guest_rip=%#llx guest_rsp=%#llx\n",
-                    static_cast<unsigned long long>(sequence),
-                    static_cast<unsigned long long>(entry.guest_rip),
-                    static_cast<unsigned long long>(entry.guest_rsp));
-            if (length > 0) {
-                const auto unused = write(
-                        STDERR_FILENO,
-                        line,
-                        static_cast<size_t>(
-                                std::min<int>(length, sizeof(line) - 1)));
-                (void) unused;
-            }
+            SignalDiagnostic row("[svm-exec-trace]");
+            row.Field("sequence", sequence);
+            row.Field("guest_rip", entry.guest_rip);
+            row.Field("guest_rsp", entry.guest_rsp);
+            row.Write();
         }
     }
 
@@ -823,6 +809,23 @@ std::span<u8> Runtime::GetUniformBuffer() const {
             impl->address_space->GetConfig().uniform_buffer_size};
 }
 
+void Runtime::DumpExecutionTrace() const {
+    if (!impl->execution_trace_enabled) return;
+    const auto& trace = impl->execution_trace;
+    const u64 next = trace.next.load(std::memory_order_acquire);
+    const u64 count = std::min<u64>(next, backend::kExecutionTraceEntryCount);
+    SVM_DIAG_PRINT(Runtime, "[sys-trace] dumping %llu recent block entries:\n",
+                 static_cast<unsigned long long>(count));
+    for (u64 sequence = next - count; sequence < next; ++sequence) {
+        const auto& entry = trace.entries[
+                sequence & (backend::kExecutionTraceEntryCount - 1)];
+        SVM_DIAG_PRINT(Runtime, "[sys-trace] #%llu rip=%#llx rsp=%#llx\n",
+                     static_cast<unsigned long long>(sequence),
+                     static_cast<unsigned long long>(entry.guest_rip),
+                     static_cast<unsigned long long>(entry.guest_rsp));
+    }
+}
+
 namespace backend {
 
 namespace {
@@ -920,7 +923,7 @@ void PublishIndirectL1Faults(
 // -- so under lazy function compilation it ran once per decoded guest block.
 //
 // Cached per thread and keyed on the UniformInfo pointer rather than in a
-// plain static: an embedder can hold several Instances with different uniform
+// basic static: an embedder can hold several Instances with different uniform
 // layouts, and a mismatched pipeline would silently apply the wrong uniform
 // map. A key change rebuilds; in the single-address-space case that never
 // happens after the first unit.
@@ -1011,7 +1014,7 @@ struct FunctionRegionAllocation final {
 PreparedFunctionRegion PrepareFunctionRegion(const std::shared_ptr<backend::Module>& module,
                                              ir::HIRFunction* function,
                                              const FeatureSet& features,
-                                             PerfFixedSnapshot2& fixed_snapshot,
+                                             PerfFixedCapture2& fixed_capture,
                                              FunctionRegionAllocation& allocation) {
     PreparedFunctionRegion prepared{
             .function = function,
@@ -1033,7 +1036,7 @@ PreparedFunctionRegion PrepareFunctionRegion(const std::shared_ptr<backend::Modu
 
     const bool dump_ir = GetSvmConfig().dump_ir;
     if (dump_ir) {
-        fmt::print(stderr, "[func-compile] {:#x} rpo-ready\n", prepared.guest_start);
+        SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} rpo-ready\n", prepared.guest_start);
     }
     const auto& address_space = module->GetAddressSpace();
     const ir::UniformInfo* uni_info =
@@ -1049,7 +1052,7 @@ PreparedFunctionRegion PrepareFunctionRegion(const std::shared_ptr<backend::Modu
     perf_id_post.Stop();
     perf_rpo2.Stop();
     if (dump_ir) {
-        fmt::print(stderr, "[func-compile] {:#x} opts-ready\n", prepared.guest_start);
+        SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} opts-ready\n", prepared.guest_start);
     }
 
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
@@ -1064,12 +1067,12 @@ PreparedFunctionRegion PrepareFunctionRegion(const std::shared_ptr<backend::Modu
     ir::RegisterAllocPass::RunWithScalarInsert(
             function, &*allocation.baseline, address_space.GetConfig().sse_scalar_insert, features);
     prepared.reg_alloc = &*allocation.baseline;
-    std::unique_ptr<ir::LoopInvariantHoistPlan> hoist_plan;
+    std::unique_ptr<ir::LoopInvariantHoistRecipe> hoist_recipe;
     if (uni_info && (features.loop_gpr_hoist || features.loop_const_hoist)) {
-        hoist_plan = ir::LoopInvariantHoistPlan::Analyze(function, *uni_info, features);
+        hoist_recipe = ir::LoopInvariantHoistRecipe::Analyze(function, *uni_info, features);
     }
-    if (hoist_plan && !hoist_plan->Empty()) {
-        hoist_plan->Apply();
+    if (hoist_recipe && !hoist_recipe->Empty()) {
+        hoist_recipe->Apply();
         function->IdByRPO();
         allocation.hoisted =
                 std::make_unique<backend::RegAlloc>(static_cast<u32>(function->MaxInstrCount()),
@@ -1084,15 +1087,15 @@ PreparedFunctionRegion PrepareFunctionRegion(const std::shared_ptr<backend::Modu
         if (allocation.hoisted->SpillCount() <= allocation.baseline->SpillCount()) {
             prepared.reg_alloc = allocation.hoisted.get();
         } else {
-            hoist_plan->Revert();
+            hoist_recipe->Revert();
             function->IdByRPO();
         }
     }
     perf_ra_detail.Stop();
     perf_ra.Stop();
-    fixed_snapshot.Record(static_cast<unsigned>(prepared.decoded_blocks));
+    fixed_capture.Record(static_cast<unsigned>(prepared.decoded_blocks));
     if (dump_ir) {
-        fmt::print(stderr, "[func-compile] {:#x} regalloc-ready\n", prepared.guest_start);
+        SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} regalloc-ready\n", prepared.guest_start);
     }
     return prepared;
 }
@@ -1136,9 +1139,9 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
     emitter.Emit();
     perf_cg_detail.Stop();
     perf_cg.Stop();
-    if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} emit-ready\n", func_start);
+    if (dump_ir) SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} emit-ready\n", func_start);
     auto buffer_size = emitter.CurrentBufferSize();
-    if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} size={}\n", func_start, buffer_size);
+    if (dump_ir) SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} size={}\n", func_start, buffer_size);
     PerfScope2 perf_pub_total{GetPerfStats2().publish_total};
     PerfScope2 perf_pub_alloc{GetPerfStats2().publish_alloc};
     auto* emitted_context = &emitter.Context();
@@ -1166,7 +1169,7 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
         }
         PerfAdd(GetPerfStats().ir_insts, ir_insts);
         if (PerfPerUnit()) {
-            fmt::print(stderr,
+            SVM_DIAG_FORMAT(Runtime,
                        "[svm-unit] pc={:#x} ir={} host={}\n",
                        func_start,
                        ir_insts,
@@ -1175,7 +1178,7 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
         PerfScope2 perf_pub_flush{GetPerfStats2().publish_flush};
         (void)emitter.Flush(buffer);
         perf_pub_flush.Stop();
-        if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} flush-ready\n", func_start);
+        if (dump_ir) SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} flush-ready\n", func_start);
         jit_state.jit_state = backend::JitState::Cached;
         jit_state.cache_id = idx;
         jit_state.offset_in = buffer.offset;
@@ -1192,7 +1195,7 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
             return nullptr;
         }
         function->ReleaseFunctionOwnership();
-        if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} publish-ready\n", func_start);
+        if (dump_ir) SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} publish-ready\n", func_start);
         // Publish every decoded block label, not only the function entry.
         // External links, RSB return targets, and code misses are allowed to
         // land at a basic-block boundary inside this compiled unit.
@@ -1320,7 +1323,7 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
                 PublishIndirectL1Faults(module, buffer, *translator);
             }
         }
-        if (dump_ir) fmt::print(stderr, "[func-compile] {:#x} entries-ready\n", func_start);
+        if (dump_ir) SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} entries-ready\n", func_start);
         {
             PerfScope2 perf_pub_disk{GetPerfStats2().publish_disk};
             RecordJitCacheUnit(module,
@@ -1377,7 +1380,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
                   std::span<ir::HIRFunction* const> functions) {
     ASSERT(!functions.empty());
     const auto features = ResolveBackendFeatures(module);
-    PerfFixedSnapshot2 fixed_snapshot;
+    PerfFixedCapture2 fixed_capture;
     std::vector<std::unique_ptr<FunctionRegionAllocation>> allocations;
     std::vector<PreparedFunctionRegion> prepared_regions;
     allocations.reserve(functions.size());
@@ -1385,7 +1388,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     for (auto* function : functions) {
         auto allocation = std::make_unique<FunctionRegionAllocation>();
         prepared_regions.push_back(
-                PrepareFunctionRegion(module, function, features, fixed_snapshot, *allocation));
+                PrepareFunctionRegion(module, function, features, fixed_capture, *allocation));
         allocations.push_back(std::move(allocation));
     }
     return TranslatePreparedFunctionRegions(module, prepared_regions);
@@ -1393,9 +1396,9 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunction* function) {
     const auto features = ResolveBackendFeatures(module);
-    PerfFixedSnapshot2 fixed_snapshot;
+    PerfFixedCapture2 fixed_capture;
     FunctionRegionAllocation allocation;
-    auto prepared = PrepareFunctionRegion(module, function, features, fixed_snapshot, allocation);
+    auto prepared = PrepareFunctionRegion(module, function, features, fixed_capture, allocation);
     return TranslatePreparedFunctionRegions(module, std::span{&prepared, 1});
 }
 

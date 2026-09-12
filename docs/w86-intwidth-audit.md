@@ -93,10 +93,10 @@ CoreMark 表均来自这次正确执行。
 2. source 的权威 interval `end == current.start`；
 3. source/destination 不是同一 SSA value；
 4. producer 可递归证明已经产生 W-clean 值：普通 U32 producer 可接受，
-   `GetHostGPR`/纯 BitCast 不可接受；identity `BitExtract` 与
+   `GetHostGPR`/纯 BitCast 不可接受；direct `BitExtract` 与
    `ZeroExtend32To64` 继续向源追溯；
 5. tie 后对应 emitter 有明确 no-op 形态，或 spike 可以用同一寄存器的 W/X
-   equality check 把 identity move 变为 no-op。
+   equality check 把 direct move 变为 no-op。
 
 第 4 条防止把“结果只以 W 读取”误当成“物理 X 高半已经为零”。例如 source
 来自 `GetHostGPR(U32)` 时，读取 W view 不代表 pinned X 的高 32 位为零；若随后
@@ -118,7 +118,7 @@ last-use 口径少 4 条 top-10 静态指令。
   `EmitBitExtract` 直接返回。
 - `ubfx-x32`：`ubfx xD,xS,#0,#32`。top-10 中没有同时满足 last-use 和
   W-clean 的可删项；一般形态仍需清 X 高半，不能仅因 `#0,#32` 就删除。
-- `bridge→W`：W identity bridge 后紧接 `ZeroExtend32To64`；链上每一步均有
+- `bridge→W`：W direct bridge 后紧接 `ZeroExtend32To64`；链上每一步均有
   W-clean 证明，转移物理寄存器后后一个 W move 可删。
 - `tied-dst`：U32 producer 在 `ZeroExtend32To64` 处精确死亡，结果直接继承
   producer 的物理 GPR；producer 本身直接写目标 W 宽度。
@@ -173,7 +173,7 @@ unit 全静态 host 的 30.19%、move/桥的 53.33%；`0x402d58` 的 8 条分别
 
 `source/runtime/frontend/x86/decoder.cc`：
 
-- `X64Decoder::NarrowTo` 用 `ZeroExtend32` 表达小于 64 位的 W-normalize；
+- `X64Decoder::NarrowTo` 用 `ZeroExtend32` 表达小于 64 位的 W-adjust；
 - `X64Decoder::R(reg, value)` 对 x86-64 的 32 位 GPR 写必须把完整 64 位架构寄存器
   更新为零扩展值，因此产生 `ZeroExtend32To64(value)`，再做全宽
   `StoreUniform`；pin/UniformElimination 后对应 `SetHostGPR`；
@@ -255,7 +255,7 @@ c-ray:   cray_x64 scene.json -j 1 -s 8 -d 160x120 -o /tmp/w86-seven/cray/out.png
 openssl: openssl_x64 speed -seconds 8 -evp sha256 / aes-128-gcm
 ```
 
-| 语料 | host_dynamic | 严格候选动态 | lsr0 | tied-dst | bridge→W | W/X identity | 候选占 host |
+| 语料 | host_dynamic | 严格候选动态 | lsr0 | tied-dst | bridge→W | W/X direct | 候选占 host |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | coremark | 348,174,711,298 | 19,235,653,449 | 2.331378% | 3.059264% | 0.134071% | ~0% | **5.524713%** |
 | stream | 68,951,537,715 | 22,364 | 0.000007% | 0.000025% | ~0% | ~0% | **0.000032%** |
@@ -265,9 +265,9 @@ openssl: openssl_x64 speed -seconds 8 -evp sha256 / aes-128-gcm
 | 7zip | 509,444,250,889 | 46,175,955,450 | 3.543023% | 5.066887% | 0.428664% | 0.025412% | **9.063986%** |
 | openssl-speed | 669,554,072,246 | 12,353,938,311 | 0.536150% | 1.260677% | 0.048271% | 0.000002% | **1.845099%** |
 
-`W/X identity` 是 `ZeroExtend32/ZeroExtend64` 一类，只有在 source 已 W-clean、
+`W/X direct` 是 `ZeroExtend32/ZeroExtend64` 一类，只有在 source 已 W-clean、
 exact last-use 成立，并在 emitter 加 equality no-op 后才计。它在 c-ray 较大，正是
-W74 已审计过的宽度 identity 面；本项目的立项门只看 CoreMark top-10，不借这列
+W74 已审计过的宽度 direct 面；本项目的立项门只看 CoreMark top-10，不借这列
 替 CoreMark 过门。
 
 外推结论：整数密集的 CoreMark/7-Zip/AES 路径最可能受益；FP/访存型 STREAM
@@ -294,8 +294,8 @@ W74 已审计过的宽度 identity 面；本项目的立项门只看 CoreMark to
 
 1. U32 `BitExtract(value,0,32)`，并通过递归 W-clean producer 证明；
 2. `ZeroExtend32To64(U32)`，source 是真实 W-writing producer 或已证明的安全
-   identity 链；
-3. 可选的 `ZeroExtend32/ZeroExtend64(U32)` identity，小类必须同时补 emitter
+   direct 链；
+3. 可选的 `ZeroExtend32/ZeroExtend64(U32)` direct，小类必须同时补 emitter
    equality no-op；
 4. 暂不接纳一般 `ubfx xD,xS,#0,#32`。只有能证明 source 高半已零、result 的
    X 语义与省略完全等价时才可另行加入；top-10 当前为零，不影响门。
@@ -316,7 +316,7 @@ selector，保证逐位回退。固定 pin、MEM spill source、helper ABI targe
 
 这类 transfer 不增加 live range，只把恰好死亡的物理寄存器交给当前 interval，
 理论上不应增大 pool pressure；仍需用 `SVM_RA_SHAPE_PROF` 实测确认 spill defs/
-loads/stores、high-water、scratch reserve 与 helper snapshot 都不增长。
+loads/stores、high-water、scratch reserve 与 helper capture 都不增长。
 
 ### 6.3 实现版建议验收门
 
@@ -333,7 +333,7 @@ loads/stores、high-water、scratch reserve 与 helper snapshot 都不增长。
 
 ## 7. 仓库纪律
 
-临时 probe 在报告完成前已用逐段 `apply_patch` 撤回，没有使用
+临时 check 在报告完成前已用逐段 `apply_patch` 撤回，没有使用
 `git checkout/reset/stash`。最终工作树只新增：
 
 - `docs/w86-intwidth-audit.md`

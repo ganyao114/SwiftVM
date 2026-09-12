@@ -1,12 +1,11 @@
+#include "runtime/backend/reg_alloc.h"
 #include "translator.h"
 
 namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool IsPinnedGPR(u32 index) {
-    return index <= 9 || (index >= 19 && index <= 23) || index == 29;
-}
+using ::swift::runtime::backend::IsFixedGPRHome;
 
 bool SupportsDirectPublication(ir::OpCode op) {
     using O = ir::OpCode;
@@ -34,16 +33,16 @@ bool JitTranslator::CanAdoptPendingSpillWrite(
     if (inst->GetOp() != ir::OpCode::SetHostGPR) {
         return true;
     }
-    if (pinned_select_publications.contains(inst) ||
-        spilled_gpr_publications.contains(inst) ||
-        dead_pinned_gpr_writes.contains(inst) ||
-        pinned_gpr_value_transfers.contains(inst) ||
-        pinned_gpr_copies.contains(inst) ||
+    if (pinned_gprs.pinned_select_publications.contains(inst) ||
+        pinned_gprs.spilled_gpr_publications.contains(inst) ||
+        pinned_gprs.dead_pinned_gpr_writes.contains(inst) ||
+        pinned_gprs.pinned_gpr_value_transfers.contains(inst) ||
+        pinned_gprs.pinned_gpr_copies.contains(inst) ||
         context.IsHostWriteCoalesced(inst->Id())) {
         return false;
     }
-    if (auto update = pinned_load_update_instructions.find(inst);
-        update != pinned_load_update_instructions.end() &&
+    if (auto update = pinned_gprs.pinned_load_update_instructions.find(inst);
+        update != pinned_gprs.pinned_load_update_instructions.end() &&
         inst == update->second.publication) {
         return false;
     }
@@ -66,7 +65,7 @@ std::optional<JitTranslator::SpilledGPRPublication>
 JitTranslator::MatchSpilledGPRPublication(ir::Inst* publication) {
     if (!publication || publication->GetOp() != ir::OpCode::SetHostGPR ||
         publication->GetArg<ir::Imm>(2).Get() != 0 ||
-        dead_pinned_gpr_writes.contains(publication) ||
+        pinned_gprs.dead_pinned_gpr_writes.contains(publication) ||
         context.IsHostWriteCoalesced(publication->Id())) {
         return std::nullopt;
     }
@@ -78,7 +77,7 @@ JitTranslator::MatchSpilledGPRPublication(ir::Inst* publication) {
     if (!producer || !SupportsDirectPublication(producer->GetOp()) ||
         (width != sizeof(u32) && width != sizeof(u64)) ||
         ir::GetValueSizeByte(producer->ReturnType()) != width ||
-        !IsPinnedGPR(target) || !context.IsSpilled(value) ||
+        !IsFixedGPRHome(target) || !context.IsSpilled(value) ||
         producer->GetUses(false) != 1) {
         return std::nullopt;
     }
@@ -118,14 +117,13 @@ JitTranslator::MatchSpilledGPRPublication(ir::Inst* publication) {
 }
 
 void JitTranslator::PrepareSpilledGPRPublications(ir::Block* block) {
-    spilled_gpr_publications.clear();
     for (auto& inst : block->GetInstList()) {
-        auto plan = MatchSpilledGPRPublication(&inst);
-        if (!plan || pinned_gpr_values.contains(plan->producer)) {
+        auto candidate = MatchSpilledGPRPublication(&inst);
+        if (!candidate || pinned_gprs.pinned_gpr_values.contains(candidate->producer)) {
             continue;
         }
-        pinned_gpr_values.emplace(plan->producer, plan->target);
-        spilled_gpr_publications.emplace(&inst, *plan);
+        pinned_gprs.pinned_gpr_values.emplace(candidate->producer, candidate->target);
+        pinned_gprs.spilled_gpr_publications.emplace(&inst, *candidate);
     }
 }
 

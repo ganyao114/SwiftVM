@@ -21,8 +21,11 @@ struct ConfigState {
 };
 
 ConfigState& State() {
-    static ConfigState state;
-    return state;
+    // Global runtimes can read configuration during process teardown, after
+    // function-local objects would have been destroyed. Keep this one state
+    // alive until the OS reclaims the process; test reloads still reuse it.
+    static ConfigState* const state = new ConfigState;
+    return *state;
 }
 
 bool ParsePresence(const char* value, bool fallback) {
@@ -281,7 +284,7 @@ const char* PerfGetenv(const char* name) {
     const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                             std::chrono::steady_clock::now() - begin)
                             .count();
-    stats.translate_probe_calls.fetch_add(1, std::memory_order_relaxed);
+    stats.translate_check_calls.fetch_add(1, std::memory_order_relaxed);
     for (size_t i = 0; i < stats.kGetenvNames.size(); ++i) {
         if (std::strcmp(name, stats.kGetenvNames[i]) == 0) {
             stats.getenv_calls[i].fetch_add(1, std::memory_order_relaxed);

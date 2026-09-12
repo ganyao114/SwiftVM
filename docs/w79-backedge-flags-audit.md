@@ -34,7 +34,7 @@ STREAM 三个算术环仍是 `399,999,980 : 20`，即每个冷出口前约两千
    per-block fault recovery veneer 与双边证明，再只延迟 NZCV merge + 已知 carry
    polarity；PF/AF 仍热路径写入 x26。这个形态的诚实静态预估是
    `Scale 36→32`、`Add 39→35`、`Triad 47→43`，不是 W76 的 25/36。
-3. full flags token / GPR/XMM state loop cache 暂不批准；它需要 loop-carried snapshot、
+3. full flags token / GPR/XMM state loop cache 暂不批准；它需要 loop-carried capture、
    external/internal 双入口和更细 fault map，已接近 region JIT，而不是小型 DCE。
 
 ## 1. 现状形态与 11 条的组成
@@ -198,7 +198,7 @@ SMC handler/跨线程 invalidator 发布 request，回边 acquire-load 命中后
 因此 cold fallthrough 在调用 `Forward()` 前必须已提交所有跨 unit architectural state；
 否则不论它命中 linked target 还是空 slot 返回 dispatcher，consumer 都会读到 stale
 flags/state。新的 self veneer 不能改变外部 published entry；任何 external entry、RSB
-target、cache miss 都必须从 fully materialized ABI 开始。
+target、cache miss 都必须从 fully computed ABI 开始。
 
 ### 2.5 解释器/JIT 切换
 
@@ -365,8 +365,8 @@ backedge 进入不读写 State；fault/signal 时按 live token 全量 deopt。
 - **静态上限**：即使 11 条全删，加入 2 条 poll 也只是 Scale 36→27、Triad 47→38；
   W76 的 25/36 不再成立。若再删 state load/store，需另做净账。
 - **正确性依赖**：loop-carried value 分配、external/internal 双入口、每个 fault site
-  的 live snapshot、helper/partial-write alias、direct external entry、SMC epoch。
-- **fault 方案**：当前 PF/AF 的源寄存器会在下一轮早期复用；要么保留 2–3 个 snapshot
+  的 live capture、helper/partial-write alias、direct external entry、SMC epoch。
+- **fault 方案**：当前 PF/AF 的源寄存器会在下一轮早期复用；要么保留 2–3 个 capture
   寄存器，要么 per-site recipe。前者缩池/增 spill，后者是完整 deoptimizer。
 - **失效回退**：任何 site 无 recipe 则整个 loop 回退。
 - **裁定**：不作为首个 spike；它已经越过小型 flags DCE 的风险边界。
@@ -407,7 +407,7 @@ P0 会在热路径增加 poll，不能默认 ON；只有 P1 的净收益覆盖�
 - mac/orb 全量、func_tests 六格、现有 signal/fault/SMC suite 全绿；
 - STREAM 三热 unit 必须得到预期 `45→41`、`48→44`、`56→52` 的完整 block 净降
   （稳态即 36→32、39→35、47→43），且 cold bytes/metadata 单列；
-- RA_SHAPE_PROF 两态 spill/high-water/scratch/helper snapshot 不增长；
+- RA_SHAPE_PROF 两态 spill/high-water/scratch/helper capture 不增长；
 - STREAM 四项和 CoreMark 各至少 7 对交错 A/B，95% CI 为正；7zip/OpenSSL/c-ray
   同跑防止较低覆盖语料被 poll 反噬；任何正式语料 >1% 回归即维持 OFF/撤回；
 - interrupt latency 单列：自环 request 到 C++ return 不超过一次 guest iteration。

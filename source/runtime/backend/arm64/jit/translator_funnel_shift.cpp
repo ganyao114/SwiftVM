@@ -8,7 +8,7 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool IsPlainImmediate(const ir::Operand& operand, u64 immediate) {
+bool IsBasicImmediate(const ir::Operand& operand, u64 immediate) {
     return operand.GetRight().Null() && operand.GetLeft().IsImm() &&
            operand.GetLeft().imm.Get() == immediate;
 }
@@ -24,7 +24,7 @@ bool SavesParity(ir::Inst* inst) {
 
 }  // namespace
 
-std::optional<JitTranslator::FunnelShiftPlan>
+std::optional<JitTranslator::FunnelShiftRecipe>
 JitTranslator::MatchFunnelShift(ir::Inst* result) const {
     if (!result || result->GetOp() != ir::OpCode::Or ||
         local_conditions.contains(result)) {
@@ -65,7 +65,7 @@ JitTranslator::MatchFunnelShift(ir::Inst* result) const {
         left_amount != bits - amount) {
         return std::nullopt;
     }
-    return FunnelShiftPlan{
+    return FunnelShiftRecipe{
             .first = left_shift,
             .second = right_shift,
             .result = result,
@@ -89,29 +89,29 @@ void JitTranslator::PrepareFunnelShifts(ir::Block* block) {
         if (result == list.end()) {
             break;
         }
-        auto plan = MatchFunnelShift(&*result);
-        if (!plan || plan->first != &*first || plan->second != &*second ||
-            fused_narrow_extract_shifts.contains(plan->first) ||
-            fused_narrow_extract_shifts.contains(plan->second)) {
+        auto recipe = MatchFunnelShift(&*result);
+        if (!recipe || recipe->first != &*first || recipe->second != &*second ||
+            fused_narrow_extract_shifts.contains(recipe->first) ||
+            fused_narrow_extract_shifts.contains(recipe->second)) {
             continue;
         }
-        funnel_shift_parts.emplace(plan->first, plan->result);
-        funnel_shift_parts.emplace(plan->second, plan->result);
-        funnel_shifts.emplace(plan->result, *plan);
+        funnel_shift_parts.emplace(recipe->first, recipe->result);
+        funnel_shift_parts.emplace(recipe->second, recipe->result);
+        funnel_shifts.emplace(recipe->result, *recipe);
 
         auto flags_value = std::next(result);
-        ir::Inst* flags_source = plan->result;
+        ir::Inst* flags_source = recipe->result;
         if (flags_value != list.end() && flags_value->GetOp() == ir::OpCode::And &&
             flags_value->GetArg<ir::Value>(0).Def() == flags_source &&
-            IsPlainImmediate(flags_value->GetArg<ir::Operand>(1), UINT32_MAX)) {
+            IsBasicImmediate(flags_value->GetArg<ir::Operand>(1), UINT32_MAX)) {
             flags_source = &*flags_value;
             ++flags_value;
         }
         if (flags_value != list.end() && flags_value->GetOp() == ir::OpCode::Or &&
             flags_value->GetArg<ir::Value>(0).Def() == flags_source &&
-            IsPlainImmediate(flags_value->GetArg<ir::Operand>(1), 0) &&
+            IsBasicImmediate(flags_value->GetArg<ir::Operand>(1), 0) &&
             SavesParity(&*flags_value)) {
-            funnel_shift_parity_producers.emplace(&*flags_value, plan->result);
+            funnel_shift_parity_producers.emplace(&*flags_value, recipe->result);
         }
     }
 }
@@ -121,28 +121,28 @@ bool JitTranslator::EmitFunnelShiftPart(ir::Inst* inst) {
     if (part == funnel_shift_parts.end()) {
         return false;
     }
-    const auto planned = funnel_shifts.find(part->second);
+    const auto prepared = funnel_shifts.find(part->second);
     const auto reproved = MatchFunnelShift(part->second);
-    ASSERT_MSG(planned != funnel_shifts.end() && reproved &&
-                       *reproved == planned->second,
+    ASSERT_MSG(prepared != funnel_shifts.end() && reproved &&
+                       *reproved == prepared->second,
                "funnel shift proof diverged at IR {}", inst->Id());
-    if (inst != planned->second.first) {
+    if (inst != prepared->second.first) {
         return true;
     }
-    auto result = context.RForWrite(ir::Value{planned->second.result});
-    auto high = context.R(planned->second.high);
-    auto low = context.R(planned->second.low);
-    __ Extr(result, high, low, planned->second.amount);
+    auto result = context.RForWrite(ir::Value{prepared->second.result});
+    auto high = context.R(prepared->second.high);
+    auto low = context.R(prepared->second.low);
+    __ Extr(result, high, low, prepared->second.amount);
     return true;
 }
 
 bool JitTranslator::EmitFunnelShiftResult(ir::Inst* inst) {
-    const auto planned = funnel_shifts.find(inst);
-    if (planned == funnel_shifts.end()) {
+    const auto prepared = funnel_shifts.find(inst);
+    if (prepared == funnel_shifts.end()) {
         return false;
     }
     const auto reproved = MatchFunnelShift(inst);
-    ASSERT_MSG(reproved && *reproved == planned->second,
+    ASSERT_MSG(reproved && *reproved == prepared->second,
                "funnel shift result proof diverged at IR {}",
                inst->Id());
     auto pseudo_flags = GetPseudoFlags(inst);

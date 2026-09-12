@@ -1,3 +1,4 @@
+#include "base/logging.h"
 //
 // SwiftVM Linux guest launcher (ARM64 + x86_64).
 //
@@ -11,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <climits>
 #include <condition_variable>
 #include <cstdio>
@@ -23,6 +25,7 @@
 #include <thread>
 #include <vector>
 #include "base/logging.h"
+#include "diagnostics.h"
 #include "loader.h"
 #include "module_features.h"
 #include "runtime/backend/address_space.h"
@@ -36,7 +39,74 @@
 #define SVM_DEFAULT_GUEST_ELF "tests/hello_aarch64"
 #endif
 
+#if defined(__aarch64__) && defined(SIGUSR1)
+#include <signal.h>
+#include <unistd.h>
+#endif
+
 using namespace swift;
+
+#if defined(__aarch64__) && defined(SIGUSR1)
+// Diagnostic: `kill -USR1 <pid>` dumps the interrupted host GPRs. Under
+// SVM_X86_PIN_EXT the live guest registers ride in host x0-x8/x19-x23/x29,
+// so this capture shows the actual guest register values mid-JIT, where a
+// spin loop never returns to the dispatcher to sync ThreadContext64.
+static void DumpHostRegsOnUsr1(int, siginfo_t*, void* uc) {
+    const int saved_errno = errno;
+    unsigned long long x[31]{};
+    unsigned long long pc, sp;
+#if defined(__APPLE__)
+    const auto* m = static_cast<ucontext_t*>(uc)->uc_mcontext;
+    for (size_t i = 0; i < 29; ++i) x[i] = m->__ss.__x[i];
+    x[29] = m->__ss.__fp;
+    x[30] = m->__ss.__lr;
+    pc = m->__ss.__pc;
+    sp = m->__ss.__sp;
+#else
+    const auto* m = &static_cast<ucontext_t*>(uc)->uc_mcontext;
+    for (size_t i = 0; i < 31; ++i) x[i] = m->regs[i];
+    pc = m->pc;
+    sp = m->sp;
+#endif
+    // The signal may interrupt host code or a syscall, so these registers
+    // are not necessarily guest pointers. Only inspect the saved context.
+    // Avoid stdio/formatting routines in the signal handler. Each field is
+    // at most 23 bytes; the prefix plus all 24 fields fit within this buffer.
+    char buf[1024];
+    char* out = buf;
+    for (const char* prefix = "[usr1] "; *prefix; ++prefix) *out++ = *prefix;
+    const auto append_hex = [&](const char* name, unsigned long long value) {
+        while (*name) *out++ = *name++;
+        *out++ = '=';
+        *out++ = '0';
+        *out++ = 'x';
+        bool started = false;
+        for (int shift = 60; shift >= 0; shift -= 4) {
+            const auto digit = (value >> shift) & 15;
+            if (digit || started || shift == 0) {
+                *out++ = "0123456789abcdef"[digit];
+                started = true;
+            }
+        }
+        *out++ = ' ';
+    };
+    append_hex("pc", pc);
+    append_hex("sp", sp);
+    for (unsigned i = 0; i < 31; ++i) {
+        if (i >= 10 && i < 19) continue;
+        char name[4]{'x', static_cast<char>('0' + i % 10), 0, 0};
+        if (i >= 10) {
+            name[1] = static_cast<char>('0' + i / 10);
+            name[2] = static_cast<char>('0' + i % 10);
+        }
+        append_hex(name, x[i]);
+    }
+    out[-1] = '\n';
+    const auto unused = write(STDERR_FILENO, buf, static_cast<size_t>(out - buf));
+    (void)unused;
+    errno = saved_errno;
+}
+#endif
 
 // Interpreter wild-pointer guard thunk: ctx is a GuestMemory*.
 static bool InterpRangeCheckThunk(void* ctx, u64 addr, u64 size) {
@@ -50,13 +120,13 @@ static void MapMainModuleAndLoadCache(runtime::backend::AddressSpace* address_sp
         auto parsed = linux::ParseModuleFeatureBindings(spec);
         module_config.feature_overrides = std::move(parsed.main);
         for (const auto& warning : parsed.warnings) {
-            std::fprintf(stderr, "WARNING: SVM_MODULE_FEATURES: %s\n", warning.c_str());
+            SVM_DIAG_PRINT(Syscall, "WARNING: SVM_MODULE_FEATURES: %s\n", warning.c_str());
         }
     }
     if (image.main_start < image.main_end) {
         address_space->MapModule(image.main_start, image.main_end, module_config);
     } else {
-        std::fprintf(stderr,
+        SVM_DIAG_PRINT(Syscall,
                      "WARNING: main image module range is empty (%#llx..%#llx); "
                      "using default module\n",
                      static_cast<unsigned long long>(image.main_start),
@@ -83,6 +153,7 @@ static int RunArm64Guest(const linux::LoadedImage& image,
     ctx.sp = guest_sp;
 
     linux::SyscallHandler syscalls{&memory, image.brk_start, linux::GuestISA::kArm64, image.path};
+    syscalls.SetExecutionTraceDumper(core->MakeExecutionTraceDumper());
     // SMC wiring: notify the runtime when the guest remaps/unmaps code pages.
     syscalls.SetSmcInvalidate([instance](VAddr s, VAddr e) { instance->InvalidateCodeRange(s, e); });
     int exit_code = 0;
@@ -216,6 +287,14 @@ private:
         auto& ctx = core->GetContext();
         std::memcpy(&ctx, &initial, sizeof(ctx));
 
+        // The watcher owns its captures and stops before the Core is freed.
+        std::unique_ptr<linux::GuestMemoryWatch> watch;
+        if (const char* watch_env = std::getenv("SVM_WATCH_LOCK")) {
+            const VAddr watch_addr = std::strtoull(watch_env, nullptr, 0);
+            watch = std::make_unique<linux::GuestMemoryWatch>(
+                    memory, process, watch_addr, tid, ctx.rip.qword);
+        }
+
         linux::SyscallHandler syscalls{
                 &memory,
                 image.brk_start,
@@ -228,6 +307,7 @@ private:
         syscalls.SetSmcInvalidate(
                 [this](VAddr start, VAddr end) { instance->InvalidateCodeRange(start, end); });
         syscalls.SetX86Context(&ctx);
+        syscalls.SetExecutionTraceDumper(core->MakeExecutionTraceDumper());
         syscalls.SetCloneCallback(
                 [this, &ctx](const auto& request) { return Spawn(request, ctx); });
 
@@ -251,6 +331,7 @@ private:
                 core->ClearInterrupt();
             }
             const auto reason = core->Run();
+            if (watch) watch->SetLocation(ctx.rip.qword);
             if (reason == translator::ExitReason::Syscall) {
                 auto result = syscalls.Handle(ctx.rax.qword,
                                               ctx.rdi.qword,
@@ -322,6 +403,7 @@ private:
             std::lock_guard guard(cores_mutex);
             std::erase(active_cores, core);
         }
+        if (watch) watch->Stop();
         translator::x86::X86Core::Destroy(core);
         active_threads.fetch_sub(1, std::memory_order_acq_rel);
         threads_changed.notify_all();
@@ -383,6 +465,16 @@ static int RunX86Guest(const linux::LoadedImage& image,
 
 int main(int argc, char** argv) {
     runtime::InitSvmConfig();
+#if defined(__aarch64__) && defined(SIGUSR1)
+    if (std::getenv("SVM_USR1_DUMP")) {
+        struct sigaction sa {};
+        sa.sa_sigaction = &DumpHostRegsOnUsr1;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_SIGINFO | SA_RESTART;
+        int rc = sigaction(SIGUSR1, &sa, nullptr);
+        SVM_DIAG_PRINT(Syscall, "[usr1] handler install rc=%d\n", rc);
+    }
+#endif
     std::string guest_path;
     std::vector<std::string> guest_args;
     if (argc >= 2) {
@@ -409,19 +501,19 @@ int main(int argc, char** argv) {
         guest_envs.emplace_back(std::string("OPENSSL_ia32cap=") + ia32cap);
     }
 
-    // 1. Guest address space. Linux defaults to guest==host identity mapping,
+    // 1. Guest address space. Linux defaults to guest==host direct mapping,
     //    which keeps the original address in JIT memory operands and releases
-    //    the pt (x24) and mem_scratch (x10) reservations. Identity does not
+    //    the pt (x24) and mem_scratch (x10) reservations. Direct does not
     //    isolate guest wild pointers from translator/DSO/stack mappings.
     //
-    //    SVM_MEM_IDENTITY=0/OFF/off explicitly selects the bounded bias window;
+    //    SVM_MEM_DIRECT=0/OFF/off explicitly selects the bounded bias window;
     //    setting SVM_GUEST_BITS also requests that window and chooses its size.
-    //    SVM_MEM_IDENTITY=1 remains accepted and is equivalent to the Linux
+    //    SVM_MEM_DIRECT=1 remains accepted and is equivalent to the Linux
     //    default. If the initial exact map collides, GuestMemory reports a
     //    warning and retries with the default bounded window.
     //
-    //    macOS does not inspect SVM_MEM_IDENTITY and always follows the
-    //    bounded-bias path (its 4GB pagezero prevents low ET_EXEC identity);
+    //    macOS does not inspect SVM_MEM_DIRECT and always follows the
+    //    bounded-bias path (its 4GB pagezero prevents low ET_EXEC direct);
     //    its existing SVM_GUEST_BITS window-size override remains available.
     //
     //    SVM_GUEST_BITS=0 restores the old unbounded bias mode, in which the
@@ -433,13 +525,13 @@ int main(int argc, char** argv) {
     linux::GuestMemory memory;
     {
         const auto& svm_config = runtime::GetSvmConfig();
-        const char* identity_env = nullptr;
+        const char* direct_env = nullptr;
         const char* guest_bits_env = svm_config.guest_bits_is_set
                 ? svm_config.guest_bits.c_str()
                 : nullptr;
 #if defined(__linux__)
-        identity_env = svm_config.mem_identity_is_set
-                ? svm_config.mem_identity.c_str()
+        direct_env = svm_config.mem_direct_is_set
+                ? svm_config.mem_direct.c_str()
                 : nullptr;
 #endif
         const auto policy = linux::SelectGuestMemoryLaunchPolicy(
@@ -448,17 +540,17 @@ int main(int argc, char** argv) {
 #else
                 false,
 #endif
-                identity_env,
+                direct_env,
                 guest_bits_env);
-        if (policy.identity) {
-            memory.EnableIdentityMode();
+        if (policy.direct) {
+            memory.EnableDirectMode();
             LOG_WARNING(
-                    "Linux identity memory mode: guest addresses map directly onto the "
+                    "Linux direct memory mode: guest addresses map directly onto the "
                     "host address space. Guest wild pointers can access translator "
-                    "mappings; use SVM_MEM_IDENTITY=0 for the bounded bias window.");
+                    "mappings; use SVM_MEM_DIRECT=0 for the bounded bias window.");
         }
         u32 window_bits = linux::GuestMemory::kDefaultWindowBits;
-        if (!policy.identity) {
+        if (!policy.direct) {
             if (guest_bits_env) {
                 const long v = std::strtol(guest_bits_env, nullptr, 0);
                 if (v == 0) {
@@ -495,7 +587,7 @@ int main(int argc, char** argv) {
     // pointer (fault host address not backed by any guest mapping -> guest
     // PageFatal) from a protection fault on a mapped guest page (SMC, host
     // bug -> let the default handler crash with diagnostics).
-    runtime::backend::SignalHandler::SetGuestMapProbe(
+    runtime::backend::SignalHandler::SetGuestMapCheck(
             [](void* ctx, std::uintptr_t fault_host_addr) -> bool {
                 auto* mem = static_cast<linux::GuestMemory*>(ctx);
                 const VAddr guest =
@@ -512,7 +604,7 @@ int main(int argc, char** argv) {
             &memory);
     // Range form, used by the helpers that must validate before they
     // dereference (x87/fxsave, rep-string walks). Same truncation rule.
-    runtime::backend::SignalHandler::SetGuestRangeProbe(
+    runtime::backend::SignalHandler::SetGuestRangeCheck(
             [](void* ctx, std::uintptr_t host_addr, u64 length) -> u64 {
                 auto* mem = static_cast<linux::GuestMemory*>(ctx);
                 const VAddr guest = mem->ToGuest(reinterpret_cast<const void*>(host_addr));
@@ -533,10 +625,10 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (runtime::GetSvmConfig().mem_mode_trace) {
-        std::fprintf(stderr,
-                     "[svm-mem-mode] identity=%u use_memory_base=%u mask=0x%llx "
+        SVM_DIAG_PRINT(Syscall,
+                     "[svm-mem-mode] direct=%u use_memory_base=%u mask=0x%llx "
                      "window_bits=%u bias=0x%llx\n",
-                     memory.IdentityMode(),
+                     memory.DirectMode(),
                      memory.GetBias() != 0,
                      static_cast<unsigned long long>(
                              memory.Windowed() ? memory.Mask() : 0),

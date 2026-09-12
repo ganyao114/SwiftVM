@@ -42,18 +42,22 @@ JitTranslator::MatchNarrowExtractExtension(ir::Inst* wrapper) const {
         extract->GetArg<ir::Imm>(1).Get() != 0 ||
         extract->GetUses() != 1 || extract->GetUses(false) != 1 ||
         extract->GetArg<ir::Value>(0).Def() == nullptr ||
-        fused_pin_gpr_reads.contains(extract) ||
-        narrow_flags_inputs.contains(extract) ||
+        pinned_gprs.fused_pin_gpr_reads.contains(extract) ||
+        flag_state.narrow_flags_inputs.contains(extract) ||
         context.IsWidthChainCoalesced(extract->Id()) ||
         context.IsWidthChainCoalesced(wrapper->Id()) ||
         context.IsLow32CopyCoalesced(extract->Id()) ||
-        scalar_identity_analysis.InputDiscarded(extract)) {
+        scalar_copy_analysis.InputDiscarded(extract)) {
         return std::nullopt;
     }
     const u32 width = ir::GetValueSizeByte(extract->ReturnType());
     if ((width != sizeof(u8) && width != sizeof(u16)) ||
         extract->GetArg<ir::Imm>(2).Get() != width * 8 ||
-        ir::GetValueSizeByte(value.Type()) != width) {
+        ir::GetValueSizeByte(value.Type()) != width ||
+        context.IsSpilled(extract->GetArg<ir::Value>(0))) {
+        // A spill reload region may end at the extract and never write its
+        // slot. A later wrapper cannot extend that region in the emitter.
+        // The IR width pass handles this fusion before allocation instead.
         return std::nullopt;
     }
     auto& list = cur_block->GetInstList();
@@ -97,11 +101,12 @@ JitTranslator::MatchNarrowMaskedInput(ir::Inst* consumer) const {
         extract->GetArg<ir::Imm>(2).Get() != width * 8 ||
         extract->GetUses() != 1 || extract->GetUses(false) != 1 ||
         !extract->GetArg<ir::Value>(0).Defined() ||
-        fused_pin_gpr_reads.contains(extract) ||
-        narrow_flags_inputs.contains(extract) ||
+        pinned_gprs.fused_pin_gpr_reads.contains(extract) ||
+        flag_state.narrow_flags_inputs.contains(extract) ||
         context.IsWidthChainCoalesced(extract->Id()) ||
         context.IsLow32CopyCoalesced(extract->Id()) ||
-        scalar_identity_analysis.InputDiscarded(extract)) {
+        scalar_copy_analysis.InputDiscarded(extract) ||
+        context.IsSpilled(extract->GetArg<ir::Value>(0))) {
         return std::nullopt;
     }
     const auto right = consumer->GetArg<ir::Operand>(1);
@@ -147,7 +152,7 @@ JitTranslator::MatchShiftMaskedInput(ir::Inst* consumer) {
         ir::GetValueSizeByte(value.Type()) !=
                 ir::GetValueSizeByte(consumer->ReturnType()) ||
         fused_narrow_extract_shifts.contains(shift) ||
-        scalar_identity_analysis.InputDiscarded(shift)) {
+        scalar_copy_analysis.InputDiscarded(shift)) {
         return std::nullopt;
     }
     const auto source = shift->GetArg<ir::Value>(0);
@@ -179,31 +184,31 @@ void JitTranslator::PrepareNarrowExtractExtensions(ir::Block* block) {
     shift_masked_inputs.clear();
     fused_shift_masked_shifts.clear();
     for (auto& inst : block->GetInstList()) {
-        auto plan = MatchNarrowExtractExtension(&inst);
-        if (!plan) {
+        auto candidate = MatchNarrowExtractExtension(&inst);
+        if (!candidate) {
             continue;
         }
-        fused_narrow_extracts.emplace(plan->extract, &inst);
-        narrow_extract_extensions.emplace(&inst, *plan);
-        if (plan->shift) {
-            fused_narrow_extract_shifts.emplace(plan->shift, &inst);
+        fused_narrow_extracts.emplace(candidate->extract, &inst);
+        narrow_extract_extensions.emplace(&inst, *candidate);
+        if (candidate->shift) {
+            fused_narrow_extract_shifts.emplace(candidate->shift, &inst);
         }
     }
     for (auto& inst : block->GetInstList()) {
-        auto plan = MatchNarrowMaskedInput(&inst);
-        if (!plan) {
+        auto candidate = MatchNarrowMaskedInput(&inst);
+        if (!candidate) {
             continue;
         }
-        narrow_masked_inputs.emplace(&inst, *plan);
-        fused_narrow_masked_extracts.emplace(plan->extract, &inst);
+        narrow_masked_inputs.emplace(&inst, *candidate);
+        fused_narrow_masked_extracts.emplace(candidate->extract, &inst);
     }
     for (auto& inst : block->GetInstList()) {
-        auto plan = MatchShiftMaskedInput(&inst);
-        if (!plan) {
+        auto candidate = MatchShiftMaskedInput(&inst);
+        if (!candidate) {
             continue;
         }
-        shift_masked_inputs.emplace(&inst, *plan);
-        fused_shift_masked_shifts.emplace(plan->shift, &inst);
+        shift_masked_inputs.emplace(&inst, *candidate);
+        fused_shift_masked_shifts.emplace(candidate->shift, &inst);
     }
 }
 

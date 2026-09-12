@@ -56,7 +56,7 @@ set_tests_properties(malformed_guest_isolation PROPERTIES
 # Guest/host address-space isolation.
 #
 # The suite explicitly selects the bounded guest window with
-# SVM_MEM_IDENTITY=0: every guest address is truncated into one host
+# SVM_MEM_DIRECT=0: every guest address is truncated into one host
 # reservation before the bias is added. It asserts that `base` and
 # `base + 2^k` alias and that wild pointers never kill the host. It fails on
 # the unbounded build -- run it with SVM_ISOLATION_EXPECT=broken to see it.
@@ -71,10 +71,10 @@ set_tests_properties(guest_address_space_isolation PROPERTIES
                      LABELS "isolation;guest;e2e" TIMEOUT 300)
 
 if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/hello_x86_64)
-    add_test(NAME linux_identity_mode
-             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/run_identity_mode_tests.sh
+    add_test(NAME linux_direct_mode
+             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/run_direct_mode_tests.sh
                      $<TARGET_FILE:svm_translator_linux>
                      ${CMAKE_CURRENT_SOURCE_DIR}/hello_x86_64)
-    set_tests_properties(linux_identity_mode PROPERTIES
-                         LABELS "identity;guest;e2e" TIMEOUT 60)
+    set_tests_properties(linux_direct_mode PROPERTIES
+                         LABELS "direct;guest;e2e" TIMEOUT 60)
 endif ()

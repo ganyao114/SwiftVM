@@ -207,9 +207,9 @@ public:
     // `SlabObject<Inst, true>` promises a slab, but nothing outside
     // source/tests/main_case.cpp ever calls Inst::InitializeSlabHeap, so in
     // svm_translator_linux (and in every embedder) the slab head is always
-    // null and SlabObject::TryAllocate/TryFree degrade to plain malloc/free,
+    // null and SlabObject::TryAllocate/TryFree degrade to basic malloc/free,
     // once per IR instruction -- the single largest line item in the decode
-    // phase. Measured with a marginal-cost probe (N extra allocations per
+    // phase. Measured with a marginal-cost check (N extra allocations per
     // appended instruction, median of 11 runs): `new Inst` + `delete` costs
     // 25 ns, of which raw malloc+free is 15.8 ns, against 0.73 ns for the
     // bump-allocated HIRValue pool next to it. On func_tests that is ~0.5 ms

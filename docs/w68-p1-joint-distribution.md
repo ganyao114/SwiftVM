@@ -2,9 +2,9 @@
 
 ## 0. 裁决
 
-**NO-GO：不放行 P0/P1 实现。** Linux identity pool10 上确实存在大量
+**NO-GO：不放行 P0/P1 实现。** Linux direct pool10 上确实存在大量
 headroom 充足、observer 安全的 fixed-home tail relocation 形状，但当前
-`PlanFixedGPRAffinities()` 暴露的每个安全候选都严格是：
+`RecipeFixedGPRAffinities()` 暴露的每个安全候选都严格是：
 
 ```text
 saved SetHost = 1
@@ -51,16 +51,16 @@ SVM_JIT_CACHE=
 生产组清除 `SVM_REGION_EDGES`，块态组设 `SVM_REGION_EDGES=0`；所有运行均
 显式清除 `SVM_EXEC_PROF`。
 
-### 1.2 probe 放置与“不改决策”证明
+### 1.2 check 放置与“不改决策”证明
 
-临时 probe 只观察现行路径：
+临时 check 只观察现行路径：
 
-- reverse-plan hazard：`register_alloc_pass.cpp:413-512`；
+- reverse-recipe hazard：`register_alloc_pass.cpp:413-512`；
 - forward fixed owner fallback：`register_alloc_pass.cpp:524-557`；
 - x18/eviction/scratch ladder 稳定后，只在最终通过 `RunVerified` 的 scan 上落行：
   `register_alloc_verified.inc:38-169`。
 
-probe 没有修改 affinity、mapping、active mask、spill、helper 或 emitter；环境变量
+check 没有修改 affinity、mapping、active mask、spill、helper 或 emitter；环境变量
 未设置时完全不收集。为避免 region 多版本和异步编译误配，临时 metadata 给每个
 最终 RA event tuple 计算稳定 signature，既有 block-entry counter 输出
 `(root, signature, entries)`；分析严格按 `(root, signature)` 连接，不按版本顺序
@@ -68,7 +68,7 @@ probe 没有修改 affinity、mapping、active mask、spill、helper 或 emitter
 
 定义：
 
-- `hazard`：现行 reverse-plan 拒绝的 fixed write candidate；
+- `hazard`：现行 reverse-recipe 拒绝的 fixed write candidate；
 - `fixed conflict`：hazard 中确有 incumbent interval 的子集；
 - `structural`：恰好一个 incumbent、incoming 在 baseline 已占普通 pool slot，
   且无 observer/fixed-clobber/fault/helper/same-home access/pending-write；
@@ -96,8 +96,8 @@ selector 窗口的上界。
 | RE=0 / SQLite | 14,711 | 5,633 | 5,302 | 4,530 | 7,623,940 | 6,204,646 | **0** |
 
 现行 forward allocator 的 `fixed_evictions` 四组均为 **0**；联合分布全部来自
-reverse-plan 的 `fixed_hazards`。这符合代码顺序：range/RAW/WAW 在
-`PlanFixedGPRAffinities()` 已 fail-closed，未把有冲突的 affinity 送入 forward
+reverse-recipe 的 `fixed_hazards`。这符合代码顺序：range/RAW/WAW 在
+`RecipeFixedGPRAffinities()` 已 fail-closed，未把有冲突的 affinity 送入 forward
 allocator。
 
 生产 region 中，fixed conflict 占全部 hazard 的 CoreMark `94.974874%`、
@@ -188,7 +188,7 @@ slot 的 fixed conflict 为：
 | SQLite region | 180 | 266,624 |
 
 对其强行 relocation 会使 `candidate_peak_pool = baseline_peak_pool + 1`，所以
-probe 按设计直接拒绝；所有 structural candidate 都满足
+check 按设计直接拒绝；所有 structural candidate 都满足
 `candidate_peak_pool == baseline_peak_pool`。
 
 ### 2.5 observer 距离与拒绝原因
@@ -290,7 +290,7 @@ SQLite 从 6,204,646 增到 9,136,561。故第 3 条不是“收益蒸发”，�
 ### 5.1 构建与语料
 
 - d8786bc clean build：PASS；
-- probe build：PASS；
+- check build：PASS；
 - 机械撤销后完整受影响 target 重建：`[60/60]` PASS；
 - CoreMark 四组均返回 0，CRC 为
   `e9f5/e714/1fd7/8e3a/25b5`，打印 `Correct operation validated`；
@@ -299,7 +299,7 @@ SQLite 从 6,204,646 增到 9,136,561。故第 3 条不是“收益蒸发”，�
 
 ### 5.2 top shape 逐点复证
 
-probe 与撤销后同命令重跑：
+check 与撤销后同命令重跑：
 
 - CoreMark region top-20 hot roots：rank、PC、host_static、move_static
   **20/20 逐点一致**；
@@ -314,11 +314,11 @@ region 的全体 translated set 会随运行时 region/version 成形略变；Co
 共有 2,873 PC，其中 2,860 的完整 tuple 一致，13 个落在不同 region version；
 SQLite 22,050 个共同 PC 中 host_static/move/spill/state 全一致，只有 2 个
 host-byte placement 值相差 4 bytes。top-20 与确定性的 RE=0 全量比较均为零 diff，
-没有 probe 导致的 allocation/emitter 形状变化。
+没有 check 导致的 allocation/emitter 形状变化。
 
 ### 5.3 机械撤销证据
 
-临时 probe 的六个文件已全部恢复；源码中搜索不到
+临时 check 的六个文件已全部恢复；源码中搜索不到
 `SVM_RA_RELOC_AUDIT`、`RelocAudit`、`reloc_audit` 或 `svm-hot-version`。
 host w68 与 VM 恢复后 SHA-256 逐文件相同：
 
@@ -331,7 +331,7 @@ host w68 与 VM 恢复后 SHA-256 逐文件相同：
 51cdfa309ee08ef5a9bcac0698d7a34dec404a7a1199277efb64a588b4ec7e7b  jit_context.cpp
 ```
 
-本报告是 w68 的唯一交付改动；没有保留机制或 probe 代码。
+本报告是 w68 的唯一交付改动；没有保留机制或 check 代码。
 
 ## 6. 缺口形态与重开条件
 
@@ -349,7 +349,7 @@ host w68 与 VM 恢复后 SHA-256 逐文件相同：
 
 ### 6.2 量化重开前置
 
-P1 只有在 selector 输入扩展后才值得重开，且必须先由 analysis-only probe 证明：
+P1 只有在 selector 输入扩展后才值得重开，且必须先由 analysis-only check 证明：
 
 1. 存在 `elidable Get/Set >= 2` 的同一 immutable HomeTransaction；不能把
    SetHost 后 baseline 本来已 canonical 的读取重复记收益；
@@ -368,7 +368,7 @@ fixed-class 机制，不进入 fragment/location/emitter 实现。
 VM 内：
 
 ```text
-/home/swift/svm-phasec/p1-evidence/probe-v2/{region,re0}-{coremark,sqlite}/
+/home/swift/svm-phasec/p1-evidence/check-v2/{region,re0}-{coremark,sqlite}/
   audit.log       # 每 final RA root/event 原始行
   hot.log         # (root,signature) entry 与 hot shape
   shape.log       # RA/spill/helper 总账
@@ -378,8 +378,8 @@ VM 内：
   stdout.log      # CRC/TOTAL oracle
 
 /home/swift/svm-phasec/p1-evidence/restored/...
-/home/swift/svm-phasec/p1-evidence/probe-source/SHA256SUMS
+/home/swift/svm-phasec/p1-evidence/check-source/SHA256SUMS
 /home/swift/svm-phasec/p1-evidence/restored-source-sha256.txt
-/home/swift/svm-phasec/p1-build-probe-v2.log
+/home/swift/svm-phasec/p1-build-check-v2.log
 /home/swift/svm-phasec/p1-build-restored.log
 ```

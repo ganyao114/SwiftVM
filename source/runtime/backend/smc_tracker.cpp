@@ -1,8 +1,10 @@
+#include "base/logging.h"
 //
 // Self-modifying code (SMC) tracking — see smc_tracker.h.
 //
 
 #include "smc_tracker.h"
+#include "runtime/common/signal_diagnostic.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -43,6 +45,7 @@ SmcTracker::SmcTracker(u64 guest_bias,
         , page_size_(static_cast<u64>(getpagesize()))
         , page_mask_(page_size_ - 1)
         , dirty_hint_enabled_(GetSvmConfig().smc_dirty_hint)
+        , debug_enabled_(GetSvmConfig().smc_dbg)
         , close_profile_enabled_(GetSvmConfig().exec_prof)
         , exit_latch_enabled_(exit_latch_enabled) {
     ASSERT((page_size_ & page_mask_) == 0);
@@ -58,7 +61,7 @@ SmcTracker::~SmcTracker() {
     const auto total_ns = close_total_ns_.load(std::memory_order_relaxed);
     const auto fast_ns = close_fast_ns_.load(std::memory_order_relaxed);
     const auto slow_ns = close_slow_ns_.load(std::memory_order_relaxed);
-    std::fprintf(stderr,
+    SVM_DIAG_PRINT(Memory,
                  "[svm-smc] dirty_hint=%u close_calls=%llu fast=%llu slow=%llu "
                  "fast_pct=%.3f total_ns=%llu fast_ns=%llu slow_ns=%llu\n",
                  dirty_hint_enabled_ ? 1u : 0u,
@@ -529,6 +532,13 @@ bool SmcTracker::HandleWriteFault(AddressSpace& space,
     }
     rec.write_protected = false;
     rec.dirty = true;
+    if (debug_enabled_ && ClaimDiagnosticSample(fault_debug_count_, 80)) {
+        SignalDiagnostic diagnostic("[smc-fault]");
+        diagnostic.Field("guest", guest);
+        diagnostic.Field("page", it->first);
+        diagnostic.Field("nodes", rec.nodes.size());
+        diagnostic.Write();
+    }
     for (const auto& tracked : rec.nodes) {
         ClearDispatchSlots(space, &current_l1, tracked);
     }

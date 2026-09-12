@@ -18,7 +18,7 @@ The repository has a 32-bit ABI descriptor and mode-aware decoder code, but ever
 constructor call in tests and translators passes `is_64bit=true`; legacy-only
 instructions are therefore marked N/A rather than implemented.
 
-A direct probe of the checked-in distorm confirms that AAA/AAD/AAM/AAS,
+A direct check of the checked-in distorm confirms that AAA/AAD/AAM/AAS,
 BOUND, DAA/DAS, INTO, and SALC decode as `I_UNDEFINED` in 64-bit mode;
 opcode 63 decodes as MOVSXD rather than ARPL.  SYSENTER/SYSEXIT still decode
 in long mode, but SwiftVM has no 32-bit Linux guest entry path or compat vDSO.
@@ -43,7 +43,7 @@ in long mode, but SwiftVM has no 32-bit Linux guest entry path or compat vDSO.
 | SYSCALL (leaf 0x80000001 EDX.11) | not advertised; SYSCALL handled | safe under-advertising |
 | RDTSCP (leaf 0x80000001 EDX.27) | not advertised; decoder missing | hidden coherently; advertise only after implementation |
 
-`RDSEED` is not present in this distorm snapshot at all: `0F C7 /7` is
+`RDSEED` is not present in this distorm capture at all: `0F C7 /7` is
 returned as `I_UNDEFINED` of size 1 in both 32- and 64-bit decode.  Supporting
 it requires a raw-byte predecode (as used for CET) or a distorm update.
 
@@ -57,7 +57,7 @@ it requires a raw-byte predecode (as used for CET) or a distorm update.
 | FXSR | FXSAVE/FXRSTOR host helpers already handled | coherent |
 | SSE + SSE2 | all non-MMX entries classified as baseline-adjacent are handled | coherent within the declared baseline |
 | MOVBE | load/store decode through ByteSwap IR | coherent |
-| RDRAND + RDSEED | both decode; RDSEED has a raw-byte predecoder for the old distorm snapshot | coherent |
+| RDRAND + RDSEED | both decode; RDSEED has a raw-byte predecoder for the old distorm capture | coherent |
 | SYSCALL + NX + LM | SYSCALL/user-mode long-mode execution is handled; SYSRET remains guest-kernel-only | coherent for userland |
 | MMX | not advertised; MMX-register-only leftovers are explicitly out of scope | coherent |
 | XSAVE/OSXSAVE | gated by SVM_XSAVE; XGETBV/XSAVE/XRSTOR wired to emitters in decoder_xsave.cc | coherent |
@@ -84,7 +84,7 @@ glibc ifunc alternatives that current CPUID leaves make unreachable.
 ## Test-fixture disassembly: decoder-version blind spots
 
 These mnemonics are emitted by the system objdump but have no enum in this old
-distorm snapshot (some are already recognized by SwiftVM's raw-byte predecoder).
+distorm capture (some are already recognized by SwiftVM's raw-byte predecoder).
 
 | objdump mnemonic | count |
 |---|---:|

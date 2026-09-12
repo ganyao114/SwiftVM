@@ -6,9 +6,9 @@ namespace swift::runtime::ir {
 
 class HIRFunction;
 
-void PlanSpillReloadRegions(HIRFunction* function,
+void RecipespillReloadRegions(HIRFunction* function,
                             backend::RegAlloc* reg_alloc,
                             const FeatureSet& features);
-void PlanSpillReloadRegions(Block* block, backend::RegAlloc* reg_alloc, const FeatureSet& features);
+void RecipespillReloadRegions(Block* block, backend::RegAlloc* reg_alloc, const FeatureSet& features);
 
 }  // namespace swift::runtime::ir

@@ -368,7 +368,7 @@ use 数精确闭合；跨块、地址复用、算术/pseudo observer、spill、�
 
 ### Scaled memory displacement encoding
 
-提交 `0fc245c` 让 identity-mode `[base + imm]` 同时接受 AArch64 unsigned scaled offset，
+提交 `0fc245c` 让 direct-mode `[base + imm]` 同时接受 AArch64 unsigned scaled offset，
 避免把已按访问宽度对齐的正位移先 `MOV` 到寄存器。pair、shift、writeback 和 bounded-bias
 路径继续使用原判定，没有新增开关。
 
@@ -442,7 +442,7 @@ ZF，既有 3-assertion repro 捕获了该问题；最终证明显式拒绝该�
 
 ### Register-offset memory EA preservation
 
-提交 `e2f9527` 让 identity 模式的 `[base + index]` 地址保持为 memory IR 的复合 operand，
+提交 `e2f9527` 让 direct 模式的 `[base + index]` 地址保持为 memory IR 的复合 operand，
 由 ARM64 memory emitter 直接使用 register-offset encoding，不再先生成中间 `GetOperand`。
 
 - 正式 smallpt 1,040,901,562→1,040,846,721，减少 54,841（0.0053%）；45 个共同 PC
@@ -455,7 +455,7 @@ ZF，既有 3-assertion repro 捕获了该问题；最终证明显式拒绝该�
 ### Fault-exact stack-push pre-index stores
 
 提交 `4821182` 对连续的 `Sub(RSP,size) -> StoreMemory -> SetHostGPR(RSP)` 做严格后端证明，
-在 identity 模式下以单条 AArch64 pre-index store 完成地址递减、存储和 RSP 发布。同步异常
+在 direct 模式下以单条 AArch64 pre-index store 完成地址递减、存储和 RSP 发布。同步异常
 发生在基址写回之前；biased-memory 和 base/data overlap（`push rsp`）继续走原路径。
 
 - 正式 smallpt 1,040,846,721→1,001,905,579，减少 38,941,142（3.7413%）；228 个共同
@@ -522,7 +522,7 @@ ARM64 emitter 分别维护并复算同一 producer 集合；既有 observer、fi
 
 提交 `613dd12` 允许唯一 U8/U16/U32 consumer 为 `Sub` 时，x19–x29 callee-saved fixed home
 直接提供 W view。既有扫描仍要求同一 read 的全部 named use 落在该 consumer，并在遇到
-同 home 写入时停止，因此 snapshot、宽度和 helper-clobber 边界不变；没有扩展到其他 op。
+同 home 写入时停止，因此 capture、宽度和 helper-clobber 边界不变；没有扩展到其他 op。
 
 - 严格 `4 8 6` A/B 的 2,757 PC / 3,597 version、100% host/entry 和 top-20 coverage、PPM
   与零 spill 全部保持；common host `580,620 -> 580,290`，减少 330（0.056836%），十个
@@ -561,11 +561,11 @@ ARM64 emitter 分别维护并复算同一 producer 集合；既有 observer、fi
 
 两个阶段都没有新增开关，没有运行长 benchmark 或完整 suite；临时 census 已删除。
 
-### Narrow logical flag identity collapse
+### Narrow logical flag direct collapse
 
 提交 `5a47163` 关闭了 smallpt 中成片出现的窄 `TEST reg,reg` 形态。前端对 U8/U16 同寄存器
 自测只读取一次，不再生成无结果消费者的 `And`；后端对无 data use 的 `Or(value, 0)` 直接
-从 `value` 发布逻辑标志。低位 `BitExtract` 只有在紧邻该精确 flag identity、只有这一处 use
+从 `value` 发布逻辑标志。低位 `BitExtract` 只有在紧邻该精确 flag direct、只有这一处 use
 且带 flags pseudo 时才允许与输入绑定。U8/U16 通过 `ADDS wzr, wzr, value, LSL #24/#16`
 一次得到正确 N/Z 并清 C/V，U32/U64 直接 `TST`；需要急切物化 PF 的旧路径仍保留。
 
@@ -580,7 +580,7 @@ ARM64 emitter 分别维护并复算同一 producer 集合；既有 observer、fi
   flags/SaveCV/CondSet focus 共通过 120 assertions，固定 seed 424242 的 ALU/mixed fuzz
   保持既有 88 / 106 divergence；
 - 严格 short collector 连续两次在 15 秒硬上限终止，均未生成 hot record。没有放宽超时，
-  没有运行长 benchmark 或完整 suite，也没有加入开关或保留 probe。
+  没有运行长 benchmark 或完整 suite，也没有加入开关或保留 check。
 
 ### NZCV publication and restore compaction
 
@@ -609,7 +609,7 @@ region published veneer 复用现有 `TargetKillsIncomingFlags` 全覆盖证明�
   通过 10 cases / 142 assertions，region/trampoline/L1 focus 通过 5 cases / 224 assertions，
   辅助 region 集通过 3 cases / 63 assertions；固定 seed 424242 的 256-iteration ALU/mixed
   fuzz 保持既有 88 / 106 divergence。没有运行长 benchmark、stress 或完整 suite，没有
-  新增开关或保留临时 probe。
+  新增开关或保留临时 check。
 
 ## 否决项
 
@@ -668,7 +668,7 @@ saved-flags compound CondSet 的 `HI/LS` 与 `GE/LT` 两指令原型通过 88-as
 - scalar-load fusion 的结构/fault 测试 2 cases / 12 assertions、新 live-publication 窗口
   测试 3 cases / 9 assertions；既有 FPR 责任测试 3 cases / 10
   assertions、resident XMM coalescing 794 assertions、scalar fixed-home tie 90 assertions、
-  resident fault/snapshot 27 assertions，Mac 与 Orb 全部通过。
+  resident fault/capture 27 assertions，Mac 与 Orb 全部通过。
 - func_tests：FLAGS 0/1 × function/block/interpreter 六格均 rc=101，checksum
   `9f52b7d59285dbe5`。
 - helper-fault 38 passed / 0 failed；clone futex/lock 在 FLAGS 0/1 下均 rc=0。
@@ -751,8 +751,8 @@ saved-flags compound CondSet 的 `HI/LS` 与 `GE/LT` 两指令原型通过 88-as
   逐字一致，function fingerprint 为 1,657 units / 11 guests 且逐项匹配。最终默认 ON 与
   rollback 套件均为 194 passed / 35 个既有 failed cases / 45 个失败断言，失败位置一致。
 - RSB/indirect 结构测试 26 assertions，覆盖七指令 L1 快路径、无 push 和无目标
-  dispatcher 路径；显式改写栈返回地址的临时 probe 在默认、L1-off 两种 RSB frame、
-  FLAGS-off 和 interpreter 下均 rc=0，probe 已删除。
+  dispatcher 路径；显式改写栈返回地址的临时 check 在默认、L1-off 两种 RSB frame、
+  FLAGS-off 和 interpreter 下均 rc=0，check 已删除。
 - 新增 production inline-L1 signal 测试 6 assertions；FLAGS=0 下 direct-link production
   全标签 11 cases / 395 assertions，默认 SMC 子集 5 cases / 268 assertions。静态
   SetLocation 的跨 module/BlockLink-off fallback 为 36 assertions，反复摘链/重编译为
@@ -797,7 +797,7 @@ saved-flags compound CondSet 的 `HI/LS` 与 `GE/LT` 两指令原型通过 88-as
    `SignExtend` publication 已关闭；同构 `Add` 仅 `-51`，不再扩池。当前 bounded census
    的 31,705 次实际 SetHostGPR 发码中，13,002 次 `GetHostGPR` 根是 guest home 间真复制。
    另有 5,157 次 `Sub` 根来自 Mac biased-memory 的栈更新；faulting StoreMemory 位于 Sub
-   与 RSP publication 之间，不能提前覆盖 x19。Linux identity 的精确形态已由 pre-index
+   与 RSP publication 之间，不能提前覆盖 x19。Linux direct 的精确形态已由 pre-index
    store 合并，因此这不是剩余 FEX 对齐池。
 2. 当前正式 smallpt 的已覆盖 link 约 6.6%。region/cycle link tail 约 2.1%，其中
    acquire poll 与跨本块 cold stub 的目标跳转不可直接删除；
@@ -814,7 +814,7 @@ saved-flags compound CondSet 的 `HI/LS` 与 `GE/LT` 两指令原型通过 88-as
    `BitCast` 559 次实际回溯为 558 次 `VecFAddScalar64` 加 1 次 `GetHostFPR`。按根统计的
    4,582 次 scalar64 copy 中，1,883 次同 home 链的严格原型也只兑现 384，且证明复杂度
    不成比例，已删除。没有新的 alias/observer 载体前不再扩池。
-4. identity `[base+imm]`、`[base+index]` 与 access-size 匹配的 scaled index 已直接进入
+4. direct `[base+imm]`、`[base+index]` 与 access-size 匹配的 scaled index 已直接进入
    memory emitter。剩余复合 EA 涉及 bias/32-bit wrapping、shift 或 AArch64 不可编码的
    scale；只有同时给出 encoding 与 wrap 证明才扩展。
 5. CoreMark 的 8/16-bit truncation 仍要求 consumer-specific 物理高位证明，并保留 U16

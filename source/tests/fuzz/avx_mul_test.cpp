@@ -26,7 +26,7 @@
 //   * the 30 VEX.L=0 rows DISAGREE, and it is Unicorn that is wrong: it runs a
 //     VEX.128 encoding with legacy SSE semantics, taking src1 from the
 //     DESTINATION rather than from VEX.vvvv and leaving bits 255:128 alone.
-//     Reduced probes show the same for vpxor and vpaddd, so it is a general
+//     Reduced checks show the same for vpxor and vpaddd, so it is a general
 //     VEX.128 defect and not something about this family.
 //
 // That leaves the VEX rows on ONE emulator, which is not enough.  So the

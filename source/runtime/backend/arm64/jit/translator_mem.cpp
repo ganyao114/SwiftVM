@@ -1,4 +1,6 @@
+#include "base/logging.h"
 #include "translator.h"
+#include "runtime/backend/gpr_coalescing_contract.h"
 
 #include <algorithm>
 #include <atomic>
@@ -25,48 +27,7 @@ ir::Value ResolveHostCoalesceBitCast(ir::Value value) {
 bool IsKnownHostWWrite(ir::Value value);
 
 bool IsHostCoalesceProducer(ir::OpCode op, bool width_chain) {
-    using O = ir::OpCode;
-    switch (op) {
-        case O::LoadImm:
-        case O::LoadMemory:
-        case O::LoadUniform:
-        case O::Zero:
-        case O::Add:
-        case O::Sub:
-        case O::And:
-        case O::AndNot:
-        case O::Or:
-        case O::Xor:
-        case O::Adc:
-        case O::Sbb:
-        case O::Mul:
-        case O::Div:
-        case O::Not:
-        case O::Neg:
-        case O::GetOperand:
-        case O::ZeroExtend32:
-        case O::SignExtend:
-        case O::LslImm:
-        case O::LslValue:
-        case O::LsrImm:
-        case O::LsrValue:
-        case O::AsrImm:
-        case O::AsrValue:
-        case O::RorImm:
-        case O::RorValue:
-        case O::ByteSwap:
-        case O::BitExtract:
-        case O::BitClear:
-        case O::Select:
-        case O::SelectZero:
-        case O::CondSelect:
-        case O::MulHigh:
-            return true;
-        case O::GetHostGPR:
-            return width_chain;
-        default:
-            return false;
-    }
+    return IsGPRPublicationProducer(op, width_chain);
 }
 
 bool IsWidthChainHostWWrite(ir::Value value, u32 target,
@@ -860,8 +821,17 @@ bool JitTranslator::ReproveScalarFPRTie(ir::Inst* inst) const {
         }
         return false;
     };
-    if (crosses_write(inst->Id(), last_use(inst), inst)) {
+    const auto result_end = last_use(inst);
+    if (crosses_write(inst->Id(), result_end, inst)) {
         return false;
+    }
+    for (auto& scan : cur_block->GetInstList()) {
+        if (scan.GetOp() == ir::OpCode::GetHostFPR &&
+            context.IsHostReadCoalesced(scan.Id()) &&
+            scan.GetArg<ir::Imm>(0).Get() == target &&
+            scan.Id() < result_end && last_use(&scan) > inst->Id()) {
+            return false;
+        }
     }
     auto tie_source = [&](ir::Inst* node) -> ir::Value {
         if (IsHostScalarFPRBinaryProducer(node->GetOp())) {
@@ -926,7 +896,7 @@ struct TsoEmissionStats {
 
     ~TsoEmissionStats() {
         if (enabled) {
-            std::fprintf(stderr,
+            SVM_DIAG_PRINT(Codegen,
                          "SVM_TSO_STATS load_sites=%llu store_sites=%llu "
                          "scalar_fast_sites=%llu alignment_check_sites=%llu "
                          "dmb_instructions=%llu\n",
@@ -987,7 +957,7 @@ void JitTranslator::ReleaseUnalignedAtomicLock(const Register& lock) {
     __ Stlr(wzr, MemOperand(lock));
 }
 
-void JitTranslator::EmitPlainAtomicLoad(ir::ValueType type,
+void JitTranslator::EmitBasicAtomicLoad(ir::ValueType type,
                                         const Register& result,
                                         const Register& address) {
     switch (type) {
@@ -1012,7 +982,7 @@ void JitTranslator::EmitPlainAtomicLoad(ir::ValueType type,
     }
 }
 
-void JitTranslator::EmitPlainAtomicStore(ir::ValueType type,
+void JitTranslator::EmitBasicAtomicStore(ir::ValueType type,
                                          const Register& value,
                                          const Register& address) {
     switch (type) {
@@ -1078,13 +1048,13 @@ void JitTranslator::EmitAtomicRMWValue(ir::AtomicRMWOp op,
 }
 
 void JitTranslator::EmitGuestToHost(const Register& dst, const Register& guest_addr) {
-    if (window_uxtw) {
+    if (memory_state.window_uxtw) {
         // pt + zext32(guest): one instruction, same as the unbounded Add.
         __ Add(dst, pt, Operand(guest_addr.W(), UXTW));
         return;
     }
-    if (guest_addr_mask) {
-        __ And(dst, guest_addr, guest_addr_mask);
+    if (memory_state.guest_addr_mask) {
+        __ And(dst, guest_addr, memory_state.guest_addr_mask);
         __ Add(dst, dst, pt);
         return;
     }
@@ -1092,7 +1062,7 @@ void JitTranslator::EmitGuestToHost(const Register& dst, const Register& guest_a
 }
 
 MemOperand JitTranslator::BiasMem(const Register& base, bool atomic) {
-    if (window_uxtw) {
+    if (memory_state.window_uxtw) {
         // Bounded 32-bit guest window: [pt, Wbase, UXTW] is the *same*
         // register-offset load the unbounded path emitted, with the
         // truncation folded into the addressing mode — zero extra cost.
@@ -1102,9 +1072,9 @@ MemOperand JitTranslator::BiasMem(const Register& base, bool atomic) {
         __ Add(mem_scratch, pt, Operand(base.W(), UXTW));
         return MemOperand{mem_scratch};
     }
-    if (guest_addr_mask) {
+    if (memory_state.guest_addr_mask) {
         // Non-32-bit window: one extra `and` with a logical immediate.
-        __ And(mem_scratch, base, guest_addr_mask);
+        __ And(mem_scratch, base, memory_state.guest_addr_mask);
         if (!atomic) {
             return MemOperand{mem_scratch, pt};
         }
@@ -1125,7 +1095,7 @@ MemOperand JitTranslator::BiasMem(const Register& base, s64 imm, bool atomic) {
     if (imm == 0) {
         return BiasMem(base, atomic);
     }
-    if (window_uxtw) {
+    if (memory_state.window_uxtw) {
         // 32-bit add wraps mod 2^32, so the displacement is applied *inside*
         // the window and the truncation is again free.
         if (imm > 0) {
@@ -1145,8 +1115,8 @@ MemOperand JitTranslator::BiasMem(const Register& base, s64 imm, bool atomic) {
     } else {
         __ Sub(mem_scratch, base, -imm);
     }
-    if (guest_addr_mask) {
-        __ And(mem_scratch, mem_scratch, guest_addr_mask);
+    if (memory_state.guest_addr_mask) {
+        __ And(mem_scratch, mem_scratch, memory_state.guest_addr_mask);
     }
     if (atomic) {
         __ Add(mem_scratch, mem_scratch, pt);
@@ -1161,7 +1131,7 @@ void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
                    "GetHostGPR coalescing proof diverged at IR {}", inst->Id());
         return;
     }
-    if (fused_pin_gpr_reads.contains(inst)) {
+    if (pinned_gprs.fused_pin_gpr_reads.contains(inst)) {
         return;
     }
     if (guest_state_map.ValueFullyResident(inst)) {
@@ -1170,17 +1140,14 @@ void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
     auto offset = inst->GetArg<ir::Imm>(1).Get();
     auto reg_index = inst->GetArg<ir::Imm>(0).Get();
     const u32 value_size = ir::GetValueSizeByte(inst->ReturnType());
-    const bool pin_ext_reg =
-            reg_index <= 9 || reg_index == 19 || reg_index == 20 ||
-            reg_index == 21 || reg_index == 22 || reg_index == 23 ||
-            reg_index == 29;
+    const bool pin_ext_reg = IsFixedGPRHome(reg_index);
     if (offset == 0 && pin_ext_reg &&
         inst->GetUses() != 0 && value_size <= sizeof(u32)) {
         auto& list = cur_block->GetInstList();
         for (auto it = std::next(list.iterator_to(*inst)); it != list.end(); ++it) {
             if (it->GetOp() == ir::OpCode::SetHostGPR &&
                 it->GetArg<ir::Imm>(1).Get() == reg_index) {
-                break;  // the materialized read must retain snapshot semantics
+                break;  // the computed read must retain capture semantics
             }
             u32 named_uses = 0;
             for (auto used : it->GetValues()) {
@@ -1236,7 +1203,7 @@ void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
                 direct_adjacent_narrow_flags ||
                 direct_callee_pin_sub ||
                 direct_extend || direct_sign_extend || direct_store) {
-                fused_pin_gpr_reads.emplace(inst, static_cast<u16>(reg_index));
+                pinned_gprs.fused_pin_gpr_reads.emplace(inst, static_cast<u16>(reg_index));
                 return;
             }
             break;
@@ -1307,43 +1274,43 @@ void JitTranslator::EmitGetHostFPR(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
-    if (auto direct = pinned_select_publications.find(inst);
-        direct != pinned_select_publications.end()) {
+    if (auto direct = pinned_gprs.pinned_select_publications.find(inst);
+        direct != pinned_gprs.pinned_select_publications.end()) {
         const auto reproved = MatchPinnedSelectPublication(inst);
         ASSERT_MSG(reproved && *reproved == direct->second,
                    "pinned SelectZero publication proof diverged at IR {}",
                    inst->Id());
         return;
     }
-    if (auto view = pinned_gpr_publication_views.find(inst);
-        view != pinned_gpr_publication_views.end()) {
+    if (auto view = pinned_gprs.pinned_gpr_publication_views.find(inst);
+        view != pinned_gprs.pinned_gpr_publication_views.end()) {
         const auto reproved = MatchPinnedGPRPublicationView(inst);
         ASSERT_MSG(reproved && *reproved == view->second,
                    "pinned GPR publication view proof diverged at IR {}", inst->Id());
     }
-    if (auto direct = spilled_gpr_publications.find(inst);
-        direct != spilled_gpr_publications.end()) {
+    if (auto direct = pinned_gprs.spilled_gpr_publications.find(inst);
+        direct != pinned_gprs.spilled_gpr_publications.end()) {
         const auto reproved = MatchSpilledGPRPublication(inst);
         ASSERT_MSG(reproved && *reproved == direct->second,
                    "spilled GPR publication proof diverged at IR {}",
                    inst->Id());
         return;
     }
-    if (auto update = pinned_load_update_instructions.find(inst);
-        update != pinned_load_update_instructions.end() &&
+    if (auto update = pinned_gprs.pinned_load_update_instructions.find(inst);
+        update != pinned_gprs.pinned_load_update_instructions.end() &&
         inst == update->second.publication) {
         const auto reproved = MatchPinnedLoadUpdate(update->second.update);
         ASSERT_MSG(reproved && *reproved == update->second,
                    "pinned load update proof diverged at IR {}", inst->Id());
         return;
     }
-    if (dead_pinned_gpr_writes.contains(inst)) {
+    if (pinned_gprs.dead_pinned_gpr_writes.contains(inst)) {
         ASSERT_MSG(IsDeadPinnedGPRWrite(inst),
                    "dead pinned GPR write proof diverged at IR {}", inst->Id());
         return;
     }
-    if (auto transfer = pinned_gpr_value_transfers.find(inst);
-        transfer != pinned_gpr_value_transfers.end()) {
+    if (auto transfer = pinned_gprs.pinned_gpr_value_transfers.find(inst);
+        transfer != pinned_gprs.pinned_gpr_value_transfers.end()) {
         const auto reproved = MatchPinnedGPRValueTransfer(inst);
         ASSERT_MSG(reproved && *reproved == transfer->second,
                    "pinned GPR value transfer proof diverged at IR {}",
@@ -1352,8 +1319,8 @@ void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
                XRegister(transfer->second.source));
         return;
     }
-    if (auto copy = pinned_gpr_copies.find(inst);
-        copy != pinned_gpr_copies.end()) {
+    if (auto copy = pinned_gprs.pinned_gpr_copies.find(inst);
+        copy != pinned_gprs.pinned_gpr_copies.end()) {
         const auto reproved = MatchPinnedGPRCopy(inst);
         ASSERT_MSG(reproved && reproved->read == copy->second.read &&
                            reproved->narrow_extend ==
@@ -1414,31 +1381,32 @@ void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
     const auto bit_width = ir::GetValueSizeByte(value.Type()) * 8;
     ASSERT_MSG(bit_offset + bit_width <= 64,
                "invalid fixed GPR write offset {} width {}", bit_offset, bit_width);
-    const bool pin_ext_reg =
-            reg_index <= 9 || reg_index == 19 || reg_index == 20 ||
-            reg_index == 21 || reg_index == 22 || reg_index == 23 ||
-            reg_index == 29;
+    const bool pin_ext_reg = IsFixedGPRHome(reg_index);
     if (bit_offset == 0 && bit_width == 32 && pin_ext_reg) {
-        const bool normalize_resident_home = residence &&
+        const bool adjust_resident_home = residence &&
                 value_reg.W() == host_reg.W() &&
                 !residence->extension.KnownZeroAbove(32);
-        if (value_reg.W() != host_reg.W() || normalize_resident_home) {
+        if (value_reg.W() != host_reg.W() || adjust_resident_home) {
             __ Mov(host_reg.W(), value_reg.W());
         }
     } else if (bit_offset == 0 && bit_width == 64) {
+        // x86-64 EAX/ECX/EDX writes reach here as a U64
+        // ZeroExtend32To64 value so memory-backed StoreUniform can still
+        // replace all eight context bytes. For the W55 pinned registers,
+        // use the architectural W write: AArch64 clears bits [63:32]
+        // naturally, exactly matching the x86 rule.
+        const bool zext32 = fused_zext32 || (value.Def() &&
+                value.Def()->GetOp() == ir::OpCode::ZeroExtend32To64);
         if (value_reg != host_reg) {
-            // x86-64 EAX/ECX/EDX writes reach here as a U64
-            // ZeroExtend32To64 value so memory-backed StoreUniform can still
-            // replace all eight context bytes. For the W55 pinned registers,
-            // use the architectural W write: AArch64 clears bits [63:32]
-            // naturally, exactly matching the x86 rule.
-            const bool zext32 = fused_zext32 || (value.Def() &&
-                    value.Def()->GetOp() == ir::OpCode::ZeroExtend32To64);
             if (pin_ext_reg && zext32) {
                 __ Mov(host_reg.W(), value_reg.W());
             } else {
                 __ Mov(host_reg, value_reg);
             }
+        } else if (pin_ext_reg && zext32) {
+            // A same-register U32->U64 publication still owes the
+            // architectural upper-half zeroing: mov wN,wN clears xN[63:32].
+            __ Mov(host_reg.W(), host_reg.W());
         }
     } else {
         // Low byte/word and AH/CH/DH (offset == 1) all lower to one BFI,
@@ -1646,7 +1614,7 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     };
     ir::Inst* narrow_consumer = nullptr;
     bool direct_narrow_consumer = false;
-    if (mem_narrow_fuse && ir::GetValueSizeByte(type) <= 2 && inst->GetUses() == 1) {
+    if (memory_state.mem_narrow_fuse && ir::GetValueSizeByte(type) <= 2 && inst->GetUses() == 1) {
         auto& list = cur_block->GetInstList();
         auto it = list.iterator_to(*inst);
         const auto adjacent = std::next(it);
@@ -1675,7 +1643,7 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
             break;
         }
     }
-    // Keep the established materialized-address path for generic Q loads and
+    // Keep the established computed-address path for generic Q loads and
     // do not consume the synthetic post-index produced by the generic address
     // peephole. A1 opens only the exact bounded W39 Plus form, for which the
     // SIMD register-offset encoding can carry pt + UXTW(guest EA) directly.
@@ -1686,15 +1654,15 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
             q_access && StructuredAddressModeEnabled(context.GetFeatures()) &&
             !operand.GetRight().Null();
     const bool fold_host_base =
-            HostBaseFoldEligible(mem_hostbase_fold,
-                                 use_memory_base,
-                                 guest_addr_mask,
+            HostBaseFoldEligible(memory_state.mem_hostbase_fold,
+                                 memory_state.use_memory_base,
+                                 memory_state.guest_addr_mask,
                                  type,
                                  structured_guest_ea,
                                  operand.GetOp() == ir::OperandOp::Plus,
                                  false);
-    auto load_update = pinned_load_updates.find(inst);
-    auto vixl_operand = load_update != pinned_load_updates.end()
+    auto load_update = pinned_gprs.pinned_load_updates.find(inst);
+    auto vixl_operand = load_update != pinned_gprs.pinned_load_updates.end()
             ? MemOperand{XRegister(load_update->second.target),
                          load_update->second.offset,
                          PreIndex}
@@ -1705,7 +1673,7 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
                              !q_access,
                              structured_guest_ea,
                              inst);
-    if (load_update != pinned_load_updates.end()) {
+    if (load_update != pinned_gprs.pinned_load_updates.end()) {
         const auto reproved = MatchPinnedLoadUpdate(load_update->second.update);
         ASSERT_MSG(reproved && *reproved == load_update->second,
                    "pinned load update proof diverged at IR {}", inst->Id());
@@ -1806,9 +1774,9 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
             q_access && StructuredAddressModeEnabled(context.GetFeatures()) &&
             !operand.GetRight().Null();
     const bool fold_host_base =
-            HostBaseFoldEligible(mem_hostbase_fold,
-                                 use_memory_base,
-                                 guest_addr_mask,
+            HostBaseFoldEligible(memory_state.mem_hostbase_fold,
+                                 memory_state.use_memory_base,
+                                 memory_state.guest_addr_mask,
                                  type,
                                  structured_guest_ea,
                                  operand.GetOp() == ir::OperandOp::Plus,
@@ -1840,15 +1808,15 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
             return WRegister(residence->home);
         }
         if (value.Def()) {
-            if (auto it = pinned_memory_values.find(value.Def());
-                it != pinned_memory_values.end()) {
+            if (auto it = memory_state.pinned_memory_values.find(value.Def());
+                it != memory_state.pinned_memory_values.end()) {
                 ASSERT_MSG(MatchPinnedMemoryValue(value.Def()) == it->second,
                            "pinned memory value proof drifted before store at IR {}",
                            inst->Id());
                 return WRegister(it->second);
             }
-            if (auto it = fused_pin_gpr_reads.find(value.Def());
-                it != fused_pin_gpr_reads.end()) {
+            if (auto it = pinned_gprs.fused_pin_gpr_reads.find(value.Def());
+                it != pinned_gprs.fused_pin_gpr_reads.end()) {
                 return WRegister(it->second);
             }
         }
@@ -1933,7 +1901,7 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
     // naturally aligned address, so materialize any offset and branch around
     // it for x86's permitted unaligned accesses. Byte accesses are naturally
     // aligned by definition. Hosts without LRCPC and vector accesses retain
-    // the proven plain-load + dmb ishld half-barrier.
+    // the proven basic-load + dmb ishld half-barrier.
     if (scalar_fast_path) {
         Register address = vixl_operand.GetBaseRegister();
         if (!vixl_operand.IsImmediateOffset() || vixl_operand.GetOffset() != 0) {
@@ -2078,7 +2046,7 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
                            false,
                            inst);
 
-    // Gate the complete scalar fast path with the same probe as LDAPR. This
+    // Gate the complete scalar fast path with the same check as LDAPR. This
     // keeps non-LRCPC hosts on the previous dmb+str implementation and makes
     // SVM_ARM64_LRCPC=0 an exact A/B baseline.
     if (scalar_fast_path) {
@@ -2253,7 +2221,7 @@ void JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
 
     load_lambda(dst, x0);
     load_lambda(src, x1);
-    if (use_memory_base) {
+    if (memory_state.use_memory_base) {
         EmitGuestToHost(x0, x0);
         EmitGuestToHost(x1, x1);
     }
@@ -2319,7 +2287,7 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
     // under guest address virtualization the pt bias must be folded in
     // explicitly (reserved scratch: CAS is VOID-adjacent and GetTmpX cannot
     // be trusted here — see defines.h mem_scratch).
-    if (use_memory_base) {
+    if (memory_state.use_memory_base) {
         EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
     }
@@ -2348,11 +2316,11 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
             }
             LoadUnalignedAtomicLockAddress(atomic_pair_scratch);
             AcquireUnalignedAtomicLock(atomic_pair_scratch, result);
-            EmitPlainAtomicLoad(type, result, address);
+            EmitBasicAtomicLoad(type, result, address);
             Label cas_done;
             __ Cmp(result, context.R(expected, true));
             __ B(&cas_done, ne);
-            EmitPlainAtomicStore(type, context.R(desired, true), address);
+            EmitBasicAtomicStore(type, context.R(desired, true), address);
             __ Bind(&cas_done);
             ReleaseUnalignedAtomicLock(atomic_pair_scratch);
             if (lse) {
@@ -2434,7 +2402,7 @@ void JitTranslator::EmitCompareAndSwap128(ir::Inst* inst) {
 
     MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
               flags_audit_block_edge);
-    if (use_memory_base) {
+    if (memory_state.use_memory_base) {
         EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
     }
@@ -2449,7 +2417,7 @@ void JitTranslator::EmitCompareAndSwap128(ir::Inst* inst) {
 
     // The locked frontend rejects misalignment before this instruction. The
     // no-LOCK form is architecturally legal when unaligned (confirmed under
-    // Rosetta), so preserve it with a serialized plain pair load/store.
+    // Rosetta), so preserve it with a serialized basic pair load/store.
     __ Tst(address, 15);
     __ B(&aligned, eq);
     LoadUnalignedAtomicLockAddress(atomic_scratch);
@@ -2504,7 +2472,7 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
 
     MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
               flags_audit_block_edge);
-    if (use_memory_base) {
+    if (memory_state.use_memory_base) {
         EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
     }
@@ -2533,8 +2501,8 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
             }
             LoadUnalignedAtomicLockAddress(atomic_pair_scratch);
             AcquireUnalignedAtomicLock(atomic_pair_scratch, result);
-            EmitPlainAtomicLoad(type, result, address);
-            EmitPlainAtomicStore(type, context.R(desired, true), address);
+            EmitBasicAtomicLoad(type, result, address);
+            EmitBasicAtomicStore(type, context.R(desired, true), address);
             ReleaseUnalignedAtomicLock(atomic_pair_scratch);
             if (lse) {
                 tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
@@ -2590,7 +2558,7 @@ void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
 
     MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
               flags_audit_block_edge);
-    if (use_memory_base) {
+    if (memory_state.use_memory_base) {
         EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
     }
@@ -2619,13 +2587,13 @@ void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
             }
             LoadUnalignedAtomicLockAddress(atomic_pair_scratch);
             AcquireUnalignedAtomicLock(atomic_pair_scratch, result);
-            EmitPlainAtomicLoad(type, result, address);
+            EmitBasicAtomicLoad(type, result, address);
             if (ir::GetValueSizeByte(type) == 8) {
                 __ Add(atomic_scratch, result, context.X(addend));
             } else {
                 __ Add(atomic_scratch.W(), result.W(), context.W(addend));
             }
-            EmitPlainAtomicStore(type, atomic_scratch, address);
+            EmitBasicAtomicStore(type, atomic_scratch, address);
             ReleaseUnalignedAtomicLock(atomic_pair_scratch);
             if (lse) {
                 tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
@@ -2688,7 +2656,7 @@ void JitTranslator::EmitAtomicRMW(ir::Inst* inst) {
 
     MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
               flags_audit_block_edge);
-    if (use_memory_base) {
+    if (memory_state.use_memory_base) {
         EmitGuestToHost(mem_scratch, address);
         address = mem_scratch;
     }
@@ -2704,9 +2672,9 @@ void JitTranslator::EmitAtomicRMW(ir::Inst* inst) {
         __ B(&aligned, eq);
         LoadUnalignedAtomicLockAddress(atomic_pair_scratch);
         AcquireUnalignedAtomicLock(atomic_pair_scratch, result);
-        EmitPlainAtomicLoad(type, result, address);
+        EmitBasicAtomicLoad(type, result, address);
         EmitAtomicRMWValue(op, type, atomic_scratch, result, operand, carry);
-        EmitPlainAtomicStore(type, atomic_scratch, address);
+        EmitBasicAtomicStore(type, atomic_scratch, address);
         ReleaseUnalignedAtomicLock(atomic_pair_scratch);
         __ B(&done);
     }

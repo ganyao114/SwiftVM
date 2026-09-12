@@ -44,7 +44,7 @@ SQLite 与 FEX 的共同正差 root 中，当前可归因的正向超额合计�
 
 - function-level 编译默认开启，从一个入口解码最多 128 个可达块；已知入口截断和 late split 重解码已经落地。
 - 默认 pin level 2 已驻留 15/16 个 guest GPR，仅 R15 不在默认映射；level 3 已实测为净负，不再以“补齐最后一个 pin”解释主要差距。
-- XMM resident ABI、GPR/FPR fault snapshot、局部 fixed-home coalescing 已存在。
+- XMM resident ABI、GPR/FPR fault capture、局部 fixed-home coalescing 已存在。
 - direct link、静态调用、BL/call-entry continuation、fault-backed indirect-L1 safepoint、RSB/continuation invalidation 已有生产实现。
 - 块内 flags 消除、Direct carry、pending-flags entry bypass、完整和部分 NZCV merge 已有实现。
 - 常见窄 load、窄 store、32 位 count/div/rem、低位 extract 和简单 EA 融合已经覆盖。
@@ -59,7 +59,7 @@ SQLite 与 FEX 的共同正差 root 中，当前可归因的正向超额合计�
 函数入口所有权
     -> 外部入口契约与双入口
         -> flags 边状态版本化
-        -> guest 值版本与 fault snapshot
+        -> guest 值版本与 fault capture
             -> 宽度事实跨边传播
     -> continuation 覆盖与热冷布局
         -> 精确 helper ABI / 字符串循环优化
@@ -123,7 +123,7 @@ SQLite 与 FEX 的共同正差 root 中，当前可归因的正向超额合计�
 | code object / LinkManager | 发布入口表，按 generation 链接、unlink 和 invalidation |
 | fault/SMC metadata | 把一个代码对象的全部已发布入口纳入同一所有权事务 |
 
-`translator_terminal.cpp` 只消费已经规划好的 entry/link plan，不继续堆叠入口分析逻辑。
+`translator_terminal.cpp` 只消费已经规划好的 entry/link recipe，不继续堆叠入口分析逻辑。
 
 ### 5.5 分阶段落地
 
@@ -190,7 +190,7 @@ return entry 消费该契约并完成第五步的首轮收益账。未经 live-i
 - direct link、SMC unlink、signal recovery 和非 FlagM 路径保持正确。
 - 不允许为了消除一条 `CFINV` 在目标入口增加更大的通用 merge。
 
-## 7. P1：snapshot-aware guest 值版本与宽度事实
+## 7. P1：capture-aware guest 值版本与宽度事实
 
 ### 7.1 问题定义
 
@@ -202,7 +202,7 @@ return entry 消费该契约并完成第五步的首轮收益账。未经 live-i
 - helper 边界同步。
 - 32 位写零扩展和窄值在观察点前的架构语义。
 
-此前 multi-use snapshot reuse 和直接 pinned immediate publication 虽然缩小形态，但改变了 CRC，说明局部 alias whitelist 无法表达旧值观察关系。
+此前 multi-use capture reuse 和直接 pinned immediate publication 虽然缩小形态，但改变了 CRC，说明局部 alias whitelist 无法表达旧值观察关系。
 
 ### 7.2 设计
 
@@ -219,22 +219,22 @@ return entry 消费该契约并完成第五步的首轮收益账。未经 live-i
 基本规则：
 
 - 同一 value version 才能复用 resident value；寄存器编号相同不代表版本相同。
-- fixed-home 被新架构版本覆盖后，仍存活的旧版本必须有独立位置或明确 snapshot。
-- 可能 fault 的指令执行前，snapshot plan 必须能恢复该时刻的全部架构可见值。
-- 32 位 guest 写只有在 snapshot 已表达高 32 位为零时，才能省略物理 self-extension。
+- fixed-home 被新架构版本覆盖后，仍存活的旧版本必须有独立位置或明确 capture。
+- 可能 fault 的指令执行前，capture recipe 必须能恢复该时刻的全部架构可见值。
+- 32 位 guest 写只有在 capture 已表达高 32 位为零时，才能省略物理 self-extension。
 - CFG join 仅在所有前驱的 value version 和 width facts 一致时保留事实，否则退化为较弱事实或规范化值。
 
 ### 7.3 实现边界
 
 - 新的 guest-state analysis 模块只计算版本、位置和事实，不发射 ARM64 指令。
 - 现有 GPR/FPR coalescer 消费分析结果，不各自维护第二套版本判断。
-- 现有 uniform/fault snapshot pass 负责把观察点需要的版本转换为保存计划。
+- 现有 uniform/fault capture pass 负责把观察点需要的版本转换为保存计划。
 - ARM64 operand、memory 和 flags emitter 只根据计划选择 W/X、`STRB/STRH`、extended address 或显式 bridge。
 
 ### 7.4 分阶段落地
 
 1. 只追踪 pinned GPR 的 full-width value version，替换当前最保守的局部 fixed-home lifetime 判断。
-2. 接入 fault snapshot，证明旧版本不会被后续观察后再允许跨多 use 复用。
+2. 接入 fault capture，证明旧版本不会被后续观察后再允许跨多 use 复用。
 3. 加入 `KnownZeroAbove(8/16/32)` 和 `KnownSignExtended(8/16/32)`。
 4. 让 memory operand、narrow store、compare 和 branch consumer 消费 width facts。
 5. GPR 路径稳定后再复用到 XMM scalar lane；不同时重写 GPR 和 FPR 分配器。
@@ -285,7 +285,7 @@ continuation 不是空白机制。现有实现已有：
 - 是否读取或写入 guest state。
 - 是否观察或破坏 host NZCV。
 - 是否可能 fault、回调或重入 dispatcher。
-- 是否为 leaf，以及是否需要完整 fault snapshot。
+- 是否为 leaf，以及是否需要完整 fault capture。
 
 backend 根据 contract 只发布真正被 helper 观察或破坏的状态。未知 helper 继续使用规范保守 ABI，这是必要的正确性边界，不建立第二套可选运行时机制。
 
@@ -295,7 +295,7 @@ consumer。
 
 ### 9.2 选择规则
 
-- 只从加权 opcode ledger 证明 helper snapshot/call tax 占主导的 root 开始。
+- 只从加权 opcode ledger 证明 helper capture/call tax 占主导的 root 开始。
 - 优先纯 leaf、固定签名、无回调、无 guest-state 隐式访问的 helper。
 - 不把 `PCMPISTRI EqualAny` 重新 outline；该路线曾缩小静态代码但使 warmed wall-time 回退。
 - `preserve_all` 只作为已存在的编译器 ABI 能力，不以“保存更多寄存器”替代精确 clobber 描述。
@@ -323,7 +323,7 @@ consumer。
 | A | FunctionEntryContract 与入口 provenance | `freeSpace` | 元数据路径不改变代码；入口所有权测试完整 |
 | B | 首类 external veneer 与 code-object 多入口 invalidation | `freeSpace` | 目标 root 实质缩小，三语料正确，无 top-20 增长 |
 | C | EdgeFlagsState 统一 region/direct/static entry | `xsputn`、Vdbe、printf | flags 指令成组下降，混合 join 正确 |
-| D | GuestStateMap 与 GPR fault snapshot 版本 | DefaultRowEst、pcache、powerOfTen | move/width bridge 成组下降，fault/CRC 正确 |
+| D | GuestStateMap 与 GPR fault capture 版本 | DefaultRowEst、pcache、powerOfTen | move/width bridge 成组下降，fault/CRC 正确 |
 | E | width facts 跨边传播 | 窄值热点 | 不增加额外 publication，不扩大未知 ABI 假设 |
 | F | continuation contract 收口与 hot/cold emission | printf、xsputn、powerOfTen | 热路径缩小且短 wall-time 不回退 |
 | G | 精确 helper ABI、字符串和复杂 EA | helper/string roots | ledger 证明收益来源，静态与短 wall-time 同向 |
@@ -352,9 +352,9 @@ consumer。
 
 ## 13. 测试与代码约束
 
-- 测试只覆盖状态契约的分界：internal/external entry、version join、fault snapshot、SMC generation 和 continuation miss。
+- 测试只覆盖状态契约的分界：internal/external entry、version join、fault capture、SMC generation 和 continuation miss。
 - 不为每个 opcode 复制相同测试；一个机制测试覆盖一个不变量。
-- 临时 census/probe 完成归因后删除；最终树不保留调试输出、临时路径或新 env 开关。
+- 临时 census/check 完成归因后删除；最终树不保留调试输出、临时路径或新 env 开关。
 - 新分析逻辑按职责拆到独立模块，emitter 文件只保留指令生成。
 - 机制完全迁移后删除被替代的旧表示和分支，不保留双协议兜底。
 - 提交作者保持 `swift_gan`，提交信息不带任务编号；按阶段本地提交，不主动 push。
@@ -365,7 +365,7 @@ consumer。
 - 无契约地把所有无条件 direct target 强制内部化。
 - 只移动 `current_loc` store，而不表示 continuation/publication 顺序。
 - 全局 inverted-carry ABI 或 broad flags full elimination。
-- 依靠局部 alias whitelist 复用 multi-use fixed-home snapshot。
+- 依靠局部 alias whitelist 复用 multi-use fixed-home capture。
 - 重新把 SSE4.2 EqualAny 内联循环 outline 成 helper。
 - 仅扩大 function/region block window；冷块增多会放大总静态代码。
 - 在 hot/cold emission 分离前进行任意 hot-block trace reorder。
@@ -420,7 +420,7 @@ publication 的 live range，曾在 SQLite 单线程短跑中触发确定性 hea
 保留原图的寄存器所有权，同时删除三条中间指令。matcher 与 emitter 均复证完整形态，并拒绝
 共享 shift、局部 condition 和现有 narrow-extract fusion。
 
-双精度移位随后通过 identity `Or` 保存 PF。flags-register ABI 下只为已确认的 funnel 结果保留
+双精度移位随后通过 direct `Or` 保存 PF。flags-register ABI 下只为已确认的 funnel 结果保留
 parity token，并把原始融合结果作为 token producer；不全局改变普通 `Or/Xor`。全局补齐 logical
 token 虽能修正 PF，却使 SQLite 增长 592 条，已完整撤销。最终窄化方案的门禁结果：
 
@@ -432,7 +432,7 @@ token 虽能修正 PF，却使 SQLite 增长 592 条，已完整撤销。最终�
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`。
 - CoreMark 20k 保持 299 roots / 37,160 条，`crcfinal=0x382f`。
 - 32/64 位 SHLD/SHRD 六组立即数的 result、CF、PF、ZF、SF 与原生 x86 的 96 字节结果逐字节一致；
-  临时差分 probe 已删除。Mac/Orb 的前端路径、fusion 拒绝边界、parity token 和 logical flags
+  临时差分 check 已删除。Mac/Orb 的前端路径、fusion 拒绝边界、parity token 和 logical flags
   定向测试通过。
 
 该阶段没有新增环境开关、诊断路径或运行时兜底。下一批继续按加权 root 残差选择
@@ -445,11 +445,11 @@ flags ABI 扩张。
 RDI 保留的普通 host 临时寄存器取地址。RCX 的 fixed home 此时已经保存同一个 full-width value
 version，因此旧值不需要第二个物理驻留位置。
 
-新的独立 ARM64 planner 追踪这一版本发布关系。它只接受零偏移、完整 64 位、不同 pinned home
+新的独立 ARM64 builder 追踪这一版本发布关系。它只接受零偏移、完整 64 位、不同 pinned home
 之间的发布，枚举透明 full-width alias 的全部 use，并确认目标 home 在最后一个转移 use 前没有被
 覆盖。caller-saved home 遇到 helper clobber 时拒绝。faulting memory use 不会结束该版本：发布后
 source 和 target 的架构槽均有正确值，source 后续覆盖产生新版本，旧版本仍由 target home 保存，
-现有 fault snapshot 可直接恢复两者。matcher 与 emitter 都复证同一计划。
+现有 fault capture 可直接恢复两者。matcher 与 emitter 都复证同一计划。
 
 首个 consumer 只让完整 value version 供后续 memory address 使用，不同时扩张到普通 ALU、窄值和
 FPR。`sqlite3DefaultRowEst` 的入口由 `mov x9, x1; mov x23, x9` 收敛为 `mov x23, x1`，后续三次
@@ -462,7 +462,7 @@ load 直接读取 x23。短门禁结果：
 - smallpt 的短 oracle 保持 PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`；共同 root 发码不变。
 - CoreMark 20k 保持 299 roots / 37,160 条，`crcfinal=0x382f`。
-- Mac/Orb 的跨多个 faulting load 版本复用、目标 home 覆盖失效和既有 pinned snapshot 边界测试通过。
+- Mac/Orb 的跨多个 faulting load 版本复用、目标 home 覆盖失效和既有 pinned capture 边界测试通过。
 
 该阶段没有新增环境开关、诊断路径或运行时兜底。下一步继续在同一 root 中加入
 `KnownZeroAbove(16/32)`，让 compare/select consumer 消费宽度事实；不把 full-width transfer
@@ -470,11 +470,11 @@ load 直接读取 x23。短门禁结果：
 
 ### 16.4 pinned GPR 窄值宽度事实消费
 
-窄 load 发布到 pinned GPR 后，原 planner 只允许扩展节点和少数低位 alias 使用该 fixed home。
-优化器把低 32 位 alias 消去、让 `Select` 直接消费 `ZeroExtend32` 时，planner 会因 producer 多 use
+窄 load 发布到 pinned GPR 后，原 builder 只允许扩展节点和少数低位 alias 使用该 fixed home。
+优化器把低 32 位 alias 消去、让 `Select` 直接消费 `ZeroExtend32` 时，builder 会因 producer 多 use
 拒绝整条发布链，后端随后为同一个已知高位为零的值保留普通临时寄存器并产生多次 move。
 
-本阶段没有增加全局宽度格或新的 IR。pinned GPR planner 现在枚举窄扩展 producer 的完整 use set，
+本阶段没有增加全局宽度格或新的 IR。pinned GPR builder 现在枚举窄扩展 producer 的完整 use set，
 只为 publication 之后、精确同宽的 U32 ALU/Select consumer 建立 `(definition, consumer)` 固定 home
 映射；低位 `BitExtract` 仍按原有单 use 规则证明。目标 home 在最后一个 consumer 前被覆盖，或 use
 集合出现未审核的 consumer 时，整条计划拒绝。`Select` emitter 只在该精确映射存在时读取 pinned W
@@ -495,7 +495,7 @@ view，其余路径继续使用寄存器分配结果。
 - Mac/Orb 的 pinned 相关 25 个用例、97 条断言通过；新增边界只验证 Select 直接消费和目标 home
   覆盖失效。
 
-该阶段没有新增环境开关、诊断日志、临时 probe 或运行时兜底。下一批继续从剩余加权 root 中选择
+该阶段没有新增环境开关、诊断日志、临时 check 或运行时兜底。下一批继续从剩余加权 root 中选择
 能共享同一状态事实的 compare/flags consumer，或转向 continuation hot/cold contract；不把
 consumer allowlist 扩成通用寄存器别名系统。
 
@@ -504,8 +504,8 @@ consumer allowlist 扩成通用寄存器别名系统。
 full-width SSA value 写入 pinned GPR 后，fixed home 已经承载同一 value version。原后端仍为后续
 零偏移低位 `BitExtract` 分配普通临时寄存器，因此在 compare 和地址计算前生成 `lsr W, W, #0`。
 
-本阶段新增独立的 ARM64 publication-view planner。它只接受 publication 之后、单 use、零偏移的
-U8/U16/U32 `BitExtract`，且 consumer 必须是精确同宽的 `Add`、`Sub` 或 `Select`。planner 枚举
+本阶段新增独立的 ARM64 publication-view builder。它只接受 publication 之后、单 use、零偏移的
+U8/U16/U32 `BitExtract`，且 consumer 必须是精确同宽的 `Add`、`Sub` 或 `Select`。builder 枚举
 producer 的完整 ordinary use set；目标 fixed home 在最后一个 consumer 前被覆盖，caller-saved
 目标跨 helper，或出现未审核 consumer 时整条计划拒绝。`SetHostGPR` 仍按原路径发布值，低位 alias
 只在该证明成立时读取目标 W view，没有引入新的 IR、运行时协议或兜底路径。
@@ -521,7 +521,7 @@ view，root 从 164 降到 161，相对 FEX 120 条的残差降到 41 条。短�
 - CoreMark 显式 20k 保持 300 roots，`37,157 -> 37,156`，无增长；`crcfinal=0x382f`。
 - Mac/Orb 的 pinned 与 full-width publication 定向测试通过，覆盖正向复用和目标 home 覆盖失效。
 
-该阶段没有新增环境开关、诊断日志、临时 probe 或运行时兜底。后续宽度事实仍按 value version 和
+该阶段没有新增环境开关、诊断日志、临时 check 或运行时兜底。后续宽度事实仍按 value version 和
 观察边界扩展，不把 fixed-home view 变成全局寄存器别名。
 
 ### 16.6 SelectZero 结果的 pinned 低位直接发布
@@ -530,8 +530,8 @@ view，root 从 164 降到 161，相对 FEX 120 条的残差降到 41 条。短�
 `SelectZero` 结果放入普通临时寄存器，随后再 move 到 pinned GPR。这里真正需要发布的是选择结果的
 低 32 位，而不是重新构造一个 guest value version。
 
-本阶段新增独立的分配后 publication planner。它只接受零偏移、非 dead、未由 RA 合并的 pinned
-`SetHostGPR`，并要求来源精确为 `ZeroExtend32To64(SelectZero(...))`。planner 保留原有 IR 和 RA
+本阶段新增独立的分配后 publication builder。它只接受零偏移、非 dead、未由 RA 合并的 pinned
+`SetHostGPR`，并要求来源精确为 `ZeroExtend32To64(SelectZero(...))`。builder 保留原有 IR 和 RA
 生命周期，枚举 extension 以及 publication 之后零偏移 U32 alias 的完整 ordinary use set；producer
 到 publication 之间存在 fault、helper、架构观察或目标 home 覆盖时拒绝，publication 到最后一个
 映射 use 之间存在目标覆盖，或 caller-saved home 跨 helper 时同样拒绝。证明成立后，`EmitSelectZero`
@@ -556,7 +556,7 @@ view，root 从 164 降到 161，相对 FEX 120 条的残差降到 41 条。短�
 
 热冷 block-tail 延迟发射和通用零常量 SSA 删除两个原型都触发了可重复的 SQLite heap corruption，
 已完整删除。前者需要先定义可序列化的 cold-stub 编译状态 contract，后者会改变 RA/fixed-home
-生命周期；在对应机制建立前不再按局部 peephole 重试。交付中没有保留 probe、环境开关、调试路径
+生命周期；在对应机制建立前不再按局部 peephole 重试。交付中没有保留 check、环境开关、调试路径
 或兼容兜底。
 
 ### 16.7 full-NZCV overwrite-first edge flags ABI
@@ -617,9 +617,9 @@ source provenance，或转入 continuation contract 与 hot/cold emission；不�
 ### 16.9 函数级热冷 emission 分离
 
 提交 `888c3db` 把 block terminal 与 cold-path emission 拆成两个阶段。每个 hot block 完成后，
-`BlockColdPathPlan` 移出该 block 的 backedge、cycle exit、fault recovery、VecNaN、flags audit 和 density
+`BlockColdPathRecipe` 移出该 block 的 backedge、cycle exit、fault recovery、VecNaN、flags audit 和 density
 状态；函数全部 hot block 生成完毕后，再按 block 顺序集中发出 cold stubs。独立 block 翻译仍立即消费
-同一 plan，不建立第二套 emitter 协议。新的布局测试直接解码首个 block 的 NaN guard，验证其 cold
+同一 recipe，不建立第二套 emitter 协议。新的布局测试直接解码首个 block 的 NaN guard，验证其 cold
 target 位于后续 hot block 之后。
 
 延迟 cold emission 暴露了一个与本阶段无关的既有 indirect-L1 边界：guest target 为零时，空表项的
@@ -673,7 +673,7 @@ publication。lookup guard fault 发生在 guest call 提交前，继续走既�
   不作为性能结论。
 - Orb SSH 仍由 `198.18.0.190:22` 立即关闭，本阶段未宣称远端门禁通过。
 
-该阶段没有新增环境开关、诊断日志、运行时 probe、临时源路径或兼容兜底。静态冷区增长来自当前
+该阶段没有新增环境开关、诊断日志、运行时 check、临时源路径或兼容兜底。静态冷区增长来自当前
 return PC 只能使用代码对象内部入口；P0 external veneer/多入口 ABI 完成后，可让冷 miss 使用可失效的
 外部 return entry，届时再收回逐 call-site continuation 准备入口。continuation 剩余工作是把 generation
 与 unlink/invalidation 纳入同一首类 contract，而不是继续扩展 traversal tag。
@@ -707,7 +707,7 @@ SMC invalidation 仍由既有 LinkManager/SmcTracker owner transaction 一次性
   49,548 条 host 指令、100% PC/version/top-20 coverage，delta 为 0。最终 candidate 单跑为 3.415s，
   PPM SHA-256 仍为 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`；elapsed
   只作一致性检查。
-- 没有新增运行时 env 开关、诊断日志、probe、临时源路径或旧机制兜底；只运行了 8 秒上限的
+- 没有新增运行时 env 开关、诊断日志、check、临时源路径或旧机制兜底；只运行了 8 秒上限的
   static-only screen，没有压力测试或正式长基准。
 
 P0 当前剩余的是 terminal-only/有非 canonical live-in 的 return entry 规范化；已有非空 decoded return
@@ -722,7 +722,7 @@ frame；只有 key miss 或失效 target fault 在共享 cold publisher 写 exte
 indirect L1/L2 external entry，因此正常 return 没有增加 tag test 或分支。
 
 原来每个 indirect call site 的独立 miss/resume label、`ADR x30,resume` 和共享 publisher branch 已完整
-删除。cold plan 按 location register 分为 call miss、guest-key mismatch 和 external continuation fault：
+删除。cold recipe 按 location register 分为 call miss、guest-key mismatch 和 external continuation fault：
 call miss 发布 external frame，key mismatch 明确清空不可信 RSB，external fault 只消费当前 frame 并保留
 外层 frame。旧 `ContinuationMiss` signal reset 机制随之删除，disk-cache v18 持久化新的
 `ExternalContinuation` recovery kind。
@@ -743,25 +743,25 @@ call miss 发布 external frame，key mismatch 明确清空不可信 RSB，exter
 
 曾尝试把所有 terminal-only call-return block 直接发布为 external entry，smallpt 在 8 个 root 后出现
 PageFatal；单变量撤回后完整短跑恢复。该路径没有保留：terminal-only entry 必须先有 RA/live-in
-canonicalization 证明，不能依赖测试中的空 `ReturnToHost` 形态。阶段末没有 probe、调试 env、日志、
+canonicalization 证明，不能依赖测试中的空 `ReturnToHost` 形态。阶段末没有 check、调试 env、日志、
 临时源路径、兼容兜底或长基准。
 
 ### 16.13 helper call state contract
 
-提交 `4bf7117` 把 `EmitHostCall` 和四个 pinned GPR planner 中分散的 helper ABI 判定收敛到独立
+提交 `4bf7117` 把 `EmitHostCall` 和四个 pinned GPR builder 中分散的 helper ABI 判定收敛到独立
 `HelperCallContract`。contract 从 direct/indirect `Lambda`、`HelperABI`、`HostFpEffect`、
-`HostRegisterEffect`、`UniformEffectId` 和编译器实际支持解析出 GPR/FPR clobber、argument snapshot、
+`HostRegisterEffect`、`UniformEffectId` 和编译器实际支持解析出 GPR/FPR clobber、argument capture、
 preserve-all leaf、FPCR transparency、general-register-only 与 pinned-state preservation。CallLocation、
 CallDynamic、X87 和专用 SSE4.2 helper 继续得到 opaque contract。
 
-`EmitHostCall` 的 snapshot 选择和参数 reload 现在消费同一 contract，替换原来三组重复布尔条件。首个
+`EmitHostCall` 的 capture 选择和参数 reload 现在消费同一 contract，替换原来三组重复布尔条件。首个
 跨指令 consumer 只允许有汇编保存证明的 `PreservesPinnedState` helper 保留 x3-x9 pinned value
 version；x0-x2、x11、x16/x17、未知或间接 helper 仍判定为 clobber。resident string wrapper 明确保存
 x3-x15、q16-q31 和 x30，因此该权限不是基于 helper 地址白名单猜测。
 
 门禁结果：
 
-- contract、pinned consumer、helper metadata/uniform effect、resident XMM snapshot、AFP transparent
+- contract、pinned consumer、helper metadata/uniform effect、resident XMM capture、AFP transparent
   helper 和 CallLambda interaction 共通过 1,155 条断言。
 - smallpt `4 8 6` 保持 279 roots、49,520 条和 canonical PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`，最终单跑 3.298s。
@@ -771,7 +771,7 @@ x3-x15、q16-q31 和 x30，因此该权限不是基于 helper 地址白名单猜
   397；该环境结果不作为门禁，也没有为通过它加入例外。
 
 本阶段不宣称宏观代码密度收益。fault、reentry/callback 和 host-NZCV effect 没有足够静态来源，继续
-fail-closed；没有新增 env 开关、日志、probe、临时路径或运行时兜底。
+fail-closed；没有新增 env 开关、日志、check、临时路径或运行时兜底。
 
 ### 16.14 canonical external CFG root
 
@@ -824,7 +824,7 @@ canonical PPM SHA-256，host 指令 `49,520 -> 49,265`（`-255`）。
 Mac 通过 `[function-entry]` 70 条断言 / 6 个 case、`[direct-link][production]` 867 / 14、
 非压力 `[smc]` 773 / 11、`[continuation]` 105 / 4，以及 glibc 72-block 定向用例 38 / 1。
 Orb 本阶段未验证，不宣称远程门禁通过。没有运行长基准或压力测试，临时诊断、
-probe、env 开关和迟绑定原型均未保留。
+check、env 开关和迟绑定原型均未保留。
 
 P0 的 `freeSpace` Release 收益门禁已闭合。terminal-only 且含非 canonical RA/live-in 的 return
 entry 仍未开放；它与本阶段“从函数内部精确边界重放完整 call”的条件不同。
@@ -845,7 +845,7 @@ contract 的 pending-call entry。Mac 通过 165 条 direct-link flags、821 条
 Release 同源 A/B 短账保持 smallpt `4 8 6` 的 279 roots / 49,265 条 host 指令和
 canonical PPM SHA-256；SQLite `--size 1 --testset main :memory:` 两侧均为 2,187 roots /
 356,265 条且正常完成。这符合本阶段不删除 incompatible-target/SMC fallback 字节、只改变
-compatible link 动态执行路径的设计。没有运行长基准或压力测试，也没有保留 probe、
+compatible link 动态执行路径的设计。没有运行长基准或压力测试，也没有保留 check、
 env 开关、诊断路径或兼容兜底。
 
 EdgeFlags 剩余高优先级项是 inverted carry 的可证明 source provenance、mixed-polarity/
@@ -856,7 +856,7 @@ multi-predecessor join，以及用同一 target contract 取代 region 内独立
 
 提交 `d24e946` 把 region 内部边的 flags 决策从 `translator_region.cpp` 拆到独立的
 `translator_edge_flags_join.cpp`。原先的条件 terminal 只有“两个 successor 都可以 defer”与
-“两条边都先 canonical merge”两种结果；现在 `RegionFlagsJoinPlan` 能表示 mixed join。
+“两条边都先 canonical merge”两种结果；现在 `RegionFlagsJoinRecipe` 能表示 mixed join。
 当且仅当 source 携带 full NZCV、canonical arm 正好是无 cycle/poll 的布局 fallthrough、
 compatible arm 可直达，且存活 PF/AF token 会被 compatible target 在观察前全部覆盖时，
 条件分支先进入 compatible target，只在 canonical fallthrough 上调用已登记的 token-aware
@@ -866,7 +866,7 @@ external/direct-link target contract 同时把原来的 `observes_before_commit`
 4-bit `observed_nzcv_mask` 与独立 `barrier_before_commit`。只要 source 携带位与 target
 提前观察位不相交，且所有 incoming 位在 fault/helper barrier 前被覆盖，partial observer
 不再让无关 mask 整体退化。该 ABI 写入 disk-cache v19。same-allocation region edge 仍使用
-snapshot-aware 内部观察边界，不把 external entry 的 fault-sensitive 规则错用到内部边。
+capture-aware 内部观察边界，不把 external entry 的 fault-sensitive 规则错用到内部边。
 
 生产定向用例覆盖一个 successor 先观察、另一个 successor 覆盖全 flags 的 mixed join，
 验证结果与 canonical 路径一致，并直接检查 host 条件分支位于 canonical merge 之前。
@@ -878,7 +878,7 @@ PPM SHA-256 保持 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528e
 SQLite `--size 1 --testset main :memory:` 两侧均为 2,187 roots / 356,265 条且正常完成。
 被拒绝的中间版本曾因错用 external fault 边界使 smallpt 增长 878 条，另一个未登记
 outline site 在 12 秒门限内被检测为自环；两条路径均已删除。没有运行长基准或压力测试，
-也没有保留 probe、env 开关、诊断日志或兼容兜底。
+也没有保留 check、env 开关、诊断日志或兼容兜底。
 
 EdgeFlags 剩余项继续收窄为非 FlagM 路径的 Direct/Inverted/Unknown source provenance，以及
 无法利用 canonical fallthrough 的多前驱 mixed-polarity join；后者需要可共享且不增长静态代码的 entry veneer。
@@ -900,7 +900,7 @@ LinkManager contract，并覆盖 link 与 target invalidation 恢复。
 Mac 通过 200 条 direct-link flags、97 条 static-forward 生产断言、913 条 production direct-link、
 360 条 jit-cache、48 条 region-flags、769 条非压力 SMC 和 105 条 continuation 断言。
 Debug smallpt `4 8 6` 保持 279 roots / 49,265 条与 canonical PPM SHA-256。Debug SQLite 在
-8 秒门限结束，不作为收益或回退证据。本阶段没有新增 env 开关、probe、诊断日志、
+8 秒门限结束，不作为收益或回退证据。本阶段没有新增 env 开关、check、诊断日志、
 临时路径或运行时兜底。
 
 EdgeFlags 下一步不再是补极性枚举，而是让无 canonical fallthrough 的多前驱 join 共享按
@@ -908,7 +908,7 @@ EdgeFlags 下一步不再是补极性枚举，而是让无 canonical fallthrough
 
 ### 16.19 pinned GuestStateMap 生命周期基础层
 
-提交 `81405ec` 新增独立的 ARM64 `GuestStateMap`，把 pinned GPR planner 原先各自扫描
+提交 `81405ec` 新增独立的 ARM64 `GuestStateMap`，把 pinned GPR builder 原先各自扫描
 `SetHostGPR`、helper clobber 和 fault/observation 窗口的逻辑收敛为同一个 block 分析对象。
 full-width value transfer、publication low view 和 SelectZero publication 现在分别消费
 `FixedHomeSurvives` 与 `PublicationWindowSafe`；`MayFaultOrObserve` 也由该对象提供唯一分类，
@@ -928,15 +928,15 @@ published 分组 37 条断言。Release 同源 A/B 的 smallpt `4 8 6` 两侧均
 统一生命周期与观察边界，不宣称这两个短 workload 已产生净代码量收益。
 
 该对象当前仍是 block-local 的 pinned fixed-home 基础层，不等同于第 7 节完整状态格。
-下一阶段需要在同一对象上加入 guest slot/value version、width facts 和 fault snapshot，随后才允许
-事实跨 diamond/backedge join 或扩展到 memory/XMM consumer。本阶段没有新增 env 开关、probe、
+下一阶段需要在同一对象上加入 guest slot/value version、width facts 和 fault capture，随后才允许
+事实跨 diamond/backedge join 或扩展到 memory/XMM consumer。本阶段没有新增 env 开关、check、
 诊断日志、临时源路径、运行时分支或旧机制兜底，也没有运行压力测试或长基准。
 
 ### 16.20 non-fallthrough EdgeFlags canonical tail
 
 提交 `6871978` 将 mixed region join 扩展到 canonical arm 不是布局 fallthrough 的情况。
 当 source 携带 full NZCV、恰好一个 successor 接受 pending state、compatible arm 会在观察前
-覆盖 incoming flags，且两条边都不是 cycle/cut 时，`RegionFlagsJoinPlan` 选择新的
+覆盖 incoming flags，且两条边都不是 cycle/cut 时，`RegionFlagsJoinRecipe` 选择新的
 `CanonicalTail`。compatible arm 保留布局 fallthrough 或普通本地分支；canonical arm 进入函数冷区
 的 canonicalizing stub。
 
@@ -954,7 +954,7 @@ cycle/cut 仍走原有 fault/poll 路径，不从冷 stub 绕过恢复协议。
 Release 同源短账保持 smallpt `4 8 6` 的 279 roots / 49,265 条和 canonical PPM SHA-256；
 SQLite `--size 1 --testset main :memory:` 保持 2,188 roots / 356,545 条且正常完成。这两个 workload
 没有命中新 tail，因此本阶段只声明机制覆盖和零回退，不声明宏观收益。没有运行长基准或压力测试，
-也没有新增 env 开关、probe、日志、临时源路径或兼容兜底。EdgeFlags 后续只剩需要 exact-mask merge
+也没有新增 env 开关、check、日志、临时源路径或兼容兜底。EdgeFlags 后续只剩需要 exact-mask merge
 trampoline 的 partial-mask shared tail，以及非零 packed-flags version 的真实 producer。
 
 ### 16.21 terminal-only canonical return entry
@@ -983,7 +983,7 @@ A/B 中，smallpt 从 279 roots / 49,265 条变为 275 / 49,249，消除 4 个�
 2,115 / 356,245：73 个不再独立编译的 connector 合计 290 条，2,115 个公共 root 再减少 10 条，
 无增长 root，程序正常完成。
 
-本阶段没有保留 census probe、env 开关、日志、临时源路径或旧的通用 external-edge 方案，也没有
+本阶段没有保留 census check、env 开关、日志、临时源路径或旧的通用 external-edge 方案，也没有
 运行压力测试或长基准。P0 的 stateless terminal-only return connector 已闭合；含 SSA/PSTATE live-in
 的 terminal 仍必须重解码为独立 canonical root，不能复用本合同。
 
@@ -1001,7 +1001,7 @@ NZCV、x12 flags-token clobber 分开判定，避免仅凭“无 fault”推导�
 
 首个生产 consumer 是 resident REP-string wrapper。它已有 x3-x15、q16-q31 和 x30 保存合同；本阶段
 利用 AAPCS64 保留的 d8 低 64 位跨 C helper 保存 NZCV，d8 仍属于 contract 明确声明的 caller-clobbered
-FPR，JIT 会按既有 live snapshot 处理。REP helper 的 guest page fault 继续通过返回值交给紧随其后的
+FPR，JIT 会按既有 live capture 处理。REP helper 的 guest page fault 继续通过返回值交给紧随其后的
 `CheckMemoryAlignment`，该指令在测试 fault bit 前提交仍存活的旧 guest flags。
 
 Mac Debug 的 helper 分组通过 86 条断言 / 9 个 case，region flags 通过 60 条，pinned value 通过 5 条；
@@ -1010,9 +1010,9 @@ static-only A/B 中，smallpt `4 8 6` 两侧均为 275 roots / 49,249 条并保�
 SQLite `--size 1 --testset main :memory:` 两侧均命中 2,114 roots，100% root/top-20 覆盖，
 `355,965 -> 355,961`（`-4`）；`0x46eb50` 与 `0x4c1e9f` 各减少 2 条，无增长 root。
 
-本阶段没有运行压力测试或长基准，也没有新增 env 开关、probe、日志、临时源路径或兼容兜底；同源
+本阶段没有运行压力测试或长基准，也没有新增 env 开关、check、日志、临时源路径或兼容兜底；同源
 Release 构建和 capture 目录已删除。其他 helper 只有在函数实现、wrapper 和调用点能同时提供静态证明
-时才可升级；第 7 节完整 guest slot/value version、fault snapshot 与跨 CFG join 仍是下一项机制工作。
+时才可升级；第 7 节完整 guest slot/value version、fault capture 与跨 CFG join 仍是下一项机制工作。
 
 ### 16.23 block-local guest value version 与 W/X 宽度事实
 
@@ -1038,36 +1038,36 @@ Release 同源 static-only A/B 中，smallpt `4 8 6` 两侧均为 275 roots，10
 单次同机 profile 中 2,114 个函数的 codegen 阶段约从 289 ms 增至 323 ms；TOTAL 受运行顺序和系统
 负载影响较大，本阶段不把一次样本当作稳定 wall-time 结论。实现没有增加无条件全函数预扫描，
 early-clobber 使用小向量而非逐项树节点分配。没有运行压力测试或长基准，也没有保留 env 开关、
-probe、日志、临时源路径或兼容兜底。当前状态格仍是 block-local；fault snapshot、diamond/backedge
+check、日志、临时源路径或兼容兜底。当前状态格仍是 block-local；fault capture、diamond/backedge
 join、`KnownZeroAbove(8/16)`、sign-extended facts 和 memory/XMM consumer 仍属于第 7 节后续工作。
 
-### 16.24 fault-visible width snapshot 与 CFG join
+### 16.24 fault-visible width capture 与 CFG join
 
-提交 `4fd6d24` 为 `GuestStateMap` 增加函数级 W/X 宽度事实合流和 fault-visible value snapshot。
+提交 `4fd6d24` 为 `GuestStateMap` 增加函数级 W/X 宽度事实合流和 fault-visible value capture。
 入口 facts 使用 must lattice：函数入口、canonical external root、call-return root 和无 predecessor block
 均从 Unknown 开始；普通内部边取全部 predecessor 的交集，diamond 和 backedge 迭代到稳定点。
 零偏移 32 位 `SetHostGPR` 产生 `KnownZeroAbove32`，64 位写只在定义可证明为 zero-extend、32 位常量
 或已知 entry value 时保留该事实；partial high write 和不透明调用撤销对应 home。
 
 值版本扫描在 fault/observation 指令执行前记录当前已发布的 `{version, home, width}` 以及高位事实。
-提前写 pinned home 的 publication window 不再只询问“中间是否可能 fault”，而是要求每个 fault snapshot
+提前写 pinned home 的 publication window 不再只询问“中间是否可能 fault”，而是要求每个 fault capture
 已经包含同一版本；否则仍拒绝 producer-time 写入。faulting load 不会被误当成已经写回 destination，
 外部入口也不会继承只在内部 predecessor 上成立的高位结论。
 
 函数级求解按需启动：只有当前 block 存在可消费 entry width fact 的 U32 same-home publication，或存在
-需要 fault snapshot 的 SelectZero publication window 时才遍历 CFG。最初的无条件版本在 SQLite 的
+需要 fault capture 的 SelectZero publication window 时才遍历 CFG。最初的无条件版本在 SQLite 的
 2,114 个函数上增加约 27 ms codegen 时间，已删除；最终需求驱动版本的单次配对为 319.5 ms 与
 312.8 ms，属于运行噪声范围，不声明编译性能收益。
 
 Mac Debug 的 pinned 分组通过 110 条断言 / 30 个 case，覆盖 internal/external entry、diamond 和
-backedge；fault-snapshot 分组通过 56 条断言 / 3 个 case，真实 PageFatal 用例验证已提交的 W 写恢复为
+backedge；fault-capture 分组通过 56 条断言 / 3 个 case，真实 PageFatal 用例验证已提交的 W 写恢复为
 高 32 位清零的 GPR，同时 faulting load 的 destination 保持旧值。SelectZero 定向分组通过 4 条断言，
 helper 和 region-flags 分别通过 86 和 60 条断言。
 
 Release 同源 static-only A/B 中，smallpt 两侧均为 275 roots / 49,107 条并保持 canonical PPM；
 SQLite 两侧均为 2,114 roots / 354,915 条，100% root/top-20 覆盖且正常完成。两个短语料没有命中
 新的跨 CFG consumer，因此本阶段只声明机制覆盖和零回退，不声明宏观缩小。没有运行压力测试或长
-基准，也没有保留 env 开关、probe、日志、临时源路径或兼容兜底。第 7 节剩余项收窄为
+基准，也没有保留 env 开关、check、日志、临时源路径或兼容兜底。第 7 节剩余项收窄为
 `KnownZeroAbove(8/16)`、`KnownSignExtended(8/16/32)` 和 memory/XMM consumer 的实际接入。
 
 ### 16.25 zero/sign extension facts 与生产 consumer
@@ -1086,14 +1086,14 @@ sign facts 取共同较大 source width 与较小 destination width，无法共�
 第 84 个 root 后因未物化原结果寄存器提前退出；该路径已删除，最终 Release 两个语料均正常完成。
 
 Mac Debug 的 pinned 分组通过 120 条断言 / 33 个 case，覆盖 U8 zero extension、S8 sign extension、
-overwrite、external root、diamond 和 backedge；fault-snapshot、SelectZero、helper 和 region-flags
+overwrite、external root、diamond 和 backedge；fault-capture、SelectZero、helper 和 region-flags
 分组分别通过 56、4、86 和 60 条断言。Release 以 `911c57e` 为同源基线，smallpt 保持 275 roots、
 100% root/top-20 覆盖和 canonical PPM，`49,107 -> 49,095`（`-12`，`-0.024436%`）；SQLite 保持
 2,114 roots 和 100% root/top-20 覆盖，`354,915 -> 354,800`（`-115`，`-0.032402%`），无增长 root。
 
 一次同机 profile 的 codegen 为 312.1 ms 与 316.9 ms，TOTAL 为 1.486 s 与 1.485 s；只作为没有
 明显 wall-time 回退的一致性检查，不声明性能结论。没有运行压力测试或长基准，也没有保留 env
-开关、probe、日志、临时源路径或兼容兜底。第 7 节下一步只扩展到能由同一事实格证明的 narrow
+开关、check、日志、临时源路径或兼容兜底。第 7 节下一步只扩展到能由同一事实格证明的 narrow
 memory/compare consumer 和 XMM scalar lane，不再增加 producer 形态白名单。
 
 ### 16.26 narrow compare 与 memory consumer
@@ -1106,7 +1106,7 @@ U8/U16 `Sub` 只有在相同 home 的相同版本仍存活，且 `ExtensionFacts
 边界继续由同一 active-state invalidation 处理。
 
 定向 codegen 用例验证已发布 U8 版本直接生成 `cmp w22,#5` 和 `strb w22`，不再物化额外低位副本。
-Mac Debug 的该分组通过 2 条断言，pinned、fault-snapshot、SelectZero、helper 和 region-flags 分别通过
+Mac Debug 的该分组通过 2 条断言，pinned、fault-capture、SelectZero、helper 和 region-flags 分别通过
 120、56、4、86 和 60 条断言。
 
 Release 以 `f4ca978` 为同源基线。smallpt 保持 275 roots、100% root/top-20 覆盖和 canonical PPM，
@@ -1114,7 +1114,7 @@ Release 以 `f4ca978` 为同源基线。smallpt 保持 275 roots、100% root/top
 `354,800 -> 354,519`（`-281`，`-0.079200%`），无增长 root 且正常完成。单次 SQLite profile 的
 codegen 为 315.6 ms、TOTAL 为 1.483 s，与上一阶段同量级，只作为无明显回退检查。
 
-没有运行压力测试或长基准，也没有保留 env 开关、probe、日志、临时源路径或兼容兜底。GPR
+没有运行压力测试或长基准，也没有保留 env 开关、check、日志、临时源路径或兼容兜底。GPR
 fault/CFG/extension 格的生产 consumer 已覆盖 ALU extension、narrow compare 和 narrow memory store；
 第 7 节下一步只剩 XMM scalar lane 是否能复用该模型的收益审计，不为低权重形态强行扩展。
 
@@ -1137,7 +1137,7 @@ Mac Debug 通过 continuation、production direct-link、非压力 SMC、indirec
 stack 定向分组；包含真实 source allocation 退休与重用门禁的 production lifecycle 用例通过 144 条
 断言。Release static-only 保持 smallpt `275 / 49,065` 和 SQLite `2,114 / 354,519`，与 `ae28113`
 完全一致。一次临时同源 SQLite 短配对为 `TOTAL 1.555s -> 1.554s`，只用于确认边界 generation 检查
-没有明显回退；临时 worktree、构建和 capture 均已删除。本阶段没有新增 env 开关、probe、日志、
+没有明显回退；临时 worktree、构建和 capture 均已删除。本阶段没有新增 env 开关、check、日志、
 临时运行路径或兼容兜底。第 8 节 generation/unlink/invalidation 与 code-cache reuse 的 correctness
 缺口至此闭合，后续不再给 16-byte continuation frame 增加热路径 generation 字段。
 
@@ -1166,7 +1166,7 @@ SQLite 保持 2,114 roots 和 100% 覆盖，`354,519 -> 354,491`（`-28`，`-0.0
 同时审核了 XMM scalar 的最窄 value-version 候选：允许同一 `GetHostFPR` 值跨同 slice 的自发布
 `SetHostFPR` 保持 fixed alias。smallpt 与 SQLite 均为零代码变化，候选已完整删除；后续 XMM 工作
 必须先证明更广的 producer/consumer lineage 命中真实热点，不再重试该同值自发布形态。本阶段没有
-保留 env 开关、probe、日志、临时路径或兼容兜底，也没有运行长基准或压力测试。EdgeFlags 剩余的
+保留 env 开关、check、日志、临时路径或兼容兜底，也没有运行长基准或压力测试。EdgeFlags 剩余的
 `packed_flags_version` 目前没有非零生产者，下一步应删除这项推测性 ABI，而不是伪造第二种 layout。
 
 ### 16.29 删除未使用的 packed-flags version ABI
@@ -1181,7 +1181,7 @@ Mac Debug 的 direct-link flags、serializer、完整 JIT-cache、region-flags p
 direct-link trampoline 分组通过；serializer v20 定向分组通过 63 条断言。Release static-only 保持
 smallpt `275 / 49,055` 与 SQLite `2,114 / 354,491`，说明该阶段只收缩状态/缓存 ABI，不改变发码。
 源码与测试中已不存在 `packed_flags_version` 或测试专用 nonzero producer，也没有新增日志、env 开关、
-probe、临时路径或兼容读取机制。第 6 节 EdgeFlags ABI 至此没有未实现的状态维度。
+check、临时路径或兼容读取机制。第 6 节 EdgeFlags ABI 至此没有未实现的状态维度。
 
 ### 16.30 inline SSE4.2 result packing
 
@@ -1198,7 +1198,7 @@ Mac Debug 的 SSE4.2 Rosetta/SDM 差分通过 16,255 条断言，16-byte memory 
 `TOTAL 1.485s -> 1.490s`，translation/codegen 两项均略降，只作为总时间无明显回退检查。
 
 该阶段没有改动共享 `0x02/0x1a` vector helper ABI，因此不宣称缩小 `__strcspn_sse42` 或
-`__strcmp_sse42`；也没有重试已经回退的 per-unit EqualAny outline。没有保留 probe、日志、env 开关、
+`__strcmp_sse42`；也没有重试已经回退的 per-unit EqualAny outline。没有保留 check、日志、env 开关、
 临时构建路径或兼容兜底。后续字符串收益必须从共享 helper 边界或循环/EA 布局获得，不能继续堆叠
 只对未命中 imm 形态生效的局部 mask 白名单。
 
@@ -1209,16 +1209,16 @@ Mac Debug 的 SSE4.2 Rosetta/SDM 差分通过 16,255 条断言，16-byte memory 
 `State::spill_area`：576 条 host 指令中有 176 条 GPR spill load/store。主要残差不是未 pin 的
 R15，而是默认 level 2 只有七个动态 value/scratch register 后产生的短生命周期地址中间值。
 
-既有 `MatchPinnedMemoryAddress` 只能证明 identity `GetOperand(base)`。本阶段把同一 proof 扩展为
+既有 `MatchPinnedMemoryAddress` 只能证明 direct `GetOperand(base)`。本阶段把同一 proof 扩展为
 `base + immediate`：地址必须只有一个普通 `LoadMemory/StoreMemory` consumer，base 必须已映射到
 静态 fixed home，且从 fixed-home publication 到 memory consumer 之间没有同 home 写入或
-caller-saved helper clobber。只有地址结果已经被 RA spill 时才延迟物化；identity 路径继续复用原
-fixed alias。memory-base 模式通过 `BiasMem(base, offset)` 保留 guest wrap/mask 语义，identity 模式
+caller-saved helper clobber。只有地址结果已经被 RA spill 时才延迟物化；direct 路径继续复用原
+fixed alias。memory-base 模式通过 `BiasMem(base, offset)` 保留 guest wrap/mask 语义，direct 模式
 只接受可直接编码的 load/store displacement；`INT64_MIN` 等不能安全取反的偏移继续走原路径。
 
 短门禁结果：
 
-- 新增定向用例强制 `GetOperand(base + 24)` 落入 `RegAlloc::MEM`，分别验证 identity
+- 新增定向用例强制 `GetOperand(base + 24)` 落入 `RegAlloc::MEM`，分别验证 direct
   `[x6,#24]` 与 biased `add x10,x6,#24; [x10,x24]`，通过 5 条断言。相关 Debug 六个
   address/GetOperand case 共通过 29 条断言。
 - SQLite `--size 1 --testset main :memory:` 保持 2,114 roots 与 100% 公共 root 覆盖，
@@ -1231,12 +1231,12 @@ fixed alias。memory-base 模式通过 `BiasMem(base, offset)` 保留 guest wrap
 第 24 个 root 触发 PageFatal；限制到 last-use 或 VIXL x16/x17 仍失败。把旧 full-pin
 fixed-class 直接放宽到 level 2 则产生大量增长 root，width-only 变体总量还增长 2,106 条。
 这些原型均未保留。后续 RA 工作需要首类 interval split/relocation，不能用隐式 scratch 生存期或
-宽泛 fixed-class 代替。该阶段没有新增 env 开关、日志、probe、临时路径或兼容兜底，也没有运行
+宽泛 fixed-class 代替。该阶段没有新增 env 开关、日志、check、临时路径或兼容兜底，也没有运行
 压力测试或长基准。
 
 ### 16.32 biased memory 的故障安全 spilled update
 
-提交 `3fb918b` 收敛 memory-base 模式下的 `Sub -> StoreMemory -> SetHostGPR` spill 链。identity
+提交 `3fb918b` 收敛 memory-base 模式下的 `Sub -> StoreMemory -> SetHostGPR` spill 链。direct
 memory 可以用 ARM64 pre-index store 同时完成访存和基址更新；带 page-table bias 时无法表达
 `[guest_base + pt]` 的硬件 writeback，旧路径因此先物化 `Sub` 结果，store 成功后再从该 SSA 发布 guest
 基址。当更新值被 RA spill 时，这会为一个短生命周期地址引入 spill store、memory-address reload 和
@@ -1247,7 +1247,7 @@ publication reload。
 寄存器重叠。只有 memory-base 且 `Sub` 结果确实落入 `RegAlloc::MEM` 时才启用新发码：访存地址从旧
 fixed home 通过 `BiasMem(base, -decrement)` 计算，faulting store 先执行，store 成功后才在
 `SetHostGPR` 位置把递减量直接发布回 fixed home。这样越界 fault 仍观察到更新前的 guest 基址；未
-spill 的 biased 路径保持一次普通地址计算，identity 路径继续使用 pre-index store。
+spill 的 biased 路径保持一次普通地址计算，direct 路径继续使用 pre-index store。
 
 短门禁结果：
 
@@ -1260,19 +1260,19 @@ spill 的 biased 路径保持一次普通地址计算，identity 路径继续使
   24 个 root 缩小、零增长，PPM SHA-256 保持
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`。
 
-本阶段没有增加 env 开关、日志、probe、临时路径或旧机制兜底，只运行了 8 秒上限的 static-only
+本阶段没有增加 env 开关、日志、check、临时路径或旧机制兜底，只运行了 8 秒上限的 static-only
 短跑；实际 SQLite/smallpt capture 分别约 4.1 秒和 0.6 秒。
 
 ### 16.33 紧邻 spilled producer 直接发布
 
 提交 `5ca4239` 把剩余的 `producer -> spill store -> reload -> SetHostGPR move` 收敛为一个分配后
-publication transaction。新 planner 只接受 U32/U64 `LoadImm`、`LoadMemory`、`Add`、`Sub` 和
+publication transaction。新 builder 只接受 U32/U64 `LoadImm`、`LoadMemory`、`Add`、`Sub` 和
 `And`：producer 必须确实落入 `RegAlloc::MEM`，只有一个紧邻的零偏移 `SetHostGPR` use，不产生
-pseudo flags，目标必须是启用的 pinned GPR，且不能与 dead/coalesced write 或已有 pinned value plan
+pseudo flags，目标必须是启用的 pinned GPR，且不能与 dead/coalesced write 或已有 pinned value recipe
 重叠。producer emitter 直接选择目标 fixed home，publication 本身不再发码。
 
 `LoadMemory` 也使用同一事务，但不把 publication 移到访存之前：ARM64 faulting load 只有成功完成才
-提交目标寄存器，因此同步 data abort 仍保留旧 fixed-home 值，fault snapshot 可以恢复 fault 前 guest
+提交目标寄存器，因此同步 data abort 仍保留旧 fixed-home 值，fault capture 可以恢复 fault 前 guest
 状态。纯 ALU/常量 producer 与 publication 之间没有其他 IR，提前一个 IR id 写入不会跨越 observer。
 
 短门禁结果：
@@ -1286,7 +1286,7 @@ pseudo flags，目标必须是启用的 pinned GPR，且不能与 dead/coalesced
   transaction；PPM SHA-256 保持
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`。
 
-本阶段没有新增 env 开关、日志、probe、运行时兜底或长期基准；SQLite/smallpt Release static-only
+本阶段没有新增 env 开关、日志、check、运行时兜底或长期基准；SQLite/smallpt Release static-only
 capture 分别约 4.3 秒和 0.5 秒。
 
 ### 16.34 平台无关的紧邻算术 spill forwarding
@@ -1315,7 +1315,7 @@ PageFatal；执行追踪确认 `ZeroExtend32To64` 等 ownership-transfer IR 可�
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`。
 
 每个命中只删除相邻的 spill store/reload 两条指令，不改变 consumer 发码或 root 划分。本阶段没有保留
-诊断输出、probe、env 开关、临时路径或兼容兜底，只运行了 8 秒上限的 static-only 短跑。
+诊断输出、check、env 开关、临时路径或兼容兜底，只运行了 8 秒上限的 static-only 短跑。
 
 ### 16.35 基本块内多 use spill reload region
 
@@ -1344,7 +1344,7 @@ live-in ABI。
   `88.348%`，`138,603 -> 137,087`（`-1,516`，`-1.094%`），96 个 root 缩小、672 个不变、零增长；
   `__strcmp_sse42@0x505120` `351 -> 341`。
 
-本阶段没有保留 probe、日志、env 开关、临时源码路径或兼容兜底，也没有运行长基准或压力测试。
+本阶段没有保留 check、日志、env 开关、临时源码路径或兼容兜底，也没有运行长基准或压力测试。
 剩余 RA 缺口收窄为跨局部控制流的显式 split interval、FPR spill region，以及有完整 fault/observer
 证明的 definition-to-region transfer；在新的加权账证明其规模前不继续泛化。
 
@@ -1375,7 +1375,7 @@ reload 同时删除。不满足完整 use、terminal、fixed-clobber 或 scratch
   `137,087 -> 136,445`（`-642`，`-0.468%`），68 个 root 缩小、700 个不变、零增长；候选额外完成
   86 个 root，不把它们计入收益。`__strcmp_sse42@0x505120` `341 -> 339`。
 
-本阶段没有保留 probe、日志、env 开关、临时源码路径或兼容兜底，也没有运行长基准或压力测试。
+本阶段没有保留 check、日志、env 开关、临时源码路径或兼容兜底，也没有运行长基准或压力测试。
 FPR pool 审计显示 smallpt 最大 live FPR 只有 7、默认 pool 为 16，因此不立 FPR spill region；剩余 RA
 方向只保留需要显式 CFG split interval 的跨局部控制流形态，等待新的加权规模证明。
 
@@ -1390,11 +1390,11 @@ window。producer 仍必须只有一个普通 `SetHostGPR` consumer、宽度与�
 `GetOperand` 与 `SignExtend` 现在和既有 load/整数 ALU producer 一样直接选择目标 fixed home，
 publication 不再生成 spill store/reload 和末尾 move。两个 emitter 只消费已经建立的
 `pinned_gpr_values` 结果，不新增运行时状态或第二套 publication 协议。定向用例同时覆盖跨纯 flags
-窗口的正向路径和没有 fault snapshot 时的拒绝路径。
+窗口的正向路径和没有 fault capture 时的拒绝路径。
 
 短门禁结果：
 
-- Debug spill 分组通过 14 个 case / 23,091 条断言；CallLambda、function entry、fault snapshot、
+- Debug spill 分组通过 14 个 case / 23,091 条断言；CallLambda、function entry、fault capture、
   SSE4.2 Rosetta/SDM 差分和 production direct-link 分组分别通过 67、87、56、16,255 和 864 条断言。
 - smallpt `4 8 6` 保持 275 roots、100% root/top-30 覆盖、零增长和 canonical PPM，
   `46,363 -> 46,258`（`-105`，`-0.226%`）；同源 RA shape 的 `spill_loads/stores`
@@ -1403,7 +1403,7 @@ publication 不再生成 spill store/reload 和末尾 move。两个 emitter 只�
   `334,592 -> 334,016`（`-576`，`-0.172%`）；去除 timing 后的输出逐行一致。
   `__strcmp_sse42@0x505120` 从 `339 -> 336`。
 
-本阶段没有运行长基准或压力测试，也没有保留 probe、日志、env 开关、硬编码 guest PC、临时源码
+本阶段没有运行长基准或压力测试，也没有保留 check、日志、env 开关、硬编码 guest PC、临时源码
 路径或兼容兜底。
 
 ### 16.38 剩余机制的规模与前置条件复核
@@ -1442,7 +1442,7 @@ ARM64 native `0x1a` helper 的真实 FPR clobber 是 `q2-q7`，generic `0x02` he
   `__strcmp_sse42@0x505120` 从 `336 -> 328`，EqualAny 字符串 root 的主要一组各减少 10 条。
 - smallpt `4 8 6` 保持 275 roots、`46,258` 条 host 指令和 canonical PPM，严格零变化。
 
-本阶段没有运行长基准或压力测试，也没有保留 probe、日志、env 开关、硬编码 guest PC、临时源码
+本阶段没有运行长基准或压力测试，也没有保留 check、日志、env 开关、硬编码 guest PC、临时源码
 路径或兼容兜底。第 9 节已知 SSE4.2 vector helper 的 caller-save 大头至此闭合；后续字符串工作只保留
 循环 fallthrough、共享调用控制流和热冷分支布局，不再用扩大 clobber 集掩盖 live-through 边界。
 
@@ -1474,7 +1474,7 @@ operand load，未改变 x86 指令的可观察提交点。
 publication 虽使前 295 个公共 root 减少 319 条，但 guest 在第 301 个 root 前退出，不能把字符串链的
 零扩展证明外推到通用 W/X publication。
 
-本阶段没有运行长基准或压力测试，也没有保留临时 planner probe、日志、env 开关、硬编码 guest PC、
+本阶段没有运行长基准或压力测试，也没有保留临时 builder check、日志、env 开关、硬编码 guest PC、
 临时源码路径或兼容兜底。剩余字符串大头已经从 packed result 搬运收窄为真实 helper frame 与循环控制流。
 
 ### 16.41 SSE4.2 helper frame 的 writeback folding
@@ -1493,7 +1493,7 @@ live-through 时，offset 0 的首个 `stp` 使用 pre-index，最终对应 `ldp
   `__strcmp_sse42@0x505120` 从 `318 -> 314`，EqualAny 主组从 `192 -> 188`。
 - smallpt `4 8 6` 保持 275 roots、`46,258` 条 host 指令和 canonical PPM，严格零变化。
 
-本阶段没有运行长基准或压力测试，也没有保留 probe、日志、env 开关、硬编码 guest PC、临时源码
+本阶段没有运行长基准或压力测试，也没有保留 check、日志、env 开关、硬编码 guest PC、临时源码
 路径或兼容兜底。helper 现场剩余的栈指令均对应真实 live-through 值；下一步只评估能否由新的 leaf
 return ABI 消除 x30 frame，而不把保存序列转移到共享 thunk 后增加动态 call/return。
 
@@ -1514,7 +1514,7 @@ C ABI frame。参数交换改用 helper 已声明破坏的 `q7`，EqualAny 的 F
 - smallpt `4 8 6` 保持 275 roots、`46,258` 条 host 指令和 canonical PPM，严格零变化。
 - 两组反向短配对的快慢方向交叉，只证明没有方向一致的明显回退，不声明动态性能收益。
 
-本阶段没有运行长基准或压力测试，也没有保留 wrapper fallback、probe、日志、env 开关、硬编码
+本阶段没有运行长基准或压力测试，也没有保留 wrapper fallback、check、日志、env 开关、硬编码
 guest PC 或临时源码路径。
 
 ### 16.43 EqualAny 专用 host return ABI
@@ -1523,7 +1523,7 @@ guest PC 或临时源码路径。
 准备返回地址，通过共享 thunk 的 `B` 或远目标的 `BR` 进入 helper；helper 以 `BR x17` 返回。普通
 `0x1a` helper 仍使用标准 `BL`/`RET`，该合同不扩展到通用 helper、guest return 或 continuation ABI。
 
-EqualAny 不再保存和恢复 x30。frame planner 在仍有 live-through GPR 时由首个 GPR save/restore
+EqualAny 不再保存和恢复 x30。frame builder 在仍有 live-through GPR 时由首个 GPR save/restore
 承担栈调整，只有 FPR 时由首个 Q register 承担，完全空 frame 不发射栈指令；奇数 GPR、result slot
 和 FPR pair 保持原有对齐及对称恢复。x17 同时进入精确 clobber 集，因此 caller 中原有 live x17
 仍会由现有 live-through 合同保存。
@@ -1543,7 +1543,7 @@ EqualAny 不再保存和恢复 x30。frame planner 在仍有 live-through GPR �
 兼容合同后，省下的 x30 指令与安全 outgoing continuation 指令完全抵消，静态收益为零。当前实现只
 保留由单一 native helper 明确定义、无需改变全局 return/continuation contract 的局部 ABI。
 
-本阶段没有运行长基准或压力测试，也没有保留调试路径、probe、日志、env 开关、硬编码 guest PC、
+本阶段没有运行长基准或压力测试，也没有保留调试路径、check、日志、env 开关、硬编码 guest PC、
 临时源码路径或兼容兜底。
 
 ### 16.44 EqualEach 精确 clobber 与专用 return ABI
@@ -1554,7 +1554,7 @@ EqualAny 不再保存和恢复 x30。frame planner 在仍有 live-through GPR �
 flags 复用 x11/x16；helper 不再破坏 x10/x12，精确 GPR clobber 收敛为
 `x11/x13/x14/x15/x16/x17`。
 
-移除真实 live-through x10 clobber 后，EqualEach caller 不再需要 GPR snapshot。该 helper 与
+移除真实 live-through x10 clobber 后，EqualEach caller 不再需要 GPR capture。该 helper 与
 EqualAny 共享局部 x17 return ABI：caller 使用 `ADR + B/BR`，helper 使用 `BR x17`；只有 FPR
 live-through 时由首个 Q register 承担 frame 调整，不保存 x30。
 
@@ -1575,24 +1575,24 @@ live-through 时由首个 Q register 承担 frame 调整，不保存 x30。
 `+29`。全函数 fallthrough-first RPO 原型则改变 RA 线性顺序，SQLite 在 1,296 个 root 后触发 stack
 smashing，smallpt root 集也从 275 变为 265；该 CFG/RPO 改动没有保留。
 
-本阶段没有运行长基准或压力测试，也没有保留调试路径、probe、日志、env 开关、硬编码 guest PC、
+本阶段没有运行长基准或压力测试，也没有保留调试路径、check、日志、env 开关、硬编码 guest PC、
 临时源码路径或兼容兜底。
 
 ### 16.45 memory-base 精确常量地址复用
 
 常量地址 RA 原本已把同一 basic block、同一页且通过 scratch 复核的 `GetOperand` 链绑定到一个
-page-base owner；identity 映射可由 memory operand 直接消费 page offset，但 Linux memory-base 模式仍在
+page-base owner；direct 映射可由 memory operand 直接消费 page offset，但 Linux memory-base 模式仍在
 每个候选处重新物化完整 guest 地址。新的 emitter consumer 在同一 anchor、同一物理 GPR 且前一个
 缓存候选的完整地址与当前值严格相等时保留寄存器内容；同页不同地址仍重新物化，因此不会把 page-base
 等价误当成 exact-address 等价。
 
 常量地址提取、RA 元数据复核、page-offset 解析和 exact reuse 发码从
 `translator_control.cpp` 拆到独立的 `translator_const_address.cpp`。实现没有新增 RA metadata、运行时分支
-或第二套 cache 协议，identity 映射的 page-base 路径保持原样。
+或第二套 cache 协议，direct 映射的 page-base 路径保持原样。
 
 短门禁结果：
 
-- 本地 Release 的常量地址定向用例通过 19 条断言，覆盖 identity 同页复用、memory-base 同地址复用、
+- 本地 Release 的常量地址定向用例通过 19 条断言，覆盖 direct 同页复用、memory-base 同地址复用、
   同页不同地址重新物化、scratch 不足回退和 publication coalescing 并存。
 - 同一二进制的 smallpt `4 8 6` static-only A/B 保持 275 roots、100% root/top-30 coverage 和 canonical
   PPM，`46,258 -> 46,188`（`-70`，`-0.151325%`）；17 个 root 缩小、零增长。
@@ -1605,7 +1605,7 @@ page-base owner；identity 映射可由 memory operand 直接消费 page offset�
   本阶段不宣称 Orb 测试可执行文件门禁通过。
 
 CoreMark 20k 在 12 秒硬上限内未完成后立即终止，没有延长或改跑压力测试。用于同二进制归因的临时
-开关已删除；最终树没有新增 env、日志、probe、临时路径、硬编码 guest PC 或兼容兜底。
+开关已删除；最终树没有新增 env、日志、check、临时路径、硬编码 guest PC 或兼容兜底。
 
 ### 16.46 flags-only consumer 的 dead spill result
 
@@ -1640,7 +1640,7 @@ write；不建立 forwarded register、不改变 PSTATE，也不延长 scratch �
 
 一个把 `ZeroExtend32/64`、`SignExtend` 和 `BranchOnlyFlags` 统一当作普通 forwarded consumer 的原型使
 smallpt 稳定 root 集从 275 变为 260；宽度 ownership 部分已完整删除。最终实现只表达 flags-only
-observer 的 dead-result 语义，没有保留诊断日志、env 开关、probe、临时路径、硬编码 guest PC 或兼容
+observer 的 dead-result 语义，没有保留诊断日志、env 开关、check、临时路径、硬编码 guest PC 或兼容
 兜底，也没有运行长基准或压力测试。
 
 ### 16.47 final-use spilled address forwarding
@@ -1673,7 +1673,7 @@ observer 的 dead-result 语义，没有保留诊断日志、env 开关、probe�
 - Orb 的 `swift_runtime`、`svm_translator_linux` 构建和 `spill_forwarding_test.cpp.o` GCC 定向编译通过；
   完整 `swift_test` 仍受既有 `direct_link_production_test.cpp:1320` designated-initializer 顺序错误阻断。
 
-本阶段没有增加 env、日志、probe、临时路径、硬编码 guest PC 或兼容兜底，也没有运行长基准或压力
+本阶段没有增加 env、日志、check、临时路径、硬编码 guest PC 或兼容兜底，也没有运行长基准或压力
 测试。剩余 address spill 不再是 final-use `GetOperand` 这一类，应重新归因到真实多 use、faulting memory
 consumer 或 width/publication ownership。
 
@@ -1682,12 +1682,12 @@ consumer 或 width/publication ownership。
 `SetHostGPR` 和 `StoreUniform` 都是无 fault 的 scalar publication consumer。此前 producer 被分配为 MEM
 且 publication 是它的全部 use 时，portable 路径仍先把结果写入 spill slot，consumer 再 reload 后发布到
 fixed guest home 或 uniform memory。该 spill backing 在两条相邻 IR 之间没有 observer，既不承担旧版本
-snapshot，也不是架构 publication 本身。
+capture，也不是架构 publication 本身。
 
 这两个 opcode 现在复用第 16.47 节的 portable final-use contract：definition 的全部 use 必须由当前
 consumer 直接读取，producer scratch 在 consumer 处不得属于 live allocation 或 fixed clobber，并继续
 拒绝 memory/helper/CFG barrier。`SetHostGPR` 的目标 home 仍由既有 fixed-clobber 判定保护；多 use、
-提前 publication、fault snapshot 和 width ownership 不进入该路径。
+提前 publication、fault capture 和 width ownership 不进入该路径。
 
 短门禁结果：
 
@@ -1705,7 +1705,7 @@ consumer 直接读取，producer scratch 在 consumer 处不得属于 live alloc
 - Orb 的 `swift_runtime`、`svm_translator_linux` 构建和 `spill_forwarding_test.cpp.o` GCC 定向编译通过；
   完整 `swift_test` 仍受既有 `direct_link_production_test.cpp:1320` designated-initializer 顺序错误阻断。
 
-本阶段没有新增 env、日志、probe、临时路径、硬编码 guest PC 或兼容兜底，也没有运行长基准或压力
+本阶段没有新增 env、日志、check、临时路径、硬编码 guest PC 或兼容兜底，也没有运行长基准或压力
 测试。剩余 final-use spill 的最大未决组仍是 `ZeroExtend*`/`SignExtend` ownership；第 16.46 节已证明
 不能把它们按普通 consumer 批量放开，后续必须从统一 width-version contract 解决。
 
@@ -1731,7 +1731,7 @@ rc=139 退出，也已删除；最终合同不保留该路径或任何兼容兜�
 
 - 本地 Debug 的 `swift_runtime`、`svm_translator_linux` 和 `swift_test` 构建通过；spill 分组通过
   20 个 case / 23,131 条断言。新增边界覆盖 exact final-use、multi-use canonical backing 和 deferred
-  pinned publication backing；既有 pinned U8/S8 facts、fault snapshot 与 CFG diamond/backedge case
+  pinned publication backing；既有 pinned U8/S8 facts、fault capture 与 CFG diamond/backedge case
   继续通过。
 - 严格同源 smallpt `4 8 6` static-only A/B 保持 275 roots、100% root/top-30 coverage 和 canonical
   PPM，`45,819 -> 45,561`（`-258`，`-0.563085%`）；23 个 root 缩小、零增长，mnemonic delta 精确为
@@ -1746,7 +1746,7 @@ rc=139 退出，也已删除；最终合同不保留该路径或任何兼容兜�
 - Orb clean GCC 构建通过 `swift_runtime`、`svm_translator_linux` 和 `spill_forwarding_test.cpp.o`；Linux
   较大的可用 GPR pool 下 smallpt 与 SQLite `--help` 均为严格零变化，并保持全部 roots 与输出 oracle。
 
-本阶段没有保留 probe、日志、env 开关、临时路径、硬编码 guest PC 或过时 fallback，也没有运行长
+本阶段没有保留 check、日志、env 开关、临时路径、硬编码 guest PC 或过时 fallback，也没有运行长
 基准或压力测试。final-use width spill 已从剩余组中闭合；后续 RA 大项只保留有加权规模证据的跨 CFG
 split interval，以及需要完整 fault/observer contract 的多 use memory consumer。
 
@@ -1757,7 +1757,7 @@ split interval，以及需要完整 fault/observer contract 的多 use memory co
 所有 consumer 都属于静态 definition-transfer 集时从 producer 开始持有 region；含 `SetHostGPR` 的
 多 use value 因 publication emitter 可能提前返回，不能直接放入该集合。
 
-`SpillReload` 现在携带 `owns_all_uses`。planner 只有在 region 覆盖该 definition 的全部非 pseudo use、
+`SpillReload` 现在携带 `owns_all_uses`。builder 只有在 region 覆盖该 definition 的全部非 pseudo use、
 没有 terminal use、且全部 consumer 属于可交接集合时才设置该位。runtime 还必须看到 producer 已经
 真实生成的 pending scratch，并由 translator 确认当前 consumer 会读取 allocated source，才把 scratch
 交给 region：物理寄存器相同时零指令激活，不同时用一条 `mov` 转交；随后不再写回或首次 reload。
@@ -1768,7 +1768,7 @@ coalescing、fused zero extension 和 fixed-home residence 都拒绝交接。其
 definition-consumer 列表、完整 use closure、dirty/fixed clobber、scratch headroom 和 segment 边界保护。
 多 use width source 等不完整合同继续使用 canonical backing。
 
-一个仅依赖 planner use 的中间版本在 smallpt 与 SQLite `--help` 都于 96 个 root 后提前 halt。最小化
+一个仅依赖 builder use 的中间版本在 smallpt 与 SQLite `--help` 都于 96 个 root 后提前 halt。最小化
 证明不安全事件的代码差只有被删除的 `STR`，没有对应 `LDR`：该 `SetHostGPR` 已由 emitter 早退，IR
 use 并不等于物理 reader。该版本、定位用 PC 过滤和日志均已删除；最终版本由 translator reader
 contract 排除该路径。
@@ -1791,7 +1791,7 @@ contract 排除该路径。
 - Orb clean GCC 构建通过 `swift_runtime`、`svm_translator_linux`，并完成
   `spill_forwarding_test.cpp.o` 定向编译。
 
-本阶段没有重启第 16.38 节已证明严格零收益的跨 local-CFG preload，也没有保留 probe、日志、env
+本阶段没有重启第 16.38 节已证明严格零收益的跨 local-CFG preload，也没有保留 check、日志、env
 开关、临时路径、硬编码 guest PC 或兼容 fallback，没有运行长基准或压力测试。剩余 spill residual 的
 主体已经进一步收窄为真实 fault/observer-aware memory lifetime，而不是 publication 首 use 的机械往返。
 
@@ -1832,7 +1832,7 @@ canonical backing，避免把 faulting input 与同一指令的新 spill definit
 - Orb clean GCC 构建通过 `swift_runtime`、`svm_translator_linux`，并完成
   `spill_forwarding_test.cpp.o` 定向编译。
 
-本阶段没有保留 probe、日志、env 开关、临时路径、硬编码 guest PC 或兼容 fallback，也没有运行长
+本阶段没有保留 check、日志、env 开关、临时路径、硬编码 guest PC 或兼容 fallback，也没有运行长
 基准或压力测试。fault-aware memory lifetime 的 store 与 direct-result load 大头已经闭合；普通
 spilled-result load 需要先建立同一 faulting instruction 内 input scratch 与 result definition 的首类
 所有权合同，不能再用 barrier 豁免继续扩大。
@@ -1869,7 +1869,7 @@ SQLite main 从 984 roots / baseline `SQL logic error` 提前变为 564 roots /
   `spill_forwarding_test.cpp.o` 定向编译。
 
 第 16.51–16.52 节累计将 smallpt 从 `45,479` 收敛到 `45,173`（`-306`，`-0.672838%`），
-SQLite `--help` 从 `38,283` 收敛到 `38,079`（`-204`，`-0.532874%`）。本阶段没有保留 probe、
+SQLite `--help` 从 `38,283` 收敛到 `38,079`（`-204`，`-0.532874%`）。本阶段没有保留 check、
 日志、env 开关、临时路径、硬编码 guest PC 或兼容 fallback，也没有运行长基准或压力测试。剩余
 region-owned load 不能继续局部放宽；若要删除其 round trip，必须让 RA 统一分配 memory input 与
 result definition 的同指令双所有权，而不是由 JIT 在 pending scratch 与既有 definition region 之间
@@ -1877,8 +1877,8 @@ result definition 的同指令双所有权，而不是由 JIT 在 pending scratc
 
 ### 16.53 fault-backed load input/result 双所有权
 
-提交 `83eca10` 在 spill reload planner 中为紧邻的单 use `GetOperand -> LoadMemory` 建立 input/result
-联合所有权。planner 先为 spilled load result 选择完整 definition region，再为地址选择不同的 GPR；地址
+提交 `83eca10` 在 spill reload builder 中为紧邻的单 use `GetOperand -> LoadMemory` 建立 input/result
+联合所有权。builder 先为 spilled load result 选择完整 definition region，再为地址选择不同的 GPR；地址
 region 从 `GetOperand` definition 延续到 faulting load，结果 region 从 load definition 延续到最后一个
 已证明 consumer。非紧邻、multi-use、terminal-observed、非 `GetOperand` producer 或 scratch headroom
 不足的形态继续使用 canonical spill 路径。
@@ -1959,13 +1959,13 @@ emitter 或 RPO 中单独插入布局边。
 `Imm` 使用精确 `u64` 类型。Mac Debug/Release `swift_test` 构建通过；Orb GCC 13.2 首次完成完整
 `swift_test` 目标构建，function-entry、direct-link production 和 spilled pinned-EA 定向组分别通过
 87、544 和 5 条断言。没有运行完整测试集、长基准或压力测试；归因用二进制、日志、动态计数捕获和
-临时目录已删除，最终树没有新增 env 开关、probe、诊断路径或兼容兜底。
+临时目录已删除，最终树没有新增 env 开关、check、诊断路径或兼容兜底。
 
 ### 16.56 final-use low32 view ownership transfer
 
 提交 `d16f42e` 补齐普通 GPR 值最后一次使用处的低 32 位 view 所有权转移。当前 SQLite 静态账中仍有
 1,372 条 `lsr wN, wM, #0`；它们不是移位，而是 `BitExtract(source, 0, 32)` 在 source 与 result 被分到
-不同寄存器后形成的 identity copy。既有 low32 coalescer 只接受 source 活过 result 的共享 view，或一个
+不同寄存器后形成的 direct copy。既有 low32 coalescer 只接受 source 活过 result 的共享 view，或一个
 紧邻 `ZeroExtend32To64` wrapper，没有表达“source 在 bridge 处死亡、result 接管物理寄存器”的区间。
 
 最终实现以 `use_end[source] == bridge.id` 判断最后一次使用，不再用 `source.GetUses() == 1` 错误拒绝
@@ -2001,7 +2001,7 @@ Mac Debug/Release 构建和 low32 三个 case / 16 条断言通过；Debug spill
 23,152 条断言。Orb GCC 13.2 完成 `swift_test` 与 `svm_translator_linux` 构建，low32 同样通过 3 个 case /
 16 条断言。Orb spill wildcard 的 deferred-width 与 flags-only 两个代码形态断言在 candidate 和同源 baseline
 上均以相同位置失败，因此不计为本阶段回归，也不宣称该组远端全绿。没有运行完整测试集、正式长基准或
-压力测试；所有 census、日志、临时二进制、源目录和既有 env 取样均已删除，最终树没有新增开关、probe、
+压力测试；所有 census、日志、临时二进制、源目录和既有 env 取样均已删除，最终树没有新增开关、check、
 硬编码 guest PC 或兼容兜底。
 
 ### 16.57 partial-overlap low32 tail 的回退裁定
@@ -2054,7 +2054,7 @@ mnemonic 保持不变。
 保留 result allocation，以及 `GetHostGPR` 拒绝。Mac Debug/Release low32 通过 3 个 case / 22 条断言，
 Debug spill wildcard 通过 23 个 case / 23,152 条断言；Orb GCC 13.2 完成 `swift_test`、
 `svm_translator_linux` 构建并通过相同 low32 组。没有运行完整测试集、正式长基准或压力测试；临时日志、
-census、A/B 二进制和目录均已删除，最终树没有新增 env 开关、probe、硬编码 guest PC 或兼容兜底。
+census、A/B 二进制和目录均已删除，最终树没有新增 env 开关、check、硬编码 guest PC 或兼容兜底。
 
 ### 16.59 multi-consumer pinned W view 的回退裁定
 
@@ -2079,7 +2079,7 @@ use。该残差不是 guest GPR 没有驻留：源值已经位于 pinned X home�
   stdout 一致，smallpt PPM 保持 canonical SHA-256，CoreMark 两侧 `crcfinal=0x4983`。
 
 静态门禁通过后，SQLite 三对交错短跑的 wall-time 中位数为 `2.658s -> 2.706s`（`+1.802%`），guest
-TOTAL 中位数为 `2.374s -> 2.433s`（`+2.485%`）。该机制只省一次 snapshot，却让多个后续 consumer
+TOTAL 中位数为 `2.374s -> 2.433s`（`+2.485%`）。该机制只省一次 capture，却让多个后续 consumer
 持续依赖同一 architectural home；在当前调度和 publication 结构下，静态收益没有转化为执行收益。
 因此实现、测试、共享 consumer 表和所有 census/捕获均已删除，不保留默认关闭分支或局部 fallback。
 剩余 zero32 read 不能再解释为“GPR 未 pin”；下一次只有跨 CFG 宽度事实能证明同版本 X 高位已清零，
@@ -2089,7 +2089,7 @@ TOTAL 中位数为 `2.374s -> 2.433s`（`+2.485%`）。该机制只省一次 sna
 
 按第 16.55 节要求实现了首类 RPO component 身份：`HIRFunction` 在主 CFG 和每个 canonical external
 root 的 DFS 结果旁记录 component id；后端只允许同 component 的物理 fallthrough，并在 component
-边界发出该 component 已积累的 block cold plans。external edge 仍通过同一 code object 的 published
+边界发出该 component 已积累的 block cold recipes。external edge 仍通过同一 code object 的 published
 entry，未改变入口 contract、SMC owner 或 generation/invalidation 协议。
 
 该基础层与双来源门槛组合后，SQLite roots `2,079 -> 2,051`，host 指令
@@ -2107,7 +2107,7 @@ island 后，三语料 root 数和每 root 指令数逐项相同，但 SQLite/sm
 因此 component id、island emission、定向测试和双来源门槛改动均已删除。该结果排除了“只把现有
 disconnected RPO 分段并提前发 cold stubs”作为多 root 合并前置条件；下一次重开必须让 component
 拥有独立 allocation/scheduling 成本模型，或由动态权重决定 code-object membership，不能继续在单一
-buffer 中改排列顺序。没有保留 env 开关、probe、日志、临时路径或兼容兜底，也没有运行长基准或压力
+buffer 中改排列顺序。没有保留 env 开关、check、日志、临时路径或兼容兜底，也没有运行长基准或压力
 测试。
 
 ### 16.61 `KnownZeroAbove32` entry read consumer 的回退裁定
@@ -2115,7 +2115,7 @@ buffer 中改排列顺序。没有保留 env 开关、probe、日志、临时路
 按第 16.59 节的重开条件，让 `GuestStateMap` 只为零偏移 U32 pinned read 启动函数级宽度求解，并且仅在
 全部真实 use 都能直接读取 fixed home、读点当前事实证明 `KnownZeroAbove(32)` 时消除原
 `GetHostGPR`。external root 从 Unknown 开始，块内 full-width clobber 使用读点事实而不是入口旧事实；
-定向用例分别覆盖 internal、external 和 clobbered entry，Mac pinned/low32/fault-snapshot 分组均通过。
+定向用例分别覆盖 internal、external 和 clobbered entry，Mac pinned/low32/fault-capture 分组均通过。
 
 严格同源 short static-only 保持全部 root 和 oracle：SQLite `252,544 -> 252,468`（`-76`，
 `-0.030094%`），57 个 root 缩小、零增长；smallpt `36,749 -> 36,742`（`-7`），CoreMark
@@ -2184,7 +2184,7 @@ resolver 消费同一来源。
 - 两组四次反向顺序 SQLite 短配对方向交叉：wall 分别为 `+0.729%` 与 `-0.200%`，guest TOTAL
   分别为 `+1.005%` 与 `-0.512%`；只据此排除方向一致的明显回退，不声明宏观性能收益。
 
-本阶段没有新增 env 开关、日志、probe、硬编码 guest PC、临时运行路径或兼容兜底，也没有运行长基准
+本阶段没有新增 env 开关、日志、check、硬编码 guest PC、临时运行路径或兼容兜底，也没有运行长基准
 或压力测试。第 9 节 helper ABI 至此不再把具有专用 emitter 的 SSE4.2 指令误归类为 opaque host call。
 
 ### 16.64 helper-clobber 后的 overwrite-first EdgeFlags consumer
@@ -2210,7 +2210,7 @@ SQLite 保持 `2,065 / 251,669`，CoreMark 显式 2k 保持 `293 / 36,574` 与 `
 `0.9575s -> 0.9550s`（`-0.261%`）。样本只用于确认动态 bypass 没有方向一致的回退，不声明吞吐收益。
 CoreMark 无参数自校准在 8 秒门限终止后没有延长，改用显式 2k 输入完成门禁。
 
-本阶段没有新增 env 开关、日志、probe、硬编码 guest PC、临时运行路径或兼容兜底，也没有运行长基准
+本阶段没有新增 env 开关、日志、check、硬编码 guest PC、临时运行路径或兼容兜底，也没有运行长基准
 或压力测试。精确 helper observation contract 现在同时被 GuestStateMap、helper emitter 和 EdgeFlags
 target ABI 消费。
 
@@ -2235,7 +2235,7 @@ owner/target 邻接，原来只为生成 `ExternalLinkBlock` 服务的 `DecodeSt
 - 严格同源 static-only 保持全部 root 和 oracle，且没有增长 root。SQLite 保持 2,065 roots，
   `251,669 -> 251,614`（`-55`，19 个 root 缩小）；smallpt 保持 263 roots，
   `36,749 -> 36,742`（`-7`，2 个 root 缩小）和 canonical PPM；CoreMark 显式 2k 保持 293 roots，
-  `36,574 -> 36,568`（`-6`，2 个 root 缩小）与 `crcfinal=0x4983`。SQLite timing-normalized stdout
+  `36,574 -> 36,568`（`-6`，2 个 root 缩小）与 `crcfinal=0x4983`。SQLite timing-adjusted stdout
   逐字节一致。
 - 两组四次反向顺序 SQLite 短配对均未显示方向一致的回退：wall 分别为 `-0.614%`、`-0.124%`，
   guest TOTAL 分别为 `-1.639%`、`0.000%`；合并中位数为 wall `1.2115s -> 1.2100s`
@@ -2243,7 +2243,7 @@ owner/target 邻接，原来只为生成 `ExternalLinkBlock` 服务的 `DecodeSt
 
 双来源门槛与完整 internal predecessor 组合在第 390 个 SQLite root 后以 `rc=139` 退出，说明部分
 二来源 target 仍缺少可组合的 live-in/dataflow 边界；该门槛改动已删除，生产继续使用经过验证的三来源
-合同。本阶段没有新增 env 开关、日志、probe、硬编码 guest PC、临时运行路径或兼容兜底，也没有运行
+合同。本阶段没有新增 env 开关、日志、check、硬编码 guest PC、临时运行路径或兼容兜底，也没有运行
 长基准或压力测试。该改进消除了已有 canonical external root 的 owner 重入税，但不把它误报为
 `balance_nonroot` membership 缺口已经闭合；后者仍需要独立 component cost 或运行时权重合同。
 
@@ -2260,7 +2260,7 @@ split target 完全相同时，decoder 才生成 `DecodeStopKind::CallReturn` �
 ownership transfer 继续生成 internal `LinkBlock`。原来宽泛的 `External` stop 没有恢复，新增枚举只表达
 continuation 所需的单一职责。定向 frontier 用例分别证明 call 前 split 转移 ownership 但不是 boundary、
 精确 return PC 被识别为 boundary，以及普通 external root 同时保留 internal predecessor 和 canonical
-external identity。
+external direct。
 
 Mac Debug/Release 与 Orb GCC 13.2 构建通过；Mac/Orb `[function-entry]` 均通过 99 条断言 / 9 个 case，
 `[continuation]` 均通过 117 条，`[direct-link][production]` 分别通过 842/543 条。当前三来源生产语料中
@@ -2270,7 +2270,7 @@ root、每 root code size 和 oracle 均逐项相同；不为零命中形态运�
 双来源门槛在加入精确 boundary 后仍以 host `SIGSEGV` 退出；关闭 `flags_region_branch` 不能恢复，关闭
 整个 `region_edges` 后 SQLite 正常完成，说明剩余边界是 external canonical entry 与完整 region state
 transfer 的兼容合同，不是 continuation 分类或单一 flags 分支。双来源、地址排除、临时 marker、日志和
-捕获均已删除，生产继续保持三来源门槛。本阶段没有新增 env 开关、probe、硬编码 guest PC、临时运行
+捕获均已删除，生产继续保持三来源门槛。本阶段没有新增 env 开关、check、硬编码 guest PC、临时运行
 路径或兼容兜底，也没有运行长基准或压力测试。
 
 ### 16.67 跨块 fixed-home 所有权与分级 external-root admission
@@ -2285,7 +2285,7 @@ home 后会让旧 SSA value 静默别名到新值。
 传给 GPR read/write、pinned W view 和 low32 copy。只有定义与所有普通/terminal consumer 都属于当前
 block 时，块内 use-end 证明才可消除 fixed-home move；独立 block allocator 保持原合同。定向函数用例
 从 canonical external root 定义并发布 U32 value，在后继覆盖同一 home 后继续消费原 publication 和
-GetHost snapshot，验证两种 coalescing 都 fail-closed。
+GetHost capture，验证两种 coalescing 都 fail-closed。
 
 正确性闭合后，直接开放全部双来源 target 虽可完成 SQLite，但同 RA 三来源基线的八次反向短配对仍为
 wall `2.5107s -> 2.6376s`（`+5.056%`）、guest TOTAL `2.2575s -> 2.3815s`
@@ -2304,14 +2304,14 @@ wall `2.5107s -> 2.6376s`（`+5.056%`）、guest TOTAL `2.2575s -> 2.3815s`
   `293 / 36,568 -> 288 / 36,473`。smallpt/CoreMark 无增长 root；SQLite 有 4 个公共 root 合计增长
   44 条、49 个公共 root 合计缩小 211 条，并消除 27 个独立 root 合计 423 条，baseline top-20 无增长。
 - smallpt PPM SHA-256 保持
-  `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`，SQLite timing-normalized
+  `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`，SQLite timing-adjusted
   stdout 逐字节一致，CoreMark `crcfinal=0x4983`。
 - 最终 admission 与同 RA 三来源 control 的八次反向 SQLite 短配对为 wall
   `2.4318s -> 2.4188s`（`-0.535%`）、guest TOTAL `2.1865s -> 2.1755s`（`-0.503%`）；只据此
   排除方向一致回退，不声明吞吐收益。
 
 归因阶段的 source bucket、marker、日志、临时二进制和捕获均不进入代码树；最终没有新增 env 开关、
-probe、硬编码 guest PC、兼容兜底或过时三来源旁路，也没有运行长基准或压力测试。多 CFG root 缺口从
+check、硬编码 guest PC、兼容兜底或过时三来源旁路，也没有运行长基准或压力测试。多 CFG root 缺口从
 “双来源整体不可用”收窄为“弱来源不能切 primary entry owner”；更低 fan-in 或真正跨 component 的
 membership 仍需要独立的动态权重合同。
 
@@ -2330,7 +2330,7 @@ owner，不会改变所有普通函数入口的热 prefix。新增 frontier 用�
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`。
 - SQLite `2,052 / 251,899 -> 1,923 / 249,687`：131 个独立 root 合计 1,760 条消失，新增 2 个 root
   合计 492 条；20 个公共 root 合计增长 111 条、261 个缩小 1,055 条，净减少 2,212 条且 baseline
-  top-20 无增长。timing-normalized stdout 逐字节一致。
+  top-20 无增长。timing-adjusted stdout 逐字节一致。
 - CoreMark 2k `288 / 36,473 -> 270 / 36,172`：18 个独立 root、301 条总指令消失；唯一增长 root
   增加 1 条，35 个缩小 93 条，baseline top-20 无增长，`crcfinal=0x4983`。
 
@@ -2342,7 +2342,7 @@ SQLite 八次反向短配对为 wall `2.5128s -> 2.5075s`（`-0.209%`）、guest
 `balance_nonroot` 从 28 roots / 3,430 条收敛到 25 / 3,373，仍远于 FEX 的单一 multiblock unit。
 这说明当前 code object 内部的 fan-in 门槛已不再是主体；剩余 24 个 root 属于不同 64-block publication
 component，必须依靠重编译/运行时热度或发布前独立与合并成本计划，不能继续降低本地 source threshold。
-本阶段没有新增 env 开关、probe、日志、临时路径、PC 白名单或兼容兜底，也没有运行长基准或压力测试。
+本阶段没有新增 env 开关、check、日志、临时路径、PC 白名单或兼容兜底，也没有运行长基准或压力测试。
 
 ### 16.69 width-chain 跨块所有权与 128-block 全局扩窗裁定
 
@@ -2367,7 +2367,7 @@ continuation 和 tagged external frame 的零热税原型在 128-block SQLite �
 `270 / 36,172`、`crcfinal=0x4983`。Mac 的跨块定向、`[function-entry]`、
 `[direct-link][production]`、`[continuation]` 和非压力 `[smc]` 分别通过 5、103、878、117 和 729 条
 断言；Orb GCC 13.2 分别通过 5、103、550、117 和 400 条。没有保留 continuation 原型、env 开关、
-probe、日志、临时运行路径或兼容兜底，也没有运行长基准或压力测试。下一步只重开带独立成本账或运行时
+check、日志、临时运行路径或兼容兜底，也没有运行长基准或压力测试。下一步只重开带独立成本账或运行时
 热度反馈的跨 publication-component 二级合并，不再重试全局 block budget 扩张。
 
 ### 16.70 component membership 固定税归因
@@ -2390,7 +2390,7 @@ cut；每个 region 独立执行优化、live interval 和 RA，不允许 SSA/fi
 allocation 中顺序发射多个 region，共享 FunctionEntryPublisher、generation/invalidation transaction 和 cold
 tail，并把已知 region 间边链接到目标 canonical entry。只有该所有权层完成后才重新评估 128-block 总
 membership；不再把一个 128-block HIRFunction 交给单一 RA，也不先做 trace/layout 排序。本阶段没有保留
-源码原型、env 开关、probe、日志或临时路径，也没有运行长基准或压力测试。
+源码原型、env 开关、check、日志或临时路径，也没有运行长基准或压力测试。
 
 ### 16.71 独立 region 发码与共享 code-object emitter
 
@@ -2432,7 +2432,7 @@ Mac/Orb 的 function-code-object 用例分别通过 19 条断言，SMC code-obje
 function-entry 和 continuation 均保持 103/117 条。Mac/Orb 的 production direct-link 分别通过 863/544 条，
 非压力 SMC 分别通过 724/406 条。Orb 静态短门禁保持 smallpt `249 / 36,448`、SQLite
 `1,923 / 249,687`、CoreMark 2k `270 / 36,172`，smallpt oracle 不变。本阶段没有增加 env 开关、日志、
-probe、临时路径或兼容兜底。backend code-object ownership 事务至此闭合；下一步只在 frontend 提供经过
+check、临时路径或兼容兜底。backend code-object ownership 事务至此闭合；下一步只在 frontend 提供经过
 canonical 64-block cut 的独立 HIRFunction regions 后启用多 region membership。
 
 ### 16.73 frontend canonical region decoder 边界
@@ -2441,18 +2441,18 @@ function-level 的 CFG 解码、split replay、late-entry 重解码、external-r
 跳过和 block-cap 判定已从 `translator.cpp` 拆到 `FunctionRegionDecoder`。decoder 每次只拥有一个
 HIRFunction 和一个明确 block budget，返回 decoded-block、host-call 与 cap 状态；translator 只负责选择
 budget、处理 block-only 回退并调用 backend。该边界允许后续为每个 canonical 64-block cut 创建独立
-HIRFunction，而不复制 decoder 循环或让 region planner 进入 terminal emitter。
+HIRFunction，而不复制 decoder 循环或让 region builder 进入 terminal emitter。
 
 Mac/Orb 的 function-entry、function-code-object 和 continuation 门禁保持通过。Orb 静态短门禁严格保持
 smallpt `249 / 36,448`、SQLite `1,923 / 249,687`、CoreMark 2k `270 / 36,172`，smallpt oracle 不变。
-本阶段没有新增运行时策略、env 开关、日志或 probe；下一步由独立 membership planner 只选择已经发生
+本阶段没有新增运行时策略、env 开关、日志或 check；下一步由独立 membership builder 只选择已经发生
 code miss 的 region roots，并复用该 decoder 形成 region 列表。
 
 ### 16.74 miss 驱动的 canonical region membership
 
-提交 `3b42c72` 落地独立 `FunctionRegionMembership`。首次 64-block canonical region 发布后，planner 只记录
+提交 `3b42c72` 落地独立 `FunctionRegionMembership`。首次 64-block canonical region 发布后，builder 只记录
 仍未发布的 external roots、主 function 的强身份和实际 decoded-block 数；只有这些 root 后续真的发生 code
-miss 时才消费记录。重组上限固定为 128 blocks，不做预编译，也不把 planner 塞回 decoder 或 backend
+miss 时才消费记录。重组上限固定为 128 blocks，不做预编译，也不把 builder 塞回 decoder 或 backend
 emitter。重组时先同步撤销旧 allocation 的全部已发布入口，再以旧 canonical region 为主 HIRFunction，
 新入口只解码尚未被主 region 认领的 blocks，最终仍由第 16.71/16.72 节的单 allocation emitter 和统一
 publication owner 发布。
@@ -2471,6 +2471,6 @@ roots/versions，却把静态指令从 `36,448` 增至 `41,221`（`+4,773`），
 instructions：相对 16.73 基线减少 6 个独立 roots，versions 不增，静态指令再少 21 条；smallpt PPM
 SHA-256 保持 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`。Mac 与 Orb 的
 membership、function-code-object、function-entry、continuation、indirect-L1、非压力 direct-link 和非压力
-SMC 定向门禁全部通过。本阶段没有长跑、stress、env 开关、probe、调试日志、临时源路径或兼容兜底；
+SMC 定向门禁全部通过。本阶段没有长跑、stress、env 开关、check、调试日志、临时源路径或兼容兜底；
 下一步应先用短版 FEX 对齐重新排序剩余 root 差距，再决定扩展到第三个 canonical region，还是转向更大的
 hot/cold layout 与跨 root 状态 ABI 缺口。

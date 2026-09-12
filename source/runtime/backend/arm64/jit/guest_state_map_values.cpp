@@ -1,3 +1,4 @@
+#include "runtime/backend/reg_alloc.h"
 #include "guest_state_map.h"
 
 #include <algorithm>
@@ -6,9 +7,7 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool IsPinnedGPR(u32 home) {
-    return home <= 9 || (home >= 19 && home <= 23) || home == 29;
-}
+using ::swift::runtime::backend::IsFixedGPRHome;
 
 bool ReadsFixedHomeValue(const ir::Inst& consumer, u32 width) {
     switch (consumer.GetOp()) {
@@ -230,13 +229,13 @@ void GuestStateMap::BuildValueVersions(
     fixed_home_uses.clear();
     fixed_home_use_counts.clear();
     registered_fixed_home_uses.clear();
-    fault_snapshot_values.clear();
-    fault_width_snapshots.clear();
+    fault_capture_values.clear();
+    fault_width_captures.clear();
     if (!has_reused_publication) {
         return;
     }
-    const bool capture_fault_snapshots = NeedsFaultSnapshots();
-    PrepareCurrentEntryWidthFacts(capture_fault_snapshots);
+    const bool capture_fault_captures = NeedsFaultCaptures();
+    PrepareCurrentEntryWidthFacts(capture_fault_captures);
     StackVector<EarlyClobber, 8> early_clobbers;
     for (const auto& write : coalesced_writes) {
         if (!write.publication ||
@@ -303,8 +302,8 @@ void GuestStateMap::BuildValueVersions(
         const ExtensionFacts publication_extension = publication
                 ? ValueExtensionFacts(published_value, active)
                 : ExtensionFacts{};
-        if (capture_fault_snapshots && MayFaultOrObserve(inst)) {
-            CaptureFaultSnapshot(inst, active, width_facts);
+        if (capture_fault_captures && MayFaultOrObserve(inst)) {
+            CaptureFaultCapture(inst, active, width_facts);
         }
         while (next_clobber < early_clobbers.size() &&
                early_clobbers[next_clobber].root == &inst) {
@@ -353,7 +352,7 @@ void GuestStateMap::BuildValueVersions(
             if (inst.GetOp() == ir::OpCode::GetHostGPR &&
                 inst.GetArg<ir::Imm>(1).Get() == 0) {
                 const u32 home = inst.GetArg<ir::Imm>(0).Get();
-                if (IsPinnedGPR(home)) {
+                if (IsFixedGPRHome(home)) {
                     PublishValue(ir::Value{&inst}, home, inst.Id(),
                                  CurrentEntryExtensionFacts(home), active);
                 }
@@ -361,7 +360,7 @@ void GuestStateMap::BuildValueVersions(
             continue;
         }
         const u32 home = inst.GetArg<ir::Imm>(1).Get();
-        if (IsPinnedGPR(home)) {
+        if (IsFixedGPRHome(home)) {
             PublishValue(published_value, home, inst.Id(),
                          publication_extension, active);
         }

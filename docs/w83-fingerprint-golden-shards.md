@@ -9,7 +9,7 @@
 选择 **平台 + 有效 FlagM/CFINV 分片**，不采用 preload 归一化。
 
 指纹是 execution-driven gate：宿主 `fstat` 元数据会改变 guest glibc 实际走到的
-basic block，宿主 lowering feature 也会合法改变 IR。把这些输入编码进 fixture identity
+basic block，宿主 lowering feature 也会合法改变 IR。把这些输入编码进 fixture direct
 比在测试进程里注入一层 libc hook 更直接，也不改变生产 syscall 语义。新机制的 profile
 为：
 

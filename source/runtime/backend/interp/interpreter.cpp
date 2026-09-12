@@ -66,7 +66,7 @@ void Interpreter::WriteScalar(InterpStack& stack, ir::Inst* inst, u64 value) {
         return;
     }
     // Slots always hold the value zero-extended / masked to its type width, so
-    // plain u64 compares (TestZero, terminals, Select) behave like the JIT's
+    // basic u64 compares (TestZero, terminals, Select) behave like the JIT's
     // width-correct register compares.
     value &= MaskFor(type);
     SetReg(stack, ir::Value{inst}, value);

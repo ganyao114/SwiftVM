@@ -1,3 +1,4 @@
+#include "support/register_alloc_test_support.h"
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -90,7 +91,7 @@ std::vector<std::string> Emit(SpillPublicationBlock input) {
     GPRSMask gprs{~((1u << 6) - 1u)};
     FPRSMask fprs{~((1u << 8) - 1u)};
     RegAlloc alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
-    RegisterAllocPass::RunForSpillEvictTest(input.block.get(), &alloc, false);
+    RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &alloc, false);
     REQUIRE(alloc.ValueType(input.result) == RegAlloc::MEM);
 
     Config config{

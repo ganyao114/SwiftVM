@@ -3,7 +3,7 @@
 //
 // WHY THIS EXISTS
 // ---------------
-// The bundled distorm snapshot is AVX1-era and cannot carry AVX. Measured over
+// The bundled distorm capture is AVX1-era and cannot carry AVX. Measured over
 // 117 representative AVX/AVX2 encodings:
 //
 //   * 40 are returned as I_UNDEFINED — every AVX2-only form (vpbroadcast*,

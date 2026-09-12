@@ -47,7 +47,7 @@ JitTranslator::GetUnalignedAtomicFallbackKey(ir::Inst* inst) {
 
     const auto result = context.MappedGPRCode(ir::Value{inst});
     const auto first_code = context.MappedGPRCode(first);
-    const auto address_code = use_memory_base
+    const auto address_code = memory_state.use_memory_base
             ? std::optional<u8>{static_cast<u8>(mem_scratch.GetCode())}
             : context.MappedGPRCode(address);
     if (!result || !first_code || !address_code) {
@@ -72,12 +72,12 @@ JitTranslator::GetUnalignedAtomicFallbackKey(ir::Inst* inst) {
 
 void JitTranslator::PrepareUnalignedAtomicFallbacks(
         std::span<ir::Block* const> blocks) {
-    ASSERT(unaligned_atomic_fallbacks.empty());
-    unaligned_atomic_fallback_counts.clear();
+    ASSERT(memory_state.unaligned_atomic_fallbacks.empty());
+    memory_state.unaligned_atomic_fallback_counts.clear();
     for (auto* block : blocks) {
         for (auto& inst : block->GetInstList()) {
             if (const auto key = GetUnalignedAtomicFallbackKey(&inst)) {
-                ++unaligned_atomic_fallback_counts[*key];
+                ++memory_state.unaligned_atomic_fallback_counts[*key];
             }
         }
     }
@@ -88,11 +88,11 @@ Label* JitTranslator::GetUnalignedAtomicFallback(ir::Inst* inst) {
     if (!key) {
         return nullptr;
     }
-    const auto count = unaligned_atomic_fallback_counts.find(*key);
-    if (count == unaligned_atomic_fallback_counts.end() || count->second < 2) {
+    const auto count = memory_state.unaligned_atomic_fallback_counts.find(*key);
+    if (count == memory_state.unaligned_atomic_fallback_counts.end() || count->second < 2) {
         return nullptr;
     }
-    auto [it, inserted] = unaligned_atomic_fallbacks.try_emplace(*key);
+    auto [it, inserted] = memory_state.unaligned_atomic_fallbacks.try_emplace(*key);
     if (inserted) {
         it->second = std::make_unique<Label>();
     }
@@ -120,18 +120,18 @@ void JitTranslator::EmitUnalignedAtomicFallback(
     __ Stxr(ipw, result.W(), MemOperand(atomic_scratch));
     __ Cbnz(ipw, &retry);
 
-    EmitPlainAtomicLoad(key.type, result, address);
+    EmitBasicAtomicLoad(key.type, result, address);
     switch (key.kind) {
         case UnalignedAtomicFallbackKind::CompareAndSwap: {
             Label no_store;
             __ Cmp(result, first);
             __ B(&no_store, ne);
-            EmitPlainAtomicStore(key.type, second, address);
+            EmitBasicAtomicStore(key.type, second, address);
             __ Bind(&no_store);
             break;
         }
         case UnalignedAtomicFallbackKind::Exchange:
-            EmitPlainAtomicStore(key.type, first, address);
+            EmitBasicAtomicStore(key.type, first, address);
             break;
         case UnalignedAtomicFallbackKind::FetchAdd:
             if (wide) {
@@ -139,7 +139,7 @@ void JitTranslator::EmitUnalignedAtomicFallback(
             } else {
                 __ Add(ipw, result.W(), first.W());
             }
-            EmitPlainAtomicStore(key.type, wide ? Register{ip} : Register{ipw},
+            EmitBasicAtomicStore(key.type, wide ? Register{ip} : Register{ipw},
                                  address);
             break;
     }
@@ -149,23 +149,23 @@ void JitTranslator::EmitUnalignedAtomicFallback(
 }
 
 void JitTranslator::EmitUnalignedAtomicFallbacks() {
-    if (unaligned_atomic_fallbacks.empty()) {
-        unaligned_atomic_fallback_counts.clear();
+    if (memory_state.unaligned_atomic_fallbacks.empty()) {
+        memory_state.unaligned_atomic_fallback_counts.clear();
         return;
     }
     const bool own_cold_scratch = !context.ColdScratchActive();
     if (own_cold_scratch) {
         context.BeginColdScratch();
     }
-    for (const auto& [key, label] : unaligned_atomic_fallbacks) {
+    for (const auto& [key, label] : memory_state.unaligned_atomic_fallbacks) {
         __ Bind(label.get());
         EmitUnalignedAtomicFallback(key);
     }
     if (own_cold_scratch) {
         context.EndColdScratch();
     }
-    unaligned_atomic_fallbacks.clear();
-    unaligned_atomic_fallback_counts.clear();
+    memory_state.unaligned_atomic_fallbacks.clear();
+    memory_state.unaligned_atomic_fallback_counts.clear();
 }
 
 #undef __

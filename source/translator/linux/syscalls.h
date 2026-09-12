@@ -19,7 +19,7 @@
 //         rdi/rsi/rdx/r10/r8/r9 = arguments
 //     and the caller writes the result back into rax.
 //
-// Syscall *numbers* differ between the two ISAs: the handler normalizes the
+// Syscall *numbers* differ between the two ISAs: the handler adjusts the
 // guest number to the asm-generic (AArch64) numbering via the GuestISA it
 // was constructed with, so the emulation code itself is ISA-agnostic.
 //
@@ -105,6 +105,8 @@
 #undef SYS_rseq
 #undef SYS_faccessat2
 #endif
+
+#include "syscall_diagnostics.h"
 
 namespace swift::linux {
 
@@ -322,6 +324,9 @@ public:
     void SetAlarmInterrupt(std::function<void()> fn);
     void ShutdownAlarm();
     [[nodiscard]] u64 ConsumePendingSignal(u64 blocked_mask);
+    [[nodiscard]] u64 PeekPendingSignals() const {
+        return pending_signals.load(std::memory_order_acquire);
+    }
 
     void RequestExitGroup(u8 code);
     [[nodiscard]] bool IsExiting() const {
@@ -336,6 +341,7 @@ public:
     VAddr brk_base{};
     VAddr brk_current{};
     VAddr brk_mapped_end{};
+    RegisterDumpTrigger register_dump;
 
 private:
     struct FutexWaiter {
@@ -373,7 +379,7 @@ class SyscallHandler {
 public:
     // brk_base: initial program break (end of the loaded image).
     // isa: selects the guest syscall numbering (x86_64 numbers are
-    // normalized to the asm-generic GuestSyscall enum in Handle()).
+    // adjusted to the asm-generic GuestSyscall enum in Handle()).
     // exe_path: guest ELF path, used for /proc/self/exe emulation.
     explicit SyscallHandler(GuestMemory* memory,
                             VAddr brk_base,
@@ -419,6 +425,10 @@ public:
     // write fs_base/gs_base through to the frontend-visible fields
     // (translator/x86/cpu.h ThreadContext64::fs_base/gs_base).
     void SetX86Context(void* x86_ctx) { this->x86_ctx = x86_ctx; }
+
+    void SetExecutionTraceDumper(std::function<void()> fn) {
+        execution_trace_dumper_ = std::move(fn);
+    }
 
     // SMC wiring (Phase 4): called with (guest_start, guest_end) whenever the
     // guest mprotects (PROT_WRITE), mmaps (MAP_FIXED), munmaps, or mremaps a
@@ -498,6 +508,10 @@ private:
     // arch_prctl writes fs_base/gs_base through it. Opaque here to keep the
     // x86 header out of this one.
     void* x86_ctx{};
+    void DumpExecTraceRing() const {
+        if (execution_trace_dumper_) execution_trace_dumper_();
+    }
+    std::function<void()> execution_trace_dumper_;
     // Thread-ish state for the single emulated thread.
     u64 fs_base{};
     u64 gs_base{};

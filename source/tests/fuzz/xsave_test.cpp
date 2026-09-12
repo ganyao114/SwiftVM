@@ -4,16 +4,16 @@
 // ------
 // Every expected value below was measured by EXECUTING the corresponding
 // instruction on real x86-64 hardware through Rosetta 2 on this host, then
-// cross-checked against the Intel SDM.  The probes live in the scratch area
+// cross-checked against the Intel SDM.  The checks live in the scratch area
 // and are reproduced verbatim in the comments next to each table so they can
 // be re-run:
 //
-//   clang -arch x86_64 -O1 -mavx2 -o /tmp/xsave_probe xsave_probe.c
-//   ROSETTA_ADVERTISE_AVX=1 arch -x86_64 /tmp/xsave_probe
+//   clang -arch x86_64 -O1 -mavx2 -o /tmp/xsave_check xsave_check.c
+//   ROSETTA_ADVERTISE_AVX=1 arch -x86_64 /tmp/xsave_check
 //
 // (Without ROSETTA_ADVERTISE_AVX=1 Rosetta's CPUID hides AVX/OSXSAVE while
 // still executing the instructions, so CPUID is never used to decide what to
-// probe -- every probe gates on whether the instruction actually ran.)
+// check -- every check gates on whether the instruction actually ran.)
 //
 // WHERE THE ORACLE IS NOT FOLLOWED
 // --------------------------------
@@ -132,7 +132,7 @@ void EmitCpuidInsn(CodeBuf& b) {
 }
 
 // ---- expected layout, from CPUID.0xD on hardware --------------------------
-// ROSETTA_ADVERTISE_AVX=1 arch -x86_64 /tmp/xsave_probe:
+// ROSETTA_ADVERTISE_AVX=1 arch -x86_64 /tmp/xsave_check:
 //   CPUID.0xD.0: EAX=00000007 EBX=00000340 ECX=00000340 EDX=00000000
 //   CPUID.0xD.1: EAX=00000000 EBX=00000000 ECX=00000000 EDX=00000000
 //   CPUID.0xD.2: EAX=00000100 EBX=00000240 ECX=00000000 EDX=00000000
@@ -388,14 +388,14 @@ TEST_CASE("x86 xsave facility vs rosetta reference") {
 
     // ---- dispatch must be live whenever the facility is advertised ---------
     {
-        CodeBuf probe;
-        EmitXgetbvInsn(probe);
+        CodeBuf check;
+        EmitXgetbvInsn(check);
         // Every block gets its own address: a core caches its translation, so
         // reusing an address would silently re-run the previous block.
-        const u64 probe_addr = base + code_cursor * 0x100;
+        const u64 check_addr = base + code_cursor * 0x100;
         ++code_cursor;
-        const auto r = run(jit_core, probe, no_setup, probe_addr);
-        INFO("SVM_XSAVE advertises XGETBV, so the dispatch probe must execute");
+        const auto r = run(jit_core, check, no_setup, check_addr);
+        INFO("SVM_XSAVE advertises XGETBV, so the dispatch check must execute");
         REQUIRE(r.exit == int(swift::translator::None));
     }
 
@@ -596,7 +596,7 @@ TEST_CASE("x86 xsave facility vs rosetta reference") {
 
     // ---- XRSTOR ------------------------------------------------------------
     {  // ---- XRSTOR ----
-        // Values planted in the save area, all different from the seeds the
+        // Values placeed in the save area, all different from the seeds the
         // registers hold when the block starts.
         const auto want_xmm = [](u32 reg, u32 lane) { return u8(0xE0 - reg * 4 - lane); };
         const auto want_ymm = [](u32 reg, u32 lane) { return u8(0x21 + reg * 5 + lane); };

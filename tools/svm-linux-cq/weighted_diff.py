@@ -2,53 +2,18 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import pathlib
-import re
 import sys
 
-
-HOT_LINE = re.compile(
-    r"\[svm-hot-all\]\s+pc=(0x[0-9a-f]+)\s+versions=(\d+)\s+entries=(\d+)\s+"
-    r"host_bytes=(\d+)\s+host_static=(\d+)\s+move_static=(\d+)\s+"
-    r"nan_static=(\d+)\s+spill_static=(\d+)"
-)
+from hot_records import HotUnit, load_hot as read_hot_records
 
 
-@dataclasses.dataclass(frozen=True)
-class HotShape:
-    pc: int
-    versions: int
-    entries: int
-    host_static: int
-    move_static: int
-    spill_static: int
-
-    def weighted_host(self) -> int:
-        return self.entries * self.host_static
-
-
-def load_hot(path: pathlib.Path) -> dict[int, HotShape]:
-    result: dict[int, HotShape] = {}
-    with path.open(encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            match = HOT_LINE.search(line)
-            if not match:
-                continue
-            values = [int(value, 0) for value in match.groups()]
-            shape = HotShape(
-                pc=values[0],
-                versions=values[1],
-                entries=values[2],
-                host_static=values[4],
-                move_static=values[5],
-                spill_static=values[7],
-            )
-            if shape.pc in result:
-                raise ValueError(f"duplicate pc 0x{shape.pc:x} in {path}")
-            result[shape.pc] = shape
-    if not result:
-        raise ValueError(f"no [svm-hot-all] records in {path}")
+def load_hot(path: pathlib.Path) -> dict[int, HotUnit]:
+    result = read_hot_records(path)
+    # Equal version counts do not establish corresponding code bodies across
+    # separate builds. Retained weights may only select an unambiguous shape.
+    if any(unit.versions != 1 for unit in result.values()):
+        raise ValueError(f"cannot match multiple code versions across captures: {path}")
     return result
 
 
@@ -100,6 +65,8 @@ def main() -> int:
 
     total_host = sum(shape.weighted_host() for shape in weights.values())
     total_entries = sum(shape.entries for shape in weights.values())
+    if not total_host or not total_entries:
+        raise ValueError("weights contain no executed code")
     covered_host = sum(weights[pc].weighted_host() for pc in exact)
     covered_entries = sum(weights[pc].entries for pc in exact)
     baseline_common = sum(
@@ -119,6 +86,7 @@ def main() -> int:
     host_coverage = percent(covered_host, total_host)
     entry_coverage = percent(covered_entries, total_entries)
 
+    print("comparison_kind=retained_entry_static_estimate; not dynamic-work or speed ratios")
     print(
         f"weights pcs={len(weights)} versions={sum(x.versions for x in weights.values())} "
         f"weighted_host={total_host}"
@@ -159,7 +127,8 @@ def main() -> int:
             f"delta={weighted_delta:+d}"
         )
 
-    coverage_ok = host_coverage >= args.min_coverage and top_matched == len(top)
+    coverage_ok = (bool(exact) and min(host_coverage, entry_coverage) >= args.min_coverage
+                   and top_matched == len(top))
     growth_ok = not args.fail_on_growth or delta <= 0
     print(f"status={'PASS' if coverage_ok and growth_ok else 'FAIL'}")
     return 0 if coverage_ok and growth_ok else 1

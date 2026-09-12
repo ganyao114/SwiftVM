@@ -64,7 +64,7 @@ TEST_CASE("glibc guest: STT_GNU_IFUNC symbols are resolved, not called directly"
         CHECK(resolved != 0);
         CHECK(resolved != raw);  // the resolver picked a different address
     }
-    // And a plain STT_FUNC symbol is passed through untouched.
+    // And a basic STT_FUNC symbol is passed through untouched.
     CHECK_FALSE(env.IsIfunc("snprintf"));
     CHECK(env.LookupSymbol("snprintf") == env.RawSymbol("snprintf"));
 }

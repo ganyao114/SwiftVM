@@ -27,7 +27,7 @@ namespace swift::linux {
 bool GuestMemory::ReserveWindow(u32 bits) {
     ASSERT(bias_ == 0);       // the reservation installs the bias; call once
     ASSERT(window_bits_ == 0);
-    ASSERT(!identity_mode_);
+    ASSERT(!direct_mode_);
     if (bits == 0) return true;  // window disabled: legacy unbounded bias mode
     ASSERT(bits >= 20 && bits <= 47);
     const u64 size = u64(1) << bits;
@@ -52,7 +52,7 @@ bool GuestMemory::ReserveWindow(u32 bits) {
     // Page-presence bitmap for the whole window: one bit per host page, so
     // 2^(bits-17) bytes -- 32 KiB at the default 32-bit window, 1 GiB at the
     // 47-bit maximum (calloc, so untouched pages cost nothing). This is what
-    // makes the helper-side "is this guest range mapped?" probe lock-free;
+    // makes the helper-side "is this guest range mapped?" check lock-free;
     // see MappedBytesFrom.
     const u64 words = std::max<u64>(1, (size >> kHostPageShift) / 64);
     page_bitmap_.reset(static_cast<std::atomic<u64>*>(
@@ -145,7 +145,7 @@ bool GuestMemory::MapFixedImpl(VAddr addr, u64 size, bool quiet_failure) {
         return false;
     }
     // Linux kernels before 4.17 may ignore the unknown NOREPLACE flag and
-    // treat the address as a hint. Never accept such a result: identity mode
+    // treat the address as a hint. Never accept such a result: direct mode
     // promises exact placement and must not silently become biased.
     if (reinterpret_cast<VAddr>(res) != host_addr) {
         munmap(res, map_size);
@@ -163,12 +163,12 @@ bool GuestMemory::MapFixedImpl(VAddr addr, u64 size, bool quiet_failure) {
     return true;
 }
 
-bool GuestMemory::FallBackIdentityToWindow() {
-    ASSERT(identity_mode_);
+bool GuestMemory::FallBackDirectToWindow() {
+    ASSERT(direct_mode_);
     ASSERT(bias_ == 0);
     ASSERT(window_bits_ == 0);
     ASSERT(mapped_regions.empty());
-    identity_mode_ = false;
+    direct_mode_ = false;
     return ReserveWindow(kDefaultWindowBits);
 }
 
@@ -216,45 +216,45 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
         }
         return MapFixed(guest_start, map_size);
     }
-    if (identity_mode_) {
+    if (direct_mode_) {
 #if defined(__linux__)
         // The initial image span is one all-or-nothing mapping. If exact
         // placement collides, no guest mapping has been published yet, so it
         // is safe to select the same bounded window used by explicit bias mode
         // and retry through the common windowed branch.
-        int identity_errno = 0;
-        return TryIdentityWithFallback(
+        int direct_errno = 0;
+        return TryDirectWithFallback(
                 [&] {
-                    if (runtime::GetSvmConfig().mem_identity_test_collision) {
+                    if (runtime::GetSvmConfig().mem_direct_test_collision) {
                         errno = EEXIST;
-                        identity_errno = errno;
+                        direct_errno = errno;
                         return false;
                     }
                     if (!MapFixedImpl(guest_start, map_size, true)) {
-                        identity_errno = errno;
+                        direct_errno = errno;
                         return false;
                     }
-                    LOG_INFO("GuestMemory: identity image span guest=host [{:#x}, {:#x})",
+                    LOG_INFO("GuestMemory: direct image span guest=host [{:#x}, {:#x})",
                              guest_start,
                              guest_start + map_size);
                     return true;
                 },
                 [&] {
-                    LOG_WARNING("GuestMemory: identity image span [{:#x}, {:#x}) is "
+                    LOG_WARNING("GuestMemory: direct image span [{:#x}, {:#x}) is "
                                 "unavailable (errno {}); falling back to the {}-bit "
                                 "bounded bias window",
                                 guest_start,
                                 guest_start + map_size,
-                                identity_errno,
+                                direct_errno,
                                 kDefaultWindowBits);
-                    if (!FallBackIdentityToWindow()) {
+                    if (!FallBackDirectToWindow()) {
                         LOG_ERROR("GuestMemory: bounded bias fallback reservation failed");
                         return false;
                     }
                     return MapImageAnywhere(guest_start, map_size);
                 });
 #else
-        PANIC("GuestMemory identity mode is only supported on Linux hosts");
+        PANIC("GuestMemory direct mode is only supported on Linux hosts");
 #endif
     }
     ASSERT(bias_ == 0);  // the image reservation installs the bias; call once

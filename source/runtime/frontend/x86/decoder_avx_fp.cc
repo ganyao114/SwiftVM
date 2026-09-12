@@ -8,7 +8,7 @@
 //   extract     vmovmskps, vmovmskpd
 //
 // Everything here decodes from VexInsn (vex_decoder.h) and never touches
-// distorm's _DInst: the bundled distorm snapshot silently drops VEX.L on 38 of
+// distorm's _DInst: the bundled distorm capture silently drops VEX.L on 38 of
 // the encodings measured, so its operand list cannot be trusted for AVX.
 //
 // ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ X64Decoder::VecHalves X64Decoder::VexLoadVec256(const VexInsn& v) {
     return {lo, hi};
 }
 
-// The r/m operand of a SCALAR form as a plain integer container: a U64 holding
+// The r/m operand of a SCALAR form as a basic integer container: a U64 holding
 // the f32 in its low dword, or the f64.  This is what VecFAddScalar32/64 and
 // VecFCmp want (they take the raw bits in a GPR, not a vector).
 ir::Value X64Decoder::VexLoadScalar(const VexInsn& v, u32 lane_bits) {
@@ -814,30 +814,30 @@ ir::Value FpConst128(ir::Assembler* as, u64 lo, u64 hi) {
 // Parameter packing for the DecodeAvxIntBinary / DecodeAvxIntUnary callbacks,
 // matching decoder_avx_int.cc's convention (lane width low, flag high).
 constexpr u32 FpPack(u32 lane, u32 flag = 0) { return lane | (flag << 16); }
-constexpr u32 FpLane(u32 param) { return param & 0xFFFF; }
+constexpr u32 FloatingLane(u32 param) { return param & 0xFFFF; }
 constexpr u32 FpFlag(u32 param) { return param >> 16; }
 
 ir::Value FpOpMin(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecMin(a, b, ir::Imm(FpLane(param)), ir::Imm(FpFlag(param)))
+    return as->VecMin(a, b, ir::Imm(FloatingLane(param)), ir::Imm(FpFlag(param)))
             .SetType(ir::ValueType::V128);
 }
 
 ir::Value FpOpMax(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecMax(a, b, ir::Imm(FpLane(param)), ir::Imm(FpFlag(param)))
+    return as->VecMax(a, b, ir::Imm(FloatingLane(param)), ir::Imm(FpFlag(param)))
             .SetType(ir::ValueType::V128);
 }
 
 ir::Value FpOpZip(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecZip(a, b, ir::Imm(FpLane(param)), ir::Imm(FpFlag(param)))
+    return as->VecZip(a, b, ir::Imm(FloatingLane(param)), ir::Imm(FpFlag(param)))
             .SetType(ir::ValueType::V128);
 }
 
 ir::Value FpOpCmpEq(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecCmpEq(a, b, ir::Imm(FpLane(param))).SetType(ir::ValueType::V128);
+    return as->VecCmpEq(a, b, ir::Imm(FloatingLane(param))).SetType(ir::ValueType::V128);
 }
 
 ir::Value FpOpCmpGt(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecCmpGt(a, b, ir::Imm(FpLane(param))).SetType(ir::ValueType::V128);
+    return as->VecCmpGt(a, b, ir::Imm(FloatingLane(param))).SetType(ir::ValueType::V128);
 }
 
 // VPSHUFB: dst[i] = ctrl[i] bit 7 ? 0 : table[ctrl[i] & 15], per 128-bit lane.

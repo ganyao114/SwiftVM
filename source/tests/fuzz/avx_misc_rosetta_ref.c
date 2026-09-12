@@ -160,7 +160,7 @@ static void build_pairs(void) {
     }
     {
         // NaN payloads, signalling NaNs, infinities, signed zero, a denormal
-        // and a value already past 2^23 (where every mode is the identity).
+        // and a value already past 2^23 (where every mode is the direct).
         Pair* p = new_pair("f32edge");
         const u32 a[8] = {QNAN_A32, SNAN_A32,   NZERO32,   DEN_MIN32,
                           INF32,    NINF32,     f32bits(16777216.0f), f32bits(-1e30f)};
@@ -310,7 +310,7 @@ static void st256(Code* c, int reg, int disp) {
 // which is not a crash, just a rounding mode that never changed, and the whole
 // MXCSR half of this file quietly measured nothing.  Caught because Rosetta
 // returned nearest-even for all four RC values while a standalone
-// _mm_setcsr probe on the same host returned four different answers.
+// _mm_setcsr check on the same host returned four different answers.
 static void ldmxcsr(Code* c, int disp) {
     emit(c, 0x0F);
     emit(c, 0xAE);
@@ -577,5 +577,4 @@ int main(int argc, char** argv) {
     }
     return 0;
 }
-
 

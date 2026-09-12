@@ -1,3 +1,4 @@
+#include "support/register_alloc_test_support.h"
 #include <catch2/catch_test_macros.hpp>
 
 #include <memory>
@@ -61,7 +62,7 @@ std::unique_ptr<RegAlloc> Allocate(ScalarPublication& item, bool enabled = true)
     const GPRSMask gprs{~((1u << 8) - 1u)};
     auto alloc = std::make_unique<RegAlloc>(
             item.block->MaxInstrId(), gprs, ResidentFPRs(), FeatureSet{});
-    RegisterAllocPass::RunForXmmResidentTest(
+    RegisterAllocTestSupport::RunForXmmResidentTest(
             item.block.get(), alloc.get(), enabled);
     return alloc;
 }
@@ -214,7 +215,7 @@ TEST_CASE("one live FPR result occupies only one resident home") {
     const GPRSMask gprs{~((1u << 8) - 1u)};
     RegAlloc alloc{
             block->MaxInstrId(), gprs, resident_fprs, FeatureSet{}};
-    RegisterAllocPass::RunForXmmResidentTest(block.get(), &alloc, true);
+    RegisterAllocTestSupport::RunForXmmResidentTest(block.get(), &alloc, true);
 
     REQUIRE(alloc.ValueFPR(result).id == kResidentTarget);
     REQUIRE(alloc.IsHostWriteCoalesced(first->Id()));
@@ -245,12 +246,12 @@ TEST_CASE("scalar square root publishes through its resident merge home") {
         const GPRSMask gprs{~((1u << 8) - 1u)};
         RegAlloc baseline{
                 block->MaxInstrId(), gprs, ResidentFPRs(), FeatureSet{}};
-        RegisterAllocPass::RunForXmmResidentTest(
+        RegisterAllocTestSupport::RunForXmmResidentTest(
                 block.get(), &baseline, false);
         const auto baseline_size = EmitSize(block.get(), baseline);
         RegAlloc alloc{
                 block->MaxInstrId(), gprs, ResidentFPRs(), FeatureSet{}};
-        RegisterAllocPass::RunForXmmResidentTest(
+        RegisterAllocTestSupport::RunForXmmResidentTest(
                 block.get(), &alloc, true);
 
         if (keep_merge_live) {

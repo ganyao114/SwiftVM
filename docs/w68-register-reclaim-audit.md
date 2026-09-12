@@ -14,7 +14,7 @@ git 命令。
   VIXL scratch contract 防止隐式租用覆盖 live value；
 - desktop Linux 的 x18 已按 host 条件化，零 spill unit 在池内，只有首轮发生
   spill 的 unit 才重跑并专用 x18；Darwin 仍保留 x18；
-- x25、x24、x10 都已按实际功能条件保留：没有 RSB/local 时 x25 可用，identity
+- x25、x24、x10 都已按实际功能条件保留：没有 RSB/local 时 x25 可用，direct
   时 x24 可用，没有 guest-address bias 时 x10 可用。
 
 给这些现状再包一层默认 OFF 的同义开关，ON/OFF 不产生不同发码，不能构成有效
@@ -26,13 +26,13 @@ spike；把现有默认行为反向绑到新开关又会破坏 OFF 默认态 byt
 
 | host / address 形态 | 首轮可见池 | 已 spill unit 重跑池 | 说明 |
 |---|---:|---:|---|
-| Linux desktop, identity | **10** | **9** | x10–x18 + x24；重跑时专用 x18 |
+| Linux desktop, direct | **10** | **9** | x10–x18 + x24；重跑时专用 x18 |
 | Linux desktop, bias | **8** | **7** | x10=mem scratch、x24=pt |
-| Darwin, identity | **9** | **9** | x18 平台保留 |
+| Darwin, direct | **9** | **9** | x18 平台保留 |
 | Darwin, bias（本机实测形态） | **7** | **7** | x18、x10、x24 均保留 |
 
 因此 fixed-class spike 的 pool 7 是 **Darwin + bias** 图，不是 Linux full-pin 的
-物理上限。保持 x26/x28/x30 不动时，Linux identity 的严格结构上限是 **12**：
+物理上限。保持 x26/x28/x30 不动时，Linux direct 的严格结构上限是 **12**：
 当前 10 + 关闭/迁出活动 RSB 的 x25 + unpin cache-base x27。所谓 13 还必须再迁出
 x26、x28、x30 之一，或少 pin 一个 guest GPR；均超出本任务边界。
 
@@ -55,7 +55,7 @@ caller/callee-save 本身不是“不可用”，但决定 helper 边界的保�
 
 | reg | 当前角色（当前坐标） | 类别 | 回收路径与代价 | 开关/裁决 |
 |---|---|---|---|---|
-| x0 | L2/L3 guest RSI；AAPCS arg/result | 自家 full-pin + ABI caller-clobber | 16-pin 目标内不可收；helper 必须 snapshot | 既有 `SVM_X86_PIN_EXT` |
+| x0 | L2/L3 guest RSI；AAPCS arg/result | 自家 full-pin + ABI caller-clobber | 16-pin 目标内不可收；helper 必须 capture | 既有 `SVM_X86_PIN_EXT` |
 | x1 | L2/L3 guest RDI；AAPCS arg1 | 同上 | 同 x0 | 同上 |
 | x2 | L2/L3 guest R8；AAPCS arg2 | 同上 | 同 x0 | 同上 |
 | x3 | L2/L3 guest R9；AAPCS arg3 | 同上 | 同 x0 | 同上 |
@@ -65,7 +65,7 @@ caller/callee-save 本身不是“不可用”，但决定 helper 边界的保�
 | x7 | L3 guest R13；L0–L2 为普通 pool | 同上 | 同 x6 | 同上 |
 | x8 | L3 guest R14；L0–L2 为普通 pool | 同上 | 同 x6 | 同上 |
 | x9 | L3 guest R15；非 L3 bias dispatcher 可作 `ip6` | 自家复用 + ABI caller-clobber | L3 下 dispatcher loc 已改用 x13，不能再收 guest home | `SVM_X86_PIN_EXT`; `trampolines.cpp:195-217` |
-| x10 | `mem_scratch`/dispatcher `forward`；identity 下普通 pool；L3 bias 可窄租给纯 ALU | 自家可优化选择 | 当前已条件回收；活动 bias 时常态入 value pool 会重现 VOID store clobber 风险 | 无需新开关；`defines.h:59-69`; `reg_alloc.cpp:85-92`; `jit_context.cpp:1143-1151` |
+| x10 | `mem_scratch`/dispatcher `forward`；direct 下普通 pool；L3 bias 可窄租给纯 ALU | 自家可优化选择 | 当前已条件回收；活动 bias 时常态入 value pool 会重现 VOID store clobber 风险 | 无需新开关；`defines.h:59-69`; `reg_alloc.cpp:85-92`; `jit_context.cpp:1143-1151` |
 | x11 | `ip`；terminal/call target、exclusive status；XPOOL 下普通 pool | 自家 fixed clobber | 已按 opcode/terminal 排除，不需全局保留 | `SVM_JIT_SCRATCH_XPOOL`; `reg_alloc.cpp:215-242` |
 | x12 | atomic surviving value；CAS/x87 fixed clobber；其余为 pool | 自家 fixed clobber | 已逐 opcode 回收 | 同上；`reg_alloc.cpp:216-233,264-276` |
 | x13 | CAS128 second observed、NaN cold link、L3 bias dispatcher loc；其余为 pool | 自家 fixed clobber | 已逐 opcode/路径回收 | 同上；`reg_alloc.cpp:223-258` |
@@ -79,7 +79,7 @@ caller/callee-save 本身不是“不可用”，但决定 helper 边界的保�
 | x21 | guest RBP；legacy asm-interpreter `handle`（x86 JIT 路径互斥） | 同上 | 同 x19；不是空闲寄存器 | `defines.h:37-47` |
 | x22 | L1+ guest RAX；legacy `arg` 路径互斥 | 同上 | 同 x19 | `SVM_X86_PIN_EXT>=1` |
 | x23 | L1+ guest RCX；legacy `args` 路径互斥 | 同上 | 同 x19 | 同上 |
-| x24 | bias 时 permanent pt；identity dispatcher 间作 `loc`，guest emission 内可入池 | 自家可优化选择 | 当前已条件回收；bias 下 unpin 会给每个 guest memory operand 增加 base 获取/活区间 | 由 `Config::memory_base/page_table` 决定；`trampolines.cpp:79-84,195-217` |
+| x24 | bias 时 permanent pt；direct dispatcher 间作 `loc`，guest emission 内可入池 | 自家可优化选择 | 当前已条件回收；bias 下 unpin 会给每个 guest memory operand 增加 base 获取/活区间 | 由 `Config::memory_base/page_table` 决定；`trampolines.cpp:79-84,195-217` |
 | x25 | 默认 RSB pointer；或 local buffer；两者都关闭时普通 pool | 自家可优化选择 | 当前已条件回收；活动 RSB 下 unpin 需每次 push/pop load/store pointer，且跨直接边保持一致 | 既有 RSB/global opts；`trampolines.cpp:76-87`; `jit_context.cpp:726-860` |
 | x26 | packed guest flags 枢纽，PF raw byte + AF bit26 + NZCV committed bits | 自家 JIT ABI | W-β lazy/split 已封存；本任务不碰 | 固定保留；`translator_flags.cpp:52-121,183-212,591-652` |
 | x27 | L2 code-cache base，runtime entry 一次加载，indirect/RSB terminal 使用 | 自家性能选择 | 可 unpin，代价是受影响边 reload；必须用“少 spill/bridge”抵消 reload 税 | 本任务只算账不实施；`trampolines.cpp:263-265`; `jit_context.cpp:823-833` |
@@ -119,7 +119,7 @@ x31/SP 不属于 x0–x30 枚举，但预算中必须排除；基础图在
 
 linker veneer、region-link slow trampoline、runtime helper/terminal 仍有显式 x16/x17
 使用，例如 `region_link_trampoline.cpp:132-165`。这些路径或在 allocator unit
-之外保存 static homes，或位于已 snapshot/fixed-clobber 的边界；它们不是未登记的
+之外保存 static homes，或位于已 capture/fixed-clobber 的边界；它们不是未登记的
 普通 emitter 覆盖。
 
 **结论：x16/x17 已安全入 pool/scratch 梯，但依据是动态租用审计，不是隐式
@@ -161,7 +161,7 @@ x28 是 permanent `State*`，不仅是普通 context cache。runtime entry 把 x
 ### 4.3 x10
 
 x10 的三个生命周期已经互斥：dispatcher 间的 `forward`、bias guest code 中的
-`mem_scratch`、identity guest code 的普通 pool。level3+bias 仅对
+`mem_scratch`、direct guest code 的普通 pool。level3+bias 仅对
 Add/Sub/Or/Select/VecFCvt/Call 等白名单 lease x10 作 instruction scratch
 (`reg_alloc.cpp:85-92`; `jit_context.cpp:1143-1151`)，不把它变成跨指令 value home。
 
@@ -204,11 +204,11 @@ x27(cache)、x28(State)、x30(LR)，留下 x10–x18 与 x24，共 10 根。这 
 
 - x16/x17 的 XPOOL 回收；
 - Linux 零-spill unit 的 x18；
-- identity 下的 x10/x24。
+- direct 下的 x10/x24。
 
 候选阶梯：
 
-| 配置 | Linux identity pool | 可行性/成本 |
+| 配置 | Linux direct pool | 可行性/成本 |
 |---|---:|---|
 | 当前 full-pin | **10**（spilling unit 9） | 已有机制，无新增代码 |
 | + x25（RSB 关闭） | 11（10） | 已有条件形态；默认 RSB 性能能力丢失 |
@@ -257,7 +257,7 @@ SQLite 命令：`sqlite_speedtest_x64 --size 1 --testset main`。两态都执行
 pool7 的 104/543 spill-unit 恰好对应“默认 scratch reserve=3 后 max-live >4”的
 直方图尾部，说明探针口径与 allocator 约束一致。
 
-### 7.2 从实测活区间投影 Linux identity pool
+### 7.2 从实测活区间投影 Linux direct pool
 
 默认普通 reserve 是 3。下表只做可审的 interval-pressure 下界，不把 peak excess
 臆造为 spill load/store 次数；后者还依赖 use 数、fixed clobber 和 eviction。
@@ -266,7 +266,7 @@ unit 追溯加入。
 
 | 语料 / 首轮池 | 普通 value 容量 | 仅按 max-live 可证明至少触发 | x18 重跑池/普通容量 | 这些 unit 的 peak excess 总下界 |
 |---|---:|---:|---:|---:|
-| CoreMark / 10（当前 Linux identity） | 7 | **2**（max-live 9） | 9 / 6 | **6** |
+| CoreMark / 10（当前 Linux direct） | 7 | **2**（max-live 9） | 9 / 6 | **6** |
 | CoreMark / 11（回收 x25 或 x27） | 8 | **2** | 10 / 7 | **4** |
 | CoreMark / 12（回收 x25+x27） | 9 | **0** | 无重跑 | **0** |
 | SQLite / 10 | 7 | **28**（8:4, 9:22, 12:2） | 9 / 6 | **86** |
@@ -274,7 +274,7 @@ unit 追溯加入。
 | SQLite / 12 | 9 | **2**（12:2） | 11 / 8 | **8** |
 | SQLite / 13（仅数学外推，非当前可达） | 10 | **2** | 12 / 9 | **6** |
 
-少数 opcode 的 reserve 大于 3，现有 aggregate probe 没输出 `(max-live,reserve)`
+少数 opcode 的 reserve 大于 3，现有 aggregate check 没输出 `(max-live,reserve)`
 联合分布；不能假装边际直方图已经给出精确 unit 数。实测 reserve 尾部是 CoreMark
 18 个 unit（4:10, 5:8），SQLite 185 个（4:51, 5:87, 6:9, 7:38）。把这些 unit
 全部按“可能额外触发”计入，得到保守区间：
@@ -284,7 +284,7 @@ unit 追溯加入。
 | CoreMark spill-unit 预估区间 | **2–20** | **2–20** | **0–18** | 0–18 |
 | SQLite spill-unit 预估区间 | **28–213** | **24–209** | **2–187** | 2–187 |
 
-这就是当前可交付的、不拍脑袋的 spill 预估：Linux identity pool10 的 CoreMark
+这就是当前可交付的、不拍脑袋的 spill 预估：Linux direct pool10 的 CoreMark
 interval 下界是 2、SQLite 下界是 28，且即使用最悲观的边际组合也显著小于本机
 pool7 实测的 104/543。pool12 能清除 CoreMark 的普通-reserve interval pressure，
 并把 SQLite 的普通-reserve 压到 2 个超宽 unit；它不能在缺少联合分布时被宣称为
@@ -333,7 +333,7 @@ xsave_test.cpp:1045
 
 Phase C 不应再以 pool7 的 267×/104-unit/543-unit 结果外推 Linux。放行前应具备：
 
-1. 在 Linux desktop + identity 上直接确认 full-pin 首轮 `gpr_pool=10`，并分别输出
+1. 在 Linux desktop + direct 上直接确认 full-pin 首轮 `gpr_pool=10`，并分别输出
    x18 重跑前/后的 pool；
 2. 若试 x27，单独默认 OFF gate，逐 PC 交付 cache reload 与 spill/bridge 动态净账；
 3. 若试 x25，必须同时量化 RSB hit/miss、push/pop 指令和 dispatcher 回退，不能把
@@ -341,5 +341,5 @@ Phase C 不应再以 pool7 的 267×/104-unit/543-unit 结果外推 Linux。放�
 4. P6 四门仍按真实配置裁决：spill ops、helper boundary、host bytes、动态
    move/bridge；本报告的 interval 表只能筛配置，不能替代实测。
 
-在这些前置下，首个值得复测的配置是 **16 pin + Linux identity pool10**；pool11/12
+在这些前置下，首个值得复测的配置是 **16 pin + Linux direct pool10**；pool11/12
 分别是带一个/两个有成本结构迁移的后续臂，不是本批可默认合入的“便宜回收”。

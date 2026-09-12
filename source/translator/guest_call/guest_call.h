@@ -192,11 +192,11 @@ struct RawArg {
     unsigned size;
 };
 
-// Marshals `args` into env per `plan`, runs, and writes the raw return bytes
-// into `ret_out` (plan.ret_size bytes, untouched unless the status is Ok).
+// Marshals `args` into env per `recipe`, runs, and writes the raw return bytes
+// into `ret_out` (recipe.ret_size bytes, untouched unless the status is Ok).
 GuestCallStatus PerformGuestCall(GuestCallEnv& env,
                                  std::uint64_t entry,
-                                 const CallPlan& plan,
+                                 const CallRecipe& recipe,
                                  const RawArg* args,
                                  unsigned nargs,
                                  std::byte* ret_out,
@@ -259,14 +259,14 @@ class GuestFn;
 template <typename Ret, typename... Args>
 class GuestFn<Ret(Args...)> {
 public:
-    static constexpr CallPlan kPlan = MakeCallPlan<Ret, Args...>();
+    static constexpr CallRecipe kRecipe = MakeCallRecipe<Ret, Args...>();
 
     GuestFn() = default;
     GuestFn(GuestCallEnv* env, std::uint64_t entry) : env_(env), entry_(entry) {}
 
     [[nodiscard]] std::uint64_t entry() const { return entry_; }
     [[nodiscard]] bool valid() const { return env_ != nullptr && entry_ != 0; }
-    [[nodiscard]] static constexpr const CallPlan& plan() { return kPlan; }
+    [[nodiscard]] static constexpr const CallRecipe& recipe() { return kRecipe; }
 
     Ret operator()(Args... args) const {
         std::byte ret[detail::kRetScratch];
@@ -290,7 +290,7 @@ private:
                 RawArg{reinterpret_cast<const std::byte*>(&args),
                        static_cast<unsigned>(sizeof(Args))}...,
                 RawArg{nullptr, 0}};
-        return PerformGuestCall(*env_, entry_, kPlan, raw, sizeof...(Args), ret, diag);
+        return PerformGuestCall(*env_, entry_, kRecipe, raw, sizeof...(Args), ret, diag);
     }
 
     GuestCallEnv* env_{};
@@ -316,8 +316,8 @@ public:
     [[nodiscard]] bool valid() const { return env_ != nullptr && entry_ != 0; }
 
     template <typename... VArgs>
-    static constexpr CallPlan PlanFor() {
-        return MakeCallPlan<Ret, Args..., VarargPromote<VArgs>...>();
+    static constexpr CallRecipe RecipeFor() {
+        return MakeCallRecipe<Ret, Args..., VarargPromote<VArgs>...>();
     }
 
     template <typename... VArgs>
@@ -345,7 +345,7 @@ private:
         (detail::CheckMarshalable<Args>(), ...);
         (detail::CheckMarshalable<VarargPromote<VArgs>>(), ...);
         detail::CheckMarshalable<Ret>();
-        static constexpr CallPlan kPlan = MakeCallPlan<Ret, Args..., VarargPromote<VArgs>...>();
+        static constexpr CallRecipe kRecipe = MakeCallRecipe<Ret, Args..., VarargPromote<VArgs>...>();
         std::tuple<VarargPromote<VArgs>...> promoted{
                 static_cast<VarargPromote<VArgs>>(vargs)...};
         return std::apply(
@@ -356,7 +356,7 @@ private:
                             RawArg{reinterpret_cast<const std::byte*>(&pv),
                                    static_cast<unsigned>(sizeof(pv))}...,
                             RawArg{nullptr, 0}};
-                    return PerformGuestCall(*env_, entry_, kPlan, raw,
+                    return PerformGuestCall(*env_, entry_, kRecipe, raw,
                                             sizeof...(Args) + sizeof...(VArgs), ret, diag);
                 },
                 promoted);

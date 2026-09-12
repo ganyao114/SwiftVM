@@ -1,9 +1,12 @@
+#include "base/logging.h"
+#include "runtime/common/signal_diagnostic.h"
 #include "function_region_decoder.h"
 
 #include <algorithm>
 #include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "runtime/common/perf_stats.h"
 #include "runtime/frontend/x86/decoder.h"
 
@@ -105,7 +108,7 @@ FunctionRegionDecodeResult FunctionRegionDecoder::Decode() {
             // object; absorbing it here would orphan that object and leave
             // inbound links dangling. Skip it as an external boundary in both
             // lazy and eager decode — under eager IsAccepted is never set, so
-            // this degrades to the plain has_code guard.
+            // this degrades to the basic has_code guard.
             if (!frontier.IsAccepted(address) && config.has_code(address)) {
                 continue;
             }
@@ -121,6 +124,21 @@ FunctionRegionDecodeResult FunctionRegionDecoder::Decode() {
                     external_roots.end()) {
                     external_roots.push_back(target);
                 }
+            }
+            static std::atomic<uint32_t> dbg_iters{0};
+            if (swift::runtime::GetSvmConfig().frontier_dbg &&
+                swift::runtime::ClaimDiagnosticSample(dbg_iters, 200)) {
+                SVM_DIAG_FORMAT(Decode,
+                           "[frontier] entry={:#x} iter decoded={} blocks={} links={} roots={}:",
+                           config.entry, result.decoded_count,
+                           std::distance(function.GetHIRBlockList().begin(),
+                                         function.GetHIRBlockList().end()),
+                           function.GetExternalDirectLinks().size(),
+                           external_roots.size());
+                for (const auto target : external_roots) {
+                    SVM_DIAG_FORMAT(Decode, " {:#x}({})", target, config.local_target(target) ? 'L' : 'N');
+                }
+                SVM_DIAG_FORMAT(Decode, "\n");
             }
             for (const auto target : external_roots) {
                 function.CreateOrGetBlock(ir::Location{target});

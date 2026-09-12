@@ -2,11 +2,11 @@
 // Guest (ARM64 / x86_64 Linux) memory management for the SwiftVM linux loader.
 //
 // Address model:
-//  - Linux defaults to identity mode: mappings are placed directly at G
+//  - Linux defaults to direct mode: mappings are placed directly at G
 //    without replacement. This removes the runtime bias, but a guest wild
 //    pointer may then name an unrelated host mapping.
 //  - macOS always uses the bounded bias window. Linux selects the same mode
-//    explicitly with SVM_MEM_IDENTITY=0 or SVM_GUEST_BITS.
+//    explicitly with SVM_MEM_DIRECT=0 or SVM_GUEST_BITS.
 //
 // ALL public methods of this class take and return *guest* addresses; the
 // bias conversion is centralized here (ToHost/ToGuest) so callers (loader,
@@ -34,25 +34,25 @@
 namespace swift::linux {
 
 struct GuestMemoryLaunchPolicy {
-    bool identity{};
+    bool direct{};
 };
 
 // Keep environment precedence in a pure helper so the four launch modes can
 // be tested without reserving a process address space. On macOS linux_host is
-// false, so the identity selector is ignored; the launcher still parses its
+// false, so the direct selector is ignored; the launcher still parses its
 // existing SVM_GUEST_BITS window-size override after this decision.
 inline GuestMemoryLaunchPolicy SelectGuestMemoryLaunchPolicy(
         bool linux_host,
-        const char* identity_value,
+        const char* direct_value,
         const char* guest_bits_value) {
     if (!linux_host || guest_bits_value) {
-        return {.identity = false};
+        return {.direct = false};
     }
-    const bool explicitly_disabled = identity_value &&
-            (std::strcmp(identity_value, "0") == 0 ||
-             std::strcmp(identity_value, "OFF") == 0 ||
-             std::strcmp(identity_value, "off") == 0);
-    return {.identity = !explicitly_disabled};
+    const bool explicitly_disabled = direct_value &&
+            (std::strcmp(direct_value, "0") == 0 ||
+             std::strcmp(direct_value, "OFF") == 0 ||
+             std::strcmp(direct_value, "off") == 0);
+    return {.direct = !explicitly_disabled};
 }
 
 class GuestMemory : public runtime::MemoryInterface {
@@ -60,7 +60,7 @@ public:
     // Guest page size reported to the guest (AT_PAGESZ, mmap/brk rounding).
     static constexpr u64 kGuestPageSize = 0x1000;
     // macOS arm64 使用 16KB 宿主页；当前 Linux 启动器运行在 4KB 页环境。
-    // 不能把 Darwin 粒度带到 identity：mmap 只保证按 Linux 宿主页对齐，
+    // 不能把 Darwin 粒度带到 direct：mmap 只保证按 Linux 宿主页对齐，
     // 用 16KB 向下取整会把相邻的翻译器映射一起交给 munmap。
 #if defined(__APPLE__)
     static constexpr u64 kHostPageSize = 0x4000;
@@ -84,27 +84,27 @@ public:
 
     // Guest->host bias (host address = (guest address & mask) + bias). Must
     // be host-page aligned. Set once by the loader after reserving the image
-    // span; 0 means identity mapping.
+    // span; 0 means direct mapping.
     void SetBias(u64 bias) { bias_ = bias; }
     [[nodiscard]] u64 GetBias() const { return bias_; }
 
-    // Select Linux host identity mapping before any reservation or mapping.
+    // Select Linux host direct mapping before any reservation or mapping.
     // The launcher never calls this on macOS.
-    void EnableIdentityMode() {
+    void EnableDirectMode() {
         ASSERT(bias_ == 0);
         ASSERT(window_bits_ == 0);
-        identity_mode_ = true;
+        direct_mode_ = true;
     }
-    [[nodiscard]] bool IdentityMode() const { return identity_mode_; }
+    [[nodiscard]] bool DirectMode() const { return direct_mode_; }
 
     // Shared control-flow primitive for the initial Linux ET_EXEC mapping.
-    // The fallback callback is invoked exactly once only after the identity
+    // The fallback callback is invoked exactly once only after the direct
     // attempt fails; keeping this generic allows collision injection tests to
     // cover the transaction without platform-specific mmap side effects.
-    template <typename IdentityAttempt, typename BiasFallback>
-    static bool TryIdentityWithFallback(IdentityAttempt&& identity_attempt,
+    template <typename DirectAttempt, typename BiasFallback>
+    static bool TryDirectWithFallback(DirectAttempt&& direct_attempt,
                                         BiasFallback&& bias_fallback) {
-        if (identity_attempt()) {
+        if (direct_attempt()) {
             return true;
         }
         return bias_fallback();
@@ -161,7 +161,7 @@ public:
     bool Read(void* dest, size_t addr, size_t size) override;
     bool Write(void* src, size_t addr, size_t size) override;
     // Instruction fetch, and the ONLY guest access the frontend makes from
-    // host code. It must be validated: the bias is a plain add, so an
+    // host code. It must be validated: the bias is a basic add, so an
     // unmapped guest address yields a host pointer into whatever the host
     // happens to have there — a wild guest branch target would fault the HOST
     // translator (host pc outside every JIT buffer, so runtime.cpp's
@@ -208,7 +208,7 @@ public:
     // Number of contiguous mapped bytes starting at `addr`, capped at
     // `length` (and at the window end). 0 means `addr` itself is unmapped.
     //
-    // This is the probe the *helpers* use — x87/fxsave and the rep-string
+    // This is the check the *helpers* use — x87/fxsave and the rep-string
     // walks, which dereference guest memory from host frames a fault cannot
     // be recovered from — so it must be cheap enough to sit in front of a
     // `rep movsb` of four bytes. With the window enabled it is a lock-free
@@ -250,7 +250,7 @@ public:
 
 private:
     bool MapFixedImpl(VAddr addr, u64 size, bool quiet_failure);
-    bool FallBackIdentityToWindow();
+    bool FallBackDirectToWindow();
     // Tracked guest mappings (sorted, disjoint [start, end) host-page
     // granularity intervals, in *guest* addresses). Maintained by
     // MapFixed/MapAnywhere/Unmap.
@@ -281,9 +281,9 @@ private:
     mutable std::shared_mutex mapped_regions_mutex;
     std::vector<std::pair<VAddr, VAddr>> mapped_regions;
     u64 bias_{};
-    // Linux host identity mode. This is distinct from unwindowed bias:
+    // Linux host direct mode. This is distinct from unwindowed bias:
     // MapImageAnywhere maps at guest_start rather than choosing a host base.
-    bool identity_mode_{};
+    bool direct_mode_{};
     // Bounded guest window. window_bits_ == 0 => disabled, mask_ == ~0.
     u32 window_bits_{};
     u64 mask_{~u64(0)};

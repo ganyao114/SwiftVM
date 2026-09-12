@@ -1,3 +1,4 @@
+#include "base/logging.h"
 //
 // Created by 甘尧 on 2024/6/20.
 //
@@ -336,10 +337,10 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
         auto is_victim = [&](const Inst* inst) {
             return std::find(victims.begin(), victims.end(), inst) != victims.end();
         };
-        std::vector<UniformSnapshotPlan> retained_plans;
-        retained_plans.reserve(block->GetUniformSnapshotPlans().size());
-        for (const auto& plan : block->GetUniformSnapshotPlans()) {
-            auto* producer = plan.value.Def();
+        std::vector<UniformCaptureRecipe> retained_recipes;
+        retained_recipes.reserve(block->GetUniformCaptureRecipes().size());
+        for (const auto& recipe : block->GetUniformCaptureRecipes()) {
+            auto* producer = recipe.value.Def();
             auto carrier_reaches_producer = [&](const Inst* carrier) {
                 if (!producer) {
                     return false;
@@ -365,16 +366,16 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 }
                 return false;
             };
-            bool in_segment = plan.segment_begin == nullptr;
+            bool in_segment = recipe.segment_begin == nullptr;
             bool has_carrier{};
             Inst* last_victim{};
             Inst* legacy_carrier{};
             for (auto& inst : inst_list) {
-                if (&inst == plan.segment_begin) {
+                if (&inst == recipe.segment_begin) {
                     in_segment = true;
                     continue;
                 }
-                if (&inst == plan.boundary) {
+                if (&inst == recipe.boundary) {
                     break;
                 }
                 if (!in_segment || inst.GetOp() != OpCode::StoreUniform) {
@@ -382,8 +383,8 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 }
                 const auto uniform = inst.GetArg<Uniform>(0);
                 const auto value = inst.GetArg<Value>(1);
-                if (uniform.GetOffset() != plan.offset ||
-                    GetValueSizeByte(value.Type()) != plan.size) {
+                if (uniform.GetOffset() != recipe.offset ||
+                    GetValueSizeByte(value.Type()) != recipe.size) {
                     continue;
                 }
                 if (!carrier_reaches_producer(&inst)) {
@@ -399,7 +400,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 }
             }
             if (has_carrier) {
-                retained_plans.push_back(plan);
+                retained_recipes.push_back(recipe);
                 continue;
             }
             if (legacy_carrier) {
@@ -410,10 +411,10 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 victims.erase(std::remove(victims.begin(), victims.end(),
                                           legacy_carrier),
                               victims.end());
-                retained_plans.push_back(plan);
+                retained_recipes.push_back(recipe);
                 continue;
             }
-            if (last_victim == plan.latest_store && producer &&
+            if (last_victim == recipe.latest_store && producer &&
                 !HasObservableUse(block, producer, last_victim)) {
                 // This is the only permitted IR-growth case: the latest value
                 // has no path except stores that this DSE batch would erase.
@@ -423,18 +424,18 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 victims.erase(std::remove(victims.begin(), victims.end(),
                                           last_victim),
                               victims.end());
-                retained_plans.push_back(plan);
+                retained_recipes.push_back(recipe);
                 if (EnvDumpIr()) {
-                    fmt::print(stderr,
-                               "[xmm-snapshot-stranded] block={:#x} "
+                    SVM_DIAG_FORMAT(Codegen,
+                               "[xmm-capture-stranded] block={:#x} "
                                "boundary={} offset={} producer={}\n",
                                block->GetStartLocation().Value(),
-                               plan.boundary ? plan.boundary->Id() : u16{},
-                               plan.offset, producer->Id());
+                               recipe.boundary ? recipe.boundary->Id() : u16{},
+                               recipe.offset, producer->Id());
                 }
             }
         }
-        block->GetUniformSnapshotPlans() = std::move(retained_plans);
+        block->GetUniformCaptureRecipes() = std::move(retained_recipes);
     }
 
     for (auto* victim : victims) {
@@ -447,13 +448,13 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
     }
 
     if (!victims.empty() && EnvDumpIr()) {
-        fmt::print(stderr, "[uniform-dse] block {:#x}: removed {} dead uniform store(s)\n",
+        SVM_DIAG_FORMAT(Codegen, "[uniform-dse] block {:#x}: removed {} dead uniform store(s)\n",
                    block->GetStartLocation().Value(), victims.size());
     }
     if (Perf2Enabled()) {
         auto& stats = GetPerfStats2();
         // The PIN_EXT repair sweep revisits the same block for XMM stores
-        // only. Keep the historical one-block/one-count probe contract while
+        // only. Keep the historical one-block/one-count check contract while
         // still reporting every additional victim it finds.
         if (!xmm_only) {
             stats.uniform_dse_blocks.fetch_add(1, std::memory_order_relaxed);
@@ -467,21 +468,21 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                                  HIRFunction* hir_function) {
     PerfScope2 perf_forward{GetPerfStats2().uniform_forward};
 
-    block->GetUniformSnapshotPlans().clear();
+    block->GetUniformCaptureRecipes().clear();
     if (features.xmm_fault_sink) {
-        UniformStoreSinkPass::CaptureLatestSnapshots(block, info);
+        UniformStoreSinkPass::CaptureLatestCaptures(block, info);
     }
 
-    // The corpus is dominated by blocks with no uniform operations. Probe only
+    // The corpus is dominated by blocks with no uniform operations. Check only
     // until the first relevant instruction: a miss replaces the legacy forward
     // scan and lets us avoid both fixed-size byte tables plus the reverse scan;
     // a hit pays only the usually short prefix before entering the unchanged
     // transfer logic below.
     if (fast_path) {
-        u32 probed_instructions{};
+        u32 checked_instructions{};
         bool has_uniform_op = false;
         for (const auto& inst : block->GetInstList()) {
-            probed_instructions++;
+            checked_instructions++;
             const auto op = inst.GetOp();
             has_uniform_op = op == OpCode::LoadUniform || op == OpCode::StoreUniform;
             if (has_uniform_op) {
@@ -490,8 +491,8 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
         }
         if (Perf2Enabled()) {
             auto& stats = GetPerfStats2();
-            stats.uniform_probe_insts.fetch_add(probed_instructions, std::memory_order_relaxed);
-            stats.uniform_probe_hits.fetch_add(has_uniform_op, std::memory_order_relaxed);
+            stats.uniform_check_insts.fetch_add(checked_instructions, std::memory_order_relaxed);
+            stats.uniform_check_hits.fetch_add(has_uniform_op, std::memory_order_relaxed);
         }
         if (!has_uniform_op) {
             perf_forward.Stop();
@@ -499,7 +500,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                 auto& stats = GetPerfStats2();
                 stats.uniform_blocks.fetch_add(1, std::memory_order_relaxed);
                 stats.uniform_no_ops_blocks.fetch_add(1, std::memory_order_relaxed);
-                stats.uniform_insts.fetch_add(probed_instructions, std::memory_order_relaxed);
+                stats.uniform_insts.fetch_add(checked_instructions, std::memory_order_relaxed);
             }
             return;
         }
@@ -521,7 +522,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     // A local Goto/NotGoto has two successors: the following instruction and
     // its BindLabel. Facts established before the branch dominate both paths,
     // so dropping the whole table at each marker needlessly reloads guest state
-    // after shift/count guard regions. Snapshot the taken edge and intersect it
+    // after shift/count guard regions. Capture the taken edge and intersect it
     // with the fallthrough state at the label. A byte survives only when both
     // paths name the same defining value and byte offset.
     //
@@ -710,7 +711,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     mapped_load_count++;
                     if (pin_ext_gpr) {
                         // Seed load-to-load forwarding for the new resident
-                        // GPRs. Snapshot safety is enforced later by the
+                        // GPRs. Capture safety is enforced later by the
                         // allocator's SetHost crossing check; a repeated full
                         // load can therefore become a zero-cost BitCast alias.
                         const Value loaded{&inst};
@@ -730,7 +731,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                     // Recording every byte preserves the existing continuity
                     // check for full V128 and U64 lane views. A later partial
                     // view that cannot be represented safely simply replaces
-                    // the covered bytes with its own materialized load.
+                    // the covered bytes with its own computed load.
                     const Value loaded{&inst};
                     for (u8 offset = 0; offset < uni_size; ++offset) {
                         uniform_values[uni_offset + offset] = {loaded, offset};
@@ -915,7 +916,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     }
 
     if (EnvDumpIr()) {
-        fmt::print(stderr,
+        SVM_DIAG_FORMAT(Codegen,
                    "[uniform-elim] block {:#x}: LoadUniform {} -> {} "
                    "(folded {}, mapped {}), mapped stores {}, invalidations {}, "
                    "full {}, range {}, preserved facts {}, "
@@ -927,7 +928,7 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
                    range_invalidation_count, preserved_fact_count,
                    path_merge_count, path_merge_bytes);
         if (EnvDumpIrPost()) {
-            fmt::print(stderr, "--- post-uniform block {:#x} ---\n{}\n",
+            SVM_DIAG_FORMAT(Codegen, "--- post-uniform block {:#x} ---\n{}\n",
                        block->GetStartLocation().Value(), block->ToString());
         }
     }

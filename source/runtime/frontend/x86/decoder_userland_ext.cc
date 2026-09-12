@@ -1,5 +1,5 @@
 // User-mode extension instructions whose decode support is absent or incomplete
-// in the vendored distorm snapshot: ADX and PKRU use raw bytes; FSGSBASE uses
+// in the vendored distorm capture: ADX and PKRU use raw bytes; FSGSBASE uses
 // distorm's existing F3 0F AE /0../3 table entries.
 
 #include <array>
@@ -169,7 +169,7 @@ u32 X64Decoder::DecodeUserlandRaw(const u8* code, size_t available) {
 
     // ADCX = 66 0F 38 F6 /r, ADOX = F3 0F 38 F6 /r. Legacy segment and
     // address-size prefixes are accepted before the mandatory prefix; REX,
-    // when present, must be the final prefix. The snapshot has no ADCX/ADOX
+    // when present, must be the final prefix. The capture has no ADCX/ADOX
     // enum at all, so construct the same _DInst operand shape that ordinary
     // ALU Src/Dst uses rather than teaching distorm a private opcode.
     size_t at = 0;
@@ -328,9 +328,9 @@ u32 X64Decoder::DecodeUserlandRaw(const u8* code, size_t available) {
     auto right = ToValue(Src(insn, insn.ops[1]));
     ir::Value result;
     if (mandatory == 0x66) {
-        // ADCX consumes architectural CF. Normalize it into the host-C slot,
+        // ADCX consumes architectural CF. Adjust it into the host-C slot,
         // perform one existing IR Adc, and save ONLY C. OF/N/Z/PF/AF never
-        // enter the save mask, so their already-materialized or lazy values
+        // enter the save mask, so their already-computed or lazy values
         // survive unchanged.
         auto cf = CarryValue();
         __ SetCarry(cf);
@@ -341,7 +341,7 @@ u32 X64Decoder::DecodeUserlandRaw(const u8* code, size_t available) {
     } else {
         // ADOX uses OF as an independent unsigned carry bit. Materialize OF
         // and the old architectural CF before borrowing host C for Adc. After
-        // the carry-out is materialized, restore CF and write ONLY OF. This
+        // the carry-out is computed, restore CF and write ONLY OF. This
         // deliberately converts the preserved CF representation to Direct;
         // no other flag bit is rewritten.
         auto old_of = __ TestFlags(ir::Flags::Overflow).SetType(ir::ValueType::U8);

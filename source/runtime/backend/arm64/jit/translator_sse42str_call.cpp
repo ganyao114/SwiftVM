@@ -185,10 +185,10 @@ void JitTranslator::EmitSse42StrVectorCall(ir::Inst* inst,
                MemOperand(sp, static_cast<s64>(save_bytes), PostIndex));
     }
 
-    flags_set = ir::Flags::None;
-    flags_clear = ir::Flags::None;
-    nzcv_dirty = false;
-    nzcv_requested = {};
+    flag_state.flags_set = ir::Flags::None;
+    flag_state.flags_clear = ir::Flags::None;
+    flag_state.nzcv_dirty = false;
+    flag_state.nzcv_requested = {};
     InvalidateFlagsToken();
 }
 

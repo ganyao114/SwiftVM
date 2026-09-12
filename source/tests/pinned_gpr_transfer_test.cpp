@@ -397,7 +397,7 @@ TEST_CASE("a published full-width GPR version feeds later faulting addresses") {
     REQUIRE(Count(lines, "ldr x", "[x23, #16]") == 1);
 }
 
-TEST_CASE("overwriting the resident GPR version keeps the source snapshot") {
+TEST_CASE("overwriting the resident GPR version keeps the source capture") {
     const auto lines = EmitTransfer(true);
     REQUIRE(Count(lines, "ldr x", "[x23, #8]") == 0);
     REQUIRE(Count(lines, "ldr x", "[x23, #16]") == 0);

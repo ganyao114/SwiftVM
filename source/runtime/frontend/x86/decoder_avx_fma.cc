@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 // Every other AVX gap needs hand-written intrinsics or a hand-written kernel to
 // show up in a real binary.  FMA3 does not: gcc and clang emit it from ordinary
-// `a * b + c` source at -O2 as soon as -mavx2/-mfma is on, so a plain numeric
+// `a * b + c` source at -O2 as soon as -mavx2/-mfma is on, so a basic numeric
 // loop compiled for a modern -march contains it.  An unimplemented instruction
 // here is not a corner case; it is FALLBACK -> IllegalCode, which kills the
 // guest process.
@@ -307,7 +307,7 @@ void X64Decoder::DecodeAvxFmaScalar(const VexInsn& v, u32 order, u32 flags, u32 
     auto op2 = XmmRead(XmmOf(v.vvvv));
     // 4 or 8 bytes for a memory operand, never 16.
     auto op3 = VexLoadScalarVec(v, lane_bits);
-    // The merge sources are read BEFORE the write below; both are plain
+    // The merge sources are read BEFORE the write below; both are basic
     // uniform reads of the destination register, whose lane 0 is also an
     // operand of the FMA in at least one of the three orders.
     auto dest_lo = XmmLo(XmmOf(v.reg));

@@ -24,7 +24,7 @@ public:
     friend class Arm64Core;
 
     // memory_base: guest->host bias for guest address virtualization
-    // (host addr = guest addr + bias); nullptr = identity mapping (default).
+    // (host addr = guest addr + bias); nullptr = direct mapping (default).
     // guest_addr_mask: bounded guest window (Config::guest_addr_mask),
     // 0 = unbounded (legacy).
     static Arm64Instance *Make(void* memory_base = nullptr, u64 guest_addr_mask = 0);
@@ -58,6 +58,7 @@ public:
     void SignalInterrupt() override;
     void ClearInterrupt() override;
     uint64_t GetSyscallNumber() override;
+    std::function<void()> MakeExecutionTraceDumper() const override;
 
     // Guest CPU context, backed by the runtime uniform buffer. The loader
     // initializes pc / sp here before the first Run(), and the syscall

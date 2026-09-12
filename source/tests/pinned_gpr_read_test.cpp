@@ -331,7 +331,7 @@ TEST_CASE("a pinned low-32 self-write clears its high half in one instruction") 
     REQUIRE(Count(lines, "ldrb ", "[x22") == 1);
 }
 
-TEST_CASE("a pinned self-write feeds a materialized indexed address") {
+TEST_CASE("a pinned self-write feeds a computed indexed address") {
     const auto lines = EmitPinnedRead(PinnedReadShape::SelfWriteAddress, false);
     REQUIRE(Count(lines, "ubfx ", "x22") == 0);
     REQUIRE(Count(lines, "mov w22, w22", "") == 1);
@@ -419,7 +419,7 @@ TEST_CASE("a superseded pinned GPR publication is omitted without observers") {
     REQUIRE(Count(faulting, "mov w23", "w1") == 2);
 }
 
-TEST_CASE("a later pinned GPR snapshot use keeps the read move") {
+TEST_CASE("a later pinned GPR capture use keeps the read move") {
     const auto lines = EmitPinnedRead(PinnedReadShape::SelfAnd, true);
     REQUIRE(Count(lines, "ubfx ", "x22") == 1);
 }

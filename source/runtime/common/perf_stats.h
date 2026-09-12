@@ -1,8 +1,8 @@
 //
 // Translation-pipeline phase counters.
 //
-// Off unless SVM_PROF is set in the environment: every probe is guarded by one
-// process-constant bool, and every probe sits on a "once per compiled unit"
+// Off unless SVM_PROF is set in the environment: every check is guarded by one
+// process-constant bool, and every check sits on a "once per compiled unit"
 // path -- never on a per-executed-guest-block path -- so enabling it cannot
 // perturb the thing being measured (guest execution time is derived as
 // wall - translate).
@@ -82,7 +82,7 @@ struct PerfLoweringBucket2 {
             part_append_ns{};
 };
 
-// Measure-first W1 probe. This is deliberately separate from PerfStats:
+// Measure-first W1 check. This is deliberately separate from PerfStats:
 // SVM_PROF keeps its stable output/fingerprint contract, while SVM_PROF2 opts
 // into the more intrusive fine-grained clocks below.
 struct PerfStats2 {
@@ -91,7 +91,7 @@ struct PerfStats2 {
     PerfCounter2 ir_append;          // central HIR/Block instruction append
     PerfCounter2 ir_setup;           // builder/function/block setup
     PerfCounter2 ir_finalize;        // EndFunction / decode-side fixups
-    // Default-off W6 attribution probes. SVM_IR_DETAIL=1 enables them; the
+    // Default-off W6 attribution checks. SVM_IR_DETAIL=1 enables them; the
     // normal SVM_PROF2 path deliberately does not pay their per-instruction
     // clocks and atomics.
     PerfCounter2 ir_alloc;
@@ -103,7 +103,7 @@ struct PerfStats2 {
 
     PerfCounter2 pass_total;
     PerfCounter2 pass_uniform;
-    // UniformElimination split and corpus-shape probes. They are observed only
+    // UniformElimination split and corpus-shape checks. They are observed only
     // with SVM_PROF2, so the production/default path pays no clocks or atomics.
     PerfCounter2 uniform_forward;
     PerfCounter2 uniform_dse;
@@ -200,7 +200,7 @@ struct PerfStats2 {
     std::atomic<unsigned long long> multi_blocks{0};
 
     std::atomic<unsigned long long> coarse_scope_calls{0};
-    std::atomic<unsigned long long> translate_probe_calls{0};
+    std::atomic<unsigned long long> translate_check_calls{0};
 
     std::atomic<unsigned long long> uniform_blocks{0};
     std::atomic<unsigned long long> uniform_no_ops_blocks{0};
@@ -212,8 +212,8 @@ struct PerfStats2 {
     std::atomic<unsigned long long> uniform_full_invalidations{0};
     std::atomic<unsigned long long> uniform_range_invalidations{0};
     std::atomic<unsigned long long> uniform_preserved_facts{0};
-    std::atomic<unsigned long long> uniform_probe_insts{0};
-    std::atomic<unsigned long long> uniform_probe_hits{0};
+    std::atomic<unsigned long long> uniform_check_insts{0};
+    std::atomic<unsigned long long> uniform_check_hits{0};
     std::atomic<unsigned long long> uniform_dse_blocks{0};
     std::atomic<unsigned long long> uniform_dse_victims{0};
 
@@ -363,9 +363,9 @@ inline void PerfDumpAtExit() {
     std::fprintf(stderr,
                  "[svm-prof2] single_units=%llu multi_units=%llu "
                  "single_blocks=%llu multi_blocks=%llu coarse_scope_calls=%llu "
-                 "translate_probe_calls=%llu\n",
+                 "translate_check_calls=%llu\n",
                  g(d.single_units), g(d.multi_units), g(d.single_blocks), g(d.multi_blocks),
-                 g(d.coarse_scope_calls), g(d.translate_probe_calls));
+                 g(d.coarse_scope_calls), g(d.translate_check_calls));
     std::fprintf(stderr,
                  "[svm-decode] attempts=%llu fetch_getpointer_calls=%llu "
                  "fetch_bounce_calls=%llu fetch_short_windows=%llu "
@@ -419,14 +419,14 @@ inline void PerfDumpAtExit() {
                  "[svm-uniform] blocks=%llu no_ops=%llu insts=%llu loads=%llu "
                  "stores=%llu barriers=%llu invalidations=%llu "
                  "full_invalidations=%llu range_invalidations=%llu "
-                 "preserved_facts=%llu probe_insts=%llu probe_hits=%llu dse_blocks=%llu "
+                 "preserved_facts=%llu check_insts=%llu check_hits=%llu dse_blocks=%llu "
                  "dse_victims=%llu\n",
                  g(d.uniform_blocks), g(d.uniform_no_ops_blocks), g(d.uniform_insts),
                  g(d.uniform_loads), g(d.uniform_stores), g(d.uniform_barriers),
                  g(d.uniform_invalidations),
                  g(d.uniform_full_invalidations), g(d.uniform_range_invalidations),
-                 g(d.uniform_preserved_facts), g(d.uniform_probe_insts),
-                 g(d.uniform_probe_hits),
+                 g(d.uniform_preserved_facts), g(d.uniform_check_insts),
+                 g(d.uniform_check_hits),
                  g(d.uniform_dse_blocks),
                  g(d.uniform_dse_victims));
     for (size_t i = 0; i < d.kGetenvNames.size(); ++i) {
@@ -630,7 +630,7 @@ public:
             if (Perf2Enabled()) {
                 GetPerfStats2().coarse_scope_calls.fetch_add(1, std::memory_order_relaxed);
                 if (perf2_translation_active) {
-                    GetPerfStats2().translate_probe_calls.fetch_add(1,
+                    GetPerfStats2().translate_check_calls.fetch_add(1,
                                                                     std::memory_order_relaxed);
                 }
             }
@@ -665,7 +665,7 @@ public:
         if (this->counter) {
             this->counter->calls.fetch_add(1, std::memory_order_relaxed);
             if (perf2_translation_active) {
-                GetPerfStats2().translate_probe_calls.fetch_add(1, std::memory_order_relaxed);
+                GetPerfStats2().translate_check_calls.fetch_add(1, std::memory_order_relaxed);
             }
             start = std::chrono::steady_clock::now();
             if (PerfLoweringDetailEnabled() &&
@@ -827,7 +827,7 @@ public:
             : scope(GetPerfStats2().translate_total), prior(perf2_translation_active) {
         if (Perf2Enabled()) {
             perf2_translation_active = true;
-            GetPerfStats2().translate_probe_calls.fetch_add(1, std::memory_order_relaxed);
+            GetPerfStats2().translate_check_calls.fetch_add(1, std::memory_order_relaxed);
         }
     }
     ~PerfTranslationScope2() {
@@ -866,13 +866,13 @@ private:
     bool prior{};
 };
 
-struct PerfFixedSnapshot2 {
+struct PerfFixedCapture2 {
     unsigned long long compute{};
     unsigned long long id_pre{};
     unsigned long long id_post{};
     unsigned long long regalloc{};
 
-    PerfFixedSnapshot2() {
+    PerfFixedCapture2() {
         if (!Perf2Enabled()) return;
         auto& s = GetPerfStats2();
         compute = s.compute_rpo.ns.load(std::memory_order_relaxed);

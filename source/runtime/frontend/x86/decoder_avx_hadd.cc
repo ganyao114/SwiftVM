@@ -78,7 +78,7 @@
 //     max  255 *  127 =  32385  <=  32767
 //     min  255 * -128 = -32640  >= -32768
 // Every u8 x s8 product fits a signed 16-bit lane EXACTLY.  That is what makes
-// the decomposition below sound: a plain 16-bit VecMul loses nothing, and a
+// the decomposition below sound: a basic 16-bit VecMul loses nothing, and a
 // single signed 16-bit VecSatAdd then reproduces the architectural saturation.
 // Verified against Rosetta at both endpoints (255*-128 twice -> -32768,
 // 255*127 twice -> 32767) and on unstructured bytes (35*127 + 43*-128 = -1059).
@@ -226,7 +226,7 @@ ir::Value OpMaddUbs(ir::Assembler* as, ir::Value a, ir::Value b, u32, u32) {
 
 }  // namespace
 
-// Every opcode here has the plain three-operand shape -- destination in
+// Every opcode here has the basic three-operand shape -- destination in
 // ModRM.reg, source 1 in VEX.vvvv, source 2 in ModRM.r/m -- and is defined per
 // 128-bit lane, so DecodeAvxIntBinary (decoder_avx_int.cc) already drives both
 // widths correctly, including contract C3's upper-half zeroing at VEX.128.

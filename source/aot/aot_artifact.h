@@ -93,7 +93,7 @@ struct AotImage {
     std::vector<AotUnit> units{};
     std::vector<AotGuestSegment> segments{};
     // L2 dispatch-table assignment observed while compiling. A slot index is
-    // not a function of the key (colliding keys probe forward), and generated
+    // not a function of the key (colliding keys check forward), and generated
     // code branches through raw slot indices, so the assignment is replayed
     // verbatim at load. In a fresh process the table starts empty, which
     // makes the replay conflict-free unless the artifact itself is corrupt.

@@ -9,9 +9,9 @@
 
 namespace swift::runtime::ir {
 
-class LoopInvariantHoistPlan {
+class LoopInvariantHoistRecipe {
 public:
-    static std::unique_ptr<LoopInvariantHoistPlan> Analyze(
+    static std::unique_ptr<LoopInvariantHoistRecipe> Analyze(
             HIRFunction* function,
             const UniformInfo& info,
             const FeatureSet& features);
@@ -21,7 +21,7 @@ public:
     [[nodiscard]] bool Empty() const { return blocks.empty(); }
 
 private:
-    struct BlockPlan {
+    struct BlockRecipe {
         Block* block{};
         std::vector<Inst*> original_order{};
         std::vector<Inst*> anchors{};
@@ -29,7 +29,7 @@ private:
         u16 const_count{};
     };
 
-    std::vector<BlockPlan> blocks{};
+    std::vector<BlockRecipe> blocks{};
     bool applied{};
 };
 

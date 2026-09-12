@@ -1,3 +1,4 @@
+#include "base/logging.h"
 //
 // Created by 甘尧 on 2024/6/26.
 //
@@ -627,7 +628,7 @@ bool TryBranchOnly(Block* block,
     }
     stats.accepted++;
     if (EnvFlagsDebug()) {
-        fmt::print("[flags-branch-only] block {:#x}: ACCEPT condition={} parity={} "
+        SVM_DIAG_FORMAT(Codegen, "[flags-branch-only] block {:#x}: ACCEPT condition={} parity={} "
                    "successors=({:#x},{:#x}) removed={}\n",
                    block->GetStartLocation().Value(),
                    condition->GetOp(), parity,
@@ -683,7 +684,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function,
     }
 
     Flags needed = live_out;
-    // Needed-set snapshots at bound labels, keyed by the Goto/NotGoto inst
+    // Needed-set captures at bound labels, keyed by the Goto/NotGoto inst
     // whose value the label binds (in-block branches are forward-only in the
     // current frontends; an unseen target falls back to needing everything).
     std::unordered_map<Inst*, Flags> label_needed;
@@ -804,7 +805,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function,
                     }
                     victims.push_back(&inst);
                     if (EnvFlagsDebug()) {
-                        fmt::print("[flags-elim-dbg] block {:#x}: DELETE SaveFlags mask={} needed={}\n",
+                        SVM_DIAG_FORMAT(Codegen, "[flags-elim-dbg] block {:#x}: DELETE SaveFlags mask={} needed={}\n",
                                    block->GetStartLocation().Value(), FlagsString(mask), FlagsString(needed));
                     }
                 } else {
@@ -947,7 +948,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function,
 
     if (EnvDumpIr() &&
         (stat_save || stat_clear || stat_setcv)) {
-        fmt::print("[flags-elim] block {:#x}: SaveFlags {} -> {} (-{}), ClearFlags {} -> {} "
+        SVM_DIAG_FORMAT(Codegen, "[flags-elim] block {:#x}: SaveFlags {} -> {} (-{}), ClearFlags {} -> {} "
                    "(-{}), SetC/V {} -> {} (-{}), masks narrowed {}, CarrySaveFlags {} -> {} "
                    "(-{}), CarryWrites {} -> {} (-{})\n",
                    block->GetStartLocation().Value(), stat_save, stat_save - stat_save_dead,
@@ -957,7 +958,7 @@ void FlagsEliminationPass::Run(Block* block, HIRFunction* hir_function,
                    stat_carry_save_dead, stat_carry_write,
                    stat_carry_write - stat_carry_write_dead, stat_carry_write_dead);
         if (EnvDumpIrPost()) {
-            fmt::print("--- post-elim block {:#x} ---\n{}\n",
+            SVM_DIAG_FORMAT(Codegen, "--- post-elim block {:#x} ---\n{}\n",
                        block->GetStartLocation().Value(), block->ToString());
         }
     }
@@ -981,7 +982,7 @@ void FlagsEliminationPass::Run(HIRFunction* hir_function,
             }
         }
         if (EnvFlagsDebug()) {
-            fmt::print("[flags-branch-only-summary] candidates={} accepted={} "
+            SVM_DIAG_FORMAT(Codegen, "[flags-branch-only-summary] candidates={} accepted={} "
                        "reject_edge={} reject_live={} reject_shape={}\n",
                        stats.candidates, stats.accepted, stats.reject_edge,
                        stats.reject_live, stats.reject_shape);

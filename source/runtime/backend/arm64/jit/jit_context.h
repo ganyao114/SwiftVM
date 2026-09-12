@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <vector>
 #include "aarch64/macro-assembler-aarch64.h"
 #include "base/common_funcs.h"
@@ -49,19 +50,19 @@ enum class FlagsMergeTrampolineKind : u8 {
 };
 
 enum class CycleReasonTrampolineKind : u8 {
-    Plain,
+    Basic,
     NZCV,
     NZCVToken,
 };
 
 enum class ReturnTrampolineKind : u8 {
-    Plain,
+    Basic,
     NZCV,
     NZCVToken,
 };
 
 // Allocation-relative description retained after emission so disk cache
-// can normalize every site without reading a concurrently patched code word.
+// can adjust every site without reading a concurrently patched code word.
 struct DirectLinkSiteInfo {
     u32 code_offset{};
     u64 guest_target{};
@@ -242,7 +243,7 @@ public:
 
     void Finish();
     [[nodiscard]] u32 CurrentBufferSize();
-    [[nodiscard]] u32 HotProbeBytesInRange(u32 begin, u32 end) const;
+    [[nodiscard]] u32 HotCheckBytesInRange(u32 begin, u32 end) const;
     [[nodiscard]] ptrdiff_t GetCodeOffset(LocationDescriptor location) const;
     // A linked canonical-state edge can bypass the published flags veneer.
     [[nodiscard]] ptrdiff_t GetDirectLinkCodeOffset(
@@ -342,7 +343,8 @@ public:
     void TickIR(ir::Inst* instr,
                 bool forward_spilled_width_input = false,
                 bool adopt_pending_spill_write = false,
-                std::optional<u32> forward_spilled_memory_input = std::nullopt);
+                std::optional<u32> forward_spilled_memory_input = std::nullopt,
+                bool consumer_deferred = false);
 
     [[nodiscard]] vixl::aarch64::Label *GetLabel(LocationDescriptor loc);
     [[nodiscard]] vixl::aarch64::Label *GetInternalLabel(LocationDescriptor loc);
@@ -416,7 +418,8 @@ private:
             ir::Inst* consumer,
             bool forward_spilled_width_input = false,
             bool adopt_pending_spill_write = false,
-            std::optional<u32> forward_spilled_memory_input = std::nullopt);
+            std::optional<u32> forward_spilled_memory_input = std::nullopt,
+            bool consumer_deferred = false);
     [[nodiscard]] bool AdoptPendingSpillWrite(
             const PendingSpillWrite& write, ir::Inst* consumer);
     void EmitSpillWriteback(const PendingSpillWrite& write);
@@ -478,7 +481,7 @@ private:
         u32 begin{};
         u32 end{};
     };
-    std::vector<HotCodeRange> hot_probe_ranges{};
+    std::vector<HotCodeRange> hot_check_ranges{};
     std::vector<HotCodeRange> hot_nan_ranges{};
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_gprs;
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_fprs;
@@ -504,8 +507,17 @@ private:
     // reload demand of one instruction to the number of distinct values it
     // names, which is the bound backend::kSpillReloadHeadroom encodes.
     std::map<u32, u8> spill_use_scratch;
+    // spill_use_scratch entries whose register holds a def value forwarded by
+    // FlushSpillWrites: the slot was never written, so a use reached through
+    // another emission path must reuse the register without re-loading.
+    std::set<u32> forwarded_spill_use_scratch;
     std::vector<PendingSpillWrite> pending_spill_writes;
     std::vector<bool> active_spill_reload_regions;
+    // Parallel to active_spill_reload_regions: the region's resident register
+    // was filled by a slot reload, so a use reached through a different
+    // emission path may reload it again. Def/adopt-established regions carry
+    // a register-only value and must not reload.
+    std::vector<bool> slot_backed_spill_reload_regions;
     std::vector<DirectLinkSiteInfo> pending_direct_link_sites;
     struct ReturnSiteInfo {
         u32 code_offset{};

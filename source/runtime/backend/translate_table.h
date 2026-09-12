@@ -3,11 +3,13 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <new>
 #include <shared_mutex>
 #include <utility>
 #include "runtime/common/types.h"
+#include "runtime/common/virtual_vector.h"
 
 namespace swift::runtime {
 
@@ -30,7 +32,10 @@ public:
     explicit TranslateTable(size_t hash_bits_ = HASH_TABLE_PAGE_BITS,
                             TranslateTableHash hash_mode_ = TranslateTableHash::Folded)
             : hash_bits{hash_bits_}, hash_mode{hash_mode_} {
-        size = 1 << hash_bits;
+        constexpr auto maximum = std::numeric_limits<size_t>::max();
+        if (hash_bits >= std::numeric_limits<size_t>::digits) throw std::bad_alloc{};
+        size = size_t{1} << hash_bits;
+        if (size > maximum / sizeof(TranslateEntry) - 10) throw std::bad_alloc{};
         Reset();
     }
 
@@ -178,7 +183,7 @@ public:
     // Invalidates the *value* of the entry for `key`, keeping the key itself.
     // The normal L2 value is zero; an inline-L1 table may instead use a safe
     // dispatcher continuation. Unlike Remove(), this does not break the
-    // linear probe chain for colliding keys, and the aligned value store is
+    // linear check chain for colliding keys, and the aligned value store is
     // atomic for generated lock-free readers on the supported hosts.
     // Returns true if the entry was found.
     bool Zero(size_t key) {
@@ -201,13 +206,13 @@ public:
     }
 
     // --- JIT disk cache / AOT support -------------------------------------
-    // A slot index is not a function of the key alone: colliding keys probe
+    // A slot index is not a function of the key alone: colliding keys check
     // forward, so which slot a key ends up in depends on insertion order. The
     // JIT dispatch indices baked into generated code are slot indices, so a
     // deserialized code unit is only valid if the table reproduces the exact
     // assignment its immediates were emitted against. PutAt installs one
     // recorded (index, key) pair with a zero value (the code pointer is filled
-    // later by Put/PushCodeCache); ForEachEntry snapshots the assignment.
+    // later by Put/PushCodeCache); ForEachEntry captures the assignment.
     //
     // PutAt returns false when `index` is already claimed by a different key,
     // which the caller must treat as "this whole cache file is unusable" --
@@ -247,12 +252,18 @@ public:
         const auto direct_alignment = hash_mode == TranslateTableHash::Direct
                 ? size * sizeof(TranslateEntry)
                 : 0;
-        auto* storage = static_cast<TranslateEntry*>(direct_alignment
-                ? ::operator new(next_entry_count * sizeof(TranslateEntry),
-                                 std::align_val_t{direct_alignment})
-                : ::operator new(next_entry_count * sizeof(TranslateEntry)));
-        EntryStorage next{storage, EntryDeleter{direct_alignment}};
-        std::memset(storage, 0, next_entry_count * sizeof(TranslateEntry));
+        const auto alignment = direct_alignment ? direct_alignment : alignof(TranslateEntry);
+        const auto bytes = next_entry_count * sizeof(TranslateEntry);
+        const auto padding = alignment - 1;
+        if (bytes > std::numeric_limits<size_t>::max() - padding) throw std::bad_alloc{};
+        const auto allocation_size = bytes + padding;
+        void* allocation = AllocateMemoryPages(allocation_size);
+        const auto address = reinterpret_cast<std::uintptr_t>(allocation);
+        auto* storage = reinterpret_cast<TranslateEntry*>((address + padding) & ~padding);
+        EntryStorage next{storage, EntryDeleter{allocation, allocation_size}};
+        // Anonymous pages already read as zero. Keep untouched table pages
+        // uncommitted instead of clearing 128 MiB per shared table and 4 MiB
+        // per runtime up front. The original allocation owns alignment padding.
         storage[next_entry_count - 1].key = size_t(-1);
         entries = std::move(next);
         entry_count = next_entry_count;
@@ -261,14 +272,11 @@ public:
 
 private:
     struct EntryDeleter {
-        size_t alignment{};
+        void* allocation{};
+        size_t bytes{};
 
-        void operator()(TranslateEntry* storage) const noexcept {
-            if (alignment) {
-                ::operator delete(storage, std::align_val_t{alignment});
-            } else {
-                ::operator delete(storage);
-            }
+        void operator()(TranslateEntry*) const noexcept {
+            FreeMemoryPages(allocation, bytes);
         }
     };
 

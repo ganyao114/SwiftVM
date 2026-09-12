@@ -1,3 +1,4 @@
+#include "runtime/backend/reg_alloc.h"
 #include "translator.h"
 
 #include "runtime/backend/arm64/helper_call_contract.h"
@@ -6,7 +7,7 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool IsPinnedGPR(u32 index) { return index <= 9 || (index >= 19 && index <= 23) || index == 29; }
+using ::swift::runtime::backend::IsFixedGPRHome;
 
 bool IsMemoryAddressUse(ir::Inst& inst, ir::Inst* definition) {
     if (inst.GetOp() != ir::OpCode::LoadMemory && inst.GetOp() != ir::OpCode::StoreMemory) {
@@ -142,14 +143,14 @@ bool IsPinnedU64AliasUse(ir::Block* block, ir::Inst& consumer) {
 std::optional<JitTranslator::PinnedGPRCopy> JitTranslator::MatchPinnedGPRCopy(
         ir::Inst* inst) const {
     if (!inst || inst->GetOp() != ir::OpCode::SetHostGPR || inst->GetArg<ir::Imm>(2).Get() != 0 ||
-        dead_pinned_gpr_writes.contains(inst)) {
+        pinned_gprs.dead_pinned_gpr_writes.contains(inst)) {
         return std::nullopt;
     }
 
     const u32 target = inst->GetArg<ir::Imm>(1).Get();
     auto published = inst->GetArg<ir::Value>(0);
     auto* extend = published.Def();
-    if (!IsPinnedGPR(target) || !extend || extend->GetOp() != ir::OpCode::ZeroExtend32To64 ||
+    if (!IsFixedGPRHome(target) || !extend || extend->GetOp() != ir::OpCode::ZeroExtend32To64 ||
         ir::GetValueSizeByte(published.Type()) != sizeof(u64)) {
         return std::nullopt;
     }
@@ -188,7 +189,7 @@ std::optional<JitTranslator::PinnedGPRCopy> JitTranslator::MatchPinnedGPRCopy(
             return std::nullopt;
         }
         const u32 index = read->GetArg<ir::Imm>(0).Get();
-        if (!IsPinnedGPR(index)) {
+        if (!IsFixedGPRHome(index)) {
             return std::nullopt;
         }
         source_index = static_cast<u16>(index);
@@ -373,8 +374,8 @@ std::optional<XRegister> JitTranslator::ResolvePinnedGPRValue(ir::Value value) c
     if (!value.Def()) {
         return std::nullopt;
     }
-    auto pinned = pinned_gpr_values.find(value.Def());
-    if (pinned == pinned_gpr_values.end()) {
+    auto pinned = pinned_gprs.pinned_gpr_values.find(value.Def());
+    if (pinned == pinned_gprs.pinned_gpr_values.end()) {
         return std::nullopt;
     }
     return XRegister(pinned->second);
@@ -391,8 +392,8 @@ std::optional<WRegister> JitTranslator::ResolvePinnedGPRWUse(ir::Value value,
     if (residence && width <= sizeof(u32) && residence->width == width) {
         return WRegister(residence->home);
     }
-    const auto pinned = fused_pin_gpr_reads.find(value.Def());
-    if (pinned != fused_pin_gpr_reads.end()) {
+    const auto pinned = pinned_gprs.fused_pin_gpr_reads.find(value.Def());
+    if (pinned != pinned_gprs.fused_pin_gpr_reads.end()) {
         return WRegister(pinned->second);
     }
     const auto inferred = guest_state_map.FixedHomeForUse(value, consumer);
@@ -420,48 +421,45 @@ void JitTranslator::PreparePinnedGPRCopies(ir::Block* block) {
     fused_pin_zext32.clear();
     checked_pin_zext32_publications.clear();
     fused_pin_sign_extends.clear();
-    fused_pin_gpr_reads.clear();
-    pinned_gpr_values.clear();
-    pinned_gpr_copies.clear();
     for (auto& inst : block->GetInstList()) {
-        auto plan = MatchPinnedGPRCopy(&inst);
-        if (!plan) {
+        auto candidate = MatchPinnedGPRCopy(&inst);
+        if (!candidate) {
             continue;
         }
-        if (!plan->source) {
-            pinned_gpr_values.emplace(plan->read, plan->target);
-            if (plan->read->GetOp() == ir::OpCode::Add) {
-                fused_pin_gpr_reads.emplace(plan->read, plan->target);
+        if (!candidate->source) {
+            pinned_gprs.pinned_gpr_values.emplace(candidate->read, candidate->target);
+            if (candidate->read->GetOp() == ir::OpCode::Add) {
+                pinned_gprs.fused_pin_gpr_reads.emplace(candidate->read, candidate->target);
             }
         } else {
-            fused_pin_gpr_reads.emplace(plan->read, *plan->source);
+            pinned_gprs.fused_pin_gpr_reads.emplace(candidate->read, *candidate->source);
         }
-        if (plan->narrow_extend) {
-            if (plan->signed_load) {
-                fused_pin_sign_extends.insert(plan->narrow_extend);
+        if (candidate->narrow_extend) {
+            if (candidate->signed_load) {
+                fused_pin_sign_extends.insert(candidate->narrow_extend);
             } else {
-                fused_pin_zext32.insert(plan->narrow_extend);
+                fused_pin_zext32.insert(candidate->narrow_extend);
             }
         }
-        fused_pin_zext32.insert(plan->extend);
-        for (auto* alias : plan->aliases) {
+        fused_pin_zext32.insert(candidate->extend);
+        for (auto* alias : candidate->aliases) {
             if (alias->GetOp() == ir::OpCode::BitExtract) {
-                fused_pin_gpr_reads.emplace(alias, plan->target);
+                pinned_gprs.fused_pin_gpr_reads.emplace(alias, candidate->target);
             } else {
-                pinned_gpr_values.emplace(alias, plan->target);
+                pinned_gprs.pinned_gpr_values.emplace(alias, candidate->target);
             }
         }
-        for (auto [value, consumer] : plan->transferred_uses) {
+        for (auto [value, consumer] : candidate->transferred_uses) {
             guest_state_map.RegisterFixedHomeUse(
                     value,
                     consumer,
                     GuestStateMap::FixedHomeValue{
-                            .home = plan->target,
+                            .home = candidate->target,
                             .width = sizeof(u32),
                             .extension = {.known_zero_above = 32},
                     });
         }
-        pinned_gpr_copies.emplace(&inst, *plan);
+        pinned_gprs.pinned_gpr_copies.emplace(&inst, *candidate);
     }
 }
 

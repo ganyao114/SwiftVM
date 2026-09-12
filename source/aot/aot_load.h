@@ -33,7 +33,7 @@ struct LoadReport {
 // the live guest window and are used to re-hash the guest bytes each unit was
 // compiled from.
 //
-// Returns kAotOk or a SwiftAotStatus. On failure `error` explains why and the
+// Returns kAotOk or a SwiftAotStatus. On failure `error` describes why and the
 // address space must be considered unusable for this artifact.
 int InstallArtifact(swift::runtime::backend::AddressSpace& address_space,
                     const AotImage& artifact,

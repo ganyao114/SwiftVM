@@ -201,7 +201,7 @@ ir::Value RoundLane(ir::Assembler* as,
         return as->VecFRoundInt(source, merge, bits, ir::Imm(u32(imm8 & 3u)), sc).SetType(kV128);
     }
     // MXCSR.RC (bits 14:13) selects, and it is runtime state, so all four
-    // roundings are materialized and one is picked bitwise.
+    // roundings are computed and one is picked bitwise.
     ir::Uniform uni_mxcsr{offsetof(ThreadContext64, mxcsr), ir::ValueType::U32};
     auto mxcsr = as->ZeroExtend64(as->LoadUniform(uni_mxcsr));
     auto low_bit = BitLaneMask(as, mxcsr, 13);

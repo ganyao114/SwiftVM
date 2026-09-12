@@ -35,7 +35,7 @@ struct DirectMemory final : swift::x86::MemoryInterface {
     void* GetPointer(void* src) override { return src; }
 };
 
-LogicalFlagEmission EmitLogicalFlagIdentity(bool observe_result) {
+LogicalFlagEmission EmitLogicalFlagDirect(bool observe_result) {
     Config config{
             .loc_start = 0,
             .loc_end = 1ull << 48,
@@ -256,14 +256,14 @@ std::vector<std::string> EmitParityOnlyLogicalBeforeSelect() {
 }  // namespace
 
 TEST_CASE("dead narrow logical identities publish NZ in one instruction") {
-    const auto emission = EmitLogicalFlagIdentity(false);
+    const auto emission = EmitLogicalFlagDirect(false);
     REQUIRE(emission.extract_tied);
     REQUIRE(Count(emission.instructions, "lsl #24") == 1);
     REQUIRE_FALSE(Contains(emission.instructions, "sxtb"));
 }
 
 TEST_CASE("observed narrow logical identities keep their result") {
-    const auto emission = EmitLogicalFlagIdentity(true);
+    const auto emission = EmitLogicalFlagDirect(true);
     REQUIRE_FALSE(emission.extract_tied);
 }
 

@@ -204,7 +204,7 @@ helper 热路径从 13→7，单次机械减少 46.153846%。miss 比旧路径�
 
 当前 Codex 文件沙箱仍拒绝 Unicorn 2.1.4 的 `hw.cachelinesize` sysctl，后者会退到
 `MRS CTR_EL0` 并在测试进程内 SIGILL。双态全量都使用 build 目录内、不进 git 的
-DYLD interpose，只为 `hw.cachelinesize` 返回本机 128，并为 AFP capability probe
+DYLD interpose，只为 `hw.cachelinesize` 返回本机 128，并为 AFP capability check
 返回 1；两态条件完全相同。该测试环境绕行不在产品 diff 中。
 
 ## 8. 改动清单
@@ -438,7 +438,7 @@ Sse42StrStage）做函数范围反汇编，拒绝 FP/NEON 寄存器、FP mnemoni
 ### 14.3 emit 与正确性边界
 
 `EmitHostCall` 仅在 `effective sse_afp_nan && direct-target && FPCRTransparent` 时跳过
-整个 `LDR host_fpcr + MSR FPCR` 及返回侧 compare/cache restore/MSR；寄存器 snapshot、
+整个 `LDR host_fpcr + MSR FPCR` 及返回侧 compare/cache restore/MSR；寄存器 capture、
 参数/返回值、fault sink 与 helper ABI 均不变。interpreter、trampoline CallHost、
 MemoryCopy、StoreUniform(mxcsr)、未知/动态 helper 以及所有保守 X87 action 继续走原
 切换与 cache 协议，没有扩大豁免。

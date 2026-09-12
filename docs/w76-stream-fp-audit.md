@@ -257,7 +257,7 @@ fallthrough exit 另有 `ldr literal + blr` 两条，只在循环结束执行。
 
 ### 4.2 NaN 与 FPCR 语义
 
-FEX source snapshot：`/tmp/w75-fex-audit`，commit
+FEX source capture：`/tmp/w75-fex-audit`，commit
 `2fdbff3d1c0058b5851b84ae9db2c00d88f02b60`。
 
 - `FEXCore/Source/Interface/Core/JIT/VectorOps.cpp:142-179` 的
@@ -292,7 +292,7 @@ NaN sign 与 invalid indefinite 位形。SwiftVM 默认在
 
 W13 若未来因独立机器结果要求重开，最低数据门应是：当前 master、无探针、至少 7
 对交错；Scale/Add/Triad 各自 95% CI 为正；c-ray/smallpt 不回退；RA_SHAPE spill/
-high-water/helper snapshot 不增；并明确接受 `vec_float_nan_pressure` 的 reduced-NaN
+high-water/helper capture 不增；并明确接受 `vec_float_nan_pressure` 的 reduced-NaN
 差异。当前三次预筛已经大幅负向，不建议消耗正式 A/B 资源。
 
 ## 6. 复现命令与证据
@@ -367,4 +367,3 @@ objdump -D -b binary -m aarch64 fex-1a70.bin > fex-1a70.asm
 
 本轮没有改动 source、tests、golden、linker 或 benchmark harness；最终只新增
 `docs/w76-stream-fp-audit.md`。
-

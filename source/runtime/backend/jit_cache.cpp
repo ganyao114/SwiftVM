@@ -1,3 +1,4 @@
+#include "base/logging.h"
 //
 // See jit_cache.h.
 //
@@ -30,10 +31,10 @@ namespace {
 
 constexpr char kMagic[8] = {'S', 'V', 'M', 'J', 'I', 'T', 'C', '\1'};
 // A guest block longer than this is a decoder bug, not a basic block; refuse
-// rather than hash (or probe) an arbitrary range out of a corrupt file.
+// rather than hash (or check) an arbitrary range out of a corrupt file.
 constexpr u64 kMaxGuestBlockBytes = 1u << 20;
 
-// Readability probe that never faults: the kernel validates the buffer and
+// Readability check that never faults: the kernel validates the buffer and
 // returns EFAULT instead of delivering a signal. mincore() is not usable here
 // because the guest window is one big PROT_NONE reservation -- its pages are
 // "mapped" but unreadable.
@@ -72,7 +73,7 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     dir = svm_config.jit_cache;
     // Profiled JIT units embed a process-local counter slot. Serializing one
     // would revive code with no matching metadata slot in the next process.
-    // The probe is measurement-only, so disable disk caching while it is on.
+    // The check is measurement-only, so disable disk caching while it is on.
     if (HotCounterStorageEnabled()) {
         LOG_WARNING("SVM_JIT_CACHE: counter-slot profiling is incompatible; cache disabled");
         return;
@@ -96,7 +97,7 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     if (!config.memory_base) {
         // Without a bias the cache cannot read guest bytes safely, and guest
         // addresses become plausible memory bases (see code_serial.h).
-        LOG_WARNING("SVM_JIT_CACHE: identity-mapped guest memory is unsupported; cache disabled");
+        LOG_WARNING("SVM_JIT_CACHE: direct-mapped guest memory is unsupported; cache disabled");
         return;
     }
     const u64 window = config.guest_addr_mask ? config.guest_addr_mask + 1 : 0;
@@ -122,7 +123,7 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
 
 JitDiskCache::~JitDiskCache() {
     if (print_stats) {
-        fmt::print(stderr,
+        SVM_DIAG_FORMAT(Runtime,
                    "[jit-cache] loaded={} compiled={} stored={} "
                    "feature(match={} skip={}) "
                    "reject(header={} guest={} reloc={} alloc={} scan={}) "
@@ -229,7 +230,7 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
 
     std::vector<u32> external_bl_offsets;
     external_bl_offsets.reserve(unit.link_sites.size());
-    std::map<u32, u32> normalized_words;
+    std::map<u32, u32> adjusted_words;
     if (!unit.link_sites.empty()) {
         // A serialized site list is also a defensive format check: only an
         // ARM64 BlockLink module may produce or revive these relocations.
@@ -277,12 +278,12 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
                 return;
             }
             external_bl_offsets.push_back(site.code_offset);
-            if (!normalized_words.emplace(site.code_offset, *branch).second) {
+            if (!adjusted_words.emplace(site.code_offset, *branch).second) {
                 stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
             if (has_flags_bypass) {
-                const auto [it, inserted] = normalized_words.emplace(
+                const auto [it, inserted] = adjusted_words.emplace(
                         site.flags_bypass_offset,
                         site.flags_bypass_instruction);
                 if (!inserted && it->second != site.flags_bypass_instruction) {
@@ -291,7 +292,7 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
                 }
                 if (has_flags_outline) {
                     const auto [branch_it, branch_inserted] =
-                            normalized_words.emplace(
+                            adjusted_words.emplace(
                                     site.flags_merge_branch_offset,
                                     0x1400'0000u);
                     if (!branch_inserted &&
@@ -309,10 +310,10 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
     // Copy immutable spans only. A live linker or invalidator may atomically
     // patch a site at this exact moment; never read that word through memcpy.
     // Each skipped word is synthesized as the unlinked BL form, so the stored
-    // snapshot is independent of Linked/Far/Unlinked runtime state.
+    // capture is independent of Linked/Far/Unlinked runtime state.
     unit.code.resize(code_size);
     size_t cursor{};
-    for (const auto& [word_offset, instruction] : normalized_words) {
+    for (const auto& [word_offset, instruction] : adjusted_words) {
         const size_t offset = word_offset;
         if (offset > cursor) {
             std::memcpy(unit.code.data() + cursor, rw_data + cursor, offset - cursor);
@@ -364,8 +365,8 @@ void JitDiskCache::Save() {
     if (units.empty() || !dirty) {
         return;
     }
-    // Snapshot the L2 dispatch-table assignment. The indices baked into the
-    // cached code are table slots, and a slot's identity depends on the
+    // Capture the L2 dispatch-table assignment. The indices baked into the
+    // cached code are table slots, and a slot's direct depends on the
     // insertion order of colliding keys -- replaying the assignment verbatim
     // is what keeps those immediates valid without patching them.
     std::vector<std::pair<u64, u32>> slots;

@@ -201,7 +201,7 @@ static void build_pairs(void) {
     {
         /* f32: NaN payloads, a signalling NaN, infinities, signed zero, exact
            ties in every direction and a value past 2^23 where all four
-           rounding modes are the identity. */
+           rounding modes are the direct. */
         Pair* p = new_pair("f32");
         const u32 a[8] = {f32bits(0.5f),  f32bits(1.5f), f32bits(2.5f), f32bits(-2.5f),
                           QNAN_A32,       SNAN_A32,      NZERO32,       f32bits(16777216.0f)};
@@ -573,7 +573,7 @@ static void gen_round(const char* name, int op, int imm, int rc, int mem) {
     row(name, imm, rc, &c);
 }
 
-/* ptest, with the five condition flags materialized into al/ah/bl/cl/dl.
+/* ptest, with the five condition flags computed into al/ah/bl/cl/dl.
    The zeroing is INSIDE the recorded region so the flag bytes are unambiguous
    even if the instruction leaves a flag undefined. */
 static void gen_test_flags(const char* name, int vex, int mem, int op, int l) {
@@ -717,7 +717,7 @@ static const int kDotImms[] = {0x00, 0xFF, 0xF0, 0x0F, 0xF1, 0x1F, 0x71, 0x17,
                                0x31, 0x3F, 0x51, 0xA5, 0x81, 0x12, 0x48, 0x96};
 #define N_DOT_IMMS ((int)(sizeof(kDotImms) / sizeof(kDotImms[0])))
 
-/* (name, 0F38 opcode) for the plain two-operand SSSE3/SSE4.1 integer forms. */
+/* (name, 0F38 opcode) for the basic two-operand SSSE3/SSE4.1 integer forms. */
 typedef struct {
     const char* name;
     int op;
@@ -873,7 +873,7 @@ int main(int argc, char** argv) {
         gen_legacy("pblendw", 0x66, 0x3A, 0x0E, 0x5A, DATA_B);
         gen_vex("vblendps", 1, 3, 0x0C, 0x5, -1, 0);
 
-        /* ---- the plain two-operand 0F38 integer family ------------------ */
+        /* ---- the basic two-operand 0F38 integer family ------------------ */
         for (int i = 0; i < N_38_BIN; i++) {
             gen_legacy(k38_bin[i].name, 0x66, 0x38, k38_bin[i].op, -1, -1);
             gen_legacy(k38_bin[i].name, 0x66, 0x38, k38_bin[i].op, -1, DATA_B);

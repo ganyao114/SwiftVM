@@ -1,6 +1,6 @@
 // Four-thread split-lock smoke. Both qword counters are deliberately placed
 // at address % 8 == 1. AArch64 exclusives would SIGBUS here; SwiftVM must take
-// the process-wide serialized plain-RMW fallback and retain exact results.
+// the process-wide serialized basic-RMW fallback and retain exact results.
 
     .set THREADS, 4
     .set ITERS, 20000

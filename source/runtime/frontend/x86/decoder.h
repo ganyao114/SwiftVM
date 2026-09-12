@@ -19,7 +19,7 @@ namespace swift::x86 {
 
 // Guest->host address bias used by host helpers (rep movs/stos) that execute
 // with raw guest pointers. Installed by the embedding translator when guest
-// addresses are virtualized (memory_base); 0 = identity.
+// addresses are virtualized (memory_base); 0 = direct.
 void SetGuestMemBias(u64 bias);
 [[nodiscard]] u64 GetGuestMemBias();
 
@@ -35,7 +35,7 @@ void SetGuestAddrMask(u64 mask);
 
 // Memory ordering mode installed by the embedding translator (from
 // Config::tso_mode). AcqRel routes every guest memory access through the
-// ordering-enforcing IR ops; Relaxed/Hardware keep plain accesses (Hardware
+// ordering-enforcing IR ops; Relaxed/Hardware keep basic accesses (Hardware
 // relies on the host already running a TSO memory model). LOCK-prefixed
 // instructions always emit ordered accesses regardless of this mode.
 void SetTsoMode(runtime::TsoMode mode);
@@ -290,7 +290,7 @@ public:
                bool is_64bit,
                runtime::Arm64Features arm64_features = runtime::Arm64Features::None,
                bool sse_afp_nan = false,
-               bool identity_addressing = false,
+               bool direct_addressing = false,
                const runtime::FeatureSet& features = runtime::FeatureSet{},
                VAddr decode_stop = 0,
                DecodeStopKind decode_stop_kind = DecodeStopKind::Internal);
@@ -523,7 +523,7 @@ private:
 
     enum class ArithOp { Add, Adc, Sub, Sbb };
 
-    // ARM subtraction reports C as NOT-borrow. FlagM hosts normalize that bit
+    // ARM subtraction reports C as NOT-borrow. FlagM hosts adjust that bit
     // immediately and keep a Direct cross-block representation. Other hosts
     // track producer polarity within the block and persist it for later CF
     // consumers.
@@ -544,7 +544,7 @@ private:
     // non-FlagM runtime polarity byte.
     ir::Value CarryValue();
 
-    // Non-FlagM runtime carry polarity byte. FlagM hosts normalize C in place
+    // Non-FlagM runtime carry polarity byte. FlagM hosts adjust C in place
     // and keep the cross-block representation Direct.
     static ir::Uniform PolarityUniform() {
         return ir::Uniform{offsetof(ThreadContext64, carry_inverted), ir::ValueType::U8};
@@ -569,7 +569,7 @@ private:
     // Narrow (or widen) a value to a type safely: SetType on a U64-producing
     // instruction would make its emitter use 32 bit registers on 64 bit
     // operands (e.g. invalid W shifts), so narrowing goes through an explicit
-    // ZeroExtend32 (W-normalize) plus a W-register-safe SetType.
+    // ZeroExtend32 (W-adjust) plus a W-register-safe SetType.
     ir::Value NarrowTo(ir::Value value, ir::ValueType type);
 
     // Segment override base: FS/GS read the 64-bit bases from the context
@@ -619,13 +619,13 @@ private:
     // limited to:
     //   absolute, base, base+disp, index<<scale, base+(index<<scale).
     // A non-default segment or base+index+nonzero-disp needs a third term and
-    // falls back to FlatAddress. Future plain GPR memory handlers may use the
+    // falls back to FlatAddress. Future basic GPR memory handlers may use the
     // same entry point once their fault/order contract is audited.
-    ir::Operand PlainStructuredAddress(_DInst& insn, _Operand& op);
+    ir::Operand BasicStructuredAddress(_DInst& insn, _Operand& op);
     [[nodiscard]] bool CanStructureAddress(const _DInst& insn,
                                            const _Operand& op) const;
 
-    // Canonical address-GPR SSA snapshots. This is frontend value numbering,
+    // Canonical address-GPR SSA captures. This is frontend value numbering,
     // not an emitter peephole: every structured memory Operand names the same
     // LoadUniform SSA value until the architectural GPR changes. Retention is
     // confined to the audited straight-line STREAM opcode chain below.
@@ -670,7 +670,7 @@ private:
 
     void DecodeMovd(_DInst& insn);
     void DecodeMovq(_DInst& insn);
-    // movdqa/movdqu/movaps/movups: plain 128-bit moves.
+    // movdqa/movdqu/movaps/movups: basic 128-bit moves.
     void DecodeMovVec(_DInst& insn);
     void DecodeMovsd(_DInst& insn);
     void DecodeMovss(_DInst& insn);
@@ -733,8 +733,8 @@ private:
     void DecodeUcomisd(_DInst& insn);
     // bsf / bsr (and tzcnt aliased to bsf with BMI1 hidden).
     void DecodeBitScan(_DInst& insn, bool reverse);
-    ir::Value NormalizeBitCountSource(_DInst& insn, _Operand& operand, u32 width);
-    // lock cmpxchg (single-threaded model: plain load/compare/store).
+    ir::Value PrepareBitCountSource(_DInst& insn, _Operand& operand, u32 width);
+    // lock cmpxchg (single-threaded model: basic load/compare/store).
     void DecodeCmpxchg(_DInst& insn);
     // rol / ror (value-exact; CF/OF left unchanged, see implementation).
     void DecodeRotate(_DInst& insn, bool left);
@@ -762,7 +762,7 @@ private:
     // one before setting bit 20, or the gate and the advertisement drift.
     [[nodiscard]] static bool Sse42StrEnabled();
     // SVM_X86_CRYPTO_NI gates the legacy AES-NI/PCLMULQDQ decoder cases and
-    // their CPUID bits together.  The host probe is part of the gate so an
+    // their CPUID bits together.  The host check is part of the gate so an
     // unsupported ARM host still gets the exact pre-crypto #UD behaviour.
     [[nodiscard]] static bool CryptoNiEnabled();
     // SHA-NI rides on the AES-NI/PCLMULQDQ bundle (CPUID + decoder gated
@@ -770,7 +770,7 @@ private:
     [[nodiscard]] static bool ShaNiEnabled();
 
     // Raw VEX prefix fields, parsed from the instruction bytes rather than
-    // taken from distorm.  This is NOT redundant: this distorm snapshot
+    // taken from distorm.  This is NOT redundant: this distorm capture
     // predates AVX2 and therefore has no 256-bit table entry for the packed
     // *integer* opcodes (VPXOR/VPAND/VPOR/VPADDx/VPCMPx/VPSHUFB/...).  For
     // those it silently reports XMM operands with size 128 even when VEX.L=1,
@@ -824,7 +824,7 @@ private:
     // The ModRM.rm register number (0..15, VEX.B folded in) of the instruction
     // currently being decoded, taken from the raw encoding.
     //
-    // Needed because this distorm snapshot's VPMOVMSKB VEX entry
+    // Needed because this distorm capture's VPMOVMSKB VEX entry
     // (externals/distorm/insts.c, II_V_66_0F_D7) carries NO operand
     // descriptors — unlike every neighbouring V* entry — so distorm reports
     // ModRM.reg for BOTH operands and sizes the destination as 64-bit. The
@@ -1142,14 +1142,14 @@ private:
     runtime::MemoryInterface* memory;
     bool end_decode{false};
     bool is_64bit{false};
-    // Snapshotted from the owning Config when this compilation unit's decoder
+    // Captureted from the owning Config when this compilation unit's decoder
     // is constructed.  CFINV still honors SVM_FLAGS_CFINV=0 at decode time;
     // PublishFCmpFlags also records the FlagM2 decision in IR.
     bool flags_cfinv_supported_{false};
     bool flags_fcmp_compact_{false};
     bool sse_afp_nan_{false};
     bool addr_ea_tie_{false};
-    bool identity_addressing_{false};
+    bool direct_addressing_{false};
     runtime::FeatureSet features_{};
     VAddr addr_mask{UINT64_MAX};
     CarryPolarity carry_{CarryPolarity::Unknown};

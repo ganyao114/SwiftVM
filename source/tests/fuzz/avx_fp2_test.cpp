@@ -165,7 +165,7 @@ bool NameMatches(const char* row, const char* entry) {
 // (V)PTEST sets AF <- OF <- PF <- SF <- 0, and this file's implementation does
 // that -- but Rosetta was measured returning BOTH answers for byte-identical
 // code.  The reference data was captured in a run where PF came back as the
-// value the flag seed left (1); five reduced probes replaying the very same
+// value the flag seed left (1); five reduced checks replaying the very same
 // instruction bytes returned 0, and whether a run gives 0 or 1 turned out to
 // depend on unrelated details of the surrounding program (whether signal
 // handlers were installed, how many vmovdqu preceded it).  A flag output that

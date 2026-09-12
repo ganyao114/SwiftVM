@@ -15,7 +15,7 @@
 //   SVM_TSO_MODE=acqrel  -> mp_bad MUST be 0. This is the red line: SwiftVM
 //                           claims x86-TSO, and TSO forbids the outcome.
 //   SVM_TSO_MODE=relaxed -> mp_bad MUST be > 0. This is the DETECTOR CHECK.
-//                           Relaxed mode deliberately emits plain ldr/str, so
+//                           Relaxed mode deliberately emits basic ldr/str, so
 //                           the violation is reachable; if this side ever
 //                           reads 0 the acqrel side proves nothing, because a
 //                           detector that cannot see a violation reports 0 for

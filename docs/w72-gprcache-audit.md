@@ -226,19 +226,19 @@ host +3.89%，spill memory ops 5425→14071（2.6x），CoreMark level3/level2
 PIN2:
 units=6944 spill_units=7 spill_defs=446 spill_loads=530 spill_stores=433
 gpr_pool bins=11:7,12:6937
-helper direct calls=84 snapshot_instructions=1492 bytes=5968
+helper direct calls=84 capture_instructions=1492 bytes=5968
 
 PIN3:
 units=6944 spill_units=249 spill_defs=6527 spill_loads=7333 spill_stores=5879
 gpr_pool bins=7:244,8:6700
-helper direct calls=84 snapshot_instructions=1752 bytes=7008
+helper direct calls=84 capture_instructions=1752 bytes=7008
 ```
 
 | 项 | PIN2 | PIN3 | 变化 |
 |---|---:|---:|---:|
 | spill units | 7 (0.1008%) | 249 (3.5858%) | 35.57x |
 | spill L/S | 530 / 433 | 7333 / 5879 | +12249 条 memory ops |
-| helper snapshot instructions | 1492 | 1752 | +260 (+17.43%) |
+| helper capture instructions | 1492 | 1752 | +260 (+17.43%) |
 | R12–R15 state ops | 5710 | 0 | -5710 |
 | host instruction slots | 277644 | 287401 | **+9757 (+3.514%)** |
 
@@ -247,7 +247,7 @@ PIN3 删完 5710 条 residual state op，却在 spill/helper/搬运上付出更�
 形态负账的方向检查，性能裁定仍引用 W60 五对结果。
 
 unit-local cache 把值交给普通 RA 时，不会永久拿走 x6–x9，也不会无条件扩大 helper
-static-pin snapshot，因此能避开 PIN3 的全局缩池成本；但它会拉长 R12–R15 live
+static-pin capture，因此能避开 PIN3 的全局缩池成本；但它会拉长 R12–R15 live
 interval，并在观察边界物化，高压块仍可能增加本地 spill。它避开 W60 最坏机制，
 却无法把 0.4–1.0% 的机械预算放大成原先的 8–18%。
 

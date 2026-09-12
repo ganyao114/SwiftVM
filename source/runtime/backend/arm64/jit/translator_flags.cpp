@@ -50,7 +50,7 @@ void JitTranslator::RecordPFAFDensity(PFAFDensityKind kind, u32 begin) {
     if (!context.DensityProfileEnabled()) return;
     // 单块的某个 PF/AF 子桶不会接近 64 KiB。高 16 位保存
     // 翻译期的 site 数，不增大 JitTranslator，也不改发码。
-    pfaf_density_bytes[static_cast<size_t>(kind)] +=
+    statistics.pfaf_density_bytes[static_cast<size_t>(kind)] +=
             (1u << 16) | bytes;
 }
 
@@ -60,22 +60,22 @@ void JitTranslator::BeginFlagsTokenProducer(const PseudoFlags& pseudo) {
     }
     if (FlagsRegsEnabled()) {
         const auto overwritten = pseudo.set | pseudo.clear;
-        if (flags_token_valid) {
+        if (flag_state.flags_token_valid) {
             if (True(overwritten & ir::Flags::Parity)) {
                 InvalidateFlagsToken();
             } else {
                 PublishFlagsToken();
             }
         }
-        if (nzcv_dirty) {
+        if (flag_state.nzcv_dirty) {
             const auto overwritten_nzcv =
                     GuestNZCVToHost(overwritten & ir::Flags::NZCV);
-            if (True(nzcv_requested & ~overwritten_nzcv)) {
+            if (True(flag_state.nzcv_requested & ~overwritten_nzcv)) {
                 MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
                           flags_audit_block_edge);
             } else {
-                nzcv_dirty = false;
-                nzcv_requested = {};
+                flag_state.nzcv_dirty = false;
+                flag_state.nzcv_requested = {};
             }
         }
         return;
@@ -178,23 +178,23 @@ bool JitTranslator::CanRetainFlagsTokenResult(
 }
 
 XRegister JitTranslator::FlagsTokenResult() const {
-    return XRegister{flags_token_result_code};
+    return XRegister{flag_state.flags_token_result_code};
 }
 
 void JitTranslator::MaterializeFlagsTokenResult() {
-    if (!flags_token_valid ||
-        flags_token_result_code == atomic_scratch.GetCode()) {
+    if (!flag_state.flags_token_valid ||
+        flag_state.flags_token_result_code == atomic_scratch.GetCode()) {
         return;
     }
     __ Mov(atomic_scratch, FlagsTokenResult());
-    if (!flags_token_keep) {
-        flags_token_result_code = atomic_scratch.GetCode();
+    if (!flag_state.flags_token_keep) {
+        flag_state.flags_token_result_code = atomic_scratch.GetCode();
     }
 }
 
 void JitTranslator::InvalidateFlagsToken() {
-    flags_token_valid = false;
-    flags_token_result_code = atomic_scratch.GetCode();
+    flag_state.flags_token_valid = false;
+    flag_state.flags_token_result_code = atomic_scratch.GetCode();
 }
 
 void JitTranslator::CaptureFlagsToken(const Register& result,
@@ -211,18 +211,18 @@ void JitTranslator::CaptureFlagsToken(const Register& result,
         } else {
             __ Mov(atomic_scratch.W(), result.W());
         }
-        flags_token_result_code = atomic_scratch.GetCode();
+        flag_state.flags_token_result_code = atomic_scratch.GetCode();
     } else {
-        flags_token_result_code = result.GetCode();
+        flag_state.flags_token_result_code = result.GetCode();
     }
-    flags_token_valid = true;
+    flag_state.flags_token_valid = true;
 }
 
 void JitTranslator::FinishFlagsTokenProducer(const Register& result,
                                              ir::ValueType type,
                                              const PseudoFlags& pseudo,
                                              ir::Inst* producer) {
-    if (!FlagsRegsEnabled() || pseudo.branch_only || flags_token_valid ||
+    if (!FlagsRegsEnabled() || pseudo.branch_only || flag_state.flags_token_valid ||
         !True(pseudo.set & ir::Flags::Parity)) {
         return;
     }
@@ -241,14 +241,14 @@ bool JitTranslator::TryEmitCycleExitFlags() {
         !requested || *requested != static_cast<u64>(HostFlags::NZCV)) {
         return false;
     }
-    const bool token = flags_token_valid;
+    const bool token = flag_state.flags_token_valid;
     if (token) {
         MaterializeFlagsTokenResult();
     }
     context.EmitCycleFlagsMergeBranch(token);
-    if (!flags_token_keep) {
-        nzcv_dirty = false;
-        nzcv_requested = {};
+    if (!flag_state.flags_token_keep) {
+        flag_state.nzcv_dirty = false;
+        flag_state.nzcv_requested = {};
         InvalidateFlagsToken();
     }
     return true;
@@ -265,9 +265,9 @@ void JitTranslator::EmitNZCVMerge(u64 requested,
     const u64 nzcv = static_cast<u64>(HostFlags::NZCV);
     ASSERT(requested && !(requested & ~nzcv));
     const u32 lsb = std::countr_zero(requested);
-    const u64 normalized = requested >> lsb;
-    if (requested != nzcv && !(normalized & (normalized + 1))) {
-        const u32 width = std::bit_width(normalized);
+    const u64 adjusted = requested >> lsb;
+    if (requested != nzcv && !(adjusted & (adjusted + 1))) {
+        const u32 width = std::bit_width(adjusted);
         __ Mrs(scratch, NZCV);
         __ Ubfx(scratch, scratch, lsb, width);
         __ Bfi(flags, scratch, lsb, width);
@@ -393,16 +393,16 @@ bool JitTranslator::TryEmitReturnFlagsBypass(
 std::optional<u64> JitTranslator::PendingNZCVMergeMask(
         FlagsRegsAuditMergeCause cause) const {
     const bool force_ret_pstate =
-            FlagsRegsEnabled() && !nzcv_dirty && !True(nzcv_requested) &&
+            FlagsRegsEnabled() && !flag_state.nzcv_dirty && !True(flag_state.nzcv_requested) &&
             BlockIsFlagsTransparent(cur_block) &&
             (cause == FlagsRegsAuditMergeCause::HostExit ||
              (cause == FlagsRegsAuditMergeCause::TerminalDispatcher &&
               region_edges_active));
-    if (!(save_in_nzcv && nzcv_dirty) && !force_ret_pstate) {
+    if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty) && !force_ret_pstate) {
         return std::nullopt;
     }
     return force_ret_pstate ? static_cast<u64>(HostFlags::NZCV)
-                            : static_cast<u64>(nzcv_requested);
+                            : static_cast<u64>(flag_state.nzcv_requested);
 }
 
 bool JitTranslator::CanDeferFullNZCVMerge(
@@ -430,12 +430,12 @@ DirectLinkFlagsBypass JitTranslator::MergeNZCV(
         const bool cold_outline = context.ColdScratchActive() &&
                                   context.CanUseRegionTrampoline() &&
                                   !outline_direct_link && full_nzcv;
-        deferred_merge = (outline_direct_link && flags_token_keep && full_nzcv) ||
+        deferred_merge = (outline_direct_link && flag_state.flags_token_keep && full_nzcv) ||
                          cold_outline;
         if (deferred_merge) {
             if (cold_outline) {
-                flags_bypass = EmitOutlinedNZCVMergeResume(flags_token_valid);
-            } else if (flags_token_valid) {
+                flags_bypass = EmitOutlinedNZCVMergeResume(flag_state.flags_token_valid);
+            } else if (flag_state.flags_token_valid) {
                 const auto scratch = context.GetSharedTmpX();
                 flags_bypass = EmitDeferredNZCVMerge(scratch, FlagsTokenResult());
             } else {
@@ -454,7 +454,7 @@ DirectLinkFlagsBypass JitTranslator::MergeNZCV(
         if (!deferred_merge && FlagsRegsEnabled() && region_edges_active) {
             const auto edge_flags = PendingEdgeFlagsState(
                     static_cast<HostFlags>(req),
-                    save_in_nzcv && nzcv_dirty
+                    flag_state.save_in_nzcv && flag_state.nzcv_dirty
                             ? EdgeFlagsProducer::Arithmetic
                             : EdgeFlagsProducer::Restore);
             if (edge_flags.HasPendingPState()) {
@@ -464,14 +464,14 @@ DirectLinkFlagsBypass JitTranslator::MergeNZCV(
         if (flags_bypass.code_offset != UINT32_MAX) {
             flags_bypass.edge_flags = PendingEdgeFlagsState(
                     static_cast<HostFlags>(req),
-                    save_in_nzcv && nzcv_dirty
+                    flag_state.save_in_nzcv && flag_state.nzcv_dirty
                             ? EdgeFlagsProducer::Arithmetic
                             : EdgeFlagsProducer::Restore);
             ASSERT(flags_bypass.Valid());
         }
-        if (!flags_token_keep) {
-            nzcv_dirty = false;
-            nzcv_requested = {};
+        if (!flag_state.flags_token_keep) {
+            flag_state.nzcv_dirty = false;
+            flag_state.nzcv_requested = {};
         }
         const u32 instructions =
                 (context.CurrentBufferSize() - begin) / sizeof(u32);
@@ -521,11 +521,11 @@ DirectLinkFlagsBypass JitTranslator::MergeNZCV(
 }
 
 void JitTranslator::PublishFlagsToken() {
-    if (!flags_token_valid) {
+    if (!flag_state.flags_token_valid) {
         return;
     }
     __ Bfi(flags, FlagsTokenResult(), HostFlagsBit::ParityByte, 8);
-    if (!flags_token_keep) {
+    if (!flag_state.flags_token_keep) {
         InvalidateFlagsToken();
     }
 }
@@ -576,8 +576,8 @@ void JitTranslator::MergeLogicalFlagsNZ(ir::Flags requested) {
         return;
     }
     EmitNZCVMerge(requested_nz, context.GetSharedTmpX());
-    nzcv_dirty = false;
-    nzcv_requested = {};
+    flag_state.nzcv_dirty = false;
+    flag_state.nzcv_requested = {};
 }
 
 void JitTranslator::SaveLogicalResultFlags(Register& result,
@@ -623,8 +623,8 @@ void JitTranslator::RecordLogicalResultFlags(Register& result,
     if (FlagsRegsEnabled()) {
         const auto requested = GuestNZCVToHost(pseudo.set & ir::Flags::NZ);
         if (True(requested)) {
-            nzcv_requested |= requested;
-            nzcv_dirty = true;
+            flag_state.nzcv_requested |= requested;
+            flag_state.nzcv_dirty = true;
         }
     } else {
         MergeLogicalFlagsNZ(pseudo.set);
@@ -674,13 +674,13 @@ void JitTranslator::SaveHostFlags(HostFlags host, ir::Flags guest) {
     if (True(guest & ir::Flags::Overflow)) {
         host_need_saved |= HostFlags::V;
     }
-    if (save_in_nzcv) {
+    if (flag_state.save_in_nzcv) {
         // Accumulate which NZCV bits were actually requested by guest
         // SaveFlags. MergeNZCV will only merge these bits, preserving
         // any ClearFlags(CF/OF) that happened between flag-setting
         // instructions.
-        nzcv_requested |= host_need_saved;
-        nzcv_dirty = true;
+        flag_state.nzcv_requested |= host_need_saved;
+        flag_state.nzcv_dirty = true;
     } else {
         const auto scratch = context.GetSharedTmpX();
         __ Mrs(scratch, NZCV);
@@ -694,23 +694,23 @@ void JitTranslator::SaveHostFlags(HostFlags host, ir::Flags guest) {
 void JitTranslator::ClearFlags(ir::Flags guest) {
     const auto cv_af = ir::Flags::CV | ir::Flags::AuxiliaryCarry;
     const bool clear_cv_af = (guest & cv_af) == cv_af;
-    const bool compound_logical = compound_logical_clear_pending &&
-            guest == cv_af && FlagsRegsEnabled() && nzcv_dirty &&
-            nzcv_requested == HostFlags::NZ;
+    const bool compound_logical = flag_state.compound_logical_clear_pending &&
+            guest == cv_af && FlagsRegsEnabled() && flag_state.nzcv_dirty &&
+            flag_state.nzcv_requested == HostFlags::NZ;
     const bool compound_logical_zero =
-            compound_logical && compound_logical_zero_pending;
-    compound_logical_clear_pending = false;
-    compound_logical_zero_pending = false;
+            compound_logical && flag_state.compound_logical_zero_pending;
+    flag_state.compound_logical_clear_pending = false;
+    flag_state.compound_logical_zero_pending = false;
     if (compound_logical) {
         if (compound_logical_zero) {
             __ Mov(flags, u64{1} << HostFlagsBit::Z);
-            if (flags_token_valid && !flags_token_keep) {
+            if (flag_state.flags_token_valid && !flag_state.flags_token_keep) {
                 InvalidateFlagsToken();
             }
-        } else if (flags_token_valid) {
+        } else if (flag_state.flags_token_valid) {
             __ Mrs(flags, NZCV);
             __ Bfi(flags, FlagsTokenResult(), HostFlagsBit::ParityByte, 8);
-            if (!flags_token_keep) {
+            if (!flag_state.flags_token_keep) {
                 InvalidateFlagsToken();
             }
         } else {
@@ -721,13 +721,13 @@ void JitTranslator::ClearFlags(ir::Flags guest) {
             __ Ubfx(scratch, scratch, HostFlagsBit::AuxiliaryCarry, width);
             __ Bfi(flags, scratch, HostFlagsBit::AuxiliaryCarry, width);
         }
-        nzcv_dirty = false;
-        nzcv_requested = {};
+        flag_state.nzcv_dirty = false;
+        flag_state.nzcv_requested = {};
         return;
     }
-    if (guest == cv_af && FlagsRegsEnabled() && nzcv_dirty &&
-        nzcv_requested == HostFlags::NZ && flags_token_valid &&
-        !flags_token_keep) {
+    if (guest == cv_af && FlagsRegsEnabled() && flag_state.nzcv_dirty &&
+        flag_state.nzcv_requested == HostFlags::NZ && flag_state.flags_token_valid &&
+        !flag_state.flags_token_keep) {
         const u32 begin = context.CurrentBufferSize();
         __ Uxtb(flags.W(), FlagsTokenResult().W());
         RecordPFAFDensity(PFAFDensityKind::AFWrite, begin);
@@ -770,12 +770,12 @@ void JitTranslator::ClearFlags(ir::Flags guest) {
     if (True(guest & ir::Flags::Parity)) {
         const u32 begin = context.CurrentBufferSize();
         // Clear Parity: an odd-parity byte makes TestParityFlag read PF = 0.
-        if (FlagsRegsEnabled() && flags_token_valid) {
+        if (FlagsRegsEnabled() && flag_state.flags_token_valid) {
             MaterializeFlagsTokenResult();
         }
         const auto scratch = context.GetSharedTmpX();
         __ Mov(scratch, 1);
-        if (FlagsRegsEnabled() && flags_token_valid) {
+        if (FlagsRegsEnabled() && flag_state.flags_token_valid) {
             __ Bfi(atomic_scratch, scratch, HostFlagsBit::ParityByte, 8);
         }
         __ Bfi(flags, scratch, HostFlagsBit::ParityByte, 8);
@@ -823,8 +823,8 @@ void JitTranslator::SaveNZ(Register& value, ir::ValueType type) {
     // Same reasoning as SaveLogicalResultFlags: Tst avoids the vixl x16
     // scratch that `Bics(ip, ip, 0)` would take.
     __ Tst(scratch, scratch);
-    if (save_in_nzcv) {
-        nzcv_dirty = true;
+    if (flag_state.save_in_nzcv) {
+        flag_state.nzcv_dirty = true;
     } else {
         __ Mrs(scratch, NZCV);
         __ Orr(flags, flags, scratch);
@@ -835,16 +835,16 @@ void JitTranslator::SaveNZ(Register& value, ir::ValueType type) {
 // the x86 mul/imul CF/OF shape, computed from the upper half of a widened
 // product.
 //
-// Both used to have a `save_in_nzcv` path that wrote the bits into the HOST
-// NZCV register with Msr and then set nzcv_dirty = false.  Every one of those
+// Both used to have a `flag_state.save_in_nzcv` path that wrote the bits into the HOST
+// NZCV register with Msr and then set flag_state.nzcv_dirty = false.  Every one of those
 // three spellings was wrong, and they compounded:
 //
-//   * nzcv_dirty = false makes MergeNZCV() a no-op, so bits placed in host
+//   * flag_state.nzcv_dirty = false makes MergeNZCV() a no-op, so bits placed in host
 //     NZCV were never copied into `flags` -- CF/OF were silently dropped.
-//   * Setting nzcv_dirty = true instead would not have helped: the Msr sits
+//   * Setting flag_state.nzcv_dirty = true instead would not have helped: the Msr sits
 //     inside the Cbz skip, so on the no-overflow path host NZCV still holds
 //     the PREVIOUS producer's result and merging it would invent flags.
-//   * nzcv_requested was never widened to C|V, so MergeNZCV's mask would have
+//   * flag_state.nzcv_requested was never widened to C|V, so MergeNZCV's mask would have
 //     filtered the bits out even if the other two had been right.
 //
 // The lazy-NZCV representation cannot express "conditionally set two bits", so
@@ -892,9 +892,6 @@ void JitTranslator::SaveOF(Register& value, ir::ValueType type) {
 }
 
 void JitTranslator::SaveAuxiliaryCarry(Register &left, const Operand &right, Register &result) {
-    if (FlagsRegsEnabled()) {
-        return;
-    }
     const u32 begin = context.CurrentBufferSize();
     // AF = carry into bit 4 = bit4(left) ^ bit4(right) ^ bit4(result). This holds
     // for add/adc/sub/sbb alike (result already reflects any carry-in). Only the
@@ -906,7 +903,7 @@ void JitTranslator::SaveAuxiliaryCarry(Register &left, const Operand &right, Reg
             __ Eor(tmp, tmp, 1u << 4);
         }
     } else {
-        // Plain or shifted register: materialize its effective bits (.X view keeps
+        // Basic or shifted register: materialize its effective bits (.X view keeps
         // bit 4 correct for the W-width shift forms too); only bit 4 survives.
         auto reg = right.GetRegister().X();
         auto shift = right.IsShiftedRegister() ? right.GetShift() : LSL;
@@ -919,7 +916,7 @@ void JitTranslator::SaveAuxiliaryCarry(Register &left, const Operand &right, Reg
 }
 
 void JitTranslator::GetParityFlag(const Register& result) {
-    if (FlagsRegsEnabled() && flags_token_valid) {
+    if (FlagsRegsEnabled() && flag_state.flags_token_valid) {
         __ Ubfx(result.W(), FlagsTokenResult(), HostFlagsBit::ParityByte, 8);
     } else {
         __ Ubfx(result.W(), flags, HostFlagsBit::ParityByte, 8);
@@ -945,27 +942,27 @@ void JitTranslator::TestAuxiliaryCarry(const Register& result) {
     RecordPFAFDensity(PFAFDensityKind::AFRead, begin);
 }
 
-bool JitTranslator::PlanRegionBranchPFAF(BackedgeFlagsPlan& plan,
+bool JitTranslator::RecipeRegionBranchPFAF(BackedgeFlagsRecipe& recipe,
                                         ir::Inst* producer) const {
-    if (!plan.dead_successor || !producer || !plan.final_save ||
-        plan.final_save->GetArg<ir::Value>(0).Def() != producer ||
+    if (!recipe.dead_successor || !producer || !recipe.final_save ||
+        recipe.final_save->GetArg<ir::Value>(0).Def() != producer ||
         producer->GetOp() != ir::OpCode::Sub ||
         (producer->ReturnType() != ir::ValueType::U8 &&
          producer->ReturnType() != ir::ValueType::U16)) {
         return false;
     }
-    const auto requested = plan.final_save->GetArg<ir::Flags>(1);
+    const auto requested = recipe.final_save->GetArg<ir::Flags>(1);
     if (!True(requested & ir::Flags::NZCV) ||
         !True(requested & ir::Flags::Parity) ||
         !True(requested & ir::Flags::AuxiliaryCarry)) {
         return false;
     }
 
-    using Deferred = BackedgeFlagsPlan::DeferredOperand;
-    plan.pfaf_width = static_cast<u8>(ir::GetValueSizeByte(producer->ReturnType()));
+    using Deferred = BackedgeFlagsRecipe::DeferredOperand;
+    recipe.pfaf_width = static_cast<u8>(ir::GetValueSizeByte(producer->ReturnType()));
     auto describe = [&](ir::Value value) -> Deferred {
         auto* def = value.Def();
-        if (!def || ir::GetValueSizeByte(value.Type()) < plan.pfaf_width) {
+        if (!def || ir::GetValueSizeByte(value.Type()) < recipe.pfaf_width) {
             return {};
         }
         if (def->GetOp() == ir::OpCode::LoadImm) {
@@ -973,7 +970,7 @@ bool JitTranslator::PlanRegionBranchPFAF(BackedgeFlagsPlan& plan,
         }
         if (def->GetOp() == ir::OpCode::GetHostGPR) {
             const u64 offset = def->GetArg<ir::Imm>(1).Get();
-            if (offset + plan.pfaf_width > sizeof(u64)) {
+            if (offset + recipe.pfaf_width > sizeof(u64)) {
                 return {};
             }
             return {Deferred::Kind::HostGPR,
@@ -981,7 +978,7 @@ bool JitTranslator::PlanRegionBranchPFAF(BackedgeFlagsPlan& plan,
         }
         if (def->GetOp() == ir::OpCode::LoadUniform) {
             const auto uniform = def->GetArg<ir::Uniform>(0);
-            if (ir::GetValueSizeByte(uniform.GetType()) < plan.pfaf_width) {
+            if (ir::GetValueSizeByte(uniform.GetType()) < recipe.pfaf_width) {
                 return {};
             }
             return {Deferred::Kind::Uniform, uniform.GetOffset(), 0};
@@ -989,25 +986,25 @@ bool JitTranslator::PlanRegionBranchPFAF(BackedgeFlagsPlan& plan,
         return {};
     };
 
-    plan.pfaf_left = describe(producer->GetArg<ir::Value>(0));
+    recipe.pfaf_left = describe(producer->GetArg<ir::Value>(0));
     const auto right = producer->GetArg<ir::Operand>(1);
     if (!right.GetRight().Null()) {
         return false;
     }
     if (right.GetLeft().IsImm()) {
-        plan.pfaf_right = {Deferred::Kind::Imm, right.GetLeft().imm.Get(), 0};
+        recipe.pfaf_right = {Deferred::Kind::Imm, right.GetLeft().imm.Get(), 0};
     } else if (right.GetLeft().IsValue()) {
-        plan.pfaf_right = describe(right.GetLeft().value);
+        recipe.pfaf_right = describe(right.GetLeft().value);
     }
-    plan.defer_pfaf = plan.pfaf_left.kind != Deferred::Kind::None &&
-                      plan.pfaf_right.kind != Deferred::Kind::None;
+    recipe.defer_pfaf = recipe.pfaf_left.kind != Deferred::Kind::None &&
+                      recipe.pfaf_right.kind != Deferred::Kind::None;
     auto overlaps_uniform = [&](const Deferred& operand,
                                 const ir::Uniform& uniform) {
         if (operand.kind != Deferred::Kind::Uniform) {
             return false;
         }
         const u64 left_begin = operand.value;
-        const u64 left_end = left_begin + plan.pfaf_width;
+        const u64 left_end = left_begin + recipe.pfaf_width;
         const u64 right_begin = uniform.GetOffset();
         const u64 right_end = right_begin + ir::GetValueSizeByte(uniform.GetType());
         return left_begin < right_end && right_begin < left_end;
@@ -1018,49 +1015,49 @@ bool JitTranslator::PlanRegionBranchPFAF(BackedgeFlagsPlan& plan,
         }
         if (scan.GetOp() == ir::OpCode::StoreUniform) {
             const auto uniform = scan.GetArg<ir::Uniform>(0);
-            if (overlaps_uniform(plan.pfaf_left, uniform) ||
-                overlaps_uniform(plan.pfaf_right, uniform)) {
-                plan.defer_pfaf = false;
+            if (overlaps_uniform(recipe.pfaf_left, uniform) ||
+                overlaps_uniform(recipe.pfaf_right, uniform)) {
+                recipe.defer_pfaf = false;
             }
         } else if (scan.GetOp() == ir::OpCode::SetHostGPR) {
             const u64 target = scan.GetArg<ir::Imm>(1).Get();
-            if ((plan.pfaf_left.kind == Deferred::Kind::HostGPR &&
-                 plan.pfaf_left.value == target) ||
-                (plan.pfaf_right.kind == Deferred::Kind::HostGPR &&
-                 plan.pfaf_right.value == target)) {
-                plan.defer_pfaf = false;
+            if ((recipe.pfaf_left.kind == Deferred::Kind::HostGPR &&
+                 recipe.pfaf_left.value == target) ||
+                (recipe.pfaf_right.kind == Deferred::Kind::HostGPR &&
+                 recipe.pfaf_right.value == target)) {
+                recipe.defer_pfaf = false;
             }
         }
     }
-    return plan.defer_pfaf;
+    return recipe.defer_pfaf;
 }
 
 bool JitTranslator::ReproveRegionBranchPFAF() const {
-    if (!backedge_flags_plan || !backedge_flags_plan->defer_pfaf ||
-        !backedge_flags_plan->final_save) {
+    if (!backedge_flags_recipe || !backedge_flags_recipe->defer_pfaf ||
+        !backedge_flags_recipe->final_save) {
         return false;
     }
-    BackedgeFlagsPlan reproved;
+    BackedgeFlagsRecipe reproved;
     reproved.dead_successor = true;
-    reproved.final_save = backedge_flags_plan->final_save;
+    reproved.final_save = backedge_flags_recipe->final_save;
     auto* producer = reproved.final_save->GetArg<ir::Value>(0).Def();
-    if (!PlanRegionBranchPFAF(reproved, producer)) {
+    if (!RecipeRegionBranchPFAF(reproved, producer)) {
         return false;
     }
-    return reproved.pfaf_width == backedge_flags_plan->pfaf_width &&
-           reproved.pfaf_left == backedge_flags_plan->pfaf_left &&
-           reproved.pfaf_right == backedge_flags_plan->pfaf_right;
+    return reproved.pfaf_width == backedge_flags_recipe->pfaf_width &&
+           reproved.pfaf_left == backedge_flags_recipe->pfaf_left &&
+           reproved.pfaf_right == backedge_flags_recipe->pfaf_right;
 }
 
 bool JitTranslator::RegionBranchPFAFActive(ir::Inst* producer) const {
-    return backedge_flags_plan && backedge_flags_plan->defer_pfaf &&
-           backedge_flags_plan->final_save &&
-           backedge_flags_plan->final_save->GetArg<ir::Value>(0).Def() == producer;
+    return backedge_flags_recipe && backedge_flags_recipe->defer_pfaf &&
+           backedge_flags_recipe->final_save &&
+           backedge_flags_recipe->final_save->GetArg<ir::Value>(0).Def() == producer;
 }
 
 JitTranslator::PseudoFlags JitTranslator::GetPseudoFlags(ir::Inst* inst) {
     if (IsDeadEdgeIntegerBranchProducer(inst)) {
-        return {dead_edge_integer_branch->required, ir::Flags::None, true};
+        return {flag_state.dead_edge_integer_branch->required, ir::Flags::None, true};
     }
     ir::Flags result_set{};
     ir::Flags result_clear{};
@@ -1089,28 +1086,28 @@ JitTranslator::PseudoFlags JitTranslator::GetPseudoFlags(ir::Inst* inst) {
 void JitTranslator::EmitSaveFlags(ir::Inst* inst) {
     // Multiple SaveFlags may appear in one flush window (e.g. the x86 frontend
     // emits separate PF/AF and NZCV saves for narrow ALU ops); merge them.
-    flags_set |= inst->GetArg<ir::Flags>(1);
+    flag_state.flags_set |= inst->GetArg<ir::Flags>(1);
 }
 
 void JitTranslator::EmitBranchOnlyFlags(ir::Inst* inst) {
     // Its producer has already left the exact requested NZCV live.  Recording
-    // flags_set/nzcv_dirty here would make AdvancePC or the terminal flush
+    // flag_state.flags_set/flag_state.nzcv_dirty here would make AdvancePC or the terminal flush
     // materialize the very architectural state this marker exists to avoid.
 }
 
 void JitTranslator::EmitClearFlags(ir::Inst* inst) {
     // See EmitSaveFlags: merge instead of asserting on a pending window.
-    compound_logical_clear_pending =
-            flags_clear == ir::Flags::None && MatchCompoundLogicalClear(inst);
-    compound_logical_zero_pending = compound_logical_clear_pending &&
+    flag_state.compound_logical_clear_pending =
+            flag_state.flags_clear == ir::Flags::None && MatchCompoundLogicalClear(inst);
+    flag_state.compound_logical_zero_pending = flag_state.compound_logical_clear_pending &&
             MatchCompoundZeroLogicalClear(inst);
-    flags_clear |= inst->GetArg<ir::Flags>(0);
+    flag_state.flags_clear |= inst->GetArg<ir::Flags>(0);
 }
 
 void JitTranslator::EmitSetCarry(ir::Inst* inst) {
     // Set guest CF directly in the flags register from a computed 0/1 value.
     // Merge pending NZCV first so no later merge clobbers the bit we write
-    // (MergeNZCV leaves nzcv_dirty=false; Bfi does not set it).
+    // (MergeNZCV leaves flag_state.nzcv_dirty=false; Bfi does not set it).
     MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
               flags_audit_block_edge);
     // A preceding ClearFlags may still be queued in the lazy flag window.
@@ -1135,20 +1132,20 @@ void JitTranslator::EmitInvertCarry(ir::Inst* inst) {
     // pending so the eventual merge cannot overwrite unrelated guest bits.
     if (CanonicalCarryEnabled() &&
         raw_carry_branch_analysis.SuppressesInvert(inst)) {
-        ASSERT(save_in_nzcv && nzcv_dirty);
-        ASSERT(!raw_carry_pending);
-        raw_carry_pending = inst;
+        ASSERT(flag_state.save_in_nzcv && flag_state.nzcv_dirty);
+        ASSERT(!flag_state.raw_carry_pending);
+        flag_state.raw_carry_pending = inst;
         return;
     }
-    if (!(save_in_nzcv && nzcv_dirty)) {
+    if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
         LoadNZCVFromFlags();
     }
     {
         vixl::CPUFeaturesScope flagm(&masm, vixl::CPUFeatures::kFlagM);
         __ Cfinv();
     }
-    nzcv_requested |= HostFlags::C;
-    nzcv_dirty = true;
+    flag_state.nzcv_requested |= HostFlags::C;
+    flag_state.nzcv_dirty = true;
 }
 
 void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
@@ -1157,7 +1154,7 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
     ASSERT(compact == IsCompactFCmp(packed));
 
     if (compact) {
-        // VecFCmp left ARM FP NZCV live and materialized ordered (VC) in its
+        // VecFCmp left ARM FP NZCV live and computed ordered (VC) in its
         // result or directly in the flags carrier. AXFLAG transforms it as follows:
         //   less/unordered -> C=0, equal/greater -> C=1  (inverted x86 CF)
         //   equal/unordered -> Z=1                       (x86 ZF)
@@ -1178,8 +1175,8 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
             vixl::CPUFeaturesScope flagm2(&masm, vixl::CPUFeatures::kAXFlag);
             __ Axflag();
         }
-        nzcv_requested = HostFlags::NZCV;
-        nzcv_dirty = true;
+        flag_state.nzcv_requested = HostFlags::NZCV;
+        flag_state.nzcv_dirty = true;
         return;
     }
 
@@ -1197,7 +1194,7 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
     u64 keep = ~replaced;
     // keep 不是合法 logical immediate，VIXL 要临时占用一枚池寄存器合成掩码。
     // 必须在 GetTmpX() 之前执行：shared_tmp + packed 重载 + bit 已占满
-    // reserve=3 的池时，再晚一步 VIXL 就无寄存器可借（L3 identity 实测炸点）。
+    // reserve=3 的池时，再晚一步 VIXL 就无寄存器可借（L3 direct 实测炸点）。
     u32 begin = context.CurrentBufferSize();
     __ And(flags, flags, ForceCast<s64>(keep));
     RecordPFAFDensity(PFAFDensityKind::SharedPack, begin);
@@ -1298,12 +1295,12 @@ ir::Inst* JitTranslator::RawFCmpCondition(ir::Inst* fcmp) const {
 }
 
 void JitTranslator::FlushFlags() {
-    if (flags_clear != ir::Flags::None) {
-        ClearFlags(flags_clear);
+    if (flag_state.flags_clear != ir::Flags::None) {
+        ClearFlags(flag_state.flags_clear);
     }
 
-    flags_set = ir::Flags::None;
-    flags_clear = ir::Flags::None;
+    flag_state.flags_set = ir::Flags::None;
+    flag_state.flags_clear = ir::Flags::None;
 }
 
 void JitTranslator::EmitTestBit(ir::Inst* inst) {
@@ -1493,14 +1490,14 @@ bool JitTranslator::FoldCcFromCarryTest(ir::Inst* test_flags) {
     }
     if (const auto raw_condition =
                 raw_carry_branch_analysis.ConditionForTest(test_flags)) {
-        ASSERT_MSG(raw_carry_pending ==
+        ASSERT_MSG(flag_state.raw_carry_pending ==
                            raw_carry_branch_analysis.InvertForTest(test_flags),
                    "raw carry branch state diverged at IR {}", test_flags->Id());
         ASSERT_MSG(RecordLocalCondition(combine, *raw_condition),
                    "raw carry branch consumer diverged at IR {}", test_flags->Id());
         MergeNZCV();
         __ Eor(flags, flags, static_cast<u64>(HostFlags::C));
-        raw_carry_pending = nullptr;
+        flag_state.raw_carry_pending = nullptr;
         return true;
     }
     if (CanonicalCarryEnabled()) {
@@ -1572,7 +1569,7 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
             break;
     }
     if (host_test) {
-        if (save_in_nzcv && nzcv_dirty) {
+        if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
             __ Cset(result, host_test->condition);
         } else {
             __ Ubfx(result, flags.W(), host_test->bit, 1);
@@ -1585,7 +1582,7 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
     // Restore PSTATE when it still holds the cmp so CondSet sees guest ZF.
     // Do not Merge here: that was moving a 4-insn pack onto every unfused JA.
     if (nzcv_mask) {
-        if (save_in_nzcv && nzcv_dirty) {
+        if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
             __ Mrs(scratch, NZCV);
             __ Tst(scratch, nzcv_mask);
             __ Cset(result, ne);
@@ -1646,7 +1643,7 @@ void JitTranslator::EmitTestNotFlags(ir::Inst* inst) {
     auto nzcv_mask = static_cast<u32>(GuestNZCVToHost(test));
     if (nzcv_mask && !True(test & (ir::Flags::Parity | ir::Flags::AuxiliaryCarry))) {
         auto result = context.W(ir::Value{inst});
-        if (save_in_nzcv && nzcv_dirty) {
+        if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
             const auto scratch = context.GetSharedTmpX();
             __ Mrs(scratch, NZCV);
             __ Tst(scratch, nzcv_mask);

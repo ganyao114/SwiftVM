@@ -2,7 +2,7 @@
 // avx_real_kernels.h -- the AVX/AVX2 workloads shared by the SwiftVM guest
 // binary (avx_real_x86_64.c) and the native oracle binary (avx_real_host.c).
 //
-// These are deliberately *programs*, not encoding probes: dot products,
+// These are deliberately *programs*, not encoding checks: dot products,
 // matrix multiplies, a hand-rolled AVX2 memcpy/strlen, cross-lane shuffles.
 // Every kernel folds its results into one u64 by BIT PATTERN, never by
 // numeric comparison, so a wrong NaN payload or a wrong -0.0 is a failure

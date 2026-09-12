@@ -209,11 +209,11 @@ STREAM 两态：
 
 - spill_units/defs/loads/stores：均 0；spill high-water 均 0；
 - max live GPR/FPR 峰值仍为 7/8；scratch GPR/FPR 均为每 unit 3；
-- helper：30 calls，snapshot 526 instructions / 2,104 code bytes /
+- helper：30 calls，capture 526 instructions / 2,104 code bytes /
   10,208 memory bytes，两态完全相同；
 - pair fallback 无增长。
 
-结论：P1 没有借缩池、增 spill 或 helper snapshot 换取 STREAM 收益。
+结论：P1 没有借缩池、增 spill 或 helper capture 换取 STREAM 收益。
 
 ## 7. 性能 A/B 与 interrupt latency
 
@@ -323,4 +323,4 @@ STREAM 三个目标块全部 eligible，无 emitter fallback。CoreMark 27 个 s
 - 未 commit/push/add/checkout/reset/stash；
 - 未修改 `source/translator/linux/linker/`、
   `SwiftVM-bench/harness/run_matrix.sh` 或 golden；
-- 临时 guest/probe 均在 `/private/tmp/w81-*`，不属于仓内改动。
+- 临时 guest/check 均在 `/private/tmp/w81-*`，不属于仓内改动。

@@ -4,7 +4,7 @@
 
 namespace swift::runtime::backend::arm64 {
 
-bool GuestStateMap::NeedsFaultSnapshots() const {
+bool GuestStateMap::NeedsFaultCaptures() const {
     ASSERT(block);
     for (const auto& publication : block->GetInstList()) {
         if (publication.GetOp() != ir::OpCode::SetHostGPR ||
@@ -22,11 +22,11 @@ bool GuestStateMap::NeedsFaultSnapshots() const {
     return false;
 }
 
-void GuestStateMap::CaptureFaultSnapshot(
+void GuestStateMap::CaptureFaultCapture(
         const ir::Inst& boundary,
         const ActiveState& active,
         const WidthFacts& width_facts) {
-    fault_width_snapshots.push_back({&boundary, width_facts});
+    fault_width_captures.push_back({&boundary, width_facts});
     for (u32 home = 0; home < active.homes.size(); ++home) {
         for (auto* version : active.homes[home]) {
             const auto found = active.versions.find(version);
@@ -35,7 +35,7 @@ void GuestStateMap::CaptureFaultSnapshot(
             }
             for (const auto& candidate : found->second) {
                 if (candidate.location.home == home) {
-                    fault_snapshot_values.push_back(
+                    fault_capture_values.push_back(
                             {&boundary, version, candidate.location});
                 }
             }
@@ -43,7 +43,7 @@ void GuestStateMap::CaptureFaultSnapshot(
     }
 }
 
-bool GuestStateMap::FaultSnapshotContains(
+bool GuestStateMap::FaultCaptureContains(
         const ir::Inst& boundary,
         u32 home,
         ir::Inst* version,
@@ -52,15 +52,15 @@ bool GuestStateMap::FaultSnapshotContains(
         return false;
     }
     const bool width_matches = !require_zero_above_32 ||
-            std::ranges::any_of(fault_width_snapshots, [&](const auto& snapshot) {
-                return snapshot.boundary == &boundary &&
-                       home < snapshot.extension_facts.size() &&
-                       snapshot.extension_facts[home].KnownZeroAbove(32);
+            std::ranges::any_of(fault_width_captures, [&](const auto& capture) {
+                return capture.boundary == &boundary &&
+                       home < capture.extension_facts.size() &&
+                       capture.extension_facts[home].KnownZeroAbove(32);
             });
     return width_matches &&
-           std::ranges::any_of(fault_snapshot_values, [&](const auto& snapshot) {
-               return snapshot.boundary == &boundary &&
-                      snapshot.version == version && snapshot.location.home == home;
+           std::ranges::any_of(fault_capture_values, [&](const auto& capture) {
+               return capture.boundary == &boundary &&
+                      capture.version == version && capture.location.home == home;
            });
 }
 

@@ -1,3 +1,4 @@
+#include "base/logging.h"
 #include "translator.h"
 
 #include "runtime/backend/arm64/helper_call_contract.h"
@@ -77,7 +78,7 @@ void JitTranslator::PrepareRegionEdges(ir::HIRFunction* function) {
             for (const u64 target : targets) {
                 const bool internal = region_blocks.contains(target);
                 external |= !internal;
-                std::fprintf(stderr,
+                SVM_DIAG_PRINT(Codegen,
                              "[svm-gap-cfg-edge] unit=0x%llx block=0x%llx "
                              "target=0x%llx internal=%u\n",
                              static_cast<unsigned long long>(unit),
@@ -94,7 +95,7 @@ void JitTranslator::PrepareRegionEdges(ir::HIRFunction* function) {
                     external = true;
                 }
             });
-            std::fprintf(stderr,
+            SVM_DIAG_PRINT(Codegen,
                          "[svm-gap-cfg] unit=0x%llx block=0x%llx external=%u\n",
                          static_cast<unsigned long long>(unit),
                          static_cast<unsigned long long>(
@@ -244,7 +245,7 @@ Label* JitTranslator::GetExternalCycleExit(ir::Location target) {
 
 bool JitTranslator::CanUseRegionSuccessorLayout(ir::Location target) const {
     return next_region_block && *next_region_block == target.Value() &&
-           !backedge_exit_label && !backedge_flags_plan &&
+           !backedge_exit_label && !backedge_flags_recipe &&
            vec_nan_cold_sites.empty();
 }
 
@@ -268,10 +269,10 @@ void JitTranslator::EmitRegionEdge(ir::Location target,
         context.RecordExecCounter(exec_offset_exit_direct);
         context.RecordExecCounter(exec_offset_region_edges);
     }
-    ++region_block_edges;
+    ++statistics.region_block_edges;
     const bool region_cycle = IsRegionCycleEdge(target);
-    const bool pending_flags_cycle = !commit_flags && backedge_flags_plan &&
-            backedge_flags_plan->dead_successor && IsDirectCycleCutEdge(target);
+    const bool pending_flags_cycle = !commit_flags && backedge_flags_recipe &&
+            backedge_flags_recipe->dead_successor && IsDirectCycleCutEdge(target);
     auto* ordered_cycle_exit = region_cycle || pending_flags_cycle
             ? nullptr
             : GetDirectCycleExit(target);
@@ -284,13 +285,13 @@ void JitTranslator::EmitRegionEdge(ir::Location target,
         if (region_cycle || pending_flags_cycle) {
             backedge_exit_referenced = true;
         }
-        ++region_block_cycles;
+        ++statistics.region_block_cycles;
     }
     if (fallthrough) {
         context.RecordExecCounter(exec_offset_region_fallthroughs);
-        ++region_block_fallthroughs;
+        ++statistics.region_block_fallthroughs;
     } else {
-        region_block_local_branch_bytes += sizeof(u32);
+        statistics.region_block_local_branch_bytes += sizeof(u32);
     }
     const u32 link_before = context.CurrentBufferSize();
     auto* cycle_exit = region_cycle || pending_flags_cycle
@@ -362,9 +363,9 @@ bool JitTranslator::EmitRegionIf(const ir::terminal::If& terminal,
             }
         }
     };
-    if (FlagsRegsEnabled() && True(nzcv_requested)) {
+    if (FlagsRegsEnabled() && True(flag_state.nzcv_requested)) {
         if (EmitRegionFlagsJoin(
-                    PlanRegionFlagsJoin(*then_target,
+                    RecipeRegionFlagsJoin(*then_target,
                                         *else_target,
                                         allow_fallthrough),
                     branch)) {
@@ -392,7 +393,7 @@ bool JitTranslator::EmitRegionIf(const ir::terminal::If& terminal,
         const auto taken = then_layout ? *else_target : *then_target;
         ASSERT(!needs_stub(taken));
         branch(LocalBranchTarget(taken), !then_layout);
-        ++region_block_edges;
+        ++statistics.region_block_edges;
         EmitRegionEdge(fall, !needs_stub(fall), false);
         return true;
     }
@@ -402,7 +403,7 @@ bool JitTranslator::EmitRegionIf(const ir::terminal::If& terminal,
     branch(stub ? &then_stub : LocalBranchTarget(*then_target),
            true);
     if (!stub) {
-        ++region_block_edges;
+        ++statistics.region_block_edges;
     }
     EmitRegionEdge(*else_target, false, false);
     if (stub) {
@@ -430,16 +431,16 @@ bool JitTranslator::EmitRegionCondition(
                 : static_cast<Condition>(static_cast<u8>(host_cond) ^ 1);
         __ B(label, cond);
     };
-    if (FlagsRegsEnabled() && save_in_nzcv && nzcv_dirty &&
-        True(nzcv_requested)) {
+    if (FlagsRegsEnabled() && flag_state.save_in_nzcv && flag_state.nzcv_dirty &&
+        True(flag_state.nzcv_requested)) {
         if (EmitRegionFlagsJoin(
-                    PlanRegionFlagsJoin(*then_target,
+                    RecipeRegionFlagsJoin(*then_target,
                                         *else_target,
                                         allow_fallthrough),
                     branch)) {
             return true;
         }
-    } else if (save_in_nzcv && nzcv_dirty) {
+    } else if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
         MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
                   FlagsRegsAuditEdgeKind::RegionInternal);
     } else {
@@ -463,7 +464,7 @@ bool JitTranslator::EmitRegionCondition(
         const auto taken = then_layout ? *else_target : *then_target;
         ASSERT(!needs_stub(taken));
         branch(LocalBranchTarget(taken), !then_layout);
-        ++region_block_edges;
+        ++statistics.region_block_edges;
         EmitRegionEdge(fall, !needs_stub(fall), false);
         return true;
     }
@@ -473,7 +474,7 @@ bool JitTranslator::EmitRegionCondition(
     branch(stub ? &then_stub : LocalBranchTarget(*then_target),
            true);
     if (!stub) {
-        ++region_block_edges;
+        ++statistics.region_block_edges;
     }
     EmitRegionEdge(*else_target, false, false);
     if (stub) {
@@ -487,20 +488,20 @@ bool JitTranslator::CanonicalCarryEnabled() const {
             True(context.GetConfig().arm64_features & Arm64Features::FlagM);
 }
 
-std::optional<JitTranslator::BackedgeCarryPlan>
-JitTranslator::PlanBackedgeCarry(ir::Block* block, ir::Inst* final_save,
+std::optional<JitTranslator::BackedgeCarryRecipe>
+JitTranslator::RecipeBackedgeCarry(ir::Block* block, ir::Inst* final_save,
                                  ir::Inst* condition, bool dead_successor) {
-    BackedgeCarryPlan plan{.canonical = CanonicalCarryEnabled(),
+    BackedgeCarryRecipe recipe{.canonical = CanonicalCarryEnabled(),
                            .marker = final_save};
-    if (plan.canonical) {
+    if (recipe.canonical) {
         for (auto& inst : block->GetInstList()) {
             if (inst.Id() > final_save->Id() &&
                 inst.Id() < condition->Id() &&
                 inst.GetOp() == ir::OpCode::InvertCarry) {
-                plan.marker = &inst;
+                recipe.marker = &inst;
             }
         }
-        return plan;
+        return recipe;
     }
 
     constexpr u32 kCarryOffset = offsetof(swift::x86::ThreadContext64,
@@ -521,7 +522,7 @@ JitTranslator::PlanBackedgeCarry(ir::Block* block, ir::Inst* final_save,
             value.Type() != ir::ValueType::U8 ||
             (!dead_successor && def->GetUses() != 1)) {
             if (GetSvmConfig().dump_ir) {
-                fmt::print(stderr,
+                SVM_DIAG_FORMAT(Codegen,
                            "[backedge-proof] {:#x} reject polarity value def={} op={} type={} uses={}\n",
                            block->GetStartLocation().Value(), def != nullptr,
                            def ? static_cast<u32>(def->GetOp()) : UINT32_MAX,
@@ -534,27 +535,27 @@ JitTranslator::PlanBackedgeCarry(ir::Block* block, ir::Inst* final_save,
         if (immediate > 1) {
             return std::nullopt;
         }
-        plan.store = &inst;
-        plan.load = def;
-        plan.marker = &inst;
-        plan.inverted = static_cast<u8>(immediate);
+        recipe.store = &inst;
+        recipe.load = def;
+        recipe.marker = &inst;
+        recipe.inverted = static_cast<u8>(immediate);
     }
-    if (!plan.store || !plan.load || plan.store->Id() >= condition->Id()) {
+    if (!recipe.store || !recipe.load || recipe.store->Id() >= condition->Id()) {
         if (GetSvmConfig().dump_ir) {
-            fmt::print(stderr,
+            SVM_DIAG_FORMAT(Codegen,
                        "[backedge-proof] {:#x} reject polarity store={} load={} cond={}\n",
                        block->GetStartLocation().Value(),
-                       plan.store ? plan.store->Id() : UINT32_MAX,
-                       plan.load ? plan.load->Id() : UINT32_MAX,
+                       recipe.store ? recipe.store->Id() : UINT32_MAX,
+                       recipe.load ? recipe.load->Id() : UINT32_MAX,
                        condition->Id());
         }
         return std::nullopt;
     }
-    return plan;
+    return recipe;
 }
 
-std::unique_ptr<JitTranslator::BackedgeFlagsPlan>
-JitTranslator::PlanBackedgeFlags(ir::Block* block) {
+std::unique_ptr<JitTranslator::BackedgeFlagsRecipe>
+JitTranslator::RecipeBackedgeFlags(ir::Block* block) {
     if ((!backedge_flags && !region_branch_flags) || !block) {
         return nullptr;
     }
@@ -623,21 +624,21 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
     }
     if (!first_producer || !final_save) {
         if (GetSvmConfig().dump_ir) {
-            fmt::print(stderr, "[backedge-proof] {:#x} reject flags producer\n",
+            SVM_DIAG_FORMAT(Codegen, "[backedge-proof] {:#x} reject flags producer\n",
                        block->GetStartLocation().Value());
         }
         return nullptr;
     }
 
-    auto carry_plan = PlanBackedgeCarry(
+    auto carry_recipe = RecipeBackedgeCarry(
             block, final_save, condition.Def(), dead_successor);
-    if (!carry_plan) {
+    if (!carry_recipe) {
         return nullptr;
     }
 
     if (!dead_successor) {
         // The old block-entry flags stay live until the first producer. A
-        // fault is allowed in that prefix; the self-plan recovery veneer
+        // fault is allowed in that prefix; the self-recipe recovery veneer
         // reconstructs them.
         for (auto& inst : block->GetInstList()) {
             if (&inst == first_producer) {
@@ -645,7 +646,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
             }
             if (!RetainsPendingHostNZCV(inst)) {
                 if (GetSvmConfig().dump_ir) {
-                    fmt::print(stderr,
+                    SVM_DIAG_FORMAT(Codegen,
                                "[backedge-proof] {:#x} reject pre-producer op={} id={}\n",
                                block->GetStartLocation().Value(),
                                static_cast<u32>(inst.GetOp()), inst.Id());
@@ -666,7 +667,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
         const auto helper = HelperCallContract::Resolve(inst, context.GetFeatures());
         if (MayFaultOrObserve(inst) || (helper && !helper->RetainsPendingNZCV())) {
             if (GetSvmConfig().dump_ir) {
-                fmt::print(stderr,
+                SVM_DIAG_FORMAT(Codegen,
                            "[backedge-proof] {:#x} reject post-producer fault op={} id={} producer={}\n",
                            block->GetStartLocation().Value(),
                            static_cast<u32>(inst.GetOp()), inst.Id(), lazy_producer->Id());
@@ -678,7 +679,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
     // guest PC and consuming the already-live local condition only.
     ir::Inst* final_advance = nullptr;
     for (auto& inst : block->GetInstList()) {
-        if (inst.Id() <= carry_plan->marker->Id()) {
+        if (inst.Id() <= carry_recipe->marker->Id()) {
             continue;
         }
         if (inst.GetOp() != ir::OpCode::AdvancePC &&
@@ -687,7 +688,7 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
             inst.GetOp() != ir::OpCode::ZeroExtend32To64 &&
             inst.GetOp() != ir::OpCode::SetHostGPR) {
             if (GetSvmConfig().dump_ir) {
-                fmt::print(stderr,
+                SVM_DIAG_FORMAT(Codegen,
                            "[backedge-proof] {:#x} reject tail op={} id={}\n",
                            block->GetStartLocation().Value(),
                            static_cast<u32>(inst.GetOp()), inst.Id());
@@ -705,44 +706,44 @@ JitTranslator::PlanBackedgeFlags(ir::Block* block) {
         return nullptr;
     }
 
-    auto plan = std::make_unique<BackedgeFlagsPlan>();
-    plan->dead_successor = dead_successor;
-    plan->canonical_carry = carry_plan->canonical;
-    plan->self_is_then = dead_successor ? then_dead : then_self;
-    plan->self_target = dead_successor
+    auto recipe = std::make_unique<BackedgeFlagsRecipe>();
+    recipe->dead_successor = dead_successor;
+    recipe->canonical_carry = carry_recipe->canonical;
+    recipe->self_is_then = dead_successor ? then_dead : then_self;
+    recipe->self_target = dead_successor
             ? (then_dead ? *then_target : *else_target)
             : self;
-    plan->cold_target = plan->self_is_then ? *else_target : *then_target;
-    plan->carry_inverted = carry_plan->inverted;
-    plan->requested = GuestNZCVToHost(final_requested & ir::Flags::NZCV);
-    plan->polarity_load = carry_plan->load && carry_plan->load->GetUses() == 1
-            ? carry_plan->load
+    recipe->cold_target = recipe->self_is_then ? *else_target : *then_target;
+    recipe->carry_inverted = carry_recipe->inverted;
+    recipe->requested = GuestNZCVToHost(final_requested & ir::Flags::NZCV);
+    recipe->polarity_load = carry_recipe->load && carry_recipe->load->GetUses() == 1
+            ? carry_recipe->load
             : nullptr;
-    plan->polarity_store = carry_plan->store;
-    plan->final_save = final_save;
-    plan->final_advance = final_advance;
-    (void)PlanRegionBranchPFAF(*plan, lazy_producer);
+    recipe->polarity_store = carry_recipe->store;
+    recipe->final_save = final_save;
+    recipe->final_advance = final_advance;
+    (void)RecipeRegionBranchPFAF(*recipe, lazy_producer);
     if (GetSvmConfig().dump_ir) {
-        fmt::print(stderr,
+        SVM_DIAG_FORMAT(Codegen,
                    "[backedge-proof] {:#x} eligible mode={} hot={:#x} cold={:#x} pfaf={}\n",
                    block->GetStartLocation().Value(),
                    dead_successor ? "region-dead" : "self-lazy",
-                   plan->self_target.Value(), plan->cold_target.Value(),
-                   plan->defer_pfaf);
+                   recipe->self_target.Value(), recipe->cold_target.Value(),
+                   recipe->defer_pfaf);
     }
-    return plan;
+    return recipe;
 }
 
-void JitTranslator::EmitBackedgeMaterialize(const BackedgeFlagsPlan& plan) {
-    if (!plan.canonical_carry) {
-        __ Mov(ipw1, plan.carry_inverted);
+void JitTranslator::EmitBackedgeMaterialize(const BackedgeFlagsRecipe& recipe) {
+    if (!recipe.canonical_carry) {
+        __ Mov(ipw1, recipe.carry_inverted);
         __ Strb(ipw1,
                 MemOperand(state,
                            state_offset_uniform_buffer +
                                    offsetof(swift::x86::ThreadContext64,
                                             carry_inverted)));
     }
-    const u64 requested = static_cast<u64>(plan.requested);
+    const u64 requested = static_cast<u64>(recipe.requested);
     if (requested == static_cast<u64>(HostFlags::NZCV) &&
         context.CanUseRegionTrampoline()) {
         EmitOutlinedNZCVMergeResume(false);
@@ -751,15 +752,15 @@ void JitTranslator::EmitBackedgeMaterialize(const BackedgeFlagsPlan& plan) {
     }
 }
 
-void JitTranslator::EmitRegionBranchPFAF(const BackedgeFlagsPlan& plan) {
-    if (!plan.defer_pfaf) {
+void JitTranslator::EmitRegionBranchPFAF(const BackedgeFlagsRecipe& recipe) {
+    if (!recipe.defer_pfaf) {
         return;
     }
     ASSERT_MSG(ReproveRegionBranchPFAF(),
                "region branch PF/AF operand proof drifted before cold emission");
-    using Deferred = BackedgeFlagsPlan::DeferredOperand;
+    using Deferred = BackedgeFlagsRecipe::DeferredOperand;
     auto load = [&](const WRegister& dst, const Deferred& operand) {
-        const u32 bits = plan.pfaf_width * 8;
+        const u32 bits = recipe.pfaf_width * 8;
         switch (operand.kind) {
             case Deferred::Kind::Imm: {
                 const u32 mask = bits == 32 ? UINT32_MAX : (1u << bits) - 1;
@@ -773,7 +774,7 @@ void JitTranslator::EmitRegionBranchPFAF(const BackedgeFlagsPlan& plan) {
             case Deferred::Kind::Uniform: {
                 const s32 offset = state_offset_uniform_buffer +
                                    static_cast<s32>(operand.value);
-                if (plan.pfaf_width == sizeof(u8)) {
+                if (recipe.pfaf_width == sizeof(u8)) {
                     __ Ldrb(dst, MemOperand(state, offset));
                 } else {
                     __ Ldrh(dst, MemOperand(state, offset));
@@ -788,8 +789,8 @@ void JitTranslator::EmitRegionBranchPFAF(const BackedgeFlagsPlan& plan) {
     // x11 is terminal-owned and is already excluded from the live value set;
     // x16/x17 are the backend's fixed scratch pair. The cold recomputation is
     // therefore invisible to RA and cannot extend a hot SSA interval.
-    load(ipw, plan.pfaf_left);
-    load(ipw1, plan.pfaf_right);
+    load(ipw, recipe.pfaf_left);
+    load(ipw1, recipe.pfaf_right);
     __ Sub(ipw0, ipw, ipw1);
     u32 begin = context.CurrentBufferSize();
     __ Bfi(flags, ip0, HostFlagsBit::ParityByte, 8);
@@ -804,25 +805,25 @@ void JitTranslator::EmitRegionBranchPFAF(const BackedgeFlagsPlan& plan) {
 }
 
 bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
-    if (!backedge_flags_plan) {
+    if (!backedge_flags_recipe) {
         return false;
     }
-    auto& plan = *backedge_flags_plan;
-    if (!save_in_nzcv || !nzcv_dirty || nzcv_requested != plan.requested) {
+    auto& recipe = *backedge_flags_recipe;
+    if (!flag_state.save_in_nzcv || !flag_state.nzcv_dirty || flag_state.nzcv_requested != recipe.requested) {
         if (GetSvmConfig().dump_ir) {
-            fmt::print(stderr,
+            SVM_DIAG_FORMAT(Codegen,
                        "[backedge-proof] {:#x} emitter fallback save={} dirty={} actual={:#x} expected={:#x}\n",
                        cur_block->GetStartLocation().Value(),
-                       save_in_nzcv,
-                       nzcv_dirty,
-                       static_cast<u64>(nzcv_requested),
-                       static_cast<u64>(plan.requested));
+                       flag_state.save_in_nzcv,
+                       flag_state.nzcv_dirty,
+                       static_cast<u64>(flag_state.nzcv_requested),
+                       static_cast<u64>(recipe.requested));
         }
         // Static proof and emitter state disagreed. Recreate the omitted
         // polarity write, commit through the ordinary path, and let the
         // generic terminal keep this block correct (but unoptimized).
-        if (!plan.canonical_carry) {
-            __ Mov(ipw1, plan.carry_inverted);
+        if (!recipe.canonical_carry) {
+            __ Mov(ipw1, recipe.carry_inverted);
             __ Strb(ipw1,
                     MemOperand(state,
                                state_offset_uniform_buffer +
@@ -831,8 +832,8 @@ bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
         }
         MergeNZCV(FlagsRegsAuditMergeCause::TerminalInternal,
                   FlagsRegsAuditEdgeKind::RegionInternal);
-        EmitRegionBranchPFAF(plan);
-        plan.optimized = false;
+        EmitRegionBranchPFAF(recipe);
+        recipe.optimized = false;
         return false;
     }
 
@@ -847,42 +848,42 @@ bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
         return false;
     }
     if (auto local = LocalConditionFor(condition)) {
-        const auto branch_to_cold = plan.self_is_then
+        const auto branch_to_cold = recipe.self_is_then
                 ? static_cast<Condition>(static_cast<u8>(*local) ^ 1)
                 : *local;
-        __ B(backedge_flags_plan->cold_exit.get(), branch_to_cold);
-    } else if (plan.self_is_then) {
-        __ Cbz(context.W(condition), backedge_flags_plan->cold_exit.get());
+        __ B(backedge_flags_recipe->cold_exit.get(), branch_to_cold);
+    } else if (recipe.self_is_then) {
+        __ Cbz(context.W(condition), backedge_flags_recipe->cold_exit.get());
     } else {
-        __ Cbnz(context.W(condition), backedge_flags_plan->cold_exit.get());
+        __ Cbnz(context.W(condition), backedge_flags_recipe->cold_exit.get());
     }
-    plan.cold_referenced = true;
-    if (plan.dead_successor) {
+    recipe.cold_referenced = true;
+    if (recipe.dead_successor) {
         backedge_exit_referenced |=
-                IsRegionCycleEdge(plan.cold_target) ||
-                IsDirectCycleCutEdge(plan.cold_target);
+                IsRegionCycleEdge(recipe.cold_target) ||
+                IsDirectCycleCutEdge(recipe.cold_target);
         // The target's prefix proves the incoming six arithmetic flags dead
         // before every observer. Keep the pending host NZCV only through the
         // terminal branch; a cycle poll still routes its cold arm through the
-        // ordinary backedge stub, which materializes this same plan.
-        EmitRegionEdge(plan.self_target, false, true, false);
+        // ordinary backedge stub, which materializes this same recipe.
+        EmitRegionEdge(recipe.self_target, false, true, false);
         return true;
     }
     MaterializeFlagsTokenResult();
     context.RecordExecCounter(exec_offset_exit_direct);
-    if (IsRegionInternalEdge(plan.self_target)) {
+    if (IsRegionInternalEdge(recipe.self_target)) {
         context.RecordExecCounter(exec_offset_region_edges);
         context.RecordExecCounter(exec_offset_region_cycle_polls);
-        ++region_block_edges;
-        ++region_block_cycles;
-        region_block_local_branch_bytes += sizeof(u32);
+        ++statistics.region_block_edges;
+        ++statistics.region_block_cycles;
+        statistics.region_block_local_branch_bytes += sizeof(u32);
     }
     backedge_exit_referenced = true;
     const u32 link_before = context.CurrentBufferSize();
     RecordExitPollFault(
-            context.Forward(plan.self_target,
+            context.Forward(recipe.self_target,
                             backedge_exit_label.get(),
-                            LocalBranchTarget(plan.self_target)),
+                            LocalBranchTarget(recipe.self_target)),
             backedge_exit_label.get());
     RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                         context.CurrentBufferSize());
@@ -890,53 +891,53 @@ bool JitTranslator::EmitBackedgeFlagsTerminal(const ir::Terminal& terminal) {
 }
 
 void JitTranslator::EmitBackedgeColdPaths() {
-    if (!backedge_flags_plan) {
+    if (!backedge_flags_recipe) {
         return;
     }
-    auto& plan = *backedge_flags_plan;
+    auto& recipe = *backedge_flags_recipe;
 
-    if (plan.dead_successor) {
-        if (plan.optimized && plan.cold_referenced) {
-            __ Bind(plan.cold_exit.get());
-            EmitBackedgeMaterialize(plan);
-            EmitRegionBranchPFAF(plan);
-            if (IsRegionInternalEdge(plan.cold_target)) {
+    if (recipe.dead_successor) {
+        if (recipe.optimized && recipe.cold_referenced) {
+            __ Bind(recipe.cold_exit.get());
+            EmitBackedgeMaterialize(recipe);
+            EmitRegionBranchPFAF(recipe);
+            if (IsRegionInternalEdge(recipe.cold_target)) {
                 // The veneer above has already committed both the carry
                 // polarity byte and the requested NZCV bits.  Do not charge
                 // the ordinary region-edge merge a second time.
-                EmitRegionEdge(plan.cold_target, false, true, false);
+                EmitRegionEdge(recipe.cold_target, false, true, false);
             } else {
                 context.RecordExecCounter(exec_offset_exit_direct);
-                (void) context.Forward(plan.cold_target,
+                (void) context.Forward(recipe.cold_target,
                                        nullptr,
                                        nullptr,
                                        LinkSiteKind::BackedgeCold);
             }
         }
-        nzcv_dirty = false;
-        nzcv_requested = {};
-        backedge_flags_plan.reset();
+        flag_state.nzcv_dirty = false;
+        flag_state.nzcv_requested = {};
+        backedge_flags_recipe.reset();
         return;
     }
 
-    __ Bind(plan.external_entry.get());
+    __ Bind(recipe.external_entry.get());
     // All non-self entries begin with committed x26/State. Dispatcher lookup
-    // clobbers NZCV. Normalize the committed carry representation to this
+    // clobbers NZCV. Adjust the committed carry representation to this
     // block's compile-time polarity before reconstructing host NZCV: a fault
     // before the first producer must see the same local ABI on an external
     // first iteration as it does after a self edge.
-    if (!plan.canonical_carry) {
+    if (!recipe.canonical_carry) {
         Label polarity_ready;
         __ Ldrb(ipw0,
                 MemOperand(state,
                            state_offset_uniform_buffer +
                                    offsetof(swift::x86::ThreadContext64,
                                             carry_inverted)));
-        __ Cmp(ipw0, plan.carry_inverted);
+        __ Cmp(ipw0, recipe.carry_inverted);
         __ B(&polarity_ready, eq);
         __ Eor(flags, flags, static_cast<u64>(HostFlags::C));
         __ Bind(&polarity_ready);
-        __ Mov(ipw0, plan.carry_inverted);
+        __ Mov(ipw0, recipe.carry_inverted);
         __ Strb(ipw0,
                 MemOperand(state,
                            state_offset_uniform_buffer +
@@ -944,16 +945,16 @@ void JitTranslator::EmitBackedgeColdPaths() {
                                             carry_inverted)));
     }
     __ Msr(NZCV, flags);
-    __ B(plan.local_entry.get());
+    __ B(recipe.local_entry.get());
 
-    if (plan.optimized && plan.cold_referenced) {
-        __ Bind(plan.cold_exit.get());
-        EmitBackedgeMaterialize(plan);
-        if (IsRegionInternalEdge(plan.cold_target)) {
-            EmitRegionEdge(plan.cold_target);
+    if (recipe.optimized && recipe.cold_referenced) {
+        __ Bind(recipe.cold_exit.get());
+        EmitBackedgeMaterialize(recipe);
+        if (IsRegionInternalEdge(recipe.cold_target)) {
+            EmitRegionEdge(recipe.cold_target);
         } else {
             context.RecordExecCounter(exec_offset_exit_direct);
-            (void) context.Forward(plan.cold_target,
+            (void) context.Forward(recipe.cold_target,
                                    nullptr,
                                    nullptr,
                                    LinkSiteKind::BackedgeCold);
@@ -961,10 +962,10 @@ void JitTranslator::EmitBackedgeColdPaths() {
     }
 
     u32 recovery_offset = 0;
-    if (plan.optimized) {
+    if (recipe.optimized) {
         recovery_offset = context.CurrentBufferSize();
-        __ Bind(plan.fault_recovery.get());
-        EmitBackedgeMaterialize(plan);
+        __ Bind(recipe.fault_recovery.get());
+        EmitBackedgeMaterialize(recipe);
         context.ReturnHost();
     }
     backedge_block_metadata.push_back({cur_block->GetStartLocation().Value(),
@@ -972,11 +973,11 @@ void JitTranslator::EmitBackedgeColdPaths() {
                                        backedge_host_end,
                                        recovery_offset});
     // The next emitted block always starts from the committed ABI. The local
-    // state represented by this object has been materialized on every edge
+    // state represented by this object has been computed on every edge
     // that can reach it.
-    nzcv_dirty = false;
-    nzcv_requested = {};
-    backedge_flags_plan.reset();
+    flag_state.nzcv_dirty = false;
+    flag_state.nzcv_requested = {};
+    backedge_flags_recipe.reset();
 }
 
 bool JitTranslator::PreservesHostNZCV(ir::OpCode op) {
@@ -1036,8 +1037,8 @@ Label* JitTranslator::LocalBranchTarget(ir::Location target) const {
         if (loop_hoist_body_entry) {
             return loop_hoist_body_entry.get();
         }
-        if (backedge_flags_plan && !backedge_flags_plan->dead_successor) {
-            return backedge_flags_plan->local_entry.get();
+        if (backedge_flags_recipe && !backedge_flags_recipe->dead_successor) {
+            return backedge_flags_recipe->local_entry.get();
         }
     }
     return context.GetInternalLabel(target.Value());
@@ -1080,8 +1081,8 @@ void JitTranslator::EmitBackedgeExitStub() {
     if (!shared_reason && !region_reason) {
         __ Ldar(ip0, MemOperand(state, state_offset_exit_request));
     }
-    if (backedge_flags_plan && backedge_flags_plan->optimized) {
-        EmitBackedgeMaterialize(*backedge_flags_plan);
+    if (backedge_flags_recipe && backedge_flags_recipe->optimized) {
+        EmitBackedgeMaterialize(*backedge_flags_recipe);
     } else if (FlagsRegsEnabled()) {
         if (TryEmitCycleExitFlags()) {
             return;
@@ -1175,30 +1176,30 @@ void JitTranslator::RecordExitPollFault(
         return;
     }
     ASSERT(recovery);
-    const size_t index = fault_metadata.size();
-    fault_metadata.push_back({cur_block->GetStartLocation().Value(),
+    const size_t index = memory_state.fault_metadata.size();
+    memory_state.fault_metadata.push_back({cur_block->GetStartLocation().Value(),
                               fault->begin,
                               fault->end,
                               0,
                               UINT32_MAX});
-    pending_exit_poll_faults.push_back({index, recovery});
+    memory_state.pending_exit_poll_faults.push_back({index, recovery});
 }
 
 void JitTranslator::ResolveExitPollFaults(Label* recovery,
                                           ir::Location resume_location) {
     ASSERT(recovery && recovery->IsBound());
     const u32 offset = static_cast<u32>(recovery->GetLocation());
-    for (auto it = pending_exit_poll_faults.begin();
-         it != pending_exit_poll_faults.end();) {
+    for (auto it = memory_state.pending_exit_poll_faults.begin();
+         it != memory_state.pending_exit_poll_faults.end();) {
         if (it->recovery != recovery) {
             ++it;
             continue;
         }
-        ASSERT(it->metadata_index < fault_metadata.size());
-        auto& metadata = fault_metadata[it->metadata_index];
+        ASSERT(it->metadata_index < memory_state.fault_metadata.size());
+        auto& metadata = memory_state.fault_metadata[it->metadata_index];
         metadata.guest_start = resume_location.Value();
         metadata.recovery_offset = offset;
-        it = pending_exit_poll_faults.erase(it);
+        it = memory_state.pending_exit_poll_faults.erase(it);
     }
 }
 

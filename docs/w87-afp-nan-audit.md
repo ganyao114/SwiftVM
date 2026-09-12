@@ -40,7 +40,7 @@ COMIS、RCP/RSQRT 不纳入第一阶段；它们要么不是 W37 guard 来源，
 - 临时 x86_64 guest：`/private/tmp/w87-afp-x86.c`；直接读写 MXCSR，并通过 Rosetta
   执行 x86 指令作为同机参考。
 - 临时扩展 `SVM_RA_HOT_COALESCE`，增加 NaN op-family 与 MXCSR-write 计数；跑完七
-  语料后已完整撤回，patch 留在 `/private/tmp/w87-temp-probe.patch`。
+  语料后已完整撤回，patch 留在 `/private/tmp/w87-temp-check.patch`。
 - orchestrator 在 Orb ubuntu/aarch64 上用 `gcc -O2` 重跑同一 Arm guest；Linux 与
   macOS 原始输出逐字节相同，`diff` 0 行。
 - 最终工作树不保留探针、guest 或 benchmark 产物。
@@ -88,7 +88,7 @@ FEX 不是只借 AFP 做 lane preserve。它在 JIT guest 区间同时打开 `AH
 ## 3. Arm 语义逐位映射
 
 章节引用以 Arm ARM DDI0487 的以下章节为合同：A1.5 “Floating-point support”、
-A1.5.4 “Flushing denormalized numbers to zero”、A1.5.5 “NaN handling and the
+A1.5.4 “Flushing deadjusted numbers to zero”、A1.5.5 “NaN handling and the
 Default NaN”，以及每条指令调用的共享伪代码 `FPProcessNaNs`/`FPProcessNaNs3`。
 [Arm A-profile Architecture Reference Manual](https://developer.arm.com/documentation/ddi0487/latest)
 与 [A64 instruction descriptions](https://developer.arm.com/documentation/ddi0602/latest)
@@ -268,7 +268,7 @@ interpreter 保持既有 bit normalization，翻译器/runtime 自身的 C++ FP 
 精确模式必须从保存值中清除 guest-owned fields，再由 `ThreadContext64::mxcsr`
 构造 AH/NEP/FIZ/FZ/RMode。
 
-另外，`source/translator/x86/translator.cpp:265-311` 的 Linux feature probe 当前只读
+另外，`source/translator/x86/translator.cpp:265-311` 的 Linux feature check 当前只读
 FlagM/FlagM2，**没有把 `getauxval(AT_HWCAP2) & HWCAP2_AFP` 写进
 `Arm64Features::AFP`**。即使 Orb `/proc/cpuinfo` advertise `afp`，现有 Linux Config
 仍看不到它。实现 spike 的 P0 必须先补 bit 20 检测；旧内核头无宏时按 Linux UAPI

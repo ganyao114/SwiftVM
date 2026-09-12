@@ -39,7 +39,7 @@ FAIL: function-mode emission fingerprint differs from .../func_fingerprint_golde
 W77_RC=1
 ```
 
-The harness prints only its first 40 diff lines. I emitted the same normalized fingerprint without `--update`, saved it as `/tmp/w77-linux-fingerprint.txt`, and ran:
+The harness prints only its first 40 diff lines. I emitted the same adjusted fingerprint without `--update`, saved it as `/tmp/w77-linux-fingerprint.txt`, and ran:
 
 ```sh
 orb -m ubuntu bash -lc '
@@ -147,7 +147,7 @@ The complete diff is:
 
 Reproducibility checks:
 
-- wine-ci produced the same normalized diff.
+- wine-ci produced the same adjusted diff.
 - `git diff --no-index <(git show c905307:source/translator/linux/tests/func_fingerprint_golden.txt) source/translator/linux/tests/func_fingerprint_golden.txt` produced no output.
 - Ten additional Ubuntu harness invocations all reported `self-consistency: OK`; this is 20 same-binary emissions with `host_bytes` retained.
 
@@ -217,7 +217,7 @@ func_tests  0x459705 / 0x459750
 
 ### Minimal causal experiment
 
-I built a temporary Orb-only `LD_PRELOAD` probe outside the checkout. It delegates `fstat`, then changes only `stdout`'s returned block size to Darwin's value:
+I built a temporary Orb-only `LD_PRELOAD` check outside the checkout. It delegates `fstat`, then changes only `stdout`'s returned block size to Darwin's value:
 
 ```c
 #define _GNU_SOURCE
@@ -257,7 +257,7 @@ adc $0xffffffff,%eax
 
 The PCs are `real_busy:0x439970` and `func_tests:0x419c10`. In `ArithWithFlags()`, a known inverted carry polarity uses one `InvertCarry` IR when `FlagsCfinvEnabled()` is true; otherwise it materializes carry with `TestFlags`, `Xor`, `LoadImm`, `Add`, and `SaveFlags` before `Adc` (`decoder_alu.cc:175-215`). After optimization this is the observed `45 -> 48` IR delta.
 
-The platform probe is asymmetric (`decoder.cc:1149-1164`): Apple AArch64 queries `hw.optional.arm.FEAT_FlagM`; every other build returns false. That does not reflect the Orb CPU:
+The platform check is asymmetric (`decoder.cc:1149-1164`): Apple AArch64 queries `hw.optional.arm.FEAT_FlagM`; every other build returns false. That does not reflect the Orb CPU:
 
 ```text
 Darwin: hw.optional.arm.FEAT_FlagM: 1
@@ -324,7 +324,7 @@ No. They are two independent causes repeated in duplicated static-glibc code:
 - host-derived `st_blksize` changes executed guest blocks in three guests;
 - missing Linux FlagM detection changes IR instruction selection at two same-PC units.
 
-The independent probes each removed/reproduced exactly their assigned subset.
+The independent checks each removed/reproduced exactly their assigned subset.
 
 ### 2. Can one Mac-generated golden be portable to Linux?
 
@@ -334,8 +334,8 @@ Not under the current execution-driven contract. Even after Linux FlagM detectio
 
 Recommended sequence:
 
-1. **Fix Linux Arm64 feature detection** independently: populate `Arm64Features::FlagM` from `getauxval(AT_HWCAP) & HWCAP_FLAGM` and `Arm64Features::AXFlag` from `AT_HWCAP2/HWCAP2_FLAGM2` in `DetectArm64Features()`. Have `X64Decoder` retain/use that passed feature bitmap for the CFINV decision, with `SVM_FLAGS_CFINV=0` remaining the override, rather than doing a second Apple-only platform probe in `FlagsCfinvEnabled()`. This removes the avoidable Linux-vs-Mac code-quality mismatch on capable hosts. It does not make a universal golden valid on hosts that genuinely lack FlagM.
-2. **Shard golden profiles by execution environment**, at minimum Darwin vs Linux, and record the relevant Arm64 feature bitmap/profile in the fixture identity. Keep the current `--against` build-to-build mode as the authoritative A/B gate.
+1. **Fix Linux Arm64 feature detection** independently: populate `Arm64Features::FlagM` from `getauxval(AT_HWCAP) & HWCAP_FLAGM` and `Arm64Features::AXFlag` from `AT_HWCAP2/HWCAP2_FLAGM2` in `DetectArm64Features()`. Have `X64Decoder` retain/use that passed feature bitmap for the CFINV decision, with `SVM_FLAGS_CFINV=0` remaining the override, rather than doing a second Apple-only platform check in `FlagsCfinvEnabled()`. This removes the avoidable Linux-vs-Mac code-quality mismatch on capable hosts. It does not make a universal golden valid on hosts that genuinely lack FlagM.
+2. **Shard golden profiles by execution environment**, at minimum Darwin vs Linux, and record the relevant Arm64 feature bitmap/profile in the fixture direct. Keep the current `--against` build-to-build mode as the authoritative A/B gate.
 3. Longer term, if a single canonical golden is required, make the fingerprint workload hermetic at the syscall/input boundary (including output-sink stat metadata) and pin a canonical CPU feature profile. That is a test-fixture design change, not a production syscall-semantics change.
 
 Do **not** use a PC ignore list. It would suppress exactly the unit-set and IR-shape regressions this gate is meant to catch, is brittle when the guest corpus moves, and would have hidden the Linux FlagM omission. Do **not** globally fake `st_blksize` in production merely to satisfy the test. Do **not** regenerate the current golden and call it portable; that would only exchange which platform fails.
@@ -344,4 +344,4 @@ Between the offered choices, platform/config sharding is the correct gate repair
 
 ## Artifacts and repository state
 
-Diagnostic artifacts were written only under `/tmp` or `/private/tmp` (`/tmp/w77-*.log`, `/tmp/w77-full.diff`, `/tmp/w77-linux-fingerprint.txt`, and the temporary preload probe). The checkout change for W77 is this report alone. Neither source nor `func_fingerprint_golden.txt` was modified or regenerated.
+Diagnostic artifacts were written only under `/tmp` or `/private/tmp` (`/tmp/w77-*.log`, `/tmp/w77-full.diff`, `/tmp/w77-linux-fingerprint.txt`, and the temporary preload check). The checkout change for W77 is this report alone. Neither source nor `func_fingerprint_golden.txt` was modified or regenerated.

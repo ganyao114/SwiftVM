@@ -33,8 +33,8 @@ public:
     [[nodiscard]] bool ClobbersGPR(u32 code) const;
     [[nodiscard]] bool ClobbersFPR(u32 code) const;
     [[nodiscard]] bool ArgumentRequiresSlot(u32 code) const;
-    [[nodiscard]] bool RequiresGPRSnapshot(u32 code, bool argument_source) const;
-    [[nodiscard]] bool RequiresFPRSnapshot(u32 code) const;
+    [[nodiscard]] bool RequiresGPRCapture(u32 code, bool argument_source) const;
+    [[nodiscard]] bool RequiresFPRCapture(u32 code) const;
 
 private:
     bool direct{};

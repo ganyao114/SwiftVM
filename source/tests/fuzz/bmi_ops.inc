@@ -45,7 +45,7 @@ SVM_BMI_OP(shlx,   1, 2, 0xF7, 0, RMV,  0)
 SVM_BMI_OP(sarx,   2, 2, 0xF7, 0, RMV,  0)
 SVM_BMI_OP(shrx,   3, 2, 0xF7, 0, RMV,  0)
 // RORX's rotate is an immediate, so each interesting amount is its own row.
-// 0 is the identity (and the one the backends would have to encode as ROR #0),
+// 0 is the direct (and the one the backends would have to encode as ROR #0),
 // 31 / 63 are the top of each width's mask, and 32 distinguishes the widths:
 // at W0 it masks to 0 and at W1 it is a real half-word swap.
 SVM_BMI_OP(rorx0,  3, 3, 0xF0, 0, RMI,  0)

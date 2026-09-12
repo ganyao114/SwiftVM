@@ -1,7 +1,11 @@
 # Codex handoff: Align SVM flags with FEX
 
+2026-09-12 measurement review: see [the current assessment](codegen-status-2026-09-12.md).
+The historical range-weighted ratios below are structural estimates and must not
+be cited as current dynamic instruction counts or speed ratios.
+
 Date: 2026-08-29
-Repo: `/Users/swift/CLionProjects/SwiftVM` (macOS). Linux identity runs on Orb: `ubuntu@orb`, tree `/home/swift/svm-phasec/SwiftVM`, build `/home/swift/svm-phasec/build`.
+Repo: `/Users/swift/CLionProjects/SwiftVM` (macOS). Linux direct runs on Orb: `ubuntu@orb`, tree `/home/swift/svm-phasec/SwiftVM`, build `/home/swift/svm-phasec/build`.
 Author on git: `swift_gan`. **Do not push** until asked. English commits, no task IDs, no AI trailer.
 
 **Do not inspect failed run `e333e444`** (xAI capacity / connection). Goal notices that name it are stale.
@@ -33,7 +37,7 @@ Default **`SVM_FLAGS_REGS=1`** (`121620f`). Region edges default ON. Default reg
 | `d5e45c7` | Keep a post-publication full-width load alias on its pinned home when its sole later role is a memory address |
 | `38cea6e` | Feed the known zero-extended W result of LDRB/LDRH directly to a dead narrow immediate branch compare |
 | `b734438` | Follow one static direct call in the dead-successor flags proof when the callee overwrites every incoming flag before control flow, and track the inspected callee prefix for SMC |
-| `ea82571` | Reuse one displacement-adjusted indexed effective address across the load and store halves of a plain integer memory RMW |
+| `ea82571` | Reuse one displacement-adjusted indexed effective address across the load and store halves of a basic integer memory RMW |
 | `f8cc6ed` | Keep an exact narrow load's branch-only zero-test alias on the pinned publication home and remove the intervening W move |
 | `e959074` | Compose low-extract input forwarding with dead narrow immediate branches so the specialized compare reads the original source |
 | `162a4d8` | Emit a spilled U32 Add directly into its pinned publication home and keep proven post-publication low-32 ALU uses on that home |
@@ -41,11 +45,11 @@ Default **`SVM_FLAGS_REGS=1`** (`121620f`). Region edges default ON. Default reg
 | `9fb39ef` | Retain an arithmetic result token only when parity is live; NZCV-only narrow producers no longer restore result bits solely for a dead PF token |
 | `f42b7cc` | Fold `BitExtract(SignExtend(v32),0,32)` back to the original 32-bit SSA and remove both signed low-32 round trips through DCE |
 | `a627d94` | Feed an adjacent single-use low U8/U16 extract directly to narrow flags alignment, where the existing left shift already discards high bits |
-| `3f079f9` | Generalize the dead narrow immediate branch plan from exact ZF to the existing ZF/CF/ZF+CF dead-edge conditions using `UXTB/UXTH; CMP imm` |
+| `3f079f9` | Generalize the dead narrow immediate branch recipe from exact ZF to the existing ZF/CF/ZF+CF dead-edge conditions using `UXTB/UXTH; CMP imm` |
 | `5922091` | Lower a dead-edge U8/U16 `Sub` with an immediate and exact ZF-only branch into `SUB imm; TST width-mask`, suppressing the single-use immediate materialization |
 | `e2bb2c7` | Omit the final narrow-result `LSR` after branch-only Add/Sub/Neg when the arithmetic value has no ordinary use; observed results keep the truncation |
 | `4cc2c1e` | Publish an exact U8/U16/U32 memory load directly into its pinned GPR home and omit the redundant zero-extension and host-register publication instructions |
-| `14e48c1` | Extend the fixed-home copy planner through exact U8/U16 `ZeroExtend32` chains and emit one `UXTB`/`UXTH` from the source home to the target home |
+| `14e48c1` | Extend the fixed-home copy builder through exact U8/U16 `ZeroExtend32` chains and emit one `UXTB`/`UXTH` from the source home to the target home |
 | `942a63d` | Generalize the pinned low-32 self-write proof into a cross-pin copy: an exact U32 fixed-home read, zero extension and full fixed-home publication become one `mov wTarget, wSource`, while later aliases remain eligible only as proven memory addresses |
 | `121620f` | FLAGS_REGS default ON |
 | `a278d8d` / `5b7857d` / `6009f8f` / `f2b490d` | Region If skip: both successors cover incoming NZCV; transparent `mov/ret`; `ClearFlags` covers C/V; **`BranchOnlyFlags` covers full PSTATE NZCV** (IR mask is Jcc live subset, not the ALU write) |
@@ -79,19 +83,19 @@ Default **`SVM_FLAGS_REGS=1`** (`121620f`). Region edges default ON. Default reg
 | `b1e501e` | Let single-use integer zero values publish directly into fixed FPR lanes from `wzr/xzr` |
 | `215a059` | Elide a shared integer zero when every use is a compatible uniform, memory or fixed-FPR store |
 | `21000f1` | Extract EQ/NE, CS/CC, MI/PL and VS/VC directly from the saved flags register without restoring host NZCV |
-| `0fc245c` | Encode identity-mode `[base + imm]` accesses with AArch64 scaled load/store offsets when possible |
+| `0fc245c` | Encode direct-mode `[base + imm]` accesses with AArch64 scaled load/store offsets when possible |
 | `723ace5` | Materialize single-bit N/Z/C/V `TestFlags` values with direct bit extraction while preserving live PSTATE |
 | `8ca4b0b` | Materialize zero/nonzero without clobbering pending PSTATE on straight-line IR paths |
 | `aa7b83d` | Read a live PSTATE single-bit flag directly with non-clobbering `CSET` |
 | `a505485` | Lower encodable negative GetOperand displacements directly with `SUB` |
 | `d9eb980` | Align direct-hash L1 storage and form each 16-byte entry address with one `BFI` |
-| `e2f9527` | Preserve identity-mode `[base + index]` in memory IR and use the AArch64 register-offset encoding directly |
-| `4821182` | Fold fault-exact identity-mode stack pushes into one AArch64 pre-index store; retain biased-memory and base/data-overlap paths |
-| `1a69a59` | Fold an identity-mode fixed-base load plus the following dead-flags +1 base update into one fault-exact pre-index load |
-| `6b10c73` | Share one materialized 4 KiB guest page base across encodable absolute memory addresses and make the proven path default |
+| `e2f9527` | Preserve direct-mode `[base + index]` in memory IR and use the AArch64 register-offset encoding directly |
+| `4821182` | Fold fault-exact direct-mode stack pushes into one AArch64 pre-index store; retain biased-memory and base/data-overlap paths |
+| `1a69a59` | Fold an direct-mode fixed-base load plus the following dead-flags +1 base update into one fault-exact pre-index load |
+| `6b10c73` | Share one computed 4 KiB guest page base across encodable absolute memory addresses and make the proven path default |
 | `e10fec4` | Let one audited consumer reuse a pinned W view for every operand occurrence and feed callee-saved pinned values directly into sign extension |
-| `7620306` | Store a sole narrow pinned GPR read directly from its fixed W home while preserving snapshot and address-use semantics |
-| `e2fe71c` | Normalize carry to a Direct cross-block ABI on FlagM hosts and remove the polarity-byte publication path |
+| `7620306` | Store a sole narrow pinned GPR read directly from its fixed W home while preserving capture and address-use semantics |
+| `e2fe71c` | Adjust carry to a Direct cross-block ABI on FlagM hosts and remove the polarity-byte publication path |
 | `a9f5ddf` | Delete `InvertCarry` and its covered carry publication when backward liveness proves a later in-block C write wins before every read |
 | `2d86a6e` | Screen candidates with bounded short shape runs and retained formal weights before promoting them to long benchmarks |
 | `5a47163` | Collapse narrow logical flag identities into one width-correct NZ producer |
@@ -348,7 +352,7 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
   (`-0.4165%`) with 101 PCs smaller and none larger. Formal c-ray equal-entry is `-21,411,778`
   with 293 PCs smaller and none larger; STREAM/CoreMark equal-entry are `-2,168` / `-2,210`,
   also shrink-only. PPM, IDAT, STREAM, CRC and spill gates remain exact.
-- Scaled immediate addressing lets identity-mode `[base + imm]` use the AArch64 unsigned scaled
+- Scaled immediate addressing lets direct-mode `[base + imm]` use the AArch64 unsigned scaled
   load/store encoding instead of `MOV imm + [base, register]`. Pair, shift, writeback and bounded
   bias paths retain their prior predicates. Formal smallpt is `-98,407` (`-0.0093%`) with 18 PCs
   smaller and none larger. Formal c-ray/STREAM/CoreMark equal-entry are `-93` / `-8` / `-8`, all
@@ -383,14 +387,14 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
   deltas are `-90,922,904` / `-91,098,755` with 1,129 equal-entry PCs smaller and none larger.
   STREAM raw/equal-entry are `-941` / `-875`; CoreMark raw/equal-entry are `-31,825,004` /
   `-31,825,027`. PPM, c-ray IDAT, STREAM validation, CoreMark CRC and spill gates remain exact.
-- Identity-mode `[base + index]` memory operands now stay composite through the frontend instead
+- Direct-mode `[base + index]` memory operands now stay composite through the frontend instead
   of materializing an intermediate `GetOperand`; the existing ARM64 memory emitter consumes the
   register-offset form directly. Formal smallpt is `-54,841` (`-0.0053%`) with 45 PCs smaller and
   none larger. Formal c-ray raw/equal-entry are `-5,506,465` / `-5,469,864` with 200 equal-entry
   PCs smaller and none larger. STREAM equal-entry is `-111`; CoreMark equal-entry is `-640,298`
   with 66 PCs smaller and none larger. PPM, IDAT, STREAM, CRC and spill gates remain exact.
 - A strict `Sub(RSP,size) -> StoreMemory -> SetHostGPR(RSP)` backend proof now emits one
-  pre-index store in identity mode. The store completes before AArch64 base writeback, so a
+  pre-index store in direct mode. The store completes before AArch64 base writeback, so a
   synchronous fault retains the pre-instruction RSP; biased memory and base/data overlap
   (`push rsp`) reject the fold. Formal smallpt is `-38,941,142` (`-3.7413%`) with 228 PCs
   smaller and none larger; unit/version/entry counts are identical. Formal c-ray raw/equal-entry
@@ -414,15 +418,15 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
   weighted SetHostGPR instances and 123,911,206 / 129,472,617 GetHostGPR instances already emit
   zero bytes; the remaining emitted moves are about 14.98M / 5.56M host instructions.
 - A single audited consumer may now name the same pinned W read more than once, so `test eax,eax`
-  lowers directly to an `ANDS` using w22 instead of first extracting a snapshot. Callee-saved
+  lowers directly to an `ANDS` using w22 instead of first extracting a capture. Callee-saved
   pinned byte/word/dword reads also feed `SXTB/SXTH/SXTW` directly. A later second consumer keeps
-  the materialized snapshot. Existing formal entries attribute 2,054,236 + 706,866 executions to
+  the computed capture. Existing formal entries attribute 2,054,236 + 706,866 executions to
   the two proven hot shapes; this estimated 2,761,102-instruction reduction is not folded into the
   headline formal total because long benchmark reruns were stopped. Mac focused validation passes
   6 cases / 429 assertions; no full suite was run.
 - A sole U8/U16/U32 pinned read used as the value of an ordinary `StoreMemory` now stores directly
   from its fixed W home. Address reuse, a later value use, an intervening write to that home, U64
-  values and TSO stores keep the materialized snapshot. The local Release `4 8 6` short screen has
+  values and TSO stores keep the computed capture. The local Release `4 8 6` short screen has
   byte-identical PPM output and identical 3,250-PC / 3,502-version shapes; the strict common set is
   `-852,490` weighted host instructions (`-0.083737%`), with all top-20 PCs present. Its
   Mac-to-retained-Orb host coverage is only 98.362170%, below the 99.9% promotion gate, so this is
@@ -452,17 +456,17 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
   `-0.265864%`) with no growing PC. Focused validation passes default/rollback carry elimination
   (32 / 11 assertions), canonical carry (4), SaveCV (4), simple CondSet (62), rotate-zero carry (4),
   region branch flags (46) and full NZCV publication (3). No long benchmark or full suite was run.
-- Normalized U8 `Select(condition, 1, 0)` now emits `CSET`, and its two `LoadImm` producers are
-  suppressed only when every use is another proven identity select. The proof accepts only direct
+- Adjusted U8 `Select(condition, 1, 0)` now emits `CSET`, and its two `LoadImm` producers are
+  suppressed only when every use is another proven direct select. The proof accepts only direct
   boolean producers and bounded `And` / `Or` compositions. A sole `CondSet` condition is folded into
-  identity and general selects; when PSTATE is dirty, `CSET` / `CSEL` runs before `MergeNZCV` so the
+  direct and general selects; when PSTATE is dirty, `CSET` / `CSEL` runs before `MergeNZCV` so the
   old guest-flags and pending-token publication boundary remains. Other non-local conditions retain
   the existing `MergeNZCV + CMP` path. The
   strict local `4 8 6` A/B has identical 2,757-PC / 3,597-version sets, 100% host/entry and
   top-20 coverage, byte-identical PPM, zero spills and common host `591,583 -> 583,155`
   (`-8,428`, `-1.424652%`)
   with no growing PC. General conditional-select fusion contributes `-5,652` (`-0.959907%`) on top
-  of the identity form; one 2,502-entry PC accounts for 5,004 of those instructions. CondSet,
+  of the direct form; one 2,502-entry PC accounts for 5,004 of those instructions. CondSet,
   flag-elimination and COMIS checks pass 3,588 assertions. The bounded
   setcc/cmov/jcc and BMI diagnostics are byte-for-byte identical to the pre-change failure sets;
   the 512-iteration interpreter run passes. A frontend-only SetCC collapse reached `586,558`, but
@@ -496,7 +500,7 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
   The pre-existing SSE batch-B JIT/interpreter divergence count remains exactly 392. No long
   benchmark or full suite was run.
 - `613dd12` lets a sole U8/U16/U32 callee-saved fixed-home read feed `Sub` directly from its W
-  view. Snapshot reuse and an intervening fixed-home write still retain the read bridge; other
+  view. Capture reuse and an intervening fixed-home write still retain the read bridge; other
   consumers are unchanged. The strict local `4 8 6` A/B keeps all 2,757 PCs / 3,597 versions,
   100% coverage, the exact PPM and zero spills, with common host `580,620 -> 580,290` (`-330`,
   `-0.056836%`) across ten shrinking PCs and none growing. The six pinned-GPR focused cases pass
@@ -642,7 +646,7 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
   11 guests. Final default-ON and rollback suite runs both return 194 passed / 35 existing failed
   cases / 45 failed assertions with the same failure locations.
 - RSB/indirect structure focus passes 26 assertions, including the paired state/cache load and
-  no-target dispatcher path. A temporary mismatched-return probe passes default, both L1-off RSB
+  no-target dispatcher path. A temporary mismatched-return check passes default, both L1-off RSB
   frames, FLAGS-off and interpreter paths and was deleted. Mac and Orb builds pass.
 - The production inline-L1 pending-signal test passes 6 assertions on Mac and Orb. Direct-link
   production passes 11 cases / 395 assertions under FLAGS=0, including cache lifecycle. Static
@@ -669,7 +673,7 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
 - A faulting full-width `LoadMemory` may publish directly into its pinned home because the fault does not commit the destination. Partial/narrow writes and any path rejected by the existing local observer, conflict, or liveness proof must keep the real publication instruction.
 - An ordinary `StoreMemory` may read a pinned W home directly only when an offset-zero U8/U16/U32
   `GetHostGPR` has exactly that store-value use and no intervening write to the home. Address uses,
-  later uses, U64 values and TSO stores keep the snapshot instruction.
+  later uses, U64 values and TSO stores keep the capture instruction.
 - FlagM units keep host C equal to x86 CF at every cross-block boundary. A live `InvertCarry` after
   a sub-family producer is part of that canonicalization, not a polarity toggle that can be removed
   locally. It is dead only when backward liveness proves a later in-block C write covers every path
@@ -684,7 +688,7 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
 - Same-width extraction is restricted to a U32 result and an audited W-reading consumer. U8/U16
   normally retain the real extract because backend physical high bits are not implied by the narrow
   IR type. The only narrow exception is the immediate, sole-use low extract feeding a no-data-use
-  `Or(0)` flag identity: its shifted NZ producer discards every physical high bit, and both the RA
+  `Or(0)` flag direct: its shifted NZ producer discards every physical high bit, and both the RA
   tie and emitter shape must remain exact. Pseudo and opaque calls always retain the extract.
 - A static `SetLocation` exit may emit a direct-link site only for the existing same-module,
   non-self, BlockLink-enabled region contract. The cycle poll remains before the site; unavailable
@@ -706,7 +710,7 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
 - A scalar memory load may replace adjacent low-load/high-zero resident publications only when
   both producers are single-use, the high value is exactly U64 zero, and the load-to-publication
   window contains no fault/helper, local-control, target-home access, or overlapping mapped FPR.
-  Emit the D-register load at the original fault site and reprove the complete plan there.
+  Emit the D-register load at the original fault site and reprove the complete recipe there.
 - A zero-register store value must be an unspilled integer `LoadImm(0)`. Multiple uses are allowed
   only when the inclusive global use count exactly equals same-block StoreUniform, StoreMemory or
   SetHostFPR value operands. Cross-block, address, arithmetic, pseudo, floating and nonzero uses
@@ -739,7 +743,7 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
 | Same-value carry-polarity publication dedup | equal-entry smallpt only `-23,703` (`-0.0022%`), with 137 PCs larger, 17 smaller and changed unit formation; fully reverted |
 | Generalized legacy scalar resident-left chain | formal smallpt byte-identical at `1,072,445,284`; exact `GetHostFPR` origin is not the remaining limiter, fully reverted |
 | Generated TestZero/TestNotZero local condition | FLAGS=1 transparent window still saves only 919 formal smallpt instructions; fully reverted |
-| Sole TestZero/TestNotZero identity/general Select fusion | strict local `4 8 6` saves only 79 (`-0.013547%`); exact PPM and no growth, but the extra planner state is not justified and was fully reverted |
+| Sole TestZero/TestNotZero direct/general Select fusion | strict local `4 8 6` saves only 79 (`-0.013547%`); exact PPM and no growth, but the extra builder state is not justified and was fully reverted |
 | Zero-register `SetHostGPR` publication | smallpt / c-ray equal-entry only `-1` / `-22`; existing GPR coalescing already absorbs it, fully reverted |
 | Transparent `BitCast` zero-store graph | formal smallpt and c-ray are byte-identical at every equal-entry PC; the proof reaches no remaining materialization and was fully reverted |
 | Pinned GPR immediate-offset memory address | smallpt is byte-identical and c-ray's partial retained-entry subset saves only `0.012823%`; the extension was fully reverted |
@@ -753,7 +757,7 @@ Validation for `7110d20` / `7045d3b` / `431be30` / `fa1768a` / `729b826` / `24f9
 | IR-rewriting integer `Sub` branch-only carry normalization | the non-carry-only form still changed the bounded unit/version set from 2,755/3,621 to 2,785/3,056; strict coverage was 99.648660% with two growing PCs, below the 99.9% gate despite `-0.908475%` on the comparable subset, fully reverted. `86aaac4` is a separate backend-only EQ/NE proof and does not revive this rewrite. |
 | Generic live `ZeroExtend32To64` result remap into the publication home | the residual `live_ok` census classified stores before conflict and observer checks, so its weighted total overstated the opportunity. The broad remap made many required moves merely change location, added low-view preservation copies, and halted the 1,000-iteration CoreMark screen at `0x402e60`. The RA module, logs and temporary restrictions were removed; retain only backend copy fusions that prove a net one-instruction form. |
 | Pinned-copy low-32 `BitExtract` address aliases | the focused local/Orb case passed, but bounded smallpt and 1,000-iteration CoreMark were both byte-identical with 100% weighted coverage. The emitter hook, matcher extension and test were removed. |
-| Multi-use fixed-home snapshot reuse | The exact post-publication Xor/narrow-alias graph shrank three formal CoreMark CRC blocks by two instructions each and the common subset by `9,120,008`, but changed `crcfinal` to `0x4555`. A later consumer still requires the original snapshot even when the visible target-home overwrite window appears closed. The matcher, diagnostics and test were fully removed. |
+| Multi-use fixed-home capture reuse | The exact post-publication Xor/narrow-alias graph shrank three formal CoreMark CRC blocks by two instructions each and the common subset by `9,120,008`, but changed `crcfinal` to `0x4555`. A later consumer still requires the original capture even when the visible target-home overwrite window appears closed. The matcher, diagnostics and test were fully removed. |
 | Direct pinned immediate publication | The broad constant form shrank the formal common CoreMark subset by `16,240,214` but returned CRC `0x6096`. Restricting it to the audited `LoadImm(8) -> home 0` shape still shrank `13,400,033` and returned CRC `0x398e`. Writing the fixed home at the producer crosses an old-value observation not represented by the local alias whitelist; the emitter path, state and test were fully removed. |
 | Disable inline indirect L1 and use the existing RSB path | The exact 2k CoreMark unit/version set and CRC remain stable, but weighted host work grows `351,368,645 -> 368,914,549` (`+4.993588%`). The current guarded RSB pop is longer than the seven-instruction inline-L1 hit path; do not flip the existing feature or re-enable RSB pushes while indirect L1 is active without a new continuation ABI. |
 | Delay dynamic `current_loc` publication on the inline-L1 hit path without a new continuation ABI | SMC invalidation keeps the L1 key and replaces only its value with the shared miss trampoline. That trampoline must reload the published location before its L2 walk, and the signal/key-miss path returns through the dispatcher for the same reason. Moving the store cold therefore requires a known-register continuation ABI for every inline exit and invalidation value; omitting it locally can dispatch or compile the stale PC. |
@@ -786,7 +790,7 @@ peepholes.
    guest copies such as `mov rbp,rdi` and `mov rbx,rdx`; deleting them requires architectural
    register renaming, not another fixed-home peephole. Direct ordinary StoreMemory payload reads
    and callee-saved `Sub` reads are closed. Continue only with another measured consumer that can
-   read the fixed home directly while retaining snapshot, width and helper-clobber proofs; the
+   read the fixed home directly while retaining capture, width and helper-clobber proofs; the
    same `Add` extension was only `-51` and is closed. Selective R12/R14 pinning is landed; do not extend
    the map to R13/R15 without resolving the Mac 15-register hang. The pre-R12 bounded emitted-write census has
    31,705 weighted `SetHostGPR` instructions: 13,002 are `GetHostGPR`-root guest copies. The older
@@ -794,7 +798,7 @@ peepholes.
    zero-test aliases are now closed. Recount roots after each landed stage; do not treat the
    remaining total as a generally safe GetHost elimination. Another 5,157 `Sub`-root live writes
    are Mac biased-memory stack updates separated from publication by a faulting store; Linux
-   identity already folds the exact safe form into pre-index stores, so this is not a remaining
+   direct already folds the exact safe form into pre-index stores, so this is not a remaining
    FEX-alignment pool.
 3. **smallpt remaining link** — covered link is now about 6.6%. Region/cycle tails are about
    2.1%; their acquire poll and branch across per-block cold stubs are load-bearing. Audit the
@@ -809,12 +813,12 @@ peepholes.
    The current weighted ledger has 76,229 emitted `SetHostFPR` instructions. A bounded rejection
    census found that the apparent remaining scalar candidates are dominated by publication to a
    second resident home and chains whose high lanes originate in another XMM home; these are real
-   guest copies, not an unclosed fixed-home tie. Fault snapshots remain load-bearing. Non-AFP hosts
+   guest copies, not an unclosed fixed-home tie. Fault captures remain load-bearing. Non-AFP hosts
    retain the legacy scalar high-lane preservation sequence, and resident-disabled configurations
    retain ordinary State publication. The indexed-shuffle pool remains closed; do not broadly
    whitelist scalar merge-home shapes.
-5. **Remaining composite EA** — identity `[base+imm]`, `[base+index]` and matching scaled-index
-   forms are now direct. Remaining materialized forms involve bias/32-bit wrapping, shifts or an
+5. **Remaining composite EA** — direct `[base+imm]`, `[base+index]` and matching scaled-index
+   forms are now direct. Remaining computed forms involve bias/32-bit wrapping, shifts or an
    AArch64-unencodable scale; require an exact encoding and wrap proof before extending the gate.
    The truncated short audit attributes only 2.020% of observed `LoadMemory` work to address
    formation, so do not treat the raw opcode total as a removable pool.
@@ -841,7 +845,7 @@ peepholes.
   AFP minmax and SHUFPS immediate are byte-identical; width chain saves 9 instructions; loop flags
   grows 40; full flag elimination grows 3. Direct `GetHostGPR -> SetHostGPR` is byte-identical, and
   forwarding through `ZeroExtend32To64` saves only 38 of 62,372 instructions (`0.060925%`). All
-  production prototypes and their probes were removed.
+  production prototypes and their checks were removed.
 - `4f27b7a` adds canonical-state cross-unit dual entries. The cold linker still returns through the
   published entry after its C++ helper call; once linked, the patched branch targets the counted
   body entry and skips the redundant `MSR NZCV,x26; B body`. Flags-transparent blocks retain the
@@ -867,7 +871,7 @@ peepholes.
   five incompatible-link restores and two compatible re-enables. Each surviving linked transition
   replaces three merge instructions with one branch; the first cold link pays two extra trampoline
   instructions, and an incompatible linked edge returns to the old steady-state cost.
-- Pending target entries, source patch metadata and normalized live merge words are persisted in
+- Pending target entries, source patch metadata and adjusted live merge words are persisted in
   disk-cache format v7. Focused validation passes 324 assertions across seven tests, including
   conditional execution, incompatible-target fallback, signal/SMC delink, cache serialization and
   all static-pin trampoline configurations. The final static smallpt screen completed in 2.352s,
@@ -894,7 +898,7 @@ peepholes.
   merge groups, but none of their targets satisfied the existing complete-overwrite contract;
   the weighted saving upper bound was zero. The implementation, tests and census logging were
   removed rather than retaining an unused cross-unit ABI extension.
-- Scalar SSE insert now follows detected FEAT_AFP on Linux as well as macOS. Orb's native NEP probe
+- Scalar SSE insert now follows detected FEAT_AFP on Linux as well as macOS. Orb's native NEP check
   preserved the upper 64-bit lane with `FPCR=0x6`, and the translated 64-case SSE NaN/high-lane
   truth matrix passes with scalar insert both enabled and disabled. The old Linux rejection no
   longer reproduces after the completed FPCR/AFP lifecycle work.
@@ -902,7 +906,7 @@ peepholes.
   3,647-version sets, 100% host, entry and top-20 coverage, exact PPM SHA
   `fe779f46a4c8f0f75ab42b573253492e5f1da2ee508fdb6aee62389787244cd0` and zero spills. Weighted
   host instructions fall `4,804,966 -> 4,598,890` (`-206,076`, `-4.288813%`); move-class work falls
-  by the same `206,076`, from `1,313,749` to `1,107,673`. Programmatic cache identity now hashes
+  by the same `206,076`, from `1,313,749` to `1,107,673`. Programmatic cache direct now hashes
   effective scalar-insert policy. This stage ran no long benchmark, stress test or full suite.
 - With Linux scalar insert active, extending the resident ABI from XMM0-11 to XMM0-15 no longer
   creates FPR spills. The bounded Orb `smallpt_wh_x64 4 32 24` comparison retains identical
@@ -921,7 +925,7 @@ peepholes.
   The single bounded production run records 2,793 PCs, 3,659 versions, 271,517 entries,
   `host_dynamic=4,276,521`, `move_dynamic=1,059,189`, zero spills and exact PPM SHA
   `fe779f46a4c8f0f75ab42b573253492e5f1da2ee508fdb6aee62389787244cd0`.
-- Resident-XMM fault snapshots now retain the last pre-fault carrier and let register allocation
+- Resident-XMM fault captures now retain the last pre-fault carrier and let register allocation
   commit it directly into the fixed home. This fixes the packed arithmetic fault case where a
   faulting RHS load previously returned stale XMM state. Its focused code remains 16 host
   instructions with `fmul v16` committed before the load and `fadd v16` after it. One smallpt
@@ -1013,7 +1017,7 @@ peepholes.
 - `4595fc5` keeps a full-width coalesced arithmetic result in its pinned GPR while the flags token
   remains block-local. The proof requires the exact coalesced host publication and rejects later
   physical-register reuse, hard clobbers and every later write to the same guest home. Region edges,
-  pending-flags backedges and parked state still normalize to the `x12` ABI when required. The unused
+  pending-flags backedges and parked state still adjust to the `x12` ABI when required. The unused
   AF-in-token state was removed. The bounded Orb screen completes in 3.701 seconds with identical
   2,755-PC / 3,621-version sets, 99.995707% retained-host coverage, all top-20 PCs, no growing PC and
   exact PPM SHA `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`.
@@ -1031,14 +1035,14 @@ peepholes.
   and `0x402497` loses seven. Eleven focused liveness, resident-FPR, tie and AFP cases pass 282
   assertions. This stage ran no long benchmark, stress test or full suite.
 - `25bc815` recognizes scalar self-XOR only when both SSA inputs are identical or equivalent pure
-  `BitCast` / `BitExtract` views of the same snapshot. Exclusive view instructions are discarded,
+  `BitCast` / `BitExtract` views of the same capture. Exclusive view instructions are discarded,
   and the Arm64 emitter uses one `ANDS` to materialize zero and produce logical NZCV together. The
   bounded Orb screen completes in 3.912 seconds with identical 2,755-PC / 3,621-version sets,
   99.995707% retained-host coverage, all top-30 PCs, no growing PC and exact PPM SHA
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. The comparable total falls
   `3,870,936 -> 3,848,132` (`-22,804`, `-0.589108%`); `0x41ef00` accounts for 12,288 and `0x45d000`
   for 4,758. The static screen has 95 shrinking PCs, none growing and `-154` instructions. Twelve
-  focused identity and flags cases pass 64 assertions. A direct frontend rewrite to a shared zero
+  focused direct and flags cases pass 64 assertions. A direct frontend rewrite to a shared zero
   constant was rejected because it perturbed constant CSE and register allocation, growing the
   static screen by 56 instructions. This stage ran no long benchmark, stress test or full suite.
 - `cd31ca8` keeps signed scalar integer conversions in the fixed XMM home after a proven full-vector
@@ -1057,15 +1061,15 @@ peepholes.
   stress test or full suite.
 - `4a446bf` preserves encodable scalar SSE memory operands through the frontend instead of
   materializing `GetOperand`. The shared helper covers scalar arithmetic and conversion sources,
-  MOVSS/MOVSD loads and stores, low-half sources and MOVHPS/MOVLPS; it reuses the existing identity-
-  mode width proof and retains the materialized path for biased addressing. The bounded Orb screen
+  MOVSS/MOVSD loads and stores, low-half sources and MOVHPS/MOVLPS; it reuses the existing direct-
+  mode width proof and retains the computed path for biased addressing. The bounded Orb screen
   completes in 2.813 seconds with identical 2,755-PC / 3,621-version sets, 99.995707% retained-host
   coverage, all top-30 PCs, no growing PC and exact PPM SHA
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. The comparable total falls
   `3,815,145 -> 3,711,542` (`-103,603`, `-2.715572%`). The two largest blocks, `0x40248e` and
   `0x402497`, each remove all 16 `ADD base,#disp` address instructions and fall `123 -> 107` and
   `122 -> 106`; their weighted reductions are 25,376 and 23,776. `0x4023c0` accounts for another
-  18,432 and `0x401e2a` for 15,240. Eight focused identity, biased-address, fault and scalar SSE
+  18,432 and `0x401e2a` for 15,240. Eight focused direct, biased-address, fault and scalar SSE
   cases pass 926 assertions on both local Clang and Orb GCC builds. This stage ran no long
   benchmark, stress test or full suite.
 - `3e1a605` extends zero-register stores through closed `LoadImm(0) -> ZeroExtend32` and
@@ -1109,7 +1113,7 @@ peepholes.
   still removed from executable IR. ARM64 independently requires one `Sub` producer, one carry
   inversion, one local EQ/NE condition, no other flag producer, no fault/observer and a fully
   PSTATE-preserving interval. It then suppresses PF/AF publication, carry normalization, the
-  polarity store and the now-obsolete backedge flags plan. Carry-reading and compound conditions
+  polarity store and the now-obsolete backedge flags recipe. Carry-reading and compound conditions
   retain the existing path. The exact HEAD/candidate Orb `smallpt_wh_x64 4 8 6` A/B keeps the PPM
   SHA `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`, zero spills,
   99.929555% retained-host coverage, 99.947333% entry coverage and all top-30 PCs. Comparable host
@@ -1263,7 +1267,7 @@ peepholes.
   assertions. This stage ran no long benchmark, stress test or full suite.
 - `be4b705` recognizes a low-lane `VecExtract64` whose V128 source is published to a resident FPR
   before its sole U64 memory store. The exact full-width publication must precede the store; opaque
-  barriers and any later non-equivalent write to that home reject the plan. The extract is then
+  barriers and any later non-equivalent write to that home reject the recipe. The extract is then
   removed and ARM64 stores the resident D register directly. Against `0512649`, the bounded c-ray
   static common set falls `214,155 -> 214,138`: 14 PCs shrink, none grow. On the explicitly partial
   22.719321%-covered retained-entry subset, host work falls `9,357,174,698 -> 9,345,606,001`
@@ -1294,7 +1298,7 @@ peepholes.
 - `42abcdb` fuses an ordinary logical producer's adjacent `ClearFlags(CVAF)` and
   `SaveFlags(NZ|PF)` publication. It publishes the parity token before borrowing scratch, then
   replaces the separate four-bit clear plus two-bit NZ merge with one six-bit extract/insert. The
-  proof rejects region-internal, backedge, dead-edge and branch-only flag plans, so their existing
+  proof rejects region-internal, backedge, dead-edge and branch-only flag recipes, so their existing
   lazy cross-edge contracts remain untouched. Smallpt keeps all 2,802 PCs / 3,435 versions, zero
   spills and the exact PPM while moving `396,873 -> 394,264` (`-2,609`, `-0.657389%`); every
   changed equal-entry PC shrinks. CoreMark keeps all 2,846 PCs / 3,379 versions and
@@ -1320,7 +1324,7 @@ peepholes.
   `5,775,449,473 -> 5,697,687,040` (`-77,762,433`, `-1.346431%`). The bounded c-ray static candidate
   completes in 0.936 seconds and the deterministic oracle remains SHA
   `89ccd2e15dba67378197d05524a6223795f8b8ab2d11f4d40deaef4af9f35c6e`; no c-ray density delta is
-  claimed because the build-only planner-disabled control was not a valid runtime baseline. Local
+  claimed because the build-only builder-disabled control was not a valid runtime baseline. Local
   and Orb pinned/page-fault focuses pass 75 assertions across 13 cases. This stage ran no long
   benchmark, stress test or full suite.
 - The Orb phase-c mirror must be synchronized with the tracked checkout using the checksum command
@@ -1344,11 +1348,11 @@ peepholes.
   A broader fixed-home publication remap grew smallpt `+4.736618%`; a generic x12 result-placement
   pass did not improve the dominant regions. Both implementations and every diagnostic path were
   removed. This stage ran no long benchmark, stress test or full suite.
-- `942a63d` generalizes the pinned low-32 self-write planner into a cross-pin copy planner. An exact
+- `942a63d` generalizes the pinned low-32 self-write builder into a cross-pin copy builder. An exact
   `GetHostGPR(U32) -> ZeroExtend32To64 -> SetHostGPR(U64)` chain now reads directly from the source
   home and emits one `mov wTarget, wSource`; any later alias must be a post-publication `BitCast`
   used only as a memory address. Source or target rewrites before publication, target rewrites while
-  an alias is live, caller-saved helper clobbers, faults and observers reject the plan. The focused
+  an alias is live, caller-saved helper clobbers, faults and observers reject the recipe. The focused
   module was renamed to `translator_pinned_gpr_copy.cpp`; no compatibility path or diagnostic gate
   remains. Against `3e47a16`, bounded smallpt keeps 2,802 PCs / 3,435 versions, 288 dynamic spills
   and the canonical PPM while moving `385,479 -> 385,025`; the 100%-covered weighted comparison is
@@ -1375,7 +1379,7 @@ peepholes.
   The faulting load writes the final pinned W home directly, while the redundant extensions and
   publication emit nothing. The load remains the only instruction that can change the target
   before publication, and the existing alias, observer, target-rewrite and helper-clobber checks
-  remain fail-closed. The plan represents a memory producer by the absence of a source GPR rather
+  remain fail-closed. The recipe represents a memory producer by the absence of a source GPR rather
   than a sentinel register or compatibility path. Against `14e48c1` with
   `SVM_X86_PIN_EXT=3`, bounded smallpt keeps 2,802 PCs / 3,435 versions, 288 dynamic spills and the
   canonical PPM while moving `385,023 -> 384,618`; the 100%-covered weighted comparison is
@@ -1401,9 +1405,9 @@ peepholes.
   and CoreMark and were removed completely. This stage ran no stress test or full suite.
 - `5922091` specializes the existing dead-edge integer branch proof when its producer is a dead
   U8/U16 `Sub`, its right operand is a single-use encodable `LoadImm`, and the branch needs exactly
-  ZF. The block plan suppresses the immediate materialization before emission, then emits
+  ZF. The block recipe suppresses the immediate materialization before emission, then emits
   `SUB wResult, wLeft, #imm; TST wResult, #width-mask`; carry, signed and observed-result shapes
-  retain the existing aligned `SUBS` path. The emitter replays the complete plan and direct pinned
+  retain the existing aligned `SUBS` path. The emitter replays the complete recipe and direct pinned
   source proof. Against `e2bb2c7` with `SVM_X86_PIN_EXT=3`, bounded smallpt keeps 2,802 PCs / 3,435
   versions, 288 dynamic spills and the canonical PPM while moving `382,069 -> 379,546`; the
   100%-covered weighted comparison is `383,095 -> 380,572` (`-2,523`, `-0.658583%`) with every
@@ -1412,8 +1416,8 @@ peepholes.
   `5,811,443,941 -> 5,811,441,723` (`-2,218`, `-0.000038%`) with every changed PC smaller. Local
   and Orb flags focuses pass 144 assertions across four cases. An earlier emitter-only ZF
   prototype had zero net code-shape change because it could not suppress the pre-emitted
-  `LoadImm`; it was removed before this block plan. This stage ran no stress test or full suite.
-- `3f079f9` generalizes the same block plan across every condition currently accepted by the
+  `LoadImm`; it was removed before this block recipe. This stage ran no stress test or full suite.
+- `3f079f9` generalizes the same block recipe across every condition currently accepted by the
   dead-edge proof: exact ZF, CF, or ZF+CF. The result-free U8/U16 compare now emits
   `UXTB/UXTH wResult, wLeft; CMP wResult, #imm`; this preserves the host-C inverse-borrow
   convention used by the existing raw EQ/NE/CC/CS/HI/LS branches and still suppresses the
@@ -1480,8 +1484,8 @@ peepholes.
   move; pinned/read/spill focuses pass on Mac and Orb, and the FLAGS six-grid remains checksum-
   identical. The temporary rejection diagnostic reused `SVM_DUMP_IR` and was removed before
   delivery; no new switch or fallback remains.
-- `e959074` composes the adjacent low-extract input plan with the dead narrow immediate branch
-  plan instead of treating them as mutually exclusive. The specialized U8/U16 compare now resolves
+- `e959074` composes the adjacent low-extract input recipe with the dead narrow immediate branch
+  recipe instead of treating them as mutually exclusive. The specialized U8/U16 compare now resolves
   the original source before choosing a pinned W view, and the redundant `BitExtract` emits
   nothing. CoreMark's `sub edx,0x30; cmp dl,9; jbe` unit at `0x4034b0` shrinks by one instruction.
   Exact 20k host work moves `4,103,652,536 -> 4,077,892,443` (`-25,760,093`, `-0.627736%`) with
@@ -1501,9 +1505,9 @@ peepholes.
   `-0.004866%`) with all 2,802 PCs / 3,435 versions, 288 spills and the canonical PPM unchanged.
   Pinned-read, spilled-add and dead-narrow-branch focuses pass on Mac and Orb; no diagnostic or
   compatibility path was added.
-- `ea82571` keeps one structured effective address across the load and store halves of a plain
+- `ea82571` keeps one structured effective address across the load and store halves of a basic
   integer Add/Sub memory RMW when the address is `base + index * access_size + displacement` in
-  identity mode. The single instruction therefore emits the displacement adjustment once while
+  direct mode. The single instruction therefore emits the displacement adjustment once while
   preserving the existing composite register-offset load/store encoding. LOCK/atomic operations,
   segment overrides, unindexed addresses, mismatched scales and biased memory retain their exact
   paths. CoreMark's mirrored units at `0x403630` and `0x403688` each shrink from 23 to 22 host
@@ -1552,7 +1556,7 @@ peepholes.
   `LoadMemory(U64) -> SetHostGPR(pin)` publication and one exact post-publication `BitCast` alias.
   The producer use graph must close over that publication and alias, the publication must already
   be allocator-proven on the target fixed home, the address must have one memory use, and target
-  rewrites or caller-saved helper barriers before that use reject the plan. The later GetOperand
+  rewrites or caller-saved helper barriers before that use reject the recipe. The later GetOperand
   therefore names the pinned home directly instead of emitting `mov xTmp,xPin`; the original
   faulting load and publication ordering are unchanged. Exact 20k CoreMark raw host work moves
   `3,714,756,826 -> 3,666,996,824`, and the 100%-covered weighted comparison moves
@@ -1604,7 +1608,7 @@ peepholes.
   diagnostic or new environment switch remains.
 - `53333fc` folds an exact adjacent `BitExtract(0, 8/16) -> ZeroExtend32` pair into one
   `UXTB/UXTH` at the extension destination. The extract must have one ordinary and raw use; pinned,
-  flags-input, width-chain, low-copy and scalar-identity owners reject the plan. Exact 20k CoreMark
+  flags-input, width-chain, low-copy and scalar-direct owners reject the recipe. Exact 20k CoreMark
   raw host work moves `3,552,714,571 -> 3,529,052,310`, and the 100%-covered weighted comparison
   moves `3,552,714,586 -> 3,529,052,325` (`-23,662,261`, `-0.666033%`) with no growing PC and CRC
   `0x382f`. The 2k screen moves `355,415,880 -> 353,049,445`. Units/versions remain
@@ -1628,7 +1632,7 @@ peepholes.
 - `4661866` keeps an exact `BitExtract(0, 8/16)` store payload on the fixed GPR home of an existing
   allocator-coalesced `SetHostGPR` publication. The extract must have one exact `StoreMemory` use,
   the publication must precede it and independently reprove, and a same-home rewrite or
-  caller-saved helper clobber before the store rejects the plan. `STRB/STRH` therefore reads the
+  caller-saved helper clobber before the store rejects the recipe. `STRB/STRH` therefore reads the
   published W register directly without materializing `UXTB/UXTH`. Exact 20k CoreMark raw host work
   moves `3,520,730,080 -> 3,512,247,843`, and the 100%-covered weighted comparison moves
   `3,520,730,095 -> 3,512,247,858` (`-8,482,237`, `-0.240923%`) with no growing PC and CRC
@@ -1668,8 +1672,8 @@ peepholes.
   diagnostic or new environment switch remains.
 - `4655e75` lets an adjacent same-width U8/U16 flags-producing `ADD/SUB` read fixed x6-x9 directly.
   The proof requires the pinned read and arithmetic to be adjacent, the producer to request host
-  NZCV, and the value to have one exact consumer; ordinary narrow arithmetic and snapshot-breaking
-  writes retain the materialized path. CoreMark's two dominant U16 comparisons at `0x402814` and
+  NZCV, and the value to have one exact consumer; ordinary narrow arithmetic and capture-breaking
+  writes retain the computed path. CoreMark's two dominant U16 comparisons at `0x402814` and
   `0x402668` each lose `UBFX + UXTH`, shrinking 13 to 11 and 10 to eight host instructions. Exact
   20k raw host work moves `3,476,032,828 -> 3,467,792,816`, and the 100%-covered weighted comparison
   moves `3,476,032,843 -> 3,467,792,831` (`-8,240,012`, `-0.237052%`) with no growing PC and CRC
@@ -1741,7 +1745,7 @@ peepholes.
   184 / 297 assertions on Mac and Orb. The promoted CoreMark and smallpt gates complete in 3.152
   and 2.308 seconds; smallpt retains all 2,730 PCs / 2,998 versions and the canonical PPM. No stress
   run, debug path or new environment switch remains.
-- `1a69a59` folds the identity-mode sequence `load [base+1]; add base,1` when the base is a fixed
+- `1a69a59` folds the direct-mode sequence `load [base+1]; add base,1` when the base is a fixed
   GPR, the load and update are its only ordinary uses, the update flags are dead, the full update
   publishes back to the same home, and the intervening window has no fault, helper or base
   observer. The load emits the original scalar access with AArch64 pre-index writeback and the
@@ -1782,8 +1786,8 @@ peepholes.
   threshold from three same-register sites to two. The carry proof accepts only adjacent
   `TestFlags(C) -> Add(0,C) -> Add(value,carry)` chains whose final flags are dead, whose result is
   published only at U8/U16 width, and whose carry is still live in host PSTATE. It emits one `ADC`
-  and removes the materialized zero/carry value chain; all other users, flag observers and
-  clobbers reject the plan. Two deferred terminal sites exactly replace their two eager stores with
+  and removes the computed zero/carry value chain; all other users, flag observers and
+  clobbers reject the recipe. Two deferred terminal sites exactly replace their two eager stores with
   one two-instruction cold publisher, so total code size does not grow. Exact CoreMark 20k moves
   `3,416,879,675 -> 3,397,918,414` (`-18,961,261`, `-0.554929%`) with all 2,761 PCs / 2,864
   versions, 100% coverage, top-20 20/20, no growing PC and `crcfinal=0x382f`. `0x4026ca` shrinks
@@ -1875,7 +1879,7 @@ peepholes.
   CoreMark 20k returns `crcfinal=0x382f` on Mac and Orb. Mac/Orb pinned-GPR, direct-link without
   stress, guarded-return, function and indirect-L1 focuses pass 93/93, 1,113/771, 5/5, 252/252
   and 13/13 assertions. The bounded Orb smallpt screen completes in 4.949 seconds with zero spills;
-  no stress run, diagnostic, temporary environment switch or probe remains.
+  no stress run, diagnostic, temporary environment switch or check remains.
 - The requested five-item tranche is complete. Static-call flags bypass has generation-checked
   pending-flags entries (`aa4ed1b`, `631e0a7`); the BL/call-entry continuation ABI is `631e0a7`;
   return polling moved to the fault-backed L1 safepoint in `940dcfe`; call-aware indirect L1 is
@@ -1888,7 +1892,7 @@ peepholes.
   published a generation-safe `call_pending_flags_host_pc`, but indirect calls cached only the
   canonical call entry and therefore paid a three-instruction full NZCV merge before every hit.
   AddressSpace now owns a separately invalidated pending-call L1 table. A proved full-NZCV call
-  probes that table without publishing flags; a miss performs the merge in the grouped cold path
+  checks that table without publishing flags; a miss performs the merge in the grouped cold path
   and returns through the deferred-location dispatcher publisher. Signal redirects both call tables
   to the inaccessible interrupt mapping, and SMC clears both canonical and pending entries. Cold
   merge scratch is selected explicitly away from the dynamic target; this is required because a
@@ -1898,7 +1902,7 @@ peepholes.
   common growth. `0x402580` shrinks `23 -> 21`; CoreMark 20k returns `crcfinal=0x382f` on Mac and
   Orb. The bounded Orb smallpt run completes in 3.861 seconds with zero spills and SHA-256
   `542db87b61af7a5cfff84083696082819f8608dc9c3ffaeda04b1db5b3210635`. Mac/Orb runtime interrupt,
-  pending-table SMC, direct-link without stress, function and guarded-return focuses pass. No probe,
+  pending-table SMC, direct-link without stress, function and guarded-return focuses pass. No check,
   diagnostic path, environment switch or stress run remains. Applying the measured post-refresh
   reductions to the last formal FEX denominator estimates the remaining CoreMark gap at about 3.5%;
   this remains an estimate until the next full guest-instruction denominator refresh.
@@ -1911,7 +1915,7 @@ peepholes.
   `363,110,103 -> 361,321,928`. CoreMark 20k returns `crcfinal=0x382f` on Mac and Orb. Mac/Orb
   direct-link without stress pass 1,281/789 assertions, function passes 252/252, guarded return
   passes 5/5, and the bounded smallpt screen retains zero spills and SHA-256
-  `542db87b61af7a5cfff84083696082819f8608dc9c3ffaeda04b1db5b3210635`. No probe, diagnostic path,
+  `542db87b61af7a5cfff84083696082819f8608dc9c3ffaeda04b1db5b3210635`. No check, diagnostic path,
   environment switch or stress run remains. Applying this reduction to the last formal FEX
   denominator estimates the remaining CoreMark gap at about 3.0%; refresh both engines before
   treating it as a formal ratio.
@@ -1929,7 +1933,7 @@ peepholes.
   Mac/Orb direct-link without stress pass 817/771 assertions, SMC focuses pass 446/401, function
   passes 252/252 and guarded return passes 5/5. CoreMark 20k returns `crcfinal=0x382f` on both, while
   bounded Orb smallpt retains zero spills and SHA-256
-  `542db87b61af7a5cfff84083696082819f8608dc9c3ffaeda04b1db5b3210635`. No stress run, probe,
+  `542db87b61af7a5cfff84083696082819f8608dc9c3ffaeda04b1db5b3210635`. No stress run, check,
   diagnostic path or environment switch remains. This reduction is larger than the previous 3.0%
   estimated gap, so refresh the live FEX denominator before claiming parity or a lead.
 - The requested five-item tranche is complete. Static-call flags bypass is provided by `aa4ed1b`;
@@ -1956,7 +1960,7 @@ peepholes.
   live ratio remains ahead: SwiftVM `1.804829` versus FEX `1.860078`, or `0.970297x` and a 2.9703%
   lead. Mac/Orb focused return, L1 and call-link tests pass 47/47 assertions, CoreMark 20k returns
   `crcfinal=0x382f`, and bounded smallpt retains zero spills and SHA-256
-  `542db87b61af7a5cfff84083696082819f8608dc9c3ffaeda04b1db5b3210635`. No stress run, probe,
+  `542db87b61af7a5cfff84083696082819f8608dc9c3ffaeda04b1db5b3210635`. No stress run, check,
   diagnostic path or environment switch remains.
 - `880831e` closes two correctness failures exposed while admitting more FEX comparison workloads.
   FLAGS_REGS previously discarded a pending parity token and uncommitted NZCV whenever the next
@@ -1980,7 +1984,7 @@ peepholes.
 - `ac3c3de` closes the value and region-cycle failures uncovered by the bounded OpenSSL refresh.
   Full-width aliases of a value already published in a pinned guest GPR now resolve directly to
   that fixed home in scalar Add, so glibc `strtol` computes `acc * 10 + digit` instead of reading an
-  unmaterialized SSA allocation. The alias matcher also rejects non-`BitExtract` consumers before
+  uncomputed SSA allocation. The alias matcher also rejects non-`BitExtract` consumers before
   querying their return width. Backedge labels now cover both hot pending-flags cuts and cold
   dead-successor cuts, cold-path poll faults are resolved before label release, and direct-cycle
   stubs are emitted after all cold edges have declared their targets. OpenSSL now honors
@@ -1989,7 +1993,7 @@ peepholes.
   `crcfinal=0x4983`. A same-input static setup region measures 634 SwiftVM host instructions versus
   597 in FEX, a 6.20% local gap. The SHA body is not statically comparable because FEX compiles a
   2,604-instruction multiblock from `0x8b9340`, while SwiftVM compiles only the two reached regions.
-  A six-second counter run was stopped without output, and no profiler path or temporary probe is
+  A six-second counter run was stopped without output, and no profiler path or temporary check is
   retained. OpenSSL still reports `infk` because its elapsed-time denominator is zero; do not use
   that throughput as code-generation evidence.
 - `89d4d94` closes two host-continuation invalidation holes without adding hit-path work. An empty
@@ -2010,7 +2014,7 @@ peepholes.
 - `70049f8` restores the default pinned/UniformElim SQLite path and closes the underlying
   caller-saved narrow-publication defect. In `sqlite3_str_vappendf` at guest `0x4250fc`, the old
   host sequence loaded the format kind with `ldrb w2` but then executed `uxtb w9, w9; cmp w9,
-  #16`, so `%d` was classified from an unmaterialized SSA allocation and `PRAGMA threads=%d`
+  #16`, so `%d` was classified from an uncomputed SSA allocation and `PRAGMA threads=%d`
   became `PRAGMA threads=`. The pinned-copy proof now admits unsigned narrow loads whose
   `SetHostGPR` publication was already coalesced, and narrow flag/compare lowering retains and
   resolves the proved fixed-home alias. The repaired sequence is `ldrb w2; uxtb w9, w2; cmp w9,
@@ -2020,7 +2024,7 @@ peepholes.
   A same-input wall sample measured SwiftVM 1.955 seconds versus FEX 1.128 seconds, but this is not
   a code-generation ratio. The bounded SQL-only RE=0 static join covered only 19.76% of entries
   and 13.83% of SwiftVM host weight because FEX emitted multiblock roots while SwiftVM emitted
-  per-block roots, so its apparent weighted ratio is rejected. No diagnostic probe, temporary
+  per-block roots, so its apparent weighted ratio is rejected. No diagnostic check, temporary
   source path, environment switch, or benchmark stress run remains.
 - `a298238` removes the remaining profile-interface hop from the pending-flags indirect-call hit
   boundary. The pending call-L1 base now lives beside the canonical indirect-call bases in `State`,
@@ -2034,7 +2038,7 @@ peepholes.
   OpenSSL SHA command exits normally. Replacing the existing flags-bypass branch with NOPs was
   rejected without implementation: the three NOPs would still execute, so removing that remaining
   branch requires a different code layout and must not introduce per-site cold growth. No stress
-  run, probe, diagnostic path or environment switch remains.
+  run, check, diagnostic path or environment switch remains.
 - `3e58efb` removes the linked static-forward branch without turning the skipped merge into executed
   NOPs. Continuation-mode static forwards emit one `BL` to a unit-shared cold publisher keyed by
   scratch/token registers; the publisher performs the full NZCV merge, parity-byte publication and
@@ -2056,7 +2060,7 @@ peepholes.
   pass 168 assertions each. Bounded smallpt retains oracle
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`; default SQLite exits in
   1.59 seconds with `TOTAL 0.974s`, and the one-second OpenSSL SHA command exits normally. No stress
-  run, probe, diagnostic path or environment switch remains.
+  run, check, diagnostic path or environment switch remains.
 - `1dff969` reduces the validated return-continuation hit from five instructions to four:
   `LDP; CMP; B.ne miss; BLR continuation`. Ordinary empty frames and guest-target mismatches branch
   to the existing grouped cold publisher, which reloads x25 from the Runtime's immutable
@@ -2077,10 +2081,10 @@ peepholes.
   runs. Mac/Orb function, direct-link without stress, target-zero/mismatch, guarded-return,
   interrupt and serializer focuses pass 1,174/1,111 assertions. Bounded smallpt retains oracle
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`, and the one-second
-  OpenSSL SHA command exits normally. No stress run, probe, diagnostic path or environment switch
+  OpenSSL SHA command exits normally. No stress run, check, diagnostic path or environment switch
   remains.
 - `e0f9d58` removes the nonzero host-entry check from every continuation indirect-call hit. The hot
-  probe is now `LDR base; BFI address; LDP key/entry; CMP key; B.ne miss; BLR entry`, six
+  check is now `LDR base; BFI address; LDP key/entry; CMP key; B.ne miss; BLR entry`, six
   instructions. Ordinary key mismatches still branch to the existing grouped cold path. Only a
   matching entry whose value was atomically invalidated to zero reaches `BLR 0`; x30 identifies the
   exact source instruction, an `IndirectCallMiss` fault record resumes that same cold path, and x25
@@ -2097,7 +2101,7 @@ peepholes.
   and 8/8 assertions; the new invalidated-entry recovery passes 11/11 and the v13 serializer focus
   passes 41/41. Bounded smallpt retains oracle
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`, and the one-second
-  OpenSSL SHA command exits normally. No stress run, retained probe, diagnostic path or environment
+  OpenSSL SHA command exits normally. No stress run, retained check, diagnostic path or environment
   switch remains.
 - The post-`e0f9d58` live FEX refresh uses the same measurement binary and smallest-containing-range
   join as the prior report. Replaying the retained pre-refresh SwiftVM profile reproduces the old
@@ -2110,13 +2114,13 @@ peepholes.
   branch-heavy audit target. Its full entry-instrumented run did not finish inside either the six-
   or eight-second cap and was terminated; SIGINT did not produce a partial profile. Do not extend
   those runs or add a profiler exit mechanism. Use a bounded representative testset or inspect the
-  remaining multiblock/dispatch formation directly. No new profiler, probe, environment switch or
+  remaining multiblock/dispatch formation directly. No new profiler, check, environment switch or
   source path was retained.
 - `30c85c7` removes the preserve-all helper ABI from BSF/BSR. The frontend now emits U64
   count-zero IR, AArch64 lowers BSF to `RBIT + CLZ` and BSR to `CLZ + EOR #63`, and the
   interpreter provides the same zero-count semantics. The old `Bsf64`/`Bsr64` helpers and their
   fallback path are deleted. In SQLite `__memcmp_sse2` this removes the repeated complete register
-  snapshots: STP/LDP fall from 122/137 to 2/17, while the unit shrinks `1,349 -> 1,017` host
+  captures: STP/LDP fall from 122/137 to 2/17, while the unit shrinks `1,349 -> 1,017` host
   instructions. The bounded `main/10` static set retains all 1,995 units and moves
   `497,244 -> 495,370` (`-1,874`, `-0.3769%`); 16 units shrink and one grows. Two interleaved full
   SQLite pairs are consistently but modestly faster: internal totals `1.182/1.177s ->
@@ -2125,7 +2129,7 @@ peepholes.
   (`-572`). Bounded smallpt keeps SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac/Orb directed bit-scan
   cases pass; fixed-seed 424242 bit fuzz records zero BSF mismatches and the same unrelated ROL
-  divergence family. No stress run, full suite, probe, diagnostic path or new environment switch
+  divergence family. No stress run, full suite, check, diagnostic path or new environment switch
   remains.
 - `4c9c669` removes both preserve-all helper calls from every 8/16/32-bit DIV/IDIV. The combined
   dividend already fits U64 at those widths, so the frontend now emits native unsigned division or
@@ -2138,7 +2142,7 @@ peepholes.
   growth and moves `291,700,693 -> 291,700,603` (`-90`). Fixed-seed 101 and 424242 DIV/IDIV fuzz
   pass on Mac and Orb. Bounded smallpt keeps SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, full
-  suite, probe, diagnostic path or new environment switch remains.
+  suite, check, diagnostic path or new environment switch remains.
 - `26c5f40` removes repeated direct-cycle cold exit tails from large function units. Each fault
   recovery label still acquires the exit request, publishes its block-specific flags and writes
   its exact target; functions with at least five conservative candidates branch afterward to one
@@ -2151,7 +2155,7 @@ peepholes.
   100% coverage. Mac/Orb direct-cycle, pending-interrupt and disabled-latch focuses pass 65
   assertions each. Bounded smallpt keeps SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, full
-  suite, probe, diagnostic path or new environment switch remains.
+  suite, check, diagnostic path or new environment switch remains.
 - A CPUID prototype that retained all four output registers in SSA until the final publication was
   fully removed. It lengthened four simultaneous Select chains and increased register pressure:
   bounded SQLite moved `468,505 -> 469,934` (`+1,429`), all five changed CPUID units grew, and
@@ -2171,7 +2175,7 @@ peepholes.
   neutral-to-positive, and bounded smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. The directed SSE batch
   passes 129 assertions on Mac and Orb; a fixed 20-iteration SSE2 seed retains the baseline's 11
-  unrelated flag divergences. No stress run, probe, diagnostic path or environment switch remains.
+  unrelated flag divergences. No stress run, check, diagnostic path or environment switch remains.
 - `9ac80fd` moves that hierarchy into one vector-lowering helper and uses it to collect byte
   IntRes1 masks in inline PCMPISTRI/M. This removes the synthesized 128-bit weight constant, two
   horizontal reductions and the scalar high-half merge from every byte-form `Sse42Str`. Against
@@ -2181,7 +2185,7 @@ peepholes.
   fallback was measured separately and rejected (`+2,907`, all 16 affected units grew), so the
   inline path remains canonical. Mac and Orb pass the 16,255-assertion Rosetta/SDM differential,
   the scratch-contract and PMOVMSKB directed gates; bounded smallpt retains SHA-256
-  `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, probe,
+  `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, check,
   diagnostic path or environment switch remains.
 - `4994d73` replaces the separate quotient and remainder helpers for 128/64 DIV/IDIV with
   one `Div128` operation whose AArch64 helper returns both ABI results. The shared arithmetic moved
@@ -2196,7 +2200,7 @@ peepholes.
   shrinks `1,110 -> 980`, and `get_common_cache_info` at `0x4d8ce0` shrinks `1,594 -> 1,498`.
   Bounded smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, retained
-  probe, diagnostic source path or new environment switch remains.
+  check, diagnostic source path or new environment switch remains.
 - `3f38207` replaces CPUID's four parallel leaf-selection chains with one x86-specific semantic
   helper returning two packed 64-bit results. The helper receives the dynamic leaf/subleaf and a
   compile-time feature mask, so code-cache-visible feature gating remains identical while the hot
@@ -2210,22 +2214,22 @@ peepholes.
   the paired-division regression. SQLite exits normally, CoreMark 20k retains `crcfinal=0x382f`,
   and bounded smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, fallback,
-  retained probe, diagnostic source path or new environment switch remains.
+  retained check, diagnostic source path or new environment switch remains.
 - `58e8d58` detects FEAT_LSE through the existing host-feature bitmap and lowers aligned scalar
   CMPXCHG, XCHG and XADD to CASAL, SWPAL and LDADDAL. The capability is already part of ConfigHash,
   so cached code cannot cross into a non-LSE host shape. Misaligned x86 atomics keep the required
-  serialized plain-access path; only the aligned exclusive retry loops are removed. Against
+  serialized basic-access path; only the aligned exclusive retry loops are removed. Against
   `3f38207`, bounded SQLite `main/10` keeps all 1,995 units and moves `464,464 -> 464,305`
   (`-159`, `-0.034233%`), with 25 shrinking units and no growth. `__run_exit_handlers` moves
   `1,010 -> 986`; its ten aligned atomic sites become four CASAL and six SWPAL instructions, while
   the static unaligned lock paths remain. Fixed-seed 101 and 424242 bit-operation fuzz on Mac and
   Orb report zero CMPXCHG mismatches; only the established unrelated rotate/bit families remain.
-  Bounded SQLite exits normally. No stress run, probe, diagnostic source path or new environment
+  Bounded SQLite exits normally. No stress run, check, diagnostic source path or new environment
   switch remains.
 - `3c5a67a` adds an explicit general-register-only helper contract for AArch64 Clang and GCC and
   applies it to the CPUID pair-result helper. CPUID now receives the XSAVE/YMM configuration in its
   compile-time feature mask, so the helper is a closed integer leaf; Orb disassembly has 113
-  instructions, no SIMD operand and no call. The backend therefore omits the pinned SIMD snapshot
+  instructions, no SIMD operand and no call. The backend therefore omits the pinned SIMD capture
   only when the compiler enforces that contract. Against `58e8d58`, bounded SQLite `main/10` keeps
   all 1,995 units and moves `464,305 -> 463,873` (`-432`, `-0.093042%`), with all five CPUID units
   shrinking and none growing. The larger CPUID roots move `1,703 -> 1,495` and `621 -> 509`, while
@@ -2240,7 +2244,7 @@ peepholes.
   the five completed mechanisms move SQLite `467,641 -> 463,553` (`-4,088`, `-0.874175%`). Bounded
   SQLite exits normally, CoreMark 20k retains `crcfinal=0x382f`, and smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, retained
-  probe, diagnostic source path or new environment switch remains.
+  check, diagnostic source path or new environment switch remains.
 - `b3c30f8` moves cycle-poll resume-location publication from every generated cold recovery stub
   into the existing fault metadata path. Each poll fault already has an exact serialized
   `guest_start`; resolution now changes that field to the architectural resume location, and the
@@ -2256,7 +2260,7 @@ peepholes.
   SMC ring, guarded-return and disk-cache fault-site round-trip focuses. Bounded SQLite exits
   normally, CoreMark 20k retains `crcfinal=0x382f`, and smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, retained
-  probe, diagnostic source path or new environment switch remains.
+  check, diagnostic source path or new environment switch remains.
 - `c7107cd` lowers 32/64-bit x86 ROL/ROR value paths through the existing native `RorImm` and
   `RorValue` IR instead of synthesizing two shifts and an OR. Immediate left rotates use the
   complementary right-rotate count, dynamic left rotates use the low-width negated count, and
@@ -2270,7 +2274,7 @@ peepholes.
   rotate directed test passes. Bounded SQLite exits normally, CoreMark 20k retains
   `crcfinal=0x382f`, and smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, retained
-  probe, diagnostic source path or new environment switch remains.
+  check, diagnostic source path or new environment switch remains.
 - `5df9b59` splits rotate flag updates by the decoder's already-known count class. Dynamic counts
   retain the zero-count branch and conditional carry-polarity merge, statically zero counts retain
   both incoming flags and polarity without emitting an update, and statically nonzero counts write
@@ -2283,7 +2287,7 @@ peepholes.
   narrow rotate test pass. Bounded SQLite exits normally, CoreMark 20k retains `crcfinal=0x382f`,
   and smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, retained
-  probe, diagnostic source path or new environment switch remains.
+  check, diagnostic source path or new environment switch remains.
 - `d9f2922` gives direct scalar state accesses, shifts, extensions and logical operations their
   measured per-instruction GPR scratch prices. After the ordinary Linux allocation proves that a
   unit spills and reserves x18 for reloads, the verified allocator tries one lower dynamic scratch
@@ -2292,12 +2296,12 @@ peepholes.
   exact HEAD/candidate SQLite `main/10` in-memory A/B keeps the same 2,065 PCs and versions, 100%
   host and entry coverage, 28 shrinking units and no growth. Static host instructions move
   `446,280 -> 445,666` (`-614`, `-0.137582%`); `sqlite3_randomness` moves `1,659 -> 1,450` and its
-  alternate root moves `263 -> 209`. Timing-normalized SQLite output is byte-identical. The local
+  alternate root moves `263 -> 209`. Timing-adjusted SQLite output is byte-identical. The local
   and Orb spill-eviction, saturated scratch-pool and hidden-scratch contract cases pass, while
   bounded smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. A reserve of one produces
   the same SQLite shape as reserve two, so the less aggressive reserve remains canonical. No stress
-  run, retained probe, diagnostic source path or new environment switch remains.
+  run, retained check, diagnostic source path or new environment switch remains.
 - `2d74b5b` replaces SSE4.2 string comparison's generic packed-flag expansion with a dedicated IR
   publication. The shared result layout now places SF/ZF/CF/OF in a reversible nibble, the flags
   pass deletes dead publications and narrows surviving ones to the live subset, and the AArch64
@@ -2306,23 +2310,23 @@ peepholes.
   2,065 PCs and versions with 100% host and entry coverage, 14 shrinking units and no growth.
   Static host instructions move `445,666 -> 444,836` (`-830`, `-0.186238%`);
   `__strcspn_sse42` moves `737 -> 645`, and the remaining 13 reductions cover the same glibc
-  SSE4.2 string family. Timing-normalized SQLite output is byte-identical. The 16,255-assertion
+  SSE4.2 string family. Timing-adjusted SQLite output is byte-identical. The 16,255-assertion
   Rosetta/SDM differential, aliasing, memory-boundary, scratch-contract and flag-elimination cases
   pass locally and on Orb. Bounded smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, retained
-  probe, diagnostic source path or new environment switch remains.
+  check, diagnostic source path or new environment switch remains.
 - `f7a6461` applies the existing compiler-enforced general-register-only helper contract to paired
   128/64 division. Both signed and unsigned wrappers are integer-only; Orb's GCC 13 wrappers contain
   no SIMD instruction, and the resolved `__divti3`, `__modti3`, `__udivti3` and `__umodti3`
   implementations contain neither SIMD instructions nor nested calls. The JIT therefore omits
-  resident FPR snapshots while retaining the existing GPR, link and paired-result preservation.
+  resident FPR captures while retaining the existing GPR, link and paired-result preservation.
   The exact SQLite A/B keeps the same 2,065 PCs and versions with 100% coverage, 29 shrinking units
   and no growth. Static host instructions move `444,836 -> 444,116` (`-720`, `-0.161857%`);
   `sqlite3VdbeExec` at `0x4a5518` moves `896 -> 848`, and `_IO_new_file_xsputn` moves
-  `783 -> 767`. Fixed-seed 101/424242 DIV/IDIV fuzz passes locally and on Orb, timing-normalized
+  `783 -> 767`. Fixed-seed 101/424242 DIV/IDIV fuzz passes locally and on Orb, timing-adjusted
   SQLite output is byte-identical, and bounded smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No stress run, retained
-  probe, diagnostic source path or new environment switch remains.
+  check, diagnostic source path or new environment switch remains.
 
 - Published region entries now share their counted entry when no split backedge ABI is required.
   Dispatcher, region-link slow traversal, indirect-L1 and legacy RSB paths restore NZCV before
@@ -2333,25 +2337,25 @@ peepholes.
   1,414 shrinking units and 80 one-instruction growths. The largest current gaps move as follows:
   `0x4a5518 848 -> 748`, `0x4a5470 581 -> 506`, `0x449880 706 -> 647`,
   `0x4e8720 767 -> 677`, `0x4e2380 839 -> 746`, `0x506d30 645 -> 610` and
-  `0x50b870 918 -> 871`. Timing-normalized SQLite output remains byte-identical with SHA-256
+  `0x50b870 918 -> 871`. Timing-adjusted SQLite output remains byte-identical with SHA-256
   `efb4bea2cec1e324d746acc11d14f62c8c742fcd98f1a52f4b75a7e44a864a25`; bounded smallpt retains
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Local and Orb entry,
   direct-link, continuation, guarded-return and flags focuses pass 169 assertions across nine
-  cases. No stress run, probe, diagnostic source path or environment switch remains.
+  cases. No stress run, check, diagnostic source path or environment switch remains.
 
 - `CQO`-formed signed `Div128` pairs now lower through native `SDIV + MSUB` when the optimized
-  operand chain still proves that the high half is `ASR(low, 63)`. Plain `GetOperand` and `BitCast`
+  operand chain still proves that the high half is `ASR(low, 63)`. Basic `GetOperand` and `BitCast`
   wrappers are resolved without accepting shifted, extended or composite operands; all other
   128/64 divisions retain the integer-only paired helper. The quotient uses a scratch register
   reserved after the paired remainder output, preventing the remainder home from aliasing and
   destroying the quotient. An exact SQLite `main/10` static-only A/B keeps all 1,999 units at 100%
   coverage and moves `384,068 -> 383,923` host instructions (`-145`, `-0.037754%`), with four
   shrinking units and no growth. `0x4a5518` moves `748 -> 678`; `0x4d8ce0`, `0x42327e` and
-  `0x41099c` each lose 25 instructions. Timing-normalized SQLite output remains byte-identical with
+  `0x41099c` each lose 25 instructions. Timing-adjusted SQLite output remains byte-identical with
   SHA-256 `efb4bea2cec1e324d746acc11d14f62c8c742fcd98f1a52f4b75a7e44a864a25`, and bounded smallpt
   retains `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac and Orb pass
   fixed seeds 101/424242 with 100 random DIV/IDIV iterations plus directed `CQO; IDIV` cases. No
-  stress run, probe, diagnostic source path or environment switch remains.
+  stress run, check, diagnostic source path or environment switch remains.
 
 - Direct-cycle fault recovery now performs the acquire load of `exit_request` once in the shared
   reason tail instead of once per resume-location stub. Each stub still owns its fault metadata and
@@ -2359,11 +2363,11 @@ peepholes.
   resume PCs are unchanged. An exact SQLite `main/10` static-only A/B keeps all 1,999 units at 100%
   coverage and moves `383,923 -> 379,915` host instructions (`-4,008`, `-1.043959%`), with 307
   shrinking units and no growth. `0x4a5518` moves `678 -> 651`, `0x4a5470` moves `506 -> 482`, and
-  the largest single reduction is 29 instructions. Timing-normalized SQLite output remains
+  the largest single reduction is 29 instructions. Timing-adjusted SQLite output remains
   byte-identical with SHA-256
   `efb4bea2cec1e324d746acc11d14f62c8c742fcd98f1a52f4b75a7e44a864a25`; bounded smallpt retains
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac and Orb pass the
-  function-SMC cycle, pending-interrupt, disabled-latch and W81 focused paths. No stress run, probe,
+  function-SMC cycle, pending-interrupt, disabled-latch and W81 focused paths. No stress run, check,
   diagnostic source path or environment switch remains.
 
 - Implicit byte-form `PCMPISTRI` with immediate `0x3a` and identical physical operands now uses its
@@ -2373,21 +2377,21 @@ peepholes.
   movemask pipeline. An exact SQLite `main/10` static-only A/B keeps all 1,999 units at 100%
   coverage and moves `379,915 -> 379,667` host instructions (`-248`, `-0.065278%`), with seven
   shrinking glibc SSE4.2 units and no growth. `__strcspn_sse42` moves `610 -> 548`; the other six
-  roots each lose 31 instructions. Timing-normalized SQLite output remains byte-identical with
+  roots each lose 31 instructions. Timing-adjusted SQLite output remains byte-identical with
   SHA-256 `efb4bea2cec1e324d746acc11d14f62c8c742fcd98f1a52f4b75a7e44a864a25`, and bounded smallpt
   retains `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac and Orb pass the
   16,255-assertion Rosetta/SDM differential, the 512-assertion scratch contract, four memory-boundary
-  assertions and 27 alias/REX assertions. No stress run, probe, diagnostic source path or
+  assertions and 27 alias/REX assertions. No stress run, check, diagnostic source path or
   environment switch remains.
 
-- A dedicated ARM64 `REP MOVS` loop was evaluated against the two helper snapshots in
+- A dedicated ARM64 `REP MOVS` loop was evaluated against the two helper captures in
   `sqlite3_randomness` at `0x423620` and fully rejected. The candidate kept precise page-fault PCs,
   copied forward and backward in architectural element order, and passed Mac/Orb fixed-seed fuzz,
   the interpreter path and the bounded smallpt oracle. Its bounded-window checks and fixed-clobber
   pressure nevertheless moved the exact 1,999-unit SQLite static shape from `379,667 -> 384,298`
   (`+4,631`, `+1.219753%`), while `0x423620` grew `1,360 -> 1,477`. Do not retry an inline loop until
   the guest window has a guaranteed guard-page ABI that removes per-site bounds code, or the loop
-  can be expressed with materially fewer fixed clobbers. No implementation or probe remains.
+  can be expressed with materially fewer fixed clobbers. No implementation or check remains.
 
 - A low-32-bit `BitExtract` can now reuse the W view of its U64 source across separated or repeated
   read-only consumers. The allocator requires the source SSA lifetime, rather than merely an
@@ -2396,9 +2400,9 @@ peepholes.
   alias constraints before removing the `UBFX`/`LSR #0`. An exact SQLite `main/10` static-only A/B
   keeps all 1,999 units at 100% coverage and moves `379,667 -> 379,445` host instructions (`-222`,
   `-0.058472%`), with 136 shrinking units and no growth; the largest unit loses eight instructions.
-  Timing-normalized SQLite output is byte-identical, and bounded smallpt retains SHA-256
+  Timing-adjusted SQLite output is byte-identical, and bounded smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac and Orb pass the two
-  focused allocation cases with 12 assertions. No stress run, probe, diagnostic source path or
+  focused allocation cases with 12 assertions. No stress run, check, diagnostic source path or
   environment switch remains.
 
 - A reverse producer-to-low32-view remap was evaluated and rejected. Keeping the producer's old
@@ -2413,41 +2417,41 @@ peepholes.
   An exact SQLite `main/10` static-only A/B keeps all 1,999 units at 100% coverage and moves
   `379,445 -> 350,638` host instructions (`-28,807`, `-7.591878%`), with 933 shrinking and 34
   growing units. `0x4a5470` moves `482 -> 440`, `0x428280` moves `828 -> 775`, and
-  `sqlite3_randomness` at `0x423620` moves `1,358 -> 1,273`. Timing-normalized SQLite output is
+  `sqlite3_randomness` at `0x423620` moves `1,358 -> 1,273`. Timing-adjusted SQLite output is
   byte-identical, and bounded smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac and Orb each pass
   123 assertions across exact region-cycle invalidation, external direct-link rings, conditional
-  rings, pending interrupts and the disabled latch. No stress run, probe, diagnostic source path or
+  rings, pending interrupts and the disabled latch. No stress run, check, diagnostic source path or
   environment switch remains.
 
 - The function-wide cycle reason tail now shares at its exact two-stub break-even instead of waiting
   for five candidates. Against the exact-cycle baseline, SQLite keeps all 1,999 units and moves
   `350,638 -> 344,221` host instructions (`-6,417`, `-1.830093%`), with 303 shrinking units and no
-  growth. `0x425378` moves `1,032 -> 919`, while `0x4a882e` moves `855 -> 766`. Timing-normalized
+  growth. `0x425378` moves `1,032 -> 919`, while `0x4a882e` moves `855 -> 766`. Timing-adjusted
   SQLite output remains byte-identical, bounded smallpt retains SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`, and Mac/Orb repeat the
-  same 123 cycle/SMC assertions. No stress run, probe, diagnostic source path or environment switch
+  same 123 cycle/SMC assertions. No stress run, check, diagnostic source path or environment switch
   remains.
 
 - Full-NZCV publication on a bypassable direct link now uses a two-instruction deoptimization site:
   `ADR x17, resume; B region_merge`. Compatible pending-flags targets patch the first instruction to
   skip both words; incompatible targets branch to one code-region merge trampoline and return through
   `x17`. This preserves the host continuation in `x30`, unlike a callable per-unit stub. Disk-cache
-  format v14 records and normalizes the merge-branch offset, then relocates it to the current region
+  format v14 records and adjusts the merge-branch offset, then relocates it to the current region
   trampoline on revival. Exact SQLite `main/10` static-only A/B keeps all 1,999 units and moves
   `344,221 -> 340,875` host instructions (`-3,346`, `-0.972050%`), with 1,049 shrinking units and no
   growth. `0x4a5518` moves `615 -> 599`, `0x4a882e` moves `766 -> 752`, and `0x401e94` moves
-  `549 -> 535`. Timing-normalized SQLite output remains byte-identical with SHA-256
+  `549 -> 535`. Timing-adjusted SQLite output remains byte-identical with SHA-256
   `9fb4d81a33c7f75c5b122f609410088c3be8a2a0bf5458d1e1164ecfc19f22f2`; bounded smallpt retains
   SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac passes 476
   assertions across production bypass execution, disk-cache serialization/revival and continuation
   preservation, plus the unchanged 123 cycle/SMC assertions. Orb passes the same cycle/SMC set and
   302 final production/cache/continuation assertions. A per-unit `BL`-return outline was rejected: it
   both grew SQLite by 1,717 instructions and overwrote `x30` before continuation-preserving direct
-  links. No probe, diagnostic path or environment switch from that evaluation remains.
+  links. No check, diagnostic path or environment switch from that evaluation remains.
 
 - Full-NZCV publication in out-of-line recovery and cycle paths now uses allocation-relative merge
-  sites patched to one of two code-region trampolines. The plain form carries only live PSTATE; the
+  sites patched to one of two code-region trampolines. The basic form carries only live PSTATE; the
   token form first materializes the parity/AF byte in `x12`. Both use `ADR x17, resume; B trampoline`
   and return through `x17`, so `x30` remains the host continuation. Units that cannot obtain a
   reachable region trampoline are re-emitted through the existing non-direct allocation path and do
@@ -2456,7 +2460,7 @@ peepholes.
   growth. `0x4032a2` moves `694 -> 654`, `0x402f73` moves `617 -> 581`, and `0x4ee9a5` moves
   `829 -> 797`. Remaining `MRS NZCV` falls from 11,694 to 5,751; full merges fall from 8,012 to
   2,069, while the 3,680 partial merges are unchanged and are now the larger publication class.
-  Timing-normalized SQLite output remains byte-identical with SHA-256
+  Timing-adjusted SQLite output remains byte-identical with SHA-256
   `9fb4d81a33c7f75c5b122f609410088c3be8a2a0bf5458d1e1164ecfc19f22f2`; bounded smallpt retains
   SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac passes 616 final
   assertions across cache, production bypass, continuation, cycle/SMC and trampoline coverage; Orb
@@ -2465,7 +2469,7 @@ peepholes.
   merge. Partial-merge follow-ups are also below the mechanism threshold: only 14 sites can use the
   existing pending direct-link ABI, while a strict no-fault/no-observer full-overwrite chain moves
   SQLite only `333,452 -> 333,347` (`-105`) across 22 units. Neither prototype remains. No census
-  logging, probe path, stress run or environment switch remains.
+  logging, check path, stress run or environment switch remains.
 
 - `fb93462` moves the repeated cycle-exit reason tail into the existing code-region trampoline.
   Single-stub exits and function-shared cycle labels now branch to one region entry, which performs
@@ -2476,11 +2480,11 @@ peepholes.
   SQLite `main/10` static-only A/B keeps all 1,999 units and moves `333,452 -> 319,814` host
   instructions (`-13,638`, `-4.089944%`), with 1,266 shrinking units, 733 unchanged units and no
   growth. `0x529e28` moves `753 -> 675`, `0x4675b0` moves `769 -> 697`, and `0x4a5518` moves
-  `584 -> 536`. Timing-normalized SQLite output remains byte-identical with SHA-256
+  `584 -> 536`. Timing-adjusted SQLite output remains byte-identical with SHA-256
   `9fb4d81a33c7f75c5b122f609410088c3be8a2a0bf5458d1e1164ecfc19f22f2`; bounded smallpt retains
   SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac and Orb pass the
   non-stress direct-link, SMC, continuation and region groups with 941 and 875 assertions. The new
-  focused region entry check covers both reason values with six assertions. No stress run, probe,
+  focused region entry check covers both reason values with six assertions. No stress run, check,
   diagnostic path or environment switch remains.
 
 - Moving static `current_loc` publication from callers into shared call entries was evaluated and
@@ -2496,13 +2500,13 @@ peepholes.
   branch at the end of that same block still require the replay stage below. A contemporaneous
   SQLite `main/10` static-only A/B matches 2,119 PCs, all top 20 roots, 99.756435% host coverage and moves
   common host instructions `333,389 -> 317,838` (`-15,551`, `-4.664521%`). The final bounded run
-  retains the same candidate common total and timing-normalized output is byte-identical. The
+  retains the same candidate common total and timing-adjusted output is byte-identical. The
   smallpt `4 8 6` common set moves `45,968 -> 43,816` (`-2,152`, `-4.681518%`); its final shape is
   identical to the initial candidate capture and the PPM SHA-256 remains
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. CoreMark retains final CRC
   `0x382f`. The newly exposed narrow `Xor` block also corrected logical-op scratch accounting for
   pinned U8/U16 inputs. Mac and Orb pass the focused decoder/function tests, non-stress direct-link
-  group and continuation group. No stress run, probe, diagnostic path or environment switch remains.
+  group and continuation group. No stress run, check, diagnostic path or environment switch remains.
 
 - A decoded function block is now replayed when its terminal discovers a block entry strictly inside
   the exact guest byte span represented by its `AdvancePC` instructions. Replay removes the old CFG
@@ -2514,11 +2518,11 @@ peepholes.
   `1,329 -> 1,163` host instructions, versus FEX at 1,015. Exact SQLite `main/10` static-only A/B keeps
   all 2,123 PCs and top-20 roots at 100% coverage, moving `318,921 -> 316,215` (`-2,706`,
   `-0.848486%`). The bounded smallpt shape keeps all 262 PCs and moves `44,634 -> 43,960` (`-674`,
-  `-1.510060%`) with 22 shrinking and no growing PCs. Timing-normalized SQLite output is byte-identical,
+  `-1.510060%`) with 22 shrinking and no growing PCs. Timing-adjusted SQLite output is byte-identical,
   smallpt retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`, and CoreMark retains
   `crcfinal=0x382f`. Mac and Orb pass the replay/function, non-stress direct-link, continuation and SMC
-  dependency groups. No stress run, probe, diagnostic path or environment switch remains.
+  dependency groups. No stress run, check, diagnostic path or environment switch remains.
 
 - Three adjacent structural candidates were rejected and fully removed. Unconditional physical-next
   region fallthrough exits SQLite incorrectly at `rip=0x51530a`; retaining logical N/Z lazily across
@@ -2535,7 +2539,7 @@ peepholes.
   `43,960 -> 43,829` (`-131`, `-0.297998%`) with no growth; its PPM SHA-256 remains
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac and Orb pass the
   focused region-flags, shared-merge, continuation-preservation and cycle/SMC groups, and short
-  CoreMark retains `crcfinal=0x382f`. No stress run, probe, diagnostic path or environment switch
+  CoreMark retains `crcfinal=0x382f`. No stress run, check, diagnostic path or environment switch
   remains.
 
 - `371d04b` shares repeated direct `CallLambda` targets within a function. Hot call sites now branch
@@ -2550,7 +2554,7 @@ peepholes.
   seven focused CallLambda, disk-cache and AFP host-call cases (134 assertions each), and short
   CoreMark retains `crcfinal=0x382f`. The fingerprint harness confirms cross-process host-byte
   self-consistency over 935 function units, then trips its stale `>3000` unit-count threshold before
-  the golden comparison. No stress run, probe, diagnostic path or environment switch remains.
+  the golden comparison. No stress run, check, diagnostic path or environment switch remains.
 
 - `763cefc` keeps lazy function regions within 8 KiB of their root. More distant direct successors
   remain undecoded external edges and use the existing on-demand L2/direct-link path; eager
@@ -2566,11 +2570,11 @@ peepholes.
   code, so neither threshold remains. Mac and Orb pass 302 assertions across function formation,
   SMC, direct-link and disk-cache focuses. CoreMark retains `crcfinal=0x382f`, and the fingerprint
   harness retains cross-process host-byte self-consistency over 935 function units before its stale
-  `>3000` threshold. No stress run, probe, diagnostic path or environment switch remains.
+  `>3000` threshold. No stress run, check, diagnostic path or environment switch remains.
 
 - `d77ffd8` extends the composite carry-condition fold to the canonical FlagM representation.
   `TestFlags(C) -> TestZero -> And(CondSet(NE))` and the inverse below-or-equal chain now publish
-  pending NZCV once, test the packed C/Z pair, and feed the identity `Select` through a local
+  pending NZCV once, test the packed C/Z pair, and feed the direct `Select` through a local
   EQ/NE condition. This removes the scalar boolean-normalization chain without assuming that the
   pre-fold PSTATE can survive later flag consumers. Against `763cefc`, bounded SQLite keeps all
   2,155 roots and moves `304,646 -> 304,116` host instructions (`-530`, `-0.173972%`) with no
@@ -2579,12 +2583,12 @@ peepholes.
   `-0.367527%`) with its canonical PPM SHA-256 unchanged. Mac and Orb pass 121 focused carry,
   CondSet and narrow-branch assertions. A same-host fixed-seed 424242 setcc/cmov/jcc comparison
   retains the baseline's exact 1,214 established differences with zero candidate-only mismatch.
-  CoreMark retains `crcfinal=0x382f`. No stress run, probe, diagnostic path or environment switch
+  CoreMark retains `crcfinal=0x382f`. No stress run, check, diagnostic path or environment switch
   remains.
 
 - `3ae5a00` gives REP MOVS/STOS/CMPS/SCAS helpers a narrow resident-SIMD preservation contract.
   The shared guard saves and restores `v16-v23` around the complete helper call, including the
-  guest-range callback and libc paths; other live SIMD registers keep the normal per-site snapshot.
+  guest-range callback and libc paths; other live SIMD registers keep the normal per-site capture.
   This avoids the invalid stronger assumption that the helper call graph is general-register-only.
   An exact same-host SQLite `main/10` A/B keeps all 2,087 roots and moves `297,402 -> 296,954`
   host instructions (`-448`, `-0.150638%`) with no growth; `sqlite3_randomness@0x423620` moves
@@ -2593,9 +2597,9 @@ peepholes.
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Three interleaved
   SQLite pairs are timing-neutral within noise (`1.047817 -> 1.049457s` median). Same-host fixed-seed
   424242 comparisons retain the baseline's exact 126 MOVS and 121 STOS established mismatches and
-  zero CMPS/SCAS mismatches. Mac and Orb pass the helper-trait and resident-snapshot checks; the
+  zero CMPS/SCAS mismatches. Mac and Orb pass the helper-trait and resident-capture checks; the
   Release wrapper contains only the four expected Q-register save/restore pairs around the helper.
-  CoreMark retains `crcfinal=0x382f`. No stress run, probe, diagnostic path or environment switch
+  CoreMark retains `crcfinal=0x382f`. No stress run, check, diagnostic path or environment switch
   remains.
 
 - `4655448` feeds the function CFG's existing fixed-point flags liveness into the destructive flags
@@ -2606,31 +2610,31 @@ peepholes.
   already removed by the pass; CF-reading conditions still require exactly one inversion. Exact
   SQLite `main/10` keeps all 2,087 roots and versions, moves `296,954 -> 292,116` host instructions
   (`-4,838`, `-1.629209%`), and has 633 shrinking roots with no growth. Three interleaved short pairs
-  move wall median `1.047209 -> 1.029851s`; timing-normalized output is identical. Bounded smallpt
+  move wall median `1.047209 -> 1.029851s`; timing-adjusted output is identical. Bounded smallpt
   keeps all 262 roots and moves `42,800 -> 42,204` (`-596`, `-1.392523%`) with PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac and Orb pass the
   function-liveness, dead-edge, SSE4.2 and direct-link/SMC focuses; fixed-seed 424242 setcc/cmov/jcc
   retains the baseline's exact 422 established mismatches with zero candidate-only mismatch.
-  CoreMark retains `crcfinal=0x382f`. No stress run, probe, diagnostic path or environment switch
+  CoreMark retains `crcfinal=0x382f`. No stress run, check, diagnostic path or environment switch
   remains.
 
 - `0ed6eb9` lowers the dominant implicit-length `PCMPISTRI 0x1a` form through one AAPCS vector
-  helper call. The call path snapshots live SIMD state, loads the two operands into `q0/q1`, passes
+  helper call. The call path captures live SIMD state, loads the two operands into `q0/q1`, passes
   the control word in `x0`, and skips preserving flags because the instruction overwrites all six
   arithmetic flags. Repeated sites share the existing function-cold host-call target thunk; other
   SSE4.2 string controls retain the inline lowering. Exact SQLite `main/10` keeps all 2,087 roots and
   versions, moves `292,116 -> 291,811` host instructions (`-305`, `-0.104411%`), and has 14
   shrinking roots with no growth. All savings are in `__strcmp_sse42`, which moves `3,949 -> 3,644`
   and closes about 18% of its previous FEX gap. Five interleaved short pairs are timing-neutral within
-  noise (`1.086915 -> 1.094917s` median), with identical timing-normalized output. Bounded smallpt
+  noise (`1.086915 -> 1.094917s` median), with identical timing-adjusted output. Bounded smallpt
   stays byte-identical at 42,204 host instructions and retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`; CoreMark retains
   `crcfinal=0x382f`. Mac and Orb pass the SSE4.2 differential, scratch, evaluator, CallLambda,
   direct-link and memory-boundary focuses. A cache-compatible two-run SQLite check stores 680 units,
-  reloads all 680 on the second process, and keeps normalized output identical. No stress run, probe,
+  reloads all 680 on the second process, and keeps adjusted output identical. No stress run, check,
   diagnostic path or environment switch remains.
 
-- `22a0b53` replaces that general AAPCS snapshot with an exact-clobber ABI for the same hot
+- `22a0b53` replaces that general AAPCS capture with an exact-clobber ABI for the same hot
   `PCMPISTRI 0x1a` form. A dedicated AArch64 leaf accepts `q0/q1`, returns the packed result in
   `w16`, and names its complete `x10/x11/x13-x17` plus `v0-v7` clobber set; the call emitter saves
   only live members of that set and LR. The generic `EmitHostCall` vector-argument and no-flags
@@ -2641,13 +2645,13 @@ peepholes.
   set FEX is 1,905, so this stage closes 569 of the previous 741-instruction gap. The repeated roots
   are now 195-197 instructions versus FEX at 190; the two remaining larger roots move `325 -> 269`
   and `331 -> 250`. Five interleaved short SQLite pairs improve wall median
-  `0.962903 -> 0.953035s` (`-1.025%`) with identical normalized output. Bounded smallpt remains
+  `0.962903 -> 0.953035s` (`-1.025%`) with identical adjusted output. Bounded smallpt remains
   byte-identical at 42,204 instructions with PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`, and CoreMark 20k
   retains `crcfinal=0x382f`. Mac and Orb pass 16,255 Rosetta/SDM assertions, the 512-assertion
   scratch contract, memory-boundary, alias and CallLambda focuses. A cache-compatible two-run
   SQLite check stores and reloads all 680 eligible units with identical output. No stress run,
-  probe, diagnostic path or environment switch remains.
+  check, diagnostic path or environment switch remains.
 
 - The next whole-function audit rejected global approaches for `balance_nonroot`: raising the
   region window grows the full SQLite shape, level-3 GPR pinning reduces that function by 221
@@ -2662,11 +2666,11 @@ peepholes.
   2,101-root SQLite `main/10` A/B, total static code moves `292,481 -> 291,437` (`-1,044`,
   `-0.356947%`) with 40 shrinking roots and no growth. `__memmove_ssse3` moves `1,990 -> 1,140`
   (`-850`); its repeated roots move from 62 to 30 instructions, versus FEX at 31, and root
-  `0x4f9840` contains the expected three `EXT` instructions. Timing-normalized SQLite output is
+  `0x4f9840` contains the expected three `EXT` instructions. Timing-adjusted SQLite output is
   byte-identical. Mac and Orb pass the 914-assertion resident-XMM test and the complete AVX integer
   reference set. Bounded smallpt remains at 42,204 instructions with PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. No long benchmark,
-  probe, diagnostic path or environment switch remains.
+  check, diagnostic path or environment switch remains.
 
 - Byte `VecMovMask` now uses the same weighted pairwise reduction as FEX. The immutable runtime
   vector prefix holds the repeated `01 02 04 08 10 20 40 80` weights; each lowering is one
@@ -2675,11 +2679,11 @@ peepholes.
   polling follows the expanded prefix through its named offset. Exact SQLite `main/10` keeps all
   2,101 roots, moves `291,437 -> 291,317` (`-120`, `-0.041175%`), and has 21 shrinking roots with
   no growth. `__strrchr_sse2` moves `675 -> 651`, `__memcmp_sse2` moves `675 -> 660`, and the
-  observed `__strcmp_sse42` set moves `1,914 -> 1,903`. Timing-normalized SQLite output is
+  observed `__strcmp_sse42` set moves `1,914 -> 1,903`. Timing-adjusted SQLite output is
   byte-identical. Bounded smallpt moves `42,204 -> 42,140` and retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac and Orb pass the
   complete AVX FP2 reference set, the 42-assertion named-constant/AES test and the 26-assertion
-  direct-cycle interrupt-poll test. No long benchmark, probe, diagnostic path or environment switch
+  direct-cycle interrupt-poll test. No long benchmark, check, diagnostic path or environment switch
   remains.
 
 - Packed integer `VecCmpEq` and `VecCmpGt` results now enter a dead resident XMM home directly.
@@ -2689,11 +2693,11 @@ peepholes.
   movemask baseline, exact SQLite `main/10` keeps all 2,101 roots and moves
   `291,317 -> 291,227` (`-90`, `-0.030894%`) with 11 shrinking roots and no growth.
   `__strrchr_sse2` moves `651 -> 633`, `__memcmp_sse2` moves `660 -> 649`, and root `0x541d60`
-  moves `415 -> 398`. Timing-normalized output is byte-identical. Bounded smallpt moves
+  moves `415 -> 398`. Timing-adjusted output is byte-identical. Bounded smallpt moves
   `42,140 -> 42,086` and retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Mac and Orb pass the
   1,034-assertion resident-XMM test and the complete AVX integer reference set. No long benchmark,
-  probe, diagnostic path or environment switch remains.
+  check, diagnostic path or environment switch remains.
 
 - BSF/BSR zero-source destination selection now uses explicit `SelectZero(test, zero, nonzero)` IR.
   ARM64 lowers it to `CMP + CSEL`, the interpreter implements the same choice, and the test source
@@ -2704,14 +2708,14 @@ peepholes.
   resident-compare baseline, exact SQLite `main/10` keeps all 2,101 roots and moves
   `291,227 -> 291,138` (`-89`, `-0.030560%`) with 15 shrinking roots and no growth.
   `__strrchr_sse2` moves `633 -> 610` and `__memcmp_sse2` moves `649 -> 635`.
-  Timing-normalized output is byte-identical. Bounded smallpt moves `42,086 -> 42,040` and retains
+  Timing-adjusted output is byte-identical. Bounded smallpt moves `42,086 -> 42,040` and retains
   PPM SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`.
   Mac and Orb pass the 395-assertion GPR publication proof and the directed BMI/BSF split test;
   1,000 fixed-seed bit-op cases report no BSF/BSR mismatch and only the established ROL/BT
-  divergence families. No long benchmark, probe, diagnostic path or environment switch remains.
+  divergence families. No long benchmark, check, diagnostic path or environment switch remains.
 
 - `4aaf88b` gives REP MOVS/STOS/CMPS/SCAS calls a shared pinned-state ABI instead of expanding the
-  generic AAPCS snapshot at every guest site. The AArch64 wrappers preserve `x3-x15` and
+  generic AAPCS capture at every guest site. The AArch64 wrappers preserve `x3-x15` and
   `v16-v31`; the caller saves only live clobbers, argument cycles and the `x11` host-target
   scratch. The previous `v16-v23`-only C++ guard was removed. Existing `ClampGuestWalk`
   mapped-range checks and guest fault returns remain unchanged. Exact SQLite `main/10` keeps all
@@ -2725,13 +2729,13 @@ peepholes.
   helper metadata, resident-XMM and FPCR focuses. The helper-fault suite retains all REP results;
   its two JIT `fxrstor` scratch-budget failures reproduce on the exact baseline. Fixed-seed 424242
   MOVS/STOS retain the baseline's exact 402/391 mismatch sets with zero candidate-only case, and
-  CMPS/SCAS remains clean. No stress run, probe, diagnostic path or environment switch remains.
+  CMPS/SCAS remains clean. No stress run, check, diagnostic path or environment switch remains.
 
 - `da63f32` keeps the same REP helpers under the installed guest FPCR. Their complete call graph is
   integer-only: mapped-range atomics and callbacks plus memcpy/memmove/memcmp operations. The
   existing signal path already restores host FPCR before entering a handler and sigreturn restores
   the interrupted guest value. Pinned-state calls return one result through `x16` when it is not a
-  live snapshot or argument reload; conflicting high-pressure units fail closed to the existing
+  live capture or argument reload; conflicting high-pressure units fail closed to the existing
   stack slot. This removes every per-site FPCR switch/rebuild and the result stack round-trip from
   the hot REP roots. Exact SQLite `main/10` keeps all 2,215 roots and moves
   `301,712 -> 300,650` (`-1,062`, `-0.351991%`) with no growth. `sqlite3BitvecSet@0x418450`
@@ -2742,7 +2746,7 @@ peepholes.
   helper metadata, resident-XMM and AFP-transparent focuses. Fixed-seed 424242 MOVS/STOS retain
   the baseline's exact 402/391 mismatch sets with zero candidate-only case, and CMPS/SCAS remains
   clean. The REP helper-fault results are unchanged; the two JIT `fxrstor` scratch-budget failures
-  still reproduce on the exact baseline. No stress run, probe, diagnostic path or environment
+  still reproduce on the exact baseline. No stress run, check, diagnostic path or environment
   switch remains.
 
 - `d6b584f` treats an `ENDBR64` target other than the current root as a lazy function-region
@@ -2760,10 +2764,10 @@ peepholes.
   73-assertion large-function CFG, 38-assertion extracted glibc function, function-liveness and
   35-assertion region-SMC focuses. The counter-based SQLite capture and CoreMark 20k/2k gates did
   not finish inside their 8/6-second caps and were stopped rather than extended; no result is
-  claimed from them. No stress run, probe, diagnostic path or environment switch remains.
+  claimed from them. No stress run, check, diagnostic path or environment switch remains.
 
 - `2ca20a2` publishes the compound logical flags of a proved self-XOR zero directly. The existing
-  self-identity analysis proves the result, so the pending `N=0,Z=1,C=0,V=0,AF=0` word no longer
+  self-direct analysis proves the result, so the pending `N=0,Z=1,C=0,V=0,AF=0` word no longer
   executes `MRS NZCV + UBFX + BFI`; it clears the six stored bits and sets Z directly. Other
   logical producers retain the existing PSTATE merge. Exact SQLite `main/10` keeps all 2,212 roots
   and moves `300,175 -> 298,111` (`-2,064`, `-0.687599%`) with no growth. Bounded smallpt keeps
@@ -2774,11 +2778,11 @@ peepholes.
   `1.400/1.678 -> 1.386/1.665s`; treat wall as neutral. Fixed-seed 424242 ALU, setcc/cmov/jcc and
   mixed comparisons retain the baseline's exact 1,424/1,214/682 mismatch sets with zero
   candidate-only case. Mac and Orb pass the self-XOR shape and function-liveness focuses. No
-  stress run, probe, diagnostic path or environment switch remains.
+  stress run, check, diagnostic path or environment switch remains.
 
 - `ee09012` relies on the acquire-release ordering already carried by aligned scalar LSE atomics.
   CASAL, SWPAL and LDADDAL no longer execute an additional `DMB ISH` before and after the RMW;
-  non-LSE exclusive loops and the serialized unaligned plain-access fallback retain both barriers.
+  non-LSE exclusive loops and the serialized unaligned basic-access fallback retain both barriers.
   The total static SQLite shape remains exactly 298,111 because those two instructions move into
   the unaligned arm rather than disappearing from the unit. `__run_exit_handlers` contains four
   CASAL and four SWPAL sites, so its aligned path executes 16 fewer DMBs. Three short SQLite pairs
@@ -2786,7 +2790,7 @@ peepholes.
   `clone_lock_rmw_x86_64` is byte-identical to baseline and exits zero; two AcqRel clone TSO
   litmus runs exit zero with `mp_bad=0`. Fixed-seed 424242 bit-op/CMPXCHG comparison retains the
   baseline's exact 51 mismatch keys with zero candidate-only case. Bounded smallpt remains at 263
-  roots / 41,251 instructions with its canonical PPM SHA-256. No stress run, probe, diagnostic
+  roots / 41,251 instructions with its canonical PPM SHA-256. No stress run, check, diagnostic
   path or environment switch remains.
 
 - `897008d` reserves `x13` across scalar atomic instructions because their unaligned fallback uses
@@ -2795,13 +2799,13 @@ peepholes.
   atomic guest now exits zero instead of PageFatal. Exact SQLite remains 2,212 roots / 298,111
   instructions with no changed root; bounded smallpt remains 263 roots / 41,251 instructions and
   retains PPM SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`.
-  The focused fixed-clobber test passes 16 assertions. No stress run, probe, diagnostic path or
+  The focused fixed-clobber test passes 16 assertions. No stress run, check, diagnostic path or
   environment switch remains.
 
 - `040d032` shares repeated 32/64-bit LSE unaligned fallbacks within one translation unit when the
   operation, width and allocated address/result/operand registers all match. A single site remains
   inline, while each repeated site keeps only `ADR + B` and returns through reserved `x13`; the
-  cold stub retains the serialized lock, two DMBs and plain faulting memory access. Exact SQLite
+  cold stub retains the serialized lock, two DMBs and basic faulting memory access. Exact SQLite
   keeps all 2,212 roots and moves `298,111 -> 297,973` (`-138`, `-0.046291%`) with no growth.
   `__run_exit_handlers@0x4e2380` moves `570 -> 536`, reducing its gap to FEX from 115 to 81.
   Bounded smallpt keeps all 263 roots, moves `41,251 -> 41,099` (`-152`, `-0.368476%`) and retains
@@ -2809,14 +2813,14 @@ peepholes.
   Three interleaved SQLite pairs are timing-neutral: internal medians move `1.331 -> 1.343s` and
   wall medians `1.619 -> 1.627s`. Fixed-seed 424242 bit-op/CMPXCHG retains the baseline's exact
   51 mismatch keys with zero candidate-only case. The aligned and unaligned lock-RMW guests exit
-  zero on both sides. A temporary two-site unaligned XADD probe confirmed two entries sharing one
+  zero on both sides. A temporary two-site unaligned XADD check confirmed two entries sharing one
   cold stub and was deleted. No stress run, diagnostic path or environment switch remains.
 
 - The numbered 1-5 ledger was re-audited against the current `297,973`-instruction SQLite shape.
   Cross-edge carry remains limited by live mixed joins; an N/Z region-trampoline prototype changed
   zero of 2,212 roots and was removed. Return-L1 is already at its current base-ISA
   `LDP + CMP + conditional miss + BLR` continuation contract. Remaining FPR publications are real
-  guest-XMM copies or fault snapshots, and the remaining composite EAs require 32-bit wrap,
+  guest-XMM copies or fault captures, and the remaining composite EAs require 32-bit wrap,
   unencodable shifts/scales or bias handling. Do not reopen those pools without a new representation
   contract rather than another local whitelist.
 
@@ -2839,7 +2843,7 @@ peepholes.
   result. Three interleaved short SQLite pairs regress wall median `1.115 -> 1.139s` and internal
   median `0.871 -> 0.893s`, so the change improves the instruction-quality target but is not a
   demonstrated end-to-end speedup. Mac and Orb focused direct-link, continuation, indirect-call
-  and static-pin groups pass 225 assertions. No stress run, probe, diagnostic path or environment
+  and static-pin groups pass 225 assertions. No stress run, check, diagnostic path or environment
   switch remains.
 
 - `df82e5b` removes the whole-unit Linux x18 spill reservation that amplified the register pressure
@@ -2854,7 +2858,7 @@ peepholes.
   Bounded smallpt `4 8 6` exits zero and retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. The saturated scratch
   test passes 763 Mac and 779 Orb assertions; the dedicated free/conflicting-x18 forwarding cases
-  pass 2 Mac and 9 Orb assertions. No stress run, probe, diagnostic path or environment switch
+  pass 2 Mac and 9 Orb assertions. No stress run, check, diagnostic path or environment switch
   remains.
 
 - The refreshed same-input SQLite/FEX attribution still puts `balance_nonroot` first: SwiftVM
@@ -2876,10 +2880,10 @@ peepholes.
   moves `40,809 -> 40,697` (`-112`, `-0.274449%`) and retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Five interleaved SQLite
   pairs move wall median `1.078718 -> 1.076245s`; internal median `0.814 -> 0.817s` remains within
-  short-run noise. Timing-normalized SQLite output is byte-identical, CoreMark 20k retains
+  short-run noise. Timing-adjusted SQLite output is byte-identical, CoreMark 20k retains
   `crcfinal=0x382f`, and Mac/Orb logical-flags focuses pass 21 assertions each. Fixed-seed 424242
   ALU differential retains the baseline's exact 182 mismatch keys with zero candidate-only case.
-  No stress run, probe, diagnostic path or environment switch remains.
+  No stress run, check, diagnostic path or environment switch remains.
 
 - `3dc5157` removes the next packed-flags duplication. For an exact CV/AF clear with N/Z still
   pending in host PSTATE and a complete parity token, every old x26 field is either explicitly
@@ -2890,10 +2894,10 @@ peepholes.
   moves `40,697 -> 40,469` (`-228`, `-0.560238%`) and retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. Five interleaved SQLite
   pairs move wall median `1.107450 -> 1.064690s` and internal median `0.842 -> 0.796s`; treat these
-  short timings as a consistency check, not a throughput claim. Timing-normalized SQLite output is
+  short timings as a consistency check, not a throughput claim. Timing-adjusted SQLite output is
   byte-identical, CoreMark 20k retains `crcfinal=0x382f`, and Mac/Orb logical-flags focuses pass
   23 assertions each. Fixed-seed 424242 ALU differential retains the baseline's exact 182 mismatch
-  keys with zero candidate-only case. No stress run, probe, diagnostic path or environment switch
+  keys with zero candidate-only case. No stress run, check, diagnostic path or environment switch
   remains.
 
 - `6dc8e14` folds incoming packed `JA/JBE` conditions without reconstructing their boolean graph.
@@ -2902,10 +2906,10 @@ peepholes.
   SQLite keeps all 2,171 roots and moves `287,411 -> 287,236` (`-175`, `-0.060888%`) with no growth.
   Bounded smallpt keeps all 263 roots, moves `40,469 -> 40,412` (`-57`, `-0.140849%`) and retains
   PPM SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`.
-  Timing-normalized SQLite output is byte-identical, CoreMark 20k retains `crcfinal=0x382f`, and the
+  Timing-adjusted SQLite output is byte-identical, CoreMark 20k retains `crcfinal=0x382f`, and the
   Mac/Orb packed/direct carry focuses pass 106 assertions each. Fixed-seed 424242 JCC differential
   retains the baseline's exact 107 mismatch keys with zero candidate-only case. No stress run,
-  probe, diagnostic path or environment switch remains.
+  check, diagnostic path or environment switch remains.
 
 - `d490189` removes the production indirect-L1 value-zero comparison. Production publishes the
   value before its key and replaces an invalidated key hit with the nonzero shared miss trampoline;
@@ -2916,9 +2920,9 @@ peepholes.
   `40,412 -> 40,235` (`-177`, `-0.437989%`) and retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. CoreMark keeps all
   294 roots, moves `40,489 -> 40,310` (`-179`, `-0.442095%`) and retains `crcfinal=0x382f`.
-  Timing-normalized SQLite output is byte-identical; three interleaved short pairs move wall median
+  Timing-adjusted SQLite output is byte-identical; three interleaved short pairs move wall median
   `1.032095 -> 1.014797s` and internal median `0.761 -> 0.756s`. Mac and Orb L1/SMC/interrupt
-  focuses pass 59 assertions each. No stress run, probe, diagnostic path or environment switch
+  focuses pass 59 assertions each. No stress run, check, diagnostic path or environment switch
   remains.
 
 - The numbered 1-5 ledger was re-audited after the packed-branch and production-L1 stages. Full
@@ -2930,7 +2934,7 @@ peepholes.
   handoff changes zero of 2,171 roots because every feasible return value is already assigned x14.
   A fallthrough-first 64-block region queue changes unit formation, covers only 86.35% of the old
   static shape and grows its common subset by 0.897911%; it was removed. Remaining FPR publications
-  are guest-XMM copies or fault snapshots, and the remaining composite EAs already use the direct
+  are guest-XMM copies or fault captures, and the remaining composite EAs already use the direct
   `UXTW` path when their 32-bit wrap, bias and scale are encodable. No prototype, diagnostic source
   path or new environment switch remains.
 
@@ -2942,10 +2946,10 @@ peepholes.
   no growth. Bounded smallpt keeps all 263 roots, moves `40,235 -> 40,070` (`-165`, `-0.410091%`)
   and retains PPM SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`.
   CoreMark keeps all 294 roots, moves `40,310 -> 40,131` (`-179`, `-0.444059%`) and retains
-  `crcfinal=0x382f`. Timing-normalized SQLite output is byte-identical; three interleaved short
+  `crcfinal=0x382f`. Timing-adjusted SQLite output is byte-identical; three interleaved short
   pairs move wall median `1.098 -> 1.090s` and internal median `0.831 -> 0.816s`. Mac and Orb
   logical-flags focuses pass 27 assertions each. Fixed-seed 424242 with 256 ALU iterations retains
-  the baseline's exact 100 mismatch keys with zero candidate-only case. No stress run, probe,
+  the baseline's exact 100 mismatch keys with zero candidate-only case. No stress run, check,
   diagnostic path or environment switch remains.
 
 - `4d8e1f0` moves paired integer-helper preservation out of every Div128 and CPUID call site into
@@ -2958,10 +2962,10 @@ peepholes.
   Bounded smallpt keeps all 263 roots, moves `40,070 -> 39,746` (`-324`, `-0.808585%`) and retains
   PPM SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`.
   CoreMark keeps all 294 roots, moves `40,131 -> 39,819` (`-312`, `-0.777454%`) and retains
-  `crcfinal=0x382f`. Timing-normalized SQLite output is byte-identical; three interleaved short
+  `crcfinal=0x382f`. Timing-adjusted SQLite output is byte-identical; three interleaved short
   pairs keep wall median `1.025 -> 1.025s` and move internal median `0.772 -> 0.771s`. Mac and Orb
   fixed seeds 101/424242 pass 100 DIV/IDIV iterations, CPUID passes 29 assertions, and Orb pin
-  levels 0-3 each pass a 30-iteration DIV/IDIV check. No stress run, probe, diagnostic path or
+  levels 0-3 each pass a 30-iteration DIV/IDIV check. No stress run, check, diagnostic path or
   environment switch remains.
 
 - `218383a` combines cold cycle-exit flags publication with the shared halt-reason path. A full-NZCV
@@ -2973,11 +2977,11 @@ peepholes.
   (`-90`, `-0.226438%`) and retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. CoreMark keeps all
   294 roots, moves `39,819 -> 39,705` (`-114`, `-0.286295%`) and retains `crcfinal=0x382f`.
-  Timing-normalized SQLite output is byte-identical; six short interleaved/reverse-order pairs move
+  Timing-adjusted SQLite output is byte-identical; six short interleaved/reverse-order pairs move
   wall median `1.051 -> 1.043s` and internal median `0.787 -> 0.779s`, used only as a consistency
   check. Mac and Orb pass 49 cycle assertions and 93 direct-link/flags assertions each. A separate
   block-local known-zero-AF merge prototype saved only 16 SQLite instructions, while a matching
-  CheckHalt merge-to-return entry changed zero roots; both were fully removed. No stress run, probe,
+  CheckHalt merge-to-return entry changed zero roots; both were fully removed. No stress run, check,
   diagnostic path or environment switch remains.
 
 - `ab19937` combines a terminal full-NZCV publication with the host-return trampoline. Eligible
@@ -2990,16 +2994,16 @@ peepholes.
   Bounded smallpt keeps all 263 roots, moves `39,656 -> 38,762` (`-894`, `-2.254388%`) and retains
   PPM SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`.
   CoreMark keeps all 294 roots, moves `39,705 -> 38,735` (`-970`, `-2.443017%`) and retains
-  `crcfinal=0x382f`. Timing-normalized SQLite output is byte-identical; three short
+  `crcfinal=0x382f`. Timing-adjusted SQLite output is byte-identical; three short
   interleaved/reverse-order pairs keep wall median `1.022 -> 1.022s` and move internal median
   `0.769 -> 0.771s`, used only as a consistency check. Mac and Orb pass 61 cycle assertions,
-  25 return/flags assertions and 105 direct-link/flags assertions each. No stress run, probe,
+  25 return/flags assertions and 105 direct-link/flags assertions each. No stress run, check,
   diagnostic path or environment switch remains.
 
 - `ae6471c` replaces the block-wide ADC/SBB flags-elimination bailout with guest-region protection.
   `flags_carry_regions` partitions IR at `AdvancePC`, marks each carry consumer and walks backwards
   through intervening regions to the actual carry writer. The flags pass resets both its needed
-  mask and local-label snapshots at those barriers while continuing ordinary dead-write elimination
+  mask and local-label captures at those barriers while continuing ordinary dead-write elimination
   in unrelated regions. `SVM_FLAG_CARRY_ELIM=0` retains the exact whole-block bailout. A strict
   paired SQLite capture keeps all 2,167 roots and moves `274,241 -> 273,723` (`-518`,
   `-0.188885%`) with no growth; `powerOfTen` moves `242 -> 199` and `sqlite3BitvecSet` moves
@@ -3007,14 +3011,14 @@ peepholes.
   `-0.126412%`) while retaining PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. CoreMark keeps all
   294 roots, moves `38,735 -> 38,686` (`-49`, `-0.126501%`) and retains `crcfinal=0x382f`.
-  Timing-normalized SQLite output is byte-identical; three short interleaved pairs move wall median
+  Timing-adjusted SQLite output is byte-identical; three short interleaved pairs move wall median
   `1.013 -> 1.006s` and internal median `0.762 -> 0.753s`, used only as a consistency check. Mac
   and Orb pass 54 flag-elimination assertions and 57 carry assertions each. Fixed-seed 424242 ALU
   retains the baseline's exact 100 mismatch keys, and mixed seed 101 retains all 105 keys exactly.
   Mixed seed 424242 reports two nominal candidate-only keys in blocks containing no ADC/SBB; their
-  baseline/candidate AArch64 streams have identical instruction counts, mnemonics and normalized
+  baseline/candidate AArch64 streams have identical instruction counts, mnemonics and adjusted
   operands, differing only in the ASLR-derived SetLocation immediate. The unsafe unrestricted
-  bailout removal and the one-instruction adjacent-chain prototype were fully removed. No probe,
+  bailout removal and the one-instruction adjacent-chain prototype were fully removed. No check,
   diagnostic path or environment switch remains.
 
 - The post-`ae6471c` FEX refresh leaves the largest positive SQLite root gaps at `freeSpace`
@@ -3032,7 +3036,7 @@ peepholes.
   exact SQLite `273,723 -> 270,992`, smallpt `38,713 -> 38,457` and CoreMark `38,686 -> 38,434`,
   with byte-identical SQLite output, the canonical smallpt image and `crcfinal=0x382f`. Repeated
   identical SQLite runs later exposed nondeterministic `malloc_consolidate` corruption, so the
-  planner, test and CMake entry were fully removed. Inferring interior region edges from trailing
+  builder, test and CMake entry were fully removed. Inferring interior region edges from trailing
   `SetLocation`, even when restricted to direct `E9/EB` joins or a 16-byte duplicate-tail threshold,
   separately produced guest Signal exits or heap corruption; those variants were also removed.
   The restored Orb translator is byte-identical to the `ae6471c` baseline
@@ -3059,21 +3063,21 @@ peepholes.
   SHA-256 remains `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`.
   CoreMark 2k keeps all 295 roots, moves `38,696 -> 38,631` (`-65`, `-0.167976%`) and retains
   `crcfinal=0x4983`. Three interleaved short SQLite pairs move wall/internal medians
-  `1.013968/0.757 -> 1.000986/0.751s`; all six timing-normalized outputs are byte-identical.
+  `1.013968/0.757 -> 1.000986/0.751s`; all six timing-adjusted outputs are byte-identical.
   Mac and Orb pass the dedicated two-case/nine-assertion focus and the broader
   nine-case/126-assertion flag focus. Fixed-seed 424242, 256-case ALU and setcc/cmov/jcc
   comparisons retain the baseline's exact 79 and 123 established mismatch sets with zero
-  candidate-only mismatch. No stress run, probe, diagnostic path or environment switch remains.
+  candidate-only mismatch. No stress run, check, diagnostic path or environment switch remains.
 
 - The explicit split-entry audit confirmed `0x4498c9`, `0x449a5b` and `0x449b0c` are real x86
-  instruction boundaries, but boundary identity is still insufficient. A prototype transferred
+  instruction boundaries, but boundary direct is still insufficient. A prototype transferred
   HIR ownership, call-return metadata, CFG edges and guest-code dependencies only at exact
   `AdvancePC` cuts, rejected prefix SSA use and incoming-flags observation, and retained
   `CheckHalt` on internalized cycle edges. Isolating it to `freeSpace` moved that root
   `417 -> 399`, but global activation reproduced guest halt in libc initialization and heap
   corruption in `_int_malloc`; fan-in thresholds only changed which function failed. The entire
   implementation, test and diagnostic output were removed. A viable split entry needs a frontend
-  decoder-state snapshot in addition to HIR/fault ownership; do not infer it from `SetLocation`,
+  decoder-state capture in addition to HIR/fault ownership; do not infer it from `SetLocation`,
   exact instruction boundaries or fan-in counts.
 
 - Implicit-length PCMPISTRI control `0x02` now uses a shared vector helper ABI instead of expanding
@@ -3084,12 +3088,12 @@ peepholes.
   `273,030 -> 272,988` (`-42`, `-0.015383%`) with one shrinking root and no growth:
   `__strcspn_sse42` moves `326 -> 284`, narrowing its FEX gap from 85 to 43 instructions.
   Three interleaved short pairs move wall/internal medians
-  `1.032009/0.774 -> 1.025786/0.769s`; all six timing-normalized outputs are byte-identical.
+  `1.032009/0.774 -> 1.025786/0.769s`; all six timing-adjusted outputs are byte-identical.
   Bounded smallpt is byte-identical at 263 roots / 38,657 instructions with PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. CoreMark 2k is
   byte-identical at 295 roots / 38,631 instructions and retains `crcfinal=0x4983`. Mac and Orb pass
   16,800 assertions across the helper scratch contract, SDM/Rosetta differential, memory-boundary,
-  alias/REX and evaluator checks. No stress run, probe, diagnostic path or environment switch
+  alias/REX and evaluator checks. No stress run, check, diagnostic path or environment switch
   remains.
 
 - The remaining continuation return hot path is at its current safe ABI floor. Each return loads
@@ -3112,14 +3116,14 @@ peepholes.
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. CoreMark 2k keeps all
   295 roots, moves `38,631 -> 38,344` (`-287`, `-0.742927%`) with 17 shrinking roots and no
   growth, and retains `crcfinal=0x4983`. Three interleaved SQLite pairs keep wall median neutral
-  (`1.022901 -> 1.022955s`) and move internal median `0.770 -> 0.766s`; all six normalized outputs
+  (`1.022901 -> 1.022955s`) and move internal median `0.770 -> 0.766s`; all six adjusted outputs
   are byte-identical. Fixed-seed 424242, 256-case Mac and Orb bit-op differentials report zero
-  CMPXCHG mismatch; their only failures are the established ROL family. No stress run, probe,
+  CMPXCHG mismatch; their only failures are the established ROL family. No stress run, check,
   diagnostic path or environment switch remains.
 
 - `Div128NarrowingAnalysis` now preserves the existing native `SDIV/UDIV + MSUB` path when a
   standard narrow dividend crosses pinned architectural state. It resolves only exact same-block
-  `StoreUniform` to `LoadUniform` chains and plain operand wrappers; overlapping writes,
+  `StoreUniform` to `LoadUniform` chains and basic operand wrappers; overlapping writes,
   `UniformBarrier`, host calls, x87 and SSE4.2 helpers stop the proof. This recovers `CQO; IDIV`
   pairs whose RDX sign extension was previously hidden from the backend while arbitrary 128-bit
   dividends retain the paired helper. Exact SQLite keeps all 2,167 roots and moves
@@ -3131,7 +3135,7 @@ peepholes.
   CoreMark screen keeps all 294 reached roots, moves `38,334 -> 38,319`, and retains
   `crcfinal=0x382f`. Mac and Orb fixed-seed 424242 DIV/IDIV screens pass 256 iterations; Orb pin
   levels 0 through 3 also pass fixed-seed 101 at 100 iterations with zero mismatch. SQLite's
-  timing-normalized output is byte-identical. No stress run, probe, diagnostic path or environment
+  timing-adjusted output is byte-identical. No stress run, check, diagnostic path or environment
   switch remains.
 
 - U32 `VecMovMask` results are now eligible for the existing fixed-GPR publication transaction.
@@ -3147,7 +3151,7 @@ peepholes.
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`. The shortened CoreMark
   screen moves `38,319 -> 38,292` with three shrinking roots and retains `crcfinal=0x382f`.
   Mac and Orb pass 129 SSE edge assertions, the AVX movemask reference and 30 assertions across ten
-  pinned-GPR cases. SQLite's timing-normalized output is byte-identical. No stress run, probe,
+  pinned-GPR cases. SQLite's timing-adjusted output is byte-identical. No stress run, check,
   diagnostic path or environment switch remains.
 
 - `RawCarryBranchAnalysis` now proves exact same-block unsigned compare branches whose
@@ -3165,7 +3169,7 @@ peepholes.
   flags-liveness and extracted 72-block glibc focuses. An attempted hot-block trace scheduler was
   fully removed after the extracted glibc function failed: the current emitter places per-block
   cold stubs immediately after hot terminals, so arbitrary hot-block reordering cannot preserve
-  fallthrough until hot and cold emission are separated. No stress run, probe, diagnostic path or
+  fallthrough until hot and cold emission are separated. No stress run, check, diagnostic path or
   environment switch remains.
 
 - `FunctionDecodeFrontier` now resolves late split entries by rerunning the x86 frontend instead of
@@ -3180,7 +3184,7 @@ peepholes.
   pool had been closed. Terminal/cold merges now materialize those masks through an explicit fixed
   scratch; ordinary hot merges are unchanged.
 
-  Two final SQLite runs have identical common roots and normalized output; runtime reachability of
+  Two final SQLite runs have identical common roots and adjusted output; runtime reachability of
   one optional eight-instruction root changes the total between `269,365` and `269,373`. Against
   the `272,049` baseline the conservative reduction is 2,676 instructions (`-0.983644%`).
   `__printf_buffer@0x529bc0` moves `287 -> 264`, `_IO_new_file_xsputn` `457 -> 435`,
@@ -3205,17 +3209,17 @@ peepholes.
   SQLite `2,164 / 269,373`, smallpt `263 / 37,998` with SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`, and CoreMark
   `294 / 37,979` with `crcfinal=0x382f`. Closing the remaining `freeSpace` direct entries therefore
-  needs an explicit external-edge or multiple-CFG-root state ABI; no probe, edge flag, target
+  needs an explicit external-edge or multiple-CFG-root state ABI; no check, edge flag, target
   registry or address gate remains.
 
 - 32-bit bit scans and counts now retain their architectural width through dedicated
-  `CountLeadingZeros32` / `CountTrailingZeros32` IR operations. A shared frontend normalizer masks
-  only the misreported 16-bit form; 32/64-bit BSF, BSR, LZCNT and TZCNT no longer create identity
+  `CountLeadingZeros32` / `CountTrailingZeros32` IR operations. A shared frontend adjustr masks
+  only the misreported 16-bit form; 32/64-bit BSF, BSR, LZCNT and TZCNT no longer create direct
   all-ones masks, and 32-bit counts use native AArch64 `CLZ W` or `RBIT W + CLZ W` instead of the
   64-bit scan/helper path. The same-input formal SQLite diff has 100% host and entry coverage, keeps
   all 2,164 roots and moves `269,373 -> 269,235` (`-138`, `-0.051230%`) with no growth.
   `__strrchr_sse2` moves `583 -> 535` versus FEX at 527, and `__memcmp_sse2` moves `592 -> 558`
-  versus FEX at 547. Two final SQLite shapes and timing-normalized outputs are identical. Bounded
+  versus FEX at 547. Two final SQLite shapes and timing-adjusted outputs are identical. Bounded
   smallpt moves `37,998 -> 37,920` with the same PPM SHA; CoreMark moves `37,979 -> 37,908` and
   retains `crcfinal=0x382f`. Mac and Orb pass the BMI-enabled 27-assertion width/encoding matrix.
   No stress run, diagnostic path or environment switch remains.
@@ -3227,10 +3231,10 @@ peepholes.
   has 100% host and entry coverage, and moves `269,235 -> 269,006` (`-229`, `-0.085056%`) with no
   growth. `pcache1TruncateUnsafe` moves `199 -> 190` versus FEX at 141, and its emitted root contains
   the expected three `MSUB` instructions. The `SelectZero` part accounts for 154 instructions and
-  `MulSub` removes another 75. Two final SQLite shapes are byte-identical and their timing-normalized
+  `MulSub` removes another 75. Two final SQLite shapes are byte-identical and their timing-adjusted
   output matches both each other and the baseline. Bounded smallpt moves `37,920 -> 37,917` with the
   same PPM SHA; CoreMark moves `37,908 -> 37,904` and retains `crcfinal=0x382f`. Mac and Orb pass the
-  fixed-seed 256-iteration DIV/IDIV differential. No dedicated probe or debug switch was added.
+  fixed-seed 256-iteration DIV/IDIV differential. No dedicated check or debug switch was added.
 
 - A block-final `CondSet` whose only consumer is the terminal branch now retains its condition in
   live host NZCV instead of materializing a boolean for a following `CBZ` or `CBNZ`. The gate requires
@@ -3239,21 +3243,21 @@ peepholes.
   2,164 roots with 100% host and entry coverage, moves `269,006 -> 268,174` (`-832`, `-0.309287%`),
   and shrinks 439 roots with no growth. `sqlite3GetVarint` moves `231 -> 225` versus FEX at 181;
   `__strrchr_sse2` moves `535 -> 528` versus FEX at 527. Two final SQLite shapes are byte-identical
-  and their timing-normalized output matches the baseline. Bounded smallpt moves `37,917 -> 37,785`
+  and their timing-adjusted output matches the baseline. Bounded smallpt moves `37,917 -> 37,785`
   with the same PPM SHA; CoreMark moves `37,904 -> 37,759` and retains `crcfinal=0x382f`. Mac and Orb
   pass 206 focused CondSet, region-flags and dead-edge assertions. The one-shot IR dump used to
   identify the terminal shape was deleted; no diagnostic path or environment switch remains.
 
 - Adjacent single-use `LSR/ASR -> AND #1` graphs now emit one `UBFX` from the original source. The
-  matcher is isolated with the other narrow-extract plans and requires matching scalar widths, no
+  matcher is isolated with the other narrow-extract recipes and requires matching scalar widths, no
   pseudo flags, an in-range immediate, a real unspilled source allocation and exact adjacency. The
   same-input SQLite diff keeps all 2,164 roots with 100% host and entry coverage, moves
   `268,174 -> 267,957` (`-217`, `-0.080918%`), and shrinks 90 roots with no growth.
   `pcache1TruncateUnsafe` moves `190 -> 188` versus FEX at 141, while `powerOfTen` moves `202 -> 200`
-  versus FEX at 153. Two final SQLite shapes are byte-identical and their timing-normalized output
+  versus FEX at 153. Two final SQLite shapes are byte-identical and their timing-adjusted output
   matches the baseline. Bounded smallpt moves `37,785 -> 37,745` with the same PPM SHA; CoreMark
   moves `37,759 -> 37,717` and retains `crcfinal=0x382f`. Mac and Orb pass 273 focused shift,
-  narrow-extract and width-chain assertions. No new test, probe or debug switch remains.
+  narrow-extract and width-chain assertions. No new test, check or debug switch remains.
 
 - Function-level decoding now internalizes an unconditional constant jump only when its target is
   already a block in the current HIR function. The existing block proves that another decoded edge
@@ -3265,38 +3269,38 @@ peepholes.
   retained and move `259,747 -> 255,517`; 72 new jump-source boundary roots add 286 instructions,
   leaving the complete candidate at 2,147 roots / 255,803 instructions (`-3,944`, `-1.518368%`).
   The top 20 roots are all covered with no growth, repeated candidate shapes are identical,
-  timing-normalized output is byte-identical and `freeSpace` moves `416 -> 409`. Bounded smallpt
+  timing-adjusted output is byte-identical and `freeSpace` moves `416 -> 409`. Bounded smallpt
   moves `37,745 -> 37,132`, retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`, and CoreMark 20k moves
   `37,717 -> 37,160` with `crcfinal=0x382f`. Mac and Orb pass the directed internal/external jump
   boundary, late-split replay, region ownership, CallLambda, 72-block CFG and SMC dependency tests.
-  No probe, debug path, environment switch or stress run remains.
+  No check, debug path, environment switch or stress run remains.
 
 - Immediate 32/64-bit SHLD/SHRD now bypass the dynamic count mask/select/guard graph. The frontend
-  retains complementary immediate shifts for allocation, and a dedicated post-RA ARM64 planner
+  retains complementary immediate shifts for allocation, and a dedicated post-RA ARM64 builder
   fuses an adjacent single-use pair plus Or into one EXTR that writes the final allocated result.
   This placement is required: a first-class pre-RA funnel node changed fixed-home publication
   timing and caused deterministic SQLite heap corruption, so that design was removed. Parity token
-  retention is restricted to the identity logical flags value proven to consume a fused result;
+  retention is restricted to the direct logical flags value proven to consume a fused result;
   the broad logical-token alternative grew SQLite by 592 instructions and was fully reverted. The
   exact SQLite common set keeps all 2,241 roots with 100% coverage and no growth, moves
-  `264,582 -> 264,565`, and shrinks `powerOfTen@0x408ee0` `194 -> 177` versus FEX at 153. Normalized
+  `264,582 -> 264,565`, and shrinks `powerOfTen@0x408ee0` `194 -> 177` versus FEX at 153. Adjusted
   output and the single-thread heap check pass. Smallpt remains 267 roots / 37,132 instructions with
   PPM SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`;
   CoreMark 20k remains 299 roots / 37,160 instructions with `crcfinal=0x382f`. A six-form native x86
-  differential confirms result plus defined CF/PF/ZF/SF byte-for-byte; its temporary probe was
+  differential confirms result plus defined CF/PF/ZF/SF byte-for-byte; its temporary check was
   deleted. Mac/Orb focused frontend, fusion, parity-token and logical-flags tests pass. No new env
   switch, diagnostic path or stress run remains.
 
 - Full-width guest GPR copies can now transfer an old value version to the published target fixed
-  home. The dedicated ARM64 planner proves the complete transparent-alias use set, target-home
+  home. The dedicated ARM64 builder proves the complete transparent-alias use set, target-home
   residency through the last use, and caller-saved helper preservation; it deliberately allows
   faulting memory uses because both architectural slots have coherent versions at every fault
   point. The first consumer covers only later memory addresses. In `sqlite3DefaultRowEst`,
   `mov x9, x1; mov x23, x9` becomes `mov x23, x1`, and the later loads use x23 after x1 is
   overwritten. The exact SQLite set keeps all 2,242 roots with 100% coverage and no growth, moving
   `264,573 -> 264,568`; five roots shrink by one instruction, including
-  `sqlite3DefaultRowEst@0x40d240` `168 -> 167` versus FEX at 120. Timing-normalized SQLite output is
+  `sqlite3DefaultRowEst@0x40d240` `168 -> 167` versus FEX at 120. Timing-adjusted SQLite output is
   byte-identical. The bounded smallpt oracle keeps PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`; CoreMark stays at 299
   roots / 37,160 instructions with `crcfinal=0x382f`. Mac/Orb tests cover reuse across two faulting
@@ -3305,50 +3309,50 @@ peepholes.
   compare/select width bridges in the same root.
 
 - Narrow values published to pinned GPR homes now retain their proven zero-above width at exact
-  post-publication consumers. The existing ARM64 planner enumerates every use of the narrow
+  post-publication consumers. The existing ARM64 builder enumerates every use of the narrow
   extension and records fixed-home mappings only for audited same-width U32 ALU/Select pairs;
-  unrecognized uses or a target-home overwrite reject the whole plan. `EmitSelect` consults that
+  unrecognized uses or a target-home overwrite reject the whole recipe. `EmitSelect` consults that
   exact definition/consumer mapping and otherwise keeps the allocated register. In
   `sqlite3DefaultRowEst`, `ldrh w10; mov w13, w10; mov w22, w13` becomes `ldrh w22`, and the later
   shift plus `csel` read w22 directly. The exact SQLite set retains all 2,242 roots with 100%
   coverage and no growth, moving `264,568 -> 264,255` (`-313`, `-0.118306%`); 175 roots shrink and
-  the target moves `167 -> 164` versus FEX at 120. Timing-normalized output is byte-identical.
+  the target moves `167 -> 164` versus FEX at 120. Timing-adjusted output is byte-identical.
   Bounded smallpt retains PPM SHA-256
   `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`; its shared roots only
   shrink. CoreMark 20k retains `crcfinal=0x382f`, with all 299 baseline roots covered and only
   shrinkage. Mac/Orb pinned tests pass 97 assertions across 25 cases, including direct Select
   consumption and invalidation by a target-home overwrite. No environment switch, diagnostic
-  path, fallback, probe or stress run remains.
+  path, fallback, check or stress run remains.
 
 - Full-width values published to pinned GPR homes now expose an exact low-width view to later
-  consumers. A dedicated ARM64 planner proves the complete producer use set, accepts only
+  consumers. A dedicated ARM64 builder proves the complete producer use set, accepts only
   post-publication single-use zero-offset U8/U16/U32 extracts consumed by same-width Add, Sub or
   Select, and rejects target overwrites or caller-saved helper crossings. The publication itself
   remains on the existing SetHostGPR path. In `sqlite3DefaultRowEst@0x40d240`, three zero-shift
   extracts disappear and later Sub/Add/Sub operations read the published W view directly, moving
   the root `164 -> 161` versus FEX at 120. The exact SQLite set retains all 2,242 roots with 100%
-  coverage and no growth, moving `264,255 -> 264,174`; 70 roots shrink and timing-normalized output
+  coverage and no growth, moving `264,255 -> 264,174`; 70 roots shrink and timing-adjusted output
   remains byte-identical. Bounded smallpt keeps all 267 roots, moves `37,128 -> 37,126`, and retains
   PPM SHA-256 `a70375e511474ad45215f93df3e2c3db44af41afe40bb1c76e0f14d5528ea7b1`.
   CoreMark 20k keeps all 300 roots, moves `37,157 -> 37,156`, and retains `crcfinal=0x382f`.
   Mac/Orb focused tests cover the positive view and target-home overwrite rejection. No new env
-  switch, diagnostic path, fallback, probe or stress run remains.
+  switch, diagnostic path, fallback, check or stress run remains.
 
 - Zero-extended SelectZero results can now publish their low 32 bits directly to a pinned W home.
-  A dedicated post-RA planner keeps the original IR/RA graph and proves the complete extension and
+  A dedicated post-RA builder keeps the original IR/RA graph and proves the complete extension and
   low-alias use sets, the producer-to-publication fault/observer boundary, target-home lifetime and
   caller-saved helper preservation. When the proof holds, `EmitSelectZero` writes `CSEL` directly to
   the pinned W register and the extension/publication emit no instructions. Repeated SQLite
   candidates are shape-identical; after excluding two known baseline-optional variants above 20
   instructions, 32 stable common roots shrink by 99 instructions with no growth.
-  `pcache1TruncateUnsafe@0x412f50` moves `188 -> 182` versus FEX at 141, and timing-normalized output
+  `pcache1TruncateUnsafe@0x412f50` moves `188 -> 182` versus FEX at 141, and timing-adjusted output
   is byte-identical. The optional roots prevent an honest formal 99.9% join claim. Smallpt keeps all
   267 roots and moves `37,126 -> 37,125` with the same PPM SHA-256. CoreMark keeps 299 stable roots,
   moves the common set `37,146 -> 37,145`, and repeats `crcfinal=0x382f`. Mac/Orb pinned tests pass
   101 assertions across 27 cases, and Mac/Orb x86 div/idiv fuzz passes. Hot/cold tail deferral and
   generic zero-constant SSA deletion both caused reproducible SQLite heap corruption and were fully
   removed; the former requires an explicit serializable cold-stub contract and the latter changes
-  RA/fixed-home lifetime. No probe, env switch, debug path, fallback or stress run remains.
+  RA/fixed-home lifetime. No check, env switch, debug path, fallback or stress run remains.
 
 - The first versioned edge-flags ABI stage now carries a shared `EdgeFlagsState` and
   `EdgeFlagsTargetContract` through region proof, direct/static link sites, LinkManager/SMC state and
@@ -3360,7 +3364,7 @@ peepholes.
   direct-link, 46 region-flags, 31 NZCV and 11 indirect-fault-continuation assertions; Orb passes
   831, 46, 31 and 11. The Orb-only partial-NZCV false failure was an existing test iterator decoding
   three unaligned byte windows per ARM64 instruction; it now advances by VIXL instruction width, and
-  the temporary disassembly capture was removed. No env switch, probe, debug path or stress run remains.
+  the temporary disassembly capture was removed. No env switch, check, debug path or stress run remains.
 
 - Contiguous partial-NZCV direct/static edges now reuse the same versioned contract and reversible
   merge patch as full NZCV. A target publishes a partial pending entry only when it overwrites every
@@ -3372,11 +3376,11 @@ peepholes.
   instructions at 100% coverage with the canonical PPM SHA. That is the expected static result because
   incompatible-target/SMC fallback bytes remain emitted; the linked partial path skips three executed
   merge instructions. SQLite and counter-based screens were stopped at the 8-second bound and are not
-  cited as benefit evidence. No probe, debug path, env switch or stress run remains.
+  cited as benefit evidence. No check, debug path, env switch or stress run remains.
 
-- `888c3db` emits every function hot block before consuming explicit per-block `BlockColdPathPlan`
+- `888c3db` emits every function hot block before consuming explicit per-block `BlockColdPathRecipe`
   records for backedge, cycle, fault, VecNaN, density and flags-audit cold state. Standalone block
-  translation consumes the same plan immediately. A layout test proves the first block's NaN cold
+  translation consumes the same recipe immediately. A layout test proves the first block's NaN cold
   target follows the next hot block. `5dcaefb` separately initializes the indirect-L1 zero-key
   sentinel with the configured miss value, so guest target zero cannot key-hit a null host target.
   Mac passes 209 focused layout/continuation/fault/SMC/flags/NaN assertions, 840 production
@@ -3384,7 +3388,7 @@ peepholes.
   `63ad1de`/`888c3db` smallpt `4 8 6` static-only keeps all 279 roots, 49,498 instructions, 100%
   coverage and the canonical PPM SHA. SQLite `main/1` was stopped on both arms at the 8-second
   bound and is not benefit evidence. Orb SSH closed immediately during this stage, so the matching
-  remote gate remains pending. No probe, debug path, env switch, temporary source path or stress
+  remote gate remains pending. No check, debug path, env switch, temporary source path or stress
   run remains. Next unify static/indirect/return/direct-link continuation publication and common
   cold tails before any trace scheduling.
 
@@ -3401,7 +3405,7 @@ peepholes.
   and 3 cold-layout assertions. Fresh `73082f5`/`0fb3113` smallpt `4 8 6` keeps 279 roots and the
   canonical PPM SHA; 17 call-miss cold roots add 50 instructions (`49,498 -> 49,548`) while 262 roots
   and the indirect-call hot-hit emitter remain unchanged. The single paired elapsed values
-  `3.437s -> 3.464s` are consistency only. Orb SSH still closes immediately. No probe, debug path,
+  `3.437s -> 3.464s` are consistency only. Orb SSH still closes immediately. No check, debug path,
   runtime env switch, temporary source path or compatibility fallback remains. The next continuation
   step is generation-aware unlink/invalidation; P0 external return entries can later remove the
   per-call-site cold continuation materialization.
@@ -3416,7 +3420,7 @@ peepholes.
   property across processes. Mac passes 42 function-entry, 355 JIT-cache and 42 region-production
   assertions. The bounded pre-stage/candidate smallpt `4 8 6` static pair is identical at 279 roots,
   49,548 instructions, 100% coverage and canonical PPM SHA, and the final candidate completes in
-  3.415s. No long benchmark, stress run, probe, env switch, diagnostic log, temporary source path or
+  3.415s. No long benchmark, stress run, check, env switch, diagnostic log, temporary source path or
   fallback remains. Next use the generation-aware external return entry to remove per-call-site
   call-miss continuation preparation, then remeasure the 50-instruction cold delta.
 
@@ -3431,19 +3435,19 @@ peepholes.
   `4 8 6` keeps 279 roots and the canonical PPM SHA while moving `49,548 -> 49,520` (`-28`,
   `-0.056511%`). Broad terminal-only return publication was rejected after a short PageFatal and is
   absent from the tree; it needs an RA/live-in canonicalization proof. No long benchmark, stress run,
-  probe, env switch, diagnostic log, temporary source path or compatibility fallback remains.
+  check, env switch, diagnostic log, temporary source path or compatibility fallback remains.
 
 - `4bf7117` centralizes direct/indirect helper ABI state in ARM64 `HelperCallContract`. Host-call
-  snapshot emission and four pinned GPR planners now share one clobber model for preserve-all,
-  FPCR, general-only, pinned-state and uniform effects. The first planner consumer permits x3-x9
+  capture emission and four pinned GPR builders now share one clobber model for preserve-all,
+  FPCR, general-only, pinned-state and uniform effects. The first builder consumer permits x3-x9
   value versions to cross only `PreservesPinnedState` helpers backed by the resident string wrapper's
   explicit x3-x15/q16-q31 save set; x0-x2, unknown and indirect helpers remain barriers. Focused
-  helper, pinned, XMM snapshot, AFP and CallLambda coverage passes 1,155 assertions. Smallpt remains
+  helper, pinned, XMM capture, AFP and CallLambda coverage passes 1,155 assertions. Smallpt remains
   279 roots / 49,520 instructions with the canonical PPM SHA. An 8-second SQLite pair has 714
   byte-identical common-root instruction counts but different truncated reachability, so no benefit
   is claimed. REP MOVS reports the same Unicorn/flags mismatch class with the old barrier and is not
   used as a gate. Fault, callback/reentry and host-NZCV effects stay conservative. No long benchmark,
-  stress run, probe, env switch, diagnostic log, temporary source path or fallback remains.
+  stress run, check, env switch, diagnostic log, temporary source path or fallback remains.
 
 - `4b9e67e` adds canonical external CFG roots for shared direct targets inside an already decoded
   function block. The frontend records exact direct-jump sources without changing ordinary
@@ -3458,7 +3462,7 @@ peepholes.
   direct sources for `0x449b0c`, while `0x4498c9` and `0x449a5b` have one each, so only the shared exit
   meets the current profitability gate. The bounded Debug SQLite screen did not reach `freeSpace`;
   do not claim or broaden the optimization until the same commit receives a Release/Orb short shape.
-  No stress run, probe, env switch, diagnostic log, temporary source path or fallback remains.
+  No stress run, check, env switch, diagnostic log, temporary source path or fallback remains.
 
 - `a83b654` removes call-return ownership as a blanket external-root rejection when the split is
   before the call and the return block has one owner. Reset detaches that unique relation; canonical
@@ -3468,7 +3472,7 @@ peepholes.
   sources plus one owner-prefix edge entering `0x449b0c`. Release smallpt keeps 279 roots and the
   canonical PPM SHA while moving `49,520 -> 49,265`. Mac passes 70 function-entry, 867 production
   direct-link, 773 non-stress SMC, 105 continuation and 38 extracted glibc assertions. Orb remains
-  unverified. No stress run, long benchmark, probe, env switch, diagnostic path or late-resolution
+  unverified. No stress run, long benchmark, check, env switch, diagnostic path or late-resolution
   fallback remains.
 
 - `8e0927d` removes the emitter's contiguous-only pending-PSTATE gate. Any well-formed NZCV mask can
@@ -3480,23 +3484,23 @@ peepholes.
   Mac passes 165 direct-link flags, 821 production direct-link, 42 production region-edge and 704
   non-stress SMC assertions. Release A/B stays identical at 279 roots / 49,265 instructions and the
   canonical PPM SHA for smallpt, and 2,187 roots / 356,265 instructions for SQLite main/size1. No
-  stress run, long benchmark, probe, env switch, diagnostic path or fallback remains. Next replace
+  stress run, long benchmark, check, env switch, diagnostic path or fallback remains. Next replace
   the separate region-successor proof with the shared target contract, then handle inverted/mixed
   carry joins.
 
-- `d24e946` adds an explicit `RegionFlagsJoinPlan` in a separate ARM64 join module. For a full-NZCV
+- `d24e946` adds an explicit `RegionFlagsJoinRecipe` in a separate ARM64 join module. For a full-NZCV
   mixed successor pair, it moves the existing merge after the condition only when the canonical arm
   is the layout fallthrough, the compatible arm is cycle-free, and any live PF/AF token is killed by
   that compatible target. The hot compatible edge then enters before the merge; the canonical arm
   uses the registered token-aware shared merge trampoline. Every layout that would add a static
   branch keeps the old single pre-branch merge. The external target contract now records a four-bit
   observed NZCV mask separately from fault/helper barriers, and disk cache v19 preserves it. The
-  same-allocation region proof remains snapshot-aware rather than inheriting the stricter external
+  same-allocation region proof remains capture-aware rather than inheriting the stricter external
   fault boundary. Mac passes 48 region-flags, 42 production region-edge, 167 direct-link flags, 794
   production direct-link, 302 JIT-cache, 682 non-stress SMC and 105 continuation assertions. Release
   A/B is exact at 279 roots / 49,265 instructions plus canonical PPM for smallpt and 2,187 roots /
   356,265 instructions for SQLite main/size1. A +878 strict-region regression and an unregistered
-  outline self-loop were removed during screening. No stress run, long benchmark, probe, env switch,
+  outline self-loop were removed during screening. No stress run, long benchmark, check, env switch,
   diagnostic path or fallback remains. Next establish non-FlagM Direct/Inverted/Unknown source
   provenance before attempting non-fallthrough multi-predecessor joins.
 
@@ -3509,12 +3513,12 @@ peepholes.
   Mac passes 200 direct-link flags, 97 focused static-forward, 913 production direct-link, 360
   JIT-cache, 48 region-flags, 769 non-stress SMC and 105 continuation assertions. Debug smallpt stays
   at 279 roots / 49,265 instructions with the canonical PPM; the 8-second Debug SQLite screen is not
-  benefit evidence. No new env switch, probe, diagnostic path or fallback remains. Next require a
+  benefit evidence. No new env switch, check, diagnostic path or fallback remains. Next require a
   shared `{mask, polarity, version}` veneer before extending mixed joins beyond canonical fallthrough.
 
-- `81405ec` introduces a block-local ARM64 `GuestStateMap` as the first snapshot-aware guest-state
+- `81405ec` introduces a block-local ARM64 `GuestStateMap` as the first capture-aware guest-state
   layer. It centralizes fixed-home survival, helper clobber and fault/observation window queries for
-  full-width transfer, publication-view and SelectZero planners; the old per-planner scans are
+  full-width transfer, publication-view and SelectZero builders; the old per-builder scans are
   removed, and the existing `MayFaultOrObserve` users delegate to the same classification. A
   zero-offset U8/U16/U32 publication view may now serve multiple audited same-width Add/Sub/Select
   consumers when every ordinary use is accounted for and the fixed home survives to the last use.
@@ -3522,8 +3526,8 @@ peepholes.
   published assertions. Exact Release A/B remains identical at 279 roots / 49,265 instructions plus
   canonical PPM for smallpt and 2,188 roots / 356,545 instructions for SQLite main/size1. This stage
   does not claim benchmark shrinkage or the complete section-7 dataflow: guest-slot versions, width
-  facts, fault snapshots, CFG joins and memory/XMM consumers remain. No stress run, long benchmark,
-  env switch, probe, diagnostic path, temporary source path or fallback remains.
+  facts, fault captures, CFG joins and memory/XMM consumers remain. No stress run, long benchmark,
+  env switch, check, diagnostic path, temporary source path or fallback remains.
 
 - `6871978` adds a non-fallthrough canonical tail to mixed region flags joins. A full-NZCV source
   with exactly one compatible successor can branch its canonical arm to a cold stub when neither
@@ -3537,13 +3541,13 @@ peepholes.
   Release smallpt remains 279 roots / 49,265 instructions with canonical PPM, and SQLite main/size1
   remains 2,188 roots / 356,545 instructions. Neither short workload hits the new tail, so no macro
   shrinkage is claimed. Partial-mask tails still require an exact-mask merge trampoline; no stress
-  run, long benchmark, env switch, probe, diagnostic path, temporary source path or fallback remains.
+  run, long benchmark, env switch, check, diagnostic path, temporary source path or fallback remains.
 
 - `79bce76` closes the stateless terminal-only return-entry gap without publishing arbitrary empty
   blocks. `FunctionEntryContract::AnalyzeCanonicalTerminalEntries` seeds function roots, accepted
   external roots and uniquely owned call-return targets, accepts only empty constant LinkBlock/
   LinkBlockFast terminals, and propagates through a chain only when every predecessor is already
-  canonical. These connectors are L2-only (`linkable=false`), use a normalized one-byte guest range
+  canonical. These connectors are L2-only (`linkable=false`), use a adjusted one-byte guest range
   for disk-cache/SMC ownership, and branch to the next block's published label rather than inheriting
   its region-internal RA/live-in state. A discarded generic-external-edge version removed the old
   PageFatal but grew Debug smallpt by 186 instructions; none of it remains. Mac passes 87
@@ -3553,7 +3557,7 @@ peepholes.
   PPM. SQLite main/size1 moves 2,188 / 356,545 to 2,115 / 356,245: 73 absorbed connectors account for
   290 instructions and the 2,115 common roots lose another 10 with no growth. SSA/PSTATE-bearing
   terminals remain rejected and require independent canonical replay. No stress run, long benchmark,
-  env switch, probe, diagnostic path, temporary source path or compatibility fallback remains.
+  env switch, check, diagnostic path, temporary source path or compatibility fallback remains.
 
 - `0ad7d65` completes the static helper observation axes in `HelperCallTraits` and the ARM64
   `HelperCallContract`: implicit guest-state read/write, direct fault, dispatcher reentry and host
@@ -3567,9 +3571,9 @@ peepholes.
   passes 86 helper, 60 region-flags and 5 pinned-value assertions. Exact Release static A/B keeps
   smallpt at 275 roots / 49,249 instructions with canonical PPM; SQLite matches all 2,114 roots and
   top-20 while moving `355,965 -> 355,961` (`-4`, two roots shrink by two, none grow). Unknown and
-  indirect helpers stay fail-closed. No stress run, long benchmark, env switch, probe, diagnostic
+  indirect helpers stay fail-closed. No stress run, long benchmark, env switch, check, diagnostic
   path, temporary source/build path or compatibility fallback remains. Next extend GuestStateMap
-  from block-local fixed homes to guest-slot versions, width facts, fault snapshots and safe CFG joins.
+  from block-local fixed homes to guest-slot versions, width facts, fault captures and safe CFG joins.
 
 - `2d2556e` adds block-local pinned guest value versions to `GuestStateMap`. Each resident value now
   carries its fixed home, W/X width and physical high-32 normalization fact. Entry reads, zero-offset
@@ -3583,8 +3587,8 @@ peepholes.
   all 2,114 roots/top-20 and moves `355,961 -> 354,915` (`-1,046`) with no growth and rc=0. A single
   local profile shows about 34 ms additional codegen time across 2,114 functions, so it is recorded
   as an analysis cost rather than hidden by noisy TOTAL timing. No stress run, long benchmark, env
-  switch, probe, diagnostic path, temporary source/build path or fallback remains. The next mechanism
-  boundary is fault-visible snapshots and safe diamond/backedge joins; this commit does not claim
+  switch, check, diagnostic path, temporary source/build path or fallback remains. The next mechanism
+  boundary is fault-visible captures and safe diamond/backedge joins; this commit does not claim
   cross-CFG facts.
 
 - `4fd6d24` adds demand-driven fault-visible width facts and CFG joins to `GuestStateMap`. Function,
@@ -3592,14 +3596,14 @@ peepholes.
   predecessor meet. U32 publications establish physical high-zero state, while full/partial writes
   and opaque calls transfer or invalidate it conservatively. Fault boundaries capture the currently
   published `{version, home, width}` state before the faulting instruction, and an early pinned-home
-  publication is legal only when every intervening snapshot already contains that version. CFG
-  solving runs only for a block with an actual entry-width or SelectZero snapshot consumer; an eager
+  publication is legal only when every intervening capture already contains that version. CFG
+  solving runs only for a block with an actual entry-width or SelectZero capture consumer; an eager
   prototype added about 27 ms across SQLite's 2,114 functions and was removed. Mac Debug passes 110
-  pinned, 56 fault-snapshot, 4 SelectZero, 86 helper and 60 region-flags assertions, including
+  pinned, 56 fault-capture, 4 SelectZero, 86 helper and 60 region-flags assertions, including
   external-root, diamond, backedge and real PageFatal W-high-zero cases. Exact Release A/B is neutral:
   smallpt remains 275 roots / 49,107 instructions with canonical PPM, and SQLite remains 2,114 roots /
   354,915 instructions with full root/top-20 coverage and rc=0. No stress run, long benchmark, env
-  switch, probe, diagnostic path, temporary source/build path or fallback remains. Next add 8/16-bit
+  switch, check, diagnostic path, temporary source/build path or fallback remains. Next add 8/16-bit
   zero/sign-extension facts and let memory/compare consumers use the joined lattice.
 
 - `f4ca978` replaces the old high-32 boolean with one `ExtensionFacts` lattice carrying
@@ -3608,12 +3612,12 @@ peepholes.
   backedges transfer or meet the same facts. Repeated U8/U16 zero/sign extensions may consume the
   resident home only when its version and full extension range still match. Extension consumers do
   not yet participate in definition-level GetHost elimination: an intermediate version combined
-  that with the older fused-zext early return and left a result register unmaterialized, causing both
+  that with the older fused-zext early return and left a result register uncomputed, causing both
   short workloads to stop after 84 roots; the rejected path is fully removed. Mac Debug passes 120
-  pinned, 56 fault-snapshot, 4 SelectZero, 86 helper and 60 region-flags assertions. Exact Release A/B
+  pinned, 56 fault-capture, 4 SelectZero, 86 helper and 60 region-flags assertions. Exact Release A/B
   against `911c57e` keeps all roots/top-20 with no growth: smallpt `49,107 -> 49,095` (`-12`) plus
   canonical PPM, and SQLite `354,915 -> 354,800` (`-115`) with rc=0. One profile pair is effectively
-  flat in TOTAL (`1.486s -> 1.485s`); no long run is used as evidence. No env switch, probe, log,
+  flat in TOTAL (`1.486s -> 1.485s`); no long run is used as evidence. No env switch, check, log,
   temporary source/build path or fallback remains. Next route narrow memory/compare and XMM scalar
   consumers through this lattice instead of adding more producer matchers.
 
@@ -3621,11 +3625,11 @@ peepholes.
   version lattice. U8/U16 compare requires an exact version plus `KnownZeroAbove(width)` before it
   can read the W home; narrow StoreMemory requires exact version/home/width and otherwise falls
   through to the existing canonical allocator path. Focused codegen emits `cmp w22,#5` and
-  `strb w22` directly. Mac Debug passes the 2 consumer assertions plus 120 pinned, 56 fault-snapshot,
+  `strb w22` directly. Mac Debug passes the 2 consumer assertions plus 120 pinned, 56 fault-capture,
   4 SelectZero, 86 helper and 60 region-flags assertions. Exact Release A/B against `f4ca978` keeps
   every root/top-20 with no growth: smallpt `49,095 -> 49,065` (`-30`) plus canonical PPM, and SQLite
   `354,800 -> 354,519` (`-281`) with rc=0. Candidate codegen is 315.6 ms and TOTAL 1.483 s in one
-  consistency profile. No stress run, long benchmark, env switch, probe, log, temporary path or
+  consistency profile. No stress run, long benchmark, env switch, check, log, temporary path or
   fallback remains. The section-7 GPR lattice now has ALU-extension, compare and memory consumers;
   audit XMM scalar reuse before broadening it further.
 
@@ -3638,7 +3642,7 @@ peepholes.
   assertions; continuation, production direct-link, non-stress SMC, indirect-L1 and guarded-RSB
   groups pass. Release static shape remains smallpt `275 / 49,065` and SQLite `2,114 / 354,519`.
   A temporary exact-HEAD SQLite pair is `TOTAL 1.555s -> 1.554s`; all temporary worktrees, builds and
-  captures were removed. No frame generation field, hot return instruction, env switch, probe, log,
+  captures were removed. No frame generation field, hot return instruction, env switch, check, log,
   temporary path or fallback remains. Continuation generation/unlink/invalidation and code-cache
   reuse are now closed; next audit XMM scalar GuestStateMap reuse and the remaining exact-mask
   EdgeFlags tail before entering string/complex-EA work.
@@ -3652,7 +3656,7 @@ peepholes.
   trampoline execution covers `N|Z`, `N|C`, token and non-token forms; region-flags production,
   trampoline, production direct-link, direct-link flags and non-stress SMC groups pass. A single
   SQLite consistency pair is `TOTAL 1.571s -> 1.573s`. The narrow XMM same-value self-publication
-  version candidate was byte-identical on both workloads and was deleted. No probe, env switch,
+  version candidate was byte-identical on both workloads and was deleted. No check, env switch,
   log, temporary path or fallback remains. Do not fake a nonzero `packed_flags_version`; remove that
   unused speculative ABI next, then re-rank string/complex-EA roots.
 
@@ -3671,13 +3675,13 @@ peepholes.
   `354,491 -> 354,486` (`-5`) solely in `__strspn_sse42` (`318 -> 313`), with no growth; smallpt
   stays `275 / 49,055`. A single SQLite pair is `TOTAL 1.485s -> 1.490s` while translation/codegen
   both decrease slightly. The shared `0x02/0x1a` helper boundary is unchanged, so do not claim a
-  `strcspn`/`strcmp` win or retry per-unit EqualAny outlining. No probe, log, env switch, temporary
+  `strcspn`/`strcmp` win or retry per-unit EqualAny outlining. No check, log, env switch, temporary
   path or fallback remains.
 
 - `3b42c72` completes miss-driven canonical region membership. A first 64-block region records only
-  its still-unpublished external roots and strong owner identity; a later real code miss consumes the
+  its still-unpublished external roots and strong owner direct; a later real code miss consumes the
   record, retires the exact old allocation, recompiles the old canonical region first and appends only
-  blocks not already claimed by it. The 128-block ceiling remains explicit, and the planner, decoder,
+  blocks not already claimed by it. The 128-block ceiling remains explicit, and the builder, decoder,
   SMC retirement and backend code-object emitter stay in separate modules. Retirement clears every
   allocation-owned alias from shared and private dispatch tables, restores incoming direct links and
   uses the existing QSBR path. Private-L1 invalidation now faults through the slot-corresponding 4 MiB
@@ -3688,7 +3692,7 @@ peepholes.
   stable across two short smallpt runs at `243 roots / 249 versions / 36,427` instructions versus
   `249 / 249 / 36,448`, with the canonical PPM SHA unchanged. Mac and Orb membership,
   function-code-object, function-entry, continuation, indirect-L1, non-stress direct-link and
-  non-stress SMC groups pass. No long benchmark, stress run, probe, env switch, debug log, temporary
+  non-stress SMC groups pass. No long benchmark, stress run, check, env switch, debug log, temporary
   source path or fallback remains. Next run the short FEX-aligned root comparison before deciding
   between a third canonical region and the larger remaining hot/cold-layout or cross-root state-ABI
   mechanism.
@@ -3743,7 +3747,7 @@ peepholes.
   `SVM_FUNC_LAZY=63` — it is a pre-existing hazard in the SMC invalidation path, not introduced by
   regroup or `c5984d9`. `run_helper_fault_tests.sh` `fxrstor` fails on a pre-existing
   scratch-GPR-budget assert (`declared 0, asked for 1`), unrelated. `run_dynamic_tests.sh` marks
-  its three glibc cases FAIL on Orb only because the identity-mode notice line joins stdout; the
+  its three glibc cases FAIL on Orb only because the direct-mode notice line joins stdout; the
   guest output and exit 42 are correct.
 
 - **Eager function formation (`SVM_FUNC_LAZY=0`, lazy=false) closes the multi-root duplication
@@ -3785,12 +3789,12 @@ peepholes.
   reclamation race. The region decoder's `has_code` boundary skip was gated on `config.lazy`, so
   an eager decode could re-absorb a block already published by an earlier object — orphaning it
   and leaving inbound direct/indirect links pointing at dead code. The guard now applies in both
-  modes (under eager `IsAccepted` is never set, so it degrades to the plain `has_code` check), and
+  modes (under eager `IsAccepted` is never set, so it degrades to the basic `has_code` check), and
   an oversized eager function retries once through the bounded lazy-region path instead of
   latching `function_compilation_disabled` (the latch only re-arms if the region also overflows).
   sqlite `main/40` now completes cleanly under `SVM_FUNC_LAZY=0` (15+/15, integrity pass) where it
   previously SIGSEGV'd on a dead code page. Earlier observation that "the latch is load-bearing"
-  was masking this overlap — the plain per-function `block_only` fallback still overlapped; only
+  was masking this overlap — the basic per-function `block_only` fallback still overlapped; only
   the has_code boundary + region retry removes it. Note c-ray currently halts on an unrelated
   pre-existing guest fixed-map failure (`errno 17` at 0xfffe08000000) in BOTH modes — not a
   codegen regression.
@@ -3809,13 +3813,13 @@ Key correction to the earlier "move ops dominate" framing:
   memory work + effective-address materialization + guest-PC stores. `GetHostGPR` is only ~1.5%
   despite high op count.
 - **Instrumentation caveat**: `SVM_RA_HOT_COALESCE_ALL=1` injects a ~36–40B (9-inst)
-  `RecordHotCounter` probe at every block entry — `[svm-boundary]` `bytes_prologue` reads that
-  probe and looks like a per-block prologue (≈160KB total). With `SVM_DENSITY_PROF` alone
+  `RecordHotCounter` check at every block entry — `[svm-boundary]` `bytes_prologue` reads that
+  check and looks like a per-block prologue (≈160KB total). With `SVM_DENSITY_PROF` alone
   `bytes_prologue=0` for every block — **there is no per-block prologue**; pinned GPRs/state are
-  persistent, not reloaded. The clean `[svm-density]` split (probes excluded) is
+  persistent, not reloaded. The clean `[svm-density]` split (checks excluded) is
   work 41.5% / boundary 27.9% / move 24.1% / flags 4.8% / uniform 1.7%. Boundary here is all
   exits+links (dispatch machinery), no entry reload. `host_instructions` in `[svm-hot-all]`
-  already subtracts probes, so the equiv-metric numbers were always clean.
+  already subtracts checks, so the equiv-metric numbers were always clean.
 - **Concrete gap vs FEX = unit granularity.** FEX `0x4024c0` = 1 block, 124 host insts for 86
   guest insts. SVM splits the same region into **4 units** (`0x4024c0`, `0x40251b`, `0x40254f`,
   `0x402600`). `0x40251b`/`0x40254f` are *internal* branch targets (`jmp8` from `0x40250a` /
@@ -3828,7 +3832,7 @@ Key correction to the earlier "move ops dominate" framing:
 
   Verified equiv `SVM/FEX` host-instruction ratios (`FEX_BLOCKSTATS=1 FEX_MULTIBLOCK=1
   FEX_HOSTFEATURES=disableavx`, `/usr/local/fex-measure/FEX` @ `f2e35f3`, joined with
-  `tools/svm-linux-cq/fex_join.py`; SVM numbers are probe-clean — `[svm-hot-all]` already
+  `tools/svm-linux-cq/fex_join.py`; SVM numbers are check-clean — `[svm-hot-all]` already
   subtracts hot-counter instrumentation):
 
   | workload | equiv SVM/FEX | weighted svm_host | weighted fex_host | entry cov |
@@ -3865,7 +3869,7 @@ crashes, not code quality.
   Added a full guest-GPR dump to the `Guest halted` path (`translator/linux/main.cpp`) for
   this class of bug.
 - **c-ray** — pre-existing guest crash near `0xfffe08000000`, both modes (not a regression).
-- **stream** — hangs under default `SVM_MEM_IDENTITY=1`; exits under `=0` (verify output).
+- **stream** — hangs under default `SVM_MEM_DIRECT=1`; exits under `=0` (verify output).
 
 ## Orb loop
 
@@ -3887,6 +3891,6 @@ func_tests one-iter coremark can halt reason 2 even on good binaries; use **2000
 
 ## Related docs (historical, some defaults stale)
 
-- `docs/fex-codegen-gap-plan-2026-08.md` — combo: flags × region × RA
+- `docs/fex-codegen-gap-recipe-2026-08.md` — combo: flags × region × RA
 - `docs/codegen-p0b-flags-repr-2026-08.md` — still says FLAGS default OFF / 16-block in places
 - `docs/svm-config-classification.md`

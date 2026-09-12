@@ -72,7 +72,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 ir::DataClass{command},
                 ir::DataClass{address},
         };
-        // Keep AFP OFF byte-identical: the target address is materialized in
+        // Keep AFP OFF byte-identical: the target address is computed in
         // generated code, independently of whether EmitHostCall consumes the
         // FP-effect tag.
         const bool fp_free = sse_afp_nan &&
@@ -138,7 +138,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Ldrh(value.W(), MemOperand(state, kFcw));
             auto guest = context.X(address);
             __ Strh(value.W(),
-                    use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                    memory_state.use_memory_base ? BiasMem(guest) : MemOperand(guest));
             zero_result();
             return;
         }
@@ -148,7 +148,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             auto pending = context.GetTmpX();
             auto guest = context.X(address);
             __ Ldrh(fcw.W(),
-                    use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                    memory_state.use_memory_base ? BiasMem(guest) : MemOperand(guest));
             __ Strh(fcw.W(), MemOperand(state, kFcw));
             __ Ldrh(fsw.W(), MemOperand(state, kFsw));
             __ And(pending.W(), fsw.W(), 0x3F);
@@ -174,7 +174,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             } else {
                 auto guest = context.X(address);
                 __ Strh(fsw.W(),
-                        use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                        memory_state.use_memory_base ? BiasMem(guest) : MemOperand(guest));
                 zero_result();
             }
             return;
@@ -209,9 +209,9 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Cmp(significand.W(), 3);
             __ B(ne, &slow);
             __ Ldr(significand,
-                   use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                   memory_state.use_memory_base ? BiasMem(guest) : MemOperand(guest));
             __ Ldrh(sign_exp.W(),
-                    use_memory_base ? BiasMem(guest, s64{8}) : MemOperand(guest, 8));
+                    memory_state.use_memory_base ? BiasMem(guest, s64{8}) : MemOperand(guest, 8));
             // The tag-position shift is dead after the test above. Reuse it
             // for the destination address, and later for the rebuilt tag.
             __ Add(shift, state, kRegs);
@@ -282,9 +282,9 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Ldr(significand, MemOperand(reg_address));
             __ Ldrh(sign_exp.W(), MemOperand(reg_address, 8));
             __ Str(significand,
-                   use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                   memory_state.use_memory_base ? BiasMem(guest) : MemOperand(guest));
             __ Strh(sign_exp.W(),
-                    use_memory_base ? BiasMem(guest, s64{8}) : MemOperand(guest, 8));
+                    memory_state.use_memory_base ? BiasMem(guest, s64{8}) : MemOperand(guest, 8));
             __ And(fsw.W(), fsw.W(), 0xFDFF);
             if (command_flags & swift::x86::X87Pop) {
                 __ Mov(tag.W(), 3);
@@ -337,7 +337,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Cmp(scratch.W(), 3);
             __ B(ne, &slow);  // occupied push destination: exact stack fault
 
-            const auto mem = use_memory_base ? BiasMem(guest) : MemOperand(guest);
+            const auto mem = memory_state.use_memory_base ? BiasMem(guest) : MemOperand(guest);
             if (format == swift::x86::X87Format::Int16) {
                 __ Ldrsh(integer, mem);
             } else if (format == swift::x86::X87Format::Int32) {
@@ -565,7 +565,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             __ Orr(fsw.W(), fsw.W(), 1);  // IE
 
             __ Bind(&store);
-            const auto out = use_memory_base ? BiasMem(guest) : MemOperand(guest);
+            const auto out = memory_state.use_memory_base ? BiasMem(guest) : MemOperand(guest);
             if (format == swift::x86::X87Format::Int16) {
                 __ Strh(converted.W(), out);
             } else if (format == swift::x86::X87Format::Int32) {
@@ -617,7 +617,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             //
             //   x87_bench   (FADD bails on IXC every iteration)
             //               inline 0.2028 s -> helper 0.1028 s
-            //   exact probe (every operand certified, zero bailouts,
+            //   exact check (every operand certified, zero bailouts,
             //               6e6 inline operations)
             //               inline 0.1350 s -> helper 0.0960 s
             //
@@ -652,7 +652,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             // residual). Fraction of operations the fast path would have served:
             //
             //   x87_bench      Add/Mul/Div, 2e6 each      0.00% / 0.00% / 0.00%
-            //   ldprobe        long double harmonic sum   Add 50.00%, Div 0.01%
+            //   ldcheck        long double harmonic sum   Add 50.00%, Div 0.01%
             //   x87_midtier    Add, 2 ops                 100%
             //   real_busy, func_tests, func_tests_musl, bench_suite,
             //   real_hello + 22 other guests              zero Binary ops
@@ -662,7 +662,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             // saves only ~0.4 ns against the helper's 16.0 ns and needs
             // ~90-98%; MUL/DIV saves ~3.9 ns and needs ~51-83%.
             //
-            // The ldprobe row is the load-bearing one, and it is a steel-man,
+            // The ldcheck row is the load-bearing one, and it is a steel-man,
             // not an adversary: a naive `acc += 1.0/k` harmonic sum, which is
             // why anyone reaches for long double at all. Its 50% Add rate
             // decomposes exactly -- 300000 `k += 1.0` counter increments
@@ -673,7 +673,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
             //
             // Nor is provenance the binding constraint, which was the obvious
             // objection (the live helper always clears the reduced marker, so a
-            // naive probe undercounts every accumulator chain after its first
+            // naive check undercounts every accumulator chain after its first
             // operation). Modelled with a shadow marker that a hit would have
             // left certified: of x87_bench's 8724 provenance-only misses, the
             // number that would then have been exact anyway was ZERO. 99.85% of
@@ -798,7 +798,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 convert_canonical(left_address, right_bits, left_bits, right_fp);
             } else if (format == swift::x86::X87Format::Float32) {
                 __ Ldr(right_bits.W(),
-                       use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                       memory_state.use_memory_base ? BiasMem(guest) : MemOperand(guest));
                 __ And(left_bits.W(), right_bits.W(), 0x7F800000u);
                 __ Cmp(left_bits.W(), 0x7F800000u);
                 __ B(eq, &slow);  // memory NaN/Inf: helper owns IE semantics
@@ -812,7 +812,7 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
                 __ Fcvt(right_fp.D(), right_fp.S());
             } else {
                 __ Ldr(right_bits,
-                       use_memory_base ? BiasMem(guest) : MemOperand(guest));
+                       memory_state.use_memory_base ? BiasMem(guest) : MemOperand(guest));
                 __ Ubfx(left_bits, right_bits, 52, 11);
                 __ Cmp(left_bits, 0x7FF);
                 __ B(eq, &slow);  // memory NaN/Inf: helper owns IE semantics

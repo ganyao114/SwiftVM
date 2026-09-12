@@ -1,3 +1,4 @@
+#include "runtime/backend/reg_alloc.h"
 #include "guest_state_map.h"
 
 #include <algorithm>
@@ -10,9 +11,7 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool IsPinnedGPR(u32 home) {
-    return home <= 9 || (home >= 19 && home <= 23) || home == 29;
-}
+using ::swift::runtime::backend::IsFixedGPRHome;
 
 using ExtensionFacts = GuestStateMap::ExtensionFacts;
 using FunctionWidthFacts = std::array<ExtensionFacts, 30>;
@@ -20,7 +19,7 @@ using FunctionWidthFacts = std::array<ExtensionFacts, 30>;
 FunctionWidthFacts TopWidthFacts() {
     FunctionWidthFacts facts{};
     for (u32 home = 0; home < facts.size(); ++home) {
-        if (IsPinnedGPR(home)) {
+        if (IsFixedGPRHome(home)) {
             facts[home] = {
                     .known_zero_above = 1,
                     .sign_extended_from = 1,
@@ -172,7 +171,7 @@ void GuestStateMap::BuildFunctionWidthFacts() {
         for (auto& inst : hir_block->GetBlock()->GetInstList()) {
             if (inst.GetOp() == ir::OpCode::SetHostGPR) {
                 const u32 home = inst.GetArg<ir::Imm>(1).Get();
-                if (!IsPinnedGPR(home)) {
+                if (!IsFixedGPRHome(home)) {
                     continue;
                 }
                 const u32 offset = inst.GetArg<ir::Imm>(2).Get();
@@ -198,7 +197,7 @@ void GuestStateMap::BuildFunctionWidthFacts() {
             const auto helper = HelperCallContract::Resolve(inst, features);
             if (helper) {
                 for (u32 home = 0; home < facts.size(); ++home) {
-                    if (IsPinnedGPR(home) && home <= 9 && helper->ClobbersGPR(home)) {
+                    if (IsFixedGPRHome(home) && home <= 9 && helper->ClobbersGPR(home)) {
                         facts[home] = {};
                     }
                 }
@@ -206,7 +205,7 @@ void GuestStateMap::BuildFunctionWidthFacts() {
                        inst.GetOp() == ir::OpCode::CallLocation ||
                        inst.GetOp() == ir::OpCode::CallDynamic) {
                 for (u32 home = 0; home < facts.size(); ++home) {
-                    if (IsPinnedGPR(home)) {
+                    if (IsFixedGPRHome(home)) {
                         facts[home] = {};
                     }
                 }
@@ -249,11 +248,11 @@ void GuestStateMap::BuildFunctionWidthFacts() {
     } while (changed);
 }
 
-void GuestStateMap::PrepareCurrentEntryWidthFacts(bool fault_snapshot_needed) {
+void GuestStateMap::PrepareCurrentEntryWidthFacts(bool fault_capture_needed) {
     if (!function || !block || function_width_facts_ready) {
         return;
     }
-    bool needed = fault_snapshot_needed;
+    bool needed = fault_capture_needed;
     if (!needed) {
         for (const auto& publication : block->GetInstList()) {
             if (publication.GetOp() != ir::OpCode::SetHostGPR ||

@@ -1,9 +1,9 @@
-// Standalone Rosetta precision probe for the opt-in ARM64 x87 reduced path.
+// Standalone Rosetta precision check for the opt-in ARM64 x87 reduced path.
 //
 // Build/run on an Apple Silicon host:
-//   clang -O2 -arch x86_64 -msse2 source/tests/x87_precision_probe.c \
-//       -o /private/tmp/x87_precision_probe
-//   arch -x86_64 /private/tmp/x87_precision_probe
+//   clang -O2 -arch x86_64 -msse2 source/tests/x87_precision_check.c \
+//       -o /private/tmp/x87_precision_check
+//   arch -x86_64 /private/tmp/x87_precision_check
 
 #include <inttypes.h>
 #include <math.h>

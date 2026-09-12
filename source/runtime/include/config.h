@@ -85,7 +85,7 @@ DECLARE_ENUM_FLAG_OPERATORS(Arm64Features)
 //   Relaxed:  no ordering — correct for single-threaded guests (default).
 //   AcqRel:   every guest load acquires / every store releases (TSO
 //             compatible); the frontend emits LoadMemoryTSO/StoreMemoryTSO
-//             and the ARM64 backend surrounds plain accesses with barriers.
+//             and the ARM64 backend surrounds basic accesses with barriers.
 //   Hardware: the host enforces TSO itself (e.g. Apple silicon TSO mode,
 //             Linux PR_SET_MEM_MODEL_TSO); codegen matches Relaxed.
 enum class TsoMode : std::uint8_t { Relaxed, AcqRel, Hardware };

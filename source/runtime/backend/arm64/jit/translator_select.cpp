@@ -13,7 +13,7 @@ bool IsImmediate(ir::Value value, u64 expected) {
            value.Def()->GetArg<ir::Imm>(0).Get() == expected;
 }
 
-bool IsNormalizedBoolean(ir::Value value, u32 depth = 0) {
+bool IsAdjustedBoolean(ir::Value value, u32 depth = 0) {
     if (!value.Def() || depth == 4) {
         return false;
     }
@@ -34,7 +34,7 @@ bool IsNormalizedBoolean(ir::Value value, u32 depth = 0) {
             u32 inputs = 0;
             for (auto input : value.Def()->GetValues()) {
                 ++inputs;
-                if (!IsNormalizedBoolean(input, depth + 1)) {
+                if (!IsAdjustedBoolean(input, depth + 1)) {
                     return false;
                 }
             }
@@ -45,31 +45,31 @@ bool IsNormalizedBoolean(ir::Value value, u32 depth = 0) {
     }
 }
 
-bool IsBooleanIdentitySelect(ir::Inst* inst) {
+bool IsBooleanDirectSelect(ir::Inst* inst) {
     return inst->GetOp() == ir::OpCode::Select && inst->ReturnType() == ir::ValueType::U8 &&
-           IsNormalizedBoolean(inst->GetArg<ir::Value>(0)) &&
+           IsAdjustedBoolean(inst->GetArg<ir::Value>(0)) &&
            IsImmediate(inst->GetArg<ir::Value>(1), 1) && IsImmediate(inst->GetArg<ir::Value>(2), 0);
 }
 
 }  // namespace
 
 void JitTranslator::PrepareBooleanSelects(ir::Block* block) {
-    normalized_bool_selects.clear();
-    direct_cond_selects.clear();
+    flag_state.boolean_selects.clear();
+    flag_state.direct_cond_selects.clear();
     std::unordered_map<ir::Inst*, u32> eligible_constant_uses;
     for (auto& inst : block->GetInstList()) {
         if (inst.GetOp() == ir::OpCode::Select) {
             auto* condition = inst.GetArg<ir::Value>(0).Def();
             if (condition && condition->GetOp() == ir::OpCode::CondSet &&
                 condition->GetUses(false) == 1) {
-                direct_cond_selects.emplace(&inst, condition->GetArg<ir::Cond>(0));
+                flag_state.direct_cond_selects.emplace(&inst, condition->GetArg<ir::Cond>(0));
                 disable_instructions.set(condition->Id());
             }
         }
-        if (!IsBooleanIdentitySelect(&inst)) {
+        if (!IsBooleanDirectSelect(&inst)) {
             continue;
         }
-        normalized_bool_selects.insert(&inst);
+        flag_state.boolean_selects.insert(&inst);
         ++eligible_constant_uses[inst.GetArg<ir::Value>(1).Def()];
         ++eligible_constant_uses[inst.GetArg<ir::Value>(2).Def()];
     }
@@ -90,18 +90,18 @@ void JitTranslator::EmitSelect(ir::Inst* inst) {
     auto resolve = [&](ir::Value value) {
         return ResolvePinnedGPRUse(value, inst).value_or(context.R(value));
     };
-    if (auto direct = direct_cond_selects.find(inst); direct != direct_cond_selects.end()) {
-        const bool identity = normalized_bool_selects.contains(inst);
+    if (auto direct = flag_state.direct_cond_selects.find(inst); direct != flag_state.direct_cond_selects.end()) {
+        const bool is_boolean = flag_state.boolean_selects.contains(inst);
         auto emit_direct = [&] {
-            if (identity) {
+            if (is_boolean) {
                 __ Cset(result.W(), MapCond(direct->second));
             } else {
                 __ Csel(result, resolve(true_value), resolve(false_value), MapCond(direct->second));
             }
         };
-        if (save_in_nzcv && nzcv_dirty) {
+        if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
             emit_direct();
-        } else if (!identity || !TryEmitCondSetFromFlags(inst, direct->second)) {
+        } else if (!is_boolean || !TryEmitCondSetFromFlags(inst, direct->second)) {
             LoadNZCVFromFlags();
             emit_direct();
         }
@@ -109,7 +109,7 @@ void JitTranslator::EmitSelect(ir::Inst* inst) {
         return;
     }
     auto local = LocalConditionFor(cond);
-    if (normalized_bool_selects.contains(inst)) {
+    if (flag_state.boolean_selects.contains(inst)) {
         if (local) {
             __ Cset(result.W(), *local);
         } else {
@@ -132,15 +132,15 @@ void JitTranslator::EmitSelectZero(ir::Inst* inst) {
     auto test = inst->GetArg<ir::Value>(0);
     auto zero_value = inst->GetArg<ir::Value>(1);
     auto nonzero_value = inst->GetArg<ir::Value>(2);
-    auto direct = pinned_select_results.find(inst);
-    if (direct != pinned_select_results.end()) {
+    auto direct = pinned_gprs.pinned_select_results.find(inst);
+    if (direct != pinned_gprs.pinned_select_results.end()) {
         const auto reproved = MatchPinnedSelectPublication(
                 direct->second.publication);
         ASSERT_MSG(reproved && *reproved == direct->second,
                    "pinned SelectZero publication proof diverged at IR {}",
                    inst->Id());
     }
-    Register result = direct == pinned_select_results.end()
+    Register result = direct == pinned_gprs.pinned_select_results.end()
             ? context.R(ir::Value{inst})
             : Register{WRegister{direct->second.target}};
     auto resolve = [&](ir::Value value) -> Register {

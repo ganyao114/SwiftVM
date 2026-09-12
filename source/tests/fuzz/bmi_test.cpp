@@ -6,7 +6,7 @@
 // WHY THREE SOURCES OF TRUTH AND NOT ONE
 // ---------------------------------------------------------------------------
 // Unicorn DOES execute BMI (unlike VEX.L=1, which it refuses outright), and it
-// does honour VEX.vvvv on these GPR forms -- both were probed before this test
+// does honour VEX.vvvv on these GPR forms -- both were checked before this test
 // was written rather than assumed.  It is nevertheless wrong in four separate
 // places, found by diffing it against Rosetta over all 2640 rows and then
 // adjudicating each disagreement against the manual (bmi_unicorn_check.c):
@@ -36,7 +36,7 @@
 //    take their SECOND -- three different meanings for one field.  Every input
 //    pair is asymmetric so a swap cannot pass by coincidence, and variant 2
 //    puts every operand in a high register so VEX.R/VEX.B folding is exercised.
-// 2. THE FLAGS, ONE AT A TIME.  Each of CF/OF/ZF/SF/PF is materialized by its
+// 2. THE FLAGS, ONE AT A TIME.  Each of CF/OF/ZF/SF/PF is computed by its
 //    own SETcc into its own byte, so a wrong flag is identified, not just
 //    detected.  Only the architecturally DEFINED flags are compared.
 // 3. "NO FLAGS AFFECTED" IS A CLAIM THAT NEEDS TESTING.  Half of BMI2 must not
@@ -395,7 +395,7 @@ TEST_CASE("x86 bmi VEX.LZ gating and the TZCNT/BSF split") {
     for (const auto& c : cases) {
         // A fresh guest address per case: translated blocks are cached by guest
         // address and the SMC tracker is off, so reusing one address replays
-        // the first translation for every later case (this probe reported all
+        // the first translation for every later case (this check reported all
         // eight cases passing that way before the addresses were separated).
         const u64 addr = base + 0x1000 * slot;
         const u64 flags_at = base + 0x800;

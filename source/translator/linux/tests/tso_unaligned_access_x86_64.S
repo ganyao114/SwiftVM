@@ -1,5 +1,5 @@
 // Ordered non-atomic x86 loads/stores deliberately crossing a cache-line and
-// a page boundary. In AcqRel mode these must take the plain-access + DMB arm,
+// a page boundary. In AcqRel mode these must take the basic-access + DMB arm,
 // never the naturally-aligned LDAPR/STLR arm.
 
     .global _start

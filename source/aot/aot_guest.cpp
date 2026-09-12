@@ -16,11 +16,11 @@ namespace swift::aot {
 
 namespace {
 
-void InstallProbes(swift::linux::GuestMemory* memory) {
+void InstallChecks(swift::linux::GuestMemory* memory) {
     // Same wiring as source/translator/linux/main.cpp: without it a wild guest
     // pointer kills the host instead of the guest, and the JIT/AOT comparison
     // would be comparing two different failure modes.
-    runtime::backend::SignalHandler::SetGuestMapProbe(
+    runtime::backend::SignalHandler::SetGuestMapCheck(
             [](void* ctx, std::uintptr_t fault_host_addr) -> bool {
                 auto* mem = static_cast<swift::linux::GuestMemory*>(ctx);
                 const VAddr guest =
@@ -31,7 +31,7 @@ void InstallProbes(swift::linux::GuestMemory* memory) {
                 return mem->RangeIsMapped(guest, 1);
             },
             memory);
-    runtime::backend::SignalHandler::SetGuestRangeProbe(
+    runtime::backend::SignalHandler::SetGuestRangeCheck(
             [](void* ctx, std::uintptr_t host_addr, u64 length) -> u64 {
                 auto* mem = static_cast<swift::linux::GuestMemory*>(ctx);
                 const VAddr guest = mem->ToGuest(reinterpret_cast<const void*>(host_addr));
@@ -68,7 +68,7 @@ bool GuestImage::ReserveWindow(std::string& error) {
         error = fmt::format("failed to reserve the {}-bit guest window", window_bits);
         return false;
     }
-    InstallProbes(&memory);
+    InstallChecks(&memory);
     window_ready = true;
     return true;
 }

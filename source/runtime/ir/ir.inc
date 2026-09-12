@@ -125,7 +125,7 @@ INST(ClearFlags, Void, Flags)
 INST(SetCarry, Void, Value)
 INST(SetOverflow, Void, Value)
 // Toggle the current carry representation in place. FlagM units use this to
-// keep a Direct cross-block carry ABI and to normalize ADC/SBB inputs; the
+// keep a Direct cross-block carry ABI and to adjust ADC/SBB inputs; the
 // interpreter toggles the matching virtual host-C bit.
 INST(InvertCarry, Void)
 // Publish VecFCmp's result to the unchanged x86 flags ABI, clearing OF/SF/AF
@@ -293,7 +293,7 @@ INST(VecFUnary, Value, Value, Value, Imm, Imm, Imm)
 
 // Scalar compare result: bit 0 = CF, bit 1 = PF, bit 2 = ZF.
 // The final Imm records whether this unit selected the FlagM2 compact
-// lowering.  It is deliberately in IR rather than re-probed by the backend,
+// lowering.  It is deliberately in IR rather than re-checked by the backend,
 // so one unit cannot mix paths if process state changes while compiling.
 INST(VecFCmp, Value, Value, Value, Imm, Imm)
 // Lane-wise compare to an all-ones / all-zeros mask.  The predicate (second

@@ -243,7 +243,7 @@ u64 LinkManager::PublishTarget(u64 guest_target,
     const u64 generation = next_target_generation_++;
     ASSERT(generation != kSignalInvalidatingGeneration);
     auto* signal_target = GetOrCreateSignalTargetLocked(guest_target);
-    // Linearize publication against the lock-free signal invalidator. A plain
+    // Linearize publication against the lock-free signal invalidator. A basic
     // final store is incorrect: a handler could publish inactive after hash
     // insertion and then have the publisher overwrite it with a stale active
     // generation. The invalidating sentinel is never a valid generation, and

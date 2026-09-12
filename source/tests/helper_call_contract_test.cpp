@@ -52,7 +52,7 @@ TEST_CASE("helper call contract resolves register and state effects", "[helper-c
     REQUIRE_FALSE(resident.ClobbersFPR(20));
     REQUIRE_FALSE(resident.ArgumentRequiresSlot(7));
     REQUIRE(resident.ArgumentRequiresSlot(2));
-    REQUIRE(resident.RequiresGPRSnapshot(11, true));
+    REQUIRE(resident.RequiresGPRCapture(11, true));
     REQUIRE_FALSE(resident.ReadsGuestState());
     REQUIRE_FALSE(resident.WritesGuestState());
     REQUIRE_FALSE(resident.MayFault());

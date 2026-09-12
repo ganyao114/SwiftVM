@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run_avx_real_tests.sh -- end-to-end qualification of SwiftVM's AVX support
-# against REAL PROGRAMS, not encoding probes.
+# against REAL PROGRAMS, not encoding checks.
 #
 #   run_avx_real_tests.sh <path-to-svm_translator_linux>
 #

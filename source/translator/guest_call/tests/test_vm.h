@@ -2,7 +2,7 @@
 // Shared guest VM fixtures for the call-layer tests.
 //
 // Only ONE JitGuestEnv can be alive at a time (the runtime's guest memory bias
-// and the host signal-handler probes are process-global), so this hands out a
+// and the host signal-handler checks are process-global), so this hands out a
 // lazily created environment and tears down the other one on a switch.
 //
 #pragma once

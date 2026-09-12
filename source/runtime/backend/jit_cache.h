@@ -7,7 +7,7 @@
 // failure path (bad header, corrupt file, stale guest bytes, unrelocatable
 // unit) silently degrades to normal JIT.
 //
-// Granularity: one file per (guest identity x validity key), holding one
+// Granularity: one file per (guest direct x validity key), holding one
 // entry per compiled unit (a function in function mode, a block otherwise).
 // Written once at AddressSpace teardown. The driver reads it once after all
 // modules have been mapped, so each cached unit can be assigned to its current

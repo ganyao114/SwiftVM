@@ -1,12 +1,19 @@
+#include "base/logging.h"
 //
 // Created by 甘尧 on 2023/10/13.
 //
 
 #include <algorithm>
+#include <cstdio>
+#if defined(__linux__)
+#include <execinfo.h>
+#include <unistd.h>
+#endif
 #include "reg_alloc.h"
 #include "runtime/common/perf_stats.h"
 #include "runtime/frontend/x86/sse42str_helper.h"
 #include "runtime/frontend/x86/x87.h"
+#include "translator/x86/cpu.h"
 
 namespace swift::runtime::backend {
 
@@ -182,7 +189,9 @@ ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
             ++need;
         }
         if (True(requested & ir::Flags::AuxiliaryCarry)) {
-            ++need;
+            // Preserve operand bits when the result reuses an input, then
+            // compute AF after the arithmetic has produced its result.
+            need += 2;
         }
     }
     return {need, kDefaultScratchFPR};
@@ -463,9 +472,16 @@ ScratchNeed ScratchBudget(const ir::Inst& inst, const FeatureSet& features) {
             case ir::OpCode::SetOverflow:
                 need.gpr = 2;
                 break;
+            case ir::OpCode::StoreUniform:
+                // An MXCSR write can refresh the host floating-point control
+                // register and leases three temporaries in EmitStoreUniform.
+                need.gpr = inst.GetArg<ir::Uniform>(0).GetOffset() ==
+                                   offsetof(swift::x86::ThreadContext64, mxcsr)
+                        ? 3
+                        : 0;
+                break;
             case ir::OpCode::LoadImm:
             case ir::OpCode::LoadUniform:
-            case ir::OpCode::StoreUniform:
             case ir::OpCode::GetHostGPR:
             case ir::OpCode::SetHostGPR:
             case ir::OpCode::ClearFlags:
@@ -827,7 +843,7 @@ void RegAlloc::SetActiveRegs(swift::u32 id, GPRSMask& gprs, FPRSMask& fprs) {
     map.dirty_fprs = fprs;
 }
 
-void RegAlloc::PermutePlacementProbeGPRHomes() {
+void RegAlloc::PermutePlacementCheckGPRHomes() {
     constexpr u32 left = 14;
     constexpr u32 right = 15;
     const auto swap_mask_bits = [=](GPRSMask& mask) {
@@ -908,12 +924,40 @@ const Vector<RegAlloc::SpillReload>* RegAlloc::SpillReloadsAt(
 }
 
 RegAlloc::Type RegAlloc::ValueType(const ir::Value& value) {
-    return alloc_result[ResolveId(value.Id())].type;
+    const u32 vid = value.Id();
+    if (vid >= alloc_result.size()) {
+        auto* def = value.Def();
+        SVM_DIAG_PRINT(Runtime,
+                     "[OOB-ValueType] value.Id()=%u alloc_size=%zu def=%p op=%u\n",
+                     vid, alloc_result.size(), (void*)def,
+                     def ? (unsigned)def->GetOp() : 0xffffu);
+#if defined(__linux__)
+        void* bt[32];
+        int n = backtrace(bt, 32);
+        backtrace_symbols_fd(bt, n, STDERR_FILENO);
+#endif
+    }
+    return alloc_result[ResolveId(vid)].type;
 }
 
 u32 RegAlloc::ResolveId(u32 id) const {
-    while (alloc_result[id].type == REF) {
-        id = alloc_result[id].slot;
+    while (true) {
+        if (id >= alloc_result.size()) {
+            SVM_DIAG_PRINT(Runtime,
+                         "[OOB-ResolveId] id=%u alloc_size=%zu (read past end)\n",
+                         id, alloc_result.size());
+            return id;
+        }
+        if (alloc_result[id].type != REF) {
+            break;
+        }
+        const u32 next = alloc_result[id].slot;
+        if (next >= alloc_result.size()) {
+            SVM_DIAG_PRINT(Runtime,
+                         "[OOB-ResolveId] REF chain: id=%u slot=%u alloc_size=%zu\n",
+                         id, next, alloc_result.size());
+        }
+        id = next;
     }
     return id;
 }

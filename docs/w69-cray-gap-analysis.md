@@ -152,7 +152,7 @@ close 次数有约 10.7% 的非确定路径差异，但绝对时间不足 70ms�
 | prime | 0 | 8,253 | 8,087 | 875ms |
 | same argv warm | 8,087 | 196 | 8,117 | 856ms |
 
-说明 cache 本身能复用。已有 `SVM_JIT_CACHE_EXEC_ID=1` 只按 guest executable identity 建 key，正好排除输出路径；默认仍 OFF。全正式 mac profile 的总翻译只有 231ms / 51.24s = 0.45%，所以即使完全复用，当前 c-ray 全量收益上限也不足约 0.5%，不能解释主差距。
+说明 cache 本身能复用。已有 `SVM_JIT_CACHE_EXEC_ID=1` 只按 guest executable direct 建 key，正好排除输出路径；默认仍 OFF。全正式 mac profile 的总翻译只有 231ms / 51.24s = 0.45%，所以即使完全复用，当前 c-ray 全量收益上限也不足约 0.5%，不能解释主差距。
 
 ### d. block link/direct link 在受载下改变行为：证伪
 
@@ -259,7 +259,7 @@ macOS 8 秒 `sample` 共 6242 个目标线程样本，借助 `SVM_EXEC_MAP` 将 
 但不能把 237 条全部列为“安全可删”：
 
 - `SVM_XMM_STATIC=1` 单开历史实测 c-ray **-26%**，host code +16.4%、向量栈流量 +256%；W17 的 partial/lazy/evict 路径三轮全负，跨 unit XMM 驻留轴已关闭。
-- 当前 XMM static ON 后动态 FPR 池只有 12 个，NaN cold edge 还固定占 v11–v14；直接照搬 FEX pin 会重新触发已知寄存器压力和 helper snapshot 边界成本。
+- 当前 XMM static ON 后动态 FPR 池只有 12 个，NaN cold edge 还固定占 v11–v14；直接照搬 FEX pin 会重新触发已知寄存器压力和 helper capture 边界成本。
 - SVM 的 NaN cold path 用 guard 保持精确 x86 NaN payload/符号与 invalid indefinite 语义。FEX 不发 guard 不证明我们可无条件删除；必须是数据流证明 finite，或引入可验证的 speculation/deopt，才能算正确候选。
 
 因此，本轮只允许研究 **unit-local、pressure-aware 的 SSA/coalescing**，不重开全局静态 pin 或跨 unit residency。
@@ -270,7 +270,7 @@ macOS 8 秒 `sample` 共 6242 个目标线程样本，借助 `SVM_EXEC_MAP` 将 
 
 | 优先级 | 候选 | 推导链与收益口径 | 必须先记的边界成本 | 风险 | 建议开关 | 裁定 |
 |---|---|---|---|---|---|---|
-| P0 | 修正 benchmark disk-cache identity | 当前 full profile 翻译 `231ms / 51.24s = 0.45%`；相同 argv 实测 loaded 8087、compiled 196。全参数预计净值 **0–0.5%**，不是主差距 | cache header/guest-bytes 校验、不同 codegen env 隔离；现有实现已覆盖 | 低 | 已有 `SVM_JIT_CACHE_EXEC_ID=1` | 可作为 benchmark 配置卫生，不算新生产优化 |
+| P0 | 修正 benchmark disk-cache direct | 当前 full profile 翻译 `231ms / 51.24s = 0.45%`；相同 argv 实测 loaded 8087、compiled 196。全参数预计净值 **0–0.5%**，不是主差距 | cache header/guest-bytes 校验、不同 codegen env 隔离；现有实现已覆盖 | 低 | 已有 `SVM_JIT_CACHE_EXEC_ID=1` | 可作为 benchmark 配置卫生，不算新生产优化 |
 | P1 | 热点 spill + tied/copy 联合 coalescing spike | spill-only 宽松上限 4.20%；move/width 三块加权宽松上限 6.10%，两者高度重叠。**净收益数据不足，无正向下界** | live range 延长、scratch 获取、terminal/cold-edge use、host code growth、其他 unit 新增 spill；必须按动态执行频率而非 unit 数记账 | 中 | `SVM_RA_HOT_COALESCE=1` | **可立测量/设计 spike，不足以立实现项目** |
 | P2 | unit-local XMM SSA residency/重复 state 往返消除 | spill+GPR+XMM 三块加权宽松上限 9.33%，其中 XMM 单项 3.30%；**净收益数据不足**，9.33% 仅为淘汰上限 | 每个候选必须给出新增 max-live FPR、spill、scratch、helper/fault edge 强制物化和 code size；任一越过旧负格即停 | 高 | `SVM_XMM_BLOCK_RESIDENCY=1` | 仅在 P1 pressure 计数器就绪后做 spike；不得跨 unit |
 | P3 | proven-finite NaN guard elimination | 三块 guard 加权宽松上限 2.68%；**净收益数据不足，无正向下界** | finite provenance 穿过 load/call/bitcast 的正确性；每个未证明值必须保留现路径；NaN pressure 测试与 fingerprint | 很高（正确性） | `SVM_SSE_NAN_PROVEN_FINITE=1` | 可做 IR proof spike；不能做启发式 fast-math |
@@ -323,7 +323,7 @@ P2 只允许单 unit 内把可证明同一 guest XMM version 的 load/store 留�
 
 - 开关：`SVM_RA_HOT_COALESCE=1`，另有只读计数模式；若需要生产源码探针，应在独立实验分支，最终实现前移除不必要热计数。
 - 收益门：c-ray 至少 7 对 A/B，95% CI 下界为正；host retired instructions 与 render wall 同向；oracle 全同。
-- 边界门：全量 RA shape 不得增加 spill units/high-water、scratch escalation、helper snapshot；host bytes 增长不超过实测删除量所能解释的范围。
+- 边界门：全量 RA shape 不得增加 spill units/high-water、scratch escalation、helper capture；host bytes 增长不超过实测删除量所能解释的范围。
 - 回归门：mac/orb `swift_test`、func_tests 六格、fingerprint A/B、全 benchmark matrix。
 
 ### Phase C：P2 unit-local XMM，必须依赖 Phase B 的 pressure 数据

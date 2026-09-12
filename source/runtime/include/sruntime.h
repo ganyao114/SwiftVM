@@ -56,6 +56,9 @@ public:
 
     [[nodiscard]] backend::State *GetState() const;
 
+    // Called on the owning thread while Run() is stopped, e.g. at a syscall.
+    void DumpExecutionTrace() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl{};

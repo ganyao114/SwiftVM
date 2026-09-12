@@ -172,7 +172,7 @@ JitTranslator::MatchNarrowCarryFusion(ir::Inst* inst) {
 }
 
 void JitTranslator::PrepareNarrowCarryFusions(ir::Block* block) {
-    narrow_carry_fusions.clear();
+    flag_state.narrow_carry_fusions.clear();
     for (auto& inst : block->GetInstList()) {
         auto fusion = MatchNarrowCarryFusion(&inst);
         if (!fusion) {
@@ -183,7 +183,7 @@ void JitTranslator::PrepareNarrowCarryFusions(ir::Block* block) {
         for (auto* input : fusion->dead_inputs) {
             disable_instructions.set(input->Id());
         }
-        narrow_carry_fusions.emplace(&inst, std::move(*fusion));
+        flag_state.narrow_carry_fusions.emplace(&inst, std::move(*fusion));
     }
 }
 

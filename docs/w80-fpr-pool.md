@@ -77,7 +77,7 @@ fast edge 没有新增 save/restore；代价只在 NaN cold edge。
 | XSAVE/XSAVEC | `EmitHostCall` 在 helper 前仍由 `SpillStaticFPRUniforms()` 把 v16-v31 同步到 xmms[]；动态 v11-v14 与该协议无关。 |
 | XRSTOR | helper 前同步 v16-v31，helper 后仍由 `RestoreStaticFPRUniforms()` 重载 v16-v31；五 seed 的 XSAVE 定向均通过。 |
 | interpreter | `enable_xmm_static` 要求 JIT；`SVM_ENABLE_JIT=0` 下 POOL_EXT 惰性。func_tests 解释器格和 SSE JIT/interpreter 差分均通过。 |
-| 普通 host call | `EmitHostCall` 使用 RegAlloc 的 live-FPR mask，按完整 Q 寄存器保存/恢复；分配到 v11-v14 的 continuation-live V128 自动进入 snapshot，不能依赖 AAPCS 只保低 64-bit。 |
+| 普通 host call | `EmitHostCall` 使用 RegAlloc 的 live-FPR mask，按完整 Q 寄存器保存/恢复；分配到 v11-v14 的 continuation-live V128 自动进入 capture，不能依赖 AAPCS 只保低 64-bit。 |
 | W57 fault sink | pass 在 guest memory、helper、控制流等观察/故障点前 flush pending architectural XMM，块尾 flush_all；这仍只描述 guest state。v11-v14 的动态中间值遵守既有 RA live/fault 边界，不扩大可延迟范围。 |
 | signal/fault | 外部 signal 在 unit 边界观察已物化 guest context；cold veneer 内无 guest fault 点，host stack save/restore 可在 signal return 后继续。普通 guest fault、SSE fault/NaN fuzz 和全量套件均通过。 |
 | exact NaN | source=result alias、scalar/packed 32/64、多个 site 共享 handler 均走同一保存规则；NaN 压力 guest 的 JIT/解释器和两开关输出一致。 |
@@ -158,7 +158,7 @@ SVM_XMM_POOL_EXT=1 "$FP" "$NEW" --against "$REF"
 增加几乎全在故意的 NaN cold corpus：`vec_float_nan_pressure@0x400078`
 因每个 cold site 加 q11-q14 保存/恢复，单 unit `13,572→16,676`（+3,104B）；
 这是冷代码尺寸，不是非 NaN fast-edge 动态指令。其余净减少来自动态池改变 helper
-live snapshot/RA 形状。
+live capture/RA 形状。
 
 ## 4. STREAM 与 CoreMark A/B
 

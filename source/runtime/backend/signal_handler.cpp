@@ -3,6 +3,7 @@
 //
 
 #include "signal_handler.h"
+#include "runtime/common/signal_diagnostic.h"
 
 #include <array>
 #include <atomic>
@@ -30,23 +31,14 @@ std::array<HandlerEntry, kMaxHandlers> g_handlers{};
 std::atomic<size_t> g_handler_count{0};
 std::mutex g_register_lock{};
 
-std::atomic<SignalHandler::GuestMapProbe> g_guest_probe{nullptr};
-std::atomic<void*> g_guest_probe_ctx{nullptr};
-std::atomic<SignalHandler::GuestRangeProbe> g_guest_range_probe{nullptr};
-std::atomic<void*> g_guest_range_probe_ctx{nullptr};
+std::atomic<SignalHandler::GuestMapCheck> g_guest_check{nullptr};
+std::atomic<void*> g_guest_check_ctx{nullptr};
+std::atomic<SignalHandler::GuestRangeCheck> g_guest_range_check{nullptr};
+std::atomic<void*> g_guest_range_check_ctx{nullptr};
 
 // Per-thread alternate stack. Allocated once and intentionally never freed:
 // the kernel references it until the thread exits.
 thread_local bool g_alt_stack_installed = false;
-
-const char* SignalName(int sig) {
-    switch (sig) {
-        case SIGSEGV: return "SIGSEGV";
-        case SIGBUS: return "SIGBUS";
-        case SIGILL: return "SIGILL";
-        default: return "SIGNAL";
-    }
-}
 
 }  // namespace
 
@@ -112,53 +104,53 @@ void SignalHandler::UnregisterHandler(void* ctx) {
     g_handler_count.store(out, std::memory_order_release);
 }
 
-void SignalHandler::SetGuestMapProbe(GuestMapProbe probe, void* ctx) {
-    g_guest_probe_ctx.store(ctx, std::memory_order_release);
-    g_guest_probe.store(probe, std::memory_order_release);
+void SignalHandler::SetGuestMapCheck(GuestMapCheck check, void* ctx) {
+    g_guest_check_ctx.store(ctx, std::memory_order_release);
+    g_guest_check.store(check, std::memory_order_release);
 }
 
-void SignalHandler::SetGuestRangeProbe(GuestRangeProbe probe, void* ctx) {
-    g_guest_range_probe_ctx.store(ctx, std::memory_order_release);
-    g_guest_range_probe.store(probe, std::memory_order_release);
+void SignalHandler::SetGuestRangeCheck(GuestRangeCheck check, void* ctx) {
+    g_guest_range_check_ctx.store(ctx, std::memory_order_release);
+    g_guest_range_check.store(check, std::memory_order_release);
 }
 
-bool SignalHandler::HasGuestMapProbe() {
-    return g_guest_probe.load(std::memory_order_acquire) != nullptr;
+bool SignalHandler::HasGuestMapCheck() {
+    return g_guest_check.load(std::memory_order_acquire) != nullptr;
 }
 
 u64 SignalHandler::GuestMappedBytes(std::uintptr_t host_addr, u64 length) {
-    // Relaxed: the probe is installed by the embedder before any guest code
+    // Relaxed: the check is installed by the embedder before any guest code
     // runs, so there is nothing to synchronise with, and this sits directly in
     // front of every rep-string helper call -- an acquire load here is a
-    // measurable `ldar` on the hot path for no benefit. (Set*Probe still
+    // measurable `ldar` on the hot path for no benefit. (Set*Check still
     // publishes ctx before fn with release, so a reader that sees a non-null
     // fn also sees its ctx.)
-    if (auto range = g_guest_range_probe.load(std::memory_order_relaxed)) {
-        return range(g_guest_range_probe_ctx.load(std::memory_order_relaxed), host_addr, length);
+    if (auto range = g_guest_range_check.load(std::memory_order_relaxed)) {
+        return range(g_guest_range_check_ctx.load(std::memory_order_relaxed), host_addr, length);
     }
-    auto probe = g_guest_probe.load(std::memory_order_acquire);
-    if (!probe) {
+    auto check = g_guest_check.load(std::memory_order_acquire);
+    if (!check) {
         return length;  // no oracle: keep the unchecked behaviour
     }
     // Fallback: walk page by page. Only reached by embedders that installed
-    // the single-address probe but not the range one.
-    constexpr u64 kProbeGranule = 4096;
-    void* ctx = g_guest_probe_ctx.load(std::memory_order_acquire);
+    // the single-address check but not the range one.
+    constexpr u64 kCheckGranule = 4096;
+    void* ctx = g_guest_check_ctx.load(std::memory_order_acquire);
     u64 done = 0;
     while (done < length) {
-        if (!probe(ctx, host_addr + done)) break;
-        const u64 in_page = kProbeGranule - ((host_addr + done) & (kProbeGranule - 1));
+        if (!check(ctx, host_addr + done)) break;
+        const u64 in_page = kCheckGranule - ((host_addr + done) & (kCheckGranule - 1));
         done += in_page < length - done ? in_page : length - done;
     }
     return done;
 }
 
 bool SignalHandler::IsGuestAddressMapped(std::uintptr_t fault_host_addr) {
-    auto probe = g_guest_probe.load(std::memory_order_acquire);
-    if (!probe) {
+    auto check = g_guest_check.load(std::memory_order_acquire);
+    if (!check) {
         return false;
     }
-    return probe(g_guest_probe_ctx.load(std::memory_order_acquire), fault_host_addr);
+    return check(g_guest_check_ctx.load(std::memory_order_acquire), fault_host_addr);
 }
 
 std::uintptr_t SignalHandler::GetContextPC(const ucontext_t* uctx) {
@@ -244,19 +236,11 @@ void SignalHandler::HandleSignal(int sig, siginfo_t* info, void* raw_uctx) {
 }
 
 void SignalHandler::DefaultHandler(int sig, siginfo_t* info, ucontext_t* uctx) {
-    // Best-effort async-signal-safe diagnostics: snprintf into a stack buffer
-    // + a single write() to stderr (no stdio buffering, no allocation).
-    char buf[256];
-    const int len = std::snprintf(buf,
-                                  sizeof(buf),
-                                  "[SwiftVM] unhandled host fault: %s at pc=%p addr=%p\n",
-                                  SignalName(sig),
-                                  reinterpret_cast<void*>(GetContextPC(uctx)),
-                                  info ? info->si_addr : nullptr);
-    if (len > 0) {
-        const ssize_t unused = write(STDERR_FILENO, buf, static_cast<size_t>(len));
-        (void) unused;
-    }
+    SignalDiagnostic diagnostic("[SwiftVM] unhandled host fault");
+    diagnostic.Field("sig", sig);
+    diagnostic.Field("pc", GetContextPC(uctx));
+    diagnostic.Field("addr", reinterpret_cast<std::uintptr_t>(info ? info->si_addr : nullptr));
+    diagnostic.Write();
     // Die with the original signal (and a core dump) instead of a bland
     // abort(): restore the default disposition and re-raise.
     std::signal(sig, SIG_DFL);

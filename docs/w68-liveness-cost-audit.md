@@ -13,7 +13,7 @@ region 态以及 7zip 抽查均为零；RE=0 对照也为零。因此预注册�
 | CoreMark + SQLite entry-weighted 总净值严格为正 | 0 | **FAIL** |
 
 这里的 `net=0` 是**候选集为空**，不是说边界杀值免费，也不是重述 P-1 的
-同点 relocation 零和结论。probe 对同块冲突有大量命中，说明观测路径工作正常；
+同点 relocation 零和结论。check 对同块冲突有大量命中，说明观测路径工作正常；
 空集只发生在本任务新增的“跨边界”维度。
 
 量化死因是：当前 measured region 虽是多块 RA unit，但 fixed-home 活区在候选
@@ -46,7 +46,7 @@ RE=0 对照只增加 `SVM_REGION_EDGES=0`。CoreMark 命令严格为
 `coremark_x64 0 0 0x66 150000 7 1 2000`；SQLite 使用 fresh DB 和
 `--size 1 --testset main`；7zip 抽查为 `b 1 -mmt1 -md16m`。
 
-RA shape 直接确认 Linux identity pool10：
+RA shape 直接确认 Linux direct pool10：
 
 | corpus / region | `gpr_pool=10` units | spill 后 `gpr_pool=9` units | fixed hazards | forward evictions |
 |---|---:|---:|---:|---:|
@@ -58,7 +58,7 @@ RA shape 直接确认 Linux identity pool10：
 ### 1.2 两条“占家”观测通道
 
 现行顺序是先收集活区，再规划 fixed affinity，最后做正向分配：
-`register_alloc_pass.cpp:260-280`。probe 没有改 affinity、mapping、active mask、
+`register_alloc_pass.cpp:260-280`。check 没有改 affinity、mapping、active mask、
 spill、helper 或 emitter，只读取最终通过 `RunVerified` 的 scan。
 
 为避免漏掉不同来源的 owner，审计拆成两条独立通道：
@@ -78,7 +78,7 @@ spill、helper 或 emitter，只读取最终通过 `RunVerified` 的 scan。
 `register_alloc_pass.cpp:524-547`。后者四组 `evictions=0`，所以没有遗漏的
 forward-only 跨边 owner。
 
-fixed-range probe 给每个 final RA unit 生成稳定 `(root, signature)`，临时把
+fixed-range check 给每个 final RA unit 生成稳定 `(root, signature)`，临时把
 既有 block-entry counter 输出扩展为 `(root, signature, block_pc, entries)`；若
 出现事件，可逐版本精确连接 producer、SetHost 与 residual-use block，不按同 guest
 PC 的多个版本平均。由于最终跨边事件为零，任何版本选择策略都不会改变结论。
@@ -170,9 +170,9 @@ reload。
 
 CoreMark + SQLite production region 合计仍为 `0 - 0 = 0`，未过“严格为正”。
 
-## 3. probe 覆盖负控：同块形状大量存在
+## 3. check 覆盖负控：同块形状大量存在
 
-为了区分“probe 没工作”和“跨边维度为空”，保留同块命中计数：
+为了区分“check 没工作”和“跨边维度为空”，保留同块命中计数：
 
 | regime / corpus | fixed-range 同块重叠 | producer-input 同块占家 | 跨块合计 |
 |---|---:|---:|---:|
@@ -203,7 +203,7 @@ CoreMark + SQLite production region 合计仍为 `0 - 0 = 0`，未过“严格�
 
 ### 4.2 top shape 前后逐点一致
 
-临时 probe 撤销、隔离目录重建后，以相同命令复跑：
+临时 check 撤销、隔离目录重建后，以相同命令复跑：
 
 - CoreMark region top-20：`rank/PC/host_static/move_static/nan_static`
   **20/20 一致**；
@@ -219,7 +219,7 @@ shape 全部零差异；production top-20 也零差异。
 
 ### 4.3 源码 SHA 与构建
 
-首次六文件 probe 和补充 input probe 都已机械撤销。恢复后隔离构建受影响 targets
+首次六文件 check 和补充 input check 都已机械撤销。恢复后隔离构建受影响 targets
 `[10/10]` 通过；源码中已搜不到 `SVM_RA_LIVENESS_*`、`BoundaryAudit` 或
 `svm-ra-live-*`。host w68 和恢复源的 SHA-256 为：
 
@@ -233,14 +233,14 @@ shape 全部零差异；production top-20 也零差异。
 ```
 
 采集中发现共享 VM clone 同时被另一战役临时写入并构建。没有修改或吸收其代码；
-补充 probe、撤销重建和 after-shape 复证均转移到
+补充 check、撤销重建和 after-shape 复证均转移到
 `~/svm-phasec/liveness-src` + `liveness-build` 隔离目录，仍严格位于用户允许的
 `~/svm-phasec/` 范围内。本报告是 w68 唯一保留的交付改动。
 
 ## 5. NO-GO 重开条件
 
 不建议实现 cost model、early-kill rewrite 或新开关。量化重开必须先由同口径
-analysis-only probe 同时证明：
+analysis-only check 同时证明：
 
 1. production region 中 `cross_boundary_owner_events > 0`，且事件必须来自
    owner 在更早 block 定义、在后续 producer block 仍有 residual use；
@@ -261,16 +261,16 @@ VM 内证据均位于允许范围：
 ```text
 /home/swift/svm-phasec/liveness-evidence/
   clean-before/{coremark,sqlite}-{region,re0}/
-  probe/{coremark,sqlite}-{region,re0}/
-  probe/7zip-region/
-  input-probe/{coremark,sqlite}-{region,re0}/
-  input-probe/7zip-region/
+  check/{coremark,sqlite}-{region,re0}/
+  check/7zip-region/
+  input-check/{coremark,sqlite}-{region,re0}/
+  input-check/7zip-region/
   restored/{coremark,sqlite}-{region,re0}/
   compare/                         # top/common-PC 规范化结果与 diff
   source-clean/SHA256SUMS
-  source-probe.SHA256SUMS
+  source-check.SHA256SUMS
   source-restored.SHA256SUMS
-  input-probe.SHA256SUMS
+  input-check.SHA256SUMS
   input-restored.SHA256SUMS
   input-build.log
   input-restored-build.log

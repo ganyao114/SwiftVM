@@ -1,3 +1,4 @@
+#include "base/logging.h"
 #include "runtime/frontend/x86/x87.h"
 
 #include <algorithm>
@@ -24,7 +25,7 @@ namespace {
 std::atomic<u64> g_x87_dispatch_calls{};
 
 void PrintX87DispatchStats() {
-    std::fprintf(stderr,
+    SVM_DIAG_PRINT(Decode,
                  "SVM x87 helper calls: %llu\n",
                  static_cast<unsigned long long>(
                          g_x87_dispatch_calls.load(std::memory_order_relaxed)));
@@ -139,12 +140,12 @@ bool IsZero(const extFloat80_t& value) {
     return (value.signExp & 0x7FFF) == 0 && value.signif == 0;
 }
 
-struct NormalizedMagnitude {
+struct AdjustedMagnitude {
     u64 significand;
     s32 exponent;
 };
 
-NormalizedMagnitude NormalizeMagnitude(const extFloat80_t& value) {
+AdjustedMagnitude AlignMagnitude(const extFloat80_t& value) {
     u64 significand = value.signif;
     s32 exponent = value.signExp & 0x7FFF;
     if (!exponent) exponent = 1;
@@ -260,7 +261,7 @@ softfloat_state StateFromControl(const ThreadContext64& ctx, bool force_extended
 //      memory. This is the isolation guarantee and is unconditional.
 //   2. the embedder's guest-mapping oracle — an in-window but *unmapped*
 //      address yields nullptr and the caller skips the access, so the host
-//      survives. Embedders without an oracle (unit tests, fuzzers, identity
+//      survives. Embedders without an oracle (unit tests, fuzzers, direct
 //      mappings) keep the raw behaviour.
 // [address, address + size) must be backed in full.
 //
@@ -292,7 +293,7 @@ u8* GuestPointer(u64 address, size_t size) {
         return nullptr;
     }
     auto* host = reinterpret_cast<u8*>(masked + GetGuestMemBias());
-    // One range probe covers the whole access, so a hole in the middle is
+    // One range check covers the whole access, so a hole in the middle is
     // caught too -- the old first/last-byte pair relied on the access being
     // smaller than the mapping granularity.
     if (runtime::backend::SignalHandler::GuestMappedBytes(
@@ -610,8 +611,8 @@ struct QuotientInfo {
 QuotientInfo CompleteQuotient(extFloat80_t dividend,
                               extFloat80_t divisor,
                               bool nearest) {
-    const auto a = NormalizeMagnitude(dividend);
-    const auto b = NormalizeMagnitude(divisor);
+    const auto a = AlignMagnitude(dividend);
+    const auto b = AlignMagnitude(divisor);
     const s32 difference = a.exponent - b.exponent;
     if (difference < -1) return {0, false};
     __uint128_t numerator = a.significand;
@@ -658,10 +659,10 @@ extFloat80_t CompleteRemainder(ThreadContext64& ctx,
 }
 
 extFloat80_t ScaleEncodingForPartial(extFloat80_t value, s32 scale) {
-    const auto normalized = NormalizeMagnitude(value);
-    const s32 exponent = normalized.exponent + scale;
+    const auto adjusted = AlignMagnitude(value);
+    const s32 exponent = adjusted.exponent + scale;
     return {
-            .signif = normalized.significand,
+            .signif = adjusted.significand,
             .signExp = static_cast<u16>((value.signExp & 0x8000) | exponent),
     };
 }
@@ -696,12 +697,12 @@ void Remainder(ThreadContext64& ctx, X87Remainder operation) {
         return;
     }
 
-    const s32 difference = NormalizeMagnitude(dividend).exponent -
-                           NormalizeMagnitude(divisor).exponent;
+    const s32 difference = AlignMagnitude(dividend).exponent -
+                           AlignMagnitude(divisor).exponent;
     if (difference >= 64) {
         // Intel permits an implementation-selected reduction width N in
         // [32,63].  Contemporary x87 uses 32-bit exponent windows for both
-        // instructions: N = 32 + (D mod 32).  A Rosetta real-x86 probe of
+        // instructions: N = 32 + (D mod 32).  A Rosetta real-x86 check of
         // 2^100 mod 3 yields 2^64 with C2 set on the first FPREM and FPREM1.
         // C0/C1/C3 are undefined while C2 is set.
         const s32 width = 32 + (difference & 31);
@@ -786,12 +787,12 @@ void Extract(ThreadContext64& ctx) {
         exponent = {.signif = UINT64_C(0x8000000000000000), .signExp = 0xFFFF};
         Raise(ctx, kSwZE);
     } else {
-        const auto normalized = NormalizeMagnitude(value);
+        const auto adjusted = AlignMagnitude(value);
         significand = {
-                .signif = normalized.significand,
+                .signif = adjusted.significand,
                 .signExp = static_cast<u16>((value.signExp & 0x8000) | 0x3FFF),
         };
-        exponent = i32_to_extF80(normalized.exponent - 0x3FFF);
+        exponent = i32_to_extF80(adjusted.exponent - 0x3FFF);
         if (IsDenormal(value)) Raise(ctx, kSwDE);
     }
 

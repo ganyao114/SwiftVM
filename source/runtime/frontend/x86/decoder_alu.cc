@@ -150,7 +150,7 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
     // valid when its polarity matches: Adc wants Direct, Sbb wants Inverted.
     // Native adc/sbc consume the stored carry directly, valid only when its
     // polarity is KNOWN to match (Adc wants Direct, Sbb wants Inverted). At
-    // block entry (Unknown) always normalize through CarryValue, which reads
+    // block entry (Unknown) always adjust through CarryValue, which reads
     // the runtime polarity byte.
     bool carry_native = op == ArithOp::Adc ? carry_ == CarryPolarity::Direct
                         : op == ArithOp::Sbb ? carry_ == CarryPolarity::Inverted
@@ -170,7 +170,7 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
     }
     if (native) {
         if (use_carry && !carry_native) {
-            // Normalize the stored host carry to the polarity the native
+            // Adjust the stored host carry to the polarity the native
             // adc/sbc consumes. Materialize the x86 CF as a value, then run
             // a carry-defining op that reproduces it with the required
             // polarity, saving only C:
@@ -271,7 +271,7 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
             // borrow-in, so when b[3:0] + cin >= 16 the half-borrow is approximate
             // (the exact 3-operand half-borrow needs a true Sbcs with a live
             // carry-in). Same class as the C/V boundary residue below; the fuzzer
-            // masks AF for narrow adc/sbb. Plain sub/cmp here are exact.
+            // masks AF for narrow adc/sbb. Basic sub/cmp here are exact.
             if (True(flag_mask & ir::Flags::AuxiliaryCarry)) {
                 auto af_src = __ Sub(a_c, ir::Operand{subtrahend});
                 __ SaveFlags(af_src, ir::Flags::AuxiliaryCarry);
@@ -1101,7 +1101,7 @@ void X64Decoder::DecodeLzcnt(_DInst& insn) {
             }
         }
     }
-    auto src = NormalizeBitCountSource(insn, op1, width);
+    auto src = PrepareBitCountSource(insn, op1, width);
     if (width == 32) {
         auto result = __ CountLeadingZeros32(src);
         __ SaveFlags(__ Or(result, ir::Operand{ir::Imm(u32(0))}), ir::Flags::Zero);
@@ -1218,7 +1218,7 @@ void X64Decoder::DecodeCmpxchg16b(_DInst& insn) {
     __ SaveFlags(diff, ir::Flags::Zero);
 }
 
-ir::Value X64Decoder::NormalizeBitCountSource(_DInst& insn,
+ir::Value X64Decoder::PrepareBitCountSource(_DInst& insn,
                                               _Operand& operand,
                                               u32 width) {
     auto source = ToValue(Src(insn, operand));
@@ -1248,7 +1248,7 @@ void X64Decoder::DecodeBitScan(_DInst& insn, bool reverse) {
             }
         }
     }
-    auto src = NormalizeBitCountSource(insn, op1, width);
+    auto src = PrepareBitCountSource(insn, op1, width);
     if (width == 32) {
         auto flagged = __ Or(src, ir::Operand{ir::Imm(u32(0))});
         __ SaveFlags(flagged, ir::Flags::Zero);
@@ -1377,7 +1377,7 @@ void X64Decoder::DecodeRotate(_DInst& insn, bool left) {
         count_masked = __ And(ToValue(count_data), ir::Operand{ir::Imm(mask)});
         auto count = count_masked;
         // 8/16-bit rotates reduce the masked count modulo the width (a rotate by
-        // the width is the identity); 32/64-bit counts are already in range.
+        // the width is the direct); 32/64-bit counts are already in range.
         if (width < 32) {
             count = __ And(count, ir::Operand{ir::Imm(u64(width - 1))});
         }
@@ -1410,7 +1410,7 @@ void X64Decoder::DecodeRotate(_DInst& insn, bool left) {
 
     // Rotates affect only CF and OF; N/Z/P/AF are left unchanged. A zero masked
     // count leaves the flags untouched (a full-width rotate has a non-zero masked
-    // count, so it still updates CF even though the value is the identity).
+    // count, so it still updates CF even though the value is the direct).
     const bool dynamic_count = constant_count == UINT32_MAX;
     const bool static_zero_count = constant_count == 0;
     ir::Value skip_flags;

@@ -1,7 +1,9 @@
+#include "base/logging.h"
 //
 // Created by 甘尧 on 2024/6/21.
 //
 
+#include "runtime/common/signal_diagnostic.h"
 #include <array>
 #include <cstdlib>
 #include <cstring>
@@ -59,7 +61,7 @@ using namespace swift::x86;
 // SVM_X86_PIN_EXT=1 extends the map with RAX/RCX in callee-saved x22/x23 and
 // RDX in x29. Level 2 additionally keeps RSI/RDI/R8-R14 in caller-saved
 // x0-x8; level 3 completes the GPR map with R15 in x9. EmitHostCall
-// snapshots every caller-saved pin around each helper. Descriptors stay sorted
+// captures every caller-saved pin around each helper. Descriptors stay sorted
 // by uniform offset so the trampoline can pair adjacent saves.
 // The trampoline reserves them from linear scan, restores them on runtime
 // entry and spills them on every host exit. Inline CallLambda helpers do not
@@ -144,7 +146,7 @@ static UniformRangeDesc x86_loop_gpr_uniform_ranges[] = {
 // Instruction-fetch memory interface for the x86 decoder. With guest
 // address virtualization (memory_base), guest address G is backed by host
 // memory at G + bias; the loader installs the bias via SetBias (0 =
-// identity, the default for tests / non-loader embedders).
+// direct, the default for tests / non-loader embedders).
 class MemoryImpl : public runtime::MemoryInterface {
 public:
     void SetBias(u64 b) { bias = b; }
@@ -164,11 +166,11 @@ public:
     // encoding the decoder mis-sizes) would therefore kill the host process
     // instead of the guest. Validate against the embedder's guest-mapping
     // oracle and hand the decoder a nullptr -> ExitReason::PageFatal.
-    // Embedders that installed no oracle (unit tests, fuzzers, identity
+    // Embedders that installed no oracle (unit tests, fuzzers, direct
     // mappings) keep the raw bias add.
     void* GetPointer(void* src) override {
         const auto host = (reinterpret_cast<uintptr_t>(src) & mask) + bias;
-        if (runtime::backend::SignalHandler::HasGuestMapProbe() &&
+        if (runtime::backend::SignalHandler::HasGuestMapCheck() &&
             !runtime::backend::SignalHandler::IsGuestAddressMapped(host)) {
             return nullptr;
         }
@@ -251,7 +253,7 @@ static Arm64Features DetectArm64Features() {
     features |= flag_features;
 #endif
 
-    // Diagnostic/bring-up override. The default remains the OS feature probe;
+    // Diagnostic/bring-up override. The default remains the OS feature check;
     // forcing an unsupported instruction will SIGILL, so this is intentionally
     // not a general user-facing mode switch.
     const auto& svm_config = runtime::GetSvmConfig();
@@ -491,7 +493,7 @@ static bool IsEndbr64Boundary(VAddr target) {
 
 struct X86Instance::Impl final {
     // memory_base: guest->host bias (host addr = guest addr + bias), installed
-    // by the linux loader; nullptr keeps the identity-mapped fast path.
+    // by the linux loader; nullptr keeps the direct-mapped fast path.
     explicit Impl(void* memory_base, u64 guest_addr_mask) {
         memory_impl.SetBias(reinterpret_cast<uintptr_t>(memory_base));
         memory_impl.SetMask(guest_addr_mask);
@@ -682,6 +684,11 @@ struct X86Instance::Impl final {
                 return published;
             }
         }
+        static std::atomic<uint32_t> translate_recompile_dbg{0};
+        if (swift::runtime::GetSvmConfig().translate_dbg &&
+            swift::runtime::ClaimDiagnosticSample(translate_recompile_dbg, 200000)) {
+            SVM_DIAG_FORMAT(Runtime, "[recompile] pc={:#x}\n", pc);
+        }
         if (compile_observer) {
             compile_observer(compile_observer_ctx, pc);
         }
@@ -700,7 +707,7 @@ struct X86Instance::Impl final {
         // Function-level compilation: decode the whole function (all reachable
         // blocks up to ret / indirect jump / syscall) into an HIRFunction and
         // compile it as a single unit. Bypasses GetNodeOrCreate to avoid the
-        // ir::Function identity conflict between the module's address-node map
+        // ir::Function direct conflict between the module's address-node map
         // and the HIRBuilder's internal Function object (TranslateIR pushes the
         // HIRBuilder's Function into the module).
         if (func_base) {
@@ -805,18 +812,18 @@ struct X86Instance::Impl final {
                     PerfAdd(GetPerfStats().decoded_blocks,
                             decode_results.back().decoded_count);
                     if (runtime::GetSvmConfig().dump_ir) {
-                        fmt::print(stderr,
+                        SVM_DIAG_FORMAT(Runtime,
                                    "--- function {:#x} (decoded {} blocks) ---\n",
                                    region.root,
                                    decode_results.back().decoded_count);
                         for (auto* block : hir_function->GetHIRBlocks()) {
                             if (block) {
-                                fmt::print(stderr,
+                                SVM_DIAG_FORMAT(Runtime,
                                            "{}\n",
                                            block->GetBlock()->ToString());
                             }
                         }
-                        fmt::print(stderr,
+                        SVM_DIAG_FORMAT(Runtime,
                                    "--- end function {:#x} ---\n",
                                    region.root);
                     }
@@ -924,7 +931,7 @@ struct X86Instance::Impl final {
                 compiled = false;
             }
             if (runtime::GetSvmConfig().dump_ir) {
-                fmt::print(stderr, "[func-compile] {:#x} builder-destroyed\n", pc);
+                SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} builder-destroyed\n", pc);
             }
             if (!retry_as_region) {
                 break;
@@ -981,7 +988,7 @@ struct X86Instance::Impl final {
                     PinUnusedCallLambdas(x.get());
                     perf_ir_finalize.Stop();
                     if (runtime::GetSvmConfig().dump_ir) {
-                        fmt::print("--- block {:#x} ---\n{}\n", pc, x->ToString());
+                        SVM_DIAG_FORMAT(Runtime, "--- block {:#x} ---\n{}\n", pc, x->ToString());
                     }
                 }
                 if (!module->GetAddressSpace().GetConfig().enable_jit) {
@@ -1048,7 +1055,7 @@ struct X86Core::Impl final {
             auto pc = s_runtime->GetLocation();
             GetCPUContext()->pc.qword = pc;
             if (trace) {
-                fmt::print("[trace] halt={:#x} rip={:#x} rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x}\n",
+                SVM_DIAG_FORMAT(Runtime, "[trace] halt={:#x} rip={:#x} rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x}\n",
                            static_cast<u32>(hr),
                            pc,
                            GetCPUContext()->rax.qword,
@@ -1106,7 +1113,8 @@ struct X86Core::Impl final {
     }
 
     X86Instance* instance;
-    std::unique_ptr<runtime::Runtime> s_runtime{};
+    // Diagnostic callbacks borrow through a weak_ptr and expire with the Core.
+    std::shared_ptr<runtime::Runtime> s_runtime{};
     u64 svc_num{};
 };
 
@@ -1187,6 +1195,12 @@ void X86Core::SignalInterrupt() { impl->s_runtime->SignalInterrupt(); }
 void X86Core::ClearInterrupt() { impl->s_runtime->ClearInterrupt(); }
 
 uint64_t X86Core::GetSyscallNumber() { return impl->svc_num; }
+
+std::function<void()> X86Core::MakeExecutionTraceDumper() const {
+    return [runtime = std::weak_ptr{impl->s_runtime}] {
+        if (auto owner = runtime.lock()) owner->DumpExecutionTrace();
+    };
+}
 
 ThreadContext64& X86Core::GetContext() {
     auto uni_buffer = impl->s_runtime->GetUniformBuffer();

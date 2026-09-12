@@ -19,19 +19,19 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
                 return false;
             }
             if (address.Def()) {
-                const auto rematerialized = spilled_memory_operands.find(
+                const auto recomputed = memory_state.spilled_memory_operands.find(
                         address.Def());
-                if (rematerialized != spilled_memory_operands.end() &&
-                    rematerialized->second.consumer == inst) {
+                if (recomputed != memory_state.spilled_memory_operands.end() &&
+                    recomputed->second.consumer == inst) {
                     return false;
                 }
             }
-            if (!use_memory_base &&
+            if (!memory_state.use_memory_base &&
                 context.IsConstAddressCached(address.Id())) {
                 return true;
             }
             if (allow_writeback && address.Def()) {
-                const auto update = use_memory_base
+                const auto update = memory_state.use_memory_base
                         ? MatchBiasedMemoryUpdate(address.Def())
                         : MatchPreIndexMemoryUpdate(address.Def());
                 if (update && update->memory == inst) {
@@ -55,7 +55,7 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
             if ((context.IsSpilled(result) &&
                  !ResolvePinnedGPRValue(result) &&
                  context.HasSpillReloadAtDefinition(inst)) ||
-                pinned_load_updates.contains(inst)) {
+                pinned_gprs.pinned_load_updates.contains(inst)) {
                 return std::nullopt;
             }
             const auto operand = inst->GetArg<ir::Operand>(0);
@@ -83,8 +83,8 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
                 if (CanUseZeroStoreRegister(value) ||
                     (residence && residence->width == width) ||
                     (value.Def() &&
-                     (pinned_memory_values.contains(value.Def()) ||
-                      fused_pin_gpr_reads.contains(value.Def())))) {
+                     (memory_state.pinned_memory_values.contains(value.Def()) ||
+                      pinned_gprs.fused_pin_gpr_reads.contains(value.Def())))) {
                     return std::nullopt;
                 }
             }

@@ -73,7 +73,7 @@
 // signal.  "x86 avx vmaskmov fault suppression" therefore runs the instruction
 // straddling a PROT_NONE page with the elements on that page masked off, under
 // a SIGSEGV/SIGBUS handler, and asserts that no fault was taken and the answer
-// is right.  The Rosetta generator runs the same probe and its four
+// is right.  The Rosetta generator runs the same check and its four
 // `// MASKFAULT` comments in avx_blend_rosetta_ref.inc record that hardware
 // completes it too.
 
@@ -546,7 +546,7 @@ TEST_CASE("x86 avx blend vs rosetta reference") {
 // instead of killing the test binary, so BOTH outcomes are reportable rather
 // than one of them being a crash.
 //
-// Rosetta runs the same four probes; see the `// MASKFAULT` comments at the end
+// Rosetta runs the same four checks; see the `// MASKFAULT` comments at the end
 // of avx_blend_rosetta_ref.inc, which record that hardware completes them.
 namespace {
 
@@ -585,15 +585,15 @@ TEST_CASE("x86 avx vmaskmov fault suppression") {
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
 
-    // Each probe: the encoding, its access width in bytes, and whether it
+    // Each check: the encoding, its access width in bytes, and whether it
     // stores.  All were disassembled and confirmed before use.
-    struct Probe {
+    struct Check {
         const char* name;
         std::vector<u8> code;
         size_t bytes;  // total access width
         bool store;
     };
-    const std::vector<Probe> probes = {
+    const std::vector<Check> checks = {
             // vmaskmovps ymm0, ymm3, [rdi]
             {"vmaskmovps.ld.256", {0xC4, 0xE2, 0x65, 0x2C, 0x07}, 32, false},
             // vmaskmovpd ymm0, ymm3, [rdi]
@@ -618,15 +618,15 @@ TEST_CASE("x86 avx vmaskmov fault suppression") {
     std::vector<std::string> problems;
     size_t code_cursor = 1;
 
-    for (const auto& probe : probes) {
+    for (const auto& check : checks) {
         for (const auto& [backend, core] : {std::pair<const char*, X86Core*>{"jit", jit_core},
                                             std::pair<const char*, X86Core*>{"interp",
                                                                              interp_core}}) {
             // Only the LOWER half of the access is on a mapped page; the mask
             // clears every element of the upper half.
-            const size_t half = probe.bytes / 2;
+            const size_t half = check.bytes / 2;
             const u64 access = guard - half;
-            auto code = probe.code;
+            auto code = check.code;
             code.push_back(0xF4);  // hlt
             const u64 code_addr = base + 0x1000 + code_cursor * 0x100;
             ++code_cursor;
@@ -651,10 +651,10 @@ TEST_CASE("x86 avx vmaskmov fault suppression") {
             std::memcpy(ctx.ymm_high[1].b, src.data() + 16, 16);
             std::memcpy(ctx.xmms[3].b, mask.data(), 16);
             std::memcpy(ctx.ymm_high[3].b, mask.data() + 16, 16);
-            // A VEX.128 probe puts its second 8 bytes on the guard page, so its
+            // A VEX.128 check puts its second 8 bytes on the guard page, so its
             // mask must clear the UPPER 8 bytes of xmm3 rather than the upper
             // 16 of ymm3.
-            if (probe.bytes == 16) {
+            if (check.bytes == 16) {
                 std::memset(ctx.xmms[3].b + 8, 0x00, 8);
             }
             ctx.rdi.qword = access;
@@ -671,15 +671,15 @@ TEST_CASE("x86 avx vmaskmov fault suppression") {
                 problems.push_back(fmt::format(
                         "{} [{}]: took SIGSEGV/SIGBUS -- a masked-off element touched the "
                         "guard page, so fault suppression is NOT implemented",
-                        probe.name, backend));
+                        check.name, backend));
                 continue;
             }
             if (exit_code != int(swift::translator::None)) {
                 problems.push_back(fmt::format("{} [{}]: block did not reach HLT (exit={})",
-                                               probe.name, backend, exit_code));
+                                               check.name, backend, exit_code));
                 continue;
             }
-            if (probe.store) {
+            if (check.store) {
                 // The mapped half must hold the source's lower half, and only
                 // that: the guard page cannot be read back, but a store that
                 // reached it would have faulted above.
@@ -688,7 +688,7 @@ TEST_CASE("x86 avx vmaskmov fault suppression") {
                     if (got != src[i]) {
                         problems.push_back(fmt::format(
                                 "{} [{}]: byte {} of the masked store is {:#04x}, expected {:#04x}",
-                                probe.name, backend, i, got, src[i]));
+                                check.name, backend, i, got, src[i]));
                         break;
                     }
                 }
@@ -703,7 +703,7 @@ TEST_CASE("x86 avx vmaskmov fault suppression") {
                 // Everything else -- the masked-off elements AND, at VEX.128,
                 // bits 255:128 -- must be zero.
                 if (got != want) {
-                    problems.push_back(fmt::format("{} [{}]: got {}, expected {}", probe.name,
+                    problems.push_back(fmt::format("{} [{}]: got {}, expected {}", check.name,
                                                    backend, Hex(got), Hex(want)));
                 }
             }

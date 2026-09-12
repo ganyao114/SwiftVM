@@ -5,7 +5,7 @@
 Linux AArch64 现在从 auxv 检测 FlagM 与 FlagM2，并把结果写入既有
 `Config::arm64_features`：FlagM 复用 `Arm64Features::FlagM`，FlagM2 复用 W47
 已有的 `Arm64Features::AXFlag`。`X64Decoder` 不再自行做 Apple-only sysctl；它从
-所属 Config 的 feature snapshot 决定 CFINV/FlagM2 lowering。结果是 Orb 上两个已知
+所属 Config 的 feature capture 决定 CFINV/FlagM2 lowering。结果是 Orb 上两个已知
 carry unit 精确从 48 降到 45 IR，除此以外对 master 无 codegen 变化。
 
 生产改动通过双平台全量构建、全量 `swift_test`、carry 定向矩阵、固定种子 fuzz、
@@ -68,9 +68,9 @@ flag 指令。因此不能采用该位号。
 
 ### `source/runtime/frontend/x86/decoder.{h,cc}`
 
-- `X64Decoder` 构造时从既有 `arm64_features` 参数 snapshot `FlagM`；FlagM2 继续
+- `X64Decoder` 构造时从既有 `arm64_features` 参数 capture `FlagM`；FlagM2 继续
   使用 W47 已有的 `AXFlag` 与 `flags_fcmp_compact_`。
-- `FlagsCfinvEnabled()` 改为读取该 snapshot，同时保留现有
+- `FlagsCfinvEnabled()` 改为读取该 capture，同时保留现有
   `SVM_FLAGS_CFINV=0` 强制关闭语义。
 - 删除 decoder 内第二套 Apple-only FlagM sysctl，避免 feature source 分裂。
 
@@ -218,4 +218,3 @@ Orb 上关闭 disk cache，按 CFINV ON/OFF 做三对交错；六次均 rc=0、
 - 未改 `source/translator/linux/linker/`、
   `SwiftVM-bench/harness/run_matrix.sh` 或任何 golden。
 - 最终改动：三个生产文件与本报告；没有遗留探针或临时测试代码。
-

@@ -1,3 +1,4 @@
+#include "support/register_alloc_test_support.h"
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -100,7 +101,7 @@ std::vector<std::string> EmitSpilledPushShape() {
     const GPRSMask gprs{~((1u << 6) - 1u)};
     const FPRSMask fprs{~((1u << 8) - 1u)};
     RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
-    RegisterAllocPass::RunForSpillEvictTest(block.get(), &alloc, false);
+    RegisterAllocTestSupport::RunForSpillEvictTest(block.get(), &alloc, false);
     REQUIRE(alloc.ValueType(updated) == RegAlloc::MEM);
 
     Config config{
@@ -126,7 +127,7 @@ std::size_t Count(const std::vector<std::string>& lines, std::string_view text) 
 
 }  // namespace
 
-TEST_CASE("stack push update folds into an identity-memory pre-index store") {
+TEST_CASE("stack push update folds into an direct-memory pre-index store") {
     const auto folded = EmitPushShape(false, false);
     REQUIRE(Count(folded, "str x3, [x4, #-8]!") == 1);
     REQUIRE(Count(folded, "sub ") == 0);

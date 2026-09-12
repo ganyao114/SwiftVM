@@ -30,7 +30,7 @@ struct GuestImage {
     std::vector<AotGuestSegment> segments{};
 
     // Reserve the window (SVM_GUEST_BITS) and install the signal-handler
-    // guest-mapping probes. Called by both paths before any mapping.
+    // guest-mapping checks. Called by both paths before any mapping.
     bool ReserveWindow(std::string& error);
 
     bool Load(const std::string& elf_path, std::string& error);

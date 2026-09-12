@@ -310,7 +310,7 @@ std::atomic<u64> g_ring_b_entries{};
 std::atomic<u8*> g_ring_fault_address{};
 std::atomic<u64> g_conditional_selector{};
 
-u64 RingTargetProbe() {
+u64 RingTargetCheck() {
     g_ring_b_entries.fetch_add(1, std::memory_order_seq_cst);
     if (g_arm_ring_fault.exchange(false, std::memory_order_seq_cst)) {
         auto* address = g_ring_fault_address.load(std::memory_order_acquire);
@@ -343,13 +343,13 @@ u64 ConditionalRingSelect() {
     return g_conditional_selector.fetch_add(1, std::memory_order_seq_cst) & 1u;
 }
 
-IntrusivePtr<Block> BuildRingBlock(VAddr guest, VAddr target, bool probe_target) {
+IntrusivePtr<Block> BuildRingBlock(VAddr guest, VAddr target, bool check_target) {
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     block->SetEndLocation(Location{guest + 1});
-    if (probe_target) {
+    if (check_target) {
         (void)block
                 ->CallLambda(Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(
-                        FptrCast(&RingTargetProbe)))}})
+                        FptrCast(&RingTargetCheck)))}})
                 .SetType(ValueType::U64);
     }
     block->SetTerminal(terminal::LinkBlock{Location{target}});
@@ -382,7 +382,7 @@ IntrusivePtr<Block> BuildSelfEdgeConditional(VAddr guest, VAddr cold_target) {
     block->SetEndLocation(Location{guest + 1});
     (void)block
             ->CallLambda(Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(
-                    FptrCast(&RingTargetProbe)))}})
+                    FptrCast(&RingTargetCheck)))}})
             .SetType(ValueType::U64);
     const auto selector =
             block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
@@ -483,7 +483,7 @@ RegionBranchRun RunRegionBranchFunction(bool enabled,
     if (helper_after_producer) {
         (void)function
                 ->CallLambda(Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(
-                        FptrCast(&RingTargetProbe)))}})
+                        FptrCast(&RingTargetCheck)))}})
                 .SetType(ValueType::U64);
     }
     function->AdvancePC(Imm{u64{1}});
@@ -2382,7 +2382,7 @@ TEST_CASE("region branch flags materialize only on the observing exit",
     REQUIRE(partial_on.code_size <= partial_off.code_size);
 
     // Host calls after the final producer are committed-state boundaries.
-    // They reject the plan just like a faulting memory operation.
+    // They reject the recipe just like a faulting memory operation.
     const auto helper_off = RunRegionBranchFunction(false, false, true);
     const auto helper_on = RunRegionBranchFunction(true, false, true);
     REQUIRE(helper_off.halt == HaltReason::CallHost);
@@ -2413,6 +2413,6 @@ TEST_CASE("region branch flags materialize only on the observing exit",
     REQUIRE(sse42_observed_on.code_size == sse42_observed_off.code_size);
     REQUIRE(sse42_observed_on.code_hash == sse42_observed_off.code_hash);
 #else
-    SUCCEED("region branch-flags execution probe requires an AArch64 host");
+    SUCCEED("region branch-flags execution check requires an AArch64 host");
 #endif
 }

@@ -131,7 +131,7 @@ bool JitTranslator::CanReuseExactCachedConstAddress(ir::Inst* inst) const {
 }
 
 std::optional<u64> JitTranslator::CachedConstAddressOffset(ir::Inst* inst) const {
-    if (use_memory_base || !ReproveCachedConstAddress(inst)) {
+    if (memory_state.use_memory_base || !ReproveCachedConstAddress(inst)) {
         return std::nullopt;
     }
     const auto address = GetConstAddress(inst);
@@ -148,7 +148,7 @@ bool JitTranslator::EmitCachedConstAddress(ir::Inst* inst,
                "constant-address cache proof failed at IR {}", inst->Id());
     const auto address = GetConstAddress(inst);
     ASSERT(address);
-    if (use_memory_base) {
+    if (memory_state.use_memory_base) {
         if (!CanReuseExactCachedConstAddress(inst)) {
             __ Mov(result, *address);
         }

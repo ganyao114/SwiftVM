@@ -256,7 +256,7 @@ public:
     };
 
     // The GPR coalescer stages one whole block and publishes it only after the
-    // write/read/width proofs agree.  This snapshot is deliberately limited to
+    // write/read/width proofs agree.  This capture is deliberately limited to
     // state that family can mutate; pools, spills and scratch contracts remain
     // allocator construction state and cannot be touched by the transaction.
     struct GPRCoalesceState {
@@ -310,10 +310,10 @@ public:
     [[nodiscard]] bool ValueLiveAfter(const ir::Value& value,
                                       u32 instruction_id) const;
     void SetActiveRegs(u32 id, GPRSMask &gprs, FPRSMask &fprs);
-    // Experimental placement probe: rename only the symmetric dynamic homes
+    // Experimental placement check: rename only the symmetric dynamic homes
     // after allocation and verification, so allocation/coalescing decisions
     // and therefore instruction count remain unchanged.
-    void PermutePlacementProbeGPRHomes();
+    void PermutePlacementCheckGPRHomes();
 
     ir::HostGPR ValueGPR(const ir::Value &value);
     ir::HostFPR ValueFPR(const ir::Value &value);

@@ -443,9 +443,9 @@ void DumpAtExit() {
     u64 state_pairs = 0;
     u64 state_same_offset = 0;
     u64 helper_calls_dynamic = 0;
-    u64 helper_snapshot_instructions_dynamic = 0;
-    u64 helper_snapshot_code_bytes_dynamic = 0;
-    u64 helper_snapshot_memory_bytes_dynamic = 0;
+    u64 helper_capture_instructions_dynamic = 0;
+    u64 helper_capture_code_bytes_dynamic = 0;
+    u64 helper_capture_memory_bytes_dynamic = 0;
     for (u32 i = 0; i < count; ++i) {
         const auto& slot = process.slots[i];
         const auto slot_entries = Dynamic(slot, HotCoalesceCounter::Entries);
@@ -461,12 +461,12 @@ void DumpAtExit() {
         state_same_offset += slot.shape.uniform.same_offset;
         helper_calls_dynamic +=
                 slot_entries * slot.shape.helper_calls;
-        helper_snapshot_instructions_dynamic +=
-                slot_entries * slot.shape.helper_snapshot_instructions;
-        helper_snapshot_code_bytes_dynamic +=
-                slot_entries * slot.shape.helper_snapshot_code_bytes;
-        helper_snapshot_memory_bytes_dynamic +=
-                slot_entries * slot.shape.helper_snapshot_memory_bytes;
+        helper_capture_instructions_dynamic +=
+                slot_entries * slot.shape.helper_capture_instructions;
+        helper_capture_code_bytes_dynamic +=
+                slot_entries * slot.shape.helper_capture_code_bytes;
+        helper_capture_memory_bytes_dynamic +=
+                slot_entries * slot.shape.helper_capture_memory_bytes;
     }
     const u64 spill_dynamic = spill_reloads + spill_writebacks;
     std::fprintf(out,
@@ -487,12 +487,12 @@ void DumpAtExit() {
                  PrintU64(state_saved_dynamic),
                  Percent(state_saved_dynamic, host_dynamic));
     std::fprintf(out,
-                 "[svm-ra-helper-dynamic] calls=%llu snapshot_instructions=%llu "
-                 "snapshot_code_bytes=%llu snapshot_memory_bytes=%llu\n",
+                 "[svm-ra-helper-dynamic] calls=%llu capture_instructions=%llu "
+                 "capture_code_bytes=%llu capture_memory_bytes=%llu\n",
                  PrintU64(helper_calls_dynamic),
-                 PrintU64(helper_snapshot_instructions_dynamic),
-                 PrintU64(helper_snapshot_code_bytes_dynamic),
-                 PrintU64(helper_snapshot_memory_bytes_dynamic));
+                 PrintU64(helper_capture_instructions_dynamic),
+                 PrintU64(helper_capture_code_bytes_dynamic),
+                 PrintU64(helper_capture_memory_bytes_dynamic));
 
     if (config.indirect_l1_prof) {
         u64 hits = 0;
@@ -521,6 +521,22 @@ void DumpAtExit() {
     }
 
     if (config.ra_hot_coalesce_all) {
+        // Preserve each code version's own count and size. A per-PC maximum
+        // cannot be multiplied by the combined count without overstating it.
+        for (u32 i = 0; i < count; ++i) {
+            const auto& slot = process.slots[i];
+            const auto& shape = slot.shape;
+            std::fprintf(out,
+                         "[svm-hot-code] pc=0x%llx code=%u entries=%llu "
+                         "host_bytes=%u host_static=%u move_static=%u nan_static=%u "
+                         "spill_static=%u state_saved_static=%u\n",
+                         static_cast<unsigned long long>(shape.guest_entry), i,
+                         PrintU64(Dynamic(slot, HotCoalesceCounter::Entries)),
+                         shape.host_bytes, shape.host_instructions, shape.move_bridges,
+                         shape.nan_guard_instructions,
+                         shape.spill_reloads + shape.spill_writebacks,
+                         shape.uniform.saved_instructions);
+        }
         for (const auto& bucket : buckets) {
             std::fprintf(out,
                          "[svm-hot-all] pc=0x%llx versions=%u entries=%llu "
@@ -533,6 +549,8 @@ void DumpAtExit() {
                          bucket.nan_static_max, bucket.spill_static_max,
                          bucket.state_saved_static_max);
         }
+        std::fprintf(out, "[svm-hot-end] codes=%u pcs=%zu overflow=%llu\n",
+                     count, buckets.size(), PrintU64(Load(process.overflow)));
     }
 
     const auto hot = Rank(buckets, [](const AggregateBucket& bucket) {

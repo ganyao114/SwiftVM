@@ -104,7 +104,7 @@ mov w29, w6
 ```
 
 对应 IR 是相邻的 `BitExtract(source, 0, 32) -> ZeroExtend32To64`。扩展值可能继续参与地址
-计算，不能把整个链误当成单用途 `SetHostGPR` 发布。新合并只移除低 32 位 identity bridge，
+计算，不能把整个链误当成单用途 `SetHostGPR` 发布。新合并只移除低 32 位 direct bridge，
 保留扩展节点的一条 `mov Wdst, Wsrc` 和它的全部后续使用：
 
 - bridge 是 U32、`lsb=0`、`bits=32`，只有一个使用且该使用就是紧邻的扩展节点；

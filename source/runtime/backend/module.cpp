@@ -116,7 +116,7 @@ bool Module::Push(ir::AddressNode* node) {
 }
 
 void Module::Remove(ir::AddressNode* node) {
-    // Identity-checked and idempotent. SMC invalidation can detach the same
+    // Direct-checked and idempotent. SMC invalidation can detach the same
     // node twice (a publisher re-registers it with the tracker between
     // TakeDirtyNodes and DetachNode, so the retry loop collects it again), and
     // the map may already hold a *different*, freshly created node at the same
@@ -138,11 +138,11 @@ void Module::Remove(ir::AddressNode* node) {
 
 // RemoveRange used to live here: remove-by-location plus an unconditional
 // release, over a whole range. It had no callers and carried the exact
-// identity bug Module::Remove documents above -- if the map had since been
+// direct bug Module::Remove documents above -- if the map had since been
 // repopulated at one of those locations with a different node, it evicted the
 // new node and released the old node's reference a second time. Deleted rather
 // than fixed: SMC invalidation reaches the same effect through
-// SmcTracker::TakeRangeNodes + DetachNode, which is identity-checked.
+// SmcTracker::TakeRangeNodes + DetachNode, which is direct-checked.
 
 AddressNodeRef Module::GetNode(ir::Location location) {
     std::shared_lock guard(inner_lock);

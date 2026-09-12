@@ -6,7 +6,7 @@
 //   svm_aot info <artifact>
 //
 // `compile` and `run` deliberately live in ONE executable. The validity key
-// includes the identity of the SwiftVM binary that produced the code
+// includes the direct of the SwiftVM binary that produced the code
 // (backend::ComputeBuildId), because every absolute host-helper address the
 // backend bakes in is an offset into that image -- two separately linked
 // executables are two different code generators. A `svm_aot compile` /

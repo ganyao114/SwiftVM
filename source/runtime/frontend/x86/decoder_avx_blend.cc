@@ -389,7 +389,7 @@ void X64Decoder::DecodeAvxMaskMov(const VexInsn& v, u32 lane_bits, bool store) {
                                      element_type,
                                      VexTsoOrdered(v));
                 if (lane_bits == 64) {
-                    // The element IS the qword: a plain write, no merge.
+                    // The element IS the qword: a basic write, no merge.
                     if (q == 0) {
                         XmmLo(XmmOf(v.reg), value);
                     } else if (q == 1) {

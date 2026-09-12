@@ -96,7 +96,7 @@ void JitTranslator::QueueVecNaNColdPath(VecNaNColdKind kind,
     //   isnan(result) ==
     //       isnan(left) || isnan(right) || operation_was_invalid
     //
-    // FSQRT has the analogous identity with a NaN input or a negative finite
+    // FSQRT has the analogous direct with a NaN input or a negative finite
     // input. The host operation therefore performs both input and generated-
     // NaN detection for us, with a single conditional branch at the site.
     const bool scalar =
@@ -432,16 +432,13 @@ void JitTranslator::EmitVecFScalarBinaryTied(ir::Inst* inst, u32 lane_bits) {
     auto right_value = inst->GetArg<ir::Value>(1);
     const bool right_is_vector = ir::IsFloatValueType(right_value.Type());
     auto right = right_is_vector ? context.V(right_value) : context.GetTmpV();
+    // NEP takes the upper lanes from the left operand. Copying left into the
+    // destination first would overwrite a right operand sharing that register.
     if (result.GetCode() == left.GetCode()) {
         if (sse_scalar_tie && result.GetCode() >= 16) {
             ASSERT_MSG(ReproveScalarFPRTie(inst),
                        "scalar FPR fixed-home tie proof diverged at IR {}", inst->Id());
         }
-    } else if (!scalar_fpr_liveness.UpperDead(inst)) {
-        // A still-live dst-in cannot be tied by RA. Seed the new destination
-        // once, then let NEP update lane 0 in place; this is still one copy
-        // instead of the legacy post-op full-copy plus lane insert.
-        __ Orr(result.V16B(), left.V16B(), left.V16B());
     }
     if (!right_is_vector) {
         if (lane_bits == 32) {
@@ -720,10 +717,10 @@ void JitTranslator::EmitVecFMinMax(ir::Inst* inst) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const bool maximum = inst->GetArg<ir::Imm>(3).Get() != 0;
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
-    if (sse_afp_minmax && scalar && result.GetCode() == left.GetCode()) {
+    if (sse_afp_minmax && scalar) {
         // AH selects operand 2 for unordered and equal inputs, matching x86
-        // MIN/MAX including NaN payload and signed-zero selection.  NEP keeps
-        // the tied destination's upper lanes intact.
+        // MIN/MAX including NaN payload and signed-zero selection. NEP takes
+        // the upper lanes from the left input, including an untied result.
         if (bits == 32) {
             if (maximum)
                 __ Fmax(result.S(), left.S(), right.S());
@@ -737,27 +734,9 @@ void JitTranslator::EmitVecFMinMax(ir::Inst* inst) {
         }
         return;
     }
-    if (sse_scalar_insert && scalar) {
-        // x86 selects operand 2 for unordered and equal. Keep dst-in as the
-        // default, and insert operand 2 only when it wins.
-        if (result.GetCode() != left.GetCode()) {
-            __ Orr(result.V16B(), left.V16B(), left.V16B());
-        }
-        Label keep_left;
-        if (bits == 32) {
-            __ Fcmp(left.S(), right.S());
-            __ B(&keep_left, maximum ? gt : mi);
-            __ Ins(result.V4S(), 0, right.V4S(), 0);
-        } else {
-            __ Fcmp(left.D(), right.D());
-            __ B(&keep_left, maximum ? gt : mi);
-            __ Ins(result.V2D(), 0, right.V2D(), 0);
-        }
-        __ Bind(&keep_left);
-        return;
-    }
+    // Vector comparison leaves pending x86 flags in host NZCV untouched.
+    // Select before writing result, which may reuse either input register.
     auto mask = context.GetTmpV();
-    auto selected = context.GetTmpV();
     if (bits == 32) {
         if (maximum)
             __ Fcmgt(mask.V4S(), left.V4S(), right.V4S());
@@ -770,15 +749,16 @@ void JitTranslator::EmitVecFMinMax(ir::Inst* inst) {
             __ Fcmgt(mask.V2D(), right.V2D(), left.V2D());
     }
     __ Bsl(mask.V16B(), left.V16B(), right.V16B());
-    __ Orr(selected.V16B(), mask.V16B(), mask.V16B());
     if (!scalar) {
-        __ Orr(result.V16B(), selected.V16B(), selected.V16B());
+        __ Orr(result.V16B(), mask.V16B(), mask.V16B());
     } else {
-        __ Orr(result.V16B(), left.V16B(), left.V16B());
+        if (result.GetCode() != left.GetCode()) {
+            __ Orr(result.V16B(), left.V16B(), left.V16B());
+        }
         if (bits == 32)
-            __ Ins(result.V4S(), 0, selected.V4S(), 0);
+            __ Ins(result.V4S(), 0, mask.V4S(), 0);
         else
-            __ Ins(result.V2D(), 0, selected.V2D(), 0);
+            __ Ins(result.V2D(), 0, mask.V2D(), 0);
     }
 }
 
@@ -1202,14 +1182,14 @@ void JitTranslator::EmitVecFCvtIntToFloat(ir::Inst* inst) {
     auto source = context.X(inst->GetArg<ir::Value>(0));
     const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
     const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
-    if (const auto* plan = resident_scalar_fpr_analysis.FindConversion(inst)) {
-        auto fp = VRegister::GetQRegFromCode(plan->target);
+    if (const auto* recipe = resident_scalar_fpr_analysis.FindConversion(inst)) {
+        auto fp = VRegister::GetQRegFromCode(recipe->target);
         if (dst_bits == 32) {
             if (src_bits == 32)
                 __ Scvtf(fp.S(), source.W());
             else
                 __ Scvtf(fp.S(), source);
-            if (plan->export_result) {
+            if (recipe->export_result) {
                 __ Fmov(context.W(ir::Value{inst}), fp.S());
             }
         } else {
@@ -1217,7 +1197,7 @@ void JitTranslator::EmitVecFCvtIntToFloat(ir::Inst* inst) {
                 __ Scvtf(fp.D(), source.W());
             else
                 __ Scvtf(fp.D(), source);
-            if (plan->export_result) {
+            if (recipe->export_result) {
                 __ Fmov(context.X(ir::Value{inst}), fp.D());
             }
         }

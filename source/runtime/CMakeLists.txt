@@ -22,7 +22,6 @@ add_library(swift_runtime STATIC
         common/object_pool.h
         common/variant_util.h
         common/logging.h
-        common/logging.cpp
         common/svm_config.cpp
         common/svm_config.h
         common/virtual_vector.cpp
@@ -165,6 +164,7 @@ add_library(swift_runtime STATIC
         backend/arm64/jit/raw_carry_branch_analysis.cpp
         backend/arm64/jit/raw_carry_branch_analysis.h
         backend/arm64/jit/translator.cpp
+        backend/arm64/jit/translator_statistics.cpp
         backend/arm64/jit/terminal_location_publication.cpp
         backend/arm64/jit/terminal_location_publication.h
         backend/arm64/jit/translator_operand.cpp
@@ -206,8 +206,8 @@ add_library(swift_runtime STATIC
         backend/arm64/jit/scalar_fpr_liveness.h
         backend/arm64/jit/resident_scalar_fpr_analysis.cpp
         backend/arm64/jit/resident_scalar_fpr_analysis.h
-        backend/arm64/jit/scalar_identity_analysis.cpp
-        backend/arm64/jit/scalar_identity_analysis.h
+        backend/arm64/jit/scalar_copy_analysis.cpp
+        backend/arm64/jit/scalar_copy_analysis.h
         backend/arm64/jit/translator_fpr_publication.cpp
         backend/arm64/jit/translator_mem.cpp
         backend/arm64/jit/translator_mem_atomic_fallback.cpp

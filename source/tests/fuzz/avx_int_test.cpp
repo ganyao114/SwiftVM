@@ -136,7 +136,7 @@ struct AvxIntRef {
 
 #include "avx_int_rosetta_ref.inc"
 
-// The shared table, materialized once per shape.
+// The shared table, computed once per shape.
 struct AluOp {
     const char* name;
     u8 pp, mm, op, w, lmask;
@@ -395,7 +395,7 @@ TEST_CASE("x86 avx integer vs rosetta reference") {
     // Rosetta 2 truncates the VPSLLVQ / VPSRLVQ shift count to 32 BITS.  The
     // Intel SDM uses the whole 64-bit qword ("IF COUNT_SRC[63:0] < 64"), so a
     // count whose low dword is below 64 but whose full value is not must give
-    // zero, and Rosetta instead performs the shift.  Probed directly rather
+    // zero, and Rosetta instead performs the shift.  Checked directly rather
     // than inferred: with value 1 and count 0x0000000100000001 (2^32 + 1)
     // Rosetta returns 2, while count 0x100 -- whose low dword IS >= 64 --
     // correctly returns 0, which rules out a low-BYTE reading and pins it to

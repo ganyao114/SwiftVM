@@ -1,3 +1,4 @@
+#include "runtime/backend/reg_alloc.h"
 #include <algorithm>
 
 #include "translator.h"
@@ -6,9 +7,7 @@ namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool IsPinnedGPR(u32 index) {
-    return index <= 9 || (index >= 19 && index <= 23) || index == 29;
-}
+using ::swift::runtime::backend::IsFixedGPRHome;
 
 u32 CountUses(ir::Inst& consumer, ir::Inst* definition) {
     return std::ranges::count_if(
@@ -51,14 +50,14 @@ std::optional<JitTranslator::PinnedSelectPublication>
 JitTranslator::MatchPinnedSelectPublication(ir::Inst* publication) const {
     if (!publication || publication->GetOp() != ir::OpCode::SetHostGPR ||
         publication->GetArg<ir::Imm>(2).Get() != 0 ||
-        dead_pinned_gpr_writes.contains(publication) ||
+        pinned_gprs.dead_pinned_gpr_writes.contains(publication) ||
         context.IsHostWriteCoalesced(publication->Id())) {
         return std::nullopt;
     }
 
     const u32 target = publication->GetArg<ir::Imm>(1).Get();
     auto* extend = publication->GetArg<ir::Value>(0).Def();
-    if (!IsPinnedGPR(target) || !extend ||
+    if (!IsFixedGPRHome(target) || !extend ||
         extend->GetOp() != ir::OpCode::ZeroExtend32To64 ||
         extend->ReturnType() != ir::ValueType::U64) {
         return std::nullopt;
@@ -136,24 +135,22 @@ JitTranslator::MatchPinnedSelectPublication(ir::Inst* publication) const {
 }
 
 void JitTranslator::PreparePinnedSelectPublications(ir::Block* block) {
-    pinned_select_results.clear();
-    pinned_select_publications.clear();
     for (auto& inst : block->GetInstList()) {
-        auto plan = MatchPinnedSelectPublication(&inst);
-        if (!plan || pinned_gpr_values.contains(plan->producer) ||
-            fused_pin_gpr_reads.contains(plan->extend) ||
-            std::ranges::any_of(plan->aliases, [&](ir::Inst* alias) {
-                return fused_pin_gpr_reads.contains(alias);
+        auto candidate = MatchPinnedSelectPublication(&inst);
+        if (!candidate || pinned_gprs.pinned_gpr_values.contains(candidate->producer) ||
+            pinned_gprs.fused_pin_gpr_reads.contains(candidate->extend) ||
+            std::ranges::any_of(candidate->aliases, [&](ir::Inst* alias) {
+                return pinned_gprs.fused_pin_gpr_reads.contains(alias);
             })) {
             continue;
         }
-        pinned_gpr_values.emplace(plan->producer, plan->target);
-        fused_pin_zext32.insert(plan->extend);
-        for (auto* alias : plan->aliases) {
-            fused_pin_gpr_reads.emplace(alias, plan->target);
+        pinned_gprs.pinned_gpr_values.emplace(candidate->producer, candidate->target);
+        fused_pin_zext32.insert(candidate->extend);
+        for (auto* alias : candidate->aliases) {
+            pinned_gprs.fused_pin_gpr_reads.emplace(alias, candidate->target);
         }
-        pinned_select_results.emplace(plan->producer, *plan);
-        pinned_select_publications.emplace(&inst, std::move(*plan));
+        pinned_gprs.pinned_select_results.emplace(candidate->producer, *candidate);
+        pinned_gprs.pinned_select_publications.emplace(&inst, std::move(*candidate));
     }
 }
 

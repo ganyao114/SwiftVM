@@ -87,7 +87,7 @@ enum {
 // Install `rt->artifact_path` into `rt->address_space`.
 //
 // Returns 0 on success. Any non-zero value means the artifact was rejected
-// and *nothing was installed*; the caller must fall back to plain JIT rather
+// and *nothing was installed*; the caller must fall back to basic JIT rather
 // than run partially initialized code. Non-zero values are SwiftAotStatus.
 int swift_aot_init(const SwiftAotRuntime* rt);
 

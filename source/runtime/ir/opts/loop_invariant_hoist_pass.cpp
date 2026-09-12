@@ -120,13 +120,13 @@ bool IsWideLoopCompareConstant(Block* block, Inst* definition) {
 
 }  // namespace
 
-std::unique_ptr<LoopInvariantHoistPlan> LoopInvariantHoistPlan::Analyze(
+std::unique_ptr<LoopInvariantHoistRecipe> LoopInvariantHoistRecipe::Analyze(
         HIRFunction* function,
         const UniformInfo& info,
         const FeatureSet& features) {
-    auto plan = std::make_unique<LoopInvariantHoistPlan>();
+    auto recipe = std::make_unique<LoopInvariantHoistRecipe>();
     if (!function || (!features.loop_gpr_hoist && !features.loop_const_hoist)) {
-        return plan;
+        return recipe;
     }
 
     for (auto& hir_block : function->GetHIRBlocksRPO()) {
@@ -136,17 +136,17 @@ std::unique_ptr<LoopInvariantHoistPlan> LoopInvariantHoistPlan::Analyze(
             continue;
         }
 
-        BlockPlan block_plan{};
-        block_plan.block = block;
+        BlockRecipe block_recipe{};
+        block_recipe.block = block;
         for (auto& inst : block->GetInstList()) {
-            block_plan.original_order.push_back(&inst);
+            block_recipe.original_order.push_back(&inst);
         }
-        for (auto* inst : block_plan.original_order) {
+        for (auto* inst : block_recipe.original_order) {
             // 两条及以上长活基址在 STREAM Triad 上虽不 spill，仍触发稳定的
             // Apple 核心短环退化；P0 因而只收一个家，其余保持原按需 load。
             constexpr u16 kMaxGPRAnchors = 1;
             if (features.loop_gpr_hoist &&
-                block_plan.gpr_count < kMaxGPRAnchors &&
+                block_recipe.gpr_count < kMaxGPRAnchors &&
                 inst->GetOp() == OpCode::LoadUniform &&
                 inst->ReturnType() == ValueType::U64) {
                 const auto uniform = inst->GetArg<Uniform>(0);
@@ -156,8 +156,8 @@ std::unique_ptr<LoopInvariantHoistPlan> LoopInvariantHoistPlan::Analyze(
                     info.uniform_regs_map.GetValueAt(offset).Null() &&
                     !UnitWritesUniform(function, offset, size) &&
                     AllUsesStayInBlock(function, block, inst)) {
-                    block_plan.anchors.push_back(inst);
-                    ++block_plan.gpr_count;
+                    block_recipe.anchors.push_back(inst);
+                    ++block_recipe.gpr_count;
                     continue;
                 }
             }
@@ -167,52 +167,52 @@ std::unique_ptr<LoopInvariantHoistPlan> LoopInvariantHoistPlan::Analyze(
                                                block->GetStartLocation()) &&
                 AllUsesStayInBlock(function, block, inst) &&
                 IsWideLoopCompareConstant(block, inst)) {
-                block_plan.anchors.push_back(inst);
-                ++block_plan.const_count;
+                block_recipe.anchors.push_back(inst);
+                ++block_recipe.const_count;
             }
         }
-        if (!block_plan.anchors.empty()) {
-            std::sort(block_plan.anchors.begin(), block_plan.anchors.end(),
+        if (!block_recipe.anchors.empty()) {
+            std::sort(block_recipe.anchors.begin(), block_recipe.anchors.end(),
                       [](const Inst* left, const Inst* right) {
                           return left->Id() < right->Id();
                       });
-            plan->blocks.push_back(std::move(block_plan));
+            recipe->blocks.push_back(std::move(block_recipe));
         }
     }
-    return plan;
+    return recipe;
 }
 
-void LoopInvariantHoistPlan::Apply() {
+void LoopInvariantHoistRecipe::Apply() {
     ASSERT(!applied);
-    for (auto& block_plan : blocks) {
-        auto* block = block_plan.block;
-        for (auto* anchor : block_plan.anchors) {
+    for (auto& block_recipe : blocks) {
+        auto* block = block_recipe.block;
+        for (auto* anchor : block_recipe.anchors) {
             block->RemoveInst(anchor);
         }
-        for (auto it = block_plan.anchors.rbegin(); it != block_plan.anchors.rend(); ++it) {
+        for (auto it = block_recipe.anchors.rbegin(); it != block_recipe.anchors.rend(); ++it) {
             block->InsertBefore(*it, block->GetBeginInst().operator->());
         }
-        block->SetLoopHoistMetadata({block_plan.anchors.back(),
-                                     std::span<Inst*>{block_plan.anchors},
-                                     block_plan.gpr_count,
-                                     block_plan.const_count});
+        block->SetLoopHoistMetadata({block_recipe.anchors.back(),
+                                     std::span<Inst*>{block_recipe.anchors},
+                                     block_recipe.gpr_count,
+                                     block_recipe.const_count});
     }
     applied = true;
 }
 
-void LoopInvariantHoistPlan::Revert() {
+void LoopInvariantHoistRecipe::Revert() {
     ASSERT(applied);
-    for (auto& block_plan : blocks) {
-        auto* block = block_plan.block;
+    for (auto& block_recipe : blocks) {
+        auto* block = block_recipe.block;
         std::vector<Inst*> current;
-        current.reserve(block_plan.original_order.size());
+        current.reserve(block_recipe.original_order.size());
         for (auto& inst : block->GetInstList()) {
             current.push_back(&inst);
         }
         for (auto* inst : current) {
             block->RemoveInst(inst);
         }
-        for (auto* inst : block_plan.original_order) {
+        for (auto* inst : block_recipe.original_order) {
             block->AppendInst(inst);
         }
         block->SetLoopHoistMetadata({});

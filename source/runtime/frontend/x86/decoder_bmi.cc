@@ -23,7 +23,7 @@
 // ORACLES
 // ---------------------------------------------------------------------------
 // Unicorn 2.1.4 DOES execute BMI and DOES honour VEX.vvvv on these GPR forms
-// (both probed, not assumed), but it is wrong in four places, found by diffing
+// (both checked, not assumed), but it is wrong in four places, found by diffing
 // it against Rosetta over 2640 cases and adjudicating each disagreement against
 // the SDM (source/tests/fuzz/bmi_unicorn_check.c):
 //   * BLSI's CF is inverted -- Unicorn uses the BLSR rule, but the SDM sets CF
@@ -117,7 +117,7 @@
 // B2  VEX.vvvv is a REAL operand for all of these except RORX, so
 //     VexInsn::vvvv_valid must NOT be consulted: the "unused" marker 0b1111
 //     un-inverts to register 0, which for BMI legitimately means rax/eax.
-//     (Probed: `blsi eax, ecx` encodes vvvv as 1111 and Unicorn writes eax.)
+//     (Checked: `blsi eax, ecx` encodes vvvv as 1111 and Unicorn writes eax.)
 // B3  The IR value that carries SaveFlags must be typed at the ARCHITECTURAL
 //     width.  The arm64 JIT sizes its flag-setting op by the value's type
 //     (W vs X register, so SF comes from bit 31 or bit 63) and the interpreter
@@ -422,7 +422,7 @@ void X64Decoder::DecodeBmiRorx(const VexInsn& v, u32 width) {
     const auto type = GetSize(width);
     auto src = BmiSrc(v, width);
     const u32 rotate = v.imm8 & (width - 1);
-    // A zero rotate is the identity.  Spelled as an explicit copy rather than
+    // A zero rotate is the direct.  Spelled as an explicit copy rather than
     // Ror #0 so neither backend has to accept a zero-width rotate.
     auto result = rotate == 0 ? __ Or(src, ir::Operand{ir::Imm(u64(0))}).SetType(type)
                               : __ RorImm(src, ir::Imm(rotate)).SetType(type);
@@ -598,7 +598,7 @@ void X64Decoder::DecodeTzcnt(_DInst& insn) {
             }
         }
     }
-    auto src = NormalizeBitCountSource(insn, op1, width);
+    auto src = PrepareBitCountSource(insn, op1, width);
     if (width == 32) {
         auto result = __ CountTrailingZeros32(src);
         __ SaveFlags(__ Or(result, ir::Operand{ir::Imm(u32(0))}), ir::Flags::Zero);
@@ -657,7 +657,7 @@ void X64Decoder::DecodeLzcntBmi(_DInst& insn) {
             }
         }
     }
-    auto src = NormalizeBitCountSource(insn, op1, width);
+    auto src = PrepareBitCountSource(insn, op1, width);
     if (width == 32) {
         auto result = __ CountLeadingZeros32(src);
         __ SaveFlags(__ Or(result, ir::Operand{ir::Imm(u32(0))}), ir::Flags::Zero);

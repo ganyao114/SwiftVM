@@ -47,7 +47,7 @@
 //       argument, the whole argument is passed on the stack.  If registers
 //       have already been assigned for some eightbytes of such an argument,
 //       the assignments get reverted."  -> per argument, and a later, smaller
-//       argument may still take a register.  Implemented in MakeCallPlan.
+//       argument may still take a register.  Implemented in MakeCallRecipe.
 //     - MEMORY return value: the caller allocates the buffer and passes its
 //       address in %rdi "as if it were the first argument"; every INTEGER
 //       argument therefore shifts one register to the right.  On return %rax
@@ -160,14 +160,14 @@ constexpr Eightbyte Merge(Eightbyte a, Eightbyte b) {
 // --- field enumeration ------------------------------------------------------
 //
 // Aggregate members are discovered by structured bindings, with the arity
-// found by probing how many initializer-clauses T{...} accepts.  The probe
+// found by probing how many initializer-clauses T{...} accepts.  The check
 // type converts to anything *except* T itself (otherwise T{x} would be a copy
 // construction and every aggregate would report arity 1).
 //
-// Nested aggregates are handled correctly: because the probe converts to the
+// Nested aggregates are handled correctly: because the check converts to the
 // nested struct type directly, the compiler prefers that over brace elision,
 // so the arity comes out as the true member count.  C ARRAY members are the
-// one case that breaks — a probe cannot initialize `int[3]`, so brace elision
+// one case that breaks — a check cannot initialize `int[3]`, so brace elision
 // kicks in and the arity comes out inflated.  The structured binding then
 // fails to compile (loudly); AbiFields<T> is the way out.
 template <typename T>
@@ -434,7 +434,7 @@ consteval TypeClassInfo ClassifyType() {
         // Rule 1 (> eight eightbytes) and rule 5(c) (> two eightbytes without
         // the SSE/SSEUP vector shape, which we never produce) collapse to
         // "> 16 bytes -> MEMORY".  Both branches must be `if constexpr` with an
-        // else: a plain early return would still INSTANTIATE the field walk
+        // else: a basic early return would still INSTANTIATE the field walk
         // below, and a 200-byte struct would then hit the 16-field limit for
         // no reason.
         if constexpr (!std::is_trivially_copyable_v<T> || AbiOverride<T>::force_memory ||
@@ -524,14 +524,14 @@ template <typename T>
 inline constexpr bool kIsMarshalable = abi_detail::Marshalable<T>::value;
 
 // ---------------------------------------------------------------------------
-// Call plan: the whole assignment, computed at compile time
+// Call recipe: the whole assignment, computed at compile time
 // ---------------------------------------------------------------------------
 
 enum class SlotKind : std::uint8_t { IntReg, SseReg, Stack };
 
-inline constexpr unsigned kMaxPlanArgs = 24;
+inline constexpr unsigned kMaxRecipeArgs = 24;
 
-struct ArgPlan {
+struct ArgRecipe {
     unsigned size{};
     unsigned align{};
     unsigned n_eb{};
@@ -541,9 +541,9 @@ struct ArgPlan {
     std::uint8_t reg[kMaxEightbytes]{};  // index into the INTEGER / SSE sequence
 };
 
-struct CallPlan {
+struct CallRecipe {
     unsigned nargs{};
-    ArgPlan args[kMaxPlanArgs]{};
+    ArgRecipe args[kMaxRecipeArgs]{};
 
     bool ret_memory{};
     unsigned ret_n_eb{};
@@ -558,9 +558,9 @@ struct CallPlan {
 };
 
 template <typename Ret, typename... Args>
-consteval CallPlan MakeCallPlan() {
-    static_assert(sizeof...(Args) <= kMaxPlanArgs, "too many arguments");
-    CallPlan p{};
+consteval CallRecipe MakeCallRecipe() {
+    static_assert(sizeof...(Args) <= kMaxRecipeArgs, "too many arguments");
+    CallRecipe p{};
     const TypeClassInfo infos[] = {ClassifyType<Args>()..., TypeClassInfo{}};
     const TypeClassInfo ret = ClassifyType<Ret>();
 
@@ -580,7 +580,7 @@ consteval CallPlan MakeCallPlan() {
 
     for (unsigned i = 0; i < p.nargs; ++i) {
         const TypeClassInfo& c = infos[i];
-        ArgPlan a{};
+        ArgRecipe a{};
         a.size = c.size;
         a.align = c.align;
         a.n_eb = c.n;

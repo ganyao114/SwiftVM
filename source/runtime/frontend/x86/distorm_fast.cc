@@ -1,3 +1,4 @@
+#include "base/logging.h"
 #include "runtime/frontend/x86/distorm_fast.h"
 
 #include <array>
@@ -36,7 +37,7 @@ void DumpStats() {
     const auto matches = s.verify_matches.load(std::memory_order_relaxed);
     const auto mismatches = s.verify_mismatches.load(std::memory_order_relaxed);
     if (attempts == 0 && matches == 0 && mismatches == 0) return;
-    std::fprintf(stderr,
+    SVM_DIAG_PRINT(Decode,
                  "[svm-distorm-fast] enabled=%u verify=%u attempts=%llu hits=%llu "
                  "fallbacks=%llu verify_matches=%llu verify_mismatches=%llu\n",
                  unsigned(DistormFastEnabled()),
@@ -560,7 +561,7 @@ bool OperandEqual(const _Operand& a, const _Operand& b) {
 }
 
 void PrintInsn(const char* name, const _DInst& insn) {
-    std::fprintf(stderr,
+    SVM_DIAG_PRINT(Decode,
                  "  %s opcode=%u size=%u flags=%#x unused=%#x used=%#x "
                  "imm=%#llx disp=%#llx segment=%u base=%u scale=%u dispSize=%u "
                  "meta=%#x modified=%#x tested=%#x undefined=%#x\n",
@@ -581,7 +582,7 @@ void PrintInsn(const char* name, const _DInst& insn) {
                  insn.testedFlagsMask,
                  insn.undefinedFlagsMask);
     for (unsigned i = 0; i < OPERANDS_NO; ++i) {
-        std::fprintf(stderr,
+        SVM_DIAG_PRINT(Decode,
                      "    op%u type=%u index=%u size=%u\n",
                      i,
                      insn.ops[i].type,
@@ -644,10 +645,10 @@ void DistormFastRecordVerification(bool match,
     auto& counter = match ? Stats().verify_matches : Stats().verify_mismatches;
     counter.fetch_add(1, std::memory_order_relaxed);
     if (match) return;
-    std::fprintf(stderr, "[svm-distorm-verify] MISMATCH bytes=");
+    SVM_DIAG_PRINT(Decode, "[svm-distorm-verify] MISMATCH bytes=");
     const unsigned size = distorm.size == 0 ? 1 : distorm.size;
-    for (unsigned i = 0; i < size && i < 15; ++i) std::fprintf(stderr, "%02x", code[i]);
-    std::fputc('\n', stderr);
+    for (unsigned i = 0; i < size && i < 15; ++i) SVM_DIAG_PRINT(Decode, "%02x", code[i]);
+    SVM_DIAG_PRINT(Decode, "%c", '\n');
     PrintInsn("fast", fast);
     PrintInsn("distorm", distorm);
 }

@@ -1,7 +1,7 @@
 # Flags 重构方案：机制上限对齐 FEX
 
 日期:2026-08-18
-承接:docs/codegen-p0b-flags-repr-2026-08.md、docs/codegen-opt-plan-2026-08.md §2.2、
+承接:docs/codegen-p0b-flags-repr-2026-08.md、docs/codegen-opt-recipe-2026-08.md §2.2、
 docs/w79-backedge-flags-audit.md
 范围:**设计**。不写发射、不翻 `SVM_FLAGS_REGS`、不改 State 布局，直到 §7 门过。
 
@@ -11,7 +11,7 @@ docs/w79-backedge-flags-audit.md
 
 ## 0. 上限怎么对齐
 
-Linux identity 上 coremark **4.04 vs 1.81 h/g**。alu+xport **1.93 vs 0.88（+1.05）**。
+Linux direct 上 coremark **4.04 vs 1.81 h/g**。alu+xport **1.93 vs 0.88（+1.05）**。
 纸门 1：`Sub+And+Or` 的 pack 占三项 **89.8%**、占程序 host **15.4%**。
 FEX 同址热块是一条 `subs`/`ands` + `b.cond`，没有 PF/AF/`mrs` 串。
 

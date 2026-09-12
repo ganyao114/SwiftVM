@@ -1,3 +1,4 @@
+#include "base/logging.h"
 #include "register_alloc_internal.h"
 #include <cstdio>
 
@@ -88,8 +89,7 @@ void CacheConstantAddressesForBlock(
         for (auto& group : groups) {
             if (group.candidates.size() < 2) {
                 if (audit && !group.candidates.empty()) {
-                    std::fprintf(
-                            stderr,
+                    SVM_DIAG_PRINT(RegisterAllocation,
                             "[svm-const-addr-group] unit=0x%llx block=0x%llx "
                             "segment=%u base=0x%llx occurrences=1 potential=0 "
                             "cached=0 no_free=0 verify=0\n",
@@ -239,8 +239,7 @@ void CacheConstantAddressesForBlock(
                 ASSERT(group.cached_reuses + group.residual_no_free +
                                group.residual_verify ==
                        potential);
-                std::fprintf(
-                        stderr,
+                SVM_DIAG_PRINT(RegisterAllocation,
                         "[svm-const-addr-group] unit=0x%llx block=0x%llx "
                         "segment=%u base=0x%llx occurrences=%zu potential=%u "
                         "cached=%u no_free=%u verify=%u\n",
@@ -324,8 +323,7 @@ void CacheConstantAddressesForBlock(
     }
     process_groups();
     if (audit && raw) {
-        std::fprintf(
-                stderr,
+        SVM_DIAG_PRINT(RegisterAllocation,
                 "[svm-const-addr-shape] unit=0x%llx block=0x%llx raw=%u "
                 "eligible=%u width=%u uses=%u alloc=%u feed=%u barrier=%u\n",
                 static_cast<unsigned long long>(unit_pc),

@@ -149,7 +149,7 @@ int InstallArtifact(backend::AddressSpace& address_space,
     }
 
     // --- pass 2: replay the L2 dispatch assignment ------------------------
-    // Generated code branches through raw slot indices and a slot's identity
+    // Generated code branches through raw slot indices and a slot's direct
     // depends on the insertion order of colliding keys, so the assignment is
     // reproduced verbatim rather than recomputed. In a fresh process the
     // table is empty, so a conflict here means the artifact is inconsistent.

@@ -28,7 +28,7 @@
 //       (the non-temporal stores are store-only, vlddqu is load-only).
 //
 // vpmovmskb, vpshufb and vbroadcastss are NOT in these macro lists where their
-// shape differs: vpshufb IS a plain three-operand ALU form and is listed as
+// shape differs: vpshufb IS a basic three-operand ALU form and is listed as
 // such, but vpmovmskb (GPR destination) and vbroadcastss (xmm source) are
 // hand-written on both sides because they have no other instance of their shape.
 

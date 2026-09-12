@@ -1,12 +1,25 @@
 # SVM_* 开关进程级/可绑分类表
 
+2026-09-12 补充：以下字段统一由进程初始化读取，保留变量存在即启用的语义（包括空串和 `=0`）。
+
+| 字段 | 分类 | 行为 |
+| --- | --- | --- |
+| `SVM_INV_DBG`、`SVM_FRONTIER_DBG`、`SVM_TRANSLATE_DBG`、`SVM_SMC_DBG` | A | 限量诊断；计数采用原子操作。 |
+| `SVM_SYS_HASH`、`SVM_SYS_DBG` | A | 系统调用诊断；缺省关闭。 |
+| `SVM_REG_DUMP` | A | 严格解析 `nr:count`，计数由每个 guest 进程持有；配合寄存器哈希开关使用。 |
+| `SVM_SKIP_PREP` | A | 发码准备阶段实验，按原来的子串匹配选择跳过项；空串不跳过。 |
+| `SVM_ZEXT_NO_ELIDE`、`SVM_NO_FUSE_PIN_WRITES` | A | 发码实验；变量存在即关闭相应优化。 |
+| `SVM_PLACEMENT_PAD`、`SVM_PLACEMENT_REFERENCE` | A | 进程级布局实验模式和输入路径。前者为 0/1/2，不再接受模块级布尔覆盖；启用时禁用磁盘代码缓存。后者缺省兼容现有脚本路径。 |
+
+布局模式缺省为 0；1 按参考偏移补齐指令，2 输出参考偏移。未登记变量的缓存哈希兜底保持不变。
+
 来源:SvmConfig 集中化(2026-08-05,master a7f644d)的 P2a 交付,驱动后续按 backend::Module 绑定 FeatureSet 的落地范围。判据:同一进程不同 guest 地址区间若取不同值,会造成 ABI/内存/ISA/loader/cache/探针约定不一致则为 A(进程级,不可绑);确定仅改变单 unit 代码形状且边界自描述则为 B(可按 module 绑);缺关键证明则为 ?(绑定前必须先补证明)。
 
 2026-08-05 精简第一刀(d6c18a1):删除六枚退役开关——D2 零读者 SVM_X87_TOPVIRT/SVM_PKRU,D1b 默认-OFF 实验路径 SVM_LINK_SUFFIX_COMMON(残值归零)/SVM_UNIFORM_PAIR_AUDIT(战役收官)/SVM_XMM_STATIC(W76 净负)/SVM_XMM_POOL_EXT。总数 138→132(A=77/B=46/?=9)。
 
 | 环境变量 / 字段 | 类型 / parser / 默认 | `3aa2620` 原读取点 | 分类与逐项理由 |
 |---|---|---|---|
-| `SVM_MEM_IDENTITY` / `mem_identity` | string / `RawString` / `空串` | `source/translator/linux/main.cpp:388`<br>`source/translator/linux/main.cpp:403` | **A**：控制地址空间、内存/信号/SMC/系统调用语义，不能按 module 分裂。 |
+| `SVM_MEM_DIRECT` / `mem_direct` | string / `RawString` / `空串` | `source/translator/linux/main.cpp:388`<br>`source/translator/linux/main.cpp:403` | **A**：控制地址空间、内存/信号/SMC/系统调用语义，不能按 module 分裂。 |
 | `SVM_FUNC_LAZY` / `func_lazy` | u64 / `FuncLazy` / `1` | `source/translator/x86/translator.cpp:603` | **?**：改变 region decode/形成边界，尚缺 L2、重叠 region 和失效可分离证明。 |
 | `SVM_DUMP_IR` / `dump_ir` | bool / `Presence` / `false` | `source/runtime/backend/arm64/jit/translator.cpp:1330`<br>`source/runtime/backend/arm64/jit/translator.cpp:1356`<br>`source/runtime/backend/arm64/jit/translator.cpp:1377`<br>`source/runtime/backend/arm64/jit/translator.cpp:1395` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
 | `SVM_X87_JIT` / `x87_jit` | bool / `NonZero` / `false` | `source/runtime/frontend/x86/decoder_x87.cc:118`<br>`source/tests/main_case.cpp:3835` | **A**：改变 guest ISA/CPUID/解码承诺，同进程分区取不同值会产生 ISA 视图不一致。 |
@@ -53,7 +66,7 @@
 | `SVM_FLAGS_FCMP_COMPACT` / `flags_fcmp_compact` | bool / `NonZero` / `false` | `source/runtime/frontend/x86/decoder.cc:265` | **B**：仅改变单个 unit 内的“FCMP compact”代码形状，不改变边界 ABI。 |
 | `SVM_FLAGS_BRANCH_ONLY` / `flags_branch_only` | bool / `DefaultOn` / `true` | `source/runtime/frontend/x86/decoder.cc:1170`<br>`source/runtime/ir/opts/flags_elimination_pass.cpp:47` | **B**：仅改变单个 unit 内的“branch-only flags”代码形状，不改变边界 ABI。 |
 | `SVM_ADDRMODE_STRUCT` / `addrmode_struct` | bool / `DefaultOn` / `true` | `source/runtime/backend/arm64/jit/translator_mem.cpp:20`<br>`source/runtime/frontend/x86/decoder.cc:880`<br>`source/tests/main_case.cpp:1450`<br>`source/tests/main_case.cpp:1451` | **B**：仅改变单个 unit 内的“结构化寻址”代码形状，不改变边界 ABI。 |
-| `SVM_JIT_CACHE_EXEC_ID` / `jit_cache_exec_id` | bool / `NonZeroNonEmpty` / `false` | `source/runtime/backend/code_serial.cpp:820` | **A**：控制进程级 disk cache、identity 或统计，同一 cache 域不可分叉。 |
+| `SVM_JIT_CACHE_EXEC_ID` / `jit_cache_exec_id` | bool / `NonZeroNonEmpty` / `false` | `source/runtime/backend/code_serial.cpp:820` | **A**：控制进程级 disk cache、direct 或统计，同一 cache 域不可分叉。 |
 | `SVM_SMC_DIRTY_HINT` / `smc_dirty_hint` | bool / `EqualsOne` / `false` | `source/runtime/backend/smc_tracker.cpp:53` | **A**：控制地址空间、内存/信号/SMC/系统调用语义，不能按 module 分裂。 |
 | `SVM_JIT_SCRATCH_XPOOL` / `jit_scratch_xpool` | bool / `DefaultOn` / `true` | `source/runtime/backend/reg_alloc.cpp:28` | **B**：仅改变单个 unit 内的“扩展 scratch pool”代码形状，不改变边界 ABI。 |
 | `SVM_X86_HELPER_VALUES` / `x86_helper_values` | bool / `NonZero` / `false` | `source/runtime/frontend/x86/decoder_internal.h:28` | **?**：改变生成码到 helper 的值传递约定，尚缺混合 unit ABI 证明。 |
@@ -98,11 +111,11 @@
 | `SVM_GPR_ZEXT_COALESCE` / `gpr_zext_coalesce` | bool / `DefaultOn` / `true` | `source/runtime/frontend/x86/decoder.cc:990` | **B**：仅改变单个 unit 内的“GPR zext coalesce”代码形状，不改变边界 ABI。 |
 | `SVM_GUEST_BITS` / `guest_bits` | string / `RawString` / `空串` | `source/aot/aot_guest.cpp:52`<br>`source/aot/aot_guest.cpp:60`<br>`source/translator/linux/guest_memory.cpp:210`<br>`source/translator/linux/main.cpp:386` | **A**：控制地址空间、内存/信号/SMC/系统调用语义，不能按 module 分裂。 |
 | `SVM_IR_DETAIL` / `ir_detail` | bool / `NonZero` / `false` | `source/runtime/common/perf_stats.h:530` | **A**：控制进程级运行、加载或宿主能力策略，不是纯单-unit 代码形状决策。 |
-| `SVM_JIT_CACHE` / `jit_cache` | string / `RawString` / `空串` | `source/runtime/backend/address_space.cpp:85`<br>`source/runtime/backend/code_serial.cpp:749`<br>`source/runtime/backend/jit_cache.cpp:65`<br>`source/runtime/backend/jit_cache.cpp:71` | **A**：控制进程级 disk cache、identity 或统计，同一 cache 域不可分叉。 |
-| `SVM_JIT_CACHE_STATS` / `jit_cache_stats` | bool / `NonZeroNonEmpty` / `false` | `source/runtime/backend/jit_cache.cpp:75` | **A**：控制进程级 disk cache、identity 或统计，同一 cache 域不可分叉。 |
+| `SVM_JIT_CACHE` / `jit_cache` | string / `RawString` / `空串` | `source/runtime/backend/address_space.cpp:85`<br>`source/runtime/backend/code_serial.cpp:749`<br>`source/runtime/backend/jit_cache.cpp:65`<br>`source/runtime/backend/jit_cache.cpp:71` | **A**：控制进程级 disk cache、direct 或统计，同一 cache 域不可分叉。 |
+| `SVM_JIT_CACHE_STATS` / `jit_cache_stats` | bool / `NonZeroNonEmpty` / `false` | `source/runtime/backend/jit_cache.cpp:75` | **A**：控制进程级 disk cache、direct 或统计，同一 cache 域不可分叉。 |
 | `SVM_LOW_PROF` / `low_prof` | bool / `NonZero` / `false` | `source/runtime/common/perf_stats.h:546` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
 | `SVM_LOW_PROF_EMPTY` / `low_prof_empty` | u64 / `EmptyBenchIterations` / `0` | `source/runtime/common/perf_stats.h:899` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
-| `SVM_MEM_IDENTITY_TEST_COLLISION` / `mem_identity_test_collision` | bool / `NonZero` / `false` | `source/translator/linux/guest_memory.cpp:228` | **A**：测试/子进程控制，作用域是整个进程，不是可绑定生产 codegen feature。 |
+| `SVM_MEM_DIRECT_TEST_COLLISION` / `mem_direct_test_collision` | bool / `NonZero` / `false` | `source/translator/linux/guest_memory.cpp:228` | **A**：测试/子进程控制，作用域是整个进程，不是可绑定生产 codegen feature。 |
 | `SVM_MEM_MODE_TRACE` / `mem_mode_trace` | bool / `NonZero` / `false` | `source/translator/linux/main.cpp:480` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
 | `SVM_PROF` / `prof` | string / `RawString` / `空串` | `source/runtime/common/perf_stats.h:344`<br>`source/runtime/common/perf_stats.h:715`<br>`source/translator/linux/tests/bench_run.py:187` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |
 | `SVM_PROF2` / `prof2` | bool / `Presence` / `false` | `source/runtime/common/perf_stats.h:320` | **A**：诊断/统计/trace 探针按进程汇总，不进入 module FeatureSet。 |

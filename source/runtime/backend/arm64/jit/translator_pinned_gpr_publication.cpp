@@ -1,10 +1,11 @@
+#include "runtime/backend/reg_alloc.h"
 #include "translator.h"
 
 namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool IsPinnedGPR(u32 index) { return index <= 9 || (index >= 19 && index <= 23) || index == 29; }
+using ::swift::runtime::backend::IsFixedGPRHome;
 
 std::optional<u32> LowViewLastUse(ir::Block* block,
                                   ir::Inst* alias,
@@ -46,13 +47,13 @@ std::optional<JitTranslator::PinnedGPRPublicationView> JitTranslator::MatchPinne
         ir::Inst* publication) const {
     if (!publication || publication->GetOp() != ir::OpCode::SetHostGPR ||
         publication->GetArg<ir::Imm>(2).Get() != 0 ||
-        dead_pinned_gpr_writes.contains(publication)) {
+        pinned_gprs.dead_pinned_gpr_writes.contains(publication)) {
         return std::nullopt;
     }
     const u32 target = publication->GetArg<ir::Imm>(1).Get();
     const auto published = publication->GetArg<ir::Value>(0);
     auto* value = published.Def();
-    if (!IsPinnedGPR(target) || !value || value->Id() >= publication->Id() ||
+    if (!IsFixedGPRHome(target) || !value || value->Id() >= publication->Id() ||
         ir::GetValueSizeByte(published.Type()) != sizeof(u64) ||
         ir::GetValueSizeByte(value->ReturnType()) != sizeof(u64) ||
         value->GetOp() == ir::OpCode::GetHostGPR ||
@@ -101,18 +102,17 @@ std::optional<JitTranslator::PinnedGPRPublicationView> JitTranslator::MatchPinne
 }
 
 void JitTranslator::PreparePinnedGPRPublicationViews(ir::Block* block) {
-    pinned_gpr_publication_views.clear();
     for (auto& inst : block->GetInstList()) {
-        auto plan = MatchPinnedGPRPublicationView(&inst);
-        if (!plan || std::ranges::any_of(plan->aliases, [&](ir::Inst* alias) {
-                return fused_pin_gpr_reads.contains(alias);
+        auto candidate = MatchPinnedGPRPublicationView(&inst);
+        if (!candidate || std::ranges::any_of(candidate->aliases, [&](ir::Inst* alias) {
+                return pinned_gprs.fused_pin_gpr_reads.contains(alias);
             })) {
             continue;
         }
-        for (auto* alias : plan->aliases) {
-            fused_pin_gpr_reads.emplace(alias, plan->target);
+        for (auto* alias : candidate->aliases) {
+            pinned_gprs.fused_pin_gpr_reads.emplace(alias, candidate->target);
         }
-        pinned_gpr_publication_views.emplace(&inst, std::move(*plan));
+        pinned_gprs.pinned_gpr_publication_views.emplace(&inst, std::move(*candidate));
     }
 }
 

@@ -24,8 +24,8 @@ static void lock(void) {
 }
 
 static void unlock(void) {
-    // x86 release is a plain aligned store; AcqRel mode must lower this
-    // through StoreMemoryTSO while Relaxed keeps the historical plain store.
+    // x86 release is a basic aligned store; AcqRel mode must lower this
+    // through StoreMemoryTSO while Relaxed keeps the historical basic store.
     __atomic_store_n(&lock_word, 0, __ATOMIC_RELEASE);
 }
 

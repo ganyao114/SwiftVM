@@ -4,7 +4,7 @@ namespace swift::runtime::backend::arm64 {
 
 bool JitTranslator::MatchCompoundLogicalClear(ir::Inst* inst) const {
     if (flags_audit_block_edge == FlagsRegsAuditEdgeKind::RegionInternal ||
-        backedge_flags_plan || dead_edge_integer_branch || !inst ||
+        backedge_flags_recipe || flag_state.dead_edge_integer_branch || !inst ||
         inst->GetOp() != ir::OpCode::ClearFlags ||
         inst->GetArg<ir::Flags>(0) !=
                 (ir::Flags::CV | ir::Flags::AuxiliaryCarry)) {
@@ -46,7 +46,7 @@ bool JitTranslator::MatchCompoundZeroLogicalClear(ir::Inst* inst) const {
     }
     auto& list = cur_block->GetInstList();
     auto producer = std::prev(list.iterator_to(*inst));
-    return scalar_identity_analysis.IsSelfXor(&*producer);
+    return scalar_copy_analysis.IsSelfXor(&*producer);
 }
 
 }  // namespace swift::runtime::backend::arm64

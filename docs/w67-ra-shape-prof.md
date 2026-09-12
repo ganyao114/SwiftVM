@@ -12,7 +12,7 @@
 
 - **P1 暂不立项。** XMM OFF 的 59,528 个 unit 中只有 25 个 spill unit（0.04200%），最高水位 10/64 slot；XMM ON 为 22/59,494（0.03698%），最高仍为 10。容量离 64 很远。
 - **P3 的静态推断得到实测确认。** `SVM_XMM_STATIC=1` 的 59,494 个 unit 全部报告 FPR pool=12，不是 16；动态 FPR live 分布为 `0:57148, 1:1876, 2:468, 3:2`，峰值仅 3。释放 v11-v14 会把所有 unit 的物理池和 value headroom 精确增加 4，但当前语料没有显示 FPR RA spill 是主要矛盾。
-- **P2 只有有限但真实的静态收益面。** 七语料共到达 13 个 direct helper target、884 个翻译 call site；严格 leaf 只有 `Bsr64`、`Bsf64`、`Sse42StrStage` 三个 target，共 229 site（25.90%）。XMM ON 样本中 leaf 为 228/883（25.82%）；只去掉每个 leaf 的 16 条 Q save/restore，静态上限是 3,648 条 snapshot 指令（14,592 code bytes），占全部 helper snapshot 指令 12.07%。这不是运行时调用频度，不能据此给墙钟收益。
+- **P2 只有有限但真实的静态收益面。** 七语料共到达 13 个 direct helper target、884 个翻译 call site；严格 leaf 只有 `Bsr64`、`Bsf64`、`Sse42StrStage` 三个 target，共 229 site（25.90%）。XMM ON 样本中 leaf 为 228/883（25.82%）；只去掉每个 leaf 的 16 条 Q save/restore，静态上限是 3,648 条 capture 指令（14,592 code bytes），占全部 helper capture 指令 12.07%。这不是运行时调用频度，不能据此给墙钟收益。
 - **P5 不过立项门。** 当前实现 PF/AF producer 都会 materialize，实测均为 100%；即使模拟 unit-local source，首次不可越过边界给出的强制 materialize 下界仍为 PF 38,549/39,184（98.38%）、AF 18,263/18,655（97.90%），远高于 `<0.5` 门槛。
 
 因此建议保持现有默认档位：`SVM_RA_SHAPE_PROF` 默认 OFF；P1/P5 不进入实现 A/B，P2 只能继续做严格 leaf 原型，P3 可作为 cold-edge ABI/稳健性工作独立评估，不能从本次数据宣称性能收益。
@@ -30,7 +30,7 @@
 
 - RA：只记录最终通过验证的 allocation pass；W65 因 spill 预留 x18 后的重跑会覆盖首轮，首轮不重复计数。`max_live` 是 emitter 可见的保守 live/dirty 集，包含活跃 spill def；instruction-local scratch 由独立的 `scratch_gpr/fpr` reserve 表示。
 - spill：`spill_defs` 来自 RA 分配；`spill_loads/stores` 在实际发射 `Ldr/Str` 时计数；high-water 是同时占用的 u64 slot 顶点。连续 pair fallback 对当前唯一的连续请求 `TryGetConsecutiveTmpV2` 计数。
-- helper：按 `direct_aapcs`、`indirect_aapcs`、`xstate_sync_aapcs` 分类，记录翻译到达并发射的 call site、实际 caller snapshot 指令数、code bytes、内存传输 bytes，以及 XSAVE/XRSTOR 的静态 XMM 同步量。
+- helper：按 `direct_aapcs`、`indirect_aapcs`、`xstate_sync_aapcs` 分类，记录翻译到达并发射的 call site、实际 caller capture 指令数、code bytes、内存传输 bytes，以及 XSAVE/XRSTOR 的静态 XMM 同步量。
 - flags：`SaveFlags` 与 `PublishFCmpFlags` 计 producer 和当前实际 materialize；`LocalParitySet`、PF/AF `TestFlags` 以及 `FCmpCondSet(VS/VC)` 计直接消费。另沿优化后的 IR 模拟 source 保持，按首次不可越过的 edge/helper/fault/other 边界计强制 materialize 下界。
 
 ### 2.3 有意取舍
@@ -78,7 +78,7 @@ GPR pool 直方图为 `11:25, 12:59503`：恰好只有 W65 条件化 x18 的 25 
 
 直方图写作 `live值:unit数`；reserve 列只列非默认 unit，未列者均为 3。
 
-| 语料 | units | FPR pool | max-live FPR histogram | 非默认 FPR reserve | spill units / HW | helper snapshot insns / code bytes |
+| 语料 | units | FPR pool | max-live FPR histogram | 非默认 FPR reserve | spill units / HW | helper capture insns / code bytes |
 |---|---:|---:|---|---|---:|---:|
 | coremark | 1,701 | 12 | 0:1648, 1:44, 2:9 | 无 | 0 / 0 | 806 / 3,224 |
 | stream | 1,435 | 12 | 0:1358, 1:53, 2:24 | 无 | 0 / 0 | 1,006 / 4,024 |
@@ -102,7 +102,7 @@ GPR pool 直方图为 `11:25, 12:59503`：恰好只有 W65 条件化 x18 的 25 
 | `RepMovs`, `RepStos1/4/8` | 4 | 116 | Movs 4 对；Stos 各 2 对 | 共 10 个 BL | 否 |
 | `X87Dispatch` | 1 | 60 | 6 STP / 对称恢复 | 123 个 BL/BLR | 否 |
 
-XMM OFF 的全部 helper snapshot 为 16,138 instructions / 64,552 code bytes / 310,576 memory bytes。XMM ON 为 30,214 / 120,856 / 761,744；其中严格 leaf site 自身占 7,578 条 snapshot 指令。按 W66 的 preserve-all 上限，只移除 228 个 ON leaf site 的 16 条 Q save/restore，即 3,648 instructions、14,592 code bytes、116,736 memory bytes；不能移除 x0-x8 pin snapshot 或 JIT 自身的 x29/x30 link pair。
+XMM OFF 的全部 helper capture 为 16,138 instructions / 64,552 code bytes / 310,576 memory bytes。XMM ON 为 30,214 / 120,856 / 761,744；其中严格 leaf site 自身占 7,578 条 capture 指令。按 W66 的 preserve-all 上限，只移除 228 个 ON leaf site 的 16 条 Q save/restore，即 3,648 instructions、14,592 code bytes、116,736 memory bytes；不能移除 x0-x8 pin capture 或 JIT 自身的 x29/x30 link pair。
 
 本语料所有 helper 均为 `direct_aapcs`，`indirect_aapcs=0`、`xstate_sync_aapcs=0`，因此后两类仍需专门语料才能给收益面。
 
@@ -124,9 +124,9 @@ XMM ON 的比率相同到舍入精度（PF 98.38%，AF 97.90%）。P5 的收益�
 | macOS 全量 | PASS；139,961 assertions / 123 cases |
 | Orb W67 全量 | PASS；142,571 / 123 |
 | Orb master 同条件对照 | PASS；142,571 / 123 |
-| func_tests 六格 | PASS；function/block/interpreter × probe 0/1 均 rc=101、checksum `9f52b7d59285dbe5`、stdout SHA-256 `9c3194ff498da03869bbabbd81241fd2ec771619281f969c4b4edc55577a6810` |
-| probe ON func_tests | PASS；1,130 units、16 helper sites，17 行 profile，聚合非空合理 |
-| probe ON CoreMark | PASS；1,694 units、24 helper sites，18 行 profile，CRC `Correct operation validated` |
+| func_tests 六格 | PASS；function/block/interpreter × check 0/1 均 rc=101、checksum `9f52b7d59285dbe5`、stdout SHA-256 `9c3194ff498da03869bbabbd81241fd2ec771619281f969c4b4edc55577a6810` |
+| check ON func_tests | PASS；1,130 units、16 helper sites，17 行 profile，聚合非空合理 |
+| check ON CoreMark | PASS；1,694 units、24 helper sites，18 行 profile，CRC `Correct operation validated` |
 | `SVM_RA_SHAPE_PROF=1` stderr | PASS；hello rc=42，stderr 有 12 行聚合输出 |
 | 七语料正确性 | PASS；16 个 XMM OFF/ON 子运行全部 rc=0，`target_overflow=0` |
 | 静态检查 | `git diff --check` PASS |
@@ -139,7 +139,7 @@ XMM ON 的比率相同到舍入精度（PF 98.38%，AF 97.90%）。P5 的收益�
 - `source/runtime/ir/opts/register_alloc_pass.cpp`：最终 RA pass 的 pool/live/reserve/spill/high-water 采样。
 - `source/runtime/backend/reg_alloc.h`：unit-local 计数载体。
 - `source/runtime/backend/arm64/jit/jit_context.cpp`、`.h`：spill load/store、pair fallback 与成功 unit 提交。
-- `source/runtime/backend/arm64/jit/translator_control.cpp`：helper ABI、snapshot 与 direct target 计数。
+- `source/runtime/backend/arm64/jit/translator_control.cpp`：helper ABI、capture 与 direct target 计数。
 - `source/runtime/common/perf_stats.h`：环境变量注册表 53→54。
 - `source/runtime/CMakeLists.txt`：加入新源文件。
 - `docs/w67-ra-shape-prof.md`：本报告。

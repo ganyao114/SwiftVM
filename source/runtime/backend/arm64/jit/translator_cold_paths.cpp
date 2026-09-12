@@ -4,7 +4,7 @@
 
 namespace swift::runtime::backend::arm64 {
 
-JitTranslator::BlockColdPathPlan JitTranslator::CaptureBlockColdPathPlan(
+JitTranslator::BlockColdPathRecipe JitTranslator::CaptureBlockColdPathRecipe(
         ir::Block* block,
         bool density,
         std::span<const u32> density_ops,
@@ -12,149 +12,149 @@ JitTranslator::BlockColdPathPlan JitTranslator::CaptureBlockColdPathPlan(
         u32 density_scalar_fp_ops,
         const ir::LoopHoistMetadata& loop_hoist,
         u32 loop_hoist_prefix_ops) {
-    BlockColdPathPlan plan;
-    plan.block = block;
-    plan.density = density;
-    ASSERT(density_ops.size() == plan.density_ops.size());
-    ASSERT(density_bytes.size() == plan.density_bytes.size());
-    std::copy(density_ops.begin(), density_ops.end(), plan.density_ops.begin());
+    BlockColdPathRecipe recipe;
+    recipe.block = block;
+    recipe.density = density;
+    ASSERT(density_ops.size() == recipe.density_ops.size());
+    ASSERT(density_bytes.size() == recipe.density_bytes.size());
+    std::copy(density_ops.begin(), density_ops.end(), recipe.density_ops.begin());
     std::copy(density_bytes.begin(), density_bytes.end(),
-              plan.density_bytes.begin());
-    plan.density_scalar_fp_ops = density_scalar_fp_ops;
-    plan.loop_hoist = &loop_hoist;
-    plan.loop_hoist_prefix_ops = loop_hoist_prefix_ops;
-    plan.pfaf_density_bytes = pfaf_density_bytes;
-    pfaf_density_bytes.fill(0);
-    plan.boundary_density_enabled = boundary_density_enabled;
-    plan.boundary_terminal_link_bytes = boundary_terminal_link_bytes;
-    plan.boundary_density_bytes = boundary_density_bytes;
-    plan.boundary_density_mnemonics =
-            std::move(boundary_density_mnemonics);
-    plan.boundary_terminal_link_mnemonics =
-            std::move(boundary_terminal_link_mnemonics);
-    plan.boundary_terminal_link_ranges =
-            std::move(boundary_terminal_link_ranges);
-    plan.save_in_nzcv = save_in_nzcv;
-    plan.nzcv_dirty = nzcv_dirty;
-    plan.nzcv_requested = nzcv_requested;
-    plan.flags_token_valid = flags_token_valid;
-    plan.flags_token_result_code = flags_token_result_code;
-    plan.flags_token_keep = flags_token_keep;
-    plan.flags_audit_block_edge = flags_audit_block_edge;
-    plan.flags_audit_strict_advance = flags_audit_strict_advance;
-    plan.backedge_exit_label = std::move(backedge_exit_label);
-    plan.backedge_exit_referenced = backedge_exit_referenced;
-    plan.direct_cycle_exits = std::move(direct_cycle_exits);
-    plan.direct_cycle_cut_edges = direct_cycle_cut_edges;
-    plan.backedge_flags_plan = std::move(backedge_flags_plan);
-    plan.loop_hoist_body_entry = std::move(loop_hoist_body_entry);
-    plan.backedge_host_begin = backedge_host_begin;
-    plan.backedge_host_end = backedge_host_end;
-    plan.region_block_edges = region_block_edges;
-    plan.region_block_cycles = region_block_cycles;
-    plan.region_block_fallthroughs = region_block_fallthroughs;
-    plan.region_block_local_branch_bytes = region_block_local_branch_bytes;
-    plan.pending_exit_poll_faults = std::move(pending_exit_poll_faults);
-    plan.vec_nan_cold_sites = std::move(vec_nan_cold_sites);
-    plan.flags_audit = context.DeferFlagsRegsAudit();
+              recipe.density_bytes.begin());
+    recipe.density_scalar_fp_ops = density_scalar_fp_ops;
+    recipe.loop_hoist = &loop_hoist;
+    recipe.loop_hoist_prefix_ops = loop_hoist_prefix_ops;
+    recipe.pfaf_density_bytes = statistics.pfaf_density_bytes;
+    statistics.pfaf_density_bytes.fill(0);
+    recipe.boundary_density_enabled = statistics.boundary_density_enabled;
+    recipe.boundary_terminal_link_bytes = statistics.boundary_terminal_link_bytes;
+    recipe.boundary_density_bytes = statistics.boundary_density_bytes;
+    recipe.boundary_density_mnemonics =
+            std::move(statistics.boundary_density_mnemonics);
+    recipe.boundary_terminal_link_mnemonics =
+            std::move(statistics.boundary_terminal_link_mnemonics);
+    recipe.boundary_terminal_link_ranges =
+            std::move(statistics.boundary_terminal_link_ranges);
+    recipe.save_in_nzcv = flag_state.save_in_nzcv;
+    recipe.nzcv_dirty = flag_state.nzcv_dirty;
+    recipe.nzcv_requested = flag_state.nzcv_requested;
+    recipe.flags_token_valid = flag_state.flags_token_valid;
+    recipe.flags_token_result_code = flag_state.flags_token_result_code;
+    recipe.flags_token_keep = flag_state.flags_token_keep;
+    recipe.flags_audit_block_edge = flags_audit_block_edge;
+    recipe.flags_audit_strict_advance = flags_audit_strict_advance;
+    recipe.backedge_exit_label = std::move(backedge_exit_label);
+    recipe.backedge_exit_referenced = backedge_exit_referenced;
+    recipe.direct_cycle_exits = std::move(direct_cycle_exits);
+    recipe.direct_cycle_cut_edges = direct_cycle_cut_edges;
+    recipe.backedge_flags_recipe = std::move(backedge_flags_recipe);
+    recipe.loop_hoist_body_entry = std::move(loop_hoist_body_entry);
+    recipe.backedge_host_begin = backedge_host_begin;
+    recipe.backedge_host_end = backedge_host_end;
+    recipe.region_block_edges = statistics.region_block_edges;
+    recipe.region_block_cycles = statistics.region_block_cycles;
+    recipe.region_block_fallthroughs = statistics.region_block_fallthroughs;
+    recipe.region_block_local_branch_bytes = statistics.region_block_local_branch_bytes;
+    recipe.pending_exit_poll_faults = std::move(memory_state.pending_exit_poll_faults);
+    recipe.vec_nan_cold_sites = std::move(vec_nan_cold_sites);
+    recipe.flags_audit = context.DeferFlagsRegsAudit();
 
-    boundary_density_enabled = false;
-    boundary_terminal_link_bytes = 0;
-    boundary_density_bytes.fill(0);
-    save_in_nzcv = true;
-    nzcv_dirty = false;
-    nzcv_requested = {};
-    flags_token_keep = false;
+    statistics.boundary_density_enabled = false;
+    statistics.boundary_terminal_link_bytes = 0;
+    statistics.boundary_density_bytes.fill(0);
+    flag_state.save_in_nzcv = true;
+    flag_state.nzcv_dirty = false;
+    flag_state.nzcv_requested = {};
+    flag_state.flags_token_keep = false;
     InvalidateFlagsToken();
     flags_audit_strict_advance = false;
     backedge_exit_referenced = false;
     direct_cycle_cut_edges = 0;
     backedge_host_begin = 0;
     backedge_host_end = 0;
-    region_block_edges = 0;
-    region_block_cycles = 0;
-    region_block_fallthroughs = 0;
-    region_block_local_branch_bytes = 0;
-    return plan;
+    statistics.region_block_edges = 0;
+    statistics.region_block_cycles = 0;
+    statistics.region_block_fallthroughs = 0;
+    statistics.region_block_local_branch_bytes = 0;
+    return recipe;
 }
 
-void JitTranslator::EmitBlockColdPathPlan(BlockColdPathPlan plan) {
-    ASSERT(plan.block);
-    ASSERT(plan.loop_hoist);
+void JitTranslator::EmitBlockColdPathRecipe(BlockColdPathRecipe recipe) {
+    ASSERT(recipe.block);
+    ASSERT(recipe.loop_hoist);
     ASSERT(!backedge_exit_label);
     ASSERT(direct_cycle_exits.empty());
-    ASSERT(!backedge_flags_plan);
+    ASSERT(!backedge_flags_recipe);
     ASSERT(!loop_hoist_body_entry);
-    ASSERT(pending_exit_poll_faults.empty());
+    ASSERT(memory_state.pending_exit_poll_faults.empty());
     ASSERT(vec_nan_cold_sites.empty());
 
-    cur_block = plan.block;
-    pfaf_density_bytes = plan.pfaf_density_bytes;
-    boundary_density_enabled = plan.boundary_density_enabled;
-    boundary_terminal_link_bytes = plan.boundary_terminal_link_bytes;
-    boundary_density_bytes = plan.boundary_density_bytes;
-    boundary_density_mnemonics =
-            std::move(plan.boundary_density_mnemonics);
-    boundary_terminal_link_mnemonics =
-            std::move(plan.boundary_terminal_link_mnemonics);
-    boundary_terminal_link_ranges =
-            std::move(plan.boundary_terminal_link_ranges);
-    save_in_nzcv = plan.save_in_nzcv;
-    nzcv_dirty = plan.nzcv_dirty;
-    nzcv_requested = plan.nzcv_requested;
-    flags_token_valid = plan.flags_token_valid;
-    flags_token_result_code = plan.flags_token_result_code;
-    flags_token_keep = plan.flags_token_keep;
-    flags_audit_block_edge = plan.flags_audit_block_edge;
-    flags_audit_strict_advance = plan.flags_audit_strict_advance;
-    backedge_exit_label = std::move(plan.backedge_exit_label);
-    backedge_exit_referenced = plan.backedge_exit_referenced;
-    direct_cycle_exits = std::move(plan.direct_cycle_exits);
-    direct_cycle_cut_edges = plan.direct_cycle_cut_edges;
-    backedge_flags_plan = std::move(plan.backedge_flags_plan);
-    loop_hoist_body_entry = std::move(plan.loop_hoist_body_entry);
-    backedge_host_begin = plan.backedge_host_begin;
-    backedge_host_end = plan.backedge_host_end;
-    region_block_edges = plan.region_block_edges;
-    region_block_cycles = plan.region_block_cycles;
-    region_block_fallthroughs = plan.region_block_fallthroughs;
-    region_block_local_branch_bytes = plan.region_block_local_branch_bytes;
-    pending_exit_poll_faults = std::move(plan.pending_exit_poll_faults);
-    vec_nan_cold_sites = std::move(plan.vec_nan_cold_sites);
-    if (plan.flags_audit) {
-        context.ResumeFlagsRegsAudit(std::move(*plan.flags_audit));
+    cur_block = recipe.block;
+    statistics.pfaf_density_bytes = recipe.pfaf_density_bytes;
+    statistics.boundary_density_enabled = recipe.boundary_density_enabled;
+    statistics.boundary_terminal_link_bytes = recipe.boundary_terminal_link_bytes;
+    statistics.boundary_density_bytes = recipe.boundary_density_bytes;
+    statistics.boundary_density_mnemonics =
+            std::move(recipe.boundary_density_mnemonics);
+    statistics.boundary_terminal_link_mnemonics =
+            std::move(recipe.boundary_terminal_link_mnemonics);
+    statistics.boundary_terminal_link_ranges =
+            std::move(recipe.boundary_terminal_link_ranges);
+    flag_state.save_in_nzcv = recipe.save_in_nzcv;
+    flag_state.nzcv_dirty = recipe.nzcv_dirty;
+    flag_state.nzcv_requested = recipe.nzcv_requested;
+    flag_state.flags_token_valid = recipe.flags_token_valid;
+    flag_state.flags_token_result_code = recipe.flags_token_result_code;
+    flag_state.flags_token_keep = recipe.flags_token_keep;
+    flags_audit_block_edge = recipe.flags_audit_block_edge;
+    flags_audit_strict_advance = recipe.flags_audit_strict_advance;
+    backedge_exit_label = std::move(recipe.backedge_exit_label);
+    backedge_exit_referenced = recipe.backedge_exit_referenced;
+    direct_cycle_exits = std::move(recipe.direct_cycle_exits);
+    direct_cycle_cut_edges = recipe.direct_cycle_cut_edges;
+    backedge_flags_recipe = std::move(recipe.backedge_flags_recipe);
+    loop_hoist_body_entry = std::move(recipe.loop_hoist_body_entry);
+    backedge_host_begin = recipe.backedge_host_begin;
+    backedge_host_end = recipe.backedge_host_end;
+    statistics.region_block_edges = recipe.region_block_edges;
+    statistics.region_block_cycles = recipe.region_block_cycles;
+    statistics.region_block_fallthroughs = recipe.region_block_fallthroughs;
+    statistics.region_block_local_branch_bytes = recipe.region_block_local_branch_bytes;
+    memory_state.pending_exit_poll_faults = std::move(recipe.pending_exit_poll_faults);
+    vec_nan_cold_sites = std::move(recipe.vec_nan_cold_sites);
+    if (recipe.flags_audit) {
+        context.ResumeFlagsRegsAudit(std::move(*recipe.flags_audit));
     }
 
     context.BeginColdScratch();
     const u32 boundary_cold_before =
-            plan.density ? context.CurrentBufferSize() : 0;
+            recipe.density ? context.CurrentBufferSize() : 0;
     const u32 flags_audit_cold_begin = context.FlagsRegsAuditEnabled()
             ? context.CurrentBufferSize()
             : 0;
     flags_audit_cold = context.FlagsRegsAuditEnabled();
     EmitBackedgeExitStub();
-    flags_token_keep = false;
+    flag_state.flags_token_keep = false;
     InvalidateFlagsToken();
     EmitBackedgeColdPaths();
     if (backedge_exit_label) {
         ResolveExitPollFaults(backedge_exit_label.get(),
-                              plan.block->GetStartLocation());
+                              recipe.block->GetStartLocation());
     }
     backedge_exit_label.reset();
     backedge_exit_referenced = false;
     EmitDirectCycleExitStubs();
-    if (plan.density) {
+    if (recipe.density) {
         RecordBoundaryRange(BoundarySubsequence::ColdTail,
                             boundary_cold_before,
                             context.CurrentBufferSize());
-        plan.density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
+        recipe.density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
                 context.CurrentBufferSize() - boundary_cold_before;
     }
     const u32 nan_cold_before =
-            plan.density ? context.CurrentBufferSize() : 0;
+            recipe.density ? context.CurrentBufferSize() : 0;
     EmitVecNaNColdPaths();
-    if (plan.density) {
-        plan.density_bytes[static_cast<size_t>(DensityCategory::NaN)] +=
+    if (recipe.density) {
+        recipe.density_bytes[static_cast<size_t>(DensityCategory::NaN)] +=
                 context.CurrentBufferSize() - nan_cold_before;
     }
     context.EndColdScratch();
@@ -171,19 +171,19 @@ void JitTranslator::EmitBlockColdPathPlan(BlockColdPathPlan plan) {
         context.FinishDeferredFlagsRegsAudit();
     }
 
-    PrintBlockDensity(plan.block,
-                      plan.density,
-                      plan.density_ops,
-                      plan.density_bytes,
-                      plan.density_scalar_fp_ops,
-                      *plan.loop_hoist,
-                      plan.loop_hoist_prefix_ops);
-    ASSERT(pending_exit_poll_faults.empty());
+    PrintBlockDensity(recipe.block,
+                      recipe.density,
+                      recipe.density_ops,
+                      recipe.density_bytes,
+                      recipe.density_scalar_fp_ops,
+                      *recipe.loop_hoist,
+                      recipe.loop_hoist_prefix_ops);
+    ASSERT(memory_state.pending_exit_poll_faults.empty());
     ASSERT(vec_nan_cold_sites.empty());
-    save_in_nzcv = true;
-    nzcv_dirty = false;
-    nzcv_requested = {};
-    flags_token_keep = false;
+    flag_state.save_in_nzcv = true;
+    flag_state.nzcv_dirty = false;
+    flag_state.nzcv_requested = {};
+    flag_state.flags_token_keep = false;
     InvalidateFlagsToken();
 }
 

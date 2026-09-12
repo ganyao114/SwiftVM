@@ -12,11 +12,12 @@
 #include <vector>
 #include "base/common_funcs.h"
 #include "jit_context.h"
+#include "block_analysis_index.h"
 #include "guest_state_map.h"
 #include "raw_carry_branch_analysis.h"
 #include "resident_scalar_fpr_analysis.h"
 #include "scalar_fpr_liveness.h"
-#include "scalar_identity_analysis.h"
+#include "scalar_copy_analysis.h"
 #include "terminal_location_publication.h"
 #include "runtime/backend/code_cache.h"
 #include "runtime/common/types.h"
@@ -116,7 +117,7 @@ public:
     }
 
     [[nodiscard]] const std::vector<FaultMetadata>& GetFaultMetadata() const {
-        return fault_metadata;
+        return memory_state.fault_metadata;
     }
 
     Operand EmitOperand(ir::Operand &ir_op);
@@ -293,7 +294,7 @@ private:
     };
     [[nodiscard]] std::optional<NarrowExtractExtension>
     MatchNarrowExtractExtension(ir::Inst* wrapper) const;
-    struct FunnelShiftPlan {
+    struct FunnelShiftRecipe {
         ir::Inst* first{};
         ir::Inst* second{};
         ir::Inst* result{};
@@ -301,9 +302,9 @@ private:
         ir::Value low{};
         u8 amount{};
 
-        bool operator==(const FunnelShiftPlan&) const = default;
+        bool operator==(const FunnelShiftRecipe&) const = default;
     };
-    [[nodiscard]] std::optional<FunnelShiftPlan>
+    [[nodiscard]] std::optional<FunnelShiftRecipe>
     MatchFunnelShift(ir::Inst* result) const;
     void PrepareFunnelShifts(ir::Block* block);
     [[nodiscard]] bool EmitFunnelShiftPart(ir::Inst* inst);
@@ -332,17 +333,17 @@ private:
     MatchNarrowFlagsInput(ir::Inst* extract);
     [[nodiscard]] ir::Value ResolveNarrowFlagsInput(ir::Value value,
                                                     ir::Inst* consumer);
-    struct NarrowComparePlan {
+    struct NarrowComparison {
         ir::Value left{};
         std::optional<ir::Value> right{};
         ir::Inst* immediate_load{};
         u32 immediate{};
         u8 width{};
 
-        bool operator==(const NarrowComparePlan&) const = default;
+        bool operator==(const NarrowComparison&) const = default;
     };
     [[nodiscard]] bool IsNarrowZeroExtended(ir::Value value, u32 width) const;
-    [[nodiscard]] std::optional<NarrowComparePlan>
+    [[nodiscard]] std::optional<NarrowComparison>
     MatchNarrowCompare(ir::Inst* inst);
     void PrepareNarrowCompares(ir::Block* block);
     struct NarrowCarryFusion {
@@ -434,8 +435,8 @@ private:
                            bool density,
                            std::span<u32> density_bytes);
 
-    struct BlockColdPathPlan;
-    [[nodiscard]] BlockColdPathPlan CaptureBlockColdPathPlan(
+    struct BlockColdPathRecipe;
+    [[nodiscard]] BlockColdPathRecipe CaptureBlockColdPathRecipe(
             ir::Block* block,
             bool density,
             std::span<const u32> density_ops,
@@ -443,7 +444,7 @@ private:
             u32 density_scalar_fp_ops,
             const ir::LoopHoistMetadata& loop_hoist,
             u32 loop_hoist_prefix_ops);
-    void EmitBlockColdPathPlan(BlockColdPathPlan plan);
+    void EmitBlockColdPathRecipe(BlockColdPathRecipe recipe);
 
     void PrintBlockDensity(ir::Block* block,
                            bool density,
@@ -455,7 +456,7 @@ private:
 
     void PlacementPoint(const char* kind, u64 guest_pc);
 
-    struct BackedgeCarryPlan {
+    struct BackedgeCarryRecipe {
         bool canonical{};
         u8 inverted{};
         ir::Inst* load{};
@@ -463,7 +464,7 @@ private:
         ir::Inst* marker{};
     };
 
-    struct BackedgeFlagsPlan {
+    struct BackedgeFlagsRecipe {
         bool optimized{true};
         // dead_successor=true 是 region 单边 flags-dead 形态：热边目标在
         // 任意观察点前完整覆写 flags，因此不需要跨块 recipe/双入口。
@@ -498,20 +499,20 @@ private:
         bool cold_referenced{};
     };
 
-    [[nodiscard]] std::unique_ptr<BackedgeFlagsPlan>
-    PlanBackedgeFlags(ir::Block* block);
-    [[nodiscard]] std::optional<BackedgeCarryPlan> PlanBackedgeCarry(
+    [[nodiscard]] std::unique_ptr<BackedgeFlagsRecipe>
+    RecipeBackedgeFlags(ir::Block* block);
+    [[nodiscard]] std::optional<BackedgeCarryRecipe> RecipeBackedgeCarry(
             ir::Block* block, ir::Inst* final_save, ir::Inst* condition,
             bool dead_successor);
     [[nodiscard]] bool CanonicalCarryEnabled() const;
     [[nodiscard]] bool TargetKillsIncomingFlags(ir::Location target) const;
-    [[nodiscard]] bool PlanRegionBranchPFAF(BackedgeFlagsPlan& plan,
+    [[nodiscard]] bool RecipeRegionBranchPFAF(BackedgeFlagsRecipe& recipe,
                                             ir::Inst* producer) const;
     [[nodiscard]] bool ReproveRegionBranchPFAF() const;
     [[nodiscard]] bool RegionBranchPFAFActive(ir::Inst* producer) const;
     [[nodiscard]] bool EmitBackedgeFlagsTerminal(const ir::Terminal& terminal);
-    void EmitBackedgeMaterialize(const BackedgeFlagsPlan& plan);
-    void EmitRegionBranchPFAF(const BackedgeFlagsPlan& plan);
+    void EmitBackedgeMaterialize(const BackedgeFlagsRecipe& recipe);
+    void EmitRegionBranchPFAF(const BackedgeFlagsRecipe& recipe);
     void EmitBackedgeColdPaths();
     [[nodiscard]] bool RetainsPendingHostNZCV(const ir::Inst& inst) const;
     [[nodiscard]] static bool PreservesHostNZCV(ir::OpCode op);
@@ -532,10 +533,10 @@ private:
     void AcquireUnalignedAtomicLock(const Register& lock,
                                     const Register& scratch);
     void ReleaseUnalignedAtomicLock(const Register& lock);
-    void EmitPlainAtomicLoad(ir::ValueType type,
+    void EmitBasicAtomicLoad(ir::ValueType type,
                              const Register& result,
                              const Register& address);
-    void EmitPlainAtomicStore(ir::ValueType type,
+    void EmitBasicAtomicStore(ir::ValueType type,
                               const Register& value,
                               const Register& address);
     void EmitAtomicRMWValue(ir::AtomicRMWOp op,
@@ -636,7 +637,7 @@ private:
         Split,
         CanonicalTail,
     };
-    struct RegionFlagsJoinPlan {
+    struct RegionFlagsJoinRecipe {
         RegionFlagsJoinMode mode{RegionFlagsJoinMode::Canonical};
         EdgeFlagsState incoming{};
         ir::Location compatible_target{};
@@ -646,12 +647,12 @@ private:
         bool canonical_fallthrough{};
         bool canonical_merge_token{};
     };
-    [[nodiscard]] RegionFlagsJoinPlan PlanRegionFlagsJoin(
+    [[nodiscard]] RegionFlagsJoinRecipe RecipeRegionFlagsJoin(
             ir::Location then_target,
             ir::Location else_target,
             bool allow_fallthrough) const;
     [[nodiscard]] bool EmitRegionFlagsJoin(
-            const RegionFlagsJoinPlan& plan,
+            const RegionFlagsJoinRecipe& recipe,
             const std::function<void(vixl::aarch64::Label*, bool)>& branch);
     [[nodiscard]] bool RegionSuccessorAcceptsEdgeFlags(
             ir::Location target,
@@ -659,7 +660,7 @@ private:
     [[nodiscard]] bool RegionSuccessorOverwritesFlagsToken(
             ir::Location target) const;
     [[nodiscard]] Label* GetRegionFlagsCanonicalStub(
-            const RegionFlagsJoinPlan& plan);
+            const RegionFlagsJoinRecipe& recipe);
     void EmitRegionFlagsCanonicalStubs();
     [[nodiscard]] bool EmitRegionIf(const ir::terminal::If& terminal,
                                     bool allow_fallthrough);
@@ -704,7 +705,7 @@ private:
     [[nodiscard]] bool CanUseCompactFCmpCarrier(ir::Inst* fcmp) const;
     [[nodiscard]] ir::Inst* RawFCmpCondition(ir::Inst* fcmp) const;
 
-    struct DeadEdgeIntegerBranchPlan {
+    struct DeadEdgeIntegerBranch {
         ir::Inst* producer{};
         ir::Inst* condition{};
         ir::Flags required{};
@@ -721,7 +722,7 @@ private:
     bool EmitDeadEdgeZeroBranch(ir::Value condition, Label* label,
                                 bool on_true);
 
-    struct DeadNarrowImmediateBranchPlan {
+    struct DeadNarrowImmediateBranch {
         ir::Inst* producer{};
         ir::Inst* immediate_load{};
         u64 immediate{};
@@ -729,7 +730,7 @@ private:
         u8 width{};
     };
     void PrepareDeadNarrowImmediateBranch();
-    [[nodiscard]] std::optional<DeadNarrowImmediateBranchPlan>
+    [[nodiscard]] std::optional<DeadNarrowImmediateBranch>
     MatchDeadNarrowImmediateBranch(ir::Inst* inst) const;
 
     // Merge pending guest flags kept in host NZCV into the flags register.
@@ -775,7 +776,7 @@ private:
     // base register into [base + pt] (+ optional immediate). atomic=true
     // folds the bias into a scratch register (for instructions without
     // register-offset forms). Only called when use_memory_base is set;
-    // identity mode never pays for this.
+    // direct mode never pays for this.
     MemOperand BiasMem(const Register &base, bool atomic = false);
     MemOperand BiasMem(const Register &base, s64 imm, bool atomic = false);
 
@@ -861,7 +862,7 @@ private:
                                                  ir::Inst* advance) const;
 
     // ARM and x86 can choose different signs/payloads when a packed FP
-    // operation consumes a NaN. Normalize each lane to x86's first-NaN,
+    // operation consumes a NaN. Adjust each lane to x86's first-NaN,
     // quiet-preserving rule after the NEON arithmetic instruction.
     void EmitVecFloatNaNFixup(const VRegister &result,
                               const VRegister &left,
@@ -908,7 +909,7 @@ private:
         Label* recovery{};
     };
 
-    struct BlockColdPathPlan {
+    struct BlockColdPathRecipe {
         ir::Block* block{};
         bool density{};
         std::array<u32, static_cast<size_t>(DensityCategory::Count)>
@@ -941,7 +942,7 @@ private:
         bool backedge_exit_referenced{};
         std::map<u64, std::unique_ptr<Label>> direct_cycle_exits{};
         u32 direct_cycle_cut_edges{};
-        std::unique_ptr<BackedgeFlagsPlan> backedge_flags_plan{};
+        std::unique_ptr<BackedgeFlagsRecipe> backedge_flags_recipe{};
         std::unique_ptr<Label> loop_hoist_body_entry{};
         u32 backedge_host_begin{};
         u32 backedge_host_end{};
@@ -965,7 +966,7 @@ private:
 
     [[nodiscard]] bool MatchMemoryOffsetCase(ir::Inst *inst);
     [[nodiscard]] std::optional<u64> MatchInductionImmediate(ir::Inst *inst);
-    void PlanInductionTies(ir::Block *block);
+    void RecipeInductionTies(ir::Block *block);
 
     void FlushFlags();
 
@@ -995,6 +996,40 @@ private:
     JitContext &context;
     MacroAssembler &masm;
     ir::Block *cur_block{};
+    // Pinned GPR analysis and emission data belong to one block. Reset all
+    // families together before candidate discovery; their existing emission
+    // priority and safety checks remain in their respective handlers.
+    struct PinnedGPRState {
+        ir::Block* owner{};
+        BlockAnalysisIndex block_analysis;
+        std::map<ir::Inst*, u16> fused_pin_gpr_reads{};
+        std::map<ir::Inst*, u16> pinned_gpr_values{};
+        std::map<ir::Inst*, PinnedGPRCopy> pinned_gpr_copies{};
+        std::map<ir::Inst*, PinnedSelectPublication> pinned_select_results{};
+        std::map<ir::Inst*, PinnedSelectPublication> pinned_select_publications{};
+        std::map<ir::Inst*, PinnedGPRValueTransfer> pinned_gpr_value_transfers{};
+        std::map<ir::Inst*, PinnedGPRPublicationView> pinned_gpr_publication_views{};
+        std::map<ir::Inst*, SpilledGPRPublication> spilled_gpr_publications{};
+        std::map<ir::Inst*, PinnedLoadUpdate> pinned_load_updates{};
+        std::map<ir::Inst*, PinnedLoadUpdate> pinned_load_update_instructions{};
+        std::unordered_set<ir::Inst*> dead_pinned_gpr_writes{};
+
+        void Reset(ir::Block* block) {
+            owner = block;
+            block_analysis.Build(block);
+            fused_pin_gpr_reads.clear();
+            pinned_gpr_values.clear();
+            pinned_gpr_copies.clear();
+            pinned_select_results.clear();
+            pinned_select_publications.clear();
+            pinned_gpr_value_transfers.clear();
+            pinned_gpr_publication_views.clear();
+            spilled_gpr_publications.clear();
+            pinned_load_updates.clear();
+            pinned_load_update_instructions.clear();
+            dead_pinned_gpr_writes.clear();
+        }
+    } pinned_gprs;
     ir::Inst *cur_instr{};
     ir::Inst *terminal_body_inst{};
     TerminalLocationPublication terminal_location_publication{};
@@ -1002,79 +1037,26 @@ private:
     BitVector disable_instructions{};
     std::map<ir::Inst *, Label> local_labels{};
     std::map<ir::Inst *, Condition> local_conditions{};
-    std::unordered_set<ir::Inst*> normalized_bool_selects{};
-    std::unordered_map<ir::Inst*, ir::Cond> direct_cond_selects{};
     std::unordered_set<ir::Inst*> fused_pin_zext32{};
     std::unordered_set<ir::Inst*> checked_pin_zext32_publications{};
     std::unordered_set<ir::Inst*> fused_pin_sign_extends{};
-    // Narrow mapped values whose audited consumers can read the pinned W
-    // register directly.
-    std::map<ir::Inst*, u16> fused_pin_gpr_reads{};
-    std::map<ir::Inst*, u16> pinned_memory_values{};
-    std::map<ir::Inst*, SpilledMemoryOperand> spilled_memory_operands{};
-    std::map<ir::Inst*, ir::Value> narrow_flags_inputs{};
-    std::map<ir::Inst*, NarrowComparePlan> narrow_compares{};
-    std::map<ir::Inst*, NarrowCarryFusion> narrow_carry_fusions{};
-    std::map<ir::Inst*, u16> pinned_gpr_values{};
-    std::map<ir::Inst*, PinnedGPRCopy> pinned_gpr_copies{};
-    std::map<ir::Inst*, PinnedSelectPublication> pinned_select_results{};
-    std::map<ir::Inst*, PinnedSelectPublication> pinned_select_publications{};
-    std::map<ir::Inst*, PinnedGPRValueTransfer> pinned_gpr_value_transfers{};
-    std::map<ir::Inst*, PinnedGPRPublicationView> pinned_gpr_publication_views{};
-    std::map<ir::Inst*, SpilledGPRPublication> spilled_gpr_publications{};
-    std::map<ir::Inst*, PinnedLoadUpdate> pinned_load_updates{};
-    std::map<ir::Inst*, PinnedLoadUpdate> pinned_load_update_instructions{};
     std::map<ir::Inst*, NarrowExtractExtension> narrow_extract_extensions{};
     std::map<ir::Inst*, ir::Inst*> fused_narrow_extracts{};
     std::map<ir::Inst*, ir::Inst*> fused_narrow_extract_shifts{};
-    std::map<ir::Inst*, FunnelShiftPlan> funnel_shifts{};
+    std::map<ir::Inst*, FunnelShiftRecipe> funnel_shifts{};
     std::map<ir::Inst*, ir::Inst*> funnel_shift_parts{};
     std::map<ir::Inst*, ir::Inst*> funnel_shift_parity_producers{};
     std::map<ir::Inst*, NarrowMaskedInput> narrow_masked_inputs{};
     std::map<ir::Inst*, ir::Inst*> fused_narrow_masked_extracts{};
     std::map<ir::Inst*, ShiftMaskedInput> shift_masked_inputs{};
     std::map<ir::Inst*, ir::Inst*> fused_shift_masked_shifts{};
-    std::unordered_set<ir::Inst*> dead_pinned_gpr_writes{};
     std::map<ir::Inst*, ScalarFPRPublication> scalar_load_fpr_fusions{};
     std::map<ir::Inst*, ScalarFPRPublication> scalar_value_fpr_fusions{};
-    std::optional<DeadEdgeIntegerBranchPlan> dead_edge_integer_branch{};
-    std::optional<DeadNarrowImmediateBranchPlan>
-            dead_narrow_immediate_branch{};
     ResidentScalarFPRAnalysis resident_scalar_fpr_analysis{};
     RawCarryBranchAnalysis raw_carry_branch_analysis{};
     ScalarFPRLiveness scalar_fpr_liveness{};
-    ScalarIdentityAnalysis scalar_identity_analysis{};
+    ScalarCopyAnalysis scalar_copy_analysis{};
     GuestStateMap guest_state_map{};
-    ir::Flags flags_set{};
-    ir::Flags flags_clear{};
-    bool save_in_nzcv{true};
-    bool nzcv_dirty{false};
-    ir::Inst* raw_carry_pending{};
-    bool flags_token_valid{false};
-    u32 flags_token_result_code{};
-    // Terminals may emit several successors. Keep the compile-time token
-    // live so every arm packs; mid-block Merge still consumes it.
-    bool flags_token_keep{false};
-    bool compound_logical_clear_pending{false};
-    bool compound_logical_zero_pending{false};
-    // Which host NZCV bits were actually requested by SaveFlags since the
-    // last MergeNZCV. Only these bits are merged; the rest keep their
-    // existing value in the flags register (so a ClearFlags(CF) between
-    // two flag-setting instructions is not overwritten by the merge).
-    HostFlags nzcv_requested{};
-    EdgeCarrySourceState edge_carry_source{};
-    // True when Config::memory_base / page_table is set: every guest memory
-    // access goes through the pt bias register (guest addr + pt = host addr).
-    bool use_memory_base{false};
-    // Bounded guest window (Config::guest_addr_mask, 0 = disabled). Every
-    // guest address is truncated to `guest_addr_mask` before pt is added, so
-    // the access can only land inside the embedder's window reservation.
-    u64 guest_addr_mask{0};
-    // guest_addr_mask == 0xFFFFFFFF: the arm64 [Xn, Wm, UXTW] addressing mode
-    // computes pt + zext32(guest) in the *same* instruction the unbounded
-    // path already used, so a 32-bit window costs nothing.
-    bool window_uxtw{false};
-    bool mem_hostbase_fold{false};
     bool induct_tie{false};
     // Default-on exact policy: keep the common path to the host FP operation
     // plus one combined result-NaN test, and defer the x86 payload/indefinite
@@ -1092,18 +1074,6 @@ private:
     // preserves the tied destination's upper lanes.
     bool sse_afp_minmax{false};
     bool shift_imm_fast{true};
-    // W29 lowering: signed/unsigned narrow loads consume their
-    // extension destination directly, and GetOperand computes into its
-    // allocated address register. SVM_MEM_NARROW_FUSE=0 restores the old
-    // load+extend and temporary+transport-move shapes.
-    // Safe by construction after the GetOperand RA-tie fix: the emitter only
-    // peels when the allocator transferred register ownership (SharesGPR).
-    bool mem_narrow_fuse{true};
-    // 只处理寻址 EA：固定别名的末次使用可转交给 GetOperand result；
-    // identity frontend 另把简单复合地址直接保留到 memory IR。
-    bool addr_ea_tie{true};
-    // 绝对地址常量直接物化到 GetOperand 的分配结果，避免临时寄存器搬运。
-    bool abs_const_mat{false};
     bool direct_cycle_latch{false};
     bool backedge_latch{false};
     bool backedge_flags{false};
@@ -1143,18 +1113,15 @@ private:
     std::unique_ptr<Label> cycle_exit_reason{};
     bool share_cycle_exit_reason{};
     u32 direct_cycle_cut_edges{};
-    std::unique_ptr<BackedgeFlagsPlan> backedge_flags_plan{};
+    std::unique_ptr<BackedgeFlagsRecipe> backedge_flags_recipe{};
     std::unique_ptr<Label> loop_hoist_body_entry{};
     u32 backedge_host_begin{};
     u32 backedge_host_end{};
     std::vector<BackedgeBlockMetadata> backedge_block_metadata{};
-    std::vector<FaultMetadata> fault_metadata{};
-    std::vector<PendingExitPollFault> pending_exit_poll_faults{};
     struct PendingDeferredFault {
         size_t metadata_index{};
         Label* recovery{};
     };
-    std::vector<PendingDeferredFault> pending_deferred_faults{};
     struct IndirectExitMissSite {
         std::unique_ptr<Label> label{};
         u64 guest_start{};
@@ -1164,7 +1131,7 @@ private:
     std::array<IndirectExitMissSite, 32> pending_call_miss_sites{};
     std::array<IndirectExitMissSite, 32> continuation_mismatch_sites{};
     std::vector<std::unique_ptr<VecNaNColdSite>> vec_nan_cold_sites{};
-    std::vector<BlockColdPathPlan> block_cold_path_plans{};
+    std::vector<BlockColdPathRecipe> block_cold_path_recipes{};
     struct DeferredNZCVMergeStub {
         XRegister scratch{};
         XRegister token{};
@@ -1181,41 +1148,105 @@ private:
     };
     std::map<RegionFlagsCanonicalStubKey, std::unique_ptr<Label>>
             region_flags_canonical_stubs{};
-    std::map<UnalignedAtomicFallbackKey, u32> unaligned_atomic_fallback_counts{};
-    std::map<UnalignedAtomicFallbackKey, std::unique_ptr<Label>>
-            unaligned_atomic_fallbacks{};
     struct HostCallThunk {
         u32 uses{};
         std::unique_ptr<Label> entry{};
     };
     std::map<u64, HostCallThunk> host_call_thunks{};
-    bool boundary_density_enabled{};
-    bool boundary_terminal_open{};
-    u32 boundary_terminal_link_bytes{};
-    std::array<u32, static_cast<size_t>(BoundarySubsequence::Count)>
-            boundary_density_bytes{};
-    std::array<std::map<std::string, u32>,
-               static_cast<size_t>(BoundarySubsequence::Count)>
-            boundary_density_mnemonics{};
-    std::array<u32, static_cast<size_t>(PFAFDensityKind::Count)>
-            pfaf_density_bytes{};
     FlagsRegsAuditEdgeKind flags_audit_block_edge{
             FlagsRegsAuditEdgeKind::Dispatcher};
     bool flags_audit_strict_advance{};
     bool flags_audit_cold{};
-    std::map<std::string, u32> boundary_terminal_link_mnemonics{};
-    std::vector<std::pair<u32, u32>> boundary_terminal_link_ranges{};
     std::unordered_set<u64> region_blocks{};
     std::map<u64, ir::Block*> region_block_map{};
     std::set<std::pair<u64, u64>> region_cycle_edges{};
     std::unordered_set<u64> canonical_terminal_entries{};
     std::optional<u64> next_region_block{};
-    u32 region_block_edges{};
-    u32 region_block_cycles{};
-    u32 region_block_fallthroughs{};
-    u32 region_block_local_branch_bytes{};
     u64 placement_unit_pc{};
     bool translating_function{};
+
+    struct FlagEmissionState {
+        std::unordered_set<ir::Inst*> boolean_selects{};
+        std::unordered_map<ir::Inst*, ir::Cond> direct_cond_selects{};
+        std::map<ir::Inst*, ir::Value> narrow_flags_inputs{};
+        std::map<ir::Inst*, NarrowComparison> narrow_compares{};
+        std::map<ir::Inst*, NarrowCarryFusion> narrow_carry_fusions{};
+        std::optional<DeadEdgeIntegerBranch> dead_edge_integer_branch{};
+        std::optional<DeadNarrowImmediateBranch>
+                dead_narrow_immediate_branch{};
+        ir::Flags flags_set{};
+        ir::Flags flags_clear{};
+        bool save_in_nzcv{true};
+        bool nzcv_dirty{false};
+        ir::Inst* raw_carry_pending{};
+        bool flags_token_valid{false};
+        u32 flags_token_result_code{};
+        // Terminals may emit several successors. Keep the compile-time token
+        // live so every arm packs; mid-block Merge still consumes it.
+        bool flags_token_keep{false};
+        bool compound_logical_clear_pending{false};
+        bool compound_logical_zero_pending{false};
+        // Which host NZCV bits were actually requested by SaveFlags since the
+        // last MergeNZCV. Only these bits are merged; the rest keep their
+        // existing value in the flags register (so a ClearFlags(CF) between
+        // two flag-setting instructions is not overwritten by the merge).
+        HostFlags nzcv_requested{};
+        EdgeCarrySourceState edge_carry_source{};
+    } flag_state;
+
+    struct MemoryEmissionState {
+        std::map<ir::Inst*, u16> pinned_memory_values{};
+        std::map<ir::Inst*, SpilledMemoryOperand> spilled_memory_operands{};
+        // True when Config::memory_base / page_table is set: every guest memory
+        // access goes through the pt bias register (guest addr + pt = host addr).
+        bool use_memory_base{false};
+        // Bounded guest window (Config::guest_addr_mask, 0 = disabled). Every
+        // guest address is truncated to `guest_addr_mask` before pt is added, so
+        // the access can only land inside the embedder's window reservation.
+        u64 guest_addr_mask{0};
+        // guest_addr_mask == 0xFFFFFFFF: the arm64 [Xn, Wm, UXTW] addressing mode
+        // computes pt + zext32(guest) in the *same* instruction the unbounded
+        // path already used, so a 32-bit window costs nothing.
+        bool window_uxtw{false};
+        bool mem_hostbase_fold{false};
+        // W29 lowering: signed/unsigned narrow loads consume their
+        // extension destination directly, and GetOperand computes into its
+        // allocated address register. SVM_MEM_NARROW_FUSE=0 restores the old
+        // load+extend and temporary+transport-move shapes.
+        // Safe by construction after the GetOperand RA-tie fix: the emitter only
+        // peels when the allocator transferred register ownership (SharesGPR).
+        bool mem_narrow_fuse{true};
+        // 只处理寻址 EA：固定别名的末次使用可转交给 GetOperand result；
+        // direct frontend 另把简单复合地址直接保留到 memory IR。
+        bool addr_ea_tie{true};
+        // 绝对地址常量直接物化到 GetOperand 的分配结果，避免临时寄存器搬运。
+        bool abs_const_mat{false};
+        std::vector<FaultMetadata> fault_metadata{};
+        std::vector<PendingExitPollFault> pending_exit_poll_faults{};
+        std::vector<PendingDeferredFault> pending_deferred_faults{};
+        std::map<UnalignedAtomicFallbackKey, u32> unaligned_atomic_fallback_counts{};
+        std::map<UnalignedAtomicFallbackKey, std::unique_ptr<Label>>
+                unaligned_atomic_fallbacks{};
+    } memory_state;
+
+    struct EmissionStatistics {
+        bool boundary_density_enabled{};
+        bool boundary_terminal_open{};
+        u32 boundary_terminal_link_bytes{};
+        std::array<u32, static_cast<size_t>(BoundarySubsequence::Count)>
+                boundary_density_bytes{};
+        std::array<std::map<std::string, u32>,
+                   static_cast<size_t>(BoundarySubsequence::Count)>
+                boundary_density_mnemonics{};
+        std::array<u32, static_cast<size_t>(PFAFDensityKind::Count)>
+                pfaf_density_bytes{};
+        std::map<std::string, u32> boundary_terminal_link_mnemonics{};
+        std::vector<std::pair<u32, u32>> boundary_terminal_link_ranges{};
+        u32 region_block_edges{};
+        u32 region_block_cycles{};
+        u32 region_block_fallthroughs{};
+        u32 region_block_local_branch_bytes{};
+    } statistics;
 };
 
 }

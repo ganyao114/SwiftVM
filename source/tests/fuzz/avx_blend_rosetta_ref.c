@@ -64,11 +64,11 @@
 // wrote.  An instruction Rosetta refuses becomes a SKIP comment, never a value
 // filled in from the manual.
 //
-// THE FAULT PROBE
+// THE FAULT CHECK
 // ---------------
 // vmaskmov's defining property -- a masked-off element neither faults nor is
 // written -- cannot be a data row, because a row records a value and this is
-// the ABSENCE of a signal.  main() therefore ends with four probes that place
+// the ABSENCE of a signal.  main() therefore ends with four checks that place
 // the upper 16 bytes of a 256-bit access on a PROT_NONE page and mask those
 // elements off; each prints a `// MASKFAULT` comment saying whether the access
 // completed.  Those comments are documentation of what the oracle does.  The
@@ -463,23 +463,23 @@ static void gen_maskstore(const char* name, int op, int src_reg, int l) {
 }
 
 // ---------------------------------------------------------------------------
-// The fault probe: does a masked-off element touch memory at all?
+// The fault check: does a masked-off element touch memory at all?
 //
 // `edge` points 16 bytes before a PROT_NONE page, so a 256-bit access covers
 // 16 readable bytes and 16 unmapped ones.  The mask clears every element in
 // the second half.  Hardware must complete the access; anything that reads or
 // writes the whole 32 bytes takes SIGSEGV/SIGBUS and is reported as such.
 // ---------------------------------------------------------------------------
-static void fault_probe(const char* name, int op, int store) {
+static void fault_check(const char* name, int op, int store) {
     static u8* guard;
     if (!guard) {
         guard = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (guard == MAP_FAILED) {
-            printf("    // MASKFAULT: probe mmap failed, no measurement\n");
+            printf("    // MASKFAULT: check mmap failed, no measurement\n");
             return;
         }
         if (mprotect(guard + 4096, 4096, PROT_NONE) != 0) {
-            printf("    // MASKFAULT: probe mprotect failed, no measurement\n");
+            printf("    // MASKFAULT: check mprotect failed, no measurement\n");
             return;
         }
     }
@@ -505,7 +505,7 @@ static void fault_probe(const char* name, int op, int store) {
     vex3(&c, 2, 1, 0, 1, 0, 0, 0, 0);
     emit(&c, 0x6F);
     modrm_base(&c, 1, 6, DATA_A);
-    // The instruction under probe, addressing the straddling pointer in rdi.
+    // The instruction under check, addressing the straddling pointer in rdi.
     vex3(&c, 1, 2, 3, 1, 0, 0, 0, 0);
     emit(&c, (u8)op);
     modrm_base(&c, store ? 1 : 0, 7, 0);
@@ -637,10 +637,10 @@ int main(int argc, char** argv) {
 
     if (!g_dump) {
         printf("};\n");
-        fault_probe("vmaskmovps", 0x2C, 0);
-        fault_probe("vmaskmovpd", 0x2D, 0);
-        fault_probe("vmaskmovps", 0x2E, 1);
-        fault_probe("vmaskmovpd", 0x2F, 1);
+        fault_check("vmaskmovps", 0x2C, 0);
+        fault_check("vmaskmovpd", 0x2D, 0);
+        fault_check("vmaskmovps", 0x2E, 1);
+        fault_check("vmaskmovpd", 0x2F, 1);
         fprintf(stderr, "rows=%d skipped=%d\n", g_rows, g_skipped);
     }
     return 0;

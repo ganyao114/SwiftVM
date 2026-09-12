@@ -8,7 +8,7 @@
 //   1. Take a finished host code unit (the bytes JitContext::Flush would copy
 //      into a CodeCache) and discover every position in it that depends on a
 //      *runtime* address -- ScanCodeUnit().
-//   2. Serialize the bytes + the relocation list + the guest-side identity of
+//   2. Serialize the bytes + the relocation list + the guest-side direct of
 //      the unit -- SerialUnit / BlobWriter / BlobReader.
 //   3. Re-bind the unit against a new set of runtime addresses --
 //      ApplyRelocations().
@@ -33,7 +33,7 @@
 //     literal load, an adr/adrp, or an out-of-unit pc-relative branch other
 //     than a caller-declared direct-link BL site. Those declared words are
 //     generated from center-table metadata, not inferred from arbitrary code.
-//   * A materialized constant that lands inside the SwiftVM host image but is
+//   * A computed constant that lands inside the SwiftVM host image but is
 //     not consumed by a modelled use (an indirect branch target or a
 //     load/store base) also rejects the unit. Missing a *use* class therefore
 //     costs cache coverage, never correctness.
@@ -54,7 +54,7 @@ namespace swift::runtime::backend {
 struct ModuleConfig;
 
 // --------------------------------------------------------------------------
-// Host image identity
+// Host image direct
 // --------------------------------------------------------------------------
 // Every absolute host address the backend bakes into generated code (host
 // helpers reached through CallLambda, &HostMemMove, &X87Dispatch,
@@ -78,7 +78,7 @@ const HostImageInfo& GetHostImage();
 enum class RelocKind : u16 {
     None = 0,
     // A movz/movn/movk run materializing (host image base + addend) into a
-    // general purpose register. Re-materialized in place at load time; the
+    // general purpose register. Re-computed in place at load time; the
     // instruction count is preserved because the sequence is rewritten with
     // the same number of movz/movk slots that the original occupied.
     HostImageAbs64 = 1,
@@ -86,7 +86,7 @@ enum class RelocKind : u16 {
 
 enum class RelocUse : u16 {
     Unknown = 0,
-    BranchTarget = 1,  // br / blr on the materialized register
+    BranchTarget = 1,  // br / blr on the computed register
     MemoryBase = 2,    // base register of a load/store
 };
 
@@ -283,12 +283,12 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit);
 // on any field must reject the whole file.
 //
 // format_version  bumped whenever this file's layout or the scanner changes
-// build_id        identity of the SwiftVM binary that produced the code; it
+// build_id        direct of the SwiftVM binary that produced the code; it
 //                 subsumes every compile-time constant (State offsets,
 //                 ScratchBudget, opcode semantics, emitter changes)
 // config_hash     the runtime Config fields that reach codegen
 // env_hash        every SVM_*/SWIFT_* environment variable, by raw value
-// guest_id        identity of the guest image (naming/coarse check only; the
+// guest_id        direct of the guest image (naming/coarse check only; the
 //                 authoritative guest check is SerialBlock::guest_bytes_hash)
 struct ValidityKey {
     u64 format_version{};
@@ -305,7 +305,7 @@ constexpr u64 kCacheFormatVersion = 20;
 u64 HashBytes(const void* data, std::size_t size, u64 seed);
 u64 HashU64(u64 value, u64 seed);
 
-// Identity of the running SwiftVM binary: its on-disk size + mtime + inode,
+// Direct of the running SwiftVM binary: its on-disk size + mtime + inode,
 // which changes on every relink. Falls back to a mapped-image content hash if
 // the executable path cannot be resolved.
 u64 ComputeBuildId();
@@ -325,9 +325,9 @@ u64 ComputeConfigHash(const Config& config,
                       const ModuleConfig& default_module_config,
                       std::span<const u64> mapped_feature_hashes);
 
-// Identity of the guest image. By default this preserves the legacy all-argv
+// Direct of the guest image. By default this preserves the legacy all-argv
 // hash. SVM_JIT_CACHE_EXEC_ID=1 instead uses only argv[1]'s path + file
-// identity, with a separate hash domain; argv[0] is already covered by
+// direct, with a separate hash domain; argv[0] is already covered by
 // build_id and argv[2..] are guest data. Used to name the cache file and as a
 // coarse header check; SerialBlock::guest_bytes_hash is the authoritative
 // load-time safety check.

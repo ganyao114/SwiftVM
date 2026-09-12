@@ -175,7 +175,7 @@ void JitTranslator::EmitTestZero(ir::Inst* inst) {
             }
         }
     }
-    if (save_in_nzcv && nzcv_dirty &&
+    if (flag_state.save_in_nzcv && flag_state.nzcv_dirty &&
         !HasLaterLocalControlFlow(cur_block, inst)) {
         EmitZeroTestPreservingPstate(inst, false);
         return;
@@ -217,8 +217,8 @@ bool JitTranslator::ReproveWidthChainBridge(ir::Inst* inst) const {
         return false;
     }
     // LONG 的 invariant 输入是 pinned X 的 W view。它只在唯一 U32
-    // Add/Xor consumer 上省 identity 快照，不宣称 X[63:32] 已清零。
-    bool long_u32_snapshot = false;
+    // Add/Xor consumer 上省 direct 快照，不宣称 X[63:32] 已清零。
+    bool long_u32_capture = false;
     if (context.GetFeatures().ra_width_chain_long && source.Defined() &&
         source.Def() && source.Def()->GetOp() == ir::OpCode::GetHostGPR &&
         ir::GetValueSizeByte(source.Type()) == sizeof(u32) && inst->GetUses() == 1) {
@@ -229,13 +229,13 @@ bool JitTranslator::ReproveWidthChainBridge(ir::Inst* inst) const {
                     continue;
                 }
                 ++consumers;
-                long_u32_snapshot |=
+                long_u32_capture |=
                         (scan.GetOp() == ir::OpCode::Add ||
                          scan.GetOp() == ir::OpCode::Xor) &&
                         ir::GetValueSizeByte(scan.ReturnType()) == sizeof(u32);
             }
         }
-        long_u32_snapshot &= consumers == 1;
+        long_u32_capture &= consumers == 1;
     }
     if (!source.Defined() ||
         !context.SharesGPR(source, ir::Value{inst})) {
@@ -308,7 +308,7 @@ bool JitTranslator::ReproveWidthChainBridge(ir::Inst* inst) const {
         }
         pinned_w_handoff = published;
     }
-    if (!IsKnownWidthChainWWrite(source, context) && !long_u32_snapshot && !pinned_w_handoff) {
+    if (!IsKnownWidthChainWWrite(source, context) && !long_u32_capture && !pinned_w_handoff) {
         return false;
     }
 
@@ -459,15 +459,15 @@ bool JitTranslator::ReproveLow32Copy(ir::Inst* inst) const {
 void JitTranslator::EmitBitExtract(ir::Inst* inst) {
     if (auto fused = fused_narrow_masked_extracts.find(inst);
         fused != fused_narrow_masked_extracts.end()) {
-        const auto plan = narrow_masked_inputs.find(fused->second);
+        const auto candidate = narrow_masked_inputs.find(fused->second);
         const auto reproved = MatchNarrowMaskedInput(fused->second);
-        ASSERT_MSG(plan != narrow_masked_inputs.end() && reproved &&
-                           *reproved == plan->second && reproved->extract == inst,
+        ASSERT_MSG(candidate != narrow_masked_inputs.end() && reproved &&
+                           *reproved == candidate->second && reproved->extract == inst,
                    "narrow masked input proof diverged at IR {}", inst->Id());
         return;
     }
-    if (auto value = pinned_memory_values.find(inst);
-        value != pinned_memory_values.end()) {
+    if (auto value = memory_state.pinned_memory_values.find(inst);
+        value != memory_state.pinned_memory_values.end()) {
         ASSERT_MSG(MatchPinnedMemoryValue(inst) == value->second,
                    "pinned memory value proof drifted before emission at IR {}",
                    inst->Id());
@@ -475,32 +475,32 @@ void JitTranslator::EmitBitExtract(ir::Inst* inst) {
     }
     if (auto fused = fused_narrow_extracts.find(inst);
         fused != fused_narrow_extracts.end()) {
-        const auto plan = narrow_extract_extensions.find(fused->second);
+        const auto candidate = narrow_extract_extensions.find(fused->second);
         const auto reproved = MatchNarrowExtractExtension(fused->second);
-        ASSERT_MSG(plan != narrow_extract_extensions.end() && reproved &&
-                           *reproved == plan->second &&
+        ASSERT_MSG(candidate != narrow_extract_extensions.end() && reproved &&
+                           *reproved == candidate->second &&
                            reproved->extract == inst,
                    "narrow extract extension proof diverged at IR {}", inst->Id());
         return;
     }
-    if (fused_pin_gpr_reads.contains(inst)) {
+    if (pinned_gprs.fused_pin_gpr_reads.contains(inst)) {
         return;
     }
-    if (narrow_flags_inputs.contains(inst)) {
-        ASSERT_MSG(MatchNarrowFlagsInput(inst) == narrow_flags_inputs.at(inst),
+    if (flag_state.narrow_flags_inputs.contains(inst)) {
+        ASSERT_MSG(MatchNarrowFlagsInput(inst) == flag_state.narrow_flags_inputs.at(inst),
                    "narrow flags input proof drifted before emission at IR {}",
                    inst->Id());
         return;
     }
-    if (scalar_identity_analysis.InputDiscarded(inst)) {
+    if (scalar_copy_analysis.InputDiscarded(inst)) {
         return;
     }
     auto value = inst->GetArg<ir::Value>(0);
     auto left = inst->GetArg<ir::Imm>(1).Get();
     auto bits = inst->GetArg<ir::Imm>(2).Get();
     auto result = [&]() -> Register {
-        if (auto pinned = pinned_gpr_values.find(inst);
-            pinned != pinned_gpr_values.end()) {
+        if (auto pinned = pinned_gprs.pinned_gpr_values.find(inst);
+            pinned != pinned_gprs.pinned_gpr_values.end()) {
             return XRegister(pinned->second);
         }
         return context.R(ir::Value{inst});
@@ -533,11 +533,11 @@ void JitTranslator::EmitSignExtend(ir::Inst* inst) {
     const auto pinned = ResolvePinnedGPRValue(ir::Value{inst});
     auto result = pinned ? Register{*pinned} : context.R(ir::Value{inst});
     const auto residence = guest_state_map.FixedHomeForUse(value, inst);
-    auto fused = value.Def() ? fused_pin_gpr_reads.find(value.Def())
-                             : fused_pin_gpr_reads.end();
+    auto fused = value.Def() ? pinned_gprs.fused_pin_gpr_reads.find(value.Def())
+                             : pinned_gprs.fused_pin_gpr_reads.end();
     auto src = residence
             ? WRegister(residence->home)
-            : fused != fused_pin_gpr_reads.end()
+            : fused != pinned_gprs.fused_pin_gpr_reads.end()
             ? WRegister(fused->second)
             : context.W(value);
     const u32 source_width = ir::GetValueSizeByte(value.Type());
@@ -618,7 +618,7 @@ bool JitTranslator::CanConsumeForwardedWidthSpill(ir::Inst* inst) {
     const auto reads_fixed_home = [&] {
         const auto source = inst->GetArg<ir::Value>(0);
         return guest_state_map.FixedHomeForUse(source, inst).has_value() ||
-               (source.Def() && fused_pin_gpr_reads.contains(source.Def()));
+               (source.Def() && pinned_gprs.fused_pin_gpr_reads.contains(source.Def()));
     };
     switch (inst->GetOp()) {
         case ir::OpCode::ZeroExtend32:
@@ -656,7 +656,7 @@ void JitTranslator::EmitTestNotZero(ir::Inst* inst) {
             }
         }
     }
-    if (save_in_nzcv && nzcv_dirty &&
+    if (flag_state.save_in_nzcv && flag_state.nzcv_dirty &&
         !HasLaterLocalControlFlow(cur_block, inst)) {
         EmitZeroTestPreservingPstate(inst, true);
         return;
@@ -714,11 +714,11 @@ void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
     auto result = context.W(ir::Value{inst});
     const auto residence = guest_state_map.FixedHomeForUse(value, inst);
-    auto fused = value.Def() ? fused_pin_gpr_reads.find(value.Def())
-                             : fused_pin_gpr_reads.end();
+    auto fused = value.Def() ? pinned_gprs.fused_pin_gpr_reads.find(value.Def())
+                             : pinned_gprs.fused_pin_gpr_reads.end();
     auto src = residence
             ? WRegister(residence->home)
-            : fused != fused_pin_gpr_reads.end()
+            : fused != pinned_gprs.fused_pin_gpr_reads.end()
             ? WRegister(fused->second)
             : context.W(value);
     const u32 source_bits = ir::GetValueSizeByte(value.Type()) * 8;
@@ -765,31 +765,38 @@ void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitZeroExtend32To64(ir::Inst* inst) {
-    if (CanUseZeroStoreRegister(ir::Value{inst})) {
+    const bool no_elide = GetSvmConfig().zext_no_elide;
+    if (!no_elide && CanUseZeroStoreRegister(ir::Value{inst})) {
         return;
     }
-    if (fused_pin_zext32.contains(inst)) {
+    if (!no_elide && fused_pin_zext32.contains(inst)) {
         return;
     }
     auto source = inst->GetArg<ir::Value>(0);
-    if (context.IsWidthChainCoalesced(inst->Id())) {
+    if (!no_elide && context.IsWidthChainCoalesced(inst->Id())) {
         ASSERT_MSG(ReproveWidthChainBridge(inst),
                    "width-chain ZeroExtend32To64 proof drifted before emission at IR {}",
                    inst->Id());
         return;
     }
-    if (source.Def() && context.IsLow32CopyCoalesced(source.Id())) {
+    if (!no_elide && source.Def() &&
+        context.IsLow32CopyCoalesced(source.Id())) {
         ASSERT_MSG(ReproveLow32Copy(source.Def()),
                    "low32 copy proof drifted at ZeroExtend32To64 IR {}",
                    inst->Id());
         EmitZeroExtend32(inst);
         return;
     }
-    if (ir::GetValueSizeByte(source.Type()) == sizeof(u32) &&
+    if (!no_elide && ir::GetValueSizeByte(source.Type()) == sizeof(u32) &&
         context.SharesGPR(source, ir::Value{inst})) {
+        // Tied to the same register: the W write that clears [63:32] is still
+        // owed. The source register may be a pinned-home U32 view whose upper
+        // half holds the live guest value, so mov wN,wN is not optional.
+        auto result = context.W(ir::Value{inst});
+        __ Mov(result, result);
         return;
     }
-    if (CanFusePinnedZeroExtendPublication(inst)) {
+    if (!no_elide && CanFusePinnedZeroExtendPublication(inst)) {
         return;
     }
     // The destination remains U64-typed in IR so the following StoreUniform

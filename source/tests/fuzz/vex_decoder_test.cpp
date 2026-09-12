@@ -5,7 +5,7 @@
 // length for every VEX-prefixed instruction, and a wrong length does not merely
 // mis-decode one instruction -- it desynchronizes every instruction after it in
 // the block. Each case is therefore checked twice: against distorm (on the
-// subset this distorm snapshot still decodes correctly) and against the case's
+// subset this distorm capture still decodes correctly) and against the case's
 // own byte count.
 //
 // The truncation sweep matters just as much: the decoder reads attacker- or

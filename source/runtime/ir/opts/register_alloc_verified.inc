@@ -44,10 +44,10 @@ static void RunVerified(Unit* unit,
                         bool intwidth_tie = false,
                         bool induct_tie = false,
                         bool spill_evict = true,
-                        RegisterAllocPass::SpillEvictTestResult* test_result = nullptr) {
-    const auto finish_placement_probe = [&] {
+                        AllocationStatistics* test_result = nullptr) {
+    const auto finish_placement_check = [&] {
         if (features.ra_home_perm) {
-            reg_alloc->PermutePlacementProbeGPRHomes();
+            reg_alloc->PermutePlacementCheckGPRHomes();
         }
     };
     auto record_shape = [&](const LinearScanAllocator& scan) {
@@ -106,11 +106,9 @@ static void RunVerified(Unit* unit,
             if (eviction_restarts) {
                 reg_alloc->ResetAllocations();
             }
-            LinearScanAllocator scan{unit, reg_alloc, default_gpr_reserve,
-                                     backend::kDefaultScratchFPR,
-                                     single_block_fast_path, scalar_insert,
-                                     intwidth_tie, induct_tie, &forced_spills,
-                                     true, features};
+            LinearScanAllocator scan{unit, reg_alloc,
+                {.features = features, .single_block_fast_path = single_block_fast_path, .scalar_insert = scalar_insert, .intwidth_tie = intwidth_tie, .induct_tie = induct_tie},
+                {.gpr_reserve = default_gpr_reserve, .fpr_reserve = backend::kDefaultScratchFPR, .forced_spills = &forced_spills, .select_eviction = true}};
             scan.AllocateRegisters();
             if (scan.HasEvictionCandidate()) {
                 forced_spills.push_back(scan.EvictionCandidate());
@@ -123,17 +121,16 @@ static void RunVerified(Unit* unit,
             if (verified) {
                 record_shape(scan);
                 record_test_result(scan, eviction_restarts, false);
-                finish_placement_probe();
+                finish_placement_check();
                 return;
             }
             eviction_fallback = true;
             break;
         }
     } else {
-        LinearScanAllocator scan{unit, reg_alloc, default_gpr_reserve,
-                                 backend::kDefaultScratchFPR, single_block_fast_path,
-                                 scalar_insert, intwidth_tie, induct_tie,
-                                 nullptr, false, features};
+        LinearScanAllocator scan{unit, reg_alloc,
+            {.features = features, .single_block_fast_path = single_block_fast_path, .scalar_insert = scalar_insert, .intwidth_tie = intwidth_tie, .induct_tie = induct_tie},
+            {.gpr_reserve = default_gpr_reserve, .fpr_reserve = backend::kDefaultScratchFPR}};
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -141,7 +138,7 @@ static void RunVerified(Unit* unit,
         if (verified) {
             record_shape(scan);
             record_test_result(scan, 0, false);
-            finish_placement_probe();
+            finish_placement_check();
             return;
         }
     }
@@ -199,9 +196,9 @@ static void RunVerified(Unit* unit,
     add_rung(base_gpr + reload_bound, base_fpr + reload_bound);
     for (auto& rung : ladder) {
         reg_alloc->ResetAllocations();
-        LinearScanAllocator scan{unit, reg_alloc, rung.gpr, rung.fpr, single_block_fast_path,
-                                 scalar_insert, intwidth_tie, induct_tie,
-                                 nullptr, false, features};
+        LinearScanAllocator scan{unit, reg_alloc,
+            {.features = features, .single_block_fast_path = single_block_fast_path, .scalar_insert = scalar_insert, .intwidth_tie = intwidth_tie, .induct_tie = induct_tie},
+            {.gpr_reserve = rung.gpr, .fpr_reserve = rung.fpr}};
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -213,7 +210,7 @@ static void RunVerified(Unit* unit,
             }
             record_shape(scan);
             record_test_result(scan, eviction_restarts, eviction_fallback);
-            finish_placement_probe();
+            finish_placement_check();
             return;
         }
     }

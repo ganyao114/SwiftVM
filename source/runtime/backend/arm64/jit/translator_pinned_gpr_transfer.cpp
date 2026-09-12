@@ -1,19 +1,15 @@
+#include "runtime/backend/reg_alloc.h"
 #include "translator.h"
 
 namespace swift::runtime::backend::arm64 {
 
 namespace {
 
-bool IsPinnedGPR(u32 index) { return index <= 9 || (index >= 19 && index <= 23) || index == 29; }
+using ::swift::runtime::backend::IsFixedGPRHome;
 
 bool IsMemoryOperation(ir::OpCode op) {
     return op == ir::OpCode::LoadMemory || op == ir::OpCode::StoreMemory ||
            op == ir::OpCode::LoadMemoryTSO || op == ir::OpCode::StoreMemoryTSO;
-}
-
-u32 CountValueUses(ir::Inst& consumer, ir::Inst* definition) {
-    return std::ranges::count_if(consumer.GetValues(),
-                                 [&](ir::Value value) { return value.Def() == definition; });
 }
 
 u32 CountAddressUses(ir::Inst& consumer, ir::Inst* definition) {
@@ -44,9 +40,10 @@ bool IsFullWidthAlias(ir::Inst& inst, ir::Inst* definition) {
 
 std::optional<JitTranslator::PinnedGPRValueTransfer> JitTranslator::MatchPinnedGPRValueTransfer(
         ir::Inst* publication) const {
+    ASSERT(pinned_gprs.owner == cur_block);
     if (!publication || publication->GetOp() != ir::OpCode::SetHostGPR ||
         publication->GetArg<ir::Imm>(2).Get() != 0 ||
-        dead_pinned_gpr_writes.contains(publication) ||
+        pinned_gprs.dead_pinned_gpr_writes.contains(publication) ||
         context.IsHostWriteCoalesced(publication->Id())) {
         return std::nullopt;
     }
@@ -61,7 +58,7 @@ std::optional<JitTranslator::PinnedGPRValueTransfer> JitTranslator::MatchPinnedG
 
     const u32 source = read->GetArg<ir::Imm>(0).Get();
     const u32 target = publication->GetArg<ir::Imm>(1).Get();
-    if (!IsPinnedGPR(source) || !IsPinnedGPR(target) || source == target) {
+    if (!IsFixedGPRHome(source) || !IsFixedGPRHome(target) || source == target) {
         return std::nullopt;
     }
 
@@ -77,11 +74,9 @@ std::optional<JitTranslator::PinnedGPRValueTransfer> JitTranslator::MatchPinnedG
     for (size_t index = 0; index < values.size(); ++index) {
         auto* definition = values[index];
         u32 ordinary_uses{};
-        for (auto& consumer : cur_block->GetInstList()) {
-            const u32 uses = CountValueUses(consumer, definition);
-            if (!uses) {
-                continue;
-            }
+        for (const auto& use : pinned_gprs.block_analysis.Uses(definition)) {
+            auto& consumer = *use.consumer;
+            const u32 uses = use.count;
             ordinary_uses += uses;
             if (&consumer == publication && definition == read && uses == 1) {
                 continue;
@@ -122,18 +117,17 @@ std::optional<JitTranslator::PinnedGPRValueTransfer> JitTranslator::MatchPinnedG
 }
 
 void JitTranslator::PreparePinnedGPRValueTransfers(ir::Block* block) {
-    pinned_gpr_value_transfers.clear();
     for (auto& inst : block->GetInstList()) {
-        auto plan = MatchPinnedGPRValueTransfer(&inst);
-        if (!plan) {
+        auto candidate = MatchPinnedGPRValueTransfer(&inst);
+        if (!candidate) {
             continue;
         }
-        fused_pin_gpr_reads.emplace(plan->read, plan->source);
-        pinned_gpr_values.emplace(plan->read, plan->target);
-        for (auto* alias : plan->aliases) {
-            pinned_gpr_values.emplace(alias, plan->target);
+        pinned_gprs.fused_pin_gpr_reads.emplace(candidate->read, candidate->source);
+        pinned_gprs.pinned_gpr_values.emplace(candidate->read, candidate->target);
+        for (auto* alias : candidate->aliases) {
+            pinned_gprs.pinned_gpr_values.emplace(alias, candidate->target);
         }
-        pinned_gpr_value_transfers.emplace(&inst, std::move(*plan));
+        pinned_gprs.pinned_gpr_value_transfers.emplace(&inst, std::move(*candidate));
     }
 }
 

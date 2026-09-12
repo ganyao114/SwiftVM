@@ -24,7 +24,7 @@ bool GcmPclMul2Enabled(const FeatureSet& features) {
 
 namespace {
 
-// This VIXL snapshot has the AArch64 Crypto Extension encodings and feature
+// This VIXL capture has the AArch64 Crypto Extension encodings and feature
 // decoder, but deliberately no assembler entry points for them.  Keep the
 // encodings here, next to their IR lowerings, rather than adding a parallel
 // assembler API to the vendored dependency.  All operands are Q registers.
@@ -215,7 +215,7 @@ void JitTranslator::EmitVecPclMul(ir::Inst* inst) {
     // through two lane DUPs plus PMULL inflated the GHASH Karatsuba fold by
     // two host instructions per 0x11 multiply; FEX takes this PMULL2 form.
     if ((select & 0x11) == 0x11 && GcmPclMul2Enabled(context.GetFeatures())) {
-        // The VIXL snapshot exposes Pmull2 but emits an unallocated sentinel
+        // The VIXL capture exposes Pmull2 but emits an unallocated sentinel
         // for it.  Keep this beside the existing raw PMULL encoding instead.
         masm.dci(Crypto3(kPmull2, result, left, right));
         return;

@@ -1,6 +1,6 @@
 //
 // Runtime half of the host->guest call layer.  Everything here is driven by a
-// CallPlan that was computed at compile time (abi_sysv.h); this file only
+// CallRecipe that was computed at compile time (abi_sysv.h); this file only
 // moves bytes and validates the return path.
 //
 
@@ -36,7 +36,7 @@ GuestCallError::GuestCallError(const GuestCallDiagnostic& d)
 
 namespace {
 
-// Distinctive junk written into every argument register the plan does NOT
+// Distinctive junk written into every argument register the recipe does NOT
 // assign.  Without it a stale value from a previous call can make a
 // mis-classified argument look correct; with it, reading the wrong register
 // yields an unmistakable number.  (This is what makes the "integer and SSE
@@ -59,7 +59,7 @@ std::uint64_t LoadEightbyte(const std::byte* data, unsigned size, unsigned index
 
 GuestCallStatus PerformGuestCall(GuestCallEnv& env,
                                  std::uint64_t entry,
-                                 const CallPlan& plan,
+                                 const CallRecipe& recipe,
                                  const RawArg* args,
                                  unsigned nargs,
                                  std::byte* ret_out,
@@ -81,15 +81,15 @@ GuestCallStatus PerformGuestCall(GuestCallEnv& env,
 
     // The call must leave the caller's view of the machine untouched: guest
     // TLS bases, callee-saved registers and the interrupted rip all belong to
-    // whatever the environment was doing before.  Snapshot, then restore after
+    // whatever the environment was doing before.  Capture, then restore after
     // the return values have been read out.
     const x86::ThreadContext64 saved = ctx;
 
     // --- MEMORY return buffer (psABI: hidden first argument in %rdi) --------
     std::uint64_t ret_buffer = 0;
-    const std::uint64_t ret_buffer_size = plan.ret_size;
-    if (plan.ret_memory) {
-        ret_buffer = env.ScratchAlloc(ret_buffer_size, std::max<std::uint64_t>(plan.ret_align, 8));
+    const std::uint64_t ret_buffer_size = recipe.ret_size;
+    if (recipe.ret_memory) {
+        ret_buffer = env.ScratchAlloc(ret_buffer_size, std::max<std::uint64_t>(recipe.ret_align, 8));
         if (ret_buffer == 0) {
             return fail(GuestCallStatus::SetupFailed);
         }
@@ -105,10 +105,10 @@ GuestCallStatus PerformGuestCall(GuestCallEnv& env,
     // %rsp is 16-byte aligned at the `call` and therefore ≡ 8 (mod 16) on
     // entry to the callee (the pushed return address).
     const std::uint64_t top = env.CallStackTop() & ~std::uint64_t{15};
-    const std::uint64_t args_base = top - plan.stack_area;
+    const std::uint64_t args_base = top - recipe.stack_area;
     const std::uint64_t entry_sp = args_base - 8;
 
-    std::vector<std::byte> image(plan.stack_area);
+    std::vector<std::byte> image(recipe.stack_area);
 
     // --- registers ----------------------------------------------------------
     for (unsigned i = 0; i < kMaxIntArgRegs; ++i) {
@@ -118,12 +118,12 @@ GuestCallStatus PerformGuestCall(GuestCallEnv& env,
         ctx.xmms[i].l[0] = kSsePoison | i;
         ctx.xmms[i].l[1] = kSsePoison | 0x80 | i;
     }
-    if (plan.ret_memory) {
+    if (recipe.ret_memory) {
         ctx.regs[kIntArgRegs[0]].qword = ret_buffer;  // %rdi
     }
 
-    for (unsigned i = 0; i < nargs && i < plan.nargs; ++i) {
-        const ArgPlan& a = plan.args[i];
+    for (unsigned i = 0; i < nargs && i < recipe.nargs; ++i) {
+        const ArgRecipe& a = recipe.args[i];
         const RawArg& raw = args[i];
         if (a.n_eb == 0) {
             continue;  // empty aggregate: nothing is passed
@@ -166,7 +166,7 @@ GuestCallStatus PerformGuestCall(GuestCallEnv& env,
     // registers used" for any call that may reach a varargs function.  It is
     // harmless for a prototyped call and required for a variadic one, so it is
     // always set.  RAX above AL is scratch on entry.
-    ctx.rax.qword = plan.sse_used;
+    ctx.rax.qword = recipe.sse_used;
 
     // --- write the stack image and the sentinel return address ---------------
     if (!image.empty()) {
@@ -229,7 +229,7 @@ GuestCallStatus PerformGuestCall(GuestCallEnv& env,
     }
 
     // --- return value --------------------------------------------------------
-    if (plan.ret_memory) {
+    if (recipe.ret_memory) {
         const void* host = env.HostPointer(ret_buffer, ret_buffer_size);
         if (host == nullptr) {
             ctx = saved;
@@ -237,13 +237,13 @@ GuestCallStatus PerformGuestCall(GuestCallEnv& env,
             return fail(GuestCallStatus::SetupFailed);
         }
         std::memcpy(ret_out, host, ret_buffer_size);
-    } else if (plan.ret_n_eb > 0) {
+    } else if (recipe.ret_n_eb > 0) {
         std::byte buf[16]{};
         unsigned int_taken = 0;
         unsigned sse_taken = 0;
-        for (unsigned e = 0; e < plan.ret_n_eb && e < 2; ++e) {
+        for (unsigned e = 0; e < recipe.ret_n_eb && e < 2; ++e) {
             std::uint64_t v = 0;
-            switch (plan.ret_eb[e]) {
+            switch (recipe.ret_eb[e]) {
                 case Eightbyte::Integer:
                     // psABI: INTEGER return eightbytes take %rax then %rdx.
                     v = ctx.regs[kIntRetRegs[int_taken++]].qword;
@@ -260,7 +260,7 @@ GuestCallStatus PerformGuestCall(GuestCallEnv& env,
             }
             std::memcpy(buf + e * 8, &v, 8);
         }
-        std::memcpy(ret_out, buf, std::min<unsigned>(plan.ret_size, 16));
+        std::memcpy(ret_out, buf, std::min<unsigned>(recipe.ret_size, 16));
     }
 
     ctx = saved;

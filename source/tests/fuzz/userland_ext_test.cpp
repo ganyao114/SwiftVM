@@ -130,26 +130,26 @@ void EmitAdxReg(std::vector<u8>& c, bool adox, u8 dst, u8 src, bool wide = true)
 
 }  // namespace
 
-TEST_CASE("FSGSBASE distorm probe and shared segment-base state") {
-    // Probe evidence for choosing normal dispatch instead of raw decode.
-    struct Probe {
+TEST_CASE("FSGSBASE distorm check and shared segment-base state") {
+    // Check evidence for choosing normal dispatch instead of raw decode.
+    struct Check {
         std::vector<u8> bytes;
         u16 opcode;
     };
-    const std::vector<Probe> probes = {
+    const std::vector<Check> checks = {
             {{0xF3, 0x48, 0x0F, 0xAE, 0xC0}, I_RDFSBASE},
             {{0xF3, 0x48, 0x0F, 0xAE, 0xC8}, I_RDGSBASE},
             {{0xF3, 0x0F, 0xAE, 0xD0}, I_WRFSBASE},
             {{0xF3, 0x48, 0x0F, 0xAE, 0xD8}, I_WRGSBASE},
     };
-    for (const auto& p : probes) {
+    for (const auto& p : checks) {
         auto bytes = p.bytes;
         const auto insn = DisDecode(bytes.data(), bytes.size(), 1);
         CHECK(insn.opcode == p.opcode);
         CHECK(insn.size == bytes.size());
         REQUIRE(insn.ops[0].type == O_REG);
     }
-    // Pin the snapshot defect that requires FixupFsgsbaseOperand: /2 is
+    // Pin the capture defect that requires FixupFsgsbaseOperand: /2 is
     // incorrectly exposed as RDX and 64-bit, although this encoding names EAX.
     {
         std::vector<u8> bytes = {0xF3, 0x0F, 0xAE, 0xD0};

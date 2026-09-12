@@ -1,7 +1,9 @@
+#include "base/logging.h"
 //
 // Created by 甘尧 on 2023/9/8.
 //
 
+#include "runtime/common/signal_diagnostic.h"
 #include "address_space.h"
 #include "runtime/backend/arm64/trampolines.h"
 #include "runtime/backend/riscv64/trampolines.h"
@@ -76,7 +78,7 @@ void AddressSpace::Init() {
     // JIT disk cache (off unless SVM_JIT_CACHE names a directory). 这里只构造；
     // driver 必须先完成 MapModule，再显式 LoadJitCache，cache unit 才能按
     // guest 地址恢复到正确 module。
-    if (JitDiskCache::Requested()) {
+    if (JitDiskCache::Requested() && GetSvmConfig().placement_pad == 0) {
         jit_disk_cache = std::make_unique<JitDiskCache>(*this);
     }
 }
@@ -167,6 +169,11 @@ void AddressSpace::InvalidateCodeRange(VAddr guest_start, VAddr guest_end) {
     // Called by the syscall layer when the guest mprotects / remaps / unmaps
     // memory that may hold translated code. SmcTracker owns cross-runtime L1
     // and shared-L2 invalidation; there is no caller-specific L1 here.
+    static std::atomic<uint32_t> inv_dbg{0};
+    if (GetSvmConfig().inv_dbg && ClaimDiagnosticSample(inv_dbg, 60)) {
+        SVM_DIAG_PRINT(Memory, "[inv-range] guest=[%#llx..%#llx]\n",
+                (unsigned long long)guest_start, (unsigned long long)guest_end);
+    }
     smc_tracker.InvalidateRange(*this, nullptr, guest_start, guest_end);
 }
 
@@ -189,7 +196,7 @@ AddressSpace::~AddressSpace() {
         const auto kind = [](const auto& values, LinkSiteKind site_kind) {
             return values[static_cast<size_t>(site_kind)];
         };
-        std::fprintf(stderr,
+        SVM_DIAG_PRINT(Memory,
                      "[svm-direct-link] sites=%zu linked=%zu far=%zu retiring=%zu "
                      "registered=%llu linker_calls=%llu delinks=%llu max_in_degree=%zu "
                      "incoming_targets=%zu owners=%zu target_records=%zu bytes_est=%zu "

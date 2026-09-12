@@ -262,7 +262,7 @@ u8 RowOpcode(const std::vector<u8>& enc) {
 
 // ---------------------------------------------------------------------------
 // The SDM model.  Deliberately shares nothing with decoder_sse42str.cc: the
-// matrix is materialized in full and aggregated afterwards, where the handler
+// matrix is computed in full and aggregated afterwards, where the handler
 // evaluates cells lazily.
 // ---------------------------------------------------------------------------
 struct SdmResult {
@@ -634,7 +634,7 @@ TEST_CASE("x86 sse4.2 string compare vs rosetta and the SDM") {
         }
         INFO("imm8[3:2] (the aggregation) never changes the answer");
         REQUIRE(aggregation_moves >= 10);
-        INFO("imm8[5:4] (the polarity) never changes the answer -- both the plain and the "
+        INFO("imm8[5:4] (the polarity) never changes the answer -- both the basic and the "
              "masked negation must be exercised");
         REQUIRE(polarity_moves >= 10);
         INFO("imm8[6] never changes the INDEX, so the msb/lsb selection is untested");
@@ -873,7 +873,7 @@ TEST_CASE("x86 sse4.2 string compare vs rosetta and the SDM") {
 //
 // Nothing here depends on guest fault handling: in the PASSING case no fault
 // is raised at all.  The failure mode is an abort of the whole test binary
-// with "[SwiftVM] unhandled host fault: SIGBUS", because this arena is plain
+// with "[SwiftVM] unhandled host fault: SIGBUS", because this arena is basic
 // host mmap rather than a guest mapping the runtime's handler recognizes.
 TEST_CASE("x86 sse4.2 string compare reads only 16 bytes of memory") {
     if (!swift::runtime::GetSvmConfig().sse42str) {

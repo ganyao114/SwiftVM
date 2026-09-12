@@ -1,7 +1,7 @@
 # P0-B flags 表示(纸门 2–4)
 
 日期:2026-08-18
-承接:docs/codegen-opt-plan-2026-08.md §2.2
+承接:docs/codegen-opt-recipe-2026-08.md §2.2
 范围:设计已落。x12 预留 + Linux spill 扫描已过。施工第三刀默认 OFF 落地 token +
 `EmitSplitFlagsPublish` + 隐含 latch。
 
@@ -156,7 +156,7 @@ W81 已落地、默认 OFF,结论仍有效:P1 六条 sink 补不回 poll,不翻�
 RFLAGS,必须能在回边进 veneer。spike 允许 `FLAGS_REGS=1` 隐含
 `BACKEDGE_LATCH=1`(文档写清;仍都默认 OFF)。不把 latch 翻成全局默认。
 
-没有 per-site operand snapshot。token 就是最小 live set:last_result +
+没有 per-site operand capture。token 就是最小 live set:last_result +
 可选 AF bit + 编译期 op/width。RA 不得在 token 存活区间重用 last_result
 家;下一条 flags ALU 才能覆盖。
 
@@ -211,7 +211,7 @@ AF bit 若走 §3.3.A,优先塞进 last_result 家的高位或 x26 里今天 AF 
 ## 8. 下一步(施工序)
 
 1. ~~只读选家~~:已裁定 x12。A 类 `SVM_FLAGS_REGS` 默认 OFF 已接线。
-2. ~~Linux identity 池扫描~~:coremark/zip7 spill 不回涨,`max_live_gpr` 9/11 vs 池 13。
+2. ~~Linux direct 池扫描~~:coremark/zip7 spill 不回涨,`max_live_gpr` 9/11 vs 池 13。
 3. ~~默认 OFF token + publish + latch 隐含~~:热路径 `Sub`/`And`/`Or`/`Xor`/`Add` 不再 `SaveParity`/`SaveAuxiliaryCarry`;观察点 `MergeNZCV` 顺带把 last_result/AF 打回 x26;AdvancePC 与同 unit 自环/region 边保持 lazy;`FLAGS_REGS=1` 隐含 latch。默认仍 OFF。
 4. §6 正确性已过(func_tests 双 RE、coremark CRC、sqlite smoke)。
    热路径 PF/AF 仍写 x26,只懒 NZCV + 跳过 And/Or MergeLogical。

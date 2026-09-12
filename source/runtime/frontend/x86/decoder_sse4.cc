@@ -2,7 +2,7 @@
 //
 // WHY THIS FILE EXISTS
 // --------------------
-// A 78-opcode probe over the legacy 66 0F 38 / 66 0F 3A / 0F 7C / 0F 7D / 0F D0
+// A 78-opcode check over the legacy 66 0F 38 / 66 0F 3A / 0F 7C / 0F 7D / 0F D0
 // encodings found 67 of them unimplemented.  An unimplemented legacy opcode is
 // not a slowdown: X64Decoder::DecodeSwitch returns false, Decode() raises
 // InterruptReason::FALLBACK and the runtime turns that into
@@ -190,7 +190,7 @@
 //    and LDDQU requires 16-byte alignment of a memory operand; this front end
 //    models no alignment check anywhere, so the deviation is inherited rather
 //    than introduced.
-//  * MOVNTDQA is a plain aligned load: non-temporal hinting has no IR
+//  * MOVNTDQA is a basic aligned load: non-temporal hinting has no IR
 //    representation and none is architecturally observable.
 //  * MXCSR's DAZ/FTZ are not honoured and no exception status bit is ever set
 //    (which is what makes ROUND's imm8 bit 3, "suppress precision exception",
@@ -477,7 +477,7 @@ ir::Value OpBlendImm(ir::Assembler* as, ir::Value a, ir::Value b, u32 param) {
 //     odd  lanes:  DEST = DEST + SRC
 // Both are computed and blended with a constant lane mask rather than being
 // built from a shuffle, so each lane's NaN and signed-zero behaviour is the
-// plain VecFSub / VecFAdd one that the rest of the front end already pins.
+// basic VecFSub / VecFAdd one that the rest of the front end already pins.
 ir::Value OpAddSub(ir::Assembler* as, ir::Value a, ir::Value b, u32 param) {
     const u32 lane_bits = Lane(param);
     const auto lanes = ir::Imm(lane_bits);
@@ -509,7 +509,7 @@ ir::Value RoundLane(ir::Assembler* as,
         return as->VecFRoundInt(source, merge, bits, ir::Imm(u32(imm8 & 3u)), sc).SetType(kV128);
     }
     // MXCSR.RC (bits 14:13) is live guest state (DecodeMxcsr writes it), so all
-    // four roundings are materialized and one is picked bitwise.
+    // four roundings are computed and one is picked bitwise.
     ir::Uniform uni_mxcsr{offsetof(ThreadContext64, mxcsr), ir::ValueType::U32};
     auto mxcsr = as->ZeroExtend64(as->LoadUniform(uni_mxcsr));
     auto low_bit = BitLaneMask(as, mxcsr, 13);

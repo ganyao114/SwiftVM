@@ -346,7 +346,7 @@ int main(int argc, char** argv) {
     g_data = raw;  // page-aligned already
 
     // --- capability gate: prove AVX2 execution before emitting anything ------
-    // vpermd is the strictest single probe available: it is AVX2-only, 256-bit
+    // vpermd is the strictest single check available: it is AVX2-only, 256-bit
     // and cross-lane, so if it runs, everything else in this table can.
     {
         Code c;

@@ -99,7 +99,7 @@ bool JitTranslator::IsNarrowZeroExtended(ir::Value value, u32 width) const {
            inst->GetArg<ir::Imm>(2).Get() == width * 8;
 }
 
-std::optional<JitTranslator::NarrowComparePlan>
+std::optional<JitTranslator::NarrowComparison>
 JitTranslator::MatchNarrowCompare(ir::Inst* inst) {
     if (!inst || inst->GetOp() != ir::OpCode::Sub ||
         inst->GetUses() != 0 || RegionBranchPFAFActive(inst)) {
@@ -116,7 +116,7 @@ JitTranslator::MatchNarrowCompare(ir::Inst* inst) {
     const auto extra_flags = flags.set & ~ir::Flags::Carry;
     if (extra_flags != ir::Flags::None) {
         const bool feeds_fused_carry = std::ranges::any_of(
-                narrow_carry_fusions, [&](const auto& fusion) {
+                flag_state.narrow_carry_fusions, [&](const auto& fusion) {
                     return fusion.second.carry_test->Id() > inst->Id() &&
                            CarryCanStayInPstate(fusion.second.carry_test);
                 });
@@ -154,7 +154,7 @@ JitTranslator::MatchNarrowCompare(ir::Inst* inst) {
         const u64 immediate = operand.GetLeft().imm.Get();
         const u64 limit = u64{1} << (width * 8);
         if (immediate < limit && masm.IsImmAddSub(immediate)) {
-            return NarrowComparePlan{
+            return NarrowComparison{
                     .left = left,
                     .immediate = static_cast<u32>(immediate),
                     .width = static_cast<u8>(width),
@@ -171,7 +171,7 @@ JitTranslator::MatchNarrowCompare(ir::Inst* inst) {
         const u64 immediate = right.Def()->GetArg<ir::Imm>(0).Get();
         const u64 limit = u64{1} << (width * 8);
         if (immediate < limit && masm.IsImmAddSub(immediate)) {
-            return NarrowComparePlan{
+            return NarrowComparison{
                     .left = left,
                     .immediate_load = right.Def(),
                     .immediate = static_cast<u32>(immediate),
@@ -182,7 +182,7 @@ JitTranslator::MatchNarrowCompare(ir::Inst* inst) {
     if (!IsNarrowZeroExtended(right, width)) {
         return std::nullopt;
     }
-    return NarrowComparePlan{
+    return NarrowComparison{
             .left = left,
             .right = right,
             .width = static_cast<u8>(width),
@@ -190,16 +190,16 @@ JitTranslator::MatchNarrowCompare(ir::Inst* inst) {
 }
 
 void JitTranslator::PrepareNarrowCompares(ir::Block* block) {
-    narrow_compares.clear();
+    flag_state.narrow_compares.clear();
     for (auto& inst : block->GetInstList()) {
-        auto plan = MatchNarrowCompare(&inst);
-        if (!plan) {
+        auto recipe = MatchNarrowCompare(&inst);
+        if (!recipe) {
             continue;
         }
-        if (plan->immediate_load) {
-            disable_instructions.set(plan->immediate_load->Id());
+        if (recipe->immediate_load) {
+            disable_instructions.set(recipe->immediate_load->Id());
         }
-        narrow_compares.emplace(&inst, *plan);
+        flag_state.narrow_compares.emplace(&inst, *recipe);
     }
 }
 

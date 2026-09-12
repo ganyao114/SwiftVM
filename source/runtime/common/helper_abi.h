@@ -26,7 +26,7 @@
 
 // ELF local-exec TLS lowers to TPIDR_EL0 plus a fixed offset and is a true
 // leaf. Mach-O TLV necessarily calls __tlv_get_addr, so a helper that touches
-// thread_local storage must retain the normal caller snapshot on macOS even
+// thread_local storage must retain the normal caller capture on macOS even
 // though the compiler supports preserve_all for ordinary leaf functions.
 #if SVM_HAS_HELPER_PRESERVE_ALL && defined(__linux__)
 #define SVM_HELPER_TLS_IS_LEAF 1

@@ -112,7 +112,7 @@ TEST_CASE("narrow flag alignment consumes low extracts directly") {
     }
 }
 
-TEST_CASE("narrow flag input keeps shared extracts materialized") {
+TEST_CASE("narrow flag input keeps shared extracts computed") {
     const auto instructions = EmitNarrowSub(ValueType::U8, true);
     REQUIRE(Count(instructions, "uxtb ") == 1);
     REQUIRE(Count(instructions, "subs ") == 1);

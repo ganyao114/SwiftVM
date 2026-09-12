@@ -225,7 +225,7 @@ SVM_AVX_INT_UNI(vpshufhw, 2, 1, 0x70, 0, 0x93, 3)
 
 // vpermq: AVX2, VEX.256.66.0F3A.W1 -- an ARBITRARY permutation of the four
 // qwords of a ymm, so it reads qwords from the other 128-bit lane.  0x1B
-// reverses all four (every qword crosses), 0xE4 is the identity, 0x00
+// reverses all four (every qword crosses), 0xE4 is the direct, 0x00
 // broadcasts qword 0 into all four, 0x4E swaps the two 128-bit lanes.
 SVM_AVX_INT_UNI(vpermq, 1, 3, 0x00, 1, 0x1B, 2)
 SVM_AVX_INT_UNI(vpermq, 1, 3, 0x00, 1, 0xE4, 2)

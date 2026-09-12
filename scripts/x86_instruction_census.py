@@ -106,7 +106,7 @@ XSAVE_SCOPE = {
 CONCURRENT_SCOPE = {"I_CMPXCHG16B"}
 
 # Instructions accepted by SwiftVM's bounded raw-byte predecoder even though
-# this distorm snapshot has no corresponding mnemonic enum.
+# this distorm capture has no corresponding mnemonic enum.
 RAW_HANDLED = {"adcx", "adox", "rdpkru", "wrpkru"}
 
 
@@ -199,7 +199,7 @@ def disassembly_counts(fixtures: list[pathlib.Path]) -> collections.Counter[str]
     return result
 
 
-def normalize_objdump(mnemonic: str) -> str | None:
+def adjust_objdump(mnemonic: str) -> str | None:
     aliases = {
         "cltd": "I_CDQ", "cltq": "I_CDQE", "cqto": "I_CQO", "movabs": "I_MOV",
         "endbr64": None, "endbr32": None, "incsspq": None, "incsspd": None,
@@ -243,13 +243,13 @@ def write_report(path: pathlib.Path, fixtures: list[pathlib.Path]) -> None:
     for mnemonic, count in sorted(disasm.items()):
         if mnemonic in RAW_HANDLED:
             continue
-        normalized = normalize_objdump(mnemonic)
-        if normalized is None:
+        adjusted = adjust_objdump(mnemonic)
+        if adjusted is None:
             continue
-        if normalized not in all_names:
+        if adjusted not in all_names:
             decoder_blind.append((mnemonic, count))
-        elif normalized not in handled:
-            observed_missing.append((mnemonic, count, normalized))
+        elif adjusted not in handled:
+            observed_missing.append((mnemonic, count, adjusted))
 
     lines = [
         "# x86 distorm instruction coverage census",
@@ -276,7 +276,7 @@ def write_report(path: pathlib.Path, fixtures: list[pathlib.Path]) -> None:
         "constructor call in tests and translators passes `is_64bit=true`; legacy-only",
         "instructions are therefore marked N/A rather than implemented.",
         "",
-        "A direct probe of the checked-in distorm confirms that AAA/AAD/AAM/AAS,",
+        "A direct check of the checked-in distorm confirms that AAA/AAD/AAM/AAS,",
         "BOUND, DAA/DAS, INTO, and SALC decode as `I_UNDEFINED` in 64-bit mode;",
         "opcode 63 decodes as MOVSXD rather than ARPL.  SYSENTER/SYSEXIT still decode",
         "in long mode, but SwiftVM has no 32-bit Linux guest entry path or compat vDSO.",
@@ -314,7 +314,7 @@ def write_report(path: pathlib.Path, fixtures: list[pathlib.Path]) -> None:
         "| RDTSCP (leaf 0x80000001 EDX.27) | not advertised; decoder missing | "
         "hidden coherently; advertise only after implementation |",
         "",
-        "`RDSEED` is not present in this distorm snapshot at all: `0F C7 /7` is",
+        "`RDSEED` is not present in this distorm capture at all: `0F C7 /7` is",
         "returned as `I_UNDEFINED` of size 1 in both 32- and 64-bit decode.  Supporting",
         "it requires a raw-byte predecode (as used for CET) or a distorm update.",
         "",
@@ -331,7 +331,7 @@ def write_report(path: pathlib.Path, fixtures: list[pathlib.Path]) -> None:
         "handled | coherent within the declared baseline |",
         "| MOVBE | load/store decode through ByteSwap IR | coherent |",
         "| RDRAND + RDSEED | both decode; RDSEED has a raw-byte predecoder for "
-        "the old distorm snapshot | coherent |",
+        "the old distorm capture | coherent |",
         "| SYSCALL + NX + LM | SYSCALL/user-mode long-mode execution is handled; "
         "SYSRET remains guest-kernel-only | coherent for userland |",
         "| MMX | not advertised; MMX-register-only leftovers are explicitly "
@@ -367,7 +367,7 @@ def write_report(path: pathlib.Path, fixtures: list[pathlib.Path]) -> None:
         "## Test-fixture disassembly: decoder-version blind spots",
         "",
         "These mnemonics are emitted by the system objdump but have no enum in this old",
-        "distorm snapshot (some are already recognized by SwiftVM's raw-byte predecoder).",
+        "distorm capture (some are already recognized by SwiftVM's raw-byte predecoder).",
         "",
         "| objdump mnemonic | count |",
         "|---|---:|",

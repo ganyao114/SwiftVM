@@ -184,7 +184,7 @@ void HIRFunction::TrackLocal(Inst* inst) {
 void HIRFunction::DestroyHIRValue(HIRValue* value) {
     auto* def = value->value.Def();
     // Clear the id slot before DestroyInst frees the instruction the id lives
-    // in. Guarded on identity so a stale HIRValue can never blank a slot that
+    // in. Guarded on direct so a stale HIRValue can never blank a slot that
     // has since been handed to another instruction.
     const auto id = def->Id();
     if (id < values.size() && values[id] == value) {
@@ -415,14 +415,35 @@ void HIRFunction::IdByRPO() {
     // value here, twice per unit, because its key was the id being changed.)
     //
     // Values defined in blocks outside the RPO -- unreachable ones -- drop out
-    // rather than being left behind with a now-stale id that could alias a
-    // renumbered instruction's slot.
+    // of `values` rather than being left behind with a now-stale id that could
+    // alias a renumbered instruction's slot. But the unreachable instructions
+    // themselves still exist in `blocks`, and passes that iterate
+    // GetHIRBlocks() (all blocks) would otherwise read inst.Id()/value.Id() as
+    // a stale building id -- aliasing a renumbered instruction's alloc_result/
+    // use_end slot or running past inst_order_id into an OOB write. Numbering
+    // them past the reachable range keeps every instruction id unique and
+    // in-bounds; the value table itself stays RPO-only, so GetHIRValue() still
+    // reports unreachable defs as "not a value" (id >= values.size()).
     reid_scratch.clear();
     reid_scratch.reserve(values.size());
+    StackVector<u8, 32> reachable{};
+    reachable.resize(MaxBlockCount(), 0);
     u32 cur_inst_id{0};
     for (auto& block : GetHIRBlocksRPO()) {
+        reachable[block.GetOrderId()] = 1;
         for (auto& inst : block.GetInstList()) {
             reid_scratch.push_back(GetHIRValue(Value{&inst}));
+            inst.SetId(cur_inst_id++);
+        }
+    }
+    // EndFunction has already emptied the temporary intrusive list. The
+    // retained vector includes the unreachable blocks that also need IDs.
+    for (auto* block : blocks) {
+        if (block->GetOrderId() < reachable.size() &&
+            reachable[block->GetOrderId()]) {
+            continue;
+        }
+        for (auto& inst : block->GetInstList()) {
             inst.SetId(cur_inst_id++);
         }
     }
@@ -641,7 +662,7 @@ HIRPools::HIRPools(u32 func_cap)
 
 namespace {
 // The per-thread pool set the lease hands out, plus the flag that makes a
-// nested lease fall back to a private one. A unique_ptr rather than a plain
+// nested lease fall back to a private one. A unique_ptr rather than a basic
 // object so the pools are released at thread exit; by then Reset() has already
 // destroyed every object in them.
 thread_local std::unique_ptr<HIRPools> tls_pools{};

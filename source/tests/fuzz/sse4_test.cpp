@@ -755,7 +755,7 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
 //
 // The failure mode is worth knowing: a load that does run into the guard page
 // aborts the whole test binary with "[SwiftVM] unhandled host fault: SIGBUS"
-// rather than returning a PageFatal exit, because this arena is plain host
+// rather than returning a PageFatal exit, because this arena is basic host
 // mmap rather than a guest mapping the runtime's fault handler recognizes.
 // That is still an unmistakable kill -- verified by mutating SseNarrowSrc to
 // read 16 bytes unconditionally, which turns this case into exactly that abort

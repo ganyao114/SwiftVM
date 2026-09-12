@@ -259,7 +259,7 @@ struct ThreadContext64 {
     // intentionally not modelled, so CPUID.PKU stays clear; unconditional
     // RDPKRU/WRPKRU users still observe a coherent, reset-zero register.
     u32 pkru{};
-    // Non-FlagM cross-block carry polarity. FlagM units normalize host C to
+    // Non-FlagM cross-block carry polarity. FlagM units adjust host C to
     // x86 CF and leave this byte zero; other hosts persist the producer's raw
     // representation so later CF consumers can recover the architectural bit.
     // 0 = stored C == x86 CF, 1 = stored C == NOT x86 CF.

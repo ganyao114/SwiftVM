@@ -22,9 +22,9 @@ constexpr size_t kTargetSlots = 512;
 
 struct AtomicHelperCounters {
     Counter calls{};
-    Counter snapshot_instructions{};
-    Counter snapshot_code_bytes{};
-    Counter snapshot_memory_bytes{};
+    Counter capture_instructions{};
+    Counter capture_code_bytes{};
+    Counter capture_memory_bytes{};
 };
 
 struct TargetCounters {
@@ -91,9 +91,9 @@ void Add(Counter& counter, u64 value) {
 
 void Add(AtomicHelperCounters& out, const RAShapeHelperCounters& in) {
     Add(out.calls, in.calls);
-    Add(out.snapshot_instructions, in.snapshot_instructions);
-    Add(out.snapshot_code_bytes, in.snapshot_code_bytes);
-    Add(out.snapshot_memory_bytes, in.snapshot_memory_bytes);
+    Add(out.capture_instructions, in.capture_instructions);
+    Add(out.capture_code_bytes, in.capture_code_bytes);
+    Add(out.capture_memory_bytes, in.capture_memory_bytes);
 }
 
 template <size_t N>
@@ -179,12 +179,12 @@ void DumpAtExit() {
         const auto& helper = counters.helpers[i];
         std::fprintf(out,
                      "[svm-ra-shape-helper] abi=%s calls=%llu "
-                     "snapshot_instructions=%llu snapshot_code_bytes=%llu "
-                     "snapshot_memory_bytes=%llu\n",
+                     "capture_instructions=%llu capture_code_bytes=%llu "
+                     "capture_memory_bytes=%llu\n",
                      HelperABIName(abi), Load(helper.calls),
-                     Load(helper.snapshot_instructions),
-                     Load(helper.snapshot_code_bytes),
-                     Load(helper.snapshot_memory_bytes));
+                     Load(helper.capture_instructions),
+                     Load(helper.capture_code_bytes),
+                     Load(helper.capture_memory_bytes));
     }
 
     std::fprintf(out,
@@ -212,14 +212,14 @@ void DumpAtExit() {
             if (!Load(helper.calls)) continue;
             std::fprintf(out,
                          "[svm-ra-shape-target] delta=%lld abi=%s calls=%llu "
-                         "snapshot_instructions=%llu snapshot_code_bytes=%llu "
-                         "snapshot_memory_bytes=%llu\n",
+                         "capture_instructions=%llu capture_code_bytes=%llu "
+                         "capture_memory_bytes=%llu\n",
                          static_cast<long long>(static_cast<std::intptr_t>(address) -
                                                 static_cast<std::intptr_t>(anchor)),
                          HelperABIName(static_cast<RAShapeHelperABI>(i)),
-                         Load(helper.calls), Load(helper.snapshot_instructions),
-                         Load(helper.snapshot_code_bytes),
-                         Load(helper.snapshot_memory_bytes));
+                         Load(helper.calls), Load(helper.capture_instructions),
+                         Load(helper.capture_code_bytes),
+                         Load(helper.capture_memory_bytes));
         }
     }
     std::fflush(out);
@@ -375,8 +375,8 @@ void RAShapeRecordHelperTarget(VAddr target,
     if (!RAShapeProfEnabled() || !target) return;
     auto& process = Counters();
     size_t slot = (target >> 4) % kTargetSlots;
-    for (size_t probe = 0; probe < kTargetSlots; ++probe) {
-        auto& entry = process.targets[(slot + probe) % kTargetSlots];
+    for (size_t check = 0; check < kTargetSlots; ++check) {
+        auto& entry = process.targets[(slot + check) % kTargetSlots];
         VAddr observed = entry.target.load(std::memory_order_relaxed);
         if (!observed) {
             VAddr expected = 0;

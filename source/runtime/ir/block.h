@@ -68,7 +68,7 @@ struct AddressNode {
 // Transient hand-off from uniform DSE to the XMM fault sink. Value is a
 // non-owning SSA reference: it deliberately does not keep the producer live
 // until the sink installs it at the already existing publication point.
-struct UniformSnapshotPlan {
+struct UniformCaptureRecipe {
     Inst* segment_begin{};
     Inst* boundary{};
     Inst* latest_store{};
@@ -83,7 +83,7 @@ struct GuestCodeDependency {
 };
 
 // 单元内单块自环的瞬态发码计划。普通入口执行到 prefix_end，自回边落到
-// 其后；引用由编译期 plan 持有，不序列化也不跨单元共享。
+// 其后；引用由编译期 recipe 持有，不序列化也不跨单元共享。
 struct LoopHoistMetadata {
     Inst* prefix_end{};
     std::span<Inst*> anchors{};
@@ -193,8 +193,8 @@ public:
 
     [[nodiscard]] u32 MaxInstrId() const { return max_instr_id; }
 
-    [[nodiscard]] std::vector<UniformSnapshotPlan>& GetUniformSnapshotPlans() {
-        return uniform_snapshot_plans;
+    [[nodiscard]] std::vector<UniformCaptureRecipe>& GetUniformCaptureRecipes() {
+        return uniform_capture_recipes;
     }
 
     void AddGuestCodeDependency(Location start, Location end) {
@@ -265,7 +265,7 @@ private:
     u16 max_instr_id{};
     u16 v_stack{};
     backend::JitCache jit_cache{};
-    std::vector<UniformSnapshotPlan> uniform_snapshot_plans{};
+    std::vector<UniformCaptureRecipe> uniform_capture_recipes{};
     std::vector<GuestCodeDependency> guest_code_dependencies{};
     LoopHoistMetadata loop_hoist_metadata{};
     bool dead_edge_integer_branch_proven{};

@@ -89,8 +89,8 @@ struct AvxGatherRef {
     int index;
     int mask;
     const char* enc;        // literal instruction bytes, hex
-    const char* index_in;   // 32 bytes planted in the index register
-    const char* mask_in;    // 32 bytes planted in the mask register
+    const char* index_in;   // 32 bytes placeed in the index register
+    const char* mask_in;    // 32 bytes placeed in the mask register
     const char* dst_after;  // 32 bytes hardware left in the destination
     const char* mask_after; // 32 bytes hardware left in the mask register
 };
@@ -658,7 +658,7 @@ TEST_CASE("x86 avx2 gather declines #UD operand shapes") {
 // vex_decoder.cc parses a VSIB ModRM/SIB as an ordinary SIB, which is correct
 // for length, base, displacement and scale, and needs exactly ONE
 // interpretation at the handler: SIB.index == 100b with VEX.X == 0 means "no
-// index register" for a plain SIB and is reported as index_none, but under
+// index register" for a basic SIB and is reported as index_none, but under
 // VSIB it names vector register 4.  This case pins both halves of that -- the
 // lengths (cross-checked against llvm-objdump when the data was captured) and
 // the index_none encoding -- so a future change to the shared decoder cannot
@@ -697,7 +697,7 @@ TEST_CASE("x86 avx2 gather VSIB decoding") {
         {"vpgatherdd ymm2,0x1000(,ymm1,4),ymm0", 10,
          {0xC4, 0xE2, 0x6D, 0x90, 0x04, 0x8D, 0x00, 0x10, 0x00, 0x00}, 10, true, 0, false, 1, 4,
          0x1000},
-        // SIB.index == 100b, VEX.X == 0: index_none for a plain SIB, ymm4 here.
+        // SIB.index == 100b, VEX.X == 0: index_none for a basic SIB, ymm4 here.
         {"vpgatherdd ymm2,(rax,ymm4,4),ymm0", 6, {0xC4, 0xE2, 0x6D, 0x90, 0x04, 0xA0}, 6, false, 0,
          true, 0, 4, 0},
         {"vpgatherdd ymm2,(rax,ymm12,4),ymm0", 6, {0xC4, 0xA2, 0x6D, 0x90, 0x04, 0xA0}, 6, false,

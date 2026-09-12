@@ -60,7 +60,7 @@ constexpr ImmForm ImmediateForm(VexMap map, VexPP pp, u8 op) {
         default:
             break;
         }
-        // Everything else on the 0F map that AVX uses is a plain 2/3-operand
+        // Everything else on the 0F map that AVX uses is a basic 2/3-operand
         // form with no immediate. The opcode space here is well covered by
         // the SSE heritage, so treating the remainder as None is safe.
         return ImmForm::None;

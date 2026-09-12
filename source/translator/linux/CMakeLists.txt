@@ -29,7 +29,7 @@ add_executable(svm_translator_linux ${SVM_LINUX_SOURCES})
 
 target_link_libraries(svm_translator_linux PUBLIC swift_translator fronted_arm64 fronted_x86 elfio::elfio)
 
-# Linux identity mapping needs the translator itself out of the conventional
+# Linux direct mapping needs the translator itself out of the conventional
 # ET_EXEC guest range (typically 0x400000). Make that invariant explicit
 # instead of relying on a distribution compiler's default-PIE specs. macOS is
 # deliberately untouched.

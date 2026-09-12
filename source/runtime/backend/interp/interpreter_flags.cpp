@@ -129,7 +129,7 @@ void Interpreter::SaveGuestFlags(InterpStack& stack, ir::Inst* def, ir::Flags f)
                 break;
             }
             default:
-                // The JIT never snapshots AF operands for non add/sub ops.
+                // The JIT never captures AF operands for non add/sub ops.
                 break;
         }
     }

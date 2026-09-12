@@ -18,7 +18,7 @@ namespace {
 
 constexpr VAddr kGuestBase = 0x400000;
 
-// Flat guest memory backed by a host buffer, identity mapped at kGuestBase.
+// Flat guest memory backed by a host buffer, direct mapped at kGuestBase.
 class FlatMemory final : public MemoryInterface {
 public:
     explicit FlatMemory(size_t size) : buffer_(size, 0) {}

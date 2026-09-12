@@ -36,7 +36,7 @@ unsigned __int128 VecFloatBinary(unsigned __int128 a,
         std::memcpy(&rbits, &rv, sizeof(T));
         // x86 SSE arithmetic propagates the first NaN operand, preserving
         // its sign/payload while setting the quiet bit. Host FPUs are free
-        // to choose a different NaN sign, so normalize the raw lane here.
+        // to choose a different NaN sign, so adjust the raw lane here.
         const u64 exponent_mask = lane_bits == 32 ? 0x7F800000u
                                                     : 0x7FF0000000000000ull;
         const u64 fraction_mask = lane_bits == 32 ? 0x007FFFFFu

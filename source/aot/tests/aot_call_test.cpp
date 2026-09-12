@@ -16,7 +16,7 @@
 //      artifact installed, and against the host's own libc.
 //
 // Ordering note: only one guest environment may be alive at a time (the guest
-// memory bias and the signal-handler probes are process-global), so the AOT
+// memory bias and the signal-handler checks are process-global), so the AOT
 // phase runs first, records its answers, and is destroyed before the JIT phase
 // re-runs the same calls.  Catch2 runs TEST_CASEs in declaration order within
 // a file, and everything here goes through one lazily-built fixture, so the
@@ -264,7 +264,7 @@ TEST_CASE("aot call: SymbolIndex::Lookup resolves to installed artifact code") {
     // Every name must (a) exist in the artifact's rewritten symbol table,
     // (b) name code the address space really published for that guest address.
     // strlen/memcpy/strcmp/memchr/strchr are STT_GNU_IFUNC here; snprintf,
-    // strtol, fib, malloc, free are plain STT_FUNC. Both kinds must resolve.
+    // strtol, fib, malloc, free are basic STT_FUNC. Both kinds must resolve.
     for (const char* name : {"strlen", "memcpy", "strcmp", "memchr", "strchr", "snprintf",
                              "strtol", "fib", "malloc", "free", "__libc_start_main"}) {
         INFO("symbol " << name);

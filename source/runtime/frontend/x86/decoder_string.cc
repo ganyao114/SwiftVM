@@ -65,7 +65,7 @@ constexpr u64 kStringGuestFault = u64(1) << 63;
 // cannot unwind. Reporting it back to the emitted code (kStringGuestFault) is
 // what turns "silently move fewer bytes" into a guest page fault.
 //
-// COST: exactly one range probe per walk in the non-faulting case (a lock-free
+// COST: exactly one range check per walk in the non-faulting case (a lock-free
 // bitmap read in the linux embedder; see GuestMemory::MappedBytesFrom). The
 // per-element loop below only runs on the faulting path, which ends in a dead
 // guest thread anyway. Embedders with no oracle installed get `length` back
@@ -103,14 +103,14 @@ static u8* ClampGuestWalk(u64 start, u64 step, bool backward, u64& count, bool& 
     const u64 ok = runtime::backend::SignalHandler::GuestMappedBytes(
             reinterpret_cast<std::uintptr_t>(host_lo), total);
     if (ok == total) {
-        return host_base;  // fully backed: the common case, one probe
+        return host_base;  // fully backed: the common case, one check
     }
     faulted = true;
     if (!backward) {
         count = ok / step;  // the mapped prefix starts at base
         return host_base;
     }
-    // Backward: the probe measured upward from the low end, so it does not
+    // Backward: the check measured upward from the low end, so it does not
     // give the run that starts at `base`. Only reached on the faulting path.
     u64 reachable = 0;
     while (reachable < count) {
@@ -364,7 +364,7 @@ static size_t StringHelperIndex(u64 step) {
     }
 }
 
-// fxsave: zero the 512-byte region and plant the architectural defaults
+// fxsave: zero the 512-byte region and place the architectural defaults
 // (FCW = 0x037F, MXCSR_MASK = 0x0000FFFF); the decoder then stores the live
 // mxcsr and xmm0-15 over it via IR.
 u64 FxsaveFill(u64 guest_addr) {
@@ -599,7 +599,7 @@ void X64Decoder::DecodeCmps(_DInst& insn) {
     // inside the branch, so the no-op path executes nothing that disturbs the
     // live flags a subsequent LAHF/pushf would read. On the active path
     // ArithWithFlags is the final flag commit. (Mirrors DecodeShift, which
-    // branches on its plain count before the flag-defining work.)
+    // branches on its basic count before the flag-defining work.)
     auto skip = __ NotGoto(__ TestNotZero(count));
     const auto& helpers = repnz ? kRepCmpsNZResident : kRepCmpsZResident;
     auto iters = __ CallHostWithTraits(kResidentStringHelperTraits,

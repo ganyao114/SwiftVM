@@ -20,7 +20,7 @@ namespace {
 // CMOVcc goes through CheckCond, which materializes a fresh LoadImm(1) /
 // LoadImm(0) pair for its CondSelect; every flag-setting arithmetic instruction
 // materializes a fresh carry-polarity byte; and an immediate reused inside a
-// block is re-materialized per use.
+// block is re-computed per use.
 //
 // Rewriting a use to an earlier identical constant is unconditionally valid for
 // a pure value, with one exception that is easy to get wrong: the x86 front end
@@ -41,7 +41,7 @@ namespace {
 // The BindLabel reset is NOT hypothetical.  Instrumenting the pass with a
 // second, barrier-free table and comparing the two shows it suppressing 13
 // in-window reuses per func_tests_x86_64 translation and 12 per
-// real_busy_x86_64, every one of them with the anchor materialized at a
+// real_busy_x86_64, every one of them with the anchor computed at a
 // greater open-branch depth than the use -- i.e. exactly the unsafe shape
 // (DecodeShift in decoder_alu.cc materializes LoadImm(0) for SAR's OF inside a
 // NotGoto/BindLabel region a few instructions before the label).
@@ -52,7 +52,7 @@ namespace {
 // whole swift_test suite -- 161k assertions including the Unicorn differential
 // fuzz -- stays green.  The suppressed reuses are real but land on flag bits
 // nothing goes on to read.  "Constant CSE does not reuse a constant
-// materialized under a branch" (source/tests/main_case.cpp) is therefore the
+// computed under a branch" (source/tests/main_case.cpp) is therefore the
 // only thing that pins this reset, and it carries a straight-line positive
 // control so it cannot pass by the pass simply doing nothing.
 //

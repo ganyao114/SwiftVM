@@ -10,8 +10,13 @@
 
 # Build directories
 build/
+/build-master/
 cmake-build-*/
 android/.gradle/
+
+# Python caches
+__pycache__/
+*.py[cod]
 
 # Binaries and intermediate artifacts
 main
@@ -35,7 +40,7 @@ source/translator/linux/tests/cmake_install.cmake
 # could otherwise run nothing. The consequence is a trap -- a new guest silently
 # stays out of a clone -- and it has fired: bench_suite_x86_64 and its golden
 # checksum table were ignored, so bench_run.py in any fresh clone/worktree ran
-# 2 of 7 workloads and verified 0 checksums, without a word of complaint.
+# 2 of 7 workloads and verified 0 checksums, without reporting the omission.
 # If you add a guest a harness depends on, add a `!` line below AND make the
 # harness fail loudly when it is missing (bench_run.py require_inputs()).
 source/translator/linux/tests/*_x86_64

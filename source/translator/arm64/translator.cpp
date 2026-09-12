@@ -1,3 +1,4 @@
+#include "base/logging.h"
 //
 // Created by 甘尧 on 2024/2/23.
 //
@@ -26,7 +27,7 @@ using namespace swift::arm64;
  * Guest memory model: with guest address virtualization (Config::memory_base)
  * the guest runs at its linked addresses while the host backing store sits at
  * guest + bias. The decoder's instruction fetch therefore applies the same
- * bias (installed by the linux loader via SetBias; 0 = identity, the default
+ * bias (installed by the linux loader via SetBias; 0 = direct, the default
  * for tests / non-loader embedders).
  */
 class MemoryImpl : public runtime::MemoryInterface {
@@ -45,7 +46,7 @@ public:
     // embedder's guest-mapping oracle is consulted before dereferencing.
     void* GetPointer(void* src) override {
         const auto host = (reinterpret_cast<uintptr_t>(src) & mask) + bias;
-        if (runtime::backend::SignalHandler::HasGuestMapProbe() &&
+        if (runtime::backend::SignalHandler::HasGuestMapCheck() &&
             !runtime::backend::SignalHandler::IsGuestAddressMapped(host)) {
             return nullptr;
         }
@@ -59,7 +60,7 @@ static MemoryImpl memory_impl{};
 
 struct Arm64Instance::Impl final {
     // memory_base: guest->host bias (host addr = guest addr + bias), installed
-    // by the linux loader; nullptr keeps the identity-mapped fast path.
+    // by the linux loader; nullptr keeps the direct-mapped fast path.
     explicit Impl(void* memory_base, u64 guest_addr_mask) {
         memory_impl.SetBias(reinterpret_cast<uintptr_t>(memory_base));
         memory_impl.SetMask(guest_addr_mask);
@@ -127,7 +128,7 @@ struct Arm64Instance::Impl final {
         // Function-level compilation: decode the whole function (all
         // reachable blocks up to ret / indirect jump) into an HIRFunction
         // and compile it as a single unit.  Bypasses GetNodeOrCreate to
-        // avoid the ir::Function identity conflict between the module's
+        // avoid the ir::Function direct conflict between the module's
         // address-node map and the HIRBuilder's internal Function object
         // (TranslateIR pushes the HIRBuilder's Function into the module).
         if (func_base) {
@@ -225,11 +226,11 @@ struct Arm64Instance::Impl final {
                         throw std::runtime_error("failed to publish interpreted HIR function");
                     }
                     if (runtime::GetSvmConfig().dump_ir) {
-                        fmt::print(stderr, "[func-compile] {:#x} interp-publish-ready\n", pc);
+                        SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} interp-publish-ready\n", pc);
                     }
                     func_stats.Compiled(decoded_blocks);
                     if (runtime::GetSvmConfig().dump_ir) {
-                        fmt::print(stderr, "[func-compile] {:#x} interp-return\n", pc);
+                        SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} interp-return\n", pc);
                     }
                     compiled = true;
                 } else {
@@ -239,7 +240,7 @@ struct Arm64Instance::Impl final {
                     }
                     func_stats.Compiled(decoded_blocks);
                     if (runtime::GetSvmConfig().dump_ir) {
-                        fmt::print(stderr, "[func-compile] {:#x} jit-return\n", pc);
+                        SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} jit-return\n", pc);
                     }
                     compiled = true;
                 }
@@ -252,7 +253,7 @@ struct Arm64Instance::Impl final {
                 compiled = false;
             }
             if (runtime::GetSvmConfig().dump_ir) {
-                fmt::print(stderr, "[func-compile] {:#x} builder-destroyed\n", pc);
+                SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} builder-destroyed\n", pc);
             }
             if (compiled) {
                 return func_code;
@@ -409,6 +410,12 @@ void Arm64Core::SignalInterrupt() { impl->s_runtime->SignalInterrupt(); }
 void Arm64Core::ClearInterrupt() { impl->s_runtime->ClearInterrupt(); }
 
 uint64_t Arm64Core::GetSyscallNumber() { return impl->svc_num; }
+
+std::function<void()> Arm64Core::MakeExecutionTraceDumper() const {
+    return [runtime = std::weak_ptr{impl->s_runtime}] {
+        if (auto owner = runtime.lock()) owner->DumpExecutionTrace();
+    };
+}
 
 ThreadContext64& Arm64Core::GetContext() {
     auto uni_buffer = impl->s_runtime->GetUniformBuffer();

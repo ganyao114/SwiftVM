@@ -7,7 +7,7 @@
 
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
-#include "runtime/backend/arm64/jit/scalar_identity_analysis.h"
+#include "runtime/backend/arm64/jit/scalar_copy_analysis.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 
@@ -83,7 +83,7 @@ TEST_CASE("self XOR discards only equivalent exclusive views") {
     auto result = block.Xor(left, Operand{right}).SetType(ValueType::U32);
     block.StoreUniform(Uniform{0, ValueType::U32}, left);
 
-    arm64::ScalarIdentityAnalysis analysis;
+    arm64::ScalarCopyAnalysis analysis;
     analysis.Analyze(&block);
 
     REQUIRE(analysis.IsSelfXor(result.Def()));

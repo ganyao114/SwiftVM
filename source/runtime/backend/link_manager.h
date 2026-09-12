@@ -171,7 +171,7 @@ public:
                                   const LinkCommit& commit);
     [[nodiscard]] bool MarkFar(LinkSiteKey site, u64 expected_generation);
 
-    // Marks the target unavailable before returning its incoming-site snapshot.
+    // Marks the target unavailable before returning its incoming-site capture.
     // Linked/Far records become Unlinked. Retiring records remain queryable and
     // are returned too, so a later integration can conservatively restore BL at
     // a source that is detached but still protected by QSBR.

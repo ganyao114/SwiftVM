@@ -35,7 +35,7 @@
 
 ### 2. 本轮复现
 
-复现标签：`w64probe-stall1`；复现时 loadavg 约 23–30。
+复现标签：`w64check-stall1`；复现时 loadavg 约 23–30。
 
 - 01:46:36 启动 prime。
 - 01:47:58 guest 到 100%，输出 `Renderer exiting`、`Finished render in 1m 22s`、`Render finished, exiting.`，并写出 142,312 B PNG。
@@ -52,9 +52,9 @@
 
 证据文件：
 
-- `results/w64probe-stall1/probes/prime_sample2.txt`
-- `results/w64probe-stall1/probes/prime_sample3.txt`
-- `results/w64probe-stall1/work/cray_svm/prime/prime.out`
+- `results/w64check-stall1/checks/prime_sample2.txt`
+- `results/w64check-stall1/checks/prime_sample3.txt`
+- `results/w64check-stall1/work/cray_svm/prime/prime.out`
 
 ## 二、具体竞态机制
 
@@ -167,7 +167,7 @@ return hr;
 
 ### P1：修复 `SVM_EXEC_PROF` 与默认 XPOOL 的 scratch 契约
 
-这不是 W64 根因，但会阻碍后续性能测量。应让 exec counter 使用的两个 GPR 纳入 `ScratchBudget`/固定 clobber 契约，或改为不会与 XPOOL 分配冲突的保留寄存器路径。修后需验证 probe on/off 的 guest 语义一致，并明确 profiler overhead，不应把 profiler 数字当默认配置绝对性能。
+这不是 W64 根因，但会阻碍后续性能测量。应让 exec counter 使用的两个 GPR 纳入 `ScratchBudget`/固定 clobber 契约，或改为不会与 XPOOL 分配冲突的保留寄存器路径。修后需验证 check on/off 的 guest 语义一致，并明确 profiler overhead，不应把 profiler 数字当默认配置绝对性能。
 
 ### 临时缓解
 
@@ -176,9 +176,9 @@ return hr;
 
 ## 六、产物与清洁度
 
-- 停滞现场：`/Users/swift/CLionProjects/SwiftVM-bench/results/w64probe-stall1/`
-- 分解探针：`/Users/swift/CLionProjects/SwiftVM-bench/results/w64probe-prof-s8/`
-- 修法压力测试：`/Users/swift/CLionProjects/SwiftVM-bench/results/w64probe-fix-smoke50/`
+- 停滞现场：`/Users/swift/CLionProjects/SwiftVM-bench/results/w64check-stall1/`
+- 分解探针：`/Users/swift/CLionProjects/SwiftVM-bench/results/w64check-prof-s8/`
+- 修法压力测试：`/Users/swift/CLionProjects/SwiftVM-bench/results/w64check-fix-smoke50/`
 - harness 未修改。
 - `source/translator/linux/linker/` 未修改。
 - 未执行 git add/commit/push/checkout/reset/stash。

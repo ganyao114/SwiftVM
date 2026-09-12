@@ -12,7 +12,7 @@
 //  - Linux defaults to host-identical guest mappings. A fixed ET_EXEC collision
 //    falls back to the bounded bias window before loading continues.
 //  - macOS always uses bounded bias. Linux selects it with
-//    SVM_MEM_IDENTITY=0 or SVM_GUEST_BITS.
+//    SVM_MEM_DIRECT=0 or SVM_GUEST_BITS.
 //
 
 #pragma once
@@ -33,7 +33,7 @@ struct LoadedImage {
     VAddr entry{};       // initial guest PC: interpreter entry, or main entry
     VAddr program_entry{};  // main executable entry (AT_ENTRY)
     VAddr load_bias{};   // GUEST load bias: 0 for ET_EXEC (linked addresses),
-                         // host-chosen for identity-mapped static PIE. The
+                         // host-chosen for direct-mapped static PIE. The
                          // guest->host bias (ET_EXEC) lives in GuestMemory
                          // (memory.GetBias()).
     VAddr interpreter_base{};  // PT_INTERP load bias (AT_BASE), or zero

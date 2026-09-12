@@ -24,7 +24,7 @@ bool IsPinnedCoalesceProducer(OpCode op);
 bool IsWidthChainRootProducer(const Inst* producer);
 bool IsPinnedCoalesceObserver(OpCode op);
 bool HasKnownWWrite(Value value);
-void PlanWidthComponentOwners(
+void RecipeWidthComponentOwners(
         Block* lir_block,
         backend::RegAlloc* reg_alloc,
         const FeatureSet& features,

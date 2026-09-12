@@ -31,7 +31,7 @@ EdgeFlagsState JitTranslator::PendingEdgeFlagsState(
         HostFlags valid,
         EdgeFlagsProducer producer) const {
     const auto mask = static_cast<u32>(valid);
-    const auto carry_polarity = edge_carry_source.Resolve(
+    const auto carry_polarity = flag_state.edge_carry_source.Resolve(
             mask, CanonicalCarryEnabled());
     return EdgeFlagsState::Pending(mask,
                                    carry_polarity,
@@ -48,15 +48,15 @@ void JitTranslator::ObserveEdgeCarryPolarity(ir::Uniform uniform,
     }
     auto* definition = value.Def();
     if (!definition || definition->GetOp() != ir::OpCode::LoadImm) {
-        edge_carry_source.InvalidateRuntimePolarity();
+        flag_state.edge_carry_source.InvalidateRuntimePolarity();
         return;
     }
     const u64 raw = definition->GetArg<ir::Imm>(0).Get();
     if (raw > 1) {
-        edge_carry_source.InvalidateRuntimePolarity();
+        flag_state.edge_carry_source.InvalidateRuntimePolarity();
         return;
     }
-    edge_carry_source.PublishRuntimePolarity(raw != 0);
+    flag_state.edge_carry_source.PublishRuntimePolarity(raw != 0);
 }
 
 EdgeFlagsTargetContract JitTranslator::AnalyzeEdgeFlagsTarget(

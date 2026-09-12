@@ -1,3 +1,4 @@
+#include "support/register_alloc_test_support.h"
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -296,7 +297,7 @@ SpillForwardingBlock MakeSpilledBitExtractPublicationBlock() {
 std::vector<std::string> Emit(SpillForwardingBlock input, GPRSMask gprs) {
     FPRSMask fprs{~((1u << 8) - 1u)};
     RegAlloc alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
-    RegisterAllocPass::RunForSpillEvictTest(input.block.get(), &alloc, false);
+    RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &alloc, false);
     REQUIRE(alloc.ValueType(input.arriving) == RegAlloc::MEM);
 
     Config config{
@@ -809,7 +810,7 @@ TEST_CASE("spill reload regions stop at local control flow") {
     GPRSMask gprs{~((1u << 5) - 1u) & ~(1u << 18)};
     FPRSMask fprs{~((1u << 8) - 1u)};
     RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
-    RegisterAllocPass::RunForSpillEvictTest(block.get(), &alloc, false);
+    RegisterAllocTestSupport::RunForSpillEvictTest(block.get(), &alloc, false);
 
     REQUIRE(alloc.ValueType(arriving) == RegAlloc::MEM);
     REQUIRE_FALSE(alloc.HasSpillReload(arriving.Id(), first.Id()));

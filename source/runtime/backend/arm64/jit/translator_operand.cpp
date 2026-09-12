@@ -11,31 +11,31 @@ std::optional<MemOperand> JitTranslator::TryEmitSpilledMemoryOperand(
         bool pair,
         bool atomic,
         ir::Inst* memory_inst) {
-    const auto plan = spilled_memory_operands.find(address);
-    if (plan == spilled_memory_operands.end() ||
-        plan->second.consumer != memory_inst) {
+    const auto recipe = memory_state.spilled_memory_operands.find(address);
+    if (recipe == memory_state.spilled_memory_operands.end() ||
+        recipe->second.consumer != memory_inst) {
         return std::nullopt;
     }
-    if (use_memory_base) {
-        return BiasMem(plan->second.base, plan->second.offset, atomic);
+    if (memory_state.use_memory_base) {
+        return BiasMem(recipe->second.base, recipe->second.offset, atomic);
     }
     const u32 access_size = ir::GetValueSizeByte(type);
     const bool encodable = pair
-            ? __ IsImmLSPair(plan->second.offset, access_size)
-            : __ IsImmLSUnscaled(plan->second.offset) ||
-                      __ IsImmLSScaled(plan->second.offset, access_size);
+            ? __ IsImmLSPair(recipe->second.offset, access_size)
+            : __ IsImmLSUnscaled(recipe->second.offset) ||
+                      __ IsImmLSScaled(recipe->second.offset, access_size);
     if (encodable) {
-        return MemOperand{plan->second.base, plan->second.offset};
+        return MemOperand{recipe->second.base, recipe->second.offset};
     }
     const auto address_reg = context.GetTmpX();
-    if (plan->second.offset > 0 && __ IsImmAddSub(plan->second.offset)) {
-        __ Add(address_reg, plan->second.base, plan->second.offset);
-    } else if (plan->second.offset < 0 &&
-               __ IsImmAddSub(-plan->second.offset)) {
-        __ Sub(address_reg, plan->second.base, -plan->second.offset);
+    if (recipe->second.offset > 0 && __ IsImmAddSub(recipe->second.offset)) {
+        __ Add(address_reg, recipe->second.base, recipe->second.offset);
+    } else if (recipe->second.offset < 0 &&
+               __ IsImmAddSub(-recipe->second.offset)) {
+        __ Sub(address_reg, recipe->second.base, -recipe->second.offset);
     } else {
-        __ Mov(address_reg, plan->second.offset);
-        __ Add(address_reg, plan->second.base, address_reg);
+        __ Mov(address_reg, recipe->second.offset);
+        __ Add(address_reg, recipe->second.base, address_reg);
     }
     return MemOperand{address_reg};
 }
@@ -156,7 +156,7 @@ JitTranslator::MatchMemoryUpdate(ir::Inst* update) const {
 
 std::optional<JitTranslator::MemoryUpdate>
 JitTranslator::MatchPreIndexMemoryUpdate(ir::Inst* update) const {
-    if (use_memory_base) {
+    if (memory_state.use_memory_base) {
         return std::nullopt;
     }
     return MatchMemoryUpdate(update);
@@ -164,7 +164,7 @@ JitTranslator::MatchPreIndexMemoryUpdate(ir::Inst* update) const {
 
 std::optional<JitTranslator::MemoryUpdate>
 JitTranslator::MatchBiasedMemoryUpdate(ir::Inst* update) const {
-    if (!use_memory_base) {
+    if (!memory_state.use_memory_base) {
         return std::nullopt;
     }
     auto match = MatchMemoryUpdate(update);
@@ -186,12 +186,12 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
         if (ir_op.GetLeft().IsImm()) {
             auto imm = ir_op.GetLeft().imm.Get();
             auto imm_signed = ir_op.GetLeft().imm.GetSigned();
-            if (use_memory_base) {
+            if (memory_state.use_memory_base) {
                 // Absolute guest address: materialize it, then apply the pt
                 // bias (guest addr + pt = host addr). With a bounded guest
                 // window the truncation happens at translation time — the
                 // immediate is a compile-time constant, so it is free.
-                __ Mov(mem_scratch, guest_addr_mask ? (imm & guest_addr_mask) : imm);
+                __ Mov(mem_scratch, memory_state.guest_addr_mask ? (imm & memory_state.guest_addr_mask) : imm);
                 if (atomic) {
                     __ Add(mem_scratch, mem_scratch, pt);
                     return MemOperand{mem_scratch};
@@ -210,12 +210,12 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             // Match Case: load store post/index & push/pop
             auto addr_value = ir_op.GetLeft().value;
             if (addr_value.Def()) {
-                if (auto rematerialized = TryEmitSpilledMemoryOperand(
+                if (auto recomputed = TryEmitSpilledMemoryOperand(
                             addr_value.Def(), type, pair, atomic, memory_inst)) {
-                    return *rematerialized;
+                    return *recomputed;
                 }
             }
-            if (!use_memory_base &&
+            if (!memory_state.use_memory_base &&
                 context.IsConstAddressCached(addr_value.Id())) {
                 const auto offset = CachedConstAddressOffset(addr_value.Def());
                 ASSERT_MSG(offset,
@@ -224,7 +224,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                 return MemOperand{context.R(addr_value), static_cast<s64>(*offset)};
             }
             if (allow_writeback && !atomic) {
-                if (use_memory_base) {
+                if (memory_state.use_memory_base) {
                     auto update = MatchBiasedMemoryUpdate(addr_value.Def());
                     if (update && update->memory == memory_inst) {
                         return BiasMem(update->base, update->offset, false);
@@ -236,7 +236,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                     }
                 }
             }
-            if ((mem_narrow_fuse || addr_ea_tie) &&
+            if ((memory_state.mem_narrow_fuse || memory_state.addr_ea_tie) &&
                 addr_value.Def()->GetOp() == ir::OpCode::GetOperand &&
                 addr_value.Def()->GetUses() == 1) {
                 auto source_operand = addr_value.Def()->GetArg<ir::Operand>(0);
@@ -250,7 +250,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                     // extending the source SSA's lifetime in the emitter.
                     disable_instructions.set(addr_value.Def()->Id());
                     auto address_reg = context.R(addr_value, true);
-                    if (use_memory_base) {
+                    if (memory_state.use_memory_base) {
                         return BiasMem(address_reg, atomic);
                     }
                     return MemOperand{address_reg};
@@ -261,7 +261,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             // With the pt bias active, post-index forms cannot express
             // [base + pt] (+writeback), so the folding is disabled and the
             // address update executes as a normal Add/Sub.
-            if (allow_writeback && !use_memory_base && addr_value.Def()->GetUses() == 2) {
+            if (allow_writeback && !memory_state.use_memory_base && addr_value.Def()->GetUses() == 2) {
                 int search_times{0};
                 for (auto itr = instr_list.iterator_to(*instr);
                      itr != instr_list.end() && search_times < 3;
@@ -309,7 +309,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                     }
                 }
             }
-            if (use_memory_base) {
+            if (memory_state.use_memory_base) {
                 auto pinned = ResolvePinnedGPRValue(addr_value);
                 return BiasMem(pinned ? Register{*pinned}
                                       : context.R(addr_value),
@@ -337,17 +337,17 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             auto imm = right.imm.GetSigned();
             bool can_imm = pair ? __ IsImmLSPair(imm, access_size)
                                 : __ IsImmLSUnscaled(imm);
-            if (!use_memory_base && !pair && ir_op.GetOp() == ir::OperandOp::Plus) {
+            if (!memory_state.use_memory_base && !pair && ir_op.GetOp() == ir::OperandOp::Plus) {
                 can_imm |= __ IsImmLSScaled(imm, access_size);
             }
             if (can_imm) {
                 if (ir_op.GetOp() == ir::OperandOp::Plus) {
-                    if (use_memory_base) {
+                    if (memory_state.use_memory_base) {
                         return BiasMem(left_reg, imm, atomic);
                     }
                     return MemOperand{left_reg, imm};
                 } else if (ir_op.GetOp() == ir::OperandOp::LSL) {
-                    if (use_memory_base) {
+                    if (memory_state.use_memory_base) {
                         __ Lsl(mem_scratch, left_reg, imm);
                         return BiasMem(mem_scratch, atomic);
                     }
@@ -355,7 +355,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                     __ Lsl(tmp, left_reg, imm);
                     return MemOperand{tmp};
                 } else if (ir_op.GetOp() == ir::OperandOp::LSR) {
-                    if (use_memory_base) {
+                    if (memory_state.use_memory_base) {
                         __ Lsr(mem_scratch, left_reg, imm);
                         return BiasMem(mem_scratch, atomic);
                     }
@@ -366,7 +366,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                     PANIC();
                 }
             } else {
-                if (use_memory_base) {
+                if (memory_state.use_memory_base) {
                     __ Mov(mem_scratch, imm);
                     if (ir_op.GetOp() == ir::OperandOp::Plus) {
                         __ Add(mem_scratch, left_reg, mem_scratch);
@@ -396,8 +396,8 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             auto right_reg = pinned ? Register{*pinned}
                                     : context.R(right.value, true);
             if (ir_op.GetOp() == ir::OperandOp::Plus) {
-                if (use_memory_base) {
-                    if (structured_guest_ea && window_uxtw) {
+                if (memory_state.use_memory_base) {
+                    if (structured_guest_ea && memory_state.window_uxtw) {
                         // Compute the guest EA in W form before applying the
                         // host bias: pt + ((base + index) mod 2^32).
                         // This deliberately is not a prebiased base.
@@ -409,21 +409,21 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                 }
                 return MemOperand{left_reg, right_reg};
             } else if (ir_op.GetOp() == ir::OperandOp::LSL) {
-                if (use_memory_base) {
+                if (memory_state.use_memory_base) {
                     __ Lsl(mem_scratch, left_reg, right_reg);
                     return BiasMem(mem_scratch, atomic);
                 }
                 return MemOperand{left_reg, right_reg, LSL};
             } else if (ir_op.GetOp() == ir::OperandOp::LSR) {
-                if (use_memory_base) {
+                if (memory_state.use_memory_base) {
                     __ Lsr(mem_scratch, left_reg, right_reg);
                     return BiasMem(mem_scratch, atomic);
                 }
                 return MemOperand{left_reg, right_reg, LSR};
             } else if (ir_op.GetOp() == ir::OperandOp::PlusExt) {
                 auto shift_amount = ir_op.GetOp().shift_ext;
-                if (structured_guest_ea && use_memory_base) {
-                    if (window_uxtw) {
+                if (structured_guest_ea && memory_state.use_memory_base) {
+                    if (memory_state.window_uxtw) {
                         // Keep base/index/scale in one wrapping W add.
                         // BiasMem supplies the final pt + Wguest, UXTW step.
                         __ Add(mem_scratch.W(),
@@ -435,11 +435,11 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                     return BiasMem(mem_scratch, atomic);
                 }
                 const bool ea_scaled_offset =
-                        addr_ea_tie && !use_memory_base && shift_amount < 4 &&
+                        memory_state.addr_ea_tie && !memory_state.use_memory_base && shift_amount < 4 &&
                         (u64{1} << shift_amount) == access_size;
                 if (ea_scaled_offset ||
                     ir::GetValueSizeByte(right.value.Type()) == shift_amount) {
-                    if (use_memory_base) {
+                    if (memory_state.use_memory_base) {
                         __ Add(mem_scratch,
                                left_reg,
                                Operand{right_reg, LSL, shift_amount});
@@ -447,7 +447,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                     }
                     return MemOperand{left_reg, right_reg, LSL, shift_amount};
                 } else {
-                    if (use_memory_base) {
+                    if (memory_state.use_memory_base) {
                         __ Lsl(mem_scratch, right_reg, shift_amount);
                         __ Add(mem_scratch, left_reg, mem_scratch);
                         return BiasMem(mem_scratch, atomic);

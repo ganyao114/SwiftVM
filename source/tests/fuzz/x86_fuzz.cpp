@@ -785,13 +785,13 @@ struct FuzzEnv {
                                         reinterpret_cast<u8*>(host_mem) + kDataOff + 0x4000));
 
         ctx->rip.qword = code_addr;
-        // snapshot initial registers for failure diagnosis
+        // capture initial registers for failure diagnosis
         std::array<u64, 16> init_regs{};
         for (int r = 0; r < 16; r++) {
             init_regs[r] = ctx->regs[r].qword;
         }
         // The x87 family keeps its two source operands at these fixed offsets.
-        // Snapshot all ten ext80 bytes before execution so a host-only Unicorn
+        // Capture all ten ext80 bytes before execution so a host-only Unicorn
         // mismatch always reports the exact input that produced it.
         u64 x87_a_significand = 0;
         u64 x87_b_significand = 0;
@@ -1729,7 +1729,7 @@ TEST_CASE("Fuzz x86 jrcxz leave") {
         // The lahf capture runs in a successor block of the conditional jump;
         // CF there is affected by the known cross-block carry-polarity gap
         // (the backend merges NZCV wholesale at block ends, so the frontend
-        // cannot normalize the stored carry's polarity before linking).
+        // cannot adjust the stored carry's polarity before linking).
         env.RunIteration(b.c, FlagMask{u32(kAhAll & ~kAhAF & ~kAhCF), true}, "jrcxz");
     }
     REQUIRE(env.failures == 0);
@@ -2800,7 +2800,7 @@ TEST_CASE("Fuzz x86 sse float edge") {
             // while real x86 chooses operand 1 (for example mulss
             // 0x7FA12345,0x7FC12345 -> 0x7FE12345).  Keep single-NaN
             // coverage but avoid that known three-way arbitration mismatch in
-            // every lane of the fully materialized 128-bit operands.
+            // every lane of the fully computed 128-bit operands.
             auto has_dual_nan = [&] {
                 for (size_t lane = 0; lane < 4; ++lane) {
                     if (is_nan32(av[lane]) && is_nan32(cv[lane]))
@@ -3029,7 +3029,7 @@ TEST_CASE("Fuzz x86 x87") {
     const auto clear_env_pointer_fields = [](CodeBuf& b, s32 displacement) {
         MemOp field{};
         // SwiftVM intentionally stores but does not update FIP/FDP/FOP yet.
-        // Normalize those documented approximation fields after FNSTENV so
+        // Adjust those documented approximation fields after FNSTENV so
         // the differential continues to compare FCW/FSW/full-FTW exactly.
         field.disp = displacement + 12;  // FIP
         EmitMovMemImm(b, 32, field, 0);
@@ -3137,7 +3137,7 @@ TEST_CASE("Fuzz x86 x87") {
                 // C3/C2/C0 -> ZF/PF/CF through the canonical FNSTSW AX+SAHF
                 // sequence used by compiled x87 code.  Unicorn/QEMU omits IE
                 // for FCOM with a QNaN and miscompares equal ext80 denormals as
-                // greater, unlike real x86 (Rosetta probes: FCOM QNaN,+0 ->
+                // greater, unlike real x86 (Rosetta checks: FCOM QNaN,+0 ->
                 // FSW 0x7501; minDn,minDn and midDn,midDn -> FSW 0x7002).
                 // Keep the three-way comparison on cases where Unicorn is a
                 // usable oracle; directed tests below retain exact NaN and
@@ -3258,7 +3258,7 @@ TEST_CASE("Fuzz x86 x87") {
                 // narrow to binary64, so the ext80 store is bit-exact here.
                 // NaNs are directed-only because QEMU truncates their payload
                 // during its internal narrowing while real x87 preserves it.
-                // A 20-value Rosetta probe measured real-FSIN deltas from 33
+                // A 20-value Rosetta check measured real-FSIN deltas from 33
                 // through 1,607,041,691 ext80 significand ULPs versus
                 // sin(double), so this is explicitly an oracle-compatibility
                 // comparison rather than a claim of hardware accuracy.
@@ -5785,14 +5785,14 @@ TEST_CASE("x87 directed edge semantics") {
     const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
     const std::string old_jit_value = old_jit ? old_jit : "";
-    struct X87BoundarySnapshot {
+    struct X87BoundaryCapture {
         u64 significand;
         u16 sign_exp;
         u16 fsw;
         u16 ftw;
     };
-    std::vector<X87BoundarySnapshot> f32_sub_expected;
-    std::vector<X87BoundarySnapshot> ext80_div_expected;
+    std::vector<X87BoundaryCapture> f32_sub_expected;
+    std::vector<X87BoundaryCapture> ext80_div_expected;
 
     // Run the exact interpreter first so the opt-in JIT boundary sweeps below
     // can use it as their local SoftFloat oracle without Unicorn.
@@ -5891,7 +5891,7 @@ TEST_CASE("x87 directed edge semantics") {
             REQUIRE((ctx.r11.qword & 0xFF) == 1);
             REQUIRE((ctx.r12.qword & 0xFF) == 1);
             // Real x86 distinguishes FCOM from FUCOM for quiet NaNs: FCOM
-            // raises invalid even for a QNaN.  A Rosetta real-x86 probe of
+            // raises invalid even for a QNaN.  A Rosetta real-x86 check of
             // FCOM QNaN,+0 reports FSW=0x7501; the ordered peer does not affect
             // that NaN rule, while Unicorn/QEMU incorrectly omits IE.
             REQUIRE((ctx.rax.qword & 0xFFFF) == 0x7501);
@@ -6512,7 +6512,7 @@ TEST_CASE("x87 directed edge semantics") {
         }
 
         // Memory denormals stay on the exact helper. The current architectural
-        // helper normalizes m32/m64 denormals while loading and therefore does
+        // helper adjusts m32/m64 denormals while loading and therefore does
         // not expose a DE bit for these memory forms; the opt-in path must not
         // invent a different status result.
         for (const bool wide : {false, true}) {
@@ -6857,7 +6857,7 @@ TEST_CASE("x87 directed edge semantics") {
             emit_mem(b, 0xDF, 5, 0x500);
             emit_mem(b, 0xDB, 5, 0x508);
             emit_reg(b, 0xD9, remainder_opcode);
-            emit_reg(b, 0xD9, 0xC0);      // FLD ST(0), snapshot partial result
+            emit_reg(b, 0xD9, 0xC0);      // FLD ST(0), capture partial result
             emit_mem(b, 0xDB, 7, 0x530);
             emit_reg(b, 0xDF, 0xE0);
             EmitMovRegReg(b, 16, kR10, kRax);
@@ -6941,7 +6941,7 @@ TEST_CASE("x87 directed edge semantics") {
             REQUIRE((ctx.x87_fsw & 0x0028) == 0x0028);  // OE + PE
         }
 
-        // FXTRACT normalizes an ext80 denormal exactly.  Final ST0 is the
+        // FXTRACT adjusts an ext80 denormal exactly.  Final ST0 is the
         // signed significand and ST1 is the unbiased exponent.
         {
             write_ext(0x540, 1, 0);
@@ -6967,7 +6967,7 @@ TEST_CASE("x87 directed edge semantics") {
             emit_reg(b, 0xDB, 0xE3);
             emit_mem(b, 0xDB, 5, 0x540);
             emit_reg(b, 0xD9, 0xF4);
-            emit_mem(b, 0xDB, 7, 0x560);  // normalized significand
+            emit_mem(b, 0xDB, 7, 0x560);  // adjusted significand
             emit_mem(b, 0xDB, 2, 0x57C);  // FIST exponent as m32
             const auto ctx = run(std::move(b));
             REQUIRE(*reinterpret_cast<u64*>(data + 0x560) ==
@@ -7071,7 +7071,7 @@ TEST_CASE("x87 directed edge semantics") {
         }
 
         {
-            // One of the Rosetta probe's double-rounding witnesses: real
+            // One of the Rosetta check's double-rounding witnesses: real
             // ext80 retains 0x...4bf7, while a binary64 multiply would round
             // to 0x...4800 before expanding back to ext80.  The reduced
             // register-arithmetic emitter that produced the second value was
@@ -7222,7 +7222,7 @@ TEST_CASE("x87 directed edge semantics") {
                     emit_reg(b, 0xDE, 0xE9);      // FSUBRP ST(1), ST(0)
                     emit_mem(b, 0xDB, 7, 0x690);
                     const auto ctx = run(std::move(b));
-                    const X87BoundarySnapshot actual{
+                    const X87BoundaryCapture actual{
                             *reinterpret_cast<u64*>(data + 0x690),
                             *reinterpret_cast<u16*>(data + 0x698),
                             ctx.x87_fsw,
@@ -7272,7 +7272,7 @@ TEST_CASE("x87 directed edge semantics") {
                     emit_reg(b, 0xDE, 0xF9);      // FDIVRP ST(1), ST(0)
                     emit_mem(b, 0xDB, 7, 0x6C0);
                     const auto ctx = run(std::move(b));
-                    const X87BoundarySnapshot actual{
+                    const X87BoundaryCapture actual{
                             *reinterpret_cast<u64*>(data + 0x6C0),
                             *reinterpret_cast<u16*>(data + 0x6C8),
                             ctx.x87_fsw,
@@ -7311,7 +7311,7 @@ TEST_CASE("SSE batch B JIT interpreter differential edge sweep") {
         u8 of{};
     };
 
-    // Construct both backends up front. X86Instance snapshots SVM_ENABLE_JIT
+    // Construct both backends up front. X86Instance captures SVM_ENABLE_JIT
     // at construction, so this compares identical guest blocks without
     // involving Unicorn or relying on host floating-point behavior.
     const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
@@ -7348,7 +7348,7 @@ TEST_CASE("SSE batch B JIT interpreter differential edge sweep") {
     size_t comparisons = 0;
     int divergences = 0;
     std::unordered_map<const CodeBuf*, u64> code_addresses;
-    std::unordered_map<const CodeBuf*, std::vector<u8>> code_snapshots;
+    std::unordered_map<const CodeBuf*, std::vector<u8>> code_captures;
 
     const auto run = [&](X86Core* core,
                          ThreadContext64* ctx,
@@ -7380,13 +7380,13 @@ TEST_CASE("SSE batch B JIT interpreter differential edge sweep") {
                                    u64 r10,
                                    bool compare_flags = false) {
         ++comparisons;
-        const std::vector<u8> snapshot(code.c.begin(), code.c.end());
-        auto snapshot_it = code_snapshots.find(&code);
-        if (snapshot_it == code_snapshots.end() || snapshot_it->second != snapshot) {
+        const std::vector<u8> capture(code.c.begin(), code.c.end());
+        auto capture_it = code_captures.find(&code);
+        if (capture_it == code_captures.end() || capture_it->second != capture) {
             const u64 new_code_addr = arena_base + code_cursor++ * 0x100;
             std::memcpy(reinterpret_cast<void*>(new_code_addr), code.c.data(), code.c.size());
             code_addresses[&code] = new_code_addr;
-            code_snapshots[&code] = snapshot;
+            code_captures[&code] = capture;
         }
         const u64 code_addr = code_addresses.at(&code);
         const Result jit = run(jit_core, jit_ctx, code_addr, lhs, rhs, r10);
@@ -8622,7 +8622,7 @@ TEST_CASE("x86 avx vex128 directed C3 zeroing and source order") {
     MemOp mout{};
     mout.disp = 0x140;
 
-    // X86Instance snapshots SVM_ENABLE_JIT at construction, so both backends
+    // X86Instance captures SVM_ENABLE_JIT at construction, so both backends
     // have to be built here rather than selected per run.
     const char* old_jit = swift::runtime::GetRawSvmConfigEnvForTest("SVM_ENABLE_JIT");
     const bool had_old_jit = old_jit != nullptr;
@@ -9491,7 +9491,7 @@ TEST_CASE("AVX VEX.128 packed integer directed edge vectors") {
 
     auto* jit_core = X86Core::Make(jit_instance);
     auto* interp_core = X86Core::Make(interp_instance);
-    struct Snapshot {
+    struct Capture {
         Vec128 x0{};
         Vec128 x1{};
         Vec128 x2{};
@@ -9509,7 +9509,7 @@ TEST_CASE("AVX VEX.128 packed integer directed edge vectors") {
         ctx.r13.qword = data_addr;
         ctx.rsp.qword = stack_addr;
         const auto exit = core->Run();
-        Snapshot out;
+        Capture out;
         out.clean_exit = exit == swift::translator::None;
         std::memcpy(out.x0.data(), reinterpret_cast<void*>(data_addr + o0.disp), 16);
         std::memcpy(out.x1.data(), reinterpret_cast<void*>(data_addr + o1.disp), 16);
@@ -9559,8 +9559,8 @@ TEST_CASE("AVX VEX.128 packed integer directed edge vectors") {
                 const Vec128 want2 = form.dst == 2 ? result : bv;
 
                 ++comparisons;
-                const Snapshot jit = run(jit_core, code_addr, a, bv);
-                const Snapshot interp = run(interp_core, code_addr, a, bv);
+                const Capture jit = run(jit_core, code_addr, a, bv);
+                const Capture interp = run(interp_core, code_addr, a, bv);
                 if (!jit.clean_exit || !interp.clean_exit) {
                     if (bad_exits++ < 4) {
                         problems.push_back(fmt::format(
@@ -9579,7 +9579,7 @@ TEST_CASE("AVX VEX.128 packed integer directed edge vectors") {
                                 hex(jit.x2), hex(interp.x0), hex(interp.x1), hex(interp.x2)));
                     }
                 }
-                const std::pair<const char*, const Snapshot*> backends[] = {{"jit", &jit},
+                const std::pair<const char*, const Capture*> backends[] = {{"jit", &jit},
                                                                            {"interp", &interp}};
                 for (const auto& [backend, got] : backends) {
                     if (got->x0 == want0 && got->x1 == want1 && got->x2 == want2) {
@@ -9888,7 +9888,7 @@ TEST_CASE("x86 avx256 vs rosetta reference") {
     // Runs on both backends, checks they agree, and returns the JIT result.
     // `want` is the Rosetta reference; `where` says where to read the answer.
     enum class Where { Ymm0, Memory, Rax32 };
-    // Two forms are KNOWN BROKEN, both because of the bundled distorm snapshot
+    // Two forms are KNOWN BROKEN, both because of the bundled distorm capture
     // rather than decoder_avx.cc.  They are pinned rather than silenced: the
     // pins encode the diagnosis, so fixing distorm turns this case red and
     // whoever fixes it has to come here and delete the exemption.
@@ -9911,7 +9911,7 @@ TEST_CASE("x86 avx256 vs rosetta reference") {
     //     noting "it disagrees".
     //
     //   KnownNotDecoded -- VBROADCASTSS with a REGISTER source.  That shape is
-    //     AVX2; this distorm snapshot only has the AVX1 m32 form, so
+    //     AVX2; this distorm capture only has the AVX1 m32 form, so
     //     C4 E2 7D 18 C1 comes back FLAG_NOT_DECODABLE and SwiftVM correctly
     //     declines the block (FALLBACK) instead of mis-executing it.  This is a
     //     coverage gap, not a wrong answer.  The m32 shape is decoded and is
@@ -10053,7 +10053,7 @@ TEST_CASE("x86 avx256 vs rosetta reference") {
         }
 
         // Data movement: load, store, and (where the encoding permits it) the
-        // register-register shape.  All three are identity on the data; what
+        // register-register shape.  All three are direct on the data; what
         // differs is the decoder path each takes.
         for (const auto& op : kMov) {
             if (std::strcmp(op.name, ref.name) != 0) {

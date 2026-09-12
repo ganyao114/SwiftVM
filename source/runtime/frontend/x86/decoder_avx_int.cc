@@ -333,7 +333,7 @@ ir::Value OpAlignr(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) 
 // which is deliberately NOT what Rosetta 2 does: Rosetta truncates the
 // VPSLLVQ / VPSRLVQ count to 32 bits and shifts by 1 for a count of
 // 0x0000000100000001 where hardware produces zero.  avx_int_test.cpp excludes
-// the two affected reference rows and records the probe that established it.
+// the two affected reference rows and records the check that established it.
 ir::Value OpShiftVar(ir::Assembler* as, ir::Value a, ir::Value counts, u32 param, u32) {
     const u32 lane = Lane(param);
     const u32 kind = Flag(param);  // 0 = left, 1 = logical right, 2 = arithmetic right
@@ -348,9 +348,9 @@ ir::Value OpShiftVar(ir::Assembler* as, ir::Value a, ir::Value counts, u32 param
     for (u32 bit = 0; (u32(1) << bit) < lane; ++bit) {
         const u64 step = u64(1) << bit;
         const u64 rep = Replicate(lane, step);
-        auto probe = VecConst(as, rep, rep);
-        auto selected = as->VecCmpEq(as->VecAnd(effective, probe).SetType(ir::ValueType::V128),
-                                     probe,
+        auto check = VecConst(as, rep, rep);
+        auto selected = as->VecCmpEq(as->VecAnd(effective, check).SetType(ir::ValueType::V128),
+                                     check,
                                      lanes)
                                 .SetType(ir::ValueType::V128);
         auto amount = as->LoadImm(ir::Imm(step)).SetType(ir::ValueType::U64);

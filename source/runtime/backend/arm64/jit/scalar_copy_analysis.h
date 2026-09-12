@@ -6,7 +6,7 @@
 
 namespace swift::runtime::backend::arm64 {
 
-class ScalarIdentityAnalysis {
+class ScalarCopyAnalysis {
 public:
     void Analyze(ir::Block* block);
     [[nodiscard]] bool IsSelfXor(ir::Inst* inst) const;

@@ -91,7 +91,7 @@ void ResidentScalarFPRAnalysis::AnalyzeConversions(ir::Block* block) {
                 export_result = false;
             }
             conversions.emplace(producer,
-                                ConversionPlan{
+                                ConversionRecipe{
                                         .target = static_cast<u16>(target),
                                         .export_result = export_result,
                                 });
@@ -255,7 +255,7 @@ bool ResidentScalarFPRAnalysis::TryMapConversionStore(ir::Block* block,
     return false;
 }
 
-const ResidentScalarFPRAnalysis::ConversionPlan* ResidentScalarFPRAnalysis::FindConversion(
+const ResidentScalarFPRAnalysis::ConversionRecipe* ResidentScalarFPRAnalysis::FindConversion(
         ir::Inst* conversion) const {
     const auto it = conversions.find(conversion);
     return it == conversions.end() ? nullptr : &it->second;

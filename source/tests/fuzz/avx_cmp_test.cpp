@@ -37,7 +37,7 @@
 // signalling variants differ in the RESULT (rather than only in MXCSR) decides
 // whether the IR needs a third semantic dimension.  Measured: imm8 `i` and
 // `i + 16` gave BIT-IDENTICAL results in all 2112 comparable rows here, while
-// a separate probe with a QNaN operand and nothing else showed MXCSR.IE
+// a separate check with a QNaN operand and nothing else showed MXCSR.IE
 // following the SDM's _OS/_OQ classification exactly (predicates 1,2,5,6,9,10,
 // 13,14 set IE; 0,3,4,7,8,11,12,15 did not; 16..31 inverted that).  So the
 // distinction is exception-only, SwiftVM models no FP exception state, and the

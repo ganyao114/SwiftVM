@@ -185,7 +185,7 @@ TEST_CASE("a published full-width value exposes its pinned low W view") {
     REQUIRE(Count(lines, "subs w", "w22, #0x8") == 1);
 }
 
-TEST_CASE("overwriting a full-width publication preserves its low snapshot") {
+TEST_CASE("overwriting a full-width publication preserves its low capture") {
     const auto lines = EmitWidthFact(PinnedWidthShape::PublishedLow32, true);
     REQUIRE(Count(lines, "lsr w", "#0") == 1);
     REQUIRE(Count(lines, "subs w", "w22, #0x8") == 0);

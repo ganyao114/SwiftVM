@@ -312,7 +312,7 @@ bool WriteArtifact(const std::string& guest_elf_path,
 
     // --- copy every original section, in order ----------------------------
     // Index 0 is the null section in both files; ELFIO's create() also made
-    // .shstrtab, so the mapping is not the identity and every st_shndx must
+    // .shstrtab, so the mapping is not the direct and every st_shndx must
     // be translated through `shndx_map`.
     std::vector<Elf_Half> shndx_map(reader.sections.size(), SHN_UNDEF);
     std::vector<section*> copied(reader.sections.size(), nullptr);

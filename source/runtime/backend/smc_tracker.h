@@ -76,7 +76,7 @@ public:
     using RuntimeToken = std::shared_ptr<RuntimeEpoch>;
 
     // guest_bias: guest->host address bias (host = guest + bias), from
-    // Config::memory_base (0 = identity mapping).
+    // Config::memory_base (0 = direct mapping).
     // guest_addr_mask: bounded-guest-window mask (see Config), 0 = disabled.
     explicit SmcTracker(u64 guest_bias,
                         u64 guest_addr_mask = 0,
@@ -208,7 +208,7 @@ private:
     // It was unreachable. CloseWriteWindow only reaches the limit check after
     // TakeDirtyNodes has returned an empty batch, and an empty batch implies
     // every dirty page's node list is empty, so the `rec.nodes.empty()` branch
-    // always continued first. Measured with a temporary probe over smc,
+    // always continued first. Measured with a temporary check over smc,
     // clone_smc_mt (x5) and smc_mt_stress (x8): nodes_nonempty was 0 in every
     // run, nodes_empty equalled the dirty-page iteration count exactly, and
     // `invalidations > 8` was true on 504..1418 of those iterations per run
@@ -269,6 +269,8 @@ private:
     const u64 page_size_;
     const u64 page_mask_;
     const bool dirty_hint_enabled_;
+    const bool debug_enabled_;
+    std::atomic<uint32_t> fault_debug_count_{0};
     const bool close_profile_enabled_;
     const bool exit_latch_enabled_;
     std::map<VAddr, PageRecord> pages_{};

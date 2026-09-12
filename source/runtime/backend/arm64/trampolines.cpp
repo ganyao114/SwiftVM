@@ -1,3 +1,4 @@
+#include "base/logging.h"
 //
 // Created by 甘尧 on 2024/4/10.
 //
@@ -83,7 +84,7 @@ void TrampolinesArm64::Build() {
     pair_buffer->Flush();
     pair_call = reinterpret_cast<PairCall>(pair_buffer->exec_data);
     if (GetSvmConfig().exec_map_is_set && GetSvmConfig().exec_map != "0") {
-        std::fprintf(stderr,
+        SVM_DIAG_PRINT(Runtime,
                      "[svm-exec-map] trampoline=%p..%p entry=%p return=%p call=%p size=%zu\n",
                      static_cast<void*>(code_buffer->exec_data),
                      static_cast<void*>(code_buffer->exec_data + buffer_size),
@@ -186,7 +187,7 @@ void TrampolinesArm64::Build() {
         const bool pin_ext_level3 =
                 static_gprs.Get(6) && static_gprs.Get(7) &&
                 static_gprs.Get(8) && static_gprs.Get(9);
-        std::fprintf(stderr,
+        SVM_DIAG_PRINT(Runtime,
                      "[svm-reg-mask] memory_base=%d page_table=%d "
                      "x24_reserved=%d x10_reserved=%d dispatcher_loc=x%d "
                      "pin_ext=%d pin_ext_level2=%d x0_x5_reserved=%d "
@@ -247,7 +248,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     // guest execution), so the dispatcher's scratch "current location" value
     // must live elsewhere. Levels 0-2 retain ip6/x9 byte-for-byte; level 3 pins
     // guest R15 there, so use dispatcher-only x13 instead. Dynamic values are
-    // dead whenever control has returned to this dispatcher. Identity mode
+    // dead whenever control has returned to this dispatcher. Direct mode
     // retains the historical x24 (loc).
     const bool has_pt = config.page_table || config.memory_base;
     const bool scalar_insert = config.sse_scalar_insert;
@@ -268,7 +269,7 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     for (const auto& desc : config.buffers_static_alloc) {
         caller_saved_static_pins |= !desc.is_float && desc.reg <= 5;
     }
-    // The historical dispatcher used w0 for the halt-reason probe and cache
+    // The historical dispatcher used w0 for the halt-reason check and cache
     // miss value. At pin level 2, x0 is guest RSI and must survive until the
     // static-uniform spill (or the next linked block), so use the dispatcher
     // scratch x11 instead. Keep OFF/level-1 byte-identical.
@@ -368,6 +369,11 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Ldr(loc_reg, MemOperand(state, state_offset_current_loc));
     __ Ldr(l1_cache, MemOperand(state, state_offset_indirect_l1_code_cache));
     __ Bfi(l1_start, loc_reg, 4, L1_CODE_CACHE_BITS);
+    // The shared populate below uses post-index addressing ([l1_start, -0x10]
+    // stores into the checked slot). Stepping past the slot here restores that
+    // invariant so the sentinel entry is overwritten in place; without it the
+    // store lands one slot early and the faulting sentinel survives.
+    __ Add(l1_start, l1_start, 0x10);
     __ Bind(&query_step_2);
     __ Lsr(loc_index, loc_reg, 2);
     __ Eor(l2_index, loc_index, Operand(loc_index, LSR, L2_CODE_CACHE_BITS));

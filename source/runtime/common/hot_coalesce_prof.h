@@ -1,4 +1,4 @@
-// Default-off execution-shape probe for W71.
+// Default-off execution-shape check for W71.
 //
 // Generated code writes only to a Runtime-private counter array. Runtime
 // destruction merges those arrays into process counters with relaxed atomics,
@@ -40,7 +40,7 @@ constexpr u32 kHotCoalesceMaxLinkTargets = 4;
 // current packed-flags operation exists, which runtime edge will consume it,
 // and the conservative instruction delta of the proposed representation.  No
 // counter in this family is emitted into guest code; dynamic weighting reuses
-// the pre-existing W71 block-entry profile when that independent probe is on.
+// the pre-existing W71 block-entry profile when that independent check is on.
 enum class FlagsRegsAuditMergeCause : u8 {
     AdvancePC,
     TerminalInternal,
@@ -104,9 +104,9 @@ struct HotCoalesceUnitStatic {
     u32 move_bridges{};
     u32 nan_guard_instructions{};
     u32 helper_calls{};
-    u32 helper_snapshot_instructions{};
-    u32 helper_snapshot_code_bytes{};
-    u32 helper_snapshot_memory_bytes{};
+    u32 helper_capture_instructions{};
+    u32 helper_capture_code_bytes{};
+    u32 helper_capture_memory_bytes{};
     std::array<VAddr, kHotCoalesceMaxLinkTargets> link_targets{};
     u8 link_target_count{};
     u8 link_target_overflow{};

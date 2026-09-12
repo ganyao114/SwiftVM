@@ -32,7 +32,7 @@
 
 出处为 `docs/w66-move-attribution-audit.md` §1–§3。该报告已经证明 W-α 的 guard 是 block-local 的：入口没有可证明的 home history 时，Get/Set 只能保守发 transport。
 
-Linux identity 的 Phase C 又排除了“只是池太小”这一单因解释：
+Linux direct 的 Phase C 又排除了“只是池太小”这一单因解释：
 
 | 语料（region 默认态） | pool histogram | 新 spill unit | move 变化 |
 |---|---:|---:|---:|
@@ -224,7 +224,7 @@ observer/faultable op  // 看到新 H
 allocate current fail-closed baseline
   -> x18 conditional rerun until pool graph stable
   -> Verify(baseline)
-  -> clone baseline into shadow plan
+  -> clone baseline into shadow recipe
   -> build HomeTransaction + relocation candidates
   -> replay dirty/scratch masks
   -> Verify(candidate)
@@ -333,7 +333,7 @@ source OUT contract 与 target IN contract逐项相等才可链 fast entry；否
 
 ### 6.1 module/cache/SMC
 
-- Config hash 已包含 `buffers_static_alloc`；module 的 resolved FeatureSet 也进入 module cache identity。P3 仍需为 `HomeContract`/fast-entry layout 增加 cache format 字段，而不是假设现有 feature hash足够。
+- Config hash 已包含 `buffers_static_alloc`；module 的 resolved FeatureSet 也进入 module cache direct。P3 仍需为 `HomeContract`/fast-entry layout 增加 cache format 字段，而不是假设现有 feature hash足够。
 - disk-cache revive 必须先发布 canonical entry，再重建经过校验的 fast-entry offset/link metadata；旧格式拒 revive，建议 bump cache format。
 - SMC invalidation 同时撤销 canonical/fast 两种 link，沿既有 owner epoch/QSBR 回收；新链接只能指向当前 epoch。
 - 跨 module 只有 ABI id 与 FeatureSet hash 都精确一致才允许 fast link；首版可更保守地只允许 same-module。B 类 module override 不得通过 fast link 泄漏到另一 module。
@@ -398,7 +398,7 @@ P3 在 contract/cache 还未固化前应按进程级 A 类看待；证明 same-m
 
 ### 8.1 P1 门
 
-全部以 Linux identity、region 默认态、RE=0 entry 权重、禁 EXEC_PROF：
+全部以 Linux direct、region 默认态、RE=0 entry 权重、禁 EXEC_PROF：
 
 1. `new spill units/defs/loads/stores == 0`，动态 spill 严格零增；
 2. helper caller-save、scratch reserve ladder、host bytes均不增；
@@ -433,7 +433,7 @@ P3 在 contract/cache 还未固化前应按进程级 A 类看待；证明 same-m
 P-1 联合分布审计 (analysis-only)
           |
           v
-P0 immutable owner + HomeTransaction + baseline snapshot
+P0 immutable owner + HomeTransaction + baseline capture
           |
           +-------------------+
           v                   v
@@ -449,7 +449,7 @@ P1 split fragments       P2 region HomeFact audit/dataflow
 
 | 片 | 工作量估算 | 主要产物 |
 |---|---:|---|
-| P-1 联合分布 probe | 2–3 人日 | conflict/tail/headroom/observer/cost 逐 root 表 |
+| P-1 联合分布 check | 2–3 人日 | conflict/tail/headroom/observer/cost 逐 root 表 |
 | P0 owner + transaction | 4–6 人日 | 单一决策面、完整 rollback、零发码变化 |
 | P1 fragment/location/Verify | 6–8 人日 | segmented map、dirty replay、RunVerified 接线 |
 | P1 emitter + focused tests | 4–6 人日 | relocation schedule、独立复证、x18/helper/fault 测试 |
@@ -472,7 +472,7 @@ P0–P2 约 **21–30 人日**；P3 另加 **12–18 人日**；完整链约 **3
 6. **direct-link 双入口序列化**：fast-entry offset、contract、epoch 的 cache 格式和 revive 越界校验尚未设计到字段级；P3 前必须先冻结格式并 bump version。
 7. **并发重链竞态**：SMC 回收与 direct-link 重指同时发生时，fast contract 的验证/发布需与现有 QSBR 同一原子事务；当前没有证明。
 8. **module override 组合**：resolved FeatureSet hash 能识别 codegen，但 static-home ABI id 与 module 生命周期的组合尚无现成字段。P3 首版应 same-module only。
-9. **Darwin/bounded-bias**：pool10 是 Linux identity 证据，不能外推 mac pool；首轮产品 gate 应在 Darwin fail-closed，后续另量。
+9. **Darwin/bounded-bias**：pool10 是 Linux direct 证据，不能外推 mac pool；首轮产品 gate 应在 Darwin fail-closed，后续另量。
 10. **XMM 泛化**：本设计只统一 proof schema，未证明普通 FPR SSA 跨边 home fact 安全；不得据此重开 XMM8–15/全静态映射。
 
 ---

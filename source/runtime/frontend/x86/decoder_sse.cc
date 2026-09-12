@@ -443,7 +443,7 @@ ir::Value X64Decoder::LoadSrcVec(_DInst& insn, _Operand& op) {
     if (op.type == O_REG) {
         return XmmRead(static_cast<_RegisterType>(op.index));
     }
-    return __ LoadMemory(PlainStructuredAddress(insn, op)).SetType(ir::ValueType::V128);
+    return __ LoadMemory(BasicStructuredAddress(insn, op)).SetType(ir::ValueType::V128);
 }
 
 ir::Value X64Decoder::XmmLo(_RegisterType reg) {
@@ -473,7 +473,7 @@ void X64Decoder::XmmLo(_RegisterType reg, ir::Value value) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::RegValue};
     auto off = ToVReg(x86_regs_table[reg]).GetOffset();
-    // NarrowTo normalizes untyped (CallLambda) values so the store has a width.
+    // NarrowTo adjusts untyped (CallLambda) values so the store has a width.
     __ StoreUniform(ir::Uniform{off, ir::ValueType::U64}, NarrowTo(value, ir::ValueType::U64));
 }
 
@@ -533,7 +533,7 @@ bool X64Decoder::CanStructureAddress(const _DInst& insn, const _Operand& op) con
     }
 }
 
-ir::Operand X64Decoder::PlainStructuredAddress(_DInst& insn, _Operand& op) {
+ir::Operand X64Decoder::BasicStructuredAddress(_DInst& insn, _Operand& op) {
     if (!CanStructureAddress(insn, op)) {
         return ir::Operand{FlatAddress(insn, op)};
     }
@@ -843,14 +843,14 @@ void X64Decoder::DecodeMovVec(_DInst& insn) {
         if (op1.type == O_REG) {
             v = __ LoadUniform(ToVReg(x86_regs_table[op1.index]));
         } else {
-            v = __ LoadMemory(PlainStructuredAddress(insn, op1))
+            v = __ LoadMemory(BasicStructuredAddress(insn, op1))
                         .SetType(ir::ValueType::V128);
         }
         __ StoreUniform(ToVReg(x86_regs_table[op0.index]), v);
     } else {
-        // Store: m128, xmm (movntdq/movntps degrade to plain stores).
+        // Store: m128, xmm (movntdq/movntps degrade to basic stores).
         auto v = __ LoadUniform(ToVReg(x86_regs_table[op1.index]));
-        __ StoreMemory(PlainStructuredAddress(insn, op0), v);
+        __ StoreMemory(BasicStructuredAddress(insn, op0), v);
     }
 }
 
@@ -995,7 +995,7 @@ void X64Decoder::DecodePshiftDQ(_DInst& insn, bool left) {
     auto dst = static_cast<_RegisterType>(insn.ops[0].index);
     u64 imm = insn.imm.byte;
     if (VecLoweringEnabled(features_.vec_byteshift_ext)) {
-        // Legacy shift-by-zero is a true identity: avoiding XmmWrite also
+        // Legacy shift-by-zero is a true direct: avoiding XmmWrite also
         // preserves the old no-IR shape.  VEX.128 has a different upper-lane
         // contract and is handled separately in decoder_avx_int.cc.
         if (imm == 0) {
@@ -1005,7 +1005,7 @@ void X64Decoder::DecodePshiftDQ(_DInst& insn, bool left) {
         return;
     }
     if (imm == 0) {
-        return;  // identity
+        return;  // direct
     }
     if (imm >= 16) {
         XmmLo(dst, __ LoadImm(ir::Imm(u64(0))));

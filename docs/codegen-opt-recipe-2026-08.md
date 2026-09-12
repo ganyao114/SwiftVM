@@ -1,11 +1,11 @@
-# SVM 代码质量优化方案(orb Linux identity,2026-08-18)
+# SVM 代码质量优化方案(orb Linux direct,2026-08-18)
 
 承接 docs/codegen-quality-vs-fex-2026-08.md(mac/bias blow-up)与
 docs/codegen-mechanism-gap-2026-08.md(三支柱),用 **当前 master 发码 +
-orb Linux identity** 重测后的优先级,把可做的切片和已封存重开条件写成
+orb Linux direct** 重测后的优先级,把可做的切片和已封存重开条件写成
 一张施工图。
 
-本文取代 docs/fex-codegen-gap-plan-2026-08.md 作为**现行战役文档**。
+本文取代 docs/fex-codegen-gap-recipe-2026-08.md 作为**现行战役文档**。
 旧文的组合论证(flags×边内部化、XMM×合并器×边界不落地、超块×边界免税)
 仍然成立;墙钟锚点(baseline6)与 mac 动态%账不再作本方案分子。
 
@@ -14,7 +14,7 @@ orb Linux identity** 重测后的优先级,把可做的切片和已封存重开�
 
 ## 0. 数据锚点
 
-- **SVM**:orb `ubuntu` aarch64,Linux identity(`SVM_MEM_IDENTITY` 缺省),
+- **SVM**:orb `ubuntu` aarch64,Linux direct(`SVM_MEM_DIRECT` 缺省),
   `SVM_REGION_EDGES=0`(与 8/14 普查同口径;生产缺省 RE 已是 ON,门禁须双态),
   禁 `SVM_JIT_CACHE` / `SVM_EXEC_PROF`。二进制 = svm-phasec RelWithDebInfo
   @ `91952f2`,与 HEAD `5ff4344` 发码相同(其后仅文档;最后发码提交
@@ -26,7 +26,7 @@ orb Linux identity** 重测后的优先级,把可做的切片和已封存重开�
   (块尾/未入账 IR),缺额主要是 terminal/link,不改排序。
 - 原始日志:orb `/tmp/svm-linux-cq/`(hot.log + 全量 log)。
 
-### 0.1 Linux identity blow-up(相对 FEX)
+### 0.1 Linux direct blow-up(相对 FEX)
 
 | 语料 | SVM h/g | FEX h/g | SVM/FEX | 相对 8/14 mac 表 |
 | --- | ---: | ---: | ---: | --- |
@@ -34,7 +34,7 @@ orb Linux identity** 重测后的优先级,把可做的切片和已封存重开�
 | osslaes | 3.081 | 2.541 | **1.21×** | 本轮 Linux 热 PC 离开 `0x634960`,沿用 8/14 同 PC |
 | sqlite | 4.900 | 2.253 | **2.18×** | 5.19→4.90 |
 | coremark | 4.044 | 1.807 | **2.24×** | 4.17→4.04;顶块 `0x402680` 仍 17/6 |
-| smallpt | 3.550 | 1.549 | **2.29×** | 3.44→3.55,identity 对 FP 不是免费午餐 |
+| smallpt | 3.550 | 1.549 | **2.29×** | 3.44→3.55,direct 对 FP 不是免费午餐 |
 | cray | 4.043 | 1.616 | **2.50×** | 3.92→4.04 |
 | zip7 | 3.409 | 1.264 | **2.70×** | 3.52→3.41;顶块 `0x42d0b0` 12→10/5 |
 | osslsha | 4.197 | 1.426 | **2.94×** | 4.32→4.20;顶块 `0x8ba580` 723→703/170 |
@@ -43,7 +43,7 @@ orb Linux identity** 重测后的优先级,把可做的切片和已封存重开�
 去 stream ≈ **2.46×**。mac 表的 2.01× / 2.25× 仍可引用,但**立项与验收
 一律用本表 Linux 列**。
 
-identity 已把访存税从 mac 账里抠掉一截(stream 最明显)。剩下的不是
+direct 已把访存税从 mac 账里抠掉一截(stream 最明显)。剩下的不是
 寻址 bias,是表示层。
 
 ### 0.2 先划掉的死账(勿再立项)
@@ -56,7 +56,7 @@ identity 已把访存税从 mac 账里抠掉一截(stream 最明显)。剩下的
   docs/w68-p1-joint-distribution.md / docs/w66-p2-homefact-census.md);
 - XMM 静态映射单独移植(W76 净负);
 - 泛化 move coalescing(可消池 0.8–2.2%,低于 5% 门);
-- x25/x27 基建压缩(Linux identity 全负,docs/w66-infra-reclaim-migration.md);
+- x25/x27 基建压缩(Linux direct 全负,docs/w66-infra-reclaim-migration.md);
 - 跨块活性代价(canonical-per-block 下事件集为空);
 - ADRP/literal pool 常量路线;
 - direct link 再优化(已与 FEX 打平为一条 `b`);
@@ -92,17 +92,17 @@ coremark 顶操:`Sub 0.626`、`BitExtract 0.360`、`And 0.350`、
 `ZeroExtend32To64 0.162`、`GetHostGPR 0.155`、`Or 0.138`。
 
 flags 专项桶只有 0.03——**真实 flags 成本藏在 Sub/And/Or/BitExtract**。
-这与 8/14 机制文一致,Linux identity 没有改变这条结论。
+这与 8/14 机制文一致,Linux direct 没有改变这条结论。
 
 ### 2.2 切成两刀,禁止捆成「再写一个 fold」
 
-**P0-A 宽度/identity 桥(可立即测)**
+**P0-A 宽度/direct 桥(可立即测)**
 
 - 对象:`BitExtract`、`ZeroExtend32To64`、`lsr #0`/`ubfx #0,#32`、
   已物化寄存器上的 fallback mov+alu。
-- 已有开关:`SVM_RA_WIDTH_CHAIN` 缺省 OFF(多节点 identity);
+- 已有开关:`SVM_RA_WIDTH_CHAIN` 缺省 OFF(多节点 direct);
   `SVM_RA_WIDTH_CHAIN_LONG` 缺省 ON。
-- 不是泛化 coalescing(已否)。只许走「同一 SSA 值的宽度 identity /
+- 不是泛化 coalescing(已否)。只许走「同一 SSA 值的宽度 direct /
   已证 last-use 的发布点定向合并」,与 `intwidth_tie` 同族。
 - 第一刀 = **只读密度 A/B + 现成开关**,不写新 pass:
   1. orb Linux,`SVM_RA_WIDTH_CHAIN=1`,`REGION_EDGES` 0/1 两态;
@@ -133,7 +133,7 @@ flags 专项桶只有 0.03——**真实 flags 成本藏在 Sub/And/Or/BitExtrac
      障碍清单逐条有载体;
   4. 开关 `SVM_FLAGS_REGS=0` 现场回退,默认 OFF 交付。
 - 未过纸门 = 维持封存。禁止「先合入再看数」。
-- **2026-08-18 纸门 1 过**(orb Linux identity,RE=0,`SVM_DENSITY_PROF`+`SVM_RA_HOT_COALESCE_ALL`,新二进制)。
+- **2026-08-18 纸门 1 过**(orb Linux direct,RE=0,`SVM_DENSITY_PROF`+`SVM_RA_HOT_COALESCE_ALL`,新二进制)。
   `svm-gap-op` 追加 `alu_role`/`pack_b`/`alu_b`/`addr_b`(仅探针行,零发码):
   无非伪 use 且带 flags → 整段 pack;值 use 全是 EA → addr;其余带 flags
   的算 4B 真 ALU、余下 pack。entries 加权 host 指令:
@@ -170,7 +170,7 @@ flags 专项桶只有 0.03——**真实 flags 成本藏在 Sub/And/Or/BitExtrac
   第一条物化自己的 GPR 算占用,永远再要第三个空闲寄存器。
 - **已修**(master):窗口检查跳过被重映射的 def,并优先复用第一条的 GPR。
   `CheckInstr` 硬门不变。默认仍 OFF(`=0` 回退)。
-- **2026-08-18 Linux 新二进制复测**(修后算法,RE=0,identity):
+- **2026-08-18 Linux 新二进制复测**(修后算法,RE=0,direct):
   smallpt host_dynamic −0.078%(44/44 potential cached,776 occ,no_free=0);
   cray −0.017%(50/50,1076 occ);coremark ≈0(25/25,432 occ)。
   窗口 bug 已收尽可缓存池,但池本身仍是个位数万分比,**不翻默认**。

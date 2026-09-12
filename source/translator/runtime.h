@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 
 namespace swift::translator {
 
@@ -31,6 +32,10 @@ public:
     virtual void SignalInterrupt() = 0;
     virtual void ClearInterrupt() = 0;
     virtual uint64_t GetSyscallNumber() = 0;
+
+    // Invoke on the owning thread between Run() calls. The callback becomes
+    // a no-op when its Core is destroyed and never refers to another Core.
+    virtual std::function<void()> MakeExecutionTraceDumper() const { return {}; }
 };
 
 }  // namespace swift::translator

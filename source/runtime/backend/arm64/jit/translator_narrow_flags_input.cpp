@@ -32,10 +32,10 @@ JitTranslator::MatchNarrowFlagsInput(ir::Inst* extract) {
 }
 
 void JitTranslator::PrepareNarrowFlagsInputs(ir::Block* block) {
-    narrow_flags_inputs.clear();
+    flag_state.narrow_flags_inputs.clear();
     for (auto& inst : block->GetInstList()) {
         if (auto source = MatchNarrowFlagsInput(&inst)) {
-            narrow_flags_inputs.emplace(&inst, *source);
+            flag_state.narrow_flags_inputs.emplace(&inst, *source);
         }
     }
 }
@@ -45,20 +45,20 @@ ir::Value JitTranslator::ResolveNarrowFlagsInput(ir::Value value,
     if (!value.Def()) {
         return value;
     }
-    if (fused_pin_gpr_reads.contains(value.Def())) {
+    if (pinned_gprs.fused_pin_gpr_reads.contains(value.Def())) {
         return value;
     }
-    auto plan = narrow_flags_inputs.find(value.Def());
-    if (plan == narrow_flags_inputs.end()) {
+    auto candidate = flag_state.narrow_flags_inputs.find(value.Def());
+    if (candidate == flag_state.narrow_flags_inputs.end()) {
         return value;
     }
     auto source = MatchNarrowFlagsInput(value.Def());
-    ASSERT_MSG(source && *source == plan->second,
+    ASSERT_MSG(source && *source == candidate->second,
                "narrow flags input proof diverged at IR {}", consumer->Id());
     ASSERT_MSG(std::next(cur_block->GetInstList().iterator_to(*value.Def())) ==
                        cur_block->GetInstList().iterator_to(*consumer),
                "narrow flags input consumer diverged at IR {}", consumer->Id());
-    return plan->second;
+    return candidate->second;
 }
 
 }  // namespace swift::runtime::backend::arm64

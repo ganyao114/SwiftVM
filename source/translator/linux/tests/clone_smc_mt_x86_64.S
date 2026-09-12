@@ -1,6 +1,6 @@
 // MT self-modifying-code stress.
 //
-// The child enters `worker`, snapshots its patchable mov-immediate, and
+// The child enters `worker`, captures its patchable mov-immediate, and
 // spins inside that translated block. The parent then rewrites the immediate
 // while the child is still executing the old JIT allocation, executes getpid
 // to retire that allocation, and only then releases the child. The child returns

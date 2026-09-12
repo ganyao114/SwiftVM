@@ -106,7 +106,7 @@ frontend's process-wide mode hook. `X86Instance` now reads
 ## Tests added
 
 - `pthread_mutex_counter.c`: four pthreads, mutex-protected exact counter.
-- `tso_spinlock_counter.c`: memory `xchg` spinlock plus plain release store.
+- `tso_spinlock_counter.c`: memory `xchg` spinlock plus basic release store.
 - `tso_litmus.c`: persistent-thread SB (1,000,000 iterations by default) and
   MP; `mp_violations != 0` fails.
 - `tso_peterson.c`: Peterson mutual exclusion with locked exchange fence.

@@ -1,6 +1,6 @@
 # FEX 代码质量差距机制归因与优化方案（2026-08-06)
 
-> **现行战役**已换到 docs/codegen-opt-plan-2026-08.md(orb Linux identity
+> **现行战役**已换到 docs/codegen-opt-recipe-2026-08.md(orb Linux direct
 > 实测优先级)。本文保留组合论证与死账清单;分子与排期以新文为准。
 
 数据锚点:baseline6(安静窗口,REPS=5,24/24 oracle)SVM/FEX 中位比——smallpt 2.498×、c-ray 2.640×、coremark 0.456、STREAM Scale 0.332/Add 0.455/Triad 0.454/Copy 0.707、zip7 0.662、osslaes 0.683;胜场 osslsha 2.458、sqlite 0.911。

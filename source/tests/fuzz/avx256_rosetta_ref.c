@@ -121,7 +121,7 @@ static Pair g_pairs[] = {
         // 15..0 of the LOW lane (A = 0x10..0x01); a cross-lane implementation
         // would select bytes 31..16 of the register (A = 0x20..0x11) instead, so
         // the two readings cannot produce the same answer.  B's high lane mixes
-        // plain indices with bit-7-set (0x88, 0xFF, 0x80) zeroing cases.
+        // basic indices with bit-7-set (0x88, 0xFF, 0x80) zeroing cases.
         {"laneidx",
          {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
           0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E,
@@ -393,7 +393,7 @@ int main(int argc, char** argv) {
 #include "avx256_ops.inc"
 
     // --- data movement: load into ymm0, store it back out -------------------
-    // Both directions are identity on the data, but they are separate decoder
+    // Both directions are direct on the data, but they are separate decoder
     // paths in SwiftVM and separate opcodes here, so each is measured rather
     // than assumed.
 #define SVM_AVX256_MOV(name, pp, mmmmm, ld_opcode, st_opcode)              \

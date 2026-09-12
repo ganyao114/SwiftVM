@@ -93,12 +93,12 @@ bool ContainsElement(const Container& container, const T& value, size_t start_po
 #define ENUM_TO_STRING_CASE(r) case ENUM_CLASS::r: return #r;
 #define ENUM_DEFINE(r) r,
 
-template <typename T> struct Identity {
+template <typename T> struct Direct {
     using type = T;
 };
 
 template<typename T>
-constexpr T RoundDown(T x, typename Identity<T>::type n) {
+constexpr T RoundDown(T x, typename Direct<T>::type n) {
     return (x & -n);
 }
 

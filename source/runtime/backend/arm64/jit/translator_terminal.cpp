@@ -23,8 +23,8 @@ bool JitTranslator::EmitCanonicalTerminalEdge(ir::Location target) {
         return false;
     }
     context.RecordExecCounter(exec_offset_exit_direct);
-    ++region_block_edges;
-    region_block_local_branch_bytes += sizeof(u32);
+    ++statistics.region_block_edges;
+    statistics.region_block_local_branch_bytes += sizeof(u32);
     const u32 link_before = context.CurrentBufferSize();
     __ B(context.GetLabel(target.Value()));
     RecordBoundaryRange(BoundarySubsequence::LinkTail,
@@ -107,7 +107,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 EmitRegionEdge(term.next);
                 return;
             }
-            const bool flags_bypassable = !flags_token_valid &&
+            const bool flags_bypassable = !flag_state.flags_token_valid &&
                                           context.CanEmitDirectLink(term.next);
             const auto local_flags_bypass = MergeNZCV(
                     flags_audit_block_edge ==
@@ -123,7 +123,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             backedge_exit_referenced |=
                     exit && exit == backedge_exit_label.get();
             auto* self_target = IsSelfEdge(term.next) &&
-                                        (backedge_flags_plan || loop_hoist_body_entry)
+                                        (backedge_flags_recipe || loop_hoist_body_entry)
                     ? LocalBranchTarget(term.next)
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
@@ -145,7 +145,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 EmitRegionEdge(term.next);
                 return;
             }
-            const bool flags_bypassable = !flags_token_valid &&
+            const bool flags_bypassable = !flag_state.flags_token_valid &&
                                           context.CanEmitDirectLink(term.next);
             const auto local_flags_bypass = MergeNZCV(
                     flags_audit_block_edge ==
@@ -161,7 +161,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             backedge_exit_referenced |=
                     exit && exit == backedge_exit_label.get();
             auto* self_target = IsSelfEdge(term.next) &&
-                                        (backedge_flags_plan || loop_hoist_body_entry)
+                                        (backedge_flags_recipe || loop_hoist_body_entry)
                     ? LocalBranchTarget(term.next)
                     : nullptr;
             const u32 link_before = context.CurrentBufferSize();
@@ -225,14 +225,14 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             const auto local_flags_bypass = MergeNZCV(
                     FlagsRegsAuditMergeCause::TerminalDispatcher,
                     flags_audit_block_edge,
-                    flags_bypassable && !flags_token_valid);
+                    flags_bypassable && !flag_state.flags_token_valid);
             const auto branch_flags_bypass =
                     flags_bypassable
                             ? (local_flags_bypass.Valid() ? local_flags_bypass
                                                          : flags_bypass)
                             : DirectLinkFlagsBypass{};
-            nzcv_dirty = false;
-            nzcv_requested = {};
+            flag_state.nzcv_dirty = false;
+            flag_state.nzcv_requested = {};
             InvalidateFlagsToken();
             Label else_label;
             if (!EmitDeadEdgeZeroBranch(term.cond, &else_label, false)) {
@@ -257,22 +257,22 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 return;
             }
             DirectLinkFlagsBypass branch_flags_bypass{};
-            if (save_in_nzcv && nzcv_dirty) {
+            if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
                 const bool flags_bypassable =
                         CanBypassTerminalFlagsMerge(term.then_) &&
                         CanBypassTerminalFlagsMerge(term.else_);
                 const auto local_flags_bypass = MergeNZCV(
                         FlagsRegsAuditMergeCause::TerminalDispatcher,
                         flags_audit_block_edge,
-                        flags_bypassable && !flags_token_valid);
+                        flags_bypassable && !flag_state.flags_token_valid);
                 if (flags_bypassable) {
                     branch_flags_bypass = local_flags_bypass;
                 }
             } else {
                 LoadNZCVFromFlags();
             }
-            nzcv_dirty = false;
-            nzcv_requested = {};
+            flag_state.nzcv_dirty = false;
+            flag_state.nzcv_requested = {};
             InvalidateFlagsToken();
             Label else_label;
             auto host_cond = MapCond(term.cond);
@@ -290,8 +290,8 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                       flags_audit_block_edge);
             // Cmp below clobbers host NZCV. Commit is done; do not let
             // terminal keep re-merge the switch key into x26.
-            nzcv_dirty = false;
-            nzcv_requested = {};
+            flag_state.nzcv_dirty = false;
+            flag_state.nzcv_requested = {};
             auto value = context.R(term.value);
             for (auto& case_ : term.cases) {
                 Label next_case;
@@ -500,7 +500,7 @@ bool JitTranslator::EmitIndirectForward() {
     dynamic_location_miss = nullptr;
     const u32 link_before = context.CurrentBufferSize();
     const auto fault = context.ForwardIndirectL1(location, miss);
-    fault_metadata.push_back({
+    memory_state.fault_metadata.push_back({
             .guest_start = cur_block->GetStartLocation().Value(),
             .host_begin = fault.begin,
             .host_end = fault.end,
@@ -543,28 +543,28 @@ void JitTranslator::RecordDeferredFault(
         Label* recovery,
         FaultRecoveryKind recovery_kind) {
     ASSERT(recovery);
-    const size_t index = fault_metadata.size();
-    fault_metadata.push_back({
+    const size_t index = memory_state.fault_metadata.size();
+    memory_state.fault_metadata.push_back({
             .guest_start = cur_block->GetStartLocation().Value(),
             .host_begin = fault.begin,
             .host_end = fault.end,
             .recovery_kind = recovery_kind,
     });
-    pending_deferred_faults.push_back({index, recovery});
+    memory_state.pending_deferred_faults.push_back({index, recovery});
 }
 
 void JitTranslator::ResolveDeferredFaults(Label* recovery) {
     ASSERT(recovery && recovery->IsBound());
     const u32 offset = static_cast<u32>(recovery->GetLocation());
-    for (auto it = pending_deferred_faults.begin();
-         it != pending_deferred_faults.end();) {
+    for (auto it = memory_state.pending_deferred_faults.begin();
+         it != memory_state.pending_deferred_faults.end();) {
         if (it->recovery != recovery) {
             ++it;
             continue;
         }
-        ASSERT(it->metadata_index < fault_metadata.size());
-        fault_metadata[it->metadata_index].recovery_offset = offset;
-        it = pending_deferred_faults.erase(it);
+        ASSERT(it->metadata_index < memory_state.fault_metadata.size());
+        memory_state.fault_metadata[it->metadata_index].recovery_offset = offset;
+        it = memory_state.pending_deferred_faults.erase(it);
     }
 }
 
@@ -573,7 +573,7 @@ bool JitTranslator::CanUseCallContinuation() const {
            static_next_loc && next_region_block == call_return_pc &&
            context.IsGPRMappedTo(*call_return_value, 14) &&
            !backedge_exit_label && direct_cycle_exits.empty() &&
-           !backedge_flags_plan && vec_nan_cold_sites.empty();
+           !backedge_flags_recipe && vec_nan_cold_sites.empty();
 }
 
 bool JitTranslator::CanUseIndirectCallContinuation() const {
@@ -581,7 +581,7 @@ bool JitTranslator::CanUseIndirectCallContinuation() const {
            dynamic_next_loc && next_region_block == call_return_pc &&
            context.IsGPRMappedTo(*call_return_value, 14) &&
            !backedge_exit_label && direct_cycle_exits.empty() &&
-           !backedge_flags_plan && vec_nan_cold_sites.empty();
+           !backedge_flags_recipe && vec_nan_cold_sites.empty();
 }
 
 bool JitTranslator::EmitIndirectCallForward(bool pending_flags) {
@@ -605,7 +605,7 @@ bool JitTranslator::EmitIndirectCallForward(bool pending_flags) {
     }
     const u32 link_before = context.CurrentBufferSize();
     const auto faults = context.ForwardIndirectCall(location, miss_site.label.get(), pending_flags);
-    fault_metadata.push_back({
+    memory_state.fault_metadata.push_back({
             .guest_start = cur_block->GetStartLocation().Value(),
             .host_begin = faults.lookup_fault.begin,
             .host_end = faults.lookup_fault.end,
@@ -614,9 +614,9 @@ bool JitTranslator::EmitIndirectCallForward(bool pending_flags) {
     });
     RecordDeferredFault(
             faults.target_fault, miss_site.label.get(), FaultRecoveryKind::IndirectCallMiss);
-    if (pending_flags && !flags_token_keep) {
-        nzcv_dirty = false;
-        nzcv_requested = {};
+    if (pending_flags && !flag_state.flags_token_keep) {
+        flag_state.nzcv_dirty = false;
+        flag_state.nzcv_requested = {};
     }
     dynamic_location_miss = nullptr;
     RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
@@ -668,7 +668,7 @@ void JitTranslator::EmitIndirectExitColdPaths() {
         const XRegister location{reg};
         auto* recovery = terminal_location_publication.MissLabel(location);
         const auto fault = context.ForwardIndirectL1(location, recovery);
-        fault_metadata.push_back({
+        memory_state.fault_metadata.push_back({
                 .guest_start = dispatch_site.guest_start,
                 .host_begin = fault.begin,
                 .host_end = fault.end,

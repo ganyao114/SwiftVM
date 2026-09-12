@@ -8,7 +8,7 @@ namespace swift::runtime::backend {
 
 // AArch64 exclusive accesses require natural alignment, while x86 LOCK does
 // not.  JITed and interpreted misaligned RMWs serialize through this same
-// process-wide lock and perform their memory access with plain load/store.
+// process-wide lock and perform their memory access with basic load/store.
 inline constinit std::atomic<u32> unaligned_atomic_lock{0};
 
 class UnalignedAtomicGuard {

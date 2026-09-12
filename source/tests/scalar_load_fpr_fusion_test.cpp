@@ -1,3 +1,4 @@
+#include "support/register_alloc_test_support.h"
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -103,7 +104,7 @@ std::vector<std::string> Emit(IntrusivePtr<Block> block) {
     fprs.Mark(kTarget);
     fprs.Mark(kTarget + 1);
     RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
-    RegisterAllocPass::RunForXmmResidentTest(block.get(), &alloc, true);
+    RegisterAllocTestSupport::RunForXmmResidentTest(block.get(), &alloc, true);
 
     Config config{
             .loc_start = 0,

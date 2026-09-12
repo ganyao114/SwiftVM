@@ -167,7 +167,7 @@ TEST_CASE("guest call: small structs by value") {
     }
 }
 
-TEST_CASE("guest call: a struct's eightbytes land in the registers the plan names") {
+TEST_CASE("guest call: a struct's eightbytes land in the registers the recipe names") {
     svmtest::ClearDumpBuffer();
     // {double,long}: eightbyte 0 -> xmm0, eightbyte 1 -> rdi.
     auto dump = Stub<void(DoubleLong)>(kStubDumpArgs);
@@ -335,14 +335,14 @@ TEST_CASE("guest call: a stack argument respects its own alignment, not just 8")
     const long expect = 2 + 3 * 3 + 5 * 7 + 7 * 11 + 11 * 13 + 13 * 17 + 17 * 19 + lo * 23 +
                         hi * 29;
     CHECK(f(2, 3, 5, 7, 11, 13, 17, x) == expect);
-    // The plan itself says 16, and the guest agrees.  (Guarded so mutation
+    // The recipe itself says 16, and the guest agrees.  (Guarded so mutation
     // testing can show the runtime call catches this on its own -- see
     // abi_class_test.cpp.)
 #ifndef SVM_ABI_STATIC_ASSERTS_OFF
-    constexpr auto plan =
-            MakeCallPlan<long, long, long, long, long, long, long, long, __int128>();
-    STATIC_REQUIRE(plan.args[6].stack_off == 0);
-    STATIC_REQUIRE(plan.args[7].stack_off == 16);
+    constexpr auto recipe =
+            MakeCallRecipe<long, long, long, long, long, long, long, long, __int128>();
+    STATIC_REQUIRE(recipe.args[6].stack_off == 0);
+    STATIC_REQUIRE(recipe.args[7].stack_off == 16);
 #endif
 }
 
@@ -419,4 +419,3 @@ TEST_CASE("ScopedGuestBuffer copies host data into the guest window explicitly")
     CHECK(p.address() == buf.address());
     CHECK(p.address() >= 0x60300000);
 }
-

@@ -56,7 +56,7 @@
 //       Predicates 8..31 are an AVX extension that SwiftVM's VecFCmpMask
 //       cannot express and its decoder declines; they are deliberately NOT in
 //       this table, because a reference row for a predicate the decoder
-//       refuses would just be an unexplained failure.
+//       refuses would fail without a useful diagnostic.
 //
 //   SVM_AVXFP_COMIS(name, pp, opcode, lane)
 //       Scalar ordered compare into EFLAGS.  The reference records CF, PF, ZF,

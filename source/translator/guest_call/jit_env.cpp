@@ -16,7 +16,7 @@ using swift::translator::x86::X86Instance;
 
 namespace {
 
-// The one live environment, so the process-global probes the runtime installs
+// The one live environment, so the process-global checks the runtime installs
 // (SignalHandler map/range oracles, and translator.cpp's file-static
 // MemoryImpl bias) always describe the space that is actually running.  Only
 // one JitGuestEnv may exist at a time; the constructor asserts it.
@@ -93,8 +93,8 @@ JitGuestEnv::~JitGuestEnv() {
     }
     g_active = nullptr;
     g_active_space = nullptr;
-    runtime::backend::SignalHandler::SetGuestMapProbe(nullptr, nullptr);
-    runtime::backend::SignalHandler::SetGuestRangeProbe(nullptr, nullptr);
+    runtime::backend::SignalHandler::SetGuestMapCheck(nullptr, nullptr);
+    runtime::backend::SignalHandler::SetGuestRangeCheck(nullptr, nullptr);
 }
 
 bool JitGuestEnv::Init(const std::string& elf_path, std::string& error) {
@@ -136,9 +136,9 @@ bool JitGuestEnv::Init(const std::string& elf_path, std::string& error) {
 
     g_active_space = &space_;
     // Wild guest pointers must surface as a guest PageFatal, not a host crash:
-    // without these probes a bad pointer inside JIT code kills the test binary
+    // without these checks a bad pointer inside JIT code kills the test binary
     // and the "guest crashed" case could not be tested at all.
-    runtime::backend::SignalHandler::SetGuestMapProbe(
+    runtime::backend::SignalHandler::SetGuestMapCheck(
             [](void* ctx, std::uintptr_t host_addr) -> bool {
                 auto* s = static_cast<GuestSpace*>(ctx);
                 const std::uint64_t guest = host_addr - s->Bias();
@@ -148,7 +148,7 @@ bool JitGuestEnv::Init(const std::string& elf_path, std::string& error) {
                 return s->RangeIsMapped(guest, 1);
             },
             &space_);
-    runtime::backend::SignalHandler::SetGuestRangeProbe(
+    runtime::backend::SignalHandler::SetGuestRangeCheck(
             [](void* ctx, std::uintptr_t host_addr, u64 len) -> u64 {
                 auto* s = static_cast<GuestSpace*>(ctx);
                 const std::uint64_t guest = host_addr - s->Bias();
