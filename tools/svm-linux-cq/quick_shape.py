@@ -34,8 +34,8 @@ PROFILE_ENV = (
 )
 
 HOST_DUMP_LINE = re.compile(
-    rb"^\[svm-host\]\s+pc=(0x[0-9a-f]+)\s+size=(\d+)\s+",
-    re.MULTILINE,
+    rb"\[svm-host\] pc=(0x[0-9a-f]+) size=([0-9]+) "
+    rb"hash=([0-9a-f]{16}) bytes=([0-9a-f]+)\n"
 )
 
 
@@ -90,15 +90,26 @@ def output_file(output: pathlib.Path, name: str) -> pathlib.Path:
 
 def write_static_shape(stderr_path: pathlib.Path, hot_path: pathlib.Path) -> int:
     versions: dict[int, list[int]] = {}
-    for match in HOST_DUMP_LINE.finditer(stderr_path.read_bytes()):
+    for number, line in enumerate(stderr_path.read_bytes().splitlines(keepends=True), 1):
+        if b"[svm-host]" not in line:
+            continue
+        match = HOST_DUMP_LINE.fullmatch(line)
+        if not match:
+            raise ValueError(f"invalid host record at line {number}")
         pc = int(match.group(1), 0)
-        versions.setdefault(pc, []).append(int(match.group(2)))
+        size = int(match.group(2))
+        if not size or size % 4 or len(match.group(4)) != size * 2:
+            raise ValueError(f"invalid host record size at line {number}")
+        digest = 1469598103934665603
+        for byte in bytes.fromhex(match.group(4).decode('ascii')):
+            digest = ((digest ^ byte) * 1099511628211) & ((1 << 64) - 1)
+        if digest != int(match.group(3), 16):
+            raise ValueError(f"invalid host record checksum at line {number}")
+        versions.setdefault(pc, []).append(size)
     with hot_path.open("w", encoding="utf-8") as handle:
         number = 0
         for pc, sizes in sorted(versions.items()):
             for size in sizes:
-                if not size or size % 4:
-                    raise ValueError(f"invalid host code size for 0x{pc:x}: {size}")
                 handle.write(
                     f"[svm-hot-code] pc=0x{pc:x} code={number} entries=0 "
                     f"host_bytes={size} host_static={size // 4}\n"

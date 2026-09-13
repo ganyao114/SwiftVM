@@ -21,6 +21,8 @@ COMPLETE = (
     '[svm-hot-end] codes=1 pcs=1 overflow=0\n'
 )
 
+HOST_CODE = '[svm-host] pc=0x1000 size=8 hash=9041f832eb9f5223 bytes=1f2003d51f2003d5\n'
+
 
 class CaptureTests(unittest.TestCase):
     def collect(self, directory, *, lines=COMPLETE, exit_code=42, stop=None,
@@ -84,8 +86,9 @@ class CaptureTests(unittest.TestCase):
     def test_static_capture_keeps_each_version_without_inventing_entries(self):
         with tempfile.TemporaryDirectory() as directory:
             result, record, out = self.collect(directory, static=True, lines=(
-                '[svm-host] pc=0x1000 size=8 code=0\n'
-                '[svm-host] pc=0x1000 size=12 code=1\n'))
+                'unrelated diagnostic\n' + HOST_CODE +
+                '[svm-host] pc=0x1000 size=12 hash=8b03c65c0717d108 '
+                'bytes=1f2003d51f2003d51f2003d5\n'))
             unit = capture.load_hot(out / 'shape.hot')[0x1000]
         self.assertEqual(result, 0)
         self.assertEqual(record['mode'], 'static_bytes')
@@ -93,6 +96,26 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(unit.host_static, 5)
         self.assertEqual(unit.entries, 0)
         self.assertEqual(unit.weighted_host(), 0)
+
+    def test_static_capture_rejects_damage_after_a_valid_record(self):
+        damaged = (
+            '[svm-host] pc=0x2000 size=broken\n',
+            '[svm-host] pc=0x2000 size=',
+            HOST_CODE.rstrip('\n'),
+            HOST_CODE.replace('bytes=1f2003d5', 'bytes='),
+            HOST_CODE.replace('size=8', 'size=12'),
+            HOST_CODE.replace('hash=9', 'hash=0'),
+            HOST_CODE.replace('bytes=1f', 'bytes=00'),
+            'interleaved output ' + HOST_CODE,
+            HOST_CODE.rstrip('\n') + HOST_CODE,
+        )
+        for line in damaged:
+            with self.subTest(line=line), tempfile.TemporaryDirectory() as directory:
+                result, record, output = self.collect(directory, static=True, lines=HOST_CODE + line)
+                self.assertEqual(result, 1)
+                self.assertFalse(record['valid'])
+                self.assertTrue(any('host record' in error for error in record['errors']))
+                self.assertFalse((output / 'shape.hot').exists())
 
     def test_result_paths_cannot_reuse_external_files(self):
         with tempfile.TemporaryDirectory() as directory:
