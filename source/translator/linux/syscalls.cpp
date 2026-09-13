@@ -1443,7 +1443,19 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
                 const auto begin = std::max(page, addr);
                 const auto end = std::min(page + GuestMemory::kHostPageSize,
                                           addr + guest_length);
-                std::memset(memory->ToHost(begin), 0, static_cast<size_t>(end - begin));
+                if (end - begin == GuestMemory::kHostPageSize) {
+                    if (!memory->ReplaceMappedPages(page, GuestMemory::kHostPageSize)) {
+                        return HostErrno();
+                    }
+                } else {
+                    // A guest subpage shares its host page with live neighbors.
+                    // Keep their bytes, but make the backing writable before
+                    // clearing a range previously protected by mprotect.
+                    if (!memory->Protect(page, GuestMemory::kHostPageSize, true, true, false)) {
+                        return HostErrno();
+                    }
+                    std::memset(memory->ToHost(begin), 0, static_cast<size_t>(end - begin));
+                }
             } else if (!memory->MapFixed(page, GuestMemory::kHostPageSize)) {
                 return -ENOMEM_;
             }
@@ -1466,7 +1478,7 @@ s64 SyscallHandler::SysMmap(u64 addr, u64 length, u64 prot, u64 flags, s64 fd, u
 
     // New anonymous backing already supplies zero pages. Touching the full
     // range here commits large allocator reservations before the guest uses
-    // them. Only reused pages were cleared above, including the tail at EOF.
+    // them. Only reused subpages were cleared above, including the tail at EOF.
     if (!anonymous) {
         u64 done = 0;
         while (done < length) {

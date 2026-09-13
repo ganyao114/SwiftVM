@@ -80,6 +80,24 @@ bool GuestMemory::MapFixed(VAddr addr, u64 size) {
     return MapFixedImpl(addr, size, false);
 }
 
+bool GuestMemory::ReplaceMappedPages(VAddr addr, u64 size) {
+    if (size == 0 || addr % kHostPageSize != 0 || size % kHostPageSize != 0 ||
+        addr + size < addr ||
+        (window_bits_ != 0 && (addr > mask_ || size > mask_ - addr + 1))) {
+        errno = EINVAL;
+        return false;
+    }
+    std::unique_lock guard(mapped_regions_mutex);
+    if (!RangeIsMappedLocked(addr, size)) {
+        errno = ENOMEM;
+        return false;
+    }
+    // The tracked interval stays mapped throughout replacement. MAP_FIXED is
+    // safe here because every affected host page belongs to this guest.
+    return mmap(ToHost(addr), size, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != MAP_FAILED;
+}
+
 bool GuestMemory::MapFixedImpl(VAddr addr, u64 size, bool quiet_failure) {
     ASSERT(addr % kHostPageSize == 0);
     auto map_size = RoundHostPage(size);

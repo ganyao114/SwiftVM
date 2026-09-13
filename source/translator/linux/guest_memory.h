@@ -142,6 +142,10 @@ public:
     // need Linux' "fail if occupied" semantics test RangeIsMapped first).
     bool MapFixed(VAddr addr, u64 size);
 
+    // Replace complete host pages already owned by this guest with writable
+    // anonymous zero pages. Never replaces an untracked host mapping.
+    bool ReplaceMappedPages(VAddr addr, u64 size);
+
     // Map anonymous pages at a free guest address; returns the *guest*
     // address or 0 on failure. Windowed: first fit in the mmap arena.
     VAddr MapAnywhere(u64 size);

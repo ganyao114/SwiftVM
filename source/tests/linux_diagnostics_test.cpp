@@ -128,13 +128,69 @@ TEST_CASE("fixed guest mmap clears only the replaced guest pages", "[linux-memor
     REQUIRE(std::fwrite("abc", 1, 3, file.get()) == 3);
     REQUIRE(std::fflush(file.get()) == 0);
     std::fill_n(bytes, size, 0xa5);
+    REQUIRE(syscalls.Handle(226, address, size, 1, 0, 0, 0).ret == 0);
     replacement = syscalls.Handle(222, address + page, 7, 3, 0x12, fileno(file.get()), 0);
     REQUIRE(replacement.ret == static_cast<s64>(address + page));
     REQUIRE(std::equal(bytes + page, bytes + page + 3, "abc"));
+    bytes[page] = 'a';
+    REQUIRE(memory.Protect(address, size, true, true, false));
     for (u64 offset = 0; offset < size; ++offset) {
         if (offset >= page && offset < page + 3) continue;
         REQUIRE(bytes[offset] == (offset >= page && offset < 2 * page ? 0 : 0xa5));
     }
+}
+
+TEST_CASE("fixed guest mmap replaces protected backing", "[linux-memory]") {
+    using namespace swift;
+    constexpr auto host_page = linux::GuestMemory::kHostPageSize;
+    constexpr auto guest_page = linux::GuestMemory::kGuestPageSize;
+    constexpr auto size = 2 * host_page;
+    const std::array<std::array<u64, 2>, 3> ranges{{
+            {0, host_page}, {guest_page, 7}, {guest_page, host_page}}};
+    for (u32 window_bits : {0u, 20u}) {
+        for (u64 old_protection : {0ull, 1ull}) {
+            for (const auto& range : ranges) {
+                CAPTURE(window_bits, old_protection, range[0], range[1]);
+                linux::GuestMemory memory;
+                if (window_bits) REQUIRE(memory.ReserveWindow(window_bits));
+                linux::SyscallHandler syscalls{&memory, 0, linux::GuestISA::kArm64};
+                const auto result = syscalls.Handle(222, 0, size, 3, 0x22, ~0ull, 0);
+                REQUIRE(result.ret > 0);
+                const auto address = static_cast<VAddr>(result.ret);
+                const auto cleanup = [&memory, address](void*) { memory.Unmap(address, size); };
+                std::unique_ptr<void, decltype(cleanup)> mapping(memory.ToHost(address), cleanup);
+                auto* bytes = static_cast<u8*>(mapping.get());
+                std::fill_n(bytes, size, 0xa5);
+                REQUIRE(syscalls.Handle(226, address, size, old_protection, 0, 0, 0).ret == 0);
+                const auto begin = range[0];
+                const auto end = begin + linux::GuestMemory::RoundGuestPage(range[1]);
+                const auto replacement = syscalls.Handle(
+                        222, address + begin, range[1], 3, 0x32, ~0ull, 0);
+                REQUIRE(replacement.ret == static_cast<s64>(address + begin));
+                REQUIRE(std::all_of(bytes + begin, bytes + end, [](auto value) { return value == 0; }));
+                // Check the new write permission before opening neighboring pages for comparison.
+                bytes[begin] = 0x5a;
+                REQUIRE(bytes[begin] == 0x5a);
+                REQUIRE(memory.Protect(address, size, true, true, false));
+                REQUIRE(std::all_of(bytes, bytes + begin, [](auto value) { return value == 0xa5; }));
+                REQUIRE(std::all_of(bytes + end, bytes + size, [](auto value) { return value == 0xa5; }));
+            }
+        }
+    }
+}
+
+TEST_CASE("guest page replacement refuses untracked host memory", "[linux-memory]") {
+    using namespace swift;
+    constexpr auto size = linux::GuestMemory::kHostPageSize;
+    auto* host = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(host != MAP_FAILED);
+    const auto cleanup = [](void* page) { munmap(page, size); };
+    std::unique_ptr<void, decltype(cleanup)> mapping(host, cleanup);
+    auto* bytes = static_cast<u8*>(host);
+    bytes[0] = 0xa5;
+    linux::GuestMemory memory;
+    REQUIRE_FALSE(memory.ReplaceMappedPages(memory.ToGuest(host), size));
+    REQUIRE(bytes[0] == 0xa5);
 }
 
 TEST_CASE("large invalid mmap requests return guest errors for both ISAs", "[linux-diagnostics]") {
