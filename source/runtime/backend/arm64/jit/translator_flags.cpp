@@ -802,10 +802,13 @@ void JitTranslator::ClearFlags(ir::Flags guest) {
         if (True(guest & ir::Flags::Zero)) {
             mask &= ~(u64(1) << HostFlagsBit::Z);
         }
-        if (clear_cv_af || True(guest & ir::Flags::Carry)) {
+        // When CV and AF are cleared together, the AF BFC below clears the
+        // contiguous AF..V field in one instruction.  Keep C/V out of this
+        // mask so the compact form does not redundantly emit an AND.
+        if (!clear_cv_af && True(guest & ir::Flags::Carry)) {
             mask &= ~(u64(1) << HostFlagsBit::C);
         }
-        if (clear_cv_af || True(guest & ir::Flags::Overflow)) {
+        if (!clear_cv_af && True(guest & ir::Flags::Overflow)) {
             mask &= ~(u64(1) << HostFlagsBit::V);
         }
         if (mask != UINT64_MAX) {

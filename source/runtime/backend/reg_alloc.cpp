@@ -164,15 +164,13 @@ ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
     const u8 operand_scratch =
             NarrowHostReadScratch(ir::DataClass{inst.GetArg<ir::Value>(0)}) +
             AddSubOperandScratch(right);
+    const u8 uses = const_cast<ir::Inst&>(inst).GetUses();
     const bool narrow_nzcv = ir::GetValueSizeByte(inst.ReturnType()) <= 2 &&
                              True(requested & ir::Flags::NZCV);
-    // The precise operand walk cannot see all allocator ties: a tied narrow
-    // result may require an additional preservation copy before the aligned
-    // add/sub, and SaveAuxiliaryCarry can lease one more temporary while those
-    // copies are live.  Keep the historical opcode-wide floor as a fail-closed
-    // lower bound; otherwise a legal fuzz shape can reach GetTmpX() with one
-    // more lease than the static operand census predicted.
-    const u8 opcode_floor = X86PinExtEnabled() ? 5 : 4;
+    // The precise operand walk cannot see all allocator ties in the narrow
+    // sign-alignment path, so that path applies a width-aware lower bound
+    // below.  Ordinary arithmetic keeps only the registers its operands
+    // actually materialize; spilled values are charged separately by Verify.
     if (narrow_nzcv) {
         // Current RA has no narrow Add/Sub destination tie: its result cannot
         // share either input, so the two emitter preservation arms are dead for
@@ -187,7 +185,18 @@ ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
                 need += 1;
             }
         }
-        return {std::max(need, opcode_floor), kDefaultScratchFPR};
+        // Narrow NZCV lowering shifts the result into the architectural sign
+        // position and may preserve tied/host operands before the aligned
+        // add.  The minimum is width dependent; an extra operand materializer
+        // beyond the first reflects the host-pinned tie that the IR census
+        // cannot otherwise see.
+        const u8 narrow_floor = branch_only
+                ? 0
+                : static_cast<u8>(
+                          2 + ir::GetValueSizeByte(inst.ReturnType()) +
+                          (operand_scratch > 1 ? operand_scratch - 1 : 0) +
+                          (uses != 0 ? 1 : 0));
+        return {std::max(need, narrow_floor), kDefaultScratchFPR};
     }
 
     u8 need = operand_scratch;
@@ -202,7 +211,7 @@ ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
             need += 1;
         }
     }
-    return {std::max(need, opcode_floor), kDefaultScratchFPR};
+    return {need, kDefaultScratchFPR};
 }
 
 static u8 LogicalOperandScratch(const ir::Inst& inst) {
