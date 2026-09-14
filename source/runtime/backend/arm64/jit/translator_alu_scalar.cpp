@@ -674,6 +674,13 @@ void JitTranslator::EmitOr(ir::Inst* inst) {
         if (const auto producer = funnel_shift_parity_producers.find(inst);
             producer != funnel_shift_parity_producers.end()) {
             FinishFlagsTokenProducer(value, left.Type(), pseudo_flags, producer->second);
+        } else {
+            // The identity OR fast path still defines PF from `value`.  The
+            // normal OR emitter reaches FinishFlagsTokenProducer below, but
+            // this early return used to record only NZCV.  A following
+            // SetCarry/SetOverflow would then publish the previous token and
+            // leave PF stale under FLAGS_REGS.
+            FinishFlagsTokenProducer(value, left.Type(), pseudo_flags, inst);
         }
         return;
     }
