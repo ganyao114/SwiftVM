@@ -94,10 +94,10 @@ TEST_CASE("hot coalesce check classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 155);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 167);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
-            "SVM_MEM_DIRECT");
+            "SVM_INV_DBG");
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
             "SVM_RA_FIXED_CLASS");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);

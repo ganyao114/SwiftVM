@@ -50,15 +50,19 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
 
         // 1. The allocation must leave every instruction the scratch its
         //    emitter is declared to need, plus a reload register for each
-        //    DISTINCT spilled value it names (JitContext reloads a value once
-        //    per instruction however often the instruction names it). This is
-        //    the contract GetTmpX relies on.
+        //    DISTINCT spilled value it names that has no precomputed reload
+        //    region. MapSpillReload marks a prepared reload register dirty,
+        //    so charging it again would count the same register twice. This
+        //    is the contract GetTmpX relies on.
         for (auto& inst : block->GetInstList()) {
             auto need = ScratchBudget(inst, FeatureSet{});
             unsigned reloads_gpr = 0, reloads_fpr = 0;
             std::vector<std::uint32_t> counted;
             auto count = [&](const Value& value) {
                 if (!value.Defined() || reg_alloc.ValueType(value) != RegAlloc::MEM) {
+                    return;
+                }
+                if (reg_alloc.HasSpillReload(value.Id(), inst.Id())) {
                     return;
                 }
                 if (std::find(counted.begin(), counted.end(), value.Id()) != counted.end()) {
@@ -335,16 +339,16 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
     };
 
     REQUIRE(measure(ValueType::U64, Flags::None, false, RightShape::Reg) == 0);
-    REQUIRE(measure(ValueType::U64, Flags::All, false, RightShape::LargeImm) == 3);
-    REQUIRE(measure(ValueType::U64, Flags::All, false, RightShape::Composite) == 3);
+    REQUIRE(measure(ValueType::U64, Flags::All, false, RightShape::LargeImm) == 2);
+    REQUIRE(measure(ValueType::U64, Flags::All, false, RightShape::Composite) == 2);
     REQUIRE(measure(ValueType::U64, Flags::All, true, RightShape::Composite) == 1);
-    REQUIRE(measure(ValueType::U8, Flags::All, false, RightShape::Reg) == 3);
-    REQUIRE(measure(ValueType::U16, Flags::All, false, RightShape::Composite) == 4);
+    REQUIRE(measure(ValueType::U8, Flags::All, false, RightShape::Reg) == 2);
+    REQUIRE(measure(ValueType::U16, Flags::All, false, RightShape::Composite) == 3);
     REQUIRE(measure(ValueType::U8, Flags::All, true, RightShape::Composite) == 2);
     REQUIRE(measure(ValueType::U16, Flags::None, false, RightShape::Reg,
                     true) == 2);
     REQUIRE(measure(ValueType::U16, Flags::All, false, RightShape::Reg,
-                    true) == 5);
+                    true) == 4);
 }
 
 // --- spill-slot recycling ----------------------------------------------------

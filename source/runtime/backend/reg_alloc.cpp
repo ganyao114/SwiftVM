@@ -189,9 +189,10 @@ ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
             ++need;
         }
         if (True(requested & ir::Flags::AuxiliaryCarry)) {
-            // Preserve operand bits when the result reuses an input, then
-            // compute AF after the arithmetic has produced its result.
-            need += 2;
+            // SaveAuxiliaryCarry itself leases one temporary after the
+            // arithmetic. The narrow result path above separately prices the
+            // operand-preservation lease required before that operation.
+            need += 1;
         }
     }
     return {need, kDefaultScratchFPR};
