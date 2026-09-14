@@ -358,7 +358,10 @@ TEST_CASE("operand copy kill is a fail-closed Mul emitter fast path") {
         context.Finish();
 
         vixl::aarch64::Decoder decoder;
-        vixl::aarch64::Disassembler disassembler;
+        class StableDisassembler : public vixl::aarch64::Disassembler {
+        public:
+            void ResetForInstruction() { ResetOutput(); }
+        } disassembler;
         decoder.AppendVisitor(&disassembler);
         std::string text;
         swift::u32 moves{};
@@ -369,6 +372,9 @@ TEST_CASE("operand copy kill is a fail-closed Mul emitter fast path") {
         auto* last = masm.GetBuffer()->GetEndAddress<
                 const vixl::aarch64::Instruction*>();
         for (auto* instruction = first; instruction < last; ++instruction) {
+            // VIXL's unallocated visitor does not call Format(), so its
+            // output buffer otherwise retains the previous instruction.
+            disassembler.ResetForInstruction();
             decoder.Decode(instruction);
             std::string_view line{disassembler.GetOutput()};
             const auto begin = line.find_first_not_of(" \t");
@@ -531,7 +537,10 @@ TEST_CASE("zero store zr is value-only and fail-closed") {
             }
         }();
         vixl::aarch64::Decoder decoder;
-        vixl::aarch64::Disassembler disassembler;
+        class StableDisassembler : public vixl::aarch64::Disassembler {
+        public:
+            void ResetForInstruction() { ResetOutput(); }
+        } disassembler;
         decoder.AppendVisitor(&disassembler);
         Emitted emitted{.bytes = context.CurrentBufferSize()};
         auto& masm = context.GetMasm();
@@ -540,6 +549,7 @@ TEST_CASE("zero store zr is value-only and fail-closed") {
         auto* last = masm.GetBuffer()->GetEndAddress<
                 const vixl::aarch64::Instruction*>();
         for (auto* instruction = first; instruction < last; ++instruction) {
+            disassembler.ResetForInstruction();
             decoder.Decode(instruction);
             std::string_view line{disassembler.GetOutput()};
             const auto begin = line.find_first_not_of(" \t");
