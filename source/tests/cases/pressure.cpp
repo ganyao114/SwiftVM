@@ -909,7 +909,9 @@ TEST_CASE("unit-local absolute addresses reuse only verified idle GPR windows") 
 
         GPRSMask gprs{~swift::u32{0}};
         if (tight_pool) {
-            for (swift::u32 code : {6u, 7u, 8u, 9u}) {
+            // Keep the pool tight enough to reject the cache owner, while
+            // still covering the two-reload memory shape under fail-closed RA.
+            for (swift::u32 code : {6u, 7u, 8u, 9u, 10u, 11u}) {
                 gprs.Clear(code);
             }
         } else {

@@ -69,10 +69,15 @@ TEST_CASE("Register allocation gives every spilled value a private slot") {
         }
     };
 
-    check_disjoint_slots(12, 0, 2, 8);  // scalar-only pressure
-    check_disjoint_slots(0, 10, 8, 2);  // vector-only pressure
-    check_disjoint_slots(10, 6, 2, 2);  // mixed
-    check_disjoint_slots(5, 5, 1, 1);   // odd-sized stack before a SIMD pair
+    // Add with spilled operands needs three transient GPRs (two reloads plus
+    // the destination), so keep the synthetic pool above that emitter floor.
+    check_disjoint_slots(12, 0, 3, 8);  // scalar-only pressure
+    // VecAdd with two spilled inputs needs five transient FPRs (three emitter
+    // scratch registers plus two reloads), in addition to the allocator's
+    // baseline reserve.
+    check_disjoint_slots(0, 10, 8, 6);  // vector-only pressure
+    check_disjoint_slots(10, 6, 3, 6);  // mixed
+    check_disjoint_slots(5, 5, 3, 6);   // odd-sized stack before a SIMD pair
 }
 
 TEST_CASE("integer width ties require exact last-use and a proven W write") {

@@ -105,9 +105,10 @@ TEST_CASE("Single-block register allocation is map-identical to the general path
     function->IdByRPO();
     REQUIRE(function->GetHIRBlocksRPO().size() == 1);
 
-    // Bits set are unavailable. Leave six allocatable GPRs/FPRs, less the
-    // default scratch reserve, so the block must take the spill path.
-    constexpr std::uint32_t available_gprs = 0x000003f0u;  // x4..x9
+    // Bits set are unavailable. Leave seven allocatable GPRs and eight FPRs,
+    // less the emitter reserve, so the block must take the spill path while
+    // still covering the four-reload call shape.
+    constexpr std::uint32_t available_gprs = 0x000007f0u;  // x4..x10
     constexpr std::uint32_t available_fprs = 0x00000f78u;  // v3..v6, v8..v11
     GPRSMask gprs{~available_gprs};
     FPRSMask fprs{~available_fprs};
