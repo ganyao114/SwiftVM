@@ -222,10 +222,15 @@ void JitTranslator::FinishFlagsTokenProducer(const Register& result,
                                              ir::ValueType type,
                                              const PseudoFlags& pseudo,
                                              ir::Inst* producer) {
-    if (!FlagsRegsEnabled() || pseudo.branch_only || flag_state.flags_token_valid ||
+    if (!FlagsRegsEnabled() || pseudo.branch_only ||
         !True(pseudo.set & ir::Flags::Parity)) {
         return;
     }
+    // A producer that defines PF always supersedes the previous token. Most
+    // paths invalidate it in BeginFlagsTokenProducer, but helpers such as
+    // MUL and split pseudo flag sequences can arrive here after a publish
+    // without that invalidation. Retaining the old token in that case makes
+    // LAHF/JP observe stale parity and can also retain a dead result register.
     CaptureFlagsToken(result, type, producer);
 }
 
@@ -797,14 +802,20 @@ void JitTranslator::ClearFlags(ir::Flags guest) {
         if (True(guest & ir::Flags::Zero)) {
             mask &= ~(u64(1) << HostFlagsBit::Z);
         }
-        if (!clear_cv_af && True(guest & ir::Flags::Carry)) {
+        if (clear_cv_af || True(guest & ir::Flags::Carry)) {
             mask &= ~(u64(1) << HostFlagsBit::C);
         }
-        if (!clear_cv_af && True(guest & ir::Flags::Overflow)) {
+        if (clear_cv_af || True(guest & ir::Flags::Overflow)) {
             mask &= ~(u64(1) << HostFlagsBit::V);
         }
         if (mask != UINT64_MAX) {
             __ And(flags, flags, ForceCast<s64>(mask));
+        }
+        if (clear_cv_af) {
+            // A logical clear invalidates any older lazy arithmetic C/V
+            // producer.  Leaving those request bits live lets a later merge
+            // repack stale host NZCV over the canonical zeroes.
+            flag_state.nzcv_requested &= HostFlags::NZ;
         }
     }
     if (True(guest & ir::Flags::Parity)) {
@@ -1578,6 +1589,20 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
     if (FlagsRegsEnabled() && test == ir::Flags::Overflow &&
         SimpleFlagStillInPstate(cur_block, inst, ir::Flags::Overflow) &&
         RecordLocalCondition(inst, ir::Cond::VS)) {
+        return;
+    }
+    // ARM C is the inverse of x86 CF for subtraction producers, and logical
+    // clears are allowed to update only the canonical carrier.  Reading live
+    // PSTATE here can therefore consume a stale carry after TEST/AND/OR/XOR.
+    // Use the packed guest bit for FLAGS_REGS; MergeNZCV first when the latest
+    // producer is still lazy.
+    if (FlagsRegsEnabled() && test == ir::Flags::Carry) {
+        auto result = context.W(ir::Value{inst});
+        if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
+            MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+                      flags_audit_block_edge);
+        }
+        __ Ubfx(result, flags.W(), HostFlagsBit::C, 1);
         return;
     }
     if (FlagsRegsEnabled() && test == ir::Flags::Carry &&

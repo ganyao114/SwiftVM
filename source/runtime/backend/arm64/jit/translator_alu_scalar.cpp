@@ -58,9 +58,23 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
                            reproved->carry_add == fusion->second.carry_add &&
                            reproved->value.Def() == fusion->second.value.Def(),
                    "narrow carry fusion proof diverged at IR {}", inst->Id());
-        ASSERT(flag_state.save_in_nzcv && flag_state.nzcv_dirty);
         const auto result = context.R(ir::Value{inst});
         const auto value = context.R(fusion->second.value, true);
+        // The carry-test/add pair is normally fed directly by a pending host
+        // NZCV producer.  A preceding boundary flush can legally have already
+        // committed that producer, though; the static fusion proof still
+        // identifies the same carry source, but PSTATE is no longer the
+        // authoritative copy.  Restore it from the canonical flags word before
+        // consuming ADC rather than asserting on a bookkeeping detail.
+        if (True(flag_state.flags_clear & ir::Flags::Carry)) {
+            // A preceding logical op can defer its CF clear until the next
+            // boundary.  ADC must observe that architectural clear instead of
+            // consuming the producer's stale host carry.
+            FlushFlags();
+            LoadNZCVFromFlags();
+        } else if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
+            LoadNZCVFromFlags();
+        }
         __ Adc(result.W(), value.W(), Operand{wzr});
         return;
     }
@@ -463,7 +477,12 @@ void JitTranslator::EmitAdc(ir::Inst* inst) {
     auto left_register = context.R(left, true);
 
     // Bring the guest carry flag into host C.
-    if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
+    if (True(flag_state.flags_clear & ir::Flags::Carry)) {
+        // Logical instructions clear CF lazily in the canonical flags word;
+        // materialize that clear before ADC consumes host carry.
+        FlushFlags();
+        LoadNZCVFromFlags();
+    } else if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
         LoadNZCVFromFlags();
     }
 
@@ -509,7 +528,12 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
     auto left_register = context.R(left, true);
 
     // The carry is stored with host (ARM) semantics, so SBC matches the guest borrow.
-    if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
+    if (True(flag_state.flags_clear & ir::Flags::Carry)) {
+        // Logical instructions clear CF lazily in the canonical flags word;
+        // materialize that clear before SBB consumes host carry.
+        FlushFlags();
+        LoadNZCVFromFlags();
+    } else if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
         LoadNZCVFromFlags();
     }
 
@@ -709,6 +733,7 @@ void JitTranslator::EmitOr(ir::Inst* inst) {
     __ Orr(result, left_register, right_operand);
     if (!pseudo_flags.Null()) {
         SaveLogicalResultFlags(result, left.Type(), pseudo_flags);
+        FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
     }
 }
 
@@ -723,6 +748,7 @@ void JitTranslator::EmitXor(ir::Inst* inst) {
             Register zero = result.Is64Bits() ? Register{xzr} : Register{wzr};
             __ Ands(result, zero, Operand{zero});
             RecordLogicalResultFlags(result, pseudo_flags);
+            FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
         } else {
             __ Mov(result, 0);
         }
@@ -756,6 +782,7 @@ void JitTranslator::EmitXor(ir::Inst* inst) {
     __ Eor(result, left_register, right_operand);
     if (!pseudo_flags.Null()) {
         SaveLogicalResultFlags(result, left.Type(), pseudo_flags);
+        FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
     }
 }
 
@@ -1094,6 +1121,7 @@ void JitTranslator::EmitMul(ir::Inst* inst) {
     if (!pseudo_flags.Null() && True(pseudo_flags.set & ir::Flags::Parity)) {
         SaveParity(result);
     }
+    FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
 }
 
 void JitTranslator::EmitMulSub(ir::Inst* inst) {
