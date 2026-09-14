@@ -166,6 +166,13 @@ ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
             AddSubOperandScratch(right);
     const bool narrow_nzcv = ir::GetValueSizeByte(inst.ReturnType()) <= 2 &&
                              True(requested & ir::Flags::NZCV);
+    // The precise operand walk cannot see all allocator ties: a tied narrow
+    // result may require an additional preservation copy before the aligned
+    // add/sub, and SaveAuxiliaryCarry can lease one more temporary while those
+    // copies are live.  Keep the historical opcode-wide floor as a fail-closed
+    // lower bound; otherwise a legal fuzz shape can reach GetTmpX() with one
+    // more lease than the static operand census predicted.
+    const u8 opcode_floor = X86PinExtEnabled() ? 5 : 4;
     if (narrow_nzcv) {
         // Current RA has no narrow Add/Sub destination tie: its result cannot
         // share either input, so the two emitter preservation arms are dead for
@@ -180,7 +187,7 @@ ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
                 need += 1;
             }
         }
-        return {need, kDefaultScratchFPR};
+        return {std::max(need, opcode_floor), kDefaultScratchFPR};
     }
 
     u8 need = operand_scratch;
@@ -195,7 +202,7 @@ ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
             need += 1;
         }
     }
-    return {need, kDefaultScratchFPR};
+    return {std::max(need, opcode_floor), kDefaultScratchFPR};
 }
 
 static u8 LogicalOperandScratch(const ir::Inst& inst) {
