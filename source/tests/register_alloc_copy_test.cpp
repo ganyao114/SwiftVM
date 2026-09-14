@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 
 namespace {
@@ -78,6 +79,53 @@ TEST_CASE("low32 copies support separated and repeated wrapper uses") {
 
     auto dead_source = AllocateCopyChain(false, false, false);
     REQUIRE(dead_source.alloc->IsLow32CopyCoalesced(dead_source.bridge.Id()));
+}
+
+TEST_CASE("ordered stores accept coalesced low32 views during emission") {
+    for (unsigned variant : {0u, 1u, 2u, 3u}) {
+        const bool ordered = (variant & 1u) != 0;
+        const bool keep_source_live = (variant & 2u) != 0;
+        CAPTURE(ordered, keep_source_live);
+        IntrusivePtr<Block> block{new Block(0, Location{0x86c0})};
+        auto source = block->LoadUniform<TypedValue<ValueType::U64>>(
+                Uniform{0, ValueType::U64});
+        auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
+                              .SetType(ValueType::U32);
+        auto reused_home = block->LoadImm(Imm{7u}).SetType(ValueType::U64);
+        block->StoreUniform(Uniform{8, ValueType::U64}, reused_home);
+        if (ordered) {
+            block->StoreMemoryTSO(Operand{Imm{0x10000u}}, bridge);
+        } else {
+            block->StoreMemory(Operand{Imm{0x10000u}}, bridge);
+        }
+        if (keep_source_live) {
+            block->StoreUniform(Uniform{16, ValueType::U64}, source);
+        }
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        ModuleConfig module_config{};
+        auto module = address_space.MapModule(
+                LocationDescriptor{0x86c0}, LocationDescriptor{0x86d0}, module_config);
+        auto features = ResolveFeatureSet(module_config);
+        RegAlloc alloc{block->MaxInstrId(), CopyTestGPRs(),
+                       FPRSMask{~((1u << 8) - 1u)}, features};
+        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        REQUIRE(alloc.IsLow32CopyCoalesced(bridge.Id()));
+        arm64::JitContext context{module, alloc};
+        arm64::JitTranslator translator{context};
+        REQUIRE_NOTHROW(translator.Translate(block.get()));
+        context.Finish();
+        REQUIRE(context.CurrentBufferSize() > 0);
+    }
 }
 
 TEST_CASE("low32 views reuse compatible source and result ownership") {

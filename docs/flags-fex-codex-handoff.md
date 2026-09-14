@@ -1,5 +1,16 @@
 # Codex handoff: Align SVM flags with FEX
 
+2026-09-14 mechanism work, based on `e6f3e9f`: see
+[the implementation and remaining design](mechanism-evolution-2026-09-14.md).
+This batch makes decoder ordering instance-owned, defaults the launcher to
+software ordering, bounds allocator retries, and repairs ordering and spill
+lifetime defects exposed by short guest checks. The linked document records
+the exact validation scope; the broader compatibility work remains staged.
+The next batch gives each x86 instance its own instruction reader and binds
+string/x87 helper addressing to the active Runtime scope. It also corrects
+the host-call scratch budget exposed by the two-instance regression. Global
+mapping-check callbacks and transactional publication remain pending.
+
 2026-09-13 correctness update: JIT buffer overruns and premature resident XMM
 writes are fixed. The c-ray 1x1 case matches the current FEX reference in both
 Linux memory modes with default optimizations. Eight focused test groups pass.

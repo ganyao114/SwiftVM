@@ -1905,15 +1905,20 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
     if (scalar_fast_path) {
         Register address = vixl_operand.GetBaseRegister();
         if (!vixl_operand.IsImmediateOffset() || vixl_operand.GetOffset() != 0) {
-            __ ComputeAddress(mem_scratch, vixl_operand);
-            address = mem_scratch;
+            // x10 is reserved only for biased memory. In direct mode it can
+            // hold a live SSA value, so address folding must use checked scratch.
+            address = memory_state.use_memory_base ? mem_scratch : context.GetTmpX();
+            __ ComputeAddress(address, vixl_operand);
         }
 
         Label unaligned;
         Label done;
         if (check_alignment) {
-            __ Tst(address, size - 1);
-            __ B(&unaligned, ne);
+            // Guest condition codes may remain in NZCV across a memory
+            // access. Test address bits without changing those flags.
+            for (u32 bit = 0; (u32{1} << bit) < size; ++bit) {
+                __ Tbnz(address, bit, &unaligned);
+            }
         }
         {
             vixl::CPUFeaturesScope rcpc(&masm, vixl::CPUFeatures::kRCpc);
@@ -2052,15 +2057,16 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
     if (scalar_fast_path) {
         Register address = vixl_operand.GetBaseRegister();
         if (!vixl_operand.IsImmediateOffset() || vixl_operand.GetOffset() != 0) {
-            __ ComputeAddress(mem_scratch, vixl_operand);
-            address = mem_scratch;
+            address = memory_state.use_memory_base ? mem_scratch : context.GetTmpX();
+            __ ComputeAddress(address, vixl_operand);
         }
 
         Label unaligned;
         Label done;
         if (check_alignment) {
-            __ Tst(address, size - 1);
-            __ B(&unaligned, ne);
+            for (u32 bit = 0; (u32{1} << bit) < size; ++bit) {
+                __ Tbnz(address, bit, &unaligned);
+            }
         }
         switch (type) {
             case ir::ValueType::S8:

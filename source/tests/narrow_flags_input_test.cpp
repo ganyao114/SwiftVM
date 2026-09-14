@@ -20,7 +20,8 @@ using namespace swift::runtime::ir;
 std::vector<std::string> EmitNarrowSub(ValueType type,
                                        bool reuse_extract,
                                        bool branch_only = false,
-                                       bool memory_source = false) {
+                                       bool memory_source = false,
+                                       bool source_spilled = false) {
     Config config{
             .loc_start = 0,
             .loc_end = 1ull << 48,
@@ -71,6 +72,14 @@ std::vector<std::string> EmitNarrowSub(ValueType type,
                    address_space.GetTrampolines().GetGPRRegs(),
                    address_space.GetTrampolines().GetFPRRegs(), features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    if (source_spilled) {
+        const auto source_reg = alloc.ValueGPR(source);
+        alloc.MapMemSpill(source.Id(), SpillSlot{2});
+        // The value lives in a reload register only through its final IR use.
+        // Its stack slot never receives a write and cannot satisfy later reads.
+        alloc.MapSpillReload(source.Id(), source.Id(), extract.Id(),
+                             source_reg, true);
+    }
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -116,6 +125,15 @@ TEST_CASE("narrow flag input keeps shared extracts computed") {
     const auto instructions = EmitNarrowSub(ValueType::U8, true);
     REQUIRE(Count(instructions, "uxtb ") == 1);
     REQUIRE(Count(instructions, "subs ") == 1);
+}
+
+TEST_CASE("narrow flag input consumes spilled sources within their reload lifetime") {
+    for (const auto type : {ValueType::U8, ValueType::U16}) {
+        CAPTURE(type);
+        const auto instructions = EmitNarrowSub(type, false, false, false, true);
+        CHECK(Count(instructions, "ldr ") == 0);
+        CHECK(Count(instructions, type == ValueType::U8 ? "uxtb " : "uxth ") == 1);
+    }
 }
 
 TEST_CASE("dead narrow immediate branches consume low extracts directly") {

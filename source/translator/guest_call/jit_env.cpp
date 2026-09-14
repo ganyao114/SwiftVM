@@ -16,10 +16,9 @@ using swift::translator::x86::X86Instance;
 
 namespace {
 
-// The one live environment, so the process-global checks the runtime installs
-// (SignalHandler map/range oracles, and translator.cpp's file-static
-// MemoryImpl bias) always describe the space that is actually running.  Only
-// one JitGuestEnv may exist at a time; the constructor asserts it.
+// The one live environment, so the process-global SignalHandler map/range
+// callbacks always describe the space that is actually running. Address bias
+// is instance-owned, but these callbacks still require one live JitGuestEnv.
 JitGuestEnv* g_active = nullptr;
 GuestSpace* g_active_space = nullptr;
 
@@ -76,8 +75,8 @@ constexpr std::uint64_t ARCH_SET_GS = 0x1001;
 }  // namespace
 
 JitGuestEnv::JitGuestEnv() {
-    // Two live environments would race over the runtime's process-global
-    // memory bias; fail fast instead of producing wrong addresses.
+    // Two live environments would replace each other's mapping callbacks.
+    // Keep this restriction until those callbacks have instance ownership.
     if (g_active != nullptr) {
         std::abort();
     }

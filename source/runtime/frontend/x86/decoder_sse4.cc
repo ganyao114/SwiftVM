@@ -655,9 +655,9 @@ ir::Value X64Decoder::SseNarrowSrc(_DInst& insn, _Operand& op, u32 bytes) {
     }
     auto address = ir::Operand{FlatAddress(insn, op)};
     if (bytes >= 16) {
-        return __ LoadMemory(address).SetType(ir::ValueType::V128);
+        return MemLoad(address, ir::ValueType::V128, TsoOrdered(insn));
     }
-    auto raw = __ LoadMemory(address).SetType(GetSize(bytes * 8));
+    auto raw = MemLoad(address, GetSize(bytes * 8), TsoOrdered(insn));
     ir::Value widened = raw;
     if (bytes != 8) {
         widened = __ ZeroExtend64(raw);
@@ -823,7 +823,7 @@ void X64Decoder::DecodeSseInsertPs(_DInst& insn) {
         word = __ And(container, ir::Operand{ir::Imm(u64(0xFFFFFFFF))}).SetType(kU64);
     } else {
         word = __ ZeroExtend64(
-                __ LoadMemory(ir::Operand{FlatAddress(insn, src)}).SetType(ir::ValueType::U32));
+                MemLoad(ir::Operand{FlatAddress(insn, src)}, ir::ValueType::U32, TsoOrdered(insn)));
     }
     auto value = XmmRead(dst);
     value = __ VecInsert16(value, word, ir::Imm(dest_lane * 2)).SetType(kV128);
@@ -896,8 +896,7 @@ void X64Decoder::DecodeSseInsert(_DInst& insn, u32 element_bits) {
         // same choice GprOf(v.rm, element_bits == 64) makes on the VEX side.
         value = R(static_cast<_RegisterType>(src.index));
     } else {
-        value = __ LoadMemory(ir::Operand{FlatAddress(insn, src)})
-                        .SetType(GetSize(element_bits));
+        value = MemLoad(ir::Operand{FlatAddress(insn, src)}, GetSize(element_bits), TsoOrdered(insn));
         if (element_bits != 64) {
             value = __ ZeroExtend64(value).SetType(kU64);
         }

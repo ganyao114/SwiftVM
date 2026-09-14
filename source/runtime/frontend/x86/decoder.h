@@ -17,30 +17,6 @@
 
 namespace swift::x86 {
 
-// Guest->host address bias used by host helpers (rep movs/stos) that execute
-// with raw guest pointers. Installed by the embedding translator when guest
-// addresses are virtualized (memory_base); 0 = direct.
-void SetGuestMemBias(u64 bias);
-[[nodiscard]] u64 GetGuestMemBias();
-
-// Bounded guest window (Config::guest_addr_mask). Host helpers truncate every
-// guest address with this mask before adding the bias, so a wild guest pointer
-// aliases inside the embedder's guest window instead of naming host memory.
-// UINT64_MAX (the default) = no window.
-void SetGuestAddrMask(u64 mask);
-[[nodiscard]] u64 GetGuestAddrMask();
-// Guest address -> host pointer for host-side helpers. The ONLY place the
-// frontend converts a guest address, so the truncation cannot be forgotten.
-[[nodiscard]] u8* GuestHostPtr(u64 guest_addr);
-
-// Memory ordering mode installed by the embedding translator (from
-// Config::tso_mode). AcqRel routes every guest memory access through the
-// ordering-enforcing IR ops; Relaxed/Hardware keep basic accesses (Hardware
-// relies on the host already running a TSO memory model). LOCK-prefixed
-// instructions always emit ordered accesses regardless of this mode.
-void SetTsoMode(runtime::TsoMode mode);
-[[nodiscard]] runtime::TsoMode GetTsoMode();
-
 using VAddr = u64;
 using namespace swift::runtime;
 
@@ -293,7 +269,8 @@ public:
                bool direct_addressing = false,
                const runtime::FeatureSet& features = runtime::FeatureSet{},
                VAddr decode_stop = 0,
-               DecodeStopKind decode_stop_kind = DecodeStopKind::Internal);
+               DecodeStopKind decode_stop_kind = DecodeStopKind::Internal,
+               runtime::TsoMode tso_mode = runtime::TsoMode::Relaxed);
 
     void Decode();
 
@@ -301,6 +278,7 @@ private:
     class DecodePipeline;
 
     [[nodiscard]] const runtime::FeatureSet& Features() const { return features_; }
+    [[nodiscard]] runtime::TsoMode GetTsoMode() const { return tso_mode_; }
 
     enum SSEMCSREnables : u32 {
         IM = 1 << 7,
@@ -1151,6 +1129,7 @@ private:
     bool addr_ea_tie_{false};
     bool direct_addressing_{false};
     runtime::FeatureSet features_{};
+    const runtime::TsoMode tso_mode_;
     VAddr addr_mask{UINT64_MAX};
     CarryPolarity carry_{CarryPolarity::Unknown};
     VAddr local_nzcv_next_pc_{UINT64_MAX};

@@ -1,11 +1,14 @@
 #include <array>
+#include <barrier>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "runtime/backend/guest_memory_scope.h"
 #include "runtime/backend/smc_tracker.h"
 #include "translator/linux/guest_memory.h"
 #include "translator/x86/translator.h"
@@ -44,6 +47,106 @@ struct SmallGuest {
 };
 
 }  // namespace
+
+extern "C" swift::u64 SwiftRepStos1(swift::u64, swift::u64, swift::u64);
+
+TEST_CASE("guest helper address scopes restore nested and thread mappings") {
+    using swift::runtime::backend::GuestMemoryScope;
+    std::array<swift::u8, 64> first{}, second{};
+    const auto& outside = GuestMemoryScope::Current();
+    REQUIRE(outside.bias == 0);
+    REQUIRE(outside.mask == UINT64_MAX);
+    {
+        const GuestMemoryScope outer{first.data(), 31};
+        REQUIRE(SwiftRepStos1(0x103, 0x11, 1) == 0);
+        {
+            const GuestMemoryScope inner{second.data(), 63};
+            REQUIRE(SwiftRepStos1(0x123, 0x22, 1) == 0);
+        }
+        try {
+            const GuestMemoryScope inner{second.data(), 63};
+            throw 1;
+        } catch (int) {
+        }
+        REQUIRE(SwiftRepStos1(0x124, 0x33, 1) == 0);
+        // Both scopes stay active at the rendezvous, with different mappings
+        // for the same guest address. No repeated workload is needed.
+        std::barrier rendezvous{2};
+        swift::u64 worker_status = UINT64_MAX;
+        std::thread worker([&] {
+            const GuestMemoryScope other{second.data(), 63};
+            rendezvous.arrive_and_wait();
+            worker_status = SwiftRepStos1(0x125, 0x44, 1);
+        });
+        rendezvous.arrive_and_wait();
+        const auto main_status = SwiftRepStos1(0x125, 0x55, 1);
+        worker.join();
+        CHECK(worker_status == 0);
+        CHECK(main_status == 0);
+    }
+    CHECK(first[3] == 0x11);
+    CHECK(first[4] == 0x33);
+    CHECK(first[5] == 0x55);
+    CHECK(second[35] == 0x22);
+    CHECK(second[37] == 0x44);
+    CHECK(GuestMemoryScope::Current().bias == 0);
+    CHECK(GuestMemoryScope::Current().mask == UINT64_MAX);
+}
+
+TEST_CASE("guest instances keep their instruction bytes") {
+    SmallGuest first(20, {0xbb, 0x11, 0, 0, 0, 0xf4});
+    SmallGuest second(20, {0xbb, 0x22, 0, 0, 0, 0xf4});
+    for (auto* guest : {&first, &second, &first}) {
+        auto& ctx = guest->core->GetContext();
+        ctx.rip.qword = guest->code_address;
+        REQUIRE(guest->core->Run() == swift::translator::ExitReason::None);
+        CHECK(ctx.rbx.qword == (guest == &first ? 0x11 : 0x22));
+    }
+}
+
+TEST_CASE("guest instances keep cached string and x87 accesses") {
+    // CMP EAX,EAX; REP MOVSB; MOV ECX,4; REP STOSB;
+    // FLD qword [R8]; FSTP qword [R9]; SETZ DL; HLT.
+    const std::vector<swift::u8> code{
+            0x39, 0xc0, 0xf3, 0xa4, 0xb9, 4, 0, 0, 0, 0xf3, 0xaa,
+            0x41, 0xdd, 0x00, 0x41, 0xdd, 0x19, 0x0f, 0x94, 0xc2, 0xf4};
+    auto run = [](SmallGuest& guest, swift::u8 seed) {
+        auto* data = static_cast<swift::u8*>(guest.memory.ToHost(guest.data_address));
+        for (size_t i = 0; i < 4; ++i) data[i] = seed + i;
+        std::memset(data + 32, 0, 48);
+        const double number = seed + 0.5;
+        std::memcpy(data + 16, &number, sizeof(number));
+        auto& ctx = guest.core->GetContext();
+        ctx.rip.qword = guest.code_address;
+        ctx.rax.qword = seed;
+        ctx.rcx.qword = 4;
+        // Each helper must apply this instance's mask before adding its bias.
+        const auto wrapped = guest.data_address | (guest.memory.Mask() + 1);
+        ctx.rsi.qword = wrapped;
+        ctx.rdi.qword = wrapped + 32;
+        ctx.r8.qword = wrapped + 16;
+        ctx.r9.qword = wrapped + 64;
+        REQUIRE(guest.core->Run() == swift::translator::ExitReason::None);
+        CHECK(std::memcmp(data, data + 32, 4) == 0);
+        for (size_t i = 36; i < 40; ++i) CHECK(data[i] == seed);
+        double result{};
+        std::memcpy(&result, data + 64, sizeof(result));
+        CHECK(result == number);
+        CHECK((ctx.rdx.qword & 0xff) == 1);
+    };
+
+    SmallGuest first(20, code);
+    run(first, 0x11);  // Populate the first instance's code cache.
+    {
+        SmallGuest second(21, code);
+        run(second, 0x22);
+        run(first, 0x33);
+        run(second, 0x44);
+    }
+    // The second window has been released; retained helper configuration
+    // would now refer to storage whose lifetime has ended.
+    run(first, 0x55);
+}
 
 TEST_CASE("bounded integer arithmetic publishes the half carry") {
     constexpr std::array<swift::u8, 6> operations{0x01, 0x29, 0x11, 0x19, 0xf7, 0x39};
@@ -308,6 +411,37 @@ TEST_CASE("bounded byte-table loop keeps its odd index and byte stores") {
                 CAPTURE(i, expected[i], stack[i]);
                 REQUIRE(stack[i] == expected[i]);
             }
+        }
+    }
+}
+
+TEST_CASE("bounded ordered memory accesses preserve live comparison flags") {
+    // CMP r8,r9; MOV rax,[rdi]; SETZ cl; CMP r8,r9;
+    // MOV [rdi+16],rax; SETZ dl; HLT.
+    const std::vector<swift::u8> code{
+            0x4d, 0x39, 0xc8, 0x48, 0x8b, 0x07, 0x0f, 0x94, 0xc1,
+            0x4d, 0x39, 0xc8, 0x48, 0x89, 0x47, 0x10, 0x0f, 0x94, 0xc2, 0xf4};
+    for (swift::u32 window_bits : {0u, 20u}) {
+        for (swift::u64 offset : {0u, 1u}) {
+            CAPTURE(window_bits, offset);
+            SmallGuest guest(window_bits, code);
+            auto* bytes = static_cast<swift::u8*>(guest.memory.ToHost(guest.data_address));
+            const swift::u64 input = 0x123456789abcdef0ull;
+            std::memcpy(bytes + offset, &input, sizeof(input));
+            auto& ctx = guest.core->GetContext();
+            ctx.rip.qword = guest.code_address;
+            ctx.rdi.qword = guest.data_address + offset;
+            ctx.r8.qword = 1;
+            ctx.r9.qword = 2;
+            ctx.rcx.qword = 0;
+            ctx.rdx.qword = 0;
+            REQUIRE(guest.core->Run() == swift::translator::ExitReason::None);
+            REQUIRE(ctx.rax.qword == input);
+            REQUIRE(ctx.rcx.qword == 0);
+            REQUIRE(ctx.rdx.qword == 0);
+            swift::u64 output = 0;
+            std::memcpy(&output, bytes + offset + 16, sizeof(output));
+            REQUIRE(output == input);
         }
     }
 }

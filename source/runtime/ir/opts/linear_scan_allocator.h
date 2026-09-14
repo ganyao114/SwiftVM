@@ -279,6 +279,7 @@ public:
                     reg_alloc->MapRegister(interval.inst->Id(), HostGPR{(u16)alloc});
                 } else {
                     SelectEvictionCandidate(interval, false);
+                    if (has_eviction_candidate) return;
                     SpillAtInterval(interval);
                 }
             } else {
@@ -292,6 +293,7 @@ public:
                     reg_alloc->MapRegister(interval.inst->Id(), HostFPR{(u16)alloc});
                 } else {
                     SelectEvictionCandidate(interval, true);
+                    if (has_eviction_candidate) return;
                     SpillAtInterval(interval);
                 }
             }
@@ -603,16 +605,89 @@ private:
                          interval.inst->Id()) != forced_spills->end();
     }
 
+    void CollectSpillUses() {
+        if (!spill_uses.empty()) {
+            return;
+        }
+        spill_uses.resize(InstrCount());
+        auto record = [&](Value value, u32 position) {
+            if (!value.Defined()) return;
+            const auto source = ResolveBitCastSource(value);
+            if (source.Id() < spill_uses.size()) {
+                spill_uses[source.Id()].push_back(position);
+            }
+        };
+        auto collect_block = [&](Block* lir_block) {
+            u32 end = 0;
+            for (auto& inst : lir_block->GetInstList()) {
+                end = std::max<u32>(end, inst.Id());
+                // Bitcasts alias their source; only their consumers read it.
+                if (inst.IsBitCastOperation()) continue;
+                for (auto value : inst.GetValues()) record(value, inst.Id());
+            }
+            for (auto* anchor : lir_block->GetLoopHoistMetadata().anchors) {
+                record(Value{anchor}, end);
+            }
+            std::function<void(const Terminal&)> visit = [&](const Terminal& terminal) {
+                VisitVariant<void>(terminal, [&](auto term) {
+                    using T = std::decay_t<decltype(term)>;
+                    if constexpr (std::is_same_v<T, terminal::If>) {
+                        record(term.cond, end);
+                        visit(term.then_);
+                        visit(term.else_);
+                    } else if constexpr (std::is_same_v<T, terminal::Switch>) {
+                        record(term.value, end);
+                        for (const auto& branch : term.cases) visit(branch.then);
+                    } else if constexpr (std::is_same_v<T, terminal::Condition>) {
+                        visit(term.then_);
+                        visit(term.else_);
+                    } else if constexpr (std::is_same_v<T, terminal::CheckHalt>) {
+                        visit(term.else_);
+                    }
+                });
+            };
+            visit(lir_block->GetTerminal());
+        };
+        if (function) {
+            for (auto& hir_block : function->GetHIRBlocksRPO()) {
+                collect_block(hir_block.GetBlock());
+            }
+        } else {
+            collect_block(block);
+        }
+        for (auto& uses : spill_uses) {
+            std::sort(uses.begin(), uses.end());
+            uses.erase(std::unique(uses.begin(), uses.end()), uses.end());
+        }
+    }
+
     void SelectEvictionCandidate(const LiveInterval& current, bool is_float) {
         if (!select_eviction || has_eviction_candidate) {
             return;
         }
-        const u32 forbidden = is_float ? 0 : IntervalFixedClobbers(current);
-        const LiveInterval* best = nullptr;
-        auto consider = [&](const LiveInterval& active) {
-            if (active.end <= current.end) {
-                return;
+        // A retry spills the entire interval, including uses before this
+        // pressure point. Account for that cost before comparing next uses.
+        // Build this index only on pressure; spill-free units pay no extra walk.
+        CollectSpillUses();
+        auto cheaper = [&](const LiveInterval& left, const LiveInterval& right) {
+            const auto& left_uses = spill_uses[left.inst->Id()];
+            const auto& right_uses = spill_uses[right.inst->Id()];
+            if (left_uses.size() != right_uses.size()) {
+                return left_uses.size() < right_uses.size();
             }
+            auto next_use = [&](const auto& uses) {
+                const auto it = std::lower_bound(uses.begin(), uses.end(), current.start);
+                return it == uses.end() ? UINT32_MAX : *it;
+            };
+            const auto left_next = next_use(left_uses);
+            const auto right_next = next_use(right_uses);
+            if (left_next != right_next) return left_next > right_next;
+            if (left.end != right.end) return left.end > right.end;
+            return left.inst->Id() < right.inst->Id();
+        };
+        const u32 forbidden = is_float ? 0 : IntervalFixedClobbers(current);
+        const LiveInterval* best = &current;
+        auto consider = [&](const LiveInterval& active) {
             const auto type = reg_alloc->ValueType(Value{active.inst});
             if (is_float ? type != backend::RegAlloc::FPR
                          : type != backend::RegAlloc::GPR) {
@@ -632,8 +707,7 @@ private:
                     return;
                 }
             }
-            if (!best || active.end > best->end ||
-                (active.end == best->end && active.inst->Id() < best->inst->Id())) {
+            if (cheaper(active, *best)) {
                 best = &active;
             }
         };
@@ -646,7 +720,7 @@ private:
                 consider(active);
             }
         }
-        if (best) {
+        if (best != &current) {
             has_eviction_candidate = true;
             eviction_candidate = best->inst->Id();
         }
@@ -1869,8 +1943,17 @@ private:
                     need.gpr, backend::kDefaultScratchGPR + reload_gpr) + extra_gpr;
         }
         const u32 need_fpr = need.fpr + reload_fpr + extra_fpr;
-        return static_cast<u32>(gprs.GetClearCount()) + scratch_only_gprs >= need_gpr &&
-               static_cast<u32>(fprs.GetClearCount()) >= need_fpr;
+        const bool fits = static_cast<u32>(gprs.GetClearCount()) + scratch_only_gprs >= need_gpr &&
+                          static_cast<u32>(fprs.GetClearCount()) >= need_fpr;
+        if (!fits && RaDiagEnabled()) {
+            SVM_DIAG_PRINT(RegisterAllocation,
+                           "[ra-budget] ir=%u op=%u free=%u/%u extra=%u need=%u/%u reload=%u/%u\n",
+                           id, static_cast<u32>(inst->GetOp()),
+                           static_cast<u32>(gprs.GetClearCount()),
+                           static_cast<u32>(fprs.GetClearCount()), scratch_only_gprs,
+                           need_gpr, need_fpr, reload_gpr, reload_fpr);
+        }
+        return fits;
     }
 
     // Number of RegAlloc map entries (matches how the caller sized it).
@@ -2534,6 +2617,7 @@ private:
     Vector<LiveInterval> live_interval;
     List<LiveInterval> active_lives;
     Vector<LiveInterval> fast_active_lives;
+    Vector<Vector<u32>> spill_uses;
     backend::GPRSMask active_gprs;
     backend::FPRSMask active_fprs;
     HostRegWriteMap scalar_tie_fpr_writes;

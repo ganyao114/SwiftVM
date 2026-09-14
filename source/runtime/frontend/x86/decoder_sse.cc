@@ -443,7 +443,7 @@ ir::Value X64Decoder::LoadSrcVec(_DInst& insn, _Operand& op) {
     if (op.type == O_REG) {
         return XmmRead(static_cast<_RegisterType>(op.index));
     }
-    return __ LoadMemory(BasicStructuredAddress(insn, op)).SetType(ir::ValueType::V128);
+    return MemLoad(BasicStructuredAddress(insn, op), ir::ValueType::V128, TsoOrdered(insn));
 }
 
 ir::Value X64Decoder::XmmLo(_RegisterType reg) {
@@ -550,9 +550,9 @@ X64Decoder::VecHalves X64Decoder::LoadSrcHalves(_DInst& insn, _Operand& op) {
         return {XmmLo(reg), XmmHi(reg)};
     }
     auto addr = FlatAddress(insn, op);
-    auto lo = __ LoadMemory(ir::Operand{addr}).SetType(ir::ValueType::U64);
+    auto lo = MemLoad(ir::Operand{addr}, ir::ValueType::U64, TsoOrdered(insn));
     auto hi_addr = __ Add(addr, ir::Operand{ir::Imm(u64(8))});
-    auto hi = __ LoadMemory(ir::Operand{hi_addr}).SetType(ir::ValueType::U64);
+    auto hi = MemLoad(ir::Operand{hi_addr}, ir::ValueType::U64, TsoOrdered(insn));
     return {lo, hi};
 }
 
@@ -560,8 +560,8 @@ ir::Value X64Decoder::LoadSrcLo(_DInst& insn, _Operand& op) {
     if (op.type == O_REG) {
         return XmmLo(static_cast<_RegisterType>(op.index));
     }
-    return __ LoadMemory(ScalarMemoryAddress(insn, op, ir::ValueType::U64))
-            .SetType(ir::ValueType::U64);
+    return MemLoad(ScalarMemoryAddress(insn, op, ir::ValueType::U64),
+                   ir::ValueType::U64, TsoOrdered(insn));
 }
 
 ir::Value X64Decoder::LoadSrcScalarVec(_DInst& insn, _Operand& op, u32 lane_bits) {
@@ -570,7 +570,7 @@ ir::Value X64Decoder::LoadSrcScalarVec(_DInst& insn, _Operand& op, u32 lane_bits
         return XmmScalarV(static_cast<_RegisterType>(op.index), lane_bits);
     }
     const auto type = lane_bits == 32 ? ir::ValueType::V32 : ir::ValueType::V64;
-    return __ LoadMemory(ScalarMemoryAddress(insn, op, type)).SetType(type);
+    return MemLoad(ScalarMemoryAddress(insn, op, type), type, TsoOrdered(insn));
 }
 
 ir::Value X64Decoder::LoadSrcHi(_DInst& insn, _Operand& op) {
@@ -578,7 +578,7 @@ ir::Value X64Decoder::LoadSrcHi(_DInst& insn, _Operand& op) {
         return XmmHi(static_cast<_RegisterType>(op.index));
     }
     auto addr = __ Add(FlatAddress(insn, op), ir::Operand{ir::Imm(u64(8))});
-    return __ LoadMemory(ir::Operand{addr}).SetType(ir::ValueType::U64);
+    return MemLoad(ir::Operand{addr}, ir::ValueType::U64, TsoOrdered(insn));
 }
 
 void X64Decoder::DecodeVecHalfOp(_DInst& insn, VecHalfFn fn) { DecodeVecHalfOp(insn, fn, fn); }
@@ -843,14 +843,14 @@ void X64Decoder::DecodeMovVec(_DInst& insn) {
         if (op1.type == O_REG) {
             v = __ LoadUniform(ToVReg(x86_regs_table[op1.index]));
         } else {
-            v = __ LoadMemory(BasicStructuredAddress(insn, op1))
-                        .SetType(ir::ValueType::V128);
+            v = MemLoad(BasicStructuredAddress(insn, op1),
+                        ir::ValueType::V128, TsoOrdered(insn));
         }
         __ StoreUniform(ToVReg(x86_regs_table[op0.index]), v);
     } else {
         // Store: m128, xmm (movntdq/movntps degrade to basic stores).
         auto v = __ LoadUniform(ToVReg(x86_regs_table[op1.index]));
-        __ StoreMemory(BasicStructuredAddress(insn, op0), v);
+        MemStore(BasicStructuredAddress(insn, op0), v, TsoOrdered(insn));
     }
 }
 
@@ -864,15 +864,15 @@ void X64Decoder::DecodeMovsd(_DInst& insn) {
             XmmLo(dst, XmmLo(static_cast<_RegisterType>(op1.index)));
         } else {
             // xmm, m64: low qword loaded, high qword zeroed.
-            auto v = __ LoadMemory(ScalarMemoryAddress(insn, op1, ir::ValueType::U64))
-                             .SetType(ir::ValueType::U64);
+            auto v = MemLoad(ScalarMemoryAddress(insn, op1, ir::ValueType::U64),
+                             ir::ValueType::U64, TsoOrdered(insn));
             XmmLo(dst, v);
             XmmHi(dst, __ LoadImm(ir::Imm(u64(0))));
         }
     } else {
         // m64 = src low qword.
-        __ StoreMemory(ScalarMemoryAddress(insn, op0, ir::ValueType::U64),
-                       XmmLo(static_cast<_RegisterType>(op1.index)));
+        MemStore(ScalarMemoryAddress(insn, op0, ir::ValueType::U64),
+                 XmmLo(static_cast<_RegisterType>(op1.index)), TsoOrdered(insn));
     }
 }
 
@@ -889,8 +889,8 @@ void X64Decoder::DecodeMovss(_DInst& insn) {
             XmmLo(dst, merged);
         } else {
             // xmm, m32: low dword loaded, upper 96 bits zeroed.
-            auto v = __ LoadMemory(ScalarMemoryAddress(insn, op1, ir::ValueType::U32))
-                             .SetType(ir::ValueType::U32);
+            auto v = MemLoad(ScalarMemoryAddress(insn, op1, ir::ValueType::U32),
+                             ir::ValueType::U32, TsoOrdered(insn));
             XmmLo(dst, __ ZeroExtend64(v));
             XmmHi(dst, __ LoadImm(ir::Imm(u64(0))));
         }
@@ -906,8 +906,8 @@ void X64Decoder::DecodeMovHalf(_DInst& insn, bool high) {
     auto& op1 = insn.ops[1];
     if (op0.type == O_REG && IsV(static_cast<_RegisterType>(op0.index))) {
         // Load: xmm half, m64 (other half preserved).
-        auto v = __ LoadMemory(ScalarMemoryAddress(insn, op1, ir::ValueType::U64))
-                         .SetType(ir::ValueType::U64);
+        auto v = MemLoad(ScalarMemoryAddress(insn, op1, ir::ValueType::U64),
+                         ir::ValueType::U64, TsoOrdered(insn));
         if (high) {
             XmmHi(static_cast<_RegisterType>(op0.index), v);
         } else {
@@ -917,7 +917,7 @@ void X64Decoder::DecodeMovHalf(_DInst& insn, bool high) {
         // Store: m64 = xmm half.
         auto half = high ? XmmHi(static_cast<_RegisterType>(op1.index))
                          : XmmLo(static_cast<_RegisterType>(op1.index));
-        __ StoreMemory(ScalarMemoryAddress(insn, op0, ir::ValueType::U64), half);
+        MemStore(ScalarMemoryAddress(insn, op0, ir::ValueType::U64), half, TsoOrdered(insn));
     }
 }
 
@@ -1389,14 +1389,14 @@ void X64Decoder::DecodeMxcsr(_DInst& insn, bool load) {
     auto addr = FlatAddress(insn, insn.ops[0]);
     ir::Uniform uni_mxcsr{offsetof(ThreadContext64, mxcsr), ir::ValueType::U32};
     if (load) {
-        auto v = __ LoadMemory(ir::Operand{addr}).SetType(ir::ValueType::U32);
+        auto v = MemLoad(ir::Operand{addr}, ir::ValueType::U32, TsoOrdered(insn));
         __ StoreUniform(uni_mxcsr, v);
         if (sse_afp_nan_) {
             __ SetLocation(ir::Lambda{ir::Imm{pc}});
             __ ReturnToDispatcher();
         }
     } else {
-        __ StoreMemory(ir::Operand{addr}, __ LoadUniform(uni_mxcsr));
+        MemStore(ir::Operand{addr}, __ LoadUniform(uni_mxcsr), TsoOrdered(insn));
     }
 }
 
@@ -1417,12 +1417,12 @@ void X64Decoder::DecodeFxsave(_DInst& insn, bool restore) {
         // x87 half had already been skipped -- and FXSAVE with RFBM covering
         // only x87 would not fault at all.
         RaiseIfGuestFault(status, insn_pc);
-        __ StoreMemory(ir::Operand{addr, 24, ir::OperandPlus}, __ LoadUniform(uni_mxcsr));
+        MemStore(ir::Operand{addr, 24, ir::OperandPlus}, __ LoadUniform(uni_mxcsr), TsoOrdered(insn));
         for (u32 i = 0; i < 16; ++i) {
             ir::Uniform uni_xmm{u32(offsetof(ThreadContext64, xmms) + i * sizeof(Xmm)),
                                 ir::ValueType::V128};
-            __ StoreMemory(ir::Operand{addr, kXsaveXmmOff + s32(16 * i), ir::OperandPlus},
-                           __ LoadUniform(uni_xmm));
+            MemStore(ir::Operand{addr, kXsaveXmmOff + s32(16 * i), ir::OperandPlus},
+                     __ LoadUniform(uni_xmm), TsoOrdered(insn));
         }
     } else {
         auto status = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&X87Fxrstor)}},
@@ -1430,13 +1430,13 @@ void X64Decoder::DecodeFxsave(_DInst& insn, bool restore) {
                                     addr)
                               .SetType(ir::ValueType::U64);
         RaiseIfGuestFault(status, insn_pc);
-        auto mx = __ LoadMemory(ir::Operand{addr, 24, ir::OperandPlus}).SetType(ir::ValueType::U32);
+        auto mx = MemLoad(ir::Operand{addr, 24, ir::OperandPlus}, ir::ValueType::U32, TsoOrdered(insn));
         __ StoreUniform(uni_mxcsr, mx);
         for (u32 i = 0; i < 16; ++i) {
             ir::Uniform uni_xmm{u32(offsetof(ThreadContext64, xmms) + i * sizeof(Xmm)),
                                 ir::ValueType::V128};
-            auto v = __ LoadMemory(ir::Operand{addr, kXsaveXmmOff + s32(16 * i), ir::OperandPlus})
-                             .SetType(ir::ValueType::V128);
+            auto v = MemLoad(ir::Operand{addr, kXsaveXmmOff + s32(16 * i), ir::OperandPlus},
+                             ir::ValueType::V128, TsoOrdered(insn));
             __ StoreUniform(uni_xmm, v);
         }
         if (sse_afp_nan_) {

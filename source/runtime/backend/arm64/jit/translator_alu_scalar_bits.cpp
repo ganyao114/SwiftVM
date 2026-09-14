@@ -6,6 +6,7 @@
 
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/context.h"
+#include "runtime/ir/low32_copy.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -389,9 +390,7 @@ bool JitTranslator::ReproveLow32ViewOwnership(ir::Inst* inst,
             return false;
         }
         if (!context.HasAllocation(ir::Value{&scan}) &&
-            scan.GetOp() != ir::OpCode::StoreMemory &&
-            scan.GetOp() != ir::OpCode::StoreUniform &&
-            scan.GetOp() != ir::OpCode::SetHostGPR) {
+            !ir::IsReadOnlyLow32Consumer(scan.GetOp())) {
             return false;
         }
     }

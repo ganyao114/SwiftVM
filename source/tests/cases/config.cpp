@@ -519,3 +519,33 @@ TEST_CASE("config hash includes independent code-shape policies") {
     REQUIRE(swift::runtime::backend::ComputeConfigHash(a1) !=
             swift::runtime::backend::ComputeConfigHash(induction));
 }
+
+TEST_CASE("config hash and default preserve software memory ordering") {
+    using namespace swift::runtime;
+    const char* old = GetRawSvmConfigEnvForTest("SVM_TSO_MODE");
+    const bool had_old = old != nullptr;
+    const std::string old_value = old ? old : "";
+    UnsetSvmConfigEnvForTest("SVM_TSO_MODE");
+    const auto mode = GetSvmConfig().tso_mode;
+    const auto missing = backend::ComputeEnvHash();
+    SetSvmConfigEnvForTest("SVM_TSO_MODE", "acqrel", 1);
+    const auto explicit_mode = backend::ComputeEnvHash();
+    SetSvmConfigEnvForTest("SVM_TSO_MODE", "relaxed", 1);
+    const auto relaxed_mode = backend::ComputeEnvHash();
+    if (had_old) SetSvmConfigEnvForTest("SVM_TSO_MODE", old_value.c_str(), 1);
+    else UnsetSvmConfigEnvForTest("SVM_TSO_MODE");
+
+    REQUIRE(mode == "acqrel");
+    // String keys retain whether the caller supplied a value. Both forms
+    // must remain separate from an explicitly weaker ordering mode.
+    REQUIRE(explicit_mode != relaxed_mode);
+    REQUIRE(missing != relaxed_mode);
+    Config ordered{};
+    Config relaxed{};
+    Config hardware{};
+    ordered.tso_mode = TsoMode::AcqRel;
+    relaxed.tso_mode = TsoMode::Relaxed;
+    hardware.tso_mode = TsoMode::Hardware;
+    REQUIRE(backend::ComputeConfigHash(ordered) != backend::ComputeConfigHash(relaxed));
+    REQUIRE(backend::ComputeConfigHash(ordered) != backend::ComputeConfigHash(hardware));
+}

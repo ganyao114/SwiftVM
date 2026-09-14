@@ -22,6 +22,7 @@ struct FunctionRegionDecodeConfig {
     bool sse_afp_nan{};
     bool native_memory{};
     runtime::FeatureSet features{};
+    runtime::TsoMode tso_mode{runtime::TsoMode::Relaxed};
     std::function<bool(runtime::LocationDescriptor)> local_target;
     std::function<bool(runtime::LocationDescriptor)> has_code;
 };

@@ -300,7 +300,8 @@ struct ValidityKey {
     bool operator==(const ValidityKey&) const = default;
 };
 
-constexpr u64 kCacheFormatVersion = 20;
+// Reject code emitted before stack/TLS accesses obeyed the selected TSO mode.
+constexpr u64 kCacheFormatVersion = 21;
 
 u64 HashBytes(const void* data, std::size_t size, u64 seed);
 u64 HashU64(u64 value, u64 seed);

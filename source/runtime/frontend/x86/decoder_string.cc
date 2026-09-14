@@ -1,6 +1,6 @@
-#include <atomic>
 #include <array>
 #include <cstring>
+#include "runtime/backend/guest_memory_scope.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/frontend/x86/decoder_internal.h"
 
@@ -9,35 +9,6 @@ namespace swift::x86 {
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
-
-namespace {
-std::atomic<u64> g_guest_mem_bias{0};
-// Bounded guest window mask; UINT64_MAX = disabled. See decoder.h.
-std::atomic<u64> g_guest_addr_mask{UINT64_MAX};
-// Memory ordering mode installed by the embedding translator (Config::tso_mode
-// -> x86::SetTsoMode). Relaxed by default: correct for single-threaded guests.
-std::atomic<u8> g_tso_mode{static_cast<u8>(runtime::TsoMode::Relaxed)};
-}
-
-void SetGuestMemBias(u64 bias) { g_guest_mem_bias.store(bias, std::memory_order_relaxed); }
-u64 GetGuestMemBias() { return g_guest_mem_bias.load(std::memory_order_relaxed); }
-
-void SetGuestAddrMask(u64 mask) {
-    g_guest_addr_mask.store(mask ? mask : UINT64_MAX, std::memory_order_relaxed);
-}
-u64 GetGuestAddrMask() { return g_guest_addr_mask.load(std::memory_order_relaxed); }
-
-u8* GuestHostPtr(u64 guest_addr) {
-    return reinterpret_cast<u8*>((guest_addr & g_guest_addr_mask.load(std::memory_order_relaxed)) +
-                                 g_guest_mem_bias.load(std::memory_order_relaxed));
-}
-
-void SetTsoMode(runtime::TsoMode mode) {
-    g_tso_mode.store(static_cast<u8>(mode), std::memory_order_relaxed);
-}
-runtime::TsoMode GetTsoMode() {
-    return static_cast<runtime::TsoMode>(g_tso_mode.load(std::memory_order_relaxed));
-}
 
 constexpr u64 kStringBackward = u64(1) << 63;
 constexpr u64 kStringStepShift = 61;
@@ -71,8 +42,9 @@ constexpr u64 kStringGuestFault = u64(1) << 63;
 // guest thread anyway. Embedders with no oracle installed get `length` back
 // unchanged and keep the old unchecked behaviour.
 static u8* ClampGuestWalk(u64 start, u64 step, bool backward, u64& count, bool& faulted) {
-    const u64 mask = g_guest_addr_mask.load(std::memory_order_relaxed);
-    const u64 bias = g_guest_mem_bias.load(std::memory_order_relaxed);
+    const auto& mapping = runtime::backend::GuestMemoryScope::Current();
+    const u64 mask = mapping.mask;
+    const u64 bias = mapping.bias;
     const u64 base = start & mask;
     if (mask != UINT64_MAX && count != 0) {
         const u64 avail = mask - base + 1;  // bytes from base to the window end

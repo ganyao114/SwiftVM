@@ -14,11 +14,13 @@ foreach(group IN LISTS SWIFT_CASE_GROUPS)
     target_link_libraries(swift_cases_test PRIVATE swift_cases_${group})
 endforeach()
 add_test(NAME swift_cases_flags COMMAND swift_cases_test "SaveCV*,CondSet*,Flag elimination keeps live pseudo masks*")
-add_test(NAME swift_cases_registers COMMAND swift_cases_test "guest GPR coalescing keeps publication*,resident XMM ABI maps*,scalar FPR fixed-home tie*,Spill eviction chooses*")
+add_test(NAME swift_cases_registers COMMAND swift_cases_test "guest GPR coalescing keeps publication*,resident XMM ABI maps*,scalar FPR fixed-home tie*,Spill eviction*")
 add_test(NAME swift_cases_width COMMAND swift_cases_test "unit-local width chains*,integer width ties require*,pinned W-view inputs hand off*,integer width chains keep*")
 add_test(NAME swift_cases_state COMMAND swift_cases_test "Runtime preserves an interrupt*,Uniform elimination does not propagate*,Uniform helper effect sets*")
 add_test(NAME swift_cases_configuration COMMAND swift_cases_test "FeatureSet*,config hash*,module feature binding parser*,SVM_FLAGS_REGS*")
 add_test(NAME swift_cases_coverage COMMAND swift_cases_test "bounded byte-table*,bounded streaming*,bounded integer arithmetic*")
+add_test(NAME swift_cases_instances COMMAND swift_cases_test "guest instances*,guest helper address*")
+set_tests_properties(swift_cases_instances PROPERTIES LABELS "unit;review" TIMEOUT 15)
 add_test(NAME swift_cases_reachability COMMAND swift_cases_test "Unreachable blocks keep unique IDs*")
 add_test(NAME swift_cases_code_buffer COMMAND swift_cases_test "Vector emission grows a full code buffer*")
 set_tests_properties(swift_cases_code_buffer PROPERTIES LABELS "unit;review" TIMEOUT 5)
@@ -152,6 +154,10 @@ add_test(swift_test swift_test --durations yes)
 set_tests_properties(swift_test PROPERTIES
         LABELS "integration;fuzz"
         ENVIRONMENT "SVM_AVX=1;SVM_BMI=1;SVM_XSAVE=1;SVM_FSGSBASE=1;SVM_ADX=1")
+add_test(NAME swift_memory_ordering COMMAND swift_test
+        "x86 memory ordering belongs*,bounded ordered memory*")
+set_tests_properties(swift_memory_ordering PROPERTIES
+        LABELS "unit;review" TIMEOUT 5 ENVIRONMENT "SVM_AVX=1")
 
 add_executable(swift_vm main.cpp)
 target_link_libraries(swift_vm PUBLIC fronted_arm64 fronted_x86 swift::runtime slang_compiler)

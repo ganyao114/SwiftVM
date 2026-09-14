@@ -50,6 +50,7 @@ void FunctionRegionDecoder::DecodeBlock(LocationDescriptor address,
             config.features,
             stop,
             stop_kind,
+            config.tso_mode,
     };
     decoder.Decode();
 }

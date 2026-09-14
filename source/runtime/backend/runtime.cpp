@@ -25,6 +25,7 @@
 #include "runtime/backend/context.h"
 #include "runtime/backend/function_entry_contract.h"
 #include "runtime/backend/guarded_return_stack.h"
+#include "runtime/backend/guest_memory_scope.h"
 #include "runtime/backend/interp/interpreter.h"
 #include "runtime/backend/interrupt_l1_mapping.h"
 #include "runtime/backend/interrupt_poll_state.h"
@@ -611,6 +612,9 @@ struct Runtime::Impl final {
             }
             ~ActiveGuard() { tls_active_runtime = prev; }
         } guard{const_cast<Impl*>(this)};
+        const auto& config = address_space->GetConfig();
+        const backend::GuestMemoryScope guest_memory{
+                config.memory_base, config.guest_addr_mask};
 
         HaltReason hr{HaltReason::None};
         while (running.load(std::memory_order_acquire)) {

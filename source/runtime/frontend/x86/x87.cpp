@@ -10,6 +10,7 @@
 #include <cstring>
 #include <limits>
 
+#include "runtime/backend/guest_memory_scope.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "translator/x86/cpu.h"
@@ -286,13 +287,14 @@ bool TakeGuestFault() {
 }  // namespace
 
 u8* GuestPointer(u64 address, size_t size) {
-    const u64 mask = GetGuestAddrMask();
+    const auto& mapping = runtime::backend::GuestMemoryScope::Current();
+    const u64 mask = mapping.mask;
     const u64 masked = address & mask;
     if (size == 0 || (mask != UINT64_MAX && size > mask - masked + 1)) {
         g_guest_fault_latch = true;
         return nullptr;
     }
-    auto* host = reinterpret_cast<u8*>(masked + GetGuestMemBias());
+    auto* host = reinterpret_cast<u8*>(masked + mapping.bias);
     // One range check covers the whole access, so a hole in the middle is
     // caught too -- the old first/last-byte pair relied on the access being
     // smaller than the mapping granularity.

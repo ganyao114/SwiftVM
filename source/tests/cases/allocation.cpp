@@ -191,7 +191,7 @@ static swift::runtime::ir::Block* BuildSpillEvictFallbackBlock() {
     return block;
 }
 
-TEST_CASE("Spill eviction chooses farthest end and preserves verified fallback") {
+TEST_CASE("Spill eviction chooses distant equal-cost uses and preserves verified fallback") {
     using namespace swift::runtime::backend;
     using namespace swift::runtime::ir;
 
@@ -231,4 +231,98 @@ TEST_CASE("Spill eviction chooses farthest end and preserves verified fallback")
     REQUIRE(fallback_result.eviction_restarts >= 1);
     REQUIRE(fallback_result.fell_back_to_ladder);
     REQUIRE(fallback_result.final_gpr_reserve > 3);
+}
+
+TEST_CASE("Spill eviction chooses a verified all-spill terminal reserve") {
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    swift::runtime::IntrusivePtr<Block> block{BuildSpillEvictFallbackBlock()};
+    const GPRSMask gprs{~((1u << 6) - 1u)};
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    const auto result = RegisterAllocTestSupport::RunForSpillEvictTest(
+            block.get(), &alloc, true);
+    REQUIRE(result.fell_back_to_ladder);
+    REQUIRE(result.final_gpr_reserve == 6);
+}
+
+TEST_CASE("Spill eviction rejects an impossible scratch contract") {
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    swift::runtime::IntrusivePtr<Block> block{BuildSpillEvictFallbackBlock()};
+    const GPRSMask gprs{~((1u << 2) - 1u)};
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    REQUIRE_THROWS(RegisterAllocTestSupport::RunForSpillEvictTest(
+            block.get(), &alloc, true));
+}
+
+TEST_CASE("Spill eviction chooses whole-interval cost before next-use distance") {
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    const GPRSMask gprs{~((1u << 6) - 1u)};
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+    for (const bool frequent : {false, true}) {
+        CAPTURE(frequent);
+        swift::runtime::IntrusivePtr<Block> block{new Block(0, Location{0x2420})};
+        auto longest = block->LoadImm(Imm{swift::u64{1}});
+        if (frequent) {
+            // These reads precede the pressure point, but a whole-interval
+            // retry would spill them too. Keep their cost in the decision.
+            block->StoreUniform(Uniform{0, ValueType::U64}, longest);
+            block->StoreUniform(Uniform{0, ValueType::U64}, longest);
+        }
+        auto distant = block->LoadImm(Imm{swift::u64{2}});
+        auto nearby = block->LoadImm(Imm{swift::u64{3}});
+        auto arriving = block->LoadImm(Imm{swift::u64{4}});
+        auto read = [&](Value value) {
+            block->StoreUniform(Uniform{0, ValueType::U64}, value);
+        };
+        if (!frequent) read(longest);
+        read(arriving);
+        read(nearby);
+        if (!frequent) read(nearby);
+        read(distant);
+        if (!frequent) {
+            read(distant);
+            read(arriving);
+        }
+        read(longest);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        const auto result = RegisterAllocTestSupport::RunForSpillEvictTest(
+                block.get(), &alloc, true);
+        REQUIRE_FALSE(result.fell_back_to_ladder);
+        REQUIRE(result.eviction_restarts == 1);
+        REQUIRE(alloc.ValueType(distant) == RegAlloc::MEM);
+        REQUIRE(alloc.ValueType(longest) == RegAlloc::GPR);
+        REQUIRE(alloc.ValueType(arriving) == RegAlloc::GPR);
+    }
+}
+
+TEST_CASE("Spill eviction chooses a bounded retry path for repeated pressure") {
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    swift::runtime::IntrusivePtr<Block> block{new Block(0, Location{0x2430})};
+    // Nine disjoint groups keep peak pressure at four values. This exercises
+    // compile work limits without a large live set or a guest stress loop.
+    for (swift::u64 group = 0; group < 9; ++group) {
+        std::array<Value, 4> values;
+        for (swift::u64 i = 0; i < values.size(); ++i) {
+            values[i] = block->LoadImm(Imm{group * 4 + i});
+        }
+        for (auto it = values.rbegin(); it != values.rend(); ++it) {
+            block->StoreUniform(Uniform{0, ValueType::U64}, *it);
+        }
+    }
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    const GPRSMask gprs{~((1u << 6) - 1u)};
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    const auto result = RegisterAllocTestSupport::RunForSpillEvictTest(
+            block.get(), &alloc, true);
+    REQUIRE(result.eviction_restarts == 8);
+    REQUIRE(result.fell_back_to_ladder);
 }

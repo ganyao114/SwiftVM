@@ -139,8 +139,8 @@ struct Config {
     bool induct_tie{false};
     // 函数 region 可把同 region 的直接出口改成本地标签；嵌入方默认仍使用块入口 ABI。
     bool region_edges{false};
-    // Memory ordering for guest accesses (frontends read this and install it
-    // via their mode hook, e.g. x86::SetTsoMode). Hardware mode is a promise
+    // Memory ordering for guest accesses, copied into each decoder.
+    // Hardware mode is a promise
     // from the embedder that the host already runs in a TSO memory model.
     TsoMode tso_mode{TsoMode::Relaxed};
     std::uint32_t stack_alignment;

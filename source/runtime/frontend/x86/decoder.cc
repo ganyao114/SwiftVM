@@ -49,37 +49,6 @@ static std::array<ABIRegUniform, 2> float_return_x64{
         ABIRegUniform{offsetof(ThreadContext64, xmm0), 16},
         ABIRegUniform{offsetof(ThreadContext64, xmm1), 16}};
 
-static bool IsGuestStackRegister(unsigned reg) {
-    switch (static_cast<_RegisterType>(reg)) {
-        case _RegisterType::R_RSP:
-        case _RegisterType::R_ESP:
-        case _RegisterType::R_SP:
-        case _RegisterType::R_RBP:
-        case _RegisterType::R_EBP:
-        case _RegisterType::R_BP:
-            return true;
-        default:
-            return false;
-    }
-}
-
-static bool IsThreadPrivateAddress(const _DInst& insn) {
-    const auto segment = static_cast<_RegisterType>(SEGMENT_GET(insn.segment));
-    if (segment == _RegisterType::R_FS || segment == _RegisterType::R_GS) {
-        return true;
-    }
-    if (IsGuestStackRegister(insn.base)) {
-        return true;
-    }
-    for (const auto& op : insn.ops) {
-        if ((op.type == O_SMEM || op.type == O_MEM) &&
-            IsGuestStackRegister(op.index)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static void FixupMovbeOperandSize(_DInst& insn, const u8* code) {
     if (insn.opcode != I_MOVBE || FLAG_GET_OPSIZE(insn.flags) != Decode32Bits) {
         return;
@@ -154,12 +123,9 @@ void ToHost(backend::State* state, ThreadContext64* ctx) {
 
 bool X64Decoder::TsoOrdered(const _DInst& insn) const {
     if (GetTsoMode() == runtime::TsoMode::AcqRel) {
-        // ABI-owned stack and TLS locations are private to this guest thread.
-        // Shared acquire/release accesses still order surrounding basic
-        // accesses, while LOCK must retain its full ordered/atomic semantics.
-        if (!(insn.flags & FLAG_LOCK) && IsThreadPrivateAddress(insn)) {
-            return false;
-        }
+        // Register and segment choices do not prove exclusive ownership.
+        // Guest threads may share stack or TLS addresses, and RBP may hold
+        // an arbitrary pointer. Relaxation requires an escape proof.
         return true;
     }
     // LOCK-prefixed instructions are full fences on x86; order their accesses
@@ -167,26 +133,9 @@ bool X64Decoder::TsoOrdered(const _DInst& insn) const {
     return (insn.flags & FLAG_LOCK) != 0;
 }
 
-bool X64Decoder::VexTsoOrdered(const VexInsn& insn) const {
+bool X64Decoder::VexTsoOrdered(const VexInsn&) const {
     // VEX encodings cannot carry LOCK, so only the AcqRel mode gate applies.
-    if (GetTsoMode() != runtime::TsoMode::AcqRel) {
-        return false;
-    }
-
-    // Mirror IsThreadPrivateAddress's stack/base-index relaxation. VexInsn
-    // keeps architectural register numbers rather than distorm register
-    // enums, where 4/5 are RSP/RBP (and ESP/EBP in 32-bit addressing).
-    // VexInsn does not retain the accepted segment override, so an FS/GS VEX
-    // access cannot be proven TLS-private here and remains conservatively
-    // ordered.
-    if (!insn.RmIsRegister()) {
-        const auto stack_reg = [](u8 reg) { return reg == 4 || reg == 5; };
-        if ((!insn.base_none && stack_reg(insn.base)) ||
-            (!insn.index_none && stack_reg(insn.index))) {
-            return false;
-        }
-    }
-    return true;
+    return GetTsoMode() == runtime::TsoMode::AcqRel;
 }
 
 ir::Value X64Decoder::MemLoad(const ir::Operand& addr, ir::ValueType type, bool tso) {
@@ -255,11 +204,12 @@ X64Decoder::X64Decoder(VAddr start,
                        bool direct_addressing,
                        const runtime::FeatureSet& features,
                        VAddr decode_stop,
-                       DecodeStopKind decode_stop_kind)
+                       DecodeStopKind decode_stop_kind,
+                       runtime::TsoMode tso_mode)
         : start(start), pc(start), decode_stop(decode_stop),
           decode_stop_kind(decode_stop_kind), assembler(visitor), memory(memory),
           is_64bit(is_64bit),
-          direct_addressing_(direct_addressing), features_(features) {
+          direct_addressing_(direct_addressing), features_(features), tso_mode_(tso_mode) {
     addr_mask = is_64bit ? UINT64_MAX : UINT32_MAX;
     flags_cfinv_supported_ =
             True(arm64_features & runtime::Arm64Features::FlagM);

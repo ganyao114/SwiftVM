@@ -145,14 +145,15 @@ static UniformRangeDesc x86_loop_gpr_uniform_ranges[] = {
 
 // Instruction-fetch memory interface for the x86 decoder. With guest
 // address virtualization (memory_base), guest address G is backed by host
-// memory at G + bias; the loader installs the bias via SetBias (0 =
+// memory at G + bias; each instance owns its immutable bias (0 =
 // direct, the default for tests / non-loader embedders).
 class MemoryImpl : public runtime::MemoryInterface {
 public:
-    void SetBias(u64 b) { bias = b; }
+    MemoryImpl(void* base, u64 address_mask)
+            : bias(reinterpret_cast<u64>(base)),
+              mask(address_mask ? address_mask : UINT64_MAX) {}
     // Bounded guest window (Config::guest_addr_mask): truncate before biasing
     // so a guest address can only ever name the embedder's window.
-    void SetMask(u64 m) { mask = m ? m : UINT64_MAX; }
     bool Read(void* dest, size_t addr, size_t size) override {
         return std::memcpy(dest, reinterpret_cast<const void*>((addr & mask) + bias), size);
     }
@@ -176,11 +177,10 @@ public:
         }
         return reinterpret_cast<void*>(host);
     }
-    u64 bias{};
-    u64 mask{UINT64_MAX};
+private:
+    const u64 bias;
+    const u64 mask;
 };
-
-static MemoryImpl memory_impl{};
 
 static runtime::TsoMode TsoModeFromEnvironment() {
     const auto& value = runtime::GetSvmConfig().tso_mode;
@@ -193,8 +193,8 @@ static runtime::TsoMode TsoModeFromEnvironment() {
     if (value == "hardware" || value == "Hardware") {
         return runtime::TsoMode::Hardware;
     }
-    LOG_WARNING("Unknown SVM_TSO_MODE '{}'; using relaxed", value);
-    return runtime::TsoMode::Relaxed;
+    LOG_WARNING("Unknown SVM_TSO_MODE '{}'; using acqrel", value);
+    return runtime::TsoMode::AcqRel;
 }
 
 static Arm64Features DetectArm64Features() {
@@ -484,24 +484,18 @@ static bool IsLocalFunctionTarget(VAddr root, VAddr target) {
                           : root - target <= kMaxDistance;
 }
 
-static bool IsEndbr64Boundary(VAddr target) {
+static bool IsEndbr64Boundary(MemoryInterface& memory, VAddr target) {
     constexpr std::array<u8, 4> kEndbr64{0xf3, 0x0f, 0x1e, 0xfa};
     std::array<u8, 4> bytes{};
-    memory_impl.Read(bytes.data(), target, bytes.size());
+    memory.Read(bytes.data(), target, bytes.size());
     return bytes == kEndbr64;
 }
 
 struct X86Instance::Impl final {
     // memory_base: guest->host bias (host addr = guest addr + bias), installed
     // by the linux loader; nullptr keeps the direct-mapped fast path.
-    explicit Impl(void* memory_base, u64 guest_addr_mask) {
-        memory_impl.SetBias(reinterpret_cast<uintptr_t>(memory_base));
-        memory_impl.SetMask(guest_addr_mask);
-        // Host helpers in the frontend (rep movs/stos, x87, xsave) dereference
-        // raw guest pointers; they read the same bias and window mask from the
-        // frontend-side globals.
-        x86::SetGuestMemBias(reinterpret_cast<uintptr_t>(memory_base));
-        x86::SetGuestAddrMask(guest_addr_mask);
+    explicit Impl(void* memory_base, u64 guest_addr_mask)
+            : memory_impl(memory_base, guest_addr_mask) {
         // SVM_ENABLE_JIT=0 forces the IR interpreter path (same switch as the
         // arm64 core; useful for cross-checking JIT results).
         const auto& svm_config = runtime::GetSvmConfig();
@@ -611,10 +605,8 @@ struct X86Instance::Impl final {
                 .guest_addr_mask = guest_addr_mask,
                 .memory = &memory_impl,
         };
-        // The x86 decoder mode is process-global because decoded IR is shared
-        // by every Runtime in this Instance. Install it once before any block
-        // can be decoded; the default remains Relaxed.
-        x86::SetTsoMode(config.tso_mode);
+        // Every decoder receives this address space's ordering mode. Other
+        // instances cannot change the policy of an in-flight decode.
         address_space = std::make_unique<backend::AddressSpace>(config);
     }
 
@@ -644,8 +636,9 @@ struct X86Instance::Impl final {
                         .native_memory = !address_space->GetConfig().memory_base &&
                                          !address_space->GetConfig().page_table,
                         .features = features,
+                        .tso_mode = address_space->GetConfig().tso_mode,
                         .local_target =
-                                [root, lazy, claimed_blocks](
+                                [this, root, lazy, claimed_blocks](
                                         LocationDescriptor address) {
                                     if (address != root && claimed_blocks &&
                                         claimed_blocks->contains(address)) {
@@ -654,7 +647,7 @@ struct X86Instance::Impl final {
                                     return !lazy ||
                                            (IsLocalFunctionTarget(root, address) &&
                                             (address == root ||
-                                             !IsEndbr64Boundary(address)));
+                                             !IsEndbr64Boundary(memory_impl, address)));
                                 },
                         .has_code =
                                 [this, claimed_blocks](
@@ -956,7 +949,7 @@ struct X86Instance::Impl final {
         const bool fresh = backend::IsEmpty(module->GetNode(pc));
         auto node = module->GetNodeOrCreate(pc, func_base);
         auto code_cache = VisitVariant<void*>(
-                node, [module, pc, fresh, &perf_detail, features](auto x) -> void* {
+                node, [this, module, pc, fresh, &perf_detail, features](auto x) -> void* {
             using T = std::decay_t<decltype(x)>;
             if constexpr (std::is_same_v<T, IntrusivePtr<ir::Function>>) {
                 // TODO: function-based compilation
@@ -979,7 +972,10 @@ struct X86Instance::Impl final {
                             module->GetAddressSpace().GetConfig().sse_afp_nan,
                             !module->GetAddressSpace().GetConfig().memory_base &&
                                     !module->GetAddressSpace().GetConfig().page_table,
-                            features};
+                            features,
+                            0,
+                            x86::DecodeStopKind::Internal,
+                            module->GetAddressSpace().GetConfig().tso_mode};
                     perf_ir_setup.Stop();
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();
@@ -1010,6 +1006,9 @@ struct X86Instance::Impl final {
     }
 
     std::vector<UniformMapDesc> static_regs_storage{};
+    // Declared before AddressSpace so its Config::memory remains valid
+    // throughout AddressSpace destruction, including cached IR teardown.
+    mutable MemoryImpl memory_impl;
     std::unique_ptr<backend::AddressSpace> address_space{};
     mutable std::mutex translate_mutex;
     mutable FunctionCompileStats func_stats{"x86_64"};

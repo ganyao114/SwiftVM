@@ -1,12 +1,9 @@
 // Allocate, then check the result against what the emitters actually need
-// (LinearScanAllocator::Verify). Escalating the reserve only on failure is
-// what keeps the guarantee free: the first attempt reserves the ordinary
-// emitter shape and, on this corpus, always passes.
+// (LinearScanAllocator::Verify). Escalate the reserve only when the ordinary
+// emitter shape does not fit.
 //
-// The escalation ladder is finite and its last rung is sufficient by
-// construction -- reserving the unit's largest opcode budget plus its largest
-// possible reload count leaves every instruction more free registers than it
-// can ask for -- so the loop cannot spin.
+// The finite ladder either finds a verified allocation or rejects the unit;
+// a pool smaller than the required scratch cannot be made safe by retrying.
 static void CollectUnitBudget(Block* block,
                               u32& gpr,
                               u32& fpr,
@@ -93,8 +90,8 @@ static void RunVerified(Unit* unit,
     const u32 default_gpr_reserve = backend::kDefaultScratchGPR > scratch_only
             ? backend::kDefaultScratchGPR - scratch_only
             : 0u;
-    // Attempt one: the ordinary emitter shape. Every unit in the corpus stops
-    // here, so nothing above this point may walk the instruction list -- the
+    // Attempt one: the ordinary emitter shape. Nothing above this point needs
+    // to walk the instruction list -- the
     // whole-unit budget scan below is deliberately deferred until an escalation
     // is known to be necessary (func_tests is dominated by translation cost and
     // notices a redundant pass).
@@ -102,6 +99,9 @@ static void RunVerified(Unit* unit,
     bool eviction_fallback = false;
     if (spill_evict) {
         Vector<u32> forced_spills{};
+        // Each retry walks the whole unit. Bound optional quality work before
+        // using the existing verified reserve ladder, independent of unit size.
+        constexpr u32 kMaxEvictionRestarts = 8;
         while (true) {
             if (eviction_restarts) {
                 reg_alloc->ResetAllocations();
@@ -111,6 +111,10 @@ static void RunVerified(Unit* unit,
                 {.gpr_reserve = default_gpr_reserve, .fpr_reserve = backend::kDefaultScratchFPR, .forced_spills = &forced_spills, .select_eviction = true}};
             scan.AllocateRegisters();
             if (scan.HasEvictionCandidate()) {
+                if (eviction_restarts == kMaxEvictionRestarts) {
+                    eviction_fallback = true;
+                    break;
+                }
                 forced_spills.push_back(scan.EvictionCandidate());
                 ++eviction_restarts;
                 continue;
@@ -152,9 +156,7 @@ static void RunVerified(Unit* unit,
 
     // A reserve at or above the pool size would leave the scan nothing to
     // allocate, so each rung is clamped to leave one register allocatable.
-    // On the ARM64 pools this never binds (the pool is far larger than any
-    // opcode budget); it only matters for the artificially small masks unit
-    // tests use to force the spill path.
+    // The terminal attempt below may reserve the full GPR pool if necessary.
     const auto pool_gpr = static_cast<u32>(backend::GPRSMask{reg_alloc->GetGprs()}.GetClearCount());
     const auto pool_fpr = static_cast<u32>(backend::FPRSMask{reg_alloc->GetFprs()}.GetClearCount());
     const bool level3 = backend::X86PinExtLevel3Enabled(reg_alloc->GetGprs());
@@ -194,6 +196,12 @@ static void RunVerified(Unit* unit,
         add_rung(base_gpr + 2, base_fpr + 2);
     }
     add_rung(base_gpr + reload_bound, base_fpr + reload_bound);
+    // Biased-memory configurations can also exhaust the dynamic GPR pool.
+    // A spilled result uses reload scratch, so the terminal attempt need not
+    // keep a separate value register. Try it only after the ordinary ladder.
+    if (pool_gpr && ladder.back().gpr < pool_gpr) {
+        ladder.push_back({pool_gpr, clamp_fpr(base_fpr + reload_bound, pool_fpr)});
+    }
     for (auto& rung : ladder) {
         reg_alloc->ResetAllocations();
         LinearScanAllocator scan{unit, reg_alloc,
@@ -214,18 +222,7 @@ static void RunVerified(Unit* unit,
             return;
         }
     }
-    if (level3) {
-        // No verified allocation exists. The last ladder attempt still
-        // populated RegAlloc, but consuming that mapping would let an emitter
-        // overwrite a live value. Fail closed instead of executing an
-        // allocation Verify() explicitly rejected.
-        PANIC("RegisterAllocPass: pool {}/{} cannot cover scratch demand {}/{} (+{} reloads)",
-              pool_gpr, pool_fpr, base_gpr, base_fpr, reload_bound);
-    }
-    // Preserve the historical behavior for the deliberately undersized masks
-    // used by allocator structure tests. Real ARM64 configurations other than
-    // level 3 do not reach this branch.
-    LOG_WARNING("RegisterAllocPass: pool {}/{} cannot cover scratch demand {}/{} (+{} reloads); "
-                "emitting with the largest workable reserve",
-                pool_gpr, pool_fpr, base_gpr, base_fpr, reload_bound);
+    // A rejected mapping must never reach an emitter, regardless of pin level.
+    PANIC("RegisterAllocPass: pool {}/{} cannot cover scratch demand {}/{} (+{} reloads)",
+          pool_gpr, pool_fpr, base_gpr, base_fpr, reload_bound);
 }

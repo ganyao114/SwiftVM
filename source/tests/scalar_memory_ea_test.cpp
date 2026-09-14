@@ -66,6 +66,64 @@ std::vector<Operand> DecodeScalarMemoryOperands(bool direct) {
 
 }  // namespace
 
+TEST_CASE("x86 memory ordering belongs to each decoder and covers shared stack and TLS") {
+    // Each row includes a read and a write followed by HLT. Padding keeps the
+    // decoder's bounded fetch inside the buffer, including at the last opcode.
+    const std::array<std::array<swift::u8, 32>, 10> inputs{{
+            {0x8b, 0x00, 0x89, 0x00, 0xf4},                         // RAX
+            {0x8b, 0x45, 0x00, 0x89, 0x45, 0x00, 0xf4},             // RBP
+            {0x8b, 0x04, 0x24, 0x89, 0x04, 0x24, 0xf4},             // RSP
+            {0x64, 0x8b, 0x00, 0x64, 0x89, 0x00, 0xf4},             // FS
+            {0x65, 0x8b, 0x00, 0x65, 0x89, 0x00, 0xf4},             // GS
+            {0xf2, 0x0f, 0x10, 0x04, 0x24,
+             0xf2, 0x0f, 0x11, 0x04, 0x24, 0xf4},                  // MOVSD
+            {0xc5, 0xfa, 0x10, 0x04, 0x24,
+             0xc5, 0xfa, 0x11, 0x04, 0x24, 0xf4},                  // VMOVSS
+            {0x50, 0x58, 0xf4},                                     // PUSH/POP
+            {0xf3, 0x0f, 0x6f, 0x04, 0x24,
+             0xf3, 0x0f, 0x7f, 0x04, 0x24, 0xf4},                  // MOVDQU
+            {0x66, 0x0f, 0x38, 0x22, 0x04, 0x24,
+             0xf3, 0x0f, 0x7f, 0x04, 0x24, 0xf4},                  // PMOVSXBQ
+    }};
+    for (std::size_t row = 0; row < inputs.size(); ++row) {
+        if (row == 6 && !GetSvmConfig().avx) continue;
+        CAPTURE(row);
+        const auto address = reinterpret_cast<swift::VAddr>(inputs[row].data());
+        DirectMemory memory;
+        Block ordered{0, Location{address}};
+        Block basic{0, Location{address}};
+        Assembler ordered_ir{&ordered};
+        Assembler basic_ir{&basic};
+        swift::x86::X64Decoder first{
+                address, &memory, &ordered_ir, true, Arm64Features::None,
+                false, true, FeatureSet{}, 0, swift::x86::DecodeStopKind::Internal,
+                TsoMode::AcqRel};
+        swift::x86::X64Decoder second{
+                address, &memory, &basic_ir, true, Arm64Features::None,
+                false, true, FeatureSet{}, 0, swift::x86::DecodeStopKind::Internal,
+                TsoMode::Relaxed};
+        // Construct and run another mode before resuming the first decoder.
+        second.Decode();
+        first.Decode();
+        auto counts = [](Block& block) {
+            std::array<std::size_t, 2> result{};
+            for (const auto& inst : block.GetInstList()) {
+                if (inst.GetOp() == OpCode::LoadMemoryTSO ||
+                    inst.GetOp() == OpCode::StoreMemoryTSO) ++result[0];
+                if (inst.GetOp() == OpCode::LoadMemory ||
+                    inst.GetOp() == OpCode::StoreMemory) ++result[1];
+            }
+            return result;
+        };
+        const auto strict = counts(ordered);
+        const auto relaxed = counts(basic);
+        REQUIRE(strict[0] == 2);
+        REQUIRE(strict[1] == 0);
+        REQUIRE(relaxed[0] == 0);
+        REQUIRE(relaxed[1] == 2);
+    }
+}
+
 TEST_CASE("scalar SSE memory operands remain composite in direct mode") {
     const auto direct = DecodeScalarMemoryOperands(true);
     const auto biased = DecodeScalarMemoryOperands(false);

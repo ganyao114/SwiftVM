@@ -370,6 +370,13 @@ GPRClassContract ClassifyGPRContract(const GPRSMask& pool,
 //    operand), one for the 64-bit ones, none for the packed ones.
 ScratchNeed ScratchBudget(ir::OpCode op, const FeatureSet& features) {
     switch (op) {
+        case ir::OpCode::CallLambda:
+            // EmitHostCall leases only the shared NZCV merge temporary.
+            // Argument, target and result reloads are charged separately by
+            // the verifier; x11 is the fixed call target. Charging three
+            // ordinary temporaries can reject a fully spilled call even
+            // though its actual emitter fits the remaining dynamic pool.
+            return {1, kDefaultScratchFPR};
         case ir::OpCode::CompareAndSwap:
         case ir::OpCode::AtomicExchange:
         case ir::OpCode::AtomicFetchAdd:

@@ -99,8 +99,8 @@ exact checked-in test binaries with `strace -f`.
 
 The existing `Config::tso_mode` was not being installed into the x86
 frontend's process-wide mode hook. `X86Instance` now reads
-`SVM_TSO_MODE=relaxed|acqrel|hardware`, defaults to Relaxed, stores it in
-`Config`, and calls `x86::SetTsoMode` before any decode
+`SVM_TSO_MODE=relaxed|acqrel|hardware`, defaults to AcqRel as of 2026-09-14, stores it in
+`Config`, and passes the mode into each decoder (updated 2026-09-14)
 (`source/translator/x86/translator.cpp:57-70`, `:346-355`).
 
 ## Tests added

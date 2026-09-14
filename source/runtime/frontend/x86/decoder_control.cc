@@ -116,10 +116,7 @@ ir::Value X64Decoder::Pop(ir::ValueType type) {
     auto size_byte = ir::GetValueSizeByte(type);
     auto sp = _RegisterType::R_RSP;
     auto address = R(sp);
-    // Stack accesses stay Relaxed even in AcqRel mode: each guest thread owns
-    // its stack, so no cross-thread ordering is observable (cross86 does the
-    // same relaxation for RSP/RBP-relative accesses).
-    auto value = __ LoadMemory(ir::Operand{address}).SetType(type);
+    auto value = MemLoad(ir::Operand{address}, type, GetTsoMode() == runtime::TsoMode::AcqRel);
     R(sp, __ Add(address, ir::Operand{ir::Imm(u64(size_byte))}));
     return value;
 }
@@ -129,7 +126,7 @@ void X64Decoder::Push(ir::Value value, ir::ValueType type) {
     auto sp = _RegisterType::R_RSP;
     auto address = R(sp);
     auto new_sp = __ Sub(address, ir::Operand{ir::Imm(u64(size_byte))});
-    __ StoreMemory(ir::Operand{new_sp}, value.SetType(type));
+    MemStore(ir::Operand{new_sp}, value.SetType(type), GetTsoMode() == runtime::TsoMode::AcqRel);
     R(sp, new_sp);
 }
 

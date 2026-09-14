@@ -28,7 +28,14 @@ JitTranslator::MatchNarrowFlagsInput(ir::Inst* extract) {
         return std::nullopt;
     }
 
-    return extract->GetArg<ir::Value>(0);
+    const auto source = extract->GetArg<ir::Value>(0);
+    // A spill reload region can end at this extract without backing its stack
+    // slot. Moving that read to the ALU would outlive the allocation contract.
+    // Keep the explicit extract until read forwarding participates in allocation.
+    if (context.IsSpilled(source)) {
+        return std::nullopt;
+    }
+    return source;
 }
 
 void JitTranslator::PrepareNarrowFlagsInputs(ir::Block* block) {

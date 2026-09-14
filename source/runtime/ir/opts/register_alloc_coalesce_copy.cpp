@@ -1,15 +1,11 @@
 #include "register_alloc_internal.h"
+#include "runtime/ir/low32_copy.h"
 
 #include <iterator>
 
 namespace swift::runtime::ir {
 
 namespace {
-
-bool IsReadOnlyLow32Consumer(OpCode op) {
-    return op == OpCode::StoreMemory || op == OpCode::StoreUniform ||
-           op == OpCode::SetHostGPR;
-}
 
 bool CanCoalesceLiveLow32View(
         Block* block,

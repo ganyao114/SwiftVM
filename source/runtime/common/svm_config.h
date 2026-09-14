@@ -215,7 +215,7 @@ struct FeatureOverrides {
     X(bool, scratch_precise, "SVM_SCRATCH_PRECISE", DefaultOn, true, "Add/Sub 精确 scratch 计费；缺省 ON，=0 回退；原 reg_alloc.cpp:92") \
     X(bool, fpr_scratch_precise, "SVM_FPR_SCRATCH_PRECISE", DefaultOn, true, "FPR 高预算 opcode 按实例精确定价；缺省 ON，=0 回退；原 reg_alloc.cpp") \
     X(bool, fpr_ipv_reclaim, "SVM_FPR_IPV_RECLAIM", DefaultOn, true, "AFP 已覆盖 NaN cold ABI 时归还 v11-v14；缺省 ON，=0 回退；单独关本开关时 SVM_XMM_RESIDENT_HI 退化为有税形态；原 trampolines.cpp") \
-    X(bool, ra_spill_evict, "SVM_RA_SPILL_EVICT", DefaultOn, true, "RA farthest-end 驱逐；缺省 ON，=0 回退；原 register_alloc_pass.cpp:106") \
+    X(bool, ra_spill_evict, "SVM_RA_SPILL_EVICT", DefaultOn, true, "RA 按区间使用成本和下次使用位置驱逐；最多重试 8 次；=0 回退") \
     X(bool, ra_coalesce, "SVM_RA_COALESCE", DefaultOn, true, "guest GPR 发布点定向合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(bool, ra_coalesce_live, "SVM_RA_COALESCE_LIVE", DefaultOn, true, "发布后仍活的 SSA 绑到 pin 家；缺省 ON，=0 回退 last-use W-alpha；同 pin 再写或 caller-saved helper 拒绝") \
     X(bool, ra_width_chain, "SVM_RA_WIDTH_CHAIN", NonZero, false, "unit 内多节点整数宽度 direct 链合并；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
@@ -263,7 +263,7 @@ struct FeatureOverrides {
     X(bool, syscall_rt_sigprocmask, "SVM_SYSCALL_RT_SIGPROCMASK", DefaultOn, true, "rt_sigprocmask syscall；缺省 ON，=0 返回 ENOSYS；原 linux/syscalls.cpp:1770") \
     X(std::string, sysroot, "SVM_SYSROOT", RawString, "", "guest 路径 sysroot；非空启用；原 linux/path_utils.h:18") \
     X(bool, trace, "SVM_TRACE", Presence, false, "guest 执行 trace；变量存在即开；原 translator/x86/translator.cpp:1132") \
-    X(std::string, tso_mode, "SVM_TSO_MODE", RawString, "relaxed", "TSO 模式 relaxed/acqrel/hardware；未知值回 relaxed；原 translator/x86/translator.cpp:253") \
+    X(std::string, tso_mode, "SVM_TSO_MODE", RawString, "acqrel", "TSO 模式 relaxed/acqrel/hardware；缺省和未知值采用 acqrel") \
     X(bool, uniform_elim, "SVM_UNIFORM_ELIM", DefaultOn, true, "uniform elimination；缺省 ON，=0 回退；原 translator/x86/arm64 translator.cpp") \
     X(bool, uniform_path_fwd, "SVM_UNIFORM_PATH_FWD", DefaultOn, true, "uniform path forwarding；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:65") \
     X(std::string, vixl_host_dump, "SVM_VIXL_HOST_DUMP", RawString, "", "VIXL host 发码诊断非 0 开，host-map 原站点按变量存在；原 jit_context.cpp/trampolines.cpp") \
