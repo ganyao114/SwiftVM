@@ -950,6 +950,18 @@ void JitTranslator::SaveAuxiliaryCarry(Register &left, const Operand &right, Reg
     // AF = carry into bit 4 = bit4(left) ^ bit4(right) ^ bit4(result). This holds
     // for add/adc/sub/sbb alike (result already reflects any carry-in). Only the
     // three bit-4s matter, so fold the whole values together and extract bit 4.
+    // AF is emitted after the arithmetic result has been written. Some narrow
+    // operands are dead according to ordinary SSA liveness, but remain live
+    // here as implicit flag inputs. Reserve the right operand before leasing
+    // the fold temporary so GetTmpX cannot alias it.
+    const auto reserve_gpr = [&](const Register& reg) {
+        if (reg.GetCode() < 31) {
+            context.ReserveTmpX(XRegister(reg.GetCode()));
+        }
+    };
+    if (!right.IsImmediate()) {
+        reserve_gpr(right.GetRegister());
+    }
     auto tmp = context.GetTmpX();
     __ Eor(tmp, left.X(), Operand{result.X()});
     if (right.IsImmediate()) {
