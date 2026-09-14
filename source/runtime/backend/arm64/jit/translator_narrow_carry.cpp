@@ -97,6 +97,20 @@ JitTranslator::MatchNarrowCarryFusion(ir::Inst* inst) {
         !IsZeroInput(zero, zero_chain)) {
         return std::nullopt;
     }
+    // Once AdvancePC commits a subtraction, the canonical carrier keeps
+    // ARM's native C polarity while the fusion consumes live host C. Keep the
+    // CFINV fusion within one guest boundary; ordinary narrow lowering handles
+    // the cross-boundary case through the canonical carry value.
+    if (CanonicalCarryEnabled()) {
+        for (auto& scan : cur_block->GetInstList()) {
+            if (&scan == carry_test) {
+                break;
+            }
+            if (scan.GetOp() == ir::OpCode::AdvancePC) {
+                return std::nullopt;
+            }
+        }
+    }
 
     bool narrow_publication = false;
     for (auto& consumer : cur_block->GetInstList()) {
