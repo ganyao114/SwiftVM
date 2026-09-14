@@ -534,6 +534,46 @@ void JitTranslator::LoadNZCVFromFlags() {
     __ Msr(NZCV, flags);
 }
 
+ir::Flags JitTranslator::FlagsForCondition(ir::Cond cond) {
+    switch (cond) {
+        case ir::Cond::EQ:
+        case ir::Cond::NE:
+            return ir::Flags::Zero;
+        case ir::Cond::CS:
+        case ir::Cond::CC:
+            return ir::Flags::Carry;
+        case ir::Cond::MI:
+        case ir::Cond::PL:
+            return ir::Flags::Negate;
+        case ir::Cond::VS:
+        case ir::Cond::VC:
+            return ir::Flags::Overflow;
+        case ir::Cond::HI:
+        case ir::Cond::LS:
+            return ir::Flags::Carry | ir::Flags::Zero;
+        case ir::Cond::GE:
+        case ir::Cond::LT:
+            return ir::Flags::Negate | ir::Flags::Overflow;
+        case ir::Cond::GT:
+        case ir::Cond::LE:
+            return ir::Flags::Negate | ir::Flags::Zero | ir::Flags::Overflow;
+        case ir::Cond::AL:
+        case ir::Cond::NV:
+        default:
+            return ir::Flags::None;
+    }
+}
+
+bool JitTranslator::PendingNZCVCovers(ir::Flags guest_flags) const {
+    if (!flag_state.save_in_nzcv || !flag_state.nzcv_dirty) {
+        return false;
+    }
+    const auto requested = GuestNZCVToHost(guest_flags & ir::Flags::NZCV);
+    return static_cast<u64>(requested) != 0 &&
+           (static_cast<u64>(flag_state.nzcv_requested) &
+            static_cast<u64>(requested)) == static_cast<u64>(requested);
+}
+
 bool JitTranslator::TryEmitCondSetFromFlags(ir::Inst* inst, ir::Cond cond) {
     u32 bit;
     switch (cond) {
@@ -1569,9 +1609,13 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
             break;
     }
     if (host_test) {
-        if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
+        if (PendingNZCVCovers(test)) {
             __ Cset(result, host_test->condition);
         } else {
+            if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
+                MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+                          flags_audit_block_edge);
+            }
             __ Ubfx(result, flags.W(), host_test->bit, 1);
         }
         return;
@@ -1582,7 +1626,7 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
     // Restore PSTATE when it still holds the cmp so CondSet sees guest ZF.
     // Do not Merge here: that was moving a 4-insn pack onto every unfused JA.
     if (nzcv_mask) {
-        if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
+        if (PendingNZCVCovers(test)) {
             __ Mrs(scratch, NZCV);
             __ Tst(scratch, nzcv_mask);
             __ Cset(result, ne);
@@ -1590,6 +1634,10 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
                 __ Msr(NZCV, scratch);
             }
         } else {
+            if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
+                MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+                          flags_audit_block_edge);
+            }
             __ Tst(flags, nzcv_mask);
             __ Cset(result, ne);
         }

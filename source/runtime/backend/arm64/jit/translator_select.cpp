@@ -99,11 +99,17 @@ void JitTranslator::EmitSelect(ir::Inst* inst) {
                 __ Csel(result, resolve(true_value), resolve(false_value), MapCond(direct->second));
             }
         };
-        if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
+        if (PendingNZCVCovers(FlagsForCondition(direct->second))) {
             emit_direct();
-        } else if (!is_boolean || !TryEmitCondSetFromFlags(inst, direct->second)) {
-            LoadNZCVFromFlags();
-            emit_direct();
+        } else {
+            if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
+                MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+                          flags_audit_block_edge);
+            }
+            if (!is_boolean || !TryEmitCondSetFromFlags(inst, direct->second)) {
+                LoadNZCVFromFlags();
+                emit_direct();
+            }
         }
         PublishFlagsToken();
         return;

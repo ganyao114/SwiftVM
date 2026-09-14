@@ -1112,7 +1112,11 @@ void JitTranslator::EmitCondSelect(ir::Inst* inst) {
     auto true_value = inst->GetArg<ir::Value>(1);
     auto false_value = inst->GetArg<ir::Value>(2);
     auto result = context.R(ir::Value{inst});
-    if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
+    if (!PendingNZCVCovers(FlagsForCondition(cond))) {
+        if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
+            MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+                      flags_audit_block_edge);
+        }
         LoadNZCVFromFlags();
     }
     __ Csel(result, context.R(true_value), context.R(false_value), MapCond(cond));
@@ -1144,7 +1148,12 @@ void JitTranslator::EmitCondSet(ir::Inst* inst) {
         return;
     }
     auto result = context.R(ir::Value{inst});
-    if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
+    if (flag_state.save_in_nzcv && flag_state.nzcv_dirty &&
+        !PendingNZCVCovers(FlagsForCondition(cond))) {
+        MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
+                  flags_audit_block_edge);
+    }
+    if (!PendingNZCVCovers(FlagsForCondition(cond))) {
         if (TryEmitCondSetFromFlags(inst, cond)) {
             return;
         }

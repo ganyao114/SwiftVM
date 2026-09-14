@@ -409,7 +409,7 @@ TEST_CASE("dead-edge fixed-home self tests branch without a logical result") {
     REQUIRE_FALSE(Contains(instructions, "tst "));
 }
 
-TEST_CASE("compact FP compare stays local across audited moves") {
+TEST_CASE("compact FP compare preserves carry polarity across audited moves") {
     for (const auto& code : {
                  std::array<swift::u8, 24>{
                          0x66, 0x0f, 0x2f, 0xc1,
@@ -468,10 +468,14 @@ TEST_CASE("compact FP compare stays local across audited moves") {
         context.Finish();
 
         const auto instructions = Disassemble(context);
-        REQUIRE(Count(instructions, "cset") == 1);
+        // AXFLAG publishes the compact compare, then CFINV restores guest CF.
+        // JA/JBE therefore need both CF and ZF after the inversion; the
+        // lowering intentionally materializes the compound predicate with a
+        // CSET plus CSEL/CSINC instead of using the pre-CFINV HI/LS mapping.
+        REQUIRE(Count(instructions, "cset") == 2);
         REQUIRE(Count(instructions, "axflag") == 1);
         REQUIRE(Count(instructions, "cfinv") == 1);
-        REQUIRE((Contains(instructions, "b.hi") || Contains(instructions, "b.ls")));
+        REQUIRE(Count(instructions, "csel") + Count(instructions, "csinc") == 1);
     }
 }
 

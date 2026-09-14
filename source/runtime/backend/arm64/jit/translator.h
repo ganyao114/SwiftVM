@@ -757,6 +757,8 @@ private:
 
     // Restore host NZCV from the flags register (uses the emission's shared scratch).
     void LoadNZCVFromFlags();
+    [[nodiscard]] static ir::Flags FlagsForCondition(ir::Cond cond);
+    [[nodiscard]] bool PendingNZCVCovers(ir::Flags flags) const;
     [[nodiscard]] bool TryEmitCondSetFromFlags(ir::Inst* inst, ir::Cond cond);
     void EmitZeroTestPreservingPstate(ir::Inst* inst, bool nonzero);
 

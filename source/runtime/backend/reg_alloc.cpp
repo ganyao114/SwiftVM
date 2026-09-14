@@ -463,7 +463,11 @@ ScratchNeed ScratchBudget(const ir::Inst& inst, const FeatureSet& features) {
             case ir::OpCode::Xor:
                 return PreciseLogicalScratchBudget(inst);
             case ir::OpCode::AdvancePC:
-                need.gpr = 1;
+                // The FLAGS_REGS=0 path merges host NZCV with one explicit
+                // shared temporary, while the scratch contract may also need
+                // a VIXL temporary for an immediate materialisation. Count
+                // both in the combined audit budget.
+                need.gpr = 2;
                 break;
             case ir::OpCode::PublishSse42StrFlags:
                 need.gpr = 1;
