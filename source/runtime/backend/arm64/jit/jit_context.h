@@ -297,6 +297,9 @@ public:
     [[nodiscard]] u32 Low32CopySource(u32 id) const {
         return reg_alloc.Low32CopySource(id);
     }
+    [[nodiscard]] bool Low32SourceRecolored(ir::Value source, u32 bridge) const {
+        return reg_alloc.AllocationId(source) == bridge;
+    }
     [[nodiscard]] bool HasWidthComponentOwner(u32 anchor) const {
         return reg_alloc.HasWidthComponentOwner(anchor);
     }

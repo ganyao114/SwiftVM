@@ -21,6 +21,7 @@ void FunctionRegionMembership::Record(runtime::IntrusivePtr<runtime::ir::Functio
     if (!owner || unique_pending.empty()) {
         return;
     }
+    std::lock_guard guard(mutex);
 
     for (const auto root : unique_pending) {
         if (const auto it = groups.find(root); it != groups.end()) {
@@ -39,6 +40,7 @@ void FunctionRegionMembership::Record(runtime::IntrusivePtr<runtime::ir::Functio
 
 std::optional<FunctionRegionMembership::Selection> FunctionRegionMembership::Select(
         runtime::LocationDescriptor root) {
+    std::lock_guard guard(mutex);
     const auto it = groups.find(root);
     if (it == groups.end()) {
         return std::nullopt;

@@ -833,6 +833,26 @@ void Interpreter::RunCountLeadingZeros64(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, std::countl_zero(value));
 }
 
+void Interpreter::RunPopCount(ir::Inst* inst, InterpStack& stack) {
+    const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    WriteScalar(stack, inst, std::popcount(value));
+}
+
+void Interpreter::RunCrc32c(ir::Inst* inst, InterpStack& stack) {
+    u32 crc = ReadScalar(stack, inst->GetArg<ir::Value>(0));
+    u64 data = ReadScalar(stack, inst->GetArg<ir::Value>(1));
+    const u32 width = inst->GetArg<ir::Imm>(2).Get();
+    ASSERT(width == 8 || width == 16 || width == 32 || width == 64);
+    for (u32 byte = 0; byte < width / 8; ++byte) {
+        crc ^= u32(data & 0xff);
+        data >>= 8;
+        for (u32 bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ (0x82f63b78u & (0u - (crc & 1u)));
+        }
+    }
+    WriteScalar(stack, inst, crc);
+}
+
 void Interpreter::RunCountTrailingZeros64(ir::Inst* inst, InterpStack& stack) {
     const auto source = inst->GetArg<ir::Value>(0);
     ASSERT(source.Type() == ir::ValueType::U64);

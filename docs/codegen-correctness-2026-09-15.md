@@ -1,5 +1,44 @@
 # 2026-09-15 后端正确性收敛
 
+## 2026-10-06 review 后续修复
+
+针对 `42a8ce2` 之后的 review，继续修复三个实现问题和两个性能缺口：
+
+- low32 反向 recolor：原检查从 bridge 开始，遗漏父值定义到 bridge 之间新占用的寄存器区间。分配器现在检查这段前缀中的固定/helper/显式 GPR 破坏；发码复核也覆盖前缀，包含相邻扩展的快速路径。定向用例保留无破坏时的合并，并拒绝将父值迁入原子操作使用的临时寄存器。
+- 已发布函数入口：split 前和空块入队前均检查已有代码，不再把 accepted 标记当作所有权证明。只有实际待解码的本地入口才触发 block-cap；回归覆盖 lazy/eager 下已经排入 HIR 的已发布入口，读取该入口会直接使测试失败。
+- 相对文件路径：`getcwd` 返回与 `AT_FDCWD` 文件操作相同的宿主当前目录，保留 Linux 返回长度包含 NUL、`ERANGE` 和 `EFAULT` 语义。两个 guest ISA 都有实际创建相对文件的测试。
+- POPCNT/CRC32：新增专用、无 helper 的 IR。POPCNT 使用 `FMOV/CNT/ADDV/UMOV`；CRC32 使用 OS 检出的 ARM64 CRC-32C 指令，缺少能力时使用不破坏 NZCV 的紧凑内联循环。回归还发现并修复了 distorm 表遗漏 CRC32 16 位源的 operand-size 支持。覆盖源宽度、输入/输出别名、保留输入、待发布 NZCV、JIT/解释器一致性以及生成代码中没有 `BLR`。原先借 POPCNT 触发 helper 的回归改用仍调用 helper 的 LZCNT。原有 resident helper 的 NZCV 用例补上 L2 入口发布和非零基线断言，避免未执行代码也通过。
+- 冷编译：配置锁改为共享读锁；有界 region 以请求 PC 为中心保护 32 KiB 半径，互不重叠的请求可并行。lazy 解码及 block 回退在 8 KiB 后的指令边界退出；两个 region 的 regroup 范围包含在保护半径内。重叠请求、相同 PC 和无界 eager/AOT/解释器函数仍互斥。共享 fallback 状态、region membership、统计、slab 空闲链和代码缓存分配均有同步保护；编译观察者需支持并发回调。
+
+`translate_ns` 现在包含等锁时间；新增 `translate_wait_ns` 和 PROF2 的 `translate_wait`。多线程计数是线程时间之和，不能用 `wall - translate` 推导执行时间。JIT 磁盘缓存版本提高到 22，避免使用修复前的发码。
+
+本轮构建与测试串行执行，原生验证结果如下；下节的 449 个用例和 Linux 绝对路径结果属于此前提交。
+
+| 验证 | 结果 | 日志 |
+| --- | --- | --- |
+| macOS ARM64 Release 默认全量 | 459 个用例、1,126,694 条断言通过 | `/tmp/swiftvm-reviewfix-full-default-20261006.log` |
+| flags 回退：`SVM_FLAGS_REGS=0 SVM_FLAGS_CFINV=0 SVM_TSO_MODE=acqrel` | 25 个相关用例、1,929 条断言通过 | `/tmp/swiftvm-reviewfix-fallback-final-20261006.log` |
+| pin3/fixed：`SVM_X86_PIN_EXT=3 SVM_RA_FIXED_CLASS=1 SVM_TSO_MODE=acqrel` | 25 个相关用例、1,929 条断言通过 | `/tmp/swiftvm-reviewfix-pin3-final-20261006.log` |
+| SMC 开/关的冷编译与 slab 并发，开启 PROF2 和函数统计 | 3 个用例、240 条断言通过；等待计数非零，包含在总翻译时间内 | `/tmp/swiftvm-reviewfix-concurrency-prof-20261006.log` |
+| 原始 low32 错误样例重新发码与 VIXL 执行 | 父值保留在 x6；对齐/非对齐原子操作之后均读到 `0x12345678`；已发布入口读取次数为 0 | `/tmp/swiftvm-reviewfix-probe-result-20261006.log` |
+| 原生 AOT 目标 | `ninja -C cmake-build-release -j1 svm_aot` 构建通过 | `/tmp/swiftvm-reviewfix-aot-build-20261006.log` |
+
+### 本轮 Linux 相对路径复核
+
+Orb Ubuntu Release 启动器串行重建通过，日志为 `/tmp/swiftvm-reviewfix-linux-build-20261006.log`。随后串行执行 SQLite、CoreMark、smallpt 的 FEX、SwiftVM 直接映射和窗口映射，共 9 次运行，全部返回 0，输出与参考一致。FEX 使用本机 `/usr/bin/FEXInterpreter.f2e35f3`，不是对最新版本的比较；SwiftVM 使用上述重建的启动器。
+
+三个引擎均固定 CPU 0、关闭磁盘代码缓存，SwiftVM 使用 `SVM_TSO_MODE=acqrel`。SQLite 输入为 `--size 1 --testset main --verify --output verify.data test.db`，数据库和验证输出都使用相对路径；CoreMark 输入为 `0x0 0x0 0x66 1000 7 1 2000`；smallpt 输入为 `4 8 6`。每次运行使用独立目录，30 秒超时，单文件上限 32 MiB。
+
+| 负载 | 三个引擎一致的结果 |
+| --- | --- |
+| SQLite | Verification Hash 为 `111130 1e792c9db61996c477b8ab5ce2d690052e8dae74824a430a`；111,130 字节验证输出逐字节一致，SHA-256 为 `6db359a50bc1c3f9606b73a1dd92f29a814781c3e0be612b361d241e69969481` |
+| CoreMark | 五项 CRC 为 `e9f5/e714/1fd7/8e3a/d340` |
+| smallpt | 完整 8×6 PPM 逐字节一致，SHA-256 为 `e32ee42312d3fd9f643c6aa26f735254a4b6b6bc1111901c0193a69bf162ff5e` |
+
+汇总日志为 `/tmp/swiftvm-reviewfix-linux-relative-20261006.log`；VM 中 `/tmp/swiftvm-linux-validation-reviewfix-20261006/{case}/{engine}/result.json` 保留启动器及客体文件摘要、完整命令、环境、返回码和输出位置。这批短运行验证正确性，不作为性能成绩或 Linux 多线程压力验证。
+
+以上证明修复行为和生成代码形态，没有建立整体性能提升百分比。无界 eager 编译及相距不足保护范围的冷入口仍串行。
+
 ## 2026-10-06 续修结果
 
 从工作区 Codex 历史恢复的最后停点是 low32 回归 SIGSEGV，以及尚未完成的 SQLite 验证。本次在保留已有改动的基础上完成续修，修复基于 `7d53d9e`，经授权整理为提交 `42a8ce2`。

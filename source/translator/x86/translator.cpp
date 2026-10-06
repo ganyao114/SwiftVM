@@ -8,7 +8,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_set>
 #if defined(__APPLE__) && defined(__aarch64__)
 #include <sys/sysctl.h>
@@ -228,6 +230,9 @@ static Arm64Features DetectArm64Features() {
     if (sysctl_feature("hw.optional.arm.FEAT_LSE")) {
         features |= Arm64Features::Atomics;
     }
+    if (sysctl_feature("hw.optional.armv8_crc32")) {
+        features |= Arm64Features::CRC32;
+    }
 #elif defined(__aarch64__) && defined(__linux__)
     // HWCAP is a process constant.  Cache both auxv reads so every Instance
     // receives the same feature bitmap, which is then part of ConfigHash.
@@ -247,6 +252,9 @@ static Arm64Features DetectArm64Features() {
         }
         if ((getauxval(AT_HWCAP) & HWCAP_ATOMICS) != 0) {
             detected |= Arm64Features::Atomics;
+        }
+        if ((getauxval(AT_HWCAP) & HWCAP_CRC32) != 0) {
+            detected |= Arm64Features::CRC32;
         }
         return detected;
     }();
@@ -484,6 +492,11 @@ static bool IsLocalFunctionTarget(VAddr root, VAddr target) {
                           : root - target <= kMaxDistance;
 }
 
+static VAddr DecodeLimit(VAddr root) {
+    constexpr VAddr kDecodeBytes = 8 * 1024;
+    return root > UINT64_MAX - kDecodeBytes ? UINT64_MAX : root + kDecodeBytes;
+}
+
 static bool IsEndbr64Boundary(MemoryInterface& memory, VAddr target) {
     constexpr std::array<u8, 4> kEndbr64{0xf3, 0x0f, 0x1e, 0xfa};
     std::array<u8, 4> bytes{};
@@ -637,6 +650,7 @@ struct X86Instance::Impl final {
                                          !address_space->GetConfig().page_table,
                         .features = features,
                         .tso_mode = address_space->GetConfig().tso_mode,
+                        .decode_limit = lazy ? DecodeLimit(root) : 0,
                         .local_target =
                                 [this, root, lazy, claimed_blocks](
                                         LocationDescriptor address) {
@@ -645,7 +659,8 @@ struct X86Instance::Impl final {
                                         return false;
                                     }
                                     return !lazy ||
-                                           (IsLocalFunctionTarget(root, address) &&
+                                           (address < DecodeLimit(root) &&
+                                            IsLocalFunctionTarget(root, address) &&
                                             (address == root ||
                                              !IsEndbr64Boundary(memory_impl, address)));
                                 },
@@ -662,14 +677,52 @@ struct X86Instance::Impl final {
     }
 
     [[nodiscard]] void* Translate(LocationDescriptor pc) const {
-        // Coarse first-cut MT policy: only one thread may inspect/mutate the
-        // frontend's function fallback sets or decode/publish IR at a time.
-        // Already-published JIT code remains concurrently executable.
-        std::lock_guard translate_guard(translate_mutex);
         PerfTranslationScope2 perf_detail;
         PerfScope perf_total{GetPerfStats().translate_ns};
+        PerfScope perf_config_wait{GetPerfStats().translate_wait_ns};
+        PerfScope2 perf_config_wait_detail{GetPerfStats2().translate_wait};
+        // Setters still wait for all active compilers. Configuration and the
+        // observer remain stable while independent bounded units compile.
+        std::shared_lock translate_guard(translate_mutex);
+        perf_config_wait.Stop();
+        perf_config_wait_detail.Stop();
+
+        PerfScope2 perf_module_lookup{GetPerfStats2().publish_lookup};
+        auto module = address_space->GetModule(pc);
+        perf_module_lookup.Stop();
+        auto& m_config = module->GetModuleConfig();
+        const auto features = backend::ResolveFeatureSet(m_config);
+        const auto function_enabled = [&] {
+            std::lock_guard guard(frontend_mutex);
+            return m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&
+                   runtime::GetSvmConfig().func_base &&
+                   !function_compilation_disabled.load(std::memory_order_relaxed) &&
+                   !block_only_locations.contains(pc);
+        };
+        const size_t configured_budget = decode_budget_override != 0
+                ? decode_budget_override
+                : (address_space->GetConfig().region_edges
+                           ? RegionFuncBudget() : LazyFuncBudget());
+        const bool bounded = address_space->GetConfig().enable_jit &&
+                             (!function_enabled() || configured_budget <= 128);
+        // Local roots are within 8 KiB. Regrouping may include an older root
+        // another 8 KiB away, and its final instruction may cross its decode
+        // limit. A 32 KiB radius covers both regions and fallback blocks.
+        // Eager/AOT and interpreted whole functions retain exclusive access
+        // to the address range because their decoded extent is not bounded.
+        constexpr VAddr kCompileRadius = 32 * 1024;
+        const VAddr range_begin = bounded && pc > kCompileRadius
+                ? pc - kCompileRadius : 0;
+        const VAddr range_end = bounded && pc < UINT64_MAX - kCompileRadius
+                ? pc + kCompileRadius + 1 : UINT64_MAX;
+        PerfScope perf_range_wait{GetPerfStats().translate_wait_ns};
+        PerfScope2 perf_range_wait_detail{GetPerfStats2().translate_wait};
+        ScopedRangeLock compile_guard{compile_ranges, range_begin,
+                                     range_end - range_begin};
+        perf_range_wait.Stop();
+        perf_range_wait_detail.Stop();
         // Another thread may have published this exact location while we
-        // waited for the coarse lock. Reuse it instead of compiling a duplicate
+        // waited for its range. Reuse it instead of compiling a duplicate
         // function whose Module::Push would fail and surface as IllegalCode.
         if (address_space->GetConfig().enable_jit) {
             PerfScope2 perf_lookup{GetPerfStats2().publish_lookup};
@@ -685,17 +738,9 @@ struct X86Instance::Impl final {
         if (compile_observer) {
             compile_observer(compile_observer_ctx, pc);
         }
-        PerfScope2 perf_module_lookup{GetPerfStats2().publish_lookup};
-        auto module = address_space->GetModule(pc);
-        perf_module_lookup.Stop();
-        auto& m_config = module->GetModuleConfig();
-        const auto features = backend::ResolveFeatureSet(m_config);
         // Function-level compilation is default-on when the optimization is
         // present; SVM_FUNC_BASE=0 is the explicit block-only escape hatch.
-        auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&
-                         runtime::GetSvmConfig().func_base &&
-                         !function_compilation_disabled &&
-                         !block_only_locations.contains(pc);
+        auto func_base = function_enabled();
 
         // Function-level compilation: decode the whole function (all reachable
         // blocks up to ret / indirect jump / syscall) into an HIRFunction and
@@ -842,6 +887,7 @@ struct X86Instance::Impl final {
                     decoded_count += result.decoded_count;
                 }
                 const auto make_block_only = [&] {
+                    std::lock_guard guard(frontend_mutex);
                     for (auto* hir_function : hir_functions) {
                         for (auto* block : hir_function->GetHIRBlocks()) {
                             if (block &&
@@ -920,7 +966,10 @@ struct X86Instance::Impl final {
                 }
             } catch (const std::exception& error) {
                 func_stats.Exception(pc, error.what());
-                block_only_locations.insert(pc);
+                {
+                    std::lock_guard guard(frontend_mutex);
+                    block_only_locations.insert(pc);
+                }
                 compiled = false;
             }
             if (runtime::GetSvmConfig().dump_ir) {
@@ -949,7 +998,7 @@ struct X86Instance::Impl final {
         const bool fresh = backend::IsEmpty(module->GetNode(pc));
         auto node = module->GetNodeOrCreate(pc, func_base);
         auto code_cache = VisitVariant<void*>(
-                node, [this, module, pc, fresh, &perf_detail, features](auto x) -> void* {
+                node, [this, module, pc, fresh, &perf_detail, features, bounded](auto x) -> void* {
             using T = std::decay_t<decltype(x)>;
             if constexpr (std::is_same_v<T, IntrusivePtr<ir::Function>>) {
                 // TODO: function-based compilation
@@ -975,7 +1024,8 @@ struct X86Instance::Impl final {
                             features,
                             0,
                             x86::DecodeStopKind::Internal,
-                            module->GetAddressSpace().GetConfig().tso_mode};
+                            module->GetAddressSpace().GetConfig().tso_mode,
+                            bounded ? DecodeLimit(pc) : 0};
                     perf_ir_setup.Stop();
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();
@@ -1010,11 +1060,13 @@ struct X86Instance::Impl final {
     // throughout AddressSpace destruction, including cached IR teardown.
     mutable MemoryImpl memory_impl;
     std::unique_ptr<backend::AddressSpace> address_space{};
-    mutable std::mutex translate_mutex;
+    mutable std::shared_mutex translate_mutex;
+    mutable RangeMutex compile_ranges;
+    mutable std::mutex frontend_mutex;
     mutable FunctionCompileStats func_stats{"x86_64"};
     mutable std::unordered_set<LocationDescriptor> block_only_locations{};
     mutable FunctionRegionMembership region_membership{};
-    mutable bool function_compilation_disabled{};
+    mutable std::atomic_bool function_compilation_disabled{};
     // AOT: in-process override of the function-mode decode budget (see
     // X86Instance::SetFunctionDecodeBudget). 0 = follow SVM_FUNC_LAZY.
     std::size_t decode_budget_override{};

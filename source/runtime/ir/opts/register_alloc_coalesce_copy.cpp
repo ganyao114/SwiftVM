@@ -266,6 +266,13 @@ bool RecolorFinalLow32Source(
     if (source_reg == bridge_reg) {
         return false;
     }
+    // Recoloring starts at the parent's definition, before the view exists.
+    // The destination must survive that newly occupied prefix as well as
+    // the bridge's original interval.
+    if (CrossesGPRClobber(block, reg_alloc, source.Id() + 1,
+                          bridge.Id(), bridge_reg)) {
+        return false;
+    }
     if (HasGPROverlap(block, reg_alloc, bridge_reg, source.Id(), bridge.Id(),
                       source.Id(), bridge.Id()) ||
         HasGPROverlap(block, reg_alloc, source_reg, source.Id(), bridge.Id(),

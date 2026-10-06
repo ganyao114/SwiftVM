@@ -2,6 +2,7 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <vector>
@@ -41,6 +42,7 @@ private:
     void Erase(const std::shared_ptr<Group>& group);
 
     std::map<runtime::LocationDescriptor, std::shared_ptr<Group>> groups;
+    std::mutex mutex;
 };
 
 }  // namespace swift::translator::x86

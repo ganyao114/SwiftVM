@@ -11,8 +11,6 @@ using namespace swift::runtime::frontend;
 // SMULH/UMULH: a call site costs 376 bytes of register save/restore plus the
 // branch pair, which made a 64-bit multiply loop 3.27x slower than the same
 // loop without the multiply (docs/perf-baseline.md 5.1).
-// popcnt helper.
-static u64 Popcnt64(u64 v, u64) { return u64(__builtin_popcountll(v)); }
 // lzcnt: count of leading zero bits within the architectural width.
 static u64 Lzcnt64(u64 v, u64 width) {
     if (!v) {
@@ -25,19 +23,6 @@ static u64 Lzcnt64(u64 v, u64 width) {
         return u64(__builtin_clz(u32(v)));
     }
     return u64(__builtin_clz(u32(v)) - (32 - width));
-}
-// crc32 (SSE4.2 CRC-32C / Castagnoli, reflected poly 0x82F63B78). The hardware
-// instruction performs no pre/post complement; nbytes is the source width.
-static u64 Crc32c64(u64 crc, u64 data, u64 nbytes) {
-    u32 c = u32(crc);
-    for (u64 i = 0; i < nbytes; ++i) {
-        c ^= u32(data & 0xFF);
-        data >>= 8;
-        for (u32 j = 0; j < 8; ++j) {
-            c = (c >> 1) ^ (0x82F63B78u & (~(c & 1) + 1));
-        }
-    }
-    return u64(c);
 }
 
 struct DivResult {
@@ -1146,11 +1131,10 @@ void X64Decoder::DecodeCrc32(_DInst& insn) {
     // crc32 r32/r64, r/m8/16/32/64: accumulate CRC-32C. No flags affected.
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
-    u64 nbytes = op1.size ? u64(op1.size) / 8 : 1;
+    const u64 width = op1.size ? u64(op1.size) : 8;
     auto acc = __ ZeroExtend64(ToValue(Src(insn, op0)));
     auto data = __ ZeroExtend64(ToValue(Src(insn, op1)));
-    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Crc32c64)}},
-                                acc, data, __ LoadImm(ir::Imm(nbytes)));
+    auto result = __ ZeroExtend64(__ Crc32c(acc, data, ir::Imm{width}));
     Dst(insn, op0, result);
 }
 
@@ -1159,20 +1143,17 @@ void X64Decoder::DecodePopcnt(_DInst& insn) {
     auto& op0 = insn.ops[0];
     const u32 width = op0.size;
     auto src = ToValue(Src(insn, insn.ops[1]));
-    // The helper accepts a u64, but POPCNT's 16/32-bit forms count only the
-    // selected source width.  Mask before the call so upper guest bits cannot
-    // contribute to the result.
+    // POPCNT's 16/32-bit forms count only the selected source width.
     if (width < 64) {
         const u64 mask = (u64{1} << width) - 1;
         src = __ And(src, ir::Operand{ir::Imm(mask)}).SetType(GetSize(width));
     }
-    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Popcnt64)}},
-                                src, __ LoadImm(ir::Imm(u64(0))));
+    auto result = __ PopCount(__ ZeroExtend64(src));
     Dst(insn, op0, result);
     __ ClearFlags(ir::Flags::All);
     carry_ = CarryPolarity::Direct;
     // A zero population count is equivalent to a zero source. Observe the
-    // result so the helper does not have to preserve its input for ZF.
+    // result so its input does not have to stay live for ZF.
     __ SaveFlags(__ Or(result, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Zero);
 }
 

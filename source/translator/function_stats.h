@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -21,17 +22,17 @@ public:
             return;
         }
         const double average =
-                compiled ? static_cast<double>(compiled_blocks) / static_cast<double>(compiled)
+                compiled.load() ? static_cast<double>(compiled_blocks.load()) / static_cast<double>(compiled.load())
                          : 0.0;
         fmt::print(stderr,
                    "[func-stats] isa={} attempted={} compiled={} fallback_exception={} "
                    "fallback_block_cap={} compiled_blocks={} avg_blocks={:.2f}\n",
                    isa,
-                   attempted,
-                   compiled,
-                   fallback_exception,
-                   fallback_block_cap,
-                   compiled_blocks,
+                   attempted.load(),
+                   compiled.load(),
+                   fallback_exception.load(),
+                   fallback_block_cap.load(),
+                   compiled_blocks.load(),
                    average);
     }
 
@@ -67,11 +68,11 @@ public:
 private:
     std::string_view isa;
     bool enabled{};
-    uint64_t attempted{};
-    uint64_t compiled{};
-    uint64_t fallback_exception{};
-    uint64_t fallback_block_cap{};
-    uint64_t compiled_blocks{};
+    std::atomic<uint64_t> attempted{};
+    std::atomic<uint64_t> compiled{};
+    std::atomic<uint64_t> fallback_exception{};
+    std::atomic<uint64_t> fallback_block_cap{};
+    std::atomic<uint64_t> compiled_blocks{};
 };
 
 }  // namespace swift::translator

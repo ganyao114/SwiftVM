@@ -2,6 +2,7 @@
 // Every semantic case runs through both the ARM64 JIT and the interpreter.
 
 #include <cstdlib>
+#include <bit>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -129,6 +130,87 @@ void EmitAdxReg(std::vector<u8>& c, bool adox, u8 dst, u8 src, bool wide = true)
 }
 
 }  // namespace
+
+TEST_CASE("CRC32 word decoding preserves the wider destination", "[scalar-bits][decode]") {
+    for (auto bytes : {std::vector<u8>{0xf2, 0x66, 0x0f, 0x38, 0xf1, 0xc2},
+                       std::vector<u8>{0x66, 0xf2, 0x0f, 0x38, 0xf1, 0xc2}}) {
+        const auto instruction = DisDecode(bytes.data(), bytes.size(), 1);
+        REQUIRE(instruction.opcode == I_CRC32);
+        REQUIRE(instruction.size == bytes.size());
+        REQUIRE(instruction.ops[0].index == R_EAX);
+        REQUIRE(instruction.ops[0].size == 32);
+        REQUIRE(instruction.ops[1].index == R_DX);
+        REQUIRE(instruction.ops[1].size == 16);
+    }
+}
+
+TEST_CASE("POPCNT and CRC32 retain guest width and flag contracts", "[scalar-bits][x86]") {
+    Vm vm;
+    for (const u32 width : {16u, 32u, 64u}) {
+        for (const u64 input : {u64{0}, u64{0xffff000000000000}, UINT64_MAX,
+                                u64{0x123456789abcdef0}}) {
+            CAPTURE(width, input);
+            std::vector<u8> code{0xf3};
+            if (width == 16) code.push_back(0x66);
+            if (width == 64) code.push_back(0x48);
+            code.insert(code.end(), {0x0f, 0xb8, 0xc2, 0x9c, 0x5b, 0xf4}); // popcnt; pushfq; pop rbx; hlt
+            const auto [jit, interp] = vm.Both(code, [&](ThreadContext64& ctx) {
+                ctx.rax.qword = 0xaabbccddeeff1234;
+                ctx.rdx.qword = input;
+                ctx.ef.flags = 0x3f;
+            });
+            CheckSameCoreState(jit, interp);
+            REQUIRE(jit.exit == int(swift::translator::None));
+            REQUIRE(interp.exit == int(swift::translator::None));
+            const u64 mask = width == 64 ? UINT64_MAX : (u64{1} << width) - 1;
+            const u64 count = std::popcount(input & mask);
+            const u64 expected = width == 16 ? 0xaabbccddeeff0000 | count : count;
+            REQUIRE(jit.ctx.rax.qword == expected);
+            REQUIRE(interp.ctx.rax.qword == expected);
+            REQUIRE((jit.ctx.rbx.qword & 0x8d5) == (count == 0 ? 0x40 : 0));
+            REQUIRE((interp.ctx.rbx.qword & 0x8d5) == (count == 0 ? 0x40 : 0));
+        }
+    }
+    for (const u32 width : {8u, 16u, 32u, 64u}) {
+        for (const bool alias : {false, true}) {
+            CAPTURE(width, alias);
+            constexpr u64 acc = 0xabcdef0198765432;
+            const u64 data = alias ? acc : 0xfedcba9876543210;
+            // Establish arithmetic flags in guest code, then compare the
+            // architectural PUSHFQ snapshots before and after CRC32.
+            std::vector<u8> code{0x41, 0x83, 0xc0, 0x01, 0x9c, 0x5f, 0xf2}; // add r8d,1; pushfq; pop rdi
+            if (width == 16) code.push_back(0x66);
+            if (width == 64) code.push_back(0x48);
+            code.insert(code.end(), {0x0f, 0x38, u8(width == 8 ? 0xf0 : 0xf1),
+                                     u8(alias ? 0xc0 : 0xc2), 0x9c, 0x5b, 0xf4});
+            u32 expected = u32(acc);
+            u64 remaining = data;
+            for (u32 byte = 0; byte < width / 8; ++byte) {
+                expected ^= u8(remaining);
+                remaining >>= 8;
+                for (u32 bit = 0; bit < 8; ++bit) {
+                    const bool low = expected & 1;
+                    expected >>= 1;
+                    if (low) expected ^= 0x82f63b78;
+                }
+            }
+            const auto [jit, interp] = vm.Both(code, [&](ThreadContext64& ctx) {
+                ctx.rax.qword = acc;
+                ctx.rdx.qword = data;
+                ctx.r8.qword = 0xffffffff;
+                ctx.ef.flags = 0x3f;
+            });
+            CheckSameCoreState(jit, interp);
+            REQUIRE(jit.exit == int(swift::translator::None));
+            REQUIRE(interp.exit == int(swift::translator::None));
+            REQUIRE(jit.ctx.rax.qword == expected);
+            REQUIRE(interp.ctx.rax.qword == expected);
+            REQUIRE((jit.ctx.rdi.qword & 0x8d5) == 0x55);
+            REQUIRE(jit.ctx.rbx.qword == jit.ctx.rdi.qword);
+            REQUIRE(interp.ctx.rbx.qword == interp.ctx.rdi.qword);
+        }
+    }
+}
 
 TEST_CASE("FSGSBASE distorm check and shared segment-base state") {
     // Check evidence for choosing normal dispatch instead of raw decode.

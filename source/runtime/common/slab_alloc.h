@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstdlib>
+#include <mutex>
 #include "logging.h"
 
 namespace swift::runtime {
@@ -27,6 +28,9 @@ public:
 
 private:
     std::atomic<Node*> head{};
+    // Pop/free reuse nodes immediately. A pointer-only CAS cannot prevent
+    // ABA or concurrent reads of next while another owner rewrites the node.
+    std::mutex mutex;
     size_t size_{};
 };
 

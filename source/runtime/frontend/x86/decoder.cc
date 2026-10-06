@@ -205,8 +205,10 @@ X64Decoder::X64Decoder(VAddr start,
                        const runtime::FeatureSet& features,
                        VAddr decode_stop,
                        DecodeStopKind decode_stop_kind,
-                       runtime::TsoMode tso_mode)
+                       runtime::TsoMode tso_mode,
+                       VAddr decode_limit)
         : start(start), pc(start), decode_stop(decode_stop),
+          decode_limit(decode_limit),
           decode_stop_kind(decode_stop_kind), assembler(visitor), memory(memory),
           is_64bit(is_64bit),
           direct_addressing_(direct_addressing), features_(features), tso_mode_(tso_mode) {
@@ -251,6 +253,12 @@ public:
         verify_fast = DistormFastVerifyEnabled();
 
         while (!decoder.end_decode) {
+            if (decoder.decode_limit != 0 && decoder.pc >= decoder.decode_limit) {
+                decoder.assembler->ExternalLinkBlock(
+                        ir::terminal::ExternalLinkBlock{ir::Location{decoder.pc}});
+                decoder.end_decode = true;
+                return;
+            }
             if (decoder.decode_stop != 0 && decoder.pc == decoder.decode_stop) {
                 if (decoder.decode_stop_kind == DecodeStopKind::CallReturn) {
                     decoder.assembler->ExternalLinkBlock(

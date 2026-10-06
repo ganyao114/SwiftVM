@@ -406,6 +406,12 @@ GPRClassContract ClassifyGPRContract(const GPRSMask& pool,
 //    operand), one for the 64-bit ones, none for the packed ones.
 ScratchNeed ScratchBudget(ir::OpCode op, const FeatureSet& features) {
     switch (op) {
+        case ir::OpCode::PopCount:
+            return {0, 1};
+        case ir::OpCode::Crc32c:
+            // Three temporaries for the software fallback; the hardware
+            // instruction needs none. Operand reloads are priced separately.
+            return {3, 0};
         case ir::OpCode::CallLambda:
             // EmitHostCall leases only the shared NZCV merge temporary.
             // Argument, target and result reloads are charged separately by

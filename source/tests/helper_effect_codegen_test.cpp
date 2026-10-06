@@ -169,10 +169,12 @@ swift::u64 RunPendingFlags(bool call_helper) {
             .has_local_operation = false,
             .backend_isa = kArm64,
             .uniform_buffer_size = 16,
+            .static_program = true,
     };
     AddressSpace address_space{config};
     constexpr swift::u64 guest = 0xb180;
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
+    std::memset(&block->GetJitCache(), 0, sizeof(JitCache));
     auto left = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
     auto result = block->Sub(left, Operand{Imm{swift::u64{1}}})
                           .SetType(ValueType::U64);
@@ -198,7 +200,9 @@ swift::u64 RunPendingFlags(bool call_helper) {
     block->StoreUniform(Uniform{0, ValueType::U64}, flags);
     block->SetTerminal(terminal::LinkBlock{Location{guest + 1}});
     block->ReIdInstr();
-    REQUIRE(TranslateIR(address_space.GetDefaultModule(), block) != nullptr);
+    const auto entry = TranslateIR(address_space.GetDefaultModule(), block);
+    REQUIRE(entry != nullptr);
+    address_space.PushCodeCache(guest, entry);
 
     Runtime runtime{&address_space};
     runtime.SetLocation(guest);
@@ -222,7 +226,9 @@ TEST_CASE("exact helper effects retain pending NZCV across host calls",
 TEST_CASE("resident string helper preserves pending NZCV",
           "[helper-effects][production]") {
 #if defined(__aarch64__)
-    REQUIRE(RunPendingFlags(true) == RunPendingFlags(false));
+    const auto baseline = RunPendingFlags(false);
+    REQUIRE(baseline != 0);
+    REQUIRE(RunPendingFlags(true) == baseline);
 #else
     SUCCEED("resident string helper requires an AArch64 host");
 #endif

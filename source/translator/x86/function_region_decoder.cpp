@@ -51,6 +51,7 @@ void FunctionRegionDecoder::DecodeBlock(LocationDescriptor address,
             stop,
             stop_kind,
             config.tso_mode,
+            config.decode_limit,
     };
     decoder.Decode();
 }
@@ -66,7 +67,7 @@ FunctionRegionDecodeResult FunctionRegionDecoder::Decode() {
                 continue;
             }
             const auto target = block->GetStartLocation().Value();
-            if (!config.local_target(target)) {
+            if (!config.local_target(target) || config.has_code(target)) {
                 continue;
             }
             auto split = frontier.FindSplit(target);
@@ -107,10 +108,9 @@ FunctionRegionDecodeResult FunctionRegionDecoder::Decode() {
             const auto address = block->GetStartLocation().Value();
             // A block that already has published code is owned by another
             // object; absorbing it here would orphan that object and leave
-            // inbound links dangling. Skip it as an external boundary in both
-            // lazy and eager decode — under eager IsAccepted is never set, so
-            // this degrades to the basic has_code guard.
-            if (!frontier.IsAccepted(address) && config.has_code(address)) {
+            // inbound links dangling. A successful split proves a decoding
+            // boundary, not ownership of another published object.
+            if (config.has_code(address)) {
                 continue;
             }
             if (config.local_target(address)) {
@@ -175,9 +175,9 @@ FunctionRegionDecodeResult FunctionRegionDecoder::Decode() {
     for (auto& candidate : function.GetHIRBlockList()) {
         auto* block = candidate.GetBlock();
         if (block->GetInstList().empty() && !block->HasTerminal()) {
-            result.hit_block_cap = true;
             const auto root = block->GetStartLocation().Value();
             if (config.local_target(root) && !config.has_code(root)) {
+                result.hit_block_cap = true;
                 result.pending_roots.push_back(root);
             }
         }

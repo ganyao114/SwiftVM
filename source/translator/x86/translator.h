@@ -75,6 +75,8 @@ public:
     // Every location Impl::Translate compiles is reported to `fn` *before* the
     // compile. Used by `svm_aot run --dump-compiles` to census what the JIT
     // still has to do at run time when an artifact is installed; null clears.
+    // Independent regions may invoke fn concurrently. It must synchronize
+    // its own state and must not call configuration setters on this instance.
     void SetCompileObserver(void (*fn)(void*, uint64_t), void* ctx);
 
 private:

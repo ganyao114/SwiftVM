@@ -261,6 +261,7 @@ void CodeCache::Init() {
 }
 
 std::optional<CodeBuffer> CodeCache::AllocCode(size_t size) {
+    std::lock_guard guard(allocation_mutex);
     u8* result{};
     if (read_only) {
         code_cursor = reinterpret_cast<u8*>(
@@ -297,6 +298,7 @@ std::optional<CodeBuffer> CodeCache::AllocCode(size_t size) {
 }
 
 bool CodeCache::FreeCode(u8* exec_ptr) {
+    std::lock_guard guard(allocation_mutex);
     ASSERT(!read_only);
 #if defined(__APPLE__) || defined(__linux__)
     if (code_mem_mapped) {

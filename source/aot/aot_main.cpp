@@ -20,6 +20,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -60,7 +61,9 @@ int Usage() {
 // replace run-time JIT".  A command-line flag rather than an SVM_* variable,
 // for the reason in CmdRun below.
 std::vector<u64>* g_compile_log = nullptr;
+std::mutex g_compile_log_mutex;
 void CompileObserver(void*, u64 pc) {
+    std::lock_guard guard(g_compile_log_mutex);
     if (g_compile_log) {
         g_compile_log->push_back(pc);
     }

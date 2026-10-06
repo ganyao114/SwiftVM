@@ -898,6 +898,55 @@ void JitTranslator::EmitCountLeadingZeros64(ir::Inst* inst) {
     __ Clz(context.X(ir::Value{inst}), context.X(value));
 }
 
+void JitTranslator::EmitPopCount(ir::Inst* inst) {
+    const auto input = context.X(inst->GetArg<ir::Value>(0));
+    const auto result = context.W(ir::Value{inst});
+    const auto bytes = context.GetTmpV();
+    __ Fmov(bytes.D(), input);
+    __ Cnt(bytes.V8B(), bytes.V8B());
+    __ Addv(bytes.B(), bytes.V8B());
+    __ Umov(result, bytes.V16B(), 0);
+}
+
+void JitTranslator::EmitCrc32c(ir::Inst* inst) {
+    const auto acc = context.W(inst->GetArg<ir::Value>(0));
+    const auto data = context.X(inst->GetArg<ir::Value>(1));
+    const auto result = context.W(ir::Value{inst});
+    const u32 width = inst->GetArg<ir::Imm>(2).Get();
+    ASSERT(width == 8 || width == 16 || width == 32 || width == 64);
+    if (True(context.GetConfig().arm64_features & Arm64Features::CRC32)) {
+        vixl::CPUFeaturesScope scope{&masm, vixl::CPUFeatures::kCRC32};
+        switch (width) {
+            case 8: __ Crc32cb(result, acc, data.W()); break;
+            case 16: __ Crc32ch(result, acc, data.W()); break;
+            case 32: __ Crc32cw(result, acc, data.W()); break;
+            case 64: __ Crc32cx(result, acc, data); break;
+        }
+        return;
+    }
+
+    // A compact inline fallback keeps guest registers and host NZCV intact.
+    // Mixing the entire input before the reflected shifts is equivalent to
+    // mixing one byte at a time, including the 64-bit form.
+    const auto state = context.GetTmpX();
+    const auto mask = context.GetTmpX();
+    const auto poly = context.GetTmpX();
+    __ Ubfx(state, data, 0, width);
+    __ Mov(mask.W(), acc);
+    __ Eor(state, state, mask);
+    __ Mov(poly, 0x82f63b78u);
+    __ Mov(result, width);
+    Label loop;
+    __ Bind(&loop);
+    __ And(mask, state, 1);
+    __ Neg(mask, mask);
+    __ And(mask, mask, poly);
+    __ Eor(state, mask, Operand{state, LSR, 1});
+    __ Sub(result, result, 1);
+    __ Cbnz(result, &loop);
+    __ Mov(result, state.W());
+}
+
 void JitTranslator::EmitCountTrailingZeros64(ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
     ASSERT(value.Type() == ir::ValueType::U64);

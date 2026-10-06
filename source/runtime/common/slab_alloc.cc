@@ -3,24 +3,20 @@
 namespace swift::runtime {
 
 void* SlabAllocator::Allocate() {
+    std::lock_guard guard(mutex);
     Node* ret = head.load();
-
-    do {
-        if (ret == nullptr) {
-            break;
-        }
-    } while (!head.compare_exchange_weak(ret, ret->next));
-
+    if (ret) {
+        head.store(ret->next);
+    }
     return ret;
 }
 
 void SlabAllocator::Free(void* obj) {
+    std::lock_guard guard(mutex);
     Node* node = static_cast<Node*>(obj);
 
-    Node* cur_head = head.load();
-    do {
-        node->next = cur_head;
-    } while (!head.compare_exchange_weak(cur_head, node));
+    node->next = head.load();
+    head.store(node);
 }
 
 }  // namespace swift::runtime

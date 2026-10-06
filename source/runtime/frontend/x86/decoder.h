@@ -270,7 +270,8 @@ public:
                const runtime::FeatureSet& features = runtime::FeatureSet{},
                VAddr decode_stop = 0,
                DecodeStopKind decode_stop_kind = DecodeStopKind::Internal,
-               runtime::TsoMode tso_mode = runtime::TsoMode::Relaxed);
+               runtime::TsoMode tso_mode = runtime::TsoMode::Relaxed,
+               VAddr decode_limit = 0);
 
     void Decode();
 
@@ -1107,6 +1108,9 @@ private:
     VAddr start;
     VAddr pc;
     VAddr decode_stop;
+    // A budget boundary may fall inside an instruction. Stop at the next
+    // instruction boundary instead of discarding it like a split hint.
+    VAddr decode_limit;
     DecodeStopKind decode_stop_kind;
     // First byte of the instruction currently in DecodeSwitch. Handlers that
     // must inspect the raw encoding (VEX prefix fields, see DecodeVex) read

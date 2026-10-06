@@ -458,3 +458,10 @@ INST(FCmpCondSet, BOOL, Value, Cond)
 // under SVM_INT_IMM_FOLD after proving the zero LoadImm has this sole use.
 // Keeping it at the end preserves every pre-existing opcode number.
 INST(Neg, Value, Value)
+
+// Count the set bits in the complete scalar input. Narrow inputs must be
+// zero-extended by the frontend before using this U64 operation.
+INST(PopCount, U64, Value)
+// CRC-32C without pre/post complement. Only the accumulator's low 32 bits
+// and the data's low Imm bits (8, 16, 32 or 64) participate; result is U32.
+INST(Crc32c, U32, Value, Value, Imm)

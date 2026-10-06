@@ -399,8 +399,10 @@ bool JitTranslator::ReproveLow32ViewOwnership(ir::Inst* inst,
         (source_last_use < last_use && source_last_use != inst->Id())) {
         return false;
     }
+    const u32 live_begin = context.Low32SourceRecolored(source, inst->Id())
+            ? source.Id() + 1 : inst->Id();
     for (auto& scan : cur_block->GetInstList()) {
-        if (scan.Id() < inst->Id()) {
+        if (scan.Id() < live_begin) {
             continue;
         }
         if (scan.Id() > last_use) {
@@ -479,6 +481,21 @@ bool JitTranslator::ReproveLow32Copy(ir::Inst* inst) const {
     if (!source.Defined() || context.Low32CopySource(inst->Id()) != source.Id() ||
         !context.SharesGPR(source, ir::Value{inst})) {
         return false;
+    }
+    if (context.Low32SourceRecolored(source, inst->Id())) {
+        const u32 target = context.X(source).GetCode();
+        for (auto& scan : cur_block->GetInstList()) {
+            if (scan.Id() <= source.Id() || scan.Id() >= inst->Id()) {
+                continue;
+            }
+            if ((scan.GetOp() == ir::OpCode::SetHostGPR &&
+                 scan.GetArg<ir::Imm>(1).Get() == target) ||
+                (FixedGPRClobbers(scan, context.GetFeatures()) & (1u << target)) ||
+                HelperCallContract::InstructionClobbersGPR(
+                        scan, target, context.GetFeatures())) {
+                return false;
+            }
+        }
     }
     return ReproveLow32ViewOwnership(inst, source) ||
            ReproveAdjacentLow32Copy(inst, source);

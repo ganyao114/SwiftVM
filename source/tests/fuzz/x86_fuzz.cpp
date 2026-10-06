@@ -4165,7 +4165,7 @@ TEST_CASE("x86 RBX RBP static mapping interaction") {
                                     0xC5,
                                     0x10,  // add rbp, 16
                             });
-            EmitPopcnt(helper, 64, kRax, kRax);  // CallLambda
+            EmitLzcnt(helper, 64, kRax, kRax);  // CallLambda
             helper.B(0xC3);
             std::memcpy(reinterpret_cast<void*>(code_addr), caller.c.data(), caller.c.size());
             std::memcpy(reinterpret_cast<void*>(helper_addr), helper.c.data(), helper.c.size());
@@ -4191,8 +4191,8 @@ TEST_CASE("x86 RBX RBP static mapping interaction") {
             CHECK(ctx.rdx.qword == initial_rbp - 8);
             CHECK(ctx.rsi.qword == initial_rbx + 8);
             CHECK(ctx.rcx.qword == rbp_memory);
-            CHECK(ctx.rax.qword == std::popcount(rbx_memory));
-            CHECK(*reinterpret_cast<u64*>(initial_rbp + 8) == std::popcount(rbx_memory));
+            CHECK(ctx.rax.qword == std::countl_zero(rbx_memory));
+            CHECK(*reinterpret_cast<u64*>(initial_rbp + 8) == std::countl_zero(rbx_memory));
             X86Core::Destroy(core);
         }
         X86Instance::Destroy(instance);
@@ -4378,7 +4378,7 @@ TEST_CASE("x86 static GetHostGPR alias clobber regression") {
         {
             CodeBuf code;
             EmitXchgRegReg(code, 64, kRbx, kRcx);
-            EmitPopcnt(code, 64, kRax, kRdx);  // CallLambda between swap and use.
+            EmitLzcnt(code, 64, kRax, kRdx);  // CallLambda between swap and use.
             EmitMovRegReg(code, 64, kRsi, kRcx);
             constexpr u64 rbx = 0x13579BDF2468ACE0ull;
             constexpr u64 rcx = 0x0F0E0D0C0B0A0908ull;
@@ -4395,7 +4395,7 @@ TEST_CASE("x86 static GetHostGPR alias clobber regression") {
                         CHECK(ctx.rbx.qword == rcx);
                         CHECK(ctx.rcx.qword == rbx);
                         CHECK(ctx.rsi.qword == rbx);
-                        CHECK(ctx.rax.qword == std::popcount(rdx));
+                        CHECK(ctx.rax.qword == std::countl_zero(rdx));
                     });
         }
         X86Instance::Destroy(instance);

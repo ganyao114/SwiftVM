@@ -4,8 +4,8 @@
 // Off unless SVM_PROF is set in the environment: every check is guarded by one
 // process-constant bool, and every check sits on a "once per compiled unit"
 // path -- never on a per-executed-guest-block path -- so enabling it cannot
-// perturb the thing being measured (guest execution time is derived as
-// wall - translate).
+// perturb the generated code. With multiple compiling threads these timers
+// accumulate thread time; wall - translate is meaningful only for one thread.
 //
 // The counters are far more useful than wall clock for this pipeline: unit
 // counts and emitted byte counts are exactly reproducible run to run, and the
@@ -39,6 +39,7 @@ struct PerfStats {
     std::atomic<unsigned long long> publish_ns{0};    // module push, L2 slots, SMC
     std::atomic<unsigned long long> ir_free_ns{0};    // releasing the unit's IR
     std::atomic<unsigned long long> translate_ns{0};  // whole Translate() call
+    std::atomic<unsigned long long> translate_wait_ns{0}; // config/range lock waits
 
     std::atomic<unsigned long long> func_units{0};
     std::atomic<unsigned long long> block_units{0};
@@ -87,6 +88,7 @@ struct PerfLoweringBucket2 {
 // into the more intrusive fine-grained clocks below.
 struct PerfStats2 {
     PerfCounter2 translate_total;
+    PerfCounter2 translate_wait;
     PerfCounter2 decode_total;       // X64Decoder::Decode, including IR append
     PerfCounter2 ir_append;          // central HIR/Block instruction append
     PerfCounter2 ir_setup;           // builder/function/block setup
@@ -285,6 +287,7 @@ inline void PerfDumpAtExit() {
     // gate on a line that *starts* with "func_units=", so anything appended to
     // the line above would have to be stripped there as well.
     std::fprintf(stderr, "[svm-prof] ir_arena_bytes=%llu\n", g(s.ir_arena_bytes));
+    std::fprintf(stderr, "[svm-prof] translate_wait_ns=%llu\n", g(s.translate_wait_ns));
 
     if (!Perf2Enabled()) {
         return;
@@ -294,6 +297,7 @@ inline void PerfDumpAtExit() {
     std::fprintf(stderr, "[svm-prof2] " #name "_ns=%llu " #name "_calls=%llu\n",                  \
                  g(d.name.ns), g(d.name.calls))
     PERF2_DUMP(translate_total);
+    PERF2_DUMP(translate_wait);
     PERF2_DUMP(decode_total);
     PERF2_DUMP(ir_append);
     PERF2_DUMP(ir_setup);

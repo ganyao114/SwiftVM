@@ -19,7 +19,9 @@ public:
         throw std::runtime_error("decoding crossed an external boundary");
     }
     bool Write(void*, size_t, size_t) override { return false; }
-    void* GetPointer(void*) override { return nullptr; }
+    void* GetPointer(void*) override {
+        throw std::runtime_error("instruction fetch crossed an external boundary");
+    }
 };
 
 TEST_CASE("function region decode stops at unavailable external roots",
@@ -64,6 +66,39 @@ TEST_CASE("function region decode stops at unavailable external roots",
         REQUIRE(result.pending_roots.empty());
         REQUIRE(function->GetExternalEntryRoots().empty());
         REQUIRE(function->GetExternalDirectLinks().size() == 3);
+    }
+}
+
+TEST_CASE("function region decode preserves already queued published entries",
+          "[function-entry][frontier]") {
+    for (const bool lazy : {false, true}) {
+        CAPTURE(lazy);
+        constexpr LocationDescriptor kStart = 0x6800;
+        constexpr LocationDescriptor kTarget = kStart + 4;
+        HIRBuilder builder{8, true, false, FeatureSet{}};
+        auto* function = builder.AppendFunction(Location{kStart});
+        auto* owner = function->GetCurrentBlock();
+        builder.AdvancePC(Imm{8u});
+        owner->GetBlock()->SetTerminal(terminal::ReturnToDispatch{});
+        function->CreateOrGetBlock(Location{kTarget});
+
+        BoundaryMemory memory;
+        FunctionRegionDecoder decoder{
+                builder, *function,
+                {.entry = kStart, .block_cap = 8, .lazy = lazy,
+                 .memory = &memory,
+                 .local_target = [](LocationDescriptor) { return true; },
+                 .has_code = [](LocationDescriptor address) {
+                     return address == kTarget;
+                 }}};
+        swift::translator::x86::FunctionRegionDecodeResult result;
+        REQUIRE_NOTHROW(result = decoder.Decode());
+        REQUIRE(result.decoded_count == 0);
+        REQUIRE_FALSE(result.hit_block_cap);
+        REQUIRE(result.pending_roots.empty());
+        REQUIRE(FunctionDecodeFrontier::DecodedEnd(owner->GetBlock()) == kStart + 8);
+        REQUIRE(owner->GetInstList().size() == 1);
+        REQUIRE(function->GetFunctionEntryProvenance().empty());
     }
 }
 

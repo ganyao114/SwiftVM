@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <memory>
+#include <array>
 
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/arm64/jit/translator.h"
@@ -267,6 +268,53 @@ TEST_CASE("low32 ownership transfer preserves guest homes across publication") {
         REQUIRE(allocation.IsLow32CopyCoalesced(bridge.Id()) == !overwrite_home);
         if (overwrite_home) {
             REQUIRE(allocation.ValueGPR(bridge).id != 22);
+        }
+    }
+}
+
+TEST_CASE("low32 recoloring preserves the parent across earlier atomic clobbers") {
+    for (const bool atomic : {false, true}) {
+        CAPTURE(atomic);
+        IntrusivePtr<Block> block{new Block(0, Location{0x86e0})};
+        auto source = block->LoadUniform<TypedValue<ValueType::U64>>(
+                Uniform{0, ValueType::U64});
+        std::array<Value, 4> keep;
+        for (unsigned i = 0; i < keep.size(); ++i) {
+            keep[i] = block->LoadUniform<TypedValue<ValueType::U64>>(
+                    Uniform{32 + i * 8, ValueType::U64});
+        }
+        Value exchanged;
+        if (atomic) {
+            auto address = block->LoadUniform<TypedValue<ValueType::U64>>(
+                    Uniform{128, ValueType::U64});
+            auto input = block->LoadImm(Imm{17u}).SetType(ValueType::U64);
+            exchanged = block->AtomicExchange(address, input).SetType(ValueType::U64);
+            block->StoreUniform(Uniform{136, ValueType::U64}, exchanged);
+        }
+        auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
+                              .SetType(ValueType::U32);
+        auto reused_home = block->LoadImm(Imm{7u}).SetType(ValueType::U64);
+        block->StoreUniform(Uniform{8, ValueType::U64}, reused_home);
+        for (unsigned i = 0; i < keep.size(); ++i) {
+            block->StoreUniform(Uniform{160 + i * 8, ValueType::U64}, keep[i]);
+        }
+        block->StoreUniform(Uniform{16, ValueType::U32}, bridge);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+
+        FeatureSet features{};
+        features.jit_scratch_xpool = true;
+        RegAlloc allocation{block->MaxInstrId(), CopyTestGPRs(),
+                            FPRSMask{~((1u << 8) - 1u)}, features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        REQUIRE(allocation.ValueType(source) == RegAlloc::GPR);
+        if (atomic) {
+            const auto source_reg = allocation.ValueGPR(source).id;
+            REQUIRE((FixedGPRClobbers(*exchanged.Def(), features) &
+                     (1u << source_reg)) == 0);
+        } else {
+            REQUIRE(allocation.IsLow32CopyCoalesced(bridge.Id()));
+            REQUIRE(allocation.AllocationId(source) == bridge.Id());
         }
     }
 }

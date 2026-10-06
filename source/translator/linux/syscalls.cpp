@@ -2001,13 +2001,17 @@ s64 SyscallHandler::SysUnlinkat(u64 dirfd, u64 path, u64 flags) {
 }
 
 s64 SyscallHandler::SysGetcwd(u64 buf, u64 size) {
-    // The emulated process always sits at the filesystem root.
-    static constexpr char kCwd[] = "/";
-    if (size < sizeof(kCwd)) return -ERANGE_;
-    if (!memory->TryWriteBytes(buf, {reinterpret_cast<const u8*>(kCwd), sizeof(kCwd)})) {
+    // AT_FDCWD operations use the host process's current directory. Report
+    // the same directory so guest canonicalization preserves relative paths.
+    if (size == 0) return -ERANGE_;
+    std::unique_ptr<char, decltype(&std::free)> cwd{::getcwd(nullptr, 0), &std::free};
+    if (!cwd) return HostErrno();
+    const size_t length = std::strlen(cwd.get()) + 1;
+    if (size < length) return -ERANGE_;
+    if (!memory->TryWriteBytes(buf, {reinterpret_cast<const u8*>(cwd.get()), length})) {
         return -EFAULT_;
     }
-    return sizeof(kCwd);
+    return static_cast<s64>(length);
 }
 
 s64 SyscallHandler::SysFcntl(u64 fd, u64 cmd, u64 arg) {

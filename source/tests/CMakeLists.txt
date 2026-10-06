@@ -88,6 +88,8 @@ add_executable(swift_test
         function_region_membership_test.cpp
         helper_call_contract_test.cpp
         helper_effect_codegen_test.cpp
+        scalar_bit_codegen_test.cpp
+        compile_concurrency_test.cpp
         flags_merge_test.cpp
         jit_cache_direct_link_test.cpp
         integer_width_elimination_test.cpp

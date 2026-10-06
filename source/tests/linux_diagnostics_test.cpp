@@ -3,6 +3,9 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
 #include <memory>
 #include <string>
 #include <thread>
@@ -204,6 +207,54 @@ TEST_CASE("large invalid mmap requests return guest errors for both ISAs", "[lin
                                             0, 1ull << 41, 0, 0x22, ~0ull, 1);
         REQUIRE(result.ret == -22);
         REQUIRE_FALSE(result.exited);
+    }
+}
+
+TEST_CASE("guest getcwd agrees with relative openat for both ISAs", "[linux-path]") {
+    using namespace swift;
+    char directory_template[] = "/tmp/swiftvm-cwd-XXXXXX";
+    const auto directory = ::mkdtemp(directory_template);
+    REQUIRE(directory != nullptr);
+    const std::string path{directory};
+    const int saved_directory = ::open(".", O_RDONLY);
+    REQUIRE(saved_directory >= 0);
+    auto restore = [saved_directory, path](void*) {
+        ::fchdir(saved_directory);
+        ::close(saved_directory);
+        ::unlink((path + "/relative.db").c_str());
+        ::rmdir(path.c_str());
+    };
+    std::unique_ptr<void, decltype(restore)> cleanup{directory_template, restore};
+    REQUIRE(::chdir(directory) == 0);
+    std::unique_ptr<char, decltype(&std::free)> expected{::getcwd(nullptr, 0), &std::free};
+    REQUIRE(expected);
+
+    for (const auto isa : {linux::GuestISA::kArm64, linux::GuestISA::kX86_64}) {
+        CAPTURE(isa);
+        WatchedMapping mapping;
+        REQUIRE(mapping.address != 0);
+        linux::SyscallHandler syscalls{&mapping.memory, 0, isa};
+        const auto cwd_nr = isa == linux::GuestISA::kX86_64 ? 79 : 17;
+        const auto open_nr = isa == linux::GuestISA::kX86_64 ? 257 : 56;
+        const auto close_nr = isa == linux::GuestISA::kX86_64 ? 3 : 57;
+        constexpr size_t capacity = 2048;
+        REQUIRE(syscalls.Handle(cwd_nr, mapping.address, capacity, 0, 0, 0, 0).ret ==
+                static_cast<s64>(std::strlen(expected.get()) + 1));
+        std::string reported;
+        REQUIRE(mapping.memory.TryReadCString(mapping.address, reported));
+        REQUIRE(reported == expected.get());
+        REQUIRE(syscalls.Handle(cwd_nr, mapping.address, reported.size(), 0, 0, 0, 0).ret == -34);
+        REQUIRE(syscalls.Handle(cwd_nr, 0, capacity, 0, 0, 0, 0).ret == -14);
+
+        const auto filename = mapping.address + capacity;
+        constexpr char relative[] = "relative.db";
+        REQUIRE(mapping.memory.TryWriteBytes(filename,
+                {reinterpret_cast<const u8*>(relative), sizeof(relative)}));
+        const auto fd = syscalls.Handle(open_nr, 0xffffff9c, filename, 0x42, 0600, 0, 0).ret;
+        REQUIRE(fd >= 0);
+        REQUIRE(syscalls.Handle(close_nr, static_cast<u64>(fd), 0, 0, 0, 0, 0).ret == 0);
+        struct stat st{};
+        REQUIRE(::stat((reported + "/relative.db").c_str(), &st) == 0);
     }
 }
 

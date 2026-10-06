@@ -6,6 +6,7 @@
 #include <array>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include "dlmalloc/malloc.h"
 #include "runtime/backend/cache_clear.h"
@@ -105,6 +106,7 @@ private:
     const bool read_only;
     u32 max_size;
     mspace space_code{};
+    std::mutex allocation_mutex;
     std::unique_ptr<MemMap> code_mem;
 
     u8* code_mem_mapped{};
