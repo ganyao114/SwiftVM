@@ -47,9 +47,9 @@ void AddressSpace::Init() {
             PANIC();
     }
 
-    // build uniform info
+    // Keep empty metadata valid even when there is no uniform buffer.
+    uniform_info = std::make_unique<ir::UniformInfo>();
     if (config.uniform_buffer_size) {
-        uniform_info = std::make_unique<ir::UniformInfo>();
         uniform_info->uniform_size = config.uniform_buffer_size;
         for (const auto& range : config.xmm_uniform_ranges) {
             uniform_info->xmm_uniform_ranges.emplace_back(range.offset,

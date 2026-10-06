@@ -426,6 +426,11 @@ void JitTranslator::EmitVecPack(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitVecShiftLeft(ir::Inst* inst) {
+    // The scalar count clamp below uses CMP/CSEL, which overwrites NZCV even
+    // though the eventual NEON shift is flag-neutral.  Commit a pending guest
+    // arithmetic producer before touching PSTATE so FLAGS_REGS can safely
+    // observe it after this operation.
+    MergeNZCV();
     auto value = context.V(inst->GetArg<ir::Value>(0));
     auto count = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -441,6 +446,7 @@ void JitTranslator::EmitVecShiftLeft(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitVecShiftRight(ir::Inst* inst) {
+    MergeNZCV();
     auto value = context.V(inst->GetArg<ir::Value>(0));
     auto count = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -457,6 +463,7 @@ void JitTranslator::EmitVecShiftRight(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitVecShiftRightArithmetic(ir::Inst* inst) {
+    MergeNZCV();
     auto value = context.V(inst->GetArg<ir::Value>(0));
     auto count = context.X(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});

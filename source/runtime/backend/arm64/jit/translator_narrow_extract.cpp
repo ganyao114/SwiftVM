@@ -125,6 +125,13 @@ JitTranslator::MatchNarrowMaskedInput(ir::Inst* consumer) const {
     if ((mask >> (width * 8)) != 0) {
         return std::nullopt;
     }
+    // Allocation only keeps the parent live through the extract. Moving its
+    // read past another IR instruction can consume a register that has already
+    // been reused, even while the extracted value itself remains live.
+    const auto next = std::next(cur_block->GetInstList().iterator_to(*extract));
+    if (next == cur_block->GetInstList().end() || &*next != consumer) {
+        return std::nullopt;
+    }
     return NarrowMaskedInput{
             .extract = extract,
             .source = extract->GetArg<ir::Value>(0),

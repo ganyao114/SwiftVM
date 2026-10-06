@@ -89,6 +89,9 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto left_input = ResolveNarrowFlagsInput(left, inst);
     auto right = inst->GetArg<ir::Operand>(1);
+    auto pseudo_flags = GetPseudoFlags(inst);
+    const bool narrow_nzcv = ir::GetValueSizeByte(inst->ReturnType()) <= 2 &&
+                             True(pseudo_flags.set & ir::Flags::NZCV);
     auto pinned = [&](ir::Value value) -> std::optional<Register> {
         return ResolvePinnedGPRUse(value, inst);
     };
@@ -98,29 +101,35 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
     const auto induction_immediate = MatchInductionImmediate(inst);
     auto right_operand = induction_immediate
             ? Operand{static_cast<s64>(*induction_immediate)}
-            : (right_pinned ? Operand{*right_pinned} : EmitOperand(right));
-    auto pseudo_flags = GetPseudoFlags(inst);
+            : (right_pinned ? Operand{*right_pinned}
+               : narrow_nzcv && right.GetRight().Null() && right.GetLeft().IsValue()
+                       ? Operand{context.R(right.GetLeft().value)}
+                       : EmitOperand(right));
     auto result = FlagsResultRegister(inst, pseudo_flags);
     auto left_pinned = pinned(left_input);
     Register left_register = left_pinned ? Register{*left_pinned}
-                                         : context.R(left_input, true);
+                                         : context.R(left_input, !narrow_nzcv);
 
     if (!pseudo_flags.Null()) {
         const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
         if (needs_nzcv && ir::GetValueSizeByte(inst->ReturnType()) <= 2) {
             // Align the architectural sign bit with W[31], perform one
             // flag-setting operation, then shift the result back down in the
-            // same destination.  The shift does not alter NZCV.  Preserve an
-            // input only when linear scan tied it to the destination, because
-            // AF still needs the original bit 4 after the result is produced.
+            // same destination. Upper input bits disappear in the alignment,
+            // so plain operands need no preliminary zero extension. Preserve
+            // actual register aliases (including fixed-home publication): AF
+            // needs the original left bit 4, and the aligned right is read
+            // after the first write to the destination.
             Register af_left = left_register.W();
-            if (context.SharesGPR(left_input, ir::Value{inst})) {
+            if (!pseudo_flags.branch_only &&
+                True(pseudo_flags.set & ir::Flags::AuxiliaryCarry) &&
+                left_register.GetCode() == result.GetCode()) {
                 auto saved = context.GetTmpX();
                 __ Mov(saved.W(), left_register.W());
                 af_left = saved.W();
             }
-            if (right.GetLeft().IsValue() &&
-                context.SharesGPR(right.GetLeft().value, ir::Value{inst})) {
+            if (!right_operand.IsImmediate() &&
+                right_operand.GetRegister().GetCode() == result.GetCode()) {
                 auto saved = context.GetTmpX();
                 __ Mov(saved.W(), right_operand);
                 right_operand = Operand{saved.W()};
@@ -133,6 +142,9 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
                 __ Mov(saved.W(), static_cast<u32>(right_operand.GetImmediate()));
                 aligned_right = Operand{saved.W(), LSL, shift};
             } else if (!right_operand.IsShiftedRegister()) {
+                aligned_right = Operand{right_operand.GetRegister().W(), LSL, shift};
+            } else if (right_operand.GetShift() == LSL &&
+                       right_operand.GetShiftAmount() == 0) {
                 aligned_right = Operand{right_operand.GetRegister().W(), LSL, shift};
             } else {
                 auto saved = context.GetTmpX();
@@ -266,15 +278,20 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto left_input = ResolveNarrowFlagsInput(left, inst);
     auto right = inst->GetArg<ir::Operand>(1);
+    auto pseudo_flags = GetPseudoFlags(inst);
+    const bool narrow_nzcv = ir::GetValueSizeByte(inst->ReturnType()) <= 2 &&
+                             True(pseudo_flags.set & ir::Flags::NZCV);
     auto right_pinned = right.GetLeft().IsValue()
             ? pinned_w(right.GetLeft().value)
             : std::nullopt;
-    auto right_operand = right_pinned ? Operand{*right_pinned} : EmitOperand(right);
-    auto pseudo_flags = GetPseudoFlags(inst);
+    auto right_operand = right_pinned ? Operand{*right_pinned}
+            : narrow_nzcv && right.GetRight().Null() && right.GetLeft().IsValue()
+                    ? Operand{context.R(right.GetLeft().value)}
+                    : EmitOperand(right);
     auto result = FlagsResultRegister(inst, pseudo_flags);
     auto left_pinned = pinned_w(left_input);
     Register left_register = left_pinned ? Register{*left_pinned}
-                                         : context.R(left_input, true);
+                                         : context.R(left_input, !narrow_nzcv);
 
     if (!pseudo_flags.Null()) {
         const bool needs_nzcv = True(pseudo_flags.set & ir::Flags::NZCV);
@@ -312,13 +329,15 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
                 }
             }
             Register af_left = left_register.W();
-            if (context.SharesGPR(left_input, ir::Value{inst})) {
+            if (!pseudo_flags.branch_only &&
+                True(pseudo_flags.set & ir::Flags::AuxiliaryCarry) &&
+                left_register.GetCode() == result.GetCode()) {
                 auto saved = context.GetTmpX();
                 __ Mov(saved.W(), left_register.W());
                 af_left = saved.W();
             }
-            if (right.GetLeft().IsValue() &&
-                context.SharesGPR(right.GetLeft().value, ir::Value{inst})) {
+            if (!right_operand.IsImmediate() &&
+                right_operand.GetRegister().GetCode() == result.GetCode()) {
                 auto saved = context.GetTmpX();
                 __ Mov(saved.W(), right_operand);
                 right_operand = Operand{saved.W()};

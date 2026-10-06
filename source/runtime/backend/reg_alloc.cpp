@@ -167,36 +167,24 @@ ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
     const u8 uses = const_cast<ir::Inst&>(inst).GetUses();
     const bool narrow_nzcv = ir::GetValueSizeByte(inst.ReturnType()) <= 2 &&
                              True(requested & ir::Flags::NZCV);
-    // The precise operand walk cannot see all allocator ties in the narrow
-    // sign-alignment path, so that path applies a width-aware lower bound
-    // below.  Ordinary arithmetic keeps only the registers its operands
-    // actually materialize; spilled values are charged separately by Verify.
     if (narrow_nzcv) {
-        // Current RA has no narrow Add/Sub destination tie: its result cannot
-        // share either input, so the two emitter preservation arms are dead for
-        // allocated code. The aligned right needs one register in the worst
-        // operand form; EmitOperand's own materialization was counted above.
-        u8 need = operand_scratch + 1;
+        // Sign alignment discards the upper input bits, so the emitter reads
+        // the left and a plain register right without narrow extraction.
+        const u8 right_scratch = right.GetRight().Null() && right.GetLeft().IsValue()
+                ? 0 : AddSubOperandScratch(right);
+        // One lease covers materializing an aligned right or preserving it
+        // when fixed-home publication aliases the result to that operand.
+        u8 need = right_scratch + 1;
         if (!branch_only) {
-            // A preceding lazy producer can require MergeNZCV. AF is a
-            // separate GetTmpX after the aligned operands are still leased.
+            // MergeNZCV uses one shared lease. AF folds the operands in a
+            // separate temporary; a used result can also publish directly to
+            // the left home and must keep the original bit 4 until that fold.
             need += 1;
             if (True(requested & ir::Flags::AuxiliaryCarry)) {
-                need += 1;
+                need += 1 + (uses != 0 ? 1 : 0);
             }
         }
-        // Narrow NZCV lowering shifts the result into the architectural sign
-        // position and may preserve tied/host operands before the aligned
-        // add.  The minimum is width dependent; an extra operand materializer
-        // beyond the first reflects the host-pinned tie that the IR census
-        // cannot otherwise see.
-        const u8 narrow_floor = branch_only
-                ? 0
-                : static_cast<u8>(
-                          2 + ir::GetValueSizeByte(inst.ReturnType()) +
-                          (operand_scratch > 1 ? operand_scratch - 1 : 0) +
-                          (uses != 0 ? 1 : 0));
-        return {std::max(need, narrow_floor), kDefaultScratchFPR};
+        return {need, kDefaultScratchFPR};
     }
 
     u8 need = operand_scratch;
@@ -328,6 +316,36 @@ u32 FixedGPRClobbers(ir::OpCode op, const FeatureSet& features,
 u32 FixedGPRClobbers(const ir::Inst& inst, const FeatureSet& features,
                      bool scratch_only) {
     u32 fixed = FixedGPRClobbers(inst.GetOp(), features, scratch_only);
+    if (inst.GetOp() == ir::OpCode::XchgBarrier &&
+        GetSvmConfig().static_regs) {
+        // XCHG publishes the two guest values in program order. At the marker
+        // only the first target has been overwritten; the second target still
+        // contains its old value until the following SetHostGPR. Clobbering
+        // only the first home preserves resident state for the second read.
+        // The decoder stores the two parent guest-GPR indices in nibbles.
+        const auto guest_home_mask = [](u32 guest) {
+            const auto level = X86PinExtLevel();
+            u32 home = UINT32_MAX;
+            if (guest == 0 && level >= 1) home = 22;       // RAX
+            else if (guest == 1 && level >= 1) home = 23;  // RCX
+            else if (guest == 2 && level >= 1) home = 29;  // RDX
+            else if (guest == 3) home = 20;                // RBX
+            else if (guest == 4) home = 19;                // RSP
+            else if (guest == 5) home = 21;                // RBP
+            else if (level >= 2 && guest >= 6 && guest <= 12) {
+                home = guest - 6;                          // RSI..R12
+            } else if (guest == 13) {
+                home = level >= 3 ? 7 : (level >= 2 ? 8 : UINT32_MAX);
+            } else if (guest == 14) {
+                home = level >= 3 ? 8 : (level >= 2 ? 7 : UINT32_MAX);
+            } else if (guest == 15 && level >= 3) {
+                home = 9;                                  // R15
+            }
+            return home < 32 ? (1u << home) : 0u;
+        };
+        const u32 packed = inst.GetArg<ir::Imm>(0).Get();
+        fixed |= guest_home_mask(packed & 0xFu);
+    }
     if (inst.GetOp() != ir::OpCode::X87Op || !ScratchXPoolEnabled(features)) {
         return fixed;
     }
@@ -358,7 +376,8 @@ GPRClassContract ClassifyGPRContract(const GPRSMask& pool,
             .call_clobber_mask = kAAPCSCallerClobber,
             .fixed_clobber_mask = fixed,
     };
-    if (FixedGPRClassEnabled(pool, features)) {
+    if (FixedGPRClassEnabled(pool, features) &&
+        inst.GetOp() != ir::OpCode::XchgBarrier) {
         ASSERT_MSG((fixed & kX86FixedGPRHomes) == 0,
                    "fixed clobber mask {:#x} overlaps guest GPR class {:#x}",
                    fixed, kX86FixedGPRHomes);

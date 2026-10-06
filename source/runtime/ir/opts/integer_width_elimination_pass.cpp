@@ -157,6 +157,50 @@ void FoldNarrowExtensions(Block* block) {
     }
 }
 
+void FoldNarrowMaskedExtracts(Block* block) {
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() != OpCode::And || !inst.GetPseudoOperations().empty()) {
+            continue;
+        }
+        const auto input = inst.GetArg<Value>(0);
+        auto* extract = input.Def();
+        const auto width = GetValueSizeByte(inst.ReturnType());
+        if ((width != 1 && width != 2) || !extract ||
+            extract->GetOp() != OpCode::BitExtract ||
+            extract->GetUses() != 1 || extract->GetUses(false) != 1 ||
+            GetValueSizeByte(input.Type()) != width ||
+            extract->GetArg<Imm>(1).Get() != 0 ||
+            extract->GetArg<Imm>(2).Get() != width * 8 ||
+            !IsNearbyDefinition(block, extract, &inst)) {
+            continue;
+        }
+        const auto source = extract->GetArg<Value>(0);
+        const auto source_width = GetValueSizeByte(source.Type());
+        if (!source.Defined() || (source_width != 4 && source_width != 8)) {
+            continue;
+        }
+        const auto right = inst.GetArg<Operand>(1);
+        u64 mask{};
+        if (right.IsImm()) {
+            mask = right.GetLeft().imm.Get();
+        } else if (right.GetRight().Null() && right.GetLeft().IsValue() &&
+                   right.GetLeft().value.Defined() &&
+                   right.GetLeft().value.Def()->GetOp() == OpCode::LoadImm) {
+            mask = right.GetLeft().value.Def()->GetArg<Imm>(0).Get();
+        } else {
+            continue;
+        }
+        if ((mask >> (width * 8)) != 0) {
+            continue;
+        }
+        // AND removes the same upper bits as the extract. Rewrite the actual
+        // use before allocation so the parent's lifetime includes this read,
+        // even with intervening definitions or spill reload regions. W-sized
+        // input avoids a redundant narrow fixed-home read in the emitter.
+        inst.SetArg(0, Value{source}.SetCastType(ValueType::U32));
+    }
+}
+
 }  // namespace
 
 void IntegerWidthEliminationPass::Run(HIRBuilder* hir_builder) {
@@ -168,12 +212,14 @@ void IntegerWidthEliminationPass::Run(HIRBuilder* hir_builder) {
 void IntegerWidthEliminationPass::Run(HIRFunction* hir_function) {
     for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
         FoldNarrowExtensions(hir_block.GetBlock());
+        FoldNarrowMaskedExtracts(hir_block.GetBlock());
         FoldDirectExtracts(hir_block.GetBlock());
     }
 }
 
 void IntegerWidthEliminationPass::Run(Block* block) {
     FoldNarrowExtensions(block);
+    FoldNarrowMaskedExtracts(block);
     FoldDirectExtracts(block);
 }
 

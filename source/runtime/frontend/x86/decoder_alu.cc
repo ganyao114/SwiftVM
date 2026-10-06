@@ -487,6 +487,15 @@ void X64Decoder::DecodeXchg(_DInst& insn) {
         auto left = Src(insn, op0);
         auto right = Src(insn, op1);
         Dst(insn, op0, right);
+        const auto& first_info = x86_regs_table[
+                static_cast<_RegisterType>(op0.index)];
+        const auto& second_info = x86_regs_table[
+                static_cast<_RegisterType>(op1.index)];
+        const u32 first_parent =
+                static_cast<u32>(first_info.index - X86RegInfo::Rax);
+        const u32 second_parent =
+                static_cast<u32>(second_info.index - X86RegInfo::Rax);
+        __ XchgBarrier(ir::Imm{first_parent | (second_parent << 4)});
         Dst(insn, op1, left);
         return;
     }
@@ -792,44 +801,21 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
         auto count_raw = ToValue(count_data);
         count = __ And(count_raw, ir::Operand{count_mask});
     }
-    ir::Value shifted = width < 32 ? __ ZeroExtend32(left) : left;
+    ir::Value shifted = width < 32
+            ? __ ZeroExtend32(left).SetType(ir::ValueType::U32)
+            : left;
 
-    ir::Value result;
     ir::Value sar_ext;  // sign-extended operand for SAR (reused for its CF)
-    if (kind == 0) {
-        result = immediate_fast ? __ LslImm(shifted, ir::Imm(constant_count))
-                                : __ LslValue(shifted, count);
-    } else if (kind == 1) {
-        result = immediate_fast ? __ LsrImm(shifted, ir::Imm(constant_count))
-                                : __ LsrValue(shifted, count);
-    } else {
+    if (kind == 2) {
         // Narrow SAR must sign extend to 32 bits first: the backend shift is a
         // 32/64 bit op, an unsigned narrow value would shift in zeros.
         sar_ext = width < 32 ? __ SignExtend(left).SetType(ir::ValueType::S32)
                              : left.SetType(GetSignedContainer(width));
-        result = immediate_fast ? __ AsrImm(sar_ext, ir::Imm(constant_count))
-                                : __ AsrValue(sar_ext, count);
     }
-    result = result.SetCastType(GetSize(width));
-    // For narrow shifts the flag-defining op must be typed at the guest
-    // width: the backends derive SF/ZF from the operation width, which the
-    // 32 bit container would get wrong.
-    ir::Value flag_value = width < 32
-            ? __ And(result, ir::Operand{ir::Imm((u64(1) << width) - 1)}).SetType(GetSize(width))
-            : result;
-
-    // A runtime-dependent zero count leaves flags untouched. The immediate
-    // fast path is statically known nonzero and needs neither test nor branch.
-    ir::Value skip_flags;
-    if (!immediate_fast) {
-        skip_flags = __ NotGoto(__ TestNotZero(count));
-    }
-    // SF / ZF / PF from the result via a flag-setting logical op (which also
-    // clears C / V / AF). CF and OF are then set explicitly via SetCarry /
-    // SetOverflow, which write the flag bits directly without disturbing N/Z.
-    auto flagged = __ Or(flag_value, ir::Operand{ir::Imm(u64(0))});
-    __ SaveFlags(flagged, ir::Flags::Negate | ir::Flags::Zero | ir::Flags::Parity);
-
+    // Compute CF before the destructive shift result. The original operand
+    // remains live through this block, preventing the allocator from
+    // coalescing it with the result and deriving CF from the overwritten
+    // value (observable through LAHF/ADC/SBB).
     // CF = last bit shifted out (count >= 1 in this region):
     //   SHL: bit (width-1) of (orig << (count-1)) == bit (width-count) of orig.
     //   SHR/SAR: bit 0 of (orig >> (count-1))     == bit (count-1) of orig.
@@ -860,6 +846,36 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
             cf = __ And(__ AsrValue(sar_ext, count_m1), ir::Operand{ir::Imm(u64(1))});
         }
     }
+    ir::Value result;
+    if (kind == 0) {
+        result = immediate_fast ? __ LslImm(shifted, ir::Imm(constant_count))
+                                : __ LslValue(shifted, count);
+    } else if (kind == 1) {
+        result = immediate_fast ? __ LsrImm(shifted, ir::Imm(constant_count))
+                                : __ LsrValue(shifted, count);
+    } else {
+        result = immediate_fast ? __ AsrImm(sar_ext, ir::Imm(constant_count))
+                                : __ AsrValue(sar_ext, count);
+    }
+    result = result.SetCastType(GetSize(width));
+    // For narrow shifts the flag-defining op must be typed at the guest
+    // width: the backends derive SF/ZF from the operation width, which the
+    // 32 bit container would get wrong.
+    ir::Value flag_value = width < 32
+            ? __ And(result, ir::Operand{ir::Imm((u64(1) << width) - 1)}).SetType(GetSize(width))
+            : result;
+
+    // A runtime-dependent zero count leaves flags untouched. The immediate
+    // fast path is statically known nonzero and needs neither test nor branch.
+    ir::Value skip_flags;
+    if (!immediate_fast) {
+        skip_flags = __ NotGoto(__ TestNotZero(count));
+    }
+    // SF / ZF / PF from the result via a flag-setting logical op (which also
+    // clears C / V / AF). CF and OF are then set explicitly via SetCarry /
+    // SetOverflow, which write the flag bits directly without disturbing N/Z.
+    auto flagged = __ Or(flag_value, ir::Operand{ir::Imm(u64(0))});
+    __ SaveFlags(flagged, ir::Flags::Negate | ir::Flags::Zero | ir::Flags::Parity);
     __ SetCarry(cf);
 
     // OF is defined only for count == 1; the formula is exact there and harmless
@@ -1140,14 +1156,24 @@ void X64Decoder::DecodeCrc32(_DInst& insn) {
 
 void X64Decoder::DecodePopcnt(_DInst& insn) {
     // popcnt r, r/m: dst = popcount(src); ZF = (src==0); CF/OF/SF/PF/AF = 0.
-    // SaveFlags on a CallLambda def computes NZCV from the call and sets SF/OF
-    // spuriously; just clear all flags (ZF rarely checked after popcnt in practice).
     auto& op0 = insn.ops[0];
+    const u32 width = op0.size;
     auto src = ToValue(Src(insn, insn.ops[1]));
+    // The helper accepts a u64, but POPCNT's 16/32-bit forms count only the
+    // selected source width.  Mask before the call so upper guest bits cannot
+    // contribute to the result.
+    if (width < 64) {
+        const u64 mask = (u64{1} << width) - 1;
+        src = __ And(src, ir::Operand{ir::Imm(mask)}).SetType(GetSize(width));
+    }
     auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Popcnt64)}},
                                 src, __ LoadImm(ir::Imm(u64(0))));
     Dst(insn, op0, result);
     __ ClearFlags(ir::Flags::All);
+    carry_ = CarryPolarity::Direct;
+    // A zero population count is equivalent to a zero source. Observe the
+    // result so the helper does not have to preserve its input for ZF.
+    __ SaveFlags(__ Or(result, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Zero);
 }
 
 void X64Decoder::DecodeCmpxchg8b(_DInst& insn) {

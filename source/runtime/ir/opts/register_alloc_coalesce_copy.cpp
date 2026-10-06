@@ -1,4 +1,5 @@
 #include "register_alloc_internal.h"
+#include "runtime/backend/arm64/helper_call_contract.h"
 #include "runtime/ir/low32_copy.h"
 
 #include <iterator>
@@ -6,6 +7,32 @@
 namespace swift::runtime::ir {
 
 namespace {
+
+bool CrossesGPRClobber(Block* block,
+                       backend::RegAlloc* reg_alloc,
+                       u32 begin,
+                       u32 end,
+                       u32 reg) {
+    // A dirty mask reserves scratch; it cannot preserve a guest home that
+    // a publication or helper overwrites inside the extended live range.
+    const auto& features = reg_alloc->GetFeatures();
+    for (auto& scan : block->GetInstList()) {
+        if (scan.Id() < begin) {
+            continue;
+        }
+        if (scan.Id() > end) {
+            break;
+        }
+        if ((scan.GetOp() == OpCode::SetHostGPR &&
+             scan.GetArg<Imm>(1).Get() == reg) ||
+            (backend::FixedGPRClobbers(scan, features) & (1u << reg)) ||
+            backend::arm64::HelperCallContract::InstructionClobbersGPR(
+                    scan, reg, features)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 bool CanCoalesceLiveLow32View(
         Block* block,
@@ -21,6 +48,12 @@ bool CanCoalesceLiveLow32View(
     }
     const u32 source_reg = reg_alloc->ValueGPR(source).id;
     const u32 bridge_reg = reg_alloc->ValueGPR(Value{&bridge}).id;
+    if (CrossesGPRClobber(block, reg_alloc, bridge.Id(),
+                          use_end[bridge.Id()], source_reg) ||
+        CrossesGPRClobber(block, reg_alloc, bridge.Id(),
+                          use_end[bridge.Id()], bridge_reg)) {
+        return false;
+    }
     if (source_reg == bridge_reg || use_end[bridge.Id()] <= bridge.Id() ||
         use_end[source.Id()] < use_end[bridge.Id()]) {
         return false;
@@ -144,6 +177,12 @@ bool TransferFinalLow32View(
     }
     const u32 source_reg = reg_alloc->ValueGPR(source).id;
     const u32 bridge_reg = reg_alloc->ValueGPR(Value{&bridge}).id;
+    if (CrossesGPRClobber(block, reg_alloc, bridge.Id(),
+                          use_end[bridge.Id()], source_reg) ||
+        CrossesGPRClobber(block, reg_alloc, bridge.Id(),
+                          use_end[bridge.Id()], bridge_reg)) {
+        return false;
+    }
     if (source_reg == bridge_reg) {
         return false;
     }
@@ -218,6 +257,12 @@ bool RecolorFinalLow32Source(
     }
     const u32 source_reg = reg_alloc->ValueGPR(source).id;
     const u32 bridge_reg = reg_alloc->ValueGPR(Value{&bridge}).id;
+    if (CrossesGPRClobber(block, reg_alloc, bridge.Id(),
+                          use_end[bridge.Id()], source_reg) ||
+        CrossesGPRClobber(block, reg_alloc, bridge.Id(),
+                          use_end[bridge.Id()], bridge_reg)) {
+        return false;
+    }
     if (source_reg == bridge_reg) {
         return false;
     }

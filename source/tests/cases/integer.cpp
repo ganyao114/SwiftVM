@@ -371,7 +371,8 @@ TEST_CASE("operand copy kill is a fail-closed Mul emitter fast path") {
                 const vixl::aarch64::Instruction*>();
         auto* last = masm.GetBuffer()->GetEndAddress<
                 const vixl::aarch64::Instruction*>();
-        for (auto* instruction = first; instruction < last; ++instruction) {
+        for (auto* instruction = first; instruction < last;
+             instruction = instruction->GetNextInstruction()) {
             // VIXL's unallocated visitor does not call Format(), so its
             // output buffer otherwise retains the previous instruction.
             disassembler.ResetForInstruction();
@@ -548,7 +549,8 @@ TEST_CASE("zero store zr is value-only and fail-closed") {
                 const vixl::aarch64::Instruction*>();
         auto* last = masm.GetBuffer()->GetEndAddress<
                 const vixl::aarch64::Instruction*>();
-        for (auto* instruction = first; instruction < last; ++instruction) {
+        for (auto* instruction = first; instruction < last;
+             instruction = instruction->GetNextInstruction()) {
             disassembler.ResetForInstruction();
             decoder.Decode(instruction);
             std::string_view line{disassembler.GetOutput()};

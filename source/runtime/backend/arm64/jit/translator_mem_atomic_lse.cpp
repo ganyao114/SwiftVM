@@ -22,19 +22,19 @@ void JitTranslator::EmitLSECompareAndSwap(ir::ValueType type,
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
-            __ casalb(result.W(), desired.W(), MemOperand(address));
+            __ Casalb(result.W(), desired.W(), MemOperand(address));
             break;
         case ir::ValueType::S16:
         case ir::ValueType::U16:
-            __ casalh(result.W(), desired.W(), MemOperand(address));
+            __ Casalh(result.W(), desired.W(), MemOperand(address));
             break;
         case ir::ValueType::S32:
         case ir::ValueType::U32:
-            __ casal(result.W(), desired.W(), MemOperand(address));
+            __ Casal(result.W(), desired.W(), MemOperand(address));
             break;
         case ir::ValueType::S64:
         case ir::ValueType::U64:
-            __ casal(result, desired, MemOperand(address));
+            __ Casal(result, desired, MemOperand(address));
             break;
         default:
             PANIC("UnImplement!");
@@ -49,19 +49,19 @@ void JitTranslator::EmitLSEExchange(ir::ValueType type,
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
-            __ swpalb(desired.W(), result.W(), MemOperand(address));
+            __ Swpalb(desired.W(), result.W(), MemOperand(address));
             break;
         case ir::ValueType::S16:
         case ir::ValueType::U16:
-            __ swpalh(desired.W(), result.W(), MemOperand(address));
+            __ Swpalh(desired.W(), result.W(), MemOperand(address));
             break;
         case ir::ValueType::S32:
         case ir::ValueType::U32:
-            __ swpal(desired.W(), result.W(), MemOperand(address));
+            __ Swpal(desired.W(), result.W(), MemOperand(address));
             break;
         case ir::ValueType::S64:
         case ir::ValueType::U64:
-            __ swpal(desired, result, MemOperand(address));
+            __ Swpal(desired, result, MemOperand(address));
             break;
         default:
             PANIC("UnImplement!");
@@ -76,19 +76,19 @@ void JitTranslator::EmitLSEFetchAdd(ir::ValueType type,
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
-            __ ldaddalb(addend.W(), result.W(), MemOperand(address));
+            __ Ldaddalb(addend.W(), result.W(), MemOperand(address));
             break;
         case ir::ValueType::S16:
         case ir::ValueType::U16:
-            __ ldaddalh(addend.W(), result.W(), MemOperand(address));
+            __ Ldaddalh(addend.W(), result.W(), MemOperand(address));
             break;
         case ir::ValueType::S32:
         case ir::ValueType::U32:
-            __ ldaddal(addend.W(), result.W(), MemOperand(address));
+            __ Ldaddal(addend.W(), result.W(), MemOperand(address));
             break;
         case ir::ValueType::S64:
         case ir::ValueType::U64:
-            __ ldaddal(addend, result, MemOperand(address));
+            __ Ldaddal(addend, result, MemOperand(address));
             break;
         default:
             PANIC("UnImplement!");

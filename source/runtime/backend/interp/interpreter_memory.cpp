@@ -420,4 +420,8 @@ void Interpreter::RunUniformBarrier(ir::Inst* inst, InterpStack& stack) {
     // Compiler barrier only (same as the JIT); no runtime effect.
 }
 
+void Interpreter::RunXchgBarrier(ir::Inst* inst, InterpStack& stack) {
+    // Metadata-only marker; the interpreter stores the two values in order.
+}
+
 }  // namespace swift::runtime::backend::interp

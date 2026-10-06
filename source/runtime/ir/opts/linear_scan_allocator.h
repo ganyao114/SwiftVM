@@ -1895,7 +1895,10 @@ private:
             const auto contract = backend::ClassifyGPRContract(
                     reg_alloc->GetGprs(), *inst, features);
             ASSERT(contract.hot_instruction_scratch == need.gpr);
-            ASSERT((contract.fixed_clobber_mask & backend::kX86FixedGPRHomes) == 0);
+            // XCHG's publication marker deliberately invalidates a guest
+            // home alias. Ordinary emitter scratch must remain disjoint.
+            ASSERT(inst->GetOp() == OpCode::XchgBarrier ||
+                   (contract.fixed_clobber_mask & backend::kX86FixedGPRHomes) == 0);
         }
         u32 reload_gpr = 0;
         u32 reload_fpr = 0;

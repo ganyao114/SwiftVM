@@ -1,5 +1,54 @@
 #include "../support/case_support.h"
 
+TEST_CASE("Trampoline branches reserve space at the end of a code buffer") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    for (unsigned operation = 0; operation < 4; ++operation) {
+        CAPTURE(operation);
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        auto module = address_space.GetDefaultModule();
+        const auto features = ResolveFeatureSet(module->GetModuleConfig());
+        RegAlloc allocation{0,
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(), features, true};
+        constexpr size_t capacity = 64;
+        vixl::aarch64::MacroAssembler assembler{capacity};
+        arm64::JitContext context{module, allocation, assembler};
+        for (size_t offset = 0; offset < capacity;
+             offset += vixl::aarch64::kInstructionSize) {
+            assembler.Nop();
+        }
+        REQUIRE(assembler.GetBuffer()->GetRemainingBytes() == 0);
+        if (operation == 0) {
+            context.EmitFlagsMergeBranch(arm64::FlagsMergeTrampolineKind::NZCV);
+        } else if (operation == 1) {
+            context.EmitCycleReasonBranch();
+        } else {
+            context.EmitCycleFlagsMergeBranch(operation == 3);
+        }
+        REQUIRE(assembler.GetBuffer()->GetSizeInBytes() <=
+                assembler.GetBuffer()->GetCapacity());
+        REQUIRE(assembler.GetBuffer()->GetCapacity() > capacity);
+        REQUIRE(context.CurrentBufferSize() == capacity + sizeof(uint32_t));
+        const auto* branch = assembler.GetBuffer()->GetOffsetAddress<const uint32_t*>(capacity);
+        REQUIRE(*branch == 0x14000000u);
+        if (operation == 0) {
+            REQUIRE(context.TakeFlagsMergeBranch(capacity) ==
+                    arm64::FlagsMergeTrampolineKind::NZCV);
+        }
+        context.Finish();
+    }
+}
+
 TEST_CASE("Vector emission grows a full code buffer before writing") {
     using namespace swift::runtime;
     using namespace swift::runtime::backend;

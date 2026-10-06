@@ -126,6 +126,12 @@ FunctionRegionDecodeResult FunctionRegionDecoder::Decode() {
                     external_roots.push_back(target);
                 }
             }
+            // Only enqueue roots that this decoder can consume. An external
+            // boundary otherwise remains a candidate and is rediscovered on
+            // every iteration without advancing decoded_count.
+            std::erase_if(external_roots, [&](LocationDescriptor target) {
+                return !config.local_target(target) || config.has_code(target);
+            });
             static std::atomic<uint32_t> dbg_iters{0};
             if (swift::runtime::GetSvmConfig().frontier_dbg &&
                 swift::runtime::ClaimDiagnosticSample(dbg_iters, 200)) {

@@ -2508,7 +2508,10 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
             LoadUnalignedAtomicLockAddress(atomic_pair_scratch);
             AcquireUnalignedAtomicLock(atomic_pair_scratch, result);
             EmitBasicAtomicLoad(type, result, address);
-            EmitBasicAtomicStore(type, context.R(desired, true), address);
+            // The store selects the low byte/halfword itself. Extracting a
+            // narrow fixed-home input would lease an unnecessary temporary
+            // on each emitted path, in addition to the flags publication.
+            EmitBasicAtomicStore(type, context.R(desired), address);
             ReleaseUnalignedAtomicLock(atomic_pair_scratch);
             if (lse) {
                 tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
@@ -2520,7 +2523,7 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
 
     __ Bind(&aligned);
     if (lse) {
-        EmitLSEExchange(type, result, context.R(desired, true), address);
+        EmitLSEExchange(type, result, context.R(desired), address);
         __ Bind(&done);
         return;
     }
@@ -2723,6 +2726,10 @@ void JitTranslator::EmitAtomicRMW(ir::Inst* inst) {
 
 void JitTranslator::EmitUniformBarrier(ir::Inst* inst) {
     // Compiler barrier only: uniform caching is not invalidated across this point.
+}
+
+void JitTranslator::EmitXchgBarrier(ir::Inst* inst) {
+    // Metadata-only marker for fixed-home lifetime analysis.
 }
 
 }  // namespace swift::runtime::backend::arm64

@@ -1735,6 +1735,69 @@ TEST_CASE("Fuzz x86 jrcxz leave") {
     REQUIRE(env.failures == 0);
 }
 
+TEST_CASE("Fuzz regression narrow memory XCHG under register pressure") {
+    FuzzEnv env;
+    for (const u8 displacement : {u8{0x18}, u8{0x19}}) {
+        env.InitRegs();
+        env.ctx->r8.qword = 0x123456789abc0001ull;
+        env.ctx->r9.qword = 0xfedcba9876548000ull;
+        env.ctx->r10.qword = 0xaabbccddeeff00a5ull;
+        env.ctx->rdx.qword = 0xdeadbeef01234567ull;
+        CodeBuf b;
+        // sub r9w,r8w; movzx r12d,r10b; xchg [r13+disp],dx;
+        // xchg r10b,r9b. Keep both the arithmetic flags and guest values live
+        // across the memory exchange, with dirty upper bits in its source.
+        b.c = {0x66, 0x45, 0x29, 0xc1, 0x45, 0x0f, 0xb6, 0xe2,
+               0x66, 0x41, 0x87, 0x55, displacement, 0x45, 0x86, 0xca};
+        env.EmitFlagCapture(b);
+        INFO("displacement=" << unsigned(displacement));
+        env.RunIteration(b.c, FlagMask{}, "narrow-xchg-pressure");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz regression narrow ADD preserves its aliased flag operands") {
+    FuzzEnv env;
+    for (const u64 left : {u64{0x0f}, u64{0x7f}, u64{0xff}}) {
+        env.InitRegs();
+        env.ctx->rax.qword = 0x1122334455660000ull | left;
+        env.ctx->rcx.qword = 0xaabbccddeeff0001ull;
+        env.ctx->r8.qword = 0xff;
+        CodeBuf b;
+        // test r8b,al; add al,cl. A narrow result published to its fixed
+        // home still needs the original bit 4 for AF after the addition.
+        b.c = {0x41, 0x84, 0xc0, 0x00, 0xc8};
+        env.EmitFlagCapture(b);
+        env.RunIteration(b.c, FlagMask{}, "narrow-add-alias");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz regression low32 LEA view survives guest register publication") {
+    FuzzEnv env;
+    for (const u32 value : {0u, 8u, 24u, 0xfffffff8u}) {
+        for (const u32 shared : {0u, 1u}) {
+            env.InitRegs();
+            env.ctx->rdi.qword = env.data_addr;
+            std::memcpy(reinterpret_cast<void*>(env.data_addr), &value, sizeof(value));
+            std::memcpy(reinterpret_cast<void*>(env.data_addr + 0x1c), &shared, sizeof(shared));
+            CodeBuf b;
+            // glibc pthread_rwlock_unlock, reached by SQLite initialization:
+            // mov eax,[rdi+28]; xor esi,esi; test eax,eax; mov eax,[rdi];
+            // setne sil; shl esi,7; mov ebp,esi; lea r9d,[rax-8];
+            // mov ecx,r9d; shr ecx,3.
+            b.c = {0x8b, 0x47, 0x1c, 0x31, 0xf6, 0x85, 0xc0, 0x8b, 0x07,
+                   0x40, 0x0f, 0x95, 0xc6, 0xc1, 0xe6, 0x07, 0x89, 0xf5,
+                   0x44, 0x8d, 0x48, 0xf8, 0x44, 0x89, 0xc9, 0xc1, 0xe9, 0x03};
+            env.EmitFlagCapture(b);
+            INFO("value=" << value << " shared=" << shared);
+            env.RunIteration(b.c, FlagMask{u32(kAhAll & ~kAhAF), false},
+                             "low32-lea-publication");
+        }
+    }
+    REQUIRE(env.failures == 0);
+}
+
 TEST_CASE("Fuzz x86 mov lea xchg extends") {
     FuzzEnv env;
     int iters = env.Iters(5000);
@@ -7801,6 +7864,125 @@ TEST_CASE("Fuzz x86 sse2") {
 
         env.EmitFlagCapture(b);
         env.RunIteration(b.c, FlagMask{}, "sse2");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz regression narrow bit index survives intervening parent reads") {
+    FuzzEnv env;
+    const std::array<std::vector<u8>, 4> programs{{
+            {0x66, 0x45, 0x01, 0xd1, 0x66, 0x44, 0x0f, 0xa3, 0xd5},
+            {0x66, 0x44, 0x85, 0xc1, 0x66, 0x45, 0x0f, 0xb3, 0xc2},
+            {0x66, 0x41, 0x31, 0xc1, 0x66, 0x41, 0x0f, 0xbb, 0xc4},
+            {0x66, 0x45, 0x39, 0xc8, 0x66, 0x44, 0x0f, 0xbb, 0xc6},
+    }};
+    for (size_t i = 0; i < programs.size(); ++i) {
+        env.InitRegs();
+        switch (i) {
+            case 0:
+                env.ctx->r9.qword = 0x2d68d0937eef1a51ull;
+                env.ctx->r10.qword = 0x2b7c93964679e650ull;
+                env.ctx->rbp.qword = 0x1b58870e4aa52395ull;
+                break;
+            case 1:
+                env.ctx->rcx.qword = 0xc4ad3c6a003e20a3ull;
+                env.ctx->r8.qword = 0xff;
+                env.ctx->r10.qword = 0x8d7c70b0d121bb67ull;
+                break;
+            case 2:
+                env.ctx->rax.qword = 0x862713853cf000b7ull;
+                env.ctx->r9.qword = 0x4b1e7fc929236b21ull;
+                env.ctx->r12.qword = 0x01b54b84c451a2a2ull;
+                break;
+            case 3:
+                env.ctx->r8.qword = 0xaa;
+                env.ctx->r9.qword = 0x8000000000000000ull;
+                env.ctx->rsi.qword = 0xffff;
+                break;
+        }
+        CodeBuf b;
+        b.c = programs[i];
+        env.EmitFlagCapture(b);
+        INFO("program=" << i);
+        env.RunIteration(b.c, FlagMask{kAhCF, false}, "narrow-bit-index");
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz regression variable SIMD shifts preserve arithmetic flags") {
+    FuzzEnv env;
+    for (const u8 opcode : {u8{0xf1}, u8{0xd1}, u8{0xe1}}) {
+        for (const u64 count : {u64{0}, u64{15}, u64{16}, ~u64{0}}) {
+            for (const bool direct_observer : {false, true}) {
+                env.InitRegs();
+                env.ctx->r12.qword = 0x7fffffff;
+                env.ctx->rdi.qword = 0xffffffff;
+                const std::array<u16, 8> input{
+                        0x8001, 0xffff, 0x7fff, 0x5555, 1, 0, 0xaaaa, 0x8000};
+                const std::array<u64, 2> counts{count, 0};
+                std::memcpy(reinterpret_cast<void*>(env.data_addr + 0x80),
+                            input.data(), sizeof(input));
+                std::memcpy(reinterpret_cast<void*>(env.data_addr + 0x100),
+                            counts.data(), sizeof(counts));
+                CodeBuf b;
+                MemOp value_mem{};
+                value_mem.disp = 0x80;
+                MemOp count_mem{};
+                count_mem.disp = 0x100;
+                EmitSseLoad(b, 0x66, 0x6f, 0, value_mem);
+                EmitSseLoad(b, 0x66, 0x6f, 1, count_mem);
+                // cmp r12d,edi leaves SF=OF=CF=1. Scalar count clamping
+                // inside PSLLW/PSRLW/PSRAW must not replace those flags.
+                b.c.insert(b.c.end(), {0x41, 0x39, 0xfc});
+                EmitSseRR(b, 0x66, opcode, 0, 1);
+                if (direct_observer) {
+                    // SETS/SETO exercise direct PSTATE consumers before LAHF.
+                    b.c.insert(b.c.end(), {0x41, 0x0f, 0x98, 0xc6,
+                                          0x41, 0x0f, 0x90, 0xc0});
+                }
+                MemOp output{};
+                output.disp = 0x180;
+                EmitSseStore(b, 0x66, 0x7f, output, 0);
+                env.EmitFlagCapture(b);
+                INFO("opcode=" << unsigned(opcode) << " count=" << count
+                                << " direct=" << direct_observer);
+                env.RunIteration(b.c, FlagMask{}, "simd-shift-flags");
+            }
+        }
+    }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("Fuzz regression POPCNT observes source width and resets carry") {
+    FuzzEnv env;
+    for (const int width : {16, 32, 64}) {
+        for (const u64 source : {u64{0}, u64{1}, u64{1} << 16,
+                                 u64{1} << 32, ~u64{0}}) {
+            for (const bool alias : {false, true}) {
+                env.InitRegs();
+                env.ctx->r8.qword = 0;
+                env.ctx->r11.qword = 1;
+                env.ctx->r9.qword = alias ? source : 0xabcdef0123456789ull;
+                env.ctx->r10.qword = source;
+                CodeBuf b;
+                // cmp r8d,r11d produces an inverted carry source on hosts
+                // without CFINV. POPCNT must replace it with canonical CF=0.
+                b.c = {0x45, 0x39, 0xd8};
+                b.B(0xf3);
+                EmitOperandPrefix(b, width);
+                EmitRexForRegReg(b, width, kR9, alias ? kR9 : kR10,
+                                 false, false);
+                b.B(0x0f);
+                b.B(0xb8);
+                EmitModRMReg(b, kR9, alias ? kR9 : kR10);
+                env.EmitFlagCapture(b);
+                // adc r8,0: observe CF without overwriting the saved flags.
+                b.c.insert(b.c.end(), {0x49, 0x83, 0xd0, 0x00});
+                INFO("width=" << width << " source=" << source
+                               << " alias=" << alias);
+                env.RunIteration(b.c, FlagMask{}, "popcnt-width-flags");
+            }
+        }
     }
     REQUIRE(env.failures == 0);
 }

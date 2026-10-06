@@ -8,6 +8,8 @@
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/ir/opts/deadcode_elimination_pass.h"
+#include "runtime/ir/opts/integer_width_elimination_pass.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 
 namespace {
@@ -178,7 +180,7 @@ TEST_CASE("an adjacent narrow extract and right shift emit one bitfield extract"
 }
 
 TEST_CASE("a narrow AND mask subsumes its low extract only when high bits are clear") {
-    auto run = [](swift::u32 mask) {
+    auto run = [](swift::u32 mask, bool fold) {
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ull << 48,
@@ -197,6 +199,10 @@ TEST_CASE("a narrow AND mask subsumes its low extract only when high bits are cl
                               .SetType(ValueType::U16);
         block->StoreUniform(Uniform{64, ValueType::U16}, result);
         block->SetTerminal(terminal::ReturnToDispatch{});
+        if (fold) {
+            IntegerWidthEliminationPass::Run(block.get());
+            DeadCodeEliminationPass::Run(block.get());
+        }
         block->ReIdInstr();
 
         FeatureSet features{};
@@ -211,7 +217,7 @@ TEST_CASE("a narrow AND mask subsumes its low extract only when high bits are cl
         return Disassemble(context);
     };
 
-    const auto fused = run(0xa001);
+    const auto fused = run(0xa001, true);
     REQUIRE(std::ranges::none_of(fused, [](const auto& line) {
         return line.find("uxth ") != std::string::npos;
     }));
@@ -219,7 +225,14 @@ TEST_CASE("a narrow AND mask subsumes its low extract only when high bits are cl
         return line.find("and w") != std::string::npos;
     }) == 1);
 
-    const auto retained = run(0x1a001);
+    // Without the IR rewrite the parent is dead before mask_value. The
+    // emitter must retain the extract instead of extending that lifetime.
+    const auto unoptimized = run(0xa001, false);
+    REQUIRE(std::ranges::count_if(unoptimized, [](const auto& line) {
+        return line.find("uxth ") != std::string::npos;
+    }) == 1);
+
+    const auto retained = run(0x1a001, true);
     REQUIRE(std::ranges::count_if(retained, [](const auto& line) {
         return line.find("uxth ") != std::string::npos;
     }) == 1);

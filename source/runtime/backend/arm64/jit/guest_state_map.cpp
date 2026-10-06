@@ -1,5 +1,6 @@
 #include "guest_state_map.h"
 
+#include "runtime/backend/reg_alloc.h"
 #include "runtime/backend/arm64/helper_call_contract.h"
 
 namespace swift::runtime::backend::arm64 {
@@ -22,6 +23,10 @@ void GuestStateMap::Analyze(ir::Block* next_block,
 
 bool GuestStateMap::ClobbersFixedHome(const ir::Inst& inst,
                                       u32 home) const {
+    if (inst.GetOp() == ir::OpCode::XchgBarrier) {
+        return (::swift::runtime::backend::FixedGPRClobbers(
+                        inst, features) & (1u << home)) != 0;
+    }
     if (inst.GetOp() == ir::OpCode::SetHostGPR &&
         inst.GetArg<ir::Imm>(1).Get() == home) {
         return true;

@@ -950,8 +950,8 @@ void X64Decoder::R(_RegisterType reg, ir::Value value) {
     if (info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::R15) {
         if (info.high) {
             if (PinExtPartialWritesEnabled() &&
-                info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::Rdx) {
-                // AH/CH/DH are byte 1 of the newly pinned parent. Keep this as
+                info.index >= X86RegInfo::Rax && info.index <= X86RegInfo::Rbx) {
+                // AH/CH/DH/BH are byte 1 of a pinned parent. Keep this as
                 // a byte store: UniformElimination turns it into one BFI at
                 // offset 8, while memory-backed/interpreter execution updates
                 // exactly the same byte in ThreadContext64.

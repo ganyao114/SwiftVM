@@ -39,6 +39,9 @@ bool SupportsResidentDefinitionElision(const ir::Inst& consumer) {
 }
 
 bool MayClobberFixedHomes(ir::OpCode op) {
+    if (op == ir::OpCode::XchgBarrier) {
+        return true;
+    }
     return op == ir::OpCode::CallLambda ||
            op == ir::OpCode::CallLocation ||
            op == ir::OpCode::CallDynamic ||

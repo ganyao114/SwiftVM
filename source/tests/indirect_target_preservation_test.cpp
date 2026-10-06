@@ -70,7 +70,8 @@ TEST_CASE("indirect L1 cold lookup preserves its target register",
             const vixl::aarch64::Instruction*>();
     auto* last = masm.GetBuffer()->GetEndAddress<
             const vixl::aarch64::Instruction*>();
-    for (auto* instruction = first; instruction < last; ++instruction) {
+    for (auto* instruction = first; instruction < last;
+         instruction = instruction->GetNextInstruction()) {
         decoder.Decode(instruction);
         instructions.emplace_back(disassembler.GetOutput());
     }

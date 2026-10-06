@@ -1,13 +1,71 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <stdexcept>
+
 #include "runtime/ir/hir_builder.h"
 #include "translator/x86/function_decode_frontier.h"
+#include "translator/x86/function_region_decoder.h"
 
 namespace {
 
 using namespace swift::runtime;
 using namespace swift::runtime::ir;
 using swift::translator::x86::FunctionDecodeFrontier;
+using swift::translator::x86::FunctionRegionDecoder;
+
+class BoundaryMemory final : public MemoryInterface {
+public:
+    bool Read(void*, size_t, size_t) override {
+        throw std::runtime_error("decoding crossed an external boundary");
+    }
+    bool Write(void*, size_t, size_t) override { return false; }
+    void* GetPointer(void*) override { return nullptr; }
+};
+
+TEST_CASE("function region decode stops at unavailable external roots",
+          "[function-entry][frontier]") {
+    for (const bool published : {false, true}) {
+        CAPTURE(published);
+        constexpr LocationDescriptor kStart = 0x6000;
+        constexpr LocationDescriptor kTarget = kStart + 4;
+        HIRBuilder builder{8, true, false, FeatureSet{}};
+        auto* function = builder.AppendFunction(Location{kStart});
+        builder.AdvancePC(Imm{8u});
+        function->GetCurrentBlock()->GetBlock()->SetTerminal(
+                terminal::ReturnToDispatch{});
+        for (LocationDescriptor source : {0x6100, 0x6200, 0x6300}) {
+            builder.SetCurBlock(function->CreateOrGetBlock(Location{source}));
+            builder.RegisterExternalDirectLink(Location{kTarget});
+            builder.ExternalLinkBlock(terminal::ExternalLinkBlock{Location{kTarget}});
+        }
+
+        BoundaryMemory memory;
+        size_t boundary_checks{};
+        FunctionRegionDecoder decoder{
+                builder, *function,
+                {.entry = kStart,
+                 .block_cap = 8,
+                 .lazy = true,
+                 .memory = &memory,
+                 .local_target = [&](LocationDescriptor address) {
+                     // Fail promptly if the same ineligible root is rediscovered.
+                     if (++boundary_checks > 32) {
+                         throw std::runtime_error("external frontier did not converge");
+                     }
+                     return published || address != kTarget;
+                 },
+                 .has_code = [&](LocationDescriptor address) {
+                     return published && address == kTarget;
+                 }}};
+        swift::translator::x86::FunctionRegionDecodeResult result;
+        REQUIRE_NOTHROW(result = decoder.Decode());
+        REQUIRE(result.decoded_count == 0);
+        REQUIRE_FALSE(result.hit_block_cap);
+        REQUIRE(result.pending_roots.empty());
+        REQUIRE(function->GetExternalEntryRoots().empty());
+        REQUIRE(function->GetExternalDirectLinks().size() == 3);
+    }
+}
 
 TEST_CASE("function decode frontier preserves split provenance",
           "[function-entry][frontier]") {

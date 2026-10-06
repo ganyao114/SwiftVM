@@ -41,6 +41,10 @@ INST(AtomicRMW, Value, Imm, Value, Value, Value)
 
 // Help
 INST(UniformBarrier, Void)
+// Metadata marker between the two fixed-home publications of register XCHG.
+// The immediate packs the two parent guest-GPR indices in nibbles; the
+// allocator uses the first target as the point-clobber boundary.
+INST(XchgBarrier, Void, Imm)
 INST(Goto, Value, BOOL)
 INST(NotGoto, Value, BOOL)
 INST(Select, Value, BOOL, Value, Value)

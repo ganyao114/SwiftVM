@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 
@@ -128,6 +129,77 @@ TEST_CASE("ordered stores accept coalesced low32 views during emission") {
     }
 }
 
+TEST_CASE("in-place low32 extensions retain their high-bit clearing write") {
+    for (const bool keep_parent_live : {false, true}) {
+        CAPTURE(keep_parent_live);
+        IntrusivePtr<Block> block{new Block(0, Location{0x86e0})};
+        auto source = block->LoadUniform<TypedValue<ValueType::U64>>(
+                Uniform{0, ValueType::U64});
+        block->StoreUniform(Uniform{16, ValueType::U64}, source);
+        auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
+                              .SetType(ValueType::U32);
+        auto result = block->ZeroExtend32To64(bridge).SetType(ValueType::U64);
+        block->StoreUniform(Uniform{8, ValueType::U64}, result);
+        if (keep_parent_live) {
+            block->StoreUniform(Uniform{24, ValueType::U64}, source);
+        }
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+
+        Config config{
+                .loc_start = 0,
+                .loc_end = 1ull << 48,
+                .enable_jit = true,
+                .has_local_operation = false,
+                .backend_isa = kArm64,
+        };
+        AddressSpace address_space{config};
+        auto module = address_space.GetDefaultModule();
+        const auto features = ResolveFeatureSet(module->GetModuleConfig());
+        RegAlloc allocation{block->MaxInstrId(), CopyTestGPRs(),
+                            FPRSMask{~((1u << 8) - 1u)}, features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        REQUIRE(allocation.IsLow32CopyCoalesced(bridge.Id()));
+        const auto source_reg = allocation.ValueGPR(source).id;
+        if (!keep_parent_live) {
+            // Supply the final-use handoff accepted by the allocator, with
+            // an arbitrary U64 input so the emitter cannot assume clean high
+            // bits. Retain conservative liveness through the result's store.
+            allocation.MapReference(source.Id(), result.Id());
+            for (auto& inst : block->GetInstList()) {
+                if (inst.Id() >= bridge.Id()) {
+                    auto gprs = allocation.DirtyGPR(inst.Id());
+                    auto fprs = allocation.DirtyFPR(inst.Id());
+                    gprs.Mark(source_reg);
+                    allocation.SetActiveRegs(inst.Id(), gprs, fprs);
+                }
+            }
+        }
+        const auto result_reg = allocation.ValueGPR(result).id;
+        REQUIRE((source_reg == result_reg) == !keep_parent_live);
+
+        arm64::JitContext context{module, allocation};
+        arm64::JitTranslator translator{context};
+        REQUIRE_NOTHROW(translator.Translate(block.get()));
+        context.Finish();
+        const auto expected = "mov w" + std::to_string(result_reg) +
+                              ", w" + std::to_string(source_reg);
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        auto* buffer = context.GetMasm().GetBuffer();
+        const auto* end = buffer->GetEndAddress<const vixl::aarch64::Instruction*>();
+        bool clears_high_bits = false;
+        for (const auto* instruction =
+                     buffer->GetStartAddress<const vixl::aarch64::Instruction*>();
+             instruction < end; instruction = instruction->GetNextInstruction()) {
+            decoder.Decode(instruction);
+            clears_high_bits |= disassembler.GetOutput() == expected;
+        }
+        REQUIRE(clears_high_bits);
+    }
+}
+
 TEST_CASE("low32 views reuse compatible source and result ownership") {
     auto allocate = [](bool keep_source_live) {
         IntrusivePtr<Block> block{new Block(0, Location{0x8690})};
@@ -165,6 +237,38 @@ TEST_CASE("low32 views reuse compatible source and result ownership") {
 
     auto dead_source = allocate(false);
     REQUIRE(dead_source.alloc->IsLow32CopyCoalesced(dead_source.bridge.Id()));
+}
+
+TEST_CASE("low32 ownership transfer preserves guest homes across publication") {
+    for (const bool overwrite_home : {false, true}) {
+        CAPTURE(overwrite_home);
+        IntrusivePtr<Block> block{new Block(0, Location{0x86d0})};
+        auto replacement = block->GetHostGPR(HostRegIndex(0), Imm{0u})
+                                   .SetType(ValueType::U64);
+        auto initial = block->LoadImm(Imm{0x12345678u}).SetType(ValueType::U32);
+        block->SetHostGPR(initial, HostRegIndex(22), Imm{0u});
+        auto source = block->GetHostGPR(HostRegIndex(22), Imm{0u})
+                              .SetType(ValueType::U32);
+        auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
+                              .SetType(ValueType::U32);
+        if (overwrite_home) {
+            block->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
+        }
+        block->StoreUniform(Uniform{16, ValueType::U32}, bridge);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+
+        const auto features = FeatureSet{};
+        RegAlloc allocation{block->MaxInstrId(), CopyTestGPRs(),
+                            FPRSMask{~((1u << 8) - 1u)}, features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        REQUIRE(allocation.IsHostReadCoalesced(source.Id()));
+        REQUIRE(allocation.ValueGPR(source).id == 22);
+        REQUIRE(allocation.IsLow32CopyCoalesced(bridge.Id()) == !overwrite_home);
+        if (overwrite_home) {
+            REQUIRE(allocation.ValueGPR(bridge).id != 22);
+        }
+    }
 }
 
 TEST_CASE("final-use low32 views transfer or recolor ownership") {

@@ -952,6 +952,7 @@ bool JitContext::EmitDirectLink(ir::Location location,
     if (!CanEmitDirectLink(location)) {
         return false;
     }
+    SingleEmissionCheckScope emission{&masm};
     u32 flags_bypass_instruction{};
     if (flags_bypass.Valid()) {
         ASSERT(flags_bypass.code_offset + sizeof(u32) <=
@@ -981,6 +982,8 @@ bool JitContext::EmitDirectLink(ir::Location location,
 }
 
 void JitContext::EmitFlagsMergeBranch(FlagsMergeTrampolineKind kind, u8 mask) {
+    // Reserve before recording the relocation: pool emission may move the site.
+    SingleEmissionCheckScope emission{&masm};
     const u32 offset = CurrentBufferSize();
     flags_merge_sites.push_back({offset, kind, mask});
     __ dc32(*EncodeB(0));
@@ -998,12 +1001,14 @@ JitContext::TakeFlagsMergeBranch(u32 code_offset) {
 }
 
 void JitContext::EmitCycleReasonBranch() {
+    SingleEmissionCheckScope emission{&masm};
     cycle_reason_sites.push_back(
             {CurrentBufferSize(), CycleReasonTrampolineKind::Basic});
     __ dc32(*EncodeB(0));
 }
 
 void JitContext::EmitCycleFlagsMergeBranch(bool token) {
+    SingleEmissionCheckScope emission{&masm};
     cycle_reason_sites.push_back(
             {CurrentBufferSize(),
              token ? CycleReasonTrampolineKind::NZCVToken
@@ -1013,6 +1018,7 @@ void JitContext::EmitCycleFlagsMergeBranch(bool token) {
 
 void JitContext::EmitReturnFlagsMergeBranch(bool token) {
     ASSERT(ContinuationActive());
+    SingleEmissionCheckScope emission{&masm};
     pending_return_sites.push_back(
             {CurrentBufferSize(),
              token ? ReturnTrampolineKind::NZCVToken
@@ -1083,6 +1089,7 @@ void JitContext::ReturnHost() {
         __ Ret();
         return;
     }
+    SingleEmissionCheckScope emission{&masm};
     pending_return_sites.push_back(
             {CurrentBufferSize(), ReturnTrampolineKind::Basic});
     __ dc32(*EncodeB(0));

@@ -230,7 +230,7 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
         return PreciseAddSubScratchBudget(*result.Def()).gpr;
     };
     REQUIRE(make_host_price(ValueType::U16, Flags::None) == 2);
-    REQUIRE(make_host_price(ValueType::U16, Flags::All) == 5);
+    REQUIRE(make_host_price(ValueType::U16, Flags::All) == 3);
     REQUIRE(make_host_price(ValueType::U32, Flags::All) == 2);
 
     swift::runtime::Config config{
@@ -343,12 +343,12 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
     REQUIRE(measure(ValueType::U64, Flags::All, false, RightShape::Composite) == 2);
     REQUIRE(measure(ValueType::U64, Flags::All, true, RightShape::Composite) == 1);
     REQUIRE(measure(ValueType::U8, Flags::All, false, RightShape::Reg) == 2);
-    REQUIRE(measure(ValueType::U16, Flags::All, false, RightShape::Composite) == 3);
-    REQUIRE(measure(ValueType::U8, Flags::All, true, RightShape::Composite) == 2);
+    REQUIRE(measure(ValueType::U16, Flags::All, false, RightShape::Composite) == 2);
+    REQUIRE(measure(ValueType::U8, Flags::All, true, RightShape::Composite) == 1);
     REQUIRE(measure(ValueType::U16, Flags::None, false, RightShape::Reg,
                     true) == 2);
     REQUIRE(measure(ValueType::U16, Flags::All, false, RightShape::Reg,
-                    true) == 4);
+                    true) == 2);
 }
 
 // --- spill-slot recycling ----------------------------------------------------
@@ -1066,7 +1066,8 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
         auto& masm = context.GetMasm();
         auto* first = masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
         auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
-        for (auto* instruction = first; instruction < last; ++instruction) {
+        for (auto* instruction = first; instruction < last;
+             instruction = instruction->GetNextInstruction()) {
             decoder.Decode(instruction);
             std::string_view text{disassembler.GetOutput()};
             const auto begin = text.find_first_not_of(" \t");

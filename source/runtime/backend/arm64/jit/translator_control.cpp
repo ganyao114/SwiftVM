@@ -151,6 +151,7 @@ void JitTranslator::PrepareHostCallThunks(const std::vector<ir::Block*>& blocks)
 
 void JitTranslator::MaterializeHostCallTarget(u64 target) {
     // Keep the target ASLR-independent in size and visible to disk-cache relocation.
+    vixl::EmissionCheckScope emission{&masm, 4 * kInstructionSize};
     __ movz(ip, target & 0xFFFFu, 0);
     __ movk(ip, (target >> 16) & 0xFFFFu, 16);
     __ movk(ip, (target >> 32) & 0xFFFFu, 32);
@@ -542,10 +543,13 @@ void JitTranslator::EmitPreserveAllPairCall(ir::Inst* inst,
     MaterializeHostCallTarget(target);
     const u64 trampoline = context.GetPairCallTrampoline();
     ASSERT(trampoline);
-    __ movz(ip0, trampoline & 0xFFFFu, 0);
-    __ movk(ip0, (trampoline >> 16) & 0xFFFFu, 16);
-    __ movk(ip0, (trampoline >> 32) & 0xFFFFu, 32);
-    __ movk(ip0, (trampoline >> 48) & 0xFFFFu, 48);
+    {
+        vixl::EmissionCheckScope emission{&masm, 4 * kInstructionSize};
+        __ movz(ip0, trampoline & 0xFFFFu, 0);
+        __ movk(ip0, (trampoline >> 16) & 0xFFFFu, 16);
+        __ movk(ip0, (trampoline >> 32) & 0xFFFFu, 32);
+        __ movk(ip0, (trampoline >> 48) & 0xFFFFu, 48);
+    }
     __ Blr(ip0);
     __ Ldp(x30, ip, MemOperand(sp, PairCallFrame::Link));
     __ Ldr(ip0, MemOperand(sp, PairCallFrame::SavedX16));

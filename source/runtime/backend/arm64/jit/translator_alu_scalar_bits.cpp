@@ -5,6 +5,7 @@
 #include <functional>
 
 #include "runtime/backend/arm64/defines.h"
+#include "runtime/backend/arm64/helper_call_contract.h"
 #include "runtime/backend/context.h"
 #include "runtime/ir/low32_copy.h"
 
@@ -405,6 +406,14 @@ bool JitTranslator::ReproveLow32ViewOwnership(ir::Inst* inst,
         if (scan.Id() > last_use) {
             break;
         }
+        if ((scan.GetOp() == ir::OpCode::SetHostGPR &&
+             scan.GetArg<ir::Imm>(1).Get() == source_target) ||
+            (FixedGPRClobbers(scan, context.GetFeatures()) &
+             (1u << source_target)) ||
+            HelperCallContract::InstructionClobbersGPR(
+                    scan, source_target, context.GetFeatures())) {
+            return false;
+        }
         if (!context.DirtyGPR(scan.Id()).Get(source_target)) {
             return false;
         }
@@ -429,9 +438,29 @@ bool JitTranslator::ReproveAdjacentLow32Copy(ir::Inst* inst,
     }
     auto& wrapper = *wrapper_it;
     if (wrapper.GetOp() != ir::OpCode::ZeroExtend32To64 ||
-        wrapper.GetArg<ir::Value>(0).Def() != inst ||
-        context.X(ir::Value{&wrapper}).GetCode() == source_target) {
+        wrapper.GetArg<ir::Value>(0).Def() != inst) {
         return false;
+    }
+
+    if (context.X(ir::Value{&wrapper}).GetCode() == source_target) {
+        // Recoloring may transfer a dead parent's register through the view
+        // to its adjacent extension. That extension still owes a W write;
+        // the original 64-bit value must have no remaining observers.
+        if (source.Def()->GetOp() == ir::OpCode::GetHostGPR ||
+            context.IsUniform(context.X(source)) ||
+            TerminalUsesWidthChainValue(cur_block->GetTerminal(), source.Def())) {
+            return false;
+        }
+        for (auto& scan : cur_block->GetInstList()) {
+            if (scan.Id() <= inst->Id()) {
+                continue;
+            }
+            for (auto input : scan.GetValues()) {
+                if (ResolveWidthChainBitCast(input).Def() == source.Def()) {
+                    return false;
+                }
+            }
+        }
     }
 
     return !context.IsWidthChainCoalesced(wrapper.Id()) &&
@@ -783,7 +812,14 @@ void JitTranslator::EmitZeroExtend32To64(ir::Inst* inst) {
         ASSERT_MSG(ReproveLow32Copy(source.Def()),
                    "low32 copy proof drifted at ZeroExtend32To64 IR {}",
                    inst->Id());
-        EmitZeroExtend32(inst);
+        if (context.SharesGPR(source, ir::Value{inst})) {
+            // The coalesced BitExtract emitted no UBFX, so its destination
+            // can still contain the parent's high bits even when tied here.
+            const auto result = context.W(ir::Value{inst});
+            __ Mov(result, result);
+        } else {
+            EmitZeroExtend32(inst);
+        }
         return;
     }
     if (!no_elide && ir::GetValueSizeByte(source.Type()) == sizeof(u32) &&

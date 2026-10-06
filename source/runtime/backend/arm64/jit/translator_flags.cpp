@@ -326,6 +326,7 @@ DirectLinkFlagsBypass JitTranslator::EmitDeferredNZCVMerge(
 }
 
 DirectLinkFlagsBypass JitTranslator::EmitOutlinedNZCVMerge() {
+    vixl::EmissionCheckScope emission{&masm, 2 * kInstructionSize};
     Label resume;
     const u32 begin = context.CurrentBufferSize();
     __ Adr(ip1, &resume);
@@ -339,6 +340,7 @@ DirectLinkFlagsBypass JitTranslator::EmitOutlinedNZCVMergeResume(bool token) {
     if (token) {
         MaterializeFlagsTokenResult();
     }
+    vixl::EmissionCheckScope emission{&masm, 2 * kInstructionSize};
     Label resume;
     const u32 begin = context.CurrentBufferSize();
     __ Adr(ip1, &resume);
@@ -1152,7 +1154,12 @@ JitTranslator::PseudoFlags JitTranslator::GetPseudoFlags(ir::Inst* inst) {
 void JitTranslator::EmitSaveFlags(ir::Inst* inst) {
     // Multiple SaveFlags may appear in one flush window (e.g. the x86 frontend
     // emits separate PF/AF and NZCV saves for narrow ALU ops); merge them.
-    flag_state.flags_set |= inst->GetArg<ir::Flags>(1);
+    const auto written = inst->GetArg<ir::Flags>(1);
+    flag_state.flags_set |= written;
+    // A later flag definition supersedes an earlier queued clear. The eager
+    // path has already packed the new value at its producer; applying that
+    // stale clear at AdvancePC would erase it (ClearFlags(All), then POPCNT ZF).
+    flag_state.flags_clear &= ~written;
 }
 
 void JitTranslator::EmitBranchOnlyFlags(ir::Inst* inst) {
@@ -1399,6 +1406,13 @@ bool OpClobbersPstate(ir::OpCode op) {
         case ir::OpCode::PublishFCmpFlags:
         case ir::OpCode::PublishSse42StrFlags:
         case ir::OpCode::X87Op:
+        // Variable-count SIMD shifts clamp their scalar count with CMP/CSEL
+        // before issuing the NEON shift.  The NEON instruction itself leaves
+        // NZCV alone, but the clamp does not; keep lazy guest flags from being
+        // read directly from the now-stale host PSTATE across these ops.
+        case ir::OpCode::VecShiftLeft:
+        case ir::OpCode::VecShiftRight:
+        case ir::OpCode::VecShiftRightArithmetic:
             return true;
         default:
             return false;
