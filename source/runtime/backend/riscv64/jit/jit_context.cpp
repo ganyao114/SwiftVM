@@ -17,6 +17,7 @@ void JitContext::EnsureSpace() {
 }
 
 void JitContext::MarkABICall() {
+    ReleaseMemoryLease();
     abi_calls = true;
     if (eager_abi_save) return;
     // The entry frame saves every register modified by this JIT block. The

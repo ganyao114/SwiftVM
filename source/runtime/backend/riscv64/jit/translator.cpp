@@ -1,4 +1,5 @@
 #include "translator.h"
+#include "wide.h"
 
 #include <algorithm>
 #include <array>
@@ -80,10 +81,33 @@ u32 Bits(ir::ValueType type) {
 }  // namespace
 
 void JitTranslator::Translate(ir::Block* input) {
+    if (WidePlan::Needed(input)) {
+        auto wide = WidePlan::Build(input);
+        context.RemapFlow(wide.instructions);
+        std::unordered_map<ir::Inst*, ir::Terminal> exits;
+        for (const auto& [inst, terminal] : function_exits) exits.emplace(wide.instructions.at(inst), terminal);
+        function_exits = std::move(exits);
+        std::unordered_set<ir::Inst*> checks;
+        for (auto* inst : function_halt_checks) checks.insert(wide.instructions.at(inst));
+        function_halt_checks = std::move(checks);
+        memory_extents = std::move(wide.memory_extents);
+        memory_continuations = std::move(wide.memory_continuations);
+        wide_ir = std::move(wide.body); input = wide_ir.get();
+    }
+    context.EnablePairCoalescing(bool(wide_ir));
     block = input;
     const auto entry_start = context.CurrentBufferSize();
     context.BeginBlock();
     context.DiscardValues();
+    bool memory_lease{};
+    for (auto& inst : block->GetInstList()) switch (inst.GetOp()) {
+        case O::LoadMemory: case O::LoadMemoryTSO: case O::StoreMemory: case O::StoreMemoryTSO:
+        case O::MemoryCopy: case O::MemoryCopyTSO: case O::CompareAndSwap128:
+        case O::CompareAndSwap: case O::AtomicExchange: case O::AtomicFetchAdd: case O::AtomicRMW:
+            memory_lease = true; break;
+        default: break;
+    }
+    context.EnableMemoryLease(memory_lease);
     bool eager_abi_save{};
     for (auto& inst : block->GetInstList()) {
         switch (inst.GetOp()) {
@@ -135,19 +159,19 @@ void JitTranslator::Translate(ir::Block* input) {
     context.EnsureSpace();
     // Helpers refer to this IR for the lifetime of its code allocation.
     for (auto& inst : block->GetInstList()) {
-        if (inst.ReturnType() != ir::ValueType::VOID && Bits(inst.ReturnType()) > 128)
-            throw std::runtime_error("RV64 semantic slots support up to V128; V256 must be split by the frontend");
+        ASSERT(inst.ReturnType() != ir::ValueType::V256);
         slot_count = std::max(slot_count, u32(inst.Id()) + 1);
         if (inst.GetOp() == O::BindLabel)
             if (!labels.try_emplace(inst.GetArg<ir::Value>(0).Def()).second)
                 throw std::runtime_error("RV64 goto has multiple bound targets");
     }
     for (auto& inst : block->GetInstList()) {
-        if ((inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto) && !labels.contains(&inst))
+        if ((inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto) && !labels.contains(context.BranchTarget(&inst)))
             throw std::runtime_error("RV64 goto has no bound target");
     }
     slot_count = std::max(slot_count, u32{1});
     auto& as = context.GetMasm();
+    context.AcquireMemoryLease();
     context.InitializeValues();
     context.LoadUniformBindings();
     EmitPhiMoves(entry_phis);
@@ -156,21 +180,45 @@ void JitTranslator::Translate(ir::Block* input) {
     u32 position{};
     for (auto& inst : block->GetInstList()) {
         context.EnsureSpace();
+        current_inst = &inst;
+        context.SetPosition(position);
         const auto before = context.CurrentBufferSize();
         if (auto edge = fallthrough_phis.find(&inst); edge != fallthrough_phis.end()) {
             context.PublishFlags();
             EmitPhiMoves(edge->second);
             context.FlushValuesTo(context.LiveAt(&inst));
         }
-        if (inst.GetOp() == O::BindLabel) {
+        if (auto exit = function_exits.find(&inst); exit != function_exits.end()) {
+            context.PublishFlags();
+            EmitTerminal(exit->second);
+            context.DiscardValues();
+        } else if (function_halt_checks.contains(&inst)) {
+            context.Load(t0, state, state_offset_halt_reason, 4);
+            context.BranchZero(t0, epilogue, false);
+        } else if (inst.GetOp() == O::BindLabel) {
             auto& label = labels.at(inst.GetArg<ir::Value>(0).Def());
             context.PublishFlags();
             context.FlushValuesTo(context.LiveAt(&inst));
             as.Bind(&label);
-            Poll();
+            if (!context.IsSyntheticLabel(&inst)) Poll();
         } else if (inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto) {
-            auto target = labels.find(&inst);
+            auto target = labels.find(context.BranchTarget(&inst));
             if (target == labels.end()) throw std::runtime_error("RV64 goto has no bound target");
+            if (!context.FallsThrough(&inst)) {
+                context.PublishFlags();
+                if (const auto* destination = context.GuestBranchTarget(&inst)) {
+                    context.Load(t4, state, state_offset_current_loc);
+                    context.Store(t4, state, state_offset_prev_loc);
+                    as.LI(t4, destination->Value());
+                    context.Store(t4, state, state_offset_current_loc);
+                }
+                if (auto edge = taken_phis.find(&inst); edge != taken_phis.end()) EmitPhiMoves(edge->second);
+                context.FlushValuesTo(context.LiveForBranch(&inst));
+                context.Jump(target->second);
+                stats.bytes[static_cast<size_t>(inst.GetOp())] += context.CurrentBufferSize() - before;
+                context.ReleaseDeadValues(position++);
+                continue;
+            }
             context.Read(t0, inst.GetArg<ir::Value>(0));
             context.PublishFlags();
             const auto fallthrough = context.CaptureValues();
@@ -204,6 +252,7 @@ void JitTranslator::Translate(ir::Block* input) {
     stats.lazy_saved_gprs = stats.lazy_saved_fprs ? std::popcount(all_gprs & ~saved_mask) : 0;
     recovery_offset = context.CurrentBufferSize();
     as.Bind(&epilogue);
+    context.ReleaseMemoryLease();
     context.LeaveFloatMode();
     if (context.FlagsEnabled()) context.Store(flags, state, state_offset_host_flags);
     context.Load(a0, state, state_offset_halt_reason, 4);
@@ -258,6 +307,7 @@ void JitTranslator::Poll() {
     context.Store(t1, state, state_offset_halt_reason, 4);
     context.Jump(epilogue);
     as.Bind(&resume);
+    context.PollMemoryLease();
 }
 
 void JitTranslator::Return(HaltReason reason) {

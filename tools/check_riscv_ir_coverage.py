@@ -79,8 +79,9 @@ def markdown(rows):
              "immediates, exceptional cases, extension profiles and instruction budgets. Interpreter fallback",
              "does not count as native performance coverage. `partial_scalar` means vector data shapes still fall back.", "",
              "Host-register operations require Config uniform bindings; register IDs are logical names, not raw RV64 registers.",
-             "Local phis are lowered on incoming CFG edges using parallel copies. Cross-block SSA and V256 remain outside",
-             "the current block/128-bit execution protocol; the compiler rejects those shapes explicitly.", "",
+             "Local and cross-block HIR phis use parallel copies on native CFG edges; function SSA shares one frame.",
+             "V256 is legalized into two native V128 halves, with explicit full-width permutations and conversions.",
+             "SSA-dependent interior blocks require their function entry; invalid scalar V256 shapes are rejected.", "",
              "Run `python3 tools/check_riscv_ir_coverage.py --require-native` to check the completion gate.", "",
              "| IR | Signature | Lowering | Emitter |", "| --- | --- | --- | --- |"]
     for row in rows:

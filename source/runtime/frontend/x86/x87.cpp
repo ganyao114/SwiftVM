@@ -11,6 +11,7 @@
 #include <limits>
 
 #include "runtime/backend/guest_memory_scope.h"
+#include "runtime/backend/atomic_fallback.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "translator/x86/cpu.h"
@@ -308,10 +309,21 @@ u8* GuestPointer(u64 address, size_t size) {
 
 namespace {
 
+// RV64 semantic helpers execute after the generated block releases its
+// memory lease. Hold one reader across the complete multi-part access.
+// Other backends retain their existing helper path without a reader RMW.
+struct X87GuestMemoryGuard {
+#if defined(__riscv) && __riscv_xlen == 64
+    runtime::backend::riscv64::MemoryKernelGuard guard{
+            runtime::backend::unaligned_atomic_lock};
+#endif
+};
+
 template <typename T>
 T LoadGuest(u64 address) {
     T value{};
     if (const auto* p = GuestPointer(address, sizeof(T))) {
+        [[maybe_unused]] X87GuestMemoryGuard guard;
         std::memcpy(&value, p, sizeof(value));
     }
     return value;
@@ -320,6 +332,7 @@ T LoadGuest(u64 address) {
 template <typename T>
 void StoreGuest(u64 address, T value) {
     if (auto* p = GuestPointer(address, sizeof(T))) {
+        [[maybe_unused]] X87GuestMemoryGuard guard;
         std::memcpy(p, &value, sizeof(value));
     }
 }
@@ -327,6 +340,7 @@ void StoreGuest(u64 address, T value) {
 extFloat80_t LoadExt80(u64 address) {
     extFloat80_t value{};
     if (const auto* p = GuestPointer(address, 10)) {
+        [[maybe_unused]] X87GuestMemoryGuard guard;
         std::memcpy(&value.signif, p, 8);
         std::memcpy(&value.signExp, p + 8, 2);
     }
@@ -335,6 +349,7 @@ extFloat80_t LoadExt80(u64 address) {
 
 void StoreExt80(u64 address, const extFloat80_t& value) {
     if (auto* p = GuestPointer(address, 10)) {
+        [[maybe_unused]] X87GuestMemoryGuard guard;
         std::memcpy(p, &value.signif, 8);
         std::memcpy(p + 8, &value.signExp, 2);
     }
@@ -1194,6 +1209,7 @@ u8 AbridgedTag(const ThreadContext64& ctx) {
 void StoreEnvironment(ThreadContext64& ctx, u64 address) {
     auto* out = GuestPointer(address, 28);
     if (!out) return;
+    [[maybe_unused]] X87GuestMemoryGuard guard;
     const u32 fcw = ctx.x87_fcw;
     const u32 fsw = ctx.x87_fsw;
     const u32 ftw = ctx.x87_ftw;
@@ -1216,6 +1232,7 @@ void StoreEnvironment(ThreadContext64& ctx, u64 address) {
 void LoadEnvironment(ThreadContext64& ctx, u64 address) {
     const auto* in = GuestPointer(address, 28);
     if (!in) return;
+    [[maybe_unused]] X87GuestMemoryGuard guard;
     u32 fcw{}, fsw{}, ftw{}, fip{}, fcs_fop{}, fdp{};
     std::memcpy(&fcw, in + 0, 4);
     std::memcpy(&fsw, in + 4, 4);
@@ -1470,6 +1487,7 @@ static u64 X87FxsaveImpl(u64 context, u64 guest_address) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     auto* out = GuestPointer(guest_address, 512);
     if (!out) return 0;
+    [[maybe_unused]] X87GuestMemoryGuard guard;
     std::memset(out, 0, 512);
     std::memcpy(out + 0, &ctx.x87_fcw, 2);
     std::memcpy(out + 2, &ctx.x87_fsw, 2);
@@ -1499,6 +1517,7 @@ static u64 X87FxrstorImpl(u64 context, u64 guest_address) {
     auto& ctx = *reinterpret_cast<ThreadContext64*>(context);
     const auto* in = GuestPointer(guest_address, 512);
     if (!in) return 0;
+    [[maybe_unused]] X87GuestMemoryGuard guard;
     std::memcpy(&ctx.x87_fcw, in + 0, 2);
     std::memcpy(&ctx.x87_fsw, in + 2, 2);
     u8 abridged{};

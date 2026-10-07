@@ -20,6 +20,9 @@
   部分写入保留未触及字节，读取保持捕获语义；回调前发布、返回后重新载入。
 - 支配分析仅初始化可能绕过定义而被读取的槽位；直线运算链不清空全部 SSA 栈。
 - 每个 SSA 值预留 16 字节的标准栈槽，低半部保存窄整数的零扩展结果；V128 使用完整槽。
+- V256 在发码前拆成两个 V128 SSA，保持四个 GPR 或两个 RVV 寄存器常驻。
+  整数运算链复用死亡输入的寄存器对，避免因拆分增加 SSA spill；完整宽度的
+  zip/unzip、pack、字节位移、抽取、movmask 和浮点转换显式处理半部之间的数据流。
 - helper 与直接发码共享这些槽。调用 helper 前，所有值和 guest uniforms 已有有效的内存副本。
 - 栈按 16 字节对齐。叶块使用 112 字节恢复帧，只保存实际使用的整数寄存器，
   不保存浮点 callee-saved 寄存器；标量浮点只使用 caller-saved 临时寄存器。
@@ -52,8 +55,20 @@ TSO 访问使用保守的 FENCE。地址 mask、limit、末端溢出检查直接
 oracle 时才调用回调边界。对齐的 32/64 位交换、加减、AND/OR/XOR 使用 AMO；
 CAS/NEG 和 8/16 位更新使用 LR/SC，保持目标 word 的相邻位。未对齐更新使用专用
 加锁 kernel，保持既有 fallback 协议，并由故障恢复释放本线程的锁。
-这个锁只协调软件原子 kernel：软件 CAS128/未对齐更新与重叠的原生窄 AMO、普通访问
-之间尚未建立共同原子协议，不能据同宽并发测试推导混合宽度的线性化保证。
+普通访存、原生 AMO/LR-SC/Zacas 与软件原子 kernel 使用共同的读者/写者协议。
+Runtime 在私有 cache line 上注册读者；生成块在入口获得访问租约，出口和 ABI 调用前释放，
+内部回边遇到待处理写者时让出租约。软件 CAS128/未对齐更新关闭入口并等待现有读者退出，
+再执行其完整更新。正常路径每块发布一次读者状态，不为每次 guest 访问增加全局原子 RMW。
+没有 Runtime 注册节点的直接 State 调用，以及 interpreter/libc 复制 kernel 使用匿名读者计数。
+RV64 的 x87 内存 helper 同样获取读者，包括完整的 80 位访问、环境保存/恢复和
+FXSAVE/FXRSTOR；只操作 x87 寄存器的指令不增加读者同步，其他后端保持原有 helper 路径。
+故障恢复清理当前 State 的租约、kernel 计数和软件原子锁。
+入口的 store/load 全栅栏与写者的全栅栏关闭注册/扫描竞争，入场成功后的 R/RW 栅栏
+获取写者退出前的更新；出口的 RW/W 栅栏使 guest
+访问先于读者退出发布，依据 [RVWMO 的 FENCE 顺序规则](https://docs.riscv.org/reference/isa/v20260120/unpriv/mm-eplan.html)。
+这一协议使软件原子更新与参与协议的访问互斥；普通宽向量访存本身仍由多条指令实现，
+不承诺与并发原生 Zacas 之间的整个向量读取原子性。直接操作 guest 指针的外部 host callback
+须自行参加该协议；ABI 调用期间生成块不持有租约。
 
 V128 的数据访问、选择、原始 bitcast、位运算、整数加减、平均、移位、乘法、比较、
 min/max、饱和运算和窄化使用原生发码。无 V 时以 GPR 对及 SWAR 运算执行；有 V 时
@@ -84,13 +99,22 @@ ABI 调用后重新读取；故障放弃 C++ 帧时从 State 恢复 `s11`。orac
 调用前保存活跃 RVV 值，调用后原位恢复并重设 vtype，普通内存热路径不为此写回。
 块返回时直接丢弃私有 SSA 缓存，独立块入口重新开始分配。
 
+具有跨 block SSA 的 HIR 函数在一份共享 SSA 帧内编译，内部 terminal 直接连接原生 CFG，
+Phi 按 HIR 前驱顺序重排到实际入边，并使用同一并行复制机制。原始 IR 保持不变；
+Module 将展开后的 IR 保留到代码 allocation 的 QSBR 回收。只有函数根入口发布为 C ABI 入口，
+依赖前驱 SSA 的内部块不能单独进入；frontend 可以从相应 guest 地址重新解码独立块。
+内部 guest 边在目标中断检查前提交 current_loc/prev_loc，条件展开的合成标签不作为中断边界。
+32 字节访存先验证完整范围，然后访问两个半部，只调用一次映射 oracle。
+TSO 屏障只置于完整访问的两端，拆分后的半部之间不重复设置。
+
 Runtime trampoline 循环调用块，通过现有 L2 表分派，使用 acquire fence 读取发布的表项。
 无键返回 CodeMiss，空目标返回 CacheMiss，非零停止原因返回 host 并清除 State 的 halt_reason。
 块入口、块间 dispatcher 和局部 label 会检查 Signal/SMC 请求。RV64 不使用 ARM64 的
 寄存器/guard-page 中断协议。
 
 内存故障从生成代码或语义 helper 进入块 epilogue，然后正常退出 dispatcher。
-恢复地址与块帧使用 State spill_area 的最后两个槽；RV64 不使用 ARM64 的 spill allocator。
+恢复地址与块帧使用 State spill_area 的最后两个槽，读者租约使用前两个预留槽；
+RV64 不使用 ARM64 的 spill allocator，也不改变 State 的布局。
 未对齐原子 helper 的故障恢复还会释放当前线程持有的 fallback 锁。host-call 参数保存在栈上，
 避免跳过 C++ 析构时遗留参数 vector 的堆分配。
 C++ helper 抛出的异常在 helper 边界捕获并转为 `IllegalCode`，不会穿过没有 unwind 信息的 JIT 帧。
@@ -122,12 +146,16 @@ CTest 启用 RV64 后端执行测试；macOS 构建可以编译同一目标，�
 ## 当前边界
 
 目前 `ir.inc` 的 191 条 opcode 均有原生 lowering：188 条数据/状态 IR 与 3 条局部控制流 IR，
-`--require-native` 覆盖门禁通过。已有 CFG 活跃性、局部 Phi、GPR/RVV 缓存和逻辑宿主寄存器绑定。
+`--require-native` 覆盖门禁通过。已有 CFG 活跃性、局部及同一函数跨块 Phi、V256 lowering、
+GPR/RVV 缓存和逻辑宿主寄存器绑定。
 Phi 参数按入边源指令顺序排列，同一源的落空边在跳转边之前；宿主入口边排在最前且要求立即数。
 Phi 必须位于 CFG 入口的连续 Phi 序列中，值输入须支配相应入边，宽度须与结果一致。
 Host-register IR 缺少兼容 uniform 绑定时明确拒绝。
-尚未实现 direct linking、RSB 优化或跨块 SSA/phi。函数内出现跨块 SSA 时编译明确拒绝，frontend 可重新解码为独立块。
-未拆分的 V256 也明确拒绝。
+portable interpreter 的向量槽位仍限定为 V128，遇到 V256 会返回 IllegalCode；
+V256 使用 RV64 原生 legalization 执行。
+跨块 SSA 必须属于同一 HIR 函数，并支配其使用点或 Phi 入边；非法标量 opcode 的 V256
+结果明确拒绝。展开后的指令数不得超出 IR 的 16 位 ID 范围。
+尚未实现 allocation 之间的 direct linking 或 RSB 优化。
 函数编译保留 canonical uniform 访问和 flag producer，避免把 ARM64 特定优化契约带入 RV64。
 
 语义 helper 内嵌本进程的函数地址和 IR 指针，因此 RV64 代码暂不写入磁盘 JIT cache，

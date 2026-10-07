@@ -165,6 +165,16 @@ HaltReason Interpreter::Run() {
     // in a function cannot index the interpreter stack out of bounds.
     u32 max_inst_id = 0;
     for (auto& inst : insts) {
+        // Portable homes and vector kernels are 128-bit. RV64 legalizes V256
+        // before native emission; never copy 32 bytes into a portable home.
+        bool wide = inst.ReturnType() == ValueType::V256;
+        for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
+            auto& arg = inst.ArgAt(slot);
+            wide |= arg.IsValue() && arg.Get<ir::Value>().Type() == ValueType::V256;
+            wide |= arg.GetType() == ir::ArgType::Uniform && arg.Get<ir::Uniform>().GetType() == ValueType::V256;
+            wide |= arg.GetType() == ir::ArgType::Local && arg.Get<ir::Local>().type == ValueType::V256;
+        }
+        if (wide) { state.halt_reason = HaltReason::IllegalCode; return state.halt_reason; }
         max_inst_id = std::max<u32>(max_inst_id, inst.Id());
     }
     const size_t slot_count = (size_t(max_inst_id) + 1) * kSlotStride;

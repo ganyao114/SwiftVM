@@ -292,3 +292,56 @@ macOS 原生构建三个目标通过；ARM64 回归通过 462 个用例、1,126,
 最后重新执行 x86-64/AArch64 完整 guest，七行 stdout 逐字节匹配，退出码为 101/25。
 摘要为 `/tmp/swiftvm-rv64-complete-final-guests-20261007.log`，输出与 JSON 结果位于 Ubuntu 的
 `/tmp/swiftvm-rv64-complete-final-guests-20261007/`。
+
+## 2026-10-07 跨 block SSA、V256 与混合宽度原子协议
+
+同一 HIR 函数的跨 block 值、terminal 条件和 Phi 在一份 SSA 帧内原生执行。
+Phi 根据 HIR 前驱重排到实际入边，保留循环携带值和并行复制环；支配关系不成立的输入
+在发布代码前拒绝。依赖前驱 SSA 的内部 block 只从函数根入口进入。中断用例验证内部
+guest 边先提交目标 PC，再检查请求；条件展开的合成标签不会形成错误的恢复边界。
+canonical HIR、展开 IR 和 executable allocation 使用同一 QSBR 生命周期。
+
+V256 拆成两个原生 V128 半部，覆盖访存、局部变量、逻辑 FPR、选择、Phi、整数/浮点运算、
+密码指令和完整宽度重排。专测在 RV64G、VLEN=128 和 VLEN=256 各通过 1,461 项检查，
+包括饱和/窄化、全部 packed 浮点转换、FMA 别名、跨半部 shift/extract/zip/unzip/gather、
+Phi 交换、全部 32 字节访存对齐、越界前拒绝以及 LP64D。缓存开启的 40 次 V256 加法链
+不产生 SSA 读写，VecAdd 发码不超过两个既有 V128 预算：RV64G 8,064 字节、RVV 392 字节。
+32 字节访问只调用一次完整范围 oracle；TSO 只在整个访问两端设置屏障，读写组合相比普通
+访存恰好增加 16 字节发码。portable interpreter 明确拒绝 V256，避免越过其 16 字节槽位。
+
+普通 guest 访存、原生 AMO/LR-SC/Zacas 和软件原子操作参加共同的读者/写者协议。
+Runtime 使用私有 cache line，每个生成块获取一次租约；ABI 调用前释放、返回后重新获取，
+内部回边为待处理写者让出租约。软件 CAS128/未对齐原子关闭入口、等待读者退出后更新。
+匿名 State、interpreter、复制 kernel 与 RV64 x87 内存 helper 使用匿名计数。
+x87 的 80 位访问、环境保存/恢复和 FXSAVE/FXRSTOR 保持一次完整访问的读者所有权；
+只操作寄存器的 x87 指令以及 ARM64 helper 不增加同步开销。入口先发布读者并执行全栅栏，再读取
+写者 gate；成功后执行 R/RW acquire 栅栏。退出用 RW/W release 栅栏，故障恢复清理当前
+线程的全部所有权。外部 callback 的直接 guest 指针访问需要自行参加协议。
+
+并发专测验证各 1,000 次软件 CAS128 与重叠 AMO64、未对齐 U16 与 AMO32 的更新，
+以及原生/interpreter 读取的一致性。新增 X87Op 专测用软件 CAS128 同时发布关联的
+significand/exponent，至少读取 1,000 次 Float80 并检查两个字段属于同一次更新。
+Zacas 组另外验证软件 CAS128 与 AMOCAS.Q 并发。
+协议专测在 RV64G、RVV128、RVV256 各通过 12 项检查，Zacas 中通过 14 项；
+跨 block SSA/Phi 专测在三个基础配置各通过 31 项检查。
+这些是功能、ABI、发码预算和协议检查，真机吞吐、延迟和物理内存顺序验收仍待硬件。
+
+本机三个构建目标通过；最终 ARM64 回归通过 462 个用例、1,126,852 个断言。
+专测日志：`/tmp/swiftvm-rv64-wide-tso-final-20261007.log`、
+`/tmp/swiftvm-rv64-rvv-wide-{128,256}-tso-final-20261007.log`、
+`/tmp/swiftvm-rv64-{cfg,rvv-cfg-128,rvv-cfg-256,memory-protocol,zacas-protocol}-final-qualified-20261007.log`。
+构建与 ARM64 回归日志：`/tmp/swiftvm-rv64-remaining-native-final-build-20261007.log`、
+`/tmp/swiftvm-rv64-remaining-arm-regression-20261007.log`。
+
+包含跨 block SSA、V256、混合宽度协议以及最后的 acquire/TSO 屏障修复后，十组 CTest
+串行全部通过：基线和单块模式各 284,909、缓存复用 23、Zbb 15,046、标量 crypto 956、
+RVV128/RVV256 各 144,346、向量 crypto 各 957、Zacas 10,611。
+日志为 `/tmp/swiftvm-rv64-remaining-accepted-ctest-20261007.log`。
+随后加入 x87 helper 同步，重新构建交叉及本机三个目标，并执行四种配置的并发协议、
+完整 Zacas（10,613 项）、基线/RVV host-call ABI（698/700 项）及内存/故障恢复（200 项）专测。
+日志为 `/tmp/swiftvm-rv64-x87-protocol-{baseline,rvv128,rvv256,zacas,calls,rvv-calls,memory}-20261007.log`、
+`/tmp/swiftvm-rv64-x87-protocol-build-20261007.log`、
+`/tmp/swiftvm-rv64-x87-native-build-20261007.log` 与
+`/tmp/swiftvm-rv64-x87-arm-regression-20261007.log`。
+最终 x86-64/AArch64 完整 guest 的七行 stdout 与基线逐字节相同，退出码分别为 101/25。
+输出和结果位于 macOS 的 `/tmp/swiftvm-rv64-x87-final-guests-20261007/`。

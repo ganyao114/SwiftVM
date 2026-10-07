@@ -14,7 +14,7 @@ void JitContext::ConfigureLiveness(ir::Block* block) {
     last_uses.clear(); live_entries.clear(); branch_live_entries.clear();
     bool cfg{};
     for (const auto& inst : block->GetInstList())
-        cfg |= inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto || inst.GetOp() == O::BindLabel;
+        cfg |= inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto || inst.GetOp() == O::BindLabel || !FallsThrough(const_cast<ir::Inst*>(&inst));
     if (!cfg) {
         // Most decoded blocks are straight-line. Avoid CFG sets and their
         // allocations on this hot compilation path.
@@ -53,12 +53,14 @@ void JitContext::ConfigureLiveness(ir::Block* block) {
         last_uses[&inst] = insts.size(); insts.push_back(&inst);
         if (inst.GetOp() == O::BindLabel) targets[inst.GetArg<ir::Value>(0).Def()] = insts.size() - 1;
     }
+    for (auto* inst : insts) if (inst->GetOp() == O::Goto || inst->GetOp() == O::NotGoto)
+        if (auto found = targets.find(BranchTarget(inst)); found != targets.end()) targets[inst] = found->second;
     if (insts.empty()) return;
     const u32 count = insts.size();
     std::vector<bool> leaders(count + 1); leaders[0] = leaders[count] = true;
     for (u32 i = 0; i < count; ++i) {
         const auto op = insts[i]->GetOp();
-        if (op == O::Goto || op == O::NotGoto) leaders[i + 1] = true;
+        if (op == O::Goto || op == O::NotGoto || !FallsThrough(insts[i])) leaders[i + 1] = true;
         else if (op == O::BindLabel) leaders[i] = true;
     }
     std::vector<u32> starts, node(count);
@@ -67,8 +69,8 @@ void JitContext::ConfigureLiveness(ir::Block* block) {
     std::vector<Set> uses(nodes), defs(nodes), edge_uses(nodes), in(nodes), out(nodes);
     std::vector<std::vector<u32>> successors(nodes);
     for (u32 b = 0; b < nodes; ++b) {
-        if (b + 1 < nodes) successors[b].push_back(b + 1);
         auto* last = insts[starts[b + 1] - 1];
+        if (b + 1 < nodes && FallsThrough(last)) successors[b].push_back(b + 1);
         if ((last->GetOp() == O::Goto || last->GetOp() == O::NotGoto) && targets.contains(last))
             successors[b].push_back(node[targets.at(last)]);
     }
@@ -120,7 +122,8 @@ void JitContext::ConfigureLiveness(ir::Block* block) {
         for (auto* value : out[b]) last_uses[value] = std::max(last_uses[value], starts[b + 1]);
         auto& live = live_entries[insts[starts[b]]]; live.assign(in[b].begin(), in[b].end());
     }
-    for (const auto& [branch, target] : targets) branch_live_entries[branch] = live_entries.at(insts[target]);
+    for (auto* branch : insts) if (branch->GetOp() == O::Goto || branch->GetOp() == O::NotGoto)
+        if (targets.contains(branch)) branch_live_entries[branch] = live_entries.at(insts[targets.at(branch)]);
 }
 
 void JitContext::FlushValuesTo(const std::vector<ir::Inst*>& live) {

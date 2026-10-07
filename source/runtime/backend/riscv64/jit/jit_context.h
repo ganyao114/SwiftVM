@@ -2,12 +2,14 @@
 
 #include <biscuit/assembler.hpp>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <span>
 #include "runtime/backend/code_cache.h"
 #include "runtime/backend/riscv64/defines.h"
 #include "runtime/backend/riscv64/host_features.h"
 #include "runtime/ir/args.h"
+#include "runtime/ir/location.h"
 
 namespace swift::runtime::ir { class Block; }
 
@@ -67,6 +69,9 @@ public:
     void ReadPart(biscuit::GPR result, ir::Value value, u32 part);
     biscuit::GPR SourcePart(ir::Value value, u32 part, biscuit::GPR scratch);
     static bool ZeroHigh(ir::Inst* inst);
+    void SetPosition(u32 position) { current_position = position; }
+    void EnablePairCoalescing(bool enabled) { pair_coalescing = enabled; }
+    bool PairCoalescingEnabled() const { return pair_coalescing; }
     std::array<biscuit::GPR, 2> ResultPair(ir::Inst* inst);
     void WritePair(ir::Inst* inst, const std::array<biscuit::GPR, 2>& registers);
     void SetVectorType(u32 bits, u32 lanes);
@@ -86,6 +91,10 @@ public:
         eager_abi_save = eager; abi_recovery = &recovery; abi_save = &save;
     }
     void MarkABICall();
+    void EnableMemoryLease(bool enabled) { memory_lease = enabled; }
+    void AcquireMemoryLease();
+    void ReleaseMemoryLease();
+    void PollMemoryLease();
     bool CallsABI() const { return abi_calls; }
     bool EagerABISave() const { return eager_abi_save; }
     u32 UsedGPRs() const { return used_gprs | (flags_enabled ? 1u << 8 : 0); }
@@ -121,6 +130,37 @@ public:
     void PublishFlags();
     void ReloadFlags();
     void ConfigureLiveness(ir::Block* block);
+    // Function CFGs share one SSA frame. A branch can name a common entry
+    // rather than owning its own BindLabel, and exits have no fallthrough.
+    void ConfigureFlow(std::unordered_map<ir::Inst*, ir::Inst*> targets,
+                       std::unordered_set<ir::Inst*> stops,
+                       std::unordered_map<ir::Inst*, ir::Location> locations = {},
+                       std::unordered_set<ir::Inst*> synthetic_labels = {}) {
+        flow_targets = std::move(targets); flow_stops = std::move(stops); flow_locations = std::move(locations);
+        flow_synthetic_labels = std::move(synthetic_labels);
+    }
+    void RemapFlow(const std::unordered_map<ir::Inst*, ir::Inst*>& mapping) {
+        std::unordered_map<ir::Inst*, ir::Inst*> targets;
+        for (const auto& [branch, target] : flow_targets) targets.emplace(mapping.at(branch), mapping.at(target));
+        std::unordered_set<ir::Inst*> stops;
+        for (auto* inst : flow_stops) stops.insert(mapping.at(inst));
+        std::unordered_map<ir::Inst*, ir::Location> locations;
+        for (const auto& [inst, location] : flow_locations) locations.emplace(mapping.at(inst), location);
+        std::unordered_set<ir::Inst*> synthetic_labels;
+        for (auto* inst : flow_synthetic_labels) synthetic_labels.insert(mapping.at(inst));
+        flow_targets = std::move(targets); flow_stops = std::move(stops); flow_locations = std::move(locations);
+        flow_synthetic_labels = std::move(synthetic_labels);
+    }
+    bool IsSyntheticLabel(ir::Inst* inst) const { return flow_synthetic_labels.contains(inst); }
+    const ir::Location* GuestBranchTarget(ir::Inst* inst) const {
+        auto found = flow_locations.find(BranchTarget(inst));
+        return found == flow_locations.end() ? nullptr : &found->second;
+    }
+    ir::Inst* BranchTarget(ir::Inst* branch) const {
+        auto found = flow_targets.find(branch);
+        return found == flow_targets.end() ? branch : found->second;
+    }
+    bool FallsThrough(ir::Inst* inst) const { return !flow_stops.contains(inst); }
     void ConfigureInitialization(ir::Block* block);
     void InitializeValues();
     void ReleaseDeadValues(u32 position);
@@ -152,12 +192,19 @@ private:
     bool flags_enabled{};
     bool vector_float{};
     bool abi_calls{};
+    bool memory_lease{};
+    bool pair_coalescing{};
+    u32 current_position{};
     bool eager_abi_save{};
     biscuit::Label* abi_recovery{};
     biscuit::Label* abi_save{};
     u32 used_gprs{}, float_mode_offset{200};
     bool flags_dirty{};
     std::unordered_map<ir::Inst*, u32> last_uses;
+    std::unordered_map<ir::Inst*, ir::Inst*> flow_targets;
+    std::unordered_map<ir::Inst*, ir::Location> flow_locations;
+    std::unordered_set<ir::Inst*> flow_stops;
+    std::unordered_set<ir::Inst*> flow_synthetic_labels;
     std::unordered_map<ir::Inst*, std::vector<ir::Inst*>> live_entries, branch_live_entries;
     std::vector<ir::Inst*> initial_values;
     std::span<const UniformMapDesc> uniform_descriptors;

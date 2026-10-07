@@ -98,7 +98,7 @@ bool JitTranslator::EmitVector(ir::Inst* inst) {
         const bool ordered = op == O::LoadMemoryTSO || op == O::StoreMemoryTSO;
         if (uniform) context.Address(a0, state, state_offset_uniform_buffer + inst->GetArg<ir::Uniform>(0).GetOffset());
         else { context.Operand(a1, inst->GetArg<ir::Operand>(0)); EmitAddress(size); }
-        if (ordered) as.FENCE();
+        if (ordered && !memory_continuations.contains(inst)) as.FENCE();
         if (uniform && !rvv && (state_offset_uniform_buffer + inst->GetArg<ir::Uniform>(0).GetOffset()) % std::min(size, 8u) == 0) {
             for (u32 part = 0; part < (size + 7) / 8; ++part) {
                 const auto width = std::min(size - part * 8, 8u);
@@ -140,7 +140,7 @@ bool JitTranslator::EmitVector(ir::Inst* inst) {
             }
             as.Bind(&done);
         }
-        if (ordered) as.FENCE();
+        if (ordered && !memory_extents.contains(inst)) as.FENCE();
         if (!store) write();
         return true;
     }
@@ -255,9 +255,10 @@ bool JitTranslator::EmitVector(ir::Inst* inst) {
             as.LI(a4, high); as.LI(a5, ~high);
         }
         for (u32 part = 0; part < 2; ++part) {
-            const auto lhs = context.SourcePart(inst->GetArg<ir::Value>(0), part, a2);
+            auto lhs = context.SourcePart(inst->GetArg<ir::Value>(0), part, a2);
             const auto rhs = shift ? a3 : context.SourcePart(inst->GetArg<ir::Value>(1), part, a3);
             const auto result = pair[part];
+            if (arithmetic && lhs == result) { as.MV(a2, lhs); lhs = a2; }
             if (bitwise) {
                 if (op == O::VecAnd || op == O::Vec4And) as.AND(result, lhs, rhs);
                 else if (op == O::VecOr || op == O::Vec4Or) as.OR(result, lhs, rhs);

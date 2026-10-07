@@ -20,9 +20,11 @@ void JitContext::ConfigureInitialization(ir::Block* block) {
     leaders[0] = leaders[count] = true;
     for (u32 i = 0; i < count; ++i) {
         const auto op = insts[i]->GetOp();
-        if (op == ir::OpCode::Goto || op == ir::OpCode::NotGoto) leaders[i + 1] = true;
+        if (op == ir::OpCode::Goto || op == ir::OpCode::NotGoto || !FallsThrough(insts[i])) leaders[i + 1] = true;
         if (op == ir::OpCode::BindLabel) { leaders[i] = true; targets[insts[i]->GetArg<ir::Value>(0).Def()] = i; }
     }
+    for (auto* inst : insts) if (inst->GetOp() == ir::OpCode::Goto || inst->GetOp() == ir::OpCode::NotGoto)
+        if (auto found = targets.find(BranchTarget(inst)); found != targets.end()) targets[inst] = found->second;
     std::vector<u32> starts, node(count);
     for (u32 i = 0; i < count; ++i) {
         if (leaders[i]) starts.push_back(i);
@@ -33,8 +35,8 @@ void JitContext::ConfigureInitialization(ir::Block* block) {
     std::vector<std::vector<u32>> successors(nodes), predecessors(nodes);
     const auto edge = [&](u32 from, u32 to) { successors[from].push_back(to); predecessors[to].push_back(from); };
     for (u32 b = 0; b < nodes; ++b) {
-        if (b + 1 < nodes) edge(b, b + 1);
         auto* last = insts[starts[b + 1] - 1];
+        if (b + 1 < nodes && FallsThrough(last)) edge(b, b + 1);
         if ((last->GetOp() == ir::OpCode::Goto || last->GetOp() == ir::OpCode::NotGoto) && targets.contains(last))
             edge(b, node[targets.at(last)]);
     }
@@ -88,10 +90,12 @@ void JitContext::ConfigureInitialization(ir::Block* block) {
         // pseudo marker appears in the instruction stream.
         if (definition->GetOp() == ir::OpCode::CpuidUpper || definition->GetOp() == ir::OpCode::Div128Remainder)
             definition = definition->GetArg<ir::Value>(0).Def();
-        if (!positions.contains(definition)) return; // compile.cpp rejects foreign SSA.
+        if (!positions.contains(definition)) return; // Independent blocks reject foreign SSA.
         const u32 where = positions.at(definition), from = node[where], to = use_node;
         const bool dominates = visited[from] && (from == to ? where < at : enter[from] <= enter[to] && leave[to] <= leave[from]);
         if (edge && !dominates) throw std::runtime_error("RV64 phi input does not dominate its incoming edge");
+        if (!dominates && !flow_targets.empty())
+            throw std::runtime_error("RV64 function SSA input does not dominate its use");
         if (!dominates) needed.insert(value.Def());
     };
     const auto operands = [&](ir::Inst* inst, u32 at) {

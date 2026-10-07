@@ -97,6 +97,7 @@ void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
     }
     // Guest address virtualization: state.pt carries the guest->host bias
     // (host = guest + bias); it is 0 for direct mapping.
+    riscv64::MemoryKernelGuard memory_guard{unaligned_atomic_lock};
     const auto* ptr =
             reinterpret_cast<const void*>(guest_addr + reinterpret_cast<uintptr_t>(state.pt));
     if (IsVector(type)) {
@@ -131,6 +132,7 @@ void Interpreter::RunStoreMemory(ir::Inst* inst, InterpStack& stack) {
         state.halt_reason = HaltReason::PageFatal;
         return;
     }
+    riscv64::MemoryKernelGuard memory_guard{unaligned_atomic_lock};
     auto* ptr = reinterpret_cast<void*>(guest_addr + reinterpret_cast<uintptr_t>(state.pt));
     if (IsVector(type)) {
         const u128 v = ReadVec(stack, value);
@@ -164,6 +166,7 @@ void Interpreter::RunMemoryCopy(ir::Inst* inst, InterpStack& stack) {
     // direct mapping).
     const auto bias = reinterpret_cast<uintptr_t>(state.pt);
     const auto mask = state.guest_addr_mask;
+    riscv64::MemoryKernelGuard memory_guard{unaligned_atomic_lock};
     std::memmove(reinterpret_cast<void*>((EvalLambda(stack, dst) & mask) + bias),
                  reinterpret_cast<const void*>((EvalLambda(stack, src) & mask) + bias),
                  size);
@@ -188,6 +191,7 @@ bool IsNaturallyAligned(const void* ptr) {
 template <typename T>
 T AtomicCompareExchange(void* ptr, T expected, T desired) {
     if (IsNaturallyAligned<T>(ptr)) {
+        riscv64::MemoryKernelGuard memory_guard{unaligned_atomic_lock};
         std::atomic_ref(*static_cast<T*>(ptr))
                 .compare_exchange_strong(expected, desired, std::memory_order_seq_cst);
         return expected;
@@ -204,6 +208,7 @@ T AtomicCompareExchange(void* ptr, T expected, T desired) {
 template <typename T>
 T AtomicExchangeValue(void* ptr, T desired) {
     if (IsNaturallyAligned<T>(ptr)) {
+        riscv64::MemoryKernelGuard memory_guard{unaligned_atomic_lock};
         return std::atomic_ref(*static_cast<T*>(ptr))
                 .exchange(desired, std::memory_order_seq_cst);
     }
@@ -217,6 +222,7 @@ T AtomicExchangeValue(void* ptr, T desired) {
 template <typename T>
 T AtomicFetchAddValue(void* ptr, T addend) {
     if (IsNaturallyAligned<T>(ptr)) {
+        riscv64::MemoryKernelGuard memory_guard{unaligned_atomic_lock};
         return std::atomic_ref(*static_cast<T*>(ptr))
                 .fetch_add(addend, std::memory_order_seq_cst);
     }
@@ -231,6 +237,7 @@ T AtomicFetchAddValue(void* ptr, T addend) {
 template <typename T, typename Transform>
 T AtomicTransformValue(void* ptr, Transform&& transform) {
     if (IsNaturallyAligned<T>(ptr)) {
+        riscv64::MemoryKernelGuard memory_guard{unaligned_atomic_lock};
         auto ref = std::atomic_ref(*static_cast<T*>(ptr));
         T old = ref.load(std::memory_order_seq_cst);
         for (;;) {

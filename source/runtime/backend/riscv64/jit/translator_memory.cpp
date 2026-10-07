@@ -1,6 +1,7 @@
 #include "translator.h"
 
 #include <cstring>
+#include "runtime/backend/atomic_fallback.h"
 #include "runtime/backend/context.h"
 
 namespace swift::runtime::backend::riscv64 {
@@ -9,6 +10,11 @@ using namespace biscuit;
 using O = ir::OpCode;
 
 namespace {
+
+void* CopyGuestMemory(void* destination, const void* source, size_t size) {
+    MemoryKernelGuard guard{unaligned_atomic_lock};
+    return std::memmove(destination, source, size);
+}
 
 bool CheckGuestRange(State* state, u64 guest, u64 size) noexcept {
     try {
@@ -27,6 +33,11 @@ void JitTranslator::EmitAddress(u64 size) {
     // Publish once before a potentially faulting access, including callbacks
     // that may observe State or abandon their own C++ callee-saved frame.
     ASSERT(size != 0);
+    if (memory_continuations.contains(current_inst)) {
+        context.GetMasm().ADDI(a0, a0, 16);
+        return;
+    }
+    if (auto extent = memory_extents.find(current_inst); extent != memory_extents.end()) size = extent->second;
     context.PublishFlags();
     auto& as = context.GetMasm();
     Label fault, no_oracle, done;
@@ -121,7 +132,7 @@ bool JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
         as.Bind(&done);
     } else {
         context.SaveVectorsForCall();
-        as.MV(a0, a4); as.MV(a1, a5); as.LI(a2, size); as.LI(t0, reinterpret_cast<u64>(&std::memmove));
+        as.MV(a0, a4); as.MV(a1, a5); as.LI(a2, size); as.LI(t0, reinterpret_cast<u64>(&CopyGuestMemory));
         context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
         context.ReloadFlags(); context.RestoreVectorsAfterCall();
     }

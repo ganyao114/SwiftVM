@@ -1,6 +1,8 @@
 #include "compile.h"
+#include "function.h"
 
-#include <set>
+#include <unordered_set>
+#include <algorithm>
 #include <stdexcept>
 #include <vector>
 #include "runtime/backend/address_space.h"
@@ -12,8 +14,9 @@
 namespace swift::runtime::backend::riscv64 {
 
 namespace {
+using Definitions = std::unordered_set<ir::Inst*>;
 
-void VerifyTerminal(const ir::Terminal& terminal, const std::set<ir::Inst*>& definitions) {
+void VerifyTerminal(const ir::Terminal& terminal, const Definitions& definitions) {
     const auto check = [&](ir::Value value) {
         if (!definitions.contains(value.Def()))
             throw std::runtime_error("RV64 terminal has a cross-block SSA input");
@@ -36,9 +39,11 @@ void VerifyTerminal(const ir::Terminal& terminal, const std::set<ir::Inst*>& def
     });
 }
 
-void Prepare(const Module& module, ir::Block* block, ir::HIRFunction* hir = nullptr) {
-    std::set<ir::Inst*> definitions;
-    for (auto& inst : block->GetInstList()) definitions.insert(&inst);
+void Prepare(const Module& module, ir::Block* block, ir::HIRFunction* hir = nullptr,
+             const Definitions* function_definitions = nullptr) {
+    Definitions local;
+    if (!function_definitions) for (auto& inst : block->GetInstList()) local.insert(&inst);
+    const auto& definitions = function_definitions ? *function_definitions : local;
     for (auto& inst : block->GetInstList()) {
         const auto check = [&](ir::Value value) {
             if (!definitions.contains(value.Def()))
@@ -66,6 +71,24 @@ void Prepare(const Module& module, ir::Block* block, ir::HIRFunction* hir = null
     // until every block's DCE has finished; local renumbering would make a
     // later block resolve an input to another block's HIRValue.
     if (!hir) block->ReIdInstr();
+}
+
+bool HasCrossBlockValues(std::span<ir::HIRBlock* const> blocks) {
+    for (auto* block : blocks) {
+        Definitions local;
+        for (auto& inst : block->GetInstList()) local.insert(&inst);
+        const auto foreign = [&](ir::Value value) { return !local.contains(value.Def()); };
+        for (auto& inst : block->GetInstList()) for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
+            auto& arg = inst.ArgAt(slot);
+            if (arg.IsValue() && foreign(arg.Get<ir::Value>())) return true;
+            if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue() && foreign(arg.Get<ir::Lambda>().GetValue())) return true;
+            if (arg.IsParams()) for (const auto& param : arg.Get<ir::Params>())
+                if (param.data.IsValue() && foreign(param.data.value)) return true;
+        }
+        try { VerifyTerminal(block->GetBlock()->GetTerminal(), local); }
+        catch (const std::runtime_error&) { return true; }
+    }
+    return false;
 }
 
 void Publish(const std::shared_ptr<Module>& module, ir::Block* block,
@@ -112,6 +135,7 @@ void* CompileBlock(const std::shared_ptr<Module>& module, ir::Block* block) {
     if (id == INVALID_CACHE_ID) return nullptr;
     context.Flush(buffer);
     module->RetainCodeIR(buffer.exec_data, block);
+    if (translator.EmittedIR() != block) module->RetainCodeIR(buffer.exec_data, translator.EmittedIR());
     Publish(module, block, buffer, id, 0, buffer.size, translator.RecoveryOffset());
     // The module/SMC node owns the IR until its code is retired. Helpers embed
     // process-local IR and function pointers, so this code is not serialized.
@@ -132,6 +156,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
     struct Entry { ir::Block* block; ir::Function* owner; u32 offset; u32 size; u32 recovery; };
     JitContext context{true, HostFeatures::Detect(), module->GetAddressSpace().GetConfig().buffers_static_alloc};
     std::vector<Entry> entries;
+    std::vector<IntrusivePtr<ir::Block>> wide_owners;
     for (auto* function : functions) {
         // Verify/emit before publishing ownership so failed whole-function
         // compilation can fall back to a freshly decoded flat block.
@@ -145,6 +170,11 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
         if (ordered.empty() || ordered.front()->GetBlock()->GetStartLocation() != start ||
             (!ordered.front()->GetBlock()->HasTerminal() && ordered.front()->GetBlock()->GetInstList().empty()))
             throw std::runtime_error("RV64 function has no decoded root block");
+        std::erase_if(ordered, [](ir::HIRBlock* hir) {
+            return !hir->GetBlock()->HasTerminal() && hir->GetInstList().empty();
+        });
+        Definitions definitions;
+        for (auto* hir : ordered) for (auto& inst : hir->GetInstList()) definitions.insert(&inst);
         for (auto* hir : ordered) {
             auto* block = hir->GetBlock();
             if (!block->HasTerminal() && block->GetInstList().empty()) continue;
@@ -153,11 +183,41 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
                 if (inst.GetOp() == ir::OpCode::AdvancePC)
                     decoded_size += inst.GetArg<ir::Imm>(0).Get();
             block->SetEndLocation(block->GetStartLocation() + std::max<u64>(decoded_size, 1));
-            Prepare(*module, block, function);
+            Prepare(*module, block, function, &definitions);
         }
         u64 end = start.Value();
         for (auto* hir : ordered) end = std::max(end, hir->GetBlock()->GetEndLocation().Value());
         function->GetFunction()->SetEndLocation(ir::Location{end});
+        if (HasCrossBlockValues(ordered)) {
+            auto plan = FunctionPlan::Build(function, ordered);
+            context.ConfigureFlow(std::move(plan.targets), std::move(plan.stops), std::move(plan.locations),
+                                  std::move(plan.synthetic_labels));
+            JitTranslator translator{context};
+            translator.SetFunctionExits(std::move(plan.exits), std::move(plan.halt_checks));
+            translator.Translate(plan.body.get());
+            auto [id, buffer] = module->AllocCodeCache(context.CurrentBufferSize());
+            if (id == INVALID_CACHE_ID) return nullptr;
+            context.Flush(buffer);
+            if (!module->Push(function->GetFunction())) {
+                module->ReclaimCode(buffer.exec_data);
+                throw std::runtime_error("failed to publish RV64 function CFG");
+            }
+            function->ReleaseFunctionOwnership();
+            module->RetainCodeIR(buffer.exec_data, function->GetFunction());
+            module->RetainCodeIR(buffer.exec_data, translator.EmittedIR());
+            auto* root = ordered.front()->GetBlock();
+            Publish(module, root, buffer, id, 0, buffer.size, translator.RecoveryOffset(), function->GetFunction());
+            function->GetFunction()->GetJitCache() = root->GetJitCache();
+            if (!module->GetModuleConfig().read_only) for (auto* hir : ordered) if (hir->GetBlock() != root) {
+                auto* block = hir->GetBlock();
+                module->GetAddressSpace().GetSmcTracker().RegisterNode(module, function->GetFunction(),
+                        block->GetStartLocation().Value(), block->GetEndLocation().Value());
+                for (const auto& dependency : block->GetGuestCodeDependencies())
+                    module->GetAddressSpace().GetSmcTracker().RegisterNode(module, function->GetFunction(),
+                            dependency.start.Value(), dependency.end.Value());
+            }
+            return buffer.exec_data;
+        }
         for (auto* hir : ordered) {
             if (!hir) continue;
             auto* block = hir->GetBlock();
@@ -166,6 +226,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
             const auto offset = context.CurrentBufferSize();
             JitTranslator translator{context};
             translator.Translate(block);
+            if (translator.EmittedIR() != block) wide_owners.emplace_back(translator.EmittedIR());
             entries.push_back({block, function->GetFunction(), offset, context.CurrentBufferSize() - offset,
                                translator.RecoveryOffset() - offset});
         }
@@ -174,6 +235,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
     auto [id, buffer] = module->AllocCodeCache(context.CurrentBufferSize());
     if (id == INVALID_CACHE_ID) return nullptr;
     context.Flush(buffer);
+    for (const auto& owner : wide_owners) module->RetainCodeIR(buffer.exec_data, owner.get());
     for (auto* function : functions) {
         if (!module->Push(function->GetFunction())) {
             module->ReclaimCode(buffer.exec_data);

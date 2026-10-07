@@ -47,7 +47,7 @@ void JitContext::ConfigureUniformBindings(ir::Block* block) {
     uniform_bindings.clear();
     std::vector<UniformBinding> active;
     for (const auto& desc : uniform_descriptors) {
-        if (!desc.size || desc.size > (desc.is_float ? 16 : 8) ||
+        if (!desc.size || desc.size > (desc.is_float ? 32 : 8) ||
             (desc.size & (desc.size - 1))) throw std::runtime_error("invalid RV64 uniform binding width");
         for (const auto& previous : active)
             if ((previous.desc.reg == desc.reg && previous.desc.is_float == desc.is_float) ||
@@ -55,6 +55,7 @@ void JitContext::ConfigureUniformBindings(ir::Block* block) {
                  u64(previous.desc.offset) < u64(desc.offset) + desc.size))
                 throw std::runtime_error("overlapping RV64 uniform bindings");
         active.push_back({desc});
+        active.back().spanning = desc.size > 16;
     }
     for (auto& inst : block->GetInstList()) {
         const auto op = inst.GetOp();

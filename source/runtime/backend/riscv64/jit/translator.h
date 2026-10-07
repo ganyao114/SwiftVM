@@ -18,6 +18,11 @@ class JitTranslator {
 public:
     explicit JitTranslator(JitContext& context) : context(context) {}
     void Translate(ir::Block* block);
+    void SetFunctionExits(std::unordered_map<ir::Inst*, ir::Terminal> exits,
+                          std::unordered_set<ir::Inst*> halt_checks) {
+        function_exits = std::move(exits); function_halt_checks = std::move(halt_checks);
+    }
+    ir::Block* EmittedIR() const { return block; }
     [[nodiscard]] u32 RecoveryOffset() const { return recovery_offset; }
     [[nodiscard]] const EmissionStats& Stats() const { return stats; }
 
@@ -49,6 +54,10 @@ private:
 
     JitContext& context;
     ir::Block* block{};
+    IntrusivePtr<ir::Block> wide_ir;
+    ir::Inst* current_inst{};
+    std::unordered_map<ir::Inst*, u32> memory_extents;
+    std::unordered_set<ir::Inst*> memory_continuations;
     u32 slot_count{};
     u32 recovery_offset{};
     EmissionStats stats{};
@@ -57,6 +66,8 @@ private:
     std::map<ir::Inst*, biscuit::Label> labels;
     std::vector<PhiMove> entry_phis;
     std::unordered_map<ir::Inst*, std::vector<PhiMove>> taken_phis, fallthrough_phis;
+    std::unordered_map<ir::Inst*, ir::Terminal> function_exits;
+    std::unordered_set<ir::Inst*> function_halt_checks;
 };
 
 }  // namespace swift::runtime::backend::riscv64

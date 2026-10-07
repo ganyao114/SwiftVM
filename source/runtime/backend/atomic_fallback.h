@@ -3,6 +3,7 @@
 #include <atomic>
 #include <thread>
 #include "runtime/common/types.h"
+#include "runtime/backend/riscv64/memory_protocol.h"
 
 namespace swift::runtime::backend {
 
@@ -33,6 +34,7 @@ public:
             std::this_thread::yield();
         }
         owns_unaligned_atomic_guard.store(true, std::memory_order_relaxed);
+        riscv64::DrainMemoryReaders();
     }
 
     ~UnalignedAtomicGuard() {

@@ -14,8 +14,26 @@ void JitContext::LeaveFloatMode() {
     if (vector_float) { Load(t5, frame, float_mode_offset); masm.FSRM(t5); }
 }
 
-std::array<GPR, 2> JitContext::ResultPair(ir::Inst*) {
+std::array<GPR, 2> JitContext::ResultPair(ir::Inst* inst) {
     if (!cache_scalars) return {t0, t1};
+    // Split V256 chains already have eight live operand GPRs. Reuse a
+    // dying input pair in place instead of spilling it merely to allocate
+    // another pair. Keep the old mapping until WritePair: operand reads must
+    // still see the original registers. Pinned phis/uniforms are excluded.
+    if (pair_coalescing) for (u32 slot = 0; slot < 2; ++slot) {
+        if (!inst->ArgAt(slot).IsValue()) continue;
+        auto* input = inst->ArgAt(slot).Get<ir::Value>().Def();
+        bool later_alias{};
+        for (u32 other = 2; other < ir::Inst::max_args; ++other)
+            later_alias |= inst->ArgAt(other).IsValue() && inst->ArgAt(other).Get<ir::Value>().Def() == input;
+        if (later_alias) continue;
+        auto last = last_uses.find(input);
+        if (last == last_uses.end() || last->second != current_position) continue;
+        std::array<GPR, 2> pair{x0, x0};
+        for (u32 i = 0; i < cached_values.size(); ++i)
+            if (cached_values[i] == input && cached_parts[i] < 2) pair[cached_parts[i]] = scalar_registers[i];
+        if (pair[0] != x0 && pair[1] != x0) return pair;
+    }
     // Reserve both before reads: either destination may evict an input half.
     const auto low = ReserveRegister();
     const auto high = ReserveRegister(low);
@@ -32,7 +50,7 @@ void JitContext::WritePair(ir::Inst* inst, const std::array<GPR, 2>& registers) 
             bool found{};
             for (size_t i = 0; i < scalar_registers.size(); ++i) {
                 if (scalar_registers[i] == registers[part]) {
-                    ASSERT(!cached_values[i]);
+                    ASSERT(!cached_values[i] || (pair_coalescing && last_uses.at(cached_values[i]) == current_position));
                     cached_values[i] = inst;
                     cached_parts[i] = part;
                     found = true;
@@ -129,6 +147,7 @@ void JitContext::SaveVectorsForCall(bool abi_call) {
 }
 
 void JitContext::RestoreVectorsAfterCall() {
+    AcquireMemoryLease();
     ResetVectorType();
     for (const auto& binding : phi_bindings) if (binding.vector_index != UINT32_MAX) {
         SetVectorType(64, 2); Address(t6, values, s64(binding.inst->Id()) * kValueStride);

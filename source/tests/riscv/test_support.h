@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include "runtime/backend/context.h"
+#include "runtime/backend/riscv64/memory_protocol.h"
 #include "runtime/backend/riscv64/jit/translator.h"
 
 namespace swift::tests::riscv {
@@ -20,8 +21,10 @@ inline void Check(bool condition, const std::string& detail) {
 }
 
 struct StateStorage {
+    rv::MemoryParticipant memory_participant;
     alignas(backend::State) std::array<u8, sizeof(backend::State) + 4096> bytes{};
     backend::State* state = new (bytes.data()) backend::State{};
+    StateStorage() { state->spill_area[backend::kRiscvMemoryParticipantSlot] = reinterpret_cast<u64>(&memory_participant); }
     void Put(u32 offset, u64 value) { std::memcpy(state->uniform_buffer_begin + offset, &value, 8); }
     u64 Get(u32 offset) const {
         u64 result{}; std::memcpy(&result, state->uniform_buffer_begin + offset, 8); return result;
@@ -61,6 +64,8 @@ void NativeScalarBits(bool zbb = false);
 void NativeScalarALU(bool zbb = false);
 void NativeFlags();
 void NativeAtomics();
+void NativeWide(bool vector = false);
+void MemoryProtocol();
 void NativeVectors(bool vector = false);
 void NativeVectorInteger(bool vector = false);
 void NativeVectorShuffle(bool vector = false);

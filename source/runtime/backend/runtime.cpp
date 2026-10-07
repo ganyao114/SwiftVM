@@ -192,6 +192,10 @@ struct Runtime::Impl final {
         // definitionally invalid; the interpreter checks this before every
         // memory access and raises PageFatal instead of crashing the host.
         state->guest_addr_limit = static_cast<u64>(address_space->GetConfig().loc_end);
+        if (address_space->GetConfig().backend_isa == kRiscv64) {
+            memory_participant.emplace();
+            state->spill_area[backend::kRiscvMemoryParticipantSlot] = reinterpret_cast<u64>(&*memory_participant);
+        }
         state->unaligned_atomic_lock_address =
                 &backend::unaligned_atomic_lock;
         if (address_space->GetConfig().backend_isa == kArm64 &&
@@ -355,6 +359,14 @@ struct Runtime::Impl final {
                 return false;
             self->state->halt_reason = HaltReason::PageFatal;
             backend::ReleaseAbandonedUnalignedAtomicGuard();
+            backend::riscv64::ReleaseAbandonedMemoryKernels();
+            if (self->state->spill_area[backend::kRiscvMemoryOwnedSlot]) {
+                auto* participant = reinterpret_cast<backend::riscv64::MemoryParticipant*>(
+                        self->state->spill_area[backend::kRiscvMemoryParticipantSlot]);
+                if (participant) participant->active.store(0, std::memory_order_release);
+                else backend::riscv64::anonymous_memory_readers.fetch_sub(1, std::memory_order_seq_cst);
+                self->state->spill_area[backend::kRiscvMemoryOwnedSlot] = 0;
+            }
             // A semantic helper may have its own C++ stack/register frame.
             // Restore the generated block anchors before its epilogue runs.
             backend::SignalHandler::SetContextGPR(uctx, 8, self->state->spill_area[backend::kRiscvRecoveryFrameSlot]);
@@ -729,6 +741,7 @@ struct Runtime::Impl final {
     Instance* instance{};
     backend::InterruptPollState state_storage;
     backend::State* state{};
+    std::optional<backend::riscv64::MemoryParticipant> memory_participant{};
     std::optional<backend::GuardedReturnStack> return_stack{};
     backend::AddressSpace* address_space{};
     // mutable: JIT dispatch fills this per-Runtime table even from const Run

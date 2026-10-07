@@ -18,9 +18,11 @@ void JitTranslator::ConfigurePhis() {
     leaders[0] = leaders.back() = true;
     for (u32 i = 0; i < insts.size(); ++i) {
         const auto op = insts[i]->GetOp();
-        if (op == O::Goto || op == O::NotGoto) leaders[i + 1] = true;
+        if (op == O::Goto || op == O::NotGoto || !context.FallsThrough(insts[i])) leaders[i + 1] = true;
         else if (op == O::BindLabel) { leaders[i] = true; targets[insts[i]->GetArg<ir::Value>(0).Def()] = i; }
     }
+    for (auto* inst : insts) if (inst->GetOp() == O::Goto || inst->GetOp() == O::NotGoto)
+        if (auto found = targets.find(context.BranchTarget(inst)); found != targets.end()) targets[inst] = found->second;
     std::vector<u32> starts, node(insts.size());
     for (u32 i = 0; i < insts.size(); ++i) {
         if (leaders[i]) starts.push_back(i);
@@ -33,7 +35,7 @@ void JitTranslator::ConfigurePhis() {
     // fallthrough before taken when both edges have the same predecessor.
     for (u32 b = 0; b < count; ++b) {
         auto* last = insts[starts[b + 1] - 1];
-        if (b + 1 < count) incoming[b + 1].push_back({last, false, starts[b + 1]});
+        if (b + 1 < count && context.FallsThrough(last)) incoming[b + 1].push_back({last, false, starts[b + 1]});
         if (last->GetOp() == O::Goto || last->GetOp() == O::NotGoto) {
             if (!targets.contains(last)) throw std::runtime_error("RV64 phi CFG has an unbound edge");
             incoming[node[targets.at(last)]].push_back({last, true, starts[b + 1]});

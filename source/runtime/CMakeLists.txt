@@ -225,6 +225,7 @@ add_library(swift_runtime STATIC
         backend/arm64/region_link_trampoline.cpp
         backend/arm64/region_link_trampoline.h
         backend/riscv64/jit/jit_context.cpp
+        backend/riscv64/jit/jit_context_memory.cpp
         backend/riscv64/jit/jit_context_vector.cpp
         backend/riscv64/jit/jit_context_cfg.cpp
         backend/riscv64/jit/jit_context_liveness.cpp
@@ -247,6 +248,10 @@ add_library(swift_runtime STATIC
         backend/riscv64/jit/translator_vector_crypto.cpp
         backend/riscv64/jit/translator_call.cpp
         backend/riscv64/jit/translator.h
+        backend/riscv64/jit/wide.cpp
+        backend/riscv64/jit/wide.h
+        backend/riscv64/jit/function.cpp
+        backend/riscv64/jit/function.h
         backend/riscv64/jit/compile.cpp
         backend/riscv64/jit/compile.h
         backend/riscv64/trampolines.cpp

@@ -175,6 +175,10 @@ constexpr u32 state_offset_spill_area = offsetof(State, spill_area);
 // ABI and persisted code offsets remain stable.
 constexpr u32 kRiscvRecoveryPcSlot = 62;
 constexpr u32 kRiscvRecoveryFrameSlot = 63;
+constexpr u32 kRiscvMemoryOwnedSlot = 60;
+constexpr u32 kRiscvMemoryParticipantSlot = 61;
+constexpr u32 state_offset_riscv_memory_owned = state_offset_spill_area + kRiscvMemoryOwnedSlot * 8;
+constexpr u32 state_offset_riscv_memory_participant = state_offset_spill_area + kRiscvMemoryParticipantSlot * 8;
 constexpr u32 state_offset_riscv_recovery_pc = state_offset_spill_area + kRiscvRecoveryPcSlot * 8;
 constexpr u32 state_offset_riscv_recovery_frame = state_offset_spill_area + kRiscvRecoveryFrameSlot * 8;
 // FLAGS_REGS park: PSTATE and x12 last_result. Occupies spill_area[0..1]

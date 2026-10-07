@@ -69,9 +69,16 @@ bool JitTranslator::EmitVectorInteger(ir::Inst* inst) {
         context.WriteVector(inst, result); return true;
     }
     const auto result = context.ResultPair(inst);
+    constexpr std::array inputs{a0, a1, a2, a3};
+    if (context.PairCoalescingEnabled()) {
+        context.ReadPart(a0, inst->GetArg<ir::Value>(0), 0); context.ReadPart(a1, inst->GetArg<ir::Value>(0), 1);
+        context.ReadPart(a2, inst->GetArg<ir::Value>(1), 0); context.ReadPart(a3, inst->GetArg<ir::Value>(1), 1);
+    }
     const u32 output_bits = pack ? bits / 2 : widen ? bits * 2 : bits;
     const auto lane = [&](GPR target, ir::Value input, u32 bit, bool sign) {
-        const auto source = context.SourcePart(input, bit / 64, target);
+        const auto source = context.PairCoalescingEnabled()
+                ? inputs[(input.Def() == inst->GetArg<ir::Value>(0).Def() ? 0 : 2) + bit / 64]
+                : context.SourcePart(input, bit / 64, target);
         if (bit % 64) as.SRLI(target, source, bit % 64); else if (source != target) as.MV(target, source);
         if (sign) context.SignExtend(target, bits); else context.Mask(target, bits);
     };
@@ -115,10 +122,10 @@ bool JitTranslator::EmitVectorInteger(ir::Inst* inst) {
                 if (!pack && bits == 64) {
                     Label unchanged;
                     if (signed_lanes) {
-                        as.XOR(a0, t2, t3); as.XOR(a1, t3, t4);
-                        if (op == O::VecSatAdd) as.NOT(a1, a1);
-                        as.AND(a0, a0, a1); as.BGE(a0, x0, &unchanged);
-                        as.SRAI(a0, t3, 63); as.XOR(t2, a5, a0);
+                        as.XOR(a6, t2, t3); as.XOR(a7, t3, t4);
+                        if (op == O::VecSatAdd) as.NOT(a7, a7);
+                        as.AND(a6, a6, a7); as.BGE(a6, x0, &unchanged);
+                        as.SRAI(a6, t3, 63); as.XOR(t2, a5, a6);
                     } else if (op == O::VecSatAdd) { as.BGEU(t2, t3, &unchanged); as.MV(t2, a5); }
                     else { as.BGEU(t3, t4, &unchanged); as.MV(t2, x0); }
                     as.Bind(&unchanged);

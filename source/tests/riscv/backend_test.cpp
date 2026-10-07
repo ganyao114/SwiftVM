@@ -967,6 +967,163 @@ void FunctionEntries() {
     std::cout << "PASS optimized HIR lifetime and interior function entries\n";
 }
 
+void FunctionCFG() {
+    auto config = TestConfig();
+    backend::AddressSpace space{config};
+    auto module = space.GetDefaultModule();
+    void* entry{};
+    {
+        ir::HIRBuilder builder{1, true};
+        auto* function = builder.AppendFunction(ir::Location{0xa000});
+        auto input = function->LoadUniform<ir::U64>(ir::Uniform{0, ValueType::U64});
+        auto condition = function->TestZero<ir::U8>(input);
+        builder.If(ir::terminal::If{ir::BOOL{condition},
+                ir::terminal::LinkBlock{ir::Location{0xa100}},
+                ir::terminal::LinkBlock{ir::Location{0xa200}}});
+        builder.SetCurBlock(ir::Location{0xa100});
+        auto left = function->Add<ir::U64>(input, ir::Operand{ir::Imm{u64{31}}});
+        builder.LinkBlock(ir::terminal::LinkBlock{ir::Location{0xa300}});
+        builder.SetCurBlock(ir::Location{0xa200});
+        auto right = function->Sub<ir::U64>(input, ir::Operand{ir::Imm{u64{7}}});
+        builder.LinkBlock(ir::terminal::LinkBlock{ir::Location{0xa300}});
+        builder.SetCurBlock(ir::Location{0xa300});
+        ir::Params params; params.Push(left); params.Push(right);
+        auto phi = function->AddPhi<ir::U64>(params);
+        auto result = function->CallLambda<ir::U64>(ir::Lambda{ir::Imm{reinterpret_cast<u64>(&Helper)}}, phi, input, phi);
+        function->StoreUniform(ir::Uniform{8, ValueType::U64}, result);
+        function->EndBlock(ir::terminal::CheckHalt{ir::terminal::ReturnToHost{}});
+        function->EndFunction();
+        entry = backend::TranslateIR(module, function);
+        Check(entry != nullptr, "compile cross-block SSA diamond with phi");
+    }
+    auto fn = reinterpret_cast<BlockFn>(entry);
+    for (u64 input : {u64{0}, u64{19}, UINT64_MAX}) {
+        StateStorage state; state.Put(0, input);
+        const u64 value = input == 0 ? 31 : input - 7;
+        Check(fn(state.state) == HaltReason::CallHost && state.Get(8) == Helper(value, input, value),
+              "cross-block SSA, terminal condition, phi and callback survive HIR release");
+        Check(state.state->current_loc == ir::Location{0xa300}, "function CFG publishes the executing guest block");
+#if defined(__riscv) && __riscv_xlen == 64
+        Check(SwiftRiscvCheckABI(fn, state.state) == 1, "function CFG preserves LP64D");
+#endif
+    }
+    Check(space.GetCodeCache(ir::Location{0xa300}) == nullptr,
+          "SSA-dependent interior block is not published as an independent ABI entry");
+    {
+        using Wide = ir::TypedValue<ValueType::V256>;
+        ir::HIRBuilder builder{1, true};
+        auto* function = builder.AppendFunction(ir::Location{0xe000});
+        auto left = function->LoadUniform<Wide>(ir::Uniform{0, ValueType::V256});
+        auto right = function->LoadUniform<Wide>(ir::Uniform{32, ValueType::V256});
+        auto condition = function->LoadUniform<ir::U8>(ir::Uniform{64, ValueType::U8});
+        builder.If(ir::terminal::If{ir::BOOL{condition},
+                ir::terminal::LinkBlock{ir::Location{0xe100}},
+                ir::terminal::LinkBlock{ir::Location{0xe200}}});
+        builder.SetCurBlock(ir::Location{0xe100});
+        auto sum = function->VecAdd<Wide>(left, right, ir::Imm{u8{64}});
+        builder.LinkBlock(ir::terminal::LinkBlock{ir::Location{0xe300}});
+        builder.SetCurBlock(ir::Location{0xe200});
+        auto difference = function->VecSub<Wide>(left, right, ir::Imm{u8{64}});
+        builder.LinkBlock(ir::terminal::LinkBlock{ir::Location{0xe300}});
+        builder.SetCurBlock(ir::Location{0xe300});
+        ir::Params inputs; inputs.Push(sum); inputs.Push(difference);
+        auto result = function->AddPhi<Wide>(inputs);
+        function->StoreUniform(ir::Uniform{96, ValueType::V256}, result);
+        function->EndBlock(ir::terminal::ReturnToHost{}); function->EndFunction();
+        auto fn = reinterpret_cast<BlockFn>(backend::TranslateIR(module, function));
+        Check(fn != nullptr, "compile cross-block V256 SSA and phi");
+        for (u64 select : {u64{0}, u64{1}}) {
+            StateStorage state; state.Put(64, select);
+            for (u32 lane = 0; lane < 4; ++lane) { state.Put(lane * 8, 19 + lane); state.Put(32 + lane * 8, 7 + lane); }
+            Check(fn(state.state) == HaltReason::CallHost, "cross-block V256 halt");
+            for (u32 lane = 0; lane < 4; ++lane)
+                Check(state.Get(96 + lane * 8) == (select ? 26 + lane * 2 : 12), "cross-block V256 phi chooses all four lanes");
+        }
+    }
+    {
+        ir::HIRBuilder builder{1, true};
+        auto* function = builder.AppendFunction(ir::Location{0xb000});
+        auto initial = function->LoadUniform<ir::U64>(ir::Uniform{0, ValueType::U64});
+        builder.LinkBlock(ir::terminal::LinkBlock{ir::Location{0xb100}});
+        builder.SetCurBlock(ir::Location{0xb100});
+        ir::Params inputs; inputs.Push(initial); inputs.Push(initial);
+        auto count = function->AddPhi<ir::U64>(inputs);
+        auto next = function->Sub<ir::U64>(count, ir::Operand{ir::Imm{u64{1}}});
+        ir::Params loop_inputs; loop_inputs.Push(initial); loop_inputs.Push(next);
+        count.Def()->SetArg(0, loop_inputs);
+        auto complete = function->TestZero<ir::U8>(next);
+        builder.If(ir::terminal::If{ir::BOOL{complete},
+                ir::terminal::LinkBlock{ir::Location{0xb200}},
+                ir::terminal::LinkBlock{ir::Location{0xb100}}});
+        builder.SetCurBlock(ir::Location{0xb200});
+        function->StoreUniform(ir::Uniform{8, ValueType::U64}, count);
+        function->EndBlock(ir::terminal::ReturnToHost{});
+        function->EndFunction();
+        entry = backend::TranslateIR(module, function);
+        Check(entry != nullptr, "compile cross-block loop-carried phi");
+    }
+    for (u64 input : {u64{1}, u64{2}, u64{127}, u64{10000}}) {
+        StateStorage state; state.Put(0, input);
+        Check(reinterpret_cast<BlockFn>(entry)(state.state) == HaltReason::CallHost && state.Get(8) == 1,
+              "native function backedge assigns the loop-carried phi");
+    }
+    // A signal raised after root effects must stop at the chosen guest entry,
+    // never at the internal label used to expand the false terminal arm.
+    {
+        Runtime runtime{&space};
+        ir::HIRBuilder builder{1, true};
+        auto* function = builder.AppendFunction(ir::Location{0xc000});
+        auto value = function->LoadImm<ir::U64>(ir::Imm{u64{73}});
+        function->StoreUniform(ir::Uniform{8, ValueType::U64}, value);
+        auto pointer = function->LoadImm<ir::U64>(ir::Imm{reinterpret_cast<u64>(&runtime)});
+        auto interrupt = +[](u64 pointer, u64, u64) -> u64 {
+            auto* state = reinterpret_cast<Runtime*>(pointer)->GetState();
+            std::atomic_ref<u64>(state->exit_request).fetch_or(kBackedgeSignalRequest, std::memory_order_release);
+            return 0;
+        };
+        auto condition = function->CallLambda<ir::U64>(
+                ir::Lambda{ir::Imm{reinterpret_cast<u64>(interrupt)}}, pointer, pointer, pointer);
+        builder.If(ir::terminal::If{ir::BOOL{condition},
+                ir::terminal::LinkBlock{ir::Location{0xc100}},
+                ir::terminal::LinkBlock{ir::Location{0xc200}}});
+        builder.SetCurBlock(ir::Location{0xc100});
+        function->StoreUniform(ir::Uniform{16, ValueType::U64}, value);
+        function->EndBlock(ir::terminal::ReturnToHost{});
+        builder.SetCurBlock(ir::Location{0xc200});
+        function->StoreUniform(ir::Uniform{16, ValueType::U64}, value);
+        function->EndBlock(ir::terminal::ReturnToHost{}); function->EndFunction();
+        Check(backend::TranslateIR(module, function) != nullptr, "compile interruptible function CFG");
+        runtime.SetLocation(0xc000);
+        Check(runtime.Run() == HaltReason::Signal && runtime.GetState()->current_loc == ir::Location{0xc200} &&
+              runtime.GetState()->prev_loc == ir::Location{0xc000}, "function interrupt commits the chosen guest edge");
+        u64 before{}, after{};
+        std::memcpy(&before, runtime.GetUniformBuffer().data() + 8, 8);
+        std::memcpy(&after, runtime.GetUniformBuffer().data() + 16, 8);
+        Check(before == 73 && after == 0, "function interrupt publishes source effects before target instructions");
+        runtime.ClearInterrupt();
+    }
+    {
+        ir::HIRBuilder builder{1, true};
+        auto* function = builder.AppendFunction(ir::Location{0xd000});
+        auto condition = function->LoadUniform<ir::U8>(ir::Uniform{0, ValueType::U8});
+        builder.If(ir::terminal::If{ir::BOOL{condition},
+                ir::terminal::LinkBlock{ir::Location{0xd100}},
+                ir::terminal::LinkBlock{ir::Location{0xd200}}});
+        builder.SetCurBlock(ir::Location{0xd100});
+        auto left = function->LoadImm<ir::U64>(ir::Imm{u64{31}});
+        function->EndBlock(ir::terminal::ReturnToHost{});
+        builder.SetCurBlock(ir::Location{0xd200});
+        function->StoreUniform(ir::Uniform{8, ValueType::U64}, left);
+        function->EndBlock(ir::terminal::ReturnToHost{}); function->EndFunction();
+        bool rejected{};
+        try { (void)backend::TranslateIR(module, function); }
+        catch (const std::runtime_error& error) { rejected = std::string{error.what()}.find("dominate") != std::string::npos; }
+        Check(rejected && space.GetCodeCache(ir::Location{0xd000}) == nullptr,
+              "function rejects non-dominating foreign SSA before publishing code");
+    }
+    std::cout << "PASS native cross-block SSA diamonds and loop-carried phis\n";
+}
+
 void RejectCrossBlockTerminals() {
     auto config = TestConfig();
     backend::AddressSpace space{config};
@@ -1043,15 +1200,25 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (argc == 2 && std::string{argv[1]} == "--rvv") {
-            NativeHostRegisters(true); NativePhi(true);
+            NativeHostRegisters(true); NativePhi(true); NativeWide(true); FunctionCFG();
             NativeVectors(true); NativeVectorInteger(true); NativeVectorShuffle(true); NativeLocals(true); NativeVectorFloat(true); NativeCalls(true); NativeMemoryFrame(true); NativeMemoryCopy(true); NativeCrypto(true);
             std::cout << "OK " << checks << " checks\n";
             return 0;
         }
         if (argc == 2 && (std::string{argv[1]} == "--structure" || std::string{argv[1]} == "--rvv-structure")) {
             const bool vector = std::string{argv[1]} == "--rvv-structure";
-            NativeHostRegisters(vector); NativePhi(vector);
+            NativeHostRegisters(vector); NativePhi(vector); FunctionCFG();
             std::cout << "OK " << checks << " checks\n"; return 0;
+        }
+        if (argc == 2 && std::string{argv[1]} == "--cfg") {
+            FunctionCFG(); std::cout << "OK " << checks << " checks\n"; return 0;
+        }
+        if (argc == 2 && (std::string{argv[1]} == "--wide" || std::string{argv[1]} == "--rvv-wide")) {
+            NativeWide(std::string{argv[1]} == "--rvv-wide");
+            std::cout << "OK " << checks << " checks\n"; return 0;
+        }
+        if (argc == 2 && std::string{argv[1]} == "--memory-protocol") {
+            MemoryProtocol(); std::cout << "OK " << checks << " checks\n"; return 0;
         }
         if (argc == 2 && (std::string{argv[1]} == "--fp" || std::string{argv[1]} == "--rvv-fp")) {
             NativeVectorFloat(std::string{argv[1]} == "--rvv-fp");
@@ -1069,20 +1236,21 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && (std::string{argv[1]} == "--memcopy" || std::string{argv[1]} == "--rvv-memcopy" || std::string{argv[1]} == "--zacas")) {
             NativeMemoryCopy(std::string{argv[1]} == "--rvv-memcopy", std::string{argv[1]} == "--zacas");
+            if (std::string{argv[1]} == "--zacas") MemoryProtocol();
             std::cout << "OK " << checks << " checks\n"; return 0;
         }
         if (argc == 2 && (std::string{argv[1]} == "--memory" || std::string{argv[1]} == "--rvv-memory")) {
             NativeMemoryFrame(std::string{argv[1]} == "--rvv-memory"); Memory(); RuntimeFaults();
             std::cout << "OK " << checks << " checks\n"; return 0;
         }
-        NativeHostRegisters(); NativePhi();
+        NativeHostRegisters(); NativePhi(); NativeWide(); MemoryProtocol();
         NativeScalarBits(); NativeScalarALU(); NativeFlags(); NativeVectors(); NativeVectorInteger(); NativeVectorShuffle(); NativeLocals(); NativeVectorFloat(); NativeCalls(); NativeMemoryCopy(); NativeCrypto();
         NativeAtomics();
         ScalarDifferential(); Conditions(); FlagPredicates(); MixedHelpers(); VectorSelections(); SemanticExceptions();
         ScalarCache(); RegisterPressureAndHelpers(); LocalCacheJoins(); ScalarAddressing();
         LargeBranches(); NativeMemoryFrame(); Memory(); AlignedMemoryAtomicity();
         RuntimeDispatch(); RunningInterrupt(); Selections(); RuntimeFaults(); Atomics();
-        RetainedIR(); FunctionEntries(); RejectCrossBlockTerminals();
+        RetainedIR(); FunctionEntries(); FunctionCFG(); RejectCrossBlockTerminals();
         X86Integration(); Arm64Integration();
         Check(checks > 70000, "backend execution coverage is nonempty");
         std::cout << "OK " << checks << " checks\n";
