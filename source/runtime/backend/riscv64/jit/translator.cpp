@@ -114,18 +114,15 @@ void JitTranslator::Translate(ir::Block* input) {
     if (context.Features().vector) for (auto& inst : block->GetInstList())
         vector_float |= inst.GetOp() >= O::VecFAddScalar32 && inst.GetOp() <= O::VecFRoundInt && inst.GetOp() != O::VecUnzip;
     context.EnableVectorFloat(vector_float);
+    ConfigurePhis();
+    context.ConfigureUniformBindings(block);
     context.ConfigureInitialization(block);
     context.ConfigureLiveness(block);
     context.EnsureSpace();
     // Helpers refer to this IR for the lifetime of its code allocation.
-    // Reject ARM64 register-rewritten IR instead of silently yielding zero.
     for (auto& inst : block->GetInstList()) {
         if (inst.ReturnType() != ir::ValueType::VOID && Bits(inst.ReturnType()) > 128)
             throw std::runtime_error("RV64 semantic slots support up to V128; V256 must be split by the frontend");
-        if (inst.GetOp() == O::GetHostGPR || inst.GetOp() == O::SetHostGPR ||
-            inst.GetOp() == O::GetHostFPR || inst.GetOp() == O::SetHostFPR ||
-            inst.GetOp() == O::AddPhi)
-            throw std::runtime_error("RV64 requires canonical block IR without host-register rewrites or phi nodes");
         slot_count = std::max(slot_count, u32(inst.Id()) + 1);
         if (inst.GetOp() == O::BindLabel)
             if (!labels.try_emplace(inst.GetArg<ir::Value>(0).Def()).second)
@@ -138,16 +135,23 @@ void JitTranslator::Translate(ir::Block* input) {
     slot_count = std::max(slot_count, u32{1});
     auto& as = context.GetMasm();
     context.InitializeValues();
+    context.LoadUniformBindings();
+    EmitPhiMoves(entry_phis);
     Poll();
 
     u32 position{};
     for (auto& inst : block->GetInstList()) {
         context.EnsureSpace();
         const auto before = context.CurrentBufferSize();
+        if (auto edge = fallthrough_phis.find(&inst); edge != fallthrough_phis.end()) {
+            context.PublishFlags();
+            EmitPhiMoves(edge->second);
+            context.FlushValuesTo(context.LiveAt(&inst));
+        }
         if (inst.GetOp() == O::BindLabel) {
             auto& label = labels.at(inst.GetArg<ir::Value>(0).Def());
             context.PublishFlags();
-            context.FlushValues();
+            context.FlushValuesTo(context.LiveAt(&inst));
             as.Bind(&label);
             Poll();
         } else if (inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto) {
@@ -155,9 +159,16 @@ void JitTranslator::Translate(ir::Block* input) {
             if (target == labels.end()) throw std::runtime_error("RV64 goto has no bound target");
             context.Read(t0, inst.GetArg<ir::Value>(0));
             context.PublishFlags();
-            context.FlushValues();
-            context.BranchZero(t0, target->second, inst.GetOp() == O::NotGoto);
-        } else if (EmitMemoryCopy(&inst) || EmitVectorCrypto(&inst) || EmitNativeCall(&inst) || EmitVectorFloat(&inst) || EmitVectorLocal(&inst) || EmitVectorShuffle(&inst) || EmitVectorInteger(&inst) || EmitVector(&inst) || EmitAtomic(&inst) || EmitScalarBits(&inst) || EmitFlags(&inst) || EmitScalar(&inst)) {
+            const auto fallthrough = context.CaptureValues();
+            Label skip;
+            if (inst.GetOp() == O::Goto) as.BEQ(t0, x0, &skip);
+            else as.BNE(t0, x0, &skip);
+            if (auto edge = taken_phis.find(&inst); edge != taken_phis.end()) EmitPhiMoves(edge->second);
+            context.FlushValuesTo(context.LiveForBranch(&inst));
+            context.Jump(target->second);
+            as.Bind(&skip);
+            context.RestoreValues(fallthrough);
+        } else if (EmitPhi(&inst) || EmitVectorHostRegisters(&inst) || EmitMemoryCopy(&inst) || EmitVectorCrypto(&inst) || EmitNativeCall(&inst) || EmitVectorFloat(&inst) || EmitVectorLocal(&inst) || EmitVectorShuffle(&inst) || EmitVectorInteger(&inst) || EmitVector(&inst) || EmitAtomic(&inst) || EmitScalarBits(&inst) || EmitFlags(&inst) || EmitScalar(&inst)) {
             ++stats.direct;
         } else {
             EmitHelper(&inst);
@@ -166,6 +177,7 @@ void JitTranslator::Translate(ir::Block* input) {
         stats.bytes[static_cast<size_t>(inst.GetOp())] += context.CurrentBufferSize() - before;
         context.ReleaseDeadValues(position++);
     }
+    context.PublishUniformBindings();
     EmitTerminal(block->GetTerminal());
     context.EnsureSpace();
     context.FinalizeFrame();
@@ -222,6 +234,7 @@ void JitTranslator::EmitHelper(ir::Inst* inst) {
     context.MarkABICall();
     // Helpers read canonical homes and can write pair-result pseudo homes.
     context.PublishFlags();
+    context.PublishPhiHomes();
     context.FlushValues();
     auto& as = context.GetMasm();
     // A helper may view a scalar operand as a raw 128-bit slot. Initialize

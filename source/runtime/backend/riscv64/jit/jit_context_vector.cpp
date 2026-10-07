@@ -71,9 +71,10 @@ Vec JitContext::ResultVector(ir::Inst*) {
     ASSERT(features.vector);
     if (!cache_scalars) return v3;
     auto index = next_vector;
+    while (reserved_vectors & (1u << index)) index = (index + 1) % cached_vectors.size();
     for (size_t scanned = 0; scanned < cached_vectors.size(); ++scanned) {
         const auto candidate = (next_vector + scanned) % cached_vectors.size();
-        if (!cached_vectors[candidate]) { index = candidate; break; }
+        if (!(reserved_vectors & (1u << candidate)) && !cached_vectors[candidate]) { index = candidate; break; }
     }
     next_vector = (index + 1) % cached_vectors.size();
     if (cached_vectors[index]) { SpillVector(index); ++value_stats.spills; }
@@ -82,6 +83,8 @@ Vec JitContext::ResultVector(ir::Inst*) {
 }
 
 Vec JitContext::SourceVector(ir::Value value, Vec scratch) {
+    for (const auto& binding : phi_bindings)
+        if (binding.inst == value.Def() && binding.vector_index != UINT32_MAX) return Vec{binding.vector_index + 8};
     for (size_t i = 0; i < cached_vectors.size(); ++i) {
         if (cached_vectors[i] == value.Def()) { ++value_stats.cache_hits; return Vec{static_cast<u32>(i + 8)}; }
     }
@@ -89,6 +92,8 @@ Vec JitContext::SourceVector(ir::Value value, Vec scratch) {
     // A GPR pair can contain scalar bitcasts or baseline results. Build [lo,
     // hi] without writing a temporary home; slide's source differs from vd.
     bool gpr_cached{};
+    for (const auto& binding : phi_bindings)
+        gpr_cached |= binding.inst == value.Def() && binding.gpr_indices[0] != UINT32_MAX;
     for (auto* cached : cached_values) gpr_cached |= cached == value.Def();
     if (gpr_cached || ZeroHigh(value.Def())) {
         ReadPart(a4, value, 0); ReadPart(a5, value, 1);
@@ -116,11 +121,19 @@ void JitContext::WriteVector(ir::Inst* inst, Vec value) {
 
 void JitContext::SaveVectorsForCall(bool abi_call) {
     if (abi_call) MarkABICall();
+    if (abi_call) for (const auto& binding : phi_bindings) if (binding.vector_index != UINT32_MAX) {
+        SetVectorType(64, 2); Address(t6, values, s64(binding.inst->Id()) * kValueStride);
+        masm.VSE64(Vec{binding.vector_index + 8}, t6); ++value_stats.stores;
+    }
     for (size_t i = 0; i < cached_vectors.size(); ++i) SpillVector(i);
 }
 
 void JitContext::RestoreVectorsAfterCall() {
     ResetVectorType();
+    for (const auto& binding : phi_bindings) if (binding.vector_index != UINT32_MAX) {
+        SetVectorType(64, 2); Address(t6, values, s64(binding.inst->Id()) * kValueStride);
+        masm.VLE64(Vec{binding.vector_index + 8}, t6); ++value_stats.loads;
+    }
     for (size_t i = 0; i < cached_vectors.size(); ++i) {
         if (!cached_vectors[i]) continue;
         SetVectorType(64, 2);

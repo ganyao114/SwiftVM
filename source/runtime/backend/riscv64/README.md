@@ -11,7 +11,13 @@
 - `s0` 保存块的恢复帧，`s1` 保存 State，`s2` 保存 SSA 值区；入口保存、出口恢复。
 - 不使用 flags 的块以 `s3`–`s11` 缓存 SSA；使用 flags 的块以 `s3`–`s10` 缓存 SSA，
   `s11` 保存 guest flags。RV64G 的 V128 值使用两个 GPR；RVV 值缓存于 `v8`–`v23`。
-- 直线块按最后一次使用释放死亡值，不为它们写回；局部跳转块暂时保留保守的标准槽策略。
+- CFG 活跃性分析按最后一次使用释放死亡值；局部跳转只写回目标入口仍需要的 SSA。
+  条件跳转的落空路径保留现有缓存，不重复 spill/reload。
+- Phi 在进入目标 CFG 节点的边上并行赋值，优先常驻 GPR/RVV；复制环用两个临时
+  GPR 打破，不分配临时栈。寄存器不足的 Phi 才使用标准槽。
+- `Config::buffers_static_alloc` 为 `Get/SetHostGPR/FPR` 提供逻辑寄存器与 uniform 范围
+  的绑定。后端按访问频率选择常驻寄存器，逻辑编号不直接对应 RV64 物理编号。
+  部分写入保留未触及字节，读取保持捕获语义；回调前发布、返回后重新载入。
 - 支配分析仅初始化可能绕过定义而被读取的槽位；直线运算链不清空全部 SSA 栈。
 - 每个 SSA 值预留 16 字节的标准栈槽，低半部保存窄整数的零扩展结果；V128 使用完整槽。
 - helper 与直接发码共享这些槽。调用 helper 前，所有值和 guest uniforms 已有有效的内存副本。
@@ -63,8 +69,9 @@ interpreter 路径不计为原生性能覆盖。
 结果直接写入缓存寄存器，优先使用空闲寄存器，活跃值淘汰时写回标准槽。目标寄存器可能仍保存当前输入，
 所以淘汰和写回发生在读取操作数之前。读取不会改变缓存映射，select 和嵌套 terminal
 的各个内部路径共享同一映射；对齐/未对齐加载在汇合后发布同一个结果寄存器。
-语义 helper、Goto/NotGoto 和 BindLabel 前写回并清空缓存，保证 helper 的隐式操作数、
-成对返回值和跳转到达路径都使用有效槽位。flags 在 helper、跳转和潜在故障前发布，
+语义 helper 前发布所有必要标准槽；跳转和 label 汇合只写回目标活跃值，Phi 直接进行边复制。
+这保证 helper 的隐式操作数、成对返回值和跳转到达路径都使用有效数据。
+flags 与常驻 uniforms 在 helper、跳转和潜在故障前发布，
 ABI 调用后重新读取；故障放弃 C++ 帧时从 State 恢复 `s11`。oracle 和原子 slow kernel
 调用前保存活跃 RVV 值，调用后原位恢复并重设 vtype，普通内存热路径不为此写回。
 块返回时直接丢弃私有 SSA 缓存，独立块入口重新开始分配。
@@ -106,10 +113,13 @@ CTest 启用 RV64 后端执行测试；macOS 构建可以编译同一目标，�
 
 ## 当前边界
 
-目前声明的覆盖为 183 条原生 IR、3 条局部控制流 IR，以及
-5 条被拒绝的结构/寄存器 IR，完整覆盖门禁仍失败。已有块内活跃性与 GPR/RVV 缓存，
-尚未实现 CFG 活跃性、direct linking、RSB 优化或跨块 SSA/phi。函数内出现跨块 SSA 时编译明确拒绝，frontend 可重新解码为独立块。
-ARM64 host-register rewritten IR 和未拆分的 V256 也明确拒绝。
+目前 `ir.inc` 的 191 条 opcode 均有原生 lowering：188 条数据/状态 IR 与 3 条局部控制流 IR，
+`--require-native` 覆盖门禁通过。已有 CFG 活跃性、局部 Phi、GPR/RVV 缓存和逻辑宿主寄存器绑定。
+Phi 参数按入边源指令顺序排列，同一源的落空边在跳转边之前；宿主入口边排在最前且要求立即数。
+Phi 必须位于 CFG 入口的连续 Phi 序列中，值输入须支配相应入边，宽度须与结果一致。
+Host-register IR 缺少兼容 uniform 绑定时明确拒绝。
+尚未实现 direct linking、RSB 优化或跨块 SSA/phi。函数内出现跨块 SSA 时编译明确拒绝，frontend 可重新解码为独立块。
+未拆分的 V256 也明确拒绝。
 函数编译保留 canonical uniform 访问和 flag producer，避免把 ARM64 特定优化契约带入 RV64。
 
 语义 helper 内嵌本进程的函数地址和 IR 指针，因此 RV64 代码暂不写入磁盘 JIT cache，

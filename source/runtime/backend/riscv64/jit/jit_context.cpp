@@ -77,6 +77,17 @@ bool JitContext::ZeroHigh(ir::Inst* inst) {
 
 GPR JitContext::SourcePart(ir::Value value, u32 part, GPR scratch) {
     ASSERT(part < 2);
+    for (const auto& binding : phi_bindings) if (binding.inst == value.Def()) {
+        if (binding.gpr_indices[0] != UINT32_MAX)
+            return binding.gpr_indices[part] == UINT32_MAX ? x0 : scalar_registers[binding.gpr_indices[part]];
+        if (binding.vector_index != UINT32_MAX) {
+            SetVectorType(64, 2);
+            const auto source = Vec{binding.vector_index + 8};
+            if (part) { masm.VSLIDEDOWN(v7, source, 1u); masm.VMV_XS(scratch, v7); }
+            else masm.VMV_XS(scratch, source);
+            return scratch;
+        }
+    }
     // Reads never allocate: all internal select arms share one mapping.
     for (size_t i = 0; i < cached_values.size(); ++i) {
         if (cached_values[i] == value.Def() && cached_parts[i] == part) {
@@ -155,10 +166,10 @@ GPR JitContext::ResultRegister(ir::Inst* inst) {
 GPR JitContext::ReserveRegister(GPR excluded) {
     const auto count = cached_values.size() - size_t(flags_enabled);
     auto index = next_register;
-    if (scalar_registers[index] == excluded) index = (index + 1) % count;
+    while ((reserved_gprs & (1u << index)) || scalar_registers[index] == excluded) index = (index + 1) % count;
     for (size_t scanned = 0; scanned < count; ++scanned) {
         const auto candidate = scanned;
-        if (!cached_values[candidate] && scalar_registers[candidate] != excluded) { index = candidate; break; }
+        if (!(reserved_gprs & (1u << candidate)) && !cached_values[candidate] && scalar_registers[candidate] != excluded) { index = candidate; break; }
     }
     next_register = (index + 1) % (cached_values.size() - size_t(flags_enabled));
     if (auto* previous = cached_values[index]) {
@@ -191,47 +202,6 @@ void JitContext::Write(ir::Inst* inst, GPR value, bool normalized) {
     ++value_stats.stores;
 }
 
-void JitContext::ConfigureLiveness(ir::Block* block) {
-    last_uses.clear();
-    // A backward local edge can read an input again on its next iteration.
-    // Until CFG liveness is available, retain canonical homes for such blocks.
-    for (auto& inst : block->GetInstList())
-        if (inst.GetOp() == ir::OpCode::Goto || inst.GetOp() == ir::OpCode::NotGoto) return;
-    u32 position{};
-    const auto mark = [&](ir::Value value, u32 use) { last_uses[value.Def()] = use; };
-    const auto operands = [&](ir::Inst* inst, u32 use) {
-        // Walk physical slots: Params can contain more than Inst::max_args
-        // values, so Inst::GetValues()'s small StackVector is insufficient.
-        for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
-            auto& arg = inst->ArgAt(slot);
-            if (arg.IsValue()) mark(arg.Get<ir::Value>(), use);
-            else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue()) mark(arg.Get<ir::Lambda>().GetValue(), use);
-            else if (arg.IsParams())
-                for (auto& param : arg.Get<ir::Params>()) if (param.data.IsValue()) mark(param.data.value, use);
-        }
-    };
-    for (auto& inst : block->GetInstList()) {
-        last_uses.try_emplace(&inst, position);
-        operands(&inst, position);
-        if (inst.GetOp() == ir::OpCode::SaveFlags || inst.GetOp() == ir::OpCode::BranchOnlyFlags)
-            operands(inst.GetArg<ir::Value>(0).Def(), position);
-        ++position;
-    }
-    const auto terminal = [&](const auto& recurse, const ir::Terminal& value) -> void {
-        VisitVariant<void>(value, [&](const auto& term) {
-            using T = std::decay_t<decltype(term)>;
-            if constexpr (std::is_same_v<T, ir::terminal::If>) {
-                mark(term.cond, position); recurse(recurse, term.then_); recurse(recurse, term.else_);
-            } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
-                recurse(recurse, term.then_); recurse(recurse, term.else_);
-            } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
-                mark(term.value, position); for (const auto& item : term.cases) recurse(recurse, item.then);
-            } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) recurse(recurse, term.else_);
-        });
-    };
-    terminal(terminal, block->GetTerminal());
-}
-
 void JitContext::ReleaseDeadValues(u32 position) {
     if (last_uses.empty()) return;
     for (auto& value : cached_values) {
@@ -243,6 +213,7 @@ void JitContext::ReleaseDeadValues(u32 position) {
 }
 
 void JitContext::PublishFlags() {
+    PublishUniformBindings();
     if (flags_enabled && flags_dirty) {
         Store(flags, state, state_offset_host_flags);
         flags_dirty = false;
@@ -250,6 +221,7 @@ void JitContext::PublishFlags() {
 }
 
 void JitContext::ReloadFlags() {
+    LoadUniformBindings();
     if (flags_enabled) Load(flags, state, state_offset_host_flags);
     flags_dirty = false;
 }

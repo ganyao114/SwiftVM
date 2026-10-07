@@ -1,6 +1,7 @@
 #include "jit_context.h"
 
 #include <algorithm>
+#include <stdexcept>
 #include <unordered_set>
 #include "runtime/common/variant_util.h"
 #include "runtime/ir/block.h"
@@ -79,16 +80,18 @@ void JitContext::ConfigureInitialization(ir::Block* block) {
         else { const auto child = children[b][next++]; enter[child] = time++; walk.emplace_back(child, 0); }
     }
     std::unordered_set<ir::Inst*> needed;
-    const auto use = [&](ir::Value value, u32 at) {
-        if (!visited[node[std::min(at, count - 1)]]) return;
+    const auto use = [&](ir::Value value, u32 at, bool edge = false) {
+        const u32 use_node = node[edge && at ? at - 1 : std::min(at, count - 1)];
+        if (!visited[use_node]) return;
         auto* definition = value.Def();
         // Pair-result pseudos are written by their producer, before the
         // pseudo marker appears in the instruction stream.
         if (definition->GetOp() == ir::OpCode::CpuidUpper || definition->GetOp() == ir::OpCode::Div128Remainder)
             definition = definition->GetArg<ir::Value>(0).Def();
         if (!positions.contains(definition)) return; // compile.cpp rejects foreign SSA.
-        const u32 where = positions.at(definition), from = node[where], to = node[std::min(at, count - 1)];
+        const u32 where = positions.at(definition), from = node[where], to = use_node;
         const bool dominates = visited[from] && (from == to ? where < at : enter[from] <= enter[to] && leave[to] <= leave[from]);
+        if (edge && !dominates) throw std::runtime_error("RV64 phi input does not dominate its incoming edge");
         if (!dominates) needed.insert(value.Def());
     };
     const auto operands = [&](ir::Inst* inst, u32 at) {
@@ -101,11 +104,12 @@ void JitContext::ConfigureInitialization(ir::Block* block) {
     };
     for (u32 i = 0; i < count; ++i) {
         auto* inst = insts[i];
-        if (inst->GetOp() == ir::OpCode::BindLabel) continue;
+        if (inst->GetOp() == ir::OpCode::BindLabel || inst->GetOp() == ir::OpCode::AddPhi) continue;
         operands(inst, i);
         if (inst->GetOp() == ir::OpCode::SaveFlags || inst->GetOp() == ir::OpCode::BranchOnlyFlags || inst->GetOp() == ir::OpCode::GetFlags)
             operands(inst->GetArg<ir::Value>(0).Def(), i);
     }
+    for (const auto& [value, at] : phi_edge_uses) use(value, at, true);
     const auto terminal = [&](const auto& recurse, const ir::Terminal& value) -> void {
         VisitVariant<void>(value, [&](const auto& term) {
             using T = std::decay_t<decltype(term)>;

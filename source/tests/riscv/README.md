@@ -91,14 +91,20 @@ AES 同时验证全部轮 IR 与 FIPS 197 的十轮已知答案。
 
 `--fp`/`--rvv-fp`、`--calls`/`--rvv-calls`、`--memcopy`/`--rvv-memcopy`、
 `--crypto`/`--scalar-crypto`/`--vector-crypto`、`--zacas` 可以分别运行对应用例。
+`--structure`/`--rvv-structure` 检查逻辑 host GPR/FPR 绑定、全部部分字段、捕获语义、
+回调更新与向量寄存器破坏，以及 Phi 的前向选择、循环交换、跨寄存器/栈槽复制环和窄立即数。
 原生浮点基线已通过 99,176 项检查，普通 RVV 浮点通过 99,330 项；内存复制/CAS128
 专测通过 10,599 项；向量加密专测通过 957 项，缓存复用通过 23 项。
 
 [覆盖清单](../../../docs/riscv64-ir-coverage.md) 由 `ir.inc` 和实际注册的 emitter 生成。
 `python3 tools/check_riscv_ir_coverage.py --check-document` 验证清单同步，
-`--require-native` 仍返回 1，因为 5 条 CFG/ARM64 host-register IR 尚未实现。
+`--require-native` 返回 0：191 条 opcode 包括 188 条数据/状态 lowering 与 3 条局部控制流 lowering。
+这仍是 opcode 清单；跨块 SSA、未拆分 V256 与缺少 uniform 绑定的 Host-register IR 明确拒绝。
 源码 case 数量和 QEMU 时间都不能替代真机性能验收。用例对 RVV 指令序列设置预算，
 并检查算术/AES 串联没有 SSA 栈流量；吞吐、延迟、跨 hart 原子顺序与 SMC 仍须在目标 CPU 测量。
+host GPR 运算链无 SSA 栈访问，完整读写各用一条寄存器移动；归一化的 32 位发布也只用一条移动，
+低字节发布用两条指令。标量和 RVV 循环 Phi 在寄存器充足时同样没有 SSA 栈访问。
+叶块只保存实际使用的 GPR，不保存浮点 callee-saved 寄存器；有 ABI 调用的块保留完整故障恢复帧。
 
 2026-10-07 的交叉构建还执行了 `func_tests_x86_64` 和 `func_tests_aarch64`，
 全部 stdout 与既有基线逐字节一致，退出码分别为 101 和 25。原生 ARM64 的
@@ -110,6 +116,8 @@ AES 同时验证全部轮 IR 与 FIPS 197 的十轮已知答案。
 - 标量/helper/V128 混合、三种 select 的完整 V128 结果、全部整数与浮点 callee-saved 寄存器、远分支及大栈/均匀区偏移。
 - 九个标量缓存寄存器的淘汰与重载、目标覆盖输入、窄结果、helper 隐式输入、成对返回值、
   scalar-to-V128 高半部、前向汇合及有限后向循环；同时执行关闭缓存的对照程序。
+- CFG 边上的活跃值选择、落空路径保留缓存、Phi 的并行交换及寄存器不足时的复制环，
+  host GPR/FPR 的部分写入、回调观察/更新与故障后最后一次发布状态。
 - 有符号 12 位访存偏移的边界与超界路径，验证全部相邻字节，检查短偏移不生成额外地址指令。
 - guest 范围末端、未对齐/TSO 访问、两个并发执行线程间对齐读写的完整性。
 - L2 分派（包括最后一个 bucket）、中断、局部后向循环、嵌套 terminals。
@@ -223,3 +231,28 @@ macOS 日志为 `/tmp/swiftvm-rv64-scalar-native-build-final-20261007.log`、
 完整 guest 的运行摘要为 `/tmp/swiftvm-rv64-scalar-guests-20261007.log`，
 逐字节输出和 `results.json` 在 Ubuntu 的 `/tmp/swiftvm-rv64-scalar-guests-20261007/` 中。
 负对照记录为 `/tmp/swiftvm-rv64-scalar-stock-qemu-20261007.log`。
+
+## 2026-10-07 完整 IR 与 CFG 验证记录
+
+`tools/check_riscv_ir_coverage.py --check-document --require-native` 通过：191 条 opcode，
+其中 188 条数据/状态 IR 和 3 条局部控制流 IR。覆盖范围为块内 SSA、最大 V128；
+跨块 SSA 和未拆分 V256 仍明确拒绝。逻辑 host-register IR 需要兼容的 uniform 绑定。
+
+完整十组 CTest 串行通过：基线和函数块各 282,673 个检查、缓存复用 23、Zbb 15,046、
+标量 crypto 956、RVV128/RVV256 各 142,140、向量 crypto 各 957、Zacas 10,599。
+随后新增的 13 路向量 Phi 复制环超过常驻寄存器容量，分别通过基线 666、
+RVV128/RVV256 各 667 个结构检查，包含破坏 RVV 寄存器的回调。
+原生 ARM64 回归通过 462 个用例、1,126,838 个断言。
+最终重新执行两个完整 guest，输出逐字节一致，x86-64/AArch64 退出码分别为 101/25。
+
+当前生成代码预算：48 次 U64 加法链关闭/启用缓存为 752/376 字节，SSA 读写从各 49 次
+降为零；RVV 向量链为 396 字节，其中 VecAdd 为 196 字节，SSA 读写为零。
+完整寄存器复制使用一条指令，规范化的 32 位 host GPR 写入使用一条指令；
+低字节写入使用两条指令。叶块只保存实际使用的 GPR，不保存浮点 callee-saved 寄存器。
+这些是发码预算与访存统计，不能推导硬件吞吐或延迟。
+
+日志为 `/tmp/swiftvm-rv64-complete-ir-final-ctest-20261007.log`、
+`/tmp/swiftvm-rv64-phi-vector-spill-focused-20261007.log`、
+`/tmp/swiftvm-rv64-complete-ir-arm-regression-20261007.log` 和
+`/tmp/swiftvm-rv64-complete-ir-guests-20261007.log`。
+guest 输出与结果位于 Ubuntu 的 `/tmp/swiftvm-rv64-complete-ir-guests-20261007/`。

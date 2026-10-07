@@ -105,7 +105,7 @@ void* CompileBlock(const std::shared_ptr<Module>& module, ir::Block* block) {
     if (block->GetJitCache().jit_state == JitState::Cached)
         return module->GetJitCache(block->GetJitCache());
     Prepare(*module, block);
-    JitContext context;
+    JitContext context{true, HostFeatures::Detect(), module->GetAddressSpace().GetConfig().buffers_static_alloc};
     JitTranslator translator{context};
     translator.Translate(block);
     auto [id, buffer] = module->AllocCodeCache(context.CurrentBufferSize());
@@ -130,7 +130,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
         return first;
     }
     struct Entry { ir::Block* block; ir::Function* owner; u32 offset; u32 size; u32 recovery; };
-    JitContext context;
+    JitContext context{true, HostFeatures::Detect(), module->GetAddressSpace().GetConfig().buffers_static_alloc};
     std::vector<Entry> entries;
     for (auto* function : functions) {
         // Verify/emit before publishing ownership so failed whole-function

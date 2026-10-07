@@ -20,7 +20,6 @@ GENERIC_DATA = {
     "SelectZero", "CondSelect",
 }
 CONTROL = {"Goto", "NotGoto", "BindLabel"}
-REWRITES = {"GetHostGPR", "SetHostGPR", "GetHostFPR", "SetHostFPR", "AddPhi"}
 
 
 def emitter_cases():
@@ -59,9 +58,7 @@ def coverage():
     rows = []
     for name, signature in signatures:
         methods = sorted(native.get(name, ()))
-        if name in REWRITES:
-            status = "rejected"
-        elif name in CONTROL:
+        if name in CONTROL:
             status = "native_control"
         elif not methods:
             status = "interpreter_helper"
@@ -81,8 +78,9 @@ def markdown(rows):
              "This is an implementation inventory. A declared emitter still needs execution tests for its types,",
              "immediates, exceptional cases, extension profiles and instruction budgets. Interpreter fallback",
              "does not count as native performance coverage. `partial_scalar` means vector data shapes still fall back.", "",
-             "`rejected` opcodes currently require ARM64 register rewriting or CFG/phi support absent from RV64.",
-             "They remain open requirements; they are not counted as implemented.", "",
+             "Host-register operations require Config uniform bindings; register IDs are logical names, not raw RV64 registers.",
+             "Local phis are lowered on incoming CFG edges using parallel copies. Cross-block SSA and V256 remain outside",
+             "the current block/128-bit execution protocol; the compiler rejects those shapes explicitly.", "",
              "Run `python3 tools/check_riscv_ir_coverage.py --require-native` to check the completion gate.", "",
              "| IR | Signature | Lowering | Emitter |", "| --- | --- | --- | --- |"]
     for row in rows:

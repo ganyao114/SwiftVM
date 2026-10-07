@@ -227,8 +227,13 @@ add_library(swift_runtime STATIC
         backend/riscv64/jit/jit_context.cpp
         backend/riscv64/jit/jit_context_vector.cpp
         backend/riscv64/jit/jit_context_cfg.cpp
+        backend/riscv64/jit/jit_context_liveness.cpp
+        backend/riscv64/jit/jit_context_uniform.cpp
+        backend/riscv64/jit/jit_context_phi.cpp
         backend/riscv64/jit/jit_context.h
         backend/riscv64/jit/translator_frame.cpp
+        backend/riscv64/jit/translator_host.cpp
+        backend/riscv64/jit/translator_phi.cpp
         backend/riscv64/jit/translator.cpp
         backend/riscv64/jit/translator_scalar_bits.cpp
         backend/riscv64/jit/translator_flags.cpp

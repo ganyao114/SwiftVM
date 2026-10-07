@@ -47,7 +47,8 @@ struct Compiled {
     backend::CodeCache cache{config, 1u << 20, FeatureSet{}};
     BlockFn fn{};
     explicit Compiled(ir::Block* block, bool cache_scalars = true,
-                      rv::HostFeatures features = rv::HostFeatures::Detect()) : context(cache_scalars, features) {
+                      rv::HostFeatures features = rv::HostFeatures::Detect(),
+                      std::span<const UniformMapDesc> bindings = {}) : context(cache_scalars, features, bindings) {
         translator.Translate(block);
         auto buffer = cache.AllocCode(context.CurrentBufferSize());
         Check(buffer.has_value(), "allocate RV64 test code");
@@ -68,5 +69,7 @@ void NativeVectorFloat(bool vector = false);
 void NativeCalls(bool vector = false);
 void NativeMemoryCopy(bool vector = false, bool zacas = false);
 void NativeCrypto(bool vector = false, bool scalar_crypto = false, bool vector_crypto = false);
+void NativeHostRegisters(bool vector = false);
+void NativePhi(bool vector = false);
 
 }  // namespace swift::tests::riscv

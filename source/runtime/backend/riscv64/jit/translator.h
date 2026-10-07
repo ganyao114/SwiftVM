@@ -22,6 +22,11 @@ public:
     [[nodiscard]] const EmissionStats& Stats() const { return stats; }
 
 private:
+    struct PhiMove { ir::Inst* destination; ir::DataClass source; };
+    void ConfigurePhis();
+    bool EmitPhi(ir::Inst* inst);
+    void EmitPhiMoves(const std::vector<PhiMove>& moves);
+    bool EmitVectorHostRegisters(ir::Inst* inst);
     bool EmitVectorCrypto(ir::Inst* inst);
     bool EmitMemoryCopy(ir::Inst* inst);
     bool EmitVectorShuffle(ir::Inst* inst);
@@ -49,6 +54,8 @@ private:
     EmissionStats stats{};
     biscuit::Label epilogue;
     std::map<ir::Inst*, biscuit::Label> labels;
+    std::vector<PhiMove> entry_phis;
+    std::unordered_map<ir::Inst*, std::vector<PhiMove>> taken_phis, fallthrough_phis;
 };
 
 }  // namespace swift::runtime::backend::riscv64

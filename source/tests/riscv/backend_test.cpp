@@ -565,10 +565,16 @@ void AlignedMemoryAtomicity() {
 
 void RuntimeFaults() {
     auto config = TestConfig();
+    std::array<UniformMapDesc, 2> fault_bindings{{{64, 8, 3, false}, {80, 16, 19, true}}};
+    config.buffers_static_alloc = fault_bindings;
     backend::AddressSpace space{config};
     auto module = space.GetDefaultModule();
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x4800})};
     ir::Assembler as{block.get()};
+    auto pinned = as.LoadImm(ir::Imm{u64{0x71698345}}).SetType(ValueType::U64);
+    as.SetHostGPR(pinned, ir::Imm{u32{3}}, ir::Imm{u32{0}});
+    auto pinned_vector = as.VecLoadConst(ir::Imm{u64{0xabcdf731}}, ir::Imm{u64{0x8731496}}).SetType(ValueType::V128);
+    as.SetHostFPR(pinned_vector, ir::Imm{u32{19}}, ir::Imm{u32{0}});
     auto address = as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
     auto loaded = as.LoadMemory(ir::Operand{address}).SetType(ValueType::U64);
     as.StoreUniform(ir::Uniform{8, ValueType::U64}, loaded);
@@ -582,6 +588,15 @@ void RuntimeFaults() {
     std::memcpy(runtime.GetUniformBuffer().data(), &pointer, 8);
     runtime.SetLocation(0x4800);
     Check(runtime.Run() == HaltReason::PageFatal, "RV64 native fault unwinds block and dispatcher frames");
+    const auto check_pins = [&] {
+        u64 gpr{}, low{}, high{};
+        std::memcpy(&gpr, runtime.GetUniformBuffer().data() + 64, 8);
+        std::memcpy(&low, runtime.GetUniformBuffer().data() + 80, 8);
+        std::memcpy(&high, runtime.GetUniformBuffer().data() + 88, 8);
+        Check(gpr == 0x71698345 && low == 0xabcdf731 && high == 0x8731496,
+              "fault recovery retains the last published pinned GPR/FPR state");
+    };
+    check_pins();
     Check(runtime.GetState()->spill_area[backend::kRiscvRecoveryPcSlot] == 0,
           "fault recovery clears borrowed frame");
     runtime.SetLocation(0xdead);
@@ -632,6 +647,10 @@ void RuntimeFaults() {
     auto fault_pointer = clobber_as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
     auto flags_value = clobber_as.Zero().SetType(ValueType::U8);
     clobber_as.SaveFlags(flags_value, ir::Flags::All);
+    auto fault_pin = clobber_as.LoadImm(ir::Imm{u64{0x71698345}}).SetType(ValueType::U64);
+    clobber_as.SetHostGPR(fault_pin, ir::Imm{u32{3}}, ir::Imm{u32{0}});
+    auto fault_vector = clobber_as.VecLoadConst(ir::Imm{u64{0xabcdf731}}, ir::Imm{u64{0x8731496}}).SetType(ValueType::V128);
+    clobber_as.SetHostFPR(fault_vector, ir::Imm{u32{19}}, ir::Imm{u32{0}});
     auto fault_call = clobber_as.CallHost(&SwiftRiscvFaultHelper, fault_pointer).SetType(ValueType::U64);
     clobber_as.StoreUniform(ir::Uniform{8, ValueType::U64}, fault_call);
     clobber_block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -649,6 +668,7 @@ void RuntimeFaults() {
           "abandoned helper restores all integer and floating callee-saved registers");
     Check(runtime.GetState()->host_cpu_flags == (initial_flags | (u64{1} << 30)),
           "abandoned helper restores dirty cached guest flags");
+    check_pins();
     abi_runtime = nullptr;
     munmap(inaccessible, 4096);
 #endif
@@ -970,9 +990,15 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (argc == 2 && std::string{argv[1]} == "--rvv") {
+            NativeHostRegisters(true); NativePhi(true);
             NativeVectors(true); NativeVectorInteger(true); NativeVectorShuffle(true); NativeLocals(true); NativeVectorFloat(true); NativeCalls(true); NativeMemoryCopy(true); NativeCrypto(true);
             std::cout << "OK " << checks << " checks\n";
             return 0;
+        }
+        if (argc == 2 && (std::string{argv[1]} == "--structure" || std::string{argv[1]} == "--rvv-structure")) {
+            const bool vector = std::string{argv[1]} == "--rvv-structure";
+            NativeHostRegisters(vector); NativePhi(vector);
+            std::cout << "OK " << checks << " checks\n"; return 0;
         }
         if (argc == 2 && (std::string{argv[1]} == "--fp" || std::string{argv[1]} == "--rvv-fp")) {
             NativeVectorFloat(std::string{argv[1]} == "--rvv-fp");
@@ -992,6 +1018,7 @@ int main(int argc, char** argv) {
             NativeMemoryCopy(std::string{argv[1]} == "--rvv-memcopy", std::string{argv[1]} == "--zacas");
             std::cout << "OK " << checks << " checks\n"; return 0;
         }
+        NativeHostRegisters(); NativePhi();
         NativeScalarBits(); NativeScalarALU(); NativeFlags(); NativeVectors(); NativeVectorInteger(); NativeVectorShuffle(); NativeLocals(); NativeVectorFloat(); NativeCalls(); NativeMemoryCopy(); NativeCrypto();
         NativeAtomics();
         ScalarDifferential(); Conditions(); FlagPredicates(); MixedHelpers(); VectorSelections(); SemanticExceptions();

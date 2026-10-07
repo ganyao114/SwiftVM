@@ -15,7 +15,7 @@ target_link_libraries(swift_riscv_emit PRIVATE biscuit::biscuit)
 target_compile_features(swift_riscv_emit PRIVATE cxx_std_20)
 
 if(TARGET swift_runtime)
-    add_executable(swift_riscv_backend_test backend_test.cpp native_scalar_test.cpp native_flags_test.cpp native_atomic_test.cpp native_vector_test.cpp native_vector_shuffle_test.cpp native_local_test.cpp native_vector_float_test.cpp native_call_test.cpp native_memory_test.cpp native_crypto_test.cpp)
+    add_executable(swift_riscv_backend_test backend_test.cpp native_scalar_test.cpp native_flags_test.cpp native_atomic_test.cpp native_vector_test.cpp native_vector_shuffle_test.cpp native_local_test.cpp native_vector_float_test.cpp native_call_test.cpp native_memory_test.cpp native_crypto_test.cpp native_structure_test.cpp)
     target_link_libraries(swift_riscv_backend_test PRIVATE swift_translator)
     if("riscv" IN_LIST ARCHITECTURE OR "riscv64" IN_LIST ARCHITECTURE)
         target_sources(swift_riscv_backend_test PRIVATE check_abi.S)

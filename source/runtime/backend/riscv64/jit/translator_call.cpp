@@ -83,7 +83,7 @@ bool JitTranslator::EmitNativeCall(ir::Inst* inst) {
             as.LI(t0, reinterpret_cast<u64>(sign ? &DivideSigned128 : &DivideUnsigned128));
             context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
             as.MV(pair[0], a0); as.MV(pair[1], a1);
-            context.RestoreVectorsAfterCall(); as.J(&done);
+            context.ReloadFlags(); context.RestoreVectorsAfterCall(); as.J(&done);
             as.Bind(&zero); as.MV(pair[0], x0); as.MV(pair[1], x0); as.Bind(&done);
             context.ResetVectorType();
         }
