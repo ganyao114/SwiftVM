@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <map>
 #include <mutex>
 #include "runtime/backend/jit_cache.h"
@@ -94,6 +95,16 @@ public:
     [[nodiscard]] const Config &GetConfig() const;
     [[nodiscard]] bool ExitLatchEnabled() const;
 
+    // Offline compilation uses the same frontend and ABI, but its units must
+    // not branch to another allocation's process-local region trampolines.
+    // Select this before compiling any code; it does not change guest semantics.
+    void SetSerializableCodeEmission() {
+        serializable_code_emission.store(true, std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool SerializableCodeEmission() const {
+        return serializable_code_emission.load(std::memory_order_relaxed);
+    }
+
     [[nodiscard]] const ir::UniformInfo &GetUniformInfo();
     [[nodiscard]] const ir::UniformInfo &GetUniformInfo() const;
 
@@ -101,6 +112,7 @@ private:
     void Init();
 
     const Config config;
+    std::atomic<bool> serializable_code_emission{false};
     std::shared_mutex lock;
     RangeMap<LocationDescriptor, std::shared_ptr<Module>> modules{};
     std::shared_ptr<Module> default_module;

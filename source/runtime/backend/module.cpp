@@ -246,6 +246,7 @@ void* Module::GetJitCache(const JitCache& jit_cache) {
 
 bool Module::IsDirectLinkConfigured() const {
     return address_space.GetConfig().backend_isa == kArm64 &&
+           !address_space.SerializableCodeEmission() &&
            module_config.HasOpt(Optimizations::BlockLink);
 }
 
@@ -447,6 +448,43 @@ bool Module::LookupFault(const u8* host_pc, FaultEntry& out) {
     }
     out = *best;
     return true;
+}
+
+bool Module::LookupCodeAllocation(const u8* host_pc, FaultEntry& out,
+                                  std::vector<FaultEntry>* fault_entries) {
+    std::shared_lock guard(cache_lock);
+    auto entry = std::upper_bound(fault_table.begin(), fault_table.end(), host_pc,
+                                 [](const u8* pc, const FaultEntry& item) {
+                                     return pc < item.host_start;
+                                 });
+    while (entry != fault_table.begin()) {
+        --entry;
+        if (!entry->Contains(host_pc)) continue;
+        const auto* owner = entry->owner_start;
+        auto first = std::lower_bound(fault_table.begin(), fault_table.end(), owner,
+                                      [](const FaultEntry& item, const u8* pc) {
+                                          return item.host_start < pc;
+                                      });
+        const FaultEntry* allocation = nullptr;
+        for (; first != fault_table.end() && first->host_start == owner; ++first) {
+            if (first->owner_start == owner && first->Contains(host_pc) &&
+                (!allocation || first->host_end > allocation->host_end))
+                allocation = &*first;
+        }
+        if (!allocation) return false;
+        out = *allocation;
+        if (fault_entries) {
+            fault_entries->clear();
+            auto site = std::lower_bound(fault_table.begin(), fault_table.end(), owner,
+                                         [](const FaultEntry& item, const u8* pc) {
+                                             return item.host_start < pc;
+                                         });
+            for (; site != fault_table.end() && site->host_start < out.host_end; ++site)
+                if (site->owner_start == owner) fault_entries->push_back(*site);
+        }
+        return true;
+    }
+    return false;
 }
 
 void Module::RemoveFaultEntries(const u8* host_start) {

@@ -30,8 +30,8 @@
 //     pool (it is movz/movn/movk/orr-immediate only -- see
 //     MoveImmediateHelper / OneInstrMoveImmediateHelper), and the backend
 //     emits no other literal. ScanCodeUnit *rejects* any unit that contains a
-//     literal load, an adr/adrp, or an out-of-unit pc-relative branch other
-//     than a caller-declared direct-link BL site. Those declared words are
+//     literal load, an adrp, an out-of-unit adr, or an out-of-unit branch
+//     other than a caller-declared direct-link BL site. Those declared words are
 //     generated from center-table metadata, not inferred from arbitrary code.
 //   * A computed constant that lands inside the SwiftVM host image but is
 //     not consumed by a modelled use (an indirect branch target or a
@@ -300,8 +300,8 @@ struct ValidityKey {
     bool operator==(const ValidityKey&) const = default;
 };
 
-// Reject code emitted before low32 recoloring covered the parent's lifetime.
-constexpr u64 kCacheFormatVersion = 22;
+// 23: the scanner accepts ADR only when its target stays inside the unit.
+constexpr u64 kCacheFormatVersion = 23;
 
 u64 HashBytes(const void* data, std::size_t size, u64 seed);
 u64 HashU64(u64 value, u64 seed);

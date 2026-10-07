@@ -21,6 +21,8 @@ Mutations:
                          Must be REJECTED.
   info-byte              flip a bit in the .svmaot.info payload, leave the
                          payload checksum alone. Must be REJECTED.
+  fault-recovery         put a recovery PC outside its unit and re-stamp the
+                         payload checksum. Must be REJECTED by range validation.
   move-data [index]      shift guest segment `index` by one page and re-stamp the
                          guest image hash, so the artifact loads with its data
                          at the wrong guest addresses. Proves the "guest data
@@ -113,6 +115,7 @@ class Artifact:
         r = Reader(blob)
         r.skip(8)
         self.fmt_version = r.u64()
+        assert self.fmt_version in (2, 3), "unsupported artifact format version"
         self.off_key = base + r.p
         self.key = [r.u64() for _ in range(5)]  # format, build, config, env, guest
         self.off_payload_size = base + r.p
@@ -169,6 +172,15 @@ class Artifact:
                 rel["addend"] = r2.u64()
                 rel["recorded"] = r2.u64()
                 u["relocs"].append(rel)
+            u["fault_sites"] = []
+            if self.fmt_version >= 3:
+                nf = r2.u32()
+                for _ in range(nf):
+                    site = dict(guest_start=r2.u64(), host_begin=r2.u32(),
+                                host_end=r2.u32(), recovery_at=at())
+                    site["recovery_offset"] = r2.u32()
+                    site["recovery_kind"] = r2.u8()
+                    u["fault_sites"].append(site)
             self.units.append(u)
         assert base + r2.p == base + len(blob), "payload did not consume the section"
 
@@ -240,6 +252,16 @@ def main():
     elif mutation == "info-byte":
         a.raw[a.payload_start + 1] ^= 0x01
         print("flipped a bit of the .svmaot.info payload (checksum left stale)")
+
+    elif mutation == "fault-recovery":
+        unit = next((u for u in a.units if u["fault_sites"]), None)
+        if unit is None:
+            print("artifact has no fault recovery metadata")
+            return 1
+        site = unit["fault_sites"][0]
+        struct.pack_into("<I", a.raw, site["recovery_at"], unit["code_size"])
+        a.restamp_payload()
+        print("put a recovery PC at the end of its unit (payload hash re-stamped)")
 
     elif mutation == "move-data":
         # A *middle* segment by default: moving the last one changes the image

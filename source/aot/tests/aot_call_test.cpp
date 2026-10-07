@@ -35,6 +35,7 @@
 #include "aot/aot_call.h"
 #include "aot/aot_compile.h"
 #include "guest_call.h"
+#include "runtime/backend/address_space.h"
 
 using namespace swift::guest_call;
 namespace aot = swift::aot;
@@ -258,6 +259,46 @@ TEST_CASE("aot call: the artifact installs and its symbol index is populated") {
     CHECK(p.env->artifact().units.size() == p.installed);
 }
 
+TEST_CASE("aot call: precise fault recovery rebases into installed allocations") {
+    auto& p = Aot();
+    REQUIRE(p.env != nullptr);
+    std::size_t checked{};
+    for (const auto& unit : p.env->artifact().units) {
+        auto* base = static_cast<swift::u8*>(aot::ResolveCodeOffset(unit.code_offset));
+        REQUIRE(base != nullptr);
+        auto module = p.env->AddressSpace()->GetModule(unit.guest_start);
+        for (const auto& site : unit.fault_sites) {
+            if (site.recovery_offset == UINT32_MAX || site.host_end - site.host_begin != 4)
+                continue;
+            swift::runtime::backend::FaultEntry entry{};
+            REQUIRE(module->LookupFault(base + site.host_begin, entry));
+            CHECK(entry.owner_start == base);
+            CHECK(entry.recovery == base + site.recovery_offset);
+            CHECK(entry.guest_loc == site.guest_start);
+            CHECK(static_cast<swift::u8>(entry.recovery_kind) == site.recovery_kind);
+            ++checked;
+        }
+    }
+    REQUIRE(checked > 0);
+
+    // Bad recovery metadata must fail before dispatch slots or live code are
+    // touched, even when the input came from an in-memory artifact.
+    auto bad = p.env->artifact();
+    REQUIRE_FALSE(bad.units.empty());
+    REQUIRE_FALSE(bad.units.front().fault_sites.empty());
+    bad.units.front().fault_sites.front().recovery_offset = bad.units.front().code_size;
+    const auto& config = p.env->AddressSpace()->GetConfig();
+    aot::LoadReport report{};
+    std::string error;
+    CHECK(aot::InstallArtifact(*p.env->AddressSpace(), bad, config.memory_base,
+                               config.guest_addr_mask, report, error) == aot::kAotBadFormat);
+    CHECK(report.units_installed == 0);
+    CHECK(error.find("fault metadata") != std::string::npos);
+    bool mismatch = false;
+    CHECK(p.env->EntryOf("strlen", mismatch) == p.strlen_entry);
+    CHECK_FALSE(mismatch);
+}
+
 TEST_CASE("aot call: SymbolIndex::Lookup resolves to installed artifact code") {
     auto& p = Aot();
     REQUIRE(p.env != nullptr);
@@ -427,4 +468,45 @@ TEST_CASE("aot call: the answers are also right, not merely equal") {
         CHECK(a.scalar.at("fib:12") == 144);
         CHECK(a.scalar.at("fib:20") == 6765);
     }
+}
+
+TEST_CASE("aot format: fault ranges round trip and invalid recovery data is rejected") {
+    aot::AotImage image{};
+    image.code.resize(24);
+    image.stub_offset = 16;
+    aot::AotUnit unit{};
+    unit.guest_start = 0x1000;
+    unit.code_size = 16;
+    unit.blocks.push_back({0x1000, 0x1004, 0, 0x1234});
+    unit.fault_sites = {{0x1000, 0, 16, UINT32_MAX, 0}, {0x1000, 4, 8, 12, 1}};
+    image.units.push_back(unit);
+    const auto decode = [&](const aot::AotImage& input, aot::AotImage& output) {
+        const auto blob = aot::EncodeInfoBlob(input);
+        std::string error;
+        return aot::DecodeInfoBlob(blob.data(), blob.size(), output, error);
+    };
+    aot::AotImage output{};
+    REQUIRE(decode(image, output));
+    REQUIRE(output.units.size() == 1);
+    REQUIRE(output.units.front().fault_sites.size() == 2);
+    const auto& site = output.units.front().fault_sites.back();
+    CHECK(site.guest_start == 0x1000);
+    CHECK(site.host_begin == 4);
+    CHECK(site.host_end == 8);
+    CHECK(site.recovery_offset == 12);
+    CHECK(site.recovery_kind == 1);
+    for (const auto invalid : {
+            aot::SerialFaultSite{0x1000, 4, 8, 16, 1},
+            aot::SerialFaultSite{0x1000, 4, 20, 12, 1},
+            aot::SerialFaultSite{0x1000, 8, 4, 12, 1},
+            aot::SerialFaultSite{0x1000, 4, 8, 13, 1},
+            aot::SerialFaultSite{0x1000, 4, 8, 12, 3},
+    }) {
+        image.units.front().fault_sites.back() = invalid;
+        output = {};
+        CHECK_FALSE(decode(image, output));
+    }
+    image.units.front().fault_sites.clear();
+    output = {};
+    CHECK_FALSE(decode(image, output));
 }

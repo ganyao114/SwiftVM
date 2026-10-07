@@ -9,8 +9,24 @@
 #include <map>
 #include <elfio/elfio.hpp>
 #include "fmt/format.h"
+#include "runtime/backend/module.h"
 
 namespace swift::aot {
+
+bool AotUnit::ValidFaultSites() const {
+    const bool has_owner = std::any_of(fault_sites.begin(), fault_sites.end(), [&](const auto& site) {
+        return site.host_begin == 0 && site.host_end == code_size &&
+               site.guest_start == guest_start;
+    });
+    return has_owner && std::all_of(fault_sites.begin(), fault_sites.end(), [&](const auto& site) {
+        return (site.host_begin & 3u) == 0 && (site.host_end & 3u) == 0 &&
+               site.host_begin < site.host_end && site.host_end <= code_size &&
+               (site.recovery_offset == UINT32_MAX ||
+                ((site.recovery_offset & 3u) == 0 && site.recovery_offset < code_size)) &&
+               site.recovery_kind <= static_cast<u8>(
+                       runtime::backend::FaultRecoveryKind::ExternalContinuation);
+    });
+}
 
 namespace {
 
@@ -42,6 +58,14 @@ void WriteUnitRecord(BlobWriter& w, const AotUnit& u) {
         w.U16(static_cast<u16>(r.use));
         w.U64(r.addend);
         w.U64(r.recorded_value);
+    }
+    w.U32(static_cast<u32>(u.fault_sites.size()));
+    for (const auto& site : u.fault_sites) {
+        w.U64(site.guest_start);
+        w.U32(site.host_begin);
+        w.U32(site.host_end);
+        w.U32(site.recovery_offset);
+        w.U8(site.recovery_kind);
     }
 }
 
@@ -81,7 +105,14 @@ bool ReadUnitRecord(BlobReader& r, AotUnit& u) {
         rel.kind = static_cast<swift::runtime::backend::RelocKind>(kind);
         rel.use = static_cast<swift::runtime::backend::RelocUse>(use);
     }
-    return true;
+    if (!r.U32(count) || count > r.Remaining() / 21) return false;
+    u.fault_sites.resize(count);
+    for (auto& site : u.fault_sites) {
+        if (!r.U64(site.guest_start) || !r.U32(site.host_begin) ||
+            !r.U32(site.host_end) || !r.U32(site.recovery_offset) ||
+            !r.U8(site.recovery_kind)) return false;
+    }
+    return u.ValidFaultSites();
 }
 
 }  // namespace
@@ -255,7 +286,7 @@ bool DecodeInfoBlob(const u8* data, std::size_t size, AotImage& out, std::string
     out.units.resize(static_cast<std::size_t>(unit_count));
     for (auto& u : out.units) {
         if (!ReadUnitRecord(r, u)) {
-            return fail("truncated unit record");
+            return fail("invalid or truncated unit record");
         }
         if (static_cast<u64>(u.code_offset) + u.code_size > code_size) {
             return fail("unit code range outside .svmaot.text");

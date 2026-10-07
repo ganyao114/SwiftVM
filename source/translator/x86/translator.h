@@ -72,6 +72,11 @@ public:
     // 0 = follow SVM_FUNC_LAZY (the default).
     void SetFunctionDecodeBudget(std::size_t blocks);
 
+    // Select portable unit emission before an offline compile. Region-only
+    // direct/return/flags trampolines are replaced by inline or L2 forms;
+    // Config and the guest ABI stay identical to the runtime instance.
+    void SetSerializableCodeEmission();
+
     // Every location Impl::Translate compiles is reported to `fn` *before* the
     // compile. Used by `svm_aot run --dump-compiles` to census what the JIT
     // still has to do at run time when an artifact is installed; null clears.

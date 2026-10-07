@@ -181,6 +181,11 @@ public:
     // the host signal handler; takes the cache lock shared.
     [[nodiscard]] bool LookupFault(const u8* host_pc, FaultEntry& out);
 
+    // Serialization needs the complete allocation, not the smaller recovery
+    // range LookupFault prefers. Resolve an interior entry to its owner range.
+    [[nodiscard]] bool LookupCodeAllocation(const u8* host_pc, FaultEntry& out,
+                                            std::vector<FaultEntry>* fault_entries = nullptr);
+
     // SMC invalidation is split in two for MT safety. DetachNode resets the
     // JitCache and removes the address-map node, but deliberately keeps the
     // executable allocation and its fault-table entry alive. SmcTracker

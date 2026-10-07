@@ -865,6 +865,7 @@ void RecordJitCacheUnit(const std::shared_ptr<backend::Module>& module,
                         const backend::arm64::JitContext& context,
                         std::span<const backend::arm64::JitTranslator* const>
                                 translators) {
+    if (module->GetAddressSpace().SerializableCodeEmission()) return;
     auto* cache = module->GetAddressSpace().GetJitDiskCache();
     if (!cache) {
         return;

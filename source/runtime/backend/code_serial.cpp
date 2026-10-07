@@ -260,9 +260,22 @@ ScanResult ScanCodeUnit(std::span<const u8> code,
         const u32 insn = ReadInst(code, offset);
 
         // ---- reject classes we cannot serialize ---------------------------
-        if (IsAdr(insn) || IsAdrp(insn)) {
+        if (IsAdrp(insn)) {
             result.reject_reason = "unit contains adr/adrp";
             return result;
+        }
+        if (IsAdr(insn)) {
+            const u32 encoded = ((insn >> 5) & 0x7FFFFu) << 2 | ((insn >> 29) & 3u);
+            const s64 displacement = (static_cast<s64>(encoded) ^ (s64{1} << 20)) - (s64{1} << 20);
+            const s64 target = static_cast<s64>(offset) + displacement;
+            if (target < 0 || target >= static_cast<s64>(code.size())) {
+                result.reject_reason = "adr target leaves the unit";
+                return result;
+            }
+            // A local address retains its meaning when the whole unit moves.
+            // It also overwrites any pending absolute constant in this register.
+            invalidate(insn & 0x1Fu);
+            continue;
         }
         if (IsLiteralLoad(insn)) {
             result.reject_reason = "unit contains a literal-pool load";

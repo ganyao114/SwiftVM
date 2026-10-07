@@ -1224,6 +1224,11 @@ void X86Instance::SetFunctionDecodeBudget(std::size_t blocks) {
     impl->decode_budget_override = blocks;
 }
 
+void X86Instance::SetSerializableCodeEmission() {
+    std::lock_guard guard(impl->translate_mutex);
+    impl->address_space->SetSerializableCodeEmission();
+}
+
 void X86Instance::SetCompileObserver(void (*fn)(void*, uint64_t), void* ctx) {
     std::lock_guard guard(impl->translate_mutex);
     impl->compile_observer = fn;

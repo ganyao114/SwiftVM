@@ -196,7 +196,7 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         translator::x86::X86Instance::Destroy(instance);
         return false;
     }
-    address_space->LoadJitCache();
+    instance->SetSerializableCodeEmission();
     const auto& config = address_space->GetConfig();
     const auto& host_image = backend::GetHostImage();
     if (host_image.size == 0) {
@@ -283,15 +283,12 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         }
 
         auto module = address_space->GetModule(c.addr);
-        // The unit's extent comes from the JIT fault table, which
-        // TranslateIR fills for *both* function and block units
-        // (Module::AddFaultEntry). JitCache::cache_size would have worked for
-        // functions only -- the block path never writes it -- and guessing a
-        // length for a block unit is exactly the kind of silent error this
-        // pipeline must not make.
+        // Resolve the complete allocation for both function and block units.
+        // LookupFault intentionally prefers precise recovery subranges; using
+        // one as a serialization extent would truncate branches and veneers.
         backend::FaultEntry fault{};
-        if (!module->LookupFault(static_cast<const u8*>(entry), fault) ||
-            fault.host_start != static_cast<const u8*>(entry)) {
+        std::vector<backend::FaultEntry> fault_entries;
+        if (!module->LookupCodeAllocation(static_cast<const u8*>(entry), fault, &fault_entries)) {
             stats.fail_block_mode++;
             return false;
         }
@@ -313,9 +310,27 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         }
 
         AotUnit unit{};
-        unit.guest_start = c.addr;
+        unit.guest_start = fault.guest_loc;
         unit.code_size = code_size;
         unit.relocs = std::move(scan.relocs);
+        for (const auto& site : fault_entries) {
+            if (site.host_start < code || site.host_end > code + code_size ||
+                (site.recovery && (site.recovery < code || site.recovery >= code + code_size))) {
+                stats.fail_block_mode++;
+                return false;
+            }
+            unit.fault_sites.push_back({
+                    site.guest_loc,
+                    static_cast<u32>(site.host_start - code),
+                    static_cast<u32>(site.host_end - code),
+                    site.recovery ? static_cast<u32>(site.recovery - code) : UINT32_MAX,
+                    static_cast<u8>(site.recovery_kind),
+            });
+        }
+        if (!unit.ValidFaultSites()) {
+            stats.fail_block_mode++;
+            return false;
+        }
 
         // Collect the unit's guest blocks. A function unit owns every block
         // the whole-function decode published inside its buffer; a block-mode
@@ -378,9 +393,10 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         });
 
         claimed.emplace_back(code, code + code_size);
-        unit_bytes_index[c.addr] = unit_bytes.size();
+        const auto unit_start = unit.guest_start;
+        unit_bytes_index[unit_start] = unit_bytes.size();
         unit_bytes.emplace_back(code, code + code_size);
-        units.emplace(c.addr, std::move(unit));
+        units.emplace(unit_start, std::move(unit));
         return true;
     };
 

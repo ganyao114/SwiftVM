@@ -114,8 +114,8 @@ enum SwiftAotStatus : int {
 };
 
 inline constexpr char kAotMagic[8] = {'S', 'V', 'M', 'A', 'O', 'T', '\0', '\1'};
-// 2: the info blob carries the successor-sweep census (AotStats::sweep_*).
-inline constexpr std::uint64_t kAotFormatVersion = 2;
+// 3: units carry precise fault ranges and allocation-relative recovery PCs.
+inline constexpr std::uint64_t kAotFormatVersion = 3;
 
 inline constexpr const char* kAotCodeSectionName = ".svmaot.text";
 inline constexpr const char* kAotInfoSectionName = ".svmaot.info";

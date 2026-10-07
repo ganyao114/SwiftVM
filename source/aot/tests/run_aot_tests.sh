@@ -219,8 +219,8 @@ expect_reject "guest ELF on disk changed" "does not match" \
 # raw environment direct fallback.
 expect_reject "SVM_STATIC_REGS=0 at run time" "Config differs" \
     env SVM_STATIC_REGS=0 "$AOT" run --aot "$BASE"
-expect_reject "SVM_TSO_MODE=acqrel at run time" "Config differs" \
-    env SVM_TSO_MODE=acqrel "$AOT" run --aot "$BASE"
+expect_reject "SVM_TSO_MODE=relaxed at run time" "Config differs" \
+    env SVM_TSO_MODE=relaxed "$AOT" run --aot "$BASE"
 expect_reject "unknown SVM key at run time (env hash only)" "environment differs" \
     env SVM_RETIRED_CONFIG_CHECK=1 "$AOT" run --aot "$BASE"
 
@@ -229,6 +229,9 @@ mutate "$BASE" "$WORK/m_info.aot" info-byte
 expect_reject "corrupt .svmaot.info" "checksum" "$AOT" run --aot "$WORK/m_info.aot"
 mutate "$BASE" "$WORK/m_codeb.aot" code-byte-nostamp
 expect_reject "corrupt .svmaot.text" "recorded hash" "$AOT" run --aot "$WORK/m_codeb.aot"
+mutate "$BASE" "$WORK/m_recovery.aot" fault-recovery
+expect_reject "recovery PC outside its code unit (checksum valid)" "unit record" \
+    "$AOT" run --aot "$WORK/m_recovery.aot"
 
 # (d) a different SwiftVM build
 python3 - "$BASE" "$WORK/m_build.aot" <<'PY'

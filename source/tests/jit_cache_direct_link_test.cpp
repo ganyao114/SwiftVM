@@ -424,6 +424,60 @@ TEST_CASE("disk cache scanner keeps move-wide constants and rejects PC-relative 
     }
 }
 
+TEST_CASE("serializer accepts unit-local ADR targets and rejects escaping addresses",
+          "[jit-cache][serializer]") {
+    const HostImageInfo image{.base = 0x100000000ull, .size = 0x100000};
+    const auto adr = [](s32 displacement) {
+        const u32 immediate = static_cast<u32>(displacement) & 0x1FFFFFu;
+        return 0x10000000u | ((immediate & 3u) << 29) |
+               ((immediate >> 2) << 5) | 17u;
+    };
+    std::array<u32, 3> words{adr(8), 0xd503201fu, adr(-8)};
+    const auto code = std::span<const u8>{reinterpret_cast<const u8*>(words.data()),
+                                         sizeof(words)};
+    REQUIRE(ScanCodeUnit(code, image, 0x100000).ok);
+    for (const s32 displacement : {-4, 12, -0x100000, 0xFFFFF}) {
+        words[0] = adr(displacement);
+        const auto scan = ScanCodeUnit(code, image, 0x100000);
+        REQUIRE_FALSE(scan.ok);
+        REQUIRE(scan.reject_reason == "adr target leaves the unit");
+    }
+}
+
+TEST_CASE("serialization resolves a complete allocation despite precise fault ranges",
+          "[serializer]") {
+    Config config{.loc_start = 0, .loc_end = 0x10000, .backend_isa = kArm64};
+    AddressSpace space{config};
+    auto module = space.GetDefaultModule();
+    std::array<u8, 192> code{};
+    auto* base = code.data();
+    module->AddFaultEntry(base, base + 64, 0x1000, base);
+    module->AddFaultEntry(base, base + 16, 0x1000, base, base + 56);
+    module->AddFaultEntry(base + 16, base + 48, 0x1010, base, base + 56);
+    module->AddFaultEntry(base + 128, base + 192, 0x2000, base + 128);
+    FaultEntry entry{};
+    REQUIRE(module->LookupFault(base, entry));
+    REQUIRE(entry.host_end == base + 16);
+    for (const size_t offset : {0u, 16u, 47u, 63u}) {
+        REQUIRE(module->LookupCodeAllocation(base + offset, entry));
+        REQUIRE(entry.host_start == base);
+        REQUIRE(entry.host_end == base + 64);
+        REQUIRE(entry.guest_loc == 0x1000);
+    }
+    std::vector<FaultEntry> sites;
+    REQUIRE(module->LookupCodeAllocation(base + 32, entry, &sites));
+    REQUIRE(sites.size() == 3);
+    REQUIRE(std::all_of(sites.begin(), sites.end(), [base](const auto& site) {
+        return site.owner_start == base;
+    }));
+    REQUIRE_FALSE(module->LookupCodeAllocation(base + 64, entry));
+    REQUIRE(module->LookupCodeAllocation(base + 160, entry));
+    REQUIRE(entry.host_start == base + 128);
+    REQUIRE(entry.host_end == base + 192);
+    module->RemoveFaultEntries(base);
+    REQUIRE_FALSE(module->LookupCodeAllocation(base, entry));
+}
+
 TEST_CASE("disk cache v20 serializes link and fault-site records",
           "[direct-link][jit-cache][serializer]") {
     SerialUnit input{};

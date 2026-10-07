@@ -306,3 +306,36 @@ RWX `PT_LOAD`），在 `run_aot_tests.sh` 里断言 AOT 输出与 JIT 逐字节�
 
 本机没有 `readelf` / `llvm-readelf`，上表是用 Python 直接解析 ELF 结构得到的；
 验证脚本不要依赖这两个工具存在。
+
+## 10. 当前 ARM64 发码的可搬运单元（2026-10-07）
+
+AOT 仍使用 x86 前端的普通解码、IR 优化和 ARM64 发码路径。
+离线实例在第一次编译前调用 `SetSerializableCodeEmission()`：单元内部的控制流照常优化，
+跨单元转移使用 L2 slot 或返回 dispatcher，flags merge 和返回路径保留在单元内。
+这避免把只属于编译进程的 region trampoline 分支写进产物；无需设置环境变量，
+运行时 Config、guest ABI 和普通 JIT 的发码选择保持原有契约。
+当前 AOT 不序列化 direct-link site，也不声称保留普通 JIT 的直接链接性能。
+离线实例不加载或记录普通 JIT disk cache，避免把两种发码的 entry contract 混用。
+
+收集器用 `Module::LookupCodeAllocation` 查找完整 allocation。
+信号处理仍使用 `LookupFault` 选择更精确的恢复范围；二者用途不同。
+旧收集器取精确范围的末端作为单元长度，会截断函数内部的分支目标和恢复 veneer。
+扫描器现在允许目标仍在单元内的 ADR，因为相对位移在整体搬运后保持有效；
+越界 ADR、ADRP、literal pool 和未声明的越界分支仍拒绝。
+此扫描器契约使用 cache validity version 23。
+
+产物格式 version 3 新增每个单元的精确 fault range、guest PC、恢复地址偏移和恢复类型。
+完整 allocation 的 owner 范围也必须存在。加载前验证所有范围与恢复地址，
+安装时按新 allocation 重建 host 地址，保留内部 poll 和 helper 故障的恢复语义。
+version 2 产物会被明确拒绝，需要重新编译。
+
+验证入口是原生 `swift_aot_call_test`、`swift_test` 的 `[serializer]` 用例，
+以及 [AOT 端到端脚本](../source/aot/tests/run_aot_tests.sh)。脚本还检查真实 guest 的
+输出、覆盖率、独立 ELF 解析、损坏产物拒绝和 SMC 重翻译。
+
+本次原生回归通过 462 个用例、1,126,837 个断言，AOT 调用测试通过 8 个用例、
+22,473 个断言，端到端脚本通过 36 项检查。`func_tests_x86_64` 默认安装 1,018 个单元，
+eager+sweep 产物包含 2,329 个单元，将运行时翻译次数从 257 降到 65；
+`real_busy_x86_64` 的对应次数从 275 降到 74。所有对应 stdout 和退出码与 JIT 一致。
+这记录的是功能与翻译覆盖率，尚未测量 AOT 相对当前直接链接 JIT 的运行性能。
+日志为 `/tmp/swiftvm-aot-e2e-final-20261007.log`，产物位于 `/tmp/swiftvm-aot-e2e-20261007/`。

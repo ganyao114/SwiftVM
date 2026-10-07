@@ -126,6 +126,10 @@ int InstallArtifact(backend::AddressSpace& address_space,
             error = fmt::format("unit {:#x} code range is out of bounds", unit.guest_start);
             return kAotBadFormat;
         }
+        if (!unit.ValidFaultSites()) {
+            error = fmt::format("unit {:#x} has invalid fault metadata", unit.guest_start);
+            return kAotBadFormat;
+        }
         for (const auto& block : unit.blocks) {
             u64 hash{};
             if (!HashGuestRange(guest_memory_base, guest_addr_mask, block.guest_start,
@@ -224,7 +228,16 @@ int InstallArtifact(backend::AddressSpace& address_space,
             error = fmt::format("another node already owns {:#x}", unit.guest_start);
             return kAotBadFormat;
         }
-        module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, unit.guest_start);
+        for (const auto& site : unit.fault_sites) {
+            module->AddFaultEntry(
+                    buffer.exec_data + site.host_begin,
+                    buffer.exec_data + site.host_end,
+                    site.guest_start,
+                    buffer.exec_data,
+                    site.recovery_offset == UINT32_MAX
+                            ? nullptr : buffer.exec_data + site.recovery_offset,
+                    static_cast<backend::FaultRecoveryKind>(site.recovery_kind));
+        }
 
         for (const auto& block : unit.blocks) {
             address_space.PushCodeCache(ir::Location{block.guest_start},

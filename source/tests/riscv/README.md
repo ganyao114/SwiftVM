@@ -132,13 +132,25 @@ Ubuntu 使用 Clang 16.0.6、QEMU 8.0.4，CPU 为文中默认基线配置。
 原生 macOS ARM64 `swift_test` 通过 460 个用例、1,126,818 个断言。
 原生 guest-call CTest 也通过。
 
-额外执行的原生 `swift_aot_call_test` 有 4/6 用例失败：安装仅包含 6 个代码单元，
+初次额外执行的原生 `swift_aot_call_test` 有 4/6 用例失败：安装仅包含 6 个代码单元，
 扫描器拒绝当前 ARM64 发码中的 ADR/ADRP 和离开单元的 PC-relative branch。
 回退本次 `TestFlags` 返回类型修改、重新构建后，仍然得到同样的四项失败；恢复修改后再重新构建。
-关闭 `SVM_REGION_EDGES` 的诊断运行同样失败。此项 ARM64 序列化兼容缺口仍待单独修复，
-不能计作通过的回归。相关日志是
+关闭 `SVM_REGION_EDGES` 的诊断运行同样失败。初期诊断日志是
 `/tmp/swiftvm-rv64-aot-constructor-control-test-20261007.log` 和
 `/tmp/swiftvm-rv64-review-aot-diagnostics-20261006.log`。
+
+2026-10-07 后续已修复此兼容缺口：离线发码不依赖共享 region trampoline，
+收集器取完整 allocation，并随产物携带精确 fault/recovery 元数据。
+扫描器允许单元内部 ADR，格式更新为 AOT version 3 / cache validity version 23。
+原生回归通过 462 个用例、1,126,837 个断言；AOT 的 8 个用例、22,473 个断言全部通过，
+guest-call 的 43 个用例也通过。AOT 端到端脚本 36 项检查全部通过，包含真实 guest、
+损坏恢复地址拒绝、独立 ELF 解析和 SMC。实现说明见 [AOT 设计](../../../docs/aot-design.md)。
+日志为 `/tmp/swiftvm-aot-native-full-20261007.log`、
+`/tmp/swiftvm-aot-final-ctest-20261007.log` 和 `/tmp/swiftvm-aot-e2e-final-20261007.log`。
+此修复后 RV64 三项执行测试再次通过（72,545 / 72,545 / 23），
+RV64 AOT 入口仍以预期消息返回 1；此变更仅恢复 ARM64 AOT 支持。
+复验日志为 `/tmp/swiftvm-aot-rv64-ctest-20261007.log`，
+拒绝记录位于 Ubuntu 的 `/tmp/swiftvm-aot-rv64-rejection-20261007.log`。
 
 构建/测试日志采用本次任务开始日期作为文件前缀：
 `/tmp/swiftvm-riscv-backend-native-final-build-20261006.log`、
