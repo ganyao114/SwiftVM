@@ -15,7 +15,6 @@ using O = ir::OpCode;
 
 namespace {
 
-constexpr std::array extra_gprs{s3, s4, s5, s6, s7, biscuit::s8, s9, s10, s11};
 constexpr std::array saved_fprs{fs0, fs1, fs2, fs3, fs4, fs5, fs6, fs7, fs8, fs9, fs10, fs11};
 
 u64 MemoryAddress(State* state, u64 guest, u64 size);
@@ -83,6 +82,7 @@ u32 Bits(ir::ValueType type) {
 
 void JitTranslator::Translate(ir::Block* input) {
     block = input;
+    context.DiscardValues();
     context.EnsureSpace();
     // Helpers refer to this IR for the lifetime of its code allocation.
     // Reject ARM64 register-rewritten IR instead of silently yielding zero.
@@ -109,7 +109,7 @@ void JitTranslator::Translate(ir::Block* input) {
     as.SD(frame, 8, sp);
     as.SD(state, 16, sp);
     as.SD(values, 24, sp);
-    for (size_t i = 0; i < extra_gprs.size(); ++i) as.SD(extra_gprs[i], 32 + i * 8, sp);
+    for (size_t i = 0; i < scalar_registers.size(); ++i) as.SD(scalar_registers[i], 32 + i * 8, sp);
     for (size_t i = 0; i < saved_fprs.size(); ++i) as.FSD(saved_fprs[i], 104 + i * 8, sp);
     as.MV(frame, sp);
     as.MV(state, a0);
@@ -134,12 +134,14 @@ void JitTranslator::Translate(ir::Block* input) {
         context.EnsureSpace();
         if (inst.GetOp() == O::BindLabel) {
             auto& label = labels.at(inst.GetArg<ir::Value>(0).Def());
+            context.FlushValues();
             as.Bind(&label);
             Poll();
         } else if (inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto) {
             auto target = labels.find(&inst);
             if (target == labels.end()) throw std::runtime_error("RV64 goto has no bound target");
             context.Read(t0, inst.GetArg<ir::Value>(0));
+            context.FlushValues();
             context.BranchZero(t0, target->second, inst.GetOp() == O::NotGoto);
         } else if (EmitScalar(&inst)) {
             ++stats.direct;
@@ -160,7 +162,7 @@ void JitTranslator::Translate(ir::Block* input) {
     as.LD(frame, 8, sp);
     as.LD(state, 16, sp);
     as.LD(values, 24, sp);
-    for (size_t i = 0; i < extra_gprs.size(); ++i) as.LD(extra_gprs[i], 32 + i * 8, sp);
+    for (size_t i = 0; i < scalar_registers.size(); ++i) as.LD(scalar_registers[i], 32 + i * 8, sp);
     for (size_t i = 0; i < saved_fprs.size(); ++i) as.FLD(saved_fprs[i], 104 + i * 8, sp);
     as.ADDI(sp, sp, kBlockSavedFrameSize);
     as.RET();
@@ -193,6 +195,8 @@ void JitTranslator::Return(HaltReason reason) {
 }
 
 void JitTranslator::EmitHelper(ir::Inst* inst) {
+    // Helpers read canonical homes and can write pair-result pseudo homes.
+    context.FlushValues();
     auto& as = context.GetMasm();
     const bool ordered = inst->GetOp() == O::LoadMemoryTSO ||
             inst->GetOp() == O::StoreMemoryTSO || inst->GetOp() == O::MemoryCopyTSO;
@@ -215,158 +219,159 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
     auto& as = context.GetMasm();
     const auto op = inst->GetOp();
     if (ir::IsFloatValueType(inst->ReturnType())) return false;
+    const auto result = context.ResultRegister(inst);
     switch (op) {
         case O::Nop: case O::AdvancePC: case O::UniformBarrier:
         case O::XchgBarrier: case O::BranchOnlyEdges:
         case O::PushRSB: case O::PopRSB: case O::CallReturn:
             return true;
-        case O::LoadImm: as.LI(t0, inst->GetArg<ir::Imm>(0).Get()); break;
-        case O::Zero: as.MV(t0, x0); break;
-        case O::GetLocation: context.Load(t0, state, state_offset_current_loc); break;
+        case O::LoadImm: as.LI(result, inst->GetArg<ir::Imm>(0).Get()); break;
+        case O::Zero: as.MV(result, x0); break;
+        case O::GetLocation: context.Load(result, state, state_offset_current_loc); break;
         case O::SetLocation: {
             auto target = inst->GetArg<ir::Lambda>(0);
-            if (target.IsValue()) context.Read(t0, target.GetValue());
-            else as.LI(t0, target.GetImm().Get());
-            context.Store(t0, state, state_offset_current_loc);
+            if (target.IsValue()) context.Read(result, target.GetValue());
+            else as.LI(result, target.GetImm().Get());
+            context.Store(result, state, state_offset_current_loc);
             return true;
         }
         case O::GetUniformAddress:
-            context.Address(t0, state, state_offset_uniform_buffer + inst->GetArg<ir::Imm>(0).Get());
+            context.Address(result, state, state_offset_uniform_buffer + inst->GetArg<ir::Imm>(0).Get());
             break;
         case O::LoadUniform: {
             auto uniform = inst->GetArg<ir::Uniform>(0);
-            context.Load(t0, state, state_offset_uniform_buffer + uniform.GetOffset(),
+            context.Load(result, state, state_offset_uniform_buffer + uniform.GetOffset(),
                          ir::GetValueSizeByte(inst->ReturnType()));
             break;
         }
         case O::StoreUniform: {
             auto value = inst->GetArg<ir::Value>(1);
             if (ir::IsFloatValueType(value.Type())) return false;
-            context.Read(t0, value);
-            context.Store(t0, state, state_offset_uniform_buffer + inst->GetArg<ir::Uniform>(0).GetOffset(),
+            context.Read(result, value);
+            context.Store(result, state, state_offset_uniform_buffer + inst->GetArg<ir::Uniform>(0).GetOffset(),
                           ir::GetValueSizeByte(value.Type()));
             return true;
         }
         case O::LoadMemory: case O::LoadMemoryTSO:
-            EmitMemory(inst, false, op == O::LoadMemoryTSO); return true;
+            EmitMemory(inst, false, op == O::LoadMemoryTSO, result); return true;
         case O::StoreMemory: case O::StoreMemoryTSO:
             if (ir::IsFloatValueType(inst->GetArg<ir::Value>(1).Type())) return false;
-            EmitMemory(inst, true, op == O::StoreMemoryTSO); return true;
+            EmitMemory(inst, true, op == O::StoreMemoryTSO, result); return true;
         case O::MemoryBarrierTSO: as.FENCE(); return true;
-        case O::GetOperand: context.Operand(t0, inst->GetArg<ir::Operand>(0)); break;
+        case O::GetOperand: context.Operand(result, inst->GetArg<ir::Operand>(0)); break;
         case O::BitCast: case O::GetResult:
             if (ir::IsFloatValueType(inst->GetArg<ir::Value>(0).Type())) return false;
-            context.Read(t0, inst->GetArg<ir::Value>(0)); break;
+            context.Read(result, inst->GetArg<ir::Value>(0)); break;
         case O::ZeroExtend32: case O::ZeroExtend32To64: case O::ZeroExtend64:
         case O::SignExtend: case O::Neg: case O::TestZero: case O::TestNotZero:
         case O::TestBit:
-            context.Read(t0, inst->GetArg<ir::Value>(0));
-            if (op == O::ZeroExtend32 || op == O::ZeroExtend32To64) context.Mask(t0, 32);
-            if (op == O::SignExtend) context.SignExtend(t0, Bits(inst->GetArg<ir::Value>(0).Type()));
-            if (op == O::Neg) as.SUB(t0, x0, t0);
-            if (op == O::TestZero) as.SEQZ(t0, t0);
-            if (op == O::TestNotZero) as.SNEZ(t0, t0);
+            context.Read(result, inst->GetArg<ir::Value>(0));
+            if (op == O::ZeroExtend32 || op == O::ZeroExtend32To64) context.Mask(result, 32);
+            if (op == O::SignExtend) context.SignExtend(result, Bits(inst->GetArg<ir::Value>(0).Type()));
+            if (op == O::Neg) as.SUB(result, x0, result);
+            if (op == O::TestZero) as.SEQZ(result, result);
+            if (op == O::TestNotZero) as.SNEZ(result, result);
             if (op == O::TestBit) {
-                as.SRLI(t0, t0, inst->GetArg<ir::Imm>(1).Get() & 63);
-                as.ANDI(t0, t0, 1);
+                as.SRLI(result, result, inst->GetArg<ir::Imm>(1).Get() & 63);
+                as.ANDI(result, result, 1);
             }
             break;
         case O::CondSet: case O::LocalCondSet:
-            context.Condition(t0, inst->GetArg<ir::Cond>(0)); break;
+            context.Condition(result, inst->GetArg<ir::Cond>(0)); break;
         case O::Select: case O::SelectZero: case O::CondSelect: {
             if (ir::IsFloatValueType(inst->GetArg<ir::Value>(1).Type())) return false;
-            if (op == O::CondSelect) context.Condition(t0, inst->GetArg<ir::Cond>(0));
-            else context.Read(t0, inst->GetArg<ir::Value>(0));
+            if (op == O::CondSelect) context.Condition(result, inst->GetArg<ir::Cond>(0));
+            else context.Read(result, inst->GetArg<ir::Value>(0));
             Label other, done;
-            if (op == O::SelectZero) as.BNE(t0, x0, &other);
-            else as.BEQ(t0, x0, &other);
-            context.Read(t0, inst->GetArg<ir::Value>(1));
+            if (op == O::SelectZero) as.BNE(result, x0, &other);
+            else as.BEQ(result, x0, &other);
+            context.Read(result, inst->GetArg<ir::Value>(1));
             as.J(&done);
             as.Bind(&other);
-            context.Read(t0, inst->GetArg<ir::Value>(2));
+            context.Read(result, inst->GetArg<ir::Value>(2));
             as.Bind(&done);
             break;
         }
         case O::Add: case O::Sub: case O::Adc: case O::Sbb:
         case O::Mul: case O::Div: case O::And: case O::Or:
         case O::Xor: case O::AndNot:
-            context.Read(t0, inst->GetArg<ir::Value>(0));
+            context.Read(result, inst->GetArg<ir::Value>(0));
             context.Operand(t1, inst->GetArg<ir::Operand>(1));
-            if (op == O::Add || op == O::Adc) as.ADD(t0, t0, t1);
-            if (op == O::Sub || op == O::Sbb) as.SUB(t0, t0, t1);
+            if (op == O::Add || op == O::Adc) as.ADD(result, result, t1);
+            if (op == O::Sub || op == O::Sbb) as.SUB(result, result, t1);
             if (op == O::Adc || op == O::Sbb) {
                 context.Load(t2, state, state_offset_host_flags);
                 as.SRLI(t2, t2, kCarryBit); as.ANDI(t2, t2, 1);
-                if (op == O::Adc) as.ADD(t0, t0, t2);
-                else { as.XORI(t2, t2, 1); as.SUB(t0, t0, t2); }
+                if (op == O::Adc) as.ADD(result, result, t2);
+                else { as.XORI(t2, t2, 1); as.SUB(result, result, t2); }
             }
-            if (op == O::Mul) as.MUL(t0, t0, t1);
+            if (op == O::Mul) as.MUL(result, result, t1);
             if (op == O::Div) {
                 const auto type = inst->GetArg<ir::Value>(0).Type();
-                context.Mask(t0, Bits(type)); context.Mask(t1, Bits(type));
+                context.Mask(result, Bits(type)); context.Mask(t1, Bits(type));
                 Label nonzero, done;
                 as.BNE(t1, x0, &nonzero);
-                as.MV(t0, x0); as.J(&done);
+                as.MV(result, x0); as.J(&done);
                 as.Bind(&nonzero);
                 if (ir::IsSignValueType(type)) {
-                    context.SignExtend(t0, Bits(type)); context.SignExtend(t1, Bits(type));
-                    as.DIV(t0, t0, t1);
-                } else as.DIVU(t0, t0, t1);
+                    context.SignExtend(result, Bits(type)); context.SignExtend(t1, Bits(type));
+                    as.DIV(result, result, t1);
+                } else as.DIVU(result, result, t1);
                 as.Bind(&done);
             }
-            if (op == O::And) as.AND(t0, t0, t1);
-            if (op == O::Or) as.OR(t0, t0, t1);
-            if (op == O::Xor) as.XOR(t0, t0, t1);
-            if (op == O::AndNot) { as.NOT(t1, t1); as.AND(t0, t0, t1); }
+            if (op == O::And) as.AND(result, result, t1);
+            if (op == O::Or) as.OR(result, result, t1);
+            if (op == O::Xor) as.XOR(result, result, t1);
+            if (op == O::AndNot) { as.NOT(t1, t1); as.AND(result, result, t1); }
             break;
         case O::Not:
             if (inst->ArgAt(1).IsVoid()) {
-                context.Read(t0, inst->GetArg<ir::Value>(0)); as.SEQZ(t0, t0);
-            } else { context.Operand(t0, inst->GetArg<ir::Operand>(1)); as.NOT(t0, t0); }
+                context.Read(result, inst->GetArg<ir::Value>(0)); as.SEQZ(result, result);
+            } else { context.Operand(result, inst->GetArg<ir::Operand>(1)); as.NOT(result, result); }
             break;
         case O::MulHigh: case O::MulSub: case O::SignedDiv64:
-            context.Read(t0, inst->GetArg<ir::Value>(0));
+            context.Read(result, inst->GetArg<ir::Value>(0));
             context.Read(t1, inst->GetArg<ir::Value>(1));
             if (op == O::MulHigh) {
-                if (inst->GetArg<ir::Imm>(2).Get()) as.MULH(t0, t0, t1);
-                else as.MULHU(t0, t0, t1);
+                if (inst->GetArg<ir::Imm>(2).Get()) as.MULH(result, result, t1);
+                else as.MULHU(result, result, t1);
             } else if (op == O::MulSub) {
                 context.Read(t2, inst->GetArg<ir::Value>(2));
-                as.MUL(t0, t0, t1); as.SUB(t0, t2, t0);
+                as.MUL(result, result, t1); as.SUB(result, t2, result);
             } else {
                 Label nonzero, done;
-                as.BNE(t1, x0, &nonzero); as.MV(t0, x0); as.J(&done);
-                as.Bind(&nonzero); as.DIV(t0, t0, t1); as.Bind(&done);
+                as.BNE(t1, x0, &nonzero); as.MV(result, x0); as.J(&done);
+                as.Bind(&nonzero); as.DIV(result, result, t1); as.Bind(&done);
             }
             break;
         case O::LslImm: case O::LslValue: case O::LsrImm: case O::LsrValue:
         case O::AsrImm: case O::AsrValue: case O::RorImm: case O::RorValue: {
             const auto value = inst->GetArg<ir::Value>(0);
             const auto bits = Bits(inst->ReturnType());
-            context.Read(t0, value);
+            context.Read(result, value);
             if (inst->ArgAt(1).IsImm()) as.LI(t1, inst->GetArg<ir::Imm>(1).Get());
             else context.Read(t1, inst->GetArg<ir::Value>(1));
             as.ANDI(t1, t1, bits - 1);
             if (op == O::AsrImm || op == O::AsrValue) {
-                context.SignExtend(t0, Bits(value.Type())); as.SRA(t0, t0, t1);
+                context.SignExtend(result, Bits(value.Type())); as.SRA(result, result, t1);
             } else {
-                context.Mask(t0, bits);
-                if (op == O::LslImm || op == O::LslValue) as.SLL(t0, t0, t1);
-                else if (op == O::LsrImm || op == O::LsrValue) as.SRL(t0, t0, t1);
+                context.Mask(result, bits);
+                if (op == O::LslImm || op == O::LslValue) as.SLL(result, result, t1);
+                else if (op == O::LsrImm || op == O::LsrValue) as.SRL(result, result, t1);
                 else {
                     as.SUB(t2, x0, t1); as.ANDI(t2, t2, bits - 1);
-                    as.SLL(t2, t0, t2); as.SRL(t0, t0, t1); as.OR(t0, t0, t2);
+                    as.SLL(t2, result, t2); as.SRL(result, result, t1); as.OR(result, result, t2);
                 }
             }
             break;
         }
         default: return false;
     }
-    context.Write(inst, t0);
+    context.Write(inst, result);
     return true;
 }
 
-void JitTranslator::EmitMemory(ir::Inst* inst, bool store, bool ordered) {
+void JitTranslator::EmitMemory(ir::Inst* inst, bool store, bool ordered, GPR result) {
     auto& as = context.GetMasm();
     const auto type = store ? inst->GetArg<ir::Value>(1).Type() : inst->ReturnType();
     const u32 size = ir::GetValueSizeByte(type);
@@ -387,11 +392,13 @@ void JitTranslator::EmitMemory(ir::Inst* inst, bool store, bool ordered) {
         context.Read(t0, inst->GetArg<ir::Value>(1));
         context.Store(t0, a0, 0, size);
     } else {
-        context.Load(t0, a0, 0, size);
-        context.Write(inst, t0);
+        context.Load(result, a0, 0, size);
     }
     if (ordered) as.FENCE();
-    if (size == 1) return;
+    if (size == 1) {
+        if (!store) context.Write(inst, result);
+        return;
+    }
     as.J(&done);
     as.Bind(&unaligned);
     if (store) {
@@ -406,16 +413,17 @@ void JitTranslator::EmitMemory(ir::Inst* inst, bool store, bool ordered) {
         if (ordered) as.FENCE();
     } else {
         if (ordered) as.FENCE();
-        as.MV(t0, x0);
+        as.MV(result, x0);
         for (u32 byte = 0; byte < size; ++byte) {
             as.LBU(t1, byte, a0);
             if (byte) as.SLLI(t1, t1, byte * 8);
-            as.OR(t0, t0, t1);
+            as.OR(result, result, t1);
         }
         if (ordered) as.FENCE();
-        context.Write(inst, t0);
     }
     as.Bind(&done);
+    // Both alignment paths define the same reserved scalar register.
+    if (!store) context.Write(inst, result);
 }
 
 void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {

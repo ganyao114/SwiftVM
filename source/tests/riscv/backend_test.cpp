@@ -63,7 +63,7 @@ struct Compiled {
     rv::JitTranslator translator{context};
     backend::CodeCache cache{config, 1u << 20, FeatureSet{}};
     BlockFn fn{};
-    explicit Compiled(ir::Block* block) {
+    explicit Compiled(ir::Block* block, bool cache_scalars = true) : context(cache_scalars) {
         translator.Translate(block);
         auto buffer = cache.AllocCode(context.CurrentBufferSize());
         Check(buffer.has_value(), "allocate RV64 test code");
@@ -302,6 +302,185 @@ void SemanticExceptions() {
     Check(compiled.fn(state.state) == HaltReason::CallHost && state.Get(8) == 42,
           "generated block remains usable after helper exception");
     std::cout << "PASS semantic exceptions stay inside C++ helper frames\n";
+}
+
+void ScalarCache() {
+    for (auto type : {ValueType::U8, ValueType::U16, ValueType::U32, ValueType::U64,
+                      ValueType::S8, ValueType::S16, ValueType::S32, ValueType::S64}) {
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3600})};
+        ir::Assembler as{block.get()};
+        auto value = as.LoadUniform(ir::Uniform{0, type}).SetType(type);
+        for (u64 i = 0; i < 48; ++i)
+            value = as.Add(value, ir::Operand{ir::Imm{i * 17 + 3}}).SetType(type);
+        as.StoreUniform(ir::Uniform{8, type}, value);
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        Compiled cached{block.get()}, uncached{block.get(), false};
+        const auto& traffic = cached.context.ValueStats();
+        const auto& baseline = uncached.context.ValueStats();
+        Check(traffic.cache_hits > 40 && traffic.spills > 0, "chain exercises cached reads and eviction");
+        Check(traffic.loads + traffic.stores < baseline.loads + baseline.stores,
+              "register cache reduces generated SSA memory operations");
+        Check(cached.context.CurrentBufferSize() < uncached.context.CurrentBufferSize(),
+              "register cache reduces arithmetic chain code size");
+        const auto bits = ir::GetValueSizeByte(type) * 8;
+        const auto mask = bits == 64 ? UINT64_MAX : (u64{1} << bits) - 1;
+        for (u64 input : {u64{0}, u64{1}, u64{127}, u64{255}, u64{0x8000000080000000ULL}, UINT64_MAX}) {
+            StateStorage actual, reference;
+            actual.Put(0, input); reference.Put(0, input);
+            u64 wanted = input & mask;
+            for (u64 i = 0; i < 48; ++i) wanted = (wanted + i * 17 + 3) & mask;
+            Check(cached.fn(actual.state) == HaltReason::CallHost, "cached chain halt");
+            Check(uncached.fn(reference.state) == HaltReason::CallHost, "uncached chain halt");
+            Check(actual.Get(8) == wanted && reference.Get(8) == wanted, "independent width-correct chain result");
+        }
+#if defined(__riscv) && __riscv_xlen == 64
+        StateStorage abi;
+        Check(SwiftRiscvCheckABI(cached.fn, abi.state) == 1, "all scalar cache GPRs preserve C ABI");
+#endif
+        if (type == ValueType::U64)
+            std::cout << "METRIC U64 chain bytes " << uncached.context.CurrentBufferSize() << " -> "
+                      << cached.context.CurrentBufferSize() << ", SSA loads " << baseline.loads << " -> "
+                      << traffic.loads << ", stores " << baseline.stores << " -> " << traffic.stores << '\n';
+    }
+    std::cout << "PASS scalar register cache, eviction, widths and uncached control\n";
+}
+
+void RegisterPressureAndHelpers() {
+    IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3700})};
+    ir::Assembler as{block.get()};
+    std::array<ir::Value, 20> inputs;
+    ir::Value alias;
+    for (u32 i = 0; i < inputs.size(); ++i) {
+        inputs[i] = as.LoadUniform(ir::Uniform{i * 8, ValueType::U64}).SetType(ValueType::U64);
+        if (i == 8)
+            alias = as.Add(inputs[8], ir::Operand{inputs[0]}).SetType(ValueType::U64);
+    }
+    as.StoreUniform(ir::Uniform{168, ValueType::U64}, alias);
+    auto total = inputs[0];
+    for (u32 i = 1; i < inputs.size(); ++i)
+        total = as.Add(total, ir::Operand{inputs[i]}).SetType(ValueType::U64);
+    // SaveFlags also reads the producer's original operands through its home.
+    as.SaveFlags(total, ir::Flags::Carry | ir::Flags::Zero | ir::Flags::Overflow);
+    auto call = as.CallHost(&Helper, inputs[0], inputs[19], total).SetType(ValueType::U64);
+    auto result = as.Xor(total, ir::Operand{call}).SetType(ValueType::U64);
+    as.StoreUniform(ir::Uniform{192, ValueType::U64}, result);
+    auto quotient = as.Div128(inputs[0], inputs[1], inputs[2], ir::Imm{u64{0}});
+    auto remainder = as.Div128Remainder(quotient);
+    as.StoreUniform(ir::Uniform{200, ValueType::U64}, quotient);
+    as.StoreUniform(ir::Uniform{208, ValueType::U64}, remainder);
+    // A scalar -> V128 helper must observe the deferred scalar and a zero high half.
+    auto vector = as.BitCast(result).SetType(ValueType::V128);
+    as.StoreUniform(ir::Uniform{224, ValueType::V128}, vector);
+    block->SetTerminal(ir::terminal::ReturnToHost{});
+    Compiled cached{block.get()}, uncached{block.get(), false};
+    Check(cached.context.ValueStats().spills > 20 && cached.context.ValueStats().loads > 0,
+          "live pressure forces both spills and reloads");
+    for (u64 seed : {u64{0}, u64{1}, u64{0xabcdef0123456789ULL}, UINT64_MAX}) {
+        StateStorage actual, expected;
+        u64 sum{};
+        for (u32 i = 0; i < inputs.size(); ++i) {
+            const auto value = i == 0 ? u64{1} : i == 2 ? u64{3} : seed + i * 17;
+            actual.Put(i * 8, value); expected.Put(i * 8, value);
+            sum += value;
+        }
+        Check(cached.fn(actual.state) == HaltReason::CallHost &&
+              uncached.fn(expected.state) == HaltReason::CallHost, "register-pressure helper halt");
+        Check(actual.Get(168) == actual.Get(0) + actual.Get(64),
+              "destination eviction preserves its right-hand input before overwriting the register");
+        const u64 wanted = sum ^ Helper(actual.Get(0), actual.Get(152), sum);
+        const auto dividend = (static_cast<unsigned __int128>(actual.Get(0)) << 64) | actual.Get(8);
+        Check(actual.Get(192) == wanted, "helper receives all deferred inputs and prior values survive");
+        Check(actual.Get(200) == u64(dividend / 3) && actual.Get(208) == u64(dividend % 3),
+              "pair-result helper publishes quotient and pseudo remainder");
+        Check(actual.Get(224) == wanted && actual.Get(232) == 0, "scalar bitcast preserves zero high half");
+        Check(std::memcmp(actual.state->uniform_buffer_begin, expected.state->uniform_buffer_begin, 240) == 0 &&
+              actual.state->host_cpu_flags == expected.state->host_cpu_flags,
+              "cached pressure program matches uncached values and flags");
+    }
+    std::cout << "PASS live register pressure, semantic homes and pair-result helpers\n";
+}
+
+void LocalCacheJoins() {
+    for (bool invert : {false, true}) {
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3800})};
+        ir::Assembler as{block.get()};
+        auto condition = as.LoadUniform(ir::Uniform{0, ValueType::U8}).SetType(ValueType::U8);
+        auto anchor = as.LoadUniform(ir::Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+        auto jump = invert ? as.NotGoto(ir::BOOL{condition}) : as.Goto(ir::BOOL{condition});
+        ir::Value skipped;
+        for (u64 i = 0; i < 20; ++i)
+            skipped = as.Add(anchor, ir::Operand{ir::Imm{i + 1}}).SetType(ValueType::U64);
+        as.BindLabel(jump);
+        auto sum = as.Add(anchor, ir::Operand{skipped}).SetType(ValueType::U64);
+        as.StoreUniform(ir::Uniform{16, ValueType::U64}, sum);
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        Compiled compiled{block.get()};
+        for (u64 input : {u64{0}, u64{1}}) {
+            StateStorage state;
+            state.Put(0, input); state.Put(8, 71);
+            Check(compiled.fn(state.state) == HaltReason::CallHost, "cache join halt");
+            const bool taken = invert ? input == 0 : input != 0;
+            Check(state.Get(16) == (taken ? 71 : 162), "join reloads the incoming path's canonical homes");
+        }
+    }
+    IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3900})};
+    ir::Assembler as{block.get()};
+    auto counter = as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
+    auto accumulated = as.LoadUniform(ir::Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+    auto sum = as.Add(accumulated, ir::Operand{counter}).SetType(ValueType::U64);
+    as.StoreUniform(ir::Uniform{8, ValueType::U64}, sum);
+    auto next = as.Sub(counter, ir::Operand{ir::Imm{u64{1}}}).SetType(ValueType::U64);
+    as.StoreUniform(ir::Uniform{0, ValueType::U64}, next);
+    auto running = as.TestNotZero(next);
+    auto jump = as.Goto(running);
+    as.BindLabel(jump);
+    auto* label = &block->GetInstList().back();
+    block->RemoveInst(label);
+    block->InsertBefore(label, counter.Def());
+    as.StoreUniform(ir::Uniform{16, ValueType::U64}, sum);
+    block->SetTerminal(ir::terminal::ReturnToHost{});
+    block->ReIdInstr();
+    Compiled compiled{block.get()};
+    for (u64 count : {u64{1}, u64{2}, u64{9}, u64{31}}) {
+        StateStorage state;
+        state.Put(0, count); state.Put(8, 17);
+        Check(compiled.fn(state.state) == HaltReason::CallHost, "finite backward cache loop halt");
+        Check(state.Get(0) == 0 && state.Get(8) == 17 + count * (count + 1) / 2 &&
+              state.Get(16) == state.Get(8), "backedge updates and fallthrough use the final iteration's values");
+    }
+    std::cout << "PASS forward joins, NotGoto and finite backward loops with cached values\n";
+}
+
+void ScalarAddressing() {
+    using namespace biscuit;
+    auto config = TestConfig();
+    backend::CodeCache cache{config, 1u << 20, FeatureSet{}};
+    for (u32 size : {1u, 2u, 4u, 8u})
+    for (s64 offset : {-2056, -2048, -8, -1, 0, 2040, 2048, 2047}) {
+        if (offset % size) continue;
+        rv::JitContext context;
+        context.EnsureSpace();
+        context.Load(a2, a0, offset, size);
+        context.Store(a1, a0, offset, size);
+        context.GetMasm().MV(a0, a2);
+        context.GetMasm().RET();
+        auto buffer = cache.AllocCode(context.CurrentBufferSize());
+        Check(buffer.has_value(), "allocate scalar addressing fixture");
+        context.Flush(*buffer);
+        const auto fn = reinterpret_cast<u64 (*)(u8*, u64)>(buffer->exec_data);
+        alignas(8) std::array<u8, 8192> memory;
+        memory.fill(0xa5);
+        auto expected = memory;
+        constexpr u64 replacement = 0xfedcba9876543210ULL;
+        std::memcpy(expected.data() + 4096 + offset, &replacement, size);
+        u64 wanted{};
+        std::memcpy(&wanted, memory.data() + 4096 + offset, size);
+        Check(fn(memory.data() + 4096, replacement) == wanted, "signed offset load is zero extended");
+        Check(memory == expected, "signed offset store preserves all neighboring bytes");
+        if (offset >= -2048 && offset <= 2047)
+            Check(context.CurrentBufferSize() == 16, "encodable offsets need no address instructions");
+    }
+    std::cout << "PASS immediate offset boundaries, large offsets and adjacent memory\n";
 }
 
 void LargeBranches() {
@@ -801,7 +980,9 @@ int main(int argc, char** argv) {
             std::cout << "OK " << checks << " checks\n";
             return 0;
         }
-        ScalarDifferential(); Conditions(); FlagPredicates(); MixedHelpers(); VectorSelections(); SemanticExceptions(); LargeBranches(); Memory(); AlignedMemoryAtomicity();
+        ScalarDifferential(); Conditions(); FlagPredicates(); MixedHelpers(); VectorSelections(); SemanticExceptions();
+        ScalarCache(); RegisterPressureAndHelpers(); LocalCacheJoins(); ScalarAddressing();
+        LargeBranches(); Memory(); AlignedMemoryAtomicity();
         RuntimeDispatch(); RunningInterrupt(); Selections(); RuntimeFaults(); Atomics();
         RetainedIR(); FunctionEntries(); RejectCrossBlockTerminals();
         X86Integration(); Arm64Integration();

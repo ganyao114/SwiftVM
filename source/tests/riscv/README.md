@@ -76,13 +76,16 @@ QEMU 的动态 sysroot 保留 C 扩展，但关闭 V、Zba/Zbb/Zbs/Zbc。
 双映射代码复用需要 [QEMU 测试补丁](../../../tools/qemu/README.md)，原版模拟器仍用于失败负对照。
 
 三个 CTest 分别验证默认函数模式、`SVM_FUNC_BASE=0` 单块模式和代码缓存地址复用。
-最终三项均通过：前两项各 72,545 个检查，缓存复用 23 个检查。
+当前三项均通过：前两项各 72,879 个检查，缓存复用 23 个检查。
 原版 QEMU 缓存复用负对照返回 1；RV64 AOT 编译入口也按预期返回非零并明确拒绝。
 主要检查包括：
 
 - 240 个标量程序、23,040 次输入执行，对照未进行 ARM64 寄存器重写的 canonical IR interpreter。
 - 16 种条件的全部 NZCV 组合，未显式标注类型的 flags 谓词及独立预期值。
 - 标量/helper/V128 混合、三种 select 的完整 V128 结果、全部整数与浮点 callee-saved 寄存器、远分支及大栈/均匀区偏移。
+- 九个标量缓存寄存器的淘汰与重载、目标覆盖输入、窄结果、helper 隐式输入、成对返回值、
+  scalar-to-V128 高半部、前向汇合及有限后向循环；同时执行关闭缓存的对照程序。
+- 有符号 12 位访存偏移的边界与超界路径，验证全部相邻字节，检查短偏移不生成额外地址指令。
 - guest 范围末端、未对齐/TSO 访问、两个并发执行线程间对齐读写的完整性。
 - L2 分派（包括最后一个 bucket）、中断、局部后向循环、嵌套 terminals。
 - 生成代码与 C++ helper 的故障恢复、故障后 fallback 原子锁释放、helper 异常隔离及 Runtime 复用。
@@ -160,3 +163,38 @@ RV64 AOT 入口仍以预期消息返回 1；此变更仅恢复 ARM64 AOT 支持�
 `/tmp/swiftvm-riscv-backend-cross-ctest-20261006.log`。
 真实 guest stdout/stderr 在 Ubuntu 的 `/tmp/swiftvm-rv64-guests-20261006/` 中。
 最终构建的复跑结果为 `complete-results.json`，对应输出使用 `.complete.stdout` / `.complete.stderr` 后缀。
+
+## 2026-10-07 标量缓存验证记录
+
+直接标量结果使用 `s3`–`s11`，语义 helper 和局部控制流边界前写回标准槽。
+发码保留可关闭缓存的内部构造参数，用于同一 IR 的执行与发码对照；Runtime 默认启用缓存。
+对照程序同时使用本轮的短偏移访存和条件提取优化，下面的差异仅来自寄存器缓存。
+
+48 次 U64 加法链的生成代码统计：
+
+| 指标 | 关闭缓存 | 启用缓存 |
+| --- | ---: | ---: |
+| 完整块代码字节 | 1,132 | 1,096 |
+| SSA 栈读取 | 49 | 0 |
+| SSA 栈写回 | 49 | 40 |
+
+SSA 统计不包含初始化清零、帧保存/恢复、uniform 或 guest 访存。该直线程序的 SSA 栈访问
+减少约 59%；此结果衡量生成代码，不能推导真机运行时间。八种有符号/无符号宽度都执行
+边界输入，并使用独立整数预期值检查缓存与关闭缓存的结果。
+
+本轮串行验证结果：
+
+- macOS 编译 `swift_riscv_backend_test` 通过；macOS 不执行 RV64 代码。
+- RV64 GNU 交叉构建通过，三个 CTest 全部通过（72,879 / 72,879 / 23 个检查）。
+- 新增寄存器压力、目标覆盖输入、helper 隐式输入、成对返回值、高半部清零、局部汇合、
+  有限回跳及有符号访存偏移边界检查；原有 fault、异常、并发访存和 ABI 检查继续通过。
+- 两个完整 `func_tests` guest 的七行 stdout 与先前基线逐字节一致，退出码仍为 101 / 25。
+- 原版 QEMU 的缓存复用负对照返回 1，失败原因精确命中旧的双映射代码执行。
+
+macOS 日志为 `/tmp/swiftvm-rv64-scalar-native-build-final-20261007.log`、
+`/tmp/swiftvm-rv64-scalar-cross-build-final-20261007.log`、
+`/tmp/swiftvm-rv64-scalar-ctest-20261007.log` 和
+`/tmp/swiftvm-rv64-scalar-execution-20261007.log`。
+完整 guest 的运行摘要为 `/tmp/swiftvm-rv64-scalar-guests-20261007.log`，
+逐字节输出和 `results.json` 在 Ubuntu 的 `/tmp/swiftvm-rv64-scalar-guests-20261007/` 中。
+负对照记录为 `/tmp/swiftvm-rv64-scalar-stock-qemu-20261007.log`。

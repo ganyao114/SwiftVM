@@ -26,30 +26,50 @@ void JitContext::Address(GPR result, GPR base, s64 offset) {
 }
 
 void JitContext::Load(GPR result, GPR base, s64 offset, u32 size) {
-    Address(t6, base, offset);
+    if (offset < -2048 || offset > 2047) {
+        Address(t6, base, offset);
+        base = t6;
+        offset = 0;
+    }
+    const auto immediate = static_cast<s32>(offset);
     switch (size) {
-        case 1: masm.LBU(result, 0, t6); break;
-        case 2: masm.LHU(result, 0, t6); break;
-        case 4: masm.LWU(result, 0, t6); break;
-        case 8: masm.LD(result, 0, t6); break;
+        case 1: masm.LBU(result, immediate, base); break;
+        case 2: masm.LHU(result, immediate, base); break;
+        case 4: masm.LWU(result, immediate, base); break;
+        case 8: masm.LD(result, immediate, base); break;
         default: PANIC("unsupported RV64 scalar load size {}", size);
     }
 }
 
 void JitContext::Store(GPR value, GPR base, s64 offset, u32 size) {
     ASSERT(value != t6);
-    Address(t6, base, offset);
+    if (offset < -2048 || offset > 2047) {
+        Address(t6, base, offset);
+        base = t6;
+        offset = 0;
+    }
+    const auto immediate = static_cast<s32>(offset);
     switch (size) {
-        case 1: masm.SB(value, 0, t6); break;
-        case 2: masm.SH(value, 0, t6); break;
-        case 4: masm.SW(value, 0, t6); break;
-        case 8: masm.SD(value, 0, t6); break;
+        case 1: masm.SB(value, immediate, base); break;
+        case 2: masm.SH(value, immediate, base); break;
+        case 4: masm.SW(value, immediate, base); break;
+        case 8: masm.SD(value, immediate, base); break;
         default: PANIC("unsupported RV64 scalar store size {}", size);
     }
 }
 
 void JitContext::Read(GPR result, ir::Value value) {
+    // Reads never allocate or change the cache: both arms of an internal
+    // select/terminal must share the same compile-time register mapping.
+    for (size_t i = 0; i < cached_values.size(); ++i) {
+        if (cached_values[i] == value.Def()) {
+            if (result != scalar_registers[i]) masm.MV(result, scalar_registers[i]);
+            ++value_stats.cache_hits;
+            return;
+        }
+    }
     Load(result, values, static_cast<s64>(value.Def()->Id()) * kValueStride);
+    ++value_stats.loads;
 }
 
 void JitContext::Data(GPR result, const ir::DataClass& data) {
@@ -81,7 +101,9 @@ void JitContext::Operand(GPR result, const ir::Operand& operand) {
 
 void JitContext::Mask(GPR value, u32 bits) {
     ASSERT(bits > 0 && bits <= 64);
-    if (bits < 64) {
+    if (bits == 8) {
+        masm.ANDI(value, value, 255);
+    } else if (bits < 64) {
         // Biscuit::ZEXTW emits Zba ADD.UW; shifts require only RV64I.
         masm.SLLI(value, value, 64 - bits);
         masm.SRLI(value, value, 64 - bits);
@@ -96,10 +118,52 @@ void JitContext::SignExtend(GPR value, u32 bits) {
     }
 }
 
+GPR JitContext::ResultRegister(ir::Inst* inst) {
+    if (!cache_scalars || inst->ReturnType() == ir::ValueType::VOID ||
+        ir::IsFloatValueType(inst->ReturnType())) return t0;
+    const auto index = next_register;
+    next_register = (index + 1) % cached_values.size();
+    if (auto* previous = cached_values[index]) {
+        Store(scalar_registers[index], values, static_cast<s64>(previous->Id()) * kValueStride);
+        ++value_stats.stores;
+        ++value_stats.spills;
+    }
+    // Evict before operand reads: the selected destination may hold an input
+    // to this instruction. Publish the new mapping only after its definition.
+    cached_values[index] = nullptr;
+    return scalar_registers[index];
+}
+
 void JitContext::Write(ir::Inst* inst, GPR value) {
     if (inst->ReturnType() == ir::ValueType::VOID) return;
     Mask(value, ir::GetValueSizeByte(inst->ReturnType()) * 8);
+    if (cache_scalars) {
+        for (size_t i = 0; i < scalar_registers.size(); ++i) {
+            if (value == scalar_registers[i]) {
+                ASSERT(cached_values[i] == nullptr);
+                cached_values[i] = inst;
+                return;
+            }
+        }
+        PANIC("RV64 scalar result has no reserved register");
+    }
     Store(value, values, static_cast<s64>(inst->Id()) * kValueStride);
+    ++value_stats.stores;
+}
+
+void JitContext::FlushValues() {
+    for (size_t i = 0; i < cached_values.size(); ++i) {
+        if (auto* inst = cached_values[i]) {
+            Store(scalar_registers[i], values, static_cast<s64>(inst->Id()) * kValueStride);
+            ++value_stats.stores;
+        }
+    }
+    DiscardValues();
+}
+
+void JitContext::DiscardValues() {
+    cached_values.fill(nullptr);
+    next_register = 0;
 }
 
 void JitContext::Jump(Label& label) {
@@ -118,38 +182,57 @@ void JitContext::BranchZero(GPR value, Label& label, bool zero) {
 }
 
 void JitContext::Condition(GPR result, ir::Cond condition) {
+    ASSERT(result != t1 && result != t2 && result != t3 && result != t4);
+    if (condition == ir::Cond::AL || condition == ir::Cond::NV) {
+        masm.LI(result, 1);
+        return;
+    }
     Load(t0, state, state_offset_host_flags);
-    masm.SRLI(t1, t0, kNegateBit);
-    masm.ANDI(t1, t1, 1);
-    masm.SRLI(t2, t0, kZeroBit);
-    masm.ANDI(t2, t2, 1);
-    masm.SRLI(t3, t0, kCarryBit);
-    masm.ANDI(t3, t3, 1);
-    masm.SRLI(t4, t0, kOverflowBit);
-    masm.ANDI(t4, t4, 1);
+    const auto extract = [&](GPR reg, u32 bit) {
+        masm.SRLI(reg, t0, bit);
+        masm.ANDI(reg, reg, 1);
+    };
+    // Most guest conditions need only one flag; avoid extracting all NZCV.
     switch (condition) {
-        case ir::Cond::EQ: masm.MV(result, t2); break;
-        case ir::Cond::NE: masm.XORI(result, t2, 1); break;
-        case ir::Cond::CS: masm.MV(result, t3); break;
-        case ir::Cond::CC: masm.XORI(result, t3, 1); break;
-        case ir::Cond::MI: masm.MV(result, t1); break;
-        case ir::Cond::PL: masm.XORI(result, t1, 1); break;
-        case ir::Cond::VS: masm.MV(result, t4); break;
-        case ir::Cond::VC: masm.XORI(result, t4, 1); break;
-        case ir::Cond::HI:
-            masm.XORI(t2, t2, 1); masm.AND(result, t3, t2); break;
-        case ir::Cond::LS:
-            masm.XORI(t3, t3, 1); masm.OR(result, t3, t2); break;
-        case ir::Cond::GE:
-            masm.XOR(result, t1, t4); masm.XORI(result, result, 1); break;
-        case ir::Cond::LT: masm.XOR(result, t1, t4); break;
-        case ir::Cond::GT:
+        case ir::Cond::EQ: case ir::Cond::NE:
+            extract(result, kZeroBit);
+            if (condition == ir::Cond::NE) masm.XORI(result, result, 1);
+            break;
+        case ir::Cond::CS: case ir::Cond::CC:
+            extract(result, kCarryBit);
+            if (condition == ir::Cond::CC) masm.XORI(result, result, 1);
+            break;
+        case ir::Cond::MI: case ir::Cond::PL:
+            extract(result, kNegateBit);
+            if (condition == ir::Cond::PL) masm.XORI(result, result, 1);
+            break;
+        case ir::Cond::VS: case ir::Cond::VC:
+            extract(result, kOverflowBit);
+            if (condition == ir::Cond::VC) masm.XORI(result, result, 1);
+            break;
+        case ir::Cond::HI: case ir::Cond::LS:
+            extract(t2, kZeroBit);
+            extract(t3, kCarryBit);
+            if (condition == ir::Cond::HI) {
+                masm.XORI(t2, t2, 1); masm.AND(result, t3, t2);
+            } else {
+                masm.XORI(t3, t3, 1); masm.OR(result, t3, t2);
+            }
+            break;
+        case ir::Cond::GE: case ir::Cond::LT:
+            extract(t1, kNegateBit);
+            extract(t4, kOverflowBit);
+            masm.XOR(result, t1, t4);
+            if (condition == ir::Cond::GE) masm.XORI(result, result, 1);
+            break;
+        case ir::Cond::GT: case ir::Cond::LE:
+            extract(t1, kNegateBit);
+            extract(t2, kZeroBit);
+            extract(t4, kOverflowBit);
             masm.XOR(result, t1, t4); masm.OR(result, result, t2);
-            masm.XORI(result, result, 1); break;
-        case ir::Cond::LE:
-            masm.XOR(result, t1, t4); masm.OR(result, result, t2); break;
-        case ir::Cond::AL:
-        case ir::Cond::NV: masm.LI(result, 1); break;
+            if (condition == ir::Cond::GT) masm.XORI(result, result, 1);
+            break;
+        case ir::Cond::AL: case ir::Cond::NV: break;
     }
 }
 

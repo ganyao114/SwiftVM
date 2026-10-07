@@ -9,7 +9,8 @@
 
 - `a0` 传入 State，返回停止原因。
 - `s0` 保存块的恢复帧，`s1` 保存 State，`s2` 保存 SSA 值区；入口保存、出口恢复。
-- 每个 SSA 值使用 16 字节的栈槽，低半部保存窄整数的零扩展结果；V128 使用完整槽。
+- `s3`–`s11` 缓存直接发码的标量结果，避免每次使用都读取栈槽。
+- 每个 SSA 值预留 16 字节的标准栈槽，低半部保存窄整数的零扩展结果；V128 使用完整槽。
 - helper 与直接发码共享这些槽。调用 helper 前，所有值和 guest uniforms 已有有效的内存副本。
 - 栈按 16 字节对齐；208 字节恢复帧保存全部整数和浮点 callee-saved 寄存器。
   helper 故障可能跳过 C++ 函数的恢复代码，因此不能只保存后端自己使用的寄存器。
@@ -27,11 +28,19 @@
 IR 的除零结果是零，因此不能直接采用 RISC-V DIV 的全一结果。
 
 条件跳转只使用就近的反条件分支，远目标通过 AUIPC/ADDI/JALR 到达。
-SSA/uniform 偏移超出 12 位时单独形成地址；汇编缓冲区按需增长。
+可编码的有符号 12 位偏移直接用于 load/store，超出范围时单独形成地址；汇编缓冲区按需增长。
+条件判断只提取所需的 NZCV 位，AL/NV 直接生成真值；8 位结果使用 ANDI 清高位。
 标量 guest 访存先验证 mask、范围、访问末端和映射 oracle；对齐地址使用单条原生 load/store，
 保持对齐访问原子性，未对齐地址使用字节访问。未对齐普通访问不提供跨 cache line 的原子保证。
 TSO 访问使用保守的 FENCE。其余指令调用现有 IR interpreter 的逐指令语义实现，
 包括 flags、V128/浮点、原子和专用 frontend helper；这不是 ARM64 发码回退。
+
+标量结果直接写入缓存寄存器，轮转淘汰时写回标准槽。目标寄存器可能仍保存当前输入，
+所以淘汰和写回发生在读取操作数之前。读取不会改变缓存映射，select 和嵌套 terminal
+的各个内部路径共享同一映射；对齐/未对齐加载在汇合后发布同一个结果寄存器。
+语义 helper、Goto/NotGoto 和 BindLabel 前写回并清空缓存，保证 helper 的隐式操作数、
+成对返回值和跳转到达路径都使用有效槽位。仅验证地址的 MemoryAddress 调用依赖 C ABI
+保持缓存寄存器；它不访问 SSA 值区。块返回时直接丢弃私有缓存，独立块入口重新开始分配。
 
 Runtime trampoline 循环调用块，通过现有 L2 表分派，使用 acquire fence 读取发布的表项。
 无键返回 CodeMiss，空目标返回 CacheMiss，非零停止原因返回 host 并清除 State 的 halt_reason。
@@ -70,7 +79,8 @@ CTest 启用 RV64 后端执行测试；macOS 构建可以编译同一目标，�
 
 ## 当前边界
 
-这是可执行的基线后端，尚未实现 RV64 寄存器分配、RVV 直接发码、direct linking、RSB 优化或
+这是可执行的基线后端，已有九个 GPR 的块内标量缓存，尚未实现活跃区间驱动的寄存器分配、
+死值免写回、RVV 直接发码、direct linking、RSB 优化或
 跨块 SSA/phi。函数内出现跨块 SSA 时编译明确拒绝，frontend 可重新解码为独立块。
 ARM64 host-register rewritten IR 和未拆分的 V256 也明确拒绝。
 函数编译保留 canonical uniform 访问和 flag producer，避免把 ARM64 特定优化契约带入 RV64。

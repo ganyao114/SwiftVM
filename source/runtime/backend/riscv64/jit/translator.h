@@ -22,7 +22,7 @@ public:
 private:
     bool EmitScalar(ir::Inst* inst);
     void EmitHelper(ir::Inst* inst);
-    void EmitMemory(ir::Inst* inst, bool store, bool ordered);
+    void EmitMemory(ir::Inst* inst, bool store, bool ordered, biscuit::GPR result);
     void EmitTerminal(const ir::Terminal& terminal);
     void Poll();
     void Return(HaltReason reason);
