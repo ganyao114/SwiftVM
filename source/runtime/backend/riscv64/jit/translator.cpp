@@ -84,6 +84,20 @@ void JitTranslator::Translate(ir::Block* input) {
     const auto entry_start = context.CurrentBufferSize();
     context.BeginBlock();
     context.DiscardValues();
+    bool eager_abi_save{};
+    for (auto& inst : block->GetInstList()) {
+        switch (inst.GetOp()) {
+            case O::CallLambda: case O::CallLocation: case O::CallDynamic:
+            case O::X87Op: case O::Sse42Str: case O::Cpuid:
+                eager_abi_save = true; break;
+            case O::MemoryCopy: case O::MemoryCopyTSO:
+                eager_abi_save |= !context.Features().vector && inst.GetArg<ir::Imm>(2).Get() > 16; break;
+            case O::CompareAndSwap128:
+                eager_abi_save |= !context.Features().zacas; break;
+            default: break;
+        }
+    }
+    context.ConfigureABIRecovery(eager_abi_save, abi_recovery, abi_save);
     const auto terminal_flags = [&](const auto& recurse, const ir::Terminal& terminal) -> bool {
         return VisitVariant<bool>(terminal, [&](const auto& term) -> bool {
             using T = std::decay_t<decltype(term)>;
@@ -182,9 +196,12 @@ void JitTranslator::Translate(ir::Block* input) {
     context.EnsureSpace();
     context.FinalizeFrame();
     stats.frame_size = context.CallsABI() ? kBlockSavedFrameSize : kLeafSavedFrameSize;
-    const auto saved_mask = context.CallsABI() ? (1u << scalar_registers.size()) - 1 : context.UsedGPRs();
+    const auto all_gprs = (1u << scalar_registers.size()) - 1;
+    const auto saved_mask = context.CallsABI() && context.EagerABISave() ? all_gprs : context.UsedGPRs();
     stats.saved_gprs = std::popcount(saved_mask);
-    stats.saved_fprs = context.CallsABI() ? saved_fprs.size() : 0;
+    stats.saved_fprs = context.CallsABI() && context.EagerABISave() ? saved_fprs.size() : 0;
+    stats.lazy_saved_fprs = context.CallsABI() && !context.EagerABISave() ? saved_fprs.size() : 0;
+    stats.lazy_saved_gprs = stats.lazy_saved_fprs ? std::popcount(all_gprs & ~saved_mask) : 0;
     recovery_offset = context.CurrentBufferSize();
     as.Bind(&epilogue);
     context.LeaveFloatMode();
@@ -198,9 +215,31 @@ void JitTranslator::Translate(ir::Block* input) {
     as.LD(state, 16, sp);
     as.LD(values, 24, sp);
     for (size_t i = 0; i < scalar_registers.size(); ++i) if (saved_mask & (1u << i)) as.LD(scalar_registers[i], 32 + i * 8, sp);
-    if (context.CallsABI()) for (size_t i = 0; i < saved_fprs.size(); ++i) as.FLD(saved_fprs[i], 104 + i * 8, sp);
+    if (context.CallsABI() && context.EagerABISave()) for (size_t i = 0; i < saved_fprs.size(); ++i) as.FLD(saved_fprs[i], 104 + i * 8, sp);
     as.ADDI(sp, sp, stats.frame_size);
     as.RET();
+    if (context.FlagsEnabled()) {
+        recovery_offset = context.CurrentBufferSize();
+        as.Bind(&fault_recovery);
+        // A fault may abandon a C++ frame whose s11 is unrelated to guest
+        // flags. Reload only in blocks that actually reserve this register;
+        // other blocks must leave the caller's unmodified s11 alone.
+        context.Load(flags, state, state_offset_host_flags);
+        context.Jump(epilogue);
+    }
+    if (stats.lazy_saved_fprs) {
+        as.Bind(&abi_recovery);
+        for (u32 i = 0; i < scalar_registers.size(); ++i) if (!(saved_mask & (1u << i)))
+            as.LD(scalar_registers[i], 32 + i * 8, frame);
+        for (u32 i = 0; i < saved_fprs.size(); ++i) as.FLD(saved_fprs[i], 104 + i * 8, frame);
+        context.Jump(context.FlagsEnabled() ? fault_recovery : epilogue);
+        as.Bind(&abi_save);
+        for (u32 i = 0; i < scalar_registers.size(); ++i) if (!(saved_mask & (1u << i)))
+            as.SD(scalar_registers[i], 32 + i * 8, frame);
+        for (u32 i = 0; i < saved_fprs.size(); ++i) as.FSD(saved_fprs[i], 104 + i * 8, frame);
+        context.Store(t4, state, state_offset_riscv_recovery_pc);
+        as.RET();
+    }
     EmitPrologue(entry_start);
 }
 
@@ -263,6 +302,7 @@ void JitTranslator::EmitHelper(ir::Inst* inst) {
     as.JALR(t0);
     context.EnterFloatMode();
     context.ReloadFlags();
+    context.RestoreVectorsAfterCall();
     if (ordered) as.FENCE();
     context.Load(t0, state, state_offset_halt_reason, 4);
     context.BranchZero(t0, epilogue, false);

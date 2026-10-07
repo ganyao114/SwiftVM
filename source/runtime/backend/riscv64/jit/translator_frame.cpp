@@ -7,16 +7,18 @@ using namespace biscuit;
 
 void JitTranslator::EmitPrologue(u32 entry_start) {
     // Emission tells us whether a C++ callee can be abandoned by recovery.
-    // Only those blocks need the entire LP64D set; a leaf saves its actual
-    // modified registers. Prepending shifts both endpoints of every already
+    // Frequent unconditional callees save LP64D at entry; conditional slow
+    // calls save untouched GP/FP registers only when executed. Other blocks
+    // save just their modified GPRs at entry.
+    // Prepending shifts both endpoints of every already
     // resolved body-relative branch by the same amount.
     Assembler prefix;
-    const auto saved_mask = context.CallsABI() ? (1u << scalar_registers.size()) - 1 : context.UsedGPRs();
+    const auto saved_mask = context.CallsABI() && context.EagerABISave() ? (1u << scalar_registers.size()) - 1 : context.UsedGPRs();
     prefix.ADDI(sp, sp, -s32(stats.frame_size));
     prefix.SD(ra, 0, sp); prefix.SD(frame, 8, sp); prefix.SD(state, 16, sp); prefix.SD(values, 24, sp);
     for (u32 i = 0; i < scalar_registers.size(); ++i)
         if (saved_mask & (1u << i)) prefix.SD(scalar_registers[i], 32 + i * 8, sp);
-    if (context.CallsABI()) for (u32 i = 0; i < saved_fprs.size(); ++i) prefix.FSD(saved_fprs[i], 104 + i * 8, sp);
+    if (context.CallsABI() && context.EagerABISave()) for (u32 i = 0; i < saved_fprs.size(); ++i) prefix.FSD(saved_fprs[i], 104 + i * 8, sp);
     prefix.MV(frame, sp); prefix.MV(state, a0);
     if (context.VectorFloatEnabled()) {
         prefix.FRRM(t0); prefix.SD(t0, context.FloatModeOffset(), frame); prefix.FSRMI(0);

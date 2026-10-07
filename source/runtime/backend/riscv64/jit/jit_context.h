@@ -82,8 +82,12 @@ public:
     void EnterFloatMode();
     void LeaveFloatMode();
     void BeginBlock() { abi_calls = false; used_gprs = reserved_gprs = reserved_vectors = 0; float_mode_offset = 200; phi_bindings.clear(); phi_edge_uses.clear(); }
-    void MarkABICall() { abi_calls = true; }
+    void ConfigureABIRecovery(bool eager, biscuit::Label& recovery, biscuit::Label& save) {
+        eager_abi_save = eager; abi_recovery = &recovery; abi_save = &save;
+    }
+    void MarkABICall();
     bool CallsABI() const { return abi_calls; }
+    bool EagerABISave() const { return eager_abi_save; }
     u32 UsedGPRs() const { return used_gprs | (flags_enabled ? 1u << 8 : 0); }
     void FinalizeFrame() { float_mode_offset = abi_calls ? 200 : 104; }
     u32 FloatModeOffset() const { return float_mode_offset; }
@@ -148,6 +152,9 @@ private:
     bool flags_enabled{};
     bool vector_float{};
     bool abi_calls{};
+    bool eager_abi_save{};
+    biscuit::Label* abi_recovery{};
+    biscuit::Label* abi_save{};
     u32 used_gprs{}, float_mode_offset{200};
     bool flags_dirty{};
     std::unordered_map<ir::Inst*, u32> last_uses;

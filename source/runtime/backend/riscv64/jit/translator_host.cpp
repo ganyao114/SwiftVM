@@ -57,8 +57,18 @@ bool JitTranslator::EmitVectorHostRegisters(ir::Inst* inst) {
             const auto source = scalar_registers[binding->gpr_indices[where / 8]];
             if (where % 8) as.SRLI(result, source, (where % 8) * 8);
             else if (result != source) as.MV(result, source);
+            if (where % 8 + bytes > 8) {
+                as.SLLI(t2, scalar_registers[binding->gpr_indices[where / 8 + 1]], (8 - where % 8) * 8);
+                as.OR(result, result, t2);
+            }
             context.Mask(result, bytes * 8);
         } else if (vector_pin) {
+            if (where % bytes) {
+                context.SetVectorType(8, 16); as.VSLIDEDOWN(v7, vector_home, where);
+                context.SetVectorType(bytes * 8, 16 / bytes); as.VMV_XS(result, v7);
+                context.Mask(result, bytes * 8);
+                return;
+            }
             context.SetVectorType(bytes * 8, 16 / bytes);
             const auto lane = where / bytes;
             if (lane) { as.VSLIDEDOWN(v7, vector_home, lane); as.VMV_XS(result, v7); }
@@ -73,7 +83,9 @@ bool JitTranslator::EmitVectorHostRegisters(ir::Inst* inst) {
                 if (size == 16) { context.SetVectorType(64, 2); as.VMV(result, vector_home); }
                 else {
                     context.SetVectorType(64, 2); as.VMV(result, 0);
-                    context.SetVectorType(size * 8, 1); as.VRGATHER(result, vector_home, offset / size);
+                    if (offset % size) {
+                        context.SetVectorType(8, size); as.VSLIDEDOWN(result, vector_home, offset);
+                    } else { context.SetVectorType(size * 8, 1); as.VRGATHER(result, vector_home, offset / size); }
                 }
             } else if (gpr_pin) {
                 read_integer(t0, 0, std::min<u32>(size, 8));
@@ -103,6 +115,15 @@ bool JitTranslator::EmitVectorHostRegisters(ir::Inst* inst) {
         if (size == 16) {
             const auto source = context.SourceVector(value, v1);
             context.SetVectorType(64, 2); as.VMV(vector_home, source);
+        } else if (offset % size) {
+            Vec source;
+            if (vector_result) source = context.SourceVector(value, v1);
+            else {
+                context.Read(t0, value); context.SetVectorType(64, 2); as.VMV(v7, t0); source = v7;
+            }
+            context.SetVectorType(8, 16); as.VMV(v6, 0); as.VSLIDEUP(v6, source, offset);
+            as.VID(v4); as.VMSGEU(v0, v4, int(offset)); as.VMSLTU(v5, v4, int(offset + size));
+            as.VMAND(v0, v0, v5); as.VMERGE(vector_home, vector_home, v6);
         } else {
             if (vector_result) {
                 const auto source = context.SourceVector(value, v1);
@@ -116,6 +137,22 @@ bool JitTranslator::EmitVectorHostRegisters(ir::Inst* inst) {
         for (u32 part = 0; part < (size > 8 ? 2u : 1u); ++part) {
             const u32 where = offset + part * 8, bytes = std::min<u32>(size, 8);
             const auto target = scalar_registers[binding->gpr_indices[where / 8]];
+            if (where % 8 + bytes > 8) {
+                // A canonical uniform field may straddle the two pinned
+                // 64-bit halves. Merge both parts without publishing/reloading
+                // the entire binding through memory.
+                const auto source = context.SourcePart(value, part, t0);
+                const u32 shift = (where % 8) * 8, first_bits = 64 - shift;
+                context.Mask(target, shift);
+                as.SLLI(t2, source, shift); as.OR(target, target, t2);
+                const auto next = scalar_registers[binding->gpr_indices[where / 8 + 1]];
+                const u32 next_bits = bytes * 8 - first_bits;
+                const u64 mask = ~((u64{1} << next_bits) - 1);
+                if (s64(mask) >= -2048) as.ANDI(next, next, s32(mask));
+                else { as.SRLI(next, next, next_bits); as.SLLI(next, next, next_bits); }
+                as.SRLI(t2, source, first_bits); context.Mask(t2, next_bits); as.OR(next, next, t2);
+                continue;
+            }
             if (bytes == 8) {
                 const auto source = context.SourcePart(value, part, t0);
                 if (target != source) as.MV(target, source);

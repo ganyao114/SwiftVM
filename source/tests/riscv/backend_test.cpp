@@ -34,6 +34,10 @@ using namespace swift::tests::riscv;
 Runtime* abi_runtime{};
 HaltReason abi_halt{};
 HaltReason RunRuntimeForABI(backend::State*) { return abi_halt = abi_runtime->Run(); }
+bool FaultRangeProbe(void* address, u64, u64) {
+    SwiftRiscvFaultHelper(reinterpret_cast<u64>(address));
+    return true;
+}
 #endif
 
 IntrusivePtr<ir::Block> ScalarProgram(OpCode op, ValueType type, bool flags = false) {
@@ -588,6 +592,23 @@ void RuntimeFaults() {
     std::memcpy(runtime.GetUniformBuffer().data(), &pointer, 8);
     runtime.SetLocation(0x4800);
     Check(runtime.Run() == HaltReason::PageFatal, "RV64 native fault unwinds block and dispatcher frames");
+#if defined(__riscv) && __riscv_xlen == 64
+    abi_runtime = &runtime;
+    for (u32 path = 0; path < 3; ++path) {
+        alignas(8) u64 accessible{};
+        runtime.GetState()->interp_range_check = path ? &FaultRangeProbe : nullptr;
+        runtime.GetState()->interp_range_check_ctx = path == 1 ? inaccessible : &accessible;
+        runtime.SetLocation(0x4800);
+        Check(SwiftRiscvCheckABI(&RunRuntimeForABI, nullptr) == 1 && abi_halt == HaltReason::PageFatal,
+              "lazy FP recovery preserves LP64D before any callback, inside an abandoned oracle, and after a returning oracle");
+        Check(runtime.GetState()->spill_area[backend::kRiscvRecoveryPcSlot] == 0 &&
+              runtime.GetState()->spill_area[backend::kRiscvRecoveryFrameSlot] == 0,
+              "every conditional recovery path clears both borrowed frame slots");
+    }
+    runtime.GetState()->interp_range_check = nullptr;
+    runtime.GetState()->interp_range_check_ctx = nullptr;
+    abi_runtime = nullptr;
+#endif
     const auto check_pins = [&] {
         u64 gpr{}, low{}, high{};
         std::memcpy(&gpr, runtime.GetUniformBuffer().data() + 64, 8);
@@ -617,6 +638,38 @@ void RuntimeFaults() {
     std::memcpy(runtime.GetUniformBuffer().data(), &vector_pointer, 8);
     runtime.SetLocation(0x4900);
     Check(runtime.Run() == HaltReason::PageFatal, "RV64 semantic helper fault recovers the generated frame");
+#if defined(__riscv) && __riscv_xlen == 64
+    // No host binding reserves s11 here. A fault handler must not overwrite
+    // the caller's s11 when this block has no guest flags cache.
+    for (bool cached_flags : {false, true}) {
+        const u64 location = cached_flags ? 0x4e00 : 0x4d00;
+        IntrusivePtr<ir::Block> plain{new ir::Block(ir::Location{location})};
+        ir::Assembler plain_as{plain.get()};
+        if (cached_flags) plain_as.SetCarry(plain_as.Zero().SetType(ValueType::U8));
+        auto source = plain_as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
+        auto result = plain_as.LoadMemory(ir::Operand{source}).SetType(ValueType::U64);
+        plain_as.StoreUniform(ir::Uniform{8, ValueType::U64}, result);
+        plain->SetTerminal(ir::terminal::ReturnToHost{});
+        Check(module->Push(plain.get()) && backend::TranslateIR(module, plain), "compile unpinned fault ABI fixture");
+        abi_runtime = &runtime;
+        for (u32 path = 0; path < 3; ++path) {
+            alignas(8) u64 accessible{};
+            runtime.GetState()->interp_range_check = path ? &FaultRangeProbe : nullptr;
+            runtime.GetState()->interp_range_check_ctx = path == 1 ? inaccessible : &accessible;
+            constexpr u64 initial = (u64{1} << 50) | (u64{1} << 29) | (u64{1} << 28);
+            runtime.GetState()->host_cpu_flags = initial;
+            runtime.SetLocation(location);
+            Check(SwiftRiscvCheckABI(&RunRuntimeForABI, nullptr) == 1 && abi_halt == HaltReason::PageFatal,
+                  "unpinned memory faults preserve s11 with or without a guest flags cache: flags=" + std::to_string(cached_flags) +
+                  " path=" + std::to_string(path));
+            Check(runtime.GetState()->host_cpu_flags == (cached_flags ? initial & ~(u64{1} << 29) : initial),
+                  "fault-only flags reload retains exactly the last published guest word");
+        }
+        runtime.GetState()->interp_range_check = nullptr;
+        runtime.GetState()->interp_range_check_ctx = nullptr;
+        abi_runtime = nullptr;
+    }
+#endif
     munmap(inaccessible, 4096);
     IntrusivePtr<ir::Block> atomic_block{new ir::Block(ir::Location{0x4b00})};
     ir::Assembler atomic_as{atomic_block.get()};
@@ -991,7 +1044,7 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string{argv[1]} == "--rvv") {
             NativeHostRegisters(true); NativePhi(true);
-            NativeVectors(true); NativeVectorInteger(true); NativeVectorShuffle(true); NativeLocals(true); NativeVectorFloat(true); NativeCalls(true); NativeMemoryCopy(true); NativeCrypto(true);
+            NativeVectors(true); NativeVectorInteger(true); NativeVectorShuffle(true); NativeLocals(true); NativeVectorFloat(true); NativeCalls(true); NativeMemoryFrame(true); NativeMemoryCopy(true); NativeCrypto(true);
             std::cout << "OK " << checks << " checks\n";
             return 0;
         }
@@ -1018,12 +1071,16 @@ int main(int argc, char** argv) {
             NativeMemoryCopy(std::string{argv[1]} == "--rvv-memcopy", std::string{argv[1]} == "--zacas");
             std::cout << "OK " << checks << " checks\n"; return 0;
         }
+        if (argc == 2 && (std::string{argv[1]} == "--memory" || std::string{argv[1]} == "--rvv-memory")) {
+            NativeMemoryFrame(std::string{argv[1]} == "--rvv-memory"); Memory(); RuntimeFaults();
+            std::cout << "OK " << checks << " checks\n"; return 0;
+        }
         NativeHostRegisters(); NativePhi();
         NativeScalarBits(); NativeScalarALU(); NativeFlags(); NativeVectors(); NativeVectorInteger(); NativeVectorShuffle(); NativeLocals(); NativeVectorFloat(); NativeCalls(); NativeMemoryCopy(); NativeCrypto();
         NativeAtomics();
         ScalarDifferential(); Conditions(); FlagPredicates(); MixedHelpers(); VectorSelections(); SemanticExceptions();
         ScalarCache(); RegisterPressureAndHelpers(); LocalCacheJoins(); ScalarAddressing();
-        LargeBranches(); Memory(); AlignedMemoryAtomicity();
+        LargeBranches(); NativeMemoryFrame(); Memory(); AlignedMemoryAtomicity();
         RuntimeDispatch(); RunningInterrupt(); Selections(); RuntimeFaults(); Atomics();
         RetainedIR(); FunctionEntries(); RejectCrossBlockTerminals();
         X86Integration(); Arm64Integration();

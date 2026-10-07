@@ -68,6 +68,7 @@ void NativeLocals(bool vector = false);
 void NativeVectorFloat(bool vector = false);
 void NativeCalls(bool vector = false);
 void NativeMemoryCopy(bool vector = false, bool zacas = false);
+void NativeMemoryFrame(bool vector = false);
 void NativeCrypto(bool vector = false, bool scalar_crypto = false, bool vector_crypto = false);
 void NativeHostRegisters(bool vector = false);
 void NativePhi(bool vector = false);

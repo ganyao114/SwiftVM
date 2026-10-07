@@ -23,8 +23,11 @@
 - helper 与直接发码共享这些槽。调用 helper 前，所有值和 guest uniforms 已有有效的内存副本。
 - 栈按 16 字节对齐。叶块使用 112 字节恢复帧，只保存实际使用的整数寄存器，
   不保存浮点 callee-saved 寄存器；标量浮点只使用 caller-saved 临时寄存器。
-  存在 ABI 调用的块使用 208 字节帧，保存全部整数和浮点 callee-saved 寄存器，
-  因为 helper 故障可能跳过 C++ 函数的恢复代码。
+  存在 ABI 调用的块使用 208 字节帧。显式 host call 等频繁调用在入口保存完整 ABI 集合；
+  只有 oracle、未对齐原子或宽除法 slow path 的块在入口仅保存实际修改的 GPR，
+  首次执行 ABI 调用时再通过共享冷路径保存其余 GPR 和全部浮点 callee-saved 寄存器。
+  正常返回保留精简出口，helper 故障通过专用恢复入口恢复完整集合，
+  因为故障可能跳过 C++ 函数的恢复代码。
   `gp`、`tp` 不参与分配。
 - State 的虚拟 flags 使用现有 ARM64/interpreter 的 NZCV、parity-byte、AF 布局。
   IR 的 `FlagsBit` 是请求掩码，不能用作这个状态字的移位位号。
@@ -49,11 +52,16 @@ TSO 访问使用保守的 FENCE。地址 mask、limit、末端溢出检查直接
 oracle 时才调用回调边界。对齐的 32/64 位交换、加减、AND/OR/XOR 使用 AMO；
 CAS/NEG 和 8/16 位更新使用 LR/SC，保持目标 word 的相邻位。未对齐更新使用专用
 加锁 kernel，保持既有 fallback 协议，并由故障恢复释放本线程的锁。
+这个锁只协调软件原子 kernel：软件 CAS128/未对齐更新与重叠的原生窄 AMO、普通访问
+之间尚未建立共同原子协议，不能据同宽并发测试推导混合宽度的线性化保证。
 
 V128 的数据访问、选择、原始 bitcast、位运算、整数加减、平均、移位、乘法、比较、
 min/max、饱和运算和窄化使用原生发码。无 V 时以 GPR 对及 SWAR 运算执行；有 V 时
 使用向量寄存器缓存，连续运算避免 SSA 栈访问。RVV 的 VL 仅覆盖 128 位，spill 使用
 VL=2 的 VSE64，不能使用会随 VLEN 扩大的 whole-register store。
+canonical uniform 的非 lane 对齐字段通过字节 slide 和掩码合并访问；slide-down 的源索引
+以 VLMAX 为界，VL 限制目标写入，尾部保持策略保留窄结果的零高位，遵循
+[RVV slide 规范](https://docs.riscv.org/reference/isa/v20260120/unpriv/v-st-ext.html)。
 RVV 固定点舍入只在所需模式变化或 ABI 调用后重设；所有线程必须允许已发布代码使用的 V。
 向量重排、横向运算、局部变量及全部浮点 IR 均直接发码。浮点结果显式修复 x86 NaN、
 有符号零、无序比较及转换溢出语义；RVV 运算使用 RNE，ABI 回调与出口恢复调用者 FRM。

@@ -10,7 +10,7 @@ namespace swift::runtime::backend::riscv64 {
 struct EmissionStats {
     u32 direct{};
     u32 helpers{};
-    u32 frame_size{}, saved_gprs{}, saved_fprs{};
+    u32 frame_size{}, saved_gprs{}, saved_fprs{}, lazy_saved_gprs{}, lazy_saved_fprs{};
     std::array<u32, static_cast<size_t>(ir::OpCode::BASE_COUNT)> bytes{};
 };
 
@@ -52,7 +52,8 @@ private:
     u32 slot_count{};
     u32 recovery_offset{};
     EmissionStats stats{};
-    biscuit::Label epilogue;
+    biscuit::Label epilogue, fault_recovery;
+    biscuit::Label abi_recovery, abi_save;
     std::map<ir::Inst*, biscuit::Label> labels;
     std::vector<PhiMove> entry_phis;
     std::unordered_map<ir::Inst*, std::vector<PhiMove>> taken_phis, fallthrough_phis;

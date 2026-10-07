@@ -9,6 +9,67 @@ namespace swift::tests::riscv {
 using T = ir::ValueType;
 using O = ir::OpCode;
 
+namespace {
+struct RangeProbe { u64 pointer{}; u32 calls{}; bool vector{}; u64 rounding{}; };
+#if defined(__riscv) && __riscv_xlen == 64
+extern "C" u64 SwiftRiscvVectorRange(u64, u64, u64, u64, u64, u64, u64, u64);
+#endif
+bool ProbeRange(void* opaque, u64, u64) {
+    auto& probe = *static_cast<RangeProbe*>(opaque);
+    ++probe.calls;
+#if defined(__riscv) && __riscv_xlen == 64
+    asm volatile("frrm %0" : "=r"(probe.rounding));
+    if (probe.vector) SwiftRiscvVectorRange(0, 0, 0, 0, 0, 0, 0, 0);
+    // The assembly helper changes every GP/FP callee-saved register before
+    // restoring them, exercising a real C ABI boundary on each oracle call.
+    SwiftRiscvFaultHelper(probe.pointer);
+#endif
+    return true;
+}
+}  // namespace
+
+void NativeMemoryFrame(bool vector) {
+    rv::HostFeatures features{}; features.vector = vector;
+    IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc820})};
+    ir::Assembler as{block.get()};
+    auto address = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+    auto live = as.LoadUniform(ir::Uniform{32, T::V128}).SetType(T::V128);
+    if (vector) live = as.VecFAdd(live, live, ir::Imm{u64{32}}).SetType(T::V128);
+    auto sum = as.LoadMemory(ir::Operand{address}).SetType(T::U64);
+    for (u32 i = 0; i < 2; ++i) {
+        auto next = as.LoadMemoryTSO(ir::Operand{address}).SetType(T::U64);
+        sum = as.Add(sum, ir::Operand{next}).SetType(T::U64);
+    }
+    as.StoreUniform(ir::Uniform{8, T::U64}, sum);
+    as.StoreUniform(ir::Uniform{48, T::V128}, live);
+    block->SetTerminal(ir::terminal::ReturnToHost{});
+    Compiled compiled{block.get(), true, features};
+    Check(compiled.translator.Stats().saved_fprs == 0 && compiled.translator.Stats().lazy_saved_fprs == 12 &&
+          compiled.translator.Stats().saved_gprs < 9 &&
+          compiled.translator.Stats().saved_gprs + compiled.translator.Stats().lazy_saved_gprs == 9 &&
+          compiled.translator.Stats().frame_size == rv::kBlockSavedFrameSize,
+          "memory fast paths save only modified GPRs and no FPRs; actual calls retain full fault recovery");
+    for (bool oracle : {false, true}) {
+        alignas(8) u64 memory = 0x17369fcb;
+        RangeProbe probe{reinterpret_cast<u64>(&memory), 0, vector};
+        StateStorage input; input.Put(0, reinterpret_cast<u64>(&memory));
+        input.Put(32, 0x3f8000003f800000ULL); input.Put(40, input.Get(32));
+        if (oracle) { input.state->interp_range_check = &ProbeRange; input.state->interp_range_check_ctx = &probe; }
+#if defined(__riscv) && __riscv_xlen == 64
+        u64 previous{}, current{}; asm volatile("fsrmi %0, 2" : "=r"(previous) :: "memory");
+        const auto abi = SwiftRiscvCheckABI(compiled.fn, input.state);
+        asm volatile("frrm %0\nfsrm %1" : "=&r"(current) : "r"(previous) : "memory");
+        Check(abi == 1 && current == 2 && (!oracle || probe.rounding == 2),
+              "optional and repeated memory callbacks preserve LP64D and the caller's rounding mode");
+#endif
+        Check(input.state->halt_reason == HaltReason::CallHost && input.Get(8) == memory * 3 &&
+              input.Get(48) == (vector ? 0x4000000040000000ULL : input.Get(32)) && input.Get(56) == input.Get(48) &&
+              probe.calls == (oracle ? 3u : 0u),
+              "live GPR/vector values survive zero or three conditional oracle calls");
+    }
+    std::cout << "PASS conditional memory ABI frames and repeated oracle calls\n";
+}
+
 void NativeMemoryCopy(bool vector, bool zacas) {
     rv::HostFeatures features{}; features.vector = vector; features.zacas = zacas;
     for (auto op : {O::MemoryCopy, O::MemoryCopyTSO}) for (u32 size : {0u, 1u, 2u, 3u, 4u, 5u, 7u, 8u, 9u, 13u, 15u, 16u, 17u, 31u, 32u, 33u, 127u, 128u, 129u, 255u, 256u, 257u, 4096u}) {

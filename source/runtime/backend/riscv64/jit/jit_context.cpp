@@ -16,6 +16,24 @@ void JitContext::EnsureSpace() {
         buffer.Grow(buffer.GetSizeInBytes() + 16384);
 }
 
+void JitContext::MarkABICall() {
+    abi_calls = true;
+    if (eager_abi_save) return;
+    // The entry frame saves every register modified by this JIT block. The
+    // remaining GP/FP registers keep their entry values until the first C ABI
+    // call. A shared cold stub saves them once and selects complete recovery
+    // in case a fault abandons the callee's restores. Only ra/t4/t5/t6 are
+    // scratch here; ra already has an entry-frame home.
+    ASSERT(abi_recovery && abi_save);
+    Label saved;
+    Load(t5, state, state_offset_riscv_recovery_pc);
+    masm.LILabel(t4, abi_recovery);
+    masm.BEQ(t5, t4, &saved);
+    masm.LILabel(t5, abi_save);
+    masm.JALR(ra, 0, t5);
+    masm.Bind(&saved);
+}
+
 void JitContext::Address(GPR result, GPR base, s64 offset) {
     if (offset >= -2048 && offset <= 2047) {
         masm.ADDI(result, base, static_cast<s32>(offset));

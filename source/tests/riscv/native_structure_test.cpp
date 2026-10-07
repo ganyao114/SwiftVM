@@ -122,6 +122,41 @@ void NativeHostRegisters(bool vector) {
             }
         }
     }
+    // Canonical uniform fields permit byte offsets that are not FPR lane
+    // offsets, including fields straddling the two 64-bit halves.
+    for (bool fpr : {false, true}) for (u32 bytes : {1u, 2u, 4u, 8u})
+    for (u32 offset = 0; offset + bytes <= (fpr ? 16u : 8u); ++offset) for (bool scalar : {false, true}) {
+        const auto type = scalar ? ir::GetIRValueType(bytes) : ir::GetVecIRValueType(bytes);
+        const u32 base = fpr ? 16 : 0, full_size = fpr ? 16 : 8;
+        const auto full_type = fpr ? T::V128 : T::U64;
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe0c0})};
+        ir::Assembler as{block.get()};
+        auto captured = as.LoadUniform(ir::Uniform{base, full_type}).SetType(full_type);
+        auto read = as.LoadUniform(ir::Uniform{base + offset, type}).SetType(type);
+        auto replacement = as.LoadUniform(ir::Uniform{32, type}).SetType(type);
+        as.StoreUniform(ir::Uniform{base + offset, type}, replacement);
+        auto current = as.LoadUniform(ir::Uniform{base, full_type}).SetType(full_type);
+        as.StoreUniform(ir::Uniform{64, full_type}, captured);
+        as.StoreUniform(ir::Uniform{80, type}, read);
+        as.StoreUniform(ir::Uniform{96, full_type}, current);
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        for (bool cache : {false, true}) {
+            Compiled compiled{block.get(), cache, features, bindings};
+            StateStorage state;
+            std::array<u8, 16> initial, replacement_bytes, expected;
+            for (u32 i = 0; i < 16; ++i) { initial[i] = u8(29 + i * 13); replacement_bytes[i] = u8(237 - i * 17); }
+            expected = initial; std::memcpy(expected.data() + offset, replacement_bytes.data(), bytes);
+            std::memcpy(state.state->uniform_buffer_begin + base, initial.data(), full_size);
+            std::memcpy(state.state->uniform_buffer_begin + 32, replacement_bytes.data(), 16);
+            Check(compiled.translator.Stats().helpers == 0 && compiled.fn(state.state) == HaltReason::CallHost &&
+                  std::memcmp(state.state->uniform_buffer_begin + base, expected.data(), full_size) == 0 &&
+                  std::memcmp(state.state->uniform_buffer_begin + 64, initial.data(), full_size) == 0 &&
+                  std::memcmp(state.state->uniform_buffer_begin + 80, initial.data() + offset, bytes) == 0 &&
+                  std::memcmp(state.state->uniform_buffer_begin + 96, expected.data(), full_size) == 0,
+                  "canonical uniform byte fields preserve captures and untouched bytes: fpr=" + std::to_string(fpr) +
+                  " offset=" + std::to_string(offset) + " bytes=" + std::to_string(bytes) + " scalar=" + std::to_string(scalar));
+        }
+    }
     {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe100})};
         ir::Assembler as{block.get()};

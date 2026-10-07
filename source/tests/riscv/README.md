@@ -93,6 +93,8 @@ AES 同时验证全部轮 IR 与 FIPS 197 的十轮已知答案。
 `--crypto`/`--scalar-crypto`/`--vector-crypto`、`--zacas` 可以分别运行对应用例。
 `--structure`/`--rvv-structure` 检查逻辑 host GPR/FPR 绑定、全部部分字段、捕获语义、
 回调更新与向量寄存器破坏，以及 Phi 的前向选择、循环交换、跨寄存器/栈槽复制环和窄立即数。
+`--memory`/`--rvv-memory` 检查条件 ABI 帧、重复 oracle 回调、callee-saved/FRM 保持，
+以及调用前、oracle 内和 oracle 返回后的故障恢复。
 原生浮点基线已通过 99,176 项检查，普通 RVV 浮点通过 99,330 项；内存复制/CAS128
 专测通过 10,599 项；向量加密专测通过 957 项，缓存复用通过 23 项。
 
@@ -104,7 +106,8 @@ AES 同时验证全部轮 IR 与 FIPS 197 的十轮已知答案。
 并检查算术/AES 串联没有 SSA 栈流量；吞吐、延迟、跨 hart 原子顺序与 SMC 仍须在目标 CPU 测量。
 host GPR 运算链无 SSA 栈访问，完整读写各用一条寄存器移动；归一化的 32 位发布也只用一条移动，
 低字节发布用两条指令。标量和 RVV 循环 Phi 在寄存器充足时同样没有 SSA 栈访问。
-叶块只保存实际使用的 GPR，不保存浮点 callee-saved 寄存器；有 ABI 调用的块保留完整故障恢复帧。
+叶块只保存实际使用的 GPR，不保存浮点 callee-saved 寄存器；条件 ABI 路径也使用精简入口/出口，
+首次实际调用时补存其余寄存器并切换完整故障恢复入口。显式 host call 保留完整入口保存。
 
 2026-10-07 的交叉构建还执行了 `func_tests_x86_64` 和 `func_tests_aarch64`，
 全部 stdout 与既有基线逐字节一致，退出码分别为 101 和 25。原生 ARM64 的
@@ -256,3 +259,36 @@ RVV128/RVV256 各 667 个结构检查，包含破坏 RVV 寄存器的回调。
 `/tmp/swiftvm-rv64-complete-ir-arm-regression-20261007.log` 和
 `/tmp/swiftvm-rv64-complete-ir-guests-20261007.log`。
 guest 输出与结果位于 Ubuntu 的 `/tmp/swiftvm-rv64-complete-ir-guests-20261007/`。
+
+## 2026-10-07 条件 ABI 帧与 uniform 字节字段补强
+
+oracle、未对齐原子和宽除法的条件 ABI 调用使用共享冷路径，首次实际调用才补存未修改的
+GPR 与 12 个 callee-saved FPR。入口/正常出口只保存恢复实际修改的 GPR；未调用 oracle
+的内存路径不执行原有的 24 条 FPR 栈读写。显式 host call、基线大复制和软件 CAS128
+保留入口完整保存，避免频繁调用反复检查。故障仍能恢复完整 LP64D 集合和调用者 FRM。
+
+新增无 host binding 的故障回归在旧处理器下返回 1，精确命中 `flags=0 path=0`：
+旧处理器把 guest flags 无条件写入未保存的 `s11`。现在只有保留 flags 缓存的生成块
+从专用故障入口重载这个寄存器，未使用 `s11` 的块保持调用者值。
+调用前、oracle 内和 oracle 返回后的故障，以及开启/关闭 flags 缓存的路径均通过 ABI 检查。
+
+canonical uniform 允许不按 lane 对齐的字节字段。全部合法偏移、标量/向量类型及
+缓存开关均使用独立字节数组验证；跨越 64 位两半的 GPR 字段直接拼接/合并，
+RVV 字段使用字节移位与掩码合并，不通过发布/重载整个绑定绕过问题。
+最终专测在 RV64G、RVV128、RVV256 各通过 200 个内存/故障检查，
+结构检查分别为 1,258 / 1,259 / 1,259。
+
+故障负对照日志为 `/tmp/swiftvm-rv64-unpinned-s11-negative-20261007.log`，
+最终专测日志为 `/tmp/swiftvm-rv64-lazy-abi-recovery-focused-20261007.log`。
+
+完成 `s11` 故障修复后的最终十组 CTest 再次全部通过：基线/单块模式各 283,407，
+缓存复用 23，Zbb 15,046，标量 crypto 956，RVV128/RVV256 各 142,854，
+向量 crypto 各 957，Zacas 10,599。日志为
+`/tmp/swiftvm-rv64-complete-final-ctest-20261007.log`。
+算术链发码预算保持为 U64 752/376 字节、RVV 396 字节；启用缓存的 SSA 读写均为零。
+macOS 原生构建三个目标通过；ARM64 回归通过 462 个用例、1,126,857 个断言。
+日志为 `/tmp/swiftvm-rv64-complete-final-native-build-20261007.log` 与
+`/tmp/swiftvm-rv64-complete-final-arm-regression-20261007.log`。
+最后重新执行 x86-64/AArch64 完整 guest，七行 stdout 逐字节匹配，退出码为 101/25。
+摘要为 `/tmp/swiftvm-rv64-complete-final-guests-20261007.log`，输出与 JSON 结果位于 Ubuntu 的
+`/tmp/swiftvm-rv64-complete-final-guests-20261007/`。

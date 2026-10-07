@@ -94,6 +94,8 @@ void NativeCalls(bool vector) {
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled cached{block.get(), true, features}, uncached{block.get(), false, features};
         Check(cached.translator.Stats().helpers == 0, "wide division has a native narrow fast path and direct wide kernel");
+        Check(cached.translator.Stats().saved_fprs == 0 && cached.translator.Stats().lazy_saved_fprs == 12,
+              "narrow Div128 paths do not save floating registers for an unexecuted wide kernel");
         for (u64 hi : {u64{0}, u64{1}, u64{1} << 63, UINT64_MAX}) for (u64 lo : {u64{0}, u64{1}, u64{1} << 63, UINT64_MAX})
             for (u64 d : {u64{0}, u64{1}, u64{3}, u64{1} << 63, UINT64_MAX}) {
                 StateStorage a, b; a.Put(0, hi); a.Put(8, lo); a.Put(16, d); b.Put(0, hi); b.Put(8, lo); b.Put(16, d);
