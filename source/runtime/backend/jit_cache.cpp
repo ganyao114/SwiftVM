@@ -79,9 +79,9 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
         return;
     }
     const auto& config = address_space.GetConfig();
-    if (BackedgeFlagsEnabled() ||
+    if (config.backend_isa == kArm64 && (BackedgeFlagsEnabled() ||
         (config.region_edges && svm_config.backedge_flags) ||
-        svm_config.flags_loop_lazy || svm_config.flags_regs) {
+        svm_config.flags_loop_lazy || svm_config.flags_regs)) {
         // Recovery veneers are block-local code offsets. SerialBlock does
         // not yet serialize that relocation/eligibility contract, so refuse
         // disk reuse rather than reviving a unit with an imprecise recipe.
@@ -206,6 +206,11 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
                               const std::vector<SerialFaultSite>& fault_sites) {
     stats.units_compiled.fetch_add(1, std::memory_order_relaxed);
     if (!enabled || !exec_data || !rw_data || code_size == 0 || blocks.empty()) {
+        return;
+    }
+    if (address_space.GetConfig().backend_isa == kRiscv64) {
+        RecordRiscvUnit(module, guest_start, is_function, exec_data, rw_data, code_size,
+                        blocks, link_sites, fault_sites);
         return;
     }
     // A module override can enable the B-class feature after the process-level
@@ -417,6 +422,7 @@ void JitDiskCache::Save() {
 // Loading
 // --------------------------------------------------------------------------
 bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const SerialUnit& unit) {
+    if (address_space.GetConfig().backend_isa == kRiscv64) return ReviveRiscvUnit(module, unit);
     PerfScope2 perf_revive{GetPerfStats2().cache_revive};
     // 1. The guest bytes this code was produced from must still be there.
     for (const auto& block : unit.blocks) {

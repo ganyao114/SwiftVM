@@ -7,12 +7,14 @@
 #include <algorithm>
 #include <cstring>
 #include <map>
+#include <unordered_set>
 #include <elfio/elfio.hpp>
 #include "fmt/format.h"
 
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/code_serial.h"
 #include "runtime/backend/module.h"
+#include "runtime/backend/riscv64/link.h"
 #include "runtime/ir/function.h"
 
 namespace swift::aot {
@@ -72,6 +74,10 @@ int InstallArtifact(backend::AddressSpace& address_space,
                     LoadReport& report,
                     std::string& error) {
     const auto& config = address_space.GetConfig();
+    if (artifact.host_isa != config.backend_isa) {
+        error = "artifact host ISA differs from the runtime backend";
+        return kAotKeyMismatch;
+    }
     const auto& host_image = backend::GetHostImage();
     if (host_image.size == 0) {
         error = "cannot determine the SwiftVM host image span";
@@ -118,7 +124,7 @@ int InstallArtifact(backend::AddressSpace& address_space,
     // --- pass 1: nothing is installed until every unit checks out ---------
     std::vector<u64> block_hashes;
     for (const auto& unit : artifact.units) {
-        if (unit.blocks.empty()) {
+        if (unit.blocks.empty() || unit.is_function > 1) {
             error = fmt::format("unit {:#x} has no blocks", unit.guest_start);
             return kAotBadFormat;
         }
@@ -130,7 +136,34 @@ int InstallArtifact(backend::AddressSpace& address_space,
             error = fmt::format("unit {:#x} has invalid fault metadata", unit.guest_start);
             return kAotBadFormat;
         }
+        if (!unit.ValidLinkSites() ||
+            (!unit.link_sites.empty() && (config.backend_isa != runtime::kRiscv64 ||
+             !address_space.GetModule(unit.guest_start)->IsDirectLinkConfigured()))) {
+            error = fmt::format("unit {:#x} has invalid direct-link metadata", unit.guest_start);
+            return kAotBadFormat;
+        }
+        for (const auto& site : unit.link_sites) {
+            u32 instruction;
+            std::memcpy(&instruction, artifact.code.data() + unit.code_offset + site.code_offset, 4);
+            if (instruction != site.unlinked_instruction) {
+                error = fmt::format("unit {:#x} has a changed direct-link instruction", unit.guest_start);
+                return kAotBadFormat;
+            }
+        }
+        const auto root = std::find_if(unit.blocks.begin(), unit.blocks.end(), [&](const auto& block) {
+            return block.IsPublished() && block.guest_start == unit.guest_start &&
+                   (config.backend_isa != runtime::kRiscv64 || block.code_offset == 0);
+        });
+        if (root == unit.blocks.end()) {
+            error = fmt::format("unit {:#x} has no root entry", unit.guest_start);
+            return kAotBadFormat;
+        }
+        std::unordered_set<u64> block_locations;
         for (const auto& block : unit.blocks) {
+            if (!block.IsDependency() && !block_locations.insert(block.guest_start).second) {
+                error = fmt::format("unit {:#x} has duplicate block metadata", unit.guest_start);
+                return kAotBadFormat;
+            }
             u64 hash{};
             if (!HashGuestRange(guest_memory_base, guest_addr_mask, block.guest_start,
                                 block.guest_end, hash)) {
@@ -144,7 +177,9 @@ int InstallArtifact(backend::AddressSpace& address_space,
                         block.guest_start, block.guest_end, unit.guest_start);
                 return kAotGuestMismatch;
             }
-            if (block.code_offset % 4 != 0 || block.code_offset >= unit.code_size) {
+            if ((block.IsPublished() && (block.code_offset % 4 != 0 || block.code_offset >= unit.code_size)) ||
+                (!block.IsPublished() && (block.code_offset != UINT32_MAX || block.IsLinkable())) ||
+                !block.ValidEntryFlags()) {
                 error = fmt::format("unit {:#x} has an out-of-range block entry",
                                     unit.guest_start);
                 return kAotBadFormat;
@@ -179,12 +214,18 @@ int InstallArtifact(backend::AddressSpace& address_space,
         std::memcpy(buffer.rw_data, artifact.code.data() + unit.code_offset, unit.code_size);
         std::string reloc_error;
         if (!backend::ApplyRelocations(
-                    buffer.rw_data, unit.code_size, unit.relocs, host_image, &reloc_error)) {
+                    buffer.rw_data, unit.code_size, unit.relocs, host_image, &reloc_error, config.backend_isa)) {
             error = fmt::format("relocation failed for unit {:#x}: {}", unit.guest_start,
                                 reloc_error);
             return kAotRelocFailed;
         }
         buffer.Flush();
+        if (config.backend_isa == runtime::kRiscv64 &&
+            !backend::riscv64::RegisterLinkSites(module, buffer, unit.link_sites)) {
+            module->GetCodeCache(buffer.exec_data)->FreeCode(buffer.exec_data);
+            error = fmt::format("cannot register direct links for unit {:#x}", unit.guest_start);
+            return kAotBadFormat;
+        }
 
         // Publish the same shape a normal compile would have left behind, so
         // SMC invalidation, the fault table and the dispatcher all see what
@@ -193,12 +234,22 @@ int InstallArtifact(backend::AddressSpace& address_space,
         // does not exist.
         ir::AddressNode* node = nullptr;
         backend::JitCache* jit_cache = nullptr;
+        const auto root = std::find_if(unit.blocks.begin(), unit.blocks.end(), [&](const auto& entry) {
+            return entry.IsPublished() && entry.guest_start == unit.guest_start;
+        });
         if (unit.is_function) {
             auto* function = new ir::Function(ir::Location{unit.guest_start});
             VAddr max_end = unit.guest_start;
             for (const auto& block : unit.blocks) {
+                if (block.IsDependency()) continue;
                 auto* ir_block = new ir::Block(ir::Location{block.guest_start});
                 ir_block->SetEndLocation(ir::Location{block.guest_end});
+                if (block.IsPublished() && config.backend_isa == runtime::kRiscv64) {
+                    auto& cache = ir_block->GetJitCache();
+                    cache.jit_state = backend::JitState::Cached;
+                    cache.cache_id = idx; cache.offset_in = buffer.offset + block.code_offset;
+                    cache.cache_size = buffer.size - block.code_offset;
+                }
                 function->AddBlock(ir_block);
                 max_end = std::max<VAddr>(max_end, block.guest_end);
             }
@@ -207,16 +258,17 @@ int InstallArtifact(backend::AddressSpace& address_space,
             jit_cache = &function->GetJitCache();
         } else {
             auto* block = new ir::Block(ir::Location{unit.guest_start});
-            block->SetEndLocation(ir::Location{unit.blocks.front().guest_end});
+            block->SetEndLocation(ir::Location{root->guest_end});
             node = block;
             jit_cache = &block->GetJitCache();
         }
         jit_cache->jit_state = backend::JitState::Cached;
         jit_cache->cache_id = idx;
-        jit_cache->offset_in = buffer.offset;
-        jit_cache->cache_size = buffer.size;
+        jit_cache->offset_in = buffer.offset + root->code_offset;
+        jit_cache->cache_size = buffer.size - root->code_offset;
 
         if (!module->Push(node)) {
+            module->DiscardLinkSource(buffer.exec_data);
             if (unit.is_function) {
                 delete static_cast<ir::Function*>(node);
             } else {
@@ -240,8 +292,12 @@ int InstallArtifact(backend::AddressSpace& address_space,
         }
 
         for (const auto& block : unit.blocks) {
-            address_space.PushCodeCache(ir::Location{block.guest_start},
-                                        buffer.exec_data + block.code_offset);
+            if (block.IsPublished()) {
+                auto* entry = buffer.exec_data + block.code_offset;
+                address_space.PushCodeCache(ir::Location{block.guest_start}, entry);
+                if (block.IsLinkable() && config.backend_isa == runtime::kRiscv64) (void)module->PublishLinkTarget(
+                        ir::Location{block.guest_start}, entry, buffer.exec_data);
+            }
             if (!module->GetModuleConfig().read_only) {
                 address_space.GetSmcTracker().RegisterNode(
                         module, node, block.guest_start, block.guest_end);

@@ -10,8 +10,22 @@
 #include <elfio/elfio.hpp>
 #include "fmt/format.h"
 #include "runtime/backend/module.h"
+#include "runtime/backend/link_manager.h"
 
 namespace swift::aot {
+
+bool AotUnit::ValidLinkSites() const {
+    u64 previous_end{};
+    for (const auto& site : link_sites) {
+        if (site.code_offset % 4 || site.code_offset < previous_end ||
+            u64(site.code_offset) + 4 > code_size ||
+            site.kind >= u8(runtime::backend::LinkSiteKind::Count) ||
+            (site.unlinked_instruction & 0xfff) != (0x6f | (28 << 7)) ||
+            site.HasFlagsBypass() || !site.ValidFlagsBypass(code_size)) return false;
+        previous_end = u64(site.code_offset) + 4;
+    }
+    return true;
+}
 
 bool AotUnit::ValidFaultSites() const {
     const bool has_owner = std::any_of(fault_sites.begin(), fault_sites.end(), [&](const auto& site) {
@@ -48,6 +62,7 @@ void WriteUnitRecord(BlobWriter& w, const AotUnit& u) {
         w.U64(b.guest_end);
         w.U32(b.code_offset);
         w.U64(b.guest_bytes_hash);
+        w.U8(b.entry_flags);
     }
     w.U32(static_cast<u32>(u.relocs.size()));
     for (const auto& r : u.relocs) {
@@ -67,6 +82,11 @@ void WriteUnitRecord(BlobWriter& w, const AotUnit& u) {
         w.U32(site.recovery_offset);
         w.U8(site.recovery_kind);
     }
+    w.U32(static_cast<u32>(u.link_sites.size()));
+    for (const auto& site : u.link_sites) {
+        w.U32(site.code_offset); w.U64(site.guest_target);
+        w.U8(site.kind); w.U32(site.unlinked_instruction);
+    }
 }
 
 bool ReadUnitRecord(BlobReader& r, AotUnit& u) {
@@ -84,10 +104,12 @@ bool ReadUnitRecord(BlobReader& r, AotUnit& u) {
     u.blocks.resize(count);
     for (auto& b : u.blocks) {
         if (!r.U64(b.guest_start) || !r.U64(b.guest_end) || !r.U32(b.code_offset) ||
-            !r.U64(b.guest_bytes_hash)) {
+            !r.U64(b.guest_bytes_hash) || !r.U8(b.entry_flags)) {
             return false;
         }
-        if (b.code_offset >= u.code_size || b.guest_end < b.guest_start) {
+        if ((b.IsPublished() ? b.code_offset >= u.code_size : b.code_offset != UINT32_MAX) ||
+            !b.ValidEntryFlags() ||
+            (!b.IsPublished() && b.IsLinkable()) || b.guest_end < b.guest_start) {
             return false;
         }
     }
@@ -112,7 +134,13 @@ bool ReadUnitRecord(BlobReader& r, AotUnit& u) {
             !r.U32(site.host_end) || !r.U32(site.recovery_offset) ||
             !r.U8(site.recovery_kind)) return false;
     }
-    return u.ValidFaultSites();
+    if (!r.U32(count) || count > r.Remaining() / 17) return false;
+    u.link_sites.resize(count);
+    for (auto& site : u.link_sites) {
+        if (!r.U32(site.code_offset) || !r.U64(site.guest_target) ||
+            !r.U8(site.kind) || !r.U32(site.unlinked_instruction)) return false;
+    }
+    return u.ValidFaultSites() && u.ValidLinkSites();
 }
 
 }  // namespace
@@ -325,6 +353,7 @@ bool WriteArtifact(const std::string& guest_elf_path,
     std::map<u64, std::pair<u64, u64>> by_guest;
     for (const auto& u : image.units) {
         for (const auto& b : u.blocks) {
+            if (!b.IsPublished()) continue;
             by_guest.emplace(b.guest_start,
                              std::pair<u64, u64>{u.code_offset + b.code_offset,
                                                  u.code_size - b.code_offset});
@@ -338,8 +367,11 @@ bool WriteArtifact(const std::string& guest_elf_path,
     w.create(ELFCLASS64, ELFDATA2LSB);
     w.set_os_abi(ELFOSABI_LINUX);
     w.set_type(ET_DYN);
-    w.set_machine(EM_AARCH64);
-    w.set_flags(0);
+    if (image.host_isa != runtime::kArm64 && image.host_isa != runtime::kRiscv64) {
+        error = "unsupported AOT host ISA"; return false;
+    }
+    w.set_machine(image.host_isa == runtime::kRiscv64 ? EM_RISCV : EM_AARCH64);
+    w.set_flags(image.host_isa == runtime::kRiscv64 ? 4 : 0); // LP64D, no RVC.
 
     // --- copy every original section, in order ----------------------------
     // Index 0 is the null section in both files; ELFIO's create() also made
@@ -539,8 +571,10 @@ bool ReadArtifact(const std::string& path, AotImage& out, std::string& error) {
         error = "cannot open artifact " + path;
         return false;
     }
-    if (r.get_class() != ELFCLASS64 || r.get_machine() != EM_AARCH64) {
-        error = "artifact is not an AArch64 ELF64";
+    if (r.get_class() != ELFCLASS64 || r.get_encoding() != ELFDATA2LSB ||
+        (r.get_machine() != EM_AARCH64 && r.get_machine() != EM_RISCV) ||
+        (r.get_machine() == EM_RISCV && r.get_flags() != 4)) {
+        error = "artifact is not a supported AArch64/RV64 LP64D ELF64";
         return false;
     }
     const section* info = r.sections[kAotInfoSectionName];
@@ -559,6 +593,7 @@ bool ReadArtifact(const std::string& path, AotImage& out, std::string& error) {
         error = "the code section size disagrees with the metadata";
         return false;
     }
+    out.host_isa = r.get_machine() == EM_RISCV ? runtime::kRiscv64 : runtime::kArm64;
     std::memcpy(out.code.data(), code->get_data(), out.code.size());
     if (swift::runtime::backend::HashBytes(out.code.data(), out.code.size(), kFnvOffset) !=
         out.code_hash) {

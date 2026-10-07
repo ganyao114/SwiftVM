@@ -62,10 +62,10 @@ bool JitTranslator::EmitNativeCall(ir::Inst* inst) {
         if (!pseudos.empty()) secondary = pseudos.front();
         if (op == O::Cpuid) {
             context.SaveVectorsForCall();
-            as.MV(a0, state); as.LI(a1, inst->GetArg<ir::Imm>(3).Get());
+            as.MV(a0, state); context.HostAddress(a1, inst->GetArg<ir::Imm>(3).Get());
             context.Read(a2, inst->GetArg<ir::Value>(0)); context.Read(a3, inst->GetArg<ir::Value>(1));
             as.LI(a4, inst->GetArg<ir::Imm>(2).Get());
-            as.LI(t0, reinterpret_cast<u64>(&QueryPair)); context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
+            context.HostAddress(t0, reinterpret_cast<u64>(&QueryPair)); context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
             as.MV(pair[0], a0); as.MV(pair[1], a1);
             context.ReloadFlags(); context.RestoreVectorsAfterCall();
         } else {
@@ -80,7 +80,7 @@ bool JitTranslator::EmitNativeCall(ir::Inst* inst) {
             else { as.DIVU(pair[0], a1, a2); as.REMU(pair[1], a1, a2); }
             as.J(&done); as.Bind(&slow);
             context.SaveVectorsForCall();
-            as.LI(t0, reinterpret_cast<u64>(sign ? &DivideSigned128 : &DivideUnsigned128));
+            context.HostAddress(t0, reinterpret_cast<u64>(sign ? &DivideSigned128 : &DivideUnsigned128));
             context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
             as.MV(pair[0], a0); as.MV(pair[1], a1);
             context.ReloadFlags(); context.RestoreVectorsAfterCall(); as.J(&done);
@@ -96,7 +96,7 @@ bool JitTranslator::EmitNativeCall(ir::Inst* inst) {
         context.SaveVectorsForCall();
         if (op == O::CallLambda || op == O::CallLocation || op == O::CallDynamic) {
             const auto target = inst->GetArg<ir::Lambda>(0);
-            if (target.IsValue()) context.Read(a1, target.GetValue()); else as.LI(a1, target.GetImm().Get());
+            if (target.IsValue()) context.Read(a1, target.GetValue()); else context.HostAddress(a1, target.GetImm().Get());
             if (op == O::CallLambda) {
                 for (u32 arg = 1; arg < 4; ++arg) {
                     if (inst->ArgAt(arg).IsValue()) append(inst->GetArg<ir::Value>(arg));
@@ -104,10 +104,10 @@ bool JitTranslator::EmitNativeCall(ir::Inst* inst) {
                 }
             } else for (const auto& param : inst->GetArg<ir::Params>(1)) append(param.data);
         } else if (op == O::X87Op) {
-            as.LI(a1, reinterpret_cast<u64>(&swift::x86::X87Dispatch));
+            context.HostAddress(a1, reinterpret_cast<u64>(&swift::x86::X87Dispatch));
             append(inst->GetArg<ir::Value>(0)); append(inst->GetArg<ir::Imm>(1)); append(inst->GetArg<ir::Value>(2));
         } else {
-            as.LI(a1, reinterpret_cast<u64>(&swift::x86::SwiftSse42StrEvalImplicit));
+            context.HostAddress(a1, reinterpret_cast<u64>(&swift::x86::SwiftSse42StrEvalImplicit));
             // A vector argument occupies two integer C-ABI parameters here.
             context.ReadPart(a2, inst->GetArg<ir::Value>(0), 0); context.ReadPart(a3, inst->GetArg<ir::Value>(0), 1);
             context.ReadPart(a4, inst->GetArg<ir::Value>(1), 0); context.ReadPart(a5, inst->GetArg<ir::Value>(1), 1);
@@ -120,7 +120,7 @@ bool JitTranslator::EmitNativeCall(ir::Inst* inst) {
             else { context.Data(t2, args[arg]); as.SD(t2, (arg - 6) * 8, sp); }
         }
         static const auto calls = HostCalls(std::make_index_sequence<9>{});
-        as.MV(a0, state); as.LI(t0, calls[count]);
+        as.MV(a0, state); context.HostAddress(t0, calls[count]);
         context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
         if (count > 6) as.ADDI(sp, sp, 16);
         if (result != a0) as.MV(result, a0);

@@ -93,6 +93,8 @@ def main():
     ap.add_argument("-o", "--out", required=True)
     ap.add_argument("--base", default="0x400000")
     ap.add_argument("--entry", default="_start")
+    ap.add_argument("--separate-data-pages", action="store_true",
+                    help="place writable data after a 16 KiB page boundary")
     args = ap.parse_args()
     base = int(args.base, 0)
     objs = [Obj(p) for p in args.objects]
@@ -116,7 +118,11 @@ def main():
     # One PT_LOAD, file offset == vaddr - base, so the on-disk prefix is the
     # mapped image. Section headers/symtab go after it.
     cursor = base + EHDR_SIZE + PHDR_SIZE
+    data_started = False
     for _, obj, sec in chunks:
+        if args.separate_data_pages and not data_started and sec["flags"] & SHF_WRITE:
+            cursor = align_up(cursor, 16384)
+            data_started = True
         cursor = align_up(cursor, max(sec["align"], 1))
         obj.addr[sec["index"]] = cursor
         cursor += sec["size"]

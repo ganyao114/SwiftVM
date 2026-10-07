@@ -170,6 +170,8 @@ void JitTranslator::Translate(ir::Block* input) {
             throw std::runtime_error("RV64 goto has no bound target");
     }
     slot_count = std::max(slot_count, u32{1});
+    const bool guest_instructions = std::any_of(block->GetInstList().begin(), block->GetInstList().end(),
+            [](const ir::Inst& inst) { return inst.GetOp() == O::AdvancePC; });
     auto& as = context.GetMasm();
     context.AcquireMemoryLease();
     context.InitializeValues();
@@ -194,13 +196,21 @@ void JitTranslator::Translate(ir::Block* input) {
             context.DiscardValues();
         } else if (function_halt_checks.contains(&inst)) {
             context.Load(t0, state, state_offset_halt_reason, 4);
-            context.BranchZero(t0, epilogue, false);
+            Label resume;
+            context.BranchZero(t0, resume, true);
+            context.PublishUniformBindingsForExit(); context.Jump(epilogue);
+            as.Bind(&resume);
         } else if (inst.GetOp() == O::BindLabel) {
             auto& label = labels.at(inst.GetArg<ir::Value>(0).Def());
             context.PublishFlags();
             context.FlushValuesTo(context.LiveAt(&inst));
             as.Bind(&label);
-            if (!context.IsSyntheticLabel(&inst)) Poll();
+            // Frontends use local labels inside individual guest instructions
+            // (CMOV, masked stores, etc.). Exiting there can replay an already
+            // completed store indefinitely after SMC. Only guest CFG entries
+            // are restartable; standalone IR loops have no AdvancePC markers.
+            if (!context.IsSyntheticLabel(&inst) &&
+                (!guest_instructions || context.IsGuestEntryLabel(&inst))) Poll();
         } else if (inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto) {
             auto target = labels.find(context.BranchTarget(&inst));
             if (target == labels.end()) throw std::runtime_error("RV64 goto has no bound target");
@@ -239,7 +249,6 @@ void JitTranslator::Translate(ir::Block* input) {
         stats.bytes[static_cast<size_t>(inst.GetOp())] += context.CurrentBufferSize() - before;
         context.ReleaseDeadValues(position++);
     }
-    context.PublishUniformBindings();
     EmitTerminal(block->GetTerminal());
     context.EnsureSpace();
     context.FinalizeFrame();
@@ -267,6 +276,7 @@ void JitTranslator::Translate(ir::Block* input) {
     if (context.CallsABI() && context.EagerABISave()) for (size_t i = 0; i < saved_fprs.size(); ++i) as.FLD(saved_fprs[i], 104 + i * 8, sp);
     as.ADDI(sp, sp, stats.frame_size);
     as.RET();
+    EmitTailCode(saved_mask);
     if (context.FlagsEnabled()) {
         recovery_offset = context.CurrentBufferSize();
         as.Bind(&fault_recovery);
@@ -290,6 +300,7 @@ void JitTranslator::Translate(ir::Block* input) {
         as.RET();
     }
     EmitPrologue(entry_start);
+    context.FinishHostAddresses();
 }
 
 void JitTranslator::Poll() {
@@ -305,12 +316,14 @@ void JitTranslator::Poll() {
     as.LI(t1, static_cast<u32>(HaltReason::Signal));
     as.Bind(&smc);
     context.Store(t1, state, state_offset_halt_reason, 4);
+    context.PublishUniformBindingsForExit();
     context.Jump(epilogue);
     as.Bind(&resume);
     context.PollMemoryLease();
 }
 
 void JitTranslator::Return(HaltReason reason) {
+    context.PublishUniformBindingsForExit();
     auto& as = context.GetMasm();
     if (reason != HaltReason::None) {
         as.LI(t0, static_cast<u32>(reason));
@@ -343,11 +356,11 @@ void JitTranslator::EmitHelper(ir::Inst* inst) {
     // used as native RV64 helpers they must participate in guest ordering.
     if (ordered) as.FENCE();
     as.MV(a0, state);
-    as.LI(a1, reinterpret_cast<u64>(block));
-    as.LI(a2, reinterpret_cast<u64>(inst));
+    context.HostAddress(a1, reinterpret_cast<u64>(block));
+    context.HostAddress(a2, reinterpret_cast<u64>(inst));
     as.MV(a3, values);
     as.LI(a4, u64(slot_count) * 2);
-    as.LI(t0, reinterpret_cast<u64>(&ExecuteInstruction));
+    context.HostAddress(t0, reinterpret_cast<u64>(&ExecuteInstruction));
     context.LeaveFloatMode();
     as.JALR(t0);
     context.EnterFloatMode();
@@ -366,8 +379,9 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
     switch (op) {
         case O::Nop: case O::AdvancePC: case O::UniformBarrier:
         case O::XchgBarrier: case O::BranchOnlyEdges:
-        case O::PushRSB: case O::PopRSB: case O::CallReturn:
             return true;
+        case O::PushRSB: case O::PopRSB: case O::CallReturn:
+            return EmitControl(inst);
         case O::LoadImm: as.LI(result, inst->GetArg<ir::Imm>(0).Get()); break;
         case O::Zero: as.MV(result, x0); break;
         case O::GetLocation: context.Load(result, state, state_offset_current_loc); break;
@@ -621,7 +635,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             context.Store(t0, state, state_offset_prev_loc);
             as.LI(t0, term.next.Value());
             context.Store(t0, state, state_offset_current_loc);
-            Return(HaltReason::None);
+            Link(term.next.Value());
         } else if constexpr (std::is_same_v<T, ir::terminal::If> ||
                              std::is_same_v<T, ir::terminal::Condition>) {
             if constexpr (std::is_same_v<T, ir::terminal::If>) context.Read(t0, term.cond);
@@ -644,8 +658,13 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             Return(HaltReason::None);
         } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
             context.Load(t0, state, state_offset_halt_reason, 4);
-            context.BranchZero(t0, epilogue, false);
+            Label resume;
+            context.BranchZero(t0, resume, true);
+            context.PublishUniformBindingsForExit(); context.Jump(epilogue);
+            as.Bind(&resume);
             EmitTerminal(term.else_);
+        } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
+            if (!PopRSB()) Return(HaltReason::None);
         } else {
             Return(HaltReason::None);
         }

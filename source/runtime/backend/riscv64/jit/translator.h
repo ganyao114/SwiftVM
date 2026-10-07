@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <deque>
 #include "runtime/backend/riscv64/jit/jit_context.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/block.h"
@@ -51,6 +52,10 @@ private:
     void EmitTerminal(const ir::Terminal& terminal);
     void Poll();
     void Return(HaltReason reason);
+    bool EmitControl(ir::Inst* inst);
+    void EmitTailCode(u32 saved_mask);
+    void Link(u64 guest);
+    bool PopRSB();
 
     JitContext& context;
     ir::Block* block{};
@@ -62,6 +67,10 @@ private:
     u32 recovery_offset{};
     EmissionStats stats{};
     biscuit::Label epilogue, fault_recovery;
+    biscuit::Label tail_epilogue, link_cold;
+    struct TailSite { u64 guest; biscuit::Label label; };
+    std::deque<TailSite> tail_sites;
+    bool tail_used{};
     biscuit::Label abi_recovery, abi_save;
     std::map<ir::Inst*, biscuit::Label> labels;
     std::vector<PhiMove> entry_phis;

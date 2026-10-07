@@ -80,6 +80,12 @@ private:
     // range is not addressable through the guest bias.
     [[nodiscard]] bool HashGuestRange(VAddr start, VAddr end, u64& out) const;
     bool ReviveUnit(const std::shared_ptr<Module>& module, const SerialUnit& unit);
+    bool ReviveRiscvUnit(const std::shared_ptr<Module>& module, const SerialUnit& unit);
+    void RecordRiscvUnit(const std::shared_ptr<Module>& module, VAddr guest_start, bool is_function,
+                         const u8* exec, const u8* rw, u32 size,
+                         const std::vector<SerialBlock>& blocks,
+                         const std::vector<SerialLinkSite>& links,
+                         const std::vector<SerialFaultSite>& faults);
 
     AddressSpace& address_space;
     HostImageInfo host_image;

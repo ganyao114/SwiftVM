@@ -167,6 +167,10 @@ void SmcTracker::BeginJit(const RuntimeToken& token) {
             // maintenance by the invalidator is not a substitute for ISB on
             // a core that may have already fetched the old branch.
             asm volatile("isb" ::: "memory");
+#elif defined(__riscv) && __riscv_xlen == 64
+            // Cache publication uses Linux's process-wide flush API. Also
+            // synchronize this hart before it observes a new patch epoch.
+            asm volatile("fence.i" ::: "memory");
 #else
             // Keeps the protocol testable on non-AArch64 hosts; no generated
             // A64 instructions can execute there.
@@ -395,6 +399,13 @@ void SmcTracker::DelinkTargets(AddressSpace& space,
             ASSERT(record.site.offset + sizeof(u32) <= region->capacity);
             auto* rx_site = region->rx_base + record.site.offset;
             auto* rw_site = region->rw_base + record.site.offset;
+            if (region->isa == kRiscv64) {
+                ASSERT_MSG(PatchDirectBranch(*region, rx_site, rw_site, record.unlinked_instruction),
+                           "failed to restore RV64 direct-link site before retirement");
+                patched_any = true;
+                restored_linked += record.state == LinkSiteState::Linked || record.state == LinkSiteState::Far;
+                continue;
+            }
             const u32 trampoline_offset =
                     record.flags_bypass_offset == UINT32_MAX
                     ? region->trampoline_offset

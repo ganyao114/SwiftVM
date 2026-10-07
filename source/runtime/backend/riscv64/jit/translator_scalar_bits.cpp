@@ -111,7 +111,7 @@ bool JitTranslator::EmitScalarBits(ir::Inst* inst) {
             throw std::runtime_error("invalid RV64 CRC32C width");
         context.Read(t0, source); context.Mask(t0, 32);
         context.Read(t1, inst->GetArg<ir::Value>(1));
-        as.LI(t2, reinterpret_cast<u64>(crc32c_table.data()));
+        context.HostAddress(t2, reinterpret_cast<u64>(crc32c_table.data()));
         for (u32 byte = 0; byte < width / 8; ++byte) {
             context.EnsureSpace();
             as.XOR(t3, t0, t1); as.ANDI(t3, t3, 255); as.SLLI(t3, t3, 2);

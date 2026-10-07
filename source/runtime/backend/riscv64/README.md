@@ -109,7 +109,9 @@ TSO 屏障只置于完整访问的两端，拆分后的半部之间不重复设�
 
 Runtime trampoline 循环调用块，通过现有 L2 表分派，使用 acquire fence 读取发布的表项。
 无键返回 CodeMiss，空目标返回 CacheMiss，非零停止原因返回 host 并清除 State 的 halt_reason。
-块入口、块间 dispatcher 和局部 label 会检查 Signal/SMC 请求。RV64 不使用 ARM64 的
+块入口、块间 dispatcher 和 guest CFG label 会检查 Signal/SMC 请求。
+单条 guest 指令内部的局部标签不作为退出点，避免 SMC 重放部分指令。
+RV64 不使用 ARM64 的
 寄存器/guard-page 中断协议。
 
 内存故障从生成代码或语义 helper 进入块 epilogue，然后正常退出 dispatcher。
@@ -155,10 +157,22 @@ portable interpreter 的向量槽位仍限定为 V128，遇到 V256 会返回 Il
 V256 使用 RV64 原生 legalization 执行。
 跨块 SSA 必须属于同一 HIR 函数，并支配其使用点或 Phi 入边；非法标量 opcode 的 V256
 结果明确拒绝。展开后的指令数不得超出 IR 的 16 位 ID 范围。
-尚未实现 allocation 之间的 direct linking 或 RSB 优化。
+allocation 之间已支持 direct linking：近目标使用单条 `JAL x0`，超出 ±1 MiB
+时使用本 allocation 的固定 L2 value 槽叶子。冷链接经共享 LinkManager 注册，
+SMC 在回收目标前原子恢复原始 JAL；热路径不调用 C++ 链接器、不重新哈希目标。
+RSB 使用带边界的返回栈，保存 guest 返回 PC 与稳定的 L2 value-word 索引。
+命中后恢复当前块的 LP64D 帧并尾跳到返回入口；空栈、预测不匹配和空槽退回普通分派。
 函数编译保留 canonical uniform 访问和 flag producer，避免把 ARM64 特定优化契约带入 RV64。
 
-语义 helper 内嵌本进程的函数地址和 IR 指针，因此 RV64 代码暂不写入磁盘 JIT cache，
-也不支持 AOT 序列化，AOT 编译入口会明确拒绝 RV64。完整 guest 舍入模式、FP 异常状态与所有
-边界指令仍需另行资格验证。
+RV64 已接入 `SVM_JIT_CACHE=<目录>` 和 `svm_aot compile/run`。
+Linux launcher 的磁盘缓存使用有界 bias window，需要同时设置 `SVM_MEM_DIRECT=0`；
+目录须预先创建。默认 direct memory 模式沿用现有缓存限制，会明确禁用磁盘缓存。
+固定宿主地址通过 `AUIPC/LD` 读取标记过的本地 literal pool，加载时校验并重定位全部
+host-image 指针。磁盘缓存和 AOT 都保留原始冷 JAL，加载后重新注册链接元数据，
+并绑定当前进程的目标。
+共享 SSA 函数仅发布根 ABI 入口，内部块和解码依赖的 guest 字节参与哈希与 SMC。
+包含进程私有 IR/堆指针或宿主镜像外指针的单元会被拒绝持久化，并继续走 JIT。
+AOT 产物使用 `EM_RISCV`、LP64D `e_flags=4`；宿主 ISA 和探测到的扩展能力进入有效性校验。
+产物格式为 AOT 4 / cache 24，旧产物需要重建。
+完整 guest 舍入模式、FP 异常状态与所有边界指令仍需另行资格验证。
 QEMU 的结果用于功能验证，不代表真机性能、原子顺序或多 hart SMC 保证。

@@ -1,6 +1,10 @@
 #include "jit_context.h"
 
 #include "runtime/backend/context.h"
+#include "runtime/backend/code_serial.h"
+#include "runtime/backend/module.h"
+#include "runtime/backend/address_space.h"
+#include <stdexcept>
 #include "runtime/backend/riscv64/defines.h"
 #include "runtime/ir/instr.h"
 #include "runtime/ir/block.h"
@@ -10,10 +14,53 @@ namespace swift::runtime::backend::riscv64 {
 
 using namespace biscuit;
 
+void JitContext::ConfigureModule(Module* owner) {
+    module = owner;
+    direct_links = owner && owner->IsDirectLinkConfigured();
+    rsb_enabled = owner && True(owner->GetAddressSpace().GetConfig().global_opts & Optimizations::ReturnStackBuffer);
+}
+
+u32 JitContext::DispatchIndex(u64 guest) {
+    if (!module) throw std::runtime_error("RV64 dispatch slot requires a module");
+    return module->GetDispatchIndex(ir::Location{guest});
+}
+
 void JitContext::EnsureSpace() {
     auto& buffer = masm.GetCodeBuffer();
     if (buffer.GetRemainingBytes() < 8192)
         buffer.Grow(buffer.GetSizeInBytes() + 16384);
+}
+
+void JitContext::HostAddress(GPR result, u64 address) {
+    EnsureSpace();
+    auto [it, inserted] = host_address_indices.emplace(address, host_addresses.size());
+    if (inserted) host_addresses.push_back(address);
+    host_references.push_back({CurrentBufferSize(), it->second, result});
+    masm.AUIPC(result, 0); masm.LD(result, 0, result);
+}
+
+void JitContext::FinishHostAddresses() {
+    if (host_addresses.empty()) return;
+    auto& buffer = masm.GetCodeBuffer();
+    buffer.Grow(buffer.GetSizeInBytes() + host_addresses.size() * sizeof(u64) + 4096);
+    if (CurrentBufferSize() & 7) masm.NOP();
+    buffer.Emit32(kRiscvHostPoolMagic);
+    buffer.Emit32(host_addresses.size());
+    const auto pool = CurrentBufferSize();
+    for (const auto address : host_addresses) buffer.Emit(address);
+    const auto end = buffer.GetCursorOffset();
+    // RewindCursor only moves backward. Patch later references first.
+    for (auto it = host_references.rbegin(); it != host_references.rend(); ++it) {
+        const auto& ref = *it;
+        const s64 delta = s64(pool) + ref.index * sizeof(u64) - ref.offset;
+        if (delta < INT32_MIN || delta > INT32_MAX)
+            throw std::runtime_error("RV64 host literal exceeds AUIPC reach");
+        buffer.RewindCursor(ref.offset);
+        masm.AUIPC(ref.reg, u32((delta + 0x800) >> 12) & 0xfffff);
+        masm.LD(ref.reg, s32(((delta & 0xfff) ^ 0x800) - 0x800), ref.reg);
+    }
+    buffer.AdvanceCursor(end);
+    host_references.clear(); host_addresses.clear(); host_address_indices.clear();
 }
 
 void JitContext::MarkABICall() {
@@ -344,6 +391,8 @@ void JitContext::Flush(const CodeBuffer& buffer) {
 }
 
 void JitContext::Prepend(u32 start, std::span<const u8> code) {
+    for (auto& ref : host_references) if (ref.offset >= start) ref.offset += code.size();
+    for (auto& site : link_sites) if (site.code_offset >= start) site.code_offset += code.size();
     auto& buffer = masm.GetCodeBuffer();
     const auto end = buffer.GetCursorOffset();
     ASSERT(start <= end);

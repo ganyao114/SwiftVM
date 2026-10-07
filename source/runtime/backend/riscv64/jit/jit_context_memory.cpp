@@ -11,7 +11,7 @@ void JitContext::AcquireMemoryLease() {
     // Match the cache's existing scratch convention: t0..t3 and a0..a7 may
     // contain a just-returned helper result or a pending guest operand.
     Label retry, anonymous, admitted, busy;
-    masm.LI(t4, reinterpret_cast<u64>(&unaligned_atomic_lock));
+    HostAddress(t4, reinterpret_cast<u64>(&unaligned_atomic_lock));
     masm.Bind(&retry);
     Load(t5, state, state_offset_riscv_memory_participant);
     masm.LI(t6, 1);
@@ -22,7 +22,7 @@ void JitContext::AcquireMemoryLease() {
     masm.BEQ(t6, x0, &admitted);
     masm.SW(x0, 0, t5); masm.J(&busy);
     masm.Bind(&anonymous);
-    masm.LI(t5, reinterpret_cast<u64>(&anonymous_memory_readers));
+    HostAddress(t5, reinterpret_cast<u64>(&anonymous_memory_readers));
     masm.AMOADD_W(Ordering::AQRL, x0, t6, t5);
     masm.FENCE(FenceOrder::RW, FenceOrder::RW);
     masm.LWU(t6, 0, t4);
@@ -50,7 +50,7 @@ void JitContext::ReleaseMemoryLease() {
     masm.BEQ(t5, x0, &anonymous);
     masm.SW(x0, 0, t5); masm.J(&done);
     masm.Bind(&anonymous);
-    masm.LI(t5, reinterpret_cast<u64>(&anonymous_memory_readers));
+    HostAddress(t5, reinterpret_cast<u64>(&anonymous_memory_readers));
     masm.LI(t6, u64{0} - 1); masm.AMOADD_W(Ordering::RL, x0, t6, t5);
     masm.Bind(&done);
     Store(x0, state, state_offset_riscv_memory_owned);
@@ -60,7 +60,7 @@ void JitContext::ReleaseMemoryLease() {
 void JitContext::PollMemoryLease() {
     if (!memory_lease) return;
     Label resume;
-    masm.LI(t4, reinterpret_cast<u64>(&unaligned_atomic_lock));
+    HostAddress(t4, reinterpret_cast<u64>(&unaligned_atomic_lock));
     masm.LWU(t5, 0, t4); masm.BEQ(t5, x0, &resume);
     ReleaseMemoryLease(); AcquireMemoryLease();
     masm.Bind(&resume);

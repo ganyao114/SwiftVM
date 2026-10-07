@@ -345,3 +345,58 @@ RVV128/RVV256 各 144,346、向量 crypto 各 957、Zacas 10,611。
 `/tmp/swiftvm-rv64-x87-arm-regression-20261007.log`。
 最终 x86-64/AArch64 完整 guest 的七行 stdout 与基线逐字节相同，退出码分别为 101/25。
 输出和结果位于 macOS 的 `/tmp/swiftvm-rv64-x87-final-guests-20261007/`。
+
+
+## RV64 AOT、磁盘缓存、direct linking / RSB（2026-10-07）
+
+RV64 使用标记过的 allocation-local literal pool 保存固定宿主地址，重定位列表在
+加载前与重新扫描的完整列表比较。缓存和 AOT 保留原始冷 JAL，加载后为当前进程
+重新注册 source/target。近目标只补写一条 JAL，远目标跳入本 allocation 的固定
+L2 value 槽叶子；热路径不进入 C++ 链接器，也不重新计算哈希。
+RSB 保存 guest 返回 PC 与稳定槽位索引，显式验证上下界、预测 PC 和槽位。
+
+新增 `--persistence` 专测在 RV64G、RVV128、RVV256 各通过 120 项检查：
+完整 ASLR slide 重定位、遗漏/伪造槽拒绝、整数常量中间值、近/远链接和冷目标、
+LP64D、SMC 失效和重新绑定、RSB 边界与回退、磁盘冷/热恢复、host helper、
+原生访存和故障恢复、共享 SSA / V256、未发布内部块和额外解码依赖的哈希与 SMC。
+最终 13 项 RV64 backend CTest 全部通过；Ubuntu 详细日志为
+`/tmp/swiftvm-rv64-persistence-final-matrix-detail-20261007.log`。
+
+前端的单条 guest 指令内部标签不再作为 SMC/Signal 退出点，只有 guest CFG 入口
+和分派边界可以退出。专项验证同页写入后，两个局部分支都完整提交当前 guest 指令，
+再报告下一 guest PC 并退休旧代码，避免重复执行部分指令。
+
+AOT 4 / cache 24 需要重建旧产物。AOT 的 LP64D ELF、独立解析、损坏拒绝及
+host→guest 调用由 `run_aot_tests.sh` 和 `swift_aot_call_test` 验证；脚本支持
+`AOT_TEST_EMULATOR` / `AOT_TEST_SYSROOT` / `AOT_TEST_CPU`。
+RV64 的 AOT 调用测试通过 9 个用例、96,184 个断言；完整 guest-call 测试通过
+43 个用例、644 个断言。Linux guest-call 使用 4 KiB 宿主页，macOS 保留 16 KiB，
+完整 CTest 改用可继承交叉模拟器的注册方式。
+端到端 36 项检查已逐项验收：初次脚本通过 34 项；修正 ARM64 专属的 static-regs
+拒绝原因断言后补验通过，修正 guest-call 页大小后 AOT 调用 CTest 也通过。
+脚本输出在 `/tmp/swiftvm-rv64-aot-qualified-20261007.log`，调用补验的详细输出在
+`/tmp/swiftvm-rv64-aot-call-qualified-detail-20261007.log`。
+`--eager --sweep` 将 `func_tests` 的运行时翻译从 229 次减至 76 次，`real_busy`
+从 242 次减至 79 次，输出与退出码均一致。普通 globals 夹具的数据按独立宿主页
+放置；显式写入 `.text` 的 SMC guest 和同页写入专项仍检验失效协议。
+
+独立进程的真实 x86-64 guest 冷启动保存 229 个磁盘单元，热启动加载全部 229 个，
+新编译为 0，退出码均为 101，七行 stdout 与基线逐字节一致。
+真实 ARM64 guest 的七行 stdout 同样与基线一致，退出码为 25。
+结果在 Ubuntu `/tmp/swiftvm-rv64-persistence-guest-proof-20261007/results.json`。
+Linux launcher 使用磁盘缓存时须设置 `SVM_MEM_DIRECT=0` 并预先创建缓存目录。
+
+共享接口的 macOS ARM64 回归通过 462 个用例、1,249,667 个断言，AOT 端到端
+脚本通过 36 项检查（含 9 个调用用例、22,487 个断言），guest-call 通过 43 个
+用例、644 个断言。AOT 加载器保留 ARM64 函数的非零根入口偏移，RV64 根入口
+仍要求 offset 0。原生日志分别为
+`/tmp/swiftvm-rv64-persistence-native-regression2-20261007.log`、
+`/tmp/swiftvm-rv64-persistence-native-aot2-20261007.log` 和
+`/tmp/swiftvm-rv64-persistence-native-guest-call-20261007.log`。
+
+回归发现的 XGETBV context helper 写回被驻留 GPR 覆盖问题已修复：使用显式返回值
+IR 更新 EAX/EDX，免去整块 context 同步。RV64 的 XGETBV 成功/非法索引路径分别
+在 JIT 和 AOT 下验证，结果见 Ubuntu `/tmp/swiftvm-rv64-xgetbv-20261007/results.json`。
+最后三组持久化补验也全部通过，日志为
+`/tmp/swiftvm-rv64-persistence-final-focus3-20261007.log`。
+真机吞吐、延迟、原子顺序和多 hart 资格验收仍需目标硬件。

@@ -31,6 +31,7 @@ import sys
 
 AOT_CODE_VADDR = 0x800000000000
 EM_AARCH64 = 183
+EM_RISCV = 243
 ET_DYN = 3
 SHT_NOBITS = 8
 SHT_SYMTAB = 2
@@ -120,7 +121,9 @@ def main():
     # 1. header
     check(a.ei_class == 2, "not ELFCLASS64")
     check(a.ei_data == 1, "not little endian")
-    check(a.e_machine == EM_AARCH64, f"e_machine {a.e_machine} != EM_AARCH64")
+    check(a.e_machine in (EM_AARCH64, EM_RISCV), f"unsupported e_machine {a.e_machine}")
+    if a.e_machine == EM_RISCV:
+        check(a.e_flags == 4, "RV64 artifact is not LP64D without RVC")
     check(a.e_type == ET_DYN, f"e_type {a.e_type} != ET_DYN")
     check(a.e_shnum > 0, "no section table")
     check(a.e_phnum > 0, "no program headers")
@@ -182,6 +185,8 @@ def main():
         want = {}
         for u in art.units:
             for b in u["blocks"]:
+                if b["entry_flags"] & 6:  # Guest-only SSA/decode extents.
+                    continue
                 want.setdefault(u["code_offset"] + b["code_offset"],
                                 u["code_size"] - b["code_offset"])
         for u in art.units:

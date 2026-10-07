@@ -24,8 +24,12 @@ namespace swift::guest_call {
 
 class GuestSpace {
 public:
-    static constexpr std::uint64_t kHostPageSize = 0x4000;  // macOS arm64
+#if defined(__APPLE__)
     static constexpr std::uint32_t kHostPageShift = 14;
+#else
+    static constexpr std::uint32_t kHostPageShift = 12;
+#endif
+    static constexpr std::uint64_t kHostPageSize = std::uint64_t{1} << kHostPageShift;
 
     GuestSpace() = default;
     ~GuestSpace();

@@ -44,6 +44,5 @@ add_executable(swift_aot_call_test tests/aot_call_test.cpp)
 target_link_libraries(swift_aot_call_test PRIVATE swift_aot Catch2::Catch2WithMain)
 target_compile_definitions(swift_aot_call_test PRIVATE
         SVM_AOT_GLIBC_ELF="${CMAKE_CURRENT_SOURCE_DIR}/../translator/linux/tests/func_tests_x86_64")
-if(NOT "riscv" IN_LIST ARCHITECTURE AND NOT "riscv64" IN_LIST ARCHITECTURE)
-    add_test(swift_aot_call_test swift_aot_call_test --durations yes)
-endif()
+add_test(NAME swift_aot_call_test COMMAND swift_aot_call_test --durations yes)
+set_tests_properties(swift_aot_call_test PROPERTIES LABELS "aot;execution" TIMEOUT 900)

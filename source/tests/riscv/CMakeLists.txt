@@ -15,14 +15,15 @@ target_link_libraries(swift_riscv_emit PRIVATE biscuit::biscuit)
 target_compile_features(swift_riscv_emit PRIVATE cxx_std_20)
 
 if(TARGET swift_runtime)
-    add_executable(swift_riscv_backend_test backend_test.cpp native_scalar_test.cpp native_flags_test.cpp native_atomic_test.cpp native_vector_test.cpp native_vector_shuffle_test.cpp native_local_test.cpp native_vector_float_test.cpp native_call_test.cpp native_memory_test.cpp native_crypto_test.cpp native_structure_test.cpp native_wide_test.cpp memory_protocol_test.cpp)
+    add_executable(swift_riscv_backend_test backend_test.cpp native_scalar_test.cpp native_flags_test.cpp native_atomic_test.cpp native_vector_test.cpp native_vector_shuffle_test.cpp native_local_test.cpp native_vector_float_test.cpp native_call_test.cpp native_memory_test.cpp native_crypto_test.cpp native_structure_test.cpp native_wide_test.cpp memory_protocol_test.cpp persistence_test.cpp)
     target_link_libraries(swift_riscv_backend_test PRIVATE swift_translator)
     if("riscv" IN_LIST ARCHITECTURE OR "riscv64" IN_LIST ARCHITECTURE)
         target_sources(swift_riscv_backend_test PRIVATE check_abi.S)
         add_test(NAME swift_riscv_backend COMMAND swift_riscv_backend_test)
         add_test(NAME swift_riscv_backend_blocks COMMAND swift_riscv_backend_test)
         add_test(NAME swift_riscv_backend_cache_reuse COMMAND swift_riscv_backend_test --cache-reuse)
-        set_tests_properties(swift_riscv_backend swift_riscv_backend_blocks swift_riscv_backend_cache_reuse PROPERTIES
+        add_test(NAME swift_riscv_backend_persistence COMMAND swift_riscv_backend_test --persistence)
+        set_tests_properties(swift_riscv_backend swift_riscv_backend_blocks swift_riscv_backend_cache_reuse swift_riscv_backend_persistence PROPERTIES
             LABELS "riscv;backend;execution" TIMEOUT 180)
         set_tests_properties(swift_riscv_backend_blocks PROPERTIES ENVIRONMENT "SVM_FUNC_BASE=0")
         if(CMAKE_CROSSCOMPILING AND SVM_RISCV_QEMU_EXECUTABLE)
@@ -41,8 +42,14 @@ if(TARGET swift_runtime)
                         COMMAND ${SVM_RISCV_QEMU_EXECUTABLE} -L ${SVM_RISCV_SYSROOT}
                         -cpu rv64,v=true,vlen=${vlen},elen=64,zba=false,zbb=false,zbs=false,zbc=false
                         $<TARGET_FILE:swift_riscv_backend_test> --rvv)
+                add_test(NAME swift_riscv_backend_persistence_vector_${vlen}
+                        COMMAND ${SVM_RISCV_QEMU_EXECUTABLE} -L ${SVM_RISCV_SYSROOT}
+                        -cpu rv64,v=true,vlen=${vlen},elen=64,zba=false,zbb=false,zbs=false,zbc=false
+                        $<TARGET_FILE:swift_riscv_backend_test> --persistence)
                 set_tests_properties(swift_riscv_backend_vector_${vlen} PROPERTIES
                         LABELS "riscv;backend;execution;vector" TIMEOUT 180)
+                set_tests_properties(swift_riscv_backend_persistence_vector_${vlen} PROPERTIES
+                        LABELS "riscv;backend;execution;persistence;vector" TIMEOUT 180)
             endforeach()
             set_tests_properties(swift_riscv_backend_zbb PROPERTIES
                     LABELS "riscv;backend;execution;extensions" TIMEOUT 180)

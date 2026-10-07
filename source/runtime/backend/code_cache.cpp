@@ -251,6 +251,7 @@ void CodeCache::Init() {
             .pending_flags_trampoline_offset =
                     CodeRegion::kInvalidTrampolineOffset,
             .return_trampoline_offset = CodeRegion::kInvalidTrampolineOffset,
+            .isa = config.backend_isa,
     };
 
     if (!read_only) {

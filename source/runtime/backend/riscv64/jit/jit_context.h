@@ -6,12 +6,14 @@
 #include <vector>
 #include <span>
 #include "runtime/backend/code_cache.h"
+#include "runtime/backend/code_serial.h"
 #include "runtime/backend/riscv64/defines.h"
 #include "runtime/backend/riscv64/host_features.h"
 #include "runtime/ir/args.h"
 #include "runtime/ir/location.h"
 
 namespace swift::runtime::ir { class Block; }
+namespace swift::runtime::backend { class Module; }
 
 namespace swift::runtime::backend::riscv64 {
 
@@ -62,6 +64,13 @@ public:
     biscuit::Assembler& GetMasm() { return masm; }
     const HostFeatures& Features() const { return features; }
     void EnsureSpace();
+    void HostAddress(biscuit::GPR result, u64 address);
+    void FinishHostAddresses();
+    void ConfigureModule(Module* owner);
+    bool DirectLinksEnabled() const { return direct_links; }
+    bool RSBEnabled() const { return rsb_enabled; }
+    u32 DispatchIndex(u64 guest);
+    auto& LinkSites() { return link_sites; }
     void Address(biscuit::GPR result, biscuit::GPR base, s64 offset);
     void Load(biscuit::GPR result, biscuit::GPR base, s64 offset, u32 size = 8);
     void Store(biscuit::GPR value, biscuit::GPR base, s64 offset, u32 size = 8);
@@ -107,6 +116,7 @@ public:
     const auto& UniformBindings() const { return uniform_bindings; }
     void LoadUniformBindings();
     void PublishUniformBindings();
+    void PublishUniformBindingsForExit();
     void LoadUniformInteger(biscuit::GPR result, u32 offset, u32 size);
     void StoreUniformInteger(biscuit::GPR source, u32 offset, u32 size);
     void ConfigurePhiRegisters(std::span<ir::Inst* const> phis);
@@ -152,6 +162,7 @@ public:
         flow_synthetic_labels = std::move(synthetic_labels);
     }
     bool IsSyntheticLabel(ir::Inst* inst) const { return flow_synthetic_labels.contains(inst); }
+    bool IsGuestEntryLabel(ir::Inst* inst) const { return flow_locations.contains(inst); }
     const ir::Location* GuestBranchTarget(ir::Inst* inst) const {
         auto found = flow_locations.find(BranchTarget(inst));
         return found == flow_locations.end() ? nullptr : &found->second;
@@ -180,6 +191,13 @@ private:
     biscuit::GPR ReserveRegister(biscuit::GPR excluded = biscuit::x0);
     void SpillVector(size_t index);
     biscuit::Assembler masm{};
+    struct HostReference { u32 offset, index; biscuit::GPR reg; };
+    std::vector<HostReference> host_references;
+    std::vector<u64> host_addresses;
+    std::unordered_map<u64, u32> host_address_indices;
+    Module* module{};
+    bool direct_links{}, rsb_enabled{};
+    std::vector<SerialLinkSite> link_sites;
     const bool cache_scalars;
     const HostFeatures features;
     std::array<ir::Inst*, scalar_registers.size()> cached_values{};

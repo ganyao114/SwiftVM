@@ -257,6 +257,18 @@ TEST_CASE("aot call: the artifact installs and its symbol index is populated") {
     // IsCompilableFuncType), and strlen/memcpy/strcmp are all in that set.
     CHECK(p.index_size > 1300);
     CHECK(p.env->artifact().units.size() == p.installed);
+    if (p.env->AddressSpace()->GetConfig().backend_isa == swift::runtime::kRiscv64) {
+        std::size_t sites{};
+        for (const auto& unit : p.env->artifact().units) sites += unit.link_sites.size();
+        CHECK(sites > 1000);
+        // AOT must retain native linking rather than quietly compiling every
+        // exit into an ordinary dispatch return. Startup/Exercise above have
+        // already executed artifact code through the restored metadata.
+        const auto stats = p.env->AddressSpace()->GetLinkManager().GetStats();
+        CHECK(stats.sites_registered >= sites);
+        CHECK(stats.linker_calls > 0);
+        CHECK(stats.linked + stats.far > 0);
+    }
 }
 
 TEST_CASE("aot call: precise fault recovery rebases into installed allocations") {
@@ -268,7 +280,9 @@ TEST_CASE("aot call: precise fault recovery rebases into installed allocations")
         REQUIRE(base != nullptr);
         auto module = p.env->AddressSpace()->GetModule(unit.guest_start);
         for (const auto& site : unit.fault_sites) {
-            if (site.recovery_offset == UINT32_MAX || site.host_end - site.host_begin != 4)
+            if (site.recovery_offset == UINT32_MAX ||
+                (p.env->AddressSpace()->GetConfig().backend_isa == swift::runtime::kArm64 &&
+                 site.host_end - site.host_begin != 4))
                 continue;
             swift::runtime::backend::FaultEntry entry{};
             REQUIRE(module->LookupFault(base + site.host_begin, entry));
@@ -297,6 +311,15 @@ TEST_CASE("aot call: precise fault recovery rebases into installed allocations")
     bool mismatch = false;
     CHECK(p.env->EntryOf("strlen", mismatch) == p.strlen_entry);
     CHECK_FALSE(mismatch);
+
+    bad = p.env->artifact();
+    bad.host_isa = config.backend_isa == swift::runtime::kRiscv64
+                           ? swift::runtime::kArm64 : swift::runtime::kRiscv64;
+    report = {};
+    CHECK(aot::InstallArtifact(*p.env->AddressSpace(), bad, config.memory_base,
+                               config.guest_addr_mask, report, error) == aot::kAotKeyMismatch);
+    CHECK(report.units_installed == 0);
+    CHECK(p.env->EntryOf("strlen", mismatch) == p.strlen_entry);
 }
 
 TEST_CASE("aot call: SymbolIndex::Lookup resolves to installed artifact code") {
@@ -509,4 +532,33 @@ TEST_CASE("aot format: fault ranges round trip and invalid recovery data is reje
     image.units.front().fault_sites.clear();
     output = {};
     CHECK_FALSE(decode(image, output));
+}
+
+TEST_CASE("aot format: RV64 cold link sites round trip and reject invalid metadata") {
+    aot::AotImage image{}; image.code.resize(24); image.stub_offset = 16;
+    aot::AotUnit unit{}; unit.guest_start = 0x1000; unit.code_size = 16;
+    unit.blocks.push_back({0x1000, 0x1004, 0, 0x1234});
+    unit.fault_sites = {{0x1000, 0, 16, UINT32_MAX, 0}};
+    unit.link_sites = {{.code_offset = 4, .guest_target = 0x2000, .kind = 0,
+                       .unlinked_instruction = 0x6f | (28 << 7)}};
+    image.units.push_back(unit);
+    const auto decode = [&](aot::AotImage& output) {
+        const auto blob = aot::EncodeInfoBlob(image); std::string error;
+        return aot::DecodeInfoBlob(blob.data(), blob.size(), output, error);
+    };
+    aot::AotImage output{}; REQUIRE(decode(output));
+    REQUIRE(output.units.front().link_sites.size() == 1);
+    const auto& site = output.units.front().link_sites.front();
+    CHECK(site.code_offset == 4); CHECK(site.guest_target == 0x2000);
+    CHECK(site.kind == 0); CHECK(site.unlinked_instruction == (0x6f | (28 << 7)));
+    for (const auto invalid : {
+            aot::SerialLinkSite{.code_offset = 16, .unlinked_instruction = 0x6f | (28 << 7)},
+            aot::SerialLinkSite{.code_offset = 5, .unlinked_instruction = 0x6f | (28 << 7)},
+            aot::SerialLinkSite{.code_offset = 4, .kind = 255, .unlinked_instruction = 0x6f | (28 << 7)},
+            aot::SerialLinkSite{.code_offset = 4, .unlinked_instruction = 0x6f},
+    }) {
+        image.units.front().link_sites = {invalid}; output = {}; CHECK_FALSE(decode(output));
+    }
+    image.units.front().link_sites = {unit.link_sites.front(), unit.link_sites.front()};
+    output = {}; CHECK_FALSE(decode(output));
 }

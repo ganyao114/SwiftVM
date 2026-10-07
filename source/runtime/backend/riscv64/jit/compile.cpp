@@ -1,5 +1,6 @@
 #include "compile.h"
 #include "function.h"
+#include "runtime/backend/riscv64/link.h"
 
 #include <unordered_set>
 #include <algorithm>
@@ -15,6 +16,14 @@ namespace swift::runtime::backend::riscv64 {
 
 namespace {
 using Definitions = std::unordered_set<ir::Inst*>;
+
+void AppendDependencies(std::vector<SerialBlock>& blocks, const ir::Block* block) {
+    for (const auto& dependency : block->GetGuestCodeDependencies()) {
+        SerialBlock extent{dependency.start.Value(), dependency.end.Value(), UINT32_MAX};
+        extent.entry_flags = SerialBlock::DependencyOnly;
+        blocks.push_back(extent);
+    }
+}
 
 void VerifyTerminal(const ir::Terminal& terminal, const Definitions& definitions) {
     const auto check = [&](ir::Value value) {
@@ -103,6 +112,7 @@ void Publish(const std::shared_ptr<Module>& module, ir::Block* block,
     module->AddFaultEntry(entry, entry + size, block->GetStartLocation().Value(),
                           buffer.exec_data, entry + recovery);
     module->GetAddressSpace().PushCodeCache(block->GetStartLocation(), entry);
+    (void)module->PublishLinkTarget(block->GetStartLocation(), entry, buffer.exec_data);
     if (!module->GetModuleConfig().read_only) {
         if (!owner) owner = block;
         u64 decoded_size{};
@@ -129,16 +139,24 @@ void* CompileBlock(const std::shared_ptr<Module>& module, ir::Block* block) {
         return module->GetJitCache(block->GetJitCache());
     Prepare(*module, block);
     JitContext context{true, HostFeatures::Detect(), module->GetAddressSpace().GetConfig().buffers_static_alloc};
+    context.ConfigureModule(module.get());
     JitTranslator translator{context};
     translator.Translate(block);
     auto [id, buffer] = module->AllocCodeCache(context.CurrentBufferSize());
     if (id == INVALID_CACHE_ID) return nullptr;
     context.Flush(buffer);
+    if (!RegisterLinkSites(module, buffer, context.LinkSites())) {
+        module->ReclaimCode(buffer.exec_data);
+        throw std::runtime_error("failed to register RV64 block link sites");
+    }
     module->RetainCodeIR(buffer.exec_data, block);
     if (translator.EmittedIR() != block) module->RetainCodeIR(buffer.exec_data, translator.EmittedIR());
     Publish(module, block, buffer, id, 0, buffer.size, translator.RecoveryOffset());
-    // The module/SMC node owns the IR until its code is retired. Helpers embed
-    // process-local IR and function pointers, so this code is not serialized.
+    std::vector<SerialBlock> blocks{{block->GetStartLocation().Value(), block->GetEndLocation().Value(), 0}};
+    AppendDependencies(blocks, block);
+    RecordCode(module, buffer, block->GetStartLocation().Value(), false, std::move(blocks), context.LinkSites());
+    // Helpers retaining IR stay owned by the module; the serializer rejects
+    // their process-local literals while ordinary native units remain cacheable.
     return buffer.exec_data;
 }
 
@@ -155,6 +173,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
     }
     struct Entry { ir::Block* block; ir::Function* owner; u32 offset; u32 size; u32 recovery; };
     JitContext context{true, HostFeatures::Detect(), module->GetAddressSpace().GetConfig().buffers_static_alloc};
+    context.ConfigureModule(module.get());
     std::vector<Entry> entries;
     std::vector<IntrusivePtr<ir::Block>> wide_owners;
     for (auto* function : functions) {
@@ -198,6 +217,10 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
             auto [id, buffer] = module->AllocCodeCache(context.CurrentBufferSize());
             if (id == INVALID_CACHE_ID) return nullptr;
             context.Flush(buffer);
+            if (!RegisterLinkSites(module, buffer, context.LinkSites())) {
+                module->ReclaimCode(buffer.exec_data);
+                throw std::runtime_error("failed to register RV64 function link sites");
+            }
             if (!module->Push(function->GetFunction())) {
                 module->ReclaimCode(buffer.exec_data);
                 throw std::runtime_error("failed to publish RV64 function CFG");
@@ -208,6 +231,15 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
             auto* root = ordered.front()->GetBlock();
             Publish(module, root, buffer, id, 0, buffer.size, translator.RecoveryOffset(), function->GetFunction());
             function->GetFunction()->GetJitCache() = root->GetJitCache();
+            std::vector<SerialBlock> serial_blocks;
+            for (auto* hir : ordered) {
+                auto* b = hir->GetBlock();
+                SerialBlock serial{b->GetStartLocation().Value(), b->GetEndLocation().Value(),
+                                   b == root ? 0u : UINT32_MAX};
+                if (b != root) serial.entry_flags = SerialBlock::MetadataOnly;
+                serial_blocks.push_back(serial);
+            }
+            for (auto* hir : ordered) AppendDependencies(serial_blocks, hir->GetBlock());
             if (!module->GetModuleConfig().read_only) for (auto* hir : ordered) if (hir->GetBlock() != root) {
                 auto* block = hir->GetBlock();
                 module->GetAddressSpace().GetSmcTracker().RegisterNode(module, function->GetFunction(),
@@ -216,6 +248,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
                     module->GetAddressSpace().GetSmcTracker().RegisterNode(module, function->GetFunction(),
                             dependency.start.Value(), dependency.end.Value());
             }
+            RecordCode(module, buffer, root->GetStartLocation().Value(), true, std::move(serial_blocks), context.LinkSites());
             return buffer.exec_data;
         }
         for (auto* hir : ordered) {
@@ -235,6 +268,14 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
     auto [id, buffer] = module->AllocCodeCache(context.CurrentBufferSize());
     if (id == INVALID_CACHE_ID) return nullptr;
     context.Flush(buffer);
+    if (!RegisterLinkSites(module, buffer, context.LinkSites())) {
+        module->ReclaimCode(buffer.exec_data);
+        throw std::runtime_error("failed to register RV64 function block link sites");
+    }
+    // Allocation ownership spans every independent ABI block. Its recovery
+    // remains block-specific in the narrower ranges published below.
+    module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size,
+                         functions.front()->GetFunction()->GetStartLocation().Value(), buffer.exec_data);
     for (const auto& owner : wide_owners) module->RetainCodeIR(buffer.exec_data, owner.get());
     for (auto* function : functions) {
         if (!module->Push(function->GetFunction())) {
@@ -246,6 +287,12 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
     }
     for (const auto& entry : entries)
         Publish(module, entry.block, buffer, id, entry.offset, entry.size, entry.recovery, entry.owner);
+    std::vector<SerialBlock> serial_blocks;
+    for (const auto& entry : entries) serial_blocks.push_back({entry.block->GetStartLocation().Value(),
+            entry.block->GetEndLocation().Value(), entry.offset});
+    for (const auto& entry : entries) AppendDependencies(serial_blocks, entry.block);
+    RecordCode(module, buffer, functions.front()->GetFunction()->GetStartLocation().Value(), true,
+               std::move(serial_blocks), context.LinkSites());
     for (auto* function : functions) {
         auto& cached = function->GetFunction()->GetJitCache();
         cached = function->GetFunction()->FindBlock(function->GetFunction()->GetStartLocation())->GetJitCache();

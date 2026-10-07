@@ -37,6 +37,9 @@
 //     not consumed by a modelled use (an indirect branch target or a
 //     load/store base) also rejects the unit. Missing a *use* class therefore
 //     costs cache coverage, never correctness.
+//   * RV64 uses 32-bit instructions and marked, aligned literal pools. The
+//     scanner validates every AUIPC/LD reference and every pool value before
+//     relocation; branches may target only instruction words inside the unit.
 //
 #pragma once
 
@@ -82,6 +85,9 @@ enum class RelocKind : u16 {
     // instruction count is preserved because the sequence is rewritten with
     // the same number of movz/movk slots that the original occupied.
     HostImageAbs64 = 1,
+    // RV64 AUIPC/LD references a checked, allocation-local literal pool.
+    // Only its 64-bit host image literal changes across processes.
+    RiscvHostLiteral64 = 2,
 };
 
 enum class RelocUse : u16 {
@@ -117,7 +123,12 @@ struct ScanResult {
 ScanResult ScanCodeUnit(std::span<const u8> code,
                         const HostImageInfo& image,
                         u64 guest_window_size,
-                        std::span<const u32> external_bl_offsets = {});
+                        std::span<const u32> external_bl_offsets = {},
+                        ISA isa = kArm64);
+
+inline constexpr u32 kRiscvHostPoolMagic = 0x52565000; // Not a valid instruction.
+ScanResult ScanRiscvCodeUnit(std::span<const u8> code, const HostImageInfo& image,
+                           u64 guest_window_size);
 
 // Rewrite the movz/movk runs listed in `relocs` so they materialize
 // (image.base + addend). `rw_code` must point at a writable alias of the unit
@@ -126,7 +137,8 @@ bool ApplyRelocations(u8* rw_code,
                       std::size_t code_size,
                       std::span<const Relocation> relocs,
                       const HostImageInfo& image,
-                      std::string* error);
+                      std::string* error,
+                      ISA isa = kArm64);
 
 // --------------------------------------------------------------------------
 // Serialized unit
@@ -137,6 +149,8 @@ bool ApplyRelocations(u8* rw_code,
 struct SerialBlock {
     enum EntryFlags : u8 {
         Linkable = 1 << 0,
+        MetadataOnly = 1 << 1,
+        DependencyOnly = 1 << 2,
     };
 
     u64 guest_start{};
@@ -149,11 +163,17 @@ struct SerialBlock {
     u8 entry_flags{Linkable};
 
     [[nodiscard]] bool IsLinkable() const { return (entry_flags & Linkable) != 0; }
+    [[nodiscard]] bool IsDependency() const { return (entry_flags & DependencyOnly) != 0; }
+    [[nodiscard]] bool IsPublished() const { return (entry_flags & (MetadataOnly | DependencyOnly)) == 0; }
+    [[nodiscard]] bool ValidEntryFlags() const {
+        return (entry_flags & ~(Linkable | MetadataOnly | DependencyOnly)) == 0 &&
+               (IsPublished() || (!IsLinkable() && (entry_flags != (MetadataOnly | DependencyOnly))));
+    }
 };
 
 // One direct-link branch site inside the unit. The code byte at
-// `code_offset` is always serialized as the unlinked `bl region_tramp` form;
-// its process-relative immediate is rewritten again when the unit is revived.
+// `code_offset` is serialized as an unlinked branch: ARM64's `bl region_tramp`
+// is rewritten on revival; RV64's JAL to its local cold stub needs no rebasing.
 // kind stores LinkSiteKind as a byte without coupling the generic serializer
 // to LinkManager's runtime-only data structures.
 struct SerialLinkSite {
@@ -166,6 +186,9 @@ struct SerialLinkSite {
     u32 flags_bypass_linked_instruction{};
     u32 flags_merge_branch_offset{UINT32_MAX};
     EdgeFlagsState edge_flags{};
+    // RV64's unlinked JAL stays within this allocation, so its instruction
+    // is position independent. ARM64 continues to use region trampoline BL.
+    u32 unlinked_instruction{};
 
     [[nodiscard]] bool HasFlagsBypass() const {
         return flags_bypass_offset != UINT32_MAX;
@@ -300,8 +323,8 @@ struct ValidityKey {
     bool operator==(const ValidityKey&) const = default;
 };
 
-// 23: the scanner accepts ADR only when its target stays inside the unit.
-constexpr u64 kCacheFormatVersion = 23;
+// 24: RV64 literal relocations, canonical JAL sites and guest-only extents.
+constexpr u64 kCacheFormatVersion = 24;
 
 u64 HashBytes(const void* data, std::size_t size, u64 seed);
 u64 HashU64(u64 value, u64 seed);

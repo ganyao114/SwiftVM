@@ -93,7 +93,7 @@ bool GuestSpace::MapFixed(std::uint64_t addr, std::uint64_t size) {
     if (end > window_size_) {
         return false;
     }
-    // Guest pages are 4 KiB but host pages are 16 KiB, so two guest mappings
+    // On macOS, guest pages are 4 KiB but host pages are 16 KiB, so two guest mappings
     // routinely share a host page: an ELF whose PT_LOADs are 0x400000 and
     // 0x401000, or a brk region that starts just past the image.  A blanket
     // MAP_FIXED over the rounded range would silently ZERO whatever was

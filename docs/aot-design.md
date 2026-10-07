@@ -9,8 +9,8 @@
 
 ## 0. 目标与形态
 
-把一个 x86-64 Linux ELF **离线**编译成 ARM64 代码，产物是一个**合法的 ELF**：
-保留原 ELF 的结构与符号，代码段重填为编译后的 ARM64 代码，符号表随之修正。
+把一个 x86-64 Linux ELF **离线**编译成 ARM64 或 RV64 代码，产物是一个**合法的 ELF**：
+保留原 ELF 的结构与符号，代码段重填为编译后的 host 代码，符号表随之修正。
 之后 host 程序可以按符号名直接调用其中的 guest 函数，参数按 x86-64 SysV ABI
 由模板静态解析后传递。
 
@@ -19,9 +19,10 @@
 
 ---
 
-## 1. 产物形态：为什么是 AArch64 ELF，以及一个必须保留的约束
+## 1. 产物形态与 guest 地址约束
 
-**产物 `e_machine = EM_AARCH64`，`ET_DYN`（共享对象）。**
+**产物为 `ET_DYN`（共享对象），ARM64 使用 `EM_AARCH64`；RV64 使用
+`EM_RISCV` 和 LP64D `e_flags=4`。** 加载器检查产物与 runtime 的宿主 ISA 一致。
 
 理由：如果只是在原 x86-64 ELF 上挂一个附加节存放编译结果，符号表就不需要修
 ——符号仍指向原来的 x86 代码。任务要求「重新填充编译后的代码段，修复符号表」，
@@ -37,7 +38,7 @@
 | 内容 | 在产物 ELF 里的位置 | 地址 |
 |---|---|---|
 | `.data` / `.rodata` / `.bss` / 原 `.text` 的只读引用 | 原样拷贝 | **保持原 guest 虚拟地址** |
-| 编译出的 ARM64 代码 | 新的可执行节 | host 地址，与 guest 地址空间无关 |
+| 编译出的 host 代码 | 新的可执行节 | host 地址，与 guest 地址空间无关 |
 
 产物因此是个混合体：**guest 数据在 guest 地址上，host 代码在 host 地址上**。
 加载器必须把数据段映射进 guest 窗口（`SVM_GUEST_BITS` 那块保留区）内的原始
@@ -339,3 +340,46 @@ eager+sweep 产物包含 2,329 个单元，将运行时翻译次数从 257 降�
 `real_busy_x86_64` 的对应次数从 275 降到 74。所有对应 stdout 和退出码与 JIT 一致。
 这记录的是功能与翻译覆盖率，尚未测量 AOT 相对当前直接链接 JIT 的运行性能。
 日志为 `/tmp/swiftvm-aot-e2e-final-20261007.log`，产物位于 `/tmp/swiftvm-aot-e2e-20261007/`。
+
+
+## 11. RV64 AOT、磁盘缓存与运行时链接（2026-10-07）
+
+RV64 的固定宿主函数和全局数据地址通过两条 `AUIPC/LD` 指令读取本单元的
+literal pool。pool 有独立标记与数量，每个 64 位字面值必须属于 SwiftVM 主镜像。
+扫描器检查每对引用及所有内部跳转；加载器重新扫描原始字节，与完整重定位列表
+逐项比较后再写入新镜像地址。遗漏、重复或伪造重定位槽会拒绝加载。
+进程私有 IR/堆指针以及镜像外宿主指针不进入持久化产物。
+
+AOT 4 / cache 24 增加 guest 范围的 entry flags、RV64 literal relocation 和
+磁盘缓存中的 canonical JAL。共享 SSA 的内部块只参与校验与 SMC，不发布为
+独立 ABI 入口；额外解码依赖也是只供校验的范围，不创建虚假的 IR 块。
+缓存有效性键包含宿主 ISA 与 RV64 扩展能力；旧格式直接拒绝并要求重新编译。
+AOT ELF 使用 `EM_RISCV`、LP64D flags；产物同时保存原始冷 JAL 与链接站点，
+安装后为 AOT 和运行时 JIT 重新建立 source/target 元数据。
+
+普通 JIT 的近边原子补写为 `JAL x0`，远边补写为跳入 allocation 本地的 L2 槽叶子。
+共享 LinkManager 的 generation、signal patch 和退休协议负责失效；缓存记录跳过
+正在补写的代码字，并从元数据合成原始冷 JAL。恢复时重新注册 source 和 target。
+RSB 保存 guest 返回地址与 L2 value-word 索引，命中后通过完整 LP64D 尾调用转移。
+边界、预测不匹配和空目标槽走普通分派，SMC 同时清空旧预测。
+RV64 离线发码保留直接链接代码，但不保存编译进程的 target generation 或热补丁。
+安装后首次命中才绑定当前进程的目标，AOT 的热路径与普通 JIT 相同。
+
+RV64 功能验证可使用带 I-cache 修复的 QEMU：
+
+```sh
+ctest --test-dir <rv64-build> -R '^swift_riscv_backend' --output-on-failure --parallel 1
+AOT_TEST_EMULATOR=<patched-qemu-riscv64> \
+  bash source/aot/tests/run_aot_tests.sh <rv64-build>
+ctest --test-dir <rv64-build> -R '^swift_aot_call_test$' --output-on-failure
+```
+
+端到端脚本的 `AOT_TEST_SYSROOT` 和 `AOT_TEST_CPU` 可覆盖默认 sysroot 与基线 RV64G
+CPU；未设置 emulator 时保持原生运行方式。QEMU 验证功能与代码结构，真机的吞吐、
+延迟和多 hart 资格验收仍需目标硬件。
+
+Linux launcher 的磁盘缓存沿用有界 bias window 要求，使用时同时设置
+`SVM_MEM_DIRECT=0`、`SVM_JIT_CACHE=<已创建的目录>`。真实 guest 的新进程加载
+229 个单元后，新编译为 0，stdout 与退出码保持一致。RV64 AOT 的 eager+sweep
+把两组真实 guest 的运行时翻译分别从 229/242 次减到 76/79 次。
+完整验收与补验记录见 [RV64 测试说明](../source/tests/riscv/README.md)。

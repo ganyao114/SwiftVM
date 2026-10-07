@@ -76,18 +76,6 @@ void EmitUndefined(ir::Assembler* assembler, VAddr next_pc) {
     __ ReturnToHost();
 }
 
-ir::UniformEffectId XgetbvEffects() {
-    static constexpr std::array ranges{
-            ir::UniformEffectRange{offsetof(ThreadContext64, rax), sizeof(u64)},
-            ir::UniformEffectRange{offsetof(ThreadContext64, rdx), sizeof(u64)},
-            ir::UniformEffectRange{offsetof(ThreadContext64, interrupt),
-                                   sizeof(InterruptReason)},
-    };
-    static constexpr ir::UniformEffectSet effects{ranges.data(), ranges.size()};
-    static const auto id = ir::RegisterUniformEffectSet(&effects);
-    return id;
-}
-
 // RFBM arrives in EDX:EAX.  Read the two dwords out of the guest context and
 // splice them into one 64-bit value for the helper.
 ir::Value EmitRequestedFeatureMask(ir::Assembler* assembler) {
@@ -247,43 +235,39 @@ void EmitXgetbv(ir::Assembler* assembler, VAddr next_pc) {
         EmitUndefined(assembler, next_pc);
         return;
     }
-    ir::Value fault_value;
-    if (HelperValuesEnabled()) {
-        const ir::Uniform uni_interrupt{offsetof(ThreadContext64, interrupt),
-                                        ir::ValueType::U32};
-        auto old_rax = __ LoadUniform(
-                ir::Uniform{offsetof(ThreadContext64, rax), ir::ValueType::U64});
-        auto old_rdx = __ LoadUniform(
-                ir::Uniform{offsetof(ThreadContext64, rdx), ir::ValueType::U64});
-        auto ecx = __ LoadUniform(
-                ir::Uniform{offsetof(ThreadContext64, rcx), ir::ValueType::U32});
-        auto packed = __ CallHostUniformPure(&XgetbvHelper, ecx)
-                              .SetType(ir::ValueType::U64);
-        fault_value = __ BitExtract(packed, ir::Imm(63u), ir::Imm(1u))
-                              .SetCastType(ir::ValueType::U32);
-        auto succeeded = __ TestZero(fault_value);
-        auto xcr0_low = __ BitExtract(packed, ir::Imm(0u), ir::Imm(32u))
-                                .SetType(ir::ValueType::U32);
-        auto xcr0_high = __ BitExtract(packed, ir::Imm(32u), ir::Imm(32u))
-                                 .SetCastType(ir::ValueType::U32);
-        __ StoreUniform(ir::Uniform{offsetof(ThreadContext64, rax), ir::ValueType::U64},
-                        __ Select(succeeded, __ ZeroExtend32To64(xcr0_low), old_rax)
-                                .SetType(ir::ValueType::U64));
-        __ StoreUniform(ir::Uniform{offsetof(ThreadContext64, rdx), ir::ValueType::U64},
-                        __ Select(succeeded, __ ZeroExtend32To64(xcr0_high), old_rdx)
-                                .SetType(ir::ValueType::U64));
-        // Keep the StoreUniform value immediate and execute it only on the
-        // fault path; a successful XGETBV must not leave a stale ILL_CODE.
-        auto no_fault = __ NotGoto(__ TestNotZero(fault_value));
-        __ StoreUniform(
-                uni_interrupt,
-                __ LoadImm(ir::Imm(static_cast<u32>(InterruptReason::ILL_CODE))));
-        __ BindLabel(no_fault);
-    } else {
-        auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
-        fault_value = __ CallHostWithUniformEffects(
-                XgetbvEffects(), &XgetbvContextHelper, context);
-    }
+    // Keep architectural outputs in IR: a context-writing helper otherwise
+    // updates memory behind resident GPRs, whose exit publication overwrites
+    // EAX/EDX with their pre-call values. This also avoids a full context sync.
+    const ir::Uniform uni_interrupt{offsetof(ThreadContext64, interrupt),
+                                    ir::ValueType::U32};
+    auto old_rax = __ LoadUniform(
+            ir::Uniform{offsetof(ThreadContext64, rax), ir::ValueType::U64});
+    auto old_rdx = __ LoadUniform(
+            ir::Uniform{offsetof(ThreadContext64, rdx), ir::ValueType::U64});
+    auto ecx = __ LoadUniform(
+            ir::Uniform{offsetof(ThreadContext64, rcx), ir::ValueType::U32});
+    auto packed = __ CallHostUniformPure(&XgetbvHelper, ecx)
+                          .SetType(ir::ValueType::U64);
+    auto fault_value = __ BitExtract(packed, ir::Imm(63u), ir::Imm(1u))
+                          .SetCastType(ir::ValueType::U32);
+    auto succeeded = __ TestZero(fault_value);
+    auto xcr0_low = __ BitExtract(packed, ir::Imm(0u), ir::Imm(32u))
+                            .SetType(ir::ValueType::U32);
+    auto xcr0_high = __ BitExtract(packed, ir::Imm(32u), ir::Imm(32u))
+                             .SetCastType(ir::ValueType::U32);
+    __ StoreUniform(ir::Uniform{offsetof(ThreadContext64, rax), ir::ValueType::U64},
+                    __ Select(succeeded, __ ZeroExtend32To64(xcr0_low), old_rax)
+                            .SetType(ir::ValueType::U64));
+    __ StoreUniform(ir::Uniform{offsetof(ThreadContext64, rdx), ir::ValueType::U64},
+                    __ Select(succeeded, __ ZeroExtend32To64(xcr0_high), old_rdx)
+                            .SetType(ir::ValueType::U64));
+    // Keep the StoreUniform value immediate and execute it only on the
+    // fault path; a successful XGETBV must not leave a stale ILL_CODE.
+    auto no_fault = __ NotGoto(__ TestNotZero(fault_value));
+    __ StoreUniform(
+            uni_interrupt,
+            __ LoadImm(ir::Imm(static_cast<u32>(InterruptReason::ILL_CODE))));
+    __ BindLabel(no_fault);
     // ECX != 0 is a #GP approximation.  Both ABIs terminate back to the host
     // on that path and link to the next instruction on the normal one.
     __ SetLocation(ir::Lambda{ir::Imm{next_pc}});

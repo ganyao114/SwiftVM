@@ -1,12 +1,12 @@
 //
 // AOT artifact: on-disk format and the runtime handshake.
 //
-// An artifact is a *legal* AArch64 ET_DYN ELF that carries three things:
+// An artifact is a legal AArch64 or RV64 LP64D ET_DYN ELF carrying:
 //
 //   1. the guest image, byte for byte, at its original guest virtual
 //      addresses (docs/aot-design.md §1: compiled code encodes guest
 //      addresses in every memory access, so guest data may not move);
-//   2. the compiled ARM64 code for as many guest functions as the existing
+//   2. the compiled host code for as many guest functions as the existing
 //      function-mode path could translate, plus the relocation list produced
 //      by backend/code_serial.h;
 //   3. the original symbol table with every `STT_FUNC` redirected at the
@@ -114,8 +114,9 @@ enum SwiftAotStatus : int {
 };
 
 inline constexpr char kAotMagic[8] = {'S', 'V', 'M', 'A', 'O', 'T', '\0', '\1'};
-// 3: units carry precise fault ranges and allocation-relative recovery PCs.
-inline constexpr std::uint64_t kAotFormatVersion = 3;
+// 4: block entry flags distinguish public entries and guest-only extents;
+//    RV64 units carry allocation-local direct-link JAL sites.
+inline constexpr std::uint64_t kAotFormatVersion = 4;
 
 inline constexpr const char* kAotCodeSectionName = ".svmaot.text";
 inline constexpr const char* kAotInfoSectionName = ".svmaot.info";

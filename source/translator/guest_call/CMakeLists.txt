@@ -27,7 +27,7 @@ target_compile_definitions(swift_guest_call_test PRIVATE
         SVM_GUEST_CALL_STUB_ELF="${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_stubs_x86_64"
         SVM_GUEST_CALL_GLIBC_ELF="${CMAKE_CURRENT_SOURCE_DIR}/../linux/tests/func_tests_x86_64")
 
-add_test(swift_guest_call_test swift_guest_call_test --durations yes)
+add_test(NAME swift_guest_call_test COMMAND swift_guest_call_test --durations yes)
 add_test(NAME swift_guest_call_smoke COMMAND swift_guest_call_test
         "SysV classification*,guest call: integer register placement*,guest call: vector register placement*")
 # The shared guest environment is destroyed after Catch2 returns. CTest must

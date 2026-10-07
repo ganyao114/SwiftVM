@@ -191,13 +191,15 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         instance->SetFunctionDecodeBudget(options.decode_budget);
     }
     auto* address_space = instance->GetAddressSpace();
-    if (address_space->GetConfig().backend_isa != swift::runtime::kArm64) {
-        error = "AOT serialization currently requires the ARM64 backend";
+    if (address_space->GetConfig().backend_isa != swift::runtime::kArm64 &&
+        address_space->GetConfig().backend_isa != swift::runtime::kRiscv64) {
+        error = "AOT serialization requires ARM64 or RV64";
         translator::x86::X86Instance::Destroy(instance);
         return false;
     }
     instance->SetSerializableCodeEmission();
     const auto& config = address_space->GetConfig();
+    image.host_isa = config.backend_isa;
     const auto& host_image = backend::GetHostImage();
     if (host_image.size == 0) {
         error = "cannot determine the SwiftVM host image span";
@@ -299,7 +301,7 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
             return false;
         }
 
-        auto scan = backend::ScanCodeUnit({code, code_size}, host_image, window);
+        auto scan = backend::ScanCodeUnit({code, code_size}, host_image, window, {}, config.backend_isa);
         if (!scan.ok) {
             stats.fail_scan++;
             if (options.verbose) {
@@ -313,6 +315,15 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         unit.guest_start = fault.guest_loc;
         unit.code_size = code_size;
         unit.relocs = std::move(scan.relocs);
+        if (config.backend_isa == runtime::kRiscv64) {
+            const auto region = module->GetCodeRegion(code);
+            for (const auto& site : address_space->GetLinkManager().QuerySourceSites({module.get(), code})) {
+                unit.link_sites.push_back({.code_offset = site.site.offset - u32(code - region->rx_base),
+                        .guest_target = site.guest_target, .kind = u8(site.kind),
+                        .unlinked_instruction = site.unlinked_instruction});
+            }
+            if (!unit.ValidLinkSites()) { ++stats.fail_scan; return false; }
+        }
         for (const auto& site : fault_entries) {
             if (site.host_start < code || site.host_end > code + code_size ||
                 (site.recovery && (site.recovery < code || site.recovery >= code + code_size))) {
@@ -340,6 +351,15 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
             auto* block_entry =
                     static_cast<const u8*>(address_space->GetCodeCache(ir::Location{bs}));
             if (!block_entry) {
+                // A shared SSA frame has only a root ABI entry. Interior
+                // decoded bytes still participate in validation and SMC.
+                if (config.backend_isa == runtime::kRiscv64 && be > bs) {
+                    SerialBlock sb{bs, be, UINT32_MAX};
+                    sb.entry_flags = SerialBlock::MetadataOnly;
+                    if (!HashGuestRange(guest, bs, be, sb.guest_bytes_hash)) blocks_ok = false;
+                    else unit.blocks.push_back(sb);
+                    return;
+                }
                 // A successor the function-mode decode named but did not
                 // decode (the lazy budget stopped short, or the block cap did).
                 // It is a *statically known* direct edge, not a guess, so it is
@@ -367,6 +387,15 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
             unit.blocks.push_back(sb);
         };
 
+        auto add_dependencies = [&](const ir::Block* block) {
+            if (config.backend_isa != runtime::kRiscv64) return;
+            for (const auto& dependency : block->GetGuestCodeDependencies()) {
+                SerialBlock sb{dependency.start.Value(), dependency.end.Value(), UINT32_MAX};
+                sb.entry_flags = SerialBlock::DependencyOnly;
+                if (!HashGuestRange(guest, sb.guest_start, sb.guest_end, sb.guest_bytes_hash)) blocks_ok = false;
+                else unit.blocks.push_back(sb);
+            }
+        };
         auto node = module->GetNode(ir::Location{c.addr});
         if (backend::IsFunction(node)) {
             unit.is_function = 1;
@@ -374,11 +403,13 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
             auto guard = function->LockRead();
             for (auto& block : function->GetBlocks()) {
                 add_block(block.GetStartLocation().Value(), block.GetEndLocation().Value());
+                add_dependencies(static_cast<const ir::Block*>(&block));
             }
         } else if (backend::IsBlock(node)) {
             unit.is_function = 0;
             auto block = backend::GetBlock(node);
             add_block(block->GetStartLocation().Value(), block->GetEndLocation().Value());
+            add_dependencies(block.get());
         } else {
             stats.fail_block_mode++;
             return false;
@@ -470,7 +501,7 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
     }
     image.stub_offset = static_cast<u32>(image.code.size());
     {
-        const u32 stub[2] = {kAotStubInsn, 0u};  // brk #0xA07 ; udf #0
+        const u32 stub[2] = {config.backend_isa == runtime::kRiscv64 ? 0x00100073u : kAotStubInsn, 0u};
         const auto* p = reinterpret_cast<const u8*>(stub);
         image.code.insert(image.code.end(), p, p + sizeof(stub));
     }
@@ -503,7 +534,7 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         for (const auto& u : image.units) {
             covered.insert(u.guest_start);
             for (const auto& b : u.blocks) {
-                covered.insert(b.guest_start);
+                if (b.IsPublished()) covered.insert(b.guest_start);
             }
         }
         u32 stubbed = 0;

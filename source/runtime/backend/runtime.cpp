@@ -193,12 +193,14 @@ struct Runtime::Impl final {
         // memory access and raises PageFatal instead of crashing the host.
         state->guest_addr_limit = static_cast<u64>(address_space->GetConfig().loc_end);
         if (address_space->GetConfig().backend_isa == kRiscv64) {
+            state->spill_area[backend::kRiscvAddressSpaceSlot] = reinterpret_cast<u64>(address_space);
             memory_participant.emplace();
             state->spill_area[backend::kRiscvMemoryParticipantSlot] = reinterpret_cast<u64>(&*memory_participant);
         }
         state->unaligned_atomic_lock_address =
                 &backend::unaligned_atomic_lock;
-        if (address_space->GetConfig().backend_isa == kArm64 &&
+        if ((address_space->GetConfig().backend_isa == kArm64 ||
+             address_space->GetConfig().backend_isa == kRiscv64) &&
             True(address_space->GetConfig().global_opts & Optimizations::ReturnStackBuffer)) {
             return_stack.emplace();
             state->rsb_pointer = return_stack->Empty();
@@ -330,7 +332,8 @@ struct Runtime::Impl final {
         const auto fault_addr = reinterpret_cast<std::uintptr_t>(info->si_addr);
         const bool handled = self->address_space->GetSmcTracker().HandleWriteFault(
                 *self->address_space, self->l1_code_cache, fault_addr);
-        if (handled && self == tls_active_runtime && self->return_stack) {
+        if (handled && self == tls_active_runtime && self->return_stack &&
+            self->address_space->GetConfig().backend_isa == kArm64) {
             (void)self->return_stack->Reset(uctx);
         }
         return handled;
@@ -467,7 +470,8 @@ struct Runtime::Impl final {
                     uctx, reinterpret_cast<std::uintptr_t>(entry.recovery));
             return true;
         }
-        if (self->return_stack && self->return_stack->Recover(uctx, fault_addr)) {
+        if (self->return_stack && self->address_space->GetConfig().backend_isa == kArm64 &&
+            self->return_stack->Recover(uctx, fault_addr)) {
             return true;
         }
         if (backend::SignalHandler::IsGuestAddressMapped(fault_addr)) {

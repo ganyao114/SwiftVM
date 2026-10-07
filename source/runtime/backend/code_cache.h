@@ -35,6 +35,7 @@ struct CodeRegion {
     u32 trampoline_offset{kInvalidTrampolineOffset};
     u32 pending_flags_trampoline_offset{kInvalidTrampolineOffset};
     u32 return_trampoline_offset{kInvalidTrampolineOffset};
+    ISA isa{kArm64};
 
     [[nodiscard]] bool ContainsRx(const void* address) const;
     [[nodiscard]] bool ContainsRw(const void* address) const;

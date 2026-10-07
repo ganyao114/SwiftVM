@@ -245,12 +245,15 @@ void* Module::GetJitCache(const JitCache& jit_cache) {
 }
 
 bool Module::IsDirectLinkConfigured() const {
-    return address_space.GetConfig().backend_isa == kArm64 &&
-           !address_space.SerializableCodeEmission() &&
+    return (address_space.GetConfig().backend_isa == kArm64 ||
+            address_space.GetConfig().backend_isa == kRiscv64) &&
+           (!address_space.SerializableCodeEmission() ||
+            address_space.GetConfig().backend_isa == kRiscv64) &&
            module_config.HasOpt(Optimizations::BlockLink);
 }
 
 bool Module::PrepareDirectLinkRegion() {
+    if (address_space.GetConfig().backend_isa == kRiscv64) return IsDirectLinkConfigured();
     if (!IsDirectLinkConfigured()) {
         return false;
     }
@@ -313,7 +316,8 @@ std::pair<u16, CodeBuffer> Module::AllocCodeCache(u32 size,
     auto ref = code_caches.try_emplace(
             current_code_cache, address_space.GetConfig(), arena_size,
             ResolveFeatureSet(module_config));
-    if (require_direct_link_region || IsDirectLinkConfigured()) {
+    if ((require_direct_link_region || IsDirectLinkConfigured()) &&
+        address_space.GetConfig().backend_isa == kArm64) {
         const auto return_host = reinterpret_cast<void*>(
                 address_space.GetTrampolines().GetReturnHost());
         if (!ref.first->second.InitializeRegionTrampoline(
@@ -377,7 +381,8 @@ u64 Module::PublishLinkTarget(ir::Location guest,
         (call_host_pc && !region->ContainsRx(call_host_pc)) ||
         (call_pending_flags_host_pc &&
          !region->ContainsRx(call_pending_flags_host_pc)) ||
-        region->trampoline_offset == CodeRegion::kInvalidTrampolineOffset) {
+        (address_space.GetConfig().backend_isa == kArm64 &&
+         region->trampoline_offset == CodeRegion::kInvalidTrampolineOffset)) {
         return 0;
     }
     return address_space.GetLinkManager().PublishTarget(

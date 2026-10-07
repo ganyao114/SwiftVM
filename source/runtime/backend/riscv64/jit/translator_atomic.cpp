@@ -86,7 +86,7 @@ bool JitTranslator::EmitAtomic(ir::Inst* inst) {
         }
         as.MV(a1, a2); as.MV(a2, a3); as.MV(a3, a4); as.MV(a4, a5);
         context.SaveVectorsForCall();
-        as.LI(t0, reinterpret_cast<u64>(&CompareWide)); context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
+        context.HostAddress(t0, reinterpret_cast<u64>(&CompareWide)); context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
         as.MV(result[0], a0); as.MV(result[1], a1);
         context.ReloadFlags(); context.RestoreVectorsAfterCall();
         if (context.Features().zacas) { as.Bind(&done); context.ResetVectorType(); }
@@ -178,7 +178,7 @@ bool JitTranslator::EmitAtomic(ir::Inst* inst) {
         as.Bind(&slow);
         const auto kernel = size == 2 ? Kernel<u16>(kind) : size == 4 ? Kernel<u32>(kind) : Kernel<u64>(kind);
         context.SaveVectorsForCall();
-        as.LI(t0, reinterpret_cast<u64>(kernel)); context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
+        context.HostAddress(t0, reinterpret_cast<u64>(kernel)); context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
         context.ReloadFlags();
         context.RestoreVectorsAfterCall();
         as.MV(result, a0);

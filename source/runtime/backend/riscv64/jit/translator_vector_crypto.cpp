@@ -168,7 +168,7 @@ bool JitTranslator::EmitVectorCrypto(ir::Inst* inst) {
             }
             context.WritePair(inst, result); return true;
         }
-        as.LI(a4, reinterpret_cast<u64>(last || !round ? (decrypt ? kInvSub.data() : kSub.data())
+        context.HostAddress(a4, reinterpret_cast<u64>(last || !round ? (decrypt ? kInvSub.data() : kSub.data())
                                                        : static_cast<const void*>(decrypt ? kDecTable.data() : kEncTable.data())));
         for (u32 column = 0; column < 4; ++column) {
             as.MV(t3, x0);

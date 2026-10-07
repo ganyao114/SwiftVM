@@ -127,7 +127,9 @@ bool LinkManager::RegisterSite(LinkSiteKey site,
          SiteRxToRw(signal_patch->region, signal_patch->rx_site) != signal_patch->rw_site ||
          static_cast<u32>(static_cast<u8*>(signal_patch->rx_site) -
                           signal_patch->region.rx_base) != site.offset ||
-         (signal_patch->unlinked_bl & kBranchOpcodeMask) != kBranchOpcode)) {
+         (signal_patch->region.isa == kRiscv64
+                 ? (signal_patch->unlinked_bl & 0x7f) != 0x6f
+                 : (signal_patch->unlinked_bl & kBranchOpcodeMask) != kBranchOpcode))) {
         return false;
     }
     if (has_flags_bypass) {
@@ -170,6 +172,7 @@ bool LinkManager::RegisterSite(LinkSiteKey site,
                     .flags_bypass_offset = flags_bypass_offset,
                     .flags_bypass_instruction = flags_bypass_instruction,
                     .kind = kind,
+                    .unlinked_instruction = signal_patch ? signal_patch->unlinked_bl : 0,
             });
     if (!inserted) {
         return false;
@@ -216,6 +219,19 @@ bool LinkManager::RegisterSite(LinkSiteKey site,
     ++sites_registered_;
     max_in_degree_ = std::max(max_in_degree_, incoming_[guest_target].size());
     return true;
+}
+
+std::vector<LinkSiteRecord> LinkManager::QuerySourceSites(LinkSourceOwner source_owner) const {
+    std::lock_guard guard(mutex_);
+    std::vector<LinkSiteRecord> result;
+    if (const auto owner = outgoing_.find(source_owner); owner != outgoing_.end()) {
+        result.reserve(owner->second.sites.size());
+        for (const auto& key : owner->second.sites) result.push_back(sites_.at(key));
+    }
+    std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
+        return a.site.offset < b.site.offset;
+    });
+    return result;
 }
 
 std::optional<LinkSiteRecord> LinkManager::QuerySite(LinkSiteKey site) const {
@@ -356,7 +372,7 @@ bool LinkManager::ValidateMarkLocked(LinkSiteKey site,
     return true;
 }
 
-bool LinkManager::MarkLinked(LinkSiteKey site, u64 expected_generation, const LinkCommit& commit) {
+bool LinkManager::MarkLinked(LinkSiteKey site, u64 expected_generation, const LinkCommit& commit, bool far) {
     std::lock_guard guard(mutex_);
     const auto site_it = sites_.find(site);
     if (site_it == sites_.end() || site_it->second.state != LinkSiteState::Unlinked || !commit) {
@@ -394,7 +410,7 @@ bool LinkManager::MarkLinked(LinkSiteKey site, u64 expected_generation, const Li
             expected_generation;
     if (committed && still_active) {
         site_it->second.target_generation = expected_generation;
-        site_it->second.state = LinkSiteState::Linked;
+        site_it->second.state = far ? LinkSiteState::Far : LinkSiteState::Linked;
         site_it->second.pending_flags_compatible =
                 pending_compatible;
         if (const auto signal_site = signal_sites_.find(site);
@@ -688,6 +704,13 @@ std::optional<u32> EncodeB(std::intptr_t offset) { return EncodeBranch(offset, k
 
 std::optional<u32> EncodeBL(std::intptr_t offset) { return EncodeBranch(offset, kBLOpcode); }
 
+std::optional<u32> EncodeRiscvJal(std::intptr_t offset, u32 rd) {
+    if (rd > 31 || (offset & 3) || offset < -(1 << 20) || offset > (1 << 20) - 4) return std::nullopt;
+    const u32 bits = u32(offset);
+    return 0x6f | (rd << 7) | (((bits >> 20) & 1) << 31) | (((bits >> 1) & 1023) << 21) |
+           (((bits >> 11) & 1) << 20) | (((bits >> 12) & 255) << 12);
+}
+
 std::optional<uintptr_t> DecodeBranchTarget(const void* site, u32 insn) {
     if (!site || (reinterpret_cast<uintptr_t>(site) & 3u) != 0 ||
         (insn & kBranchOpcodeMask) != kBranchOpcode) {
@@ -704,7 +727,7 @@ std::optional<uintptr_t> DecodeBranchTarget(const void* site, u32 insn) {
 }
 
 bool PatchDirectBranch(const CodeRegion& region, void* rx_site, void* rw_site, u32 insn) {
-    if ((insn & kBranchOpcodeMask) != kBranchOpcode) {
+    if (region.isa == kRiscv64 ? (insn & 0x7f) != 0x6f : (insn & kBranchOpcodeMask) != kBranchOpcode) {
         return false;
     }
     return PatchCodeWord(region, rx_site, rw_site, insn);

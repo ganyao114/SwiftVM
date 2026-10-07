@@ -54,7 +54,7 @@ void JitTranslator::EmitAddress(u64 size) {
     context.SaveVectorsForCall();
     as.ADDI(sp, sp, -16); as.SD(a1, 0, sp);
     as.MV(a0, state); as.LI(a2, size);
-    as.LI(t0, reinterpret_cast<u64>(&CheckGuestRange)); context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
+    context.HostAddress(t0, reinterpret_cast<u64>(&CheckGuestRange)); context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
     context.ReloadFlags();
     context.RestoreVectorsAfterCall();
     as.LD(a1, 0, sp); as.ADDI(sp, sp, 16);
@@ -132,7 +132,7 @@ bool JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
         as.Bind(&done);
     } else {
         context.SaveVectorsForCall();
-        as.MV(a0, a4); as.MV(a1, a5); as.LI(a2, size); as.LI(t0, reinterpret_cast<u64>(&CopyGuestMemory));
+        as.MV(a0, a4); as.MV(a1, a5); as.LI(a2, size); context.HostAddress(t0, reinterpret_cast<u64>(&CopyGuestMemory));
         context.LeaveFloatMode(); as.JALR(t0); context.EnterFloatMode();
         context.ReloadFlags(); context.RestoreVectorsAfterCall();
     }

@@ -23,6 +23,7 @@ BUILD="$(cd "$BUILD_ARG" && pwd)" || {
 }
 AOT="$BUILD/source/aot/svm_aot"
 REF="$BUILD/source/translator/linux/svm_translator_linux"
+CALLTEST="$BUILD/source/aot/swift_aot_call_test"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CORPUS="$(cd "$HERE/../../translator/linux/tests" && pwd)"
 WORK_ARG="${AOT_TEST_WORK:-$(mktemp -d)}"
@@ -36,6 +37,25 @@ head_() { printf '\n== %s ==\n' "$1"; }
 
 [ -x "$AOT" ] || { echo "missing $AOT"; exit 2; }
 
+# Cross-host qualification uses the same suite and rejection assertions.
+# Quoted wrappers also preserve env-based validity-key mutation tests below.
+if [ -n "${AOT_TEST_EMULATOR:-}" ]; then
+    runner=( "$AOT_TEST_EMULATOR" -L "${AOT_TEST_SYSROOT:-/usr/riscv64-linux-gnu}"
+             -cpu "${AOT_TEST_CPU:-rv64,v=false,zba=false,zbb=false,zbs=false,zbc=false}" )
+    for tool in AOT REF CALLTEST; do
+        real="${!tool}"
+        [ -x "$real" ] || continue
+        wrapper="$WORK/run-$tool"
+        {
+            printf '#!/usr/bin/env bash\nexec '
+            printf '%q ' "${runner[@]}" "$real"
+            printf '"$@"\n'
+        } > "$wrapper"
+        chmod +x "$wrapper"
+        printf -v "$tool" '%s' "$wrapper"
+    done
+fi
+
 # --------------------------------------------------------------------------
 head_ "0. build the guest-globals case"
 # --------------------------------------------------------------------------
@@ -46,7 +66,7 @@ build_guest() {
             -fno-pie -mcmodel=small -O1 -fno-stack-protector \
             -c "$HERE/$name.c" -o "$WORK/$name.o" 2>/dev/null &&
        python3 "$HERE/mkaotguest.py" -o "$output" \
-            "$WORK/$name.o" --entry _start >/dev/null; then
+            "$WORK/$name.o" --entry _start --separate-data-pages >/dev/null; then
         ok "${name}_x86_64 rebuilt"
     elif [ -f "$HERE/${name}_x86_64" ]; then
         cp "$HERE/${name}_x86_64" "$output"
@@ -190,8 +210,8 @@ expect_reject() {
     local label=$1 needle=$2; shift 2
     local out rc
     out=$("$@" 2>&1); rc=$?
-    if [ "$rc" != 0 ] && printf '%s' "$out" | grep -q "$needle"; then
-        ok "$label -> rejected ($(printf '%s' "$out" | grep -o "$needle" | head -1))"
+    if [ "$rc" != 0 ] && printf '%s' "$out" | grep -Eq "$needle"; then
+        ok "$label -> rejected ($(printf '%s' "$out" | grep -Eo "$needle" | head -1))"
     else
         bad "$label -> NOT rejected (rc=$rc): $(printf '%s' "$out" | head -2)"
     fi
@@ -214,10 +234,10 @@ expect_reject "guest ELF on disk changed" "does not match" \
     "$AOT" run --aot "$BASE" --guest "$WORK/tampered_guest"
 
 # (b) a switch that participates in the hash
-# SVM_STATIC_REGS / SVM_TSO_MODE reach Config, so they trip the *config*
-# hash (which is checked first). An unknown SVM_* key directly exercises the
-# raw environment direct fallback.
-expect_reject "SVM_STATIC_REGS=0 at run time" "Config differs" \
+# Static GPR residency reaches Config on ARM64; RV64 does not use that
+# binding map, so it rejects through the environment hash instead. TSO
+# changes Config on both backends. Neither switch may silently load code.
+expect_reject "SVM_STATIC_REGS=0 at run time" "Config differs|environment differs" \
     env SVM_STATIC_REGS=0 "$AOT" run --aot "$BASE"
 expect_reject "SVM_TSO_MODE=relaxed at run time" "Config differs" \
     env SVM_TSO_MODE=relaxed "$AOT" run --aot "$BASE"
@@ -327,7 +347,6 @@ head_ "AOT <-> call layer, end to end"
 # validity key covers the SwiftVM build id, so an artifact from this `svm_aot`
 # binary would be refused there -- correctly), installs it, resolves libc
 # symbols through the artifact's rewritten .symtab and calls them with GuestFn.
-CALLTEST="$BUILD/source/aot/swift_aot_call_test"
 if [ -x "$CALLTEST" ]; then
     if "$CALLTEST" > "$WORK/call_test.log" 2>&1; then
         ok "swift_aot_call_test: $(tail -2 "$WORK/call_test.log" | head -1)"

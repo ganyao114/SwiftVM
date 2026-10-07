@@ -115,7 +115,7 @@ class Artifact:
         r = Reader(blob)
         r.skip(8)
         self.fmt_version = r.u64()
-        assert self.fmt_version in (2, 3), "unsupported artifact format version"
+        assert self.fmt_version in (2, 3, 4), "unsupported artifact format version"
         self.off_key = base + r.p
         self.key = [r.u64() for _ in range(5)]  # format, build, config, env, guest
         self.off_payload_size = base + r.p
@@ -162,6 +162,7 @@ class Artifact:
                 b["code_offset"] = r2.u32()
                 b["hash_at"] = at()
                 b["hash"] = r2.u64()
+                b["entry_flags"] = r2.u8() if self.fmt_version >= 4 else 1
                 u["blocks"].append(b)
             nr = r2.u32()
             u["relocs"] = []
@@ -181,6 +182,13 @@ class Artifact:
                     site["recovery_offset"] = r2.u32()
                     site["recovery_kind"] = r2.u8()
                     u["fault_sites"].append(site)
+            u["link_sites"] = []
+            if self.fmt_version >= 4:
+                nl = r2.u32()
+                for _ in range(nl):
+                    site = dict(code_offset_at=at(), code_offset=r2.u32(),
+                                guest_target=r2.u64(), kind=r2.u8(), instruction=r2.u32())
+                    u["link_sites"].append(site)
             self.units.append(u)
         assert base + r2.p == base + len(blob), "payload did not consume the section"
 

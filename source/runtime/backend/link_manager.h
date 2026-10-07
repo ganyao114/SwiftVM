@@ -65,6 +65,7 @@ struct LinkSiteRecord {
     LinkSiteState state{LinkSiteState::Unlinked};
     LinkSiteKind kind{LinkSiteKind::Unconditional};
     bool pending_flags_compatible{};
+    u32 unlinked_instruction{};
 };
 
 struct LinkFlagsBypassPatch {
@@ -143,6 +144,7 @@ public:
                                     LinkSiteKind kind = LinkSiteKind::Unconditional,
                                     EdgeFlagsState edge_flags = {});
     [[nodiscard]] std::optional<LinkSiteRecord> QuerySite(LinkSiteKey site) const;
+    [[nodiscard]] std::vector<LinkSiteRecord> QuerySourceSites(LinkSourceOwner source_owner) const;
 
     // Publishing a target assigns a process-local, globally monotonic generation.
     // MarkLinked/MarkFar are the linkage-time generation recheck boundary.
@@ -168,7 +170,7 @@ public:
     // between metadata linkage and patch.
     [[nodiscard]] bool MarkLinked(LinkSiteKey site,
                                   u64 expected_generation,
-                                  const LinkCommit& commit);
+                                  const LinkCommit& commit, bool far = false);
     [[nodiscard]] bool MarkFar(LinkSiteKey site, u64 expected_generation);
 
     // Marks the target unavailable before returning its incoming-site capture.
@@ -284,6 +286,7 @@ private:
 
 [[nodiscard]] std::optional<u32> EncodeB(std::intptr_t offset);
 [[nodiscard]] std::optional<u32> EncodeBL(std::intptr_t offset);
+[[nodiscard]] std::optional<u32> EncodeRiscvJal(std::intptr_t offset, u32 rd = 0);
 [[nodiscard]] std::optional<uintptr_t> DecodeBranchTarget(const void* site, u32 insn);
 
 // Performs exactly one aligned 32-bit atomic instruction write through the RW

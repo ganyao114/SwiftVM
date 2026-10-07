@@ -1182,12 +1182,17 @@ void CodeReuse() {
 
 }  // namespace
 
+namespace swift::tests::riscv { void RuntimePersistence(); }
+
 int main(int argc, char** argv) {
 #if !defined(__riscv) || __riscv_xlen != 64
     std::cerr << "swift_riscv_backend_test requires an RV64 process (native or QEMU)\n";
     return 1;
 #else
     try {
+        if (argc == 2 && std::string{argv[1]} == "--persistence") {
+            RuntimePersistence(); std::cout << "OK " << checks << " checks\n"; return 0;
+        }
         if (argc == 2 && std::string{argv[1]} == "--cache-reuse") {
             CodeReuse();
             std::cout << "OK " << checks << " checks\n";

@@ -143,4 +143,12 @@ void JitContext::PublishUniformBindings() {
     }
 }
 
+void JitContext::PublishUniformBindingsForExit() {
+    // This path cannot return to the body. Preserve the emitter's RVV state
+    // for the unexecuted alternative, without adding a VSET to its hot path.
+    const auto bits = vector_bits, lanes = vector_lanes, rounding = vector_round_mode;
+    PublishUniformBindings();
+    vector_bits = bits; vector_lanes = lanes; vector_round_mode = rounding;
+}
+
 }  // namespace swift::runtime::backend::riscv64

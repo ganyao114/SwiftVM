@@ -44,9 +44,11 @@ constexpr std::intptr_t kImm26Boundary = (std::intptr_t{1} << 27) - 4;
 static_assert(sizeof(LinkSiteKey) == 16);
 static_assert(sizeof(LinkSourceOwner) == 16);
 static_assert(sizeof(LinkSiteRecord) == 72);
-static_assert(sizeof(LinkSignalPatchSite) == 88);
+// The region ISA tag adds one aligned word to a region and its signal copy;
+// the canonical RV64 instruction fits the existing site-record padding.
+static_assert(sizeof(LinkSignalPatchSite) == 96);
 static_assert(sizeof(LinkTargetRecord) == 88);
-static_assert(sizeof(CodeRegion) == 40);
+static_assert(sizeof(CodeRegion) == 48);
 
 constexpr auto kPendingNZCV = EdgeFlagsState::Pending(
         kEdgeNZCVMask,

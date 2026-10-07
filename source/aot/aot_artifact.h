@@ -15,6 +15,7 @@ namespace swift::aot {
 using swift::runtime::backend::Relocation;
 using swift::runtime::backend::SerialBlock;
 using swift::runtime::backend::SerialFaultSite;
+using swift::runtime::backend::SerialLinkSite;
 using swift::runtime::backend::ValidityKey;
 
 // One compiled guest function. `code_offset`/`code_size` index AotImage::code
@@ -29,8 +30,10 @@ struct AotUnit {
     std::vector<SerialBlock> blocks{};
     std::vector<Relocation> relocs{};
     std::vector<SerialFaultSite> fault_sites{};
+    std::vector<SerialLinkSite> link_sites{};
 
     [[nodiscard]] bool ValidFaultSites() const;
+    [[nodiscard]] bool ValidLinkSites() const;
 };
 
 // A PT_LOAD of the guest ELF, carried verbatim. `data.size()` is p_filesz;
@@ -80,6 +83,7 @@ struct AotStats {
 };
 
 struct AotImage {
+    runtime::ISA host_isa{runtime::kArm64}; // Also recorded by ELF e_machine.
     ValidityKey key{};  // key.guest_id is the guest *content* hash, see below
     AotGuestImageInfo guest{};
     AotStats stats{};

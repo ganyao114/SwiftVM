@@ -5,6 +5,7 @@
 #include "runtime/backend/code_serial.h"
 #include "runtime/backend/module.h"
 #include "runtime/common/svm_config.h"
+#include "runtime/backend/riscv64/host_features.h"
 
 #include <algorithm>
 #include <array>
@@ -204,7 +205,10 @@ struct Pending {
 ScanResult ScanCodeUnit(std::span<const u8> code,
                         const HostImageInfo& image,
                         u64 guest_window_size,
-                        std::span<const u32> external_bl_offsets) {
+                        std::span<const u32> external_bl_offsets,
+                        ISA isa) {
+    if (isa == kRiscv64) return ScanRiscvCodeUnit(code, image, guest_window_size);
+    if (isa != kArm64) return {false, "unsupported serialization ISA"};
     ScanResult result{};
     if (code.size() % kInstSize != 0 || code.empty()) {
         result.reject_reason = "unit size is not a multiple of 4";
@@ -437,7 +441,7 @@ bool ApplyRelocations(u8* rw_code,
                       std::size_t code_size,
                       std::span<const Relocation> relocs,
                       const HostImageInfo& image,
-                      std::string* error) {
+                      std::string* error, ISA isa) {
     auto fail = [&](const char* msg) {
         if (error) *error = msg;
         return false;
@@ -445,6 +449,27 @@ bool ApplyRelocations(u8* rw_code,
     if (image.size == 0) {
         return fail("host image span unknown");
     }
+    if (isa == kRiscv64) {
+        // Re-scan the recorded image before changing any byte: a corrupt
+        // relocation list may not invent literal slots or omit a host pointer.
+        HostImageInfo recorded = image;
+        if (!relocs.empty()) recorded.base = relocs.front().recorded_value - relocs.front().addend;
+        const auto scan = ScanRiscvCodeUnit({rw_code, code_size}, recorded, 0);
+        if (!scan.ok || scan.relocs.size() != relocs.size()) return fail("invalid RV64 literal metadata");
+        for (size_t i = 0; i < relocs.size(); ++i) {
+            const auto& a = relocs[i]; const auto& b = scan.relocs[i];
+            if (a.kind != b.kind || a.code_offset != b.code_offset || a.inst_count != b.inst_count ||
+                a.reg != b.reg || a.use != b.use || a.addend != b.addend || a.recorded_value != b.recorded_value ||
+                a.addend >= image.size || image.base > UINT64_MAX - a.addend)
+                return fail("RV64 literal relocation differs from emitted metadata");
+        }
+        for (const auto& rel : relocs) {
+            const u64 value = image.base + rel.addend;
+            std::memcpy(rw_code + rel.code_offset, &value, sizeof(value));
+        }
+        return true;
+    }
+    if (isa != kArm64) return fail("unsupported relocation ISA");
     for (const auto& r : relocs) {
         if (r.kind != RelocKind::HostImageAbs64) {
             return fail("unknown relocation kind");
@@ -612,6 +637,7 @@ void WriteUnit(BlobWriter& w, const SerialUnit& unit) {
         w.U32(site.edge_flags.valid_nzcv_mask);
         w.U8(static_cast<u8>(site.edge_flags.carry_polarity));
         w.U8(static_cast<u8>(site.edge_flags.producer));
+        w.U32(site.unlinked_instruction);
     }
     w.U32(static_cast<u32>(unit.fault_sites.size()));
     for (const auto& site : unit.fault_sites) {
@@ -657,8 +683,9 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit) {
         b.pending_flags_contract.commits_before_fault = commits_before_fault;
         b.pending_flags_contract.barrier_before_commit = barrier_before_commit;
         if (commits_before_fault > 1 || barrier_before_commit > 1 ||
-            (b.entry_flags & ~SerialBlock::Linkable) != 0 ||
-            !b.pending_flags_contract.IsWellFormed() || b.code_offset >= code_size ||
+            !b.ValidEntryFlags() ||
+            (!b.IsPublished() && (b.IsLinkable() || b.code_offset != UINT32_MAX)) ||
+            !b.pending_flags_contract.IsWellFormed() || (b.IsPublished() && b.code_offset >= code_size) ||
             b.guest_end < b.guest_start ||
             (b.direct_code_offset != UINT32_MAX &&
              ((b.direct_code_offset & 3u) != 0 || b.direct_code_offset >= code_size))) {
@@ -704,7 +731,7 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit) {
             !r.U32(site.flags_bypass_linked_instruction) ||
             !r.U32(site.flags_merge_branch_offset) ||
             !r.U32(site.edge_flags.valid_nzcv_mask) ||
-            !r.U8(carry_polarity) || !r.U8(producer)) {
+            !r.U8(carry_polarity) || !r.U8(producer) || !r.U32(site.unlinked_instruction)) {
             return false;
         }
         site.edge_flags.carry_polarity =
@@ -748,7 +775,7 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit) {
             !r.U8(site.recovery_kind)) {
             return false;
         }
-        if ((site.host_begin & 3u) != 0 || site.host_end != site.host_begin + sizeof(u32) ||
+        if ((site.host_begin & 3u) != 0 || (site.host_end & 3u) != 0 || site.host_end <= site.host_begin ||
             site.host_end > code_size ||
             (site.recovery_offset != UINT32_MAX &&
              ((site.recovery_offset & 3u) != 0 || site.recovery_offset >= code_size)) ||
@@ -884,6 +911,12 @@ u64 ComputeConfigHash(const Config& config) {
     h = HashU64(config.enable_asm_interp ? 1 : 0, h);
     h = HashU64(config.has_local_operation ? 1 : 0, h);
     h = HashU64(static_cast<u64>(config.backend_isa), h);
+    if (config.backend_isa == kRiscv64) {
+        const auto rv = riscv64::HostFeatures::Detect();
+        for (const bool bit : {rv.zbb, rv.zbc, rv.zbs, rv.zkne, rv.zknd, rv.zknh,
+                              rv.zacas, rv.vector, rv.vector_crypto_aes,
+                              rv.vector_crypto_sha256, rv.vector_crypto_clmul}) h = HashU64(bit, h);
+    }
     h = HashU64(config.uniform_buffer_size, h);
     h = HashU64(config.static_program ? 1 : 0, h);
     h = HashU64(static_cast<u64>(config.global_opts), h);
