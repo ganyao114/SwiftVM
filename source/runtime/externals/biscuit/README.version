@@ -1,0 +1,11 @@
+URL: https://github.com/lioncash/biscuit
+Version: 0.20.0 + post-tag PC-relative offset fix
+Revision: 06d2ba12ed5f8b7397f9be79b2beb200a83b6bb7
+BaseTag: v0.20.0
+Imported: 2026-10-06
+License: MIT (LICENSE.md)
+LocalPatches: None
+
+This snapshot includes 8668272f88d99f169ea0a8965e436058b8114b73,
+which fixes AUIPC high/low offset splitting for labels and literals.
+The vendored upstream files are unchanged; this file records provenance.

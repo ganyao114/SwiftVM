@@ -11,50 +11,72 @@
 #include <cstddef>
 #include <cstdint>
 
-#if defined(__linux__) && defined(__riscv)
-#include <sys/auxv.h>
-#include <sys/prctl.h>
-#include <asm/hwcap.h>
-#endif
-
 namespace biscuit {
 
-#ifndef COMPAT_HWCAP_ISA_I
-#define COMPAT_HWCAP_ISA_I  (1U << ('I' - 'A'))
-#endif
-
-#ifndef COMPAT_HWCAP_ISA_M
-#define COMPAT_HWCAP_ISA_M  (1U << ('M' - 'A'))
-#endif
-
-#ifndef COMPAT_HWCAP_ISA_A
-#define COMPAT_HWCAP_ISA_A  (1U << ('A' - 'A'))
-#endif
-
-#ifndef COMPAT_HWCAP_ISA_F
-#define COMPAT_HWCAP_ISA_F  (1U << ('F' - 'A'))
-#endif
-
-#ifndef COMPAT_HWCAP_ISA_D
-#define COMPAT_HWCAP_ISA_D  (1U << ('D' - 'A'))
-#endif
-
-#ifndef COMPAT_HWCAP_ISA_C
-#define COMPAT_HWCAP_ISA_C  (1U << ('C' - 'A'))
-#endif
-
-#ifndef COMPAT_HWCAP_ISA_V
-#define COMPAT_HWCAP_ISA_V  (1U << ('V' - 'A'))
-#endif
-
 enum class RISCVExtension : uint64_t {
-    I = COMPAT_HWCAP_ISA_I,
-    M = COMPAT_HWCAP_ISA_M,
-    A = COMPAT_HWCAP_ISA_A,
-    F = COMPAT_HWCAP_ISA_F,
-    D = COMPAT_HWCAP_ISA_D,
-    C = COMPAT_HWCAP_ISA_C,
-    V = COMPAT_HWCAP_ISA_V
+    I,
+    M,
+    A,
+    F,
+    D,
+    C,
+    V,
+    Zba,
+    Zbb,
+    Zbs,
+    Zicboz,
+    Zbc,
+    Zbkb,
+    Zbkc,
+    Zbkx,
+    Zknd,
+    Zkne,
+    Zknh,
+    Zksed,
+    Zksh,
+    Zkt,
+    Zvbb,
+    Zvbc,
+    Zvkb,
+    Zvkg,
+    Zvkned,
+    Zvknha,
+    Zvknhb,
+    Zvksed,
+    Zvksh,
+    Zvkt,
+    Zfh,
+    Zfhmin,
+    Zihintntl,
+    Zvfh,
+    Zvfhmin,
+    Zfa,
+    Ztso,
+    Zacas,
+    Zicond,
+    Zihintpause,
+    Zve32x,
+    Zve32f,
+    Zve64x,
+    Zve64f,
+    Zve64d,
+    Zimop,
+    Zca,
+    Zcb,
+    Zcd,
+    Zcf,
+    Zcmop,
+    Zawrs,
+    Supm,
+    Zicntr,
+    Zihpm,
+    Zfbfmin,
+    Zvfbfmin,
+    Zvfbfwma,
+    Zicbom,
+    Zaamo,
+    Zalrsc,
+    Zicclsm
 };
 
 template <CSR csr>
@@ -96,6 +118,13 @@ public:
 
     /// Returns the vector register length in bytes.
     uint32_t GetVlenb() const;
+
+    /// Returns the highest userspace-accessible virtual address.
+    /// On Linux, they are the following:
+    ///     With Sv39: 0x0000003fffffffff
+    ///     With Sv48: 0x00007fffffffffff
+    ///     With Sv57: 0x00ffffffffffffff
+    uint64_t GetHighestVirtualAddress() const;
 };
 
 } // namespace biscuit

@@ -23,6 +23,8 @@ enum class CSR : uint32_t {
     FRM            = 0x002, // Floating-point Dynamic Rounding Mode
     FCSR           = 0x003, // Floating-point Control and Status Register (frm + fflags)
 
+    SSP            = 0x011, // Shadow stack pointer
+
     JVT            = 0x017, // Table jump base vector and control register
 
     Cycle          = 0xC00, // Cycle counter for RDCYCLE instruction.
@@ -101,14 +103,30 @@ enum class CSR : uint32_t {
 
     SEnvCfg        = 0x10A, // Supervisor environment configuration register
 
+    SStateEn0      = 0x10C, // Supervisor State Enable 0 register
+    SStateEn1      = 0x10D, // Supervisor State Enable 1 register
+    SStateEn2      = 0x10E, // Supervisor State Enable 2 register
+    SStateEn3      = 0x10F, // Supervisor State Enable 3 register
+
+    SCountInhibit  = 0x120, // Supervisor counter-inhibit register
+
     SScratch       = 0x140, // Scratch register for supervisor trap handlers
     SEPC           = 0x141, // Supervisor exception program counter
     SCause         = 0x142, // Supervisor trap cause
     STVal          = 0x143, // Supervisor bad address or instruction
     SIP            = 0x144, // Supervisor interrupt pending.
 
+    SCTRCTL        = 0x14E, // Supervisor control transfer records control register
+    SCTRStatus     = 0x14F, // Supervisor control transfer records status register
+    SCTRDepth      = 0x15F, // Supervisor control transfer records depth register
+
     SISelect       = 0x150, // Supervisor indirect register select
     SIReg          = 0x151, // Supervisor indirect register alias
+    SIReg2         = 0x152, // Supervisor indirect register alias 2
+    SIReg3         = 0x153, // Supervisor indirect register alias 3
+    SIReg4         = 0x155, // Supervisor indirect register alias 4 (SIPH is 0x154)
+    SIReg5         = 0x156, // Supervisor indirect register alias 5
+    SIReg6         = 0x157, // Supervisor indirect register alias 6f
 
     StopEI         = 0x15C, // Supervisor top external interrupt (only with an IMSIC)
     StopI          = 0xDB0, // Supervisor top interrupt
@@ -121,7 +139,11 @@ enum class CSR : uint32_t {
 
     SATP           = 0x180, // Supervisor address translation and protection
 
+    SRMCfg         = 0x181, // Supervisor Resource Management Configuration
+
     SContext       = 0x5A8, // Supervisor-mode context register
+
+    SCountOvf      = 0xDA0, // Supervisor count overflow
 
     // Hypervisor-level CSRs
 
@@ -134,6 +156,7 @@ enum class CSR : uint32_t {
     HVIEN          = 0x608, // Hypervisor virtual interrupt enables
     HVICTL         = 0x609, // Hypervisor virtual interrupt control
 
+    HEDelegH       = 0x612, // Upper 32 bits of hedeleg
     HIDelegH       = 0x613, // Upper 32 bits of hideleg
     HVIENH         = 0x618, // Upper 32 bits of hvien
     HVIPH          = 0x655, // Upper 32 bits of hvip
@@ -160,6 +183,17 @@ enum class CSR : uint32_t {
     HTimeDelta     = 0x605, // Delta for VS/VU-mode timer
     HTimeDeltaH    = 0x615, // Upper 32 bits of HTimeDelta, HSXLEN=32 only
 
+    HStateEn0      = 0x60C, // Hypervisor State Enable 0 register
+    HStateEn1      = 0x60D, // Hypervisor State Enable 1 register
+    HStateEn2      = 0x60E, // Hypervisor State Enable 2 register
+    HStateEn3      = 0x60F, // Hypervisor State Enable 3 register
+    HStateEn0H     = 0x61C, // Upper 32 bits of Hypervisor State Enable 0 register
+    HStateEn1H     = 0x61D, // Upper 32 bits of Hypervisor State Enable 1 register
+    HStateEn2H     = 0x61E, // Upper 32 bits of Hypervisor State Enable 2 register
+    HStateEn3H     = 0x61F, // Upper 32 bits of Hypervisor State Enable 3 register
+
+    // Virtual Supervisor CSRs
+
     VSStatus       = 0x200, // Virtual supervisor status register
     VSIE           = 0x204, // Virtual supervisor interrupt-enable register
     VSTVec         = 0x205, // Virtual supervisor trap handler base address
@@ -169,8 +203,15 @@ enum class CSR : uint32_t {
     VSTVal         = 0x243, // Virtual supervisor bad address or instruction
     VSIP           = 0x244, // Virtual supervisor interrupt pending
 
+    VSCTRCTL       = 0x24E, // Virtual supervisor control transfer records control register
+
     VSISelect      = 0x250, // Virtual supervisor indirect register select
     VSIReg         = 0x251, // Virtual supervisor indirect register alias
+    VSIReg2        = 0x252, // Virtual supervisor indirect register alias 2
+    VSIReg3        = 0x253, // Virtual supervisor indirect register alias 3
+    VSIReg4        = 0x255, // Virtual supervisor indirect register alias 4 (VSIPH is 0x254)
+    VSIReg5        = 0x256, // Virtual supervisor indirect register alias 5
+    VSIReg6        = 0x257, // Virtual supervisor indirect register alias 6
 
     VStopEI        = 0x25C, // Virtual supervisor top external interrupt (only with an IMSIC)
     VStopI         = 0xEB0, // Virtual supervisor top interrupt
@@ -199,6 +240,16 @@ enum class CSR : uint32_t {
     MVIP           = 0x309, // Machine virtual interrupt-pending bits
     MStatusH       = 0x310, // Additional machine status register, RV32 only
 
+    MStateEn0      = 0x30C, // Machine State Enable 0 register
+    MStateEn1      = 0x30D, // Machine State Enable 1 register
+    MStateEn2      = 0x30E, // Machine State Enable 2 register
+    MStateEn3      = 0x30F, // Machine State Enable 3 register
+    MStateEn0H     = 0x31C, // Upper 32 bits of Machine State Enable 0 register
+    MStateEn1H     = 0x31D, // Upper 32 bits of Machine State Enable 1 register
+    MStateEn2H     = 0x31E, // Upper 32 bits of Machine State Enable 2 register
+    MStateEn3H     = 0x31F, // Upper 32 bits of Machine State Enable 3 register
+
+    MEDelegH       = 0x312, // Upper 32 bits of medeleg
     MIDelegH       = 0x313, // Upper 32 bits of of mideleg (only with S-mode)
     MIEH           = 0x314, // Upper 32 bits of mie
     MVIENH         = 0x318, // Upper 32 bits of mvien (only with S-mode)
@@ -213,8 +264,15 @@ enum class CSR : uint32_t {
     MTInst         = 0x34A, // Machine trap instruction (transformed)
     MTVal2         = 0x34B, // Machine bad guest physical address
 
+    MCTRCTL        = 0x34E, // Machine control transfer records control register
+
     MISelect       = 0x350, // Machine indirect register select
     MIReg          = 0x351, // Machine indirect register alias
+    MIReg2         = 0x352, // Machine indirect register alias 2
+    MIReg3         = 0x353, // Machine indirect register alias 3
+    MIReg4         = 0x355, // Machine indirect register alias 4 (MIPH is 0x354)
+    MIReg5         = 0x356, // Machine indirect register alias 5
+    MIReg6         = 0x357, // Machine indirect register alias 6
 
     MTopEI         = 0x35C, // Machine top external interrupt (only with an IMSIC)
     MTopI          = 0xFB0, // Machine top interrupt
@@ -416,7 +474,19 @@ enum class CSR : uint32_t {
     TData1         = 0x7A1, // First Debug/Trace trigger data register
     TData2         = 0x7A2, // Second Debug/Trace trigger data register
     TData3         = 0x7A3, // Third Debug/Trace trigger data register
+    TInfo          = 0x7A4, // Trigger info
+    TControl       = 0x7A5, // Trigger control
     MContext       = 0x7A8, // Machine-mode context register
+    MSContext      = 0x7AA, // Machine supervisor context
+    // TData Aliases
+    MControl       = 0x7A1, // Match control
+    MControl6      = 0x7A1, // Match control type 6
+    ICount         = 0x7A1, // Instruction count
+    ITrigger       = 0x7A1, // Interrupt trigger
+    ETrigger       = 0x7A1, // Exception trigger
+    TMEXTrigger    = 0x7A1, // External trigger
+    TExtra32       = 0x7A3, // Trigger extra (RV32)
+    TExtra64       = 0x7A3, // Trigger extra (RV64)
 
     DCSR           = 0x7B0, // Debug control and status register
     DPC            = 0x7B1, // Debug PC

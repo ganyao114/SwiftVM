@@ -202,17 +202,17 @@ TEST_CASE("BSETI", "[rvb]") {
     auto as = MakeAssembler32(value);
 
     as.BSETI(x31, x7, 0);
-    REQUIRE(value == 0x28039FB3);
+    REQUIRE(value == 0x28039F93);
 
     as.RewindBuffer();
 
     as.BSETI(x31, x7, 15);
-    REQUIRE(value == 0x28F39FB3);
+    REQUIRE(value == 0x28F39F93);
 
     as.RewindBuffer();
 
     as.BSETI(x31, x7, 31);
-    REQUIRE(value == 0x29F39FB3);
+    REQUIRE(value == 0x29F39F93);
 }
 
 TEST_CASE("BSETI (RV64)", "[rvb]") {
@@ -220,22 +220,22 @@ TEST_CASE("BSETI (RV64)", "[rvb]") {
     auto as = MakeAssembler64(value);
 
     as.BSETI(x31, x7, 0);
-    REQUIRE(value == 0x28039FB3);
+    REQUIRE(value == 0x28039F93);
 
     as.RewindBuffer();
 
     as.BSETI(x31, x7, 15);
-    REQUIRE(value == 0x28F39FB3);
+    REQUIRE(value == 0x28F39F93);
 
     as.RewindBuffer();
 
     as.BSETI(x31, x7, 31);
-    REQUIRE(value == 0x29F39FB3);
+    REQUIRE(value == 0x29F39F93);
 
     as.RewindBuffer();
 
     as.BSETI(x31, x7, 63);
-    REQUIRE(value == 0x2BF39FB3);
+    REQUIRE(value == 0x2BF39F93);
 }
 
 TEST_CASE("CLMUL", "[rvb]") {
@@ -452,8 +452,8 @@ TEST_CASE("RORIW", "[rvb]") {
 
     as.RewindBuffer();
 
-    as.RORIW(x31, x7, 63);
-    REQUIRE(value == 0x63F3DF9B);
+    as.RORIW(x31, x7, 31);
+    REQUIRE(value == 0x61F3DF9B);
 }
 
 TEST_CASE("SEXT.B", "[rvb]") {
@@ -538,12 +538,12 @@ TEST_CASE("UNZIP", "[rvb]") {
     auto as = MakeAssembler32(value);
 
     as.UNZIP(x31, x31);
-    REQUIRE(value == 0x09FFDF93);
+    REQUIRE(value == 0x08FFDF93);
 
     as.RewindBuffer();
 
     as.UNZIP(x1, x2);
-    REQUIRE(value == 0x09F15093);
+    REQUIRE(value == 0x08F15093);
 }
 
 TEST_CASE("XNOR", "[rvb]") {
@@ -601,10 +601,10 @@ TEST_CASE("ZIP", "[rvb]") {
     auto as = MakeAssembler32(value);
 
     as.ZIP(x31, x31);
-    REQUIRE(value == 0x09EF9F93);
+    REQUIRE(value == 0x08FF9F93);
 
     as.RewindBuffer();
 
     as.ZIP(x1, x2);
-    REQUIRE(value == 0x09E11093);
+    REQUIRE(value == 0x08F11093);
 }

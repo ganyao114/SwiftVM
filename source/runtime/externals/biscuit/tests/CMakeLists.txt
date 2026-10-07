@@ -1,8 +1,10 @@
 project(biscuit_tests)
 
 add_executable(${PROJECT_NAME}
+    src/assembler_autocompress_tests.cpp
     src/assembler_bfloat_tests.cpp
     src/assembler_branch_tests.cpp
+    src/assembler_cfi_tests.cpp
     src/assembler_cmo_tests.cpp
     src/assembler_privileged_tests.cpp
     src/assembler_rv32i_tests.cpp
@@ -17,7 +19,10 @@ add_executable(${PROJECT_NAME}
     src/assembler_rvq_tests.cpp
     src/assembler_rvv_tests.cpp
     src/assembler_vector_crypto_tests.cpp
+    src/assembler_xthead_tests.cpp
+    src/assembler_zabha_tests.cpp
     src/assembler_zacas_tests.cpp
+    src/assembler_zalasr_tests.cpp
     src/assembler_zawrs_tests.cpp
     src/assembler_zc_tests.cpp
     src/assembler_zfa_tests.cpp

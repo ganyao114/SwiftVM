@@ -14,6 +14,7 @@ namespace {
 // funct3 | imm[8|4:3] | rs | imm[7:6|2:1|5] | op
 void EmitCompressedBranch(CodeBuffer& buffer, uint32_t funct3, int32_t offset, GPR rs, uint32_t op) {
     BISCUIT_ASSERT(IsValidCBTypeImm(offset));
+    BISCUIT_ASSERT((offset % 2) == 0);
     BISCUIT_ASSERT(IsValid3BitCompressedReg(rs));
 
     const auto transformed_imm = TransformToCBTypeImm(static_cast<uint32_t>(offset));
@@ -131,7 +132,7 @@ void EmitCMJTType(CodeBuffer& buffer, uint32_t funct6, uint32_t index, uint32_t 
 }
 
 void EmitCMMVType(CodeBuffer& buffer, uint32_t funct6, GPR r1s, uint32_t funct2, GPR r2s, uint32_t op) {
-    const auto is_valid_s_register = [](GPR reg) {
+    [[maybe_unused]] const auto is_valid_s_register = [](GPR reg) {
         return reg == s0 || reg == s1 || (reg >= s2 && reg <= s7);
     };
 
@@ -164,7 +165,7 @@ void EmitCMPPType(CodeBuffer& buffer, uint32_t funct6, uint32_t funct2, PushPopL
     const auto stack_adj_u = static_cast<uint32_t>(std::abs(stack_adj));
     const auto spimm = (stack_adj_u - stack_adj_base) / 16U;
 
-    // We can only encode up to three differenct values as the upper spimm bits.
+    // We can only encode up to three different values as the upper spimm bits.
     // Ensure we catch any cases where we end up going outside of them.
     BISCUIT_ASSERT(stack_adj_u == stack_adj_base ||
                    stack_adj_u == stack_adj_base + 16 ||
@@ -385,7 +386,6 @@ void Assembler::C_JR(GPR rs) noexcept {
 }
 
 void Assembler::C_LD(GPR rd, uint32_t imm, GPR rs) noexcept {
-    BISCUIT_ASSERT(IsRV64OrRV128(m_features));
     BISCUIT_ASSERT(imm <= 248);
     BISCUIT_ASSERT(imm % 8 == 0);
 
@@ -393,7 +393,6 @@ void Assembler::C_LD(GPR rd, uint32_t imm, GPR rs) noexcept {
 }
 
 void Assembler::C_LDSP(GPR rd, uint32_t imm) noexcept {
-    BISCUIT_ASSERT(IsRV64OrRV128(m_features));
     BISCUIT_ASSERT(rd != x0);
     BISCUIT_ASSERT(imm <= 504);
     BISCUIT_ASSERT(imm % 8 == 0);
@@ -440,9 +439,9 @@ void Assembler::C_LQSP(GPR rd, uint32_t imm) noexcept {
 void Assembler::C_LUI(GPR rd, uint32_t imm) noexcept {
     BISCUIT_ASSERT(imm != 0);
     BISCUIT_ASSERT(rd != x0 && rd != x2);
+    BISCUIT_ASSERT(imm <= 0x3F);
 
-    const auto new_imm = (imm & 0x3F000) >> 12;
-    EmitCompressedImmediate(m_buffer, 0b011, new_imm, rd, 0b01);
+    EmitCompressedImmediate(m_buffer, 0b011, imm, rd, 0b01);
 }
 
 void Assembler::C_LW(GPR rd, uint32_t imm, GPR rs) noexcept {
@@ -483,7 +482,6 @@ void Assembler::C_OR(GPR rd, GPR rs) noexcept {
 }
 
 void Assembler::C_SD(GPR rs2, uint32_t imm, GPR rs1) noexcept {
-    BISCUIT_ASSERT(IsRV64OrRV128(m_features));
     BISCUIT_ASSERT(imm <= 248);
     BISCUIT_ASSERT(imm % 8 == 0);
 
@@ -491,7 +489,6 @@ void Assembler::C_SD(GPR rs2, uint32_t imm, GPR rs1) noexcept {
 }
 
 void Assembler::C_SDSP(GPR rs, uint32_t imm) noexcept {
-    BISCUIT_ASSERT(IsRV64OrRV128(m_features));
     BISCUIT_ASSERT(imm <= 504);
     BISCUIT_ASSERT(imm % 8 == 0);
 
@@ -691,6 +688,15 @@ void Assembler::CM_POPRETZ(PushPopList reg_list, int32_t stack_adj) noexcept {
 void Assembler::CM_PUSH(PushPopList reg_list, int32_t stack_adj) noexcept {
     BISCUIT_ASSERT(stack_adj < 0);
     EmitCMPPType(m_buffer, 0b101110, 0b00, reg_list, stack_adj, 0b10, m_features);
+}
+
+// Control Flow Integrity Extension Instructions
+
+void Assembler::C_SSPOPCHK() noexcept {
+    EmitCMOP(m_buffer, 5);
+}
+void Assembler::C_SSPUSH() noexcept {
+    EmitCMOP(m_buffer, 1);
 }
 
 } // namespace biscuit
