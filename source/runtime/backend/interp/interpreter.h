@@ -65,7 +65,7 @@ private:
     u64 EvalLambda(InterpStack& stack, ir::Lambda& lambda);
     u64 CallHostFunc(InterpStack& stack,
                      ir::Lambda& lambda,
-                     const std::vector<ir::DataClass>& args);
+                     std::span<const ir::DataClass> args);
 
     // Guest flags (state.host_cpu_flags) helpers; the layout mirrors the JIT
     // flags register (x26), see interpreter.cpp.

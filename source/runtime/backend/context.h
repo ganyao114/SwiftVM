@@ -170,6 +170,13 @@ constexpr u32 state_offset_pending_call_l1_code_cache =
 static_assert(state_offset_pending_call_l1_code_cache == 3 * sizeof(u64));
 static_assert(alignof(State) >= 2 * alignof(u64));
 constexpr u32 state_offset_spill_area = offsetof(State, spill_area);
+// RV64's canonical SSA homes are on the host stack, leaving the spill area
+// available for recovery metadata. Reuse its last two words so State's ARM64
+// ABI and persisted code offsets remain stable.
+constexpr u32 kRiscvRecoveryPcSlot = 62;
+constexpr u32 kRiscvRecoveryFrameSlot = 63;
+constexpr u32 state_offset_riscv_recovery_pc = state_offset_spill_area + kRiscvRecoveryPcSlot * 8;
+constexpr u32 state_offset_riscv_recovery_frame = state_offset_spill_area + kRiscvRecoveryFrameSlot * 8;
 // FLAGS_REGS park: PSTATE and x12 last_result. Occupies spill_area[0..1]
 // so uniform offsets do not move. RA must not allocate these slots when
 // FlagsRegsEnabled(). nzcv_park bit 0 is the parked-valid flag; NZCV lives

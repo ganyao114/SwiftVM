@@ -1,46 +1,34 @@
-//
-// Created by 甘尧 on 2023/12/13.
-//
-
 #pragma once
 
-#include "base/common_funcs.h"
+#include <biscuit/assembler.hpp>
 #include "runtime/backend/code_cache.h"
-#include "runtime/backend/reg_alloc.h"
-#include "runtime/common/types.h"
-#include "runtime/include/config.h"
-#include "runtime/ir/instr.h"
-#include "runtime/ir/location.h"
-#include "assembler_riscv64.h"
+#include "runtime/ir/args.h"
 
 namespace swift::runtime::backend::riscv64 {
 
-using namespace swift::riscv64;
-
-class JitContext : DeleteCopyAndMove {
+// Each SSA value has a canonical 16-byte home, shared by direct lowering and
+// semantic helpers. The ARM64 host-register rewrite pass is not used here.
+class JitContext {
 public:
-    explicit JitContext(const Config& config, RegAlloc &reg_alloc);
-
-    XRegister X(const ir::Value &value);
-    FRegister V(const ir::Value &value);
-
-    XRegister GetTmpX();
-    FRegister GetTmpV();
-
-    void Forward(ir::Location location);
-    void Forward(const XRegister &location);
-    void Finish();
-    u8 *Flush(CodeCache &code_cache);
-
-    Riscv64Assembler &GetMasm();
-
-    void TickIR(ir::Inst *instr);
+    biscuit::Assembler& GetMasm() { return masm; }
+    void EnsureSpace();
+    void Address(biscuit::GPR result, biscuit::GPR base, s64 offset);
+    void Load(biscuit::GPR result, biscuit::GPR base, s64 offset, u32 size = 8);
+    void Store(biscuit::GPR value, biscuit::GPR base, s64 offset, u32 size = 8);
+    void Read(biscuit::GPR result, ir::Value value);
+    void Data(biscuit::GPR result, const ir::DataClass& data);
+    void Operand(biscuit::GPR result, const ir::Operand& operand);
+    void Mask(biscuit::GPR value, u32 bits);
+    void SignExtend(biscuit::GPR value, u32 bits);
+    void Write(ir::Inst* inst, biscuit::GPR value);
+    void Jump(biscuit::Label& label);
+    void BranchZero(biscuit::GPR value, biscuit::Label& label, bool zero = true);
+    void Condition(biscuit::GPR result, ir::Cond condition);
+    [[nodiscard]] u32 CurrentBufferSize();
+    void Flush(const CodeBuffer& buffer);
 
 private:
-    const Config &config;
-    RegAlloc &reg_alloc;
-    ArenaAllocator masm_alloc{};
-    Riscv64Assembler masm{&masm_alloc};
+    biscuit::Assembler masm{};
 };
 
-}
+}  // namespace swift::runtime::backend::riscv64

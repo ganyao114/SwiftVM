@@ -191,6 +191,11 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         instance->SetFunctionDecodeBudget(options.decode_budget);
     }
     auto* address_space = instance->GetAddressSpace();
+    if (address_space->GetConfig().backend_isa != swift::runtime::kArm64) {
+        error = "AOT serialization currently requires the ARM64 backend";
+        translator::x86::X86Instance::Destroy(instance);
+        return false;
+    }
     address_space->LoadJitCache();
     const auto& config = address_space->GetConfig();
     const auto& host_image = backend::GetHostImage();

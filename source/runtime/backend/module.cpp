@@ -208,10 +208,14 @@ void* Module::GetJitCache(ir::Location location) {
     if (IsEmpty(node)) {
         return nullptr;
     }
-    return VisitVariant<void*>(node, [this](auto x) -> auto {
+    return VisitVariant<void*>(node, [this, location](auto x) -> auto {
         using T = std::decay_t<decltype(x)>;
         if constexpr (std::is_same_v<T, IntrusivePtr<ir::Function>>) {
             auto guard = x->LockRead();
+            if (address_space.GetConfig().backend_isa == kRiscv64) {
+                auto* block = x->FindBlock(location);
+                return block ? GetJitCache(block->GetJitCache()) : nullptr;
+            }
             return GetJitCache(x->GetJitCache());
         } else if constexpr (std::is_same_v<T, IntrusivePtr<ir::Block>>) {
             auto guard = x->LockRead();
@@ -508,7 +512,14 @@ void Module::ReclaimCode(u8* exec_ptr) {
     if (!exec_ptr) {
         return;
     }
+    // Destruction of the last IR owner takes the node lock. Drop it after the
+    // cache lock to avoid inversion with readers that resolve a JitCache.
+    std::vector<ir::NodeRef> owners;
     std::unique_lock guard(cache_lock);
+    if (auto found = code_ir_owners.find(exec_ptr); found != code_ir_owners.end()) {
+        owners = std::move(found->second);
+        code_ir_owners.erase(found);
+    }
     std::erase_if(fault_table,
                   [&](const FaultEntry& entry) { return entry.owner_start == exec_ptr; });
     for (auto& [index, cache] : code_caches) {
@@ -517,6 +528,11 @@ void Module::ReclaimCode(u8* exec_ptr) {
             return;
         }
     }
+}
+
+void Module::RetainCodeIR(u8* allocation, ir::AddressNode* node) {
+    std::unique_lock guard(cache_lock);
+    code_ir_owners[allocation].emplace_back(node);
 }
 
 }  // namespace swift::runtime::backend

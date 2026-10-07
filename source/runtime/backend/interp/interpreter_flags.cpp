@@ -63,6 +63,13 @@ void Interpreter::SaveGuestFlags(InterpStack& stack, ir::Inst* def, ir::Flags f)
                 have = true;
                 break;
             }
+            case ir::OpCode::Neg: {
+                const u64 source = ReadScalar(stack, def->GetArg<ir::Value>(0)) & MaskBits(bits);
+                carry = source == 0; // ARM C = NOT borrow for 0 - source.
+                overflow = source == (u64{1} << (bits - 1));
+                have = true;
+                break;
+            }
             case ir::OpCode::And:
             case ir::OpCode::Or:
             case ir::OpCode::Xor:
@@ -117,6 +124,11 @@ void Interpreter::SaveGuestFlags(InterpStack& stack, ir::Inst* def, ir::Flags f)
     }
     if (True(f & ir::Flags::AuxiliaryCarry)) {
         switch (def->GetOp()) {
+            case ir::OpCode::Neg: {
+                const u64 source = ReadScalar(stack, def->GetArg<ir::Value>(0));
+                set(kHostAF, ((source ^ result) >> 4) & 1);
+                break;
+            }
             case ir::OpCode::Add:
             case ir::OpCode::Adc:
             case ir::OpCode::Sub:

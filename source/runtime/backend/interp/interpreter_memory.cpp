@@ -89,7 +89,8 @@ void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
     // the addressing mode, so checking the untruncated address here would make
     // the two paths disagree about which wild pointers are in bounds.
     guest_addr &= state.guest_addr_mask;
-    if (guest_addr >= state.guest_addr_limit || guest_addr + access_size > state.guest_addr_limit ||
+    if (guest_addr >= state.guest_addr_limit || access_size > state.guest_addr_limit - guest_addr ||
+        (state.guest_addr_mask != UINT64_MAX && access_size - 1 > state.guest_addr_mask - guest_addr) ||
         (state.interp_range_check &&
          !state.interp_range_check(state.interp_range_check_ctx, guest_addr, access_size))) {
         state.halt_reason = HaltReason::PageFatal;
@@ -124,7 +125,8 @@ void Interpreter::RunStoreMemory(ir::Inst* inst, InterpStack& stack) {
     // the addressing mode, so checking the untruncated address here would make
     // the two paths disagree about which wild pointers are in bounds.
     guest_addr &= state.guest_addr_mask;
-    if (guest_addr >= state.guest_addr_limit || guest_addr + access_size > state.guest_addr_limit ||
+    if (guest_addr >= state.guest_addr_limit || access_size > state.guest_addr_limit - guest_addr ||
+        (state.guest_addr_mask != UINT64_MAX && access_size - 1 > state.guest_addr_mask - guest_addr) ||
         (state.interp_range_check &&
          !state.interp_range_check(state.interp_range_check_ctx, guest_addr, access_size))) {
         state.halt_reason = HaltReason::PageFatal;

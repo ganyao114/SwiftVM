@@ -30,6 +30,7 @@
 #include "runtime/backend/interrupt_l1_mapping.h"
 #include "runtime/backend/interrupt_poll_state.h"
 #include "runtime/backend/runtime.h"
+#include "runtime/backend/riscv64/jit/compile.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/backedge_control.h"
@@ -193,7 +194,8 @@ struct Runtime::Impl final {
         state->guest_addr_limit = static_cast<u64>(address_space->GetConfig().loc_end);
         state->unaligned_atomic_lock_address =
                 &backend::unaligned_atomic_lock;
-        if (True(address_space->GetConfig().global_opts & Optimizations::ReturnStackBuffer)) {
+        if (address_space->GetConfig().backend_isa == kArm64 &&
+            True(address_space->GetConfig().global_opts & Optimizations::ReturnStackBuffer)) {
             return_stack.emplace();
             state->rsb_pointer = return_stack->Empty();
             state->rsb_empty = return_stack->Empty();
@@ -201,7 +203,7 @@ struct Runtime::Impl final {
         smc_epoch = address_space->GetSmcTracker().RegisterRuntime(
                 l1_code_cache,
                 &state->exit_request,
-                &state_storage,
+                address_space->GetConfig().backend_isa == kArm64 ? &state_storage : nullptr,
                 &state->rsb_pointer,
                 state->rsb_empty);
         jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
@@ -344,6 +346,23 @@ struct Runtime::Impl final {
         const auto host_pc = reinterpret_cast<u8*>(backend::SignalHandler::GetContextPC(uctx));
         const auto fault_addr = reinterpret_cast<std::uintptr_t>(info->si_addr);
         backend::FaultEntry entry{};
+        if (self->address_space->GetConfig().backend_isa == kRiscv64 &&
+            self->state->spill_area[backend::kRiscvRecoveryPcSlot] &&
+            self->state->spill_area[backend::kRiscvRecoveryFrameSlot]) {
+            const auto recovery = self->state->spill_area[backend::kRiscvRecoveryPcSlot];
+            if (!self->address_space->LookupFault(reinterpret_cast<u8*>(recovery), entry) ||
+                backend::SignalHandler::IsGuestAddressMapped(fault_addr))
+                return false;
+            self->state->halt_reason = HaltReason::PageFatal;
+            backend::ReleaseAbandonedUnalignedAtomicGuard();
+            // A semantic helper may have its own C++ stack/register frame.
+            // Restore the generated block anchors before its epilogue runs.
+            backend::SignalHandler::SetContextGPR(uctx, 8, self->state->spill_area[backend::kRiscvRecoveryFrameSlot]);
+            backend::SignalHandler::SetContextGPR(uctx, 9, reinterpret_cast<uintptr_t>(self->state));
+            backend::SignalHandler::SetContextGPR(uctx, 2, self->state->spill_area[backend::kRiscvRecoveryFrameSlot]);
+            backend::SignalHandler::SetContextPC(uctx, recovery);
+            return true;
+        }
         if (self->state_storage.Contains(fault_addr)) {
             const auto request = std::atomic_ref<u64>(self->state->exit_request)
                                          .load(std::memory_order_acquire);
@@ -779,7 +798,8 @@ void Runtime::SignalInterrupt() {
             .store(GetInterruptL1Mapping().Data(), std::memory_order_release);
     std::atomic_ref<void*>(impl->state->pending_call_l1_code_cache)
             .store(GetInterruptL1Mapping().Data(), std::memory_order_release);
-    impl->state_storage.Arm();
+    if (impl->address_space->GetConfig().backend_isa == kArm64)
+        impl->state_storage.Arm();
 }
 
 void Runtime::ClearInterrupt() {
@@ -1383,6 +1403,8 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
 void* TranslateIR(const std::shared_ptr<backend::Module>& module,
                   std::span<ir::HIRFunction* const> functions) {
     ASSERT(!functions.empty());
+    if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
+        return riscv64::CompileFunctions(module, functions);
     const auto features = ResolveBackendFeatures(module);
     PerfFixedCapture2 fixed_capture;
     std::vector<std::unique_ptr<FunctionRegionAllocation>> allocations;
@@ -1399,6 +1421,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
 }
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunction* function) {
+    if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
+        return riscv64::CompileFunctions(module, std::span{&function, 1});
     const auto features = ResolveBackendFeatures(module);
     PerfFixedCapture2 fixed_capture;
     FunctionRegionAllocation allocation;
@@ -1414,6 +1438,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     }
 
     auto guard = ir_block->LockWrite();
+    if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
+        return riscv64::CompileBlock(module, ir_block);
     auto& jit_state = ir_block->GetJitCache();
     if (jit_state.jit_state == backend::JitState::Cached) {
         return module->GetJitCache(jit_state);
@@ -1470,6 +1496,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module,
                   const IntrusivePtr<ir::Block>& block) {
+    if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
+        return riscv64::CompileBlock(module, block.get());
     auto& jit_state = block->GetJitCache();
 
     if (jit_state.jit_state == backend::JitState::Cached) {

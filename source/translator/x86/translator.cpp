@@ -45,6 +45,7 @@
 #include "runtime/backend/context.h"
 #include "runtime/backend/jit_code.h"
 #include "runtime/backend/runtime.h"
+#include "runtime/backend/host_isa.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/common/perf_stats.h"
 #include "runtime/frontend/x86/decoder.h"
@@ -578,7 +579,8 @@ struct X86Instance::Impl final {
         if (enable_xmm_fault_sink || enable_xmm_resident) {
             global_opts |= Optimizations::XmmFaultSink;
         }
-        const Arm64Features arm64_features = DetectArm64Features();
+        const Arm64Features arm64_features = backend::kNativeJitBackend == kArm64
+                ? DetectArm64Features() : Arm64Features::None;
         const bool sse_scalar_insert = SSEScalarInsertEnabled(arm64_features);
         const bool sse_afp_nan = SSEAFPNanEnabled(arm64_features);
         const bool mem_hostbase_fold = svm_config.mem_hostbase_fold;
@@ -589,9 +591,10 @@ struct X86Instance::Impl final {
                 .loc_end = 1ul << 49,
                 .enable_jit = enable_jit,
                 .has_local_operation = false,
-                .backend_isa = swift::runtime::kArm64,
+                .backend_isa = backend::kNativeJitBackend,
                 .uniform_buffer_size = sizeof(ThreadContext64) + kScratchUniformSize,
-                .buffers_static_alloc = static_regs,
+                .buffers_static_alloc = backend::kNativeJitBackend == kArm64
+                        ? static_regs : std::span<UniformMapDesc>{},
                 .xmm_uniform_ranges = x86_xmm_uniform_ranges,
                 .loop_gpr_uniform_ranges = x86_loop_gpr_uniform_ranges,
                 .static_program = false,

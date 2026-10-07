@@ -7,6 +7,7 @@
 #include <map>
 #include <shared_mutex>
 #include "runtime/backend/code_cache.h"
+#include "runtime/backend/edge_flags_state.h"
 #include "runtime/common/address_hash_map.h"
 #include "runtime/common/range_mutex.h"
 #include "runtime/common/svm_config.h"
@@ -188,6 +189,9 @@ public:
     // fault in that code can still be recovered.
     [[nodiscard]] u8* DetachNode(ir::AddressNode* node);
     void ReclaimCode(u8* exec_ptr);
+    // RV64 semantic helpers borrow canonical IR. Keep it alive through the
+    // same QSBR grace period as the executable allocation, including detach.
+    void RetainCodeIR(u8* allocation, ir::AddressNode* node);
 
     // Drops every fault-table subrange owned by the allocation at host_start.
     void RemoveFaultEntries(const u8* host_start);
@@ -197,6 +201,7 @@ public:
     [[nodiscard]] AddressSpace& GetAddressSpace() const { return address_space; }
 
 private:
+    std::map<u8*, std::vector<ir::NodeRef>> code_ir_owners;
     const ModuleConfig module_config;
     AddressSpace& address_space;
     ir::Location module_start;

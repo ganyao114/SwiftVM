@@ -12,6 +12,7 @@
 #include "runtime/backend/context.h"
 #include "runtime/backend/jit_code.h"
 #include "runtime/backend/runtime.h"
+#include "runtime/backend/host_isa.h"
 #include "runtime/frontend/arm64/arm64_frontend.h"
 #include "runtime/frontend/ir_assembler.h"
 #include "runtime/include/sruntime.h"
@@ -79,7 +80,7 @@ struct Arm64Instance::Impl final {
                 .loc_end = 1ull << 48,
                 .enable_jit = enable_jit,
                 .has_local_operation = false,
-                .backend_isa = swift::runtime::kArm64,
+                .backend_isa = backend::kNativeJitBackend,
                 .uniform_buffer_size = sizeof(ThreadContext64),
                 // No static host-register allocation of guest registers:
                 // the whole ThreadContext64 lives in the uniform buffer and

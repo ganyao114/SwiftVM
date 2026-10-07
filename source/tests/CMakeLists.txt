@@ -1,6 +1,13 @@
+# Existing cases below execute ARM64 machine code and use its register ABI.
+# RV64 has its own execution suite; do not register ARM64 cases as RV64 tests.
+if("riscv" IN_LIST ARCHITECTURE OR "riscv64" IN_LIST ARCHITECTURE)
+    add_subdirectory(riscv)
+    return()
+endif()
+
 # Keep focused cases reusable without compiling the integration/fuzz suite.
 add_library(swift_ra_test_support STATIC support/register_alloc_test_support.cpp)
-target_link_libraries(swift_ra_test_support PUBLIC swift::runtime)
+target_link_libraries(swift_ra_test_support PUBLIC swift::runtime riscv64_asm)
 
 set(SWIFT_CASE_GROUPS config runtime uniform decode integer gpr fpr fault allocation fp_environment fp_shapes pressure flags coverage code_buffer)
 foreach(group IN LISTS SWIFT_CASE_GROUPS)
@@ -162,7 +169,7 @@ set_tests_properties(swift_memory_ordering PROPERTIES
         LABELS "unit;review" TIMEOUT 5 ENVIRONMENT "SVM_AVX=1")
 
 add_executable(swift_vm main.cpp)
-target_link_libraries(swift_vm PUBLIC fronted_arm64 fronted_x86 swift::runtime slang_compiler)
+target_link_libraries(swift_vm PUBLIC fronted_arm64 fronted_x86 swift::runtime slang_compiler riscv64_asm)
 
 add_executable(shufps_test shufps_test.cpp)
 target_link_libraries(shufps_test PUBLIC swift_translator swift::runtime Catch2::Catch2WithMain)

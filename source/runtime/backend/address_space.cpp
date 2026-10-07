@@ -78,7 +78,8 @@ void AddressSpace::Init() {
     // JIT disk cache (off unless SVM_JIT_CACHE names a directory). 这里只构造；
     // driver 必须先完成 MapModule，再显式 LoadJitCache，cache unit 才能按
     // guest 地址恢复到正确 module。
-    if (JitDiskCache::Requested() && GetSvmConfig().placement_pad == 0) {
+    if (config.backend_isa == kArm64 && JitDiskCache::Requested() &&
+        GetSvmConfig().placement_pad == 0) {
         jit_disk_cache = std::make_unique<JitDiskCache>(*this);
     }
 }

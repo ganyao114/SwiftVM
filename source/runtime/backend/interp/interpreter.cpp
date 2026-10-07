@@ -7,6 +7,7 @@
 // two could disagree this implementation follows the JIT, including its
 // quirks (documented inline).
 
+#include <array>
 #include <unordered_map>
 #include <alloca.h>
 #include "interpreter.h"
@@ -145,7 +146,7 @@ u64 Interpreter::EvalLambda(InterpStack& stack, ir::Lambda& lambda) {
 
 u64 Interpreter::CallHostFunc(InterpStack& stack,
                               ir::Lambda& lambda,
-                              const std::vector<ir::DataClass>& args) {
+                              std::span<const ir::DataClass> args) {
     // Host C-ABI call with up to 8 u64 arguments, u64 result. The frontends
     // use this for helpers the IR cannot express (x86 128-bit multiply high
     // half, 128-bit dividends, REP MOVS); see decoder.cc MulHiU64/DivQU64/...
@@ -300,17 +301,23 @@ void Interpreter::RunNotGoto(ir::Inst* inst, InterpStack& stack) {
 
 void Interpreter::RunSelect(ir::Inst* inst, InterpStack& stack) {
     const bool cond = ReadScalar(stack, inst->GetArg<ir::Value>(0)) != 0;
-    WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(cond ? 1 : 2)));
+    const auto selected = inst->GetArg<ir::Value>(cond ? 1 : 2);
+    if (IsVector(inst->ReturnType())) WriteVec(stack, inst, ReadVec(stack, selected));
+    else WriteScalar(stack, inst, ReadScalar(stack, selected));
 }
 
 void Interpreter::RunSelectZero(ir::Inst* inst, InterpStack& stack) {
     const bool zero = ReadScalar(stack, inst->GetArg<ir::Value>(0)) == 0;
-    WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(zero ? 1 : 2)));
+    const auto selected = inst->GetArg<ir::Value>(zero ? 1 : 2);
+    if (IsVector(inst->ReturnType())) WriteVec(stack, inst, ReadVec(stack, selected));
+    else WriteScalar(stack, inst, ReadScalar(stack, selected));
 }
 
 void Interpreter::RunCondSelect(ir::Inst* inst, InterpStack& stack) {
     const bool cond = EvalCondition(inst->GetArg<ir::Cond>(0));
-    WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(cond ? 1 : 2)));
+    const auto selected = inst->GetArg<ir::Value>(cond ? 1 : 2);
+    if (IsVector(inst->ReturnType())) WriteVec(stack, inst, ReadVec(stack, selected));
+    else WriteScalar(stack, inst, ReadScalar(stack, selected));
 }
 
 void Interpreter::RunBindLabel(ir::Inst* inst, InterpStack& stack) {
@@ -319,15 +326,17 @@ void Interpreter::RunBindLabel(ir::Inst* inst, InterpStack& stack) {
 
 void Interpreter::RunCallLambda(ir::Inst* inst, InterpStack& stack) {
     auto lambda = inst->GetArg<ir::Lambda>(0);
-    std::vector<ir::DataClass> args;
+    // Keep argument storage on the stack: fault recovery can abandon this frame.
+    std::array<ir::DataClass, 3> args{};
+    size_t count{};
     for (int i = 1; i < 4; i++) {
         if (inst->ArgAt(i).IsValue()) {
-            args.emplace_back(inst->GetArg<ir::Value>(i));
+            args[count++] = inst->GetArg<ir::Value>(i);
         } else if (inst->ArgAt(i).IsImm()) {
-            args.emplace_back(inst->GetArg<ir::Imm>(i));
+            args[count++] = inst->GetArg<ir::Imm>(i);
         }
     }
-    WriteScalar(stack, inst, CallHostFunc(stack, lambda, args));
+    WriteScalar(stack, inst, CallHostFunc(stack, lambda, std::span{args.data(), count}));
 }
 
 void Interpreter::RunDiv128(ir::Inst* inst, InterpStack& stack) {
@@ -376,20 +385,24 @@ void Interpreter::RunX87Op(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunCallLocation(ir::Inst* inst, InterpStack& stack) {
     // Same as the JIT: treated as a host C-ABI call with params.
     auto lambda = inst->GetArg<ir::Lambda>(0);
-    std::vector<ir::DataClass> args;
+    std::array<ir::DataClass, 8> args{};
+    size_t count{};
     for (auto& param : inst->GetArg<ir::Params>(1)) {
-        args.emplace_back(param.data);
+        if (count == args.size()) break;
+        args[count++] = param.data;
     }
-    WriteScalar(stack, inst, CallHostFunc(stack, lambda, args));
+    WriteScalar(stack, inst, CallHostFunc(stack, lambda, std::span{args.data(), count}));
 }
 
 void Interpreter::RunCallDynamic(ir::Inst* inst, InterpStack& stack) {
     auto lambda = inst->GetArg<ir::Lambda>(0);
-    std::vector<ir::DataClass> args;
+    std::array<ir::DataClass, 8> args{};
+    size_t count{};
     for (auto& param : inst->GetArg<ir::Params>(1)) {
-        args.emplace_back(param.data);
+        if (count == args.size()) break;
+        args[count++] = param.data;
     }
-    WriteScalar(stack, inst, CallHostFunc(stack, lambda, args));
+    WriteScalar(stack, inst, CallHostFunc(stack, lambda, std::span{args.data(), count}));
 }
 
 void Interpreter::RunAddPhi(ir::Inst* inst, InterpStack& stack) {

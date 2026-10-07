@@ -1576,3 +1576,34 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     REQUIRE_FALSE(contains(segmented, tail_old));
     REQUIRE(contains(segmented, tail_new));
 }
+
+TEST_CASE("Flag-only predicates infer a boolean type and execute canonical IR") {
+    using namespace swift;
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    Block block{0, Location{0x4400}};
+    const std::array flags{Flags::Negate, Flags::Zero, Flags::Carry, Flags::Overflow};
+    for (u32 i = 0; i < flags.size(); ++i) {
+        auto yes = block.TestFlags(flags[i]);
+        auto no = block.TestNotFlags(flags[i]);
+        REQUIRE(yes.Type() == ValueType::U8);
+        REQUIRE(no.Type() == ValueType::U8);
+        block.StoreUniform(Uniform{i * 2, ValueType::U8}, yes);
+        block.StoreUniform(Uniform{i * 2 + 1, ValueType::U8}, no);
+    }
+    block.SetTerminal(terminal::ReturnToHost{});
+    alignas(backend::State) std::array<u8, sizeof(backend::State) + 16> storage{};
+    auto* state = new (storage.data()) backend::State{};
+    for (u32 nzcv = 0; nzcv < 16; ++nzcv) {
+        state->halt_reason = HaltReason::None;
+        state->host_cpu_flags = (u64(nzcv) << 28) | 0xf00;
+        std::memset(state->uniform_buffer_begin, 0xff, 8);
+        backend::interp::Interpreter interpreter{*state, &block};
+        REQUIRE(interpreter.Run() == HaltReason::CallHost);
+        for (u32 i = 0; i < flags.size(); ++i) {
+            const auto expected = (nzcv >> (3 - i)) & 1;
+            REQUIRE(state->uniform_buffer_begin[i * 2] == expected);
+            REQUIRE(state->uniform_buffer_begin[i * 2 + 1] == (expected ^ 1));
+        }
+    }
+}

@@ -69,7 +69,12 @@ void Inst::operator delete(void* p) {
     tls_inst_free_head = p;
 }
 
-Inst::Inst(OpCode code) : op_code(code) {}
+Inst::Inst(OpCode code) : op_code(code) {
+    // These predicates only take Flags, so argument-based inference cannot
+    // supply their scalar result type. Canonical interpreters need it too.
+    if (code == OpCode::TestFlags || code == OpCode::TestNotFlags)
+        ret_type = ValueType::U8;
+}
 
 Arg& Inst::ArgAt(int index) { return arguments[index]; }
 

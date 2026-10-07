@@ -9,6 +9,12 @@
 
 namespace swift::runtime::backend {
 
+#if defined(__riscv) && __riscv_xlen == 64
+inline constexpr ISA kNativeJitBackend = kRiscv64;
+#else
+inline constexpr ISA kNativeJitBackend = kArm64;
+#endif
+
 // ARM instruction alignment. ARM processors require code to be 4-byte aligned,
 // but ARM ELF requires 8..
 static constexpr size_t kArmAlignment = 8;

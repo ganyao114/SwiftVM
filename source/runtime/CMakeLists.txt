@@ -226,6 +226,10 @@ add_library(swift_runtime STATIC
         backend/arm64/region_link_trampoline.h
         backend/riscv64/jit/jit_context.cpp
         backend/riscv64/jit/jit_context.h
+        backend/riscv64/jit/translator.cpp
+        backend/riscv64/jit/translator.h
+        backend/riscv64/jit/compile.cpp
+        backend/riscv64/jit/compile.h
         backend/riscv64/trampolines.cpp
         backend/riscv64/trampolines.h
         backend/interp/interpreter.cpp
@@ -252,5 +256,5 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "arm64" IN_LIST ARCHITECTURE)
 endif ()
 
 find_package(Boost 1.57)
-target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl riscv64_asm dlmalloc)
+target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl biscuit::biscuit dlmalloc)
 add_library(swift::runtime ALIAS swift_runtime)
