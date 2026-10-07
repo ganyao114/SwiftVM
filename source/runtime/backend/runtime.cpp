@@ -360,6 +360,9 @@ struct Runtime::Impl final {
             backend::SignalHandler::SetContextGPR(uctx, 8, self->state->spill_area[backend::kRiscvRecoveryFrameSlot]);
             backend::SignalHandler::SetContextGPR(uctx, 9, reinterpret_cast<uintptr_t>(self->state));
             backend::SignalHandler::SetContextGPR(uctx, 2, self->state->spill_area[backend::kRiscvRecoveryFrameSlot]);
+            // Helpers publish flags before calling out. Their interrupted s11
+            // may belong to a C++ frame, so restore the generated flags cache.
+            backend::SignalHandler::SetContextGPR(uctx, 27, self->state->host_cpu_flags);
             backend::SignalHandler::SetContextPC(uctx, recovery);
             return true;
         }

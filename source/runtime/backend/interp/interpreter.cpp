@@ -16,14 +16,7 @@
 #include "runtime/common/sse42str_result.h"
 #include "runtime/common/variant_util.h"
 #include "runtime/frontend/x86/x87.h"
-
-namespace swift::x86 {
-extern "C" u64 SwiftSse42StrEvalImplicit(u64 a_lo,
-                                         u64 a_hi,
-                                         u64 b_lo,
-                                         u64 b_hi,
-                                         u64 imm8);
-}
+#include "runtime/frontend/x86/sse42str_helper.h"
 
 namespace swift::runtime::backend::interp {
 

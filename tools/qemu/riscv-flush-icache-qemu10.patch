@@ -1,0 +1,33 @@
+diff --git a/linux-user/riscv/cpu_loop.c b/linux-user/riscv/cpu_loop.c
+index 3ac8bbfe..5864d81a 100644
+--- a/linux-user/riscv/cpu_loop.c
++++ b/linux-user/riscv/cpu_loop.c
+@@ -20,4 +20,5 @@
+ #include "qemu/osdep.h"
++#include "exec/tb-flush.h"
+ #include "qemu/error-report.h"
+ #include "qemu.h"
+ #include "user-internals.h"
+@@ -48,8 +49,8 @@ void cpu_loop(CPURISCVState *env)
+         case RISCV_EXCP_U_ECALL:
+             env->pc += 4;
+             if (env->gpr[xA7] == TARGET_NR_riscv_flush_icache) {
+-                /* riscv_flush_icache_syscall is a no-op in QEMU as
+-                   self-modifying code is automatically detected */
++                /* SwiftVM publishes through a different RW alias. */
++                tb_flush(cs);
+                 ret = 0;
+             } else {
+                 ret = do_syscall(env,
+diff --git a/linux-user/riscv/vdso.S b/linux-user/riscv/vdso.S
+index c3727523..088172bf 100644
+--- a/linux-user/riscv/vdso.S
++++ b/linux-user/riscv/vdso.S
+@@ -87,5 +87,4 @@
+ __vdso_flush_icache:
+-	/* qemu does not need to flush the icache */
+-	li	a0, 0
++	raw_syscall __NR_riscv_flush_icache
+-	ret
++	ret
+ endf __vdso_flush_icache

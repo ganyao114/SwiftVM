@@ -40,9 +40,16 @@ void Prepare(const Module& module, ir::Block* block, ir::HIRFunction* hir = null
     std::set<ir::Inst*> definitions;
     for (auto& inst : block->GetInstList()) definitions.insert(&inst);
     for (auto& inst : block->GetInstList()) {
-        for (auto value : inst.GetValues()) {
+        const auto check = [&](ir::Value value) {
             if (!definitions.contains(value.Def()))
                 throw std::runtime_error("RV64 function block has a cross-block SSA input");
+        };
+        for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
+            auto& arg = inst.ArgAt(slot);
+            if (arg.IsValue()) check(arg.Get<ir::Value>());
+            else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue()) check(arg.Get<ir::Lambda>().GetValue());
+            else if (arg.IsParams())
+                for (auto& param : arg.Get<ir::Params>()) if (param.data.IsValue()) check(param.data.value);
         }
     }
     VerifyTerminal(block->GetTerminal(), definitions);

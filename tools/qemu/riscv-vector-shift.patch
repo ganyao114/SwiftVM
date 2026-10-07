@@ -1,0 +1,15 @@
+diff --git a/target/riscv/insn_trans/trans_rvv.c.inc b/target/riscv/insn_trans/trans_rvv.c.inc
+--- a/target/riscv/insn_trans/trans_rvv.c.inc
++++ b/target/riscv/insn_trans/trans_rvv.c.inc
+@@ -1815,5 +1815,9 @@
+ GEN_OPIVX_GVEC_SHIFT_TRANS(vsll_vx,  shls)
+ GEN_OPIVX_GVEC_SHIFT_TRANS(vsrl_vx,  shrs)
+-GEN_OPIVX_GVEC_SHIFT_TRANS(vsra_vx,  sars)
++/* QEMU 8.0.4's AArch64 gvec constant-shift path can leave byte lanes
++ * unchanged when rs1 is assigned 7 in this TB and VL == VLMAX. Use the
++ * architectural helper until the test emulator is upgraded. This does
++ * not change guest/generated instructions or the SwiftVM runtime. */
++GEN_OPIVX_TRANS(vsra_vx, opivx_check)
+-
++
+ GEN_OPIVI_GVEC_TRANS(vsll_vi, IMM_TRUNC_SEW, vsll_vx, shli)

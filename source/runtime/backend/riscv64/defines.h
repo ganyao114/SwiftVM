@@ -10,6 +10,7 @@ namespace swift::runtime::backend::riscv64 {
 inline constexpr auto frame = biscuit::s0;
 inline constexpr auto state = biscuit::s1;
 inline constexpr auto values = biscuit::s2;
+inline constexpr auto flags = biscuit::s11;
 inline constexpr std::array scalar_registers{biscuit::s3, biscuit::s4, biscuit::s5,
         biscuit::s6, biscuit::s7, biscuit::s8, biscuit::s9, biscuit::s10, biscuit::s11};
 inline constexpr unsigned kValueStride = 16;

@@ -3,6 +3,8 @@
 #include "runtime/backend/context.h"
 #include "runtime/backend/riscv64/defines.h"
 #include "runtime/ir/instr.h"
+#include "runtime/ir/block.h"
+#include "runtime/common/variant_util.h"
 
 namespace swift::runtime::backend::riscv64 {
 
@@ -10,8 +12,8 @@ using namespace biscuit;
 
 void JitContext::EnsureSpace() {
     auto& buffer = masm.GetCodeBuffer();
-    if (buffer.GetRemainingBytes() < 1024)
-        buffer.Grow(buffer.GetSizeInBytes() + 4096);
+    if (buffer.GetRemainingBytes() < 8192)
+        buffer.Grow(buffer.GetSizeInBytes() + 16384);
 }
 
 void JitContext::Address(GPR result, GPR base, s64 offset) {
@@ -58,18 +60,44 @@ void JitContext::Store(GPR value, GPR base, s64 offset, u32 size) {
     }
 }
 
-void JitContext::Read(GPR result, ir::Value value) {
-    // Reads never allocate or change the cache: both arms of an internal
-    // select/terminal must share the same compile-time register mapping.
+void JitContext::Read(GPR result, ir::Value value) { ReadPart(result, value, 0); }
+
+void JitContext::ReadPart(GPR result, ir::Value value, u32 part) {
+    const auto source = SourcePart(value, part, result);
+    if (source != result) masm.MV(result, source);
+}
+
+GPR JitContext::SourceRegister(ir::Value value, GPR scratch) { return SourcePart(value, 0, scratch); }
+
+bool JitContext::ZeroHigh(ir::Inst* inst) {
+    if (inst->GetOp() == ir::OpCode::BitCast || inst->GetOp() == ir::OpCode::GetResult)
+        return ZeroHigh(inst->GetArg<ir::Value>(0).Def());
+    return !ir::IsFloatValueType(inst->ReturnType());
+}
+
+GPR JitContext::SourcePart(ir::Value value, u32 part, GPR scratch) {
+    ASSERT(part < 2);
+    // Reads never allocate: all internal select arms share one mapping.
     for (size_t i = 0; i < cached_values.size(); ++i) {
-        if (cached_values[i] == value.Def()) {
-            if (result != scalar_registers[i]) masm.MV(result, scalar_registers[i]);
+        if (cached_values[i] == value.Def() && cached_parts[i] == part) {
             ++value_stats.cache_hits;
-            return;
+            return scalar_registers[i];
         }
     }
-    Load(result, values, static_cast<s64>(value.Def()->Id()) * kValueStride);
+    for (size_t i = 0; i < cached_vectors.size(); ++i) {
+        if (cached_vectors[i] == value.Def()) {
+            SetVectorType(64, 2);
+            const auto source = Vec{static_cast<u32>(i + 8)};
+            if (part) { masm.VSLIDEDOWN(v7, source, 1u); masm.VMV_XS(scratch, v7); }
+            else masm.VMV_XS(scratch, source);
+            ++value_stats.cache_hits;
+            return scratch;
+        }
+    }
+    if (part && ZeroHigh(value.Def())) return x0;
+    Load(scratch, values, static_cast<s64>(value.Def()->Id()) * kValueStride + part * 8);
     ++value_stats.loads;
+    return scratch;
 }
 
 void JitContext::Data(GPR result, const ir::DataClass& data) {
@@ -121,10 +149,20 @@ void JitContext::SignExtend(GPR value, u32 bits) {
 GPR JitContext::ResultRegister(ir::Inst* inst) {
     if (!cache_scalars || inst->ReturnType() == ir::ValueType::VOID ||
         ir::IsFloatValueType(inst->ReturnType())) return t0;
-    const auto index = next_register;
-    next_register = (index + 1) % cached_values.size();
+    return ReserveRegister();
+}
+
+GPR JitContext::ReserveRegister(GPR excluded) {
+    const auto count = cached_values.size() - size_t(flags_enabled);
+    auto index = next_register;
+    if (scalar_registers[index] == excluded) index = (index + 1) % count;
+    for (size_t scanned = 0; scanned < count; ++scanned) {
+        const auto candidate = (next_register + scanned) % count;
+        if (!cached_values[candidate] && scalar_registers[candidate] != excluded) { index = candidate; break; }
+    }
+    next_register = (index + 1) % (cached_values.size() - size_t(flags_enabled));
     if (auto* previous = cached_values[index]) {
-        Store(scalar_registers[index], values, static_cast<s64>(previous->Id()) * kValueStride);
+        Store(scalar_registers[index], values, static_cast<s64>(previous->Id()) * kValueStride + cached_parts[index] * 8);
         ++value_stats.stores;
         ++value_stats.spills;
     }
@@ -134,14 +172,15 @@ GPR JitContext::ResultRegister(ir::Inst* inst) {
     return scalar_registers[index];
 }
 
-void JitContext::Write(ir::Inst* inst, GPR value) {
+void JitContext::Write(ir::Inst* inst, GPR value, bool normalized) {
     if (inst->ReturnType() == ir::ValueType::VOID) return;
-    Mask(value, ir::GetValueSizeByte(inst->ReturnType()) * 8);
+    if (!normalized) Mask(value, ir::GetValueSizeByte(inst->ReturnType()) * 8);
     if (cache_scalars) {
         for (size_t i = 0; i < scalar_registers.size(); ++i) {
             if (value == scalar_registers[i]) {
                 ASSERT(cached_values[i] == nullptr);
                 cached_values[i] = inst;
+                cached_parts[i] = 0;
                 return;
             }
         }
@@ -151,19 +190,85 @@ void JitContext::Write(ir::Inst* inst, GPR value) {
     ++value_stats.stores;
 }
 
+void JitContext::ConfigureLiveness(ir::Block* block) {
+    last_uses.clear();
+    // A backward local edge can read an input again on its next iteration.
+    // Until CFG liveness is available, retain canonical homes for such blocks.
+    for (auto& inst : block->GetInstList())
+        if (inst.GetOp() == ir::OpCode::Goto || inst.GetOp() == ir::OpCode::NotGoto) return;
+    u32 position{};
+    const auto mark = [&](ir::Value value, u32 use) { last_uses[value.Def()] = use; };
+    const auto operands = [&](ir::Inst* inst, u32 use) {
+        // Walk physical slots: Params can contain more than Inst::max_args
+        // values, so Inst::GetValues()'s small StackVector is insufficient.
+        for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
+            auto& arg = inst->ArgAt(slot);
+            if (arg.IsValue()) mark(arg.Get<ir::Value>(), use);
+            else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue()) mark(arg.Get<ir::Lambda>().GetValue(), use);
+            else if (arg.IsParams())
+                for (auto& param : arg.Get<ir::Params>()) if (param.data.IsValue()) mark(param.data.value, use);
+        }
+    };
+    for (auto& inst : block->GetInstList()) {
+        last_uses.try_emplace(&inst, position);
+        operands(&inst, position);
+        if (inst.GetOp() == ir::OpCode::SaveFlags || inst.GetOp() == ir::OpCode::BranchOnlyFlags)
+            operands(inst.GetArg<ir::Value>(0).Def(), position);
+        ++position;
+    }
+    const auto terminal = [&](const auto& recurse, const ir::Terminal& value) -> void {
+        VisitVariant<void>(value, [&](const auto& term) {
+            using T = std::decay_t<decltype(term)>;
+            if constexpr (std::is_same_v<T, ir::terminal::If>) {
+                mark(term.cond, position); recurse(recurse, term.then_); recurse(recurse, term.else_);
+            } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
+                recurse(recurse, term.then_); recurse(recurse, term.else_);
+            } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
+                mark(term.value, position); for (const auto& item : term.cases) recurse(recurse, item.then);
+            } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) recurse(recurse, term.else_);
+        });
+    };
+    terminal(terminal, block->GetTerminal());
+}
+
+void JitContext::ReleaseDeadValues(u32 position) {
+    if (last_uses.empty()) return;
+    for (auto& value : cached_values) {
+        if (value && last_uses.at(value) <= position) { value = nullptr; ++value_stats.dead_values; }
+    }
+    for (auto& value : cached_vectors) {
+        if (value && last_uses.at(value) <= position) { value = nullptr; ++value_stats.dead_values; }
+    }
+}
+
+void JitContext::PublishFlags() {
+    if (flags_enabled && flags_dirty) {
+        Store(flags, state, state_offset_host_flags);
+        flags_dirty = false;
+    }
+}
+
+void JitContext::ReloadFlags() {
+    if (flags_enabled) Load(flags, state, state_offset_host_flags);
+    flags_dirty = false;
+}
+
 void JitContext::FlushValues() {
     for (size_t i = 0; i < cached_values.size(); ++i) {
         if (auto* inst = cached_values[i]) {
-            Store(scalar_registers[i], values, static_cast<s64>(inst->Id()) * kValueStride);
+            Store(scalar_registers[i], values, static_cast<s64>(inst->Id()) * kValueStride + cached_parts[i] * 8);
             ++value_stats.stores;
         }
     }
+    SaveVectorsForCall();
     DiscardValues();
 }
 
 void JitContext::DiscardValues() {
     cached_values.fill(nullptr);
-    next_register = 0;
+    cached_vectors.fill(nullptr);
+    next_register = next_vector = 0;
+    ResetVectorType();
 }
 
 void JitContext::Jump(Label& label) {
@@ -187,9 +292,9 @@ void JitContext::Condition(GPR result, ir::Cond condition) {
         masm.LI(result, 1);
         return;
     }
-    Load(t0, state, state_offset_host_flags);
+    ASSERT(flags_enabled);
     const auto extract = [&](GPR reg, u32 bit) {
-        masm.SRLI(reg, t0, bit);
+        masm.SRLI(reg, flags, bit);
         masm.ANDI(reg, reg, 1);
     };
     // Most guest conditions need only one flag; avoid extracting all NZCV.

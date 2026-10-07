@@ -1,6 +1,7 @@
 #include "interpreter.h"
 
 #include <array>
+#include <bit>
 #include <cstring>
 #if defined(__aarch64__)
 #include <arm_neon.h>
@@ -50,13 +51,15 @@ u8 AesSbox(u8 value) {
 #pragma GCC diagnostic ignored "-Wreturn-type"
 #endif
 u8 AesInvSbox(u8 value) {
-    // The interpreter is a correctness reference, not the hot path.  Keeping
-    // this inverse expressed through the forward S-box avoids a second opaque
-    // 256-byte table whose byte order could drift from the JIT mapping.
-    for (unsigned candidate = 0; candidate != 256; ++candidate) {
-        if (AesSbox(static_cast<u8>(candidate)) == value) return static_cast<u8>(candidate);
-    }
-    PANIC("AES S-box inverse missing");
+    // Derive the inverse once from the independently expressed reference
+    // polynomial rather than recomputing 256 substitutions for every byte.
+    static const auto inverse = [] {
+        std::array<u8, 256> result{};
+        for (u32 candidate = 0; candidate < 256; ++candidate)
+            result[AesSbox(u8(candidate))] = u8(candidate);
+        return result;
+    }();
+    return inverse[value];
 }
 #if defined(__clang__)
 #pragma clang diagnostic pop
@@ -106,6 +109,15 @@ void AesMixColumns(AesBlock& value, bool inverse) {
         }
     }
 }
+
+using ShaWords = std::array<u32, 4>;
+
+ShaWords ToShaWords(unsigned __int128 value) { ShaWords words{}; std::memcpy(words.data(), &value, 16); return words; }
+unsigned __int128 FromShaWords(const ShaWords& words) { unsigned __int128 value{}; std::memcpy(&value, words.data(), 16); return value; }
+u32 Sigma0(u32 x) { return std::rotr(x, 7) ^ std::rotr(x, 18) ^ (x >> 3); }
+u32 Sigma1(u32 x) { return std::rotr(x, 17) ^ std::rotr(x, 19) ^ (x >> 10); }
+u32 Sum0(u32 x) { return std::rotr(x, 2) ^ std::rotr(x, 13) ^ std::rotr(x, 22); }
+u32 Sum1(u32 x) { return std::rotr(x, 6) ^ std::rotr(x, 11) ^ std::rotr(x, 25); }
 
 }  // namespace
 
@@ -205,7 +217,11 @@ void Interpreter::RunVecSha256Msg1(ir::Inst* inst, InterpStack& stack) {
     std::memcpy(&out, &result, sizeof(out));
     WriteVec(stack, inst, out);
 #else
-    PANIC("SHA256 interpreter requires AArch64 SHA2");
+    const auto dst = ToShaWords(ReadVec(stack, inst->GetArg<ir::Value>(0)));
+    const auto src = ToShaWords(ReadVec(stack, inst->GetArg<ir::Value>(1)));
+    ShaWords out{};
+    for (u32 i = 0; i < 4; ++i) out[i] = dst[i] + Sigma0(i == 3 ? src[0] : dst[i + 1]);
+    WriteVec(stack, inst, FromShaWords(out));
 #endif
 }
 
@@ -225,7 +241,11 @@ void Interpreter::RunVecSha256Msg2(ir::Inst* inst, InterpStack& stack) {
     std::memcpy(&out, &result, sizeof(out));
     WriteVec(stack, inst, out);
 #else
-    PANIC("SHA256 interpreter requires AArch64 SHA2");
+    auto out = ToShaWords(ReadVec(stack, inst->GetArg<ir::Value>(0)));
+    const auto src = ToShaWords(ReadVec(stack, inst->GetArg<ir::Value>(1)));
+    out[0] += Sigma1(src[2]); out[1] += Sigma1(src[3]);
+    out[2] += Sigma1(out[0]); out[3] += Sigma1(out[1]);
+    WriteVec(stack, inst, FromShaWords(out));
 #endif
 }
 
@@ -252,7 +272,16 @@ void Interpreter::RunVecSha256Rnds2(ir::Inst* inst, InterpStack& stack) {
     std::memcpy(&out, &result, sizeof(out));
     WriteVec(stack, inst, out);
 #else
-    PANIC("SHA256 interpreter requires AArch64 SHA2");
+    const auto dst = ToShaWords(ReadVec(stack, inst->GetArg<ir::Value>(0)));
+    const auto src = ToShaWords(ReadVec(stack, inst->GetArg<ir::Value>(1)));
+    const auto key = ToShaWords(ReadVec(stack, inst->GetArg<ir::Value>(2)));
+    std::array<u32, 8> s{src[3], src[2], dst[3], dst[2], src[1], src[0], dst[1], dst[0]};
+    for (u32 round = 0; round < 2; ++round) {
+        const u32 t1 = s[7] + Sum1(s[4]) + ((s[4] & s[5]) ^ (~s[4] & s[6])) + key[round];
+        const u32 t2 = Sum0(s[0]) + ((s[0] & s[1]) ^ (s[0] & s[2]) ^ (s[1] & s[2]));
+        s = {t1 + t2, s[0], s[1], s[2], s[3] + t1, s[4], s[5], s[6]};
+    }
+    WriteVec(stack, inst, FromShaWords({s[5], s[4], s[1], s[0]}));
 #endif
 }
 

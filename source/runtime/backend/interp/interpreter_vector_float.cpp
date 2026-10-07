@@ -14,6 +14,21 @@ namespace {
 
 enum class FloatBinaryKind : u8 { Add, Sub, Mul, Div };
 
+u64 ConvertFloatBits(u64 raw, u32 input_bits) {
+    const u64 exponent = input_bits == 32 ? 0x7f800000 : 0x7ff0000000000000ULL;
+    const u64 fraction = input_bits == 32 ? 0x7fffff : 0xfffffffffffffULL;
+    if ((raw & exponent) == exponent && (raw & fraction)) {
+        if (input_bits == 32) return ((raw & 0x80000000) << 32) | ((raw & fraction) << 29) | 0x7ff8000000000000ULL;
+        return ((raw >> 32) & 0x80000000) | ((raw >> 29) & 0x7fffff) | 0x7fc00000;
+    }
+    if (input_bits == 32) {
+        const u32 encoded = u32(raw); float source{}; std::memcpy(&source, &encoded, 4);
+        const double converted = source; u64 result{}; std::memcpy(&result, &converted, 8); return result;
+    }
+    double source{}; std::memcpy(&source, &raw, 8);
+    const float converted = static_cast<float>(source); u32 result{}; std::memcpy(&result, &converted, 4); return result;
+}
+
 template <typename T, typename Op>
 unsigned __int128 VecFloatBinary(unsigned __int128 a,
                                  unsigned __int128 b,
@@ -303,7 +318,7 @@ void Interpreter::RunVecFUnary(ir::Inst* inst, InterpStack& stack) {
             if (kind == 0 && value < 0.0f) {
                 encoded = 0xFFC00000u;
             }
-            output = encoded;
+            output = (input & 0x7f800000) == 0x7f800000 && (input & 0x7fffff) ? input | 0x400000 : encoded;
         } else {
             double value;
             std::memcpy(&value, &raw, sizeof(value));
@@ -312,6 +327,8 @@ void Interpreter::RunVecFUnary(ir::Inst* inst, InterpStack& stack) {
             if (value < 0.0) {
                 output = UINT64_C(0xFFF8000000000000);
             }
+            if ((raw & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL && (raw & 0xfffffffffffffULL))
+                output = raw | 0x8000000000000ULL;
         }
         const u128 mask = static_cast<u128>(lane_mask) << (lane * bits);
         result = (result & ~mask) | (static_cast<u128>(output) << (lane * bits));
@@ -383,16 +400,14 @@ void Interpreter::RunVecFCvtIntToFloat(ir::Inst* inst, InterpStack& stack) {
     const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
     const u64 raw = static_cast<u64>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
     if (dst_bits == 32) {
-        const long double value = src_bits == 32 ? static_cast<long double>(static_cast<s32>(raw))
-                                                 : static_cast<long double>(static_cast<s64>(raw));
-        const float converted = static_cast<float>(value);
+        const float converted = src_bits == 32 ? static_cast<float>(static_cast<s32>(raw))
+                                               : static_cast<float>(static_cast<s64>(raw));
         u32 bits = 0;
         std::memcpy(&bits, &converted, sizeof(bits));
         WriteScalar(stack, inst, bits);
     } else {
-        const long double value = src_bits == 32 ? static_cast<long double>(static_cast<s32>(raw))
-                                                 : static_cast<long double>(static_cast<s64>(raw));
-        const double converted = static_cast<double>(value);
+        const double converted = src_bits == 32 ? static_cast<double>(static_cast<s32>(raw))
+                                                : static_cast<double>(static_cast<s64>(raw));
         u64 bits = 0;
         std::memcpy(&bits, &converted, sizeof(bits));
         WriteScalar(stack, inst, bits);
@@ -436,22 +451,7 @@ void Interpreter::RunVecFCvtFloatToInt(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunVecFCvtScalar(ir::Inst* inst, InterpStack& stack) {
     const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
     const u64 raw = static_cast<u64>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
-    if (src_bits == 32) {
-        const u32 source = static_cast<u32>(raw);
-        float value{};
-        std::memcpy(&value, &source, sizeof(value));
-        const double converted = static_cast<double>(value);
-        u64 bits = 0;
-        std::memcpy(&bits, &converted, sizeof(bits));
-        WriteScalar(stack, inst, bits);
-    } else {
-        double value{};
-        std::memcpy(&value, &raw, sizeof(value));
-        const float converted = static_cast<float>(value);
-        u32 bits = 0;
-        std::memcpy(&bits, &converted, sizeof(bits));
-        WriteScalar(stack, inst, bits);
-    }
+    WriteScalar(stack, inst, ConvertFloatBits(raw, src_bits));
 }
 
 void Interpreter::RunVecFCvtPacked(ir::Inst* inst, InterpStack& stack) {
@@ -507,23 +507,11 @@ void Interpreter::RunVecFCvtPacked(ir::Inst* inst, InterpStack& stack) {
         }
     } else if (kind == 6) {
         for (u32 lane = 0; lane < 2; ++lane) {
-            const u32 raw = static_cast<u32>(source >> (lane * 32));
-            float decoded;
-            std::memcpy(&decoded, &raw, sizeof(decoded));
-            const double converted = decoded;
-            u64 encoded;
-            std::memcpy(&encoded, &converted, sizeof(encoded));
-            put64(lane, encoded);
+            put64(lane, ConvertFloatBits(static_cast<u32>(source >> (lane * 32)), 32));
         }
     } else {
         for (u32 lane = 0; lane < 2; ++lane) {
-            const u64 raw = static_cast<u64>(source >> (lane * 64));
-            double decoded;
-            std::memcpy(&decoded, &raw, sizeof(decoded));
-            const float converted = static_cast<float>(decoded);
-            u32 encoded;
-            std::memcpy(&encoded, &converted, sizeof(encoded));
-            put32(lane, encoded);
+            put32(lane, ConvertFloatBits(static_cast<u64>(source >> (lane * 64)), 64));
         }
     }
     WriteVec(stack, inst, result);

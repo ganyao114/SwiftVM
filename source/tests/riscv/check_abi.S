@@ -270,4 +270,33 @@ SwiftRiscvFaultHelper:
     .balign 8
 swift_riscv_abi_sp:
     .quad 0
+    .text
+    .option push
+    .option arch, +v
+    .global SwiftRiscvVectorRange
+    .type SwiftRiscvVectorRange, @function
+SwiftRiscvVectorRange:
+    // Deliberately destroy every vector register the block may cache and
+    // leave a different VL/SEW, as a legal ordinary C ABI callback can do.
+    vsetivli zero, 1, e8, m1, ta, ma
+    vmv.v.i v8, -1
+    vmv.v.i v9, -1
+    vmv.v.i v10, -1
+    vmv.v.i v11, -1
+    vmv.v.i v12, -1
+    vmv.v.i v13, -1
+    vmv.v.i v14, -1
+    vmv.v.i v15, -1
+    vmv.v.i v16, -1
+    vmv.v.i v17, -1
+    vmv.v.i v18, -1
+    vmv.v.i v19, -1
+    vmv.v.i v20, -1
+    vmv.v.i v21, -1
+    vmv.v.i v22, -1
+    vmv.v.i v23, -1
+    li a0, 1
+    ret
+    .size SwiftRiscvVectorRange, .-SwiftRiscvVectorRange
+    .option pop
     .section .note.GNU-stack,"",@progbits

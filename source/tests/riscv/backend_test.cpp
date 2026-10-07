@@ -1,3 +1,5 @@
+#include "test_support.h"
+
 #include <array>
 #include <bit>
 #include <chrono>
@@ -26,51 +28,13 @@ using ir::ValueType;
 
 namespace {
 
-u64 checks{};
-void Check(bool condition, const std::string& detail) {
-    ++checks;
-    if (!condition) throw std::runtime_error(detail);
-}
+using namespace swift::tests::riscv;
 
-struct StateStorage {
-    alignas(backend::State) std::array<u8, sizeof(backend::State) + 4096> bytes{};
-    backend::State* state = new (bytes.data()) backend::State{};
-    void Put(u32 offset, u64 value) { std::memcpy(state->uniform_buffer_begin + offset, &value, 8); }
-    u64 Get(u32 offset) const {
-        u64 result{}; std::memcpy(&result, state->uniform_buffer_begin + offset, 8); return result;
-    }
-};
-
-Config TestConfig() {
-    return {.loc_start = 0, .loc_end = UINT64_MAX, .enable_jit = true,
-            .backend_isa = kRiscv64, .uniform_buffer_size = 4096,
-            .static_program = true, .global_opts = Optimizations::None,
-            .stack_alignment = 16};
-}
-
-using BlockFn = HaltReason (*)(backend::State*);
 #if defined(__riscv) && __riscv_xlen == 64
-extern "C" int SwiftRiscvCheckABI(BlockFn fn, backend::State* state);
-extern "C" u64 SwiftRiscvFaultHelper(u64 address);
 Runtime* abi_runtime{};
 HaltReason abi_halt{};
 HaltReason RunRuntimeForABI(backend::State*) { return abi_halt = abi_runtime->Run(); }
 #endif
-
-struct Compiled {
-    Config config{TestConfig()};
-    rv::JitContext context;
-    rv::JitTranslator translator{context};
-    backend::CodeCache cache{config, 1u << 20, FeatureSet{}};
-    BlockFn fn{};
-    explicit Compiled(ir::Block* block, bool cache_scalars = true) : context(cache_scalars) {
-        translator.Translate(block);
-        auto buffer = cache.AllocCode(context.CurrentBufferSize());
-        Check(buffer.has_value(), "allocate RV64 test code");
-        context.Flush(*buffer);
-        fn = reinterpret_cast<BlockFn>(buffer->exec_data);
-    }
-};
 
 IntrusivePtr<ir::Block> ScalarProgram(OpCode op, ValueType type, bool flags = false) {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x1000})};
@@ -240,8 +204,8 @@ void MixedHelpers() {
           "native values survive host helper and vector operations");
     Check(actual.Get(16) == ((actual.Get(0) + actual.Get(8)) ^ Helper(actual.Get(0), actual.Get(8), actual.Get(0) + actual.Get(8))),
           "independent host helper result");
-    Check(compiled.translator.Stats().helpers >= 4 && compiled.translator.Stats().direct >= 4,
-          "mixed fixture executes both lowering paths");
+    Check(compiled.translator.Stats().helpers == 0 && compiled.translator.Stats().direct >= 10,
+          "mixed fixture uses native values and a direct C-ABI call");
 #if defined(__riscv) && __riscv_xlen == 64
     actual.state->halt_reason = HaltReason::None;
     Check(SwiftRiscvCheckABI(compiled.fn, actual.state) == 1, "helper C ABI preserved");
@@ -317,7 +281,8 @@ void ScalarCache() {
         Compiled cached{block.get()}, uncached{block.get(), false};
         const auto& traffic = cached.context.ValueStats();
         const auto& baseline = uncached.context.ValueStats();
-        Check(traffic.cache_hits > 40 && traffic.spills > 0, "chain exercises cached reads and eviction");
+        Check(traffic.cache_hits > 40 && traffic.spills == 0 && traffic.loads == 0 && traffic.stores == 0,
+              "dead SSA values in a straight arithmetic chain never spill or reload");
         Check(traffic.loads + traffic.stores < baseline.loads + baseline.stores,
               "register cache reduces generated SSA memory operations");
         Check(cached.context.CurrentBufferSize() < uncached.context.CurrentBufferSize(),
@@ -373,7 +338,7 @@ void RegisterPressureAndHelpers() {
     as.StoreUniform(ir::Uniform{224, ValueType::V128}, vector);
     block->SetTerminal(ir::terminal::ReturnToHost{});
     Compiled cached{block.get()}, uncached{block.get(), false};
-    Check(cached.context.ValueStats().spills > 20 && cached.context.ValueStats().loads > 0,
+    Check(cached.context.ValueStats().spills >= 12 && cached.context.ValueStats().loads > 0,
           "live pressure forces both spills and reloads");
     for (u64 seed : {u64{0}, u64{1}, u64{0xabcdef0123456789ULL}, UINT64_MAX}) {
         StateStorage actual, expected;
@@ -415,6 +380,8 @@ void LocalCacheJoins() {
         as.StoreUniform(ir::Uniform{16, ValueType::U64}, sum);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get()};
+        Check(compiled.context.ValueStats().initializations == 1,
+              "only the non-dominating value is initialized at a join");
         for (u64 input : {u64{0}, u64{1}}) {
             StateStorage state;
             state.Put(0, input); state.Put(8, 71);
@@ -653,6 +620,8 @@ void RuntimeFaults() {
     IntrusivePtr<ir::Block> clobber_block{new ir::Block(ir::Location{0x4c00})};
     ir::Assembler clobber_as{clobber_block.get()};
     auto fault_pointer = clobber_as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
+    auto flags_value = clobber_as.Zero().SetType(ValueType::U8);
+    clobber_as.SaveFlags(flags_value, ir::Flags::All);
     auto fault_call = clobber_as.CallHost(&SwiftRiscvFaultHelper, fault_pointer).SetType(ValueType::U64);
     clobber_as.StoreUniform(ir::Uniform{8, ValueType::U64}, fault_call);
     clobber_block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -663,9 +632,13 @@ void RuntimeFaults() {
     const auto clobber_pointer = reinterpret_cast<u64>(inaccessible);
     std::memcpy(runtime.GetUniformBuffer().data(), &clobber_pointer, 8);
     runtime.SetLocation(0x4c00);
+    const auto initial_flags = (u64{1} << 50) | (u64{1} << 29) | (u64{1} << 26);
+    runtime.GetState()->host_cpu_flags = initial_flags;
     abi_runtime = &runtime;
     Check(SwiftRiscvCheckABI(&RunRuntimeForABI, nullptr) == 1 && abi_halt == HaltReason::PageFatal,
           "abandoned helper restores all integer and floating callee-saved registers");
+    Check(runtime.GetState()->host_cpu_flags == (initial_flags | (u64{1} << 30)),
+          "abandoned helper restores dirty cached guest flags");
     abi_runtime = nullptr;
     munmap(inaccessible, 4096);
 #endif
@@ -980,6 +953,37 @@ int main(int argc, char** argv) {
             std::cout << "OK " << checks << " checks\n";
             return 0;
         }
+        if (argc == 2 && std::string{argv[1]} == "--zbb") {
+            NativeScalarBits(true);
+            NativeScalarALU(true);
+            std::cout << "OK " << checks << " checks\n";
+            return 0;
+        }
+        if (argc == 2 && std::string{argv[1]} == "--rvv") {
+            NativeVectors(true); NativeVectorInteger(true); NativeVectorShuffle(true); NativeLocals(true); NativeVectorFloat(true); NativeCalls(true); NativeMemoryCopy(true); NativeCrypto(true);
+            std::cout << "OK " << checks << " checks\n";
+            return 0;
+        }
+        if (argc == 2 && (std::string{argv[1]} == "--fp" || std::string{argv[1]} == "--rvv-fp")) {
+            NativeVectorFloat(std::string{argv[1]} == "--rvv-fp");
+            std::cout << "OK " << checks << " checks\n"; return 0;
+        }
+        if (argc == 2 && (std::string{argv[1]} == "--calls" || std::string{argv[1]} == "--rvv-calls")) {
+            NativeCalls(std::string{argv[1]} == "--rvv-calls");
+            std::cout << "PASS " << checks << " checks\n";
+            return 0;
+        }
+        if (argc == 2 && (std::string{argv[1]} == "--crypto" || std::string{argv[1]} == "--scalar-crypto" || std::string{argv[1]} == "--vector-crypto")) {
+            const auto mode = std::string{argv[1]};
+            NativeCrypto(mode == "--vector-crypto", mode == "--scalar-crypto", mode == "--vector-crypto");
+            std::cout << "OK " << checks << " checks\n"; return 0;
+        }
+        if (argc == 2 && (std::string{argv[1]} == "--memcopy" || std::string{argv[1]} == "--rvv-memcopy" || std::string{argv[1]} == "--zacas")) {
+            NativeMemoryCopy(std::string{argv[1]} == "--rvv-memcopy", std::string{argv[1]} == "--zacas");
+            std::cout << "OK " << checks << " checks\n"; return 0;
+        }
+        NativeScalarBits(); NativeScalarALU(); NativeFlags(); NativeVectors(); NativeVectorInteger(); NativeVectorShuffle(); NativeLocals(); NativeVectorFloat(); NativeCalls(); NativeMemoryCopy(); NativeCrypto();
+        NativeAtomics();
         ScalarDifferential(); Conditions(); FlagPredicates(); MixedHelpers(); VectorSelections(); SemanticExceptions();
         ScalarCache(); RegisterPressureAndHelpers(); LocalCacheJoins(); ScalarAddressing();
         LargeBranches(); Memory(); AlignedMemoryAtomicity();

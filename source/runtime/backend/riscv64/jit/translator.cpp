@@ -83,6 +83,38 @@ u32 Bits(ir::ValueType type) {
 void JitTranslator::Translate(ir::Block* input) {
     block = input;
     context.DiscardValues();
+    const auto terminal_flags = [&](const auto& recurse, const ir::Terminal& terminal) -> bool {
+        return VisitVariant<bool>(terminal, [&](const auto& term) -> bool {
+            using T = std::decay_t<decltype(term)>;
+            if constexpr (std::is_same_v<T, ir::terminal::Condition>) return true;
+            else if constexpr (std::is_same_v<T, ir::terminal::If>)
+                return recurse(recurse, term.then_) || recurse(recurse, term.else_);
+            else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
+                for (const auto& item : term.cases) if (recurse(recurse, item.then)) return true;
+                return false;
+            } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) return recurse(recurse, term.else_);
+            else return false;
+        });
+    };
+    bool uses_flags = terminal_flags(terminal_flags, block->GetTerminal());
+    for (auto& inst : block->GetInstList()) {
+        switch (inst.GetOp()) {
+            case O::GetFlags: case O::SaveFlags: case O::BranchOnlyFlags:
+            case O::TestFlags: case O::TestNotFlags: case O::ClearFlags:
+            case O::SetCarry: case O::SetOverflow: case O::InvertCarry:
+            case O::PublishFCmpFlags: case O::PublishSse42StrFlags:
+            case O::Adc: case O::Sbb: case O::CondSet: case O::LocalCondSet: case O::CondSelect:
+                uses_flags = true; break;
+            default: break;
+        }
+    }
+    context.EnableFlagsCache(uses_flags);
+    bool vector_float{};
+    if (context.Features().vector) for (auto& inst : block->GetInstList())
+        vector_float |= inst.GetOp() >= O::VecFAddScalar32 && inst.GetOp() <= O::VecFRoundInt && inst.GetOp() != O::VecUnzip;
+    context.EnableVectorFloat(vector_float);
+    context.ConfigureInitialization(block);
+    context.ConfigureLiveness(block);
     context.EnsureSpace();
     // Helpers refer to this IR for the lifetime of its code allocation.
     // Reject ARM64 register-rewritten IR instead of silently yielding zero.
@@ -113,27 +145,27 @@ void JitTranslator::Translate(ir::Block* input) {
     for (size_t i = 0; i < saved_fprs.size(); ++i) as.FSD(saved_fprs[i], 104 + i * 8, sp);
     as.MV(frame, sp);
     as.MV(state, a0);
+    if (context.VectorFloatEnabled()) { as.FRRM(t0); context.Store(t0, frame, 200); context.EnterFloatMode(); }
+    context.ReloadFlags();
     as.LI(t0, u64(slot_count) * kValueStride);
     as.SUB(sp, sp, t0);
     as.MV(values, sp);
-    // Clear high halves too: scalar -> vector BitCast must see deterministic
-    // zeros, and pair-result helpers may define a later pseudo's home.
-    as.MV(t1, values);
-    Label clear;
-    as.Bind(&clear);
-    as.SD(x0, 0, t1);
-    as.ADDI(t1, t1, 8);
-    as.ADDI(t0, t0, -8);
-    as.BNE(t0, x0, &clear);
+    // Homes are materialized only when needed. Clearing every home here
+    // would add O(block size) stores even to register-only arithmetic chains.
+    // Scalar high halves are synthesized as zero; helper inputs get them below.
+    context.InitializeValues();
     as.LILabel(t0, &epilogue);
     context.Store(t0, state, state_offset_riscv_recovery_pc);
     context.Store(frame, state, state_offset_riscv_recovery_frame);
     Poll();
 
+    u32 position{};
     for (auto& inst : block->GetInstList()) {
         context.EnsureSpace();
+        const auto before = context.CurrentBufferSize();
         if (inst.GetOp() == O::BindLabel) {
             auto& label = labels.at(inst.GetArg<ir::Value>(0).Def());
+            context.PublishFlags();
             context.FlushValues();
             as.Bind(&label);
             Poll();
@@ -141,19 +173,24 @@ void JitTranslator::Translate(ir::Block* input) {
             auto target = labels.find(&inst);
             if (target == labels.end()) throw std::runtime_error("RV64 goto has no bound target");
             context.Read(t0, inst.GetArg<ir::Value>(0));
+            context.PublishFlags();
             context.FlushValues();
             context.BranchZero(t0, target->second, inst.GetOp() == O::NotGoto);
-        } else if (EmitScalar(&inst)) {
+        } else if (EmitMemoryCopy(&inst) || EmitVectorCrypto(&inst) || EmitNativeCall(&inst) || EmitVectorFloat(&inst) || EmitVectorLocal(&inst) || EmitVectorShuffle(&inst) || EmitVectorInteger(&inst) || EmitVector(&inst) || EmitAtomic(&inst) || EmitScalarBits(&inst) || EmitFlags(&inst) || EmitScalar(&inst)) {
             ++stats.direct;
         } else {
             EmitHelper(&inst);
             ++stats.helpers;
         }
+        stats.bytes[static_cast<size_t>(inst.GetOp())] += context.CurrentBufferSize() - before;
+        context.ReleaseDeadValues(position++);
     }
     EmitTerminal(block->GetTerminal());
     context.EnsureSpace();
     recovery_offset = context.CurrentBufferSize();
     as.Bind(&epilogue);
+    context.LeaveFloatMode();
+    if (context.FlagsEnabled()) context.Store(flags, state, state_offset_host_flags);
     context.Load(a0, state, state_offset_halt_reason, 4);
     context.Store(x0, state, state_offset_riscv_recovery_pc);
     context.Store(x0, state, state_offset_riscv_recovery_frame);
@@ -196,8 +233,20 @@ void JitTranslator::Return(HaltReason reason) {
 
 void JitTranslator::EmitHelper(ir::Inst* inst) {
     // Helpers read canonical homes and can write pair-result pseudo homes.
+    context.PublishFlags();
     context.FlushValues();
     auto& as = context.GetMasm();
+    // A helper may view a scalar operand as a raw 128-bit slot. Initialize
+    // just those high halves instead of clearing all SSA homes on block entry.
+    const auto prepare = [&](ir::Value value) {
+        if (JitContext::ZeroHigh(value.Def())) context.Store(x0, values, s64(value.Def()->Id()) * kValueStride + 8);
+    };
+    for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
+        auto& arg = inst->ArgAt(slot);
+        if (arg.IsValue()) prepare(arg.Get<ir::Value>());
+        else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue()) prepare(arg.Get<ir::Lambda>().GetValue());
+        else if (arg.IsParams()) for (const auto& param : arg.Get<ir::Params>()) if (param.data.IsValue()) prepare(param.data.value);
+    }
     const bool ordered = inst->GetOp() == O::LoadMemoryTSO ||
             inst->GetOp() == O::StoreMemoryTSO || inst->GetOp() == O::MemoryCopyTSO;
     // The interpreter's TSO entrypoints provide value semantics only. When
@@ -209,7 +258,10 @@ void JitTranslator::EmitHelper(ir::Inst* inst) {
     as.MV(a3, values);
     as.LI(a4, u64(slot_count) * 2);
     as.LI(t0, reinterpret_cast<u64>(&ExecuteInstruction));
+    context.LeaveFloatMode();
     as.JALR(t0);
+    context.EnterFloatMode();
+    context.ReloadFlags();
     if (ordered) as.FENCE();
     context.Load(t0, state, state_offset_halt_reason, 4);
     context.BranchZero(t0, epilogue, false);
@@ -247,8 +299,8 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
         case O::StoreUniform: {
             auto value = inst->GetArg<ir::Value>(1);
             if (ir::IsFloatValueType(value.Type())) return false;
-            context.Read(result, value);
-            context.Store(result, state, state_offset_uniform_buffer + inst->GetArg<ir::Uniform>(0).GetOffset(),
+            const auto source = context.SourceRegister(value, t0);
+            context.Store(source, state, state_offset_uniform_buffer + inst->GetArg<ir::Uniform>(0).GetOffset(),
                           ir::GetValueSizeByte(value.Type()));
             return true;
         }
@@ -259,9 +311,6 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
             EmitMemory(inst, true, op == O::StoreMemoryTSO, result); return true;
         case O::MemoryBarrierTSO: as.FENCE(); return true;
         case O::GetOperand: context.Operand(result, inst->GetArg<ir::Operand>(0)); break;
-        case O::BitCast: case O::GetResult:
-            if (ir::IsFloatValueType(inst->GetArg<ir::Value>(0).Type())) return false;
-            context.Read(result, inst->GetArg<ir::Value>(0)); break;
         case O::ZeroExtend32: case O::ZeroExtend32To64: case O::ZeroExtend64:
         case O::SignExtend: case O::Neg: case O::TestZero: case O::TestNotZero:
         case O::TestBit:
@@ -293,37 +342,62 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
             break;
         }
         case O::Add: case O::Sub: case O::Adc: case O::Sbb:
-        case O::Mul: case O::Div: case O::And: case O::Or:
-        case O::Xor: case O::AndNot:
-            context.Read(result, inst->GetArg<ir::Value>(0));
-            context.Operand(t1, inst->GetArg<ir::Operand>(1));
-            if (op == O::Add || op == O::Adc) as.ADD(result, result, t1);
-            if (op == O::Sub || op == O::Sbb) as.SUB(result, result, t1);
+        case O::Mul: case O::And: case O::Or: case O::Xor: case O::AndNot: {
+            const auto left = context.SourceRegister(inst->GetArg<ir::Value>(0), t0);
+            const auto operand = inst->GetArg<ir::Operand>(1);
+            const bool simple = operand.GetRight().Null() || operand.GetOp().type == ir::OperandOp::None;
+            bool immediate = false;
+            if (simple && operand.GetLeft().IsImm()) {
+                const auto raw = static_cast<s64>(operand.GetLeft().imm.Get());
+                const auto encoded = op == O::Sub || op == O::Sbb ? u64{0} - u64(raw) : u64(raw);
+                const auto value = static_cast<s64>(encoded);
+                if (value >= -2048 && value <= 2047) {
+                    if (op == O::Add || op == O::Adc || op == O::Sub || op == O::Sbb) {
+                        as.ADDI(result, left, value); immediate = true;
+                    } else if (op == O::And) { as.ANDI(result, left, value); immediate = true; }
+                    else if (op == O::Or) { as.ORI(result, left, value); immediate = true; }
+                    else if (op == O::Xor) { as.XORI(result, left, value); immediate = true; }
+                }
+            }
+            if (!immediate) {
+                GPR right = t1;
+                if (simple && operand.GetLeft().IsValue())
+                    right = context.SourceRegister(operand.GetLeft().value, t1);
+                else context.Operand(t1, operand);
+                if (op == O::Add || op == O::Adc) as.ADD(result, left, right);
+                if (op == O::Sub || op == O::Sbb) as.SUB(result, left, right);
+                if (op == O::Mul) as.MUL(result, left, right);
+                if (op == O::And) as.AND(result, left, right);
+                if (op == O::Or) as.OR(result, left, right);
+                if (op == O::Xor) as.XOR(result, left, right);
+                if (op == O::AndNot) {
+                    if (context.Features().zbb) as.ANDN(result, left, right);
+                    else { as.NOT(t2, right); as.AND(result, left, t2); }
+                }
+            }
             if (op == O::Adc || op == O::Sbb) {
-                context.Load(t2, state, state_offset_host_flags);
-                as.SRLI(t2, t2, kCarryBit); as.ANDI(t2, t2, 1);
+                as.SRLI(t2, flags, kCarryBit); as.ANDI(t2, t2, 1);
                 if (op == O::Adc) as.ADD(result, result, t2);
                 else { as.XORI(t2, t2, 1); as.SUB(result, result, t2); }
             }
-            if (op == O::Mul) as.MUL(result, result, t1);
-            if (op == O::Div) {
-                const auto type = inst->GetArg<ir::Value>(0).Type();
-                context.Mask(result, Bits(type)); context.Mask(t1, Bits(type));
-                Label nonzero, done;
-                as.BNE(t1, x0, &nonzero);
-                as.MV(result, x0); as.J(&done);
-                as.Bind(&nonzero);
-                if (ir::IsSignValueType(type)) {
-                    context.SignExtend(result, Bits(type)); context.SignExtend(t1, Bits(type));
-                    as.DIV(result, result, t1);
-                } else as.DIVU(result, result, t1);
-                as.Bind(&done);
-            }
-            if (op == O::And) as.AND(result, result, t1);
-            if (op == O::Or) as.OR(result, result, t1);
-            if (op == O::Xor) as.XOR(result, result, t1);
-            if (op == O::AndNot) { as.NOT(t1, t1); as.AND(result, result, t1); }
             break;
+        }
+        case O::Div: {
+            context.Read(result, inst->GetArg<ir::Value>(0));
+            context.Operand(t1, inst->GetArg<ir::Operand>(1));
+            const auto type = inst->GetArg<ir::Value>(0).Type();
+            context.Mask(result, Bits(type)); context.Mask(t1, Bits(type));
+            Label nonzero, done;
+            as.BNE(t1, x0, &nonzero);
+            as.MV(result, x0); as.J(&done);
+            as.Bind(&nonzero);
+            if (ir::IsSignValueType(type)) {
+                context.SignExtend(result, Bits(type)); context.SignExtend(t1, Bits(type));
+                as.DIV(result, result, t1);
+            } else as.DIVU(result, result, t1);
+            as.Bind(&done);
+            break;
+        }
         case O::Not:
             if (inst->ArgAt(1).IsVoid()) {
                 context.Read(result, inst->GetArg<ir::Value>(0)); as.SEQZ(result, result);
@@ -348,19 +422,38 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
         case O::AsrImm: case O::AsrValue: case O::RorImm: case O::RorValue: {
             const auto value = inst->GetArg<ir::Value>(0);
             const auto bits = Bits(inst->ReturnType());
-            context.Read(result, value);
-            if (inst->ArgAt(1).IsImm()) as.LI(t1, inst->GetArg<ir::Imm>(1).Get());
-            else context.Read(t1, inst->GetArg<ir::Value>(1));
-            as.ANDI(t1, t1, bits - 1);
-            if (op == O::AsrImm || op == O::AsrValue) {
-                context.SignExtend(result, Bits(value.Type())); as.SRA(result, result, t1);
+            const bool left = op == O::LslImm || op == O::LslValue;
+            const bool right = op == O::LsrImm || op == O::LsrValue;
+            const bool arithmetic = op == O::AsrImm || op == O::AsrValue;
+            auto source = context.SourceRegister(value, t0);
+            if (arithmetic || (!left && bits < 64)) {
+                if (result != source) as.MV(result, source);
+                if (arithmetic) context.SignExtend(result, Bits(value.Type()));
+                else context.Mask(result, bits);
+                source = result;
+            }
+            if (inst->ArgAt(1).IsImm()) {
+                const u32 shift = inst->GetArg<ir::Imm>(1).Get() & (bits - 1);
+                if (left) as.SLLI(result, source, shift);
+                else if (right) as.SRLI(result, source, shift);
+                else if (arithmetic) as.SRAI(result, source, shift);
+                else if (!shift) { if (result != source) as.MV(result, source); }
+                else if (context.Features().zbb && bits == 64) as.RORI(result, source, shift);
+                else if (context.Features().zbb && bits == 32) as.RORIW(result, source, shift);
+                else {
+                    as.SRLI(t2, source, shift); as.SLLI(result, source, bits - shift);
+                    as.OR(result, result, t2);
+                }
             } else {
-                context.Mask(result, bits);
-                if (op == O::LslImm || op == O::LslValue) as.SLL(result, result, t1);
-                else if (op == O::LsrImm || op == O::LsrValue) as.SRL(result, result, t1);
+                context.Read(t1, inst->GetArg<ir::Value>(1)); as.ANDI(t1, t1, bits - 1);
+                if (left) as.SLL(result, source, t1);
+                else if (right) as.SRL(result, source, t1);
+                else if (arithmetic) as.SRA(result, source, t1);
+                else if (context.Features().zbb && bits == 64) as.ROR(result, source, t1);
+                else if (context.Features().zbb && bits == 32) as.RORW(result, source, t1);
                 else {
                     as.SUB(t2, x0, t1); as.ANDI(t2, t2, bits - 1);
-                    as.SLL(t2, result, t2); as.SRL(result, result, t1); as.OR(result, result, t2);
+                    as.SLL(t2, source, t2); as.SRL(result, source, t1); as.OR(result, result, t2);
                 }
             }
             break;
@@ -376,10 +469,7 @@ void JitTranslator::EmitMemory(ir::Inst* inst, bool store, bool ordered, GPR res
     const auto type = store ? inst->GetArg<ir::Value>(1).Type() : inst->ReturnType();
     const u32 size = ir::GetValueSizeByte(type);
     context.Operand(a1, inst->GetArg<ir::Operand>(0));
-    as.MV(a0, state); as.LI(a2, size);
-    as.LI(t0, reinterpret_cast<u64>(&MemoryAddress)); as.JALR(t0);
-    context.Load(t0, state, state_offset_halt_reason, 4);
-    context.BranchZero(t0, epilogue, false);
+    EmitAddress(size);
     // Naturally aligned scalar accesses must remain a single memory
     // operation: decomposing them into bytes would tear under guest threads.
     Label unaligned, done;

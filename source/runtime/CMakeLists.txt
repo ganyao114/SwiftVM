@@ -225,8 +225,21 @@ add_library(swift_runtime STATIC
         backend/arm64/region_link_trampoline.cpp
         backend/arm64/region_link_trampoline.h
         backend/riscv64/jit/jit_context.cpp
+        backend/riscv64/jit/jit_context_vector.cpp
+        backend/riscv64/jit/jit_context_cfg.cpp
         backend/riscv64/jit/jit_context.h
         backend/riscv64/jit/translator.cpp
+        backend/riscv64/jit/translator_scalar_bits.cpp
+        backend/riscv64/jit/translator_flags.cpp
+        backend/riscv64/jit/translator_memory.cpp
+        backend/riscv64/jit/translator_atomic.cpp
+        backend/riscv64/jit/translator_vector.cpp
+        backend/riscv64/jit/translator_vector_integer.cpp
+        backend/riscv64/jit/translator_vector_shuffle.cpp
+        backend/riscv64/jit/translator_local.cpp
+        backend/riscv64/jit/translator_vector_float.cpp
+        backend/riscv64/jit/translator_vector_crypto.cpp
+        backend/riscv64/jit/translator_call.cpp
         backend/riscv64/jit/translator.h
         backend/riscv64/jit/compile.cpp
         backend/riscv64/jit/compile.h

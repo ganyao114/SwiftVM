@@ -13,17 +13,16 @@ using ir::ValueType;
 void Interpreter::RunDefineLocal(ir::Inst* inst, InterpStack& stack) {}
 
 void Interpreter::RunLoadLocal(ir::Inst* inst, InterpStack& stack) {
-    // Locals are modelled as 8-byte slots indexed by Local::id inside
-    // state.local_buffer (assumption: no current frontend emits locals; the
-    // arm64 translator config sets has_local_operation=false and the JIT
-    // PANICs on these).
+    // Local ids address eight-byte slots in the caller-supplied buffer.
+    // Vector accesses span adjacent slots and need a full 128-bit temporary.
     const auto local = inst->GetArg<ir::Local>(0);
     const auto* base = static_cast<const u8*>(state.local_buffer);
-    u64 value{0};
+    u128 value{0};
     if (base) {
         std::memcpy(&value, base + size_t(local.id) * 8, ir::GetValueSizeByte(local.type));
     }
-    WriteScalar(stack, inst, value);
+    if (IsVector(inst->ReturnType())) WriteVec(stack, inst, value);
+    else WriteScalar(stack, inst, static_cast<u64>(value));
 }
 
 void Interpreter::RunStoreLocal(ir::Inst* inst, InterpStack& stack) {
@@ -32,7 +31,7 @@ void Interpreter::RunStoreLocal(ir::Inst* inst, InterpStack& stack) {
     if (!base) {
         return;
     }
-    const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(1));
+    const u128 value = ReadVec(stack, inst->GetArg<ir::Value>(1));
     std::memcpy(base + size_t(local.id) * 8, &value, ir::GetValueSizeByte(local.type));
 }
 

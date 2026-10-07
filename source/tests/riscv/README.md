@@ -75,9 +75,34 @@ fixture 保留调用者临时寄存器 `t6` 用于函数入口标记；这是裸
 QEMU 的动态 sysroot 保留 C 扩展，但关闭 V、Zba/Zbb/Zbs/Zbc。
 双映射代码复用需要 [QEMU 测试补丁](../../../tools/qemu/README.md)，原版模拟器仍用于失败负对照。
 
-三个 CTest 分别验证默认函数模式、`SVM_FUNC_BASE=0` 单块模式和代码缓存地址复用。
-当前三项均通过：前两项各 72,879 个检查，缓存复用 23 个检查。
+十个 CTest 验证默认函数模式、`SVM_FUNC_BASE=0` 单块模式、代码缓存复用、Zbb、
+标量加密扩展、VLEN=128/256 的 RVV、两个 VLEN 的向量加密扩展，以及 Zacas。
+前三类基线与普通 RVV 使用补丁版 QEMU 8.0.4；向量加密和 Zacas 使用补丁版
+QEMU 10.1.2，通过 `SVM_RISCV_QEMU_CRYPTO_EXECUTABLE` 显式指定。当前十项全部通过。
 原版 QEMU 缓存复用负对照返回 1；RV64 AOT 编译入口也按预期返回非零并明确拒绝。
+
+原生发码用例逐类断言无 interpreter 分派，并比较 cached/uncached 与独立参考结果。
+覆盖全部标量宽度、flags 请求掩码、原子 RMW、向量 lane 宽度、全部 shuffle 控制、
+浮点舍入/比较模式和 NaN/溢出边界；检查 LP64D callee-saved 寄存器及 caller FRM。
+专门的 host-call 测试验证 0–8 参数、栈参数、动态目标、宽除法、成对结果，以及调用时
+完全破坏 RVV 寄存器后的活跃浮点值恢复。CAS128 包括四线程同时更新的完整成对不变量。
+memmove 用例覆盖重叠方向、全部字节对齐、零长度、边界故障和超过 VLEN 的复制。
+AES 同时验证全部轮 IR 与 FIPS 197 的十轮已知答案。
+
+`--fp`/`--rvv-fp`、`--calls`/`--rvv-calls`、`--memcopy`/`--rvv-memcopy`、
+`--crypto`/`--scalar-crypto`/`--vector-crypto`、`--zacas` 可以分别运行对应用例。
+原生浮点基线已通过 99,176 项检查，普通 RVV 浮点通过 99,330 项；内存复制/CAS128
+专测通过 10,599 项；向量加密专测通过 957 项，缓存复用通过 23 项。
+
+[覆盖清单](../../../docs/riscv64-ir-coverage.md) 由 `ir.inc` 和实际注册的 emitter 生成。
+`python3 tools/check_riscv_ir_coverage.py --check-document` 验证清单同步，
+`--require-native` 仍返回 1，因为 5 条 CFG/ARM64 host-register IR 尚未实现。
+源码 case 数量和 QEMU 时间都不能替代真机性能验收。用例对 RVV 指令序列设置预算，
+并检查算术/AES 串联没有 SSA 栈流量；吞吐、延迟、跨 hart 原子顺序与 SMC 仍须在目标 CPU 测量。
+
+2026-10-07 的交叉构建还执行了 `func_tests_x86_64` 和 `func_tests_aarch64`，
+全部 stdout 与既有基线逐字节一致，退出码分别为 101 和 25。原生 ARM64 的
+462 个回归用例通过，共 1,126,860 次断言。
 主要检查包括：
 
 - 240 个标量程序、23,040 次输入执行，对照未进行 ARM64 寄存器重写的 canonical IR interpreter。
