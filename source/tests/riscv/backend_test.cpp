@@ -281,6 +281,16 @@ void ScalarCache() {
         Compiled cached{block.get()}, uncached{block.get(), false};
         const auto& traffic = cached.context.ValueStats();
         const auto& baseline = uncached.context.ValueStats();
+        Check(cached.translator.Stats().frame_size == rv::kLeafSavedFrameSize &&
+              cached.translator.Stats().saved_fprs == 0 && cached.translator.Stats().saved_gprs == 2 &&
+              uncached.translator.Stats().saved_fprs == 0 && uncached.translator.Stats().saved_gprs == 0,
+              "leaf chains save only the two reused value GPRs and no floating registers");
+        const auto& emitted = cached.context.GetMasm().GetCodeBuffer();
+        for (u32 offset = 0; offset < cached.context.CurrentBufferSize(); offset += 4) {
+            u32 encoding{}; std::memcpy(&encoding, emitted.GetOffsetPointer(offset), 4);
+            Check((encoding & 0x707f) != 0x3027 && (encoding & 0x707f) != 0x3007,
+                  "leaf arithmetic code contains no FSD/FLD save or restore instructions");
+        }
         Check(traffic.cache_hits > 40 && traffic.spills == 0 && traffic.loads == 0 && traffic.stores == 0,
               "dead SSA values in a straight arithmetic chain never spill or reload");
         Check(traffic.loads + traffic.stores < baseline.loads + baseline.stores,

@@ -157,7 +157,7 @@ GPR JitContext::ReserveRegister(GPR excluded) {
     auto index = next_register;
     if (scalar_registers[index] == excluded) index = (index + 1) % count;
     for (size_t scanned = 0; scanned < count; ++scanned) {
-        const auto candidate = (next_register + scanned) % count;
+        const auto candidate = scanned;
         if (!cached_values[candidate] && scalar_registers[candidate] != excluded) { index = candidate; break; }
     }
     next_register = (index + 1) % (cached_values.size() - size_t(flags_enabled));
@@ -169,6 +169,7 @@ GPR JitContext::ReserveRegister(GPR excluded) {
     // Evict before operand reads: the selected destination may hold an input
     // to this instruction. Publish the new mapping only after its definition.
     cached_values[index] = nullptr;
+    used_gprs |= 1u << index;
     return scalar_registers[index];
 }
 
@@ -260,7 +261,7 @@ void JitContext::FlushValues() {
             ++value_stats.stores;
         }
     }
-    SaveVectorsForCall();
+    SaveVectorsForCall(false);
     DiscardValues();
 }
 
@@ -349,6 +350,17 @@ void JitContext::Flush(const CodeBuffer& buffer) {
     ASSERT(buffer.size >= CurrentBufferSize());
     std::memcpy(buffer.rw_data, masm.GetCodeBuffer().GetOffsetPointer(0), CurrentBufferSize());
     buffer.Flush();
+}
+
+void JitContext::Prepend(u32 start, std::span<const u8> code) {
+    auto& buffer = masm.GetCodeBuffer();
+    const auto end = buffer.GetCursorOffset();
+    ASSERT(start <= end);
+    if (buffer.GetRemainingBytes() <= code.size()) buffer.Grow(buffer.GetSizeInBytes() + code.size() + 4096);
+    auto* begin = buffer.GetOffsetPointer(start);
+    std::memmove(begin + code.size(), begin, end - start);
+    std::memcpy(begin, code.data(), code.size());
+    buffer.AdvanceCursor(end + code.size());
 }
 
 }  // namespace swift::runtime::backend::riscv64

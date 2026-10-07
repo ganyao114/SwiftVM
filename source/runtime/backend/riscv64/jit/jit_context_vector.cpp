@@ -11,7 +11,7 @@ void JitContext::EnterFloatMode() {
 }
 
 void JitContext::LeaveFloatMode() {
-    if (vector_float) { Load(t5, frame, 200); masm.FSRM(t5); }
+    if (vector_float) { Load(t5, frame, float_mode_offset); masm.FSRM(t5); }
 }
 
 std::array<GPR, 2> JitContext::ResultPair(ir::Inst*) {
@@ -114,7 +114,8 @@ void JitContext::WriteVector(ir::Inst* inst, Vec value) {
     }
 }
 
-void JitContext::SaveVectorsForCall() {
+void JitContext::SaveVectorsForCall(bool abi_call) {
+    if (abi_call) MarkABICall();
     for (size_t i = 0; i < cached_vectors.size(); ++i) SpillVector(i);
 }
 

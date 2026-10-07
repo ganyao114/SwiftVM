@@ -82,6 +82,26 @@ void NativeVectors(bool vector) {
             }
         }
     }
+    for (u32 lane = 0; lane < 8; ++lane) {
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc080})};
+        ir::Assembler as{block.get()};
+        auto input = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
+        auto scalar = as.LoadUniform(ir::Uniform{16, T::U64}).SetType(T::U64);
+        auto inserted = as.VecInsert16(input, scalar, ir::Imm{u64(lane)}).SetType(T::V128);
+        as.StoreUniform(ir::Uniform{32, T::V128}, inserted);
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        Compiled compiled{block.get(), true, features};
+        if (vector) Check(compiled.translator.Stats().bytes[size_t(O::VecInsert16)] <= 24,
+                          "RVV halfword insertion remains in vector registers without a GPR-pair round trip");
+        StateStorage state;
+        std::array<u16, 8> expected{0x8235, 0x7149, 0xa136, 0x2395, 0xff00, 0x1874, 0x3145, 0x8756};
+        std::memcpy(state.state->uniform_buffer_begin, expected.data(), 16);
+        state.Put(16, 0xdeadbeefcafe9671ULL);
+        expected[lane] = 0x9671;
+        Check(compiled.fn(state.state) == HaltReason::CallHost &&
+              std::memcmp(state.state->uniform_buffer_begin + 32, expected.data(), 16) == 0,
+              "halfword insertion changes only the selected lane and truncates its scalar input");
+    }
     // Narrow vector homes must retain zero high halves, independently of VLEN.
     for (auto type : {T::V8, T::V16, T::V32, T::V64, T::V128}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc100})};

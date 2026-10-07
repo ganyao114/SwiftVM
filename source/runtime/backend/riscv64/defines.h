@@ -13,11 +13,15 @@ inline constexpr auto values = biscuit::s2;
 inline constexpr auto flags = biscuit::s11;
 inline constexpr std::array scalar_registers{biscuit::s3, biscuit::s4, biscuit::s5,
         biscuit::s6, biscuit::s7, biscuit::s8, biscuit::s9, biscuit::s10, biscuit::s11};
+inline constexpr std::array saved_fprs{biscuit::fs0, biscuit::fs1, biscuit::fs2, biscuit::fs3,
+        biscuit::fs4, biscuit::fs5, biscuit::fs6, biscuit::fs7, biscuit::fs8, biscuit::fs9,
+        biscuit::fs10, biscuit::fs11};
 inline constexpr unsigned kValueStride = 16;
 inline constexpr unsigned kSavedFrameSize = 32;
 // Faults in C++ helpers can bypass their register restores. Keep the complete
 // LP64D callee-saved set at the generated block's recovery frame.
 inline constexpr unsigned kBlockSavedFrameSize = 208;
+inline constexpr unsigned kLeafSavedFrameSize = 112;
 // State's virtual flag word follows the ARM64 backend/interpreter NZCV layout,
 // rather than the low-bit IR mask enum.
 inline constexpr unsigned kNegateBit = 31;

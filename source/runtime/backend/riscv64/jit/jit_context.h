@@ -3,6 +3,7 @@
 #include <biscuit/assembler.hpp>
 #include <unordered_map>
 #include <vector>
+#include <span>
 #include "runtime/backend/code_cache.h"
 #include "runtime/backend/riscv64/defines.h"
 #include "runtime/backend/riscv64/host_features.h"
@@ -47,12 +48,19 @@ public:
     biscuit::Vec ResultVector(ir::Inst* inst);
     biscuit::Vec SourceVector(ir::Value value, biscuit::Vec scratch);
     void WriteVector(ir::Inst* inst, biscuit::Vec value);
-    void SaveVectorsForCall();
+    void SaveVectorsForCall(bool abi_call = true);
     void RestoreVectorsAfterCall();
     void EnableVectorFloat(bool enabled) { vector_float = enabled; }
     bool VectorFloatEnabled() const { return vector_float; }
     void EnterFloatMode();
     void LeaveFloatMode();
+    void BeginBlock() { abi_calls = false; used_gprs = 0; float_mode_offset = 200; }
+    void MarkABICall() { abi_calls = true; }
+    bool CallsABI() const { return abi_calls; }
+    u32 UsedGPRs() const { return used_gprs | (flags_enabled ? 1u << 8 : 0); }
+    void FinalizeFrame() { float_mode_offset = abi_calls ? 200 : 104; }
+    u32 FloatModeOffset() const { return float_mode_offset; }
+    void Prepend(u32 start, std::span<const u8> code);
     biscuit::GPR SourceRegister(ir::Value value, biscuit::GPR scratch);
     void Data(biscuit::GPR result, const ir::DataClass& data);
     void Operand(biscuit::GPR result, const ir::Operand& operand);
@@ -96,6 +104,8 @@ private:
     size_t next_register{};
     bool flags_enabled{};
     bool vector_float{};
+    bool abi_calls{};
+    u32 used_gprs{}, float_mode_offset{200};
     bool flags_dirty{};
     std::unordered_map<ir::Inst*, u32> last_uses;
     std::vector<ir::Inst*> initial_values;

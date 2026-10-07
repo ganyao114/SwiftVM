@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <stdexcept>
 #include "runtime/backend/interp/interpreter.h"
 #include "runtime/backend/riscv64/defines.h"
@@ -14,8 +15,6 @@ using namespace biscuit;
 using O = ir::OpCode;
 
 namespace {
-
-constexpr std::array saved_fprs{fs0, fs1, fs2, fs3, fs4, fs5, fs6, fs7, fs8, fs9, fs10, fs11};
 
 u64 MemoryAddress(State* state, u64 guest, u64 size);
 
@@ -82,6 +81,8 @@ u32 Bits(ir::ValueType type) {
 
 void JitTranslator::Translate(ir::Block* input) {
     block = input;
+    const auto entry_start = context.CurrentBufferSize();
+    context.BeginBlock();
     context.DiscardValues();
     const auto terminal_flags = [&](const auto& recurse, const ir::Terminal& terminal) -> bool {
         return VisitVariant<bool>(terminal, [&](const auto& term) -> bool {
@@ -136,27 +137,7 @@ void JitTranslator::Translate(ir::Block* input) {
     }
     slot_count = std::max(slot_count, u32{1});
     auto& as = context.GetMasm();
-    as.ADDI(sp, sp, -static_cast<s32>(kBlockSavedFrameSize));
-    as.SD(ra, 0, sp);
-    as.SD(frame, 8, sp);
-    as.SD(state, 16, sp);
-    as.SD(values, 24, sp);
-    for (size_t i = 0; i < scalar_registers.size(); ++i) as.SD(scalar_registers[i], 32 + i * 8, sp);
-    for (size_t i = 0; i < saved_fprs.size(); ++i) as.FSD(saved_fprs[i], 104 + i * 8, sp);
-    as.MV(frame, sp);
-    as.MV(state, a0);
-    if (context.VectorFloatEnabled()) { as.FRRM(t0); context.Store(t0, frame, 200); context.EnterFloatMode(); }
-    context.ReloadFlags();
-    as.LI(t0, u64(slot_count) * kValueStride);
-    as.SUB(sp, sp, t0);
-    as.MV(values, sp);
-    // Homes are materialized only when needed. Clearing every home here
-    // would add O(block size) stores even to register-only arithmetic chains.
-    // Scalar high halves are synthesized as zero; helper inputs get them below.
     context.InitializeValues();
-    as.LILabel(t0, &epilogue);
-    context.Store(t0, state, state_offset_riscv_recovery_pc);
-    context.Store(frame, state, state_offset_riscv_recovery_frame);
     Poll();
 
     u32 position{};
@@ -187,6 +168,11 @@ void JitTranslator::Translate(ir::Block* input) {
     }
     EmitTerminal(block->GetTerminal());
     context.EnsureSpace();
+    context.FinalizeFrame();
+    stats.frame_size = context.CallsABI() ? kBlockSavedFrameSize : kLeafSavedFrameSize;
+    const auto saved_mask = context.CallsABI() ? (1u << scalar_registers.size()) - 1 : context.UsedGPRs();
+    stats.saved_gprs = std::popcount(saved_mask);
+    stats.saved_fprs = context.CallsABI() ? saved_fprs.size() : 0;
     recovery_offset = context.CurrentBufferSize();
     as.Bind(&epilogue);
     context.LeaveFloatMode();
@@ -199,10 +185,11 @@ void JitTranslator::Translate(ir::Block* input) {
     as.LD(frame, 8, sp);
     as.LD(state, 16, sp);
     as.LD(values, 24, sp);
-    for (size_t i = 0; i < scalar_registers.size(); ++i) as.LD(scalar_registers[i], 32 + i * 8, sp);
-    for (size_t i = 0; i < saved_fprs.size(); ++i) as.FLD(saved_fprs[i], 104 + i * 8, sp);
-    as.ADDI(sp, sp, kBlockSavedFrameSize);
+    for (size_t i = 0; i < scalar_registers.size(); ++i) if (saved_mask & (1u << i)) as.LD(scalar_registers[i], 32 + i * 8, sp);
+    if (context.CallsABI()) for (size_t i = 0; i < saved_fprs.size(); ++i) as.FLD(saved_fprs[i], 104 + i * 8, sp);
+    as.ADDI(sp, sp, stats.frame_size);
     as.RET();
+    EmitPrologue(entry_start);
 }
 
 void JitTranslator::Poll() {
@@ -232,6 +219,7 @@ void JitTranslator::Return(HaltReason reason) {
 }
 
 void JitTranslator::EmitHelper(ir::Inst* inst) {
+    context.MarkABICall();
     // Helpers read canonical homes and can write pair-result pseudo homes.
     context.PublishFlags();
     context.FlushValues();

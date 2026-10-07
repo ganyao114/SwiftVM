@@ -25,6 +25,8 @@ void NativeVectorFloat(bool vector) {
         Compiled cached{block, true, features}, uncached{block, false, features};
         Check(cached.translator.Stats().helpers == 0 && uncached.translator.Stats().helpers == 0,
               "floating instructions must not dispatch through the interpreter");
+        Check(cached.translator.Stats().saved_fprs == 0 && cached.translator.Stats().frame_size == rv::kLeafSavedFrameSize,
+              "native floating operations use caller-saved temporaries and a leaf rounding frame");
         if (vector) Check(cached.translator.Stats().bytes[size_t(op)] <= 160,
                           "RVV floating sequence has a fixed instruction budget including NaN repair");
         for (u32 sample = 0; sample < 320; ++sample) {

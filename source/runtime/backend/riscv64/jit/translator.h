@@ -10,6 +10,7 @@ namespace swift::runtime::backend::riscv64 {
 struct EmissionStats {
     u32 direct{};
     u32 helpers{};
+    u32 frame_size{}, saved_gprs{}, saved_fprs{};
     std::array<u32, static_cast<size_t>(ir::OpCode::BASE_COUNT)> bytes{};
 };
 
@@ -34,6 +35,7 @@ private:
     bool EmitScalarBits(ir::Inst* inst);
     bool EmitFlags(ir::Inst* inst);
     void EmitHelper(ir::Inst* inst);
+    void EmitPrologue(u32 entry_start);
     void EmitAddress(u64 size);
     void EmitMemory(ir::Inst* inst, bool store, bool ordered, biscuit::GPR result);
     void EmitTerminal(const ir::Terminal& terminal);

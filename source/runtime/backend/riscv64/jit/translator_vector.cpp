@@ -184,16 +184,20 @@ bool JitTranslator::EmitVector(ir::Inst* inst) {
             context.Read(a0, inst->GetArg<ir::Value>(0));
             if (rvv) { context.SetVectorType(64, 2); as.VMV(vector_result, a0); }
             else { as.MV(pair[0], a0); as.MV(pair[1], a0); }
+        } else if (rvv) {
+            const auto source = context.SourceVector(inst->GetArg<ir::Value>(0), v1);
+            context.Read(a2, inst->GetArg<ir::Value>(1));
+            context.SetVectorType(16, 8); as.VID(v4);
+            as.VMSEQ(v0, v4, s32(inst->GetArg<ir::Imm>(2).Get() & 7));
+            as.VMERGE(vector_result, source, a2);
         } else {
-            // Baseline and RVV share the two-half bit insertion, then RVV
-            // builds a register without spilling the result through memory.
             context.ReadPart(a0, inst->GetArg<ir::Value>(0), 0); context.ReadPart(a1, inst->GetArg<ir::Value>(0), 1);
             context.Read(a2, inst->GetArg<ir::Value>(1)); context.Mask(a2, 16);
             const u32 lane = inst->GetArg<ir::Imm>(2).Get() & 7, shift = lane * 16 % 64;
             const auto target = lane < 4 ? a0 : a1;
             as.LI(t2, ~(u64{65535} << shift)); as.AND(target, target, t2);
             if (shift) as.SLLI(a2, a2, shift); as.OR(target, target, a2);
-            if (rvv) vector_from_pair(a0, a1); else { as.MV(pair[0], a0); as.MV(pair[1], a1); }
+            as.MV(pair[0], a0); as.MV(pair[1], a1);
         }
         write(); return true;
     }

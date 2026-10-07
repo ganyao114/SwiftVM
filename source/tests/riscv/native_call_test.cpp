@@ -65,6 +65,9 @@ void NativeCalls(bool vector) {
             Compiled cached{block.get(), true, features}, uncached{block.get(), false, features};
             Check(cached.translator.Stats().helpers == 0 && uncached.translator.Stats().helpers == 0,
                   "host calls use a specialized ABI boundary without IR dispatch");
+            Check(cached.translator.Stats().saved_gprs == 9 && cached.translator.Stats().saved_fprs == 12 &&
+                  cached.translator.Stats().frame_size == rv::kBlockSavedFrameSize,
+                  "a host-call frame preserves the full set needed for abandoned-callee fault recovery");
             for (u64 seed : {u64{0}, u64{1}, u64{0x9573ace287bd9f31}, UINT64_MAX}) {
                 StateStorage a, b; u64 expected{};
                 for (u32 i = 0; i < count; ++i) { const auto value = seed + 17 * i; a.Put(i * 8, value); b.Put(i * 8, value); expected += value * weights[i]; }
