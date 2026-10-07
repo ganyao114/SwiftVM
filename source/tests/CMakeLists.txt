@@ -184,3 +184,5 @@ if(Python3_Interpreter_FOUND)
             -s ${CMAKE_SOURCE_DIR}/tools/tests -p "test_*.py")
     set_tests_properties(swift_tools_test PROPERTIES LABELS "unit;review" TIMEOUT 15)
 endif()
+
+add_subdirectory(riscv)
