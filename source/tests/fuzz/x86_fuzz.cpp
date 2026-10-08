@@ -1412,6 +1412,28 @@ TEST_CASE("Fuzz x86 shifts") {
     REQUIRE(env.failures == 0);
 }
 
+TEST_CASE("SHR retains the original overflow bit after a high-byte CL shift") {
+    FuzzEnv env;
+    for (int width : {32, 64}) {
+        for (bool negative : {false, true}) {
+            env.InitRegs();
+            env.ctx->rax.qword = 0;
+            env.ctx->rcx.qword = 8;
+            env.ctx->rbx.qword = 0x5500;
+            env.ctx->r12.qword = (u64(1) << (width - (negative ? 1 : 2))) | 1;
+            CodeBuf code;
+            EmitAluRegReg(code, 6, width, kR12, kRax); // xor r12, rax
+            EmitShift(code, 4, 8, 7, 0, true, true);  // shl bh, cl
+            EmitShift(code, 5, width, kR12, 1, false);
+            env.EmitFlagCapture(code);
+            FlagMask mask;
+            mask.ah &= ~kAhAF;
+            env.RunIteration(code.c, mask, "shift-original-overflow");
+        }
+    }
+    REQUIRE(env.failures == 0);
+}
+
 TEST_CASE("Fuzz x86 mul imul") {
     FuzzEnv env;
     int iters = env.Iters(3000);

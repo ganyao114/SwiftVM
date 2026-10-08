@@ -797,10 +797,9 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
         sar_ext = width < 32 ? __ SignExtend(left).SetType(ir::ValueType::S32)
                              : left.SetType(GetSignedContainer(width));
     }
-    // Compute CF before the destructive shift result. The original operand
-    // remains live through this block, preventing the allocator from
-    // coalescing it with the result and deriving CF from the overwritten
-    // value (observable through LAHF/ADC/SBB).
+    // Compute CF before the destructive result can reuse the operand's pinned
+    // home. Deriving CF afterwards can observe the overwritten value
+    // (observable through LAHF/ADC/SBB).
     // CF = last bit shifted out (count >= 1 in this region):
     //   SHL: bit (width-1) of (orig << (count-1)) == bit (width-count) of orig.
     //   SHR/SAR: bit 0 of (orig >> (count-1))     == bit (count-1) of orig.
@@ -865,14 +864,18 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
 
     // OF is defined only for count == 1; the formula is exact there and harmless
     // (architecturally undefined) for other counts:
-    //   SHL: MSB(result) XOR CF;  SHR: MSB(orig);  SAR: 0.
+    //   SHL: MSB(result) XOR CF;  SHR: bit (width-2) of result;  SAR: 0.
     ir::Value of;
     if (kind == 0) {
         auto msb = __ And(__ LsrImm(flag_value, ir::Imm(u64(width - 1))),
                           ir::Operand{ir::Imm(u64(1))});
         of = __ Xor(msb, ir::Operand{cf});
     } else if (kind == 1) {
-        of = __ And(__ LsrImm(shifted, ir::Imm(u64(width - 1))), ir::Operand{ir::Imm(u64(1))});
+        // For count 1 the original MSB is now the result's next-highest bit.
+        // Read the result so its pinned home can safely overwrite the source,
+        // without retaining a snapshot or doing extra work on the zero path.
+        of = __ And(__ LsrImm(flag_value, ir::Imm(u64(width - 2))),
+                    ir::Operand{ir::Imm(u64(1))});
     } else {
         of = __ LoadImm(ir::Imm(u64(0)));
     }
