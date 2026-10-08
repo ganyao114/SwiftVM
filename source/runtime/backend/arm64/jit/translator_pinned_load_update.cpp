@@ -93,7 +93,7 @@ JitTranslator::MatchPinnedLoadUpdate(ir::Inst* update) {
         break;
     }
     if (!load || !publication || load->Id() >= update->Id() ||
-        context.X(ir::Value{load}).GetCode() == target) {
+        context.IsGPRMappedTo(ir::Value{load}, target)) {
         return std::nullopt;
     }
     u32 ordinary_uses{};
@@ -138,10 +138,10 @@ void JitTranslator::PreparePinnedLoadUpdates(ir::Block* block) {
         if (!candidate) {
             continue;
         }
-        pinned_gprs.fused_pin_gpr_reads.emplace(candidate->base_read, candidate->target);
-        pinned_gprs.pinned_load_updates.emplace(candidate->load, *candidate);
-        pinned_gprs.pinned_load_update_instructions.emplace(candidate->update, *candidate);
-        pinned_gprs.pinned_load_update_instructions.emplace(candidate->publication, *candidate);
+        pinned_gprs.AssignLowView(candidate->base_read, candidate->target);
+        pinned_load_updates.emplace(candidate->load, *candidate);
+        pinned_load_update_instructions.emplace(candidate->update, *candidate);
+        pinned_load_update_instructions.emplace(candidate->publication, *candidate);
     }
 }
 

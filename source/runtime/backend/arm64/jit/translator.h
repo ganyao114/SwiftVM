@@ -12,7 +12,7 @@
 #include <vector>
 #include "base/common_funcs.h"
 #include "jit_context.h"
-#include "block_analysis_index.h"
+#include "runtime/backend/arm64/alloc/pinned_gpr_allocation.h"
 #include "guest_state_map.h"
 #include "raw_carry_branch_analysis.h"
 #include "resident_scalar_fpr_analysis.h"
@@ -220,69 +220,6 @@ private:
     [[nodiscard]] bool ReproveCachedConstAddress(ir::Inst* inst) const;
     [[nodiscard]] bool CanReuseExactCachedConstAddress(ir::Inst* inst) const;
 
-    struct PinnedGPRCopy {
-        ir::Inst* read{};
-        ir::Inst* narrow_extend{};
-        ir::Inst* extend{};
-        bool signed_load{};
-        std::vector<ir::Inst*> aliases{};
-        std::vector<std::pair<ir::Inst*, ir::Inst*>> transferred_uses{};
-        std::optional<u16> source{};
-        u16 target{};
-        u8 width{};
-        u32 last_use{};
-    };
-    void PrepareDeadPinnedGPRWrites(ir::Block* block);
-    [[nodiscard]] bool IsDeadPinnedGPRWrite(ir::Inst* inst) const;
-    void PreparePinnedGPRCopies(ir::Block* block);
-    struct PinnedSelectPublication {
-        ir::Inst* producer{};
-        ir::Inst* extend{};
-        ir::Inst* publication{};
-        std::vector<ir::Inst*> aliases{};
-        u16 target{};
-        u32 last_use{};
-
-        bool operator==(const PinnedSelectPublication&) const = default;
-    };
-    [[nodiscard]] std::optional<PinnedSelectPublication>
-    MatchPinnedSelectPublication(ir::Inst* publication) const;
-    void PreparePinnedSelectPublications(ir::Block* block);
-    struct PinnedGPRValueTransfer {
-        ir::Inst* read{};
-        ir::Inst* publication{};
-        std::vector<ir::Inst*> aliases{};
-        u16 source{};
-        u16 target{};
-        u32 last_use{};
-
-        bool operator==(const PinnedGPRValueTransfer&) const = default;
-    };
-    [[nodiscard]] std::optional<PinnedGPRValueTransfer>
-    MatchPinnedGPRValueTransfer(ir::Inst* publication) const;
-    void PreparePinnedGPRValueTransfers(ir::Block* block);
-    struct PinnedGPRPublicationView {
-        ir::Inst* value{};
-        ir::Inst* publication{};
-        std::vector<ir::Inst*> aliases{};
-        u16 target{};
-        u32 last_use{};
-
-        bool operator==(const PinnedGPRPublicationView&) const = default;
-    };
-    [[nodiscard]] std::optional<PinnedGPRPublicationView>
-    MatchPinnedGPRPublicationView(ir::Inst* publication) const;
-    void PreparePinnedGPRPublicationViews(ir::Block* block);
-    struct SpilledGPRPublication {
-        ir::Inst* producer{};
-        ir::Inst* publication{};
-        u16 target{};
-
-        bool operator==(const SpilledGPRPublication&) const = default;
-    };
-    [[nodiscard]] std::optional<SpilledGPRPublication>
-    MatchSpilledGPRPublication(ir::Inst* publication);
-    void PrepareSpilledGPRPublications(ir::Block* block);
     struct NarrowExtractExtension {
         ir::Inst* extract{};
         ir::Value source{};
@@ -355,14 +292,6 @@ private:
     [[nodiscard]] std::optional<NarrowCarryFusion>
     MatchNarrowCarryFusion(ir::Inst* inst);
     void PrepareNarrowCarryFusions(ir::Block* block);
-    [[nodiscard]] std::optional<PinnedGPRCopy>
-    MatchPinnedGPRCopy(ir::Inst* inst) const;
-    [[nodiscard]] std::optional<XRegister>
-    ResolvePinnedGPRValue(ir::Value value) const;
-    [[nodiscard]] std::optional<WRegister>
-    ResolvePinnedGPRWUse(ir::Value value, const ir::Inst* consumer) const;
-    [[nodiscard]] std::optional<Register>
-    ResolvePinnedGPRUse(ir::Value value, const ir::Inst* consumer) const;
     struct PinnedMemorySource {
         u16 target{};
         u32 live_begin{};
@@ -998,40 +927,11 @@ private:
     JitContext &context;
     MacroAssembler &masm;
     ir::Block *cur_block{};
-    // Pinned GPR analysis and emission data belong to one block. Reset all
-    // families together before candidate discovery; their existing emission
-    // priority and safety checks remain in their respective handlers.
-    struct PinnedGPRState {
-        ir::Block* owner{};
-        BlockAnalysisIndex block_analysis;
-        std::map<ir::Inst*, u16> fused_pin_gpr_reads{};
-        std::map<ir::Inst*, u16> pinned_gpr_values{};
-        std::map<ir::Inst*, PinnedGPRCopy> pinned_gpr_copies{};
-        std::map<ir::Inst*, PinnedSelectPublication> pinned_select_results{};
-        std::map<ir::Inst*, PinnedSelectPublication> pinned_select_publications{};
-        std::map<ir::Inst*, PinnedGPRValueTransfer> pinned_gpr_value_transfers{};
-        std::map<ir::Inst*, PinnedGPRPublicationView> pinned_gpr_publication_views{};
-        std::map<ir::Inst*, SpilledGPRPublication> spilled_gpr_publications{};
-        std::map<ir::Inst*, PinnedLoadUpdate> pinned_load_updates{};
-        std::map<ir::Inst*, PinnedLoadUpdate> pinned_load_update_instructions{};
-        std::unordered_set<ir::Inst*> dead_pinned_gpr_writes{};
-
-        void Reset(ir::Block* block) {
-            owner = block;
-            block_analysis.Build(block);
-            fused_pin_gpr_reads.clear();
-            pinned_gpr_values.clear();
-            pinned_gpr_copies.clear();
-            pinned_select_results.clear();
-            pinned_select_publications.clear();
-            pinned_gpr_value_transfers.clear();
-            pinned_gpr_publication_views.clear();
-            spilled_gpr_publications.clear();
-            pinned_load_updates.clear();
-            pinned_load_update_instructions.clear();
-            dead_pinned_gpr_writes.clear();
-        }
-    } pinned_gprs;
+    GuestStateMap guest_state_map{};
+    PinnedGPRAllocation pinned_gprs;
+    // Load/writeback combining is target lowering, separate from placement.
+    std::map<ir::Inst*, PinnedLoadUpdate> pinned_load_updates{};
+    std::map<ir::Inst*, PinnedLoadUpdate> pinned_load_update_instructions{};
     ir::Inst *cur_instr{};
     ir::Inst *terminal_body_inst{};
     TerminalLocationPublication terminal_location_publication{};
@@ -1039,9 +939,7 @@ private:
     BitVector disable_instructions{};
     std::map<ir::Inst *, Label> local_labels{};
     std::map<ir::Inst *, Condition> local_conditions{};
-    std::unordered_set<ir::Inst*> fused_pin_zext32{};
     std::unordered_set<ir::Inst*> checked_pin_zext32_publications{};
-    std::unordered_set<ir::Inst*> fused_pin_sign_extends{};
     std::map<ir::Inst*, NarrowExtractExtension> narrow_extract_extensions{};
     std::map<ir::Inst*, ir::Inst*> fused_narrow_extracts{};
     std::map<ir::Inst*, ir::Inst*> fused_narrow_extract_shifts{};
@@ -1058,7 +956,6 @@ private:
     RawCarryBranchAnalysis raw_carry_branch_analysis{};
     ScalarFPRLiveness scalar_fpr_liveness{};
     ScalarCopyAnalysis scalar_copy_analysis{};
-    GuestStateMap guest_state_map{};
     bool induct_tie{false};
     // Default-on exact policy: keep the common path to the host FP operation
     // plus one combined result-NaN test, and defer the x86 payload/indefinite

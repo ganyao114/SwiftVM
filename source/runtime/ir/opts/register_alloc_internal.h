@@ -23,6 +23,7 @@ bool IsPinnedCoalesceTarget(u32 reg);
 bool IsPinnedCoalesceProducer(OpCode op);
 bool IsWidthChainRootProducer(const Inst* producer);
 bool IsPinnedCoalesceObserver(OpCode op);
+bool IsPinnedCoalesceObserver(const Inst& inst, const FeatureSet& features);
 bool HasKnownWWrite(Value value);
 void RecipeWidthComponentOwners(
         Block* lir_block,

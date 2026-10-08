@@ -70,13 +70,13 @@ JitTranslator::MatchPinnedMemorySource(ir::Value source) const {
         }
         target = publication->GetArg<ir::Imm>(1).Get();
         live_begin = publication->Id();
-        if (context.X(published).GetCode() != target) {
+        if (!context.IsGPRMappedTo(published, target)) {
             return std::nullopt;
         }
     } else {
         return std::nullopt;
     }
-    if (!IsPinnedMemoryTarget(target) || context.X(source).GetCode() != target) {
+    if (!IsPinnedMemoryTarget(target) || !context.IsGPRMappedTo(source, target)) {
         return std::nullopt;
     }
     return PinnedMemorySource{static_cast<u16>(target), live_begin};
@@ -198,7 +198,7 @@ std::optional<u16> JitTranslator::MatchPinnedMemoryValue(ir::Inst* extract) cons
     }
 
     const u32 target = publication->GetArg<ir::Imm>(1).Get();
-    if (!IsPinnedMemoryTarget(target) || context.R(source).GetCode() != target) {
+    if (!IsPinnedMemoryTarget(target) || !context.IsGPRMappedTo(source, target)) {
         return std::nullopt;
     }
     for (auto& scan : cur_block->GetInstList()) {
@@ -219,7 +219,7 @@ void JitTranslator::PreparePinnedMemoryValues(ir::Block* block) {
     for (auto& inst : block->GetInstList()) {
         if (auto target = MatchPinnedMemoryValue(&inst)) {
             memory_state.pinned_memory_values.emplace(&inst, *target);
-            pinned_gprs.fused_pin_gpr_reads.emplace(&inst, *target);
+            pinned_gprs.AssignLowView(&inst, *target);
         }
     }
 }

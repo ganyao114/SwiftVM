@@ -345,7 +345,9 @@ bool DensityScalarFP(ir::OpCode op) {
 
 #define __ masm.
 
-JitTranslator::JitTranslator(JitContext& ctx) : context(ctx), masm(ctx.GetMasm()) {
+JitTranslator::JitTranslator(JitContext& ctx)
+        : context(ctx), masm(ctx.GetMasm()),
+          pinned_gprs(ctx.GetAllocation(), ctx.GetFeatures(), guest_state_map) {
     auto& config = ctx.GetConfig();
     memory_state.use_memory_base = config.memory_base != nullptr || config.page_table != nullptr;
     memory_state.guest_addr_mask = config.guest_addr_mask;
@@ -595,7 +597,9 @@ bool JitTranslator::IsStrictInternalAdvancePC(ir::Block* block,
 JitTranslator::BlockTranslateState
 JitTranslator::PrepareBlockState(ir::Block* block) {
     cur_block = block;
-    pinned_gprs.Reset(block);
+    pinned_load_updates.clear();
+    pinned_load_update_instructions.clear();
+    checked_pin_zext32_publications.clear();
     memory_state.spilled_memory_operands.clear();
     const auto& loop_hoist = block->GetLoopHoistMetadata();
     loop_hoist_body_entry = loop_hoist.prefix_end
@@ -635,14 +639,10 @@ JitTranslator::PrepareBlockState(ir::Block* block) {
     auto want = [&](const char* name) {
         return skip_prep.find(name) == std::string::npos;
     };
-    PrepareDeadPinnedGPRWrites(block);
-    if (want("gprcopies")) PreparePinnedGPRCopies(block);
-    if (want("selectpub")) PreparePinnedSelectPublications(block);
-    if (want("transfers")) PreparePinnedGPRValueTransfers(block);
-    if (want("pubviews")) PreparePinnedGPRPublicationViews(block);
+    pinned_gprs.Prepare(block);
     if (want("loadupd")) PreparePinnedLoadUpdates(block);
     if (want("memvals")) PreparePinnedMemoryValues(block);
-    if (want("spillpub")) PrepareSpilledGPRPublications(block);
+    if (want("spillpub")) pinned_gprs.PrepareSpilledGPRPublications(block);
     PrepareDeadEdgeIntegerBranch(block);
     PrepareDeadNarrowImmediateBranch();
     PrepareNarrowFlagsInputs(block);
@@ -688,6 +688,9 @@ JitTranslator::PrepareBlockState(ir::Block* block) {
                     : nullptr;
     const bool split_flags_entry = backedge_flags_recipe &&
                                    !backedge_flags_recipe->dead_successor;
+    pinned_gprs.PrepareNarrowReads([&](ir::Inst* consumer) {
+        return GetPseudoFlags(consumer).set;
+    });
     context.SetCurrent(block, split_flags_entry,
                        FlagsRegsEnabled() && region_edges_active);
     if (FlagsRegsEnabled() && region_edges_active && !split_flags_entry &&
@@ -1125,7 +1128,7 @@ void JitTranslator::Translate(ir::Inst* inst) {
     context.TickIR(inst, forward_spilled_width_input,
                    adopt_pending_spill_write,
                    forward_spilled_memory_input,
-                   fused_pin_zext32.contains(inst));
+                   pinned_gprs.IsZeroExtendElided(inst));
     if (inst->GetOp() != ir::OpCode::SetLocation &&
         inst->GetOp() != ir::OpCode::CallReturn) {
         static_next_loc.reset();

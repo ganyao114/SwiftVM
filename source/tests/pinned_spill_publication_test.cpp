@@ -91,6 +91,9 @@ std::vector<std::string> Emit(SpillPublicationBlock input) {
     GPRSMask gprs{~((1u << 6) - 1u)};
     FPRSMask fprs{~((1u << 8) - 1u)};
     RegAlloc alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    // Exercise the spill fallback independently of successful preallocation.
+    // The fixed-GPR tests cover the new capture/spill-free publication path.
+    alloc.FinishFixedGPRConstraints();
     RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &alloc, false);
     REQUIRE(alloc.ValueType(input.result) == RegAlloc::MEM);
 
@@ -150,4 +153,23 @@ TEST_CASE("adjacent spilled values publish in their pinned GPR") {
     REQUIRE(Contains(immediate, "mov w22, #0x9"));
     REQUIRE(Contains(memory, "ldr x22, [x6]"));
     REQUIRE(Contains(add, "add w22"));
+}
+
+TEST_CASE("Single-home preallocation preserves spill choices under pressure", "[fixed-gpr]") {
+    for (auto producer : {AdjacentProducer::Immediate, AdjacentProducer::Memory, AdjacentProducer::Add}) {
+        auto input = MakeAdjacentSpillPublicationBlock(producer);
+        const GPRSMask gprs{~((1u << 6) - 1u)};
+        const FPRSMask fprs{~((1u << 8) - 1u)};
+        RegAlloc baseline{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        baseline.FinishFixedGPRConstraints();
+        RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &baseline, false);
+        RegAlloc optimized{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &optimized, false);
+        REQUIRE_FALSE(optimized.HasFixedGPRDefinition(input.result.Id()));
+        REQUIRE(optimized.ValueType(input.result) == RegAlloc::MEM);
+        for (swift::u32 id = 0; id < baseline.MapCount(); ++id) {
+            INFO("allocation id " << id);
+            REQUIRE(optimized.Mapping(id) == baseline.Mapping(id));
+        }
+    }
 }

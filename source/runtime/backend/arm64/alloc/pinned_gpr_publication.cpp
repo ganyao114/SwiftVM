@@ -1,5 +1,5 @@
 #include "runtime/backend/reg_alloc.h"
-#include "translator.h"
+#include "pinned_gpr_allocation.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -43,11 +43,11 @@ std::optional<u32> LowViewLastUse(ir::Block* block,
 
 }  // namespace
 
-std::optional<JitTranslator::PinnedGPRPublicationView> JitTranslator::MatchPinnedGPRPublicationView(
+std::optional<PinnedGPRAllocation::PinnedGPRPublicationView> PinnedGPRAllocation::MatchPinnedGPRPublicationView(
         ir::Inst* publication) const {
     if (!publication || publication->GetOp() != ir::OpCode::SetHostGPR ||
         publication->GetArg<ir::Imm>(2).Get() != 0 ||
-        pinned_gprs.dead_pinned_gpr_writes.contains(publication)) {
+        recipes.dead_writes.contains(publication)) {
         return std::nullopt;
     }
     const u32 target = publication->GetArg<ir::Imm>(1).Get();
@@ -65,7 +65,7 @@ std::optional<JitTranslator::PinnedGPRPublicationView> JitTranslator::MatchPinne
     u32 ordinary_uses{};
     u32 last_use = publication->Id();
     std::vector<ir::Inst*> aliases;
-    for (auto& consumer : cur_block->GetInstList()) {
+    for (auto& consumer : this->block->GetInstList()) {
         const auto uses = std::ranges::count_if(
                 consumer.GetValues(), [&](ir::Value input) { return input.Def() == value; });
         if (!uses) {
@@ -77,7 +77,7 @@ std::optional<JitTranslator::PinnedGPRPublicationView> JitTranslator::MatchPinne
             continue;
         }
         const auto alias_last_use = LowViewLastUse(
-                cur_block, &consumer, value);
+                this->block, &consumer, value);
         if (consumer.Id() <= publication->Id() || uses != 1 ||
             !alias_last_use) {
             return std::nullopt;
@@ -101,18 +101,18 @@ std::optional<JitTranslator::PinnedGPRPublicationView> JitTranslator::MatchPinne
     };
 }
 
-void JitTranslator::PreparePinnedGPRPublicationViews(ir::Block* block) {
+void PinnedGPRAllocation::PreparePinnedGPRPublicationViews(ir::Block* block) {
     for (auto& inst : block->GetInstList()) {
         auto candidate = MatchPinnedGPRPublicationView(&inst);
         if (!candidate || std::ranges::any_of(candidate->aliases, [&](ir::Inst* alias) {
-                return pinned_gprs.fused_pin_gpr_reads.contains(alias);
+                return HasLowView(alias);
             })) {
             continue;
         }
         for (auto* alias : candidate->aliases) {
-            pinned_gprs.fused_pin_gpr_reads.emplace(alias, candidate->target);
+            AssignLowView(alias, candidate->target);
         }
-        pinned_gprs.pinned_gpr_publication_views.emplace(&inst, std::move(*candidate));
+        recipes.publication_views.emplace(&inst, std::move(*candidate));
     }
 }
 

@@ -88,7 +88,7 @@ void JitTranslator::EmitSelect(ir::Inst* inst) {
     auto false_value = inst->GetArg<ir::Value>(2);
     auto result = context.R(ir::Value{inst});
     auto resolve = [&](ir::Value value) {
-        return ResolvePinnedGPRUse(value, inst).value_or(context.R(value));
+        return context.UseGPR(value, inst, pinned_gprs);
     };
     if (auto direct = flag_state.direct_cond_selects.find(inst); direct != flag_state.direct_cond_selects.end()) {
         const bool is_boolean = flag_state.boolean_selects.contains(inst);
@@ -138,15 +138,15 @@ void JitTranslator::EmitSelectZero(ir::Inst* inst) {
     auto test = inst->GetArg<ir::Value>(0);
     auto zero_value = inst->GetArg<ir::Value>(1);
     auto nonzero_value = inst->GetArg<ir::Value>(2);
-    auto direct = pinned_gprs.pinned_select_results.find(inst);
-    if (direct != pinned_gprs.pinned_select_results.end()) {
-        const auto reproved = MatchPinnedSelectPublication(
+    auto direct = pinned_gprs.GetRecipes().select_results.find(inst);
+    if (direct != pinned_gprs.GetRecipes().select_results.end()) {
+        const auto reproved = pinned_gprs.MatchPinnedSelectPublication(
                 direct->second.publication);
         ASSERT_MSG(reproved && *reproved == direct->second,
                    "pinned SelectZero publication proof diverged at IR {}",
                    inst->Id());
     }
-    Register result = direct == pinned_gprs.pinned_select_results.end()
+    Register result = direct == pinned_gprs.GetRecipes().select_results.end()
             ? context.R(ir::Value{inst})
             : Register{WRegister{direct->second.target}};
     auto resolve = [&](ir::Value value) -> Register {

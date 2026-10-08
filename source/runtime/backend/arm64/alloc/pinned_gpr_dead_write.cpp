@@ -1,5 +1,5 @@
 #include "runtime/backend/reg_alloc.h"
-#include "translator.h"
+#include "pinned_gpr_allocation.h"
 #include "runtime/common/svm_config.h"
 
 namespace swift::runtime::backend::arm64 {
@@ -45,10 +45,11 @@ ir::Inst* PublicationRoot(ir::Inst& store) {
 
 }  // namespace
 
-bool JitTranslator::IsDeadPinnedGPRWrite(ir::Inst* inst) const {
-    ASSERT(pinned_gprs.owner == cur_block);
+bool PinnedGPRAllocation::IsDeadPinnedGPRWrite(ir::Inst* inst) const {
+    ASSERT(block);
     if (!inst || inst->GetOp() != ir::OpCode::SetHostGPR ||
-        context.IsHostWriteCoalesced(inst->Id())) {
+        (allocation.IsHostWriteCoalesced(inst->Id()) ||
+         allocation.NeedsFixedGPRPublication(inst->Id()))) {
         return false;
     }
     const u32 target = inst->GetArg<ir::Imm>(1).Get();
@@ -56,19 +57,19 @@ bool JitTranslator::IsDeadPinnedGPRWrite(ir::Inst* inst) const {
         return false;
     }
 
-    auto* next = pinned_gprs.block_analysis.FollowingWrite(inst);
+    auto* next = block_analysis.FollowingWrite(inst);
     if (!next) return false;
     auto& overwrite = *next;
     // The index only removes the search. Recheck actual width, allocation
     // and publication-root ordering before suppressing the write.
     if (!IsFullGPRWrite(overwrite)) return false;
-    if (!context.IsHostWriteCoalesced(overwrite.Id())) return true;
+    if (!allocation.IsHostWriteCoalesced(overwrite.Id())) return true;
     auto* root = PublicationRoot(overwrite);
     return root && root->Id() > inst->Id();
 }
 
-void JitTranslator::PrepareDeadPinnedGPRWrites(ir::Block* block) {
-    pinned_gprs.block_analysis.BuildWriteSuccessors(
+void PinnedGPRAllocation::PrepareDeadPinnedGPRWrites(ir::Block* block) {
+    block_analysis.BuildWriteSuccessors(
             [&](ir::Inst& inst) {
                 return MayFaultOrObserve(inst) || IsWriteBoundary(inst.GetOp());
             },
@@ -89,7 +90,7 @@ void JitTranslator::PrepareDeadPinnedGPRWrites(ir::Block* block) {
         const bool dead = IsDeadPinnedGPRWrite(&inst) &&
                 GetSvmConfig().skip_prep.find("deadwrite") == std::string::npos;
         if (dead) {
-            pinned_gprs.dead_pinned_gpr_writes.insert(&inst);
+            recipes.dead_writes.insert(&inst);
         }
         if (inst.GetOp() != ir::OpCode::SetHostGPR ||
             inst.GetArg<ir::Imm>(2).Get() != 0 || dead) {
@@ -114,12 +115,12 @@ void JitTranslator::PrepareDeadPinnedGPRWrites(ir::Block* block) {
                 }
             }
         }
-        if (context.IsGPRMappedTo(published, home)) {
+        if (IsGPRMappedTo(published, home)) {
             coalesced_writes.push_back({&inst, static_cast<u16>(home)});
         }
     }
     guest_state_map.BuildValueVersions(
-            pinned_gprs.dead_pinned_gpr_writes,
+            recipes.dead_writes,
             std::span<const GuestStateMap::CoalescedWrite>{
                     coalesced_writes.data(), coalesced_writes.size()},
             has_reused_publication);

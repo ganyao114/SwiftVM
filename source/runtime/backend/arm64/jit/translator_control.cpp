@@ -584,7 +584,7 @@ void JitTranslator::EmitCallLambda(ir::Inst* inst) {
 void JitTranslator::EmitGetOperand(ir::Inst* inst) {
     if (const auto address = MatchPinnedMemoryAddress(inst)) {
         if (address->offset == 0) {
-            pinned_gprs.pinned_gpr_values.emplace(inst, address->target);
+            pinned_gprs.AssignValueHome(inst, address->target);
             return;
         }
         if (context.IsSpilled(ir::Value{inst})) {
@@ -597,7 +597,7 @@ void JitTranslator::EmitGetOperand(ir::Inst* inst) {
         }
     }
     auto operand = inst->GetArg<ir::Operand>(0);
-    const auto pinned_result = ResolvePinnedGPRValue(ir::Value{inst});
+    const auto pinned_result = context.PinnedValueGPR(ir::Value{inst}, cur_instr, pinned_gprs);
     auto result = pinned_result ? Register{*pinned_result}
                                 : context.R(ir::Value{inst});
     if (EmitCachedConstAddress(inst, result)) {
@@ -647,7 +647,7 @@ void JitTranslator::EmitGetOperand(ir::Inst* inst) {
         left = result;
     } else {
         const auto value = operand.GetLeft().value;
-        const auto pinned = ResolvePinnedGPRValue(value);
+        const auto pinned = context.PinnedValueGPR(value, cur_instr, pinned_gprs);
         left = pinned ? Register{*pinned} : context.R(value, true);
     }
     Register dst = left.Is64Bits() ? result.X() : result.W();
@@ -674,7 +674,7 @@ void JitTranslator::EmitGetOperand(ir::Inst* inst) {
         return;
     }
 
-    const auto pinned = ResolvePinnedGPRValue(right.value);
+    const auto pinned = context.PinnedValueGPR(right.value, cur_instr, pinned_gprs);
     auto right_reg = pinned ? Register{*pinned}
                             : context.R(right.value, true);
     if (operand.GetOp() == ir::OperandOp::Plus) {

@@ -1,5 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/arm64/jit/block_analysis_index.h"
+#include "runtime/backend/arm64/jit/guest_state_map.h"
+#include "runtime/backend/arm64/helper_call_contract.h"
+#include "runtime/backend/reg_alloc.h"
 
 using namespace swift::runtime;
 using namespace swift::runtime::ir;
@@ -59,4 +62,73 @@ TEST_CASE("reverse write search agrees with forward search at reads and partial 
             CHECK(index.FollowingWrite(write) == expected);
         }
     }
+}
+
+TEST_CASE("fixed home intervals preserve partial writes, exchanges and exact helper barriers",
+          "[block-analysis][pinned-gpr]") {
+    using swift::runtime::backend::arm64::GuestStateMap;
+    using swift::runtime::backend::arm64::HelperCallContract;
+    IntrusivePtr<Block> block{new Block(0, Location{0x3000})};
+    auto value = block->LoadImm(Imm{swift::u64{3}}).SetType(ValueType::U64);
+    for (unsigned i = 0; i < 80; ++i) block->Nop();
+    auto* full = block->AppendInst(OpCode::SetHostGPR, value, HostRegIndex(20), Imm{0u});
+    block->GetHostGPR(HostRegIndex(20), Imm{0u}).SetType(ValueType::U64);
+    auto* partial = block->AppendInst(OpCode::SetHostGPR, value, HostRegIndex(20), Imm{1u});
+    auto* call = block->AppendInst(OpCode::CallLambda, Lambda{Imm{swift::u64{1}}});
+    auto* resident = block->AppendInst(OpCode::CallLambda,
+            Lambda{DataClass{Imm{swift::u64{1}}},
+                   HelperCallTraits{.host_registers = HostRegisterEffect::PreservesPinnedState}});
+    auto* leaf = block->AppendInst(OpCode::CallLambda,
+            Lambda{DataClass{Imm{swift::u64{1}}},
+                   HelperCallTraits{.abi = HelperABI::PreserveAllLeaf}});
+    auto left = block->LoadUniform(Uniform{0, ValueType::V128});
+    auto right = block->LoadUniform(Uniform{16, ValueType::V128});
+    auto* sse = block->Sse42Str(left, right, Imm{swift::u64{0x02}}).Def();
+    auto* exchange = block->AppendInst(OpCode::XchgBarrier, Imm{swift::u32{0x10}});
+    block->ReIdInstr();
+    std::vector<swift::u32> boundaries{0, 1, block->MaxInstrId()};
+    for (auto* inst : {full, partial, call, resident, leaf, sse, exchange}) {
+        boundaries.push_back(inst->Id() - 1);
+        boundaries.push_back(inst->Id());
+        boundaries.push_back(inst->Id() + 1);
+    }
+
+    GuestStateMap state;
+    for (bool leaf_abi : {false, true}) {
+        FeatureSet features{}; features.helper_leaf_abi = leaf_abi;
+        state.Analyze(block.get(), features);
+        // Three full traversals followed by another query exercise the index.
+        // The independent forward oracle retains old semantics.
+        for (unsigned i = 0; i < 4; ++i)
+            REQUIRE(state.FixedHomeSurvives(31, 0, block->MaxInstrId()));
+        for (swift::u32 home : {0u, 2u, 7u, 9u, 19u, 20u, 22u, 23u, 29u, 31u}) {
+            for (auto after : boundaries) for (auto before : boundaries) {
+                bool expected = true;
+                for (auto& inst : block->GetInstList()) {
+                    if (inst.Id() <= after || inst.Id() >= before) continue;
+                    const bool clobbers = inst.GetOp() == OpCode::XchgBarrier
+                            ? (swift::runtime::backend::FixedGPRClobbers(inst, features) & (1u << home)) != 0
+                            : (inst.GetOp() == OpCode::SetHostGPR && inst.GetArg<Imm>(1).Get() == home) ||
+                              (home <= 9 && HelperCallContract::InstructionClobbersGPR(inst, home, features));
+                    if (clobbers) { expected = false; break; }
+                }
+                CHECK(state.FixedHomeSurvives(home, after, before) == expected);
+            }
+        }
+        CHECK_FALSE(state.FixedHomeSurvives(20, partial->Id() - 1, partial->Id() + 1));
+        CHECK(state.FixedHomeSurvives(20, partial->Id(), partial->Id() + 1));
+        // Function analysis can also change the helper ABI between queries.
+        features.helper_leaf_abi = !leaf_abi;
+        state.AnalyzeFunction(nullptr, features);
+        for (unsigned i = 0; i < 3; ++i)
+            REQUIRE(state.FixedHomeSurvives(31, 0, block->MaxInstrId()));
+        CHECK(state.FixedHomeSurvives(9, leaf->Id() - 1, leaf->Id() + 1) ==
+              !HelperCallContract::InstructionClobbersGPR(*leaf, 9, features));
+    }
+    IntrusivePtr<Block> next{new Block(0, Location{0x4000})};
+    for (unsigned i = 0; i < 100; ++i) next->Nop();
+    next->ReIdInstr();
+    state.Analyze(next.get(), FeatureSet{});
+    for (unsigned i = 0; i < 4; ++i)
+        CHECK(state.FixedHomeSurvives(20, 0, next->MaxInstrId()));
 }

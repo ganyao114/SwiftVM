@@ -1,6 +1,8 @@
 #include "base/logging.h"
 #include "translator.h"
 #include "runtime/backend/gpr_coalescing_contract.h"
+#include "runtime/backend/arm64/alloc/fixed_gpr_constraints.h"
+#include "runtime/backend/arm64/helper_call_contract.h"
 
 #include <algorithm>
 #include <atomic>
@@ -102,32 +104,8 @@ bool IsHostScalarUnaryProducer(const ir::Inst& inst,
     return lane_bits == 32 || lane_bits == 64;
 }
 
-bool IsHostCoalesceObserver(ir::OpCode op) {
-    using O = ir::OpCode;
-    switch (op) {
-        case O::LoadMemory:
-        case O::StoreMemory:
-        case O::LoadMemoryTSO:
-        case O::StoreMemoryTSO:
-        case O::MemoryCopy:
-        case O::MemoryCopyTSO:
-        case O::CompareAndSwap:
-        case O::CompareAndSwap128:
-        case O::CheckMemoryAlignment:
-        case O::AtomicExchange:
-        case O::AtomicFetchAdd:
-        case O::AtomicRMW:
-        case O::CallLambda:
-        case O::CallLocation:
-        case O::CallDynamic:
-        case O::X87Op:
-        case O::Sse42Str:
-        case O::GetUniformAddress:
-        case O::UniformBarrier:
-            return true;
-        default:
-            return false;
-    }
+bool IsHostCoalesceObserver(const ir::Inst& inst, const FeatureSet& features) {
+    return IsFixedGPRPublicationObserver(inst, features);
 }
 
 bool IsKnownHostWWrite(ir::Value value) {
@@ -328,9 +306,15 @@ bool JitTranslator::ReproveCoalescedHostWrite(ir::Inst* inst) const {
             continue;
         }
         ir::Value value{&other};
-        const auto publication_value = low32_copy ? stored : produced;
-        if (context.SharesGPR(value, publication_value) &&
-            last_use(&other) > proof_start) {
+        auto& allocation = context.GetAllocation();
+        if (allocation.FixedGPRPublicationOwns(inst->Id(), value.Id())) continue;
+        const bool fixed = allocation.HasFixedGPRDefinition(value.Id());
+        if (!fixed && !context.IsGPRMappedTo(value, target)) continue;
+        // Fixed segments already carry their exact ends. Ordinary candidates
+        // need a block scan only after their physical home matches the target.
+        const u32 end = fixed ? value.Id() : last_use(&other);
+        if (allocation.FixedGPRHomeIntersects(
+                    value, target, proof_start, live_end, end)) {
             return false;
         }
     }
@@ -348,7 +332,7 @@ bool JitTranslator::ReproveCoalescedHostWrite(ir::Inst* inst) const {
             break;
         }
         const bool flags_only = scan.GetOp() == ir::OpCode::SaveFlags;
-        if ((!flags_only && IsHostCoalesceObserver(scan.GetOp())) ||
+        if ((!flags_only && IsHostCoalesceObserver(scan, context.GetFeatures())) ||
             (scan.GetOp() == ir::OpCode::GetHostGPR &&
              scan.GetArg<ir::Imm>(0).Get() == target) ||
             (scan.GetOp() == ir::OpCode::SetHostGPR &&
@@ -388,12 +372,8 @@ bool JitTranslator::ReproveCoalescedHostWrite(ir::Inst* inst) const {
             scan.GetArg<ir::Imm>(1).Get() == target) {
             return false;
         }
-        if (target <= 9 &&
-            (scan.GetOp() == ir::OpCode::CallLambda ||
-             scan.GetOp() == ir::OpCode::CallLocation ||
-             scan.GetOp() == ir::OpCode::CallDynamic ||
-             scan.GetOp() == ir::OpCode::X87Op ||
-             scan.GetOp() == ir::OpCode::Sse42Str)) {
+        if (target <= 9 && HelperCallContract::InstructionClobbersGPR(
+                    scan, target, context.GetFeatures())) {
             return false;
         }
     }
@@ -422,7 +402,7 @@ bool JitTranslator::ReproveCoalescedHostRead(ir::Inst* inst) const {
             blocked = false;
             continue;
         }
-        if (latest_store && IsHostCoalesceObserver(scan.GetOp())) {
+        if (latest_store && IsHostCoalesceObserver(scan, context.GetFeatures())) {
             blocked = true;
         }
     }
@@ -648,7 +628,7 @@ bool JitTranslator::ReproveAesChainHostWrite(ir::Inst* inst) const {
                 scan.GetOp() == ir::OpCode::LoadMemory ||
                 scan.GetOp() == ir::OpCode::StoreMemory ||
                 scan.GetOp() == ir::OpCode::SaveFlags;
-        if (IsHostCoalesceObserver(scan.GetOp()) && !committed_home_safe) {
+        if (IsHostCoalesceObserver(scan, context.GetFeatures()) && !committed_home_safe) {
             return false;
         }
     }
@@ -780,7 +760,7 @@ bool JitTranslator::ReproveCoalescedHostFPRWrite(ir::Inst* inst) const {
         }
         if (!after_producer) continue;
         if (&scan == inst) break;
-        if (IsHostCoalesceObserver(scan.GetOp()) ||
+        if (IsHostCoalesceObserver(scan, context.GetFeatures()) ||
             (scan.GetOp() == ir::OpCode::GetHostFPR &&
              scan.GetArg<ir::Imm>(0).Get() == target) ||
             (scan.GetOp() == ir::OpCode::SetHostFPR &&
@@ -1126,89 +1106,21 @@ MemOperand JitTranslator::BiasMem(const Register& base, s64 imm, bool atomic) {
 }
 
 void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
+    if (context.GetAllocation().IsFixedGPRDefinitionElided(inst->Id())) return;
     if (context.IsHostReadCoalesced(inst->Id())) {
         ASSERT_MSG(ReproveCoalescedHostRead(inst),
                    "GetHostGPR coalescing proof diverged at IR {}", inst->Id());
         return;
     }
-    if (pinned_gprs.fused_pin_gpr_reads.contains(inst)) {
+    if (pinned_gprs.HasLowView(inst)) {
         return;
     }
-    if (guest_state_map.ValueFullyResident(inst)) {
+    if (pinned_gprs.ValueFullyResident(inst)) {
         return;
     }
     auto offset = inst->GetArg<ir::Imm>(1).Get();
     auto reg_index = inst->GetArg<ir::Imm>(0).Get();
     const u32 value_size = ir::GetValueSizeByte(inst->ReturnType());
-    const bool pin_ext_reg = IsFixedGPRHome(reg_index);
-    if (offset == 0 && pin_ext_reg &&
-        inst->GetUses() != 0 && value_size <= sizeof(u32)) {
-        auto& list = cur_block->GetInstList();
-        for (auto it = std::next(list.iterator_to(*inst)); it != list.end(); ++it) {
-            if (it->GetOp() == ir::OpCode::SetHostGPR &&
-                it->GetArg<ir::Imm>(1).Get() == reg_index) {
-                break;  // the computed read must retain capture semantics
-            }
-            u32 named_uses = 0;
-            for (auto used : it->GetValues()) {
-                named_uses += used.Def() == inst;
-            }
-            if (named_uses == 0) {
-                continue;
-            }
-            if (named_uses != inst->GetUses()) {
-                break;
-            }
-            // Narrow And/Xor reads stay fused for the callee-saved pins
-            // (22/23/29) below level 3 — the W56-proven shape. The x6-x9
-            // caller-saved pins keep codex's conservative restriction.
-            const bool direct_alu =
-                    (it->GetOp() == ir::OpCode::And || it->GetOp() == ir::OpCode::Xor) &&
-                    ir::GetValueSizeByte(it->ReturnType()) <= sizeof(u32) &&
-                    (reg_index <= 5 || value_size == sizeof(u32) ||
-                     (reg_index >= 22 && !backend::X86PinExtLevel3Requested()));
-            const bool direct_u32_or =
-                    it->GetOp() == ir::OpCode::Or &&
-                    value_size == sizeof(u32) &&
-                    ir::GetValueSizeByte(it->ReturnType()) == sizeof(u32);
-            const bool direct_caller_pin_alu =
-                    reg_index <= 9 &&
-                    (it->GetOp() == ir::OpCode::Add || it->GetOp() == ir::OpCode::Sub) &&
-                    ir::GetValueSizeByte(it->ReturnType()) <= sizeof(u32) &&
-                    (reg_index <= 5 || value_size == sizeof(u32));
-            const auto pseudo_flags = GetPseudoFlags(&*it);
-            const bool direct_adjacent_narrow_flags =
-                    reg_index >= 6 && reg_index <= 9 &&
-                    (value_size == sizeof(u8) || value_size == sizeof(u16)) &&
-                    it->Id() == inst->Id() + 1 &&
-                    (it->GetOp() == ir::OpCode::Add ||
-                     it->GetOp() == ir::OpCode::Sub) &&
-                    ir::GetValueSizeByte(it->ReturnType()) == value_size &&
-                    !pseudo_flags.Null() &&
-                    True(pseudo_flags.set & ir::Flags::NZCV);
-            const bool direct_callee_pin_sub =
-                    reg_index >= 19 && it->GetOp() == ir::OpCode::Sub &&
-                    ir::GetValueSizeByte(it->ReturnType()) <= sizeof(u32);
-            const bool direct_extend =
-                    (value_size == sizeof(u8) || value_size == sizeof(u16)) &&
-                    it->GetOp() == ir::OpCode::ZeroExtend32 &&
-                    it->GetArg<ir::Value>(0).Def() == inst;
-            const bool direct_sign_extend =
-                    reg_index >= 19 && it->GetOp() == ir::OpCode::SignExtend &&
-                    it->GetArg<ir::Value>(0).Def() == inst;
-            const bool direct_store =
-                    named_uses == 1 && it->GetOp() == ir::OpCode::StoreMemory &&
-                    it->GetArg<ir::Value>(1).Def() == inst;
-            if (direct_alu || direct_u32_or || direct_caller_pin_alu ||
-                direct_adjacent_narrow_flags ||
-                direct_callee_pin_sub ||
-                direct_extend || direct_sign_extend || direct_store) {
-                pinned_gprs.fused_pin_gpr_reads.emplace(inst, static_cast<u16>(reg_index));
-                return;
-            }
-            break;
-        }
-    }
     auto host_reg = XRegister(reg_index);
     auto ret_reg = context.X(ir::Value{inst});
     const auto bit_offset = offset * 8;
@@ -1274,44 +1186,44 @@ void JitTranslator::EmitGetHostFPR(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
-    if (auto direct = pinned_gprs.pinned_select_publications.find(inst);
-        direct != pinned_gprs.pinned_select_publications.end()) {
-        const auto reproved = MatchPinnedSelectPublication(inst);
+    if (auto direct = pinned_gprs.GetRecipes().select_publications.find(inst);
+        direct != pinned_gprs.GetRecipes().select_publications.end()) {
+        const auto reproved = pinned_gprs.MatchPinnedSelectPublication(inst);
         ASSERT_MSG(reproved && *reproved == direct->second,
                    "pinned SelectZero publication proof diverged at IR {}",
                    inst->Id());
         return;
     }
-    if (auto view = pinned_gprs.pinned_gpr_publication_views.find(inst);
-        view != pinned_gprs.pinned_gpr_publication_views.end()) {
-        const auto reproved = MatchPinnedGPRPublicationView(inst);
+    if (auto view = pinned_gprs.GetRecipes().publication_views.find(inst);
+        view != pinned_gprs.GetRecipes().publication_views.end()) {
+        const auto reproved = pinned_gprs.MatchPinnedGPRPublicationView(inst);
         ASSERT_MSG(reproved && *reproved == view->second,
                    "pinned GPR publication view proof diverged at IR {}", inst->Id());
     }
-    if (auto direct = pinned_gprs.spilled_gpr_publications.find(inst);
-        direct != pinned_gprs.spilled_gpr_publications.end()) {
-        const auto reproved = MatchSpilledGPRPublication(inst);
+    if (auto direct = pinned_gprs.GetRecipes().spilled_publications.find(inst);
+        direct != pinned_gprs.GetRecipes().spilled_publications.end()) {
+        const auto reproved = pinned_gprs.MatchSpilledGPRPublication(inst);
         ASSERT_MSG(reproved && *reproved == direct->second,
                    "spilled GPR publication proof diverged at IR {}",
                    inst->Id());
         return;
     }
-    if (auto update = pinned_gprs.pinned_load_update_instructions.find(inst);
-        update != pinned_gprs.pinned_load_update_instructions.end() &&
+    if (auto update = pinned_load_update_instructions.find(inst);
+        update != pinned_load_update_instructions.end() &&
         inst == update->second.publication) {
         const auto reproved = MatchPinnedLoadUpdate(update->second.update);
         ASSERT_MSG(reproved && *reproved == update->second,
                    "pinned load update proof diverged at IR {}", inst->Id());
         return;
     }
-    if (pinned_gprs.dead_pinned_gpr_writes.contains(inst)) {
-        ASSERT_MSG(IsDeadPinnedGPRWrite(inst),
+    if (pinned_gprs.GetRecipes().dead_writes.contains(inst)) {
+        ASSERT_MSG(pinned_gprs.IsDeadPinnedGPRWrite(inst),
                    "dead pinned GPR write proof diverged at IR {}", inst->Id());
         return;
     }
-    if (auto transfer = pinned_gprs.pinned_gpr_value_transfers.find(inst);
-        transfer != pinned_gprs.pinned_gpr_value_transfers.end()) {
-        const auto reproved = MatchPinnedGPRValueTransfer(inst);
+    if (auto transfer = pinned_gprs.GetRecipes().transfers.find(inst);
+        transfer != pinned_gprs.GetRecipes().transfers.end()) {
+        const auto reproved = pinned_gprs.MatchPinnedGPRValueTransfer(inst);
         ASSERT_MSG(reproved && *reproved == transfer->second,
                    "pinned GPR value transfer proof diverged at IR {}",
                    inst->Id());
@@ -1319,9 +1231,9 @@ void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
                XRegister(transfer->second.source));
         return;
     }
-    if (auto copy = pinned_gprs.pinned_gpr_copies.find(inst);
-        copy != pinned_gprs.pinned_gpr_copies.end()) {
-        const auto reproved = MatchPinnedGPRCopy(inst);
+    if (auto copy = pinned_gprs.GetRecipes().copies.find(inst);
+        copy != pinned_gprs.GetRecipes().copies.end()) {
+        const auto reproved = pinned_gprs.MatchPinnedGPRCopy(inst);
         ASSERT_MSG(reproved && reproved->read == copy->second.read &&
                            reproved->narrow_extend ==
                                    copy->second.narrow_extend &&
@@ -1370,10 +1282,11 @@ void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
     }
     auto offset = inst->GetArg<ir::Imm>(2).Get();
     auto reg_index = inst->GetArg<ir::Imm>(1).Get();
+    const bool pin_ext_reg = IsFixedGPRHome(reg_index);
     auto host_reg = XRegister(reg_index);
     auto value = inst->GetArg<ir::Value>(0);
-    const bool fused_zext32 = value.Def() && fused_pin_zext32.contains(value.Def());
-    const auto residence = guest_state_map.FixedHomeForUse(value, inst);
+    const bool fused_zext32 = value.Def() && pinned_gprs.IsZeroExtendElided(value.Def());
+    const auto residence = pinned_gprs.FixedHomeForUse(value, inst);
     auto value_reg = fused_zext32
             ? context.X(value.Def()->GetArg<ir::Value>(0))
             : (residence ? XRegister(residence->home) : context.X(value));
@@ -1381,7 +1294,6 @@ void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
     const auto bit_width = ir::GetValueSizeByte(value.Type()) * 8;
     ASSERT_MSG(bit_offset + bit_width <= 64,
                "invalid fixed GPR write offset {} width {}", bit_offset, bit_width);
-    const bool pin_ext_reg = IsFixedGPRHome(reg_index);
     if (bit_offset == 0 && bit_width == 32 && pin_ext_reg) {
         const bool adjust_resident_home = residence &&
                 value_reg.W() == host_reg.W() &&
@@ -1605,7 +1517,7 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = ir::Value{inst};
     auto type = inst->ReturnType();
-    const auto pinned_value = ResolvePinnedGPRValue(value);
+    const auto pinned_value = context.PinnedValueGPR(value, cur_instr, pinned_gprs);
     auto value_w = [&] {
         return pinned_value ? pinned_value->W() : context.W(value);
     };
@@ -1633,7 +1545,7 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
             const bool shared = extending &&
                     context.SharesGPR(value, ir::Value{it.operator->()});
             const bool pinned_extension = extending &&
-                    fused_pin_sign_extends.contains(it.operator->());
+                    pinned_gprs.IsSignExtendElided(it.operator->());
             const bool direct = extending && it == adjacent && !pinned_value &&
                     !context.IsSpilled(ir::Value{it.operator->()});
             if (shared || pinned_extension || direct) {
@@ -1661,8 +1573,8 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
                                  structured_guest_ea,
                                  operand.GetOp() == ir::OperandOp::Plus,
                                  false);
-    auto load_update = pinned_gprs.pinned_load_updates.find(inst);
-    auto vixl_operand = load_update != pinned_gprs.pinned_load_updates.end()
+    auto load_update = pinned_load_updates.find(inst);
+    auto vixl_operand = load_update != pinned_load_updates.end()
             ? MemOperand{XRegister(load_update->second.target),
                          load_update->second.offset,
                          PreIndex}
@@ -1673,7 +1585,7 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
                              !q_access,
                              structured_guest_ea,
                              inst);
-    if (load_update != pinned_gprs.pinned_load_updates.end()) {
+    if (load_update != pinned_load_updates.end()) {
         const auto reproved = MatchPinnedLoadUpdate(load_update->second.update);
         ASSERT_MSG(reproved && *reproved == load_update->second,
                    "pinned load update proof diverged at IR {}", inst->Id());
@@ -1799,7 +1711,7 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
         return;
     }
     const bool zero_gpr = CanUseZeroStoreRegister(value);
-    const auto residence = guest_state_map.FixedHomeForUse(value, inst);
+    const auto residence = pinned_gprs.FixedHomeForUse(value, inst);
     const auto store_w = [&]() -> WRegister {
         if (zero_gpr) {
             return wzr;
@@ -1815,9 +1727,8 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
                            inst->Id());
                 return WRegister(it->second);
             }
-            if (auto it = pinned_gprs.fused_pin_gpr_reads.find(value.Def());
-                it != pinned_gprs.fused_pin_gpr_reads.end()) {
-                return WRegister(it->second);
+            if (const auto home = pinned_gprs.LowViewHome(value.Def())) {
+                return WRegister(*home);
             }
         }
         return context.W(value);

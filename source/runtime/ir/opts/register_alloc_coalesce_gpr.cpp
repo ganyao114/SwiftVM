@@ -1,6 +1,8 @@
 #include "base/logging.h"
 #include "register_alloc_internal.h"
 #include "runtime/backend/gpr_coalescing_contract.h"
+#include "runtime/backend/arm64/alloc/fixed_gpr_constraints.h"
+#include "runtime/backend/arm64/helper_call_contract.h"
 
 #include <atomic>
 #include <cstdio>
@@ -52,30 +54,11 @@ bool IsWidthChainRootProducer(const Inst* producer) {
 }
 
 bool IsPinnedCoalesceObserver(OpCode op) {
-    switch (op) {
-        case OpCode::LoadMemory:
-        case OpCode::StoreMemory:
-        case OpCode::LoadMemoryTSO:
-        case OpCode::StoreMemoryTSO:
-        case OpCode::MemoryCopy:
-        case OpCode::MemoryCopyTSO:
-        case OpCode::CompareAndSwap:
-        case OpCode::CompareAndSwap128:
-        case OpCode::CheckMemoryAlignment:
-        case OpCode::AtomicExchange:
-        case OpCode::AtomicFetchAdd:
-        case OpCode::AtomicRMW:
-        case OpCode::CallLambda:
-        case OpCode::CallLocation:
-        case OpCode::CallDynamic:
-        case OpCode::X87Op:
-        case OpCode::Sse42Str:
-        case OpCode::GetUniformAddress:
-        case OpCode::UniformBarrier:
-            return true;
-        default:
-            return false;
-    }
+    return backend::arm64::IsFixedGPRPublicationObserver(op);
+}
+
+bool IsPinnedCoalesceObserver(const Inst& inst, const FeatureSet& features) {
+    return backend::arm64::IsFixedGPRPublicationObserver(inst, features);
 }
 
 bool HasKnownWWrite(Value value) {
@@ -682,7 +665,7 @@ void CoalesceGuestGPRReads(
                 blocked = false;
                 continue;
             }
-            if (latest_store && IsPinnedCoalesceObserver(scan.GetOp())) {
+            if (latest_store && IsPinnedCoalesceObserver(scan, reg_alloc->GetFeatures())) {
                 blocked = true;
             }
         }
@@ -748,9 +731,6 @@ bool HasGuestGPRTargetConflict(
         u32 target,
         u32 live_end) {
     auto& list = lir_block->GetInstList();
-    auto mapped_to = [&](Value value, u32 mapped_target) {
-        return GuestGPRMappedTo(value, mapped_target, reg_alloc);
-    };
     for (auto& other : list) {
         if (&other == producer || &other == wrapper || &other == store ||
             !other.HasValue() || other.IsBitCastOperation()) {
@@ -763,17 +743,15 @@ bool HasGuestGPRTargetConflict(
             continue;
         }
         Value value{&other};
-        if (!mapped_to(value, target)) {
-            continue;
-        }
-        const u32 start = other.Id();
+        if (reg_alloc->FixedGPRPublicationOwns(store->Id(), value.Id())) continue;
         const u32 end = value.Id() < use_end.size() ? use_end[value.Id()] : value.Id();
         // A pre-existing tie can define a new value in the
         // producer->publication window. Its ordinary emitter then
         // writes the fixed home even though no Get/SetHostGPR is
         // present for the observer scan to see. Reject every
         // third-party target interval intersecting [producer, live_end].
-        if (start <= live_end && end > producer->Id()) {
+        if (reg_alloc->FixedGPRHomeIntersects(
+                    value, target, producer->Id(), live_end, end)) {
             return true;
         }
     }
@@ -1003,12 +981,8 @@ void CoalesceGuestGPRWrites(
                     live_blocked = true;
                     break;
                 }
-                if (target <= 9 &&
-                    (scan.GetOp() == OpCode::CallLambda ||
-                     scan.GetOp() == OpCode::CallLocation ||
-                     scan.GetOp() == OpCode::CallDynamic ||
-                     scan.GetOp() == OpCode::X87Op ||
-                     scan.GetOp() == OpCode::Sse42Str)) {
+                if (target <= 9 && backend::arm64::HelperCallContract::InstructionClobbersGPR(
+                            scan, target, features)) {
                     live_blocked = true;
                     break;
                 }
@@ -1032,7 +1006,7 @@ void CoalesceGuestGPRWrites(
                 break;
             }
             const bool flags_only = scan.GetOp() == OpCode::SaveFlags;
-            if ((!flags_only && IsPinnedCoalesceObserver(scan.GetOp())) ||
+            if ((!flags_only && IsPinnedCoalesceObserver(scan, reg_alloc->GetFeatures())) ||
                 (scan.GetOp() == OpCode::GetHostGPR &&
                  scan.GetArg<Imm>(0).Get() == target) ||
                 (scan.GetOp() == OpCode::SetHostGPR &&
@@ -1094,7 +1068,7 @@ void CoalesceGuestGPRWrites(
                 if ((scan.Id() < fixed_gpr_clobbers.size() &&
                      (fixed_gpr_clobbers[scan.Id()] & (1u << target))) ||
                     (scan.Id() < producer->Id() &&
-                     IsPinnedCoalesceObserver(scan.GetOp()) &&
+                     IsPinnedCoalesceObserver(scan, reg_alloc->GetFeatures()) &&
                      !in_width_component(&scan)) ||
                     (scan.GetOp() == OpCode::SetHostGPR &&
                      &scan != &store && scan.GetArg<Imm>(1).Get() == target)) {
@@ -1544,7 +1518,7 @@ void CensusPinnedHostResidual(
             if (&scan == &store) {
                 break;
             }
-            if (IsPinnedCoalesceObserver(scan.GetOp()) ||
+            if (IsPinnedCoalesceObserver(scan, reg_alloc->GetFeatures()) ||
                 (scan.GetOp() == OpCode::GetHostGPR &&
                  scan.GetArg<Imm>(0).Get() == target) ||
                 (scan.GetOp() == OpCode::SetHostGPR &&
@@ -1597,7 +1571,7 @@ void CensusPinnedHostResidual(
                 blocked = false;
                 continue;
             }
-            if (latest_store && IsPinnedCoalesceObserver(scan.GetOp())) {
+            if (latest_store && IsPinnedCoalesceObserver(scan, reg_alloc->GetFeatures())) {
                 blocked = true;
             }
         }

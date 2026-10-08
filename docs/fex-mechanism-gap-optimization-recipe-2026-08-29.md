@@ -246,6 +246,84 @@ return entry 消费该契约并完成第五步的首轮收益账。未经 live-i
 - fixed-home old/new version 交错、diamond join 和循环 backedge 有定向覆盖。
 - 若只能通过不断增加形态白名单获得收益，则停止该候选并回到版本模型补足观察关系。
 
+### 7.6 ARM64 pinned 分配职责拆分（2026-10-07）
+
+初版重构将 `backend/arm64/alloc/` 的 `PinnedGPRAllocation` 作为普通 SSA 分配之后的独立规划步骤，
+当时只读取 `RegAlloc`，不持有汇编器，也不申请 scratch；§7.7 将位置表和提前分配约束进一步合入 regalloc。它负责 dead publication、
+窄值副本、SelectZero publication、值转移、publication view、spilled publication
+以及单 consumer 窄 GPR 读取的选择；`JitTranslator` 消费 recipe 并复核安全条件。
+
+```mermaid
+flowchart LR
+    RA[普通 SSA 寄存器分配] --> P[PinnedGPRAllocation]
+    G[GuestStateMap 版本、宽度和观察点事实] --> P
+    P --> U[UseLocation value + consumer]
+    U --> J[JitContext 物化寄存器或 spill]
+    P --> E[ARM64 recipe 发码与复核]
+```
+
+- `GuestStateMap` 不再保存 allocation pass 的显式转移决定；这些 use-specific
+  home 和定义省略的计数由 `PinnedGPRAllocation` 保存。
+- 定义输出位置与 publication 之后的 residence 分开表示。full-width transfer
+  仅在 publication 之后到最后一次 use 生效，不能给整个 SSA 活跃区间预着色。
+- `UseLocation(value, consumer)` 统一选择 pinned home、普通 GPR 或 spill。
+  查询不发码；`JitContext::UseGPR` 仅物化已经选择的位置，避免 Select 对
+  `optional::value_or(context.R(value))` 的 eager fallback 产生无用 reload。
+- 窄读取在发码前规划，跨 helper 的有效性使用精确 clobber contract。
+  load/writeback、address folding 和动态零扩展省略仍属于 ARM64 lowering；
+  它们只能通过 plan 接口提交位置约束，位置匹配使用只读 allocation 查询。
+- 这一步不会重跑线性扫描，也不会回收它已经选出的 spill。提前 coalescing
+  和全活跃区间重分配是后续工作，需要独立验证压力、capture 和 fault 可恢复性。
+
+### 7.7 ARM64 固定 GPR 前置规划与统一位置表（2026-10-07）
+
+`PrepareFixedGPRConstraints` 在收集普通活跃区间之前执行，匹配过程不读取分配结果。
+共享的 transfer / narrow-read 判定仍由 `GuestStateMap` 提供 helper clobber 和固定家存活事实。
+规划覆盖以下情况：
+
+- source 被改写、后续仅用于内存地址的 full-width transfer，包括完整宽度 BitCast 别名。
+  SSA 在 publication 指令仍位于 source，之后到最后一个 consumer 位于 target。
+- 单 consumer、无 flags 且存在数据 consumer 的精确 U32 ALU 输入，或窄 StoreMemory
+  值，直接使用固定 W 视图。flags-only/带 flags 的输入保留既有 lowering。
+  8/16 位 NZCV 输入仍留给 target preparation，避免绑定到 guest 家后新增移位恢复；
+  扩展链仍由 width coalescing 决定 ownership。
+- 紧邻 SetHostGPR、仅由该 publication 消费的 32/64 位 LoadImm、LoadMemory、
+  Add/Sub/And 直接分配结果到固定家。publication 引用宽度必须与结果宽度一致；
+  死 publication 不走这条路径。
+
+分段 transfer 直接建立 fixed mapping，不进入普通寄存器区间。单位置读取/输出先依据
+已收集区间计算 GPR 峰值，只在当前 scratch reserve 下能容纳全部值时移除区间；高压力
+单元保留已有便宜 spill victim 和 pending-write forwarding 的分配选择，避免删掉原本
+会被 target lowering 消掉的 capture 后反而增加真实 spill load/store。三种 collector 共用
+约束；scratch reserve / spill eviction 重试保留 transfer 证明并重建普通位置。完成的
+width-coalescing transaction 可以接管窄读取，其 capture/W write 证明替代早期 read
+elision；事务完成前不修改约束，以支持回滚。跨块/terminal consumer、内部控制流、
+partial write 和 helper clobber 不满足
+证明时保留普通 capture。后续 coalescing 和旧 width fusion 必须检查两段固定 residence，
+每次完整分配后还独立检查实际物理 writer，避免其他优化悄悄提前覆盖固定家。
+
+```mermaid
+flowchart LR
+    G[GuestStateMap / helper contract] --> C[固定区间前置规划]
+    C --> R[普通 SSA 分配与 coalescing]
+    R --> V[实际物理 writer 验证]
+    V --> P[ARM64 组合与视图规划]
+    P --> L[RegAlloc.GPRLocationAt value + consumer]
+    L --> J[JitContext 按位置物化或 reload]
+```
+
+`RegAlloc` 现在统一保存定义位置、publication 后 residence、low view、逐 consumer 的
+显式/推导位置以及 spill reload recipe。普通 X/W 查询使用已分配的 SSA 视图，
+推导的架构副本只在 operand view 中供选择；负向 SSA 查询不做 use-map hash 或宽度
+分析，并且只 resolve 一次 reference。`PinnedGPRAllocation` 只维护 target recipe，
+通过 regalloc 接口提交后置位置。X/W、Get、RForWrite 和 UseGPR 共用位置查询；查询
+不会发码，MEM 返回值只描述 reload，实际 load 由 JitContext 发出。W view 不意味着
+X 高 32 位已清零，宽度事实由共享 `GPRWidthFacts` 表达。
+
+前置规划不是把所有 SSA 的整个生命周期绑定到一个 guest 寄存器。它消除了已证明
+可以直接使用固定家的临时值；Select、窄副本链、memory writeback 等需要最终目标
+组合形态的剩余决定仍保留在 ARM64 preparation 中。
+
 ## 8. P1：continuation 覆盖与热冷代码分离
 
 ### 8.1 当前边界

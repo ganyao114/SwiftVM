@@ -5,6 +5,9 @@
 #pragma once
 
 #include <bit>
+#include <optional>
+#include <unordered_map>
+#include "runtime/backend/gpr_value_facts.h"
 #include "base/common_funcs.h"
 #include "runtime/common/types.h"
 #include "runtime/common/ra_shape_prof.h"
@@ -228,6 +231,56 @@ public:
         REF
     };
 
+    enum class GPRView : u8 { Value, Low32, WholeValue };
+    struct GPRLocation {
+        Type kind{NONE};
+        u16 slot{};
+        u8 bits{};
+        bool pinned{};
+        u16 reload_register{UINT16_MAX};
+    };
+    struct FixedGPRDefinition {
+        u16 home{UINT16_MAX};
+        u16 transferred_home{UINT16_MAX};
+        u32 end{};
+        u32 transfer{UINT32_MAX};
+        u32 last_use{};
+        u32 publication{UINT32_MAX};
+        u32 owner{};
+        u8 width{};
+        bool elided{};
+    };
+    // A constraint is proven before ordinary live intervals are assigned. It
+    // remains intact across scratch-reserve retries and is verified against
+    // the completed allocation before the emitter can consume it.
+    void PlanFixedGPRDefinition(u32 value_id, FixedGPRDefinition definition);
+    [[nodiscard]] const FixedGPRDefinition* FixedGPRDefinitionAt(u32 value_id) const;
+    [[nodiscard]] bool HasFixedGPRDefinition(u32 value_id) const;
+    [[nodiscard]] bool NeedsFixedGPRPublication(u32 instruction_id) const;
+    [[nodiscard]] bool IsFixedGPRDefinitionElided(u32 value_id) const;
+    [[nodiscard]] bool FixedGPRHomeIntersects(ir::Value value, u16 home,
+                                            u32 begin, u32 end, u32 ordinary_end) const;
+    [[nodiscard]] bool FixedGPRPublicationOwns(u32 publication, u32 value_id) const;
+    [[nodiscard]] bool FixedGPRConstraintsReady() const { return fixed_gpr_constraints_ready; }
+    void FinishFixedGPRConstraints() { fixed_gpr_constraints_ready = true; }
+
+    // This is the single location table for preallocated homes, target views,
+    // inferred copies and ordinary allocations/reload recipes. Querying it
+    // never emits a load or reserves scratch.
+    [[nodiscard]] GPRLocation GPRLocationAt(ir::Value value, u32 consumer,
+                                           GPRView view = GPRView::Value) const;
+    [[nodiscard]] std::optional<u16> GPRValueHome(ir::Value value, u32 consumer) const;
+    [[nodiscard]] std::optional<u16> GPRLowView(u32 value_id) const;
+    [[nodiscard]] bool HasGPRValueHome(u32 value_id) const;
+    void BeginGPRLocationAnalysis();
+    void AssignGPRValueHome(u32 value_id, u16 home);
+    void AssignGPRTransferredHome(u32 value_id, u16 home, u32 begin, u32 end);
+    void AssignGPRLowView(u32 value_id, u16 home);
+    void RegisterGPRUseHome(u32 value_id, u32 consumer, FixedGPRValue value,
+                            bool selected);
+    [[nodiscard]] std::optional<FixedGPRValue> GPRUseHome(u32 value_id, u32 consumer) const;
+    [[nodiscard]] u32 AdditionalGPRResidentUses(u32 value_id) const;
+
     struct Map {
         Type type{NONE};
         u16 slot{};
@@ -315,12 +368,12 @@ public:
     // and therefore instruction count remain unchanged.
     void PermutePlacementCheckGPRHomes();
 
-    ir::HostGPR ValueGPR(const ir::Value &value);
-    ir::HostFPR ValueFPR(const ir::Value &value);
-    ir::SpillSlot ValueMem(const ir::Value &value);
-    ir::HostGPR ValueGPR(u32 id);
-    ir::HostFPR ValueFPR(u32 id);
-    ir::SpillSlot ValueMem(u32 id);
+    ir::HostGPR ValueGPR(const ir::Value &value) const;
+    ir::HostFPR ValueFPR(const ir::Value &value) const;
+    ir::SpillSlot ValueMem(const ir::Value &value) const;
+    ir::HostGPR ValueGPR(u32 id) const;
+    ir::HostFPR ValueFPR(u32 id) const;
+    ir::SpillSlot ValueMem(u32 id) const;
     [[nodiscard]] u32 AllocationId(const ir::Value& value) const;
     [[nodiscard]] const SpillReload* SpillReloadAt(
             u32 value_id, u32 instruction_id) const;
@@ -329,7 +382,7 @@ public:
     [[nodiscard]] bool HasSpillReload(u32 value_id, u32 instruction_id) const;
     // Resolves REF (bitcast alias) entries, so the result is the underlying
     // GPR/FPR/MEM allocation rather than the alias itself.
-    Type ValueType(const ir::Value &value);
+    Type ValueType(const ir::Value &value) const;
 
     [[nodiscard]] GPRSMask GetDirtyGPR() const;
     [[nodiscard]] FPRSMask GetDirtyFPR() const;
@@ -355,6 +408,30 @@ private:
     // GPR/FPR/MEM allocation.
     [[nodiscard]] u32 ResolveId(u32 id) const;
     [[nodiscard]] const Vector<SpillReload>* SpillReloadsAt(u32 instruction_id) const;
+
+    struct GPRPlacement {
+        u16 result{UINT16_MAX};
+        u16 low_view{UINT16_MAX};
+        u16 whole_value{UINT16_MAX};
+        u32 begin{};
+        u32 end{UINT32_MAX};
+        u32 epoch{};
+        u32 additional_uses{};
+        bool has_use_homes{};
+        FixedGPRDefinition fixed{};
+    };
+    struct GPRUse {
+        FixedGPRValue value{};
+        u32 epoch{};
+        bool selected{};
+    };
+    GPRPlacement& GPRPlacementFor(u32 value_id);
+    [[nodiscard]] const GPRPlacement* CurrentGPRPlacement(u32 value_id) const;
+    Vector<GPRPlacement> gpr_placements{};
+    std::unordered_map<u64, GPRUse> gpr_use_homes{};
+    std::unordered_map<u32, u32> fixed_gpr_publications{};
+    u32 gpr_location_epoch{1};
+    bool fixed_gpr_constraints_ready{};
 
     Vector<Map> alloc_result;
     Vector<u32> live_ends;

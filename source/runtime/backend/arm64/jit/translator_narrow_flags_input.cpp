@@ -52,7 +52,7 @@ ir::Value JitTranslator::ResolveNarrowFlagsInput(ir::Value value,
     if (!value.Def()) {
         return value;
     }
-    if (pinned_gprs.fused_pin_gpr_reads.contains(value.Def())) {
+    if (pinned_gprs.HasLowView(value.Def())) {
         return value;
     }
     auto candidate = flag_state.narrow_flags_inputs.find(value.Def());

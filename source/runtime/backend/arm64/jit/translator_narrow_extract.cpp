@@ -42,7 +42,7 @@ JitTranslator::MatchNarrowExtractExtension(ir::Inst* wrapper) const {
         extract->GetArg<ir::Imm>(1).Get() != 0 ||
         extract->GetUses() != 1 || extract->GetUses(false) != 1 ||
         extract->GetArg<ir::Value>(0).Def() == nullptr ||
-        pinned_gprs.fused_pin_gpr_reads.contains(extract) ||
+        pinned_gprs.HasLowView(extract) ||
         flag_state.narrow_flags_inputs.contains(extract) ||
         context.IsWidthChainCoalesced(extract->Id()) ||
         context.IsWidthChainCoalesced(wrapper->Id()) ||
@@ -101,7 +101,7 @@ JitTranslator::MatchNarrowMaskedInput(ir::Inst* consumer) const {
         extract->GetArg<ir::Imm>(2).Get() != width * 8 ||
         extract->GetUses() != 1 || extract->GetUses(false) != 1 ||
         !extract->GetArg<ir::Value>(0).Defined() ||
-        pinned_gprs.fused_pin_gpr_reads.contains(extract) ||
+        pinned_gprs.HasLowView(extract) ||
         flag_state.narrow_flags_inputs.contains(extract) ||
         context.IsWidthChainCoalesced(extract->Id()) ||
         context.IsLow32CopyCoalesced(extract->Id()) ||

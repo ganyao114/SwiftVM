@@ -2,14 +2,15 @@
 
 #include <array>
 #include <map>
+#include <memory>
 #include <optional>
-#include <set>
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
 
 #include "base/common_funcs.h"
 #include "runtime/common/types.h"
+#include "runtime/backend/gpr_value_facts.h"
 #include "runtime/include/config.h"
 #include "runtime/ir/block.h"
 
@@ -21,34 +22,10 @@ namespace swift::runtime::backend::arm64 {
 
 class GuestStateMap final {
 public:
-    struct ExtensionFacts {
-        u8 known_zero_above{};
-        u8 sign_extended_from{};
-        u8 sign_extended_to{};
+    using ExtensionFacts = backend::GPRWidthFacts;
+    using FixedHomeValue = backend::FixedGPRValue;
 
-        [[nodiscard]] bool KnownZeroAbove(u32 bits) const {
-            return known_zero_above != 0 && known_zero_above <= bits;
-        }
-
-        [[nodiscard]] bool KnownSignExtended(u32 from, u32 to) const {
-            const bool explicit_fact = sign_extended_from != 0 &&
-                    sign_extended_from <= from && sign_extended_to >= to;
-            const bool implied_by_zero = known_zero_above != 0 &&
-                    known_zero_above < from;
-            return explicit_fact || implied_by_zero;
-        }
-
-        bool operator==(const ExtensionFacts&) const = default;
-    };
-
-    struct FixedHomeValue {
-        u16 home{};
-        u8 width{};
-        ExtensionFacts extension{};
-
-        bool operator==(const FixedHomeValue&) const = default;
-    };
-
+    [[nodiscard]] const auto& FixedHomeUses() const { return fixed_home_uses; }
     struct CoalescedWrite {
         ir::Inst* publication{};
         u16 home{};
@@ -77,13 +54,7 @@ public:
     [[nodiscard]] std::optional<FixedHomeValue> FixedHomeForUse(
             ir::Value value,
             const ir::Inst* consumer) const;
-    void RegisterFixedHomeUse(ir::Inst* version,
-                              const ir::Inst* consumer,
-                              FixedHomeValue location);
-    [[nodiscard]] std::optional<FixedHomeValue> RegisteredFixedHomeForUse(
-            ir::Value value,
-            const ir::Inst* consumer) const;
-    [[nodiscard]] bool ValueFullyResident(ir::Inst* definition) const;
+    [[nodiscard]] u32 ResidentUseCount(ir::Inst* definition) const;
     [[nodiscard]] bool MayFaultOrObserve(const ir::Inst& inst) const;
     [[nodiscard]] static bool MayFaultOrObserve(ir::OpCode op);
 
@@ -114,6 +85,7 @@ private:
 
     [[nodiscard]] bool ClobbersFixedHome(const ir::Inst& inst,
                                          u32 home) const;
+    void BuildFixedHomeClobberIndex() const;
     void BuildFunctionWidthFacts();
     void PrepareCurrentEntryWidthFacts(bool fault_capture_needed);
     [[nodiscard]] ExtensionFacts CurrentEntryExtensionFacts(u32 home) const;
@@ -138,6 +110,11 @@ private:
     ir::Block* block{};
     ir::HIRFunction* function{};
     FeatureSet features{};
+    // IR and instruction IDs remain final until the next Analyze(). Allocate
+    // only after several successful scans of a substantial block.
+    using FixedHomeClobberIndex = std::array<std::vector<u16>, 32>;
+    mutable std::unique_ptr<FixedHomeClobberIndex> fixed_home_clobbers;
+    mutable u8 successful_survival_scans{};
     bool function_width_facts_ready{};
     WidthFacts block_entry_width_facts{};
     std::unordered_map<const ir::Block*, WidthFacts> function_entry_width_facts{};
@@ -145,7 +122,6 @@ private:
     StackVector<FaultWidthCapture, 8> fault_width_captures{};
     std::map<std::pair<ir::Inst*, const ir::Inst*>, FixedHomeValue> fixed_home_uses{};
     std::map<ir::Inst*, u32> fixed_home_use_counts{};
-    std::set<std::pair<ir::Inst*, const ir::Inst*>> registered_fixed_home_uses{};
 };
 
 }  // namespace swift::runtime::backend::arm64

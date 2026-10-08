@@ -644,6 +644,7 @@ RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
 }
 
 void RegAlloc::ResetAllocations() {
+    BeginGPRLocationAnalysis();
     std::fill(alloc_result.begin(), alloc_result.end(), Map{});
     std::fill(live_ends.begin(), live_ends.end(), UINT32_MAX);
     spill_reloads.clear();
@@ -916,27 +917,27 @@ void RegAlloc::PermutePlacementCheckGPRHomes() {
     }
 }
 
-ir::HostFPR RegAlloc::ValueFPR(const ir::Value& value) { return ValueFPR(value.Id()); }
+ir::HostFPR RegAlloc::ValueFPR(const ir::Value& value) const { return ValueFPR(value.Id()); }
 
-ir::HostGPR RegAlloc::ValueGPR(const ir::Value& value) {
+ir::HostGPR RegAlloc::ValueGPR(const ir::Value& value) const {
     return ValueGPR(value.Id());
 }
 
-ir::SpillSlot RegAlloc::ValueMem(const ir::Value& value) { return ValueMem(value.Id()); }
+ir::SpillSlot RegAlloc::ValueMem(const ir::Value& value) const { return ValueMem(value.Id()); }
 
-ir::HostGPR RegAlloc::ValueGPR(u32 id) {
+ir::HostGPR RegAlloc::ValueGPR(u32 id) const {
     id = ResolveId(id);
     ASSERT(alloc_result[id].type == GPR);
     return ir::HostGPR{alloc_result[id].slot};
 }
 
-ir::HostFPR RegAlloc::ValueFPR(u32 id) {
+ir::HostFPR RegAlloc::ValueFPR(u32 id) const {
     id = ResolveId(id);
     ASSERT(alloc_result[id].type == FPR);
     return ir::HostFPR{alloc_result[id].slot};
 }
 
-ir::SpillSlot RegAlloc::ValueMem(u32 id) {
+ir::SpillSlot RegAlloc::ValueMem(u32 id) const {
     id = ResolveId(id);
     ASSERT(alloc_result[id].type == MEM);
     return ir::SpillSlot{alloc_result[id].slot};
@@ -976,7 +977,7 @@ const Vector<RegAlloc::SpillReload>* RegAlloc::SpillReloadsAt(
     return &spill_reloads[instruction_id];
 }
 
-RegAlloc::Type RegAlloc::ValueType(const ir::Value& value) {
+RegAlloc::Type RegAlloc::ValueType(const ir::Value& value) const {
     const u32 vid = value.Id();
     if (vid >= alloc_result.size()) {
         auto* def = value.Def();

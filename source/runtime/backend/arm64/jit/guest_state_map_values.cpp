@@ -231,7 +231,6 @@ void GuestStateMap::BuildValueVersions(
     ASSERT(block);
     fixed_home_uses.clear();
     fixed_home_use_counts.clear();
-    registered_fixed_home_uses.clear();
     fault_capture_values.clear();
     fault_width_captures.clear();
     if (!has_reused_publication) {
@@ -382,41 +381,9 @@ std::optional<GuestStateMap::FixedHomeValue> GuestStateMap::FixedHomeForUse(
             : std::optional<FixedHomeValue>{found->second};
 }
 
-void GuestStateMap::RegisterFixedHomeUse(ir::Inst* version,
-                                         const ir::Inst* consumer,
-                                         FixedHomeValue location) {
-    if (!version || !consumer) {
-        return;
-    }
-    const auto key = std::make_pair(version, consumer);
-    if (registered_fixed_home_uses.insert(key).second &&
-        !fixed_home_uses.contains(key)) {
-        ++fixed_home_use_counts[version];
-    }
-    fixed_home_uses.insert_or_assign(key, location);
-}
-
-std::optional<GuestStateMap::FixedHomeValue>
-GuestStateMap::RegisteredFixedHomeForUse(
-        ir::Value value,
-        const ir::Inst* consumer) const {
-    if (!value.Def() || !consumer) {
-        return std::nullopt;
-    }
-    const auto key = std::make_pair(value.Def(), consumer);
-    if (!registered_fixed_home_uses.contains(key)) {
-        return std::nullopt;
-    }
-    return fixed_home_uses.at(key);
-}
-
-bool GuestStateMap::ValueFullyResident(ir::Inst* definition) const {
-    if (!definition || definition->GetUses(false) == 0) {
-        return false;
-    }
+u32 GuestStateMap::ResidentUseCount(ir::Inst* definition) const {
     const auto found = fixed_home_use_counts.find(definition);
-    return found != fixed_home_use_counts.end() &&
-           found->second == definition->GetUses(false);
+    return found == fixed_home_use_counts.end() ? 0 : found->second;
 }
 
 }  // namespace swift::runtime::backend::arm64

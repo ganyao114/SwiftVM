@@ -528,7 +528,7 @@ void JitTranslator::EmitBitExtract(ir::Inst* inst) {
                    "narrow extract extension proof diverged at IR {}", inst->Id());
         return;
     }
-    if (pinned_gprs.fused_pin_gpr_reads.contains(inst)) {
+    if (pinned_gprs.HasLowView(inst)) {
         return;
     }
     if (flag_state.narrow_flags_inputs.contains(inst)) {
@@ -544,9 +544,8 @@ void JitTranslator::EmitBitExtract(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Imm>(1).Get();
     auto bits = inst->GetArg<ir::Imm>(2).Get();
     auto result = [&]() -> Register {
-        if (auto pinned = pinned_gprs.pinned_gpr_values.find(inst);
-            pinned != pinned_gprs.pinned_gpr_values.end()) {
-            return XRegister(pinned->second);
+        if (auto pinned = context.PinnedValueGPR(ir::Value{inst}, cur_instr, pinned_gprs)) {
+            return *pinned;
         }
         return context.R(ir::Value{inst});
     }();
@@ -571,19 +570,18 @@ void JitTranslator::EmitBitExtract(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitSignExtend(ir::Inst* inst) {
-    if (fused_pin_sign_extends.contains(inst)) {
+    if (pinned_gprs.IsSignExtendElided(inst)) {
         return;
     }
     auto value = inst->GetArg<ir::Value>(0);
-    const auto pinned = ResolvePinnedGPRValue(ir::Value{inst});
+    const auto pinned = context.PinnedValueGPR(ir::Value{inst}, cur_instr, pinned_gprs);
     auto result = pinned ? Register{*pinned} : context.R(ir::Value{inst});
-    const auto residence = guest_state_map.FixedHomeForUse(value, inst);
-    auto fused = value.Def() ? pinned_gprs.fused_pin_gpr_reads.find(value.Def())
-                             : pinned_gprs.fused_pin_gpr_reads.end();
+    const auto residence = pinned_gprs.FixedHomeForUse(value, inst);
+    const auto fused = pinned_gprs.LowViewHome(value.Def());
     auto src = residence
             ? WRegister(residence->home)
-            : fused != pinned_gprs.fused_pin_gpr_reads.end()
-            ? WRegister(fused->second)
+            : fused
+            ? WRegister(*fused)
             : context.W(value);
     const u32 source_width = ir::GetValueSizeByte(value.Type());
     const u32 source_bits = source_width * 8;
@@ -624,7 +622,7 @@ bool JitTranslator::CanFusePinnedZeroExtendPublication(ir::Inst* inst) {
     if (!inst) {
         return false;
     }
-    if (fused_pin_zext32.contains(inst)) {
+    if (pinned_gprs.IsZeroExtendElided(inst)) {
         return true;
     }
     if (!checked_pin_zext32_publications.insert(inst).second ||
@@ -649,7 +647,7 @@ bool JitTranslator::CanFusePinnedZeroExtendPublication(ir::Inst* inst) {
         const bool fused = target <= 9 || target == 22 || target == 23 ||
                            target == 29;
         if (fused) {
-            fused_pin_zext32.insert(inst);
+            pinned_gprs.ElideZeroExtend(inst);
         }
         return fused;
     }
@@ -662,18 +660,18 @@ bool JitTranslator::CanConsumeForwardedWidthSpill(ir::Inst* inst) {
     }
     const auto reads_fixed_home = [&] {
         const auto source = inst->GetArg<ir::Value>(0);
-        return guest_state_map.FixedHomeForUse(source, inst).has_value() ||
-               (source.Def() && pinned_gprs.fused_pin_gpr_reads.contains(source.Def()));
+        return pinned_gprs.FixedHomeForUse(source, inst).has_value() ||
+               (source.Def() && pinned_gprs.HasLowView(source.Def()));
     };
     switch (inst->GetOp()) {
         case ir::OpCode::ZeroExtend32:
             return !CanUseZeroStoreRegister(ir::Value{inst}) &&
-                   !reads_fixed_home() && !fused_pin_zext32.contains(inst) &&
+                   !reads_fixed_home() && !pinned_gprs.IsZeroExtendElided(inst) &&
                    !narrow_extract_extensions.contains(inst);
         case ir::OpCode::ZeroExtend32To64: {
             const auto source = inst->GetArg<ir::Value>(0);
             return !CanUseZeroStoreRegister(ir::Value{inst}) &&
-                   !reads_fixed_home() && !fused_pin_zext32.contains(inst) &&
+                   !reads_fixed_home() && !pinned_gprs.IsZeroExtendElided(inst) &&
                    !context.IsWidthChainCoalesced(inst->Id()) &&
                    !(source.Def() && context.IsLow32CopyCoalesced(source.Id())) &&
                    !CanFusePinnedZeroExtendPublication(inst);
@@ -681,7 +679,7 @@ bool JitTranslator::CanConsumeForwardedWidthSpill(ir::Inst* inst) {
         case ir::OpCode::ZeroExtend64:
             return true;
         case ir::OpCode::SignExtend:
-            return !reads_fixed_home() && !fused_pin_sign_extends.contains(inst);
+            return !reads_fixed_home() && !pinned_gprs.IsSignExtendElided(inst);
         default:
             return false;
     }
@@ -733,7 +731,7 @@ void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
     if (CanUseZeroStoreRegister(ir::Value{inst})) {
         return;
     }
-    if (fused_pin_zext32.contains(inst)) {
+    if (pinned_gprs.IsZeroExtendElided(inst)) {
         return;
     }
     if (auto fused = narrow_extract_extensions.find(inst);
@@ -758,13 +756,12 @@ void JitTranslator::EmitZeroExtend32(ir::Inst* inst) {
     }
     auto value = inst->GetArg<ir::Value>(0);
     auto result = context.W(ir::Value{inst});
-    const auto residence = guest_state_map.FixedHomeForUse(value, inst);
-    auto fused = value.Def() ? pinned_gprs.fused_pin_gpr_reads.find(value.Def())
-                             : pinned_gprs.fused_pin_gpr_reads.end();
+    const auto residence = pinned_gprs.FixedHomeForUse(value, inst);
+    const auto fused = pinned_gprs.LowViewHome(value.Def());
     auto src = residence
             ? WRegister(residence->home)
-            : fused != pinned_gprs.fused_pin_gpr_reads.end()
-            ? WRegister(fused->second)
+            : fused
+            ? WRegister(*fused)
             : context.W(value);
     const u32 source_bits = ir::GetValueSizeByte(value.Type()) * 8;
     if (residence && residence->extension.KnownZeroAbove(source_bits)) {
@@ -814,7 +811,7 @@ void JitTranslator::EmitZeroExtend32To64(ir::Inst* inst) {
     if (!no_elide && CanUseZeroStoreRegister(ir::Value{inst})) {
         return;
     }
-    if (!no_elide && fused_pin_zext32.contains(inst)) {
+    if (!no_elide && pinned_gprs.IsZeroExtendElided(inst)) {
         return;
     }
     auto source = inst->GetArg<ir::Value>(0);

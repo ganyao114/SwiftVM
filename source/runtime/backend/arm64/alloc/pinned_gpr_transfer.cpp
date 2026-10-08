@@ -1,5 +1,5 @@
 #include "runtime/backend/reg_alloc.h"
-#include "translator.h"
+#include "pinned_gpr_allocation.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -38,15 +38,11 @@ bool IsFullWidthAlias(ir::Inst& inst, ir::Inst* definition) {
 
 }  // namespace
 
-std::optional<JitTranslator::PinnedGPRValueTransfer> JitTranslator::MatchPinnedGPRValueTransfer(
-        ir::Inst* publication) const {
-    ASSERT(pinned_gprs.owner == cur_block);
+std::optional<FixedGPRTransfer> MatchFixedGPRTransfer(
+        ir::Inst* publication, const BlockAnalysisIndex& block_analysis,
+        const GuestStateMap& guest_state_map) {
     if (!publication || publication->GetOp() != ir::OpCode::SetHostGPR ||
-        publication->GetArg<ir::Imm>(2).Get() != 0 ||
-        pinned_gprs.dead_pinned_gpr_writes.contains(publication) ||
-        context.IsHostWriteCoalesced(publication->Id())) {
-        return std::nullopt;
-    }
+        publication->GetArg<ir::Imm>(2).Get() != 0) return std::nullopt;
 
     const auto published = publication->GetArg<ir::Value>(0);
     auto* read = published.Def();
@@ -67,14 +63,14 @@ std::optional<JitTranslator::PinnedGPRValueTransfer> JitTranslator::MatchPinnedG
         return std::nullopt;
     }
 
-    std::vector<ir::Inst*> values{read};
+    StackVector<ir::Inst*, 8> values{read};
     std::vector<ir::Inst*> aliases{};
     u32 last_use = publication->Id();
     bool has_transferred_use = false;
     for (size_t index = 0; index < values.size(); ++index) {
         auto* definition = values[index];
         u32 ordinary_uses{};
-        for (const auto& use : pinned_gprs.block_analysis.Uses(definition)) {
+        for (const auto& use : block_analysis.Uses(definition)) {
             auto& consumer = *use.consumer;
             const u32 uses = use.count;
             ordinary_uses += uses;
@@ -106,7 +102,7 @@ std::optional<JitTranslator::PinnedGPRValueTransfer> JitTranslator::MatchPinnedG
         return std::nullopt;
     }
 
-    return PinnedGPRValueTransfer{
+    return FixedGPRTransfer{
             .read = read,
             .publication = publication,
             .aliases = std::move(aliases),
@@ -116,18 +112,29 @@ std::optional<JitTranslator::PinnedGPRValueTransfer> JitTranslator::MatchPinnedG
     };
 }
 
-void JitTranslator::PreparePinnedGPRValueTransfers(ir::Block* block) {
+std::optional<PinnedGPRAllocation::PinnedGPRValueTransfer>
+PinnedGPRAllocation::MatchPinnedGPRValueTransfer(ir::Inst* publication) const {
+    ASSERT(block);
+    if (!publication || recipes.dead_writes.contains(publication) ||
+        allocation.NeedsFixedGPRPublication(publication->Id()) ||
+        allocation.IsHostWriteCoalesced(publication->Id())) return std::nullopt;
+    return MatchFixedGPRTransfer(publication, block_analysis, guest_state_map);
+}
+
+void PinnedGPRAllocation::PreparePinnedGPRValueTransfers(ir::Block* block) {
     for (auto& inst : block->GetInstList()) {
         auto candidate = MatchPinnedGPRValueTransfer(&inst);
         if (!candidate) {
             continue;
         }
-        pinned_gprs.fused_pin_gpr_reads.emplace(candidate->read, candidate->source);
-        pinned_gprs.pinned_gpr_values.emplace(candidate->read, candidate->target);
+        AssignLowView(candidate->read, candidate->source);
+        AssignTransferredValue(candidate->read, candidate->target,
+                               inst.Id() + 1, candidate->last_use);
         for (auto* alias : candidate->aliases) {
-            pinned_gprs.pinned_gpr_values.emplace(alias, candidate->target);
+            AssignTransferredValue(alias, candidate->target,
+                                   inst.Id() + 1, candidate->last_use);
         }
-        pinned_gprs.pinned_gpr_value_transfers.emplace(&inst, std::move(*candidate));
+        recipes.transfers.emplace(&inst, std::move(*candidate));
     }
 }
 

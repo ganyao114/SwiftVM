@@ -5,6 +5,7 @@
 #include "allocation_statistics.h"
 #include "base/logging.h"
 #include "runtime/backend/arm64/pshufd_direct.h"
+#include "runtime/backend/arm64/alloc/fixed_gpr_constraints.h"
 #include "runtime/common/perf_stats.h"
 namespace swift::runtime::ir {
 class RegisterAllocTestSupport;
@@ -127,6 +128,12 @@ public:
     // the condition JitContext::GetTmpX/GetTmpV depend on, checked against the
     // data the JIT will actually consume rather than against a model of it.
     [[nodiscard]] bool Verify() {
+        if (function) {
+            for (auto& hir_block : function->GetHIRBlocksRPO())
+                backend::arm64::VerifyFixedGPRConstraints(hir_block.GetBlock(), *reg_alloc, features);
+        } else {
+            backend::arm64::VerifyFixedGPRConstraints(block, *reg_alloc, features);
+        }
         // Fast path, and the one every unit in the corpus takes: nothing was
         // spilled, so no instruction needs a reload register, and AllocGPR /
         // AllocFPR already refused to drop below `*_reserve` at every mask
@@ -192,6 +199,14 @@ public:
     }
 
     void AllocateRegisters() {
+        if (!reg_alloc->FixedGPRConstraintsReady()) {
+            if (function) {
+                backend::arm64::PrepareFixedGPRConstraints(function, *reg_alloc, features);
+            } else {
+                backend::arm64::PrepareFixedGPRConstraints(block, *reg_alloc, features);
+            }
+            reg_alloc->FinishFixedGPRConstraints();
+        }
         if (FlagsRegsEnabled()) {
             if (spill_slots.size() < 2) {
                 GrowSpillStack(2 - spill_slots.size());
@@ -211,6 +226,7 @@ public:
         } else {
             CollectLiveIntervals(block);
         }
+        FinalizeSingleHomePreallocation();
         CollectResidentFPRWrites();
         RecipeFixedGPRAffinities();
         RecipeCallReturnAffinities();
@@ -347,6 +363,7 @@ public:
         CoalesceGuestFPRAccesses(xmm_resident);
         RecognizePshufdDirect();
         CacheConstantAddresses();
+        FinalizeFixedGPRReadConstraints();
         if (spill_count && RaDiagEnabled()) {
             LOG_WARNING("RegisterAllocPass: {} value(s) spilled to stack slots (highest slot {})",
                         spill_count, max_spill_slot);
@@ -386,6 +403,61 @@ private:
         active_gprs.Mark(target);
         reg_alloc->MapRegister(interval.inst->Id(), HostGPR{target});
         return true;
+    }
+
+    bool MapPreallocatedGPR(u32 id, bool single_home = false) {
+        const auto* fixed = reg_alloc->FixedGPRDefinitionAt(id);
+        if (!fixed) return false;
+        // Single-home views can be zero-cost spill victims in the existing
+        // lowering. Decide whether to remove their intervals only after peak
+        // value-class pressure is known, before any assignment or eviction.
+        if (!single_home && (!fixed->elided || fixed->publication == UINT32_MAX)) return false;
+        MapFixedRead(id, fixed->home);
+        fixed_gpr_alias_end[id] = fixed->end;
+        reg_alloc->SetLiveEnd(id, fixed->last_use);
+        if (!fixed->elided && fixed->publication != UINT32_MAX)
+            reg_alloc->MarkHostWriteCoalesced(fixed->publication);
+        return true;
+    }
+
+    void FinalizeSingleHomePreallocation() {
+        bool candidates = false;
+        for (const auto& interval : live_interval) {
+            const auto* fixed = reg_alloc->FixedGPRDefinitionAt(interval.inst->Id());
+            candidates |= fixed && (!fixed->elided || fixed->publication == UINT32_MAX);
+        }
+        if (!candidates) return;
+        const u32 count = InstrCount();
+        Vector<s32> changes(count + 1);
+        for (const auto& interval : live_interval) {
+            if (IsFloatValue(interval.inst)) continue;
+            ++changes[interval.start];
+            --changes[std::min<u32>(interval.end + 1, count)];
+        }
+        s32 live = 0, peak = 0;
+        for (auto change : changes) {
+            live += change;
+            peak = std::max(peak, live);
+        }
+        auto pool = reg_alloc->GetGprs();
+        const u32 available = pool.GetClearCount();
+        const u32 capacity = available > gpr_reserve ? available - gpr_reserve : 0;
+        if (static_cast<u32>(peak) > capacity) {
+            // Under pressure, removing cheap captures can perturb spill
+            // eviction and destroy useful pending-write forwarding. Preserve
+            // those existing choices until spill cost models target elision.
+            for (const auto& interval : live_interval) {
+                const auto* fixed = reg_alloc->FixedGPRDefinitionAt(interval.inst->Id());
+                if (fixed && (!fixed->elided || fixed->publication == UINT32_MAX))
+                    reg_alloc->PlanFixedGPRDefinition(interval.inst->Id(), {});
+            }
+            return;
+        }
+        std::erase_if(live_interval, [&](const auto& interval) {
+            const auto* fixed = reg_alloc->FixedGPRDefinitionAt(interval.inst->Id());
+            if (!fixed || (fixed->elided && fixed->publication != UINT32_MAX)) return false;
+            return MapPreallocatedGPR(interval.inst->Id(), true);
+        });
     }
 
     void MapFixedRead(u32 id, u16 target) {
@@ -452,6 +524,51 @@ private:
         return definition && definition->block->GetBlock() == lir_block;
     }
 
+    [[nodiscard]] bool CoalescingValueUsesStayInBlock(Block* lir_block, Value value) const {
+        auto may_coalesce = [&](u32 id) {
+            const auto* fixed = reg_alloc->FixedGPRDefinitionAt(id);
+            // A single-use result can only coalesce into its own publication
+            // home. Narrow reads can be adopted by a later width transaction.
+            // A two-segment transfer must retain its point-specific locations.
+            return !fixed || !fixed->elided ||
+                   (fixed->publication == UINT32_MAX && fixed->width <= sizeof(u32));
+        };
+        return may_coalesce(value.Id()) && may_coalesce(ResolveBitCastSource(value).Id()) &&
+               ValueUsesStayInBlock(lir_block, value);
+    }
+
+    void FinalizeFixedGPRReadConstraints() {
+        auto finalize = [&](Block* lir_block) {
+            for (auto& inst : lir_block->GetInstList()) {
+                const auto* fixed = reg_alloc->FixedGPRDefinitionAt(inst.Id());
+                if (!fixed || !fixed->elided || fixed->publication != UINT32_MAX ||
+                    fixed->width > sizeof(u32)) continue;
+                ASSERT(reg_alloc->ValueType(Value{&inst}) == backend::RegAlloc::GPR);
+                if (reg_alloc->IsWidthChainCoalesced(inst.Id()) ||
+                    reg_alloc->ValueGPR(Value{&inst}).id != fixed->home) {
+                    // Wait until every ownership transaction has committed or
+                    // rolled back. No target location is queried during RA.
+                    reg_alloc->PlanFixedGPRDefinition(inst.Id(), {});
+                }
+            }
+        };
+        if (function) {
+            for (auto& hir_block : function->GetHIRBlocksRPO()) finalize(hir_block.GetBlock());
+        } else {
+            finalize(block);
+        }
+    }
+
+    [[nodiscard]] bool FixedConstraintConflict(Block* lir_block, u16 target,
+                                               u32 begin, u32 end) const {
+        for (auto& inst : lir_block->GetInstList()) {
+            if (reg_alloc->HasFixedGPRDefinition(inst.Id()) &&
+                reg_alloc->FixedGPRHomeIntersects(Value{&inst}, target, begin, end, inst.Id()))
+                return true;
+        }
+        return false;
+    }
+
     void RecipeFixedGPRAffinities() {
         if (!fixed_class) {
             return;
@@ -476,7 +593,14 @@ private:
                 const u32 end = read.Id() < use_end.size()
                         ? std::max<u32>(read.Id(), use_end[read.Id()])
                         : read.Id();
-                fixed_ranges[target].push_back({read.Id(), end});
+                if (const auto* fixed = reg_alloc->FixedGPRDefinitionAt(read.Id())) {
+                    fixed_ranges[fixed->home].push_back({read.Id(), fixed->end});
+                    if (fixed->transferred_home != UINT16_MAX)
+                        fixed_ranges[fixed->transferred_home].push_back(
+                                {fixed->transfer + 1, fixed->last_use});
+                } else {
+                    fixed_ranges[target].push_back({read.Id(), end});
+                }
                 ++fixed_affinity_reads;
                 ++fixed_copies_elided;
             }
@@ -503,13 +627,14 @@ private:
                     continue;
                 }
 
-                bool hazard = false;
+                bool hazard = FixedConstraintConflict(
+                        lir_block, static_cast<u16>(target), producer->Id(), store.Id());
                 for (auto& scan : list) {
                     if (scan.Id() < producer->Id() || scan.Id() >= store.Id()) {
                         continue;
                     }
                     if (&scan != producer &&
-                        (IsPinnedCoalesceObserver(scan.GetOp()) ||
+                        (IsPinnedCoalesceObserver(scan, features) ||
                          (scan.GetOp() == OpCode::GetHostGPR &&
                           scan.GetArg<Imm>(0).Get() == target) ||
                          (scan.GetOp() == OpCode::SetHostGPR &&
@@ -838,6 +963,9 @@ private:
                 // Publish the zext directly in the static target. It remains a
                 // valid capture for later SSA users because the scan above
                 // rejected every crossing write.
+                if (reg_alloc->HasFixedGPRDefinition(zext->Id()) ||
+                    FixedConstraintConflict(lir_block, static_cast<u16>(target),
+                                            zext->Id(), store->Id())) continue;
                 reg_alloc->MapRegister(zext->Id(), HostGPR{static_cast<u16>(target)});
 
                 auto producer = list.end();
@@ -916,7 +1044,10 @@ private:
                 for (auto scan = std::next(producer); scan != zext; ++scan) {
                     target_observed_before_store |= observes_host(*scan, target);
                 }
-                if (!target_observed_before_store) {
+                if (!target_observed_before_store &&
+                    !reg_alloc->HasFixedGPRDefinition(producer->Id()) &&
+                    !FixedConstraintConflict(lir_block, static_cast<u16>(target),
+                                             producer->Id(), store->Id())) {
                     reg_alloc->MapRegister(
                             producer->Id(), HostGPR{static_cast<u16>(target)});
                 }
@@ -990,7 +1121,7 @@ private:
                 nullptr,
                 [](void* context, Block* lir_block, Value value) {
                     return static_cast<LinearScanAllocator*>(context)
-                            ->ValueUsesStayInBlock(lir_block, value);
+                            ->CoalescingValueUsesStayInBlock(lir_block, value);
                 }};
         auto coalesce_block = [&](Block* lir_block) {
             auto use_end = CollectWidthChainUseEnds(lir_block, InstrCount());
@@ -1025,7 +1156,7 @@ private:
                 nullptr,
                 [](void* context, Block* lir_block, Value value) {
                     return static_cast<LinearScanAllocator*>(context)
-                            ->ValueUsesStayInBlock(lir_block, value);
+                            ->CoalescingValueUsesStayInBlock(lir_block, value);
                 }};
         auto coalesce_block = [&](Block* lir_block) {
             auto use_end = CollectGuestGPRUseEnds(lir_block, InstrCount());
@@ -1055,7 +1186,7 @@ private:
                 nullptr,
                 [](void* context, Block* lir_block, Value value) {
                     return static_cast<LinearScanAllocator*>(context)
-                            ->ValueUsesStayInBlock(lir_block, value);
+                            ->CoalescingValueUsesStayInBlock(lir_block, value);
                 }};
         auto coalesce_block = [&](Block* lir_block) {
             auto use_end = CollectGuestGPRUseEnds(lir_block, InstrCount());
@@ -1087,7 +1218,7 @@ private:
                 nullptr,
                 [](void* context, Block* lir_block, Value value) {
                     return static_cast<LinearScanAllocator*>(context)
-                            ->ValueUsesStayInBlock(lir_block, value);
+                            ->CoalescingValueUsesStayInBlock(lir_block, value);
                 }};
         const bool host_accesses = features.ra_coalesce &&
                 backend::X86PinExtLevel2Enabled(reg_alloc->GetGprs());
@@ -2063,6 +2194,7 @@ private:
             }
             auto& hir_value = *hir_value_ptr;
             auto instr = hir_value.value.Def();
+            if (MapPreallocatedGPR(hir_value.GetOrderId())) continue;
             auto start = hir_value.GetOrderId();
             u32 current_end{hir_value.GetOrderId()};
             if (auto it = actual_use_end.find(instr->Id()); it != actual_use_end.end()) {
@@ -2225,6 +2357,7 @@ private:
             }
             auto& hir_value = *hir_value_ptr;
             auto* instr = hir_value.value.Def();
+            if (MapPreallocatedGPR(hir_value.GetOrderId())) continue;
             auto start = hir_value.GetOrderId();
             const u32 current_end =
                     std::max<u32>(hir_value.GetOrderId(), actual_use_end[instr->Id()]);
@@ -2374,6 +2507,7 @@ private:
         perf_scan.Stop();
         PerfScope2 perf_values{GetPerfStats2().regalloc_live_values};
         for (auto& instr : lir_block->GetInstList()) {
+            if (instr.HasValue() && MapPreallocatedGPR(instr.Id())) continue;
             const bool host_reg_alias = instr.IsGetHostRegOperation();
             const auto host_index =
                     host_reg_alias ? static_cast<u16>(instr.GetArg<Imm>(0).Get()) : u16{};

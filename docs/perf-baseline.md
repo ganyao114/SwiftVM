@@ -883,3 +883,134 @@ else 路径就会拿到未落地的 `flags`。今天测下来 0/18 324，**是�
 `translator_alu.cpp`、`interpreter.cpp`、`decoder.cc`、`flags_elimination_pass.cpp`；
 插桩同样只在独立 worktree，主工作区无残留——`git grep -n "emitstat\|svm_rsb_prof"`
 应无输出。未 commit。）
+
+## 8. ARM64 pinned 区间查询（2026-10-07）
+
+`GuestStateMap::FixedHomeSurvives` 原来每次都遍历整个 IR 块，transfer 的
+准备和发射还会重复证明。现在完成三次成功的完整扫描后，后续查询才按需
+建立寄存器改写位置索引，并用 `upper_bound` 查询开区间。短块和空区间跳过
+索引，提前拒绝不累计成功扫描次数。换块或改变 helper ABI 时清空索引；partial write、
+`XchgBarrier` 和 helper 的精确 clobber 规则保持一致。
+transfer 的临时别名工作队列改用容量 8 的 `StackVector`，长链可以溢出到堆。
+
+基线为 `e1e5e03`，macOS ARM64 Release（`-O3 -DNDEBUG`）。微基准包含
+每轮的 `Analyze`、查询、索引创建和清理，IR 构造不计时；预热后交替执行
+5 组 before/after，表中为各自中位数。块里每隔 64 条指令写一次 x20，
+其余为 Nop，查询 x23；提前拒绝场景另在 ID 1 写 x23。
+
+| 场景 | 基线 μs/块 | 优化后 μs/块 |
+|---|---:|---:|
+| 32 条 IR，4 次成功查询 | 0.7832 | 0.7758 |
+| 4096 条 IR，1 次成功查询 | 24.1725 | 24.0375 |
+| 4096 条 IR，128 次成功查询 | 3173.9301 | 98.0977 |
+| 4096 条 IR，128 次提前拒绝 | 1.8999 | 2.0000 |
+
+密集查询场景约快 **32.35 倍**；提前拒绝场景有约 0.10 μs/块的分支开销。
+这些数字限定于编译分析。完整程序对照期间，多个中间版本的 translate /
+codegen 耗时出现约 1–30% 的增加，未改动的解码阶段也有同方向变化。
+共享主机负载和调度波动较大；补做 `taskpolicy -b` 的 8 组对照，codegen
+总中位数下降而逐组比值的中位数上升，仍不足以判断整体收益或排除回归。
+这些整体计时没有通过性能验收。原始样本和复现程序保存在
+`/tmp/swiftvm-pinned-optimization-20261007/`，其中 `guest-samples.json` /
+`guest-background-samples.json` 对应最终 SHR 位提取优化之前的中间版本。
+
+验证包括 465 个 native 用例、1,261,214 次断言；pin level 0/3 的区间
+oracle、partial write/helper ABI/换块清理，以及长别名链的发码等价检查。
+func_tests 的 231 个编译单元指纹和 checksum 一致，CoreMark 计算 CRC 一致。
+CoreMark 打印运行时间会改变 `__printf_fp_buffer_1.isra.0` 内的执行路径，
+其余 281 个编译单元指纹一致，均无 function 到 block 的回退。
+
+回归过程中另外发现既有 SHR OF 错误，种子为 `6553530653582419201`：
+`xor r12d,eax; shl bh,cl; shr r12d,1` 在原值最高位为 1 时，旧二进制
+会返回 OF=0。OF 仅在 count=1 时有定义，此时原最高位正是结果的次高位。
+现在直接从结果恢复它，让 pinned 源寄存器可以安全复用，并避免原值快照和
+额外临时值；count=0 路径保留原有工作量，没有增加 IR 指令或 helper 调用。
+固定输入回归和原失败种子均通过，immediate fast path 开关两种设置均通过。
+
+## 9. ARM64 pinned 分配职责拆分（2026-10-07）
+
+本轮对照基线是 §8 完成后的工作区二进制，而不是 `e1e5e03`，因此两侧均包含
+SHR OF 修复。`PinnedGPRAllocation` 提取六类 publication/transfer 分析和窄
+读取规划；定义位置、publication 后 residence、显式 use home 由 allocation
+plan 管理。`GuestStateMap` 只提供版本、宽度和观察点事实。
+完整架构边界见 `fex-mechanism-gap-optimization-recipe-2026-08-29.md` §7.6。
+
+位置查询传入实际 consumer；spill forwarding 在 `TickIR` 之前也不能使用上一次
+instruction 的位置。Select 先选择位置再物化 spill，去掉 eager fallback reload。
+普通 spill 的物理加载使用 X 寄存器，消费时仍按选定的 W/X 视图转换。load-update
+和 pinned memory 匹配改用只读 allocation 查询，不在匹配失败时发射 reload。
+
+最终验证：
+
+- macOS ARM64 Release 串行构建通过。
+- 默认配置的完整 native suite：468 个用例、1,261,225 次断言通过
+  （`SVM_AVX/BMI/XSAVE/FSGSBASE/ADX=1`）。
+- 完整 codegen suite：28 个用例、12,164 次断言通过，包含 transfer 生效区间、
+  换块清理、Select 命中 pinned 时不 reload，以及普通 U32 spill 的 W 视图。
+- pin level 0/3 的本次 pinned 定向矩阵均为 14 个用例、61 次断言通过。
+  全量 golden 并非 pin level 0 通用矩阵：强制 level 0 后，既有 coalescing/
+  low32 用例有 8 个 case、13 个断言失败；重构前的保存二进制得到相同失败。
+  这些默认配置预期在本轮没有修改，不计为 pin level 0 全量验收通过。
+- func_tests 所有 231 条编译记录（保留重复 PC 的记录）和完整 stdout 一致，
+  checksum 为 `9f52b7d59285dbe5`；代码由 266,932 减至 266,916 字节。
+- CoreMark 使用 `200000` 次迭代，通过运行时间 guard 和全部 CRC 校验。
+  排除 `__printf_fp_buffer_1.isra.0` 的浮点运行时间打印路径后，281 条编译记录
+  一致；代码由 360,568 减至 360,544 字节。两侧均无 function → block 回退。
+- 上述真实 guest 对照中，没有单个编译记录的代码量增长；记录证明结果和
+  发码量保持，不构成吞吐率或整体编译时间的性能验收。
+
+基线二进制、串行构建日志、完整测试日志和对照脚本保存在
+`/tmp/swiftvm-pinned-refactor-20261007/`；最终逐条对照为
+`guest-compare-full.json`，该文件没有按 PC 去重。
+
+## 10. ARM64 固定 GPR 前置规划与位置统一（2026-10-07）
+
+基线为 §9 完成后的工作区二进制。分段 transfer 在普通活跃区间收集前规划：
+publication 指令仍读 source，之后的内存 consumer 读 target，完整 BitCast 别名
+共享这条约束；capture 不再参与普通寄存器分配。定义位置、逐 consumer residence、
+low view、架构副本和 spill reload 描述统一进入 `RegAlloc`，宽度事实使用公共类型。
+SSA 位置查询与 operand 副本选择使用不同视图；查询本身不发码。
+
+单位置规划涵盖无 flags、存在数据 consumer 的精确 U32 ALU 输入、窄 store 值，
+以及与 full-width publication 紧邻的 LoadImm/LoadMemory/Add/Sub/And 输出。
+收集完区间后先计算 GPR 峰值；只有当前 reserve 下全部值能容纳时才移除这些
+区间。高压力单元保留原有 spill eviction / pending-write forwarding 的选择。
+flags-only/带 flags 的输入和扩展链留给既有 target lowering / width coalescing；
+完成的 width transaction 可接管早期窄读取约束。各路径均保留 fault/helper、
+partial write、跨块、terminal 和内部控制流约束，并独立检查分配后的物理 writer。
+
+验收中曾发现两类成本回退，最终版本已排除：直接预绑定窄读取会改变便宜 spill
+victim 的选择，使 CoreMark main 新增实际 load/store；flags 比较输入的位置变化也
+会新增低 32 位提取。压力和 flags 成本门槛保留原有选择。另修正 publication 复核
+中对不相关 SSA 值 eager 计算 last-use 的整块扫描：现在先筛选物理家，再扫描。
+宽计算结果以 8/16 位发布时不得直接 W 写 guest 家；窄 capture 被当作更宽 SSA
+视图使用时仍需保留物理 W capture，不能假设固定 X 寄存器的高位为零。
+
+最终验证：
+
+- macOS ARM64 Release，所有构建、测试和 guest 对照串行执行。
+- 完整 native suite：481 个用例、1,261,354 次断言通过
+  （`SVM_AVX/BMI/XSAVE/FSGSBASE/ADX=1`）。
+- 完整 codegen suite：41 个用例、12,273 次断言通过。
+- 本轮 `[fixed-gpr]` 矩阵：pin level 0 为 13 个用例、107 次断言；
+  level 3 为 13 个用例、109 次断言，均通过。level 0 检查关闭 caller pin
+  coalescing 后的普通结果位置，不将其作为默认 golden 的全量验收。
+- 六个普通值位置、正常 scratch reserve 的压力用例：spill 定义由 **6 减至 5**；
+  source 在 publication 前位于 x20，publication 后的地址位于 x23。另有针对单位置
+  候选的高压力对照，完整 mapping / dirty mask 与旧分配选择一致。
+- func_tests 的全部 231 条编译记录指纹（保留重复 PC）和完整 stdout 一致，
+  checksum `9f52b7d59285dbe5`，代码量 **266,916 → 266,916 字节**。
+- CoreMark 200000 次迭代通过运行时间 guard 和全部 CRC；排除浮点运行时间打印
+  路径 `0x4658a0..0x467930` 后，281 条编译记录一致，代码量
+  **360,544 → 360,544 字节**。两侧均无 function → block 回退，单个记录均未增长。
+
+上述数据验证分配压力、正确性和发码量，不构成整体吞吐率或编译速度验收。
+最终一组 func_tests 的 translate / regalloc / codegen 时间分别为
+192.960 / 95.435 / 41.052 ms（before）与 205.447 / 106.841 / 42.883 ms（after）。
+新增前置分析和物理 writer 验证仍有编译成本；这是共享主机的一组诊断数据，
+不能据此宣称整体性能提升或排除编译耗时回归。
+
+基线二进制、原始日志和复现脚本位于 `/tmp/swiftvm-pinned-regalloc-20261007/`，
+逐条对照结果为 `guest-compare-full.json`，压力数据为 `pressure-verified.log`。
+`SVM_SKIP_PREP=fixedgpr/fixedreads/fixedresults/fixedtransfers` 可用于隔离本轮规划成本，
+不改变既有后置 target recipe 的实验开关。

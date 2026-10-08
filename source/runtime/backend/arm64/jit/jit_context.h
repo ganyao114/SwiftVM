@@ -26,6 +26,8 @@ namespace swift::runtime::backend::arm64 {
 
 using namespace vixl::aarch64;
 
+class PinnedGPRAllocation;
+
 struct NoneReg {};
 using CPUReg = boost::variant<NoneReg, Register, VRegister>;
 
@@ -116,6 +118,20 @@ public:
         }
         return static_cast<u8>(reg_alloc.ValueGPR(value).id);
     }
+    [[nodiscard]] RegAlloc& GetAllocation() { return reg_alloc; }
+    // Select the use location before materializing it. A pinned hit must never
+    // evaluate the spill fallback or lease an otherwise unnecessary scratch.
+    [[nodiscard]] Register UseGPR(const ir::Value& value, const ir::Inst* consumer,
+                                   const PinnedGPRAllocation& placement);
+    [[nodiscard]] std::optional<Register> PinnedGPRUse(
+            ir::Value value, const ir::Inst* consumer,
+            const PinnedGPRAllocation& placement) const;
+    [[nodiscard]] std::optional<WRegister> PinnedWUse(
+            ir::Value value, const ir::Inst* consumer,
+            const PinnedGPRAllocation& placement) const;
+    [[nodiscard]] std::optional<XRegister> PinnedValueGPR(
+            ir::Value value, const ir::Inst* consumer,
+            const PinnedGPRAllocation& placement) const;
     [[nodiscard]] Register R(const ir::Value& value, bool auto_cast = false);
     [[nodiscard]] Register RForWrite(const ir::Value& value);
     [[nodiscard]] XRegister X(const ir::Value& value);

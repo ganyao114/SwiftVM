@@ -38,12 +38,12 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
                     return false;
                 }
             }
-            return !ResolvePinnedGPRValue(address).has_value();
+            return !context.PinnedValueGPR(address, inst, pinned_gprs).has_value();
         }
 
         const auto side_reads = [&](const ir::DataClass& side) {
             return side.IsValue() && side.value.Id() == *pending &&
-                   !ResolvePinnedGPRValue(side.value).has_value();
+                   !context.PinnedValueGPR(side.value, inst, pinned_gprs).has_value();
         };
         return side_reads(operand.GetLeft()) ||
                side_reads(operand.GetRight());
@@ -53,9 +53,9 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
         case ir::OpCode::LoadMemory: {
             const auto result = ir::Value{inst};
             if ((context.IsSpilled(result) &&
-                 !ResolvePinnedGPRValue(result) &&
+                 !context.PinnedValueGPR(result, inst, pinned_gprs) &&
                  context.HasSpillReloadAtDefinition(inst)) ||
-                pinned_gprs.pinned_load_updates.contains(inst)) {
+                pinned_load_updates.contains(inst)) {
                 return std::nullopt;
             }
             const auto operand = inst->GetArg<ir::Operand>(0);
@@ -78,13 +78,13 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
             }
             const u32 width = ir::GetValueSizeByte(value.Type());
             if (width <= sizeof(u32)) {
-                const auto residence = guest_state_map.FixedHomeForUse(
+                const auto residence = pinned_gprs.FixedHomeForUse(
                         value, inst);
                 if (CanUseZeroStoreRegister(value) ||
                     (residence && residence->width == width) ||
                     (value.Def() &&
                      (memory_state.pinned_memory_values.contains(value.Def()) ||
-                      pinned_gprs.fused_pin_gpr_reads.contains(value.Def())))) {
+                      pinned_gprs.HasLowView(value.Def())))) {
                     return std::nullopt;
                 }
             }

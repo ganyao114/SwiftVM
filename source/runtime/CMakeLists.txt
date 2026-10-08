@@ -141,6 +141,8 @@ add_library(swift_runtime STATIC
         backend/host_isa.h
         backend/mem_map.cpp
         backend/mem_map.h
+        backend/reg_alloc_gpr_locations.cpp
+        backend/gpr_value_facts.h
         backend/reg_alloc.cpp
         backend/reg_alloc.h
         backend/jit_code.h
@@ -156,6 +158,12 @@ add_library(swift_runtime STATIC
         backend/arm64/jit/function_code_object_emitter.h
         backend/arm64/jit/div128_narrowing_analysis.cpp
         backend/arm64/jit/div128_narrowing_analysis.h
+        backend/arm64/alloc/pinned_gpr_narrow_read.cpp
+        backend/arm64/alloc/fixed_gpr_constraints.cpp
+        backend/arm64/alloc/fixed_gpr_constraints.h
+        backend/arm64/alloc/pinned_gpr_allocation.cpp
+        backend/arm64/alloc/pinned_gpr_allocation.h
+        backend/arm64/alloc/pinned_gpr_spilled_publication.cpp
         backend/arm64/jit/guest_state_map.cpp
         backend/arm64/jit/guest_state_map_cfg.cpp
         backend/arm64/jit/guest_state_map_fault.cpp
@@ -191,13 +199,13 @@ add_library(swift_runtime STATIC
         backend/arm64/jit/translator_narrow_flags_input.cpp
         backend/arm64/jit/translator_narrow_compare.cpp
         backend/arm64/jit/translator_narrow_carry.cpp
-        backend/arm64/jit/translator_dead_gpr_write.cpp
-        backend/arm64/jit/translator_pinned_gpr_copy.cpp
-        backend/arm64/jit/translator_pinned_gpr_transfer.cpp
-        backend/arm64/jit/translator_pinned_gpr_publication.cpp
+        backend/arm64/alloc/pinned_gpr_dead_write.cpp
+        backend/arm64/alloc/pinned_gpr_copy.cpp
+        backend/arm64/alloc/pinned_gpr_transfer.cpp
+        backend/arm64/alloc/pinned_gpr_publication.cpp
         backend/arm64/jit/translator_spilled_gpr_publication.cpp
         backend/arm64/jit/translator_spilled_memory.cpp
-        backend/arm64/jit/translator_pinned_select.cpp
+        backend/arm64/alloc/pinned_gpr_select.cpp
         backend/arm64/jit/translator_pinned_load_update.cpp
         backend/arm64/jit/translator_pinned_memory.cpp
         backend/arm64/jit/translator_narrow_extract.cpp

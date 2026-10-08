@@ -78,8 +78,8 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
         __ Adc(result.W(), value.W(), Operand{wzr});
         return;
     }
-    if (auto update = pinned_gprs.pinned_load_update_instructions.find(inst);
-        update != pinned_gprs.pinned_load_update_instructions.end() &&
+    if (auto update = pinned_load_update_instructions.find(inst);
+        update != pinned_load_update_instructions.end() &&
         inst == update->second.update) {
         const auto reproved = MatchPinnedLoadUpdate(inst);
         ASSERT_MSG(reproved && *reproved == update->second,
@@ -93,7 +93,7 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
     const bool narrow_nzcv = ir::GetValueSizeByte(inst->ReturnType()) <= 2 &&
                              True(pseudo_flags.set & ir::Flags::NZCV);
     auto pinned = [&](ir::Value value) -> std::optional<Register> {
-        return ResolvePinnedGPRUse(value, inst);
+        return context.PinnedGPRUse(value, inst, pinned_gprs);
     };
     auto right_pinned = right.GetLeft().IsValue()
             ? pinned(right.GetLeft().value)
@@ -217,7 +217,7 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
         auto pseudo_flags = GetPseudoFlags(inst);
         pseudo_flags.set = ir::Flags::Carry;
         const auto result = FlagsResultRegister(inst, pseudo_flags);
-        const auto pinned = ResolvePinnedGPRWUse(candidate->second.left, inst);
+        const auto pinned = context.PinnedWUse(candidate->second.left, inst, pinned_gprs);
         const auto left = pinned ? *pinned : context.W(candidate->second.left);
         if (!pseudo_flags.branch_only) {
             BeginFlagsTokenProducer(pseudo_flags);
@@ -236,7 +236,7 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
         return;
     }
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
-        return ResolvePinnedGPRWUse(value, inst);
+        return context.PinnedWUse(value, inst, pinned_gprs);
     };
     if (flag_state.dead_narrow_immediate_branch &&
         flag_state.dead_narrow_immediate_branch->producer == inst) {
@@ -616,7 +616,7 @@ void JitTranslator::EmitAnd(ir::Inst* inst) {
     }
     auto right = inst->GetArg<ir::Operand>(1);
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
-        return ResolvePinnedGPRWUse(value, inst);
+        return context.PinnedWUse(value, inst, pinned_gprs);
     };
     auto right_pinned = right.GetLeft().IsValue()
             ? pinned_w(right.GetLeft().value)
@@ -703,7 +703,7 @@ void JitTranslator::EmitOr(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
-        return ResolvePinnedGPRWUse(value, inst);
+        return context.PinnedWUse(value, inst, pinned_gprs);
     };
     auto pseudo_flags = GetPseudoFlags(inst);
     if (!pseudo_flags.Null() && inst->GetUses() == 0 && right.IsImm() &&
@@ -777,7 +777,7 @@ void JitTranslator::EmitXor(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
-        return ResolvePinnedGPRWUse(value, inst);
+        return context.PinnedWUse(value, inst, pinned_gprs);
     };
     auto right_pinned = right.GetLeft().IsValue()
             ? pinned_w(right.GetLeft().value)
@@ -978,7 +978,7 @@ void JitTranslator::EmitLoadImm(ir::Inst* inst) {
     if (CanUseZeroStoreRegister(ir::Value{inst})) {
         return;
     }
-    const auto pinned = ResolvePinnedGPRValue(ir::Value{inst});
+    const auto pinned = context.PinnedValueGPR(ir::Value{inst}, cur_instr, pinned_gprs);
     auto result = pinned
             ? (ir::GetValueSizeByte(inst->ReturnType()) > sizeof(u32)
                        ? Register{*pinned}
@@ -1121,10 +1121,9 @@ void JitTranslator::EmitMul(ir::Inst* inst) {
     auto right = inst->GetArg<ir::Operand>(1);
     auto type = left.Type();
     auto result = context.R(ir::Value{inst});
-    auto pinned = left.Def() ? pinned_gprs.fused_pin_gpr_reads.find(left.Def())
-                             : pinned_gprs.fused_pin_gpr_reads.end();
-    Register left_register = pinned != pinned_gprs.fused_pin_gpr_reads.end()
-            ? Register{WRegister(pinned->second)}
+    const auto pinned = pinned_gprs.LowViewHome(left.Def());
+    Register left_register = pinned
+            ? Register{WRegister(*pinned)}
             : context.R(left, true);
     auto pseudo_flags = GetPseudoFlags(inst);
     auto right_operand = EmitOperand(right);

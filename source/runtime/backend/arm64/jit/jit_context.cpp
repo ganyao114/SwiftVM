@@ -4,6 +4,7 @@
 //
 
 #include "jit_context.h"
+#include "runtime/backend/arm64/alloc/pinned_gpr_allocation.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -366,17 +367,51 @@ CPUReg JitContext::Get(const ir::Value& value) {
         case RegAlloc::GPR:
             return X(value);
         case RegAlloc::FPR:
+            // BitCast may expose an integer view of a physical FPR.
             return V(value);
         case RegAlloc::MEM:
-            // Spilled value: reload from (or def-scratch for) its slot.
-            if (IsFloatValue(value)) {
-                return SpillFPR(value);
-            }
-            return SpillGPR(value);
+            return IsFloatValue(value) ? CPUReg{SpillFPR(value)} : CPUReg{X(value)};
         default:
             ASSERT_MSG(false, "value has no register allocation");
     }
     return {};
+}
+
+std::optional<Register> JitContext::PinnedGPRUse(
+        ir::Value value, const ir::Inst* consumer,
+        const PinnedGPRAllocation& placement) const {
+    const auto location = placement.UseLocation(value, consumer);
+    if (!location.pinned) return std::nullopt;
+    return Register{location.slot, location.bits};
+}
+
+std::optional<WRegister> JitContext::PinnedWUse(
+        ir::Value value, const ir::Inst* consumer,
+        const PinnedGPRAllocation& placement) const {
+    const auto location = placement.UseLocation(value, consumer,
+                                                 PinnedGPRAllocation::View::Low32);
+    return location.pinned ? std::optional<WRegister>{WRegister{location.slot}}
+                           : std::nullopt;
+}
+
+std::optional<XRegister> JitContext::PinnedValueGPR(
+        ir::Value value, const ir::Inst* consumer,
+        const PinnedGPRAllocation& placement) const {
+    // A negative override probe needs no base allocation lookup. The caller
+    // materializes the ordinary SSA location only when this returns empty.
+    const auto home = placement.ValueHome(value, consumer);
+    return home ? std::optional<XRegister>{XRegister{*home}} : std::nullopt;
+}
+
+Register JitContext::UseGPR(const ir::Value& value, const ir::Inst* consumer,
+                            const PinnedGPRAllocation& placement) {
+    const auto location = placement.UseLocation(value, consumer);
+    if (location.kind == RegAlloc::MEM) {
+        const auto reloaded = SpillGPR(value);
+        return Register{reloaded.GetCode(), location.bits};
+    }
+    ASSERT_MSG(location.kind == RegAlloc::GPR, "value has no GPR allocation");
+    return Register{location.slot, location.bits};
 }
 
 Register JitContext::R(const ir::Value& value, bool auto_cast) {
@@ -402,26 +437,31 @@ Register JitContext::R(const ir::Value& value, bool auto_cast) {
 }
 
 Register JitContext::RForWrite(const ir::Value& value) {
-    if (reg_alloc.ValueType(value) == RegAlloc::MEM) {
-        return SpillGPR(value, true);
-    }
-    return R(value);
+    const auto location = reg_alloc.GPRLocationAt(
+            value, cur_inst ? cur_inst->Id() : UINT32_MAX, RegAlloc::GPRView::WholeValue);
+    if (location.kind == RegAlloc::MEM) return SpillGPR(value, true);
+    ASSERT(location.kind == RegAlloc::GPR);
+    return Register{location.slot, value.Type() == ir::ValueType::U64 ? 64u : 32u};
 }
 
 XRegister JitContext::X(const ir::Value& value) {
-    if (reg_alloc.ValueType(value) == RegAlloc::MEM) {
+    const auto location = reg_alloc.GPRLocationAt(
+            value, cur_inst ? cur_inst->Id() : UINT32_MAX, RegAlloc::GPRView::WholeValue);
+    if (location.kind == RegAlloc::MEM) {
         return XRegister(SpillGPR(value).GetCode());
     }
-    auto reg = reg_alloc.ValueGPR(value);
-    return XRegister(reg.id);
+    ASSERT(location.kind == RegAlloc::GPR);
+    return XRegister(location.slot);
 }
 
 WRegister JitContext::W(const ir::Value& value) {
-    if (reg_alloc.ValueType(value) == RegAlloc::MEM) {
+    const auto location = reg_alloc.GPRLocationAt(
+            value, cur_inst ? cur_inst->Id() : UINT32_MAX, RegAlloc::GPRView::WholeValue);
+    if (location.kind == RegAlloc::MEM) {
         return WRegister(SpillGPR(value).GetCode());
     }
-    auto reg = reg_alloc.ValueGPR(value);
-    return WRegister(reg.id);
+    ASSERT(location.kind == RegAlloc::GPR);
+    return WRegister(location.slot);
 }
 
 VRegister JitContext::V(const ir::Value& value) {

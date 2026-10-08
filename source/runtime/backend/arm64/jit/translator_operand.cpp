@@ -310,12 +310,12 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                 }
             }
             if (memory_state.use_memory_base) {
-                auto pinned = ResolvePinnedGPRValue(addr_value);
+                auto pinned = context.PinnedValueGPR(addr_value, cur_instr, pinned_gprs);
                 return BiasMem(pinned ? Register{*pinned}
                                       : context.R(addr_value),
                                atomic);
             }
-            auto pinned = ResolvePinnedGPRValue(addr_value);
+            auto pinned = context.PinnedValueGPR(addr_value, cur_instr, pinned_gprs);
             return MemOperand{pinned ? Register{*pinned}
                                      : context.R(addr_value)};
         }
@@ -329,7 +329,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             left_reg = tmp;
         } else {
             auto left = ir_op.GetLeft().value;
-            auto pinned = ResolvePinnedGPRValue(left);
+            auto pinned = context.PinnedValueGPR(left, cur_instr, pinned_gprs);
             left_reg = pinned ? Register{*pinned} : context.R(left, true);
         }
         auto right = ir_op.GetRight();
@@ -392,7 +392,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                 }
             }
         } else {
-            auto pinned = ResolvePinnedGPRValue(right.value);
+            auto pinned = context.PinnedValueGPR(right.value, cur_instr, pinned_gprs);
             auto right_reg = pinned ? Register{*pinned}
                                     : context.R(right.value, true);
             if (ir_op.GetOp() == ir::OperandOp::Plus) {
