@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include "helpers.h"
 #include "runtime/backend/interrupt_request.h"
+#include "runtime/backend/single_instruction_control_flow.h"
 #include "x87_helper.h"
 #include "runtime/common/variant_util.h"
 #include "runtime/common/crc32.h"
@@ -304,6 +305,8 @@ Translator::Translator(PreparedTag, ir::Block* block, HostFeatures requested, co
     if (execution_mode == ExecutionMode::SingleInstruction) {
         if (function_plan)
             throw std::runtime_error("x64 single instruction cannot use a FunctionPlan");
+        if (!SingleInstructionControlFlowValid(*block))
+            throw std::runtime_error("x64 single instruction requires finite control flow and dominating definitions");
         for (const auto& inst : block->GetInstList())
             if (inst.GetOp() == O::AdvancePC)
                 throw std::runtime_error("x64 single instruction cannot contain AdvancePC");

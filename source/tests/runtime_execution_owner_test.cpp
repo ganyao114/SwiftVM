@@ -74,6 +74,16 @@ StateSnapshot Capture(Runtime& runtime) {
     std::memcpy(result.profile.data(), runtime.GetState()->interface, result.profile.size());
     return result;
 }
+StateSnapshot AfterSmcBoundary(StateSnapshot before, bool closes_window) {
+    // A capable Step closes an already pending SMC window before fresh decode,
+    // even if that decoder rejects the unit. Check the exact acknowledgment
+    // while retaining the byte comparison for every other State/profile field.
+    if (closes_window) {
+        const u64 acknowledged = 0;
+        std::memcpy(before.state.data() + offsetof(backend::State, exit_request), &acknowledged, sizeof(acknowledged));
+    }
+    return before;
+}
 void Put(Runtime& runtime, u32 offset, u64 value) {
     std::memcpy(runtime.GetUniformBuffer().data() + offset, &value, 8);
 }
@@ -231,7 +241,7 @@ void CheckRequest(const NestedRequest& request, void* bias, u64 mask) {
 }
 }
 
-TEST_CASE("Runtime Step missing capability or unsupported fresh decode preserves state and publication", "[runtime][step][ownership]") {
+TEST_CASE("Runtime Step refusal preserves architectural state and publication across SMC acknowledgment", "[runtime][step][ownership]") {
     REQUIRE(static_cast<u32>(HaltReason::Unsupported) == 0x200);
     REQUIRE(static_cast<u32>(HaltReason::EntryRejected) == 0x400);
     for (bool native : {false, true}) for (bool service : {false, true})
@@ -250,10 +260,10 @@ TEST_CASE("Runtime Step missing capability or unsupported fresh decode preserves
             const auto before = Capture(runtime);
             const auto decodes = probe.decodes.load();
             REQUIRE(runtime.Step() == HaltReason::Unsupported);
-            REQUIRE(Capture(runtime) == before);
+            REQUIRE(Capture(runtime) == AfterSmcBoundary(before, service && has_memory && space.ExitLatchEnabled()));
             REQUIRE(runtime.GetLocation() == start_pc);
             REQUIRE(probe.NoMemoryAccess());
-            REQUIRE(probe.decodes.load() == decodes + unsigned(native && service && has_memory));
+            REQUIRE(probe.decodes.load() == decodes + unsigned(service && has_memory));
             REQUIRE(backend::IsEmpty(module->GetNode(ir::Location{start_pc})));
             REQUIRE(space.GetCodeCache(ir::Location{start_pc}) == nullptr);
             REQUIRE_FALSE(backend::RuntimeExecutionActiveOnCurrentThread());
@@ -273,7 +283,7 @@ TEST_CASE("Runtime Step missing capability or unsupported fresh decode preserves
         REQUIRE(Capture(runtime) == before);
         REQUIRE(space.GetCodeCache(ir::Location{start_pc}) == cache);
         REQUIRE(probe.NoMemoryAccess());
-        REQUIRE(probe.decodes.load() == decodes + unsigned(native && service && has_memory));
+        REQUIRE(probe.decodes.load() == decodes + unsigned(service && has_memory));
         REQUIRE(runtime.Run() == HaltReason::CallHost);
         REQUIRE(Get(runtime, 8) == helper_value);
     }
@@ -301,9 +311,9 @@ TEST_CASE("Runtime Step observes sticky Signal without consuming state or fetchi
         REQUIRE(runtime.GetState()->halt_reason == HaltReason::None);
         const auto cleared = Capture(runtime);
         REQUIRE(runtime.Step() == HaltReason::Unsupported);
-        REQUIRE(Capture(runtime) == cleared);
+        REQUIRE(Capture(runtime) == AfterSmcBoundary(cleared, service && space.ExitLatchEnabled()));
         REQUIRE(probe.NoMemoryAccess());
-        REQUIRE(probe.decodes.load() == unsigned(native && service));
+        REQUIRE(probe.decodes.load() == unsigned(service));
     }
 }
 
@@ -356,15 +366,13 @@ TEST_CASE("Runtime native and interpreter helpers reject recursive and nested Ru
             REQUIRE(core_b_probe.reads.load() == 0);
             REQUIRE(core_b_probe.pointers.load() == 0);
             REQUIRE(other.Step() == HaltReason::Unsupported);
-            REQUIRE(probe.decodes.load() == decodes + unsigned(native));
+            REQUIRE(probe.decodes.load() == decodes + 1);
             REQUIRE(other.Run() == HaltReason::CodeMiss);
             REQUIRE(core_a->Step() == swift::translator::ExitReason::Unsupported);
             REQUIRE(core_same_instance->Step() == swift::translator::ExitReason::Unsupported);
             REQUIRE(core_other_instance->Step() == swift::translator::ExitReason::Unsupported);
-            REQUIRE(core_a_probe.fetches.load() == core_a_fetches +
-                2 * unsigned(arm_a->GetAddressSpace()->GetConfig().enable_jit));
-            REQUIRE(core_b_probe.fetches.load() == core_b_fetches +
-                unsigned(arm_b->GetAddressSpace()->GetConfig().enable_jit));
+            REQUIRE(core_a_probe.fetches.load() == core_a_fetches + 2);
+            REQUIRE(core_b_probe.fetches.load() == core_b_fetches + 1);
         }
         REQUIRE(request.calls.load() == 2);
         REQUIRE(backend::GuestMemoryScope::Current().bias == 0);

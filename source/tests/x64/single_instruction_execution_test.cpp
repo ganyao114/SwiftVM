@@ -10,6 +10,7 @@
 #include <xmmintrin.h>
 #include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/interrupt_request.h"
+#include "runtime/backend/interp/interpreter.h"
 #include "runtime/backend/riscv64/memory_protocol.h"
 #include "runtime/backend/x64/translator.h"
 #include "runtime/frontend/arm64/arm64_frontend.h"
@@ -248,6 +249,7 @@ void Check(Program& program, bool cache, const Context& initial, const Context& 
     REQUIRE(machine.state->spill_area[backend::kRiscvRecoveryPcSlot] == (entry_stopped ? recovery_pc_sentinel : 0));
     REQUIRE(machine.state->spill_area[backend::kRiscvRecoveryFrameSlot] == (entry_stopped ? recovery_frame_sentinel : 0));
     if (entry_stopped) REQUIRE(machine.state->prev_loc == ir::Location{0xBEEF0000});
+    else REQUIRE(machine.state->prev_loc == program.block.GetStartLocation());
     REQUIRE(machine.state->spill_area[backend::kRiscvMemoryOwnedSlot] == 0);
     REQUIRE(backend::riscv64::anonymous_memory_readers.load() == readers);
     REQUIRE(std::atomic_ref<u64>(machine.state->exit_request).load(std::memory_order_acquire) ==
@@ -481,6 +483,52 @@ TEST_CASE("single native constructor rejects multi instruction and hidden dispat
         hidden.block.SetTerminal(ir::terminal::CheckHalt{ir::terminal::Condition{
             ir::Cond::EQ, ir::terminal::LinkBlock{ir::Location{pc + 4}}, selection}});
         REQUIRE_THROWS_AS((x64::Translator{&hidden.block, {}, nullptr, nullptr, cache, x64::ExecutionMode::SingleInstruction}), std::runtime_error);
+    }
+}
+
+TEST_CASE("single engines require definitions on every local branch path", "[x64][single-native][admission]") {
+    for (bool cache : {false, true}) for (bool dominates : {false, true}) for (unsigned consumer = 0; consumer < 4; ++consumer) {
+        CAPTURE(cache, dominates, consumer);
+        ir::Block block{ir::Location{pc}}; ir::Assembler as{&block};
+        auto condition = as.LoadImm(ir::Imm{u8{1}}).SetType(T::U8);
+        ir::Value source;
+        if (dominates) source = as.LoadImm(ir::Imm{u64{0x55}}).SetType(T::U64);
+        auto jump = as.Goto(ir::BOOL{condition});
+        if (!dominates) source = as.LoadImm(ir::Imm{u64{0x55}}).SetType(T::U64);
+        as.BindLabel(jump);
+        if (consumer == 0) as.StoreUniform(ir::Uniform{0, T::U64}, source);
+        else if (consumer == 1) {
+            block.SetTerminal(ir::terminal::If{source, ir::terminal::LinkBlock{ir::Location{pc + 4}},
+                ir::terminal::LinkBlock{ir::Location{pc + 8}}});
+        } else if (consumer == 2) as.SetLocation(ir::Lambda{source});
+        else {
+            auto lhs = as.LoadImm(ir::Imm{u64{3}}).SetType(T::U64);
+            auto result = as.Add(lhs, ir::Operand{source}).SetType(T::U64);
+            as.StoreUniform(ir::Uniform{0, T::U64}, result);
+        }
+        if (!block.HasTerminal()) block.SetTerminal(ir::terminal::LinkBlock{ir::Location{pc + 4}});
+        REQUIRE(backend::interp::Interpreter::ValidateSingle(block, sizeof(Context)) == dominates);
+        if (dominates) {
+            x64::Translator translator{&block, {}, nullptr, nullptr, cache, x64::ExecutionMode::SingleInstruction};
+            REQUIRE_NOTHROW(translator.Translate());
+        } else {
+            REQUIRE_THROWS_AS((x64::Translator{&block, {}, nullptr, nullptr, cache,
+                x64::ExecutionMode::SingleInstruction}), std::runtime_error);
+        }
+    }
+}
+
+TEST_CASE("single engines reject branch tokens used as computed data", "[x64][single-native][admission]") {
+    for (bool cache : {false, true}) for (bool inverse : {false, true}) {
+        ir::Block block{ir::Location{pc}}; ir::Assembler as{&block};
+        auto condition = as.LoadImm(ir::Imm{u8{1}}).SetType(T::U8);
+        auto jump = (inverse ? as.NotGoto(ir::BOOL{condition}) : as.Goto(ir::BOOL{condition})).SetType(T::U64);
+        as.BindLabel(jump);
+        as.StoreUniform(ir::Uniform{0, T::U64}, jump);
+        block.SetTerminal(ir::terminal::LinkBlock{ir::Location{pc + 4}});
+        REQUIRE_FALSE(backend::interp::Interpreter::ValidateSingle(block, sizeof(Context)));
+        REQUIRE_THROWS_AS((x64::Translator{&block, {}, nullptr, nullptr, cache,
+            x64::ExecutionMode::SingleInstruction}), std::runtime_error);
     }
 }
 

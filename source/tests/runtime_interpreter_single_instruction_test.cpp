@@ -88,6 +88,7 @@ struct Fixture {
     Context& Guest() { return *reinterpret_cast<Context*>(runtime.GetUniformBuffer().data()); }
     void Seed(const Context& context, u64 flags = other_flags) {
         Guest() = context; runtime.SetLocation(context.pc); runtime.GetState()->host_cpu_flags = flags;
+        runtime.GetState()->prev_loc = ir::Location{0xdead0000};
         runtime.GetState()->spill_area[backend::kRiscvRecoveryPcSlot] = recovery_sentinels[0];
         runtime.GetState()->spill_area[backend::kRiscvRecoveryFrameSlot] = recovery_sentinels[1];
         runtime.GetState()->spill_area[backend::kRiscvMemoryOwnedSlot] = recovery_sentinels[2];
@@ -112,7 +113,10 @@ HaltReason Step(Fixture& fixture) {
     const auto mapping = backend::GuestMemoryScope::Current();
     const auto readers = backend::riscv64::anonymous_memory_readers.load();
     const auto kernels = backend::riscv64::memory_kernel_depth.load();
+    const auto original_pc = fixture.runtime.GetLocation();
     const auto reason = fixture.runtime.Step();
+    if (reason == HaltReason::Step || reason == HaltReason::CallHost)
+        REQUIRE(fixture.runtime.GetState()->prev_loc.Value() == original_pc);
     REQUIRE(_mm_getcsr() == desired);
     REQUIRE(fixture.runtime.GetState()->spill_area[backend::kRiscvRecoveryPcSlot] == recovery_sentinels[0]);
     REQUIRE(fixture.runtime.GetState()->spill_area[backend::kRiscvRecoveryFrameSlot] == recovery_sentinels[1]);
@@ -174,7 +178,7 @@ struct Rejected {
         case 7: as.CompareAndSwap128(address, value, value, value, value).SetType(T::V128); break;
         case 8: as.AtomicExchange(address, value).SetType(T::U64); break;
         case 9: as.AtomicFetchAdd(address, value).SetType(T::U64); break;
-        case 10: as.AtomicRMW(address, ir::Imm{u32{0}}, value, value, value).SetType(T::U64); break;
+        case 10: as.AtomicRMW(ir::Imm{u32{0}}, address, value, value).SetType(T::U64); break;
         case 11: as.CheckMemoryAlignment(address, ir::Imm{u32{8}}); break;
         case 12: as.AdvancePC(ir::Imm{u32{4}}); break;
         case 13: return SingleDecodeResult::Ready; // no terminal
@@ -200,6 +204,27 @@ struct Rejected {
             block.SetTerminal(ir::terminal::CheckHalt{ir::terminal::Condition{
                 ir::Cond::EQ, ir::terminal::LinkBlock{ir::Location{pc + 4}}, ir::terminal::Switch{value, cases}}});
             return SingleDecodeResult::Ready;
+        }
+        case 21: case 22: case 23: {
+            auto condition = as.LoadImm(ir::Imm{u8{1}}).SetType(T::U8);
+            auto jump = as.Goto(ir::BOOL{condition});
+            auto skipped = as.LoadImm(ir::Imm{u64{0x55}}).SetType(T::U64);
+            as.BindLabel(jump);
+            if (self.shape == 21) as.StoreUniform(ir::Uniform{u32(offsetof(Context, r)), T::U64}, skipped);
+            else if (self.shape == 22) {
+                block.SetTerminal(ir::terminal::If{skipped,
+                    ir::terminal::LinkBlock{ir::Location{pc + 4}},
+                    ir::terminal::LinkBlock{ir::Location{pc + 8}}});
+                return SingleDecodeResult::Ready;
+            } else as.SetLocation(ir::Lambda{skipped});
+            break;
+        }
+        case 24: {
+            auto condition = as.LoadImm(ir::Imm{u8{1}}).SetType(T::U8);
+            auto jump = as.Goto(ir::BOOL{condition}).SetType(T::U64);
+            as.BindLabel(jump);
+            as.StoreUniform(ir::Uniform{u32(offsetof(Context, r)), T::U64}, jump);
+            break;
         }
         default: break;
         }
@@ -254,8 +279,8 @@ TEST_CASE("Interpreter Runtime Step audited FP and SIMD helpers preserve full gu
     for (auto test : {Case{0x1e222820, 0x3f800000, 0x40000000, 0x40400000, false},
                       Case{0x1ee22820, 0x3c00, 0x4000, 0x4200, true}}) { // exactly 1+2=3 in S/H
         Fixture fixture; fixture.provider.Word(pc, test.word); auto initial = Initial();
-        initial.v[1] = test.lhs; initial.v[2] = test.rhs; fixture.Seed(initial);
-        auto expected = initial; expected.v[0] = test.answer;
+        initial.v[1] = {test.lhs, 0}; initial.v[2] = {test.rhs, 0}; fixture.Seed(initial);
+        auto expected = initial; expected.v[0] = {test.answer, 0};
         REQUIRE(Step(fixture) == HaltReason::Step); Check(fixture, expected, other_flags, pc + 4);
     }
     Fixture vector; vector.provider.Word(pc, 0x4e228420); // ADD V0.16B,V1.16B,V2.16B
@@ -304,11 +329,11 @@ TEST_CASE("Interpreter Core Step branch and audited FP commit complete context",
     for (u32 word : {0xd63f03c0u, 0x90000020u, 0x1e222820u, 0x1ee22820u}) {
         fixture.provider.Word(pc, word); auto initial = Initial(); initial.lr = 0x81234560;
         const bool half = word == 0x1ee22820;
-        initial.v[1] = half ? 0x3c00 : 0x3f800000; initial.v[2] = half ? 0x4000 : 0x40000000;
+        initial.v[1] = {half ? 0x3c00u : 0x3f800000u, 0}; initial.v[2] = {half ? 0x4000u : 0x40000000u, 0};
         fixture.core->GetContext() = initial; auto expected = initial; expected.pc += 4;
         if (word == 0xd63f03c0) { expected.lr = pc + 4; expected.pc = initial.lr; }
         else if (word == 0x90000020) expected.r[0] = pc + 4 * 4096; // ADRP #4 pages
-        else expected.v[0] = half ? 0x4200 : 0x40400000;
+        else expected.v[0] = {half ? 0x4200u : 0x40400000u, 0};
         REQUIRE(fixture.core->Step() == Exit::Step); Equal(expected, fixture.core->GetContext());
         REQUIRE(fixture.provider.requests.back().first == pc); REQUIRE(fixture.provider.requests.back().second == 4);
     }
@@ -336,7 +361,7 @@ TEST_CASE("Interpreter Step pending or decode callback Signal starts no guest ef
 }
 
 TEST_CASE("Interpreter Step rejects unsupported data or host tails before register prefix", "[runtime][interp-step][gate-e1][admission]") {
-    for (unsigned shape = 0; shape < 21; ++shape) {
+    for (unsigned shape = 0; shape < 25; ++shape) {
         CAPTURE(shape); Rejected rejected{.shape = shape}; Fixture fixture{{&Rejected::Decode, &rejected}};
         fixture.provider.memory.fill(0xa7); const auto before = Capture(fixture.runtime); const auto memory = fixture.provider.memory;
         REQUIRE(Step(fixture) == HaltReason::Unsupported); REQUIRE(Capture(fixture.runtime) == before); REQUIRE(fixture.provider.memory == memory);

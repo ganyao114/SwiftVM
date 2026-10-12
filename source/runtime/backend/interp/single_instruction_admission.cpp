@@ -3,6 +3,7 @@
 #include <span>
 #include <unordered_map>
 #include "interpreter.h"
+#include "runtime/backend/single_instruction_control_flow.h"
 #include "runtime/common/crc32.h"
 #include "runtime/common/saturating_add_sub.h"
 #include "runtime/common/saturating_multiply.h"
@@ -305,7 +306,7 @@ bool SingleInstructionAdmitted(const ir::Block& block, size_t uniform_bytes) {
                     if (!prior.contains(pseudo) || prior.at(pseudo) <= prior.at(&inst)) return false;
             }
         }
-        return Terminal(block.GetTerminal(), prior);
+        return Terminal(block.GetTerminal(), prior) && SingleInstructionControlFlowValid(block);
     } catch (const std::exception&) {
         return false;
     }

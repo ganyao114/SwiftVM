@@ -224,6 +224,14 @@ HaltReason Interpreter::Run() {
         }
     }
 
+    if (mode == ExecutionMode::SingleInstruction) {
+        // Match native entry only after admission and pending-halt checks.
+        // Dynamic targets and synchronous traps must retain the executed PC
+        // independently of the successor written by SetLocation/terminals.
+        state.current_loc = block->GetStartLocation();
+        state.prev_loc = state.current_loc;
+    }
+
     for (auto it = insts.begin(); it != insts.end(); ++it) {
         // Include local branch continue paths: a pure Goto loop must remain
         // interruptible without another instruction writing halt_reason.
@@ -286,15 +294,15 @@ HaltReason Interpreter::RunTerminal(const ir::Terminal& terminal, InterpStack& s
             state.halt_reason = HaltReason::CallHost;
             result = HaltReason::CallHost;
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlock>) {
-            state.prev_loc = state.current_loc;
+            if (mode == ExecutionMode::Ordinary) state.prev_loc = state.current_loc;
             state.current_loc = term.next;
             result = HaltReason::None;
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
-            state.prev_loc = state.current_loc;
+            if (mode == ExecutionMode::Ordinary) state.prev_loc = state.current_loc;
             state.current_loc = term.next;
             result = HaltReason::None;
         } else if constexpr (std::is_same_v<T, ir::terminal::ExternalLinkBlock>) {
-            state.prev_loc = state.current_loc;
+            if (mode == ExecutionMode::Ordinary) state.prev_loc = state.current_loc;
             state.current_loc = term.next;
             result = HaltReason::None;
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
