@@ -179,6 +179,12 @@ std::uintptr_t SignalHandler::GetContextGPR(const ucontext_t* uctx, u32 index) {
     return index < 31 ? uctx->uc_mcontext.regs[index] : 0;
 #elif defined(__linux__) && defined(__riscv) && __riscv_xlen == 64
     return index > 0 && index < 32 ? uctx->uc_mcontext.__gregs[index] : 0;
+#elif defined(__linux__) && defined(__x86_64__)
+    static constexpr int registers[]{REG_RAX, REG_RCX, REG_RDX, REG_RBX,
+                                     REG_RSP, REG_RBP, REG_RSI, REG_RDI,
+                                     REG_R8, REG_R9, REG_R10, REG_R11,
+                                     REG_R12, REG_R13, REG_R14, REG_R15};
+    return index < std::size(registers) ? uctx->uc_mcontext.gregs[registers[index]] : 0;
 #else
     (void) uctx;
     (void) index;
@@ -210,6 +216,14 @@ bool SignalHandler::SetContextGPR(ucontext_t* uctx, u32 index, std::uintptr_t va
 #elif defined(__linux__) && defined(__riscv) && __riscv_xlen == 64
     if (index == 0 || index >= 32) return false;
     uctx->uc_mcontext.__gregs[index] = value;
+    return true;
+#elif defined(__linux__) && defined(__x86_64__)
+    static constexpr int registers[]{REG_RAX, REG_RCX, REG_RDX, REG_RBX,
+                                     REG_RSP, REG_RBP, REG_RSI, REG_RDI,
+                                     REG_R8, REG_R9, REG_R10, REG_R11,
+                                     REG_R12, REG_R13, REG_R14, REG_R15};
+    if (index >= std::size(registers)) return false;
+    uctx->uc_mcontext.gregs[registers[index]] = static_cast<greg_t>(value);
     return true;
 #else
     (void) uctx;
@@ -254,6 +268,13 @@ void SignalHandler::DefaultHandler(int sig, siginfo_t* info, ucontext_t* uctx) {
     // Die with the original signal (and a core dump) instead of a bland
     // abort(): restore the default disposition and re-raise.
     std::signal(sig, SIG_DFL);
+    // The delivered signal is blocked inside its own handler. Unblock it
+    // before re-raising so the parent observes actual signal termination;
+    // otherwise raise only queues it and _Exit reports an ordinary exit.
+    sigset_t unblock;
+    sigemptyset(&unblock);
+    sigaddset(&unblock, sig);
+    sigprocmask(SIG_UNBLOCK, &unblock, nullptr);
     std::raise(sig);
     std::_Exit(128 + sig);
 }

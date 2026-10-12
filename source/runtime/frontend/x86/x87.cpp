@@ -1017,10 +1017,26 @@ void Binary(ThreadContext64& ctx, const DecodedCommand& command, u64 address) {
     auto state = StateFromControl(ctx);
     const auto result =
             ApplyBinary(state, static_cast<X87Binary>(command.operation), left, right);
+    // C1 records rounding up in magnitude. Recompute only inexact results
+    // toward zero at the same precision: a different payload is precisely an
+    // increment beyond the truncated neighbour, including masked overflow
+    // to infinity and underflow to a larger subnormal. Keep scratch exception
+    // flags private; only the original operation publishes guest exceptions.
+    bool rounded_up = false;
+    if (state.exceptionFlags & softfloat_flag_inexact) {
+        auto toward_zero = StateFromControl(ctx);
+        toward_zero.roundingMode = softfloat_round_minMag;
+        const auto truncated =
+                ApplyBinary(toward_zero, static_cast<X87Binary>(command.operation), left, right);
+        rounded_up = result.signif != truncated.signif || result.signExp != truncated.signExp;
+    }
     Write(ctx, dest, result);
     ctx.x87_fsw &= static_cast<u16>(~kSwC1);
     RaiseSoftFloat(ctx, state.exceptionFlags);
     if (command.flags & X87Pop) Pop(ctx);
+    // The pop belongs to this arithmetic instruction and must not erase its
+    // rounding direction. Require/StackFault paths above retain their C1=0.
+    if (rounded_up) ctx.x87_fsw |= kSwC1;
 }
 
 void SetCompareStatus(ThreadContext64& ctx, bool less, bool equal, bool unordered) {

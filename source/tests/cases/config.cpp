@@ -204,12 +204,15 @@ TEST_CASE("FeatureSet captures every B-class field and applies sparse overrides"
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 70);
+    STATIC_REQUIRE(kFeatureCount == 76);
     REQUIRE(FeatureSet{}.ra_coalesce_live);
     REQUIRE(FeatureSet{}.operand_copy_kill);
     REQUIRE(FeatureSet{}.zero_store_zr);
     REQUIRE_FALSE(FeatureSet{}.flags_regs_audit);
     REQUIRE_FALSE(FeatureSet{}.ra_fixed_class);
+    REQUIRE_FALSE(FeatureSet{}.x64_scalar_cache);
+    REQUIRE_FALSE(FeatureSet{}.x64_cfg_allocation);
+    REQUIRE_FALSE(FeatureSet{}.x64_flags_residency);
     REQUIRE(FlagsRegsEnabled() == GetSvmConfig().flags_regs);
     STATIC_REQUIRE(kFlagsNzcvParkSlot == 0);
     STATIC_REQUIRE(kFlagsResultParkSlot == 1);
@@ -238,6 +241,12 @@ TEST_CASE("FeatureSet captures every B-class field and applies sparse overrides"
     Config config{};
     REQUIRE(ComputeConfigHash(config, empty) == ComputeConfigHash(config));
     REQUIRE(ComputeConfigHash(config, overridden) != ComputeConfigHash(config));
+    for (auto feature : {FeatureId::x64_cfg_allocation, FeatureId::x64_flags_residency}) {
+        ModuleConfig selected{};
+        selected.feature_overrides.Set(feature, !capture.Get(feature));
+        REQUIRE(ComputeConfigHash(config, selected) != ComputeConfigHash(config, empty));
+        REQUIRE(HashFeatureSet(ResolveFeatureSet(selected)) != HashFeatureSet(resolved_empty));
+    }
 }
 
 TEST_CASE("loop invariant hoist keeps a narrow unit-local proof boundary") {

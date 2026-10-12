@@ -30,6 +30,9 @@ struct ModuleConfig {
 
 [[nodiscard]] inline FeatureSet ResolveFeatureSet(const ModuleConfig& config) {
     auto features = GetSvmConfig().GetFeatureSet();
+    // This policy is selected by the module optimization bit. Resolve the
+    // effective value here so persisted feature hashes match emitted code.
+    features.x64_scalar_cache = config.HasOpt(Optimizations::ScalarRegisterCache);
     for (std::size_t i = 0; i < kFeatureCount; ++i) {
         const auto id = static_cast<FeatureId>(i);
         if (const auto value = config.feature_overrides.Get(id)) {

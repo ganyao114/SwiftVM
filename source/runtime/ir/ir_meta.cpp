@@ -2,7 +2,6 @@
 // Created by 甘尧 on 2023/9/8.
 //
 
-#include <cmath>
 #include "runtime/common/logging.h"
 #include "runtime/ir/ir_meta.h"
 #include "runtime/ir/ir_types.h"
@@ -83,7 +82,7 @@ ValueType GetSignedIRValueType(u32 size_byte) {
     }
 }
 
-u8 GetValueSizeByte(ValueType type) { return std::pow(2u, GetValueSizePow(type)); }
+u8 GetValueSizeByte(ValueType type) { return u8{1} << GetValueSizePow(type); }
 
 bool IsFloatValueType(ValueType type) { return type >= ValueType::V8 && type <= ValueType::V256; }
 

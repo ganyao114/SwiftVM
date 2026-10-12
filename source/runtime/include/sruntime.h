@@ -24,7 +24,9 @@ enum class HaltReason : std::uint32_t {
     // Reserved ABI value: the old untracked linkage patcher was removed.
     ReservedLinkage = 0x00000040,
     IllegalCode = 0x00000080,
-    CallHost = 0x000000100
+    CallHost = 0x000000100,
+    Unsupported = 0x00000200,
+    EntryRejected = 0x00000400
 };
 
 DECLARE_ENUM_FLAG_OPERATORS(HaltReason)
@@ -40,12 +42,20 @@ public:
 
     ~Runtime();
 
+    // Run/Step reject simultaneous entry and nesting on an executing thread
+    // before changing State. Setters/context access remain stopped-owner-only.
     HaltReason Run();
 
+    // Step is returned only after one complete guest instruction retires.
+    // Missing decoding/execution/recovery capability returns Unsupported with
+    // no guest execution. Linux x64 JIT executes a fresh unpublished unit;
+    // other execution engines currently report Unsupported.
     HaltReason Step();
 
+    // May be called by another thread; publishes a sticky atomic request.
     void SignalInterrupt();
 
+    // The execution owner calls this only while Run/Step is stopped.
     void ClearInterrupt();
 
     void SetLocation(LocationDescriptor location);

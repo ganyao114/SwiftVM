@@ -305,13 +305,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             context.RecordExecCounter(exec_offset_exit_indirect);
             context.ReturnHost();
         } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
-            Label no_halt;
-            __ Ldr(ipw, MemOperand(state, state_offset_halt_reason));
-            __ Cbz(ipw, &no_halt);
-            MergeNZCV(FlagsRegsAuditMergeCause::HostExit,
-                      FlagsRegsAuditEdgeKind::Host);
-            context.ReturnHost();
-            __ Bind(&no_halt);
+            CheckHalt();
             EmitTerminal(term.else_, LinkSiteKind::CheckHalt);
         } else {
             PANIC("Unknown terminal!");

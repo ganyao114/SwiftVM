@@ -562,6 +562,32 @@ void JitTranslator::EmitPreserveAllPairCall(ir::Inst* inst,
     __ Add(sp, sp, PairCallFrame::Size);
 }
 
+void JitTranslator::CheckHalt() {
+    Label stop, resume;
+    __ Ldr(ipw, MemOperand(state, state_offset_halt_reason));
+    __ Cbnz(ipw, &stop);
+    // Result restoration is complete before this scratch load. Unlike a
+    // restartable backedge poll, this check must ignore the low SMC generation.
+    __ Ldar(ip, MemOperand(state, state_offset_exit_request));
+    __ Tbz(ip, 63, &resume);
+    __ Mov(ipw, static_cast<u32>(HaltReason::Signal));
+    __ Str(ipw, MemOperand(state, state_offset_halt_reason));
+    __ Bind(&stop);
+    // The running path skips this merge. Keep its pending NZCV/parity token
+    // intact in the emitter too, including preserve-all transparent helpers.
+    const auto nzcv_dirty = flag_state.nzcv_dirty;
+    const auto nzcv_requested = flag_state.nzcv_requested;
+    const auto token_valid = flag_state.flags_token_valid;
+    const auto token_result = flag_state.flags_token_result_code;
+    MergeNZCV(FlagsRegsAuditMergeCause::HostExit, FlagsRegsAuditEdgeKind::Host);
+    context.ReturnHost();
+    flag_state.nzcv_dirty = nzcv_dirty;
+    flag_state.nzcv_requested = nzcv_requested;
+    flag_state.flags_token_valid = token_valid;
+    flag_state.flags_token_result_code = token_result;
+    __ Bind(&resume);
+}
+
 void JitTranslator::EmitCallLambda(ir::Inst* inst) {
     auto lambda = inst->GetArg<ir::Lambda>(0);
     std::vector<ir::DataClass> args{};
@@ -579,6 +605,7 @@ void JitTranslator::EmitCallLambda(ir::Inst* inst) {
         result = context.R(self);
     }
     EmitHostCall(lambda, args, has_result, result);
+    CheckHalt();
 }
 
 void JitTranslator::EmitGetOperand(ir::Inst* inst) {
@@ -704,6 +731,7 @@ void JitTranslator::EmitCallDynamic(ir::Inst* inst) {
         result = context.R(self);
     }
     EmitHostCall(lambda, args, has_result, result);
+    CheckHalt();
 }
 
 void JitTranslator::EmitDefineLocal(ir::Inst* inst) {}
@@ -782,6 +810,7 @@ void JitTranslator::EmitCallLocation(ir::Inst* inst) {
         result = context.R(self);
     }
     EmitHostCall(lambda, args, has_result, result);
+    CheckHalt();
 }
 
 void JitTranslator::EmitNop(ir::Inst* inst) {}

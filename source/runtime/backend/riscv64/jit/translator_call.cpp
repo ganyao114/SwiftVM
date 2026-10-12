@@ -128,8 +128,7 @@ bool JitTranslator::EmitNativeCall(ir::Inst* inst) {
         if (vector_return) { as.MV(pair[1], x0); context.WritePair(inst, pair); }
         else context.Write(inst, result);
     }
-    context.Load(t0, state, state_offset_halt_reason, 4);
-    context.BranchZero(t0, epilogue, false);
+    CheckHalt();
     return true;
 }
 

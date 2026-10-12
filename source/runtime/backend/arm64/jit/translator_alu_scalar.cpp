@@ -10,6 +10,7 @@
 #include "runtime/backend/arm64/operand_checks.h"
 #include "runtime/backend/context.h"
 #include "runtime/common/div128.h"
+#include "runtime/common/crc32.h"
 #include "runtime/common/svm_config.h"
 
 namespace swift::runtime::backend::arm64 {
@@ -906,6 +907,49 @@ void JitTranslator::EmitPopCount(ir::Inst* inst) {
     __ Cnt(bytes.V8B(), bytes.V8B());
     __ Addv(bytes.B(), bytes.V8B());
     __ Umov(result, bytes.V16B(), 0);
+}
+
+void JitTranslator::EmitCrc32(ir::Inst* inst) {
+    const u32 width = ValidateIeeeCrc32(inst);
+    const auto acc_value = inst->GetArg<ir::Value>(0), data_value = inst->GetArg<ir::Value>(1);
+    const u32 acc_bits = std::min(32u, IeeeCrcInputBits(acc_value));
+    const u32 data_bits = std::min(width, IeeeCrcInputBits(data_value));
+    const auto acc = context.W(acc_value);
+    const auto data = context.X(data_value);
+    const auto result = context.W(ir::Value{inst});
+    if (True(context.GetConfig().arm64_features & Arm64Features::CRC32)) {
+        // Context register views do not apply IR narrowing casts. Snapshot
+        // both inputs before an aliased result can overwrite either source.
+        const auto acc_snapshot = context.GetTmpX(), data_snapshot = context.GetTmpX();
+        __ Ubfx(acc_snapshot.W(), acc, 0, acc_bits);
+        __ Ubfx(data_snapshot, data, 0, data_bits);
+        vixl::CPUFeaturesScope scope{&masm, vixl::CPUFeatures::kCRC32};
+        switch (width) {
+            case 8: __ Crc32b(result, acc_snapshot.W(), data_snapshot.W()); break;
+            case 16: __ Crc32h(result, acc_snapshot.W(), data_snapshot.W()); break;
+            case 32: __ Crc32w(result, acc_snapshot.W(), data_snapshot.W()); break;
+            case 64: __ Crc32x(result, acc_snapshot.W(), data_snapshot); break;
+        }
+        return;
+    }
+    // The loop uses non-flag-setting instructions, preserving host NZCV.
+    const auto state = context.GetTmpX();
+    const auto mask = context.GetTmpX();
+    const auto poly = context.GetTmpX();
+    __ Ubfx(state, data, 0, data_bits);
+    __ Ubfx(mask.W(), acc, 0, acc_bits);
+    __ Eor(state, state, mask);
+    __ Mov(poly, 0xEDB88320u);
+    __ Mov(result, width);
+    Label loop;
+    __ Bind(&loop);
+    __ And(mask, state, 1);
+    __ Neg(mask, mask);
+    __ And(mask, mask, poly);
+    __ Eor(state, mask, Operand{state, LSR, 1});
+    __ Sub(result, result, 1);
+    __ Cbnz(result, &loop);
+    __ Mov(result, state.W());
 }
 
 void JitTranslator::EmitCrc32c(ir::Inst* inst) {

@@ -13,9 +13,17 @@ namespace swift::runtime::backend::interp {
 
 using InterpStack = std::span<u64>;
 
+enum class ExecutionMode : u8 { Ordinary, SingleInstruction };
+
 class Interpreter {
 public:
-    explicit Interpreter(State& state, ir::Block* block);
+    explicit Interpreter(State& state, ir::Block* block,
+                         ExecutionMode mode = ExecutionMode::Ordinary,
+                         size_t single_uniform_bytes = 0);
+
+    // Complete-unit preflight. Generic host helpers also require the
+    // frontend's independent positive target/ABI inventory before entry.
+    static bool ValidateSingle(const ir::Block& block, size_t uniform_bytes);
 
     HaltReason Run();
 
@@ -75,9 +83,12 @@ private:
     bool EvalCondition(ir::Cond cond);
 
     HaltReason RunTerminal(const ir::Terminal& terminal, InterpStack& stack);
+    HaltReason ObserveInternalHalt();
 
     State& state;
     ir::Block* block;
+    const ExecutionMode mode;
+    const size_t single_uniform_bytes;
 };
 
 }  // namespace swift::runtime::backend::interp

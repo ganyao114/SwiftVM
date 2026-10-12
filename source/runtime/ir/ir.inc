@@ -189,6 +189,18 @@ INST(VecAvg, Value, Value, Value, Imm)
 INST(VecMin, Value, Value, Value, Imm, Imm)
 INST(VecMax, Value, Value, Value, Imm, Imm)
 INST(VecMul, Value, Value, Value, Imm)
+// V128 byte dot product: 4 adjacent byte products per U32 accumulator lane.
+// Args: lhs, rhs, accumulator (all V128), signed bytes (0 or 1). Wrap U32;
+// preserve all guest flags and floating-point status.
+INST(VecDot, Value, Value, Value, Value, Imm)
+// Pure signed saturating multiply-high. Inputs/results V128; esize 16/32.
+// control = (active_lanes << 2) | mode. Modes: SQDMULH, SQRDMULH,
+// SQRDMLAH, SQRDMLSH. Active lanes: 16=>1/4/8, 32=>1/2/4.
+// Round toward +infinity on ties, clamp only the final combined result.
+// Inactive lanes are zero and excluded from saturation. QC is an explicit
+// U8 pseudo; neither instruction changes flags or floating-point status.
+INST(VecSatMulHigh, Value, Value, Value, Value, Imm, Imm)
+INST(VecSatMulQC, Value, Value)
 // High 16 bits of eight signed/unsigned 16x16-bit products.
 INST(VecMulHigh16, Value, Value, Value, Imm)
 // Widening multiply of the EVEN lanes.  Imms are (src_lane_bits, is_signed);
@@ -209,6 +221,11 @@ INST(VecMulHigh16, Value, Value, Value, Imm)
 // (vnsrl) plus vwmul.  Nothing here is x86-shaped: the x86 description "the low
 // 32 bits of each 64-bit lane" is the same bits stated in the other direction.
 INST(VecMulWiden, Value, Value, Value, Imm, Imm)
+// Saturating add/sub on complete raw vector containers. Exact Imms are
+// (lane bits 8/16/32/64, signed lanes 0/1). No guest flags/QC result; native
+// ARM FPSR.QC and RVV vxsat behavior is inherited from their instructions.
+// Narrow annotations do not clear inactive bytes; frontends explicitly mask
+// inactive inputs and publish narrow outputs when guest forms require it.
 INST(VecSatAdd, Value, Value, Value, Imm, Imm)
 INST(VecSatSub, Value, Value, Value, Imm, Imm)
 // Narrow and concatenate signed lanes; unsigned destination selects PACKUSWB.
@@ -465,3 +482,17 @@ INST(PopCount, U64, Value)
 // CRC-32C without pre/post complement. Only the accumulator's low 32 bits
 // and the data's low Imm bits (8, 16, 32 or 64) participate; result is U32.
 INST(Crc32c, U32, Value, Value, Imm)
+// IEEE CRC-32 with the same raw accumulator/width contract as Crc32c.
+INST(Crc32, U32, Value, Value, Imm)
+
+// Pure saturating immediate vector shift. Canonical V128 input/result;
+// args: source, destination lane bits, shift, (active_lanes << 4) | mode.
+// Modes/valid shapes are defined in common/saturating_shift.h. Inactive
+// result lanes are zero. No flags or floating-point state change; QC is
+// computed and published at producer execution, never at the marker.
+INST(VecSatShiftImm, Value, Value, Imm, Imm, Imm)
+INST(VecSatShiftQC, Value, Value)
+
+// Pure ARM unsigned fixed-point estimates on four u32 lanes. Canonical
+// V128 input/result; exact operation 0=URECPE, 1=URSQRTE. No FP or flags state.
+INST(VecUnsignedEstimate, Value, Value, Imm)

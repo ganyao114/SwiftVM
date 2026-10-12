@@ -236,6 +236,8 @@ Value& Lambda::GetValue() const {
 
 bool Lambda::IsValue() const { return address.IsValue(); }
 
+bool Lambda::IsImm() const { return address.IsImm() || IsTaggedImm(); }
+
 UniformEffectId Lambda::GetUniformEffectId() const {
     if ((static_cast<u8>(address.type) & kUniformEffectTag) == 0) {
         return UniformEffectId::Unknown;

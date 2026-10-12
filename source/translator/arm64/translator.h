@@ -7,6 +7,10 @@
 #include "cpu.h"
 #include "translator/runtime.h"
 
+namespace swift::runtime {
+class MemoryInterface;
+}
+
 namespace swift::runtime::backend {
 class AddressSpace;
 }
@@ -26,8 +30,11 @@ public:
     // memory_base: guest->host bias for guest address virtualization
     // (host addr = guest addr + bias); nullptr = direct mapping (default).
     // guest_addr_mask: bounded guest window (Config::guest_addr_mask),
-    // 0 = unbounded (legacy).
-    static Arm64Instance *Make(void* memory_base = nullptr, u64 guest_addr_mask = 0);
+    // 0 = unbounded (legacy). The optional code_provider must outlive this
+    // Instance and match its mask/bias; a mismatch throws std::invalid_argument.
+    // Without a provider, safe ReadCode returns Unsupported.
+    static Arm64Instance *Make(void* memory_base = nullptr, u64 guest_addr_mask = 0,
+                               runtime::MemoryInterface* code_provider = nullptr);
     static void Destroy(Arm64Instance *instance);
 
     // SMC hook: forwards to AddressSpace::InvalidateCodeRange — see
@@ -42,7 +49,8 @@ public:
     [[nodiscard]] backend::AddressSpace* GetAddressSpace();
 
 private:
-    explicit Arm64Instance(void* memory_base, u64 guest_addr_mask);
+    explicit Arm64Instance(void* memory_base, u64 guest_addr_mask,
+                           runtime::MemoryInterface* code_provider);
 
     struct Impl;
     std::unique_ptr<Impl> impl{};
@@ -53,7 +61,11 @@ public:
     static Arm64Core *Make(Arm64Instance *instance);
     static void Destroy(Arm64Core *core);
 
+    // Execution entry is exclusive and rejects nested guest execution. Context
+    // access and other setters remain stopped-owner operations.
     ExitReason Run() override;
+    // The single-decode service is registered, but a retirement/recovery engine
+    // is not available yet: Step returns Unsupported without fetching code.
     ExitReason Step() override;
     void SignalInterrupt() override;
     void ClearInterrupt() override;

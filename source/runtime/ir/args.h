@@ -289,6 +289,7 @@ public:
     Lambda(const DataClass& value, HelperCallTraits traits);
 
     bool IsValue() const;
+    bool IsImm() const;
 
     Value& GetValue();
     Value& GetValue() const;

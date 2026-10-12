@@ -135,9 +135,9 @@ void A64Decoder::VisitLogicalImmediate(const Instruction* instr) {
         __ SaveFlags(result, ir::Flags::NZCV);
     }
     if (is64) {
-        WriteXRegister(instr->GetRd(), result);
+        WriteXRegister(instr->GetRd(), result, instr->GetRdMode());
     } else {
-        WriteWRegister(instr->GetRd(), result);
+        WriteWRegister(instr->GetRd(), result, instr->GetRdMode());
     }
 }
 
@@ -390,6 +390,20 @@ void A64Decoder::VisitExtract(const Instruction* instr) {
 }
 
 void A64Decoder::VisitDataProcessing2Source(const Instruction* instr) {
+    const auto op = instr->Mask(DataProcessing2SourceMask);
+    const bool ieee = op == CRC32B || op == CRC32H || op == CRC32W || op == CRC32X;
+    const bool castagnoli = op == CRC32CB || op == CRC32CH || op == CRC32CW || op == CRC32CX;
+    if (ieee || castagnoli) {
+        const u32 data_bits = 8u << ((op >> 10) & 3);
+        // The accumulator and destination are always W registers, even for
+        // CRC32X/CX. Both sources must be read before an aliased Rd is written.
+        auto accumulator = ReadWRegister(instr->GetRn());
+        auto data = data_bits == 64 ? ReadXRegister(instr->GetRm()) : ReadWRegister(instr->GetRm());
+        auto result = castagnoli ? __ Crc32c(accumulator, data, ir::Imm{data_bits}).SetType(ir::ValueType::U32) :
+                                  __ Crc32(accumulator, data, ir::Imm{data_bits}).SetType(ir::ValueType::U32);
+        WriteWRegister(instr->GetRd(), result);
+        return;
+    }
     bool is64 = instr->GetSixtyFourBits();
     auto type = GPRType(is64);
     auto stype = is64 ? ir::ValueType::S64 : ir::ValueType::S32;
@@ -705,7 +719,9 @@ void A64Decoder::ConditionalCompareHelper(const Instruction* instr,
     // cannot discard the commit.
     auto committed = __ GetFlags(result, ir::Flags::NZCV).SetType(ir::ValueType::U64);
     auto carry = CondPassed(cs);
-    __ SetCarry(__ Select(__ TestNotZero(committed), carry, carry)
+    auto nonzero = __ TestNotZero(committed);
+    nonzero.SetType(ir::ValueType::U8);
+    __ SetCarry(__ Select(nonzero, carry, carry)
                         .SetType(ir::ValueType::U8));
     __ BindLabel(done);
 }
@@ -722,6 +738,18 @@ void A64Decoder::VisitConditionalCompareRegister(const Instruction* instr) {
 }
 
 void A64Decoder::VisitDataProcessing1Source(const Instruction* instr) {
+    // Pointer-authentication instructions share this visitor but set opcode2
+    // (bit 16). Matching only opcode[5:0] aliases PACIA..AUTIA with RBIT..CLZ.
+    // Reject all unsupported full encodings before reading or writing state.
+    const u32 full_op = instr->Mask(DataProcessing1SourceMask) & ~u32(SixtyFourBits);
+    switch (full_op) {
+        case RBIT: case REV16: case REV: case (REV_x & ~u32(SixtyFourBits)):
+        case CLZ: case CLS:
+            break;
+        default:
+            Interrupt(InterruptReason::FALLBACK, current_pc);
+            return;
+    }
     bool is64 = instr->GetSixtyFourBits();
     auto type = GPRType(is64);
     auto rn = ReadRegister(instr->GetRn(), type);
@@ -841,13 +869,61 @@ void A64Decoder::VisitDataProcessing1Source(const Instruction* instr) {
             break;
         }
         case 0x05: {  // CLS
-            Interrupt(InterruptReason::FALLBACK, current_pc);
+            const u32 width = is64 ? 64 : 32;
+            auto sign = __ AsrImm(rn, ir::Imm{width - 1}).SetType(type);
+            auto normalized = __ Xor(rn, SingleOperand(sign)).SetType(type);
+            ir::Value leading;
+            if (is64) leading = __ CountLeadingZeros64(normalized);
+            else leading = __ CountLeadingZeros32(normalized);
+            auto count = __ Sub(leading, SingleOperand(ir::Imm{u64{1}})).SetType(type);
+            if (is64) WriteXRegister(rd, count); else WriteWRegister(rd, count);
             break;
         }
         default:
             Interrupt(InterruptReason::FALLBACK, current_pc);
             return;
     }
+}
+
+void A64Decoder::VisitRotateRightIntoFlags(const Instruction* instr) {
+    if (instr->Mask(RotateRightIntoFlagsMask) != RMIF) {
+        Interrupt(InterruptReason::ILL_CODE, current_pc);
+        return;
+    }
+    const u32 mask = instr->GetNzcv();
+    if (!mask) return;
+    auto rotated = ReadXRegister(instr->GetRn());
+    const u32 shift = instr->GetImmRMIFRotation();
+    if (shift) rotated = __ RorImm<ir::U64>(rotated, ir::Imm{shift}).SetType(ir::ValueType::U64);
+    auto value = __ And<ir::U64>(rotated, SingleOperand(ir::Imm{u64(mask)})).SetType(ir::ValueType::U64);
+    const ir::Flags flags[] = {ir::Flags::Overflow, ir::Flags::Carry, ir::Flags::Zero, ir::Flags::Negate};
+    for (u32 bit = 0; bit < 4; ++bit) {
+        if (mask & (1u << bit)) continue;
+        auto old = __ TestFlags(flags[bit]).SetType(ir::ValueType::U8);
+        auto packed = __ LslImm<ir::U64>(Widen(old), ir::Imm{bit}).SetType(ir::ValueType::U64);
+        value = __ Or<ir::U64>(value, SingleOperand(packed)).SetType(ir::ValueType::U64);
+    }
+    WriteNZCV(value);
+}
+
+void A64Decoder::VisitEvaluateIntoFlags(const Instruction* instr) {
+    const auto op = instr->Mask(EvaluateIntoFlagsMask);
+    if (op != SETF8 && op != SETF16) {
+        Interrupt(InterruptReason::ILL_CODE, current_pc);
+        return;
+    }
+    const u32 bits = op == SETF8 ? 8 : 16;
+    auto source = ReadWRegister(instr->GetRn());
+    auto sign = __ TestBit(source, ir::Imm{bits - 1}).SetType(ir::ValueType::U8);
+    auto overflow = __ TestBit(source, ir::Imm{bits}).SetType(ir::ValueType::U8);
+    overflow = __ Xor<ir::U8>(sign, SingleOperand(overflow)).SetType(ir::ValueType::U8);
+    auto n = __ LslImm<ir::U64>(Widen(sign), ir::Imm{63u}).SetType(ir::ValueType::U64);
+    n = __ Sub<ir::U64>(ImmValue(0, ir::ValueType::U64), SingleOperand(n)).SetType(ir::ValueType::U64);
+    auto z = __ And<ir::U32>(source, SingleOperand(ir::Imm{(1u << bits) - 1})).SetType(ir::ValueType::U32);
+    z = __ Sub<ir::U32>(z, SingleOperand(ir::Imm{u32{0}})).SetType(ir::ValueType::U32);
+    __ SaveFlags(n, ir::Flags::Negate);
+    __ SaveFlags(z, ir::Flags::Zero);
+    __ SetOverflow(overflow);
 }
 
 }  // namespace swift::arm64

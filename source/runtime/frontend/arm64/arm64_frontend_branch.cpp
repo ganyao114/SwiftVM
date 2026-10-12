@@ -70,6 +70,7 @@ void A64Decoder::VisitCompareBranch(const Instruction* instr) {
     }
     auto value = ReadRegister(instr->GetRt(), GPRType(is64));
     ir::BOOL cond = non_zero ? __ TestNotZero(value) : __ TestZero(value);
+    cond.SetType(ir::ValueType::U8);
     VAddr target = current_pc + s64(instr->GetImmCmpBranch()) * kInstructionSize;
     assembler->If(ir::terminal::If{
             cond, ir::terminal::LinkBlock{target}, ir::terminal::LinkBlock{NextPC()}});
@@ -80,9 +81,11 @@ void A64Decoder::VisitTestBranch(const Instruction* instr) {
     u32 bit_pos = (instr->GetImmTestBranchBit5() << 5) | instr->GetImmTestBranchBit40();
     auto value = ReadXRegister(instr->GetRt());
     ir::BOOL bit_set = __ TestBit(value, ir::Imm{u8(bit_pos)});
+    bit_set.SetType(ir::ValueType::U8);
     ir::BOOL cond = bit_set;
     if (instr->Mask(TestBranchMask) == TBZ) {
-        cond = ir::BOOL{__ Xor<ir::U8>(bit_set, SingleOperand(ir::Imm{true}))};
+        cond = ir::BOOL{__ Xor<ir::U8>(bit_set, SingleOperand(ir::Imm{true}))
+                               .SetType(ir::ValueType::U8)};
     }
     VAddr target = current_pc + s64(instr->GetImmTestBranch()) * kInstructionSize;
     assembler->If(ir::terminal::If{
@@ -94,8 +97,7 @@ void A64Decoder::VisitUnconditionalBranchToRegister(const Instruction* instr) {
     switch (instr->Mask(UnconditionalBranchToRegisterMask)) {
         case RET: {
             WritePC(ir::Lambda{ReadXRegister(instr->GetRn())});
-            // NOTE: PopRSB is not emitted: zero-argument IR instructions
-            // currently crash Inst::Validate (IR issue, see report).
+            // Return() supplies the return-stack-buffer terminal hint.
             __ Return();
             end_decode_ = true;
             break;
@@ -126,14 +128,28 @@ void A64Decoder::VisitUnconditionalBranchToRegister(const Instruction* instr) {
 void A64Decoder::VisitSystem(const Instruction* instr) {
     if (instr->Mask(SystemHintFMask) == SystemHintFixed) {
         // NOP, YIELD, WFE, WFI, SEV(L), BTI, ... are all treated as NOPs.
-        // NOTE: nothing is emitted: the zero-argument Nop IR instruction
-        // currently crashes Inst::Validate (IR issue, see report).
+        // These hints require no IR operation in the current execution profile.
         return;
     }
 
     if (instr->Mask(MemBarrierFMask) == MemBarrierFixed) {
-        // DMB / DSB / ISB: no reordering is performed by this IR, so they are
-        // dropped here as well.
+        switch (instr->Mask(MemBarrierMask)) {
+            case DMB:
+            case DSB:
+                __ MemoryBarrierTSO();
+                break;
+            case ISB:
+                // End the decoded block so subsequent instructions are fetched
+                // after the synchronization point and any SMC invalidation.
+                __ MemoryBarrierTSO();
+                WritePC(ir::Lambda{ir::Imm{NextPC()}});
+                __ ReturnToDispatcher();
+                end_decode_ = true;
+                break;
+            default:
+                Interrupt(InterruptReason::FALLBACK, current_pc);
+                break;
+        }
         return;
     }
 
@@ -142,6 +158,43 @@ void A64Decoder::VisitSystem(const Instruction* instr) {
         bool is_read = instr->Mask(SystemSysRegMask) == MRS;
         auto rt = instr->GetRt();
         switch (sysreg) {
+            case NZCV: {
+                if (is_read) {
+                    auto value = ImmValue(0, ir::ValueType::U64);
+                    const ir::Flags flags[] = {ir::Flags::Overflow, ir::Flags::Carry,
+                                               ir::Flags::Zero, ir::Flags::Negate};
+                    for (u32 i = 0; i < 4; ++i) {
+                        auto bit = __ TestFlags(flags[i]).SetType(ir::ValueType::U8);
+                        auto shifted = __ LslImm<ir::U64>(Widen(bit), ir::Imm{28u + i})
+                                               .SetType(ir::ValueType::U64);
+                        value = __ Or<ir::U64>(value, SingleOperand(shifted))
+                                        .SetType(ir::ValueType::U64);
+                    }
+                    WriteXRegister(rt, value);
+                } else {
+                    auto source = ReadXRegister(rt);
+                    auto bit = [&](u32 position) {
+                        auto shifted = __ LsrImm<ir::U64>(source, ir::Imm{position})
+                                               .SetType(ir::ValueType::U64);
+                        return __ And<ir::U64>(shifted, SingleOperand(ir::Imm{u64{1}}))
+                                .SetType(ir::ValueType::U64);
+                    };
+                    // N and Z can be set independently, including N=Z=1.
+                    auto n = __ LslImm<ir::U64>(bit(31), ir::Imm{63u})
+                                     .SetType(ir::ValueType::U64);
+                    auto z = __ Xor<ir::U64>(bit(30), SingleOperand(ir::Imm{u64{1}}))
+                                     .SetType(ir::ValueType::U64);
+                    n = __ Sub<ir::U64>(ImmValue(0, ir::ValueType::U64), SingleOperand(n))
+                                .SetType(ir::ValueType::U64);
+                    z = __ Sub<ir::U64>(z, SingleOperand(ir::Imm{u64{0}}))
+                                .SetType(ir::ValueType::U64);
+                    __ SaveFlags(n, ir::Flags::Negate);
+                    __ SaveFlags(z, ir::Flags::Zero);
+                    __ SetCarry(bit(29));
+                    __ SetOverflow(bit(28));
+                }
+                return;
+            }
             case TPIDR_EL0:
             case TPIDRRO_EL0: {
                 ir::Uniform uni{u32(offsetof(ThreadContext64, tpidr)), ir::ValueType::U64};
@@ -178,11 +231,7 @@ void A64Decoder::VisitSystem(const Instruction* instr) {
                 }
                 return;
             default:
-                // Unknown system registers (NZCV, MIDR_EL1, …): MRS reads
-                // return 0; MSR writes are ignored.
-                if (is_read) {
-                    WriteXRegister(rt, ImmValue(0, ir::ValueType::U64));
-                }
+                Interrupt(InterruptReason::FALLBACK, current_pc);
                 return;
         }
     }

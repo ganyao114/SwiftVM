@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <sys/mman.h>
@@ -24,12 +25,36 @@
 
 namespace swift::linux {
 
+void GuestMemory::SetBias(u64 bias) {
+    std::unique_lock guard(mapped_regions_mutex);
+    if (identity_sealed_.load() || window_bits_ || direct_mode_) {
+        errno = EBUSY;
+        return;
+    }
+    bias_ = bias;
+}
+
+void GuestMemory::EnableDirectMode() {
+    std::unique_lock guard(mapped_regions_mutex);
+    if (identity_sealed_.load() || bias_ || window_bits_) {
+        errno = EBUSY;
+        return;
+    }
+    direct_mode_ = true;
+}
+
 bool GuestMemory::ReserveWindow(u32 bits) {
-    ASSERT(bias_ == 0);       // the reservation installs the bias; call once
-    ASSERT(window_bits_ == 0);
-    ASSERT(!direct_mode_);
+    std::unique_lock guard(mapped_regions_mutex);
+    return ReserveWindowLocked(bits);
+}
+
+bool GuestMemory::ReserveWindowLocked(u32 bits) {
+    if (identity_sealed_.load() || bias_ || window_bits_ || direct_mode_) {
+        errno = EBUSY;
+        return false;
+    }
     if (bits == 0) return true;  // window disabled: legacy unbounded bias mode
-    ASSERT(bits >= 20 && bits <= 47);
+    if (bits < 20 || bits > 47) { errno = EINVAL; return false; }
     const u64 size = u64(1) << bits;
     // One PROT_NONE reservation for the whole guest address space. PROT_NONE
     // anonymous pages commit nothing; every later guest mapping is carved out
@@ -81,26 +106,44 @@ bool GuestMemory::MapFixed(VAddr addr, u64 size) {
 }
 
 bool GuestMemory::ReplaceMappedPages(VAddr addr, u64 size) {
+    std::unique_lock guard(mapped_regions_mutex);
+    u64 checked;
     if (size == 0 || addr % kHostPageSize != 0 || size % kHostPageSize != 0 ||
-        addr + size < addr ||
-        (window_bits_ != 0 && (addr > mask_ || size > mask_ - addr + 1))) {
+        !MappingRange(addr, size, checked)) {
         errno = EINVAL;
         return false;
     }
-    std::unique_lock guard(mapped_regions_mutex);
     if (!RangeIsMappedLocked(addr, size)) {
         errno = ENOMEM;
         return false;
     }
     // The tracked interval stays mapped throughout replacement. MAP_FIXED is
     // safe here because every affected host page belongs to this guest.
-    return mmap(ToHost(addr), size, PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != MAP_FAILED;
+    auto next_readable = UpdateRegions(readable_regions, addr, size, true);
+    auto fail_readable = UpdateRegions(readable_regions, addr, size, false);
+    if (mmap(ToHost(addr), size, PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED) {
+        readable_regions.swap(fail_readable);
+        return false;
+    }
+    readable_regions.swap(next_readable);
+    return true;
 }
 
 bool GuestMemory::MapFixedImpl(VAddr addr, u64 size, bool quiet_failure) {
-    ASSERT(addr % kHostPageSize == 0);
-    auto map_size = RoundHostPage(size);
+    std::unique_lock guard(mapped_regions_mutex);
+    return MapFixedLocked(addr, size, quiet_failure);
+}
+
+bool GuestMemory::MapFixedLocked(VAddr addr, u64 size, bool quiet_failure) {
+    u64 map_size;
+    if (addr % kHostPageSize || !MappingRange(addr, size, map_size)) {
+        errno = EINVAL;
+        return false;
+    }
+    auto next_mapped = UpdateRegions(mapped_regions, addr, map_size, true);
+    auto next_readable = UpdateRegions(readable_regions, addr, map_size, true);
+    auto fail_readable = UpdateRegions(readable_regions, addr, map_size, false);
     if (window_bits_ != 0) {
         // Windowed: the range must lie wholly inside the guest window. The
         // MAP_FIXED below can only ever land inside our own reservation.
@@ -115,13 +158,14 @@ bool GuestMemory::MapFixedImpl(VAddr addr, u64 size, bool quiet_failure) {
                          -1,
                          0);
         if (res == MAP_FAILED) {
+            readable_regions.swap(fail_readable);
             LOG_ERROR("GuestMemory: window map failed at guest {:#x} size {:#x} errno {}",
                       addr,
                       map_size,
                       errno);
             return false;
         }
-        TrackMap(addr, map_size);
+        TrackMapLocked(addr, map_size, std::move(next_mapped), std::move(next_readable));
         return true;
     }
     const VAddr host_addr = addr + bias_;
@@ -177,25 +221,20 @@ bool GuestMemory::MapFixedImpl(VAddr addr, u64 size, bool quiet_failure) {
         return false;
     }
 #endif
-    TrackMap(addr, map_size);
+    TrackMapLocked(addr, map_size, std::move(next_mapped), std::move(next_readable));
     return true;
 }
 
-bool GuestMemory::FallBackDirectToWindow() {
-    ASSERT(direct_mode_);
-    ASSERT(bias_ == 0);
-    ASSERT(window_bits_ == 0);
-    ASSERT(mapped_regions.empty());
-    direct_mode_ = false;
-    return ReserveWindow(kDefaultWindowBits);
-}
-
 VAddr GuestMemory::MapAnywhere(u64 size) {
-    auto map_size = RoundHostPage(size);
+    std::unique_lock guard(mapped_regions_mutex);
+    if (!size || size > std::numeric_limits<u64>::max() - (kHostPageSize - 1)) {
+        errno = EINVAL;
+        return 0;
+    }
+    const auto map_size = RoundHostPage(size);
     if (window_bits_ != 0) {
         VAddr addr;
         {
-            std::shared_lock guard(mapped_regions_mutex);
             // First fit in the arena; fall back to the low half (below the
             // arena base) only if the arena is exhausted.
             addr = FindFreeLocked(arena_base_, map_size);
@@ -205,7 +244,7 @@ VAddr GuestMemory::MapAnywhere(u64 size) {
             LOG_ERROR("GuestMemory: guest window exhausted, cannot place {:#x} bytes", map_size);
             return 0;
         }
-        return MapFixed(addr, map_size) ? addr : 0;
+        return MapFixedLocked(addr, map_size, false) ? addr : 0;
     }
     auto* res = mmap(nullptr, map_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (res == MAP_FAILED) {
@@ -213,14 +252,36 @@ VAddr GuestMemory::MapAnywhere(u64 size) {
         return 0;
     }
     // Report the guest address (host - bias).
-    auto addr = reinterpret_cast<VAddr>(res) - bias_;
-    TrackMap(addr, map_size);
+    const auto host = reinterpret_cast<VAddr>(res);
+    if (host <= bias_ || map_size > std::numeric_limits<VAddr>::max() - (host - bias_) ||
+        !HostRange(host - bias_, map_size)) {
+        munmap(res, map_size);
+        errno = EINVAL;
+        return 0;
+    }
+    const auto addr = host - bias_;
+    try {
+        auto mapped = UpdateRegions(mapped_regions, addr, map_size, true);
+        auto readable = UpdateRegions(readable_regions, addr, map_size, true);
+        TrackMapLocked(addr, map_size, std::move(mapped), std::move(readable));
+    } catch (...) {
+        munmap(res, map_size);
+        throw;
+    }
     return addr;
 }
 
 bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
-    ASSERT(guest_start % kHostPageSize == 0);
-    auto map_size = RoundHostPage(size);
+    std::unique_lock guard(mapped_regions_mutex);
+    return MapImageAnywhereLocked(guest_start, size);
+}
+
+bool GuestMemory::MapImageAnywhereLocked(VAddr guest_start, u64 size) {
+    u64 map_size;
+    if (guest_start % kHostPageSize || !MappingRange(guest_start, size, map_size)) {
+        errno = EINVAL;
+        return false;
+    }
     if (window_bits_ != 0) {
         // Windowed: the guest keeps its linked addresses, which must fit in
         // the window. The bias is already installed by ReserveWindow.
@@ -232,8 +293,9 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
                       window_bits_);
             return false;
         }
-        return MapFixed(guest_start, map_size);
+        return MapFixedLocked(guest_start, map_size, false);
     }
+    if (identity_sealed_.load() || !mapped_regions.empty()) { errno = EBUSY; return false; }
     if (direct_mode_) {
 #if defined(__linux__)
         // The initial image span is one all-or-nothing mapping. If exact
@@ -248,7 +310,7 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
                         direct_errno = errno;
                         return false;
                     }
-                    if (!MapFixedImpl(guest_start, map_size, true)) {
+                    if (!MapFixedLocked(guest_start, map_size, true)) {
                         direct_errno = errno;
                         return false;
                     }
@@ -265,11 +327,12 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
                                 guest_start + map_size,
                                 direct_errno,
                                 kDefaultWindowBits);
-                    if (!FallBackDirectToWindow()) {
+                    direct_mode_ = false;
+                    if (!ReserveWindowLocked(kDefaultWindowBits)) {
                         LOG_ERROR("GuestMemory: bounded bias fallback reservation failed");
                         return false;
                     }
-                    return MapImageAnywhere(guest_start, map_size);
+                    return MapImageAnywhereLocked(guest_start, map_size);
                 });
 #else
         PANIC("GuestMemory direct mode is only supported on Linux hosts");
@@ -303,8 +366,20 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
                   res);
         return false;
     }
-    SetBias(reinterpret_cast<VAddr>(res) - guest_start);
-    TrackMap(guest_start, map_size);
+    if (reinterpret_cast<VAddr>(res) < guest_start) {
+        munmap(res, map_size);
+        errno = EINVAL;
+        return false;
+    }
+    try {
+        auto mapped = UpdateRegions(mapped_regions, guest_start, map_size, true);
+        auto readable = UpdateRegions(readable_regions, guest_start, map_size, true);
+        bias_ = reinterpret_cast<VAddr>(res) - guest_start;
+        TrackMapLocked(guest_start, map_size, std::move(mapped), std::move(readable));
+    } catch (...) {
+        munmap(res, map_size);
+        throw;
+    }
     LOG_INFO("GuestMemory: image span guest {:#x} -> host {} (bias {:#x})",
              guest_start,
              res,
@@ -313,54 +388,124 @@ bool GuestMemory::MapImageAnywhere(VAddr guest_start, u64 size) {
 }
 
 void GuestMemory::Unmap(VAddr addr, u64 size) {
-    auto base = RoundDownHostPage(addr);
-    auto end = RoundHostPage(addr + size);
-    if (end <= base) return;
+    std::unique_lock guard(mapped_regions_mutex);
+    VAddr base, end;
+    if (!ProtectionRange(addr, size, base, end)) { errno = EINVAL; return; }
     if (window_bits_ != 0) {
-        if (base > mask_) return;
-        if (end - 1 > mask_) end = mask_ + 1;
+        auto mapped = UpdateRegions(mapped_regions, base, end - base, false);
+        auto readable = UpdateRegions(readable_regions, base, end - base, false);
         // Keep the window reservation intact: overlay PROT_NONE anonymous
         // pages instead of punching a hole a host allocation could move into.
         // This also discards the old pages, so a later map is zero-filled.
-        mmap(ToHost(base),
+        if (mmap(ToHost(base),
              end - base,
              PROT_NONE,
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE,
              -1,
-             0);
-        TrackUnmap(base, end - base);
+             0) == MAP_FAILED) {
+            readable_regions.swap(readable);
+            return;
+        }
+        TrackUnmapLocked(base, end - base, std::move(mapped), std::move(readable));
         return;
     }
 
     // 恒等模式与翻译器共享宿主地址空间。Linux 允许对 guest 未映射区间执行
     // munmap；若把数值地址原样转交内核，可能误拆同址的翻译器映射，尤其是
     // JIT RX code cache。因此只释放本 GuestMemory 确实发布过的交集。
-    std::unique_lock guard(mapped_regions_mutex);
+    Regions intersections;
     for (const auto& region : mapped_regions) {
         if (region.second <= base) continue;
         if (region.first >= end) break;
         const VAddr mapped_begin = std::max(base, region.first);
         const VAddr mapped_end = std::min(end, region.second);
         if (mapped_begin < mapped_end) {
-            munmap(ToHost(mapped_begin), mapped_end - mapped_begin);
+            intersections.emplace_back(mapped_begin, mapped_end);
         }
     }
-    TrackUnmapLocked(base, end - base);
+    // Commit only intersections actually released; a failed syscall must not
+    // make presence metadata forget still-owned host backing.
+    for (const auto& [begin, finish] : intersections) {
+        auto mapped = UpdateRegions(mapped_regions, begin, finish - begin, false);
+        auto readable = UpdateRegions(readable_regions, begin, finish - begin, false);
+        if (munmap(ToHost(begin), finish - begin) != 0) {
+            readable_regions.swap(readable);
+            return;
+        }
+        TrackUnmapLocked(begin, finish - begin, std::move(mapped), std::move(readable));
+    }
 }
 
 bool GuestMemory::Protect(VAddr addr, u64 size, bool read, bool write, bool exec) {
-    auto base = RoundDownHostPage(addr);
-    auto end = RoundHostPage(addr + size);
-    if (window_bits_ != 0) {
-        if (base > mask_) return false;
-        if (end - 1 > mask_) end = mask_ + 1;
-        if (end <= base) return false;
+    std::unique_lock guard(mapped_regions_mutex);
+    VAddr base, end;
+    if (!ProtectionRange(addr, size, base, end)) { errno = EINVAL; return false; }
+    if (!RangeIsMappedLocked(base, end - base)) {
+        errno = ENOMEM;
+        return false;
     }
+    auto readable = UpdateRegions(readable_regions, base, end - base, read);
+    auto fail_readable = UpdateRegions(readable_regions, base, end - base, false);
     int prot = PROT_NONE;
     if (read) prot |= PROT_READ;
     if (write) prot |= PROT_WRITE;
     if (exec) prot |= PROT_EXEC;
-    return mprotect(ToHost(base), end - base, prot) == 0;
+    if (mprotect(ToHost(base), end - base, prot) != 0) {
+        // mprotect may have applied permissions to a prefix before failing.
+        // Keep the fetch capability fail-closed until an explicit restoration.
+        readable_regions.swap(fail_readable);
+        return false;
+    }
+    readable_regions.swap(readable);
+    return true;
+}
+
+bool GuestMemory::HostRange(VAddr addr, u64 size) const {
+    constexpr auto limit = std::numeric_limits<std::uintptr_t>::max();
+    if (addr > limit || bias_ > limit - addr) return false;
+    const auto host = addr + bias_;
+    return size == 0 || size - 1 <= limit - host;
+}
+
+bool GuestMemory::MappingRange(VAddr addr, u64 size, u64& rounded) const {
+    constexpr auto limit = std::numeric_limits<u64>::max();
+    if (!size || size > limit - (kHostPageSize - 1)) return false;
+    rounded = RoundHostPage(size);
+    // Ledgers use exclusive ends, which must themselves be representable.
+    if (rounded > limit - addr) return false;
+    if (window_bits_ && (addr > mask_ || rounded > mask_ - addr + 1)) return false;
+    return HostRange(addr, rounded);
+}
+
+bool GuestMemory::ProtectionRange(VAddr addr, u64 size, VAddr& base, VAddr& end) const {
+    constexpr auto limit = std::numeric_limits<u64>::max();
+    if (!size || size > limit - addr) return false;
+    const auto raw_end = addr + size;
+    if (raw_end > limit - (kHostPageSize - 1)) return false;
+    base = RoundDownHostPage(addr);
+    end = RoundHostPage(raw_end);
+    if (end <= base || (window_bits_ && (base > mask_ || end - 1 > mask_))) return false;
+    return HostRange(base, end - base);
+}
+
+bool GuestMemory::MatchesCodeAddressSpace(std::uintptr_t bias, std::uint64_t mask) const {
+    std::shared_lock guard(mapped_regions_mutex);
+    const bool matches = bias == bias_ && mask == mask_;
+    if (matches) identity_sealed_.store(true);
+    return matches;
+}
+
+runtime::CodeFetchResult GuestMemory::ReadCode(void* dest, size_t addr, size_t size) {
+    std::shared_lock guard(mapped_regions_mutex);
+    identity_sealed_.store(true);
+    constexpr auto limit = std::numeric_limits<size_t>::max();
+    if (size > limit - addr) return runtime::CodeFetchResult::Fault;
+    const auto effective = addr & mask_;
+    if (window_bits_ && size > mask_ - effective + 1) return runtime::CodeFetchResult::Fault;
+    if (!HostRange(effective, size) || !RangeIsMappedLocked(effective, size) ||
+        !RangeIsReadableLocked(effective, size)) return runtime::CodeFetchResult::Fault;
+    if (size) std::memcpy(dest, reinterpret_cast<const void*>(effective + bias_), size);
+    return runtime::CodeFetchResult::Success;
 }
 
 bool GuestMemory::Read(void* dest, size_t addr, size_t size) {
@@ -401,40 +546,11 @@ void GuestMemory::SetPageBits(VAddr addr, u64 size, bool present) {
     }
 }
 
-void GuestMemory::TrackMap(VAddr addr, u64 size) {
-    if (size == 0) return;
-    std::unique_lock guard(mapped_regions_mutex);
-    const VAddr end = addr + size;
-    // Replace any overlaps, then coalesce touching intervals. TrackUnmapLocked
-    // clears the same page bits, so set them after it, not before.
-    TrackUnmapLocked(addr, size);
-    SetPageBits(addr, size, true);
-    mapped_regions.emplace_back(addr, end);
-    std::sort(mapped_regions.begin(), mapped_regions.end());
-    std::vector<std::pair<VAddr, VAddr>> merged;
-    merged.reserve(mapped_regions.size());
-    for (const auto& r : mapped_regions) {
-        if (!merged.empty() && r.first <= merged.back().second) {
-            merged.back().second = std::max(merged.back().second, r.second);
-        } else {
-            merged.push_back(r);
-        }
-    }
-    mapped_regions = std::move(merged);
-}
-
-void GuestMemory::TrackUnmap(VAddr addr, u64 size) {
-    if (size == 0) return;
-    std::unique_lock guard(mapped_regions_mutex);
-    TrackUnmapLocked(addr, size);
-}
-
-void GuestMemory::TrackUnmapLocked(VAddr addr, u64 size) {
-    SetPageBits(addr, size, false);
-    const VAddr end = addr + size;
-    std::vector<std::pair<VAddr, VAddr>> out;
-    out.reserve(mapped_regions.size());
-    for (const auto& r : mapped_regions) {
+GuestMemory::Regions GuestMemory::UpdateRegions(const Regions& regions, VAddr addr, u64 size, bool present) {
+    const auto end = addr + size;
+    Regions out;
+    out.reserve(regions.size() + 2);
+    for (const auto& r : regions) {
         if (r.second <= addr || r.first >= end) {
             out.push_back(r);
             continue;
@@ -442,7 +558,31 @@ void GuestMemory::TrackUnmapLocked(VAddr addr, u64 size) {
         if (r.first < addr) out.emplace_back(r.first, addr);
         if (r.second > end) out.emplace_back(end, r.second);
     }
-    mapped_regions = std::move(out);
+    if (present) out.emplace_back(addr, end);
+    std::sort(out.begin(), out.end());
+    Regions merged;
+    merged.reserve(out.size());
+    for (const auto& r : out) {
+        if (!merged.empty() && r.first <= merged.back().second) {
+            merged.back().second = std::max(merged.back().second, r.second);
+        } else {
+            merged.push_back(r);
+        }
+    }
+    return merged;
+}
+
+void GuestMemory::TrackMapLocked(VAddr addr, u64 size, Regions&& mapped, Regions&& readable) noexcept {
+    mapped_regions.swap(mapped);
+    readable_regions.swap(readable);
+    SetPageBits(addr, size, true);
+    identity_sealed_.store(true);
+}
+
+void GuestMemory::TrackUnmapLocked(VAddr addr, u64 size, Regions&& mapped, Regions&& readable) noexcept {
+    mapped_regions.swap(mapped);
+    readable_regions.swap(readable);
+    SetPageBits(addr, size, false);
 }
 
 bool GuestMemory::RangeIsMapped(VAddr addr, u64 size) const {
@@ -523,6 +663,15 @@ bool GuestMemory::RangeIsMappedLocked(VAddr addr, u64 size) const {
     if (it == mapped_regions.begin()) return false;
     --it;
     return it->first <= addr && addr + size <= it->second;
+}
+
+bool GuestMemory::RangeIsReadableLocked(VAddr addr, u64 size) const {
+    if (!size) return true;
+    auto it = std::upper_bound(readable_regions.begin(), readable_regions.end(), addr,
+                              [](VAddr a, const auto& region) { return a < region.first; });
+    if (it == readable_regions.begin()) return false;
+    --it;
+    return it->first <= addr && addr < it->second && size <= it->second - addr;
 }
 
 bool GuestMemory::TryReadBytes(VAddr addr, std::span<u8> out) {

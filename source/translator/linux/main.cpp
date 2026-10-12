@@ -140,7 +140,7 @@ static int RunArm64Guest(const linux::LoadedImage& image,
                          VAddr guest_sp,
                          linux::GuestMemory& memory) {
     auto* instance = translator::arm64::Arm64Instance::Make(
-            reinterpret_cast<void*>(memory.GetBias()), memory.Windowed() ? memory.Mask() : 0);
+            reinterpret_cast<void*>(memory.GetBias()), memory.Windowed() ? memory.Mask() : 0, &memory);
     MapMainModuleAndLoadCache(instance->GetAddressSpace(), image);
     // Wire the interpreter wild-pointer guard before creating the core
     // (the core's constructor copies it into the runtime State).
@@ -157,9 +157,20 @@ static int RunArm64Guest(const linux::LoadedImage& image,
     // SMC wiring: notify the runtime when the guest remaps/unmaps code pages.
     syscalls.SetSmcInvalidate([instance](VAddr s, VAddr e) { instance->InvalidateCodeRange(s, e); });
     int exit_code = 0;
+    // Explicit diagnostic execution engine for native Step differential
+    // validation. Every instruction, including SVC, enters Core::Step;
+    // unsupported units terminate instead of falling back to Run.
+    const char* step_selector = std::getenv("SVM_ARM64_STEP");
+    const bool single_step = step_selector && std::strcmp(step_selector, "1") == 0;
+    u64 step_calls{}, retired_steps{}, step_syscalls{};
     for (;;) {
-        auto reason = core->Run();
+        auto reason = single_step ? (++step_calls, core->Step()) : core->Run();
+        if (single_step && reason == translator::ExitReason::Step) {
+            ++retired_steps;
+            continue;
+        }
         if (reason == translator::ExitReason::Syscall) {
+            if (single_step) ++step_syscalls;
             auto result = syscalls.Handle(ctx.r[8], ctx.r[0], ctx.r[1], ctx.r[2], ctx.r[3], ctx.r[4], ctx.r[5]);
             ctx.r[0] = static_cast<u64>(result.ret);
             if (result.exited) {
@@ -178,6 +189,13 @@ static int RunArm64Guest(const linux::LoadedImage& image,
             exit_code = 1;
             break;
         }
+    }
+
+    if (single_step) {
+        std::fprintf(stderr, "[arm64-step] calls=%llu retired=%llu syscalls=%llu run_calls=0\n",
+                     static_cast<unsigned long long>(step_calls),
+                     static_cast<unsigned long long>(retired_steps),
+                     static_cast<unsigned long long>(step_syscalls));
     }
 
     translator::arm64::Arm64Core::Destroy(core);

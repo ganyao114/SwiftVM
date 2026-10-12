@@ -19,17 +19,20 @@ using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
 
-IntrusivePtr<Block> BitOperations(u32 width, bool keep_inputs) {
+IntrusivePtr<Block> BitOperations(u32 width, bool keep_inputs, bool ieee = false,
+                                  ValueType acc_view = ValueType::U64, ValueType data_view = ValueType::U64,
+                                  bool narrow_producer = false) {
     IntrusivePtr<Block> block{new Block(0, Location{0xb200})};
     std::memset(&block->GetJitCache(), 0, sizeof(JitCache));
-    const auto data = block->LoadUniform(Uniform{0, ValueType::U64});
-    const auto acc = block->LoadUniform(Uniform{8, ValueType::U64});
+    const auto data = block->LoadUniform(Uniform{0, narrow_producer ? ValueType::U8 : ValueType::U64});
+    const auto acc = block->LoadUniform(Uniform{8, narrow_producer ? ValueType::U16 : ValueType::U64});
     const auto zero = block->LoadImm(Imm{u64{0}});
     const auto negative = block->Sub(zero, Operand{Imm{u64{1}}});
     block->SaveFlags(negative, Flags::NZCV);
     const auto count = block->PopCount(data);
     block->StoreUniform(Uniform{16, ValueType::U64}, count);
-    const auto crc = block->Crc32c(acc, data, Imm{width});
+    const auto crc = ieee ? block->Crc32(Value{acc}.SetCastType(acc_view), Value{data}.SetCastType(data_view), Imm{width}).SetType(ValueType::U32) :
+                            block->Crc32c(acc, data, Imm{width});
     block->StoreUniform(Uniform{24, ValueType::U32}, crc);
     block->StoreUniform(Uniform{32, ValueType::U64},
                         block->TestFlags(Flags::Negate).SetType(ValueType::U64));
@@ -148,4 +151,31 @@ TEST_CASE("scalar bit operations preserve inputs and pending NZCV", "[scalar-bit
 #else
     SUCCEED("Native scalar bit operations require an AArch64 host");
 #endif
+}
+
+TEST_CASE("IEEE CRC scalar views emit hardware snapshots and bounded software scratch", "[scalar-bits][codegen]") {
+    for (bool hardware : {false, true}) for (bool keep_inputs : {false, true}) for (bool narrow_producer : {false, true})
+    for (u32 width : {8u, 16u, 32u, 64u}) for (auto view : {ValueType::U8, ValueType::S16, ValueType::U32, ValueType::S64}) {
+        CAPTURE(hardware, keep_inputs, narrow_producer, width, view);
+        auto config = BitConfig(hardware); AddressSpace address_space{config};
+        auto block = BitOperations(width, keep_inputs, true, view, view, narrow_producer);
+        FeatureSet features{};
+        RegAlloc alloc{block->MaxInstrId(), address_space.GetTrampolines().GetGPRRegs(),
+                       address_space.GetTrampolines().GetFPRRegs(), features};
+        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        arm64::JitContext context{address_space.GetDefaultModule(), alloc}; arm64::JitTranslator translator{context};
+        translator.Translate(block.get()); context.Finish();
+        auto* first = context.GetMasm().GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+        auto* last = context.GetMasm().GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+        vixl::aarch64::Decoder decoder; vixl::aarch64::Disassembler disassembler; decoder.AppendVisitor(&disassembler);
+        std::string output;
+        for (auto* instruction = first; instruction < last; instruction = instruction->GetNextInstruction()) {
+            decoder.Decode(instruction); output += disassembler.GetOutput(); output += '\n';
+        }
+        INFO(output);
+        REQUIRE(first < last);
+        REQUIRE(output.find("blr ") == std::string::npos);
+        const std::string opcode = width == 8 ? "crc32b " : width == 16 ? "crc32h " : width == 32 ? "crc32w " : "crc32x ";
+        REQUIRE((output.find(opcode) != std::string::npos) == hardware);
+    }
 }

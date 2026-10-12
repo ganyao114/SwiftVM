@@ -432,6 +432,71 @@ void LocalCacheJoins() {
     std::cout << "PASS forward joins, NotGoto and finite backward loops with cached values\n";
 }
 
+void SaturationQCBeforeMarkerBranches(bool vector = false) {
+    for (bool cached : {false, true}) for (bool saturated : {false, true}) {
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x39f0})}; ir::Assembler as{block.get()};
+        auto condition = as.LoadUniform(ir::Uniform{0, ValueType::U8}).SetType(ValueType::U8);
+        auto input = as.LoadUniform(ir::Uniform{16, ValueType::V128}).SetType(ValueType::V128);
+        auto producer = as.VecSatMulHigh(input, input, input, ir::Imm{u64{16}}, ir::Imm{u64{5}}).SetType(ValueType::V128);
+        auto skip = as.Goto(ir::BOOL{condition});
+        auto qc = as.VecSatMulQC(producer).SetType(ValueType::U8);
+        as.BindLabel(skip);
+        // The taken edge skips the QC marker, but its producer already ran.
+        as.StoreUniform(ir::Uniform{48, ValueType::U8}, qc);
+        as.StoreUniform(ir::Uniform{64, ValueType::V128}, producer);
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        auto features = rv::HostFeatures{}; features.vector = vector;
+        Compiled compiled{block.get(), cached, features};
+        for (u64 branch : {u64{0}, u64{1}}) {
+            StateStorage actual; actual.Put(0, branch); actual.Put(16, saturated ? 0x8000 : 0);
+            actual.state->host_cpu_flags = 0x12345678abcdef00ULL;
+            Check(compiled.fn(actual.state) == HaltReason::CallHost, "saturation QC marker skip halt");
+            Check(actual.Get(48) == u64(saturated) && actual.Get(64) == (saturated ? 0x7fff : 0) && actual.Get(72) == 0,
+                  "producer-defined QC survives cache flush across skipped marker with inactive zeros");
+            Check(actual.state->host_cpu_flags == 0x12345678abcdef00ULL, "saturation CFG/QC preserve guest flags");
+        }
+    }
+    std::cout << "PASS saturation QC marker skip / cached+uncached / " << (vector ? "RVV" : "scalar") << " inputs\n";
+}
+
+void SaturatingShiftQCBeforeMarkerBranches() {
+    for (bool cached : {false, true}) for (u32 layout = 0; layout < 3; ++layout) {
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x39f8})}; ir::Assembler as{block.get()};
+        auto condition = as.LoadUniform(ir::Uniform{0, ValueType::U8}).SetType(ValueType::U8);
+        auto input = as.LoadUniform(ir::Uniform{16, ValueType::V128}).SetType(ValueType::V128);
+        auto producer = as.VecSatShiftImm(input, ir::Imm{u64{8}}, ir::Imm{u64{1}}, ir::Imm{u64{128}}).SetType(ValueType::V128);
+        auto other = as.VecSatShiftImm(input, ir::Imm{u64{8}}, ir::Imm{u64{0}}, ir::Imm{u64{129}}).SetType(ValueType::V128);
+        as.StoreUniform(ir::Uniform{96, ValueType::V128}, other);
+        ir::Value skip;
+        if (layout == 1) skip = as.Goto(ir::BOOL{condition});
+        auto qc = as.VecSatShiftQC(producer).SetType(ValueType::U8);
+        auto repeated = as.VecSatShiftQC(producer).SetType(ValueType::U8);
+        if (layout == 1) as.BindLabel(skip);
+        as.StoreUniform(ir::Uniform{48, ValueType::U8}, qc);
+        as.StoreUniform(ir::Uniform{49, ValueType::U8}, repeated);
+        as.StoreUniform(ir::Uniform{64, ValueType::V128}, producer);
+        if (layout == 2) {
+            auto counter = as.LoadUniform(ir::Uniform{80, ValueType::U64}).SetType(ValueType::U64);
+            auto next = as.Sub(counter, ir::Operand{ir::Imm{u64{1}}}).SetType(ValueType::U64);
+            as.StoreUniform(ir::Uniform{80, ValueType::U64}, next);
+            auto back = as.Goto(ir::BOOL{as.TestNotZero(next).SetType(ValueType::U8)}); as.BindLabel(back);
+            auto* label = &block->GetInstList().back(); block->RemoveInst(label); block->InsertBefore(label, qc.Def());
+        }
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        Compiled compiled{block.get(), cached, rv::HostFeatures{}};
+        for (u64 branch : {u64{0}, u64{1}}) for (bool saturated : {false, true}) {
+            StateStorage actual; actual.Put(0, branch); actual.Put(16, saturated ? 0x8080808080808080ULL : 0);
+            actual.Put(24, UINT64_MAX); actual.Put(80, 4); actual.state->host_cpu_flags = 0x12345678abcdef00ULL;
+            Check(compiled.fn(actual.state) == HaltReason::CallHost, "satshift early QC skip/revisit halt");
+            Check(actual.Get(48) == (saturated ? 0x101u : 0u) && actual.Get(64) == (saturated ? 0x8080808080808080ULL : 0) && actual.Get(72) == 0,
+                  "satshift producer QC survives second producer, skipped/revisited markers and ignores inactive high lanes");
+            Check(actual.state->host_cpu_flags == 0x12345678abcdef00ULL && (layout != 2 || actual.Get(80) == 0),
+                  "satshift cached and uncached CFG preserve flags");
+        }
+    }
+    std::cout << "PASS saturating shift QC cached+uncached skipped/revisited marker paths\n";
+}
+
 void ScalarAddressing() {
     using namespace biscuit;
     auto config = TestConfig();
@@ -1206,6 +1271,7 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string{argv[1]} == "--rvv") {
             NativeHostRegisters(true); NativePhi(true); NativeWide(true); FunctionCFG();
+            SaturationQCBeforeMarkerBranches(true);
             NativeVectors(true); NativeVectorInteger(true); NativeVectorShuffle(true); NativeLocals(true); NativeVectorFloat(true); NativeCalls(true); NativeMemoryFrame(true); NativeMemoryCopy(true); NativeCrypto(true);
             std::cout << "OK " << checks << " checks\n";
             return 0;
@@ -1252,7 +1318,7 @@ int main(int argc, char** argv) {
         NativeScalarBits(); NativeScalarALU(); NativeFlags(); NativeVectors(); NativeVectorInteger(); NativeVectorShuffle(); NativeLocals(); NativeVectorFloat(); NativeCalls(); NativeMemoryCopy(); NativeCrypto();
         NativeAtomics();
         ScalarDifferential(); Conditions(); FlagPredicates(); MixedHelpers(); VectorSelections(); SemanticExceptions();
-        ScalarCache(); RegisterPressureAndHelpers(); LocalCacheJoins(); ScalarAddressing();
+        ScalarCache(); RegisterPressureAndHelpers(); LocalCacheJoins(); SaturationQCBeforeMarkerBranches(); SaturatingShiftQCBeforeMarkerBranches(); ScalarAddressing();
         LargeBranches(); NativeMemoryFrame(); Memory(); AlignedMemoryAtomicity();
         RuntimeDispatch(); RunningInterrupt(); Selections(); RuntimeFaults(); Atomics();
         RetainedIR(); FunctionEntries(); FunctionCFG(); RejectCrossBlockTerminals();

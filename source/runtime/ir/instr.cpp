@@ -347,7 +347,8 @@ bool Inst::HasValue() { return meta::HasValue(GetIRMetaInfo(op_code).return_type
 bool Inst::IsPseudoOperation() {
     return op_code == OpCode::GetFlags || op_code == OpCode::SaveFlags ||
            op_code == OpCode::BranchOnlyFlags || op_code == OpCode::GetResult ||
-           op_code == OpCode::Div128Remainder || op_code == OpCode::CpuidUpper;
+           op_code == OpCode::Div128Remainder || op_code == OpCode::CpuidUpper ||
+           op_code == OpCode::VecSatMulQC || op_code == OpCode::VecSatShiftQC;
 }
 
 bool Inst::IsGetHostRegOperation() {

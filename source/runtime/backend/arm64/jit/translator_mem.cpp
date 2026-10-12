@@ -1024,6 +1024,25 @@ void JitTranslator::EmitAtomicRMWValue(ir::AtomicRMWOp op,
             __ Sub(dst, lhs, rhs);
             __ Sub(dst, dst, context.W(carry));
             break;
+        case ir::AtomicRMWOp::SignedMax:
+        case ir::AtomicRMWOp::SignedMin:
+        case ir::AtomicRMWOp::UnsignedMax:
+        case ir::AtomicRMWOp::UnsignedMin: {
+            const bool signed_compare = op == ir::AtomicRMWOp::SignedMax || op == ir::AtomicRMWOp::SignedMin;
+            const bool maximum = op == ir::AtomicRMWOp::SignedMax || op == ir::AtomicRMWOp::UnsignedMax;
+            const auto bits = ir::GetValueSizeByte(type) * 8;
+            // Byte and halfword old/operand values are zero-extended. Shift
+            // both sign bits to W[31] for the signed comparison only.
+            if (signed_compare && bits < 32) {
+                __ Lsl(dst, lhs, 32 - bits);
+                __ Cmp(dst, Operand(rhs, LSL, 32 - bits));
+            } else {
+                __ Cmp(lhs, rhs);
+            }
+            const Condition condition = signed_compare ? (maximum ? ge : le) : (maximum ? hs : ls);
+            __ Csel(dst, lhs, rhs, condition);
+            break;
+        }
     }
 }
 

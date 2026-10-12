@@ -2,6 +2,7 @@
 
 #include <array>
 #include <stdexcept>
+#include "runtime/common/crc32.h"
 
 namespace swift::runtime::backend::riscv64 {
 
@@ -61,10 +62,11 @@ bool JitTranslator::EmitScalarBits(ir::Inst* inst) {
     switch (op) {
         case O::ByteSwap: case O::CountLeadingZeros64: case O::CountTrailingZeros64:
         case O::CountLeadingZeros32: case O::CountTrailingZeros32: case O::PopCount:
-        case O::BitExtract: case O::BitInsert: case O::BitClear: case O::Crc32c:
+        case O::BitExtract: case O::BitInsert: case O::BitClear: case O::Crc32: case O::Crc32c:
         case O::LocalParitySet: case O::FCmpCondSet: break;
         default: return false;
     }
+    if (op == O::Crc32) (void)ValidateIeeeCrc32(inst);
     auto& as = context.GetMasm();
     if (ir::IsFloatValueType(inst->ReturnType())) return false;
     const auto result = context.ResultRegister(inst);
@@ -105,13 +107,17 @@ bool JitTranslator::EmitScalarBits(ir::Inst* inst) {
         as.LI(result, FloatConditionTable(inst->GetArg<ir::Cond>(1)));
         as.SRL(result, result, t1); as.ANDI(result, result, 1);
         normalized = true;
-    } else if (op == O::Crc32c) {
+    } else if (op == O::Crc32 || op == O::Crc32c) {
         const auto width = inst->GetArg<ir::Imm>(2).Get();
         if (width != 8 && width != 16 && width != 32 && width != 64)
             throw std::runtime_error("invalid RV64 CRC32C width");
         context.Read(t0, source); context.Mask(t0, 32);
         context.Read(t1, inst->GetArg<ir::Value>(1));
-        context.HostAddress(t2, reinterpret_cast<u64>(crc32c_table.data()));
+        if (op == O::Crc32) {
+            context.Mask(t0, IeeeCrcInputBits(source));
+            context.Mask(t1, IeeeCrcInputBits(inst->GetArg<ir::Value>(1)));
+        }
+        context.HostAddress(t2, reinterpret_cast<u64>(op == O::Crc32 ? ieee_crc32_table.data() : crc32c_table.data()));
         for (u32 byte = 0; byte < width / 8; ++byte) {
             context.EnsureSpace();
             as.XOR(t3, t0, t1); as.ANDI(t3, t3, 255); as.SLLI(t3, t3, 2);

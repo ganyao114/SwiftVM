@@ -12,9 +12,10 @@
 // bias conversion is centralized here (ToHost/ToGuest) so callers (loader,
 // stack setup, syscall emulation) never see host pointers.
 //
-// Note: guest page protections are intentionally *not* honored — the host
-// never executes guest code (the JIT reads it as data), so all guest pages
-// stay host RW. Guest PROT_EXEC is a no-op for us.
+// Mapping APIs initially create host RW pages. Protect changes actual host
+// permissions; safe code copies also retain a separate read capability.
+// This capability does not enforce guest execute permission or synchronize
+// instruction contents with guest/host writes.
 //
 
 #pragma once
@@ -85,16 +86,12 @@ public:
     // Guest->host bias (host address = (guest address & mask) + bias). Must
     // be host-page aligned. Set once by the loader after reserving the image
     // span; 0 means direct mapping.
-    void SetBias(u64 bias) { bias_ = bias; }
+    void SetBias(u64 bias);
     [[nodiscard]] u64 GetBias() const { return bias_; }
 
     // Select Linux host direct mapping before any reservation or mapping.
     // The launcher never calls this on macOS.
-    void EnableDirectMode() {
-        ASSERT(bias_ == 0);
-        ASSERT(window_bits_ == 0);
-        direct_mode_ = true;
-    }
+    void EnableDirectMode();
     [[nodiscard]] bool DirectMode() const { return direct_mode_; }
 
     // Shared control-flow primitive for the initial Linux ET_EXEC mapping.
@@ -164,6 +161,10 @@ public:
     // runtime::MemoryInterface — bias translation (instruction fetch).
     bool Read(void* dest, size_t addr, size_t size) override;
     bool Write(void* src, size_t addr, size_t size) override;
+    // Validate the complete original/effective range and pin mapped, readable
+    // backing through the copy. Fault never copies a partial destination.
+    runtime::CodeFetchResult ReadCode(void* dest, size_t addr, size_t size) override;
+    bool MatchesCodeAddressSpace(std::uintptr_t bias, std::uint64_t mask) const override;
     // Instruction fetch, and the ONLY guest access the frontend makes from
     // host code. It must be validated: the bias is a basic add, so an
     // unmapped guest address yields a host pointer into whatever the host
@@ -253,15 +254,24 @@ public:
     static constexpr u64 RoundDownHostPage(u64 v) { return v & ~(kHostPageSize - 1); }
 
 private:
+    using Regions = std::vector<std::pair<VAddr, VAddr>>;
     bool MapFixedImpl(VAddr addr, u64 size, bool quiet_failure);
-    bool FallBackDirectToWindow();
+    bool MapFixedLocked(VAddr addr, u64 size, bool quiet_failure);
+    bool ReserveWindowLocked(u32 bits);
+    bool MapImageAnywhereLocked(VAddr guest_start, u64 size);
+    // Range validation performs checked rounding and checked host translation.
+    [[nodiscard]] bool MappingRange(VAddr addr, u64 size, u64& rounded) const;
+    [[nodiscard]] bool ProtectionRange(VAddr addr, u64 size, VAddr& base, VAddr& end) const;
+    [[nodiscard]] bool HostRange(VAddr addr, u64 size) const;
+    static Regions UpdateRegions(const Regions& regions, VAddr addr, u64 size, bool present);
     // Tracked guest mappings (sorted, disjoint [start, end) host-page
     // granularity intervals, in *guest* addresses). Maintained by
     // MapFixed/MapAnywhere/Unmap.
-    void TrackMap(VAddr addr, u64 size);
-    void TrackUnmap(VAddr addr, u64 size);
-    void TrackUnmapLocked(VAddr addr, u64 size);
+    // Prepared vectors make publication allocation-free after host mutation.
+    void TrackMapLocked(VAddr addr, u64 size, Regions&& mapped, Regions&& readable) noexcept;
+    void TrackUnmapLocked(VAddr addr, u64 size, Regions&& mapped, Regions&& readable) noexcept;
     [[nodiscard]] bool RangeIsMappedLocked(VAddr addr, u64 size) const;
+    [[nodiscard]] bool RangeIsReadableLocked(VAddr addr, u64 size) const;
     // First free [addr, addr+size) hole at or above `from` inside the window.
     [[nodiscard]] VAddr FindFreeLocked(VAddr from, u64 size) const;
     // Page-presence bitmap, one bit per host page of the window; nullptr when
@@ -283,7 +293,10 @@ private:
     };
     std::unique_ptr<std::atomic<u64>[], BitmapFree> page_bitmap_;
     mutable std::shared_mutex mapped_regions_mutex;
-    std::vector<std::pair<VAddr, VAddr>> mapped_regions;
+    Regions mapped_regions;
+    Regions readable_regions;
+    // Address identity may change only before mappings/provider exposure.
+    mutable std::atomic<bool> identity_sealed_{};
     u64 bias_{};
     // Linux host direct mode. This is distinct from unwindowed bias:
     // MapImageAnywhere maps at guest_start rather than choosing a host base.

@@ -5,8 +5,9 @@
 namespace swift::runtime::backend {
 
 // Host helpers share the address mapping of the Runtime that called them.
-// A scope is entered for both JIT and interpreted execution. Restoring the
-// previous scope also supports a host callback entering another Runtime.
+// A scope is entered for both JIT and interpreted execution. Runtime rejects
+// nested guest execution before changing this mapping; restoring the previous
+// scope also supports standalone scoped helper use outside Runtime execution.
 class GuestMemoryScope final {
 public:
     struct Mapping {

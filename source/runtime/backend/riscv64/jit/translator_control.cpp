@@ -76,8 +76,7 @@ void JitTranslator::EmitTailCode(u32 saved_mask) {
     if (!tail_used) return;
     auto& as = context.GetMasm();
     as.Bind(&tail_epilogue);
-    context.Load(t0, state, state_offset_halt_reason, 4);
-    context.BranchZero(t0, epilogue, false);
+    CheckHalt();
     context.ReleaseMemoryLease(); context.LeaveFloatMode();
     if (context.FlagsEnabled()) context.Store(flags, state, state_offset_host_flags);
     as.MV(a0, state);

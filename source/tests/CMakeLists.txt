@@ -1,3 +1,147 @@
+add_executable(arm64_frontend_semantics_test arm64_frontend_semantics_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE ir_value_size_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_atomic_extrema_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_indexed_scalar_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_indexed_fp_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_crypto_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_crc_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_sha_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_scalar_misc_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_scalar_shift_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_vector_sat_shift_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_scalar_multiply_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_scalar_mulhigh_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_scalar_sign_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_dot_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_saturating_multiply_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_vector_doubling_long_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_scalar_pairwise_fp_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_fp16_unary_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_vector_fp_unary_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_fp_compare_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_fp_integer_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_fp_fixed_simd_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_frint_range_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_polynomial_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_mixed_sat_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_pairwise_widen_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_high_narrow_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_absolute_long_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_absolute_narrow_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_halving_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_integer_reserved_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_scalar_variable_shift_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_fp_precision_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_fp_estimate_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_fp_reduction_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_fp16_binary_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_vector_fp_binary_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_scalar_fp16_misc_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_vector_fma_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_fmulx_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_reciprocal_step_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_casp_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_dataproc_decode_regression_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_memory_commit_test.cpp)
+target_sources(arm64_frontend_semantics_test PRIVATE arm64_base_memory_extensions_test.cpp)
+target_link_libraries(arm64_frontend_semantics_test PRIVATE
+        swift_translator fronted_arm64 swift::runtime Catch2::Catch2WithMain)
+add_test(NAME arm64_frontend_semantics_test COMMAND arm64_frontend_semantics_test)
+set_tests_properties(arm64_frontend_semantics_test PROPERTIES LABELS "unit;arm64;frontend" TIMEOUT 120)
+
+add_executable(arm64_single_instruction_test arm64_single_instruction_test.cpp)
+target_link_libraries(arm64_single_instruction_test PRIVATE
+        swift_translator fronted_arm64 swift::runtime Catch2::Catch2WithMain)
+add_test(NAME arm64_single_instruction_test COMMAND arm64_single_instruction_test)
+set_tests_properties(arm64_single_instruction_test PROPERTIES
+        LABELS "unit;arm64;frontend;single-instruction" TIMEOUT 60)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(swift_guest_code_fetch_test guest_code_fetch_test.cpp
+            ../translator/linux/guest_memory.cpp)
+    target_link_libraries(swift_guest_code_fetch_test PRIVATE swift_translator swift::runtime Catch2::Catch2WithMain)
+    add_test(NAME swift_guest_code_fetch_test COMMAND swift_guest_code_fetch_test)
+    set_tests_properties(swift_guest_code_fetch_test PROPERTIES
+            LABELS "unit;memory;code-fetch;lease" TIMEOUT 45)
+
+    add_executable(swift_interp_atomic_range_test interp_atomic_range_test.cpp)
+    target_link_libraries(swift_interp_atomic_range_test PRIVATE swift_translator swift::runtime Catch2::Catch2WithMain)
+    add_test(NAME swift_interp_atomic_range_test COMMAND swift_interp_atomic_range_test)
+    set_tests_properties(swift_interp_atomic_range_test PROPERTIES LABELS "unit;memory;atomic;interpreter" TIMEOUT 30)
+endif()
+
+find_package(Threads REQUIRED)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "x86_64" IN_LIST ARCHITECTURE)
+    add_executable(swift_runtime_interpreter_single_instruction_test runtime_interpreter_single_instruction_test.cpp)
+    target_link_libraries(swift_runtime_interpreter_single_instruction_test PRIVATE
+            swift_translator fronted_arm64 swift::runtime Catch2::Catch2WithMain Threads::Threads)
+    add_test(NAME swift_runtime_interpreter_single_instruction_test COMMAND swift_runtime_interpreter_single_instruction_test)
+    set_tests_properties(swift_runtime_interpreter_single_instruction_test PROPERTIES
+            LABELS "unit;runtime;interpreter;single-instruction;gate-e1" TIMEOUT 120 ENVIRONMENT "SVM_ENABLE_JIT=0;SVM_FUNC_BASE=0")
+    add_executable(swift_runtime_execution_owner_test runtime_execution_owner_test.cpp)
+    target_link_libraries(swift_runtime_execution_owner_test PRIVATE
+            swift_translator swift::runtime Catch2::Catch2WithMain Threads::Threads)
+    add_test(NAME swift_runtime_execution_owner_test COMMAND swift_runtime_execution_owner_test)
+    set_tests_properties(swift_runtime_execution_owner_test PROPERTIES
+            LABELS "unit;runtime;ownership;step" TIMEOUT 60)
+endif()
+if(TARGET swift_guest_code_fetch_test)
+    target_link_libraries(swift_guest_code_fetch_test PRIVATE Threads::Threads)
+endif()
+add_executable(swift_exclusive_monitor_test exclusive_monitor_test.cpp
+        ../runtime/common/exclusive_monitor.cpp)
+target_compile_definitions(swift_exclusive_monitor_test PRIVATE SWIFT_EXCLUSIVE_MONITOR_STANDALONE)
+target_link_libraries(swift_exclusive_monitor_test PRIVATE Threads::Threads)
+add_test(NAME swift_exclusive_monitor_test COMMAND swift_exclusive_monitor_test)
+set_tests_properties(swift_exclusive_monitor_test PROPERTIES LABELS "unit;exclusive;registry" TIMEOUT 30)
+
+add_executable(swift_memory_lease_test memory_lease_test.cpp
+        ../runtime/common/memory_lease.cpp)
+target_include_directories(swift_memory_lease_test PRIVATE ${CMAKE_SOURCE_DIR}/source)
+target_link_libraries(swift_memory_lease_test PRIVATE Threads::Threads)
+add_test(NAME swift_memory_lease_test COMMAND swift_memory_lease_test)
+set_tests_properties(swift_memory_lease_test PROPERTIES LABELS "unit;memory;lease" TIMEOUT 45)
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME swift_tools_test COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_SOURCE_DIR}/tools/tests -p "test_*.py")
+    set_tests_properties(swift_tools_test PROPERTIES LABELS "unit;review" TIMEOUT 120)
+endif()
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "x86_64" IN_LIST ARCHITECTURE)
+    target_include_directories(arm64_frontend_semantics_test PRIVATE ${XBYAK_INCLUDE_DIR})
+    add_subdirectory(x64)
+    # This case only allocates and emits ARM64 bytes; it never executes them.
+    add_executable(swift_arm64_satmul_codegen_test register_alloc_copy_test.cpp)
+    target_link_libraries(swift_arm64_satmul_codegen_test PRIVATE
+            swift_translator swift::runtime Catch2::Catch2WithMain)
+    add_test(NAME swift_arm64_satmul_codegen_test COMMAND swift_arm64_satmul_codegen_test
+            "saturating multiply flat-block QC is reserved at its producer")
+    set_tests_properties(swift_arm64_satmul_codegen_test PROPERTIES
+            LABELS "unit;arm64;codegen" TIMEOUT 30)
+    add_test(NAME swift_arm64_satshift_codegen_test COMMAND swift_arm64_satmul_codegen_test
+            "saturating shift flat-block QC is reserved at its producer,saturating shift spilled input and result retain independent FPR leases")
+    set_tests_properties(swift_arm64_satshift_codegen_test PROPERTIES
+            LABELS "unit;arm64;codegen" TIMEOUT 30)
+    add_test(NAME swift_arm64_unsigned_estimate_codegen_test COMMAND swift_arm64_satmul_codegen_test
+            "unsigned estimates emit native ARM64 under aliases and FPR pressure,unsigned estimates reject noncanonical ARM64 IR before emission")
+    set_tests_properties(swift_arm64_unsigned_estimate_codegen_test PROPERTIES
+            LABELS "unit;arm64;codegen" TIMEOUT 30)
+    add_test(NAME swift_arm64_sataddsub_codegen_test COMMAND swift_arm64_satmul_codegen_test
+            "saturating add subtract emit ARM64 dword qword aliases and spills,saturating add subtract reject malformed ARM64 whole blocks")
+    set_tests_properties(swift_arm64_sataddsub_codegen_test PROPERTIES
+            LABELS "unit;arm64;codegen" TIMEOUT 30)
+    add_executable(swift_arm64_crc_codegen_test scalar_bit_codegen_test.cpp)
+    target_link_libraries(swift_arm64_crc_codegen_test PRIVATE
+            swift_translator swift::runtime Catch2::Catch2WithMain)
+    add_test(NAME swift_arm64_crc_codegen_test COMMAND swift_arm64_crc_codegen_test
+            "IEEE CRC scalar views emit hardware snapshots and bounded software scratch")
+    set_tests_properties(swift_arm64_crc_codegen_test PROPERTIES
+            LABELS "unit;arm64;codegen" TIMEOUT 30)
+    return()
+endif()
+
 # Existing cases below execute ARM64 machine code and use its register ABI.
 # RV64 has its own execution suite; do not register ARM64 cases as RV64 tests.
 if("riscv" IN_LIST ARCHITECTURE OR "riscv64" IN_LIST ARCHITECTURE)
@@ -182,14 +326,10 @@ target_link_libraries(swift_support_test PRIVATE swift_support_cases Catch2::Cat
 add_test(NAME swift_support_test COMMAND swift_support_test)
 set_tests_properties(swift_support_test PROPERTIES LABELS "unit;diagnostics" TIMEOUT 15)
 
-find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME swift_wording_check COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/tools/check_wording.py)
     set_tests_properties(swift_wording_check PROPERTIES LABELS "unit;review" TIMEOUT 20)
-    add_test(NAME swift_tools_test COMMAND ${Python3_EXECUTABLE} -m unittest discover
-            -s ${CMAKE_SOURCE_DIR}/tools/tests -p "test_*.py")
-    set_tests_properties(swift_tools_test PROPERTIES LABELS "unit;review" TIMEOUT 15)
 endif()
 
 add_subdirectory(riscv)

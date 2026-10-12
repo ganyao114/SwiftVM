@@ -11,6 +11,8 @@ namespace swift::runtime::backend {
 
 #if defined(__riscv) && __riscv_xlen == 64
 inline constexpr ISA kNativeJitBackend = kRiscv64;
+#elif defined(__linux__) && defined(__x86_64__)
+inline constexpr ISA kNativeJitBackend = kX86_64;
 #else
 inline constexpr ISA kNativeJitBackend = kArm64;
 #endif

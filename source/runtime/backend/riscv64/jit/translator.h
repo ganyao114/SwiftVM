@@ -51,6 +51,7 @@ private:
     void EmitMemory(ir::Inst* inst, bool store, bool ordered, biscuit::GPR result);
     void EmitTerminal(const ir::Terminal& terminal);
     void Poll();
+    void CheckHalt();
     void Return(HaltReason reason);
     bool EmitControl(ir::Inst* inst);
     void EmitTailCode(u32 saved_mask);

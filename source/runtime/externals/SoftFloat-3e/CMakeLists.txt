@@ -57,6 +57,8 @@ add_library(softfloat_3e STATIC
   src/s_roundToI32.c
   src/s_roundToI64.c
   src/s_roundPackToF32.c
+  src/s_roundPackToF16.c
+  src/s_commonNaNToF16UI.c
   src/s_addMagsExtF80.c
   src/s_extF80UIToCommonNaN.c
   src/s_commonNaNToF32UI.c
@@ -95,3 +97,4 @@ list(APPEND DEFINES "-DLITTLEENDIAN=1;-DSOFTFLOAT_BUILTIN_CLZ=1;-DINLINE=static 
 target_include_directories(softfloat_3e PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include/)
 target_include_directories(softfloat_3e PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include/SoftFloat-3e/)
 target_compile_definitions(softfloat_3e PUBLIC ${DEFINES})
+target_compile_definitions(softfloat_3e PUBLIC SOFTFLOAT_ROUND_ODD=1)

@@ -3,6 +3,7 @@
 //
 
 #include "arm64_frontend_internal.h"
+#include <limits>
 
 namespace swift::arm64 {
 
@@ -24,12 +25,46 @@ void A64Decoder::Decode() {
             break;
         }
         auto instr = reinterpret_cast<const Instruction*>(code_ptr);
+        assembler->AddGuestCodeDependency(current_pc, NextPC());
         decoder.Decode(instr);
         current_pc += kInstructionSize;
         if (!end_decode_ && !assembler->EndCommit()) {
             __ AdvancePC(ir::Imm{u32(kInstructionSize)});
         }
     }
+}
+
+CodeFetchResult A64Decoder::DecodeSingle() {
+    if (end_decode_ || assembler->EndCommit()) return CodeFetchResult::Success;
+    if (current_pc & (kInstructionSize - 1)) {
+        Interrupt(InterruptReason::ILL_CODE, current_pc);
+        return CodeFetchResult::Fault;
+    }
+    // Guest-code dependencies use a nonwrapping half-open range. Refuse a
+    // boundary that cannot be represented before fetching or emitting work.
+    if (current_pc > std::numeric_limits<VAddr>::max() - kInstructionSize) {
+        Interrupt(InterruptReason::PAGE_FATAL, current_pc);
+        return CodeFetchResult::Fault;
+    }
+    // GetPointer only establishes the first byte. A bounded read is required
+    // here so the memory interface can reject a partial instruction before
+    // VIXL dereferences it. ReadCode owns range/permission/lifetime validation;
+    // no next-instruction fetch belongs to this decode boundary.
+    u32 instruction{};
+    const auto fetched = memory ? memory->ReadCode(&instruction, current_pc, sizeof(instruction))
+                                : CodeFetchResult::Unsupported;
+    if (fetched == CodeFetchResult::Unsupported) return fetched;
+    if (fetched != CodeFetchResult::Success) {
+        Interrupt(InterruptReason::PAGE_FATAL, current_pc);
+        return CodeFetchResult::Fault;
+    }
+    assembler->AddGuestCodeDependency(current_pc, NextPC());
+    vixl::aarch64::Decoder decoder;
+    decoder.AppendVisitor(this);
+    decoder.Decode(reinterpret_cast<const Instruction*>(&instruction));
+    current_pc += kInstructionSize;
+    if (!end_decode_ && !assembler->EndCommit()) BranchImm(current_pc);
+    return CodeFetchResult::Success;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +180,17 @@ void A64Decoder::WriteWRegister(u8 code, ir::Value value, Reg31Mode r31mode) {
 void A64Decoder::WriteVRegister(u8 code, ir::Value value) {
     auto offset = u32(offsetof(ThreadContext64, v) + code * sizeof(u128));
     __ StoreUniform(ir::Uniform{offset, value.Type()}, value);
+    // Scalar SIMD writes clear every bit above the written B/H/S/D lane.
+    const u32 bytes = ir::GetValueSizeByte(value.Type());
+    for (u32 i = bytes; i < 16;) {
+        const u32 remaining = 16 - i;
+        const auto type = (i % 8 == 0 && remaining >= 8) ? ir::ValueType::U64
+                        : (i % 4 == 0 && remaining >= 4) ? ir::ValueType::U32
+                        : (i % 2 == 0 && remaining >= 2) ? ir::ValueType::U16
+                                                       : ir::ValueType::U8;
+        __ StoreUniform(ir::Uniform{offset + i, type}, ImmValue(0, type));
+        i += ir::GetValueSizeByte(type);
+    }
 }
 
 void A64Decoder::WritePC(ir::Lambda new_pc) { assembler->SetLocation(new_pc); }
@@ -257,14 +303,15 @@ ir::BOOL A64Decoder::BoolXor(ir::BOOL a, ir::BOOL b) {
 }
 
 ir::BOOL A64Decoder::CondPassed(Condition cond) {
-    auto n = [&] { return ir::BOOL{__ TestFlags(ir::Flags::Negate)}; };
-    auto z = [&] { return ir::BOOL{__ TestFlags(ir::Flags::Zero)}; };
-    auto c = [&] { return ir::BOOL{__ TestFlags(ir::Flags::Carry)}; };
-    auto v = [&] { return ir::BOOL{__ TestFlags(ir::Flags::Overflow)}; };
-    auto not_n = [&] { return ir::BOOL{__ TestNotFlags(ir::Flags::Negate)}; };
-    auto not_z = [&] { return ir::BOOL{__ TestNotFlags(ir::Flags::Zero)}; };
-    auto not_c = [&] { return ir::BOOL{__ TestNotFlags(ir::Flags::Carry)}; };
-    auto not_v = [&] { return ir::BOOL{__ TestNotFlags(ir::Flags::Overflow)}; };
+    auto boolean = [](ir::Value value) { return ir::BOOL{value.SetType(ir::ValueType::U8)}; };
+    auto n = [&] { return boolean(__ TestFlags(ir::Flags::Negate)); };
+    auto z = [&] { return boolean(__ TestFlags(ir::Flags::Zero)); };
+    auto c = [&] { return boolean(__ TestFlags(ir::Flags::Carry)); };
+    auto v = [&] { return boolean(__ TestFlags(ir::Flags::Overflow)); };
+    auto not_n = [&] { return boolean(__ TestNotFlags(ir::Flags::Negate)); };
+    auto not_z = [&] { return boolean(__ TestNotFlags(ir::Flags::Zero)); };
+    auto not_c = [&] { return boolean(__ TestNotFlags(ir::Flags::Carry)); };
+    auto not_v = [&] { return boolean(__ TestNotFlags(ir::Flags::Overflow)); };
     switch (cond) {
         case eq:
             return z();
@@ -288,20 +335,20 @@ ir::BOOL A64Decoder::CondPassed(Condition cond) {
             return BoolOr(not_c(), z());
         case ge:
             // N == V
-            return __ TestZero(BoolXor(n(), v()));
+            return boolean(__ TestZero(BoolXor(n(), v())));
         case lt:
             // N != V
-            return __ TestNotZero(BoolXor(n(), v()));
+            return boolean(__ TestNotZero(BoolXor(n(), v())));
         case gt:
             // !Z && (N == V)
-            return BoolAnd(__ TestZero(BoolXor(n(), v())), not_z());
+            return BoolAnd(boolean(__ TestZero(BoolXor(n(), v()))), not_z());
         case le:
             // Z || (N != V)
-            return BoolOr(__ TestNotZero(BoolXor(n(), v())), z());
+            return BoolOr(boolean(__ TestNotZero(BoolXor(n(), v()))), z());
         case al:
         case nv:
         default:
-            return ir::BOOL{__ LoadImm<ir::U8>(ir::Imm{true})};
+            return boolean(__ LoadImm<ir::U8>(ir::Imm{true}));
     }
 }
 
@@ -459,6 +506,7 @@ void A64Decoder::Interrupt(InterruptReason reason, VAddr resume_pc) {
 // ---------------------------------------------------------------------------
 
 void A64Decoder::VisitUnimplemented(const Instruction* instr) {
+    if (TryBaseMemoryExtension(instr)) return;
     Interrupt(InterruptReason::FALLBACK, current_pc);
 }
 

@@ -2570,6 +2570,11 @@ private:
                     // id), which is why only block mode failed.
                     end = start;
                 }
+                // The saturation producer writes its QC pseudo before the
+                // marker's position. Match the HIR collectors so flat-block
+                // allocation reserves that output through the entire delay.
+                if (instr.GetOp() == OpCode::VecSatMulQC || instr.GetOp() == OpCode::VecSatShiftQC)
+                    start = instr.GetArg<Value>(0).Id();
                 live_interval.push_back({&instr, start, end});
             }
         }

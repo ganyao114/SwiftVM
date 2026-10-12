@@ -408,9 +408,10 @@ ScratchNeed ScratchBudget(ir::OpCode op, const FeatureSet& features) {
     switch (op) {
         case ir::OpCode::PopCount:
             return {0, 1};
-        case ir::OpCode::Crc32c:
-            // Three temporaries for the software fallback; the hardware
-            // instruction needs none. Operand reloads are priced separately.
+        case ir::OpCode::Crc32: case ir::OpCode::Crc32c:
+            // Three temporaries for the software fallback. IEEE hardware
+            // emission uses two for masked input snapshots; CRC32C needs
+            // none. Operand reloads are priced separately.
             return {3, 0};
         case ir::OpCode::CallLambda:
             // EmitHostCall leases only the shared NZCV merge temporary.
@@ -459,6 +460,16 @@ ScratchNeed ScratchBudget(ir::OpCode op, const FeatureSet& features) {
             return {static_cast<u8>(X86PinExtEnabled() ? 5 : 4),
                     kDefaultScratchFPR};
         // --- five GPRs ---------------------------------------------------
+        case ir::OpCode::VecSatMulHigh:
+            // Three vector snapshots, five scalar lanes/clamp temporaries,
+            // plus the shared pending-NZCV merge lease before CMP clobbers.
+            // QC spill outputs are stored directly without another lease.
+            return {6, 3};
+        case ir::OpCode::VecSatShiftImm:
+            // One ordinary vector snapshot, with conservative FPR headroom;
+            // source/result spill leases are charged separately by the
+            // verifier. Six GPRs hold lane/QC work and private saved NZCV.
+            return {6, 2};
         case ir::OpCode::VecFCvtFloatToInt:
             return {5, kDefaultScratchFPR};
         // --- five FPRs ---------------------------------------------------

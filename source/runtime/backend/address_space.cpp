@@ -7,6 +7,9 @@
 #include "address_space.h"
 #include "runtime/backend/arm64/trampolines.h"
 #include "runtime/backend/riscv64/trampolines.h"
+#ifdef SWIFT_HAS_X64_BACKEND
+#include "runtime/backend/x64/trampolines.h"
+#endif
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/logging.h"
 #include <algorithm>
@@ -43,6 +46,11 @@ void AddressSpace::Init() {
         case kRiscv64:
             trampolines = std::make_unique<riscv64::TrampolinesRiscv64>(config);
             break;
+#ifdef SWIFT_HAS_X64_BACKEND
+        case kX86_64:
+            trampolines = std::make_unique<x64::TrampolinesX64>(config);
+            break;
+#endif
         default:
             PANIC();
     }

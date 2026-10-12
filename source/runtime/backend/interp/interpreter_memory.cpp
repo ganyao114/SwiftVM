@@ -1,5 +1,8 @@
 #include <atomic>
 #include <cstring>
+#if defined(__x86_64__)
+#include <emmintrin.h>
+#endif
 #include "interpreter.h"
 #include "runtime/backend/atomic_fallback.h"
 #include "runtime/ir/atomic_rmw.h"
@@ -162,18 +165,40 @@ void Interpreter::RunMemoryCopy(ir::Inst* inst, InterpStack& stack) {
     auto dst = inst->GetArg<ir::Lambda>(0);
     auto src = inst->GetArg<ir::Lambda>(1);
     const u64 size = inst->GetArg<ir::Imm>(2).Get();
+    if (!size) return;
     // The lambdas evaluate to guest addresses; apply the pt bias (0 for
     // direct mapping).
     const auto bias = reinterpret_cast<uintptr_t>(state.pt);
     const auto mask = state.guest_addr_mask;
+    const u64 destination = EvalLambda(stack, dst) & mask;
+    const u64 source = EvalLambda(stack, src) & mask;
+    const auto valid = [&](u64 address) {
+        if (address >= state.guest_addr_limit || size > state.guest_addr_limit - address ||
+            size - 1 > mask - address) {
+            state.halt_reason = HaltReason::PageFatal;
+            return false;
+        }
+        if (state.interp_range_check) {
+            try {
+                if (!state.interp_range_check(state.interp_range_check_ctx, address, size))
+                    state.halt_reason = HaltReason::PageFatal;
+            } catch (...) {
+                state.halt_reason = HaltReason::IllegalCode;
+            }
+        }
+        return state.halt_reason == HaltReason::None;
+    };
+    // Validate both complete extents before starting any destination writes.
+    if (!valid(destination) || !valid(source)) return;
     riscv64::MemoryKernelGuard memory_guard{unaligned_atomic_lock};
-    std::memmove(reinterpret_cast<void*>((EvalLambda(stack, dst) & mask) + bias),
-                 reinterpret_cast<const void*>((EvalLambda(stack, src) & mask) + bias),
-                 size);
+    std::memmove(reinterpret_cast<void*>(destination + bias),
+                 reinterpret_cast<const void*>(source + bias), size);
 }
 
 void Interpreter::RunMemoryCopyTSO(ir::Inst* inst, InterpStack& stack) {
+    std::atomic_thread_fence(std::memory_order_seq_cst);
     RunMemoryCopy(inst, stack);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
 }
 
 void Interpreter::RunMemoryBarrierTSO(ir::Inst* inst, InterpStack& stack) {
@@ -181,6 +206,26 @@ void Interpreter::RunMemoryBarrierTSO(ir::Inst* inst, InterpStack& stack) {
 }
 
 namespace {
+
+// Scalar atomics use the same masked guest extent as ordinary loads/stores.
+// Check before constructing a host pointer or entering either atomic guard.
+// This is a bounds/mapping-oracle check, not host protection-fault recovery.
+bool CheckScalarAtomicRange(State& state, u64 address, u64 size) {
+    if (address >= state.guest_addr_limit || size > state.guest_addr_limit - address ||
+        (state.guest_addr_mask != UINT64_MAX && size - 1 > state.guest_addr_mask - address)) {
+        state.halt_reason = HaltReason::PageFatal;
+        return false;
+    }
+    try {
+        if (state.interp_range_check &&
+            !state.interp_range_check(state.interp_range_check_ctx, address, size))
+            state.halt_reason = HaltReason::PageFatal;
+    } catch (...) {
+        // Match the existing CompareAndSwap128 callback contract.
+        state.halt_reason = HaltReason::IllegalCode;
+    }
+    return state.halt_reason == HaltReason::None;
+}
 
 template <typename T>
 bool IsNaturallyAligned(const void* ptr) {
@@ -264,7 +309,9 @@ void Interpreter::RunCompareAndSwap(ir::Inst* inst, InterpStack& stack) {
     const auto desired = inst->GetArg<ir::Value>(2);
     const u32 bits = TypeBits(expected.Type());
     const u64 mask = MaskBits(bits);
-    auto* ptr = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
+    const u64 address = addr & state.guest_addr_mask;
+    if (!CheckScalarAtomicRange(state, address, ir::GetValueSizeByte(expected.Type()))) return;
+    auto* ptr = reinterpret_cast<void*>(address + reinterpret_cast<uintptr_t>(state.pt));
     const u64 expected_value = ReadScalar(stack, expected) & mask;
     const u64 desired_value = ReadScalar(stack, desired) & mask;
     u64 old{};
@@ -296,7 +343,20 @@ void Interpreter::RunCompareAndSwap128(ir::Inst* inst, InterpStack& stack) {
     const u64 expected_hi = ReadScalar(stack, inst->GetArg<ir::Value>(2));
     const u64 desired_lo = ReadScalar(stack, inst->GetArg<ir::Value>(3));
     const u64 desired_hi = ReadScalar(stack, inst->GetArg<ir::Value>(4));
-    auto* ptr = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
+    const u64 address = addr & state.guest_addr_mask;
+    if (address >= state.guest_addr_limit || 16 > state.guest_addr_limit - address ||
+        15 > state.guest_addr_mask - address) {
+        state.halt_reason = HaltReason::PageFatal;
+        return;
+    }
+    try {
+        if (state.interp_range_check && !state.interp_range_check(state.interp_range_check_ctx, address, 16))
+            state.halt_reason = HaltReason::PageFatal;
+    } catch (...) {
+        state.halt_reason = HaltReason::IllegalCode;
+    }
+    if (state.halt_reason != HaltReason::None) return;
+    auto* ptr = reinterpret_cast<void*>(address + reinterpret_cast<uintptr_t>(state.pt));
 
     // std::atomic_ref<unsigned __int128> is neither portable nor guaranteed
     // lock-free. Serialize the 16-byte memcpy compare/store with the same
@@ -306,8 +366,15 @@ void Interpreter::RunCompareAndSwap128(ir::Inst* inst, InterpStack& stack) {
     std::memcpy(&old, ptr, sizeof(old));
     const u128 expected = (static_cast<u128>(expected_hi) << 64) | expected_lo;
     if (old == expected) {
+#if defined(__x86_64__)
+        // Keep the matching write a single host instruction. A split memcpy
+        // can change the first half before a cross-page protection fault.
+        const __m128i desired = _mm_set_epi64x(s64(desired_hi), s64(desired_lo));
+        asm volatile("movdqu %1, (%0)" : : "r"(ptr), "x"(desired) : "memory");
+#else
         const u128 desired = (static_cast<u128>(desired_hi) << 64) | desired_lo;
         std::memcpy(ptr, &desired, sizeof(desired));
+#endif
     }
     WriteVec(stack, inst, old);
 }
@@ -323,7 +390,9 @@ void Interpreter::RunCheckMemoryAlignment(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunAtomicExchange(ir::Inst* inst, InterpStack& stack) {
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto desired = inst->GetArg<ir::Value>(1);
-    auto* raw = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
+    const u64 address = addr & state.guest_addr_mask;
+    if (!CheckScalarAtomicRange(state, address, ir::GetValueSizeByte(desired.Type()))) return;
+    auto* raw = reinterpret_cast<void*>(address + reinterpret_cast<uintptr_t>(state.pt));
     const u64 value = ReadScalar(stack, desired);
     u64 old{};
     switch (TypeBits(desired.Type())) {
@@ -348,7 +417,9 @@ void Interpreter::RunAtomicExchange(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunAtomicFetchAdd(ir::Inst* inst, InterpStack& stack) {
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto addend = inst->GetArg<ir::Value>(1);
-    auto* raw = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
+    const u64 address = addr & state.guest_addr_mask;
+    if (!CheckScalarAtomicRange(state, address, ir::GetValueSizeByte(addend.Type()))) return;
+    auto* raw = reinterpret_cast<void*>(address + reinterpret_cast<uintptr_t>(state.pt));
     const u64 value = ReadScalar(stack, addend);
     u64 old{};
     switch (TypeBits(addend.Type())) {
@@ -376,7 +447,9 @@ void Interpreter::RunAtomicRMW(ir::Inst* inst, InterpStack& stack) {
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(1));
     const auto operand_arg = inst->GetArg<ir::Value>(2);
     const auto carry_arg = inst->GetArg<ir::Value>(3);
-    void* raw = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
+    const u64 address = addr & state.guest_addr_mask;
+    if (!CheckScalarAtomicRange(state, address, ir::GetValueSizeByte(operand_arg.Type()))) return;
+    void* raw = reinterpret_cast<void*>(address + reinterpret_cast<uintptr_t>(state.pt));
     const u64 operand = ReadScalar(stack, operand_arg);
     const u64 carry = ReadScalar(stack, carry_arg) & 1;
 
@@ -400,6 +473,11 @@ void Interpreter::RunAtomicRMW(ir::Inst* inst, InterpStack& stack) {
                 return static_cast<T>(old + rhs + static_cast<T>(carry));
             case ir::AtomicRMWOp::SubBorrow:
                 return static_cast<T>(old - rhs - static_cast<T>(carry));
+            case ir::AtomicRMWOp::SignedMax:
+            case ir::AtomicRMWOp::SignedMin:
+            case ir::AtomicRMWOp::UnsignedMax:
+            case ir::AtomicRMWOp::UnsignedMin:
+                return ir::AtomicExtremum(op, old, rhs);
         }
         return old;
     };

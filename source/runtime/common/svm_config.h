@@ -83,7 +83,13 @@ namespace swift::runtime {
     X(loop_gpr_hoist, true) \
     X(loop_const_hoist, true) \
     X(flags_regs_audit, false) \
-    X(ra_fixed_class, false)
+    X(ra_fixed_class, false) \
+    X(x64_scalar_cache, false) \
+    X(x64_cfg_allocation, false) \
+    X(x64_flags_residency, false) \
+    X(x64_flags_profitability, false) \
+    X(x64_native_cf_chains, false) \
+    X(x64_vector_cfg, false)
 
 enum class FeatureId : std::size_t {
 #define SVM_FEATURE_ID(field, default_value) field,
@@ -265,6 +271,12 @@ struct FeatureOverrides {
     X(bool, trace, "SVM_TRACE", Presence, false, "guest 执行 trace；变量存在即开；原 translator/x86/translator.cpp:1132") \
     X(std::string, tso_mode, "SVM_TSO_MODE", RawString, "acqrel", "TSO 模式 relaxed/acqrel/hardware；缺省和未知值采用 acqrel") \
     X(bool, uniform_elim, "SVM_UNIFORM_ELIM", DefaultOn, true, "uniform elimination；缺省 ON，=0 回退；原 translator/x86/arm64 translator.cpp") \
+    X(bool, x64_scalar_cache, "SVM_X64_SCALAR_CACHE", NonZero, false, "x64 static scalar write-through cache；缺省 OFF，非 0 开；纳入模块优化及缓存指纹") \
+    X(bool, x64_cfg_allocation, "SVM_X64_CFG_ALLOCATION", NonZero, false, "x64 whole-function CFG scalar allocation；缺省 OFF，纳入模块及缓存指纹") \
+    X(bool, x64_flags_residency, "SVM_X64_FLAGS_RESIDENCY", NonZero, false, "x64 packed guest flags in a callee-saved register；缺省 OFF，纳入模块及缓存指纹") \
+    X(bool, x64_flags_profitability, "SVM_X64_FLAGS_PROFITABILITY", NonZero, false, "x64 CFG flags 驻留收益选择；需 CFG allocation 与 flags residency；缺省 OFF，纳入模块及缓存指纹") \
+    X(bool, x64_native_cf_chains, "SVM_X64_NATIVE_CF_CHAINS", NonZero, false, "x64 two-producer native CF transport；缺省 OFF，纳入模块及缓存指纹") \
+    X(bool, x64_vector_cfg, "SVM_X64_VECTOR_CFG", NonZero, false, "x64 full-CFG vector cache；保留 canonical homes；缺省 OFF，纳入模块及缓存指纹") \
     X(bool, uniform_path_fwd, "SVM_UNIFORM_PATH_FWD", DefaultOn, true, "uniform path forwarding；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:65") \
     X(std::string, vixl_host_dump, "SVM_VIXL_HOST_DUMP", RawString, "", "VIXL host 发码诊断非 0 开，host-map 原站点按变量存在；原 jit_context.cpp/trampolines.cpp") \
     X(bool, vixl_prof, "SVM_VIXL_PROF", NonZero, false, "VIXL profile；非 0 开；原 svm-vixl-prof.cc:62") \

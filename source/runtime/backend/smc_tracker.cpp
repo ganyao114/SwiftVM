@@ -203,10 +203,14 @@ void SmcTracker::EndJit(const RuntimeToken& token) {
     if (!multithreaded_.load(std::memory_order_acquire)) {
         return;
     }
-    token->active_epoch.store(kInactiveEpoch, std::memory_order_seq_cst);
+    LeaveJitNoReclaim(token);
     if (pending_count_.load(std::memory_order_relaxed) != 0) {
         ReclaimRetired();
     }
+}
+
+void SmcTracker::LeaveJitNoReclaim(const RuntimeToken& token) noexcept {
+    if (token) token->active_epoch.store(kInactiveEpoch, std::memory_order_seq_cst);
 }
 
 void SmcTracker::SynchronizeContinuation(const RuntimeToken& token, u64 epoch) const {

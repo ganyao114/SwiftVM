@@ -1,6 +1,10 @@
 #include "translator.h"
 
 #include <stdexcept>
+#include "runtime/common/saturating_multiply.h"
+#include "runtime/common/saturating_shift.h"
+#include "runtime/common/unsigned_estimate.h"
+#include "runtime/common/saturating_add_sub.h"
 
 namespace swift::runtime::backend::riscv64 {
 
@@ -9,7 +13,198 @@ using O = ir::OpCode;
 
 bool JitTranslator::EmitVectorInteger(ir::Inst* inst) {
     const auto op = inst->GetOp();
+    if (op == O::VecSatAdd || op == O::VecSatSub) (void)ValidateSaturatingAddSub(inst);
     switch (op) {
+        case O::VecUnsignedEstimate: {
+            const auto operation = ValidateUnsignedEstimate(inst);
+            auto& as = context.GetMasm();
+            context.ReadPart(a0, inst->GetArg<ir::Value>(0), 0);
+            context.ReadPart(a1, inst->GetArg<ir::Value>(0), 1);
+            const auto result = context.ResultPair(inst);
+            for (u32 part = 0; part < 2; ++part) {
+                as.MV(result[part], x0);
+                for (u32 lane = 0; lane < 2; ++lane) {
+                    Label saturated, upper, selected, done;
+                    as.MV(t2, part ? a1 : a0);
+                    if (lane) as.SRLI(t2, t2, 32);
+                    context.Mask(t2, 32);
+                    as.SRLI(t3, t2, operation ? 30 : 31);
+                    as.BEQ(t3, x0, &saturated);
+                    if (!operation) {
+                        as.SRLI(t3, t2, 23); as.ANDI(t3, t3, 255);
+                        context.HostAddress(a6, reinterpret_cast<u64>(kReciprocalMidpoints.data()));
+                    } else {
+                        as.SRLI(t3, t2, 31); as.BNE(t3, x0, &upper);
+                        as.SRLI(t3, t2, 23); as.ADDI(t3, t3, -128);
+                        context.HostAddress(a6, reinterpret_cast<u64>(kReciprocalRootMidpoints[1].data()));
+                        as.J(&selected); as.Bind(&upper);
+                        as.SRLI(t3, t2, 24); as.ADDI(t3, t3, -128);
+                        context.HostAddress(a6, reinterpret_cast<u64>(kReciprocalRootMidpoints[0].data()));
+                        as.Bind(&selected);
+                    }
+                    as.SLLI(t3, t3, 1); as.ADD(t3, a6, t3);
+                    as.LHU(t2, 0, t3); as.SLLI(t2, t2, 23); as.J(&done);
+                    as.Bind(&saturated); as.LI(t2, UINT32_MAX);
+                    as.Bind(&done);
+                    if (lane) as.SLLI(t2, t2, 32);
+                    as.OR(result[part], result[part], t2);
+                }
+            }
+            context.WritePair(inst, result); return true;
+        }
+        case O::VecSatShiftQC:
+            ValidateSaturatingShiftQC(inst); return true;
+        case O::VecSatShiftImm: {
+            const auto shape = ValidateSaturatingShift(inst);
+            auto& as = context.GetMasm();
+            context.ReadPart(a0, inst->GetArg<ir::Value>(0), 0);
+            context.ReadPart(a1, inst->GetArg<ir::Value>(0), 1);
+            const auto result = context.ResultPair(inst);
+            as.MV(a7, x0);
+            for (u32 part = 0; part < 2; ++part) {
+                as.MV(result[part], x0);
+                for (u32 local = 0; local < 64 / shape.bits; ++local) {
+                    const u32 lane = part * (64 / shape.bits) + local;
+                    if (lane >= shape.lanes) break;
+                    const u32 source_bits = shape.SourceBits(), position = lane * source_bits;
+                    as.MV(t3, position < 64 ? a0 : a1);
+                    if (position % 64) as.SRLI(t3, t3, position % 64);
+                    context.Mask(t3, source_bits);
+                    if (shape.Left()) {
+                        as.SLLI(t2, t3, shape.shift); context.Mask(t2, shape.bits);
+                        as.MV(t4, t2);
+                        if (shape.SignedResult()) {
+                            context.SignExtend(t3, shape.bits); context.SignExtend(t4, shape.bits);
+                            as.SRAI(t4, t4, shape.shift);
+                        } else as.SRLI(t4, t4, shape.shift);
+                        as.XOR(t4, t4, t3);
+                        if (shape.mode == SaturatingShiftMode::SQSHLU) {
+                            as.SRLI(a2, t3, shape.bits - 1); as.OR(t4, t4, a2);
+                        }
+                    } else {
+                        as.MV(t2, t3);
+                        if (shape.SignedSource()) { context.SignExtend(t2, source_bits); as.SRAI(t2, t2, shape.shift); }
+                        else as.SRLI(t2, t2, shape.shift);
+                        if (shape.Rounded()) { as.SRLI(t4, t3, shape.shift - 1); as.ANDI(t4, t4, 1); as.ADD(t2, t2, t4); }
+                        as.MV(t4, t2); context.Mask(t4, shape.bits);
+                        if (shape.SignedResult()) context.SignExtend(t4, shape.bits);
+                        as.XOR(t4, t4, t2);
+                    }
+                    as.SLTU(t4, x0, t4); as.OR(a7, a7, t4);
+                    Label unchanged, positive, selected;
+                    as.BEQ(t4, x0, &unchanged);
+                    const u64 maximum = shape.SignedResult() ? (u64{1} << (shape.bits - 1)) - 1 :
+                                        shape.bits == 64 ? ~u64{0} : (u64{1} << shape.bits) - 1;
+                    if (shape.SignedSource()) {
+                        as.SRLI(a2, shape.Left() ? t3 : t2, shape.Left() ? shape.bits - 1 : 63);
+                        as.BEQ(a2, x0, &positive);
+                        as.LI(t2, shape.SignedResult() ? u64{1} << (shape.bits - 1) : 0); as.J(&selected);
+                        as.Bind(&positive); as.LI(t2, maximum); as.Bind(&selected);
+                    } else as.LI(t2, maximum);
+                    as.Bind(&unchanged);
+                    context.Mask(t2, shape.bits);
+                    if (local * shape.bits) as.SLLI(t2, t2, local * shape.bits);
+                    as.OR(result[part], result[part], t2);
+                }
+            }
+            context.WritePair(inst, result);
+            for (auto* pseudo : inst->GetPseudoOperations(O::VecSatShiftQC)) {
+                ValidateSaturatingShiftQC(pseudo);
+                const auto output = context.ResultRegister(pseudo);
+                as.MV(output, a7); context.Write(pseudo, output);
+            }
+            return true;
+        }
+        case O::VecSatMulQC:
+            ValidateSaturatingMultiplyQC(inst); return true;
+        case O::VecSatMulHigh: {
+            const auto shape = ValidateSaturatingMultiply(inst);
+            auto& as = context.GetMasm();
+            constexpr std::array snapshots{a0, a1, a2, a3, a4, a5};
+            for (u32 input = 0; input < 3; ++input) for (u32 part = 0; part < 2; ++part)
+                context.ReadPart(snapshots[input * 2 + part], inst->GetArg<ir::Value>(input), part);
+            const auto result = context.ResultPair(inst);
+            as.MV(a7, x0);
+            const s64 lower = -(s64{1} << (shape.bits - 1)), upper = -lower - 1;
+            const auto lane = [&](GPR target, u32 input, u32 index) {
+                const auto source = snapshots[input * 2 + index * shape.bits / 64];
+                if (index * shape.bits % 64) as.SRLI(target, source, index * shape.bits % 64);
+                else as.MV(target, source);
+                context.SignExtend(target, shape.bits);
+            };
+            for (u32 part = 0; part < 2; ++part) {
+                as.MV(result[part], x0);
+                for (u32 local = 0; local < 64 / shape.bits; ++local) {
+                    const u32 index = part * (64 / shape.bits) + local;
+                    if (index >= shape.lanes) break;
+                    lane(t3, 0, index); lane(t4, 1, index); as.MUL(t2, t3, t4);
+                    if (shape.mode == 3) as.NEG(t2, t2);
+                    if (shape.mode != 0) { as.LI(t5, s64{1} << (shape.bits - 2)); as.ADD(t2, t2, t5); }
+                    as.SRAI(t2, t2, shape.bits - 1);
+                    if (shape.mode >= 2) { lane(a6, 2, index); as.ADD(t2, t2, a6); }
+                    Label above_lower, below_upper;
+                    as.LI(t5, lower); as.BGE(t2, t5, &above_lower); as.MV(t2, t5); as.LI(a7, 1); as.Bind(&above_lower);
+                    as.LI(t5, upper); as.BGE(t5, t2, &below_upper); as.MV(t2, t5); as.LI(a7, 1); as.Bind(&below_upper);
+                    context.Mask(t2, shape.bits);
+                    if (local * shape.bits) as.SLLI(t2, t2, local * shape.bits);
+                    as.OR(result[part], result[part], t2);
+                }
+            }
+            context.WritePair(inst, result);
+            for (auto* pseudo : inst->GetPseudoOperations(O::VecSatMulQC)) {
+                ValidateSaturatingMultiplyQC(pseudo);
+                const auto output = context.ResultRegister(pseudo);
+                as.MV(output, a7); context.Write(pseudo, output);
+            }
+            return true;
+        }
+        case O::VecDot: {
+            if (inst->ReturnType() != ir::ValueType::V128 || inst->GetArg<ir::Imm>(3).Get() > 1)
+                throw std::runtime_error("VecDot requires V128 and a boolean signed-byte mode");
+            for (u32 input = 0; input < 3; ++input)
+                if (inst->GetArg<ir::Value>(input).Type() != ir::ValueType::V128 ||
+                    inst->GetArg<ir::Value>(input).Def()->ReturnType() != ir::ValueType::V128)
+                    throw std::runtime_error("VecDot requires three V128 inputs");
+            auto& as = context.GetMasm();
+            const bool signed_bytes = inst->GetArg<ir::Imm>(3).Get() != 0;
+            // Snapshot all three complete inputs before allocating/reusing an
+            // output pair. ReadPart also extracts RVV-resident values, so this
+            // portable RV64G path is valid with vector caching enabled.
+            constexpr std::array snapshots{a0, a1, a2, a3, a4, a5};
+            for (u32 input = 0; input < 3; ++input)
+                for (u32 part = 0; part < 2; ++part)
+                    context.ReadPart(snapshots[input * 2 + part], inst->GetArg<ir::Value>(input), part);
+            const auto result = context.ResultPair(inst);
+            for (u32 part = 0; part < 2; ++part) {
+                as.MV(result[part], x0);
+                for (u32 lane = 0; lane < 2; ++lane) {
+                    if (lane) as.SRLI(a6, snapshots[4 + part], 32);
+                    else as.MV(a6, snapshots[4 + part]);
+                    for (u32 byte = 0; byte < 4; ++byte) {
+                        const u32 shift = lane * 32 + byte * 8;
+                        if (shift) {
+                            as.SRLI(t3, snapshots[part], shift);
+                            as.SRLI(t4, snapshots[2 + part], shift);
+                        } else {
+                            as.MV(t3, snapshots[part]);
+                            as.MV(t4, snapshots[2 + part]);
+                        }
+                        if (signed_bytes) {
+                            context.SignExtend(t3, 8); context.SignExtend(t4, 8);
+                        } else {
+                            context.Mask(t3, 8); context.Mask(t4, 8);
+                        }
+                        as.MUL(t2, t3, t4);
+                        as.ADD(a6, a6, t2);
+                    }
+                    context.Mask(a6, 32);
+                    if (lane) as.SLLI(a6, a6, 32);
+                    as.OR(result[part], result[part], a6);
+                }
+            }
+            context.WritePair(inst, result);
+            return true;
+        }
         case O::Vec4Mul: case O::VecMul: case O::VecMulHigh16: case O::VecMulWiden:
         case O::VecCmpEq: case O::VecCmpGt: case O::VecMin: case O::VecMax:
         case O::VecSatAdd: case O::VecSatSub: case O::VecPack: break;

@@ -103,6 +103,9 @@ public:
     void UnregisterRuntime(const RuntimeToken& token);
     void BeginJit(const RuntimeToken& token);
     void EndJit(const RuntimeToken& token);
+    // Exceptional host-side exit: publish quiescence without locks,
+    // allocations or reclamation. A later normal boundary reclaims code.
+    void LeaveJitNoReclaim(const RuntimeToken& token) noexcept;
 
     // Internal direct-link hook. Signal and deferred delinkers call this only
     // after restoring BL and completing D/I-cache maintenance. The deferred

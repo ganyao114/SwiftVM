@@ -23,14 +23,21 @@
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/atomic_fallback.h"
 #include "runtime/backend/context.h"
+#include "runtime/backend/execution_owner.h"
 #include "runtime/backend/function_entry_contract.h"
 #include "runtime/backend/guarded_return_stack.h"
 #include "runtime/backend/guest_memory_scope.h"
 #include "runtime/backend/interp/interpreter.h"
 #include "runtime/backend/interrupt_l1_mapping.h"
 #include "runtime/backend/interrupt_poll_state.h"
+#include "runtime/backend/interrupt_request.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/riscv64/jit/compile.h"
+#ifdef SWIFT_HAS_X64_BACKEND
+#include "runtime/backend/x64/compile.h"
+#include "runtime/backend/x64/translator.h"
+#include "runtime/backend/x64/single_instruction_code.h"
+#endif
 #include "runtime/backend/signal_handler.h"
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/backedge_control.h"
@@ -57,6 +64,10 @@ std::unique_ptr<Instance> Instance::Make(const Config& config) {
 // on this thread; the host signal handler uses it to route faults to the
 // right State. void* because Runtime::Impl is a private nested type.
 static thread_local void* tls_active_runtime{};
+
+bool backend::RuntimeExecutionActiveOnCurrentThread() noexcept {
+    return tls_active_runtime != nullptr;
+}
 
 namespace {
 
@@ -353,6 +364,46 @@ struct Runtime::Impl final {
         const auto host_pc = reinterpret_cast<u8*>(backend::SignalHandler::GetContextPC(uctx));
         const auto fault_addr = reinterpret_cast<std::uintptr_t>(info->si_addr);
         backend::FaultEntry entry{};
+#if defined(SWIFT_HAS_X64_BACKEND) && defined(__linux__) && defined(__x86_64__)
+        if (self->single_execution_active.load(std::memory_order_acquire)) {
+            const auto* descriptor = self->single_fault.load(std::memory_order_acquire);
+            if (!descriptor) return false;
+            // Private execution must fail closed. A helper/prologue/epilogue
+            // fault may not fall through into ordinary module recovery.
+            const auto frame = self->state->spill_area[backend::kRiscvRecoveryFrameSlot];
+            const auto recovery = self->state->spill_area[backend::kRiscvRecoveryPcSlot];
+            if (backend::SignalHandler::GetContextGPR(uctx, 12) !=
+                    reinterpret_cast<uintptr_t>(self->state) ||
+                !descriptor->ClassifyFault(reinterpret_cast<uintptr_t>(host_pc), fault_addr,
+                    recovery, frame, self->state,
+                    backend::SignalHandler::GetContextGPR(uctx, 14),
+                    backend::SignalHandler::GetContextGPR(uctx, 13),
+                    backend::SignalHandler::GetContextGPR(uctx, 4))) return false;
+            self->state->halt_reason = HaltReason::PageFatal;
+            self->state->current_loc = ir::Location{descriptor->OriginalPc()};
+            // The generated recovery epilogue releases only its actual owned
+            // lease/atomic guard, restores MXCSR and clears recovery slots.
+            backend::SignalHandler::SetContextPC(uctx, descriptor->RecoveryPc());
+            return true;
+        }
+        if (self->address_space->GetConfig().backend_isa == kX86_64 &&
+            self->state->spill_area[backend::kRiscvRecoveryPcSlot] &&
+            self->state->spill_area[backend::kRiscvRecoveryFrameSlot]) {
+            const auto recovery = self->state->spill_area[backend::kRiscvRecoveryPcSlot];
+            if (!self->address_space->LookupFault(reinterpret_cast<u8*>(recovery), entry) ||
+                backend::SignalHandler::IsGuestAddressMapped(fault_addr)) {
+                return false;
+            }
+            self->state->halt_reason = HaltReason::PageFatal;
+            backend::ReleaseAbandonedUnalignedAtomicGuard();
+            const auto frame = self->state->spill_area[backend::kRiscvRecoveryFrameSlot];
+            backend::SignalHandler::SetContextGPR(uctx, 12, reinterpret_cast<uintptr_t>(self->state));
+            backend::SignalHandler::SetContextGPR(uctx, 13, frame);
+            backend::SignalHandler::SetContextGPR(uctx, 4, frame);
+            backend::SignalHandler::SetContextPC(uctx, recovery);
+            return true;
+        }
+#endif
         if (self->address_space->GetConfig().backend_isa == kRiscv64 &&
             self->state->spill_area[backend::kRiscvRecoveryPcSlot] &&
             self->state->spill_area[backend::kRiscvRecoveryFrameSlot]) {
@@ -536,6 +587,14 @@ struct Runtime::Impl final {
                 .load(std::memory_order_acquire);
     }
 
+    [[nodiscard]] static bool IsDispatchReason(HaltReason reason) {
+        constexpr u32 dispatch_bits = static_cast<u32>(HaltReason::CodeMiss) |
+                static_cast<u32>(HaltReason::ModuleMiss) | static_cast<u32>(HaltReason::CacheMiss);
+        // Missing-module lookups may return a combined miss. Any fault or
+        // synchronous host stop outside this mask retains its priority.
+        return (static_cast<u32>(reason) & ~dispatch_bits) == 0;
+    }
+
     void AcknowledgeSmcRequest(u64 observed) const {
         if ((observed & kBackedgeSmcRequestMask) == 0) {
             return;
@@ -555,6 +614,10 @@ struct Runtime::Impl final {
     }
 
     [[nodiscard]] HaltReason Interpreter() const {
+        if (const auto reason = backend::ObserveHaltRequest(*state); reason != HaltReason::None) {
+            state->halt_reason = HaltReason::None;
+            return reason;
+        }
         auto current_loc = state->current_loc.Value();
         auto current_module{address_space->GetModule(current_loc)};
 
@@ -591,6 +654,8 @@ struct Runtime::Impl final {
         IntrusivePtr<ir::Function> active_function{};
 
         while (hr == HaltReason::None) {
+            hr = backend::ObserveHaltRequest(*state);
+            if (hr != HaltReason::None) break;
             // Re-read the location every iteration: interpreted blocks update
             // state->current_loc through their terminals (LinkBlock /
             // SetLocation), so the dispatcher must follow it like the JIT
@@ -635,24 +700,241 @@ struct Runtime::Impl final {
         return hr;
     }
 
+    // Entry ownership must precede all ordinary State/profile accesses. A
+    // nested Runtime could otherwise replace the signal/recovery TLS owner
+    // and release resources still belonging to the outer execution.
+    class EntryGuard final {
+    public:
+        explicit EntryGuard(const Impl& self) noexcept : self(self) {
+            if (tls_active_runtime) return;
+            bool expected = false;
+            if (!self.entry_active.compare_exchange_strong(
+                        expected, true, std::memory_order_acquire,
+                        std::memory_order_relaxed)) return;
+            previous = tls_active_runtime;
+            tls_active_runtime = const_cast<Impl*>(&self);
+            entered = true;
+        }
+
+        ~EntryGuard() noexcept {
+            if (!entered) return;
+            tls_active_runtime = previous;
+            self.entry_active.store(false, std::memory_order_release);
+        }
+
+        EntryGuard(const EntryGuard&) = delete;
+        EntryGuard& operator=(const EntryGuard&) = delete;
+        [[nodiscard]] bool Entered() const noexcept { return entered; }
+
+    private:
+        const Impl& self;
+        void* previous{};
+        bool entered{};
+    };
+
+    class ExecutionScope final {
+    public:
+        explicit ExecutionScope(const Config& config)
+                : guest_memory(InstallAltStack(config), config.guest_addr_mask) {}
+        ExecutionScope(const ExecutionScope&) = delete;
+        ExecutionScope& operator=(const ExecutionScope&) = delete;
+
+    private:
+        static void* InstallAltStack(const Config& config) {
+            backend::SignalHandler::InstallThreadAltStack();
+            return config.memory_base;
+        }
+        const backend::GuestMemoryScope guest_memory;
+    };
+
+    class JitEpochScope final {
+    public:
+        JitEpochScope(backend::SmcTracker& tracker,
+                      const backend::SmcTracker::RuntimeToken& token)
+                : tracker(tracker), token(token) {
+            try {
+                tracker.BeginJit(token);
+            } catch (...) {
+                tracker.LeaveJitNoReclaim(token);
+                throw;
+            }
+        }
+
+        ~JitEpochScope() noexcept {
+            if (active) tracker.LeaveJitNoReclaim(token);
+        }
+
+        void Finish() {
+            // EndJit publishes quiescence before potentially throwing
+            // reclamation. Exceptional destruction must never reclaim.
+            active = false;
+            tracker.EndJit(token);
+        }
+
+        JitEpochScope(const JitEpochScope&) = delete;
+        JitEpochScope& operator=(const JitEpochScope&) = delete;
+
+    private:
+        backend::SmcTracker& tracker;
+        const backend::SmcTracker::RuntimeToken& token;
+        bool active{true};
+    };
+
+    class GuestFpScope final {
+    public:
+        GuestFpScope(const Impl& self, bool enabled) noexcept
+                : self(self), active(enabled) {
+            if (!active) return;
+            self.jit_host_fpcr.store(backend::arm64::ReadNativeFPCR(),
+                                    std::memory_order_relaxed);
+            self.jit_guest_fpcr_active.store(true, std::memory_order_release);
+        }
+
+        ~GuestFpScope() noexcept {
+            if (!active) return;
+            // Supported host-side unwinding must leave the native FP state
+            // usable. This does not provide unwind metadata for JIT frames.
+            self.RestoreHostFPCRForSignal();
+            Finish();
+        }
+
+        void Finish() noexcept {
+            if (!active) return;
+            // The normal trampoline return already restored host FPCR.
+            self.jit_guest_fpcr_active.store(false, std::memory_order_release);
+            active = false;
+        }
+
+        GuestFpScope(const GuestFpScope&) = delete;
+        GuestFpScope& operator=(const GuestFpScope&) = delete;
+
+    private:
+        const Impl& self;
+        bool active;
+    };
+
+    [[nodiscard]] HaltReason Step() const {
+        const EntryGuard entry{*this};
+        if (!entry.Entered()) return HaltReason::EntryRejected;
+        if (!running.load(std::memory_order_acquire) ||
+            (LoadExitRequest() & kBackedgeSignalRequest)) return HaltReason::Signal;
+        const auto& config = address_space->GetConfig();
+#if defined(SWIFT_HAS_X64_BACKEND) && defined(__linux__) && defined(__x86_64__)
+        if (config.backend_isa != kX86_64 ||
+            !config.single_decode.callback || !config.memory) return HaltReason::Unsupported;
+        struct SingleExecutionScope {
+            const Impl& owner;
+            explicit SingleExecutionScope(const Impl& owner) : owner(owner) {
+                owner.single_execution_active.store(true, std::memory_order_release);
+            }
+            ~SingleExecutionScope() {
+                owner.single_execution_active.store(false, std::memory_order_release);
+            }
+        } single_execution{*this};
+        const ExecutionScope execution{config};
+        auto& smc = address_space->GetSmcTracker();
+        if (address_space->ExitLatchEnabled()) {
+            const auto observed = LoadExitRequest();
+            if (observed & kBackedgeSmcRequestMask) {
+                smc.CloseWriteWindow(*address_space, l1_code_cache);
+                AcknowledgeSmcRequest(observed);
+            }
+        }
+        const auto original_pc = GetLocation();
+        ir::Block fresh{ir::Location{original_pc}};
+        std::unique_ptr<backend::x64::PrivateSingleInstructionCode> code;
+        try {
+            const auto decoded = config.single_decode.callback(config.single_decode.context,
+                    original_pc, *config.memory, fresh);
+            if ((decoded != SingleDecodeResult::Ready && decoded != SingleDecodeResult::FaultIR) ||
+                !fresh.HasTerminal() ||
+                fresh.GetStartLocation().Value() != original_pc) return HaltReason::Unsupported;
+            // A one-instruction unit may have finite local diamonds, never
+            // an unpolled native loop or arbitrary unaudited host callback.
+            std::unordered_map<const ir::Inst*, size_t> positions;
+            std::unordered_map<const ir::Inst*, size_t> targets;
+            bool calls{};
+            for (const auto& inst : fresh.GetInstList()) {
+                positions.emplace(&inst, positions.size());
+                calls |= inst.GetOp() == ir::OpCode::CallLambda ||
+                         inst.GetOp() == ir::OpCode::CallDynamic ||
+                         inst.GetOp() == ir::OpCode::CallLocation ||
+                         inst.GetOp() == ir::OpCode::Cpuid;
+                if (inst.GetOp() == ir::OpCode::BindLabel) {
+                    if (!inst.ArgAt(0).IsValue() || !inst.GetArg<ir::Value>(0).Defined() ||
+                        !targets.emplace(inst.GetArg<ir::Value>(0).Def(), positions.size() - 1).second)
+                        return HaltReason::Unsupported;
+                }
+            }
+            for (const auto& inst : fresh.GetInstList()) {
+                if (inst.GetOp() != ir::OpCode::Goto && inst.GetOp() != ir::OpCode::NotGoto) continue;
+                const auto target = targets.find(&inst);
+                if (target == targets.end() || target->second <= positions.at(&inst))
+                    return HaltReason::Unsupported;
+            }
+            if ((calls && !config.single_decode.admit) ||
+                (config.single_decode.admit &&
+                 !config.single_decode.admit(config.single_decode.context, fresh)))
+                return HaltReason::Unsupported;
+            if (!config.enable_jit) {
+                if (!backend::interp::Interpreter::ValidateSingle(fresh, config.uniform_buffer_size))
+                    return HaltReason::Unsupported;
+            } else {
+                backend::x64::Translator translator{&fresh, backend::x64::HostFeatures::Detect(),
+                        &config, nullptr, True(config.global_opts & Optimizations::ScalarRegisterCache),
+                        backend::x64::ExecutionMode::SingleInstruction};
+                translator.Translate();
+                if (translator.GuestFaultCoverage() != backend::x64::GuestAccessCoverage::Precise)
+                    return HaltReason::Unsupported;
+                code = std::make_unique<backend::x64::PrivateSingleInstructionCode>(state,
+                        std::span<const u8>{translator.getCode(), translator.getSize()},
+                        translator.RecoveryOffset(), translator.FrameSize(), original_pc,
+                        translator.GuestAccesses(), translator.GuestFaultCoverage());
+            }
+        } catch (const std::exception&) {
+            // Construction/decoding/emission has not entered native guest
+            // code or changed architectural State. Reject the complete unit.
+            return HaltReason::Unsupported;
+        }
+        JitEpochScope epoch{smc, smc_epoch};
+        HaltReason reason;
+        if (!config.enable_jit) {
+            backend::interp::Interpreter interpreter{*state, &fresh,
+                    backend::interp::ExecutionMode::SingleInstruction, config.uniform_buffer_size};
+            reason = interpreter.Run();
+        } else {
+            struct FaultScope {
+                const Impl& owner;
+                FaultScope(const Impl& owner,
+                        const backend::x64::SingleInstructionFaultDescriptor& descriptor) : owner(owner) {
+                    owner.single_fault.store(&descriptor, std::memory_order_release);
+                }
+                ~FaultScope() { owner.single_fault.store(nullptr, std::memory_order_release); }
+            } fault{*this, code->Descriptor()};
+            reason = code->Run();
+        }
+        state->halt_reason = HaltReason::None;
+        const auto observed = address_space->ExitLatchEnabled() ? LoadExitRequest() : 0;
+        epoch.Finish();
+        smc.CloseWriteWindow(*address_space, l1_code_cache);
+        if (address_space->ExitLatchEnabled()) AcknowledgeSmcRequest(observed);
+        if (reason == HaltReason::Step && (LoadExitRequest() & kBackedgeSignalRequest))
+            reason = HaltReason::Signal;
+        return reason;
+#else
+        return HaltReason::Unsupported;
+#endif
+    }
+
     [[nodiscard]] HaltReason Run() const {
+        const EntryGuard entry{*this};
+        if (!entry.Entered()) return HaltReason::EntryRejected;
         if (!exec_profile_started) {
             exec_profile_start = std::chrono::steady_clock::now();
             exec_profile_started = true;
         }
-        // Publish this runtime to the host signal handler chain and make sure
-        // this thread has an alternate signal stack while guest code runs.
-        backend::SignalHandler::InstallThreadAltStack();
-        struct ActiveGuard {
-            void* prev;
-            explicit ActiveGuard(Impl* self) : prev(tls_active_runtime) {
-                tls_active_runtime = self;
-            }
-            ~ActiveGuard() { tls_active_runtime = prev; }
-        } guard{const_cast<Impl*>(this)};
         const auto& config = address_space->GetConfig();
-        const backend::GuestMemoryScope guest_memory{
-                config.memory_base, config.guest_addr_mask};
+        const ExecutionScope execution{config};
 
         HaltReason hr{HaltReason::None};
         while (running.load(std::memory_order_acquire)) {
@@ -672,22 +954,14 @@ struct Runtime::Impl final {
             // Publish before cache lookup, not merely before JitRun: a pointer
             // fetched while an invalidation races must remain epoch-protected
             // until the trampoline returns.
-            smc.BeginJit(smc_epoch);
+            JitEpochScope epoch{smc, smc_epoch};
             if (auto cache = hr != HaltReason::CacheMiss ? address_space->GetCodeCache(current_loc)
                                                          : nullptr;
                 cache) {
                 // JIT Run!
-                const bool manage_guest_fpcr =
-                        address_space->GetConfig().sse_afp_nan;
-                if (manage_guest_fpcr) {
-                    jit_host_fpcr.store(backend::arm64::ReadNativeFPCR(),
-                                        std::memory_order_relaxed);
-                    jit_guest_fpcr_active.store(true, std::memory_order_release);
-                }
+                GuestFpScope guest_fp{*this, config.sse_afp_nan};
                 hr = JitRun(cache);
-                if (manage_guest_fpcr) {
-                    jit_guest_fpcr_active.store(false, std::memory_order_release);
-                }
+                guest_fp.Finish();
                 // Read after the generated return. If a newer invalidation
                 // arrived after its poll, CloseWriteWindow below consumes it
                 // too. If one arrives after this load, the exact-generation
@@ -698,7 +972,7 @@ struct Runtime::Impl final {
                 // The runtime is now quiescent with respect to retired JIT
                 // code. This is an atomic-only fast path unless reclamation
                 // work is actually pending.
-                smc.EndJit(smc_epoch);
+                epoch.Finish();
                 // SMC write-window close (Phase 4): if a guest store hit a
                 // write-protected code page during this JitRun, the stale
                 // translations are invalidated now — the guest is back on
@@ -714,15 +988,22 @@ struct Runtime::Impl final {
                     // SMC-only CodeMiss veneer. The sticky atomic bit, not
                     // the non-atomic halt_reason sampled by the trampoline,
                     // is authoritative at this boundary.
-                    if (LoadExitRequest() & kBackedgeSignalRequest) {
+                    if (IsDispatchReason(hr) &&
+                        (LoadExitRequest() & kBackedgeSignalRequest)) {
                         hr = HaltReason::Signal;
                     }
                 }
             } else {
-                smc.EndJit(smc_epoch);
+                epoch.Finish();
                 // IR Interpreter
                 hr = Interpreter();
             }
+            // Cover requests racing cache lookup, missing entries and engine
+            // return even when the optional SMC latch policy is disabled.
+            // Preserve synchronous fault/host-stop reasons returned by the
+            // engine rather than replacing them with a concurrent Signal.
+            if (IsDispatchReason(hr) &&
+                (LoadExitRequest() & kBackedgeSignalRequest)) hr = HaltReason::Signal;
             if (hr == HaltReason::CacheMiss) {
                 continue;
             } else {
@@ -757,6 +1038,11 @@ struct Runtime::Impl final {
     std::shared_ptr<OwnerSlot> owner_slot{};
     backend::interp::InterpStack interp_stack;
     std::atomic_bool running{true};
+    mutable std::atomic_bool entry_active{false};
+#ifdef SWIFT_HAS_X64_BACKEND
+    mutable std::atomic<const backend::x64::SingleInstructionFaultDescriptor*> single_fault{};
+    mutable std::atomic<bool> single_execution_active{};
+#endif
     backend::Trampolines::RuntimeEntry jit_entry{};
     backend::RuntimeProfileInterface profile_interface{};
     backend::ExecutionTraceBuffer execution_trace{};
@@ -805,12 +1091,12 @@ Runtime::~Runtime() = default;
 
 HaltReason Runtime::Run() { return impl->Run(); }
 
-HaltReason Runtime::Step() { return HaltReason::None; }
+HaltReason Runtime::Step() { return impl->Step(); }
 
 void Runtime::SignalInterrupt() {
     impl->running.store(false, std::memory_order_release);
-    // The fault handler acquire-loads the request before it consumes Signal.
-    impl->state->halt_reason = HaltReason::Signal;
+    // halt_reason belongs to the executing thread. Cross-thread requests must
+    // not race its helper/fault stores; all stopping points acquire the bit.
     std::atomic_ref<u64>(impl->state->exit_request)
             .fetch_or(kBackedgeSignalRequest, std::memory_order_release);
     impl->PublishIndirectL1Base(GetInterruptL1Mapping().Data());
@@ -823,6 +1109,7 @@ void Runtime::SignalInterrupt() {
 }
 
 void Runtime::ClearInterrupt() {
+    // Owner-only, while execution is stopped. This is not concurrent cancel.
     impl->state->halt_reason = HaltReason::None;
     if (impl->return_stack) {
         impl->state->rsb_pointer = impl->return_stack->Empty();
@@ -1424,6 +1711,10 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
 void* TranslateIR(const std::shared_ptr<backend::Module>& module,
                   std::span<ir::HIRFunction* const> functions) {
     ASSERT(!functions.empty());
+#ifdef SWIFT_HAS_X64_BACKEND
+    if (module->GetAddressSpace().GetConfig().backend_isa == kX86_64)
+        return x64::CompileFunctions(module, functions);
+#endif
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileFunctions(module, functions);
     const auto features = ResolveBackendFeatures(module);
@@ -1442,6 +1733,10 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
 }
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunction* function) {
+#ifdef SWIFT_HAS_X64_BACKEND
+    if (module->GetAddressSpace().GetConfig().backend_isa == kX86_64)
+        return x64::CompileFunctions(module, std::span{&function, 1});
+#endif
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileFunctions(module, std::span{&function, 1});
     const auto features = ResolveBackendFeatures(module);
@@ -1459,6 +1754,10 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     }
 
     auto guard = ir_block->LockWrite();
+#ifdef SWIFT_HAS_X64_BACKEND
+    if (module->GetAddressSpace().GetConfig().backend_isa == kX86_64)
+        return x64::CompileBlock(module, ir_block);
+#endif
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileBlock(module, ir_block);
     auto& jit_state = ir_block->GetJitCache();
@@ -1517,6 +1816,10 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module,
                   const IntrusivePtr<ir::Block>& block) {
+#ifdef SWIFT_HAS_X64_BACKEND
+    if (module->GetAddressSpace().GetConfig().backend_isa == kX86_64)
+        return x64::CompileBlock(module, block.get());
+#endif
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileBlock(module, block.get());
     auto& jit_state = block->GetJitCache();

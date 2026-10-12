@@ -14,7 +14,8 @@ using R = ir::AtomicRMWOp;
 
 namespace {
 
-enum class AtomicKind { Exchange, Add, And, Or, Xor, Neg, Compare };
+enum class AtomicKind { Exchange, Add, And, Or, Xor, Neg, Compare,
+                        SignedMax, SignedMin, UnsignedMax, UnsignedMin };
 
 template<class T, AtomicKind kind>
 u64 UnalignedAtomic(void* pointer, u64 operand, u64 desired) noexcept {
@@ -31,6 +32,10 @@ u64 UnalignedAtomic(void* pointer, u64 operand, u64 desired) noexcept {
     if constexpr (kind == AtomicKind::Xor) replacement = T(old ^ T(operand));
     if constexpr (kind == AtomicKind::Neg) replacement = T(T(0) - old);
     if constexpr (kind == AtomicKind::Compare) replacement = old == T(operand) ? T(desired) : old;
+    if constexpr (kind == AtomicKind::SignedMax) replacement = ir::AtomicExtremum(R::SignedMax, old, T(operand));
+    if constexpr (kind == AtomicKind::SignedMin) replacement = ir::AtomicExtremum(R::SignedMin, old, T(operand));
+    if constexpr (kind == AtomicKind::UnsignedMax) replacement = ir::AtomicExtremum(R::UnsignedMax, old, T(operand));
+    if constexpr (kind == AtomicKind::UnsignedMin) replacement = ir::AtomicExtremum(R::UnsignedMin, old, T(operand));
     std::memcpy(pointer, &replacement, sizeof(replacement));
     return old;
 }
@@ -59,6 +64,10 @@ AtomicKernel Kernel(AtomicKind kind) {
         case AtomicKind::Xor: return &UnalignedAtomic<T, AtomicKind::Xor>;
         case AtomicKind::Neg: return &UnalignedAtomic<T, AtomicKind::Neg>;
         case AtomicKind::Compare: return &UnalignedAtomic<T, AtomicKind::Compare>;
+        case AtomicKind::SignedMax: return &UnalignedAtomic<T, AtomicKind::SignedMax>;
+        case AtomicKind::SignedMin: return &UnalignedAtomic<T, AtomicKind::SignedMin>;
+        case AtomicKind::UnsignedMax: return &UnalignedAtomic<T, AtomicKind::UnsignedMax>;
+        case AtomicKind::UnsignedMin: return &UnalignedAtomic<T, AtomicKind::UnsignedMin>;
     }
     UNREACHABLE();
 }
@@ -117,6 +126,10 @@ bool JitTranslator::EmitAtomic(ir::Inst* inst) {
             case R::Or: kind = AtomicKind::Or; break;
             case R::Xor: kind = AtomicKind::Xor; break;
             case R::Neg: kind = AtomicKind::Neg; break;
+            case R::SignedMax: kind = AtomicKind::SignedMax; break;
+            case R::SignedMin: kind = AtomicKind::SignedMin; break;
+            case R::UnsignedMax: kind = AtomicKind::UnsignedMax; break;
+            case R::UnsignedMin: kind = AtomicKind::UnsignedMin; break;
             case R::Add: case R::AddCarry: break;
             default: throw std::runtime_error("invalid RV64 atomic RMW operation");
         }
@@ -137,6 +150,10 @@ bool JitTranslator::EmitAtomic(ir::Inst* inst) {
             case AtomicKind::And: emit(&Assembler::AMOAND_W, &Assembler::AMOAND_D); break;
             case AtomicKind::Or: emit(&Assembler::AMOOR_W, &Assembler::AMOOR_D); break;
             case AtomicKind::Xor: emit(&Assembler::AMOXOR_W, &Assembler::AMOXOR_D); break;
+            case AtomicKind::SignedMax: emit(&Assembler::AMOMAX_W, &Assembler::AMOMAX_D); break;
+            case AtomicKind::SignedMin: emit(&Assembler::AMOMIN_W, &Assembler::AMOMIN_D); break;
+            case AtomicKind::UnsignedMax: emit(&Assembler::AMOMAXU_W, &Assembler::AMOMAXU_D); break;
+            case AtomicKind::UnsignedMin: emit(&Assembler::AMOMINU_W, &Assembler::AMOMINU_D); break;
             default: UNREACHABLE();
         }
     } else {
@@ -163,6 +180,25 @@ bool JitTranslator::EmitAtomic(ir::Inst* inst) {
             case AtomicKind::Or: as.OR(t2, result, a1); break;
             case AtomicKind::Xor: as.XOR(t2, result, a1); break;
             case AtomicKind::Neg: as.NEG(t2, result); break;
+            case AtomicKind::SignedMax: case AtomicKind::SignedMin:
+            case AtomicKind::UnsignedMax: case AtomicKind::UnsignedMin: {
+                const bool signed_compare = kind == AtomicKind::SignedMax || kind == AtomicKind::SignedMin;
+                const bool maximum = kind == AtomicKind::SignedMax || kind == AtomicKind::UnsignedMax;
+                // Flipping the actual access-width sign bit maps signed
+                // ordering onto BLTU, including byte and halfword lanes.
+                if (signed_compare) {
+                    as.LI(t0, u64{1} << (size * 8 - 1));
+                    as.XOR(t2, result, t0); as.XOR(t0, a1, t0);
+                } else {
+                    as.MV(t2, result); as.MV(t0, a1);
+                }
+                Label operand_wins, selected;
+                if (maximum) as.BLTU(t2, t0, &operand_wins);
+                else as.BLTU(t0, t2, &operand_wins);
+                as.MV(t2, result); as.J(&selected);
+                as.Bind(&operand_wins); as.MV(t2, a1); as.Bind(&selected);
+                break;
+            }
         }
         if (size < 4) {
             as.AND(t2, t2, a5); as.SLL(t2, t2, a4); as.AND(t1, t1, a6); as.OR(t2, t2, t1);

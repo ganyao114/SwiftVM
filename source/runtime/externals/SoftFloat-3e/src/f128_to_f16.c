@@ -84,7 +84,7 @@ float16_t f128_to_f16( struct softfloat_state *state, float128_t a )
     if ( sizeof (int_fast16_t) < sizeof (int_fast32_t) ) {
         if ( exp < -0x40 ) exp = -0x40;
     }
-    return softfloat_roundPackToF16( sign, exp, frac16 | 0x4000 );
+    return softfloat_roundPackToF16( state, sign, exp, frac16 | 0x4000 );
     /*------------------------------------------------------------------------
     *------------------------------------------------------------------------*/
  uiZ:

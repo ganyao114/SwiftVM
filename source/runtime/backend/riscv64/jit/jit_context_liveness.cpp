@@ -48,8 +48,9 @@ void JitContext::ConfigureLiveness(ir::Block* block) {
         return;
     }
     std::vector<ir::Inst*> insts;
-    std::unordered_map<ir::Inst*, u32> targets;
+    std::unordered_map<ir::Inst*, u32> targets, positions;
     for (auto& inst : block->GetInstList()) {
+        positions[&inst] = insts.size();
         last_uses[&inst] = insts.size(); insts.push_back(&inst);
         if (inst.GetOp() == O::BindLabel) targets[inst.GetArg<ir::Value>(0).Def()] = insts.size() - 1;
     }
@@ -89,12 +90,19 @@ void JitContext::ConfigureLiveness(ir::Block* block) {
             else if (arg.IsParams()) for (const auto& param : arg.Get<ir::Params>()) if (param.data.IsValue()) mark(param.data.value, at);
         }
     };
+    // Preseed early QC definitions before scanning any operand uses: a QC
+    // consumer can precede its no-op marker within the producer's CFG node.
+    for (auto* inst : insts) if (inst->GetOp() == O::VecSatMulQC || inst->GetOp() == O::VecSatShiftQC) {
+        const auto producer = positions.find(inst->GetArg<ir::Value>(0).Def());
+        if (producer != positions.end()) defs[node[producer->second]].insert(inst);
+    }
     for (u32 i = 0; i < count; ++i) {
         auto* inst = insts[i];
         if (inst->GetOp() != O::BindLabel && inst->GetOp() != O::AddPhi) operands(inst, i);
         if (inst->GetOp() == O::SaveFlags || inst->GetOp() == O::BranchOnlyFlags || inst->GetOp() == O::GetFlags)
             operands(inst->GetArg<ir::Value>(0).Def(), i);
-        if (inst->ReturnType() != ir::ValueType::VOID) defs[node[i]].insert(inst);
+        // A branch before the marker must publish the producer-defined QC.
+        if (inst->GetOp() != O::VecSatMulQC && inst->GetOp() != O::VecSatShiftQC && inst->ReturnType() != ir::ValueType::VOID) defs[node[i]].insert(inst);
     }
     for (const auto& [value, at] : phi_edge_uses) mark(value, at, true);
     const auto terminal = [&](const auto& recurse, const ir::Terminal& value) -> void {

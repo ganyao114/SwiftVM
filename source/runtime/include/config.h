@@ -9,6 +9,8 @@
 
 namespace swift::runtime {
 
+namespace ir { class Block; }
+
 using LocationDescriptor = VAddr;
 
 struct UniformMapDesc {
@@ -52,6 +54,7 @@ enum class Optimizations : std::uint32_t {
     // AOT validity keys, so reusing it would change the meaning of old keys.
     DeadCodeRemove = 1 << 11,
     XmmFaultSink = 1 << 12,
+    ScalarRegisterCache = 1 << 14,
     // Bit 13 stays reserved: global_opts is hashed into persisted JIT cache and
     // AOT validity keys, so reusing it would change the meaning of old keys.
     All = UINT32_MAX
@@ -90,11 +93,26 @@ DECLARE_ENUM_FLAG_OPERATORS(Arm64Features)
 //             Linux PR_SET_MEM_MODEL_TSO); codegen matches Relaxed.
 enum class TsoMode : std::uint8_t { Relaxed, AcqRel, Hardware };
 
+enum class CodeFetchResult : std::uint8_t { Success, Fault, Unsupported };
+
 class MemoryInterface {
 public:
     virtual bool Read(void* dest, size_t addr, size_t size) = 0;
     virtual bool Write(void* src, size_t addr, size_t size) = 0;
     virtual void* GetPointer(void* src) = 0;
+
+    // Separate from ordinary data transfers: Success guarantees the entire
+    // code range was readable and its backing remained live during copying.
+    // Implementations must reject guest/window/host arithmetic overflow.
+    // Unsupported does not access memory; never fall back to unchecked Read.
+    virtual CodeFetchResult ReadCode(void*, size_t, size_t) {
+        return CodeFetchResult::Unsupported;
+    }
+    // Initialization-only identity check for an instance's guest mask/bias.
+    // A provider passed to an Instance must outlive that Instance.
+    virtual bool MatchesCodeAddressSpace(std::uintptr_t, std::uint64_t) const {
+        return false;
+    }
 
     template <typename T> T Read(size_t addr = 0) {
         T t;
@@ -103,6 +121,23 @@ public:
     }
 
     template <typename T> void Write(T& t, size_t addr) { Write(&t, addr, sizeof(T)); }
+};
+
+// Frontend capability, independent of the host backend ISA. The caller owns
+// a fresh, open, unpublished block at original_pc. The service constructs one
+// complete instruction, including its local CFG and terminal, without entering
+// a Runtime or publishing code. Unsupported leaves that block unchanged.
+enum class SingleDecodeResult : std::uint8_t { Ready, FaultIR, Unsupported };
+struct SingleDecodeService {
+    using Callback = SingleDecodeResult (*)(const void* context,
+            LocationDescriptor original_pc, MemoryInterface& memory, ir::Block& fresh_block);
+    Callback callback{};
+    const void* context{}; // Non-owning; must outlive the Instance.
+    // Optional frontend-owned positive inventory for generic host calls in
+    // the complete fresh unit. Without it Runtime rejects such calls before
+    // execution. This does not replace backend recovery/CFG validation.
+    using Admission = bool (*)(const void* context, const ir::Block& fresh_block);
+    Admission admit{};
 };
 
 struct Config {
@@ -121,8 +156,9 @@ struct Config {
     // ops.  This optional description lets UniformElimination distinguish
     // their scalar XmmLo/XmmHi views from unrelated U64 uniforms.
     std::span<UniformRangeDesc> xmm_uniform_ranges;
-    // Frontend-owned guest GPR State ranges eligible for strictly unit-local
-    // loop caching. No host-register ABI is attached to this description.
+    // Frontend-owned guest GPR State ranges eligible for unit-local loop
+    // caching and whole-CFG state SSA promotion. No host-register ABI is
+    // attached to this description.
     std::span<UniformRangeDesc> loop_gpr_uniform_ranges;
     bool static_program;
     Optimizations global_opts;
@@ -155,6 +191,9 @@ struct Config {
     // embedder's job to prove it will not).
     std::uint64_t guest_addr_mask{0};
     MemoryInterface* memory;
+    // Copied at Instance construction; no runtime reconfiguration. Registering
+    // decoding alone does not promise a single-instruction execution engine.
+    SingleDecodeService single_decode{};
 };
 
 }  // namespace swift::runtime

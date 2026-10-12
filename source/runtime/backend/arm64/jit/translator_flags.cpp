@@ -1413,6 +1413,8 @@ bool OpClobbersPstate(ir::OpCode op) {
         case ir::OpCode::VecShiftLeft:
         case ir::OpCode::VecShiftRight:
         case ir::OpCode::VecShiftRightArithmetic:
+        case ir::OpCode::VecSatMulHigh:
+        case ir::OpCode::VecSatShiftImm:
             return true;
         default:
             return false;

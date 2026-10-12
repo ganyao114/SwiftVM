@@ -88,7 +88,8 @@ void JitContext::ConfigureInitialization(ir::Block* block) {
         auto* definition = value.Def();
         // Pair-result pseudos are written by their producer, before the
         // pseudo marker appears in the instruction stream.
-        if (definition->GetOp() == ir::OpCode::CpuidUpper || definition->GetOp() == ir::OpCode::Div128Remainder)
+        if (definition->GetOp() == ir::OpCode::CpuidUpper || definition->GetOp() == ir::OpCode::Div128Remainder ||
+            definition->GetOp() == ir::OpCode::VecSatMulQC || definition->GetOp() == ir::OpCode::VecSatShiftQC)
             definition = definition->GetArg<ir::Value>(0).Def();
         if (!positions.contains(definition)) return; // Independent blocks reject foreign SSA.
         const u32 where = positions.at(definition), from = node[where], to = use_node;

@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
+#include "runtime/common/saturating_multiply.h"
+#include "runtime/common/saturating_shift.h"
+#include "runtime/common/unsigned_estimate.h"
+#include "runtime/common/saturating_add_sub.h"
 
 namespace swift::runtime::backend::interp {
 
@@ -208,6 +213,77 @@ void Interpreter::RunVecMul(ir::Inst* inst, InterpStack& stack) {
                            [](u64 a, u64 b) { return a * b; }));
 }
 
+void Interpreter::RunVecDot(ir::Inst* inst, InterpStack& stack) {
+    const u64 signed_bytes = inst->GetArg<ir::Imm>(3).Get();
+    if (inst->ReturnType() != ValueType::V128 || signed_bytes > 1)
+        throw std::runtime_error("VecDot requires V128 and a boolean signed-byte mode");
+    for (u32 input = 0; input < 3; ++input)
+        if (inst->GetArg<ir::Value>(input).Type() != ValueType::V128 ||
+            inst->GetArg<ir::Value>(input).Def()->ReturnType() != ValueType::V128)
+            throw std::runtime_error("VecDot requires three V128 inputs");
+    const auto lhs = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto rhs = ReadVec(stack, inst->GetArg<ir::Value>(1));
+    const auto accumulator = ReadVec(stack, inst->GetArg<ir::Value>(2));
+    u128 result{};
+    for (u32 lane = 0; lane < 4; ++lane) {
+        u32 sum = u32(accumulator >> (lane * 32));
+        for (u32 element = 0; element < 4; ++element) {
+            const u32 position = lane * 32 + element * 8;
+            const u32 a = u8(lhs >> position), b = u8(rhs >> position);
+            const s32 left = signed_bytes && a >= 128 ? s32(a) - 256 : s32(a);
+            const s32 right = signed_bytes && b >= 128 ? s32(b) - 256 : s32(b);
+            sum += u32(left * right);
+        }
+        result |= u128(sum) << (lane * 32);
+    }
+    WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecSatMulHigh(ir::Inst* inst, InterpStack& stack) {
+    const auto shape = ValidateSaturatingMultiply(inst);
+    const auto snapshot = [&](u32 index) {
+        const auto value = ReadVec(stack, inst->GetArg<ir::Value>(index));
+        return std::array<u64, 2>{u64(value), u64(value >> 64)};
+    };
+    const auto result = EvaluateSaturatingMultiply(snapshot(0), snapshot(1), snapshot(2), shape);
+    WriteVec(stack, inst, u128(result.value[0]) | (u128(result.value[1]) << 64));
+    // Separate pseudo slots retain QC through delayed consumers and loops.
+    for (auto* pseudo : inst->GetPseudoOperations(ir::OpCode::VecSatMulQC)) {
+        ValidateSaturatingMultiplyQC(pseudo);
+        WriteScalar(stack, pseudo, result.saturated);
+    }
+}
+
+void Interpreter::RunVecSatMulQC(ir::Inst* inst, InterpStack&) {
+    // Like the wide-division/pair-result pseudos, the producer wrote this
+    // slot when it executed. A pseudo has no additional guest side effects.
+    ValidateSaturatingMultiplyQC(inst);
+}
+
+void Interpreter::RunVecSatShiftImm(ir::Inst* inst, InterpStack& stack) {
+    const auto shape = ValidateSaturatingShift(inst);
+    const auto input = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    const auto result = EvaluateSaturatingShift({u64(input), u64(input >> 64)}, shape);
+    WriteVec(stack, inst, u128(result.value[0]) | (u128(result.value[1]) << 64));
+    for (auto* pseudo : inst->GetPseudoOperations(ir::OpCode::VecSatShiftQC)) {
+        ValidateSaturatingShiftQC(pseudo);
+        WriteScalar(stack, pseudo, result.saturated);
+    }
+}
+
+void Interpreter::RunVecUnsignedEstimate(ir::Inst* inst, InterpStack& stack) {
+    const auto operation = ValidateUnsignedEstimate(inst);
+    const auto input = ReadVec(stack, inst->GetArg<ir::Value>(0));
+    u128 result{};
+    for (u32 lane = 0; lane < 4; ++lane)
+        result |= u128(EvaluateUnsignedEstimateLane(u32(input >> (lane * 32)), operation)) << (lane * 32);
+    WriteVec(stack, inst, result);
+}
+
+void Interpreter::RunVecSatShiftQC(ir::Inst* inst, InterpStack&) {
+    ValidateSaturatingShiftQC(inst);
+}
+
 void Interpreter::RunVecMulHigh16(ir::Inst* inst, InterpStack& stack) {
     const bool signed_lanes = inst->GetArg<ir::Imm>(2).Get() != 0;
     WriteVec(stack,
@@ -257,47 +333,39 @@ void Interpreter::RunVecMulWiden(ir::Inst* inst, InterpStack& stack) {
 
 
 void Interpreter::RunVecSatAdd(ir::Inst* inst, InterpStack& stack) {
-    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
-    const bool signed_lanes = inst->GetArg<ir::Imm>(3).Get() != 0;
-    const u64 mask = (u64(1) << bits) - 1;
-    WriteVec(stack,
-             inst,
-             VecLaneBinary(
-                     ReadVec(stack, inst->GetArg<ir::Value>(0)),
-                     ReadVec(stack, inst->GetArg<ir::Value>(1)),
-                     bits,
-                     [bits, signed_lanes, mask](u64 a, u64 b) {
-                         if (!signed_lanes) return std::min<u64>(a + b, mask);
-                         const s64 minimum = -(s64(1) << (bits - 1));
-                         const s64 maximum = (s64(1) << (bits - 1)) - 1;
-                         return static_cast<u64>(
-                                        std::clamp(SignedLane(a, bits) + SignedLane(b, bits),
-                                                   minimum,
-                                                   maximum)) &
-                                mask;
-                     }));
+    const auto shape = ValidateSaturatingAddSub(inst);
+    const u64 mask = shape.bits == 64 ? UINT64_MAX : (u64{1} << shape.bits) - 1;
+    const __int128 limit = __int128{1} << (shape.bits - 1);
+    WriteVec(stack, inst, VecLaneBinary(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                                      ReadVec(stack, inst->GetArg<ir::Value>(1)), shape.bits,
+        [=](u64 a, u64 b) -> u64 {
+            if (!shape.sign) {
+                const auto sum = static_cast<unsigned __int128>(a) + b;
+                return sum > mask ? mask : u64(sum);
+            }
+            // Sign decoding is widened before subtraction; no signed64
+            // overflow, 64-bit shifts, or out-of-range unsigned->signed cast.
+            const auto decode = [=](u64 v) -> __int128 {
+                return (v & u64(limit)) ? __int128(v) - 2 * limit : __int128(v);
+            };
+            const __int128 sum = decode(a) + decode(b);
+            return u64(std::clamp(sum, -limit, limit - 1)) & mask;
+        }));
 }
-
 void Interpreter::RunVecSatSub(ir::Inst* inst, InterpStack& stack) {
-    const u32 bits = inst->GetArg<ir::Imm>(2).Get();
-    const bool signed_lanes = inst->GetArg<ir::Imm>(3).Get() != 0;
-    const u64 mask = (u64(1) << bits) - 1;
-    WriteVec(stack,
-             inst,
-             VecLaneBinary(
-                     ReadVec(stack, inst->GetArg<ir::Value>(0)),
-                     ReadVec(stack, inst->GetArg<ir::Value>(1)),
-                     bits,
-                     [bits, signed_lanes, mask](u64 a, u64 b) {
-                         if (!signed_lanes) return a < b ? u64(0) : a - b;
-                         const s64 minimum = -(s64(1) << (bits - 1));
-                         const s64 maximum = (s64(1) << (bits - 1)) - 1;
-                         return static_cast<u64>(
-                                        std::clamp(SignedLane(a, bits) - SignedLane(b, bits),
-                                                   minimum,
-                                                   maximum)) &
-                                mask;
-                     }));
+    const auto shape = ValidateSaturatingAddSub(inst);
+    const u64 mask = shape.bits == 64 ? UINT64_MAX : (u64{1} << shape.bits) - 1;
+    const __int128 limit = __int128{1} << (shape.bits - 1);
+    WriteVec(stack, inst, VecLaneBinary(ReadVec(stack, inst->GetArg<ir::Value>(0)),
+                                      ReadVec(stack, inst->GetArg<ir::Value>(1)), shape.bits,
+        [=](u64 a, u64 b) -> u64 {
+            if (!shape.sign) return a < b ? 0 : a - b;
+            const auto decode = [=](u64 v) -> __int128 {
+                return (v & u64(limit)) ? __int128(v) - 2 * limit : __int128(v);
+            };
+            const __int128 difference = decode(a) - decode(b);
+            return u64(std::clamp(difference, -limit, limit - 1)) & mask;
+        }));
 }
 
 void Interpreter::RunVecPack(ir::Inst* inst, InterpStack& stack) {

@@ -121,6 +121,8 @@ add_library(swift_runtime STATIC
         backend/address_space.h
         backend/function_entry_contract.cpp
         backend/function_entry_contract.h
+        backend/function_plan.cpp
+        backend/function_plan.h
         backend/runtime.cpp
         backend/runtime.h
         backend/signal_handler.cpp
@@ -275,6 +277,8 @@ add_library(swift_runtime STATIC
         backend/interp/interpreter_vector_float.cpp
         backend/interp/interpreter_vector_integer.cpp
         backend/interp/interpreter.h
+        backend/interp/single_instruction_admission.cpp
+        backend/interp/single_instruction_admission.h
         backend/interp/interpreter_internal.h
         backend/cache_clear.cpp
         backend/cache_clear.h
@@ -292,5 +296,50 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "arm64" IN_LIST ARCHITECTURE)
 endif ()
 
 find_package(Boost 1.57)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "x86_64" IN_LIST ARCHITECTURE)
+    find_path(XBYAK_INCLUDE_DIR xbyak/xbyak.h REQUIRED)
+    target_sources(swift_runtime PRIVATE
+            backend/x64/compile.cpp
+            backend/x64/single_instruction_code.cpp
+            backend/x64/uniform_forward.cpp
+            backend/x64/flags_liveness.cpp
+            backend/x64/scalar_register_plan.cpp
+            backend/x64/cfg_register_plan.cpp
+            backend/x64/cfg_live_range_split.cpp
+            backend/x64/cfg_home_reload_preparation.h
+            backend/x64/carry_chain_plan.cpp
+            backend/x64/cfg_register_plan.h
+            backend/x64/cfg_uniform_forward.cpp
+            backend/x64/cfg_uniform_forward.h
+            backend/x64/cfg_uniform_dead_store_pc.cpp
+            backend/x64/cfg_uniform_dead_store_pc.h
+            backend/x64/vector_register_plan.cpp
+            backend/x64/vector_register_plan.h
+            backend/x64/cfg_state_promote.cpp
+            backend/x64/cfg_state_promote.h
+            backend/x64/sparse_frame_plan.cpp
+            backend/x64/sparse_frame_plan.h
+            backend/x64/helpers.cpp
+            backend/x64/x87_helper.cpp
+            backend/x64/translator.cpp
+            backend/x64/vector.cpp
+            backend/x64/emit_control.cpp
+            backend/x64/emit_phi.cpp
+            backend/x64/function.cpp
+            backend/x64/emit_memory.cpp
+            backend/x64/emit_scalar.cpp
+            backend/x64/emit_flags.cpp
+            backend/x64/flags_residency.cpp
+            backend/x64/flags_profitability.cpp
+            backend/x64/emit_vector_integer.cpp
+            backend/x64/emit_vector_saturating.cpp
+            backend/x64/emit_vector_crypto.cpp
+            backend/x64/emit_vector_permute.cpp
+            backend/x64/emit_vector_float.cpp
+            backend/x64/trampolines.cpp)
+    target_include_directories(swift_runtime PRIVATE ${XBYAK_INCLUDE_DIR})
+    target_link_libraries(swift_runtime PRIVATE softfloat_3e)
+    target_compile_definitions(swift_runtime PUBLIC SWIFT_HAS_X64_BACKEND=1)
+endif ()
 target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl biscuit::biscuit dlmalloc)
 add_library(swift::runtime ALIAS swift_runtime)

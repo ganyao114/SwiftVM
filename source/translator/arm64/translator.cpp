@@ -4,16 +4,22 @@
 //
 
 #include <cstdlib>
+#include <atomic>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <unordered_set>
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/backend/context.h"
+#include "runtime/backend/execution_owner.h"
 #include "runtime/backend/jit_code.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/host_isa.h"
+#include "runtime/common/backedge_control.h"
 #include "runtime/frontend/arm64/arm64_frontend.h"
+#include "runtime/frontend/arm64/state_ranges.h"
+#include "runtime/frontend/arm64/single_instruction_admission.h"
 #include "runtime/frontend/ir_assembler.h"
 #include "runtime/include/sruntime.h"
 #include "translator.h"
@@ -24,6 +30,8 @@ namespace swift::translator::arm64 {
 using namespace swift::runtime;
 using namespace swift::arm64;
 
+static thread_local const void* active_core{};
+
 /*
  * Guest memory model: with guest address virtualization (Config::memory_base)
  * the guest runs at its linked addresses while the host backing store sits at
@@ -33,15 +41,28 @@ using namespace swift::arm64;
  */
 class MemoryImpl : public runtime::MemoryInterface {
 public:
-    void SetBias(u64 b) { bias = b; }
-    // Bounded guest window (Config::guest_addr_mask): truncate before biasing
-    // so a guest address can only ever name the embedder's window.
-    void SetMask(u64 m) { mask = m ? m : UINT64_MAX; }
+    MemoryImpl(void* base, u64 address_mask, runtime::MemoryInterface* provider)
+            : bias(reinterpret_cast<uintptr_t>(base)),
+              mask(address_mask ? address_mask : UINT64_MAX),
+              code_provider(provider) {
+        if (code_provider && !code_provider->MatchesCodeAddressSpace(bias, mask)) {
+            throw std::invalid_argument("ARM64 code provider does not match the instance address space");
+        }
+    }
     bool Read(void* dest, size_t addr, size_t size) override {
         return std::memcpy(dest, reinterpret_cast<const void*>((addr & mask) + bias), size);
     }
     bool Write(void* src, size_t addr, size_t size) override {
         return std::memcpy(reinterpret_cast<void*>((addr & mask) + bias), src, size);
+    }
+    CodeFetchResult ReadCode(void* dest, size_t addr, size_t size) override {
+        // The provider owns bounds, permissions and backing lifetime. Keep
+        // the original guest coordinates, including any overflow evidence.
+        return code_provider ? code_provider->ReadCode(dest, addr, size)
+                             : CodeFetchResult::Unsupported;
+    }
+    bool MatchesCodeAddressSpace(uintptr_t address_bias, uint64_t address_mask) const override {
+        return bias == address_bias && mask == address_mask;
     }
     // Instruction fetch runs in host code; see the x86 MemoryImpl for why the
     // embedder's guest-mapping oracle is consulted before dereferencing.
@@ -53,18 +74,32 @@ public:
         }
         return reinterpret_cast<void*>(host);
     }
-    u64 bias{};
-    u64 mask{UINT64_MAX};
+private:
+    const u64 bias;
+    const u64 mask;
+    runtime::MemoryInterface* const code_provider;
 };
 
-static MemoryImpl memory_impl{};
-
 struct Arm64Instance::Impl final {
+    static bool AdmitInstruction(const void*, const ir::Block& block) {
+        return Arm64SingleInstructionAdmitted(block);
+    }
+    static SingleDecodeResult DecodeInstruction(const void*, LocationDescriptor pc,
+                                                MemoryInterface& memory, ir::Block& block) {
+        ir::Assembler assembler{&block};
+        A64Decoder decoder{pc, &memory, &assembler};
+        switch (decoder.DecodeSingle()) {
+        case CodeFetchResult::Success: return SingleDecodeResult::Ready;
+        case CodeFetchResult::Fault: return SingleDecodeResult::FaultIR;
+        case CodeFetchResult::Unsupported: return SingleDecodeResult::Unsupported;
+        }
+        return SingleDecodeResult::Unsupported;
+    }
+
     // memory_base: guest->host bias (host addr = guest addr + bias), installed
     // by the linux loader; nullptr keeps the direct-mapped fast path.
-    explicit Impl(void* memory_base, u64 guest_addr_mask) {
-        memory_impl.SetBias(reinterpret_cast<uintptr_t>(memory_base));
-        memory_impl.SetMask(guest_addr_mask);
+    explicit Impl(void* memory_base, u64 guest_addr_mask, runtime::MemoryInterface* code_provider)
+            : memory_impl(memory_base, guest_addr_mask, code_provider) {
         // SVM_ENABLE_JIT=0 forces the IR interpreter path (bring-up aid
         // while the JIT is under development).
         const auto& svm_config = runtime::GetSvmConfig();
@@ -74,6 +109,12 @@ struct Arm64Instance::Impl final {
                            Optimizations::ReturnStackBuffer | Optimizations::FunctionBaseCompile;
         if (svm_config.uniform_elim) {
             global_opts |= Optimizations::UniformElimination;
+        }
+        if (svm_config.x64_scalar_cache) {
+            global_opts |= Optimizations::ScalarRegisterCache;
+        }
+        if (backend::kNativeJitBackend == kX86_64 && svm_config.flag_full_elim) {
+            global_opts |= Optimizations::FlagElimination;
         }
         Config config{
                 .loc_start = 0,
@@ -86,6 +127,7 @@ struct Arm64Instance::Impl final {
                 // the whole ThreadContext64 lives in the uniform buffer and
                 // is loaded/stored via IR uniform accesses.
                 .buffers_static_alloc = {},
+                .loop_gpr_uniform_ranges = Arm64GprUniformRanges(),
                 .static_program = false,
                 // Block linking enabled: empty dispatch slots fall back to the
                 // dispatcher safely (see JitContext::Forward).
@@ -107,6 +149,7 @@ struct Arm64Instance::Impl final {
                 .memory_base = memory_base,
                 .guest_addr_mask = guest_addr_mask,
                 .memory = &memory_impl,
+                .single_decode = {&DecodeInstruction, nullptr, &AdmitInstruction},
         };
         address_space = std::make_unique<backend::AddressSpace>(config);
     }
@@ -265,7 +308,7 @@ struct Arm64Instance::Impl final {
         // Block-level compilation path.
         const bool fresh = backend::IsEmpty(module->GetNode(pc));
         auto node = module->GetNodeOrCreate(pc, false);
-        auto code_cache = VisitVariant<void*>(node, [module, pc, fresh](auto x) -> void* {
+        auto code_cache = VisitVariant<void*>(node, [this, module, pc, fresh](auto x) -> void* {
             using T = std::decay_t<decltype(x)>;
             if constexpr (std::is_same_v<T, IntrusivePtr<ir::Function>>) {
                 return nullptr;
@@ -297,6 +340,7 @@ struct Arm64Instance::Impl final {
         return code_cache;
     }
 
+    mutable MemoryImpl memory_impl;
     std::unique_ptr<backend::AddressSpace> address_space{};
     mutable FunctionCompileStats func_stats{"aarch64"};
     mutable std::unordered_set<LocationDescriptor> block_only_locations{};
@@ -308,6 +352,28 @@ struct Arm64Instance::Impl final {
 };
 
 struct Arm64Core::Impl final {
+    struct EntryGuard {
+        Impl* owner{};
+        explicit EntryGuard(Impl& self) noexcept {
+            // Protect wrapper context/location accesses before Runtime::Run.
+            // All nesting is rejected until recovery and leases can restore
+            // parent ownership, including a Core called by a raw Runtime.
+            if (active_core || backend::RuntimeExecutionActiveOnCurrentThread()) return;
+            bool expected = false;
+            if (!self.entry_active.compare_exchange_strong(expected, true,
+                    std::memory_order_acquire, std::memory_order_relaxed)) return;
+            owner = &self;
+            active_core = owner;
+        }
+        ~EntryGuard() noexcept {
+            if (!owner) return;
+            active_core = nullptr;
+            owner->entry_active.store(false, std::memory_order_release);
+        }
+        EntryGuard(const EntryGuard&) = delete;
+        EntryGuard& operator=(const EntryGuard&) = delete;
+    };
+
     explicit Impl(Arm64Instance* instance) : instance(instance) {
         s_runtime = instance->impl->MakeRuntime();
         // Wire the interpreter wild-pointer guard into the runtime State.
@@ -321,11 +387,15 @@ struct Arm64Core::Impl final {
     }
 
     [[nodiscard]] ExitReason Run() {
+        const EntryGuard entry{*this};
+        if (!entry.owner) return ExitReason::EntryRejected;
         // update backend location
         s_runtime->SetLocation(GetCPUContext()->pc);
         auto hr = HaltReason::None;
         while (hr == HaltReason::None) {
             hr = s_runtime->Run();
+            if (hr == HaltReason::EntryRejected) return ExitReason::EntryRejected;
+            if (hr == HaltReason::Unsupported) return ExitReason::Unsupported;
             // update frontend location
             auto pc = s_runtime->GetLocation();
             GetCPUContext()->pc = pc;
@@ -360,7 +430,41 @@ struct Arm64Core::Impl final {
         }
     }
 
-    ExitReason Step() { return ExitReason::Step; }
+    ExitReason Step() {
+        const EntryGuard entry{*this};
+        if (!entry.owner) return ExitReason::EntryRejected;
+        auto* context = GetCPUContext();
+        // Preserve both location views for unavailable capability or an
+        // already pending interrupt, before preparing a fresh unit.
+        const auto previous = s_runtime->GetLocation();
+        if (std::atomic_ref<u64>(s_runtime->GetState()->exit_request)
+                .load(std::memory_order_acquire) & kBackedgeSignalRequest)
+            return ExitReason::Signal;
+        s_runtime->SetLocation(context->pc);
+        const auto reason = s_runtime->Step();
+        if (reason == HaltReason::Unsupported || reason == HaltReason::EntryRejected) {
+            s_runtime->SetLocation(previous);
+            return reason == HaltReason::Unsupported ? ExitReason::Unsupported : ExitReason::EntryRejected;
+        }
+        context->pc = s_runtime->GetLocation();
+        if (True(reason & HaltReason::PageFatal)) return ExitReason::PageFatal;
+        if (True(reason & HaltReason::IllegalCode)) return ExitReason::IllegalCode;
+        if (True(reason & HaltReason::CallHost)) {
+            switch (static_cast<InterruptReason>(context->padding)) {
+            case InterruptReason::SVC:
+                svc_num = context->r[8];
+                return ExitReason::Syscall;
+            case InterruptReason::PAGE_FATAL: return ExitReason::PageFatal;
+            case InterruptReason::ILL_CODE:
+            case InterruptReason::BRK:
+            case InterruptReason::HLT:
+            case InterruptReason::FALLBACK: return ExitReason::IllegalCode;
+            default: return ExitReason::IllegalCode;
+            }
+        }
+        if (True(reason & HaltReason::Signal)) return ExitReason::Signal;
+        return reason == HaltReason::Step ? ExitReason::Step : ExitReason::Unsupported;
+    }
 
     [[nodiscard]] ThreadContext64* GetCPUContext() const {
         return reinterpret_cast<ThreadContext64*>(s_runtime->GetUniformBuffer().data());
@@ -369,14 +473,17 @@ struct Arm64Core::Impl final {
     Arm64Instance* instance{};
     std::shared_ptr<runtime::Runtime> s_runtime{};
     u64 svc_num{};
+    std::atomic<bool> entry_active{};
 };
 
-Arm64Instance::Arm64Instance(void* memory_base, u64 guest_addr_mask) {
-    impl = std::make_unique<Impl>(memory_base, guest_addr_mask);
+Arm64Instance::Arm64Instance(void* memory_base, u64 guest_addr_mask,
+                             runtime::MemoryInterface* code_provider) {
+    impl = std::make_unique<Impl>(memory_base, guest_addr_mask, code_provider);
 }
 
-Arm64Instance* Arm64Instance::Make(void* memory_base, u64 guest_addr_mask) {
-    return new Arm64Instance(memory_base, guest_addr_mask);
+Arm64Instance* Arm64Instance::Make(void* memory_base, u64 guest_addr_mask,
+                                  runtime::MemoryInterface* code_provider) {
+    return new Arm64Instance(memory_base, guest_addr_mask, code_provider);
 }
 
 void Arm64Instance::Destroy(Arm64Instance* instance) { delete instance; }

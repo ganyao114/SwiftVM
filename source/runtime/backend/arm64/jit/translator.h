@@ -733,6 +733,7 @@ private:
                          const Register& address);
 
     // Host C-ABI call helper (saves/restores caller-saved allocated GPRs)
+    void CheckHalt();
     void EmitHostCall(const ir::Lambda &lambda,
                       const std::vector<ir::DataClass> &args,
                       bool has_result,

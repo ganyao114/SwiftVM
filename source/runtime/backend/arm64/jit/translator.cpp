@@ -19,6 +19,8 @@
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/function_entry_contract.h"
 #include "runtime/common/backedge_control.h"
+#include "runtime/common/unsigned_estimate.h"
+#include "runtime/common/saturating_add_sub.h"
 #include "runtime/common/svm_config.h"
 #include "translator/x86/cpu.h"
 
@@ -898,6 +900,11 @@ void JitTranslator::EmitBlockTerminal(
 
 
 void JitTranslator::Translate(ir::Block* block) {
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() == ir::OpCode::VecUnsignedEstimate) (void)ValidateUnsignedEstimate(&inst);
+        if (inst.GetOp() == ir::OpCode::VecSatAdd || inst.GetOp() == ir::OpCode::VecSatSub)
+            (void)ValidateSaturatingAddSub(&inst);
+    }
     vixl::svm_vixl_prof::JitScope vixl_prof{context.GetFeatures().vixl_fast};
     ASSERT(vec_nan_cold_sites.empty());
     if (!translating_function) {

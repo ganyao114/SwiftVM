@@ -11,8 +11,12 @@
 #include <unordered_map>
 #include <alloca.h>
 #include "interpreter.h"
+#include "runtime/backend/interrupt_request.h"
 #include <bit>
 #include "runtime/common/div128.h"
+#include "runtime/common/crc32.h"
+#include "runtime/common/unsigned_estimate.h"
+#include "runtime/common/saturating_add_sub.h"
 #include "runtime/common/sse42str_result.h"
 #include "runtime/common/variant_util.h"
 #include "runtime/frontend/x86/x87.h"
@@ -31,14 +35,35 @@ u64 MaskFor(ValueType type) { return MaskBits(TypeBits(type)); }
 
 }  // namespace
 
-Interpreter::Interpreter(State& state, ir::Block* block) : state(state), block(block) {}
+Interpreter::Interpreter(State& state, ir::Block* block, ExecutionMode mode,
+                         size_t single_uniform_bytes)
+        : state(state), block(block), mode(mode), single_uniform_bytes(single_uniform_bytes) {}
+
+HaltReason Interpreter::ObserveInternalHalt() {
+    // Single guest instructions cannot observe asynchronous Signal between
+    // their IR fragments. Synchronous helper/fault state still stops them.
+    return mode == ExecutionMode::SingleInstruction ? state.halt_reason : ObserveHaltRequest(state);
+}
 
 // ---------------------------------------------------------------------------
 // Value slot accessors
 // ---------------------------------------------------------------------------
 
 u64 Interpreter::ReadScalar(InterpStack& stack, ir::Value value) {
-    return GetReg<u64>(stack, value);
+    const u64 raw = GetReg<u64>(stack, value);
+    const auto view = value.Type();
+    if (view >= ValueType::U8 && view <= ValueType::S64) {
+        // Signed views expose raw low bits as well. Arithmetic consumers
+        // perform sign extension explicitly; widening a view cannot recover
+        // bits outside the producer's canonical scalar slot.
+        u32 bits = TypeBits(view);
+        const auto producer = value.Def()->ReturnType();
+        if (producer >= ValueType::U8 && producer <= ValueType::S64)
+            bits = std::min(bits, TypeBits(producer));
+        return raw & MaskBits(bits);
+    }
+    // Vector bit containers and legacy untyped reads retain their behavior.
+    return raw;
 }
 
 u64 Interpreter::ReadScalarBits(InterpStack& stack, ir::Value value) {
@@ -158,6 +183,9 @@ u64 Interpreter::CallHostFunc(InterpStack& stack,
 // ---------------------------------------------------------------------------
 
 HaltReason Interpreter::Run() {
+    if (mode == ExecutionMode::SingleInstruction &&
+        (!block || !ValidateSingle(*block, single_uniform_bytes))) return HaltReason::Unsupported;
+    if (const auto reason = ObserveHaltRequest(state); reason != HaltReason::None) return reason;
     auto& insts = block->GetInstList();
     // Function-mode instruction ids are global across the RPO, while
     // Block::max_instr_id is only maintained by Block::ReIdInstr for flat
@@ -165,6 +193,10 @@ HaltReason Interpreter::Run() {
     // in a function cannot index the interpreter stack out of bounds.
     u32 max_inst_id = 0;
     for (auto& inst : insts) {
+        if (inst.GetOp() == ir::OpCode::VecUnsignedEstimate)
+            (void)ValidateUnsignedEstimate(&inst);
+        if (inst.GetOp() == ir::OpCode::VecSatAdd || inst.GetOp() == ir::OpCode::VecSatSub)
+            (void)ValidateSaturatingAddSub(&inst);
         // Portable homes and vector kernels are 128-bit. RV64 legalizes V256
         // before native emission; never copy 32 bytes into a portable home.
         bool wide = inst.ReturnType() == ValueType::V256;
@@ -193,9 +225,12 @@ HaltReason Interpreter::Run() {
     }
 
     for (auto it = insts.begin(); it != insts.end(); ++it) {
+        // Include local branch continue paths: a pure Goto loop must remain
+        // interruptible without another instruction writing halt_reason.
+        if (const auto reason = ObserveInternalHalt(); reason != HaltReason::None) return reason;
         const auto op = it->GetOp();
         if (op == ir::OpCode::Goto || op == ir::OpCode::NotGoto) {
-            const bool cond = GetReg<u64>(stack, it->GetArg<ir::Value>(0)) != 0;
+            const bool cond = ReadScalar(stack, it->GetArg<ir::Value>(0)) != 0;
             const bool jump = (op == ir::OpCode::Goto) == cond;
             if (jump) {
                 if (auto target = labels.find(&*it); target != labels.end()) {
@@ -209,11 +244,14 @@ HaltReason Interpreter::Run() {
         // instruction-level fault sets state.halt_reason; stop the block
         // immediately so the halt propagates to the dispatcher instead of
         // continuing to execute past the faulting instruction.
-        if (state.halt_reason != HaltReason::None) {
-            return state.halt_reason;
-        }
+        if (const auto reason = ObserveInternalHalt(); reason != HaltReason::None) return reason;
     }
-    return RunTerminal(block->GetTerminal(), stack);
+    const auto terminal_reason = RunTerminal(block->GetTerminal(), stack);
+    if (mode == ExecutionMode::Ordinary || terminal_reason != HaltReason::None) return terminal_reason;
+    // The terminal has committed the entire successor before this final
+    // asynchronous observation. Leave synchronous state for Runtime to consume.
+    if (const auto reason = ObserveHaltRequest(state); reason != HaltReason::None) return reason;
+    return HaltReason::Step;
 }
 
 HaltReason Interpreter::Run(ir::Inst* inst, InterpStack& stack) {
@@ -232,6 +270,9 @@ HaltReason Interpreter::Run(ir::Inst* inst, InterpStack& stack) {
 }
 
 HaltReason Interpreter::RunTerminal(const ir::Terminal& terminal, InterpStack& stack) {
+    // Also covers empty blocks, recursive terminals and the last-instruction
+    // race. Synchronous instruction faults have priority over a pending bit.
+    if (const auto reason = ObserveInternalHalt(); reason != HaltReason::None) return reason;
     HaltReason result{HaltReason::None};
     VisitVariant<void>(terminal, [&](auto term) {
         using T = std::decay_t<decltype(term)>;
@@ -261,7 +302,7 @@ HaltReason Interpreter::RunTerminal(const ir::Terminal& terminal, InterpStack& s
             // ReturnToDispatch. current_loc was set by a SetLocation inst.
             result = HaltReason::None;
         } else if constexpr (std::is_same_v<T, ir::terminal::If>) {
-            const bool cond = GetReg<u64>(stack, term.cond) != 0;
+            const bool cond = ReadScalar(stack, term.cond) != 0;
             result = RunTerminal(cond ? term.then_ : term.else_, stack);
         } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
             result = RunTerminal(EvalCondition(term.cond) ? term.then_ : term.else_, stack);
@@ -852,6 +893,24 @@ void Interpreter::RunCountLeadingZeros64(ir::Inst* inst, InterpStack& stack) {
 void Interpreter::RunPopCount(ir::Inst* inst, InterpStack& stack) {
     const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     WriteScalar(stack, inst, std::popcount(value));
+}
+
+void Interpreter::RunCrc32(ir::Inst* inst, InterpStack& stack) {
+    const u32 width = ValidateIeeeCrc32(inst);
+    const auto acc_value = inst->GetArg<ir::Value>(0), data_value = inst->GetArg<ir::Value>(1);
+    // ReadScalar returns the producer's slot. Apply the input view explicitly.
+    const auto read = [&](ir::Value value) {
+        const u32 bits = IeeeCrcInputBits(value);
+        return ReadScalar(stack, value) & (bits == 64 ? UINT64_MAX : (u64{1} << bits) - 1);
+    };
+    u32 crc = read(acc_value);
+    u64 data = read(data_value);
+    for (u32 byte = 0; byte < width / 8; ++byte) {
+        crc ^= u32(data & 0xff); data >>= 8;
+        for (u32 bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+    WriteScalar(stack, inst, crc);
 }
 
 void Interpreter::RunCrc32c(ir::Inst* inst, InterpStack& stack) {

@@ -9,6 +9,8 @@
 #include "runtime/backend/riscv64/defines.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/variant_util.h"
+#include "runtime/common/unsigned_estimate.h"
+#include "runtime/common/saturating_add_sub.h"
 
 namespace swift::runtime::backend::riscv64 {
 
@@ -81,6 +83,13 @@ u32 Bits(ir::ValueType type) {
 }  // namespace
 
 void JitTranslator::Translate(ir::Block* input) {
+    for (auto& inst : input->GetInstList()) {
+        if (inst.GetOp() == O::VecUnsignedEstimate) (void)ValidateUnsignedEstimate(&inst);
+        // RV64 retains its existing V256 legalization. Check complete
+        // immediates and defined types before WidePlan touches malformed IR.
+        if (inst.GetOp() == O::VecSatAdd || inst.GetOp() == O::VecSatSub)
+            (void)ValidateSaturatingAddSub(&inst, 32);
+    }
     if (WidePlan::Needed(input)) {
         auto wide = WidePlan::Build(input);
         context.RemapFlow(wide.instructions);
@@ -96,6 +105,9 @@ void JitTranslator::Translate(ir::Block* input) {
     }
     context.EnablePairCoalescing(bool(wide_ir));
     block = input;
+    for (auto& inst : block->GetInstList())
+        if (inst.GetOp() == O::VecSatAdd || inst.GetOp() == O::VecSatSub)
+            (void)ValidateSaturatingAddSub(&inst);
     const auto entry_start = context.CurrentBufferSize();
     context.BeginBlock();
     context.DiscardValues();
@@ -177,6 +189,7 @@ void JitTranslator::Translate(ir::Block* input) {
     context.InitializeValues();
     context.LoadUniformBindings();
     EmitPhiMoves(entry_phis);
+    CheckHalt();
     Poll();
 
     u32 position{};
@@ -195,11 +208,7 @@ void JitTranslator::Translate(ir::Block* input) {
             EmitTerminal(exit->second);
             context.DiscardValues();
         } else if (function_halt_checks.contains(&inst)) {
-            context.Load(t0, state, state_offset_halt_reason, 4);
-            Label resume;
-            context.BranchZero(t0, resume, true);
-            context.PublishUniformBindingsForExit(); context.Jump(epilogue);
-            as.Bind(&resume);
+            CheckHalt();
         } else if (inst.GetOp() == O::BindLabel) {
             auto& label = labels.at(inst.GetArg<ir::Value>(0).Def());
             context.PublishFlags();
@@ -322,6 +331,24 @@ void JitTranslator::Poll() {
     context.PollMemoryLease();
 }
 
+void JitTranslator::CheckHalt() {
+    auto& as = context.GetMasm();
+    Label stop, resume;
+    context.Load(t0, state, state_offset_halt_reason, 4);
+    context.BranchZero(t0, stop, false);
+    // A helper result is already in its SSA home. Preserve low SMC bits for
+    // restartable entries; only the sticky Signal bit stops inside an instruction.
+    context.Load(t0, state, state_offset_exit_request);
+    as.FENCE(FenceOrder::R, FenceOrder::RW);
+    as.SRLI(t0, t0, 63);
+    context.BranchZero(t0, resume);
+    as.LI(t0, static_cast<u32>(HaltReason::Signal));
+    context.Store(t0, state, state_offset_halt_reason, 4);
+    as.Bind(&stop);
+    context.PublishUniformBindingsForExit(); context.Jump(epilogue);
+    as.Bind(&resume);
+}
+
 void JitTranslator::Return(HaltReason reason) {
     context.PublishUniformBindingsForExit();
     auto& as = context.GetMasm();
@@ -367,8 +394,7 @@ void JitTranslator::EmitHelper(ir::Inst* inst) {
     context.ReloadFlags();
     context.RestoreVectorsAfterCall();
     if (ordered) as.FENCE();
-    context.Load(t0, state, state_offset_halt_reason, 4);
-    context.BranchZero(t0, epilogue, false);
+    CheckHalt();
 }
 
 bool JitTranslator::EmitScalar(ir::Inst* inst) {
@@ -657,11 +683,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             }
             Return(HaltReason::None);
         } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
-            context.Load(t0, state, state_offset_halt_reason, 4);
-            Label resume;
-            context.BranchZero(t0, resume, true);
-            context.PublishUniformBindingsForExit(); context.Jump(epilogue);
-            as.Bind(&resume);
+            CheckHalt();
             EmitTerminal(term.else_);
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
             if (!PopRSB()) Return(HaltReason::None);
