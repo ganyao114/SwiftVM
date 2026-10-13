@@ -492,6 +492,15 @@ void Inst::SetVirReg(u16 slot) {
 void Inst::Validate(Inst* inst) {
     ASSERT(inst);
     ASSERT(inst->op_code >= OpCode::Void && inst->op_code < OpCode::COUNT);
+    if (inst->op_code == OpCode::Not && inst->ArgAt(1).IsVoid()) {
+        // The public builders and emitters also accept logical unary Not.
+        // Its optional Operand occupies three slots when present; absent
+        // operands must leave the entire tail empty.
+        ASSERT_MSG(inst->ArgAt(0).IsValue(), "Not arg 0 must be Value type!");
+        for (int slot = 2; slot < max_args; ++slot)
+            ASSERT_MSG(inst->ArgAt(slot).IsVoid(), "unary Not has an unexpected argument!");
+        return;
+    }
     if (inst->op_code == OpCode::CallLambda) {
         ASSERT_MSG(inst->ArgAt(0).IsLambda(), "CallLambda arg 0 must be Lambda type!");
         return;

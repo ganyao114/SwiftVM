@@ -333,3 +333,4 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 add_subdirectory(riscv)
+add_subdirectory(loongarch64)

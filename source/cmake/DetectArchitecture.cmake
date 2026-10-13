@@ -59,4 +59,6 @@ detect_architecture("_M_PPC" ppc)
 
 detect_architecture("__riscv" riscv)
 
+detect_architecture("__loongarch64" loongarch64)
+
 detect_architecture("__EMSCRIPTEN__" wasm)

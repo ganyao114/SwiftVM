@@ -689,11 +689,13 @@ public:
 private:
     Location GetNextLocation(const Terminal& term);
 
-    // `AdvancePC` is not program-counter motion -- no backend emits any -- it is
-    // the guest instruction boundary at which the arm64 backend commits its
+    // This coalescing is for backends that treat AdvancePC as metadata, not
+    // program-counter motion. Frontends targeting LoongArch must disable it:
+    // that backend commits PC and polls at each original retirement boundary.
+    // On the arm64 backend it is the boundary at which the backend commits its
     // lazily kept flag state (EmitAdvancePC = MergeNZCV + FlushFlags) and at
     // which the interpreter does nothing at all. Its immediate is read in
-    // exactly one other place: the sum over a block is that block's guest byte
+    // block byte accounting as well: the sum is that block's guest byte
     // length (backend/runtime.cpp, SMC range registration).
     //
     // Measured over the 25 e2e guests: 21 562 AdvancePC reach the backend and

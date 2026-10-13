@@ -7,6 +7,7 @@
 #include "address_space.h"
 #include "runtime/backend/arm64/trampolines.h"
 #include "runtime/backend/riscv64/trampolines.h"
+#include "runtime/backend/loongarch64/trampolines.h"
 #ifdef SWIFT_HAS_X64_BACKEND
 #include "runtime/backend/x64/trampolines.h"
 #endif
@@ -23,12 +24,15 @@ AddressSpace::AddressSpace(const Config& config)
         : config(config)
         , smc_tracker(reinterpret_cast<u64>(config.memory_base),
                       config.guest_addr_mask,
-                      BackedgeLatchEnabled() || config.region_edges) {
+                      config.backend_isa == kLoongArch || BackedgeLatchEnabled() || config.region_edges) {
     Init();
 }
 
 bool AddressSpace::ExitLatchEnabled() const {
-    return BackedgeLatchEnabled() || config.region_edges;
+    // The LoongArch dispatcher always polls exit_request at guest boundaries.
+    // Publish SMC generations even when the optional legacy latch is disabled,
+    // so the host boundary detaches dirty IR before a cached module lookup.
+    return config.backend_isa == kLoongArch || BackedgeLatchEnabled() || config.region_edges;
 }
 
 void AddressSpace::Init() {
@@ -45,6 +49,9 @@ void AddressSpace::Init() {
             break;
         case kRiscv64:
             trampolines = std::make_unique<riscv64::TrampolinesRiscv64>(config);
+            break;
+        case kLoongArch:
+            trampolines = std::make_unique<loongarch64::TrampolinesLoongArch64>(config);
             break;
 #ifdef SWIFT_HAS_X64_BACKEND
         case kX86_64:

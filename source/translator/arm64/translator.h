@@ -64,8 +64,8 @@ public:
     // Execution entry is exclusive and rejects nested guest execution. Context
     // access and other setters remain stopped-owner operations.
     ExitReason Run() override;
-    // The single-decode service is registered, but a retirement/recovery engine
-    // is not available yet: Step returns Unsupported without fetching code.
+    // Decode a fresh instruction and execute it through the host's private
+    // retirement/recovery engine. Unsupported units preserve guest context.
     ExitReason Step() override;
     void SignalInterrupt() override;
     void ClearInterrupt() override;

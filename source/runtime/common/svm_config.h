@@ -89,7 +89,12 @@ namespace swift::runtime {
     X(x64_flags_residency, false) \
     X(x64_flags_profitability, false) \
     X(x64_native_cf_chains, false) \
-    X(x64_vector_cfg, false)
+    X(x64_vector_cfg, false) \
+    X(loongarch_lsx, true) \
+    X(loongarch_lasx, true) \
+    X(loongarch_crc32, true) \
+    X(loongarch_cfg_allocation, true) \
+    X(loongarch_flags_publication, true)
 
 enum class FeatureId : std::size_t {
 #define SVM_FEATURE_ID(field, default_value) field,
@@ -277,6 +282,11 @@ struct FeatureOverrides {
     X(bool, x64_flags_profitability, "SVM_X64_FLAGS_PROFITABILITY", NonZero, false, "x64 CFG flags 驻留收益选择；需 CFG allocation 与 flags residency；缺省 OFF，纳入模块及缓存指纹") \
     X(bool, x64_native_cf_chains, "SVM_X64_NATIVE_CF_CHAINS", NonZero, false, "x64 two-producer native CF transport；缺省 OFF，纳入模块及缓存指纹") \
     X(bool, x64_vector_cfg, "SVM_X64_VECTOR_CFG", NonZero, false, "x64 full-CFG vector cache；保留 canonical homes；缺省 OFF，纳入模块及缓存指纹") \
+    X(bool, loongarch_lsx, "SVM_LOONGARCH_LSX", DefaultOn, true, "LoongArch LSX JIT；缺省 ON，=0 禁用，仍需内核 HWCAP；纳入模块及缓存指纹") \
+    X(bool, loongarch_lasx, "SVM_LOONGARCH_LASX", DefaultOn, true, "LoongArch LASX JIT 策略；缺省 ON，=0 禁用，仍需内核 HWCAP；当前 V256 拆为 V128") \
+    X(bool, loongarch_crc32, "SVM_LOONGARCH_CRC32", DefaultOn, true, "LoongArch CRC32 JIT；缺省 ON，=0 禁用，仍需内核 HWCAP；纳入模块及缓存指纹") \
+    X(bool, loongarch_cfg_allocation, "SVM_LOONGARCH_CFG_ALLOCATION", DefaultOn, true, "LoongArch 全 CFG 标量分配；缺省 ON，=0 采用局部缓存基线；纳入模块及缓存指纹") \
+    X(bool, loongarch_flags_publication, "SVM_LOONGARCH_FLAGS_PUBLICATION", DefaultOn, true, "LoongArch CFG flags 按脏状态发布；缺省 ON，=0 保守写回；纳入模块及缓存指纹") \
     X(bool, uniform_path_fwd, "SVM_UNIFORM_PATH_FWD", DefaultOn, true, "uniform path forwarding；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:65") \
     X(std::string, vixl_host_dump, "SVM_VIXL_HOST_DUMP", RawString, "", "VIXL host 发码诊断非 0 开，host-map 原站点按变量存在；原 jit_context.cpp/trampolines.cpp") \
     X(bool, vixl_prof, "SVM_VIXL_PROF", NonZero, false, "VIXL profile；非 0 开；原 svm-vixl-prof.cc:62") \

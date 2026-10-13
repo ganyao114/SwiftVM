@@ -161,7 +161,14 @@ struct Arm64Instance::Impl final {
     [[nodiscard]] void* Translate(LocationDescriptor pc) const {
         auto module = address_space->GetModule(pc);
         auto& m_config = module->GetModuleConfig();
-        const auto features = backend::ResolveFeatureSet(m_config);
+        auto features = backend::ResolveFeatureSet(m_config);
+        if (address_space->GetConfig().backend_isa == kLoongArch) {
+            // LoongArch polls at each retired guest instruction. HIR's
+            // metadata-only coalescing keeps the first marker in place while
+            // adding later byte counts, so an SMC exit would skip instructions
+            // that have not executed. Preserve the original boundaries.
+            features.advpc_coalesce = false;
+        }
         // Function-level compilation is default-on when the optimization is
         // present; SVM_FUNC_BASE=0 is the explicit block-only escape hatch.
         auto func_base = m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&
@@ -386,9 +393,22 @@ struct Arm64Core::Impl final {
         return instance->impl->Translate(pc);
     }
 
+    void ImportNZCV() {
+        constexpr u64 mask = 0xf0000000;
+        auto* state = s_runtime->GetState();
+        state->host_cpu_flags = (state->host_cpu_flags & ~mask) | (GetCPUContext()->pstate & mask);
+    }
+
+    void ExportNZCV() {
+        constexpr u32 mask = 0xf0000000;
+        auto* context = GetCPUContext();
+        context->pstate = (context->pstate & ~mask) | (u32(s_runtime->GetState()->host_cpu_flags) & mask);
+    }
+
     [[nodiscard]] ExitReason Run() {
         const EntryGuard entry{*this};
         if (!entry.owner) return ExitReason::EntryRejected;
+        ImportNZCV();
         // update backend location
         s_runtime->SetLocation(GetCPUContext()->pc);
         auto hr = HaltReason::None;
@@ -399,6 +419,7 @@ struct Arm64Core::Impl final {
             // update frontend location
             auto pc = s_runtime->GetLocation();
             GetCPUContext()->pc = pc;
+            ExportNZCV();
             if (True(hr & runtime::HaltReason::CodeMiss)) {
                 // No cache, do translate (in IR interpreter mode this only
                 // decodes the block into the module).
@@ -441,12 +462,16 @@ struct Arm64Core::Impl final {
                 .load(std::memory_order_acquire) & kBackedgeSignalRequest)
             return ExitReason::Signal;
         s_runtime->SetLocation(context->pc);
+        const auto previous_flags = s_runtime->GetState()->host_cpu_flags;
+        ImportNZCV();
         const auto reason = s_runtime->Step();
         if (reason == HaltReason::Unsupported || reason == HaltReason::EntryRejected) {
             s_runtime->SetLocation(previous);
+            s_runtime->GetState()->host_cpu_flags = previous_flags;
             return reason == HaltReason::Unsupported ? ExitReason::Unsupported : ExitReason::EntryRejected;
         }
         context->pc = s_runtime->GetLocation();
+        ExportNZCV();
         if (True(reason & HaltReason::PageFatal)) return ExitReason::PageFatal;
         if (True(reason & HaltReason::IllegalCode)) return ExitReason::IllegalCode;
         if (True(reason & HaltReason::CallHost)) {

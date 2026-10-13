@@ -33,6 +33,14 @@
 #include "runtime/backend/interrupt_request.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/riscv64/jit/compile.h"
+#include "runtime/backend/loongarch64/jit/compile.h"
+#include "runtime/backend/loongarch64/jit/fault_scope.h"
+#include "runtime/backend/loongarch64/jit/helpers.h"
+#if defined(SWIFT_HAS_LOONGARCH_BACKEND) && defined(__linux__) && defined(__loongarch64)
+#include "runtime/backend/loongarch64/jit/translator.h"
+#include "runtime/backend/loongarch64/single_instruction_admission.h"
+#include "runtime/backend/loongarch64/single_instruction_code.h"
+#endif
 #ifdef SWIFT_HAS_X64_BACKEND
 #include "runtime/backend/x64/compile.h"
 #include "runtime/backend/x64/translator.h"
@@ -203,7 +211,8 @@ struct Runtime::Impl final {
         // definitionally invalid; the interpreter checks this before every
         // memory access and raises PageFatal instead of crashing the host.
         state->guest_addr_limit = static_cast<u64>(address_space->GetConfig().loc_end);
-        if (address_space->GetConfig().backend_isa == kRiscv64) {
+        if (address_space->GetConfig().backend_isa == kRiscv64 ||
+            address_space->GetConfig().backend_isa == kLoongArch) {
             state->spill_area[backend::kRiscvAddressSpaceSlot] = reinterpret_cast<u64>(address_space);
             memory_participant.emplace();
             state->spill_area[backend::kRiscvMemoryParticipantSlot] = reinterpret_cast<u64>(&*memory_participant);
@@ -400,6 +409,81 @@ struct Runtime::Impl final {
             backend::SignalHandler::SetContextGPR(uctx, 12, reinterpret_cast<uintptr_t>(self->state));
             backend::SignalHandler::SetContextGPR(uctx, 13, frame);
             backend::SignalHandler::SetContextGPR(uctx, 4, frame);
+            backend::SignalHandler::SetContextPC(uctx, recovery);
+            return true;
+        }
+#endif
+#if defined(__linux__) && defined(__loongarch64)
+        if (self->single_execution_active.load(std::memory_order_acquire)) {
+            const auto* descriptor = self->loongarch_single_fault.load(std::memory_order_acquire);
+            if (!descriptor || self->state_storage.Contains(fault_addr) ||
+                GetInterruptL1Mapping().Contains(fault_addr)) return false;
+            backend::loongarch64::SingleFaultContext context{};
+            context.host_pc = reinterpret_cast<uintptr_t>(host_pc);
+            context.fault_address = fault_addr;
+            context.recovery_slot = self->state->spill_area[backend::kRiscvRecoveryPcSlot];
+            context.frame_slot = self->state->spill_area[backend::kRiscvRecoveryFrameSlot];
+            context.active_state = self->state;
+            for (u32 reg = 0; reg < context.gprs.size(); ++reg)
+                context.gprs[reg] = backend::SignalHandler::GetContextGPR(uctx, reg);
+            if (descriptor->ClassifyFault(context) == backend::loongarch64::GuestFaultKind::None)
+                return false;
+            backend::loongarch64::ClearGuestFaultScope(self->state);
+            self->state->halt_reason = HaltReason::PageFatal;
+            self->state->current_loc = ir::Location{descriptor->OriginalPc()};
+            self->state->prev_loc = ir::Location{descriptor->OriginalPc()};
+            backend::ReleaseAbandonedUnalignedAtomicGuard();
+            backend::riscv64::ReleaseAbandonedMemoryKernels();
+            backend::loongarch64::ReleaseMemory(self->state);
+            backend::SignalHandler::SetContextGPR(uctx, 22, descriptor->ExpectedFrame());
+            backend::SignalHandler::SetContextGPR(uctx, 23, reinterpret_cast<uintptr_t>(self->state));
+            backend::SignalHandler::SetContextGPR(uctx, 3, descriptor->ExpectedFrame());
+            backend::SignalHandler::SetContextPC(uctx, descriptor->RecoveryPc());
+            return true;
+        }
+        if (self->address_space->GetConfig().backend_isa == kLoongArch &&
+            !self->state_storage.Contains(fault_addr) &&
+            !GetInterruptL1Mapping().Contains(fault_addr) &&
+            self->state->spill_area[backend::kRiscvRecoveryPcSlot] &&
+            self->state->spill_area[backend::kRiscvRecoveryFrameSlot]) {
+            using backend::loongarch64::GuestFaultKind;
+            const auto kind = backend::loongarch64::ClassifyGuestFault(self->state, fault_addr);
+            if (kind == GuestFaultKind::None) return false;
+            const auto recovery = self->state->spill_area[backend::kRiscvRecoveryPcSlot];
+            const auto frame = self->state->spill_area[backend::kRiscvRecoveryFrameSlot];
+            const auto host_sp = backend::SignalHandler::GetContextGPR(uctx, 3);
+            if (!self->address_space->LookupFault(reinterpret_cast<u8*>(recovery), entry) ||
+                reinterpret_cast<std::uintptr_t>(entry.recovery) != recovery ||
+                !entry.owner_start || (recovery & 3) ||
+                (frame & 15) || !host_sp || (host_sp & 15) || host_sp > frame ||
+                backend::SignalHandler::IsGuestAddressMapped(fault_addr)) return false;
+            if (kind == GuestFaultKind::Native) {
+                backend::FaultEntry native_entry{};
+                // Only the fully checked native access may use this scope.
+                // Prologues, epilogues, callbacks and validation helpers must
+                // not acquire permission to abandon an arbitrary host frame.
+                if (!self->address_space->LookupFault(host_pc, native_entry) ||
+                    native_entry.owner_start != entry.owner_start ||
+                    native_entry.recovery != entry.recovery ||
+                    native_entry.host_start != entry.host_start ||
+                    native_entry.host_end != entry.host_end ||
+                    backend::SignalHandler::GetContextGPR(uctx, 22) != frame ||
+                    backend::SignalHandler::GetContextGPR(uctx, 23) !=
+                            reinterpret_cast<std::uintptr_t>(self->state) ||
+                    backend::SignalHandler::GetContextGPR(uctx, 24) != host_sp) return false;
+            }
+            // A TypedKernel scope is published only around the audited
+            // memcpy/atomic operation, after all external callbacks return.
+            // Its C++ callee may use r22..r24, so recovery uses the saved JIT
+            // anchors rather than the interrupted helper's register values.
+            backend::loongarch64::ClearGuestFaultScope(self->state);
+            self->state->halt_reason = HaltReason::PageFatal;
+            backend::ReleaseAbandonedUnalignedAtomicGuard();
+            backend::riscv64::ReleaseAbandonedMemoryKernels();
+            backend::loongarch64::ReleaseMemory(self->state);
+            backend::SignalHandler::SetContextGPR(uctx, 22, frame);
+            backend::SignalHandler::SetContextGPR(uctx, 23, reinterpret_cast<uintptr_t>(self->state));
+            backend::SignalHandler::SetContextGPR(uctx, 3, frame);
             backend::SignalHandler::SetContextPC(uctx, recovery);
             return true;
         }
@@ -819,8 +903,18 @@ struct Runtime::Impl final {
         if (!running.load(std::memory_order_acquire) ||
             (LoadExitRequest() & kBackedgeSignalRequest)) return HaltReason::Signal;
         const auto& config = address_space->GetConfig();
-#if defined(SWIFT_HAS_X64_BACKEND) && defined(__linux__) && defined(__x86_64__)
-        if (config.backend_isa != kX86_64 ||
+#if defined(__linux__) && ((defined(SWIFT_HAS_X64_BACKEND) && defined(__x86_64__)) || \
+                          (defined(SWIFT_HAS_LOONGARCH_BACKEND) && defined(__loongarch64)))
+#if defined(__loongarch64)
+        using PrivateCode = backend::loongarch64::PrivateSingleInstructionCode;
+        using PrivateDescriptor = backend::loongarch64::SingleInstructionFaultDescriptor;
+        constexpr auto single_backend = kLoongArch;
+#else
+        using PrivateCode = backend::x64::PrivateSingleInstructionCode;
+        using PrivateDescriptor = backend::x64::SingleInstructionFaultDescriptor;
+        constexpr auto single_backend = kX86_64;
+#endif
+        if (config.backend_isa != single_backend ||
             !config.single_decode.callback || !config.memory) return HaltReason::Unsupported;
         struct SingleExecutionScope {
             const Impl& owner;
@@ -841,8 +935,13 @@ struct Runtime::Impl final {
             }
         }
         const auto original_pc = GetLocation();
+#if defined(__loongarch64)
+        IntrusivePtr<ir::Block> fresh_owner{new ir::Block{ir::Location{original_pc}}};
+        auto& fresh = *fresh_owner;
+#else
         ir::Block fresh{ir::Location{original_pc}};
-        std::unique_ptr<backend::x64::PrivateSingleInstructionCode> code;
+#endif
+        std::unique_ptr<PrivateCode> code;
         try {
             const auto decoded = config.single_decode.callback(config.single_decode.context,
                     original_pc, *config.memory, fresh);
@@ -880,16 +979,44 @@ struct Runtime::Impl final {
                 if (!backend::interp::Interpreter::ValidateSingle(fresh, config.uniform_buffer_size))
                     return HaltReason::Unsupported;
             } else {
+#if defined(__loongarch64)
+                if (!backend::loongarch64::SingleInstructionAdmitted(fresh, config.uniform_buffer_size))
+                    return HaltReason::Unsupported;
+                const auto policy = GetSvmConfig().GetFeatureSet();
+                auto features = backend::loongarch64::HostFeatures::Detect().WithPolicy(
+                        policy.loongarch_lsx, policy.loongarch_lasx, policy.loongarch_crc32);
+                backend::loongarch64::JitContext context{true, features, config.buffers_static_alloc,
+                        policy.loongarch_cfg_allocation ? backend::loongarch64::ScalarAllocationMode::GlobalCFG
+                                                       : backend::loongarch64::ScalarAllocationMode::LocalCache};
+                context.SetFlagsPublication(policy.loongarch_flags_publication);
+                if (auto module = address_space->GetModule(original_pc)) context.ConfigureModule(module.get());
+                // The first private recovery contract retains dense IDs and
+                // bounded homes. Ordinary Run independently uses sparse homes.
+                context.SetSparseHomes(false);
+                backend::loongarch64::JitTranslator translator{
+                        context, backend::loongarch64::ExecutionMode::SingleInstruction};
+                translator.Translate(&fresh);
+                auto& assembler = context.GetMasm();
+                assembler.Finalize();
+                if (translator.GuestFaultCoverage() != backend::loongarch64::GuestAccessCoverage::Precise)
+                    return HaltReason::Unsupported;
+                code = std::make_unique<PrivateCode>(state,
+                        std::span<const u8>{assembler.Data(), assembler.Size()},
+                        translator.RecoveryOffset(), translator.HomeBytes(), original_pc,
+                        translator.GuestAccesses(), translator.GuestFaultCoverage(),
+                        IntrusivePtr<ir::Block>{translator.EmittedIR()}, translator.AuditedTypedGuestAccesses());
+#else
                 backend::x64::Translator translator{&fresh, backend::x64::HostFeatures::Detect(),
                         &config, nullptr, True(config.global_opts & Optimizations::ScalarRegisterCache),
                         backend::x64::ExecutionMode::SingleInstruction};
                 translator.Translate();
                 if (translator.GuestFaultCoverage() != backend::x64::GuestAccessCoverage::Precise)
                     return HaltReason::Unsupported;
-                code = std::make_unique<backend::x64::PrivateSingleInstructionCode>(state,
+                code = std::make_unique<PrivateCode>(state,
                         std::span<const u8>{translator.getCode(), translator.getSize()},
                         translator.RecoveryOffset(), translator.FrameSize(), original_pc,
                         translator.GuestAccesses(), translator.GuestFaultCoverage());
+#endif
             }
         } catch (const std::exception&) {
             // Construction/decoding/emission has not entered native guest
@@ -906,10 +1033,20 @@ struct Runtime::Impl final {
             struct FaultScope {
                 const Impl& owner;
                 FaultScope(const Impl& owner,
-                        const backend::x64::SingleInstructionFaultDescriptor& descriptor) : owner(owner) {
+                        const PrivateDescriptor& descriptor) : owner(owner) {
+#if defined(__loongarch64)
+                    owner.loongarch_single_fault.store(&descriptor, std::memory_order_release);
+#else
                     owner.single_fault.store(&descriptor, std::memory_order_release);
+#endif
                 }
-                ~FaultScope() { owner.single_fault.store(nullptr, std::memory_order_release); }
+                ~FaultScope() {
+#if defined(__loongarch64)
+                    owner.loongarch_single_fault.store(nullptr, std::memory_order_release);
+#else
+                    owner.single_fault.store(nullptr, std::memory_order_release);
+#endif
+                }
             } fault{*this, code->Descriptor()};
             reason = code->Run();
         }
@@ -1041,8 +1178,12 @@ struct Runtime::Impl final {
     mutable std::atomic_bool entry_active{false};
 #ifdef SWIFT_HAS_X64_BACKEND
     mutable std::atomic<const backend::x64::SingleInstructionFaultDescriptor*> single_fault{};
-    mutable std::atomic<bool> single_execution_active{};
 #endif
+#if defined(SWIFT_HAS_LOONGARCH_BACKEND) && defined(__linux__) && defined(__loongarch64)
+    mutable std::atomic<const backend::loongarch64::SingleInstructionFaultDescriptor*> loongarch_single_fault{};
+    static_assert(decltype(loongarch_single_fault)::is_always_lock_free);
+#endif
+    mutable std::atomic<bool> single_execution_active{};
     backend::Trampolines::RuntimeEntry jit_entry{};
     backend::RuntimeProfileInterface profile_interface{};
     backend::ExecutionTraceBuffer execution_trace{};
@@ -1717,6 +1858,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
 #endif
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileFunctions(module, functions);
+    if (module->GetAddressSpace().GetConfig().backend_isa == kLoongArch)
+        return loongarch64::CompileFunctions(module, functions);
     const auto features = ResolveBackendFeatures(module);
     PerfFixedCapture2 fixed_capture;
     std::vector<std::unique_ptr<FunctionRegionAllocation>> allocations;
@@ -1739,6 +1882,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
 #endif
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileFunctions(module, std::span{&function, 1});
+    if (module->GetAddressSpace().GetConfig().backend_isa == kLoongArch)
+        return loongarch64::CompileFunctions(module, std::span{&function, 1});
     const auto features = ResolveBackendFeatures(module);
     PerfFixedCapture2 fixed_capture;
     FunctionRegionAllocation allocation;
@@ -1760,6 +1905,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
 #endif
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileBlock(module, ir_block);
+    if (module->GetAddressSpace().GetConfig().backend_isa == kLoongArch)
+        return loongarch64::CompileBlock(module, ir_block);
     auto& jit_state = ir_block->GetJitCache();
     if (jit_state.jit_state == backend::JitState::Cached) {
         return module->GetJitCache(jit_state);
@@ -1822,6 +1969,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
 #endif
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileBlock(module, block.get());
+    if (module->GetAddressSpace().GetConfig().backend_isa == kLoongArch)
+        return loongarch64::CompileBlock(module, block.get());
     auto& jit_state = block->GetJitCache();
 
     if (jit_state.jit_state == backend::JitState::Cached) {

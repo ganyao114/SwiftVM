@@ -160,6 +160,8 @@ std::uintptr_t SignalHandler::GetContextPC(const ucontext_t* uctx) {
     return static_cast<std::uintptr_t>(uctx->uc_mcontext.pc);
 #elif defined(__linux__) && defined(__riscv) && __riscv_xlen == 64
     return uctx->uc_mcontext.__gregs[REG_PC];
+#elif defined(__linux__) && defined(__loongarch64)
+    return uctx->uc_mcontext.__pc;
 #elif defined(__APPLE__) && defined(__x86_64__)
     return static_cast<std::uintptr_t>(uctx->uc_mcontext->__ss.__rip);
 #elif defined(__linux__) && defined(__x86_64__)
@@ -178,6 +180,8 @@ std::uintptr_t SignalHandler::GetContextGPR(const ucontext_t* uctx, u32 index) {
 #elif defined(__linux__) && defined(__aarch64__)
     return index < 31 ? uctx->uc_mcontext.regs[index] : 0;
 #elif defined(__linux__) && defined(__riscv) && __riscv_xlen == 64
+    return index > 0 && index < 32 ? uctx->uc_mcontext.__gregs[index] : 0;
+#elif defined(__linux__) && defined(__loongarch64)
     return index > 0 && index < 32 ? uctx->uc_mcontext.__gregs[index] : 0;
 #elif defined(__linux__) && defined(__x86_64__)
     static constexpr int registers[]{REG_RAX, REG_RCX, REG_RDX, REG_RBX,
@@ -217,6 +221,10 @@ bool SignalHandler::SetContextGPR(ucontext_t* uctx, u32 index, std::uintptr_t va
     if (index == 0 || index >= 32) return false;
     uctx->uc_mcontext.__gregs[index] = value;
     return true;
+#elif defined(__linux__) && defined(__loongarch64)
+    if (index == 0 || index >= 32) return false;
+    uctx->uc_mcontext.__gregs[index] = value;
+    return true;
 #elif defined(__linux__) && defined(__x86_64__)
     static constexpr int registers[]{REG_RAX, REG_RCX, REG_RDX, REG_RBX,
                                      REG_RSP, REG_RBP, REG_RSI, REG_RDI,
@@ -240,6 +248,8 @@ void SignalHandler::SetContextPC(ucontext_t* uctx, std::uintptr_t pc) {
     uctx->uc_mcontext.pc = pc;
 #elif defined(__linux__) && defined(__riscv) && __riscv_xlen == 64
     uctx->uc_mcontext.__gregs[REG_PC] = pc;
+#elif defined(__linux__) && defined(__loongarch64)
+    uctx->uc_mcontext.__pc = pc;
 #elif defined(__APPLE__) && defined(__x86_64__)
     uctx->uc_mcontext->__ss.__rip = pc;
 #elif defined(__linux__) && defined(__x86_64__)

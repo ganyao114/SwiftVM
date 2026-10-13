@@ -694,7 +694,13 @@ struct X86Instance::Impl final {
         auto module = address_space->GetModule(pc);
         perf_module_lookup.Stop();
         auto& m_config = module->GetModuleConfig();
-        const auto features = backend::ResolveFeatureSet(m_config);
+        auto features = backend::ResolveFeatureSet(m_config);
+        if (address_space->GetConfig().backend_isa == kLoongArch) {
+            // LoongArch uses the original guest boundaries to commit PC and
+            // poll SMC requests. Folding later byte counts into an earlier
+            // marker would publish a successor before it has executed.
+            features.advpc_coalesce = false;
+        }
         const auto function_enabled = [&] {
             std::lock_guard guard(frontend_mutex);
             return m_config.HasOpt(runtime::Optimizations::FunctionBaseCompile) &&

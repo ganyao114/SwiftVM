@@ -296,6 +296,15 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "arm64" IN_LIST ARCHITECTURE)
 endif ()
 
 find_package(Boost 1.57)
+# A cross compiler omits the host's /usr/include from its implicit search.
+# Expose only Boost's architecture-neutral headers, rather than host libc.
+if(CMAKE_CROSSCOMPILING AND Boost_FOUND)
+    set(SWIFT_BOOST_HEADER_ROOT "${CMAKE_CURRENT_BINARY_DIR}/boost-headers")
+    file(MAKE_DIRECTORY "${SWIFT_BOOST_HEADER_ROOT}")
+    file(CREATE_LINK "${Boost_INCLUDE_DIR}/boost" "${SWIFT_BOOST_HEADER_ROOT}/boost"
+            SYMBOLIC COPY_ON_ERROR)
+    target_include_directories(swift_runtime SYSTEM PUBLIC "${SWIFT_BOOST_HEADER_ROOT}")
+endif()
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "x86_64" IN_LIST ARCHITECTURE)
     find_path(XBYAK_INCLUDE_DIR xbyak/xbyak.h REQUIRED)
     target_sources(swift_runtime PRIVATE
@@ -341,5 +350,31 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "x86_64" IN_LIST ARCHITECTURE)
     target_link_libraries(swift_runtime PRIVATE softfloat_3e)
     target_compile_definitions(swift_runtime PUBLIC SWIFT_HAS_X64_BACKEND=1)
 endif ()
-target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl biscuit::biscuit dlmalloc)
+target_sources(swift_runtime PRIVATE
+        backend/loongarch64/assembler.cpp
+        backend/loongarch64/single_instruction_admission.cpp
+        backend/loongarch64/trampolines.cpp
+        backend/loongarch64/jit/compile.cpp
+        backend/loongarch64/jit/jit_context.cpp
+        backend/loongarch64/jit/register_plan.cpp
+        backend/loongarch64/jit/flags_plan.cpp
+        backend/loongarch64/jit/scalar_allocation_plan.cpp
+        backend/loongarch64/jit/sparse_homes_plan.cpp
+        backend/loongarch64/jit/translator.cpp
+        backend/loongarch64/jit/translator_scalar.cpp
+        backend/loongarch64/jit/translator_bits.cpp
+        backend/loongarch64/jit/translator_flags.cpp
+        backend/loongarch64/jit/translator_float.cpp
+        backend/loongarch64/jit/translator_control.cpp
+        backend/loongarch64/jit/translator_memory.cpp
+        backend/loongarch64/jit/translator_atomic.cpp
+        backend/loongarch64/jit/translator_vector.cpp
+        backend/loongarch64/jit/translator_phi.cpp
+        backend/loongarch64/jit/wide.cpp)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "loongarch64" IN_LIST ARCHITECTURE)
+    target_sources(swift_runtime PRIVATE backend/loongarch64/single_instruction_code.cpp)
+endif ()
+target_compile_definitions(swift_runtime PUBLIC SWIFT_HAS_LOONGARCH_BACKEND=1)
+target_link_libraries(swift_runtime PRIVATE softfloat_3e)
+target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl biscuit::biscuit dlmalloc swift_xbyak_loongarch64)
 add_library(swift::runtime ALIAS swift_runtime)
