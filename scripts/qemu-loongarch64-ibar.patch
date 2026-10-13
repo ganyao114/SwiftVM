@@ -1,0 +1,46 @@
+diff --git a/target/loongarch/helper.h b/target/loongarch/helper.h
+index b3b64a0..05abcdb 100644
+--- a/target/loongarch/helper.h
++++ b/target/loongarch/helper.h
+@@ -718,3 +718,6 @@ DEF_HELPER_FLAGS_4(vextrins_b, TCG_CALL_NO_RWG, void, ptr, ptr, i64, i32)
+ DEF_HELPER_FLAGS_4(vextrins_h, TCG_CALL_NO_RWG, void, ptr, ptr, i64, i32)
+ DEF_HELPER_FLAGS_4(vextrins_w, TCG_CALL_NO_RWG, void, ptr, ptr, i64, i32)
+ DEF_HELPER_FLAGS_4(vextrins_d, TCG_CALL_NO_RWG, void, ptr, ptr, i64, i32)
++
++/* Conservative instruction-stream synchronization. */
++DEF_HELPER_1(ibar, void, env)
+diff --git a/target/loongarch/insn_trans/trans_memory.c.inc b/target/loongarch/insn_trans/trans_memory.c.inc
+index 42f4e74..92d0975 100644
+--- a/target/loongarch/insn_trans/trans_memory.c.inc
++++ b/target/loongarch/insn_trans/trans_memory.c.inc
+@@ -123,7 +123,9 @@ static bool trans_dbar(DisasContext *ctx, arg_dbar * a)
+ 
+ static bool trans_ibar(DisasContext *ctx, arg_ibar *a)
+ {
+-    ctx->base.is_jmp = DISAS_STOP;
++    /* Linux-user RW/RX aliases bypass QEMU's virtual-page SMC tracking. */
++    gen_helper_ibar(tcg_env);
++    ctx->base.is_jmp = DISAS_EXIT_UPDATE;
+     return true;
+ }
+ 
+diff --git a/target/loongarch/op_helper.c b/target/loongarch/op_helper.c
+index fe79c62..8e01984 100644
+--- a/target/loongarch/op_helper.c
++++ b/target/loongarch/op_helper.c
+@@ -138,3 +138,15 @@ void helper_idle(CPULoongArchState *env)
+     do_raise_exception(env, EXCP_HLT, 0);
+ }
+ #endif
++
++/*
++ * IBAR must invalidate host translations of the synchronized instruction
++ * stream, even when guest writes used a distinct RW mapping of an RX page.
++ * The instruction has no range operands, so conservatively flush all TBs.
++ * tb_flush() arranges CPU-safe invalidation; DISAS_EXIT_UPDATE returns to
++ * the CPU loop before any new translated instruction is entered.
++ */
++void helper_ibar(CPULoongArchState *env)
++{
++    tb_flush(env_cpu(env));
++}
