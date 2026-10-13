@@ -232,5 +232,198 @@ class Arm64DifferentialTests(unittest.TestCase):
             self.assertEqual(manifest["cases"][0]["sha256"], diff.sha(elf))
 
 
+class FullSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.case = diff.full_state_cases()[0]
+        self.raw = diff.encode_full_snapshot(self.case, pc=0x401234, sp=diff.CAPTURE_SP,
+            registers=list(range(31)), vectors=[(i << 120) | i for i in range(32)],
+            nzcv=0x60000000, fpcr=0x00400000, fpsr=0x08000091, memory=bytes(range(64)))
+
+    @staticmethod
+    def oracle_module():
+        location = MODULE_PATH.parents[1] / "source/tests/loongarch64/run_arm64_unicorn.py"
+        spec = importlib.util.spec_from_file_location("full_snapshot_unicorn", location)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def oracle(self):
+        try:
+            return self.oracle_module().Oracle()
+        except ImportError as error:
+            self.skipTest(f"Unicorn/Capstone unavailable: {error}")
+
+    def test_complete_protocol_is_explicit_and_preserves_legacy(self):
+        self.assertEqual(len(self.raw), 904)
+        state = diff.decode_snapshot(self.raw, self.case, 2)
+        self.assertEqual(state["snapshot_version"], 2)
+        self.assertEqual(set(state["registers"]), {f"x{i}" for i in range(31)})
+        self.assertEqual(set(state["vectors"]), {f"q{i}" for i in range(32)})
+        legacy = (diff.MAGIC + struct.pack("<Q31QQ", diff.case_id(self.case), *range(31), 0x60000000)
+                  + bytes(range(64)))
+        old_state = diff.decode_snapshot(legacy, self.case, 1)
+        self.assertEqual(set(old_state), {"case", "registers", "nzcv", "memory"})
+        self.assertEqual(len(legacy), 336)
+        self.assertEqual(diff.differences(old_state, state),
+                         ["snapshot protocol versions differ; incomplete and full state cannot be compared"])
+        with self.assertRaises(ValueError):
+            diff.decode_snapshot(legacy, self.case, 2)
+        with self.assertRaises(ValueError):
+            diff.decode_snapshot(self.raw, self.case, 1)
+
+    def test_complete_protocol_rejects_corruption_and_unknown_descriptors(self):
+        malformed = [self.raw[:-1], self.raw + b"noise", self.raw[:8] + bytes(8) + self.raw[16:]]
+        for offset, format_code, value in ((16, "I", 336), (20, "I", 0),
+                                         (824, "Q", diff.MEMORY_BASE + 8), (832, "Q", 63),
+                                         (800, "Q", 1)):
+            broken = bytearray(self.raw)
+            struct.pack_into("<" + format_code, broken, offset, value)
+            malformed.append(bytes(broken))
+        for raw in malformed:
+            with self.subTest(raw=raw[:24]), self.assertRaises(ValueError):
+                diff.decode_snapshot(raw, self.case, 2)
+
+    def test_negative_state_pollution_locates_all_fields_and_vector_halves(self):
+        expected = diff.decode_snapshot(self.raw, self.case, 2)
+        for name, offset in (("PC", 24), ("SP", 32), ("x30", 40 + 30 * 8),
+                             ("q0", 288), ("q31", 288 + 31 * 16 + 15),
+                             ("FPCR", 808), ("FPSR", 816), ("NZCV", 803),
+                             ("memory[0x3f]", 840 + 63)):
+            broken = bytearray(self.raw)
+            broken[offset] ^= 0x10 if name == "NZCV" else 1
+            messages = diff.differences(expected, diff.decode_snapshot(bytes(broken), self.case, 2))
+            with self.subTest(field=name):
+                self.assertEqual(len(messages), 1)
+                self.assertTrue(messages[0].startswith(name + ":"), messages)
+        controls = diff.snapshot_negative_controls(self.raw, self.case)
+        self.assertEqual(controls["executed"], 10)
+        self.assertEqual(controls["rejected"], 10)
+
+    def test_real_guest_capture_matches_independent_precapture_unicorn_state(self):
+        oracle = self.oracle()
+        for case in diff.full_state_cases():
+            with self.subTest(case=case.name):
+                raw, counts = oracle.execute(case, diff.make_elf(case, 2), True, 2)
+                state = diff.decode_snapshot(raw, case, 2)
+                self.assertEqual(counts["state_captures"], 1)
+                self.assertEqual(counts["syscalls"], 2)
+                self.assertEqual(int(state["pc"], 16), diff.snapshot_boundary(case, 2))
+                self.assertGreater(counts["instructions"], 150)
+                self.assertEqual(len(state["memory"]), 128)
+                if case == self.case:
+                    self.assertEqual(int(state["registers"]["x0"], 16), diff.MASK64)
+                    self.assertEqual(int(state["registers"]["x1"], 16), case.seeds[1])
+                    self.assertEqual(int(state["registers"]["x30"], 16), case.seeds[30])
+                    self.assertEqual(int(state["sp"], 16), case.sp)
+                    self.assertEqual(int(state["vectors"]["q31"], 16), case.vectors[31])
+                    self.assertEqual(int(state["fpcr"], 16), case.fpcr)
+                    self.assertEqual(int(state["fpsr"], 16), case.fpsr)
+                if case.name == "state_guest_x30_sp":
+                    self.assertEqual(int(state["sp"], 16), case.sp + 32)
+                    self.assertEqual(int(state["registers"]["x30"], 16), 0x1234 + 0x5678)
+                if case.name == "state_guest_q31":
+                    self.assertEqual(state["vectors"]["q31"], state["vectors"]["q0"])
+                if case.name == "state_scalar_fp_clears_upper":
+                    self.assertEqual(int(state["vectors"]["q31"], 16), diff.vector_seed(case, 0) & diff.MASK64)
+
+    def test_real_harness_vector_and_fp_pollution_is_rejected(self):
+        oracle = self.oracle()
+        source = diff.make_elf(self.case, 2)
+        capture_offset = diff.snapshot_boundary(self.case, 2) - diff.CODE_BASE
+        q31_store = 0x3D800000 | (((288 + 31 * 16) // 16) << 10) | 31
+        for original, replacement, field in ((q31_store, q31_store - 1, "q31"),
+                                              (0xD53B4421, 0xD53B4401, "FPSR")):
+            elf = bytearray(source)
+            offset = elf.index(struct.pack("<I", original), capture_offset)
+            struct.pack_into("<I", elf, offset, replacement)
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
+                oracle.execute(self.case, bytes(elf), True, 2)
+
+    def test_full_snapshot_step_proof_counts_real_instructions_and_rejects_fallback(self):
+        module = self.oracle_module()
+        _, counts = self.oracle().execute(self.case, diff.make_elf(self.case, 2), True, 2)
+        n = counts["instructions"]
+        good = f"[arm64-step] calls={n} retired={n - 2} syscalls=2 run_calls=0".encode()
+        self.assertEqual(module.step_proof(good, counts)["retired"], n - 2)
+        for raw in (good + good, good.replace(b"run_calls=0", b"run_calls=1"),
+                    f"[arm64-step] calls={n + 1} retired={n - 1} syscalls=2 run_calls=0".encode()):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                module.step_proof(raw, counts)
+
+    def test_capture_preserves_memory_with_sp_at_observation_boundaries(self):
+        from dataclasses import replace
+        oracle = self.oracle()
+        expected_memory = bytes((0x80 + i * 17) & 0xFF for i in range(64))
+        for sp in (diff.MEMORY_BASE - 16, diff.MEMORY_BASE, diff.MEMORY_BASE + 1,
+                   diff.MEMORY_BASE + 48, diff.MEMORY_BASE + 63, diff.MEMORY_BASE + 64):
+            case = replace(self.case, sp=sp)
+            with self.subTest(sp=hex(sp)):
+                elf = diff.make_elf(case, 2)
+                self.assertEqual(struct.unpack_from("<IIQQQQQQ", elf, 120)[6], diff.FULL_DATA_SIZE)
+                raw, counts = oracle.execute(case, elf, True, 2)
+                state = diff.decode_snapshot(raw, case, 2)
+                self.assertEqual(int(state["sp"], 16), sp)
+                self.assertEqual(state["memory"], expected_memory.hex())
+                self.assertEqual(int(state["nzcv"], 16), case.nzcv)
+                self.assertEqual(counts["state_captures"], 1)
+
+    def test_real_rcpc_sp_below_and_above_memory_uses_disjoint_capture_scratch(self):
+        from arm64_rcpc_corpus import corpus, expected
+        oracle = self.oracle()
+        names = {"rcpc_stlurx_o255_p0_sp", "rcpc_ldapursbx_o255_p0_sp",
+                 "rcpc_stlurx_o-256_p0_sp", "rcpc_ldapursbx_o-256_p0_sp"}
+        selected = [case for case in corpus(diff.Case) if case.name in names]
+        self.assertEqual({case.name for case in selected}, names)
+        for case in selected:
+            with self.subTest(case=case.name):
+                raw, counts = oracle.execute(case, diff.make_elf(case, 2), True, 2)
+                state = diff.decode_snapshot(raw, case, 2)
+                self.assertEqual(int(state["sp"], 16), case.seeds[1])
+                self.assertEqual(state["memory"], expected(case)["memory"].hex())
+                self.assertEqual(int(state["nzcv"], 16), case.nzcv)
+                self.assertEqual(counts["state_captures"], 1)
+
+    def test_capture_rejects_scratch_aliases_and_unmapped_addresses(self):
+        from dataclasses import replace
+        oracle = self.oracle()
+        for address, reason in ((diff.MEMORY_BASE, "aliases observed memory"),
+                                (diff.FULL_SNAPSHOT_BASE, "aliases snapshot"),
+                                (diff.VECTOR_SEEDS_BASE, "aliases vector seeds"),
+                                (diff.DATA_BASE - 16, "outside the mapped"),
+                                (diff.DATA_BASE + diff.FULL_DATA_SIZE - 8, "outside the mapped"),
+                                (diff.DATA_BASE + diff.FULL_DATA_SIZE, "outside the mapped")):
+            sp = address - diff.CAPTURE_SCRATCH_OFFSET
+            with self.subTest(address=hex(address)):
+                with self.assertRaisesRegex(ValueError, reason):
+                    diff.make_elf(replace(self.case, sp=sp), 2)
+                moved = replace(self.case, instructions=(0x9100003F,),
+                                seeds={**self.case.seeds, 1: sp})  # mov sp, x1
+                with self.assertRaisesRegex(ValueError, reason):
+                    oracle.execute(moved, diff.make_elf(moved, 2), True, 2)
+
+    def test_capture_sp_and_nzcv_modifications_are_rejected(self):
+        oracle = self.oracle()
+        source = diff.make_elf(self.case, 2)
+        capture_offset = diff.snapshot_boundary(self.case, 2) - diff.CODE_BASE
+        for offset, opcode, field in ((capture_offset, 0x910043FF, "SP"),
+                                      (source.index(struct.pack("<I", 0x910003E1), capture_offset),
+                                       0xB10003E1, "NZCV")):
+            elf = bytearray(source)
+            struct.pack_into("<I", elf, offset, opcode)
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, field):
+                oracle.execute(self.case, bytes(elf), True, 2)
+
+    def test_protocol_migration_cannot_overwrite_legacy_elf_evidence(self):
+        legacy_case = diff.Case("legacy_nop", (0xD503201F,), "nop")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            diff.build(output, [legacy_case], 1)
+            elf = output / "legacy_nop.elf"
+            before = elf.read_bytes()
+            with self.assertRaisesRegex(ValueError, "different snapshot protocol"):
+                diff.build(output, [legacy_case], 2)
+            self.assertEqual(elf.read_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

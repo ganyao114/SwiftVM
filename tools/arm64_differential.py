@@ -22,6 +22,19 @@ CODE_BASE = 0x400000
 DATA_BASE = 0x410000
 MEMORY_BASE = DATA_BASE + 272
 SNAPSHOT_SIZE = 336
+# The legacy constants and default ELF remain v1. Its 336 bytes never claimed
+# to contain PC/SP, vector registers, or FP control/status.
+FULL_MAGIC = b"SVMA64\x00\x02"
+FULL_SNAPSHOT_SIZE = 904
+FULL_SNAPSHOT_BASE = DATA_BASE + 0x1000
+VECTOR_SEEDS_BASE = DATA_BASE + 0x2000
+CAPTURE_SP = DATA_BASE + 0xF000
+CAPTURE_SCRATCH_OFFSET = 0x4000
+FULL_DATA_SIZE = 0x20000
+FULL_OFFSETS = {"pc": 24, "sp": 32, "registers": 40, "vectors": 288,
+                "nzcv": 800, "fpcr": 808, "fpsr": 816, "memory_address": 824,
+                "memory_size": 832, "memory": 840}
+CAPTURE_BEFORE_HARNESS = 1
 MASK64 = (1 << 64) - 1
 ELF_ALIGNMENT = 0x10000  # Works with Android 4 KiB, 16 KiB and 64 KiB pages.
 REMOTE = "/data/local/tmp/swiftvm-arm64-differential"
@@ -36,6 +49,10 @@ class Case:
     nzcv: int = 0x60000000
     family: str = "scalar"
     memory: bytes | None = None
+    vectors: dict[int, int] = field(default_factory=dict)
+    fpcr: int = 0
+    fpsr: int = 0
+    sp: int = CAPTURE_SP
 
 
 def mov64(reg: int, value: int) -> list[int]:
@@ -388,7 +405,118 @@ def case_id(case: Case) -> int:
     return int.from_bytes(hashlib.sha256(case.name.encode()).digest()[:8], "little")
 
 
-def make_elf(case: Case) -> bytes:
+def snapshot_protocol(version: int) -> dict:
+    if version not in (1, 2):
+        raise ValueError(f"unknown ARM64 snapshot version: {version}")
+    return {"version": version, "size": SNAPSHOT_SIZE if version == 1 else FULL_SNAPSHOT_SIZE,
+            "sampling_point": "after case instructions, before capture harness",
+            "fields": ["X0-X30", "NZCV", "memory[64]"] if version == 1 else
+                      ["PC", "SP", "X0-X30", "Q0-Q31", "NZCV", "FPCR", "FPSR", "memory[64]"],
+            "memory_address": MEMORY_BASE, "memory_size": 64}
+
+
+def vector_seed(case: Case, reg: int) -> int:
+    # Every untouched vector, including the high registers, has distinct bits.
+    return case.vectors.get(reg, (0x3210000000000000 + reg) |
+                            ((0x4320000000000100 + reg) << 64))
+
+
+def capture_scratch_addresses(sp: int, mapped_size: int = FULL_DATA_SIZE) -> tuple[int, int]:
+    """Audit both scratch stores against the actual SP and ELF data mapping."""
+    if not 0 <= sp <= MASK64:
+        raise ValueError("v2 capture requires an unsigned 64-bit SP")
+    first, second = sp + CAPTURE_SCRATCH_OFFSET, sp + CAPTURE_SCRATCH_OFFSET + 8
+    if first < DATA_BASE or second + 8 > DATA_BASE + mapped_size:
+        raise ValueError("capture scratch is outside the mapped fixture region")
+    for address, size, name in ((MEMORY_BASE, 64, "observed memory"),
+                                (FULL_SNAPSHOT_BASE, FULL_SNAPSHOT_SIZE, "snapshot"),
+                                (VECTOR_SEEDS_BASE, 512, "vector seeds")):
+        if first < address + size and second + 8 > address:
+            raise ValueError(f"capture scratch aliases {name}")
+    return first, second
+
+
+def full_harness(case: Case) -> tuple[list[int], int]:
+    capture_scratch_addresses(case.sp)
+    words = mov64(0, VECTOR_SEEDS_BASE)
+    for reg in range(32):
+        words.append(0x3DC00000 | (reg << 10) | reg)  # ldr qN, [x0, #N*16]
+    words += mov64(0, case.sp)
+    words.append(0x9100001F)  # mov sp, x0
+    words += mov64(0, case.fpcr) + [0xD51B4400]  # msr fpcr, x0
+    words += mov64(0, case.fpsr) + [0xD51B4420]  # msr fpsr, x0
+    for reg in range(31):
+        default = MEMORY_BASE if reg == 29 else DATA_BASE if reg == 30 else 0x100 + reg
+        words += mov64(reg, case.seeds.get(reg, default))
+    words += mov64(28, case.nzcv) + [0xD51B421C]
+    words += mov64(28, case.seeds.get(28, 0x11C))
+    words += case.instructions
+    capture_index = len(words)
+    # Save temporaries far from guest memory, without changing the actual SP.
+    # Guest cases may have moved SP into or beside the observed memory region.
+    words.append(0xF90003E0 | ((CAPTURE_SCRATCH_OFFSET // 8) << 10))
+    words.append(0xF90003E1 | (((CAPTURE_SCRATCH_OFFSET + 8) // 8) << 10))
+    words += mov64(0, FULL_SNAPSHOT_BASE)
+    def store(reg, offset):
+        words.append(0xF9000000 | ((offset // 8) << 10) | reg)  # str xN, [x0, #offset]
+    for reg in range(2, 31):
+        store(reg, FULL_OFFSETS["registers"] + reg * 8)
+    words.append(0xF94003E1 | ((CAPTURE_SCRATCH_OFFSET // 8) << 10))
+    store(1, FULL_OFFSETS["registers"])
+    words.append(0xF94003E1 | (((CAPTURE_SCRATCH_OFFSET + 8) // 8) << 10))
+    store(1, FULL_OFFSETS["registers"] + 8)
+    delta = (capture_index - len(words)) * 4
+    words.append(0x10000001 | ((delta & 3) << 29) | (((delta >> 2) & 0x7FFFF) << 5))  # adr x1, capture
+    store(1, FULL_OFFSETS["pc"])
+    words.append(0x910003E1)  # mov x1, sp (unchanged actual SP)
+    store(1, FULL_OFFSETS["sp"])
+    for reg in range(32):
+        words.append(0x3D800000 | (((FULL_OFFSETS["vectors"] + reg * 16) // 16) << 10) | reg)
+    for opcode, field_name in ((0xD53B4201, "nzcv"), (0xD53B4401, "fpcr"), (0xD53B4421, "fpsr")):
+        words.append(opcode)
+        store(1, FULL_OFFSETS[field_name])
+    words += mov64(1, MEMORY_BASE)
+    for offset in range(0, 64, 8):
+        words.append(0xF9400000 | ((offset // 8) << 10) | (1 << 5) | 2)
+        store(2, FULL_OFFSETS["memory"] + offset)
+    words += mov64(0, 1) + mov64(1, FULL_SNAPSHOT_BASE) + mov64(2, FULL_SNAPSHOT_SIZE) + mov64(8, 64)
+    words += [0xD4000001, 0xF1000000 | (FULL_SNAPSHOT_SIZE << 10) | 31, 0x9A9F07E0]
+    words += mov64(8, 93) + [0xD4000001]
+    return words, CODE_BASE + 0x1000 + capture_index * 4
+
+
+def snapshot_boundary(case: Case, version: int = 1) -> int | None:
+    return full_harness(case)[1] if version == 2 else None
+
+
+def full_state_cases() -> list[Case]:
+    """Focused v2 probes, kept out of the historical registered corpus."""
+    return [
+        Case("state_preserve_all", (0xD503201F,), "nop; preserve every architectural field",
+             {0: MASK64, 1: 0x123456789abcdef0, 29: 0xabcdef, 30: 0x76543210},
+             family="state", vectors={31: (1 << 127) | 0x12345678}, fpcr=0x00400000, fpsr=0x08000091),
+        Case("state_guest_x30_sp", (0x910083FF, rr(0x8B000000, 30, 0, 1)),
+             "add sp, sp, #32; add x30, x0, x1", {0: 0x1234, 1: 0x5678}, family="state"),
+        Case("state_guest_q31", (0x4EA01C1F,), "orr v31.16b, v0.16b, v0.16b", family="state"),
+        Case("state_scalar_fp_clears_upper", (0x1E60401F,), "fmov d31, d0", family="state"),
+        Case("state_guest_fpcr_fpsr", (0xD51B4400, 0xD51B4421),
+             "msr fpcr, x0; msr fpsr, x1", {0: 0x00C00000, 1: 0x0800009F}, family="state"),
+    ]
+
+
+def encode_full_snapshot(case: Case, *, pc: int, sp: int, registers: list[int],
+                         vectors: list[int], nzcv: int, fpcr: int, fpsr: int,
+                         memory: bytes) -> bytes:
+    if len(registers) != 31 or len(vectors) != 32 or len(memory) != 64:
+        raise ValueError("v2 snapshot requires 31 X, 32 Q, and 64 memory bytes")
+    return (FULL_MAGIC + struct.pack("<QIIQQ31Q", case_id(case), FULL_SNAPSHOT_SIZE,
+            CAPTURE_BEFORE_HARNESS, pc, sp, *registers) +
+            b"".join(value.to_bytes(16, "little") for value in vectors) +
+            struct.pack("<5Q", nzcv, fpcr, fpsr, MEMORY_BASE, len(memory)) + memory)
+
+
+def make_elf(case: Case, snapshot_version: int = 1) -> bytes:
+    snapshot_protocol(snapshot_version)
     words: list[int] = []
     for reg in range(29):
         words += mov64(reg, case.seeds.get(reg, 0x100 + reg))
@@ -410,6 +538,8 @@ def make_elf(case: Case) -> bytes:
     words.append(0x9A9F07E0)  # cset x0, ne
     words += mov64(8, 93)
     words.append(0xD4000001)  # svc #0 / exit
+    if snapshot_version == 2:
+        words, _ = full_harness(case)
     code = struct.pack(f"<{len(words)}I", *words)
     if len(code) + 0x1000 > DATA_BASE - CODE_BASE:
         raise ValueError("case code exceeds executable segment")
@@ -417,6 +547,14 @@ def make_elf(case: Case) -> bytes:
     if len(memory) != 64:
         raise ValueError("case fixture must contain exactly 64 bytes")
     data = MAGIC + struct.pack("<Q", case_id(case)) + bytes(256) + memory
+    if snapshot_version == 2:
+        data = bytearray(data.ljust(VECTOR_SEEDS_BASE - DATA_BASE + 512, b"\0"))
+        snapshot = encode_full_snapshot(case, pc=0, sp=0, registers=[0] * 31, vectors=[0] * 32,
+                                        nzcv=0, fpcr=0, fpsr=0, memory=bytes(64))
+        start = FULL_SNAPSHOT_BASE - DATA_BASE
+        data[start:start + len(snapshot)] = snapshot
+        start = VECTOR_SEEDS_BASE - DATA_BASE
+        data[start:start + 512] = b"".join(vector_seed(case, reg).to_bytes(16, "little") for reg in range(32))
     ident = b"\x7fELF\x02\x01\x01\x00" + bytes(8)
     header = struct.pack("<16sHHIQQQIHHHHHH", ident, 2, 183, 1, CODE_BASE + 0x1000,
                          64, 0, 0, 64, 56, 2, 0, 0, 0)
@@ -425,12 +563,36 @@ def make_elf(case: Case) -> bytes:
     program_headers = struct.pack("<IIQQQQQQ", 1, 5, 0, CODE_BASE, CODE_BASE,
                                   executable_size, executable_size, ELF_ALIGNMENT)
     program_headers += struct.pack("<IIQQQQQQ", 1, 6, data_offset, DATA_BASE, DATA_BASE,
-                                   len(data), len(data), ELF_ALIGNMENT)
+                                   len(data), len(data) if snapshot_version == 1 else FULL_DATA_SIZE, ELF_ALIGNMENT)
     return (header + program_headers).ljust(0x1000, b"\0") + code + bytes(
         data_offset - executable_size) + data
 
 
-def decode_snapshot(raw: bytes, case: Case) -> dict:
+def decode_snapshot(raw: bytes, case: Case, snapshot_version: int | None = None) -> dict:
+    version = 2 if raw[:8] == FULL_MAGIC else 1
+    if snapshot_version is not None and version != snapshot_version:
+        raise ValueError(f"{case.name}: snapshot protocol version mismatch")
+    if version == 2:
+        if len(raw) != FULL_SNAPSHOT_SIZE:
+            raise ValueError(f"{case.name}: expected {FULL_SNAPSHOT_SIZE} v2 stdout bytes, got {len(raw)}")
+        identity, size, point = struct.unpack_from("<QII", raw, 8)
+        if identity != case_id(case) or size != FULL_SNAPSHOT_SIZE or point != CAPTURE_BEFORE_HARNESS:
+            raise ValueError(f"{case.name}: v2 snapshot identity/size/sampling point mismatch")
+        memory_address, memory_size = struct.unpack_from("<2Q", raw, FULL_OFFSETS["memory_address"])
+        if memory_address != MEMORY_BASE or memory_size != 64:
+            raise ValueError(f"{case.name}: v2 memory descriptor mismatch")
+        regs = struct.unpack_from("<31Q", raw, FULL_OFFSETS["registers"])
+        nzcv, fpcr, fpsr = struct.unpack_from("<3Q", raw, FULL_OFFSETS["nzcv"])
+        if nzcv & ~0xF0000000:
+            raise ValueError(f"{case.name}: NZCV has reserved bits: {nzcv:#x}")
+        return {"case": case.name, "snapshot_version": 2, "sampling_point": point,
+                "pc": f"0x{struct.unpack_from('<Q', raw, FULL_OFFSETS['pc'])[0]:016x}",
+                "sp": f"0x{struct.unpack_from('<Q', raw, FULL_OFFSETS['sp'])[0]:016x}",
+                "registers": {f"x{i}": f"0x{v:016x}" for i, v in enumerate(regs)},
+                "vectors": {f"q{i}": f"0x{int.from_bytes(raw[288 + i * 16:304 + i * 16], 'little'):032x}"
+                            for i in range(32)},
+                "nzcv": f"0x{nzcv:08x}", "fpcr": f"0x{fpcr:08x}", "fpsr": f"0x{fpsr:08x}",
+                "memory_address": f"0x{memory_address:016x}", "memory": raw[840:].hex()}
     if len(raw) != SNAPSHOT_SIZE:
         raise ValueError(f"{case.name}: expected {SNAPSHOT_SIZE} stdout bytes, got {len(raw)}")
     if raw[:8] != MAGIC or struct.unpack_from("<Q", raw, 8)[0] != case_id(case):
@@ -444,14 +606,51 @@ def decode_snapshot(raw: bytes, case: Case) -> dict:
 
 
 def differences(expected: dict, actual: dict) -> list[str]:
+    if expected.get("snapshot_version", 1) != actual.get("snapshot_version", 1):
+        return ["snapshot protocol versions differ; incomplete and full state cannot be compared"]
     diff = [f"{reg}: native={value}, SwiftVM={actual['registers'][reg]}"
             for reg, value in expected["registers"].items() if value != actual["registers"][reg]]
+    if expected.get("snapshot_version") == 2:
+        for field_name in ("pc", "sp"):
+            if expected[field_name] != actual[field_name]:
+                diff.append(f"{field_name.upper()}: native={expected[field_name]}, SwiftVM={actual[field_name]}")
+        diff += [f"{reg}: native={value}, SwiftVM={actual['vectors'][reg]}"
+                 for reg, value in expected["vectors"].items() if value != actual["vectors"][reg]]
+        for field_name in ("fpcr", "fpsr", "memory_address"):
+            if expected[field_name] != actual[field_name]:
+                diff.append(f"{field_name.upper()}: native={expected[field_name]}, SwiftVM={actual[field_name]}")
     if expected["nzcv"] != actual["nzcv"]:
         diff.append(f"NZCV: native={expected['nzcv']}, SwiftVM={actual['nzcv']}")
     a, b = bytes.fromhex(expected["memory"]), bytes.fromhex(actual["memory"])
+    if len(a) != len(b):
+        diff.append(f"memory size: native={len(a)}, SwiftVM={len(b)}")
     diff += [f"memory[{i:#x}]: native={lhs:#04x}, SwiftVM={rhs:#04x}"
              for i, (lhs, rhs) in enumerate(zip(a, b)) if lhs != rhs]
     return diff
+
+
+def snapshot_negative_controls(raw: bytes, case: Case) -> dict:
+    """Deliberately corrupt real captured bytes and require field detection.
+
+    These are comparison controls, not additional executed guest cases.
+    The caller must supply its actual v2 stdout, rather than a fabricated
+    architectural state or a snapshot constructed from the oracle.
+    """
+    state = decode_snapshot(raw, case, 2)
+    controls = (("PC", 24, 1), ("SP", 32, 1), ("x30", 40 + 30 * 8, 1),
+                ("q0", 288, 1), ("q31", 288 + 31 * 16, 1), ("q31", 288 + 31 * 16 + 15, 1),
+                ("FPCR", 808, 1), ("FPSR", 816, 1), ("NZCV", 803, 0x10),
+                ("memory[0x3f]", 840 + 63, 1))
+    fields = []
+    for field_name, offset, mask in controls:
+        broken = bytearray(raw)
+        broken[offset] ^= mask
+        errors = differences(state, decode_snapshot(bytes(broken), case, 2))
+        if len(errors) != 1 or not errors[0].startswith(field_name + ":"):
+            raise ValueError(f"{case.name}: {field_name} corruption escaped the full-state comparison: {errors}")
+        fields.append({"field": field_name, "byte_offset": offset, "rejected": True})
+    return {"source": "actual SwiftVM stdout", "source_sha256": hashlib.sha256(raw).hexdigest(),
+            "executed": len(fields), "rejected": len(fields), "controls": fields}
 
 
 def run_command(command: list[str], timeout: float) -> subprocess.CompletedProcess:
@@ -471,20 +670,30 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def build(output: Path, cases: list[Case]) -> None:
+def build(output: Path, cases: list[Case], snapshot_version: int = 1) -> None:
+    existing = output / "corpus.json"
+    if existing.is_file():
+        prior = json.loads(existing.read_text(encoding="utf-8"))
+        if prior.get("snapshot_protocol", {"version": 1})["version"] != snapshot_version:
+            raise ValueError("output contains a different snapshot protocol; select a new directory")
     output.mkdir(parents=True, exist_ok=True)
     entries = []
     for case in cases:
         elf = output / f"{case.name}.elf"
-        generated = make_elf(case)
+        generated = make_elf(case, snapshot_version)
         # Reuse only byte-identical ELF inputs. References and manifests are
         # regenerated; a stale or corrupt ELF is replaced before it is hashed.
         if not elf.is_file() or elf.read_bytes() != generated:
             elf.write_bytes(generated)
         elf.chmod(0o755)
-        entries.append({"name": case.name, "sha256": sha(elf), "assembly": case.assembly,
-                        "initial_nzcv": hex(case.nzcv), "seeds": {f"x{k}": hex(v) for k, v in case.seeds.items()}})
-    write_json(output / "corpus.json", {"version": 1, "cases": entries})
+        entry = {"name": case.name, "sha256": sha(elf), "assembly": case.assembly,
+                 "initial_nzcv": hex(case.nzcv), "seeds": {f"x{k}": hex(v) for k, v in case.seeds.items()}}
+        if snapshot_version == 2:
+            entry.update(initial_sp=hex(case.sp), initial_fpcr=hex(case.fpcr), initial_fpsr=hex(case.fpsr),
+                         vector_seeds={f"q{i}": f"0x{vector_seed(case, i):032x}" for i in range(32)},
+                         capture_pc=hex(snapshot_boundary(case, 2)))
+        entries.append(entry)
+    write_json(output / "corpus.json", {"version": 1, "snapshot_protocol": snapshot_protocol(snapshot_version), "cases": entries})
 
 
 def adb_executable(explicit: str | None) -> str:
@@ -502,6 +711,7 @@ def adb_executable(explicit: str | None) -> str:
 
 
 def native(args: argparse.Namespace, cases: list[Case], output: Path) -> None:
+    snapshot_version = getattr(args, "snapshot_version", 1)
     adb = adb_executable(args.adb)
     listing = run_command([adb, "devices"], args.timeout).stdout.decode("utf-8", "replace")
     devices = [line.split()[0] for line in listing.splitlines()[1:] if line.strip().endswith("\tdevice")]
@@ -518,7 +728,8 @@ def native(args: argparse.Namespace, cases: list[Case], output: Path) -> None:
         raise RuntimeError(f"device has no arm64-v8a ABI: {abi}")
     native_dir = output / "native"
     native_dir.mkdir(exist_ok=True)
-    manifest = {"version": 1, "complete": False, "serial": serial, "abi": abi, "cases": {}}
+    manifest = {"version": 1, "snapshot_protocol": snapshot_protocol(snapshot_version),
+                "complete": False, "serial": serial, "abi": abi, "cases": {}}
     write_json(native_dir / "manifest.json", manifest)
     run_command(prefix + ["shell", "mkdir", "-p", REMOTE], args.timeout)
     for case in cases:
@@ -527,7 +738,7 @@ def native(args: argparse.Namespace, cases: list[Case], output: Path) -> None:
         run_command(prefix + ["push", str(elf), remote], args.timeout)
         run_command(prefix + ["shell", "chmod", "755", remote], args.timeout)
         result = run_command(prefix + ["exec-out", remote], args.timeout)
-        state = decode_snapshot(result.stdout, case)
+        state = decode_snapshot(result.stdout, case, snapshot_version)
         (native_dir / f"{case.name}.bin").write_bytes(result.stdout)
         write_json(native_dir / f"{case.name}.json", state)
         manifest["cases"][case.name] = {"elf_sha256": sha(elf), "snapshot_sha256": hashlib.sha256(result.stdout).hexdigest()}
@@ -546,6 +757,7 @@ def wsl_path(path: Path) -> str:
 
 
 def compare(args: argparse.Namespace, cases: list[Case], output: Path) -> None:
+    snapshot_version = getattr(args, "snapshot_version", 1)
     if not args.runner:
         raise RuntimeError("--runner must point to svm_translator_linux (use --wsl for a Linux runner on Windows)")
     if not args.wsl and not shutil.which(args.runner):
@@ -554,9 +766,12 @@ def compare(args: argparse.Namespace, cases: list[Case], output: Path) -> None:
     manifest = json.loads((native_dir / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("complete") is not True or manifest.get("version") != 1:
         raise RuntimeError("native capture is incomplete or uses an unknown protocol")
+    if manifest.get("snapshot_protocol", {"version": 1})["version"] != snapshot_version:
+        raise RuntimeError("native capture belongs to a different snapshot protocol")
     translated = output / "translated"
     translated.mkdir(exist_ok=True)
-    report = {"version": 1, "complete": False, "executed": 0, "passed": 0, "failed": 0, "cases": []}
+    report = {"version": 1, "snapshot_protocol": snapshot_protocol(snapshot_version),
+              "complete": False, "executed": 0, "passed": 0, "failed": 0, "cases": []}
     write_json(output / "report.json", report)
     for case in cases:
         elf = output / f"{case.name}.elf"
@@ -566,7 +781,7 @@ def compare(args: argparse.Namespace, cases: list[Case], output: Path) -> None:
         raw = (native_dir / f"{case.name}.bin").read_bytes()
         if hashlib.sha256(raw).hexdigest() != entry["snapshot_sha256"]:
             raise RuntimeError(f"{case.name}: native snapshot digest mismatch")
-        expected = decode_snapshot(raw, case)
+        expected = decode_snapshot(raw, case, snapshot_version)
         command = [args.runner, *args.runner_arg, str(elf)]
         if args.wsl:
             command = ["wsl"] + (["-d", args.wsl] if args.wsl != "default" else []) + [
@@ -578,7 +793,7 @@ def compare(args: argparse.Namespace, cases: list[Case], output: Path) -> None:
             if result.returncode:
                 raise RuntimeError(f"runner exited with {result.returncode}: "
                                    + result.stderr.decode("utf-8", "replace")[-6000:])
-            actual = decode_snapshot(result.stdout, case)
+            actual = decode_snapshot(result.stdout, case, snapshot_version)
             write_json(translated / f"{case.name}.json", actual)
             diff = differences(expected, actual)
         except subprocess.TimeoutExpired as error:
@@ -606,6 +821,8 @@ def main() -> int:
     parser.add_argument("mode", choices=["build", "native", "compare", "run"])
     parser.add_argument("--output", type=Path, default=Path("build/arm64-differential"))
     parser.add_argument("--case", action="append", default=[], help="exact case name; repeat to select multiple")
+    parser.add_argument("--snapshot-version", type=int, choices=[1, 2], default=1,
+                        help="1: legacy 336-byte GPR/NZCV/memory; 2: 904-byte complete architectural state")
     parser.add_argument("--group", choices=["all", "scalar", "simd", "atomic", "fp", "fp_fixed", "shift", "sat", "half", "struct", "single", "indexed", "scalarneon", "misc", "flagm", "crypto", "crc", "sha", "scalarmisc", "rcpc", "scalarshift", "casp", "scalarmul", "scalarmulhigh", "dot", "satmul", "pairfp", "fp16unary", "fp16binary", "vecfp", "fmanan", "misc16", "vecfma", "fmulx", "recipstep", "vecsatshift", "indexedfp", "veclong", "vecunary", "fpcompare", "fpinteger", "fpprecision", "fpestimate", "fpreduction", "unsignedestimate", "fpfixed", "frintrange", "polynomial", "scalarvarshift", "mixedsat", "pairwiden", "highnarrow", "abslong", "absnarrow", "halving"], default="all")
     parser.add_argument("--adb")
     parser.add_argument("--serial")
@@ -627,7 +844,7 @@ def main() -> int:
         if not cases:
             raise ValueError("zero selected cases")
         output = args.output.resolve()
-        build(output, cases)
+        build(output, cases, args.snapshot_version)
         if args.mode in ("native", "run"):
             native(args, cases, output)
         if args.mode in ("compare", "run"):

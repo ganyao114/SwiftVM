@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare an actual LoongArch SwiftVM runner under QEMU with Unicorn ARM64.
 
-This uses the project's existing complete ELF snapshot protocol. No ARM64
+This supports the project's legacy and complete v2 ELF snapshot protocols. No ARM64
 hardware or adb is required. QEMU executes the LoongArch JIT; Unicorn executes
 the original ARM64 guest ELF. LBT is not part of this simulator qualification.
 """
@@ -51,7 +51,8 @@ class Oracle:
         self.regs = registers
         self.versions = {"capstone": cs_version, "unicorn": uc_version, "cpu": "UC_CPU_ARM64_MAX"}
 
-    def execute(self, case, elf: bytes, count_instructions: bool = False) -> tuple[bytes, dict]:
+    def execute(self, case, elf: bytes, count_instructions: bool = False,
+                snapshot_version: int = 1) -> tuple[bytes, dict]:
         code = struct.unpack_from("<IIQQQQQQ", elf, 64)
         data = struct.unpack_from("<IIQQQQQQ", elf, 120)
         instructions = list(self.decoder.disasm(elf[4096:code[5]], d.CODE_BASE + 4096))
@@ -60,24 +61,51 @@ class Oracle:
         cpu = self.Uc(self.arch, self.mode)
         cpu.ctl_set_cpu_model(self.regs.UC_CPU_ARM64_MAX)
         cpu.mem_map(d.CODE_BASE, 65536)
-        cpu.mem_map(d.DATA_BASE, 65536)
+        cpu.mem_map(d.DATA_BASE, max(65536, (data[6] + 65535) & ~65535))
         cpu.mem_write(d.CODE_BASE, elf[:code[5]])
         cpu.mem_write(d.DATA_BASE, elf[data[2]:data[2] + data[5]])
-        snapshots, exits = [], []
+        snapshots, exits, direct_states = [], [], []
         counts = {"instructions": 0, "syscalls": 0}
+        boundary = d.snapshot_boundary(case, snapshot_version)
+        size = d.snapshot_protocol(snapshot_version)["size"]
 
-        def instruction(_emulator, _address, _size, _context):
+        def instruction(emulator, address, _size, _context):
             counts["instructions"] += 1
+            if snapshot_version == 2 and address == boundary:
+                r = self.regs
+                # This hook samples the real pre-instruction architectural
+                # state. No harness temporary, memory store, or expected value
+                # is used to reconstruct a register's contents.
+                sp = emulator.reg_read(r.UC_ARM64_REG_SP)
+                try:
+                    d.capture_scratch_addresses(sp, data[6])
+                except ValueError as error:
+                    raise ValueError(f"{case.name}: {error}") from error
+                direct_states.append(d.encode_full_snapshot(case,
+                    pc=emulator.reg_read(r.UC_ARM64_REG_PC), sp=sp,
+                    registers=[emulator.reg_read(getattr(r, f"UC_ARM64_REG_X{i}")) for i in range(31)],
+                    vectors=[emulator.reg_read(getattr(r, f"UC_ARM64_REG_Q{i}")) for i in range(32)],
+                    nzcv=emulator.reg_read(r.UC_ARM64_REG_NZCV),
+                    fpcr=emulator.reg_read(r.UC_ARM64_REG_FPCR), fpsr=emulator.reg_read(r.UC_ARM64_REG_FPSR),
+                    memory=bytes(emulator.mem_read(d.MEMORY_BASE, 64))))
+            elif snapshot_version == 2 and direct_states:
+                captured = direct_states[0]
+                if emulator.reg_read(self.regs.UC_ARM64_REG_SP) != struct.unpack_from("<Q", captured, d.FULL_OFFSETS["sp"])[0]:
+                    raise ValueError(f"{case.name}: capture modified SP")
+                if counts["syscalls"] == 0 and emulator.reg_read(self.regs.UC_ARM64_REG_NZCV) != struct.unpack_from("<Q", captured, d.FULL_OFFSETS["nzcv"])[0]:
+                    raise ValueError(f"{case.name}: capture modified NZCV before publishing its snapshot")
 
         def interrupt(emulator, number, _):
             counts["syscalls"] += 1
             r = self.regs
             syscall = emulator.reg_read(r.UC_ARM64_REG_X8)
             if syscall == 64:
-                if emulator.reg_read(r.UC_ARM64_REG_X0) != 1 or emulator.reg_read(r.UC_ARM64_REG_X2) != d.SNAPSHOT_SIZE:
+                expected_address = d.FULL_SNAPSHOT_BASE if snapshot_version == 2 else d.DATA_BASE
+                if (emulator.reg_read(r.UC_ARM64_REG_X0) != 1 or emulator.reg_read(r.UC_ARM64_REG_X2) != size or
+                        emulator.reg_read(r.UC_ARM64_REG_X1) != expected_address):
                     raise ValueError(f"{case.name}: invalid snapshot syscall")
-                snapshots.append(bytes(emulator.mem_read(emulator.reg_read(r.UC_ARM64_REG_X1), d.SNAPSHOT_SIZE)))
-                emulator.reg_write(r.UC_ARM64_REG_X0, d.SNAPSHOT_SIZE)
+                snapshots.append(bytes(emulator.mem_read(emulator.reg_read(r.UC_ARM64_REG_X1), size)))
+                emulator.reg_write(r.UC_ARM64_REG_X0, size)
             elif syscall == 93:
                 if emulator.reg_read(r.UC_ARM64_REG_X0) != 0:
                     raise ValueError(f"{case.name}: ARM64 harness error exit")
@@ -87,12 +115,25 @@ class Oracle:
                 raise ValueError(f"{case.name}: unexpected interrupt={number}, syscall={syscall}")
 
         cpu.hook_add(self.interrupt, interrupt)
-        if count_instructions:
+        if count_instructions or snapshot_version == 2:
             cpu.hook_add(self.code_hook, instruction)
         cpu.emu_start(d.CODE_BASE + 4096, 0, count=4000)
         if len(snapshots) != 1 or len(exits) != 1:
             raise ValueError(f"{case.name}: missing or duplicated ARM64 snapshot/exit")
-        d.decode_snapshot(snapshots[0], case)
+        d.decode_snapshot(snapshots[0], case, snapshot_version)
+        if snapshot_version == 2:
+            if len(direct_states) != 1:
+                raise ValueError(f"{case.name}: expected exactly one pre-capture architectural hook")
+            if snapshots[0] != direct_states[0]:
+                errors = d.differences(d.decode_snapshot(direct_states[0], case, 2),
+                                       d.decode_snapshot(snapshots[0], case, 2))
+                raise ValueError(f"{case.name}: guest harness polluted its sampled state: {errors}")
+            counts["state_captures"] = len(direct_states)
+            # Preserve the observed PC in evidence, rather than substituting
+            # the expected harness location used to select the code hook.
+            counts["capture_pc"] = d.decode_snapshot(direct_states[0], case, 2)["pc"]
+            counts["reference_method"] = "pre-instruction Unicorn register/memory reads; guest capture audited"
+            return direct_states[0], counts
         return snapshots[0], counts
 
 
@@ -117,8 +158,11 @@ def run(args) -> int:
         header = stream.read(64)
     if header[:4] != b"\x7fELF" or len(header) < 20 or struct.unpack_from("<H", header, 18)[0] != 258:
         raise ValueError("--runner must be a LoongArch ELF executable; no SwiftVM cases executed")
-    cases = d.corpus()
-    if args.group != "all":
+    snapshot_version = getattr(args, "snapshot_version", 1)
+    if args.group == "state" and snapshot_version != 2:
+        raise ValueError("the focused architectural state probes require --snapshot-version=2")
+    cases = d.full_state_cases() if args.group == "state" else d.corpus()
+    if args.group not in ("all", "state"):
         cases = [case for case in cases if case.family == args.group]
     available = {}
     for case in cases:
@@ -158,6 +202,11 @@ def run(args) -> int:
     environment.update(overrides)
     oracle = Oracle()
     output = args.output.resolve()
+    report_path = output / "report.json"
+    if report_path.is_file():
+        previous = json.loads(report_path.read_text())
+        if previous.get("snapshot_protocol", {"version": 1})["version"] != snapshot_version:
+            raise ValueError("output contains evidence for another snapshot version; select a new directory")
     output.mkdir(parents=True, exist_ok=True)
     source_runner = runner
     source_digest = sha_file(source_runner)
@@ -165,8 +214,8 @@ def run(args) -> int:
     shutil.copy2(source_runner, runner)
     if sha_file(runner) != source_digest:
         raise ValueError("runner changed while freezing the qualification executable")
-    report_path = output / "report.json"
-    report = {"version": 2, "scope": "arm64-guest-loongarch-qemu", "complete": False,
+    report = {"version": 3, "scope": "arm64-guest-loongarch-qemu", "complete": False,
+              "snapshot_protocol": d.snapshot_protocol(snapshot_version),
               "execution_engine": "core-step" if args.step else "core-run",
               "started": datetime.now(timezone.utc).isoformat(), "runner": str(runner),
               "source_runner": str(source_runner), "runner_sha256": source_digest, "qemu": args.qemu, "cpu": args.cpu,
@@ -176,7 +225,8 @@ def run(args) -> int:
                            "per_family": args.sample_per_family, "families": coverage,
                            "full_selected_group": len(cases) == sum(available.values())},
               "planned": len(cases), "executed": 0,
-              "passed": 0, "failed": 0, "lbt_executed": False, "cases": []}
+              "passed": 0, "failed": 0, "lbt_executed": False,
+              "negative_controls_executed": 0, "negative_controls_rejected": 0, "cases": []}
     checkpoint(report_path, report)
     command_prefix = [str(qemu), "-L", str(args.sysroot), "-cpu", args.cpu]
     if args.runtime_libdir:
@@ -184,13 +234,14 @@ def run(args) -> int:
     for case in cases:
         directory = output / case.name
         directory.mkdir(exist_ok=True)
-        elf = d.make_elf(case)
+        elf = d.make_elf(case, snapshot_version)
         elf_path = directory / "guest.elf"
         elf_path.write_bytes(elf)
-        expected, counts = oracle.execute(case, elf, args.step)
+        expected, counts = oracle.execute(case, elf, args.step, snapshot_version)
         (directory / "unicorn.bin").write_bytes(expected)
         errors = []
         proof = None
+        negative_controls = None
         try:
             result = subprocess.run([*command_prefix, str(runner), *args.runner_arg, str(elf_path)],
                                     capture_output=True, timeout=args.timeout, env=environment)
@@ -202,8 +253,12 @@ def run(args) -> int:
             else:
                 if args.step:
                     proof = step_proof(result.stderr, counts)
-                actual = d.decode_snapshot(result.stdout, case)
-                errors.extend(d.differences(d.decode_snapshot(expected, case), actual))
+                actual = d.decode_snapshot(result.stdout, case, snapshot_version)
+                errors.extend(d.differences(d.decode_snapshot(expected, case, snapshot_version), actual))
+                if snapshot_version == 2:
+                    negative_controls = d.snapshot_negative_controls(result.stdout, case)
+                    report["negative_controls_executed"] += negative_controls["executed"]
+                    report["negative_controls_rejected"] += negative_controls["rejected"]
                 if expected != result.stdout and not errors:
                     errors.append("full raw snapshot bytes differ")
         except subprocess.TimeoutExpired as error:
@@ -216,7 +271,10 @@ def run(args) -> int:
         report["failed" if errors else "passed"] += 1
         report["cases"].append({"name": case.name, "family": case.family, "elf_sha256": hashlib.sha256(elf).hexdigest(),
                                 "unicorn_sha256": hashlib.sha256(expected).hexdigest(), "differences": errors,
-                                "step_proof": proof, "unicorn_counts": counts if args.step else None})
+                                "negative_controls": negative_controls,
+                                "step_proof": proof,
+                                "unicorn_counts": counts if args.step or snapshot_version == 2 else None,
+                                "snapshot_version": snapshot_version})
         checkpoint(report_path, report)
         print(f"{'FAIL' if errors else 'PASS'} {case.name}", flush=True)
         for error in errors[:4]:
@@ -236,8 +294,10 @@ def main() -> int:
     parser.add_argument("--cpu", default="la464")
     parser.add_argument("--sysroot", type=Path, default=Path("/root/swiftvm-loongarch-deps/toolchain/cross-tools/target"))
     parser.add_argument("--runtime-libdir", type=Path, default=Path("/root/swiftvm-loongarch-deps/toolchain/cross-tools/loongarch64-unknown-linux-gnu/lib"))
-    parser.add_argument("--group", default="scalar", help="existing ARM64 corpus family, or all")
+    parser.add_argument("--group", default="scalar", help="existing ARM64 corpus family, all, or focused v2 state probes")
     parser.add_argument("--step", action="store_true", help="execute Core Step and require retirement proof against Unicorn")
+    parser.add_argument("--snapshot-version", type=int, choices=[1, 2], default=1,
+                        help="explicit snapshot protocol: legacy GPR/memory v1 or complete architecture v2")
     parser.add_argument("--case", action="append", default=[])
     parser.add_argument("--sample-per-family", type=int,
                         help="stable SHA256-of-name sample limit per family; report selected and available counts")
