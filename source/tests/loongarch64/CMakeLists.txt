@@ -41,10 +41,13 @@ enable_language(ASM)
 
 add_executable(swift_loongarch_backend_test
     backend_test.cpp scalar_test.cpp flags_test.cpp memory_test.cpp
-    control_test.cpp arm64_guest_test.cpp vector_test.cpp wide_test.cpp float_test.cpp
+    control_test.cpp arm64_guest_test.cpp vector_test.cpp vector_allocation_test.cpp wide_test.cpp float_test.cpp
+    vector_cfg_allocation_test.cpp
     register_plan_test.cpp scalar_allocation_plan_test.cpp scalar_allocation_execution_test.cpp
+    uniform_forward_test.cpp uniform_pass_test.cpp retirement_residency_test.cpp
+    home_reuse_test.cpp scalar_splitting_test.cpp
     sparse_homes_plan_test.cpp sparse_home_execution_test.cpp
-    flags_plan_test.cpp flags_publication_test.cpp
+    flags_plan_test.cpp flags_publication_test.cpp flags_demand_test.cpp
     runtime_lifecycle_test.cpp runtime_step_test.cpp
     single_instruction_admission_test.cpp single_instruction_encoding_test.cpp single_instruction_code_test.cpp
     compile_contract_test.cpp benchmark.cpp check_abi.S)
@@ -55,7 +58,7 @@ target_link_libraries(swift_loongarch_backend_test PRIVATE
     "-Wl,--start-group" swift_translator swift_runtime fronted_arm64 fronted_x86 "-Wl,--end-group")
 target_compile_features(swift_loongarch_backend_test PRIVATE cxx_std_20)
 
-foreach(suite IN ITEMS scalar flags control memory guest vector float allocation sparse-homes flags-plan flags-publication lifecycle step single-instruction compile-contracts)
+foreach(suite IN ITEMS scalar flags control memory guest vector vector-allocation vector-cfg-allocation float allocation uniform-forward uniform-passes retirement-residency home-reuse scalar-splitting rematerialization sparse-homes flags-plan flags-publication flags-demand lifecycle step single-instruction compile-contracts)
     add_test(NAME swift_loongarch_backend_${suite}
         COMMAND swift_loongarch_backend_test --${suite})
     set_tests_properties(swift_loongarch_backend_${suite} PROPERTIES
@@ -63,7 +66,10 @@ foreach(suite IN ITEMS scalar flags control memory guest vector float allocation
 endforeach()
 add_test(NAME swift_loongarch_backend COMMAND swift_loongarch_backend_test)
 set_tests_properties(swift_loongarch_backend PROPERTIES
-    LABELS "loongarch;backend;execution" TIMEOUT 240)
+    # The aggregate includes every execution suite, including production
+    # uniform-pass compilation. Keep headroom for QEMU/WSL timing variation;
+    # each independently registered suite retains its 180-second limit.
+    LABELS "loongarch;backend;execution" TIMEOUT 300)
 
 option(SVM_LOONGARCH_UNICORN_TESTS "Compare ARM64 guests against Unicorn on the build host" OFF)
 set(SVM_LOONGARCH_UNICORN_PYTHONPATH "" CACHE PATH "Host Python package directory with Unicorn and Capstone")

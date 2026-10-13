@@ -2,6 +2,7 @@
 
 #include <array>
 #include <limits>
+#include <stdexcept>
 
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
@@ -22,6 +23,10 @@ u64 XrstorHelper(u64 context, u64 guest_address, u64 rfbm);
 namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
+
+void JitTranslator::EmitCheckpoint(ir::Inst*) {
+    throw std::runtime_error("LoongArch retirement Checkpoint reached ARM64 backend");
+}
 
 void JitTranslator::SpillStaticFPRUniforms() {
     for (const auto& desc : context.GetConfig().buffers_static_alloc) {

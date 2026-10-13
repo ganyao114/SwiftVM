@@ -11,6 +11,18 @@ using O = ir::OpCode;
 using T = ir::ValueType;
 
 bool Wide(ir::Value value) { return value.Type() == T::V256; }
+bool LaneLocalBinary(O op) {
+    switch (op) {
+        case O::Vec4Add: case O::Vec4Sub: case O::Vec4Mul:
+        case O::Vec4And: case O::Vec4Or:
+        case O::VecAdd: case O::VecSub: case O::VecMul:
+        case O::VecAnd: case O::VecOr: case O::VecXor: case O::VecAndNot:
+        case O::VecCmpEq: case O::VecCmpGt: case O::VecMin: case O::VecMax:
+        case O::VecAvg: case O::VecSatAdd: case O::VecSatSub:
+        case O::VecMulHigh16: return true;
+        default: return false;
+    }
+}
 bool Split(ir::Inst* inst) {
     if (inst->ReturnType() == T::V256) return true;
     if (inst->GetOp() == O::StoreUniform || inst->GetOp() == O::StoreMemory ||
@@ -115,6 +127,25 @@ private:
                 }
                 case ir::ArgType::Params: {
                     ir::Params params;
+                    if (original->GetOp() == O::Checkpoint) {
+                        std::optional<u64> offset;
+                        for (const auto& param : arg.Get<ir::Params>()) {
+                            if (!offset) {
+                                if (!param.data.IsImm()) throw std::runtime_error("invalid wide checkpoint offset");
+                                offset = param.data.imm.Get();
+                            } else {
+                                if (!param.data.IsValue()) throw std::runtime_error("invalid wide checkpoint value");
+                                const auto value = param.data.value;
+                                params.Push(ir::Imm{*offset}); params.Push(Part(value, 0));
+                                if (Wide(value)) {
+                                    params.Push(ir::Imm{*offset + 16}); params.Push(Part(value, 1));
+                                }
+                                offset.reset();
+                            }
+                        }
+                        if (offset) throw std::runtime_error("incomplete wide checkpoint");
+                        target->SetArg(slot, params); break;
+                    }
                     for (const auto& param : arg.Get<ir::Params>()) {
                         if (param.data.IsValue()) params.Push(Part(param.data.value, part));
                         else params.Push(part ? ir::Imm{u64{0}} : param.data.imm);
@@ -268,6 +299,12 @@ private:
             Append(low); Clear(high); return;
         }
         Args(high, original, 1);
+        if (LaneLocalBinary(op) && original->ReturnType() == T::V256 &&
+            Wide(original->GetArg<ir::Value>(0)) && Wide(original->GetArg<ir::Value>(1))) {
+            plan.native_pairs.push_back({low, high,
+                    {source(0, 0).Def(), source(0, 1).Def()},
+                    {source(1, 0).Def(), source(1, 1).Def()}});
+        }
         if (op == O::VecDup64) high->SetArg(0, source(0, 0));
         if (op == O::VecShiftLeft || op == O::VecShiftRight || op == O::VecShiftRightArithmetic)
             high->SetArg(1, source(1, 0));

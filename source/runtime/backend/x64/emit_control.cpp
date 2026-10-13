@@ -25,6 +25,10 @@ void Translator::EmitAdvancePC(ir::Inst* inst) {
     guest_pc += Immediate(inst, 0); location_dirty = location_from_metadata = true; return;
 }
 
+void Translator::EmitCheckpoint(ir::Inst*) {
+    throw std::runtime_error("LoongArch retirement Checkpoint reached x64 backend");
+}
+
 void Translator::EmitSetLocation(ir::Inst* inst) {
     const auto lambda = inst->GetArg<ir::Lambda>(0);
     if (lambda.IsValue()) Read(rax, lambda.GetValue()); else mov(rax, lambda.GetImm().Get());

@@ -233,6 +233,11 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
 
     for (auto it = inst_list.rbegin(); it != inst_list.rend(); ++it) {
         Inst& inst = *it;
+        if (info.precise_observation_points &&
+            UniformStoreSinkPass::IsObservationPoint(inst.GetOp(), info)) {
+            clear_all();
+            continue;
+        }
         switch (inst.GetOp()) {
             case OpCode::StoreUniform: {
                 const auto uniform = inst.GetArg<Uniform>(0);
@@ -581,6 +586,12 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
 
     for (auto& inst : block->GetInstList()) {
         instruction_count++;
+        if (info.precise_observation_points &&
+            UniformStoreSinkPass::IsObservationPoint(inst.GetOp(), info)) {
+            barrier_count++;
+            invalidate_uniform_values();
+            continue;
+        }
         switch (inst.GetOp()) {
             case OpCode::LoadUniform: {
                 load_count++;

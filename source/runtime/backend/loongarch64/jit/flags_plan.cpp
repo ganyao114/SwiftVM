@@ -1,4 +1,5 @@
 #include "flags_plan.h"
+#include "sparse_homes_plan.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -121,11 +122,11 @@ FlagsEffect FlagsPlan::Effect(ir::Inst* inst) {
                 effect.observes_before = effect.synchronized_after = effect.exits_after = true;
             return effect;
         }
-        case O::AdvancePC: case O::BindLabel: case O::Goto: case O::NotGoto:
+        case O::Checkpoint: case O::BindLabel: case O::Goto: case O::NotGoto:
             // Poll/CheckHalt can return with the incoming flags. Synthetic
             // labels and guest Goto can be overestimated safely.
             effect.exits_before = true; return effect;
-        case O::AddPhi: case O::Nop: case O::UniformBarrier: case O::XchgBarrier:
+        case O::AdvancePC: case O::AddPhi: case O::Nop: case O::UniformBarrier: case O::XchgBarrier:
         case O::PushRSB: case O::PopRSB: case O::CallReturn:
         case O::SetLocation: case O::GetLocation: case O::MemoryBarrierTSO:
             return effect;
@@ -139,8 +140,7 @@ FlagsEffect FlagsPlan::Effect(ir::Inst* inst) {
         // Guarded SIMD/FP and out-of-width scalar operations can choose a
         // helper on only one path. They do not guarantee synchronization of
         // the native path, so never kill may-dirty state at the join.
-        if (OptionalNative(inst->GetOp()) || ir::IsFloatValueType(inst->ReturnType()) ||
-            ir::GetValueSizeByte(inst->ReturnType()) > 8) {
+        if (SparseHomesPlan::MayCallTypedHelper(inst)) {
             effect.observes_before = effect.exits_after = true;
         }
     } else {
@@ -240,7 +240,17 @@ FlagsPlan FlagsPlan::Build(ir::Block* block, const Targets& targets,
             const auto& effect = plan.effects.at(insts[i]);
             F outgoing = terminal_after[i] || effect.exits_after ? F::All : F::None;
             for (const auto next : successors[i]) outgoing |= needed_before[next];
-            F incoming = effect.reads | (outgoing & ~effect.replaces);
+            F reads = effect.reads;
+            // These operations read carry only to produce their carry flag.
+            // When that write is dead, the demand-enabled emitter omits the
+            // operation and its input cannot keep an earlier carry write live.
+            // ADC/SBB value instructions still unconditionally consume carry.
+            const auto op = insts[i]->GetOp();
+            if ((op == O::InvertCarry || op == O::SaveFlags || op == O::BranchOnlyFlags) &&
+                !True(outgoing & effect.writes & F::Carry)) {
+                reads &= ~F::Carry;
+            }
+            F incoming = reads | (outgoing & ~effect.replaces);
             if (terminal_before[i] || effect.observes_before || effect.exits_before) incoming |= F::All;
             if (needed_before[i] != incoming || needed_after[i] != outgoing) {
                 needed_before[i] = incoming; needed_after[i] = outgoing; changed = true;

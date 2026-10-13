@@ -69,6 +69,9 @@ void JitTranslator::EmitAddPhi(ir::Inst*) {}
 
 void JitTranslator::EmitPhiMoves(const std::vector<PhiMove>& moves) {
     if (moves.empty()) return;
+    const bool old_placement = context.SetScalarBaselinePlacement(true);
+    if (!vectors.GlobalCFGActive()) vectors.Barrier();
+    for (const auto& move : moves) if (move.source.IsValue()) vectors.PublishPhiInput(move.source.value.Def());
     context.FlushValues(); context.DiscardValues();
     auto& as = context.GetMasm();
     const auto temporary_size = u64(moves.size()) * 16;
@@ -91,6 +94,10 @@ void JitTranslator::EmitPhiMoves(const std::vector<PhiMove>& moves) {
         context.WriteRawPart(moves[i].destination, t0, 0);
         context.WriteRawPart(moves[i].destination, t1, 1);
     }
+    // Every source is staged and every destination committed before loading
+    // physical assignments. A cyclic phi must not overwrite a later source.
+    for (const auto& move : moves) vectors.ReloadPhiDefinition(move.destination);
     as.LI(t0, temporary_size); as.add_d(sp, sp, t0);
+    context.SetScalarBaselinePlacement(old_placement);
 }
 }  // namespace swift::runtime::backend::loongarch64

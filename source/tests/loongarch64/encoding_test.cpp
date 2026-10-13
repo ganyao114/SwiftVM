@@ -73,6 +73,52 @@ void ConstantEncodings() {
           "fixed GNU assembler baseline add.d and return encodings");
 }
 
+void LSXMemoryEncodings() {
+    // GNU binutils 2.44, target loongarch64-unknown-linux-gnu. The fixture is
+    // .text followed by vld/vst $vr8, $r24, offset for each offset below.
+    // loongarch64-unknown-linux-gnu-as -o lsx-memory.o lsx-memory.s
+    // loongarch64-unknown-linux-gnu-objcopy -O binary --only-section=.text lsx-memory.o lsx-memory.bin
+    // These words were read from the actual 56-byte GNU .text binary, rather
+    // than reconstructed from Xbyak's encoding formula. Offset 1 checks that
+    // the signed immediate denotes bytes, with no vector-width scaling.
+    struct Fixture { std::int32_t offset; u32 load; u32 store; };
+    constexpr std::array fixtures{
+        Fixture{-2048, 0x2c200308, 0x2c600308},
+        Fixture{   -1, 0x2c3fff08, 0x2c7fff08},
+        Fixture{    0, 0x2c000308, 0x2c400308},
+        Fixture{    1, 0x2c000708, 0x2c400708},
+        Fixture{   16, 0x2c004308, 0x2c404308},
+        Fixture{ 2032, 0x2c1fc308, 0x2c5fc308},
+        Fixture{ 2047, 0x2c1fff08, 0x2c5fff08},
+    };
+    la::Assembler assembler{4};
+    for (const auto& fixture : fixtures) {
+        const auto at = assembler.Size();
+        assembler.vld(la::VReg{8}, la::values, fixture.offset);
+        assembler.vst(la::VReg{8}, la::values, fixture.offset);
+        Check(assembler.Size() == at + 8 && Word(assembler, at) == fixture.load &&
+              Word(assembler, at + 4) == fixture.store,
+              "GNU LSX vld/vst signed byte offset=" + std::to_string(fixture.offset));
+    }
+    assembler.Finalize();
+    std::array<std::uint8_t, fixtures.size() * 8> original{};
+    Check(assembler.Size() == original.size(), "LSX memory fixture contains exactly fourteen instructions");
+    std::memcpy(original.data(), assembler.Data(), original.size());
+    for (const auto invalid : {std::int32_t{-2049}, std::int32_t{2048}}) {
+        for (const bool store : {false, true}) {
+            bool rejected{};
+            try {
+                if (store) assembler.vst(la::VReg{8}, la::values, invalid);
+                else assembler.vld(la::VReg{8}, la::values, invalid);
+            } catch (const std::exception&) { rejected = true; }
+            Check(rejected && assembler.Size() == original.size() &&
+                  std::memcmp(assembler.Data(), original.data(), original.size()) == 0,
+                  "out-of-range LSX " + std::string(store ? "vst" : "vld") +
+                  " offset=" + std::to_string(invalid) + " leaves the complete buffer unchanged");
+        }
+    }
+}
+
 void LabelsAndGrowth() {
     la::Assembler assembler{4};
     la::Label end;
@@ -162,7 +208,7 @@ void ExecuteConstants() {
 
 int main() {
     try {
-        ConstantEncodings(); LabelsAndGrowth(); LBTEncodingsAndAdmission();
+        ConstantEncodings(); LSXMemoryEncodings(); LabelsAndGrowth(); LBTEncodingsAndAdmission();
 #if defined(__linux__) && defined(__loongarch__)
         ExecuteConstants();
         std::cout << "PASS native assembler execution; ";

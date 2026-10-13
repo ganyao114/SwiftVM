@@ -4,6 +4,7 @@
 #include <vector>
 #include "runtime/backend/loongarch64/guest_access.h"
 #include "runtime/backend/loongarch64/jit/jit_context.h"
+#include "runtime/backend/loongarch64/jit/vector_context.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/block.h"
 
@@ -13,6 +14,9 @@ enum class ExecutionMode : u8 { Ordinary, SingleInstruction };
 
 struct EmissionStats {
     u32 direct{}, helpers{}, guarded_native{}, frame_size{}, saved_gprs{}, saved_fprs{};
+    // Static flag bit computations, not dynamic execution counts.
+    u32 flag_bits_requested{}, flag_bits_computed{}, flag_writes_elided{};
+    u32 checkpoints{}, cold_uniform_stores{}, pc_stores{}, hot_pc_stores{};
     std::array<u32, static_cast<size_t>(ir::OpCode::BASE_COUNT)> bytes{};
 };
 
@@ -32,6 +36,7 @@ public:
     GuestAccessCoverage GuestFaultCoverage() const { return guest_access_coverage; }
     bool AuditedTypedGuestAccesses() const { return typed_guest_accesses; }
     const EmissionStats& Stats() const { return stats; }
+    const VectorValueStats& VectorStats() const { return vectors.Stats(); }
 
 private:
     void Emit(ir::Inst* inst);
@@ -40,6 +45,7 @@ private:
 #undef INST
     void EmitHelper(ir::Inst* inst);
     void EmitCondition(ir::Cond cond, GPR result);
+    ir::Flags RequestedFlags(ir::Inst* inst, ir::Flags requested);
     void EmitTerminal(const ir::Terminal& terminal);
     void EmitPrologue();
     void EmitEpilogue();
@@ -48,6 +54,7 @@ private:
     void RecordGuestAccess(u32 begin, u32 size, GuestAccessKind kind, GPR address, s32 displacement = 0);
     void Poll();
     void CheckHalt();
+    void PublishPC(bool commit = true);
     void Return(HaltReason reason);
     void EmitMemory(ir::Inst* inst, bool store, bool ordered);
     void EmitAtomic(ir::Inst* inst);
@@ -58,12 +65,16 @@ private:
     void Call(GPR target);
 
     JitContext& context;
+    VectorContext vectors{context};
+    std::vector<WideVectorPair> wide_pairs;
     ir::Block* block{};
     IntrusivePtr<ir::Block> wide_ir;
     ir::Inst* current_inst{};
     EmissionStats stats{};
     u32 recovery_offset{};
     bool guest_instructions{};
+    u64 pc_delta{}, previous_pc_delta{};
+    bool pc_pending{};
     ExecutionMode execution_mode{ExecutionMode::Ordinary};
     GuestAccessCoverage guest_access_coverage{GuestAccessCoverage::Precise};
     std::vector<GuestAccessRange> guest_accesses;

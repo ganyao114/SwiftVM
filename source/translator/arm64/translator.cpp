@@ -110,6 +110,10 @@ struct Arm64Instance::Impl final {
         if (svm_config.uniform_elim) {
             global_opts |= Optimizations::UniformElimination;
         }
+        if (backend::kNativeJitBackend == kLoongArch && svm_config.xmm_fault_sink) {
+            // Reuse the existing store-sink policy bit with guest-owned ranges.
+            global_opts |= Optimizations::XmmFaultSink;
+        }
         if (svm_config.x64_scalar_cache) {
             global_opts |= Optimizations::ScalarRegisterCache;
         }
@@ -128,6 +132,8 @@ struct Arm64Instance::Impl final {
                 // is loaded/stored via IR uniform accesses.
                 .buffers_static_alloc = {},
                 .loop_gpr_uniform_ranges = Arm64GprUniformRanges(),
+                .store_sink_uniform_ranges = backend::kNativeJitBackend == kLoongArch
+                        ? Arm64StoreSinkUniformRanges() : std::span<UniformRangeDesc>{},
                 .static_program = false,
                 // Block linking enabled: empty dispatch slots fall back to the
                 // dispatcher safely (see JitContext::Forward).

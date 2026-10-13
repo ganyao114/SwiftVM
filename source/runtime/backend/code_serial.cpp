@@ -964,6 +964,16 @@ u64 ComputeConfigHash(const Config& config) {
         h = HashU64(range.offset, h);
         h = HashU64(range.size, h);
     }
+    // Preserve existing empty-range cache keys. Configured generic sinking
+    // must have its own domain, even when the total State size is identical.
+    if (!config.store_sink_uniform_ranges.empty()) {
+        h = HashU64(0x554e4953494e4b01ULL, h);
+        h = HashU64(config.store_sink_uniform_ranges.size(), h);
+        for (const auto& range : config.store_sink_uniform_ranges) {
+            h = HashU64(range.offset, h);
+            h = HashU64(range.size, h);
+        }
+    }
     return h;
 }
 

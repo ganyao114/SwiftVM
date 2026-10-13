@@ -119,6 +119,9 @@ void Benchmark() {
                       << ",\"dead_values\":" << values.dead_values << ",\"cfg_nodes\":" << registers.nodes
                       << ",\"max_live\":" << registers.max_live << ",\"liveness_iterations\":" << registers.iterations
                       << ",\"native_emitters\":" << emit.direct << ",\"helper_sites\":" << emit.helpers
+                      << ",\"flag_bits_requested\":" << emit.flag_bits_requested
+                      << ",\"flag_bits_computed\":" << emit.flag_bits_computed
+                      << ",\"flag_writes_elided\":" << emit.flag_writes_elided
                       << ",\"allocated_values\":" << coloring.register_values << ",\"spilled_values\":" << coloring.spilled_values
                       << ",\"interference_edges\":" << coloring.interference_edges << ",\"phi_coalesced\":" << coloring.phi_coalesced
                       << ",\"estimated_input_sites\":" << coloring.input_sites

@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 
 namespace swift::runtime::backend {
 
@@ -64,6 +65,13 @@ void AddressSpace::Init() {
 
     // Keep empty metadata valid even when there is no uniform buffer.
     uniform_info = std::make_unique<ir::UniformInfo>();
+    uniform_info->precise_observation_points = config.backend_isa == kLoongArch;
+    for (const auto& range : config.store_sink_uniform_ranges) {
+        if (range.offset > config.uniform_buffer_size ||
+            range.size > config.uniform_buffer_size - range.offset) {
+            throw std::invalid_argument("uniform store sink range exceeds the state buffer");
+        }
+    }
     if (config.uniform_buffer_size) {
         uniform_info->uniform_size = config.uniform_buffer_size;
         for (const auto& range : config.xmm_uniform_ranges) {
@@ -72,6 +80,10 @@ void AddressSpace::Init() {
         }
         for (const auto& range : config.loop_gpr_uniform_ranges) {
             uniform_info->loop_gpr_uniform_ranges.emplace_back(
+                    range.offset, range.offset + range.size);
+        }
+        for (const auto& range : config.store_sink_uniform_ranges) {
+            uniform_info->store_sink_uniform_ranges.emplace_back(
                     range.offset, range.offset + range.size);
         }
         for (auto& desc : config.buffers_static_alloc) {

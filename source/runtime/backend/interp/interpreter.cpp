@@ -470,6 +470,11 @@ void Interpreter::RunAdvancePC(ir::Inst* inst, InterpStack& stack) {
     // lazy flag state here, which the interpreter keeps eagerly coherent).
 }
 
+void Interpreter::RunCheckpoint(ir::Inst*, InterpStack&) {
+    // Native backend retirement metadata. The interpreter already executes
+    // uniform stores eagerly and samples interruption in its ordinary loop.
+}
+
 void Interpreter::RunSetLocation(ir::Inst* inst, InterpStack& stack) {
     auto location = inst->GetArg<ir::Lambda>(0);
     state.current_loc = EvalLambda(stack, location);

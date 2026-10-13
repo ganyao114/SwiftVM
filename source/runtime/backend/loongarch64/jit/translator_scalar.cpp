@@ -116,6 +116,7 @@ void JitTranslator::EmitZero(ir::Inst* inst) {
 
 void JitTranslator::EmitLoadImm(ir::Inst* inst) {
     if (!Scalar(inst)) { EmitHelper(inst); return; }
+    if (context.Rematerialized(inst)) return;
     context.GetMasm().LI(t0, inst->GetArg<ir::Imm>(0).Get());
     context.Write(inst, t0);
 }

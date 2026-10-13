@@ -4,6 +4,7 @@
 #include <cstring>
 #include <stdexcept>
 #include "runtime/backend/cache_clear.h"
+#include "runtime/backend/address_space.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/module.h"
 
@@ -27,6 +28,14 @@ void JitContext::ConfigureModule(Module* owner) {
     const auto policy = ResolveFeatureSet(module->GetModuleConfig());
     features = features.WithPolicy(policy.loongarch_lsx, policy.loongarch_lasx, policy.loongarch_crc32);
     SetFlagsPublication(policy.loongarch_flags_publication);
+    SetFlagsDemand(policy.loongarch_flags_demand);
+    SetUniformForwarding(policy.loongarch_uniform_forwarding);
+    SetScalarRematerialization(policy.loongarch_rematerialization);
+    SetScalarSplitting(policy.loongarch_scalar_splitting);
+    SetHomeReuse(policy.loongarch_home_reuse);
+    SetVectorAllocation(policy.loongarch_vector_allocation);
+    SetVectorCFGAllocation(policy.loongarch_vector_cfg_allocation);
+    uniform_extent = module->GetAddressSpace().GetConfig().uniform_buffer_size;
     if (!policy.loongarch_cfg_allocation && allocation_mode == ScalarAllocationMode::GlobalCFG) {
         allocation_mode = ScalarAllocationMode::LocalCache;
         cache_values = true;
@@ -44,7 +53,8 @@ void JitContext::Flush(const CodeBuffer& buffer) {
 void JitContext::ConfigureBlock(ir::Block* block) {
     if (!block) throw std::invalid_argument("LoongArch homes need an IR block");
     DiscardValues();
-    register_plan.reset(); scalar_allocation.reset(); current_inst = nullptr;
+    register_plan.reset(); scalar_allocation.reset(); current_inst = nullptr; scalar_baseline_placement = false;
+    uniform_plan.reset(); uniform_stats = {};
     sparse_homes.reset(); home_members.clear(); home_stats = {};
     flags_plan.reset(); flags_dirty = ir::Flags::All;
     slot_count = 1;
@@ -59,13 +69,53 @@ void JitContext::ConfigureBlock(ir::Block* block) {
     home_stats.dense_bytes = home_stats.compact_bytes = u64(slot_count) * kValueStride;
 }
 
-void JitContext::ConfigureRegisters(ir::Block* block, const RegisterPlan::Exits& exits) {
-    register_plan = RegisterPlan::Build(block, targets, stops, {}, exits);
-    if (allocation_mode == ScalarAllocationMode::GlobalCFG)
-        scalar_allocation = ScalarAllocationPlan::Build(block, *register_plan, targets);
+void JitContext::ConfigureUniforms(ir::Block* block, const RegisterPlan::Exits& exits) {
+    if (!UsesUniformForwarding()) return;
+    if (register_plan || scalar_allocation || sparse_homes)
+        throw std::logic_error("LoongArch uniform forwarding must precede allocation");
+    uniform_plan = UniformForwardPlan::Build(block, targets, stops, exits, uniform_extent);
+    if (uniform_plan->Stats().candidates) {
+        const auto baseline_live = RegisterPlan::Build(block, targets, stops, {}, exits);
+        const auto baseline = ScalarAllocationPlan::Build(block, baseline_live, targets,
+                ScalarAllocationPlan::kRegisterCount, scalar_rematerialization, scalar_splitting, stops, exits);
+        uniform_plan->SetBaselineSpills(baseline.Stats().spilled_values);
+    }
+    uniform_plan->Apply();
 }
 
-void JitContext::ConfigureHomes(ir::Block* block, const RegisterPlan::Exits& exits) {
+void JitContext::ConfigureRegisters(ir::Block* block, const RegisterPlan::Exits& exits) {
+    // Forwarding can extend source ranges. Prune candidates against the final
+    // complete CFG coloring; the baseline remains an architectural state load.
+    for (u32 round = 0;; ++round) {
+        register_plan = RegisterPlan::Build(block, targets, stops, {}, exits);
+        if (allocation_mode != ScalarAllocationMode::GlobalCFG) return;
+        scalar_allocation = ScalarAllocationPlan::Build(block, *register_plan, targets,
+                ScalarAllocationPlan::kRegisterCount, scalar_rematerialization, scalar_splitting, stops, exits);
+        if (!uniform_plan) return;
+        uniform_plan->RecordAllocationRound();
+        uniform_plan->RecordAllocatedSpills(scalar_allocation->Stats().spilled_values);
+        if (!uniform_plan->RejectSpilledSources(*scalar_allocation)) {
+            if (uniform_plan->RejectSpillGrowth(scalar_allocation->Stats().spilled_values)) {
+                register_plan = RegisterPlan::Build(block, targets, stops, {}, exits);
+                scalar_allocation = ScalarAllocationPlan::Build(block, *register_plan, targets,
+                        ScalarAllocationPlan::kRegisterCount, scalar_rematerialization, scalar_splitting, stops, exits);
+                uniform_plan->RecordAllocatedSpills(scalar_allocation->Stats().spilled_values);
+            }
+            return;
+        }
+        if (round == 7) {
+            uniform_plan->RejectAll();
+            register_plan = RegisterPlan::Build(block, targets, stops, {}, exits);
+            scalar_allocation = ScalarAllocationPlan::Build(block, *register_plan, targets,
+                    ScalarAllocationPlan::kRegisterCount, scalar_rematerialization, scalar_splitting, stops, exits);
+            uniform_plan->RecordAllocatedSpills(scalar_allocation->Stats().spilled_values);
+            return;
+        }
+    }
+}
+
+void JitContext::ConfigureHomes(ir::Block* block, const RegisterPlan::Exits& exits,
+                               std::span<const WideVectorPair> wide) {
     if (!UsesSparseHomes()) return;
     if (!block || !scalar_allocation || !register_plan)
         throw std::logic_error("LoongArch sparse homes require a configured CFG allocation");
@@ -79,7 +129,7 @@ void JitContext::ConfigureHomes(ir::Block* block, const RegisterPlan::Exits& exi
     }
     // Build performs all checks before any ID or frame-size mutation. A
     // rejected layout leaves the dense clone intact for the caller's fallback.
-    auto plan = SparseHomesPlan::Build(block, *scalar_allocation, exits);
+    auto plan = SparseHomesPlan::Build(block, *scalar_allocation, exits, nullptr, home_reuse, targets, stops, wide);
     const auto dense_bytes = home_stats.dense_bytes;
     sparse_homes.emplace(std::move(plan));
     for (auto& inst : block->GetInstList()) inst.SetId(sparse_homes->HomeId(&inst).value_or(ir::Inst::invalid_id));
@@ -108,9 +158,30 @@ void JitContext::ConfigureFlags(ir::Block* block, const FlagsPlan::Exits& exits,
 
 void JitContext::BeginInstruction(ir::Inst* inst) {
     current_inst = inst;
+    if (scalar_allocation) {
+        const auto moves = scalar_allocation->MovesBefore(inst);
+        // Stage every old source before changing any destination register.
+        // The home planner keeps these simultaneously live staging slots
+        // distinct, including register swaps and narrowing raw aliases.
+        for (const auto& move : moves) if (move.from) {
+            Store(scalar_registers[*move.from], values, HomeOffset(move.value));
+            ++stats.stores; ++stats.split_stores;
+            if (!move.to) ++stats.spills;
+        }
+        for (const auto& move : moves) if (move.to) {
+            Load(scalar_registers[*move.to], values, HomeOffset(move.value));
+            ++stats.loads; ++stats.split_loads;
+        }
+    }
     // Restore the incoming CFG union, not the previous lexical emitter's
     // transient state. A guarded helper can reload only one runtime path.
     flags_dirty = flags_plan ? flags_plan->At(inst) : ir::Flags::All;
+}
+
+std::optional<u32> JitContext::ScalarRegister(ir::Inst* value) const {
+    if (!scalar_allocation) return std::nullopt;
+    return scalar_baseline_placement ? scalar_allocation->Register(value) :
+                                     scalar_allocation->RegisterAt(value, current_inst);
 }
 
 bool JitContext::IsLive(ir::Inst* inst) const {
@@ -204,7 +275,11 @@ void JitContext::ReadPart(GPR result, ir::Value value, u32 part) {
             size = std::min(size, u32(ir::GetValueSizeByte(producer)));
         if (size && size < 8) Mask(result, size * 8);
     };
-    if (scalar_allocation && part == 0) if (auto reg = scalar_allocation->Register(value.Def())) {
+    if (scalar_allocation) if (auto immediate = scalar_allocation->Immediate(value.Def())) {
+        masm.LI(result, part ? u64{0} : *immediate); ++stats.rematerializations;
+        normalize(); return;
+    }
+    if (part == 0) if (auto reg = ScalarRegister(value.Def())) {
         masm.MV(result, scalar_registers[*reg]); ++stats.register_reads;
         normalize(); return;
     }
@@ -223,14 +298,15 @@ void JitContext::ReadPart(GPR result, ir::Value value, u32 part) {
 void JitContext::WritePart(ir::Inst* inst, GPR value, u32 part) {
     if (inst->ReturnType() == ir::ValueType::VOID) return;
     if (part > 1) throw std::invalid_argument("LoongArch value part exceeds canonical home");
-    if (scalar_allocation && part == 0) if (auto reg = scalar_allocation->Register(inst)) {
+    if (Rematerialized(inst)) { ++stats.omitted_constant_stores; return; }
+    if (part == 0) if (auto reg = ScalarRegister(inst)) {
         masm.MV(scalar_registers[*reg], value);
         const auto size = ir::GetValueSizeByte(inst->ReturnType());
         if (size < 8) Mask(scalar_registers[*reg], size * 8);
         return;
     }
     if (!cache_values) {
-        if (scalar_allocation && part == 0 && scalar_allocation->Spilled(inst)) ++stats.spills;
+        if (scalar_allocation && part == 0 && ScalarAllocationPlan::Eligible(inst)) ++stats.spills;
         const u32 size = ir::GetValueSizeByte(inst->ReturnType());
         if (part == 0 && size < 8) {
             Store(zero, values, HomeOffset(inst));
@@ -269,7 +345,10 @@ void JitContext::WritePart(ir::Inst* inst, GPR value, u32 part) {
 
 void JitContext::ReadRawPart(GPR result, ir::Value value, u32 part) {
     if (part > 1) throw std::invalid_argument("LoongArch raw value part exceeds canonical home");
-    if (scalar_allocation && part == 0) if (auto reg = scalar_allocation->Register(value.Def())) {
+    if (scalar_allocation) if (auto immediate = scalar_allocation->Immediate(value.Def())) {
+        masm.LI(result, part ? u64{0} : *immediate); ++stats.rematerializations; return;
+    }
+    if (part == 0) if (auto reg = ScalarRegister(value.Def())) {
         masm.MV(result, scalar_registers[*reg]); ++stats.register_reads; return;
     }
     for (size_t i = 0; i < cache.size(); ++i) if (cache[i].inst == value.Def() && cache[i].part == part) {
@@ -281,17 +360,22 @@ void JitContext::ReadRawPart(GPR result, ir::Value value, u32 part) {
 void JitContext::WriteRawPart(ir::Inst* inst, GPR value, u32 part) {
     if (inst->ReturnType() == ir::ValueType::VOID) return;
     if (part > 1) throw std::invalid_argument("LoongArch raw value part exceeds canonical home");
-    if (scalar_allocation && part == 0) if (auto reg = scalar_allocation->Register(inst)) {
+    if (part == 0) if (auto reg = ScalarRegister(inst)) {
         masm.MV(scalar_registers[*reg], value); return;
     }
     for (auto& cached : cache) if (cached.inst == inst && cached.part == part) cached = {};
     Store(value, values, HomeOffset(inst, part)); ++stats.stores;
-    if (scalar_allocation && part == 0 && scalar_allocation->Spilled(inst)) ++stats.spills;
+    if (scalar_allocation && part == 0 && ScalarAllocationPlan::Eligible(inst) && !Rematerialized(inst)) ++stats.spills;
 }
 
 void JitContext::PublishInput(ir::Inst* value) {
     if (!scalar_allocation) { FlushValues(); return; }
-    if (auto reg = scalar_allocation->Register(value)) {
+    if (auto immediate = scalar_allocation->Immediate(value)) {
+        masm.LI(t0, *immediate); Store(t0, values, HomeOffset(value)); ++stats.stores;
+        Store(zero, values, HomeOffset(value, 1)); ++stats.stores;
+        return;
+    }
+    if (auto reg = ScalarRegister(value)) {
         Store(scalar_registers[*reg], values, HomeOffset(value)); ++stats.stores;
     }
 }
@@ -302,13 +386,19 @@ void JitContext::PublishInputs(ir::Inst* inst) {
 }
 
 void JitContext::ReloadDefinition(ir::Inst* value) {
-    if (scalar_allocation) if (auto reg = scalar_allocation->Register(value)) {
+    if (auto reg = ScalarRegister(value)) {
         Load(scalar_registers[*reg], values, HomeOffset(value)); ++stats.loads;
     }
 }
 
 void JitContext::ReloadDefinitions(ir::Inst* inst) {
     if (scalar_allocation) for (auto* value : scalar_allocation->Definitions(inst)) ReloadDefinition(value);
+}
+
+ir::Flags JitContext::RequiredFlagWrites(ir::Inst* inst, ir::Flags requested) const {
+    if (flags_demand && flags_plan && flags_plan->Reachable(inst))
+        return requested & flags_plan->NeededAfter(inst);
+    return requested;
 }
 
 void JitContext::Operand(GPR result, const ir::Operand& operand) {

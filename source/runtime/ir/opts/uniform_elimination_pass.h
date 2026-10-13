@@ -36,6 +36,14 @@ struct UniformInfo {
     RangeMap<u32, UniformRegister> uniform_regs_map{};
     std::vector<UniformRange> xmm_uniform_ranges{};
     std::vector<UniformRange> loop_gpr_uniform_ranges{};
+    std::vector<UniformRange> store_sink_uniform_ranges{};
+    // Some backends poll interrupts/SMC at every AdvancePC and allow memory
+    // helpers to observe State. Keep byte facts and stores local to those
+    // observation intervals; legacy backends retain their existing policy.
+    bool precise_observation_points{};
+    // A Checkpoint holds real SSA snapshots for retirement exits, so the
+    // AdvancePC marker itself need not invalidate byte facts or sink stores.
+    bool retirement_snapshots{};
 
     [[nodiscard]] bool IsXmmUniformRange(u32 offset, u32 size) const {
         for (const auto& range : xmm_uniform_ranges) {
@@ -49,6 +57,16 @@ struct UniformInfo {
     [[nodiscard]] bool IsLoopGPRUniformRange(u32 offset, u32 size) const {
         for (const auto& range : loop_gpr_uniform_ranges) {
             if (offset >= range.begin && offset + size <= range.end) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool IsStoreSinkUniformRange(u32 offset, u32 size) const {
+        if (IsXmmUniformRange(offset, size)) return true;
+        for (const auto& range : store_sink_uniform_ranges) {
+            if (offset >= range.begin && offset <= range.end && size <= range.end - offset) {
                 return true;
             }
         }

@@ -231,6 +231,12 @@ struct CaptureByte {
 
 }  // namespace
 
+bool UniformStoreSinkPass::IsObservationPoint(OpCode op, const UniformInfo& info) {
+    return IsFaultOrObservationPoint(op) ||
+           (info.precise_observation_points && !info.retirement_snapshots &&
+            op == OpCode::AdvancePC);
+}
+
 void UniformStoreSinkPass::CaptureLatestCaptures(Block* block, const UniformInfo& info) {
     auto& recipes = block->GetUniformCaptureRecipes();
     recipes.clear();
@@ -272,7 +278,7 @@ void UniformStoreSinkPass::CaptureLatestCaptures(Block* block, const UniformInfo
                 }
             }
         }
-        if (IsFaultOrObservationPoint(inst.GetOp())) {
+        if (IsObservationPoint(inst.GetOp(), info)) {
             capture(&inst);
             clear();
             segment_begin = &inst;
@@ -283,7 +289,7 @@ void UniformStoreSinkPass::CaptureLatestCaptures(Block* block, const UniformInfo
 void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info,
                                const FeatureSet& features,
                                HIRFunction* hir_function) {
-    if (!block || info.xmm_uniform_ranges.empty()) {
+    if (!block || (info.xmm_uniform_ranges.empty() && info.store_sink_uniform_ranges.empty())) {
         return;
     }
 
@@ -347,6 +353,26 @@ void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info,
         if (!any) {
             return;
         }
+
+        // Publishing a later overlapping store while leaving an earlier one
+        // pending reverses their byte order at the next flush. Include the
+        // entire overlap component before materializing in source order.
+        bool expanded;
+        do {
+            expanded = false;
+            for (size_t index = 0; index < pending.size(); ++index) {
+                if (selected[index]) continue;
+                for (size_t other = 0; other < pending.size(); ++other) {
+                    if (selected[other] &&
+                        Overlaps(pending[index].offset, pending[index].size,
+                                 pending[other].offset, pending[other].size)) {
+                        selected[index] = true;
+                        expanded = true;
+                        break;
+                    }
+                }
+            }
+        } while (expanded);
 
         // Determine dead writes before relinking. A store is removable only
         // when later selected writes cover every byte and its producer chain
@@ -489,24 +515,28 @@ void UniformStoreSinkPass::Run(Block* block, const UniformInfo& info,
             const auto value = inst->GetArg<Value>(1);
             const u32 offset = uniform.GetOffset();
             const u32 size = GetValueSizeByte(value.Type());
-            if (offset + size <= info.uniform_size && info.IsXmmUniformRange(offset, size)) {
+            if (offset + size <= info.uniform_size && info.IsStoreSinkUniformRange(offset, size)) {
                 block->RemoveInst(inst);
                 pending.push_back({inst, value, offset, size});
                 continue;
             }
+            // A write spanning configured and unconfigured bytes must not
+            // overtake a pending store to the overlapping configured range.
+            flush(inst, offset, size, false);
         } else if (op == OpCode::LoadUniform) {
             const auto uniform = inst->GetArg<Uniform>(0);
             const u32 offset = uniform.GetOffset();
             const u32 size = GetValueSizeByte(uniform.GetType());
-            if (offset + size <= info.uniform_size && info.IsXmmUniformRange(offset, size)) {
+            if (offset + size <= info.uniform_size && info.IsStoreSinkUniformRange(offset, size)) {
                 if (!TryForwardLoad(*inst, pending)) {
                     flush(inst, offset, size, false);
                 }
                 continue;
             }
+            flush(inst, offset, size, false);
         }
 
-        if (IsFaultOrObservationPoint(op)) {
+        if (IsObservationPoint(op, info)) {
             flush_all(inst);
         }
     }

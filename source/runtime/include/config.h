@@ -160,6 +160,9 @@ struct Config {
     // caching and whole-CFG state SSA promotion. No host-register ABI is
     // attached to this description.
     std::span<UniformRangeDesc> loop_gpr_uniform_ranges;
+    // Guest state eligible for observation-point store sinking. Unlike XMM
+    // ranges, this metadata carries no x86 narrow-view or static-map policy.
+    std::span<UniformRangeDesc> store_sink_uniform_ranges;
     bool static_program;
     Optimizations global_opts;
     Arm64Features arm64_features{Arm64Features::None};

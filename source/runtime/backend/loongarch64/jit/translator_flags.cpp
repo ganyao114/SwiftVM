@@ -1,5 +1,6 @@
 #include "translator.h"
 
+#include <bit>
 #include "runtime/common/sse42str_result.h"
 
 namespace swift::runtime::backend::loongarch64 {
@@ -58,6 +59,15 @@ void TestFlags(JitContext& context, ir::Inst* inst, bool inverted) {
 
 }  // namespace
 
+ir::Flags JitTranslator::RequestedFlags(ir::Inst* inst, ir::Flags original) {
+    original &= FlagsPlan::Effect(inst).writes;
+    const auto requested = context.RequiredFlagWrites(inst, original);
+    stats.flag_bits_requested += std::popcount(u64(original & ir::Flags::All));
+    stats.flag_bits_computed += std::popcount(u64(requested & ir::Flags::All));
+    if (!True(requested & ir::Flags::All)) ++stats.flag_writes_elided;
+    return requested;
+}
+
 void JitTranslator::EmitCondition(ir::Cond cond, GPR result) {
     auto& as = context.GetMasm();
     if (cond == ir::Cond::AL || cond == ir::Cond::NV) { as.LI(result, 1); return; }
@@ -112,7 +122,8 @@ void JitTranslator::EmitSaveFlags(ir::Inst* inst) {
     auto* def = value.Def();
     const auto bits = ir::GetValueSizeByte(def->ReturnType()) * 8;
     if (!bits || bits > 64) return;
-    const auto requested = inst->GetArg<ir::Flags>(1);
+    const auto requested = RequestedFlags(inst, inst->GetArg<ir::Flags>(1));
+    if (!True(requested)) return;
     const bool carry = True(requested & ir::Flags::Carry);
     const bool overflow = True(requested & ir::Flags::Overflow);
     const bool auxiliary = True(requested & ir::Flags::AuxiliaryCarry);
@@ -215,14 +226,16 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) { TestFlags(context, inst, fal
 void JitTranslator::EmitTestNotFlags(ir::Inst* inst) { TestFlags(context, inst, true); }
 
 void JitTranslator::EmitClearFlags(ir::Inst* inst) {
+    const auto requested = RequestedFlags(inst, inst->GetArg<ir::Flags>(0));
+    if (!True(requested)) return;
     auto& as = context.GetMasm();
     context.ReadFlags(t6);
-    const auto requested = inst->GetArg<ir::Flags>(0);
     as.LI(t5, True(requested & ir::Flags::Parity) ? 1 : 0);
     MergeFlags(context, FlagMask(requested));
 }
 
 void JitTranslator::EmitSetCarry(ir::Inst* inst) {
+    if (!True(RequestedFlags(inst, ir::Flags::Carry))) return;
     auto& as = context.GetMasm();
     context.Read(t0, inst->GetArg<ir::Value>(0)); as.andi(t0, t0, 1);
     context.ReadFlags(t6); as.slli_d(t5, t0, kCarryBit);
@@ -230,35 +243,45 @@ void JitTranslator::EmitSetCarry(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitSetOverflow(ir::Inst* inst) {
+    if (!True(RequestedFlags(inst, ir::Flags::Overflow))) return;
     auto& as = context.GetMasm();
     context.Read(t0, inst->GetArg<ir::Value>(0)); as.andi(t0, t0, 1);
     context.ReadFlags(t6); as.slli_d(t5, t0, kOverflowBit);
     MergeFlags(context, u64{1} << kOverflowBit);
 }
 
-void JitTranslator::EmitInvertCarry(ir::Inst*) {
+void JitTranslator::EmitInvertCarry(ir::Inst* inst) {
+    if (!True(RequestedFlags(inst, ir::Flags::Carry))) return;
     auto& as = context.GetMasm();
     context.ReadFlags(t0); as.LI(t1, u64{1} << kCarryBit); as.xor_(t0, t0, t1);
     context.WriteFlags(t0);
 }
 
 void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
+    const auto requested = RequestedFlags(inst, ir::Flags::All);
+    if (!True(requested)) return;
     auto& as = context.GetMasm();
     context.Read(t0, inst->GetArg<ir::Value>(0)); context.ReadFlags(t6);
-    as.andi(t3, t0, 1);
-    if (inst->GetArg<ir::Imm>(1).Get()) as.xori(t3, t3, 1);
-    as.slli_d(t5, t3, kCarryBit);
-    as.bstrpick_d(t3, t0, 2, 2); as.slli_d(t3, t3, kZeroBit); as.or_(t5, t5, t3);
-    as.bstrpick_d(t3, t0, 1, 1); as.xori(t3, t3, 1); as.or_(t5, t5, t3);
-    constexpr auto replaced = 255 | (u64{1} << kNegateBit) | (u64{1} << kZeroBit) |
-            (u64{1} << kCarryBit) | (u64{1} << kOverflowBit) | (u64{1} << kAuxiliaryBit);
-    MergeFlags(context, replaced);
+    as.MV(t5, zero);
+    if (True(requested & ir::Flags::Carry)) {
+        as.andi(t3, t0, 1);
+        if (inst->GetArg<ir::Imm>(1).Get()) as.xori(t3, t3, 1);
+        as.slli_d(t3, t3, kCarryBit); as.or_(t5, t5, t3);
+    }
+    if (True(requested & ir::Flags::Zero)) {
+        as.bstrpick_d(t3, t0, 2, 2); as.slli_d(t3, t3, kZeroBit); as.or_(t5, t5, t3);
+    }
+    if (True(requested & ir::Flags::Parity)) {
+        as.bstrpick_d(t3, t0, 1, 1); as.xori(t3, t3, 1); as.or_(t5, t5, t3);
+    }
+    MergeFlags(context, FlagMask(requested));
 }
 
 void JitTranslator::EmitPublishSse42StrFlags(ir::Inst* inst) {
+    const auto requested = RequestedFlags(inst, inst->GetArg<ir::Flags>(1));
+    if (!True(requested)) return;
     auto& as = context.GetMasm();
     context.Read(t0, inst->GetArg<ir::Value>(0)); context.ReadFlags(t6); as.MV(t5, zero);
-    const auto requested = inst->GetArg<ir::Flags>(1);
     u64 replaced{};
     const auto publish = [&](ir::Flags flag, u32 from, u32 to) {
         if (!True(requested & flag)) return;

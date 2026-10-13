@@ -323,7 +323,9 @@ void JitTranslator::Translate(ir::Block* input) {
         if (inst.GetOp() == O::VecUnsignedEstimate) (void)ValidateUnsignedEstimate(&inst);
         if (inst.GetOp() == O::VecSatAdd || inst.GetOp() == O::VecSatSub) (void)ValidateSaturatingAddSub(&inst, 32);
     }
-    if (WidePlan::Needed(input) || context.UsesSparseHomes()) {
+    const bool has_markers = std::any_of(input->GetInstList().begin(), input->GetInstList().end(),
+        [](const ir::Inst& inst) { return inst.GetOp() == O::AdvancePC; });
+    if (has_markers || WidePlan::Needed(input) || context.UsesSparseHomes() || context.UsesUniformForwarding()) {
         auto wide = WidePlan::Build(input);
         context.RemapFlow(wide.instructions);
         decltype(function_exits) exits;
@@ -334,9 +336,23 @@ void JitTranslator::Translate(ir::Block* input) {
         for (auto* inst : function_halt_checks) checks.insert(wide.instructions.at(inst));
         function_halt_checks = std::move(checks);
         memory_extents = std::move(wide.memory_extents); memory_continuations = std::move(wide.memory_continuations);
+        wide_pairs = std::move(wide.native_pairs);
         wide_ir = std::move(wide.body); input = wide_ir.get();
     }
     block = input;
+    // Direct translator users also need retirement polls. Keep source IR
+    // untouched, and retain production snapshots already inserted by Prepare.
+    bool inserted_checkpoint{};
+    for (auto it = block->GetInstList().begin(); it != block->GetInstList().end(); ++it) {
+        if (it->GetOp() != O::AdvancePC) continue;
+        auto next = std::next(it);
+        if (next != block->GetInstList().end() && next->GetOp() == O::Checkpoint) continue;
+        auto* checkpoint = new ir::Inst(O::Checkpoint);
+        checkpoint->SetArg(0, ir::Params{});
+        block->InsertAfter(checkpoint, &*it);
+        inserted_checkpoint = true;
+    }
+    if (inserted_checkpoint) block->ReIdInstr();
     guest_instructions = std::any_of(block->GetInstList().begin(), block->GetInstList().end(),
             [](const ir::Inst& inst) { return inst.GetOp() == O::AdvancePC; });
     context.ConfigureBlock(block);
@@ -347,9 +363,13 @@ void JitTranslator::Translate(ir::Block* input) {
         if ((inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto) && !labels.contains(context.BranchTarget(&inst)))
             throw std::runtime_error("LoongArch branch target is not bound");
     ConfigurePhis();
+    context.ConfigureUniforms(block, function_exits);
     context.ConfigureRegisters(block, function_exits);
-    context.ConfigureHomes(block, function_exits);
+    context.ConfigureHomes(block, function_exits, wide_pairs);
     context.ConfigureFlags(block, function_exits, function_halt_checks);
+    vectors.Configure(block, wide_pairs, context.VectorAllocationEnabled(),
+                      context.FlowTargets(), context.FlowStops(), function_exits,
+                      context.VectorCFGAllocationEnabled());
     EmitPrologue();
     EmitPhiMoves(entry_phis);
     if (execution_mode == ExecutionMode::Ordinary) { Poll(); CheckHalt(); }
@@ -359,15 +379,25 @@ void JitTranslator::Translate(ir::Block* input) {
             context.FlushValues(); context.DiscardValues(); EmitPhiMoves(moves->second);
         }
         context.BeginInstruction(&inst);
+        vectors.BeginInstruction(&inst);
+        if (SparseHomesPlan::MayCallTypedHelper(&inst) || AuditedGuestMemoryOpcode(inst.GetOp()) ||
+            inst.GetOp() == O::CheckMemoryAlignment)
+            PublishPC();
         if (auto exit = function_exits.find(&inst); exit != function_exits.end()) {
             context.FlushValues(); context.DiscardValues(); EmitTerminal(exit->second);
-        } else if (function_halt_checks.contains(&inst)) CheckHalt();
+        } else if (function_halt_checks.contains(&inst)) {
+            PublishPC(); vectors.Barrier(); CheckHalt();
+        }
         const auto before = context.CurrentBufferSize();
-        Emit(&inst);
+        const auto wide_before = vectors.Stats().lasx_operations;
+        if (!vectors.EmitWide(&inst)) Emit(&inst);
+        else stats.direct += vectors.Stats().lasx_operations - wide_before;
         context.FinishInstruction();
+        vectors.FinishInstruction();
         stats.bytes[size_t(inst.GetOp())] += context.CurrentBufferSize() - before;
     }
     context.FlushValues(); context.DiscardValues();
+    vectors.Barrier();
     EmitTerminal(block->GetTerminal());
     if (execution_mode == ExecutionMode::SingleInstruction) {
         context.GetMasm().Bind(&single_retirement);
@@ -399,6 +429,7 @@ void JitTranslator::Call(GPR target) { context.GetMasm().jirl(ra, target, 0); }
 
 void JitTranslator::EmitHelper(ir::Inst* inst) {
     --stats.direct; ++stats.helpers;
+    vectors.Barrier();
     if (execution_mode == ExecutionMode::SingleInstruction && AuditedGuestMemoryOpcode(inst->GetOp()))
         typed_guest_accesses = true;
     auto& as = context.GetMasm();

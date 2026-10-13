@@ -359,6 +359,10 @@ target_sources(swift_runtime PRIVATE
         backend/loongarch64/jit/register_plan.cpp
         backend/loongarch64/jit/flags_plan.cpp
         backend/loongarch64/jit/scalar_allocation_plan.cpp
+        backend/loongarch64/jit/uniform_forward_plan.cpp
+        backend/loongarch64/jit/vector_allocation_plan.cpp
+        backend/loongarch64/jit/vector_publication_plan.cpp
+        backend/loongarch64/jit/vector_context.cpp
         backend/loongarch64/jit/sparse_homes_plan.cpp
         backend/loongarch64/jit/translator.cpp
         backend/loongarch64/jit/translator_scalar.cpp

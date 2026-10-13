@@ -21,19 +21,12 @@ u32 LaneIndex(u64 bits) {
     }
 }
 
-void ReadVector(JitContext& context, ir::Value value, VReg reg) {
-    context.PublishInput(value.Def());
-    context.Address(t0, values, context.HomeOffset(value.Def()));
-    context.GetMasm().vld(reg, t0, 0);
+VReg ReadVector(VectorContext& vectors, ir::Value value, VReg reg) {
+    return vectors.ReadOperand(value, reg);
 }
 
-void WriteVector(JitContext& context, ir::Inst* inst, VReg reg) {
-    // The producer writes the complete raw container, including narrow IR
-    // annotations. The scalar cache must not later spill an obsolete half.
-    context.DiscardValues();
-    context.Address(t0, values, context.HomeOffset(inst));
-    context.GetMasm().vst(reg, t0, 0);
-    context.ReloadDefinition(inst);
+void WriteVector(VectorContext& vectors, ir::Inst* inst, VReg reg) {
+    vectors.Write(inst, reg);
 }
 
 void ReadPair(JitContext& context, ir::Value value, GPR low, GPR high) {
@@ -50,18 +43,22 @@ void WritePair(JitContext& context, ir::Inst* inst, GPR low, GPR high) {
 }
 
 template <typename Operation>
-void BinaryVector(JitContext& context, ir::Inst* inst, Operation operation) {
+void BinaryVector(VectorContext& vectors, ir::Inst* inst, Operation operation) {
+    auto& context = vectors.Context();
     context.FlushValues();
-    ReadVector(context, inst->GetArg<ir::Value>(0), v0);
-    ReadVector(context, inst->GetArg<ir::Value>(1), v1);
-    operation(context.GetMasm());
-    WriteVector(context, inst, v2);
+    const auto left = ReadVector(vectors, inst->GetArg<ir::Value>(0), v0);
+    const auto right = ReadVector(vectors, inst->GetArg<ir::Value>(1), v1);
+    const auto result = vectors.Destination(inst, v2);
+    operation(context.GetMasm(), result, left, right);
+    WriteVector(vectors, inst, result);
 }
 
-void BinaryLane(JitContext& context, ir::Inst* inst, u64 bits,
+void BinaryLane(VectorContext& vectors, ir::Inst* inst, u64 bits,
                 const std::array<BinaryInstruction, 4>& instructions) {
     const auto instruction = instructions[LaneIndex(bits)];
-    BinaryVector(context, inst, [&](Assembler& as) { (as.*instruction)(v2, v0, v1); });
+    BinaryVector(vectors, inst, [&](Assembler& as, VReg result, VReg left, VReg right) {
+        (as.*instruction)(result, left, right);
+    });
 }
 
 // LSX opcodes missing from the pinned Xbyak mnemonic set. All constants are
@@ -70,18 +67,19 @@ void RawBinary(Assembler& as, u32 opcode, VReg destination, VReg left, VReg righ
     as.dd(opcode | (right.getIdx() << 10) | (left.getIdx() << 5) | destination.getIdx());
 }
 
-void BinaryRawLane(JitContext& context, ir::Inst* inst, u64 bits,
+void BinaryRawLane(VectorContext& vectors, ir::Inst* inst, u64 bits,
                    u32 opcode, bool reverse = false) {
     opcode += LaneIndex(bits) * 0x8000;
-    BinaryVector(context, inst, [&](Assembler& as) {
-        RawBinary(as, opcode, v2, reverse ? v1 : v0, reverse ? v0 : v1);
+    BinaryVector(vectors, inst, [&](Assembler& as, VReg result, VReg left, VReg right) {
+        RawBinary(as, opcode, result, reverse ? right : left, reverse ? left : right);
     });
 }
 
 template <typename ScalarOperation, typename VectorOperation>
-void Bitwise(JitContext& context, ir::Inst* inst, ScalarOperation scalar, VectorOperation vector) {
+void Bitwise(VectorContext& vectors, ir::Inst* inst, ScalarOperation scalar, VectorOperation vector) {
+    auto& context = vectors.Context();
     if (context.Features().lsx) {
-        BinaryVector(context, inst, vector);
+        BinaryVector(vectors, inst, vector);
         return;
     }
     context.FlushValues();
@@ -93,21 +91,23 @@ void Bitwise(JitContext& context, ir::Inst* inst, ScalarOperation scalar, Vector
     WritePair(context, inst, t4, t5);
 }
 
-void ImmediateShift(JitContext& context, ir::Inst* inst, bool left, bool arithmetic) {
+void ImmediateShift(VectorContext& vectors, ir::Inst* inst, bool left, bool arithmetic) {
+    auto& context = vectors.Context();
     const auto bits = inst->GetArg<ir::Imm>(2).Get();
     const auto width = LaneIndex(bits);
     const auto raw_count = inst->GetArg<ir::Imm>(1).Get();
     const auto count = arithmetic ? std::min(raw_count, bits - 1) : raw_count;
     context.FlushValues();
-    ReadVector(context, inst->GetArg<ir::Value>(0), v0);
+    const auto input = ReadVector(vectors, inst->GetArg<ir::Value>(0), v0);
+    const auto result = vectors.Destination(inst, v2);
     auto& as = context.GetMasm();
-    if (!arithmetic && count >= bits) as.vxor_v(v2, v2, v2);
+    if (!arithmetic && count >= bits) as.vxor_v(result, result, result);
     else {
 #define SHIFT_CASE(index, suffix) \
         case index: \
-            if (left) as.vslli_##suffix(v2, v0, u32(count)); \
-            else if (arithmetic) as.vsrai_##suffix(v2, v0, u32(count)); \
-            else as.vsrli_##suffix(v2, v0, u32(count)); \
+            if (left) as.vslli_##suffix(result, input, u32(count)); \
+            else if (arithmetic) as.vsrai_##suffix(result, input, u32(count)); \
+            else as.vsrli_##suffix(result, input, u32(count)); \
             break;
         switch (width) {
             SHIFT_CASE(0, b)
@@ -117,21 +117,23 @@ void ImmediateShift(JitContext& context, ir::Inst* inst, bool left, bool arithme
         }
 #undef SHIFT_CASE
     }
-    WriteVector(context, inst, v2);
+    WriteVector(vectors, inst, result);
 }
 
-void VariableShift(JitContext& context, ir::Inst* inst, bool left, bool arithmetic) {
+void VariableShift(VectorContext& vectors, ir::Inst* inst, bool left, bool arithmetic) {
+    auto& context = vectors.Context();
     const auto bits = inst->GetArg<ir::Imm>(2).Get();
     const auto width = LaneIndex(bits);
     context.FlushValues();
-    ReadVector(context, inst->GetArg<ir::Value>(0), v0);
+    const auto input = ReadVector(vectors, inst->GetArg<ir::Value>(0), v0);
+    const auto result = vectors.Destination(inst, v2);
     context.Read(t0, inst->GetArg<ir::Value>(1));
     auto& as = context.GetMasm();
     Label in_range, finished;
     as.sltui(t1, t0, s32(bits));
     as.BNE(t1, zero, &in_range);
     if (arithmetic) as.LI(t0, bits - 1);
-    else { as.vxor_v(v2, v2, v2); as.J(&finished); }
+    else { as.vxor_v(result, result, result); as.J(&finished); }
     as.Bind(&in_range);
     switch (width) {
         case 0: as.vreplgr2vr_b(v1, t0); break;
@@ -140,9 +142,9 @@ void VariableShift(JitContext& context, ir::Inst* inst, bool left, bool arithmet
         case 3: as.vreplgr2vr_d(v1, t0); break;
     }
     RawBinary(as, (left ? 0x70e80000 : arithmetic ? 0x70ec0000 : 0x70ea0000) + width * 0x8000,
-              v2, v0, v1);
+              result, input, v1);
     as.Bind(&finished);
-    WriteVector(context, inst, v2);
+    WriteVector(vectors, inst, result);
 }
 
 void ByteShiftPair(JitContext& context, ir::Inst* inst, bool left, bool extract) {
@@ -229,7 +231,7 @@ void DynamicByteShuffle(JitContext& context, ir::Inst* inst, bool table_lookup) 
 #define LANE_METHOD(name, mnemonic, width) \
     void JitTranslator::Emit##name(ir::Inst* inst) { \
         if (!context.Features().lsx) { EmitHelper(inst); return; } \
-        BinaryLane(context, inst, width, \
+        BinaryLane(vectors, inst, width, \
             {&Assembler::mnemonic##_b, &Assembler::mnemonic##_h, \
              &Assembler::mnemonic##_w, &Assembler::mnemonic##_d}); \
     }
@@ -242,21 +244,21 @@ LANE_METHOD(VecCmpEq, vseq, inst->GetArg<ir::Imm>(2).Get())
 
 void JitTranslator::EmitVec4Sub(ir::Inst* inst) {
     if (!context.Features().lsx) { EmitHelper(inst); return; }
-    BinaryRawLane(context, inst, 32, 0x700c0000);
+    BinaryRawLane(vectors, inst, 32, 0x700c0000);
 }
 void JitTranslator::EmitVecSub(ir::Inst* inst) {
     if (!context.Features().lsx) { EmitHelper(inst); return; }
-    BinaryRawLane(context, inst, inst->GetArg<ir::Imm>(2).Get(), 0x700c0000);
+    BinaryRawLane(vectors, inst, inst->GetArg<ir::Imm>(2).Get(), 0x700c0000);
 }
 void JitTranslator::EmitVecCmpGt(ir::Inst* inst) {
     if (!context.Features().lsx) { EmitHelper(inst); return; }
-    BinaryRawLane(context, inst, inst->GetArg<ir::Imm>(2).Get(), 0x70060000, true);
+    BinaryRawLane(vectors, inst, inst->GetArg<ir::Imm>(2).Get(), 0x70060000, true);
 }
 void JitTranslator::EmitVecAvg(ir::Inst* inst) {
     const auto bits = inst->GetArg<ir::Imm>(2).Get();
     if (bits != 8 && bits != 16) throw std::invalid_argument("LoongArch VecAvg requires byte/halfword lanes");
     if (!context.Features().lsx) { EmitHelper(inst); return; }
-    BinaryRawLane(context, inst, bits, 0x706a0000);
+    BinaryRawLane(vectors, inst, bits, 0x706a0000);
 }
 
 #define MINMAX_METHOD(name, mnemonic) \
@@ -264,9 +266,9 @@ void JitTranslator::EmitVecAvg(ir::Inst* inst) {
         if (!context.Features().lsx) { EmitHelper(inst); return; } \
         const auto bits = inst->GetArg<ir::Imm>(2).Get(); \
         if (inst->GetArg<ir::Imm>(3).Get()) \
-            BinaryLane(context, inst, bits, {&Assembler::mnemonic##_b, &Assembler::mnemonic##_h, \
+            BinaryLane(vectors, inst, bits, {&Assembler::mnemonic##_b, &Assembler::mnemonic##_h, \
                        &Assembler::mnemonic##_w, &Assembler::mnemonic##_d}); \
-        else BinaryLane(context, inst, bits, {&Assembler::mnemonic##_bu, &Assembler::mnemonic##_hu, \
+        else BinaryLane(vectors, inst, bits, {&Assembler::mnemonic##_bu, &Assembler::mnemonic##_hu, \
                         &Assembler::mnemonic##_wu, &Assembler::mnemonic##_du}); \
     }
 MINMAX_METHOD(VecMin, vmin)
@@ -275,30 +277,30 @@ MINMAX_METHOD(VecMax, vmax)
 
 void JitTranslator::EmitVecSatAdd(ir::Inst* inst) {
     if (!context.Features().lsx) { EmitHelper(inst); return; }
-    BinaryRawLane(context, inst, inst->GetArg<ir::Imm>(2).Get(),
+    BinaryRawLane(vectors, inst, inst->GetArg<ir::Imm>(2).Get(),
                   inst->GetArg<ir::Imm>(3).Get() ? 0x70460000 : 0x704a0000);
 }
 void JitTranslator::EmitVecSatSub(ir::Inst* inst) {
     if (!context.Features().lsx) { EmitHelper(inst); return; }
-    BinaryRawLane(context, inst, inst->GetArg<ir::Imm>(2).Get(),
+    BinaryRawLane(vectors, inst, inst->GetArg<ir::Imm>(2).Get(),
                   inst->GetArg<ir::Imm>(3).Get() ? 0x70480000 : 0x704c0000);
 }
 void JitTranslator::EmitVecMulHigh16(ir::Inst* inst) {
     if (!context.Features().lsx) { EmitHelper(inst); return; }
-    BinaryRawLane(context, inst, 16, inst->GetArg<ir::Imm>(2).Get() ? 0x70860000 : 0x70880000);
+    BinaryRawLane(vectors, inst, 16, inst->GetArg<ir::Imm>(2).Get() ? 0x70860000 : 0x70880000);
 }
 void JitTranslator::EmitVecMulWiden(ir::Inst* inst) {
     const auto bits = inst->GetArg<ir::Imm>(2).Get();
     if (bits != 8 && bits != 16 && bits != 32) throw std::invalid_argument("invalid LoongArch widening multiply width");
     if (!context.Features().lsx) { EmitHelper(inst); return; }
-    BinaryRawLane(context, inst, bits, inst->GetArg<ir::Imm>(3).Get() ? 0x70900000 : 0x70980000);
+    BinaryRawLane(vectors, inst, bits, inst->GetArg<ir::Imm>(3).Get() ? 0x70900000 : 0x70980000);
 }
 
 #define BITWISE_METHOD(name, scalar_instruction, vector_instruction) \
     void JitTranslator::Emit##name(ir::Inst* inst) { \
-        Bitwise(context, inst, \
+        Bitwise(vectors, inst, \
             [](Assembler& as, GPR rd, GPR rj, GPR rk) { as.scalar_instruction(rd, rj, rk); }, \
-            [](Assembler& as) { as.vector_instruction(v2, v0, v1); }); \
+            [](Assembler& as, VReg result, VReg left, VReg right) { as.vector_instruction(result, left, right); }); \
     }
 BITWISE_METHOD(Vec4And, and_, vand_v)
 BITWISE_METHOD(VecAnd, and_, vand_v)
@@ -307,16 +309,16 @@ BITWISE_METHOD(VecOr, or_, vor_v)
 BITWISE_METHOD(VecXor, xor_, vxor_v)
 #undef BITWISE_METHOD
 void JitTranslator::EmitVecAndNot(ir::Inst* inst) {
-    Bitwise(context, inst,
+    Bitwise(vectors, inst,
         [](Assembler& as, GPR rd, GPR rj, GPR rk) { as.nor(t6, rk, zero); as.and_(rd, rj, t6); },
         // LSX vandn.v computes ~vj & vk; IR requires lhs & ~rhs.
-        [](Assembler& as) { as.vandn_v(v2, v1, v0); });
+        [](Assembler& as, VReg result, VReg left, VReg right) { as.vandn_v(result, right, left); });
 }
 
 #define SHIFT_METHOD(name, helper, left, arithmetic) \
     void JitTranslator::Emit##name(ir::Inst* inst) { \
         if (!context.Features().lsx) { EmitHelper(inst); return; } \
-        helper(context, inst, left, arithmetic); \
+        helper(vectors, inst, left, arithmetic); \
     }
 SHIFT_METHOD(VecShiftLeftImm, ImmediateShift, true, false)
 SHIFT_METHOD(VecShiftRightImm, ImmediateShift, false, false)
@@ -380,8 +382,10 @@ void JitTranslator::EmitVecMovMask(ir::Inst* inst) {
 void JitTranslator::EmitVecShuffle32(ir::Inst* inst) {
     const auto control = inst->GetArg<ir::Imm>(1).Get() & 255;
     if (context.Features().lsx) {
-        context.FlushValues(); ReadVector(context, inst->GetArg<ir::Value>(0), v0);
-        context.GetMasm().vshuf4i_w(v2, v0, u32(control)); WriteVector(context, inst, v2);
+        context.FlushValues();
+        const auto input = ReadVector(vectors, inst->GetArg<ir::Value>(0), v0);
+        const auto result = vectors.Destination(inst, v2);
+        context.GetMasm().vshuf4i_w(result, input, u32(control)); WriteVector(vectors, inst, result);
         return;
     }
     std::array<u32, 16> indices{}, sources{};
@@ -407,8 +411,10 @@ void JitTranslator::EmitVecShuffle16(ir::Inst* inst) {
 void JitTranslator::EmitVecDupPairs32(ir::Inst* inst) {
     const bool odd = inst->GetArg<ir::Imm>(1).Get() != 0;
     if (context.Features().lsx) {
-        context.FlushValues(); ReadVector(context, inst->GetArg<ir::Value>(0), v0);
-        context.GetMasm().vshuf4i_w(v2, v0, odd ? 0xf5 : 0xa0); WriteVector(context, inst, v2);
+        context.FlushValues();
+        const auto input = ReadVector(vectors, inst->GetArg<ir::Value>(0), v0);
+        const auto result = vectors.Destination(inst, v2);
+        context.GetMasm().vshuf4i_w(result, input, odd ? 0xf5 : 0xa0); WriteVector(vectors, inst, result);
         return;
     }
     std::array<u32, 16> indices{}, sources{};
@@ -425,7 +431,9 @@ void JitTranslator::EmitVecZip(ir::Inst* inst) {
                                                   &Assembler::vilvl_w, &Assembler::vilvl_d};
         const std::array<BinaryInstruction, 4> upper{&Assembler::vilvh_b, &Assembler::vilvh_h,
                                                     &Assembler::vilvh_w, &Assembler::vilvh_d};
-        BinaryVector(context, inst, [&](Assembler& as) { (as.*(high ? upper[index] : low[index]))(v2, v1, v0); });
+        BinaryVector(vectors, inst, [&](Assembler& as, VReg result, VReg left, VReg right) {
+            (as.*(high ? upper[index] : low[index]))(result, right, left);
+        });
         return;
     }
     std::array<u32, 16> indices{}, sources{};
@@ -443,7 +451,9 @@ void JitTranslator::EmitVecUnzip(ir::Inst* inst) {
                                                    &Assembler::vpickev_w, &Assembler::vpickev_d};
         const std::array<BinaryInstruction, 4> upper{&Assembler::vpickod_b, &Assembler::vpickod_h,
                                                     &Assembler::vpickod_w, &Assembler::vpickod_d};
-        BinaryVector(context, inst, [&](Assembler& as) { (as.*(odd ? upper[index] : even[index]))(v2, v1, v0); });
+        BinaryVector(vectors, inst, [&](Assembler& as, VReg result, VReg left, VReg right) {
+            (as.*(odd ? upper[index] : even[index]))(result, right, left);
+        });
         return;
     }
     std::array<u32, 16> indices{}, sources{};
@@ -458,17 +468,22 @@ void JitTranslator::EmitVecByteShift(ir::Inst* inst) {
     const bool left = inst->GetArg<ir::Imm>(3).Get() != 0;
     if (!count || count >= 16) throw std::invalid_argument("invalid LoongArch vector byte shift");
     if (!context.Features().lsx) { ByteShiftPair(context, inst, left, false); return; }
-    context.FlushValues(); ReadVector(context, inst->GetArg<ir::Value>(0), v0);
+    context.FlushValues();
+    const auto input = ReadVector(vectors, inst->GetArg<ir::Value>(0), v0);
+    const auto result = vectors.Destination(inst, v2);
     auto& as = context.GetMasm();
-    if (left) as.vbsll_v(v2, v0, u32(count)); else as.vbsrl_v(v2, v0, u32(count));
-    WriteVector(context, inst, v2);
+    if (left) as.vbsll_v(result, input, u32(count)); else as.vbsrl_v(result, input, u32(count));
+    WriteVector(vectors, inst, result);
 }
 void JitTranslator::EmitVecExtractBytes(ir::Inst* inst) {
     const auto count = inst->GetArg<ir::Imm>(2).Get();
     if (!count || count >= 16) throw std::invalid_argument("invalid LoongArch vector byte shift");
     if (!context.Features().lsx) { ByteShiftPair(context, inst, false, true); return; }
-    BinaryVector(context, inst, [&](Assembler& as) {
-        as.vbsrl_v(v2, v0, u32(count)); as.vbsll_v(v1, v1, u32(16 - count)); as.vor_v(v2, v2, v1);
+    BinaryVector(vectors, inst, [&](Assembler& as, VReg result, VReg left, VReg right) {
+        // A fixed input remains live in its mapped register. Shift the right
+        // operand into scratch instead of destructively modifying that input.
+        as.vbsrl_v(result, left, u32(count));
+        as.vbsll_v(v1, right, u32(16 - count)); as.vor_v(result, result, v1);
     });
 }
 void JitTranslator::EmitVecShuffle32Indexed(ir::Inst* inst) { DynamicByteShuffle(context, inst, false); }

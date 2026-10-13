@@ -62,6 +62,7 @@ void JitTranslator::EmitLoadUniform(ir::Inst* inst) {
     const auto uniform = inst->GetArg<ir::Uniform>(0);
     const u32 size = ir::GetValueSizeByte(inst->ReturnType());
     if (!size || size > 16) { EmitHelper(inst); return; }
+    context.RecordUniformLoad((size + 7) / 8);
     context.Load(t0, state, state_offset_uniform_buffer + uniform.GetOffset(), std::min(size, u32{8}));
     context.Write(inst, t0);
     if (size > 8) {
@@ -75,6 +76,8 @@ void JitTranslator::EmitStoreUniform(ir::Inst* inst) {
     const auto value = inst->GetArg<ir::Value>(1);
     const u32 size = ir::GetValueSizeByte(value.Type());
     if (!size || size > 16) { EmitHelper(inst); return; }
+    context.RecordUniformStore((size + 7) / 8);
+    if (vectors.StoreUniform(inst)) return;
     context.Read(t0, value);
     context.Store(t0, state, state_offset_uniform_buffer + uniform.GetOffset(), std::min(size, u32{8}));
     if (size > 8) {

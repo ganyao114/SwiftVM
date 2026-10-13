@@ -94,7 +94,15 @@ namespace swift::runtime {
     X(loongarch_lasx, true) \
     X(loongarch_crc32, true) \
     X(loongarch_cfg_allocation, true) \
-    X(loongarch_flags_publication, true)
+    X(loongarch_flags_publication, true) \
+    X(loongarch_uniform_forwarding, true) \
+    X(loongarch_rematerialization, true) \
+    X(loongarch_flags_demand, true) \
+    X(loongarch_vector_allocation, true) \
+    X(loongarch_vector_cfg_allocation, true) \
+    X(loongarch_home_reuse, true) \
+    X(loongarch_scalar_splitting, true) \
+    X(loongarch_uniform_residency, true)
 
 enum class FeatureId : std::size_t {
 #define SVM_FEATURE_ID(field, default_value) field,
@@ -287,6 +295,14 @@ struct FeatureOverrides {
     X(bool, loongarch_crc32, "SVM_LOONGARCH_CRC32", DefaultOn, true, "LoongArch CRC32 JIT；缺省 ON，=0 禁用，仍需内核 HWCAP；纳入模块及缓存指纹") \
     X(bool, loongarch_cfg_allocation, "SVM_LOONGARCH_CFG_ALLOCATION", DefaultOn, true, "LoongArch 全 CFG 标量分配；缺省 ON，=0 采用局部缓存基线；纳入模块及缓存指纹") \
     X(bool, loongarch_flags_publication, "SVM_LOONGARCH_FLAGS_PUBLICATION", DefaultOn, true, "LoongArch CFG flags 按脏状态发布；缺省 ON，=0 保守写回；纳入模块及缓存指纹") \
+    X(bool, loongarch_uniform_forwarding, "SVM_LOONGARCH_UNIFORM_FORWARDING", DefaultOn, true, "LoongArch CFG uniform load forwarding；缺省 ON，=0 回退；保持精确 guest state stores；纳入模块及缓存指纹") \
+    X(bool, loongarch_rematerialization, "SVM_LOONGARCH_REMATERIALIZATION", DefaultOn, true, "LoongArch scalar constants rematerialization；缺省 ON，=0 回退；纳入模块及缓存指纹") \
+    X(bool, loongarch_flags_demand, "SVM_LOONGARCH_FLAGS_DEMAND", DefaultOn, true, "LoongArch 按 CFG demand 计算软件 flags；缺省 ON，=0 计算完整请求；保留 fault/retirement 观察状态；纳入模块及缓存指纹") \
+    X(bool, loongarch_vector_allocation, "SVM_LOONGARCH_VECTOR_ALLOCATION", DefaultOn, true, "LoongArch LSX vector allocation；缺省 ON，=0 使用 canonical homes；纳入模块及缓存指纹") \
+    X(bool, loongarch_vector_cfg_allocation, "SVM_LOONGARCH_VECTOR_CFG_ALLOCATION", DefaultOn, true, "LoongArch 全 CFG 向量固定映射；缺省 ON，=0 保留区域缓存基线；纳入模块及缓存指纹") \
+    X(bool, loongarch_home_reuse, "SVM_LOONGARCH_HOME_REUSE", DefaultOn, true, "LoongArch CFG home 生命周期复用；=0 使用唯一槽；纳入模块及缓存指纹") \
+    X(bool, loongarch_scalar_splitting, "SVM_LOONGARCH_SCALAR_SPLITTING", DefaultOn, true, "LoongArch 标量活跃区间分片；=0 使用全区间映射；纳入模块及缓存指纹") \
+    X(bool, loongarch_uniform_residency, "SVM_LOONGARCH_UNIFORM_RESIDENCY", DefaultOn, true, "LoongArch 跨退休 uniform 驻留与 checkpoint 快照；=0 在退休点发布 uniform；纳入模块及缓存指纹") \
     X(bool, uniform_path_fwd, "SVM_UNIFORM_PATH_FWD", DefaultOn, true, "uniform path forwarding；缺省 ON，=0 回退；原 uniform_elimination_pass.cpp:65") \
     X(std::string, vixl_host_dump, "SVM_VIXL_HOST_DUMP", RawString, "", "VIXL host 发码诊断非 0 开，host-map 原站点按变量存在；原 jit_context.cpp/trampolines.cpp") \
     X(bool, vixl_prof, "SVM_VIXL_PROF", NonZero, false, "VIXL profile；非 0 开；原 svm-vixl-prof.cc:62") \

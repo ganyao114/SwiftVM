@@ -94,7 +94,7 @@ TEST_CASE("hot coalesce check classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 167);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 170);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_INV_DBG");
@@ -204,7 +204,7 @@ TEST_CASE("FeatureSet captures every B-class field and applies sparse overrides"
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 76);
+    STATIC_REQUIRE(kFeatureCount == 89);
     REQUIRE(FeatureSet{}.ra_coalesce_live);
     REQUIRE(FeatureSet{}.operand_copy_kill);
     REQUIRE(FeatureSet{}.zero_store_zr);

@@ -70,7 +70,7 @@ Config X64Config() {
 
 TEST_CASE("x64 configuration registers opt-in defaults and all feature identities",
           "[x64][configuration]") {
-    STATIC_REQUIRE(kFeatureCount == 81);
+    STATIC_REQUIRE(kFeatureCount == 89);
     const FeatureSet defaults{};
     const SvmConfig default_config{};
     for (std::size_t i = 0; i < kX64Features.size(); ++i) {

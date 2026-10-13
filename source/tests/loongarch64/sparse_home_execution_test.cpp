@@ -133,13 +133,18 @@ void ForeignProducerPseudo() {
 void HelperAndPressure() {
     Builder b;
     std::vector<I*> values;
-    for (u32 i = 0; i < 9; ++i) values.push_back(b.Constant(i + 1));
+    // Dynamic inputs keep all nine values live across the helper even when
+    // scalar LoadImm rematerialization is enabled by default.
+    for (u32 i = 0; i < 9; ++i)
+        values.push_back(b.Add(O::LoadUniform, T::U64, ir::Uniform{64 + i * 8, T::U64}));
     b.Add(O::CallLambda, T::VOID, Probe(), V{values.back()});
     auto* sum = values.front();
     for (u32 i = 1; i < values.size(); ++i) sum = b.Add(O::Add, T::U64, V{sum}, ir::Operand{V{values[i]}});
     b.Store(sum); b.Finish(); const auto source_ids = b.IDs();
     for (bool compact : {false, true}) {
-        HomesCode code(b, compact); StateStorage state; observed = 0; code.Run(state);
+        HomesCode code(b, compact); StateStorage state;
+        for (u32 i = 0; i < values.size(); ++i) state.Put(64 + i * 8, i + 1);
+        observed = 0; code.Run(state);
         Check(state.Get(0) == 45 && observed == 9, "values survive spills and VOID typed helper");
         Check(code.context.ValueStats().spills > 0, "helper-pressure fixture executes allocated spill sites");
         if (compact) {

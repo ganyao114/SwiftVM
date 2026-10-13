@@ -496,3 +496,10 @@ INST(VecSatShiftQC, Value, Value)
 // Pure ARM unsigned fixed-point estimates on four u32 lanes. Canonical
 // V128 input/result; exact operation 0=URECPE, 1=URSQRTE. No FP or flags state.
 INST(VecUnsignedEstimate, Value, Value, Imm)
+
+// Guest retirement observation supplied by a backend that keeps uniform
+// stores resident across AdvancePC metadata. Params contains ordered pairs of
+// uniform byte offset (Imm) and the original typed SSA store value. Those
+// values are real uses and must survive DCE until the cold exit can publish
+// them. The ordinary continuation does not write architectural state.
+INST(Checkpoint, Void, Params)

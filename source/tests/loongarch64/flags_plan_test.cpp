@@ -122,15 +122,19 @@ void DiamondsPhisAndBackedges() {
 void BoundariesUnreachableAndOpaque() {
     Builder b;
     auto* value = b.Constant(); b.Add(O::SetCarry, T::VOID, V{value});
-    auto* retire = b.Add(O::AdvancePC, T::VOID, ir::Imm{u64{4}});
+    auto* marker = b.Add(O::AdvancePC, T::VOID, ir::Imm{u64{4}});
+    auto* retire = b.Add(O::Checkpoint, T::VOID, ir::Params{});
     auto* alignment = b.Add(O::CheckMemoryAlignment, T::VOID, V{value}, ir::Imm{u64{7}});
     auto* halted = b.Add(O::Nop, T::VOID);
     auto* exit = b.Add(O::Nop, T::VOID);
     auto* dead = b.Add(O::SetOverflow, T::VOID, V{value}); b.Finish();
     la::FlagsPlan::Exits exits{{exit, ir::terminal::ReturnToHost{}}};
     auto plan = la::FlagsPlan::Build(&b.block, {}, {}, exits, {halted});
-    Check(plan.EffectAt(retire).exits_before && plan.EffectAt(alignment).exits_after &&
-          plan.EffectAt(halted).exits_before, "retirement, alignment and function halt-check paths are observed");
+    Check(!plan.EffectAt(marker).exits_before && !plan.EffectAt(marker).observes_before,
+          "AdvancePC metadata does not observe or publish flags");
+    Check(plan.EffectAt(retire).exits_before, "checkpoint observes incoming flags");
+    Check(plan.EffectAt(alignment).exits_after, "alignment fault observes completed flags");
+    Check(plan.EffectAt(halted).exits_before, "function halt check observes incoming flags");
     Check(plan.ExitDirty() == F::Carry && !plan.Reachable(dead) && plan.At(dead) == F::All,
           "unreachable writes cannot poison reachable exits or justify omitted publications");
 
