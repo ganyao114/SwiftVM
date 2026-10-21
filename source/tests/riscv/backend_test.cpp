@@ -436,6 +436,7 @@ void ScalarAddressing() {
     using namespace biscuit;
     auto config = TestConfig();
     backend::CodeCache cache{config, 1u << 20, FeatureSet{}};
+    QuiescentRawCache release_cache{cache};
     for (u32 size : {1u, 2u, 4u, 8u})
     for (s64 offset : {-2056, -2048, -8, -1, 0, 2040, 2048, 2047}) {
         if (offset % size) continue;
@@ -1154,6 +1155,7 @@ void RejectCrossBlockTerminals() {
 void CodeReuse() {
     auto config = TestConfig();
     backend::CodeCache cache{config, 1u << 20, FeatureSet{}};
+    QuiescentRawCache release_cache{cache};
     u8* previous{};
     for (u64 generation = 0; generation < 8; ++generation) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x9000})};
@@ -1190,6 +1192,15 @@ int main(int argc, char** argv) {
     return 1;
 #else
     try {
+        if (argc == 2 && std::string{argv[1]} == "--shifts") {
+            NativeScalarShifts(); std::cout << "OK " << checks << " checks\n"; return 0;
+        }
+        if (argc == 2 && std::string{argv[1]} == "--shift-bench") {
+            ScalarShiftBenchmark(); return 0;
+        }
+        if (argc == 2 && std::string{argv[1]} == "--feature-bench") {
+            ScalarFeatureBenchmark(); return 0;
+        }
         if (argc == 2 && std::string{argv[1]} == "--persistence") {
             RuntimePersistence(); std::cout << "OK " << checks << " checks\n"; return 0;
         }
@@ -1249,7 +1260,7 @@ int main(int argc, char** argv) {
             std::cout << "OK " << checks << " checks\n"; return 0;
         }
         NativeHostRegisters(); NativePhi(); NativeWide(); MemoryProtocol();
-        NativeScalarBits(); NativeScalarALU(); NativeFlags(); NativeVectors(); NativeVectorInteger(); NativeVectorShuffle(); NativeLocals(); NativeVectorFloat(); NativeCalls(); NativeMemoryCopy(); NativeCrypto();
+        NativeScalarBits(); NativeScalarALU(); NativeScalarShifts(); NativeFlags(); NativeVectors(); NativeVectorInteger(); NativeVectorShuffle(); NativeLocals(); NativeVectorFloat(); NativeCalls(); NativeMemoryCopy(); NativeCrypto();
         NativeAtomics();
         ScalarDifferential(); Conditions(); FlagPredicates(); MixedHelpers(); VectorSelections(); SemanticExceptions();
         ScalarCache(); RegisterPressureAndHelpers(); LocalCacheJoins(); ScalarAddressing();

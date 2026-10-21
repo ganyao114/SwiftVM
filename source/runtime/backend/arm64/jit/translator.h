@@ -12,12 +12,12 @@
 #include <vector>
 #include "base/common_funcs.h"
 #include "jit_context.h"
-#include "runtime/backend/arm64/alloc/pinned_gpr_allocation.h"
-#include "guest_state_map.h"
-#include "raw_carry_branch_analysis.h"
-#include "resident_scalar_fpr_analysis.h"
-#include "scalar_fpr_liveness.h"
-#include "scalar_copy_analysis.h"
+#include "runtime/backend/arm64/alloc/narrow_bit_plan.h"
+#include "runtime/backend/arm64/alloc/region_pfaf_plan.h"
+#include "runtime/backend/arm64/alloc/narrow_integer_flags_plan.h"
+#include "runtime/backend/arm64/alloc/backedge_flags_plan.h"
+#include "runtime/backend/arm64/alloc/gpr_block_plan.h"
+#include "runtime/backend/arm64/alloc/scalar_fpr_publication_plan.h"
 #include "terminal_location_publication.h"
 #include "runtime/backend/code_cache.h"
 #include "runtime/common/types.h"
@@ -107,9 +107,9 @@ public:
 
     explicit JitTranslator(JitContext& ctx);
 
-    void Translate(ir::Block *block);
+    bool Translate(ir::Block *block);
 
-    void Translate(ir::HIRFunction *function);
+    bool Translate(ir::HIRFunction *function);
 
     [[nodiscard]] const std::vector<BackedgeBlockMetadata>&
     GetBackedgeBlockMetadata() const {
@@ -135,11 +135,25 @@ public:
                               bool structured_guest_ea = false,
                               ir::Inst* memory_inst = nullptr);
 
+
+    // Residue (mod 8) of a value whose alignment is derivable from a
+    // pinned-home read with a recorded residue, an immediate constant, or
+    // size-multiple Add/Sub steps from either; nullopt when unknown.
+    [[nodiscard]] std::optional<u32> AlignmentResidueMod8(ir::Value value) const;
+    // Per-instruction maintenance of home_alignment_mod8: guest-register
+    // homes are rewritten both by SetHostGPR publications and by ordinary
+    // producers the allocator placed on the home, so both must refresh or
+    // drop the recorded residue before the instruction emits.
+    void TrackHomeAlignment(ir::Inst* inst);
+
 #define INST(name, ...) void Emit##name(ir::Inst *inst);
 #include "runtime/ir/ir.inc"
 #undef INST
 
 private:
+    friend class FunctionCodeObjectEmitter;
+    bool EmitPreparedFunction(ir::HIRFunction* function);
+    friend class JitTranslatorTestSupport;
     void EmitExecutionTrace(u64 guest_rip);
     void EmitByteMovMask(const VRegister& source,
                          const WRegister& result,
@@ -148,166 +162,39 @@ private:
     [[nodiscard]] bool CanUseZeroStoreRegister(ir::Value value);
     [[nodiscard]] bool CanConsumeForwardedWidthSpill(ir::Inst* inst);
     [[nodiscard]] std::optional<u32> ForwardedMemorySpillInput(ir::Inst* inst);
-    [[nodiscard]] bool CanFusePinnedZeroExtendPublication(ir::Inst* inst);
+    [[nodiscard]] bool CanFusePinnedZeroExtendPublication(ir::Inst* inst) const;
     [[nodiscard]] bool CanAdoptPendingSpillWrite(
             ir::Inst* inst, bool reads_forwarded_memory_input);
-    [[nodiscard]] bool IsZeroStoreValue(ir::Value value);
-    [[nodiscard]] bool HasOnlyZeroStoreUses(ir::Inst* definition);
-    [[nodiscard]] bool ReproveCoalescedHostWrite(ir::Inst* inst) const;
-    [[nodiscard]] bool ReproveCoalescedHostRead(ir::Inst* inst) const;
-    [[nodiscard]] bool EmitCachedConstAddress(ir::Inst* inst,
-                                              const Register& result);
-    [[nodiscard]] std::optional<u64> CachedConstAddressOffset(ir::Inst* inst) const;
-    [[nodiscard]] bool ReproveCoalescedHostFPRWrite(ir::Inst* inst) const;
-    [[nodiscard]] bool ReproveScalarFPRTie(ir::Inst* inst) const;
-    [[nodiscard]] bool ReproveShufpsImmTie(ir::Inst* inst) const;
-    [[nodiscard]] bool ReproveCoalescedHostFPRRead(ir::Inst* inst) const;
-    [[nodiscard]] bool ReproveAesChainTie(ir::Inst* inst) const;
-    [[nodiscard]] bool ReproveAesChainHostWrite(ir::Inst* inst) const;
-    struct MemoryUpdate {
-        ir::Inst* memory{};
-        ir::Inst* publication{};
-        XRegister base{};
-        s64 offset{};
-    };
-    [[nodiscard]] std::optional<MemoryUpdate>
-    MatchMemoryUpdate(ir::Inst* update) const;
+    using MemoryUpdate = GPRMemoryUpdate;
     [[nodiscard]] std::optional<MemoryUpdate>
     MatchPreIndexMemoryUpdate(ir::Inst* update) const;
     [[nodiscard]] std::optional<MemoryUpdate>
     MatchBiasedMemoryUpdate(ir::Inst* update) const;
-    struct PinnedLoadUpdate {
-        ir::Inst* load{};
-        ir::Inst* update{};
-        ir::Inst* publication{};
-        ir::Inst* base_read{};
-        u16 target{};
-        s16 offset{};
-
-        bool operator==(const PinnedLoadUpdate&) const = default;
-    };
-    void PreparePinnedLoadUpdates(ir::Block* block);
-    [[nodiscard]] std::optional<PinnedLoadUpdate>
-    MatchPinnedLoadUpdate(ir::Inst* update);
-    struct ScalarFPRPublication {
-        ir::Inst* low_store{};
-        ir::Inst* high_store{};
-        ir::Inst* zero{};
-        ir::Inst* load_extension{};
-        u16 target{};
-    };
+    using PinnedLoadUpdate = GPRLoadUpdate;
     void PrepareScalarFPRPublications(ir::Block* block);
-    void PrepareBooleanSelects(ir::Block* block);
-    [[nodiscard]] bool ReproveScalarFPRPublication(
-            const ScalarFPRPublication& publication) const;
-    [[nodiscard]] bool ReproveScalarLoadFPRFusion(
-            ir::Inst* load, const ScalarFPRPublication& publication) const;
-    [[nodiscard]] bool ReproveScalarValueFPRFusion(
-            ir::Inst* low_store, const ScalarFPRPublication& publication) const;
     [[nodiscard]] bool EmitPshufdDirect(const VRegister& result,
                                         const VRegister& source,
                                         u32 control);
-    [[nodiscard]] std::optional<u8> ReprovePshufdDirectConstant(
-            ir::Inst* inst) const;
-    [[nodiscard]] std::optional<u8> ReprovePshufdDirectShuffle(
-            ir::Inst* inst) const;
-    [[nodiscard]] bool ReproveWidthChainBridge(ir::Inst* inst) const;
-    [[nodiscard]] bool ReproveLow32ViewOwnership(ir::Inst* inst,
-                                                 ir::Value source) const;
-    [[nodiscard]] bool ReproveAdjacentLow32Copy(ir::Inst* inst,
-                                                ir::Value source) const;
-    [[nodiscard]] bool ReproveLow32Copy(ir::Inst* inst) const;
-    [[nodiscard]] bool ReproveCachedConstAddress(ir::Inst* inst) const;
-    [[nodiscard]] bool CanReuseExactCachedConstAddress(ir::Inst* inst) const;
 
-    struct NarrowExtractExtension {
-        ir::Inst* extract{};
-        ir::Value source{};
-        ir::Inst* shift{};
-        u8 width{};
-        bool source_high_zero{};
-
-        bool operator==(const NarrowExtractExtension&) const = default;
-    };
-    [[nodiscard]] std::optional<NarrowExtractExtension>
-    MatchNarrowExtractExtension(ir::Inst* wrapper) const;
-    struct FunnelShiftRecipe {
-        ir::Inst* first{};
-        ir::Inst* second{};
-        ir::Inst* result{};
-        ir::Value high{};
-        ir::Value low{};
-        u8 amount{};
-
-        bool operator==(const FunnelShiftRecipe&) const = default;
-    };
-    [[nodiscard]] std::optional<FunnelShiftRecipe>
-    MatchFunnelShift(ir::Inst* result) const;
-    void PrepareFunnelShifts(ir::Block* block);
-    [[nodiscard]] bool EmitFunnelShiftPart(ir::Inst* inst);
-    [[nodiscard]] bool EmitFunnelShiftResult(ir::Inst* inst);
-    struct NarrowMaskedInput {
-        ir::Inst* extract{};
-        ir::Value source{};
-        u8 width{};
-
-        bool operator==(const NarrowMaskedInput&) const = default;
-    };
-    [[nodiscard]] std::optional<NarrowMaskedInput>
-    MatchNarrowMaskedInput(ir::Inst* consumer) const;
-    struct ShiftMaskedInput {
-        ir::Inst* shift{};
-        ir::Value source{};
-        u8 offset{};
-
-        bool operator==(const ShiftMaskedInput&) const = default;
-    };
-    [[nodiscard]] std::optional<ShiftMaskedInput>
-    MatchShiftMaskedInput(ir::Inst* consumer);
-    void PrepareNarrowExtractExtensions(ir::Block* block);
-    void PrepareNarrowFlagsInputs(ir::Block* block);
-    [[nodiscard]] std::optional<ir::Value>
-    MatchNarrowFlagsInput(ir::Inst* extract);
+    using NarrowExtractExtension = arm64::NarrowExtractExtension;
+    using NarrowMaskedInput = arm64::NarrowMaskedInput;
+    using ShiftMaskedInput = arm64::ShiftMaskedInput;
+    void ImportIntegerFlagPreparation();
+    const IntegerFlagPreparationPlan& IntegerFlagPreparation() const {
+        static const IntegerFlagPreparationPlan empty;
+        return gpr_plan->integer_flags ? *gpr_plan->integer_flags : empty;
+    }
     [[nodiscard]] ir::Value ResolveNarrowFlagsInput(ir::Value value,
                                                     ir::Inst* consumer);
-    struct NarrowComparison {
-        ir::Value left{};
-        std::optional<ir::Value> right{};
-        ir::Inst* immediate_load{};
-        u32 immediate{};
-        u8 width{};
-
-        bool operator==(const NarrowComparison&) const = default;
-    };
-    [[nodiscard]] bool IsNarrowZeroExtended(ir::Value value, u32 width) const;
-    [[nodiscard]] std::optional<NarrowComparison>
-    MatchNarrowCompare(ir::Inst* inst);
-    void PrepareNarrowCompares(ir::Block* block);
-    struct NarrowCarryFusion {
-        ir::Inst* carry_test{};
-        ir::Inst* carry_add{};
-        ir::Value value{};
-        std::vector<ir::Inst*> dead_inputs{};
-    };
-    [[nodiscard]] std::optional<NarrowCarryFusion>
-    MatchNarrowCarryFusion(ir::Inst* inst);
-    void PrepareNarrowCarryFusions(ir::Block* block);
-    struct PinnedMemorySource {
-        u16 target{};
-        u32 live_begin{};
-    };
-    struct PinnedMemoryAddress {
-        ir::Inst* memory{};
-        u16 target{};
-        s64 offset{};
-    };
-    [[nodiscard]] std::optional<PinnedMemoryAddress>
-    MatchPinnedMemoryAddress(ir::Inst* address) const;
-    [[nodiscard]] std::optional<PinnedMemorySource>
-    MatchPinnedMemorySource(ir::Value source) const;
-    [[nodiscard]] std::optional<u16>
-    MatchPinnedMemoryValue(ir::Inst* extract) const;
-    void PreparePinnedMemoryValues(ir::Block* block);
+    const NarrowCarryAction* NarrowCarryFor(ir::Inst* inst) const {
+        const auto found = IntegerFlagPreparation().integer.carries.find(inst);
+        return found == IntegerFlagPreparation().integer.carries.end() ? nullptr : &found->second;
+    }
+    const NarrowCompareAction* NarrowCompareFor(ir::Inst* inst) const {
+        const auto found = IntegerFlagPreparation().integer.comparisons.find(inst);
+        return found == IntegerFlagPreparation().integer.comparisons.end() ? nullptr : &found->second;
+    }
+    using PinnedMemoryAddress = GPRMemoryAddress;
     struct SpilledMemoryOperand {
         ir::Inst* consumer{};
         XRegister base{};
@@ -385,42 +272,13 @@ private:
 
     void PlacementPoint(const char* kind, u64 guest_pc);
 
-    struct BackedgeCarryRecipe {
-        bool canonical{};
-        u8 inverted{};
-        ir::Inst* load{};
-        ir::Inst* store{};
-        ir::Inst* marker{};
-    };
-
     struct BackedgeFlagsRecipe {
         bool optimized{true};
-        // dead_successor=true 是 region 单边 flags-dead 形态：热边目标在
-        // 任意观察点前完整覆写 flags，因此不需要跨块 recipe/双入口。
-        bool dead_successor{};
-        bool canonical_carry{};
-        bool self_is_then{};
-        ir::Location self_target{};
-        ir::Location cold_target{};
-        u8 carry_inverted{};
-        HostFlags requested{};
-        ir::Inst* polarity_load{};
-        ir::Inst* polarity_store{};
-        ir::Inst* final_save{};
-        ir::Inst* final_advance{};
-        struct DeferredOperand {
-            enum class Kind : u8 { None, Imm, HostGPR, Uniform } kind{};
-            u64 value{};
-            u8 offset{};
-
-            auto operator<=>(const DeferredOperand&) const = default;
-        };
-        // 严格窄 Sub 子集可在 cold edge 从架构家重读两个输入并重算 PF/AF，
-        // 不延长 SSA interval，也不让 recipe 穿过目标块。
-        bool defer_pfaf{};
-        u8 pfaf_width{};
-        DeferredOperand pfaf_left{};
-        DeferredOperand pfaf_right{};
+        const std::shared_ptr<const BackedgeFlagsPlan> plan_owner;
+        const BackedgeFlagsPlan& plan;
+        const HostFlags requested;
+        BackedgeFlagsRecipe(std::shared_ptr<const BackedgeFlagsPlan> owner, HostFlags mask)
+                : plan_owner(std::move(owner)), plan(*plan_owner), requested(mask) {}
         std::unique_ptr<Label> local_entry{std::make_unique<Label>()};
         std::unique_ptr<Label> external_entry{std::make_unique<Label>()};
         std::unique_ptr<Label> cold_exit{std::make_unique<Label>()};
@@ -429,15 +287,9 @@ private:
     };
 
     [[nodiscard]] std::unique_ptr<BackedgeFlagsRecipe>
-    RecipeBackedgeFlags(ir::Block* block);
-    [[nodiscard]] std::optional<BackedgeCarryRecipe> RecipeBackedgeCarry(
-            ir::Block* block, ir::Inst* final_save, ir::Inst* condition,
-            bool dead_successor);
+    ImportBackedgeFlagsRecipe();
     [[nodiscard]] bool CanonicalCarryEnabled() const;
     [[nodiscard]] bool TargetKillsIncomingFlags(ir::Location target) const;
-    [[nodiscard]] bool RecipeRegionBranchPFAF(BackedgeFlagsRecipe& recipe,
-                                            ir::Inst* producer) const;
-    [[nodiscard]] bool ReproveRegionBranchPFAF() const;
     [[nodiscard]] bool RegionBranchPFAFActive(ir::Inst* producer) const;
     [[nodiscard]] bool EmitBackedgeFlagsTerminal(const ir::Terminal& terminal);
     void EmitBackedgeMaterialize(const BackedgeFlagsRecipe& recipe);
@@ -475,57 +327,11 @@ private:
                             ir::Value operand,
                             ir::Value carry);
 
-    enum class UnalignedAtomicFallbackKind : u8 {
-        CompareAndSwap,
-        Exchange,
-        FetchAdd,
-    };
-
-    struct UnalignedAtomicFallbackKey {
-        UnalignedAtomicFallbackKind kind{};
-        ir::ValueType type{};
-        u8 address{};
-        u8 result{};
-        u8 first{};
-        u8 second{};
-
-        auto operator<=>(const UnalignedAtomicFallbackKey&) const = default;
-    };
-
-    [[nodiscard]] std::optional<UnalignedAtomicFallbackKey>
-    GetUnalignedAtomicFallbackKey(ir::Inst* inst);
-    void PrepareUnalignedAtomicFallbacks(std::span<ir::Block* const> blocks);
     [[nodiscard]] Label* GetUnalignedAtomicFallback(ir::Inst* inst);
     void EmitUnalignedAtomicFallbacks();
     void EmitUnalignedAtomicFallback(const UnalignedAtomicFallbackKey& key);
 
-    struct PseudoFlags {
-        ir::Flags set{};
-        ir::Flags clear{};
-        bool branch_only{};
-
-        [[nodiscard]] bool Null() const {
-            return set == ir::Flags::None && clear == ir::Flags::None &&
-                   !branch_only;
-        }
-
-        [[nodiscard]] bool IsNZCV() const {
-            return True(set & ir::Flags::NZCV);
-        }
-
-        [[nodiscard]] bool IsCV() const {
-            return True(set & ir::Flags::CV) && False(set & ir::Flags::NZ) && False(clear & ir::Flags::NZ);
-        }
-
-        [[nodiscard]] bool IsNZ_ZeroCV() const {
-            return True(set & ir::Flags::NZ) && True(clear & ir::Flags::CV);
-        }
-
-        [[nodiscard]] bool NeedsResultBits() const {
-            return True(set & (ir::Flags::Parity |
-                               ir::Flags::AuxiliaryCarry));
-        }
-    };
+    using PseudoFlags = PseudoFlagsDemand;
 
     void Translate(ir::Inst *inst);
     void PublishPendingStaticLocation();
@@ -533,33 +339,43 @@ private:
     // Terminals
     void EmitTerminal(const ir::Terminal &terminal,
                       LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional,
-                      DirectLinkFlagsBypass flags_bypass = {});
+                      DirectLinkFlagsBypass flags_bypass = {},
+                      bool canonical_transfer = false);
     void EmitDispatcherTerminal(LinkSiteKind direct_link_kind,
                                 DirectLinkFlagsBypass flags_bypass,
                                 bool external_edge,
                                 bool call_exit);
     [[nodiscard]] bool CanBypassTerminalFlagsMerge(
             const ir::Terminal& terminal) const;
-    void PrepareRegionEdges(ir::HIRFunction* function);
-    void CollectRegionTargets(const ir::Terminal& terminal,
-                              std::vector<u64>& targets) const;
-    [[nodiscard]] std::optional<ir::Location>
-    RegionLeafTarget(const ir::Terminal& terminal) const;
+    bool ImportRegionPreparation(ir::Block* block, ir::HIRFunction* function);
+    void ReportRegionEdges();
+    const RegionPreparationPlan& RegionPlan() const {
+        return region_plan_owner ? *region_plan_owner : EmptyRegionPreparationPlan();
+    }
+    bool RegionEdgesActive() const {
+        return region_function_mode && RegionPlan().active;
+    }
+    const auto& RegionBlockMap() const { return RegionPlan().blocks; }
+    const auto& RegionCycleEdges() const { return RegionPlan().cycle_edges; }
+    const auto& CanonicalTerminalEntries() const {
+        return canonical_entries_active ? RegionPlan().canonical_terminal_entries
+                                        : EmptyRegionPreparationPlan().canonical_terminal_entries;
+    }
     [[nodiscard]] bool IsRegionInternalEdge(ir::Location target) const;
     [[nodiscard]] bool IsRegionCycleEdge(ir::Location target) const;
     [[nodiscard]] bool HasRegionCycleEdgeFromCurrent() const;
     [[nodiscard]] bool IsDirectCycleCutEdge(ir::Location source,
                                             ir::Location target) const;
     [[nodiscard]] bool IsDirectCycleCutEdge(ir::Location target) const;
-    [[nodiscard]] u32 CountCycleExitCandidates(
-            std::span<ir::Block* const> blocks) const;
+    [[nodiscard]] u32 CountCycleExitCandidates() const;
     [[nodiscard]] Label* GetDirectCycleExit(ir::Location target);
     [[nodiscard]] Label* GetExternalCycleExit(ir::Location target);
     [[nodiscard]] bool CanUseRegionSuccessorLayout(ir::Location target) const;
     void EmitRegionEdge(ir::Location target,
                         bool fallthrough = false,
                         bool record_edge_counters = true,
-                        bool commit_flags = true);
+                        bool commit_flags = true,
+                        bool poll_request = true);
     enum class RegionFlagsJoinMode : u8 {
         Canonical,
         Deferred,
@@ -592,10 +408,12 @@ private:
             const RegionFlagsJoinRecipe& recipe);
     void EmitRegionFlagsCanonicalStubs();
     [[nodiscard]] bool EmitRegionIf(const ir::terminal::If& terminal,
-                                    bool allow_fallthrough);
+                                    bool allow_fallthrough,
+                                    bool canonical_transfer = false);
     [[nodiscard]] bool BlockIsFlagsTransparent(ir::Block* block) const;
     [[nodiscard]] bool EmitRegionCondition(const ir::terminal::Condition& terminal,
-                                           bool allow_fallthrough);
+                                           bool allow_fallthrough,
+                                           bool canonical_transfer = false);
     [[nodiscard]] bool IsCanonicalTerminalEntry() const;
     [[nodiscard]] bool EmitCanonicalTerminalEdge(ir::Location target);
     [[nodiscard]] bool HasSelfEdge(const ir::Terminal& terminal) const;
@@ -603,10 +421,14 @@ private:
     [[nodiscard]] Label* LocalBranchTarget(ir::Location target) const;
     void EmitBackedgeExitStub();
     void EmitDirectCycleExitStubs();
-    void EmitCycleExitReasonTail(Label* reason);
+    void EmitCycleExitReasonTail(Label* reason, bool allow_outline = true);
+    [[nodiscard]] Label* GetTerminalRequestExit();
+    void EmitTerminalRequestExitStub();
     void RecordExitPollFault(std::optional<JitContext::FaultRange> fault,
-                             Label* recovery);
-    void ResolveExitPollFaults(Label* recovery, ir::Location resume_location);
+                             Label* recovery,
+                             std::optional<ir::Location> guest_start = std::nullopt);
+    void ResolveExitPollFaults(Label* recovery, ir::Location resume_location,
+                               std::optional<u32> frame_recovery = std::nullopt);
     void RecordDeferredFault(JitContext::FaultRange fault,
                              Label* recovery,
                              FaultRecoveryKind recovery_kind);
@@ -628,39 +450,32 @@ private:
     bool RecordLocalCondition(ir::Inst *inst, ir::Cond cond);
     [[nodiscard]] std::optional<Condition> LocalConditionFor(ir::Value value) const;
     [[nodiscard]] bool LaterNeedsHostPstate(ir::Inst* from) const;
-    [[nodiscard]] bool CarryCanStayInPstate(ir::Inst* test) const;
+    bool PstateAvailable(ir::Inst* test, ir::Flags flag) const {
+        return gpr_plan->consumers && gpr_plan->consumers->pstate && True(gpr_plan->consumers->pstate->At(test) & flag);
+    }
+    ir::Inst* SoleConsumer(ir::Inst* value) const {
+        if (!gpr_plan->consumers) return nullptr;
+        const auto found = gpr_plan->consumers->sole_users.find(value);
+        return found == gpr_plan->consumers->sole_users.end() ? nullptr : found->second;
+    }
     bool FoldCcFromCarryTest(ir::Inst* test_flags);
-    [[nodiscard]] static bool IsCompactFCmp(ir::Value value);
+    [[nodiscard]] bool IsCompactFCmp(ir::Value value) const;
     [[nodiscard]] bool CanUseCompactFCmpCarrier(ir::Inst* fcmp) const;
-    [[nodiscard]] ir::Inst* RawFCmpCondition(ir::Inst* fcmp) const;
+    [[nodiscard]] ir::Inst* RawFCmpCondition(ir::Inst* fcmp, ir::Inst* consumer = nullptr) const;
 
-    struct DeadEdgeIntegerBranch {
-        ir::Inst* producer{};
-        ir::Inst* condition{};
-        ir::Flags required{};
-        ir::Cond raw_condition{};
-        std::optional<u16> zero_target{};
-        bool zero_is_64{};
-        std::unordered_set<ir::Inst*> discarded{};
-    };
-
-    void PrepareDeadEdgeIntegerBranch(ir::Block* block);
+    void ImportIntegerBranchPlan();
+    const DeadEdgeIntegerBranch* DeadEdgePlan() const {
+        return gpr_plan->integer_branch ? &gpr_plan->integer_branch->edge : nullptr;
+    }
+    const DeadNarrowImmediateBranch* DeadNarrowPlan() const {
+        return gpr_plan->integer_branch && gpr_plan->integer_branch->narrow
+                ? &*gpr_plan->integer_branch->narrow : nullptr;
+    }
     [[nodiscard]] bool IsDeadEdgeIntegerBranchProducer(ir::Inst* inst) const;
     [[nodiscard]] std::optional<ir::Cond>
     DeadEdgeIntegerBranchCondition(ir::Inst* inst) const;
     bool EmitDeadEdgeZeroBranch(ir::Value condition, Label* label,
                                 bool on_true);
-
-    struct DeadNarrowImmediateBranch {
-        ir::Inst* producer{};
-        ir::Inst* immediate_load{};
-        u64 immediate{};
-        ir::Flags required{};
-        u8 width{};
-    };
-    void PrepareDeadNarrowImmediateBranch();
-    [[nodiscard]] std::optional<DeadNarrowImmediateBranch>
-    MatchDeadNarrowImmediateBranch(ir::Inst* inst) const;
 
     // Merge pending guest flags kept in host NZCV into the flags register.
     // B0 tags the existing sequence only; the tags never affect emission.
@@ -749,10 +564,11 @@ private:
     bool TryEmitSharedHostCall(const ir::Lambda& lambda);
     bool TryEmitSharedHostBranch(const ir::Lambda& lambda);
     void EmitHostCallThunks();
+    ir::Inst* PairSecondaryResult(ir::Inst* inst, ir::OpCode secondary) const;
     void EmitPreserveAllPairCall(ir::Inst* inst,
                                  VAddr target,
-                                 const std::vector<ir::DataClass>& args,
-                                 ir::OpCode secondary,
+                                 const std::array<ir::DataClass, 3>& args,
+                                 ir::Inst* secondary,
                                  ir::HostRegisterEffect host_registers =
                                          ir::HostRegisterEffect::MayTouchSIMD);
     void SpillStaticFPRUniforms();
@@ -838,6 +654,11 @@ private:
     struct PendingExitPollFault {
         size_t metadata_index{};
         Label* recovery{};
+        bool publish_frame{};
+        // Terminal polls carry their own resume location (the poll
+        // target); Resolve must not overwrite it with the shared
+        // stub resume used for cycle polls.
+        bool guest_final{};
     };
 
     struct BlockColdPathRecipe {
@@ -872,6 +693,7 @@ private:
         std::unique_ptr<Label> backedge_exit_label{};
         bool backedge_exit_referenced{};
         std::map<u64, std::unique_ptr<Label>> direct_cycle_exits{};
+        std::unique_ptr<Label> terminal_request_exit{};
         u32 direct_cycle_cut_edges{};
         std::unique_ptr<BackedgeFlagsRecipe> backedge_flags_recipe{};
         std::unique_ptr<Label> loop_hoist_body_entry{};
@@ -896,8 +718,6 @@ private:
     [[nodiscard]] PseudoFlags GetPseudoFlags(ir::Inst *inst);
 
     [[nodiscard]] bool MatchMemoryOffsetCase(ir::Inst *inst);
-    [[nodiscard]] std::optional<u64> MatchInductionImmediate(ir::Inst *inst);
-    void RecipeInductionTies(ir::Block *block);
 
     void FlushFlags();
 
@@ -918,8 +738,7 @@ private:
     void InvalidateFlagsToken();
     void EmitSplitFlagsPublish();
     [[nodiscard]] bool TryEmitCycleExitFlags();
-    [[nodiscard]] bool MatchCompoundLogicalClear(ir::Inst* inst) const;
-    [[nodiscard]] bool MatchCompoundZeroLogicalClear(ir::Inst* inst) const;
+    [[nodiscard]] ir::Inst* PlannedCompoundProducer(ir::Inst* inst) const;
     void ParkFlagsHot();
     void UnparkFlagsHot();
     void EmitFlagsPublishedVeneer(ir::Block* block);
@@ -927,11 +746,6 @@ private:
     JitContext &context;
     MacroAssembler &masm;
     ir::Block *cur_block{};
-    GuestStateMap guest_state_map{};
-    PinnedGPRAllocation pinned_gprs;
-    // Load/writeback combining is target lowering, separate from placement.
-    std::map<ir::Inst*, PinnedLoadUpdate> pinned_load_updates{};
-    std::map<ir::Inst*, PinnedLoadUpdate> pinned_load_update_instructions{};
     ir::Inst *cur_instr{};
     ir::Inst *terminal_body_inst{};
     TerminalLocationPublication terminal_location_publication{};
@@ -939,24 +753,36 @@ private:
     BitVector disable_instructions{};
     std::map<ir::Inst *, Label> local_labels{};
     std::map<ir::Inst *, Condition> local_conditions{};
-    std::unordered_set<ir::Inst*> checked_pin_zext32_publications{};
-    std::map<ir::Inst*, NarrowExtractExtension> narrow_extract_extensions{};
-    std::map<ir::Inst*, ir::Inst*> fused_narrow_extracts{};
-    std::map<ir::Inst*, ir::Inst*> fused_narrow_extract_shifts{};
-    std::map<ir::Inst*, FunnelShiftRecipe> funnel_shifts{};
-    std::map<ir::Inst*, ir::Inst*> funnel_shift_parts{};
-    std::map<ir::Inst*, ir::Inst*> funnel_shift_parity_producers{};
-    std::map<ir::Inst*, NarrowMaskedInput> narrow_masked_inputs{};
-    std::map<ir::Inst*, ir::Inst*> fused_narrow_masked_extracts{};
-    std::map<ir::Inst*, ShiftMaskedInput> shift_masked_inputs{};
-    std::map<ir::Inst*, ir::Inst*> fused_shift_masked_shifts{};
-    std::map<ir::Inst*, ScalarFPRPublication> scalar_load_fpr_fusions{};
-    std::map<ir::Inst*, ScalarFPRPublication> scalar_value_fpr_fusions{};
-    ResidentScalarFPRAnalysis resident_scalar_fpr_analysis{};
-    RawCarryBranchAnalysis raw_carry_branch_analysis{};
-    ScalarFPRLiveness scalar_fpr_liveness{};
-    ScalarCopyAnalysis scalar_copy_analysis{};
-    bool induct_tie{false};
+    void ImportGPRBlock(ir::Block* block);
+    const GPRResidenceFacts& ActiveGPRFacts() const {
+        static const GPRResidenceFacts empty;
+        return gpr_plan->pinned ? gpr_plan->pinned->Facts() : empty;
+    }
+    bool IsGPRZeroExtendElided(ir::Inst* inst) const { return ActiveGPRFacts().zero_extends.contains(inst); }
+    bool IsGPRSignExtendElided(ir::Inst* inst) const { return ActiveGPRFacts().sign_extends.contains(inst); }
+    std::optional<u16> GPRLowViewHome(ir::Inst* inst) const {
+        return inst ? context.GetAllocation().GPRLowView(inst->Id()) : std::nullopt;
+    }
+    bool HasGPRLowView(ir::Inst* inst) const { return GPRLowViewHome(inst).has_value(); }
+    std::optional<FixedGPRValue> FixedGPRHomeForUse(ir::Value value, const ir::Inst* consumer) const {
+        return value.Defined() && consumer ? context.GetAllocation().GPRUseHome(value.Id(), consumer->Id())
+                                          : std::nullopt;
+    }
+    std::shared_ptr<const GPRBlockPlan> gpr_plan_owner;
+    const GPRBlockPlan* gpr_plan{&EmptyGPRBlockPlan()};
+    // Borrowed from gpr_plan's immutable consumer storage after block import.
+    const NarrowBitPlan& NarrowBits() const {
+        static const NarrowBitPlan empty;
+        return gpr_plan && gpr_plan->narrow_bits ? *gpr_plan->narrow_bits : empty;
+    }
+    const ScalarFPRPublicationPlan& ScalarPublicationPlan() const {
+        static const ScalarFPRPublicationPlan empty;
+        return gpr_plan && gpr_plan->scalar_fpr ? *gpr_plan->scalar_fpr : empty;
+    }
+    const ScalarPreparationPlan& ScalarPreparation() const {
+        static const ScalarPreparationPlan empty;
+        return gpr_plan && gpr_plan->scalar_preparation ? *gpr_plan->scalar_preparation : empty;
+    }
     // Default-on exact policy: keep the common path to the host FP operation
     // plus one combined result-NaN test, and defer the x86 payload/indefinite
     // repair to shared block-local stubs. =0 restores the legacy inline
@@ -975,9 +801,6 @@ private:
     bool shift_imm_fast{true};
     bool direct_cycle_latch{false};
     bool backedge_latch{false};
-    bool backedge_flags{false};
-    bool region_branch_flags{false};
-    bool region_edges_active{false};
     bool execution_trace_enabled{false};
     int execution_trace_rsp_reg{-1};
     bool cur_block_is_call{};
@@ -1009,7 +832,9 @@ private:
     std::unique_ptr<Label> backedge_exit_label{};
     bool backedge_exit_referenced{};
     std::map<u64, std::unique_ptr<Label>> direct_cycle_exits{};
+    std::unique_ptr<Label> terminal_request_exit{};
     std::unique_ptr<Label> cycle_exit_reason{};
+    HostFlags terminal_bypass_nzcv{};
     bool share_cycle_exit_reason{};
     u32 direct_cycle_cut_edges{};
     std::unique_ptr<BackedgeFlagsRecipe> backedge_flags_recipe{};
@@ -1056,23 +881,14 @@ private:
             FlagsRegsAuditEdgeKind::Dispatcher};
     bool flags_audit_strict_advance{};
     bool flags_audit_cold{};
-    std::unordered_set<u64> region_blocks{};
-    std::map<u64, ir::Block*> region_block_map{};
-    std::set<std::pair<u64, u64>> region_cycle_edges{};
-    std::unordered_set<u64> canonical_terminal_entries{};
+    std::shared_ptr<const RegionPreparationPlan> region_plan_owner;
+    bool region_function_mode{}, canonical_entries_active{};
+    bool current_flags_transparent{};
     std::optional<u64> next_region_block{};
     u64 placement_unit_pc{};
     bool translating_function{};
 
     struct FlagEmissionState {
-        std::unordered_set<ir::Inst*> boolean_selects{};
-        std::unordered_map<ir::Inst*, ir::Cond> direct_cond_selects{};
-        std::map<ir::Inst*, ir::Value> narrow_flags_inputs{};
-        std::map<ir::Inst*, NarrowComparison> narrow_compares{};
-        std::map<ir::Inst*, NarrowCarryFusion> narrow_carry_fusions{};
-        std::optional<DeadEdgeIntegerBranch> dead_edge_integer_branch{};
-        std::optional<DeadNarrowImmediateBranch>
-                dead_narrow_immediate_branch{};
         ir::Flags flags_set{};
         ir::Flags flags_clear{};
         bool save_in_nzcv{true};
@@ -1094,8 +910,14 @@ private:
     } flag_state;
 
     struct MemoryEmissionState {
-        std::map<ir::Inst*, u16> pinned_memory_values{};
         std::map<ir::Inst*, SpilledMemoryOperand> spilled_memory_operands{};
+        // Statically proven residues (mod 8) of pinned guest-register
+        // homes: seeded only from immediate-constant roots and maintained
+        // across home rewrites by TrackHomeAlignment. A dynamic alignment
+        // check does NOT seed this map: its unaligned fallback rejoins the
+        // same continuation, so reaching later code proves nothing about
+        // the address bits. Cleared per block and at local-label joins.
+        std::map<u32, u32> home_alignment_mod8{};
         // True when Config::memory_base / page_table is set: every guest memory
         // access goes through the pt bias register (guest addr + pt = host addr).
         bool use_memory_base{false};
@@ -1123,7 +945,6 @@ private:
         std::vector<FaultMetadata> fault_metadata{};
         std::vector<PendingExitPollFault> pending_exit_poll_faults{};
         std::vector<PendingDeferredFault> pending_deferred_faults{};
-        std::map<UnalignedAtomicFallbackKey, u32> unaligned_atomic_fallback_counts{};
         std::map<UnalignedAtomicFallbackKey, std::unique_ptr<Label>>
                 unaligned_atomic_fallbacks{};
     } memory_state;

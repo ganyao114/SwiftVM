@@ -105,6 +105,7 @@ std::vector<std::string> Emit(SpillPublicationBlock input) {
             .backend_isa = kArm64,
     };
     AddressSpace address_space{config};
+    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(input.block.get());
@@ -155,7 +156,7 @@ TEST_CASE("adjacent spilled values publish in their pinned GPR") {
     REQUIRE(Contains(add, "add w22"));
 }
 
-TEST_CASE("Single-home preallocation preserves spill choices under pressure", "[fixed-gpr]") {
+TEST_CASE("Single-home constraints are honored by the first allocation under pressure", "[fixed-gpr]") {
     for (auto producer : {AdjacentProducer::Immediate, AdjacentProducer::Memory, AdjacentProducer::Add}) {
         auto input = MakeAdjacentSpillPublicationBlock(producer);
         const GPRSMask gprs{~((1u << 6) - 1u)};
@@ -165,11 +166,11 @@ TEST_CASE("Single-home preallocation preserves spill choices under pressure", "[
         RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &baseline, false);
         RegAlloc optimized{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &optimized, false);
-        REQUIRE_FALSE(optimized.HasFixedGPRDefinition(input.result.Id()));
-        REQUIRE(optimized.ValueType(input.result) == RegAlloc::MEM);
-        for (swift::u32 id = 0; id < baseline.MapCount(); ++id) {
-            INFO("allocation id " << id);
-            REQUIRE(optimized.Mapping(id) == baseline.Mapping(id));
-        }
+        REQUIRE(optimized.HasFixedGPRDefinition(input.result.Id()));
+        REQUIRE(optimized.ValueType(input.result) == RegAlloc::GPR);
+        REQUIRE(optimized.ValueGPR(input.result).id == 22);
+        REQUIRE(optimized.SpillCount() <= baseline.SpillCount());
+        REQUIRE(optimized.TargetReplayCount() == 0);
+        REQUIRE_NOTHROW(arm64::VerifyFixedGPRConstraints(input.block.get(), optimized, FeatureSet{}));
     }
 }

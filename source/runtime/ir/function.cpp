@@ -15,6 +15,14 @@ void Function::AddBlock(ir::Block* block) {
     blocks.insert(*block);
 }
 
+bool Function::DetachBlock(ir::Block* block) {
+    if (!block) return false;
+    auto it = blocks.find(*block);
+    if (it == blocks.end() || it.operator->() != block) return false;
+    blocks.erase(it);
+    return true;
+}
+
 bool Function::TakeBlocksFrom(Function& region) {
     const auto placeholder = [](const ir::Block& block) {
         return block.GetInstList().empty() && !block.HasTerminal();

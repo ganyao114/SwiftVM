@@ -4,6 +4,7 @@
 #include <vector>
 #include "runtime/backend/context.h"
 #include "runtime/backend/link_manager.h"
+#include "runtime/backend/retirement_control.h"
 #include "runtime/include/config.h"
 
 namespace swift::runtime::backend::arm64 {
@@ -15,6 +16,7 @@ struct RegionLinkContext {
     const CodeRegion* region{};
     void* return_host{};
     void* dispatcher{};
+    std::shared_ptr<RetirementControl> retirement_control;
 };
 
 // Cold AAPCS64 helper called by the generated trampoline.

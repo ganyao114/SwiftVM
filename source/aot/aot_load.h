@@ -12,6 +12,7 @@
 #pragma once
 
 #include <string>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 #include "aot/aot_artifact.h"
@@ -23,10 +24,13 @@ class AddressSpace;
 
 namespace swift::aot {
 
+class InstalledCodeMap;
+
 struct LoadReport {
     u32 units_installed{};
     u32 dispatch_slots{};
     u64 code_bytes{};
+    std::shared_ptr<InstalledCodeMap> mapping;
 };
 
 // Install `artifact` into `address_space`. `guest_memory_base`/`mask` describe
@@ -50,8 +54,11 @@ class SymbolIndex {
 public:
     bool Build(const std::string& artifact_path,
                const AotImage& artifact,
-               std::string& error);
+               std::string& error,
+               const std::shared_ptr<InstalledCodeMap>& installed = {});
     // Host address of `name`, or null when it is not a rewritten STT_FUNC.
+    // A raw caller must hold an SMC ExecutionScope from before lookup until
+    // the generated call returns; a successful lookup alone does not pin code.
     [[nodiscard]] void* Lookup(const std::string& name) const;
     [[nodiscard]] std::size_t Size() const { return by_name.size(); }
 
@@ -63,10 +70,13 @@ private:
                                LoadReport&,
                                std::string&);
     std::unordered_map<std::string, u64> by_name;  // name -> artifact code offset
+    std::shared_ptr<InstalledCodeMap> mapping;
 };
 
 // Runtime mapping from artifact code offset to the host address the unit was
 // installed at. Populated by InstallArtifact; consulted by SymbolIndex users.
+// Raw execution requires the same SMC execution scope as SymbolIndex::Lookup.
 void* ResolveCodeOffset(u64 offset);
+void* ResolveCodeOffset(const std::shared_ptr<InstalledCodeMap>& mapping, u64 offset);
 
 }  // namespace swift::aot

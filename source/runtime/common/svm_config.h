@@ -61,7 +61,7 @@ namespace swift::runtime {
     X(sse_afp_nan, true) \
     X(sse_afp_minmax, false) \
     X(mem_hostbase_fold, true) \
-    X(induct_tie, true) \
+ X(rcpc_fault_emulate, true) \
     X(scratch_precise, true) \
     X(fpr_scratch_precise, true) \
     X(fpr_ipv_reclaim, true) \
@@ -70,7 +70,6 @@ namespace swift::runtime {
     X(ra_coalesce_live, true) \
     X(ra_width_chain, false) \
     X(ra_width_chain_long, true) \
-    X(const_addr_cache, true) \
     X(indirect_l1, true) \
     X(shadow_lean, true) \
     X(flag_full_elim, false) \
@@ -209,7 +208,7 @@ struct FeatureOverrides {
     X(bool, sse_afp_nan, "SVM_SSE_AFP_NAN", DefaultOn, true, "AFP NaN policy 请求；缺省 ON，=0 回退，仍受 host AFP 限制；原 translator/x86/translator.cpp:342") \
     X(bool, sse_afp_minmax, "SVM_SSE_AFP_MINMAX", NonZero, false, "AFP/AH scalar SSE MIN/MAX 单指令 lowering；非 0 开，缺省 OFF，依赖有效 SVM_SSE_AFP_NAN；原 translator_alu.cpp") \
     X(bool, mem_hostbase_fold, "SVM_MEM_HOSTBASE_FOLD", DefaultOn, true, "host-base fold；缺省 ON，=0 回退；原 translator/x86/translator.cpp:728") \
-    X(bool, induct_tie, "SVM_INDUCT_TIE", DefaultOn, true, "induction tie；缺省 ON，=0 回退；原 register_alloc_pass.cpp:98") \
+ X(bool, rcpc_fault_emulate, "SVM_RCPC_FAULT_EMULATE", NonZero, true, "Adaptive RCpc fault emulation: unchecked emission, SIGBUS emulation, per-site fallback to checked emission after 128 faults; default ON when a guest-map oracle is installed, =0 forces checked emission") \
     X(bool, region_edges, "SVM_REGION_EDGES", DefaultOn, true, "region edge 内部化（bounded64）；缺省 ON，=0 回退；原 translator/x86/translator.cpp:730") \
     X(bool, exec_trace, "SVM_EXEC_TRACE", NonZero, false, "执行 trace 探针；非 0 开，缺省 OFF；原 runtime.cpp:80/jit_context.cpp:78") \
     X(bool, scratch_precise, "SVM_SCRATCH_PRECISE", DefaultOn, true, "Add/Sub 精确 scratch 计费；缺省 ON，=0 回退；原 reg_alloc.cpp:92") \
@@ -220,7 +219,6 @@ struct FeatureOverrides {
     X(bool, ra_coalesce_live, "SVM_RA_COALESCE_LIVE", DefaultOn, true, "发布后仍活的 SSA 绑到 pin 家；缺省 ON，=0 回退 last-use W-alpha；同 pin 再写或 caller-saved helper 拒绝") \
     X(bool, ra_width_chain, "SVM_RA_WIDTH_CHAIN", NonZero, false, "unit 内多节点整数宽度 direct 链合并；非 0 开，缺省 OFF；原 register_alloc_pass.cpp") \
     X(bool, ra_width_chain_long, "SVM_RA_WIDTH_CHAIN_LONG", DefaultOn, true, "unit 内长 Add/Xor 发布链的低 32 位 ownership 合并；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
-    X(bool, const_addr_cache, "SVM_CONST_ADDR_CACHE", DefaultOn, true, "unit 内同页绝对地址共享 guest page base；缺省 ON，=0 回退；原 register_alloc_pass.cpp") \
     X(bool, indirect_l1, "SVM_INDIRECT_L1", DefaultOn, true, "间接出口块内 L1 首槽快查，含逐出口信号 safepoint；缺省 ON，=0 回退；原 jit_context.cpp") \
     X(bool, shadow_lean, "SVM_SHADOW_LEAN", DefaultOn, true, "RSB frame 复用 L2 slot，缩短 push/pop；缺省 ON，=0 回退；原 jit_context.cpp") \
     X(std::string, arm64_lrcpc_override, "SVM_ARM64_LRCPC", RawString, "", "RCpc host 特征 override；仅明确 0/1 生效，缺省或其他值不改探测；原 translator/x86/translator.cpp:315") \
@@ -287,7 +285,10 @@ struct FeatureOverrides {
     X(bool, swift_fuzz_trace, "SWIFT_FUZZ_TRACE", Presence, false, "x86 fuzz trace；变量存在即开；原 x86_fuzz.cpp:769") \
     X(bool, flags_regs_audit, "SVM_FLAGS_REGS_AUDIT", NonZero, false, "W-beta flags 寄存器化纯计数审计；非 0 开，缺省 OFF；零发码改动") \
     X(bool, flags_regs, "SVM_FLAGS_REGS", NonZero, true, "P0-B lazy token ABI(x12 last_result)；缺省 ON，=0 精确回到 x26 急切打包；出口发布，不隐含 latch；A 类，不进 FeatureSet") \
-    X(bool, ra_fixed_class, "SVM_RA_FIXED_CLASS", NonZero, false, "W-gamma guest GPR fixed register class；非 0 开，缺省 OFF；需 SVM_X86_PIN_EXT=3")
+    X(bool, ra_fixed_class, "SVM_RA_FIXED_CLASS", NonZero, false, "W-gamma guest GPR fixed register class；非 0 开，缺省 OFF；需 SVM_X86_PIN_EXT=3") \
+    X(bool, builder_uniform, "SVM_BUILDER_UNIFORM", NonZero, true, "SB1 decode-time uniform load forwarding in ir::Assembler; default ON, =0 disables; A-class, not in FeatureSet") \
+    X(bool, bound_decode, "SVM_BOUND_DECODE", NonZero, true, "bound-backend decode: frontend may use backend facts (pin map, encodability) at append time when the unit targets the arm64 JIT; default ON, =0 disables; A-class, not in FeatureSet") \
+    X(bool, verify_plan, "SVM_VERIFY_PLAN", NonZero, false, "full GPR plan audit (fixed constraints, dominators, use locations); width certificates and flags-only spill collection always run; default OFF")
 
 struct SvmConfig {
 #define SVM_DECLARE_FIELD(type, field, name, parse, default_value, source_comment) \

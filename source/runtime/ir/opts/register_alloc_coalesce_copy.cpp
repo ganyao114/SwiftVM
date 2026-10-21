@@ -314,6 +314,11 @@ void CoalesceLow32CopyChains(
         }
 
         auto source = ResolveBitCastSource(bridge.GetArg<Value>(0));
+        // A target-precoloured definition is a real writer in its declared
+        // guest home. Turning it into a view of another register would also
+        // invalidate the publication already coalesced by initial allocation.
+        if (const auto* fixed = reg_alloc->FixedGPRDefinitionAt(bridge.Id());
+            fixed && !fixed->preserved) continue;
         if (!uses_stay_in_block(source)) {
             continue;
         }

@@ -53,6 +53,7 @@ void CheckCoalescingContract(OpCode opcode, bool live) {
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
     REQUIRE(alloc.IsHostWriteCoalesced(publication->Id()));
     REQUIRE(alloc.ValueGPR(result).id == 19);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     REQUIRE_NOTHROW(translator.Translate(block.get()));

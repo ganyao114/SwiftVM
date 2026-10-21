@@ -62,11 +62,52 @@ public:
     constexpr Imm(s64 value) : type{ValueType::S64}, imm_s64{value} {}
     constexpr Imm(u64 value, ValueType size) : type{size}, imm_u64{value} {}
 
-    [[nodiscard]] ValueType GetType() const;
-    [[nodiscard]] bool IsSigned() const;
-    [[nodiscard]] bool IsNegate() const;
-    [[nodiscard]] u64 Get() const;
-    [[nodiscard]] s64 GetSigned() const;
+    [[nodiscard]] ValueType GetType() const { return type; }
+    [[nodiscard]] bool IsSigned() const {
+        return type >= ValueType::S8 && type <= ValueType::S64;
+    }
+    [[nodiscard]] bool IsNegate() const {
+        return IsSigned() && GetSigned() < 0;
+    }
+    [[nodiscard]] u64 Get() const {
+        switch (type) {
+            case ValueType::U8:
+                return imm_u8;
+            case ValueType::U16:
+                return imm_u16;
+            case ValueType::U32:
+                return imm_u32;
+            case ValueType::U64:
+                return imm_u64;
+            case ValueType::S8:
+                return static_cast<u8>(imm_s8);
+            case ValueType::S16:
+                return static_cast<u16>(imm_s16);
+            case ValueType::S32:
+                return static_cast<u32>(imm_s32);
+            case ValueType::S64:
+                return static_cast<u64>(imm_s64);
+            default:
+                return 0;
+        }
+    }
+    [[nodiscard]] s64 GetSigned() const {
+        if (!IsSigned()) {
+            return static_cast<s64>(Get());
+        }
+        switch (type) {
+            case ValueType::S8:
+                return imm_s8;
+            case ValueType::S16:
+                return imm_s16;
+            case ValueType::S32:
+                return imm_s32;
+            case ValueType::S64:
+                return imm_s64;
+            default:
+                return 0;
+        }
+    }
 
 private:
     ValueType type{ValueType::VOID};
@@ -97,12 +138,19 @@ public:
 
     [[nodiscard]] Value SetType(ValueType type);
 
-    [[nodiscard]] Value SetCastType(ValueType type);
+    [[nodiscard]] Value SetCastType(ValueType type) {
+        ASSERT(Def());
+        cast_type = type;
+        return *this;
+    }
+
+    // A type view belongs to a use edge, not to its canonical definition.
+    [[nodiscard]] Value WithDefinition(Inst* definition) const;
 
     [[nodiscard]] ValueType Type() const;
 
-    bool operator==(const Value& rhs) const;
-    bool operator!=(const Value& rhs) const;
+    bool operator==(const Value& rhs) const { return inst == rhs.inst; }
+    bool operator!=(const Value& rhs) const { return !(rhs == *this); }
 
     void Use() const;
     void UnUse() const;
@@ -534,7 +582,7 @@ public:
 
     explicit Operand(const Value& left);
 
-    [[nodiscard]] Op GetOp() const;
+    [[nodiscard]] Op GetOp() const { return op; }
 
     [[nodiscard]] Type GetLeft() const { return left; }
 

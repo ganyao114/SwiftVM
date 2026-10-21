@@ -25,6 +25,9 @@ public:
 
     explicit Trampolines(const Config& config,
                          const FeatureSet& features = FeatureSet{});
+    ~Trampolines() override;
+
+    [[nodiscard]] MemMap::ReleaseResult ReleaseAfterQuiescence();
 
     virtual std::optional<CallHost> GetCallHost(HostFunction* func, ISA frontend);
 
@@ -43,6 +46,8 @@ public:
     [[nodiscard]] FPRSMask GetFPRRegs() const { return fpr_regs; }
 
 protected:
+    virtual void RevokeHostCallAliases() {}
+    bool release_started{};
     bool built = false;
     const Config& config;
     CodeCache code_cache;
@@ -55,6 +60,10 @@ protected:
     GPRSMask fpr_regs{};
     std::shared_mutex lock{};
     std::unordered_map<LocationDescriptor, HostFunction *> host_functions{};
+private:
+    friend class AddressSpace;
+    void CommitConstruction() noexcept { construction_committed = true; }
+    bool construction_committed{};
 };
 
 }  // namespace swift::runtime::backend

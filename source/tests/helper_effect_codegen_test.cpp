@@ -11,6 +11,7 @@
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/runtime.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 
 namespace {
@@ -74,6 +75,7 @@ std::vector<std::string> EmitHelperBoundary(bool exact) {
                    address_space.GetTrampolines().GetGPRRegs(),
                    address_space.GetTrampolines().GetFPRRegs(), features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -150,6 +152,7 @@ Sse42HelperEmission EmitSse42HelperBoundary(swift::u8 imm,
     const auto carry_fpr = alloc.ValueFPR(carry).id;
     const auto left_fpr = alloc.ValueFPR(left).id;
     const auto right_fpr = alloc.ValueFPR(right).id;
+    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -220,7 +223,17 @@ TEST_CASE("exact helper effects retain pending NZCV across host calls",
     const auto conservative = EmitHelperBoundary(false);
     const auto exact = EmitHelperBoundary(true);
     REQUIRE(Count(conservative, "nzcv") == 2);
-    REQUIRE(Count(exact, "nzcv") == 1);
+    // Eager flags publish both results; the lazy token can discard the first.
+    REQUIRE(Count(exact, "nzcv") == (GetSvmConfig().flags_regs ? 1 : 2));
+    const auto call = std::ranges::find_if(exact, [](const auto& instruction) {
+        return instruction.find("blr ") != std::string::npos;
+    });
+    const auto capture = std::ranges::find_if(exact, [](const auto& instruction) {
+        return instruction.find("mrs ") != std::string::npos;
+    });
+    REQUIRE(call != exact.end());
+    REQUIRE(capture != exact.end());
+    REQUIRE(call < capture);
 }
 
 TEST_CASE("resident string helper preserves pending NZCV",

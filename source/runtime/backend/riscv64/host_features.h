@@ -31,11 +31,18 @@ struct HostFeatures {
             HostFeatures result;
 #if defined(__linux__) && defined(__riscv) && __riscv_xlen == 64
             result.vector = (getauxval(AT_HWCAP) & (1UL << ('V' - 'A'))) != 0;
+            // The kernel ABI predates its definition in some libc headers.
+            // Linux RV64 reserves arch-specific syscall 244 + 14 for hwprobe;
+            // older kernels reject it with ENOSYS and retain RV64G fallbacks.
 #ifdef SYS_riscv_hwprobe
+            constexpr auto hwprobe_syscall = SYS_riscv_hwprobe;
+#else
+            constexpr auto hwprobe_syscall = 258;
+#endif
             // Linux UAPI key 4, IMA_EXT_0. NULL CPU set intersects all online
             // CPUs, so emitted code remains valid after thread migration.
             struct Probe { std::int64_t key; std::uint64_t value; } probe{4, 0};
-            if (syscall(SYS_riscv_hwprobe, &probe, 1, 0, nullptr, 0) == 0 && probe.key == 4) {
+            if (syscall(hwprobe_syscall, &probe, 1, 0, nullptr, 0) == 0 && probe.key == 4) {
                 result.vector = (probe.value & (1ULL << 2)) != 0;
                 result.zbb = (probe.value & (1ULL << 4)) != 0;
                 result.zbs = (probe.value & (1ULL << 5)) != 0;
@@ -48,7 +55,6 @@ struct HostFeatures {
                 result.vector_crypto_sha256 = result.vector && (probe.value & ((1ULL << 22) | (1ULL << 23)));
                 result.vector_crypto_clmul = result.vector && (probe.value & (1ULL << 18));
             }
-#endif
 #endif
             return result;
         }();

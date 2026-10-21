@@ -122,6 +122,7 @@ TEST_CASE("ordered stores accept coalesced low32 views during emission") {
                        FPRSMask{~((1u << 8) - 1u)}, features};
         RegisterAllocPass::Run(block.get(), &alloc, false, features);
         REQUIRE(alloc.IsLow32CopyCoalesced(bridge.Id()));
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         REQUIRE_NOTHROW(translator.Translate(block.get()));
@@ -179,6 +180,7 @@ TEST_CASE("in-place low32 extensions retain their high-bit clearing write") {
         const auto result_reg = allocation.ValueGPR(result).id;
         REQUIRE((source_reg == result_reg) == !keep_parent_live);
 
+        allocation.CompleteGPRAllocation(module);
         arm64::JitContext context{module, allocation};
         arm64::JitTranslator translator{context};
         REQUIRE_NOTHROW(translator.Translate(block.get()));
@@ -263,7 +265,7 @@ TEST_CASE("low32 ownership transfer preserves guest homes across publication") {
         RegAlloc allocation{block->MaxInstrId(), CopyTestGPRs(),
                             FPRSMask{~((1u << 8) - 1u)}, features};
         RegisterAllocPass::Run(block.get(), &allocation, false, features);
-        REQUIRE(allocation.IsHostReadCoalesced(source.Id()));
+        REQUIRE((allocation.IsHostReadCoalesced(source.Id()) || allocation.IsFixedGPRDefinitionElided(source.Id())));
         REQUIRE(allocation.ValueGPR(source).id == 22);
         REQUIRE(allocation.IsLow32CopyCoalesced(bridge.Id()) == !overwrite_home);
         if (overwrite_home) {

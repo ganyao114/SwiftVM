@@ -1,6 +1,7 @@
 #include "runtime/backend/function_entry_contract.h"
 
 #include <algorithm>
+#include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
 
@@ -290,6 +291,9 @@ void* FunctionEntryPublisher::HostPC(
 
 PublishedFunctionEntry FunctionEntryPublisher::Publish(
         const FunctionEntryContract& contract) const {
+    RetirementControl::Lease producer{module.GetRetirementControl(), RetirementControl::Kind::Producer};
+    RetirementControl::PublicationScope publication{producer};
+    if (!publication) throw std::runtime_error("function publication admission is closed");
     ASSERT(allocation && contract.IsWellFormed(allocation_size));
     auto* canonical_host_pc = HostPC(contract.Canonical());
     auto& address_space = module.GetAddressSpace();

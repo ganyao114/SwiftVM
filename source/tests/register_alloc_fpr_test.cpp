@@ -7,6 +7,7 @@
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/scalar_fpr_liveness.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/backend/arm64/alloc/fpr_allocation_plan.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 
 namespace {
@@ -67,7 +68,7 @@ std::unique_ptr<RegAlloc> Allocate(ScalarPublication& item, bool enabled = true)
     return alloc;
 }
 
-swift::u32 EmitSize(Block* block, RegAlloc& alloc) {
+swift::u32 EmitSize(Block* block, RegAlloc& alloc, bool register_friend_unit = true) {
     Config config{
             .loc_start = 0,
             .loc_end = 1ull << 48,
@@ -79,6 +80,8 @@ swift::u32 EmitSize(Block* block, RegAlloc& alloc) {
     auto module = address_space.MapModule(
             LocationDescriptor{0x8750}, LocationDescriptor{0x8790},
             ModuleConfig{});
+    if (register_friend_unit) alloc.SetAllocationUnit(block, nullptr, {});
+    alloc.CompleteGPRAllocation(module);
     backend::arm64::JitContext context{module, alloc};
     backend::arm64::JitTranslator translator{context};
     translator.Translate(block);
@@ -154,6 +157,69 @@ TEST_CASE("legacy scalar FPR publication stops before a fault observer") {
     auto alloc = Allocate(item);
     REQUIRE(alloc->ValueFPR(item.result).id != kResidentTarget);
     REQUIRE_FALSE(alloc->IsHostWriteCoalesced(item.publish->Id()));
+}
+
+TEST_CASE("FPR plan rejects a live old value before emission", "[fpr-plan]") {
+    auto item = MakeScalarPublication(false, true, false, true);
+    auto alloc = Allocate(item);
+    // Simulate an invalid allocator candidate, rather than relying on the
+    // allocator itself to catch the ownership violation.
+    alloc->MapRegister(item.result.Id(), HostFPR{kResidentTarget});
+    alloc->MarkHostWriteCoalesced(item.publish->Id());
+    const auto plan = backend::arm64::BuildFPRAllocationPlan(
+            item.block.get(), *alloc, FeatureSet{}, false, false);
+    REQUIRE_FALSE(plan.valid);
+    REQUIRE(plan.rejected == item.publish);
+}
+
+TEST_CASE("rejected FPR candidates reallocate before freezing", "[fpr-plan]") {
+    auto item = MakeScalarPublication(false, true, false, true);
+    const GPRSMask gprs{~((1u << 8) - 1u)};
+    RegAlloc alloc{item.block->MaxInstrId(), gprs, ResidentFPRs(), FeatureSet{}};
+    RegisterAllocPass::Run(item.block.get(), &alloc, false, FeatureSet{});
+    alloc.MapRegister(item.result.Id(), HostFPR{kResidentTarget});
+    alloc.MarkHostWriteCoalesced(item.publish->Id());
+    REQUIRE(EmitSize(item.block.get(), alloc, false) > 0);
+    REQUIRE(alloc.FPRCoalescingDisabled());
+    REQUIRE(alloc.TargetReplayCount() == 1);
+    REQUIRE_FALSE(alloc.IsHostWriteCoalesced(item.publish->Id()));
+    REQUIRE(alloc.ValueFPR(item.result).id != kResidentTarget);
+    REQUIRE(alloc.GPRLocationsFrozen());
+    const auto plan = alloc.GPRPlanFor(item.block.get());
+    REQUIRE_FALSE(plan->fpr);
+}
+
+TEST_CASE("aborting FPR target planning restores the allocation policy", "[fpr-plan]") {
+    RegAlloc alloc{1, GPRSMask{}, FPRSMask{}, FeatureSet{}};
+    alloc.BeginTargetPlanning();
+    alloc.DisableFPRCoalescing();
+    REQUIRE(alloc.FPRCoalescingDisabled());
+    alloc.AbortTargetPlanning();
+    REQUIRE_FALSE(alloc.FPRCoalescingDisabled());
+}
+
+TEST_CASE("mixed shuffle masks cancel direct lowering before emission", "[fpr-plan][shuffle-plan]") {
+    Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
+                  .has_local_operation = false, .backend_isa = kArm64};
+    AddressSpace space{config};
+    IntrusivePtr<Block> block{new Block(0, Location{0x87a0})};
+    auto source = block->LoadUniform(Uniform{0, ValueType::V128}).SetType(ValueType::V128);
+    auto mask = block->VecLoadConst(Imm{swift::u64{0x0706050403020100}},
+                                  Imm{swift::u64{0x0f0e0d0c0b0a0908}}).SetType(ValueType::V128);
+    auto result = block->VecShuffle32Indexed(source, mask).SetType(ValueType::V128);
+    block->StoreUniform(Uniform{32, ValueType::V128}, result);
+    block->StoreUniform(Uniform{64, ValueType::V128}, mask);
+    block->SetTerminal(terminal::ReturnToHost{}); block->ReIdInstr();
+    RegAlloc alloc{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
+                   space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
+    RegisterAllocPass::Run(block.get(), &alloc, false, FeatureSet{});
+    alloc.MarkPshufdDirect(mask.Id()); alloc.MarkPshufdDirect(result.Id());
+    alloc.CompleteGPRAllocation(space.GetDefaultModule());
+    backend::arm64::JitContext context{space.GetDefaultModule(), alloc};
+    REQUIRE(context.CurrentBufferSize() == 0); REQUIRE(alloc.FPRCoalescingDisabled());
+    REQUIRE_FALSE(alloc.IsPshufdDirect(mask.Id())); REQUIRE_FALSE(alloc.IsPshufdDirect(result.Id()));
+    backend::arm64::JitTranslator translator{context}; translator.Translate(block.get()); context.Finish();
+    REQUIRE(context.CurrentBufferSize() > 0);
 }
 
 TEST_CASE("resident FPR publication keeps a live result in its fixed home") {

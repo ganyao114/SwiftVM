@@ -130,7 +130,7 @@ void GuestStateMap::AnalyzeFunction(ir::HIRFunction* function,
                                     const FeatureSet& next_features) {
     this->function = function;
     features = next_features;
-    fixed_home_clobbers.reset();
+    InvalidateFixedHomeClobberIndex();
     successful_survival_scans = 0;
     function_width_facts_ready = false;
     function_entry_width_facts.clear();

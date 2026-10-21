@@ -92,7 +92,7 @@ void GuestStateMap::PublishValue(ir::Value value,
             },
             .publication = publication,
     };
-    active.versions[version].push_back(published);
+    active.VersionsFor(version).push_back(published);
     active.homes[home].push_back(version);
     auto* alias_root = version;
     while (alias_root) {
@@ -116,7 +116,7 @@ void GuestStateMap::PublishValue(ir::Value value,
                 },
                 .publication = publication,
         };
-        active.versions[alias.Def()].push_back(alias_published);
+        active.VersionsFor(alias.Def()).push_back(alias_published);
         active.homes[home].push_back(alias.Def());
         alias_root = alias.Def();
     }
@@ -130,9 +130,8 @@ GuestStateMap::ExtensionFacts GuestStateMap::ValueExtensionFacts(
     }
     const u32 width = ir::GetValueSizeByte(value.Type());
     ExtensionFacts facts{};
-    if (const auto found = active.versions.find(value.Def());
-        found != active.versions.end()) {
-        for (const auto& candidate : found->second) {
+    if (const auto* found = active.FindVersions(value.Def())) {
+        for (const auto& candidate : *found) {
             const auto& candidate_facts = candidate.location.extension;
             if (candidate_facts.known_zero_above &&
                 (!facts.known_zero_above ||
@@ -208,6 +207,16 @@ void GuestStateMap::InvalidateHome(u32 home, ActiveState& active) const {
     auto versions = std::move(active.homes[home]);
     active.homes[home].clear();
     for (auto* version : versions) {
+        if (const auto slot = active.SlotOf(version)) {
+            auto& entries = active.dense_versions[*slot];
+            entries.erase(
+                    std::remove_if(entries.begin(), entries.end(),
+                                   [&](const auto& value) {
+                                       return value.location.home == home;
+                                   }),
+                    entries.end());
+            continue;
+        }
         const auto found = active.versions.find(version);
         if (found == active.versions.end()) {
             continue;
@@ -255,6 +264,7 @@ void GuestStateMap::BuildValueVersions(
     });
     std::size_t next_clobber{};
     ActiveState active;
+    active.InitDense(block);
     WidthFacts width_facts = block_entry_width_facts;
     for (auto& inst : block->GetInstList()) {
         for (auto value : inst.GetValues()) {
@@ -270,9 +280,8 @@ void GuestStateMap::BuildValueVersions(
                 continue;
             }
             const ActiveValue* newest{};
-            const auto versions = active.versions.find(value.Def());
-            if (versions != active.versions.end()) {
-                for (const auto& candidate : versions->second) {
+            if (const auto* versions = active.FindVersions(value.Def())) {
+                for (const auto& candidate : *versions) {
                     if (candidate.location.width == width &&
                         (!newest || candidate.publication > newest->publication)) {
                         newest = &candidate;
@@ -286,10 +295,30 @@ void GuestStateMap::BuildValueVersions(
                     !newest->location.extension.KnownZeroAbove(width * 8)) {
                     continue;
                 }
-                fixed_home_uses.insert_or_assign(
-                        std::make_pair(value.Def(), &inst), newest->location);
+                const auto existing = std::find_if(
+                        fixed_home_uses.begin(), fixed_home_uses.end(),
+                        [&](const FixedHomeUse& use) {
+                            return use.definition == value.Def() &&
+                                   use.consumer == &inst;
+                        });
+                if (existing != fixed_home_uses.end()) {
+                    existing->location = newest->location;
+                } else {
+                    fixed_home_uses.push_back(
+                            {value.Def(), &inst, newest->location});
+                }
                 if (SupportsResidentDefinitionElision(inst)) {
-                    ++fixed_home_use_counts[value.Def()];
+                    const auto counted = std::find_if(
+                            fixed_home_use_counts.begin(),
+                            fixed_home_use_counts.end(),
+                            [&](const auto& entry) {
+                                return entry.first == value.Def();
+                            });
+                    if (counted != fixed_home_use_counts.end()) {
+                        ++counted->second;
+                    } else {
+                        fixed_home_use_counts.emplace_back(value.Def(), 1);
+                    }
                 }
             }
         }
@@ -367,6 +396,14 @@ void GuestStateMap::BuildValueVersions(
                          publication_extension, active);
         }
     }
+    std::sort(fixed_home_uses.begin(), fixed_home_uses.end(),
+              [](const FixedHomeUse& a, const FixedHomeUse& b) {
+                  const std::less<> pointer_less{};
+                  if (a.definition != b.definition) {
+                      return pointer_less(a.definition, b.definition);
+                  }
+                  return pointer_less(a.consumer, b.consumer);
+              });
 }
 
 std::optional<GuestStateMap::FixedHomeValue> GuestStateMap::FixedHomeForUse(
@@ -375,14 +412,27 @@ std::optional<GuestStateMap::FixedHomeValue> GuestStateMap::FixedHomeForUse(
     if (!value.Def() || !consumer) {
         return std::nullopt;
     }
-    const auto found = fixed_home_uses.find({value.Def(), consumer});
-    return found == fixed_home_uses.end()
+    const FixedHomeUse probe{value.Def(), consumer, {}};
+    const auto found = std::lower_bound(
+            fixed_home_uses.begin(), fixed_home_uses.end(), probe,
+            [](const FixedHomeUse& a, const FixedHomeUse& b) {
+                const std::less<> pointer_less{};
+                if (a.definition != b.definition) {
+                    return pointer_less(a.definition, b.definition);
+                }
+                return pointer_less(a.consumer, b.consumer);
+            });
+    return found == fixed_home_uses.end() ||
+                    found->definition != value.Def() ||
+                    found->consumer != consumer
             ? std::nullopt
-            : std::optional<FixedHomeValue>{found->second};
+            : std::optional<FixedHomeValue>{found->location};
 }
 
 u32 GuestStateMap::ResidentUseCount(ir::Inst* definition) const {
-    const auto found = fixed_home_use_counts.find(definition);
+    const auto found = std::find_if(
+            fixed_home_use_counts.begin(), fixed_home_use_counts.end(),
+            [&](const auto& entry) { return entry.first == definition; });
     return found == fixed_home_use_counts.end() ? 0 : found->second;
 }
 

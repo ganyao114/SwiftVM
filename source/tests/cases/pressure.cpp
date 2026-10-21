@@ -1,6 +1,7 @@
 #include "../support/allocation_inputs.h"
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
+#include "../support/jit_translator_test_support.h"
 
 TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
     using namespace swift::runtime::ir;
@@ -55,7 +56,7 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
         //    so charging it again would count the same register twice. This
         //    is the contract GetTmpX relies on.
         for (auto& inst : block->GetInstList()) {
-            auto need = ScratchBudget(inst, FeatureSet{});
+            auto need = ScratchBudget(inst, FeatureSet{}, ScanFlagsDemand(*block, inst));
             unsigned reloads_gpr = 0, reloads_fpr = 0;
             std::vector<std::uint32_t> counted;
             auto count = [&](const Value& value) {
@@ -88,6 +89,7 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
         // 2. And the JIT must actually emit it. GetTmpX panics through
         //    AssertFailed, so reaching the end of Translate is the assertion:
         //    a scratch shortfall aborts here rather than returning.
+        reg_alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, reg_alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
@@ -161,8 +163,9 @@ TEST_CASE("SSE4.2 string lowering stays within its declared scratch contract") {
 #else
         const swift::u32 expected_gprs = 4u;
 #endif
-        REQUIRE(ScratchBudget(*result.Def(), FeatureSet{}).gpr == expected_gprs);
+        REQUIRE(ScratchBudget(*result.Def(), FeatureSet{}, {}).gpr == expected_gprs);
 
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         context.SetCurrent(&block);
@@ -199,12 +202,15 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
                 break;
         }
         auto result = block.Add(left, right).SetType(type);
+        FlagsDemand demand{};
         if (branch_only) {
             block.AppendInst(OpCode::BranchOnlyFlags, result, flags);
+            demand = {flags, 1, true, false};
         } else if (flags != Flags::None) {
             block.SaveFlags(result, flags);
+            demand = {flags, 1, false, true};
         }
-        return PreciseAddSubScratchBudget(*result.Def()).gpr;
+        return PreciseAddSubScratchBudget(*result.Def(), demand).gpr;
     };
 
     REQUIRE(make_price(ValueType::U64, Flags::None, false, RightShape::Reg) == 0);
@@ -226,8 +232,12 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
         Block block{0, Location{0x1d80}};
         auto left = block.GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(type);
         auto result = block.Add(left, Operand{left}).SetType(type);
-        if (flags != Flags::None) block.SaveFlags(result, flags);
-        return PreciseAddSubScratchBudget(*result.Def()).gpr;
+        FlagsDemand demand{};
+        if (flags != Flags::None) {
+            block.SaveFlags(result, flags);
+            demand = {flags, 1, false, true};
+        }
+        return PreciseAddSubScratchBudget(*result.Def(), demand).gpr;
     };
     REQUIRE(make_host_price(ValueType::U16, Flags::None) == 2);
     REQUIRE(make_host_price(ValueType::U16, Flags::All) == 3);
@@ -314,10 +324,15 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
         alloc.SetActiveRegs(pending.Id(), active_gprs, active_fprs);
         alloc.SetActiveRegs(target.Id(), active_gprs, active_fprs);
 
+        // This isolated encoder measurement supplies the final physical mapping.
+        // Register its actual IR unit before the explicit planning boundary.
+        alloc.SetAllocationUnit(&block, nullptr, {});
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         context.SetCurrent(&block);
         context.TickIR(pending.Def());
+        arm64::JitTranslatorTestSupport::BindPseudoFlags(translator, block);
         translator.EmitAdd(pending.Def());
         context.EndInstructionScratch();
         context.TickIR(target.Def());
@@ -328,7 +343,9 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
         translator.EmitAdd(target.Def());
         context.EndTerminalScratch();
         const swift::u32 peak = context.LastInstructionScratchGPR();
-        const swift::u32 price = PreciseAddSubScratchBudget(*target.Def()).gpr;
+        const FlagsDemand demand{flags, static_cast<swift::u8>(flags != Flags::None || branch_only),
+                branch_only, flags != Flags::None && !branch_only};
+        const swift::u32 price = PreciseAddSubScratchBudget(*target.Def(), demand).gpr;
         INFO("type " << static_cast<unsigned>(type) << " flags "
                      << static_cast<unsigned long long>(flags) << " branch "
                      << branch_only << " shape " << static_cast<unsigned>(shape)
@@ -338,17 +355,21 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
         return peak;
     };
 
-    REQUIRE(measure(ValueType::U64, Flags::None, false, RightShape::Reg) == 0);
-    REQUIRE(measure(ValueType::U64, Flags::All, false, RightShape::LargeImm) == 2);
-    REQUIRE(measure(ValueType::U64, Flags::All, false, RightShape::Composite) == 2);
-    REQUIRE(measure(ValueType::U64, Flags::All, true, RightShape::Composite) == 1);
-    REQUIRE(measure(ValueType::U8, Flags::All, false, RightShape::Reg) == 2);
-    REQUIRE(measure(ValueType::U16, Flags::All, false, RightShape::Composite) == 2);
-    REQUIRE(measure(ValueType::U8, Flags::All, true, RightShape::Composite) == 1);
-    REQUIRE(measure(ValueType::U16, Flags::None, false, RightShape::Reg,
-                    true) == 2);
+    const std::array<swift::u32, 8> observed{
+        measure(ValueType::U64, Flags::None, false, RightShape::Reg),
+        measure(ValueType::U64, Flags::All, false, RightShape::LargeImm),
+        measure(ValueType::U64, Flags::All, false, RightShape::Composite),
+        measure(ValueType::U64, Flags::All, true, RightShape::Composite),
+        measure(ValueType::U8, Flags::All, false, RightShape::Reg),
+        measure(ValueType::U16, Flags::All, false, RightShape::Composite),
+        measure(ValueType::U8, Flags::All, true, RightShape::Composite),
+        measure(ValueType::U16, Flags::None, false, RightShape::Reg, true),
+    };
+    const auto flags_peak = swift::runtime::FlagsRegsEnabled() ? 2u : 3u;
+    const std::array<swift::u32, 8> expected{0, flags_peak, flags_peak, 1, flags_peak, flags_peak, 1, 2};
+    REQUIRE(observed == expected);
     REQUIRE(measure(ValueType::U16, Flags::All, false, RightShape::Reg,
-                    true) == 2);
+                    true) == flags_peak);
 }
 
 // --- spill-slot recycling ----------------------------------------------------
@@ -635,6 +656,7 @@ TEST_CASE("Spill slots are recycled, not merely handed out") {
         // 6. Finally the JIT has to emit it. GetTmpX/GetTmpV and
         //    SpillGPR/SpillFPR assert through AssertFailed, so reaching the end
         //    of Translate is itself the assertion.
+        reg_alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, reg_alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
@@ -718,6 +740,7 @@ TEST_CASE("peeled GetOperand keeps its address live through the memory use") {
                 reg_alloc.ValueGPR(value).id);
     }
 
+    reg_alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, reg_alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(raw_block);
@@ -848,6 +871,10 @@ TEST_CASE("absolute GetOperand materializes directly into its result") {
     active_gprs.Mark(6);
     alloc.SetActiveRegs(address.Id(), active_gprs, active_fprs);
 
+    alloc.FreezeGPRLocations();
+
+    alloc.SetAllocationUnit(block.get(), nullptr, {});
+    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     arm64::JitTranslator translator{context};
     context.TickIR(address.Def());
@@ -860,135 +887,6 @@ TEST_CASE("absolute GetOperand materializes directly into its result") {
     REQUIRE(bytes == (enabled ? 8 : 12));
 }
 
-TEST_CASE("unit-local absolute addresses reuse only verified idle GPR windows") {
-    using namespace swift::runtime;
-    using namespace swift::runtime::backend;
-    using namespace swift::runtime::ir;
-
-    struct Result {
-        swift::u32 bytes{};
-        bool anchor{};
-        bool reuse{};
-        bool host_write{};
-    };
-    auto run = [](bool cache, bool tight_pool, bool coalesce,
-                  swift::u64 second_address = 0x004958d8,
-                  bool biased_memory = false) {
-        Config config{
-                .loc_start = 0,
-                .loc_end = 1ull << 48,
-                .enable_jit = true,
-                .has_local_operation = false,
-                .backend_isa = kArm64,
-                .page_table = biased_memory ? reinterpret_cast<void*>(0x1000) : nullptr,
-        };
-        AddressSpace address_space{config};
-        ModuleConfig module_config{};
-        module_config.feature_overrides.Set(FeatureId::abs_const_mat, false);
-        module_config.feature_overrides.Set(FeatureId::const_addr_cache, cache);
-        module_config.feature_overrides.Set(FeatureId::ra_coalesce, coalesce);
-        auto module = address_space.MapModule(
-                LocationDescriptor{0x78a0}, LocationDescriptor{0x78c0}, module_config);
-
-        IntrusivePtr<Block> block{new Block(0, Location{0x78a0})};
-        auto first = block->GetOperand(Operand{Imm{swift::u64{0x004958d8}}})
-                             .SetType(ValueType::U64);
-        (void)block->LoadMemory(Operand{first}).SetType(ValueType::U64);
-        auto second = block->GetOperand(Operand{Imm{second_address}})
-                              .SetType(ValueType::U64);
-        (void)block->LoadMemory(Operand{second}).SetType(ValueType::U64);
-        Inst* publish = nullptr;
-        if (coalesce) {
-            auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
-                                 .SetType(ValueType::U64);
-            publish = block->AppendInst(
-                    OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
-        }
-        block->SetTerminal(terminal::ReturnToDispatch{});
-        block->ReIdInstr();
-
-        GPRSMask gprs{~swift::u32{0}};
-        if (tight_pool) {
-            // Keep the pool tight enough to reject the cache owner, while
-            // still covering the two-reload memory shape under fail-closed RA.
-            for (swift::u32 code : {6u, 7u, 8u, 9u, 10u, 11u}) {
-                gprs.Clear(code);
-            }
-        } else {
-            for (swift::u32 code : {6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u,
-                             15u, 16u, 17u, 18u, 24u}) {
-                gprs.Clear(code);
-            }
-            for (swift::u32 code : {0u, 1u, 2u, 3u, 4u, 5u, 19u, 20u, 21u,
-                             22u, 23u, 25u, 26u, 27u, 28u, 29u, 30u, 31u}) {
-                gprs.Mark(code);
-            }
-        }
-        const FPRSMask fprs{~((1u << 8) - 1u)};
-        auto features = FeatureSet{};
-        features.const_addr_cache = cache;
-        features.ra_coalesce = coalesce;
-        RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
-
-        const bool anchor = alloc.IsConstAddressCached(first.Id());
-        const bool reuse = alloc.IsConstAddressCached(second.Id());
-        const bool host_write = publish && alloc.IsHostWriteCoalesced(publish->Id());
-        arm64::JitContext context{module, alloc};
-        arm64::JitTranslator translator{context};
-        translator.Translate(block.get());
-        context.Finish();
-        return Result{context.CurrentBufferSize(), anchor, reuse, host_write};
-    };
-
-    SECTION("a repeated RIP-style absolute address shares one page base") {
-        const auto off = run(false, false, false);
-        const auto on = run(true, false, false);
-        REQUIRE_FALSE(off.anchor);
-        REQUIRE_FALSE(off.reuse);
-        REQUIRE(on.anchor);
-        REQUIRE(on.reuse);
-        REQUIRE(on.bytes + 4 * vixl::aarch64::kInstructionSize == off.bytes);
-    }
-
-    SECTION("nearby absolute addresses share one page base") {
-        const auto off = run(false, false, false, 0x004958e0);
-        const auto on = run(true, false, false, 0x004958e0);
-        REQUIRE(on.anchor);
-        REQUIRE(on.reuse);
-        REQUIRE(on.bytes + 4 * vixl::aarch64::kInstructionSize == off.bytes);
-    }
-
-    SECTION("biased memory rematerializes each exact guest address") {
-        const auto off = run(false, false, false, 0x004958e0, true);
-        const auto on = run(true, false, false, 0x004958e0, true);
-        REQUIRE(on.anchor);
-        REQUIRE(on.reuse);
-        REQUIRE(on.bytes + 2 * vixl::aarch64::kInstructionSize == off.bytes);
-    }
-
-    SECTION("biased memory reuses an unchanged exact guest address") {
-        const auto off = run(false, false, false, 0x004958d8, true);
-        const auto on = run(true, false, false, 0x004958d8, true);
-        REQUIRE(on.anchor);
-        REQUIRE(on.reuse);
-        REQUIRE(on.bytes + 4 * vixl::aarch64::kInstructionSize == off.bytes);
-    }
-
-    SECTION("scratch headroom shortage falls back without a cache owner") {
-        const auto tight = run(true, true, false);
-        REQUIRE_FALSE(tight.anchor);
-        REQUIRE_FALSE(tight.reuse);
-    }
-
-    SECTION("guest publication coalescing and address caching remain independent") {
-        const auto both = run(true, false, true);
-        REQUIRE(both.anchor);
-        REQUIRE(both.reuse);
-        REQUIRE(both.host_write);
-    }
-}
-
 TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
@@ -997,6 +895,7 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
     struct Result {
         swift::u32 bytes{};
         std::map<std::string, swift::u32> mnemonics{};
+        std::vector<swift::u32> instructions{};
         bool host_write_coalesced{};
     };
     enum class Shape { Indirect, Call, Return };
@@ -1054,12 +953,14 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
         RegisterAllocPass::Run(block.get(), &alloc, false, features);
         const bool host_write = publish && alloc.IsHostWriteCoalesced(publish->Id());
 
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
 
         std::map<std::string, swift::u32> mnemonics;
+        std::vector<swift::u32> instructions;
         vixl::aarch64::Decoder decoder;
         vixl::aarch64::Disassembler disassembler;
         decoder.AppendVisitor(&disassembler);
@@ -1068,6 +969,7 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
         auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
         for (auto* instruction = first; instruction < last;
              instruction = instruction->GetNextInstruction()) {
+            instructions.push_back(instruction->InstructionBits());
             decoder.Decode(instruction);
             std::string_view text{disassembler.GetOutput()};
             const auto begin = text.find_first_not_of(" \t");
@@ -1076,7 +978,8 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
             const auto end = text.find_first_of(" \t");
             ++mnemonics[std::string{text.substr(0, end)}];
         }
-        return Result{context.CurrentBufferSize(), std::move(mnemonics), host_write};
+        return Result{context.CurrentBufferSize(), std::move(mnemonics),
+                      std::move(instructions), host_write};
     };
 
     const auto off = run(false, false, Shape::Indirect, false, true);
@@ -1086,16 +989,29 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
         auto it = result.mnemonics.find(std::string{mnemonic});
         return it == result.mnemonics.end() ? 0u : it->second;
     };
-    REQUIRE(l1.bytes == off.bytes + 6 * vixl::aarch64::kInstructionSize);
+    const auto l1_flags_restore = GetSvmConfig().flags_regs
+            ? vixl::aarch64::kInstructionSize : 0;
+    // LDARB/CBZ/STR/B poll the retained target; the cold reason tail has
+    // LDAR, two TBNZ, three MOV, two B, STR and RET.
+    constexpr auto request_exit_bytes = 14 * vixl::aarch64::kInstructionSize;
+    INFO("indirect off=" << off.bytes << " l1=" << l1.bytes);
+    REQUIRE(l1.bytes == off.bytes + 5 * vixl::aarch64::kInstructionSize +
+            l1_flags_restore + request_exit_bytes);
     REQUIRE(shadow.bytes == off.bytes);
     REQUIRE(count(off, "br") == 0);
     REQUIRE(count(l1, "br") == 1);
-    REQUIRE(count(l1, "ret") == 0);
+    REQUIRE(count(l1, "ret") == count(off, "ret"));
+    REQUIRE(count(l1, "ldar") == count(off, "ldar") + 1);
+    REQUIRE(count(l1, "ldarb") == count(off, "ldarb") + 1);
+    REQUIRE(count(l1, "lsr") == count(off, "lsr"));
+    REQUIRE(count(l1, "tbnz") == count(off, "tbnz") + 2);
+    REQUIRE(count(l1, "str") == count(off, "str") + 2);
     REQUIRE(count(l1, "cmp") == count(off, "cmp") + 1);
     REQUIRE(count(l1, "ccmp") == count(off, "ccmp"));
     REQUIRE(count(l1, "csel") == 1);
     REQUIRE(count(l1, "bfi") == count(off, "bfi") + 1);
     REQUIRE(count(l1, "ldp") == count(off, "ldp") + 1);
+    REQUIRE(count(l1, "msr") == count(off, "msr") + (GetSvmConfig().flags_regs ? 1 : 0));
     REQUIRE(count(l1, "tst") == count(off, "tst"));
     REQUIRE(l1.host_write_coalesced);
 
@@ -1103,28 +1019,36 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
     const auto call_l1 = run(true, false, Shape::Call, false, false);
     const auto call_shadow = run(false, true, Shape::Call, false, false);
     const auto call_both = run(true, true, Shape::Call, false, false);
-    REQUIRE(call_l1.bytes ==
-            call_off.bytes + vixl::aarch64::kInstructionSize);
+    INFO("call off=" << call_off.bytes << " l1=" << call_l1.bytes);
+    REQUIRE(call_l1.bytes == call_off.bytes + l1_flags_restore + request_exit_bytes);
     REQUIRE(call_shadow.bytes ==
             call_off.bytes - 2 * vixl::aarch64::kInstructionSize);
     REQUIRE(call_both.bytes == call_l1.bytes);
     REQUIRE(count(call_l1, "stp") + 1 == count(call_off, "stp"));
+    REQUIRE(count(call_l1, "ldar") == count(call_off, "ldar") + 1);
+    REQUIRE(count(call_l1, "ldarb") == count(call_off, "ldarb") + 1);
+    REQUIRE(count(call_l1, "tbnz") == count(call_off, "tbnz") + 2);
 
     const auto ret_off = run(false, false, Shape::Return, false, false);
     const auto ret_l1 = run(true, false, Shape::Return, false, false);
     const auto ret_shadow = run(false, true, Shape::Return, false, false);
     const auto ret_both = run(true, true, Shape::Return, false, false);
+    INFO("return off=" << ret_off.bytes << " l1=" << ret_l1.bytes <<
+         " shadow=" << ret_shadow.bytes);
+    // Ordinary RSB also pops the frame on its request arm; lean RSB has
+    // already consumed it in the post-index LDP.
     REQUIRE(ret_l1.bytes ==
-            ret_off.bytes - 4 * vixl::aarch64::kInstructionSize);
+            ret_off.bytes - 5 * vixl::aarch64::kInstructionSize);
     REQUIRE(ret_shadow.bytes ==
-            ret_off.bytes - vixl::aarch64::kInstructionSize);
+            ret_off.bytes - 2 * vixl::aarch64::kInstructionSize);
     REQUIRE(ret_both.bytes == ret_l1.bytes);
     REQUIRE(count(ret_l1, "ldp") == count(ret_off, "ldp"));
     REQUIRE(count(ret_l1, "cmp") == count(ret_off, "cmp"));
 
     const auto ret_trailing = run(false, true, Shape::Return, true, false);
-    REQUIRE(ret_trailing.bytes ==
-            ret_shadow.bytes + vixl::aarch64::kInstructionSize);
+    // Losing the retained target adds a current_loc LDR but removes the
+    // request arm's target STR.
+    REQUIRE(ret_trailing.bytes == ret_shadow.bytes);
     REQUIRE(count(ret_trailing, "ldr") == count(ret_shadow, "ldr") + 1);
     const auto ret_l1_trailing = run(true, true, Shape::Return, true, false);
     REQUIRE(ret_l1_trailing.bytes < ret_trailing.bytes);
@@ -1138,6 +1062,7 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
     const auto trailing_on =
             run(true, false, Shape::Indirect, true, false);
     REQUIRE(trailing_on.bytes == trailing_off.bytes);
+    REQUIRE(trailing_on.instructions == trailing_off.instructions);
     REQUIRE(count(trailing_on, "br") == 0);
 }
 

@@ -69,8 +69,7 @@ struct CaptureByte {
             if (!consumes) {
                 continue;
             }
-            if (user.HasSideEffects() || user.GetOp() == OpCode::LoadMemory ||
-                user.GetOp() == OpCode::LoadMemoryTSO) {
+            if (user.HasSideEffects()) {
                 return true;
             }
             work.push_back(&user);
@@ -235,27 +234,38 @@ void UniformStoreSinkPass::CaptureLatestCaptures(Block* block, const UniformInfo
     auto& recipes = block->GetUniformCaptureRecipes();
     recipes.clear();
     std::vector<CaptureByte> latest(info.uniform_size);
+    // Bytes written since the last boundary. Capture/clear only touch
+    // these: untouched slots hold undefined values and would be
+    // skipped by the full scan anyway, so the results are identical
+    // without paying O(uniform_size) per fault point.
+    std::vector<u32> dirty;
     Inst* segment_begin{};
 
-    auto clear = [&] { std::fill(latest.begin(), latest.end(), CaptureByte{}); };
+    auto clear = [&] {
+        for (u32 offset : dirty) latest[offset] = CaptureByte{};
+        dirty.clear();
+    };
+    std::vector<u32> slots;
     auto capture = [&](Inst* boundary) {
-        for (const auto& range : info.xmm_uniform_ranges) {
-            for (u32 offset = range.begin; offset + 16 <= range.end; offset += 16) {
-                const auto& first = latest[offset];
-                if (!first.value.Defined() || first.value.Type() != ValueType::V128 ||
-                    first.byte != 0) {
-                    continue;
-                }
-                bool complete = true;
-                for (u32 byte = 1; byte < 16; ++byte) {
-                    const auto& item = latest[offset + byte];
-                    complete &= item.value == first.value && item.store == first.store &&
-                                item.byte == byte;
-                }
-                if (complete) {
-                    recipes.push_back({segment_begin, boundary, first.store,
-                                     first.value, offset, 16});
-                }
+        slots.clear();
+        for (u32 written : dirty) slots.push_back(written & ~15u);
+        std::sort(slots.begin(), slots.end());
+        slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
+        for (u32 offset : slots) {
+            const auto& first = latest[offset];
+            if (!first.value.Defined() || first.value.Type() != ValueType::V128 ||
+                first.byte != 0) {
+                continue;
+            }
+            bool complete = true;
+            for (u32 byte = 1; byte < 16; ++byte) {
+                const auto& item = latest[offset + byte];
+                complete &= item.value == first.value && item.store == first.store &&
+                            item.byte == byte;
+            }
+            if (complete) {
+                recipes.push_back({segment_begin, boundary, first.store,
+                                 first.value, offset, 16});
             }
         }
     };
@@ -269,12 +279,15 @@ void UniformStoreSinkPass::CaptureLatestCaptures(Block* block, const UniformInfo
             if (offset + size <= latest.size() && info.IsXmmUniformRange(offset, size)) {
                 for (u32 byte = 0; byte < size; ++byte) {
                     latest[offset + byte] = {value, &inst, static_cast<u8>(byte)};
+                    dirty.push_back(offset + byte);
                 }
             }
         }
         if (IsFaultOrObservationPoint(inst.GetOp())) {
-            capture(&inst);
-            clear();
+            if (!dirty.empty()) {
+                capture(&inst);
+                clear();
+            }
             segment_begin = &inst;
         }
     }

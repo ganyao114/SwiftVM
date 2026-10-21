@@ -19,6 +19,21 @@ public:
     void Apply();
     void Revert();
     [[nodiscard]] bool Empty() const { return blocks.empty(); }
+    [[nodiscard]] u32 AnchorCount() const {
+        u32 total = 0;
+        for (const auto& recipe : blocks) total += static_cast<u32>(recipe.anchors.size());
+        return total;
+    }
+    [[nodiscard]] u32 GPRHoistCount() const {
+        u32 total = 0;
+        for (const auto& recipe : blocks) total += recipe.gpr_count;
+        return total;
+    }
+    [[nodiscard]] u32 ConstHoistCount() const {
+        u32 total = 0;
+        for (const auto& recipe : blocks) total += recipe.const_count;
+        return total;
+    }
 
 private:
     struct BlockRecipe {

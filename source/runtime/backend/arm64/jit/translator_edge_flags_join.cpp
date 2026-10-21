@@ -4,8 +4,6 @@
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/context.h"
 
-#include <unordered_set>
-
 namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
@@ -13,85 +11,14 @@ namespace swift::runtime::backend::arm64 {
 bool JitTranslator::RegionSuccessorAcceptsEdgeFlags(
         ir::Location target,
         const EdgeFlagsState& incoming) const {
-    std::unordered_set<u64> visited;
-    while (visited.insert(target.Value()).second) {
-        const auto found = region_block_map.find(target.Value());
-        auto* block = found == region_block_map.end() ? nullptr : found->second;
-        if (!block) {
-            return false;
-        }
-        HostFlags needed = static_cast<HostFlags>(incoming.valid_nzcv_mask);
-        for (auto& inst : block->GetInstList()) {
-            const auto op = inst.GetOp();
-            if (op == ir::OpCode::GetFlags || op == ir::OpCode::CallLambda ||
-                op == ir::OpCode::CallLocation || op == ir::OpCode::CallDynamic ||
-                op == ir::OpCode::X87Op || op == ir::OpCode::TestFlags ||
-                op == ir::OpCode::TestNotFlags || op == ir::OpCode::Adc ||
-                op == ir::OpCode::Sbb || op == ir::OpCode::CondSelect ||
-                op == ir::OpCode::CondSet) {
-                return false;
-            }
-            if (op == ir::OpCode::ClearFlags) {
-                needed &= static_cast<HostFlags>(
-                        ~static_cast<u64>(GuestNZCVToHost(
-                                inst.GetArg<ir::Flags>(0) & ir::Flags::NZCV)));
-            } else if (op == ir::OpCode::BranchOnlyFlags) {
-                return true;
-            } else if (op == ir::OpCode::SaveFlags) {
-                needed &= static_cast<HostFlags>(
-                        ~static_cast<u64>(GuestNZCVToHost(
-                                inst.GetArg<ir::Flags>(1))));
-            }
-            if (!True(needed)) {
-                return true;
-            }
-        }
-        // A flag-preserving block does not commit incoming NZCV on its own.
-        // Follow its jump until the pending bits are overwritten; an observer,
-        // external edge or cycle requires the predecessor to commit them.
-        if (!BlockIsFlagsTransparent(block)) {
-            return false;
-        }
-        const auto next = RegionLeafTarget(block->GetTerminal());
-        if (!next) {
-            return false;
-        }
-        target = *next;
-    }
-    return false;
+    const auto found = RegionBlockMap().find(target.Value());
+    return found != RegionBlockMap().end() &&
+           (found->second.accepted_masks & (u16{1} << (incoming.valid_nzcv_mask >> 28))) != 0;
 }
 
-bool JitTranslator::RegionSuccessorOverwritesFlagsToken(
-        ir::Location target) const {
-    const auto found = region_block_map.find(target.Value());
-    if (found == region_block_map.end() || !found->second) {
-        return false;
-    }
-    ir::Flags needed = ir::Flags::Parity | ir::Flags::AuxiliaryCarry;
-    for (auto& inst : found->second->GetInstList()) {
-        if (MayFaultOrObserve(inst) ||
-            HelperCallContract::InstructionClobbersGPR(
-                    inst, atomic_scratch.GetCode(), context.GetFeatures())) {
-            return false;
-        }
-        if (inst.GetOp() == ir::OpCode::GetFlags ||
-            inst.GetOp() == ir::OpCode::TestFlags ||
-            inst.GetOp() == ir::OpCode::TestNotFlags) {
-            return false;
-        }
-        if (inst.GetOp() == ir::OpCode::SaveFlags) {
-            needed &= ~inst.GetArg<ir::Flags>(1);
-        } else if (inst.GetOp() == ir::OpCode::ClearFlags) {
-            needed &= ~inst.GetArg<ir::Flags>(0);
-        }
-        if (!True(needed)) {
-            return true;
-        }
-        if (inst.GetOp() == ir::OpCode::AdvancePC) {
-            return false;
-        }
-    }
-    return false;
+bool JitTranslator::RegionSuccessorOverwritesFlagsToken(ir::Location target) const {
+    const auto found = RegionBlockMap().find(target.Value());
+    return found != RegionBlockMap().end() && found->second.token_overwritten;
 }
 
 JitTranslator::RegionFlagsJoinRecipe JitTranslator::RecipeRegionFlagsJoin(
@@ -197,8 +124,13 @@ bool JitTranslator::EmitRegionFlagsJoin(
         if (recipe.canonical_merge_token) {
             MaterializeFlagsTokenResult();
         }
-        branch(GetRegionFlagsCanonicalStub(recipe),
-               !recipe.compatible_on_true);
+        Label compatible;
+        branch(&compatible, recipe.compatible_on_true);
+        RecordExitPollFault(
+                context.PollTerminalExit(recipe.canonical_target, GetTerminalRequestExit()),
+                GetTerminalRequestExit(), recipe.canonical_target);
+        __ B(GetRegionFlagsCanonicalStub(recipe));
+        __ Bind(&compatible);
         context.RecordExecCounter(exec_offset_exit_direct);
         context.RecordExecCounter(exec_offset_region_edges);
         ++statistics.region_block_edges;
@@ -209,8 +141,13 @@ bool JitTranslator::EmitRegionFlagsJoin(
         return true;
     }
 
-    branch(LocalBranchTarget(recipe.compatible_target),
-           recipe.compatible_on_true);
+    Label canonical;
+    branch(&canonical, !recipe.compatible_on_true);
+    RecordExitPollFault(
+            context.PollTerminalExit(recipe.compatible_target, GetTerminalRequestExit()),
+            GetTerminalRequestExit(), recipe.compatible_target);
+    __ B(LocalBranchTarget(recipe.compatible_target));
+    __ Bind(&canonical);
     context.RecordExecCounter(exec_offset_exit_direct);
     context.RecordExecCounter(exec_offset_region_edges);
     ++statistics.region_block_edges;

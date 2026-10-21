@@ -7,7 +7,7 @@ namespace {
 
 using ::swift::runtime::backend::IsFixedGPRHome;
 
-std::optional<u32> LowViewLastUse(ir::Block* block,
+std::optional<u32> LowViewLastUse(const BlockAnalysisIndex& index,
                                   ir::Inst* alias,
                                   ir::Inst* value) {
     if (alias->GetOp() != ir::OpCode::BitExtract || alias->GetArg<ir::Value>(0).Def() != value ||
@@ -21,12 +21,9 @@ std::optional<u32> LowViewLastUse(ir::Block* block,
     }
     u32 ordinary_uses{};
     u32 last_use = alias->Id();
-    for (auto& consumer : block->GetInstList()) {
-        const auto uses = std::ranges::count_if(
-                consumer.GetValues(), [&](ir::Value input) { return input.Def() == alias; });
-        if (!uses) {
-            continue;
-        }
+    for (const auto& use : index.Uses(alias)) {
+        auto& consumer = *use.consumer;
+        const u32 uses = use.count;
         const auto op = consumer.GetOp();
         if (uses != 1 ||
             (op != ir::OpCode::Add && op != ir::OpCode::Sub && op != ir::OpCode::Select) ||
@@ -43,7 +40,7 @@ std::optional<u32> LowViewLastUse(ir::Block* block,
 
 }  // namespace
 
-std::optional<PinnedGPRAllocation::PinnedGPRPublicationView> PinnedGPRAllocation::MatchPinnedGPRPublicationView(
+std::optional<GPRPlanBuilder::PinnedGPRPublicationView> GPRPlanBuilder::MatchPinnedGPRPublicationView(
         ir::Inst* publication) const {
     if (!publication || publication->GetOp() != ir::OpCode::SetHostGPR ||
         publication->GetArg<ir::Imm>(2).Get() != 0 ||
@@ -65,19 +62,16 @@ std::optional<PinnedGPRAllocation::PinnedGPRPublicationView> PinnedGPRAllocation
     u32 ordinary_uses{};
     u32 last_use = publication->Id();
     std::vector<ir::Inst*> aliases;
-    for (auto& consumer : this->block->GetInstList()) {
-        const auto uses = std::ranges::count_if(
-                consumer.GetValues(), [&](ir::Value input) { return input.Def() == value; });
-        if (!uses) {
-            continue;
-        }
+    for (const auto& use : block_analysis.Uses(value)) {
+        auto& consumer = *use.consumer;
+        const u32 uses = use.count;
         ordinary_uses += uses;
         if (&consumer == publication && uses == 1) {
             saw_publication = true;
             continue;
         }
         const auto alias_last_use = LowViewLastUse(
-                this->block, &consumer, value);
+                block_analysis, &consumer, value);
         if (consumer.Id() <= publication->Id() || uses != 1 ||
             !alias_last_use) {
             return std::nullopt;
@@ -101,7 +95,7 @@ std::optional<PinnedGPRAllocation::PinnedGPRPublicationView> PinnedGPRAllocation
     };
 }
 
-void PinnedGPRAllocation::PreparePinnedGPRPublicationViews(ir::Block* block) {
+void GPRPlanBuilder::PreparePinnedGPRPublicationViews(ir::Block* block) {
     for (auto& inst : block->GetInstList()) {
         auto candidate = MatchPinnedGPRPublicationView(&inst);
         if (!candidate || std::ranges::any_of(candidate->aliases, [&](ir::Inst* alias) {

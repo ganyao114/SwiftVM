@@ -34,9 +34,12 @@ JitTranslator::BlockColdPathRecipe JitTranslator::CaptureBlockColdPathRecipe(
             std::move(statistics.boundary_terminal_link_mnemonics);
     recipe.boundary_terminal_link_ranges =
             std::move(statistics.boundary_terminal_link_ranges);
-    recipe.save_in_nzcv = flag_state.save_in_nzcv;
-    recipe.nzcv_dirty = flag_state.nzcv_dirty;
-    recipe.nzcv_requested = flag_state.nzcv_requested;
+    // A linked conditional can skip its common merge. Both cancellation and
+    // cycle exits must still publish that PSTATE, independently of patch state.
+    recipe.save_in_nzcv = flag_state.save_in_nzcv || True(terminal_bypass_nzcv);
+    recipe.nzcv_dirty = flag_state.nzcv_dirty || True(terminal_bypass_nzcv);
+    recipe.nzcv_requested = flag_state.nzcv_requested | terminal_bypass_nzcv;
+    terminal_bypass_nzcv = {};
     recipe.flags_token_valid = flag_state.flags_token_valid;
     recipe.flags_token_result_code = flag_state.flags_token_result_code;
     recipe.flags_token_keep = flag_state.flags_token_keep;
@@ -45,6 +48,7 @@ JitTranslator::BlockColdPathRecipe JitTranslator::CaptureBlockColdPathRecipe(
     recipe.backedge_exit_label = std::move(backedge_exit_label);
     recipe.backedge_exit_referenced = backedge_exit_referenced;
     recipe.direct_cycle_exits = std::move(direct_cycle_exits);
+    recipe.terminal_request_exit = std::move(terminal_request_exit);
     recipe.direct_cycle_cut_edges = direct_cycle_cut_edges;
     recipe.backedge_flags_recipe = std::move(backedge_flags_recipe);
     recipe.loop_hoist_body_entry = std::move(loop_hoist_body_entry);
@@ -83,6 +87,7 @@ void JitTranslator::EmitBlockColdPathRecipe(BlockColdPathRecipe recipe) {
     ASSERT(recipe.loop_hoist);
     ASSERT(!backedge_exit_label);
     ASSERT(direct_cycle_exits.empty());
+    ASSERT(!terminal_request_exit);
     ASSERT(!backedge_flags_recipe);
     ASSERT(!loop_hoist_body_entry);
     ASSERT(memory_state.pending_exit_poll_faults.empty());
@@ -110,6 +115,7 @@ void JitTranslator::EmitBlockColdPathRecipe(BlockColdPathRecipe recipe) {
     backedge_exit_label = std::move(recipe.backedge_exit_label);
     backedge_exit_referenced = recipe.backedge_exit_referenced;
     direct_cycle_exits = std::move(recipe.direct_cycle_exits);
+    terminal_request_exit = std::move(recipe.terminal_request_exit);
     direct_cycle_cut_edges = recipe.direct_cycle_cut_edges;
     backedge_flags_recipe = std::move(recipe.backedge_flags_recipe);
     loop_hoist_body_entry = std::move(recipe.loop_hoist_body_entry);
@@ -132,6 +138,7 @@ void JitTranslator::EmitBlockColdPathRecipe(BlockColdPathRecipe recipe) {
             ? context.CurrentBufferSize()
             : 0;
     flags_audit_cold = context.FlagsRegsAuditEnabled();
+    EmitTerminalRequestExitStub();
     EmitBackedgeExitStub();
     flag_state.flags_token_keep = false;
     InvalidateFlagsToken();

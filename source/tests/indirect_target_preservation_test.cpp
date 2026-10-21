@@ -43,6 +43,7 @@ TEST_CASE("indirect L1 cold lookup preserves its target register",
     RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
 
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     context.SetCurrent(block.get());
     context.BeginColdScratch();

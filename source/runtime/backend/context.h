@@ -10,6 +10,7 @@
 #include "runtime/ir/args.h"
 
 namespace swift::runtime::backend {
+struct InstructionCapture;
 
 constexpr u32 rsb_init_key = UINT32_MAX;
 constexpr size_t rsb_stack_size = 64;
@@ -79,6 +80,7 @@ struct RuntimeProfileInterface {
     void* l1_code_cache{};
     // 仅 SVM_EXEC_TRACE 使用；每个 Runtime 独占，信号处理器只读。
     ExecutionTraceBuffer* execution_trace{};
+    InstructionCapture* instruction_capture{};
 };
 
 union CPUFlags {

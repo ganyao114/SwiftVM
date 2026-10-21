@@ -112,7 +112,9 @@ void JitTranslator::EmitTailCode(u32 saved_mask) {
     context.HostAddress(t0, reinterpret_cast<u64>(&ResolveDirectLink)); as.JALR(t0);
     as.MV(t0, a0); as.LD(a0, 8, sp); as.LD(ra, 0, sp); as.ADDI(sp, sp, 32);
     Label missing; as.BEQ(t0, x0, &missing); as.JR(t0);
-    as.Bind(&missing); as.MV(a0, x0); as.RET();
+    // A denied retirement link returns a reason to the outer trampoline;
+    // ordinary misses keep zero and resume its dispatcher.
+    as.Bind(&missing); context.Load(a0, a0, state_offset_halt_reason, 4); as.RET();
     for (auto& site : context.LinkSites()) if (!site.unlinked_instruction)
         std::memcpy(&site.unlinked_instruction, as.GetCodeBuffer().GetOffsetPointer(site.code_offset), 4);
 }

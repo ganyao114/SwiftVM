@@ -88,7 +88,7 @@ TEST_CASE("integer width elimination rejects non-direct extracts") {
     REQUIRE(narrow.Def()->GetUses(false) == 1);
     REQUIRE(direct.Def()->GetUses(false) == 1);
     REQUIRE(flagged.Def()->GetUses(false) == 1);
-    REQUIRE(flagged.Def()->GetPseudoOperations(OpCode::SaveFlags).size() == 1);
+    REQUIRE(CollectPseudoOperations(block, flagged.Def(), OpCode::SaveFlags).size() == 1);
     REQUIRE(opaque.Def()->GetUses(false) == 1);
 }
 

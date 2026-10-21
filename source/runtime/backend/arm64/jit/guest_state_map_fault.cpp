@@ -29,11 +29,11 @@ void GuestStateMap::CaptureFaultCapture(
     fault_width_captures.push_back({&boundary, width_facts});
     for (u32 home = 0; home < active.homes.size(); ++home) {
         for (auto* version : active.homes[home]) {
-            const auto found = active.versions.find(version);
-            if (found == active.versions.end()) {
+            const auto* found = active.FindVersions(version);
+            if (!found) {
                 continue;
             }
-            for (const auto& candidate : found->second) {
+            for (const auto& candidate : *found) {
                 if (candidate.location.home == home) {
                     fault_capture_values.push_back(
                             {&boundary, version, candidate.location});

@@ -1,5 +1,133 @@
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
+#include "runtime/common/object_pool.h"
+
+namespace {
+struct alignas(64) PoolLifetimeProbe {
+    PoolLifetimeProbe(unsigned& live, std::array<unsigned, 64>& released, unsigned id, bool fail = false)
+            : live(live), released(released), id(id) {
+        if (fail) throw std::runtime_error("injected pool construction failure");
+        payload = std::make_unique<unsigned>(id);
+        ++live;
+    }
+    ~PoolLifetimeProbe() { ++released[id]; --live; }
+    unsigned& live;
+    std::array<unsigned, 64>& released;
+    unsigned id;
+    std::unique_ptr<unsigned> payload;
+};
+}
+
+TEST_CASE("ObjectPool releases active objects exactly once across chunks and reuse", "[runtime][lifetime][object-pool]") {
+    for (unsigned count : {0u, 1u, 2u, 3u, 9u}) {
+        CAPTURE(count);
+        unsigned live = 0, next = 0;
+        std::array<unsigned, 64> released{};
+        {
+            swift::runtime::ObjectPool<PoolLifetimeProbe, true> pool{2};
+            for (unsigned epoch = 0; epoch < 3; ++epoch) {
+                for (unsigned i = 0; i < count; ++i) {
+                    auto* object = pool.Create(live, released, next++);
+                    REQUIRE(reinterpret_cast<uintptr_t>(object) % alignof(PoolLifetimeProbe) == 0);
+                    REQUIRE(*object->payload == object->id);
+                }
+                REQUIRE(live == count);
+                if (epoch < 2) {
+                    pool.ReleaseContents();
+                    REQUIRE(live == 0);
+                    pool.ReleaseContents();
+                    REQUIRE(live == 0);
+                }
+            }
+        }
+        REQUIRE(live == 0);
+        for (unsigned id = 0; id < next; ++id) REQUIRE(released[id] == 1);
+    }
+}
+
+TEST_CASE("ObjectPool excludes failed constructors from active object destruction", "[runtime][lifetime][object-pool]") {
+    for (unsigned prefix : {0u, 1u, 2u, 3u}) {
+        CAPTURE(prefix);
+        unsigned live = 0;
+        std::array<unsigned, 64> released{};
+        {
+            swift::runtime::ObjectPool<PoolLifetimeProbe, true> pool{2};
+            for (unsigned id = 0; id < prefix; ++id) pool.Create(live, released, id);
+            REQUIRE_THROWS_AS(pool.Create(live, released, 60u, true), std::runtime_error);
+            REQUIRE(live == prefix);
+            auto* object = pool.Create(live, released, prefix);
+            REQUIRE(*object->payload == prefix);
+            pool.ReleaseContents();
+            REQUIRE(live == 0);
+            REQUIRE(released[60] == 0);
+            for (unsigned id = 0; id <= prefix; ++id) REQUIRE(released[id] == 1);
+        }
+        REQUIRE(live == 0);
+        REQUIRE(released[60] == 0);
+    }
+}
+
+TEST_CASE("ObjectPool non-destructing policy preserves its explicit opt-out", "[runtime][lifetime][object-pool]") {
+    unsigned destroyed = 0;
+    struct Probe {
+        explicit Probe(unsigned& count) : destroyed(count) {}
+        ~Probe() { ++destroyed; }
+        unsigned& destroyed;
+    };
+    {
+        swift::runtime::ObjectPool<Probe> pool{1};
+        for (unsigned i = 0; i < 3; ++i) pool.Create(destroyed);
+        pool.ReleaseContents();
+        pool.Create(destroyed);
+    }
+    REQUIRE(destroyed == 0);
+}
+
+TEST_CASE("ObjectPool rejects same-pool construction reentry and remains reusable", "[runtime][lifetime][object-pool]") {
+    unsigned destroyed = 0;
+    struct Probe {
+        Probe(const std::function<void()>& nested, unsigned& destroyed) : destroyed(destroyed) { nested(); }
+        ~Probe() { ++destroyed; }
+        unsigned& destroyed;
+    };
+    swift::runtime::ObjectPool<Probe, true> pool{1};
+    const std::function<void()> empty = [] {};
+    const std::function<void()> create = [&] { pool.Create(empty, destroyed); };
+    const std::function<void()> release = [&] { pool.ReleaseContents(); };
+    REQUIRE_THROWS_AS(pool.Create(create, destroyed), std::logic_error);
+    REQUIRE_THROWS_AS(pool.Create(release, destroyed), std::logic_error);
+    REQUIRE(destroyed == 0);
+    pool.Create(empty, destroyed);
+    pool.ReleaseContents();
+    REQUIRE(destroyed == 1);
+}
+
+TEST_CASE("Instance owner destroys derived state", "[runtime][lifetime]") {
+    bool destroyed = false;
+    struct TrackedInstance final : swift::runtime::Instance {
+        explicit TrackedInstance(bool& flag) : destroyed(flag) {}
+        ~TrackedInstance() override { destroyed = true; }
+        bool& destroyed;
+    };
+    std::unique_ptr<swift::runtime::Instance> instance = std::make_unique<TrackedInstance>(destroyed);
+    REQUIRE_FALSE(destroyed);
+    instance.reset();
+    REQUIRE(destroyed);
+}
+
+#if defined(__aarch64__)
+TEST_CASE("Instance factory destruction releases default module", "[runtime][lifetime]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
+                  .has_local_operation = false, .backend_isa = kArm64};
+    auto instance = Instance::Make(config);
+    std::weak_ptr<Module> module = static_cast<AddressSpace*>(instance.get())->GetDefaultModule();
+    REQUIRE_FALSE(module.expired());
+    instance.reset();
+    REQUIRE(module.expired());
+}
+#endif
 
 TEST_CASE("Test compiler") {
     using namespace swift::slang;

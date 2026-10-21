@@ -85,13 +85,20 @@ void JitTranslator::BeginFlagsTokenProducer(const PseudoFlags& pseudo) {
 
 Register JitTranslator::FlagsResultRegister(
         ir::Inst* inst, const PseudoFlags& pseudo) {
-    if (const auto pinned = context.PinnedValueGPR(ir::Value{inst}, cur_instr, pinned_gprs)) {
+    if (const auto pinned = context.PlannedGPR<XRegister>(ir::Value{inst}, cur_instr)) {
         return ir::GetValueSizeByte(inst->ReturnType()) > sizeof(u32)
                 ? Register{*pinned}
                 : Register{pinned->W()};
     }
     if (FlagsRegsEnabled() && !pseudo.Null() && !pseudo.branch_only &&
-        inst->GetUses() == 0) {
+        !context.InstructionHasValueUses()) {
+        // AF/NZCV-only producers reuse x12, but don't create a new PF token.
+        // Publish the previous PF before its backing register is overwritten.
+        if (!True(pseudo.set & ir::Flags::Parity) && flag_state.flags_token_valid &&
+            flag_state.flags_token_result_code == atomic_scratch.GetCode()) {
+            PublishFlagsToken();
+            InvalidateFlagsToken();
+        }
         return ir::GetValueSizeByte(inst->ReturnType()) > sizeof(u32)
                 ? atomic_scratch
                 : atomic_scratch.W();
@@ -101,80 +108,8 @@ Register JitTranslator::FlagsResultRegister(
 
 bool JitTranslator::CanRetainFlagsTokenResult(
         ir::Inst* producer, const Register& result) {
-    if (!producer) {
-        return false;
-    }
-    const u32 width = ir::GetValueSizeByte(producer->ReturnType());
-    if (width != sizeof(u32) && width != sizeof(u64)) {
-        return false;
-    }
-    if (!backend::IsFixedGPRHome(result.GetCode())) {
-        return false;
-    }
-    const ir::Value value{producer};
-    auto is_publication_wrapper = [&](ir::Inst* wrapper) {
-        if (width != sizeof(u32) || !wrapper ||
-            wrapper->GetOp() != ir::OpCode::ZeroExtend32To64) {
-            return false;
-        }
-        auto source = wrapper->GetArg<ir::Value>(0);
-        while (source.Defined() && source.Def()->IsBitCastOperation()) {
-            source = source.Def()->GetArg<ir::Value>(0);
-        }
-        return source.Def() == producer &&
-               context.SharesGPR(source, ir::Value{wrapper});
-    };
-
-    bool after_producer = false;
-    bool published = false;
-    ir::Inst* publication_wrapper = nullptr;
-    for (auto& inst : cur_block->GetInstList()) {
-        if (&inst == producer) {
-            after_producer = true;
-            continue;
-        }
-        if (!after_producer) {
-            continue;
-        }
-        if (inst.GetOp() == ir::OpCode::SetHostGPR &&
-            inst.GetArg<ir::Imm>(1).Get() == result.GetCode()) {
-            auto stored = inst.GetArg<ir::Value>(0);
-            while (stored.Defined() && stored.Def()->IsBitCastOperation()) {
-                stored = stored.Def()->GetArg<ir::Value>(0);
-            }
-            auto* wrapper = stored.Def();
-            bool publishes_producer = wrapper == producer;
-            if (!publishes_producer && is_publication_wrapper(wrapper)) {
-                publishes_producer = true;
-                publication_wrapper = wrapper;
-            }
-            if (!published && inst.GetArg<ir::Imm>(2).Get() == 0 &&
-                context.IsHostWriteCoalesced(inst.Id()) &&
-                publishes_producer) {
-                published = true;
-                continue;
-            }
-            return false;
-        }
-        if ((backend::FixedGPRClobbers(inst, context.GetFeatures()) &
-             (1u << result.GetCode())) != 0) {
-            return false;
-        }
-        if (inst.HasValue() && !inst.IsBitCastOperation()) {
-            if (!publication_wrapper && is_publication_wrapper(&inst)) {
-                publication_wrapper = &inst;
-                continue;
-            }
-            if (&inst == publication_wrapper) {
-                continue;
-            }
-            const ir::Value other{&inst};
-            if (context.SharesGPR(value, other)) {
-                return false;
-            }
-        }
-    }
-    return published;
+    return gpr_plan && gpr_plan->flags_tokens && cur_instr &&
+           gpr_plan->flags_tokens->Retains(producer, result.GetCode(), cur_instr->Id());
 }
 
 XRegister JitTranslator::FlagsTokenResult() const {
@@ -404,7 +339,7 @@ std::optional<u64> JitTranslator::PendingNZCVMergeMask(
             BlockIsFlagsTransparent(cur_block) &&
             (cause == FlagsRegsAuditMergeCause::HostExit ||
              (cause == FlagsRegsAuditMergeCause::TerminalDispatcher &&
-              region_edges_active));
+              RegionEdgesActive()));
     if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty) && !force_ret_pstate) {
         return std::nullopt;
     }
@@ -415,7 +350,7 @@ std::optional<u64> JitTranslator::PendingNZCVMergeMask(
 bool JitTranslator::CanDeferFullNZCVMerge(
         FlagsRegsAuditMergeCause cause) const {
     const auto requested = PendingNZCVMergeMask(cause);
-    return FlagsRegsEnabled() && region_edges_active && requested &&
+    return FlagsRegsEnabled() && RegionEdgesActive() && requested &&
            *requested == static_cast<u64>(HostFlags::NZCV);
 }
 
@@ -458,7 +393,7 @@ DirectLinkFlagsBypass JitTranslator::MergeNZCV(
             }
         }
         const u32 merge_end = context.CurrentBufferSize();
-        if (!deferred_merge && FlagsRegsEnabled() && region_edges_active) {
+        if (!deferred_merge && FlagsRegsEnabled() && RegionEdgesActive()) {
             const auto edge_flags = PendingEdgeFlagsState(
                     static_cast<HostFlags>(req),
                     flag_state.save_in_nzcv && flag_state.nzcv_dirty
@@ -1010,145 +945,19 @@ void JitTranslator::TestAuxiliaryCarry(const Register& result) {
     RecordPFAFDensity(PFAFDensityKind::AFRead, begin);
 }
 
-bool JitTranslator::RecipeRegionBranchPFAF(BackedgeFlagsRecipe& recipe,
-                                        ir::Inst* producer) const {
-    if (!recipe.dead_successor || !producer || !recipe.final_save ||
-        recipe.final_save->GetArg<ir::Value>(0).Def() != producer ||
-        producer->GetOp() != ir::OpCode::Sub ||
-        (producer->ReturnType() != ir::ValueType::U8 &&
-         producer->ReturnType() != ir::ValueType::U16)) {
-        return false;
-    }
-    const auto requested = recipe.final_save->GetArg<ir::Flags>(1);
-    if (!True(requested & ir::Flags::NZCV) ||
-        !True(requested & ir::Flags::Parity) ||
-        !True(requested & ir::Flags::AuxiliaryCarry)) {
-        return false;
-    }
-
-    using Deferred = BackedgeFlagsRecipe::DeferredOperand;
-    recipe.pfaf_width = static_cast<u8>(ir::GetValueSizeByte(producer->ReturnType()));
-    auto describe = [&](ir::Value value) -> Deferred {
-        auto* def = value.Def();
-        if (!def || ir::GetValueSizeByte(value.Type()) < recipe.pfaf_width) {
-            return {};
-        }
-        if (def->GetOp() == ir::OpCode::LoadImm) {
-            return {Deferred::Kind::Imm, def->GetArg<ir::Imm>(0).Get(), 0};
-        }
-        if (def->GetOp() == ir::OpCode::GetHostGPR) {
-            const u64 offset = def->GetArg<ir::Imm>(1).Get();
-            if (offset + recipe.pfaf_width > sizeof(u64)) {
-                return {};
-            }
-            return {Deferred::Kind::HostGPR,
-                    def->GetArg<ir::Imm>(0).Get(), static_cast<u8>(offset)};
-        }
-        if (def->GetOp() == ir::OpCode::LoadUniform) {
-            const auto uniform = def->GetArg<ir::Uniform>(0);
-            if (ir::GetValueSizeByte(uniform.GetType()) < recipe.pfaf_width) {
-                return {};
-            }
-            return {Deferred::Kind::Uniform, uniform.GetOffset(), 0};
-        }
-        return {};
-    };
-
-    recipe.pfaf_left = describe(producer->GetArg<ir::Value>(0));
-    const auto right = producer->GetArg<ir::Operand>(1);
-    if (!right.GetRight().Null()) {
-        return false;
-    }
-    if (right.GetLeft().IsImm()) {
-        recipe.pfaf_right = {Deferred::Kind::Imm, right.GetLeft().imm.Get(), 0};
-    } else if (right.GetLeft().IsValue()) {
-        recipe.pfaf_right = describe(right.GetLeft().value);
-    }
-    recipe.defer_pfaf = recipe.pfaf_left.kind != Deferred::Kind::None &&
-                      recipe.pfaf_right.kind != Deferred::Kind::None;
-    auto overlaps_uniform = [&](const Deferred& operand,
-                                const ir::Uniform& uniform) {
-        if (operand.kind != Deferred::Kind::Uniform) {
-            return false;
-        }
-        const u64 left_begin = operand.value;
-        const u64 left_end = left_begin + recipe.pfaf_width;
-        const u64 right_begin = uniform.GetOffset();
-        const u64 right_end = right_begin + ir::GetValueSizeByte(uniform.GetType());
-        return left_begin < right_end && right_begin < left_end;
-    };
-    for (const auto& scan : cur_block->GetInstList()) {
-        if (scan.Id() <= producer->Id()) {
-            continue;
-        }
-        if (scan.GetOp() == ir::OpCode::StoreUniform) {
-            const auto uniform = scan.GetArg<ir::Uniform>(0);
-            if (overlaps_uniform(recipe.pfaf_left, uniform) ||
-                overlaps_uniform(recipe.pfaf_right, uniform)) {
-                recipe.defer_pfaf = false;
-            }
-        } else if (scan.GetOp() == ir::OpCode::SetHostGPR) {
-            const u64 target = scan.GetArg<ir::Imm>(1).Get();
-            if ((recipe.pfaf_left.kind == Deferred::Kind::HostGPR &&
-                 recipe.pfaf_left.value == target) ||
-                (recipe.pfaf_right.kind == Deferred::Kind::HostGPR &&
-                 recipe.pfaf_right.value == target)) {
-                recipe.defer_pfaf = false;
-            }
-        }
-    }
-    return recipe.defer_pfaf;
-}
-
-bool JitTranslator::ReproveRegionBranchPFAF() const {
-    if (!backedge_flags_recipe || !backedge_flags_recipe->defer_pfaf ||
-        !backedge_flags_recipe->final_save) {
-        return false;
-    }
-    BackedgeFlagsRecipe reproved;
-    reproved.dead_successor = true;
-    reproved.final_save = backedge_flags_recipe->final_save;
-    auto* producer = reproved.final_save->GetArg<ir::Value>(0).Def();
-    if (!RecipeRegionBranchPFAF(reproved, producer)) {
-        return false;
-    }
-    return reproved.pfaf_width == backedge_flags_recipe->pfaf_width &&
-           reproved.pfaf_left == backedge_flags_recipe->pfaf_left &&
-           reproved.pfaf_right == backedge_flags_recipe->pfaf_right;
-}
 
 bool JitTranslator::RegionBranchPFAFActive(ir::Inst* producer) const {
-    return backedge_flags_recipe && backedge_flags_recipe->defer_pfaf &&
-           backedge_flags_recipe->final_save &&
-           backedge_flags_recipe->final_save->GetArg<ir::Value>(0).Def() == producer;
+    return backedge_flags_recipe && backedge_flags_recipe->plan.pfaf &&
+           backedge_flags_recipe->plan.pfaf->producer == producer;
 }
 
 JitTranslator::PseudoFlags JitTranslator::GetPseudoFlags(ir::Inst* inst) {
     if (IsDeadEdgeIntegerBranchProducer(inst)) {
-        return {flag_state.dead_edge_integer_branch->required, ir::Flags::None, true};
+        return {DeadEdgePlan()->required, ir::Flags::None, true};
     }
-    ir::Flags result_set{};
-    ir::Flags result_clear{};
-    bool branch_only = false;
-    if (auto pseudos = inst->GetPseudoOperations(); !pseudos.empty()) {
-        for (auto& pseudo : pseudos) {
-            if (pseudo->GetOp() == ir::OpCode::SaveFlags) {
-                auto guest_flags = pseudo->GetArg<ir::Flags>(1);
-                result_set |= guest_flags;
-            } else if (pseudo->GetOp() == ir::OpCode::BranchOnlyFlags) {
-                auto guest_flags = pseudo->GetArg<ir::Flags>(1);
-                result_set |= guest_flags;
-                branch_only = true;
-            } else if (pseudo->GetOp() == ir::OpCode::ClearFlags) {
-                auto guest_flags = pseudo->GetArg<ir::Flags>(0);
-                result_clear |= guest_flags;
-            }
-        }
-    }
-    if (!branch_only && RegionBranchPFAFActive(inst)) {
-        branch_only = true;
-    }
-    return {result_set, result_clear, branch_only};
+    auto demand = gpr_plan->pseudo_flags.For(inst);
+    if (!demand.branch_only && RegionBranchPFAFActive(inst)) demand.branch_only = true;
+    return demand;
 }
 
 void JitTranslator::EmitSaveFlags(ir::Inst* inst) {
@@ -1170,10 +979,10 @@ void JitTranslator::EmitBranchOnlyFlags(ir::Inst* inst) {
 
 void JitTranslator::EmitClearFlags(ir::Inst* inst) {
     // See EmitSaveFlags: merge instead of asserting on a pending window.
-    flag_state.compound_logical_clear_pending =
-            flag_state.flags_clear == ir::Flags::None && MatchCompoundLogicalClear(inst);
+    auto* producer = flag_state.flags_clear == ir::Flags::None ? PlannedCompoundProducer(inst) : nullptr;
+    flag_state.compound_logical_clear_pending = producer != nullptr;
     flag_state.compound_logical_zero_pending = flag_state.compound_logical_clear_pending &&
-            MatchCompoundZeroLogicalClear(inst);
+            ScalarPreparation().copies.IsSelfXor(producer);
     flag_state.flags_clear |= inst->GetArg<ir::Flags>(0);
 }
 
@@ -1203,8 +1012,8 @@ void JitTranslator::EmitInvertCarry(ir::Inst* inst) {
     // CFINV operates on host NZCV.  A known in-unit producer leaves its C
     // there; otherwise restore the committed ABI word first.  Mark only C as
     // pending so the eventual merge cannot overwrite unrelated guest bits.
-    if (CanonicalCarryEnabled() &&
-        raw_carry_branch_analysis.SuppressesInvert(inst)) {
+    if (FlagsRegsEnabled() && CanonicalCarryEnabled() &&
+        ScalarPreparation().raw_carry.SuppressesInvert(inst)) {
         ASSERT(flag_state.save_in_nzcv && flag_state.nzcv_dirty);
         ASSERT(!flag_state.raw_carry_pending);
         flag_state.raw_carry_pending = inst;
@@ -1222,9 +1031,10 @@ void JitTranslator::EmitInvertCarry(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
-    const bool compact = inst->GetArg<ir::Imm>(1).Get() != 0;
     auto packed = inst->GetArg<ir::Value>(0);
-    ASSERT(compact == IsCompactFCmp(packed));
+    ASSERT(packed.Def() && packed.Def()->GetOp() == ir::OpCode::VecFCmp &&
+           (inst->GetArg<ir::Imm>(1).Get() != 0) == (packed.Def()->GetArg<ir::Imm>(3).Get() != 0));
+    const bool compact = IsCompactFCmp(packed);
 
     if (compact) {
         // VecFCmp left ARM FP NZCV live and computed ordered (VC) in its
@@ -1257,19 +1067,13 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
               flags_audit_block_edge);
     FlushFlags();
     auto packed_reg = context.R(packed);
-    constexpr u64 replaced =
-            (u64(1) << HostFlagsBit::N) |
-            (u64(1) << HostFlagsBit::Z) |
-            (u64(1) << HostFlagsBit::C) |
-            (u64(1) << HostFlagsBit::V) |
-            (u64(1) << HostFlagsBit::AuxiliaryCarry) |
-            (u64(0xff) << HostFlagsBit::ParityByte);
-    u64 keep = ~replaced;
-    // keep 不是合法 logical immediate，VIXL 要临时占用一枚池寄存器合成掩码。
-    // 必须在 GetTmpX() 之前执行：shared_tmp + packed 重载 + bit 已占满
-    // reserve=3 的池时，再晚一步 VIXL 就无寄存器可借（L3 direct 实测炸点）。
+    // Clear the overwritten fields directly. A spilled relation and the flags
+    // merge can already occupy the pool; synthesizing a mask needs another
+    // VIXL scratch register before the explicit bit temporary is acquired.
     u32 begin = context.CurrentBufferSize();
-    __ And(flags, flags, ForceCast<s64>(keep));
+    __ Bfc(flags, HostFlagsBit::V, 4);
+    __ Bfc(flags, HostFlagsBit::AuxiliaryCarry, 1);
+    // The later eight-bit BFI replaces the whole parity byte with 0 or 1.
     RecordPFAFDensity(PFAFDensityKind::SharedPack, begin);
 
     auto bit = context.GetTmpX();
@@ -1277,6 +1081,9 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
     // VecFCmp: bit0=CF, bit1=PF, bit2=ZF.  PF's ABI slot stores a raw
     // parity byte, so 0 spells PF=1 and 1 spells PF=0.
     __ Ubfx(bit, packed_reg, 0, 1);
+    // The full relation fallback changes storage, not the IR's declared
+    // carry polarity. Compact publication promises inverted x86 CF.
+    if (inst->GetArg<ir::Imm>(1).Get() != 0) __ Eor(bit, bit, 1);
     __ Bfi(flags, bit, HostFlagsBit::C, 1);
     __ Ubfx(bit, packed_reg, 2, 1);
     __ Bfi(flags, bit, HostFlagsBit::Z, 1);
@@ -1288,83 +1095,16 @@ void JitTranslator::EmitPublishFCmpFlags(ir::Inst* inst) {
 }
 
 bool JitTranslator::CanUseCompactFCmpCarrier(ir::Inst* fcmp) const {
-    if (!fcmp || !IsCompactFCmp(ir::Value{fcmp}) || !cur_block) {
-        return false;
-    }
-
-    auto& list = cur_block->GetInstList();
-    auto publish = list.iterator_to(*fcmp);
-    if (++publish == list.end() ||
-        publish->GetOp() != ir::OpCode::PublishFCmpFlags ||
-        publish->GetArg<ir::Value>(0).Def() != fcmp ||
-        publish->GetArg<ir::Imm>(1).Get() == 0) {
-        return false;
-    }
-
-    u32 consumers = 0;
-    bool saw_condition = false;
-    for (auto& user : list) {
-        bool consumes = false;
-        for (auto value : user.GetValues()) {
-            consumes |= value.Def() == fcmp;
-        }
-        if (!consumes) {
-            continue;
-        }
-        ++consumers;
-        if (&user == &*publish) {
-            continue;
-        }
-        if (saw_condition || user.GetOp() != ir::OpCode::FCmpCondSet) {
-            return false;
-        }
-        saw_condition = true;
-        auto scan = publish;
-        for (++scan; scan != list.end() && &*scan != &user; ++scan) {
-            if (scan->GetOp() != ir::OpCode::InvertCarry &&
-                !RetainsPendingHostNZCV(*scan)) {
-                return false;
-            }
-        }
-        if (scan == list.end()) {
-            return false;
-        }
-    }
-    return consumers != 0 && consumers == fcmp->GetUses();
+    if (!fcmp || !gpr_plan || !gpr_plan->consumers) return false;
+    const auto found = gpr_plan->consumers->comparisons.find(fcmp);
+    return found != gpr_plan->consumers->comparisons.end() && found->second.compact_carrier;
 }
 
-ir::Inst* JitTranslator::RawFCmpCondition(ir::Inst* fcmp) const {
-    if (!fcmp || fcmp->GetOp() != ir::OpCode::VecFCmp || !cur_block) {
-        return nullptr;
-    }
-
-    ir::Inst* condition = nullptr;
-    for (auto& user : cur_block->GetInstList()) {
-        bool consumes = false;
-        for (auto value : user.GetValues()) {
-            consumes |= value.Def() == fcmp;
-        }
-        if (!consumes) {
-            continue;
-        }
-        if (condition || user.GetOp() != ir::OpCode::FCmpCondSet) {
-            return nullptr;
-        }
-        condition = &user;
-    }
-    if (!condition || fcmp->GetUses() != 1) {
-        return nullptr;
-    }
-
-    auto& list = cur_block->GetInstList();
-    auto scan = std::next(list.iterator_to(*fcmp));
-    for (; scan != list.end() && &*scan != condition; ++scan) {
-        if (!RetainsPendingHostNZCV(*scan) ||
-            MayFaultOrObserve(*scan)) {
-            return nullptr;
-        }
-    }
-    return scan != list.end() ? condition : nullptr;
+ir::Inst* JitTranslator::RawFCmpCondition(ir::Inst* fcmp, ir::Inst* consumer) const {
+    if (!fcmp || !gpr_plan || !gpr_plan->consumers) return nullptr;
+    const auto found = gpr_plan->consumers->comparisons.find(fcmp);
+    if (found == gpr_plan->consumers->comparisons.end()) return nullptr;
+    return consumer && found->second.raw_all_conditions ? consumer : found->second.raw_condition;
 }
 
 void JitTranslator::FlushFlags() {
@@ -1394,184 +1134,21 @@ void JitTranslator::EmitGetFlags(ir::Inst* inst) {
     RecordPFAFDensity(PFAFDensityKind::WholeFlags, begin);
 }
 
-namespace {
-bool OpClobbersPstate(ir::OpCode op) {
-    switch (op) {
-        case ir::OpCode::TestFlags:
-        case ir::OpCode::TestNotFlags:
-        case ir::OpCode::CallLambda:
-        case ir::OpCode::CallLocation:
-        case ir::OpCode::CallDynamic:
-        case ir::OpCode::VecFCmp:
-        case ir::OpCode::PublishFCmpFlags:
-        case ir::OpCode::PublishSse42StrFlags:
-        case ir::OpCode::X87Op:
-        // Variable-count SIMD shifts clamp their scalar count with CMP/CSEL
-        // before issuing the NEON shift.  The NEON instruction itself leaves
-        // NZCV alone, but the clamp does not; keep lazy guest flags from being
-        // read directly from the now-stale host PSTATE across these ops.
-        case ir::OpCode::VecShiftLeft:
-        case ir::OpCode::VecShiftRight:
-        case ir::OpCode::VecShiftRightArithmetic:
-            return true;
-        default:
-            return false;
-    }
-}
-
-// Z/N/V have the same host/guest polarity. C does not (see CarryStillInPstate).
-bool SimpleFlagStillInPstate(ir::Block* block, ir::Inst* test, ir::Flags flag) {
-    bool live = false;
-    for (auto& inst : block->GetInstList()) {
-        if (&inst == test) {
-            return live;
-        }
-        if (inst.GetOp() == ir::OpCode::SaveFlags ||
-            inst.GetOp() == ir::OpCode::BranchOnlyFlags) {
-            live = True(inst.GetArg<ir::Flags>(1) & flag);
-            continue;
-        }
-        if (inst.GetOp() == ir::OpCode::ClearFlags &&
-            True(inst.GetArg<ir::Flags>(0) & flag)) {
-            live = false;
-            continue;
-        }
-        if (flag == ir::Flags::Overflow &&
-            inst.GetOp() == ir::OpCode::SetOverflow) {
-            live = false;
-            continue;
-        }
-        if (OpClobbersPstate(inst.GetOp())) {
-            live = false;
-        }
-    }
-    return false;
-}
-
-bool IsAddFamilyCarryProducer(ir::Inst* producer) {
-    if (!producer) {
-        return false;
-    }
-    const auto op = producer->GetOp();
-    return op == ir::OpCode::Add || op == ir::OpCode::Adc;
-}
-
-// Host C matches the bit TestFlags(Carry) reads: either the last Carry
-// SaveFlags came from Add/Adc (no later invert), or InvertCarry ran after
-// that save and PSTATE was not clobbered. Sub/Sbb/Cmp without invert keep
-// ARM not-borrow, which is the stored C bit only until CFINV.
-bool CarryStillInPstate(ir::Block* block, ir::Inst* test) {
-    bool saw_carry_save = false;
-    bool clobbered = false;
-    bool invert_live = false;
-    bool add_family_live = false;
-    for (auto& inst : block->GetInstList()) {
-        if (&inst == test) {
-            return invert_live || add_family_live;
-        }
-        if (inst.GetOp() == ir::OpCode::SaveFlags ||
-            inst.GetOp() == ir::OpCode::BranchOnlyFlags) {
-            if (True(inst.GetArg<ir::Flags>(1) & ir::Flags::Carry)) {
-                saw_carry_save = true;
-                clobbered = false;
-                invert_live = false;
-                add_family_live =
-                        IsAddFamilyCarryProducer(inst.GetArg<ir::Value>(0).Def());
-            }
-            continue;
-        }
-        if (inst.GetOp() == ir::OpCode::InvertCarry) {
-            invert_live = saw_carry_save && !clobbered;
-            add_family_live = false;
-            continue;
-        }
-        if (inst.GetOp() == ir::OpCode::SetCarry ||
-            (inst.GetOp() == ir::OpCode::ClearFlags &&
-             True(inst.GetArg<ir::Flags>(0) & ir::Flags::Carry))) {
-            saw_carry_save = false;
-            invert_live = false;
-            add_family_live = false;
-            clobbered = true;
-            continue;
-        }
-        if (OpClobbersPstate(inst.GetOp())) {
-            clobbered = true;
-            invert_live = false;
-            add_family_live = false;
-        }
-    }
-    return false;
-}
-}  // namespace
-
-bool JitTranslator::CarryCanStayInPstate(ir::Inst* test) const {
-    return CarryStillInPstate(cur_block, test);
-}
-
-ir::Inst* SoleUserInBlock(ir::Block* block, ir::Inst* def) {
-    if (!block || !def || def->GetUses() != 1) {
-        return nullptr;
-    }
-    ir::Inst* found = nullptr;
-    for (auto& inst : block->GetInstList()) {
-        for (auto value : inst.GetValues()) {
-            if (value.Def() == def) {
-                if (found) {
-                    return nullptr;
-                }
-                found = &inst;
-            }
-        }
-    }
-    return found;
-}
-
-ir::Inst* OtherAndOrArg(ir::Inst* combine, ir::Inst* known) {
-    if (!combine || !known ||
-        (combine->GetOp() != ir::OpCode::And && combine->GetOp() != ir::OpCode::Or)) {
-        return nullptr;
-    }
-    if (combine->GetArg<ir::Value>(0).Def() == known) {
-        auto rhs = combine->GetArg<ir::Operand>(1).GetLeft();
-        return rhs.IsValue() ? rhs.value.Def() : nullptr;
-    }
-    return combine->GetArg<ir::Value>(0).Def();
-}
 
 bool JitTranslator::FoldCcFromCarryTest(ir::Inst* test_flags) {
-    if (!FlagsRegsEnabled() || !cur_block || !test_flags) {
+    if (!FlagsRegsEnabled() || !CanonicalCarryEnabled() || !cur_block || !test_flags) {
         return false;
     }
     if (test_flags->GetArg<ir::Flags>(0) != ir::Flags::Carry) {
         return false;
     }
-    const bool carry_in_pstate = CarryStillInPstate(cur_block, test_flags);
-    auto* pred = SoleUserInBlock(cur_block, test_flags);
-    if (!pred) {
-        return false;
-    }
-    auto* combine = SoleUserInBlock(cur_block, pred);
-    if (!combine) {
-        return false;
-    }
-    auto* other = OtherAndOrArg(combine, pred);
-    if (!other || other->GetOp() != ir::OpCode::CondSet) {
-        return false;
-    }
-    const auto zcond = other->GetArg<ir::Cond>(0);
-    const bool above = pred->GetOp() == ir::OpCode::TestZero &&
-                       combine->GetOp() == ir::OpCode::And &&
-                       zcond == ir::Cond::NE;
-    const bool below_equal = pred->GetOp() == ir::OpCode::TestNotZero &&
-                             combine->GetOp() == ir::OpCode::Or &&
-                             zcond == ir::Cond::EQ;
-    if (!above && !below_equal) {
-        return false;
-    }
+    const auto* action = ScalarPreparation().raw_carry.FoldForTest(test_flags);
+    if (!action) return false;
+    auto* combine = action->combine;
     if (const auto raw_condition =
-                raw_carry_branch_analysis.ConditionForTest(test_flags)) {
+                ScalarPreparation().raw_carry.ConditionForTest(test_flags)) {
         ASSERT_MSG(flag_state.raw_carry_pending ==
-                           raw_carry_branch_analysis.InvertForTest(test_flags),
+                           ScalarPreparation().raw_carry.InvertForTest(test_flags),
                    "raw carry branch state diverged at IR {}", test_flags->Id());
         ASSERT_MSG(RecordLocalCondition(combine, *raw_condition),
                    "raw carry branch consumer diverged at IR {}", test_flags->Id());
@@ -1580,24 +1157,11 @@ bool JitTranslator::FoldCcFromCarryTest(ir::Inst* test_flags) {
         flag_state.raw_carry_pending = nullptr;
         return true;
     }
-    if (CanonicalCarryEnabled()) {
-        if (!RecordLocalCondition(combine,
-                                  above ? ir::Cond::EQ : ir::Cond::NE)) {
-            return false;
-        }
-        MergeNZCV();
-        const auto mask = static_cast<u64>(GuestNZCVToHost(
-                ir::Flags::Carry | ir::Flags::Zero));
-        __ Tst(flags, mask);
-        return true;
-    }
-    if (!carry_in_pstate) {
-        return false;
-    }
-    if (above) {
-        return RecordLocalCondition(combine, ir::Cond::HI);
-    }
-    return RecordLocalCondition(combine, ir::Cond::LS);
+    if (!RecordLocalCondition(combine, action->packed_condition)) return false;
+    MergeNZCV();
+    const auto mask = static_cast<u64>(GuestNZCVToHost(ir::Flags::Carry | ir::Flags::Zero));
+    __ Tst(flags, mask);
+    return true;
 }
 
 void JitTranslator::EmitTestFlags(ir::Inst* inst) {
@@ -1606,17 +1170,17 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
     }
     auto test = inst->GetArg<ir::Flags>(0);
     if (FlagsRegsEnabled() && test == ir::Flags::Zero &&
-        SimpleFlagStillInPstate(cur_block, inst, ir::Flags::Zero) &&
+        PstateAvailable(inst, ir::Flags::Zero) &&
         RecordLocalCondition(inst, ir::Cond::EQ)) {
         return;
     }
     if (FlagsRegsEnabled() && test == ir::Flags::Negate &&
-        SimpleFlagStillInPstate(cur_block, inst, ir::Flags::Negate) &&
+        PstateAvailable(inst, ir::Flags::Negate) &&
         RecordLocalCondition(inst, ir::Cond::MI)) {
         return;
     }
     if (FlagsRegsEnabled() && test == ir::Flags::Overflow &&
-        SimpleFlagStillInPstate(cur_block, inst, ir::Flags::Overflow) &&
+        PstateAvailable(inst, ir::Flags::Overflow) &&
         RecordLocalCondition(inst, ir::Cond::VS)) {
         return;
     }
@@ -1635,7 +1199,7 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
         return;
     }
     if (FlagsRegsEnabled() && test == ir::Flags::Carry &&
-        CarryStillInPstate(cur_block, inst) &&
+        PstateAvailable(inst, ir::Flags::Carry) &&
         RecordLocalCondition(inst, ir::Cond::CS)) {
         return;
     }
@@ -1723,22 +1287,22 @@ void JitTranslator::EmitTestFlags(ir::Inst* inst) {
 void JitTranslator::EmitTestNotFlags(ir::Inst* inst) {
     auto test = inst->GetArg<ir::Flags>(0);
     if (FlagsRegsEnabled() && test == ir::Flags::Zero &&
-        SimpleFlagStillInPstate(cur_block, inst, ir::Flags::Zero) &&
+        PstateAvailable(inst, ir::Flags::Zero) &&
         RecordLocalCondition(inst, ir::Cond::NE)) {
         return;
     }
     if (FlagsRegsEnabled() && test == ir::Flags::Negate &&
-        SimpleFlagStillInPstate(cur_block, inst, ir::Flags::Negate) &&
+        PstateAvailable(inst, ir::Flags::Negate) &&
         RecordLocalCondition(inst, ir::Cond::PL)) {
         return;
     }
     if (FlagsRegsEnabled() && test == ir::Flags::Overflow &&
-        SimpleFlagStillInPstate(cur_block, inst, ir::Flags::Overflow) &&
+        PstateAvailable(inst, ir::Flags::Overflow) &&
         RecordLocalCondition(inst, ir::Cond::VC)) {
         return;
     }
     if (FlagsRegsEnabled() && test == ir::Flags::Carry &&
-        CarryStillInPstate(cur_block, inst) &&
+        PstateAvailable(inst, ir::Flags::Carry) &&
         RecordLocalCondition(inst, ir::Cond::CC)) {
         return;
     }

@@ -9,8 +9,13 @@
 
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/runtime.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/common/svm_config.h"
+#include "runtime/backend/arm64/alloc/gpr_block_plan.h"
+#include "runtime/backend/arm64/jit/block_analysis_index.h"
 #include "runtime/frontend/x86/decoder.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/ir/opts/flags_elimination_pass.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 
@@ -69,6 +74,7 @@ LogicalFlagEmission EmitLogicalFlagDirect(bool observe_result) {
     const bool extract_tied =
             alloc.ValueGPR(source).id == alloc.ValueGPR(extract).id;
 
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -105,6 +111,13 @@ std::size_t Count(const std::vector<std::string>& instructions,
     });
 }
 
+std::size_t CountMnemonic(const std::vector<std::string>& instructions,
+                         std::string_view mnemonic) {
+    return std::ranges::count_if(instructions, [&](const auto& instruction) {
+        return instruction.starts_with(mnemonic);
+    });
+}
+
 std::vector<std::string> Disassemble(arm64::JitContext& context) {
     vixl::aarch64::Decoder decoder;
     vixl::aarch64::Disassembler disassembler;
@@ -121,6 +134,34 @@ std::vector<std::string> Disassemble(arm64::JitContext& context) {
         instructions.emplace_back(disassembler.GetOutput());
     }
     return instructions;
+}
+
+std::vector<std::string> BeforeRequestTail(
+        arm64::JitContext& context, const std::vector<std::string>& instructions) {
+    using namespace vixl::aarch64;
+    const auto* begin = context.GetMasm().GetBuffer()->GetStartAddress<const swift::u8*>();
+    const auto* end = begin + instructions.size() * sizeof(swift::u32);
+    size_t cold = instructions.size();
+    unsigned polls{};
+    for (size_t i = 0; i + 1 < instructions.size(); ++i) {
+        if (!instructions[i].starts_with("ldarb ") ||
+            !instructions[i + 1].starts_with("cbz ")) continue;
+        const auto* check = reinterpret_cast<const Instruction*>(begin + (i + 1) * sizeof(swift::u32));
+        const auto* resume = reinterpret_cast<const swift::u8*>(check->GetImmPCOffsetTarget());
+        REQUIRE(resume > begin + (i + 1) * sizeof(swift::u32));
+        REQUIRE(resume <= end);
+        const auto* exit = reinterpret_cast<const Instruction*>(resume - sizeof(swift::u32));
+        REQUIRE(exit->IsUncondBranchImm());
+        const auto* tail = reinterpret_cast<const swift::u8*>(exit->GetImmPCOffsetTarget());
+        REQUIRE(tail >= resume);
+        REQUIRE(tail < end);
+        cold = std::min(cold, static_cast<size_t>(tail - begin) / sizeof(swift::u32));
+        ++polls;
+    }
+    REQUIRE(polls == 2);
+    const std::vector<std::string> hot{instructions.begin(), instructions.begin() + cold};
+    REQUIRE(Count(hot, "ldarb ") == 2);
+    return hot;
 }
 
 std::vector<std::string> EmitNarrowArithmetic(OpCode op,
@@ -164,6 +205,7 @@ std::vector<std::string> EmitNarrowArithmetic(OpCode op,
                    address_space.GetTrampolines().GetGPRRegs(),
                    address_space.GetTrampolines().GetFPRRegs(), features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -207,6 +249,7 @@ std::vector<std::string> EmitPackedCVAFClear(
                    address_space.GetTrampolines().GetGPRRegs(),
                    address_space.GetTrampolines().GetFPRRegs(), features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -246,6 +289,7 @@ std::vector<std::string> EmitParityOnlyLogicalBeforeSelect() {
                    address_space.GetTrampolines().GetGPRRegs(),
                    address_space.GetTrampolines().GetFPRRegs(), features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -255,11 +299,17 @@ std::vector<std::string> EmitParityOnlyLogicalBeforeSelect() {
 
 }  // namespace
 
-TEST_CASE("dead narrow logical identities publish NZ in one instruction") {
+TEST_CASE("dead narrow logical identities preserve NZ and parity publication") {
     const auto emission = EmitLogicalFlagDirect(false);
     REQUIRE(emission.extract_tied);
-    REQUIRE(Count(emission.instructions, "lsl #24") == 1);
-    REQUIRE_FALSE(Contains(emission.instructions, "sxtb"));
+    if (GetSvmConfig().flags_regs) {
+        REQUIRE(Count(emission.instructions, "lsl #24") == 1);
+        REQUIRE_FALSE(Contains(emission.instructions, "sxtb"));
+    } else {
+        REQUIRE(Count(emission.instructions, "lsl #24") == 0);
+        REQUIRE(Count(emission.instructions, "sxtb") == 1);
+        REQUIRE(Contains(emission.instructions, "tst "));
+    }
 }
 
 TEST_CASE("observed narrow logical identities keep their result") {
@@ -302,23 +352,50 @@ TEST_CASE("parity-only logical publication leaves NZCV clean") {
 
 TEST_CASE("logical NZ publication absorbs an adjacent CVAF clear") {
     const auto exact = EmitPackedCVAFClear(true);
-    REQUIRE(Contains(exact, "mrs x26, nzcv"));
-    REQUIRE(Count(exact, "ubfx ") == 0);
     REQUIRE_FALSE(Contains(exact, "#26, #6"));
-    REQUIRE_FALSE(Contains(exact, "bfc x26, #26, #4"));
+    if (GetSvmConfig().flags_regs) {
+        REQUIRE(Contains(exact, "mrs x26, nzcv"));
+        REQUIRE(Count(exact, "ubfx ") == 0);
+        REQUIRE_FALSE(Contains(exact, "bfc x26, #26, #4"));
+    } else {
+        REQUIRE(Count(exact, "mrs ") == 1);
+        REQUIRE(Count(exact, "ubfx ") == 1);
+        REQUIRE(Contains(exact, "#30, #2"));
+        REQUIRE(Contains(exact, "bfi x26"));
+        REQUIRE(Contains(exact, "bfxil x26"));
+        REQUIRE(Contains(exact, "bfc x26, #26, #4"));
+    }
 
     const auto partial = EmitPackedCVAFClear(false);
     REQUIRE_FALSE(Contains(partial, "#26, #6"));
 
     const auto zero = EmitPackedCVAFClear(true, OpCode::Xor);
-    REQUIRE(Contains(zero, "mov x26, #0x40000000"));
-    REQUIRE_FALSE(Contains(zero, "bfc x26"));
-    REQUIRE_FALSE(Contains(zero, "bfi x26"));
     REQUIRE_FALSE(Contains(zero, "orr x26"));
+    if (GetSvmConfig().flags_regs) {
+        REQUIRE(Contains(zero, "mov x26, #0x40000000"));
+        REQUIRE_FALSE(Contains(zero, "bfc x26"));
+        REQUIRE_FALSE(Contains(zero, "bfi x26"));
+    } else {
+        REQUIRE(Contains(zero, "wzr, wzr"));
+        REQUIRE(Count(zero, "mrs ") == 1);
+        REQUIRE(Contains(zero, "#30, #2"));
+        REQUIRE(Contains(zero, "bfi x26"));
+        REQUIRE(Contains(zero, "bfxil x26"));
+        REQUIRE(Contains(zero, "bfc x26, #26, #4"));
+    }
 
     const auto arithmetic = EmitPackedCVAFClear(true, OpCode::Add);
-    REQUIRE(Contains(arithmetic, "uxtb w26"));
-    REQUIRE_FALSE(Contains(arithmetic, "bfc x26, #26, #4"));
+    if (GetSvmConfig().flags_regs) {
+        REQUIRE(Contains(arithmetic, "uxtb w26"));
+        REQUIRE_FALSE(Contains(arithmetic, "bfc x26, #26, #4"));
+    } else {
+        REQUIRE(Contains(arithmetic, "adds w"));
+        REQUIRE(Count(arithmetic, "mrs ") == 1);
+        REQUIRE(Contains(arithmetic, "#30, #2"));
+        REQUIRE(Contains(arithmetic, "bfi x26"));
+        REQUIRE(Contains(arithmetic, "bfxil x26"));
+        REQUIRE(Contains(arithmetic, "bfc x26, #26, #4"));
+    }
 }
 
 TEST_CASE("narrow register self tests skip the redundant AND") {
@@ -395,6 +472,25 @@ TEST_CASE("dead-edge fixed-home self tests branch without a logical result") {
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
     alloc.MapRegister(loaded.Id(), HostGPR{22});
     alloc.MarkHostWriteCoalesced(publication->Id());
+    // The independent builder never materializes a value to prove eligibility.
+    arm64::BlockAnalysisIndex analysis;
+    analysis.Build(block.get());
+    arm64::GuestStateMap facts;
+    facts.Analyze(block.get(), features);
+    REQUIRE(arm64::BuildIntegerBranchPlan(block.get(), analysis, alloc, features, facts));
+    alloc.MapRegister(loaded.Id(), HostGPR{23});
+    REQUIRE_FALSE(arm64::BuildIntegerBranchPlan(block.get(), analysis, alloc, features, facts));
+    alloc.MapMemSpill(loaded.Id(), SpillSlot{2});
+    REQUIRE_FALSE(arm64::BuildIntegerBranchPlan(block.get(), analysis, alloc, features, facts));
+    alloc.MapRegister(loaded.Id(), HostGPR{22});
+    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
+    const auto plan = alloc.GPRPlanFor(block.get());
+    REQUIRE(plan);
+    REQUIRE(plan->integer_branch);
+    REQUIRE(plan->integer_branch->edge.zero_target == 22);
+    REQUIRE(plan->integer_branch->edge.condition == condition.Def());
+    REQUIRE_FALSE(plan->integer_branch->narrow);
+    REQUIRE(plan->pinned->MatchesFrozenIR());
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -462,6 +558,7 @@ TEST_CASE("compact FP compare preserves carry polarity across audited moves") {
                        address_space.GetTrampolines().GetGPRRegs(),
                        address_space.GetTrampolines().GetFPRRegs(), features};
         RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
@@ -545,6 +642,7 @@ TEST_CASE("dead-edge FP compares branch on raw host flags") {
                        address_space.GetTrampolines().GetGPRRegs(),
                        address_space.GetTrampolines().GetFPRRegs(), features};
         RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
         arm64::JitContext context{address_space.GetDefaultModule(), alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
@@ -636,18 +734,24 @@ TEST_CASE("dead-edge integer compares branch on raw host flags") {
                        address_space.GetTrampolines().GetGPRRegs(),
                        address_space.GetTrampolines().GetFPRRegs(), features};
         RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
         arm64::JitContext context{address_space.GetDefaultModule(), alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
 
-        const auto instructions = Disassemble(context);
+        const auto instructions = BeforeRequestTail(context, Disassemble(context));
+        CAPTURE(instructions);
         REQUIRE(Count(instructions, "subs") == 0);
         REQUIRE(Count(instructions, "uxtb ") == 1);
         REQUIRE(Count(instructions, "cmp ") == 1);
-        REQUIRE(Count(instructions, "lsl ") == 0);
+        REQUIRE(CountMnemonic(instructions, "lsl ") == 0);
+        REQUIRE(Count(instructions, "ldarb ") == 2);
         REQUIRE(Count(instructions, "lsr ") == 0);
-        REQUIRE(Count(instructions, "#0x50") == 1);
+        REQUIRE(std::ranges::count_if(instructions, [](const auto& instruction) {
+            return instruction.starts_with("cmp ") &&
+                   instruction.find("#0x50 (80)") != std::string::npos;
+        }) == 1);
         REQUIRE(Count(instructions, "cfinv") == 0);
         REQUIRE(Count(instructions, "cset") == 0);
         REQUIRE(Count(instructions, "mrs") == 0);
@@ -692,17 +796,38 @@ TEST_CASE("incoming packed carry-zero branches test the flags carrier") {
                        address_space.GetTrampolines().GetGPRRegs(),
                        address_space.GetTrampolines().GetFPRRegs(), features};
         RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
         arm64::JitContext context{address_space.GetDefaultModule(), alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
 
-        const auto instructions = Disassemble(context);
+        const auto instructions = BeforeRequestTail(context, Disassemble(context));
         CAPTURE(opcode, instructions);
-        REQUIRE(Count(instructions, "tst ") == 1);
-        REQUIRE(Count(instructions, "ubfx") == 0);
-        REQUIRE(Count(instructions, "cset") == 0);
-        REQUIRE((Contains(instructions, "b.eq") || Contains(instructions, "b.ne")));
+        if (GetSvmConfig().flags_regs) {
+            REQUIRE(Count(instructions, "tst ") == 1);
+            REQUIRE(Contains(instructions, "tst x26, #0x60000000"));
+            REQUIRE(Count(instructions, "ubfx") == 0);
+            REQUIRE(Count(instructions, "cset") == 0);
+            REQUIRE((Contains(instructions, "b.eq") || Contains(instructions, "b.ne")));
+            REQUIRE(Contains(instructions, opcode == 0x77 ? "b.ne" : "b.eq"));
+        } else {
+            REQUIRE(Count(instructions, "tst ") == 0);
+            REQUIRE(Count(instructions, "ubfx") == 2);
+            REQUIRE(Contains(instructions, "w26, #29, #1"));
+            REQUIRE(Contains(instructions, "x26, #30, #1"));
+            REQUIRE(Count(instructions, "cset") == 1);
+            REQUIRE(std::ranges::count_if(instructions, [opcode](const auto& instruction) {
+                        return instruction.find("cset ") != std::string::npos &&
+                               instruction.ends_with(opcode == 0x77 ? ", eq" : ", ne");
+                    }) == 1);
+            REQUIRE(Count(instructions, "eor ") == (opcode == 0x77 ? 1 : 0));
+            if (opcode == 0x77) {
+                REQUIRE(Contains(instructions, "#0x1"));
+            }
+            REQUIRE(Count(instructions, "cbz ") == 3);
+            REQUIRE(Contains(instructions, opcode == 0x77 ? "and w" : "orr w"));
+        }
     }
 }
 
@@ -743,16 +868,17 @@ TEST_CASE("branch-only narrow equality compares extend the register operand") {
                        address_space.GetTrampolines().GetGPRRegs(),
                        address_space.GetTrampolines().GetFPRRegs(), features};
         RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
         arm64::JitContext context{address_space.GetDefaultModule(), alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
 
-        const auto instructions = Disassemble(context);
-        CAPTURE(opcode);
+        const auto instructions = BeforeRequestTail(context, Disassemble(context));
+        CAPTURE(opcode, instructions);
         REQUIRE(Count(instructions, "cmp ") == 1);
         REQUIRE(Count(instructions, "uxth") == 1);
-        REQUIRE(Count(instructions, "lsl ") == 0);
+        REQUIRE(CountMnemonic(instructions, "lsl ") == 0);
         REQUIRE(Count(instructions, "subs") == 0);
     }
 }
@@ -835,4 +961,154 @@ TEST_CASE("dead-edge proof follows one direct jump to a dominating flag write") 
     const auto [rejected_markers, rejected_dependencies] = decode_marker(code);
     REQUIRE(rejected_markers == 0);
     REQUIRE(rejected_dependencies.empty());
+}
+
+TEST_CASE("dead-edge zero home remains intact until terminal consumption", "[integer-branch]") {
+    for (unsigned mode : {0u, 1u, 2u, 3u, 4u, 5u}) {
+        CAPTURE(mode);
+        Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
+                      .has_local_operation = false, .backend_isa = kArm64};
+        AddressSpace space{config}; FeatureSet features{};
+        IntrusivePtr<Block> block{new Block(0, Location{0x8ab0})};
+        const auto base = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
+        const auto loaded = block->LoadMemory(Operand{base}).SetType(ValueType::U64);
+        auto* publication = block->AppendInst(OpCode::SetHostGPR, loaded, HostRegIndex(22), Imm{0u});
+        block->AdvancePC(Imm{1u});
+        const auto result = block->And(loaded, Operand{loaded}).SetType(ValueType::U64);
+        block->ClearFlags(Flags::Carry | Flags::Overflow | Flags::AuxiliaryCarry);
+        block->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
+        block->AdvancePC(Imm{1u}); block->BranchOnlyEdges();
+        const auto condition = block->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+        const auto intruder = block->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
+        if (mode == 3 || mode == 5) {
+            const auto changed = block->Add(loaded, Operand{Imm{1u}}).SetType(ValueType::U64);
+            auto* save = block->AppendInst(OpCode::SaveFlags, changed, Flags::NZCV);
+            if (mode == 5) {
+                block->RemoveInst(changed.Def()); block->InsertBefore(changed.Def(), condition.Def());
+                block->RemoveInst(save); block->InsertBefore(save, condition.Def());
+            }
+        }
+        if (mode == 4) {
+            const auto observed = block->LoadMemory(Operand{base}).SetType(ValueType::U64);
+            block->StoreUniform(Uniform{8, ValueType::U64}, observed);
+        }
+        if (mode == 2) block->SetHostGPR(intruder, HostRegIndex(22), Imm{0u});
+        else block->StoreUniform(Uniform{0, ValueType::U64}, intruder);
+        block->SetTerminal(terminal::If{condition, terminal::LinkBlock{Location{0x8ac0}},
+                                      terminal::LinkBlock{Location{0x8ad0}}});
+        FlagsEliminationPass::Run(block.get(), nullptr, features); block->ReIdInstr();
+        REQUIRE(block->HasDeadEdgeIntegerBranchProof());
+        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
+                            space.GetTrampolines().GetFPRRegs(), features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        allocation.MapRegister(loaded.Id(), HostGPR{22});
+        allocation.MarkHostWriteCoalesced(publication->Id());
+        allocation.MapRegister(intruder.Id(), HostGPR{static_cast<swift::u16>(mode == 1 ? 22 : 23)});
+        arm64::BlockAnalysisIndex analysis; analysis.Build(block.get());
+        arm64::GuestStateMap facts; facts.Analyze(block.get(), features);
+        const auto direct = arm64::BuildIntegerBranchPlan(block.get(), analysis, allocation, features, facts);
+        if (mode == 0) REQUIRE(direct);
+        else REQUIRE_FALSE(direct);
+        // The ordinary-writer cell proves the pure builder without imposing an
+        // invalid manual overlap on the allocator's final target replay.
+        if (mode == 1 || mode >= 3) continue;
+        allocation.CompleteGPRAllocation(space.GetDefaultModule());
+        const auto frozen = allocation.GPRPlanFor(block.get()); REQUIRE(frozen);
+        if (mode == 0) REQUIRE(frozen->integer_branch);
+        else REQUIRE_FALSE(frozen->integer_branch);
+        arm64::JitContext context{space.GetDefaultModule(), allocation};
+        arm64::JitTranslator translator{context}; translator.Translate(block.get()); context.Finish();
+        const auto instructions = Disassemble(context);
+        const auto zero_branches = Count(instructions, "cbnz x22") + Count(instructions, "cbz x22");
+        REQUIRE(zero_branches == (mode == 0 ? 1 : 0));
+        if (mode == 2) REQUIRE((Contains(instructions, "b.eq") || Contains(instructions, "b.ne")));
+    }
+}
+
+TEST_CASE("dead-edge CBZ requires a complete 32 or 64 bit home", "[integer-branch]") {
+    for (auto type : {ValueType::U8, ValueType::U16, ValueType::U32, ValueType::U64}) {
+        CAPTURE(type);
+        Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
+                      .has_local_operation = false, .backend_isa = kArm64};
+        AddressSpace space{config}; FeatureSet features{};
+        IntrusivePtr<Block> block{new Block(0, Location{0x8ae0})};
+        const auto base = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
+        const auto loaded = block->LoadMemory(Operand{base}).SetType(type);
+        auto* publication = block->AppendInst(OpCode::SetHostGPR, loaded, HostRegIndex(22), Imm{0u});
+        block->AdvancePC(Imm{1u});
+        const auto result = block->And(loaded, Operand{loaded}).SetType(type);
+        block->ClearFlags(Flags::Carry | Flags::Overflow | Flags::AuxiliaryCarry);
+        block->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
+        block->AdvancePC(Imm{1u}); block->BranchOnlyEdges();
+        const auto condition = block->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+        block->SetTerminal(terminal::If{condition, terminal::LinkBlock{Location{0x8af0}},
+                                      terminal::LinkBlock{Location{0x8b00}}});
+        FlagsEliminationPass::Run(block.get(), nullptr, features); block->ReIdInstr();
+        REQUIRE(block->HasDeadEdgeIntegerBranchProof());
+        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
+                            space.GetTrampolines().GetFPRRegs(), features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        allocation.MapRegister(loaded.Id(), HostGPR{22});
+        allocation.MarkHostWriteCoalesced(publication->Id());
+        arm64::BlockAnalysisIndex analysis; analysis.Build(block.get());
+        arm64::GuestStateMap facts; facts.Analyze(block.get(), features);
+        const auto direct = arm64::BuildIntegerBranchPlan(block.get(), analysis, allocation, features, facts);
+        REQUIRE(direct.has_value() == (ir::GetValueSizeByte(type) >= 4));
+    }
+}
+TEST_CASE("dead-edge terminal fallback preserves the captured zero relation", "[integer-branch][runtime]") {
+#if defined(__aarch64__)
+    for (const auto type : {ValueType::U8, ValueType::U16, ValueType::U64}) {
+        for (const swift::u64 low : {0ull, 3ull}) {
+            CAPTURE(type, low);
+            Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
+                          .has_local_operation = false, .backend_isa = kArm64};
+            config.uniform_buffer_size = 64; config.stack_alignment = 16;
+            AddressSpace space{config}; auto module = space.GetDefaultModule(); FeatureSet features{};
+            constexpr swift::u64 start = 0xfa00, yes = 0xfa10, no = 0xfa20;
+            IntrusivePtr<Block> entry{new Block(0, Location{start})};
+            const auto width = ir::GetValueSizeByte(type);
+            const auto initial = entry->LoadImm(Imm{static_cast<swift::u64>(low | (width < 8 ? 1ull << (width * 8) : 0ull))}).SetType(ValueType::U64);
+            entry->SetHostGPR(initial, HostRegIndex(22), Imm{0u});
+            const auto captured = entry->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(type);
+            entry->SetHostGPR(captured, HostRegIndex(22), Imm{0u});
+            entry->AdvancePC(Imm{1u});
+            const auto result = entry->And(captured, Operand{captured}).SetType(type);
+            entry->ClearFlags(Flags::Carry | Flags::Overflow | Flags::AuxiliaryCarry);
+            entry->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
+            entry->AdvancePC(Imm{1u}); entry->BranchOnlyEdges();
+            const auto condition = entry->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+            const auto changed = entry->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
+            entry->SetHostGPR(changed, HostRegIndex(22), Imm{0u});
+            entry->SetTerminal(terminal::If{condition, terminal::LinkBlock{Location{yes}},
+                                          terminal::LinkBlock{Location{no}}});
+            FlagsEliminationPass::Run(entry.get(), nullptr, features);
+            REQUIRE(entry->HasDeadEdgeIntegerBranchProof());
+            auto publish = [&](Block* block, bool inspect) {
+                block->ReIdInstr();
+                RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
+                                    space.GetTrampolines().GetFPRRegs(), features};
+                RegisterAllocPass::Run(block, &allocation, false, features);
+                allocation.CompleteGPRAllocation(module);
+                if (inspect) REQUIRE_FALSE(allocation.GPRPlanFor(block)->integer_branch);
+                arm64::JitContext context{module, allocation}; arm64::JitTranslator translator{context};
+                translator.Translate(block); context.Finish();
+                const auto [index, buffer] = module->AllocCodeCache(context.CurrentBufferSize(), context.RequiresRegionTrampoline());
+                REQUIRE(index != INVALID_CACHE_ID); context.Flush(buffer);
+                space.PushCodeCache(block->GetStartLocation(), buffer.exec_data + context.GetCodeOffset(block->GetStartLocation().Value()));
+            };
+            publish(entry.get(), true);
+            for (const auto target : {yes, no}) {
+                IntrusivePtr<Block> outcome{new Block(0, Location{target})};
+                const auto answer = outcome->LoadImm(Imm{target == yes ? swift::u64{111} : swift::u64{222}}).SetType(ValueType::U64);
+                outcome->StoreUniform(Uniform{0, ValueType::U64}, answer);
+                outcome->SetTerminal(terminal::ReturnToHost{}); publish(outcome.get(), false);
+            }
+            Runtime runtime{&space}; runtime.SetLocation(start);
+            REQUIRE(runtime.Run() == HaltReason::CallHost);
+            swift::u64 answer{}; std::memcpy(&answer, runtime.GetUniformBuffer().data(), sizeof(answer));
+            REQUIRE(answer == (low == 0 ? 111 : 222));
+        }
+    }
+#endif
 }

@@ -6,10 +6,32 @@
 
 #include <cstring>
 #include <unordered_map>
+#include <cstdio>
+#include <cstdlib>
 
 namespace swift::runtime::ir {
 
 namespace {
+
+// Env-gated fold census (SVM_FOLDCENSUS): sizes what a decode-time
+// smart builder could absorb from this pass.
+unsigned long long g_fold_neg{};
+unsigned long long g_fold_imm{};
+unsigned long long g_dedup_scalar{};
+unsigned long long g_dedup_vec{};
+unsigned long long g_dedup_zero{};
+bool g_fold_census_registered{};
+bool FoldCensusEnabled() {
+    static const bool enabled = std::getenv("SVM_FOLDCENSUS") != nullptr;
+    if (enabled && !g_fold_census_registered) {
+        g_fold_census_registered = true;
+        std::atexit([] {
+            std::fprintf(stderr, "[svm-foldcensus] const neg=%llu imm=%llu dedup_scalar=%llu dedup_vec=%llu dedup_zero=%llu\n",
+                         g_fold_neg, g_fold_imm, g_dedup_scalar, g_dedup_vec, g_dedup_zero);
+        });
+    }
+    return enabled;
+}
 
 // Block-local common subexpression elimination for constant materialization.
 //
@@ -189,12 +211,13 @@ std::optional<Imm> LogicalImmediate(const Imm& source, ValueType type) {
     return reg_bits == 32 ? Imm{static_cast<u32>(widened)} : Imm{widened};
 }
 
-Flags RequestedFlags(const Inst& inst) {
+Flags RequestedFlags(const Block& block, const Inst& inst) {
     Flags flags{};
-    for (auto& pseudo : const_cast<Inst&>(inst).GetPseudoOperations()) {
-        if (pseudo->GetOp() == OpCode::SaveFlags ||
-            pseudo->GetOp() == OpCode::BranchOnlyFlags) {
-            flags |= pseudo->GetArg<Flags>(1);
+    for (const auto& pseudo : block.GetInstList()) {
+        if ((pseudo.GetOp() == OpCode::SaveFlags ||
+             pseudo.GetOp() == OpCode::BranchOnlyFlags) &&
+            pseudo.ArgAt(0).IsValue() && pseudo.GetArg<Value>(0).Def() == &inst) {
+            flags |= pseudo.GetArg<Flags>(1);
         }
     }
     return flags;
@@ -232,6 +255,7 @@ void FoldIntegerImmediates(Block* block, const FeatureSet& features) {
                 right.GetOp() == OperandPlus) {
                 const auto source = right.GetLeft().value;
                 const auto type = inst.ReturnType();
+                if (FoldCensusEnabled()) ++g_fold_neg;
                 inst.DestroyArgs();
                 inst.SetInst(OpCode::Neg, source);
                 inst.SetReturn(type);
@@ -257,7 +281,7 @@ void FoldIntegerImmediates(Block* block, const FeatureSet& features) {
         // still materializes an immediate.  Folding it has no host-code win.
         const u32 bytes = GetValueSizeByte(inst.ReturnType());
         if ((op == OpCode::Add || op == OpCode::Sub) && bytes <= 2 &&
-            True(RequestedFlags(inst) & Flags::NZCV)) {
+            True(RequestedFlags(*block, inst) & Flags::NZCV)) {
             continue;
         }
 
@@ -266,6 +290,7 @@ void FoldIntegerImmediates(Block* block, const FeatureSet& features) {
                 ? AddSubImmediate(source, inst.ReturnType())
                 : LogicalImmediate(source, inst.ReturnType());
         if (folded) {
+            if (FoldCensusEnabled()) ++g_fold_imm;
             inst.SetArg(1, Operand{*folded});
         }
     }
@@ -304,9 +329,8 @@ void DedupConstants(Block* block, const FeatureSet& features) {
                 break;
         }
         // Pseudo operations (SaveFlags / ClearFlags / GetResult ...) name their
-        // producer through arg 0 and are linked to it by Inst::next_pseudo_inst.
-        // Retargeting that argument would break the pairing, and none of them
-        // reads a constant anyway.
+        // producer through arg 0. Retargeting that argument would break the
+        // pairing, and none of them reads a constant anyway.
         if (!inst.IsPseudoOperation()) {
             for (int i = 0; i < Inst::max_args; ++i) {
                 auto& arg = inst.ArgAt(i);
@@ -314,7 +338,8 @@ void DedupConstants(Block* block, const FeatureSet& features) {
                     auto def = arg.Get<Value>().Def();
                     if (!def) continue;
                     if (auto it = replacement.find(def); it != replacement.end()) {
-                        inst.SetArg(i, it->second);
+                        inst.SetArg(i, arg.Get<Value>().WithDefinition(it->second.Def()));
+                        ASSERT(inst.HasValidTypeViews());
                     }
                 } else if (arg.IsLambda()) {
                     auto lambda = arg.Get<Lambda>();
@@ -322,7 +347,9 @@ void DedupConstants(Block* block, const FeatureSet& features) {
                     auto def = lambda.GetValue().Def();
                     if (!def) continue;
                     if (auto it = replacement.find(def); it != replacement.end()) {
-                        inst.SetArg(i, Lambda{it->second});
+                        lambda.GetValue() = lambda.GetValue().WithDefinition(it->second.Def());
+                        inst.SetArg(i, lambda);
+                        ASSERT(inst.HasValidTypeViews());
                     }
                 }
             }
@@ -335,12 +362,14 @@ void DedupConstants(Block* block, const FeatureSet& features) {
             auto [it, inserted] =
                     vec_canonical.try_emplace(key, Value{&inst});
             if (!inserted) {
+                if (FoldCensusEnabled()) ++g_dedup_vec;
                 replacement.emplace(&inst, it->second);
             }
             continue;
         }
         if (inst.GetOp() == OpCode::VecSharedZero) {
             if (zero_canonical.Defined()) {
+                if (FoldCensusEnabled()) ++g_dedup_zero;
                 replacement.emplace(&inst, zero_canonical);
             } else {
                 zero_canonical = Value{&inst};
@@ -359,6 +388,7 @@ void DedupConstants(Block* block, const FeatureSet& features) {
                 canonical.try_emplace(key, ScalarImmEntry{Value{&inst}, index});
         if (!inserted) {
             if (index - it->second.index <= kReuseWindow) {
+                if (FoldCensusEnabled()) ++g_dedup_scalar;
                 replacement.emplace(&inst, it->second.value);
             } else {
                 // Too far to reuse: this definition becomes the new anchor.

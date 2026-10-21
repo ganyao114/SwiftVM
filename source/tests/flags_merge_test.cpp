@@ -9,6 +9,7 @@
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 
 namespace {
@@ -57,6 +58,7 @@ std::map<std::string, swift::u32> EmitBlock(
                    address_space.GetTrampolines().GetFPRRegs(), features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
 
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -142,7 +144,7 @@ TEST_CASE("flags-only arithmetic writes the result token directly") {
     using namespace swift::runtime::ir;
 
     std::vector<std::string> flags_only;
-    EmitBlock([](Block& block) {
+    const auto mnemonics = EmitBlock([](Block& block) {
         auto left = block.LoadUniform<TypedValue<ValueType::U64>>(
                 Uniform{0, ValueType::U64});
         auto right = block.LoadUniform<TypedValue<ValueType::U64>>(
@@ -155,9 +157,20 @@ TEST_CASE("flags-only arithmetic writes the result token directly") {
         block.SaveFlags(logical, Flags::Negate | Flags::Zero | Flags::Parity);
     }, &flags_only);
 
-    REQUIRE(Contains(flags_only, "adds x12"));
-    REQUIRE(Contains(flags_only, "subs x12"));
-    REQUIRE(Contains(flags_only, "ands x12"));
+    REQUIRE(mnemonics.at("adds") == 1);
+    REQUIRE(mnemonics.at("subs") == 1);
+    REQUIRE(mnemonics.at("ands") == 1);
+    if (swift::runtime::GetSvmConfig().flags_regs) {
+        REQUIRE(Contains(flags_only, "adds x12"));
+        REQUIRE(Contains(flags_only, "subs x12"));
+        REQUIRE(Contains(flags_only, "ands x12"));
+    } else {
+        REQUIRE_FALSE(Contains(flags_only, "adds x12"));
+        REQUIRE_FALSE(Contains(flags_only, "subs x12"));
+        REQUIRE_FALSE(Contains(flags_only, "ands x12"));
+        REQUIRE(mnemonics.at("mrs") == 3);
+        REQUIRE(mnemonics.at("bfxil") == 3);
+    }
     REQUIRE_FALSE(Contains(flags_only, "mov x12"));
 
     std::vector<std::string> observed;
@@ -172,7 +185,8 @@ TEST_CASE("flags-only arithmetic writes the result token directly") {
     }, &observed);
 
     REQUIRE_FALSE(Contains(observed, "subs x12"));
-    REQUIRE(Contains(observed, "mov x12"));
+    REQUIRE(Contains(observed, "mov x12") == swift::runtime::GetSvmConfig().flags_regs);
+    REQUIRE(Contains(observed, "bfxil x26"));
 
     std::vector<std::string> pinned;
     EmitBlock([](Block& block) {
@@ -217,7 +231,10 @@ TEST_CASE("flags-only arithmetic writes the result token directly") {
         block.SetHostGPR(replacement, HostRegIndex(21), Imm{0u});
     }, &overwritten, true);
 
-    REQUIRE(Contains(overwritten, "mov x12, x21"));
+    REQUIRE(Contains(overwritten, "mov x12, x21") == swift::runtime::GetSvmConfig().flags_regs);
+    if (!swift::runtime::GetSvmConfig().flags_regs) {
+        REQUIRE(Contains(overwritten, "bfxil x26, x21"));
+    }
 }
 
 TEST_CASE("full NZCV publication omits the redundant source mask") {

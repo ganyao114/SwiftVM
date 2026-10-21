@@ -173,7 +173,7 @@ void RegisterAllocPass::RunWithScalarInsert(HIRFunction* hir_function,
     const bool use_fast_path =
             single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
     RunVerified(hir_function, reg_alloc, features, use_fast_path, scalar_insert,
-                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_intwidth_tie,
                 features.ra_spill_evict);
 }
 
@@ -184,7 +184,7 @@ void RegisterAllocPass::Run(HIRFunction* hir_function,
     const bool use_fast_path =
             single_block_fast_path && hir_function->GetHIRBlocksRPO().size() == 1;
     RunVerified(hir_function, reg_alloc, features, use_fast_path, false,
-                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_intwidth_tie,
                 features.ra_spill_evict);
 }
 
@@ -193,7 +193,7 @@ void RegisterAllocPass::Run(ir::Block* block,
                             bool scalar_insert,
                             const FeatureSet& features) {
     RunVerified(block, reg_alloc, features, false, scalar_insert,
-                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_intwidth_tie,
                 features.ra_spill_evict);
 }
 

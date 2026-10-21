@@ -28,6 +28,12 @@
 #include "syscalls.h"
 #include "translator/x86/cpu.h"
 
+// Bionic aliases these spellings to host timespec members. The guest ABI
+// structures below deliberately use flat nanosecond fields.
+#undef st_atime_nsec
+#undef st_mtime_nsec
+#undef st_ctime_nsec
+
 namespace swift::linux {
 
 // Guest mmap flags (asm-generic mman).

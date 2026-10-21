@@ -131,6 +131,17 @@ struct LinkSignalInvalidationResult {
 
 class LinkManager {
 public:
+    class SignalReader {
+    public:
+        explicit SignalReader(LinkManager& manager) noexcept;
+        ~SignalReader();
+        SignalReader(const SignalReader&) = delete;
+        SignalReader& operator=(const SignalReader&) = delete;
+        explicit operator bool() const { return admitted_; }
+    private:
+        LinkManager& manager_;
+        bool admitted_{};
+    };
     // Global lock order for future SMC/reclaim integration:
     //   SmcTracker::invalidation_mutex_ -> LinkManager::mutex_ -> module/cache locks.
     // The signal path instead enters under SmcTracker::metadata_lock_ and uses
@@ -158,7 +169,10 @@ public:
                                     void* call_pending_flags_host_pc = nullptr,
                                     EdgeFlagsTargetContract
                                             pending_flags_contract = {});
-    [[nodiscard]] std::optional<LinkTargetRecord> QueryTarget(u64 guest_target) const;
+    // Optional status distinguishes a known retired generation from an absent
+    // publication, under the same lock/atomic observation as the target lookup.
+    [[nodiscard]] std::optional<LinkTargetRecord> QueryTarget(u64 guest_target,
+                                                             bool* invalidated = nullptr) const;
     [[nodiscard]] std::vector<u64> QueryTargets(LinkSourceOwner target_owner) const;
     [[nodiscard]] std::optional<u64> QueryTargetGeneration(u64 guest_target) const;
     [[nodiscard]] bool ValidateTargetGeneration(u64 guest_target, u64 generation) const;
@@ -197,6 +211,10 @@ public:
     // deactivate, then restores a second time so BL is the final instruction.
     // The returned count is the number of sites that had reached Linked.
     [[nodiscard]] LinkSignalInvalidationResult SignalInvalidateTarget(u64 guest_target) noexcept;
+
+    // Caller has drained producers/executors. Revoke every target and signal
+    // entry, then return false until pre-revocation signal readers leave.
+    [[nodiscard]] bool SealAndRevoke();
 
     [[nodiscard]] LinkManagerStats GetStats() const;
 
@@ -275,6 +293,7 @@ private:
     std::unique_ptr<SignalBucketArray> signal_buckets_storage_{};
     std::atomic<SignalBucketArray*> signal_buckets_{};
     std::atomic<u32> signal_readers_{};
+    std::atomic_bool sealed_{};
     std::atomic<u64> signal_invalidations_{};
     std::atomic<u64> signal_delinks_{};
     u64 next_target_generation_{1};

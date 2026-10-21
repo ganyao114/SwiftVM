@@ -33,16 +33,9 @@ void JitTranslator::EmitSse42Str(ir::Inst* inst) {
                 inst, a, b, result, target, u8(imm));
         return;
     }
-    ir::Flags publish_flags = cur_block ? ir::Flags::None : ir::Flags::All;
-    if (cur_block) {
-        for (auto& user : cur_block->GetInstList()) {
-            if (user.GetOp() == ir::OpCode::PublishSse42StrFlags &&
-                user.GetArg<ir::Value>(0).Def() == inst) {
-                publish_flags = user.GetArg<ir::Flags>(1);
-                break;
-            }
-        }
-    }
+    const auto publish_flags = cur_block
+            ? gpr_plan->consumers->string_flags.at(inst)
+            : ir::Flags::All;
     if (imm == 0x3au && a.GetCode() == b.GetCode()) {
         const auto length = context.GetTmpX();
         const auto scalar = context.GetTmpX();

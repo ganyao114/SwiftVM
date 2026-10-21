@@ -6,6 +6,7 @@
 #include "runtime/backend/context.h"
 #include "runtime/ir/block.h"
 #include "runtime/ir/instr.h"
+#include "scalar_uniform_emission_contract.h"
 
 namespace swift::runtime::backend::riscv64 {
 
@@ -46,9 +47,12 @@ UniformBinding* JitContext::FindUniformRange(u32 offset, u32 size) {
 void JitContext::ConfigureUniformBindings(ir::Block* block) {
     uniform_bindings.clear();
     std::vector<UniformBinding> active;
+    const auto uniform_capacity = UniformCapacity();
     for (const auto& desc : uniform_descriptors) {
         if (!desc.size || desc.size > (desc.is_float ? 32 : 8) ||
             (desc.size & (desc.size - 1))) throw std::runtime_error("invalid RV64 uniform binding width");
+        if (uniform_capacity && (desc.offset > *uniform_capacity || desc.size > *uniform_capacity - desc.offset))
+            throw std::runtime_error("RV64 uniform binding exceeds configured state span");
         for (const auto& previous : active)
             if ((previous.desc.reg == desc.reg && previous.desc.is_float == desc.is_float) ||
                 (u64(desc.offset) < u64(previous.desc.offset) + previous.desc.size &&
@@ -65,7 +69,7 @@ void JitContext::ConfigureUniformBindings(ir::Block* block) {
             const auto reg = inst.GetArg<ir::Imm>(get ? 0 : 1).Get();
             const auto offset = inst.GetArg<ir::Imm>(get ? 1 : 2).Get();
             const auto type = get ? inst.ReturnType() : inst.GetArg<ir::Value>(0).Type();
-            const u32 size = ir::GetValueSizeByte(type);
+            const u32 size = RVUniformValueWidth(type);
             auto found = std::find_if(active.begin(), active.end(), [&](const auto& binding) {
                 return binding.desc.reg == reg && binding.desc.is_float == (op == O::GetHostFPR || op == O::SetHostFPR);
             });
@@ -75,7 +79,7 @@ void JitContext::ConfigureUniformBindings(ir::Block* block) {
             ++found->accesses; found->written |= set;
         } else if (op == O::LoadUniform || op == O::StoreUniform) {
             const auto uniform = inst.GetArg<ir::Uniform>(0);
-            const u32 size = ir::GetValueSizeByte(op == O::LoadUniform ? inst.ReturnType() : inst.GetArg<ir::Value>(1).Type());
+            const u32 size = RVUniformValueWidth(op == O::LoadUniform ? inst.ReturnType() : inst.GetArg<ir::Value>(1).Type());
             for (auto& binding : active) {
                 const auto begin = uniform.GetOffset();
                 if (begin >= binding.desc.offset && size <= binding.desc.size &&

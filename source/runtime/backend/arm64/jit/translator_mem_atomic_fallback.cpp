@@ -6,93 +6,18 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
-std::optional<JitTranslator::UnalignedAtomicFallbackKey>
-JitTranslator::GetUnalignedAtomicFallbackKey(ir::Inst* inst) {
-    if (!CanUseLSE()) {
-        return std::nullopt;
-    }
-
-    UnalignedAtomicFallbackKey key{};
-    ir::Value address{};
-    ir::Value first{};
-    ir::Value second{};
-    switch (inst->GetOp()) {
-        case ir::OpCode::CompareAndSwap:
-            key.kind = UnalignedAtomicFallbackKind::CompareAndSwap;
-            address = inst->GetArg<ir::Value>(0);
-            first = inst->GetArg<ir::Value>(1);
-            second = inst->GetArg<ir::Value>(2);
-            key.type = first.Type();
-            break;
-        case ir::OpCode::AtomicExchange:
-            key.kind = UnalignedAtomicFallbackKind::Exchange;
-            address = inst->GetArg<ir::Value>(0);
-            first = inst->GetArg<ir::Value>(1);
-            key.type = first.Type();
-            break;
-        case ir::OpCode::AtomicFetchAdd:
-            key.kind = UnalignedAtomicFallbackKind::FetchAdd;
-            address = inst->GetArg<ir::Value>(0);
-            first = inst->GetArg<ir::Value>(1);
-            key.type = first.Type();
-            break;
-        default:
-            return std::nullopt;
-    }
-
-    const u32 width = ir::GetValueSizeByte(key.type);
-    if (width != sizeof(u32) && width != sizeof(u64)) {
-        return std::nullopt;
-    }
-
-    const auto result = context.MappedGPRCode(ir::Value{inst});
-    const auto first_code = context.MappedGPRCode(first);
-    const auto address_code = memory_state.use_memory_base
-            ? std::optional<u8>{static_cast<u8>(mem_scratch.GetCode())}
-            : context.MappedGPRCode(address);
-    if (!result || !first_code || !address_code) {
-        return std::nullopt;
-    }
-
-    key.address = *address_code;
-    key.result = *result;
-    key.first = *first_code;
-    if (key.result == key.first) {
-        return std::nullopt;
-    }
-    if (key.kind == UnalignedAtomicFallbackKind::CompareAndSwap) {
-        const auto second_code = context.MappedGPRCode(second);
-        if (!second_code || key.result == *second_code) {
-            return std::nullopt;
-        }
-        key.second = *second_code;
-    }
-    return key;
-}
-
-void JitTranslator::PrepareUnalignedAtomicFallbacks(
-        std::span<ir::Block* const> blocks) {
-    ASSERT(memory_state.unaligned_atomic_fallbacks.empty());
-    memory_state.unaligned_atomic_fallback_counts.clear();
-    for (auto* block : blocks) {
-        for (auto& inst : block->GetInstList()) {
-            if (const auto key = GetUnalignedAtomicFallbackKey(&inst)) {
-                ++memory_state.unaligned_atomic_fallback_counts[*key];
-            }
-        }
-    }
-}
-
 Label* JitTranslator::GetUnalignedAtomicFallback(ir::Inst* inst) {
-    const auto key = GetUnalignedAtomicFallbackKey(inst);
-    if (!key) {
+    ASSERT(region_plan_owner);
+    const auto& plan = region_plan_owner->unaligned_atomics;
+    const auto key = plan.keys.find(inst);
+    if (key == plan.keys.end()) {
         return nullptr;
     }
-    const auto count = memory_state.unaligned_atomic_fallback_counts.find(*key);
-    if (count == memory_state.unaligned_atomic_fallback_counts.end() || count->second < 2) {
+    const auto count = plan.counts.find(key->second);
+    if (count == plan.counts.end() || count->second < 2) {
         return nullptr;
     }
-    auto [it, inserted] = memory_state.unaligned_atomic_fallbacks.try_emplace(*key);
+    auto [it, inserted] = memory_state.unaligned_atomic_fallbacks.try_emplace(key->second);
     if (inserted) {
         it->second = std::make_unique<Label>();
     }
@@ -150,7 +75,6 @@ void JitTranslator::EmitUnalignedAtomicFallback(
 
 void JitTranslator::EmitUnalignedAtomicFallbacks() {
     if (memory_state.unaligned_atomic_fallbacks.empty()) {
-        memory_state.unaligned_atomic_fallback_counts.clear();
         return;
     }
     const bool own_cold_scratch = !context.ColdScratchActive();
@@ -165,7 +89,6 @@ void JitTranslator::EmitUnalignedAtomicFallbacks() {
         context.EndColdScratch();
     }
     memory_state.unaligned_atomic_fallbacks.clear();
-    memory_state.unaligned_atomic_fallback_counts.clear();
 }
 
 #undef __

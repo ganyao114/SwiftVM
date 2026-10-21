@@ -49,6 +49,7 @@ std::vector<std::string> EmitPinnedLoadUpdate() {
                    address_space.GetTrampolines().GetGPRRegs(),
                    address_space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
     RegisterAllocPass::Run(block.get(), &alloc, false, FeatureSet{});
+    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());

@@ -406,7 +406,7 @@ TEST_CASE("aot call: a symbol rewritten to the wrong unit is caught, not called"
     }
 
     aot::SymbolIndex bad;
-    REQUIRE(bad.Build(mutated, p.env->artifact(), error));
+    REQUIRE(bad.Build(mutated, p.env->artifact(), error, p.env->load_report().mapping));
     // The mutated table still resolves to *something* inside the code section
     // -- that is exactly why "the lookup returned a pointer" is not evidence.
     void* bad_host = bad.Lookup("strlen");

@@ -1,3 +1,4 @@
+#include "runtime/backend/arm64/alloc/pinned_gpr_allocation.h"
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -87,6 +88,7 @@ std::vector<std::string> EmitTransfer(bool overwrite_target,
                    address_space.GetTrampolines().GetFPRRegs(),
                    features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -124,6 +126,7 @@ std::vector<std::string> EmitHelperTransfer(HostRegisterEffect effect, swift::u3
                    address_space.GetTrampolines().GetFPRRegs(),
                    features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -168,6 +171,7 @@ std::vector<std::string> EmitSse42Transfer(swift::u8 imm) {
                    address_space.GetTrampolines().GetFPRRegs(),
                    features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -218,6 +222,7 @@ std::vector<std::string> EmitCrossBlockWidth(bool external_entry) {
                    address_space.GetTrampolines().GetFPRRegs(),
                    features};
     RegisterAllocPass::Run(function, &alloc, features);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(function);
@@ -421,6 +426,7 @@ TEST_CASE("overwriting the resident GPR version keeps the source capture") {
 
 TEST_CASE("published value versions feed general ALU consumers") {
     const auto lines = EmitTransfer(false, true);
+    INFO([&] { std::string text; for (const auto& line : lines) text += line + '\n'; return text; }());
     REQUIRE(Count(lines, "mov x23, x1", "") == 1);
     REQUIRE(Count(lines, "add x", "x23") == 1);
 }
@@ -487,7 +493,7 @@ TEST_CASE("pinned allocation transfers a residence only after its publication") 
     alloc.MapRegister(loaded.Id(), HostGPR{16});
     arm64::GuestStateMap semantics;
     semantics.Analyze(block.get(), features);
-    arm64::PinnedGPRAllocation placement{alloc, features, semantics};
+    arm64::GPRPlanBuilder placement{alloc, features, semantics};
     placement.Prepare(block.get());
     REQUIRE(placement.GetRecipes().transfers.size() == 1);
 
@@ -552,10 +558,11 @@ TEST_CASE("Select uses a transferred pinned value without reloading its spill") 
 
     arm64::GuestStateMap semantics;
     semantics.Analyze(block.get(), features);
-    arm64::PinnedGPRAllocation placement{alloc, features, semantics};
+    arm64::GPRPlanBuilder placement{alloc, features, semantics};
+    placement.Prepare(block.get());
+    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     const auto before = context.CurrentBufferSize();
-    placement.Prepare(block.get());
     REQUIRE(context.CurrentBufferSize() == before);
     REQUIRE(placement.GetRecipes().copies.size() == 1);
     REQUIRE(placement.UseLocation(widened, selected.Def()).slot == 23);
@@ -600,6 +607,7 @@ TEST_CASE("Select materializes ordinary spilled U32 operands as W registers") {
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
     alloc.MapMemSpill(left.Id(), SpillSlot{0});
     alloc.MapMemSpill(right.Id(), SpillSlot{1});
+    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -648,6 +656,7 @@ TEST_CASE("Fixed GPR transfer is allocated before captures and survives a fault 
     // residence proof. Both runs must emit the same publication at its IR point.
     RegisterAllocPass::Run(block.get(), &allocation, false, features);
     REQUIRE(allocation.GPRLocationAt(source, loaded.Id()).slot == 23);
+    allocation.CompleteGPRAllocation(address_space.GetDefaultModule());
     arm64::JitContext context{address_space.GetDefaultModule(), allocation};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -730,6 +739,217 @@ TEST_CASE("Narrow fixed GPR preallocation preserves the whole guest register", "
     REQUIRE_FALSE(fact->extension.KnownZeroAbove(32));
 }
 
+TEST_CASE("Narrow fixed GPR preallocation covers a zero-extended read", "[fixed-gpr]") {
+    IntrusivePtr<Block> block{new Block(0, Location{0x98d0})};
+    auto read = block->GetHostGPR(HostRegIndex(20), Imm{0u}).SetType(ValueType::U16);
+    auto extended = block->ZeroExtend32(read).SetType(ValueType::U32);
+    block->StoreUniform(Uniform{64, ValueType::U32}, extended);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    FeatureSet features{};
+    GPRSMask pool{};
+    pool.Mark(20);
+    RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    REQUIRE(allocation.IsFixedGPRDefinitionElided(read.Id()));
+    REQUIRE(allocation.PreservedGPRDefinitionAt(read.Id()) == nullptr);
+    REQUIRE(allocation.ValueGPR(read).id == 20);
+    const auto location = allocation.GPRLocationAt(read, extended.Id());
+    REQUIRE(location.slot == 20);
+    REQUIRE(location.bits == 32);
+}
+
+TEST_CASE("Narrow fixed GPR preallocation covers a sub-32 ALU read", "[fixed-gpr]") {
+    IntrusivePtr<Block> block{new Block(0, Location{0x98e0})};
+    auto read = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U16);
+    auto result = block->And(read, Operand{Imm{0xffu}}).SetType(ValueType::U16);
+    block->StoreUniform(Uniform{64, ValueType::U16}, result);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    FeatureSet features{};
+    GPRSMask pool{};
+    pool.Mark(22);
+    RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    REQUIRE(allocation.IsFixedGPRDefinitionElided(read.Id()));
+    REQUIRE(allocation.PreservedGPRDefinitionAt(read.Id()) == nullptr);
+    REQUIRE(allocation.ValueGPR(read).id == 22);
+    const auto location = allocation.GPRLocationAt(read, result.Id());
+    REQUIRE(location.slot == 22);
+    REQUIRE(location.bits == 32);
+}
+
+TEST_CASE("Narrow fixed GPR preallocation covers a sign-extended read", "[fixed-gpr]") {
+    IntrusivePtr<Block> block{new Block(0, Location{0x98d8})};
+    auto read = block->GetHostGPR(HostRegIndex(20), Imm{0u}).SetType(ValueType::U16);
+    auto extended = block->SignExtend(read).SetType(ValueType::S32);
+    block->StoreUniform(Uniform{64, ValueType::S32}, extended);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    FeatureSet features{};
+    GPRSMask pool{};
+    pool.Mark(20);
+    RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    REQUIRE(allocation.IsFixedGPRDefinitionElided(read.Id()));
+    REQUIRE(allocation.PreservedGPRDefinitionAt(read.Id()) == nullptr);
+    REQUIRE(allocation.ValueGPR(read).id == 20);
+}
+
+TEST_CASE("Logic fixed GPR publications bypass the temporary value class", "[fixed-gpr]") {
+    for (auto op : {0, 1}) {
+        IntrusivePtr<Block> block{new Block(0, Location{0x98f0})};
+        auto left = block->LoadImm(Imm{swift::u64{0x12345678}}).SetType(ValueType::U64);
+        auto right = block->LoadImm(Imm{swift::u64{0x0f0f0f0f}}).SetType(ValueType::U64);
+        auto value = op == 0 ? block->Xor(left, Operand{right}).SetType(ValueType::U64)
+                             : block->Or(left, Operand{right}).SetType(ValueType::U64);
+        block->SetHostGPR(value, HostRegIndex(23), Imm{0u});
+        auto* publication = &block->GetInstList().back();
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        FeatureSet features{};
+        features.ra_coalesce = true;
+        GPRSMask pool{};
+        pool.Mark(23);
+        RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        REQUIRE(allocation.HasFixedGPRDefinition(value.Id()));
+        REQUIRE(allocation.ValueGPR(value).id == 23);
+        REQUIRE(allocation.IsHostWriteCoalesced(publication->Id()));
+    }
+}
+
+TEST_CASE("Multiply and shifted fixed GPR publications bypass the temporary value class", "[fixed-gpr]") {
+    for (auto op : {0, 1}) {
+        IntrusivePtr<Block> block{new Block(0, Location{0x98f8})};
+        auto left = block->LoadImm(Imm{swift::u64{0x12345678}}).SetType(ValueType::U64);
+        auto right = block->LoadImm(Imm{swift::u64{0x0f0f0f0f}}).SetType(ValueType::U64);
+        auto value = op == 0 ? block->Mul(left, Operand{right}).SetType(ValueType::U64)
+                             : block->LslImm(left, Imm{5u}).SetType(ValueType::U64);
+        static_cast<void>(right);
+        block->SetHostGPR(value, HostRegIndex(23), Imm{0u});
+        auto* publication = &block->GetInstList().back();
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        FeatureSet features{};
+        features.ra_coalesce = true;
+        GPRSMask pool{};
+        pool.Mark(23);
+        RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        REQUIRE(allocation.HasFixedGPRDefinition(value.Id()));
+        REQUIRE(allocation.ValueGPR(value).id == 23);
+        REQUIRE(allocation.IsHostWriteCoalesced(publication->Id()));
+    }
+}
+
+TEST_CASE("Shifted and carry fixed GPR publications bypass the temporary value class", "[fixed-gpr]") {
+    for (auto op : {0, 1}) {
+        IntrusivePtr<Block> block{new Block(0, Location{0x9900})};
+        auto left = block->LoadImm(Imm{swift::u64{0x12345678}}).SetType(ValueType::U64);
+        auto right = block->LoadImm(Imm{swift::u64{5}}).SetType(ValueType::U64);
+        auto value = op == 0 ? block->LslValue(left, right).SetType(ValueType::U64)
+                             : block->Adc(left, Operand{right}).SetType(ValueType::U64);
+        block->SetHostGPR(value, HostRegIndex(23), Imm{0u});
+        auto* publication = &block->GetInstList().back();
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        FeatureSet features{};
+        features.ra_coalesce = true;
+        GPRSMask pool{};
+        pool.Mark(23);
+        RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        REQUIRE(allocation.HasFixedGPRDefinition(value.Id()));
+        REQUIRE(allocation.ValueGPR(value).id == 23);
+        REQUIRE(allocation.IsHostWriteCoalesced(publication->Id()));
+    }
+}
+
+TEST_CASE("Select and high multiply fixed GPR publications bypass the temporary value class", "[fixed-gpr]") {
+    for (auto op : {0, 1, 2}) {
+        IntrusivePtr<Block> block{new Block(0, Location{0x9908})};
+        auto left = block->LoadImm(Imm{swift::u64{0x12345678}}).SetType(ValueType::U64);
+        auto right = block->LoadImm(Imm{swift::u64{0x0f0f0f0f}}).SetType(ValueType::U64);
+        auto value = op == 0 ? block->CondSelect(Cond::EQ, left, right).SetType(ValueType::U64)
+                : op == 1 ? block->MulHigh(left, right, Imm{0u}).SetType(ValueType::U64)
+                          : block->LoadUniform(Uniform{64, ValueType::U64}).SetType(ValueType::U64);
+        static_cast<void>(left);
+        static_cast<void>(right);
+        block->SetHostGPR(value, HostRegIndex(23), Imm{0u});
+        auto* publication = &block->GetInstList().back();
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        FeatureSet features{};
+        features.ra_coalesce = true;
+        GPRSMask pool{};
+        pool.Mark(23);
+        RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        REQUIRE(allocation.HasFixedGPRDefinition(value.Id()));
+        REQUIRE(allocation.ValueGPR(value).id == 23);
+        REQUIRE(allocation.IsHostWriteCoalesced(publication->Id()));
+    }
+}
+
+TEST_CASE("Value select fixed GPR publication bypasses the temporary value class", "[fixed-gpr]") {
+    IntrusivePtr<Block> block{new Block(0, Location{0x9910})};
+    auto cond = block->LoadImm(Imm{swift::u32{1}}).SetType(ValueType::U32);
+    auto left = block->LoadImm(Imm{swift::u64{0x12345678}}).SetType(ValueType::U64);
+    auto right = block->LoadImm(Imm{swift::u64{0x0f0f0f0f}}).SetType(ValueType::U64);
+    auto value = block->Select(cond, left, right).SetType(ValueType::U64);
+    block->SetHostGPR(value, HostRegIndex(23), Imm{0u});
+    auto* publication = &block->GetInstList().back();
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    FeatureSet features{};
+    features.ra_coalesce = true;
+    GPRSMask pool{};
+    pool.Mark(23);
+    RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    REQUIRE(allocation.HasFixedGPRDefinition(value.Id()));
+    REQUIRE(allocation.ValueGPR(value).id == 23);
+    REQUIRE(allocation.IsHostWriteCoalesced(publication->Id()));
+}
+
+TEST_CASE("Division fixed GPR publication bypasses the temporary value class", "[fixed-gpr]") {
+    IntrusivePtr<Block> block{new Block(0, Location{0x9918})};
+    auto left = block->LoadImm(Imm{swift::u64{0x12345678}}).SetType(ValueType::U64);
+    auto right = block->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
+    auto value = block->Div(left, Operand{right}).SetType(ValueType::U64);
+    block->SetHostGPR(value, HostRegIndex(23), Imm{0u});
+    auto* publication = &block->GetInstList().back();
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    FeatureSet features{};
+    features.ra_coalesce = true;
+    GPRSMask pool{};
+    pool.Mark(23);
+    RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    REQUIRE(allocation.HasFixedGPRDefinition(value.Id()));
+    REQUIRE(allocation.ValueGPR(value).id == 23);
+    REQUIRE(allocation.IsHostWriteCoalesced(publication->Id()));
+}
+
+TEST_CASE("Narrow fixed GPR preallocation covers a widened read", "[fixed-gpr]") {
+    IntrusivePtr<Block> block{new Block(0, Location{0x9928})};
+    auto read = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U32);
+    auto widened = block->ZeroExtend32To64(read).SetType(ValueType::U64);
+    block->StoreUniform(Uniform{64, ValueType::U64}, widened);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+    FeatureSet features{};
+    GPRSMask pool{};
+    pool.Mark(22);
+    RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    REQUIRE(allocation.IsFixedGPRDefinitionElided(read.Id()));
+    REQUIRE(allocation.PreservedGPRDefinitionAt(read.Id()) == nullptr);
+    REQUIRE(allocation.ValueGPR(read).id == 22);
+}
+
 TEST_CASE("Adjacent fixed GPR publication bypasses the temporary value class", "[fixed-gpr]") {
     IntrusivePtr<Block> block{new Block(0, Location{0x9840})};
     auto value = block->LoadImm(Imm{swift::u64{0x12345678}}).SetType(ValueType::U64);
@@ -773,7 +993,8 @@ TEST_CASE("Fixed GPR transfer rejects source and destination clobbers", "[fixed-
         pool.Mark(23);
         RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
         RegisterAllocPass::Run(block.get(), &allocation, false, features);
-        REQUIRE_FALSE(allocation.HasFixedGPRDefinition(value.Id()));
+        const auto* residence = allocation.FixedGPRDefinitionAt(value.Id());
+        REQUIRE((!residence || residence->preserved));
         REQUIRE(allocation.ValueGPR(value).id != 20);
     }
 }
@@ -798,8 +1019,11 @@ TEST_CASE("Fixed GPR transfer follows exact helper preservation", "[fixed-gpr]")
         pool.Mark(20);
         RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
         RegisterAllocPass::Run(block.get(), &allocation, false, features);
-        REQUIRE(allocation.HasFixedGPRDefinition(value.Id()) == preserved);
+        const auto* residence = allocation.FixedGPRDefinitionAt(value.Id());
+        REQUIRE(residence != nullptr);
+        REQUIRE(residence->preserved == !preserved);
         if (preserved) REQUIRE(allocation.GPRLocationAt(value, loaded.Id()).slot == 7);
+        else REQUIRE(allocation.GPRLocationAt(value, loaded.Id()).slot != 20);
     }
 }
 
@@ -855,7 +1079,8 @@ TEST_CASE("Fixed GPR preallocation preserves captures used in successor blocks",
     pool.Mark(23);
     RegAlloc allocation{function->MaxInstrCount(), pool, FPRSMask{}, features};
     RegisterAllocPass::Run(function, &allocation, false, features);
-    REQUIRE_FALSE(allocation.HasFixedGPRDefinition(value.Id()));
+    REQUIRE(allocation.PreservedGPRDefinitionAt(value.Id()) != nullptr);
+    REQUIRE(allocation.PreservedGPRDefinitionAt(value.Id())->transfer == value.Id());
     REQUIRE(allocation.ValueGPR(value).id != 20);
 }
 
@@ -891,11 +1116,11 @@ TEST_CASE("A widened narrow capture keeps clean high bits", "[fixed-gpr]") {
     pool.Mark(20);
     RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
     RegisterAllocPass::Run(block.get(), &allocation, false, features);
-    REQUIRE_FALSE(allocation.HasFixedGPRDefinition(value.Id()));
+    REQUIRE(allocation.PreservedGPRDefinitionAt(value.Id()) != nullptr);
     REQUIRE(allocation.ValueGPR(value).id != 20);
 }
 
-TEST_CASE("Flags input reuse retains its ordinary capture placement", "[fixed-gpr]") {
+TEST_CASE("Flags input reuse reads its fixed home directly", "[fixed-gpr]") {
     IntrusivePtr<Block> block{new Block(0, Location{0x98b0})};
     auto value = block->GetHostGPR(HostRegIndex(3), Imm{0u}).SetType(ValueType::U32);
     auto result = block->Add(value, Operand{Imm{1u}}).SetType(ValueType::U32);
@@ -908,8 +1133,9 @@ TEST_CASE("Flags input reuse retains its ordinary capture placement", "[fixed-gp
     pool.Mark(3);
     RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
     RegisterAllocPass::Run(block.get(), &allocation, false, features);
-    REQUIRE_FALSE(allocation.HasFixedGPRDefinition(value.Id()));
-    REQUIRE(allocation.ValueGPR(value).id != 3);
+    REQUIRE(allocation.IsFixedGPRDefinitionElided(value.Id()));
+    REQUIRE(allocation.PreservedGPRDefinitionAt(value.Id()) == nullptr);
+    REQUIRE(allocation.ValueGPR(value).id == 3);
 }
 
 TEST_CASE("Width coalescing accepts a preallocated read input", "[fixed-gpr]") {

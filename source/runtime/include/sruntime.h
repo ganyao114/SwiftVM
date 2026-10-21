@@ -24,23 +24,44 @@ enum class HaltReason : std::uint32_t {
     // Reserved ABI value: the old untracked linkage patcher was removed.
     ReservedLinkage = 0x00000040,
     IllegalCode = 0x00000080,
-    CallHost = 0x000000100
+    CallHost = 0x000000100,
+    RuntimeBusy = 0x00000200,
+    Retirement = 0x00000400,
+    InstructionPending = 0x00000800,
+    InstructionRejected = 0x00001000
 };
 
 DECLARE_ENUM_FLAG_OPERATORS(HaltReason)
 
 class Instance {
 public:
+    virtual ~Instance() = default;
+
     static std::unique_ptr<Instance> Make(const Config& config);
 };
 
 class Runtime {
 public:
+    struct InstructionKey {
+        const void* runtime{};
+        const void* address_space{};
+        const void* control{};
+        const void* descriptor{};
+        const void* emitted_ir{};
+        const void* allocation{};
+        u64 generation{}, allocation_id{}, ir_identity{}, head_id{}, guest_pc{};
+        friend bool operator==(const InstructionKey&, const InstructionKey&) = default;
+    };
     explicit Runtime(Instance *instance);
 
     ~Runtime();
 
+    // Concurrent or recursive entry on this Runtime returns RuntimeBusy.
+    // Other state access and destruction require Run to be stopped.
     HaltReason Run();
+    [[nodiscard]] InstructionKey SuspendedInstruction() const;
+    HaltReason ResumeInstruction(const InstructionKey& key);
+    [[nodiscard]] bool AbandonInstruction(const InstructionKey& key);
 
     HaltReason Step();
 

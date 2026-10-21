@@ -12,13 +12,16 @@
 #include <cstring>
 #include <fcntl.h>
 #include <map>
+#include <stdexcept>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "runtime/backend/address_space.h"
-#include "runtime/backend/arm64/region_link_trampoline.h"
+#include "base/scope_exit.h"
+#include "runtime/backend/code_lifetime.h"
 #include "runtime/backend/function_entry_contract.h"
 #include "runtime/backend/module.h"
+#include "runtime/backend/riscv64/link.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/common/logging.h"
@@ -30,33 +33,6 @@ namespace swift::runtime::backend {
 namespace {
 
 constexpr char kMagic[8] = {'S', 'V', 'M', 'J', 'I', 'T', 'C', '\1'};
-// A guest block longer than this is a decoder bug, not a basic block; refuse
-// rather than hash (or check) an arbitrary range out of a corrupt file.
-constexpr u64 kMaxGuestBlockBytes = 1u << 20;
-
-// Readability check that never faults: the kernel validates the buffer and
-// returns EFAULT instead of delivering a signal. mincore() is not usable here
-// because the guest window is one big PROT_NONE reservation -- its pages are
-// "mapped" but unreadable.
-bool RangeIsReadable(const void* p, std::size_t n) {
-    static int devnull = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
-    if (devnull < 0 || n == 0) {
-        return devnull >= 0;
-    }
-    const auto* cursor = static_cast<const u8*>(p);
-    std::size_t left = n;
-    while (left > 0) {
-        const auto chunk = left > 4096 ? std::size_t{4096} : left;
-        const auto written = ::write(devnull, cursor, chunk);
-        if (written < 0) {
-            return false;
-        }
-        cursor += written;
-        left -= static_cast<std::size_t>(written);
-    }
-    return true;
-}
-
 }  // namespace
 
 bool JitDiskCache::Requested() {
@@ -81,12 +57,10 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     const auto& config = address_space.GetConfig();
     if (config.backend_isa == kArm64 && (BackedgeFlagsEnabled() ||
         (config.region_edges && svm_config.backedge_flags) ||
-        svm_config.flags_loop_lazy || svm_config.flags_regs)) {
-        // Recovery veneers are block-local code offsets. SerialBlock does
-        // not yet serialize that relocation/eligibility contract, so refuse
-        // disk reuse rather than reviving a unit with an imprecise recipe.
-        // FLAGS_REGS pins last_result in x12 and implies latch; SerialBlock
-        // cannot record the token home yet.
+        svm_config.flags_loop_lazy)) {
+        // Legacy backedge/loop-lazy recipes have their own eligibility state.
+        // Format29 carries the flags-register ABI's entries, precise recovery
+        // metadata and shared-region branches, but does not admit that older ABI.
         LOG_WARNING("SVM_JIT_CACHE: lazy flags ABI is incompatible; cache disabled");
         return;
     }
@@ -169,27 +143,8 @@ std::string JitDiskCache::FilePath() const {
 }
 
 bool JitDiskCache::HashGuestRange(VAddr start, VAddr end, u64& out) const {
-    if (end <= start || end - start > kMaxGuestBlockBytes) {
-        return false;
-    }
     const auto& config = address_space.GetConfig();
-    const u64 mask = config.guest_addr_mask ? config.guest_addr_mask : UINT64_MAX;
-    if (config.guest_addr_mask) {
-        const u64 lo = start & mask;
-        if (end - start > mask + 1 - lo) {
-            return false;
-        }
-        if ((start & ~mask) != (end - 1 & ~mask)) {
-            return false;
-        }
-    }
-    const auto host = reinterpret_cast<const u8*>(config.memory_base) + (start & mask);
-    const auto len = static_cast<std::size_t>(end - start);
-    if (!RangeIsReadable(host, len)) {
-        return false;
-    }
-    out = HashBytes(host, len, 0xCBF29CE484222325ull);
-    return true;
+    return HashGuestMemory(config.memory_base, config.guest_addr_mask, start, end, out);
 }
 
 // --------------------------------------------------------------------------
@@ -204,6 +159,9 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
                               const std::vector<SerialBlock>& blocks,
                               const std::vector<SerialLinkSite>& link_sites,
                               const std::vector<SerialFaultSite>& fault_sites) {
+    const auto& control = address_space.GetRetirementControl();
+    RetirementControl::Lease producer{control, RetirementControl::Kind::Producer};
+    if (!producer || !module || module->GetRetirementControl() != control) return;
     stats.units_compiled.fetch_add(1, std::memory_order_relaxed);
     if (!enabled || !exec_data || !rw_data || code_size == 0 || blocks.empty()) {
         return;
@@ -213,12 +171,9 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
                         blocks, link_sites, fault_sites);
         return;
     }
-    // A module override can enable the B-class feature after the process-level
-    // cache object was created.  SerialBlock has no recovery-veneer offsets;
-    // never persist such a unit.  An old committed unit cannot revive into the
-    // new shape because its FeatureSet hash differs at Load time.
+    // A module override can enable the older loop-lazy ABI after construction.
     const auto resolved_features = ResolveFeatureSet(module->GetModuleConfig());
-    if (resolved_features.flags_loop_lazy || FlagsRegsEnabled()) {
+    if (resolved_features.flags_loop_lazy) {
         return;
     }
 
@@ -329,6 +284,11 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
     if (cursor < code_size) {
         std::memcpy(unit.code.data() + cursor, rw_data + cursor, code_size - cursor);
     }
+    auto* owning_cache = module->GetCodeCache(const_cast<u8*>(exec_data));
+    if (!owning_cache || !FreezeRegionBranches(*owning_cache, exec_data, unit.code, unit.region_branches)) {
+        stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     const u64 window =
             address_space.GetConfig().guest_addr_mask ? address_space.GetConfig().guest_addr_mask + 1
@@ -358,6 +318,17 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
 // Saving
 // --------------------------------------------------------------------------
 void JitDiskCache::Save() {
+    RetirementControl::Lease producer{address_space.GetRetirementControl(), RetirementControl::Kind::Producer};
+    if (!producer) return;
+    SaveImpl();
+}
+
+void JitDiskCache::SaveAfterDrain() {
+    // Only AddressSpace teardown calls this after terminal admission closure.
+    SaveImpl();
+}
+
+void JitDiskCache::SaveImpl() {
     if (!enabled) {
         return;
     }
@@ -422,388 +393,246 @@ void JitDiskCache::Save() {
 // Loading
 // --------------------------------------------------------------------------
 bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const SerialUnit& unit) {
-    if (address_space.GetConfig().backend_isa == kRiscv64) return ReviveRiscvUnit(module, unit);
+    RetirementControl::Lease producer{module->GetRetirementControl(), RetirementControl::Kind::Producer};
+    if (!producer) return false;
     PerfScope2 perf_revive{GetPerfStats2().cache_revive};
-    // 1. The guest bytes this code was produced from must still be there.
-    for (const auto& block : unit.blocks) {
-        u64 hash{};
-        if (!HashGuestRange(block.guest_start, block.guest_end, hash) ||
-            hash != block.guest_bytes_hash) {
-            stats.reject_guest_bytes.fetch_add(1, std::memory_order_relaxed);
-            dirty = true;
-            return false;
-        }
-        if (block.code_offset % 4 != 0 || block.code_offset >= unit.code.size() ||
-            (block.direct_code_offset != UINT32_MAX &&
-             ((block.direct_code_offset & 3u) != 0 ||
-              block.direct_code_offset >= unit.code.size())) ||
-            (block.pending_flags_code_offset != UINT32_MAX &&
-             ((block.pending_flags_code_offset & 3u) != 0 ||
-              block.pending_flags_code_offset >= unit.code.size()))) {
-            stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-            dirty = true;
-            return false;
-        }
-    }
-    if (!unit.link_sites.empty() && !module->IsDirectLinkConfigured()) {
+    SmcTracker::PublicationScope installation{address_space.GetSmcTracker()};
+    ir::NodeRef node_owner;
+    bool published{}, committed{};
+    const auto retire_failed = ScopeExit([&] {
+        if (!published || committed) return;
+        try { (void)installation.RetireNode(address_space, module, node_owner.Get()); }
+        catch (...) {} // The Module retains inert storage for retry or shutdown.
+    });
+    const auto reject = [&] {
         stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
         dirty = true;
         return false;
-    }
-    for (const auto& site : unit.link_sites) {
-        const bool has_flags_bypass = site.HasFlagsBypass();
-        if ((site.code_offset & 3u) != 0 ||
-            static_cast<size_t>(site.code_offset) + sizeof(u32) > unit.code.size() ||
-            site.kind >= static_cast<u8>(LinkSiteKind::Count) ||
-            !site.ValidFlagsBypass(unit.code.size())) {
-            stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-            dirty = true;
-            return false;
-        }
-        if (has_flags_bypass) {
-            u32 instruction{};
-            std::memcpy(&instruction,
-                        unit.code.data() + site.flags_bypass_offset,
-                        sizeof(instruction));
-            if (instruction != site.flags_bypass_instruction) {
-                stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
+    };
+    const auto entry_owned = [&](VAddr location) {
+        return address_space.GetCodeCache(ir::Location{location}) ||
+               address_space.GetCallCodeCacheTable().Lookup(location) ||
+               address_space.GetPendingCallCodeCacheTable().Lookup(location) ||
+               !IsEmpty(address_space.GetModule(location)->GetNode(ir::Location{location}));
+    };
+    try {
+        const bool rv = address_space.GetConfig().backend_isa == kRiscv64;
+        if (unit.blocks.empty() || unit.is_function > 1 || unit.code.empty() ||
+            unit.code.size() > UINT32_MAX || (unit.code.size() & 3u)) return reject();
+        const SerialBlock* root{};
+        std::vector<VAddr> entries, locations;
+        std::vector<const SerialBlock*> emitted;
+        for (const auto& block : unit.blocks) {
+            if (!block.ValidEntryContract(unit.code.size())) return reject();
+            if (!block.IsDependency()) {
+                if (std::find(locations.begin(), locations.end(), block.guest_start) != locations.end())
+                    return reject();
+                locations.push_back(block.guest_start);
+            }
+            u64 hash{};
+            if (!HashGuestRange(block.guest_start, block.guest_end, hash) ||
+                hash != block.guest_bytes_hash) {
+                stats.reject_guest_bytes.fetch_add(1, std::memory_order_relaxed);
                 dirty = true;
                 return false;
             }
-            if (site.flags_merge_branch_offset != UINT32_MAX) {
-                std::memcpy(&instruction,
-                            unit.code.data() + site.flags_merge_branch_offset,
-                            sizeof(instruction));
-                if (instruction != 0x1400'0000u) {
-                    stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-                    dirty = true;
-                    return false;
-                }
+            if (block.IsPublished()) {
+                if (entry_owned(block.guest_start)) return reject();
+                entries.push_back(block.guest_start);
+                emitted.push_back(&block);
+                if (block.guest_start == unit.guest_start) root = &block;
             }
         }
-    }
-    for (const auto& site : unit.fault_sites) {
-        if ((site.host_begin & 3u) != 0 || site.host_end != site.host_begin + sizeof(u32) ||
-            site.host_end > unit.code.size() ||
-            (site.recovery_offset != UINT32_MAX &&
-             ((site.recovery_offset & 3u) != 0 || site.recovery_offset >= unit.code.size())) ||
-            site.recovery_kind > static_cast<u8>(FaultRecoveryKind::ExternalContinuation)) {
-            stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
+        if (!root || (rv && root->code_offset != 0) ||
+            (!unit.is_function && (locations.size() != 1 || unit.blocks.front().guest_start != unit.guest_start)) ||
+            ((!unit.link_sites.empty() || !unit.region_branches.empty()) && !module->IsDirectLinkConfigured()) ||
+            !ValidRegionBranches(unit.region_branches, unit.code.size()) ||
+            (rv && !unit.region_branches.empty())) return reject();
+        for (const auto& site : unit.fault_sites) {
+            if ((site.host_begin & 3u) || (site.host_end & 3u) ||
+                site.host_begin >= site.host_end || site.host_end > unit.code.size() ||
+                (!rv && site.host_end != site.host_begin + sizeof(u32)) ||
+                (site.recovery_offset != UINT32_MAX &&
+                 ((site.recovery_offset & 3u) || site.recovery_offset >= unit.code.size())) ||
+                site.recovery_kind > static_cast<u8>(FaultRecoveryKind::ExternalContinuation))
+                return reject();
+        }
+        std::sort(emitted.begin(), emitted.end(), [](const auto* a, const auto* b) {
+            return a->code_offset < b->code_offset;
+        });
+        if (!rv && address_space.ExitLatchEnabled()) {
+            for (size_t i = 0; i + 1 < emitted.size(); ++i)
+                if (emitted[i]->code_offset == emitted[i + 1]->code_offset) return reject();
+        }
+
+        // Copy persistence ownership before publication. The final map insertion
+        // remains inside the transaction, including a possible rehash failure.
+        SerialUnit saved_unit = unit;
+        auto module_guard = module->ModuleLockWrite();
+        auto [idx, buffer] = module->AllocCodeCache(static_cast<u32>(unit.code.size()),
+                !rv && (!unit.link_sites.empty() || !unit.region_branches.empty()));
+        if (idx == INVALID_CACHE_ID) {
+            stats.reject_alloc.fetch_add(1, std::memory_order_relaxed);
             dirty = true;
             return false;
         }
-    }
-
-    // 2. Place the code.
-    auto [idx, buffer] = module->AllocCodeCache(
-            static_cast<u32>(unit.code.size()), !unit.link_sites.empty());
-    if (idx == INVALID_CACHE_ID) {
+        std::shared_ptr<CodeLifetime> lifetime;
+        const auto discard = ScopeExit([&] {
+            if (published) return;
+            if (lifetime) lifetime->Revoke();
+            try {
+                module->DiscardLinkSource(buffer.exec_data);
+                module->ReclaimCode(buffer.exec_data);
+            } catch (...) {} // Arena ownership survives metadata cleanup failure.
+        });
+        std::memcpy(buffer.rw_data, unit.code.data(), unit.code.size());
+        std::string error;
+        if (!ApplyRelocations(buffer.rw_data, unit.code.size(), unit.relocs, host_image,
+                              &error, address_space.GetConfig().backend_isa)) return reject();
+        if (rv) {
+            if (!riscv64::RegisterLinkSites(module, buffer, unit.link_sites)) return reject();
+        } else {
+            // Disk capture freezes an allocation-relative cold BL, whereas the
+            // shared installer consumes the address-independent BL placeholder.
+            // Normalize only validated source words before rebinding them.
+            auto arm_links = unit.link_sites;
+            for (auto& site : arm_links) {
+                if ((site.code_offset & 3u) || size_t(site.code_offset) + sizeof(u32) > unit.code.size())
+                    return reject();
+                if (site.unlinked_instruction != 0 && site.unlinked_instruction != 0x94000000u)
+                    return reject();
+                site.unlinked_instruction = 0x94000000u;
+                u32 instruction{};
+                std::memcpy(&instruction, buffer.rw_data + site.code_offset, sizeof(instruction));
+                if ((instruction & 0xfc000000u) != 0x94000000u) return reject();
+                instruction = 0x94000000u;
+                std::memcpy(buffer.rw_data + site.code_offset, &instruction, sizeof(instruction));
+            }
+            auto* cache = module->GetCodeCache(buffer.exec_data);
+            if (!cache || !RebindRegionBranches(*cache, buffer.exec_data,
+                    {buffer.rw_data, buffer.size}, unit.region_branches) ||
+                !RegisterArmSerialLinks(*module, buffer, arm_links)) return reject();
+        }
+        buffer.Flush();
+        lifetime = std::make_shared<CodeLifetime>(buffer.exec_data, buffer.size, std::move(entries));
+        ir::AddressNode* node{};
+        JitCache* cache{};
+        if (unit.is_function) {
+            auto* function = new ir::Function(ir::Location{unit.guest_start});
+            node_owner = ir::NodeRef{function};
+            VAddr max_end = unit.guest_start;
+            for (const auto& block : unit.blocks) {
+                if (block.IsDependency()) continue;
+                auto* child = new ir::Block(ir::Location{block.guest_start});
+                child->SetEndLocation(ir::Location{block.guest_end});
+                child->code_lifetime = lifetime;
+                if (rv && block.IsPublished()) {
+                    auto& child_cache = child->GetJitCache();
+                    child_cache.jit_state = JitState::Cached;
+                    child_cache.cache_id = idx;
+                    child_cache.offset_in = buffer.offset + block.code_offset;
+                    child_cache.cache_size = buffer.size - block.code_offset;
+                }
+                function->AddBlock(child);
+                max_end = std::max(max_end, block.guest_end);
+            }
+            function->SetEndLocation(ir::Location{max_end});
+            node = function; cache = &function->GetJitCache();
+        } else {
+            auto* block = new ir::Block(ir::Location{unit.guest_start});
+            node_owner = ir::NodeRef{block};
+            block->SetEndLocation(ir::Location{root->guest_end});
+            node = block; cache = &block->GetJitCache();
+        }
+        cache->jit_state = JitState::Cached;
+        cache->cache_id = idx;
+        // The node cache identifies the complete allocation, as in normal ARM
+        // compilation; dispatch entries below carry their own canonical offsets.
+        cache->offset_in = buffer.offset;
+        cache->cache_size = buffer.size;
+        node->code_lifetime = lifetime;
+        auto node_guard = unit.is_function ? static_cast<ir::Function*>(node)->LockWrite()
+                                           : static_cast<ir::Block*>(node)->LockWrite();
+        RetirementControl::PublicationScope admission{producer};
+        if (!admission) return reject();
+        SmcTracker::PublicationScope::CommitScope commit{installation};
+        const auto rollback = ScopeExit([&] {
+            if (committed) return;
+            lifetime->Revoke();
+            if (published) {
+                for (const auto entry : lifetime->entries)
+                    (void)address_space.GetLinkManager().SignalInvalidateTarget(entry);
+                commit.RevokeNode(address_space, module, node);
+            }
+        });
+        const auto guest_matches = [&] {
+            for (const auto& block : unit.blocks) {
+                u64 hash{};
+                if (!HashGuestRange(block.guest_start, block.guest_end, hash) ||
+                    hash != block.guest_bytes_hash) return false;
+            }
+            return true;
+        };
+        if (!guest_matches()) return reject();
+        for (const auto& block : unit.blocks)
+            if (block.IsPublished() && entry_owned(block.guest_start)) return reject();
+        if (!module->Push(node)) return reject();
+        published = true;
+        if (!rv)
+            module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size,
+                                  unit.guest_start, buffer.exec_data);
+        for (const auto& site : unit.fault_sites)
+            module->AddFaultEntry(buffer.exec_data + site.host_begin, buffer.exec_data + site.host_end,
+                    site.guest_start, buffer.exec_data,
+                    site.recovery_offset == UINT32_MAX ? nullptr : buffer.exec_data + site.recovery_offset,
+                    static_cast<FaultRecoveryKind>(site.recovery_kind));
+        if (!rv && address_space.ExitLatchEnabled()) {
+            for (size_t i = 0; i < emitted.size(); ++i) {
+                const u32 end = i + 1 < emitted.size() ? emitted[i + 1]->code_offset : buffer.size;
+                module->AddFaultEntry(buffer.exec_data + emitted[i]->code_offset, buffer.exec_data + end,
+                                      emitted[i]->guest_start, buffer.exec_data);
+            }
+        }
+        for (const auto& block : unit.blocks)
+            if (!module->GetModuleConfig().read_only)
+                commit.RegisterNode(module, node, block.guest_start, block.guest_end);
+        if (lifetime->Revoked()) throw std::runtime_error("disk guest protection failed or write window is open");
+        if (!guest_matches()) throw std::runtime_error("guest bytes changed before disk commit");
+        FunctionEntryPublisher publisher{*module, buffer.exec_data, static_cast<u32>(buffer.size)};
+        for (const auto& block : unit.blocks) {
+            if (!block.IsPublished()) continue;
+            const auto contract = FunctionEntryContract::Restore(
+                ir::Location{block.guest_start}, ir::Location{block.guest_end},
+                {.canonical = block.code_offset, .direct_link = block.direct_code_offset,
+                 .pending_flags = block.pending_flags_code_offset, .continuation = block.continuation_code_offset,
+                 .pending_flags_continuation = block.pending_flags_continuation_code_offset},
+                block.pending_flags_contract, block.IsLinkable());
+            (void)publisher.Publish(contract);
+        }
+        {
+            std::lock_guard guard(lock);
+            const auto [position, inserted] = units.try_emplace(unit.guest_start, std::move(saved_unit));
+            if (!inserted) throw std::runtime_error("disk unit persistence owner already exists");
+            if (!lifetime->Commit()) {
+                units.erase(position);
+                throw std::runtime_error("disk unit retired before commit");
+            }
+            committed = true;
+        }
+        stats.units_loaded.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    } catch (const std::bad_alloc&) {
         stats.reject_alloc.fetch_add(1, std::memory_order_relaxed);
         dirty = true;
         return false;
+    } catch (...) {
+        return reject();
     }
-    std::memcpy(buffer.rw_data, unit.code.data(), unit.code.size());
-
-    // 3. Re-bind every runtime address.
-    std::string err;
-    if (!ApplyRelocations(
-                buffer.rw_data, unit.code.size(), unit.relocs, host_image, &err)) {
-        LOG_WARNING("SVM_JIT_CACHE: relocation failed for {:#x}: {}", unit.guest_start, err);
-        if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
-            cache->FreeCode(buffer.exec_data);
-        }
-        stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-        dirty = true;
-        return false;
-    }
-    std::optional<CodeRegion> direct_region;
-    std::vector<u32> unlinked_bl;
-    if (!unit.link_sites.empty()) {
-        direct_region = module->GetCodeRegion(buffer.exec_data);
-        if (!direct_region ||
-            direct_region->trampoline_offset == CodeRegion::kInvalidTrampolineOffset) {
-            if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
-                cache->FreeCode(buffer.exec_data);
-            }
-            stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-            dirty = true;
-            return false;
-        }
-        unlinked_bl.reserve(unit.link_sites.size());
-        for (const auto& site : unit.link_sites) {
-            auto* rx_site = buffer.exec_data + site.code_offset;
-            const bool has_flags_bypass = site.HasFlagsBypass();
-            const u32 trampoline_offset = has_flags_bypass
-                    ? direct_region->pending_flags_trampoline_offset
-                    : direct_region->trampoline_offset;
-            if (trampoline_offset == CodeRegion::kInvalidTrampolineOffset) {
-                if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
-                    cache->FreeCode(buffer.exec_data);
-                }
-                stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-                dirty = true;
-                return false;
-            }
-            auto* trampoline = direct_region->rx_base + trampoline_offset;
-            const auto branch = EncodeBL(trampoline - rx_site);
-            if (!branch) {
-                if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
-                    cache->FreeCode(buffer.exec_data);
-                }
-                stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-                dirty = true;
-                return false;
-            }
-            std::memcpy(buffer.rw_data + site.code_offset, &*branch, sizeof(*branch));
-            if (has_flags_bypass) {
-                if (site.flags_merge_branch_offset != UINT32_MAX) {
-                    if (direct_region->pending_flags_trampoline_offset ==
-                        CodeRegion::kInvalidTrampolineOffset) {
-                        if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
-                            cache->FreeCode(buffer.exec_data);
-                        }
-                        stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-                        dirty = true;
-                        return false;
-                    }
-                    auto* merge_site = buffer.exec_data +
-                            site.flags_merge_branch_offset;
-                    auto* merge_trampoline = direct_region->rx_base +
-                            direct_region->pending_flags_trampoline_offset +
-                            arm64::kFlagsMergeOffsetFromPending;
-                    const auto merge_branch = EncodeB(
-                            merge_trampoline - merge_site);
-                    if (!merge_branch) {
-                        if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
-                            cache->FreeCode(buffer.exec_data);
-                        }
-                        stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-                        dirty = true;
-                        return false;
-                    }
-                    std::memcpy(buffer.rw_data +
-                                        site.flags_merge_branch_offset,
-                                &*merge_branch,
-                                sizeof(*merge_branch));
-                }
-                u32 linked_instruction = site.flags_bypass_linked_instruction;
-                if (!linked_instruction) {
-                    const auto linked_branch = EncodeB(
-                            static_cast<intptr_t>(site.flags_bypass_resume_offset) -
-                            static_cast<intptr_t>(site.flags_bypass_offset));
-                    ASSERT(linked_branch);
-                    linked_instruction = *linked_branch;
-                }
-                std::memcpy(buffer.rw_data + site.flags_bypass_offset,
-                            &linked_instruction,
-                            sizeof(linked_instruction));
-            }
-            unlinked_bl.push_back(*branch);
-        }
-    }
-    buffer.Flush();
-
-    // 4. Publish an address node so SMC invalidation and the fault table see
-    //    the same shape they would after a normal compile.
-    ir::AddressNode* node{};
-    JitCache* jit_cache{};
-    if (unit.is_function) {
-        auto* function = new ir::Function(ir::Location{unit.guest_start});
-        VAddr max_end = unit.guest_start;
-        for (const auto& block : unit.blocks) {
-            auto* ir_block = new ir::Block(ir::Location{block.guest_start});
-            ir_block->SetEndLocation(ir::Location{block.guest_end});
-            function->AddBlock(ir_block);
-            max_end = std::max<VAddr>(max_end, block.guest_end);
-        }
-        function->SetEndLocation(ir::Location{max_end});
-        node = function;
-        jit_cache = &function->GetJitCache();
-    } else {
-        auto* block = new ir::Block(ir::Location{unit.guest_start});
-        block->SetEndLocation(ir::Location{unit.blocks.front().guest_end});
-        node = block;
-        jit_cache = &block->GetJitCache();
-    }
-    jit_cache->jit_state = JitState::Cached;
-    jit_cache->cache_id = idx;
-    jit_cache->offset_in = buffer.offset;
-    jit_cache->cache_size = buffer.size;
-
-    if (!module->Push(node)) {
-        // Another entry already owns this location.
-        if (unit.is_function) {
-            delete static_cast<ir::Function*>(node);
-        } else {
-            delete static_cast<ir::Block*>(node);
-        }
-        if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
-            cache->FreeCode(buffer.exec_data);
-        }
-        stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-        dirty = true;
-        return false;
-    }
-    module->AddFaultEntry(buffer.exec_data,
-                          buffer.exec_data + buffer.size,
-                          unit.guest_start,
-                          buffer.exec_data);
-    for (const auto& site : unit.fault_sites) {
-        module->AddFaultEntry(buffer.exec_data + site.host_begin,
-                              buffer.exec_data + site.host_end,
-                              site.guest_start,
-                              buffer.exec_data,
-                              site.recovery_offset == UINT32_MAX
-                                      ? nullptr
-                                      : buffer.exec_data + site.recovery_offset,
-                              static_cast<FaultRecoveryKind>(site.recovery_kind));
-    }
-    for (size_t i = 0;
-         address_space.ExitLatchEnabled() && i < unit.blocks.size();
-         ++i) {
-        const u32 begin = unit.blocks[i].code_offset;
-        const u32 end = i + 1 < unit.blocks.size()
-                ? unit.blocks[i + 1].code_offset
-                : static_cast<u32>(buffer.size);
-        if (begin >= end || end > buffer.size) {
-            // The serialized unit passed the structural reader but does not
-            // describe non-overlapping emitted block subranges. Reject it
-            // instead of falling back to imprecise function-entry recovery.
-            module->Remove(node);
-            if (unit.is_function) {
-                delete static_cast<ir::Function*>(node);
-            } else {
-                delete static_cast<ir::Block*>(node);
-            }
-            if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
-                cache->FreeCode(buffer.exec_data);
-            }
-            stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-            dirty = true;
-            return false;
-        }
-        module->AddFaultEntry(buffer.exec_data + begin,
-                              buffer.exec_data + end,
-                              unit.blocks[i].guest_start,
-                              buffer.exec_data);
-    }
-
-    // 5. Install every source record only after all code words are in their
-    // unlinked BL form, and before publishing any target or L2 entry. A partial
-    // registration is rolled back as one owner transaction.
-    if (direct_region) {
-        const LinkSourceOwner owner{module.get(), buffer.exec_data};
-        for (size_t i = 0; i < unit.link_sites.size(); ++i) {
-            const auto& site = unit.link_sites[i];
-            auto* rx_site = buffer.exec_data + site.code_offset;
-            auto* rw_site = buffer.rw_data + site.code_offset;
-            const LinkSiteKey key{direct_region->id, buffer.offset + site.code_offset};
-            LinkFlagsBypassPatch flags_bypass_patch{};
-            if (site.HasFlagsBypass()) {
-                u32 linked_instruction = site.flags_bypass_linked_instruction;
-                if (!linked_instruction) {
-                    const auto linked_branch = EncodeB(
-                            static_cast<intptr_t>(site.flags_bypass_resume_offset) -
-                            static_cast<intptr_t>(site.flags_bypass_offset));
-                    ASSERT(linked_branch);
-                    linked_instruction = *linked_branch;
-                }
-                flags_bypass_patch = {
-                        .rx_site = buffer.exec_data + site.flags_bypass_offset,
-                        .rw_site = buffer.rw_data + site.flags_bypass_offset,
-                        .unlinked_instruction = site.flags_bypass_instruction,
-                        .linked_instruction = linked_instruction,
-                };
-            }
-            const LinkSignalPatchSite signal_patch{
-                    .region = *direct_region,
-                    .rx_site = rx_site,
-                    .rw_site = rw_site,
-                    .unlinked_bl = unlinked_bl[i],
-                    .flags_bypass = flags_bypass_patch,
-            };
-            if (!address_space.GetLinkManager().RegisterSite(
-                        key,
-                        site.guest_target,
-                        owner,
-                        &signal_patch,
-                        static_cast<LinkSiteKind>(site.kind),
-                        site.edge_flags)) {
-                module->DiscardLinkSource(buffer.exec_data);
-                module->Remove(node);
-                module->RemoveFaultEntries(buffer.exec_data);
-                if (unit.is_function) {
-                    delete static_cast<ir::Function*>(node);
-                } else {
-                    delete static_cast<ir::Block*>(node);
-                }
-                if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
-                    cache->FreeCode(buffer.exec_data);
-                }
-                stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-                dirty = true;
-                return false;
-            }
-        }
-    }
-
-    // 6. Target publication is deliberately last: a revived site can be found
-    // by the cold linker only after every source record and signal patch record
-    // for this allocation exists. Linked state is never restored from disk.
-    std::vector<FunctionEntryContract> entry_contracts;
-    entry_contracts.reserve(unit.blocks.size());
-    for (const auto& block : unit.blocks) {
-        entry_contracts.push_back(FunctionEntryContract::Restore(
-                ir::Location{block.guest_start},
-                ir::Location{block.guest_end},
-                {
-                        .canonical = block.code_offset,
-                        .direct_link = block.direct_code_offset,
-                        .pending_flags = block.pending_flags_code_offset,
-                },
-                block.pending_flags_contract,
-                block.IsLinkable()));
-        if (!entry_contracts.back().IsWellFormed(static_cast<u32>(buffer.size))) {
-            module->DiscardLinkSource(buffer.exec_data);
-            module->Remove(node);
-            module->RemoveFaultEntries(buffer.exec_data);
-            if (unit.is_function) {
-                delete static_cast<ir::Function*>(node);
-            } else {
-                delete static_cast<ir::Block*>(node);
-            }
-            if (auto* cache = module->GetCodeCache(buffer.exec_data)) {
-                cache->FreeCode(buffer.exec_data);
-            }
-            stats.reject_reloc.fetch_add(1, std::memory_order_relaxed);
-            dirty = true;
-            return false;
-        }
-    }
-    FunctionEntryPublisher entry_publisher{
-            *module, buffer.exec_data, static_cast<u32>(buffer.size)};
-    for (size_t i = 0; i < unit.blocks.size(); ++i) {
-        const auto& block = unit.blocks[i];
-        (void)entry_publisher.Publish(entry_contracts[i]);
-        if (!module->GetModuleConfig().read_only) {
-            address_space.GetSmcTracker().RegisterNode(
-                    module, node, block.guest_start, block.guest_end);
-        }
-    }
-    // Carry the entry forward: Save() writes `units`, so without this a warm
-    // run would persist only what it *re-compiled* and the cache would shrink
-    // to nothing over successive runs. The stored bytes and relocations are
-    // the originals (ApplyRelocations patched the code cache copy, not
-    // unit.code), so re-persisting them verbatim stays self-consistent.
-    {
-        std::lock_guard guard(lock);
-        units[unit.guest_start] = unit;
-    }
-    stats.units_loaded.fetch_add(1, std::memory_order_relaxed);
-    return true;
 }
 
 void JitDiskCache::Load() {
+    RetirementControl::Lease producer{address_space.GetRetirementControl(), RetirementControl::Kind::Producer};
+    if (!producer) return;
     PerfScope2 perf_load{GetPerfStats2().cache_load};
     if (load_attempted.exchange(true, std::memory_order_acq_rel) || !enabled) {
         return;
@@ -874,23 +703,18 @@ void JitDiskCache::Load() {
         }
         slots.emplace_back(slot_key, index);
     }
-    auto& table = address_space.GetCodeCacheTable();
-    for (const auto& [slot_key, index] : slots) {
-        if (!table.PutAt(index, slot_key)) {
-            LOG_WARNING("SVM_JIT_CACHE: dispatch slot replay conflict; cache ignored");
-            table.Clear();
-            stats.reject_header.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-    }
-    stats.dispatch_slots.store(slots.size(), std::memory_order_relaxed);
-
     u64 unit_count{};
     if (!reader.U64(unit_count)) {
-        table.Clear();
         stats.reject_header.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    auto& table = address_space.GetCodeCacheTable();
+    if (!table.ReplaySlots(slots)) {
+        LOG_WARNING("SVM_JIT_CACHE: dispatch slot replay conflict; cache ignored");
+        stats.reject_header.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    stats.dispatch_slots.store(slots.size(), std::memory_order_relaxed);
     for (u64 i = 0; i < unit_count; ++i) {
         SerialUnit unit{};
         if (!ReadUnit(reader, unit)) {

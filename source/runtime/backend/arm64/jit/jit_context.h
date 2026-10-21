@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <type_traits>
 #include <vector>
 #include "aarch64/macro-assembler-aarch64.h"
 #include "base/common_funcs.h"
@@ -24,9 +25,11 @@
 
 namespace swift::runtime::backend::arm64 {
 
+class FrozenGPRPlan;
+struct UnitScratchFacts;
+
 using namespace vixl::aarch64;
 
-class PinnedGPRAllocation;
 
 struct NoneReg {};
 using CPUReg = boost::variant<NoneReg, Register, VRegister>;
@@ -75,9 +78,13 @@ struct DirectLinkSiteInfo {
 
 class JitContext : DeleteCopyAndMove {
 public:
+    [[nodiscard]] bool InstructionHasValueUses() const { return instruction_has_value_uses; }
+    [[nodiscard]] bool MulInputHasNoObservers() const { return instruction_unobserved_mul_right; }
+    [[nodiscard]] bool Div128CanLowerNatively() const { return instruction_div128_native; }
     struct FaultRange {
         u32 begin{};
         u32 end{};
+        bool publish_frame{};
     };
 
     struct StaticForwardResult {
@@ -97,6 +104,10 @@ public:
                RegAlloc& reg_alloc,
                MacroAssembler& assembler,
                bool enable_direct_link = true);
+    // Raw assembly buffers cannot consume IR or an allocation plan.
+    struct AssemblerOnlyTag {};
+    JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_alloc,
+               MacroAssembler& assembler, AssemblerOnlyTag);
 
     void AbsorbEmissionState(JitContext& region);
 
@@ -119,19 +130,30 @@ public:
         return static_cast<u8>(reg_alloc.ValueGPR(value).id);
     }
     [[nodiscard]] RegAlloc& GetAllocation() { return reg_alloc; }
+    [[nodiscard]] bool RequireGPRPlan(const ir::Block* block) const;
+    [[nodiscard]] const std::shared_ptr<Module>& GetModule() const { return module; }
     // Select the use location before materializing it. A pinned hit must never
     // evaluate the spill fallback or lease an otherwise unnecessary scratch.
-    [[nodiscard]] Register UseGPR(const ir::Value& value, const ir::Inst* consumer,
-                                   const PinnedGPRAllocation& placement);
-    [[nodiscard]] std::optional<Register> PinnedGPRUse(
+    [[nodiscard]] Register UseGPR(const ir::Value& value, const ir::Inst* consumer);
+    [[nodiscard]] RegAlloc::GPRLocation OperandLocation(
             ir::Value value, const ir::Inst* consumer,
-            const PinnedGPRAllocation& placement) const;
-    [[nodiscard]] std::optional<WRegister> PinnedWUse(
-            ir::Value value, const ir::Inst* consumer,
-            const PinnedGPRAllocation& placement) const;
-    [[nodiscard]] std::optional<XRegister> PinnedValueGPR(
-            ir::Value value, const ir::Inst* consumer,
-            const PinnedGPRAllocation& placement) const;
+            RegAlloc::GPRView view = RegAlloc::GPRView::Value) const;
+    // A residence probe is read-only. Materialization (including a spill
+    // reload) happens only after the caller chooses its operand form.
+    template<class RegisterType = Register>
+    [[nodiscard]] std::optional<RegisterType> PlannedGPR(
+            ir::Value value, const ir::Inst* consumer) const {
+        constexpr auto view = std::is_same_v<RegisterType, WRegister>
+                ? RegAlloc::GPRView::Low32
+                : std::is_same_v<RegisterType, XRegister>
+                        ? RegAlloc::GPRView::Definition : RegAlloc::GPRView::Value;
+        const auto location = OperandLocation(value, consumer, view);
+        if (!location.pinned) return std::nullopt;
+        if constexpr (std::is_same_v<RegisterType, Register>)
+            return Register{location.slot, location.bits};
+        else
+            return RegisterType{location.slot};
+    }
     [[nodiscard]] Register R(const ir::Value& value, bool auto_cast = false);
     [[nodiscard]] Register RForWrite(const ir::Value& value);
     [[nodiscard]] XRegister X(const ir::Value& value);
@@ -167,6 +189,7 @@ public:
     // it immediately after the opcode emitter returns. Terminals get their own
     // contract because they share the last instruction's live mask.
     void EndInstructionScratch();
+    void ExecuteGPRPreservations(u32 instruction);
     [[nodiscard]] u32 LastInstructionScratchGPR() const {
         return last_instruction_scratch_gpr;
     }
@@ -185,14 +208,17 @@ public:
             Label* backedge_exit = nullptr,
             Label* self_target = nullptr,
             LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional,
-            DirectLinkFlagsBypass flags_bypass = {});
+            DirectLinkFlagsBypass flags_bypass = {},
+            Label* request_exit = nullptr);
     [[nodiscard]] std::optional<FaultRange>
     ForwardLocal(ir::Location location,
                  Label* cycle_exit = nullptr,
                  bool fallthrough = false,
-                 Label* local_target = nullptr);
+                 Label* local_target = nullptr,
+                 Label* request_exit = nullptr);
     [[nodiscard]] std::optional<FaultRange>
-    ForwardPublishedEntry(ir::Location location, Label* cycle_exit = nullptr);
+    ForwardPublishedEntry(ir::Location location, Label* cycle_exit = nullptr,
+                          Label* request_exit = nullptr, bool publish_frame = false);
     [[nodiscard]] bool CanBypassDispatcher(ir::Location location) const;
     [[nodiscard]] bool CanEmitDirectLink(ir::Location location) const;
     [[nodiscard]] bool CanUseRegionTrampoline() const { return direct_link_active; }
@@ -218,14 +244,17 @@ public:
     ForwardStatic(ir::Location location,
                   Label* cycle_exit = nullptr,
                   LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional,
-                  DirectLinkFlagsBypass flags_bypass = {});
+                  DirectLinkFlagsBypass flags_bypass = {},
+                  Label* request_exit = nullptr);
     [[nodiscard]] FaultRange
-    ForwardIndirectL1(const Register& location, Label* miss = nullptr);
+    ForwardIndirectL1(const Register& location, Label* miss = nullptr, Label* request_exit = nullptr);
     [[nodiscard]] FaultRange
-    ForwardContinuation(const Register& location, Label* miss, Label* null_target);
+    ForwardContinuation(const Register& location, Label* miss, Label* null_target,
+                        Label* request_exit = nullptr);
     [[nodiscard]] IndirectCallForwardResult ForwardIndirectCall(const Register& location,
                                                                 Label* miss,
-                                                                bool pending_flags = false);
+                                                                bool pending_flags = false,
+                                                                Label* request_exit = nullptr);
     void ReturnToDispatcher(const Register& location);
     void ReturnHost();
     [[nodiscard]] bool ContinuationActive() const {
@@ -250,7 +279,8 @@ public:
     // The guarded Runtime mapping resets rsb_ptr in the host fault context if
     // either direction leaves the usable stack.
     void EmitRSBPush(u64 guest_return_addr, u32 dispatch_index);
-    void EmitRSBPop(std::optional<XRegister> actual_target = std::nullopt);
+    void EmitRSBPop(std::optional<XRegister> actual_target = std::nullopt,
+                    Label* request_exit = nullptr);
 
     // Reserves (GetOrPut) the L2 dispatch-table slot for a guest address and
     // returns its slot index (2*entry+1, pointing at the entry's value word).
@@ -293,6 +323,12 @@ public:
     // Address-space config (JIT needs it for the memory_base bias fast-path
     // decision in EmitMemOperand).
     [[nodiscard]] const Config& GetConfig() { return module->GetAddressSpace().GetConfig(); }
+    // Adaptive RCpc: true when the unit being compiled contains a guest
+    // block that exhausted its emulated-fault budget. The emitter then
+    // produces the checked alignment form despite rcpc_fault_emulate.
+    // Serializable (offline-capture) emission never sets this: the
+    // serialized form stays canonical and adapts again at runtime.
+    [[nodiscard]] bool RcpcForceChecks() const { return rcpc_force_checks; }
     [[nodiscard]] const FeatureSet& GetFeatures() const { return features; }
     [[nodiscard]] u64 GetPairCallTrampoline() const;
     [[nodiscard]] bool IsHostWriteCoalesced(u32 id) const {
@@ -327,12 +363,6 @@ public:
     }
     [[nodiscard]] bool WidthComponentOwnerHighZero(u32 anchor) const {
         return reg_alloc.WidthComponentOwnerHighZero(anchor);
-    }
-    [[nodiscard]] bool IsConstAddressCached(u32 id) const {
-        return reg_alloc.IsConstAddressCached(id);
-    }
-    [[nodiscard]] u32 ConstAddressCacheAnchor(u32 id) const {
-        return reg_alloc.ConstAddressCacheAnchor(id);
     }
     [[nodiscard]] bool IsAesChainTied(u32 id) const {
         return reg_alloc.IsAesChainTied(id);
@@ -397,6 +427,30 @@ public:
     void CommitFlagsRegsAudit();
 
 private:
+    [[nodiscard]] std::optional<FaultRange>
+    PollCycleExit(ir::Location target, Label* exit, bool publish_frame = false);
+    [[nodiscard]] std::optional<FaultRange>
+    PollTerminalExit(ir::Location target, Label* exit, bool publish_frame = false);
+    void PollTerminalExit(std::optional<XRegister> target, Label* exit,
+                          bool pop_frame = false, bool publish_frame = false);
+    friend class JitTranslator;
+    // Translator binds only after RequireGPRPlan admits the complete unit.
+    // The context and immutable owner then have the same allocation epoch.
+    void BindInstructionScratchPlan(const ir::Block* block,
+                                    std::shared_ptr<const FrozenGPRPlan> plan) {
+        scratch_plan_block = block;
+        instruction_scratch_plan = std::move(plan);
+        instruction_scratch_next = 0;
+    }
+    void ClearInstructionScratchPlan() {
+        scratch_plan_block = nullptr;
+        instruction_scratch_plan.reset();
+        instruction_scratch_next = 0;
+    }
+    void BindFrozenGPRPlan(u32 generation, u32 attempt) {
+        gpr_generation = generation;
+        gpr_attempt = attempt;
+    }
     void Initialize(bool enable_direct_link);
     void MaybeDumpHostBytes();
     void FlushLabels(VAddr target);
@@ -450,6 +504,7 @@ private:
     [[nodiscard]] XRegister GetSpillTmpX();
     [[nodiscard]] VRegister GetSpillTmpV();
     [[nodiscard]] backend::ScratchNeed CurrentBudget() const;
+    [[nodiscard]] UnitScratchFacts CurrentUnitScratch() const;
     void BeginVixlScratch(bool allow_pool);
     void EndVixlScratch();
     void ExcludeVixlScratch(const XRegister& reg);
@@ -468,10 +523,13 @@ private:
     ir::Block *cur_block{};
     ir::Inst *cur_inst{};
     RegAlloc& reg_alloc;
+    bool assembler_only_context{};
+    u32 gpr_generation{}, gpr_attempt{};
     std::unique_ptr<MacroAssembler> owned_masm;
     MacroAssembler& masm;
     LocationDescriptor unit_start{};
     bool unit_start_set{};
+    bool rcpc_force_checks{};
     bool host_bytes_dumped{};
     bool ra_shape_submitted{};
     bool exec_profile_enabled{};
@@ -565,6 +623,16 @@ private:
     u32 spill_tmp_gprs{};
     u32 spill_tmp_fprs{};
     u32 last_instruction_scratch_gpr{};
+    u32 instruction_audit_clobbers{};
+    const ir::Block* scratch_plan_block{};
+    std::shared_ptr<const FrozenGPRPlan> instruction_scratch_plan;
+    size_t instruction_scratch_next{};
+    backend::ScratchNeed instruction_scratch_budget{backend::kDefaultScratchGPR,
+                                                    backend::kDefaultScratchFPR};
+    bool instruction_vixl_x87{};
+    bool instruction_has_value_uses : 1 {};
+    bool instruction_unobserved_mul_right : 1 {};
+    bool instruction_div128_native : 1 {};
     int shared_tmp_gpr{-1};
     bool auxiliary_scratch{};
     bool vixl_scratch_contract_active{};

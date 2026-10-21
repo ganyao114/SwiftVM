@@ -52,6 +52,7 @@ public:
     WidePlan Run() {
         for (auto& inst : input->GetInstList()) Lower(&inst);
         plan.body->SetTerminal(Terminal(input->GetTerminal()));
+        plan.body->SetEndLocation(input->GetEndLocation());
         if (plan.body->GetInstList().size() > std::numeric_limits<u16>::max())
             throw std::runtime_error("RV64 V256 expansion exceeds the IR instruction ID limit");
         plan.body->ReIdInstr();

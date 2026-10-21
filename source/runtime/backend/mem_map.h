@@ -19,6 +19,31 @@ public:
         RWX = Read | Write | Executable
     };
 
+    struct UnmapResult {
+        int error{};
+        [[nodiscard]] bool Released() const { return error == 0; }
+    };
+
+    struct ReleaseResult {
+        u32 remaining_views{};
+        bool backing_mapped{};
+        bool descriptor_open{};
+        int unmap_error{};
+        int close_error{};
+
+        [[nodiscard]] bool Complete() const {
+            return remaining_views == 0 && !backing_mapped && !descriptor_open &&
+                   unmap_error == 0 && close_error == 0;
+        }
+    };
+    struct RetainedReleaseResult {
+        // Includes owners temporarily held by a concurrent retry. The first
+        // failure describes a queued owner, when one is available.
+        size_t owners{};
+        ReleaseResult first_failure{};
+        [[nodiscard]] bool Complete() const { return owners == 0; }
+    };
+
     explicit MemMap(u32 size, bool executable = false);
 
     ~MemMap() override;
@@ -26,6 +51,16 @@ public:
     void* Map(u32 size, u32 offset, Mode mode, bool pri = false);
     void Protect(u32 size, u32 offset, Mode mode);
     void Unmap(void* mem, u32 size);
+    [[nodiscard]] UnmapResult UnmapChecked(void* mem, u32 size) noexcept;
+    // The caller must revoke aliases and drain executors and signal readers first.
+    // Failed views remain owned for retry; a failed close is never retried.
+    [[nodiscard]] ReleaseResult ReleaseAfterQuiescence() noexcept;
+    [[nodiscard]] ReleaseResult GetReleaseState() const noexcept;
+    // Host-boundary retry for failed construction/non-executable/previously
+    // quiesced releases. Published executable arenas are never admitted here
+    // until their caller has explicitly begun ReleaseAfterQuiescence.
+    [[nodiscard]] static RetainedReleaseResult GetRetainedReleaseState() noexcept;
+    [[nodiscard]] static RetainedReleaseResult RetryRetainedReleases() noexcept;
     void Free(u32 offset, u32 size);
     u8* GetMemory();
     [[nodiscard]] u32 GetSize() const;

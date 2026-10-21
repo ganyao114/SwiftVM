@@ -71,6 +71,8 @@ TEST_CASE("logging uses inclusive thresholds and skips disabled arguments", "[di
     CHECK_FALSE(Enabled(Level::Max));
 }
 
+// Android deliberately routes host logging to logcat.
+#if !defined(__ANDROID__)
 TEST_CASE("enabled host logs go to stderr", "[diagnostic-helpers]") {
     int fds[2];
     REQUIRE(pipe(fds) == 0);
@@ -104,6 +106,7 @@ TEST_CASE("enabled host logs go to stderr", "[diagnostic-helpers]") {
     CHECK(evaluated == 1);
     CHECK(std::string(buffer, count).find("host diagnostic 1") != std::string::npos);
 }
+#endif
 
 TEST_CASE("diagnostic channels skip disabled arguments independently", "[diagnostic-helpers]") {
     using namespace swift::log;

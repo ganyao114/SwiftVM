@@ -94,12 +94,12 @@ TEST_CASE("hot coalesce check classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 167);
+    REQUIRE(PerfStats2::kGetenvNames.size() == 169);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_INV_DBG");
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.back()) ==
-            "SVM_RA_FIXED_CLASS");
+            "SVM_VERIFY_PLAN");
     STATIC_REQUIRE(offsetof(backend::RuntimeProfileInterface, exec) == 0);
 
     REQUIRE(HotCoalesceIsMoveBridge("mov x1, x2"));
@@ -204,7 +204,7 @@ TEST_CASE("FeatureSet captures every B-class field and applies sparse overrides"
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 70);
+    STATIC_REQUIRE(kFeatureCount == 69);
     REQUIRE(FeatureSet{}.ra_coalesce_live);
     REQUIRE(FeatureSet{}.operand_copy_kill);
     REQUIRE(FeatureSet{}.zero_store_zr);
@@ -327,13 +327,13 @@ TEST_CASE("FPR demand-lean prices proven peaks and reclaims only AFP cold ABI") 
     off.fpr_scratch_precise = false;
     FeatureSet on{};
     on.fpr_scratch_precise = true;
-    REQUIRE(ScratchBudget(*scalar32.Def(), off).fpr == 5);
-    REQUIRE(ScratchBudget(*scalar64.Def(), off).fpr == 4);
-    REQUIRE(ScratchBudget(*convert_fast.Def(), off).fpr == 5);
-    REQUIRE(ScratchBudget(*scalar32.Def(), on).fpr == 1);
-    REQUIRE(ScratchBudget(*scalar64.Def(), on).fpr == 0);
-    REQUIRE(ScratchBudget(*convert_fast.Def(), on).fpr == 1);
-    REQUIRE(ScratchBudget(*convert_wide.Def(), on).fpr == 5);
+    REQUIRE(ScratchBudget(*scalar32.Def(), off, {}).fpr == 5);
+    REQUIRE(ScratchBudget(*scalar64.Def(), off, {}).fpr == 4);
+    REQUIRE(ScratchBudget(*convert_fast.Def(), off, {}).fpr == 5);
+    REQUIRE(ScratchBudget(*scalar32.Def(), on, {}).fpr == 1);
+    REQUIRE(ScratchBudget(*scalar64.Def(), on, {}).fpr == 0);
+    REQUIRE(ScratchBudget(*convert_fast.Def(), on, {}).fpr == 1);
+    REQUIRE(ScratchBudget(*convert_wide.Def(), on, {}).fpr == 5);
 
     Config config{
             .loc_start = 0,
@@ -509,7 +509,7 @@ TEST_CASE("config hash includes independent code-shape policies") {
     swift::runtime::Config induction{};
     swift::runtime::Config region{};
     a1.mem_hostbase_fold = true;
-    induction.induct_tie = true;
+    induction.rcpc_fault_emulate = true;
     region.region_edges = true;
 
     const auto base_hash = swift::runtime::backend::ComputeConfigHash(base);

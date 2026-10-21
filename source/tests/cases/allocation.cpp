@@ -6,7 +6,6 @@ TEST_CASE("Unreachable blocks keep unique IDs after function finalization") {
     using namespace swift::runtime::ir;
     using namespace swift::runtime::backend;
     FeatureSet features{};
-    features.const_addr_cache = true;
     HIRBuilder builder{1, true, features};
     auto* function = builder.AppendFunction(Location{0x1000}, Location{0x1200});
     auto live = function->LoadImm(Imm{swift::u64{42}}).SetType(ValueType::U64);

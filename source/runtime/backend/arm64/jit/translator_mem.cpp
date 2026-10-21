@@ -17,842 +17,9 @@
 
 namespace swift::runtime::backend::arm64 {
 
-namespace {
 
-ir::Value ResolveHostCoalesceBitCast(ir::Value value) {
-    while (value.Defined() && value.Def()->IsBitCastOperation()) {
-        value = value.Def()->GetArg<ir::Value>(0);
-    }
-    return value;
-}
 
-bool IsKnownHostWWrite(ir::Value value);
 
-bool IsHostCoalesceProducer(ir::OpCode op, bool width_chain) {
-    return IsGPRPublicationProducer(op, width_chain);
-}
-
-bool IsWidthChainHostWWrite(ir::Value value, u32 target,
-                            const FeatureSet& features) {
-    value = ResolveHostCoalesceBitCast(value);
-    if (!value.Defined()) {
-        return false;
-    }
-    auto* def = value.Def();
-    if (def->GetOp() == ir::OpCode::GetHostGPR) {
-        return features.ra_width_chain &&
-               ir::GetValueSizeByte(def->ReturnType()) == sizeof(u32) &&
-               def->GetArg<ir::Imm>(1).Get() == 0 &&
-               def->GetArg<ir::Imm>(0).Get() != target;
-    }
-    return IsKnownHostWWrite(value);
-}
-
-bool IsHostScalarFPRBinaryProducer(ir::OpCode op) {
-    using O = ir::OpCode;
-    switch (op) {
-        case O::VecFAddScalar32:
-        case O::VecFSubScalar32:
-        case O::VecFMulScalar32:
-        case O::VecFDivScalar32:
-        case O::VecFAddScalar64:
-        case O::VecFSubScalar64:
-        case O::VecFMulScalar64:
-        case O::VecFDivScalar64:
-            return true;
-        default:
-            return false;
-    }
-}
-
-bool IsHostFPRCoalesceProducer(ir::OpCode op, bool scalar_insert,
-                              bool scalar_tie) {
-    using O = ir::OpCode;
-    switch (op) {
-        case O::LoadUniform:
-        case O::LoadMemory:
-        case O::VecAnd:
-        case O::VecOr:
-        case O::VecXor:
-        case O::VecAdd:
-        case O::VecSub:
-        case O::VecCmpEq:
-        case O::VecCmpGt:
-        case O::VecMul:
-        case O::VecShuffle32Indexed:
-        case O::VecExtractBytes:
-        case O::VecZip:
-        case O::VecFAdd:
-        case O::VecFSub:
-        case O::VecFMul:
-        case O::VecFDiv:
-            return true;
-        default:
-            return IsHostScalarFPRBinaryProducer(op) &&
-                   (!scalar_insert || scalar_tie);
-    }
-}
-
-bool IsHostScalarUnaryProducer(const ir::Inst& inst,
-                               bool scalar_tie) {
-    if (!scalar_tie || inst.GetOp() != ir::OpCode::VecFUnary ||
-        inst.GetArg<ir::Imm>(3).Get() != 0 ||
-        inst.GetArg<ir::Imm>(4).Get() == 0) {
-        return false;
-    }
-    const u32 lane_bits = inst.GetArg<ir::Imm>(2).Get();
-    return lane_bits == 32 || lane_bits == 64;
-}
-
-bool IsHostCoalesceObserver(const ir::Inst& inst, const FeatureSet& features) {
-    return IsFixedGPRPublicationObserver(inst, features);
-}
-
-bool IsKnownHostWWrite(ir::Value value) {
-    value = ResolveHostCoalesceBitCast(value);
-    if (!value.Defined()) {
-        return false;
-    }
-    auto* def = value.Def();
-    if (def->GetOp() == ir::OpCode::GetHostGPR) {
-        return false;
-    }
-    if (def->GetOp() == ir::OpCode::BitExtract &&
-        ir::GetValueSizeByte(def->ReturnType()) == sizeof(u32) &&
-        def->GetArg<ir::Imm>(1).Get() == 0 &&
-        def->GetArg<ir::Imm>(2).Get() == 32) {
-        return IsKnownHostWWrite(def->GetArg<ir::Value>(0));
-    }
-    if (def->GetOp() == ir::OpCode::ZeroExtend32To64 &&
-        ir::GetValueSizeByte(def->GetArg<ir::Value>(0).Type()) == sizeof(u32)) {
-        return IsKnownHostWWrite(def->GetArg<ir::Value>(0));
-    }
-    return ir::GetValueSizeByte(def->ReturnType()) == sizeof(u32);
-}
-
-bool TerminalUsesHostCoalesceValue(const ir::Terminal& terminal_value,
-                                   ir::Inst* definition) {
-    return VisitVariant<bool>(terminal_value, [&](const auto& edge) {
-        using T = std::decay_t<decltype(edge)>;
-        if constexpr (std::is_same_v<T, ir::terminal::If>) {
-            return ResolveHostCoalesceBitCast(edge.cond).Def() == definition ||
-                   TerminalUsesHostCoalesceValue(edge.then_, definition) ||
-                   TerminalUsesHostCoalesceValue(edge.else_, definition);
-        } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
-            if (ResolveHostCoalesceBitCast(edge.value).Def() == definition) {
-                return true;
-            }
-            return std::any_of(edge.cases.begin(), edge.cases.end(),
-                               [&](const auto& item) {
-                                   return TerminalUsesHostCoalesceValue(item.then, definition);
-                               });
-        } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
-            return TerminalUsesHostCoalesceValue(edge.then_, definition) ||
-                   TerminalUsesHostCoalesceValue(edge.else_, definition);
-        } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
-            return TerminalUsesHostCoalesceValue(edge.else_, definition);
-        }
-        return false;
-    });
-}
-
-}  // namespace
-
-bool JitTranslator::ReproveCoalescedHostWrite(ir::Inst* inst) const {
-    if (!inst || inst->GetOp() != ir::OpCode::SetHostGPR ||
-        inst->GetArg<ir::Imm>(2).Get() != 0) {
-        return false;
-    }
-    const u32 target = inst->GetArg<ir::Imm>(1).Get();
-    auto stored = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
-    auto* wrapper = stored.Def();
-    const bool width_wrapper = stored.Defined() &&
-                               context.IsWidthChainCoalesced(stored.Id());
-    const bool live_publish =
-            context.GetFeatures().ra_coalesce_live && !width_wrapper;
-    if (!wrapper || (!width_wrapper && !live_publish && wrapper->GetUses() != 1)) {
-        return false;
-    }
-    auto produced = stored;
-    bool zero_extend_chain = false;
-    bool low32_copy = false;
-    if (wrapper->GetOp() == ir::OpCode::ZeroExtend32To64) {
-        produced = ResolveHostCoalesceBitCast(wrapper->GetArg<ir::Value>(0));
-        zero_extend_chain = true;
-        if (produced.Def() &&
-            context.IsLow32CopyCoalesced(produced.Id()) &&
-            produced.Def()->GetOp() == ir::OpCode::BitExtract &&
-            produced.Def()->GetArg<ir::Imm>(1).Get() == 0 &&
-            produced.Def()->GetArg<ir::Imm>(2).Get() == 32) {
-            auto source = ResolveHostCoalesceBitCast(
-                    produced.Def()->GetArg<ir::Value>(0));
-            low32_copy = source.Defined() &&
-                    context.Low32CopySource(produced.Id()) == source.Id() &&
-                    context.SharesGPR(source, produced);
-        }
-        const bool width_root = produced.Defined() &&
-                                context.IsWidthChainCoalesced(produced.Id()) &&
-                                context.WidthChainAnchor(produced.Id()) == produced.Id();
-        if (!produced.Def() ||
-            (!width_root && !live_publish && produced.Def()->GetUses() != 1) ||
-            (!low32_copy &&
-             !IsWidthChainHostWWrite(produced, target, context.GetFeatures()))) {
-            return false;
-        }
-    }
-    auto* producer = produced.Def();
-    if (!producer ||
-        !IsHostCoalesceProducer(producer->GetOp(),
-                                context.GetFeatures().ra_width_chain) ||
-        (!low32_copy && context.X(produced).GetCode() != target) ||
-        (zero_extend_chain && context.X(stored).GetCode() != target)) {
-        return false;
-    }
-    const u32 width = ir::GetValueSizeByte(produced.Type());
-    if ((width != sizeof(u32) && width != sizeof(u64)) ||
-        (width == sizeof(u32) &&
-         !low32_copy &&
-         !IsWidthChainHostWWrite(produced, target, context.GetFeatures()))) {
-        return false;
-    }
-    if (width_wrapper) {
-        const u32 anchor = context.WidthChainAnchor(stored.Id());
-        if (context.HasWidthComponentOwner(anchor)) {
-            const bool actual_high_zero = zero_extend_chain ||
-                    ir::GetValueSizeByte(produced.Type()) == sizeof(u32);
-            if (!context.WidthComponentOwnerCommitted(anchor) ||
-                context.WidthComponentOwnerTarget(anchor) != target ||
-                context.WidthComponentOwnerHighZero(anchor) != actual_high_zero) {
-                return false;
-            }
-        }
-    }
-    ir::Inst* component_source = nullptr;
-    if (producer->GetOp() == ir::OpCode::SignExtend) {
-        auto source = ResolveHostCoalesceBitCast(producer->GetArg<ir::Value>(0));
-        auto* source_def = source.Def();
-        if (source_def && context.IsWidthChainCoalesced(source.Id())) {
-            if (source_def->GetOp() != ir::OpCode::LoadMemory ||
-                ir::GetValueSizeByte(source.Type()) > sizeof(u16) ||
-                source_def->GetUses() != 1 ||
-                context.WidthChainAnchor(source.Id()) !=
-                        context.WidthChainAnchor(produced.Id()) ||
-                !context.SharesGPR(source, produced)) {
-                return false;
-            }
-            component_source = source_def;
-        }
-    }
-    const u32 proof_start = component_source ? component_source->Id()
-                                             : producer->Id();
-
-    auto last_use = [&](ir::Inst* definition) {
-        u32 end = definition->Id();
-        for (auto& scan : cur_block->GetInstList()) {
-            for (auto use : scan.GetValues()) {
-                if (ResolveHostCoalesceBitCast(use).Def() == definition) {
-                    end = std::max<u32>(end, scan.Id());
-                }
-            }
-        }
-        if (TerminalUsesHostCoalesceValue(cur_block->GetTerminal(), definition) &&
-            cur_block->GetInstList().begin() != cur_block->GetInstList().end()) {
-            end = std::max<u32>(end, std::prev(cur_block->GetInstList().end())->Id());
-        }
-        return end;
-    };
-
-    for (auto input : producer->GetValues()) {
-        auto root = ResolveHostCoalesceBitCast(input);
-        if (low32_copy && root.Defined() &&
-            context.Low32CopySource(produced.Id()) == root.Id()) {
-            continue;
-        }
-        if (!root.Defined() || !context.SharesGPR(root, produced)) {
-            continue;
-        }
-        if (last_use(root.Def()) > producer->Id()) {
-            return false;
-        }
-    }
-
-    u32 live_end = inst->Id();
-    if (live_publish) {
-        live_end = std::max<u32>(live_end, last_use(wrapper));
-        if (zero_extend_chain) {
-            live_end = std::max<u32>(live_end, last_use(producer));
-        }
-    }
-    for (auto& other : cur_block->GetInstList()) {
-        if (&other == component_source || &other == producer ||
-            &other == wrapper || &other == inst ||
-            !other.HasValue() || other.IsBitCastOperation() ||
-            other.Id() > live_end) {
-            continue;
-        }
-        const bool low32_copy_alias =
-                context.IsLow32CopyCoalesced(other.Id()) &&
-                other.GetOp() == ir::OpCode::BitExtract &&
-                other.GetArg<ir::Imm>(1).Get() == 0 &&
-                other.GetArg<ir::Imm>(2).Get() == 32 &&
-                (context.Low32CopySource(other.Id()) == stored.Id() ||
-                 context.Low32CopySource(other.Id()) == produced.Id());
-        if (low32_copy_alias) {
-            continue;
-        }
-        if (other.Id() > inst->Id() &&
-            other.GetOp() == ir::OpCode::GetHostGPR &&
-            other.GetArg<ir::Imm>(0).Get() == target) {
-            continue;
-        }
-        ir::Value value{&other};
-        auto& allocation = context.GetAllocation();
-        if (allocation.FixedGPRPublicationOwns(inst->Id(), value.Id())) continue;
-        const bool fixed = allocation.HasFixedGPRDefinition(value.Id());
-        if (!fixed && !context.IsGPRMappedTo(value, target)) continue;
-        // Fixed segments already carry their exact ends. Ordinary candidates
-        // need a block scan only after their physical home matches the target.
-        const u32 end = fixed ? value.Id() : last_use(&other);
-        if (allocation.FixedGPRHomeIntersects(
-                    value, target, proof_start, live_end, end)) {
-            return false;
-        }
-    }
-
-    bool after_start = false;
-    for (auto& scan : cur_block->GetInstList()) {
-        if (scan.Id() == proof_start) {
-            after_start = true;
-            continue;
-        }
-        if (!after_start || &scan == producer || &scan == wrapper) {
-            continue;
-        }
-        if (&scan == inst) {
-            break;
-        }
-        const bool flags_only = scan.GetOp() == ir::OpCode::SaveFlags;
-        if ((!flags_only && IsHostCoalesceObserver(scan, context.GetFeatures())) ||
-            (scan.GetOp() == ir::OpCode::GetHostGPR &&
-             scan.GetArg<ir::Imm>(0).Get() == target) ||
-            (scan.GetOp() == ir::OpCode::SetHostGPR &&
-             scan.GetArg<ir::Imm>(1).Get() == target)) {
-            return false;
-        }
-    }
-    if (!live_publish) {
-        for (auto& scan : cur_block->GetInstList()) {
-            if (scan.Id() <= inst->Id()) {
-                continue;
-            }
-            for (auto value : scan.GetValues()) {
-                if (ResolveHostCoalesceBitCast(value).Def() == wrapper) {
-                    if (width_wrapper) {
-                        continue;
-                    }
-                    return false;
-                }
-            }
-        }
-        if (TerminalUsesHostCoalesceValue(cur_block->GetTerminal(), wrapper)) {
-            return false;
-        }
-        return true;
-    }
-    bool after_store = false;
-    for (auto& scan : cur_block->GetInstList()) {
-        if (&scan == inst) {
-            after_store = true;
-            continue;
-        }
-        if (!after_store || scan.Id() > live_end) {
-            continue;
-        }
-        if (scan.GetOp() == ir::OpCode::SetHostGPR &&
-            scan.GetArg<ir::Imm>(1).Get() == target) {
-            return false;
-        }
-        if (target <= 9 && HelperCallContract::InstructionClobbersGPR(
-                    scan, target, context.GetFeatures())) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool JitTranslator::ReproveCoalescedHostRead(ir::Inst* inst) const {
-    if (!inst || inst->GetOp() != ir::OpCode::GetHostGPR ||
-        inst->GetArg<ir::Imm>(1).Get() != 0 ||
-        ir::GetValueSizeByte(inst->ReturnType()) != sizeof(u32)) {
-        return false;
-    }
-    const u32 target = inst->GetArg<ir::Imm>(0).Get();
-    if (context.X(ir::Value{inst}).GetCode() != target) {
-        return false;
-    }
-    ir::Inst* latest_store = nullptr;
-    bool blocked = false;
-    for (auto& scan : cur_block->GetInstList()) {
-        if (&scan == inst) {
-            break;
-        }
-        if (scan.GetOp() == ir::OpCode::SetHostGPR &&
-            scan.GetArg<ir::Imm>(1).Get() == target) {
-            latest_store = &scan;
-            blocked = false;
-            continue;
-        }
-        if (latest_store && IsHostCoalesceObserver(scan, context.GetFeatures())) {
-            blocked = true;
-        }
-    }
-    if (!latest_store || blocked) {
-        return false;
-    }
-    auto published = ResolveHostCoalesceBitCast(latest_store->GetArg<ir::Value>(0));
-    bool high_zero = published.Def() &&
-            ((published.Def()->GetOp() == ir::OpCode::ZeroExtend32To64 &&
-              ir::GetValueSizeByte(published.Def()->GetArg<ir::Value>(0).Type()) == sizeof(u32)) ||
-             (ir::GetValueSizeByte(published.Type()) == sizeof(u32) &&
-              IsKnownHostWWrite(published)));
-    if (published.Defined() && context.IsWidthChainCoalesced(published.Id())) {
-        const u32 anchor = context.WidthChainAnchor(published.Id());
-        if (context.HasWidthComponentOwner(anchor)) {
-            if (!context.WidthComponentOwnerCommitted(anchor) ||
-                !context.IsHostWriteCoalesced(latest_store->Id()) ||
-                context.WidthComponentOwnerTarget(anchor) != target) {
-                return false;
-            }
-            high_zero = context.WidthComponentOwnerHighZero(anchor);
-        }
-    }
-    if (!high_zero) {
-        return false;
-    }
-    u32 read_end = inst->Id();
-    for (auto& scan : cur_block->GetInstList()) {
-        for (auto value : scan.GetValues()) {
-            if (ResolveHostCoalesceBitCast(value).Def() == inst) {
-                read_end = std::max<u32>(read_end, scan.Id());
-            }
-        }
-    }
-    if (TerminalUsesHostCoalesceValue(cur_block->GetTerminal(), inst) &&
-        cur_block->GetInstList().begin() != cur_block->GetInstList().end()) {
-        read_end = std::max<u32>(read_end, std::prev(cur_block->GetInstList().end())->Id());
-    }
-    for (auto& scan : cur_block->GetInstList()) {
-        if (scan.Id() > inst->Id() && scan.Id() <= read_end &&
-            scan.GetOp() == ir::OpCode::SetHostGPR &&
-            scan.GetArg<ir::Imm>(1).Get() == target) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool JitTranslator::ReproveCoalescedHostFPRRead(ir::Inst* inst) const {
-    if (!inst || inst->GetOp() != ir::OpCode::GetHostFPR ||
-        inst->GetArg<ir::Imm>(1).Get() != 0 ||
-        !ir::IsFloatValueType(inst->ReturnType())) {
-        return false;
-    }
-    const u32 target = inst->GetArg<ir::Imm>(0).Get();
-    if (context.V(ir::Value{inst}).GetCode() != target) {
-        return false;
-    }
-    u32 end = inst->Id();
-    for (auto& scan : cur_block->GetInstList()) {
-        for (auto value : scan.GetValues()) {
-            if (ResolveHostCoalesceBitCast(value).Def() == inst) {
-                end = std::max<u32>(end, scan.Id());
-            }
-        }
-    }
-    for (auto& scan : cur_block->GetInstList()) {
-        if (scan.Id() <= inst->Id() || scan.Id() > end) continue;
-        if (scan.GetOp() == ir::OpCode::SetHostFPR &&
-            scan.GetArg<ir::Imm>(1).Get() == target) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool JitTranslator::ReproveAesChainTie(ir::Inst* inst) const {
-    if (!context.GetFeatures().ra_aes_chain_tie || !inst ||
-        (inst->GetOp() != ir::OpCode::VecAesEncFast &&
-         inst->GetOp() != ir::OpCode::VecAesEncLastFast) ||
-        !context.IsAesChainTied(inst->Id())) {
-        return false;
-    }
-    const u32 target = context.AesChainTarget(inst->Id());
-    auto data = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
-    auto key = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(1));
-    auto zero = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(2));
-    if (!data.Defined() || !data.Def() || target < 16 || target > 31 ||
-        context.V(ir::Value{inst}).GetCode() != target ||
-        context.V(data).GetCode() != target ||
-        context.V(key).GetCode() == target ||
-        context.V(zero).GetCode() == target) {
-        return false;
-    }
-
-    u32 data_end = data.Def()->Id();
-    ir::Inst* semantic_consumer = nullptr;
-    u32 semantic_uses = 0;
-    for (auto& scan : cur_block->GetInstList()) {
-        for (auto value : scan.GetValues()) {
-            auto root = ResolveHostCoalesceBitCast(value);
-            if (root.Def() == data.Def()) {
-                data_end = std::max<u32>(data_end, scan.Id());
-            }
-            if (!scan.IsBitCastOperation() && root.Def() == inst) {
-                semantic_consumer = &scan;
-                ++semantic_uses;
-            }
-        }
-    }
-    if (data_end != inst->Id() || semantic_uses != 1 || !semantic_consumer) {
-        return false;
-    }
-
-    const bool predecessor_is_chain =
-            (data.Def()->GetOp() == ir::OpCode::VecAesEncFast ||
-             data.Def()->GetOp() == ir::OpCode::VecAesEncLastFast) &&
-            context.IsAesChainTied(data.Id()) &&
-            context.AesChainTarget(data.Id()) == target;
-    const bool predecessor_is_home =
-            data.Def()->GetOp() == ir::OpCode::GetHostFPR &&
-            data.Def()->GetArg<ir::Imm>(0).Get() == target &&
-            data.Def()->GetArg<ir::Imm>(1).Get() == 0 &&
-            context.IsHostReadCoalesced(data.Id());
-    if (!predecessor_is_chain && !predecessor_is_home) {
-        return false;
-    }
-
-    const bool successor_is_chain =
-            (semantic_consumer->GetOp() == ir::OpCode::VecAesEncFast ||
-             semantic_consumer->GetOp() == ir::OpCode::VecAesEncLastFast) &&
-            context.IsAesChainTied(semantic_consumer->Id()) &&
-            context.AesChainTarget(semantic_consumer->Id()) == target &&
-            ResolveHostCoalesceBitCast(
-                    semantic_consumer->GetArg<ir::Value>(0)).Def() == inst;
-    const bool successor_is_store =
-            semantic_consumer->GetOp() == ir::OpCode::SetHostFPR &&
-            semantic_consumer->GetArg<ir::Imm>(1).Get() == target &&
-            semantic_consumer->GetArg<ir::Imm>(2).Get() == 0 &&
-            context.IsHostWriteCoalesced(semantic_consumer->Id());
-    // A single producer is deliberately outside this spike: the component
-    // must own both the initial read and final publication, not just move one
-    // of the two copies to the other side of the AES instruction.
-    return (predecessor_is_home && successor_is_chain) ||
-           (predecessor_is_chain && (successor_is_chain || successor_is_store));
-}
-
-bool JitTranslator::ReproveAesChainHostWrite(ir::Inst* inst) const {
-    if (!inst || inst->GetOp() != ir::OpCode::SetHostFPR ||
-        inst->GetArg<ir::Imm>(2).Get() != 0) {
-        return false;
-    }
-    const u32 target = inst->GetArg<ir::Imm>(1).Get();
-    auto produced = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
-    if (!produced.Defined() || !produced.Def() ||
-        !context.IsAesChainTied(produced.Id()) ||
-        context.AesChainTarget(produced.Id()) != target ||
-        context.V(produced).GetCode() != target) {
-        return false;
-    }
-
-    std::vector<ir::Inst*> reverse_chain;
-    auto data = produced;
-    while (data.Defined() && data.Def() && context.IsAesChainTied(data.Id())) {
-        auto* node = data.Def();
-        if (!ReproveAesChainTie(node)) {
-            return false;
-        }
-        reverse_chain.push_back(node);
-        data = ResolveHostCoalesceBitCast(node->GetArg<ir::Value>(0));
-    }
-    if (reverse_chain.size() < 2 || !data.Defined() || !data.Def() ||
-        data.Def()->GetOp() != ir::OpCode::GetHostFPR ||
-        data.Def()->GetArg<ir::Imm>(0).Get() != target ||
-        data.Def()->GetArg<ir::Imm>(1).Get() != 0 ||
-        !context.IsHostReadCoalesced(data.Id()) ||
-        context.V(data).GetCode() != target) {
-        return false;
-    }
-    std::reverse(reverse_chain.begin(), reverse_chain.end());
-    auto is_chain_node = [&](const ir::Inst* candidate) {
-        return std::find(reverse_chain.begin(), reverse_chain.end(), candidate) !=
-               reverse_chain.end();
-    };
-
-    auto last_use = [&](ir::Inst* definition) {
-        u32 end = definition->Id();
-        for (auto& scan : cur_block->GetInstList()) {
-            for (auto value : scan.GetValues()) {
-                if (ResolveHostCoalesceBitCast(value).Def() == definition) {
-                    end = std::max<u32>(end, scan.Id());
-                }
-            }
-        }
-        return end;
-    };
-    if (last_use(produced.Def()) != inst->Id()) {
-        return false;
-    }
-    const u32 begin = reverse_chain.front()->Id();
-    for (auto& other : cur_block->GetInstList()) {
-        if (&other == inst || &other == data.Def() || is_chain_node(&other) ||
-            !other.HasValue() || other.IsBitCastOperation() || other.Id() >= inst->Id()) {
-            continue;
-        }
-        ir::Value value{&other};
-        if (context.SharesFPR(value, produced) && last_use(&other) > begin) {
-            return false;
-        }
-    }
-    for (auto& scan : cur_block->GetInstList()) {
-        if (scan.Id() <= begin || scan.Id() >= inst->Id() ||
-            is_chain_node(&scan) || scan.IsBitCastOperation()) {
-            continue;
-        }
-        if ((scan.GetOp() == ir::OpCode::GetHostFPR &&
-             scan.GetArg<ir::Imm>(0).Get() == target) ||
-            (scan.GetOp() == ir::OpCode::SetHostFPR &&
-             scan.GetArg<ir::Imm>(1).Get() == target)) {
-            return false;
-        }
-        const bool committed_home_safe =
-                scan.GetOp() == ir::OpCode::LoadMemory ||
-                scan.GetOp() == ir::OpCode::StoreMemory ||
-                scan.GetOp() == ir::OpCode::SaveFlags;
-        if (IsHostCoalesceObserver(scan, context.GetFeatures()) && !committed_home_safe) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool JitTranslator::ReproveCoalescedHostFPRWrite(ir::Inst* inst) const {
-    if (!inst || inst->GetOp() != ir::OpCode::SetHostFPR ||
-        inst->GetArg<ir::Imm>(2).Get() != 0) {
-        return false;
-    }
-    const u32 target = inst->GetArg<ir::Imm>(1).Get();
-    auto produced = ResolveHostCoalesceBitCast(inst->GetArg<ir::Value>(0));
-    auto* producer = produced.Def();
-    const bool scalar_unary = producer &&
-            IsHostScalarUnaryProducer(*producer, sse_scalar_tie);
-    if (producer && context.IsAesChainTied(produced.Id())) {
-        return ReproveAesChainHostWrite(inst);
-    }
-    if (!producer || produced.Type() != ir::ValueType::V128 ||
-        (!IsHostFPRCoalesceProducer(producer->GetOp(), sse_scalar_insert,
-                                    sse_scalar_tie) &&
-         !scalar_unary) ||
-        context.V(produced).GetCode() != target) {
-        return false;
-    }
-
-    auto last_use = [&](ir::Inst* definition) {
-        u32 end = definition->Id();
-        for (auto& scan : cur_block->GetInstList()) {
-            for (auto use : scan.GetValues()) {
-                if (ResolveHostCoalesceBitCast(use).Def() == definition) {
-                    end = std::max<u32>(end, scan.Id());
-                }
-            }
-        }
-        return end;
-    };
-    const u32 produced_end = last_use(producer);
-    if (produced_end < inst->Id()) {
-        return false;
-    }
-    if (IsHostScalarFPRBinaryProducer(producer->GetOp())) {
-        auto left = ResolveHostCoalesceBitCast(producer->GetArg<ir::Value>(0));
-        if (sse_scalar_insert) {
-            if (!left.Defined() || context.V(left).GetCode() != target ||
-                !ReproveScalarFPRTie(producer)) {
-                return false;
-            }
-        } else if (left.Defined() && context.SharesFPR(left, produced)) {
-            if (!left.Def() ||
-                left.Def()->GetOp() != ir::OpCode::GetHostFPR ||
-                left.Def()->GetArg<ir::Imm>(0).Get() != target ||
-                left.Def()->GetArg<ir::Imm>(1).Get() != 0 ||
-                !context.IsHostReadCoalesced(left.Id()) ||
-                last_use(left.Def()) != producer->Id()) {
-                return false;
-            }
-        }
-    } else if (scalar_unary) {
-        auto merge = ResolveHostCoalesceBitCast(
-                producer->GetArg<ir::Value>(1));
-        if (!merge.Defined() || !merge.Def() ||
-            merge.Def()->GetOp() != ir::OpCode::GetHostFPR ||
-            merge.Def()->GetArg<ir::Imm>(0).Get() != target ||
-            merge.Def()->GetArg<ir::Imm>(1).Get() != 0 ||
-            !context.IsHostReadCoalesced(merge.Id()) ||
-            context.V(merge).GetCode() != target ||
-            last_use(merge.Def()) != producer->Id()) {
-            return false;
-        }
-    }
-    for (auto input : producer->GetValues()) {
-        auto root = ResolveHostCoalesceBitCast(input);
-        if (root.Defined() && context.SharesFPR(root, produced) &&
-            last_use(root.Def()) > producer->Id()) {
-            return false;
-        }
-    }
-    auto is_in_place_successor = [&](ir::Inst& successor) {
-        if (successor.Id() <= producer->Id() || successor.Id() != produced_end) {
-            return false;
-        }
-        const auto successor_values = successor.GetValues();
-        const bool consumes_produced = std::any_of(
-                successor_values.begin(), successor_values.end(), [producer](ir::Value value) {
-                    return ResolveHostCoalesceBitCast(value).Def() == producer;
-                });
-        if (!consumes_produced) {
-            return false;
-        }
-        for (auto& scan : cur_block->GetInstList()) {
-            if (scan.Id() <= successor.Id() || scan.GetOp() != ir::OpCode::SetHostFPR ||
-                scan.GetArg<ir::Imm>(1).Get() != target || scan.GetArg<ir::Imm>(2).Get() != 0 ||
-                !context.IsHostWriteCoalesced(scan.Id())) {
-                continue;
-            }
-            if (ResolveHostCoalesceBitCast(scan.GetArg<ir::Value>(0)).Def() == &successor) {
-                return ReproveCoalescedHostFPRWrite(&scan);
-            }
-        }
-        return false;
-    };
-    for (auto& other : cur_block->GetInstList()) {
-        if (&other == producer || &other == inst || !other.HasValue() ||
-            other.IsBitCastOperation() || other.Id() > produced_end) {
-            continue;
-        }
-        ir::Value value{&other};
-        if (context.SharesFPR(value, produced) && last_use(&other) > producer->Id() &&
-            !is_in_place_successor(other)) {
-            return false;
-        }
-    }
-    for (auto& scan : cur_block->GetInstList()) {
-        if (scan.Id() <= inst->Id() || scan.Id() > produced_end) {
-            continue;
-        }
-        if (scan.GetOp() == ir::OpCode::SetHostFPR &&
-            scan.GetArg<ir::Imm>(1).Get() == target) {
-            return false;
-        }
-    }
-    bool after_producer = false;
-    for (auto& scan : cur_block->GetInstList()) {
-        if (&scan == producer) {
-            after_producer = true;
-            continue;
-        }
-        if (!after_producer) continue;
-        if (&scan == inst) break;
-        if (IsHostCoalesceObserver(scan, context.GetFeatures()) ||
-            (scan.GetOp() == ir::OpCode::GetHostFPR &&
-             scan.GetArg<ir::Imm>(0).Get() == target) ||
-            (scan.GetOp() == ir::OpCode::SetHostFPR &&
-             scan.GetArg<ir::Imm>(1).Get() == target)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool JitTranslator::ReproveScalarFPRTie(ir::Inst* inst) const {
-    if (!sse_scalar_tie || !sse_scalar_insert || !inst ||
-        !IsHostScalarFPRBinaryProducer(inst->GetOp())) {
-        return false;
-    }
-    const u32 target = context.V(ir::Value{inst}).GetCode();
-    if (target < 16 || target > 31) {
-        return false;
-    }
-    auto last_use = [&](ir::Inst* definition) {
-        u32 end = definition->Id();
-        for (auto& scan : cur_block->GetInstList()) {
-            for (auto use : scan.GetValues()) {
-                if (ResolveHostCoalesceBitCast(use).Def() == definition) {
-                    end = std::max<u32>(end, scan.Id());
-                }
-            }
-        }
-        return end;
-    };
-    auto crosses_write = [&](u32 begin, u32 end, ir::Inst* owner) {
-        for (auto& scan : cur_block->GetInstList()) {
-            if (begin < scan.Id() && scan.Id() < end && scan.GetOp() == ir::OpCode::SetHostFPR &&
-                scan.GetArg<ir::Imm>(1).Get() == target &&
-                ResolveHostCoalesceBitCast(scan.GetArg<ir::Value>(0)).Def() != owner) {
-                return true;
-            }
-        }
-        return false;
-    };
-    const auto result_end = last_use(inst);
-    if (crosses_write(inst->Id(), result_end, inst)) {
-        return false;
-    }
-    for (auto& scan : cur_block->GetInstList()) {
-        if (scan.GetOp() == ir::OpCode::GetHostFPR &&
-            context.IsHostReadCoalesced(scan.Id()) &&
-            scan.GetArg<ir::Imm>(0).Get() == target &&
-            scan.Id() < result_end && last_use(&scan) > inst->Id()) {
-            return false;
-        }
-    }
-    auto tie_source = [&](ir::Inst* node) -> ir::Value {
-        if (IsHostScalarFPRBinaryProducer(node->GetOp())) {
-            return node->GetArg<ir::Value>(0);
-        }
-        if (IsHostScalarUnaryProducer(*node, sse_scalar_tie)) {
-            return node->GetArg<ir::Value>(1);
-        }
-        return {};
-    };
-    for (auto* node = inst;;) {
-        auto left = ResolveHostCoalesceBitCast(tie_source(node));
-        if (!left.Defined() || !left.Def() || context.V(left).GetCode() != target ||
-            last_use(left.Def()) != node->Id() ||
-            crosses_write(left.Id(), node->Id(), left.Def())) {
-            return false;
-        }
-        if (left.Def()->GetOp() == ir::OpCode::GetHostFPR) {
-            return left.Def()->GetArg<ir::Imm>(0).Get() == target &&
-                   left.Def()->GetArg<ir::Imm>(1).Get() == 0 &&
-                   context.IsHostReadCoalesced(left.Id());
-        }
-        if (!IsHostScalarFPRBinaryProducer(left.Def()->GetOp()) &&
-            !IsHostScalarUnaryProducer(*left.Def(), sse_scalar_tie)) {
-            for (auto& scan : cur_block->GetInstList()) {
-                if (scan.Id() <= left.Id() || scan.Id() >= node->Id() ||
-                    scan.GetOp() != ir::OpCode::SetHostFPR ||
-                    scan.GetArg<ir::Imm>(1).Get() != target ||
-                    !context.IsHostWriteCoalesced(scan.Id())) {
-                    continue;
-                }
-                auto value = ResolveHostCoalesceBitCast(scan.GetArg<ir::Value>(0));
-                if (value.Def() == left.Def()) {
-                    return ReproveCoalescedHostFPRWrite(&scan);
-                }
-            }
-            return false;
-        }
-        node = left.Def();
-    }
-}
 
 #define __ masm.
 
@@ -1108,14 +275,14 @@ MemOperand JitTranslator::BiasMem(const Register& base, s64 imm, bool atomic) {
 void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
     if (context.GetAllocation().IsFixedGPRDefinitionElided(inst->Id())) return;
     if (context.IsHostReadCoalesced(inst->Id())) {
-        ASSERT_MSG(ReproveCoalescedHostRead(inst),
+        ASSERT_MSG(context.GetAllocation().HostReadVerified(inst->Id()),
                    "GetHostGPR coalescing proof diverged at IR {}", inst->Id());
         return;
     }
-    if (pinned_gprs.HasLowView(inst)) {
+    if (HasGPRLowView(inst)) {
         return;
     }
-    if (pinned_gprs.ValueFullyResident(inst)) {
+    if (gpr_plan->pinned->ValueFullyResident(inst)) {
         return;
     }
     auto offset = inst->GetArg<ir::Imm>(1).Get();
@@ -1142,7 +309,7 @@ void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
 
 void JitTranslator::EmitGetHostFPR(ir::Inst* inst) {
     if (context.IsHostReadCoalesced(inst->Id())) {
-        ASSERT_MSG(ReproveCoalescedHostFPRRead(inst),
+        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::Read),
                    "GetHostFPR coalescing proof diverged at IR {}", inst->Id());
         return;
     }
@@ -1185,153 +352,48 @@ void JitTranslator::EmitGetHostFPR(ir::Inst* inst) {
     }
 }
 
+
+
 void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
-    if (auto direct = pinned_gprs.GetRecipes().select_publications.find(inst);
-        direct != pinned_gprs.GetRecipes().select_publications.end()) {
-        const auto reproved = pinned_gprs.MatchPinnedSelectPublication(inst);
-        ASSERT_MSG(reproved && *reproved == direct->second,
-                   "pinned SelectZero publication proof diverged at IR {}",
-                   inst->Id());
-        return;
-    }
-    if (auto view = pinned_gprs.GetRecipes().publication_views.find(inst);
-        view != pinned_gprs.GetRecipes().publication_views.end()) {
-        const auto reproved = pinned_gprs.MatchPinnedGPRPublicationView(inst);
-        ASSERT_MSG(reproved && *reproved == view->second,
-                   "pinned GPR publication view proof diverged at IR {}", inst->Id());
-    }
-    if (auto direct = pinned_gprs.GetRecipes().spilled_publications.find(inst);
-        direct != pinned_gprs.GetRecipes().spilled_publications.end()) {
-        const auto reproved = pinned_gprs.MatchSpilledGPRPublication(inst);
-        ASSERT_MSG(reproved && *reproved == direct->second,
-                   "spilled GPR publication proof diverged at IR {}",
-                   inst->Id());
-        return;
-    }
-    if (auto update = pinned_load_update_instructions.find(inst);
-        update != pinned_load_update_instructions.end() &&
-        inst == update->second.publication) {
-        const auto reproved = MatchPinnedLoadUpdate(update->second.update);
-        ASSERT_MSG(reproved && *reproved == update->second,
-                   "pinned load update proof diverged at IR {}", inst->Id());
-        return;
-    }
-    if (pinned_gprs.GetRecipes().dead_writes.contains(inst)) {
-        ASSERT_MSG(pinned_gprs.IsDeadPinnedGPRWrite(inst),
-                   "dead pinned GPR write proof diverged at IR {}", inst->Id());
-        return;
-    }
-    if (auto transfer = pinned_gprs.GetRecipes().transfers.find(inst);
-        transfer != pinned_gprs.GetRecipes().transfers.end()) {
-        const auto reproved = pinned_gprs.MatchPinnedGPRValueTransfer(inst);
-        ASSERT_MSG(reproved && *reproved == transfer->second,
-                   "pinned GPR value transfer proof diverged at IR {}",
-                   inst->Id());
-        __ Mov(XRegister(transfer->second.target),
-               XRegister(transfer->second.source));
-        return;
-    }
-    if (auto copy = pinned_gprs.GetRecipes().copies.find(inst);
-        copy != pinned_gprs.GetRecipes().copies.end()) {
-        const auto reproved = pinned_gprs.MatchPinnedGPRCopy(inst);
-        ASSERT_MSG(reproved && reproved->read == copy->second.read &&
-                           reproved->narrow_extend ==
-                                   copy->second.narrow_extend &&
-                           reproved->extend == copy->second.extend &&
-                           reproved->signed_load == copy->second.signed_load &&
-                           reproved->aliases == copy->second.aliases &&
-                           reproved->transferred_uses ==
-                                   copy->second.transferred_uses &&
-                           reproved->source == copy->second.source &&
-                           reproved->target == copy->second.target &&
-                           reproved->width == copy->second.width &&
-                           reproved->last_use == copy->second.last_use,
-                   "pinned GPR copy proof diverged at IR {}", inst->Id());
-        if (!copy->second.source) {
+    const auto found = gpr_plan->publications.find(inst);
+    ASSERT_MSG(found != gpr_plan->publications.end(), "unplanned GPR publication");
+    const auto& action = found->second;
+    const auto target = XRegister(action.target);
+    switch (action.kind) {
+        case GPRPublicationKind::Skip: return;
+        case GPRPublicationKind::Transfer:
+            __ Mov(target, XRegister(*action.source_home));
+            return;
+        case GPRPublicationKind::Copy: {
+            const auto source = WRegister(*action.source_home);
+            if (action.width == 8) __ Uxtb(target.W(), source);
+            else if (action.width == 16) __ Uxth(target.W(), source);
+            else __ Mov(target.W(), source);
             return;
         }
-        auto source = XRegister(*copy->second.source);
-        auto target = XRegister(copy->second.target);
-        if (copy->second.width == sizeof(u8)) {
-            __ Uxtb(target.W(), source.W());
-        } else if (copy->second.width == sizeof(u16)) {
-            __ Uxth(target.W(), source.W());
-        } else {
-            __ Mov(target.W(), source.W());
-        }
-        return;
-    }
-    const auto published = inst->GetArg<ir::Value>(0);
-    if (auto update = MatchBiasedMemoryUpdate(published.Def());
-        update && update->publication == inst) {
-        __ Sub(update->base,
-               update->base,
-               static_cast<u64>(-update->offset));
-        return;
-    }
-    if (auto update = MatchPreIndexMemoryUpdate(published.Def());
-        update && update->publication == inst) {
-        return;
-    }
-    if (context.IsHostWriteCoalesced(inst->Id())) {
-        if (ReproveCoalescedHostWrite(inst)) {
+        case GPRPublicationKind::BiasedUpdate:
+            __ Sub(target, target, action.decrement);
             return;
-        }
-        ASSERT_MSG(context.GetFeatures().ra_coalesce_live,
-                   "SetHostGPR coalescing proof diverged at IR {}", inst->Id());
+        case GPRPublicationKind::Value: break;
     }
-    auto offset = inst->GetArg<ir::Imm>(2).Get();
-    auto reg_index = inst->GetArg<ir::Imm>(1).Get();
-    const bool pin_ext_reg = IsFixedGPRHome(reg_index);
-    auto host_reg = XRegister(reg_index);
-    auto value = inst->GetArg<ir::Value>(0);
-    const bool fused_zext32 = value.Def() && pinned_gprs.IsZeroExtendElided(value.Def());
-    const auto residence = pinned_gprs.FixedHomeForUse(value, inst);
-    auto value_reg = fused_zext32
-            ? context.X(value.Def()->GetArg<ir::Value>(0))
-            : (residence ? XRegister(residence->home) : context.X(value));
-    const auto bit_offset = offset * 8;
-    const auto bit_width = ir::GetValueSizeByte(value.Type()) * 8;
-    ASSERT_MSG(bit_offset + bit_width <= 64,
-               "invalid fixed GPR write offset {} width {}", bit_offset, bit_width);
-    if (bit_offset == 0 && bit_width == 32 && pin_ext_reg) {
-        const bool adjust_resident_home = residence &&
-                value_reg.W() == host_reg.W() &&
-                !residence->extension.KnownZeroAbove(32);
-        if (value_reg.W() != host_reg.W() || adjust_resident_home) {
-            __ Mov(host_reg.W(), value_reg.W());
-        }
-    } else if (bit_offset == 0 && bit_width == 64) {
-        // x86-64 EAX/ECX/EDX writes reach here as a U64
-        // ZeroExtend32To64 value so memory-backed StoreUniform can still
-        // replace all eight context bytes. For the W55 pinned registers,
-        // use the architectural W write: AArch64 clears bits [63:32]
-        // naturally, exactly matching the x86 rule.
-        const bool zext32 = fused_zext32 || (value.Def() &&
-                value.Def()->GetOp() == ir::OpCode::ZeroExtend32To64);
-        if (value_reg != host_reg) {
-            if (pin_ext_reg && zext32) {
-                __ Mov(host_reg.W(), value_reg.W());
-            } else {
-                __ Mov(host_reg, value_reg);
-            }
-        } else if (pin_ext_reg && zext32) {
-            // A same-register U32->U64 publication still owes the
-            // architectural upper-half zeroing: mov wN,wN clears xN[63:32].
-            __ Mov(host_reg.W(), host_reg.W());
+    const auto source = action.source_home ? XRegister(*action.source_home)
+                                          : context.X(action.source);
+    if (action.bit_offset == 0 && action.width == 32 && action.clear_high) {
+        if (source != target || action.adjust_resident_home) __ Mov(target.W(), source.W());
+    } else if (action.bit_offset == 0 && action.width == 64) {
+        if (source != target || action.clear_high) {
+            if (action.clear_high) __ Mov(target.W(), source.W());
+            else __ Mov(target, source);
         }
     } else {
-        // Low byte/word and AH/CH/DH (offset == 1) all lower to one BFI,
-        // preserving every untouched bit of the pinned 64-bit parent.
-        __ Bfi(host_reg, value_reg, bit_offset, bit_width);
+        __ Bfi(target, source, action.bit_offset, action.width);
     }
 }
 
+
 void JitTranslator::EmitSetHostFPR(ir::Inst* inst) {
-    if (auto fusion = scalar_value_fpr_fusions.find(inst);
-        fusion != scalar_value_fpr_fusions.end()) {
-        ASSERT_MSG(ReproveScalarValueFPRFusion(inst, fusion->second),
-                   "scalar FPR value fusion proof diverged at IR {}", inst->Id());
+    if (auto fusion = ScalarPublicationPlan().values.find(inst);
+        fusion != ScalarPublicationPlan().values.end()) {
         const auto value = inst->GetArg<ir::Value>(0);
         auto target = VRegister::GetQRegFromCode(fusion->second.target);
         if (CanUseZeroStoreRegister(value)) {
@@ -1342,7 +404,7 @@ void JitTranslator::EmitSetHostFPR(ir::Inst* inst) {
         return;
     }
     if (context.IsHostWriteCoalesced(inst->Id())) {
-        ASSERT_MSG(ReproveCoalescedHostFPRWrite(inst),
+        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::Write),
                    "SetHostFPR coalescing proof diverged at IR {}", inst->Id());
         return;
     }
@@ -1517,44 +579,20 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = ir::Value{inst};
     auto type = inst->ReturnType();
-    const auto pinned_value = context.PinnedValueGPR(value, cur_instr, pinned_gprs);
+    const auto pinned_value = context.PlannedGPR<XRegister>(value, cur_instr);
     auto value_w = [&] {
         return pinned_value ? pinned_value->W() : context.W(value);
     };
     auto value_x = [&] {
         return pinned_value ? *pinned_value : context.X(value);
     };
-    ir::Inst* narrow_consumer = nullptr;
-    bool direct_narrow_consumer = false;
-    if (memory_state.mem_narrow_fuse && ir::GetValueSizeByte(type) <= 2 && inst->GetUses() == 1) {
-        auto& list = cur_block->GetInstList();
-        auto it = list.iterator_to(*inst);
-        const auto adjacent = std::next(it);
-        for (++it; it != list.end(); ++it) {
-            bool uses_load = false;
-            for (auto used : it->GetValues()) {
-                uses_load |= used.Def() == inst;
-            }
-            if (!uses_load) {
-                continue;
-            }
-            const bool extending =
-                    (it->GetOp() == ir::OpCode::SignExtend ||
-                     it->GetOp() == ir::OpCode::ZeroExtend32) &&
-                    it->GetArg<ir::Value>(0).Def() == inst;
-            const bool shared = extending &&
-                    context.SharesGPR(value, ir::Value{it.operator->()});
-            const bool pinned_extension = extending &&
-                    pinned_gprs.IsSignExtendElided(it.operator->());
-            const bool direct = extending && it == adjacent && !pinned_value &&
-                    !context.IsSpilled(ir::Value{it.operator->()});
-            if (shared || pinned_extension || direct) {
-                narrow_consumer = it.operator->();
-                direct_narrow_consumer = direct && !shared && !pinned_extension;
-            }
-            break;
-        }
+    const NarrowLoadAction* narrow = nullptr;
+    if (gpr_plan->memory) {
+        const auto found = gpr_plan->memory->narrow_loads.find(inst);
+        if (found != gpr_plan->memory->narrow_loads.end()) narrow = &found->second;
     }
+    auto* narrow_consumer = narrow ? narrow->extension : nullptr;
+    const bool direct_narrow_consumer = narrow && narrow->direct;
     // Keep the established computed-address path for generic Q loads and
     // do not consume the synthetic post-index produced by the generic address
     // peephole. A1 opens only the exact bounded W39 Plus form, for which the
@@ -1573,8 +611,8 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
                                  structured_guest_ea,
                                  operand.GetOp() == ir::OperandOp::Plus,
                                  false);
-    auto load_update = pinned_load_updates.find(inst);
-    auto vixl_operand = load_update != pinned_load_updates.end()
+    auto load_update = gpr_plan->load_updates.find(inst);
+    auto vixl_operand = load_update != gpr_plan->load_updates.end()
             ? MemOperand{XRegister(load_update->second.target),
                          load_update->second.offset,
                          PreIndex}
@@ -1585,17 +623,8 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
                              !q_access,
                              structured_guest_ea,
                              inst);
-    if (load_update != pinned_load_updates.end()) {
-        const auto reproved = MatchPinnedLoadUpdate(load_update->second.update);
-        ASSERT_MSG(reproved && *reproved == load_update->second,
-                   "pinned load update proof diverged at IR {}", inst->Id());
-    }
-    if (direct_narrow_consumer && vixl_operand.GetAddrMode() != Offset &&
-        vixl_operand.GetBaseRegister().GetCode() ==
-                context.R(ir::Value{narrow_consumer}).GetCode()) {
-        narrow_consumer = nullptr;
-        direct_narrow_consumer = false;
-    }
+    ASSERT(!direct_narrow_consumer || vixl_operand.GetAddrMode() == Offset ||
+           vixl_operand.GetBaseRegister().GetCode() != context.R(ir::Value{narrow_consumer}).GetCode());
     auto narrow_value_w = [&] {
         return direct_narrow_consumer ? context.W(ir::Value{narrow_consumer})
                                       : value_w();
@@ -1604,10 +633,8 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
         return direct_narrow_consumer ? context.X(ir::Value{narrow_consumer})
                                       : value_x();
     };
-    auto scalar_fpr = scalar_load_fpr_fusions.find(inst);
-    if (scalar_fpr != scalar_load_fpr_fusions.end()) {
-        ASSERT_MSG(ReproveScalarLoadFPRFusion(inst, scalar_fpr->second),
-                   "scalar FPR load fusion proof diverged at IR {}", inst->Id());
+    auto scalar_fpr = ScalarPublicationPlan().loads.find(inst);
+    if (scalar_fpr != ScalarPublicationPlan().loads.end()) {
         const auto target = VRegister::GetQRegFromCode(scalar_fpr->second.target);
         if (scalar_fpr->second.load_extension) {
             __ Ldr(target.S(), vixl_operand);
@@ -1619,8 +646,8 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
-            if (narrow_consumer && narrow_consumer->GetOp() == ir::OpCode::SignExtend) {
-                if (ir::GetValueSizeByte(narrow_consumer->ReturnType()) == 8) {
+            if (narrow && narrow->sign) {
+                if (narrow->result_bytes == 8) {
                     __ Ldrsb(narrow_value_x(), vixl_operand);
                 } else {
                     __ Ldrsb(narrow_value_w(), vixl_operand);
@@ -1632,8 +659,8 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
             break;
         case ir::ValueType::S16:
         case ir::ValueType::U16:
-            if (narrow_consumer && narrow_consumer->GetOp() == ir::OpCode::SignExtend) {
-                if (ir::GetValueSizeByte(narrow_consumer->ReturnType()) == 8) {
+            if (narrow && narrow->sign) {
+                if (narrow->result_bytes == 8) {
                     __ Ldrsh(narrow_value_x(), vixl_operand);
                 } else {
                     __ Ldrsh(narrow_value_w(), vixl_operand);
@@ -1670,9 +697,6 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
             PANIC("UnImplement!");
             break;
     }
-    if (narrow_consumer) {
-        disable_instructions.set(narrow_consumer->Id());
-    }
 }
 
 void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
@@ -1701,7 +725,7 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
                            !q_access,
                            structured_guest_ea,
                            inst);
-    if (const auto target = resident_scalar_fpr_analysis.FindMemoryStore(inst)) {
+    if (const auto target = ScalarPreparation().resident.FindMemoryStore(inst)) {
         auto source = VRegister::GetQRegFromCode(*target);
         if (ir::GetValueSizeByte(type) == sizeof(u32)) {
             __ Str(source.S(), vixl_operand);
@@ -1711,7 +735,7 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
         return;
     }
     const bool zero_gpr = CanUseZeroStoreRegister(value);
-    const auto residence = pinned_gprs.FixedHomeForUse(value, inst);
+    const auto residence = FixedGPRHomeForUse(value, inst);
     const auto store_w = [&]() -> WRegister {
         if (zero_gpr) {
             return wzr;
@@ -1720,14 +744,11 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
             return WRegister(residence->home);
         }
         if (value.Def()) {
-            if (auto it = memory_state.pinned_memory_values.find(value.Def());
-                it != memory_state.pinned_memory_values.end()) {
-                ASSERT_MSG(MatchPinnedMemoryValue(value.Def()) == it->second,
-                           "pinned memory value proof drifted before store at IR {}",
-                           inst->Id());
+            if (auto it = gpr_plan->memory_values.find(value.Def());
+                it != gpr_plan->memory_values.end()) {
                 return WRegister(it->second);
             }
-            if (const auto home = pinned_gprs.LowViewHome(value.Def())) {
+            if (const auto home = GPRLowViewHome(value.Def())) {
                 return WRegister(*home);
             }
         }
@@ -1771,6 +792,133 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
     }
 }
 
+namespace {
+// Walks Add/Sub-of-immediate and bitcast views off an address value,
+// accumulating the constant offset.  Returns the remaining root value
+// ({} when the walk started from an undefined value).
+ir::Value AlignmentRootValue(ir::Value value, u64* offset) {
+    while (value.Defined()) {
+        auto* def = value.Def();
+        if (def->IsBitCastOperation()) {
+            value = def->GetArg<ir::Value>(0);
+            continue;
+        }
+        if (def->GetOp() != ir::OpCode::Add && def->GetOp() != ir::OpCode::Sub) {
+            break;
+        }
+        const auto right = def->GetArg<ir::Operand>(1);
+        if (!right.GetRight().Null() || !right.GetLeft().IsImm()) {
+            break;
+        }
+        const u64 imm = right.GetLeft().imm.Get();
+        *offset += (def->GetOp() == ir::OpCode::Add ? imm : -imm);
+        value = def->GetArg<ir::Value>(0);
+    }
+    return value;
+}
+
+// Root value of an effective-address operand plus its total constant
+// offset from that root, or nullopt when the shape is not trackable.
+std::optional<std::pair<ir::Value, u64>> AlignmentOperandRoot(
+        const ir::Operand& operand) {
+    ir::Value value{};
+    u64 offset = 0;
+    if (operand.GetRight().Null()) {
+        if (!operand.GetLeft().IsValue()) return std::nullopt;
+        value = operand.GetLeft().value;
+    } else if (operand.GetOp() == ir::OperandOp::Plus &&
+               operand.GetLeft().IsValue() && operand.GetRight().IsImm()) {
+        value = operand.GetLeft().value;
+        offset = operand.GetRight().imm.Get();
+    } else {
+        return std::nullopt;
+    }
+    auto root = AlignmentRootValue(value, &offset);
+    if (!root.Defined()) return std::nullopt;
+    return std::pair{root, offset};
+}
+
+// The pinned home read at the root of an address, if any: returns the
+// home index and stores the total offset from the home value.
+std::optional<u32> AlignmentHomeRoot(const ir::Operand& operand, u64* offset) {
+    const auto rooted = AlignmentOperandRoot(operand);
+    if (!rooted) return std::nullopt;
+    auto* def = rooted->first.Def();
+    if (!def || def->GetOp() != ir::OpCode::GetHostGPR ||
+        def->GetArg<ir::Imm>(1).Get() != 0) {
+        return std::nullopt;
+    }
+    *offset = rooted->second;
+    return static_cast<u32>(def->GetArg<ir::Imm>(0).Get());
+}
+}  // namespace
+
+std::optional<u32> JitTranslator::AlignmentResidueMod8(ir::Value value) const {
+    u64 offset = 0;
+    auto root = AlignmentRootValue(value, &offset);
+    if (!root.Defined()) return std::nullopt;
+    auto* def = root.Def();
+    if (def->GetOp() == ir::OpCode::LoadImm) {
+        return static_cast<u32>((def->GetArg<ir::Imm>(0).Get() + offset) & 7);
+    }
+    if (def->GetOp() == ir::OpCode::GetHostGPR &&
+        def->GetArg<ir::Imm>(1).Get() == 0) {
+        const auto known = memory_state.home_alignment_mod8.find(
+                static_cast<u32>(def->GetArg<ir::Imm>(0).Get()));
+        if (known != memory_state.home_alignment_mod8.end()) {
+            return static_cast<u32>((known->second + offset) & 7);
+        }
+    }
+    return std::nullopt;
+}
+
+void JitTranslator::TrackHomeAlignment(ir::Inst* inst) {
+    auto& homes = memory_state.home_alignment_mod8;
+    if (homes.empty() && inst->GetOp() != ir::OpCode::SetHostGPR) {
+        return;
+    }
+    switch (inst->GetOp()) {
+        case ir::OpCode::CallLambda:
+        case ir::OpCode::CallLocation:
+        case ir::OpCode::CallDynamic:
+            // Control leaves the block-local model: guest homes may be
+            // rewritten by the callee/helper to values we cannot track.
+            homes.clear();
+            return;
+        case ir::OpCode::SetHostGPR: {
+            const u32 home = inst->GetArg<ir::Imm>(1).Get();
+            if (inst->GetArg<ir::Imm>(2).Get() != 0) {
+                homes.erase(home);
+                return;
+            }
+            if (auto residue = AlignmentResidueMod8(inst->GetArg<ir::Value>(0))) {
+                homes[home] = *residue;
+            } else {
+                homes.erase(home);
+            }
+            return;
+        }
+        case ir::OpCode::GetHostGPR:
+            return;
+        default:
+            break;
+    }
+    // An ordinary producer allocated onto a tracked home rewrites it
+    // just like a publication does.
+    if (!inst->HasValue()) return;
+    const auto value = ir::Value{inst};
+    if (context.GetAllocation().ValueType(value) != backend::RegAlloc::GPR) {
+        return;
+    }
+    const u32 home = context.GetAllocation().ValueGPR(value).id;
+    if (!homes.contains(home)) return;
+    if (auto residue = AlignmentResidueMod8(value)) {
+        homes[home] = *residue;
+    } else {
+        homes.erase(home);
+    }
+}
+
 void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = ir::Value{inst};
@@ -1790,8 +938,28 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
             ((operand.GetLeft().imm.Get() + static_bias) & (size - 1)) != 0;
     const bool scalar_fast_path =
             scalar && supports_rcpc && !statically_unaligned;
-    const bool check_alignment =
-            scalar_fast_path && size > 1 && !static_address;
+    // With rcpc_fault_emulate the dispatch below is skipped entirely:
+    // unaligned or 16-byte-window-crossing accesses raise SIGBUS and the
+    // runtime fault handler emulates them (see TryEmulateRcpcFault).
+    // Units that exhausted their fault budget (RcpcForceChecks) compile
+    // the checked form instead, byte-identical to non-emulate emission.
+    const bool rcpc_unchecked = context.GetConfig().rcpc_fault_emulate &&
+            !context.RcpcForceChecks();
+    bool check_alignment =
+            scalar_fast_path && size > 1 && !static_address &&
+            !rcpc_unchecked;
+    if (check_alignment && size == 8) {
+        // The home's residue may already be proven even when this
+        // address's SSA root differs (the push/pop re-read pattern).
+        u64 home_offset = 0;
+        if (auto home = AlignmentHomeRoot(operand, &home_offset)) {
+            const auto known = memory_state.home_alignment_mod8.find(*home);
+            if (known != memory_state.home_alignment_mod8.end() &&
+                ((known->second + home_offset) & 7) == 0) {
+                check_alignment = false;
+            }
+        }
+    }
     tso_emission_stats.Increment(tso_emission_stats.load_sites);
     if (scalar_fast_path) {
         tso_emission_stats.Increment(tso_emission_stats.scalar_fast_sites);
@@ -1808,6 +976,48 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
                            false,
                            inst);
 
+    // FEAT_LRCPC2 (RCpcImm) adds unscaled-immediate RCpc forms.  For byte
+    // accesses LDAPUR needs neither alignment checks nor a materialized
+    // base when the operand already carries a simm9 offset.  Wider forms
+    // stay on the LDAPR path below: an unaligned LDAPUR that crosses a
+    // 16-byte window faults with SIGBUS on this host (measured), and the
+    // branchy alignment check there is precisely what orders it.
+    const bool supports_rcpc_imm =
+            True(context.GetConfig().arm64_features & Arm64Features::RCpcImm);
+    if (scalar && scalar_fast_path && supports_rcpc_imm && !check_alignment &&
+        vixl_operand.IsImmediateOffset() &&
+        vixl_operand.GetOffset() >= -256 && vixl_operand.GetOffset() <= 255) {
+        bool emitted = true;
+        {
+            vixl::CPUFeaturesScope rcpc(&masm, vixl::CPUFeatures::kRCpc,
+                                        vixl::CPUFeatures::kRCpcImm);
+            switch (type) {
+                case ir::ValueType::S8:
+                case ir::ValueType::U8:
+                    __ ldapurb(context.W(value), vixl_operand);
+                    break;
+                case ir::ValueType::S16:
+                case ir::ValueType::U16:
+                    __ ldapurh(context.W(value), vixl_operand);
+                    break;
+                case ir::ValueType::S32:
+                case ir::ValueType::U32:
+                    __ ldapur(context.W(value), vixl_operand);
+                    break;
+                case ir::ValueType::S64:
+                case ir::ValueType::U64:
+                    __ ldapur(context.X(value), vixl_operand);
+                    break;
+                default:
+                    emitted = false;
+                    break;
+            }
+        }
+        if (emitted) {
+            return;
+        }
+    }
+
     // FEAT_LRCPC's LDAPR is the scalar x86-TSO fast path. It requires a bare,
     // naturally aligned address, so materialize any offset and branch around
     // it for x86's permitted unaligned accesses. Byte accesses are naturally
@@ -1823,12 +1033,24 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
         }
 
         Label unaligned;
+        Label cross_check;
         Label done;
+        Register span;
+        bool have_span = false;
         if (check_alignment) {
             // Guest condition codes may remain in NZCV across a memory
-            // access. Test address bits without changing those flags.
-            for (u32 bit = 0; (u32{1} << bit) < size; ++bit) {
-                __ Tbnz(address, bit, &unaligned);
+            // access. Test address bits without changing those flags. For
+            // 8-byte accesses one extract+branch replaces three bit tests;
+            // the extracted span is reused by the cross-window check.
+            if (size == 8) {
+                span = context.GetTmpX();
+                have_span = true;
+                __ Ubfx(span, address, 0, 4);
+                __ Cbnz(span, supports_rcpc_imm ? &cross_check : &unaligned);
+            } else {
+                for (u32 bit = 0; (u32{1} << bit) < size; ++bit) {
+                    __ Tbnz(address, bit, supports_rcpc_imm ? &cross_check : &unaligned);
+                }
             }
         }
         {
@@ -1861,6 +1083,39 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
             return;
         }
         __ B(&done);
+        if (supports_rcpc_imm) {
+            // LDAPUR accepts unaligned accesses that stay within one
+            // 16-byte window; crossing accesses fault on this host class
+            // (measured), so divert exactly those to the dmb fallback.
+            __ Bind(&cross_check);
+            if (!have_span) {
+                span = context.GetTmpX();
+                __ Ubfx(span, address, 0, 4);
+            }
+            __ Add(span, span, size - 1);
+            __ Tbnz(span, 4, &unaligned);
+            {
+                vixl::CPUFeaturesScope rcpc(&masm, vixl::CPUFeatures::kRCpc,
+                                            vixl::CPUFeatures::kRCpcImm);
+                switch (type) {
+                    case ir::ValueType::S16:
+                    case ir::ValueType::U16:
+                        __ ldapurh(context.W(value), MemOperand(address));
+                        break;
+                    case ir::ValueType::S32:
+                    case ir::ValueType::U32:
+                        __ ldapur(context.W(value), MemOperand(address));
+                        break;
+                    case ir::ValueType::S64:
+                    case ir::ValueType::U64:
+                        __ ldapur(context.X(value), MemOperand(address));
+                        break;
+                    default:
+                        PANIC("unsupported unaligned scalar TSO load width");
+                }
+            }
+            __ B(&done);
+        }
         __ Bind(&unaligned);
         switch (type) {
             case ir::ValueType::S16:
@@ -1944,8 +1199,26 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
             ((operand.GetLeft().imm.Get() + static_bias) & (size - 1)) != 0;
     const bool scalar_fast_path =
             scalar && supports_rcpc && !statically_unaligned;
-    const bool check_alignment =
-            scalar_fast_path && size > 1 && !static_address;
+    // With rcpc_fault_emulate the dispatch below is skipped entirely:
+    // unaligned or 16-byte-window-crossing accesses raise SIGBUS and the
+    // runtime fault handler emulates them (see TryEmulateRcpcFault).
+    // RcpcForceChecks units compile the checked form (see load path).
+    const bool rcpc_unchecked = context.GetConfig().rcpc_fault_emulate &&
+            !context.RcpcForceChecks();
+    bool check_alignment =
+            scalar_fast_path && size > 1 && !static_address &&
+            !(rcpc_unchecked &&
+              True(context.GetConfig().arm64_features & Arm64Features::RCpcImm));
+    if (check_alignment && size == 8) {
+        u64 home_offset = 0;
+        if (auto home = AlignmentHomeRoot(operand, &home_offset)) {
+            const auto known = memory_state.home_alignment_mod8.find(*home);
+            if (known != memory_state.home_alignment_mod8.end() &&
+                ((known->second + home_offset) & 7) == 0) {
+                check_alignment = false;
+            }
+        }
+    }
     tso_emission_stats.Increment(tso_emission_stats.store_sites);
     if (scalar_fast_path) {
         tso_emission_stats.Increment(tso_emission_stats.scalar_fast_sites);
@@ -1962,6 +1235,45 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
                            false,
                            inst);
 
+    // STLUR mirror of the LDAPUR load fast path above: byte accesses
+    // with a simm9 immediate offset need neither alignment checks nor
+    // address materialization.
+    const bool supports_rcpc_imm =
+            True(context.GetConfig().arm64_features & Arm64Features::RCpcImm);
+    if (scalar && scalar_fast_path && supports_rcpc_imm && !check_alignment &&
+        vixl_operand.IsImmediateOffset() &&
+        vixl_operand.GetOffset() >= -256 && vixl_operand.GetOffset() <= 255) {
+        bool emitted = true;
+        {
+            vixl::CPUFeaturesScope rcpc(&masm, vixl::CPUFeatures::kRCpc,
+                                        vixl::CPUFeatures::kRCpcImm);
+            switch (type) {
+                case ir::ValueType::S8:
+                case ir::ValueType::U8:
+                    __ stlurb(context.W(value), vixl_operand);
+                    break;
+                case ir::ValueType::S16:
+                case ir::ValueType::U16:
+                    __ stlurh(context.W(value), vixl_operand);
+                    break;
+                case ir::ValueType::S32:
+                case ir::ValueType::U32:
+                    __ stlur(context.W(value), vixl_operand);
+                    break;
+                case ir::ValueType::S64:
+                case ir::ValueType::U64:
+                    __ stlur(context.X(value), vixl_operand);
+                    break;
+                default:
+                    emitted = false;
+                    break;
+            }
+        }
+        if (emitted) {
+            return;
+        }
+    }
+
     // Gate the complete scalar fast path with the same check as LDAPR. This
     // keeps non-LRCPC hosts on the previous dmb+str implementation and makes
     // SVM_ARM64_LRCPC=0 an exact A/B baseline.
@@ -1973,31 +1285,64 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
         }
 
         Label unaligned;
+        Label cross_check;
         Label done;
+        Register span;
+        bool have_span = false;
         if (check_alignment) {
-            for (u32 bit = 0; (u32{1} << bit) < size; ++bit) {
-                __ Tbnz(address, bit, &unaligned);
+            // Same NZCV-preserving check as the load path: one extract+branch
+            // for 8-byte accesses, bit tests below that.
+            if (size == 8) {
+                span = context.GetTmpX();
+                have_span = true;
+                __ Ubfx(span, address, 0, 4);
+                __ Cbnz(span, supports_rcpc_imm ? &cross_check : &unaligned);
+            } else {
+                for (u32 bit = 0; (u32{1} << bit) < size; ++bit) {
+                    __ Tbnz(address, bit, supports_rcpc_imm ? &cross_check : &unaligned);
+                }
             }
         }
-        switch (type) {
-            case ir::ValueType::S8:
-            case ir::ValueType::U8:
-                __ Stlrb(context.W(value), MemOperand(address));
-                break;
-            case ir::ValueType::S16:
-            case ir::ValueType::U16:
-                __ Stlrh(context.W(value), MemOperand(address));
-                break;
-            case ir::ValueType::S32:
-            case ir::ValueType::U32:
-                __ Stlr(context.W(value), MemOperand(address));
-                break;
-            case ir::ValueType::S64:
-            case ir::ValueType::U64:
-                __ Stlr(context.X(value), MemOperand(address));
-                break;
-            default:
-                PANIC("unsupported scalar TSO store width");
+        if (rcpc_unchecked && size > 1) {
+            vixl::CPUFeaturesScope rcpc(&masm, vixl::CPUFeatures::kRCpc,
+                                        vixl::CPUFeatures::kRCpcImm);
+            switch (type) {
+                case ir::ValueType::S16:
+                case ir::ValueType::U16:
+                    __ stlurh(context.W(value), MemOperand(address));
+                    break;
+                case ir::ValueType::S32:
+                case ir::ValueType::U32:
+                    __ stlur(context.W(value), MemOperand(address));
+                    break;
+                case ir::ValueType::S64:
+                case ir::ValueType::U64:
+                    __ stlur(context.X(value), MemOperand(address));
+                    break;
+                default:
+                    PANIC("unsupported scalar TSO store width");
+            }
+        } else {
+            switch (type) {
+                case ir::ValueType::S8:
+                case ir::ValueType::U8:
+                    __ Stlrb(context.W(value), MemOperand(address));
+                    break;
+                case ir::ValueType::S16:
+                case ir::ValueType::U16:
+                    __ Stlrh(context.W(value), MemOperand(address));
+                    break;
+                case ir::ValueType::S32:
+                case ir::ValueType::U32:
+                    __ Stlr(context.W(value), MemOperand(address));
+                    break;
+                case ir::ValueType::S64:
+                case ir::ValueType::U64:
+                    __ Stlr(context.X(value), MemOperand(address));
+                    break;
+                default:
+                    PANIC("unsupported scalar TSO store width");
+            }
         }
         if (size == 1) {
             return;
@@ -2006,6 +1351,39 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
             return;
         }
         __ B(&done);
+        if (supports_rcpc_imm) {
+            // STLUR mirror of the load cross-check: unaligned stores that
+            // stay within one 16-byte window keep release semantics
+            // without the full barrier; crossing stores keep dmb+str.
+            __ Bind(&cross_check);
+            if (!have_span) {
+                span = context.GetTmpX();
+                __ Ubfx(span, address, 0, 4);
+            }
+            __ Add(span, span, size - 1);
+            __ Tbnz(span, 4, &unaligned);
+            {
+                vixl::CPUFeaturesScope rcpc(&masm, vixl::CPUFeatures::kRCpc,
+                                            vixl::CPUFeatures::kRCpcImm);
+                switch (type) {
+                    case ir::ValueType::S16:
+                    case ir::ValueType::U16:
+                        __ stlurh(context.W(value), MemOperand(address));
+                        break;
+                    case ir::ValueType::S32:
+                    case ir::ValueType::U32:
+                        __ stlur(context.W(value), MemOperand(address));
+                        break;
+                    case ir::ValueType::S64:
+                    case ir::ValueType::U64:
+                        __ stlur(context.X(value), MemOperand(address));
+                        break;
+                    default:
+                        PANIC("unsupported unaligned scalar TSO store width");
+                }
+            }
+            __ B(&done);
+        }
         __ Bind(&unaligned);
         tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
         __ Dmb(InnerShareable, BarrierAll);

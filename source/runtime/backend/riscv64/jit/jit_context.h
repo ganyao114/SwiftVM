@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include <vector>
 #include <span>
+#include <optional>
 #include "runtime/backend/code_cache.h"
 #include "runtime/backend/code_serial.h"
 #include "runtime/backend/riscv64/defines.h"
@@ -67,6 +68,7 @@ public:
     void HostAddress(biscuit::GPR result, u64 address);
     void FinishHostAddresses();
     void ConfigureModule(Module* owner);
+    std::optional<u32> UniformCapacity() const;
     bool DirectLinksEnabled() const { return direct_links; }
     bool RSBEnabled() const { return rsb_enabled; }
     u32 DispatchIndex(u64 guest);

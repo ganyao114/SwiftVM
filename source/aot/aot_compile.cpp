@@ -258,6 +258,9 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
     // One entry address through the ordinary function-mode path. Returns true
     // when a unit was added.
     auto compile_one = [&](u64 addr, const std::string& name) -> bool {
+        backend::RetirementControl::Lease producer{
+                address_space->GetRetirementControl(), backend::RetirementControl::Kind::Producer};
+        if (!producer) return false;
         const FuncCandidate c{addr, 0, 0, false, name};
         if (units.count(c.addr)) {
             return false;
@@ -301,12 +304,13 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
             return false;
         }
 
-        auto scan = backend::ScanCodeUnit({code, code_size}, host_image, window, {}, config.backend_isa);
-        if (!scan.ok) {
+        backend::SerialUnit captured;
+        std::string capture_error;
+        if (!backend::CaptureSerialCode(*module, code, code_size, host_image, window, captured, &capture_error)) {
             stats.fail_scan++;
             if (options.verbose) {
                 fmt::print(stderr, "[aot] {:#x} {}: scan refused ({})\n", c.addr, c.name,
-                           scan.reject_reason);
+                           capture_error);
             }
             return false;
         }
@@ -314,16 +318,10 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         AotUnit unit{};
         unit.guest_start = fault.guest_loc;
         unit.code_size = code_size;
-        unit.relocs = std::move(scan.relocs);
-        if (config.backend_isa == runtime::kRiscv64) {
-            const auto region = module->GetCodeRegion(code);
-            for (const auto& site : address_space->GetLinkManager().QuerySourceSites({module.get(), code})) {
-                unit.link_sites.push_back({.code_offset = site.site.offset - u32(code - region->rx_base),
-                        .guest_target = site.guest_target, .kind = u8(site.kind),
-                        .unlinked_instruction = site.unlinked_instruction});
-            }
-            if (!unit.ValidLinkSites()) { ++stats.fail_scan; return false; }
-        }
+        unit.relocs = std::move(captured.relocs);
+        unit.link_sites = std::move(captured.link_sites);
+        unit.region_branches = std::move(captured.region_branches);
+        if (!unit.ValidLinkSites()) { ++stats.fail_scan; return false; }
         for (const auto& site : fault_entries) {
             if (site.host_start < code || site.host_end > code + code_size ||
                 (site.recovery && (site.recovery < code || site.recovery >= code + code_size))) {
@@ -380,6 +378,29 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
             sb.guest_start = bs;
             sb.guest_end = be;
             sb.code_offset = static_cast<u32>(block_entry - code);
+            const auto entry_offset = [&](const void* pointer) {
+                if (!pointer) return UINT32_MAX;
+                const auto* address = static_cast<const u8*>(pointer);
+                if (address < code || address >= code + code_size) {
+                    blocks_ok = false;
+                    return UINT32_MAX;
+                }
+                return static_cast<u32>(address - code);
+            };
+            if (const auto target = address_space->GetLinkManager().QueryTarget(bs)) {
+                sb.direct_code_offset = entry_offset(target->direct_host_pc);
+                sb.pending_flags_code_offset = entry_offset(target->pending_flags_host_pc);
+                sb.pending_flags_contract = target->pending_flags_contract;
+                sb.continuation_code_offset = entry_offset(target->call_host_pc);
+                sb.pending_flags_continuation_code_offset = entry_offset(target->call_pending_flags_host_pc);
+            } else {
+                sb.continuation_code_offset = entry_offset(reinterpret_cast<void*>(address_space->GetCallCodeCacheTable().Lookup(bs)));
+                sb.pending_flags_continuation_code_offset = entry_offset(reinterpret_cast<void*>(address_space->GetPendingCallCodeCacheTable().Lookup(bs)));
+            }
+            if (!sb.ValidEntryContract(code_size)) {
+                blocks_ok = false;
+                return;
+            }
             if (!HashGuestRange(guest, bs, be, sb.guest_bytes_hash)) {
                 blocks_ok = false;
                 return;
@@ -426,7 +447,7 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         claimed.emplace_back(code, code + code_size);
         const auto unit_start = unit.guest_start;
         unit_bytes_index[unit_start] = unit_bytes.size();
-        unit_bytes.emplace_back(code, code + code_size);
+        unit_bytes.push_back(std::move(captured.code));
         units.emplace(unit_start, std::move(unit));
         return true;
     };

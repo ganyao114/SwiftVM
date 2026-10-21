@@ -24,6 +24,9 @@
 #ifndef HWCAP_FLAGM
 #define HWCAP_FLAGM (1UL << 27)
 #endif
+#ifndef HWCAP_ILRCPC
+#define HWCAP_ILRCPC (1UL << 26)
+#endif
 #ifndef HWCAP_ATOMICS
 #define HWCAP_ATOMICS (1UL << 8)
 #endif
@@ -57,6 +60,13 @@ namespace swift::translator::x86 {
 
 using namespace swift::runtime;
 using namespace swift::x86;
+
+// Bound-backend decode: the frontend may use backend facts at
+// append time only when the unit is compiled for the arm64 JIT.
+static bool BoundBackendDecode(const Config& config) {
+    return runtime::GetSvmConfig().bound_decode &&
+           config.backend_isa == kArm64 && config.enable_jit;
+}
 
 // Conservative static guest->host map. RBX/RSP/RBP are hot general, stack and
 // frame registers; x19-x21 are AArch64 ABI callee-saved and do not overlap the
@@ -241,6 +251,15 @@ static Arm64Features DetectArm64Features() {
         Arm64Features detected = Arm64Features::None;
         if ((getauxval(AT_HWCAP) & HWCAP_FLAGM) != 0) {
             detected |= Arm64Features::FlagM;
+        }
+        // The kernel exposes LRCPC only through HWCAP_ILRCPC (the
+        // immediate-offset forms, FEAT_LRCPC2), which implies the base
+        // FEAT_LRCPC register forms; there is no base-only HWCAP bit.
+        // Without this the scalar TSO fast path stayed dead on Linux and
+        // every scalar load/store paid a full dmb.
+        if ((getauxval(AT_HWCAP) & HWCAP_ILRCPC) != 0) {
+            detected |= Arm64Features::RCpc;
+            detected |= Arm64Features::RCpcImm;
         }
         if ((getauxval(AT_HWCAP2) & HWCAP2_FLAGM2) != 0) {
             detected |= Arm64Features::AXFlag;
@@ -584,8 +603,16 @@ struct X86Instance::Impl final {
         const bool sse_scalar_insert = SSEScalarInsertEnabled(arm64_features);
         const bool sse_afp_nan = SSEAFPNanEnabled(arm64_features);
         const bool mem_hostbase_fold = svm_config.mem_hostbase_fold;
-        const bool induct_tie = svm_config.induct_tie;
         const bool region_edges = svm_config.region_edges;
+        // Oracle gate: unchecked RCpc emission is only sound when the
+        // fault handler can prove a faulting access is guest-mapped
+        // before emulating it. Embedders without an oracle (unit tests,
+        // fuzzers) silently stay on checked emission even though the
+        // SVM_RCPC_FAULT_EMULATE default is now on.
+        const bool rcpc_fault_emulate = svm_config.rcpc_fault_emulate &&
+                backend::kNativeJitBackend == kArm64 &&
+                True(arm64_features & Arm64Features::RCpc) &&
+                backend::SignalHandler::HasGuestMapCheck();
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ul << 49,
@@ -612,8 +639,8 @@ struct X86Instance::Impl final {
                 .sse_scalar_insert = sse_scalar_insert,
                 .sse_afp_nan = sse_afp_nan,
                 .mem_hostbase_fold = mem_hostbase_fold,
-                .induct_tie = induct_tie,
                 .region_edges = region_edges,
+                .rcpc_fault_emulate = rcpc_fault_emulate,
                 .tso_mode = TsoModeFromEnvironment(),
                 .stack_alignment = 16,
                 .page_table = nullptr,
@@ -652,6 +679,8 @@ struct X86Instance::Impl final {
                         .native_memory = !address_space->GetConfig().memory_base &&
                                          !address_space->GetConfig().page_table,
                         .features = features,
+                        .uniform_info = &address_space->GetUniformInfo(),
+                        .bound_backend = BoundBackendDecode(address_space->GetConfig()),
                         .tso_mode = address_space->GetConfig().tso_mode,
                         .decode_limit = lazy ? DecodeLimit(root) : 0,
                         .local_target =
@@ -680,6 +709,9 @@ struct X86Instance::Impl final {
     }
 
     [[nodiscard]] void* Translate(LocationDescriptor pc) const {
+        backend::RetirementControl::Lease producer{
+                address_space->GetRetirementControl(), backend::RetirementControl::Kind::Producer};
+        if (!producer) return nullptr;
         PerfTranslationScope2 perf_detail;
         PerfScope perf_total{GetPerfStats().translate_ns};
         PerfScope perf_config_wait{GetPerfStats().translate_wait_ns};
@@ -1015,6 +1047,9 @@ struct X86Instance::Impl final {
                     std::memset(&x->GetJitCache(), 0, sizeof(backend::JitCache));
                     PerfScope2 perf_ir_setup{GetPerfStats2().ir_setup};
                     ir::Assembler assembler{x.get()};
+                    assembler.EnableUniformBuilder(
+                            &module->GetAddressSpace().GetUniformInfo(), features,
+                            BoundBackendDecode(module->GetAddressSpace().GetConfig()));
                     x86::X64Decoder decoder{
                             pc,
                             &memory_impl,
@@ -1099,12 +1134,21 @@ struct X86Core::Impl final {
     }
 
     [[nodiscard]] ExitReason Run() {
+        backend::RetirementControl::Lease execution{
+                instance->impl->address_space->GetRetirementControl(), backend::RetirementControl::Kind::Execution};
+        if (!execution) return ExitReason::Retirement;
         // update backend location
         s_runtime->SetLocation(GetCPUContext()->pc.qword);
         const bool trace = runtime::GetSvmConfig().trace;
         auto hr = HaltReason::None;
         while (hr == HaltReason::None) {
             hr = s_runtime->Run();
+            if (True(hr & HaltReason::RuntimeBusy)) {
+                return ExitReason::RuntimeBusy;
+            }
+            if (True(hr & HaltReason::Retirement)) {
+                return ExitReason::Retirement;
+            }
             // update frontend location
             auto pc = s_runtime->GetLocation();
             GetCPUContext()->pc.qword = pc;
@@ -1122,6 +1166,8 @@ struct X86Core::Impl final {
                 // decodes the block into the module and returns nullptr).
                 const bool jit = instance->impl->address_space->GetConfig().enable_jit;
                 auto* cache = Translate(pc);
+                if (instance->impl->address_space->GetRetirementControl()->IsClosed())
+                    return ExitReason::Retirement;
                 if (jit && !cache) {
                     return ExitReason::IllegalCode;
                 }

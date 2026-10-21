@@ -177,6 +177,7 @@ AFPShapeCode CompileAFPShape(AFPShapeOp op,
                        address_space.GetTrampolines().GetFPRRegs(),
                        features};
     RegisterAllocPass::Run(block.get(), &reg_alloc, scalar_insert, features);
+    reg_alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, reg_alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());

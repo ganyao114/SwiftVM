@@ -9,6 +9,14 @@ void* ResolveDirectLink(State* state, const u8* rx_site) noexcept {
     try {
         auto* space = reinterpret_cast<AddressSpace*>(state->spill_area[kRiscvAddressSpaceSlot]);
         if (!space) return nullptr;
+        RetirementControl::Lease producer{
+                space->GetRetirementControl(), RetirementControl::Kind::Producer};
+        RetirementControl::PublicationScope publication{
+                producer, RetirementControl::PublicationScope::Mode::OpenOnly};
+        if (!publication) {
+            state->halt_reason = HaltReason::Retirement;
+            return nullptr;
+        }
         auto module = space->GetModule(state->prev_loc.Value());
         if (!module) return nullptr;
         const auto region = module->GetCodeRegion(rx_site);

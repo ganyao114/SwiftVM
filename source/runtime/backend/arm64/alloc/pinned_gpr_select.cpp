@@ -46,8 +46,8 @@ bool IsAliasConsumer(ir::Inst& consumer, ir::Inst* alias) {
 
 }  // namespace
 
-std::optional<PinnedGPRAllocation::PinnedSelectPublication>
-PinnedGPRAllocation::MatchPinnedSelectPublication(ir::Inst* publication) const {
+std::optional<GPRPlanBuilder::PinnedSelectPublication>
+GPRPlanBuilder::MatchPinnedSelectPublication(ir::Inst* publication) const {
     if (!publication || publication->GetOp() != ir::OpCode::SetHostGPR ||
         publication->GetArg<ir::Imm>(2).Get() != 0 ||
         recipes.dead_writes.contains(publication) ||
@@ -81,11 +81,9 @@ PinnedGPRAllocation::MatchPinnedSelectPublication(ir::Inst* publication) const {
     u32 extend_uses = 0;
     u32 last_use = publication->Id();
     std::vector<ir::Inst*> aliases;
-    for (auto& consumer : this->block->GetInstList()) {
-        const u32 uses = CountUses(consumer, extend);
-        if (!uses) {
-            continue;
-        }
+    for (const auto& use : block_analysis.Uses(extend)) {
+        auto& consumer = *use.consumer;
+        const u32 uses = use.count;
         extend_uses += uses;
         if (&consumer == publication && uses == 1) {
             saw_publication = true;
@@ -103,11 +101,9 @@ PinnedGPRAllocation::MatchPinnedSelectPublication(ir::Inst* publication) const {
 
     for (auto* alias : aliases) {
         u32 alias_uses = 0;
-        for (auto& consumer : this->block->GetInstList()) {
-            const u32 uses = CountUses(consumer, alias);
-            if (!uses) {
-                continue;
-            }
+        for (const auto& use : block_analysis.Uses(alias)) {
+        auto& consumer = *use.consumer;
+        const u32 uses = use.count;
             alias_uses += uses;
             if (!IsAliasConsumer(consumer, alias)) {
                 return std::nullopt;
@@ -134,10 +130,12 @@ PinnedGPRAllocation::MatchPinnedSelectPublication(ir::Inst* publication) const {
     };
 }
 
-void PinnedGPRAllocation::PreparePinnedSelectPublications(ir::Block* block) {
+void GPRPlanBuilder::PreparePinnedSelectPublications(ir::Block* block) {
     for (auto& inst : block->GetInstList()) {
         auto candidate = MatchPinnedSelectPublication(&inst);
-        if (!candidate || HasValueHome(candidate->producer) ||
+        if (!candidate || allocation.GPRTargetWriteConflict(
+                    candidate->target, candidate->producer->Id(), inst.Id(), candidate->producer->Id()) ||
+            HasValueHome(candidate->producer) ||
             HasLowView(candidate->extend) ||
             std::ranges::any_of(candidate->aliases, [&](ir::Inst* alias) {
                 return HasLowView(alias);

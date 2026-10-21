@@ -221,6 +221,8 @@ void RunCacheChildPhase(std::string_view phase) {
             REQUIRE(region);
             const auto sites = FindProductionSites(space, *region, source_code);
             REQUIRE(sites.size() == 2);
+            REQUIRE(disk->Stats().units_compiled.load() == 3);
+            REQUIRE(disk->Stats().reject_scan.load() == 0);
 
             Runtime runtime{&space};
             SetUniform(runtime, 8, 1);

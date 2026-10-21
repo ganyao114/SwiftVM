@@ -9,7 +9,7 @@
 
 namespace swift::translator {
 
-enum ExitReason : uint8_t { None = 0, IllegalCode, PageFatal, Syscall, Signal, Step };
+enum ExitReason : uint8_t { None = 0, IllegalCode, PageFatal, Syscall, Signal, Step, RuntimeBusy, Retirement };
 
 class Instance {
 public:

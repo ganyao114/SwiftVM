@@ -5,6 +5,7 @@
 #include "deadcode_elimination_pass.h"
 
 #include <vector>
+#include <unordered_map>
 
 namespace swift::runtime::ir {
 
@@ -22,45 +23,42 @@ namespace {
 // load alive; once dead uniform stores are eliminated the store can disappear
 // and the load with it.  The fault, not the value, is the side effect.
 [[nodiscard]] bool Removable(Inst& inst) {
-    switch (inst.GetOp()) {
-        case OpCode::LoadMemory:
-        case OpCode::LoadMemoryTSO:
-            return false;
-        default:
-            return !inst.HasSideEffects();
+    if (inst.GetUses(false) != 0) return false;
+    return !inst.HasSideEffects();
+}
+
+void Eliminate(const std::vector<Block*>& blocks, HIRFunction* function) {
+    std::unordered_map<Inst*, Block*> owners;
+    std::vector<Inst*> work;
+    for (auto* block : blocks) {
+        for (auto& inst : block->GetInstList()) {
+            owners.emplace(&inst, block);
+            if (Removable(inst)) work.push_back(&inst);
+        }
+    }
+    // FIFO keeps the removal order deterministic.
+    for (size_t next = 0; next < work.size(); ++next) {
+        auto* inst = work[next];
+        auto owner = owners.find(inst);
+        // Duplicate operand edges may enqueue the same definition. Test its
+        // membership before dereferencing any instruction already deleted.
+        if (owner == owners.end() || !Removable(*inst)) continue;
+        auto operands = inst->GetValues();
+        auto* block = owner->second;
+        owners.erase(owner);
+        if (function) function->EraseInst(block, inst);
+        else block->DestroyInst(inst);
+        for (auto value : operands) {
+            auto* def = value.Def();
+            if (owners.contains(def) && Removable(*def)) work.push_back(def);
+        }
     }
 }
 
 }  // namespace
 
 void DeadCodeEliminationPass::Run(Block* block, HIRFunction* hir_function) {
-    auto& inst_list = block->GetInstList();
-    // Iterate to a fixpoint: removing an instruction can kill the last use of
-    // an EARLIER def (e.g. once FlagEliminationPass drops a dead SaveFlags,
-    // the flag-only def chain behind it dies link by link). A single forward
-    // sweep would leave those corpses in the list and the backends would try
-    // to emit instructions the register allocator never gave a slot.
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (auto it = inst_list.begin(); it != inst_list.end();) {
-            auto pre = it;
-            if (Removable(*it)) {
-                if (hir_function) {
-                    // EraseInst unlinks from inst_list itself; step past the
-                    // victim before it is freed.
-                    ++it;
-                    hir_function->EraseInst(block, pre.operator->());
-                } else {
-                    it = inst_list.erase(it);
-                    delete pre.operator->();
-                }
-                changed = true;
-            } else {
-                ++it;
-            }
-        }
-    }
+    Eliminate({block}, hir_function);
 }
 
 void DeadCodeEliminationPass::Run(HIRBuilder* hir_builder) {
@@ -70,9 +68,13 @@ void DeadCodeEliminationPass::Run(HIRBuilder* hir_builder) {
 }
 
 void DeadCodeEliminationPass::Run(HIRFunction* hir_function) {
-    for (auto& hir_block : hir_function->GetHIRBlocksRPO()) {
-        Run(hir_block.GetBlock(), hir_function);
+    std::vector<Block*> blocks;
+    for (auto* hir_block : hir_function->GetHIRBlocks()) {
+        if (hir_block) blocks.push_back(hir_block->GetBlock());
     }
+    // A shared worklist also removes predecessor defs whose last use dies in
+    // a later block, without rescanning the function to reach a fixed point.
+    Eliminate(blocks, hir_function);
 }
 
 }  // namespace swift::runtime::ir

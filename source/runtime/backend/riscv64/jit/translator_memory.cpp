@@ -44,11 +44,21 @@ void JitTranslator::EmitAddress(u64 size) {
     context.Load(t0, state, offsetof(State, guest_addr_mask));
     as.AND(a1, a1, t0);
     context.Load(t1, state, offsetof(State, guest_addr_limit));
-    as.BGEU(a1, t1, &fault);
-    as.SUB(t1, t1, a1); as.LI(t2, size); as.BLTU(t1, t2, &fault);
-    // For UINT64_MAX the bound check already rejects address wraparound;
-    // this subtraction also handles every finite guest address mask.
-    as.SUB(t0, t0, a1); as.LI(t2, size - 1); as.BLTU(t0, t2, &fault);
+    if (size == 1) {
+        // AND already ensures a1 <= mask; an accepted single byte has no end overflow.
+        as.BGEU(a1, t1, &fault);
+    } else if (size > 1 && size <= 2048) {
+        // Inclusive end: reject wrap, end >= exclusive limit, or end > mask.
+        // The positive immediate fits ADDI; retain the generic large/zero-size path.
+        as.ADDI(t2, a1, s32(size - 1));
+        as.BLTU(t2, a1, &fault);
+        as.BGEU(t2, t1, &fault);
+        as.BLTU(t0, t2, &fault);
+    } else {
+        as.BGEU(a1, t1, &fault);
+        as.SUB(t1, t1, a1); as.LI(t2, size); as.BLTU(t1, t2, &fault);
+        as.SUB(t0, t0, a1); as.LI(t2, size - 1); as.BLTU(t0, t2, &fault);
+    }
     context.Load(t0, state, offsetof(State, interp_range_check));
     as.BEQ(t0, x0, &no_oracle);
     context.SaveVectorsForCall();

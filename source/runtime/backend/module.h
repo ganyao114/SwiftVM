@@ -7,7 +7,11 @@
 #include <map>
 #include <shared_mutex>
 #include "runtime/backend/code_cache.h"
+#include "runtime/backend/code_serial.h"
 #include "runtime/backend/edge_flags_state.h"
+#include "runtime/backend/fault_catalog.h"
+#include "runtime/backend/retirement_control.h"
+#include "runtime/backend/restricted_instruction_resume.h"
 #include "runtime/common/address_hash_map.h"
 #include "runtime/common/range_mutex.h"
 #include "runtime/common/svm_config.h"
@@ -41,38 +45,15 @@ struct ModuleConfig {
 
 struct NoneAddressNode {};
 
-enum class FaultRecoveryKind : u8 {
-    GuestFault,
-    IndirectCallMiss,
-    ExternalContinuation,
-};
-
-// JIT fault table entry. Function units may contribute one subrange per
-// emitted guest block; owner_start keeps all entries tied to the allocation
-// that must be retired together. recovery is optional and defaults to the
-// global committed-state fault return.
-struct FaultEntry {
-    u8* host_start{};
-    u8* host_end{};
-    u8* owner_start{};
-    u8* recovery{};
-    VAddr guest_loc{};
-    FaultRecoveryKind recovery_kind{FaultRecoveryKind::GuestFault};
-
-    [[nodiscard]] bool Contains(const u8* host_pc) const {
-        return host_pc >= host_start && host_pc < host_end;
-    }
-};
-
 using AddressNodeRef = boost::variant<NoneAddressNode, IntrusivePtr<ir::Block>, IntrusivePtr<ir::Function>>;
 
 using AddressNodeRefs = StackVector<AddressNodeRef, 32>;
 
-constexpr bool IsEmpty(const AddressNodeRef& node) { return node.empty() || node.which() == 0; }
+inline bool IsEmpty(const AddressNodeRef& node) { return node.empty() || node.which() == 0; }
 
-constexpr bool IsBlock(const AddressNodeRef& node) { return !IsEmpty(node) && node.which() == 1; }
+inline bool IsBlock(const AddressNodeRef& node) { return !IsEmpty(node) && node.which() == 1; }
 
-constexpr bool IsFunction(const AddressNodeRef& node) { return !IsEmpty(node) && node.which() == 2; }
+inline bool IsFunction(const AddressNodeRef& node) { return !IsEmpty(node) && node.which() == 2; }
 
 inline IntrusivePtr<ir::Function> GetFunction(const AddressNodeRef& node) {
     return boost::get<IntrusivePtr<ir::Function>>(node);
@@ -88,23 +69,34 @@ public:
 
     ~DataAllocator();
 
+    // The owner must first revoke users and establish their quiescence.
+    [[nodiscard]] MemMap::ReleaseResult ReleaseAfterQuiescence();
+
     [[nodiscard]] void* Alloc(u32 size);
 
     void Free(void* ptr);
 
     [[nodiscard]] u32 GetSize() const { return mem_map->GetSize(); }
 
-    [[nodiscard]] u8* GetBackend() const { return mem_map->GetMemory(); }
+    [[nodiscard]] u8* GetBackend() const {
+        return release_started ? nullptr : mem_map->GetMemory();
+    }
 
     [[nodiscard]] bool IsOverlap(const u8 *ptr);
 private:
     std::unique_ptr<MemMap> mem_map;
-    mspace space;
+    mspace space{};
+    bool release_started{};
 };
 
 class Module : DeleteCopyAndMove {
+    struct ConstructionKey {
+        friend class AddressSpace;
+    private:
+        ConstructionKey() = default;
+    };
 public:
-    explicit Module(AddressSpace& space,
+    explicit Module(ConstructionKey, AddressSpace& space,
                     const ir::Location& start,
                     const ir::Location& end,
                     const ModuleConfig& m_config);
@@ -177,8 +169,7 @@ public:
                        FaultRecoveryKind recovery_kind =
                                FaultRecoveryKind::GuestFault);
 
-    // Finds the fault entry whose host range contains host_pc. Called from
-    // the host signal handler; takes the cache lock shared.
+    // Finds copied metadata through the signal-safe immutable catalog.
     [[nodiscard]] bool LookupFault(const u8* host_pc, FaultEntry& out);
 
     // Serialization needs the complete allocation, not the smaller recovery
@@ -194,21 +185,38 @@ public:
     // fault in that code can still be recovered.
     [[nodiscard]] u8* DetachNode(ir::AddressNode* node);
     void ReclaimCode(u8* exec_ptr);
+    void RecordSerialLinkSites(u8* allocation, std::vector<SerialLinkSite> sites);
+    [[nodiscard]] std::vector<SerialLinkSite> QuerySerialLinkSites(const u8* allocation);
     // RV64 semantic helpers borrow canonical IR. Keep it alive through the
     // same QSBR grace period as the executable allocation, including detach.
     void RetainCodeIR(u8* allocation, ir::AddressNode* node);
 
+    void RegisterInstructionResume(u8* allocation, std::shared_ptr<const InstructionResumeDescriptor> descriptor);
+    [[nodiscard]] std::unique_ptr<InstructionCodePin> PinInstructionCode(const std::shared_ptr<Module>& owner, u8* allocation);
+    [[nodiscard]] bool ValidateInstructionPin(const InstructionCodePin& pin);
+    void ReleaseInstructionPin(u8* allocation, u64 allocation_id);
+    struct InstructionPinState { u64 id{}, pins{}, ir_owners{}; bool revoked{}, reclaim_pending{}; };
+    [[nodiscard]] InstructionPinState InspectInstructionPin(u8* allocation);
+
     // Drops every fault-table subrange owned by the allocation at host_start.
     void RemoveFaultEntries(const u8* host_start);
 
-    [[nodiscard]] AddressSpace& GetAddressSpace() { return address_space; }
+    [[nodiscard]] AddressSpace& GetAddressSpace() const;
 
-    [[nodiscard]] AddressSpace& GetAddressSpace() const { return address_space; }
+    [[nodiscard]] const std::shared_ptr<RetirementControl>& GetRetirementControl() const {
+        return retirement_control;
+    }
 
 private:
+    friend class AddressSpace;
+    void RevokeAfterQuiescence();
+    [[nodiscard]] MemMap::ReleaseResult ReleaseAfterQuiescence();
     std::map<u8*, std::vector<ir::NodeRef>> code_ir_owners;
+    std::unique_ptr<std::map<u8*, std::vector<SerialLinkSite>>> serial_link_sites;
     const ModuleConfig module_config;
-    AddressSpace& address_space;
+    std::atomic<AddressSpace*> address_space;
+    std::shared_ptr<RetirementControl> retirement_control;
+    std::shared_ptr<FaultCatalog> fault_catalog;
     ir::Location module_start;
     ir::Location module_end;
     std::shared_mutex inner_lock;
@@ -217,12 +225,16 @@ private:
     AddressHashMap<&ir::AddressNode::map_node> address_node_map;
     std::shared_mutex cache_lock;
     std::map<u16, CodeCache> code_caches{};
-    // Sorted by host_start (mspace allocations are not guaranteed monotonic).
-    // Entries are retained while detached JIT code is epoch-protected and
-    // removed together with the allocation by ReclaimCode.
-    std::vector<FaultEntry> fault_table{};
     std::list<DataAllocator> data_allocators{};
     u16 current_code_cache{};
+    bool publications_revoked{};
+    struct InstructionAllocation {
+        std::shared_ptr<const InstructionResumeDescriptor> descriptor;
+        u64 id{}, pins{};
+        bool revoked{}, reclaim_pending{};
+    };
+    std::map<u8*, InstructionAllocation> instruction_allocations;
+    u64 next_instruction_allocation{1};
 };
 
 }  // namespace swift::runtime::backend

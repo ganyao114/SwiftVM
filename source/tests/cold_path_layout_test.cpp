@@ -6,6 +6,7 @@
 
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/function_code_object_emitter.h"
+#include "runtime/backend/arm64/alloc/target_allocation_planner.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/runtime.h"
@@ -65,6 +66,7 @@ TEST_CASE("function cold paths follow every hot block",
                    address_space.GetTrampolines().GetFPRRegs(),
                    features};
     RegisterAllocPass::Run(function, &alloc, features);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(function);
@@ -149,6 +151,8 @@ TEST_CASE("function code objects emit independently allocated regions",
                           features};
     RegisterAllocPass::Run(first, &first_alloc, features);
     RegisterAllocPass::Run(second, &second_alloc, features);
+    REQUIRE(arm64::CompleteARM64UnitForEmission(module, first_alloc, nullptr, first));
+    REQUIRE(arm64::CompleteARM64UnitForEmission(module, second_alloc, nullptr, second));
 
     const std::array<arm64::FunctionRegionEmission, 2> regions{{
             {.function = first, .reg_alloc = &first_alloc},

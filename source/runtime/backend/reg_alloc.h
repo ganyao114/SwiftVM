@@ -6,7 +6,10 @@
 
 #include <bit>
 #include <optional>
+#include <functional>
+#include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include "runtime/backend/gpr_value_facts.h"
 #include "base/common_funcs.h"
 #include "runtime/common/types.h"
@@ -15,7 +18,11 @@
 #include "runtime/ir/block.h"
 #include "runtime/ir/host_reg.h"
 
+namespace swift::runtime::ir { class HIRFunction; }
+
 namespace swift::runtime::backend {
+namespace arm64 { struct GPRBlockPlan; class UnitFacts; }
+class Module;
 
 template<typename T = u32>
 class RegisterMask {
@@ -96,6 +103,7 @@ using FPRSMask = RegisterMask<u32>;
 // It never enters the value pool and memory opcodes never see it as scratch.
 [[nodiscard]] bool X86PinExtLevel3AluScratchEnabled(const GPRSMask& pool,
                                                     ir::OpCode op);
+[[nodiscard]] bool X86PinExtLevel3AluScratchEnabled(bool available, ir::OpCode op);
 
 // W-gamma fixed-class gate.  The class is meaningful only with the complete
 // sixteen-register level-3 architectural map; a sparse map must keep the
@@ -163,6 +171,22 @@ struct ScratchNeed {
     u8 fpr;
 };
 
+// Flags demand of one value-producing instruction, summarised from
+// its SaveFlags/BranchOnlyFlags pseudo uses. Each phase computes it
+// from its own use index (allocator demand table, planner flags
+// plan, or a block scan) and passes it to the precise scratch
+// budgets, replacing pseudo-chain walks (un-chaining step 3.4).
+struct FlagsDemand {
+    ir::Flags requested{};
+    u8 pseudo_count{};
+    bool branch_only{};
+    bool has_save{};
+};
+
+// Exact demand for `owner` by scanning one block. For call sites
+// without a use index (standalone preparation, tests).
+[[nodiscard]] FlagsDemand ScanFlagsDemand(const ir::Block& block, const ir::Inst& owner);
+
 // Four independent GPR budgets.  `value_pool` is a count; the remaining
 // fields are contracts for one emission site and never contribute registers
 // to that pool.  Keeping fixed clobbers as a mask prevents the x12/x13 CAS and
@@ -178,7 +202,8 @@ struct GPRClassContract {
 [[nodiscard]] GPRClassContract ClassifyGPRContract(
         const GPRSMask& pool,
         const ir::Inst& inst,
-        const FeatureSet& features);
+        const FeatureSet& features,
+        FlagsDemand demand);
 
 // W52 opt-in scratch-pool contract. OFF preserves the historical global
 // reservation byte-for-byte. ON lets the allocator use x11-x17 and protects
@@ -213,8 +238,9 @@ inline constexpr u8 kDefaultScratchFPR = 3;
 // never fail.
 [[nodiscard]] ScratchNeed ScratchBudget(ir::OpCode op, const FeatureSet& features);
 [[nodiscard]] ScratchNeed ScratchBudget(const ir::Inst& inst,
-                                        const FeatureSet& features);
-[[nodiscard]] ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst);
+                                        const FeatureSet& features,
+                                        FlagsDemand demand);
+[[nodiscard]] ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst, FlagsDemand demand);
 [[nodiscard]] bool ScratchPreciseRequested(const FeatureSet& features);
 
 class RegAlloc : DeleteCopyAndMove {
@@ -222,6 +248,66 @@ public:
 
     explicit RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
                       const FeatureSet& features, bool afp_nan = false);
+    ~RegAlloc();
+    // Shared per-attempt analysis facts (middle-pipeline redesign
+    // step 1). Lazily created; valid for this allocation attempt only.
+    [[nodiscard]] arm64::UnitFacts& Facts();
+    void SetAllocationUnit(ir::Block* block, ir::HIRFunction* function, std::function<void()> replay);
+    void CompleteGPRAllocation(const std::shared_ptr<Module>& module);
+    void BeginTargetPlanning();
+    void EndTargetPlanning();
+    void AbortTargetPlanning() noexcept;
+    [[nodiscard]] bool TargetPlanning() const { return target_planning; }
+    [[nodiscard]] bool GPRAllocationComplete() const { return target_complete; }
+    [[nodiscard]] u32 TargetReplayCount() const { return target_replays; }
+    [[nodiscard]] bool FPRCoalescingDisabled() const { return fpr_coalescing_disabled; }
+    void DisableFPRCoalescing() { ASSERT(target_planning && !gpr_locations_frozen); fpr_coalescing_disabled = true; }
+    void CertifyWidthElision(u32 id, bool low32) {
+        ASSERT(target_planning && !gpr_locations_frozen && id < alloc_result.size());
+        if (verified_width_elisions.empty()) verified_width_elisions.resize(alloc_result.size());
+        verified_width_elisions[id] |= low32 ? 2 : 1;
+    }
+    [[nodiscard]] bool WidthElisionVerified(u32 id) const {
+        return id < verified_width_elisions.size() && (verified_width_elisions[id] & 1);
+    }
+    void CertifyHostRead(u32 id) {
+        ASSERT(target_planning && !gpr_locations_frozen && id < alloc_result.size());
+        if (verified_width_elisions.empty()) verified_width_elisions.resize(alloc_result.size());
+        verified_width_elisions[id] |= 4;
+    }
+    [[nodiscard]] bool HostReadVerified(u32 id) const {
+        return id < verified_width_elisions.size() && (verified_width_elisions[id] & 4);
+    }
+    void CertifyZeroStore(u32 id) {
+        ASSERT(target_planning && !gpr_locations_frozen && id < alloc_result.size());
+        if (verified_width_elisions.empty()) verified_width_elisions.resize(alloc_result.size());
+        verified_width_elisions[id] |= 8;
+    }
+    [[nodiscard]] bool ZeroStoreVerified(u32 id) const {
+        return id < verified_width_elisions.size() && (verified_width_elisions[id] & 8);
+    }
+    [[nodiscard]] bool Low32ElisionVerified(u32 id) const {
+        return id < verified_width_elisions.size() && (verified_width_elisions[id] & 2);
+    }
+    void StoreGPRPlan(const ir::Block* block, std::shared_ptr<const arm64::GPRBlockPlan> plan) { target_plans[block] = std::move(plan); }
+    [[nodiscard]] std::shared_ptr<const arm64::GPRBlockPlan> GPRPlanFor(const ir::Block* block) const;
+    // Synchronous readonly view; do not retain it across plan replacement,
+    // replay/reset, or this allocator's lifetime. Facts belong to this attempt.
+    // To own the GPRBlockPlan beyond this read, use GPRPlanFor instead.
+    [[nodiscard]] const arm64::GPRBlockPlan* GPRPlanViewFor(const ir::Block* block) const;
+    struct TargetHome {
+        u32 value{};
+        u16 result{UINT16_MAX}, low{UINT16_MAX}, whole{UINT16_MAX};
+        u32 begin{}, end{UINT32_MAX}, additional_uses{};
+        bool has_use_homes{};
+    };
+    struct TargetUse { u32 value{}, consumer{}; FixedGPRValue home{}; bool selected{}; };
+    struct TargetDeclarations { std::vector<TargetHome> homes; std::vector<TargetUse> uses; };
+    [[nodiscard]] TargetDeclarations SaveTargetDeclarations() const;
+    void RestoreTargetDeclarations(const TargetDeclarations& declarations);
+    bool BindTargetDefinition(u32 value, u16 home, u8 width, bool elided, u32 last_use, u32 publication = UINT32_MAX);
+    void ReplayAllocation();
+    void DeclareElidedPublication(u32 id) { ASSERT(target_planning); target_elided_publications.insert(id); }
 
     enum Type : u16 {
         NONE,
@@ -231,13 +317,14 @@ public:
         REF
     };
 
-    enum class GPRView : u8 { Value, Low32, WholeValue };
+    enum class GPRView : u8 { Value, Low32, WholeValue, Definition };
     struct GPRLocation {
         Type kind{NONE};
         u16 slot{};
         u8 bits{};
         bool pinned{};
         u16 reload_register{UINT16_MAX};
+        GPRWidthFacts extension{};
     };
     struct FixedGPRDefinition {
         u16 home{UINT16_MAX};
@@ -248,7 +335,12 @@ public:
         u32 publication{UINT32_MAX};
         u32 owner{};
         u8 width{};
+        u8 bit_offset{};
         bool elided{};
+        // The guest home owns the prefix; the ordinary mapping owns the
+        // suffix. transfer is a preservation point, before that IR executes.
+        bool preserved{};
+        bool version{};
     };
     // A constraint is proven before ordinary live intervals are assigned. It
     // remains intact across scratch-reserve retries and is verified against
@@ -258,11 +350,30 @@ public:
     [[nodiscard]] bool HasFixedGPRDefinition(u32 value_id) const;
     [[nodiscard]] bool NeedsFixedGPRPublication(u32 instruction_id) const;
     [[nodiscard]] bool IsFixedGPRDefinitionElided(u32 value_id) const;
+    [[nodiscard]] const FixedGPRDefinition* PreservedGPRDefinitionAt(u32 value_id) const;
+    [[nodiscard]] bool GPRPreservationConflict(u16 home, u32 begin, u32 end) const;
+    [[nodiscard]] bool GPRTargetWriteConflict(u16 home, u32 begin, u32 end,
+                                               u32 ignored = UINT32_MAX, u32 ignored_second = UINT32_MAX) const;
+    struct GPRPreservationAction {
+        u32 value{};
+        u16 source{};
+        Type destination_kind{NONE};
+        u16 destination{};
+        u8 width{};
+        u8 bit_offset{};
+        u16 scratch{UINT16_MAX};
+    };
+    void BuildGPRPreservationActions();
+    [[nodiscard]] const Vector<GPRPreservationAction>& GPRPreservationsBefore(u32 instruction) const;
+    [[nodiscard]] bool HasGPRPreservationActions() const { return !gpr_preservation_actions.empty(); }
     [[nodiscard]] bool FixedGPRHomeIntersects(ir::Value value, u16 home,
                                             u32 begin, u32 end, u32 ordinary_end) const;
     [[nodiscard]] bool FixedGPRPublicationOwns(u32 publication, u32 value_id) const;
     [[nodiscard]] bool FixedGPRConstraintsReady() const { return fixed_gpr_constraints_ready; }
-    void FinishFixedGPRConstraints() { fixed_gpr_constraints_ready = true; }
+    void FinishFixedGPRConstraints() {
+        ASSERT(!gpr_locations_frozen);
+        fixed_gpr_constraints_ready = true;
+    }
 
     // This is the single location table for preallocated homes, target views,
     // inferred copies and ordinary allocations/reload recipes. Querying it
@@ -273,12 +384,17 @@ public:
     [[nodiscard]] std::optional<u16> GPRLowView(u32 value_id) const;
     [[nodiscard]] bool HasGPRValueHome(u32 value_id) const;
     void BeginGPRLocationAnalysis();
+    void FreezeGPRLocations();
+    [[nodiscard]] bool GPRLocationsFrozen() const { return gpr_locations_frozen; }
+    [[nodiscard]] u32 GPRLocationGeneration() const { return gpr_location_epoch; }
+    [[nodiscard]] u32 AllocationAttempt() const { return allocation_attempt; }
     void AssignGPRValueHome(u32 value_id, u16 home);
     void AssignGPRTransferredHome(u32 value_id, u16 home, u32 begin, u32 end);
     void AssignGPRLowView(u32 value_id, u16 home);
     void RegisterGPRUseHome(u32 value_id, u32 consumer, FixedGPRValue value,
                             bool selected);
-    [[nodiscard]] std::optional<FixedGPRValue> GPRUseHome(u32 value_id, u32 consumer) const;
+    [[nodiscard]] std::optional<FixedGPRValue> GPRUseHome(u32 value_id, u32 consumer,
+                                                       bool selected_only = false) const;
     [[nodiscard]] u32 AdditionalGPRResidentUses(u32 value_id) const;
 
     struct Map {
@@ -323,6 +439,10 @@ public:
     [[nodiscard]] const GPRSMask& GetGprs() const;
     [[nodiscard]] const FPRSMask& GetFprs() const;
     [[nodiscard]] const FeatureSet& GetFeatures() const { return features; }
+    void DeclareGuestGPR(u16 home) {
+        ASSERT(!gpr_locations_frozen && home < 31);
+        gprs.Mark(home);
+    }
 
     void MapRegister(u32 id, ir::HostGPR gpr);
     void MapFixedRegister(u32 id, ir::HostGPR gpr);
@@ -338,7 +458,6 @@ public:
     void MarkLow32CopyCoalesced(u32 id, u32 source_id);
     bool FreezeWidthComponentOwner(u32 anchor_id, u16 target, bool high_zero);
     bool CommitWidthComponentOwner(u32 anchor_id, u16 target);
-    void MarkConstAddressCached(u32 id, u32 anchor_id);
     void MarkAesChainTied(u32 id, u16 target);
     void MarkPshufdDirect(u32 id);
     [[nodiscard]] bool IsHostWriteCoalesced(u32 id) const;
@@ -353,11 +472,12 @@ public:
     [[nodiscard]] bool WidthComponentOwnerHighZero(u32 anchor_id) const;
     [[nodiscard]] GPRCoalesceState SaveGPRCoalesceState() const;
     void RestoreGPRCoalesceState(GPRCoalesceState state);
-    [[nodiscard]] bool IsConstAddressCached(u32 id) const;
-    [[nodiscard]] u32 ConstAddressCacheAnchor(u32 id) const;
     [[nodiscard]] bool IsAesChainTied(u32 id) const;
     [[nodiscard]] u16 AesChainTarget(u32 id) const;
-    [[nodiscard]] bool IsPshufdDirect(u32 id) const;
+    [[nodiscard]] bool IsPshufdDirect(u32 id) const {
+        return id < pshufd_direct.size() && pshufd_direct[id];
+    }
+    [[nodiscard]] bool SharesFPR(const ir::Value& left, const ir::Value& right) const;
     [[nodiscard]] bool IsFixedGPR(u32 id) const;
     void SetLiveEnd(u32 id, u32 end);
     [[nodiscard]] bool ValueLiveAfter(const ir::Value& value,
@@ -407,6 +527,11 @@ private:
     // Follows REF chains (MapReference) to the id holding the real
     // GPR/FPR/MEM allocation.
     [[nodiscard]] u32 ResolveId(u32 id) const;
+    // Point every REF entry straight at its final allocation so
+    // ResolveId (called by every allocation query) is O(1). Safe
+    // once an allocation attempt is complete; results of ResolveId
+    // are unchanged.
+    void FlattenRefChains();
     [[nodiscard]] const Vector<SpillReload>* SpillReloadsAt(u32 instruction_id) const;
 
     struct GPRPlacement {
@@ -430,8 +555,29 @@ private:
     Vector<GPRPlacement> gpr_placements{};
     std::unordered_map<u64, GPRUse> gpr_use_homes{};
     std::unordered_map<u32, u32> fixed_gpr_publications{};
+    std::optional<std::unordered_map<u32, u32>> target_publications_undo;
     u32 gpr_location_epoch{1};
+    u32 allocation_attempt{};
+    bool gpr_locations_frozen{};
     bool fixed_gpr_constraints_ready{};
+    ir::Block* allocation_block{};
+    ir::HIRFunction* allocation_function{};
+    std::function<void()> allocation_replay{};
+    std::unique_ptr<arm64::UnitFacts> unit_facts{};
+    bool target_planning{}, target_complete{};
+    std::unordered_map<const ir::Block*, std::shared_ptr<const arm64::GPRBlockPlan>> target_plans{};
+    std::unordered_map<u32, FixedGPRDefinition> target_fixed_undo;
+    u32 target_replays{};
+    bool fpr_coalescing_disabled{}, target_fpr_disabled_undo{};
+    std::vector<u8> verified_width_elisions;
+    std::unordered_set<u32> target_elided_publications{};
+    std::unordered_map<u32, Vector<GPRPreservationAction>> gpr_preservation_actions{};
+    mutable std::array<Vector<std::pair<u32, u32>>, 32> gpr_preservation_ranges{};
+    mutable bool gpr_preservation_ranges_dirty{true};
+    struct HomeInterval { u32 owner{}, begin{}, end{}; };
+    mutable std::array<std::vector<HomeInterval>, 32> gpr_home_intervals{};
+    mutable std::array<std::vector<u32>, 32> gpr_home_prefix_ends{};
+    mutable bool gpr_home_intervals_dirty{true};
 
     Vector<Map> alloc_result;
     Vector<u32> live_ends;
@@ -442,7 +588,6 @@ private:
     Vector<u32> width_chain_anchors{};
     Vector<WidthComponentOwner> width_component_owners{};
     Vector<u32> low32_copy_sources{};
-    Vector<u32> const_address_cache_anchors{};
     Vector<u16> aes_chain_targets{};
     Vector<bool> pshufd_direct{};
     u32 stack_size{};

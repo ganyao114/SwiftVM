@@ -1,5 +1,8 @@
 #include "translator.h"
+#include "native_call_arity.h"
+#include "pair_pseudo_producer.h"
 #include "wide.h"
+#include "retirement_phase_plan.h"
 
 #include <algorithm>
 #include <array>
@@ -81,6 +84,18 @@ u32 Bits(ir::ValueType type) {
 }  // namespace
 
 void JitTranslator::Translate(ir::Block* input) {
+    auto* canonical_input = input;
+    // Validate final emission terminals before WidePlan or any code bytes.
+    if (input->HasTerminal()) VerifyRVTerminalConditions(input->GetTerminal());
+    for (const auto& [marker, terminal] : function_exits) VerifyRVTerminalConditions(terminal);
+    // Module-backed entries have an exact Config state span; raw contexts
+    // without a module retain their explicit external-storage contract.
+    const auto uniform_capacity = context.UniformCapacity();
+    // Direct entry must reject before WidePlan or any code/frame emission.
+    for (const auto& inst : input->GetInstList()) {
+        if (uniform_capacity) VerifyNativeCallContractsForConfiguredEmission(inst, *uniform_capacity, input);
+        else VerifyNativeCallContractsForEmission(inst, input);
+    }
     if (WidePlan::Needed(input)) {
         auto wide = WidePlan::Build(input);
         context.RemapFlow(wide.instructions);
@@ -172,6 +187,43 @@ void JitTranslator::Translate(ir::Block* input) {
     slot_count = std::max(slot_count, u32{1});
     const bool guest_instructions = std::any_of(block->GetInstList().begin(), block->GetInstList().end(),
             [](const ir::Inst& inst) { return inst.GetOp() == O::AdvancePC; });
+    // Standalone IR uses Poll at labels and has no instruction-resume contract.
+    // Freeze this choice with the same classification used by label emission.
+    const auto retirement_plan = guest_instructions
+            ? PrepareRetirementPhases(*block, context,
+                    !entry_phis.empty() || !taken_phis.empty() || !fallthrough_phis.empty(),
+                    !function_exits.empty() || !function_halt_checks.empty())
+            : RetirementPhasePlan{};
+    if (!retirement_plan.heads.empty()) {
+        const auto markers = std::count_if(block->GetInstList().begin(), block->GetInstList().end(),
+                [](const auto& inst) { return inst.GetOp() == O::AdvancePC; });
+        if (markers != 1 || retirement_plan.heads.size() != 1 || context.Features().vector)
+            throw std::runtime_error("RV64 instruction resume rejected: restricted shape");
+        u32 payload_parts{};
+        for (const auto& home : retirement_plan.heads.front().live)
+            if ((home.type != ir::ValueType::U64 && home.type != ir::ValueType::V32 &&
+                 home.type != ir::ValueType::V64 && home.type != ir::ValueType::V128) ||
+                (home.parts != 1 && home.parts != 2) || home.parts > kRestrictedResumeParts - payload_parts)
+                throw std::runtime_error("RV64 instruction resume rejected: typed home or payload budget");
+            else payload_parts += home.parts;
+        instruction_resume = std::make_shared<InstructionResumeDescriptor>();
+        instruction_resume->original = canonical_input;
+        instruction_resume->emitted = block;
+        instruction_resume->guest_pc = retirement_plan.heads.front().guest_pc;
+        instruction_resume->completion_pc = block->GetEndLocation().Value();
+        instruction_resume->head_id = retirement_plan.heads.front().label->Id();
+        instruction_resume->payload_parts = payload_parts;
+        payload_parts = 0;
+        for (const auto& home : retirement_plan.heads.front().live) {
+            instruction_resume->live.push_back({home.value->Id(), home.offset, home.type, home.bytes, home.parts, payload_parts});
+            payload_parts += home.parts;
+        }
+        if (!ValidateInstructionResumeHomes(*instruction_resume))
+            throw std::runtime_error("RV64 instruction resume rejected: canonical home contract");
+        if (!InstructionIRIdentity(*canonical_input) || !InstructionIRIdentity(*block))
+            throw std::runtime_error("RV64 instruction resume rejected: terminal or Params IR");
+    }
+    std::unordered_map<ir::Inst*, u32> retirement_head_offsets;
     auto& as = context.GetMasm();
     context.AcquireMemoryLease();
     context.InitializeValues();
@@ -205,12 +257,43 @@ void JitTranslator::Translate(ir::Block* input) {
             context.PublishFlags();
             context.FlushValuesTo(context.LiveAt(&inst));
             as.Bind(&label);
+            if (retirement_plan.Find(&inst)) retirement_head_offsets.emplace(&inst, context.CurrentBufferSize());
             // Frontends use local labels inside individual guest instructions
             // (CMOV, masked stores, etc.). Exiting there can replay an already
             // completed store indefinitely after SMC. Only guest CFG entries
             // are restartable; standalone IR loops have no AdvancePC markers.
             if (!context.IsSyntheticLabel(&inst) &&
                 (!guest_instructions || context.IsGuestEntryLabel(&inst))) Poll();
+            else if (const auto* head = retirement_plan.Find(&inst)) {
+                Label no_retirement;
+                context.Load(t0, state, state_offset_exit_request);
+                as.FENCE(FenceOrder::R, FenceOrder::RW);
+                as.SRLI(t1, t0, 62); as.ANDI(t1, t1, 1);
+                as.BEQ(t1, x0, &no_retirement);
+                if (context.FlagsEnabled()) context.Store(flags, state, state_offset_host_flags);
+                as.LI(t1, head->guest_pc);
+                context.Store(t1, state, state_offset_current_loc);
+                if (instruction_resume) {
+                    Label no_capture;
+                    context.Load(t2, state, offsetof(State, interface));
+                    context.Load(t2, t2, offsetof(RuntimeProfileInterface, instruction_capture));
+                    as.BEQ(t2, x0, &no_capture);
+                    for (const auto& home : instruction_resume->live) {
+                        for (u32 part = 0; part < home.parts; ++part) {
+                            context.Load(t1, values, home.offset + 8 * part);
+                            context.Store(t1, t2, offsetof(InstructionCapture, payload) + 8 * (home.payload_slot + part));
+                        }
+                    }
+                    as.LI(t1, head->label->Id()); context.Store(t1, t2, offsetof(InstructionCapture, head_id));
+                    as.LI(t1, head->guest_pc); context.Store(t1, t2, offsetof(InstructionCapture, guest_pc));
+                    context.Load(t1, state, state_offset_host_flags); context.Store(t1, t2, offsetof(InstructionCapture, guest_flags));
+                    as.FRFLAGS(t1); context.Store(t1, t2, offsetof(InstructionCapture, sticky_fflags));
+                    as.LI(t1, InstructionCapture::Suspended); context.Store(t1, t2, offsetof(InstructionCapture, status));
+                    as.Bind(&no_capture);
+                }
+                Return(HaltReason::Retirement);
+                as.Bind(&no_retirement);
+            }
         } else if (inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto) {
             auto target = labels.find(context.BranchTarget(&inst));
             if (target == labels.end()) throw std::runtime_error("RV64 goto has no bound target");
@@ -299,7 +382,39 @@ void JitTranslator::Translate(ir::Block* input) {
         context.Store(t4, state, state_offset_riscv_recovery_pc);
         as.RET();
     }
+    const auto before_prologue = context.CurrentBufferSize();
     EmitPrologue(entry_start);
+    const auto prologue_size = context.CurrentBufferSize() - before_prologue;
+    if (instruction_resume) {
+        auto& d = *instruction_resume;
+        d.head_offset = retirement_head_offsets.at(retirement_plan.heads.front().label) + prologue_size;
+        d.resume_offset = context.CurrentBufferSize();
+        EmitPrologue(d.resume_offset, false);
+        context.DiscardValues();
+        context.AcquireMemoryLease();
+        context.InitializeValues();
+        context.LoadUniformBindings();
+        context.Load(t2, state, offsetof(State, interface));
+        context.Load(t2, t2, offsetof(RuntimeProfileInterface, instruction_capture));
+        for (const auto& home : d.live) {
+            for (u32 part = 0; part < home.parts; ++part) {
+                context.Load(t1, t2, offsetof(InstructionCapture, payload) + 8 * (home.payload_slot + part));
+                context.Store(t1, values, home.offset + 8 * part);
+            }
+        }
+        // fflags is a separate CSR: merging sticky exceptions cannot change
+        // the current host invocation's frm or rerun prefix FP instructions.
+        as.FRFLAGS(t1);
+        context.Load(t3, t2, offsetof(InstructionCapture, sticky_fflags));
+        as.OR(t1, t1, t3); as.FSFLAGS(t1);
+        as.LI(t1, InstructionCapture::Armed); context.Store(t1, t2, offsetof(InstructionCapture, status));
+        const s64 delta = s64(d.head_offset) - context.CurrentBufferSize();
+        as.AUIPC(t5, u32((delta + 0x800) >> 12) & 0xfffff);
+        as.JALR(x0, s32(((delta & 0xfff) ^ 0x800) - 0x800), t5);
+        d.ir_identity = InstructionIRIdentity(*d.emitted);
+        d.original_identity = InstructionIRIdentity(*d.original);
+        if (!d.ir_identity || !d.original_identity) throw std::runtime_error("RV64 instruction resume rejected: Params IR");
+    }
     context.FinishHostAddresses();
 }
 
@@ -309,12 +424,19 @@ void JitTranslator::Poll() {
     as.FENCE(FenceOrder::R, FenceOrder::RW);
     Label resume;
     as.BEQ(t0, x0, &resume);
+    Label retirement, publish;
+    as.SRLI(t1, t0, 62); as.ANDI(t1, t1, 1);
+    as.BNE(t1, x0, &retirement);
     as.SRLI(t0, t0, 63);
     as.LI(t1, static_cast<u32>(HaltReason::CodeMiss));
     Label smc;
     as.BEQ(t0, x0, &smc);
     as.LI(t1, static_cast<u32>(HaltReason::Signal));
     as.Bind(&smc);
+    as.J(&publish);
+    as.Bind(&retirement);
+    as.LI(t1, static_cast<u32>(HaltReason::Retirement));
+    as.Bind(&publish);
     context.Store(t1, state, state_offset_halt_reason, 4);
     context.PublishUniformBindingsForExit();
     context.Jump(epilogue);
@@ -376,6 +498,7 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
     const auto op = inst->GetOp();
     if (ir::IsFloatValueType(inst->ReturnType())) return false;
     const auto result = context.ResultRegister(inst);
+    bool normalized = false;
     switch (op) {
         case O::Nop: case O::AdvancePC: case O::UniformBarrier:
         case O::XchgBarrier: case O::BranchOnlyEdges:
@@ -530,8 +653,13 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
             const bool left = op == O::LslImm || op == O::LslValue;
             const bool right = op == O::LsrImm || op == O::LsrValue;
             const bool arithmetic = op == O::AsrImm || op == O::AsrValue;
+            // RV64I word shifts discard raw upper bits and mask the count to
+            // five bits. This also handles narrow BitCast/GetResult inputs,
+            // whose slots are deliberately not normalized to their IR type.
+            const bool word_shift = bits == 32 && (left || right ||
+                    (arithmetic && Bits(value.Type()) == 32));
             auto source = context.SourceRegister(value, t0);
-            if (arithmetic || (!left && bits < 64)) {
+            if (!word_shift && (arithmetic || (!left && bits < 64))) {
                 if (result != source) as.MV(result, source);
                 if (arithmetic) context.SignExtend(result, Bits(value.Type()));
                 else context.Mask(result, bits);
@@ -539,8 +667,14 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
             }
             if (inst->ArgAt(1).IsImm()) {
                 const u32 shift = inst->GetArg<ir::Imm>(1).Get() & (bits - 1);
-                if (left) as.SLLI(result, source, shift);
-                else if (right) as.SRLI(result, source, shift);
+                if (word_shift) {
+                    if (left) as.SLLIW(result, source, shift);
+                    else if (right) as.SRLIW(result, source, shift);
+                    else as.SRAIW(result, source, shift);
+                    // SRLIW with count zero can sign-extend bit 31.
+                    normalized = right && shift != 0;
+                } else if (left) as.SLLI(result, source, shift);
+                else if (right) { as.SRLI(result, source, shift); normalized = true; }
                 else if (arithmetic) as.SRAI(result, source, shift);
                 else if (!shift) { if (result != source) as.MV(result, source); }
                 else if (context.Features().zbb && bits == 64) as.RORI(result, source, shift);
@@ -550,22 +684,32 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
                     as.OR(result, result, t2);
                 }
             } else {
-                context.Read(t1, inst->GetArg<ir::Value>(1)); as.ANDI(t1, t1, bits - 1);
-                if (left) as.SLL(result, source, t1);
-                else if (right) as.SRL(result, source, t1);
-                else if (arithmetic) as.SRA(result, source, t1);
-                else if (context.Features().zbb && bits == 64) as.ROR(result, source, t1);
-                else if (context.Features().zbb && bits == 32) as.RORW(result, source, t1);
+                auto shift = context.SourceRegister(inst->GetArg<ir::Value>(1), t1);
+                // XLEN and word shifts perform the required count masking.
+                if (bits < 64 && !word_shift) {
+                    if (shift != t1) as.MV(t1, shift);
+                    as.ANDI(t1, t1, bits - 1);
+                    shift = t1;
+                }
+                if (word_shift) {
+                    if (left) as.SLLW(result, source, shift);
+                    else if (right) as.SRLW(result, source, shift);
+                    else as.SRAW(result, source, shift);
+                } else if (left) as.SLL(result, source, shift);
+                else if (right) { as.SRL(result, source, shift); normalized = true; }
+                else if (arithmetic) as.SRA(result, source, shift);
+                else if (context.Features().zbb && bits == 64) as.ROR(result, source, shift);
+                else if (context.Features().zbb && bits == 32) as.RORW(result, source, shift);
                 else {
-                    as.SUB(t2, x0, t1); as.ANDI(t2, t2, bits - 1);
-                    as.SLL(t2, source, t2); as.SRL(result, source, t1); as.OR(result, result, t2);
+                    as.SUB(t2, x0, shift); as.ANDI(t2, t2, bits - 1);
+                    as.SLL(t2, source, t2); as.SRL(result, source, shift); as.OR(result, result, t2);
                 }
             }
             break;
         }
         default: return false;
     }
-    context.Write(inst, result);
+    context.Write(inst, result, normalized);
     return true;
 }
 

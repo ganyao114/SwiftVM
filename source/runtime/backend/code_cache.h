@@ -18,6 +18,7 @@
 namespace swift::runtime::backend {
 
 class LinkManager;
+class RetirementControl;
 namespace arm64 {
 struct RegionLinkContext;
 }
@@ -70,6 +71,10 @@ public:
 
     ~CodeCache();
 
+    // Requires revoked publications and executor/signal-reader quiescence.
+    // Seals allocation immediately, including when a view release needs retry.
+    [[nodiscard]] MemMap::ReleaseResult ReleaseAfterQuiescence();
+
     [[nodiscard]] std::optional<CodeBuffer> AllocCode(size_t size);
     bool FreeCode(u8* exec_ptr);
     [[nodiscard]] bool Contain(const u8* exec_ptr);
@@ -81,7 +86,8 @@ public:
     // Initialize the shared cold trampoline before registering a site.
     [[nodiscard]] bool InitializeRegionTrampoline(LinkManager& manager,
                                                   void* return_host,
-                                                  void* dispatcher);
+                                                  void* dispatcher,
+                                                  const std::shared_ptr<RetirementControl>& control);
     [[nodiscard]] void* GetRegionTrampoline() const;
     [[nodiscard]] void* GetPendingFlagsRegionTrampoline() const;
     [[nodiscard]] void* GetFlagsMergeRegionTrampoline() const;
@@ -107,6 +113,7 @@ private:
     const bool read_only;
     u32 max_size;
     mspace space_code{};
+    bool release_started{};
     std::mutex allocation_mutex;
     std::unique_ptr<MemMap> code_mem;
 

@@ -432,14 +432,21 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     __ Ldr(halt_reg, MemOperand(state, state_offset_halt_reason));
     __ Cbnz(halt_reg, &label_return_host);
     __ Ldar(ip0, MemOperand(state, state_offset_exit_request));
+    Label retirement;
+    __ Tbnz(ip0, 62, &retirement);
     __ Tbz(ip0, 63, &code_dispatcher);
     __ Mov(halt_reg, static_cast<u32>(HaltReason::Signal));
+    __ B(&label_return_host);
+    __ Bind(&retirement);
+    __ Mov(halt_reg, static_cast<u32>(HaltReason::Retirement));
     __ Bind(&label_return_host);
     EmitFlagsPark(assembler);
     // clear execption
     __ Str(wzr, MemOperand(state, state_offset_halt_reason));
     // write back rsb
-    __ Str(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
+    if (True(config.global_opts & Optimizations::ReturnStackBuffer)) {
+        __ Str(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
+    }
     __ Str(flags, MemOperand(state, state_offset_host_flags));
     BuildSaveStaticUniform(assembler);
     if (caller_saved_static_pins) {
@@ -468,7 +475,9 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
     EmitFlagsPark(assembler);
     __ Mov(ipw, static_cast<u32>(HaltReason::CallHost));
     __ Str(ipw, MemOperand(state, state_offset_halt_reason));
-    __ Str(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
+    if (True(config.global_opts & Optimizations::ReturnStackBuffer)) {
+        __ Str(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
+    }
     __ Str(flags, MemOperand(state, state_offset_host_flags));
     BuildSaveStaticUniform(assembler);
     if (manage_fpcr) {
@@ -489,7 +498,9 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
         __ Orr(ip, ip, kFpcrNep);
         __ Msr(FPCR, ip);
     }
-    __ Ldr(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
+    if (True(config.global_opts & Optimizations::ReturnStackBuffer)) {
+        __ Ldr(rsb_ptr, MemOperand(state, state_offset_rsb_pointer));
+    }
     __ Ldr(flags, MemOperand(state, state_offset_host_flags));
     EmitFlagsUnpark(assembler);
     BuildRestoreStaticUniform(assembler);
@@ -670,28 +681,15 @@ void TrampolinesArm64::CallHostTrampoline(TrampolinesArm64* thiz, State* ctx) {
 }
 
 std::optional<Trampolines::CallHost> TrampolinesArm64::GetCallHost(HostFunction* func,
-                                                                   ISA frontend) {
+                                                                   ISA /*frontend*/) {
     ASSERT(func);
+    if (release_started) return std::nullopt;
     if (auto itr = call_host_trampolines.find(func->addr); itr != call_host_trampolines.end()) {
         return itr->second;
     }
 
-    auto sig_hash = func->SignatureHash();
-    if (auto itr = signature_trampolines.find(sig_hash); itr == signature_trampolines.end()) {
-        MacroAssembler assembler{};
-        auto trampoline = BuildFunctionTrampoline(assembler, func, frontend);
-    }
-}
-
-void* TrampolinesArm64::BuildFunctionTrampoline(MacroAssembler& assembler,
-                                                HostFunction* func,
-                                                ISA frontend_isa) {
-    auto empty_type = func->signatures.empty();
-    auto ret_type = empty_type ? ParamType::Void : func->signatures[0];
-
-    if (empty_type) {
-
-    }
+    // Building signature-specific host-call trampolines is not supported.
+    return std::nullopt;
 }
 
 }  // namespace swift::runtime::backend::arm64

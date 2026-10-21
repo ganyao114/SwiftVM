@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <memory>
 #include <span>
 #include <utility>
 #include "runtime/common/mem_arena.h"
@@ -156,7 +157,7 @@ class HIRBlock final : public DataContext {
     friend class HIRValue;
 
 public:
-    explicit HIRBlock(Block* block, HIRValueMap& values, HIRPools& pools);
+    explicit HIRBlock(std::unique_ptr<Block> block, HIRValueMap& values, HIRPools& pools);
 
     template <typename... Args> Inst* CreateInst(OpCode op, const Args&... args) {
         auto inst = new Inst(op);
@@ -227,6 +228,9 @@ public:
 
     Block* GetBlock();
     InstList& GetInstList();
+    bool BeginStandalonePublication();
+    void AbortStandalonePublication();
+    void CommitStandalonePublication();
 
     u16 MaxBlockCount() override;
     u16 MaxInstrCount() override;
@@ -237,7 +241,10 @@ public:
 private:
     u16 order_id{};
     Block* block;
+    // Synthetic and unfinished nodes stay here until canonical ownership transfers.
+    std::unique_ptr<Block> unpublished_block;
     HIRFunction* function{};
+    bool standalone_publication_pending{};
     HIRPools& pools;
     HIRValueMap& value_map;
     IntrusiveList<&Edge::outgoing_edges> outgoing_edges{};
@@ -260,7 +267,7 @@ public:
         Location target{};
     };
 
-    explicit HIRFunction(Function* function,
+    explicit HIRFunction(std::unique_ptr<Function> function,
                          const Location& begin,
                          const Location& end,
                          HIRPools& pools,
@@ -379,6 +386,7 @@ public:
     HIRPools& GetMemPool();
     Function* GetFunction();
     void ReleaseFunctionOwnership();
+    [[nodiscard]] bool HasStandaloneBlocks() const { return standalone_blocks_published; }
     void AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional = false);
     void RegisterCallReturn(Location location);
     void RemoveEdge(Edge* edge);
@@ -478,6 +486,7 @@ private:
     u16 max_local_id{};
     Function* function;
     bool owns_function{true};
+    bool standalone_blocks_published{};
     Location begin;
     Location end;
     u16 block_order_id{};

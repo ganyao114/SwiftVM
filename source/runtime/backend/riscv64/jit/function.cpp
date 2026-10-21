@@ -14,8 +14,7 @@ public:
         : function(function), blocks(blocks) {
         plan.body = new ir::Block(function->GetFunction()->GetStartLocation());
         for (auto* block : blocks) {
-            auto* label = New(O::BindLabel);
-            label->SetArgs(ir::Value{label});
+            auto* label = Label();
             labels.emplace(block, label);
             plan.locations.emplace(label, block->GetBlock()->GetStartLocation());
             locations.emplace(block->GetBlock()->GetStartLocation().Value(), block);
@@ -89,6 +88,14 @@ private:
         auto owner = std::make_unique<ir::Inst>(op);
         auto* result = owner.get(); owned.emplace(result, std::move(owner)); return result;
     }
+    ir::Inst* Label() {
+        auto* label = New(O::BindLabel);
+        // These self-references are control tokens, not SSA reads. Give them
+        // a valid type view; BindLabel's metadata still has no runtime value.
+        label->SetReturn(ir::ValueType::U8);
+        label->SetArgs(ir::Value{label});
+        return label;
+    }
     void Append(ir::Inst* inst) {
         plan.body->AppendInst(inst);
         owned.at(inst).release(); owned.erase(inst);
@@ -151,7 +158,7 @@ private:
                     edges.push_back({source, target->second});
                 } else Exit(terminal);
             } else if constexpr (std::is_same_v<T, ir::terminal::If> || std::is_same_v<T, ir::terminal::Condition>) {
-                auto* other = New(O::BindLabel); other->SetArgs(ir::Value{other});
+                auto* other = Label();
                 plan.synthetic_labels.insert(other);
                 ir::Value condition;
                 if constexpr (std::is_same_v<T, ir::terminal::If>) condition = Remap(term.cond);
@@ -161,7 +168,7 @@ private:
                 Terminal(source, term.then_); Append(other); Terminal(source, term.else_);
             } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
                 for (const auto& item : term.cases) {
-                    auto* next = New(O::BindLabel); next->SetArgs(ir::Value{next});
+                    auto* next = Label();
                     plan.synthetic_labels.insert(next);
                     auto* difference = Inst(O::Xor, term.value.Type(), Remap(term.value), ir::Operand{item.case_value});
                     auto* branch = Inst(O::Goto, ir::ValueType::VOID, ir::Value{difference});

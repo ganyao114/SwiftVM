@@ -22,7 +22,7 @@ thread_local size_t tls_inst_bump_left{};
 // Inst is `#pragma pack(1)`, so its size need not be a multiple of anything.
 // Round the slot up to 16 bytes so every instruction keeps exactly the
 // alignment malloc used to give it -- an Inst holds raw pointers
-// (next_pseudo_inst, the intrusive list node) that the rest of the runtime
+// (the intrusive list node) that the rest of the runtime
 // reads without any packed-access annotation.
 constexpr size_t kInstSlot = (sizeof(Inst) + 15u) & ~size_t(15u);
 constexpr size_t kChunkBytes = 64u * 1024u;
@@ -267,84 +267,32 @@ void Inst::SetArgFresh(int index, const Params& params) {
 void Inst::Use(const Value& value) {
     auto def = value.Def();
     ASSERT_MSG(def, "Value used by {} is null!", op_code);
+    ASSERT(def->num_use != UINT32_MAX);
     def->num_use++;
 
     if (IsPseudoOperation()) {
-        auto insert_point = value.Def();
-        while (insert_point->next_pseudo_inst) {
-            insert_point = insert_point->next_pseudo_inst;
-            assert(insert_point->GetArg<Value>(0).Def() == value.Def());
-        }
-        insert_point->next_pseudo_inst = this;
+        def->pseudo_use_count++;
     }
 }
 
 void Inst::UnUse(const Value& value) {
     auto def = value.Def();
     ASSERT_MSG(def, "Value used by {} is null!", op_code);
+    ASSERT(def->num_use != 0);
     def->num_use--;
 
     if (IsPseudoOperation()) {
-        auto insert_point = value.Def();
-        while (insert_point->next_pseudo_inst != this) {
-            insert_point = insert_point->next_pseudo_inst;
-            assert(insert_point->GetArg<Value>(0).Def() == value.Def());
-        }
-        insert_point->next_pseudo_inst = next_pseudo_inst;
-        next_pseudo_inst = {};
+        ASSERT(def->pseudo_use_count != 0);
+        def->pseudo_use_count--;
     }
 }
 
-u8 Inst::GetUses(bool exclude_pseudo) {
-    if (!exclude_pseudo) {
-        return num_use;
-    }
-    u8 pseudo_count{0};
-    auto pseudo_inst = next_pseudo_inst;
-    while (pseudo_inst) {
-        ASSERT(pseudo_inst->GetArg<Value>(0).Def() == this);
-        pseudo_count++;
-        pseudo_inst = pseudo_inst->next_pseudo_inst;
-    }
-    return num_use - pseudo_count;
+u32 Inst::GetUses(bool exclude_pseudo) const {
+    ASSERT(pseudo_use_count <= num_use);
+    return exclude_pseudo ? num_use - pseudo_use_count : num_use;
 }
 
-Inst::Values Inst::GetValues() {
-    Values values{};
-    for (auto &arg : arguments) {
-        if (arg.IsValue()) {
-            values.push_back(arg.Get<Value>());
-        } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
-            values.push_back(arg.Get<Lambda>().GetValue());
-        } else if (arg.IsParams()) {
-            auto& params = arg.Get<Params>();
-            for (auto param : params) {
-                if (auto data = param.data; data.IsValue()) {
-                    values.push_back(data.value);
-                }
-            }
-        }
-    }
-    return std::move(values);
-}
-
-OpCode Inst::GetOp() const {
-    return op_code;
-}
-
-void Inst::SetId(u16 id_) { this->id = id_; }
-
-void Inst::SetReturn(ValueType type) { this->ret_type = type; }
-
-u16 Inst::Id() const { return id; }
-
-ValueType Inst::ReturnType() const {
-    return ret_type;
-}
-
-bool Inst::HasValue() { return meta::HasValue(GetIRMetaInfo(op_code).return_type); }
-
-bool Inst::IsPseudoOperation() {
+bool Inst::IsPseudoOperation() const {
     return op_code == OpCode::GetFlags || op_code == OpCode::SaveFlags ||
            op_code == OpCode::BranchOnlyFlags || op_code == OpCode::GetResult ||
            op_code == OpCode::Div128Remainder || op_code == OpCode::CpuidUpper;
@@ -368,68 +316,27 @@ bool Inst::IsBitCastOperation() {
     return op_code == OpCode::BitCast;
 }
 
-bool Inst::HasSideEffects() {
-    if (num_use) {
-        return true;
-    }
-    // Value-returning atomics still mutate guest memory when their old value
-    // is dead (LOCK NOT is the common case). They must not be removed by DCE.
-    //
-    // Host calls belong in the same bucket: CallLambda/CallLocation/CallDynamic
-    // are opaque to this IR (UniformEliminationPass already treats them as
-    // full barriers), and the x86 frontend uses them for helpers that write
-    // guest state through the state pointer rather than through their return
-    // value -- FNINIT, the SoftFloat x87 helpers, xsave, and so on. Their U64
-    // return is frequently unused, and deleting them silently drops the guest
-    // side effect: with these three missing from this list, function-mode
-    // compilation dropped the x87 control-word / TOP updates and
-    // "x87 directed edge semantics" read TOP=0 after nine FLD1s instead of 7.
-    if (op_code == OpCode::CompareAndSwap || op_code == OpCode::CompareAndSwap128 ||
-        op_code == OpCode::AtomicExchange || op_code == OpCode::AtomicFetchAdd ||
-        op_code == OpCode::AtomicRMW || op_code == OpCode::X87Op ||
-        op_code == OpCode::CallLambda || op_code == OpCode::CallLocation ||
-        op_code == OpCode::CallDynamic) {
-        return true;
-    }
-    auto &ir_info = GetIRMetaInfo(op_code);
-    return ir_info.return_type == ArgType::Void;
-}
-
-Inst::Pseudos Inst::GetPseudoOperations(OpCode code) {
-    Pseudos pseudos{};
-    auto pseudo_inst = next_pseudo_inst;
-    while (pseudo_inst) {
-        ASSERT(pseudo_inst->GetArg<Value>(0).Def() == this);
-        if (pseudo_inst->op_code == code) {
-            pseudos.push_back(pseudo_inst);
+IREffect Inst::GetEffects() const {
+    auto effects = GetIRMetaInfo(op_code).effects;
+    if (op_code == OpCode::CallLambda && ArgAt(0).IsLambda()) {
+        const auto helper = GetArg<Lambda>(0);
+        // Only direct helpers can carry audited traits. Memory effects remain
+        // conservative: guest-state traits say nothing about pointed-to memory.
+        if (!helper.IsValue() && helper.GetHelperReentryEffect() == HelperReentryEffect::NoReentry) {
+            const auto state = helper.GetHelperGuestStateEffect();
+            if (state == HelperGuestStateEffect::None || state == HelperGuestStateEffect::WriteOnly)
+                effects &= ~IREffect::ReadGuestState;
+            if (state == HelperGuestStateEffect::None || state == HelperGuestStateEffect::ReadOnly)
+                effects &= ~IREffect::WriteGuestState;
+            if (helper.GetHelperFaultEffect() == HelperFaultEffect::NoDirectFault)
+                effects &= ~IREffect::MayFault;
         }
-        pseudo_inst = pseudo_inst->next_pseudo_inst;
     }
-    return std::move(pseudos);
+    return effects;
 }
 
-Inst::Pseudos Inst::GetPseudoOperations() {
-    Pseudos pseudos{};
-    auto pseudo_inst = next_pseudo_inst;
-    while (pseudo_inst) {
-        ASSERT(pseudo_inst->GetArg<Value>(0).Def() == this);
-        pseudos.push_back(pseudo_inst);
-        pseudo_inst = pseudo_inst->next_pseudo_inst;
-    }
-    return std::move(pseudos);
-}
-
-bool Inst::HasFlagsSavePseudo() {
-    auto pseudo_inst = next_pseudo_inst;
-    while (pseudo_inst) {
-        ASSERT(pseudo_inst->GetArg<Value>(0).Def() == this);
-        if (pseudo_inst->GetOp() == OpCode::SaveFlags ||
-            pseudo_inst->GetOp() == OpCode::BranchOnlyFlags) {
-            return true;
-        }
-        pseudo_inst = pseudo_inst->next_pseudo_inst;
-    }
-    return false;
+bool Inst::HasSideEffects() const {
+    return HasObservableEffects(GetEffects());
 }
 
 void Inst::DestroyArg(u8 arg_idx) {
@@ -475,8 +382,8 @@ void Inst::ReleaseArgs() {
         }
         arg = {};
     }
-    next_pseudo_inst = {};
     num_use = 0;
+    pseudo_use_count = 0;
 }
 
 void Inst::Reset() {
@@ -488,9 +395,29 @@ void Inst::SetVirReg(u16 slot) {
     vir_reg = slot;
 }
 
+bool Inst::HasValidTypeViews() const {
+    for (auto value : const_cast<Inst*>(this)->GetValues()) {
+        if (!value.Defined() || value.Def()->ReturnType() == ValueType::VOID ||
+            value.Type() <= ValueType::VOID || value.Type() > ValueType::V256)
+            return false;
+    }
+    // Uniform ranges are byte ranges. Signed/unsigned aliases are legal, but
+    // a store view must agree with the range width consumed by state analyses.
+    if (op_code == OpCode::StoreUniform && ArgAt(0).GetType() == ArgType::Uniform &&
+        ArgAt(1).IsValue()) {
+        const auto uniform = GetArg<Uniform>(0);
+        const auto value = GetArg<Value>(1);
+        if (uniform.GetType() == ValueType::VOID ||
+            GetValueSizeByte(uniform.GetType()) != GetValueSizeByte(value.Type()))
+            return false;
+    }
+    return true;
+}
+
 void Inst::Validate(Inst* inst) {
     ASSERT(inst);
     ASSERT(inst->op_code >= OpCode::Void && inst->op_code < OpCode::COUNT);
+    ASSERT_MSG(inst->HasValidTypeViews(), "{} has an invalid operand type view", inst->op_code);
     if (inst->op_code == OpCode::CallLambda) {
         ASSERT_MSG(inst->ArgAt(0).IsLambda(), "CallLambda arg 0 must be Lambda type!");
         return;
@@ -519,17 +446,6 @@ void Inst::Validate(Inst* inst) {
         // < BASE_COUNT); anything reaching here is not a real instruction.
         ASSERT_MSG(false, "Unk Instr {}!", inst->op_code);
     }
-}
-
-int Inst::PublicIndex(int logical_index) const {
-    auto& info = GetIRMetaInfo(op_code);
-    ASSERT(logical_index >= 0 && logical_index < (int)info.arg_types.size());
-    int physical = logical_index;
-    for (int i = 0; i < logical_index; i++) {
-        physical += PhysicalSlots(info.arg_types[i]) - 1;
-    }
-    ASSERT(physical < max_args);
-    return physical;
 }
 
 Inst::~Inst() {

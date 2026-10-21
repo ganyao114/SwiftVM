@@ -1,5 +1,6 @@
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
+#include "runtime/backend/arm64/alloc/gpr_width_verifier.h"
 
 TEST_CASE("Register allocation gives every spilled value a private slot") {
     using namespace swift::runtime::ir;
@@ -164,6 +165,24 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
         REQUIRE(on.ValueGPR(extract).id == on.ValueGPR(result).id);
     }
 
+    SECTION("narrow load feeds the tie chain through ZeroExtend32") {
+        auto* block = new Block(0, Location{0x8638});
+        auto address = block->GetHostGPR(HostRegIndex(0), Imm{0u})
+                               .SetType(ValueType::U64);
+        auto byte = block->LoadMemory(Operand{address}).SetType(ValueType::U8);
+        auto wide = block->ZeroExtend32(byte).SetType(ValueType::U32);
+        auto result = block->ZeroExtend32To64(wide);
+        block->StoreUniform(Uniform{8, ValueType::U64}, result);
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+
+        RegAlloc on{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        RegisterAllocTestSupport::RunForIntWidthTieTest(block, &on, true);
+        REQUIRE(on.ValueType(byte) == RegAlloc::GPR);
+        REQUIRE(on.ValueGPR(byte).id == on.ValueGPR(wide).id);
+        REQUIRE(on.ValueGPR(wide).id == on.ValueGPR(result).id);
+    }
+
     SECTION("GetHostGPR is a W view, not a W write") {
         auto* block = new Block(0, Location{0x8640});
         auto source = block->GetHostGPR(HostRegIndex(0), Imm{0u})
@@ -253,6 +272,113 @@ TEST_CASE("pinned W-view inputs hand off only to a published destructive result"
 
     auto [rejected_block, rejected, rejected_bridge, rejected_product] = allocate(true);
     REQUIRE_FALSE(rejected->IsWidthChainCoalesced(rejected_bridge.Id()));
+}
+
+TEST_CASE("a third-party tied interval crossing the pinned W-view window rejects the handoff") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    auto make_gprs = [] {
+        GPRSMask result{swift::u32{0}};
+        for (swift::u32 code :
+             {0u, 1u, 2u, 3u, 4u, 5u, 19u, 20u, 21u, 22u, 23u, 25u, 26u, 27u, 28u, 29u, 30u, 31u}) {
+            result.Mark(code);
+        }
+        return result;
+    };
+    const FPRSMask fprs{~((1u << 8) - 1u)};
+
+    IntrusivePtr<Block> block{new Block(0, Location{0x8679})};
+    // A full-width read of the pinned home whose result stays live across
+    // the bridge window below.  The conflict selector models the linear
+    // scan proving such a read alias-safe and fixing its result to x22.
+    auto tied = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
+    auto seed = block->LoadImm(Imm{swift::u32{7}}).SetType(ValueType::U32);
+    auto source = block->ZeroExtend32To64(seed).SetType(ValueType::U64);
+    auto* publish_source = block->AppendInst(
+            OpCode::SetHostGPR, source, HostRegIndex(22), Imm{0u});
+    block->AdvancePC(Imm{1u});
+    auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
+    auto right = block->LoadImm(Imm{swift::u32{3}}).SetType(ValueType::U32);
+    auto product = block->Mul(bridge, Operand{right}).SetType(ValueType::U32);
+    auto published = block->ZeroExtend32To64(product).SetType(ValueType::U64);
+    auto* publish_product = block->AppendInst(
+            OpCode::SetHostGPR, published, HostRegIndex(22), Imm{0u});
+    block->StoreUniform(Uniform{8, ValueType::U64}, tied);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+
+    auto features = FeatureSet{};
+    REQUIRE_FALSE(features.ra_width_chain);
+    RegAlloc conflict{block->MaxInstrId(), make_gprs(), fprs, features};
+    RegisterAllocTestSupport::RunForPinnedWConflictTest(
+            block.get(), &conflict,
+            {source.Def()->Id(), product.Def()->Id(), tied.Def()->Id()},
+            {publish_source->Id(), publish_product->Id()}, 22);
+    // Guard against a vacuous pass: the handoff prerequisites must have
+    // formed (source published at the home, consumer homed there, and the
+    // scan really did fix the crossing read to the same home), so the
+    // only reason left to refuse the bridge is the tied interval.
+    REQUIRE(conflict.ValueGPR(tied).id == 22);
+    REQUIRE(conflict.ValueGPR(source).id == 22);
+    REQUIRE(conflict.ValueGPR(product).id == 22);
+    REQUIRE_FALSE(conflict.IsWidthChainCoalesced(bridge.Id()));
+    // The final width verifier must accept the resulting allocation.  The
+    // real-guest version of this shape (static CoreMark, function
+    // 0x474bf0) previously aborted here: the handoff was marked even
+    // though a scan-fixed GetHostGPR read stayed live across the window.
+    REQUIRE_NOTHROW(arm64::VerifyGPRWidthElisions(block.get(), conflict, features, GPRSMask{}));
+}
+
+TEST_CASE("fixed publication of a zero-extended constant survives coalesce-live off") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+
+    // SetHostGPR(ZeroExtend32To64(LoadImm)) becomes the publication of a
+    // fixed GPR definition when a later read of the same home is planned
+    // against it.  With ra_coalesce_live off, the planner's reproof only
+    // accepts last-use W-writes, and its W-write predicate is type-based:
+    // a U64 LoadImm is not one.  The scan must therefore not mark the
+    // publication coalesced in that mode (real-guest repro: bench_suite
+    // int kernel under SVM_MODULE_FEATURES=main:ra_coalesce_live=0).
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+    };
+    AddressSpace address_space{config};
+    ModuleConfig module_config{};
+    module_config.feature_overrides.Set(FeatureId::ra_coalesce_live, false);
+    auto module = address_space.MapModule(
+            LocationDescriptor{0x86a0}, LocationDescriptor{0x86c0}, module_config);
+
+    IntrusivePtr<Block> block{new Block(0, Location{0x86a0})};
+    auto imm = block->LoadImm(Imm{swift::u64{0x2a}}).SetType(ValueType::U64);
+    auto extended = block->ZeroExtend32To64(imm).SetType(ValueType::U64);
+    block->SetHostGPR(extended, HostRegIndex(22), Imm{0u});
+    auto read = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
+    block->StoreUniform(Uniform{8, ValueType::U64}, read);
+    block->SetTerminal(terminal::ReturnToDispatch{});
+    block->ReIdInstr();
+
+    auto features = ResolveFeatureSet(module_config);
+    REQUIRE_FALSE(features.ra_coalesce_live);
+    GPRSMask gprs{swift::u32{0}};
+    for (swift::u32 code :
+         {0u, 1u, 2u, 3u, 4u, 5u, 19u, 20u, 21u, 22u, 23u, 25u, 26u, 27u, 28u, 29u, 30u, 31u}) {
+        gprs.Mark(code);
+    }
+    RegAlloc alloc{block->MaxInstrId(), gprs, FPRSMask{~((1u << 8) - 1u)}, features};
+    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    alloc.CompleteGPRAllocation(module);
+    arm64::JitContext context{module, alloc};
+    arm64::JitTranslator translator{context};
+    REQUIRE_NOTHROW(translator.Translate(block.get()));
+    context.Finish();
 }
 
 TEST_CASE("unit-local width chains share only proven W-clean direct components") {
@@ -358,6 +484,9 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
         auto features = FeatureSet{};
         features.ra_width_chain = false;
         features.ra_width_chain_long = enabled;
+        // This fixture tests the long-component threshold independently of
+        // the new initial target-home constraints.
+        features.ra_coalesce = false;
         auto alloc = std::make_unique<RegAlloc>(
                 chain.block->MaxInstrId(), make_gprs(), fprs, features);
         RegisterAllocPass::Run(chain.block.get(), alloc.get(), false, features);
@@ -400,6 +529,7 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
             auto features = ResolveFeatureSet(module_config);
             RegAlloc alloc{chain.block->MaxInstrId(), make_gprs(), fprs, features};
             RegisterAllocPass::Run(chain.block.get(), &alloc, false, features);
+            alloc.CompleteGPRAllocation(module);
             arm64::JitContext context{module, alloc};
             arm64::JitTranslator translator{context};
             translator.Translate(chain.block.get());
@@ -604,6 +734,7 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
             auto features = ResolveFeatureSet(module_config);
             RegAlloc alloc{chain.block->MaxInstrId(), make_gprs(), fprs, features};
             RegisterAllocPass::Run(chain.block.get(), &alloc, false, features);
+            alloc.CompleteGPRAllocation(module);
             arm64::JitContext context{module, alloc};
             arm64::JitTranslator translator{context};
             translator.Translate(chain.block.get());
@@ -619,80 +750,6 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
         REQUIRE(off.second > 0);
         REQUIRE(on.second == 0);
         REQUIRE(on.first + off.second * vixl::aarch64::kInstructionSize == off.first);
-    }
-}
-
-TEST_CASE("64-bit induction ties require exact last-use and matching pinned publish") {
-    using namespace swift::runtime::ir;
-    using namespace swift::runtime::backend;
-
-    const GPRSMask gprs{~((1u << 19) - 1u)};
-    const FPRSMask fprs{~((1u << 8) - 1u)};
-
-    auto check = [&](bool use_source_after_add,
-                     swift::u16 publish_target,
-                     bool active_flags,
-                     bool expect_tie) {
-        auto* raw = new Block(0, Location{0x86a0});
-        swift::runtime::IntrusivePtr<Block> block{raw};
-        auto source = raw->GetHostGPR(HostRegIndex(22), Imm{0u})
-                              .SetType(ValueType::U64);
-        auto immediate = raw->LoadImm(Imm{swift::u64{16}}).SetType(ValueType::U64);
-        auto alias = raw->BitCast(source).SetType(ValueType::U64);
-        auto result = raw->Add(alias, Operand{immediate}).SetType(ValueType::U64);
-        if (active_flags) {
-            raw->SaveFlags(result, Flags::All);
-        }
-        if (use_source_after_add) {
-            raw->StoreUniform(Uniform{24, ValueType::U64}, source);
-        }
-        raw->SetHostGPR(result, HostRegIndex(publish_target), Imm{0u});
-        raw->StoreUniform(Uniform{32, ValueType::U64}, result);
-        raw->SetTerminal(terminal::ReturnToDispatch{});
-        raw->ReIdInstr();
-
-        RegAlloc off{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
-        RegisterAllocTestSupport::RunForInductTieTest(raw, &off, false);
-        REQUIRE(off.ValueGPR(source).id == 22);
-        REQUIRE(off.ValueGPR(result).id != 22);
-
-        RegAlloc on{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
-        RegisterAllocTestSupport::RunForInductTieTest(raw, &on, true);
-        REQUIRE(on.ValueGPR(source).id == 22);
-        REQUIRE((on.ValueGPR(result).id == 22) == expect_tie);
-    };
-
-    SECTION("exact last use and matching target tie") {
-        check(false, 22, false, true);
-    }
-    SECTION("source live after result start falls back") {
-        check(true, 22, false, false);
-    }
-    SECTION("different architectural target falls back") {
-        check(false, 23, false, false);
-    }
-    SECTION("live full-width flags reject destructive source") {
-        check(false, 22, true, false);
-    }
-
-    SECTION("later pinned overwrite while result capture is live falls back") {
-        auto* raw = new Block(0, Location{0x86b0});
-        swift::runtime::IntrusivePtr<Block> block{raw};
-        auto source = raw->GetHostGPR(HostRegIndex(22), Imm{0u})
-                              .SetType(ValueType::U64);
-        auto immediate = raw->LoadImm(Imm{swift::u64{32}}).SetType(ValueType::U64);
-        auto result = raw->Add(source, Operand{immediate}).SetType(ValueType::U64);
-        raw->SetHostGPR(result, HostRegIndex(22), Imm{0u});
-        auto next = raw->Add(result, Operand{immediate}).SetType(ValueType::U64);
-        raw->SetHostGPR(next, HostRegIndex(22), Imm{0u});
-        raw->StoreUniform(Uniform{32, ValueType::U64}, result);
-        raw->SetTerminal(terminal::ReturnToDispatch{});
-        raw->ReIdInstr();
-
-        RegAlloc on{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
-        RegisterAllocTestSupport::RunForInductTieTest(raw, &on, true);
-        REQUIRE(on.ValueGPR(source).id == 22);
-        REQUIRE(on.ValueGPR(result).id != 22);
     }
 }
 
@@ -724,11 +781,11 @@ TEST_CASE("fixed GPR class is level3-only and keeps fixed clobbers disjoint") {
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
-    auto contract = ClassifyGPRContract(gprs, *value.Def(), features);
+    auto contract = ClassifyGPRContract(gprs, *value.Def(), features, {});
     REQUIRE(contract.value_pool == gprs.GetClearCount());
     REQUIRE((contract.fixed_clobber_mask & kX86FixedGPRHomes) == 0);
     REQUIRE(contract.hot_instruction_scratch ==
-            ScratchBudget(*value.Def(), features).gpr);
+            ScratchBudget(*value.Def(), features, {}).gpr);
 
     RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
@@ -775,6 +832,17 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
         auto alloc = std::make_unique<RegAlloc>(
                 block->MaxInstrId(), pinned_gprs(), fprs, features);
         RegisterAllocTestSupport::RunForCoalesceTest(block, alloc.get(), enabled);
+        return alloc;
+    };
+    // Fixed publications only mark under live semantics (see
+    // MapPreallocatedGPR); sections asserting on fixed homes run their
+    // positive arm in the production-like live configuration.
+    auto allocate_live = [&](Block* block) {
+        block->SetTerminal(terminal::ReturnToDispatch{});
+        block->ReIdInstr();
+        auto alloc = std::make_unique<RegAlloc>(
+                block->MaxInstrId(), pinned_gprs(), fprs, FeatureSet{});
+        RegisterAllocTestSupport::RunForCoalesceLiveTest(block, alloc.get(), true);
         return alloc;
     };
     struct ExpandedProducer {
@@ -951,7 +1019,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
                                  .SetType(ValueType::U64);
             auto* publish = block->AppendInst(
                     OpCode::SetHostGPR, value, HostRegIndex(home), Imm{0u});
-            auto on = allocate(block.get(), true);
+            auto on = allocate_live(block.get());
             REQUIRE(on->ValueGPR(value).id == home);
             REQUIRE(on->IsHostWriteCoalesced(publish->Id()));
         }
@@ -966,7 +1034,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
         auto off = allocate(block.get(), false);
         REQUIRE(off->ValueGPR(value).id != 22);
         REQUIRE_FALSE(off->IsHostWriteCoalesced(publish->Id()));
-        auto on = allocate(block.get(), true);
+        auto on = allocate_live(block.get());
         REQUIRE(on->ValueGPR(value).id == 22);
         REQUIRE(on->IsHostWriteCoalesced(publish->Id()));
     }
@@ -1056,7 +1124,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
         auto features = FeatureSet{};
         features.ra_coalesce = true;
         RegAlloc control{block->MaxInstrId(), pinned_gprs(), fprs, features};
-        RegisterAllocTestSupport::RunForCoalesceTest(block.get(), &control, true);
+        RegisterAllocTestSupport::RunForCoalesceLiveTest(block.get(), &control, true);
         REQUIRE(control.IsHostWriteCoalesced(publish->Id()));
 
         RegAlloc conflict{block->MaxInstrId(), pinned_gprs(), fprs, features};
@@ -1179,6 +1247,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
             features.ra_coalesce = enabled;
             RegAlloc alloc{block->MaxInstrId(), pinned_gprs(), fprs, features};
             RegisterAllocTestSupport::RunForCoalesceTest(block.get(), &alloc, enabled);
+            alloc.CompleteGPRAllocation(module);
             arm64::JitContext context{module, alloc};
             arm64::JitTranslator translator{context};
             translator.Translate(block.get());
@@ -1209,6 +1278,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
                     module_config);
             auto item = make_expanded_case(op, type, location);
             auto alloc = allocate(item.block.get(), enabled);
+            (*alloc).CompleteGPRAllocation(module);
             arm64::JitContext context{module, *alloc};
             arm64::JitTranslator translator{context};
             translator.Translate(item.block.get());
@@ -1230,7 +1300,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
                 REQUIRE(off->ValueGPR(item.produced).id != 22);
                 REQUIRE_FALSE(off->IsHostWriteCoalesced(item.publish->Id()));
 
-                auto on = allocate(item.block.get(), true);
+                auto on = allocate_live(item.block.get());
                 CAPTURE(item.produced.Id(), item.produced.Def()->GetUses(),
                         item.publish->Id(), on->ValueGPR(item.produced).id);
                 REQUIRE(on->ValueGPR(item.produced).id == 22);

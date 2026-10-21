@@ -31,7 +31,7 @@ public:
                               std::span<const FunctionRegionEmission> regions);
     ~FunctionCodeObjectEmitter();
 
-    void Emit(bool enable_direct_link = true);
+    bool Emit(bool enable_direct_link = true);
     [[nodiscard]] u32 CurrentBufferSize() const;
     [[nodiscard]] bool RequiresRegionTrampoline() const;
     [[nodiscard]] JitContext& Context() const;

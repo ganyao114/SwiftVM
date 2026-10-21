@@ -19,6 +19,10 @@ public:
     [[nodiscard]] const ConversionRecipe* FindConversion(ir::Inst* conversion) const;
     [[nodiscard]] std::optional<u16> FindMemoryStore(ir::Inst* store) const;
     [[nodiscard]] bool IsDiscarded(ir::Inst* inst) const;
+    [[nodiscard]] bool Empty() const {
+        return conversions.empty() && memory_stores.empty() && discarded.empty();
+    }
+    [[nodiscard]] const auto& Discarded() const { return discarded; }
 
 private:
     void AnalyzeConversions(ir::Block* block);

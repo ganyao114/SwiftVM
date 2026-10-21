@@ -32,6 +32,7 @@
 #include <span>
 #include <vector>
 #include "runtime/backend/translate_table.h"
+#include "runtime/backend/retirement_control.h"
 #include "runtime/common/types.h"
 #include "runtime/ir/function.h"
 
@@ -65,6 +66,9 @@ public:
         std::atomic<u64> synced_patch_epoch{0};
         std::atomic<u64> patch_sync_count{0};
         std::atomic<u64> synced_continuation_epoch{0};
+        // Begin/End and continuation state belong to the execution thread.
+        // Nested scopes keep the oldest generated return address protected.
+        unsigned execution_depth{};
         TranslateTable* l1{};
         // Points at State::exit_request. The Runtime owns State for at least
         // as long as this token remains registered.
@@ -74,6 +78,52 @@ public:
         RSBFrame* rsb_empty{};
     };
     using RuntimeToken = std::shared_ptr<RuntimeEpoch>;
+
+    class ExecutionScope {
+    public:
+        ExecutionScope(SmcTracker& tracker, const RuntimeToken& token);
+        ~ExecutionScope();
+        ExecutionScope(const ExecutionScope&) = delete;
+        ExecutionScope& operator=(const ExecutionScope&) = delete;
+
+        // Normal host boundary may reclaim; exceptional cleanup only leaves
+        // the epoch and defers potentially allocating reclamation work.
+        void End();
+
+    private:
+        SmcTracker* tracker_;
+        RuntimeToken token_;
+    };
+
+    // Acquire before module/node locks. CommitScope excludes the signal writer
+    // while an installed unit publishes its complete node/slots/SMC state.
+    class PublicationScope {
+    public:
+        explicit PublicationScope(SmcTracker& tracker)
+                : tracker_(tracker), guard_(tracker.invalidation_mutex_) {}
+        class CommitScope {
+        public:
+            explicit CommitScope(PublicationScope& publication) : tracker_(publication.tracker_) {
+                tracker_.LockMetadata();
+            }
+            ~CommitScope() { tracker_.UnlockMetadata(); }
+            CommitScope(const CommitScope&) = delete;
+            CommitScope& operator=(const CommitScope&) = delete;
+            void RegisterNode(const std::shared_ptr<Module>& module, ir::AddressNode* node,
+                              VAddr start, VAddr end);
+            void RevokeNode(AddressSpace& space, const std::shared_ptr<Module>& module,
+                            ir::AddressNode* node);
+
+        private:
+            SmcTracker& tracker_;
+        };
+        bool RetireNode(AddressSpace& space, const std::shared_ptr<Module>& module,
+                        ir::AddressNode* node);
+
+    private:
+        SmcTracker& tracker_;
+        std::unique_lock<std::mutex> guard_;
+    };
 
     // guest_bias: guest->host address bias (host = guest + bias), from
     // Config::memory_base (0 = direct mapping).
@@ -117,11 +167,12 @@ public:
         return patch_sync_count_.load(std::memory_order_relaxed);
     }
     [[nodiscard]] bool CanReclaimAtEpochForTest(u64 retire_epoch) const {
+        MetadataGuard guard(*this);
         return CanReclaim(retire_epoch);
     }
 
-    // Called before the first guest thread is spawned. Single-threaded guests
-    // leave runtime epochs inactive and retain their cheaper path.
+    // Called before the first guest thread is spawned. Execution lifetime
+    // tracking remains active for single-threaded and SMC-disabled guests.
     void EnableMultithreading();
 
     // Signal-handler path. Before opening the page it atomically deactivates
@@ -157,6 +208,32 @@ public:
     // page to RW, clears metadata, and suppresses future registration.
     void DisableAndUnprotectAll();
 
+    struct ShutdownResult {
+        bool admission_ready{};
+        bool runtimes_attached{};
+        size_t remaining_pages{};
+        VAddr failed_page{};
+        int protect_error{};
+        [[nodiscard]] bool Complete() const {
+            return admission_ready && !runtimes_attached && remaining_pages == 0 &&
+                   protect_error == 0;
+        }
+    };
+    struct ShutdownPreparation {
+        bool admission_ready{};
+        bool runtimes_attached{};
+        [[nodiscard]] bool Ready() const { return admission_ready && !runtimes_attached; }
+    };
+    // Before persistence or revocation, reject existing low-level tokens and
+    // seal registration under the same metadata lock used by RegisterRuntime.
+    // A rejected preparation does not alter page or publication state.
+    [[nodiscard]] ShutdownPreparation PrepareShutdown(
+            AddressSpace& space, const RetirementControl::Ticket& ticket);
+    // Requires the AddressSpace's sealed terminal ticket and no Runtime tokens.
+    // Failed pages and their strong owners survive for a later retry.
+    [[nodiscard]] ShutdownResult ShutdownAfterQuiescence(
+            AddressSpace& space, const RetirementControl::Ticket& ticket);
+
 private:
     class MetadataGuard {
     public:
@@ -185,6 +262,10 @@ private:
 
     struct PageRecord {
         bool write_protected{};
+        // A failed range cleanup can be followed by an external remap. The
+        // retained record still owns cleanup, but cannot prove the current
+        // mapping is read-only when another generation is published.
+        bool reprotect_on_publish{};
         bool dirty{};
         bool claim_stale_fault{};
         std::vector<TrackedNode> nodes;
@@ -227,6 +308,8 @@ private:
     [[nodiscard]] VAddr PageKey(VAddr guest_addr) const { return guest_addr & ~page_mask_; }
 
     bool SetPageProtected(VAddr page, bool prot_read_only);
+    [[nodiscard]] int SetPageProtectionChecked(VAddr page, bool prot_read_only) noexcept;
+    [[nodiscard]] ShutdownResult UnprotectAllLocked();
     void LockMetadata() const;
     void UnlockMetadata() const;
 
@@ -237,13 +320,13 @@ private:
                             std::span<const VAddr> aliases = {},
                             bool publish_exit_request = true);
     void PublishExitRequest();
-    [[nodiscard]] std::vector<TrackedNode> TakeDirtyNodes(AddressSpace& space,
-                                                          TranslateTable* extra_l1);
-    [[nodiscard]] std::vector<TrackedNode> TakeRangeNodes(AddressSpace& space,
-                                                          TranslateTable* extra_l1,
-                                                          VAddr first,
-                                                          VAddr last);
+    [[nodiscard]] std::vector<TrackedNode> CollectDirtyNodes();
+    [[nodiscard]] std::vector<TrackedNode> CollectRangeNodes(VAddr first, VAddr last);
     void RemoveTrackedNode(ir::AddressNode* node);
+    void RegisterNodeLocked(const std::shared_ptr<Module>& module, ir::AddressNode* node,
+                            VAddr start, VAddr end);
+    bool RetireNodeLocked(AddressSpace& space, TranslateTable* current_l1,
+                          const std::shared_ptr<Module>& module, ir::AddressNode* node);
     // invalidation_mutex_ must be held. Every target generation is made
     // inactive and every incoming instruction is restored to BL before node
     // detach or the global reclaim epoch may advance.
@@ -251,8 +334,12 @@ private:
                        const std::vector<TrackedNode>& nodes,
                        std::span<const VAddr> aliases = {});
     [[nodiscard]] bool CanReclaim(u64 retire_epoch) const;
+    void LeaveJit(const RuntimeToken& token) noexcept;
 
     // invalidation_mutex_ must be held.
+    void RetireBatch(AddressSpace& space, TranslateTable* extra_l1,
+                     const std::vector<TrackedNode>& nodes,
+                     std::span<const VAddr> aliases = {});
     void Retire(std::vector<ReclaimCandidate>& candidates);
     void ReclaimRetiredLocked();
     void ReclaimRetired();
@@ -308,6 +395,8 @@ private:
     std::atomic<unsigned long long> close_fast_ns_{0};
     std::atomic<unsigned long long> close_slow_ns_{0};
     bool locally_enabled_{true};
+    bool runtime_registration_sealed_{};
+    bool terminal_shutdown_{};
 };
 
 }  // namespace swift::runtime::backend

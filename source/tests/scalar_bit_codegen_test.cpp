@@ -80,6 +80,7 @@ TEST_CASE("scalar bit operations emit without host helpers", "[scalar-bits][code
                        address_space.GetTrampolines().GetGPRRegs(),
                        address_space.GetTrampolines().GetFPRRegs(), features};
         RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
         arm64::JitContext context{address_space.GetDefaultModule(), alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());

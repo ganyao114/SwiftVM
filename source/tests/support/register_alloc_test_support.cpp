@@ -11,16 +11,7 @@ void RegisterAllocTestSupport::RunForIntWidthTieTest(ir::Block* block,
     auto features = FeatureSet{};
     features.ra_intwidth_tie = intwidth_tie;
     RunVerified(block, reg_alloc, features, false, false, intwidth_tie,
-                features.induct_tie, features.ra_spill_evict);
-}
-
-void RegisterAllocTestSupport::RunForInductTieTest(ir::Block* block,
-                                            backend::RegAlloc* reg_alloc,
-                                            bool induct_tie) {
-    auto features = FeatureSet{};
-    features.induct_tie = induct_tie;
-    RunVerified(block, reg_alloc, features, false, false,
-                features.ra_intwidth_tie, induct_tie, features.ra_spill_evict);
+                features.ra_spill_evict);
 }
 
 void RegisterAllocTestSupport::RunForCoalesceTest(ir::Block* block,
@@ -30,7 +21,7 @@ void RegisterAllocTestSupport::RunForCoalesceTest(ir::Block* block,
     features.ra_coalesce = coalesce;
     features.ra_coalesce_live = false;
     RunVerified(block, reg_alloc, features, false, false,
-                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_intwidth_tie,
                 features.ra_spill_evict);
 }
 
@@ -41,7 +32,7 @@ void RegisterAllocTestSupport::RunForCoalesceLiveTest(ir::Block* block,
     features.ra_coalesce = true;
     features.ra_coalesce_live = live;
     RunVerified(block, reg_alloc, features, false, false,
-                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_intwidth_tie,
                 features.ra_spill_evict);
 }
 
@@ -56,12 +47,41 @@ void RegisterAllocTestSupport::RunForCoalesceConflictTest(ir::Block* block,
     features.ra_coalesce = false;
     features.ra_coalesce_live = false;
     RunVerified(block, reg_alloc, features, false, false,
-                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_intwidth_tie,
                 features.ra_spill_evict);
     // Model the output of any earlier fixed-home tie independently of its
     // current opcode-specific matcher. The coalescer must treat that mapping
     // as authoritative and reject an intersecting publication window.
     reg_alloc->MapRegister(tied_value_id, HostGPR{target});
+    features.ra_coalesce = true;
+    LinearScanAllocator scan{block, reg_alloc,
+        {.features = features},
+        {.gpr_reserve = 0, .fpr_reserve = 0}};
+    scan.CoalesceGuestRegisterAccesses();
+}
+
+void RegisterAllocTestSupport::RunForPinnedWConflictTest(ir::Block* block,
+                                                  backend::RegAlloc* reg_alloc,
+                                                  const std::vector<u32>& tied_value_ids,
+                                                  const std::vector<u32>& write_coalesced_ids,
+                                                  u16 target) {
+    auto features = FeatureSet{};
+    features.ra_coalesce = false;
+    features.ra_coalesce_live = false;
+    RunVerified(block, reg_alloc, features, false, false,
+                features.ra_intwidth_tie,
+                features.ra_spill_evict);
+    // Model the homes the linear scan and the write coalescer are proven
+    // to have produced for the real-guest shape this targets: the pinned
+    // publication chain and an independent fixed read all resident on the
+    // same home.  The pinned W-view matcher must treat those mappings as
+    // authoritative and reject an intersecting bridge window.
+    for (auto id : tied_value_ids) {
+        reg_alloc->MapRegister(id, HostGPR{target});
+    }
+    for (auto id : write_coalesced_ids) {
+        reg_alloc->MarkHostWriteCoalesced(id);
+    }
     features.ra_coalesce = true;
     LinearScanAllocator scan{block, reg_alloc,
         {.features = features},
@@ -77,7 +97,7 @@ void RegisterAllocTestSupport::RunForWidthChainTest(ir::Block* block,
     features.ra_width_chain_long = false;
     features.ra_coalesce = false;
     RunVerified(block, reg_alloc, features, false, false,
-                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_intwidth_tie,
                 features.ra_spill_evict);
 }
 
@@ -88,7 +108,7 @@ void RegisterAllocTestSupport::RunForWidthChainConflictTest(ir::Block* block,
     auto features = FeatureSet{};
     features.ra_width_chain = false;
     RunVerified(block, reg_alloc, features, false, false,
-                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_intwidth_tie,
                 features.ra_spill_evict);
     reg_alloc->MapRegister(tied_value_id, HostGPR{target});
     features.ra_width_chain = true;
@@ -106,7 +126,7 @@ void RegisterAllocTestSupport::RunForWidthChainLongConflictTest(ir::Block* block
     features.ra_width_chain = false;
     features.ra_width_chain_long = false;
     RunVerified(block, reg_alloc, features, false, false,
-                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_intwidth_tie,
                 features.ra_spill_evict);
     reg_alloc->MapRegister(tied_value_id, HostGPR{target});
     features.ra_width_chain_long = true;
@@ -238,7 +258,7 @@ RegisterAllocTestSupport::SpillEvictTestResult RegisterAllocTestSupport::RunForS
     auto features = FeatureSet{};
     features.ra_spill_evict = spill_evict;
     RunVerified(block, reg_alloc, features, false, false,
-                features.ra_intwidth_tie, features.induct_tie,
+                features.ra_intwidth_tie,
                 spill_evict, &result);
     return result;
 }

@@ -1,4 +1,5 @@
 #include "integer_width_elimination_pass.h"
+#include "runtime/ir/consumer_index.h"
 
 namespace swift::runtime::ir {
 
@@ -22,31 +23,18 @@ bool ReplaceSingleUse(Inst* consumer, Inst* definition, Value replacement) {
     for (u32 index = 0; index < Inst::max_args; ++index) {
         auto& arg = consumer->ArgAt(index);
         if (arg.IsValue() && arg.Get<Value>().Def() == definition) {
-            consumer->SetArg(index, replacement);
+            consumer->SetArg(index, arg.Get<Value>().WithDefinition(replacement.Def()));
             return true;
         }
         if (arg.IsLambda() && arg.Get<Lambda>().IsValue() &&
             arg.Get<Lambda>().GetValue().Def() == definition) {
-            consumer->SetArg(index, Lambda{replacement});
+            auto lambda = arg.Get<Lambda>();
+            lambda.GetValue() = lambda.GetValue().WithDefinition(replacement.Def());
+            consumer->SetArg(index, lambda);
             return true;
         }
     }
     return false;
-}
-
-Inst* FindSingleConsumer(Block* block, Inst* definition) {
-    Inst* consumer = nullptr;
-    u32 edges = 0;
-    for (auto& candidate : block->GetInstList()) {
-        auto values = candidate.GetValues();
-        for (auto value : values) {
-            if (value.Def() == definition) {
-                consumer = &candidate;
-                ++edges;
-            }
-        }
-    }
-    return edges == 1 ? consumer : nullptr;
 }
 
 Value DirectSource(Inst* inst) {
@@ -111,6 +99,7 @@ bool IsU32Consumer(Inst* consumer, Inst* definition) {
 }
 
 void FoldDirectExtracts(Block* block) {
+    SingleConsumerIndex consumers{block};
     for (auto& inst : block->GetInstList()) {
         if (inst.GetOp() != OpCode::BitExtract || inst.GetArg<Imm>(1).Get() != 0 ||
             inst.GetArg<Imm>(2).Get() != GetValueSizeByte(inst.ReturnType()) * 8 ||
@@ -123,9 +112,10 @@ void FoldDirectExtracts(Block* block) {
             continue;
         }
 
-        auto* consumer = FindSingleConsumer(block, &inst);
+        auto* consumer = consumers.Find(&inst);
         if (consumer && IsU32Consumer(consumer, &inst)) {
-            ReplaceSingleUse(consumer, &inst, source);
+            if (ReplaceSingleUse(consumer, &inst, source))
+                consumers.Transfer(&inst, source.Def(), consumer);
         }
     }
 }
@@ -159,7 +149,7 @@ void FoldNarrowExtensions(Block* block) {
 
 void FoldNarrowMaskedExtracts(Block* block) {
     for (auto& inst : block->GetInstList()) {
-        if (inst.GetOp() != OpCode::And || !inst.GetPseudoOperations().empty()) {
+        if (inst.GetOp() != OpCode::And || inst.HasPseudoOperations()) {
             continue;
         }
         const auto input = inst.GetArg<Value>(0);

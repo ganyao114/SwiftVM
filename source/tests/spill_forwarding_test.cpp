@@ -1,6 +1,9 @@
 #include "support/register_alloc_test_support.h"
 #include <catch2/catch_test_macros.hpp>
 
+#include <bit>
+#include <cstring>
+#include "runtime/backend/runtime.h"
 #include <algorithm>
 #include <iterator>
 #include <string>
@@ -9,9 +12,270 @@
 
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/alloc/gpr_block_plan.h"
+#include "runtime/backend/arm64/jit/block_analysis_index.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
+#include "runtime/backend/arm64/jit/div128_narrowing_analysis.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/frontend/x86/x87.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
+
+TEST_CASE("Div128 uniform proofs stop at control flow joins", "[div128-cfg]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    struct Sample {
+        unsigned branch;
+        swift::u64 low, divisor, high, quotient, remainder;
+        bool native;
+    };
+    const Sample samples[] = {
+        {0, 100, 7, 0, 14, 2, true},
+        {1, 3, 5, 1, 3689348814741910323ull, 4, false},
+        {2, 3, 5, 1, 3689348814741910323ull, 4, false},
+        {3, 100, 7, 0, 14, 2, true},
+    };
+    for (const auto& sample : samples) {
+        INFO("branch=" << sample.branch);
+        constexpr swift::u32 low_offset = 512, divisor_offset = 520, high_offset = 528;
+        constexpr swift::u32 quotient_offset = 544, remainder_offset = 552;
+        Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
+                      .has_local_operation = false, .backend_isa = kArm64};
+        config.uniform_buffer_size = 1024;
+        config.stack_alignment = 16;
+        config.enable_asm_interp = false;
+        AddressSpace space{config};
+        auto module = space.GetDefaultModule();
+        IntrusivePtr<Block> block{new Block(0, Location{0x2500 + sample.branch * 4})};
+        const auto low = block->LoadUniform(Uniform{low_offset, ValueType::U64}).SetType(ValueType::U64);
+        const auto divisor = block->LoadUniform(Uniform{divisor_offset, ValueType::U64}).SetType(ValueType::U64);
+        auto high = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
+        if (sample.branch == 3) {
+            block->StoreUniform(Uniform{high_offset, ValueType::U64}, high);
+            high = block->LoadUniform(Uniform{high_offset, ValueType::U64}).SetType(ValueType::U64);
+        } else if (sample.branch != 0) {
+            // The taken branch skips the zero store, preserving incoming high=1.
+            const auto condition = block->LoadImm(Imm{swift::u32{sample.branch == 1 ? 1u : 0u}})
+                    .SetType(ValueType::U32);
+            const auto join = sample.branch == 1 ? block->Goto(condition) : block->NotGoto(condition);
+            block->StoreUniform(Uniform{high_offset, ValueType::U64}, high);
+            block->BindLabel(join);
+            high = block->LoadUniform(Uniform{high_offset, ValueType::U64}).SetType(ValueType::U64);
+        }
+        const auto quotient = block->Div128(high, low, divisor, Imm{swift::u64{0}}).SetType(ValueType::U64);
+        const auto remainder = block->Div128Remainder(quotient).SetType(ValueType::U64);
+        block->StoreUniform(Uniform{quotient_offset, ValueType::U64}, quotient);
+        block->StoreUniform(Uniform{remainder_offset, ValueType::U64}, remainder);
+        block->SetTerminal(terminal::ReturnToHost{});
+        block->ReIdInstr();
+        const auto features = FeatureSet{};
+        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
+                            space.GetTrampolines().GetFPRRegs(), features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        allocation.CompleteGPRAllocation(module);
+        CHECK(arm64::Div128NarrowingAnalysis{block.get()}.CanLowerNatively(quotient.Def()) == sample.native);
+        const auto plan = allocation.GPRPlanFor(block.get());
+        REQUIRE(plan);
+        const auto* scratch = plan->pinned->ScratchFor(quotient.Def());
+        REQUIRE(scratch);
+        CHECK(scratch->div128_native == sample.native);
+        arm64::JitContext context{module, allocation};
+        arm64::JitTranslator translator{context};
+        REQUIRE(translator.Translate(block.get()));
+        context.Finish();
+        auto& masm = context.GetMasm();
+        const auto* first = masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+        const auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        unsigned divisions = 0;
+        for (auto* instruction = first; instruction < last; instruction = instruction->GetNextInstruction()) {
+            decoder.Decode(instruction);
+            const std::string line = disassembler.GetOutput();
+            divisions += line.starts_with("udiv ") || line.starts_with("sdiv ");
+        }
+        CHECK(divisions == (sample.native ? 1u : 0u));
+#if defined(__aarch64__)
+        const auto [index, buffer] = module->AllocCodeCache(context.CurrentBufferSize(), context.RequiresRegionTrampoline());
+        REQUIRE(index != INVALID_CACHE_ID);
+        context.Flush(buffer);
+        REQUIRE(module->Push(block.get()));
+        (void)module->PublishLinkTarget(block->GetStartLocation(), buffer.exec_data, buffer.exec_data);
+        space.PushCodeCache(block->GetStartLocation(), buffer.exec_data);
+        Runtime runtime{&space};
+        auto uniform = runtime.GetUniformBuffer();
+        std::memcpy(uniform.data() + low_offset, &sample.low, sizeof(sample.low));
+        std::memcpy(uniform.data() + divisor_offset, &sample.divisor, sizeof(sample.divisor));
+        std::memcpy(uniform.data() + high_offset, &sample.high, sizeof(sample.high));
+        runtime.SetLocation(block->GetStartLocation().Value());
+        REQUIRE(runtime.Run() == HaltReason::CallHost);
+        swift::u64 actual_quotient{}, actual_remainder{};
+        std::memcpy(&actual_quotient, uniform.data() + quotient_offset, sizeof(actual_quotient));
+        std::memcpy(&actual_remainder, uniform.data() + remainder_offset, sizeof(actual_remainder));
+        CHECK(actual_quotient == sample.quotient);
+        CHECK(actual_remainder == sample.remainder);
+#endif
+    }
+}
+
+TEST_CASE("Div128 scratch proofs require local uniform membership", "[scratch-facts][div128-cfg]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    for (bool sign : {false, true}) for (bool alias : {false, true}) {
+        CAPTURE(sign, alias);
+        IntrusivePtr<Block> parent{new Block(0, Location{0x2510})};
+        IntrusivePtr<Block> block{new Block(0, Location{0x2514})};
+        const auto low = block->LoadUniform(Uniform{512, ValueType::U64}).SetType(ValueType::U64);
+        const auto divisor = block->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
+        const auto source = sign ? block->AsrImm(low, Imm{swift::u32{63}}).SetType(ValueType::U64) :
+                block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
+        block->StoreUniform(Uniform{528, ValueType::U64}, source);
+        auto local = block->LoadUniform(Uniform{528, ValueType::U64}).SetType(ValueType::U64);
+        auto incoming = parent->LoadUniform(Uniform{528, ValueType::U64}).SetType(ValueType::U64);
+        auto* local_load = local.Def();
+        auto* incoming_load = incoming.Def();
+        if (alias) {
+            local = block->BitCast(local).SetType(ValueType::U64);
+            incoming = block->BitCast(incoming).SetType(ValueType::U64);
+        }
+        const auto local_div = block->Div128(local, low, divisor, Imm{swift::u64{sign}}).SetType(ValueType::U64);
+        const auto incoming_div = block->Div128(incoming, low, divisor, Imm{swift::u64{sign}}).SetType(ValueType::U64);
+        const auto pure_div = block->Div128(source, low, divisor, Imm{swift::u64{sign}}).SetType(ValueType::U64);
+        block->ReIdInstr();
+        incoming_load->SetId(local_load->Id());
+        const arm64::Div128NarrowingAnalysis proof{block.get()};
+        CHECK(proof.CanLowerNatively(local_div.Def()));
+        CHECK_FALSE(proof.CanLowerNatively(incoming_div.Def()));
+        const GPRSMask pool{};
+        const FeatureSet features{};
+        CHECK_FALSE(arm64::PrepareInstructionScratch(*local_div.Def(), pool, features).div128_native);
+        CHECK_FALSE(arm64::PrepareInstructionScratch(*incoming_div.Def(), pool, features).div128_native);
+        CHECK(arm64::PrepareInstructionScratch(*pure_div.Def(), pool, features).div128_native);
+        CHECK(arm64::PrepareInstructionScratchWithBlock(*local_div.Def(), pool, features, block.get()).div128_native);
+        CHECK_FALSE(arm64::PrepareInstructionScratchWithBlock(*incoming_div.Def(), pool, features, block.get()).div128_native);
+    }
+}
+
+TEST_CASE("Div128 uniform scratch proofs stop at partial stores and barriers", "[scratch-facts][div128-cfg]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    for (unsigned boundary = 0; boundary < 3; ++boundary) {
+        CAPTURE(boundary);
+        IntrusivePtr<Block> block{new Block(0, Location{0x2518})};
+        const auto low = block->LoadImm(Imm{swift::u64{100}}).SetType(ValueType::U64);
+        const auto divisor = block->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
+        const auto zero = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
+        block->StoreUniform(Uniform{528, ValueType::U64}, zero);
+        if (boundary == 1) block->StoreUniform(Uniform{532, ValueType::U32}, Value{divisor}.SetCastType(ValueType::U32));
+        if (boundary == 2) block->AppendInst(OpCode::UniformBarrier);
+        const auto high = block->LoadUniform(Uniform{528, ValueType::U64}).SetType(ValueType::U64);
+        const auto quotient = block->Div128(high, low, divisor, Imm{swift::u64{0}}).SetType(ValueType::U64);
+        block->ReIdInstr();
+        CHECK(arm64::Div128NarrowingAnalysis{block.get()}.CanLowerNatively(quotient.Def()) == (boundary == 0));
+    }
+}
+
+TEST_CASE("prepared scratch preserves fixed and audit exclusions", "[scratch-facts][regression]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    constexpr swift::u32 x11 = 1u << 11, x12 = 1u << 12, x13 = 1u << 13;
+    constexpr swift::u32 ip0 = 1u << 16, ip1 = 1u << 17;
+    for (bool requested_xpool : {false, true}) for (int missing : {-1, 0, 9, 10, 12}) {
+        const bool xpool = requested_xpool || GetSvmConfig().x86_pin_ext >= 3;
+        CAPTURE(requested_xpool, xpool, missing);
+        GPRSMask pool{(1u << 14) - 1};
+        if (missing >= 0) pool.Clear(missing);
+        FeatureSet features{};
+        features.jit_scratch_xpool = requested_xpool;
+        IntrusivePtr<Block> block{new Block(0, Location{0x251a})};
+        const auto scalar = block->LoadImm(Imm{swift::u64{1}}).SetType(ValueType::U64);
+        const auto vector = block->LoadUniform(Uniform{512, ValueType::V128}).SetType(ValueType::V128);
+        const auto add = block->Add(scalar, Operand{scalar}).SetType(ValueType::U64);
+        const auto atomic = block->CompareAndSwap(scalar, scalar, scalar).SetType(ValueType::U64);
+        const auto fp = block->VecFAdd(vector, vector, Imm{swift::u32{32}}).SetType(ValueType::V128);
+        const auto x87 = block->X87Op(scalar, Imm{static_cast<swift::u64>(swift::x86::X87Action::Compare)}, scalar)
+                .SetType(ValueType::U64);
+        auto* xchg = block->AppendInst(OpCode::XchgBarrier, Imm{swift::u32{3}});
+        block->SetTerminal(terminal::ReturnToHost{});
+        block->ReIdInstr();
+        RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+        const auto plan = arm64::FrozenGPRPlan::SealWithSpillClobbers(
+                allocation, {block.get(), {}, {}}, features);
+        const bool scratch_only = GetSvmConfig().x86_pin_ext >= 2 && !xpool &&
+                missing != 0 && missing != 12;
+        const swift::u32 profile = xpool && GetSvmConfig().exec_prof ? ip0 | ip1 : 0;
+        const bool planned_scratch_only = GetSvmConfig().x86_pin_ext >= 2 && !xpool && missing != 0;
+        const bool alu_lease = GetSvmConfig().x86_pin_ext >= 3 &&
+                missing != 0 && missing != 9 && missing != 10;
+        struct Expected {
+            const Inst* inst;
+            swift::u32 xpool_clobbers, scratch_clobbers, published_home;
+            bool alu{};
+        };
+        const swift::u32 published_home = GetSvmConfig().static_regs ? 1u << 20 : 0;
+        const Expected expected[] = {
+            {add.Def(), 0, 0, 0, true},
+            {atomic.Def(), x11 | x12 | x13, x11 | x12 | x13, 0},
+            {fp.Def(), x13, x13, 0},
+            {x87.Def(), ip0 | x12 | x13, 0, 0},
+            {xchg, 0, 0, published_home},
+        };
+        for (const auto& row : expected) {
+            const auto* frozen = plan->ScratchFor(row.inst);
+            REQUIRE(frozen);
+            const auto manual = arm64::PrepareInstructionScratch(*row.inst, pool, features);
+            // RegAlloc restores x12/x13 reservations without XPOOL. Manual
+            // preparation receives the supplied mask without normalization.
+            for (const auto [facts, scratch] : {
+                    std::pair{frozen, planned_scratch_only}, std::pair{&manual, scratch_only}}) {
+                const swift::u32 fixed = profile | row.published_home |
+                        (xpool ? row.xpool_clobbers : (scratch ? row.scratch_clobbers : 0));
+                const swift::u32 audit = profile | row.published_home | (xpool ? row.xpool_clobbers : 0);
+                const swift::u32 terminal = scratch ? x13 | (GetSvmConfig().flags_regs ? 0 : x12) : 0;
+                CHECK(facts->fixed_clobbers == fixed);
+                CHECK(facts->audit_clobbers == audit);
+                CHECK(facts->leases == ((terminal & ~fixed) | (row.alu && alu_lease ? 1u << 10 : 0)));
+            }
+        }
+    }
+}
+
+TEST_CASE("unit scratch admission rejects changed feature policy", "[scratch-facts][pin-plan][regression]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
+                  .has_local_operation = false, .backend_isa = kArm64};
+    AddressSpace space{config};
+    auto module = space.GetDefaultModule();
+    IntrusivePtr<Block> block{new Block(0, Location{0x251c})};
+    const auto value = block->LoadImm(Imm{swift::u64{42}}).SetType(ValueType::U64);
+    block->StoreUniform(Uniform{0, ValueType::U64}, value);
+    block->SetTerminal(terminal::ReturnToHost{});
+    block->ReIdInstr();
+    const FeatureSet features{};
+    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
+                        space.GetTrampolines().GetFPRRegs(), features};
+    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    allocation.CompleteGPRAllocation(module);
+    const auto plan = allocation.GPRPlanFor(block.get());
+    REQUIRE(plan);
+    REQUIRE(plan->pinned->UsesUnitScratchInputs());
+    REQUIRE(plan->pinned->MatchesScratchInputs(allocation.GetGprs(), features));
+    REQUIRE(plan->region->MatchesUnit(block.get(), nullptr, allocation, config, features));
+    for (auto field : {&FeatureSet::jit_scratch_xpool, &FeatureSet::scratch_precise,
+                       &FeatureSet::fpr_scratch_precise, &FeatureSet::sse_nan_coldpath}) {
+        auto changed = features;
+        changed.*field = !(changed.*field);
+        CHECK_FALSE(plan->pinned->MatchesScratchInputs(allocation.GetGprs(), changed));
+        CHECK_FALSE(plan->region->MatchesUnit(block.get(), nullptr, allocation, config, changed));
+    }
+    CHECK(plan->pinned->MatchesScratchInputs(allocation.GetGprs(), features));
+}
 
 namespace {
 
@@ -297,6 +561,9 @@ SpillForwardingBlock MakeSpilledBitExtractPublicationBlock() {
 std::vector<std::string> Emit(SpillForwardingBlock input, GPRSMask gprs) {
     FPRSMask fprs{~((1u << 8) - 1u)};
     RegAlloc alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    // These fixtures explicitly exercise arriving spill backing; the initial
+    // target-home optimization is covered separately by the pin-plan tests.
+    alloc.FinishFixedGPRConstraints();
     RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &alloc, false);
     REQUIRE(alloc.ValueType(input.arriving) == RegAlloc::MEM);
 
@@ -310,6 +577,7 @@ std::vector<std::string> Emit(SpillForwardingBlock input, GPRSMask gprs) {
     AddressSpace address_space{config};
     auto module = address_space.MapModule(
             LocationDescriptor{0x2400}, LocationDescriptor{0x2500}, ModuleConfig{});
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(input.block.get());
@@ -815,4 +1083,105 @@ TEST_CASE("spill reload regions stop at local control flow") {
     REQUIRE(alloc.ValueType(arriving) == RegAlloc::MEM);
     REQUIRE_FALSE(alloc.HasSpillReload(arriving.Id(), first.Id()));
     REQUIRE_FALSE(alloc.HasSpillReload(arriving.Id(), second.Id()));
+}
+
+// Proposal only: append to the existing ARM spill_forwarding_test.cpp.
+// No production or test source has been changed, compiled, or executed.
+TEST_CASE("normal allocation preserves flags-only spilled XOR and surviving uses", "[spill-flags-only][regression]") {
+    for (unsigned shape : {0u, 1u, 2u}) {
+        Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
+                      .has_local_operation = false, .backend_isa = kArm64};
+        config.uniform_buffer_size = 1024;
+        config.stack_alignment = 16;
+        config.enable_asm_interp = false;
+        AddressSpace space{config};
+        auto module = space.GetDefaultModule();
+        IntrusivePtr<Block> block{new Block(0, Location{0x24b0})};
+        // AF is explicitly initialized then preserved; XOR's undefined x86 AF
+        // is not used as an oracle for a new AF publication contract.
+        block->ClearFlags(Flags::AuxiliaryCarry);
+        const auto left = block->LoadUniform(Uniform{64, ValueType::U64}).SetType(ValueType::U64);
+        const auto right = block->LoadUniform(Uniform{72, ValueType::U64}).SetType(ValueType::U64);
+        std::vector<Value> live;
+        for (unsigned i = 0; i < 36; ++i)
+            live.push_back(block->LoadUniform(Uniform{128 + i * 8, ValueType::U64}).SetType(ValueType::U64));
+        const auto result = block->Xor(left, Operand{right}).SetType(ValueType::U64);
+        block->SaveFlags(result, Flags::NZCV | Flags::Parity);
+        const auto* flags_consumer = &block->GetInstList().back();
+        const Flags tests[] = {Flags::Parity, Flags::AuxiliaryCarry, Flags::Carry,
+                               Flags::Overflow, Flags::Zero, Flags::Negate};
+        for (unsigned i = 0; i < 6; ++i) {
+            const auto bit = block->TestFlags(tests[i]).SetType(ValueType::U8);
+            block->StoreUniform(Uniform{i, ValueType::U8}, bit);
+        }
+        if (shape == 1) block->StoreUniform(Uniform{8, ValueType::U64}, result);
+        if (shape == 2) {
+            const auto alias = block->BitCast(result).SetType(ValueType::U64);
+            block->StoreUniform(Uniform{8, ValueType::U64}, alias);
+        }
+        auto total = block->Add(left, Operand{right}).SetType(ValueType::U64);
+        for (const auto value : live) total = block->Add(total, Operand{value}).SetType(ValueType::U64);
+        block->StoreUniform(Uniform{16, ValueType::U64}, total);
+        block->SetTerminal(terminal::ReturnToHost{});
+        block->ReIdInstr();
+        auto features = FeatureSet{};
+        features.ra_spill_evict = false;
+        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
+                            space.GetTrampolines().GetFPRRegs(), features};
+        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        allocation.CompleteGPRAllocation(module);
+        INFO("shape=" << shape);
+        REQUIRE(allocation.ValueType(result) == RegAlloc::MEM);
+        REQUIRE(allocation.GPRLocationAt(result, result.Id(), RegAlloc::GPRView::WholeValue).kind == RegAlloc::MEM);
+        const auto actions = allocation.GPRPlanFor(block.get()); REQUIRE(actions);
+        [&]<class Actions>(const Actions* selected) {
+            if constexpr (requires { selected->flags_only_spills.Discards(flags_consumer, result.Id()); }) {
+                CHECK(selected->flags_only_spills.Discards(flags_consumer, result.Id()) == (shape == 0));
+                CHECK_FALSE(selected->flags_only_spills.Discards(flags_consumer, left.Id()));
+            }
+        }(actions.get());
+
+        arm64::JitContext context{module, allocation};
+        arm64::JitTranslator translator{context};
+        REQUIRE(translator.Translate(block.get()));
+        context.Finish();
+#if defined(__aarch64__)
+        const auto [index, buffer] = module->AllocCodeCache(context.CurrentBufferSize(), context.RequiresRegionTrampoline());
+        REQUIRE(index != INVALID_CACHE_ID);
+        context.Flush(buffer);
+        REQUIRE(module->Push(block.get()));
+        (void)module->PublishLinkTarget(block->GetStartLocation(), buffer.exec_data, buffer.exec_data);
+        space.PushCodeCache(block->GetStartLocation(), buffer.exec_data);
+        for (const auto inputs : {std::pair<swift::u64, swift::u64>{0x55, 0x55},
+                                  {0x55, 0x54}, {0, 0x8000000000000000ull}}) {
+            Runtime runtime{&space};
+            auto uniform = runtime.GetUniformBuffer();
+            std::memcpy(uniform.data() + 64, &inputs.first, sizeof(inputs.first));
+            std::memcpy(uniform.data() + 72, &inputs.second, sizeof(inputs.second));
+            swift::u64 expected_sum = inputs.first + inputs.second;
+            for (unsigned i = 0; i < 36; ++i) {
+                const swift::u64 v = 100 + i;
+                std::memcpy(uniform.data() + 128 + i * 8, &v, sizeof(v));
+                expected_sum += v;
+            }
+            runtime.SetLocation(block->GetStartLocation().Value());
+            REQUIRE(runtime.Run() == HaltReason::CallHost);
+            const swift::u64 expected = inputs.first ^ inputs.second;
+            CHECK(uniform[0] == (std::popcount(static_cast<unsigned>(expected & 0xff)) % 2 == 0));
+            CHECK(uniform[1] == 0); // explicit incoming AF preserved
+            CHECK(uniform[2] == 0);
+            CHECK(uniform[3] == 0);
+            CHECK(uniform[4] == (expected == 0));
+            CHECK(uniform[5] == (expected >> 63));
+            swift::u64 actual_sum{};
+            std::memcpy(&actual_sum, uniform.data() + 16, sizeof(actual_sum));
+            CHECK(actual_sum == expected_sum);
+            if (shape != 0) {
+                swift::u64 actual{};
+                std::memcpy(&actual, uniform.data() + 8, sizeof(actual));
+                CHECK(actual == expected);
+            }
+        }
+#endif
+    }
 }

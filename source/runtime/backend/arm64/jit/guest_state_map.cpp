@@ -4,6 +4,7 @@
 #include <bit>
 #include "runtime/backend/reg_alloc.h"
 #include "runtime/backend/arm64/helper_call_contract.h"
+#include "runtime/backend/arm64/alloc/target_analysis_traits.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -11,7 +12,7 @@ void GuestStateMap::Analyze(ir::Block* next_block,
                             const FeatureSet& next_features) {
     block = next_block;
     features = next_features;
-    fixed_home_clobbers.reset();
+    InvalidateFixedHomeClobberIndex();
     successful_survival_scans = 0;
     block_entry_width_facts = {};
     if (const auto found = function_entry_width_facts.find(block);
@@ -45,15 +46,41 @@ GuestStateMap::ExtensionFacts GuestStateMap::CurrentEntryExtensionFacts(
             : ExtensionFacts{};
 }
 
+void GuestStateMap::InvalidateFixedHomeClobberIndex() {
+    // Clear contents but keep the storage: the next block's build then
+    // reuses the 65 vectors' capacity instead of regrowing them from
+    // empty on every Analyze (a top host-compile allocator customer).
+    if (fixed_home_clobbers) {
+        for (auto& ids : fixed_home_clobbers->writes) ids.clear();
+        for (auto& ids : fixed_home_clobbers->reads) ids.clear();
+        fixed_home_clobbers->observers.clear();
+    }
+    fixed_home_clobbers_built = false;
+}
+
 void GuestStateMap::BuildFixedHomeClobberIndex() const {
-    auto index = std::make_unique<FixedHomeClobberIndex>();
+    if (!fixed_home_clobbers) {
+        fixed_home_clobbers = std::make_unique<FixedHomeClobberIndex>();
+    }
+    auto* index = fixed_home_clobbers.get();
+    // Contents are empty after invalidation; clearing again also covers
+    // a previous build abandoned mid-way by an exception.
+    for (auto& ids : index->writes) ids.clear();
+    for (auto& ids : index->reads) ids.clear();
+    index->observers.clear();
     for (auto& inst : block->GetInstList()) {
+        if (MayFaultOrObserve(inst) || inst.GetOp() == ir::OpCode::GetUniformAddress ||
+            inst.GetOp() == ir::OpCode::UniformBarrier) index->observers.push_back(&inst);
+        if (inst.GetOp() == ir::OpCode::GetHostGPR) {
+            const auto home = inst.GetArg<ir::Imm>(0).Get();
+            if (home < 32) index->reads[home].push_back(inst.Id());
+        }
         u32 mask{};
         if (inst.GetOp() == ir::OpCode::XchgBarrier) {
             mask = ::swift::runtime::backend::FixedGPRClobbers(inst, features);
         } else if (inst.GetOp() == ir::OpCode::SetHostGPR) {
             const auto home = inst.GetArg<ir::Imm>(1).Get();
-            if (home < index->size()) mask = 1u << home;
+            if (home < 32) mask = 1u << home;
         } else if (const auto helper = HelperCallContract::Resolve(inst, features)) {
             // Resolve an exact helper contract once, rather than once per
             // register and interval. Only caller-saved guest homes apply here.
@@ -62,12 +89,12 @@ void GuestStateMap::BuildFixedHomeClobberIndex() const {
         }
         while (mask) {
             const auto home = std::countr_zero(mask);
-            (*index)[home].push_back(inst.Id());
+            index->writes[home].push_back(inst.Id());
             mask &= mask - 1;
         }
     }
-    for (auto& ids : *index) std::sort(ids.begin(), ids.end());
-    fixed_home_clobbers = std::move(index);
+    for (auto& ids : index->writes) std::sort(ids.begin(), ids.end());
+    fixed_home_clobbers_built = true;
 }
 
 bool GuestStateMap::FixedHomeSurvives(u32 home,
@@ -78,9 +105,9 @@ bool GuestStateMap::FixedHomeSurvives(u32 home,
     // Wait for three complete scans before paying to resolve contracts and
     // collect clobbers for every home. Two-query transfers keep scanning.
     constexpr u8 min_indexed_scans = 3;
-    if (home < 32 && successful_survival_scans >= min_indexed_scans) {
-        if (!fixed_home_clobbers) BuildFixedHomeClobberIndex();
-        const auto& ids = (*fixed_home_clobbers)[home];
+    if (home < 32 && (fixed_home_clobbers_built || successful_survival_scans >= min_indexed_scans)) {
+        if (!fixed_home_clobbers_built) BuildFixedHomeClobberIndex();
+        const auto& ids = fixed_home_clobbers->writes[home];
         const auto next = std::upper_bound(ids.begin(), ids.end(), after);
         return next == ids.end() || *next >= before;
     }
@@ -100,6 +127,14 @@ bool GuestStateMap::FixedHomeSurvives(u32 home,
     return true;
 }
 
+std::optional<u32> GuestStateMap::FirstFixedHomeClobber(u32 home, u32 after) const {
+    ASSERT(block && home < 32);
+    if (!fixed_home_clobbers_built) BuildFixedHomeClobberIndex();
+    const auto& ids = fixed_home_clobbers->writes[home];
+    const auto next = std::upper_bound(ids.begin(), ids.end(), after);
+    return next == ids.end() ? std::nullopt : std::optional<u32>{*next};
+}
+
 bool GuestStateMap::PublicationWindowSafe(
         u32 home,
         ir::Value early_value,
@@ -107,16 +142,25 @@ bool GuestStateMap::PublicationWindowSafe(
         u32 before,
         const ir::Inst* ignored) const {
     ASSERT(block);
-    for (auto& inst : block->GetInstList()) {
-        if (inst.Id() <= after || inst.Id() >= before || &inst == ignored) {
-            continue;
-        }
-        if (ClobbersFixedHome(inst, home)) {
-            return false;
-        }
-        if (MayFaultOrObserve(inst) &&
-            !FaultCaptureContains(
-                    inst, home, early_value.Def(),
+    if (before <= after + 1) return true;
+    ASSERT(home < 32);
+    if (!fixed_home_clobbers_built) BuildFixedHomeClobberIndex();
+    const auto& clobbers = fixed_home_clobbers->writes[home];
+    for (auto it = std::upper_bound(clobbers.begin(), clobbers.end(), after);
+         it != clobbers.end() && *it < before; ++it) {
+        if (!ignored || *it != ignored->Id()) return false;
+    }
+    const auto& reads = fixed_home_clobbers->reads[home];
+    for (auto it = std::upper_bound(reads.begin(), reads.end(), after);
+         it != reads.end() && *it < before; ++it) {
+        if (!ignored || *it != ignored->Id()) return false;
+    }
+    const auto& observers = fixed_home_clobbers->observers;
+    const auto first = std::upper_bound(observers.begin(), observers.end(), after,
+            [](u32 id, const ir::Inst* inst) { return id < inst->Id(); });
+    for (auto it = first; it != observers.end() && (*it)->Id() < before; ++it) {
+        if (*it != ignored && !FaultCaptureContains(
+                    **it, home, early_value.Def(),
                     ir::GetValueSizeByte(early_value.Type()) <= sizeof(u32))) {
             return false;
         }
@@ -125,34 +169,11 @@ bool GuestStateMap::PublicationWindowSafe(
 }
 
 bool GuestStateMap::MayFaultOrObserve(const ir::Inst& inst) const {
-    const auto helper = HelperCallContract::Resolve(inst, features);
-    return helper ? helper->RequiresGuestStatePublication()
-                  : MayFaultOrObserve(inst.GetOp());
+    return TargetMayFaultOrObserve(inst, features);
 }
 
 bool GuestStateMap::MayFaultOrObserve(ir::OpCode op) {
-    switch (op) {
-        case ir::OpCode::LoadMemory:
-        case ir::OpCode::StoreMemory:
-        case ir::OpCode::LoadMemoryTSO:
-        case ir::OpCode::StoreMemoryTSO:
-        case ir::OpCode::MemoryCopy:
-        case ir::OpCode::MemoryCopyTSO:
-        case ir::OpCode::CompareAndSwap:
-        case ir::OpCode::CompareAndSwap128:
-        case ir::OpCode::CheckMemoryAlignment:
-        case ir::OpCode::AtomicExchange:
-        case ir::OpCode::AtomicFetchAdd:
-        case ir::OpCode::AtomicRMW:
-        case ir::OpCode::CallLambda:
-        case ir::OpCode::CallLocation:
-        case ir::OpCode::CallDynamic:
-        case ir::OpCode::X87Op:
-        case ir::OpCode::Sse42Str:
-            return true;
-        default:
-            return false;
-    }
+    return TargetMayFaultOrObserve(op);
 }
 
 }  // namespace swift::runtime::backend::arm64

@@ -117,6 +117,8 @@ std::vector<std::string> Emit(IntrusivePtr<Block> block) {
     auto module = address_space.MapModule(
             LocationDescriptor{0x8810}, LocationDescriptor{0x8830},
             ModuleConfig{});
+    alloc.SetAllocationUnit(block.get(), nullptr, {});
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());

@@ -131,6 +131,10 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
             swift::runtime::PerfLoweringPart2::Flags};
     const bool sub = op == ArithOp::Sub || op == ArithOp::Sbb;
     const bool use_carry = op == ArithOp::Adc || op == ArithOp::Sbb;
+    // Register/helper transport can expose a wider storage definition. The
+    // arithmetic and its flags always use the guest instruction's width.
+    left = left.SetCastType(GetSize(width));
+    right = right.SetCastType(GetSize(width));
     // The native host adc/sbc consumes the stored carry directly, which is only
     // valid when its polarity matches: Adc wants Direct, Sbb wants Inverted.
     // Native adc/sbc consume the stored carry directly, valid only when its
@@ -185,6 +189,7 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
                 result = __ Sbb(left, ir::Operand{right});
                 break;
         }
+        result = result.SetType(GetSize(width));
         __ SaveFlags(result, flag_mask);
         // INC / DEC call this with Carry excluded from flag_mask: the
         // stored carry (and its polarity) must stay untouched then.
@@ -197,7 +202,49 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
         }
         return result;
     }
-    if (!use_carry && FlagsNarrowAlignEnabled()) {
+    if (use_carry) {
+        // Keep carry/borrow as an SSA input to the arithmetic. Folding it into
+        // b before computing flags loses CF at b==mask and AF at b[3:0]==15.
+        // A 32-bit container holds every possible 8/16-bit three-input result.
+        auto a = __ ZeroExtend32(left.SetCastType(GetSize(width)));
+        auto b = __ ZeroExtend32(right.SetCastType(GetSize(width)));
+        auto cin = __ ZeroExtend32(CarryValue());
+        auto first = sub ? __ Sub(a, ir::Operand{b}) : __ Add(a, ir::Operand{b});
+        auto total = sub ? __ Sub(first, ir::Operand{cin}) : __ Add(first, ir::Operand{cin});
+        auto value = __ BitExtract(total, ir::Imm{0u}, ir::Imm{width}).SetType(GetSize(width));
+        if (True(flag_mask & ir::Flags::Parity))
+            __ SaveFlags(total, ir::Flags::Parity);
+        auto operands_xor = __ Xor(a, ir::Operand{b});
+        if (True(flag_mask & ir::Flags::AuxiliaryCarry)) {
+            // AF = bit 4 of a ^ b ^ result, for both ADC and SBB.
+            auto half = __ BitExtract(__ Xor(operands_xor, ir::Operand{total}),
+                                      ir::Imm{4u}, ir::Imm{1u});
+            auto bit3 = __ LslImm(half, ir::Imm{3u});
+            auto af = __ Add(bit3, ir::Operand{bit3});
+            __ SaveFlags(af, ir::Flags::AuxiliaryCarry);
+        }
+        if (True(flag_mask & ir::Flags::NZ)) {
+            auto aligned = __ LslImm(total, ir::Imm{32u - width});
+            auto nz = __ Add(aligned, ir::Operand{ir::Imm{0u}});
+            __ SaveFlags(nz, flag_mask & ir::Flags::NZ);
+        }
+        if (True(flag_mask & ir::Flags::Overflow)) {
+            auto sign_diff = sub ? operands_xor
+                    : __ Xor(operands_xor, ir::Operand{ir::Imm{UINT32_MAX}});
+            auto changed = __ Xor(a, ir::Operand{total});
+            auto overflow = __ BitExtract(__ And(sign_diff, ir::Operand{changed}),
+                                          ir::Imm{width - 1u}, ir::Imm{1u});
+            __ SetOverflow(overflow);
+        }
+        if (True(flag_mask & ir::Flags::Carry)) {
+            auto carry = __ BitExtract(total, ir::Imm{width}, ir::Imm{1u});
+            __ SetCarry(carry);
+            carry_ = CarryPolarity::Direct;
+            StorePolarity(false);
+        }
+        return value;
+    }
+    if (FlagsNarrowAlignEnabled()) {
         // AArch64 has no byte/halfword ADDS/SUBS.  Keep the operation in one
         // typed producer and let the backend align both operands to bit 31:
         // the flag-setting result is then shifted back down in place.  This
@@ -207,9 +254,9 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
         const auto type = GetSize(width);
         ir::Value result;
         if (sub) {
-            result = __ Sub(left.SetType(type), ir::Operand{right.SetType(type)}).SetType(type);
+            result = __ Sub(left.SetCastType(type), ir::Operand{right.SetCastType(type)}).SetType(type);
         } else {
-            result = __ Add(left.SetType(type), ir::Operand{right.SetType(type)}).SetType(type);
+            result = __ Add(left.SetCastType(type), ir::Operand{right.SetCastType(type)}).SetType(type);
         }
         __ SaveFlags(result, flag_mask);
         if (True(flag_mask & ir::Flags::Carry)) {
@@ -229,12 +276,6 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
     const u32 shift = container - width;
     ir::Value a_c = __ ZeroExtend32(left);
     ir::Value b_c = __ ZeroExtend32(right);
-    // Carry / borrow in as a value, read before anything clobbers host NZCV.
-    // x86 ADC adds CF and SBB subtracts CF (the flag value itself).
-    ir::Value cin;
-    if (use_carry) {
-        cin = CarryValue();
-    }
     // Unshifted add producing the result value plus PF/AF. For subtractions the
     // subtrahend is negated and masked, keeping the value in [0, 2^container):
     // its host N/C/V are always 0 and its Z is only set when the true Z is
@@ -243,20 +284,15 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
     {
         ir::Value rhs;
         if (!sub) {
-            rhs = use_carry ? __ Add(b_c, ir::Operand{cin}) : b_c;
+            rhs = b_c;
         } else {
-            auto subtrahend = use_carry ? __ Add(b_c, ir::Operand{cin}) : b_c;
+            auto subtrahend = b_c;
             auto zero = __ LoadImm(ir::Imm(u64(0)));
             rhs = __ And(__ Sub(zero, ir::Operand{subtrahend}), ir::Operand{ir::Imm(mask)});
             // AF for a narrow subtraction is the half-BORROW of (a - subtrahend),
             // which the add-of-negated used for the value below does NOT reproduce
             // (its half-carry differs). Source AF from a genuine sub. PF is still
             // correct from the add-of-negated (low bits of a+(-b) == a-b).
-            // Known residue: for SBB (use_carry) subtrahend = b + cin pre-folds the
-            // borrow-in, so when b[3:0] + cin >= 16 the half-borrow is approximate
-            // (the exact 3-operand half-borrow needs a true Sbcs with a live
-            // carry-in). Same class as the C/V boundary residue below; the fuzzer
-            // masks AF for narrow adc/sbb. Basic sub/cmp here are exact.
             if (True(flag_mask & ir::Flags::AuxiliaryCarry)) {
                 auto af_src = __ Sub(a_c, ir::Operand{subtrahend});
                 __ SaveFlags(af_src, ir::Flags::AuxiliaryCarry);
@@ -264,26 +300,12 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
         }
         auto value = __ Add(a_c, ir::Operand{rhs});
         // For sub, AF was sourced from the dedicated sub above, so only PF comes
-        // from the add-of-negated here. For add, AF (half-carry of a+b) is exact,
-        // except narrow ADC (use_carry): rhs = b + cin pre-folds the carry-in, so
-        // when b[3:0] + cin >= 16 the half-carry is approximate (documented above).
+        // from the add-of-negated here. For add, AF is its exact half-carry.
         __ SaveFlags(value, flag_mask & (sub ? ir::Flags::Parity
                                              : (ir::Flags::Parity | ir::Flags::AuxiliaryCarry)));
-        // Exact NZCV from the shifted op: the carry-in is folded into the
-        // shifted subtrahend BEFORE the shift, so N/Z/V at the container's
-        // top bit always match the narrow operation (the wrap of b + cin to
-        // 2^width shifts out of the result but keeps result parity with the
-        // narrow computation). Known residue: C is wrong in the single edge
-        // b == mask && cin == 1, where the true borrow/carry cannot be
-        // represented by any single 32 bit host op (documented; would need
-        // backend support to fix).
+        // Exact narrow NZCV from the aligned two-operand operation.
         auto sa = __ LslImm(a_c, ir::Imm(shift));
-        ir::Value sb;
-        if (use_carry) {
-            sb = __ LslImm(__ Add(b_c, ir::Operand{cin}), ir::Imm(shift));
-        } else {
-            sb = __ LslImm(b_c, ir::Imm(shift));
-        }
+        auto sb = __ LslImm(b_c, ir::Imm(shift));
         auto flagged = sub ? __ Sub(sa, ir::Operand{sb}) : __ Add(sa, ir::Operand{sb});
         __ SaveFlags(flagged, flag_mask & ir::Flags::NZCV);
         // INC / DEC call this with Carry excluded from flag_mask: the

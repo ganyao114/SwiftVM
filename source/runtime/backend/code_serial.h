@@ -161,6 +161,8 @@ struct SerialBlock {
     u32 pending_flags_code_offset{UINT32_MAX};
     EdgeFlagsTargetContract pending_flags_contract{};
     u8 entry_flags{Linkable};
+    u32 continuation_code_offset{UINT32_MAX};
+    u32 pending_flags_continuation_code_offset{UINT32_MAX};
 
     [[nodiscard]] bool IsLinkable() const { return (entry_flags & Linkable) != 0; }
     [[nodiscard]] bool IsDependency() const { return (entry_flags & DependencyOnly) != 0; }
@@ -169,6 +171,7 @@ struct SerialBlock {
         return (entry_flags & ~(Linkable | MetadataOnly | DependencyOnly)) == 0 &&
                (IsPublished() || (!IsLinkable() && (entry_flags != (MetadataOnly | DependencyOnly))));
     }
+    [[nodiscard]] bool ValidEntryContract(std::size_t code_size) const;
 };
 
 // One direct-link branch site inside the unit. The code byte at
@@ -251,6 +254,24 @@ struct SerialFaultSite {
     u8 recovery_kind{};
 };
 
+class CodeCache;
+enum class SerialRegionBranchKind : u8 {
+    MergeNZCV, MergeNZCVToken, MergeMask, MergeMaskToken,
+    Cycle, CycleNZCV, CycleNZCVToken, Return, ReturnNZCV, ReturnNZCVToken, Count,
+};
+struct SerialRegionBranch {
+    u32 code_offset{};
+    SerialRegionBranchKind kind{};
+    u8 mask{};
+};
+// These are exact branches to this CodeCache's known shared ABI entries.
+// They are stored as B . and rebound to the destination cache before publish.
+bool ValidRegionBranches(std::span<const SerialRegionBranch> branches, std::size_t code_size);
+bool FreezeRegionBranches(CodeCache& cache, const u8* original_rx, std::span<u8> code,
+                          std::vector<SerialRegionBranch>& branches);
+bool RebindRegionBranches(CodeCache& cache, const u8* destination_rx, std::span<u8> code,
+                          std::span<const SerialRegionBranch> branches);
+
 struct SerialUnit {
     u64 guest_start{};
     u64 feature_hash{};
@@ -260,7 +281,18 @@ struct SerialUnit {
     std::vector<Relocation> relocs{};
     std::vector<SerialLinkSite> link_sites{};
     std::vector<SerialFaultSite> fault_sites{};
+    std::vector<SerialRegionBranch> region_branches{};
 };
+
+class Module;
+struct CodeBuffer;
+bool ValidSerialLinkSites(std::span<const SerialLinkSite> sites,
+                          std::span<const SerialRegionBranch> region_branches, std::size_t code_size);
+bool CaptureSerialCode(Module& module, const u8* allocation, u32 code_size,
+                       const HostImageInfo& image, u64 guest_window_size, SerialUnit& output,
+                       std::string* error = nullptr);
+bool RegisterArmSerialLinks(Module& module, const CodeBuffer& buffer,
+                            std::span<const SerialLinkSite> sites);
 
 // --------------------------------------------------------------------------
 // Blob I/O
@@ -298,6 +330,14 @@ private:
 
 void WriteUnit(BlobWriter& w, const SerialUnit& unit);
 bool ReadUnit(BlobReader& r, SerialUnit& unit);
+inline constexpr std::size_t kSerialBlockBytes = 52;
+void WriteSerialBlock(BlobWriter& writer, const SerialBlock& block);
+bool ReadSerialBlock(BlobReader& reader, SerialBlock& block, std::size_t code_size);
+inline constexpr std::size_t kSerialLinkSiteBytes = 43;
+void WriteSerialLinkSite(BlobWriter& writer, const SerialLinkSite& site);
+bool ReadSerialLinkSite(BlobReader& reader, SerialLinkSite& site, std::size_t code_size);
+void WriteRegionBranches(BlobWriter& writer, std::span<const SerialRegionBranch> branches);
+bool ReadRegionBranches(BlobReader& reader, std::vector<SerialRegionBranch>& branches, std::size_t code_size);
 
 // --------------------------------------------------------------------------
 // Validity key
@@ -305,10 +345,8 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit);
 // Everything that can change the *meaning* of a serialized unit. A mismatch
 // on any field must reject the whole file.
 //
-// format_version  bumped whenever this file's layout or the scanner changes
-// build_id        direct of the SwiftVM binary that produced the code; it
-//                 subsumes every compile-time constant (State offsets,
-//                 ScratchBudget, opcode semantics, emitter changes)
+// format_version  bumped for layout, scanner or generated-code semantic changes
+// build_id        coarse metadata identity of the SwiftVM binary that produced code
 // config_hash     the runtime Config fields that reach codegen
 // env_hash        every SVM_*/SWIFT_* environment variable, by raw value
 // guest_id        direct of the guest image (naming/coarse check only; the
@@ -323,15 +361,21 @@ struct ValidityKey {
     bool operator==(const ValidityKey&) const = default;
 };
 
-// 24: RV64 literal relocations, canonical JAL sites and guest-only extents.
-constexpr u64 kCacheFormatVersion = 24;
+// 26: Mandatory retirement exits at dynamic terminal transfers.
+// 27: Mandatory request boundaries at static terminal transfers.
+// 28: Per-site Call frame publication on static latch fault recovery.
+// 29: Complete canonical/pending and published-frame entry contracts.
+// 30: Preserve callee NZCV across physical Call continuation returns.
+constexpr u64 kCacheFormatVersion = 31;
 
 u64 HashBytes(const void* data, std::size_t size, u64 seed);
 u64 HashU64(u64 value, u64 seed);
+// Copy bounded guest bytes through a fault-safe kernel read before hashing.
+// Unreadable/unmapped ranges and overflowing biased addresses leave out intact.
+bool HashGuestMemory(const void* base, u64 mask, u64 start, u64 end, u64& out);
 
-// Direct of the running SwiftVM binary: its on-disk size + mtime + inode,
-// which changes on every relink. Falls back to a mapped-image content hash if
-// the executable path cannot be resolved.
+// Metadata identity of the running binary: path, size, mtime, inode and image span.
+// Codegen compatibility also requires an explicit cache format version change.
 u64 ComputeBuildId();
 
 // Hash of every environment variable whose name starts with SVM_ or SWIFT_,

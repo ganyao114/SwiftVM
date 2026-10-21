@@ -20,6 +20,11 @@ void JitContext::ConfigureModule(Module* owner) {
     rsb_enabled = owner && True(owner->GetAddressSpace().GetConfig().global_opts & Optimizations::ReturnStackBuffer);
 }
 
+std::optional<u32> JitContext::UniformCapacity() const {
+    if (!module) return std::nullopt;
+    return module->GetAddressSpace().GetConfig().uniform_buffer_size;
+}
+
 u32 JitContext::DispatchIndex(u64 guest) {
     if (!module) throw std::runtime_error("RV64 dispatch slot requires a module");
     return module->GetDispatchIndex(ir::Location{guest});

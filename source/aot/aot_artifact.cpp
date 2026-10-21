@@ -15,16 +15,7 @@
 namespace swift::aot {
 
 bool AotUnit::ValidLinkSites() const {
-    u64 previous_end{};
-    for (const auto& site : link_sites) {
-        if (site.code_offset % 4 || site.code_offset < previous_end ||
-            u64(site.code_offset) + 4 > code_size ||
-            site.kind >= u8(runtime::backend::LinkSiteKind::Count) ||
-            (site.unlinked_instruction & 0xfff) != (0x6f | (28 << 7)) ||
-            site.HasFlagsBypass() || !site.ValidFlagsBypass(code_size)) return false;
-        previous_end = u64(site.code_offset) + 4;
-    }
-    return true;
+    return runtime::backend::ValidSerialLinkSites(link_sites, region_branches, code_size);
 }
 
 bool AotUnit::ValidFaultSites() const {
@@ -58,11 +49,7 @@ void WriteUnitRecord(BlobWriter& w, const AotUnit& u) {
     w.U32(u.code_size);
     w.U32(static_cast<u32>(u.blocks.size()));
     for (const auto& b : u.blocks) {
-        w.U64(b.guest_start);
-        w.U64(b.guest_end);
-        w.U32(b.code_offset);
-        w.U64(b.guest_bytes_hash);
-        w.U8(b.entry_flags);
+        runtime::backend::WriteSerialBlock(w, b);
     }
     w.U32(static_cast<u32>(u.relocs.size()));
     for (const auto& r : u.relocs) {
@@ -84,9 +71,9 @@ void WriteUnitRecord(BlobWriter& w, const AotUnit& u) {
     }
     w.U32(static_cast<u32>(u.link_sites.size()));
     for (const auto& site : u.link_sites) {
-        w.U32(site.code_offset); w.U64(site.guest_target);
-        w.U8(site.kind); w.U32(site.unlinked_instruction);
+        runtime::backend::WriteSerialLinkSite(w, site);
     }
+    runtime::backend::WriteRegionBranches(w, u.region_branches);
 }
 
 bool ReadUnitRecord(BlobReader& r, AotUnit& u) {
@@ -98,20 +85,12 @@ bool ReadUnitRecord(BlobReader& r, AotUnit& u) {
     if (u.code_size == 0 || u.code_size % 4 != 0 || u.code_offset % 4 != 0) {
         return false;
     }
-    if (!r.U32(count) || count > r.Remaining() / 8) {
+    if (!r.U32(count) || count > r.Remaining() / runtime::backend::kSerialBlockBytes) {
         return false;
     }
     u.blocks.resize(count);
     for (auto& b : u.blocks) {
-        if (!r.U64(b.guest_start) || !r.U64(b.guest_end) || !r.U32(b.code_offset) ||
-            !r.U64(b.guest_bytes_hash) || !r.U8(b.entry_flags)) {
-            return false;
-        }
-        if ((b.IsPublished() ? b.code_offset >= u.code_size : b.code_offset != UINT32_MAX) ||
-            !b.ValidEntryFlags() ||
-            (!b.IsPublished() && b.IsLinkable()) || b.guest_end < b.guest_start) {
-            return false;
-        }
+        if (!runtime::backend::ReadSerialBlock(r, b, u.code_size)) return false;
     }
     if (!r.U32(count) || count > r.Remaining() / 8) {
         return false;
@@ -134,13 +113,13 @@ bool ReadUnitRecord(BlobReader& r, AotUnit& u) {
             !r.U32(site.host_end) || !r.U32(site.recovery_offset) ||
             !r.U8(site.recovery_kind)) return false;
     }
-    if (!r.U32(count) || count > r.Remaining() / 17) return false;
+    if (!r.U32(count) || count > r.Remaining() / runtime::backend::kSerialLinkSiteBytes) return false;
     u.link_sites.resize(count);
     for (auto& site : u.link_sites) {
-        if (!r.U32(site.code_offset) || !r.U64(site.guest_target) ||
-            !r.U8(site.kind) || !r.U32(site.unlinked_instruction)) return false;
+        if (!runtime::backend::ReadSerialLinkSite(r, site, u.code_size)) return false;
     }
-    return u.ValidFaultSites() && u.ValidLinkSites();
+    return runtime::backend::ReadRegionBranches(r, u.region_branches, u.code_size) &&
+           u.ValidFaultSites() && u.ValidLinkSites();
 }
 
 }  // namespace
@@ -345,8 +324,8 @@ bool WriteArtifact(const std::string& guest_elf_path,
     // binaries alias heavily (173 aliased addresses in func_tests_x86_64:
     // `__stack_chk_fail`/`__stack_chk_fail_local`, ...), and every alias must
     // land on the same unit.
-    // Guest address -> (offset in .svmaot.text, length). Unit entries first,
-    // then every block entry inside a unit: a symbol whose address is interior
+    // Guest address -> (offset in .svmaot.text, length). Published root entries
+    // take precedence, then every block entry inside a unit: an interior symbol
     // to another unit (a shared tail, a `.cold` fragment folded into its
     // parent) is *covered*, and pointing it at the failure stub would make the
     // symbol table claim it was not compiled.
@@ -360,7 +339,11 @@ bool WriteArtifact(const std::string& guest_elf_path,
         }
     }
     for (const auto& u : image.units) {
-        by_guest[u.guest_start] = {u.code_offset, u.code_size};
+        const auto root = std::find_if(u.blocks.begin(), u.blocks.end(), [&](const auto& block) {
+            return block.IsPublished() && block.guest_start == u.guest_start;
+        });
+        const auto offset = root == u.blocks.end() ? 0 : root->code_offset;
+        by_guest[u.guest_start] = {u.code_offset + offset, u.code_size - offset};
     }
 
     elfio w;

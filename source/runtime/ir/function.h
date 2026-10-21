@@ -24,6 +24,8 @@ public:
     ir::Block* EntryBlock();
     ir::Block* FindBlock(ir::Location location, bool block_start = true);
     void AddBlock(ir::Block* block);
+    // Detach only this exact node, relinquishing Function's deletion ownership.
+    bool DetachBlock(ir::Block* block);
     bool TakeBlocksFrom(Function& region);
     // Frees every instruction of every block, leaving the blocks (and their
     // guest ranges, jit_cache and dispatch indices) in place. Idempotent.

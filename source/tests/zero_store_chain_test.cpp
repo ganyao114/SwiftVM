@@ -51,6 +51,7 @@ std::vector<std::string> Emit(IntrusivePtr<Block> block) {
                    address_space.GetTrampolines().GetFPRRegs(),
                    features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());

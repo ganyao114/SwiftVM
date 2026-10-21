@@ -565,6 +565,14 @@ size_t destroy_mspace(mspace msp);
 mspace create_mspace_with_base(void* base, size_t capacity, int locked);
 
 /*
+  SwiftVM: prevent system allocation for a caller-supplied, never-grown
+  mspace. The exact initial footprint becomes its finite limit, without
+  granularity rounding. Returns 1 on success, 0 for an unsuitable space.
+  Call before the first allocation; do not subsequently raise the limit.
+*/
+int mspace_disable_growth(mspace msp);
+
+/*
   mspace_track_large_chunks controls whether requests for large chunks
   are allocated in their own untracked mmapped regions, separate from
   others in this mspace. By default large chunks are not tracked,

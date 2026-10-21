@@ -45,7 +45,7 @@ void JitTranslator::RestoreStaticFPRUniforms() {
 
 void JitTranslator::EmitAdvancePC(ir::Inst* inst) {
     if (backedge_flags_recipe && backedge_flags_recipe->optimized &&
-        backedge_flags_recipe->final_advance == inst) {
+        backedge_flags_recipe->plan.final_advance == inst) {
         // This is the last architectural boundary before the proven self/
         // single-cold terminal. Keep the requested NZCV live for the self
         // edge; both cold exits materialize it in their veneers.
@@ -89,6 +89,9 @@ void JitTranslator::EmitGoto(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitBindLabel(ir::Inst* inst) {
+    // A local join may be reached without executing the alignment check
+    // that proved a congruence class earlier in the block.
+    memory_state.home_alignment_mod8.clear();
     auto value = inst->GetArg<ir::Value>(0);
     __ Bind(GetLocalLabel(value.Def()));
 }
@@ -500,15 +503,22 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     }
 }
 
+ir::Inst* JitTranslator::PairSecondaryResult(ir::Inst* inst, ir::OpCode secondary) const {
+    ASSERT_MSG(gpr_plan && gpr_plan->consumers && gpr_plan->consumers->valid,
+               "pair-result plan was not admitted");
+    const auto& results = gpr_plan->consumers->pair_results;
+    const auto found = results.find(inst);
+    ASSERT_MSG(found != results.end() && found->second.secondary_opcode == secondary,
+               "missing prepared pair-result fact");
+    return found->second.secondary;
+}
+
 void JitTranslator::EmitPreserveAllPairCall(ir::Inst* inst,
                                             VAddr target,
-                                            const std::vector<ir::DataClass>& args,
-                                            ir::OpCode secondary,
+                                            const std::array<ir::DataClass, 3>& args,
+                                            ir::Inst* secondary,
                                             ir::HostRegisterEffect host_registers) {
-    ASSERT(args.size() == 3);
     ASSERT(host_registers == ir::HostRegisterEffect::GeneralOnly);
-    const auto secondary_results = inst->GetPseudoOperations(secondary);
-    ASSERT(secondary_results.size() <= 1);
     MergeNZCV(FlagsRegsAuditMergeCause::Helper,
               FlagsRegsAuditEdgeKind::Host);
     FlushFlags();
@@ -520,10 +530,10 @@ void JitTranslator::EmitPreserveAllPairCall(ir::Inst* inst,
         }
     }
     const auto primary_result = context.R(ir::Value{inst});
-    const auto secondary_result = secondary_results.empty()
+    const auto secondary_result = !secondary
             ? std::optional<Register>{}
             : std::optional<Register>{
-                      context.RForWrite(ir::Value{secondary_results.front()})};
+                      context.RForWrite(ir::Value{secondary})};
 
     __ Sub(sp, sp, PairCallFrame::Size);
     __ Stp(x30, ip, MemOperand(sp, PairCallFrame::Link));
@@ -582,54 +592,27 @@ void JitTranslator::EmitCallLambda(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitGetOperand(ir::Inst* inst) {
-    if (const auto address = MatchPinnedMemoryAddress(inst)) {
-        if (address->offset == 0) {
-            pinned_gprs.AssignValueHome(inst, address->target);
+    if (const auto address = gpr_plan->addresses.find(inst);
+        address != gpr_plan->addresses.end()) {
+        if (address->second.offset == 0) {
             return;
         }
         if (context.IsSpilled(ir::Value{inst})) {
             memory_state.spilled_memory_operands.emplace(
                     inst,
-                    SpilledMemoryOperand{address->memory,
-                                         XRegister(address->target),
-                                         address->offset});
+                    SpilledMemoryOperand{address->second.memory,
+                                         XRegister(address->second.target),
+                                         address->second.offset});
             return;
         }
     }
     auto operand = inst->GetArg<ir::Operand>(0);
-    const auto pinned_result = context.PinnedValueGPR(ir::Value{inst}, cur_instr, pinned_gprs);
+    const auto pinned_result = context.PlannedGPR<XRegister>(ir::Value{inst}, cur_instr);
     auto result = pinned_result ? Register{*pinned_result}
                                 : context.R(ir::Value{inst});
-    if (EmitCachedConstAddress(inst, result)) {
-        return;
-    }
     if (memory_state.abs_const_mat && operand.GetRight().Null() && operand.GetLeft().IsImm()) {
         __ Mov(result, operand.GetLeft().imm.Get());
         return;
-    }
-    if ((memory_state.mem_narrow_fuse || memory_state.addr_ea_tie) && operand.GetRight().Null() &&
-        operand.GetLeft().IsValue() && inst->GetUses() == 1 &&
-        context.SharesGPR(ir::Value{inst}, operand.GetLeft().value)) {
-        bool feeds_memory = false;
-        auto it = cur_block->GetInstList().iterator_to(*inst);
-        for (++it; it != cur_block->GetInstList().end(); ++it) {
-            bool uses_address = false;
-            for (auto used : it->GetValues()) {
-                uses_address |= used.Def() == inst;
-            }
-            if (!uses_address) {
-                continue;
-            }
-            feeds_memory = it->GetOp() == ir::OpCode::LoadMemory ||
-                           it->GetOp() == ir::OpCode::StoreMemory ||
-                           it->GetOp() == ir::OpCode::LoadMemoryTSO ||
-                           it->GetOp() == ir::OpCode::StoreMemoryTSO;
-            break;
-        }
-        if (feeds_memory) {
-            // EmitMemOperand consumes this result's tied register directly.
-            return;
-        }
     }
     if (!memory_state.mem_narrow_fuse || operand.GetRight().Null()) {
         __ Mov(result, EmitOperand(operand));
@@ -647,7 +630,7 @@ void JitTranslator::EmitGetOperand(ir::Inst* inst) {
         left = result;
     } else {
         const auto value = operand.GetLeft().value;
-        const auto pinned = context.PinnedValueGPR(value, cur_instr, pinned_gprs);
+        const auto pinned = context.PlannedGPR<XRegister>(value, cur_instr);
         left = pinned ? Register{*pinned} : context.R(value, true);
     }
     Register dst = left.Is64Bits() ? result.X() : result.W();
@@ -674,7 +657,7 @@ void JitTranslator::EmitGetOperand(ir::Inst* inst) {
         return;
     }
 
-    const auto pinned = context.PinnedValueGPR(right.value, cur_instr, pinned_gprs);
+    const auto pinned = context.PlannedGPR<XRegister>(right.value, cur_instr);
     auto right_reg = pinned ? Register{*pinned}
                             : context.R(right.value, true);
     if (operand.GetOp() == ir::OperandOp::Plus) {

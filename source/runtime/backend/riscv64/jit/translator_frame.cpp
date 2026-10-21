@@ -5,7 +5,7 @@ namespace swift::runtime::backend::riscv64 {
 
 using namespace biscuit;
 
-void JitTranslator::EmitPrologue(u32 entry_start) {
+void JitTranslator::EmitPrologue(u32 entry_start, bool prepend) {
     // Emission tells us whether a C++ callee can be abandoned by recovery.
     // Frequent unconditional callees save LP64D at entry; conditional slow
     // calls save untouched GP/FP registers only when executed. Other blocks
@@ -34,14 +34,14 @@ void JitTranslator::EmitPrologue(u32 entry_start) {
     store(t0, state_offset_riscv_recovery_pc); store(frame, state_offset_riscv_recovery_frame);
     auto& buffer = prefix.GetCodeBuffer();
     const auto size = buffer.GetCursorOffset();
-    const s64 recovery_delta = size + recovery_offset - entry_start - recovery_source;
-    ASSERT(recovery_delta >= 0 && recovery_delta <= INT32_MAX);
+    const s64 recovery_delta = s64(prepend ? size : 0) + recovery_offset - entry_start - recovery_source;
+    ASSERT(recovery_delta >= INT32_MIN && recovery_delta <= INT32_MAX);
     buffer.RewindCursor(recovery_source);
     prefix.AUIPC(t0, u32((recovery_delta + 0x800) >> 12) & 0xfffff);
     prefix.ADDI(t0, t0, s32(((recovery_delta & 0xfff) ^ 0x800) - 0x800));
     buffer.AdvanceCursor(size);
     context.Prepend(entry_start, {buffer.GetOffsetPointer(0), size_t(size)});
-    recovery_offset += size;
+    if (prepend) recovery_offset += size;
 }
 
 }  // namespace swift::runtime::backend::riscv64

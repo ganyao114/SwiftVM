@@ -147,7 +147,10 @@ class DecoderVisitor {
   virtual ~DecoderVisitor() {}
 
 #define DECLARE(A) virtual void Visit##A(const Instruction* instr) { VisitUnimplemented(instr); };
-  VISITOR_LIST(DECLARE)
+  VISITOR_LIST_THAT_RETURN(DECLARE)
+  DECLARE(Unallocated)
+  virtual void VisitUnimplemented(const Instruction* instr) = 0;
+  VISITOR_LIST_THAT_DONT_RETURN(DECLARE)
 #undef DECLARE
 
   bool IsConstVisitor() const { return constness_ == kConstVisitor; }

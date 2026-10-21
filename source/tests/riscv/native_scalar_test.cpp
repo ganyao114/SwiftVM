@@ -1,6 +1,8 @@
 #include "test_support.h"
 
 #include <bit>
+#include <chrono>
+#include <iomanip>
 #include "runtime/frontend/ir_assembler.h"
 
 namespace swift::tests::riscv {
@@ -9,6 +11,15 @@ using O = ir::OpCode;
 using T = ir::ValueType;
 
 namespace {
+
+void WarmKernel(BlockFn function, backend::State* state) {
+    // Keep the selected core busy long enough for the board's existing
+    // ondemand policy to settle, without changing any frequency settings.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+    do {
+        for (u32 i = 0; i < 1000; ++i) function(state);
+    } while (std::chrono::steady_clock::now() < until);
+}
 
 u64 ReverseBytes(u64 value, u32 width) {
     u64 result{};
@@ -172,6 +183,149 @@ void NativeScalarALU(bool zbb) {
         }
     }
     std::cout << "PASS native ALU immediate boundaries and single-instruction budgets, Zbb=" << zbb << '\n';
+}
+
+void NativeScalarShifts() {
+    u64 seed = 0x93c284b42c7d1631ULL;
+    for (T type : {T::U8, T::U16, T::U32, T::U64})
+    for (O op : {O::LslImm, O::LsrImm, O::AsrImm, O::RorImm,
+                 O::LslValue, O::LsrValue, O::AsrValue, O::RorValue})
+    for (bool raw : {false, true}) {
+        const u32 bits = ir::GetValueSizeByte(type) * 8;
+        const u64 mask = bits == 64 ? UINT64_MAX : (u64{1} << bits) - 1;
+        const bool immediate = op == O::LslImm || op == O::LsrImm || op == O::AsrImm || op == O::RorImm;
+        const std::array counts{0u, 1u, bits - 1, bits, bits + 1, 63u, 64u, 255u};
+        for (u32 variant = 0; variant < (immediate ? counts.size() : 1); ++variant) {
+            const auto count = counts[variant];
+            IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa600})};
+            ir::Assembler as{block.get()};
+            auto input = as.LoadUniform(ir::Uniform{0, raw ? T::U64 : type}).SetType(raw ? T::U64 : type);
+            if (raw) input = as.BitCast(input).SetType(type);
+            auto shift = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
+            auto output = immediate ? ir::Value{block->AppendInst(op, input, ir::Imm{u64(count)})}.SetType(type) :
+                                      ir::Value{block->AppendInst(op, input, shift)}.SetType(type);
+            // U64 consumers expose stray high bits that a narrow store would hide.
+            auto exposed = as.ZeroExtend64(output).SetType(T::U64);
+            as.StoreUniform(ir::Uniform{16, T::U64}, exposed);
+            block->SetTerminal(ir::terminal::ReturnToHost{});
+            for (bool cached : {false, true}) {
+                Compiled native{block.get(), cached, rv::HostFeatures{}};
+                Check(native.translator.Stats().helpers == 0, "all scalar shifts remain native RV64G");
+                for (u32 sample = 0; sample < (immediate ? 32 : 32 * counts.size()); ++sample) {
+                    seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+                    const auto edge = sample % 32;
+                    const u64 value = edge == 0 ? UINT64_MAX : edge == 1 ? u64{1} << (bits - 1) :
+                                      edge == 2 ? 0 : edge == 3 ? 1 : seed;
+                    const auto actual_count = immediate ? count : counts[sample / 32];
+                    const u32 n = actual_count & (bits - 1);
+                    u64 wanted{};
+                    if (op == O::LslImm || op == O::LslValue) wanted = value << n;
+                    else if (op == O::LsrImm || op == O::LsrValue) wanted = (value & mask) >> n;
+                    else if (op == O::AsrImm || op == O::AsrValue) {
+                        wanted = (value & mask) >> n;
+                        if ((value & (u64{1} << (bits - 1))) && n) wanted |= mask ^ (mask >> n);
+                    } else wanted = n ? ((value & mask) >> n) | (value << (bits - n)) : value;
+                    StateStorage state; state.Put(0, value); state.Put(8, actual_count);
+                    Check(native.fn(state.state) == HaltReason::CallHost, "scalar shift halt");
+                    Check(state.Get(16) == (wanted & mask), std::string{ir::GetIRMetaInfo(op).name} +
+                          "/bits=" + std::to_string(bits) + "/raw=" + std::to_string(raw) +
+                          "/count=" + std::to_string(actual_count) + "/sample=" + std::to_string(sample));
+                }
+            }
+        }
+    }
+    std::cout << "PASS scalar shift widths, masked counts and raw BitCast upper bits\n";
+}
+
+void ScalarShiftBenchmark() {
+    using Clock = std::chrono::steady_clock;
+    constexpr u32 length = 128, iterations = 100000, compiles = 100;
+    for (O op : {O::LsrImm, O::LsrValue, O::AsrImm, O::AsrValue}) {
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa700})};
+        ir::Assembler as{block.get()};
+        auto input = as.LoadUniform(ir::Uniform{0, T::U32}).SetType(T::U32);
+        auto count = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
+        const bool immediate = op == O::LsrImm || op == O::AsrImm;
+        for (u32 i = 0; i < length; ++i) {
+            input = immediate ? ir::Value{block->AppendInst(op, input, ir::Imm{u64{1}})}.SetType(T::U32) :
+                                ir::Value{block->AppendInst(op, input, count)}.SetType(T::U32);
+            input = as.Xor(input, ir::Operand{ir::Imm{u64{0x932567a1}}}).SetType(T::U32);
+        }
+        as.StoreUniform(ir::Uniform{16, T::U32}, input);
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        Compiled native{block.get(), true, rv::HostFeatures{}};
+        StateStorage state; state.Put(0, 0xadc83f21); state.Put(8, 1);
+        u32 wanted = 0xadc83f21;
+        for (u32 i = 0; i < length; ++i) {
+            const bool arithmetic = op == O::AsrImm || op == O::AsrValue;
+            wanted = arithmetic ? (wanted >> 1) | (wanted & 0x80000000) : wanted >> 1;
+            wanted ^= 0x932567a1;
+        }
+        WarmKernel(native.fn, state.state);
+        const auto start = Clock::now();
+        u64 checksum{};
+        for (u32 i = 0; i < iterations; ++i) {
+            native.fn(state.state); checksum += state.Get(16);
+        }
+        const auto end = Clock::now();
+        Check(checksum == u64(wanted) * iterations, "benchmark independent shift checksum");
+        const auto compile_start = Clock::now();
+        for (u32 i = 0; i < compiles; ++i) {
+            rv::JitContext context{true, rv::HostFeatures{}};
+            rv::JitTranslator translator{context}; translator.Translate(block.get());
+        }
+        const auto compile_end = Clock::now();
+        std::cout << std::fixed << std::setprecision(3) << "BENCH " << ir::GetIRMetaInfo(op).name
+                  << " shift_bytes=" << native.translator.Stats().bytes[static_cast<size_t>(op)]
+                  << " code_bytes=" << native.context.CurrentBufferSize()
+                  << " runtime_ns_per_shift=" << std::chrono::duration<double, std::nano>(end - start).count() / iterations / length
+                  << " compile_us_per_block=" << std::chrono::duration<double, std::micro>(compile_end - compile_start).count() / compiles
+                  << " checksum=" << checksum << '\n';
+    }
+}
+
+void ScalarFeatureBenchmark() {
+    using Clock = std::chrono::steady_clock;
+    constexpr u32 length = 128, iterations = 100000, compiles = 100;
+    const auto features = rv::HostFeatures::Detect();
+    for (O op : {O::PopCount, O::CountLeadingZeros64, O::CountTrailingZeros64}) {
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa800})};
+        ir::Assembler as{block.get()};
+        auto input = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+        for (u32 i = 0; i < length; ++i) {
+            input = ir::Value{block->AppendInst(op, input)}.SetType(T::U64);
+            input = as.Xor(input, ir::Operand{ir::Imm{u64{0x932567a1}}}).SetType(T::U64);
+        }
+        as.StoreUniform(ir::Uniform{16, T::U64}, input);
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        Compiled native{block.get(), true, features};
+        StateStorage state; state.Put(0, 0xadc83f21);
+        u64 wanted = 0xadc83f21;
+        for (u32 i = 0; i < length; ++i) {
+            wanted = op == O::PopCount ? std::popcount(wanted) :
+                     op == O::CountLeadingZeros64 ? std::countl_zero(wanted) : std::countr_zero(wanted);
+            wanted ^= 0x932567a1;
+        }
+        WarmKernel(native.fn, state.state);
+        const auto start = Clock::now();
+        u64 checksum{};
+        for (u32 i = 0; i < iterations; ++i) { native.fn(state.state); checksum += state.Get(16); }
+        const auto end = Clock::now();
+        Check(checksum == wanted * iterations, "benchmark independent scalar count checksum");
+        const auto compile_start = Clock::now();
+        for (u32 i = 0; i < compiles; ++i) {
+            rv::JitContext context{true, features};
+            rv::JitTranslator translator{context}; translator.Translate(block.get());
+        }
+        const auto compile_end = Clock::now();
+        std::cout << std::fixed << std::setprecision(3) << "BENCH " << ir::GetIRMetaInfo(op).name
+                  << " detected_zbb=" << features.zbb
+                  << " op_bytes=" << native.translator.Stats().bytes[static_cast<size_t>(op)]
+                  << " code_bytes=" << native.context.CurrentBufferSize()
+                  << " runtime_ns_per_op=" << std::chrono::duration<double, std::nano>(end - start).count() / iterations / length
+                  << " compile_us_per_block=" << std::chrono::duration<double, std::micro>(compile_end - compile_start).count() / compiles
+                  << " checksum=" << checksum << '\n';
+    }
 }
 
 }  // namespace swift::tests::riscv

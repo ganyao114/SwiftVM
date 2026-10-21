@@ -23,6 +23,11 @@
 
 #include "cache_clear.h"
 #include "mem_map.h"
+#include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <stdexcept>
+#include <thread>
 
 namespace swift::runtime::backend {
 
@@ -147,7 +152,10 @@ static int GetProtectFlags(MemMap::Mode mode) {
 
 class MemMap::Impl {
 public:
-    explicit Impl(u32 size, bool exec) : map_size(size), executable(exec) {
+    explicit Impl(u32 size, bool exec) : executable(exec), map_size(size) {}
+
+    void Init() {
+        const u32 size = map_size;
         long page_size = sysconf(_SC_PAGESIZE);
         if (page_size != PageAlignment) {
             throw std::bad_alloc{};
@@ -162,14 +170,21 @@ public:
             fd = shm_open_anon(O_RDWR | O_CREAT | O_CLOEXEC, 0666);
         } else {
             backing_memory = reinterpret_cast<u8*>(
-                    mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0));
+                    mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+            if (backing_memory == MAP_FAILED) {
+                backing_memory = nullptr;
+                throw std::bad_alloc{};
+            }
+            RecordView(backing_memory, size);
+            construction_complete = true;
+            return;
         }
 #elif ANDROID || defined(__linux__)
         fd = memfd_create("HostMemory", 0);
 #endif
         if (fd == -1) {
             throw std::bad_alloc{};
-        } else if (fd != 0) {
+        } else {
             int ret = ftruncate(fd, map_size);
             if (ret != 0) {
                 throw std::bad_alloc{};
@@ -177,15 +192,27 @@ public:
         }
 
         backing_memory = reinterpret_cast<u8*>(Map(size, 0, Mode::ReadWrite, false));
+        construction_complete = true;
     }
 
-    [[nodiscard]] void* Map(u32 size, u32 offset, MemMap::Mode mode, bool pri) const {
+    [[nodiscard]] void* Map(u32 size, u32 offset, MemMap::Mode mode, bool pri) {
+        if (release_started) {
+            throw std::logic_error("mapping owner has begun release");
+        }
+        if (size == 0 || offset > map_size || size > map_size - offset) {
+            throw std::bad_alloc{};
+        }
+        // Metadata allocation must finish before acquiring a kernel view.
+        views.reserve(views.size() + 1);
         auto flags = GetProtectFlags(mode);
 #if __APPLE__
-        if (!fd) {
+        if (fd < 0) {
             auto res = MirrorMemory(offset + backing_memory, size, pri);
-            ASSERT(res);
-            ASSERT(mprotect(res, size, flags) == 0);
+            if (!res) throw std::bad_alloc{};
+            // The view ledger owns every successful acquisition before a
+            // later protection failure can unwind through constructor guards.
+            RecordView(res, size);
+            if (mprotect(res, size, flags) != 0) throw std::bad_alloc{};
             return res;
         }
 #endif
@@ -193,10 +220,12 @@ public:
         if (res == MAP_FAILED) {
             throw std::bad_alloc{};
         }
+        RecordView(res, size);
         return res;
     }
 
     void Free(u32 host_offset, u32 length) const {
+        if (release_started || !backing_memory) return;
 #ifdef __APPLE__
         madvise(backing_memory + host_offset, length, MADV_DONTNEED);
 #else
@@ -204,25 +233,177 @@ public:
 #endif
     }
 
-    bool Unmap(void* mem, u32 size) { return munmap(mem, size); }
+    [[nodiscard]] MemMap::UnmapResult UnmapChecked(void* mem, u32 size) noexcept {
+        const auto view = std::find_if(views.begin(), views.end(), [&](const View& item) {
+            return item.address == mem && item.size == size;
+        });
+        if (view == views.end()) return {.error = EINVAL};
+        const int saved_errno = errno;
+        const int result = munmap(mem, size);
+        const int error = result == 0 ? 0 : errno;
+        errno = saved_errno;
+        if (error != 0) return {.error = error};
+        if (mem == backing_memory) backing_memory = nullptr;
+        views.erase(view);
+        return {};
+    }
 
     [[nodiscard]] u8* GetBackend() const { return backing_memory; }
 
-    virtual ~Impl() = default;
+    [[nodiscard]] bool NeedsDestructorRelease() const noexcept {
+        return !executable || !construction_complete || release_started;
+    }
+
+    // Impl destruction only frees metadata. Its live kernel resources must
+    // already have been released or transferred to the retained-owner queue.
+    ~Impl() = default;
+
+    [[nodiscard]] MemMap::ReleaseResult ReleaseAfterQuiescence() noexcept {
+        release_started = true;
+        unmap_error = 0;
+        // The initial RW backing is the first view; remove later aliases first.
+        while (!views.empty()) {
+            const auto view = views.back();
+            const auto result = UnmapChecked(view.address, view.size);
+            if (!result.Released()) {
+                unmap_error = result.error;
+                return GetReleaseState();
+            }
+        }
+        CloseDescriptor();
+        return GetReleaseState();
+    }
+
+    [[nodiscard]] MemMap::ReleaseResult GetReleaseState() const noexcept {
+        return {.remaining_views = static_cast<u32>(views.size()),
+                .backing_mapped = backing_memory != nullptr,
+                .descriptor_open = fd >= 0,
+                .unmap_error = unmap_error,
+                .close_error = close_error};
+    }
+
+    static void Retain(std::unique_ptr<Impl>& owner) noexcept {
+        auto* item = owner.release();
+        RetainedGuard guard(retained_lock);
+        item->retained_next = retained_head;
+        retained_head = item;
+        ++retained_count;
+    }
+
+    [[nodiscard]] static MemMap::RetainedReleaseResult RetainedState() noexcept {
+        RetainedGuard guard(retained_lock);
+        return {.owners = retained_count,
+                .first_failure = retained_head ? retained_head->GetReleaseState()
+                                               : MemMap::ReleaseResult{}};
+    }
+
+    [[nodiscard]] static MemMap::RetainedReleaseResult RetryRetained() noexcept {
+        RetainedGuard retry_guard(retry_lock);
+        Impl* batch;
+        {
+            RetainedGuard guard(retained_lock);
+            batch = retained_head;
+            retained_head = nullptr;
+        }
+        // Each owner present at entry is retried once. New and still-failing
+        // owners remain queued; syscall and delete callbacks run without the
+        // queue lock, and in-flight owners remain counted until completion.
+        while (batch) {
+            auto* item = batch;
+            batch = item->retained_next;
+            item->retained_next = nullptr;
+            const bool complete = item->ReleaseAfterQuiescence().Complete();
+            {
+                RetainedGuard guard(retained_lock);
+                if (complete) {
+                    --retained_count;
+                } else {
+                    item->retained_next = retained_head;
+                    retained_head = item;
+                }
+            }
+            if (complete) delete item;
+        }
+        return RetainedState();
+    }
+
+    void CloseUnretiredDescriptor() noexcept { CloseDescriptor(); }
+
+private:
+    class RetainedGuard {
+    public:
+        explicit RetainedGuard(std::atomic_flag& flag) noexcept : flag(flag) {
+            while (flag.test_and_set(std::memory_order_acquire)) std::this_thread::yield();
+        }
+        ~RetainedGuard() { flag.clear(std::memory_order_release); }
+    private:
+        std::atomic_flag& flag;
+    };
+    // No allocating singleton or static destructor: late static owners can
+    // still transfer failures, and process exit never masquerades as cleanup.
+    inline static constinit std::atomic_flag retained_lock = ATOMIC_FLAG_INIT;
+    inline static constinit std::atomic_flag retry_lock = ATOMIC_FLAG_INIT;
+    inline static Impl* retained_head{};
+    inline static size_t retained_count{};
+    Impl* retained_next{};
+    struct View {
+        void* address{};
+        u32 size{};
+    };
+
+    void RecordView(void* address, u32 size) noexcept {
+        views.push_back({address, size});
+    }
+
+    void CloseDescriptor() noexcept {
+        const int saved_errno = errno;
+        if (fd >= 0) {
+            // Linux consumes the descriptor even when close reports an error.
+            // Other platforms can be ambiguous; report the error without
+            // risking a second close of a descriptor reused by another owner.
+            const int descriptor = fd;
+            fd = -1;
+            if (close(descriptor) != 0) close_error = errno;
+        }
+        errno = saved_errno;
+    }
 
     const bool executable;
-    int fd{};
+    bool construction_complete{false};
+    bool release_started{false};
+    int fd{-1};
+    int unmap_error{};
+    int close_error{};
     u8* backing_memory{};
     u32 map_size;
+    StackVector<View, 2> views;
 };
 
 #endif  // ^^^ Unix ^^^
 
 MemMap::MemMap(u32 size, bool exec) : arena_size(size) {
     impl = std::make_unique<Impl>(size, exec);
+    try {
+        impl->Init();
+    } catch (...) {
+        if (!impl->ReleaseAfterQuiescence().Complete()) Impl::Retain(impl);
+        throw;
+    }
 }
 
-MemMap::~MemMap() = default;
+MemMap::~MemMap() {
+    if (!impl) return;
+    if (impl->NeedsDestructorRelease()) {
+        // Preserve the existing single destructor retry for transient rollback
+        // failures. A persistent failure still transfers the same live Impl;
+        // the retry is bounded and a consumed close descriptor is never reused.
+        const auto state = impl->ReleaseAfterQuiescence();
+        if (!state.Complete()) Impl::Retain(impl);
+    } else {
+        // Upper-level retirement is still required for a published arena.
+        impl->CloseUnretiredDescriptor();
+    }
+}
 
 void* MemMap::Map(u32 size, u32 offset, MemMap::Mode mode, bool pri) {
     return impl->Map(size, offset, mode, pri);
@@ -230,7 +411,27 @@ void* MemMap::Map(u32 size, u32 offset, MemMap::Mode mode, bool pri) {
 
 void MemMap::Protect(u32 size, u32 offset, MemMap::Mode mode) {}
 
-void MemMap::Unmap(void* mem, swift::u32 size) { impl->Unmap(mem, size); }
+void MemMap::Unmap(void* mem, swift::u32 size) { (void)impl->UnmapChecked(mem, size); }
+
+MemMap::UnmapResult MemMap::UnmapChecked(void* mem, u32 size) noexcept {
+    return impl->UnmapChecked(mem, size);
+}
+
+MemMap::ReleaseResult MemMap::ReleaseAfterQuiescence() noexcept {
+    return impl->ReleaseAfterQuiescence();
+}
+
+MemMap::ReleaseResult MemMap::GetReleaseState() const noexcept {
+    return impl->GetReleaseState();
+}
+
+MemMap::RetainedReleaseResult MemMap::GetRetainedReleaseState() noexcept {
+    return Impl::RetainedState();
+}
+
+MemMap::RetainedReleaseResult MemMap::RetryRetainedReleases() noexcept {
+    return Impl::RetryRetained();
+}
 
 void MemMap::Free(u32 offset, u32 size) { impl->Free(offset, size); }
 

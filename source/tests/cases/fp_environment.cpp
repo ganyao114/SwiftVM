@@ -57,6 +57,7 @@ TEST_CASE("AFP scalar unary and minmax preserve lanes under register reuse") {
     RegisterAllocPass::Run(block.get(), &alloc, true, features);
     REQUIRE(alloc.ValueFPR(first).id != alloc.ValueFPR(second).id);
     alloc.MapRegister(result.Id(), alloc.ValueFPR(reuse_second ? second : first));
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -173,6 +174,7 @@ TEST_CASE("AFP scalar arithmetic may reuse the right input register") {
             RegisterAllocPass::Run(block.get(), &alloc, true, features);
             REQUIRE(alloc.ValueFPR(left).id != alloc.ValueFPR(right).id);
             alloc.MapRegister(result.Id(), alloc.ValueFPR(right));
+            alloc.CompleteGPRAllocation(module);
             arm64::JitContext context{module, alloc};
             arm64::JitTranslator translator{context};
             translator.Translate(block.get());
@@ -622,6 +624,7 @@ TEST_CASE("AFP mode brackets direct MemoryCopy host calls with native FPCR") {
                        address_space.GetTrampolines().GetFPRRegs(),
                        FeatureSet{}};
     RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
+    reg_alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
     arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -748,6 +751,7 @@ TEST_CASE("AFP transparent helper call shape omits only its FPCR switch pair") {
                            address_space.GetTrampolines().GetFPRRegs(),
                            FeatureSet{}};
         RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
+        reg_alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
         arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());

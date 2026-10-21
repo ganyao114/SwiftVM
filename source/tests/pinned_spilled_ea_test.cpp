@@ -61,6 +61,7 @@ std::vector<std::string> Emit(SpilledEaBlock input, bool biased) {
             .page_table = biased ? reinterpret_cast<void*>(0x1000) : nullptr,
     };
     AddressSpace address_space{config};
+    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(input.block.get());

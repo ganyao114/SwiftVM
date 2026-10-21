@@ -40,7 +40,7 @@ bool AotGuestEnv::Init(const std::string& guest_elf, const std::string& artifact
         error = fmt::format("artifact rejected (status {}): {}", status, error);
         return false;
     }
-    if (!index_.Build(artifact_path, artifact_, error)) {
+    if (!index_.Build(artifact_path, artifact_, error, report_.mapping)) {
         return false;
     }
     return true;

@@ -128,6 +128,8 @@ std::vector<std::string> Emit(IntrusivePtr<Block> block) {
     AddressSpace address_space{config};
     auto module = address_space.MapModule(
             LocationDescriptor{0x8b80}, LocationDescriptor{0x8ba0}, ModuleConfig{});
+    alloc.SetAllocationUnit(block.get(), nullptr, {});
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -166,6 +168,29 @@ TEST_CASE("integer conversion writes a zero-high resident FPR directly") {
     REQUIRE(Count(faulting, "scvtf d17") == 1);
     REQUIRE(Count(faulting, "eor v17.16b") == 1);
     REQUIRE(Count(faulting, "mov v17.d[0]") == 0);
+}
+
+TEST_CASE("RegAlloc freezes resident memory actions before encoder construction", "[scalar-preparation]") {
+    for (const bool overwrite : {false, true}) {
+        CAPTURE(overwrite);
+        auto block = MakeResidentStore(overwrite);
+        GPRSMask gprs{~((1u << 8) - 1u)}; FPRSMask fprs{0}; fprs.Mark(kTarget);
+        RegAlloc allocation{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        RegisterAllocTestSupport::RunForXmmResidentTest(block.get(), &allocation, true);
+        Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
+                      .has_local_operation = false, .backend_isa = kArm64};
+        AddressSpace space{config};
+        allocation.SetAllocationUnit(block.get(), nullptr, {});
+        allocation.CompleteGPRAllocation(space.GetDefaultModule());
+        const auto plan = allocation.GPRPlanFor(block.get()); REQUIRE(plan);
+        if (overwrite) REQUIRE_FALSE(plan->scalar_preparation);
+        else {
+            REQUIRE(plan->scalar_preparation);
+            for (auto& inst : block->GetInstList())
+                if (inst.GetOp() == OpCode::StoreMemory)
+                    REQUIRE(plan->scalar_preparation->resident.FindMemoryStore(&inst) == kTarget);
+        }
+    }
 }
 
 TEST_CASE("resident scalar FPR reads store to memory without a GPR bridge") {

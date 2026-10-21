@@ -1,15 +1,22 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <new>
 #include <shared_mutex>
+#include <span>
 #include <utility>
+#include <vector>
 #include "runtime/common/types.h"
 #include "runtime/common/virtual_vector.h"
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 namespace swift::runtime {
 
@@ -234,6 +241,52 @@ public:
         return true;
     }
 
+    // Validate the full replay before changing any slot. Preserve values of
+    // matching existing keys and never clear unrelated accepted publications.
+    bool ReplaySlots(std::span<const std::pair<u64, u32>> assignments) {
+        if (assignments.empty()) return true;
+        std::vector<std::pair<u64, u32>> by_index(assignments.begin(), assignments.end());
+        std::sort(by_index.begin(), by_index.end(), [](const auto& a, const auto& b) {
+            return a.second < b.second || (a.second == b.second && a.first < b.first);
+        });
+        for (size_t i = 0; i < by_index.size(); ++i) {
+            const auto [key, index] = by_index[i];
+            if (!key || key != static_cast<size_t>(key) || index >= size - 1 ||
+                (i && by_index[i - 1].second == index && by_index[i - 1].first != key)) return false;
+        }
+        auto by_key = by_index;
+        std::sort(by_key.begin(), by_key.end());
+        for (size_t i = 1; i < by_key.size(); ++i)
+            if (by_key[i - 1].first == by_key[i].first && by_key[i - 1].second != by_key[i].second) return false;
+
+        std::unique_lock<TableLock> guard(lock);
+        for (const auto& [key, index] : by_index)
+            if (entries[index].key && entries[index].key != key) return false;
+        const auto proposed_key = [&](u32 index) -> size_t {
+            const auto found = std::lower_bound(by_index.begin(), by_index.end(), index,
+                [](const auto& item, u32 slot) { return item.second < slot; });
+            return found != by_index.end() && found->second == index
+                    ? static_cast<size_t>(found->first) : entries[index].key;
+        };
+        for (const auto& [key, index] : by_index) {
+            const auto start = Hash(static_cast<size_t>(key));
+            if (start > index) return false;
+            // Lookup stops at the first empty slot. A recorded key must be
+            // reachable in the final table, with no earlier duplicate key.
+            for (u32 probe = start; probe < index; ++probe) {
+                const auto preceding = proposed_key(probe);
+                if (!preceding || preceding == key) return false;
+            }
+        }
+        for (const auto& [key, index] : by_index) {
+            if (entries[index].key) continue;
+            entries[index].value = 0;
+            std::atomic_thread_fence(std::memory_order_release);
+            entries[index].key = static_cast<size_t>(key);
+        }
+        return true;
+    }
+
     template <typename Fn> void ForEachEntry(Fn&& fn) {
         std::shared_lock<TableLock> guard(lock);
         for (u32 index = 0; index < size - 1; ++index) {
@@ -245,6 +298,19 @@ public:
 
     void Clear() {
         std::memset(entries.get(), 0, entry_count * sizeof(TranslateEntry));
+    }
+
+    // No generated reader may remain. Discard anonymous pages without
+    // committing an otherwise untouched address-space-wide table at teardown.
+    [[nodiscard]] int ClearAfterQuiescence() {
+        std::unique_lock<TableLock> guard(lock);
+#if defined(__linux__)
+        const auto& storage = entries.get_deleter();
+        if (madvise(storage.allocation, storage.bytes, MADV_DONTNEED) != 0) return errno;
+#else
+        Clear();
+#endif
+        return 0;
     }
 
     void Reset() {

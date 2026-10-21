@@ -31,6 +31,7 @@ struct AotUnit {
     std::vector<Relocation> relocs{};
     std::vector<SerialFaultSite> fault_sites{};
     std::vector<SerialLinkSite> link_sites{};
+    std::vector<runtime::backend::SerialRegionBranch> region_branches{};
 
     [[nodiscard]] bool ValidFaultSites() const;
     [[nodiscard]] bool ValidLinkSites() const;

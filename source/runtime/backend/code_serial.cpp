@@ -3,17 +3,28 @@
 //
 
 #include "runtime/backend/code_serial.h"
+#include "runtime/backend/function_entry_contract.h"
+#include "runtime/backend/address_space.h"
+#include "runtime/backend/link_manager.h"
 #include "runtime/backend/module.h"
 #include "runtime/common/svm_config.h"
 #include "runtime/backend/riscv64/host_features.h"
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
+#include <limits>
+#include <map>
 #include <optional>
 #include <string_view>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <sys/uio.h>
+#endif
+#include "base/scope_exit.h"
 
 #ifdef __APPLE__
 #include <crt_externs.h>
@@ -74,21 +85,30 @@ HostImageInfo CheckHostImage() {
     info.size = hi - lo;
 #else
     struct Ctx {
+        std::uintptr_t anchor;
         std::uintptr_t lo{UINTPTR_MAX};
         std::uintptr_t hi{0};
         bool done{false};
-    } ctx;
+    } ctx{reinterpret_cast<std::uintptr_t>(&HostImageAnchor)};
     dl_iterate_phdr(
             [](struct dl_phdr_info* pi, size_t, void* raw) -> int {
                 auto* c = static_cast<Ctx*>(raw);
-                // The first entry is the main program.
+                // Bionic may enumerate the linker/vDSO before the executable.
+                // Select the object containing our anchor, not list position.
+                std::uintptr_t lo = UINTPTR_MAX;
+                std::uintptr_t hi = 0;
+                bool contains_anchor = false;
                 for (int i = 0; i < pi->dlpi_phnum; ++i) {
                     const auto& ph = pi->dlpi_phdr[i];
                     if (ph.p_type != PT_LOAD) continue;
                     const auto start = pi->dlpi_addr + ph.p_vaddr;
-                    c->lo = std::min<std::uintptr_t>(c->lo, start);
-                    c->hi = std::max<std::uintptr_t>(c->hi, start + ph.p_memsz);
+                    lo = std::min<std::uintptr_t>(lo, start);
+                    hi = std::max<std::uintptr_t>(hi, start + ph.p_memsz);
+                    contains_anchor |= c->anchor >= start && c->anchor < start + ph.p_memsz;
                 }
+                if (!contains_anchor) return 0;
+                c->lo = lo;
+                c->hi = hi;
                 c->done = true;
                 return 1;  // stop after the main object
             },
@@ -594,6 +614,345 @@ bool BlobReader::Bytes(void* out, std::size_t n) {
     return true;
 }
 
+bool SerialBlock::ValidEntryContract(std::size_t code_size) const {
+    if (!ValidEntryFlags() || guest_end < guest_start ||
+        !pending_flags_contract.IsWellFormed() || code_size > UINT32_MAX || code_size == 0) return false;
+    if (!IsPublished()) {
+        return code_offset == UINT32_MAX && direct_code_offset == UINT32_MAX &&
+               pending_flags_code_offset == UINT32_MAX && continuation_code_offset == UINT32_MAX &&
+               pending_flags_continuation_code_offset == UINT32_MAX &&
+               pending_flags_contract == EdgeFlagsTargetContract{};
+    }
+    for (const auto offset : {code_offset, direct_code_offset, pending_flags_code_offset,
+                             continuation_code_offset, pending_flags_continuation_code_offset}) {
+        if (offset != UINT32_MAX && ((offset & 3u) != 0 || offset >= code_size)) return false;
+    }
+    if ((pending_flags_code_offset != UINT32_MAX) != pending_flags_contract.CanPublishPendingEntry()) return false;
+    return FunctionEntryContract::Restore(ir::Location{guest_start}, ir::Location{guest_end},
+        {.canonical = code_offset, .direct_link = direct_code_offset,
+         .pending_flags = pending_flags_code_offset, .continuation = continuation_code_offset,
+         .pending_flags_continuation = pending_flags_continuation_code_offset},
+        pending_flags_contract, IsLinkable()).IsWellFormed(static_cast<u32>(code_size));
+}
+
+void WriteSerialBlock(BlobWriter& w, const SerialBlock& b) {
+    w.U64(b.guest_start);
+    w.U64(b.guest_end);
+    w.U32(b.code_offset);
+    w.U64(b.guest_bytes_hash);
+    w.U32(b.direct_code_offset);
+    w.U32(b.pending_flags_code_offset);
+    w.U32(b.pending_flags_contract.overwrite_before_observe);
+    w.U8(b.pending_flags_contract.observed_nzcv_mask);
+    w.U8(b.pending_flags_contract.commits_before_fault);
+    w.U8(b.pending_flags_contract.barrier_before_commit);
+    w.U8(b.entry_flags);
+    w.U32(b.continuation_code_offset);
+    w.U32(b.pending_flags_continuation_code_offset);
+}
+
+bool ReadSerialBlock(BlobReader& r, SerialBlock& b, std::size_t code_size) {
+    u8 commits_before_fault{}, barrier_before_commit{};
+    if (!r.U64(b.guest_start) || !r.U64(b.guest_end) || !r.U32(b.code_offset) ||
+        !r.U64(b.guest_bytes_hash) || !r.U32(b.direct_code_offset) ||
+        !r.U32(b.pending_flags_code_offset) || !r.U32(b.pending_flags_contract.overwrite_before_observe) ||
+        !r.U8(b.pending_flags_contract.observed_nzcv_mask) || !r.U8(commits_before_fault) ||
+        !r.U8(barrier_before_commit) || !r.U8(b.entry_flags) || !r.U32(b.continuation_code_offset) ||
+        !r.U32(b.pending_flags_continuation_code_offset) || commits_before_fault > 1 || barrier_before_commit > 1) return false;
+    b.pending_flags_contract.commits_before_fault = commits_before_fault != 0;
+    b.pending_flags_contract.barrier_before_commit = barrier_before_commit != 0;
+    return b.ValidEntryContract(code_size);
+}
+
+namespace {
+void* RegionBranchTarget(CodeCache& cache, const SerialRegionBranch& branch) {
+    switch (branch.kind) {
+        case SerialRegionBranchKind::MergeNZCV: return cache.GetFlagsMergeRegionTrampoline();
+        case SerialRegionBranchKind::MergeNZCVToken: return cache.GetFlagsMergeTokenRegionTrampoline();
+        case SerialRegionBranchKind::MergeMask: return cache.GetFlagsMaskMergeRegionTrampoline(branch.mask);
+        case SerialRegionBranchKind::MergeMaskToken: return cache.GetFlagsMaskMergeTokenRegionTrampoline(branch.mask);
+        case SerialRegionBranchKind::Cycle: return cache.GetCycleReasonRegionTrampoline();
+        case SerialRegionBranchKind::CycleNZCV: return cache.GetCycleFlagsMergeRegionTrampoline();
+        case SerialRegionBranchKind::CycleNZCVToken: return cache.GetCycleFlagsMergeTokenRegionTrampoline();
+        case SerialRegionBranchKind::Return: return cache.GetReturnRegionTrampoline();
+        case SerialRegionBranchKind::ReturnNZCV: return cache.GetReturnFlagsMergeRegionTrampoline();
+        case SerialRegionBranchKind::ReturnNZCVToken: return cache.GetReturnFlagsMergeTokenRegionTrampoline();
+        case SerialRegionBranchKind::Count: return nullptr;
+    }
+    return nullptr;
+}
+}
+
+bool ValidRegionBranches(std::span<const SerialRegionBranch> branches, std::size_t code_size) {
+    size_t previous_end{};
+    for (const auto& branch : branches) {
+        const bool masked = branch.kind == SerialRegionBranchKind::MergeMask ||
+                            branch.kind == SerialRegionBranchKind::MergeMaskToken;
+        if (branch.kind >= SerialRegionBranchKind::Count ||
+            (masked ? branch.mask == 0 || branch.mask >= 15 : branch.mask != 0) ||
+            (branch.code_offset & 3u) != 0 || branch.code_offset < previous_end ||
+            u64(branch.code_offset) + 4 > code_size) return false;
+        previous_end = size_t(branch.code_offset) + 4;
+    }
+    return true;
+}
+
+bool FreezeRegionBranches(CodeCache& cache, const u8* original_rx, std::span<u8> code,
+                          std::vector<SerialRegionBranch>& branches) {
+    if (!branches.empty() || code.size() % 4 || code.size() > UINT32_MAX) return false;
+    if (cache.GetRegion().isa != kArm64) return true;
+    std::vector<SerialRegionBranch> collected;
+    for (size_t offset = 0; offset < code.size(); offset += 4) {
+        u32 instruction{};
+        std::memcpy(&instruction, code.data() + offset, 4);
+        if ((instruction & 0xfc00'0000u) != 0x1400'0000u) continue;
+        const s64 words = (s64(instruction & 0x03ff'ffffu) ^ (s64{1} << 25)) - (s64{1} << 25);
+        const s64 destination = s64(offset) + words * 4;
+        if (destination >= 0 && destination < s64(code.size())) continue;
+        const auto target = reinterpret_cast<uintptr_t>(original_rx) + destination;
+        bool found{};
+        for (u8 kind = 0; kind < u8(SerialRegionBranchKind::Count) && !found; ++kind) {
+            const auto type = static_cast<SerialRegionBranchKind>(kind);
+            const bool masked = type == SerialRegionBranchKind::MergeMask || type == SerialRegionBranchKind::MergeMaskToken;
+            for (u8 mask = masked ? 1 : 0; mask < (masked ? 15 : 1); ++mask) {
+                SerialRegionBranch branch{static_cast<u32>(offset), type, mask};
+                const auto* entry = RegionBranchTarget(cache, branch);
+                if (entry && reinterpret_cast<uintptr_t>(entry) == target) {
+                    collected.push_back(branch);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        // An arbitrary external branch never becomes an admitted recipe.
+        if (!found) return false;
+    }
+    for (const auto& branch : collected) {
+        const u32 placeholder = 0x1400'0000u;
+        std::memcpy(code.data() + branch.code_offset, &placeholder, 4);
+    }
+    branches = std::move(collected);
+    return true;
+}
+
+bool RebindRegionBranches(CodeCache& cache, const u8* destination_rx, std::span<u8> code,
+                          std::span<const SerialRegionBranch> branches) {
+    if (!ValidRegionBranches(branches, code.size()) ||
+        (!branches.empty() && cache.GetRegion().isa != kArm64)) return false;
+    // Validate the complete set before changing any instruction.
+    for (const auto& branch : branches) {
+        u32 instruction{};
+        std::memcpy(&instruction, code.data() + branch.code_offset, 4);
+        const auto* target = RegionBranchTarget(cache, branch);
+        const auto site = reinterpret_cast<uintptr_t>(destination_rx) + branch.code_offset;
+        if (instruction != 0x1400'0000u || !target || !cache.GetRegion().ContainsRx(target) ||
+            !Imm26Reachable(reinterpret_cast<const void*>(site), target)) return false;
+    }
+    for (const auto& branch : branches) {
+        const auto target = reinterpret_cast<uintptr_t>(RegionBranchTarget(cache, branch));
+        const auto site = reinterpret_cast<uintptr_t>(destination_rx) + branch.code_offset;
+        const auto delta = static_cast<intptr_t>(target) - static_cast<intptr_t>(site);
+        const u32 instruction = 0x1400'0000u | (u32(delta / 4) & 0x03ff'ffffu);
+        std::memcpy(code.data() + branch.code_offset, &instruction, 4);
+    }
+    return true;
+}
+
+void WriteRegionBranches(BlobWriter& w, std::span<const SerialRegionBranch> branches) {
+    w.U32(static_cast<u32>(branches.size()));
+    for (const auto& branch : branches) {
+        w.U32(branch.code_offset); w.U8(static_cast<u8>(branch.kind)); w.U8(branch.mask);
+    }
+}
+
+bool ReadRegionBranches(BlobReader& r, std::vector<SerialRegionBranch>& branches, std::size_t code_size) {
+    u32 count{};
+    if (!r.U32(count) || count > r.Remaining() / 6) return false;
+    branches.resize(count);
+    for (auto& branch : branches) {
+        u8 kind{};
+        if (!r.U32(branch.code_offset) || !r.U8(kind) || !r.U8(branch.mask)) return false;
+        branch.kind = static_cast<SerialRegionBranchKind>(kind);
+    }
+    return ValidRegionBranches(branches, code_size);
+}
+
+bool ValidSerialLinkSites(std::span<const SerialLinkSite> sites,
+                          std::span<const SerialRegionBranch> branches, std::size_t code_size) {
+    if (!ValidRegionBranches(branches, code_size)) return false;
+    std::map<u32, const SerialLinkSite*> bypasses;
+    std::map<u32, u64> patches;
+    const auto word = [&](u32 offset, u64 identity) {
+        const auto [found, inserted] = patches.emplace(offset, identity);
+        return inserted || found->second == identity;
+    };
+    size_t previous_end{};
+    for (const auto& site : sites) {
+        const bool arm = site.unlinked_instruction == 0x94000000u;
+        const bool rv = (site.unlinked_instruction & 0xfffu) == (0x6fu | (28u << 7));
+        if ((!arm && !rv) || site.kind >= u8(LinkSiteKind::Count) ||
+            site.code_offset < previous_end || (site.code_offset & 3u) ||
+            u64(site.code_offset) + 4 > code_size || !site.ValidFlagsBypass(code_size) ||
+            (rv && site.HasFlagsBypass()) || !word(site.code_offset, u64{1} << 63)) return false;
+        previous_end = size_t(site.code_offset) + 4;
+        if (!site.HasFlagsBypass()) continue;
+        const auto [prior, inserted] = bypasses.emplace(site.flags_bypass_offset, &site);
+        if (!inserted) {
+            const auto& other = *prior->second;
+            if (site.flags_bypass_resume_offset != other.flags_bypass_resume_offset ||
+                site.flags_bypass_instruction != other.flags_bypass_instruction ||
+                site.flags_bypass_linked_instruction != other.flags_bypass_linked_instruction ||
+                site.flags_merge_branch_offset != other.flags_merge_branch_offset || site.edge_flags != other.edge_flags) return false;
+        }
+        for (u64 offset = site.flags_bypass_offset; offset < site.flags_bypass_resume_offset; offset += 4)
+            if (!word(static_cast<u32>(offset), u64(site.flags_bypass_offset) + 1)) return false;
+    }
+    for (const auto& branch : branches) if (!word(branch.code_offset, (u64{1} << 62) + branch.code_offset)) return false;
+    return true;
+}
+
+void WriteSerialLinkSite(BlobWriter& w, const SerialLinkSite& site) {
+    w.U32(site.code_offset); w.U64(site.guest_target); w.U8(site.kind);
+    w.U32(site.flags_bypass_offset); w.U32(site.flags_bypass_resume_offset);
+    w.U32(site.flags_bypass_instruction); w.U32(site.flags_bypass_linked_instruction);
+    w.U32(site.flags_merge_branch_offset); w.U32(site.edge_flags.valid_nzcv_mask);
+    w.U8(static_cast<u8>(site.edge_flags.carry_polarity));
+    w.U8(static_cast<u8>(site.edge_flags.producer)); w.U32(site.unlinked_instruction);
+}
+
+bool ReadSerialLinkSite(BlobReader& r, SerialLinkSite& site, std::size_t code_size) {
+    u8 carry{}, producer{};
+    if (!r.U32(site.code_offset) || !r.U64(site.guest_target) || !r.U8(site.kind) ||
+        !r.U32(site.flags_bypass_offset) || !r.U32(site.flags_bypass_resume_offset) ||
+        !r.U32(site.flags_bypass_instruction) || !r.U32(site.flags_bypass_linked_instruction) ||
+        !r.U32(site.flags_merge_branch_offset) || !r.U32(site.edge_flags.valid_nzcv_mask) ||
+        !r.U8(carry) || !r.U8(producer) || !r.U32(site.unlinked_instruction)) return false;
+    site.edge_flags.carry_polarity = static_cast<EdgeCarryPolarity>(carry);
+    site.edge_flags.producer = static_cast<EdgeFlagsProducer>(producer);
+    return (site.code_offset & 3u) == 0 && u64(site.code_offset) + 4 <= code_size &&
+           site.kind < u8(LinkSiteKind::Count) && site.ValidFlagsBypass(code_size);
+}
+
+bool CaptureSerialCode(Module& module, const u8* allocation, u32 code_size,
+                       const HostImageInfo& image, u64 window, SerialUnit& output, std::string* error) {
+    const auto fail = [&](const char* reason) { if (error) *error = reason; return false; };
+    auto* cache = module.GetCodeCache(const_cast<u8*>(allocation));
+    FaultEntry owner;
+    std::vector<FaultEntry> faults;
+    if (!cache || !module.LookupCodeAllocation(allocation, owner, &faults) || owner.host_start != allocation ||
+        static_cast<size_t>(owner.host_end - owner.host_start) != code_size) return fail("code allocation identity changed");
+    const auto& region = cache->GetRegion();
+    const auto base = static_cast<u32>(allocation - region.rx_base);
+    const auto runtime_sites = module.GetAddressSpace().GetLinkManager().QuerySourceSites({&module, allocation});
+    std::vector<SerialLinkSite> links = region.isa == kArm64 ? module.QuerySerialLinkSites(allocation) : std::vector<SerialLinkSite>{};
+    std::sort(links.begin(), links.end(), [](const auto& a, const auto& b) { return a.code_offset < b.code_offset; });
+    if (region.isa == kArm64 && links.size() != runtime_sites.size()) return fail("source flags recipe is incomplete");
+    size_t record_index{};
+    for (const auto& record : runtime_sites) {
+        if (record.site.region_id != region.id || record.site.offset < base) return fail("source site leaves its allocation");
+        SerialLinkSite site{.code_offset = record.site.offset - base, .guest_target = record.guest_target,
+            .kind = u8(record.kind), .unlinked_instruction = record.unlinked_instruction};
+        if (region.isa == kArm64) {
+            const auto& emitted = links[record_index++];
+            if (emitted.code_offset != site.code_offset || emitted.guest_target != site.guest_target ||
+                emitted.kind != site.kind || emitted.edge_flags != record.edge_flags ||
+                emitted.flags_bypass_offset != (record.flags_bypass_offset == UINT32_MAX ? UINT32_MAX : record.flags_bypass_offset - base) ||
+                emitted.flags_bypass_instruction != record.flags_bypass_instruction)
+                return fail("captured recipe differs from its live source identity");
+        } else links.push_back(site);
+    }
+    std::sort(links.begin(), links.end(), [](const auto& a, const auto& b) { return a.code_offset < b.code_offset; });
+    if (!ValidSerialLinkSites(links, {}, code_size)) return fail("invalid captured source recipes");
+    std::map<u32, u32> patches;
+    const auto patch = [&](u32 offset, u32 instruction) {
+        const auto [found, inserted] = patches.emplace(offset, instruction);
+        return inserted || found->second == instruction;
+    };
+    for (const auto& site : links) {
+        if (!patch(site.code_offset, site.unlinked_instruction)) return fail("source patch collision");
+        if (site.HasFlagsBypass() && (!patch(site.flags_bypass_offset, site.flags_bypass_instruction) ||
+            (site.flags_merge_branch_offset != UINT32_MAX && !patch(site.flags_merge_branch_offset, 0x14000000u))))
+            return fail("flags patch collision");
+    }
+    std::vector<u8> code(code_size);
+    const auto* original = cache->GetRWPtr(allocation);
+    size_t cursor{};
+    for (const auto& [offset, instruction] : patches) {
+        std::memcpy(code.data() + cursor, original + cursor, offset - cursor);
+        std::memcpy(code.data() + offset, &instruction, 4);
+        cursor = size_t(offset) + 4;
+    }
+    std::memcpy(code.data() + cursor, original + cursor, code.size() - cursor);
+    std::vector<SerialRegionBranch> branches;
+    if (!FreezeRegionBranches(*cache, allocation, code, branches) ||
+        !ValidSerialLinkSites(links, branches, code_size)) return fail("shared branch and source recipes overlap");
+    const auto scan = ScanCodeUnit(code, image, window, {}, region.isa);
+    if (!scan.ok) { if (error) *error = scan.reject_reason; return false; }
+    std::vector<SerialFaultSite> serial_faults;
+    for (const auto& fault : faults) {
+        if (fault.host_start < allocation || fault.host_end > allocation + code_size ||
+            (fault.recovery && (fault.recovery < allocation || fault.recovery >= allocation + code_size)))
+            return fail("fault metadata leaves its allocation");
+        serial_faults.push_back({fault.guest_loc, u32(fault.host_start - allocation), u32(fault.host_end - allocation),
+            fault.recovery ? u32(fault.recovery - allocation) : UINT32_MAX, u8(fault.recovery_kind)});
+    }
+    output.code = std::move(code); output.link_sites = std::move(links);
+    output.region_branches = std::move(branches); output.fault_sites = std::move(serial_faults);
+    output.relocs = scan.relocs;
+    return true;
+}
+
+bool RegisterArmSerialLinks(Module& module, const CodeBuffer& buffer, std::span<const SerialLinkSite> sites) {
+    auto* cache = module.GetCodeCache(buffer.exec_data);
+    if (!cache || !ValidSerialLinkSites(sites, {}, buffer.size)) return false;
+    const auto& region = cache->GetRegion();
+    if (region.isa != kArm64) return sites.empty();
+    const auto encode = [](const u8* from, const void* to, bool call) -> std::optional<u32> {
+        if (!to || !Imm26Reachable(from, to)) return std::nullopt;
+        const auto delta = reinterpret_cast<intptr_t>(to) - reinterpret_cast<intptr_t>(from);
+        return (call ? 0x94000000u : 0x14000000u) | (u32(delta / 4) & 0x03ffffffu);
+    };
+    std::vector<LinkSignalPatchSite> resolved;
+    resolved.reserve(sites.size());
+    for (const auto& site : sites) {
+        u32 instruction{};
+        std::memcpy(&instruction, buffer.rw_data + site.code_offset, 4);
+        auto* rx = buffer.exec_data + site.code_offset;
+        const auto branch = encode(rx, site.HasFlagsBypass() ? cache->GetPendingFlagsRegionTrampoline() : cache->GetRegionTrampoline(), true);
+        if (instruction != 0x94000000u || !branch) return false;
+        LinkFlagsBypassPatch bypass{};
+        if (site.HasFlagsBypass()) {
+            std::memcpy(&instruction, buffer.rw_data + site.flags_bypass_offset, 4);
+            if (instruction != site.flags_bypass_instruction) return false;
+            u32 linked = site.flags_bypass_linked_instruction;
+            if (!linked) linked = 0x14000000u | ((site.flags_bypass_resume_offset - site.flags_bypass_offset) / 4);
+            bypass = {buffer.exec_data + site.flags_bypass_offset, buffer.rw_data + site.flags_bypass_offset,
+                site.flags_bypass_instruction, linked};
+            if (site.flags_merge_branch_offset != UINT32_MAX) {
+                std::memcpy(&instruction, buffer.rw_data + site.flags_merge_branch_offset, 4);
+                if (instruction != 0x14000000u || !encode(buffer.exec_data + site.flags_merge_branch_offset,
+                                                        cache->GetFlagsMergeRegionTrampoline(), false)) return false;
+            }
+        }
+        resolved.push_back({region, rx, buffer.rw_data + site.code_offset, *branch, bypass});
+    }
+    for (size_t index = 0; index < sites.size(); ++index) {
+        const auto& site = sites[index];
+        const auto& resolved_site = resolved[index];
+        std::memcpy(buffer.rw_data + site.code_offset, &resolved_site.unlinked_bl, 4);
+        if (site.HasFlagsBypass()) {
+            std::memcpy(buffer.rw_data + site.flags_bypass_offset, &resolved_site.flags_bypass.linked_instruction, 4);
+            if (site.flags_merge_branch_offset != UINT32_MAX) {
+                const auto branch = encode(buffer.exec_data + site.flags_merge_branch_offset, cache->GetFlagsMergeRegionTrampoline(), false);
+                std::memcpy(buffer.rw_data + site.flags_merge_branch_offset, &*branch, 4);
+            }
+        }
+        if (!module.GetAddressSpace().GetLinkManager().RegisterSite({region.id, buffer.offset + site.code_offset},
+            site.guest_target, {&module, buffer.exec_data}, &resolved_site, static_cast<LinkSiteKind>(site.kind), site.edge_flags)) return false;
+    }
+    return true;
+}
+
 void WriteUnit(BlobWriter& w, const SerialUnit& unit) {
     w.U64(unit.guest_start);
     w.U64(unit.feature_hash);
@@ -602,17 +961,7 @@ void WriteUnit(BlobWriter& w, const SerialUnit& unit) {
     w.Bytes(unit.code.data(), unit.code.size());
     w.U32(static_cast<u32>(unit.blocks.size()));
     for (const auto& b : unit.blocks) {
-        w.U64(b.guest_start);
-        w.U64(b.guest_end);
-        w.U32(b.code_offset);
-        w.U64(b.guest_bytes_hash);
-        w.U32(b.direct_code_offset);
-        w.U32(b.pending_flags_code_offset);
-        w.U32(b.pending_flags_contract.overwrite_before_observe);
-        w.U8(b.pending_flags_contract.observed_nzcv_mask);
-        w.U8(b.pending_flags_contract.commits_before_fault);
-        w.U8(b.pending_flags_contract.barrier_before_commit);
-        w.U8(b.entry_flags);
+        WriteSerialBlock(w, b);
     }
     w.U32(static_cast<u32>(unit.relocs.size()));
     for (const auto& r : unit.relocs) {
@@ -626,18 +975,7 @@ void WriteUnit(BlobWriter& w, const SerialUnit& unit) {
     }
     w.U32(static_cast<u32>(unit.link_sites.size()));
     for (const auto& site : unit.link_sites) {
-        w.U32(site.code_offset);
-        w.U64(site.guest_target);
-        w.U8(site.kind);
-        w.U32(site.flags_bypass_offset);
-        w.U32(site.flags_bypass_resume_offset);
-        w.U32(site.flags_bypass_instruction);
-        w.U32(site.flags_bypass_linked_instruction);
-        w.U32(site.flags_merge_branch_offset);
-        w.U32(site.edge_flags.valid_nzcv_mask);
-        w.U8(static_cast<u8>(site.edge_flags.carry_polarity));
-        w.U8(static_cast<u8>(site.edge_flags.producer));
-        w.U32(site.unlinked_instruction);
+        WriteSerialLinkSite(w, site);
     }
     w.U32(static_cast<u32>(unit.fault_sites.size()));
     for (const auto& site : unit.fault_sites) {
@@ -647,6 +985,7 @@ void WriteUnit(BlobWriter& w, const SerialUnit& unit) {
         w.U32(site.recovery_offset);
         w.U8(site.recovery_kind);
     }
+    WriteRegionBranches(w, unit.region_branches);
 }
 
 bool ReadUnit(BlobReader& r, SerialUnit& unit) {
@@ -663,43 +1002,12 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit) {
     if (!r.Bytes(unit.code.data(), code_size)) {
         return false;
     }
-    if (!r.U32(count) || count > r.Remaining() / 8) {
+    if (!r.U32(count) || count > r.Remaining() / kSerialBlockBytes) {
         return false;
     }
     unit.blocks.resize(count);
     for (auto& b : unit.blocks) {
-        u8 observed_nzcv_mask{};
-        u8 commits_before_fault{};
-        u8 barrier_before_commit{};
-        if (!r.U64(b.guest_start) || !r.U64(b.guest_end) || !r.U32(b.code_offset) ||
-            !r.U64(b.guest_bytes_hash) || !r.U32(b.direct_code_offset) ||
-            !r.U32(b.pending_flags_code_offset) ||
-            !r.U32(b.pending_flags_contract.overwrite_before_observe) ||
-            !r.U8(observed_nzcv_mask) || !r.U8(commits_before_fault) ||
-            !r.U8(barrier_before_commit) || !r.U8(b.entry_flags)) {
-            return false;
-        }
-        b.pending_flags_contract.observed_nzcv_mask = observed_nzcv_mask;
-        b.pending_flags_contract.commits_before_fault = commits_before_fault;
-        b.pending_flags_contract.barrier_before_commit = barrier_before_commit;
-        if (commits_before_fault > 1 || barrier_before_commit > 1 ||
-            !b.ValidEntryFlags() ||
-            (!b.IsPublished() && (b.IsLinkable() || b.code_offset != UINT32_MAX)) ||
-            !b.pending_flags_contract.IsWellFormed() || (b.IsPublished() && b.code_offset >= code_size) ||
-            b.guest_end < b.guest_start ||
-            (b.direct_code_offset != UINT32_MAX &&
-             ((b.direct_code_offset & 3u) != 0 || b.direct_code_offset >= code_size))) {
-            return false;
-        }
-        const bool has_pending_flags =
-                b.pending_flags_code_offset != UINT32_MAX;
-        if ((has_pending_flags &&
-             ((b.pending_flags_code_offset & 3u) != 0 ||
-              b.pending_flags_code_offset >= code_size)) ||
-            has_pending_flags !=
-                    b.pending_flags_contract.CanPublishPendingEntry()) {
-            return false;
-        }
+        if (!ReadSerialBlock(r, b, code_size)) return false;
     }
     if (!r.U32(count) || count > r.Remaining() / 8) {
         return false;
@@ -715,31 +1023,14 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit) {
         rel.kind = static_cast<RelocKind>(kind);
         rel.use = static_cast<RelocUse>(use);
     }
-    if (!r.U32(count) || count > r.Remaining() / 39) {
+    if (!r.U32(count) || count > r.Remaining() / kSerialLinkSiteBytes) {
         return false;
     }
     unit.link_sites.resize(count);
     u32 previous_offset{};
     bool first = true;
     for (auto& site : unit.link_sites) {
-        u8 carry_polarity{};
-        u8 producer{};
-        if (!r.U32(site.code_offset) || !r.U64(site.guest_target) ||
-            !r.U8(site.kind) || !r.U32(site.flags_bypass_offset) ||
-            !r.U32(site.flags_bypass_resume_offset) ||
-            !r.U32(site.flags_bypass_instruction) ||
-            !r.U32(site.flags_bypass_linked_instruction) ||
-            !r.U32(site.flags_merge_branch_offset) ||
-            !r.U32(site.edge_flags.valid_nzcv_mask) ||
-            !r.U8(carry_polarity) || !r.U8(producer) || !r.U32(site.unlinked_instruction)) {
-            return false;
-        }
-        site.edge_flags.carry_polarity =
-                static_cast<EdgeCarryPolarity>(carry_polarity);
-        site.edge_flags.producer = static_cast<EdgeFlagsProducer>(producer);
-        if ((site.code_offset & 3u) != 0 ||
-            static_cast<size_t>(site.code_offset) + sizeof(u32) > code_size ||
-            (!first && site.code_offset <= previous_offset)) {
+        if (!ReadSerialLinkSite(r, site, code_size) || (!first && site.code_offset <= previous_offset)) {
             return false;
         }
         if (!site.ValidFlagsBypass(code_size)) {
@@ -783,6 +1074,12 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit) {
             return false;
         }
     }
+    if (!ReadRegionBranches(r, unit.region_branches, code_size)) return false;
+    for (const auto& branch : unit.region_branches) {
+        u32 instruction{};
+        std::memcpy(&instruction, unit.code.data() + branch.code_offset, 4);
+        if (instruction != 0x1400'0000u) return false;
+    }
     return true;
 }
 
@@ -801,6 +1098,75 @@ u64 HashBytes(const void* data, std::size_t size, u64 seed) {
 }
 
 u64 HashU64(u64 value, u64 seed) { return HashBytes(&value, sizeof(value), seed); }
+
+namespace {
+bool CopyGuestThroughPipe(void* output, const void* input, size_t size) {
+    int descriptors[2];
+#ifdef __linux__
+    if (pipe2(descriptors, O_CLOEXEC | O_NONBLOCK) != 0) return false;
+#else
+    if (pipe(descriptors) != 0) return false;
+#endif
+    const auto close_pipe = ScopeExit([&] { close(descriptors[0]); close(descriptors[1]); });
+#ifndef __linux__
+    for (const auto descriptor : descriptors)
+        if (fcntl(descriptor, F_SETFD, FD_CLOEXEC) != 0 ||
+            fcntl(descriptor, F_SETFL, O_NONBLOCK) != 0) return false;
+#endif
+    auto* destination = static_cast<u8*>(output);
+    auto* source = static_cast<const u8*>(input);
+    while (size) {
+        // POSIX guarantees this much atomic pipe capacity, including macOS.
+        const auto chunk = std::min(size, size_t{512});
+        ssize_t copied;
+        do { copied = write(descriptors[1], source, chunk); } while (copied < 0 && errno == EINTR);
+        if (copied != static_cast<ssize_t>(chunk)) return false;
+        size_t received{};
+        while (received < chunk) {
+            ssize_t count;
+            do { count = read(descriptors[0], destination + received, chunk - received); }
+            while (count < 0 && errno == EINTR);
+            if (count <= 0) return false;
+            received += static_cast<size_t>(count);
+        }
+        source += chunk; destination += chunk; size -= chunk;
+    }
+    return true;
+}
+}
+
+bool HashGuestMemory(const void* base, u64 mask, u64 start, u64 end, u64& out) {
+    if (end <= start || end - start > (1u << 20)) return false;
+    const u64 effective_mask = mask ? mask : UINT64_MAX;
+    const u64 offset = start & effective_mask, length = end - start;
+    if (mask && mask != UINT64_MAX &&
+        (length > mask + 1 - offset || (start & ~mask) != ((end - 1) & ~mask))) return false;
+    const auto bias = reinterpret_cast<uintptr_t>(base);
+    if (offset > std::numeric_limits<uintptr_t>::max() - bias) return false;
+    auto address = bias + static_cast<uintptr_t>(offset);
+    if (length - 1 > std::numeric_limits<uintptr_t>::max() - address) return false;
+    std::array<u8, 4096> bytes;
+    u64 hash = 0xCBF29CE484222325ull;
+    size_t remaining = static_cast<size_t>(length);
+    while (remaining) {
+        const auto chunk = std::min(remaining, bytes.size());
+        bool copied{};
+#ifdef __linux__
+        iovec local{bytes.data(), chunk}, remote{reinterpret_cast<void*>(address), chunk};
+        ssize_t count;
+        do { count = process_vm_readv(getpid(), &local, 1, &remote, 1, 0); }
+        while (count < 0 && errno == EINTR);
+        if (count == static_cast<ssize_t>(chunk)) copied = true;
+        else if (count >= 0 || (errno != ENOSYS && errno != EPERM && errno != EACCES)) return false;
+#endif
+        if (!copied && !CopyGuestThroughPipe(bytes.data(), reinterpret_cast<const void*>(address), chunk))
+            return false;
+        hash = HashBytes(bytes.data(), chunk, hash);
+        address += chunk; remaining -= chunk;
+    }
+    out = hash;
+    return true;
+}
 
 namespace {
 constexpr u64 kFnvOffset = 0xCBF29CE484222325ull;
@@ -927,7 +1293,7 @@ u64 ComputeConfigHash(const Config& config) {
     // Config directly without an SVM_SSE_AFP_NAN environment variable.
     h = HashU64(config.sse_afp_nan ? 1 : 0, h);
     h = HashU64(config.mem_hostbase_fold ? 1 : 0, h);
-    h = HashU64(config.induct_tie ? 1 : 0, h);
+    h = HashU64(config.rcpc_fault_emulate ? 1 : 0, h);
     // OFF 沿用既有 cache direct；ON 额外隔离不同 unit 边界和本地分支。
     if (config.region_edges) {
         h = HashU64(1, h);

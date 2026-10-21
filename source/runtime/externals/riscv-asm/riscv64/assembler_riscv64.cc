@@ -16,6 +16,7 @@
 
 #include "assembler_riscv64.h"
 #include <ostream>
+#include <cstdlib>
 #include <algorithm>
 
 namespace swift {
@@ -1642,7 +1643,10 @@ Riscv64Assembler::BranchCondition Riscv64Assembler::Branch::OppositeCondition(
       return kCondLEU;
     case kUncond:
         assert(false);
+        break;
   }
+  // Unsupported conditions must not fall off in NDEBUG builds.
+  std::abort();
 }
 
 Riscv64Assembler::Branch::Type Riscv64Assembler::Branch::GetType() const { return type_; }

@@ -9,6 +9,9 @@
 
 namespace swift::runtime {
 class MemoryInterface;
+namespace ir {
+struct UniformInfo;
+}
 }
 
 namespace swift::translator::x86 {
@@ -22,6 +25,8 @@ struct FunctionRegionDecodeConfig {
     bool sse_afp_nan{};
     bool native_memory{};
     runtime::FeatureSet features{};
+    const runtime::ir::UniformInfo* uniform_info{};
+    bool bound_backend{};
     runtime::TsoMode tso_mode{runtime::TsoMode::Relaxed};
     VAddr decode_limit{};
     std::function<bool(runtime::LocationDescriptor)> local_target;

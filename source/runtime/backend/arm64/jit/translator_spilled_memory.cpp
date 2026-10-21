@@ -26,10 +26,6 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
                     return false;
                 }
             }
-            if (!memory_state.use_memory_base &&
-                context.IsConstAddressCached(address.Id())) {
-                return true;
-            }
             if (allow_writeback && address.Def()) {
                 const auto update = memory_state.use_memory_base
                         ? MatchBiasedMemoryUpdate(address.Def())
@@ -38,12 +34,12 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
                     return false;
                 }
             }
-            return !context.PinnedValueGPR(address, inst, pinned_gprs).has_value();
+            return !context.PlannedGPR<XRegister>(address, inst).has_value();
         }
 
         const auto side_reads = [&](const ir::DataClass& side) {
             return side.IsValue() && side.value.Id() == *pending &&
-                   !context.PinnedValueGPR(side.value, inst, pinned_gprs).has_value();
+                   !context.PlannedGPR<XRegister>(side.value, inst).has_value();
         };
         return side_reads(operand.GetLeft()) ||
                side_reads(operand.GetRight());
@@ -53,9 +49,9 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
         case ir::OpCode::LoadMemory: {
             const auto result = ir::Value{inst};
             if ((context.IsSpilled(result) &&
-                 !context.PinnedValueGPR(result, inst, pinned_gprs) &&
+                 !context.PlannedGPR<XRegister>(result, inst) &&
                  context.HasSpillReloadAtDefinition(inst)) ||
-                pinned_load_updates.contains(inst)) {
+                gpr_plan->load_updates.contains(inst)) {
                 return std::nullopt;
             }
             const auto operand = inst->GetArg<ir::Operand>(0);
@@ -73,18 +69,18 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
             }
             if (value.Id() != *pending ||
                 ir::IsFloatValueType(value.Type()) ||
-                resident_scalar_fpr_analysis.FindMemoryStore(inst)) {
+                ScalarPreparation().resident.FindMemoryStore(inst)) {
                 return std::nullopt;
             }
             const u32 width = ir::GetValueSizeByte(value.Type());
             if (width <= sizeof(u32)) {
-                const auto residence = pinned_gprs.FixedHomeForUse(
+                const auto residence = FixedGPRHomeForUse(
                         value, inst);
                 if (CanUseZeroStoreRegister(value) ||
                     (residence && residence->width == width) ||
                     (value.Def() &&
-                     (memory_state.pinned_memory_values.contains(value.Def()) ||
-                      pinned_gprs.HasLowView(value.Def())))) {
+                     (gpr_plan->memory_values.contains(value.Def()) ||
+                      HasGPRLowView(value.Def())))) {
                     return std::nullopt;
                 }
             }

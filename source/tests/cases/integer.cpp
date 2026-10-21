@@ -245,7 +245,7 @@ TEST_CASE("integer immediates fold only into proven single-use ALU consumers") {
         ConstFoldingPass::Run(&block, features);
         REQUIRE(result.Def()->GetOp() == OpCode::Neg);
         REQUIRE(result.Def()->GetArg<Value>(0).Def() == source.Def());
-        REQUIRE(result.Def()->GetPseudoOperations(OpCode::SaveFlags).size() == 1);
+        REQUIRE(CollectPseudoOperations(block, result.Def(), OpCode::SaveFlags).size() == 1);
         REQUIRE(zero.Def()->GetUses(false) == 0);
     }
 
@@ -277,6 +277,7 @@ TEST_CASE("integer immediates fold only into proven single-use ALU consumers") {
                        address_space.GetTrampolines().GetGPRRegs(),
                        address_space.GetTrampolines().GetFPRRegs(), features};
         RegisterAllocPass::Run(block, &alloc, false, features);
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
@@ -352,6 +353,7 @@ TEST_CASE("operand copy kill is a fail-closed Mul emitter fast path") {
                        address_space.GetTrampolines().GetGPRRegs(),
                        address_space.GetTrampolines().GetFPRRegs(), features};
         RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
@@ -523,6 +525,7 @@ TEST_CASE("zero store zr is value-only and fail-closed") {
         if (force_spill) {
             alloc.MapMemSpill(stored.Id(), SpillSlot{0});
         }
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
@@ -1259,8 +1262,8 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
 
     FlagsEliminationPass::Run(&overwritten, nullptr, FeatureSet{});
 
-    REQUIRE(old_result.Def()->GetPseudoOperations(OpCode::SaveFlags).empty());
-    auto new_pseudos = new_result.Def()->GetPseudoOperations(OpCode::SaveFlags);
+    REQUIRE(CollectPseudoOperations(overwritten, old_result.Def(), OpCode::SaveFlags).empty());
+    auto new_pseudos = CollectPseudoOperations(overwritten, new_result.Def(), OpCode::SaveFlags);
     REQUIRE(new_pseudos.size() == 1);
     REQUIRE(new_pseudos[0] == new_save);
     REQUIRE(new_pseudos[0]->GetArg<Flags>(1) == Flags::NZ);
@@ -1284,9 +1287,9 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
 
     const bool carry_elim_off =
             !swift::runtime::GetSvmConfig().flag_carry_elim;
-    REQUIRE(c_old.Def()->GetPseudoOperations(OpCode::SaveFlags).size() ==
+    REQUIRE(CollectPseudoOperations(carry_overwritten, c_old.Def(), OpCode::SaveFlags).size() ==
             (carry_elim_off ? 1 : 0));
-    REQUIRE(c_new.Def()->GetPseudoOperations(OpCode::SaveFlags).size() == 1);
+    REQUIRE(CollectPseudoOperations(carry_overwritten, c_new.Def(), OpCode::SaveFlags).size() == 1);
     size_t carry_save_count = 0;
     for (auto& inst : carry_overwritten.GetInstList()) {
         carry_save_count += inst.GetOp() == OpCode::SaveFlags;
@@ -1305,7 +1308,7 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
 
     // Sbb reads the preceding carry, so its producer stays live. Its mask must
     // remain whole: the JIT cannot safely turn this into a C-only pseudo.
-    auto carry_pseudos = carry_source.Def()->GetPseudoOperations(OpCode::SaveFlags);
+    auto carry_pseudos = CollectPseudoOperations(carry_read, carry_source.Def(), OpCode::SaveFlags);
     REQUIRE(carry_pseudos.size() == 1);
     REQUIRE(carry_pseudos[0] == carry_save);
     REQUIRE(carry_pseudos[0]->GetArg<Flags>(1) == Flags::All);

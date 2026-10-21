@@ -75,7 +75,7 @@ void Interpreter::WritePairResult(InterpStack& stack,
                                   const HostPairResult& result,
                                   ir::OpCode secondary) {
     WriteScalar(stack, inst, result.first);
-    const auto secondary_results = inst->GetPseudoOperations(secondary);
+    const auto secondary_results = ir::CollectPseudoOperations(*block, inst, secondary);
     ASSERT(secondary_results.size() <= 1);
     if (!secondary_results.empty()) {
         WriteScalar(stack, secondary_results.front(), result.second);

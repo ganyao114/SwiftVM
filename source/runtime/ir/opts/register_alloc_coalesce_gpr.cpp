@@ -72,6 +72,13 @@ bool HasKnownWWrite(Value value) {
     if (def->GetOp() == OpCode::GetHostGPR || def->IsBitCastOperation()) {
         return false;
     }
+    if (def->GetOp() == OpCode::LoadImm) {
+        // A constant that fits in 32 bits materializes with the high
+        // half zero under either the W or X encoding, so it is a known
+        // W write even though its return type is U64.  Keep this in
+        // lockstep with the planner/verifier copies of this predicate.
+        return (def->GetArg<Imm>(0).Get() >> 32) == 0;
+    }
     if (def->GetOp() == OpCode::BitExtract &&
         GetValueSizeByte(def->ReturnType()) == sizeof(u32) &&
         def->GetArg<Imm>(1).Get() == 0 &&
@@ -81,6 +88,17 @@ bool HasKnownWWrite(Value value) {
     if (def->GetOp() == OpCode::ZeroExtend32To64 &&
         GetValueSizeByte(def->GetArg<Value>(0).Type()) == sizeof(u32)) {
         return HasKnownWWrite(def->GetArg<Value>(0));
+    }
+    // A narrow *unsigned* load materializes through a W-form load, which
+    // zeroes bits [63:32] exactly like a 32-bit def.  Signed narrow loads
+    // do not qualify: their register holds a sign-extended pattern, not
+    // the zero-extended one.  This stays an opcode whitelist, not a size
+    // test; keep it in lockstep with the planner/verifier copies.
+    if ((def->GetOp() == OpCode::LoadMemory ||
+         def->GetOp() == OpCode::LoadMemoryTSO) &&
+        (def->ReturnType() == ValueType::U8 ||
+         def->ReturnType() == ValueType::U16)) {
+        return true;
     }
     return GetValueSizeByte(def->ReturnType()) == sizeof(u32);
 }
@@ -179,12 +197,12 @@ Vector<u32> CollectWidthChainUseEnds(Block* lir_block, u32 instr_count) {
     auto& list = lir_block->GetInstList();
     Vector<u32> use_end(instr_count);
     for (auto& inst : list) {
-        for (auto value : inst.GetValues()) {
+        inst.ForEachValue([&](Value value) {
             value = ResolveBitCastSource(value);
             if (value.Defined() && value.Id() < use_end.size()) {
                 use_end[value.Id()] = std::max<u32>(use_end[value.Id()], inst.Id());
             }
-        }
+        });
     }
     if (list.begin() != list.end()) {
         const u32 block_end = std::prev(list.end())->Id();
@@ -321,12 +339,11 @@ Vector<u8> CollectLongWidthChainBridges(
                 !safe_between(previous.store->Id(), current.producer->Id())) {
                 return false;
             }
-            auto inputs = current.producer->GetValues();
-            return std::any_of(
-                    inputs.begin(), inputs.end(),
-                    [&](Value input) {
-                        return low_extract_source(input).Def() == previous.wrapper;
-                    });
+            bool linked = false;
+            current.producer->ForEachValue([&](Value input) {
+                linked |= low_extract_source(input).Def() == previous.wrapper;
+            });
+            return linked;
         };
         auto mark_run = [&](size_t begin, size_t end) {
             constexpr size_t kMinLongWidthChainSteps = 32;
@@ -335,7 +352,7 @@ Vector<u8> CollectLongWidthChainBridges(
             }
             for (size_t index = begin; index < end; ++index) {
                 auto* producer = steps[index].producer;
-                for (auto input : producer->GetValues()) {
+                producer->ForEachValue([&](Value input) {
                     auto input_root = ResolveBitCastSource(input);
                     auto* bridge = input_root.Def();
                     auto source = low_extract_source(input_root);
@@ -343,10 +360,10 @@ Vector<u8> CollectLongWidthChainBridges(
                         bridge->Id() >= use_end.size() ||
                         use_end[bridge->Id()] != producer->Id() ||
                         reg_alloc->ValueType(source) != backend::RegAlloc::GPR) {
-                        continue;
+                        return;
                     }
                     long_bridge[bridge->Id()] = 1;
-                }
+                });
             }
         };
         size_t run_begin = 0;
@@ -451,14 +468,15 @@ void CoalesceWidthChainBridges(
                     ? std::max<u32>(other.Id(), use_end[other.Id()])
                     : other.Id();
             if (other.Id() <= end && other_end >= bridge.Id()) {
-                auto inputs = other.GetValues();
+                bool consumes_bridge = false;
+                if (long_candidate && other.Id() == end) {
+                    other.ForEachValue([&](Value input) {
+                        consumes_bridge |=
+                                ResolveBitCastSource(input).Def() == &bridge;
+                    });
+                }
                 const bool exact_last_use_handoff =
-                        long_candidate && other.Id() == end &&
-                        std::any_of(inputs.begin(), inputs.end(),
-                                    [&](Value input) {
-                                        return ResolveBitCastSource(input).Def() ==
-                                               &bridge;
-                                    });
+                        long_candidate && other.Id() == end && consumes_bridge;
                 if (exact_last_use_handoff) {
                     continue;
                 }
@@ -507,12 +525,11 @@ void CoalesceWidthChainBridges(
                 break;
             }
             if (produced.Def()) {
-                for (auto input : produced.Def()->GetValues()) {
+                produced.Def()->ForEachValue([&](Value input) {
                     if (ResolveBitCastSource(input).Def() == &bridge) {
                         blocked = true;
-                        break;
                     }
-                }
+                });
             }
             if (blocked) {
                 break;
@@ -568,12 +585,12 @@ Vector<u32> CollectGuestGPRUseEnds(Block* lir_block, u32 instr_count) {
     auto& list = lir_block->GetInstList();
     Vector<u32> use_end(instr_count);
     for (auto& inst : list) {
-        for (auto value : inst.GetValues()) {
+        inst.ForEachValue([&](Value value) {
             value = ResolveBitCastSource(value);
             if (value.Defined() && value.Id() < use_end.size()) {
                 use_end[value.Id()] = std::max<u32>(use_end[value.Id()], inst.Id());
             }
-        }
+        });
     }
     if (list.begin() != list.end()) {
         const u32 block_end = std::prev(list.end())->Id();
@@ -1018,14 +1035,13 @@ void CoalesceGuestGPRWrites(
         if (blocked) {
             continue;
         }
-        for (auto input : producer->GetValues()) {
+        producer->ForEachValue([&](Value input) {
             auto root = ResolveBitCastSource(input);
             if (mapped_to(root, target) && root.Id() < use_end.size() &&
                 use_end[root.Id()] > producer->Id()) {
                 blocked = true;
-                break;
             }
-        }
+        });
         if (blocked) {
             continue;
         }
@@ -1155,13 +1171,13 @@ Inst* PublishedPinnedWViewConsumer(Block* lir_block,
     Inst* consumer = nullptr;
     u32 uses = 0;
     for (auto& candidate : lir_block->GetInstList()) {
-        for (auto value : candidate.GetValues()) {
+        candidate.ForEachValue([&](Value value) {
             if (ResolveBitCastSource(value).Def() != &bridge) {
-                continue;
+                return;
             }
             ++uses;
             consumer = &candidate;
-        }
+        });
     }
     if (uses != 1 || !consumer || !IsPinnedWViewProducer(consumer->GetOp()) ||
         GetValueSizeByte(consumer->ReturnType()) != sizeof(u32) ||
@@ -1226,6 +1242,51 @@ void CoalescePinnedWViewInputs(Block* lir_block,
             continue;
         }
 
+        // The final width verifier re-proves this handoff against every
+        // other value homed on the same pinned register and against foreign
+        // SetHostGPR stores to the target inside the bridge window
+        // (ReproveWidthChainBridge).  Values the linear scan fixed to the
+        // home, such as alias-safe GetHostGPR reads, are invisible to
+        // PublishedPinnedWViewConsumer but still collide with the window,
+        // so mirror both interference gates here.
+        const u32 anchor = reg_alloc->IsWidthChainCoalesced(source.Id())
+                                   ? reg_alloc->WidthChainAnchor(source.Id())
+                                   : source.Id();
+        const u32 bridge_end = use_end[bridge.Id()];
+        bool interfered = false;
+        for (auto& other : lir_block->GetInstList()) {
+            if (other.GetOp() == OpCode::SetHostGPR &&
+                other.Id() > bridge.Id() && other.Id() <= bridge_end &&
+                other.GetArg<Imm>(1).Get() == target) {
+                auto stored = ResolveBitCastSource(other.GetArg<Value>(0));
+                if (stored.Def() != &bridge && stored.Def() != consumer &&
+                    stored.Def() != source.Def()) {
+                    interfered = true;
+                    break;
+                }
+                continue;
+            }
+            if (!other.HasValue() || other.IsBitCastOperation() ||
+                &other == &bridge || &other == consumer ||
+                other.Id() >= use_end.size() ||
+                reg_alloc->ValueType(Value{&other}) != backend::RegAlloc::GPR ||
+                reg_alloc->ValueGPR(Value{&other}).id != target) {
+                continue;
+            }
+            const bool same_component =
+                    other.Id() == anchor ||
+                    (reg_alloc->IsWidthChainCoalesced(other.Id()) &&
+                     reg_alloc->WidthChainAnchor(other.Id()) == anchor);
+            if (!same_component && other.Id() <= bridge_end &&
+                use_end[other.Id()] >= bridge.Id()) {
+                interfered = true;
+                break;
+            }
+        }
+        if (interfered) {
+            continue;
+        }
+
         const auto old = reg_alloc->Mapping(bridge.Id());
         if (old.type != backend::RegAlloc::GPR) {
             continue;
@@ -1239,9 +1300,6 @@ void CoalescePinnedWViewInputs(Block* lir_block,
             }
             continue;
         }
-        const u32 anchor = reg_alloc->IsWidthChainCoalesced(source.Id())
-                                   ? reg_alloc->WidthChainAnchor(source.Id())
-                                   : source.Id();
         reg_alloc->MarkWidthChainCoalesced(bridge.Id(), anchor);
     }
 }

@@ -19,6 +19,12 @@ public:
     };
     ~RangeMap() = default;
 
+    void Clear() {
+        auto first = container.begin();
+        first->second = null_value;
+        container.erase(std::next(first), container.end());
+    }
+
     void Map(KeyTBase address, KeyTBase address_end, ValueT value) {
         KeyT new_address = static_cast<KeyT>(address);
         KeyT new_address_end = static_cast<KeyT>(address_end);

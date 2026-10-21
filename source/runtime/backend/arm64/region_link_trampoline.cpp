@@ -45,15 +45,41 @@ extern "C" void* RegionLinkTrampolineSlow(RegionLinkContext* context,
         !context->region->ContainsRx(rx_site)) {
         return context ? context->dispatcher : nullptr;
     }
-    context->manager->RecordLinkerCall();
     const auto key = SiteKey(*context->region, rx_site);
+    RetirementControl::Lease producer{
+            context->retirement_control, RetirementControl::Kind::Producer};
+    RetirementControl::PublicationScope publication{
+            producer, RetirementControl::PublicationScope::Mode::OpenOnly};
+    if (!publication) {
+        // The current execution keeps source metadata alive until host return.
+        const auto site = context->manager->QuerySite(key);
+        if (state) {
+            if (site) state->current_loc = ir::Location{site->guest_target};
+            state->halt_reason = HaltReason::Retirement;
+        }
+        return ContinuationContract::EncodeTraversal(context->return_host,
+                site && site->kind == LinkSiteKind::Call
+                        ? ContinuationTraversal::CallMiss : ContinuationTraversal::Branch);
+    }
+    context->manager->RecordLinkerCall();
     for (unsigned attempt = 0; attempt != 3; ++attempt) {
         const auto site = context->manager->QuerySite(key);
         if (!site || site->state == LinkSiteState::Retiring) {
             return ReturnToDispatcher(*context, state, site);
         }
-        const auto target = context->manager->QueryTarget(site->guest_target);
+        bool invalidated = false;
+        const auto target = context->manager->QueryTarget(site->guest_target, &invalidated);
         const bool call = site->kind == LinkSiteKind::Call;
+        if (!target && invalidated && state) {
+            // A concurrent cache lookup may repopulate L1 after the signal
+            // invalidator clears it. Returning to dispatcher here can then
+            // traverse the same retired code forever. A known invalidation
+            // must end this JitRun so CloseWriteWindow can detach the nodes.
+            state->current_loc = ir::Location{site->guest_target};
+            state->halt_reason = HaltReason::CodeMiss;
+            return ContinuationContract::EncodeTraversal(context->return_host,
+                    call ? ContinuationTraversal::CallMiss : ContinuationTraversal::Branch);
+        }
         if (!target || !target->host_pc || (call && !target->call_host_pc)) {
             return ReturnToDispatcher(*context, state, site);
         }
@@ -203,14 +229,19 @@ RegionLinkTrampolineCode BuildRegionLinkTrampoline(
     ASSERT(masm.GetBuffer()->GetSizeInBytes() ==
            pending_flags_offset + kCycleReasonOffsetFromPending);
     masm.Bind(&cycle_reason);
+    Label retirement;
     Label signal;
     Label publish;
     masm.Ldar(x16, MemOperand(x28, offsetof(State, exit_request)));
+    masm.Tbnz(x16, 62, &retirement);
     masm.Tbnz(x16, 63, &signal);
     masm.Mov(w17, static_cast<u32>(HaltReason::CodeMiss));
     masm.B(&publish);
     masm.Bind(&signal);
     masm.Mov(w17, static_cast<u32>(HaltReason::Signal));
+    masm.B(&publish);
+    masm.Bind(&retirement);
+    masm.Mov(w17, static_cast<u32>(HaltReason::Retirement));
     masm.Bind(&publish);
     masm.Str(w17, MemOperand(x28, offsetof(State, halt_reason)));
     masm.B(&return_host);

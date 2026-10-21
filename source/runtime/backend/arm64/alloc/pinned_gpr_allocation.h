@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <functional>
 #include <map>
 #include <optional>
@@ -8,6 +9,7 @@
 
 #include "runtime/backend/reg_alloc.h"
 #include "fixed_gpr_constraints.h"
+#include "frozen_gpr_plan.h"
 #include "runtime/backend/arm64/jit/block_analysis_index.h"
 #include "runtime/backend/arm64/jit/guest_state_map.h"
 
@@ -17,7 +19,7 @@ namespace swift::runtime::backend::arm64 {
 // RegAlloc owns every physical location, live set and spill recipe; this pass
 // submits copy/view constraints without generating code or leasing scratch.
 // GuestStateMap owns observation/fault/version facts, not physical allocation.
-class PinnedGPRAllocation final {
+class GPRPlanBuilder final : DeleteCopyAndMove {
 public:
     struct PinnedGPRCopy {
         ir::Inst* read{};
@@ -72,7 +74,7 @@ public:
     using View = RegAlloc::GPRView;
     using Location = RegAlloc::GPRLocation;
 
-    PinnedGPRAllocation(RegAlloc& allocation, const FeatureSet& features,
+    GPRPlanBuilder(RegAlloc& allocation, const FeatureSet& features,
                         GuestStateMap& guest_state_map)
             : allocation(allocation), features(features), guest_state_map(guest_state_map) {}
     void Prepare(ir::Block* block);
@@ -81,7 +83,20 @@ public:
     void PrepareNarrowReads(const std::function<ir::Flags(ir::Inst*)>& set_flags);
     // Run after target memory combinations have supplied their constraints.
     void PrepareSpilledGPRPublications(ir::Block* block);
+    // All target constraints must be submitted before this boundary.
+    std::shared_ptr<const FrozenGPRPlan> Freeze();
+    GPRPlanDraft FinishConstraints();
+    std::unique_ptr<BlockAnalysisIndex> ReleaseUseFacts() {
+        return std::make_unique<BlockAnalysisIndex>(std::move(block_analysis));
+    }
+    void RecordPhysicalWrite(const ir::Inst* inst, u16 home) {
+        ASSERT(!finished);
+        target_writes.push_back({inst->Id(), home});
+    }
     [[nodiscard]] const Recipes& GetRecipes() const { return recipes; }
+    [[nodiscard]] const GPRResidenceFacts& Facts() const { return facts; }
+    [[nodiscard]] const BlockAnalysisIndex& UseFacts() const { ASSERT(!finished); return block_analysis; }
+    PseudoFlagsPlan ReleasePseudoFlags() { ASSERT(!finished); return block_analysis.ReleasePseudoFlags(); }
     [[nodiscard]] Location UseLocation(ir::Value value, const ir::Inst* consumer,
                                        View view = View::Value) const;
     [[nodiscard]] std::optional<u16> ValueHome(ir::Value value,
@@ -99,6 +114,18 @@ public:
     void AssignValueHome(ir::Inst* value, u16 home);
     void AssignLowView(ir::Inst* value, u16 home);
 
+    [[nodiscard]] bool IsZeroExtendElided(ir::Inst* inst) const {
+        return zero_extends.contains(inst);
+    }
+    [[nodiscard]] bool IsSignExtendElided(ir::Inst* inst) const {
+        return sign_extends.contains(inst);
+    }
+    void ElideZeroExtend(ir::Inst* inst) {
+        ASSERT_MSG(!finished, "zero extension changed after plan finish");
+        zero_extends.insert(inst);
+    }
+
+private:
     [[nodiscard]] bool IsDeadPinnedGPRWrite(ir::Inst* inst) const;
     [[nodiscard]] std::optional<PinnedGPRCopy> MatchPinnedGPRCopy(ir::Inst* inst) const;
     [[nodiscard]] std::optional<PinnedSelectPublication>
@@ -109,15 +136,6 @@ public:
     MatchPinnedGPRPublicationView(ir::Inst* publication) const;
     [[nodiscard]] std::optional<SpilledGPRPublication>
     MatchSpilledGPRPublication(ir::Inst* publication) const;
-    [[nodiscard]] bool IsZeroExtendElided(ir::Inst* inst) const {
-        return zero_extends.contains(inst);
-    }
-    [[nodiscard]] bool IsSignExtendElided(ir::Inst* inst) const {
-        return sign_extends.contains(inst);
-    }
-    void ElideZeroExtend(ir::Inst* inst) { zero_extends.insert(inst); }
-
-private:
     void RegisterUseHome(ir::Inst* version, const ir::Inst* consumer,
                          GuestStateMap::FixedHomeValue location);
     void AssignTransferredValue(ir::Inst* value, u16 home, u32 begin, u32 end);
@@ -140,8 +158,13 @@ private:
     ir::Block* block{};
     BlockAnalysisIndex block_analysis{};
     Recipes recipes{};
-    std::unordered_set<ir::Inst*> zero_extends{};
-    std::unordered_set<ir::Inst*> sign_extends{};
+    GPRResidenceFacts facts;
+    std::unordered_set<ir::Inst*>& zero_extends{facts.zero_extends};
+    std::unordered_set<ir::Inst*>& sign_extends{facts.sign_extends};
+    bool finished{};
+    u32 generation{};
+    u32 allocation_attempt{};
+    std::vector<GPRPhysicalWrite> target_writes{};
 };
 
 }  // namespace swift::runtime::backend::arm64

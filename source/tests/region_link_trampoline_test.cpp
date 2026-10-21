@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
@@ -11,6 +12,7 @@
 #include "runtime/common/svm_config.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
 #include "runtime/backend/arm64/region_link_trampoline.h"
+#include "runtime/backend/arm64/continuation_contract.h"
 #include "runtime/backend/arm64/trampolines.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/link_manager.h"
@@ -157,7 +159,8 @@ TEST_CASE("region cycle reason trampoline publishes the pending reason",
     LinkManager manager;
     CodeCache cache{config, 1u << 20, FeatureSet{}};
     auto* return_host = reinterpret_cast<void*>(runtime_trampolines.GetReturnHost());
-    REQUIRE(cache.InitializeRegionTrampoline(manager, return_host, return_host));
+    REQUIRE(cache.InitializeRegionTrampoline(
+            manager, return_host, return_host, std::make_shared<RetirementControl>()));
     REQUIRE(cache.GetCycleReasonRegionTrampoline());
 
     auto code = cache.AllocCode(sizeof(u32));
@@ -172,6 +175,8 @@ TEST_CASE("region cycle reason trampoline publishes the pending reason",
     const std::array cases{
             std::pair{u64{0}, HaltReason::CodeMiss},
             std::pair{u64{1} << 63, HaltReason::Signal},
+            std::pair{u64{1} << 62, HaltReason::Retirement},
+            std::pair{(u64{1} << 62) | (u64{1} << 63) | 1, HaltReason::Retirement},
     };
     for (const auto& [request, expected] : cases) {
         TestState test_state{config.uniform_buffer_size};
@@ -193,7 +198,8 @@ TEST_CASE("region exit trampolines merge flags before returning",
     LinkManager manager;
     CodeCache cache{config, 1u << 20, FeatureSet{}};
     auto* return_host = reinterpret_cast<void*>(runtime_trampolines.GetReturnHost());
-    REQUIRE(cache.InitializeRegionTrampoline(manager, return_host, return_host));
+    REQUIRE(cache.InitializeRegionTrampoline(
+            manager, return_host, return_host, std::make_shared<RetirementControl>()));
 
     constexpr u64 packed_af = u64{1} << 26;
     constexpr u64 packed_zc = (u64{1} << 30) | (u64{1} << 29);
@@ -252,7 +258,8 @@ TEST_CASE("region masked flags trampolines preserve unrequested bits",
     LinkManager manager;
     CodeCache cache{config, 1u << 20, FeatureSet{}};
     auto* return_host = reinterpret_cast<void*>(runtime_trampolines.GetReturnHost());
-    REQUIRE(cache.InitializeRegionTrampoline(manager, return_host, return_host));
+    REQUIRE(cache.InitializeRegionTrampoline(
+            manager, return_host, return_host, std::make_shared<RetirementControl>()));
 
     constexpr u64 initial_nzcv = 0x9000'0000u;
     constexpr u64 packed_af = u64{1} << 26;
@@ -321,7 +328,7 @@ TEST_CASE("region trampoline preserves x30 and every static-pin configuration",
                 auto* return_host = reinterpret_cast<void*>(
                         runtime_trampolines.GetReturnHost());
                 REQUIRE(cache.InitializeRegionTrampoline(
-                        manager, return_host, return_host));
+                        manager, return_host, return_host, std::make_shared<RetirementControl>()));
                 REQUIRE(cache.GetRegion().trampoline_offset !=
                         CodeRegion::kInvalidTrampolineOffset);
 
@@ -460,7 +467,8 @@ TEST_CASE("call-kind region links preserve the host continuation",
     LinkManager manager;
     CodeCache cache{config, 1u << 20, FeatureSet{}};
     auto* return_host = reinterpret_cast<void*>(runtime_trampolines.GetReturnHost());
-    REQUIRE(cache.InitializeRegionTrampoline(manager, return_host, return_host));
+    REQUIRE(cache.InitializeRegionTrampoline(
+            manager, return_host, return_host, std::make_shared<RetirementControl>()));
     auto code = cache.AllocCode(256);
     REQUIRE(code);
 
@@ -521,7 +529,7 @@ TEST_CASE("call-kind region links preserve the host continuation",
 #endif
 }
 
-TEST_CASE("region linker caches Far state and preserves dispatcher fallback",
+TEST_CASE("region linker distinguishes absent dispatch from invalidated targets",
           "[direct-link][trampoline][far]") {
     std::vector<UniformMapDesc> descriptors;
     auto config = TestConfig(descriptors);
@@ -532,7 +540,8 @@ TEST_CASE("region linker caches Far state and preserves dispatcher fallback",
     REQUIRE(cache.InitializeRegionTrampoline(
             manager,
             const_cast<int*>(&return_stub),
-            const_cast<int*>(&dispatcher_stub)));
+            const_cast<int*>(&dispatcher_stub),
+            std::make_shared<RetirementControl>()));
     auto site = cache.AllocCode(16);
     REQUIRE(site);
     const int owner_module{};
@@ -545,6 +554,9 @@ TEST_CASE("region linker caches Far state and preserves dispatcher fallback",
             kGuestTarget, const_cast<int*>(&outside_region_target), 0xfeed);
     TestState state{config.uniform_buffer_size};
     auto* context = cache.GetRegionLinkContext();
+    bool invalidated = true;
+    REQUIRE_FALSE(manager.QueryTarget(kGuestTarget + 4, &invalidated));
+    REQUIRE_FALSE(invalidated);
     REQUIRE(RegionLinkTrampolineSlow(context, state.state, site->exec_data) ==
             &outside_region_target);
     REQUIRE(manager.QuerySite(key)->state == LinkSiteState::Far);
@@ -555,9 +567,187 @@ TEST_CASE("region linker caches Far state and preserves dispatcher fallback",
             &outside_region_target);
 
     REQUIRE(manager.BeginTargetInvalidation(kGuestTarget).size() == 1);
+    REQUIRE_FALSE(manager.QueryTarget(kGuestTarget, &invalidated));
+    REQUIRE(invalidated);
     REQUIRE(RegionLinkTrampolineSlow(context, state.state, site->exec_data) ==
-            &dispatcher_stub);
+            &return_stub);
     REQUIRE(state.state->current_loc.Value() == kGuestTarget);
+    REQUIRE(state.state->halt_reason == HaltReason::CodeMiss);
+}
+
+TEST_CASE("signal-invalidated cold links return host with call traversal intact", "[direct-link][trampoline][smc]") {
+    for (const bool call : {false, true}) {
+        std::vector<UniformMapDesc> descriptors;
+        auto config = TestConfig(descriptors);
+        LinkManager manager;
+        CodeCache cache{config, 1u << 20, FeatureSet{}};
+        alignas(4) int return_stub{}, dispatcher_stub{}, target_stub{};
+        REQUIRE(cache.InitializeRegionTrampoline(
+                manager, &return_stub, &dispatcher_stub, std::make_shared<RetirementControl>()));
+        auto site = cache.AllocCode(16);
+        REQUIRE(site);
+        const int owner_module{}, owner_allocation{};
+        const LinkSiteKey key{cache.GetRegion().id, site->offset};
+        REQUIRE(manager.RegisterSite(key, kGuestTarget, {&owner_module, &owner_allocation},
+                nullptr, call ? LinkSiteKind::Call : LinkSiteKind::Unconditional));
+        TestState state{config.uniform_buffer_size};
+        auto* context = cache.GetRegionLinkContext();
+        const auto absent = RegionLinkTrampolineSlow(context, state.state, site->exec_data);
+        REQUIRE(absent == ContinuationContract::EncodeTraversal(&dispatcher_stub,
+                call ? ContinuationTraversal::CallMiss : ContinuationTraversal::Branch));
+        (void)manager.PublishTarget(kGuestTarget, &target_stub, 0xfeed, {}, nullptr, nullptr, &target_stub);
+        REQUIRE(manager.SignalInvalidateTarget(kGuestTarget).found);
+        bool invalidated = false;
+        REQUIRE_FALSE(manager.QueryTarget(kGuestTarget, &invalidated));
+        REQUIRE(invalidated);
+        const auto result = RegionLinkTrampolineSlow(context, state.state, site->exec_data);
+        REQUIRE(result == ContinuationContract::EncodeTraversal(&return_stub,
+                call ? ContinuationTraversal::CallMiss : ContinuationTraversal::Branch));
+        REQUIRE(state.state->current_loc.Value() == kGuestTarget);
+        REQUIRE(state.state->halt_reason == HaltReason::CodeMiss);
+    }
+}
+
+TEST_CASE("closed cold links preserve traversal without patching or changing statistics",
+          "[direct-link][trampoline][retirement]") {
+    for (const bool sealed : {false, true}) {
+        for (const bool call : {false, true}) {
+            for (const auto link_state : {LinkSiteState::Unlinked, LinkSiteState::Linked,
+                                          LinkSiteState::Far}) {
+                std::vector<UniformMapDesc> descriptors;
+                auto config = TestConfig(descriptors);
+                LinkManager manager;
+                CodeCache cache{config, 1u << 20, FeatureSet{}};
+                auto control = std::make_shared<RetirementControl>();
+                alignas(4) int return_stub{}, dispatcher_stub{};
+                REQUIRE(cache.InitializeRegionTrampoline(
+                        manager, &return_stub, &dispatcher_stub, control));
+                REQUIRE(cache.InitializeRegionTrampoline(
+                        manager, &return_stub, &dispatcher_stub, control));
+                REQUIRE_FALSE(cache.InitializeRegionTrampoline(
+                        manager, &return_stub, &dispatcher_stub,
+                        std::make_shared<RetirementControl>()));
+                auto site = cache.AllocCode(16);
+                auto target = cache.AllocCode(16);
+                REQUIRE(site);
+                REQUIRE(target);
+                const u32 original = 0x94000000;
+                std::memcpy(site->rw_data, &original, sizeof(original));
+                const int owner_module{}, owner_allocation{};
+                const LinkSiteKey key{cache.GetRegion().id, site->offset};
+                REQUIRE(manager.RegisterSite(key, kGuestTarget, {&owner_module, &owner_allocation},
+                        nullptr, call ? LinkSiteKind::Call : LinkSiteKind::Unconditional));
+                const auto generation = manager.PublishTarget(kGuestTarget, target->exec_data,
+                        cache.GetRegion().id, {}, nullptr, nullptr, target->exec_data);
+                REQUIRE(generation != 0);
+                if (link_state == LinkSiteState::Linked)
+                    REQUIRE(manager.MarkLinked(key, generation, [](const auto&) { return true; }));
+                if (link_state == LinkSiteState::Far) REQUIRE(manager.MarkFar(key, generation));
+                const auto before = manager.GetStats();
+                const auto ticket = RetirementControl::RequestDrain(control);
+                if (sealed) REQUIRE(control->SealPublications(ticket));
+                TestState state{config.uniform_buffer_size};
+                const auto result = RegionLinkTrampolineSlow(
+                        cache.GetRegionLinkContext(), state.state, site->exec_data);
+                REQUIRE(result == ContinuationContract::EncodeTraversal(&return_stub,
+                        call ? ContinuationTraversal::CallMiss : ContinuationTraversal::Branch));
+                REQUIRE(state.state->halt_reason == HaltReason::Retirement);
+                REQUIRE(state.state->current_loc.Value() == kGuestTarget);
+                REQUIRE(LoadInsn(site->rw_data) == original);
+                REQUIRE(manager.QuerySite(key)->state == link_state);
+                const auto after = manager.GetStats();
+                REQUIRE(after.linker_calls == before.linker_calls);
+                REQUIRE(after.linked == before.linked);
+                REQUIRE(after.far == before.far);
+                REQUIRE(control->WaitDrain(ticket) == RetirementControl::DrainStatus::Ready);
+                REQUIRE(control->SealPublications(ticket));
+                REQUIRE(control->Resume(ticket));
+            }
+        }
+    }
+}
+
+TEST_CASE("closed generated cold links bypass a dispatcher holding old code",
+          "[direct-link][trampoline][retirement][regression]") {
+#if defined(__aarch64__)
+    std::vector<UniformMapDesc> descriptors;
+    const auto config = TestConfig(descriptors);
+    TrampolinesArm64 trampolines{config, FeatureSet{}};
+    LinkManager manager;
+    CodeCache cache{config, 1u << 20, FeatureSet{}};
+    auto old_target = cache.AllocCode(32);
+    auto dispatcher = cache.AllocCode(32);
+    REQUIRE(old_target);
+    REQUIRE(dispatcher);
+    EmitHaltTarget(*old_target, HaltReason::CallHost);
+    MacroAssembler stale_dispatch;
+    stale_dispatch.Mov(x16, reinterpret_cast<uintptr_t>(old_target->exec_data));
+    stale_dispatch.Br(x16);
+    CopyAssembler(*dispatcher, 0, stale_dispatch);
+    dispatcher->Flush();
+    auto control = std::make_shared<RetirementControl>();
+    auto* return_host = reinterpret_cast<void*>(trampolines.GetReturnHost());
+    REQUIRE(cache.InitializeRegionTrampoline(manager, return_host, dispatcher->exec_data, control));
+    auto site = cache.AllocCode(16);
+    REQUIRE(site);
+    const auto unlinked = EncodeBL(static_cast<u8*>(cache.GetRegionTrampoline()) - site->exec_data);
+    REQUIRE(unlinked);
+    std::memcpy(site->rw_data, &*unlinked, sizeof(*unlinked));
+    site->Flush();
+    const int owner_module{}, owner_allocation{};
+    const LinkSiteKey key{cache.GetRegion().id, site->offset};
+    REQUIRE(manager.RegisterSite(key, kGuestTarget, {&owner_module, &owner_allocation}));
+    REQUIRE(manager.PublishTarget(kGuestTarget, old_target->exec_data, cache.GetRegion().id) != 0);
+    const auto ticket = RetirementControl::RequestDrain(control);
+    TestState state{config.uniform_buffer_size};
+    REQUIRE(trampolines.GetRuntimeEntry()(state.state, site->exec_data) == HaltReason::Retirement);
+    REQUIRE(state.state->current_loc.Value() == kGuestTarget);
+    REQUIRE(LoadInsn(site->rw_data) == *unlinked);
+    REQUIRE(manager.GetStats().linker_calls == 0);
+    REQUIRE(control->SealPublications(ticket));
+    REQUIRE(control->Resume(ticket));
+#else
+    SUCCEED("native closed cold-link recovery requires AArch64");
+#endif
+}
+
+TEST_CASE("invalidated cold targets bypass a dispatcher holding retired code", "[direct-link][trampoline][smc][regression]") {
+#if defined(__aarch64__)
+    std::vector<UniformMapDesc> descriptors;
+    const auto config = TestConfig(descriptors);
+    TrampolinesArm64 trampolines{config, FeatureSet{}};
+    LinkManager manager;
+    CodeCache cache{config, 1u << 20, FeatureSet{}};
+    auto retired = cache.AllocCode(32);
+    auto dispatcher = cache.AllocCode(32);
+    REQUIRE(retired);
+    REQUIRE(dispatcher);
+    EmitHaltTarget(*retired, HaltReason::CallHost);
+    MacroAssembler stale_dispatch;
+    stale_dispatch.Mov(x16, reinterpret_cast<uintptr_t>(retired->exec_data));
+    stale_dispatch.Br(x16);
+    CopyAssembler(*dispatcher, 0, stale_dispatch);
+    dispatcher->Flush();
+    auto* return_host = reinterpret_cast<void*>(trampolines.GetReturnHost());
+    REQUIRE(cache.InitializeRegionTrampoline(
+            manager, return_host, dispatcher->exec_data, std::make_shared<RetirementControl>()));
+    auto site = cache.AllocCode(16);
+    REQUIRE(site);
+    const auto unlinked = EncodeBL(static_cast<u8*>(cache.GetRegionTrampoline()) - site->exec_data);
+    REQUIRE(unlinked);
+    std::memcpy(site->rw_data, &*unlinked, sizeof(*unlinked));
+    site->Flush();
+    const int owner_module{}, owner_allocation{};
+    const LinkSiteKey key{cache.GetRegion().id, site->offset};
+    REQUIRE(manager.RegisterSite(key, kGuestTarget, {&owner_module, &owner_allocation}));
+    (void)manager.PublishTarget(kGuestTarget, retired->exec_data, cache.GetRegion().id);
+    REQUIRE(manager.SignalInvalidateTarget(kGuestTarget).found);
+    TestState state{config.uniform_buffer_size};
+    REQUIRE(trampolines.GetRuntimeEntry()(state.state, site->exec_data) == HaltReason::CodeMiss);
+    REQUIRE(state.state->current_loc.Value() == kGuestTarget);
+#else
+    SUCCEED("native stale-dispatch recovery requires AArch64");
+#endif
 }
 
 TEST_CASE("direct-link concurrent patch invalidation and mspace reuse stress",
@@ -576,7 +766,7 @@ TEST_CASE("direct-link concurrent patch invalidation and mspace reuse stress",
     REQUIRE(dispatcher);
     EmitHaltTarget(*dispatcher, HaltReason::CodeMiss);
     REQUIRE(cache.InitializeRegionTrampoline(
-            manager, return_host, dispatcher->exec_data));
+            manager, return_host, dispatcher->exec_data, std::make_shared<RetirementControl>()));
     auto site = cache.AllocCode(64);
     REQUIRE(site);
     const auto bl = EncodeBL(
@@ -641,9 +831,18 @@ TEST_CASE("direct-link concurrent patch invalidation and mspace reuse stress",
     }
 
     start.store(true, std::memory_order_release);
+    const auto progress_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    bool progress_timeout = false;
+    while (executions.load(std::memory_order_acquire) < thread_count && !failed.load()) {
+        if (std::chrono::steady_clock::now() >= progress_deadline) {
+            progress_timeout = true;
+            break;
+        }
+        std::this_thread::yield();
+    }
     const bool long_mode = GetSvmConfig().direct_link_stress_long;
     const unsigned iterations = GetSvmConfig().direct_link_stress_iters;
-    for (unsigned iteration = 0; iteration < iterations && !failed.load(); ++iteration) {
+    for (unsigned iteration = 0; iteration < iterations && !failed.load() && !progress_timeout; ++iteration) {
         const auto incoming = manager.BeginTargetInvalidation(kGuestTarget);
         REQUIRE(incoming.size() == 1);
         REQUIRE(PatchDirectBranch(cache.GetRegion(),
@@ -673,14 +872,53 @@ TEST_CASE("direct-link concurrent patch invalidation and mspace reuse stress",
         EmitFingerprintTarget(*target, ++fingerprint);
         REQUIRE(manager.PublishTarget(
                         kGuestTarget, target->exec_data, cache.GetRegion().id) != 0);
+        const auto before_resume = executions.load(std::memory_order_acquire);
         pause_entries.store(false, std::memory_order_release);
+        // A yield doesn't guarantee any worker runs. Require actual generated
+        // code execution between patch cycles instead of a timing assumption.
+        while (executions.load(std::memory_order_acquire) == before_resume && !failed.load()) {
+            if (std::chrono::steady_clock::now() >= progress_deadline) {
+                progress_timeout = true;
+                break;
+            }
+            std::this_thread::yield();
+        }
     }
     stop.store(true, std::memory_order_release);
     for (auto& worker : workers) worker.join();
     REQUIRE_FALSE(failed.load());
+    REQUIRE_FALSE(progress_timeout);
     REQUIRE(executions.load() > iterations);
     for (const auto& token : tokens) tracker.UnregisterRuntime(token);
 #else
     SUCCEED("direct-link execution stress requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("unsupported ARM64 host-call trampolines fail explicitly", "[trampoline][call-host]") {
+#if defined(__aarch64__)
+    std::vector<UniformMapDesc> descriptors;
+    auto config = TestConfig(descriptors);
+    TrampolinesArm64 trampolines{config, FeatureSet{}};
+    HostFunction empty{.module = "test", .name = "void",
+                       .signatures = {}, .addr = 0x7300,
+                       .impl = reinterpret_cast<void*>(+[]() {})};
+    HostFunction integer{.module = "test", .name = "integer",
+                         .signatures = {ParamType::Uint64, ParamType::Uint64, ParamType::Uint64},
+                         .addr = 0x7308,
+                         .impl = reinterpret_cast<void*>(+[](u64 a, u64 b) { return a + b; })};
+    HostFunction floating{.module = "test", .name = "floating",
+                          .signatures = {ParamType::Float64, ParamType::Float64},
+                          .addr = 0x7310,
+                          .impl = reinterpret_cast<void*>(+[](double a) { return a; })};
+    // Query only: no trampoline or host implementation is invoked.
+    for (auto* function : {&empty, &integer, &floating}) {
+        for (const auto frontend : {kX86, kX86_64, kArm64}) {
+            CHECK_FALSE(trampolines.GetCallHost(function, frontend).has_value());
+            CHECK_FALSE(trampolines.GetCallHost(function, frontend).has_value());
+        }
+    }
+#else
+    SUCCEED("host-call availability contract requires an AArch64 host");
 #endif
 }

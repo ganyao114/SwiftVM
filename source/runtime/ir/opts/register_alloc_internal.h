@@ -8,6 +8,13 @@ struct LiveInterval {
     Inst* inst{};
     u32 start{};
     u32 end{};
+    // Allocation outcome cached for eviction evaluation. A mapping
+    // never changes while its interval is active (SpillAtInterval
+    // only ever spills the incoming interval), so candidate checks
+    // read these instead of re-querying RegAlloc for every active
+    // interval at every pressure point.
+    backend::RegAlloc::Type alloc_kind{};
+    u16 alloc_code{};
 
     bool operator<(const LiveInterval& other) const {
         if (start == other.start) {
@@ -19,6 +26,7 @@ struct LiveInterval {
 };
 
 Value ResolveBitCastSource(Value value);
+Vector<u32> CollectCFGUseEnds(HIRFunction* function);
 bool IsPinnedCoalesceTarget(u32 reg);
 bool IsPinnedCoalesceProducer(OpCode op);
 bool IsWidthChainRootProducer(const Inst* producer);
@@ -117,16 +125,6 @@ struct ConstAddressCandidate {
     Inst* inst{};
     u32 use_id{};
 };
-
-std::optional<u64> RawConstAddressValue(Inst* inst);
-std::optional<u64> ConstAddressValue(Inst* inst);
-bool IsConstAddressBarrier(OpCode op);
-void CacheConstantAddressesForBlock(
-        Block* lir_block,
-        backend::RegAlloc* reg_alloc,
-        u64 unit_pc,
-        bool audit,
-        const RegisterAllocFamilyCallbacks& callbacks);
 
 class VRegisterAllocator {
 public:

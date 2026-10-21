@@ -825,8 +825,8 @@ TEST_CASE("IR build fast path is field-identical across all argument shapes") {
                 REQUIRE(IRCaptureArg(left_inst.ArgAt(slot)) ==
                         IRCaptureArg(right_inst.ArgAt(slot)));
             }
-            auto left_pseudo = const_cast<Inst&>(left_inst).GetPseudoOperations();
-            auto right_pseudo = const_cast<Inst&>(right_inst).GetPseudoOperations();
+            auto left_pseudo = CollectPseudoOperations(*left_block, &left_inst);
+            auto right_pseudo = CollectPseudoOperations(*right_block, &right_inst);
             REQUIRE(left_pseudo.size() == right_pseudo.size());
             for (std::size_t i = 0; i < left_pseudo.size(); ++i) {
                 REQUIRE(left_pseudo[i]->Id() == right_pseudo[i]->Id());

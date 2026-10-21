@@ -4,9 +4,11 @@
 
 #pragma once
 
+#include <memory>
 #include <mutex>
 #include <span>
 #include <shared_mutex>
+#include "runtime/backend/code_lifetime.h"
 #include "runtime/backend/jit_code.h"
 #include "runtime/common/cast_utils.h"
 #include "runtime/common/perf_stats.h"
@@ -28,6 +30,8 @@ struct AddressNode {
     Location location{0};
     u32 node_size{0};
     NodeType node_type{None};
+    // Assigned before installation publishes the node; immutable thereafter.
+    std::shared_ptr<backend::CodeLifetime> code_lifetime;
 
     explicit AddressNode() {};
 
@@ -273,6 +277,30 @@ private:
 
 using BlockList = IntrusiveList<&Block::list_node>;
 using BlockMap = IntrusiveMap<&Block::map_node>;
+
+// Chain-free pseudo lookup (un-chaining step 3.6): a pseudo is an ordinary
+// instruction in its owner's block whose arg 0 is the owner's value. These
+// scans are O(block) and suit emission/test paths; hot planning paths use
+// BlockAnalysisIndex or demand tables instead.
+inline Inst::Pseudos CollectPseudoOperations(const Block& block, const Inst* owner) {
+    Inst::Pseudos pseudos{};
+    for (auto& inst : block.GetInstList()) {
+        if (inst.IsPseudoOperation() && inst.ArgAt(0).IsValue() &&
+            inst.GetArg<Value>(0).Def() == owner)
+            pseudos.push_back(&inst);
+    }
+    return pseudos;
+}
+
+inline Inst::Pseudos CollectPseudoOperations(const Block& block, const Inst* owner, OpCode code) {
+    Inst::Pseudos pseudos{};
+    for (auto& inst : block.GetInstList()) {
+        if (inst.GetOp() == code && inst.ArgAt(0).IsValue() &&
+            inst.GetArg<Value>(0).Def() == owner)
+            pseudos.push_back(&inst);
+    }
+    return pseudos;
+}
 
 }  // namespace swift::runtime::ir
 

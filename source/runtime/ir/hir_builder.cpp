@@ -12,8 +12,8 @@ namespace swift::runtime::ir {
 
 Edge::Edge(HIRBlock* src, HIRBlock* dest) : src_block(src), dest_block(dest) {}
 
-HIRBlock::HIRBlock(Block* block, HIRValueMap& values, HIRPools& pools)
-        : block(block), value_map(values), pools(pools) {}
+HIRBlock::HIRBlock(std::unique_ptr<Block> block, HIRValueMap& values, HIRPools& pools)
+        : block(block.get()), unpublished_block(std::move(block)), value_map(values), pools(pools) {}
 
 HIRValue* HIRBlock::AppendInst(Inst* inst) {
     block->AppendInst(inst);
@@ -59,6 +59,27 @@ Block* HIRBlock::GetBlock() { return block; }
 
 InstList& HIRBlock::GetInstList() { return block->GetInstList(); }
 
+bool HIRBlock::BeginStandalonePublication() {
+    if (!function || !function->owns_function || !function->block_list.empty() ||
+        standalone_publication_pending || !function->function->DetachBlock(block)) {
+        return false;
+    }
+    standalone_publication_pending = true;
+    return true;
+}
+
+void HIRBlock::AbortStandalonePublication() {
+    ASSERT(standalone_publication_pending);
+    function->function->AddBlock(block);
+    standalone_publication_pending = false;
+}
+
+void HIRBlock::CommitStandalonePublication() {
+    ASSERT(standalone_publication_pending);
+    function->standalone_blocks_published = true;
+    standalone_publication_pending = false;
+}
+
 u16 HIRBlock::MaxInstrCount() { return 0; }
 u16 HIRBlock::MaxBlockCount() { return 0; }
 u16 HIRBlock::MaxLocalCount() { return 0; }
@@ -83,12 +104,12 @@ u16 HIRValue::GetOrderId() const { return value.Def()->Id(); }
 
 HIRUse::HIRUse(Inst* inst, u8 arg_idx) : inst(inst), arg_idx(arg_idx) {}
 
-HIRFunction::HIRFunction(Function* function,
+HIRFunction::HIRFunction(std::unique_ptr<Function> function,
                          const Location& begin,
                          const Location& end,
                          HIRPools& pools,
                          bool ir_fast)
-        : function(function), begin(begin), end(end), ir_fast(ir_fast), pools(pools) {
+        : function(function.get()), begin(begin), end(end), ir_fast(ir_fast), pools(pools) {
     if (ir_fast) {
         // Most lazy-compiled units fit in 64 instructions. Avoid the geometric
         // 1/2/4/... growth of the append-time dense id table on that common
@@ -101,6 +122,8 @@ HIRFunction::HIRFunction(Function* function,
     AddEdge(entry_block, first_block);
     entry_block->block->SetTerminal(terminal::LinkBlock{begin});
     current_block = first_block;
+    // Retain the parameter's owner until every construction allocation succeeds.
+    function.release();
 }
 
 HIRFunction::~HIRFunction() {
@@ -485,8 +508,9 @@ void HIRFunction::EndFunction() {
         // The HIR wrappers live in HIRBuilder's pools, but ir::Function owns
         // the Block objects after the builder goes away. The synthetic entry
         // has Location::INVALID and exists only to seed CFG/RPO discovery.
-        if (&block != entry_block) {
+        if (&block != entry_block && block.unpublished_block) {
             function->AddBlock(block.GetBlock());
+            block.unpublished_block.release();
         }
     }
     block_list.clear();
@@ -645,7 +669,7 @@ HIRBlock* HIRFunction::CreateOrGetBlock(Location location) {
     if (itr != block_list.end()) {
         return itr.operator->();
     }
-    auto hir_block = pools.blocks.Create(new Block(location), values, pools);
+    auto hir_block = pools.blocks.Create(std::make_unique<Block>(location), values, pools);
     hir_block->order_id = block_order_id++;
     hir_block->function = this;
     block_list.push_back(*hir_block);
@@ -700,7 +724,7 @@ HIRBuilder::HIRBuilder(u32 func_cap, bool defer_function_end, bool ir_fast,
 
 HIRFunction* HIRBuilder::AppendFunction(Location start, Location end) {
     current_function =
-            pools.functions.Create(new Function(start), start, end, pools, ir_fast);
+            pools.functions.Create(std::make_unique<Function>(start), start, end, pools, ir_fast);
     hir_functions.push_back(*current_function);
     SetCurBlock(current_function->AppendBlock(start, end));
     return current_function;

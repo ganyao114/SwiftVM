@@ -1,7 +1,8 @@
 #pragma once
 
 #include <array>
-#include <map>
+#include <utility>
+#include <vector>
 #include <memory>
 #include <optional>
 #include <span>
@@ -25,7 +26,18 @@ public:
     using ExtensionFacts = backend::GPRWidthFacts;
     using FixedHomeValue = backend::FixedGPRValue;
 
-    [[nodiscard]] const auto& FixedHomeUses() const { return fixed_home_uses; }
+    // One resident fixed-home use. Stored flat (sorted by
+    // (definition, consumer) at the end of BuildValueVersions) instead
+    // of a node-allocated std::map: the entry count per block is small
+    // and the map was a recurring host-compile allocator customer.
+    struct FixedHomeUse {
+        ir::Inst* definition{};
+        const ir::Inst* consumer{};
+        FixedHomeValue location{};
+    };
+    [[nodiscard]] std::span<const FixedHomeUse> FixedHomeUses() const {
+        return fixed_home_uses;
+    }
     struct CoalescedWrite {
         ir::Inst* publication{};
         u16 home{};
@@ -45,6 +57,7 @@ public:
     [[nodiscard]] bool FixedHomeSurvives(u32 home,
                                          u32 after,
                                          u32 before) const;
+    [[nodiscard]] std::optional<u32> FirstFixedHomeClobber(u32 home, u32 after) const;
     [[nodiscard]] bool PublicationWindowSafe(
             u32 home,
             ir::Value early_value,
@@ -68,8 +81,60 @@ private:
     };
 
     struct ActiveState {
+        // Per-definition version lists. When the block's ids are a dense
+        // span (the ReId/RPO norm), in-block definitions index
+        // dense_versions by slot (Id - first_id), validated against the
+        // owner pointer so an out-of-block definition with a colliding
+        // id can never alias a slot; everything else keeps the hash map.
+        std::vector<StackVector<ActiveValue, 2>> dense_versions{};
+        std::vector<ir::Inst*> dense_owners{};
+        u32 dense_first_id{};
+        bool dense{};
         std::unordered_map<ir::Inst*, StackVector<ActiveValue, 2>> versions{};
         std::array<StackVector<ir::Inst*, 4>, 30> homes{};
+
+        void InitDense(ir::Block* owner_block) {
+            dense = false;
+            dense_owners.clear();
+            dense_versions.clear();
+            if (!owner_block || owner_block->GetInstList().empty()) return;
+            dense_first_id = owner_block->GetInstList().front().Id();
+            for (auto& inst : owner_block->GetInstList()) {
+                if (inst.Id() != dense_first_id + dense_owners.size()) {
+                    dense_owners.clear();
+                    return;
+                }
+                dense_owners.push_back(&inst);
+            }
+            dense_versions.resize(dense_owners.size());
+            dense = true;
+        }
+
+        [[nodiscard]] std::optional<size_t> SlotOf(const ir::Inst* def) const {
+            if (!dense || !def || def->Id() < dense_first_id) {
+                return std::nullopt;
+            }
+            const size_t slot = def->Id() - dense_first_id;
+            if (slot >= dense_owners.size() || dense_owners[slot] != def) {
+                return std::nullopt;
+            }
+            return slot;
+        }
+
+        [[nodiscard]] const StackVector<ActiveValue, 2>* FindVersions(
+                ir::Inst* def) const {
+            if (const auto slot = SlotOf(def)) {
+                const auto& found = dense_versions[*slot];
+                return found.empty() ? nullptr : &found;
+            }
+            const auto found = versions.find(def);
+            return found == versions.end() ? nullptr : &found->second;
+        }
+
+        [[nodiscard]] StackVector<ActiveValue, 2>& VersionsFor(ir::Inst* def) {
+            if (const auto slot = SlotOf(def)) return dense_versions[*slot];
+            return versions[def];
+        }
     };
 
     struct FaultCaptureValue {
@@ -86,6 +151,7 @@ private:
     [[nodiscard]] bool ClobbersFixedHome(const ir::Inst& inst,
                                          u32 home) const;
     void BuildFixedHomeClobberIndex() const;
+    void InvalidateFixedHomeClobberIndex();
     void BuildFunctionWidthFacts();
     void PrepareCurrentEntryWidthFacts(bool fault_capture_needed);
     [[nodiscard]] ExtensionFacts CurrentEntryExtensionFacts(u32 home) const;
@@ -112,16 +178,22 @@ private:
     FeatureSet features{};
     // IR and instruction IDs remain final until the next Analyze(). Allocate
     // only after several successful scans of a substantial block.
-    using FixedHomeClobberIndex = std::array<std::vector<u16>, 32>;
+    struct FixedHomeClobberIndex {
+        std::array<std::vector<u16>, 32> writes, reads;
+        std::vector<ir::Inst*> observers;
+    };
     mutable std::unique_ptr<FixedHomeClobberIndex> fixed_home_clobbers;
+    // The index object (and its vector capacities) is retained across
+    // Analyze calls; built tracks whether its contents describe block.
+    mutable bool fixed_home_clobbers_built{};
     mutable u8 successful_survival_scans{};
     bool function_width_facts_ready{};
     WidthFacts block_entry_width_facts{};
     std::unordered_map<const ir::Block*, WidthFacts> function_entry_width_facts{};
     StackVector<FaultCaptureValue, 16> fault_capture_values{};
     StackVector<FaultWidthCapture, 8> fault_width_captures{};
-    std::map<std::pair<ir::Inst*, const ir::Inst*>, FixedHomeValue> fixed_home_uses{};
-    std::map<ir::Inst*, u32> fixed_home_use_counts{};
+    std::vector<FixedHomeUse> fixed_home_uses{};
+    std::vector<std::pair<ir::Inst*, u32>> fixed_home_use_counts{};
 };
 
 }  // namespace swift::runtime::backend::arm64

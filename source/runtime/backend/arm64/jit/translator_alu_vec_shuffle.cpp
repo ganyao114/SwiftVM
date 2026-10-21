@@ -61,39 +61,7 @@ void JitTranslator::EmitVecShuffle32(ir::Inst* inst) {
     __ Tbl(result.V16B(), src.V16B(), indexes.V16B());
 }
 
-bool JitTranslator::ReproveShufpsImmTie(ir::Inst* inst) const {
-    if (!sse_shufps_imm || !inst ||
-        inst->GetOp() != ir::OpCode::VecShuffle32TwoSrc) {
-        return false;
-    }
-    const u32 control = inst->GetArg<ir::Imm>(2).Get() & 0xffu;
-    auto resolve = [](ir::Value value) {
-        while (value.Defined() && value.Def()->IsBitCastOperation()) {
-            value = value.Def()->GetArg<ir::Value>(0);
-        }
-        return value;
-    };
-    auto left = resolve(inst->GetArg<ir::Value>(0));
-    const bool alias_shape = inst->GetArg<ir::Value>(0).Id() ==
-                             inst->GetArg<ir::Value>(1).Id();
-    if (control != 0xe4 &&
-        !((control == 0xe0 || control == 0xe5) && alias_shape)) {
-        return false;
-    }
-    if (!left.Defined() || !left.Def() || context.IsHostReadCoalesced(left.Id()) ||
-        !context.SharesFPR(left, ir::Value{inst})) {
-        return false;
-    }
-    u32 last_use = left.Def()->Id();
-    for (auto& scan : cur_block->GetInstList()) {
-        for (auto use : scan.GetValues()) {
-            if (resolve(use).Def() == left.Def()) {
-                last_use = std::max<u32>(last_use, scan.Id());
-            }
-        }
-    }
-    return last_use == inst->Id();
-}
+
 
 void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
     const auto left_value = inst->GetArg<ir::Value>(0);
@@ -131,7 +99,7 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
     if (same_source) {
         if (control == 0xE4) {
             if (sse_shufps_imm && result.GetCode() == left.GetCode()) {
-                ASSERT_MSG(ReproveShufpsImmTie(inst),
+                ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::ShuffleTie),
                            "SHUFPS imm tie proof diverged at IR {}", inst->Id());
             }
             const bool emitted = EmitPshufdDirect(result, left, control);
@@ -143,7 +111,7 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
         }
         if (control == 0xE0 || control == 0xE5) {
             if (sse_shufps_imm && result.GetCode() == left.GetCode()) {
-                ASSERT_MSG(ReproveShufpsImmTie(inst),
+                ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::ShuffleTie),
                            "SHUFPS imm tie proof diverged at IR {}", inst->Id());
             }
             if (result.GetCode() != left.GetCode()) {
@@ -175,7 +143,7 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
 
     if (sse_shufps_imm && control == 0xe4 &&
         result.GetCode() == left.GetCode()) {
-        ASSERT_MSG(ReproveShufpsImmTie(inst),
+        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::ShuffleTie),
                    "SHUFPS imm tie proof diverged at IR {}", inst->Id());
         __ Ins(result.V2D(), 1, right.V2D(), 1);
         return;
@@ -223,59 +191,13 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
     __ Tbx(result.V16B(), right.V16B(), indexes.V16B());
 }
 
-std::optional<u8> JitTranslator::ReprovePshufdDirectConstant(
-        ir::Inst* inst) const {
-    if (!inst || inst->GetOp() != ir::OpCode::VecLoadConst ||
-        !context.IsPshufdDirect(inst->Id())) {
-        return std::nullopt;
-    }
-    const u64 low = inst->GetArg<ir::Imm>(0).Get();
-    const u64 high = inst->GetArg<ir::Imm>(1).Get();
-    auto control = DecodePshufdDirectControl(low, high);
-    if (!control) {
-        return std::nullopt;
-    }
 
-    u32 local_uses = 0;
-    bool saw_shuffle = false;
-    for (auto& consumer : cur_block->GetInstList()) {
-        for (auto value : consumer.GetValues()) {
-            if (value.Def() != inst) {
-                continue;
-            }
-            ++local_uses;
-            if (consumer.GetOp() != ir::OpCode::VecShuffle32Indexed ||
-                consumer.GetArg<ir::Value>(1).Def() != inst ||
-                consumer.GetArg<ir::Value>(0).Def() == inst ||
-                !context.IsPshufdDirect(consumer.Id())) {
-                return std::nullopt;
-            }
-            saw_shuffle = true;
-        }
-    }
-    if (!saw_shuffle || local_uses != inst->GetUses()) {
-        return std::nullopt;
-    }
-    return control;
-}
 
-std::optional<u8> JitTranslator::ReprovePshufdDirectShuffle(
-        ir::Inst* inst) const {
-    if (!inst || inst->GetOp() != ir::OpCode::VecShuffle32Indexed ||
-        !context.IsPshufdDirect(inst->Id())) {
-        return std::nullopt;
-    }
-    auto indexes = inst->GetArg<ir::Value>(1);
-    if (!indexes.Defined() || !indexes.Def() ||
-        !context.IsPshufdDirect(indexes.Id())) {
-        return std::nullopt;
-    }
-    return ReprovePshufdDirectConstant(indexes.Def());
-}
+
 
 void JitTranslator::EmitVecLoadConst(ir::Inst* inst) {
     if (context.IsPshufdDirect(inst->Id())) {
-        ASSERT_MSG(ReprovePshufdDirectConstant(inst).has_value(),
+        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::Pshufd),
                    "PSHUFD direct constant proof diverged at IR {}", inst->Id());
         return;
     }
@@ -299,7 +221,7 @@ void JitTranslator::EmitVecShuffle32Indexed(ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     if (context.IsPshufdDirect(inst->Id())) {
-        auto control = ReprovePshufdDirectShuffle(inst);
+        auto control = gpr_plan->fpr ? gpr_plan->fpr->Control(inst) : std::nullopt;
         ASSERT_MSG(control.has_value(),
                    "PSHUFD direct shuffle proof diverged at IR {}", inst->Id());
         const bool emitted = EmitPshufdDirect(result, src, *control);

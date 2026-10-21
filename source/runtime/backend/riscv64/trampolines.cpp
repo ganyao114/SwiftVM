@@ -57,11 +57,16 @@ TrampolinesRiscv64::TrampolinesRiscv64(const Config& config) : Trampolines(confi
     as.J(&dispatch);
 
     as.Bind(&requested);
+    Label retirement;
+    as.SRLI(t2, t1, 62); as.ANDI(t2, t2, 1);
+    as.BNE(t2, x0, &retirement);
     as.SRLI(t1, t1, 63);
     as.LI(a0, static_cast<u32>(HaltReason::CodeMiss));
     as.BEQ(t1, x0, &done);
     as.LI(a0, static_cast<u32>(HaltReason::Signal));
     as.J(&done);
+    as.Bind(&retirement);
+    as.LI(a0, static_cast<u32>(HaltReason::Retirement)); as.J(&done);
     as.Bind(&code_miss);
     as.LI(a0, static_cast<u32>(HaltReason::CodeMiss)); as.J(&done);
     as.Bind(&cache_miss);

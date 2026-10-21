@@ -1305,6 +1305,9 @@ DLMALLOC_EXPORT size_t destroy_mspace(mspace msp);
 */
 DLMALLOC_EXPORT mspace create_mspace_with_base(void* base, size_t capacity, int locked);
 
+/* SwiftVM fixed caller-supplied arenas; see malloc.h. */
+DLMALLOC_EXPORT int mspace_disable_growth(mspace msp);
+
 /*
   mspace_track_large_chunks controls whether requests for large chunks
   are allocated in their own untracked mmapped regions, separate from
@@ -5490,6 +5493,21 @@ mspace create_mspace_with_base(void* base, size_t capacity, int locked) {
     set_lock(m, locked);
   }
   return (mspace)m;
+}
+
+int mspace_disable_growth(mspace msp) {
+  int result = 0;
+  mstate ms = (mstate)msp;
+  if (ms != 0 && ok_magic(ms) && !PREACTION(ms)) {
+    if (is_extern_segment(&ms->seg) && ms->seg.next == 0 &&
+        ms->footprint != 0 && ms->footprint == ms->seg.size) {
+      disable_mmap(ms);
+      ms->footprint_limit = ms->footprint;
+      result = 1;
+    }
+    POSTACTION(ms);
+  }
+  return result;
 }
 
 int mspace_track_large_chunks(mspace msp, int enable) {

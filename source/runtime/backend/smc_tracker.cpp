@@ -12,8 +12,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
+#include <stdexcept>
 #include <unordered_set>
+#include <utility>
 #include <sys/mman.h>
 #include <unistd.h>
 #include "runtime/backend/address_space.h"
@@ -91,6 +94,18 @@ void SmcTracker::UnlockMetadata() const {
 }
 
 bool SmcTracker::SetPageProtected(VAddr page, bool prot_read_only) {
+    const int error = SetPageProtectionChecked(page, prot_read_only);
+    if (error != 0) {
+        LOG_ERROR("SMC: mprotect({:#x}, {}) failed: {}",
+                  (page & mask_) + bias_,
+                  prot_read_only ? "R" : "RW",
+                  std::strerror(error));
+        return false;
+    }
+    return true;
+}
+
+int SmcTracker::SetPageProtectionChecked(VAddr page, bool prot_read_only) noexcept {
     // Truncate to the guest window first: `page` is derived from a
     // guest-controlled block location, and an unmasked page + bias_ would
     // mprotect an arbitrary *host* mapping (observed: the translator's own
@@ -98,14 +113,7 @@ bool SmcTracker::SetPageProtected(VAddr page, bool prot_read_only) {
     const auto host_addr = (page & mask_) + bias_;
     const auto host = reinterpret_cast<void*>(host_addr);
     const int prot = prot_read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
-    if (mprotect(host, page_size_, prot) != 0) {
-        LOG_ERROR("SMC: mprotect({:#x}, {}) failed: {}",
-                  host_addr,
-                  prot_read_only ? "R" : "RW",
-                  std::strerror(errno));
-        return false;
-    }
-    return true;
+    return mprotect(host, page_size_, prot) == 0 ? 0 : errno;
 }
 
 SmcTracker::RuntimeToken SmcTracker::RegisterRuntime(TranslateTable& l1,
@@ -124,6 +132,7 @@ SmcTracker::RuntimeToken SmcTracker::RegisterRuntime(TranslateTable& l1,
             global_epoch_.load(std::memory_order_seq_cst),
             std::memory_order_relaxed);
     MetadataGuard guard(*this);
+    if (runtime_registration_sealed_) throw std::runtime_error("SMC runtime registration is sealed");
     runtimes_.push_back(token);
     return token;
 }
@@ -132,7 +141,10 @@ void SmcTracker::UnregisterRuntime(const RuntimeToken& token) {
     if (!token) {
         return;
     }
-    token->active_epoch.store(kInactiveEpoch, std::memory_order_release);
+    // Unregistering cannot make a live generated return address quiescent.
+    if (token->active_epoch.load(std::memory_order_seq_cst) != kInactiveEpoch) {
+        std::terminate();
+    }
     {
         MetadataGuard guard(*this);
         std::erase(runtimes_, token);
@@ -146,10 +158,7 @@ void SmcTracker::BeginJit(const RuntimeToken& token) {
     if (!token) {
         return;
     }
-    if (!multithreaded_.load(std::memory_order_acquire)) {
-        if (token->rsb_empty) {
-            SynchronizeContinuation(token, global_epoch_.load(std::memory_order_seq_cst));
-        }
+    if (token->execution_depth++ != 0) {
         return;
     }
     for (;;) {
@@ -197,15 +206,40 @@ u64 SmcTracker::AdvanceCodePatchEpoch() {
 }
 
 void SmcTracker::EndJit(const RuntimeToken& token) {
+    LeaveJit(token);
+    if (token && token->execution_depth == 0 &&
+        pending_count_.load(std::memory_order_relaxed) != 0) {
+        ReclaimRetired();
+    }
+}
+
+void SmcTracker::LeaveJit(const RuntimeToken& token) noexcept {
     if (!token) {
         return;
     }
-    if (!multithreaded_.load(std::memory_order_acquire)) {
+    if (token->execution_depth == 0) {
+        std::terminate();
+    }
+    if (--token->execution_depth != 0) {
         return;
     }
     token->active_epoch.store(kInactiveEpoch, std::memory_order_seq_cst);
-    if (pending_count_.load(std::memory_order_relaxed) != 0) {
-        ReclaimRetired();
+}
+
+SmcTracker::ExecutionScope::ExecutionScope(SmcTracker& tracker, const RuntimeToken& token)
+        : tracker_(&tracker), token_(token) {
+    tracker_->BeginJit(token_);
+}
+
+SmcTracker::ExecutionScope::~ExecutionScope() {
+    if (tracker_) {
+        tracker_->LeaveJit(token_);
+    }
+}
+
+void SmcTracker::ExecutionScope::End() {
+    if (auto* tracker = std::exchange(tracker_, nullptr)) {
+        tracker->EndJit(token_);
     }
 }
 
@@ -227,11 +261,32 @@ void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
                               ir::AddressNode* node,
                               VAddr guest_start,
                               VAddr guest_end) {
-    if (!IsEnabled()) {
-        return;
-    }
     MetadataGuard guard(*this);
-    if (!locally_enabled_) {
+    RegisterNodeLocked(module, node, guest_start, guest_end);
+}
+
+void SmcTracker::PublicationScope::CommitScope::RegisterNode(
+        const std::shared_ptr<Module>& module, ir::AddressNode* node, VAddr start, VAddr end) {
+    tracker_.RegisterNodeLocked(module, node, start, end);
+}
+
+void SmcTracker::PublicationScope::CommitScope::RevokeNode(
+        AddressSpace& space, const std::shared_ptr<Module>& module, ir::AddressNode* node) {
+    TrackedNode tracked{module, ir::NodeRef{node}, node->GetStartLocation().Value(),
+                        node->GetEndLocation().Value()};
+    tracker_.ClearDispatchSlots(space, nullptr, tracked);
+    tracker_.RemoveTrackedNode(node);
+}
+
+bool SmcTracker::PublicationScope::RetireNode(
+        AddressSpace& space, const std::shared_ptr<Module>& module, ir::AddressNode* node) {
+    return tracker_.RetireNodeLocked(space, nullptr, module, node);
+}
+
+void SmcTracker::RegisterNodeLocked(const std::shared_ptr<Module>& module,
+                                    ir::AddressNode* node, VAddr guest_start, VAddr guest_end) {
+    if (!IsEnabled() || !locally_enabled_ ||
+        (node->code_lifetime && node->code_lifetime->Revoked())) {
         return;
     }
     if (guest_end <= guest_start) {
@@ -268,6 +323,10 @@ void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
     }
     for (VAddr page = first; page <= last; page += page_size_) {
         auto& rec = pages_[page];
+        if (rec.dirty && node->code_lifetime) {
+            node->code_lifetime->Revoke();
+            return;
+        }
         // Preserve the lock-free close invariant before publishing another
         // translation into an already-open write window. Normally the fault
         // already left the hint set; this store makes RegisterNode itself
@@ -288,10 +347,14 @@ void SmcTracker::RegisterNode(const std::shared_ptr<Module>& module,
         // A translation published during another thread's open write window
         // is collected by CloseWriteWindow's retry loop. Do not protect the
         // page until that batch has detached every such translation.
-        if (!rec.dirty && !rec.write_protected) {
+        if (!rec.dirty && (!rec.write_protected || rec.reprotect_on_publish)) {
             if (SetPageProtected(page, true)) {
                 rec.write_protected = true;
+                rec.reprotect_on_publish = false;
                 rec.claim_stale_fault = false;
+            } else if (node->code_lifetime) {
+                node->code_lifetime->Revoke();
+                return;
             }
         }
         // page += page_size_ would wrap past the top of the address space and
@@ -322,11 +385,19 @@ void SmcTracker::ClearDispatchSlots(AddressSpace& space,
     };
 
     auto* node = tracked.node.Get();
-    clear_location(node->GetStartLocation().Value());
-    if (node->node_type == ir::AddressNode::Function) {
-        auto* function = static_cast<ir::Function*>(node);
-        for (auto& block : function->GetBlocks()) {
-            clear_location(block.GetStartLocation().Value());
+    if (const auto& lifetime = node->code_lifetime) {
+        lifetime->Revoke();
+        for (const auto entry : lifetime->entries) clear_location(entry);
+    } else {
+        // Persistent lifetimes enumerate the entries this allocation actually
+        // publishes. Its other blocks may only describe dependencies, whose
+        // dispatch slots belong to a different live allocation.
+        clear_location(node->GetStartLocation().Value());
+        if (node->node_type == ir::AddressNode::Function) {
+            auto* function = static_cast<ir::Function*>(node);
+            for (auto& block : function->GetBlocks()) {
+                clear_location(block.GetStartLocation().Value());
+            }
         }
     }
     for (const auto location : aliases) {
@@ -353,8 +424,16 @@ void SmcTracker::PublishExitRequest() {
         // The fault handler acquire-loads this request after the poll page
         // becomes inaccessible. A counter lets the Runtime CAS away only the
         // exact request its cold veneer observed.
-        std::atomic_ref<u64>(*runtime->exit_request)
-                .fetch_add(1, std::memory_order_release);
+        auto request = std::atomic_ref<u64>(*runtime->exit_request);
+        auto observed = request.load(std::memory_order_relaxed);
+        for (;;) {
+            const auto count = observed & kBackedgeSmcRequestMask;
+            // Reusing an exhausted generation could acknowledge a newer SMC.
+            if (count == kBackedgeSmcRequestMask) std::abort();
+            const auto next = (observed & ~kBackedgeSmcRequestMask) | (count + 1);
+            if (request.compare_exchange_weak(observed, next,
+                    std::memory_order_release, std::memory_order_relaxed)) break;
+        }
         if (runtime->interrupt_poll) {
             runtime->interrupt_poll->Arm();
         }
@@ -374,10 +453,14 @@ void SmcTracker::DelinkTargets(AddressSpace& space,
     std::unordered_set<VAddr> targets;
     for (const auto& tracked : nodes) {
         auto* node = tracked.node.Get();
-        targets.insert(node->GetStartLocation().Value());
-        if (node->node_type == ir::AddressNode::Function) {
-            for (auto& block : static_cast<ir::Function*>(node)->GetBlocks()) {
-                targets.insert(block.GetStartLocation().Value());
+        if (const auto& lifetime = node->code_lifetime) {
+            targets.insert(lifetime->entries.begin(), lifetime->entries.end());
+        } else {
+            targets.insert(node->GetStartLocation().Value());
+            if (node->node_type == ir::AddressNode::Function) {
+                for (auto& block : static_cast<ir::Function*>(node)->GetBlocks()) {
+                    targets.insert(block.GetStartLocation().Value());
+                }
             }
         }
     }
@@ -431,8 +514,7 @@ void SmcTracker::DelinkTargets(AddressSpace& space,
     }
 }
 
-std::vector<SmcTracker::TrackedNode> SmcTracker::TakeDirtyNodes(
-        AddressSpace& space, TranslateTable* extra_l1) {
+std::vector<SmcTracker::TrackedNode> SmcTracker::CollectDirtyNodes() {
     std::vector<TrackedNode> nodes;
     for (auto& [page, record] : pages_) {
         if (!record.dirty) {
@@ -444,38 +526,25 @@ std::vector<SmcTracker::TrackedNode> SmcTracker::TakeDirtyNodes(
                         return other.node.Get() == tracked.node.Get();
                     });
             if (!duplicate) {
-                ClearDispatchSlots(space, extra_l1, tracked);
                 nodes.push_back(tracked);
             }
         }
     }
-    for (const auto& tracked : nodes) {
-        RemoveTrackedNode(tracked.node.Get());
-    }
     return nodes;
 }
 
-std::vector<SmcTracker::TrackedNode> SmcTracker::TakeRangeNodes(
-        AddressSpace& space, TranslateTable* extra_l1, VAddr first, VAddr last) {
+std::vector<SmcTracker::TrackedNode> SmcTracker::CollectRangeNodes(VAddr first, VAddr last) {
     std::vector<TrackedNode> nodes;
-    for (VAddr page = first; page <= last; page += page_size_) {
-        auto it = pages_.find(page);
-        if (it == pages_.end()) {
-            continue;
-        }
+    for (auto it = pages_.lower_bound(first); it != pages_.end() && it->first <= last; ++it) {
         for (const auto& tracked : it->second.nodes) {
             const bool duplicate = std::any_of(
                     nodes.begin(), nodes.end(), [&](const TrackedNode& other) {
                         return other.node.Get() == tracked.node.Get();
                     });
             if (!duplicate) {
-                ClearDispatchSlots(space, extra_l1, tracked);
                 nodes.push_back(tracked);
             }
         }
-    }
-    for (const auto& tracked : nodes) {
-        RemoveTrackedNode(tracked.node.Get());
     }
     return nodes;
 }
@@ -531,10 +600,15 @@ bool SmcTracker::HandleWriteFault(AddressSpace& space,
     };
     for (const auto& tracked : rec.nodes) {
         auto* node = tracked.node.Get();
-        signal_invalidate(node->GetStartLocation().Value());
-        if (node->node_type == ir::AddressNode::Function) {
-            for (auto& block : static_cast<ir::Function*>(node)->GetBlocks()) {
-                signal_invalidate(block.GetStartLocation().Value());
+        if (const auto& lifetime = node->code_lifetime) {
+            lifetime->Revoke();
+            for (const auto entry : lifetime->entries) signal_invalidate(entry);
+        } else {
+            signal_invalidate(node->GetStartLocation().Value());
+            if (node->node_type == ir::AddressNode::Function) {
+                for (auto& block : static_cast<ir::Function*>(node)->GetBlocks()) {
+                    signal_invalidate(block.GetStartLocation().Value());
+                }
             }
         }
     }
@@ -569,6 +643,38 @@ bool SmcTracker::CanReclaim(u64 retire_epoch) const {
     return true;
 }
 
+void SmcTracker::RetireBatch(AddressSpace& space, TranslateTable* extra_l1,
+                              const std::vector<TrackedNode>& nodes,
+                              std::span<const VAddr> aliases) {
+    std::vector<ReclaimCandidate> candidates;
+    candidates.reserve(nodes.size());
+    {
+        MetadataGuard guard(*this);
+        retired_.reserve(retired_.size() + nodes.size());
+    }
+    // All allocating work precedes removal of tracking or dispatch ownership.
+    // Delinking may fail after restoring some branches, but every node stays
+    // tracked and its code stays allocated, so the same operation can retry.
+    DelinkTargets(space, nodes, aliases);
+    {
+        MetadataGuard guard(*this);
+        for (const auto& tracked : nodes) {
+            ClearDispatchSlots(space, extra_l1, tracked, aliases);
+            RemoveTrackedNode(tracked.node.Get());
+        }
+    }
+    // The remaining operations allocate no retirement storage. Commit this
+    // batch before collecting the next one so a later OOM cannot lose detached
+    // allocations waiting for executor grace.
+    for (const auto& tracked : nodes) {
+        if (auto* exec_ptr = tracked.module->DetachNode(tracked.node.Get()); exec_ptr) {
+            (void)space.GetLinkManager().DetachSource({tracked.module.get(), exec_ptr});
+            candidates.push_back(ReclaimCandidate{tracked.module, exec_ptr});
+        }
+    }
+    Retire(candidates);
+}
+
 void SmcTracker::Retire(std::vector<ReclaimCandidate>& candidates) {
     if (candidates.empty()) {
         return;
@@ -582,6 +688,7 @@ void SmcTracker::Retire(std::vector<ReclaimCandidate>& candidates) {
     // cleared tables and cannot newly enter one of these allocations.
     const auto retire_epoch = global_epoch_.fetch_add(1, std::memory_order_seq_cst) + 1;
     MetadataGuard guard(*this);
+    ASSERT(retired_.capacity() - retired_.size() >= candidates.size());
     for (auto& candidate : candidates) {
         retired_.push_back(
                 RetiredCode{std::move(candidate.module), candidate.exec_ptr, retire_epoch});
@@ -591,26 +698,28 @@ void SmcTracker::Retire(std::vector<ReclaimCandidate>& candidates) {
 }
 
 void SmcTracker::ReclaimRetiredLocked() {
-    std::vector<RetiredCode> ready;
-    {
-        MetadataGuard guard(*this);
-        for (auto it = retired_.begin(); it != retired_.end();) {
-            if (CanReclaim(it->retire_epoch)) {
-                ready.push_back(std::move(*it));
-                it = retired_.erase(it);
-            } else {
-                ++it;
-            }
+    for (;;) {
+        RetiredCode ready;
+        size_t index{};
+        {
+            MetadataGuard guard(*this);
+            const auto it = std::find_if(retired_.begin(), retired_.end(),
+                    [this](const auto& item) { return CanReclaim(item.retire_epoch); });
+            if (it == retired_.end()) break;
+            index = static_cast<size_t>(it - retired_.begin());
+            ready = *it;
         }
-        pending_count_.store(retired_.size(), std::memory_order_relaxed);
-    }
-    for (auto& retired : ready) {
         // Still under invalidation_mutex_: owner records remain queryable from
         // detach through the QSBR grace period, and are purged immediately
         // before the module/cache lock can free and reuse the allocation.
-        auto& manager = retired.module->GetAddressSpace().GetLinkManager();
-        (void)manager.PurgeSource({retired.module.get(), retired.exec_ptr});
-        retired.module->ReclaimCode(retired.exec_ptr);
+        auto& manager = ready.module->GetAddressSpace().GetLinkManager();
+        (void)manager.PurgeSource({ready.module.get(), ready.exec_ptr});
+        ready.module->ReclaimCode(ready.exec_ptr);
+        {
+            MetadataGuard guard(*this);
+            retired_.erase(retired_.begin() + index);
+            pending_count_.store(retired_.size(), std::memory_order_relaxed);
+        }
     }
     // Keep the hint true until the actual ReclaimCode calls finish, not merely
     // until entries move out of retired_. MaybeClear takes metadata_lock_, so a
@@ -674,17 +783,14 @@ void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& current_l
         close_slow_calls_.fetch_add(1, std::memory_order_relaxed);
     }
     std::lock_guard invalidation_guard(invalidation_mutex_);
-    std::vector<ReclaimCandidate> candidates;
-
     for (;;) {
         std::vector<TrackedNode> nodes;
         {
             MetadataGuard guard(*this);
-            nodes = TakeDirtyNodes(space, &current_l1);
+            nodes = CollectDirtyNodes();
             if (nodes.empty()) {
                 // An empty batch IMPLIES every dirty page now has an empty
-                // node list: TakeDirtyNodes visits every dirty page, collects
-                // its nodes, and only then erases them from the records, so
+                // node list: CollectDirtyNodes visits every dirty page, so
                 // "it returned nothing" and "no dirty page still tracks a
                 // node" are the same statement. There is therefore nothing
                 // left to detach and nothing to re-protect here -- pages are
@@ -715,17 +821,9 @@ void SmcTracker::CloseWriteWindow(AddressSpace& space, TranslateTable& current_l
         // patch epoch -> module/cache detach -> Retire/global epoch. The patch
         // epoch is advanced inside DelinkTargets after cache maintenance and
         // before any target allocation can enter the retired list.
-        DelinkTargets(space, nodes);
-        for (const auto& tracked : nodes) {
-            if (auto* exec_ptr = tracked.module->DetachNode(tracked.node.Get()); exec_ptr) {
-                (void)space.GetLinkManager().DetachSource(
-                        {tracked.module.get(), exec_ptr});
-                candidates.push_back(ReclaimCandidate{tracked.module, exec_ptr});
-            }
-        }
+        RetireBatch(space, &current_l1, nodes);
     }
 
-    Retire(candidates);
     ReclaimRetiredLocked();
     if (close_profile_enabled_) {
         const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -758,38 +856,32 @@ void SmcTracker::InvalidateRange(AddressSpace& space,
     const VAddr first = PageKey(guest_start);
     const VAddr last = PageKey(guest_end - 1);
     std::lock_guard invalidation_guard(invalidation_mutex_);
-    std::vector<ReclaimCandidate> candidates;
-
     for (;;) {
         std::vector<TrackedNode> nodes;
         {
             MetadataGuard guard(*this);
-            nodes = TakeRangeNodes(space, current_l1, first, last);
+            nodes = CollectRangeNodes(first, last);
             if (nodes.empty()) {
-                for (VAddr page = first; page <= last; page += page_size_) {
-                    auto it = pages_.find(page);
-                    if (it == pages_.end()) {
+                for (auto it = pages_.lower_bound(first); it != pages_.end() && it->first <= last;) {
+                    if (it->second.write_protected && !SetPageProtected(it->first, false)) {
+                        // Keep the actual protected page reachable by another
+                        // range invalidation, a write fault or terminal cleanup.
+                        // Erasing it here would permanently lose the only record
+                        // of the still-read-only guest mapping.
+                        // A caller may subsequently replace that mapping, so
+                        // a new publication must establish protection again.
+                        it->second.reprotect_on_publish = true;
+                        ++it;
                         continue;
                     }
-                    if (it->second.write_protected) {
-                        SetPageProtected(page, false);
-                    }
-                    pages_.erase(it);
+                    it = pages_.erase(it);
                 }
                 break;
             }
         }
-        DelinkTargets(space, nodes);
-        for (const auto& tracked : nodes) {
-            if (auto* exec_ptr = tracked.module->DetachNode(tracked.node.Get()); exec_ptr) {
-                (void)space.GetLinkManager().DetachSource(
-                        {tracked.module.get(), exec_ptr});
-                candidates.push_back(ReclaimCandidate{tracked.module, exec_ptr});
-            }
-        }
+        RetireBatch(space, current_l1, nodes);
     }
 
-    Retire(candidates);
     ReclaimRetiredLocked();
 }
 
@@ -797,10 +889,15 @@ bool SmcTracker::RetireNode(AddressSpace& space,
                             TranslateTable* current_l1,
                             const std::shared_ptr<Module>& module,
                             ir::AddressNode* node) {
-    if (!module || !node) {
-        return false;
-    }
     std::lock_guard invalidation_guard(invalidation_mutex_);
+    return RetireNodeLocked(space, current_l1, module, node);
+}
+
+bool SmcTracker::RetireNodeLocked(AddressSpace& space,
+                                  TranslateTable* current_l1,
+                                  const std::shared_ptr<Module>& module,
+                                  ir::AddressNode* node) {
+    if (!module || !node) return false;
     const auto current = module->GetNode(node->GetStartLocation());
     const bool current_owner =
             (IsFunction(current) && GetFunction(current).get() == node) ||
@@ -822,9 +919,10 @@ bool SmcTracker::RetireNode(AddressSpace& space,
     if (!published) {
         return false;
     }
+    auto* allocation = node->code_lifetime ? node->code_lifetime->base : published;
 
     auto& link_manager = space.GetLinkManager();
-    const LinkSourceOwner owner{module.get(), published};
+    const LinkSourceOwner owner{module.get(), allocation};
     const auto aliases = link_manager.QueryTargets(owner);
     TrackedNode tracked{
             .module = module,
@@ -832,51 +930,90 @@ bool SmcTracker::RetireNode(AddressSpace& space,
             .guest_start = node->GetStartLocation().Value(),
             .guest_end = node->GetStartLocation().Value() + 1,
     };
-    {
-        MetadataGuard guard(*this);
-        ClearDispatchSlots(space, current_l1, tracked, aliases);
-        RemoveTrackedNode(node);
-    }
     std::vector<TrackedNode> nodes{tracked};
-    DelinkTargets(space, nodes, aliases);
-    auto* exec_ptr = module->DetachNode(node);
-    ASSERT(exec_ptr == published);
-    if (!exec_ptr) {
-        return false;
-    }
-    (void)link_manager.DetachSource(owner);
-    std::vector<ReclaimCandidate> candidates{
-            ReclaimCandidate{module, exec_ptr}};
-    Retire(candidates);
+    RetireBatch(space, current_l1, nodes, aliases);
     ReclaimRetiredLocked();
     return true;
 }
 
 void SmcTracker::DisableAndUnprotectAll() {
     std::lock_guard invalidation_guard(invalidation_mutex_);
-    // Dropped after metadata_lock_ is released: the records own node
-    // references, and releasing the last one runs ~Block/~Function (which
-    // frees the whole instruction list) -- work that must not happen under a
-    // spinlock the signal handler also takes.
-    std::map<VAddr, PageRecord> dead_pages;
     {
         MetadataGuard guard(*this);
         locally_enabled_ = false;
         multithreaded_.store(false, std::memory_order_release);
-        for (const auto& runtime : runtimes_) {
-            if (runtime) {
-                runtime->active_epoch.store(kInactiveEpoch, std::memory_order_seq_cst);
-            }
-        }
-        for (auto& [page, record] : pages_) {
-            if (record.write_protected) {
-                SetPageProtected(page, false);
-            }
-        }
-        dead_pages.swap(pages_);
     }
-    dead_pages.clear();
+    const auto result = UnprotectAllLocked();
+    if (result.protect_error) {
+        LOG_ERROR("SMC: unprotect {:#x} failed: {}; {} pages remain",
+                  result.failed_page, std::strerror(result.protect_error), result.remaining_pages);
+    }
     ReclaimRetiredLocked();
+}
+
+SmcTracker::ShutdownResult SmcTracker::UnprotectAllLocked() {
+    ShutdownResult result{.admission_ready = true};
+    VAddr next_page{};
+    for (;;) {
+        std::map<VAddr, PageRecord>::node_type released;
+        bool last{};
+        {
+            MetadataGuard guard(*this);
+            auto it = pages_.lower_bound(next_page);
+            if (it == pages_.end()) break;
+            const auto page = it->first;
+            const int error = it->second.write_protected
+                    ? SetPageProtectionChecked(page, false) : 0;
+            last = page == std::numeric_limits<VAddr>::max();
+            next_page = last ? page : page + 1;
+            if (error) {
+                if (!result.protect_error) {
+                    result.failed_page = page;
+                    result.protect_error = error;
+                }
+            } else {
+                released = pages_.extract(it);
+            }
+        }
+        // Dropping strong Module/Node owners must occur outside the signal spinlock.
+        if (last) break;
+    }
+    {
+        MetadataGuard guard(*this);
+        result.remaining_pages = pages_.size();
+    }
+    return result;
+}
+
+SmcTracker::ShutdownPreparation SmcTracker::PrepareShutdown(
+        AddressSpace& space, const RetirementControl::Ticket& ticket) {
+    const auto& control = space.GetRetirementControl();
+    if (&space.GetSmcTracker() != this || ticket.owner != control ||
+        control->CheckShutdown(ticket) != RetirementControl::DrainStatus::Ready) return {};
+    std::lock_guard invalidation_guard(invalidation_mutex_);
+    MetadataGuard guard(*this);
+    if (!runtimes_.empty()) return {.admission_ready = true, .runtimes_attached = true};
+    runtime_registration_sealed_ = true;
+    return {.admission_ready = true};
+}
+
+SmcTracker::ShutdownResult SmcTracker::ShutdownAfterQuiescence(
+        AddressSpace& space, const RetirementControl::Ticket& ticket) {
+    const auto& control = space.GetRetirementControl();
+    if (&space.GetSmcTracker() != this || ticket.owner != control ||
+        control->CheckShutdown(ticket) != RetirementControl::DrainStatus::Ready) return {};
+    std::lock_guard invalidation_guard(invalidation_mutex_);
+    {
+        MetadataGuard guard(*this);
+        if (!runtimes_.empty()) return {.admission_ready = true, .runtimes_attached = true};
+        runtime_registration_sealed_ = true;
+        terminal_shutdown_ = true;
+        locally_enabled_ = false;
+        multithreaded_.store(false, std::memory_order_release);
+    }
+    auto result = UnprotectAllLocked();
+    if (result.Complete()) ReclaimRetiredLocked();
+    return result;
 }
 
 bool SmcTracker::HasProtectedPages() const {

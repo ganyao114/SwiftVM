@@ -22,7 +22,7 @@ TEST_CASE("Trampoline branches reserve space at the end of a code buffer") {
                             address_space.GetTrampolines().GetFPRRegs(), features, true};
         constexpr size_t capacity = 64;
         vixl::aarch64::MacroAssembler assembler{capacity};
-        arm64::JitContext context{module, allocation, assembler};
+        arm64::JitContext context{module, allocation, assembler, arm64::JitContext::AssemblerOnlyTag{}};
         for (size_t offset = 0; offset < capacity;
              offset += vixl::aarch64::kInstructionSize) {
             assembler.Nop();
@@ -87,6 +87,7 @@ TEST_CASE("Vector emission grows a full code buffer before writing") {
 
         constexpr size_t capacity = 64;
         vixl::aarch64::MacroAssembler assembler{capacity};
+        allocation.CompleteGPRAllocation(module);
         arm64::JitContext context{module, allocation, assembler};
         arm64::JitTranslator translator{context};
         // Fixed input reads emit no copies, so the vector operation is the

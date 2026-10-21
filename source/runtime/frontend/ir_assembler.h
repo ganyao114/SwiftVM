@@ -5,6 +5,10 @@
 #pragma once
 
 #include "runtime/ir/hir_builder.h"
+#include "runtime/ir/opts/uniform_elimination_pass.h"
+
+#include <unordered_map>
+#include <vector>
 
 namespace swift::runtime::ir {
 
@@ -14,16 +18,35 @@ public:
 
     explicit Assembler(Block* block) : ir_block(block), hir_builder() {}
 
+    // Flushes pending uniform restamps: a block can end without a
+    // terminal forward through this Assembler (decode limit /
+    // fallthrough handled by the caller).
+    ~Assembler();
+
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
     Inst* AppendInst(OpCode op, const Args&... args) {
-        if (hir_builder) {
-            return hir_builder->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
-        } else if (ir_block) {
-            return ir_block->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
+        Inst* inst = AppendRaw<RetType>(op, std::forward<const Args&>(args)...);
+        if (uniform_builder && inst) {
+            UniformAfterAppend(inst);
         }
-        PANIC();
-        return nullptr;
+        if (uniform_bound && inst) {
+            BoundFoldImmediate(inst);
+            BoundFoldExtend(inst);
+        }
+        if (uniform_forward) {
+            UniformFlushRestamps();
+        }
+        return inst;
     }
+
+    // Smart-builder uniform shadow (step 4 SB0): mirrors
+    // UniformEliminationPass's forward byte-fact table at append time
+    // and counts the loads it would fold or convert, without changing
+    // any IR. Enabled only under SVM_FOLDCENSUS until SB1.
+    void EnableUniformBuilder(const UniformInfo* info, FeatureSet features,
+                              bool bound_backend = false);
+    Value LoadUniform(Uniform uniform);
+    Void StoreUniform(Uniform uniform, Value value);
 
 #define INST(name, ret, ...)                                                                       \
     template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
@@ -119,9 +142,79 @@ public:
     }
 
 private:
+    template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
+    Inst* AppendRaw(OpCode op, const Args&... args) {
+        Inst* inst{};
+        if (hir_builder) {
+            inst = hir_builder->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
+        } else if (ir_block) {
+            inst = ir_block->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
+        } else {
+            PANIC();
+        }
+        if (uniform_bound && inst) {
+            // Only LoadImm positions are ever looked up (immediate
+            // fold windows); counting every append keeps distances
+            // exact without a hash insert per instruction.
+            if (op == OpCode::LoadImm) {
+                bound_positions.emplace(inst, bound_index);
+            }
+            ++bound_index;
+        }
+        return inst;
+    }
+
+    struct UniformByteFact {
+        Value value{};
+        u8 offset{};
+        [[nodiscard]] bool Defined() const { return value.Defined(); }
+    };
+    struct UniformFold {
+        bool ok{};
+        bool extract{};  // BitExtract instead of BitCast alias
+        Value value{};
+        u8 offset{};
+    };
+    void UniformAfterAppend(Inst* inst);
+    // The pass re-stamps folded/mapped loads with the Uniform
+    // descriptor type, overriding any SetType the decoder applied
+    // to the returned Value in between. Mirror that at the next
+    // append so downstream sees the identical return type.
+    void UniformFlushRestamps();
+    void UniformOnLoad(Inst* inst);
+    void UniformOnStore(Inst* inst);
+    void UniformStoreFacts(Uniform uniform, Value value);
+    void BoundFoldImmediate(Inst* inst);
+    void BoundFoldExtend(Inst* inst);
+    void UniformInvalidateAll();
+    void UniformInvalidateHelper(const Inst& inst);
+    [[nodiscard]] UniformFold UniformFoldFor(Uniform uniform) const;
+    [[nodiscard]] bool UniformWouldFold(Uniform uniform) const {
+        return UniformFoldFor(uniform).ok;
+    }
+
     HIRBuilder* hir_builder;
     ir::Block* ir_block;
     bool end_decode{false};
+
+    const UniformInfo* uniform_info{};
+    FeatureSet uniform_features{};
+    bool uniform_builder{};
+    // SB1: actually emit the folded/converted node instead of the
+    // LoadUniform the pass would have rewritten. Env-gated
+    // (SVM_BUILDER_UNIFORM) until dump-equivalence gates pass.
+    bool uniform_forward{};
+    // Bound-backend decode: the unit is known to target the arm64
+    // JIT, so the builder may also emit mapped uniform stores
+    // (SetHost*) directly. The pass remains the general path.
+    bool uniform_bound{};
+    // Append positions for bound-mode use windows (mirrors the
+    // const-folding pass's per-block instruction index).
+    std::unordered_map<Inst*, u32> bound_positions;
+    u32 bound_index{};
+    std::vector<UniformByteFact> uniform_bytes;
+    std::unordered_map<Inst*, std::vector<UniformByteFact>> uniform_labels;
+    std::vector<std::pair<Inst*, ValueType>> uniform_restamps;
 };
 
 }  // namespace swift::runtime::ir

@@ -52,8 +52,17 @@ size_t LinkManager::LinkSourceOwnerHash::operator()(const LinkSourceOwner& owner
                        std::hash<const void*>{}(owner.allocation));
 }
 
+LinkManager::SignalReader::SignalReader(LinkManager& manager) noexcept : manager_(manager) {
+    manager_.signal_readers_.fetch_add(1, std::memory_order_seq_cst);
+    admitted_ = !manager_.sealed_.load(std::memory_order_seq_cst);
+}
+
+LinkManager::SignalReader::~SignalReader() {
+    manager_.signal_readers_.fetch_sub(1, std::memory_order_seq_cst);
+}
+
 LinkManager::SignalTarget* LinkManager::FindSignalTarget(u64 guest_target) const noexcept {
-    auto* buckets = signal_buckets_.load(std::memory_order_acquire);
+    auto* buckets = signal_buckets_.load(std::memory_order_seq_cst);
     if (!buckets) {
         return nullptr;
     }
@@ -150,6 +159,7 @@ bool LinkManager::RegisterSite(LinkSiteKey site,
         }
     }
     std::lock_guard guard(mutex_);
+    if (sealed_.load(std::memory_order_seq_cst)) return false;
     if (const auto owner = outgoing_.find(source_owner);
         owner != outgoing_.end() && owner->second.retiring) {
         return false;
@@ -256,6 +266,7 @@ u64 LinkManager::PublishTarget(u64 guest_target,
             call_pending_flags_host_pc != nullptr) ==
            pending_flags_contract.CanPublishPendingEntry());
     std::lock_guard guard(mutex_);
+    if (sealed_.load(std::memory_order_seq_cst)) return 0;
     const u64 generation = next_target_generation_++;
     ASSERT(generation != kSignalInvalidatingGeneration);
     auto* signal_target = GetOrCreateSignalTargetLocked(guest_target);
@@ -299,12 +310,14 @@ u64 LinkManager::PublishTarget(u64 guest_target,
     return generation;
 }
 
-std::optional<LinkTargetRecord> LinkManager::QueryTarget(u64 guest_target) const {
+std::optional<LinkTargetRecord> LinkManager::QueryTarget(u64 guest_target, bool* invalidated) const {
     std::lock_guard guard(mutex_);
-    if (const auto it = targets_.find(guest_target);
-        it != targets_.end() && it->second.active && it->second.signal_target &&
+    const auto it = targets_.find(guest_target);
+    if (invalidated) *invalidated = it != targets_.end();
+    if (it != targets_.end() && it->second.active && it->second.signal_target &&
         it->second.signal_target->active_generation.load(std::memory_order_acquire) ==
                 it->second.generation) {
+        if (invalidated) *invalidated = false;
         return LinkTargetRecord{
                 .guest_target = guest_target,
                 .host_pc = it->second.host_pc,
@@ -357,6 +370,7 @@ bool LinkManager::ValidateTargetGeneration(u64 guest_target, u64 generation) con
 bool LinkManager::ValidateMarkLocked(LinkSiteKey site,
                                      u64 expected_generation,
                                      LinkSiteRecord*& record) {
+    if (sealed_.load(std::memory_order_seq_cst)) return false;
     const auto site_it = sites_.find(site);
     if (site_it == sites_.end() || site_it->second.state != LinkSiteState::Unlinked) {
         return false;
@@ -374,6 +388,7 @@ bool LinkManager::ValidateMarkLocked(LinkSiteKey site,
 
 bool LinkManager::MarkLinked(LinkSiteKey site, u64 expected_generation, const LinkCommit& commit, bool far) {
     std::lock_guard guard(mutex_);
+    if (sealed_.load(std::memory_order_seq_cst)) return false;
     const auto site_it = sites_.find(site);
     if (site_it == sites_.end() || site_it->second.state != LinkSiteState::Unlinked || !commit) {
         return false;
@@ -440,6 +455,7 @@ bool LinkManager::MarkFar(LinkSiteKey site, u64 expected_generation) {
 
 std::vector<LinkSiteRecord> LinkManager::BeginTargetInvalidation(u64 guest_target) {
     std::lock_guard guard(mutex_);
+    if (sealed_.load(std::memory_order_seq_cst)) return {};
     const auto target = targets_.find(guest_target);
     if (target == targets_.end()) {
         return {};
@@ -569,13 +585,10 @@ size_t LinkManager::PurgeSource(LinkSourceOwner source_owner) {
 }
 
 LinkSignalInvalidationResult LinkManager::SignalInvalidateTarget(u64 guest_target) noexcept {
-    signal_readers_.fetch_add(1, std::memory_order_seq_cst);
-    auto finish = [this] {
-        signal_readers_.fetch_sub(1, std::memory_order_seq_cst);
-    };
+    SignalReader reader{*this};
+    if (!reader) return {};
     auto* target = FindSignalTarget(guest_target);
     if (!target) {
-        finish();
         return {};
     }
 
@@ -617,8 +630,31 @@ LinkSignalInvalidationResult LinkManager::SignalInvalidateTarget(u64 guest_targe
     if (linked_sites) {
         signal_delinks_.fetch_add(linked_sites, std::memory_order_relaxed);
     }
-    finish();
     return {.found = true, .linked_sites = linked_sites};
+}
+
+bool LinkManager::SealAndRevoke() {
+    std::lock_guard guard(mutex_);
+    sealed_.store(true, std::memory_order_seq_cst);
+    for (auto& site : signal_sites_storage_) {
+        site->live.store(false, std::memory_order_seq_cst);
+    }
+    for (auto& target : signal_targets_storage_) {
+        target->active_generation.store(0, std::memory_order_seq_cst);
+    }
+    for (auto& [guest, target] : targets_) target.active = false;
+    for (auto& [key, site] : sites_) site.state = LinkSiteState::Retiring;
+    signal_buckets_.store(nullptr, std::memory_order_seq_cst);
+    if (signal_readers_.load(std::memory_order_seq_cst) != 0) return false;
+    sites_.clear();
+    incoming_.clear();
+    outgoing_.clear();
+    targets_.clear();
+    signal_sites_.clear();
+    signal_targets_storage_.clear();
+    signal_sites_storage_.clear();
+    signal_buckets_storage_.reset();
+    return true;
 }
 
 LinkManagerStats LinkManager::GetStats() const {

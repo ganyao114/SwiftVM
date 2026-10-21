@@ -1,4 +1,206 @@
 # Existing cases below execute ARM64 machine code and use its register ABI.
+add_executable(swift_ir_test ir_contract_test.cpp)
+target_link_libraries(swift_ir_test PRIVATE swift_translator swift::runtime Catch2::Catch2WithMain)
+add_test(NAME swift_ir_contracts COMMAND swift_ir_test)
+set_tests_properties(swift_ir_contracts PROPERTIES LABELS "unit;ir" TIMEOUT 30)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+    add_executable(swift_entry_persistence_test entry_persistence_test.cpp)
+    target_link_libraries(swift_entry_persistence_test PRIVATE swift_aot)
+    foreach(mode disk aot reject native aot-links native-links)
+        add_test(NAME swift_entry_persistence_${mode} COMMAND swift_entry_persistence_test ${mode})
+        set_tests_properties(swift_entry_persistence_${mode} PROPERTIES LABELS "unit;serialization;entry" TIMEOUT 30)
+    endforeach()
+    add_executable(swift_address_space_shutdown_test address_space_shutdown_test.cpp)
+    target_link_libraries(swift_address_space_shutdown_test PRIVATE swift_aot)
+    target_link_options(swift_address_space_shutdown_test PRIVATE "-Wl,--wrap=munmap"
+            "-Wl,--wrap=mprotect" "-Wl,--wrap=close" "-Wl,--wrap=destroy_mspace"
+            "-Wl,--wrap=mmap" "-Wl,--wrap=ftruncate" "-Wl,--wrap=rename"
+            "-Wl,--wrap=create_mspace_with_base" "-Wl,--wrap=mspace_free" "-Wl,--wrap=mspace_memalign"
+            "-Wl,--wrap=_ZN5swift7runtime7backend6Module4PushEPNS0_2ir11AddressNodeE"
+            "-Wl,--wrap=_ZN5swift7runtime7backend6Module14AllocCodeCacheEjb"
+            "-Wl,--wrap=_ZNK5swift7runtime7backend11LinkManager12QueryTargetsENS1_15LinkSourceOwnerE"
+            "-Wl,--wrap=_ZN5swift7runtime7backend11LinkManager11PurgeSourceENS1_15LinkSourceOwnerE"
+            "-Wl,--wrap=_ZN5swift7runtime7backend8ReadUnitERNS1_10BlobReaderERNS1_10SerialUnitE"
+            "-Wl,--wrap=sched_yield")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+        target_link_options(swift_address_space_shutdown_test PRIVATE "-Wl,--wrap=process_vm_readv")
+    endif()
+    foreach(mode gates tokens running construction retained save owners readers retry-rx retry-rw smc close aot aot-dispatch disk-dispatch disk-revival disk-revival-cleanup disk-revival-cleanup-terminal disk-revival-oom symbols symbols-smc symbols-range symbols-write symbols-latest symbols-publication symbols-rollback symbols-dirty symbols-compound multi-install multi-install-cleanup multi-install-cleanup-terminal multi-call-install multi-call-install-cleanup multi-call-install-cleanup-terminal symbols-reader-node symbols-reader-range symbols-child-node symbols-child-range symbols-child-write instruction-pin-terminal instruction-pin-reclaim instruction-pin-failure retire-oom-node retire-oom-range retire-oom-write range-unprotect range-unprotect-terminal range-republish range-republish-protect-fail cycles resource-cycles)
+        add_test(NAME swift_address_space_shutdown_${mode} COMMAND swift_address_space_shutdown_test ${mode})
+        set_tests_properties(swift_address_space_shutdown_${mode} PROPERTIES
+                LABELS "unit;shutdown;mapping;lifetime" TIMEOUT 30)
+    endforeach()
+    foreach(mode disk-readability aot-readability guest-hash aot-entry disk-entry
+            aot-entry-node disk-entry-node aot-entry-range disk-entry-range aot-entry-write disk-entry-write
+            aot-reader-node disk-reader-node aot-reader-range disk-reader-range aot-reader-write disk-reader-write
+            aot-linked-oom disk-linked-oom aot-linked-protect disk-linked-protect
+            aot-linked-cleanup disk-linked-cleanup aot-linked-terminal disk-linked-terminal
+            aot-linked-multi-oom disk-linked-multi-oom aot-linked-multi-protect disk-linked-multi-protect
+            aot-linked-multi-cleanup disk-linked-multi-cleanup aot-linked-multi-terminal disk-linked-multi-terminal
+            aot-linked-private-oom disk-linked-private-oom
+            aot-linked-chain-oom disk-linked-chain-oom aot-linked-chain-protect disk-linked-chain-protect
+            aot-linked-chain-cleanup disk-linked-chain-cleanup aot-linked-chain-terminal disk-linked-chain-terminal
+            aot-linked-race-source disk-linked-race-source aot-linked-race-target disk-linked-race-target aot-linked-race-duplicate
+            aot-linked-reuse disk-linked-reuse
+            aot-linked-partial-rx disk-linked-partial-rx aot-linked-partial-rw disk-linked-partial-rw
+            linked-executor-retire aot-linked-executor-retire disk-linked-executor-retire
+            aot-linked-dual-executor-retire disk-linked-dual-executor-retire
+            aot-linked-target-executor disk-linked-target-executor
+            aot-linked-concurrent-install disk-linked-concurrent-install
+            aot-linked-concurrent-compile disk-linked-concurrent-compile
+            aot-linked-call-oom disk-linked-call-oom aot-linked-call-protect disk-linked-call-protect
+            aot-linked-call-cleanup disk-linked-call-cleanup aot-linked-call-terminal disk-linked-call-terminal
+            aot-linked-call-executor disk-linked-call-executor
+            aot-linked-double-retire disk-linked-double-retire
+            aot-linked-install-retire disk-linked-install-retire
+            aot-linked-call-invalidate disk-linked-call-invalidate
+            aot-linked-compile-retire disk-linked-compile-retire
+            aot-linked-install-failure disk-linked-install-failure)
+        add_test(NAME swift_address_space_shutdown_${mode} COMMAND swift_address_space_shutdown_test ${mode})
+        set_tests_properties(swift_address_space_shutdown_${mode} PROPERTIES
+                LABELS "unit;shutdown;mapping;lifetime;guest-read" TIMEOUT 30)
+    endforeach()
+    set_tests_properties(swift_address_space_shutdown_save PROPERTIES
+            ENVIRONMENT "SVM_FLAGS_REGS=0;SVM_BACKEDGE_FLAGS=0;SVM_FLAGS_LOOP_LAZY=0")
+    add_executable(swift_terminal_revoke_test terminal_revoke_test.cpp)
+    target_link_libraries(swift_terminal_revoke_test PRIVATE swift_translator swift::runtime)
+    target_link_options(swift_terminal_revoke_test PRIVATE "-Wl,--wrap=mprotect")
+    foreach(mode catalog links signals smc disable reclaim)
+        add_test(NAME swift_terminal_revoke_${mode} COMMAND swift_terminal_revoke_test ${mode})
+        set_tests_properties(swift_terminal_revoke_${mode} PROPERTIES
+                LABELS "unit;shutdown;signal;lifetime" TIMEOUT 30)
+    endforeach()
+    add_executable(swift_shutdown_owner_test shutdown_owner_test.cpp)
+    target_link_libraries(swift_shutdown_owner_test PRIVATE swift_translator swift::runtime)
+    foreach(mode control runtime slots signals destruction)
+        add_test(NAME swift_shutdown_owner_${mode} COMMAND swift_shutdown_owner_test ${mode})
+        set_tests_properties(swift_shutdown_owner_${mode} PROPERTIES
+                LABELS "unit;shutdown;signal;lifetime" TIMEOUT 30)
+    endforeach()
+    add_executable(swift_mapping_release_test mapping_release_test.cpp)
+    target_link_libraries(swift_mapping_release_test PRIVATE swift::runtime)
+    target_link_options(swift_mapping_release_test PRIVATE
+            "-Wl,--wrap=mmap" "-Wl,--wrap=munmap" "-Wl,--wrap=close"
+            "-Wl,--wrap=mremap" "-Wl,--wrap=create_mspace_with_base" "-Wl,--wrap=destroy_mspace"
+            "-Wl,--wrap=_Znwm")
+    foreach(mode mapping retry-rx retry-rw close registration cache cache-retry data bounded construction retained)
+        add_test(NAME swift_mapping_release_${mode} COMMAND swift_mapping_release_test ${mode})
+        set_tests_properties(swift_mapping_release_${mode} PROPERTIES
+                LABELS "unit;mapping;lifetime" TIMEOUT 30)
+    endforeach()
+    add_executable(swift_retirement_control_test retirement_control_test.cpp)
+    target_link_libraries(swift_retirement_control_test PRIVATE swift_translator swift::runtime)
+    foreach(mode control concurrent runtime retained persistence link-publication links requests)
+        add_test(NAME swift_retirement_control_${mode} COMMAND swift_retirement_control_test ${mode})
+        set_tests_properties(swift_retirement_control_${mode} PROPERTIES
+                LABELS "unit;admission;lifetime" TIMEOUT 30)
+    endforeach()
+    add_executable(swift_retirement_cycle_test retirement_cycle_test.cpp)
+    target_link_libraries(swift_retirement_cycle_test PRIVATE swift_translator swift::runtime)
+    foreach(shape two-unit self region)
+        add_test(NAME swift_retirement_cycle_${shape} COMMAND swift_retirement_cycle_test ${shape})
+        set_tests_properties(swift_retirement_cycle_${shape} PROPERTIES
+                LABELS "unit;retirement;lifetime" TIMEOUT 30
+                ENVIRONMENT "SVM_BACKEDGE_LATCH=0")
+    endforeach()
+    add_executable(swift_execution_scope_test execution_scope_test.cpp)
+    target_link_libraries(swift_execution_scope_test PRIVATE swift_translator swift::runtime)
+    foreach(mode epochs runtime retired unregister)
+        add_test(NAME swift_execution_scope_${mode} COMMAND swift_execution_scope_test ${mode})
+        set_tests_properties(swift_execution_scope_${mode} PROPERTIES
+                LABELS "unit;execution;lifetime" TIMEOUT 30)
+    endforeach()
+    add_executable(swift_fault_catalog_test fault_catalog_test.cpp)
+    target_link_libraries(swift_fault_catalog_test PRIVATE swift::runtime)
+    foreach(mode snapshots signal concurrent integration)
+        add_test(NAME swift_fault_catalog_${mode} COMMAND swift_fault_catalog_test ${mode})
+        set_tests_properties(swift_fault_catalog_${mode} PROPERTIES
+                LABELS "unit;signal;fault;lifetime" TIMEOUT 30)
+    endforeach()
+endif()
+add_executable(swift_hir_lifetime_test hir_lifetime_test.cpp)
+target_link_libraries(swift_hir_lifetime_test PRIVATE swift::runtime)
+foreach(mode unfinished published construction finish-retry)
+    foreach(fast 0 1)
+        add_test(NAME swift_hir_lifetime_${mode}_fast${fast}
+                 COMMAND swift_hir_lifetime_test ${mode})
+        set_tests_properties(swift_hir_lifetime_${mode}_fast${fast} PROPERTIES
+                LABELS "unit;ir;hir;lifetime" TIMEOUT 30
+                ENVIRONMENT "SVM_IR_FAST=${fast};SVM_IR_DETAIL=0")
+    endforeach()
+endforeach()
+if("arm64" IN_LIST ARCHITECTURE)
+    add_executable(swift_arm64_call_persistence_test arm64/call_persistence_test.cpp)
+    target_link_libraries(swift_arm64_call_persistence_test PRIVATE swift_aot)
+    foreach(mode static indirect aot-static aot-indirect aot-producer aot-reject)
+        add_test(NAME swift_arm64_call_persistence_${mode} COMMAND swift_arm64_call_persistence_test ${mode})
+        set_tests_properties(swift_arm64_call_persistence_${mode} PROPERTIES LABELS "unit;arm64;cache;call"
+                TIMEOUT 60 ENVIRONMENT "SVM_FLAGS_REGS=1;SVM_BACKEDGE_LATCH=0;SVM_BACKEDGE_FLAGS=0;SVM_FLAGS_LOOP_LAZY=0")
+    endforeach()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+        add_executable(swift_arm64_rsb_disabled_test arm64/rsb_disabled_test.cpp)
+        target_link_libraries(swift_arm64_rsb_disabled_test PRIVATE swift_translator swift::runtime)
+        foreach(flags 0 1)
+            add_test(NAME swift_arm64_rsb_disabled_flags${flags} COMMAND swift_arm64_rsb_disabled_test body)
+            set_tests_properties(swift_arm64_rsb_disabled_flags${flags} PROPERTIES
+                    LABELS "unit;arm64;rsb;abi" TIMEOUT 30
+                    ENVIRONMENT "SVM_FLAGS_REGS=${flags};SVM_BACKEDGE_LATCH=0")
+        endforeach()
+        add_executable(swift_arm64_static_latch_cache_version_test arm64/static_latch_cache_version_test.cpp)
+        target_link_libraries(swift_arm64_static_latch_cache_version_test PRIVATE swift_aot)
+        add_test(NAME swift_arm64_static_latch_cache_version COMMAND swift_arm64_static_latch_cache_version_test)
+        set_tests_properties(swift_arm64_static_latch_cache_version PROPERTIES
+                LABELS "unit;arm64;aot;cache;retirement" TIMEOUT 30
+                ENVIRONMENT "SVM_FLAGS_REGS=0;SVM_BACKEDGE_LATCH=1")
+        add_executable(swift_arm64_static_call_latch_fault_test arm64/static_call_latch_fault_test.cpp)
+        target_link_libraries(swift_arm64_static_call_latch_fault_test PRIVATE swift_aot)
+        foreach(mode call branch mixed-call mixed-branch indirect-call rsb-call internal-call published-call indirect-internal-call
+                     request-call request-branch request-mixed-call request-mixed-branch request-indirect-call request-rsb-call request-internal-call request-published-call request-indirect-internal-call
+                     aot-call aot-branch aot-mixed-call aot-mixed-branch aot-indirect-call aot-rsb-call aot-internal-call aot-published-call aot-indirect-internal-call
+                     aot-request-call aot-request-branch aot-request-mixed-call aot-request-mixed-branch aot-request-indirect-call aot-request-rsb-call aot-request-internal-call aot-request-published-call aot-request-indirect-internal-call
+                     disk-call disk-branch disk-mixed-call disk-mixed-branch disk-indirect-call disk-rsb-call disk-internal-call disk-published-call disk-indirect-internal-call
+                     disk-request-call disk-request-branch disk-request-mixed-call disk-request-mixed-branch disk-request-indirect-call disk-request-rsb-call disk-request-internal-call disk-request-published-call disk-request-indirect-internal-call)
+            add_test(NAME swift_arm64_static_latch_${mode} COMMAND swift_arm64_static_call_latch_fault_test ${mode})
+            set_tests_properties(swift_arm64_static_latch_${mode} PROPERTIES
+                    LABELS "unit;arm64;signal;retirement;lifetime" TIMEOUT 30
+                    ENVIRONMENT "SVM_FLAGS_REGS=1;SVM_BACKEDGE_LATCH=1")
+        endforeach()
+        add_executable(swift_arm64_retirement_static_test arm64/retirement_static_test.cpp)
+        target_link_libraries(swift_arm64_retirement_static_test PRIVATE swift_translator swift::runtime)
+        foreach(mode direct dispatcher if condition condition-false region published
+                     region-if-taken region-if-fall region-condition-taken region-condition-fall
+                    call call-pending if-pending condition-pending condition-pending-false)
+            add_test(NAME swift_arm64_retirement_static_${mode} COMMAND swift_arm64_retirement_static_test ${mode})
+            set_tests_properties(swift_arm64_retirement_static_${mode} PROPERTIES
+                    LABELS "unit;arm64;retirement;lifetime" TIMEOUT 30
+                    ENVIRONMENT "SVM_FLAGS_REGS=1;SVM_BACKEDGE_LATCH=0")
+        endforeach()
+        add_executable(swift_arm64_retirement_dynamic_test arm64/retirement_dynamic_test.cpp)
+        target_link_libraries(swift_arm64_retirement_dynamic_test PRIVATE swift_translator swift::runtime)
+        foreach(mode l1 rsb rsb-lean continuation call call-pending)
+            add_test(NAME swift_arm64_retirement_dynamic_${mode} COMMAND swift_arm64_retirement_dynamic_test ${mode})
+            set_tests_properties(swift_arm64_retirement_dynamic_${mode} PROPERTIES
+                    LABELS "unit;arm64;retirement;lifetime" TIMEOUT 30
+                    ENVIRONMENT "SVM_FLAGS_REGS=1;SVM_BACKEDGE_LATCH=0")
+        endforeach()
+        add_executable(swift_arm64_cache_lifetime_test arm64/cache_lifetime_test.cpp)
+        target_link_libraries(swift_arm64_cache_lifetime_test PRIVATE swift::runtime)
+        foreach(mode mapping cache exceptions fd-zero)
+            add_test(NAME swift_arm64_cache_lifetime_${mode}
+                     COMMAND swift_arm64_cache_lifetime_test ${mode})
+            set_tests_properties(swift_arm64_cache_lifetime_${mode} PROPERTIES
+                    LABELS "unit;arm64;cache;lifetime" TIMEOUT 30)
+        endforeach()
+    endif()
+    add_executable(swift_narrow_carry_test narrow_adc_sbb_test.cpp)
+    target_link_libraries(swift_narrow_carry_test PRIVATE swift_translator Catch2::Catch2WithMain)
+    add_test(NAME swift_narrow_carry COMMAND swift_narrow_carry_test)
+    add_test(NAME swift_narrow_carry_eager COMMAND swift_narrow_carry_test)
+    set_tests_properties(swift_narrow_carry_eager PROPERTIES
+            LABELS "unit;ir;flags" TIMEOUT 60 ENVIRONMENT "SVM_FLAGS_REGS=0")
+    set_tests_properties(swift_narrow_carry PROPERTIES LABELS "unit;ir;flags" TIMEOUT 60)
+endif()
+
 # RV64 has its own execution suite; do not register ARM64 cases as RV64 tests.
 if("riscv" IN_LIST ARCHITECTURE OR "riscv64" IN_LIST ARCHITECTURE)
     add_subdirectory(riscv)
@@ -49,10 +251,35 @@ set_tests_properties(swift_cases_flags swift_cases_registers swift_cases_width s
 add_library(swift_codegen_cases OBJECT
         operand_checks_test.cpp
         block_analysis_index_test.cpp
+        alu_split_plan_test.cpp
+        atomic_fallback_plan_test.cpp
+        cycle_exit_plan_test.cpp
         coalescing_contract_test.cpp
         pinned_gpr_transfer_test.cpp
         pinned_load_update_test.cpp
         pinned_spill_publication_test.cpp
+        pinned_gpr_plan_test.cpp
+        fpr_plan_metrics_test.cpp
+        memory_plan_test.cpp
+          flags_token_plan_test.cpp
+          block_static_lowering_plan_test.cpp
+          narrow_integer_flags_plan_test.cpp
+          consumer_pstate_plan_test.cpp
+          backedge_flags_plan_test.cpp
+          zero_store_verifier_test.cpp
+          lowering_coverage_test.cpp
+          edge_flags_analysis_test.cpp
+          region_compile_metrics_test.cpp
+          pseudo_flags_plan_test.cpp
+          pseudo_flags_metrics_test.cpp
+          token_demand_metrics_test.cpp
+          pinned_memory_index_test.cpp
+          scalar_publication_metrics_test.cpp
+          scalar_publication_plan_test.cpp
+          shuffle_plan_metrics_test.cpp
+          shuffle_plan_test.cpp
+          memory_plan_metrics_test.cpp
+          boolean_select_metrics_test.cpp
         register_alloc_copy_test.cpp)
 target_link_libraries(swift_codegen_cases PUBLIC swift_translator swift_ra_test_support swift::runtime Catch2::Catch2)
 add_executable(swift_codegen_test)
@@ -89,7 +316,6 @@ add_executable(swift_test
         region_edges_test.cpp
         direct_link_production_test.cpp
         double_shift_test.cpp
-        funnel_shift_codegen_test.cpp
         function_decode_frontier_test.cpp
         function_entry_contract_test.cpp
         function_region_membership_test.cpp

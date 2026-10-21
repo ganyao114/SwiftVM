@@ -155,8 +155,10 @@ u32 SpillReloadDemand(Inst& inst, backend::RegAlloc& reg_alloc, u32 excluded_val
 bool HasHeadroom(Inst& inst,
                  backend::RegAlloc& reg_alloc,
                  const FeatureSet& features,
-                 u32 excluded_value) {
-    const auto need = backend::ScratchBudget(inst, features);
+                 u32 excluded_value,
+                 std::span<const backend::FlagsDemand> flags_demands) {
+    const auto need = backend::ScratchBudget(inst, features,
+            inst.Id() < flags_demands.size() ? flags_demands[inst.Id()] : backend::FlagsDemand{});
     const u32 reloads = SpillReloadDemand(inst, reg_alloc, excluded_value);
     u32 required = need.gpr + reloads;
     const u32 scratch_only = ScratchOnlyGPRs(inst, reg_alloc, features);
@@ -174,6 +176,7 @@ std::optional<u16> FindRegionRegister(const Vector<Inst*>& instructions,
                                       u32 value_id,
                                       backend::RegAlloc* reg_alloc,
                                       const FeatureSet& features,
+                                      std::span<const backend::FlagsDemand> flags_demands,
                                       u32 forbidden = 0) {
     for (u16 reg = 0; reg < 31; ++reg) {
         if ((forbidden & (1u << reg)) || reg_alloc->GetGprs().Get(reg)) {
@@ -183,7 +186,7 @@ std::optional<u16> FindRegionRegister(const Vector<Inst*>& instructions,
         for (size_t i = first; i <= last; ++i) {
             auto* inst = instructions[i];
             if (reg_alloc->DirtyGPR(inst->Id()).Get(reg) ||
-                !HasHeadroom(*inst, *reg_alloc, features, value_id)) {
+                !HasHeadroom(*inst, *reg_alloc, features, value_id, flags_demands)) {
                 available = false;
                 break;
             }
@@ -205,6 +208,7 @@ bool TryRecipeLoadMemoryOwnershipPair(
         const std::map<u32, bool>& transferable_uses,
         backend::RegAlloc* reg_alloc,
         const FeatureSet& features,
+        std::span<const backend::FlagsDemand> flags_demands,
         Vector<u32>& prepared_values) {
     if (input_positions.size() != 1) {
         return false;
@@ -249,13 +253,13 @@ bool TryRecipeLoadMemoryOwnershipPair(
 
     const auto result_reg = FindRegionRegister(
             instructions, consumer_pos, result_positions->second.back(),
-            result_id, reg_alloc, features);
+            result_id, reg_alloc, features, flags_demands);
     if (!result_reg) {
         return false;
     }
     const auto input_reg = FindRegionRegister(
             instructions, definition_pos, consumer_pos, input_id, reg_alloc,
-            features, 1u << *result_reg);
+            features, flags_demands, 1u << *result_reg);
     if (!input_reg) {
         return false;
     }
@@ -291,6 +295,7 @@ void Recipesegment(const Vector<Inst*>& instructions,
                  const Terminal& terminal,
                  backend::RegAlloc* reg_alloc,
                  const FeatureSet& features,
+                 std::span<const backend::FlagsDemand> flags_demands,
                  HIRFunction* function = nullptr) {
     std::map<u32, Vector<size_t>> uses;
     std::map<u32, u32> use_counts;
@@ -370,7 +375,7 @@ void Recipesegment(const Vector<Inst*>& instructions,
         if (TryRecipeLoadMemoryOwnershipPair(
                     instructions, terminal, value_id, positions, uses,
                     use_counts, transferable_uses, reg_alloc, features,
-                    prepared_values)) {
+                    flags_demands, prepared_values)) {
             continue;
         }
         auto definition = std::find_if(instructions.begin(), instructions.end(),
@@ -385,7 +390,7 @@ void Recipesegment(const Vector<Inst*>& instructions,
             const size_t definition_pos = std::distance(instructions.begin(), definition);
             if (definition_pos < positions.front()) {
                 auto reg = FindRegionRegister(instructions, definition_pos, positions.back(),
-                                              value_id, reg_alloc, features);
+                                              value_id, reg_alloc, features, flags_demands);
                 if (reg) {
                     reg_alloc->MapSpillReload(value_id,
                                               (*definition)->Id(),
@@ -405,7 +410,7 @@ void Recipesegment(const Vector<Inst*>& instructions,
                                               positions[end],
                                               value_id,
                                               reg_alloc,
-                                              features);
+                                              features, flags_demands);
                 if (!reg) {
                     break;
                 }
@@ -431,11 +436,12 @@ void Recipesegment(const Vector<Inst*>& instructions,
 }
 
 void RecipeBlock(Block* block, backend::RegAlloc* reg_alloc, const FeatureSet& features,
+               std::span<const backend::FlagsDemand> flags_demands,
                HIRFunction* function = nullptr) {
     Vector<Inst*> segment;
     auto flush = [&] {
         if (!segment.empty()) {
-            Recipesegment(segment, block->GetTerminal(), reg_alloc, features, function);
+            Recipesegment(segment, block->GetTerminal(), reg_alloc, features, flags_demands, function);
             segment.clear();
         }
     };
@@ -453,16 +459,18 @@ void RecipeBlock(Block* block, backend::RegAlloc* reg_alloc, const FeatureSet& f
 
 void RecipespillReloadRegions(HIRFunction* function,
                             backend::RegAlloc* reg_alloc,
-                            const FeatureSet& features) {
+                            const FeatureSet& features,
+                            std::span<const backend::FlagsDemand> flags_demands) {
     for (auto& hir_block : function->GetHIRBlocksRPO()) {
-        RecipeBlock(hir_block.GetBlock(), reg_alloc, features, function);
+        RecipeBlock(hir_block.GetBlock(), reg_alloc, features, flags_demands, function);
     }
 }
 
 void RecipespillReloadRegions(Block* block,
                             backend::RegAlloc* reg_alloc,
-                            const FeatureSet& features) {
-    RecipeBlock(block, reg_alloc, features);
+                            const FeatureSet& features,
+                            std::span<const backend::FlagsDemand> flags_demands) {
+    RecipeBlock(block, reg_alloc, features, flags_demands);
 }
 
 }  // namespace swift::runtime::ir

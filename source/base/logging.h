@@ -52,7 +52,7 @@ template <typename... Args> void LogMessage(Level log_level,
 #endif
 }
 
-void AssertFailed(const std::string& message);
+[[noreturn]] void AssertFailed(const std::string& message);
 
 }  // namespace swift::log
 

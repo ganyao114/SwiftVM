@@ -91,6 +91,7 @@ public:
         return inst;
     }
     static void Validate(Inst* inst);
+    [[nodiscard]] bool HasValidTypeViews() const;
 
     explicit Inst() = default;
 
@@ -154,32 +155,57 @@ public:
 
     void Use(const Value& value);
     void UnUse(const Value& value);
-    [[nodiscard]] u8 GetUses(bool exclude_pseudo = true);
-    [[nodiscard]] Values GetValues();
+    [[nodiscard]] u32 GetUses(bool exclude_pseudo = true) const;
+    [[nodiscard]] Values GetValues() {
+        Values values{};
+        ForEachValue([&](Value value) { values.push_back(value); });
+        return values;
+    }
+    // Visit every occurrence in physical argument order, including Lambda and
+    // Params values. Copies preserve each use's type view without exposing IR
+    // operands to mutation or building a temporary Values collection.
+    template<class Visitor> void ForEachValue(Visitor&& visit) {
+        for (auto& arg : arguments) {
+            if (arg.IsValue()) {
+                visit(Value{arg.Get<Value>()});
+            } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
+                visit(Value{arg.Get<Lambda>().GetValue()});
+            } else if (arg.IsParams()) {
+                for (auto param : arg.Get<Params>())
+                    if (auto data = param.data; data.IsValue()) visit(data.value);
+            }
+        }
+    }
 
-    [[nodiscard]] OpCode GetOp() const;
-    void SetId(u16 id);
-    void SetReturn(ValueType type);
-    [[nodiscard]] u16 Id() const;
-    [[nodiscard]] ValueType ReturnType() const;
-    [[nodiscard]] bool HasValue();
-    [[nodiscard]] bool IsPseudoOperation();
+    // Trivial accessors are defined inline: they dominate host compile
+    // profiles when emitted out-of-line (simpleperf, 2026-10-20).
+    [[nodiscard]] OpCode GetOp() const { return op_code; }
+    void SetId(u16 id_) { id = id_; }
+    void SetReturn(ValueType type) { ret_type = type; }
+    [[nodiscard]] u16 Id() const { return id; }
+    [[nodiscard]] ValueType ReturnType() const { return ret_type; }
+    [[nodiscard]] bool HasValue() {
+        return meta::HasValue(GetIRMetaInfo(op_code).return_type);
+    }
+    [[nodiscard]] bool IsPseudoOperation() const;
     [[nodiscard]] bool IsGetHostRegOperation();
     [[nodiscard]] bool IsSetHostRegOperation();
     [[nodiscard]] bool IsBitCastOperation();
-    [[nodiscard]] bool HasSideEffects();
+    [[nodiscard]] IREffect GetEffects() const;
+    [[nodiscard]] bool HasSideEffects() const;
 
-    [[nodiscard]] Inst::Pseudos GetPseudoOperations(OpCode code);
-    [[nodiscard]] Inst::Pseudos GetPseudoOperations();
-    [[nodiscard]] bool HasFlagsSavePseudo();
+    // Pseudos are ordinary instructions in the owner's block whose arg 0 is
+    // the owner's value; there is no intrusive owner->pseudo chain. Find
+    // them with CollectPseudoOperations (block.h) or a use index.
+    [[nodiscard]] bool HasPseudoOperations() const { return pseudo_use_count != 0 && !IsPseudoOperation(); }
     void DestroyArg(u8 arg_idx);
     void DestroyArgs();
     // Teardown for "everything that could read this instruction is going away
     // too" -- Block::DestroyInstrs and nothing else.
     //
     // DestroyArgs keeps the IR's *bookkeeping* consistent: each argument value
-    // is unregistered from its defining instruction (`def->num_use--`, plus a
-    // walk of that def's pseudo-operation chain). That is a dependent load and
+    // is unregistered from its defining instruction (`def->num_use--`). That
+    // is a dependent load and
     // store into a different instruction for every operand, and it is the
     // expensive half of teardown: freeing a compiled function's IR costs
     // 18.1 ns per instruction with DestroyArgs and 10.4 ns with this
@@ -244,12 +270,24 @@ private:
     friend class Value;
     friend class Block;
 
-    [[nodiscard]] int PublicIndex(int index) const;
+    [[nodiscard]] int PublicIndex(int logical_index) const {
+        auto& info = GetIRMetaInfo(op_code);
+        ASSERT(logical_index >= 0 && logical_index < (int)info.arg_types.size());
+        int physical = logical_index;
+        for (int i = 0; i < logical_index; i++) {
+            physical += PhysicalSlots(info.arg_types[i]) - 1;
+        }
+        ASSERT(physical < max_args);
+        return physical;
+    }
 
-    Inst* next_pseudo_inst{};
     mutable std::array<Arg, max_args> arguments{};
     OpCode op_code{OpCode::Void};
-    u8 num_use{};
+    u32 num_use{};
+    // Uses of this value by pseudo operations, maintained alongside
+    // num_use in Use/UnUse so GetUses can exclude them in O(1)
+    // instead of walking the pseudo chain (un-chaining step 3.1).
+    u16 pseudo_use_count{};
     u16 id{invalid_id};
     u16 vir_reg{};
     ValueType ret_type{};
@@ -261,6 +299,26 @@ using InstList = IntrusiveList<&Inst::list_node>;
 // Process-constant bisect switch. Default on; SVM_IR_FAST=0 restores every
 // construction/append/use-registration path changed by W6.
 bool IRBuildFastEnabled();
+
+// Value accessors that dereference the definition live here, where Inst
+// is complete; args.h can only forward-declare it. Inlined for the same
+// host-compile reason as the Inst accessors above.
+inline Value Value::SetType(ValueType type) {
+    ASSERT(Def());
+    Def()->SetReturn(type);
+    return *this;
+}
+
+inline ValueType Value::Type() const {
+    ASSERT(Def());
+    if (cast_type == ValueType::VOID) {
+        return Def()->ReturnType();
+    } else {
+        return cast_type;
+    }
+}
+
+inline u16 Value::Id() const { return Def()->Id(); }
 
 }  // namespace swift::runtime::ir
 

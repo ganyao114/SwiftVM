@@ -74,13 +74,15 @@ public:
     [[nodiscard]] JitCacheStats& Stats() { return stats; }
 
 private:
+    friend class AddressSpace;
+    void SaveAfterDrain();
+    void SaveImpl();
     [[nodiscard]] std::string FilePath() const;
     [[nodiscard]] ValidityKey Key() const;
     // Hash of the guest bytes covering [start, end). Returns false when the
     // range is not addressable through the guest bias.
     [[nodiscard]] bool HashGuestRange(VAddr start, VAddr end, u64& out) const;
     bool ReviveUnit(const std::shared_ptr<Module>& module, const SerialUnit& unit);
-    bool ReviveRiscvUnit(const std::shared_ptr<Module>& module, const SerialUnit& unit);
     void RecordRiscvUnit(const std::shared_ptr<Module>& module, VAddr guest_start, bool is_function,
                          const u8* exec, const u8* rw, u32 size,
                          const std::vector<SerialBlock>& blocks,

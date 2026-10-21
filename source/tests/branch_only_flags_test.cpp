@@ -54,7 +54,8 @@ TEST_CASE("branch-only flags discard dead carry normalization") {
 
     FlagsEliminationPass::Run(function, features);
 
-    const auto pseudos = result.Def()->GetPseudoOperations(
+    const auto pseudos = CollectPseudoOperations(
+            *function->GetHIRBlocksRPO().front().GetBlock(), result.Def(),
             OpCode::BranchOnlyFlags);
     REQUIRE(pseudos.size() == 1);
     REQUIRE(pseudos.front()->GetArg<Flags>(1) == Flags::Zero);
@@ -98,8 +99,8 @@ TEST_CASE("branch-only flags discard full-width carry normalization") {
 
         FlagsEliminationPass::Run(function, features);
 
-        const auto pseudos = result.Def()->GetPseudoOperations(
-                OpCode::BranchOnlyFlags);
+        const auto pseudos = CollectPseudoOperations(
+                *compare_block->GetBlock(), result.Def(), OpCode::BranchOnlyFlags);
         REQUIRE(pseudos.size() == 1);
         REQUIRE(pseudos.front()->GetArg<Flags>(1) == Flags::Zero);
         REQUIRE(std::none_of(compare_block->GetInstList().begin(),
@@ -126,7 +127,9 @@ TEST_CASE("function flags liveness removes only internally dead publications") {
     function->IdByRPO();
 
     FlagsEliminationPass::Run(function, features);
-    REQUIRE(dead_result.Def()->GetPseudoOperations(OpCode::SaveFlags).empty());
+    REQUIRE(CollectPseudoOperations(*function->GetHIRBlocksRPO().front().GetBlock(),
+                                    dead_result.Def(), OpCode::SaveFlags)
+                    .empty());
 
     HIRBuilder external_builder{1, true, features};
     auto* external = external_builder.AppendFunction(Location{0x9800}, Location{0x9900});
@@ -141,7 +144,9 @@ TEST_CASE("function flags liveness removes only internally dead publications") {
     external->IdByRPO();
 
     FlagsEliminationPass::Run(external, features);
-    REQUIRE(live_result.Def()->GetPseudoOperations(OpCode::SaveFlags).size() == 1);
+    REQUIRE(CollectPseudoOperations(*external->GetHIRBlocksRPO().front().GetBlock(),
+                                    live_result.Def(), OpCode::SaveFlags)
+                    .size() == 1);
 }
 
 }  // namespace swift::runtime::ir

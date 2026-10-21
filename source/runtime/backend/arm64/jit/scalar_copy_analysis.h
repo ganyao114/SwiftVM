@@ -11,6 +11,9 @@ public:
     void Analyze(ir::Block* block);
     [[nodiscard]] bool IsSelfXor(ir::Inst* inst) const;
     [[nodiscard]] bool InputDiscarded(ir::Inst* inst) const;
+    [[nodiscard]] bool Empty() const {
+        return self_xors.empty() && discarded_inputs.empty();
+    }
 
 private:
     std::unordered_set<ir::Inst*> self_xors{};

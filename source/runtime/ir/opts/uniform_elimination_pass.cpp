@@ -7,12 +7,32 @@
 #include "uniform_store_sink_pass.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
 namespace swift::runtime::ir {
 
+
+// Env-gated fold census (SVM_FOLDCENSUS): totals of the locals below.
+static unsigned long long g_uni_folded{};
+static unsigned long long g_uni_mapped_loads{};
+static unsigned long long g_uni_mapped_stores{};
+static bool g_uni_census_registered{};
+static bool UniCensusEnabled() {
+    static const bool enabled = std::getenv("SVM_FOLDCENSUS") != nullptr;
+    if (enabled && !g_uni_census_registered) {
+        g_uni_census_registered = true;
+        std::atexit([] {
+            std::fprintf(stderr, "[svm-foldcensus] uniform folded=%llu mapped_loads=%llu mapped_stores=%llu\n",
+                         g_uni_folded, g_uni_mapped_loads, g_uni_mapped_stores);
+        });
+    }
+    return enabled;
+}
 
 // 诊断开关来自进程级配置快照，不在逐块路径重复扫描 environ。
 static bool EnvDumpIr() { return GetSvmConfig().dump_ir; }
@@ -109,25 +129,7 @@ struct UniformValue {
 
 // Would DeadCodeEliminationPass keep `def` even after its last use is gone?
 [[nodiscard]] static bool SurvivesDCE(const Inst* def) {
-    switch (def->GetOp()) {
-        // Keep in sync with Inst::HasSideEffects() plus the guest-load rule in
-        // DeadCodeEliminationPass: every value-returning opcode either of them
-        // refuses to delete.
-        case OpCode::LoadMemory:
-        case OpCode::LoadMemoryTSO:
-        case OpCode::CompareAndSwap:
-        case OpCode::CompareAndSwap128:
-        case OpCode::AtomicExchange:
-        case OpCode::AtomicFetchAdd:
-        case OpCode::AtomicRMW:
-        case OpCode::X87Op:
-        case OpCode::CallLambda:
-        case OpCode::CallLocation:
-        case OpCode::CallDynamic:
-            return true;
-        default:
-            return false;
-    }
+    return def->HasSideEffects();
 }
 
 // This is the constraint that decides which stores may be removed at all.
@@ -145,7 +147,14 @@ struct UniformValue {
 // LoadMemory -> ZeroExtend32 -> ZeroExtend64 -> StoreUniform, so checking only
 // the store's immediate operand is not enough.  Found by SVM_FUNC_BASE=0
 // swift_test, the only configuration that takes the block-mode allocator path.
-[[nodiscard]] static bool HasObservableUse(Block* block, Inst* root,
+// Non-StoreUniform consumers per definition, in block order. Built
+// once per EliminateDeadStores call that actually tests a victim:
+// the previous whole-block rescan per chain link made DSE quadratic
+// once decode-time load folding (SB1) stopped resurrecting bytes
+// and most stores started testing all-dead.
+using UniformConsumers = std::unordered_map<Inst*, std::vector<Inst*>>;
+
+[[nodiscard]] static bool HasObservableUse(const UniformConsumers& consumers, Inst* root,
                                            const Inst* ignored_store) {
     StackVector<Inst*, 16> work{root};
     u32 visited{};
@@ -153,28 +162,25 @@ struct UniformValue {
     while (!work.empty() && ++visited <= kMaxVisited) {
         auto* producer = work.back();
         work.pop_back();
-        for (auto& user : block->GetInstList()) {
-            if (&user == ignored_store || user.GetOp() == OpCode::StoreUniform) {
+        const auto found = consumers.find(producer);
+        if (found == consumers.end()) {
+            continue;
+        }
+        for (auto* user : found->second) {
+            if (user == ignored_store) {
                 continue;
             }
-            bool consumes{};
-            for (auto value : user.GetValues()) {
-                consumes |= value.Def() == producer;
-            }
-            if (!consumes) {
-                continue;
-            }
-            if (user.HasSideEffects() || user.GetOp() == OpCode::LoadMemory ||
-                user.GetOp() == OpCode::LoadMemoryTSO) {
+            if (user->HasSideEffects()) {
                 return true;
             }
-            work.push_back(&user);
+            work.push_back(user);
         }
     }
     return false;
 }
 
-[[nodiscard]] static bool ChainWouldStrandASurvivor(Block* block, const Value& root,
+[[nodiscard]] static bool ChainWouldStrandASurvivor(const UniformConsumers& consumers,
+                                                    const Value& root,
                                                     const Inst* store, bool precise) {
     StackVector<Inst*, 16> work{};
     u32 visited = 0;
@@ -191,8 +197,8 @@ struct UniformValue {
         // Multiple stores can be removed as one DSE batch, so a raw use count
         // is not proof. Require a non-StoreUniform path that reaches a real
         // observer before treating the producer as independently live.
-        const u8 uses = const_cast<Inst*>(def)->GetUses(false);
-        if (precise && uses > 1 && HasObservableUse(block, def, store)) {
+        const u32 uses = def->GetUses(false);
+        if (precise && uses > 1 && HasObservableUse(consumers, def, store)) {
             continue;
         }
         if (SurvivesDCE(def)) {
@@ -216,6 +222,26 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                                 bool xmm_only = false) {
     PerfScope2 perf_dse{GetPerfStats2().uniform_dse};
     auto& inst_list = block->GetInstList();
+    std::optional<UniformConsumers> consumer_index;
+    const auto& get_consumers = [&]() -> const UniformConsumers& {
+        if (!consumer_index) {
+            consumer_index.emplace();
+            for (auto& user : inst_list) {
+                if (user.GetOp() == OpCode::StoreUniform) {
+                    continue;
+                }
+                for (auto value : user.GetValues()) {
+                    if (auto* def = value.Def()) {
+                        auto& users = (*consumer_index)[def];
+                        if (users.empty() || users.back() != &user) {
+                            users.push_back(&user);
+                        }
+                    }
+                }
+            }
+        }
+        return *consumer_index;
+    };
     // killed[i] = byte i of the uniform buffer is overwritten later in this
     // block before any read.
     StackVector<u8, 0x100> killed{};
@@ -230,6 +256,46 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
     std::unordered_map<Inst*, std::vector<u8>> label_killed;
 
     auto clear_all = [&] { std::fill(killed.begin(), killed.end(), u8{0}); };
+
+    // Reverse home lookup for SetHost*/GetHost*: host register ->
+    // (uniform offset, register size) from the same pin map the
+    // forward pass converts with. Built lazily; -1 unknown,
+    // -2 ambiguous (both stay barriers). Bound-backend decode
+    // emits mapped stores directly, so dead-store elimination
+    // must see through them or every early-mapped dead store
+    // survives as a dead publication.
+    struct HomeRange { u32 offset{}; u32 size{}; };
+    std::optional<std::array<s32, 64>> home_offsets;
+    std::array<u32, 64> home_sizes{};
+    const auto home_range = [&](bool fpr, u32 reg) -> std::optional<HomeRange> {
+        if (!home_offsets) {
+            home_offsets.emplace();
+            home_offsets->fill(-1);
+            info.uniform_regs_map.ForEachValue([&](const UniformRegister& entry) {
+                if (entry.Null()) {
+                    return;
+                }
+                const u32 idx = entry.host_reg.is_fpr
+                        ? 32 + entry.host_reg.fpr.id
+                        : entry.host_reg.gpr.id;
+                if (idx >= 64) {
+                    return;
+                }
+                const auto off = static_cast<s32>(entry.uniform.GetOffset());
+                if ((*home_offsets)[idx] == -1) {
+                    (*home_offsets)[idx] = off;
+                    home_sizes[idx] = GetValueSizeByte(entry.uniform.GetType());
+                } else if ((*home_offsets)[idx] != off) {
+                    (*home_offsets)[idx] = -2;
+                }
+            });
+        }
+        const u32 idx = fpr ? 32 + reg : reg;
+        if (idx >= 64 || (*home_offsets)[idx] < 0) {
+            return std::nullopt;
+        }
+        return HomeRange{static_cast<u32>((*home_offsets)[idx]), home_sizes[idx]};
+    };
 
     for (auto it = inst_list.rbegin(); it != inst_list.rend(); ++it) {
         Inst& inst = *it;
@@ -258,7 +324,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                     }
                 }
                 if (all_dead &&
-                    !ChainWouldStrandASurvivor(block, value, &inst, true)) {
+                    !ChainWouldStrandASurvivor(get_consumers(), value, &inst, true)) {
                     victims.push_back(&inst);
                     break;  // a removed store kills nothing
                 }
@@ -288,20 +354,79 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
             case OpCode::X87Op:
             case OpCode::MemoryCopy:
             case OpCode::MemoryCopyTSO:
-            case OpCode::SetHostFPR:
-            case OpCode::GetHostFPR:
             case OpCode::SetLocation:
                 clear_all();
                 break;
             case OpCode::SetHostGPR:
-            case OpCode::GetHostGPR:
-                // In the XMM-only cleanup these operations touch a disjoint,
-                // statically mapped GPR and cannot observe the XMM uniform
-                // bytes. The full generic sweep stays conservative.
-                if (!xmm_only) {
+            case OpCode::SetHostFPR: {
+                const bool fpr = inst.GetOp() == OpCode::SetHostFPR;
+                if (xmm_only && !fpr) {
+                    break;  // disjoint from XMM bytes in the cleanup sweep
+                }
+                const auto value = inst.GetArg<Value>(0);
+                const u32 size = GetValueSizeByte(value.Type());
+                const auto home = home_range(fpr, inst.GetArg<Imm>(1).Get());
+                const u32 off_in = inst.GetArg<Imm>(2).Get();
+                if (!home || off_in + size > home->size) {
                     clear_all();
+                    break;
+                }
+                const u32 off = home->offset + off_in;
+                if (xmm_only && !info.IsXmmUniformRange(off, size)) {
+                    break;
+                }
+                if (XmmUniformForwardOff(features) && info.IsXmmUniformRange(off, size)) {
+                    break;
+                }
+                if (off + size > killed.size()) {
+                    clear_all();
+                    break;
+                }
+                bool all_dead = true;
+                for (u32 i = 0; i < size; ++i) {
+                    if (!killed[off + i]) {
+                        all_dead = false;
+                        break;
+                    }
+                }
+                // Only full-width publications are victim-eligible:
+                // a partial write's upper-byte semantics belong to
+                // the planner's width model, not to this sweep.
+                if (off_in == 0 && size == home->size && all_dead &&
+                    !ChainWouldStrandASurvivor(get_consumers(), value, &inst, true)) {
+                    victims.push_back(&inst);
+                    break;
+                }
+                for (u32 i = 0; i < size; ++i) {
+                    killed[off + i] = 1;
                 }
                 break;
+            }
+            case OpCode::GetHostGPR:
+            case OpCode::GetHostFPR: {
+                const bool fpr = inst.GetOp() == OpCode::GetHostFPR;
+                if (xmm_only && !fpr) {
+                    break;
+                }
+                const auto home = home_range(fpr, inst.GetArg<Imm>(0).Get());
+                const u32 off_in = inst.GetArg<Imm>(1).Get();
+                const u32 size = GetValueSizeByte(inst.ReturnType());
+                if (!home || off_in + size > home->size) {
+                    clear_all();
+                    break;
+                }
+                const u32 off = home->offset + off_in;
+                if (xmm_only && !info.IsXmmUniformRange(off, size)) {
+                    break;
+                }
+                if (XmmUniformForwardOff(features) && info.IsXmmUniformRange(off, size)) {
+                    break;
+                }
+                for (u32 i = 0; i < size && off + i < killed.size(); ++i) {
+                    killed[off + i] = 0;
+                }
+                break;
+            }
             case OpCode::BindLabel:
                 if (PathForwardOff(features)) {
                     clear_all();
@@ -392,7 +517,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 }
                 if (is_victim(&inst)) {
                     last_victim = &inst;
-                    if (ChainWouldStrandASurvivor(block, value, &inst, false)) {
+                    if (ChainWouldStrandASurvivor(get_consumers(), value, &inst, false)) {
                         legacy_carrier = &inst;
                     }
                 } else {
@@ -415,7 +540,7 @@ static void EliminateDeadStores(Block* block, const UniformInfo& info,
                 continue;
             }
             if (last_victim == recipe.latest_store && producer &&
-                !HasObservableUse(block, producer, last_victim)) {
+                !HasObservableUse(get_consumers(), producer, last_victim)) {
                 // This is the only permitted IR-growth case: the latest value
                 // has no path except stores that this DSE batch would erase.
                 // Keep one carrier so DCE cannot strand the producer before
@@ -484,7 +609,8 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
         for (const auto& inst : block->GetInstList()) {
             checked_instructions++;
             const auto op = inst.GetOp();
-            has_uniform_op = op == OpCode::LoadUniform || op == OpCode::StoreUniform;
+            has_uniform_op = op == OpCode::LoadUniform || op == OpCode::StoreUniform ||
+                    op == OpCode::SetHostGPR || op == OpCode::SetHostFPR;
             if (has_uniform_op) {
                 break;
             }
@@ -838,6 +964,9 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
             case OpCode::SetHostGPR:
             case OpCode::SetHostFPR:
             case OpCode::SetLocation:
+                if (inst.GetOp() != OpCode::SetLocation) {
+                    store_count++;
+                }
                 barrier_count++;
                 // Calls are conservatively opaque even though today's x86
                 // helpers do not receive the uniform buffer. MemoryCopy uses
@@ -897,6 +1026,11 @@ void UniformEliminationPass::Run(Block* block, const UniformInfo& info, bool fas
     }
 
     perf_forward.Stop();
+    if (UniCensusEnabled()) {
+        g_uni_folded += folded_load_count;
+        g_uni_mapped_loads += mapped_load_count;
+        g_uni_mapped_stores += mapped_store_count;
+    }
     if (Perf2Enabled()) {
         auto& stats = GetPerfStats2();
         stats.uniform_blocks.fetch_add(1, std::memory_order_relaxed);

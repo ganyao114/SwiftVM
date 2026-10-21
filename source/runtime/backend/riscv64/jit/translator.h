@@ -5,6 +5,7 @@
 #include "runtime/backend/riscv64/jit/jit_context.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/block.h"
+#include "runtime/backend/restricted_instruction_resume.h"
 
 namespace swift::runtime::backend::riscv64 {
 
@@ -26,6 +27,7 @@ public:
     ir::Block* EmittedIR() const { return block; }
     [[nodiscard]] u32 RecoveryOffset() const { return recovery_offset; }
     [[nodiscard]] const EmissionStats& Stats() const { return stats; }
+    [[nodiscard]] std::shared_ptr<const InstructionResumeDescriptor> InstructionResume() const { return instruction_resume; }
 
 private:
     struct PhiMove { ir::Inst* destination; ir::DataClass source; };
@@ -46,7 +48,7 @@ private:
     bool EmitScalarBits(ir::Inst* inst);
     bool EmitFlags(ir::Inst* inst);
     void EmitHelper(ir::Inst* inst);
-    void EmitPrologue(u32 entry_start);
+    void EmitPrologue(u32 entry_start, bool prepend = true);
     void EmitAddress(u64 size);
     void EmitMemory(ir::Inst* inst, bool store, bool ordered, biscuit::GPR result);
     void EmitTerminal(const ir::Terminal& terminal);
@@ -77,6 +79,7 @@ private:
     std::unordered_map<ir::Inst*, std::vector<PhiMove>> taken_phis, fallthrough_phis;
     std::unordered_map<ir::Inst*, ir::Terminal> function_exits;
     std::unordered_set<ir::Inst*> function_halt_checks;
+    std::shared_ptr<InstructionResumeDescriptor> instruction_resume;
 };
 
 }  // namespace swift::runtime::backend::riscv64

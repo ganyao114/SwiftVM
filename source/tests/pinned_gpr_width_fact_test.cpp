@@ -137,6 +137,7 @@ std::vector<std::string> EmitWidthFact(PinnedWidthShape shape, bool overwrite_ta
                    address_space.GetTrampolines().GetFPRRegs(),
                    features};
     RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -201,8 +202,10 @@ TEST_CASE("a published low view serves multiple consumers from one value version
 
 TEST_CASE("a published U8 zero extension serves a later extension from its pinned home") {
     const auto lines = EmitWidthFact(PinnedWidthShape::PublishedZero8, false);
+    // The first extension still cleans into the publication home; the
+    // later extension is tied to the load result register and elided.
     REQUIRE(Count(lines, "uxtb") == 1);
-    REQUIRE(Count(lines, "mov w", ", w22") == 1);
+    REQUIRE(Count(lines, "mov w", ", w22") == 0);
 }
 
 TEST_CASE("a published S8 sign extension serves a later extension from its pinned home") {
@@ -222,7 +225,7 @@ TEST_CASE("published narrow facts feed compare and memory consumers") {
 TEST_CASE("overwriting narrow extension facts rejects the pinned home") {
     const auto zero = EmitWidthFact(PinnedWidthShape::PublishedZero8, true);
     const auto sign = EmitWidthFact(PinnedWidthShape::PublishedSign8, true);
-    REQUIRE(Count(zero, "uxtb") == 2);
+    REQUIRE(Count(zero, "uxtb") == 1);
     REQUIRE(Count(zero, "mov w", ", w22") == 0);
     REQUIRE(Count(sign, "sxtb") == 2);
     REQUIRE(Count(sign, "mov x", ", x22") == 0);

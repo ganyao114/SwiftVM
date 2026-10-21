@@ -16,8 +16,8 @@ bool SupportsDirectPublication(ir::OpCode op) {
 
 }  // namespace
 
-std::optional<PinnedGPRAllocation::SpilledGPRPublication>
-PinnedGPRAllocation::MatchSpilledGPRPublication(ir::Inst* publication) const {
+std::optional<GPRPlanBuilder::SpilledGPRPublication>
+GPRPlanBuilder::MatchSpilledGPRPublication(ir::Inst* publication) const {
     if (!publication || publication->GetOp() != ir::OpCode::SetHostGPR ||
         publication->GetArg<ir::Imm>(2).Get() != 0 ||
         recipes.dead_writes.contains(publication) ||
@@ -41,6 +41,7 @@ PinnedGPRAllocation::MatchSpilledGPRPublication(ir::Inst* publication) const {
     const auto producer_it = instructions.iterator_to(*producer);
     const auto publication_it = instructions.iterator_to(*publication);
     if (producer->Id() >= publication->Id() ||
+        allocation.GPRTargetWriteConflict(target, producer->Id(), publication->Id(), producer->Id()) ||
         !guest_state_map.PublicationWindowSafe(
                 target, value, producer->Id(), publication->Id())) {
         return std::nullopt;
@@ -71,7 +72,8 @@ PinnedGPRAllocation::MatchSpilledGPRPublication(ir::Inst* publication) const {
     };
 }
 
-void PinnedGPRAllocation::PrepareSpilledGPRPublications(ir::Block* block) {
+void GPRPlanBuilder::PrepareSpilledGPRPublications(ir::Block* block) {
+    ASSERT(!finished);
     for (auto& inst : block->GetInstList()) {
         auto candidate = MatchSpilledGPRPublication(&inst);
         if (!candidate || HasValueHome(candidate->producer)) {

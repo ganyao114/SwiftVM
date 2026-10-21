@@ -10,8 +10,23 @@ static void CollectUnitBudget(Block* block,
                               u32& reload_bound,
                               const backend::GPRSMask& pool,
                               const FeatureSet& features) {
+    std::unordered_map<u32, backend::FlagsDemand> demands;
     for (auto& inst : block->GetInstList()) {
-        auto need = backend::ScratchBudget(inst, features);
+        const auto op = inst.GetOp();
+        if (op != OpCode::SaveFlags && op != OpCode::BranchOnlyFlags) continue;
+        if (!inst.ArgAt(0).IsValue()) continue;
+        auto* owner = inst.GetArg<Value>(0).Def();
+        if (!owner) continue;
+        auto& demand = demands[owner->Id()];
+        demand.requested |= inst.GetArg<Flags>(1);
+        demand.pseudo_count++;
+        demand.branch_only |= op == OpCode::BranchOnlyFlags;
+        demand.has_save |= op == OpCode::SaveFlags;
+    }
+    for (auto& inst : block->GetInstList()) {
+        const auto found = demands.find(inst.Id());
+        auto need = backend::ScratchBudget(inst, features,
+                found != demands.end() ? found->second : backend::FlagsDemand{});
         const u32 scratch_only =
                 LinearScanAllocator::ScratchOnlyGPRs(inst.GetOp(), pool, features);
         gpr = std::max<u32>(gpr, need.gpr > scratch_only ? need.gpr - scratch_only : 0);
@@ -39,13 +54,23 @@ static void RunVerified(Unit* unit,
                         bool single_block_fast_path = false,
                         bool scalar_insert = false,
                         bool intwidth_tie = false,
-                        bool induct_tie = false,
                         bool spill_evict = true,
                         AllocationStatistics* test_result = nullptr) {
     const auto finish_placement_check = [&] {
         if (features.ra_home_perm) {
             reg_alloc->PermutePlacementCheckGPRHomes();
         }
+        reg_alloc->BuildGPRPreservationActions();
+        if constexpr (std::is_same_v<Unit, Block>)
+            reg_alloc->SetAllocationUnit(unit, nullptr, [=] {
+                RunVerified(unit, reg_alloc, features, single_block_fast_path, scalar_insert,
+                            intwidth_tie, spill_evict, nullptr);
+            });
+        else
+            reg_alloc->SetAllocationUnit(nullptr, unit, [=] {
+                RunVerified(unit, reg_alloc, features, single_block_fast_path, scalar_insert,
+                            intwidth_tie, spill_evict, nullptr);
+            });
     };
     auto record_shape = [&](const LinearScanAllocator& scan) {
         if (!RAShapeProfEnabled()) return;
@@ -97,8 +122,10 @@ static void RunVerified(Unit* unit,
     // notices a redundant pass).
     u32 eviction_restarts = 0;
     bool eviction_fallback = false;
+    u32 census_attempts = 0;
     if (spill_evict) {
         Vector<u32> forced_spills{};
+        u32 census_first_spills = 0;
         // Each retry walks the whole unit. Bound optional quality work before
         // using the existing verified reserve ladder, independent of unit size.
         constexpr u32 kMaxEvictionRestarts = 8;
@@ -107,13 +134,32 @@ static void RunVerified(Unit* unit,
                 reg_alloc->ResetAllocations();
             }
             LinearScanAllocator scan{unit, reg_alloc,
-                {.features = features, .single_block_fast_path = single_block_fast_path, .scalar_insert = scalar_insert, .intwidth_tie = intwidth_tie, .induct_tie = induct_tie},
-                {.gpr_reserve = default_gpr_reserve, .fpr_reserve = backend::kDefaultScratchFPR, .forced_spills = &forced_spills, .select_eviction = true}};
+                {.features = features, .single_block_fast_path = single_block_fast_path, .scalar_insert = scalar_insert, .intwidth_tie = intwidth_tie},
+                {.gpr_reserve = default_gpr_reserve, .fpr_reserve = backend::kDefaultScratchFPR, .forced_spills = &forced_spills, .select_eviction = true, .finish_on_candidate = eviction_restarts > 0}};
+            ++census_attempts;
             scan.AllocateRegisters();
+            if (eviction_restarts == 0) census_first_spills = scan.SpillCount();
             if (scan.HasEvictionCandidate()) {
                 if (eviction_restarts == kMaxEvictionRestarts) {
                     eviction_fallback = true;
                     break;
+                }
+                if (eviction_restarts > 0) {
+                    // A forced spill already failed to yield a
+                    // candidate-free attempt. If this attempt also
+                    // cannot verify at the current reserve, more
+                    // evictions cannot fix that -- the reserve
+                    // ladder is the only way forward, so stop
+                    // spending full-unit scans here. (Census on
+                    // CoreMark: every unit that restarted at all
+                    // eventually fell back to the ladder.)
+                    PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
+                    const bool verified = scan.Verify();
+                    perf_verify.Stop();
+                    if (!verified) {
+                        eviction_fallback = true;
+                        break;
+                    }
                 }
                 forced_spills.push_back(scan.EvictionCandidate());
                 ++eviction_restarts;
@@ -123,6 +169,10 @@ static void RunVerified(Unit* unit,
             const bool verified = scan.Verify();
             perf_verify.Stop();
             if (verified) {
+                if (GetSvmConfig().density_prof) {
+                    std::fprintf(stderr, "[evict-census] restarts=%u first_spills=%u final_spills=%u attempts=%u path=evict\n",
+                            eviction_restarts, census_first_spills, scan.SpillCount(), census_attempts);
+                }
                 record_shape(scan);
                 record_test_result(scan, eviction_restarts, false);
                 finish_placement_check();
@@ -133,13 +183,17 @@ static void RunVerified(Unit* unit,
         }
     } else {
         LinearScanAllocator scan{unit, reg_alloc,
-            {.features = features, .single_block_fast_path = single_block_fast_path, .scalar_insert = scalar_insert, .intwidth_tie = intwidth_tie, .induct_tie = induct_tie},
+            {.features = features, .single_block_fast_path = single_block_fast_path, .scalar_insert = scalar_insert, .intwidth_tie = intwidth_tie},
             {.gpr_reserve = default_gpr_reserve, .fpr_reserve = backend::kDefaultScratchFPR}};
+        ++census_attempts;
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
         perf_verify.Stop();
         if (verified) {
+            if (GetSvmConfig().density_prof) {
+                std::fprintf(stderr, "[evict-census] restarts=0 attempts=%u path=plain\n", census_attempts);
+            }
             record_shape(scan);
             record_test_result(scan, 0, false);
             finish_placement_check();
@@ -205,8 +259,9 @@ static void RunVerified(Unit* unit,
     for (auto& rung : ladder) {
         reg_alloc->ResetAllocations();
         LinearScanAllocator scan{unit, reg_alloc,
-            {.features = features, .single_block_fast_path = single_block_fast_path, .scalar_insert = scalar_insert, .intwidth_tie = intwidth_tie, .induct_tie = induct_tie},
+            {.features = features, .single_block_fast_path = single_block_fast_path, .scalar_insert = scalar_insert, .intwidth_tie = intwidth_tie},
             {.gpr_reserve = rung.gpr, .fpr_reserve = rung.fpr}};
+        ++census_attempts;
         scan.AllocateRegisters();
         PerfScope2 perf_verify{GetPerfStats2().regalloc_verify};
         const bool verified = scan.Verify();
@@ -215,6 +270,10 @@ static void RunVerified(Unit* unit,
             if (RaDiagEnabled()) {
                 LOG_WARNING("RegisterAllocPass: scratch reserve escalated to {}/{}", rung.gpr,
                             rung.fpr);
+            }
+            if (GetSvmConfig().density_prof) {
+                std::fprintf(stderr, "[evict-census] restarts=%u attempts=%u path=ladder fallback=%u\n",
+                        eviction_restarts, census_attempts, eviction_fallback ? 1u : 0u);
             }
             record_shape(scan);
             record_test_result(scan, eviction_restarts, eviction_fallback);

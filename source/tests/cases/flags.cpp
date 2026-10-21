@@ -36,6 +36,7 @@ TEST_CASE("SaveCV commits x86 CF/OF into the flags register") {
     RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
 
+    reg_alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, reg_alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -103,6 +104,7 @@ static std::string TranslateCondSetArithmeticBlock(swift::runtime::ir::Cond cond
     RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
 
+    reg_alloc.CompleteGPRAllocation(module);
     arm64::JitContext context{module, reg_alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());

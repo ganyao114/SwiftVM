@@ -1,4 +1,5 @@
 #include "translator.h"
+#include "runtime/backend/arm64/alloc/target_analysis_traits.h"
 #include "runtime/backend/arm64/defines.h"
 
 namespace swift::runtime::backend::arm64 {
@@ -41,138 +42,25 @@ std::optional<MemOperand> JitTranslator::TryEmitSpilledMemoryOperand(
 }
 
 bool JitTranslator::CanUseZeroStoreRegister(ir::Value value) {
-    auto* definition = value.Def();
-    if (!context.GetFeatures().zero_store_zr || context.IsSpilled(value) ||
-        !definition || !IsZeroStoreValue(value) ||
-        ir::GetValueSizeByte(value.Type()) > sizeof(u64)) {
-        return false;
-    }
-    return HasOnlyZeroStoreUses(definition);
+    return TargetCanUseZeroStoreRegister(value, context.GetAllocation(),
+                                        context.GetFeatures(), gpr_plan->consumers.get());
 }
 
-bool JitTranslator::IsZeroStoreValue(ir::Value value) {
-    if (!value.Defined() || ir::IsFloatValueType(value.Type())) {
-        return false;
-    }
-    auto* definition = value.Def();
-    if (definition->GetOp() == ir::OpCode::LoadImm) {
-        return definition->GetArg<ir::Imm>(0).Get() == 0;
-    }
-    if (definition->GetOp() != ir::OpCode::ZeroExtend32 &&
-        definition->GetOp() != ir::OpCode::ZeroExtend32To64) {
-        return false;
-    }
-    return IsZeroStoreValue(definition->GetArg<ir::Value>(0));
-}
 
-bool JitTranslator::HasOnlyZeroStoreUses(ir::Inst* definition) {
-    u32 compatible_uses = 0;
-    for (auto& use : cur_block->GetInstList()) {
-        if ((use.GetOp() == ir::OpCode::StoreUniform ||
-             use.GetOp() == ir::OpCode::StoreMemory) &&
-            use.GetArg<ir::Value>(1).Def() == definition) {
-            ++compatible_uses;
-        } else if (use.GetOp() == ir::OpCode::SetHostFPR &&
-                   use.GetArg<ir::Value>(0).Def() == definition) {
-            ++compatible_uses;
-        } else if ((use.GetOp() == ir::OpCode::ZeroExtend32 ||
-                    use.GetOp() == ir::OpCode::ZeroExtend32To64) &&
-                   use.GetArg<ir::Value>(0).Def() == definition &&
-                   !context.IsSpilled(ir::Value{&use}) &&
-                   IsZeroStoreValue(ir::Value{&use}) &&
-                   HasOnlyZeroStoreUses(&use)) {
-            ++compatible_uses;
-        }
-    }
-    return compatible_uses != 0 &&
-           compatible_uses == definition->GetUses(false);
-}
-
-std::optional<JitTranslator::MemoryUpdate>
-JitTranslator::MatchMemoryUpdate(ir::Inst* update) const {
-    if (!update || update->GetOp() != ir::OpCode::Sub ||
-        ir::GetValueSizeByte(update->ReturnType()) != sizeof(u64) ||
-        update->GetUses(false) != 2) {
-        return std::nullopt;
-    }
-
-    const auto right = update->GetArg<ir::Operand>(1);
-    if (!right.GetRight().Null() || !right.GetLeft().IsImm()) {
-        return std::nullopt;
-    }
-    const u64 decrement = right.GetLeft().imm.Get();
-    if (decrement == 0 || decrement > 256) {
-        return std::nullopt;
-    }
-
-    const auto source = update->GetArg<ir::Value>(0);
-    auto* source_def = source.Def();
-    if (!source_def || source_def->GetOp() != ir::OpCode::GetHostGPR ||
-        source_def->GetArg<ir::Imm>(1).Get() != 0 ||
-        ir::GetValueSizeByte(source.Type()) != sizeof(u64)) {
-        return std::nullopt;
-    }
-    const u32 target = source_def->GetArg<ir::Imm>(0).Get();
-    const auto base = XRegister(target);
-    if (context.X(source) != base) {
-        return std::nullopt;
-    }
-
-    auto& instructions = cur_block->GetInstList();
-    auto memory_it = std::next(instructions.iterator_to(*update));
-    if (memory_it == instructions.end() ||
-        memory_it->GetOp() != ir::OpCode::StoreMemory) {
-        return std::nullopt;
-    }
-    const auto memory_operand = memory_it->GetArg<ir::Operand>(0);
-    const auto stored = memory_it->GetArg<ir::Value>(1);
-    if (!memory_operand.GetRight().Null() ||
-        !memory_operand.GetLeft().IsValue() ||
-        memory_operand.GetLeft().value.Def() != update ||
-        ir::IsFloatValueType(stored.Type()) ||
-        ir::GetValueSizeByte(stored.Type()) != decrement) {
-        return std::nullopt;
-    }
-    if (!context.IsSpilled(stored) && context.X(stored) == base) {
-        return std::nullopt;
-    }
-
-    auto publication_it = std::next(memory_it);
-    if (publication_it == instructions.end() ||
-        publication_it->GetOp() != ir::OpCode::SetHostGPR ||
-        publication_it->GetArg<ir::Value>(0).Def() != update ||
-        publication_it->GetArg<ir::Imm>(1).Get() != target ||
-        publication_it->GetArg<ir::Imm>(2).Get() != 0) {
-        return std::nullopt;
-    }
-
-    return MemoryUpdate{
-            .memory = memory_it.operator->(),
-            .publication = publication_it.operator->(),
-            .base = base,
-            .offset = -static_cast<s64>(decrement),
-    };
-}
 
 std::optional<JitTranslator::MemoryUpdate>
 JitTranslator::MatchPreIndexMemoryUpdate(ir::Inst* update) const {
-    if (memory_state.use_memory_base) {
-        return std::nullopt;
-    }
-    return MatchMemoryUpdate(update);
+    const auto found = gpr_plan->preindex_updates.find(update);
+    return found == gpr_plan->preindex_updates.end() ? std::nullopt : std::optional{found->second};
 }
 
 std::optional<JitTranslator::MemoryUpdate>
 JitTranslator::MatchBiasedMemoryUpdate(ir::Inst* update) const {
-    if (!memory_state.use_memory_base) {
-        return std::nullopt;
-    }
-    auto match = MatchMemoryUpdate(update);
-    if (!match || !context.IsSpilled(ir::Value{update})) {
-        return std::nullopt;
-    }
-    return match;
+    const auto found = gpr_plan->biased_updates.find(update);
+    return found == gpr_plan->biased_updates.end() ? std::nullopt : std::optional{found->second};
 }
+
+
 
 MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                                          ir::ValueType type,
@@ -209,19 +97,24 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
         } else {
             // Match Case: load store post/index & push/pop
             auto addr_value = ir_op.GetLeft().value;
+            if (memory_inst && gpr_plan->memory) {
+                const auto found = gpr_plan->memory->offsets.find(memory_inst);
+                if (found != gpr_plan->memory->offsets.end()) {
+                    const auto& action = found->second;
+                    auto pinned = context.PlannedGPR<XRegister>(action.base, cur_instr);
+                    const Register base = pinned ? Register{*pinned}
+                                                 : context.R(action.base);
+                    if (memory_state.use_memory_base) {
+                        return BiasMem(base, action.offset, atomic);
+                    }
+                    return MemOperand{base, action.offset};
+                }
+            }
             if (addr_value.Def()) {
                 if (auto recomputed = TryEmitSpilledMemoryOperand(
                             addr_value.Def(), type, pair, atomic, memory_inst)) {
                     return *recomputed;
                 }
-            }
-            if (!memory_state.use_memory_base &&
-                context.IsConstAddressCached(addr_value.Id())) {
-                const auto offset = CachedConstAddressOffset(addr_value.Def());
-                ASSERT_MSG(offset,
-                           "constant-address offset proof failed at IR {}",
-                           addr_value.Id());
-                return MemOperand{context.R(addr_value), static_cast<s64>(*offset)};
             }
             if (allow_writeback && !atomic) {
                 if (memory_state.use_memory_base) {
@@ -236,86 +129,21 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                     }
                 }
             }
-            if ((memory_state.mem_narrow_fuse || memory_state.addr_ea_tie) &&
-                addr_value.Def()->GetOp() == ir::OpCode::GetOperand &&
-                addr_value.Def()->GetUses() == 1) {
-                auto source_operand = addr_value.Def()->GetArg<ir::Operand>(0);
-                auto source_left = source_operand.GetLeft();
-                if (source_operand.GetRight().Null() && source_left.IsValue() &&
-                    context.SharesGPR(addr_value, source_left.value)) {
-                    // A simple EA does not need to be materialised in the
-                    // GetOperand result register. The RA tie makes the result
-                    // own that same register through the memory use, so
-                    // consume the live result allocation here rather than
-                    // extending the source SSA's lifetime in the emitter.
-                    disable_instructions.set(addr_value.Def()->Id());
-                    auto address_reg = context.R(addr_value, true);
-                    if (memory_state.use_memory_base) {
-                        return BiasMem(address_reg, atomic);
-                    }
-                    return MemOperand{address_reg};
-                }
-            }
-            auto& instr_list = cur_block->GetInstList();
-            auto instr = addr_value.Def();
-            // With the pt bias active, post-index forms cannot express
-            // [base + pt] (+writeback), so the folding is disabled and the
-            // address update executes as a normal Add/Sub.
-            if (allow_writeback && !memory_state.use_memory_base && addr_value.Def()->GetUses() == 2) {
-                int search_times{0};
-                for (auto itr = instr_list.iterator_to(*instr);
-                     itr != instr_list.end() && search_times < 3;
-                     itr++, search_times++) {
-                    auto add_sub =
-                            itr->GetOp() == ir::OpCode::Add || itr->GetOp() == ir::OpCode::Sub;
-                    if (!add_sub) {
-                        continue;
-                    }
-                    auto same_value = itr->GetArg<ir::Value>(0) == addr_value;
-                    if (!same_value) {
-                        continue;
-                    }
-                    auto operand = itr->GetArg<ir::Operand>(1);
-                    auto no_right = operand.GetRight().Null();
-                    if (!no_right) {
-                        continue;
-                    }
-                    auto same_register = context.R(addr_value) == context.R(itr.operator->());
-                    if (!same_register) {
-                        continue;
-                    }
-                    auto left = operand.GetLeft();
-                    if (left.IsImm()) {
-                        auto imm = left.imm.GetSigned();
-                        if (!pair && !__ IsImmLSUnscaled(imm)) {
-                            continue;
-                        }
-                        if (pair && !__ IsImmLSPair(imm, access_size)) {
-                            continue;
-                        }
-                        if (itr->GetOp() == ir::OpCode::Add) {
-                            disable_instructions.set(itr->Id());
-                            return MemOperand{context.R(addr_value), imm, PostIndex};
-                        } else {
-                            disable_instructions.set(itr->Id());
-                            return MemOperand{context.R(addr_value), -imm, PostIndex};
-                        }
-                    } else {
-                        if (itr->GetOp() == ir::OpCode::Add) {
-                            disable_instructions.set(itr->Id());
-                            return MemOperand{
-                                    context.R(addr_value), context.R(left.value), PostIndex};
-                        }
-                    }
+            if (allow_writeback && !atomic && gpr_plan->memory) {
+                const auto found = gpr_plan->memory->writebacks.find(memory_inst);
+                if (found != gpr_plan->memory->writebacks.end()) {
+                    const auto& action = found->second;
+                    ASSERT(!pair && action.access_bytes == access_size);
+                    return MemOperand{XRegister(action.base), action.offset, PostIndex};
                 }
             }
             if (memory_state.use_memory_base) {
-                auto pinned = context.PinnedValueGPR(addr_value, cur_instr, pinned_gprs);
+                auto pinned = context.PlannedGPR<XRegister>(addr_value, cur_instr);
                 return BiasMem(pinned ? Register{*pinned}
                                       : context.R(addr_value),
                                atomic);
             }
-            auto pinned = context.PinnedValueGPR(addr_value, cur_instr, pinned_gprs);
+            auto pinned = context.PlannedGPR<XRegister>(addr_value, cur_instr);
             return MemOperand{pinned ? Register{*pinned}
                                      : context.R(addr_value)};
         }
@@ -329,7 +157,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             left_reg = tmp;
         } else {
             auto left = ir_op.GetLeft().value;
-            auto pinned = context.PinnedValueGPR(left, cur_instr, pinned_gprs);
+            auto pinned = context.PlannedGPR<XRegister>(left, cur_instr);
             left_reg = pinned ? Register{*pinned} : context.R(left, true);
         }
         auto right = ir_op.GetRight();
@@ -392,7 +220,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                 }
             }
         } else {
-            auto pinned = context.PinnedValueGPR(right.value, cur_instr, pinned_gprs);
+            auto pinned = context.PlannedGPR<XRegister>(right.value, cur_instr);
             auto right_reg = pinned ? Register{*pinned}
                                     : context.R(right.value, true);
             if (ir_op.GetOp() == ir::OperandOp::Plus) {

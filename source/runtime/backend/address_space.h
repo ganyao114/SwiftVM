@@ -4,12 +4,15 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <map>
 #include <mutex>
+#include <unordered_set>
 #include "runtime/backend/jit_cache.h"
 #include "runtime/backend/link_manager.h"
 #include "runtime/backend/module.h"
+#include "runtime/backend/retirement_control.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/backend/translate_table.h"
 #include "runtime/backend/trampolines.h"
@@ -26,7 +29,27 @@ class AddressSpace : public runtime::Instance {
 public:
     explicit AddressSpace(const Config& config);
 
-    ~AddressSpace();
+    ~AddressSpace() override;
+
+    enum class ShutdownStage { Admission, Smc, Dispatch, LinkReaders, FaultReaders,
+                               Modules, Trampolines, Complete };
+    struct ShutdownResult {
+        RetirementControl::DrainStatus admission{RetirementControl::DrainStatus::Stale};
+        ShutdownStage stage{ShutdownStage::Admission};
+        SmcTracker::ShutdownResult smc{};
+        MemMap::ReleaseResult mapping{};
+        int dispatch_error{};
+        const Module* failed_module{};
+        size_t remaining_modules{};
+        [[nodiscard]] bool Complete() const {
+            return admission == RetirementControl::DrainStatus::Ready && stage == ShutdownStage::Complete;
+        }
+    };
+    // Host callers/raw entries must be quiescent. Pending and failed owners
+    // stay attached to this live AddressSpace for an explicit retry.
+    [[nodiscard]] ShutdownResult TryShutdown(const RetirementControl::Ticket& ticket);
+    [[nodiscard]] bool RegisterTerminalAlias(const std::shared_ptr<TerminalAliasOwner>& owner);
+    [[nodiscard]] size_t GetOwnedModuleCount();
 
     std::shared_ptr<Module> MapModule(LocationDescriptor start,
                                       LocationDescriptor end,
@@ -49,9 +72,16 @@ public:
 
     [[nodiscard]] void* GetCodeCache(ir::Location location);
 
-    // Searches every module's JIT fault table for the compiled unit whose
-    // host PC range contains host_pc (host signal handler path).
+    // Signal-safe lookup includes detached Modules that retain live code.
     [[nodiscard]] bool LookupFault(const u8* host_pc, FaultEntry& out);
+
+    [[nodiscard]] const std::shared_ptr<FaultCatalog>& GetFaultCatalog() const {
+        return fault_catalog;
+    }
+
+    [[nodiscard]] const std::shared_ptr<RetirementControl>& GetRetirementControl() const {
+        return retirement_control;
+    }
 
     // Self-modifying code tracker: write-protects guest pages holding
     // translated code, claims the resulting write faults from the host
@@ -70,6 +100,31 @@ public:
     // translated guest code. SmcTracker clears the shared L2 and every
     // registered Runtime's L1 dispatch cache.
     void InvalidateCodeRange(VAddr guest_start, VAddr guest_end);
+
+    // --- Adaptive RCpc alignment fallback ---------------------------------
+    // Under rcpc_fault_emulate, scalar RCpc TSO accesses are emitted
+    // without alignment dispatch and faulting accesses are emulated by
+    // the runtime signal handler. A guest block whose emulated-fault
+    // count reaches kRcpcFaultThreshold is marked checks-forced and its
+    // translation invalidated, so the recompile emits the checked form
+    // (the same policy shape as XTAJIT's fault-count fallback).
+    // Counting is signal-safe and keyed by host PC (a fault-catalog
+    // lookup per fault would dwarf the emulation it replaces); the
+    // guest block is resolved once, at service time. Marking and
+    // invalidation run at dispatcher boundaries through
+    // ServiceRcpcAdaptive. InvalidateCodeRange clears marks for
+    // rewritten guest code, giving it a fresh fault budget.
+    static constexpr u32 kRcpcFaultThreshold = 128;
+    // Returns true exactly when this fault crosses the threshold, so
+    // the caller can request a dispatcher boundary (steady-state loops
+    // may not reach one for a very long time on their own).
+    [[nodiscard]] bool CountRcpcEmulatedFault(std::uintptr_t host_pc);
+    void ServiceRcpcAdaptive(TranslateTable* current_l1);
+    [[nodiscard]] bool RcpcChecksForced(VAddr guest_begin, VAddr guest_end);
+    [[nodiscard]] u64 RcpcEmulatedFaultTotal() const {
+        return rcpc_fault_total.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] size_t RcpcForcedSiteCount();
 
     // The address-space wide (L2) translate table backing PushCodeCache /
     // GetCodeCache; the JIT dispatcher reads it directly from generated code.
@@ -95,9 +150,9 @@ public:
     [[nodiscard]] const Config &GetConfig() const;
     [[nodiscard]] bool ExitLatchEnabled() const;
 
-    // Offline compilation uses the same frontend and ABI, but its units must
-    // not branch to another allocation's process-local region trampolines.
-    // Select this before compiling any code; it does not change guest semantics.
+    // Offline compilation captures immutable recipes for process-local links
+    // and region trampolines so installation can bind a fresh cache. Select
+    // this before compiling any code; it does not change guest semantics.
     void SetSerializableCodeEmission() {
         serializable_code_emission.store(true, std::memory_order_relaxed);
     }
@@ -112,10 +167,19 @@ private:
     void Init();
 
     const Config config;
+    std::shared_ptr<RetirementControl> retirement_control{std::make_shared<RetirementControl>()};
     std::atomic<bool> serializable_code_emission{false};
+    std::shared_ptr<FaultCatalog> fault_catalog{std::make_shared<FaultCatalog>()};
     std::shared_mutex lock;
     RangeMap<LocationDescriptor, std::shared_ptr<Module>> modules{};
     std::shared_ptr<Module> default_module;
+    std::vector<std::shared_ptr<Module>> owned_modules;
+    std::vector<std::shared_ptr<TerminalAliasOwner>> terminal_aliases;
+    std::mutex shutdown_mutex;
+    bool persistence_finished{};
+    bool aliases_revoked{};
+    bool modules_revoked{};
+    bool shutdown_complete{};
     std::unique_ptr<Trampolines> trampolines;
     TranslateTable code_cache{code_cache_bits};
     TranslateTable call_code_cache{18, TranslateTableHash::Direct};
@@ -126,6 +190,19 @@ private:
     LinkManager link_manager{};
     std::unique_ptr<ir::UniformInfo> uniform_info{};
     std::unique_ptr<JitDiskCache> jit_disk_cache{};
+
+    // Adaptive RCpc state. The fault table is written from signal
+    // context; everything else is guarded by rcpc_service_lock.
+    struct RcpcFaultSlot {
+        std::atomic<std::uintptr_t> key{~std::uintptr_t{0}};  // host PC
+        std::atomic<u32> count{0};
+    };
+    static constexpr size_t kRcpcFaultSlots = 1024;
+    std::array<RcpcFaultSlot, kRcpcFaultSlots> rcpc_fault_slots{};
+    std::atomic<u64> rcpc_fault_total{0};
+    std::atomic<bool> rcpc_service_pending{false};
+    std::mutex rcpc_service_lock;
+    std::unordered_set<VAddr> rcpc_forced_sites;
 };
 
 }  // namespace swift::runtime::backend

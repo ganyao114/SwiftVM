@@ -11,14 +11,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <span>
+#include <stdexcept>
 #include <utility>
 #include <unistd.h>
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/constant.h"
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
+#include "runtime/backend/arm64/alloc/target_allocation_planner.h"
 #include "runtime/backend/arm64/jit/function_code_object_emitter.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/atomic_fallback.h"
@@ -32,6 +35,7 @@
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/riscv64/jit/compile.h"
 #include "runtime/backend/signal_handler.h"
+#include "runtime/backend/signal_owner_slot.h"
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/hot_coalesce_prof.h"
@@ -107,14 +111,14 @@ static_assert(backend::state_offset_aes_keygen_swizzle ==
 // so opening the write window and retrying the store is exactly right: a host
 // store into a code page is self-modifying code and must invalidate.
 //
-// Indirected through a shared slot rather than stored as a raw pointer: a
-// Runtime may be destroyed by a thread other than the one that created it, and
-// the slot (not the Impl) is what the owning thread's TLS keeps alive, so the
-// handler can never observe a dangling Impl.
-struct OwnerSlot {
-    std::atomic<void*> impl{nullptr};
+// TLS owns the slot separately from Impl. A signal reads only the lock-free
+// pointer; shared_ptr assignment/destruction is never part of that read path.
+static thread_local std::atomic<backend::SignalOwnerSlot*> tls_owner_slot{};
+struct ThreadOwnerStorage {
+    std::shared_ptr<backend::SignalOwnerSlot> owner;
+    ~ThreadOwnerStorage() { tls_owner_slot.store(nullptr, std::memory_order_seq_cst); }
 };
-static thread_local std::shared_ptr<OwnerSlot> tls_owner_slot{};
+static thread_local ThreadOwnerStorage tls_owner_storage{};
 
 struct Runtime::Impl final {
     explicit Impl(backend::AddressSpace* address_space)
@@ -122,6 +126,7 @@ struct Runtime::Impl final {
                             sizeof(backend::State) +
                             address_space->GetConfig().uniform_buffer_size),
               address_space(address_space) {
+        retirement_control = address_space->GetRetirementControl();
         auto* named = state_storage.Data();
         state = reinterpret_cast<backend::State*>(
                 named + sizeof(RuntimeNamedVectorConstants));
@@ -174,7 +179,10 @@ struct Runtime::Impl final {
         // Inline indirect-L1 faults use this request word even when the
         // optional backedge/SMC latch is disabled.
         state->exit_request = 0;
+        retirement_exit.emplace(retirement_control, state->exit_request,
+                address_space->GetConfig().backend_isa == kArm64 ? &state_storage : nullptr);
         state->interface = &profile_interface;
+        profile_interface.instruction_capture = &instruction_capture;
         // Wire the dispatcher's code-cache tables: L1 is per-runtime, L2 is the
         // address-space wide translate table that PushCodeCache writes to.
         state->l2_code_cache = address_space->GetCodeCacheTable().Data();
@@ -206,24 +214,32 @@ struct Runtime::Impl final {
             state->rsb_pointer = return_stack->Empty();
             state->rsb_empty = return_stack->Empty();
         }
+        // Finish allocations before registering raw Runtime fields with SMC.
+        auto& thread_storage = tls_owner_storage;
+        owner_slot = std::make_shared<backend::SignalOwnerSlot>();
+        jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
         smc_epoch = address_space->GetSmcTracker().RegisterRuntime(
                 l1_code_cache,
                 &state->exit_request,
                 address_space->GetConfig().backend_isa == kArm64 ? &state_storage : nullptr,
                 &state->rsb_pointer,
                 state->rsb_empty);
-        jit_entry = address_space->GetTrampolines().GetRuntimeEntry();
         // Claim this thread for host-side SMC fault recovery (see OwnerSlot).
         // A thread that constructs a second Runtime keeps the newest; either
         // resolves to the same AddressSpace and SmcTracker.
-        if (!tls_owner_slot) {
-            tls_owner_slot = std::make_shared<OwnerSlot>();
-        }
-        owner_slot = tls_owner_slot;
-        owner_slot->impl.store(this, std::memory_order_release);
+        if (!owner_slot->Publish(this)) std::terminate();
+        // The new Impl pins its slot until TLS takes ownership. An interrupted
+        // old-slot reader finishes on this same thread before old TLS storage
+        // can be dropped by the following assignment.
+        tls_owner_slot.store(owner_slot.get(), std::memory_order_seq_cst);
+        thread_storage.owner = owner_slot;
     }
 
     ~Impl() {
+        if (run_in_progress.test(std::memory_order_acquire)) {
+            std::terminate();
+        }
+        if (owner_slot) owner_slot->DetachAndWait(this);
         if (GetSvmConfig().exec_prof) {
             const auto elapsed_ns = exec_profile_started
                                             ? std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -277,11 +293,8 @@ struct Runtime::Impl final {
         // loop), and any thread that goes on running closes the window after
         // its next JitRun. Unverified defensive work is not kept.
         address_space->GetSmcTracker().UnregisterRuntime(smc_epoch);
-        if (owner_slot) {
-            void* expected = this;
-            owner_slot->impl.compare_exchange_strong(
-                    expected, nullptr, std::memory_order_acq_rel, std::memory_order_relaxed);
-        }
+        // Terminal readiness must remain blocked through the final AS access.
+        retirement_exit.reset();
     }
 
     // Host-fault recovery (SignalHandler chain, priority kFaultPriority).
@@ -316,9 +329,9 @@ struct Runtime::Impl final {
         // code runs. Both resolve to this thread's AddressSpace, which is all
         // HandleWriteFault needs.
         auto* self = static_cast<Impl*>(tls_active_runtime);
-        if (!self && tls_owner_slot) {
-            self = static_cast<Impl*>(tls_owner_slot->impl.load(std::memory_order_acquire));
-        }
+        backend::SignalOwnerSlot::Reader owner_reader{
+                self ? nullptr : tls_owner_slot.load(std::memory_order_seq_cst)};
+        if (!self) self = static_cast<Impl*>(owner_reader.Get());
         if (!self) return false;
         // Signal callbacks are C++ host code. A guest/SMC fault may interrupt
         // generated code, a conservative helper already using host FPCR, or
@@ -337,6 +350,86 @@ struct Runtime::Impl final {
             (void)self->return_stack->Reset(uctx);
         }
         return handled;
+    }
+
+    // Decode the scalar RCpc forms the ARM64 emitter can produce without
+    // alignment dispatch (Config::rcpc_fault_emulate). Encodings were
+    // cross-checked against emitted instruction words: register forms keep
+    // Rs=11111 in the compare mask so exclusive LDAXR/STLXR never match.
+    struct RcpcAccess {
+        bool load;
+        u32 size;
+        u32 rt;
+        bool sign;
+        bool sign_to_x;
+    };
+
+    static std::optional<RcpcAccess> DecodeRcpcAccess(u32 w) {
+        const u32 size = u32{1} << (w >> 30);
+        const u32 rt = w & 31;
+        if ((w & 0x3FFFFC00u) == 0x38BFC000u) {
+            return RcpcAccess{true, size, rt, false, false};  // LDAPR
+        }
+        if ((w & 0x3FFFFC00u) == 0x089FFC00u) {
+            return RcpcAccess{false, size, rt, false, false};  // STLR
+        }
+        if ((w & 0x3F000000u) == 0x19000000u) {  // RCpc unscaled immediate
+            switch ((w >> 22) & 3) {
+                case 0: return RcpcAccess{false, size, rt, false, false};  // STLUR
+                case 1: return RcpcAccess{true, size, rt, false, false};   // LDAPUR
+                case 2: return RcpcAccess{true, size, rt, true, true};     // LDAPURSB/SH/SW
+                default: return RcpcAccess{true, size, rt, true, false};   // LDAPURSB/SH (W)
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Emulate one faulting scalar RCpc access and resume after it. The
+    // fault address must be proven guest-mapped for the whole access by
+    // the embedder oracle first; anything else falls through to the
+    // generic PageFatal path. Ordering mirrors the emitter's own slow
+    // paths: load = copy + acquire fence, store = release fence + copy.
+    // The copy itself can still fault if the oracle raced an unmap; the
+    // nested fault then reaches the default handler like other host
+    // dereferences in this chain.
+    static bool TryEmulateRcpcFault(Impl* self, ucontext_t* uctx,
+                                    const u8* host_pc, std::uintptr_t fault_addr) {
+        if (self->address_space->GetConfig().backend_isa != kArm64 ||
+            !self->address_space->GetConfig().rcpc_fault_emulate ||
+            !backend::SignalHandler::HasGuestMapCheck() || !host_pc) {
+            return false;
+        }
+        u32 insn = 0;
+        std::memcpy(&insn, host_pc, sizeof(insn));
+        const auto access = DecodeRcpcAccess(insn);
+        if (!access) return false;
+        if (backend::SignalHandler::GuestMappedBytes(fault_addr, access->size) !=
+            access->size) {
+            return false;
+        }
+        auto* ea = reinterpret_cast<u8*>(fault_addr);
+        if (access->load) {
+            u64 value = 0;
+            std::memcpy(&value, ea, access->size);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (access->sign) {
+                const u32 bits = access->size * 8;
+                const auto extended = static_cast<u64>(
+                        static_cast<std::int64_t>(value << (64 - bits)) >> (64 - bits));
+                value = access->sign_to_x ? extended : (extended & 0xFFFFFFFFu);
+            }
+            if (access->rt != 31 &&
+                !backend::SignalHandler::SetContextGPR(uctx, access->rt, value)) {
+                return false;
+            }
+        } else {
+            const auto value = backend::SignalHandler::GetContextGPR(uctx, access->rt);
+            std::atomic_thread_fence(std::memory_order_release);
+            std::memcpy(ea, &value, access->size);
+        }
+        backend::SignalHandler::SetContextPC(
+                uctx, reinterpret_cast<std::uintptr_t>(host_pc + sizeof(u32)));
+        return true;
     }
 
     static bool HandleFault(void* ctx, ucontext_t* uctx, int sig, siginfo_t* info) {
@@ -408,7 +501,9 @@ struct Runtime::Impl final {
                 diagnostic.Field("p_call", reinterpret_cast<std::uintptr_t>(self->state->pending_call_l1_code_cache));
                 diagnostic.Write();
             }
-            if ((request & kBackedgeSignalRequest) != 0) {
+            if ((request & (kBackedgeSignalRequest | kRetirementExitRequest)) != 0) {
+                if (request & kRetirementExitRequest)
+                    self->state->halt_reason = HaltReason::Retirement;
                 const bool has_entry =
                         self->address_space->LookupFault(host_pc, entry);
                 const auto recovery_pc = has_entry && entry.recovery
@@ -442,6 +537,48 @@ struct Runtime::Impl final {
                     reinterpret_cast<std::uintptr_t>(
                             self->address_space->GetTrampolines()
                                     .GetIndirectL1Miss()));
+            return true;
+        }
+        if (sig == SIGBUS && TryEmulateRcpcFault(self, uctx, host_pc, fault_addr)) {
+            // Adaptive accounting: charge the fault to its host PC. At
+            // kRcpcFaultThreshold the dispatcher marks the owning guest
+            // block checks-forced and invalidates it for a checked
+            // recompile (ServiceRcpcAdaptive).
+            if (self->address_space->CountRcpcEmulatedFault(
+                        reinterpret_cast<std::uintptr_t>(host_pc)) &&
+                self->address_space->ExitLatchEnabled()) {
+                // Steady-state loops may not reach a dispatcher boundary
+                // for the whole workload, so request one: bump this
+                // runtime's SMC generation (the PublishExitRequest CAS
+                // shape, restricted to the executing runtime). The next
+                // backedge poll exits through the SMC veneer; the Run
+                // loop's post-JitRun service then adapts the block, and
+                // AcknowledgeSmcRequest retires the generation as usual.
+                // No page is dirty, so CloseWriteWindow fast-paths.
+                auto request = std::atomic_ref<u64>(self->state->exit_request);
+                auto observed = request.load(std::memory_order_relaxed);
+                bool bumped = false;
+                for (;;) {
+                    const auto count = observed & kBackedgeSmcRequestMask;
+                    if (count == kBackedgeSmcRequestMask) break;
+                    const auto next =
+                            (observed & ~kBackedgeSmcRequestMask) | (count + 1);
+                    if (request.compare_exchange_weak(
+                                observed, next, std::memory_order_release,
+                                std::memory_order_relaxed)) {
+                        bumped = true;
+                        break;
+                    }
+                }
+                // Arm the latch like every other exit_request
+                // publisher: with the latch enabled, backedge polls
+                // are fault-only (PollCycleExit), so this generation
+                // bump must fault the dummy load to be observed.
+                if (bumped &&
+                    self->address_space->GetConfig().backend_isa == kArm64) {
+                    self->state_storage.Arm();
+                }
+            }
             return true;
         }
         bool has_entry = host_pc &&
@@ -542,7 +679,7 @@ struct Runtime::Impl final {
         }
         auto request = std::atomic_ref<u64>(state->exit_request);
         u64 expected = observed;
-        const u64 desired = observed & kBackedgeSignalRequest;
+        const u64 desired = observed & ~kBackedgeSmcRequestMask;
         // Clear only the exact SMC generation seen before CloseWriteWindow.
         // A concurrent invalidation changes the low counter, makes this CAS
         // fail, and is therefore observed by the next boundary/backedge.
@@ -635,7 +772,41 @@ struct Runtime::Impl final {
         return hr;
     }
 
-    [[nodiscard]] HaltReason Run() const {
+    [[nodiscard]] Runtime::InstructionKey InstructionKey() const {
+        if (!instruction_pin || (instruction_capture.status != backend::InstructionCapture::Suspended &&
+                                 instruction_capture.status != backend::InstructionCapture::Abandoned)) return {};
+        const auto& pin = *instruction_pin;
+        return {this, address_space, retirement_control.get(), pin.descriptor.get(), pin.descriptor->emitted,
+                pin.allocation, instruction_generation, pin.allocation_id, pin.descriptor->ir_identity,
+                instruction_capture.head_id, instruction_capture.guest_pc};
+    }
+
+    [[nodiscard]] HaltReason Run(const Runtime::InstructionKey* resume_key = nullptr) const {
+        if (run_in_progress.test_and_set(std::memory_order_acquire)) {
+            return HaltReason::RuntimeBusy;
+        }
+        struct RunGuard {
+            std::atomic_flag& flag;
+            ~RunGuard() { flag.clear(std::memory_order_release); }
+        } run_guard{run_in_progress};
+        backend::RetirementControl::Lease admission{
+                retirement_control, backend::RetirementControl::Kind::Execution};
+        if (!admission) return HaltReason::Retirement;
+        if (!resume_key && instruction_capture.status != backend::InstructionCapture::Empty)
+            return HaltReason::InstructionPending;
+        if (resume_key) {
+            if (instruction_capture.status != backend::InstructionCapture::Suspended || !instruction_pin ||
+                *resume_key != InstructionKey() ||
+                &instruction_pin->module->GetAddressSpace() != address_space ||
+                instruction_pin->module->GetRetirementControl() != retirement_control ||
+                !retirement_control->AuthorizeInstructionResume(admission, instruction_generation) ||
+                !instruction_pin->module->ValidateInstructionPin(*instruction_pin) ||
+                instruction_capture.head_id != instruction_pin->descriptor->head_id ||
+                instruction_capture.guest_pc != instruction_pin->descriptor->guest_pc ||
+                !backend::ValidInstructionStickyFlags(instruction_capture.sticky_fflags) ||
+                GetLocation() != instruction_capture.guest_pc || state->host_cpu_flags != instruction_capture.guest_flags)
+                return HaltReason::InstructionRejected;
+        }
         if (!exec_profile_started) {
             exec_profile_start = std::chrono::steady_clock::now();
             exec_profile_started = true;
@@ -656,6 +827,7 @@ struct Runtime::Impl final {
 
         HaltReason hr{HaltReason::None};
         while (running.load(std::memory_order_acquire)) {
+            if (retirement_control->IsClosed()) return HaltReason::Retirement;
             auto current_loc = GetLocation();
             auto& smc = address_space->GetSmcTracker();
             if (address_space->ExitLatchEnabled()) {
@@ -672,10 +844,32 @@ struct Runtime::Impl final {
             // Publish before cache lookup, not merely before JitRun: a pointer
             // fetched while an invalidation races must remain epoch-protected
             // until the trampoline returns.
-            smc.BeginJit(smc_epoch);
-            if (auto cache = hr != HaltReason::CacheMiss ? address_space->GetCodeCache(current_loc)
+            backend::SmcTracker::ExecutionScope execution{smc, smc_epoch};
+            // Closing a write window can detach an allocation after the
+            // initial owner/key check. Revalidate under actual execution
+            // protection before selecting any process-local resume entry.
+            if (resume_key &&
+                (!retirement_control->AuthorizeInstructionResume(admission, instruction_generation) ||
+                 !instruction_pin->module->ValidateInstructionPin(*instruction_pin)))
+                return HaltReason::InstructionRejected;
+            if (auto cache = resume_key ? instruction_pin->allocation + instruction_pin->descriptor->resume_offset :
+                            hr != HaltReason::CacheMiss ? address_space->GetCodeCache(current_loc)
                                                          : nullptr;
                 cache) {
+                if (resume_key) {
+                    instruction_capture.status = backend::InstructionCapture::Resuming;
+                } else if (address_space->GetConfig().backend_isa == kRiscv64) {
+                    auto module = address_space->GetModule(current_loc);
+                    instruction_pin = module->PinInstructionCode(module, static_cast<u8*>(cache));
+                    if (instruction_pin) {
+                        if (!module->ValidateInstructionPin(*instruction_pin)) {
+                            instruction_pin.reset(); return HaltReason::InstructionRejected;
+                        }
+                        instruction_capture = {};
+                        instruction_capture.status = backend::InstructionCapture::Armed;
+                        instruction_generation = admission.Generation();
+                    }
+                }
                 // JIT Run!
                 const bool manage_guest_fpcr =
                         address_space->GetConfig().sse_afp_nan;
@@ -685,6 +879,18 @@ struct Runtime::Impl final {
                     jit_guest_fpcr_active.store(true, std::memory_order_release);
                 }
                 hr = JitRun(cache);
+                if (instruction_pin) {
+                    if (instruction_capture.status == backend::InstructionCapture::Suspended) {
+                        instruction_generation = admission.Generation();
+                    } else if (instruction_capture.status == backend::InstructionCapture::Resuming) {
+                        // The trampoline refused entry before the resume veneer.
+                        instruction_capture.status = backend::InstructionCapture::Suspended;
+                    } else if (hr == HaltReason::CallHost && GetLocation() == instruction_pin->descriptor->completion_pc) {
+                        instruction_pin.reset(); instruction_capture = {};
+                    } else {
+                        instruction_capture.status = backend::InstructionCapture::Abandoned;
+                    }
+                }
                 if (manage_guest_fpcr) {
                     jit_guest_fpcr_active.store(false, std::memory_order_release);
                 }
@@ -698,7 +904,7 @@ struct Runtime::Impl final {
                 // The runtime is now quiescent with respect to retired JIT
                 // code. This is an atomic-only fast path unless reclamation
                 // work is actually pending.
-                smc.EndJit(smc_epoch);
+                execution.End();
                 // SMC write-window close (Phase 4): if a guest store hit a
                 // write-protected code page during this JitRun, the stale
                 // translations are invalidated now — the guest is back on
@@ -708,6 +914,12 @@ struct Runtime::Impl final {
                 // been restored by the signal-window transaction before any
                 // retired allocation can become reclaimable.
                 smc.CloseWriteWindow(*address_space, l1_code_cache);
+                // Adaptive RCpc: blocks that exhausted their emulated-
+                // fault budget during this JitRun are marked checks-
+                // forced and invalidated here, at the same quiescent
+                // boundary as the SMC window close. Atomic-only unless
+                // a threshold crossing is actually pending.
+                address_space->ServiceRcpcAdaptive(&l1_code_cache);
                 if (address_space->ExitLatchEnabled()) {
                     AcknowledgeSmcRequest(observed);
                     // A Signal may race after the generated poll selected an
@@ -719,10 +931,11 @@ struct Runtime::Impl final {
                     }
                 }
             } else {
-                smc.EndJit(smc_epoch);
+                execution.End();
                 // IR Interpreter
                 hr = Interpreter();
             }
+            if (retirement_control->IsClosed()) return HaltReason::Retirement;
             if (hr == HaltReason::CacheMiss) {
                 continue;
             } else {
@@ -748,15 +961,18 @@ struct Runtime::Impl final {
     std::optional<backend::riscv64::MemoryParticipant> memory_participant{};
     std::optional<backend::GuardedReturnStack> return_stack{};
     backend::AddressSpace* address_space{};
+    std::shared_ptr<backend::RetirementControl> retirement_control;
+    std::optional<backend::RetirementControl::ExitRegistration> retirement_exit;
     // mutable: JIT dispatch fills this per-Runtime table even from const Run
     // paths; State publishes its stable Data() base to generated code.
     mutable TranslateTable l1_code_cache{
             l1_cache_bits, TranslateTableHash::Direct};
     backend::SmcTracker::RuntimeToken smc_epoch{};
     // Kept alive alongside the creating thread's tls_owner_slot; see OwnerSlot.
-    std::shared_ptr<OwnerSlot> owner_slot{};
+    std::shared_ptr<backend::SignalOwnerSlot> owner_slot{};
     backend::interp::InterpStack interp_stack;
     std::atomic_bool running{true};
+    mutable std::atomic_flag run_in_progress = ATOMIC_FLAG_INIT;
     backend::Trampolines::RuntimeEntry jit_entry{};
     backend::RuntimeProfileInterface profile_interface{};
     backend::ExecutionTraceBuffer execution_trace{};
@@ -773,6 +989,9 @@ struct Runtime::Impl final {
     // Keep a lock-free copy alongside an active marker for that boundary.
     mutable std::atomic<u64> jit_host_fpcr{};
     mutable std::atomic_bool jit_guest_fpcr_active{false};
+    mutable backend::InstructionCapture instruction_capture{};
+    mutable std::unique_ptr<backend::InstructionCodePin> instruction_pin{};
+    mutable u64 instruction_generation{};
 
     void PublishIndirectL1Base(void* base) {
         std::atomic_ref<void*>(state->indirect_l1_code_cache)
@@ -780,8 +999,12 @@ struct Runtime::Impl final {
     }
 };
 
-Runtime::Runtime(Instance* instance)
-        : impl(std::make_unique<Impl>(reinterpret_cast<backend::AddressSpace*>(instance))) {
+Runtime::Runtime(Instance* instance) {
+    auto* space = reinterpret_cast<backend::AddressSpace*>(instance);
+    backend::RetirementControl::Lease creation{
+            space->GetRetirementControl(), backend::RetirementControl::Kind::Producer};
+    if (!creation) throw std::runtime_error("runtime admission is closed");
+    impl = std::make_unique<Impl>(space);
     // Process-wide sigaction handlers (idempotent) + this runtime's entries
     // in the fault handler chain. The chain is process-global; both handlers
     // filter by the thread-local active runtime so only the executing
@@ -804,6 +1027,19 @@ Runtime::Runtime(Instance* instance)
 Runtime::~Runtime() = default;
 
 HaltReason Runtime::Run() { return impl->Run(); }
+
+Runtime::InstructionKey Runtime::SuspendedInstruction() const { return impl->InstructionKey(); }
+
+HaltReason Runtime::ResumeInstruction(const InstructionKey& key) { return impl->Run(&key); }
+
+bool Runtime::AbandonInstruction(const InstructionKey& key) {
+    if (impl->run_in_progress.test_and_set(std::memory_order_acquire)) return false;
+    struct Guard { std::atomic_flag& flag; ~Guard() { flag.clear(std::memory_order_release); } } guard{impl->run_in_progress};
+    if (!key.runtime || key != impl->InstructionKey()) return false;
+    impl->instruction_pin.reset();
+    impl->instruction_capture.status = backend::InstructionCapture::Abandoned;
+    return true;
+}
 
 HaltReason Runtime::Step() { return HaltReason::None; }
 
@@ -835,12 +1071,16 @@ void Runtime::ClearInterrupt() {
             .store(impl->address_space->GetPendingCallCodeCacheTable().Data(),
                    std::memory_order_release);
     std::atomic_ref<u64>(impl->state->exit_request)
-            .fetch_and(kBackedgeSmcRequestMask, std::memory_order_acq_rel);
+            .fetch_and(~kBackedgeSignalRequest, std::memory_order_acq_rel);
     impl->state_storage.DisarmIfIdle(&impl->state->exit_request);
     impl->running.store(true, std::memory_order_release);
 }
 
-void Runtime::SetLocation(LocationDescriptor location) { impl->SetLocation(location); }
+void Runtime::SetLocation(LocationDescriptor location) {
+    if (impl->instruction_pin) throw std::runtime_error("instruction must complete or be abandoned before location reset");
+    impl->instruction_capture = {};
+    impl->SetLocation(location);
+}
 
 LocationDescriptor Runtime::GetLocation() { return impl->GetLocation(); }
 
@@ -886,6 +1126,11 @@ void RecordJitCacheUnit(const std::shared_ptr<backend::Module>& module,
                         std::span<const backend::arm64::JitTranslator* const>
                                 translators) {
     if (module->GetAddressSpace().SerializableCodeEmission()) return;
+    // A checks-forced (adaptive RCpc) unit must not enter the disk
+    // cache: its key carries no per-unit mark, so recording it would
+    // serve checked bytes as the canonical unchecked form (and vice
+    // versa the revived unchecked unit simply adapts again at runtime).
+    if (context.RcpcForceChecks()) return;
     auto* cache = module->GetAddressSpace().GetJitDiskCache();
     if (!cache) {
         return;
@@ -1027,6 +1272,9 @@ bool FuncIRFreeEnabled() {
 
 bool PublishIRFunction(const std::shared_ptr<backend::Module>& module,
                        ir::HIRFunction* function) {
+    RetirementControl::Lease producer{module->GetRetirementControl(), RetirementControl::Kind::Producer};
+    if (!producer) return false;
+    if (!function || function->HasStandaloneBlocks()) return false;
     PrepareFunctionGuestRanges(function);
     if (!module->Push(function->GetFunction())) {
         return false;
@@ -1035,11 +1283,31 @@ bool PublishIRFunction(const std::shared_ptr<backend::Module>& module,
     return true;
 }
 
+static bool SupportsArm64IR(ir::Block* block) {
+    for (auto& inst : block->GetInstList()) {
+        if (inst.GetOp() == ir::OpCode::AddPhi || inst.GetOp() == ir::OpCode::DefineLocal ||
+            inst.GetOp() == ir::OpCode::LoadLocal || inst.GetOp() == ir::OpCode::StoreLocal) {
+            // Phi needs predecessor-edge parallel copies. The ARM64 local
+            // emitters are also unimplemented, so they are not a safe lowering.
+            SVM_DIAG_FORMAT(Codegen, "[unsupported-arm64-ir] op={} pc={:#x}\n",
+                            inst.GetOp(), block->GetStartLocation().Value());
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool SupportsArm64IR(ir::HIRFunction* function) {
+    if (!function || function->HasStandaloneBlocks()) return false;
+    for (auto* block : function->GetHIRBlocks())
+        if (block && !SupportsArm64IR(block->GetBlock())) return false;
+    return true;
+}
+
 static FeatureSet ResolveBackendFeatures(const std::shared_ptr<backend::Module>& module) {
     auto features = backend::ResolveFeatureSet(module->GetModuleConfig());
     // induction tie 已由 Config 承载，本期保持既有所有权；FeatureSet 中保留
     // 同名槽位只是为了与 B 类字段表一一对应，P3 再统一去重。
-    features.induct_tie = module->GetAddressSpace().GetConfig().induct_tie;
     return features;
 }
 
@@ -1129,6 +1397,14 @@ PreparedFunctionRegion PrepareFunctionRegion(const std::shared_ptr<backend::Modu
                                                    allocation.hoisted.get(),
                                                    address_space.GetConfig().sse_scalar_insert,
                                                    features);
+        if (GetSvmConfig().density_prof) {
+            std::fprintf(stderr,
+                    "[hoist-census] guest=%#llx anchors=%u gpr=%u const=%u base_spills=%u hoist_spills=%u\n",
+                    static_cast<unsigned long long>(prepared.guest_start),
+                    hoist_recipe->AnchorCount(), hoist_recipe->GPRHoistCount(),
+                    hoist_recipe->ConstHoistCount(),
+                    allocation.baseline->SpillCount(), allocation.hoisted->SpillCount());
+        }
         if (allocation.hoisted->SpillCount() <= allocation.baseline->SpillCount()) {
             prepared.reg_alloc = allocation.hoisted.get();
         } else {
@@ -1161,6 +1437,14 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
     const bool dump_ir = GetSvmConfig().dump_ir;
     PerfScope perf_cg{GetPerfStats().codegen_ns};
     PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};
+    // Hoist selection and merged ownership are final before target planning.
+    // Keep the existing timer range; no encoder exists until all units finish.
+    {
+        PerfScope2 perf_complete{GetPerfStats2().codegen_complete};
+        for (auto& item : prepared_regions)
+            if (!backend::arm64::CompleteARM64UnitForEmission(
+                    module, *item.reg_alloc, nullptr, item.function)) return nullptr;
+    }
     std::array<backend::arm64::FunctionRegionEmission, 1> single_region{};
     std::vector<backend::arm64::FunctionRegionEmission> region_storage;
     std::span<const backend::arm64::FunctionRegionEmission> regions;
@@ -1181,7 +1465,7 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
         regions = region_storage;
     }
     backend::arm64::FunctionCodeObjectEmitter emitter{module, regions};
-    emitter.Emit();
+    if (!emitter.Emit()) return nullptr;
     perf_cg_detail.Stop();
     perf_cg.Stop();
     if (dump_ir) SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} emit-ready\n", func_start);
@@ -1198,7 +1482,7 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
         // half-direct translation or fail solely because direct linking was selected.
         // Re-emit the entire unit with the legacy slot leaf and allocate it
         // under the existing unrestricted arena policy.
-        emitter.Emit(false);
+        if (!emitter.Emit(false)) return nullptr;
         emitted_context = &emitter.Context();
         buffer_size = emitter.CurrentBufferSize();
         allocation = module->AllocCodeCache(buffer_size, false);
@@ -1299,6 +1583,9 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
                         .pending_flags_contract = pending_flags_contract,
                         .entry_flags = static_cast<u8>(
                                 entry_contract.Linkable() ? backend::SerialBlock::Linkable : 0),
+                        .continuation_code_offset = entry_contract.Continuation().code_offset,
+                        .pending_flags_continuation_code_offset =
+                                entry_contract.PendingFlagsContinuation().code_offset,
                 });
                 if (!module->GetModuleConfig().read_only) {
                     PerfScope2 perf_pub_smc{GetPerfStats2().publish_smc};
@@ -1423,9 +1710,14 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module,
                   std::span<ir::HIRFunction* const> functions) {
+    RetirementControl::Lease producer{module->GetRetirementControl(), RetirementControl::Kind::Producer};
+    if (!producer) return nullptr;
     ASSERT(!functions.empty());
+    for (auto* function : functions)
+        if (!function || function->HasStandaloneBlocks()) return nullptr;
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileFunctions(module, functions);
+    for (auto* function : functions) if (!SupportsArm64IR(function)) return nullptr;
     const auto features = ResolveBackendFeatures(module);
     PerfFixedCapture2 fixed_capture;
     std::vector<std::unique_ptr<FunctionRegionAllocation>> allocations;
@@ -1442,8 +1734,12 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
 }
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunction* function) {
+    RetirementControl::Lease producer{module->GetRetirementControl(), RetirementControl::Kind::Producer};
+    if (!producer) return nullptr;
+    if (!function || function->HasStandaloneBlocks()) return nullptr;
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileFunctions(module, std::span{&function, 1});
+    if (!SupportsArm64IR(function)) return nullptr;
     const auto features = ResolveBackendFeatures(module);
     PerfFixedCapture2 fixed_capture;
     FunctionRegionAllocation allocation;
@@ -1452,11 +1748,21 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
 }
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* block) {
+    RetirementControl::Lease producer{module->GetRetirementControl(), RetirementControl::Kind::Producer};
+    if (!producer) return nullptr;
     auto ir_block = block->GetBlock();
     auto block_start = ir_block->GetStartLocation().Value();
+    if (module->GetAddressSpace().GetConfig().backend_isa == kArm64 &&
+        !SupportsArm64IR(ir_block)) return nullptr;
+    // Function and Module use the same intrusive map hook. Detach before Push,
+    // and retain the Function owner until the module has taken its reference.
+    if (!block->BeginStandalonePublication()) return nullptr;
+    auto publication = ScopeExit([&] { block->AbortStandalonePublication(); });
     if (!module->Push(ir_block)) {
         return nullptr;
     }
+    block->CommitStandalonePublication();
+    publication.Cancel();
 
     auto guard = ir_block->LockWrite();
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
@@ -1469,12 +1775,24 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     const auto features = ResolveBackendFeatures(module);
     auto gprs{address_space.GetTrampolines().GetGPRRegs()};
     auto fprs{address_space.GetTrampolines().GetFPRRegs()};
+    const auto capacity = backend::arm64::ARM64StandaloneHIRCapacity(*ir_block);
+    if (!capacity) return nullptr;
     backend::RegAlloc reg_alloc{
-            static_cast<u32>(block->MaxInstrCount()), gprs, fprs, features,
+            *capacity, gprs, fprs, features,
             address_space.GetConfig().sse_afp_nan};
+    if (*capacity) {
+        ir::RegisterAllocPass::Run(ir_block, &reg_alloc,
+                address_space.GetConfig().sse_scalar_insert, features);
+    } else {
+        // The ordinary block collector rejects empty IR. Preserve its explicit
+        // initial compatibility path without admitting an unbound value.
+        reg_alloc.SetAllocationUnit(ir_block, nullptr, {});
+    }
+    if (!backend::arm64::CompleteARM64UnitForEmission(
+            module, reg_alloc, block->GetBlock(), nullptr)) return nullptr;
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
-    translator.Translate(block->GetBlock());
+    if (!translator.Translate(block->GetBlock())) return nullptr;
     auto buffer_size = context.CurrentBufferSize();
     backend::arm64::JitContext* emitted_context = &context;
     backend::arm64::JitTranslator* emitted_translator = &translator;
@@ -1484,7 +1802,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     if (allocation.first == backend::INVALID_CACHE_ID && context.RequiresRegionTrampoline()) {
         fallback_context.emplace(module, reg_alloc, false);
         fallback_translator.emplace(*fallback_context);
-        fallback_translator->Translate(block->GetBlock());
+        if (!fallback_translator->Translate(block->GetBlock())) return nullptr;
         emitted_context = &*fallback_context;
         emitted_translator = &*fallback_translator;
         buffer_size = emitted_context->CurrentBufferSize();
@@ -1517,8 +1835,11 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module,
                   const IntrusivePtr<ir::Block>& block) {
+    RetirementControl::Lease producer{module->GetRetirementControl(), RetirementControl::Kind::Producer};
+    if (!producer) return nullptr;
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileBlock(module, block.get());
+    if (!SupportsArm64IR(block.get())) return nullptr;
     auto& jit_state = block->GetJitCache();
 
     if (jit_state.jit_state == backend::JitState::Cached) {
@@ -1549,9 +1870,14 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     perf_ra_detail.Stop();
 
     PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};
+    {
+        PerfScope2 perf_complete{GetPerfStats2().codegen_complete};
+        if (!backend::arm64::CompleteARM64UnitForEmission(
+                module, reg_alloc, block.get(), nullptr)) return nullptr;
+    }
     backend::arm64::JitContext context{module, reg_alloc};
     backend::arm64::JitTranslator translator{context};
-    translator.Translate(block.get());
+    if (!translator.Translate(block.get())) return nullptr;
     perf_cg_detail.Stop();
     auto buffer_size = context.CurrentBufferSize();
     PerfScope2 perf_pub_total{GetPerfStats2().publish_total};
@@ -1564,7 +1890,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     if (allocation.first == backend::INVALID_CACHE_ID && context.RequiresRegionTrampoline()) {
         fallback_context.emplace(module, reg_alloc, false);
         fallback_translator.emplace(*fallback_context);
-        fallback_translator->Translate(block.get());
+        if (!fallback_translator->Translate(block.get())) return nullptr;
         emitted_context = &*fallback_context;
         emitted_translator = &*fallback_translator;
         buffer_size = emitted_context->CurrentBufferSize();

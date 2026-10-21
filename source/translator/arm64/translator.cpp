@@ -116,6 +116,9 @@ struct Arm64Instance::Impl final {
     }
 
     [[nodiscard]] void* Translate(LocationDescriptor pc) const {
+        backend::RetirementControl::Lease producer{
+                address_space->GetRetirementControl(), backend::RetirementControl::Kind::Producer};
+        if (!producer) return nullptr;
         auto module = address_space->GetModule(pc);
         auto& m_config = module->GetModuleConfig();
         const auto features = backend::ResolveFeatureSet(m_config);
@@ -321,11 +324,20 @@ struct Arm64Core::Impl final {
     }
 
     [[nodiscard]] ExitReason Run() {
+        backend::RetirementControl::Lease execution{
+                instance->impl->address_space->GetRetirementControl(), backend::RetirementControl::Kind::Execution};
+        if (!execution) return ExitReason::Retirement;
         // update backend location
         s_runtime->SetLocation(GetCPUContext()->pc);
         auto hr = HaltReason::None;
         while (hr == HaltReason::None) {
             hr = s_runtime->Run();
+            if (True(hr & HaltReason::RuntimeBusy)) {
+                return ExitReason::RuntimeBusy;
+            }
+            if (True(hr & HaltReason::Retirement)) {
+                return ExitReason::Retirement;
+            }
             // update frontend location
             auto pc = s_runtime->GetLocation();
             GetCPUContext()->pc = pc;
@@ -334,6 +346,8 @@ struct Arm64Core::Impl final {
                 // decodes the block into the module).
                 const bool jit = instance->impl->address_space->GetConfig().enable_jit;
                 auto* cache = Translate(pc);
+                if (instance->impl->address_space->GetRetirementControl()->IsClosed())
+                    return ExitReason::Retirement;
                 if (jit && !cache) {
                     return ExitReason::IllegalCode;
                 }

@@ -14,7 +14,7 @@ namespace swift::runtime::backend::arm64 {
 #define __ masm.
 
 bool JitTranslator::IsCanonicalTerminalEntry() const {
-    return cur_block && canonical_terminal_entries.contains(
+    return cur_block && CanonicalTerminalEntries().contains(
             cur_block->GetStartLocation().Value());
 }
 
@@ -26,7 +26,11 @@ bool JitTranslator::EmitCanonicalTerminalEdge(ir::Location target) {
     ++statistics.region_block_edges;
     statistics.region_block_local_branch_bytes += sizeof(u32);
     const u32 link_before = context.CurrentBufferSize();
-    __ B(context.GetLabel(target.Value()));
+    auto* cycle_exit = GetExternalCycleExit(target);
+    RecordExitPollFault(context.ForwardPublishedEntry(
+            target, cycle_exit, cycle_exit ? nullptr : GetTerminalRequestExit()),
+            cycle_exit ? cycle_exit : GetTerminalRequestExit(),
+            cycle_exit ? std::nullopt : std::optional<ir::Location>{target});
     RecordBoundaryRange(BoundarySubsequence::LinkTail,
                         link_before,
                         context.CurrentBufferSize());
@@ -75,9 +79,16 @@ void JitTranslator::EmitDispatcherTerminal(
 
 void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                                  LinkSiteKind direct_link_kind,
-                                 DirectLinkFlagsBypass flags_bypass) {
-    VisitVariant<void>(terminal, [this, direct_link_kind, flags_bypass](auto term) {
+                                 DirectLinkFlagsBypass flags_bypass,
+                                 bool canonical_transfer) {
+    VisitVariant<void>(terminal, [this, direct_link_kind, flags_bypass, canonical_transfer](auto term) {
         using T = std::decay_t<decltype(term)>;
+        if constexpr (!std::is_same_v<T, ir::terminal::If> &&
+                      !std::is_same_v<T, ir::terminal::Condition> &&
+                      !std::is_same_v<T, ir::terminal::Switch> &&
+                      !std::is_same_v<T, ir::terminal::CheckHalt>) {
+            if (canonical_transfer && FlagsRegsEnabled()) LoadNZCVFromFlags();
+        }
         if constexpr (!std::is_same_v<T, ir::terminal::Invalid> &&
                       !std::is_same_v<T, ir::terminal::ReturnToDispatch> &&
                       !std::is_same_v<T, ir::terminal::ExternalLinkBlock>) {
@@ -133,8 +144,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                                     self_target,
                                     direct_link_kind,
                                     local_flags_bypass.Valid() ? local_flags_bypass
-                                                              : flags_bypass),
-                    exit);
+                                                              : flags_bypass,
+                                    exit ? nullptr : GetTerminalRequestExit()),
+                    exit ? exit : GetTerminalRequestExit(),
+                    exit ? std::nullopt : std::optional<ir::Location>{term.next});
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
@@ -171,8 +184,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                                     self_target,
                                     direct_link_kind,
                                     local_flags_bypass.Valid() ? local_flags_bypass
-                                                              : flags_bypass),
-                    exit);
+                                                              : flags_bypass,
+                                    exit ? nullptr : GetTerminalRequestExit()),
+                    exit ? exit : GetTerminalRequestExit(),
+                    exit ? std::nullopt : std::optional<ir::Location>{term.next});
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
@@ -181,7 +196,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             // disable L1 consume RSB frames.
             const bool l1_enabled = context.GetFeatures().indirect_l1;
             const bool inline_l1_return = l1_enabled && dynamic_next_loc.has_value();
-            MergeNZCV(l1_enabled && !inline_l1_return
+            // The return key comparison clobbers PSTATE. A transparent
+            // callee tail can inherit pending NZCV from another region block,
+            // so commit it before either continuation or dispatcher traversal.
+            MergeNZCV(FlagsRegsEnabled() || (l1_enabled && !inline_l1_return)
                               ? FlagsRegsAuditMergeCause::TerminalDispatcher
                               : FlagsRegsAuditMergeCause::TerminalInternal,
                       l1_enabled ? FlagsRegsAuditEdgeKind::Dispatcher
@@ -205,7 +223,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                         : std::nullopt;
                 dynamic_next_loc.reset();
                 dynamic_location_miss = nullptr;
-                context.EmitRSBPop(actual_target);
+                context.EmitRSBPop(actual_target, GetTerminalRequestExit());
                 RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                     context.CurrentBufferSize());
             } else {
@@ -213,24 +231,35 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             }
         } else if constexpr (std::is_same_v<T, ir::terminal::If>) {
             if (EmitRegionIf(term,
-                             direct_link_kind == LinkSiteKind::Unconditional)) {
+                             direct_link_kind == LinkSiteKind::Unconditional,
+                             canonical_transfer)) {
                 return;
             }
             // One commit for both arms. MergeNZCV does not clobber host NZCV,
             // so a local b.cond can still read the cmp. Publishing per arm
             // doubled the AdvancePC merge we just removed.
+            const auto pending_mask = PendingNZCVMergeMask(
+                    FlagsRegsAuditMergeCause::TerminalDispatcher);
             const bool flags_bypassable =
                     CanBypassTerminalFlagsMerge(term.then_) &&
-                    CanBypassTerminalFlagsMerge(term.else_);
-            const auto local_flags_bypass = MergeNZCV(
-                    FlagsRegsAuditMergeCause::TerminalDispatcher,
-                    flags_audit_block_edge,
-                    flags_bypassable && !flag_state.flags_token_valid);
-            const auto branch_flags_bypass =
-                    flags_bypassable
-                            ? (local_flags_bypass.Valid() ? local_flags_bypass
-                                                         : flags_bypass)
-                            : DirectLinkFlagsBypass{};
+                    CanBypassTerminalFlagsMerge(term.else_) &&
+                    (!pending_mask || *pending_mask == static_cast<u64>(HostFlags::NZCV));
+            const auto local_flags_bypass = canonical_transfer
+                    ? DirectLinkFlagsBypass{}
+                    : MergeNZCV(FlagsRegsAuditMergeCause::TerminalDispatcher,
+                                flags_audit_block_edge,
+                                flags_bypassable && !flag_state.flags_token_valid);
+            const auto available_bypass = local_flags_bypass.Valid()
+                    ? local_flags_bypass : flags_bypass;
+            const auto branch_flags_bypass = flags_bypassable &&
+                    available_bypass.edge_flags.valid_nzcv_mask == kEdgeNZCVMask
+                    ? available_bypass : DirectLinkFlagsBypass{};
+            const bool canonical_edges = canonical_transfer ||
+                    (FlagsRegsEnabled() && !branch_flags_bypass.Valid());
+            if (branch_flags_bypass.Valid()) {
+                terminal_bypass_nzcv |= static_cast<HostFlags>(
+                        branch_flags_bypass.edge_flags.valid_nzcv_mask);
+            }
             flag_state.nzcv_dirty = false;
             flag_state.nzcv_requested = {};
             InvalidateFlagsToken();
@@ -245,22 +274,24 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             }
             EmitTerminal(term.then_,
                          LinkSiteKind::ConditionalThen,
-                         branch_flags_bypass);
+                         branch_flags_bypass, canonical_edges);
             __ Bind(&else_label);
             EmitTerminal(term.else_,
                          LinkSiteKind::ConditionalElse,
-                         branch_flags_bypass);
+                         branch_flags_bypass, canonical_edges);
         } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
             if (EmitRegionCondition(
                         term,
-                        direct_link_kind == LinkSiteKind::Unconditional)) {
+                        direct_link_kind == LinkSiteKind::Unconditional,
+                        canonical_transfer)) {
                 return;
             }
             DirectLinkFlagsBypass branch_flags_bypass{};
             if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
+                const bool complete_pstate = flag_state.nzcv_requested == HostFlags::NZCV;
                 const bool flags_bypassable =
                         CanBypassTerminalFlagsMerge(term.then_) &&
-                        CanBypassTerminalFlagsMerge(term.else_);
+                        CanBypassTerminalFlagsMerge(term.else_) && complete_pstate;
                 const auto local_flags_bypass = MergeNZCV(
                         FlagsRegsAuditMergeCause::TerminalDispatcher,
                         flags_audit_block_edge,
@@ -268,8 +299,20 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 if (flags_bypassable) {
                     branch_flags_bypass = local_flags_bypass;
                 }
+                if (!complete_pstate) LoadNZCVFromFlags();
             } else {
+                if (!canonical_transfer && FlagsRegsEnabled() &&
+                    BlockIsFlagsTransparent(cur_block)) {
+                    MergeNZCV(FlagsRegsAuditMergeCause::TerminalDispatcher,
+                              flags_audit_block_edge);
+                }
                 LoadNZCVFromFlags();
+            }
+            const bool canonical_edges = canonical_transfer ||
+                    (FlagsRegsEnabled() && !branch_flags_bypass.Valid());
+            if (branch_flags_bypass.Valid()) {
+                terminal_bypass_nzcv |= static_cast<HostFlags>(
+                        branch_flags_bypass.edge_flags.valid_nzcv_mask);
             }
             flag_state.nzcv_dirty = false;
             flag_state.nzcv_requested = {};
@@ -279,40 +322,54 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
             __ B(&else_label, static_cast<Condition>(static_cast<u8>(host_cond) ^ 1));
             EmitTerminal(term.then_,
                          LinkSiteKind::ConditionalThen,
-                         branch_flags_bypass);
+                         branch_flags_bypass, canonical_edges);
             __ Bind(&else_label);
             EmitTerminal(term.else_,
                          LinkSiteKind::ConditionalElse,
-                         branch_flags_bypass);
+                         branch_flags_bypass, canonical_edges);
         } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
             // Linear compare chain; each arm ends with its own terminal.
-            MergeNZCV(FlagsRegsAuditMergeCause::PStateClobber,
-                      flags_audit_block_edge);
+            if (!canonical_transfer) {
+                MergeNZCV(BlockIsFlagsTransparent(cur_block)
+                                  ? FlagsRegsAuditMergeCause::TerminalDispatcher
+                                  : FlagsRegsAuditMergeCause::PStateClobber,
+                          flags_audit_block_edge);
+            }
             // Cmp below clobbers host NZCV. Commit is done; do not let
             // terminal keep re-merge the switch key into x26.
             flag_state.nzcv_dirty = false;
             flag_state.nzcv_requested = {};
             auto value = context.R(term.value);
+            // Nested terminals can consume the original raw condition, which
+            // need not equal canonical x26 after a partial guest-flags save.
+            __ Mrs(ip, NZCV);
+            __ Str(ip, MemOperand(sp, -16, PreIndex));
             for (auto& case_ : term.cases) {
                 Label next_case;
                 __ Mov(ip, case_.case_value.Get());
                 __ Cmp(value, ip);
                 __ B(&next_case, ne);
-                EmitTerminal(case_.then, LinkSiteKind::SwitchArm);
+                __ Ldr(ip, MemOperand(sp, 16, PostIndex));
+                __ Msr(NZCV, ip);
+                EmitTerminal(case_.then, LinkSiteKind::SwitchArm, {}, true);
                 __ Bind(&next_case);
             }
             // No case matched: bail out to the dispatcher.
+            __ Ldr(ip, MemOperand(sp, 16, PostIndex));
+            if (FlagsRegsEnabled()) LoadNZCVFromFlags();
+            else __ Msr(NZCV, ip);
             context.RecordExecCounter(exec_offset_exit_indirect);
             context.ReturnHost();
         } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
             Label no_halt;
             __ Ldr(ipw, MemOperand(state, state_offset_halt_reason));
             __ Cbz(ipw, &no_halt);
+            if (canonical_transfer && FlagsRegsEnabled()) LoadNZCVFromFlags();
             MergeNZCV(FlagsRegsAuditMergeCause::HostExit,
                       FlagsRegsAuditEdgeKind::Host);
             context.ReturnHost();
             __ Bind(&no_halt);
-            EmitTerminal(term.else_, LinkSiteKind::CheckHalt);
+            EmitTerminal(term.else_, LinkSiteKind::CheckHalt, {}, canonical_transfer);
         } else {
             PANIC("Unknown terminal!");
         }
@@ -347,113 +404,21 @@ std::optional<Condition> JitTranslator::LocalConditionFor(ir::Value value) const
 }
 
 bool JitTranslator::LaterNeedsHostPstate(ir::Inst* from) const {
-    if (!local_conditions.empty()) {
-        return true;
-    }
-    bool seen = false;
-    for (auto& inst : cur_block->GetInstList()) {
-        if (!seen) {
-            seen = &inst == from;
-            continue;
-        }
-        switch (inst.GetOp()) {
-            case ir::OpCode::CondSet:
-            case ir::OpCode::CondSelect:
-            case ir::OpCode::LocalCondSet:
-            case ir::OpCode::FCmpCondSet:
-            case ir::OpCode::InvertCarry:
-            case ir::OpCode::Adc:
-            case ir::OpCode::Sbb:
-            case ir::OpCode::TestFlags:
-            case ir::OpCode::TestNotFlags:
-            case ir::OpCode::VecFCmp:
-            case ir::OpCode::PublishFCmpFlags:
-            case ir::OpCode::PublishSse42StrFlags:
-                return true;
-            default:
-                break;
-        }
-    }
-    bool needs = false;
-    std::function<void(const ir::Terminal&)> visit = [&](const ir::Terminal& terminal) {
-        VisitVariant<void>(terminal, [&](auto term) {
-            using T = std::decay_t<decltype(term)>;
-            if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
-                needs = true;
-            } else if constexpr (std::is_same_v<T, ir::terminal::If>) {
-                visit(term.then_);
-                visit(term.else_);
-            } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
-                visit(term.else_);
-            } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
-                for (const auto& arm : term.cases) {
-                    visit(arm.then);
-                }
-            }
-        });
-    };
-    visit(cur_block->GetTerminal());
-    return needs;
+    return !local_conditions.empty() || (gpr_plan->consumers && gpr_plan->consumers->later_pstate.contains(from));
 }
 
-bool JitTranslator::IsCompactFCmp(ir::Value value) {
-    return value.Def() && value.Def()->GetOp() == ir::OpCode::VecFCmp &&
-           value.Def()->GetArg<ir::Imm>(3).Get() != 0;
+bool JitTranslator::IsCompactFCmp(ir::Value value) const {
+    if (!value.Def() || value.Def()->GetOp() != ir::OpCode::VecFCmp ||
+        value.Def()->GetArg<ir::Imm>(3).Get() == 0) return false;
+    if (!gpr_plan->consumers) return true;
+    const auto found = gpr_plan->consumers->comparisons.find(value.Def());
+    return found == gpr_plan->consumers->comparisons.end() || !found->second.packed_relation;
 }
 
 bool JitTranslator::RecordLocalCondition(ir::Inst* inst, ir::Cond cond) {
-    if (inst->GetUses() != 1) {
-        return false;
-    }
-    auto& list = cur_block->GetInstList();
-    for (auto it = std::next(list.iterator_to(*inst)); it != list.end(); ++it) {
-        bool names = false;
-        for (auto value : it->GetValues()) {
-            names = names || value.Def() == inst;
-        }
-        if (!names) {
-            continue;
-        }
-        const bool supported =
-                (it->GetOp() == ir::OpCode::Goto ||
-                 it->GetOp() == ir::OpCode::NotGoto) &&
-                        it->GetArg<ir::Value>(0).Def() == inst ||
-                it->GetOp() == ir::OpCode::Select &&
-                        it->GetArg<ir::Value>(0).Def() == inst;
-        if (!supported) {
-            return false;
-        }
-        local_conditions.emplace(inst, MapCond(cond));
-        return true;
-    }
-
-    bool terminal_use = false;
-    std::function<void(const ir::Terminal&)> visit = [&](const ir::Terminal& terminal) {
-        VisitVariant<void>(terminal, [&](auto term) {
-            using T = std::decay_t<decltype(term)>;
-            if constexpr (std::is_same_v<T, ir::terminal::If>) {
-                if (term.cond.Def() == inst) {
-                    terminal_use = true;
-                }
-                visit(term.then_);
-                visit(term.else_);
-            } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
-                visit(term.then_);
-                visit(term.else_);
-            } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
-                visit(term.else_);
-            } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
-                for (const auto& arm : term.cases) {
-                    visit(arm.then);
-                }
-            }
-        });
-    };
-    visit(cur_block->GetTerminal());
-    if (terminal_use) {
-        local_conditions.emplace(inst, MapCond(cond));
-    }
-    return terminal_use;
+    if (!gpr_plan->consumers || !gpr_plan->consumers->local_conditions.contains(inst)) return false;
+    local_conditions.emplace(inst, MapCond(cond));
+    return true;
 }
 
 // A direct jmp/call decodes to SetLocation(imm) + ReturnToDispatcher, and the
@@ -474,11 +439,18 @@ bool JitTranslator::EmitStaticForward(LinkSiteKind direct_link_kind,
     const auto location = ir::Location{target};
     auto* cycle_exit = external_edge ? GetExternalCycleExit(location)
                                      : GetDirectCycleExit(location);
+    // Forward links emit no exit poll: any cycle through linked units
+    // contains a backward edge, and backward external edges poll through
+    // their direct cycle cut (cycle_exit) or the dispatcher. This edge
+    // therefore only delays exit observation by a bounded chain length.
+    Label* request_exit = nullptr;
+    const bool publish_frame = context.ContinuationActive() && direct_link_kind == LinkSiteKind::Call;
     const auto forwarded = external_edge && IsRegionInternalEdge(location)
             ? JitContext::StaticForwardResult{
-                      true, context.ForwardPublishedEntry(location, cycle_exit)}
+                      true, context.ForwardPublishedEntry(location, cycle_exit,
+                                                          request_exit, publish_frame)}
             : context.ForwardStatic(
-                      location, cycle_exit, direct_link_kind, flags_bypass);
+                      location, cycle_exit, direct_link_kind, flags_bypass, request_exit);
     RecordExitPollFault(forwarded.poll_fault, cycle_exit);
     if (forwarded.emitted) {
         static_next_loc.reset();
@@ -499,7 +471,7 @@ bool JitTranslator::EmitIndirectForward() {
     auto* miss = dynamic_location_miss;
     dynamic_location_miss = nullptr;
     const u32 link_before = context.CurrentBufferSize();
-    const auto fault = context.ForwardIndirectL1(location, miss);
+    const auto fault = context.ForwardIndirectL1(location, miss, GetTerminalRequestExit());
     memory_state.fault_metadata.push_back({
             .guest_start = cur_block->GetStartLocation().Value(),
             .host_begin = fault.begin,
@@ -531,7 +503,8 @@ bool JitTranslator::EmitContinuationForward() {
     const u32 link_before = context.CurrentBufferSize();
     const auto fault = context.ForwardContinuation(location,
                                                    mismatch_site.label.get(),
-                                                   dispatch_site.label.get());
+                                                   dispatch_site.label.get(),
+                                                   GetTerminalRequestExit());
     RecordDeferredFault(fault, dispatch_site.label.get(), FaultRecoveryKind::ExternalContinuation);
     RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                         context.CurrentBufferSize());
@@ -604,7 +577,8 @@ bool JitTranslator::EmitIndirectCallForward(bool pending_flags) {
         }
     }
     const u32 link_before = context.CurrentBufferSize();
-    const auto faults = context.ForwardIndirectCall(location, miss_site.label.get(), pending_flags);
+    const auto faults = context.ForwardIndirectCall(location, miss_site.label.get(), pending_flags,
+                                                    GetTerminalRequestExit());
     memory_state.fault_metadata.push_back({
             .guest_start = cur_block->GetStartLocation().Value(),
             .host_begin = faults.lookup_fault.begin,

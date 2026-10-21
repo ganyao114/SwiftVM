@@ -834,7 +834,7 @@ uint32_t CPUInfo::GetVlenb() const {
 }
 
 uint64_t CPUInfo::GetHighestVirtualAddress() const {
-#if defined(__riscv) && defined(__linux__)
+#if defined(__riscv) && defined(__linux__) && defined(SYS_riscv_hwprobe)
     riscv_hwprobe pairs[] = {
         {RISCV_HWPROBE_KEY_HIGHEST_VIRT_ADDRESS, 0},
     };

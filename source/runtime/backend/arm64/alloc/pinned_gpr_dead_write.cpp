@@ -45,7 +45,7 @@ ir::Inst* PublicationRoot(ir::Inst& store) {
 
 }  // namespace
 
-bool PinnedGPRAllocation::IsDeadPinnedGPRWrite(ir::Inst* inst) const {
+bool GPRPlanBuilder::IsDeadPinnedGPRWrite(ir::Inst* inst) const {
     ASSERT(block);
     if (!inst || inst->GetOp() != ir::OpCode::SetHostGPR ||
         (allocation.IsHostWriteCoalesced(inst->Id()) ||
@@ -68,27 +68,34 @@ bool PinnedGPRAllocation::IsDeadPinnedGPRWrite(ir::Inst* inst) const {
     return root && root->Id() > inst->Id();
 }
 
-void PinnedGPRAllocation::PrepareDeadPinnedGPRWrites(ir::Block* block) {
+void GPRPlanBuilder::PrepareDeadPinnedGPRWrites(ir::Block* block) {
     block_analysis.BuildWriteSuccessors(
             [&](ir::Inst& inst) {
                 return MayFaultOrObserve(inst) || IsWriteBoundary(inst.GetOp());
             },
             IsFullGPRWrite);
     StackVector<GuestStateMap::CoalescedWrite, 8> coalesced_writes;
-    std::unordered_set<ir::Inst*> published_versions;
+    // Published versions per block are few; linear membership
+    // avoids a hash set allocation for every prepared block.
+    StackVector<ir::Inst*, 16> published_versions;
+    const auto version_published = [&](ir::Inst* version) {
+        for (auto* item : published_versions)
+            if (item == version) return true;
+        return false;
+    };
+    const bool want_deadwrite =
+            GetSvmConfig().skip_prep.find("deadwrite") == std::string::npos;
     bool has_reused_publication = false;
     for (auto& inst : block->GetInstList()) {
         if (!has_reused_publication) {
             for (auto value : inst.GetValues()) {
-                if (value.Def() &&
-                    published_versions.contains(value.Def())) {
+                if (value.Def() && version_published(value.Def())) {
                     has_reused_publication = true;
                     break;
                 }
             }
         }
-        const bool dead = IsDeadPinnedGPRWrite(&inst) &&
-                GetSvmConfig().skip_prep.find("deadwrite") == std::string::npos;
+        const bool dead = want_deadwrite && IsDeadPinnedGPRWrite(&inst);
         if (dead) {
             recipes.dead_writes.insert(&inst);
         }
@@ -103,7 +110,7 @@ void PinnedGPRAllocation::PrepareDeadPinnedGPRWrites(ir::Block* block) {
         auto published = inst.GetArg<ir::Value>(0);
         if (!has_reused_publication && published.Def()) {
             auto* version = published.Def();
-            published_versions.insert(version);
+            published_versions.push_back(version);
             while (version &&
                    (version->GetOp() == ir::OpCode::ZeroExtend32 ||
                     version->GetOp() == ir::OpCode::ZeroExtend32To64 ||
@@ -111,7 +118,7 @@ void PinnedGPRAllocation::PrepareDeadPinnedGPRWrites(ir::Block* block) {
                 auto alias = version->GetArg<ir::Value>(0);
                 version = alias.Def();
                 if (version) {
-                    published_versions.insert(version);
+                    published_versions.push_back(version);
                 }
             }
         }

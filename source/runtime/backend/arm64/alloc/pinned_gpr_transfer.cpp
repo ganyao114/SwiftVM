@@ -82,8 +82,11 @@ std::optional<FixedGPRTransfer> MatchFixedGPRTransfer(
                 aliases.push_back(&consumer);
                 continue;
             }
-            if (consumer.Id() <= publication->Id() ||
-                CountAddressUses(consumer, definition) != uses) {
+            u32 full_width_uses = 0;
+            for (auto value : consumer.GetValues())
+                if (value.Def() == definition && ir::GetValueSizeByte(value.Type()) == sizeof(u64))
+                    ++full_width_uses;
+            if (consumer.Id() <= publication->Id() || full_width_uses != uses) {
                 return std::nullopt;
             }
             has_transferred_use = true;
@@ -112,8 +115,8 @@ std::optional<FixedGPRTransfer> MatchFixedGPRTransfer(
     };
 }
 
-std::optional<PinnedGPRAllocation::PinnedGPRValueTransfer>
-PinnedGPRAllocation::MatchPinnedGPRValueTransfer(ir::Inst* publication) const {
+std::optional<GPRPlanBuilder::PinnedGPRValueTransfer>
+GPRPlanBuilder::MatchPinnedGPRValueTransfer(ir::Inst* publication) const {
     ASSERT(block);
     if (!publication || recipes.dead_writes.contains(publication) ||
         allocation.NeedsFixedGPRPublication(publication->Id()) ||
@@ -121,7 +124,7 @@ PinnedGPRAllocation::MatchPinnedGPRValueTransfer(ir::Inst* publication) const {
     return MatchFixedGPRTransfer(publication, block_analysis, guest_state_map);
 }
 
-void PinnedGPRAllocation::PreparePinnedGPRValueTransfers(ir::Block* block) {
+void GPRPlanBuilder::PreparePinnedGPRValueTransfers(ir::Block* block) {
     for (auto& inst : block->GetInstList()) {
         auto candidate = MatchPinnedGPRValueTransfer(&inst);
         if (!candidate) {
@@ -130,6 +133,17 @@ void PinnedGPRAllocation::PreparePinnedGPRValueTransfers(ir::Block* block) {
         AssignLowView(candidate->read, candidate->source);
         AssignTransferredValue(candidate->read, candidate->target,
                                inst.Id() + 1, candidate->last_use);
+        // Plan the fixed transfer definition here, where the recipe is
+        // known, instead of re-deriving it from saved declarations in
+        // BindDeclaredGPRHomes; Bind's equivalence check then skips it.
+        // Bind only runs under target planning, so gate identically:
+        // builder-only callers must not observe fixed definitions.
+        if (allocation.TargetPlanning())
+        allocation.PlanFixedGPRDefinition(candidate->read->Id(), {
+                .home = candidate->source, .transferred_home = candidate->target,
+                .end = inst.Id(), .transfer = inst.Id(), .last_use = candidate->last_use,
+                .publication = inst.Id(), .owner = candidate->read->Id(),
+                .width = 8, .elided = true, .version = true});
         for (auto* alias : candidate->aliases) {
             AssignTransferredValue(alias, candidate->target,
                                    inst.Id() + 1, candidate->last_use);

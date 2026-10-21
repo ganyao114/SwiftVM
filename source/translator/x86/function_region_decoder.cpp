@@ -39,6 +39,7 @@ void FunctionRegionDecoder::DecodeBlock(LocationDescriptor address,
                                         ::swift::x86::DecodeStopKind stop_kind) {
     builder.SetCurBlock(block);
     ir::Assembler assembler{&builder};
+    assembler.EnableUniformBuilder(config.uniform_info, config.features, config.bound_backend);
     ::swift::x86::X64Decoder decoder{
             address,
             config.memory,

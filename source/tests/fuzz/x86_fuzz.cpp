@@ -1262,7 +1262,6 @@ TEST_CASE("Fuzz x86 alu") {
         env.EmitFlagPrefix(b);
         int n = env.RandInt(1, 3);
         FlagMask mask;
-        bool narrow_carry_op = false;
         for (int j = 0; j < n; ++j) {
             u8 group = env.Pick(std::vector<u8>{0, 1, 2, 3, 4, 5, 6, 7});  // add..cmp (test below)
             int width = env.Pick(std::vector<int>{8, 16, 32, 64});
@@ -1276,29 +1275,7 @@ TEST_CASE("Fuzz x86 alu") {
                 src = u8(env.RandInt(0, 7));
             }
             int form = env.RandInt(0, 9);
-            if ((group == 2 || group == 3) && width < 32 && !high_byte) {
-                // Narrow adc/sbb are exact except two irreducible boundaries:
-                // C is wrong for b == mask && cin == 1 and V for
-                // b == signmax && cin == 1 (no single host op yields all four
-                // flags there; the JIT merges NZCV wholesale per flag window,
-                // so the frontend cannot split the saves). Keep the operand
-                // off those boundaries via a filtered immediate.
-                const u64 mask_w = (u64(1) << width) - 1;
-                const u64 signmax_w = (u64(1) << (width - 1)) - 1;
-                u64 imm;
-                do {
-                    imm = env.PoolVal(width) & mask_w;
-                } while (imm == mask_w || imm == signmax_w);
-                // AF is also approximate for narrow adc/sbb (carry-in pre-folded
-                // into the subtrahend; exact needs a true Adcs/Sbcs). Mask it.
-                narrow_carry_op = true;
-                EmitAluRegImm(b, group, width, dst, imm, false);
-                continue;
-            }
             if (high_byte) {
-                if ((group == 2 || group == 3) && width == 8) {
-                    group = 5;  // see the narrow adc/sbb boundary note above
-                }
                 // High byte ops: reg-reg forms only.
                 if (env.RandInt(0, 4) == 0) {
                     EmitTestRegReg(b, width, dst, src, true);
@@ -1322,9 +1299,6 @@ TEST_CASE("Fuzz x86 alu") {
             }
         }
         env.EmitFlagCapture(b);
-        if (narrow_carry_op) {
-            mask.ah &= ~kAhAF;  // narrow adc/sbb AF residue; see decoder ArithWithFlags
-        }
         env.RunIteration(b.c, mask, "alu");
     }
     REQUIRE(env.failures == 0);
@@ -1820,6 +1794,15 @@ TEST_CASE("Fuzz regression low32 LEA view survives guest register publication") 
     REQUIRE(env.failures == 0);
 }
 
+TEST_CASE("early fixed homes survive low32 copy coalescing", "[pin-plan][regression]") {
+    FuzzEnv env;
+    env.InitRegs();
+    const std::vector<u8> body{0x66, 0x44, 0x01, 0xd3, 0xbe, 0x80, 0x00, 0x00, 0x00,
+                              0x48, 0x63, 0xde, 0xba, 0x49, 0x23, 0x52, 0x9c,
+                              0x9f, 0x41, 0x0f, 0x90, 0xc7};
+    env.RunIteration(body, FlagMask{}, "early-fixed-low32");
+}
+
 TEST_CASE("Fuzz x86 mov lea xchg extends") {
     FuzzEnv env;
     int iters = env.Iters(5000);
@@ -1888,6 +1871,20 @@ TEST_CASE("Fuzz x86 mov lea xchg extends") {
         env.EmitFlagCapture(b);
         env.RunIteration(b.c, FlagMask{}, "mov");
     }
+    REQUIRE(env.failures == 0);
+}
+
+TEST_CASE("xchg captures cannot replace a later immediate publication", "[pin-plan][regression]") {
+    FuzzEnv env;
+    env.InitRegs();
+    env.ctx->regs[kRdi].qword = 0x82dbe244676d23e5;
+    env.ctx->regs[kRdx].qword = 0x743f2986ad7a6ac6;
+    env.ctx->regs[kRsi].qword = 0x80;
+    env.ctx->regs[kR12].qword = 0xdedfb04e478eac03;
+    const std::vector<u8> body{0x41, 0x28, 0xf4, 0x41, 0x89, 0x75, 0xf0,
+                              0x48, 0x87, 0xfa, 0xbf, 0x39, 0x25, 0xeb, 0x23,
+                              0x4b, 0x89, 0x54, 0xdd, 0xf8, 0x9f, 0x41, 0x0f, 0x90, 0xc7};
+    env.RunIteration(body, FlagMask{}, "xchg-immediate-publication");
     REQUIRE(env.failures == 0);
 }
 
@@ -2184,20 +2181,7 @@ TEST_CASE("Fuzz x86 mixed sequences") {
                 case 0:  // alu reg-reg / reg-imm
                 case 1: {
                     u8 group = env.Pick(std::vector<u8>{0, 1, 2, 3, 4, 5, 6, 7});
-                    if ((group == 2 || group == 3) && width < 32) {
-                        // Narrow adc/sbb: exact except two irreducible
-                        // boundaries (C: b==mask&&cin==1, V: b==signmax&&cin==1;
-                        // see the alu family note) — keep operands clear. AF is
-                        // also approximate (carry-in pre-fold; see decoder).
-                        const u64 mask_w = (u64(1) << width) - 1;
-                        const u64 signmax_w = (u64(1) << (width - 1)) - 1;
-                        u64 imm;
-                        do {
-                            imm = env.PoolVal(width) & mask_w;
-                        } while (imm == mask_w || imm == signmax_w);
-                        mask.ah &= ~kAhAF;
-                        EmitAluRegImm(b, group, width, env.RandReg(), imm, false);
-                    } else if (env.RandInt(0, 1)) {
+                    if (env.RandInt(0, 1)) {
                         EmitAluRegReg(b, group, width, env.RandReg(), env.RandReg());
                     } else {
                         EmitAluRegImm(b,

@@ -1,9 +1,13 @@
 #include "compile.h"
+#include "native_call_arity.h"
+#include "pair_pseudo_producer.h"
 #include "function.h"
 #include "runtime/backend/riscv64/link.h"
 
 #include <unordered_set>
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <vector>
 #include "runtime/backend/address_space.h"
@@ -11,11 +15,132 @@
 #include "runtime/common/variant_util.h"
 #include "runtime/ir/opts/const_folding_pass.h"
 #include "runtime/ir/opts/deadcode_elimination_pass.h"
+#include "runtime/ir/opts/flags_elimination_pass.h"
 
 namespace swift::runtime::backend::riscv64 {
 
 namespace {
 using Definitions = std::unordered_set<ir::Inst*>;
+
+bool ScalarFlagValue(ir::Value value) {
+    return value.Type() != ir::ValueType::VOID && !ir::IsFloatValueType(value.Type()) &&
+           ir::GetValueSizeByte(value.Type()) <= 8;
+}
+
+// An entry poll sees incoming flags; the terminal sees all final flags. No
+// instruction between those boundaries may expose a partially executed unit.
+bool PureScalarFlags(const Module& module, const ir::Block* block) {
+    const auto terminal_safe = [&](const auto& recurse, const ir::Terminal& terminal) -> bool {
+        return VisitVariant<bool>(terminal, [&](const auto& term) -> bool {
+            using T = std::decay_t<decltype(term)>;
+            if constexpr (std::is_same_v<T, ir::terminal::ReturnToHost> ||
+                          std::is_same_v<T, ir::terminal::ReturnToDispatch> ||
+                          std::is_same_v<T, ir::terminal::LinkBlock> ||
+                          std::is_same_v<T, ir::terminal::LinkBlockFast>) return true;
+            else if constexpr (std::is_same_v<T, ir::terminal::Condition>)
+                return recurse(recurse, term.then_) && recurse(recurse, term.else_);
+            else if constexpr (std::is_same_v<T, ir::terminal::If>)
+                return ScalarFlagValue(term.cond) && recurse(recurse, term.then_) && recurse(recurse, term.else_);
+            else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
+                if (!ScalarFlagValue(term.value)) return false;
+                for (const auto& item : term.cases) if (!recurse(recurse, item.then)) return false;
+                return true;
+            } else return false;
+        });
+    };
+    if (!terminal_safe(terminal_safe, block->GetTerminal())) return false;
+    for (auto& inst : block->GetInstList()) {
+        using O = ir::OpCode;
+        switch (inst.GetOp()) {
+            case O::Nop: case O::AdvancePC: case O::LoadImm: case O::Zero:
+            case O::LoadUniform: case O::StoreUniform: case O::BitCast:
+            case O::GetResult: case O::GetOperand:
+            case O::Add: case O::Sub: case O::Mul: case O::MulHigh:
+            case O::And: case O::Or: case O::Xor: case O::AndNot:
+            case O::LslImm: case O::LsrImm: case O::AsrImm: case O::RorImm:
+            case O::LslValue: case O::LsrValue: case O::AsrValue: case O::RorValue:
+            case O::SignExtend: case O::ZeroExtend32: case O::ZeroExtend32To64: case O::ZeroExtend64:
+            case O::TestZero: case O::TestNotZero: case O::TestBit:
+            case O::GetFlags: case O::SaveFlags: case O::TestFlags: case O::TestNotFlags:
+            case O::ClearFlags: case O::SetCarry: case O::SetOverflow: case O::InvertCarry:
+            case O::CondSet: case O::LocalCondSet: case O::CondSelect: break;
+            default: return false;
+        }
+        if (inst.GetOp() == O::SaveFlags) {
+            const auto value = inst.GetArg<ir::Value>(0);
+            const auto producer = value.Def()->GetOp();
+            // The portable pass treats its mask as definite writes. Native
+            // RV flags deliberately preserve undefined AF/CV for producers
+            // that do not calculate them; those masks cannot be admitted.
+            auto definite = ir::Flags::Negate | ir::Flags::Zero | ir::Flags::Parity;
+            if (producer == O::Add || producer == O::Sub) definite = ir::Flags::All;
+            else if (producer == O::And || producer == O::Or || producer == O::Xor ||
+                     producer == O::AndNot || (producer == O::Mul && ir::GetValueSizeByte(value.Type()) < 8))
+                definite |= ir::Flags::CV;
+            if (True(inst.GetArg<ir::Flags>(1) & ~definite)) return false;
+        }
+        if (inst.ReturnType() != ir::ValueType::VOID &&
+            (ir::IsFloatValueType(inst.ReturnType()) || ir::GetValueSizeByte(inst.ReturnType()) > 8))
+            return false;
+        for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
+            auto& arg = inst.ArgAt(slot);
+            // ArgAt indexes physical slots: Operand's two values are already
+            // visited separately, unlike GetArg's logical Operand view.
+            if (arg.IsValue() && !ScalarFlagValue(arg.Get<ir::Value>())) return false;
+            if (arg.GetType() == ir::ArgType::Flags && True(arg.Get<ir::Flags>() & ~ir::Flags::All))
+                return false;
+            if (arg.GetType() == ir::ArgType::Uniform) {
+                const auto& uniform = arg.Get<ir::Uniform>();
+                const auto type = uniform.GetType();
+                if (type == ir::ValueType::VOID || ir::IsFloatValueType(type)) return false;
+                if (ir::GetValueSizeByte(type) > 8) return false;
+                // Native accesses follow the value/return width, not the
+                // declared Uniform width. A narrow declaration cannot prove
+                // a wider access near the buffer end non-faulting.
+                const auto access_type = inst.GetOp() == O::StoreUniform
+                        ? inst.GetArg<ir::Value>(1).Type() : inst.ReturnType();
+                if (access_type == ir::ValueType::VOID || ir::IsFloatValueType(access_type)) return false;
+                const auto width = ir::GetValueSizeByte(access_type);
+                const auto capacity = module.GetAddressSpace().GetConfig().uniform_buffer_size;
+                if (width > 8 || uniform.GetOffset() > capacity || width > capacity - uniform.GetOffset())
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Static emission accounting only. This is deliberately cold and opt-in:
+// opcode bytes are not an execution profile or a PMU measurement.
+bool EmissionProfileEnabled() {
+    const auto& config = GetSvmConfig();
+    return config.prof_is_set && std::atoi(config.prof.c_str()) >= 2;
+}
+
+void ReportEmission(bool enabled, const ir::Block* original,
+                    const JitTranslator& translator, u32 host_bytes) {
+    if (!enabled) return;
+    const auto& stats = translator.Stats();
+    u32 instructions{};
+    std::array<u32, static_cast<size_t>(ir::OpCode::BASE_COUNT)> counts{};
+    for (const auto& inst : translator.EmittedIR()->GetInstList()) {
+        ++instructions;
+        ++counts[static_cast<size_t>(inst.GetOp())];
+    }
+    std::fprintf(stderr,
+                 "[rv64-emission] guest=%#llx host_bytes=%u ir_insts=%u direct=%u helpers=%u "
+                 "frame_bytes=%u saved_gprs=%u saved_fprs=%u\n",
+                 static_cast<unsigned long long>(original->GetStartLocation().Value()),
+                 host_bytes, instructions, stats.direct, stats.helpers, stats.frame_size,
+                 stats.saved_gprs, stats.saved_fprs);
+    for (size_t opcode = 0; opcode < stats.bytes.size(); ++opcode) {
+        if (!stats.bytes[opcode]) continue;
+        std::fprintf(stderr, "[rv64-opbytes] guest=%#llx op=%s count=%u bytes=%u\n",
+                     static_cast<unsigned long long>(original->GetStartLocation().Value()),
+                     ir::GetIRMetaInfo(static_cast<ir::OpCode>(opcode)).name,
+                     counts[opcode], stats.bytes[opcode]);
+    }
+}
 
 void AppendDependencies(std::vector<SerialBlock>& blocks, const ir::Block* block) {
     for (const auto& dependency : block->GetGuestCodeDependencies()) {
@@ -50,10 +175,17 @@ void VerifyTerminal(const ir::Terminal& terminal, const Definitions& definitions
 
 void Prepare(const Module& module, ir::Block* block, ir::HIRFunction* hir = nullptr,
              const Definitions* function_definitions = nullptr) {
+    const auto& config = module.GetModuleConfig();
+    const bool flags_enabled = config.HasOpt(Optimizations::FlagElimination);
+    bool has_barrier{};
     Definitions local;
     if (!function_definitions) for (auto& inst : block->GetInstList()) local.insert(&inst);
     const auto& definitions = function_definitions ? *function_definitions : local;
     for (auto& inst : block->GetInstList()) {
+        VerifyNativeCallContracts(inst);
+        // ConstFolding rewrites arithmetic/argument references, never this
+        // zero-argument observer. DCE runs after the flags admission gate.
+        if (flags_enabled && inst.GetOp() == ir::OpCode::MemoryBarrierTSO) has_barrier = true;
         const auto check = [&](ir::Value value) {
             if (!definitions.contains(value.Def()))
                 throw std::runtime_error("RV64 function block has a cross-block SSA input");
@@ -67,13 +199,17 @@ void Prepare(const Module& module, ir::Block* block, ir::HIRFunction* hir = null
         }
     }
     VerifyTerminal(block->GetTerminal(), definitions);
-    const auto& config = module.GetModuleConfig();
     const auto features = ResolveFeatureSet(config);
     // Keep architectural uniforms and flag producers canonical. The ARM64
     // uniform/allocator pipeline installs host-register reads that helpers
     // cannot execute and uses a different pinned-register ABI.
     if (config.HasOpt(Optimizations::ConstantFolding))
         ir::ConstFoldingPass::Run(block, features);
+    if (flags_enabled && !has_barrier && PureScalarFlags(module, block)) {
+        auto scalar_features = features;
+        scalar_features.flags_branch_only = false;
+        ir::FlagsEliminationPass::Run(block, hir, scalar_features, ir::Flags::All);
+    }
     if (config.HasOpt(Optimizations::DeadCodeRemove))
         ir::DeadCodeEliminationPass::Run(block, hir);
     // HIR's use table is indexed by function-wide IDs. Keep those IDs intact
@@ -115,15 +251,6 @@ void Publish(const std::shared_ptr<Module>& module, ir::Block* block,
     (void)module->PublishLinkTarget(block->GetStartLocation(), entry, buffer.exec_data);
     if (!module->GetModuleConfig().read_only) {
         if (!owner) owner = block;
-        u64 decoded_size{};
-        for (auto& inst : block->GetInstList()) {
-            if (inst.GetOp() == ir::OpCode::AdvancePC)
-                decoded_size += inst.GetArg<ir::Imm>(0).Get();
-        }
-        if (decoded_size)
-            block->SetEndLocation(block->GetStartLocation() + decoded_size);
-        else if (block->GetEndLocation().Value() <= block->GetStartLocation().Value())
-            block->SetEndLocation(block->GetStartLocation() + 1);
         module->GetAddressSpace().GetSmcTracker().RegisterNode(
                 module, owner, block->GetStartLocation().Value(), block->GetEndLocation().Value());
         for (const auto& dependency : block->GetGuestCodeDependencies())
@@ -135,13 +262,28 @@ void Publish(const std::shared_ptr<Module>& module, ir::Block* block,
 }  // namespace
 
 void* CompileBlock(const std::shared_ptr<Module>& module, ir::Block* block) {
+    RetirementControl::Lease producer{module->GetRetirementControl(), RetirementControl::Kind::Producer};
+    if (!producer) return nullptr;
     if (block->GetJitCache().jit_state == JitState::Cached)
         return module->GetJitCache(block->GetJitCache());
+    const bool emission_profile = EmissionProfileEnabled();
     Prepare(*module, block);
+    // Freeze the decoded extent before WidePlan clones the IR and instruction
+    // resume captures its completion PC and identity. Publication must not
+    // mutate that identity, including for read-only modules that skip SMC.
+    u64 decoded_size{};
+    for (const auto& inst : block->GetInstList())
+        if (inst.GetOp() == ir::OpCode::AdvancePC)
+            decoded_size += inst.GetArg<ir::Imm>(0).Get();
+    if (decoded_size)
+        block->SetEndLocation(block->GetStartLocation() + decoded_size);
+    else if (block->GetEndLocation().Value() <= block->GetStartLocation().Value())
+        block->SetEndLocation(block->GetStartLocation() + 1);
     JitContext context{true, HostFeatures::Detect(), module->GetAddressSpace().GetConfig().buffers_static_alloc};
     context.ConfigureModule(module.get());
     JitTranslator translator{context};
     translator.Translate(block);
+    ReportEmission(emission_profile, block, translator, context.CurrentBufferSize());
     auto [id, buffer] = module->AllocCodeCache(context.CurrentBufferSize());
     if (id == INVALID_CACHE_ID) return nullptr;
     context.Flush(buffer);
@@ -151,10 +293,12 @@ void* CompileBlock(const std::shared_ptr<Module>& module, ir::Block* block) {
     }
     module->RetainCodeIR(buffer.exec_data, block);
     if (translator.EmittedIR() != block) module->RetainCodeIR(buffer.exec_data, translator.EmittedIR());
+    if (auto descriptor = translator.InstructionResume()) module->RegisterInstructionResume(buffer.exec_data, std::move(descriptor));
     Publish(module, block, buffer, id, 0, buffer.size, translator.RecoveryOffset());
     std::vector<SerialBlock> blocks{{block->GetStartLocation().Value(), block->GetEndLocation().Value(), 0}};
     AppendDependencies(blocks, block);
-    RecordCode(module, buffer, block->GetStartLocation().Value(), false, std::move(blocks), context.LinkSites());
+    if (!translator.InstructionResume())
+        RecordCode(module, buffer, block->GetStartLocation().Value(), false, std::move(blocks), context.LinkSites());
     // Helpers retaining IR stay owned by the module; the serializer rejects
     // their process-local literals while ordinary native units remain cacheable.
     return buffer.exec_data;
@@ -162,6 +306,11 @@ void* CompileBlock(const std::shared_ptr<Module>& module, ir::Block* block) {
 
 void* CompileFunctions(const std::shared_ptr<Module>& module,
                        std::span<ir::HIRFunction* const> functions) {
+    RetirementControl::Lease producer{module->GetRetirementControl(), RetirementControl::Kind::Producer};
+    if (!producer) return nullptr;
+    if (functions.empty()) return nullptr;
+    for (auto* function : functions)
+        if (!function || function->HasStandaloneBlocks()) return nullptr;
     if (functions.size() > 1) {
         void* first{};
         for (auto* function : functions) {
@@ -172,6 +321,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
         return first;
     }
     struct Entry { ir::Block* block; ir::Function* owner; u32 offset; u32 size; u32 recovery; };
+    const bool emission_profile = EmissionProfileEnabled();
     JitContext context{true, HostFeatures::Detect(), module->GetAddressSpace().GetConfig().buffers_static_alloc};
     context.ConfigureModule(module.get());
     std::vector<Entry> entries;
@@ -214,6 +364,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
             JitTranslator translator{context};
             translator.SetFunctionExits(std::move(plan.exits), std::move(plan.halt_checks));
             translator.Translate(plan.body.get());
+            ReportEmission(emission_profile, plan.body.get(), translator, context.CurrentBufferSize());
             auto [id, buffer] = module->AllocCodeCache(context.CurrentBufferSize());
             if (id == INVALID_CACHE_ID) return nullptr;
             context.Flush(buffer);
@@ -259,6 +410,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
             const auto offset = context.CurrentBufferSize();
             JitTranslator translator{context};
             translator.Translate(block);
+            ReportEmission(emission_profile, block, translator, context.CurrentBufferSize() - offset);
             if (translator.EmittedIR() != block) wide_owners.emplace_back(translator.EmittedIR());
             entries.push_back({block, function->GetFunction(), offset, context.CurrentBufferSize() - offset,
                                translator.RecoveryOffset() - offset});

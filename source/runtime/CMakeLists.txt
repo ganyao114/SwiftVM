@@ -82,10 +82,10 @@ add_library(swift_runtime STATIC
         ir/opts/register_alloc_coalesce_gpr.cpp
         ir/opts/register_alloc_coalesce_copy.cpp
         ir/opts/register_alloc_coalesce_fpr.cpp
-        ir/opts/register_alloc_const_address.cpp
         ir/opts/register_alloc_pass.cpp
         ir/opts/register_alloc_pass.h
         ir/opts/register_alloc_internal.h
+        ir/opts/register_alloc_cfg_liveness.cpp
         ir/opts/register_alloc_spill_reload.cpp
         ir/opts/register_alloc_spill_reload.h
         ir/opts/register_alloc_verified.inc
@@ -118,6 +118,10 @@ add_library(swift_runtime STATIC
         backend/interrupt_poll_state.cpp
         backend/interrupt_poll_state.h
         backend/address_space.cpp
+        backend/fault_catalog.cpp
+        backend/retirement_control.cpp
+        backend/restricted_instruction_resume.cpp
+        backend/restricted_instruction_resume.h
         backend/address_space.h
         backend/function_entry_contract.cpp
         backend/function_entry_contract.h
@@ -142,6 +146,27 @@ add_library(swift_runtime STATIC
         backend/mem_map.cpp
         backend/mem_map.h
         backend/reg_alloc_gpr_locations.cpp
+        backend/arm64/alloc/gpr_allocation_plan.cpp
+        backend/arm64/alloc/target_allocation_planner.cpp
+        backend/arm64/alloc/target_analysis_traits.cpp
+        backend/arm64/alloc/integer_branch_plan.cpp
+        backend/arm64/alloc/region_preparation_plan.cpp
+        backend/arm64/alloc/gpr_plan_verifier.cpp
+        backend/arm64/alloc/gpr_width_verifier.cpp
+        backend/arm64/alloc/scalar_fpr_publication_plan.cpp
+        backend/arm64/alloc/fpr_allocation_plan.cpp
+        backend/arm64/alloc/memory_lowering_plan.cpp
+        backend/arm64/alloc/boolean_select_plan.cpp
+        backend/arm64/alloc/narrow_bit_plan.cpp
+        backend/arm64/alloc/consumer_plan.cpp
+        backend/arm64/alloc/flags_token_plan.cpp
+        backend/arm64/alloc/region_pfaf_plan.cpp
+        backend/arm64/alloc/narrow_integer_flags_plan.cpp
+        backend/arm64/alloc/pstate_facts.cpp
+        backend/arm64/alloc/backedge_flags_plan.cpp
+        backend/arm64/alloc/zero_store_verifier.cpp
+        backend/arm64/alloc/edge_flags_analysis.cpp
+        backend/arm64/alloc/pseudo_flags_plan.cpp
         backend/gpr_value_facts.h
         backend/reg_alloc.cpp
         backend/reg_alloc.h
@@ -187,7 +212,6 @@ add_library(swift_runtime STATIC
         backend/arm64/jit/translator_select.cpp
         backend/arm64/jit/translator_alu_vec_fp.cpp
         backend/arm64/jit/translator_alu_scalar_bits.cpp
-        backend/arm64/jit/translator_const_address.cpp
         backend/arm64/jit/translator_control.cpp
         backend/arm64/jit/translator_sse42str_call.cpp
         backend/arm64/jit/translator_sse42str.cpp
@@ -197,8 +221,7 @@ add_library(swift_runtime STATIC
         backend/arm64/jit/translator_compound_flags.cpp
         backend/arm64/jit/translator_dead_edge_branch.cpp
         backend/arm64/jit/translator_narrow_flags_input.cpp
-        backend/arm64/jit/translator_narrow_compare.cpp
-        backend/arm64/jit/translator_narrow_carry.cpp
+        backend/arm64/jit/translator_narrow_integer_flags.cpp
         backend/arm64/alloc/pinned_gpr_dead_write.cpp
         backend/arm64/alloc/pinned_gpr_copy.cpp
         backend/arm64/alloc/pinned_gpr_transfer.cpp
@@ -209,7 +232,6 @@ add_library(swift_runtime STATIC
         backend/arm64/jit/translator_pinned_load_update.cpp
         backend/arm64/jit/translator_pinned_memory.cpp
         backend/arm64/jit/translator_narrow_extract.cpp
-        backend/arm64/jit/translator_funnel_shift.cpp
         backend/arm64/jit/scalar_fpr_liveness.cpp
         backend/arm64/jit/scalar_fpr_liveness.h
         backend/arm64/jit/resident_scalar_fpr_analysis.cpp
@@ -248,6 +270,8 @@ add_library(swift_runtime STATIC
         backend/riscv64/jit/translator_host.cpp
         backend/riscv64/jit/translator_phi.cpp
         backend/riscv64/jit/translator.cpp
+        backend/riscv64/jit/retirement_phase_plan.cpp
+        backend/riscv64/jit/retirement_phase_plan.h
         backend/riscv64/jit/translator_scalar_bits.cpp
         backend/riscv64/jit/translator_flags.cpp
         backend/riscv64/jit/translator_memory.cpp
@@ -284,8 +308,8 @@ add_library(swift_runtime STATIC
 # GCC requires the AArch64 crypto extension at compile time before its
 # vsha256* intrinsics can be inlined. The x86 SHA frontend already gates
 # execution on the runtime host feature; this option only makes the existing
-# interpreter implementation buildable on Linux and leaves macOS unchanged.
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND "arm64" IN_LIST ARCHITECTURE)
+# interpreter implementation buildable on Linux/Android and leaves macOS unchanged.
+if (CMAKE_SYSTEM_NAME MATCHES "^(Linux|Android)$" AND "arm64" IN_LIST ARCHITECTURE)
     set_source_files_properties(
             backend/interp/interpreter_vector_crypto.cpp
             PROPERTIES COMPILE_OPTIONS "-march=armv8-a+crypto")

@@ -18,6 +18,7 @@ public:
     std::optional<CallHost> GetCallHost(HostFunction* func, ISA frontend) override;
 
 private:
+    void RevokeHostCallAliases() override { call_host_trampolines.clear(); }
     void Build();
 
     void BuildRuntimeEntry(MacroAssembler &assembler);
@@ -30,8 +31,6 @@ private:
 
     void BuildRestoreStaticUniform(MacroAssembler &assembler);
 
-    void *BuildFunctionTrampoline(MacroAssembler &assembler, HostFunction *func, ISA frontend_isa);
-
     static void CallHostTrampoline(TrampolinesArm64 *thiz, State *ctx);
 
     Label label_runtime_entry;
@@ -42,7 +41,6 @@ private:
     Label label_indirect_l1_miss;
     const FeatureSet features;
     std::unordered_map<LocationDescriptor, CallHost> call_host_trampolines{};
-    std::unordered_map<u64, void *> signature_trampolines{};
 };
 
 }  // namespace swift::runtime::backend::arm64

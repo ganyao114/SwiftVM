@@ -17,9 +17,11 @@
 #endif
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include "aarch64/disasm-aarch64.h"
 #include "runtime/common/svm_config.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/region_link_trampoline.h"
+#include "runtime/backend/arm64/alloc/edge_flags_analysis.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/link_manager.h"
 #include "runtime/backend/runtime.h"
@@ -307,10 +309,17 @@ void SetSelector(Runtime& runtime, u64 selector) {
 std::atomic_bool g_arm_ring_fault{};
 std::atomic_bool g_ring_fault_completed{};
 std::atomic<u64> g_ring_b_entries{};
+std::atomic_bool g_ring_pause_count{};
+std::atomic_bool g_ring_count_paused{};
+std::atomic_bool g_ring_resume_count{};
 std::atomic<u8*> g_ring_fault_address{};
 std::atomic<u64> g_conditional_selector{};
 
 u64 RingTargetCheck() {
+    if (g_ring_pause_count.exchange(false, std::memory_order_seq_cst)) {
+        g_ring_count_paused.store(true, std::memory_order_seq_cst);
+        while (!g_ring_resume_count.load(std::memory_order_acquire)) std::this_thread::yield();
+    }
     g_ring_b_entries.fetch_add(1, std::memory_order_seq_cst);
     if (g_arm_ring_fault.exchange(false, std::memory_order_seq_cst)) {
         auto* address = g_ring_fault_address.load(std::memory_order_acquire);
@@ -625,6 +634,31 @@ u32 LoadInsn(const void* address) {
     return instruction;
 }
 
+void RequireStaticRequestPoll(const u8* begin, const u8* link) {
+    using namespace vixl::aarch64;
+    if (link - begin == 6 * sizeof(u32)) {
+        REQUIRE(LoadInsn(begin) == 0xd51b421au); // MSR NZCV, x26 after branch selection.
+        begin += sizeof(u32);
+    }
+    REQUIRE(link - begin == 5 * sizeof(u32));
+    Decoder decoder;
+    Disassembler disassembler;
+    decoder.AppendVisitor(&disassembler);
+    constexpr std::array<std::string_view, 5> mnemonics{
+            "ldarb ", "cbz ", "mov ", "str ", "b "};
+    for (size_t i = 0; i < mnemonics.size(); ++i) {
+        const auto* instruction = reinterpret_cast<const Instruction*>(begin + i * sizeof(u32));
+        decoder.Decode(instruction);
+        const std::string_view text{disassembler.GetOutput()};
+        CAPTURE(text);
+        REQUIRE(text.starts_with(mnemonics[i]));
+    }
+    const auto* resume = reinterpret_cast<const Instruction*>(begin + 1 * sizeof(u32));
+    REQUIRE(resume->GetImmPCOffsetTarget() == reinterpret_cast<const Instruction*>(link));
+    const auto* exit = reinterpret_cast<const Instruction*>(link - sizeof(u32));
+    REQUIRE(exit->GetImmPCOffsetTarget() > reinterpret_cast<const Instruction*>(link));
+}
+
 bool ContainsInsn(const u8* begin, size_t size, u32 expected) {
     for (size_t offset = 0; offset + sizeof(u32) <= size; offset += sizeof(u32)) {
         if (LoadInsn(begin + offset) == expected) {
@@ -834,7 +868,11 @@ TEST_CASE("direct SCC descending edge observes a pending interrupt",
                                site.record.guest_target == guest_b;
                     });
             REQUIRE(site_a != sites_a.end());
-            REQUIRE_FALSE(ContainsInsn(
+            // DN3: with the backedge latch on, terminal polls are
+            // fault-only latch loads too (they were ldarb+cbz), so
+            // the ascending edge carries the same poll load; the
+            // descending edge below must still carry one as well.
+            REQUIRE(ContainsInsn(
                     code_a,
                     static_cast<size_t>(site_a->rx - code_a),
                     kInterruptPollLoad));
@@ -1078,7 +1116,7 @@ TEST_CASE("production conditional terminal links and delinks both arms independe
         REQUIRE(else_site != sites.end());
         REQUIRE(then_site->record.kind == LinkSiteKind::ConditionalThen);
         REQUIRE(else_site->record.kind == LinkSiteKind::ConditionalElse);
-        REQUIRE(then_site->rx + sizeof(u32) == else_site->rx);
+        RequireStaticRequestPoll(then_site->rx + sizeof(u32), else_site->rx);
         const auto* trampoline = region->rx_base + region->trampoline_offset;
         REQUIRE(DecodeBranchTarget(then_site->rx, LoadInsn(then_site->rx)) ==
                 reinterpret_cast<uintptr_t>(trampoline));
@@ -1297,6 +1335,168 @@ TEST_CASE("production direct links bypass a shared full flags merge",
     REQUIRE(munmap(guest_memory, guest_size) == 0);
 #else
     SUCCEED("production flags bypass execution requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("switch arms preserve guest flags and raw predicates",
+          "[direct-link][production][conditional][flags]") {
+#if defined(__aarch64__)
+    ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
+    for (const unsigned layout : {0u, 1u, 2u}) for (const unsigned predicate_kind : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u}) {
+        const bool region = layout != 0;
+        const bool internal = layout == 2;
+        const bool raw_predicate = predicate_kind != 0;
+        const bool floating_predicate = predicate_kind >= 3 && predicate_kind <= 5;
+        Config config{
+                .loc_start = 0x1000,
+                .loc_end = 0x4000,
+                .enable_jit = true,
+                .backend_isa = kArm64,
+                .uniform_buffer_size = 64,
+                .global_opts = Optimizations::BlockLink | Optimizations::ReturnStackBuffer,
+                .region_edges = true,
+        };
+        AddressSpace space{config};
+        auto module = space.GetDefaultModule();
+        if (!internal) for (const auto [guest, fingerprint] :
+             {std::pair{u64{0x2000}, u64{0x1111}}, std::pair{u64{0x3000}, u64{0x2222}}}) {
+            auto target = BuildTarget(guest, fingerprint);
+            auto* code = TranslateIR(module, target);
+            REQUIRE(code != nullptr);
+            space.PushCodeCache(Location{guest}, code);
+        }
+        HIRBuilder builder{1, true};
+        auto* function = builder.AppendFunction(Location{0x1000}, Location{internal ? 0x3001u : region ? 0x1002u : 0x1001u});
+        if (region) {
+            auto* body = builder.LinkBlock(terminal::LinkBlock{Location{0x1001}});
+            builder.SetCurBlock(body);
+        }
+        const auto selector = function->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+        Value condition = selector;
+        if (floating_predicate) {
+            const auto left = function->LoadUniform(Uniform{16, ValueType::V128}).SetType(ValueType::V128);
+            const auto right = function->LoadUniform(Uniform{32, ValueType::V128}).SetType(ValueType::V128);
+            const auto compared = function->VecFCmp(left, right, Imm{u32{64}}, Imm{u32{1}}).SetType(ValueType::U64);
+            condition = function->FCmpCondSet(compared, Cond::GT).SetType(ValueType::U8);
+        } else if (predicate_kind == 7 || predicate_kind == 8) {
+            const auto value = function->LoadImm(Imm{u32{predicate_kind == 7 ? 1u : 0u}}).SetType(ValueType::U32);
+            condition = (predicate_kind == 7 ? function->TestNotZero(value) : function->TestZero(value)).SetType(ValueType::U8);
+        } else if (raw_predicate) {
+            const auto left = function->LoadUniform(Uniform{16, ValueType::U8}).SetType(ValueType::U8);
+            const auto right = function->LoadImm(Imm{u8{3}}).SetType(ValueType::U8);
+            const auto result = function->Sub(left, Operand{right}).SetType(ValueType::U8);
+            function->SaveFlags(result, Flags::Zero);
+            condition = function->LocalCondSet(Cond::PL).SetType(ValueType::U8);
+        }
+        const auto arm = terminal::If{BOOL{condition}, terminal::LinkBlock{Location{0x2000}},
+                                     terminal::LinkBlock{Location{0x3000}}};
+        const Terminal selected = predicate_kind == 9
+                ? Terminal{terminal::Condition{Cond::MI, terminal::LinkBlock{Location{0x2000}},
+                                              terminal::LinkBlock{Location{0x3000}}}}
+                : predicate_kind == 10
+                ? Terminal{terminal::Condition{Cond::MI, arm, terminal::LinkBlock{Location{0x3000}}}}
+                : predicate_kind == 2 || predicate_kind == 4
+                ? Terminal{terminal::Condition{Cond::NE, arm, terminal::ReturnToHost{}}}
+                : Terminal{arm};
+        auto* source_hir = function->GetCurrentBlock();
+        const auto* source_block = source_hir->GetBlock();
+        function->EndBlock(predicate_kind >= 5 ? selected : Terminal{terminal::Switch{
+                selector, {{Imm{u64{0}}, selected}, {Imm{u64{1}}, selected}}}});
+        REQUIRE(arm64::AnalyzeBlockFlagsTransparent(*source_block) ==
+                !raw_predicate);
+        if (internal) for (const auto [guest, fingerprint] :
+             {std::pair{u64{0x2000}, u64{0x1111}}, std::pair{u64{0x3000}, u64{0x2222}}}) {
+            auto* target = function->AppendBlock(Location{guest}, Location{guest + 1});
+            function->AddEdge(source_hir, target, true);
+            builder.SetCurBlock(target);
+            const auto value = function->LoadImm(Imm{fingerprint}).SetType(ValueType::U64);
+            function->StoreUniform(Uniform{0, ValueType::U64}, value);
+            function->EndBlock(terminal::ReturnToHost{});
+        }
+        function->EndFunction();
+        auto* source = TranslateIR(module, function);
+        REQUIRE(source != nullptr);
+        space.PushCodeCache(Location{0x1000}, source);
+        Runtime runtime{&space};
+        if (floating_predicate) {
+            const double left = 2.0, right = 1.0;
+            std::memcpy(runtime.GetUniformBuffer().data() + 16, &left, sizeof(left));
+            std::memcpy(runtime.GetUniformBuffer().data() + 32, &right, sizeof(right));
+        } else runtime.GetUniformBuffer()[16] = 7;
+        for (unsigned round = 0; round < 2; ++round) for (const u64 key : {u64{0}, u64{1}}) {
+            CAPTURE(layout, region, internal, predicate_kind, raw_predicate, round, key);
+            SetSelector(runtime, key);
+            runtime.GetState()->host_cpu_flags = 0xa0000000u;
+            runtime.SetLocation(0x1000);
+            REQUIRE(runtime.Run() == HaltReason::CallHost);
+            CHECK((runtime.GetState()->host_cpu_flags & 0xf0000000u) == 0xa0000000u);
+            u64 fingerprint{};
+            std::memcpy(&fingerprint, runtime.GetUniformBuffer().data(), sizeof(fingerprint));
+            REQUIRE(fingerprint == (raw_predicate || key ? 0x1111u : 0x2222u));
+        }
+    }
+#else
+    SUCCEED("switch PSTATE execution requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("region conditions preserve inherited pending guest flags",
+          "[direct-link][production][conditional][flags]") {
+#if defined(__aarch64__)
+    ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
+    for (const bool internal : {false, true}) for (const bool negative : {false, true}) {
+        CAPTURE(internal, negative);
+        Config config{.loc_start = 0x1000, .loc_end = 0x4000, .enable_jit = true,
+                      .backend_isa = kArm64, .uniform_buffer_size = 64,
+                      .global_opts = Optimizations::BlockLink | Optimizations::ReturnStackBuffer,
+                      .region_edges = true};
+        AddressSpace space{config};
+        auto module = space.GetDefaultModule();
+        if (!internal) for (const auto [guest, fingerprint] :
+             {std::pair{u64{0x2000}, u64{0x1111}}, std::pair{u64{0x3000}, u64{0x2222}}}) {
+            auto target = BuildTarget(guest, fingerprint);
+            auto* code = TranslateIR(module, target);
+            REQUIRE(code != nullptr);
+            space.PushCodeCache(Location{guest}, code);
+        }
+        HIRBuilder builder{1, true};
+        auto* function = builder.AppendFunction(Location{0x1000}, Location{internal ? 0x3001u : 0x1002u});
+        const auto left = function->LoadUniform(Uniform{8, ValueType::U8}).SetType(ValueType::U8);
+        const auto result = function->Sub(left, Operand{Imm{u8{7}}}).SetType(ValueType::U8);
+        function->SaveFlags(result, Flags::NZCV);
+        auto* body = builder.LinkBlock(terminal::LinkBlock{Location{0x1001}});
+        builder.SetCurBlock(body);
+        function->EndBlock(terminal::Condition{negative ? Cond::MI : Cond::PL,
+                terminal::LinkBlock{Location{0x2000}}, terminal::LinkBlock{Location{0x3000}}});
+        REQUIRE(arm64::AnalyzeBlockFlagsTransparent(*body->GetBlock()));
+        if (internal) for (const auto [guest, fingerprint] :
+             {std::pair{u64{0x2000}, u64{0x1111}}, std::pair{u64{0x3000}, u64{0x2222}}}) {
+            auto* target = function->AppendBlock(Location{guest}, Location{guest + 1});
+            function->AddEdge(body, target, true);
+            builder.SetCurBlock(target);
+            const auto value = function->LoadImm(Imm{fingerprint}).SetType(ValueType::U64);
+            function->StoreUniform(Uniform{0, ValueType::U64}, value);
+            function->EndBlock(terminal::ReturnToHost{});
+        }
+        function->EndFunction();
+        auto* source = TranslateIR(module, function);
+        REQUIRE(source != nullptr);
+        space.PushCodeCache(Location{0x1000}, source);
+        Runtime runtime{&space};
+        runtime.GetUniformBuffer()[8] = 5;
+        for (unsigned round = 0; round < 2; ++round) {
+            CAPTURE(round);
+            runtime.GetState()->host_cpu_flags = 0x20000000u;
+            runtime.SetLocation(0x1000);
+            REQUIRE(runtime.Run() == HaltReason::CallHost);
+            u64 fingerprint{};
+            std::memcpy(&fingerprint, runtime.GetUniformBuffer().data(), sizeof(fingerprint));
+            REQUIRE(fingerprint == (negative ? 0x1111u : 0x2222u));
+            REQUIRE((runtime.GetState()->host_cpu_flags & 0xd0000000u) == 0x80000000u);
+        }
+    }
+#else
+    SUCCEED("inherited guest flags execution requires an AArch64 host");
 #endif
 }
 
@@ -1965,6 +2165,7 @@ TEST_CASE("SMC fault synchronously breaks a production direct-linked block ring"
 #if defined(__aarch64__)
     ScopedEnvironment disk_cache{"SVM_JIT_CACHE", ""};
     const bool same_thread_fault = GENERATE(false, true);
+    const bool hold_inflight = GENERATE(false, true);
     DYNAMIC_SECTION("faulting runtime thread=" << same_thread_fault) {
         const size_t page_size = static_cast<size_t>(getpagesize());
         const size_t guest_size = 4 * page_size;
@@ -1999,12 +2200,22 @@ TEST_CASE("SMC fault synchronously breaks a production direct-linked block ring"
             auto* code_b = TranslateIR(module, block_b);
             REQUIRE(code_a != nullptr);
             REQUIRE(code_b != nullptr);
+            const auto source_region = module->GetCodeRegion(static_cast<u8*>(code_a));
+            REQUIRE(source_region);
+            auto incoming_sites = FindProductionSites(space, *source_region, static_cast<u8*>(code_a));
+            std::erase_if(incoming_sites, [&](const ProductionSite& site) {
+                return site.record.source_owner.allocation != code_a;
+            });
+            REQUIRE(incoming_sites.size() == 1);
             space.PushCodeCache(Location{guest_a}, code_a);
             space.PushCodeCache(Location{guest_b}, code_b);
 
             g_ring_b_entries.store(0, std::memory_order_seq_cst);
             g_ring_fault_completed.store(false, std::memory_order_seq_cst);
             g_arm_ring_fault.store(false, std::memory_order_seq_cst);
+            g_ring_pause_count.store(false, std::memory_order_seq_cst);
+            g_ring_count_paused.store(false, std::memory_order_seq_cst);
+            g_ring_resume_count.store(false, std::memory_order_seq_cst);
             g_ring_fault_address.store(
                     static_cast<u8*>(guest_memory) + guest_b, std::memory_order_release);
 
@@ -2020,6 +2231,19 @@ TEST_CASE("SMC fault synchronously breaks a production direct-linked block ring"
             REQUIRE(WaitUntil(
                     [&] { return space.GetLinkManager().GetStats().linked == 2; },
                     std::chrono::seconds(2)));
+
+            if (!same_thread_fault && hold_inflight) {
+                g_ring_pause_count.store(true, std::memory_order_seq_cst);
+                const bool paused = WaitUntil([] { return g_ring_count_paused.load(std::memory_order_seq_cst); },
+                                              std::chrono::seconds(2));
+                if (!paused) {
+                    g_ring_pause_count.store(false, std::memory_order_seq_cst);
+                    g_ring_resume_count.store(true, std::memory_order_release);
+                    space.InvalidateCodeRange(guest_b, guest_b + 1);
+                    runner.join();
+                    REQUIRE(paused);
+                }
+            }
 
             if (same_thread_fault) {
                 // The helper runs inside block B on the guest execution
@@ -2041,9 +2265,17 @@ TEST_CASE("SMC fault synchronously breaks a production direct-linked block ring"
                     std::chrono::seconds(2)));
             const u64 entries_after_handler =
                     g_ring_b_entries.load(std::memory_order_seq_cst);
+            g_ring_resume_count.store(true, std::memory_order_release);
             const bool bounded = WaitUntil(
                     [&] { return runner_done.load(std::memory_order_acquire); },
                     std::chrono::seconds(2));
+            // Preserve the failed transaction's state before rescue delinks
+            // it again. Physical branch publication and continued B entries
+            // distinguish a patch race from execution synchronization failure.
+            const auto entries_before_rescue = g_ring_b_entries.load(std::memory_order_seq_cst);
+            const auto signal_stats = space.GetLinkManager().GetStats();
+            const auto branch_before_rescue = LoadInsn(incoming_sites.front().rx);
+            const bool target_active_before_rescue = space.GetLinkManager().QueryTarget(guest_b).has_value();
             if (!bounded) {
                 // Keep a failing regression test joinable: the deferred path
                 // is a rescue only, after the bounded-exit verdict is fixed.
@@ -2053,11 +2285,16 @@ TEST_CASE("SMC fault synchronously breaks a production direct-linked block ring"
                         std::chrono::seconds(2)));
             }
             runner.join();
+            CAPTURE(entries_after_handler, entries_before_rescue,
+                    signal_stats.signal_invalidations, signal_stats.linker_calls,
+                    branch_before_rescue, target_active_before_rescue);
             REQUIRE(bounded);
             REQUIRE(runner_halt.load(std::memory_order_acquire) ==
                     static_cast<u32>(HaltReason::CodeMiss));
-            REQUIRE(g_ring_b_entries.load(std::memory_order_seq_cst) ==
-                    entries_after_handler);
+            const auto final_entries = g_ring_b_entries.load(std::memory_order_seq_cst);
+            if (!same_thread_fault && hold_inflight) REQUIRE(final_entries == entries_after_handler + 1);
+            else if (same_thread_fault) REQUIRE(final_entries == entries_after_handler);
+            else REQUIRE(final_entries <= entries_after_handler + 1);
             REQUIRE(space.GetLinkManager().QueryTarget(guest_b) == std::nullopt);
 
             // Deferred CloseWriteWindow has now detached old B. Republish a
@@ -2188,8 +2425,11 @@ TEST_CASE("SMC fault boundedly breaks a conditional two-arm production ring",
             REQUIRE(bounded);
             REQUIRE(runner_halt.load(std::memory_order_acquire) ==
                     static_cast<u32>(HaltReason::CodeMiss));
-            REQUIRE(g_ring_b_entries.load(std::memory_order_seq_cst) ==
-                    entries_after_handler);
+            // A remote writer may invalidate a B already entered before the
+            // handler; QSBR permits that one callback to finish. No next B
+            // dispatch is permitted, and the bounded CodeMiss verdict stays.
+            REQUIRE(g_ring_b_entries.load(std::memory_order_seq_cst) <=
+                    entries_after_handler + (same_thread_fault ? 0 : 1));
             REQUIRE(space.GetLinkManager().QueryTarget(guest_b) == std::nullopt);
 
             constexpr u64 kNewFingerprint = 0xC02D17u;

@@ -10,9 +10,6 @@ public:
     static void RunForIntWidthTieTest(ir::Block *block,
                                      backend::RegAlloc *reg_alloc,
                                      bool intwidth_tie);
-    static void RunForInductTieTest(ir::Block *block,
-                                    backend::RegAlloc *reg_alloc,
-                                    bool induct_tie);
     static void RunForCoalesceTest(ir::Block *block,
                                    backend::RegAlloc *reg_alloc,
                                    bool coalesce);
@@ -23,6 +20,11 @@ public:
                                            backend::RegAlloc *reg_alloc,
                                            u32 tied_value_id,
                                            u16 target);
+    static void RunForPinnedWConflictTest(ir::Block *block,
+                                          backend::RegAlloc *reg_alloc,
+                                          const std::vector<u32>& tied_value_ids,
+                                          const std::vector<u32>& write_coalesced_ids,
+                                          u16 target);
     static void RunForWidthChainTest(ir::Block *block,
                                      backend::RegAlloc *reg_alloc,
                                      bool enabled);

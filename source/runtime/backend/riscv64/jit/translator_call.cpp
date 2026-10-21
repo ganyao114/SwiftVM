@@ -58,7 +58,7 @@ bool JitTranslator::EmitNativeCall(ir::Inst* inst) {
     if (paired) {
         ir::Inst* secondary{};
         const auto secondary_op = op == O::Cpuid ? O::CpuidUpper : O::Div128Remainder;
-        const auto pseudos = inst->GetPseudoOperations(secondary_op);
+        const auto pseudos = ir::CollectPseudoOperations(*block, inst, secondary_op);
         if (!pseudos.empty()) secondary = pseudos.front();
         if (op == O::Cpuid) {
             context.SaveVectorsForCall();

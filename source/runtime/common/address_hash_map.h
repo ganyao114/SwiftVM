@@ -170,6 +170,21 @@ public:
         intrusive_maps.clear();
     }
 
+    // Transfers the map's existing reference so callers can lock or destroy
+    // the node after releasing their map lock, without a temporary vector.
+    T* ExtractFirst() {
+        if (intrusive_maps.empty()) return nullptr;
+        auto& first = intrusive_maps.front();
+        auto* node = first.begin().operator->();
+        const auto address = node->location.Value();
+        first.erase(first.begin());
+        if (first.empty()) {
+            hash_map[Hash(address)] = nullptr;
+            intrusive_maps.pop_front();
+        }
+        return node;
+    }
+
 private:
     IntrusiveMap<Member>* CreateIntrusiveMap() { return &intrusive_maps.emplace_back(); }
 

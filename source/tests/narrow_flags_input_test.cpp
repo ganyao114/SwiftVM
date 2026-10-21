@@ -8,6 +8,7 @@
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/backend/arm64/alloc/gpr_block_plan.h"
 #include "runtime/ir/opts/flags_elimination_pass.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 
@@ -79,6 +80,27 @@ std::vector<std::string> EmitNarrowSub(ValueType type,
         // Its stack slot never receives a write and cannot satisfy later reads.
         alloc.MapSpillReload(source.Id(), source.Id(), extract.Id(),
                              source_reg, true);
+    }
+    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
+    const auto frozen = alloc.GPRPlanFor(block.get());
+    REQUIRE(frozen);
+    const bool forwarded = !reuse_extract && !memory_source &&
+                           alloc.ValueType(source) != RegAlloc::MEM;
+    REQUIRE((frozen->integer_flags && frozen->integer_flags->inputs.contains(extract.Def())) == forwarded);
+    if (forwarded) {
+        const auto& input = frozen->integer_flags->inputs.at(extract.Def());
+        REQUIRE(input.source.Def() == (alloc.GPRLowView(extract.Id()) ? extract.Def() : source.Def()));
+        REQUIRE(input.consumer == result.Def());
+    }
+
+    if (branch_only) {
+        const auto plan = alloc.GPRPlanFor(block.get());
+        REQUIRE(plan);
+        REQUIRE(plan->integer_branch);
+        REQUIRE(plan->integer_branch->edge.producer == result.Def());
+        REQUIRE(plan->integer_branch->narrow);
+        REQUIRE(plan->integer_branch->narrow->immediate == 3);
+        REQUIRE(plan->integer_branch->narrow->width == ir::GetValueSizeByte(type));
     }
     arm64::JitContext context{address_space.GetDefaultModule(), alloc};
     arm64::JitTranslator translator{context};

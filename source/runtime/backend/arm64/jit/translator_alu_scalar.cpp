@@ -1,7 +1,5 @@
 #include "translator.h"
 
-#include "div128_narrowing_analysis.h"
-
 #include <algorithm>
 #include <cstring>
 #include <functional>
@@ -51,15 +49,9 @@ AuxiliaryCarryInputs CaptureAuxiliaryCarryInputs(
 }  // namespace
 
 void JitTranslator::EmitAdd(ir::Inst* inst) {
-    if (auto fusion = flag_state.narrow_carry_fusions.find(inst);
-        fusion != flag_state.narrow_carry_fusions.end()) {
-        const auto reproved = MatchNarrowCarryFusion(inst);
-        ASSERT_MSG(reproved && reproved->carry_test == fusion->second.carry_test &&
-                           reproved->carry_add == fusion->second.carry_add &&
-                           reproved->value.Def() == fusion->second.value.Def(),
-                   "narrow carry fusion proof diverged at IR {}", inst->Id());
+    if (const auto* fusion = NarrowCarryFor(inst)) {
         const auto result = context.R(ir::Value{inst});
-        const auto value = context.R(fusion->second.value, true);
+        const auto value = context.R(fusion->value, true);
         // The carry-test/add pair is normally fed directly by a pending host
         // NZCV producer.  A preceding boundary flush can legally have already
         // committed that producer, though; the static fusion proof still
@@ -78,12 +70,9 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
         __ Adc(result.W(), value.W(), Operand{wzr});
         return;
     }
-    if (auto update = pinned_load_update_instructions.find(inst);
-        update != pinned_load_update_instructions.end() &&
+    if (auto update = gpr_plan->load_update_instructions.find(inst);
+        update != gpr_plan->load_update_instructions.end() &&
         inst == update->second.update) {
-        const auto reproved = MatchPinnedLoadUpdate(inst);
-        ASSERT_MSG(reproved && *reproved == update->second,
-                   "pinned load update proof diverged at IR {}", inst->Id());
         return;
     }
     auto left = inst->GetArg<ir::Value>(0);
@@ -93,15 +82,12 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
     const bool narrow_nzcv = ir::GetValueSizeByte(inst->ReturnType()) <= 2 &&
                              True(pseudo_flags.set & ir::Flags::NZCV);
     auto pinned = [&](ir::Value value) -> std::optional<Register> {
-        return context.PinnedGPRUse(value, inst, pinned_gprs);
+        return context.PlannedGPR(value, inst);
     };
     auto right_pinned = right.GetLeft().IsValue()
             ? pinned(right.GetLeft().value)
             : std::nullopt;
-    const auto induction_immediate = MatchInductionImmediate(inst);
-    auto right_operand = induction_immediate
-            ? Operand{static_cast<s64>(*induction_immediate)}
-            : (right_pinned ? Operand{*right_pinned}
+    auto right_operand = (right_pinned ? Operand{*right_pinned}
                : narrow_nzcv && right.GetRight().Null() && right.GetLeft().IsValue()
                        ? Operand{context.R(right.GetLeft().value)}
                        : EmitOperand(right));
@@ -157,7 +143,7 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
             }
             __ Adds(result.W(), result.W(), aligned_right);
             if ((!pseudo_flags.branch_only && pseudo_flags.NeedsResultBits()) ||
-                inst->GetUses() != 0) {
+                context.InstructionHasValueUses()) {
                 __ Lsr(result.W(), result.W(), shift);
             }
             auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
@@ -210,22 +196,19 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
     if (MatchPreIndexMemoryUpdate(inst) || MatchBiasedMemoryUpdate(inst)) {
         return;
     }
-    if (auto candidate = flag_state.narrow_compares.find(inst); candidate != flag_state.narrow_compares.end()) {
-        const auto reproved = MatchNarrowCompare(inst);
-        ASSERT_MSG(reproved && *reproved == candidate->second,
-                   "narrow compare proof diverged at IR {}", inst->Id());
+    if (const auto* candidate = NarrowCompareFor(inst)) {
         auto pseudo_flags = GetPseudoFlags(inst);
         pseudo_flags.set = ir::Flags::Carry;
         const auto result = FlagsResultRegister(inst, pseudo_flags);
-        const auto pinned = context.PinnedWUse(candidate->second.left, inst, pinned_gprs);
-        const auto left = pinned ? *pinned : context.W(candidate->second.left);
+        const auto pinned = context.PlannedGPR<WRegister>(candidate->left, inst);
+        const auto left = pinned ? *pinned : context.W(candidate->left);
         if (!pseudo_flags.branch_only) {
             BeginFlagsTokenProducer(pseudo_flags);
         }
-        if (candidate->second.right) {
-            __ Cmp(left, context.W(*candidate->second.right));
+        if (candidate->right) {
+            __ Cmp(left, context.W(*candidate->right));
         } else {
-            __ Cmp(left, candidate->second.immediate);
+            __ Cmp(left, candidate->immediate);
         }
         const auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
         if (!pseudo_flags.branch_only) {
@@ -236,24 +219,10 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
         return;
     }
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
-        return context.PinnedWUse(value, inst, pinned_gprs);
+        return context.PlannedGPR<WRegister>(value, inst);
     };
-    if (flag_state.dead_narrow_immediate_branch &&
-        flag_state.dead_narrow_immediate_branch->producer == inst) {
-        const auto reproved = MatchDeadNarrowImmediateBranch(inst);
-        ASSERT_MSG(reproved &&
-                           reproved->producer ==
-                                   flag_state.dead_narrow_immediate_branch->producer &&
-                           reproved->immediate_load ==
-                                   flag_state.dead_narrow_immediate_branch->immediate_load &&
-                           reproved->immediate ==
-                                   flag_state.dead_narrow_immediate_branch->immediate &&
-                           reproved->required ==
-                                   flag_state.dead_narrow_immediate_branch->required &&
-                           reproved->width ==
-                                   flag_state.dead_narrow_immediate_branch->width,
-                   "dead narrow immediate branch proof diverged at IR {}",
-                   inst->Id());
+    if (DeadNarrowPlan() &&
+        DeadNarrowPlan()->producer == inst) {
         const auto left = inst->GetArg<ir::Value>(0);
         const auto left_input = ResolveNarrowFlagsInput(left, inst);
         const auto result = context.W(ir::Value{inst});
@@ -262,17 +231,17 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
         const bool zero_extended_load = left_input.Def() &&
                 left_input.Def()->GetOp() == ir::OpCode::LoadMemory &&
                 ir::GetValueSizeByte(left_input.Def()->ReturnType()) ==
-                        flag_state.dead_narrow_immediate_branch->width;
+                        DeadNarrowPlan()->width;
         Register compare = source;
         if (!zero_extended_load) {
-            if (flag_state.dead_narrow_immediate_branch->width == sizeof(u8)) {
+            if (DeadNarrowPlan()->width == sizeof(u8)) {
                 __ Uxtb(result, source);
             } else {
                 __ Uxth(result, source);
             }
             compare = result;
         }
-        __ Cmp(compare, flag_state.dead_narrow_immediate_branch->immediate);
+        __ Cmp(compare, DeadNarrowPlan()->immediate);
         return;
     }
     auto left = inst->GetArg<ir::Value>(0);
@@ -371,7 +340,7 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
             }
             __ Subs(result.W(), result.W(), aligned_right);
             if ((!pseudo_flags.branch_only && pseudo_flags.NeedsResultBits()) ||
-                inst->GetUses() != 0) {
+                context.InstructionHasValueUses()) {
                 __ Lsr(result.W(), result.W(), shift);
             }
             auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
@@ -454,7 +423,7 @@ void JitTranslator::EmitNeg(ir::Inst* inst) {
         }
         __ Subs(result.W(), wzr, result.W());
         if ((!pseudo_flags.branch_only && pseudo_flags.NeedsResultBits()) ||
-            inst->GetUses() != 0) {
+            context.InstructionHasValueUses()) {
             __ Lsr(result.W(), result.W(), shift);
         }
         const auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
@@ -589,34 +558,28 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitAnd(ir::Inst* inst) {
-    if (auto masked = shift_masked_inputs.find(inst);
-        masked != shift_masked_inputs.end()) {
-        const auto reproved = MatchShiftMaskedInput(inst);
-        ASSERT_MSG(reproved && *reproved == masked->second,
-                   "shift masked input proof diverged at IR {}", inst->Id());
-        __ Ubfx(context.R(ir::Value{inst}), context.R(reproved->source),
-                reproved->offset, 1);
+    if (auto masked = NarrowBits().shift_masks.find(inst);
+        masked != NarrowBits().shift_masks.end()) {
+__ Ubfx(context.R(ir::Value{inst}), context.R(masked->second.source),
+                masked->second.offset, 1);
         return;
     }
-    if (flag_state.dead_edge_integer_branch &&
-        flag_state.dead_edge_integer_branch->producer == inst &&
-        flag_state.dead_edge_integer_branch->zero_target) {
+    if (DeadEdgePlan() &&
+        DeadEdgePlan()->producer == inst &&
+        DeadEdgePlan()->zero_target) {
         return;
     }
     if (local_conditions.contains(inst)) {
         return;
     }
     auto left = inst->GetArg<ir::Value>(0);
-    if (auto masked = narrow_masked_inputs.find(inst);
-        masked != narrow_masked_inputs.end()) {
-        const auto reproved = MatchNarrowMaskedInput(inst);
-        ASSERT_MSG(reproved && *reproved == masked->second,
-                   "narrow masked input proof diverged at IR {}", inst->Id());
-        left = reproved->source;
+    if (auto masked = NarrowBits().masks.find(inst);
+        masked != NarrowBits().masks.end()) {
+        left = masked->second.source;
     }
     auto right = inst->GetArg<ir::Operand>(1);
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
-        return context.PinnedWUse(value, inst, pinned_gprs);
+        return context.PlannedGPR<WRegister>(value, inst);
     };
     auto right_pinned = right.GetLeft().IsValue()
             ? pinned_w(right.GetLeft().value)
@@ -660,7 +623,9 @@ void JitTranslator::EmitAnd(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitAddPhi(ir::Inst* inst) {}
+void JitTranslator::EmitAddPhi(ir::Inst* inst) {
+    PANIC("ARM64 Phi must be lowered on predecessor edges before emission");
+}
 
 void JitTranslator::EmitAndNot(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
@@ -694,19 +659,16 @@ void JitTranslator::EmitAndNot(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitOr(ir::Inst* inst) {
-    if (EmitFunnelShiftResult(inst)) {
-        return;
-    }
     if (local_conditions.contains(inst)) {
         return;
     }
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
-        return context.PinnedWUse(value, inst, pinned_gprs);
+        return context.PlannedGPR<WRegister>(value, inst);
     };
     auto pseudo_flags = GetPseudoFlags(inst);
-    if (!pseudo_flags.Null() && inst->GetUses() == 0 && right.IsImm() &&
+    if (!pseudo_flags.Null() && !context.InstructionHasValueUses() && right.IsImm() &&
         right.GetLeft().imm.Get() == 0) {
         const auto pinned = pinned_w(left);
         Register value = pinned ? Register{*pinned} : context.R(left);
@@ -714,17 +676,12 @@ void JitTranslator::EmitOr(ir::Inst* inst) {
             BeginFlagsTokenProducer(pseudo_flags);
         }
         SaveLogicalResultFlags(value, left.Type(), pseudo_flags);
-        if (const auto producer = funnel_shift_parity_producers.find(inst);
-            producer != funnel_shift_parity_producers.end()) {
-            FinishFlagsTokenProducer(value, left.Type(), pseudo_flags, producer->second);
-        } else {
-            // The identity OR fast path still defines PF from `value`.  The
-            // normal OR emitter reaches FinishFlagsTokenProducer below, but
-            // this early return used to record only NZCV.  A following
-            // SetCarry/SetOverflow would then publish the previous token and
-            // leave PF stale under FLAGS_REGS.
-            FinishFlagsTokenProducer(value, left.Type(), pseudo_flags, inst);
-        }
+        // The identity OR fast path still defines PF from `value`.  The
+        // normal OR emitter reaches FinishFlagsTokenProducer below, but
+        // this early return used to record only NZCV.  A following
+        // SetCarry/SetOverflow would then publish the previous token and
+        // leave PF stale under FLAGS_REGS.
+        FinishFlagsTokenProducer(value, left.Type(), pseudo_flags, inst);
         return;
     }
     auto right_pinned = right.GetLeft().IsValue()
@@ -759,7 +716,7 @@ void JitTranslator::EmitOr(ir::Inst* inst) {
 void JitTranslator::EmitXor(ir::Inst* inst) {
     auto pseudo_flags = GetPseudoFlags(inst);
     auto result = context.R(ir::Value{inst});
-    if (scalar_copy_analysis.IsSelfXor(inst)) {
+    if (ScalarPreparation().copies.IsSelfXor(inst)) {
         if (!pseudo_flags.Null()) {
             if (!pseudo_flags.branch_only) {
                 BeginFlagsTokenProducer(pseudo_flags);
@@ -777,7 +734,7 @@ void JitTranslator::EmitXor(ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
-        return context.PinnedWUse(value, inst, pinned_gprs);
+        return context.PlannedGPR<WRegister>(value, inst);
     };
     auto right_pinned = right.GetLeft().IsValue()
             ? pinned_w(right.GetLeft().value)
@@ -820,7 +777,7 @@ void JitTranslator::EmitNot(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitAsrImm(ir::Inst* inst) {
-    if (fused_shift_masked_shifts.contains(inst)) {
+    if (NarrowBits().masked_shifts.contains(inst)) {
         return;
     }
     auto value = inst->GetArg<ir::Value>(0);
@@ -830,9 +787,6 @@ void JitTranslator::EmitAsrImm(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitLslImm(ir::Inst* inst) {
-    if (EmitFunnelShiftPart(inst)) {
-        return;
-    }
     auto value = inst->GetArg<ir::Value>(0);
     auto lsl = inst->GetArg<ir::Imm>(1).Get();
     auto result = context.R(ir::Value{inst});
@@ -840,22 +794,16 @@ void JitTranslator::EmitLslImm(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitLsrImm(ir::Inst* inst) {
-    if (EmitFunnelShiftPart(inst)) {
+    if (NarrowBits().masked_shifts.contains(inst)) {
         return;
     }
-    if (fused_shift_masked_shifts.contains(inst)) {
-        return;
-    }
-    if (auto fused = fused_narrow_extract_shifts.find(inst);
-        fused != fused_narrow_extract_shifts.end()) {
-        const auto candidate = narrow_extract_extensions.find(fused->second);
-        const auto reproved = MatchNarrowExtractExtension(fused->second);
-        ASSERT_MSG(candidate != narrow_extract_extensions.end() && reproved &&
-                           *reproved == candidate->second && reproved->shift == inst,
-                   "narrow extract shift proof diverged at IR {}", inst->Id());
+    if (auto fused = NarrowBits().extract_shifts.find(inst);
+        fused != NarrowBits().extract_shifts.end()) {
+        const auto candidate = NarrowBits().extensions.find(fused->second);
+        ASSERT(candidate != NarrowBits().extensions.end() && candidate->second.shift == inst);
         const u32 lsr = inst->GetArg<ir::Imm>(1).Get();
-        __ Ubfx(context.W(ir::Value{inst}), context.W(reproved->source), lsr,
-                reproved->width * 8 - lsr);
+        __ Ubfx(context.W(ir::Value{inst}), context.W(candidate->second.source), lsr,
+                candidate->second.width * 8 - lsr);
         return;
     }
     auto value = inst->GetArg<ir::Value>(0);
@@ -978,7 +926,7 @@ void JitTranslator::EmitLoadImm(ir::Inst* inst) {
     if (CanUseZeroStoreRegister(ir::Value{inst})) {
         return;
     }
-    const auto pinned = context.PinnedValueGPR(ir::Value{inst}, cur_instr, pinned_gprs);
+    const auto pinned = context.PlannedGPR<XRegister>(ir::Value{inst}, cur_instr);
     auto result = pinned
             ? (ir::GetValueSizeByte(inst->ReturnType()) > sizeof(u32)
                        ? Register{*pinned}
@@ -1051,14 +999,12 @@ void JitTranslator::EmitDiv128(ir::Inst* inst) {
     const auto high = inst->GetArg<ir::Value>(0);
     const auto low = inst->GetArg<ir::Value>(1);
     const auto divisor = inst->GetArg<ir::Value>(2);
-    if (Div128NarrowingAnalysis{cur_block}.CanLowerNatively(inst)) {
-        const auto secondary_results =
-                inst->GetPseudoOperations(ir::OpCode::Div128Remainder);
-        ASSERT(secondary_results.size() <= 1);
+    auto* secondary = PairSecondaryResult(inst, ir::OpCode::Div128Remainder);
+    if (context.Div128CanLowerNatively()) {
         const auto low_register = context.X(low);
         const auto divisor_register = context.X(divisor);
         const auto quotient = context.X(ir::Value{inst});
-        if (secondary_results.empty()) {
+        if (!secondary) {
             if (sign) {
                 __ Sdiv(quotient, low_register, divisor_register);
             } else {
@@ -1068,7 +1014,7 @@ void JitTranslator::EmitDiv128(ir::Inst* inst) {
         }
 
         const XRegister remainder{context.RForWrite(
-                ir::Value{secondary_results.front()}).GetCode()};
+                ir::Value{secondary}).GetCode()};
         context.ReserveTmpX(remainder);
         const auto quotient_tmp = context.GetTmpX();
         if (sign) {
@@ -1087,7 +1033,7 @@ void JitTranslator::EmitDiv128(ir::Inst* inst) {
 
     const auto target = sign ? &swift::runtime::DivideSigned128
                              : &swift::runtime::DivideUnsigned128;
-    std::vector<ir::DataClass> args{
+    const std::array<ir::DataClass, 3> args{
             high,
             low,
             divisor,
@@ -1095,14 +1041,14 @@ void JitTranslator::EmitDiv128(ir::Inst* inst) {
     EmitPreserveAllPairCall(inst,
                             reinterpret_cast<VAddr>(target),
                             args,
-                            ir::OpCode::Div128Remainder,
+                            secondary,
                             ir::HostRegisterEffect::GeneralOnly);
 }
 
 void JitTranslator::EmitDiv128Remainder(ir::Inst*) {}
 
 void JitTranslator::EmitCpuid(ir::Inst* inst) {
-    std::vector<ir::DataClass> args{
+    const std::array<ir::DataClass, 3> args{
             inst->GetArg<ir::Value>(0),
             inst->GetArg<ir::Value>(1),
             inst->GetArg<ir::Imm>(2),
@@ -1110,7 +1056,7 @@ void JitTranslator::EmitCpuid(ir::Inst* inst) {
     EmitPreserveAllPairCall(inst,
                             inst->GetArg<ir::Imm>(3).Get(),
                             args,
-                            ir::OpCode::CpuidUpper,
+                            PairSecondaryResult(inst, ir::OpCode::CpuidUpper),
                             ir::HostRegisterEffect::GeneralOnly);
 }
 
@@ -1121,7 +1067,7 @@ void JitTranslator::EmitMul(ir::Inst* inst) {
     auto right = inst->GetArg<ir::Operand>(1);
     auto type = left.Type();
     auto result = context.R(ir::Value{inst});
-    const auto pinned = pinned_gprs.LowViewHome(left.Def());
+    const auto pinned = GPRLowViewHome(left.Def());
     Register left_register = pinned
             ? Register{WRegister(*pinned)}
             : context.R(left, true);
@@ -1136,17 +1082,10 @@ void JitTranslator::EmitMul(ir::Inst* inst) {
     // require a narrow cast, come from a spill, or encode an induction/
     // composite/immediate operand on the established path.
     const auto right_part = right.GetLeft();
-    const bool basic_value = right.GetRight().Null() && right_part.IsValue() &&
-                             right_part.value.Defined();
-    const bool unobserved_value =
-            basic_value &&
-            right_part.value.Def()->GetUses(false) ==
-                    right_part.value.Def()->GetUses() &&
-            right_part.value.Def()->GetPseudoOperations().empty();
     const bool kill_operand_copy =
             context.GetFeatures().operand_copy_kill &&
             ir::GetValueSizeByte(type) >= sizeof(u32) && pseudo_flags.Null() &&
-            unobserved_value && !context.IsSpilled(right_part.value) &&
+            context.MulInputHasNoObservers() && !context.IsSpilled(right_part.value) &&
             IsUnmodifiedRegister(right_operand);
     auto multiplier = kill_operand_copy
             ? right_operand.GetRegister()
@@ -1218,27 +1157,16 @@ void JitTranslator::EmitCondSelect(ir::Inst* inst) {
 }
 
 void JitTranslator::EmitCondSet(ir::Inst* inst) {
-    if (inst->GetUses() == 1) {
-        for (auto& user : cur_block->GetInstList()) {
-            if ((user.GetOp() == ir::OpCode::And ||
-                 user.GetOp() == ir::OpCode::Or) &&
-                local_conditions.contains(&user)) {
-                for (auto value : user.GetValues()) {
-                    if (value.Def() == inst) {
-                        return;
-                    }
-                }
-            }
-        }
-    }
+    ASSERT(gpr_plan->consumers);
+    const auto& action = gpr_plan->consumers->booleans.at(inst);
+    if (action.logical_user && local_conditions.contains(action.logical_user)) return;
     auto cond = inst->GetArg<ir::Cond>(0);
     // Cond is untyped, so Inst::SetArg cannot infer a return type here and a
     // front end that forgets SetType leaves it VOID.  That is silent in this
     // back end (RegAlloc keys off the opcode's meta return type) and silent
     // data loss in the interpreter, so refuse it in both.
     ASSERT(inst->ReturnType() != ir::ValueType::VOID);
-    auto following = cur_block->GetInstList().iterator_to(*inst);
-    if (++following == cur_block->GetInstList().end() && flag_state.save_in_nzcv &&
+    if (action.last_instruction && flag_state.save_in_nzcv &&
         flag_state.nzcv_dirty && RecordLocalCondition(inst, cond)) {
         return;
     }
@@ -1298,7 +1226,13 @@ void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
     ASSERT(fcmp.Def() && fcmp.Def()->GetOp() == ir::OpCode::VecFCmp);
     ASSERT(inst->ReturnType() != ir::ValueType::VOID);
 
-    if (RawFCmpCondition(fcmp.Def()) == inst) {
+    if (cond == ir::Cond::AL || cond == ir::Cond::NV) {
+        __ Mov(context.R(ir::Value{inst}), 1);
+        return;
+    }
+
+    if (RawFCmpCondition(fcmp.Def(), inst) == inst ||
+        (gpr_plan->consumers && gpr_plan->consumers->raw_fcmp_conditions.contains(inst))) {
         if (RecordLocalCondition(inst, cond)) {
             return;
         }
@@ -1311,14 +1245,11 @@ void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
         // changes that representation before this consumer; follow the emitted
         // operations rather than assuming that AXFLAG's carry is still live.
         bool inverted_carry = true;
-        auto& instructions = cur_block->GetInstList();
-        for (auto scan = std::next(instructions.iterator_to(*fcmp.Def()));
-             scan != instructions.end() && &*scan != inst; ++scan) {
-            if (scan->GetOp() == ir::OpCode::InvertCarry &&
-                &*scan != flag_state.raw_carry_pending) {
-                inverted_carry = !inverted_carry;
-            }
-        }
+        ASSERT(gpr_plan->consumers);
+        const auto found = gpr_plan->consumers->carry_inversions.find(inst);
+        if (found != gpr_plan->consumers->carry_inversions.end())
+            for (auto* inversion : found->second)
+                if (inversion != flag_state.raw_carry_pending) inverted_carry = !inverted_carry;
         if (!inverted_carry && (cond == ir::Cond::GT || cond == ir::Cond::LE)) {
             // Direct CF and ZF need two predicates for JA/JBE. Keep NZCV
             // intact because later guest instructions can still observe it.
@@ -1370,10 +1301,18 @@ void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
         return;
     }
 
-    if (RecordLocalCondition(inst, cond)) {
-        return;
-    }
-    __ Cset(context.R(ir::Value{inst}), MapCond(cond));
+    // The fallback consumes the named relation, independently of current
+    // guest NZCV. VecFCmp encodes greater/less/equal/unordered as 0/1/4/7.
+    // Each bit in this table is the condition result for that relation index.
+    constexpr std::array<u8, 16> predicates{
+            0x10, 0x83, 0x91, 0x02, 0x02, 0x91, 0x80, 0x13,
+            0x81, 0x12, 0x11, 0x82, 0x01, 0x92, 0x93, 0x93};
+    const auto packed = context.X(fcmp);
+    auto result = context.R(ir::Value{inst}).W();
+    auto table = context.GetTmpX();
+    __ Mov(table, predicates[static_cast<u32>(cond)]);
+    __ Lsr(result, table.W(), packed.W());
+    __ And(result, result, 1);
 }
 
 void JitTranslator::EmitZero(ir::Inst* inst) {

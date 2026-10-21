@@ -5,11 +5,12 @@
 
 #include <algorithm>
 #include <cstdio>
-#if defined(__linux__)
+#if defined(__linux__) && (!defined(__ANDROID__) || __ANDROID_API__ >= 33)
 #include <execinfo.h>
 #include <unistd.h>
 #endif
 #include "reg_alloc.h"
+#include "runtime/backend/arm64/alloc/unit_facts.h"
 #include "runtime/common/perf_stats.h"
 #include "runtime/frontend/x86/sse42str_helper.h"
 #include "runtime/frontend/x86/x87.h"
@@ -91,7 +92,11 @@ bool X86PinExtScratchOnlyEnabled(const GPRSMask& pool,
 }
 
 bool X86PinExtLevel3AluScratchEnabled(const GPRSMask& pool, ir::OpCode op) {
-    return X86PinExtLevel3Enabled(pool) && pool.Get(10) &&
+    return X86PinExtLevel3AluScratchEnabled(X86PinExtLevel3Enabled(pool) && pool.Get(10), op);
+}
+
+bool X86PinExtLevel3AluScratchEnabled(bool available, ir::OpCode op) {
+    return available &&
            (op == ir::OpCode::Add || op == ir::OpCode::Sub ||
             op == ir::OpCode::Or || op == ir::OpCode::Select ||
             op == ir::OpCode::SelectZero ||
@@ -147,24 +152,30 @@ static u8 AddSubOperandScratch(const ir::Operand& right) {
     return need + 1;
 }
 
-ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst) {
-    ASSERT(inst.GetOp() == ir::OpCode::Add || inst.GetOp() == ir::OpCode::Sub);
-    ir::Flags requested{};
-    bool branch_only = false;
-    for (auto* pseudo : const_cast<ir::Inst&>(inst).GetPseudoOperations()) {
-        if (pseudo->GetOp() == ir::OpCode::SaveFlags) {
-            requested |= pseudo->GetArg<ir::Flags>(1);
-        } else if (pseudo->GetOp() == ir::OpCode::BranchOnlyFlags) {
-            requested |= pseudo->GetArg<ir::Flags>(1);
-            branch_only = true;
-        }
+FlagsDemand ScanFlagsDemand(const ir::Block& block, const ir::Inst& owner) {
+    FlagsDemand demand{};
+    for (const auto& inst : block.GetInstList()) {
+        const auto op = inst.GetOp();
+        if (op != ir::OpCode::SaveFlags && op != ir::OpCode::BranchOnlyFlags) continue;
+        if (!inst.ArgAt(0).IsValue() || inst.GetArg<ir::Value>(0).Def() != &owner) continue;
+        demand.requested |= inst.GetArg<ir::Flags>(1);
+        demand.pseudo_count++;
+        demand.branch_only |= op == ir::OpCode::BranchOnlyFlags;
+        demand.has_save |= op == ir::OpCode::SaveFlags;
     }
+    return demand;
+}
+
+ScratchNeed PreciseAddSubScratchBudget(const ir::Inst& inst, FlagsDemand demand) {
+    ASSERT(inst.GetOp() == ir::OpCode::Add || inst.GetOp() == ir::OpCode::Sub);
+    const auto requested = demand.requested;
+    const bool branch_only = demand.branch_only;
 
     const auto right = inst.GetArg<ir::Operand>(1);
     const u8 operand_scratch =
             NarrowHostReadScratch(ir::DataClass{inst.GetArg<ir::Value>(0)}) +
             AddSubOperandScratch(right);
-    const u8 uses = const_cast<ir::Inst&>(inst).GetUses();
+    const u32 uses = inst.GetUses();
     const bool narrow_nzcv = ir::GetValueSizeByte(inst.ReturnType()) <= 2 &&
                              True(requested & ir::Flags::NZCV);
     if (narrow_nzcv) {
@@ -223,18 +234,12 @@ static u8 LogicalOperandScratch(const ir::Inst& inst) {
     return need + 1;
 }
 
-static ScratchNeed PreciseLogicalScratchBudget(const ir::Inst& inst) {
+static ScratchNeed PreciseLogicalScratchBudget(const ir::Inst& inst, FlagsDemand demand) {
     u8 need = std::max<u8>(
             NarrowHostReadScratch(ir::DataClass{inst.GetArg<ir::Value>(0)}) +
                     LogicalOperandScratch(inst),
             1);
-    for (auto* pseudo : const_cast<ir::Inst&>(inst).GetPseudoOperations()) {
-        if (pseudo->GetOp() == ir::OpCode::SaveFlags ||
-            pseudo->GetOp() == ir::OpCode::BranchOnlyFlags) {
-            ++need;
-            break;
-        }
-    }
+    if (demand.pseudo_count) ++need;
     return {need, kDefaultScratchFPR};
 }
 
@@ -360,14 +365,15 @@ u32 FixedGPRClobbers(const ir::Inst& inst, const FeatureSet& features,
 
 GPRClassContract ClassifyGPRContract(const GPRSMask& pool,
                                      const ir::Inst& inst,
-                                     const FeatureSet& features) {
+                                     const FeatureSet& features,
+                                     FlagsDemand demand) {
     const u32 fixed = FixedGPRClobbers(inst, features);
     // x0-x17 are the ordinary AAPCS caller-clobbered GPRs used by generated
     // helper calls. x18 stays out: Apple reserves it and the Linux conditional
     // spill path treats it as reload-only capacity, never a helper value home.
     constexpr u32 kAAPCSCallerClobber = (1u << 18) - 1;
     const bool cold_continuation = (fixed & (1u << 13)) != 0;
-    const auto need = ScratchBudget(inst, features);
+    const auto need = ScratchBudget(inst, features, demand);
     auto value_pool = pool;
     GPRClassContract result{
             .value_pool = static_cast<u8>(value_pool.GetClearCount()),
@@ -492,17 +498,17 @@ ScratchNeed ScratchBudget(ir::OpCode op, const FeatureSet& features) {
     }
 }
 
-ScratchNeed ScratchBudget(const ir::Inst& inst, const FeatureSet& features) {
+ScratchNeed ScratchBudget(const ir::Inst& inst, const FeatureSet& features, FlagsDemand demand) {
     auto need = ScratchBudget(inst.GetOp(), features);
     if (ScratchPreciseRequested(features)) {
         switch (inst.GetOp()) {
             case ir::OpCode::Add:
             case ir::OpCode::Sub:
-                return PreciseAddSubScratchBudget(inst);
+                return PreciseAddSubScratchBudget(inst, demand);
             case ir::OpCode::And:
             case ir::OpCode::Or:
             case ir::OpCode::Xor:
-                return PreciseLogicalScratchBudget(inst);
+                return PreciseLogicalScratchBudget(inst, demand);
             case ir::OpCode::AdvancePC:
                 // The FLAGS_REGS=0 path merges host NZCV with one explicit
                 // shared temporary, while the scratch contract may also need
@@ -607,6 +613,13 @@ ScratchNeed ScratchBudget(const ir::Inst& inst, const FeatureSet& features) {
     return need;
 }
 
+RegAlloc::~RegAlloc() = default;
+
+arm64::UnitFacts& RegAlloc::Facts() {
+    if (!unit_facts) unit_facts = std::make_unique<arm64::UnitFacts>();
+    return *unit_facts;
+}
+
 RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
                    const FeatureSet& features, bool afp_nan)
         : alloc_result(instr_size), live_ends(instr_size, UINT32_MAX),
@@ -615,9 +628,7 @@ RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
           width_chain_anchors(instr_size, UINT32_MAX),
           width_component_owners(instr_size),
           low32_copy_sources(instr_size, UINT32_MAX),
-          const_address_cache_anchors(instr_size, UINT32_MAX),
           aes_chain_targets(instr_size, UINT16_MAX),
-          pshufd_direct(instr_size),
           gprs(gprs), fprs(fprs), features(features) {
     // Trampolines 暴露跨 module 的最大 GPR 并集。XPOOL 关闭时在 unit 私有
     // allocator 里恢复旧保留集，保持默认发码不变，同时允许 module 快照分叉。
@@ -644,6 +655,9 @@ RegAlloc::RegAlloc(u32 instr_size, const GPRSMask& gprs, const FPRSMask& fprs,
 }
 
 void RegAlloc::ResetAllocations() {
+    verified_width_elisions.clear();
+    ++allocation_attempt;
+    gpr_preservation_actions.clear();
     BeginGPRLocationAnalysis();
     std::fill(alloc_result.begin(), alloc_result.end(), Map{});
     std::fill(live_ends.begin(), live_ends.end(), UINT32_MAX);
@@ -656,14 +670,13 @@ void RegAlloc::ResetAllocations() {
               WidthComponentOwner{});
     std::fill(low32_copy_sources.begin(), low32_copy_sources.end(),
               UINT32_MAX);
-    std::fill(const_address_cache_anchors.begin(), const_address_cache_anchors.end(),
-              UINT32_MAX);
     std::fill(aes_chain_targets.begin(), aes_chain_targets.end(), UINT16_MAX);
-    std::fill(pshufd_direct.begin(), pshufd_direct.end(), false);
+    pshufd_direct.clear();
     current_ir = nullptr;
 }
 
 void RegAlloc::MapRegister(u32 id, ir::HostFPR fpr) {
+    ASSERT_MSG(!gpr_locations_frozen, "allocation changed after plan freeze");
     auto& map = alloc_result[id];
     map.type = FPR;
     map.slot = fpr.id;
@@ -671,6 +684,11 @@ void RegAlloc::MapRegister(u32 id, ir::HostFPR fpr) {
 }
 
 void RegAlloc::MapRegister(u32 id, ir::HostGPR gpr) {
+    ASSERT_MSG(!gpr_locations_frozen, "allocation changed after plan freeze");
+    if (allocation_replay && !target_planning) {
+        if (const auto* fixed = FixedGPRDefinitionAt(id); fixed && !fixed->preserved && fixed->home != gpr.id)
+            PlanFixedGPRDefinition(id, {});
+    }
     auto& map = alloc_result[id];
     map.type = GPR;
     map.slot = gpr.id;
@@ -678,6 +696,7 @@ void RegAlloc::MapRegister(u32 id, ir::HostGPR gpr) {
 }
 
 void RegAlloc::MapFixedRegister(u32 id, ir::HostGPR gpr) {
+    ASSERT_MSG(!gpr_locations_frozen, "allocation changed after plan freeze");
     ASSERT(IsFixedGPRHome(gpr.id));
     auto& map = alloc_result[id];
     map.type = GPR;
@@ -686,6 +705,11 @@ void RegAlloc::MapFixedRegister(u32 id, ir::HostGPR gpr) {
 }
 
 void RegAlloc::MapMemSpill(u32 id, ir::SpillSlot slot) {
+    ASSERT_MSG(!gpr_locations_frozen, "allocation changed after plan freeze");
+    if (allocation_replay && !target_planning) {
+        if (const auto* fixed = FixedGPRDefinitionAt(id); fixed && !fixed->preserved)
+            PlanFixedGPRDefinition(id, {});
+    }
     auto& map = alloc_result[id];
     map.type = MEM;
     map.slot = slot.offset;
@@ -695,6 +719,7 @@ void RegAlloc::MapMemSpill(u32 id, ir::SpillSlot slot) {
 void RegAlloc::MapSpillReload(u32 value_id, u32 first_use, u32 last_use,
                               ir::HostGPR reg, bool owns_all_uses,
                               bool fault_backed) {
+    ASSERT_MSG(!gpr_locations_frozen, "spill reload changed after plan freeze");
     value_id = ResolveId(value_id);
     ASSERT(alloc_result[value_id].type == MEM);
     ASSERT(first_use <= last_use);
@@ -720,6 +745,7 @@ void RegAlloc::MapSpillReload(u32 value_id, u32 first_use, u32 last_use,
 }
 
 void RegAlloc::MapReference(u32 from, u32 to) {
+    ASSERT_MSG(!gpr_locations_frozen, "allocation changed after plan freeze");
     auto& map = alloc_result[to];
     map.type = REF;
     map.slot = from;
@@ -727,22 +753,26 @@ void RegAlloc::MapReference(u32 from, u32 to) {
 }
 
 void RegAlloc::MarkHostWriteCoalesced(u32 id) {
+    ASSERT(!gpr_locations_frozen);
     ASSERT(id < coalesced_host_writes.size());
     coalesced_host_writes[id] = true;
 }
 
 void RegAlloc::MarkHostReadCoalesced(u32 id) {
+    ASSERT(!gpr_locations_frozen);
     ASSERT(id < coalesced_host_reads.size());
     coalesced_host_reads[id] = true;
 }
 
 void RegAlloc::MarkWidthChainCoalesced(u32 id, u32 anchor_id) {
+    ASSERT(!gpr_locations_frozen);
     ASSERT(id < width_chain_anchors.size());
     ASSERT(anchor_id < width_chain_anchors.size());
     width_chain_anchors[id] = anchor_id;
 }
 
 void RegAlloc::MarkLow32CopyCoalesced(u32 id, u32 source_id) {
+    ASSERT(!gpr_locations_frozen);
     ASSERT(id < low32_copy_sources.size());
     ASSERT(source_id < low32_copy_sources.size());
     low32_copy_sources[id] = source_id;
@@ -750,6 +780,7 @@ void RegAlloc::MarkLow32CopyCoalesced(u32 id, u32 source_id) {
 
 bool RegAlloc::FreezeWidthComponentOwner(u32 anchor_id, u16 target,
                                          bool high_zero) {
+    ASSERT(!gpr_locations_frozen);
     ASSERT(anchor_id < width_component_owners.size());
     auto& owner = width_component_owners[anchor_id];
     if (owner.Valid()) {
@@ -761,6 +792,7 @@ bool RegAlloc::FreezeWidthComponentOwner(u32 anchor_id, u16 target,
 }
 
 bool RegAlloc::CommitWidthComponentOwner(u32 anchor_id, u16 target) {
+    ASSERT(!gpr_locations_frozen);
     ASSERT(anchor_id < width_component_owners.size());
     auto& owner = width_component_owners[anchor_id];
     if (!owner.Valid() || owner.target != target) {
@@ -770,23 +802,21 @@ bool RegAlloc::CommitWidthComponentOwner(u32 anchor_id, u16 target) {
     return true;
 }
 
-void RegAlloc::MarkConstAddressCached(u32 id, u32 anchor_id) {
-    ASSERT(id < const_address_cache_anchors.size());
-    ASSERT(anchor_id < const_address_cache_anchors.size());
-    const_address_cache_anchors[id] = anchor_id;
-}
-
 void RegAlloc::MarkAesChainTied(u32 id, u16 target) {
+    ASSERT(!gpr_locations_frozen);
     ASSERT(id < aes_chain_targets.size());
     aes_chain_targets[id] = target;
 }
 
 void RegAlloc::MarkPshufdDirect(u32 id) {
-    ASSERT(id < pshufd_direct.size());
+    ASSERT(!gpr_locations_frozen);
+    ASSERT(id < alloc_result.size());
+    if (pshufd_direct.empty()) pshufd_direct.resize(alloc_result.size());
     pshufd_direct[id] = true;
 }
 
 bool RegAlloc::IsHostWriteCoalesced(u32 id) const {
+    if (target_elided_publications.contains(id)) return true;
     return id < coalesced_host_writes.size() && coalesced_host_writes[id];
 }
 
@@ -839,22 +869,13 @@ RegAlloc::GPRCoalesceState RegAlloc::SaveGPRCoalesceState() const {
 }
 
 void RegAlloc::RestoreGPRCoalesceState(GPRCoalesceState state) {
+    ASSERT(!gpr_locations_frozen);
     ASSERT(state.mappings.size() == alloc_result.size());
     alloc_result = std::move(state.mappings);
     coalesced_host_writes = std::move(state.host_writes);
     coalesced_host_reads = std::move(state.host_reads);
     width_chain_anchors = std::move(state.width_anchors);
     width_component_owners = std::move(state.width_owners);
-}
-
-bool RegAlloc::IsConstAddressCached(u32 id) const {
-    return id < const_address_cache_anchors.size() &&
-           const_address_cache_anchors[id] != UINT32_MAX;
-}
-
-u32 RegAlloc::ConstAddressCacheAnchor(u32 id) const {
-    ASSERT(IsConstAddressCached(id));
-    return const_address_cache_anchors[id];
 }
 
 bool RegAlloc::IsAesChainTied(u32 id) const {
@@ -866,8 +887,13 @@ u16 RegAlloc::AesChainTarget(u32 id) const {
     return aes_chain_targets[id];
 }
 
-bool RegAlloc::IsPshufdDirect(u32 id) const {
-    return id < pshufd_direct.size() && pshufd_direct[id];
+bool RegAlloc::SharesFPR(const ir::Value& left, const ir::Value& right) const {
+    if (!left.Defined() || !right.Defined() ||
+        left.Id() >= alloc_result.size() || right.Id() >= alloc_result.size()) return false;
+    const auto& lhs = alloc_result[ResolveId(left.Id())];
+    if (lhs.type != FPR || lhs.slot >= 32) return false;
+    const auto& rhs = alloc_result[ResolveId(right.Id())];
+    return rhs.type == FPR && lhs.slot == rhs.slot;
 }
 
 bool RegAlloc::IsFixedGPR(u32 id) const {
@@ -877,6 +903,7 @@ bool RegAlloc::IsFixedGPR(u32 id) const {
 }
 
 void RegAlloc::SetLiveEnd(u32 id, u32 end) {
+    ASSERT(!gpr_locations_frozen);
     ASSERT(id < live_ends.size());
     live_ends[id] = end;
 }
@@ -892,12 +919,14 @@ bool RegAlloc::ValueLiveAfter(const ir::Value& value,
 }
 
 void RegAlloc::SetActiveRegs(swift::u32 id, GPRSMask& gprs, FPRSMask& fprs) {
+    ASSERT(!gpr_locations_frozen);
     auto& map = alloc_result[id];
     map.dirty_gprs = gprs;
     map.dirty_fprs = fprs;
 }
 
 void RegAlloc::PermutePlacementCheckGPRHomes() {
+    ASSERT(!gpr_locations_frozen);
     constexpr u32 left = 14;
     constexpr u32 right = 15;
     const auto swap_mask_bits = [=](GPRSMask& mask) {
@@ -985,13 +1014,31 @@ RegAlloc::Type RegAlloc::ValueType(const ir::Value& value) const {
                      "[OOB-ValueType] value.Id()=%u alloc_size=%zu def=%p op=%u\n",
                      vid, alloc_result.size(), (void*)def,
                      def ? (unsigned)def->GetOp() : 0xffffu);
-#if defined(__linux__)
+#if defined(__linux__) && (!defined(__ANDROID__) || __ANDROID_API__ >= 33)
         void* bt[32];
         int n = backtrace(bt, 32);
         backtrace_symbols_fd(bt, n, STDERR_FILENO);
 #endif
     }
     return alloc_result[ResolveId(vid)].type;
+}
+
+void RegAlloc::FlattenRefChains() {
+    const auto count = static_cast<u32>(alloc_result.size());
+    for (u32 id = 0; id < count; ++id) {
+        if (alloc_result[id].type != REF) continue;
+        u32 cursor = id;
+        // Bounded walk: a cycle would be an allocator bug; leave the
+        // entry untouched instead of looping forever.
+        for (u32 steps = 0; steps <= count; ++steps) {
+            const u32 next = alloc_result[cursor].slot;
+            if (next >= count || alloc_result[next].type != REF) {
+                if (next < count) alloc_result[id].slot = next;
+                break;
+            }
+            cursor = next;
+        }
+    }
 }
 
 u32 RegAlloc::ResolveId(u32 id) const {

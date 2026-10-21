@@ -11,97 +11,23 @@
 
 namespace swift::runtime::ir {
 
-ValueType Imm::GetType() const { return type; }
-
-u64 Imm::Get() const {
-    switch (type) {
-        case ValueType::U8:
-            return imm_u8;
-        case ValueType::U16:
-            return imm_u16;
-        case ValueType::U32:
-            return imm_u32;
-        case ValueType::U64:
-            return imm_u64;
-        case ValueType::S8:
-            return static_cast<u8>(imm_s8);
-        case ValueType::S16:
-            return static_cast<u16>(imm_s16);
-        case ValueType::S32:
-            return static_cast<u32>(imm_s32);
-        case ValueType::S64:
-            return static_cast<u64>(imm_s64);
-        default:
-            return 0;
-    }
-}
-
-s64 Imm::GetSigned() const {
-    if (!IsSigned()) {
-        return static_cast<s64>(Get());
-    }
-    switch (type) {
-        case ValueType::S8:
-            return imm_s8;
-        case ValueType::S16:
-            return imm_s16;
-        case ValueType::S32:
-            return imm_s32;
-        case ValueType::S64:
-            return imm_s64;
-        default:
-            return 0;
-    }
-}
-
-bool Imm::IsSigned() const {
-    return type >= ValueType::S8 && type <= ValueType::S64;
-}
-
-bool Imm::IsNegate() const {
-    if (IsSigned()) {
-        return GetSigned() < 0;
-    } else {
-        return false;
-    }
-}
-
-Value Value::SetType(ValueType type) {
-    ASSERT(Def());
-    Def()->SetReturn(type);
-    return *this;
-}
-
-Value Value::SetCastType(ValueType type) {
-    ASSERT(Def());
-    cast_type = type;
-    return *this;
-}
-
-ValueType Value::Type() const {
-    ASSERT(Def());
-    if (cast_type == ValueType::VOID) {
-        return Def()->ReturnType();
-    } else {
-        return cast_type;
-    }
+Value Value::WithDefinition(Inst* definition) const {
+    ASSERT(Def() && definition);
+    ASSERT(Type() != ValueType::VOID && definition->ReturnType() != ValueType::VOID);
+    return Value{definition}.SetCastType(Type());
 }
 
 void Value::Use() const {
     ASSERT(Def());
+    ASSERT(Def()->num_use != UINT32_MAX);
     Def()->num_use++;
 }
 
 void Value::UnUse() const {
     ASSERT(Def());
+    ASSERT(Def()->num_use != 0);
     Def()->num_use--;
 }
-
-u16 Value::Id() const { return Def()->Id(); }
-
-bool Value::operator==(const Value& rhs) const { return inst == rhs.inst; }
-
-bool Value::operator!=(const Value& rhs) const { return !(rhs == *this); }
 
 ArgClass DataClass::ToArgClass() const {
     if (type == ArgType::Value) {
@@ -322,8 +248,6 @@ Operand::Operand(const Type& left, const Type& right, Op op) : left(left), right
 Operand::Operand(const Value& left, const Imm& right, Op op) : left(left), right(right), op(op) {}
 
 Operand::Operand(const Value& left, const Value& right, Op op) : left(left), right(right), op(op) {}
-
-Operand::Op Operand::GetOp() const { return op; }
 
 Uniform::Uniform(u32 offset, ValueType type) : type(type), offset(offset) {}
 

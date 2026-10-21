@@ -278,7 +278,7 @@ void JitTranslator::PrintBlockDensity(
                      statistics.pfaf_density_bytes[5] >> 16);
         PrintBoundaryDensity(block->GetStartLocation().Value(), density_bytes[4]);
     }
-    if (region_edges_active && (density || context.ExecProfileEnabled())) {
+    if (RegionEdgesActive() && (density || context.ExecProfileEnabled())) {
         std::fprintf(stderr,
                      "[svm-region-edge] pc=0x%llx edges=%u cycles=%u "
                      "fallthrough=%u local_branch_bytes=%u poll_bytes=%u\n",

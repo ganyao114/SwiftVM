@@ -119,6 +119,8 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
         auto module = address_space.MapModule(
                 LocationDescriptor{location}, LocationDescriptor{location + 0x10},
                 ModuleConfig{});
+        alloc.SetAllocationUnit(block, nullptr, {});
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
@@ -282,6 +284,7 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
                            address_space.GetTrampolines().GetGPRRegs(),
                            address_space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
             RegisterAllocPass::Run(block.get(), &alloc, false, FeatureSet{});
+            alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
             arm64::JitContext context{address_space.GetDefaultModule(), alloc};
             arm64::JitTranslator translator{context};
             translator.Translate(block.get());
@@ -402,6 +405,8 @@ TEST_CASE("AES resident ownership ties only complete verified chains") {
         auto module = address_space.MapModule(
                 LocationDescriptor{location}, LocationDescriptor{location + 0x10},
                 module_config);
+        alloc.SetAllocationUnit(block, nullptr, {});
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
@@ -785,6 +790,7 @@ TEST_CASE("AES KEYGEN compact uses the immutable runtime prefix and exact loweri
                 LocationDescriptor{block->GetStartLocation().Value()},
                 LocationDescriptor{block->GetStartLocation().Value() + 0x10},
                 module_config);
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
@@ -982,6 +988,8 @@ TEST_CASE("PSHUFD direct lowering requires an exclusively shared canonical mask"
         auto module = address_space.MapModule(
                 LocationDescriptor{location}, LocationDescriptor{location + 0x10},
                 ModuleConfig{});
+        alloc.SetAllocationUnit(block, nullptr, {});
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
@@ -1008,9 +1016,9 @@ TEST_CASE("PSHUFD direct lowering requires an exclusively shared canonical mask"
         DYNAMIC_SECTION(name << " uses one-instruction shuffles") {
             auto item = make_case(0xb0400 + control, control, false, false, true);
             auto alloc = allocate(item.block.get());
+            auto code = emit(item.block.get(), *alloc, 0xb0500 + control);
             REQUIRE(alloc->IsPshufdDirect(item.indexes.Id()));
             REQUIRE(alloc->IsPshufdDirect(item.first.Id()));
-            auto code = emit(item.block.get(), *alloc, 0xb0500 + control);
             REQUIRE(code.find(mnemonic) != std::string::npos);
             REQUIRE(code.find("tbl") == std::string::npos);
         }
@@ -1033,8 +1041,8 @@ TEST_CASE("PSHUFD direct lowering requires an exclusively shared canonical mask"
             auto item = make_case(0xb0900 + mixed * 0x20 + corrupt_mask * 0x40,
                                   0x4E, mixed, corrupt_mask, true);
             auto alloc = allocate(item.block.get());
-            REQUIRE_FALSE(alloc->IsPshufdDirect(item.indexes.Id()));
             auto code = emit(item.block.get(), *alloc, 0xb0a00);
+            REQUIRE_FALSE(alloc->IsPshufdDirect(item.indexes.Id()));
             REQUIRE(code.find("tbl") != std::string::npos);
         }
     }
@@ -1044,8 +1052,8 @@ TEST_CASE("PSHUFD direct lowering requires an exclusively shared canonical mask"
         item.first.Def()->SetArg(0, item.indexes);
         item.block->ReIdInstr();
         auto alloc = allocate(item.block.get());
-        REQUIRE_FALSE(alloc->IsPshufdDirect(item.indexes.Id()));
         auto code = emit(item.block.get(), *alloc, 0xb0c00);
+        REQUIRE_FALSE(alloc->IsPshufdDirect(item.indexes.Id()));
         REQUIRE(code.find("tbl") != std::string::npos);
     }
 }
@@ -1135,6 +1143,8 @@ TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window")
         auto module = address_space.MapModule(
                 LocationDescriptor{location}, LocationDescriptor{location + 0x10},
                 module_config);
+        alloc.SetAllocationUnit(block, nullptr, {});
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
@@ -1340,6 +1350,8 @@ TEST_CASE("SHUFPS hot immediates tie only an exact last-use destination") {
         auto module = address_space.MapModule(
                 LocationDescriptor{location}, LocationDescriptor{location + 0x10},
                 module_config);
+        alloc.SetAllocationUnit(block, nullptr, {});
+        alloc.CompleteGPRAllocation(module);
         arm64::JitContext context{module, alloc};
         arm64::JitTranslator translator{context};
         translator.Translate(block);

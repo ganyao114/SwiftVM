@@ -436,7 +436,7 @@ void JitTranslator::EmitVecFScalarBinaryTied(ir::Inst* inst, u32 lane_bits) {
     // destination first would overwrite a right operand sharing that register.
     if (result.GetCode() == left.GetCode()) {
         if (sse_scalar_tie && result.GetCode() >= 16) {
-            ASSERT_MSG(ReproveScalarFPRTie(inst),
+        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::ScalarTie),
                        "scalar FPR fixed-home tie proof diverged at IR {}", inst->Id());
         }
     }
@@ -1050,7 +1050,7 @@ void JitTranslator::EmitVecFCmp(ir::Inst* inst) {
     auto right = GetVecScalarOperand(inst->GetArg<ir::Value>(1),
                                      inst->GetArg<ir::Imm>(2).Get());
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
-    const bool compact = inst->GetArg<ir::Imm>(3).Get() != 0;
+    const bool compact = IsCompactFCmp(ir::Value{inst});
     // FCMP overwrites host NZCV.  Guest decoding normally puts an AdvancePC
     // boundary immediately before us; keep the IR opcode safe on its own too.
     MergeNZCV();
@@ -1182,7 +1182,7 @@ void JitTranslator::EmitVecFCvtIntToFloat(ir::Inst* inst) {
     auto source = context.X(inst->GetArg<ir::Value>(0));
     const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
     const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
-    if (const auto* recipe = resident_scalar_fpr_analysis.FindConversion(inst)) {
+    if (const auto* recipe = ScalarPreparation().resident.FindConversion(inst)) {
         auto fp = VRegister::GetQRegFromCode(recipe->target);
         if (dst_bits == 32) {
             if (src_bits == 32)

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <cstdio>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -32,7 +34,10 @@ struct StateStorage {
 };
 
 inline Config TestConfig() {
-    return {.loc_start = 0, .loc_end = UINT64_MAX, .enable_jit = true,
+    // The address-node index reserves eight bytes per MiB of guest range.
+    // UINT64_MAX needs 128 TiB of contiguous VA, beyond native SV39 hosts.
+    // A 48-bit test range covers the board's code pointers and reserves 2 GiB.
+    return {.loc_start = 0, .loc_end = u64{1} << 48, .enable_jit = true,
             .backend_isa = kRiscv64, .uniform_buffer_size = 4096,
             .static_program = true, .global_opts = Optimizations::None,
             .stack_alignment = 16};
@@ -43,11 +48,31 @@ extern "C" int SwiftRiscvCheckABI(BlockFn fn, backend::State* state);
 extern "C" u64 SwiftRiscvFaultHelper(u64 address);
 #endif
 
+// Direct entry calls and every worker join must finish before this guard's scope ends.
+class QuiescentRawCache final {
+public:
+    explicit QuiescentRawCache(backend::CodeCache& cache) : cache(cache) {}
+    ~QuiescentRawCache() noexcept {
+        if (!cache.ReleaseAfterQuiescence().Complete()) {
+            std::fputs("FAIL: quiescent raw cache release incomplete\n", stderr);
+            std::terminate();
+        }
+    }
+    QuiescentRawCache(const QuiescentRawCache&) = delete;
+    QuiescentRawCache& operator=(const QuiescentRawCache&) = delete;
+    QuiescentRawCache(QuiescentRawCache&&) = delete;
+    QuiescentRawCache& operator=(QuiescentRawCache&&) = delete;
+
+private:
+    backend::CodeCache& cache;
+};
+
 struct Compiled {
     Config config{TestConfig()};
     rv::JitContext context;
     rv::JitTranslator translator{context};
     backend::CodeCache cache{config, 1u << 20, FeatureSet{}};
+    QuiescentRawCache release_cache{cache};
     BlockFn fn{};
     explicit Compiled(ir::Block* block, bool cache_scalars = true,
                       rv::HostFeatures features = rv::HostFeatures::Detect(),
@@ -62,6 +87,9 @@ struct Compiled {
 
 void NativeScalarBits(bool zbb = false);
 void NativeScalarALU(bool zbb = false);
+void NativeScalarShifts();
+void ScalarShiftBenchmark();
+void ScalarFeatureBenchmark();
 void NativeFlags();
 void NativeAtomics();
 void NativeWide(bool vector = false);

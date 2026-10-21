@@ -4,6 +4,9 @@
 
 #pragma once
 
+#include <memory>
+#include <utility>
+#include "base/scope_exit.h"
 #include "perf_stats.h"
 #include "types.h"
 
@@ -29,10 +32,19 @@ public:
     template <typename... Args>
         requires std::is_constructible_v<T, Args...>
     T* Create(Args&&... args) {
-        return std::construct_at(Memory(), std::forward<Args>(args)...);
+        ASSERT_MSG(!constructing, "same-pool constructor reentry is not supported");
+        constructing = true;
+        auto reset = ScopeExit([&] { constructing = false; });
+        auto* chunk = FreeChunk();
+        auto* object = std::construct_at(std::addressof(chunk->storage[chunk->used_objects].object),
+                                         std::forward<Args>(args)...);
+        // A throwing constructor must not enter the destructible prefix.
+        ++chunk->used_objects;
+        return object;
     }
 
     void ReleaseContents() {
+        ASSERT_MSG(!constructing, "pool release during construction is not supported");
         if (chunks.empty()) {
             return;
         }
@@ -73,10 +85,12 @@ private:
         }
 
         Chunk& operator=(Chunk&& rhs) noexcept {
+            if (this == &rhs) return *this;
             Release();
             used_objects = std::exchange(rhs.used_objects, 0);
             num_objects = std::exchange(rhs.num_objects, 0);
             storage = std::move(rhs.storage);
+            return *this;
         }
 
         Chunk(Chunk&& rhs) noexcept
@@ -91,7 +105,10 @@ private:
         }
 
         void Release() {
-            std::destroy_n(storage.get(), used_objects);
+            if constexpr (destruct) {
+                for (size_t i = 0; i < used_objects; ++i)
+                    std::destroy_at(std::addressof(storage[i].object));
+            }
             used_objects = 0;
         }
 
@@ -99,11 +116,6 @@ private:
         size_t num_objects{};
         std::unique_ptr<Storage[]> storage;
     };
-
-    [[nodiscard]] T* Memory() {
-        Chunk* const chunk{FreeChunk()};
-        return &chunk->storage[chunk->used_objects++].object;
-    }
 
     [[nodiscard]] Chunk* FreeChunk() {
         if (node->used_objects != node->num_objects) {
@@ -116,6 +128,7 @@ private:
     Chunk* node{};
     Vector<Chunk> chunks;
     size_t new_chunk_size{};
+    bool constructing{};
 };
 
 }  // namespace swift::runtime

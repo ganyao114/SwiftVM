@@ -116,7 +116,7 @@ enum SwiftAotStatus : int {
 inline constexpr char kAotMagic[8] = {'S', 'V', 'M', 'A', 'O', 'T', '\0', '\1'};
 // 4: block entry flags distinguish public entries and guest-only extents;
 //    RV64 units carry allocation-local direct-link JAL sites.
-inline constexpr std::uint64_t kAotFormatVersion = 4;
+inline constexpr std::uint64_t kAotFormatVersion = 6;
 
 inline constexpr const char* kAotCodeSectionName = ".svmaot.text";
 inline constexpr const char* kAotInfoSectionName = ".svmaot.info";

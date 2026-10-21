@@ -14,6 +14,7 @@
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/smc_tracker.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/ir/opts/register_alloc_pass.h"
 #include "translator/x86/translator.h"
 
@@ -33,6 +34,7 @@ enum class PinnedReadShape {
     CopyU16,
     LoadU16,
     SignedLoadU16,
+    LoadByteExtend,
     LoadU8Flags,
     LoadU8SavedFlags,
     LoadNarrowSubtract,
@@ -49,7 +51,8 @@ enum class PinnedReadShape {
 };
 
 std::vector<std::string> EmitPinnedRead(PinnedReadShape shape, bool reuse_read,
-                                        ValueType type = ValueType::U32) {
+                                        ValueType type = ValueType::U32,
+                                        unsigned* target_replays = nullptr) {
     Config config{
             .loc_start = 0,
             .loc_end = 1ull << 48,
@@ -77,13 +80,15 @@ std::vector<std::string> EmitPinnedRead(PinnedReadShape shape, bool reuse_read,
         shape == PinnedReadShape::SignedLoadU16) {
         type = ValueType::U16;
     } else if (shape == PinnedReadShape::LoadU8Flags ||
-               shape == PinnedReadShape::LoadU8SavedFlags) {
+               shape == PinnedReadShape::LoadU8SavedFlags ||
+               shape == PinnedReadShape::LoadByteExtend) {
         type = ValueType::U8;
     }
     auto value = shape == PinnedReadShape::LoadU16 ||
                          shape == PinnedReadShape::SignedLoadU16 ||
                          shape == PinnedReadShape::LoadU8Flags ||
                          shape == PinnedReadShape::LoadU8SavedFlags ||
+                         shape == PinnedReadShape::LoadByteExtend ||
                          shape == PinnedReadShape::LoadNarrowSubtract ||
                          shape == PinnedReadShape::LoadCallerNarrowSubtract
             ? block->LoadMemory(Operand{block->LoadImm(Imm{swift::u64{0x1000}})
@@ -91,7 +96,12 @@ std::vector<std::string> EmitPinnedRead(PinnedReadShape shape, bool reuse_read,
                       .SetType(type)
             : block->GetHostGPR(HostRegIndex(source_index), Imm{0u})
                       .SetType(type);
-    if (shape == PinnedReadShape::SignedLoadU16) {
+    if (shape == PinnedReadShape::LoadByteExtend) {
+        auto extended = block->ZeroExtend32(value).SetType(ValueType::U32);
+        auto result = block->Xor(extended, Operand{Imm{0x5au}})
+                              .SetType(ValueType::U32);
+        block->StoreUniform(Uniform{64, ValueType::U32}, result);
+    } else if (shape == PinnedReadShape::SignedLoadU16) {
         auto signed_value = block->SignExtend(value).SetType(ValueType::S32);
         auto extended = block->ZeroExtend32To64(signed_value)
                                 .SetType(ValueType::U64);
@@ -120,7 +130,9 @@ std::vector<std::string> EmitPinnedRead(PinnedReadShape shape, bool reuse_read,
         auto result = block->Sub(left, Operand{alias}).SetType(type);
         block->SaveFlags(result, Flags::All);
     } else if (shape == PinnedReadShape::LoadU8Flags ||
-               shape == PinnedReadShape::LoadU8SavedFlags) {
+               shape == PinnedReadShape::LoadU8SavedFlags ||
+                         shape == PinnedReadShape::LoadByteExtend ||
+               shape == PinnedReadShape::LoadByteExtend) {
         auto extended = block->ZeroExtend32To64(value).SetType(ValueType::U64);
         block->SetHostGPR(extended, HostRegIndex(23), Imm{0u});
         auto alias = block->BitExtract(extended, Imm{0u}, Imm{8u})
@@ -257,6 +269,8 @@ std::vector<std::string> EmitPinnedRead(PinnedReadShape shape, bool reuse_read,
             break;
         }
     }
+    alloc.CompleteGPRAllocation(module);
+    if (target_replays) *target_replays = alloc.TargetReplayCount();
     arm64::JitContext context{module, alloc};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -305,6 +319,28 @@ bool HasShiftPreparation(const std::vector<std::string>& lines) {
 }
 
 }  // namespace
+
+TEST_CASE("narrow pinned reads need no target replay", "[fixed-gpr]") {
+    for (auto type : {ValueType::U8, ValueType::U16, ValueType::U32}) {
+        CAPTURE(type);
+        unsigned replays = UINT32_MAX;
+        (void)EmitPinnedRead(PinnedReadShape::Subtract, false, type, &replays);
+        REQUIRE(replays == 0);
+    }
+    unsigned replays = UINT32_MAX;
+    (void)EmitPinnedRead(PinnedReadShape::SelfAnd, false, ValueType::U32, &replays);
+    REQUIRE(replays == 0);
+    replays = UINT32_MAX;
+    (void)EmitPinnedRead(PinnedReadShape::SignExtend, false, ValueType::U32, &replays);
+    REQUIRE(replays == 0);
+}
+
+TEST_CASE("a tied byte load extension needs no clean", "[fixed-gpr]") {
+    const auto lines = EmitPinnedRead(PinnedReadShape::LoadByteExtend, false);
+    REQUIRE(Count(lines, "uxtb ", "") == 0);
+    REQUIRE(Count(lines, "ldapurb ", "") + Count(lines, "ldrb ", "") +
+                    Count(lines, "ldurb ", "") >= 1);
+}
 
 TEST_CASE("one pinned GPR consumer reuses its fixed W view") {
     const auto lines = EmitPinnedRead(PinnedReadShape::SelfAnd, false);
@@ -396,7 +432,13 @@ TEST_CASE("a pinned narrow load keeps a saved flag alias in its fixed home") {
     REQUIRE(Count(lines, "ldrb w23", "") == 1);
     REQUIRE(Count(lines, "mov w23", "") == 0);
     REQUIRE(Count(lines, "uxtb ", "") == 0);
-    REQUIRE(Count(lines, "w23, lsl #24", "") == 1);
+    if (GetSvmConfig().flags_regs) {
+        REQUIRE(Count(lines, "w23, lsl #24", "") == 1);
+    } else {
+        REQUIRE(Count(lines, "sxtb ", "w23") == 1);
+        REQUIRE(Count(lines, "tst ", "") == 1);
+        REQUIRE(Count(lines, "bfxil x26, x23", "") == 1);
+    }
 }
 
 TEST_CASE("a pinned GPR supplies a sole memory address without a copy") {
@@ -413,10 +455,11 @@ TEST_CASE("a pinned GPR supplies a sole memory address without a copy") {
 
 TEST_CASE("a superseded pinned GPR publication is omitted without observers") {
     const auto direct = EmitPinnedRead(PinnedReadShape::OverwrittenWrite, false);
-    REQUIRE(Count(direct, "mov w23", "w1") == 1);
+    INFO([&] { std::string text; for (const auto& line : direct) text += line + '\n'; return text; }());
+    REQUIRE(Count(direct, "mov w23", "") == 1);
 
     const auto faulting = EmitPinnedRead(PinnedReadShape::OverwrittenWriteFault, false);
-    REQUIRE(Count(faulting, "mov w23", "w1") == 2);
+    REQUIRE(Count(faulting, "mov w23", "") == 2);
 }
 
 TEST_CASE("a later pinned GPR capture use keeps the read move") {

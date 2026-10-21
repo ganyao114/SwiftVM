@@ -136,7 +136,17 @@ struct Config {
     // addition to their SVM_* environment selectors) so AOT/JIT cache
     // identities cannot alias when an embedder selects them directly.
     bool mem_hostbase_fold{false};
-    bool induct_tie{false};
+    // Emit scalar RCpc accesses without alignment dispatch; unaligned or
+    // 16-byte-window-crossing accesses fault (SIGBUS) and are emulated by
+    // the runtime fault handler. Adaptive: a guest block whose faulting
+    // site reaches AddressSpace::kRcpcFaultThreshold emulated faults is
+    // recompiled in the checked form. Only valid when the embedder
+    // installs the guest map oracle (SignalHandler::SetGuestMapCheck) so
+    // the handler can prove the full access range is guest-mapped
+    // before touching it. This struct default stays false; the x86
+    // translator enables it from SVM_RCPC_FAULT_EMULATE (default on)
+    // gated on the oracle being installed.
+    bool rcpc_fault_emulate{false};
     // 函数 region 可把同 region 的直接出口改成本地标签；嵌入方默认仍使用块入口 ABI。
     bool region_edges{false};
     // Memory ordering for guest accesses, copied into each decoder.
