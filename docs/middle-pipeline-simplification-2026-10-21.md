@@ -284,3 +284,5 @@ U2 Declare 侧配方（copy/select/spill 发表）改为放置感知：仅当 Va
 U3 narrow-preserved 同理评估（其 def 由分配器硬保证，路径不同，单独处理）。
 U4 三类清零后删 Bind/Replay/Save-RestoreTargetDeclarations；FixedGPRConstraintsHold 降为 SVM_VERIFY_PLAN 审计。
 风险门不变：每刀斜率容忍 1%、spill 总数 +2% 停。
+
+方向 1 U1 普查结论（2026-10-21）：Bind writer 7 个候选在 Bind 时刻 placed 率 0/7（5 个 Add 为 MEM/spilled，SelectZero 在 x14 而非目标 x29）。早门普查（按 target=6/22/29 聚合）：uses 门压倒性主导（Add@22 共 110 次）。结合配方来源定位：writer Add 不是 spilled-publication 配方（该配方要求单use），而是 copy 配方的 transferred-use 生产者——Add 除发表链外还有经 home 直读的后续消费者，copy matcher 以 RegisterUseHome 登记这些 selected use 并 AssignValueHome，Bind 再以 fixed def 强制驻留到 last_use。早规划 uses==1 门必然拒绝此类形状；且 copy matcher 依赖分配后事实（IsGPRMappedTo 等），无法整体前移。可行统一形态：分配器增加"value→固定 home"的软 tie 偏好（现有 tie 仅支持 value↔value），Declare 配方改为放置感知（已放置才声明、否则普通 copy），Bind 退化为纯校验后删除。此为分配器新机制，属多日工作，本轮停在设计与证据层。
