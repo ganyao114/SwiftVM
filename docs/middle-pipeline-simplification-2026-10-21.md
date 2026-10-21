@@ -269,3 +269,18 @@ Step 5b 续探（2026-10-21，阴性）：uniform pass 残余跳过实测无效�
 稳态构成复测（2026-10-21，检查点 2a611ae 后）：静态 host dump 普查（449 units/77863 条）mov 18.5%（reg,reg 10.5%）、分支 16.5%、msr+mrs nzcv 6.2%、RCpc 访存约 7.9%。动态计数（SVM_EXEC_PROF，2000 iter）：exits 144.9M（约 72k/iter，direct 89%）、region_edges 114.6M、cycle_polls 38.5M、fallthroughs 30.2M、gpr_uniform 10.4M、dispatch 仅 451。斜率 1132.5k/iter 对 72k exits/iter 约 15.6 条/exit——块粒度细、边界序列是结构性大头；direct-link 仅 linked 472/1345 sites。后续斜率工作应优先降 exit 数（区域增大/链接率）或 per-exit 序列长度，而非单条指令微优化。
 
 Step 4c writer 类续探（2026-10-21，阴性，已回退）：用户确认接受 wrapped-Add 前移取舍后实测三步。(1) 仅解除 PrepareEarlyResultHomes 的 wrapped Add/Sub/And 排除：Bind writer 仍 7/7，该门非绑定约束。(2) 门普查（全部 SetHostGPR 发表）：pub_shape 4363、width 287、unwrap 169、uses 4640、op 1255、accepted 2825——主导拒绝是 producer->GetUses(false)!=1。(3) 放宽 uses==1 并把早 def 的 end/last_use 延长到 VersionUseEnds 点、冲突检查同步延长：两次 abort——先是 placed 检查（ValueGPR != home），把多use 的 publication 对齐 Bind 的 UINT32_MAX 后变为"fixed value 被自身发表 SetHostGPR 覆写"。结论：fixed def 的 publication/end 字段在分配前规划与 Bind 两处语义不同（发表写识别、区间保留与 checker 的 writers 模型耦合），writer 类前移需要先做字段语义设计，不能靠逐门放宽迭代。实验已整体回退至检查点 2a611ae 并复门 IDENTICAL。
+
+方向 1 设计（2026-10-21，FixedGPRDefinition 字段语义盘点与统一路径）：
+
+字段语义差异（early=PrepareFixedGPRConstraints 分配前；Bind=Declare 后）：
+- publication：early 指"发表该值的 SetHostGPR"，分配器据此 MarkHostWriteCoalesced（发射跳过该 store，分配器拥有省略）；Bind 的 writer/narrow 指 Skip 发表消费点或 MAX（省略由 planner 的 publications 计划拥有，MAX 避免双重标记）。transfer 两边同指 SetHostGPR——这是 transfer 类能直接前移的原因。
+- end：checker 统一按"无覆写窗口上界"读；early reads 写 last consumer、early result 写 publication、Bind 写驻留终点（last selected use）。early result 的 end=publication 弱于 Bind 需求，故 Bind 必重规划。
+- last_use：分配器 SetLiveEnd 的活性覆盖；两边多与各自 end 相同，end 统一后自动对齐。
+- 自身发表写豁免：checker 对 (after, before) 内覆写者的豁免有两条——consumed_inputs（planner RecordPhysicalWrite 登记的消费写，Bind 检查时才有）与 transparent 链（仅 width<=4 或窄常量）。early 检查（RunVerified）没有 consumed_inputs，故 early def 的 end 一旦越过自身发表点即被判覆写（4c 实验 abort 之二）。abort 之一（placed 失败）则是多use 生产者可被 spill，硬 fixed def 无法在分配前保证放置。
+
+结论：writer 类不能用硬 fixed def 在分配前完备预着色；Bind 的存续理由是事后验证。统一路径改走"软提示 + 声明时按实测放置决定"：
+U1 普查：Bind writer 候选在 Bind 时刻 producer 已实际放置在目标 home 的比例（placed 率）。
+U2 Declare 侧配方（copy/select/spill 发表）改为放置感知：仅当 ValueGPR(producer)==target（或已有 fixed def 保证）时才 AssignValueHome，否则走普通 copy 配方——声明不再需要 Bind 兜底，Bind writer 变更应随之清零。
+U3 narrow-preserved 同理评估（其 def 由分配器硬保证，路径不同，单独处理）。
+U4 三类清零后删 Bind/Replay/Save-RestoreTargetDeclarations；FixedGPRConstraintsHold 降为 SVM_VERIFY_PLAN 审计。
+风险门不变：每刀斜率容忍 1%、spill 总数 +2% 停。
