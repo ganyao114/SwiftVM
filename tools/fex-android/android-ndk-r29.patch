@@ -1,0 +1,356 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7f02e2a..e8e0b3a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -220,7 +220,12 @@ if (ENABLE_COMPILE_TIME_TRACE)
+   link_libraries(-ftime-trace)
+ endif()
+ 
+-set (PTHREAD_LIB pthread)
++if (ANDROID)
++  # Bionic provides pthread symbols in libc.
++  set(PTHREAD_LIB "")
++else()
++  set(PTHREAD_LIB pthread)
++endif()
+ 
+ if (USE_LINKER)
+   message(STATUS "Overriding linker to: ${USE_LINKER}")
+diff --git a/FEXCore/CMakeLists.txt b/FEXCore/CMakeLists.txt
+index 92a40fb..b3c2c66 100644
+--- a/FEXCore/CMakeLists.txt
++++ b/FEXCore/CMakeLists.txt
+@@ -49,7 +49,7 @@ if (OVERRIDE_VERSION STREQUAL "detect")
+       OUTPUT_STRIP_TRAILING_WHITESPACE
+     )
+     execute_process(
+-      COMMAND ${GIT_EXECUTABLE} describe --abbrev=7
++      COMMAND ${GIT_EXECUTABLE} describe --always --dirty --abbrev=7
+       WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+       OUTPUT_VARIABLE GIT_DESCRIBE_STRING
+       ERROR_QUIET
+diff --git a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
+index 88c7387..dfef042 100644
+--- a/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
++++ b/FEXCore/Source/Interface/Core/ArchHelpers/Arm64Emitter.cpp
+@@ -73,21 +73,26 @@ namespace x64 {
+     ARMEmitter::Reg::r8, ARMEmitter::Reg::r16, ARMEmitter::Reg::r17,
+   };
+ 
+-  constexpr std::array<ARMEmitter::Register, 7> RA = {
++  constexpr auto RA = std::to_array<ARMEmitter::Register>({
+     // All these callee saved
+     ARMEmitter::Reg::r20, ARMEmitter::Reg::r21, ARMEmitter::Reg::r22, ARMEmitter::Reg::r23,
+-    ARMEmitter::Reg::r24, ARMEmitter::Reg::r30, ARMEmitter::Reg::r18,
+-  };
++    ARMEmitter::Reg::r24, ARMEmitter::Reg::r30,
++#ifndef __ANDROID__
++    ARMEmitter::Reg::r18,
++#endif
++  });
+ 
+   constexpr unsigned RAPairs = 4;
+ 
+   // Dynamic GPRs
+-  constexpr std::array<ARMEmitter::Register, 2> PreserveAll_Dynamic = {
++  constexpr auto PreserveAll_Dynamic = std::to_array<ARMEmitter::Register>({
++#ifndef __ANDROID__
+     ARMEmitter::Reg::r18,
++#endif
+     ARMEmitter::Reg::r30,
+-  };
++  });
+ 
+-  constexpr std::array<ARMEmitter::Register, 2> NotPreserved_Dynamic = PreserveAll_Dynamic;
++  constexpr auto NotPreserved_Dynamic = PreserveAll_Dynamic;
+ 
+   // All are caller saved
+   constexpr std::array<ARMEmitter::VRegister, 16> SRAFPR = {
+diff --git a/FEXCore/Source/Utils/AllocatorHooks.cpp b/FEXCore/Source/Utils/AllocatorHooks.cpp
+index 60bfabf..b5ee36b 100644
+--- a/FEXCore/Source/Utils/AllocatorHooks.cpp
++++ b/FEXCore/Source/Utils/AllocatorHooks.cpp
+@@ -5,6 +5,9 @@
+ 
+ #include <malloc.h>
+ #include <stdlib.h>
++#ifdef __ANDROID__
++#include <unistd.h>
++#endif
+ 
+ namespace FEXCore::Allocator {
+ 
+@@ -71,7 +74,11 @@ void* memalign(size_t align, size_t s) {
+   return ::memalign(align, s);
+ }
+ void* valloc(size_t size) {
++#ifdef __ANDROID__
++  return ::memalign(::getpagesize(), size);
++#else
+   return ::valloc(size);
++#endif
+ }
+ int posix_memalign(void** r, size_t a, size_t s) {
+   return ::posix_memalign(r, a, s);
+diff --git a/FEXCore/include/FEXCore/fextl/functional.h b/FEXCore/include/FEXCore/fextl/functional.h
+index 479604a..11a289e 100644
+--- a/FEXCore/include/FEXCore/fextl/functional.h
++++ b/FEXCore/include/FEXCore/fextl/functional.h
+@@ -43,9 +43,16 @@ public:
+       // First, relocate argument to a location returned from FEX's allocators
+       using Fnoref = std::remove_reference_t<F>;
+       storage = Alloc(std::alignment_of_v<Fnoref>, sizeof(Fnoref));
+-      auto moved_lambda = new (storage) Fnoref {std::move(f)};
++      [[maybe_unused]] auto moved_lambda = new (storage) Fnoref {std::move(f)};
+ 
+       // Second, wrap the relocated argument in a single-capture lambda
++#ifdef __ANDROID__
++      // libc++ does not expose the nothrow/SBO guarantee used below. Invoke
++      // the FEX-allocated callable directly so allocator ownership is kept.
++      external_invoke = [](void* storage, Args... args) -> R {
++        return (*static_cast<Fnoref*>(storage))(std::forward<Args>(args)...);
++      };
++#else
+       auto wrapped_lambda = [moved_lambda](Args... args) {
+         return (*moved_lambda)(std::forward<Args>(args)...);
+       };
+@@ -56,6 +63,7 @@ public:
+                                                                     "does not support implementing "
+                                                                     "fextl::move_only_function");
+       internal = std::move(wrapped_lambda);
++#endif
+ 
+       // Finally, if a destructor must be called, generate a pointer to its destructor
+       if constexpr (!std::is_trivially_destructible_v<Fnoref>) {
+@@ -74,9 +82,20 @@ public:
+   }
+ 
+   move_only_function& operator=(move_only_function&& other) noexcept {
++#ifdef __ANDROID__
++    if (this == &other) {
++      return *this;
++    }
++    if (internal_destructor) {
++      internal_destructor(this);
++    }
++    Dealloc(storage);
++    external_invoke = std::exchange(other.external_invoke, nullptr);
++#else
+     if (!other && internal_destructor) {
+       this->~move_only_function();
+     }
++#endif
+     internal = std::exchange(other.internal, nullptr);
+     internal_destructor = std::exchange(other.internal_destructor, nullptr);
+     storage = std::exchange(other.storage, nullptr);
+@@ -91,14 +110,26 @@ public:
+   }
+ 
+   R operator()(Args... args) const {
++#ifdef __ANDROID__
++    if (external_invoke) {
++      return external_invoke(storage, std::forward<Args>(args)...);
++    }
++#endif
+     return internal(std::forward<Args>(args)...);
+   }
+ 
+   explicit operator bool() const noexcept {
++#ifdef __ANDROID__
++    return external_invoke || (bool)internal;
++#else
+     return (bool)internal;
++#endif
+   }
+ 
+ private:
++#ifdef __ANDROID__
++  R (*external_invoke)(void*, Args...) = nullptr;
++#endif
+   std::function<R(Args...)> internal;
+   void (*internal_destructor)(move_only_function*) = nullptr;
+   void* storage = nullptr;
+diff --git a/Source/Common/Async.h b/Source/Common/Async.h
+index 0ab446a..e0d4a4f 100644
+--- a/Source/Common/Async.h
++++ b/Source/Common/Async.h
+@@ -11,6 +11,7 @@
+ #include <chrono>
+ #include <optional>
+ #include <poll.h>
++#include <unistd.h>
+ #include <span>
+ #include <utility>
+ #include <vector>
+diff --git a/Source/Tools/FEXLoader/ELFCodeLoader.h b/Source/Tools/FEXLoader/ELFCodeLoader.h
+index c43551c..3695ae4 100644
+--- a/Source/Tools/FEXLoader/ELFCodeLoader.h
++++ b/Source/Tools/FEXLoader/ELFCodeLoader.h
+@@ -61,8 +61,8 @@ class ELFCodeLoader final : public FEX::CodeLoader {
+       }
+ 
+       had_pt_load = true;
+-      min_map_address = std::min(min_map_address, PAGE_START(it.p_vaddr));
+-      max_map_address = std::max(max_map_address, it.p_vaddr + it.p_memsz);
++      min_map_address = std::min<size_t>(min_map_address, PAGE_START(it.p_vaddr));
++      max_map_address = std::max<size_t>(max_map_address, it.p_vaddr + it.p_memsz);
+     }
+ 
+     if (!had_pt_load) {
+diff --git a/Source/Tools/FEXServer/ProcessPipe.cpp b/Source/Tools/FEXServer/ProcessPipe.cpp
+index b4375fe..ce3fdec 100644
+--- a/Source/Tools/FEXServer/ProcessPipe.cpp
++++ b/Source/Tools/FEXServer/ProcessPipe.cpp
+@@ -86,10 +86,11 @@ bool InitializeServerPipe() {
+   auto ServerFolder = FEXServerClient::GetServerLockFolder();
+ 
+   std::error_code ec {};
+-  if (!std::filesystem::exists(ServerFolder, ec)) {
++  if (!std::filesystem::is_directory(ServerFolder, ec)) {
+     // Doesn't exist, create the the folder as a user convenience
+-    if (!std::filesystem::create_directories(ServerFolder, ec)) {
+-      LogMan::Msg::EFmt("Couldn't create server pipe folder at: {}", ServerFolder);
++    std::filesystem::create_directories(ServerFolder, ec);
++    if (ec || !std::filesystem::is_directory(ServerFolder, ec)) {
++      LogMan::Msg::EFmt("Couldn't create server pipe folder at: {} {} ({})", ServerFolder, ec.value(), ec.message());
+       return false;
+     }
+   }
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+index 0e9e868..cd9fb7c 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+@@ -630,10 +630,13 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
+                            "capacity size. This will "
+                            "likely crash! Asserting now!");
+ 
++        uint64_t HostSignalMask {};
++        static_assert(sizeof(_context->uc_sigmask) >= sizeof(HostSignalMask));
++        memcpy(&HostSignalMask, &_context->uc_sigmask, sizeof(HostSignalMask));
+         ThreadObject->SignalInfo.DeferredSignalFrames.emplace_back(ThreadStateObject::DeferredSignalState {
+           .Info = SigInfo,
+           .Signal = Signal,
+-          .SigMask = _context->uc_sigmask.__val[0],
++          .SigMask = HostSignalMask,
+         });
+ 
+         uint64_t NewMask = GetNewSigMask(Signal);
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
+index 1189710..fb1ecd1 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
+@@ -592,8 +592,8 @@ uint64_t SignalDelegator::SetupFrame_ia32(FEXCore::Core::InternalThreadState* Th
+ 
+   // 32-bit Guest can provide its own restorer or we need to provide our own.
+   // On a real host this restorer will live in VDSO.
+-  constexpr uint32_t SA_RESTORER = 0x04000000;
+-  const bool HasRestorer = (GuestAction->sa_flags & SA_RESTORER) == SA_RESTORER;
++  constexpr uint32_t GuestSARestorer = 0x04000000;
++  const bool HasRestorer = (GuestAction->sa_flags & GuestSARestorer) == GuestSARestorer;
+   if (HasRestorer) {
+     guest_uctx->pretcode = (uint32_t)(uint64_t)GuestAction->restorer;
+   } else {
+@@ -791,8 +791,8 @@ uint64_t SignalDelegator::SetupRTFrame_ia32(FEXCore::Core::InternalThreadState*
+ 
+   // 32-bit Guest can provide its own restorer or we need to provide our own.
+   // On a real host this restorer will live in VDSO.
+-  constexpr uint32_t SA_RESTORER = 0x04000000;
+-  const bool HasRestorer = (GuestAction->sa_flags & SA_RESTORER) == SA_RESTORER;
++  constexpr uint32_t GuestSARestorer = 0x04000000;
++  const bool HasRestorer = (GuestAction->sa_flags & GuestSARestorer) == GuestSARestorer;
+   if (HasRestorer) {
+     guest_uctx->pretcode = (uint32_t)(uint64_t)GuestAction->restorer;
+   } else {
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
+index 1fe4358..da37603 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
+@@ -4,6 +4,10 @@
+ #include "LinuxSyscalls/SignalDelegator.h"
+ 
+ #include <FEXHeaderUtils/Syscalls.h>
++#ifdef __ANDROID__
++#include <FEXHeaderUtils/Filesystem.h>
++#include <FEXCore/Config/Config.h>
++#endif
+ #include <FEXCore/Utils/Profiler.h>
+ #include <FEXCore/fextl/fmt.h>
+ 
+@@ -25,7 +29,16 @@ void ThreadManager::StatAlloc::Initialize() {
+     return;
+   }
+ 
++#ifdef __ANDROID__
++  const auto Directory = fextl::fmt::format("{}/shm", FEXCore::Config::GetDataDirectory());
++  if (!FHU::Filesystem::CreateDirectories(Directory)) {
++    return;
++  }
++  const auto Path = fextl::fmt::format("{}/fex-{}-stats", Directory, ::getpid());
++  int fd = ::open(Path.c_str(), O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC | O_NOFOLLOW, USER_PERMS);
++#else
+   int fd = shm_open(fextl::fmt::format("fex-{}-stats", ::getpid()).c_str(), O_CREAT | O_TRUNC | O_RDWR, USER_PERMS);
++#endif
+   if (fd == -1) {
+     return;
+   }
+@@ -73,7 +86,12 @@ uint32_t ThreadManager::StatAlloc::FrontendAllocateSlots(uint32_t NewSize) {
+   NewSize = std::max(MAX_STATS_SIZE, NewSize);
+ 
+   // When allocating more slots, open the fd without O_TRUNC | O_CREAT.
++#ifdef __ANDROID__
++  const auto Path = fextl::fmt::format("{}/shm/fex-{}-stats", FEXCore::Config::GetDataDirectory(), ::getpid());
++  int fd = ::open(Path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW, USER_PERMS);
++#else
+   int fd = shm_open(fextl::fmt::format("fex-{}-stats", ::getpid()).c_str(), O_RDWR, USER_PERMS);
++#endif
+   if (fd == -1) {
+     return CurrentSize;
+   }
+@@ -112,7 +130,12 @@ void ThreadManager::StatAlloc::DeallocateSlot(FEXCore::SHMStats::ThreadStats* Al
+ }
+ 
+ void ThreadManager::StatAlloc::CleanupForExit() {
++#ifdef __ANDROID__
++  const auto Path = fextl::fmt::format("{}/shm/fex-{}-stats", FEXCore::Config::GetDataDirectory(), ::getpid());
++  ::unlink(Path.c_str());
++#else
+   shm_unlink(fextl::fmt::format("fex-{}-stats", ::getpid()).c_str());
++#endif
+ }
+ 
+ void ThreadManager::StatAlloc::LockBeforeFork() {
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
+index 203e8d4..ae24d69 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
+@@ -18,7 +18,7 @@ $end_info$
+ #include <FEXCore/Utils/Profiler.h>
+ #include <FEXCore/Utils/SignalScopeGuards.h>
+ 
+-#include <bits/types/sigset_t.h>
++#include <signal.h>
+ #include <cstdint>
+ #include <linux/seccomp.h>
+ 
+diff --git a/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp b/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp
+index a2d68a8..2468428 100644
+--- a/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp
++++ b/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp
+@@ -304,7 +304,7 @@ namespace x32 {
+         int rv;
+       }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
+ 
+-      int Result = ::getcpu(args->cpu, args->node);
++      int Result = FHU::Syscalls::getcpu(args->cpu, args->node);
+       args->rv = SyscallRet(Result);
+     }
+   } // namespace glibc
+@@ -641,7 +641,7 @@ void LoadGuestVDSOSymbols(bool Is64Bit, char* VDSOBase) {
+   for (size_t i = 0; i < NumSymbols; ++i) {
+     uint64_t offset = SymTableHeader->sh_offset + i * SymTableHeader->sh_entsize;
+     const Elf32_Sym* Symbol = reinterpret_cast<const Elf32_Sym*>(VDSOBase + offset);
+-    if (ELF32_ST_VISIBILITY(Symbol->st_other) != STV_HIDDEN && Symbol->st_value != 0) {
++    if ((Symbol->st_other & 0x3) != STV_HIDDEN && Symbol->st_value != 0) {
+       const char* Name = &StrTab[Symbol->st_name];
+       if (Name[0] != '\0') {
+         if (strcmp(Name, "__kernel_sigreturn") == 0) {
